@@ -104,15 +104,20 @@ for the signal duration:
 | 38400 Bd | 1 706 667 | 8.5 s | 17.1 s |
 | 57600 Bd | 1 706 667 | 5.7 s | 17.1 s |
 | 115200 Bd | 1 820 445 | 2.8 s | 18.2 s |
-| 160000 Bd | 2 048 000 | 2.0 s | 20.5 s |
+| 153600 Bd | 2 133 334 | 2.1 s | 21.3 s |
 
 Signal and wall clock diverge above ~19200 Bd for the reason in the next section. Verified against the
 app's own arithmetic, not hand-computed.
 
-**The highest standard rate that records is 160000 Bd**; the true cut-off is wherever `fs_for_burst`
-first returns nil, a little above it (165000 Bd still passes, 200000 Bd does not). The refusal is by
-name: *"200000 Bd is too fast to stream -- no sample rate delivers 4 samples/bit; use FRAME"*.
-Recording needs 4 samples/bit and the digitizer stops at 1 MS/s, so 200000 Bd and beyond -- including
+**The highest standard rate that records is 153600 Bd**, and the cut-off is exact rather than
+approximate: `fs_for_burst` returns nil once `1/(minsabit * baud)` no longer exceeds `acq_overhead` plus
+one period of the top listed rate, which is `1/(4 * (1/1e6 + 5.1e-7))` = **165563 Bd**. 153600 clears it
+at 4.31 samples/bit delivered; 172800 is the next entry in the ladder and does not. Confirmed on the
+instrument 2026-08-18 on both sides of the boundary: an 8 kB recording at 153.6 kBd captures and
+decodes, and at 172.8 kBd the mode is refused. The refusal names the recording's own figure:
+*"192000 Bd: a recording gets 3.4 samples/bit, under the 4 floor -- use FRAME"* — deliberately not the
+`SA/BIT` header value, which is measured from a FRAME capture and reads about 5.2 at that rate.
+Recording needs 4 samples/bit and the digitizer stops at 1 MS/s, so 172800 Bd and beyond -- including
 the 250 kBd decode ceiling -- are FRAME only.
 
 **Nothing is dropped inside a recording.** One hardware acquisition with no script running, so there

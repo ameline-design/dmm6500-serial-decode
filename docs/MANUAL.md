@@ -291,10 +291,12 @@ There are two different times here and it is worth keeping them apart:
 - **Signal** — how much of the line ends up in the file.
 - **Waiting** — how long you stand there before the buffer is full.
 
-Below about 19200 baud they are the same. Above it they are not, because the meter files about
-**100 000 samples a second** into its memory while a fast line needs it to sample faster than that.
-The samples it takes are properly spaced and the record is complete — you just wait longer than the
-amount of signal you get.
+Below about 19200 baud they are the same. Above it they are not, because the meter writes about
+**100 000 readings a second** into its memory however fast the digitizer is told to sample. The
+digitizer really does sample at the rate it is asked — that is what gives you the samples per bit — but
+the readings reach the buffer at that fixed ceiling, so gathering them takes longer than the stretch of
+line they represent. The samples are properly spaced and the record is complete; you just stand there
+longer than the amount of signal you get.
 
 | Locked rate | Signal you get | Waiting for the full 32 kB |
 |---|---|---|
@@ -307,18 +309,34 @@ amount of signal you get.
 | 38400 Bd | 8.5 s | about 17 s |
 | 57600 Bd | 5.7 s | about 17 s |
 | 115200 Bd | 2.8 s | about 18 s |
-| 160000 Bd | 2.0 s | about 20 s |
+| 153600 Bd | 2.1 s | about 21 s |
 
 Every row is the same 32 768 bytes — what changes is how long that takes to go past. The `8 kB`
 window is a quarter of each figure. Then add the decoding, which does not depend on the baud rate:
 about two minutes for 32 kB, half a minute for 8 kB.
 
-**You do not have to fill it:** press **TRIGGER** whenever you like and you keep everything up to that
-point.
+**You do have to fill it.** There is no way to stop a recording early — see the TRIGGER key section
+above — so choose the window with the whole wait in mind.
 
-**Above about 160000 baud there is no recording mode.** Pressing **Mode** and then **Capture** says
-so, with the number, rather than recording at a sample rate too low to be trusted. Use FRAME, which
-works to the full 250000 baud.
+**153600 baud is the fastest rate that can record. Above that, FRAME only.**
+
+The reason is that a recording and a frame capture do not get the same sample rate out of the same
+request. A frame capture gets very nearly the 1 MS/s it asks for; a recording's burst acquisition loses
+about half a microsecond per sample, so the same request delivers about 662 kS/s. The floor is four
+samples per bit, and the crossover works out at **165563 baud** — so of the standard rates, 153600 is
+the last one that clears it, at 4.3 samples/bit.
+
+Above it the app **refuses before you press**, on the note row, naming the figure a recording would
+actually get:
+
+    192000 Bd: a recording gets 3.4 samples/bit, under the 4 floor -- use FRAME
+
+That figure is deliberately the recording's, not the header's. The `SA/BIT` cell will read about 5.2 at
+192000 baud, which is true of the frame capture it was measured from — the two are different
+acquisitions, and the note says which one it means.
+
+**FRAME keeps working to the full 250000 baud**, and usefully so: at 192000 baud a frame capture holds
+384 bytes.
 
 ---
 

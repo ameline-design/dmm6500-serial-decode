@@ -295,7 +295,7 @@ sdec.maxmult  = 12    -- a gap longer than this many bit times is idle, not data
 
 sdec.stdbaud = {110, 300, 600, 1200, 1800, 2400, 4800, 7200, 9600, 14400,
                 19200, 28800, 31250, 38400, 57600, 76800, 115200, 128000,
-                153600, 230400, 250000, 460800, 921600}
+                153600, 172800, 192000, 230400, 250000, 460800, 921600}
 
 sdec.nbins     = 512
 sdec.binocc    = 16    -- target samples per BIN

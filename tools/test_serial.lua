@@ -5789,6 +5789,15 @@ do
     check('...while 153.6 kBd, which records fine, is not refused',
           sdec.mode_why({needbaud = true, cap = 8192}) == nil,
           tostring(sdec.mode_why({needbaud = true, cap = 8192})))
+    -- THE CROSSOVER IS 165563 Bd, so 153600 is the last standard rate that can record and everything
+    -- above it is frame-only. Asserted as a boundary rather than a single point: an acq_overhead or
+    -- rate-ladder change that moved it would go unnoticed otherwise.
+    local recmax, i = nil, nil
+    for i = 1, table.getn(sdec.stdbaud) do
+      if sdec.fs_for_burst(sdec.stdbaud[i]) ~= nil then recmax = sdec.stdbaud[i] end
+    end
+    check('...and 153600 is the fastest standard rate that can record at all',
+          recmax == 153600, tostring(recmax))
     sdec.force_baud = svb
   end
 

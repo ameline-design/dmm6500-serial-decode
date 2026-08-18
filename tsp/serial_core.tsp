@@ -168,11 +168,24 @@ sdec.maxmult  = 12    -- a gap longer than this many bit times is idle, not data
 --
 -- No new ambiguity: 153600 sits 20 % from 128000 and 33 % from 230400, against a 2 % snaptol.
 --
+-- 172800 (9x) and 192000 (10x) are here for the same reason, found the same way: the ladder had
+-- nothing between 153600 and 230400, so a 192 kBd line reported a raw 191993 with a question mark and
+-- needed a Lock Rate press to pin. Both are FRAME-ONLY -- see below -- but snapping still buys the
+-- green padlock and the auto-lock instead of a manual press.
+--
+-- Spacing checked against the 2 % snaptol: 153600 -> 172800 is 12.5 %, 172800 -> 192000 is 10 %,
+-- 192000 -> 230400 is 17 %. No new ambiguity anywhere in the group.
+--
 -- 307200 is the next doubling and is NOT here, because sdec.maxbaud is 250000 and the detector
 -- rejects anything above it -- adding the rate without raising that would list a rate it refuses.
+--
+-- WHICH OF THESE CAN RECORD is a separate question from whether they decode, and the answer follows
+-- from fs_for_burst(): the burst path loses acq_overhead per sample, so the crossover is at
+-- 1/(4*(1/1e6 + 5.1e-7)) = 165563 Bd. 153600 is therefore the FASTEST STANDARD RATE THAT CAN RECORD
+-- (4.31 samples/bit delivered); 172800 and above are frame-only. Frame decodes to the full 250000.
 sdec.stdbaud = {110, 300, 600, 1200, 1800, 2400, 4800, 7200, 9600, 14400,
                 19200, 28800, 31250, 38400, 57600, 76800, 115200, 128000,
-                153600, 230400, 250000, 460800, 921600}
+                153600, 172800, 192000, 230400, 250000, 460800, 921600}
 
 -- ============================================================================
 -- Level detection
