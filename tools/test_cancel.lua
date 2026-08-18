@@ -888,7 +888,11 @@ do
   sdec.ck_running, sdec.strm_inflight = true, true
   sdec.ui_refresh()
   local ctl = MD.text(sdec.ui_log_t)
-  check('the control cell names the TRIGGER key', has(ctl, 'TRIGGER'), tostring(ctl))
+  -- NAMES NO CONTROL: measured 2026-08-18, the key's event does not reach the blender while a
+  -- panel-initiated run executes, and a touch press cannot be dispatched at all.
+  check('the control cell promises no control during a one-press run',
+        not has(ctl, 'TRIGGER') and not has(ctl, 'Capture=') and has(ctl, 'no stop'),
+        tostring(ctl))
   check('and fits its 221 px', sdec.ui_textw(ctl) <= 221,
         string.format('%d px: %q', sdec.ui_textw(ctl), tostring(ctl)))
   idle()

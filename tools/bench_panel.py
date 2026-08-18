@@ -81,8 +81,11 @@ CAPTURES = ('Capture', 'LockRate', 'Opt:Apply', 'Opt:AutoDetect', 'Opt:LockDetec
 # A RECORDING PRESS IS IN A THIRD CLASS, and pretending otherwise would either fail every sweep or
 # raise the ordinary bound until it stopped meaning anything. One press now records a whole window
 # and decodes it: 8 kB at 2400 baud is ~34 s of recording plus ~30 s of decoding, and the operator
-# is told so on the status row. What makes a minutes-long press acceptable is that TRIGGER stops it,
-# which is a separate case below rather than a footnote here.
+# is told so on the status row. What makes a minutes-long press acceptable is that it is BOUNDED and
+# states its cost beforehand -- NOT that TRIGGER stops it, which this comment used to claim and which
+# was measured false on 2026-08-18: the key's event does not reach the blender while a panel-initiated
+# run executes. The cancel case below still passes, because it delivers the event from a firmware timer
+# rather than a finger -- worth knowing when reading its verdict.
 #
 # 300 s is a HANG DETECTOR, not a latency budget. It is sized to catch a press that never returns --
 # the failure that costs a power cycle -- and deliberately not to police the duration, which is the

@@ -887,7 +887,15 @@ function sdec.ui_notes()
   if md2.needbaud and sdec.force_baud ~= nil and sdec.force_baud > 0 then
     local bps = sdec.force_baud / 10          -- 10 bit times a byte, near enough for a note
     if md2.cap ~= nil then
-      add(string.format('bounded at %d bytes -- about %.0f s of this line, then it stops',
+      -- AND THAT NOTHING CAN CUT IT SHORT, which is the other half of what an operator needs BEFORE
+      -- pressing: neither a button nor the TRIGGER key can (measured 2026-08-18 -- see the control
+      -- cell in ui_refresh), and the decode costs more than the acquisition, so the hold outlasts the
+      -- figure here. 'EARLY' is the precise word: 'bounded' already says it ends by itself.
+      --
+      -- KEPT SHORT BECAUSE THE NOTE TRIMMER IS REAL. A fuller sentence -- '...and nothing on the panel
+      -- can stop it once started' -- rendered as '...once st...', so the warning was the part that got
+      -- cut. ~74 characters is the budget once '(+N more)' takes its share.
+      add(string.format('bounded at %d bytes -- ~%.0f s of this line, and nothing stops it early',
                         md2.cap, md2.cap / bps))
     else
       -- Unlimited by design, but the capture buffer is finite, so say how long that is.
@@ -1886,11 +1894,15 @@ function sdec.ui_refresh()
     -- line count, and both will not fit in the left string, which already ends near 385 px of the
     -- 430 available.
     --
-    -- WHICH CONTROL IS TRUE IS DECIDED BY THE STATE. A front-panel BUTTON cannot act while a script
-    -- runs -- presses queue, so a Capture pressed to stop a run starts another one when it ends -- but
-    -- the front-panel TRIGGER key can: sdec.cancel_setup() latches it on a trigger blender, and both
-    -- long loops poll the latch (see sdec.cancel_asked). So a one-press run advertises the control that
-    -- works rather than the bound it will eventually hit.
+    -- WHICH CONTROL IS TRUE IS DECIDED BY THE STATE, AND FOR A ONE-PRESS RUN THE TRUE ANSWER IS NONE.
+    -- This cell said 'TRIGGER key = stop' on the strength of cancel_setup()'s blender latch. MEASURED
+    -- 2026-08-18 and it is not so: pressed 20 % into a 32 kB decode, with tens of seconds of polling
+    -- still to come, the run finished 'full' and the latch was EMPTY -- the key's event never reaches
+    -- the blender while a panel-initiated run executes. The plumbing behind it is sound (a firmware
+    -- trigger timer blended in as stimulus 2 DID cancel at 8 s, keeping 497 bytes), so what is false
+    -- is only the claim that a finger can deliver it. A touch press cannot act either: presses queue.
+    --
+    -- So it names no control. The duration is on the note line, where there is room for it.
     --
     -- PAINTED ONCE, BEFORE THE RUN, and correct for its whole duration: sdec.progress() repaints
     -- only the counter cell, so nothing overwrites this until the run returns. strm_inflight is what
@@ -1901,7 +1913,7 @@ function sdec.ui_refresh()
     elseif sdec.ck_job ~= nil then
       set(sdec.ui_log_t, 'Capture=step  Mode=Exit')
     elseif sdec.ck_running or sdec.strm_inflight then
-      set(sdec.ui_log_t, 'TRIGGER key = stop')
+      set(sdec.ui_log_t, 'no stop until it ends')
     else set(sdec.ui_log_t, 'Mode=Exit to FRAME') end
   else
     set(sdec.ui_log_t, sdec.flog_status())

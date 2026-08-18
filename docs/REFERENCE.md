@@ -16,9 +16,11 @@ rather than being dropped. So a handler's own duration *is* its press latency, a
 only way to answer a touch press. That is why a stop press is absorbed after the capture it
 interrupted.
 
-The **front-panel TRIGGER key is the exception**, and it is what makes a minutes-long press
-acceptable: it is latched by the trigger hardware rather than delivered to the interpreter, so a
-running handler can see it. See **Cancelling a run: the TRIGGER key latch** below.
+The **front-panel TRIGGER key was meant to be the exception** — latched by the trigger hardware rather
+than delivered to the interpreter, so a running handler could see it. Measured 2026-08-18, it is not:
+the press does not reach the latch while a panel-initiated run executes, so **nothing makes a
+minutes-long press interruptible**, and what makes it acceptable is only that the run is bounded and
+says its cost beforehand. See **Cancelling a run: the TRIGGER key latch** below.
 
 Measured over 50 button presses covering every control in every state:
 
@@ -213,18 +215,36 @@ represented **1.054 s of signal**, and the 12 171 bytes decoded match 1.054 s ×
 So above ~19200 Bd, filling the buffer takes roughly `capacity / 100 000` seconds regardless of rate —
 about 17-20 s for every mode in the table.
 
-### Cancelling a run: the TRIGGER key latch
+### Cancelling a run: the TRIGGER key latch, and why it does not reach the operator
+
+> **Status, 2026-08-18: this mechanism works and cannot be triggered by a finger.** The plumbing below
+> is real — when the cancel event is delivered by a firmware trigger timer blended in as stimulus 2, a
+> run stops within one poll, keeps every byte decoded so far and files them (measured: fired 8 s into
+> an 8 kB run, `ck_cancel` true, `stopped` = `stopped`, 497 bytes kept, ended at 8.1 s against 20.5 s
+> uninterrupted). What does **not** happen is the key reaching it: pressed 20 % of the way through a
+> 32 kB decode, the run finished `full` and the latch was **empty** afterwards. The polls do run —
+> counters over a 20.5 s run show `ck_progress` called 15 times and `cancel_asked` 21 times.
+>
+> The distinguishing detail, and the lead to test: the table below was gathered with
+> `bench_cancelkey.py` driving a **host-initiated** script, whereas every failure is a
+> **panel-initiated** run — the firmware executing a display button's event string. Presses may be
+> barred from generating trigger events inside a display event handler. The reference is consistent
+> with a state dependence: the key's action "depends on the instrument state" (3272), and running a
+> script selects the trigger-model measurement method, where the key means Initiate/Abort Trigger
+> Model (8060–8150).
+>
+> So the panel promises no stop, and the manual says a recording runs to its own end.
 
 **The problem.** A decode long enough to need cancelling is a handler that has not returned, and a
 touch press is not delivered until it does. So the app cannot notice a Cancel button, and for a while
 the answer was to make the press *short* instead — one slice per press, which cost **twelve presses**
 to decode a full 32 kB recording.
 
-**What works.** The front-panel TRIGGER key generates `trigger.EVENT_DISPLAY`, and an event blender is
-a latching detector for it: "if one or more trigger events were detected since the last time
+**What the latch does.** The front-panel TRIGGER key generates `trigger.EVENT_DISPLAY`, and an event
+blender is a latching detector for it: "if one or more trigger events were detected since the last time
 `trigger.blender[N].wait()` or `.clear()` was called, this function returns immediately" (ref 14-334).
 The latch lives in firmware, so the interpreter being busy is irrelevant. Measured on 1.7.17a by
-`tools/bench_cancelkey.py`:
+`tools/bench_cancelkey.py`, **against a host-initiated script** — which is the caveat above:
 
 | Question | Measured |
 |---|---|

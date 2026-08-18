@@ -47,7 +47,7 @@ SERIAL DECODE	rect	97	15	1	4	1	4259648	100	0
 SERIAL DECODE	rect	101	15	1	4	1	4259648	100	0	
 SERIAL DECODE	rect	95	19	9	7	1	4259648	100	0	
 SERIAL DECODE	text	8	48	0	0	1	16760832	-1	0	32 kB
-SERIAL DECODE	text	92	48	0	0	1	16760832	-1	0	bounded at 32768 bytes -- about 3 s of this line, then it stops
+SERIAL DECODE	text	92	48	0	0	1	16760832	-1	0	bounded at 32768 bytes -- ~3 s of this line, and nothing stops it early
 SERIAL DECODE	text	8	66	0	0	1	8421504	-1	0	
 SERIAL DECODE	text	64	66	0	0	1	16777215	-1	0	
 SERIAL DECODE	text	260	66	0	0	1	16777215	-1	0	

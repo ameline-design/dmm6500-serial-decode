@@ -3419,7 +3419,7 @@ function sdec.ui_notes()
   if md2.needbaud and sdec.force_baud ~= nil and sdec.force_baud > 0 then
     local bps = sdec.force_baud / 10          -- 10 bit times a byte, near enough for a note
     if md2.cap ~= nil then
-      add(string.format('bounded at %d bytes -- about %.0f s of this line, then it stops',
+      add(string.format('bounded at %d bytes -- ~%.0f s of this line, and nothing stops it early',
                         md2.cap, md2.cap / bps))
     else
       local nsmp = sdec.ck_bufmax or 2800000
@@ -4041,7 +4041,7 @@ function sdec.ui_refresh()
     elseif sdec.ck_job ~= nil then
       set(sdec.ui_log_t, 'Capture=step  Mode=Exit')
     elseif sdec.ck_running or sdec.strm_inflight then
-      set(sdec.ui_log_t, 'TRIGGER key = stop')
+      set(sdec.ui_log_t, 'no stop until it ends')
     else set(sdec.ui_log_t, 'Mode=Exit to FRAME') end
   else
     set(sdec.ui_log_t, sdec.flog_status())

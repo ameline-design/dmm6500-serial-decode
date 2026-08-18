@@ -532,11 +532,13 @@ function sdec.record_run()
   -- that started it has already been offered to the absorb and declined.
   sdec.strm_stopped_by_press = nil
   sdec.fc_clock = pcall(function() timer.cleartime() end)
-  -- PAINTED AFTER THE CLEAR ABOVE AND BEFORE THE FIRST WINDOW. This is the refresh that puts
-  -- 'TRIGGER key = stop' on the panel, and it belongs on this side of the clear: the operator must
-  -- not be invited to press until a press will be seen. It is also the last full refresh until the
+  -- PAINTED AFTER THE CLEAR ABOVE AND BEFORE THE FIRST WINDOW. It is the last full refresh until the
   -- run ends -- sdec.progress() repaints only the counter -- so the control cell it writes stands for
-  -- the whole run.
+  -- the whole run, which is why it must be painted at all. That cell now reads 'no stop until it ends';
+  -- it used to say 'TRIGGER key = stop', and the order mattered then because the operator must not be
+  -- invited to press before a press could be seen. It invites nothing now, but the clear still belongs
+  -- above it: cancel_clear() must discard the previous run's press before this run can be cancelled by
+  -- anything at all.
   pcall(function() sdec.ui_refresh() end)
   local keep = nil                 -- the last window that actually decoded something
   local ok, why = false, nil
@@ -1317,19 +1319,21 @@ function sdec.capture()
     -- STREAMING: produces a file, not a view, so the panel shows progress and a summary.
     sdec.clear_result()
     sdec.ui_status = 'capturing'
-    -- SET BEFORE THE REFRESH, so the control cell says 'TRIGGER key = stop' for the whole run. Only
+    -- SET BEFORE THE REFRESH, so the control cell says 'no stop until it ends' for the whole run. Only
     -- this refresh paints that cell -- sdec.progress() writes the counter and nothing else -- and
     -- ck_running does not become true until stream_begin() is already inside the job, so without a
     -- flag of its own the cell would read 'Mode=Exit to FRAME' throughout a run Mode cannot exit.
     sdec.strm_inflight = true
-    -- NO REFRESH HERE. record_run() paints, immediately after it clears the cancel latch, and the
-    -- order matters: painted first, a press made in the milliseconds between the operator reading
-    -- 'TRIGGER key = stop' and the run starting would be thrown away by the very run it was aimed at.
-    -- The panel must not invite a press it is about to discard.
+    -- NO REFRESH HERE. record_run() paints, immediately after it clears the cancel latch. When the cell
+    -- still named the TRIGGER key the order mattered for a second reason -- a press made between the
+    -- operator reading it and the run starting would be discarded by the very run it was aimed at.
+    -- One refresh, in record_run(), remains the right shape regardless.
     local sok, swhy = false, nil
     -- THE WHOLE JOB, IN THIS ONE PRESS: record, decode, save, and under flow control repeat until
-    -- the device stops. It can hold the panel for minutes, which is only acceptable because
-    -- TRIGGER stops it -- see sdec.record_run() and sdec.cancel_setup().
+    -- the device stops. It holds the panel for as long as that takes, AND NOTHING CAN CUT IT SHORT --
+    -- this comment used to say the hold "is only acceptable because TRIGGER stops it", and that premise
+    -- was measured false on 2026-08-18: the key emits no blender event while this runs. The bounds in
+    -- record_run() (fc_maxwin, fc_maxsec) are therefore the only exits, not a backstop to a cancel.
     local pok, perr = pcall(function() sok, swhy = sdec.record_run() end)
     sdec.strm_inflight = nil
     sdec.busy, sdec.ck_running = false, false

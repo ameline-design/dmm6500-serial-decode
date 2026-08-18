@@ -178,14 +178,18 @@ do
   check('the cell still fits its 221 px', sdec.ui_textw(lg) <= 221,
         string.format('%d px', sdec.ui_textw(lg)))
 
-  -- THE POLLED PATH NOW NAMES THE TRIGGER KEY. It used to state its bounds instead -- strm_maxsec
-  -- and the quiet-line watchdog -- because nothing the operator could press would act during it.
-  -- The key does act: the firmware latches it on a blender while the interpreter is busy, and both
-  -- long loops poll the latch. A stated bound was the best available answer, not a better one.
+  -- THE POLLED PATH NAMES NOTHING, AND THAT IS THE THIRD ANSWER THIS CELL HAS HAD. It stated its
+  -- bounds; then it named the TRIGGER key, on the strength of the blender latch; and on 2026-08-18 the
+  -- key was measured NOT to deliver while a panel-initiated run executes -- pressed 20 % into a 32 kB
+  -- decode, the run still ended 'full' with the latch empty. The plumbing works (a blended firmware
+  -- timer cancels), so only the finger's part is false. Naming a control that cannot act is worse than
+  -- naming none, so the cell says it runs to its own end and the note line carries the duration.
   sdec.strm_recording = nil
   sdec.ui_refresh()
-  check('a polled one-shot stream names the TRIGGER key, which can stop it',
-        has(MD.text(sdec.ui_log_t), 'TRIGGER') and has(MD.text(sdec.ui_log_t), 'stop'),
+  check('a polled one-shot stream names no control, because none can act',
+        not has(MD.text(sdec.ui_log_t), 'TRIGGER')
+        and not has(MD.text(sdec.ui_log_t), 'Capture=')
+        and has(MD.text(sdec.ui_log_t), 'no stop'),
         string.format('%q', tostring(MD.text(sdec.ui_log_t))))
   sdec.progress_samples(1960, 20000)
   check('and its percentage still works', has(sdec.ck_status(), '9 % of the buffer'),

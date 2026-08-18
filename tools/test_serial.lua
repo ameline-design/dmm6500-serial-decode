@@ -4723,17 +4723,19 @@ local function test_modes()
   sdec.force_baud = 9600
   sdec.ck_running = true
   sdec.ui_refresh()
-  -- NOT 'Capture=Stop  Mode=Exit', and no longer 'runs to N s or quiet' either. A touch press is
-  -- still not dispatched while a script runs, so neither BUTTON can act -- but the front-panel
-  -- TRIGGER key can, because the firmware latches it on a trigger blender whether the interpreter
-  -- is busy or not (measured, tools/bench_cancelkey.py). The cell names the one control that works.
-  check('a running stream names the control that WORKS -- the TRIGGER key',
-        has(MD.text(sdec.ui_log_t), 'TRIGGER')
-        and has(MD.text(sdec.ui_log_t), 'stop'),
+  -- IT NAMES NO CONTROL, BECAUSE THERE IS NONE. This asserted 'TRIGGER key = stop' on the strength of
+  -- cancel_setup()'s blender latch. MEASURED FALSE 2026-08-18 on the instrument: pressed 20 % into a
+  -- 32 kB decode the run still finished 'full' and the latch was EMPTY, so the key's event does not
+  -- reach the blender while a panel-initiated run executes. A touch press cannot act either -- presses
+  -- queue. Advertising either one is the defect class this whole suite exists to catch, so the cell
+  -- must promise nothing and the duration lives on the note line.
+  check('a running stream promises NO control, because none can act',
+        not has(MD.text(sdec.ui_log_t), 'TRIGGER')
+        and not has(MD.text(sdec.ui_log_t), 'Capture=')
+        and not has(MD.text(sdec.ui_log_t), 'Mode='),
         tostring(MD.text(sdec.ui_log_t)))
-  check('...and does NOT advertise a button that cannot act during a run',
-        not has(MD.text(sdec.ui_log_t), 'Capture='),
-        tostring(MD.text(sdec.ui_log_t)))
+  check('...and says instead that it runs to its own end',
+        has(MD.text(sdec.ui_log_t), 'no stop'), tostring(MD.text(sdec.ui_log_t)))
   sdec.ck_running = false
   MD.usb(false)
   sdec.flog_path = nil

@@ -80,8 +80,8 @@ you are (`FRAME HEX pg 1/1 bytes 1-155/155 win 240 [done]`) and names the log fi
 **The mode cell is colour-coded**, so a glance says which mode you are in without reading: grey for
 FRAME, blue for the `8 kB` recording window, amber for `32 kB`. During a recording the status row
 carries a live counter — `recording... 40 % of the buffer`, then `decoding... 4096/8192 bytes` — and
-the cell to its right reads `TRIGGER key = stop`, which is the one control that works while the app is
-busy.
+the cell to its right reads `no stop until it ends`, because while the app is busy nothing on the
+instrument can interrupt it.
 
 **The note row is the important one.** Warnings appear there — an ambiguous baud rate, a line that
 disagrees with the rate you locked, a recording that stopped early. If more than one applies it ends
@@ -117,34 +117,43 @@ if the panel seems to ignore you, wait rather than pressing again.
 ## The TRIGGER key — the one hardware button that matters
 
 The **TRIGGER** key is the physical key on the front panel, to the left of the screen. It is not part
-of the app's own row of buttons, and it does two things nothing on the glass can do.
+of the app's own row of buttons. It was intended to do two things nothing on the glass can do; **one of
+them works** — timing a capture — and the other, stopping a long job, does not. Both are described
+below, because knowing which is which is the difference between waiting confidently and pressing a key
+that does nothing.
 
-### 1. It stops a long job
+### 1. It does not stop a long job, and nothing else does either
 
-**A recording is one press, and TRIGGER is how you end it early.** The app notices the press within
-**about a second** and finishes the piece of work it is on. Everything already decoded is kept — the
-bytes stay on screen and the file on the USB key is complete up to that point.
+**A recording runs to its own end.** Once you press **Capture** in `8 kB` or `32 kB`, nothing on the
+instrument will cut it short — not a button on the glass, and not the TRIGGER key. Decide before you
+press. The note row tells you the cost up front:
 
-What "finishes" means depends on when you press, and the difference is worth knowing:
+    bounded at 32768 bytes -- ~34 s of this line, and nothing stops it early
 
-- **While recording** — it stops recording, then **goes on to decode what it already captured**, which
-  can take a while on its own. Press TRIGGER a second time to stop that too.
-- **While decoding** — it stops at the end of the current block and files what it has. The rest of the
-  recording is **not** decoded: those bytes were captured but you will not see them, so press with
-  that in mind rather than expecting a complete file.
+and the cell on the status row reads `no stop until it ends` for as long as it is working. Allow more
+than that figure: it is the time to fill the buffer, and the decode afterwards takes longer than the
+capture did.
 
-The status row says `TRIGGER key = stop` for as long as a run is going, so you never have to remember
-this.
+**Earlier builds advertised TRIGGER as the stop. That was wrong, and it was measured wrong** on the
+instrument on 2026-08-18: pressed 20 % of the way through a 32 kB decode — with tens of seconds of
+checking still to come — the run finished normally and the trigger latch was found empty afterwards.
+The key's press never reaches the app while a run started from the panel is executing.
 
-**Why it is this key and not a button on the screen.** While the app is working, the instrument
-cannot deliver a touch press — it queues it until the work finishes, which is too late to be a stop.
-The TRIGGER key goes through the trigger hardware instead, which keeps working while the app is busy.
-That is measured, not assumed: pressed in the middle of a deliberate ten-second run of solid work, it
-was still seen the moment the app next looked.
+**The app's own side of this is sound,** which is why it is worth fixing rather than accepting: when
+the identical cancel is delivered by a firmware timer instead of a finger, the run stops inside a
+second, keeps every byte decoded up to that point, and files them. What is missing is a route from a
+key press to that mechanism.
 
-**A tap on Capture during a run is not a stop.** It is queued, and when the run finishes the app
-treats the first such press as "you meant to stop it" and tells you so rather than starting another
-recording.
+**What does bound a run,** so it can never hold the panel indefinitely:
+
+- the byte ceiling for the mode — 8192 or 32768;
+- a quiet line: one second with no activity ends it;
+- under flow control, 32 windows or 20 minutes of wall clock, whichever comes first. The 20 minutes is
+  what matters on slow lines, where a full 32 kB window would take 18 minutes at 300 baud.
+
+**A tap on Capture during a run is not a stop.** It is queued by the instrument and delivered when the
+run finishes. The app recognises presses made during the run it has just finished and discards them,
+saying so on the note row, rather than starting another recording you did not ask for.
 
 ### 2. It can time a capture
 
@@ -184,12 +193,12 @@ whole job: it records, decodes every byte, writes them to the USB key, and comes
 screen. There is nothing to press in the middle.
 
 While it works, the counter on the status row moves — first `recording... N % of the buffer`, then
-`decoding... N/8192 bytes` — and the cell beside it reads `TRIGGER key = stop`. **Press TRIGGER to
-finish early**; you keep everything decoded up to that moment.
+`decoding... N/8192 bytes` — and the cell beside it reads `no stop until it ends`. **There is no way
+to finish it early** — see the section on the TRIGGER key above for what bounds it instead.
 
-It stops by itself when the window is full, when the line has been quiet for a second, or when you
-press TRIGGER. There is also a 20-minute backstop, so nothing can wait for ever — it only matters on
-very slow lines, where a full 32 kB window takes 18 minutes at 300 baud.
+It stops by itself when the window is full or when the line has been quiet for a second. There is also
+a 20-minute backstop, so nothing can wait for ever — it only matters on very slow lines, where a full
+32 kB window takes 18 minutes at 300 baud.
 
 **Nothing is dropped inside a recording.** What you get is a continuous, in-order run of the line —
 verified with a 1024-byte non-repeating test pattern, where the decoded bytes were one unbroken slice
