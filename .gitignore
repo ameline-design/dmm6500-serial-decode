@@ -1,0 +1,56 @@
+# THIRD-PARTY DOCUMENTATION IS NOT OURS TO REDISTRIBUTE.
+#
+# docs/ doubles as the working reference shelf for this project: Keithley's DMM6500 manuals and TSP app
+# examples, Siglent's generator and scope programming guides, and a couple of processor reference manuals.
+# They are what the measurements were made against and they are cited throughout the code, but they are
+# vendor copyright and this repository is public -- so they stay local. Every number they were used to
+# establish is quoted, with its source named, in docs/REFERENCE.md.
+#
+# Listed by vendor rather than by a blanket docs/*.txt rule, so a document WE write in docs/ is published
+# by default instead of silently disappearing.
+
+# Keithley
+docs/DMM6500_*.txt
+docs/DMM6500-*.txt
+docs/DMM6500DisplayDoc.md
+docs/Display API Command Reference.md
+docs/Keithley_DMM6500_Notes-*.txt
+docs/1KW-*.txt
+docs/2000SCAN-*.txt
+docs/K10SCAN_schematic.txt
+docs/LowLevelHandbook_*.txt
+docs/TSPAPP-*.txt
+docs/TSPAPP_*.txt
+
+# Siglent (generator and scope)
+docs/SDG_*.pdf
+docs/SDG_*.txt
+docs/SDG2000X_*.pdf
+docs/SDG2000X_*.txt
+docs/SDS1000*.pdf
+docs/SDS1000*.txt
+docs/SDS1002X-*.pdf
+docs/SDS1002X-*.txt
+
+# Processor reference manuals
+docs/Arm-Cortex-M4-Processor-Datasheet.txt
+docs/e300coreRM.txt
+docs/MPC5125RM.txt
+
+# BENCH OUTPUT IS EVIDENCE, NOT SOURCE: regenerable by re-running the harness, tens of megabytes of it,
+# and it dates immediately.
+out/
+
+# THE WORKING LOG STAYS LOCAL. notes/ is a session-by-session engineering journal -- bench wiring, IP
+# addresses, firmware quirks, review transcripts, what was tried and abandoned. It is the most useful file
+# in the project to whoever is holding the probe and the least useful to whoever is reading the code, and
+# publishing it would put a lot of unreviewed detail about a specific bench on the open web. Everything a
+# reader needs is in docs/REFERENCE.md, which is written to be read.
+notes/
+
+# Local tooling and OS noise
+.claude/
+.DS_Store
+**/.DS_Store
+__pycache__/
+*.pyc

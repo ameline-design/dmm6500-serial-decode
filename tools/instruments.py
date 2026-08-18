@@ -1,0 +1,346 @@
+#!/usr/bin/env python3
+"""One place for the bench's addresses and the facts about it that code needs.
+
+Every other tool imported its own hardcoded IP -- dmmrun.py, siglent.py and
+screenshot.py each had a different constant for the same three boxes -- which is
+fine until the scope becomes a fourth and one of them is missed. Addresses are
+static DHCP reservations on the router, so they are stable, but they belong in
+one file and be overridable from the environment for the day one of them is not.
+
+The bench:
+
+    +--------------+                    +------------------+
+    | SDG2122X     | CH1 out --+--coax--| DMM6500 INPUT HI |   the decoder
+    | 16-bit AWG   |           |        +------------------+
+    | CH2 combined |           |        +------------------+
+    | into CH1     |           +--coax--| SDS1204X-E CH1   |   the oracle
+    +--------------+   splitter         +------------------+
+           ^                                     ^
+           +----------------- USB ---------------+   (scope drives the SDG for
+                                                      Bode plots -- see the
+                                                      hazard note below)
+
+All three on one gigabit switch at 100 Mbit, plus a HomeKit smart plug feeding
+the DMM6500 so the once-per-power-cycle UI build limit can be recovered from
+without a human present.
+"""
+import os
+
+# --------------------------------------------------------------------------
+# Addresses. Environment overrides so a moved instrument needs no code change.
+# --------------------------------------------------------------------------
+DMM_IP = os.environ.get('DMM_IP', '10.0.1.151')
+SDG_IP = os.environ.get('SDG_IP', '10.0.1.79')
+SCOPE_IP = os.environ.get('SCOPE_IP', '10.0.1.163')   # SDS1204X-E, found 2026-08-16
+
+SCPI_PORT = 5025          # raw socket on all three
+TELNET_PORT = 5024        # scope only, echoes a prompt; 5025 is the clean one
+# ...except 5024 is open on the GENERATOR too, so it does not identify the scope. What does:
+# 5025 answers *IDN? on all three, and only one of them says SDS. Found by sweeping the subnet
+# for 5025 and asking each hit who it was, which took seconds -- worth doing again rather than
+# trusting a remembered address after anything is re-plugged.
+#
+#   10.0.1.163  Siglent Technologies,SDS1204X-E,SDSMMDBC2R0625,7.3.6.1.37R17
+#   10.0.1.79   Siglent Technologies,SDG2122X,SDG2XCAD1R2808,2.01.01.38R4
+#
+# THE SCOPE IS ON THE 7.x FIRMWARE LINE. docs/SDS1002X-E-Firmware-Revise-History.txt tops out at
+# 1.3.28 and its compatibility table covers 1.3.x and 5.1.3.x sources only -- 7.x appears nowhere
+# in it. That document is for a different series, and an .ADS taken from it is rejected as
+# "invalid" by this scope. Recorded because the failure looks like a bad download or a bad eject
+# and is neither.
+SCOPE_FW = '7.3.6.1.37R17'
+
+# DMM6500 web UI, for screenshot.py's virtual-front-panel route.
+DMM_USER = os.environ.get('DMM_USER', 'admin')
+DMM_PASSWORD = os.environ.get('DMM_PASSWORD', 'admin')
+
+# --------------------------------------------------------------------------
+# The smart plug. HomeKit, so it is driven through the macOS Shortcuts CLI
+# rather than any network protocol -- there is no IP to put here.
+# --------------------------------------------------------------------------
+PLUG_ON_SHORTCUT = os.environ.get('PLUG_ON_SHORTCUT', 'DMM Power On')
+PLUG_OFF_SHORTCUT = os.environ.get('PLUG_OFF_SHORTCUT', 'DMM Power Off')
+
+# Seconds the DMM must stay unpowered for a power cycle to be a power cycle.
+# A short interruption can leave the mainboard powered through bulk capacitance
+# and the firmware never restarts, which looks exactly like a cycle that did not
+# fix anything.
+PLUG_MIN_OFF_S = 15.0
+# Seconds to allow for the LXI stack after power returns. It answers ICMP well
+# before it accepts a socket, so readiness is polled with *IDN? not ping.
+PLUG_BOOT_TIMEOUT_S = 90.0
+
+# --------------------------------------------------------------------------
+# Hard facts that shape what the drivers may do. These are not preferences.
+# --------------------------------------------------------------------------
+
+# CALIBRATION IS OFF LIMITS ON BOTH INSTRUMENTS. ki.cal exists on the DMM6500
+# and is never touched: no *CAL, no adjustment command, no write to calibration
+# state, on the DMM or the SDG. Reads of dmm.calibration.* are pointless anyway.
+# Any driver here that grows a calibration path is a bug.
+
+# The DMM6500 accepts only ONE controlling socket. A second one silently steals
+# replies -- reads return '' or raise BrokenPipe, with no error to say why.
+# dmmrun.acquire_single_instance() holds an flock; use it.
+DMM_SINGLE_CLIENT = True
+
+# One UI build per power cycle. sdec.start() may be called once; every refresh
+# after it is settext-only. A second build crashes the firmware hard enough to
+# need intervention -- which is what the smart plug is for.
+DMM_ONE_BUILD_PER_POWER_CYCLE = True
+
+# NEVER CALL display.waitevent() FROM A REMOTELY LOADED SCRIPT. It wedges the instrument: the TSP
+# interpreter stops answering, the control socket goes silent, clear_dead_sockets() and reconnecting
+# do not recover it, and only a power cycle does.
+#
+# Measured 2026-08-17, twice. Called as display.waitevent(0) -- documented as "number of seconds to
+# wait for an event, forever if not specified" -- FIRST from a script while the app was running (the
+# socket was reset), then from a bare instrument with no custom screen and no app built (no reply at
+# all, then four reconnect attempts returned nothing). So a timeout of 0 does NOT mean "poll and
+# return immediately"; with no waitevent-enabled object to report, it blocks, and it takes the remote
+# interface down with it.
+#
+# This matters beyond the harness. The instrument's own display documentation shows waitevent(0)
+# polled inside a long loop to check for a Stop press, and that pattern is the obvious way to let a
+# long-running handler stay cancellable. On this firmware it is a trap: an app that polls it and
+# finds nothing pending would hang the panel with no way back but the mains switch.
+#
+# THE MECHANISM THAT DOES WORK IS BELOW -- a trigger blender latching the TRIGGER key.
+DMM_WAITEVENT_WEDGES_THE_INSTRUMENT = True
+
+# HOW TO CANCEL A RUNNING HANDLER ON THIS INSTRUMENT. The only mechanism found, and the one the app
+# uses: the front-panel TRIGGER key generates trigger.EVENT_DISPLAY, an event blender LATCHES it in
+# firmware, and blender wait(t) reads the latch without blocking. Measured 2026-08-17 with
+# tools/bench_cancelkey.py, on a bare instrument and with the app running:
+#
+#   * a press latches with NOTHING armed -- no trigger model has to be waiting on the key
+#   * THE LATCH IS SET WHILE LUA SPINS: pressed during a deliberate 10 s busy loop, seen by the poll
+#     afterwards, twice. This is the fact the one-press design rests on
+#   * wait(0.001) returns in 1.1 ms, wait(0.05) in 50.1 ms -- it polls. NEVER PASS ZERO: that is how
+#     display.waitevent behaves, and the risk is not worth the microsecond
+#   * 1.06 ms per poll amortised over 200; nothing reaches the event log
+DMM_TRIGGER_KEY_LATCHES_ON_A_BLENDER = True
+
+# AND TWO THINGS THAT DO NOT WORK, both measured the same day, so nobody re-derives them:
+#
+# *TRG (trigger.EVENT_COMMAND) CANNOT cancel a running handler. Sent 2 s into a 6 s busy loop it never
+# reached the latch: the command queue is drained only when the interpreter is idle. It is useless as a
+# harness stand-in for a finger, which is what it was tried for.
+DMM_BUS_TRIGGER_CANNOT_INTERRUPT_A_SCRIPT = True
+#
+# A TRIGGER TIMER *DOES* fire mid-script, because it is firmware: measured firing 2.019 s into a 6 s
+# busy loop and latching on the same blender. tools/bench_panel.py wires trigger.EVENT_TIMER1 as a
+# temporary extra stimulus so the sweep can test a cancel with no finger on the panel.
+DMM_TRIGGER_TIMER_FIRES_DURING_A_SCRIPT = True
+
+# THE FRONT PANEL HAS NO KNOB, and no key other than TRIGGER is visible to a script. The controls are
+# Home, Menu, Apps, Help (left), Enter, Exit, Function, Trigger (right), the TERMINALS front/rear
+# switch and the power button. The display API's event table lists events for OBJECTS only, plus
+# EVENT_ENDAPP on a screen and EVENT_KNOB_ROTATE/EVENT_KNOB_ENTER -- which are "only on instruments
+# with a front panel knob", i.e. not this one (that is the 7510/DMM7512 class).
+#
+# So the pollable physical inputs are exactly two: the TRIGGER key via the blender latch above, and
+# `dmm.terminals` (read-only, dmm.TERMINALS_FRONT / _REAR), which reflects the TERMINALS switch.
+#
+# THE TERMINALS SWITCH IS NOT A SPARE BUTTON, however tempting a second pollable input looks: it
+# PHYSICALLY ROUTES the inputs between the front and rear connectors, so using it as a control would
+# disconnect the very line being decoded. It is readable state, not an input.
+#
+# An in-app help viewer therefore needs on-screen paging buttons; there is no key to hang it off.
+DMM_NO_FRONT_PANEL_KNOB = True
+
+# SDG2122X output ceiling: 20 Vpp into high-Z, i.e. +/-10 V. BSWV
+# MAX_OUTPUT_AMP takes {1-20} and the published specs give max amplitude as
+# +/-10 V. A vector needing more than this cannot be produced here at all.
+SDG_MAX_VPP = 20.0
+
+# SDG2000X arb: bin length 4 B to 16 MB at 2 bytes per point.
+SDG_MAX_PTS = 8388608
+# TrueArb sample rate range, Sa/s.
+SDG_MIN_SRATE = 1e-6
+SDG_MAX_SRATE = 75e6
+
+# The DMM6500 digitizes at 1 MSa/s maximum. The app fixes the 10 V range, whose
+# digitize bandwidth is 440 kHz -- against 210 kHz on 1 V and 17 kHz on 100 V --
+# so the range choice is a bandwidth choice, not just a headroom one.
+DMM_MAX_SRATE = 1e6
+DMM_DIGITIZE_BW_HZ = 440e3
+
+# HAZARD: LARGE WVDT UPLOADS WEDGE THE SDG, AND IT HAS NO SMART PLUG.
+#
+# Measured 2026-08-16. Repeated C1:WVDT uploads of 170-210 kB stop the generator
+# responding on BOTH 5025 and 5024 -- connections are accepted, nothing is ever
+# answered, including *IDN?. It goes on playing the loaded waveform correctly and
+# indefinitely, so the failure is invisible from the signal side. Waiting does not
+# clear it (45 s), and it progressed from "touchscreen fine, LAN dead" to the
+# front-panel Output button not responding either, so it is a firmware hang and not
+# merely a stale session. Recovery is a POWER CYCLE, and unlike the DMM6500 there is
+# no plug shortcut -- it costs a human.
+#
+# So: upload each vector ONCE per power cycle and select it by name afterwards
+# (siglent.select_arb, tools/bench_uart.py --reuse). write_raw() also now settles in
+# proportion to the payload, and close() shuts the socket down rather than dropping
+# it. None of that is known to be sufficient; not re-uploading is what avoids it.
+SDG_UPLOAD_WEDGE_HAZARD = True
+# Generator firmware was updated 2026-08-17: 2.01.01.38R4 -> 2.01.01.39R7. The hazard above was
+# measured on 38R4 and has NOT yet been retested on 39R7 -- tools/sdg_hang_repro.py exists for
+# exactly that, and until it has been run with --arm this flag stays True. A firmware update is a
+# reason to re-measure, not a reason to assume.
+SDG_FW = '2.01.01.39R7'
+SDG_UPLOAD_SAFE_BYTES = 65536      # below this, uploads have never wedged it
+
+# AND ON 39R7 THE LAN DIES WITH NO UPLOAD AT ALL -- SO SIZE IS NOT THE ONLY VARIABLE.
+#
+# Measured 2026-08-17, twice, same shape both times:
+#   1. sdg_hang_repro.py --check  ->  BOTH ports answer, 5025 gives the full *IDN?
+#   2. bench_uart.py, seconds later  ->  ConnectionRefusedError on the FIRST socket,
+#      before a single byte of waveform was sent
+# and the second time the FRONT PANEL was wedged too, needing a power cycle.
+#
+# Note the difference from the 38R4 hazard above: that one ACCEPTED connections and answered
+# nothing. This REFUSES them -- a closed port, i.e. the listener is gone, not a busy firmware
+# thread. Different symptom, different cause, and zero bytes uploaded either time.
+#
+# FIRST SUSPECT WAS socket.shutdown(SHUT_RDWR) -- called by siglent.close() and by
+# sdg_hang_repro.alive(), and added THIS session as a mitigation for the 38R4 upload wedge, so a
+# mitigation causing a worse failure was the obvious story. TESTED AND REFUTED, 2026-08-17: three
+# plain-close *IDN? connections, then one closing with shutdown(), then three more -- all seven
+# answered. shutdown() does not take the listener down.
+#
+# REMAINING SUSPECT: PORT 5024. Both refusals came right after sdg_hang_repro.py --check, which
+# probes 5024 as well as 5025. 5024 is the telnet-style port that echoes a '>>' prompt, and this
+# is a single-session instrument -- an abandoned telnet session is a plausible way to lose the
+# listener, and it would explain why a --check poisons the next connect while ordinary 5025
+# traffic does not. NOT YET TESTED, because confirming it wedges the generator and costs a human
+# a power cycle. Test it deliberately, with someone there, not in passing.
+#
+# MEANWHILE: --check on 5024 is not worth its risk. Probe 5025 only.
+#
+# Do NOT size vectors around SDG_UPLOAD_SAFE_BYTES on the assumption that it is the relevant
+# variable -- on this firmware it demonstrably is not the only one. Better: upload ONCE and sweep
+# the arb SRATE instead (baud = SRATE / samples_per_bit), which needs no re-upload at all.
+SDG_SHUTDOWN_SUSPECTED_HAZARD = True
+
+# HAZARD: the scope also drives the SDG over USB for its Bode-plot function. If
+# the scope is left in Bode mode it will reprogram the generator underneath any
+# run happening here, and the symptom is a stimulus that silently stops matching
+# the manifest. Take the scope out of Bode mode before an unattended session.
+SCOPE_BODE_HAZARD = True
+
+# Capture depth AND SAMPLE RATE, which trade together and PER PAIR.
+#
+# The 4-channel scope is two independent channel pairs, (1,2) and (3,4), each with
+# its own ADC and acquisition memory. Within a pair:
+#     one of the two enabled  -> 1 GSa/s and 14 Mpts
+#     both enabled            -> 500 MSa/s and 7 Mpts, each
+# The pairs do not affect each other. This is also what the user manual's table
+# means by "Single Channel Mode" and "Dual Channel Mode" -- those columns describe
+# the state of a PAIR, not the total number of channels enabled, which is why the
+# table appears to omit the three- and four-channel cases.
+#
+# So the wiring here is optimal rather than a compromise: CH1 carries the signal
+# with CH2 left DISABLED, giving the signal channel the full 1 GSa/s and 14 Mpts
+# no matter what pair (3,4) is doing; and the two markers sit together in pair
+# (3,4) at 500 MSa/s and 7 Mpts each, which is ample for a signal whose entire job
+# is to produce one edge.
+#
+# Enabling CH2 to diagnose therefore costs BOTH rate and depth on the signal
+# channel -- 500 MSa/s and 7 Mpts -- and does so silently. Still ample (the
+# binding vector, v46, is 254 ms and needs only ~1 MSa/s to corroborate 9600 baud,
+# i.e. 254 kpts) but it is a real cost, so CH2 is diagnose-only.
+#
+# Plan windows with the manual's relation, and read the achieved depth off the
+# screen ("Curr", upper-right) rather than predicting it:
+#     memory depth = sample rate (Sa/s) x waveform length (s/div x div)
+SCOPE_MSIZ_INTERLEAVED = ('14K', '140K', '1.4M', '14M')   # MSIZ, one per pair
+SCOPE_MSIZ_NONINTERLEAVED = ('7K', '70K', '700K', '7M')   # MSIZ, both per pair
+SCOPE_DEEP_CHANNELS = (1, 3)     # one from each pair: full rate and depth on both
+SCOPE_CH_SIGNAL = 1      # the summed stimulus, from the T
+SCOPE_CH_IMPAIR = 2      # SDG CH2 alone. ENABLE ONLY WHEN DIAGNOSING -- halves CH1
+# SDG Aux In/Out. INTENDED to mark the arb's first sample, and it DOES NOT in TrueArb.
+# Measured 2026-08-16: with C1:SYNC reporting "ON,TYPE,CH1" and a TrueArb waveform playing
+# correctly on CH1 (3.44 V pk-pk), CH3 is dead flat -- 0.08 V over a 14 ms window and no
+# measurable frequency over 2.8 s, i.e. two full 1.07 s waveform periods. So there is no
+# sync edge to arm the scope on, and any plan that anchors an acquisition to the start of an
+# arb payload needs another mechanism. Do not trust this channel as a marker without
+# re-checking it; the SYNC readback says nothing about whether the BNC is driving.
+SCOPE_CH_ARBSYNC = 3
+SCOPE_CH_DMMWIN = 4      # DMM EXT TRIG OUT: marks the DMM's capture window
+
+
+# --------------------------------------------------------------------------
+# WRITE, THEN READ BACK. The house rule for both Siglent instruments.
+# --------------------------------------------------------------------------
+# The manuals contain outright errors -- the scope's LIN section documents a baud
+# range of "300 to 2000" and then gives an example using 9600, naming the CAN
+# command while doing it -- and the firmware on both instruments has been updated
+# more recently than the documents describe. So a documented range may be stale in
+# either direction: a limit may have been lifted, a parameter renamed, a default
+# changed.
+#
+# Reading the manual harder does not fix that. Reading the INSTRUMENT does. Every
+# setter in both SCPI dialects has a matching query, so the robust pattern for any
+# setting that would silently corrupt a result is: write it, query it back, and
+# compare. One extra round trip, and it is immune to both manual errors and
+# firmware drift -- neither of which announces itself.
+#
+# Use it for settings whose failure is INVISIBLE (a mode that silently falls back,
+# a threshold clamped to the vertical scale, a baud rate rejected out of range).
+# Do not bother for settings whose failure is obvious on screen.
+
+class VerifyError(RuntimeError):
+    pass
+
+
+def verify(dev, query, expect, what, ci=True):
+    """Query `query` on `dev` and require `expect` to appear in the reply.
+
+    dev is any object with .query() and a .dry attribute -- both drivers here
+    qualify. Returns the raw reply, or True in dry-run mode where there is no
+    instrument to disagree with.
+    """
+    if getattr(dev, 'dry', False):
+        return True
+    got = dev.query(query)
+    hay, needle = (got.upper(), str(expect).upper()) if ci else (got, str(expect))
+    if needle not in hay:
+        raise VerifyError(
+            f'{what}: asked for {expect!r} but the instrument reports {got!r}. '
+            f'The manuals are known to contain errors and the firmware is newer '
+            f'than they are, so believe this reply over any documented range.')
+    return got
+
+
+def firmware(dev):
+    """*IDN? including the firmware revision.
+
+    Worth recording at the start of every session and into any result file. Both
+    instruments have had firmware updates more recent than their manuals, so a
+    behaviour that changes between sessions is explicable only if the revision
+    that produced each result is known. Without it, a firmware change looks like
+    an intermittent fault -- and intermittent faults are the most expensive thing
+    to chase on this bench.
+    """
+    return dev.query('*IDN?')
+
+
+def have_scope():
+    """The scope's address is the one thing on this bench not yet known."""
+    return bool(SCOPE_IP)
+
+
+def describe():
+    lines = [
+        f'DMM6500     {DMM_IP}:{SCPI_PORT}    the decoder under test',
+        f'SDG2122X    {SDG_IP}:{SCPI_PORT}    stimulus, CH1 + CH2 combined',
+    ]
+    if have_scope():
+        lines.append(f'SDS1204X-E  {SCOPE_IP}:{SCPI_PORT}    independent oracle')
+    else:
+        lines.append('SDS1204X-E  ADDRESS UNKNOWN -- set SCOPE_IP to enable the oracle')
+    lines.append(f'plug        shortcuts "{PLUG_ON_SHORTCUT}" / "{PLUG_OFF_SHORTCUT}"')
+    return '\n'.join(lines)
+
+
+if __name__ == '__main__':
+    print(describe())

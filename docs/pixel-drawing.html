@@ -1,0 +1,697 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Drawing pixels on a Keithley DMM6500 from TSP</title>
+<style>
+  /* ------------------------------------------------------------------ page */
+  @page { size: A4; margin: 16mm 14mm 16mm 14mm; }
+
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+  body {
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-size: 10.2pt;
+    line-height: 1.45;
+    color: #16181d;
+    max-width: 185mm;
+    margin: 0 auto;
+    padding: 8mm 4mm 12mm 4mm;
+    background: #fff;
+  }
+
+  /* ---------------------------------------------------------- typography */
+  h1 {
+    font-size: 20pt;
+    line-height: 1.15;
+    margin: 0 0 2mm 0;
+    letter-spacing: -0.4px;
+  }
+  h2 {
+    font-size: 13pt;
+    margin: 9mm 0 2.5mm 0;
+    padding-bottom: 1.2mm;
+    border-bottom: 1.5px solid #16181d;
+    page-break-after: avoid;
+    break-after: avoid;
+  }
+  h3 {
+    font-size: 11pt;
+    margin: 5mm 0 1.5mm 0;
+    page-break-after: avoid;
+    break-after: avoid;
+  }
+  h4 {
+    font-size: 10.2pt;
+    margin: 4mm 0 1mm 0;
+    color: #3a3f4b;
+    page-break-after: avoid;
+    break-after: avoid;
+  }
+  p { margin: 0 0 2.6mm 0; }
+  ul, ol { margin: 0 0 3mm 0; padding-left: 6mm; }
+  li { margin-bottom: 1.2mm; }
+  a { color: #16181d; }
+
+  .subtitle {
+    font-size: 11pt;
+    color: #4a5060;
+    margin: 0 0 5mm 0;
+  }
+
+  code, pre, .mono, td.mono {
+    font-family: "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+  }
+
+  p code, li code, td code, th code, dd code, dt code {
+    font-size: 9pt;
+    background: #f1f2f5;
+    border: 1px solid #e0e2e8;
+    border-radius: 2px;
+    padding: 0.3mm 1mm;
+    white-space: nowrap;
+  }
+
+  /* --------------------------------------------------------- code blocks */
+  pre {
+    font-size: 8.4pt;
+    line-height: 1.42;
+    background: #fbfbfc;
+    border: 1px solid #d7dae1;
+    border-left: 3px solid #6b7280;
+    border-radius: 3px;
+    padding: 2.6mm 3mm;
+    margin: 0 0 3.5mm 0;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+  pre code { background: none; border: 0; padding: 0; font-size: inherit; }
+
+  /* static "syntax highlighting" — no JS, greyscale-safe */
+  .c  { color: #6a737d; font-style: italic; }   /* comment  */
+  .s  { color: #0a6b3d; }                       /* string   */
+  .n  { color: #8a4b00; }                       /* number   */
+  .k  { color: #7d1b8c; font-weight: 600; }     /* keyword  */
+  .a  { color: #0b3d91; }                       /* api name */
+  .e  { color: #a01020; font-weight: 600; }     /* error / emphasis in code */
+
+  /* -------------------------------------------------------------- tables */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 8.8pt;
+    margin: 0 0 4mm 0;
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+  th {
+    text-align: left;
+    background: #eceef2;
+    border: 1px solid #c9ccd4;
+    padding: 1.4mm 2mm;
+    font-weight: 600;
+  }
+  td {
+    border: 1px solid #d7dae1;
+    padding: 1.4mm 2mm;
+    vertical-align: top;
+  }
+  tbody tr:nth-child(even) td { background: #f8f9fb; }
+  td.num { text-align: right; white-space: nowrap; }
+  table.perf td.num { font-variant-numeric: tabular-nums; }
+
+  /* ------------------------------------------------------------- callouts */
+  .box {
+    border: 1px solid #c9ccd4;
+    border-left: 3px solid #6b7280;
+    background: #f7f8fa;
+    padding: 2.6mm 3mm;
+    margin: 0 0 4mm 0;
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+  .box p:last-child, .box ul:last-child, .box pre:last-child { margin-bottom: 0; }
+  .box .hd {
+    font-weight: 700;
+    font-size: 9pt;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin: 0 0 1.5mm 0;
+  }
+  .warn      { border-left-color: #a01020; background: #fdf6f6; }
+  .warn .hd  { color: #a01020; }
+  .key       { border-left-color: #0b3d91; background: #f5f8fd; }
+  .key .hd   { color: #0b3d91; }
+
+  .status {
+    border: 1px solid #c9ccd4;
+    background: #f7f8fa;
+    padding: 3mm;
+    margin: 0 0 6mm 0;
+    font-size: 9pt;
+  }
+  .status dl { margin: 0; display: grid; grid-template-columns: 34mm 1fr; gap: 1mm 3mm; }
+  .status dt { font-weight: 600; color: #4a5060; }
+  .status dd { margin: 0; }
+
+  .tag {
+    display: inline-block;
+    font-size: 7.6pt;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    padding: 0.5mm 1.4mm;
+    border-radius: 2px;
+    vertical-align: 1px;
+  }
+  .tag-un  { background: #a01020; color: #fff; }
+  .tag-inf { background: #8a4b00; color: #fff; }
+
+  hr { border: 0; border-top: 1px solid #d7dae1; margin: 7mm 0; }
+
+  .toc { font-size: 9.2pt; margin: 0 0 6mm 0; }
+  .toc ol { padding-left: 6mm; margin: 0; }
+  .toc li { margin-bottom: 0.6mm; }
+
+  footer {
+    margin-top: 8mm;
+    padding-top: 2.5mm;
+    border-top: 1px solid #d7dae1;
+    font-size: 8.4pt;
+    color: #6a737d;
+  }
+</style>
+</head>
+<body>
+
+<h1>Drawing pixels on a Keithley DMM6500 from TSP</h1>
+<p class="subtitle">An empirically reverse-engineered, undocumented display API:
+<code>display.setpixel</code>, <code>display.flush</code>, and the image-object
+form that makes them work.</p>
+
+<div class="status">
+  <dl>
+    <dt>Status</dt>
+    <dd><span class="tag tag-un">Unofficial</span> Not part of any Keithley
+        documentation. Everything here was found by experiment and can change or
+        vanish in another firmware release.</dd>
+    <dt>Verified on</dt>
+    <dd>Keithley DMM6500, firmware <strong>1.7.17a</strong>, in <strong>TSP</strong>
+        command mode (Lua 5.0.2), driven over the raw socket on port 5025.</dd>
+    <dt>Evidence rule</dt>
+    <dd>Every API call, error string and timing number below was observed on real
+        hardware. The few statements that are reasoning rather than observation are
+        tagged <span class="tag tag-inf">Inferred</span>.</dd>
+    <dt>Why it matters</dt>
+    <dd>Pixel writes are ~7&times; faster than the only documented plotting path
+        (<code>buffer.write.reading()</code> into a graph), which makes a live
+        on-instrument plot practical.</dd>
+  </dl>
+</div>
+
+<div class="toc">
+<strong>Contents</strong>
+<ol>
+  <li>What this is, and what it is not</li>
+  <li>Quick start &mdash; minimal working example</li>
+  <li>API reference</li>
+  <li>Failure modes and error codes</li>
+  <li>Measured performance</li>
+  <li>Animation: differential redraw</li>
+  <li>Practical display notes</li>
+  <li>Recovering a blacked-out screen</li>
+  <li>Things that do not exist (hallucination warning)</li>
+  <li>Other undocumented names in the same firmware</li>
+  <li>Environment gotchas</li>
+</ol>
+</div>
+
+<h2>1. What this is, and what it is not</h2>
+
+<p>The DMM6500's TSP environment exposes a display API for building instrument-resident
+apps: screens, buttons, labels, lines, images. That API is documented, partly in the
+Reference Manual and more completely in the community "TTI Display API" reference.</p>
+
+<p><strong><code>display.setpixel</code> appears in neither.</strong> It exists in the
+firmware and in the <code>display</code> metatable, it works, and it is the fastest
+way to get arbitrary graphics onto the panel from a script. This document is the
+result of finding out how to call it.</p>
+
+<p>What you get: individual pixel writes into an off-screen buffer, plus an explicit
+flush that pushes the buffer to the display processor. That is the whole primitive
+set. There is <strong>no</strong> line, rectangle, circle, blit or text-into-bitmap
+call &mdash; see &sect;9. If you want a line, you rasterise it yourself, one
+<code>setpixel</code> at a time, or you use a documented
+<code>display.OBJ_LINE</code> object.</p>
+
+<div class="box warn">
+  <p class="hd">Read this before you experiment</p>
+  <p>The display setters are permissive C bindings. They accept the <em>wrong number
+  of arguments</em> without raising a Lua error, so <code>pcall()</code> will tell you
+  a malformed call succeeded when it did not. To know whether a call actually worked
+  you must read <code>eventlog.next()</code> afterwards, or look at the screen.</p>
+  <p>Junk arguments to display setters can leave the physical panel completely dark.
+  This is recoverable without a power cycle &mdash; see &sect;8.</p>
+</div>
+
+<h2>2. Quick start &mdash; minimal working example</h2>
+
+<p>Four steps: upload a PNG to act as the canvas backing store, create a screen,
+create an image object <em>with an explicit width and height</em>, then write pixels
+and flush.</p>
+
+<h3>2.1 Upload the canvas bitmap</h3>
+
+<p><code>loadimage</code> is a <strong>shell directive, not a Lua function</strong>.
+It is intercepted by the command parser, so you send it as raw lines over the socket;
+you cannot call it from inside a script body or wrap it in Lua. The payload is a
+base64-encoded PNG, which may be split across as many lines as you like.</p>
+
+<pre><code>loadimage mycanvas
+iVBORw0KGgoAAAANSUhEUgAAAlgAAAH0CAIAAAD...
+...more base64 lines...
+endimage</code></pre>
+
+<p>Notes from practice:</p>
+<ul>
+  <li>We sent the base64 in <strong>900-character lines</strong> and allowed about
+      <strong>one second</strong> after <code>endimage</code> before creating the
+      object. Neither number is a documented requirement, but uploads of a 750&times;500
+      image are large and the parser needs the time.</li>
+  <li>The official documentation asks for "compressed 24 bit with Alpha". A plain
+      <strong>24-bit truecolour PNG (colour type 2, no alpha)</strong> works fine
+      &mdash; that is what all the tests here used, generated in a few lines of
+      Python with <code>zlib</code>.</li>
+  <li>Make the PNG a flat fill of your intended background colour. Its pixels are the
+      canvas's initial contents.</li>
+  <li><code>loadimage mycanvas myscript</code> associates the image with a script so
+      it survives a power cycle. Without the script name the image lives only until
+      the next reboot, which is what you want while iterating.</li>
+</ul>
+
+<h3>2.2 Create the screen, the canvas, and draw</h3>
+
+<pre><code><span class="c">-- a screen to host the canvas</span>
+scr = <span class="a">display.create</span>(<span class="a">display.ROOT</span>, <span class="a">display.OBJ_SCREEN</span>, <span class="s">"MY APP"</span>)
+<span class="a">display.changescreen</span>(scr)
+
+<span class="c">-- the image object. The trailing WIDTH, HEIGHT are the crucial part.</span>
+im = <span class="a">display.create</span>(scr, <span class="a">display.OBJ_IMAGE</span>, <span class="n">25</span>, <span class="n">55</span>, <span class="s">"mycanvas"</span>, <span class="n">750</span>, <span class="n">500</span>)
+
+<span class="c">-- write pixels: 0-based coordinates, colour is 0xRRGGBB</span>
+<span class="k">for</span> x = <span class="n">0</span>, <span class="n">749</span> <span class="k">do</span>
+  <span class="a">display.setpixel</span>(im, x, <span class="n">250</span>, <span class="n">0x00FF00</span>)
+<span class="k">end</span>
+
+<span class="c">-- one flush per frame pushes the whole batch to the display processor</span>
+<span class="a">display.flush</span>(im)</code></pre>
+
+<div class="box key">
+  <p class="hd">The one thing that makes this work</p>
+  <p>The documented <code>display.create()</code> form for an image object takes five
+  arguments and ends at the image name:</p>
+  <pre><code>display.create(&lt;parent&gt;, display.OBJ_IMAGE, &lt;x&gt;, &lt;y&gt;, <span class="s">"&lt;image name&gt;"</span>)</code></pre>
+  <p>An image created that way <em>renders correctly but has no addressable pixel
+  buffer</em>. Every <code>setpixel</code> into it fails. You must pass the
+  undocumented sixth and seventh arguments:</p>
+  <pre><code>display.create(&lt;parent&gt;, display.OBJ_IMAGE, &lt;x&gt;, &lt;y&gt;, <span class="s">"&lt;name&gt;"</span>, <span class="e">&lt;width&gt;, &lt;height&gt;</span>)</code></pre>
+</div>
+
+<h2>3. API reference</h2>
+
+<h3>3.1 <code>display.create()</code> &mdash; image object with pixel buffer <span class="tag tag-un">Undocumented form</span></h3>
+
+<pre><code>&lt;object id&gt; = display.create(&lt;parent id&gt;, display.OBJ_IMAGE,
+                             &lt;x&gt;, &lt;y&gt;, <span class="s">"&lt;image name&gt;"</span>, &lt;width&gt;, &lt;height&gt;)</code></pre>
+
+<table>
+  <thead><tr><th style="width:32mm">Argument</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td class="mono">parent id</td><td>Screen or swipe object that owns the image. A user screen created with <code>display.OBJ_SCREEN</code> is the normal choice.</td></tr>
+    <tr><td class="mono">x, y</td><td>Position of the image's top-left corner within the parent, in panel pixels.</td></tr>
+    <tr><td class="mono">image name</td><td>The name given in the <code>loadimage</code> directive. Its bitmap becomes the canvas's initial content.</td></tr>
+    <tr><td class="mono">width, height</td><td><strong>Undocumented.</strong> Size of the addressable pixel buffer. Omit these and the buffer is zero-sized: valid <code>x</code> becomes the empty range 0&hellip;&minus;1.</td></tr>
+  </tbody>
+</table>
+
+<p>Returns the object id, which is what <code>setpixel</code> and <code>flush</code>
+take. We did not test whether width/height may differ from the uploaded PNG's
+dimensions; in all successful tests they matched.</p>
+
+<h3>3.2 <code>display.setpixel()</code> <span class="tag tag-un">Undocumented</span></h3>
+
+<pre><code>display.setpixel(&lt;image id&gt;, &lt;px&gt;, &lt;py&gt;, &lt;0xRRGGBB&gt;)</code></pre>
+
+<table>
+  <thead><tr><th style="width:32mm">Argument</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td class="mono">image id</td><td>Object id from the 7-argument <code>display.create()</code> above. <strong>Only</strong> an image object is accepted; every other object type is rejected with error 1717.</td></tr>
+    <tr><td class="mono">px, py</td><td><strong>0-based</strong> coordinates within the image's pixel buffer. Valid range is 0&hellip;width&minus;1 and 0&hellip;height&minus;1.</td></tr>
+    <tr><td class="mono">colour</td><td>24-bit RGB packed as an integer, <code>0xRRGGBB</code>. <code>0x00FF00</code> is full-brightness green.</td></tr>
+  </tbody>
+</table>
+
+<p>The write goes into the off-screen buffer. Nothing appears on the panel until you
+flush. There is no return value, and <strong>no error is raised in Lua</strong> on a
+bad call &mdash; check <code>eventlog</code>.</p>
+
+<p>The name lives in the firmware's display-attribute table immediately next to
+<code>image</code>, which is what first suggested that an image object, rather than a
+screen, is the correct target. <span class="tag tag-inf">Inferred</span></p>
+
+<h3>3.3 <code>display.flush()</code> <span class="tag tag-un">Undocumented</span></h3>
+
+<pre><code>display.flush(&lt;image id&gt;)</code></pre>
+
+<p>Pushes the image's pixel buffer to the display processor. Call it <strong>once per
+frame</strong>, after a batch of <code>setpixel</code> calls &mdash; the paint is
+deferred, and the flush itself is too fast to measure (&sect;5).</p>
+
+<p>The argument is required and must be the <em>image</em> id:</p>
+<ul>
+  <li><code>display.flush(image_id)</code> &mdash; works.</li>
+  <li><code>display.flush(screen_id)</code> &mdash; <code>1717 Attribute flush does not apply to an object of type Custom Screen</code>.</li>
+  <li><code>display.flush()</code> &mdash; <code>-109 Missing parameter</code>. Note
+      that this <em>returns cleanly to Lua</em>; the failure is visible only in the
+      event log. This is exactly the permissive-binding trap described in &sect;1.</li>
+</ul>
+
+<h3>3.4 Checking whether a call worked</h3>
+
+<p>Because malformed calls do not raise, the reliable pattern while developing is to
+clear the event log, make the call, and read the log back:</p>
+
+<pre><code><span class="a">eventlog.clear</span>()
+<span class="a">display.setpixel</span>(im, <span class="n">0</span>, <span class="n">0</span>, <span class="n">0xFF0000</span>)
+<span class="k">if</span> <span class="a">eventlog.getcount</span>() &gt; <span class="n">0</span> <span class="k">then</span>
+  <span class="a">print</span>(<span class="a">eventlog.next</span>())
+<span class="k">else</span>
+  <span class="a">print</span>(<span class="s">"ACCEPTED"</span>)
+<span class="k">end</span></code></pre>
+
+<h2>4. Failure modes and error codes</h2>
+
+<p>These are the errors we actually triggered. They are more useful than the happy
+path, because each one identifies a specific way the call can be wrong.</p>
+
+<table>
+  <thead>
+    <tr>
+      <th style="width:56mm">What you did</th>
+      <th>What the event log says</th>
+      <th style="width:52mm">Diagnosis</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>setpixel</code> on an image created <strong>without</strong> trailing width/height (documented 5-arg form)</td>
+      <td class="mono e">1130 Parameter x, expected value from 0 to -1</td>
+      <td>The bounds check computes max = width&minus;1 = &minus;1, i.e. a zero-size pixel buffer. The object id itself is valid &mdash; you get 1130, not 1717.</td>
+    </tr>
+    <tr>
+      <td>Same, but the create call had 6 arguments instead of 7 (width given, height missing)</td>
+      <td class="mono e">1130 Parameter y, expected value from 0 to -1</td>
+      <td>Width was accepted, height defaulted to zero. Confirms both trailing arguments are consumed as buffer dimensions.</td>
+    </tr>
+    <tr>
+      <td><code>setpixel</code> on a user screen id</td>
+      <td class="mono e">1717 Attribute pixel, does not apply to an object of type Custom Screen</td>
+      <td>Wrong target type. <code>pixel</code> is an image attribute.</td>
+    </tr>
+    <tr>
+      <td><code>setpixel</code> on the home screen</td>
+      <td class="mono e">1717 &hellip; object of type Home Screen</td>
+      <td>Same.</td>
+    </tr>
+    <tr>
+      <td><code>setpixel</code> on the graph screen</td>
+      <td class="mono e">1717 &hellip; object of type Graph Screen</td>
+      <td>Same. You cannot draw pixels onto the built-in graph.</td>
+    </tr>
+    <tr>
+      <td>Arguments shifted &mdash; a coordinate where the object id belongs</td>
+      <td class="mono e">1703 Object id is invalid</td>
+      <td>Useful discriminator: 1703 means "not an object", 1717 means "wrong kind of object", 1130 means "right object, empty buffer".</td>
+    </tr>
+    <tr>
+      <td><code>display.flush()</code> with no argument</td>
+      <td class="mono e">-109 Missing parameter</td>
+      <td>The id is mandatory. No Lua error is raised.</td>
+    </tr>
+    <tr>
+      <td><code>display.flush(screen_id)</code></td>
+      <td class="mono e">1717 Attribute flush does not apply to an object of type Custom Screen</td>
+      <td>Flush is per-image, not per-screen.</td>
+    </tr>
+    <tr>
+      <td>Any display setter with a wrong argument <em>count</em></td>
+      <td>&mdash; nothing in Lua &mdash;</td>
+      <td>Permissive C binding: no error is raised, so signatures cannot be discovered with <code>pcall()</code>. Check the event log or the screen.</td>
+    </tr>
+    <tr>
+      <td>Junk arguments to display setters</td>
+      <td>&mdash; varies &mdash;</td>
+      <td>Can leave the physical panel fully dark. Recover with the sequence in &sect;8; no power cycle needed.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>5. Measured performance</h2>
+
+<p>Timed on the instrument with <code>timer.cleartime()</code> /
+<code>timer.gettime()</code>, so these include Lua interpreter overhead &mdash; which
+is the number that matters, because that is how you will call it.</p>
+
+<table class="perf">
+  <thead>
+    <tr><th>Operation</th><th class="num" style="width:26mm">Measured</th><th>Notes</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>display.setpixel</code>, per pixel</td>
+      <td class="num"><strong>10.9 &micro;s</strong></td>
+      <td>600-pixel row written in 0.0066 s.</td>
+    </tr>
+    <tr>
+      <td>600-column trace, including the arithmetic to compute each y</td>
+      <td class="num">0.0127 s</td>
+      <td>So the per-column cost roughly doubles once you also compute the value &mdash; the interpreter, not the display link, is the limit.</td>
+    </tr>
+    <tr>
+      <td><code>display.flush(im)</code></td>
+      <td class="num">0.0000 s</td>
+      <td>Too fast to measure. The paint is deferred, so batch and flush once per frame.</td>
+    </tr>
+    <tr>
+      <td><code>buffer.write.reading()</code> into a <code>WRITABLE_FULL</code> buffer, plotted on the built-in graph (the documented path)</td>
+      <td class="num">~80 &micro;s</td>
+      <td>Per point. This is the baseline pixel writes are competing with.</td>
+    </tr>
+  </tbody>
+</table>
+
+<p><strong>Pixel writes are roughly 7&times; faster than the documented plotting
+path.</strong> In practical terms, for a 750-point trace:</p>
+
+<table class="perf">
+  <thead><tr><th>Path</th><th class="num" style="width:34mm">750-point trace</th></tr></thead>
+  <tbody>
+    <tr><td><code>display.setpixel</code></td><td class="num"><strong>~8 ms</strong></td></tr>
+    <tr><td><code>buffer.write.reading()</code> + graph</td><td class="num">~60 ms</td></tr>
+  </tbody>
+</table>
+
+<p>Two consequences worth internalising:</p>
+<ul>
+  <li><strong>Flush once per frame, never per pixel.</strong> The whole speed
+      advantage comes from batching into the off-screen buffer.</li>
+  <li><strong>A full-canvas repaint is not affordable.</strong> At 10.9 &micro;s per
+      pixel, clearing a 750&times;500 canvas is 375 000 writes &asymp; 4 s. That
+      dictates the technique in &sect;6.</li>
+</ul>
+
+<h2>6. Animation: differential redraw</h2>
+
+<p>Do not repaint the canvas per frame. Keep the previous y for each column and erase
+only that one pixel before drawing the new one. A frame then costs about
+<code>2&times;W</code> writes instead of <code>W&times;H</code>.</p>
+
+<pre><code><span class="k">local</span> prev = {}
+<span class="k">for</span> x = <span class="n">0</span>, W-<span class="n">1</span> <span class="k">do</span> prev[x] = -<span class="n">1</span> <span class="k">end</span>
+
+<span class="c">-- per frame:</span>
+<span class="k">for</span> x = <span class="n">0</span>, W-<span class="n">1</span> <span class="k">do</span>
+  <span class="k">local</span> y = compute(x)
+  <span class="k">local</span> p = prev[x]
+  <span class="k">if</span> p ~= y <span class="k">then</span>
+    <span class="k">if</span> p &gt;= <span class="n">0</span> <span class="k">then</span> <span class="a">display.setpixel</span>(im, x, p, BG) <span class="k">end</span>
+    <span class="a">display.setpixel</span>(im, x, y, FG)
+    prev[x] = y
+  <span class="k">end</span>
+<span class="k">end</span>
+<span class="a">display.flush</span>(im)</code></pre>
+
+<p>Points that matter in the loop above:</p>
+<ul>
+  <li>The sentinel <code>-1</code> marks "nothing drawn in this column yet", so the
+      first frame skips the erase.</li>
+  <li>The <code>p ~= y</code> test skips columns whose value did not move &mdash; free,
+      and on a slow-moving trace it cuts the write count substantially.</li>
+  <li>Hoist the function lookups out of the loop. In Lua 5.0.2 each
+      <code>display.setpixel</code> is a metatable index; caching it in a local
+      (<code>local sp = display.setpixel</code>, along with
+      <code>math.floor</code>, <code>math.sin</code>) removes that per-write cost.</li>
+  <li>For a 2-pixel-thick trace, erase and draw both rows: up to four writes per
+      changed column, so ~3000 writes for a 750-wide frame. At the measured
+      10.9 &micro;s that is on the order of 30 ms of pixel writes per frame, versus
+      4 s for a full clear. <span class="tag tag-inf">Inferred</span> (arithmetic from
+      the measured per-pixel cost, not a separately measured frame time.)</li>
+</ul>
+
+<h2>7. Practical display notes</h2>
+
+<ul>
+  <li><strong>Panel is 800&times;480.</strong> Under an app's title bar the usable
+      area is roughly <strong>800&times;430</strong>.</li>
+  <li><strong>~750 px wide is a sensible canvas</strong> for a plot that also needs
+      room for axis legends.</li>
+  <li><strong>Draw traces 2 px thick in y.</strong> The physical pixels are very
+      small; a 1-px trace is genuinely hard to see on the glass.</li>
+  <li><strong>Use full-brightness colours on a near-black background.</strong>
+      <code>0x00FF00</code> on <code>0x000008</code> reads well. Mid-grey backgrounds
+      wash the trace out badly &mdash; this was a real, visible failure in the first
+      attempt, not a matter of taste.</li>
+  <li>The pixel buffer's bounds come from the <code>create</code> call's width and
+      height, not from what fits on screen. A 750&times;500 canvas placed at
+      <code>y = 55</code> on a 480-pixel-tall panel accepted writes across its full
+      height with no bounds errors; what is visible is limited by the panel.</li>
+</ul>
+
+<h2>8. Recovering a blacked-out screen</h2>
+
+<p>Bad arguments to display setters &mdash; and the undocumented
+<code>display.STATE_BLACKOUT</code> / <code>display.STATE_LCD_OFF</code> states
+&mdash; can leave the panel completely dark. You do not need a power cycle:</p>
+
+<pre><code><span class="a">display.lightstate</span> = <span class="a">display.STATE_LCD_100</span>
+<span class="a">display.changescreen</span>(<span class="a">display.SCREEN_HOME</span>)</code></pre>
+
+<p>Worth putting at the top of every experiment script, together with
+<code>reset()</code> and <code>eventlog.clear()</code>.</p>
+
+<h2>9. Things that do not exist</h2>
+
+<div class="box warn">
+  <p class="hd">Hallucination warning</p>
+  <p>Every name in this section is suggested confidently by AI assistants and web
+  search results for "DMM6500 draw graphics". <strong>We tested each one on the
+  instrument. They are all nil or absent.</strong> If a tool hands you code using
+  them, the code has never run.</p>
+</div>
+
+<table>
+  <thead><tr><th style="width:62mm">Suggested name</th><th>Reality</th></tr></thead>
+  <tbody>
+    <tr><td class="mono">display.canvas</td><td><code>nil</code>. There is no canvas object at all.</td></tr>
+    <tr><td class="mono">display.canvas.setpixel<br>display.canvas.drawline<br>display.canvas.drawrect</td><td>Do not exist &mdash; they cannot, since <code>display.canvas</code> is nil.</td></tr>
+    <tr><td class="mono">_G.gui</td><td>Absent. No such global.</td></tr>
+    <tr><td class="mono">drawline / drawrect / drawtext</td><td>No drawing primitives of any kind. A scan of all 130 <code>_G</code> entries found <strong>no key containing "draw", "canvas", "pixel" or "gfx"</strong>.</td></tr>
+    <tr><td class="mono">display.getpixel</td><td>The string is present in the firmware's string table but it is <strong>not callable</strong>: <code>attempt to call field 'getpixel' (a nil value)</code>. The pixel buffer is write-only from TSP.</td></tr>
+    <tr><td class="mono">buffer.write.readings<br>buffer.write.batch<br>buffer.write.block</td><td>All <code>nil</code>. There is no bulk or vectorised buffer write; <code>buffer.write.reading()</code> one point at a time is the only path.</td></tr>
+    <tr><td class="mono">display.graph.adddata<br>display.graph.setdata<br>display.graph.plot<br>display.graph.append</td><td>All <code>nil</code>. You cannot push a data series at the built-in graph.</td></tr>
+  </tbody>
+</table>
+
+<p><strong>For lines, use what does exist:</strong> documented
+<code>display.OBJ_LINE</code> objects, or rasterise the line yourself pixel by pixel
+into an image canvas.</p>
+
+<h3>9.1 Object types named in firmware but unreachable</h3>
+
+<p>The firmware's internal object-type table names types with no public constants:
+<code>WINDOW</code>, <code>FAST_TEXT</code>, <code>STATIC_LABEL</code>,
+<code>SEP</code>, <code>ITEM_LIST</code>. Probing <code>display.OBJ_WINDOW</code>,
+<code>display.OBJ_FAST_TEXT</code> and the rest returns <code>nil</code>, so they are
+not reachable from TSP in this firmware. <code>OBJ_IMAGE</code> remains the only
+bitmap-ish type available.</p>
+
+<h2>10. Other undocumented names in the same firmware</h2>
+
+<p>The <code>display</code>, <code>display.graph</code> and <code>buffer</code> tables
+are metatable proxies: <code>pairs()</code> over them yields nothing, and the real API
+surface lives in the metatable. That is how the names below were found.</p>
+
+<pre><code><span class="k">local</span> mt = <span class="a">getmetatable</span>(display)
+<span class="c">-- mt.Objects (244 entries), mt.Getters (5), mt.Setters (4),</span>
+<span class="c">-- mt.__index, mt.__newindex</span></code></pre>
+
+<table>
+  <thead><tr><th style="width:62mm">Name</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td class="mono">display.setpixel<br>display.flush</td><td>The subject of this document.</td></tr>
+    <tr><td class="mono">display.setkeyenable</td><td>Front-panel key enable/disable. Not exercised here.</td></tr>
+    <tr><td class="mono">display.SCREEN_DATASHEET<br>display.SCREEN_PLOT_SWIPE</td><td>Built-in screens absent from the docs.</td></tr>
+    <tr><td class="mono">display.OBJ_EDIT_NOTIFY_EVENT<br>display.OBJ_EDIT_WAIT_EVENT</td><td>Undocumented object types that do exist as constants.</td></tr>
+    <tr><td class="mono">display.EVENT_SHOW<br>display.EVENT_HIDE</td><td>Undocumented event constants.</td></tr>
+    <tr><td class="mono">display.STATE_BLACKOUT<br>display.STATE_LCD_OFF</td><td>Can turn the panel fully dark. See &sect;8 before trying them.</td></tr>
+    <tr><td class="mono">display.YSCALE_PER_TRACE_ONCE<br>display.XSCALE_SHARED</td><td>Extra graph scaling modes.</td></tr>
+    <tr><td class="mono">display.TYPE_VIRTUAL</td><td>Display-type value (virtual front panel vs. physical screen).</td></tr>
+  </tbody>
+</table>
+
+<p>Existence here means the name resolves &mdash; it does not mean we characterised the
+call. Only <code>setpixel</code>, <code>flush</code>, the image
+<code>create</code> form and <code>STATE_LCD_100</code> were exercised end to end.</p>
+
+<h2>11. Environment gotchas</h2>
+
+<h3>11.1 The Lua is 5.0.2</h3>
+
+<p>Older than nearly every Lua reference and every LLM's default assumption:</p>
+<ul>
+  <li><strong>No <code>#</code> length operator.</strong> Use
+      <code>table.getn(t)</code>.</li>
+  <li><strong>No bitwise operators.</strong> There is a <code>bit</code> table with
+      <code>bitand</code>, <code>bitor</code>, <code>bitxor</code>,
+      <code>test</code>, <code>set</code>, <code>clear</code>, <code>get</code>,
+      <code>getfield</code>, <code>setfield</code>. For packing a colour,
+      plain arithmetic works: <code>r*65536 + g*256 + b</code>.</li>
+  <li>The instrument is in <strong>TSP mode</strong>, so SCPI syntax is a syntax
+      error, not a command.</li>
+</ul>
+
+<h3>11.2 One controlling client, and dead sockets</h3>
+
+<div class="box warn">
+  <p class="hd">This will waste an hour if you do not know it</p>
+  <p><strong>Only one client may control the instrument over TCP at a time.</strong> A
+  second concurrent socket does <em>not</em> error &mdash; it silently steals replies,
+  so your reads return empty strings or the previous command's answer.</p>
+  <p>A client killed mid-session leaves a <strong>dead socket</strong> that swallows
+  all responses. To clear every connection without a power cycle, connect to port
+  <strong>5030</strong> (Dead Socket Termination) and immediately close it.</p>
+</div>
+
+<table>
+  <thead><tr><th style="width:24mm">Port</th><th>Service</th></tr></thead>
+  <tbody>
+    <tr><td class="num mono">23</td><td>Telnet</td></tr>
+    <tr><td class="num mono">80</td><td>HTTP (LXI web interface)</td></tr>
+    <tr><td class="num mono">1024</td><td>VXI-11</td></tr>
+    <tr><td class="num mono">5025</td><td>Raw socket &mdash; what you send TSP to</td></tr>
+    <tr><td class="num mono">5030</td><td>Dead Socket Termination &mdash; connect and close to reset all connections</td></tr>
+  </tbody>
+</table>
+
+<footer>
+  Reverse-engineered empirically on a Keithley DMM6500, firmware 1.7.17a.
+  Unofficial and unsupported: nothing here is promised by Keithley, and a firmware
+  update may change or remove any of it. Reproduce the measurements before relying
+  on them.
+</footer>
+
+</body>
+</html>
