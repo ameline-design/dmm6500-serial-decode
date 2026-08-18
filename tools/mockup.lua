@@ -120,7 +120,9 @@ end
 -- further tabs, and the reader rejoins everything from column 10 onward.
 local function dumpobjs(path)
   local f = io.open(path, 'w')
-  f:write('screen\tkind\tx\ty\tw\th\tfont\tcolor\tfill\ttext\n')
+  -- `just` sits BEFORE text on purpose: text is the last column because it may itself contain tabs
+  -- (an edit object packs label/desc/value into it), so anything after it could not be parsed out.
+  f:write('screen\tkind\tx\ty\tw\th\tfont\tcolor\tfill\tjust\ttext\n')
   local i
   for i = 1, nobj do
     local o = OBJ[i]
@@ -146,11 +148,11 @@ local function dumpobjs(path)
         txt = tostring(o.label) .. '\t' .. tostring(o.desc) .. '\t'
               .. ((o.value == 1) and 'ON' or 'OFF')
       end
-      f:write(string.format('%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n',
+      f:write(string.format('%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n',
         title, tostring(o.kind), tostring(o.x or 0), tostring(o.y or 0),
         tostring(o.w or 0), tostring(o.h or 0), tostring(o.font or 1),
         tostring(o.color or 16777215), tostring(o.fill or -1),
-        tostring(txt or '')))
+        tostring(o.just or 0), tostring(txt or '')))
     end
   end
   f:close()
@@ -354,6 +356,29 @@ sdec.ui_status = 'done'
 sdec.ui_refresh()
 print('32 kB done: ' .. sdec.ck_summary(sdec.ck_tot))
 dumpobjs('docs/mockup-objects-stream-done.tsv')
+
+-- THE RESTING STATE AFTER A RECORDING, and the one an operator actually reads: capture() lands in
+-- FRAME with the retained tail on screen (sdec.res = ck_tot.tail), paged. The mockup above leaves
+-- res at the earlier 97-byte frame capture, so it could not show the paging at all.
+--
+-- sdec.ck_keep bytes, carrying `first` and `ntotal` exactly as ck_tail_result() builds them -- which
+-- is what lets ui_notes() tell a tail from a frame capture, and what puts the page count on screen.
+do
+  local keep = sdec.ck_keep
+  local tail = {nf = keep, ngood = keep, nbad = 0, nfalse = 0, vals = {}, errs = {}, tpos = {},
+                first = 32768 - keep + 1, ntotal = 32768,
+                nbits = 8, par = sdec.PAR_NONE, nstop = 1, framebits = 10}
+  local ti
+  for ti = 1, keep do tail.vals[ti] = 32 + math.mod(ti * 7, 95) end
+  sdec.capmode = 'frame'
+  sdec.res = tail
+  sdec.ui_mode = 'hex'
+  sdec.ui_page = 0
+  sdec.ui_refresh()
+  print(string.format('recording tail: %d bytes kept of %d, %d pages, indicator %q',
+        tail.nf, tail.ntotal, sdec.ui_npages(), tostring(sdec.ui_pgindtxt)))
+  dumpobjs('docs/mockup-objects-stream-tail.tsv')
+end
 
 -- The recording mode with the rate back on auto: the gate, stated before anything is attempted.
 sdec.capmode = 'med'

@@ -4901,6 +4901,25 @@ local function test_modes()
   nt, nn = sdec.ui_notes()
   check('a finished stream SAYS the panel shows only the first window',
         has(table.concat(nt, ' | '), 'panel shows the first'), table.concat(nt, ' | '))
+
+  -- A RETAINED TAIL IS NOT A PREFIX, and the note used to call it one: a recording ends with
+  -- sdec.res = ck_tot.tail -- the LAST ck_keep bytes -- while this line said 'the first 8192 bytes'
+  -- and the index column beside it counted from 24576. Two cells contradicting each other about
+  -- which end of the stream is on screen.
+  do
+    local svres, svtot = sdec.res, sdec.ck_tot
+    sdec.res = {nf = 8192, ngood = 8192, nbad = 0, vals = {}, errs = {},
+                first = 24577, ntotal = 32768}
+    sdec.ck_tot = {nf = 32768, nbad = 0, nwin = 1, nsmp = 1, path = '/usb1/stream00.txt'}
+    local tnt = table.concat(sdec.ui_notes(), ' | ')
+    check('a retained TAIL names the byte range it is showing',
+          has(tnt, 'bytes 24577-32768 of 32768'), tnt)
+    check('...and does NOT claim to be the first bytes of the stream',
+          not has(tnt, 'panel shows the first'), tnt)
+    check('...and still names the file holding all of them',
+          has(tnt, 'stream00.txt'), tnt)
+    sdec.res, sdec.ck_tot = svres, svtot
+  end
   sdec.ck_tot = nil
   clearforce()
   sdec.capmode = 'med'

@@ -1237,20 +1237,11 @@ function sdec.capture()
   -- and the press lands HERE, as a fresh capture.
   --
   -- Which, since a finished stream leaves its bytes on screen, would clear_result() them
-  -- immediately -- bytes appear, then vanish, which is worse than never showing them. So the
-  -- first press after a stream exit is spent on what the operator was asking for: the run is
-  -- over, the bytes stay up, and the note row says the press was taken as the Stop. At most one
-  -- press is absorbed, and only ever after a stream that actually ran.
-  if sdec.strm_absorb_due() then
-    sdec.strm_stopped_by_press = nil
-    sdec.lasterr = nil
-    sdec.strm_absorbed = 'Capture taken as the Stop for the stream that just ended -- ' ..
-                         'press again to capture'
-    pcall(function() ulog.line(sdec.strm_absorbed) end)
-    return pcall(function() sdec.ui_refresh() end)
-  end
-  sdec.strm_stopped_by_press = nil        -- stale arm from a run whose window has passed
-  sdec.strm_absorbed = nil
+  -- immediately -- bytes appear, then vanish, which is worse than never showing them. So a press
+  -- inside the absorb window is spent on what the operator was asking for: the run is over, the
+  -- bytes stay up, and the note row says the press was taken as the Stop. EVERY press in the
+  -- window, not just the first -- see sdec.press_absorbed().
+  if sdec.press_absorbed('Capture') then return true end
   -- BUSY ON ENTRY MEANS A PREVIOUS RUN DIED, not that one is in progress. A second press cannot
   -- arrive during a capture -- a front-panel press is not dispatched while a Lua script runs, and
   -- presses queue until the handler returns -- so the only way this flag is still set is that a
@@ -1361,14 +1352,12 @@ function sdec.capture()
       -- the key holds everything the tail does not. Staying in the streaming mode instead means
       -- the queued press that was meant to stop the run is honoured as a NEW recording, which
       -- is what makes such a mode impossible to leave.
-      local endwhy = sdec.ck_endwhy
       if sdec.ck_tot ~= nil and sdec.ck_tot.tail ~= nil then
         -- No separate "this is a stream tail" flag: the view carries `first` and `ntotal`,
         -- so ui_notes() can tell a tail from a frame capture by looking at the view itself,
         -- and clear_result() drops it at the start of the next capture like any other result.
         sdec.res = sdec.ck_tot.tail
       end
-      sdec.strm_absorb_arm(endwhy)
     end
     -- LEAVING THE MODE HAPPENS ON EVERY OUTCOME, not just the successful one. Inside the `else`
     -- above it would miss exactly the cases that matter -- a refused stream, a raise out of the
@@ -1380,6 +1369,12 @@ function sdec.capture()
       sdec.mode_exit(sdec.strm_exit_why(sdec.ck_endwhy, sok, sdec.lasterr))
     end)
     pcall(function() sdec.ui_refresh() end)
+    -- ARMED LAST, after mode_exit()'s USB flush and the repaint: the window is 1 s from the moment it
+    -- is armed, so arming above them spends part of it before the handler even returns.
+    --
+    -- ON EVERY OUTCOME. A raise and a refusal held the interpreter just as long, so they have the same
+    -- queue of presses behind them.
+    sdec.strm_absorb_arm()
     return sok, swhy
   end
 
@@ -1664,6 +1659,9 @@ end
 -- Write a self-describing file to the USB key: the wire parameters, then the whole capture as a
 -- hex + ASCII dump, then every parsed protocol list. Returns ok.
 function sdec.save()
+  -- A queued press must not spend a filename: it consumes saveNNN, sending the deliberate save that
+  -- follows somewhere else.
+  if sdec.press_absorbed('Save') then return false end
   -- The panel only ever shows one page; this is how the rest of a capture leaves the instrument.
   sdec.savedas = nil
   if sdec.res == nil or sdec.res.nf == 0 then
@@ -1804,6 +1802,8 @@ end
 
 -- Start a new byte log, so one device's or one test's messages are separated from the next.
 function sdec.log_new()
+  -- Same as Save: a queued press renumbers the log the finished run wrote to.
+  if sdec.press_absorbed('NewLog') then return false end
   -- FORGETTING THE PATH IS THE WHOLE MECHANISM: frame_log() opens, appends and closes per
   -- capture, so there is no handle to close here, and the next capture calls ulog.next_free()
   -- again and lands on the next unused name.
@@ -2051,7 +2051,7 @@ function sdec.strm_exit_why(endwhy, ok, err)
   return 'finished'
 end
 
--- HOW LONG A QUEUED STOP PRESS STAYS ABSORBABLE.
+-- HOW LONG A QUEUED PRESS STAYS ABSORBABLE.
 --
 -- The absorb exists because a press aimed at stopping a stream is only dispatched once the run's
 -- Lua returns, and would otherwise land as a new capture that wipes the bytes the run just put on
@@ -2063,14 +2063,21 @@ end
 -- wider than scheduling jitter, not wider than human reaction time -- deliberately NARROWER than
 -- reaction time, in fact, because a press the operator decided to make after seeing the result
 -- is by definition not the one that was queued before it existed.
+--
+-- AN ABSORB, NOT A FLUSH: nothing can drain the firmware's pending-press queue -- display.waitevent()
+-- is the only thing that reads it and it wedges the instrument. Queued presses are still delivered;
+-- each is recognised as queued and does nothing.
 sdec.strm_absorb_s = sdec.strm_absorb_s or 1.0
 
--- Arm the one-press absorb after a run that a queued Stop may be following.
-function sdec.strm_absorb_arm(endwhy)
+-- Arm the queued-press absorb after a run that held the interpreter.
+--
+-- ARMED ON EVERY ENDING, INCLUDING 'stopped'. This used to return early when a press had been SEEN,
+-- reasoning that nothing could be queued behind it -- true of one press, false of an operator, who
+-- presses Capture, then TRIGGER, then Capture again. TRIGGER ends the run, so the two Capture presses
+-- were exactly the ones left unabsorbed, and each started another uninterruptable recording.
+function sdec.strm_absorb_arm()
   sdec.strm_stopped_by_press = nil
-  -- A stop that was actually SEEN needs no absorb: the press that set it was dispatched, so
-  -- there is nothing queued behind it.
-  if endwhy == 'stopped' then return end
+  sdec.strm_nabsorbed = 0
   -- timer.cleartime() stamps the moment the run ended. Nothing else runs between here and the
   -- dispatch of a queued press, so nothing else can reset the timer in between -- and if the
   -- firmware has no timer at all, the flag is simply never armed, which fails toward honouring
@@ -2086,6 +2093,44 @@ function sdec.strm_absorb_due()
   pcall(function() el = timer.gettime() end)
   if el == nil then return false end
   return el <= sdec.strm_absorb_s
+end
+
+-- The one gate every handler that matters consults: was this press queued behind a run that has
+-- already ended? True means it is dealt with and the caller must return without acting.
+--
+-- EVERY PRESS IN THE WINDOW, NOT THE FIRST. Disarming on the first absorb left a burst of three with
+-- one swallowed and two honoured. The window bounds this, not a count, so leaving it armed cannot eat
+-- a later deliberate press.
+--
+-- A STALE ARM IS CLEARED HERE: the elapsed time lives in the instrument's ONE global timer, so an arm
+-- standing past its window would be resurrected by the next unrelated timer.cleartime(). Anything
+-- taking the timer must also disarm first -- record_run() does, as does every harness via bench_sync.
+--
+-- NOT WIRED TO View OR THE PAGE BUTTONS: neither starts work nor loses data, and paging is what an
+-- operator legitimately does next.
+function sdec.press_absorbed(what)
+  if not sdec.strm_absorb_due() then
+    -- Stale arm from a run whose window has passed, cleared on the first press after it.
+    sdec.strm_stopped_by_press = nil
+    sdec.strm_absorbed = nil
+    return false
+  end
+  local n = (sdec.strm_nabsorbed or 0) + 1
+  sdec.strm_nabsorbed = n
+  -- lasterr goes, because the run that just ended is what the operator is reading and a queued
+  -- press must not replace its verdict with a complaint about itself.
+  sdec.lasterr = nil
+  if n == 1 then
+    sdec.strm_absorbed = string.format('%s taken as the Stop for the recording that just '
+                                       .. 'ended -- press again to use it',
+                                       tostring(what or 'the press'))
+  else
+    sdec.strm_absorbed = string.format('%d presses queued during the recording were '
+                                       .. 'discarded -- it had already ended', n)
+  end
+  pcall(function() ulog.line(sdec.strm_absorbed) end)
+  pcall(function() sdec.ui_refresh() end)
+  return true
 end
 
 -- Leave the current capture mode, flushing its files, and return to FRAME. `why` goes on the note
@@ -2161,6 +2206,9 @@ end
 --   RUNNING  -> abort. Stop the stream, flush, straight back to FRAME, one press.
 --   IDLE     -> advance to the next mode, flushing the one being left on the way out.
 function sdec.mode_cycle()
+  -- A queued press lands after the run has already reached FRAME, where advancing the mode arms a
+  -- different capture and clears the summary.
+  if sdec.press_absorbed('Mode') then return false end
   -- FRAME IS ONE PRESS AWAY FROM ANYWHERE, which is what makes the cycle an acceptable
   -- substitute for a dedicated Exit button on a bar with no room for one.
   if sdec.ck_running then
@@ -2328,6 +2376,8 @@ end
 
 -- Show the options screen, building it first if it does not exist yet.
 function sdec.options()
+  -- A queued press throws the form up over the result, to be dismissed before the bytes can be read.
+  if sdec.press_absorbed('Options') then return false end
   -- THROUGH pcall: this is a touch handler, and build_options() raises by design when the pool is
   -- exhausted. An uncaught raise here is an ERROR-severity event, which is a modal dialog over the
   -- app -- so the refusal is turned into a note instead, like every other refusal on this panel.

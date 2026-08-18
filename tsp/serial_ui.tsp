@@ -932,8 +932,18 @@ function sdec.ui_notes()
   -- capture-FULL note solves: a partial view is honest only if it says it is partial.
   if sdec.ck_tot ~= nil and sdec.res ~= nil and sdec.ck_tot.nf > sdec.res.nf then
     local base = string.gsub(tostring(sdec.ck_tot.path or 'the USB file'), '^.*/', '')
-    add(string.format('panel shows the first %d bytes of the stream; all %d are in %s',
-                      sdec.res.nf, sdec.ck_tot.nf, base))
+    -- WHICH BYTES, NOT JUST HOW MANY. A finished recording leaves its retained TAIL on screen, so
+    -- 'the first 8192' named the wrong end of the stream while the index column read 24576 -- the
+    -- panel contradicting itself. res.first is the 1-based absolute index ck_tail_result() records
+    -- for exactly this, and capture() says so where it assigns the tail.
+    local first, tot = sdec.res.first, sdec.res.ntotal or sdec.ck_tot.nf
+    if first ~= nil and first > 1 then
+      add(string.format('panel shows bytes %d-%d of %d; all are in %s',
+                        first, first + sdec.res.nf - 1, tot, base))
+    else
+      add(string.format('panel shows the first %d bytes of the stream; all %d are in %s',
+                        sdec.res.nf, tot, base))
+    end
   end
 
   -- Only warn about samples/bit once there IS a bit time; before the first capture
@@ -1248,6 +1258,8 @@ function sdec.ui_destroy()
   sdec.ui_lockbody, sdec.ui_lockc, sdec.ui_lockhit = nil, nil, nil
   sdec.del_obj(sdec.ui_page_t)
   sdec.del_obj(sdec.ui_log_t)
+  sdec.del_obj(sdec.ui_pgind)
+  sdec.ui_pgind, sdec.ui_pgindtxt = nil, nil
   sdec.del_obj(sdec.ui_scr)
   sdec.ui_scr, sdec.ui_note = nil, nil
   sdec.ui_flab, sdec.ui_fval = nil, nil
@@ -1511,10 +1523,18 @@ function sdec.ui_build()
   -- All three hide themselves when they have nothing to do -- the page buttons when the capture
   -- fits one page, Lock Rate when there is no detected rate to pin -- which is why they are
   -- tracked separately from the bottom row. See sdec.ui_page_btns().
+  -- 140 px WIDE, NOT 185, AND THE RIGHT EDGE STAYS AT 785. The width these buttons do not use is
+  -- width the dump rows get: a TEXT row is 80 columns of a proportional font, needing 636 px against
+  -- the 592 it had, so the right-hand characters were drawn under Page Up -- and the page arithmetic
+  -- still counted them, so paging stepped over bytes that were never visible.
+  --
+  -- 140 AND NOT NARROWER: 'Lock Rate' measures 134 px, and test_serial's label-fit check is what
+  -- caught 130. That leaves 645 for the dump, which clears the 636 the widest row needs.
+  local pbx, pbw = 645, 140
   local pdef = {
-    {x = 600, y = 58,  w = 185, t = 'Page Up',   e = 'sdec.page_prev()',  pg = true},
-    {x = 600, y = 160, w = 185, t = 'Lock Rate', e = 'sdec.lock_toggle()'},
-    {x = 600, y = 262, w = 185, t = 'Page Dn',   e = 'sdec.page_next()',  pg = true},
+    {x = pbx, y = 58,  w = pbw, t = 'Page Up',   e = 'sdec.page_prev()',  pg = true},
+    {x = pbx, y = 160, w = pbw, t = 'Lock Rate', e = 'sdec.lock_toggle()'},
+    {x = pbx, y = 262, w = pbw, t = 'Page Dn',   e = 'sdec.page_next()',  pg = true},
   }
   local pk, npg = nil, 0
   sdec.ui_pgbtn = {}
@@ -1533,6 +1553,16 @@ function sdec.ui_build()
       end
     end
   end
+  -- WHICH PAGE OF HOW MANY, in the gap between Page Up (ends at 116) and Lock Rate (starts at 160).
+  -- Paging blind is the complaint this answers: the buttons move the view but nothing said how much
+  -- there was or where in it you were. Shown and hidden with the page buttons -- 'page 1 of 1' is
+  -- noise -- and it costs ONE display object, unlike the 15 the position bar wants.
+  --
+  -- JUST_RIGHT against the panel edge, so the count does not shuffle sideways as it grows from
+  -- 'page 1 of 9' to 'page 27 of 35'. x is therefore the RIGHT edge, not the left.
+  sdec.ui_pgind = create(sdec.ui_scr, display.OBJ_TEXT, 794, 141, '',
+                         sdec.ui_c_dim, small, display.JUST_RIGHT)
+  sdec.ui_pgindtxt = nil
   -- THESE TWO ARE VISIBILITY SHADOW CACHES, and nil means "unknown, so write it on the next
   -- refresh".
   --
@@ -1580,8 +1610,19 @@ end
 function sdec.ui_page_btns()
   local t = sdec.ui_pgbtn
   if t == nil then return false end
+  local npg = sdec.ui_npages()
   local want = false
-  if sdec.ui_npages() > 1 then want = true end
+  if npg > 1 then want = true end
+  -- 1-BASED FOR THE OPERATOR: ui_page is a 0-based index and 'page 0 of 35' names a page no button
+  -- can reach. Cached like every other cell, so a refresh with the same page costs no display traffic.
+  if sdec.ui_pgind ~= nil then
+    local ptxt = ''
+    if want then ptxt = string.format('page %d of %d', sdec.ui_page + 1, npg) end
+    if ptxt ~= sdec.ui_pgindtxt then
+      sdec.ui_set(sdec.ui_pgind, ptxt)
+      sdec.ui_pgindtxt = ptxt
+    end
+  end
   if want ~= sdec.ui_pgvis then
     local st = display.STATE_INVISIBLE
     if want then st = display.STATE_ENABLE end

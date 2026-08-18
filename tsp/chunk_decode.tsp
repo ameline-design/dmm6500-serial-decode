@@ -850,7 +850,16 @@ end
 -- All three put the interesting bytes at the END. (Frame mode shows the START of its
 -- capture, which is not an inconsistency -- a frame capture IS its start, there is no
 -- tail for it to lose.)
-sdec.ck_keep = 720          -- 3 pages of 240. Fixed RAM, not proportional to the run.
+-- 8192 bytes = 35 pages of 240, and the whole of an 8 kB recording. It was 720 (three pages), which
+-- left an 8 kB recording pageable over its last 9 % and the rest reachable only by unplugging the key.
+--
+-- MEASURED on the live app 2026-08-18, since the argument above rests on RAM: a Lua array of numbers
+-- costs exactly 16 B per element (8192 -> 129 kB, 16384 -> 256 kB); the app sits at ~1470 kB of heap
+-- against gcinfo()'s 2861 kB threshold; and a 256 kB array allocated and freed with the event log
+-- clean. Cost here is 129 kB for the ring plus 129 kB for ck_tail_result()'s copy.
+--
+-- NOT 32768: that is 516 kB twice over, never demonstrated allocatable. The file still holds all of it.
+sdec.ck_keep = 8192
 
 -- A fixed-size ring for the last bytes of a stream, so RAM does not grow with the run.
 function sdec.ck_tail_new(cap)

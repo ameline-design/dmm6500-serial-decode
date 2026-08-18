@@ -2739,7 +2739,7 @@ function sdec.ck_sink_file(path, ncol)
   return sink, finish, nil
 end
 
-sdec.ck_keep = 720          -- 3 pages of 240. Fixed RAM, not proportional to the run.
+sdec.ck_keep = 8192
 
 -- A fixed-size ring for the last bytes of a stream, so RAM does not grow with the run.
 function sdec.ck_tail_new(cap)
@@ -3446,8 +3446,14 @@ function sdec.ui_notes()
 
   if sdec.ck_tot ~= nil and sdec.res ~= nil and sdec.ck_tot.nf > sdec.res.nf then
     local base = string.gsub(tostring(sdec.ck_tot.path or 'the USB file'), '^.*/', '')
-    add(string.format('panel shows the first %d bytes of the stream; all %d are in %s',
-                      sdec.res.nf, sdec.ck_tot.nf, base))
+    local first, tot = sdec.res.first, sdec.res.ntotal or sdec.ck_tot.nf
+    if first ~= nil and first > 1 then
+      add(string.format('panel shows bytes %d-%d of %d; all are in %s',
+                        first, first + sdec.res.nf - 1, tot, base))
+    else
+      add(string.format('panel shows the first %d bytes of the stream; all %d are in %s',
+                        sdec.res.nf, tot, base))
+    end
   end
 
   if sdec.bittime ~= nil then
@@ -3642,6 +3648,8 @@ function sdec.ui_destroy()
   sdec.ui_lockbody, sdec.ui_lockc, sdec.ui_lockhit = nil, nil, nil
   sdec.del_obj(sdec.ui_page_t)
   sdec.del_obj(sdec.ui_log_t)
+  sdec.del_obj(sdec.ui_pgind)
+  sdec.ui_pgind, sdec.ui_pgindtxt = nil, nil
   sdec.del_obj(sdec.ui_scr)
   sdec.ui_scr, sdec.ui_note = nil, nil
   sdec.ui_flab, sdec.ui_fval = nil, nil
@@ -3793,10 +3801,11 @@ function sdec.ui_build()
     {x = 526, w = 112, t = 'Save',       e = 'sdec.save()'},
     {x = 662, w = 112, t = 'Options',    e = 'sdec.options()'},
   }
+  local pbx, pbw = 645, 140
   local pdef = {
-    {x = 600, y = 58,  w = 185, t = 'Page Up',   e = 'sdec.page_prev()',  pg = true},
-    {x = 600, y = 160, w = 185, t = 'Lock Rate', e = 'sdec.lock_toggle()'},
-    {x = 600, y = 262, w = 185, t = 'Page Dn',   e = 'sdec.page_next()',  pg = true},
+    {x = pbx, y = 58,  w = pbw, t = 'Page Up',   e = 'sdec.page_prev()',  pg = true},
+    {x = pbx, y = 160, w = pbw, t = 'Lock Rate', e = 'sdec.lock_toggle()'},
+    {x = pbx, y = 262, w = pbw, t = 'Page Dn',   e = 'sdec.page_next()',  pg = true},
   }
   local pk, npg = nil, 0
   sdec.ui_pgbtn = {}
@@ -3815,6 +3824,9 @@ function sdec.ui_build()
       end
     end
   end
+  sdec.ui_pgind = create(sdec.ui_scr, display.OBJ_TEXT, 794, 141, '',
+                         sdec.ui_c_dim, small, display.JUST_RIGHT)
+  sdec.ui_pgindtxt = nil
   sdec.ui_pgvis = nil
   sdec.ui_lockvis = nil
   local k
@@ -3846,8 +3858,17 @@ end
 function sdec.ui_page_btns()
   local t = sdec.ui_pgbtn
   if t == nil then return false end
+  local npg = sdec.ui_npages()
   local want = false
-  if sdec.ui_npages() > 1 then want = true end
+  if npg > 1 then want = true end
+  if sdec.ui_pgind ~= nil then
+    local ptxt = ''
+    if want then ptxt = string.format('page %d of %d', sdec.ui_page + 1, npg) end
+    if ptxt ~= sdec.ui_pgindtxt then
+      sdec.ui_set(sdec.ui_pgind, ptxt)
+      sdec.ui_pgindtxt = ptxt
+    end
+  end
   if want ~= sdec.ui_pgvis then
     local st = display.STATE_INVISIBLE
     if want then st = display.STATE_ENABLE end
@@ -4951,16 +4972,7 @@ function sdec.capture()
     end
   end
 
-  if sdec.strm_absorb_due() then
-    sdec.strm_stopped_by_press = nil
-    sdec.lasterr = nil
-    sdec.strm_absorbed = 'Capture taken as the Stop for the stream that just ended -- ' ..
-                         'press again to capture'
-    pcall(function() ulog.line(sdec.strm_absorbed) end)
-    return pcall(function() sdec.ui_refresh() end)
-  end
-  sdec.strm_stopped_by_press = nil        -- stale arm from a run whose window has passed
-  sdec.strm_absorbed = nil
+  if sdec.press_absorbed('Capture') then return true end
   if sdec.busy then
     sdec.lasterr = 'previous capture did not finish (aborted?) -- starting a new one'
     pcall(function() ulog.line(sdec.lasterr) end)
@@ -5027,16 +5039,15 @@ function sdec.capture()
     else
       sdec.ui_status = 'done'
       pcall(function() ulog.line(sdec.ck_summary(sdec.ck_tot)) end)
-      local endwhy = sdec.ck_endwhy
       if sdec.ck_tot ~= nil and sdec.ck_tot.tail ~= nil then
         sdec.res = sdec.ck_tot.tail
       end
-      sdec.strm_absorb_arm(endwhy)
     end
     pcall(function()
       sdec.mode_exit(sdec.strm_exit_why(sdec.ck_endwhy, sok, sdec.lasterr))
     end)
     pcall(function() sdec.ui_refresh() end)
+    sdec.strm_absorb_arm()
     return sok, swhy
   end
 
@@ -5185,6 +5196,7 @@ end
 -- Write a self-describing file to the USB key: the wire parameters, then the whole capture as a
 -- hex + ASCII dump, then every parsed protocol list. Returns ok.
 function sdec.save()
+  if sdec.press_absorbed('Save') then return false end
   sdec.savedas = nil
   if sdec.res == nil or sdec.res.nf == 0 then
     sdec.lasterr = 'nothing to save -- capture first'
@@ -5297,6 +5309,7 @@ end
 
 -- Start a new byte log, so one device's or one test's messages are separated from the next.
 function sdec.log_new()
+  if sdec.press_absorbed('NewLog') then return false end
   local was = sdec.flog_path
   pcall(function() ulog.flush() end)
   sdec.flog_path, sdec.flog_n, sdec.flog_why = nil, nil, nil
@@ -5431,10 +5444,14 @@ end
 
 sdec.strm_absorb_s = sdec.strm_absorb_s or 1.0
 
--- Arm the one-press absorb after a run that a queued Stop may be following.
-function sdec.strm_absorb_arm(endwhy)
+-- Arm the queued-press absorb after a run that held the interpreter.
+-- ARMED ON EVERY ENDING, INCLUDING 'stopped'. This used to return early when a press had been SEEN,
+-- reasoning that nothing could be queued behind it -- true of one press, false of an operator, who
+-- presses Capture, then TRIGGER, then Capture again. TRIGGER ends the run, so the two Capture presses
+-- were exactly the ones left unabsorbed, and each started another uninterruptable recording.
+function sdec.strm_absorb_arm()
   sdec.strm_stopped_by_press = nil
-  if endwhy == 'stopped' then return end
+  sdec.strm_nabsorbed = 0
   local ok = pcall(function() timer.cleartime() end)
   if ok then sdec.strm_stopped_by_press = true end
 end
@@ -5446,6 +5463,33 @@ function sdec.strm_absorb_due()
   pcall(function() el = timer.gettime() end)
   if el == nil then return false end
   return el <= sdec.strm_absorb_s
+end
+
+-- A STALE ARM IS CLEARED HERE: the elapsed time lives in the instrument's ONE global timer, so an arm
+-- standing past its window would be resurrected by the next unrelated timer.cleartime(). Anything
+-- taking the timer must also disarm first -- record_run() does, as does every harness via bench_sync.
+-- NOT WIRED TO View OR THE PAGE BUTTONS: neither starts work nor loses data, and paging is what an
+-- operator legitimately does next.
+function sdec.press_absorbed(what)
+  if not sdec.strm_absorb_due() then
+    sdec.strm_stopped_by_press = nil
+    sdec.strm_absorbed = nil
+    return false
+  end
+  local n = (sdec.strm_nabsorbed or 0) + 1
+  sdec.strm_nabsorbed = n
+  sdec.lasterr = nil
+  if n == 1 then
+    sdec.strm_absorbed = string.format('%s taken as the Stop for the recording that just '
+                                       .. 'ended -- press again to use it',
+                                       tostring(what or 'the press'))
+  else
+    sdec.strm_absorbed = string.format('%d presses queued during the recording were '
+                                       .. 'discarded -- it had already ended', n)
+  end
+  pcall(function() ulog.line(sdec.strm_absorbed) end)
+  pcall(function() sdec.ui_refresh() end)
+  return true
 end
 
 -- Leave the current capture mode, flushing its files, and return to FRAME. `why` goes on the note
@@ -5486,6 +5530,7 @@ end
 --   RUNNING  -> abort. Stop the stream, flush, straight back to FRAME, one press.
 --   IDLE     -> advance to the next mode, flushing the one being left on the way out.
 function sdec.mode_cycle()
+  if sdec.press_absorbed('Mode') then return false end
   if sdec.ck_running then
     sdec.mode_exit('Mode pressed')
     sdec.ck_tot, sdec.ck_nbytes = nil, nil
@@ -5608,6 +5653,7 @@ end
 
 -- Show the options screen, building it first if it does not exist yet.
 function sdec.options()
+  if sdec.press_absorbed('Options') then return false end
   if sdec.optscr == nil then
     local bok, berr = pcall(function() sdec.build_options() end)
     if not bok or sdec.optscr == nil then

@@ -49,6 +49,10 @@ BTN_BOT = (168, 168, 168)
 BTN_EDGE = (138, 138, 138)
 BTN_TEXT = (26, 26, 26)
 BUTTON_H = 58           # measured from the FFT app's Options button
+# THE DUMP BAND, from serial_ui.tsp: ui_row_y0 = 66 to ui_row_y0 + (ui_nrow-1) * ui_row_dy = 318.
+# Used to tell a dump row from the note and status lines, which pass beside the margin buttons
+# legitimately -- ui_note_y = 48 is deliberately truncated with '(+N more)'.
+DUMP_Y0, DUMP_Y1 = 66, 318
 
 FONT_SMALL, FONT_MEDIUM = 15, 19
 
@@ -104,14 +108,15 @@ def read_dump(path):
         next(fh)
         for line in fh:
             f = line.rstrip('\n').split('\t')
-            if len(f) < 10:
+            if len(f) < 11:
                 continue
             rows.append({
                 'screen': f[0], 'kind': f[1],
                 'x': int(float(f[2])), 'y': int(float(f[3])),
                 'w': int(float(f[4])), 'h': int(float(f[5])),
                 'font': int(float(f[6])), 'color': int(float(f[7])),
-                'fill': int(float(f[8])), 'text': '\t'.join(f[9:]),
+                'fill': int(float(f[8])), 'just': int(float(f[9])),
+                'text': '\t'.join(f[10:]),
             })
     return rows
 
@@ -130,6 +135,20 @@ def draw_panel(rows, screen, title, out, scale, mono_rows, fonts):
 
     overflow = []
     mine = [r for r in rows if r['screen'] == screen]
+    # THE RIGHT-MARGIN BUTTON COLUMN, found from the dump itself: any button sitting beside the dump
+    # rather than in the bottom row. A dump row that reaches it is invisible from there rightwards.
+    mbtn = [r for r in mine if r['kind'] == 'button' and r['y'] + BUTTON_H <= DUMP_Y1 + BUTTON_H
+            and r['y'] < DUMP_Y1]
+    marginx = min((r['x'] for r in mbtn), default=None)
+    marginy1 = max((r['y'] + BUTTON_H for r in mbtn), default=0)
+    # A PANEL WITH NO OBJECTS IS A BROKEN RENDER, NOT AN EMPTY SCREEN. The title bar is drawn above
+    # unconditionally, so a filter that matches nothing still produces a plausible-looking PNG -- and
+    # that is how a screen-name mismatch went unnoticed. Raise instead: every scenario here builds a
+    # panel with dozens of objects, so zero can only mean the filter is wrong.
+    if not mine:
+        names = sorted({r['screen'] for r in rows})
+        raise SystemExit('render_png: no objects for screen %r in this dump -- it holds %s'
+                         % (screen, ', '.join(repr(n) for n in names) or 'nothing'))
 
     # Header field strip: the value row is a set of fixed columns, so a value that
     # outgrows its column collides with the next rather than wrapping. Collect the
@@ -157,10 +176,26 @@ def draw_panel(rows, screen, title, out, scale, mono_rows, fonts):
             # first two rows in the proportional face while the rest were monospace.
             f = fonts.m(px - 1) if (mono_rows and r['y'] >= 62 and r['y'] < 330) \
                 else fonts.r(px)
-            d.text((x, y), r['text'], font=f, fill=rgb(r['color']))
+            # JUSTIFICATION IS HONOURED, because the app uses it. A JUST_RIGHT object's x is its
+            # RIGHT edge, so drawing it left-anchored -- which is what this did before the dump
+            # carried `just` -- puts it a whole string-width away from where the instrument shows it,
+            # and the overflow check below then measures the wrong edge too.
             wpx = d.textlength(r['text'], font=f) / S
-            if r['x'] + wpx > 798:
-                overflow.append((r['text'][:46], round(r['x'] + wpx), 'past 798 px'))
+            xl = r['x']
+            if r['just'] == 2:                     # display.JUST_RIGHT
+                xl = r['x'] - wpx
+            elif r['just'] == 1:                   # display.JUST_CENTER
+                xl = r['x'] - wpx / 2
+            d.text((xl * S, y), r['text'], font=f, fill=rgb(r['color']))
+            if xl + wpx > 798:
+                overflow.append((r['text'][:46], round(xl + wpx), 'past 798 px'))
+            # AND AGAINST THE RIGHT-MARGIN BUTTONS, not just the panel edge. A dump row that runs
+            # under Page Up is invisible while still being counted by the page arithmetic, so paging
+            # steps over bytes nobody saw -- and checking only 798 px could not see it.
+            if marginx is not None and DUMP_Y0 <= r['y'] <= DUMP_Y1 and xl < marginx \
+                    and xl + wpx > marginx:
+                overflow.append((r['text'][:46], round(xl + wpx),
+                                 f'runs under the margin buttons at {marginx}'))
             if r['y'] == 18 and r['x'] in colx:
                 nxt = [c for c in colx if c > r['x']]
                 if nxt and r['x'] + wpx > nxt[0] - 4:
@@ -218,47 +253,63 @@ def cmd_panel(args):
     os.makedirs(out, exist_ok=True)
     fonts = Fonts(args.scale)
 
+    # THE MAIN SCREEN'S NAME, WHICH IS ALSO THE ROW FILTER (draw_panel keys on it) -- so it must be
+    # the app's own sdec.ui_title and nothing else.
+    #
+    # It read 'SERIAL PROTOCOL DECODE', which the app stopped calling the screen. The committed .tsv
+    # dumps still held that old name, so rendering from them matched and looked fine -- while drawing
+    # a title bar the instrument no longer shows. Re-running `lua tools/mockup.lua` (the documented
+    # first step) rewrote them with the real name, after which the filter matched NOTHING and every
+    # main-screen panel rendered EMPTY, reporting success and a size. The options mockups were never
+    # affected: their name never changed.
+    MAIN = 'SERIAL DECODE'
+
     # mono=True renders the dump area in a fixed-pitch font, which is what the hex, MIDI
     # and LIN views rely on for their columns to line up. The text view and the streaming
     # views are proportional.
     jobs = [
-        ('docs/mockup-objects-text.tsv', 'SERIAL PROTOCOL DECODE', 'mockup-main-text', False),
-        ('docs/mockup-objects-hex.tsv', 'SERIAL PROTOCOL DECODE', 'mockup-main-hex', True),
-        ('docs/mockup-objects-midi.tsv', 'SERIAL PROTOCOL DECODE', 'mockup-main-midi', True),
-        ('docs/mockup-objects-lin.tsv', 'SERIAL PROTOCOL DECODE', 'mockup-main-lin', True),
+        ('docs/mockup-objects-text.tsv', MAIN, 'mockup-main-text', False),
+        ('docs/mockup-objects-hex.tsv', MAIN, 'mockup-main-hex', True),
+        ('docs/mockup-objects-midi.tsv', MAIN, 'mockup-main-midi', True),
+        ('docs/mockup-objects-lin.tsv', MAIN, 'mockup-main-lin', True),
         ('docs/mockup-objects-opts.tsv', 'SERIAL DECODE OPTIONS', 'mockup-options', False),
         ('docs/mockup-objects-opts-ext.tsv', 'SERIAL DECODE OPTIONS',
          'mockup-options-ext', False),
         # The three capture modes, five states. stream-done matters most for layout: its
         # five-digit BYTES value is what the header table was widened to hold, so a LAYOUT
         # warning there means the widening was not enough.
-        ('docs/mockup-objects-frame-log.tsv', 'SERIAL PROTOCOL DECODE',
+        ('docs/mockup-objects-frame-log.tsv', MAIN,
          'mockup-mode-frame-log', False),
-        ('docs/mockup-objects-frame-exttrig.tsv', 'SERIAL PROTOCOL DECODE',
+        ('docs/mockup-objects-frame-exttrig.tsv', MAIN,
          'mockup-trig-ext', False),
-        ('docs/mockup-objects-frame-nolock.tsv', 'SERIAL PROTOCOL DECODE',
+        ('docs/mockup-objects-frame-nolock.tsv', MAIN,
          'mockup-lock-none', False),
-        ('docs/mockup-objects-frame-locked.tsv', 'SERIAL PROTOCOL DECODE',
+        ('docs/mockup-objects-frame-locked.tsv', MAIN,
          'mockup-lock-locked', False),
-        ('docs/mockup-objects-stream-arm.tsv', 'SERIAL PROTOCOL DECODE',
+        ('docs/mockup-objects-stream-arm.tsv', MAIN,
          'mockup-mode-stream-arm', False),
-        ('docs/mockup-objects-stream-run.tsv', 'SERIAL PROTOCOL DECODE',
+        ('docs/mockup-objects-stream-run.tsv', MAIN,
          'mockup-mode-stream-run', False),
-        ('docs/mockup-objects-stream-done.tsv', 'SERIAL PROTOCOL DECODE',
+        ('docs/mockup-objects-stream-done.tsv', MAIN,
          'mockup-mode-stream-done', False),
-        ('docs/mockup-objects-stream-gate.tsv', 'SERIAL PROTOCOL DECODE',
+        ('docs/mockup-objects-stream-gate.tsv', MAIN,
          'mockup-mode-stream-gate', False),
+        # THE RESTING STATE AFTER A RECORDING: FRAME, showing the retained tail, paged, with the
+        # page indicator between Page Up and Lock Rate. stream-done above cannot show this -- it
+        # leaves sdec.res at the earlier frame capture, so it renders a single page.
+        ('docs/mockup-objects-stream-tail.tsv', MAIN,
+         'mockup-stream-tail', True),
         # THE TWO LOSS REGIMES above the continuous ceiling -- the states that decide whether
         # the app keeps its central promise. Locked 115200 either way; only the rear-BNC
         # flow-control setting differs, and the note line has to say which one you are in.
-        ('docs/mockup-objects-fc-losing.tsv', 'SERIAL PROTOCOL DECODE',
+        ('docs/mockup-objects-fc-losing.tsv', MAIN,
          'mockup-fc-losing', False),
-        ('docs/mockup-objects-fc-ok.tsv', 'SERIAL PROTOCOL DECODE', 'mockup-fc-ok', False),
+        ('docs/mockup-objects-fc-ok.tsv', MAIN, 'mockup-fc-ok', False),
         # A COMPLETELY FULL hex screen at the CHOSEN geometry: 15 rows, 18 px pitch, 240 bytes.
         # The 14-row comparison that picked it is gone -- it documented a decision, and keeping a
         # mockup of a layout the app no longer has is the stale-render trap the check below
         # exists for.
-        ('docs/mockup-objects-hex15.tsv', 'SERIAL PROTOCOL DECODE', 'mockup-hex-full', True),
+        ('docs/mockup-objects-hex15.tsv', MAIN, 'mockup-hex-full', True),
     ]
     missing = [j[0] for j in jobs if not os.path.exists(os.path.join(ROOT, j[0]))]
     if missing:

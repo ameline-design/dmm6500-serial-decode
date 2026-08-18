@@ -1150,5 +1150,102 @@ do
   MD.forget_files()
 end
 
+-- ============================================================================
+-- THE QUEUED-PRESS ABSORB. Bench report 2026-08-18: presses made during an 8 kB recording were
+-- stored up and then each STARTED ANOTHER uninterruptable recording. The absorb existed but had
+-- three holes, and none of them had a test -- this suite was 161 green while all three were open.
+--
+-- OFFLINE THERE IS NO `timer`, so the arm's pcall fails and the absorb never engages: that is the
+-- degrade-to-honouring-the-press path, tested last. The window itself needs a fake clock.
+-- ============================================================================
+do
+  idle()
+  local CLK = {t = 0}
+  timer = {cleartime = function() CLK.t = 0 end, gettime = function() return CLK.t end}
+
+  -- (1) ARMED ON EVERY ENDING. It used to return early for endwhy 'stopped', which is exactly the
+  -- run an operator stops with TRIGGER after having already pressed Capture twice.
+  sdec.strm_absorb_arm('stopped')
+  check('the absorb arms even for a run that ended stopped',
+        sdec.strm_stopped_by_press == true, tostring(sdec.strm_stopped_by_press))
+  check('arming resets the absorbed count', sdec.strm_nabsorbed == 0,
+        tostring(sdec.strm_nabsorbed))
+
+  -- (2) EVERY PRESS IN THE WINDOW, not just the first. One swallowed and two honoured is what the
+  -- operator saw as "it started again by itself".
+  local a1 = sdec.press_absorbed('Capture')
+  local m1 = sdec.strm_absorbed
+  local a2 = sdec.press_absorbed('Capture')
+  local a3 = sdec.press_absorbed('Capture')
+  check('press 1 in the window is absorbed', a1 == true, tostring(a1))
+  check('press 2 in the window is ALSO absorbed', a2 == true, tostring(a2))
+  check('press 3 in the window is ALSO absorbed', a3 == true, tostring(a3))
+  check('all three are counted', sdec.strm_nabsorbed == 3, tostring(sdec.strm_nabsorbed))
+  check('the first says which control was taken and to press again',
+        has(m1, 'Capture') and has(m1, 'press again'), tostring(m1))
+  check('a burst reports the count rather than repeating the single-press wording',
+        has(sdec.strm_absorbed, '3 presses'), tostring(sdec.strm_absorbed))
+
+  -- (3) THE WINDOW BOUNDS IT. A press made after it must be honoured, and the stale arm cleared --
+  -- left standing, the next unrelated timer.cleartime() would resurrect it.
+  CLK.t = (sdec.strm_absorb_s or 1.0) + 0.5
+  local a4 = sdec.press_absorbed('Capture')
+  check('a press past the window is NOT absorbed', a4 == false, tostring(a4))
+  check('and the stale arm is cleared by that press',
+        sdec.strm_stopped_by_press == nil, tostring(sdec.strm_stopped_by_press))
+  check('the absorbed note is cleared with it', sdec.strm_absorbed == nil,
+        tostring(sdec.strm_absorbed))
+
+  -- (4) WHAT THE HANDLERS DO WITH IT. The point is not the flag, it is that the press does nothing.
+  sdec.res = {nf = 3, vals = {65, 66, 67}, errs = {}, ngood = 3, nbad = 0}
+  sdec.capmode, sdec.savedas, sdec.busy = 'frame', nil, false
+  sdec.strm_absorb_arm()
+  CLK.t = 0
+  local cres = sdec.capture()
+  check('an absorbed Capture keeps the result on screen',
+        sdec.res ~= nil and sdec.res.nf == 3, tostring(sdec.res and sdec.res.nf))
+  check('an absorbed Capture reports handled', cres == true, tostring(cres))
+  check('an absorbed Capture does not leave the busy latch set', sdec.busy == false,
+        tostring(sdec.busy))
+
+  sdec.strm_absorb_arm()
+  CLK.t = 0
+  sdec.mode_cycle()
+  check('an absorbed Mode does not advance the capture mode', sdec.capmode == 'frame',
+        tostring(sdec.capmode))
+
+  sdec.strm_absorb_arm()
+  CLK.t = 0
+  local sres = sdec.save()
+  check('an absorbed Save writes nothing', sdec.savedas == nil, tostring(sdec.savedas))
+  check('an absorbed Save took the absorb path, not "nothing to save"',
+        sres == false and has(sdec.strm_absorbed, 'Save'), tostring(sdec.strm_absorbed))
+
+  -- (5) PAGING IS NOT ABSORBED, deliberately: it starts no work, loses no data, and is what an
+  -- operator does next. Swallowing it would only teach that the buttons are unreliable.
+  sdec.ui_mode = 'hex'
+  sdec.res = {nf = 600, vals = {}, errs = {}, ngood = 600, nbad = 0}
+  local i
+  for i = 1, 600 do sdec.res.vals[i] = 65 end
+  sdec.ui_page = 0
+  sdec.strm_absorb_arm()
+  CLK.t = 0
+  sdec.page_next()
+  check('Page Dn still works inside the absorb window', sdec.ui_page == 1,
+        tostring(sdec.ui_page))
+
+  -- (6) NO TIMER AT ALL: the arm cannot stamp the moment, so nothing is ever absorbed and every
+  -- press is honoured. Failing toward the operator's press rather than eating it.
+  timer = nil
+  sdec.strm_stopped_by_press, sdec.strm_absorbed = nil, nil
+  sdec.strm_absorb_arm()
+  check('with no timer the absorb never arms', sdec.strm_stopped_by_press == nil,
+        tostring(sdec.strm_stopped_by_press))
+  check('and so no press is ever absorbed', sdec.press_absorbed('Capture') == false)
+  idle()
+  sdec.strm_stopped_by_press, sdec.strm_absorbed, sdec.strm_nabsorbed = nil, nil, nil
+  sdec.res, sdec.ui_page = nil, 0
+end
+
 print(string.format('\n%d passed, %d failed', pass, fail))
 if fail > 0 then os.exit(1) end
