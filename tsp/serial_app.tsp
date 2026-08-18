@@ -83,7 +83,9 @@ function sdec.clear_result()
   -- recording changed its own measurement basis mid-run, so latching it would put that sentence over
   -- a later capture that did no such thing. proto_why is the same: a MIDI parser that raised on one
   -- capture must not accuse the next one, which may parse perfectly.
-  sdec.strm_releveled, sdec.proto_why = nil, nil
+  -- relocked joins them: it says THIS capture abandoned a locked rate, and latching it would put
+  -- that over a later capture that did not.
+  sdec.strm_releveled, sdec.proto_why, sdec.relocked = nil, nil, nil
   sdec.probe_note = nil                 -- set by autoset() when it had to re-capture slower
   -- The previous capture's 20 000-entry sample table has just become unreachable. Collecting it
   -- here costs 8.3 ms measured, against a 1.6 s capture, and Lua memory pressure is on the

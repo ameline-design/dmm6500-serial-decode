@@ -2072,12 +2072,43 @@ function sdec.decode_from(rd, n)
   return true
 end
 
--- Runs the whole chain on an already-acquired capture. serial_core.acquire()
--- leaves the levels, edges and idle level in place; this adds bit timing,
--- format and bytes. Returns ok, reason.
+sdec.relock_badfrac   = 0.25     -- interior frames in error before the lock is doubted
+sdec.relock_minframes = 8        -- fewer frames than this and a bad fraction is not evidence
+
+-- Fraction of INTERIOR frames that failed, or nil when there are too few to judge. Interior, because
+-- head resync and a clipped tail fail on healthy captures too.
+function sdec.ua_badfrac(r)
+  if r == nil or (r.nf or 0) < 1 then return nil end
+  local ninter = r.nf - sdec.ua_edge_frames - 1
+  if ninter < 1 then return nil end
+  local nin = sdec.ua_bad_interior(r)
+  return nin / ninter
+end
+
 function sdec.decode()
   if sdec.smp == nil then return false, 'nothing captured' end
-  return sdec.decode_from(sdec.smp, sdec.nread)
+  sdec.relocked = nil
+  local ok, why = sdec.decode_from(sdec.smp, sdec.nread)
+
+  if sdec.force_baud == nil or sdec.rate_note == nil then return ok, why end
+
+  if sdec.proto ~= nil and sdec.proto ~= 'uart' then return ok, why end
+  local bf = sdec.ua_badfrac(sdec.res)
+  if bf == nil or bf < sdec.relock_badfrac then return ok, why end
+  if (sdec.res.nf or 0) < sdec.relock_minframes then return ok, why end
+
+  local was = sdec.force_baud
+  sdec.force_baud = nil
+  sdec.rate_note = nil
+  local ok2, why2 = sdec.decode_from(sdec.smp, sdec.nread)
+  if ok2 and sdec.baud ~= nil then
+    sdec.relocked = string.format('%g baud fit nothing -- unlocked, and this capture reads %.0f',
+                                  was, sdec.baud)
+  else
+    sdec.relocked = string.format('%g baud fit nothing -- unlocked, so the next capture detects',
+                                  was)
+  end
+  return ok2, why2
 end
 
 -- ============================================================================
@@ -3437,6 +3468,7 @@ function sdec.ui_notes()
   if sdec.mode_exited ~= nil then add(tostring(sdec.mode_exited)) end
   if sdec.lognote ~= nil then add(tostring(sdec.lognote)) end
   if sdec.strm_releveled ~= nil then add(tostring(sdec.strm_releveled)) end
+  if sdec.relocked ~= nil then add(tostring(sdec.relocked)) end
 
   local md = sdec.mode_cur()
   if not md.view then
@@ -4335,7 +4367,7 @@ function sdec.clear_result()
   sdec.fmt_note, sdec.baud_note, sdec.rate_note = nil, nil, nil
   sdec.lasterr, sdec.savedas, sdec.probe_idle = nil, nil, nil
   sdec.mode_exited, sdec.lognote, sdec.autolocknote = nil, nil, nil
-  sdec.strm_releveled, sdec.proto_why = nil, nil
+  sdec.strm_releveled, sdec.proto_why, sdec.relocked = nil, nil, nil
   sdec.probe_note = nil                 -- set by autoset() when it had to re-capture slower
   pcall(function() collectgarbage() end)
   return true

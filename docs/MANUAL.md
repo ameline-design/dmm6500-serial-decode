@@ -204,6 +204,19 @@ a 20-minute backstop, so nothing can wait for ever — it only matters on very s
 verified with a 1024-byte non-repeating test pattern, where the decoded bytes were one unbroken slice
 of it.
 
+> **If a `Processing reading backlog...` dialog appears, ignore it. Do not press Abort.**
+>
+> It is the instrument's own message, not the app's: the digitizer is producing readings faster than
+> the meter is moving them out of the buffer. It **clears by itself** and the recording carries on
+> normally.
+>
+> Seen on the bench from 38.4 kBd upwards — at 182 kS/s, at 635 kS/s recording a 76.8 kBd line, and
+> within a second of pressing Capture at 1 MS/s on a 115.2 kBd line. Every one of those recordings
+> completed and decoded correctly, including a full 32 kB one.
+>
+> Pressing **Abort** would stop the acquisition the dialog is describing, which is the one thing that
+> actually loses the capture. There is nothing to do but let it run.
+
 ### Which window size to pick
 
 The window is the unit of work: one press records a window, decodes it, and files it. So the size is a
@@ -343,6 +356,26 @@ it anyway, or capture again.
 wrong once and then sticking to it is how you get a confident, completely wrong decode. (**Lock
 Detected** on the Options screen *does* copy the detected polarity into the fields along with
 everything else — but there you can see what it picked before you commit it.)
+
+### If the line changes rate, the app gives the lock up
+
+A locked rate is a promise about the wire, and when the wire stops keeping it the lock is worse than
+useless — it turns every frame into an error and nothing gets better by pressing Capture again. So when
+**all three** of these hold, the app **drops the lock by itself** and re-detects from the same samples:
+
+- a rate is locked;
+- the bit time it measures on the wire disagrees with that rate;
+- more than a quarter of the frames in the middle of the capture failed.
+
+It says so on the note row, naming the rate it discarded — `19200 baud fit nothing -- unlocked, and
+this capture reads 38400` — and from there auto-lock pins the new rate on the usual terms. That is the
+same result as typing `0` into Options by hand, which is what you had to do before.
+
+**The middle condition is what protects a rate you typed deliberately.** If the rate fits the wire and
+the *format* is wrong, every frame fails too — but the measurement agrees with your number, so your
+number is kept. The same goes for **MIDI**, whose 31250 is fixed by the specification rather than
+detected, and for **LIN**, whose break fields make framing errors on a perfectly healthy bus: neither
+is ever second-guessed this way.
 
 ---
 

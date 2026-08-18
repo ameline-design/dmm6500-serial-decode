@@ -5643,6 +5643,96 @@ local function test_modes()
 end
 test_modes()
 
+-- ============================================================================
+-- ABANDONING A LOCKED RATE THE WIRE CONTRADICTS.
+--
+-- Bench report 2026-08-18: the generator's rate was doubled under a 19200 lock, every frame failed,
+-- and repeated Capture presses kept showing an all-red hex page. Nothing recovered -- the operator
+-- had to type 0 into Options to get detection back. sdec.decode() now drops such a lock.
+--
+-- THE GATE THAT MATTERS IS THE THIRD ONE, and it has its own test below: a rate that FITS but a
+-- format that does not also fails every frame, and that lock must survive. Discarding a rate the
+-- operator typed, when the rate was right, would be a worse defect than the one being fixed.
+-- ============================================================================
+print('\nabandoning a locked rate that fits nothing')
+do
+  -- THE BENCH CASE, REPRODUCED AT THE INSTRUMENT'S OWN SAMPLE RATE. fs must be ~8.3 samples/bit at
+  -- the LOCKED rate, as the app picks it: at a cleaner 400 kS/s the same mismatch decodes with a
+  -- badfrac of 0.06 and no framing trouble at all, which is the silent-wrong case and NOT what was
+  -- reported. Getting this wrong made the first version of this test pass while nothing happened.
+  local FS = 160000
+  clearforce()
+
+  -- (1) THE WIRE AT TWICE THE LOCK -- asserted unconditionally, no `if relocked ~= nil` wrapper:
+  -- guarding the assertions on the behaviour they are testing is how a test passes vacuously.
+  local rd, ts, nc, nsmp = GEN({bytes = hb, baud = 38400, fs = FS})
+  analyse(rd, nsmp, FS)
+  sdec.smp, sdec.nread = rd, nsmp
+  sdec.force_baud = 19200
+  sdec.relocked, sdec.rate_note = nil, nil
+  sdec.decode()
+  check('a wire at 2x the locked rate makes the app abandon the lock',
+        sdec.relocked ~= nil and sdec.force_baud == nil,
+        string.format('relocked=%s force_baud=%s', tostring(sdec.relocked),
+                      tostring(sdec.force_baud)))
+  check('...it says so, naming the rate it dropped', has(tostring(sdec.relocked), '19200'),
+        tostring(sdec.relocked))
+  check('...and the note fits the cell',
+        sdec.ui_textw(tostring(sdec.relocked)) <= sdec.ui_note_px,
+        string.format('%d px of %d', sdec.ui_textw(tostring(sdec.relocked)), sdec.ui_note_px))
+  check('...the warning about the rate it just dropped does not outlive it',
+        sdec.rate_note == nil, tostring(sdec.rate_note))
+  check('...and it reaches the note row', has(table.concat(sdec.ui_notes(), ' | '), '19200'),
+        table.concat(sdec.ui_notes(), ' | '))
+
+  -- (2) THE SAFETY GATE. A rate that fits, with a format that does not: every frame fails, and the
+  -- lock MUST survive because the evidence is against the format, not the rate. rate_note nil is
+  -- what carries that distinction.
+  clearforce()
+  local rd2, ts2, nc2, nsmp2 = GEN({bytes = hb, baud = 9600, fs = 100000, nbits = 7,
+                                    par = 1, nstop = 1})
+  analyse(rd2, nsmp2, 100000)
+  sdec.smp, sdec.nread = rd2, nsmp2
+  sdec.force_baud, sdec.force_nbits = 9600, 8
+  sdec.force_par, sdec.force_nstop = sdec.PAR_NONE, 1
+  sdec.relocked, sdec.rate_note = nil, nil
+  sdec.decode()
+  check('a RIGHT rate with a wrong format keeps its lock',
+        sdec.force_baud == 9600 and sdec.relocked == nil,
+        string.format('force_baud=%s relocked=%s', tostring(sdec.force_baud),
+                      tostring(sdec.relocked)))
+
+  -- (3) TOO FEW FRAMES IS NOT EVIDENCE. Two bad bytes must not throw away a rate.
+  clearforce()
+  local rd3, ts3, nc3, nsmp3 = GEN({bytes = {65, 66}, baud = 38400, fs = FS})
+  analyse(rd3, nsmp3, FS)
+  sdec.smp, sdec.nread = rd3, nsmp3
+  sdec.force_baud = 19200
+  sdec.relocked = nil
+  sdec.decode()
+  check('a capture too short to judge keeps its lock',
+        sdec.force_baud == 19200, tostring(sdec.force_baud))
+
+  -- (4) A HEALTHY CAPTURE IS LEFT ALONE, which is the case that runs every day.
+  clearforce()
+  local rd4, ts4, nc4, nsmp4 = GEN({bytes = hb, baud = 9600, fs = 100000})
+  analyse(rd4, nsmp4, 100000)
+  sdec.smp, sdec.nread = rd4, nsmp4
+  sdec.force_baud = 9600
+  sdec.relocked = nil
+  sdec.decode()
+  check('a correct lock on a good capture is never touched',
+        sdec.force_baud == 9600 and sdec.relocked == nil,
+        string.format('force_baud=%s relocked=%s', tostring(sdec.force_baud),
+                      tostring(sdec.relocked)))
+
+  -- (5) IT IS PER-CAPTURE. Latched, it would accuse the next capture of a lock it never had.
+  sdec.relocked = 'stale'
+  sdec.clear_result()
+  check('clear_result evicts the note', sdec.relocked == nil, tostring(sdec.relocked))
+  clearforce()
+end
+
 print()
 print(string.format('%d passed, %d failed', pass, fail))
 os.exit(fail == 0 and 0 or 1)

@@ -1444,11 +1444,74 @@ end
 -- Runs the whole chain on an already-acquired capture. serial_core.acquire()
 -- leaves the levels, edges and idle level in place; this adds bit timing,
 -- format and bytes. Returns ok, reason.
+-- WHEN A LOCKED RATE IS OBVIOUSLY WRONG, ABANDON IT RATHER THAN DEFEND IT.
+--
+-- Doubling the generator's rate under a 19200 lock made every frame fail, and repeated Capture
+-- presses kept showing all-red: the app had no way back, and the operator had to type 0 into Options
+-- to re-enable detection. A rate that explains nothing is not worth keeping.
+-- 0.25, AND IT WAS 0.9 UNTIL THE NUMBER WAS MEASURED. "Every byte is in error" is what the panel
+-- LOOKS like -- a row is painted red if any of its 16 bytes failed, so a third of frames bad reddens
+-- essentially every row -- but the actual interior-bad fraction for the bench case (38400 on the wire
+-- under a 19200 lock at 8.3 samples/bit) is 0.37. A 0.9 gate would never have fired on the very
+-- report it was written for. Measured across mismatches: 0.34-0.50 for a wrong rate, against ~0.004
+-- for a healthy capture, so a quarter separates them with room on both sides.
+sdec.relock_badfrac   = 0.25     -- interior frames in error before the lock is doubted
+sdec.relock_minframes = 8        -- fewer frames than this and a bad fraction is not evidence
+
+-- Fraction of INTERIOR frames that failed, or nil when there are too few to judge. Interior, because
+-- head resync and a clipped tail fail on healthy captures too.
+function sdec.ua_badfrac(r)
+  if r == nil or (r.nf or 0) < 1 then return nil end
+  local ninter = r.nf - sdec.ua_edge_frames - 1
+  if ninter < 1 then return nil end
+  local nin = sdec.ua_bad_interior(r)
+  return nin / ninter
+end
+
 function sdec.decode()
   -- sdec.smp, not sdec.buf.readings: see sdec.acq_copy(). Every pass below would
   -- otherwise pay an IPC round trip per sample.
   if sdec.smp == nil then return false, 'nothing captured' end
-  return sdec.decode_from(sdec.smp, sdec.nread)
+  sdec.relocked = nil
+  local ok, why = sdec.decode_from(sdec.smp, sdec.nread)
+
+  -- THREE GATES, AND THE THIRD IS WHAT KEEPS A HAND-TYPED RATE SAFE. rate_note is set only when the
+  -- measured bit time DISAGREES with the locked one, so a correct rate with a wrong FORMAT -- which
+  -- also fails every frame -- leaves the lock alone. That case is real: a 5N1.5 line defeats
+  -- sig_bittime structurally, and is exactly when someone types the rate in by hand.
+  --
+  -- FRAME PATH ONLY. decode_from() is also the streaming prime, and a streaming mode REFUSES without
+  -- a locked rate -- unlocking inside one would strand a run that has already sized its buffer.
+  if sdec.force_baud == nil or sdec.rate_note == nil then return ok, why end
+
+  -- PLAIN UART ONLY, and both other protocols are excluded for their own reason. MIDI's 31250 is the
+  -- MIDI 1.0 SPECIFICATION rather than a detection (see options_apply), so a capture that does not
+  -- decode at it means the wire is not MIDI -- not that the rate is wrong. And a LIN capture is full
+  -- of framing errors from its break fields by design, which would trip the bad-fraction gate on a
+  -- perfectly good bus. Caught by test_serial's 'MIDI pins 31250', which this broke.
+  if sdec.proto ~= nil and sdec.proto ~= 'uart' then return ok, why end
+  local bf = sdec.ua_badfrac(sdec.res)
+  if bf == nil or bf < sdec.relock_badfrac then return ok, why end
+  if (sdec.res.nf or 0) < sdec.relock_minframes then return ok, why end
+
+  -- Unlock and decode the SAME samples again. No restore path: the lock explained nothing, so being
+  -- left unlocked is the useful outcome even if detection does no better -- the next Capture then
+  -- auto-detects instead of repeating this. autolock_try() re-locks afterwards if its own five gates
+  -- are satisfied, which is the same route as typing 0 into Options.
+  local was = sdec.force_baud
+  sdec.force_baud = nil
+  -- Or the warning about the rate we just abandoned outlives it: the no-lock branch of decode_from
+  -- does not clear this.
+  sdec.rate_note = nil
+  local ok2, why2 = sdec.decode_from(sdec.smp, sdec.nread)
+  if ok2 and sdec.baud ~= nil then
+    sdec.relocked = string.format('%g baud fit nothing -- unlocked, and this capture reads %.0f',
+                                  was, sdec.baud)
+  else
+    sdec.relocked = string.format('%g baud fit nothing -- unlocked, so the next capture detects',
+                                  was)
+  end
+  return ok2, why2
 end
 
 -- ============================================================================

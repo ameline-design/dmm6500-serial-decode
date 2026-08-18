@@ -923,6 +923,10 @@ function sdec.ui_notes()
   -- half was. That is the same class as the two above: a consequence of the app's own decision, with no
   -- other trace on the panel. Ranked with them, above the wire warnings.
   if sdec.strm_releveled ~= nil then add(tostring(sdec.strm_releveled)) end
+  -- THE APP THREW AWAY A SETTING THE OPERATOR MADE, which is the loudest thing it can do without
+  -- asking, and the BAUD cell and padlock both change with no other explanation. Ranked with the
+  -- others in this group for the same reason: it is a consequence of the app's own decision.
+  if sdec.relocked ~= nil then add(tostring(sdec.relocked)) end
 
   -- A streaming mode that cannot run says so BEFORE Capture is pressed, and here rather than in
   -- the status row: the remedy is a sentence, the status row shares its line with the log status,
