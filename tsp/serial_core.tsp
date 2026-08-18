@@ -157,9 +157,22 @@ sdec.maxmult  = 12    -- a gap longer than this many bit times is idle, not data
 
 -- Standard rates, including a few worth recognising by name: 31250 is MIDI and
 -- 250000 is DMX512, both of which show up on a bench.
+--
+-- 153600 IS HERE BECAUSE ITS ABSENCE COST A WHOLE BENCH SESSION. The ladder jumped 128000 -> 230400,
+-- so a 153.6 kBd line -- 8 x 19200, and the next doubling anyone sweeping upward reaches -- could not
+-- snap: the nearest listed rate is 20 % away. Nothing decoded wrongly, but autolock_try()'s FIRST
+-- gate is `snapped`, so the rate was never pinned; the recording modes are gated on a lock, so they
+-- stayed unarmed; and the only way in was to type the raw figure into Options by hand. Pinned by
+-- hand, an 8 kB recording at 153588 baud captured and decoded correctly -- so the rate was always
+-- usable and the ladder was the only thing refusing it.
+--
+-- No new ambiguity: 153600 sits 20 % from 128000 and 33 % from 230400, against a 2 % snaptol.
+--
+-- 307200 is the next doubling and is NOT here, because sdec.maxbaud is 250000 and the detector
+-- rejects anything above it -- adding the rate without raising that would list a rate it refuses.
 sdec.stdbaud = {110, 300, 600, 1200, 1800, 2400, 4800, 7200, 9600, 14400,
                 19200, 28800, 31250, 38400, 57600, 76800, 115200, 128000,
-                230400, 250000, 460800, 921600}
+                153600, 230400, 250000, 460800, 921600}
 
 -- ============================================================================
 -- Level detection

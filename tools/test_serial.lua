@@ -5733,6 +5733,51 @@ do
   clearforce()
 end
 
+-- ============================================================================
+-- 153.6 kBd MUST SNAP, OR AUTO-LOCK CAN NEVER PIN IT.
+--
+-- Bench, 2026-08-18: a 153.6 kBd line decoded correctly but the padlock never went green and the
+-- recording modes stayed unarmed, because the rate ladder jumped 128000 -> 230400 and
+-- autolock_try()'s first gate is `snapped`. The operator had to type the raw measured figure into
+-- Options. Being in the list is not the claim worth testing -- SNAPPING is, and so is the auto-lock
+-- that depends on it.
+-- ============================================================================
+print('\n153.6 kBd snaps, so auto-lock can pin it')
+do
+  clearforce()
+  local FS = 1000000
+  local hb2, hn2 = GEN_BYTES(string.rep('Lorem ipsum dolor sit amet. ', 12))
+  local rd, ts, nc, nsmp = GEN({bytes = hb2, baud = 153600, fs = FS})
+  analyse(rd, nsmp, FS)
+  local ok, why = sdec.decode_from(rd, nsmp)
+  check('a 153.6 kBd line decodes', ok and sdec.res ~= nil and sdec.res.nf > 0,
+        string.format('ok=%s nf=%s why=%s', tostring(ok),
+                      tostring(sdec.res and sdec.res.nf), tostring(why)))
+  check('...and SNAPS to 153600 rather than reporting a raw figure',
+        sdec.snapped == true and sdec.baud == 153600,
+        string.format('snapped=%s baud=%s', tostring(sdec.snapped), tostring(sdec.baud)))
+  check('...so the panel shows it without a question mark',
+        not has(sdec.baud_text(), '?'), sdec.baud_text())
+  -- THE GATE THAT WAS FAILING. autolock_try() has five; only `snapped` was in the way.
+  sdec.autolock, sdec.autolock_skip = true, nil
+  sdec.autolock_try()
+  check('...and auto-lock pins it, so the recording modes arm',
+        sdec.force_baud == 153600, tostring(sdec.force_baud))
+  check('...which is what makes an 8 kB recording available',
+        sdec.mode_why({needbaud = true, cap = 8192}) == nil,
+        tostring(sdec.mode_why({needbaud = true, cap = 8192})))
+  -- 307200 is deliberately absent: maxbaud refuses it, so listing it would advertise a refusal.
+  local has307 = false
+  local i
+  for i = 1, table.getn(sdec.stdbaud) do
+    if sdec.stdbaud[i] == 307200 then has307 = true end
+  end
+  check('307200 stays out of the ladder while maxbaud is 250000',
+        not has307 and sdec.maxbaud == 250000,
+        string.format('has307=%s maxbaud=%s', tostring(has307), tostring(sdec.maxbaud)))
+  clearforce()
+end
+
 print()
 print(string.format('%d passed, %d failed', pass, fail))
 os.exit(fail == 0 and 0 or 1)
