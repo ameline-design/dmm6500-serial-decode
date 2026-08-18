@@ -5766,6 +5766,32 @@ do
   check('...which is what makes an 8 kB recording available',
         sdec.mode_why({needbaud = true, cap = 8192}) == nil,
         tostring(sdec.mode_why({needbaud = true, cap = 8192})))
+  -- THE REFUSAL MUST NOT CONTRADICT THE HEADER BESIDE IT. At 192024 Bd the SA/BIT cell reads 5.2,
+  -- measured from a FRAME capture that gets nearly the 1 MS/s it asks for, while the note used to say
+  -- "no sample rate delivers 4 samples/bit". Both true, and together they read as a bug -- the owner
+  -- quoted the two cells against each other. A recording's burst acquisition loses acq_overhead per
+  -- sample, so it gets 3.4, and the note has to say whose figure it means.
+  do
+    local svb = sdec.force_baud
+    sdec.force_baud = 192024
+    local w = sdec.mode_why({needbaud = true, cap = 8192})
+    check('a rate too fast to record is refused', w ~= nil, tostring(w))
+    check('...naming the figure a RECORDING gets, not the frame one',
+          has(tostring(w), '3.4') and not has(tostring(w), '5.2'), tostring(w))
+    check('...and it still points at FRAME, which does work there',
+          has(tostring(w), 'FRAME'), tostring(w))
+    check('...and fits the note cell WITH its WARNING prefix',
+          sdec.ui_textw('WARNING: ' .. tostring(w)) <= sdec.ui_note_px,
+          string.format('%d px of %d', sdec.ui_textw('WARNING: ' .. tostring(w)),
+                        sdec.ui_note_px))
+    -- 153.6 kBd is on the other side of the same gate and must stay available.
+    sdec.force_baud = 153600
+    check('...while 153.6 kBd, which records fine, is not refused',
+          sdec.mode_why({needbaud = true, cap = 8192}) == nil,
+          tostring(sdec.mode_why({needbaud = true, cap = 8192})))
+    sdec.force_baud = svb
+  end
+
   -- 307200 is deliberately absent: maxbaud refuses it, so listing it would advertise a refusal.
   local has307 = false
   local i

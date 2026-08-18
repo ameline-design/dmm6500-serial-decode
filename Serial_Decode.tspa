@@ -3134,6 +3134,14 @@ function sdec.mode_why(m)
   end
   if m.needbaud and sdec.force_baud ~= nil and sdec.force_baud > 0 and
      sdec.fs_for_burst ~= nil and sdec.fs_for_burst(sdec.force_baud) == nil then
+    local dl = nil
+    if sdec.rates ~= nil and sdec.fs_delivered ~= nil then
+      dl = sdec.fs_delivered(sdec.rates[table.getn(sdec.rates)])
+    end
+    if dl ~= nil and dl > 0 then
+      return string.format('%d Bd: a recording gets %.1f samples/bit, under the %d floor -- '
+                           .. 'use FRAME', sdec.force_baud, dl / sdec.force_baud, sdec.minsabit)
+    end
     return string.format('%d Bd is too fast to stream -- no sample rate delivers %d ' ..
                          'samples/bit; use FRAME', sdec.force_baud, sdec.minsabit)
   end

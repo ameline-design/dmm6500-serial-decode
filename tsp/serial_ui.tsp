@@ -430,6 +430,20 @@ function sdec.mode_why(m)
   -- with the number rather than run at 2.6 samples/bit while claiming 4 -- see fs_for_burst().
   if m.needbaud and sdec.force_baud ~= nil and sdec.force_baud > 0 and
      sdec.fs_for_burst ~= nil and sdec.fs_for_burst(sdec.force_baud) == nil then
+    -- NAME THE RECORDING'S OWN FIGURE, or this note contradicts the header beside it. At 192024 Bd
+    -- the SA/BIT cell reads 5.2 -- true, and measured from a FRAME capture, which gets very nearly
+    -- the 1 MS/s it asks for -- while this said "no sample rate delivers 4 samples/bit". Both are
+    -- right and together they read as a bug: a recording's burst acquisition loses acq_overhead per
+    -- sample, so the same 1 MS/s request delivers 662 kS/s and only 3.4 samples/bit. Reported by the
+    -- owner, who quoted the two cells against each other.
+    local dl = nil
+    if sdec.rates ~= nil and sdec.fs_delivered ~= nil then
+      dl = sdec.fs_delivered(sdec.rates[table.getn(sdec.rates)])
+    end
+    if dl ~= nil and dl > 0 then
+      return string.format('%d Bd: a recording gets %.1f samples/bit, under the %d floor -- '
+                           .. 'use FRAME', sdec.force_baud, dl / sdec.force_baud, sdec.minsabit)
+    end
     return string.format('%d Bd is too fast to stream -- no sample rate delivers %d ' ..
                          'samples/bit; use FRAME', sdec.force_baud, sdec.minsabit)
   end
