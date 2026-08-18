@@ -24,6 +24,12 @@ for _, m in ipairs({'tsp/usb_log.tsp', 'tsp/serial_ui.tsp', 'tsp/serial_app.tsp'
   chunk()
 end
 
+-- The app module's own source, for assertions about which handlers consult a gate -- cheaper and
+-- more direct than constructing the state each press needs.
+local SRC_APP = (function()
+  local fh = io.open('tsp/serial_app.tsp'); local t = fh:read('*a'); fh:close(); return t
+end)()
+
 local pass, fail = 0, 0
 local function check(name, cond, detail)
   if cond then
@@ -1212,18 +1218,29 @@ do
   check('an absorbed Capture does not leave the busy latch set', sdec.busy == false,
         tostring(sdec.busy))
 
+  -- MODE IS NOT ABSORBED, and this is the assertion that matters most in this block. It WAS, and
+  -- bench_panel's Mode/rec-exit failed on hardware: the press in the second after a recording did
+  -- nothing, the grabs came back byte-identical, and the harness could draw no conclusion. Mode is
+  -- the way out of a mode; a dead escape hatch is worse than a mode change nobody asked for.
+  sdec.capmode = 'frame'
   sdec.strm_absorb_arm()
   CLK.t = 0
   sdec.mode_cycle()
-  check('an absorbed Mode does not advance the capture mode', sdec.capmode == 'frame',
-        tostring(sdec.capmode))
+  check('Mode still ACTS inside the absorb window -- it is the way out',
+        sdec.capmode ~= 'frame', tostring(sdec.capmode))
+  sdec.capmode = 'frame'
 
-  sdec.strm_absorb_arm()
-  CLK.t = 0
-  local sres = sdec.save()
-  check('an absorbed Save writes nothing', sdec.savedas == nil, tostring(sdec.savedas))
-  check('an absorbed Save took the absorb path, not "nothing to save"',
-        sres == false and has(sdec.strm_absorbed, 'Save'), tostring(sdec.strm_absorbed))
+  -- Save, NewLog and Options are not absorbed either -- each is one press to recover from, against a
+  -- control that looks broken. Asserted by the absence of the gate rather than by pressing them: this
+  -- block's fake result has no baud, and sdec.save() formats one.
+  check('Save is not wired to the absorb',
+        not has(SRC_APP, "press_absorbed('Save')"), 'save() consults the absorb')
+  check('NewLog is not wired to the absorb',
+        not has(SRC_APP, "press_absorbed('NewLog')"), 'log_new() consults the absorb')
+  check('Options is not wired to the absorb',
+        not has(SRC_APP, "press_absorbed('Options')"), 'options() consults the absorb')
+  check('Capture IS still wired to it, which is the whole point',
+        has(SRC_APP, "press_absorbed('Capture')"), 'capture() lost the absorb')
 
   -- (5) PAGING IS NOT ABSORBED, deliberately: it starts no work, loses no data, and is what an
   -- operator does next. Swallowing it would only teach that the buttons are unreliable.

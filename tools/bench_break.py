@@ -160,6 +160,21 @@ def judge(res, notes, hexs, accept, want_bytes=None):
         if exact:
             if 'exact' in accept:
                 return True, 'exact %d B' % nf
+            # A THIRD HONEST OUTCOME, ADDED 2026-08-18: the app can now NOTICE that a forced rate the
+            # wire contradicts explains nothing, drop it, and re-detect -- so a case written to demand
+            # 'flag or refuse' gets correct bytes instead. That is better than either, and it must not
+            # read as a failure. But it is only better BECAUSE IT SAYS SO: exact bytes with the wrong
+            # rate silently still in force would be the confident-and-wrong outcome this file exists to
+            # catch, so the note is the condition, not the byte match.
+            if 'relocked' in accept:
+                # EITHER OF THE TWO WAYS THE APP SAYS IT. sdec.decode() drops a contradicted lock and
+                # says "N baud fit nothing -- unlocked"; autoset() re-captures at the measured rate and
+                # says "probe fitted N Bd, wire is M". Both tell the operator their forced rate lost,
+                # which is the condition. Silence is not.
+                joined = ' | '.join(notes)
+                if ('fit nothing' in joined or 'unlocked' in joined or 'wire is' in joined):
+                    return True, 'exact %d B, forced rate overridden and said so' % nf
+                return False, ('EXACT with nothing said about the forced rate: %d B' % nf)
             return False, 'EXACT, but this case must not decode: %d B' % nf
         if 'flagged' in accept and warned:
             return True, 'wrong bytes but FLAGGED (%d err, %s)' % (
@@ -294,7 +309,7 @@ def cases(g, d, a):
     C.append(('force-2x-rate', '9600 wire, rate FORCED to 19200 (+100 %)',
               lambda: (arb(9600), force(baud='19200', nbits='nil', par='nil',
                                        nstop='nil', invert='nil')),
-              {'flagged', 'refuse'}, b'Hello, World!'))
+              {'flagged', 'refuse', 'relocked'}, b'Hello, World!'))
     C.append(('force-half-rate', '9600 wire, rate FORCED to 4800 (-50 %)',
               lambda: (arb(9600), force(baud='4800', nbits='nil', par='nil',
                                        nstop='nil', invert='nil')),
@@ -315,7 +330,7 @@ def cases(g, d, a):
                                  'silent-corruption edge',
               lambda: (arb(9600), force(baud='10176', nbits='nil', par='nil',
                                         nstop='nil', invert='nil')),
-              {'flagged', 'refuse'}, b'Hello, World!'))
+              {'flagged', 'refuse', 'relocked'}, b'Hello, World!'))
 
     # ---- THE CEILING CLIFF, and the alias that makes it dangerous ----------------------
     # Above 250 kBd the instrument cannot reach 4 samples/bit, so the decode must be refused.

@@ -5726,10 +5726,35 @@ do
         string.format('force_baud=%s relocked=%s', tostring(sdec.force_baud),
                       tostring(sdec.relocked)))
 
-  -- (5) IT IS PER-CAPTURE. Latched, it would accuse the next capture of a lock it never had.
-  sdec.relocked = 'stale'
+  -- (4b) THE RETRY HAS TO EARN IT. Raised by review: rate_note also fires on healthy captures (its
+  -- integer-multiple branch is usually the fit erring short), so a CORRECT hand-typed rate with a wrong
+  -- forced FORMAT could have its rate thrown away. Driven deterministically by making every decode look
+  -- equally bad -- detection then beats nothing, so the operator's rate must come back.
+  do
+    clearforce()
+    local rd5, ts5, nc5, nsmp5 = GEN({bytes = hb, baud = 38400, fs = FS})
+    analyse(rd5, nsmp5, FS)
+    sdec.smp, sdec.nread = rd5, nsmp5
+    sdec.force_baud = 19200
+    sdec.relocked = nil
+    local realbf = sdec.ua_badfrac
+    sdec.ua_badfrac = function() return 0.95 end     -- nothing improves on anything
+    sdec.decode()
+    sdec.ua_badfrac = realbf
+    check('a retry that is no better restores the operator rate',
+          sdec.force_baud == 19200, tostring(sdec.force_baud))
+    check('...and claims no relock, because none helped',
+          sdec.relocked == nil, tostring(sdec.relocked))
+  end
+
+  -- (5) IT IS PER-PRESS, NOT PER-ACQUIRE, and that distinction is the fix for a real failure.
+  -- clear_result() runs on every acquire(), including autoset()'s re-capture after a rate change -- so
+  -- evicting it there wiped the note between the relock and the end of the same press, leaving correct
+  -- bytes and nothing saying the operator's lock had been dropped. bench_break caught it.
+  sdec.relocked = 'kept'
   sdec.clear_result()
-  check('clear_result evicts the note', sdec.relocked == nil, tostring(sdec.relocked))
+  check('clear_result KEEPS the note, so it survives an internal re-capture',
+        sdec.relocked == 'kept', tostring(sdec.relocked))
   clearforce()
 end
 

@@ -292,11 +292,15 @@ There are two different times here and it is worth keeping them apart:
 - **Waiting** — how long you stand there before the buffer is full.
 
 Below about 19200 baud they are the same. Above it they are not, because the meter writes about
-**100 000 readings a second** into its memory however fast the digitizer is told to sample. The
-digitizer really does sample at the rate it is asked — that is what gives you the samples per bit — but
-the readings reach the buffer at that fixed ceiling, so gathering them takes longer than the stretch of
-line they represent. The samples are properly spaced and the record is complete; you just stand there
-longer than the amount of signal you get.
+**100 000 readings a second** into its memory however fast the digitizer is told to sample. The samples
+are properly spaced and the record is complete; gathering them just takes longer than the stretch of
+line they represent, so you stand there longer than the signal you get.
+
+That ceiling is a separate thing from the sample rate, and the two are easy to confuse. The **sample
+rate** decides how many samples land in each bit — a frame capture gets very nearly the rate it asks
+for, a recording's burst gets somewhat less, and that difference is what limits recording to 153600
+baud (above). The **100 000 readings a second** is not about fidelity at all: it is how fast readings
+reach memory, and it decides only how long you wait.
 
 | Locked rate | Signal you get | Waiting for the full 32 kB |
 |---|---|---|

@@ -1472,7 +1472,9 @@ function sdec.decode()
   -- sdec.smp, not sdec.buf.readings: see sdec.acq_copy(). Every pass below would
   -- otherwise pay an IPC round trip per sample.
   if sdec.smp == nil then return false, 'nothing captured' end
-  sdec.relocked = nil
+  -- relocked IS NOT CLEARED HERE. capture() clears it once per press; clearing it per DECODE undoes
+  -- that, because autoset() re-captures and decode() runs again -- erasing the note that says the
+  -- operator's lock was dropped, which is the whole justification for dropping it.
   local ok, why = sdec.decode_from(sdec.smp, sdec.nread)
 
   -- THREE GATES, AND THE THIRD IS WHAT KEEPS A HAND-TYPED RATE SAFE. rate_note is set only when the
@@ -1498,20 +1500,32 @@ function sdec.decode()
   -- left unlocked is the useful outcome even if detection does no better -- the next Capture then
   -- auto-detects instead of repeating this. autolock_try() re-locks afterwards if its own five gates
   -- are satisfied, which is the same route as typing 0 into Options.
-  local was = sdec.force_baud
+  -- THE RETRY HAS TO EARN IT, and this is the gate that keeps a CORRECT hand-typed rate safe.
+  -- rate_note is not proof the RATE is wrong: its integer-multiple branch fires on healthy captures
+  -- too (sig_bittime fits the greatest common period, so a ratio near 1/2 is usually the fit erring
+  -- short). So a right rate with a WRONG FORCED FORMAT -- errors everywhere, plus that artefact --
+  -- would otherwise have its rate thrown away and a detected one substituted. Raised by review.
+  --
+  -- So: unlock, re-decode, and keep the result only if it beats the threshold that triggered this.
+  -- Otherwise put the operator's rate back and decode at it again -- three decodes in the failing
+  -- case, which is a frame capture's cost and nothing on the streaming path.
+  local was, bf0 = sdec.force_baud, bf
   sdec.force_baud = nil
   -- Or the warning about the rate we just abandoned outlives it: the no-lock branch of decode_from
   -- does not clear this.
   sdec.rate_note = nil
   local ok2, why2 = sdec.decode_from(sdec.smp, sdec.nread)
-  if ok2 and sdec.baud ~= nil then
+  local bf2 = sdec.ua_badfrac(sdec.res)
+  if ok2 and bf2 ~= nil and bf2 < sdec.relock_badfrac and sdec.baud ~= nil then
     sdec.relocked = string.format('%g baud fit nothing -- unlocked, and this capture reads %.0f',
                                   was, sdec.baud)
-  else
-    sdec.relocked = string.format('%g baud fit nothing -- unlocked, so the next capture detects',
-                                  was)
+    return ok2, why2
   end
-  return ok2, why2
+  -- Detection did no better, so the lock was not the problem. Put it back; rate_note is re-published
+  -- by the decode below and still says the wire disagrees, which is the honest state.
+  sdec.force_baud = was
+  sdec.relocked = nil
+  return sdec.decode_from(sdec.smp, sdec.nread)
 end
 
 -- ============================================================================

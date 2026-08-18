@@ -83,9 +83,13 @@ function sdec.clear_result()
   -- recording changed its own measurement basis mid-run, so latching it would put that sentence over
   -- a later capture that did no such thing. proto_why is the same: a MIDI parser that raised on one
   -- capture must not accuse the next one, which may parse perfectly.
-  -- relocked joins them: it says THIS capture abandoned a locked rate, and latching it would put
-  -- that over a later capture that did not.
-  sdec.strm_releveled, sdec.proto_why, sdec.relocked = nil, nil, nil
+  sdec.strm_releveled, sdec.proto_why = nil, nil
+  -- relocked IS NOT EVICTED HERE, and it is the one exception in this block. clear_result() runs on
+  -- every acquire(), including the RE-CAPTURE autoset() does after a rate changes -- so evicting it
+  -- here wiped the note between the relock and the end of the same press, leaving correct bytes and
+  -- nothing saying the operator's locked rate had been dropped. bench_break caught it as "EXACT with
+  -- the forced rate silently still in force". It is cleared at the top of capture() instead: once per
+  -- PRESS, which is what it describes.
   sdec.probe_note = nil                 -- set by autoset() when it had to re-capture slower
   -- The previous capture's 20 000-entry sample table has just become unreachable. Collecting it
   -- here costs 8.3 ms measured, against a 1.6 s capture, and Lua memory pressure is on the
@@ -1246,6 +1250,9 @@ function sdec.capture()
   -- bytes stay up, and the note row says the press was taken as the Stop. EVERY press in the
   -- window, not just the first -- see sdec.press_absorbed().
   if sdec.press_absorbed('Capture') then return true end
+  -- ONCE PER PRESS, not per acquire(): see clear_result(). A relock inside this press must still be on
+  -- the note row when the press returns, however many internal re-captures happen after it.
+  sdec.relocked = nil
   -- BUSY ON ENTRY MEANS A PREVIOUS RUN DIED, not that one is in progress. A second press cannot
   -- arrive during a capture -- a front-panel press is not dispatched while a Lua script runs, and
   -- presses queue until the handler returns -- so the only way this flag is still set is that a
@@ -1665,9 +1672,6 @@ end
 -- Write a self-describing file to the USB key: the wire parameters, then the whole capture as a
 -- hex + ASCII dump, then every parsed protocol list. Returns ok.
 function sdec.save()
-  -- A queued press must not spend a filename: it consumes saveNNN, sending the deliberate save that
-  -- follows somewhere else.
-  if sdec.press_absorbed('Save') then return false end
   -- The panel only ever shows one page; this is how the rest of a capture leaves the instrument.
   sdec.savedas = nil
   if sdec.res == nil or sdec.res.nf == 0 then
@@ -1808,8 +1812,6 @@ end
 
 -- Start a new byte log, so one device's or one test's messages are separated from the next.
 function sdec.log_new()
-  -- Same as Save: a queued press renumbers the log the finished run wrote to.
-  if sdec.press_absorbed('NewLog') then return false end
   -- FORGETTING THE PATH IS THE WHOLE MECHANISM: frame_log() opens, appends and closes per
   -- capture, so there is no handle to close here, and the next capture calls ulog.next_free()
   -- again and lands on the next unused name.
@@ -2112,8 +2114,16 @@ end
 -- standing past its window would be resurrected by the next unrelated timer.cleartime(). Anything
 -- taking the timer must also disarm first -- record_run() does, as does every harness via bench_sync.
 --
--- NOT WIRED TO View OR THE PAGE BUTTONS: neither starts work nor loses data, and paging is what an
--- operator legitimately does next.
+-- CAPTURE ONLY, and the scope was narrowed by measurement rather than by taste. It was briefly wired
+-- to Mode, Save, NewLog and Options as well; bench_panel's Mode/rec-exit failed, because a Mode press
+-- in the second after a recording was swallowed and the panel did nothing at all -- the harness saw
+-- byte-identical grabs. Mode is the way OUT of a mode, and a dead escape hatch is worse than a mode
+-- change nobody asked for.
+--
+-- The test that survives is the harm: Capture starts a run of tens of seconds that cannot be
+-- interrupted and wipes the result on screen. Nothing else on the panel does that -- Save spends a
+-- filename, NewLog renumbers a log, Options opens a form, View and the page buttons only change what
+-- is displayed. All recoverable in one press, so none is worth a control that appears broken.
 function sdec.press_absorbed(what)
   if not sdec.strm_absorb_due() then
     -- Stale arm from a run whose window has passed, cleared on the first press after it.
@@ -2131,8 +2141,10 @@ function sdec.press_absorbed(what)
                                        .. 'ended -- press again to use it',
                                        tostring(what or 'the press'))
   else
-    sdec.strm_absorbed = string.format('%d presses queued during the recording were '
-                                       .. 'discarded -- it had already ended', n)
+    -- 'WITHIN A SECOND OF', not 'queued during the recording'. A 1 s window cannot tell a queued press
+    -- from a deliberate one made just after the result appeared, so it must not assert which it was.
+    sdec.strm_absorbed = string.format('%d presses within a second of the run ending were '
+                                       .. 'discarded -- press again to capture', n)
   end
   pcall(function() ulog.line(sdec.strm_absorbed) end)
   pcall(function() sdec.ui_refresh() end)
@@ -2212,9 +2224,8 @@ end
 --   RUNNING  -> abort. Stop the stream, flush, straight back to FRAME, one press.
 --   IDLE     -> advance to the next mode, flushing the one being left on the way out.
 function sdec.mode_cycle()
-  -- A queued press lands after the run has already reached FRAME, where advancing the mode arms a
-  -- different capture and clears the summary.
-  if sdec.press_absorbed('Mode') then return false end
+  -- NOT ABSORBED. See sdec.press_absorbed: Mode is the way OUT, and a dead Mode button in the second
+  -- after a run is worse than a mode change nobody wanted. bench_panel's Mode/rec-exit caught this.
   -- FRAME IS ONE PRESS AWAY FROM ANYWHERE, which is what makes the cycle an acceptable
   -- substitute for a dedicated Exit button on a bar with no room for one.
   if sdec.ck_running then
@@ -2382,8 +2393,6 @@ end
 
 -- Show the options screen, building it first if it does not exist yet.
 function sdec.options()
-  -- A queued press throws the form up over the result, to be dismissed before the bytes can be read.
-  if sdec.press_absorbed('Options') then return false end
   -- THROUGH pcall: this is a touch handler, and build_options() raises by design when the pool is
   -- exhausted. An uncaught raise here is an ERROR-severity event, which is a modal dialog over the
   -- app -- so the refusal is turned into a note instead, like every other refusal on this panel.
