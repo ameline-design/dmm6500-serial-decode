@@ -78,7 +78,14 @@ def nonce(prefix='bs'):
 # second is the serious one: since a caller might read a value that itself contains a plausible reply
 # line, an unescaped newline lets a VALUE forge a whole tagged answer. Only four characters need it, so
 # the wire stays readable.
-_ENC = ("local __bse = function(v) return (string.gsub(tostring(v), '[~|\13\10]', "
+# A POSITIVE CLASS -- everything NOT plainly safe is escaped -- rather than a list of the characters that
+# are dangerous. Naming the dangerous ones needs '\13' and '\10' inside a Lua pattern inside a Python
+# string, and that escaping silently did not match: a value containing a NEWLINE came back as two lines,
+# with the pipe correctly escaped and the newline not. A negated %w class has no control characters to
+# escape and cannot be got wrong the same way. Over-escaping is harmless -- it round-trips -- and the
+# common values (model names, versions, 'frame', 'true', numbers) contain nothing outside the safe set,
+# so the wire stays readable.
+_ENC = ("local __bse = function(v) return (string.gsub(tostring(v), '[^%w%.%-%+ :;,/=%(%)]', "
         "function(c) return string.format('~%02X', string.byte(c)) end)) end ")
 
 
