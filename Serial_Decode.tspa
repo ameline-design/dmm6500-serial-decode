@@ -3801,11 +3801,11 @@ function sdec.ui_build()
     {x = 526, w = 112, t = 'Save',       e = 'sdec.save()'},
     {x = 662, w = 112, t = 'Options',    e = 'sdec.options()'},
   }
-  local pbx, pbw = 645, 140
+  local pbw, lbw = 125, 140
   local pdef = {
-    {x = pbx, y = 58,  w = pbw, t = 'Page Up',   e = 'sdec.page_prev()',  pg = true},
-    {x = pbx, y = 160, w = pbw, t = 'Lock Rate', e = 'sdec.lock_toggle()'},
-    {x = pbx, y = 262, w = pbw, t = 'Page Dn',   e = 'sdec.page_next()',  pg = true},
+    {x = 785 - pbw, y = 58,  w = pbw, t = 'Page Up',   e = 'sdec.page_prev()',  pg = true},
+    {x = 785 - lbw, y = 160, w = lbw, t = 'Lock Rate', e = 'sdec.lock_toggle()'},
+    {x = 785 - pbw, y = 262, w = pbw, t = 'Page Dn',   e = 'sdec.page_next()',  pg = true},
   }
   local pk, npg = nil, 0
   sdec.ui_pgbtn = {}
@@ -3824,7 +3824,7 @@ function sdec.ui_build()
       end
     end
   end
-  sdec.ui_pgind = create(sdec.ui_scr, display.OBJ_TEXT, 794, 141, '',
+  sdec.ui_pgind = create(sdec.ui_scr, display.OBJ_TEXT, 770, 141, '',
                          sdec.ui_c_dim, small, display.JUST_RIGHT)
   sdec.ui_pgindtxt = nil
   sdec.ui_pgvis = nil

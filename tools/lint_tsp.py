@@ -29,6 +29,10 @@ INCOMPAT = [
     (r'[^<>=~!]&[^&]|\|[^|]|>>|<<', 'bitwise operator (not in 5.0.2)'),
     (r'\bmath\.log\s*\(\s*[^,)]+,', 'math.log with a base argument (5.0.2 takes one arg)'),
     (r'%b\b', 'string.format %b (not in 5.0.2)'),
+    # select() is a 5.1 vararg helper and raises "attempt to call global 'select'" here, at error
+    # severity -- which on the panel is a modal box. The lookbehind is what keeps sdec.fs_select()
+    # and any other name ending in select from matching.
+    (r'(?<![\w.])select\s*\(', "select() (Lua 5.1 vararg helper -- not in 5.0.2)"),
 ]
 
 

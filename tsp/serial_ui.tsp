@@ -1523,18 +1523,19 @@ function sdec.ui_build()
   -- All three hide themselves when they have nothing to do -- the page buttons when the capture
   -- fits one page, Lock Rate when there is no detected rate to pin -- which is why they are
   -- tracked separately from the bottom row. See sdec.ui_page_btns().
-  -- 140 px WIDE, NOT 185, AND THE RIGHT EDGE STAYS AT 785. The width these buttons do not use is
-  -- width the dump rows get: a TEXT row is 80 columns of a proportional font, needing 636 px against
-  -- the 592 it had, so the right-hand characters were drawn under Page Up -- and the page arithmetic
-  -- still counted them, so paging stepped over bytes that were never visible.
+  -- NARROWER THAN 185, RIGHT EDGES ALL AT 785. The width these buttons do not use is width the dump
+  -- rows get: a TEXT row is 80 columns of a proportional font, needing 636 px against the 592 it had,
+  -- so the right-hand characters were drawn under Page Up -- and the page arithmetic still counted
+  -- them, so paging stepped over bytes that were never visible.
   --
-  -- 140 AND NOT NARROWER: 'Lock Rate' measures 134 px, and test_serial's label-fit check is what
-  -- caught 130. That leaves 645 for the dump, which clears the 636 the widest row needs.
-  local pbx, pbw = 645, 140
+  -- THE PAGE BUTTONS GO NARROWER THAN Lock Rate BECAUSE THEIR LABELS ARE SHORTER. 'Lock Rate'
+  -- measures 134 px and cannot follow them down; test_serial's label-fit check is what caught 130.
+  -- Right edges are what line up, since these sit against the panel edge.
+  local pbw, lbw = 125, 140
   local pdef = {
-    {x = pbx, y = 58,  w = pbw, t = 'Page Up',   e = 'sdec.page_prev()',  pg = true},
-    {x = pbx, y = 160, w = pbw, t = 'Lock Rate', e = 'sdec.lock_toggle()'},
-    {x = pbx, y = 262, w = pbw, t = 'Page Dn',   e = 'sdec.page_next()',  pg = true},
+    {x = 785 - pbw, y = 58,  w = pbw, t = 'Page Up',   e = 'sdec.page_prev()',  pg = true},
+    {x = 785 - lbw, y = 160, w = lbw, t = 'Lock Rate', e = 'sdec.lock_toggle()'},
+    {x = 785 - pbw, y = 262, w = pbw, t = 'Page Dn',   e = 'sdec.page_next()',  pg = true},
   }
   local pk, npg = nil, 0
   sdec.ui_pgbtn = {}
@@ -1560,7 +1561,7 @@ function sdec.ui_build()
   --
   -- JUST_RIGHT against the panel edge, so the count does not shuffle sideways as it grows from
   -- 'page 1 of 9' to 'page 27 of 35'. x is therefore the RIGHT edge, not the left.
-  sdec.ui_pgind = create(sdec.ui_scr, display.OBJ_TEXT, 794, 141, '',
+  sdec.ui_pgind = create(sdec.ui_scr, display.OBJ_TEXT, 770, 141, '',
                          sdec.ui_c_dim, small, display.JUST_RIGHT)
   sdec.ui_pgindtxt = nil
   -- THESE TWO ARE VISIBILITY SHADOW CACHES, and nil means "unknown, so write it on the next
