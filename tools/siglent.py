@@ -240,7 +240,7 @@ class SDG:
         # the POINT COUNT rather than with anything else, which is what the two observations show -- a
         # 1942-point arb answers instantly, a 3 413 625-point one needs more than 6 s. Inference, not a
         # measurement: nothing here proves the copy exists, only that selection cost grows with size.
-        got = self.query(f'C{ch}:ARWV?', timeout=30) or ''
+        got = self.query(f'C{ch}:ARWV?', timeout=120) or ''
         want = name[:-4] if name.endswith('.bin') else name
         # NO FOLDER HANDLING HERE, DELIBERATELY: a waveform in a subdirectory CANNOT BE SELECTED AT ALL.
         # Measured 2026-08-19 -- 34 vectors written as 'SERIAL\name' were listed by STL? USER and then

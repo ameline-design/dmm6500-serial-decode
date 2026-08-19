@@ -280,11 +280,24 @@ SDG_UPLOAD_SAFE_BYTES = 65536      # below this, uploads have never wedged it
 #     resident and the swap interval would have been a constant ~629 payload bytes at every baud rate.
 #     It was arithmetically pretty and the premise was wrong by a factor of a thousand.)
 #
-#   * SELECTION COST IS THE FLASH -> DDR COPY over that serial link, which is why it scales with point
-#     count and why ARWV? can be slow to answer. Measured: 6.51 MB needed 6-10 s, so 0.65-1.08 MB/s or
-#     roughly 5-9 Mbit/s. At the low end the largest arb the instrument accepts, 16 MB, would take ~25 s
-#     -- which is what makes select_arb's 30 s readback timeout adequate for anything, rather than a
-#     number picked to clear the one case that failed.
+#   * SELECTION COST IS THE FLASH -> DDR COPY over that serial link, and it is the generator's one weak
+#     link. TIMED CLEANLY: 3884 B selects in 0.51 s, 6 827 250 B in 22.43 s -- a fit of 0.5 s fixed plus
+#     311 kB/s marginal, about 2.5 Mbit/s. The largest arb the instrument accepts, 16 MB, is therefore
+#     ~54 s. (An earlier figure here said 0.65-1.08 MB/s; it was bracketed from when a query happened to
+#     be answered rather than from the copy finishing, and it made select_arb's readback timeout too
+#     short for the very case it claimed to cover. 120 s now.)
+#
+#   * CHANGING THE SAMPLE RATE IS FREE, which is the useful corollary: srate is a few FPGA register
+#     writes, measured at 0.01 s of actual work against 22 s to change waveform. So a rate sweep should
+#     SELECT ONCE AND VARY srate, never re-select per point. That is exactly what the vector naming
+#     already assumes -- no baud rate in a name, because one waveform serves every rate -- so the naming
+#     decision and the cheap path coincide.
+#
+#   * AND QUERIES STALL WHILE A COPY IS IN FLIGHT. This is the mechanism behind every timing anomaly seen
+#     today. The SCPI service does not answer during the transfer: C1:SRATE? took 21.72 s immediately
+#     after a 6.51 MB select and then 0.00 s twice running. So a query that seems to hang after a large
+#     select is waiting, not broken -- and a check that reads "no answer within N seconds" as a wedge will
+#     cry wolf. It did, three times.
 #
 #   * THE CONCLUSION IS INSENSITIVE TO THE READING ANYWAY, which is the useful part: at the SMALLEST
 #     interpretation (16 MB a chip) the largest possible arb is still only half of one, so a waveform is
