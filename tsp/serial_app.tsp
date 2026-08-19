@@ -79,6 +79,7 @@ function sdec.clear_result()
   -- survive until the NEXT capture, then go -- a latched one puts 'auto-locked 9600' or 'left
   -- 32 kB mode' on the panel above bytes from a later capture that did no such thing.
   sdec.mode_exited, sdec.lognote, sdec.autolocknote = nil, nil, nil
+  sdec.mode_exitbad = false
   -- strm_releveled IS ONE OF THEM, and it has to be evicted here for the same reason: it says THIS
   -- recording changed its own measurement basis mid-run, so latching it would put that sentence over
   -- a later capture that did no such thing. proto_why is the same: a MIDI parser that raised on one
@@ -828,7 +829,7 @@ function sdec.decode_step()
   -- over a run that had just failed. lasterr holds the sentence both failure branches above wrote.
   local dok = (tot ~= nil and tot.stopped ~= 'write failed' and tot.stopped ~= 'sink')
   pcall(function()
-    sdec.mode_exit(sdec.strm_exit_why(sdec.ck_endwhy, dok, sdec.lasterr))
+    sdec.mode_exit(sdec.strm_exit_why(sdec.ck_endwhy, dok, sdec.lasterr), not dok)
   end)
   pcall(function() sdec.ui_refresh() end)
   -- dok, NOT true. This is capture()'s return value (serial_app.tsp:1303), and returning true on
@@ -1296,7 +1297,7 @@ function sdec.capture()
       sdec.lasterr = tostring(perr or swhy or 'recording failed')
       sdec.ui_status = 'error'
       pcall(function() ulog.line(sdec.lasterr) end)
-      pcall(function() sdec.mode_exit('recording failed') end)
+      pcall(function() sdec.mode_exit('recording failed', true) end)
     end
     pcall(function() sdec.ui_refresh() end)
     return sok
@@ -1320,7 +1321,7 @@ function sdec.capture()
       sdec.lasterr = tostring(perr or swhy or 'could not start recording')
       sdec.ui_status = 'refused'
       pcall(function() ulog.line(sdec.lasterr) end)
-      pcall(function() sdec.mode_exit(sdec.lasterr) end)
+      pcall(function() sdec.mode_exit(sdec.lasterr, true) end)
     else
       sdec.ui_status = 'recording -- press Capture to stop'
     end
@@ -1383,7 +1384,7 @@ function sdec.capture()
     -- failing thing again and Mode is the only way out. The verdict and the message differ per
     -- outcome; the resting state does not.
     pcall(function()
-      sdec.mode_exit(sdec.strm_exit_why(sdec.ck_endwhy, sok, sdec.lasterr))
+      sdec.mode_exit(sdec.strm_exit_why(sdec.ck_endwhy, sok, sdec.lasterr), not sok)
     end)
     pcall(function() sdec.ui_refresh() end)
     -- ARMED LAST, after mode_exit()'s USB flush and the repaint: the window is 1 s from the moment it
@@ -2177,7 +2178,14 @@ end
 
 -- Leave the current capture mode, flushing its files, and return to FRAME. `why` goes on the note
 -- row. Returns the mode that was left, so a caller can say what happened.
-function sdec.mode_exit(why)
+-- `bad` says the run ENDED BADLY, and it is passed rather than inferred. The note row shows this
+-- function's message ONLY when it is set: a recording that finished normally leaves the note row
+-- EMPTY, because the status row's summary already names the bytes, the errors and the file.
+--
+-- NOT SNIFFED OUT OF `why`. Every caller that means "this failed" knows it -- strm_exit_why() is
+-- given the same ok flag -- and matching on words like 'failed' is how a protected failure gets
+-- narrowed to a boolean nobody checks, which is this app's dominant defect class.
+function sdec.mode_exit(why, bad)
   -- ONE FUNCTION FOR EVERY WAY OUT -- the Mode button, an idle line, a completed run, End App --
   -- so all of them flush the same way and land in the same place. A mode that can be left by two
   -- paths with different cleanup is a mode that eventually loses the tail of a file.
@@ -2242,14 +2250,15 @@ function sdec.mode_exit(why)
     -- above -- which is the second reason not to rely on the unwind path clearing it.
     sdec.ck_running, sdec.ck_stop = false, false
   end
-  sdec.mode_exited = nil
+  sdec.mode_exited, sdec.mode_exitbad = nil, false
   if md.id ~= 'frame' then
     -- Said on the note line, because a run ending is what the operator needs told -- and now that
     -- the mode does NOT change, the note must not claim it did. It names the mode still selected,
     -- so the next Capture press is not a surprise.
-    sdec.mode_exited = string.format('%s run ended (%s); files flushed -- still in %s, '
-                                     .. 'press Mode to change',
-                                     md.name, tostring(why or 'exited'), md.name)
+    -- ALWAYS SET, AND ALWAYS LOGGED -- the debug trace wants every exit, and tools/test_cancel.lua
+    -- reads this string for the fault reason. Only the NOTE ROW is conditional (see ui_notes).
+    sdec.mode_exited = string.format('%s run ended (%s)', md.name, tostring(why or 'exited'))
+    sdec.mode_exitbad = (bad == true)
     pcall(function() ulog.line(sdec.mode_exited) end)
   end
   return was

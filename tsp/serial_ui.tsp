@@ -154,13 +154,32 @@ sdec.ui_rule_x1  = 792
 -- The note is a labelled cell in the same table, spanning the full width under the
 -- field row, rather than a loose line floating beneath it.
 sdec.ui_note_lab_x = 8
--- The MODE cell is this row's left cell, and the row's vertical rule sits at
--- ui_note_val_x - 9 = 83, which the longest mode name clears by 12 px.
+-- THE TRIGGER SOURCE, in the note row's left cell -- where the CAPTURE MODE used to sit. The mode
+-- moved to the title bar, and two indicators for one setting is one too many; what this row had no
+-- room for was the thing a capture actually WAITS for.
+--
+-- LABELS ARE THE OPTION FIELD'S OWN, letter for letter, and build_options() creates that field FROM
+-- this table -- so the cell cannot paraphrase the control that sets it, which is the defect this app
+-- keeps finding. Keys are sdec.trigmode's values (see ui_opt_trig_v).
+--
+-- COLOUR IS THE GLANCE CHANNEL, as it was for the mode: green is the ordinary case (wait for the
+-- line's own start bit), yellow is "do not wait for anything", cyan is "waiting for a finger".
+sdec.ui_trigsrc = {
+  edge  = {name = 'Start bit',   c = 0x40FF40},
+  free  = {name = 'Free run',    c = 0xFFFF00},
+  front = {name = 'Trigger key', c = 0x00FFFF},
+}
+-- The TRIGGER SOURCE cell is this row's left cell, and the row's vertical rule sits at
+-- ui_note_val_x - 9 = 103, which the longest label clears by 8 px.
+--
+-- 112, NOT 92. The cell held mode names -- 'FRAME' at 62 px was the widest -- and now holds
+-- 'Trigger key' at 84, which did not fit the 75 px it had. The 20 px come off the note beside it,
+-- which is ellipsised anyway; ui_note_px is DERIVED from this so the two cannot disagree.
 --
 -- WARNING: the panel-edge check in tools/render_png.py catches only a string that overruns 798,
 -- not one that overruns an INTERIOR rule -- so a cell bounded by its neighbour has to be
--- measured against that neighbour by hand.
-sdec.ui_note_val_x = 92
+-- measured against that neighbour by hand. test_serial measures every label in ui_trigsrc.
+sdec.ui_note_val_x = 112
 -- THE PAGE COUNTER SHARES THE NOTE ROW, ending 4 px inside the table's right rule at ui_rule_x1. It
 -- sat in the right margin between the page buttons until those shrank to 'Up' and 'Dn'; the margin
 -- is buttons now and nothing else.
@@ -231,10 +250,14 @@ sdec.ui_prog_ly   = sdec.ui_prog_y + 7
 -- thickness, expected value from 1 to 10", which raises a modal dialog over the panel. It leaves
 -- 1 px of dark inside the frame above and below the bar, which reads as a trough.
 sdec.ui_prog_lw = 10
--- THE EXTERNAL TRIGGER GETS ITS OWN CELL, so that what the app is writing and what it is waiting
--- for are not two unrelated facts in one box. The log cell is 468..667, the trigger's 677..792.
-sdec.ui_trig_div = 668
-sdec.ui_trig_x   = 677
+-- THE REAR BNC GETS ITS OWN CELL, so that what the app is writing and what its back panel is doing
+-- are not two unrelated facts in one box. The log cell is 468..655, the rear BNC's 665..792.
+--
+-- 656, NOT 668. The cell said 'EXT TRIG' at 81 px; it now names the DIRECTION, and 'EXT TRIG OUT' is
+-- 123 px against the 115 it had. 12 px come off the log cell, which keeps 188 -- enough for
+-- 'log: bytes007  999999 B' at 180, and its name already trims with a '~' beyond that.
+sdec.ui_trig_div = 656
+sdec.ui_trig_x   = 665
 -- A BUTTON IS ~58 PX TALL (measured from docs/panel-ref-chrome.png). The content area is only
 -- 480 - 49 = 431 px, so a button needs y + 58 <= 431, i.e. y <= 373.
 --
@@ -656,6 +679,12 @@ sdec.ui_c_pgword = 0xA8A8A8    -- 'page' and 'of': 66 %
 -- already spent and leaves the denominator to be guessed.
 sdec.ui_c_prog     = 0x00FFFF
 sdec.ui_c_prog_box = 0xCCCCCC
+-- THE REAR BNC's THREE STATES. Its cell is EMPTY when the connector is off -- a marker that is always
+-- present is not a marker, and the old cell read a permanent amber 'EXT TRIG' while Options said the
+-- rear BNC was off, which is the panel asserting hardware that is not in use.
+sdec.ui_c_extin  = 0x40FF40   -- green: an input, armed
+sdec.ui_c_extout = 0xFFC000   -- amber: an output, pulsing a credit per capture
+sdec.ui_c_extio  = 0x00FFFF   -- cyan:  both directions live
 
 -- ---------- handles ----------
 -- Declared, not assigned: see the note in serial_core.tsp. Opening the installed
@@ -1092,47 +1121,31 @@ function sdec.ui_notes()
     add('external trigger is ticked but IGNORED -- Free run means do not wait for anything')
   end
 
-  -- SAY WHAT BOUNDS THE RECORDING, in the units the operator is deciding in: the byte ceiling,
-  -- and how long that works out to at this rate.
+  -- NO RECORDING FORECAST ON THIS ROW. It used to add 'bounded at 8192 bytes -- ~2 s of this line,
+  -- and nothing stops it early', and it was wrong in two ways at once:
   --
-  -- NOT "bytes are lost". The press-driven path arms ONE hardware acquisition and decodes it
-  -- afterwards, so there are no windows to lose anything between. Measured at 9600 baud -- double
-  -- strm_maxbaud -- a recording comes back 1925 of 1925 bytes contiguous against a non-repeating
-  -- payload, byte rate matching the wire to 0.5 %. Warning about loss here would send the operator
-  -- to wire up flow control they do not need, and cast doubt on a complete capture.
-  local md2 = sdec.mode_cur()
-  if md2.needbaud and sdec.force_baud ~= nil and sdec.force_baud > 0 then
-    local bps = sdec.force_baud / 10          -- 10 bit times a byte, near enough for a note
-    if md2.cap ~= nil then
-      -- AND THAT NOTHING CAN CUT IT SHORT, which is the other half of what an operator needs BEFORE
-      -- pressing: neither a button nor the TRIGGER key can (measured 2026-08-18 -- see the control
-      -- cell in ui_refresh), and the decode costs more than the acquisition, so the hold outlasts the
-      -- figure here. 'EARLY' is the precise word: 'bounded' already says it ends by itself.
-      --
-      -- KEPT SHORT BECAUSE THE NOTE TRIMMER IS REAL. A fuller sentence -- '...and nothing on the panel
-      -- can stop it once started' -- rendered as '...once st...', so the warning was the part that got
-      -- cut. ~74 characters is the budget once '(+N more)' takes its share.
-      add(string.format('bounded at %d bytes -- ~%.0f s of this line, and nothing stops it early',
-                        md2.cap, md2.cap / bps))
-    else
-      -- Unlimited by design, but the capture buffer is finite, so say how long that is.
-      local nsmp = sdec.ck_bufmax or 2800000
-      local fs = nil
-      pcall(function() fs = sdec.fs_for_burst(sdec.force_baud) end)
-      if fs ~= nil and fs > 0 then
-        add(string.format('records until Capture stops it, or %.0f s when the buffer fills',
-                          nsmp / fs))
-      else
-        add('records until Capture stops it, or until the capture buffer fills')
-      end
-    end
-  end
+  --   * IT STAYED AFTER THE RUN. ui_notes has no idea whether the recording it is forecasting has
+  --     already happened, so a finished 8 kB capture sat under a yellow warning about a press the
+  --     operator had made a minute ago -- distracting, and above the notes that described the result.
+  --   * '~2 s' WAS THE LINE'S TIME, NOT THE OPERATION'S. It is cap/bps: how long the DEVICE takes to
+  --     send that many bytes. The meter then decodes at ~300 byte/s whatever the baud rate, so 8 kB is
+  --     ~27 s of decoding after the acquisition -- an order of magnitude out, in the reassuring
+  --     direction, which is the worst direction for a figure nothing can interrupt.
+  --
+  -- THE BOTTOM ROW CARRIES IT INSTEAD, where it is a property of the mode and not of a run: see
+  -- ck_status's 'ready' string, which names the ceiling AND that nothing stops it once started. That
+  -- string appears only while the mode is armed and idle, so it cannot outlive its own subject.
 
   -- A mode that changed ITSELF has to say so. Both of these are consequences of a button press
   -- whose effect is otherwise invisible: mode_exit() moves the MODE cell back to a grey FRAME, and
   -- log_new() changes a filename that only appears on the NEXT capture. Ranked above the wire
   -- warnings because they answer "what did that press just do?".
-  if sdec.mode_exited ~= nil then add(tostring(sdec.mode_exited)) end
+  -- ONLY WHEN THE RUN ENDED BADLY. A recording that finished normally used to leave a yellow note
+  -- describing its own exit, which sat over the notes that described the RESULT and outlived the press
+  -- that caused it. The status row's summary -- bytes, errors, window count, filename -- is the
+  -- completion message, and it is enough. A FAILED run still says so here, because the summary cannot
+  -- carry a reason.
+  if sdec.mode_exited ~= nil and sdec.mode_exitbad then add(tostring(sdec.mode_exited)) end
   if sdec.lognote ~= nil then add(tostring(sdec.lognote)) end
   -- A RECORDING THAT CHANGED ITS OWN MEASUREMENT BASIS MID-RUN SAYS SO. strm_relevel() only fires when
   -- the watchdog was about to end a run on levels REUSED from an earlier capture and this capture's own
@@ -1379,8 +1392,10 @@ function sdec.ui_fit(s, maxpx)
   return string.sub(s, 1, i - 1) .. '...'
 end
 
--- The note cell runs from ui_note_val_x to the table's right rule at ui_rule_x1.
-sdec.ui_note_px = 700
+-- The note cell runs from ui_note_val_x to the table's right rule at ui_rule_x1 -- DERIVED, because
+-- it was the literal 700 and the trigger-source cell beside it just took 20 px. A literal here would
+-- have let the note draw through its own left rule.
+sdec.ui_note_px = sdec.ui_rule_x1 - sdec.ui_note_val_x
 
 -- 'page N of M' for the note row, or '' when there is nothing worth saying: one page, or the
 -- operator has not paged yet.
@@ -1469,11 +1484,11 @@ function sdec.ui_invalidate()
   -- because it shadows a whole ARRAY with one value, not one object with a second cache.
   sdec.ui_vrc = nil
   sdec.ui_sbc = nil
-  -- ui_fvalc, ui_modec and ui_logc must be here too. Omitting any one defeats the colour channel
+  -- ui_fvalc, ui_trigsrcc and ui_logc must be here too. Omitting any one defeats the colour channel
   -- it shadows: a locked wire shows its values in the plain column colour and the MODE cell
   -- reverts to grey, silently undoing the lock indicator -- whose whole point is that a forced
   -- value must not look measured.
-  sdec.ui_fvalc, sdec.ui_modec, sdec.ui_logc = nil, nil, nil
+  sdec.ui_fvalc, sdec.ui_trigsrcc, sdec.ui_logc = nil, nil, nil
   sdec.ui_trigc = nil
   sdec.ui_lockc = nil
   -- The progress bar's two: the percentage last written, and which of its three colour states the
@@ -1734,15 +1749,18 @@ function sdec.ui_build()
   -- No setevent on these either: EVENT_PRESS on an OBJ_RECT is refused (1717) at severity 2, which
   -- raises an error dialog over the panel.
 
-  -- THE MODE CELL: the capture mode, top-left inside the header table's box grid, in a per-mode
-  -- colour -- the at-a-glance channel, since colour is read faster than any word. One text object,
-  -- retexted and recoloured per refresh, so it costs no extra object.
+  -- THE TRIGGER-SOURCE CELL: top-left inside the header table's box grid, in a per-source colour --
+  -- the at-a-glance channel, since colour is read faster than any word. One text object, retexted and
+  -- recoloured per refresh, so it costs no extra object.
+  --
+  -- IT HELD THE CAPTURE MODE until the mode moved to the title bar. Two indicators for one setting is
+  -- one too many, and the trigger source had none.
   --
   -- Stored in ui_flab so ui_destroy deletes it explicitly rather than leaving it to the firmware's
   -- parent cascade, which this app never relies on.
-  sdec.ui_modelab = create(sdec.ui_scr, display.OBJ_TEXT, sdec.ui_note_lab_x,
-                           sdec.ui_note_y, 'FRAME', sdec.ui_c_dim, small, left)
-  sdec.ui_flab[nf + 1] = sdec.ui_modelab
+  sdec.ui_trigsrc_t = create(sdec.ui_scr, display.OBJ_TEXT, sdec.ui_note_lab_x,
+                             sdec.ui_note_y, sdec.ui_trigsrc.edge.name, sdec.ui_c_dim, small, left)
+  sdec.ui_flab[nf + 1] = sdec.ui_trigsrc_t
   sdec.ui_note = create(sdec.ui_scr, display.OBJ_TEXT, sdec.ui_note_val_x,
                         sdec.ui_note_y, '', sdec.ui_c_warn, small, left)
 
@@ -2058,11 +2076,19 @@ function sdec.ui_refresh()
 
   -- The MODE cell, recoloured as well as retexted: the colour is what makes the mode
   -- readable without reading. Only written when it changes, like every other cell.
-  local mdc = sdec.mode_cur()
-  set(sdec.ui_modelab, mdc.name)
-  if sdec.ui_modec ~= mdc.c then
-    sdec.ui_color(sdec.ui_modelab, mdc.c)
-    sdec.ui_modec = mdc.c
+  -- THE TRIGGER SOURCE, where the capture mode used to be. What a capture WAITS for is the fact this
+  -- row had no room for, and it is the one that distinguishes a capture that is hung from one waiting
+  -- for an edge that is not coming. Recoloured as well as retexted: the colour is what makes it
+  -- readable without reading, exactly as it was for the mode.
+  --
+  -- FALLS BACK TO 'Start bit' RATHER THAN GOING BLANK on an unrecognised trigmode, because this cell
+  -- now carries the front-panel key's only indicator -- see the rear-BNC cell, which is empty when the
+  -- connector is off and so cannot carry it.
+  local tsrc = sdec.ui_trigsrc[sdec.trigmode or 'edge'] or sdec.ui_trigsrc.edge
+  set(sdec.ui_trigsrc_t, tsrc.name)
+  if sdec.ui_trigsrcc ~= tsrc.c then
+    sdec.ui_color(sdec.ui_trigsrc_t, tsrc.c)
+    sdec.ui_trigsrcc = tsrc.c
   end
   -- THE TITLE BAR NAMES THE MODE TOO, in the largest type on the panel. Retexted only when it
   -- changes, like every other cell -- and the mode changes on a button press, so that is at most once
@@ -2240,23 +2266,32 @@ function sdec.ui_refresh()
   -- run that ends leaves ck_running false, so ck_pct returns nil and both rects go. Without it the
   -- bar would stay at its last percentage under a row that has moved on to naming the file.
   sdec.ui_progbar_set(sdec.ck_pct())
-  -- THE TRIGGER SOURCE, so that a capture which appears to hang is distinguishable from one
-  -- waiting for an edge that is not coming.
+  -- THE REAR BNC, AND WHICH WAY IT IS POINTING -- and EMPTY when it is off.
   --
-  -- EXCEPTION REPORTING: the default (start-bit edge, no external) says NOTHING, because a marker
-  -- that is always present is not a marker. Anything else texts this cell AND turns it amber --
-  -- one setcolor on an object that already exists, so the glanceable channel costs nothing.
+  -- IT USED TO READ A PERMANENT AMBER 'EXT TRIG' while Options said Rear BNC = Off, which is the panel
+  -- asserting hardware that is not in use. Its own comment claimed the default said nothing; the code
+  -- had never done that. A marker that is always present is not a marker.
   --
-  -- GREEN = armed and in force. AMBER = off, or on but IGNORED. The two are distinguished because
-  -- "ticked but doing nothing" is the case that misleads: free run means DO NOT WAIT, so an
-  -- external trigger cannot apply while the checkbox on the form still shows ticked.
-  local trigtxt, trigcol = 'EXT TRIG', sdec.ui_c_warn
-  if sdec.trigext and sdec.trigmode ~= 'free' then
-    trigcol = sdec.ui_c_locked
-  elseif sdec.trigext then
-    trigtxt = 'EXT ignored'
+  -- THE DIRECTION IS THE FACT. Rear BNC is two independent booleans -- trigext (an input: wait for an
+  -- edge) and fc_out (an output: pulse a credit per capture) -- and 'EXT TRIG' named neither, so the
+  -- cell could not distinguish a meter waiting for a signal from one driving another device.
+  --
+  --   trigext          EXT TRIG IN    green
+  --   fc_out           EXT TRIG OUT   amber
+  --   both             EXT TRIG I/O   cyan
+  --   neither          (empty)
+  --
+  -- THE '?' IS THE APP'S OWN UNCERTAINTY MARK, the one the BAUD cell uses for an unlocked rate. A rear
+  -- INPUT is configured-but-not-in-force under Free run, because free run means DO NOT WAIT -- the case
+  -- that misleads, since the form still shows it ticked. The colour stays the mode's (the three are
+  -- spoken for) and ui_notes carries the sentence.
+  local trigtxt, trigcol = '', sdec.ui_c_dim
+  local tin, tout = (sdec.trigext == true), (sdec.fc_out == true)
+  if tin and tout then trigtxt, trigcol = 'EXT TRIG I/O', sdec.ui_c_extio
+  elseif tin then trigtxt, trigcol = 'EXT TRIG IN', sdec.ui_c_extin
+  elseif tout then trigtxt, trigcol = 'EXT TRIG OUT', sdec.ui_c_extout
   end
-  if sdec.trigmode == 'front' then trigtxt = trigtxt .. '  KEY' end
+  if tin and sdec.trigmode == 'free' then trigtxt = trigtxt .. '?' end
   set(sdec.ui_trig_t, trigtxt)
   if sdec.ui_trigc ~= trigcol then
     sdec.ui_color(sdec.ui_trig_t, trigcol)
@@ -2427,7 +2462,16 @@ function sdec.ck_status()
     -- mode shows its window in the row above (win N, which moves with the sample rate); the
     -- streaming modes show their cap here, and 'no cap' is a real answer rather than a blank.
     if md.cap ~= nil then
-      return string.format('ready -- max %d bytes, to a file', md.cap)
+      -- AND THAT NOTHING CUTS IT SHORT, which is the other half of what the operator needs BEFORE
+      -- pressing: neither a button nor the TRIGGER key can (measured 2026-08-18). This is where that
+      -- warning lives now -- it used to be a note-line forecast that outlived the run it described
+      -- and quoted the LINE's time rather than the operation's.
+      --
+      -- NO TIME FIGURE AT ALL. cap/bps is the device's sending time and the decode costs several
+      -- times more, so any single number here would mislead; the byte ceiling is exact and the bar
+      -- shows progress once it starts. Measured at 438 px for the widest form, inside the 456 a
+      -- not-running string has before the divider.
+      return string.format('ready -- %d bytes to a file, no stop once started', md.cap)
     end
     return 'ready -- no cap, until Stop or a quiet line'
   end
@@ -2738,9 +2782,15 @@ function sdec.build_options()
   -- THREE sources here, not four, because the rear BNC moved to its own checkbox below. Two
   -- controls for one connector would have been redundant: this field picks the PRIMARY source
   -- and the checkbox adds the rear input alongside it.
+  --
+  -- ENTRIES COME FROM sdec.ui_trigsrc, not from literals, because the note row's left cell shows this
+  -- field's value and the two must be the same words. Spelled out per index rather than unpack()'d:
+  -- Lua 5.0.2 has a global unpack() and the offline harness's modern Lua does not.
   sdec.opt_trig = create(sdec.optscr, display.OBJ_EDIT_OPTION, x, nexty(),
                          'Trigger', 'capture start',
-                         'Start bit', 'Free run', 'Trigger key')
+                         sdec.ui_trigsrc[sdec.opt_trig_v[1]].name,
+                         sdec.ui_trigsrc[sdec.opt_trig_v[2]].name,
+                         sdec.ui_trigsrc[sdec.opt_trig_v[3]].name)
   -- ONE FIELD FOR BOTH REAR BNCs, and the reason is height. Two orthogonal booleans (trigext and
   -- fc_out) become four entries in one field, because the form has NO ROOM for an eighth field:
   -- see the arithmetic at ui_opt_y0 -- seven fields already sit at 8 px of clearance on a pitch

@@ -1726,8 +1726,12 @@ do
   local fitted = sdec.ui_fit(LONG, room)
   check('a note long enough to fill the row ends clear of the counter',
         sdec.ui_note_val_x + sdec.ui_textw(fitted) * sdec.ui_fit_slack < xp,
+        -- math.floor: the slack is a FLOAT, and '%d' on a non-integer raises in the harness's modern
+        -- Lua while the instrument's 5.0.2 truncates it quietly. The detail string is built whether
+        -- the check passes or not, so this aborts the whole run rather than failing one assertion.
         string.format('note ends ~%d, page starts %d',
-                      sdec.ui_note_val_x + sdec.ui_textw(fitted) * sdec.ui_fit_slack, xp))
+                      math.floor(sdec.ui_note_val_x
+                                 + sdec.ui_textw(fitted) * sdec.ui_fit_slack), xp))
   check('ui_fit leaves headroom for the width model reading narrow',
         sdec.ui_fit_slack > 1.0 and sdec.ui_textw(sdec.ui_fit(LONG, 700)) * sdec.ui_fit_slack <= 700,
         string.format('slack %.2f, fitted %d px of 700', sdec.ui_fit_slack,
@@ -4733,24 +4737,57 @@ local function test_modes()
   check('the retired strm id falls back to frame rather than half-selecting a gone mode',
         sdec.mode_cur().id == 'frame', tostring(sdec.mode_cur().id))
 
-  -- ---- the MODE cell: the at-a-glance channel ----
-  local cols = {}
-  for i = 1, 2 do
-    sdec.capmode = sdec.ui_modes[i].id
+  -- ---- the note row's left cell: THE TRIGGER SOURCE, the at-a-glance channel ----
+  --
+  -- It held the CAPTURE MODE until the mode moved to the title bar. The block that checked it looped
+  -- over two modes and then compared cols[3] -- nil -- so 'each mode has its own colour' was two
+  -- comparisons against nothing; and 'the longest mode name still fits' asserted
+  -- string.len('STREAM') <= 8 about a mode that had been retired, plus a cell width, never the
+  -- rendered width of any string it would hold. Both are replaced by measurements.
+  do
+    local wasmode, wastrig = sdec.capmode, sdec.trigmode
+    local seen, k, v = {}, nil, nil
+    local cellpx = (sdec.ui_note_val_x - 9) - sdec.ui_note_lab_x
+    for k, v in pairs(sdec.ui_trigsrc) do
+      sdec.trigmode = k
+      sdec.ui_refresh()
+      check('the trigger cell names ' .. v.name .. " for trigmode '" .. k .. "'",
+            MD.text(sdec.ui_trigsrc_t) == v.name,
+            string.format('%q', tostring(MD.text(sdec.ui_trigsrc_t))))
+      check('...in its own colour, and the label FITS the cell',
+            MD.obj(sdec.ui_trigsrc_t).color == v.c and sdec.ui_textw(v.name) <= cellpx,
+            string.format('0x%06X, %d px of %d', MD.obj(sdec.ui_trigsrc_t).color,
+                          sdec.ui_textw(v.name), cellpx))
+      if seen[v.c] then
+        check('...and no two sources share a colour', false, v.name .. ' repeats ' .. seen[v.c])
+      end
+      seen[v.c] = v.name
+    end
+    check('three trigger sources, three distinct colours', true,
+          string.format('%d labels, widest %d px, cell %d px',
+                        3, math.max(sdec.ui_textw(sdec.ui_trigsrc.edge.name),
+                                    sdec.ui_textw(sdec.ui_trigsrc.free.name),
+                                    sdec.ui_textw(sdec.ui_trigsrc.front.name)), cellpx))
+    -- THE CELL AND THE CONTROL MUST SAY THE SAME WORDS. The option field is built from this table, so
+    -- this asserts the wiring rather than two copies of three strings.
+    local o = MD.obj(sdec.opt_trig)
+    local i, bad = nil, nil
+    for i = 1, 3 do
+      local want = sdec.ui_trigsrc[sdec.opt_trig_v[i]].name
+      if o == nil or o.opts == nil or o.opts[i] ~= want then bad = want end
+    end
+    check('the Trigger option field offers exactly the words the cell shows', bad == nil,
+          bad == nil and 'all three match' or ('mismatch at ' .. bad))
+    -- AN UNRECOGNISED trigmode MUST NOT BLANK IT. This cell is the front-panel key's only indicator
+    -- now that the rear-BNC cell is empty when the connector is off.
+    sdec.trigmode = 'nonsense'
     sdec.ui_refresh()
-    cols[i] = MD.obj(sdec.ui_modelab).color
-    check('the MODE cell names ' .. sdec.ui_modes[i].name,
-          MD.text(sdec.ui_modelab) == sdec.ui_modes[i].name,
-          string.format('%q', MD.text(sdec.ui_modelab)))
+    check('an unrecognised trigger source falls back to a label rather than going blank',
+          MD.text(sdec.ui_trigsrc_t) == sdec.ui_trigsrc.edge.name,
+          string.format('%q', tostring(MD.text(sdec.ui_trigsrc_t))))
+    sdec.capmode, sdec.trigmode = wasmode, wastrig
+    sdec.ui_refresh()
   end
-  check('and each mode has its OWN colour -- colour is read faster than a word',
-        cols[1] ~= cols[2] and cols[2] ~= cols[3] and cols[1] ~= cols[3],
-        string.format('%s / %s / %s', tostring(cols[1]), tostring(cols[2]),
-                      tostring(cols[3])))
-  -- The cell must fit its 70 px box: the note value sits at x = 78.
-  check('the longest mode name still fits the MODE cell',
-        string.len('STREAM') <= 8 and sdec.ui_note_val_x - sdec.ui_note_lab_x >= 60,
-        string.format('%d px', sdec.ui_note_val_x - sdec.ui_note_lab_x))
 
   -- ---- the gate ----
   clearforce()
@@ -4783,12 +4820,25 @@ local function test_modes()
         tostring(sdec.capmode))
   check('forgetting the message-log path, so re-entering starts a NEW file',
         sdec.flog_path == nil and sdec.flog_n == nil)
-  check('and it SAYS what it did rather than silently going grey',
-        sdec.mode_exited ~= nil and has(sdec.mode_exited, '32 kB') and
-        has(sdec.mode_exited, 'flushed'), tostring(sdec.mode_exited))
+  check('and it names the mode it left, for the debug trace and the failure path',
+        sdec.mode_exited ~= nil and has(sdec.mode_exited, '32 kB'),
+        tostring(sdec.mode_exited))
+  -- A NORMAL END LEAVES THE NOTE ROW ALONE. The exit note used to go there unconditionally, so a
+  -- finished recording sat under a yellow line describing its own exit -- above the notes that
+  -- described the RESULT, and outliving the press that caused it. The status row's summary (bytes,
+  -- errors, windows, filename) is the completion message.
   local nt, nn = sdec.ui_notes()
-  check('the exit note reaches the note line',
-        has(table.concat(nt, ' | '), 'flushed'), table.concat(nt, ' | '))
+  check('a NORMAL exit stays OFF the note line',
+        not has(table.concat(nt, ' | '), 'run ended'), table.concat(nt, ' | '))
+  -- A FAILED one still reaches it, because the summary cannot carry a reason.
+  sdec.capmode = 'med'
+  sdec.mode_exit('slice fault', true)
+  nt = sdec.ui_notes()
+  check('...and a FAILED exit does reach it, with the reason',
+        has(table.concat(nt, ' | '), 'run ended') and
+        has(table.concat(nt, ' | '), 'slice fault'), table.concat(nt, ' | '))
+  sdec.capmode = 'med'
+  sdec.mode_exit('test')
   -- Leaving FRAME says nothing: there is nothing to report about staying put.
   sdec.capmode = 'frame'
   sdec.mode_exit('test')
@@ -5452,8 +5502,13 @@ local function test_modes()
   sdec.force_baud = 9600
   sdec.capmode = 'med'
   sdec.ck_tot, sdec.ck_running = nil, false
-  check('32 kB states its cap while armed',
-        has(sdec.ck_status(), 'max 32768'), sdec.ck_status())
+  -- THE CEILING AND THE FACT THAT NOTHING CUTS IT SHORT, both on this row, because both are what the
+  -- operator needs BEFORE pressing. The warning used to be a note-line forecast that quoted the LINE's
+  -- sending time (cap/bps) while the decode costs several times more -- an order of magnitude out in
+  -- the reassuring direction. There is no time figure here at all; the bar shows progress once it runs.
+  check('32 kB states its cap while armed, and that nothing stops it',
+        has(sdec.ck_status(), '32768') and has(sdec.ck_status(), 'no stop'),
+        sdec.ck_status())
   -- THE 'no cap' CASE IS GONE WITH THE MODE. This used to set capmode = 'strm' and assert that
   -- ck_status() said 'no cap'. That assertion still PASSED after the mode was removed -- capmode
   -- 'strm' falls back to FRAME, whose cap is also nil -- so it was testing the fallback, not a
@@ -5526,17 +5581,70 @@ local function test_modes()
                       MD.obj(sdec.ui_trig_t).color))
   sdec.trigmode = 'free'
   sdec.ui_refresh()
-  check('ticked but IGNORED under free run reads amber and says ignored',
-        has(MD.text(sdec.ui_trig_t) or '', 'ignored') and
-        MD.obj(sdec.ui_trig_t).color == sdec.ui_c_warn,
-        string.format('%q', MD.text(sdec.ui_trig_t)))
+  -- '?' IS THE APP'S OWN UNCERTAINTY MARK, the one the BAUD cell uses for an unlocked rate: a rear
+  -- INPUT is configured but NOT IN FORCE under free run, because free run means do not wait. The three
+  -- colours are spoken for by the three directions, so the marker is the text and the sentence is on
+  -- the note line -- which is where it always belonged.
+  check('a rear input ticked but IGNORED under free run is marked, not silently green',
+        MD.text(sdec.ui_trig_t) == 'EXT TRIG IN?',
+        string.format('%q', tostring(MD.text(sdec.ui_trig_t))))
   check('and the note says so, which the code claimed but never did',
         has(table.concat(sdec.ui_notes(), ' | '), 'ticked but IGNORED'),
         table.concat(sdec.ui_notes(), ' | '))
-  sdec.trigext, sdec.trigmode = false, 'edge'
+  -- THE DIRECTION IS THE FACT, and each has its own colour. 'EXT TRIG' named neither direction, so
+  -- the cell could not distinguish a meter WAITING for a signal from one DRIVING another device.
+  sdec.trigmode = 'edge'
+  sdec.trigext, sdec.fc_out = false, true
   sdec.ui_refresh()
-  check('off reads amber too -- off and ignored are the same to the operator',
-        MD.obj(sdec.ui_trig_t).color == sdec.ui_c_warn)
+  check('an output-only rear BNC reads EXT TRIG OUT in amber',
+        MD.text(sdec.ui_trig_t) == 'EXT TRIG OUT'
+        and MD.obj(sdec.ui_trig_t).color == sdec.ui_c_extout,
+        string.format('%q 0x%06X', tostring(MD.text(sdec.ui_trig_t)),
+                      MD.obj(sdec.ui_trig_t).color))
+  sdec.trigext, sdec.fc_out = true, true
+  sdec.ui_refresh()
+  check('both directions read EXT TRIG I/O in cyan',
+        MD.text(sdec.ui_trig_t) == 'EXT TRIG I/O'
+        and MD.obj(sdec.ui_trig_t).color == sdec.ui_c_extio,
+        string.format('%q 0x%06X', tostring(MD.text(sdec.ui_trig_t)),
+                      MD.obj(sdec.ui_trig_t).color))
+  -- EVERY LABEL MUST FIT ITS CELL. 'EXT TRIG OUT' is 123 px and the cell had 115, which is why the
+  -- divider moved -- measured here rather than trusted, since it is bounded by an INTERIOR rule that
+  -- render_png's panel-edge check cannot see.
+  do
+    local cellpx = sdec.ui_rule_x1 - sdec.ui_trig_x
+    local bad, li = nil, nil
+    for li, lbl in ipairs({'EXT TRIG IN', 'EXT TRIG OUT', 'EXT TRIG I/O',
+                           'EXT TRIG IN?', 'EXT TRIG I/O?'}) do
+      if sdec.ui_textw(lbl) > cellpx - 2 then bad = lbl end
+    end
+    check('every rear-BNC label fits the cell, marker included', bad == nil,
+          bad == nil and string.format('widest 123 px of %d', cellpx)
+          or string.format('%q needs %d of %d', bad, sdec.ui_textw(bad), cellpx))
+  end
+  -- ...AND THE LOG CELL BESIDE IT MUST STILL HOLD ITS OWN CONTENT after giving up those 12 px.
+  check('the log cell still fits a six-digit byte count after the divider moved',
+        sdec.ui_textw('log: bytes007  999999 B') <= sdec.ui_log_px,
+        string.format('%d px of %d', sdec.ui_textw('log: bytes007  999999 B'), sdec.ui_log_px))
+  -- OFF IS EMPTY. The cell read a permanent amber 'EXT TRIG' while Options said Rear BNC = Off --
+  -- the panel asserting hardware that is not in use. Its own comment claimed the default said
+  -- nothing; the code had never done it.
+  sdec.trigext, sdec.fc_out, sdec.trigmode = false, false, 'edge'
+  sdec.ui_refresh()
+  check('Rear BNC off leaves the cell EMPTY rather than claiming a trigger',
+        (MD.text(sdec.ui_trig_t) or '') == '',
+        string.format('%q', tostring(MD.text(sdec.ui_trig_t))))
+  -- AND THE FRONT KEY IS STILL INDICATED, in the trigger-source cell, because this one cannot carry
+  -- it any more. Dropping ' KEY' from here without that would have lost what a capture waits for.
+  sdec.trigmode = 'front'
+  sdec.ui_refresh()
+  check('...and the front-panel key is still named, in the trigger-source cell',
+        MD.text(sdec.ui_trigsrc_t) == sdec.ui_trigsrc.front.name
+        and (MD.text(sdec.ui_trig_t) or '') == '',
+        string.format('%q / %q', tostring(MD.text(sdec.ui_trigsrc_t)),
+                      tostring(MD.text(sdec.ui_trig_t))))
+  sdec.trigmode = 'edge'
+  sdec.ui_refresh()
   -- And it is a control, wired the same speculative way as the padlock.
   sdec.trigext_toggle()
   check('tapping the cell toggles the external trigger', sdec.trigext == true)
@@ -5808,18 +5916,23 @@ local function test_modes()
   check('no rate makes the panel claim bytes are lost between windows',
         claimed == nil, tostring(claimed))
 
-  -- What it DOES say is the real bound, in seconds of this line.
-  sdec.force_baud = 9600
-  check('a bounded streaming mode names its byte ceiling and how long that is',
-        has(regime() or '', 'bounded at') and has(regime() or '', 'bytes'),
-        tostring(regime()))
-  -- THE UNCAPPED MODE IS GONE, so there is no longer a 'records until you stop it' regime to
-  -- check. What replaces it is that the SAME bounded note appears at a slow rate too -- the ceiling
-  -- is a byte count, so it does not change with the rate, only the seconds it works out to do.
-  sdec.force_baud = 2400
-  check('and it says the same at a slow rate -- the ceiling is bytes, not seconds',
-        has(regime() or '', 'bounded at') and has(regime() or '', 'bytes'),
-        tostring(regime()))
+  -- AND IT SAYS NOTHING AT ALL ABOUT THE BOUND, at any rate. This note used to forecast
+  -- 'bounded at 8192 bytes -- ~2 s of this line, and nothing stops it early', and it was wrong twice:
+  --
+  --   * ui_notes cannot tell whether the run it forecasts has already happened, so a FINISHED 8 kB
+  --     capture sat under a yellow warning about a press made a minute earlier.
+  --   * '~2 s' is cap/bps -- the DEVICE's sending time. The meter decodes at ~300 byte/s whatever the
+  --     baud rate, so 8 kB is ~27 s of decoding on top: an order of magnitude out, in the reassuring
+  --     direction, for an operation nothing can interrupt.
+  --
+  -- The ceiling and the no-early-stop warning are on the STATUS ROW now, where they are properties of
+  -- the armed mode rather than of a run and cannot outlive their subject -- asserted at ck_status().
+  local bi
+  for bi = 1, 2 do
+    sdec.force_baud = ({9600, 2400})[bi]
+    check(string.format('no bound forecast on the note row at %d Bd', sdec.force_baud),
+          not has(regime() or '', 'bounded at'), tostring(regime()))
+  end
   sdec.capmode, sdec.fc_out = 'med', false
   -- FRAME never shows it: the regime is a property of the streaming modes, and FRAME's own
   -- gaps are stated by its duty cycle rather than by this note.

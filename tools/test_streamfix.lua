@@ -171,12 +171,21 @@ do
 
   sdec.ui_refresh()
   local lg = MD.text(sdec.ui_log_t)
-  check('the log cell offers the controls a press can reach',
-        has(lg, 'Capture=Stop'), string.format('%q', tostring(lg)))
+  -- BOTH CONTROLS BY NAME, not one exact phrase. It read 'Capture=Stop  Mode=Exit' and now reads
+  -- 'Capture or Mode = Stop': Mode aborts the run and no longer changes the mode, so a label promising
+  -- an exit described behaviour it had stopped having. What has to hold is that the cell names the two
+  -- buttons that stop this run and calls what they do a stop.
+  check('the log cell offers the controls a press can reach, and calls them a stop',
+        has(lg, 'Capture') and has(lg, 'Mode') and has(lg, 'Stop'),
+        string.format('%q', tostring(lg)))
   check('and claims neither the 20 s ceiling nor the quiet-line exit, which this path has not',
         not has(lg, 'runs to') and not has(lg, 'quiet'), string.format('%q', tostring(lg)))
-  check('the cell still fits its 221 px', sdec.ui_textw(lg) <= 221,
-        string.format('%d px', sdec.ui_textw(lg)))
+  -- AGAINST ui_log_px, NOT A LITERAL. The cell was 221 px when this was written, then 200, and is 188
+  -- now that the rear-BNC cell beside it took 12 px to fit 'EXT TRIG OUT'. A literal here passes while
+  -- the string it measures runs into its neighbour.
+  check('the cell still fits the log cell as it is TODAY',
+        sdec.ui_textw(lg) <= sdec.ui_log_px,
+        string.format('%d px of %d', sdec.ui_textw(lg), sdec.ui_log_px))
 
   -- THE POLLED PATH NAMES NOTHING, AND THAT IS THE THIRD ANSWER THIS CELL HAS HAD. It stated its
   -- bounds; then it named the TRIGGER key, on the strength of the blender latch; and on 2026-08-18 the

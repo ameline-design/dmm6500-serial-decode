@@ -74,14 +74,24 @@ Along the top are the things the app worked out about your line:
 
 A dash means "not measured yet".
 
-Underneath: the **mode cell**, the bytes, then two rows of text. The **status row** tells you where
+Underneath: the **trigger cell**, the bytes, then two rows of text. The **status row** tells you where
 you are (`FRAME HEX pg 1/1 bytes 1-155/155 win 240 [done]`) and names the log file.
 
-**The mode cell is colour-coded**, so a glance says which mode you are in without reading: grey for
-FRAME, blue for the `8 kB` recording window, amber for `32 kB`. During a recording the status row
-carries a live counter — `recording... 40 % of the buffer`, then `decoding... 4096/8192 bytes` — and
-the cell to its right reads `no stop until it ends`, because while the app is busy nothing on the
-instrument can interrupt it.
+**Which mode you are in is in the title bar** — `SERIAL DECODE - 240B FRAME`, `- 8K CAPTURE` or
+`- 32K CAPTURE`, in the largest type on the screen.
+
+**The cell at the left of the note row is what a capture WAITS for**, colour-coded so a glance is
+enough: green `Start bit` (the normal case — it waits for the line's own start bit), yellow `Free run`
+(it does not wait for anything), cyan `Trigger key` (it waits for the physical key).
+
+**The cell at the bottom right is the rear BNC**, and it is **empty when the rear BNC is off** — which
+is the default. When it is not, it names the direction: green `EXT TRIG IN`, amber `EXT TRIG OUT`,
+cyan `EXT TRIG I/O`. A trailing `?` means the input is switched on but *not in force*, which happens
+under `Free run` — free run means do not wait, so there is nothing for the input to gate.
+
+During a recording the status row carries a live counter — `recording... 40 % of the buffer`, then
+`decoding... 4096/8192 bytes` — with a **cyan progress bar** beside it, and the cell to its right reads
+`Capture or Mode = Stop`.
 
 **The note row is the important one.** Warnings appear there — an ambiguous baud rate, a line that
 disagrees with the rate you locked, a recording that stopped early. If more than one applies it ends
@@ -126,13 +136,14 @@ between waiting confidently and pressing a key that does nothing.
 
 **A recording runs to its own end.** Once you press **Capture** in `8 kB` or `32 kB`, nothing on the
 instrument will cut it short — not a button on the glass, and not the TRIGGER key. Decide before you
-press. The note row tells you the cost up front:
+press. The status row says so before you commit:
 
-    bounded at 32768 bytes -- ~34 s of this line, and nothing stops it early
+    32 kB  ready -- 32768 bytes to a file, no stop once started
 
-and the cell on the status row reads `no stop until it ends` for as long as it is working. Allow more
-than that figure: it is the time to fill the buffer, and the decode afterwards takes longer than the
-capture did.
+**There is deliberately no time estimate.** The one that used to be there was the time your *device*
+takes to send that many bytes, and the meter's decode costs several times more — 8 kB is a couple of
+seconds on the wire and around half a minute to decode. A single number would have been reassuring and
+wrong, so what you get is the exact byte ceiling and, once it starts, a progress bar.
 
 **The app's own side of this is sound,** which is why it is worth fixing rather than accepting: when
 the identical cancel is delivered by a firmware timer instead of a finger, the run stops inside a
@@ -188,8 +199,13 @@ whole job: it records, decodes every byte, writes them to the USB key, and comes
 screen. There is nothing to press in the middle.
 
 While it works, the counter on the status row moves — first `recording... N % of the buffer`, then
-`decoding... N/8192 bytes` — and the cell beside it reads `no stop until it ends`. **There is no way
-to finish it early** — see the section on the TRIGGER key above for what bounds it instead.
+`decoding... N/8192 bytes` — with a cyan progress bar beside it, and the cell to its right reads
+`Capture or Mode = Stop`. **There is no way to finish it early** — see the section on the TRIGGER key
+above for what bounds it instead.
+
+**When it finishes, the note row goes quiet.** The status row's summary — bytes, errors, window count
+and filename — is the completion message; the yellow note row is reserved for what went wrong, so an
+empty one after a recording means there was nothing to say.
 
 It stops by itself when the window is full or when the line has been quiet for a second. There is also
 a 20-minute backstop, so nothing can wait for ever — it only matters on very slow lines, where a full

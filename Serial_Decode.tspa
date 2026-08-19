@@ -3087,7 +3087,12 @@ sdec.ui_rule_bot = 51                        -- under the note row's ink (37..48
 sdec.ui_rule_x0  = 4
 sdec.ui_rule_x1  = 792
 sdec.ui_note_lab_x = 8
-sdec.ui_note_val_x = 92
+sdec.ui_trigsrc = {
+  edge  = {name = 'Start bit',   c = 0x40FF40},
+  free  = {name = 'Free run',    c = 0xFFFF00},
+  front = {name = 'Trigger key', c = 0x00FFFF},
+}
+sdec.ui_note_val_x = 112
 sdec.ui_pgind_x  = 788
 sdec.ui_pgind_dig = '99'
 sdec.ui_pgind_gap = 6
@@ -3108,8 +3113,8 @@ sdec.ui_prog_y = 330
 sdec.ui_prog_wmax = sdec.ui_prog_w - 2
 sdec.ui_prog_ly   = sdec.ui_prog_y + 7
 sdec.ui_prog_lw = 10
-sdec.ui_trig_div = 668
-sdec.ui_trig_x   = 677
+sdec.ui_trig_div = 656
+sdec.ui_trig_x   = 665
 sdec.ui_btn_y    = 362
 sdec.ui_btn_h    = 58                        -- for layout arithmetic, not passed to the API
 sdec.ui_x        = 8
@@ -3314,6 +3319,9 @@ sdec.ui_c_pgnum  = 0xFFFFFF    -- the numerals: 100 %
 sdec.ui_c_pgword = 0xA8A8A8    -- 'page' and 'of': 66 %
 sdec.ui_c_prog     = 0x00FFFF
 sdec.ui_c_prog_box = 0xCCCCCC
+sdec.ui_c_extin  = 0x40FF40   -- green: an input, armed
+sdec.ui_c_extout = 0xFFC000   -- amber: an output, pulsing a credit per capture
+sdec.ui_c_extio  = 0x00FFFF   -- cyan:  both directions live
 
 sdec.ui_mode = sdec.ui_mode or 'text'    -- 'text', 'hex' or 'midi'
 sdec.ui_page = sdec.ui_page or 0          -- 0-based page index
@@ -3584,26 +3592,7 @@ function sdec.ui_notes()
     add('external trigger is ticked but IGNORED -- Free run means do not wait for anything')
   end
 
-  local md2 = sdec.mode_cur()
-  if md2.needbaud and sdec.force_baud ~= nil and sdec.force_baud > 0 then
-    local bps = sdec.force_baud / 10          -- 10 bit times a byte, near enough for a note
-    if md2.cap ~= nil then
-      add(string.format('bounded at %d bytes -- ~%.0f s of this line, and nothing stops it early',
-                        md2.cap, md2.cap / bps))
-    else
-      local nsmp = sdec.ck_bufmax or 2800000
-      local fs = nil
-      pcall(function() fs = sdec.fs_for_burst(sdec.force_baud) end)
-      if fs ~= nil and fs > 0 then
-        add(string.format('records until Capture stops it, or %.0f s when the buffer fills',
-                          nsmp / fs))
-      else
-        add('records until Capture stops it, or until the capture buffer fills')
-      end
-    end
-  end
-
-  if sdec.mode_exited ~= nil then add(tostring(sdec.mode_exited)) end
+  if sdec.mode_exited ~= nil and sdec.mode_exitbad then add(tostring(sdec.mode_exited)) end
   if sdec.lognote ~= nil then add(tostring(sdec.lognote)) end
   if sdec.strm_releveled ~= nil then add(tostring(sdec.strm_releveled)) end
   if sdec.relocked ~= nil then add(tostring(sdec.relocked)) end
@@ -3738,7 +3727,7 @@ function sdec.ui_fit(s, maxpx)
   return string.sub(s, 1, i - 1) .. '...'
 end
 
-sdec.ui_note_px = 700
+sdec.ui_note_px = sdec.ui_rule_x1 - sdec.ui_note_val_x
 
 -- 1-BASED FOR THE OPERATOR: ui_page is a 0-based index and 'page 0 of 35' names a page no button
 -- can reach.
@@ -3801,7 +3790,7 @@ function sdec.ui_invalidate()
   sdec.ui_last, sdec.ui_rowc = nil, nil
   sdec.ui_vrc = nil
   sdec.ui_sbc = nil
-  sdec.ui_fvalc, sdec.ui_modec, sdec.ui_logc = nil, nil, nil
+  sdec.ui_fvalc, sdec.ui_trigsrcc, sdec.ui_logc = nil, nil, nil
   sdec.ui_trigc = nil
   sdec.ui_lockc = nil
   sdec.ui_progpct, sdec.ui_progvis = nil, nil
@@ -3969,9 +3958,9 @@ function sdec.ui_build()
   lockpart(lx + 2, sdec.ui_lab_y + 1, 1, 4)     -- shackle: left post
   lockpart(lx + 6, sdec.ui_lab_y + 1, 1, 4)     -- shackle: right post
   sdec.ui_lockbody = lockpart(lx, sdec.ui_lab_y + 5, 9, 7)   -- body
-  sdec.ui_modelab = create(sdec.ui_scr, display.OBJ_TEXT, sdec.ui_note_lab_x,
-                           sdec.ui_note_y, 'FRAME', sdec.ui_c_dim, small, left)
-  sdec.ui_flab[nf + 1] = sdec.ui_modelab
+  sdec.ui_trigsrc_t = create(sdec.ui_scr, display.OBJ_TEXT, sdec.ui_note_lab_x,
+                             sdec.ui_note_y, sdec.ui_trigsrc.edge.name, sdec.ui_c_dim, small, left)
+  sdec.ui_flab[nf + 1] = sdec.ui_trigsrc_t
   sdec.ui_note = create(sdec.ui_scr, display.OBJ_TEXT, sdec.ui_note_val_x,
                         sdec.ui_note_y, '', sdec.ui_c_warn, small, left)
 
@@ -4166,11 +4155,11 @@ function sdec.ui_refresh()
     sdec.ui_lockc = lc
   end
 
-  local mdc = sdec.mode_cur()
-  set(sdec.ui_modelab, mdc.name)
-  if sdec.ui_modec ~= mdc.c then
-    sdec.ui_color(sdec.ui_modelab, mdc.c)
-    sdec.ui_modec = mdc.c
+  local tsrc = sdec.ui_trigsrc[sdec.trigmode or 'edge'] or sdec.ui_trigsrc.edge
+  set(sdec.ui_trigsrc_t, tsrc.name)
+  if sdec.ui_trigsrcc ~= tsrc.c then
+    sdec.ui_color(sdec.ui_trigsrc_t, tsrc.c)
+    sdec.ui_trigsrcc = tsrc.c
   end
   local ttl = sdec.ui_title_text()
   if sdec.ui_titletxt ~= ttl then
@@ -4277,13 +4266,13 @@ function sdec.ui_refresh()
     set(sdec.ui_page_t, string.format('%s  %s%s', md.name, sdec.ck_status(), warn))
   end
   sdec.ui_progbar_set(sdec.ck_pct())
-  local trigtxt, trigcol = 'EXT TRIG', sdec.ui_c_warn
-  if sdec.trigext and sdec.trigmode ~= 'free' then
-    trigcol = sdec.ui_c_locked
-  elseif sdec.trigext then
-    trigtxt = 'EXT ignored'
+  local trigtxt, trigcol = '', sdec.ui_c_dim
+  local tin, tout = (sdec.trigext == true), (sdec.fc_out == true)
+  if tin and tout then trigtxt, trigcol = 'EXT TRIG I/O', sdec.ui_c_extio
+  elseif tin then trigtxt, trigcol = 'EXT TRIG IN', sdec.ui_c_extin
+  elseif tout then trigtxt, trigcol = 'EXT TRIG OUT', sdec.ui_c_extout
   end
-  if sdec.trigmode == 'front' then trigtxt = trigtxt .. '  KEY' end
+  if tin and sdec.trigmode == 'free' then trigtxt = trigtxt .. '?' end
   set(sdec.ui_trig_t, trigtxt)
   if sdec.ui_trigc ~= trigcol then
     sdec.ui_color(sdec.ui_trig_t, trigcol)
@@ -4361,7 +4350,7 @@ function sdec.ck_status()
   if t == nil then
     if sdec.mode_why(md) ~= nil then return 'not armed -- see the note' end
     if md.cap ~= nil then
-      return string.format('ready -- max %d bytes, to a file', md.cap)
+      return string.format('ready -- %d bytes to a file, no stop once started', md.cap)
     end
     return 'ready -- no cap, until Stop or a quiet line'
   end
@@ -4568,7 +4557,9 @@ function sdec.build_options()
                         'Auto', 'Idle high', 'Idle low')
   sdec.opt_trig = create(sdec.optscr, display.OBJ_EDIT_OPTION, x, nexty(),
                          'Trigger', 'capture start',
-                         'Start bit', 'Free run', 'Trigger key')
+                         sdec.ui_trigsrc[sdec.opt_trig_v[1]].name,
+                         sdec.ui_trigsrc[sdec.opt_trig_v[2]].name,
+                         sdec.ui_trigsrc[sdec.opt_trig_v[3]].name)
   sdec.opt_ext = create(sdec.optscr, display.OBJ_EDIT_OPTION, x, nexty(),
                         'Rear BNC', 'trig in / flow-control out',
                         'Off', 'Trig In', 'FC Out', 'In + FC Out')
@@ -4632,6 +4623,7 @@ function sdec.clear_result()
   sdec.fmt_note, sdec.baud_note, sdec.rate_note = nil, nil, nil
   sdec.lasterr, sdec.savedas, sdec.probe_idle = nil, nil, nil
   sdec.mode_exited, sdec.lognote, sdec.autolocknote = nil, nil, nil
+  sdec.mode_exitbad = false
   sdec.strm_releveled, sdec.proto_why = nil, nil
   sdec.probe_note = nil                 -- set by autoset() when it had to re-capture slower
   pcall(function() collectgarbage() end)
@@ -5017,7 +5009,7 @@ function sdec.decode_step()
   sdec.ck_job_md = nil
   local dok = (tot ~= nil and tot.stopped ~= 'write failed' and tot.stopped ~= 'sink')
   pcall(function()
-    sdec.mode_exit(sdec.strm_exit_why(sdec.ck_endwhy, dok, sdec.lasterr))
+    sdec.mode_exit(sdec.strm_exit_why(sdec.ck_endwhy, dok, sdec.lasterr), not dok)
   end)
   pcall(function() sdec.ui_refresh() end)
   return dok
@@ -5286,7 +5278,7 @@ function sdec.capture()
       sdec.lasterr = tostring(perr or swhy or 'recording failed')
       sdec.ui_status = 'error'
       pcall(function() ulog.line(sdec.lasterr) end)
-      pcall(function() sdec.mode_exit('recording failed') end)
+      pcall(function() sdec.mode_exit('recording failed', true) end)
     end
     pcall(function() sdec.ui_refresh() end)
     return sok
@@ -5307,7 +5299,7 @@ function sdec.capture()
       sdec.lasterr = tostring(perr or swhy or 'could not start recording')
       sdec.ui_status = 'refused'
       pcall(function() ulog.line(sdec.lasterr) end)
-      pcall(function() sdec.mode_exit(sdec.lasterr) end)
+      pcall(function() sdec.mode_exit(sdec.lasterr, true) end)
     else
       sdec.ui_status = 'recording -- press Capture to stop'
     end
@@ -5341,7 +5333,7 @@ function sdec.capture()
       end
     end
     pcall(function()
-      sdec.mode_exit(sdec.strm_exit_why(sdec.ck_endwhy, sok, sdec.lasterr))
+      sdec.mode_exit(sdec.strm_exit_why(sdec.ck_endwhy, sok, sdec.lasterr), not sok)
     end)
     pcall(function() sdec.ui_refresh() end)
     sdec.strm_absorb_arm()
@@ -5798,9 +5790,12 @@ function sdec.press_absorbed(what)
   return true
 end
 
--- Leave the current capture mode, flushing its files, and return to FRAME. `why` goes on the note
--- row. Returns the mode that was left, so a caller can say what happened.
-function sdec.mode_exit(why)
+-- function's message ONLY when it is set: a recording that finished normally leaves the note row
+-- EMPTY, because the status row's summary already names the bytes, the errors and the file.
+-- NOT SNIFFED OUT OF `why`. Every caller that means "this failed" knows it -- strm_exit_why() is
+-- given the same ok flag -- and matching on words like 'failed' is how a protected failure gets
+-- narrowed to a boolean nobody checks, which is this app's dominant defect class.
+function sdec.mode_exit(why, bad)
   local was = sdec.capmode
   local md = sdec.mode_cur()
   local running = sdec.ck_running
@@ -5822,11 +5817,10 @@ function sdec.mode_exit(why)
   else
     sdec.ck_running, sdec.ck_stop = false, false
   end
-  sdec.mode_exited = nil
+  sdec.mode_exited, sdec.mode_exitbad = nil, false
   if md.id ~= 'frame' then
-    sdec.mode_exited = string.format('%s run ended (%s); files flushed -- still in %s, '
-                                     .. 'press Mode to change',
-                                     md.name, tostring(why or 'exited'), md.name)
+    sdec.mode_exited = string.format('%s run ended (%s)', md.name, tostring(why or 'exited'))
+    sdec.mode_exitbad = (bad == true)
     pcall(function() ulog.line(sdec.mode_exited) end)
   end
   return was

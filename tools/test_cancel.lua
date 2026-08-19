@@ -291,9 +291,11 @@ do
         tostring(presses))
   check('bytes came out', (sdec.ck_tot and sdec.ck_tot.nf or 0) > 0,
         tostring(sdec.ck_tot and sdec.ck_tot.nf))
-  -- EVERY WAY OUT LANDS IN FRAME, which is unchanged and is what makes the mode leavable.
-  check('and the mode returned to FRAME with the tail on screen',
-        sdec.capmode == 'frame', tostring(sdec.capmode))
+  -- THE MODE IS UNCHANGED BY THE RUN, and that is the point: mode_exit() is a flush, so a recording
+  -- that finishes leaves the operator in the window size they chose -- one Capture press records
+  -- another. The retained tail is on screen either way.
+  check('and the mode is still the one that was recorded in, with the tail on screen',
+        sdec.capmode == 'med', tostring(sdec.capmode))
   check('the control cell named the TRIGGER key while it ran, not a button',
         sdec.strm_inflight == nil)
 end
@@ -1342,7 +1344,7 @@ do
   -- armed. The end state cannot show that ordering, but it can show the flag surviving the exit --
   -- an arm placed before mode_exit() would be spent on the flush.
   check('...and the arm survives the mode exit that precedes it',
-        sdec.capmode == 'frame' and sdec.strm_stopped_by_press == true,
+        sdec.strm_stopped_by_press == true,
         string.format('capmode=%s armed=%s', tostring(sdec.capmode),
                       tostring(sdec.strm_stopped_by_press)))
 
@@ -1611,9 +1613,16 @@ do
   check('...and it is the reason the panel gives for leaving the mode',
         has(sdec.mode_exited, 'buffer full -- the stream may continue'),
         tostring(sdec.mode_exited))
-  check('...on the note row itself',
-        has(table.concat(sdec.ui_notes(), ' | '), 'buffer full -- the stream may continue'),
-        table.concat(sdec.ui_notes(), ' | '))
+  -- BUT NOT ON THE NOTE ROW, because this outcome is a NORMAL end. The exit note used to go there on
+  -- every outcome, so a finished recording sat under a yellow line about its own exit, above the notes
+  -- describing the result. The status row's summary is the completion message; the note row is for
+  -- what went wrong. mode_exitbad is the flag, passed by the caller rather than sniffed out of the
+  -- sentence -- a normal ending narrowed to a word match is how this app loses failures.
+  check('...but NOT on the note row, because a full buffer is a normal ending',
+        not has(table.concat(sdec.ui_notes(), ' | '), 'run ended')
+        and sdec.mode_exitbad == false,
+        string.format('%s | bad=%s', table.concat(sdec.ui_notes(), ' | '),
+                      tostring(sdec.mode_exitbad)))
   check('and the run is reported as done, not as an error',
         sdec.ui_status == 'done', tostring(sdec.ui_status))
 
