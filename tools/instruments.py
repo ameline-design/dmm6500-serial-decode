@@ -264,6 +264,13 @@ SDG_UPLOAD_SAFE_BYTES = 65536      # below this, uploads have never wedged it
 #     only a handful of signals, which is why 311 kB/s is what the copy achieves and why selecting a large
 #     arb is the slowest thing this instrument does.
 #
+#     THE SAME CPU BOARD IS USED ACROSS SEVERAL SIGLENT INSTRUMENTS -- their DMMs and other generators
+#     (owner). That matters for the WVDT wedge report: the LAN stack that fails is on the SHARED board, so
+#     the defect is likely family-wide rather than an SDG2122X quirk, which is both a stronger case for the
+#     vendor and a reason to expect the same failure on any Siglent box built on it. Nothing on this bench
+#     is exposed beyond the generator -- the meter is a Keithley -- but the SDS1204X-E scope is a Siglent,
+#     so if it ever grows a bulk-transfer path, assume the same ceiling until measured otherwise.
+#
 #   * A CLOSE-IN SPECTRUM OF A 40 MHz OUTPUT SUPPORTS THAT, with its limits stated. Owner's capture on a
 #     Siglent analyser: marker 40.000002 MHz against a 40.000000 MHz setting -- a 2 Hz error, 0.05 ppm --
 #     carrier ~42 dB above the noise floor at 10 Hz RBW, and no spur visible anywhere in the span. What it
