@@ -1545,6 +1545,33 @@ check('clearing the errors takes the red back off -- the cache does not pin it',
       sdec.ui_fvalc[ef] == sdec.ui_fields[ef].c,
       string.format('%06X', MD.obj(sdec.ui_fval[ef]).color or 0))
 
+-- ROW COLOUR IS NOT THE ERR RULE, AND THE PANEL CAUGHT THE DIFFERENCE. The row colour used to skip
+-- the first ua_edge_frames and the clipped last frame, exactly as the ERR count does -- so an 8 kB
+-- recording with ERR 3 drew '???OWN FOX JUMPS' in normal WHITE: three bytes rendered as '?' on a row
+-- that said nothing was wrong. The colour claims nothing the row is not already showing, so it now
+-- fires on ANY flagged byte. ERR still counts interior errors only, which is why they disagree here.
+do
+  local sv, i = {}, nil
+  for i = 1, 3 do sv[i] = sdec.res.errs[i]; sdec.res.errs[i] = 'framing' end
+  sdec.ui_refresh()
+  check('a row whose only flagged bytes are the first three is painted RED',
+        MD.obj(sdec.ui_row[1]).color == sdec.ui_c_err,
+        string.format('%06X vs err %06X', MD.obj(sdec.ui_row[1]).color or 0, sdec.ui_c_err))
+  check('...and the hex and ASCII fields of that row with it, not just the text',
+        MD.obj(sdec.ui_rhx[1]).color == sdec.ui_c_err
+        and MD.obj(sdec.ui_ras[1]).color == sdec.ui_c_err,
+        string.format('hex %06X ascii %06X', MD.obj(sdec.ui_rhx[1]).color or 0,
+                      MD.obj(sdec.ui_ras[1]).color or 0))
+  check('...while ERR still ignores them, because a gapless line always has resync debris',
+        MD.obj(sdec.ui_fval[ef]).color == sdec.ui_fields[ef].c,
+        string.format('%06X', MD.obj(sdec.ui_fval[ef]).color or 0))
+  for i = 1, 3 do sdec.res.errs[i] = sv[i] end
+  sdec.ui_refresh()
+  check('and a row with nothing flagged is not red -- the colour cannot over-fire',
+        MD.obj(sdec.ui_row[1]).color ~= sdec.ui_c_err,
+        string.format('%06X', MD.obj(sdec.ui_row[1]).color or 0))
+end
+
 -- ============================================================================
 print('\nview and paging handlers (real code)')
 -- ============================================================================
@@ -3639,22 +3666,74 @@ do
       sdec.ck_tot.nf, sdec.ck_tot.ntotal = 32768, 32768
       j = table.concat(sdec.ui_notes(), ' | ')
       check('a tail that does NOT contain the misaligned head says it is in the file',
-            has(j, 'began mid-byte') and has(j, 'in the file')
-            and has(j, 'on screen is sound'), j)
+            has(j, 'the run began mid-byte') and has(j, 'misaligned, in the file'), j)
+      -- 'the first N' vs 'its first N' is the whole distinction, so match the on-screen form exactly:
+      -- a tail claiming it would be pointing at bytes 24577 on.
       check('...and does not claim the bytes on screen are the first ones',
-            not has(j, 'the first 22 byte(s) are misaligned'), j)
-      -- NOT VERIFIED END TO END HERE, AND SAYING SO IS THE POINT. The two checks above SET
-      -- ck_tot.headsusp by hand, so they cover the PANEL's half -- the wording split, and that a
-      -- recording reports at all -- and say nothing about chunk_decode producing the figure.
-      --
-      -- TWO ATTEMPTS AT THAT FAILED FOR REASONS WORTH RECORDING, so the next person does not repeat them:
-      --   * a synthetic back-to-back stream never produces headsusp at all. ua_run needs an IDLE GAP
-      --     inside the window -- errors before the first gap, none after -- and GEN packs bytes with no
-      --     gap, so it decodes 240 bytes and marks nothing. A gapped waveform is what this needs.
-      --   * wrapping ua_run to fake the flag marks the wrong call. ck_job_step runs PRIMING steps that
-      --     call ua_run before any decode window, so a wrapper that marks 'the first call with bytes'
-      --     spends its mark on format detection and every decode window gets the later value.
-      -- The bench check is one press: an 8 kB capture on a busy line, which is how this was reported.
+            not has(j, 'the first 22 bytes are misaligned'), j)
+      -- THE NUMBER IS THE DAMAGE, NOT THE SUSPICION. headsusp is idle1 - 1 -- the bytes before the first
+      -- inter-message GAP, a conservative region ua_run drops from the parity vote -- and reporting it
+      -- as a count of bad bytes over-claimed badly: 'the first 79 byte(s) are misaligned' on a capture
+      -- with 3 flagged bytes and a first row that was not even red, because the fox vector runs 79 bytes
+      -- before its first gap. Seen on the panel. An earlier capture read 36 against 20 errors, close
+      -- enough to look plausible, which is how it survived.
+      do
+        local e79 = {}
+        e79[1], e79[2], e79[3] = 'p', 'p', 'p'      -- only the first three could not be framed
+        sdec.res = {nf = 8192, nbad = 3, nbits = 8, par = sdec.PAR_NONE, nstop = 1,
+                    vals = {}, errs = e79, first = 1, ntotal = 8192}
+        sdec.ck_tot = {nf = 8192, nbad = 3, nwin = 19, path = '/usb1/bytes333.txt',
+                       stopped = 'cap', headsusp = 79}
+        local j = table.concat(sdec.ui_notes(), ' | ')
+        check('the note reports the bytes that FAILED, not the suspect region',
+              has(j, 'the first 3 bytes are misaligned') and not has(j, '79'), j)
+        -- SINGULAR AND PLURAL, and no 'byte(s)': a parenthesised plural on a panel reads as a
+        -- placeholder nobody filled in.
+        local e1 = {}
+        e1[1] = 'p'
+        sdec.res.errs, sdec.res.nbad = e1, 1
+        j = table.concat(sdec.ui_notes(), ' | ')
+        check('one bad byte reads as a singular sentence',
+              has(j, 'the first byte is misaligned') and not has(j, 'bytes are'), j)
+        check('...and no note anywhere says byte(s)', not has(j, 'byte(s)'), j)
+        -- A LATER FLAG WIDENS IT, so 'the first N' stays literally true: N is the LAST flagged byte in
+        -- the region, covering every byte the decoder could not frame and nothing beyond.
+        local e5 = {}
+        e5[1], e5[2], e5[5] = 'p', 'p', 'p'
+        sdec.res.errs, sdec.res.nbad = e5, 3
+        j = table.concat(sdec.ui_notes(), ' | ')
+        check('a gap in the flagged run still gives a true "the first N"',
+              has(j, 'the first 5 bytes are misaligned'), j)
+        sdec.res, sdec.ck_tot = nil, nil
+      end
+      -- AND A TAIL HAS NO HEAD TO COUNT. A 32 kB run keeps bytes 24577 on, so res.errs does not
+      -- reach the opening bytes at all and ui_notes cannot count them however it is written -- the
+      -- figure has to come from ck_decode, which had that window. Without it the tail quotes the
+      -- suspect region and over-claims by the factor the panel showed: 79 against 3. errs is flagged
+      -- only DEEP in the window, so counting it regardless of res.first fails this too.
+      do
+        local etail = {}
+        etail[1200], etail[4001] = 'p', 'p'
+        sdec.res = {nf = 8192, nbad = 2, nbits = 8, par = sdec.PAR_NONE, nstop = 1,
+                    vals = {}, errs = etail, first = 24577, ntotal = 32768}
+        sdec.ck_tot = {nf = 32768, nbad = 5, nwin = 68, path = '/usb1/bytes341.txt',
+                       stopped = 'cap', headsusp = 79, headbad = 3}
+        local j = table.concat(sdec.ui_notes(), ' | ')
+        check('a tail quotes the head damage ck_decode counted, not the suspect region',
+              has(j, 'its first 3 bytes are misaligned, in the file') and not has(j, '79'), j)
+        sdec.ck_tot.headbad = 1
+        j = table.concat(sdec.ui_notes(), ' | ')
+        check('...and in the singular for a single misaligned byte',
+              has(j, 'its first byte is misaligned, in the file') and not has(j, 'byte(s)'), j)
+        sdec.res, sdec.ck_tot = nil, nil
+      end
+      -- THE CHECKS ABOVE SET ck_tot BY HAND, so they cover the PANEL's half only: the wording split,
+      -- the two numbers, and that a recording reports at all. The RUN's half -- ck_decode actually
+      -- producing headsusp and headbad -- is checked in the chunked section, on a spliced waveform whose
+      -- first render carries no lead and whose tail is the gap. Two earlier attempts failed for reasons
+      -- worth keeping: a single GEN packs bytes with no gap, so ua_run finds no idle1 and marks nothing;
+      -- and wrapping ua_run to fake the flag spends its mark on ck_job_step's PRIMING call, which runs
+      -- before any decode window.
       sdec.res = {nf = 8192, nbad = 22, nbits = 8, par = sdec.PAR_NONE, nstop = 1,
                   vals = {}, errs = {}, first = 24577, ntotal = 32768}
       sdec.ck_tot = {nf = 32768, nbad = 22, nwin = 68, path = '/usb1/bytes325.txt',
@@ -4517,6 +4596,55 @@ local function test_chunked()
           ptot == nil and perr2 ~= nil, tostring(perr2))
 
     sdec.ck_win_n = old
+  end
+
+  -- ---- A MID-BYTE START, THROUGH THE REAL ck_decode ----
+  -- The panel's half of this was set by hand in the ui_notes section, which says nothing about
+  -- ck_decode producing the figure. It needs a GAPPED waveform, and that is why two earlier attempts
+  -- failed: a single GEN packs bytes back to back, and ua_run only marks a head when it finds an idle
+  -- GAP inside the window with errors before it and none after. So two renders are spliced with the
+  -- first one's TAIL as the gap -- 40 bit times of mark, four frames in -- and the first render carries
+  -- NO LEAD, which is the hardware condition itself: the framer's first mark run is bounded only by
+  -- the start of the capture, so it anchors inside a byte and stays wrong until that gap.
+  do
+    clearforce()
+    local fsr = 100000
+    sdec.force_baud = 9600
+    local byA = GEN_BYTES('abcd')
+    local byB = GEN_BYTES('The quick brown fox jumps over the lazy dog')
+    local ra, _, _, na = GEN({bytes = byA, baud = 9600, fs = fsr, gap = 2, lead = 0, tail = 40})
+    local rb, _, _, nb = GEN({bytes = byB, baud = 9600, fs = fsr, gap = 2, lead = 0, tail = 20})
+    local rd, n, i = {}, 0, nil
+    for i = 1, na do n = n + 1; rd[n] = ra[i] end
+    for i = 1, nb do n = n + 1; rd[n] = rb[i] end
+    sdec.acq_fs = fsr
+    local old = sdec.ck_win_n
+    sdec.ck_win_n = 2000                      -- the head AND its gap must land in one window
+    local reader = sdec.ck_reader_table(rd, n)
+    local got, errs, win = {}, {}, {}
+    local fmt, why = sdec.ck_prime(reader, n, win)
+    local tot, terr = nil, why
+    if fmt ~= nil then
+      tot, terr = sdec.ck_decode(reader, n, fmt, sdec.ck_sink_collect(got, errs), {win = win})
+    end
+    sdec.ck_win_n = old
+    check('a chunked decode of a gapped mid-byte capture carries the suspect region out',
+          tot ~= nil and tot.headsusp ~= nil and tot.headsusp > 0,
+          string.format('headsusp=%s nf=%s nbad=%s %s', tostring(tot and tot.headsusp),
+                        tostring(tot and tot.nf), tostring(tot and tot.nbad), tostring(terr)))
+    -- THE NUMBER THE PANEL PRINTS, computed where the head is: the last flagged byte inside that
+    -- region. It cannot exceed the region, or 'the first N' would over-claim again.
+    check('...and the damage figure with it, bounded by the region',
+          tot ~= nil and tot.headbad ~= nil and tot.headbad > 0
+          and tot.headbad <= tot.headsusp,
+          string.format('headbad=%s of headsusp=%s', tostring(tot and tot.headbad),
+                        tostring(tot and tot.headsusp)))
+    -- The errors are the HEAD's, not the whole capture's -- otherwise this passes on a broken
+    -- waveform rather than a misaligned start.
+    check('...over a capture whose errors are all in that head',
+          tot ~= nil and tot.nbad ~= nil and tot.headsusp ~= nil and tot.nbad <= tot.headsusp
+          and tot.nf > 40,
+          string.format('%s bad of %s bytes', tostring(tot and tot.nbad), tostring(tot and tot.nf)))
   end
   clearforce()
 end

@@ -81,16 +81,20 @@ looking rather than by counting. Flagged bytes read as `?` in the ASCII gutter:
 ![An 8 kB recording whose first two rows failed](img/panel-errors.png)
 
 That is a real 8 kB recording that began part way through a byte. **The note row names the cause** —
-`capture began mid-byte -- the first 36 byte(s) are misaligned` — which is the difference between a
-puzzle and a known condition: the app arms on a busy line, so it lands wherever the traffic happens to
-be, and the bytes before the first gap between messages cannot be framed.
+`began mid-byte -- the first N bytes are misaligned.` — which is the difference between a puzzle and a
+known condition: the app arms on a busy line, so it lands wherever the traffic happens to be, and the
+bytes before the first gap between messages cannot be framed.
 
-Read the two figures together and they agree: 36 bytes sit before that first gap, of which **20
-actually failed** (`8192 bytes  20 err`), because a misaligned frame can still pass its stop bit and
-parity by chance. That is why the note gives the extent and `ERR` gives the count — they are different
-questions. Everything from the first gap onward decoded cleanly, and the file on the USB key holds all
-8192 bytes either way: a byte that failed its parity or stop bit is still written, marked, rather than
-dropped.
+The note's number is **how far the damage reaches**: the last byte in that opening region the decoder
+could not frame, so "the first N" is literally true and nothing past N is being accused. `ERR` is the
+**count** of failures. They answer different questions, but they no longer disagree wildly — an earlier
+version quoted the whole region before the first gap, which on one capture read 79 against 3 real
+failures. One deliberate difference is left: `ERR` ignores failures in the first three frames and in the
+last one, because a healthy gapless line always resynchronises at the start and always has its final
+frame cut in half — so a short misaligned head can leave `ERR` at 0 while the note still names it. The
+rows are red either way. Everything from the first gap onward decoded cleanly, and the file on the USB
+key holds all 8192 bytes: a byte that failed its parity or stop bit is still written, marked, rather
+than dropped.
 
 Underneath: the **trigger cell**, the bytes, then two rows of text. The **status row** tells you where
 you are (`FRAME HEX pg 1/1 bytes 1-155/155 win 240 [done]`) and names the log file.
@@ -441,7 +445,7 @@ shows as `--`.
 failures. Noise landing inside a data bit flips it with nothing to detect — which is why the note row
 matters more than the error count.
 
-If you see **`capture began mid-byte — the first N bytes are misaligned`**: on a line that never goes
+If you see **`began mid-byte — the first N bytes are misaligned.`**: on a line that never goes
 quiet, the capture starts wherever it starts, and if that is halfway through a byte the first few
 bytes are chopped up wrongly. They are shown rather than hidden, but **do not trust their values**.
 Everything after the first gap in the traffic is fine. On traffic with normal gaps between messages it

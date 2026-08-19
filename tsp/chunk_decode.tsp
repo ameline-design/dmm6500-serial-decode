@@ -657,6 +657,19 @@ function sdec.ck_decode(reader, ntotal, fmt, sink, opts)
       -- saying nothing. Caught by wrapping ua_run in test_serial and watching window 2 win.
       if tot.nf == 0 and r.headsusp ~= nil and r.headsusp > 0 then
         tot.headsusp = r.headsusp
+        -- AND HOW FAR THE DAMAGE ACTUALLY REACHES. headsusp is the bytes before the first inter-message
+        -- GAP -- a conservative region, not a count of bad bytes -- and the panel reported it as one:
+        -- 'the first 79 bytes are misaligned' over a capture with 3 flagged bytes. The LAST flagged byte
+        -- in that region is what makes 'the first N' literally true.
+        --
+        -- COMPUTED HERE BECAUSE ONLY HERE HAS THE HEAD. A recording leaves its retained TAIL on screen,
+        -- and a 32 kB tail starts at byte 24577 -- its errs array does not contain the opening bytes at
+        -- all, so ui_notes cannot count them however it is written.
+        local hb, hi = 0, nil
+        for hi = 1, r.headsusp do
+          if r.errs[hi] ~= nil then hb = hi end
+        end
+        if hb > 0 then tot.headbad = hb end
       end
       local sok = true
       if sink ~= nil then sok = sink(r.vals, r.errs, m, tot.nf) end
@@ -1076,7 +1089,8 @@ function sdec.ck_job_step(job)
   -- means. job outlives the steps, so the FIRST non-nil answer is kept and handed back every time.
   if tot ~= nil then
     if job.headsusp == nil then job.headsusp = tot.headsusp end
-    tot.headsusp = job.headsusp
+    if job.headbad == nil then job.headbad = tot.headbad end
+    tot.headsusp, tot.headbad = job.headsusp, job.headbad
   end
   if not pok then
     tot, praise = nil, perr

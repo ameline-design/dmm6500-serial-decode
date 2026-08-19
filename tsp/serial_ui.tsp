@@ -1254,17 +1254,50 @@ function sdec.ui_notes()
   end
   if hs ~= nil then
     local onscreen = (sdec.res == nil or sdec.res.first == nil or sdec.res.first <= 1)
-    -- SHORT ENOUGH TO SURVIVE THE PAGE COUNTER. Measured on the panel: the long form was 757 px
-    -- against the 556 the note has once the counter is showing, so it rendered as '...everythi...' --
-    -- cutting the REASSURING half and leaving the warning. The half that says the rest of the capture
-    -- is sound is the half an operator needs in order to carry on, so it is the half that must fit.
-    -- 'the rest is sound' is 520 px and survives with the counter, the ellipsis and the slack.
+    -- HOW FAR THE DAMAGE ACTUALLY REACHES, not how far the SUSPICION does. headsusp is idle1 - 1: the
+    -- bytes before the first inter-message GAP, which ua_run excludes from the parity vote as a
+    -- conservative region. It is not a count of bad bytes, and reporting it as one over-claimed badly
+    -- -- 'the first 79 byte(s) are misaligned' over a capture with 3 flagged bytes and a first row that
+    -- was not even red, because the fox vector runs 79 bytes before its first gap. An earlier capture
+    -- said 36 against 20 errors, close enough to look plausible, which is how it survived.
+    --
+    -- THE LAST FLAGGED BYTE IN THAT REGION, so 'the first N' is literally true: N covers every byte the
+    -- decoder could not frame, and nothing beyond. Only countable when the head is ON SCREEN -- a
+    -- 32 kB tail does not carry its own head's errs -- so the other branch keeps no number at all
+    -- rather than quoting the suspect region as if it were damage.
+    if onscreen and sdec.res ~= nil and sdec.res.errs ~= nil then
+      local last, i = 0, nil
+      for i = 1, hs do
+        if sdec.res.errs[i] ~= nil then last = i end
+      end
+      if last > 0 then hs = last end
+    elseif sdec.ck_tot ~= nil and sdec.ck_tot.headbad ~= nil
+           and sdec.ck_tot.headbad > 0 then
+      -- FROM THE RUN, for a tail that does not contain its own head. ck_decode counted it on the window
+      -- that produced the first bytes, which is the only place the opening bytes exist.
+      hs = sdec.ck_tot.headbad
+    end
+    -- IT STATES THE EXTENT AND STOPS. The note shares its row with the page counter, which leaves it
+    -- 556 px, and every trailing reassurance was what got cut: measured on the panel, the long form was
+    -- 757 px and rendered as '...everythi...'. Ending at 'misaligned.' removes the clause rather than
+    -- betting on it fitting. ERR carries the count of failures; this carries how far they reach.
+    -- SINGULAR AND PLURAL, spelled out rather than 'byte(s)': one byte is 'the first byte is', more is
+    -- 'the first 3 bytes are'. A parenthesised plural on a panel reads as a placeholder nobody filled in.
     if onscreen then
-      add(string.format('began mid-byte -- the first %d byte(s) are misaligned; '
-                        .. 'the rest is sound', hs))
+      if hs == 1 then
+        add('began mid-byte -- the first byte is misaligned.')
+      else
+        add(string.format('began mid-byte -- the first %d bytes are misaligned.', hs))
+      end
     else
-      add(string.format('the run began mid-byte -- its first %d byte(s) are in the file, '
-                        .. 'misaligned; what is on screen is sound', hs))
+      -- 'in the file' is the fact that distinguishes this branch and cannot be dropped: the bytes it
+      -- names are not the ones on the panel.
+      if hs == 1 then
+        add('the run began mid-byte -- its first byte is misaligned, in the file.')
+      else
+        add(string.format('the run began mid-byte -- its first %d bytes are misaligned, in the file.',
+                          hs))
+      end
     end
   end
 
@@ -2179,13 +2212,17 @@ function sdec.ui_refresh()
       if r ~= nil then
         local j
         for j = i0, i0 + cols - 1 do
-          -- Red for an INTERIOR error only. The head frames a gapless stream spends
-          -- resynchronising, and the last frame the buffer cut in half, are not signal faults
-          -- and must not paint a row red on a healthy line.
-          if j <= r.nf and r.errs[j] ~= nil
-             and j > (sdec.ua_edge_frames or 3) and j < r.nf then
-            bad = true
-          end
+          -- ANY flagged byte reddens its row, edges included. The colour excluded the first
+          -- ua_edge_frames and the clipped last frame, which contradicted the row it was
+          -- describing: seen on the panel, an 8 kB run with ERR 3 drew '???OWN FOX JUMPS' in
+          -- normal white. The bytes are ALREADY '??' in hex and '?' in ASCII, so the colour
+          -- claims nothing new -- it agrees with what is on screen, and damage is meant to be
+          -- found by looking.
+          --
+          -- ERR STILL COUNTS INTERIOR ERRORS ONLY (ua_bad_interior): a permanently non-zero
+          -- count on a healthy gapless line is decoration, not a fault indicator. The two
+          -- differ on purpose; do not re-unify them.
+          if j <= r.nf and r.errs[j] ~= nil then bad = true end
         end
       end
     end

@@ -2694,6 +2694,11 @@ function sdec.ck_decode(reader, ntotal, fmt, sink, opts)
       end
       if tot.nf == 0 and r.headsusp ~= nil and r.headsusp > 0 then
         tot.headsusp = r.headsusp
+        local hb, hi = 0, nil
+        for hi = 1, r.headsusp do
+          if r.errs[hi] ~= nil then hb = hi end
+        end
+        if hb > 0 then tot.headbad = hb end
       end
       local sok = true
       if sink ~= nil then sok = sink(r.vals, r.errs, m, tot.nf) end
@@ -2967,7 +2972,8 @@ function sdec.ck_job_step(job)
   job.opts.resume = nil               -- unconditionally: a raise must not leave it set
   if tot ~= nil then
     if job.headsusp == nil then job.headsusp = tot.headsusp end
-    tot.headsusp = job.headsusp
+    if job.headbad == nil then job.headbad = tot.headbad end
+    tot.headsusp, tot.headbad = job.headsusp, job.headbad
   end
   if not pok then
     tot, praise = nil, perr
@@ -3649,12 +3655,29 @@ function sdec.ui_notes()
   end
   if hs ~= nil then
     local onscreen = (sdec.res == nil or sdec.res.first == nil or sdec.res.first <= 1)
+    if onscreen and sdec.res ~= nil and sdec.res.errs ~= nil then
+      local last, i = 0, nil
+      for i = 1, hs do
+        if sdec.res.errs[i] ~= nil then last = i end
+      end
+      if last > 0 then hs = last end
+    elseif sdec.ck_tot ~= nil and sdec.ck_tot.headbad ~= nil
+           and sdec.ck_tot.headbad > 0 then
+      hs = sdec.ck_tot.headbad
+    end
     if onscreen then
-      add(string.format('began mid-byte -- the first %d byte(s) are misaligned; '
-                        .. 'the rest is sound', hs))
+      if hs == 1 then
+        add('began mid-byte -- the first byte is misaligned.')
+      else
+        add(string.format('began mid-byte -- the first %d bytes are misaligned.', hs))
+      end
     else
-      add(string.format('the run began mid-byte -- its first %d byte(s) are in the file, '
-                        .. 'misaligned; what is on screen is sound', hs))
+      if hs == 1 then
+        add('the run began mid-byte -- its first byte is misaligned, in the file.')
+      else
+        add(string.format('the run began mid-byte -- its first %d bytes are misaligned, in the file.',
+                          hs))
+      end
     end
   end
 
@@ -4214,10 +4237,7 @@ function sdec.ui_refresh()
       if r ~= nil then
         local j
         for j = i0, i0 + cols - 1 do
-          if j <= r.nf and r.errs[j] ~= nil
-             and j > (sdec.ua_edge_frames or 3) and j < r.nf then
-            bad = true
-          end
+          if j <= r.nf and r.errs[j] ~= nil then bad = true end
         end
       end
     end
