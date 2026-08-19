@@ -5851,9 +5851,11 @@ function sdec.mode_next()
   return sdec.ui_modes[1]
 end
 
--- The Mode button. Two behaviours, and which one applies turns on whether a run is in progress:
---   RUNNING  -> abort. Stop the stream, flush, straight back to FRAME, one press.
 --   IDLE     -> advance to the next mode, flushing the one being left on the way out.
+-- THE RUNNING BRANCH NO LONGER LANDS IN FRAME. mode_exit() is a flush and does not touch capmode, so
+-- an abort stops the run and leaves the setting that says what the next one is -- one press, one
+-- effect. Getting to FRAME from a recording mode is therefore up to two more presses of this button,
+-- which is the trade for the mode never changing itself.
 function sdec.mode_cycle()
   if sdec.ck_running then
     sdec.mode_exit('Mode pressed')

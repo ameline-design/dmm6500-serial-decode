@@ -2283,13 +2283,17 @@ end
 
 -- The Mode button. Two behaviours, and which one applies turns on whether a run is in progress:
 --
---   RUNNING  -> abort. Stop the stream, flush, straight back to FRAME, one press.
+--   RUNNING  -> abort. Stop the stream and flush, in one press, STAYING in the mode.
 --   IDLE     -> advance to the next mode, flushing the one being left on the way out.
+--
+-- THE RUNNING BRANCH NO LONGER LANDS IN FRAME. mode_exit() is a flush and does not touch capmode, so
+-- an abort stops the run and leaves the setting that says what the next one is -- one press, one
+-- effect. Getting to FRAME from a recording mode is therefore up to two more presses of this button,
+-- which is the trade for the mode never changing itself.
 function sdec.mode_cycle()
-  -- NOT ABSORBED. See sdec.press_absorbed: Mode is the way OUT, and a dead Mode button in the second
-  -- after a run is worse than a mode change nobody wanted. bench_panel's Mode/rec-exit caught this.
-  -- FRAME IS ONE PRESS AWAY FROM ANYWHERE, which is what makes the cycle an acceptable
-  -- substitute for a dedicated Exit button on a bar with no room for one.
+  -- NOT ABSORBED. See sdec.press_absorbed: Mode is a way to STOP, and a dead Mode button in the
+  -- second after a run is worse than a mode change nobody wanted. bench_panel's Mode/rec-exit caught
+  -- this.
   if sdec.ck_running then
     sdec.mode_exit('Mode pressed')
     -- The summary survives a stream that ended BY ITSELF -- it is the result, and the bytes are
