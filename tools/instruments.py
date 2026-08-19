@@ -192,8 +192,13 @@ SDG_UPLOAD_SAFE_BYTES = 65536      # below this, uploads have never wedged it
 # A ZERO-LENGTH WAVEFORM BRICKS THIS GENERATOR, AND WE HAVE NO RECOVERY. Reported publicly by an owner who
 # did it with low-level SCPI over TCP -- the same route this repo uses. An empty waveform got stored, the
 # instrument was power-cycled, and it never came back: logo for ~25 s, a brief LED flash, then a blank LCD
-# forever. They recovered ONLY because their firmware was patched and exposed telnet, which let them delete
-# the file from /usr/bin/siglent/usr/usr. This instrument runs stock 2.01.01.39R7 with no telnet.
+# forever. They recovered ONLY because their firmware had been patched SO THE ROOT PASSWORD HASH WAS A
+# KNOWN VALUE -- that is what gave them a shell over telnet and let them delete the file from
+# /usr/bin/siglent/usr/usr.
+#
+# SO THE ESCAPE NEEDS TWO THINGS WE DO NOT HAVE, and it is worth being precise about both rather than
+# hoping: a reachable shell AND credentials for it. This instrument runs stock 2.01.01.39R7, so even if a
+# port answered, the root hash is not ours to know. Do not plan on unbricking it.
 #
 # THE TRIGGER IS OUR OWN RECOVERY PROCEDURE. They power-cycled to clear a stuck TCP state -- which is the
 # WVDT wedge documented above. Wedge, then power-cycle, is what we do; it is also the step that turns a bad

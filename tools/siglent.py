@@ -77,8 +77,8 @@ class SDG:
         # A ZERO-LENGTH WAVEFORM BRICKS THIS INSTRUMENT. Reported publicly and independently: a fumbled
         # low-level SCPI upload stored an empty waveform, and the NEXT POWER-UP showed the logo for ~25 s,
         # flashed the LEDs and left the LCD blank forever. The poster recovered only because their firmware
-        # was PATCHED and exposed telnet, letting them delete the file from
-        # /usr/bin/siglent/usr/usr by hand.
+        # was PATCHED SO THE ROOT PASSWORD HASH WAS A KNOWN VALUE, which gave them a shell over telnet
+        # and let them delete the file from /usr/bin/siglent/usr/usr by hand.
         #
         # WE HAVE NO SUCH ESCAPE. This generator runs stock 2.01.01.39R7 with no telnet, so a brick here is
         # not a power-cycle away from fixed -- it is a dead instrument. And the path to it is one we walk
