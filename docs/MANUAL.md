@@ -92,7 +92,17 @@ version quoted the whole region before the first gap, which on one capture read 
 failures. One deliberate difference is left: `ERR` ignores failures in the first three frames and in the
 last one, because a healthy gapless line always resynchronises at the start and always has its final
 frame cut in half — so a short misaligned head can leave `ERR` at 0 while the note still names it. The
-rows are red either way. Everything from the first gap onward decoded cleanly, and the file on the USB
+rows are red either way:
+
+![One misaligned byte: ERR reads 0, the row is red, the note names it](img/panel-err0.png)
+
+That is the smallest version of the same fault, on a 240B frame capture. Exactly one byte was
+misaligned — `?quick brown fox`, resynchronised by the second byte — so `ERR` counts nothing, because
+byte 1 is one of the three head frames it ignores. The **row is still red**, which is the whole reason
+the colour does not defer to the count: a reader who trusted `ERR` alone would see a warning with
+nothing to look at. On a busy line roughly one capture in eight starts this way.
+
+In the 8 kB capture above, everything from the first gap onward decoded cleanly, and the file on the USB
 key holds all 8192 bytes: a byte that failed its parity or stop bit is still written, marked, rather
 than dropped.
 
