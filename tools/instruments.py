@@ -257,14 +257,32 @@ SCOPE_MSIZ_NONINTERLEAVED = ('7K', '70K', '700K', '7M')   # MSIZ, both per pair
 SCOPE_DEEP_CHANNELS = (1, 3)     # one from each pair: full rate and depth on both
 SCOPE_CH_SIGNAL = 1      # the summed stimulus, from the T
 SCOPE_CH_IMPAIR = 2      # SDG CH2 alone. ENABLE ONLY WHEN DIAGNOSING -- halves CH1
-# SDG Aux In/Out. INTENDED to mark the arb's first sample, and it DOES NOT in TrueArb.
-# Measured 2026-08-16: with C1:SYNC reporting "ON,TYPE,CH1" and a TrueArb waveform playing
-# correctly on CH1 (3.44 V pk-pk), CH3 is dead flat -- 0.08 V over a 14 ms window and no
-# measurable frequency over 2.8 s, i.e. two full 1.07 s waveform periods. So there is no
-# sync edge to arm the scope on, and any plan that anchors an acquisition to the start of an
-# arb payload needs another mechanism. Do not trust this channel as a marker without
-# re-checking it; the SYNC readback says nothing about whether the BNC is driving.
-SCOPE_CH_ARBSYNC = 3
+# THE SDG's ARB SYNC IS ABANDONED, DECIDED 2026-08-19. Do not investigate it again.
+#
+# The reason is arithmetic, not a measurement: SDG2000X_UserManual 12.7 documents the sync as a
+# 50 ns pulse, and the DMM6500's EXT TRIG IN specs a MINIMUM PULSE WIDTH of 1 us
+# (docs/DMM6500_Specs_April_2018.txt:761). 20x too narrow. It could never have driven this meter
+# whether or not the BNC works, so whether it works does not matter to this project.
+#
+# The Aux In/Out BNC will only ever be used as an INPUT, as the burst trigger for the
+# flow-control loop (notes/PROPOSAL-flowcontrol-loop.md). Never as a sync output. That also
+# removes a hazard: the BNC is bidirectional, so a sync output left enabled while the DMM drives
+# it would tie two push-pull drivers together.
+#
+# Retracted along the way: an earlier note here asserted the sync "DOES NOT" drive in TrueArb,
+# from CH3 reading flat over a 14 ms window. That window had a 1.31 % chance of containing a
+# 50 ns pulse at v71's 0.936 Hz, so it was equally consistent with a live pulse being missed.
+# The claim was never supportable; it is gone rather than corrected.
+#
+# CH3 IS THEREFORE FREE -- but that changes nothing for the credit-pulse edge measurement (gate G0
+# of the flow-control proposal), and it is worth saying why so nobody rewires for no reason. EITHER
+# channel of a pair gets the full 1 GSa/s and 14 Mpts when the other is OFF; only both-enabled
+# halves them. So CH4, already wired to the DMM's EXT TRIG OUT, is ALREADY optimal for G0 with CH3
+# left off -- CH1 and CH4 are two full-bandwidth channels in different pairs. SCOPE_DEEP_CHANNELS
+# below is one valid choice of one-per-pair, not the only one; (1, 4) is equally deep.
+# What freeing CH3 actually buys is a SPARE deep channel, for a case that needs to watch a third
+# signal at full rate. Nothing today does.
+SCOPE_CH_ARBSYNC = 3     # unused; a spare deep channel, no longer allocated to the abandoned sync
 SCOPE_CH_DMMWIN = 4      # DMM EXT TRIG OUT: marks the DMM's capture window
 
 

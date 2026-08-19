@@ -15,6 +15,32 @@ naming here: **flow control** is verified electrically — 4.92 V, ~10 µs, one 
 measures **9.4–9.8 µs**, so a device waiting for a credit needs an edge-triggered input rather than a
 polling loop.
 
+**Endurance, measured.** An 8-hour soak of this build on one power cycle ran **98 laps — 4,214
+capture-and-decode cycles and 9 one-press recordings — with zero wrong answers.** Every recording
+ended because its buffer filled, at 8 192 bytes, with no instrument events logged and no error left
+behind. The number worth more than the failure count is the **lap time**: a mean of 300.9 s over the
+first ten laps and 292.9 s over the last ten, drifting **−2.7 %** across the full eight hours, so
+nothing accumulated. A leaked display object, a buffer handle that was never returned or a
+fragmenting allocator would all have shown up as laps getting *slower*, and none did — which matters
+because a leak here would not have failed a lap, it would have wedged the instrument around hour six.
+The soak also settles a specific defect: the 2× baud misfit that made 9600 read as 19200 affected
+**15.2 %** of laps in v1.01 and recurred **zero** times in 98.
+
+Eleven of those 98 laps are printed as failures by `tools/soak.py`, and none of them is one. All
+eleven are the same measurement artifact in the *harness*: the long-payload gate scores a capture on
+its longest unflagged run, which is an order statistic, so **one honestly-flagged byte landing more
+than ten bytes from either edge fails the point** however few there are — at 239 bytes only 22 of 239
+single-flag positions can pass. The bytes the decoder stood behind were byte-exact every time — as
+they were in all 143 long-payload points ever recorded here. The gate has since been **replaced** by
+one that is *stricter*, not laxer: it validates **every** clean run against the payload at one agreed
+alignment instead of only the longest, and bounds the flag **count**, which does not move when a flag
+changes position. It catches two things the old rule passed — a corrupted byte inside a short run,
+and a decode that lost and regained sync mid-capture. `tools/rejudge_soak.py` re-judges the soak
+records either way.
+
+What that soak does **not** cover: it is depth rather than breadth — 43 stimulus points repeated 98
+times, no front-panel interaction (that is `hw-panel`'s job), and one power cycle rather than many.
+
 **Nothing stops a long job early — there is no working stop control.** A touch press cannot be
 delivered while a script runs, so the app cannot show a Cancel button, and the front-panel TRIGGER key
 does not fill the gap: it does **not** deliver `trigger.EVENT_DISPLAY` while a PANEL-initiated run is
@@ -70,9 +96,10 @@ python3 tools/release_sweep.py --offline
 | Stage | Checks |
 |---|---|
 | `lint` `parse` | Lua 5.0.2 incompatibilities; `luac -p` on every module |
-| `unit` | 858 offline tests — decoder, UI, state machine, file paths |
+| `unit` | 938 offline tests — decoder, UI, state machine, file paths, every visible ASCII glyph |
 | `unit-cancel` | the TRIGGER-key cancel latch, one-press recordings, both window sizes, the flow-control loop |
 | `stress` | hostile signals: never silently **wrong**, never **raises** |
+| `unit-loremgate` | the harness's own long-payload verdict — every clean run validated, flag count bounded |
 | `tolerance` | recomputes the envelope table printed in the manual |
 | `package` `archive` | rebuilds the `.tspa`, then builds both screens *from the archive* against a mock front end |
 | `manual` | rebuilds every shipped PDF: `docs/MANUAL.pdf`, `docs/REFERENCE.pdf`, `README.pdf` |

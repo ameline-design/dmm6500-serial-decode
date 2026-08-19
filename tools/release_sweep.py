@@ -112,6 +112,12 @@ def stages(outdir, shots):
         Stage('unit-analog', ['lua', 'tools/test_analog.lua'],
               note='the bench cases at the app\'s OWN sample rates, swept over sampling phase, '
                    'jitter, noise and where the capture window opens'),
+        # Gates the HARNESS's own long-payload verdict, not the app. It earns a gate because the
+        # gate it replaces passed a capture containing a silently wrong byte, and a judging rule
+        # that can do that is as dangerous as a decoder bug -- it hides them.
+        Stage('unit-loremgate', ['python3', 'tools/test_lorem_gate.py'],
+              note='the long-payload judging rule: every clean run validated, flag COUNT bounded, '
+                   'and the cases the old longest-run gate got wrong'),
         Stage('tolerance', ['lua', 'tools/tolerance.lua'], gate=False,
               note='the envelope table in the manual, recomputed'),
         Stage('package', ['python3', 'tools/package_tspa.py'],

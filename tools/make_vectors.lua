@@ -195,6 +195,32 @@ local function lorem_vec(baud, fs, nbytes)
          by, nb, nil, s
 end
 
+-- EVERY VISIBLE 7-BIT GLYPH, 0x21..0x7E, in one 133-byte payload. The pangram twice, cased, which
+-- is the trick of it -- 52 of the 94 come free from two copies -- then the digits and every
+-- remaining symbol in code-point order so a gap is visible on inspection.
+--
+-- Worth a vector of its own because a byte the decoder never sees is a bit pattern that was never
+-- framed. The lorem vectors are English prose: they never send '~' (0x7E, six consecutive ones
+-- inside one frame), '!' (0x21), '\' or '{|}'. Those attack the stop-bit search and the run-length
+-- logic differently from letters, and no shipped vector contained them.
+--
+-- tools/test_serial.lua asserts the same 94-glyph coverage offline against the same string, so the
+-- offline and hardware halves are testing one payload rather than two similar ones.
+local ASCII94 = 'the quick brown fox jumps over the lazy dog. ' ..
+                'THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG. ' ..
+                '0123456789 !"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~'
+
+-- SIZED FOR A LAN UPLOAD. 133 bytes at ~10.4 samples/bit is about 14 kpts / 28 kB, comfortably
+-- under SDG_UPLOAD_SAFE_BYTES (tools/instruments.py) -- unlike the 1 kB lorem vectors, whose 213 kB
+-- has to reach the generator on a USB key. gap/lead/tail and loop match lorem_vec for the same
+-- reasons stated there; loop = true especially, since without it the frame across the arb's repeat
+-- seam is corrupt and reads as a decoder fault rather than a stimulus one.
+local function ascii94_vec(baud, fs, nbits, par)
+  local by, nb = GEN_BYTES(ASCII94)
+  return {bytes = by, baud = baud, fs = fs, nbits = nbits, par = par,
+          gap = 0, lead = 10, tail = 10, loop = true}, by, nb, nil, ASCII94
+end
+
 local function hello(o)
   local by, nb = GEN_BYTES(HELLO)
   local opts = {bytes = by, baud = o.baud, fs = o.fs, nbits = o.nbits,
@@ -530,6 +556,20 @@ vec{id = 'v76', desc = 'lorem 300 B, 9600 8N1 (loop-exact sweep vector)', fs = 1
     build = function() return lorem_vec(9600, 100000, 300) end}
 vec{id = 'v75', desc = 'lorem ipsum 1 kB, 1200 8N1 (paging)', fs = 10000, fsv = 5.0,
     long = true, build = function() return lorem_vec(1200, 10000, LONG_N) end}
+
+-- THE FULL-GLYPH VECTORS. NOT YET UPLOADED TO THE GENERATOR -- built here so the files and the
+-- manifest rows exist, and uploaded on the next deliberate `bench_matrix.py --upload`. Deferred on
+-- purpose: an upload mid-soak risks wedging the generator's LAN service, and recovery is a power
+-- cycle on an instrument with no smart plug, so it costs a human.
+--
+-- 7E1 as well as 8N1, because that is where full-glyph coverage earns the most: the parity bit is
+-- then computed over all 94 bit patterns rather than over the 40-odd that English prose produces.
+-- Every byte is <= 0x7E, so a seven-bit frame carries the whole payload with nothing truncated --
+-- which is what makes the 8N1 and 7E1 rows directly comparable.
+vec{id = 'v77', desc = 'all 94 visible glyphs, 9600 8N1', fs = 100000, fsv = 5.0,
+    build = function() return ascii94_vec(9600, 100000) end}
+vec{id = 'v78', desc = 'all 94 visible glyphs, 9600 7E1', fs = 100000, fsv = 5.0,
+    build = function() return ascii94_vec(9600, 100000, 7, 1) end}
 
 -- ---------------------------------------------------------------------------
 -- THE STANDARD-RATE SWEEP, 300 to 38400

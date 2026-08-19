@@ -31,6 +31,7 @@ display object is created, so the one-build-per-power-cycle budget is untouched.
 """
 import argparse
 import csv
+import math
 import os
 import struct
 import sys
@@ -375,6 +376,110 @@ def analyse(got, want):
     best = max(runs, key=len) if runs else []
     gb = bytes(int(x, 16) for x in best)
     return cyclic_find(want, gb), len(best), bad, interior
+
+
+# Judging thresholds for judge_payload(). A run shorter than MINVAL matches a 1 kB payload by
+# chance often enough to prove nothing, so it is neither validated nor counted as coverage.
+JP_MINVAL = 4
+JP_FLAG_FRAC = 0.02      # flag budget, as a fraction of the capture...
+JP_FLAG_FLOOR = 2        # ...or this many, whichever is kinder
+JP_COVER_MIN = 0.90      # how much of the capture must be positively verified byte-exact
+
+
+def runs_of(frames):
+    """Every maximal run of non-flagged frames, as (start_index, [frames])."""
+    out, cur, start = [], [], 0
+    for i, f in enumerate(frames):
+        if f == '??':
+            if cur:
+                out.append((start, cur))
+            cur, start = [], i + 1
+        else:
+            if not cur:
+                start = i
+            cur.append(f)
+    if cur:
+        out.append((start, cur))
+    return out
+
+
+def judge_payload(got, want):
+    """Judge a capture of a LOOPING payload. -> (ok, detail).
+
+    REPLACES the `longest_clean_run/body >= 0.95` test for the long-payload suites, which had two
+    independent faults. It is STRICTER than what it replaces, not laxer -- see tools/test_lorem_gate.py,
+    which holds the cases proving both.
+
+    1. The old gate was a fragile ORDER STATISTIC. With k bytes flagged the score depended on WHERE
+       they landed, not how many: for a single flag at index p in 239 frames the runs are p and
+       238-p, so it needed p <= 10 or p >= 228 -- only 22 of 239 positions (9.2 %) could pass. One
+       honestly-flagged byte more than ten from an edge failed the point outright. Measured across
+       143 recorded lorem points: the longest run was byte-exact 141 of 141 times it was reported,
+       yet 1.4 % of points fell below the gate. Those verdicts described flag position, not
+       correctness. Here the signal-quality test is a COUNT, which does not move when a flag does.
+    2. analyse() validates ONLY the longest run, so a wrong byte in a shorter run was invisible.
+       Here EVERY run long enough to be diagnostic is checked.
+
+    ONE alignment is established for the whole capture and every run is checked at the position it
+    predicts -- NOT by searching for each run independently. A 4-8 byte run of prose really does
+    occur more than once in 1 kB, so a per-run find() lands on the wrong copy and fakes a
+    misalignment. All candidate anchor positions are tried before a capture is called wrong.
+    """
+    frames = [got[i:i + 2] for i in range(0, len(got), 2)]
+    body = len(frames)
+    if not body:
+        return False, 'no bytes decoded'
+    bad = [i for i, f in enumerate(frames) if f == '??']
+    interior = [i for i in bad if i != 0 and i != body - 1]
+    rr = runs_of(frames)
+    hay = want + want                    # the payload loops, so a window may straddle the wrap
+
+    diag = [(s, f) for s, f in rr if len(f) >= JP_MINVAL]
+    if not diag:
+        return False, 'nothing long enough to validate (%d B in runs under %d)' % (body, JP_MINVAL)
+    try:
+        asbytes = [(s, bytes(int(x, 16) for x in f)) for s, f in rr]
+    except ValueError:
+        return False, 'capture is not hex'
+    anchor_start, anchor = max(diag, key=lambda r: len(r[1]))
+    anchor_b = bytes(int(x, 16) for x in anchor)
+
+    cands, at = [], hay.find(anchor_b)
+    while 0 <= at < len(want):
+        cands.append((at - anchor_start) % len(want))
+        at = hay.find(anchor_b, at + 1)
+    if not cands:
+        return False, ('run of %d B at index %d is NOT in the payload -- silently wrong'
+                       % (len(anchor_b), anchor_start))
+
+    align, verified, whynot = None, 0, ''
+    for cand in cands:
+        v, ok_all = 0, True
+        for start, gb in asbytes:
+            if len(gb) < JP_MINVAL:
+                continue                 # too short to prove anything either way
+            exp = (cand + start) % len(want)
+            if hay[exp:exp + len(gb)] != gb:
+                ok_all = False
+                whynot = ('run of %d B at index %d does not match the payload at the alignment the '
+                          'rest of the capture agrees on -- silently wrong' % (len(gb), start))
+                break
+            v += len(gb)
+        if ok_all:
+            align, verified = cand, v
+            break
+    if align is None:
+        return False, whynot
+
+    budget = max(JP_FLAG_FLOOR, int(math.ceil(JP_FLAG_FRAC * body)))
+    if len(interior) > budget:
+        return False, '%d interior flagged, budget %d' % (len(interior), budget)
+    cover = float(verified) / body
+    if cover < JP_COVER_MIN:
+        return False, ('only %.1f %% positively verified (need %.0f %%)'
+                       % (100 * cover, 100 * JP_COVER_MIN))
+    return True, ('%d of %d B verified byte-exact at offset %d (%d flagged, budget %d)'
+                  % (verified, body, align, len(interior), budget))
 
 
 def parse_point(lines):

@@ -6142,6 +6142,71 @@ local function test_baud_round()
 end
 test_baud_round()
 
+-- ============================================================================
+print('\nevery visible 7-bit glyph, in one payload (real code)')
+-- ============================================================================
+-- LONG covers the 26 letters once, lower case, plus digits and nine punctuation marks. This covers
+-- ALL 94 visible glyphs, 0x21..0x7E: the pangram twice, cased, which is the trick of it -- 52 of the
+-- 94 come free from two copies -- then the digits and every remaining symbol in code-point order.
+--
+-- Why it earns its place next to LONG rather than replacing it: a byte the decoder never sees is a
+-- byte whose bit pattern was never framed. '~' is 0x7E = 1111110, six consecutive ones inside one
+-- frame, and '!' is 0x21 = 0100001; those exercise the stop-bit search and the run-length logic
+-- differently from the letters, and the shipped suites had no coverage of either.
+--
+-- LONG is left exactly as it is on purpose. ok_exact() compares txt(r) == LONG byte for byte, and
+-- stress_serial.lua names its case 'long payload, 54 bytes' after the length of its own copy, so
+-- editing the string in place would have made a test name state something untrue.
+local ASCII94 = 'the quick brown fox jumps over the lazy dog. ' ..
+                'THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG. ' ..
+                '0123456789 !"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~'
+
+-- THE VECTOR CHECKS ITSELF FIRST. Without this a later edit could drop a glyph and every decode
+-- assertion below would still pass, having quietly stopped testing what it claims to.
+local a94seen, a94missing, a94i = {}, '', nil
+for a94i = 1, string.len(ASCII94) do
+  a94seen[string.byte(ASCII94, a94i)] = true
+end
+for a94i = 33, 126 do              -- 0x21..0x7E, every visible glyph; 32 is space, a separator here
+  if not a94seen[a94i] then a94missing = a94missing .. string.char(a94i) end
+end
+check('the vector covers all 94 visible 7-bit glyphs',
+      a94missing == '' and string.len(ASCII94) == 133,
+      string.format('%d bytes, missing [%s]', string.len(ASCII94), a94missing))
+
+local a94b, a94n = GEN_BYTES(ASCII94)
+local function a94_exact(r)
+  return r ~= nil and r.nf == a94n and r.nbad == 0 and txt(r) == ASCII94
+end
+-- Its OWN detail, not detail(): that one divides by lgn, so reusing it here printed '133/65 bytes'
+-- and named LONG's length as this payload's expected count.
+local function a94_detail(r)
+  if r == nil then return 'nil' end
+  return string.format('%d/%d bytes %d err %s %s', r.nf, a94n, r.nbad,
+                       tostring(sdec.baud), sdec.fmt_text())
+end
+
+-- 8N1 across the ladder, and 7E1/7O1 too: every byte here is <= 0x7E, so a seven-bit frame carries
+-- the whole payload without loss and must still come back byte-exact.
+for _, a94baud in ipairs({1200, 9600, 38400, 115200}) do
+  local a94r = corrupt({bytes = a94b, baud = a94baud, fs = sdec.pick_fs(a94baud, 8)})
+  check(string.format('all 94 glyphs decode exactly at %d baud 8N1', a94baud),
+        a94_exact(a94r), a94_detail(a94r))
+end
+for _, a94f in ipairs({{1, '7E1'}, {2, '7O1'}}) do
+  local a94r = corrupt({bytes = a94b, baud = 9600, fs = sdec.pick_fs(9600, 8),
+                        nbits = 7, par = a94f[1]})
+  check('all 94 glyphs decode exactly at 9600 ' .. a94f[2], a94_exact(a94r), a94_detail(a94r))
+end
+
+-- The two extremes of run length in this payload, asserted as data rather than as a claim: '~'
+-- (0x7E) is the longest run of ones inside a frame and '!' (0x21) among the sparsest.
+GEN_RESEED(9494)
+local a94nr = corrupt({bytes = a94b, baud = 9600, fs = sdec.pick_fs(9600, 8), noise = 0.15})
+check('all 94 glyphs survive 15 % noise', a94_exact(a94nr), a94_detail(a94nr))
+check('and the payload really does contain the awkward ones (0x7E, 0x21, 0x5C)',
+      a94seen[126] and a94seen[33] and a94seen[92], 'tilde / bang / backslash')
+
 print()
 print(string.format('%d passed, %d failed', pass, fail))
 os.exit(fail == 0 and 0 or 1)

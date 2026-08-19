@@ -444,21 +444,21 @@ def suite_lorem(d, g, a, rows):
         if 'fail' in res:
             det = 'FAIL %s' % res['fail']
         elif nf > head:
-            pos, run, bad, interior = BU.analyse(hexs[2 * head:], payload)
             # A FLAGGED framing error is not a wrong answer. lorem is rendered with gap = 0 -- bytes
             # back to back, which is what a device dumping a buffer does -- so a capture that began
             # mid-byte has no idle to resynchronise on and cannot report its own misaligned head
             # (r.idle1 stays nil, so headsusp does). What must hold is that the bytes the decoder
-            # stands behind are RIGHT: the longest clean run has to match the payload and cover
-            # nearly all of the capture. One flagged frame in 239 is reported honestly as ERR 1.
-            body = nf - head
-            frac = float(run) / body if body else 0.0
-            ok = pos >= 0 and frac >= 0.95
-            det = ('%d of %d B match at offset %d (%d flagged)%s'
-                   % (run, body, pos, len(bad),
-                      ' after a FLAGGED %d-byte head' % head if head else '')) if ok else \
-                  ('%d B, longest clean run %d (%.0f %%), %d bad (%d interior)'
-                   % (nf, run, 100 * frac, len(bad), len(interior)))
+            # STANDS BEHIND are right, and that it did not decline too many.
+            #
+            # This used to be `longest_clean_run/body >= 0.95`, which failed a point on WHERE a flag
+            # landed rather than how many there were -- one honest flag more than ten bytes from an
+            # edge failed outright, and only 22 of 239 single-flag positions could pass. It also left
+            # every run but the longest unchecked against the payload. BU.judge_payload validates
+            # every diagnostic run at one agreed alignment and bounds the flag COUNT; see its
+            # docstring and tools/test_lorem_gate.py.
+            ok, det = BU.judge_payload(hexs[2 * head:], payload)
+            if head:
+                det = det + ' after a FLAGGED %d-byte head' % head
         gb = num(res, 'baud')
         close = gb is not None and abs(gb / baud - 1.0) <= 0.02
         print('  %-26s %-5s %-6s %5s Bd  %-46s %s'
@@ -469,6 +469,12 @@ def suite_lorem(d, g, a, rows):
             print('      *** %d x event 4915 ***' % n4915)
         for n in notes:
             print('      note: %s' % n)
+        # DUMP THE BYTES ON A FAILURE. Without this the record of a failed point is its summary line
+        # and nothing else, so the verdict can never be re-derived -- eleven soak laps were judged
+        # BAD by the old gate and none of them could be re-tested afterwards, because the hex was
+        # gone. Only on failure: 480 hex chars per passing point would bury the log.
+        if not (ok and close):
+            print('      hex head %d: %s' % (head, hexs[2 * head:][:512]))
         rows.append(('lorem %d' % baud, ok and close, det))
 
 
