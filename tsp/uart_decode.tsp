@@ -1368,6 +1368,13 @@ function sdec.ua_refine_parity(r, rd, n, T)
     if r2 == nil then return r end
     r2.score = sdec.ua_score(r2)
     r2.headsusp = r.headsusp
+    -- STAMP THE FORMAT ON. ua_run returns values and errors, not which format produced them -- the search
+    -- loop does that when it picks a winner -- so this re-decode came back with nbits/par/nstop/invert all
+    -- NIL, and only score and headsusp were copied. The branch whose purpose is to change the format
+    -- returned one with none. It surfaced as a crash in ua_note_fmt's %d, so capture() raised while
+    -- DESCRIBING a decode that had succeeded and the bench filed 'no bytes decoded'. 14 of 256 offsets
+    -- offline, identical at c7ca3e9. The strict path escaped it by mutating r in place.
+    r2.nbits, r2.par, r2.nstop, r2.invert = 7, par, r.nstop, r.invert
     sdec.fmt_note = note
     return r2
   end

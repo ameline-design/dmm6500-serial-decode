@@ -2006,6 +2006,7 @@ function sdec.ua_refine_parity(r, rd, n, T)
     if r2 == nil then return r end
     r2.score = sdec.ua_score(r2)
     r2.headsusp = r.headsusp
+    r2.nbits, r2.par, r2.nstop, r2.invert = 7, par, r.nstop, r.invert
     sdec.fmt_note = note
     return r2
   end
