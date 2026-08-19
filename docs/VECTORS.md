@@ -245,6 +245,28 @@ vectors added to a suite and never uploaded: `v42` `v43` `v45` `v46` `v47` `v48a
 `SER_LIN_02` `SER_LIN_03`, `SER_Lorem300B_8N1`, `SER_Random1kB_8N1`, `SER_Blocks512B_8N1`. `v42`, `v43`
 get none — same payload as `SER_Hello_8N1`, re-rendered for a rate that `srate` now supplies.
 
+
+## Two things measured while uploading, 2026-08-19
+
+**A waveform in a subdirectory cannot be selected. Store flat.** 34 vectors were written as
+`SERIAL\name` -- forward slashes are accepted by the write and then appear nowhere, a silent no-op --
+and every one was listed by `STL? USER`. `ARWV NAME` then refused all of them: by full path
+(`SERIAL\name`), by the other separator, and by basename alike, leaving the previous selection playing.
+So the store is effectively flat, and a name with a separator in it is a name that will never work.
+
+`select_arb` is what found it, and the first probe was a **false positive**: `WVDT` leaves its own write
+selected, so reading `ARWV?` straight after an upload reports the upload rather than the select. Park the
+selection on a known root vector first or the test proves nothing.
+
+**One large upload at a time is safe.** `SER_Lorem1kB_8N1` at 213 750 B -- 3.3x `SDG_UPLOAD_SAFE_BYTES` --
+wrote in 2.3 s, appeared in `STL? USER`, selected through `select_arb`, and decoded on the DMM at 9600.
+The SCPI service answered `*IDN?` immediately afterwards. The wedge recorded in `tools/instruments.py`
+took **four consecutive** 170-210 kB uploads, so the ceiling is a bound on a RUN of large writes rather
+than on one. Protocol for the remaining two: one upload, power-cycle the generator, next upload.
+
+That makes `out/vectors/USB-TRANSFER.md` less necessary than it looked -- the USB key is a convenience
+for a batch, not the only route for a single vector.
+
 ## What this costs
 
 There is no rename command: `ARWV NAME,x` selects, `WVDT` writes. A rename is a re-write plus a delete

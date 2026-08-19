@@ -231,6 +231,15 @@ class SDG:
         # which is the point of the call, was not.
         got = self.query(f'C{ch}:ARWV?') or ''
         want = name[:-4] if name.endswith('.bin') else name
+        # NO FOLDER HANDLING HERE, DELIBERATELY: a waveform in a subdirectory CANNOT BE SELECTED AT ALL.
+        # Measured 2026-08-19 -- 34 vectors written as 'SERIAL\name' were listed by STL? USER and then
+        # ARWV NAME refused every form of the request, by path ('SERIAL\name', 'SERIAL/name') and by
+        # basename alike, leaving the previous selection playing. So the store is effectively flat and a
+        # name with a separator in it is a name that will never work.
+        #
+        # This check is what found that. The first probe looked like a success because WVDT leaves its own
+        # write selected, so reading ARWV? straight after an upload reports the upload rather than the
+        # select -- park the selection on a known ROOT vector first, or the test proves nothing.
         if want.lower() not in got.lower():
             raise RuntimeError(
                 'C%d:ARWV NAME,%s did not take -- the generator still reports %r. The waveform is '
