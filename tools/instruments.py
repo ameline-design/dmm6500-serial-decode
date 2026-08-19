@@ -234,6 +234,24 @@ SDG_UPLOAD_SAFE_BYTES = 65536      # below this, uploads have never wedged it
 # Two chips on one FPGA is more likely a WIDER BUS than a bank per channel; nothing here distinguishes
 # them, and nothing in this project depends on which it is.
 #
+# THE DAC IS DUAL-CHANNEL, 1.2 GSa/s, 16 BITS. Three consequences, and all three RULE THE GENERATOR OUT
+# as an explanation for a decode artefact, which is why they are worth writing down:
+#
+#   * 16 bits is why a .bin is what it is. The file is raw DAC codewords, -32768..32767 little-endian --
+#     native to the converter, not a format the firmware translates.
+#
+#   * THE EDGES THE DMM SEES ARE THE ONES WE RENDER. 1.2 GSa/s against SDG_MAX_SRATE of 75 MS/s is 16x
+#     oversampling, so a TrueArb point is held for at least 16 DAC clocks -- and at the 100 kS/s these
+#     vectors use, 12 000 of them. DAC transition granularity is 0.833 ns against a rendered edge of
+#     15 us (rise = 1.5 samples), so our edge shaping dominates by ~18 000x. Any edge effect in a capture
+#     is the vector's or the analog path's, never the converter's.
+#
+#   * RESOLUTION IS NOT A FACTOR EITHER. Full scale 20 Vpp over 65536 codes is 305 uV per LSB; the 3.3 V
+#     logic swing these vectors use spans 10 813 codes, about 13.4 effective bits, and a threshold
+#     decision at ~1.63 V sits ~5400 codes from either rail. make_vectors.lua's note that "low
+#     utilisation is not an error" is right: a third of full scale still leaves three orders of magnitude
+#     more resolution than a logic threshold can use.
+#
 # WHAT THAT SETTLES:
 #
 #   * A WAVEFORM IS RESIDENT, NOT STREAMED. SDG_MAX_PTS is 8 388 608 points = 16 MB, which is 12% of ONE
