@@ -1228,7 +1228,26 @@ end
 -- Guards: >= 6 good frames and >= 3 distinct values. The second matters because a
 -- repeated byte is genuinely ambiguous -- 0x55 as 8N1 and as 7E1 give identical
 -- waveforms -- so the common format should win.
-function sdec.ua_refine_parity(r)
+-- How many frames at each end are excluded from the parity vote regardless of what headsusp says.
+-- THREE at the head, not one: a gapless stream "RESYNCHRONISES a few frames in" (see the boundary
+-- comment above ua_score), so trusting only the first frame to be suspect contradicts what this
+-- file already knows. One at the tail, which the buffer end slices.
+sdec.par_skiphead = sdec.par_skiphead or 3
+sdec.par_skiptail = sdec.par_skiptail or 1
+-- TWO TIERS, because the sample size a verdict needs depends on whether it tolerates dissent.
+--   UNANIMOUS agreement: par_minvote_all is enough. This is the original rule and it must stay
+--   small -- 'Hello, World!' is thirteen bytes and is legitimately 7E1, so a bar of twenty would
+--   refuse to classify a whole class of real short captures. Raising it broke six tests.
+--   ANY DISSENT: par_minvote_frac and par_minfrac. Tolerating a dissenter is the new and riskier
+--   claim, so it earns the larger sample. Null hypothesis is random 8-bit data, bit 7 matching
+--   parity with p = 0.5: 95 % of 20 votes is 2e-5, of 140 is 1.4e-31 (doubled, both parities tried).
+sdec.par_minfrac      = sdec.par_minfrac      or 0.95
+sdec.par_minvote_all  = sdec.par_minvote_all  or 6
+sdec.par_minvote_frac = sdec.par_minvote_frac or 20
+-- Votes required in EACH bit-7 state. The guard that stops a restricted alphabet faking parity.
+sdec.par_minboth = sdec.par_minboth or 2
+
+function sdec.ua_refine_parity(r, rd, n, T)
   if r == nil then return r end
   -- A FORCED PARITY IS NOT A HYPOTHESIS TO REFINE. Reading the top data bit as parity is exactly
   -- what the operator turned off by setting Parity = None, so running it anyway hands 7E1 back to
@@ -1237,50 +1256,95 @@ function sdec.ua_refine_parity(r)
   if r.nbits ~= 8 or r.par ~= sdec.PAR_NONE then return r end
   if r.ngood < 6 then return r end
 
-  -- SKIP A MISANCHORED HEAD. Unanimity is what makes this call safe -- a random 8-bit stream is
-  -- almost never unanimous -- but it also means ONE frame can veto a hundred and forty agreeing
-  -- ones, and a capture that started mid-byte supplies exactly that: garbage frames of which most
-  -- fail their stop bit or parity and are skipped below, and the occasional one that passes both
-  -- by chance and is not. Measured: a 7E1 line reads as 8N1 on two runs in three for this
-  -- reason. ua_run marks the region only when the errors are confined to it, so
-  -- there is evidence behind the exclusion rather than an allowance.
-  local i0 = (r.headsusp or 0) + 1
+  -- SKIP THE CAPTURE BOUNDARIES, ALWAYS -- not only when headsusp says so.
+  --
+  -- This test used to demand UNANIMITY, and its own defence against one frame vetoing a hundred and
+  -- forty was headsusp. That defence is conditioned on evidence this failure mode does not produce:
+  -- headsusp needs `nh > 0`, a framing ERROR in the head, and a misaligned head that happens to
+  -- frame cleanly as 8N1 produces NONE. Measured on hardware 2026-08-19 with v78 (7E1, gap = 0):
+  -- 4 of 8 captures came back with ZERO flagged frames and every byte carrying a spurious bit 7 --
+  -- 7E1 read as 8N1, parity absorbed into data bit 7, nothing flagged, because 8N1 is a genuinely
+  -- self-consistent reading of a 7E1 waveform. 47 of 48 bytes had bit 7 == the parity of their low
+  -- seven; the single exception was the FIRST frame. With gap = 0 there is often no idle1 either,
+  -- so headsusp had two independent reasons not to fire.
+  local i0 = sdec.par_skiphead + 1
+  if r.headsusp ~= nil and r.headsusp + 1 > i0 then i0 = r.headsusp + 1 end
+  local i1 = r.nf - sdec.par_skiptail
 
-  local mod, floor = math.mod, math.floor
-  local alleven, allodd = true, true
-  local seen, ndist, nvote = {}, 0, 0
+  local mod = math.mod
+  local nev, nod, nvote = 0, 0, 0
+  local seen, ndist = {}, 0
+  local ntop0, ntop1 = 0, 0
   local i
-  for i = i0, r.nf do
+  for i = i0, i1 do
     if r.errs[i] == nil then
       nvote = nvote + 1
       local v = r.vals[i]
       local top = 0
       if v >= 128 then top = 1 end
+      if top == 1 then ntop1 = ntop1 + 1 else ntop0 = ntop0 + 1 end
       local low = mod(v, 128)
       if seen[low] == nil then seen[low] = true; ndist = ndist + 1 end
       local pe = mod(sdec.ua_popcount(low), 2)
-      if top ~= pe then alleven = false end
-      if top ~= 1 - pe then allodd = false end
+      if top == pe then nev = nev + 1 end
+      if top == 1 - pe then nod = nod + 1 end
     end
   end
 
   if ndist < 3 then return r end
-  if nvote < 6 then return r end        -- the head may have been most of a short capture
-  if not alleven and not allodd then return r end
+  if nvote < sdec.par_minvote_all then return r end
+  -- BOTH BIT-7 STATES, OR IT IS NOT EVIDENCE OF PARITY AT ALL. ndist alone does not protect: 48 of
+  -- the 95 printable ASCII characters have even popcount, so an 8N1 payload drawn only from those
+  -- has bit 7 always 0 AND even parity 0 in every frame -- perfect apparent 7E1 agreement over
+  -- arbitrarily many distinct values. A real parity stream exercises both states (all 94 visible
+  -- glyphs: 46 of them set bit 7 under even parity). A constant-parity payload genuinely lacks the
+  -- evidence to prefer 7E1 over 8N1, and must stay 8N1.
+  if ntop0 < sdec.par_minboth or ntop1 < sdec.par_minboth then return r end
 
-  local par = sdec.PAR_EVEN
-  local pname = 'even'
-  if allodd then par = sdec.PAR_ODD; pname = 'odd' end
+  -- Unanimity gets in on the small sample; anything short of it must clear the fraction AND the
+  -- larger vote count. So a dissent can never buy a promotion that unanimity could not.
+  local need = sdec.par_minfrac * nvote
+  if nvote < sdec.par_minvote_frac then need = nvote end
+  local par, pname, nagree = nil, nil, 0
+  if nev >= need and nev >= nod then
+    par, pname, nagree = sdec.PAR_EVEN, 'even', nev
+  elseif nod >= need then
+    par, pname, nagree = sdec.PAR_ODD, 'odd', nod
+  end
+  if par == nil then return r end
 
-  -- Re-read as 7 data bits: the value is the low 7 bits, the 8th was parity.
+  -- HOW THE PROMOTION IS APPLIED DEPENDS ON WHETHER ANY VOTER DISSENTED, and the distinction is
+  -- not cosmetic. Rewriting every value to mod(v,128) is sound only when EVERY voting frame agreed:
+  -- then no frame is being relabelled 7E1 while actually failing that parity. Under a fraction the
+  -- dissenters would keep a clean bill of health while contradicting the format just assigned --
+  -- the fix would itself become a silent wrong answer, which is the defect class this decoder
+  -- exists to avoid. So a dissent forces a real re-decode, where a dissenter becomes a real parity
+  -- error. ua_refine_width re-decodes for a related reason; see its comment.
+  local strict = (nagree == nvote)
+  local note = string.format(
+      '8N1 also fits; chose 7%s1 (bit 7 tracked %s parity in %d of %d frames)',
+      string.upper(string.sub(pname, 1, 1)), pname, nagree, nvote)
+
+  if not strict then
+    -- rd/n/T are absent only when a caller hands in a synthetic result table. Refuse rather than
+    -- fall back to the unsound in-place path: staying 8N1 is a worse answer but an honest one.
+    if rd == nil or n == nil or T == nil then return r end
+    local r2 = sdec.ua_run(rd, n, T, 7, par, r.nstop, r.invert)
+    if r2 == nil then return r end
+    r2.score = sdec.ua_score(r2)
+    r2.headsusp = r.headsusp
+    sdec.fmt_note = note
+    return r2
+  end
+
+  -- Unanimous: the low 7 bits ARE the value in every frame that voted, so strip in place.
   for i = 1, r.nf do
     local v = r.vals[i]
     if v ~= nil then r.vals[i] = mod(v, 128) end
   end
   r.nbits = 7
   r.par   = par
-  sdec.fmt_note = string.format('8N1 also fits; chose 7%s1 (bit 7 tracked %s parity in all %d frames)',
-                                string.upper(string.sub(pname, 1, 1)), pname, nvote)
+  sdec.fmt_note = note
   return r
 end
 
@@ -1489,7 +1553,9 @@ function sdec.decode_from(rd, n)
     -- stripping a bit changes what "the parity bit" would be; then compose one note.
     local anames, na = sdec.ua_alts(r)
     r = sdec.ua_refine_width(r, rd, n, T)
-    r = sdec.ua_refine_parity(r)
+    -- rd/n/T go in because promotion to 7E1 RE-DECODES rather than shifting values, so a frame that
+    -- dissents from the chosen parity becomes a real parity error instead of a clean-looking lie.
+    r = sdec.ua_refine_parity(r, rd, n, T)
     sdec.ua_note_fmt(r, anames, na)
   end
 

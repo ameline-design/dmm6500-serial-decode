@@ -4304,18 +4304,27 @@ local function test_midbyte()
         ra.nbits == 7 and ra.par == sdec.PAR_EVEN,
         string.format('%d bits par=%s', ra.nbits, tostring(ra.par)))
 
+  -- UNANIMITY IS NO LONGER THE GUARD, and the check that used to assert it has been retired
+  -- deliberately. It encoded the policy that CAUSED a hardware defect: measured 2026-08-19 with
+  -- v78 (7E1, gap = 0), four captures in eight came back as 8N1 with every byte carrying a spurious
+  -- bit 7 and NOTHING flagged, because one misaligned frame at the head vetoed a hundred and thirty
+  -- agreeing ones. The head is now skipped unconditionally, so a dissenter there cannot vote.
   local rb = sdec.ua_refine_parity(mkpar(pv, pn, 2, nil))
-  check('ONE unflagged dissenter with no marked head still vetoes it -- unanimity is the guard',
-        rb.nbits == 8 and rb.par == sdec.PAR_NONE,
-        string.format('%d bits par=%s', rb.nbits, tostring(rb.par)))
+  check('a dissenter in the always-skipped head does NOT veto, with no marking needed',
+        rb.nbits == 7 and rb.par == sdec.PAR_EVEN,
+        string.format('%d bits par=%s (skiphead %d)', rb.nbits, tostring(rb.par), sdec.par_skiphead))
 
   local rc = sdec.ua_refine_parity(mkpar(pv, pn, 2, 3))
-  check('but a dissenter INSIDE a marked misaligned head does not -- that is the hardware case',
+  check('and a dissenter inside a MARKED misaligned head does not either',
         rc.nbits == 7 and rc.par == sdec.PAR_EVEN,
         string.format('%d bits par=%s', rc.nbits, tostring(rc.par)))
 
+  -- A DISSENTER THAT REALLY VOTED cannot be promoted from a synthetic table, and the reason matters:
+  -- stripping bit 7 in place is sound only under unanimity, so any dissent forces a re-decode, which
+  -- needs the waveform. Without rd/n/T the honest answer is to stay 8N1. Asserting the verdict alone
+  -- would pass for the wrong reason, so the note is checked too.
   local rd2 = sdec.ua_refine_parity(mkpar(pv, pn, 30, 3))
-  check('a dissenter PAST the marked head still vetoes it -- the exclusion is bounded',
+  check('a real dissenter is not promoted in place -- it needs a re-decode, so 8N1 stands',
         rd2.nbits == 8 and rd2.par == sdec.PAR_NONE,
         string.format('%d bits par=%s', rd2.nbits, tostring(rd2.par)))
 
@@ -4324,6 +4333,22 @@ local function test_midbyte()
   check('and a head that swallowed the capture leaves too few votes to reclassify on',
         re.nbits == 8 and re.par == sdec.PAR_NONE,
         string.format('%d bits par=%s', re.nbits, tostring(re.par)))
+
+  -- THE RESTRICTED-ALPHABET TRAP. ndist >= 3 does not protect: 48 of the 95 printable ASCII
+  -- characters have EVEN popcount, so an 8N1 payload drawn only from those carries bit 7 = 0 in
+  -- every frame AND even parity 0 in every frame -- perfect apparent 7E1 agreement over as many
+  -- distinct values as you like. Requiring BOTH bit-7 states present is what rejects it.
+  local ev, nev2 = {}, 0
+  local c
+  for c = 33, 126 do
+    if math.mod(sdec.ua_popcount(c), 2) == 0 then nev2 = nev2 + 1; ev[nev2] = c end
+  end
+  check('there really are enough even-popcount printable glyphs to build the trap', nev2 >= 20,
+        string.format('%d of 94', nev2))
+  local rf = sdec.ua_refine_parity(mkpar(ev, nev2, nil, nil))
+  check('an 8N1 payload of only even-popcount bytes stays 8N1 -- bit 7 never varies, so it is '
+        .. 'not evidence of parity', rf.nbits == 8 and rf.par == sdec.PAR_NONE,
+        string.format('%d bits par=%s over %d distinct values', rf.nbits, tostring(rf.par), nev2))
   clearforce()
 end
 test_midbyte()
@@ -6157,56 +6182,115 @@ print('\nevery visible 7-bit glyph, in one payload (real code)')
 -- LONG is left exactly as it is on purpose. ok_exact() compares txt(r) == LONG byte for byte, and
 -- stress_serial.lua names its case 'long payload, 54 bytes' after the length of its own copy, so
 -- editing the string in place would have made a test name state something untrue.
-local ASCII94 = 'the quick brown fox jumps over the lazy dog. ' ..
-                'THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG. ' ..
-                '0123456789 !"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~'
+-- AN IMMEDIATELY-INVOKED FUNCTION, not a do...end block. The main chunk sits at Lua's
+-- 200-local ceiling, and a do...end block still charges its locals to the enclosing
+-- function's register budget -- only a new function body gets a fresh one. This form
+-- also adds no name to the main chunk, which a `local function` would.
+;(function()
+  local ASCII94 = 'the quick brown fox jumps over the lazy dog. ' ..
+                  'THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG. ' ..
+                  '0123456789 !"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~'
 
--- THE VECTOR CHECKS ITSELF FIRST. Without this a later edit could drop a glyph and every decode
--- assertion below would still pass, having quietly stopped testing what it claims to.
-local a94seen, a94missing, a94i = {}, '', nil
-for a94i = 1, string.len(ASCII94) do
-  a94seen[string.byte(ASCII94, a94i)] = true
-end
-for a94i = 33, 126 do              -- 0x21..0x7E, every visible glyph; 32 is space, a separator here
-  if not a94seen[a94i] then a94missing = a94missing .. string.char(a94i) end
-end
-check('the vector covers all 94 visible 7-bit glyphs',
-      a94missing == '' and string.len(ASCII94) == 133,
-      string.format('%d bytes, missing [%s]', string.len(ASCII94), a94missing))
+  -- THE VECTOR CHECKS ITSELF FIRST. Without this a later edit could drop a glyph and every decode
+  -- assertion below would still pass, having quietly stopped testing what it claims to.
+  local a94seen, a94missing, a94i = {}, '', nil
+  for a94i = 1, string.len(ASCII94) do
+    a94seen[string.byte(ASCII94, a94i)] = true
+  end
+  for a94i = 33, 126 do              -- 0x21..0x7E, every visible glyph; 32 is space, a separator here
+    if not a94seen[a94i] then a94missing = a94missing .. string.char(a94i) end
+  end
+  check('the vector covers all 94 visible 7-bit glyphs',
+        a94missing == '' and string.len(ASCII94) == 133,
+        string.format('%d bytes, missing [%s]', string.len(ASCII94), a94missing))
 
-local a94b, a94n = GEN_BYTES(ASCII94)
-local function a94_exact(r)
-  return r ~= nil and r.nf == a94n and r.nbad == 0 and txt(r) == ASCII94
-end
--- Its OWN detail, not detail(): that one divides by lgn, so reusing it here printed '133/65 bytes'
--- and named LONG's length as this payload's expected count.
-local function a94_detail(r)
-  if r == nil then return 'nil' end
-  return string.format('%d/%d bytes %d err %s %s', r.nf, a94n, r.nbad,
-                       tostring(sdec.baud), sdec.fmt_text())
-end
+  local a94b, a94n = GEN_BYTES(ASCII94)
+  local function a94_exact(r)
+    return r ~= nil and r.nf == a94n and r.nbad == 0 and txt(r) == ASCII94
+  end
+  -- Its OWN detail, not detail(): that one divides by lgn, so reusing it here printed '133/65 bytes'
+  -- and named LONG's length as this payload's expected count.
+  local function a94_detail(r)
+    if r == nil then return 'nil' end
+    return string.format('%d/%d bytes %d err %s %s', r.nf, a94n, r.nbad,
+                         tostring(sdec.baud), sdec.fmt_text())
+  end
 
--- 8N1 across the ladder, and 7E1/7O1 too: every byte here is <= 0x7E, so a seven-bit frame carries
--- the whole payload without loss and must still come back byte-exact.
-for _, a94baud in ipairs({1200, 9600, 38400, 115200}) do
-  local a94r = corrupt({bytes = a94b, baud = a94baud, fs = sdec.pick_fs(a94baud, 8)})
-  check(string.format('all 94 glyphs decode exactly at %d baud 8N1', a94baud),
-        a94_exact(a94r), a94_detail(a94r))
-end
-for _, a94f in ipairs({{1, '7E1'}, {2, '7O1'}}) do
-  local a94r = corrupt({bytes = a94b, baud = 9600, fs = sdec.pick_fs(9600, 8),
-                        nbits = 7, par = a94f[1]})
-  check('all 94 glyphs decode exactly at 9600 ' .. a94f[2], a94_exact(a94r), a94_detail(a94r))
-end
+  -- 8N1 across the ladder, and 7E1/7O1 too: every byte here is <= 0x7E, so a seven-bit frame carries
+  -- the whole payload without loss and must still come back byte-exact.
+  for _, a94baud in ipairs({1200, 9600, 38400, 115200}) do
+    local a94r = corrupt({bytes = a94b, baud = a94baud, fs = sdec.pick_fs(a94baud, 8)})
+    check(string.format('all 94 glyphs decode exactly at %d baud 8N1', a94baud),
+          a94_exact(a94r), a94_detail(a94r))
+  end
+  for _, a94f in ipairs({{1, '7E1'}, {2, '7O1'}}) do
+    local a94r = corrupt({bytes = a94b, baud = 9600, fs = sdec.pick_fs(9600, 8),
+                          nbits = 7, par = a94f[1]})
+    check('all 94 glyphs decode exactly at 9600 ' .. a94f[2], a94_exact(a94r), a94_detail(a94r))
+  end
 
--- The two extremes of run length in this payload, asserted as data rather than as a claim: '~'
--- (0x7E) is the longest run of ones inside a frame and '!' (0x21) among the sparsest.
-GEN_RESEED(9494)
-local a94nr = corrupt({bytes = a94b, baud = 9600, fs = sdec.pick_fs(9600, 8), noise = 0.15})
-check('all 94 glyphs survive 15 % noise', a94_exact(a94nr), a94_detail(a94nr))
-check('and the payload really does contain the awkward ones (0x7E, 0x21, 0x5C)',
-      a94seen[126] and a94seen[33] and a94seen[92], 'tilde / bang / backslash')
+  -- The two extremes of run length in this payload, asserted as data rather than as a claim: '~'
+  -- (0x7E) is the longest run of ones inside a frame and '!' (0x21) among the sparsest.
+  GEN_RESEED(9494)
+  local a94nr = corrupt({bytes = a94b, baud = 9600, fs = sdec.pick_fs(9600, 8), noise = 0.15})
+  check('all 94 glyphs survive 15 % noise', a94_exact(a94nr), a94_detail(a94nr))
+  check('and the payload really does contain the awkward ones (0x7E, 0x21, 0x5C)',
+        a94seen[126] and a94seen[33] and a94seen[92], 'tilde / bang / backslash')
 
+  -- ============================================================================
+  print('\n7E1 with no idle gap, captured from a mid-byte start (real code)')
+  -- ============================================================================
+  -- THE HARDWARE DEFECT OF 2026-08-19, reproduced offline. v78 (94 glyphs, 7E1, gap = 0) captured
+  -- through the app returned 8N1 on four runs in eight, with ZERO flagged frames and every byte
+  -- carrying a spurious bit 7 -- 47 of 48 bytes had bit 7 equal to the parity of their low seven, and
+  -- the one exception was the FIRST frame. 8N1 is a genuinely self-consistent reading of a 7E1
+  -- waveform, so there was no framing error to report and nothing was flagged.
+  --
+  -- It needed hardware only to be NOTICED. The mechanism is entirely reproducible here: start the
+  -- window part-way through a frame on a gapless stream, and the misaligned head used to veto the
+  -- parity vote. gap = 0 matters -- with idle between bytes the framer resynchronises immediately.
+  do
+    -- Window offsets are taken DEEP INTO THE PAYLOAD, at fractional bit positions. A first attempt
+  -- sliced only a few bit times in and proved nothing -- it landed in the generator's lead-in idle,
+  -- where the framer anchors cleanly, so it passed under the OLD policy too. Verified to
+  -- discriminate: with par_skiphead = 0 and par_minfrac = 1.0 restored, 21 of these 60 offsets are
+  -- read as 8N1-with-bit-7; with the shipped values, none are. That 35 % also matches the 4-in-8
+  -- seen on hardware.
+  local a94g = {bytes = a94b, baud = 9600, fs = sdec.pick_fs(9600, 8), nbits = 7, par = 1, gap = 0}
+  local grd, gts, gnc, gn = GEN(a94g)
+  local sabit = a94g.fs / a94g.baud
+  local nbad8, nchecked, worst = 0, 0, ''
+  local a94off
+  for a94off = 0, 59 do
+    local s0 = 1 + math.floor(gn * 0.15 + a94off * sabit / 3.0)
+    local w, wn = {}, 0
+    local i
+    for i = s0, gn do wn = wn + 1; w[wn] = grd[i] end
+    if wn > 2000 then
+      nchecked = nchecked + 1
+      analyse(w, wn, a94g.fs)
+      sdec.decode_from(w, wn)
+      local rr = sdec.res
+      -- The failure signature: called 8N1, with bit 7 set on bytes that are really 7-bit characters.
+      if rr ~= nil and rr.nbits == 8 then
+        local hi, k = 0, nil
+        for k = 1, rr.nf do
+          local v = rr.vals[k]
+          if v ~= nil and v >= 128 then hi = hi + 1 end
+        end
+        if hi > 2 then
+          nbad8 = nbad8 + 1
+          worst = string.format('offset %d: 8N1, %d of %d bytes carry bit 7', a94off, hi, rr.nf)
+        end
+      end
+    end
+  end
+  check('a gapless 7E1 stream is never read as 8N1-with-bit-7, at any mid-frame window start',
+        nbad8 == 0 and nchecked >= 50,
+        string.format('%d of %d offsets failed  %s', nbad8, nchecked, worst))
+  end
+
+end)()
 print()
 print(string.format('%d passed, %d failed', pass, fail))
 os.exit(fail == 0 and 0 or 1)
