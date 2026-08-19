@@ -4238,7 +4238,10 @@ function sdec.ui_refresh()
   end
 
   local vwant = sdec.ui_c_hide
-  if mode == 'hex' and sdec.mode_cur().view then vwant = sdec.ui_c_rule end
+  if mode == 'hex' and (sdec.mode_cur().view
+                        or (sdec.ck_tot ~= nil and not sdec.ck_running)) then
+    vwant = sdec.ui_c_rule
+  end
   if sdec.ui_vrc ~= vwant then
     local vi
     for vi = 1, table.getn(sdec.ui_vr or {}) do
@@ -4289,9 +4292,9 @@ function sdec.ui_refresh()
 
   if not md.view or sdec.ck_tot ~= nil or sdec.ck_running then
     if sdec.strm_recording then
-      set(sdec.ui_log_t, 'Capture=Stop  Mode=Exit')
+      set(sdec.ui_log_t, 'Capture or Mode = Stop')
     elseif sdec.ck_job ~= nil then
-      set(sdec.ui_log_t, 'Capture=step  Mode=Exit')
+      set(sdec.ui_log_t, 'Capture=step  Mode=Stop')
     elseif sdec.ck_running or sdec.strm_inflight then
       set(sdec.ui_log_t, 'no stop until it ends')
     else
@@ -5633,6 +5636,7 @@ function sdec.options_auto()
   local md = sdec.mode_cur()
   if md.needbaud then
     sdec.mode_exit('auto-detect is FRAME-mode only')
+    sdec.capmode = 'frame'
   end
   return sdec.options_apply()
 end
@@ -5648,7 +5652,10 @@ function sdec.lock_toggle()
     sdec.force_par, sdec.force_nstop, sdec.force_invert = nil, nil, nil
     sdec.autolock_defer()
     note = 'unlocked -- auto-detecting again, back to the top sample rate'
-    if sdec.mode_cur().needbaud then sdec.mode_exit('unlocked the baud rate') end
+    if sdec.mode_cur().needbaud then
+      sdec.mode_exit('unlocked the baud rate')
+      sdec.capmode = 'frame'
+    end
   elseif st == 'auto' then
     local r = sdec.res
     if r == nil or sdec.baud == nil then
@@ -5810,7 +5817,6 @@ function sdec.mode_exit(why)
   pcall(function() ulog.flush() end)
   sdec.flog_path, sdec.flog_n, sdec.flog_why = nil, nil, nil
   sdec.flog_bytes = nil        -- or the next file reports the previous file's byte total
-  sdec.capmode = 'frame'
   if running then
     sdec.ck_stop = true
   else
@@ -5818,8 +5824,9 @@ function sdec.mode_exit(why)
   end
   sdec.mode_exited = nil
   if md.id ~= 'frame' then
-    sdec.mode_exited = string.format('left %s mode (%s); files flushed, back to FRAME',
-                                     md.name, tostring(why or 'exited'))
+    sdec.mode_exited = string.format('%s run ended (%s); files flushed -- still in %s, '
+                                     .. 'press Mode to change',
+                                     md.name, tostring(why or 'exited'), md.name)
     pcall(function() ulog.line(sdec.mode_exited) end)
   end
   return was

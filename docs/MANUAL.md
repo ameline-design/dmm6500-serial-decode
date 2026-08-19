@@ -233,12 +233,17 @@ press.
 whether you are probing the right pin; go on to `32 kB` when you want the most data for the fewest
 presses.
 
+**The mode you choose stays chosen.** The title bar says which one you are in — `SERIAL DECODE - 240B
+FRAME`, `- 8K CAPTURE` or `- 32K CAPTURE` — and a recording that finishes leaves it alone, so pressing
+Capture again records another window. Only **Mode** changes it. Two things move it for you, and both
+say so on the note line: **Options ▸ Auto Detect**, because auto-detection cannot run in a recording
+mode at all, and clearing the baud rate, because a recording needs it locked.
+
 ### More than one window: flow control
 
 A window is not a total. If your device is built to wait, you can capture as much as you like without
 losing a byte, **and without pressing anything per window** — up to 32 windows or 20 minutes per press,
-whichever comes first. To carry on past that, press **Mode** to pick the window size again and then
-**Capture**; it resumes where it stopped, in a new file.
+whichever comes first. To carry on past that, press **Capture** again; it resumes where it stopped, in a new file.
 
 Set `Options ▸ Rear BNC = FC Out`. The rear EXT TRIG OUT then emits **one ~5 V, ~10 µs pulse each
 time a capture is armed** (measured on a scope: 4.92 V, 9.4–9.8 µs — the width is the meter's own
@@ -254,10 +259,10 @@ cannot leave the panel busy for ever, and the 20 minutes is usually the one you 
 window takes longer than recording it, so 20 minutes is about eight windows at 9600 baud rather than
 32.
 
-If it stops for either reason it says which, and it tells you how to carry on: **press Mode to choose
-the window size again, then Capture.** Two presses, not one — a finished recording always leaves you
-back in FRAME — and the bytes that follow go into a **new** numbered file rather than the one it was
-just writing.
+If it stops for either reason it says which, and it tells you how to carry on: **press Capture
+again.** A finished recording leaves you in the mode you chose — the title bar still reads
+`SERIAL DECODE - 32K CAPTURE` — so it is one press, and the bytes that follow go into a **new**
+numbered file rather than the one it was just writing.
 
 **No bytes are lost in the gap.** Your device only transmits when it is credited, and no credit goes
 out until the next recording arms, so it is still waiting exactly where the run stopped. What you get

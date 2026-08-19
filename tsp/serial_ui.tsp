@@ -2171,7 +2171,12 @@ function sdec.ui_refresh()
   -- there were a dump; md.view says whether there is one. A streaming mode paints no rows at all,
   -- so the view test alone would leave the rules standing over an empty area, delimiting nothing.
   local vwant = sdec.ui_c_hide
-  if mode == 'hex' and sdec.mode_cur().view then vwant = sdec.ui_c_rule end
+  -- OR A FINISHED RECORDING, whose retained tail IS a dump and is now shown WITHOUT the mode having
+  -- changed to FRAME first. md.view alone hid the rules under the very bytes they delimit.
+  if mode == 'hex' and (sdec.mode_cur().view
+                        or (sdec.ck_tot ~= nil and not sdec.ck_running)) then
+    vwant = sdec.ui_c_rule
+  end
   if sdec.ui_vrc ~= vwant then
     local vi
     for vi = 1, table.getn(sdec.ui_vr or {}) do
@@ -2278,10 +2283,13 @@ function sdec.ui_refresh()
     -- only the counter cell, so nothing overwrites this until the run returns. strm_inflight is what
     -- makes that possible -- it is set by capture() before the refresh, because ck_running does not
     -- become true until stream_begin() is already inside the job.
+    -- 'Stop', NOT 'Exit'. Mode aborts the RUN and no longer changes the mode, so a label promising
+    -- an exit was describing the behaviour it used to have. Either button stops; saying so twice in
+    -- one cell is better than naming a control that does something else.
     if sdec.strm_recording then
-      set(sdec.ui_log_t, 'Capture=Stop  Mode=Exit')
+      set(sdec.ui_log_t, 'Capture or Mode = Stop')
     elseif sdec.ck_job ~= nil then
-      set(sdec.ui_log_t, 'Capture=step  Mode=Exit')
+      set(sdec.ui_log_t, 'Capture=step  Mode=Stop')
     elseif sdec.ck_running or sdec.strm_inflight then
       set(sdec.ui_log_t, 'no stop until it ends')
     else

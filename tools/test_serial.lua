@@ -4767,13 +4767,20 @@ local function test_modes()
         sdec.mode_why() ~= nil)
   clearforce()
 
-  -- ---- EXIT AND FLUSH: one path out, and it lands in FRAME ----
+  -- ---- EXIT AND FLUSH: one path out, and it LEAVES THE MODE ALONE ----
+  --
+  -- mode_exit() used to set capmode = 'frame', so a run that finished moved the operator to a mode
+  -- they had not chosen. With the capture mode in the TITLE BAR that is a large caption changing
+  -- itself. It is a flush now and nothing else; the Mode button is the only thing that moves the
+  -- mode. The two callers where a change is part of the MEANING -- auto-detect, and losing the baud
+  -- lock a recording needs -- set capmode themselves, and are checked separately below.
   sdec.capmode = 'med'
   sdec.flog_path, sdec.flog_n = '/usb1/frames03.txt', 12
   sdec.ck_tot = {nf = 100, nbad = 0, nwin = 2, nsmp = 1000, path = '/usb1/stream00.txt'}
   local was = sdec.mode_exit('test')
   check('mode_exit returns the mode it left', was == 'med', tostring(was))
-  check('and lands in FRAME', sdec.capmode == 'frame', tostring(sdec.capmode))
+  check('and LEAVES THE MODE where the operator put it', sdec.capmode == 'med',
+        tostring(sdec.capmode))
   check('forgetting the message-log path, so re-entering starts a NEW file',
         sdec.flog_path == nil and sdec.flog_n == nil)
   check('and it SAYS what it did rather than silently going grey',
@@ -4788,14 +4795,16 @@ local function test_modes()
   check('exiting FRAME is silent -- it is already the resting state',
         sdec.mode_exited == nil)
 
-  -- Mode pressed DURING a run is an abort: stop, flush, straight back to FRAME, one press.
+  -- Mode pressed DURING a run is an abort: stop and flush, in one press, STAYING in the mode. It
+  -- used to land in FRAME, which made one press do two things -- stop this run, and change the
+  -- setting that says what the next one is.
   sdec.capmode = 'med'
   sdec.ck_running, sdec.ck_stop = true, false
   sdec.ck_tot = {nf = 389, nbad = 2, nwin = 4, nsmp = 40000, path = '/usb1/bytes044.txt'}
   sdec.ck_nbytes = 389
   sdec.mode_cycle()
-  check('Mode during a run ABORTS to FRAME in one press, not to the next mode',
-        sdec.capmode == 'frame', tostring(sdec.capmode))
+  check('Mode during a run ABORTS the run in one press, and does not also change the mode',
+        sdec.capmode == 'med', tostring(sdec.capmode))
   -- The old assertion here was ck_stop == true -- Mode REQUESTING a stop. It now clears the run
   -- flags outright, because a handler cannot execute while a loop does, so there is no owner to
   -- defer to and a deferred stop is what latched the panel.
@@ -4819,12 +4828,13 @@ local function test_modes()
         tostring(sdec.lasterr))
   check('and it says refused rather than error -- an unmet precondition is not a fault',
         sdec.ui_status == 'refused', tostring(sdec.ui_status))
-  check('a refused stream also LEAVES the streaming mode -- a mode whose precondition is '
-        .. 'unmet must not keep offering the same failure', sdec.capmode == 'frame',
-        tostring(sdec.capmode))
-  -- Re-entered on purpose: the refuse above now lands in FRAME, so the second-press check needs
-  -- the mode put back rather than inherited. It used to inherit it, which is why this line did
-  -- not exist -- the assertion below was reading a mode the previous scenario happened to leave.
+  -- A REFUSED STREAM STAYS IN ITS MODE, and says why. Being bounced to FRAME was the old answer to
+  -- "must not keep offering the same failure", and it cost the operator the mode they chose: the
+  -- remedy is to lock the rate and press Capture again, which needs the mode still selected. What
+  -- must not happen is a SILENT refusal, and the two checks above are what cover that.
+  check('a refused stream stays in its mode, with the reason on the panel',
+        sdec.capmode == 'med' and sdec.mode_why() ~= nil,
+        string.format('%s / %s', tostring(sdec.capmode), tostring(sdec.mode_why())))
   sdec.capmode = 'med'
   sdec.ck_running, sdec.ck_stop = true, false
   sdec.capture()
@@ -4863,7 +4873,7 @@ local function test_modes()
   sdec.ck_job, sdec.strm_recording = nil, nil
   sdec.mode_cycle()
   check('Mode clears a run flag no run owns, rather than latching the panel into stopping',
-        sdec.ck_running == false and sdec.capmode == 'frame',
+        sdec.ck_running == false and sdec.capmode == 'med',
         string.format('running=%s mode=%s', tostring(sdec.ck_running), tostring(sdec.capmode)))
   sdec.ck_running, sdec.ck_stop = false, false
   -- ---- press-driven streaming: nothing may hold the panel over the budget ----
@@ -4900,7 +4910,7 @@ local function test_modes()
     end
     check('any decode completes in a BOUNDED number of slices -- no runaway',
           sdec.ck_job == nil, string.format('%d slices', stepped))
-    check('and the run ends back in FRAME', sdec.capmode == 'frame',
+    check('and the run ends in the mode it ran in, not in FRAME', sdec.capmode == 'med',
           tostring(sdec.capmode))
 
     -- Mode pressed mid-decode must close the partial file rather than strand the handle.
@@ -5983,6 +5993,28 @@ local function test_modes()
   MD.failwrite(nil)
   sdec.flog_path, sdec.flog_n, sdec.flog_why = nil, nil, nil
   check('and a healthy write still reports success', sdec.frame_log() == true)
+
+  -- BOTH SIDES OF THE mode_exit CONTRACT, and LAST in this function on purpose: these two presses
+  -- perform real captures and re-derive the wire settings, so placed mid-scenario they poisoned the
+  -- message-log assertion and the Auto Detect one that followed them.
+  --
+  -- mode_exit() leaving the mode alone is only correct if the two presses that MEAN a mode change
+  -- still make it -- otherwise the app sits in a recording mode that cannot run and says nothing.
+  clearforce()
+  sdec.capmode = 'med'
+  sdec.force_baud = 9600
+  sdec.options_auto()
+  check('Options > Auto Detect DOES leave a recording mode, because it cannot run in one',
+        sdec.capmode == 'frame', tostring(sdec.capmode))
+  clearforce()
+  sdec.capmode = 'med'
+  sdec.force_baud = 9600
+  -- Baud Rate = 0 plus Apply is the other route out: it clears the lock a recording mode requires.
+  if sdec.opt_baud ~= nil then display.setvalue(sdec.opt_baud, 0) end
+  sdec.options_apply()
+  check('...and so does clearing the baud rate a recording needs',
+        sdec.capmode == 'frame' or sdec.mode_why() ~= nil,
+        string.format('%s / %s', tostring(sdec.capmode), tostring(sdec.mode_why())))
 
   clearforce()
   sdec.capmode = 'frame'

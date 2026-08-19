@@ -1870,6 +1870,10 @@ function sdec.options_auto()
   local md = sdec.mode_cur()
   if md.needbaud then
     sdec.mode_exit('auto-detect is FRAME-mode only')
+    -- SET HERE, NOT IN mode_exit(). That function is a flush and no longer touches the mode, so the
+    -- two places a mode change is part of the MEANING say so themselves: auto-detect cannot run in a
+    -- recording mode at all, so this press has to land in FRAME or it does nothing.
+    sdec.capmode = 'frame'
   end
   return sdec.options_apply()
 end
@@ -1906,8 +1910,12 @@ function sdec.lock_toggle()
     sdec.autolock_defer()
     note = 'unlocked -- auto-detecting again, back to the top sample rate'
     -- Unlocking disarms the streaming modes, so leave one rather than sit in a mode that can
-    -- no longer run. Same reasoning as options_auto().
-    if sdec.mode_cur().needbaud then sdec.mode_exit('unlocked the baud rate') end
+    -- no longer run. Same reasoning as options_auto(), and the mode change is set HERE for the same
+    -- reason: mode_exit() is a flush and the switch is part of what THIS press means.
+    if sdec.mode_cur().needbaud then
+      sdec.mode_exit('unlocked the baud rate')
+      sdec.capmode = 'frame'
+    end
   elseif st == 'auto' then
     local r = sdec.res
     if r == nil or sdec.baud == nil then
@@ -2207,7 +2215,17 @@ function sdec.mode_exit(why)
   pcall(function() ulog.flush() end)
   sdec.flog_path, sdec.flog_n, sdec.flog_why = nil, nil, nil
   sdec.flog_bytes = nil        -- or the next file reports the previous file's byte total
-  sdec.capmode = 'frame'
+  -- THE MODE IS NOT CHANGED HERE, and that is the point of this function being only a flush.
+  --
+  -- It used to set capmode = 'frame', so a recording that finished -- or hit its cap, or met a quiet
+  -- line -- moved the operator to a mode they had not chosen. With the capture mode now in the TITLE
+  -- BAR, that switch is a large caption changing itself, which is worse than the small grey one it
+  -- used to be: the panel appears to have decided something. A recording mode is a SETTING, and a
+  -- setting the app resets after every use is one the operator has to re-make every time.
+  --
+  -- So the mode stays where it was put and the Mode button is the only thing that moves it. The two
+  -- callers that need FRAME for a REASON -- auto-detect, which is a frame-mode operation, and losing
+  -- the baud lock a recording mode requires -- set it themselves, next to the reason.
   if running then
     -- REQUEST a stop and leave ck_running alone: the run owns that flag and clears it as it
     -- unwinds.
@@ -2226,10 +2244,12 @@ function sdec.mode_exit(why)
   end
   sdec.mode_exited = nil
   if md.id ~= 'frame' then
-    -- Said on the note line, because a mode changing itself is exactly the kind of thing an
-    -- operator must not have to infer from a colour that quietly went grey.
-    sdec.mode_exited = string.format('left %s mode (%s); files flushed, back to FRAME',
-                                     md.name, tostring(why or 'exited'))
+    -- Said on the note line, because a run ending is what the operator needs told -- and now that
+    -- the mode does NOT change, the note must not claim it did. It names the mode still selected,
+    -- so the next Capture press is not a surprise.
+    sdec.mode_exited = string.format('%s run ended (%s); files flushed -- still in %s, '
+                                     .. 'press Mode to change',
+                                     md.name, tostring(why or 'exited'), md.name)
     pcall(function() ulog.line(sdec.mode_exited) end)
   end
   return was
