@@ -440,11 +440,15 @@ function sdec.mode_why(m)
     if sdec.rates ~= nil and sdec.fs_delivered ~= nil then
       dl = sdec.fs_delivered(sdec.rates[table.getn(sdec.rates)])
     end
+    -- %.0f, NOT %d, FOR THE RATE. force_baud carries a MEASURED rate whenever autolock set it, and a
+    -- measurement is fractional -- 153588.155 has been on this panel. Lua 5.0.2 truncates such a value
+    -- silently, so the instrument renders the same characters either way, but 5.4 raises on it: the
+    -- hazard is that no offline test can enter this branch, which is how it stayed uncovered.
     if dl ~= nil and dl > 0 then
-      return string.format('%d Bd: a recording gets %.1f samples/bit, under the %d floor -- '
+      return string.format('%.0f Bd: a recording gets %.1f samples/bit, under the %d floor -- '
                            .. 'use FRAME', sdec.force_baud, dl / sdec.force_baud, sdec.minsabit)
     end
-    return string.format('%d Bd is too fast to stream -- no sample rate delivers %d ' ..
+    return string.format('%.0f Bd is too fast to stream -- no sample rate delivers %d ' ..
                          'samples/bit; use FRAME', sdec.force_baud, sdec.minsabit)
   end
   return nil
@@ -794,10 +798,14 @@ function sdec.ui_field_values()
   -- read '--' for the whole run -- and a streaming mode cannot be entered without a locked rate,
   -- which makes them the three cells that are certain. The measured cells (LOGIC, THRESH, SA/BIT,
   -- FIT) do stay '--', because nothing has been fitted.
+  -- %.0f on both: a locked rate can be a MEASUREMENT, and decode_from copies force_baud into
+  -- sdec.baud with snapped = true, so a fraction reaches either branch. This is the repaint path for
+  -- every capture, so on 5.5 a %d here raises the whole refresh and on 5.0.2 it silently truncates
+  -- -- leaving the BAUD cell disagreeing with baud_text() beside it.
   if sdec.baud == nil and sdec.force_baud ~= nil then
-    v[1] = string.format('%d', sdec.force_baud)
+    v[1] = string.format('%.0f', sdec.force_baud)
   elseif sdec.baud == nil then v[1] = '--'
-  elseif sdec.snapped then v[1] = string.format('%d', sdec.baud)
+  elseif sdec.snapped then v[1] = string.format('%.0f', sdec.baud)
   else v[1] = string.format('%.0f?', sdec.baud) end
 
   v[2] = sdec.fmt_text()

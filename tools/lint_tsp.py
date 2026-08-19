@@ -33,6 +33,12 @@ INCOMPAT = [
     # severity -- which on the panel is a modal box. The lookbehind is what keeps sdec.fs_select()
     # and any other name ending in select from matching.
     (r'(?<![\w.])select\s*\(', "select() (Lua 5.1 vararg helper -- not in 5.0.2)"),
+    # THE ONE THE OFFLINE SUITES CANNOT CATCH. 5.0.2 has math.mod and no math.fmod; the host Lua has
+    # math.fmod and no math.mod, and gen_serial.lua:22 shims `math.mod = math.mod or math.fmod` so
+    # every suite passes either way. So math.fmod in tsp/ is invisible offline and fatal on the box:
+    # measured, a build using it refused every capture with "attempt to call field `fmod' (a nil
+    # value)" after 368640 clean offline decodes.
+    (r'math\.fmod\s*\(', "math.fmod (5.1+; 5.0.2 has math.mod -- and the offline shim hides this)"),
 ]
 
 

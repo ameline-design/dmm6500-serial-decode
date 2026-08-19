@@ -1,6 +1,6 @@
 # Serial Protocol Decode — measured reference
 
-**Ian Ameline** · version 0.9 — beta · MIT licence
+**Ian Ameline** · version 1.02 — beta · MIT licence
 
 The detail behind [MANUAL.md](MANUAL.md). Everything here was measured on a DMM6500 (firmware
 1.7.17a) against an SDG2122X generator, verified where noted with an SDS1204X-E scope. The manual is
@@ -54,7 +54,7 @@ compromise.** One press records a window, decodes all of it and files it: at 960
 recording plus ~110 s of decoding for 32 kB, or 8.5 s plus ~30 s for 8 kB. Decoding runs at ~300
 byte/s end to end and does not scale with the baud rate. `bench_panel.py` bounds such a press at
 **300 s**, which is a hang detector rather than a latency budget — the duration is the window size the
-operator chose, and TRIGGER ends it within about a second.
+operator chose, and nothing shortens it: see *Cancelling a run* below for why TRIGGER does not.
 
 ---
 
@@ -323,7 +323,7 @@ That is a deliberate reduction in bytes per press, and it costs no DATA — the 
 when credited, so it is still waiting where the run stopped. What it costs is two presses and a file
 boundary, described below.
 
-Both are backstops, not schedules: TRIGGER ends a run within about a second. When either fires the note
+Both are backstops, and they are the ONLY things that end a run early — no key does. When either fires the note
 row names which one and gives the remedy, **from the first window onward** — a run stopped by the clock
 on window one is the normal case on a slow line.
 
@@ -436,8 +436,21 @@ decoder is not yet established; the offsets need checking for repeatability. Tra
 ## Ambiguity, and what FIT does not tell you
 
 **`FIT` is not a probability that the rate is right.** It measures how well one bit period explains
-the measured pulse widths. A clean fit can still be an octave out, which is why the note row names a
-rival rate when one fits.
+the measured pulse widths — and on its own it cannot separate a rate from **double** that rate. Every
+pulse that is a whole number of bit times is also a whole number of *half* bit times, so both readings
+fit equally well: measured 0.99999999 for each, on the same capture. The halved reading then finds
+twice as many frames, which any error count rewards.
+
+**So a halved bit time is rejected on separate evidence.** A candidate rate must leave some pulse an
+**odd** number of its own bit times: real traffic has single- and three-bit runs, and at half the true
+rate every pulse is an even number of cells. Only runs up to 12 bit times count toward that, because a
+longer one is inter-byte idle whose length is set by when the capture started rather than by the format.
+Measured over 368 640 paired decodes: this removed every reproducible case — 0.38 % of capture start
+positions misread the rate before, none after — with no case that previously decoded correctly changing
+its answer.
+
+This does not touch the *longer*-bit-time direction, so the genuine ambiguity below is preserved, and
+the note row still names a rival rate when one really fits.
 
 Perfectly periodic traffic can be genuinely undecidable: eight `0x00` frames at 9600 Bd 7N1 with a
 one-bit gap are bit-for-bit the same waveform as four `0x08` bytes at 4800 Bd 8N1. No decoder can

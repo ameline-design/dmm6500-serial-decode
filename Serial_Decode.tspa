@@ -3,7 +3,7 @@ loadscript Serial_Decode
 -- $Product: DMM6500
 -- $Tag: Serial, UART, Decode, Digitize
 -- $Description: BETA. Decodes an asynchronous serial line with the instrument's own digitizer: recovers baud rate, frame format and bytes, shows them as text or hex, streams every byte to a USB key, and saves the capture. Everything auto-detects; everything can be locked down.
--- $Version: 0.9
+-- $Version: 1.02
 -- $Requires: 1.7.0
 -- $Author: Ian Ameline
 -- $License: MIT
@@ -1624,6 +1624,26 @@ function sdec.ua_plausible(T, n)
   return b >= 50 and b <= sdec.maxbaud * (1 + sdec.plaustol)
 end
 
+sdec.submult_minpulses = sdec.submult_minpulses or 20
+sdec.submult_oddfrac   = sdec.submult_oddfrac   or 0.10
+
+function sdec.ua_submultiple(T)
+  if T == nil or T <= 0 then return false end
+  local nw = sdec.nw or 0
+  if nw < sdec.submult_minpulses then return false end
+  local odd, seen = 0, 0
+  local i
+  for i = 1, nw do
+    local k = math.floor(sdec.w[i] / T + 0.5)
+    if k >= 1 and k <= sdec.maxmult then
+      seen = seen + 1
+      if math.mod(k, 2) == 1 then odd = odd + 1 end
+    end
+  end
+  if seen < sdec.submult_minpulses then return false end
+  return odd < sdec.submult_oddfrac * seen
+end
+
 -- drift cases -- and 3.0, 11 and 13 for the three spike-corrupted fits.
 -- So when the fit is implausible AND consistent with its own widths, the line really is
 -- out of range and rescaling would only manufacture a plausible-looking wrong answer.
@@ -1759,7 +1779,7 @@ function sdec.ua_best_probe(st)
   local i = st.i
   local T, ratio, q = st.cands[i].T, st.cands[i].r, st.cands[i].q
   if st.mayrescale and ratio ~= 1 and q ~= nil and q >= st.qmin
-     and sdec.ua_plausible(T, st.n) then
+     and sdec.ua_plausible(T, st.n) and not sdec.ua_submultiple(T) then
     local _, snapped = sdec.sig_snap(st.fs / T)
     if snapped then
       local sc = sdec.ua_probe(st.rd, st.n, T)
@@ -2141,10 +2161,10 @@ end
 -- The baud rate as the panel shows it, falling back to a forced value.
 function sdec.baud_text()
   if sdec.baud == nil and sdec.force_baud ~= nil then
-    return string.format('%d baud', sdec.force_baud)
+    return string.format('%.0f baud', sdec.force_baud)
   end
   if sdec.baud == nil then return '--' end
-  if sdec.snapped then return string.format('%d baud', sdec.baud) end
+  if sdec.snapped then return string.format('%.0f baud', sdec.baud) end
   return string.format('%.0f baud?', sdec.baud)
 end
 
@@ -3139,10 +3159,10 @@ function sdec.mode_why(m)
       dl = sdec.fs_delivered(sdec.rates[table.getn(sdec.rates)])
     end
     if dl ~= nil and dl > 0 then
-      return string.format('%d Bd: a recording gets %.1f samples/bit, under the %d floor -- '
+      return string.format('%.0f Bd: a recording gets %.1f samples/bit, under the %d floor -- '
                            .. 'use FRAME', sdec.force_baud, dl / sdec.force_baud, sdec.minsabit)
     end
-    return string.format('%d Bd is too fast to stream -- no sample rate delivers %d ' ..
+    return string.format('%.0f Bd is too fast to stream -- no sample rate delivers %d ' ..
                          'samples/bit; use FRAME', sdec.force_baud, sdec.minsabit)
   end
   return nil
@@ -3385,9 +3405,9 @@ function sdec.ui_field_values()
   local v = {}
 
   if sdec.baud == nil and sdec.force_baud ~= nil then
-    v[1] = string.format('%d', sdec.force_baud)
+    v[1] = string.format('%.0f', sdec.force_baud)
   elseif sdec.baud == nil then v[1] = '--'
-  elseif sdec.snapped then v[1] = string.format('%d', sdec.baud)
+  elseif sdec.snapped then v[1] = string.format('%.0f', sdec.baud)
   else v[1] = string.format('%.0f?', sdec.baud) end
 
   v[2] = sdec.fmt_text()
@@ -4761,7 +4781,7 @@ function sdec.decode_step()
     sdec.mode_exit(sdec.strm_exit_why(sdec.ck_endwhy, dok, sdec.lasterr))
   end)
   pcall(function() sdec.ui_refresh() end)
-  return true
+  return dok
 end
 
 -- Abandon a decode in progress -- Mode pressed, or a mode change. Closes the partial file and
@@ -5395,7 +5415,7 @@ function sdec.lock_toggle()
       sdec.lasterr = 'nothing decoded yet -- capture first, then lock'
       return pcall(function() sdec.ui_refresh() end)
     end
-    sdec.force_baud   = sdec.baud
+    sdec.force_baud   = math.floor(sdec.baud + 0.5)
     sdec.force_nbits  = r.nbits
     sdec.force_par    = r.par
     sdec.force_nstop  = r.nstop
@@ -5718,7 +5738,7 @@ function sdec.options_lock()
     pcall(function() sdec.ui_refresh() end)
     return false
   end
-  sdec.force_baud  = sdec.baud
+  sdec.force_baud  = math.floor(sdec.baud + 0.5)
   sdec.force_nbits = sdec.res.nbits
   sdec.force_par   = sdec.res.par
   sdec.force_nstop = sdec.res.nstop
@@ -5734,7 +5754,7 @@ end
 function sdec.options_apply()
   local readok, readerr = pcall(function()
     local b = display.getvalue(sdec.opt_baud)
-    if type(b) == 'number' and b >= 110 then sdec.force_baud = b
+    if type(b) == 'number' and b >= 110 then sdec.force_baud = math.floor(b + 0.5)
     else
       if sdec.force_baud ~= nil then sdec.autolock_defer() end
       sdec.force_baud = nil

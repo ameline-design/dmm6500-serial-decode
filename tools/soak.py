@@ -26,6 +26,7 @@ HOW IT KEEPS ITSELF HONEST:
     python3 tools/soak.py --hours 8
     python3 tools/soak.py --hours 1 --suites formats        # just the format arbitration
     python3 tools/soak.py --hours 8 --record-every 10       # add a one-press recording every 10th lap
+    python3 tools/soak.py --selftest                        # replay a saved lap; no instrument at all
 """
 import argparse
 import json
@@ -39,8 +40,31 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bench_sync as BS  # noqa: E402
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# The per-point verdict lines bench_matrix prints in its summary: "format v44d  ok  8O1 exact 150 B".
-POINT = re.compile(r'^\s*(\S+\s+\S+)\s+(ok|BAD|skip)\s+(.*)$')
+# THE SUMMARY BLOCK IS THE AUTHORITY ON WHICH POINTS EXIST, and these four patterns bracket it.
+# bench_matrix ends every run with (bench_matrix.py:744-751):
+#
+#     POINT                             RESULT
+#     ------------------------------------------------------------------------------------------------
+#     format v44e                  BAD  7N1 153 B (head 0), longest clean run 9, 35 bad (35 interior)
+#     <blank>
+#     16 of 17 points fully correct
+#     events: 0 x 4915, 0 other, over 17 points
+#
+# -- a header, a rule, one row per point starting at COLUMN 0, then a blank line. Anchoring on that
+# structure is what keeps a BODY line out, and the body is not a hypothetical hazard: the rates suite
+# prints '  300 Bd  ok  8N1 ...' per point as it goes (bench_matrix.py:342), which is indented but
+# otherwise the same shape. MEASURED on out/soak/2026-08-18T18-45-46/lap0001-INCOMPLETE.log, whose own
+# summary counts 17 points: the previous parser read the whole output and produced 28 keys, '300 Bd'
+# sitting beside 'rate 300' for all eleven rates -- so the count test below fired on EVERY lap, clean
+# ones included, and a run of these two suites could not tally a single lap.
+HEAD = re.compile(r'^POINT\s+RESULT\s*$')
+RULE = re.compile(r'^-{20,}\s*$')
+# The name can itself contain spaces -- 'offset 3.3V +0.20V' (bench_matrix.py:516) is three words -- so
+# it runs up to the first STANDALONE verdict token instead of being a fixed two words. The old two-word
+# pattern matched none of the offsets suite's rows at all, which would have made every lap of
+# --suites offsets incomplete for the opposite reason: too few points, not too many.
+ROW = re.compile(r'^(\S.*?)\s+(ok|BAD|skip)\s*(.*?)\s*$')
+FINAL = re.compile(r'(\d+) of (\d+) points fully correct')
 
 # A recording press, driven exactly as the panel would: one press, whole job. Timed on the HOST,
 # because the instrument's single timer is reset inside the app at the end of a recording (see
@@ -106,15 +130,58 @@ print('===DONE===')
 '''
 
 
+def judge_lap(out, rc, expect=None):
+    """Read one child's output. -> ({point: (verdict, detail)}, why_incomplete).
+
+    A LAP THAT DID NOT FINISH IS NOT A LAP THAT PASSED, and `why` is what says so: the tally counts
+    per-point failures, so a child that stopped partway would otherwise enter a 'run' for every point it
+    reached and none for the points it never got to -- and absence is indistinguishable from success.
+
+    BUT A LAP THAT FAILED A POINT DID FINISH. bench_matrix exits 1 whenever any point is BAD
+    (bench_matrix.py:755), so the old first test -- `rc != 0` means incomplete -- filed exactly the laps
+    this tool exists to count as unmeasured, dropped them from the tally, and reported "0 laps had at
+    least one bad point" while lapNNNN-INCOMPLETE.log files piled up beside it. `expect` was learned
+    after that test too, so once laps started failing it stayed None forever.
+
+    So completeness is judged on the SUMMARY ALONE, and all three tests are about its self-consistency:
+    the 'N of M points fully correct' line is present, M matches the number of rows actually parsed, and
+    that count matches what previous laps produced. The exit code is recorded and quoted where it is
+    evidence -- when there is no summary -- and never overrides one. A real crash keeps its old verdict
+    for free: an unknown suite (bench_matrix.py:677, rc 2), a traceback, and a child killed by a signal
+    all print no summary to be consistent with.
+    """
+    points = {}
+    lines = out.splitlines()
+    # The LAST such block, so a child that somehow printed twice is read at its end rather than its start.
+    at = [i for i in range(len(lines) - 1)
+          if HEAD.match(lines[i]) and RULE.match(lines[i + 1])]
+    if at:
+        for ln in lines[at[-1] + 2:]:
+            if not ln.strip() or FINAL.search(ln):
+                break
+            m = ROW.match(ln)
+            if m:
+                points[m.group(1).strip()] = (m.group(2), m.group(3).strip())
+    # THE COMPLETENESS TESTS, all three of them.
+    fin = None
+    for m in FINAL.finditer(out):
+        fin = m
+    why = None
+    if fin is None:
+        why = ('no "N of N points fully correct" line -- the suite did not reach its summary (exit %d)'
+               % rc)
+    elif int(fin.group(2)) != len(points):
+        why = 'the summary counts %s points but %d were parsed' % (fin.group(2), len(points))
+    elif expect is not None and len(points) != expect:
+        why = 'produced %d points, previous laps produced %d' % (len(points), expect)
+    return points, why
+
+
 def run_suite(suites, rates=None, timeout=1200, expect=None):
     """One lap of bench_matrix. -> (rc, stdout, {point: (verdict, detail)}, why_incomplete).
 
-    A LAP THAT DID NOT FINISH IS NOT A LAP THAT PASSED, and the fourth return value is what says so. The
-    tally below counts per-point failures, so a child that printed a few summary-looking lines and then
-    crashed used to have its PARTIAL point set tallied and the lap printed as ALL OK -- every point it
-    never reached simply absent, and absence indistinguishable from success. Three independent things have
-    to hold: the child exited 0, its final 'N of N points fully correct' line is present and parseable,
-    and the point count matches what previous laps produced.
+    The judging is judge_lap()'s and needs no instrument and no subprocess, which is what makes it
+    testable against a saved lap -- see --selftest.
     """
     argv = ['python3', 'tools/bench_matrix.py', '--suites', suites,
             '--no-start', '--no-output-off']
@@ -123,29 +190,88 @@ def run_suite(suites, rates=None, timeout=1200, expect=None):
     p = subprocess.run(argv, cwd=ROOT, stdout=subprocess.PIPE,
                        stderr=subprocess.STDOUT, timeout=timeout)
     out = p.stdout.decode('utf-8', errors='replace')
-    points = {}
-    # Only the SUMMARY block carries one line per point; the body repeats them with more detail, and
-    # parsing both would double-count. The summary follows the last '=== ' banner.
-    tail = out.split('points fully correct')[0]
-    for ln in tail.splitlines():
-        m = POINT.match(ln.rstrip())
-        if m and not ln.startswith('==='):
-            name, verdict, detail = m.group(1).strip(), m.group(2), m.group(3).strip()
-            points[name] = (verdict, detail)
-    # THE COMPLETENESS TESTS, all three of them.
-    why = None
-    if p.returncode != 0:
-        why = 'the suite exited %d' % p.returncode
-    else:
-        fin = re.search(r'(\d+) of (\d+) points fully correct', out)
-        if fin is None:
-            why = 'no "N of N points fully correct" line -- the suite did not reach its summary'
-        elif int(fin.group(2)) != len(points):
-            why = ('the summary counts %s points but %d were parsed'
-                   % (fin.group(2), len(points)))
-        elif expect is not None and len(points) != expect:
-            why = 'produced %d points, previous laps produced %d' % (len(points), expect)
+    points, why = judge_lap(out, p.returncode, expect)
     return p.returncode, out, points, why
+
+
+# THE LAP THE CLASSIFICATION WAS FIXED AGAINST: a real child, exit 1, seventeen points, one of them BAD
+# -- 'format v44e', an 8N1 vector at 9600 Bd read as 7N1 at 19200 Bd. Both defects are visible in this
+# one file, so it is the fixture. out/ is not published (see .gitignore), which is why the path is an
+# argument; every check below is about THIS lap, so another log fails on the names rather than passing
+# vacuously.
+SELFTEST_LOG = os.path.join(ROOT, 'out', 'soak', '2026-08-18T18-45-46', 'lap0001-INCOMPLETE.log')
+SELFTEST_POINTS = ['format v41', 'format v44a', 'format v44b', 'format v44c', 'format v44d',
+                   'format v44e', 'rate 300', 'rate 600', 'rate 1200', 'rate 2400', 'rate 4800',
+                   'rate 9600', 'rate 19200', 'rate 38400', 'rate 57600', 'rate 115200',
+                   'rate 250000']
+
+
+def selftest(path):
+    """Replay a saved lap through judge_lap(). -> 0 if every check holds, 1 otherwise.
+
+    NO INSTRUMENT AND NO SUBPROCESS, which is the whole point. The lap classification is what has been
+    wrong twice -- a failing lap read as a lap that never ran, and a body line read as a point -- and in
+    both cases the tool went on looking busy for hours. A check that needed the bench could only run
+    while the bench was free, which is never during the run it exists to protect.
+    """
+    bad, tot = [], [0]
+
+    def ck(cond, what):
+        tot[0] += 1
+        print('  %-4s %s' % ('ok' if cond else 'BAD', what))
+        if not cond:
+            bad.append(what)
+
+    print('--- replaying %s' % path)
+    if not os.path.exists(path):
+        print('  BAD  no such log -- give one as `--selftest PATH`; out/ is not in the repo')
+        return 1
+    full = open(path, encoding='utf-8', errors='replace').read()
+
+    # 1. THE REAL LAP AS IT WAS, exit 1 because one of its points was BAD.
+    pts, why = judge_lap(full, 1)
+    ck(sorted(pts) == sorted(SELFTEST_POINTS),
+       '%d points parsed, exactly the seventeen the summary names' % len(pts))
+    ck(not [k for k in pts if k.endswith(' Bd')],
+       'no rates BODY line among them -- "300 Bd" ... "250000 Bd" are not points')
+    ck(pts.get('format v44e', ('?',))[0] == 'BAD', 'format v44e is BAD')
+    ck(sum(1 for v in pts.values() if v[0] == 'ok') == 16, 'the other sixteen are ok')
+    ck(why is None, 'exit 1 with a self-consistent summary -> COMPLETE, so the lap IS tallied')
+
+    # 2. THE SAME CHILD CUT OFF BEFORE ITS SUMMARY, exit 0. The whole body is still there, eleven
+    #    matching rates lines included, so this is also the check that a body line can no longer be
+    #    taken for a point: it must yield NOTHING.
+    lines = full.splitlines(True)
+    cut = [i for i, l in enumerate(lines) if HEAD.match(l.rstrip('\n'))]
+    pts2, why2 = judge_lap(''.join(lines[:cut[0]]) if cut else '', 0)
+    ck(bool(cut) and not pts2 and why2 is not None,
+       'the body alone, exit 0 -> INCOMPLETE, 0 points: %s' % why2)
+
+    # 3. A CHILD THAT REFUSED ITS ARGUMENTS -- bench_matrix.py:677 prints this and returns 2.
+    pts3, why3 = judge_lap("unknown suite 'formats2'; have formats, hard, levels, lorem, offsets, "
+                           "rates\n", 2)
+    ck(not pts3 and why3 is not None and 'exit 2' in why3,
+       'exit 2 with no summary -> INCOMPLETE: %s' % why3)
+
+    # 4. THE COUNT DISAGREEING WITH PREVIOUS LAPS, the third completeness test.
+    _, why4 = judge_lap(full, 1, expect=16)
+    ck(why4 is not None, 'seventeen points where previous laps made sixteen -> INCOMPLETE: %s' % why4)
+
+    # 5. AND A CLEAN LAP IS STILL A CLEAN LAP: the same log with v44e ok and exit 0.
+    clean = []
+    for l in full.splitlines():
+        if l.startswith('format v44e'):
+            l = '%-28s %-4s %s' % ('format v44e', 'ok', '8N1 exact 152 B')
+        elif FINAL.search(l):
+            l = '17 of 17 points fully correct'
+        clean.append(l)
+    pts5, why5 = judge_lap('\n'.join(clean), 0)
+    ck(why5 is None and len(pts5) == 17 and pts5.get('format v44e', ('?',))[0] == 'ok',
+       'the same lap with v44e ok, exit 0 -> COMPLETE with 17 points')
+
+    print('SELFTEST %s' % ('OK -- all %d checks hold' % tot[0] if not bad
+                           else 'FAILED: %d of %d checks' % (len(bad), tot[0])))
+    return 1 if bad else 0
 
 
 def hold_awake():
@@ -268,7 +394,14 @@ def main():
                     help='also take a one-press recording every Nth lap (0 = never). Each costs '
                          'about a minute, so it trades laps for coverage of the recording path')
     ap.add_argument('--out', default=os.path.join(ROOT, 'out', 'soak'))
+    ap.add_argument('--selftest', nargs='?', const=SELFTEST_LOG, default=None, metavar='LOG',
+                    help='replay a saved lap log through the completeness tests and exit. Touches no '
+                         'instrument and spawns no child, so it is safe while a soak is running')
     a = ap.parse_args()
+
+    # BEFORE ANYTHING ELSE, and before a record directory exists: this mode is for a bench that is busy.
+    if a.selftest:
+        return selftest(a.selftest)
 
     stamp = time.strftime('%Y-%m-%dT%H-%M-%S')
     outdir = os.path.join(os.path.expanduser(a.out), stamp)
@@ -307,7 +440,7 @@ def main():
         d = None
 
     deadline = time.time() + a.hours * 3600
-    laps, bad_laps, dead = 0, 0, 0
+    laps, bad_laps, dead, odd_rc = 0, 0, 0, 0
     tally = {}            # point -> [runs, failures]
     recs = []
     # THE POINT COUNT THE FIRST COMPLETE LAP PRODUCED, so a later lap that quietly produces fewer is
@@ -328,14 +461,6 @@ def main():
                       'possibly wedged instrument')
                 break
             continue
-        if not points:
-            dead += 1
-            print('lap %-4d produced no points (instrument unreachable?)' % laps)
-            if dead >= 3:
-                print('three laps in a row produced nothing; stopping.')
-                break
-            continue
-        dead = 0
         # AN INCOMPLETE LAP IS EVIDENCE OF NOTHING, and must not be tallied. Counting its partial point
         # set would enter a 'run' for every point it reached and none for the points it never got to --
         # so the missing ones silently improve their own pass rate, which is the opposite of what a soak
@@ -348,7 +473,18 @@ def main():
             jl.write(json.dumps({'lap': laps, 'secs': round(time.time() - t_start, 1),
                                  'rc': rc, 'npoints': len(points), 'incomplete': why}) + '\n')
             jl.flush()
+            # A LAP THAT PRODUCED NO POINTS AT ALL is the one this tool stops for: a meter that has
+            # stopped answering, rather than a suite whose summary merely disagreed with itself. Its
+            # output is now kept either way, which the old 'produced no points' branch did not do --
+            # the laps whose evidence mattered most were the ones it printed one line about and dropped.
+            if not points:
+                dead += 1
+                if dead >= 3:
+                    print('three laps in a row reached no summary; stopping rather than hammering a '
+                          'possibly wedged instrument')
+                    break
             continue
+        dead = 0
         if expect is None:
             expect = len(points)
 
@@ -359,6 +495,16 @@ def main():
             if verdict == 'BAD':
                 t[1] += 1
                 fails.append('%s: %s' % (name, detail[:70]))
+        # A NONZERO EXIT WITH NOTHING BAD IN IT IS A CONTRADICTION, and the one the summary is now
+        # blind to. bench_matrix returns 1 exactly when a point is BAD (bench_matrix.py:755), so this
+        # combination means the child died AFTER printing a consistent summary -- a teardown that
+        # raised, most likely, which is precisely the thing that poisons the next lap. The points were
+        # genuinely measured, so the lap is still tallied; what must not happen is it printing ALL OK
+        # and discarding the traceback, which is what judging completeness on the summary alone buys
+        # at this one spot.
+        if rc != 0 and not fails:
+            odd_rc += 1
+            fails.append('the child exited %d with every point ok -- output kept' % rc)
         if fails:
             bad_laps += 1
             # THE WHOLE OUTPUT, kept per failing lap. The frequency is one half of the answer and the
@@ -432,6 +578,9 @@ def main():
     print('\n' + '=' * 78)
     print('%d laps in %.2f h; %d laps had at least one bad point; %d laps INCOMPLETE (not tallied)' %
           (laps, (time.time() - t_start) / 3600.0, bad_laps, incomplete))
+    if odd_rc:
+        print('%d lap(s) exited nonzero with every point ok -- a child that died after its summary; '
+              'their output is kept' % odd_rc)
     print('%-26s %6s %6s  %s' % ('POINT', 'RUNS', 'FAILS', 'RATE'))
     print('-' * 78)
     flaky = sorted(tally.items(), key=lambda kv: -kv[1][1])
@@ -458,7 +607,7 @@ def main():
     with open(os.path.join(outdir, 'SUMMARY.json'), 'w') as fh:
         json.dump({'stamp': stamp, 'laps': laps, 'bad_laps': bad_laps,
                    'hours': round((time.time() - t_start) / 3600.0, 3),
-                   'incomplete_laps': incomplete,
+                   'incomplete_laps': incomplete, 'odd_exit_laps': odd_rc,
                    'tally': {k: {'runs': v[0], 'fails': v[1]} for k, v in tally.items()},
                    'records': recs}, fh, indent=1)
     print('\nrecord: %s' % outdir)

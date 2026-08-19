@@ -829,7 +829,12 @@ function sdec.decode_step()
     sdec.mode_exit(sdec.strm_exit_why(sdec.ck_endwhy, dok, sdec.lasterr))
   end)
   pcall(function() sdec.ui_refresh() end)
-  return true
+  -- dok, NOT true. This is capture()'s return value (serial_app.tsp:1303), and returning true on
+  -- every path made a decode that RAISED, produced no totals, or failed its file write
+  -- indistinguishable from one that worked -- and from the `true` above meaning "unfinished, press
+  -- again". The panel was right either way; the CALLER could not tell. Whether work remains is
+  -- sdec.ck_job ~= nil, not this.
+  return dok
 end
 
 -- Abandon a decode in progress -- Mode pressed, or a mode change. Closes the partial file and
@@ -1901,7 +1906,9 @@ function sdec.lock_toggle()
       sdec.lasterr = 'nothing decoded yet -- capture first, then lock'
       return pcall(function() sdec.ui_refresh() end)
     end
-    sdec.force_baud   = sdec.baud
+    -- Rounded, for the reason given at the Options Lock path: sdec.baud is a standard rate only
+    -- when sdec.snapped, and this button has no such test.
+    sdec.force_baud   = math.floor(sdec.baud + 0.5)
     sdec.force_nbits  = r.nbits
     sdec.force_par    = r.par
     sdec.force_nstop  = r.nstop
@@ -2438,10 +2445,15 @@ function sdec.options_lock()
     pcall(function() sdec.ui_refresh() end)
     return false
   end
-  -- The SNAPPED rate, since that is the one a device is actually running: locking a
+  -- The snapped rate WHEN IT SNAPPED, since that is the one a device is actually running: locking a
   -- measured 9611 would put the sampling point a bit further into the next cell on every
   -- frame, which is the error a 10-bit frame accumulates worst.
-  sdec.force_baud  = sdec.baud
+  --
+  -- ROUNDED, because sdec.baud is only a standard rate when sdec.snapped -- this path has no such
+  -- test and a nonstandard line locks its raw measurement, e.g. 12345.6. force_baud must stay whole:
+  -- decode_from sets snapped = true for any forced rate, so a fraction then reaches the %d in
+  -- baud_text's snapped branch. At 0.003 % the rounding is far inside sdec.ratemargin.
+  sdec.force_baud  = math.floor(sdec.baud + 0.5)
   sdec.force_nbits = sdec.res.nbits
   sdec.force_par   = sdec.res.par
   sdec.force_nstop = sdec.res.nstop
@@ -2462,7 +2474,19 @@ function sdec.options_apply()
   -- capture at the end is skipped, so the panel says so instead of guessing.
   local readok, readerr = pcall(function()
     local b = display.getvalue(sdec.opt_baud)
-    if type(b) == 'number' and b >= 110 then sdec.force_baud = b
+    -- ROUNDED TO A WHOLE Bd. force_baud must stay integral because decode_from sets snapped = true
+    -- for any forced rate, and the snapped display branches format it with %d.
+    --
+    -- This is one of THREE sources that needed rounding, not the only one -- an earlier version of
+    -- this comment claimed the others were integral by construction and was wrong. Autolock's is
+    -- (gated on `snapped`, so sig_snap returned an exact sdec.stdbaud entry), and MIDI is the literal
+    -- 31250, but the two LOCK paths copy sdec.baud with no snapped test and so lock a raw measurement
+    -- on a nonstandard line: they round too, see :2449 and :1909.
+    --
+    -- The field is an OBJ_EDIT_NUMBER with NFORMAT_PREFIX and no decimal-places argument, so whether
+    -- it can hand back 9600.5 is a firmware question this code should not have to answer. Rounding
+    -- rather than refusing -- 9600.4 plainly means 9600.
+    if type(b) == 'number' and b >= 110 then sdec.force_baud = math.floor(b + 0.5)
     else
       -- Baud Rate 0 IS the request for auto-detect; defer auto-lock for one capture so
       -- the operator sees the detection unlocked rather than instantly re-locked.

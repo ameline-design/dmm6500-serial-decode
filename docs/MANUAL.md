@@ -1,6 +1,6 @@
 # Serial Protocol Decode — user manual
 
-**Ian Ameline** · version 0.9 — **beta** · MIT licence
+**Ian Ameline** · version 1.02 — **beta** · MIT licence
 
 This app turns a Keithley DMM6500 into a serial decoder. Clip onto a UART line, press **Capture**,
 and read the bytes on the front panel. You do not have to tell it the baud rate, the frame format or
@@ -49,8 +49,8 @@ That is the whole normal workflow. The first capture also locks the baud rate wh
 so later captures are faster.
 
 Two more things worth knowing before you need them: **Mode** turns Capture into a recording of up to
-32 768 bytes straight to the USB key, still one press — and the physical **TRIGGER** key stops a long
-job, keeping everything decoded so far.
+32 768 bytes straight to the USB key, still one press — and once a long job starts, **nothing stops it
+early**, so decide the size before you press — see **The TRIGGER key** below.
 
 ---
 
@@ -116,11 +116,11 @@ if the panel seems to ignore you, wait rather than pressing again.
 
 ## The TRIGGER key — the one hardware button that matters
 
-The **TRIGGER** key is the physical key on the front panel, to the left of the screen. It is not part
-of the app's own row of buttons. It was intended to do two things nothing on the glass can do; **one of
-them works** — timing a capture — and the other, stopping a long job, does not. Both are described
-below, because knowing which is which is the difference between waiting confidently and pressing a key
-that does nothing.
+The **TRIGGER** key is the physical key on the front panel, to the **right** of the screen — the lowest
+of that column of buttons. It is not part of the app's own row of buttons. It was intended to do two
+things nothing on the glass can do; **one of them works** — timing a capture — and the other, stopping
+a long job, does not. Both are described below, because knowing which is which is the difference
+between waiting confidently and pressing a key that does nothing.
 
 ### 1. It does not stop a long job, and nothing else does either
 
@@ -133,11 +133,6 @@ press. The note row tells you the cost up front:
 and the cell on the status row reads `no stop until it ends` for as long as it is working. Allow more
 than that figure: it is the time to fill the buffer, and the decode afterwards takes longer than the
 capture did.
-
-**Earlier builds advertised TRIGGER as the stop. That was wrong, and it was measured wrong** on the
-instrument on 2026-08-18: pressed 20 % of the way through a 32 kB decode — with tens of seconds of
-checking still to come — the run finished normally and the trigger latch was found empty afterwards.
-The key's press never reaches the app while a run started from the panel is executing.
 
 **The app's own side of this is sound,** which is why it is worth fixing rather than accepting: when
 the identical cancel is delivered by a firmware timer instead of a finger, the run stops inside a
@@ -253,8 +248,8 @@ again — round and round, with the window number on the status row, until the d
 While the app is decoding, nothing is armed, no credit is issued, and a device that waits stays quiet,
 so the gap where bytes could be lost is closed by design. Everything lands in one file, in order.
 
-It ends when your device goes quiet after a credit, when you press **TRIGGER**, or when it reaches one
-of two backstops: **32 windows** or **20 minutes**. Those exist so a device that never stops talking
+It ends when your device goes quiet after a credit, or when it reaches one
+of two backstops: **32 windows** or **20 minutes**. There is no key that ends it early. Those exist so a device that never stops talking
 cannot leave the panel busy for ever, and the 20 minutes is usually the one you meet — decoding a
 window takes longer than recording it, so 20 minutes is about eight windows at 9600 baud rather than
 32.
@@ -395,9 +390,7 @@ same result as typing `0` into Options by hand, which is what you had to do befo
 
 **The middle condition is what protects a rate you typed deliberately.** If the rate fits the wire and
 the *format* is wrong, every frame fails too — but the measurement agrees with your number, so your
-number is kept. The same goes for **MIDI**, whose 31250 is fixed by the specification rather than
-detected, and for **LIN**, whose break fields make framing errors on a perfectly healthy bus: neither
-is ever second-guessed this way.
+number is kept.
 
 ---
 
@@ -407,7 +400,7 @@ is ever second-guessed this way.
 
 | Setting | What it does |
 |---|---|
-| **Baud Rate** | `0` means auto-detect. Type a number to lock that rate. |
+| **Baud Rate** | `0` means auto-detect. Type a number to lock that rate; it is rounded to a whole baud. |
 | **Data Bits** | Leave on `Auto (7/8)`. Only use `Auto (any)` if you know the device sends 9-bit words — it can make a damaged capture look tidier while being wrong. |
 | **Parity** | `Auto`, or pin `None` / `Even` / `Odd`. |
 | **Polarity** | `Auto`, `Idle high` (normal CMOS/TTL) or `Idle low` (inverted). Auto is reliable unless the line is almost never idle. |

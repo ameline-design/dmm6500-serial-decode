@@ -5838,6 +5838,310 @@ do
   clearforce()
 end
 
+-- ============================================================================
+-- THE PADLOCK'S FAILED RE-CAPTURE, which had no test anywhere: 're-capture failed' appeared in no
+-- suite at all. Locking a rate CHANGES the sample rate, so lock_toggle() re-captures -- and both the
+-- pcall's verdict and capture()'s own boolean were once discarded, so a re-capture that refused or
+-- raised still produced 'locked 9600 baud -- now sampling at 80 kS/s' over whatever the previous
+-- capture had left on the glass. A confident report of a capture that did not happen: the panel
+-- stating something untrue, which is this project's other recurring defect.
+-- ============================================================================
+print('\nthe padlock says so when its re-capture fails')
+local function test_lock_recapture()
+  -- The line goes silent between the decode that produced the rate and the press that locks it,
+  -- which is not contrived at all: locking is what the operator does after a burst has gone past.
+  local qrd, qts, qnc, qn = GEN({bytes = {}, baud = 9600, fs = 100000, lead = 12000,
+                                 tail = 0, n = 12000})
+  local svrd, svts, svn = SRC.rd, SRC.ts, SRC.nsmp
+  local brd, bts, bnc, bn = GEN({bytes = hb, baud = 9600, fs = 100000, lead = 20, n = 12000})
+
+  -- AMBER, WITH A RATE TO LOCK: nothing forced and a real decode behind it, which is the only state
+  -- from which the padlock locks anything.
+  local function ready_to_lock()
+    clearforce()
+    sdec.busy, sdec.capmode = false, 'frame'
+    sdec.lognote, sdec.lasterr = nil, nil
+    SRC.rd, SRC.ts, SRC.nsmp = brd, bts, bn
+    analyse(brd, bn, 100000)
+    sdec.decode_from(brd, bn)
+    return sdec.lock_state()
+  end
+
+  check('the padlock starts amber, with a detected rate to pin',
+        ready_to_lock() == 'auto' and sdec.baud ~= nil,
+        string.format('%s baud=%s', sdec.lock_state(), tostring(sdec.baud)))
+
+  -- ---- 1. THE RE-CAPTURE REFUSES: there is nothing on the wire any more ----
+  SRC.rd, SRC.ts, SRC.nsmp = qrd, qts, qn
+  sdec.lock_toggle()
+  check('a re-capture that found nothing SAYS the re-capture failed',
+        has(sdec.lognote, 're-capture failed'), tostring(sdec.lognote))
+  check('...and says which figures the header is therefore still showing',
+        has(sdec.lognote, 'the figures above are the previous one'), tostring(sdec.lognote))
+  -- THE SENTENCE IT MUST NOT PRINT. 'now sampling at N kS/s' is a claim about a capture that was
+  -- never made, and it is what the shipped code said here.
+  check('...and does NOT claim a new sample rate is in force',
+        not has(sdec.lognote, 'now sampling at'), tostring(sdec.lognote))
+  -- THE ACTION STILL HAPPENED, which is why the WORDING had to change rather than the behaviour:
+  -- the lock is applied whether or not the capture that follows it works.
+  check('...while the lock itself did take, so the wording is the only thing that moves',
+        sdec.force_baud == 9600 and sdec.lock_state() == 'locked',
+        string.format('baud=%s %s', tostring(sdec.force_baud), sdec.lock_state()))
+  check('...and it still names what was locked, which is the half that succeeded',
+        has(sdec.lognote, 'locked') and has(sdec.lognote, '9600'), tostring(sdec.lognote))
+  -- TWO CELLS THAT MUST NOT CONTRADICT EACH OTHER: lasterr carries capture()'s own reason and
+  -- outranks this note in ui_notes, so both have to be on the note list and both have to be true.
+  check('...with capture()\'s own reason kept beside it', has(sdec.lasterr, 'idle'),
+        tostring(sdec.lasterr))
+  local nt = table.concat(sdec.ui_notes(), ' | ')
+  check('...and the panel carries both, not one over the other',
+        has(nt, 're-capture failed') and has(nt, 'idle'), nt)
+
+  -- ---- 2. THE RE-CAPTURE RAISES inside the acquisition ----
+  ready_to_lock()
+  local realauto = sdec.autoset
+  sdec.autoset = function() error('acquisition fault', 0) end
+  sdec.lock_toggle()
+  sdec.autoset = realauto
+  check('a re-capture whose acquisition RAISED gets the same sentence',
+        has(sdec.lognote, 're-capture failed')
+        and not has(sdec.lognote, 'now sampling at'), tostring(sdec.lognote))
+  check('...with the raise reported rather than swallowed',
+        has(sdec.lasterr, 'acquisition fault'), tostring(sdec.lasterr))
+
+  -- ---- 3. THE CALL ITSELF RAISES, which is the half the pcall is for ----
+  -- lock_toggle() is a touch handler and capture() is guarded internally, but its own comment says
+  -- the call must not be able to raise HERE either -- so the pcall's verdict has to be read too, not
+  -- only capture()'s boolean.
+  ready_to_lock()
+  local realcap = sdec.capture
+  sdec.capture = function() error('touch handler fault', 0) end
+  local pok = pcall(function() sdec.lock_toggle() end)
+  sdec.capture = realcap
+  check('a capture() that RAISES does not take the padlock handler with it', pok == true)
+  check('...and is reported as a failed re-capture, not as a new sample rate',
+        has(sdec.lognote, 're-capture failed')
+        and not has(sdec.lognote, 'now sampling at'), tostring(sdec.lognote))
+
+  -- ---- 4. AND A RE-CAPTURE THAT WORKED STILL NAMES THE NEW RATE ----
+  -- Asserted from the other side, or the guard could be made unconditional and every successful lock
+  -- would report a failure while this section stayed green.
+  ready_to_lock()
+  sdec.lock_toggle()
+  check('a re-capture that succeeded names the rate now in force',
+        has(sdec.lognote, 'now sampling at')
+        and not has(sdec.lognote, 're-capture failed'), tostring(sdec.lognote))
+
+  SRC.rd, SRC.ts, SRC.nsmp = svrd, svts, svn
+  clearforce()
+  sdec.clear_result()
+  sdec.lognote, sdec.lasterr = nil, nil
+end
+test_lock_recapture()
+
+-- ============================================================================
+-- THE TAIL RING'S ABSOLUTE OFFSETS, computed from the ring rather than typed out. The note row's
+-- 'bytes 24577-32768 of 32768' is pinned against a hand-written first = 24577 elsewhere in this file,
+-- and a hand-written expectation cannot catch an off-by-one in the thing that computes it -- so
+-- nothing tested tl.w, which is the total ever pushed and the only source of that number.
+--
+-- ck_tail_push's skip is where it went wrong once already: a batch wider than the ring jumped
+-- straight to the last cap bytes without advancing w, so the ring held the right bytes and labelled
+-- them with the wrong offsets, and every later push inherited the error.
+-- ============================================================================
+print('\nthe stream tail ring: which absolute bytes it says it is holding')
+local function test_tail_offsets()
+  -- Bytes ARE their own absolute index, so a wrong offset is visible in the values themselves rather
+  -- than only in the arithmetic. `base` is passed as the caller passes it: the 0-based index of the
+  -- first byte of the batch.
+  local function ring(cap, batches)
+    local tl, total, bi = sdec.ck_tail_new(cap), 0, nil
+    for bi = 1, table.getn(batches) do
+      local m, v, e, i = batches[bi], {}, {}, nil
+      for i = 1, m do total = total + 1; v[i] = total end
+      sdec.ck_tail_push(tl, v, e, m, total - m)
+    end
+    return tl, total
+  end
+  -- THE INVARIANT EVERY CASE IS CHECKED AGAINST: the view's last absolute index is the number of
+  -- bytes ever pushed, and its values are exactly that closed range. Asserted as a range rather than
+  -- as one number, because `first` alone is satisfied by a ring that kept the wrong bytes.
+  local function holds(name, cap, batches, wantfirst, wantn)
+    local tl, total = ring(cap, batches)
+    local r = sdec.ck_tail_result(tl, nil, total)
+    local bad, i = nil, nil
+    if r == nil then bad = 'no view at all'
+    else
+      for i = 1, r.nf do
+        if r.vals[i] ~= r.first + i - 1 and bad == nil then
+          bad = string.format('vals[%d]=%s, not %d', i, tostring(r.vals[i]), r.first + i - 1)
+        end
+      end
+    end
+    check(name,
+          r ~= nil and r.first == wantfirst and r.nf == wantn
+          and r.first + r.nf - 1 == total and r.ntotal == total and bad == nil,
+          string.format('first=%s nf=%s w=%d pushed=%d%s',
+                        tostring(r and r.first), tostring(r and r.nf), tl.w, total,
+                        bad and (' -- ' .. bad) or ''))
+  end
+
+  -- NOT WRAPPED: everything ever pushed is still in the ring, so the view starts at byte 1.
+  holds('a ring that has not wrapped starts at byte 1', 8, {5}, 1, 5)
+  holds('...and one filled exactly to its capacity still does', 8, {8}, 1, 8)
+  -- WRAPPED EXACTLY ONCE, on a batch boundary: the write cursor is back at slot 1 and the oldest
+  -- kept byte is cap+1.
+  holds('a ring wrapped exactly once starts at cap + 1', 8, {8, 8}, 9, 8)
+  holds('...and twice, at 2 x cap + 1', 8, {8, 8, 8}, 17, 8)
+  -- WRAPPED MID-ELEMENT: the cursor sits in the middle of the array, so the linearisation has to
+  -- start from the oldest slot rather than from slot 1. This is the case an off-by-one in `start`
+  -- rotates without changing the count.
+  holds('a ring wrapped mid-batch still reports the oldest byte it kept', 8, {5, 5}, 3, 8)
+  holds('...however uneven the batches were', 4, {2, 3, 4}, 6, 4)
+  holds('...including a wrap that lands one short of the cursor', 4, {3, 3, 3}, 6, 4)
+  -- A BATCH WIDER THAN THE RING. The skip must still COUNT: cap 3 fed a batch of 5 keeps bytes 3-5,
+  -- and the defect this replaced reported first = 1 for exactly this case.
+  holds('a batch wider than the ring keeps its LAST cap bytes, and says which', 3, {5}, 3, 3)
+  holds('...and a later push inherits the corrected total rather than a stale one', 3, {5, 2}, 5, 3)
+  holds('...for a batch many times the width', 4, {40}, 37, 4)
+
+  -- AND THE FIGURE THE NOTE ROW PRINTS, derived here instead of typed. This is the 24577 the
+  -- streaming note is pinned against: a shipped 8192-byte ring after a full 32 kB recording.
+  local tl32, total32 = ring(sdec.ck_keep, {8192, 8192, 8192, 8192})
+  local r32 = sdec.ck_tail_result(tl32, nil, total32)
+  check('the shipped ring after a 32 kB recording holds bytes 24577-32768',
+        sdec.ck_keep == 8192 and r32.first == 24577 and r32.nf == 8192
+        and r32.ntotal == 32768,
+        string.format('keep=%s first=%s nf=%s ntotal=%s', tostring(sdec.ck_keep),
+                      tostring(r32.first), tostring(r32.nf), tostring(r32.ntotal)))
+  -- THE PANEL'S SENTENCE, READ OFF THAT VIEW rather than off a table written by hand -- which is what
+  -- closes the loop between the offsets and the note that publishes them.
+  local svres, svtot = sdec.res, sdec.ck_tot
+  sdec.res = r32
+  sdec.ck_tot = {nf = total32, nbad = 0, nwin = 4, nsmp = 1, path = '/usb1/stream00.txt'}
+  local nt = table.concat(sdec.ui_notes(), ' | ')
+  check('...and the note row names that range, computed from the ring itself',
+        has(nt, string.format('bytes %d-%d of %d', r32.first, r32.first + r32.nf - 1,
+                              total32)), nt)
+  sdec.res, sdec.ck_tot = svres, svtot
+
+  -- AN EMPTY RING IS NO VIEW AT ALL, not a view of zero bytes: sdec.res = {nf = 0} would page and
+  -- label bytes that do not exist.
+  check('an empty ring produces no view', sdec.ck_tail_result(sdec.ck_tail_new(8), nil, 0) == nil)
+  check('and a ring cannot be made with no room in it',
+        sdec.ck_tail_new(0) == nil and sdec.ck_tail_new(-1) == nil)
+end
+test_tail_offsets()
+
+-- ============================================================================
+-- A FRACTIONAL BAUD RATE, WHICH THE OPTIONS FORM IS THE ONLY SOURCE OF. The Baud Rate field used to
+-- admit any number >= 110, so 9600.5 could be applied -- and force_baud is formatted with %d at
+-- three sites, which TRUNCATES silently on the instrument's Lua 5.0.2 and RAISES on the 5.5 these
+-- suites run. options_apply() now rounds at the point of entry, which is what makes the rest safe.
+--
+-- Pinned here BOTH ways: the rounding, and the panel strings rendering a fractional rate anyway. The
+-- second half is what keeps the hazard visible -- a %d put back at any of those sites raises here
+-- rather than waiting to truncate on the box.
+-- ============================================================================
+print('\na baud rate typed with a fraction in it')
+local function test_baud_round()
+  clearforce()
+  sdec.allow_rebuild = true
+  sdec.build_options()
+  local svproto = sdec.proto
+  sdec.proto = 'uart'
+  -- A LINE THAT IS IDLE WHILE THE FORM IS APPLIED, because Apply ENDS IN A CAPTURE ('use these now')
+  -- and a capture that decodes would move the rate out from under the assertion: auto-lock pins the
+  -- rate it detected, and decode() DROPS a locked rate the wire contradicts -- both of them correct,
+  -- both of them about the capture rather than about the field. Typing a rate in with nothing on the
+  -- wire yet is also the ordinary case: the rate comes from a datasheet, not from a burst.
+  local svrd, svts, svn = SRC.rd, SRC.ts, SRC.nsmp
+  local qrd, qts, qnc, qn = GEN({bytes = {}, baud = 9600, fs = 100000, lead = 12000,
+                                 tail = 0, n = 12000})
+  SRC.rd, SRC.ts, SRC.nsmp = qrd, qts, qn
+
+  -- ---- 1. THE FIELD ROUNDS, AT THE ONE PLACE THE VALUE ENTERS ----
+  local cases = {{9600.4, 9600}, {9600.6, 9601}, {110.5, 111}, {31250.0, 31250},
+                 {153588.155, 153588}}
+  local ci
+  for ci = 1, table.getn(cases) do
+    display.setvalue(sdec.opt_baud, cases[ci][1])
+    sdec.options_apply()
+    check(string.format('Baud Rate %.3f is applied as %d', cases[ci][1], cases[ci][2]),
+          sdec.force_baud == cases[ci][2],
+          string.format('%s (%s)', tostring(sdec.force_baud), type(sdec.force_baud)))
+    -- AN INTEGER, not merely a value that compares equal: %d is what the app formats it with, and
+    -- 9600.0 passes an == test and still raises on 5.5.
+    check('...as a whole number %d can format',
+          pcall(function() return string.format('%d', sdec.force_baud) end) == true,
+          tostring(sdec.force_baud))
+  end
+  -- BELOW THE FLOOR IS STILL AUTO-DETECT, and the rounding must not have moved the floor: 109.5
+  -- rounds to 110, but the test is on the value read, not on the rounded one.
+  display.setvalue(sdec.opt_baud, 109.6)
+  sdec.options_apply()
+  check('a rate under the 110 floor is still read as auto-detect, not rounded up into range',
+        sdec.force_baud == nil, tostring(sdec.force_baud))
+  display.setvalue(sdec.opt_baud, 0)
+  sdec.options_apply()
+  check('and 0 is still the auto-detect request it always was', sdec.force_baud == nil,
+        tostring(sdec.force_baud))
+
+  -- ---- 2. THE PANEL STRINGS THAT FORMAT A LOCKED RATE ----
+  -- Driven with a fractional force_baud on purpose. Nothing in the app should produce one now, and
+  -- that is exactly why these have to be exercised by hand: the sites are unreachable, so a %d put
+  -- back at any of them would never be noticed until the value came from somewhere new -- the socket,
+  -- a restore path, a future field.
+  local svb, svbaud, svres, svsnap = sdec.force_baud, sdec.baud, sdec.res, sdec.snapped
+  local svmode = sdec.capmode
+  -- No res and no fitted rate, which is the state a streaming run leaves: the forced value is the
+  -- only thing these three cells have to go on, and it is what they fall back to.
+  sdec.baud, sdec.res, sdec.snapped = nil, nil, nil
+  -- .4 rather than .5, so there is one right answer: %.0f rounds a half to even and math.floor(x+0.5)
+  -- rounds it up, and a test that cannot say which is correct pins nothing.
+  sdec.force_baud = 9600.4
+  local bok, btxt = pcall(function() return sdec.baud_text() end)
+  check('baud_text() renders a fractional locked rate instead of raising',
+        bok == true and btxt == '9600 baud', tostring(btxt))
+  -- THE HEADER CELL BESIDE IT reads the same variable and must agree with it -- two cells stating
+  -- different rates for the same locked wire is the panel contradicting itself, and this one is still
+  -- on %d (serial_ui.tsp:802) while the other two were moved to %.0f.
+  local vok, v1 = pcall(function() return sdec.ui_field_values()[1] end)
+  check('the BAUD header cell renders it too', vok == true, tostring(v1))
+  check('...and agrees with baud_text() about what the rate is',
+        vok == true and bok == true and v1 == '9600',
+        string.format('%s vs %s', tostring(v1), tostring(btxt)))
+
+  -- mode_why's REFUSAL, which is the other string the rate reaches. It needs a rate no sample rate
+  -- can stream: 192024.5 Bd, one of the rates fs_for_burst() gives up on.
+  sdec.capmode = 'med'
+  sdec.force_baud = 192024.5
+  check('the rate chosen for this case really is unstreamable',
+        sdec.fs_for_burst(sdec.force_baud) == nil,
+        tostring(sdec.fs_for_burst(sdec.force_baud)))
+  local wok, wtxt = pcall(function() return sdec.mode_why() end)
+  check('the streaming refusal renders a fractional rate rather than raising',
+        wok == true and wtxt ~= nil and has(wtxt, '192024') and has(wtxt, 'use FRAME'),
+        tostring(wtxt))
+  -- The SECOND wording, for a build that cannot say what the top rate delivers. Both branches format
+  -- the rate, so both need the same treatment.
+  local svdel = sdec.fs_delivered
+  sdec.fs_delivered = nil
+  local w2ok, w2 = pcall(function() return sdec.mode_why() end)
+  sdec.fs_delivered = svdel
+  check('...and so does the shorter wording behind it',
+        w2ok == true and w2 ~= nil and has(w2, '192024') and has(w2, 'too fast to stream'),
+        tostring(w2))
+
+  sdec.force_baud, sdec.baud, sdec.res, sdec.snapped = svb, svbaud, svres, svsnap
+  sdec.capmode, sdec.proto = svmode, svproto
+  clearforce()
+  display.setvalue(sdec.opt_baud, 0)
+  sdec.options_apply()
+  SRC.rd, SRC.ts, SRC.nsmp = svrd, svts, svn
+end
+test_baud_round()
+
 print()
 print(string.format('%d passed, %d failed', pass, fail))
 os.exit(fail == 0 and 0 or 1)

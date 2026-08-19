@@ -73,12 +73,13 @@ MANIFEST = [
                     'them as text or hex, streams every byte to a USB key, and '
                     'saves the capture. Everything auto-detects; everything can be '
                     'locked down.'),
-    # 0.9, NOT '1.0-beta'. This string goes into a manifest an instrument installer parses, and
-    # the Requires note below is there because this firmware's compares cannot be assumed numeric
-    # -- so the pre-release marker has to live somewhere that cannot fail a parse. A version that
-    # sorts below 1 says the same thing and cannot break an install. The word "beta" is in the
-    # Description, which is free text the Manage Apps screen shows.
-    ('Version', '0.9'),
+    # MATCHES THE GIT TAG, and stays a plain dotted number. This string goes into a manifest an
+    # instrument installer parses and whose compares cannot be assumed numeric, so the version must
+    # never carry a pre-release suffix -- '1.0-beta' could fail a parse or sort anywhere. It was 0.9
+    # to sort below 1 as the beta marker; now the tag is what states the version and the word "beta"
+    # lives in the Description, which is free text the Manage Apps screen shows. As strings, '1.02'
+    # still sorts above '0.9', so an upgrade over an installed beta is not a downgrade.
+    ('Version', '1.02'),
     # Stated minimum firmware, kept deliberately low: if the installer compares this
     # field as a STRING then "1.7.3c" sorts above "1.7.17a" and the app refuses to
     # install on the very unit it was written on. "1.7.0" satisfies either compare.

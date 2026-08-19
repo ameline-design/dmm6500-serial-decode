@@ -701,6 +701,58 @@ function sdec.ua_plausible(T, n)
   return b >= 50 and b <= sdec.maxbaud * (1 + sdec.plaustol)
 end
 
+-- Is this candidate bit time a SUB-MULTIPLE of the one that generated the pulses?
+--
+-- The mirror of ua_plausible's too-LONG test, which had no counterpart. Halving is the dangerous
+-- direction: every pulse that is a multiple of T is also a multiple of T/2, so the q gate cannot
+-- separate them (measured 0.99999999 for both), while the halved reading finds twice the frames.
+--
+-- The ODD multiples separate them. At the true bit time some pulses are an odd number of cells --
+-- a frame of varied data has single- and three-bit runs -- and at half it every pulse is even. It
+-- catches 1/3 and 1/4 the same way. Not the median: all-0x00 is a nine-bit low run, so a median test
+-- rejected the truth (broke 'decodes all 0x00').
+--
+-- IT IS A PRIOR ON REAL TRAFFIC, NOT A STRUCTURAL PROOF, and an earlier version of this comment
+-- claimed otherwise. A payload can have no odd run at all: repeated 0xE6 at 8N1 with a 2-bit gap
+-- gives runs of 2,2,2,6 -- 0 of 159 odd. Measured on that case and on 0x33/0xCC/0x0F/0x66/0x00 at
+-- three gaps: the gate changes no answer for the worse, and fixes two (0xE6 gap 1 went from refused
+-- to correct, 0xCC gap 1 from 19200 to 9600). The 0xE6 gap-2 capture does read as half rate -- but
+-- identically with this gate disabled, so that is the documented harmonic ambiguity, not this.
+--
+-- Both constants measured over 368640 paired decodes. A FRACTION, not zero: jitter leaves 6-13
+-- stray odd multiples per ~1000 pulses and "exactly zero" repaired only 398 of 708 cases. Odd
+-- fraction is 0.011-0.013 at a halved T against 0.587-0.604 at the true one.
+--
+-- ONLY BIT RUNS MAY VOUCH, bounded by sdec.maxmult for the reason sig_fit already gives: a multiple
+-- beyond it is inter-byte idle carrying no timing information. The strays above are exactly that --
+-- a 42-bit loop-seam gap gives k = 169, whose parity is set by the capture phase, not the format,
+-- and one such width was enough to silence the gate and let ratio 0.25 through.
+--
+-- Gates CANDIDATES only, never the fit, so a corrupt fit can still be rescaled.
+sdec.submult_minpulses = sdec.submult_minpulses or 20
+sdec.submult_oddfrac   = sdec.submult_oddfrac   or 0.10
+
+function sdec.ua_submultiple(T)
+  if T == nil or T <= 0 then return false end
+  local nw = sdec.nw or 0
+  if nw < sdec.submult_minpulses then return false end
+  local odd, seen = 0, 0
+  local i
+  for i = 1, nw do
+    local k = math.floor(sdec.w[i] / T + 0.5)
+    if k >= 1 and k <= sdec.maxmult then
+      seen = seen + 1
+      -- math.mod, not % and NOT math.fmod: 5.0.2 has no modulo operator and no math.fmod. The
+      -- offline suites shim math.mod to math.fmod (gen_serial.lua:22), so fmod passes every test
+      -- here and dies on the instrument -- measured, this build refused every capture with
+      -- "attempt to call field `fmod' (a nil value)".
+      if math.mod(k, 2) == 1 then odd = odd + 1 end
+    end
+  end
+  if seen < sdec.submult_minpulses then return false end
+  return odd < sdec.submult_oddfrac * seen
+end
+
 -- Whether the fit is consistent with the pulse-width distribution it came from.
 --
 -- This is the one number that separates "the line is faster than this instrument" from
@@ -955,7 +1007,7 @@ function sdec.ua_best_probe(st)
   local i = st.i
   local T, ratio, q = st.cands[i].T, st.cands[i].r, st.cands[i].q
   if st.mayrescale and ratio ~= 1 and q ~= nil and q >= st.qmin
-     and sdec.ua_plausible(T, st.n) then
+     and sdec.ua_plausible(T, st.n) and not sdec.ua_submultiple(T) then
     local _, snapped = sdec.sig_snap(st.fs / T)
     if snapped then
       local sc = sdec.ua_probe(st.rd, st.n, T)
@@ -1561,11 +1613,15 @@ end
 -- The baud rate as the panel shows it, falling back to a forced value.
 function sdec.baud_text()
   -- Same fallback as fmt_text(): a locked rate is knowledge, and a stream has one by definition.
+  -- %.0f because a locked rate came from a MEASUREMENT and is fractional -- see the note in
+  -- serial_ui.tsp's mode_why. Identical characters on 5.0.2, and no longer untestable off the box.
   if sdec.baud == nil and sdec.force_baud ~= nil then
-    return string.format('%d baud', sdec.force_baud)
+    return string.format('%.0f baud', sdec.force_baud)
   end
   if sdec.baud == nil then return '--' end
-  if sdec.snapped then return string.format('%d baud', sdec.baud) end
+  -- %.0f here too: `snapped` is true for any FORCED rate (see decode_from), not only for one
+  -- sig_snap matched, so this branch is not guaranteed a standard-rate integer by itself.
+  if sdec.snapped then return string.format('%.0f baud', sdec.baud) end
   return string.format('%.0f baud?', sdec.baud)
 end
 

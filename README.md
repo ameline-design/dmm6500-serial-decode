@@ -4,7 +4,7 @@ A UART decoder that runs **on** a Keithley DMM6500 bench multimeter. It digitize
 instrument's own digitizer, recovers the baud rate, frame format and idle polarity from the signal,
 and shows the bytes on the front panel as text or hex. No host, no logic analyser, one probe.
 
-Ian Ameline · **version 0.9 — beta** · MIT licence (see [LICENSE](LICENSE)) ·
+Ian Ameline · **version 1.02 — beta** · MIT licence (see [LICENSE](LICENSE)) ·
 [user manual](docs/MANUAL.md)
 
 **Beta status.** Everything the manual claims was measured on the bench, and the release gate below
@@ -15,12 +15,15 @@ naming here: **flow control** is verified electrically — 4.92 V, ~10 µs, one 
 measures **9.4–9.8 µs**, so a device waiting for a credit needs an edge-triggered input rather than a
 polling loop.
 
-**The front-panel TRIGGER key is the stop control, and it is confirmed on hardware.** A touch press
-cannot be delivered while a script runs, so the app cannot see a Cancel button; the TRIGGER key is
-latched by the trigger hardware instead, which keeps working while the interpreter is busy. Measured
-with `tools/bench_cancelkey.py`: a press during a deliberate 10 s Lua spin was still seen by the poll
-after it, at a cost of 1.06 ms per poll and zero event-log entries. That is what makes a one-press
-recording honest rather than a hang. The same key also *gates* an armed capture when
+**Nothing stops a long job early — there is no working stop control.** A touch press cannot be
+delivered while a script runs, so the app cannot show a Cancel button, and the front-panel TRIGGER key
+does not fill the gap: it does **not** deliver `trigger.EVENT_DISPLAY` while a PANEL-initiated run is
+executing, measured on hardware 2026-08-18. `tools/bench_cancelkey.py`'s contrary result — a press
+during a 10 s Lua spin still seen by the poll afterwards, 1.06 ms per poll, zero event-log entries — was
+a HOST-initiated run, which is a different execution context, so it does not license the panel claim.
+So a recording runs for its stated time and cannot be interrupted; decide the size before pressing.
+The [user manual](docs/MANUAL.md) says so under **The TRIGGER key**.
+The same key does still *gate* an armed capture when
 `Options ▸ Trigger = Trigger key`, which took its own purpose-built test
 (`tools/bench_trigkey.py --quiet-line`) because timing-based tests could not tell a prompt press from
 a free-running capture.
@@ -75,7 +78,7 @@ python3 tools/release_sweep.py --offline
 | `manual` | rebuilds every shipped PDF: `docs/MANUAL.pdf`, `docs/REFERENCE.pdf`, `README.pdf` |
 | `hw-matrix` | on the bench, through the app's own Capture button: six frame formats, the standard rate ladder, a 1 kB non-repeating payload, three logic swings, twelve DC offsets |
 | `hw-odd-rates` | nineteen **non-standard** baud rates — 900, 1500, 3600, 8123, 29127, 104857 … |
-| `hw-panel` | every button in every state, with the panel grabbed **before and after each press** and differenced by region — including a one-press recording and a cancel delivered mid-handler by a trigger timer, since the real stop control is a physical key no harness can press |
+| `hw-panel` | every button in every state, with the panel grabbed **before and after each press** and differenced by region — including a one-press recording and a cancel delivered mid-handler by a trigger timer, which is the only way a harness can exercise the cancel path at all |
 | `hw-break` | degenerate signals and contradictory settings — no signal, DC only, all-`0x00`/`0xFF`/`0x55`, a break, 60 mV of swing, 19 Vpp, rates past the ceiling, and six wrong forced settings. A refusal with a reason passes; confident garbage does not |
 
 `hw-panel` is the one worth understanding: it checks six things per press — that the handler does not

@@ -1268,5 +1268,395 @@ do
   sdec.res, sdec.ui_page = nil, 0
 end
 
+-- ============================================================================
+print('\nL  the absorb is armed and disarmed by the code that runs on the panel')
+-- ============================================================================
+-- THE BLOCK ABOVE CALLS strm_absorb_arm() DIRECTLY, which is the one thing it cannot test: the
+-- argument in `strm_absorb_arm('stopped')` is DISCARDED by the function, so the regression it names
+-- -- the arm returning early for a run that ended 'stopped' -- would go on passing if the arm were
+-- deleted from capture() altogether. Nothing anywhere drove the real call sites.
+--
+-- Two of them, and they pull in opposite directions:
+--   capture()    ARMS, after mode_exit and the repaint, on EVERY outcome (serial_app.tsp:1390).
+--   record_run() DISARMS, because it takes the same global timer the arm's age is stored in
+--                (serial_app.tsp:539-540) -- and the disarm must come FIRST.
+--
+-- THE ORDER IS THE WHOLE MECHANISM. The instrument has ONE timer; strm_stopped_by_press is a bare
+-- boolean and timer.cleartime() is the timestamp. Clear the timer with an old arm still standing and
+-- strm_absorb_due() reads ~0 elapsed, so the arm looks a moment old and the NEXT Capture press is
+-- swallowed as the Stop for a run that ended long before. That cost a whole soak lap: the leftover
+-- absorb ate the lap's first Capture, so the lap measured the previous recording's tail.
+do
+  idle()
+  clearforce()
+  -- The fake clock the block above uses, plus a record of what the absorb flag was AT THE MOMENT the
+  -- timer was taken -- which is the only way to see the order rather than just the end state.
+  local CLK = {t = 0, clears = 0, armed_at_clear = {}}
+  timer = {cleartime = function()
+             CLK.clears = CLK.clears + 1
+             CLK.armed_at_clear[CLK.clears] = sdec.strm_stopped_by_press
+             CLK.t = 0
+           end,
+           gettime = function() return CLK.t end}
+  sdec.cancel_setup()
+  sdec.force_baud, sdec.capmode = 9600, 'med'
+  sdec.strm_stopped_by_press, sdec.strm_nabsorbed, sdec.strm_absorbed = nil, nil, nil
+
+  -- (1) A STALE ARM STANDING WHEN A RUN TAKES THE TIMER. CLK.t = 10 is well past the 1 s window, so
+  -- this arm is dead -- and the run's timer.cleartime() is exactly what would bring it back to life.
+  sdec.strm_absorb_arm()
+  check('an arm before the run is live', sdec.strm_stopped_by_press == true,
+        tostring(sdec.strm_stopped_by_press))
+  CLK.t = 10
+  CLK.clears, CLK.armed_at_clear = 0, {}
+  sdec.flog_path, sdec.flog_n, sdec.flog_bytes = nil, nil, nil
+  local rok, rwhy = sdec.record_run()
+  check('the run itself succeeds, so the state after it is a real ending', rok == true,
+        tostring(rwhy))
+  check('record_run TAKES the timer, which is why it has to deal with the absorb at all',
+        CLK.clears >= 1, string.format('%d cleartime call(s)', CLK.clears))
+  -- THE ORDER, read at the timer rather than inferred from the end state: cleared first, the flag is
+  -- already nil when the stamp is taken. Cleared second -- or not at all -- it is still true here,
+  -- and the arm now dates from this run instead of from the one that set it.
+  check('and it DISARMS the absorb before taking it, not after',
+        CLK.armed_at_clear[1] == nil, tostring(CLK.armed_at_clear[1]))
+  check('so the stale arm is gone rather than back-dated to this run',
+        sdec.strm_stopped_by_press == nil, tostring(sdec.strm_stopped_by_press))
+  -- WHAT THE OPERATOR GETS, which is the only thing that matters: the press after the run acts.
+  check('and the next Capture press is honoured, not eaten as a Stop',
+        sdec.press_absorbed('Capture') == false, tostring(sdec.strm_absorbed))
+
+  -- (2) capture() ARMS IT, through the real press path. A recording started from the panel holds the
+  -- interpreter for tens of seconds and every press made meanwhile is queued behind it.
+  idle()
+  sdec.strm_stopped_by_press, sdec.strm_nabsorbed, sdec.strm_absorbed = nil, nil, nil
+  sdec.force_baud, sdec.capmode, sdec.busy = 9600, 'med', false
+  sdec.flog_path, sdec.flog_n, sdec.flog_bytes = nil, nil, nil
+  local cok = sdec.capture()
+  check('a one-press recording from the panel succeeds', cok == true, tostring(sdec.lasterr))
+  check('and capture() arms the absorb behind it', sdec.strm_stopped_by_press == true,
+        tostring(sdec.strm_stopped_by_press))
+  check('with the absorbed count reset, so a burst is counted from zero',
+        sdec.strm_nabsorbed == 0, tostring(sdec.strm_nabsorbed))
+  -- ARMED LAST: after mode_exit() and the repaint, because the window is 1 s from the moment it is
+  -- armed. The end state cannot show that ordering, but it can show the flag surviving the exit --
+  -- an arm placed before mode_exit() would be spent on the flush.
+  check('...and the arm survives the mode exit that precedes it',
+        sdec.capmode == 'frame' and sdec.strm_stopped_by_press == true,
+        string.format('capmode=%s armed=%s', tostring(sdec.capmode),
+                      tostring(sdec.strm_stopped_by_press)))
+
+  -- (3) ON EVERY OUTCOME. A refused run and a run that RAISED held the interpreter just as long, so
+  -- they have the same queue of presses behind them -- and arming only on the success path is the
+  -- regression the direct call above claims to guard and cannot.
+  local function ends_armed(name, install)
+    idle()
+    sdec.strm_stopped_by_press, sdec.strm_nabsorbed, sdec.strm_absorbed = nil, nil, nil
+    sdec.force_baud, sdec.capmode, sdec.busy = 9600, 'med', false
+    sdec.flog_path, sdec.flog_n, sdec.flog_bytes = nil, nil, nil
+    local restore = install()
+    local ok = sdec.capture()
+    restore()
+    check(name, ok ~= true and sdec.strm_stopped_by_press == true,
+          string.format('ok=%s armed=%s', tostring(ok), tostring(sdec.strm_stopped_by_press)))
+  end
+  ends_armed('a REFUSED recording arms the absorb too -- it held the panel just as long',
+    function()
+      local r = sdec.stream_begin
+      sdec.stream_begin = function() return false, 'cannot allocate the buffer' end
+      return function() sdec.stream_begin = r end
+    end)
+  ends_armed('and so does one that RAISED',
+    function()
+      local r = sdec.record_run
+      sdec.record_run = function() error('run fault', 0) end
+      return function() sdec.record_run = r end
+    end)
+
+  -- (4) AND A FRAME CAPTURE MUST NOT ARM IT. A frame capture is milliseconds and queues nothing, so
+  -- an absorb after one would swallow a deliberate second press for no reason at all -- the failure
+  -- mode press_absorbed()'s own comment says the 1 s window exists to avoid.
+  idle()
+  sdec.strm_stopped_by_press, sdec.strm_nabsorbed, sdec.strm_absorbed = nil, nil, nil
+  clearforce()
+  sdec.capmode, sdec.busy = 'frame', false
+  sdec.capture()
+  check('a FRAME capture leaves the absorb disarmed', sdec.strm_stopped_by_press == nil,
+        tostring(sdec.strm_stopped_by_press))
+
+  timer = nil
+  idle()
+  clearforce()
+  sdec.strm_stopped_by_press, sdec.strm_absorbed, sdec.strm_nabsorbed = nil, nil, nil
+  sdec.busy, sdec.fc_clock = false, nil
+end
+
+-- ============================================================================
+print('\nM  decode_step() must not report a raise as progress')
+-- ============================================================================
+-- THE FIFTH INSTANCE OF H2's DEFECT CLASS, and the one still open. decode_step() pcalls the slice and
+-- narrows a raise to `done, err = true, tostring(perr)` (serial_app.tsp:777) -- then returns `true` on
+-- every path (:832). That is the SAME `true` it returns at :793 to mean "still working, press again",
+-- and the same one a finished decode returns. capture() hands it straight back (:1303), so a caller
+-- cannot tell a decode that blew up from one that worked or one that has more to do.
+--
+-- Three of the four things this function does on a failure are already right, and they are asserted
+-- here so a fix cannot trade one defect for another: lasterr carries the reason, ui_status says
+-- 'error', and strm_exit_why is given dok = false so the note row reads 'run failed: ...' rather than
+-- the acquisition's leftover 'buffer full -- the stream may continue'. Only the VERDICT is wrong.
+--
+-- EXPECTED TO FAIL against today's source. The behaviour asserted is the intended one.
+do
+  idle()
+  clearforce()
+  -- The stepped path is the harness path -- strm_press is false on the panel -- and it is the only
+  -- one that builds a job at all. ck_win_n/ck_level_max are globals stream_decode() narrows and never
+  -- restores (its own KNOWN SCOPE LEAK note), so they are put back by hand.
+  local oldpress, oldwin, oldlvl = sdec.strm_press, sdec.ck_win_n, sdec.ck_level_max
+  sdec.strm_press = true
+  sdec.cancel_setup()
+  sdec.force_baud, sdec.capmode = 9600, 'med'
+
+  -- A REAL JOB, from the real press path: start a recording, stop it, and the stop creates the job
+  -- and spends the first slice. Everything below then steps THAT job.
+  --
+  -- A CASE THAT COULD NOT BUILD ONE FAILS RATHER THAN VANISHING. Every case below is guarded on this,
+  -- and a bare `if built then` would let a block that set up nothing report nothing at all -- the same
+  -- silent-green shape as the gaps this file is closing.
+  local function fresh_job(tag)
+    idle()
+    sdec.strm_press = true
+    sdec.force_baud, sdec.capmode = 9600, 'med'
+    sdec.flog_path, sdec.flog_n, sdec.flog_bytes = nil, nil, nil
+    sdec.lasterr, sdec.mode_exited, sdec.ui_status = nil, nil, nil
+    local built = false
+    if sdec.stream_start() then
+      sdec.stream_stop()
+      built = (sdec.ck_job ~= nil)
+    end
+    if not built and tag ~= nil then
+      check(tag .. ': no job was built, so nothing below it was tested', false,
+            tostring(sdec.lasterr))
+    end
+    return built
+  end
+
+  check('the stepped path builds a decode job to step', fresh_job() == true,
+        tostring(sdec.lasterr))
+  check('and an UNFINISHED slice reports true, which is what true has to mean here',
+        sdec.decode_step() == true and sdec.ck_job ~= nil,
+        string.format('job=%s', tostring(sdec.ck_job)))
+
+  -- ---- 1. THE SLICE RAISES ----
+  if fresh_job('a raising slice') then
+    local real = sdec.ck_job_step
+    sdec.ck_job_step = function(j) error('slice fault', 0) end
+    local verdict = sdec.decode_step()
+    sdec.ck_job_step = real
+    check('a slice that RAISED does not report the same verdict as one that worked',
+          verdict == false, tostring(verdict))
+    check('...and the reason is kept rather than narrowed away',
+          has(sdec.lasterr, 'slice fault'), tostring(sdec.lasterr))
+    check('...and the status row says error', sdec.ui_status == 'error',
+          tostring(sdec.ui_status))
+    -- dok = false REACHED strm_exit_why, which is what keeps the acquisition's 'full' from
+    -- describing a decode that never finished.
+    check('...and the note row reports the failure, not the buffer that had filled',
+          has(sdec.mode_exited, 'run failed') and has(sdec.mode_exited, 'slice fault')
+          and not has(sdec.mode_exited, 'buffer full'), tostring(sdec.mode_exited))
+    check('...and the job is dropped rather than left for another press',
+          sdec.ck_job == nil and sdec.ck_running == false,
+          string.format('job=%s running=%s', tostring(sdec.ck_job), tostring(sdec.ck_running)))
+  end
+
+  -- ---- 2. THE SLICE FINISHES WITH NO TOTALS ----
+  -- done = true, tot = nil is the OTHER way this function ends without a result, and it takes the
+  -- same exit. A caller reading `true` concludes the file on the key holds a decode.
+  if fresh_job('a slice with no totals') then
+    local real = sdec.ck_job_step
+    sdec.ck_job_step = function(j) return true, nil, 'window allocation failed' end
+    local verdict = sdec.decode_step()
+    sdec.ck_job_step = real
+    check('a slice that finished with NO totals reports failure',
+          verdict == false, tostring(verdict))
+    check('...naming what the step said went wrong',
+          has(sdec.lasterr, 'window allocation failed'), tostring(sdec.lasterr))
+    check('...with the note row agreeing', has(sdec.mode_exited, 'run failed')
+          and not has(sdec.mode_exited, 'buffer full'), tostring(sdec.mode_exited))
+  end
+
+  -- ---- 3. THE FILE DID NOT GET WRITTEN ----
+  -- The one failure this function ALREADY narrows correctly for the note row, and still reports as
+  -- true to its caller: bytes were decoded, none of them reached the key.
+  if fresh_job('a failed file write') then
+    local real = sdec.ck_job_step
+    sdec.ck_job_step = function(j)
+      return true, {nf = 479, nbad = 0, nwin = 2, stopped = 'write failed'}, nil
+    end
+    local verdict = sdec.decode_step()
+    sdec.ck_job_step = real
+    check('a decode whose file write failed reports failure',
+          verdict == false, tostring(verdict))
+    check('...and says the file is incomplete, with the byte count that did not reach it',
+          has(sdec.lasterr, 'file is incomplete') and has(sdec.lasterr, '479'),
+          tostring(sdec.lasterr))
+    check('...and the status row says error, not done', sdec.ui_status == 'error',
+          tostring(sdec.ui_status))
+  end
+
+  -- ---- 4. AND A SLICE THAT SUCCEEDED STILL REPORTS SUCCESS ----
+  -- Asserted from the other side, or a fix could be "return false" and every suite would stay green
+  -- while every finished decode read as a failure.
+  if fresh_job('a clean finish') then
+    local real = sdec.ck_job_step
+    sdec.ck_job_step = function(j)
+      return true, {nf = 512, nbad = 0, nwin = 2, stopped = nil,
+                    tail = {nf = 2, ngood = 2, nbad = 0, vals = {65, 66}, errs = {},
+                            first = 511, ntotal = 512}}, nil
+    end
+    local verdict = sdec.decode_step()
+    sdec.ck_job_step = real
+    check('a slice that FINISHED cleanly still reports success', verdict == true,
+          tostring(verdict))
+    check('...with the status row saying done', sdec.ui_status == 'done',
+          tostring(sdec.ui_status))
+    check('...and no error left behind for the next press to display',
+          sdec.lasterr == nil, tostring(sdec.lasterr))
+  end
+
+  -- ---- 5. AND THE PRESS THAT CARRIES IT. capture() returns decode_step()'s verdict verbatim, so
+  -- the Capture handler tells the panel and every host harness the same untruth.
+  if fresh_job('the press that steps it') then
+    local real = sdec.ck_job_step
+    sdec.ck_job_step = function(j) error('slice fault', 0) end
+    sdec.busy = false
+    local pressed = sdec.capture()
+    sdec.ck_job_step = real
+    check('and the Capture press that stepped it reports the failure too',
+          pressed == false, tostring(pressed))
+  end
+
+  sdec.strm_press, sdec.ck_win_n, sdec.ck_level_max = oldpress, oldwin, oldlvl
+  idle()
+  clearforce()
+  sdec.busy, sdec.ui_status, sdec.mode_exited = false, nil, nil
+  -- The stubbed tail above was published to sdec.res, and nothing here clears it.
+  sdec.res, sdec.lasterr = nil, nil
+end
+
+-- ============================================================================
+print('\nN  a full buffer is a NORMAL ending, and only a normal ending says so')
+-- ============================================================================
+-- 'buffer full -- the stream may continue' is what strm_exit_why() puts on the note row for the
+-- commonest successful recording there is, and it was the one arm no suite ever executed. Two
+-- shipped defects were already exactly this: an arm above it reaching first, and this sentence
+-- standing over a run that had failed. A third hoist would put the wrong sentence on every
+-- full-buffer recording and leave every suite green.
+--
+-- DRIVEN, NOT POSED. The other strm_exit_why cases in this file pass ck_endwhy and a verdict by hand,
+-- which cannot show that a real full recording arrives with that combination -- fc_end nil, ck_cancel
+-- nil, fc_win 1, ok true. So this block records until the buffer genuinely reaches strm_nsmp and reads
+-- the sentence off the panel afterwards.
+do
+  idle()
+  clearforce()
+  -- A SOURCE LONG ENOUGH TO FILL AN 8 kB RECORDING, which the file's shared 80 000-sample line cannot
+  -- be: 'sml' at 9600 baud asks for 341 334 readings, four times what this file's other blocks use.
+  --
+  -- SIZED FROM THE MODE, not written down. stream_samples() is what the recording will ask the trigger
+  -- model for, so asking it is what makes the buffer genuinely fill -- and a mode whose ceiling or
+  -- sample rate changes then resizes the fixture instead of quietly ending the run some other way.
+  -- Gapless and with almost no lead, so those samples are very nearly all payload.
+  local svrd, svts, svn = SRC.rd, SRC.ts, SRC.nsmp
+  sdec.force_baud, sdec.capmode = 9600, 'sml'
+  sdec.hw_config()
+  local need = sdec.stream_samples(sdec.mode_cur(), sdec.fs)
+  check('the recording mode can size a capture to fill', need ~= nil and need > 1000,
+        string.format('%s readings at %s S/s', tostring(need), tostring(sdec.fs)))
+  local fbytes, k = {}, nil
+  for k = 1, math.ceil(need * 9600 / (10 * sdec.fs)) + 200 do
+    fbytes[k] = 32 + math.fmod(k * 7, 90)
+  end
+  local frd, fts, fnc, fn = GEN({bytes = fbytes, baud = 9600, fs = sdec.fs, lead = 4, gap = 0,
+                                 tail = 4, n = need + 4000})
+  SRC.rd, SRC.ts, SRC.nsmp = frd, fts, fn
+
+  sdec.force_baud, sdec.capmode, sdec.busy = 9600, 'sml', false
+  sdec.flog_path, sdec.flog_n, sdec.flog_bytes = nil, nil, nil
+  MD.forget_files()
+  local cok = sdec.capture()
+  check('a full-buffer recording succeeds', cok == true, tostring(sdec.lasterr))
+  -- FULL MEANS FULL: the readings the mode asked for are all there. Without this the block could pass
+  -- on a run that ended some other way and was merely labelled 'full'.
+  check('and the buffer really did reach the sample count the mode asked for',
+        sdec.buf ~= nil and sdec.strm_nsmp ~= nil and (sdec.buf.n or 0) >= sdec.strm_nsmp,
+        string.format('%s of %s readings', tostring(sdec.buf and sdec.buf.n),
+                      tostring(sdec.strm_nsmp)))
+  check('so the acquisition ended full, not quiet or stopped', sdec.ck_endwhy == 'full',
+        tostring(sdec.ck_endwhy))
+  check('with bytes decoded and filed', (sdec.ck_tot and sdec.ck_tot.nf or 0) > 4000,
+        tostring(sdec.ck_tot and sdec.ck_tot.nf))
+  -- The state the other arms of strm_exit_why turn on, pinned so this really is the 'full' arm being
+  -- read and not one of them.
+  check('...and none of the earlier arms applies: no cancel, no bound, one window',
+        sdec.ck_cancel == nil and sdec.fc_end == nil and (sdec.fc_win or 0) == 1,
+        string.format('cancel=%s fc_end=%s fc_win=%s', tostring(sdec.ck_cancel),
+                      tostring(sdec.fc_end), tostring(sdec.fc_win)))
+  check('THE SENTENCE: a full buffer says the stream may continue',
+        sdec.strm_exit_why(sdec.ck_endwhy, cok, sdec.lasterr)
+          == 'buffer full -- the stream may continue',
+        sdec.strm_exit_why(sdec.ck_endwhy, cok, sdec.lasterr))
+  -- AND IT REACHES THE PANEL. The note row is where the operator reads it; mode_exit() is what puts
+  -- it there, and capture() passes strm_exit_why()'s answer through it on every outcome.
+  check('...and it is the reason the panel gives for leaving the mode',
+        has(sdec.mode_exited, 'buffer full -- the stream may continue'),
+        tostring(sdec.mode_exited))
+  check('...on the note row itself',
+        has(table.concat(sdec.ui_notes(), ' | '), 'buffer full -- the stream may continue'),
+        table.concat(sdec.ui_notes(), ' | '))
+  check('and the run is reported as done, not as an error',
+        sdec.ui_status == 'done', tostring(sdec.ui_status))
+
+  -- THE SAME FULL ACQUISITION, FAILED. This is the pairing that matters: 'full' still describes what
+  -- the acquisition did, and it must not be what the operator is told about the RUN. The key is
+  -- pulled part-way through the decode, so bytes are decoded and none of them reaches the file.
+  idle()
+  sdec.force_baud, sdec.capmode, sdec.busy = 9600, 'sml', false
+  sdec.flog_path, sdec.flog_n, sdec.flog_bytes = nil, nil, nil
+  local realwrite, nw = file.write, 0
+  file.write = function(fh, s)
+    nw = nw + 1
+    if nw > 3 then error('key removed', 0) end
+    return realwrite(fh, s)
+  end
+  local wok = sdec.capture()
+  file.write = realwrite
+  check('a recording whose file write failed part-way is a FAILURE', wok == false,
+        tostring(wok))
+  check('...even though the acquisition itself still ended full',
+        sdec.ck_endwhy == 'full', tostring(sdec.ck_endwhy))
+  check('...and the note row says the run failed, not that the stream may continue',
+        has(sdec.mode_exited, 'run failed')
+        and not has(sdec.mode_exited, 'buffer full -- the stream may continue'),
+        tostring(sdec.mode_exited))
+  check('...naming the file that is incomplete',
+        has(sdec.lasterr, 'file is incomplete'), tostring(sdec.lasterr))
+
+  -- AND A CANCEL OUTRANKS IT, which is the arm that reached first in one of the two shipped defects:
+  -- ck_endwhy describes the ACQUISITION, so a press during the DECODE leaves it 'full'.
+  sdec.ck_cancel = true
+  check('a press during the decode of a full buffer is credited to the key, not to the buffer',
+        sdec.strm_exit_why('full', true, nil) == 'stopped with the TRIGGER key',
+        sdec.strm_exit_why('full', true, nil))
+  sdec.ck_cancel = nil
+
+  SRC.rd, SRC.ts, SRC.nsmp = svrd, svts, svn
+  MD.forget_files()
+  idle()
+  clearforce()
+  sdec.busy, sdec.ui_status, sdec.mode_exited = false, nil, nil
+  sdec.flog_path, sdec.flog_n, sdec.flog_bytes = nil, nil, nil
+end
+
 print(string.format('\n%d passed, %d failed', pass, fail))
 if fail > 0 then os.exit(1) end

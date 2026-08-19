@@ -103,6 +103,15 @@ def stages(outdir, shots):
                    'known random data, at the sample rates the panel actually picks'),
         Stage('stress', ['lua', 'tools/stress_serial.lua'],
               note='hostile signals -- must never be silently WRONG and never RAISE'),
+        # THE GAP EVERY STAGE ABOVE SHARED: they all name a round sample rate by hand and all start
+        # on the generator's clean lead idle. #29 -- 9600 read as 19200, then as 7N1 -- failed two
+        # bench laps in seven while 884 assertions stayed green, because the app runs 9600 at
+        # pick_fs(9600,8) = 80 kS/s and a triggered capture opens mid-pulse. This stage takes fs from
+        # the app and sweeps what the bench actually varies: sampling phase, edge jitter, noise,
+        # window length, and where the window opens. It reproduced #29 in 10 s.
+        Stage('unit-analog', ['lua', 'tools/test_analog.lua'],
+              note='the bench cases at the app\'s OWN sample rates, swept over sampling phase, '
+                   'jitter, noise and where the capture window opens'),
         Stage('tolerance', ['lua', 'tools/tolerance.lua'], gate=False,
               note='the envelope table in the manual, recomputed'),
         Stage('package', ['python3', 'tools/package_tspa.py'],
@@ -165,7 +174,7 @@ def summarise(name, out, rc):
             if pred(l):
                 return l.strip()
         return ''
-    if name in ('unit', 'stress', 'archive'):
+    if name in ('unit', 'stress', 'archive', 'unit-analog'):
         s = find(lambda l: 'passed' in l and 'failed' in l)
         return s or (lines[-1] if lines else '')
     if name == 'lint':
