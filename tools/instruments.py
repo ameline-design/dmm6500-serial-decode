@@ -189,6 +189,28 @@ SDG_UPLOAD_WEDGE_HAZARD = True
 SDG_FW = '2.01.01.39R7'
 SDG_UPLOAD_SAFE_BYTES = 65536      # below this, uploads have never wedged it
 
+# RE-MEASURED ON 39R7, 2026-08-19, AND THE CEILING BOUNDS A COUNT AS MUCH AS A SIZE.
+#
+# One session, in this order:
+#   34 uploads of 3.8-63 kB, ~900 kB in total   -> fine, all 34 verified in STL? USER
+#   1st over-ceiling upload, 213 750 B          -> fine: wrote in 2.3 s, selected, DECODED on the DMM
+#   2nd over-ceiling upload, 107 250 B          -> fine; the "wedge" first reported here was a FALSE
+#                                                  ALARM, see the session-limit note below
+#   3rd over-ceiling upload, 213 750 B          -> WEDGED. The write itself completed and the waveform
+#                                                  was present after the power cycle; the SCPI service
+#                                                  died immediately after it.
+#
+# So small writes do not accumulate risk -- 900 kB of them changed nothing -- while large ones do, and
+# THREE was enough. That is the same order as the original record of four consecutive 170-210 kB on 38R4,
+# so 39R7 is no more tolerant. The constant therefore stays 65536, but the operational rule is: fewer
+# than three over-ceiling writes between power cycles, and prefer the USB key for a batch.
+#
+# THE SDG SERVES ONE SCPI SESSION AT A TIME, and that is indistinguishable from a wedge if you probe with
+# a second socket: with a connection already open, a second one is accepted and answers nothing, which is
+# exactly the wedge symptom. It produced a false "the LAN service has wedged" over a healthy instrument
+# whose very next query on the open socket succeeded. bench_sync.sdg_alive() takes sdg= for this reason.
+# The genuine wedge above was confirmed on the LIVE session and again on a fresh socket after closing it.
+
 # AND ON 39R7 THE LAN DIES WITH NO UPLOAD AT ALL -- SO SIZE IS NOT THE ONLY VARIABLE.
 #
 # Measured 2026-08-17, twice, same shape both times:

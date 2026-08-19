@@ -246,8 +246,18 @@ def preflight(d, who, need_built=True, timeout=30):
         raise SystemExit('%s REFUSING: the app is not at rest in FRAME after cleanup (%r).' % (who, st2))
     return st2
 
-def sdg_alive(ip=None, port=None, timeout=4):
+def sdg_alive(ip=None, port=None, timeout=4, sdg=None):
     """Is the generator's SCPI service answering? -> (True, idn) or (False, reason).
+
+    PASS `sdg` IF YOU ALREADY HOLD A SOCKET, or this reports a wedge that is not there. The SDG2122X
+    serves ONE SCPI session at a time: with a socket already open, a second connection is accepted and
+    then answers nothing -- which is character-for-character the wedge symptom below. Measured
+    2026-08-19, and it produced a false "the LAN service has wedged" immediately after a perfectly good
+    107 kB upload, on a socket whose very next query succeeded. Closing the first socket made the probe
+    answer at once.
+
+    A false wedge verdict is worse than no check: it sends an operator to power-cycle an instrument that
+    is working, and once the check has cried wolf a real wedge reads as the same familiar noise.
 
     A SEPARATE, SHORT-TIMEOUT PROBE, because the SDG2122X's LAN service wedges while its network stack
     stays up: it PINGS normally and REFUSES the SCPI port, or accepts a connection and never answers.
@@ -259,6 +269,22 @@ def sdg_alive(ip=None, port=None, timeout=4):
     thinks it selected.
     """
     import socket
+    # REUSE A LIVE HANDLE rather than competing with it for the single session.
+    if sdg is not None:
+        try:
+            r = sdg.query('*IDN?')
+        except Exception as e:
+            return False, '%s on the open session: %s' % (type(e).__name__, e)
+        # POSITIVELY IDENTIFY THE ANSWER. siglent.query() returns the STRING '<timeout>' rather than
+        # None or a raise, so `if not r` accepts it as a reply -- and this function then reported
+        # (True, '<timeout>') over a genuinely wedged instrument. Measured 2026-08-19, in this very
+        # function, minutes after it was written to fix the opposite error. A liveness check must
+        # require the shape of a live answer, not merely the absence of an obvious failure.
+        r = (r or '').strip()
+        if 'siglent' not in r.lower():
+            return False, ('the open SCPI session did not answer *IDN? with an identity (%r) -- the LAN '
+                           'service has wedged. Power-cycle the generator.' % r[:60])
+        return True, r
     if ip is None or port is None:
         try:
             from siglent import SDG_IP, SDG_PORT
@@ -279,8 +305,10 @@ def sdg_alive(ip=None, port=None, timeout=4):
         return False, ('the SCPI port is REFUSED at %s:%s while the host still pings -- the LAN service '
                        'has wedged. Power-cycle the generator.' % (ip, port))
     except socket.timeout:
-        return False, ('the SCPI port at %s:%s accepted nothing within %g s -- the LAN service has '
-                       'wedged. Power-cycle the generator.' % (ip, port, timeout))
+        return False, ('the SCPI port at %s:%s accepted nothing within %g s. EITHER another client holds '
+                       'the single SCPI session -- pass sdg= if that client is you -- OR the LAN service '
+                       'has wedged, in which case power-cycle the generator. These two are '
+                       'indistinguishable from a second socket.' % (ip, port, timeout))
     except Exception as e:
         return False, '%s: %s' % (type(e).__name__, e)
 

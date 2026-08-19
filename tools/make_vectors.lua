@@ -532,6 +532,39 @@ vec{id = 'v94', desc = '128 each of 0x00, 0xFF, 0x55, 0xAA -- 9600 8N1 (USB key)
               loop = true}, by, nb, nil, bytes_to_string(by, nb)
     end}
 
+-- A PAYLOAD THE EXACT SIZE OF A RECORDING, which is the one thing a looping vector cannot be.
+--
+-- The app's recording modes capture exactly 8192 and 32768 bytes. Against a 1 kB loop a 32 kB recording
+-- sees the same 1024 bytes THIRTY-TWO times, so a byte that is systematically wrong repeats in every
+-- copy and reads as the payload rather than as damage -- and a substring check passes on a capture that
+-- silently dropped a whole period. A non-repeating payload of the capture's own length makes every
+-- position unique: a wrong byte cannot be explained by the loop, and a missing run cannot be hidden by
+-- the next copy of itself.
+--
+-- SAME SEED, SAME HELPER, so these are PREFIX-COMPATIBLE with the shorter random vectors: v91's 256
+-- bytes are the head of v93's 1024, which are the head of v95's 8192, which are the head of v96's
+-- 32768. That is structural rather than incidental (see rand_bytes) and it is what makes a disagreement
+-- between two of them evidence about the TRANSPORT and not about the payload.
+--
+-- USB KEY ONLY, and by a wide margin: 1.63 MB and 6.51 MB against a 65536-byte LAN ceiling. Measured
+-- 2026-08-19, a THIRD consecutive large upload wedged the generator's LAN service at 213 kB, so these
+-- are not close calls. Both fit SDG_MAX_PTS (8388608): 853542 and 3413542 points.
+vec{id = 'v95', desc = '8192 uniform random bytes 0-255, 9600 8N1 (USB key, one 8 kB recording)',
+    fs = 100000, fsv = 5.0, long = true,
+    build = function()
+      local by, nb = rand_bytes(8192, 20260818)
+      return {bytes = by, baud = 9600, fs = 100000, gap = 0, lead = 10, tail = 10,
+              loop = true}, by, nb, nil, bytes_to_string(by, nb)
+    end}
+
+vec{id = 'v96', desc = '32768 uniform random bytes 0-255, 9600 8N1 (USB key, one 32 kB recording)',
+    fs = 100000, fsv = 5.0, long = true,
+    build = function()
+      local by, nb = rand_bytes(32768, 20260818)
+      return {bytes = by, baud = 9600, fs = 100000, gap = 0, lead = 10, tail = 10,
+              loop = true}, by, nb, nil, bytes_to_string(by, nb)
+    end}
+
 -- 1200 baud, and it is the ONLY vector that exercises PAGING.
 --
 -- Page size is cols x ui_nrow: TEXT is 80 x 15 = 1200 bytes, HEX is 16 x 15 = 240.

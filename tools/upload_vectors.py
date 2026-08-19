@@ -61,6 +61,11 @@ MAP = {
     'v71':  'SER_Lorem1kB_8N1',       # over the ceiling -- USB key only, refused here
     'v93':  'SER_Random1kB_8N1',      # over the ceiling
     'v94':  'SER_Blocks512B_8N1',     # over the ceiling
+    # A PAYLOAD THE EXACT SIZE OF A RECORDING. Against a 1 kB loop a 32 kB recording sees the same
+    # 1024 bytes 32 times, so a systematically wrong byte repeats in every copy and reads as the
+    # payload. These make every position unique. 1.63 MB and 6.51 MB -- USB key, not close calls.
+    'v95':  'SER_Random8kB_8N1',
+    'v96':  'SER_Random32kB_8N1',
 }
 for _i in range(6):
     MAP['r%02d' % _i] = 'SER_Random_%02d_8N1' % (_i + 1)
@@ -102,6 +107,10 @@ def main():
     # A BACKSLASH, AND ONLY A BACKSLASH. Measured 2026-08-19: 'SERIAL\\name' stores and selects;
     # 'SERIAL/name' and '/SERIAL/name' were accepted by the write and then appeared nowhere in
     # STL? USER -- a silent no-op, which is the worst of the three outcomes. Empty means the root.
+    # FOR REPAIRING A GAP without re-writing the set. A front-panel delete can take a neighbour by
+    # accident, and re-uploading all 34 to replace one is 900 kB of writes for 54 kB of need.
+    ap.add_argument('--only', default=None,
+                    help='comma-separated SER_ names to upload, instead of everything')
     ap.add_argument('--folder', default='SERIAL',
                     help=r'internal-flash folder, joined with a backslash (default SERIAL; "" = root)')
     a = ap.parse_args()
@@ -125,6 +134,17 @@ def main():
             raise SystemExit('REFUSING: %s is mapped but %s is missing' % (vid, path))
         n = os.path.getsize(path)
         (toobig if n > SDG_UPLOAD_SAFE_BYTES else todo).append((vid, MAP[vid], n, r))
+
+    if a.only:
+        keep = set(x.strip() for x in a.only.split(',') if x.strip())
+        unknown = keep - set(MAP.values())
+        if unknown:
+            raise SystemExit('REFUSING: --only names nothing in the mapping: %s' % ' '.join(sorted(unknown)))
+        todo = [t for t in todo if t[1] in keep]
+        toobig = [t for t in toobig if t[1] in keep]
+        unmapped = []
+        if not todo and not toobig:
+            raise SystemExit('REFUSING: --only matched nothing uploadable')
 
     if unmapped:
         raise SystemExit('REFUSING: in the manifest, neither mapped nor retired: %s\n'
