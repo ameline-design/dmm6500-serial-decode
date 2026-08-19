@@ -4,8 +4,14 @@ The stimulus waveforms stored on the SDG2122X. Current names (`v41`, `r07`, `v44
 choosing one at the bench means consulting `out/vectors/manifest.tsv`. This is the proposed rename plus
 the coverage the set is missing.
 
-**Nothing here has been applied.** Renaming a stored waveform on this generator means re-writing it
-under the new name — there is no rename command — so read "What this costs" at the end first.
+**Status 2026-08-19: APPLIED for 35 of 37 vectors.** They are uploaded to the SDG under these names and
+every one is verified selectable — `tools/upload_vectors.py` holds the mapping and does the work. Still
+outstanding: `SER_Random1kB_8N1` and `SER_Blocks512B_8N1`, both over the LAN ceiling, going one at a time
+with a power cycle between. The additions in "Filling out", "A smattering" and "Parity errors" are still
+plans; the renderer support for the parity ones is written and tested (`GEN opts.perr`).
+
+There is no rename command on this generator, so applying a name means writing the waveform under it and
+deleting the old one from the front panel.
 
 ## Scheme
 
@@ -85,15 +91,15 @@ result that cannot distinguish them will otherwise read as a decoder bug.
 | `v92` | `SER_Walk_8N1` | walking one / walking zero | 8N1 | 10.42 |
 | `r00`–`r05` | `SER_Random_01_8N1` … `SER_Random_06_8N1` | 256 random each | 8N1 | 10.42 |
 | `r06`–`r11` | `SER_Random_07_7E1` … `SER_Random_12_7E1` | 256 random each | 7E1 | 10.42 |
-| `v80` | `SER_Hello_8N1_sp10` | `Hello, World!` | 8N1 | 10.00 |
+| `v80` | `SER_Hello_8N1_Sp10` | `Hello, World!` | 8N1 | 10.00 |
 | `v72` `v73` | — | byte-identical to `v71` | | retire |
 | `v81`–`v84` | — | byte-identical to `v80` | | retire |
 | `v74` `v75` | — | `Lorem1k` re-rendered, 8.68 / 8.33 | | retire |
 
 The `Random` index runs 01..12 unbroken across formats, so no two share an index. `v41` vs `v80` is
 unresolved: both are `Hello, World!` 8N1 differing only in render density, and both are load-bearing
-(`v41` is the plan's canonical row, `v80` is `RATE_ARB` in `bench_matrix.py`). `SER_Hello_8N1_sp10` is a
-placeholder, not a recommendation — and `sp10` is **samples per bit, not a baud rate**; if that reads as
+(`v41` is the plan's canonical row, `v80` is `RATE_ARB` in `bench_matrix.py`). `SER_Hello_8N1_Sp10` is a
+placeholder, not a recommendation — and `Sp10` is **samples per bit, not a baud rate**; if that reads as
 a rate to anyone it is the wrong suffix and the two vectors should be resolved by retiring one instead.
 
 **Two traps in the source data.** `manifest.tsv`'s `exp_fmt` is *what the decoder should report*, not
