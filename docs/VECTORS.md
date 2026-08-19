@@ -1,140 +1,258 @@
-# Bench test vectors — naming plan
+# Bench test vectors — naming and coverage plan
 
 The stimulus waveforms stored on the SDG2122X. Current names (`v41`, `r07`, `v44c`) encode nothing, so
-picking one at the bench means consulting `out/vectors/manifest.tsv`. This is the proposed rename.
+choosing one at the bench means consulting `out/vectors/manifest.tsv`. This is the proposed rename plus
+the coverage the set is missing.
 
 **Nothing here has been applied.** Renaming a stored waveform on this generator means re-writing it
-under the new name — there is no rename command — so see the constraints at the end before doing any
-of it.
+under the new name — there is no rename command — so read "What this costs" at the end first.
 
 ## Scheme
 
-    SER_<Content>[_<NN>]_<Format>
+    SER_<Content>[_<NN>]_<Format>[_<Variant>]
 
-* `SER_` prefix on everything, so the serial-decode vectors group together and sort apart from any
-  other work on the instrument.
-* `<Content>` names the payload, not the test. `Hello`, `Fox`, `Lorem1k`, `Random`, `Walk`, `Blocks64`.
+* `SER_` on everything, so these group together and sort apart from other work on the instrument.
+* `<Content>` names the payload, not the test: `Hello`, `Fox`, `Lorem1k`, `Random`, `Walk`, `Blocks64`.
 * `<NN>` only for a numbered series, two digits, 1-based: `SER_Random_01_8N1`.
-* `<Format>` is what is **on the wire**: `8N1`, `7E1`, `7O1`, `8E1`, `8O1`, `8N2`.
+* `<Format>` is what is **on the wire**: `8N1`, `7E1`, `7O1`, `8E1`, `8O1`, `8N2`, `5N1`, `6O1`, `9N1`.
+* `<Variant>` for a deliberate impairment: `PErr8`, `Inv`, `Spike`, `Drift10`, `Gap2`.
 
 **The baud rate is deliberately absent.** It is set by the generator's sample rate at selection time
 (`select_arb(name, amp, srate)`), so one waveform serves every rate. Putting a rate in the name would
-imply five waveforms where there is one — see the duplicate groups below, which are byte-identical
-files that exist only because they were rendered for a target rate.
+imply five waveforms where there is one — and there really is one: `v80`–`v84` are five names for a
+byte-identical file, and `v71`/`v72`/`v73` are three more. Nine of the 33 names now on the instrument
+are duplicate or redundant renderings.
 
-## The 33 vectors currently on the instrument
+## Payload width rules
 
-From `STL? USER`, 2026-08-19. Fourteen further manifest vectors are **not** on the generator at all
-(listed after).
+A frame carries `<nbits>` data bits, so a payload has to fit the width. Measured ranges:
 
-| now | new name | payload | wire fmt | pts/bit | note |
-|---|---|---|---|---|---|
-| `v41` | `SER_Hello_8N1` | `Hello, World!` | 8N1 | 10.42 | |
-| `v44a` | `SER_Hello_7E1` | `Hello, World!` | 7E1 | 10.42 | |
-| `v44b` | `SER_Hello_7O1` | `Hello, World!` | 7O1 | 10.42 | |
-| `v44c` | `SER_Hello_8E1` | `Hello, World!` | 8E1 | 10.42 | |
-| `v44d` | `SER_Hello_8O1` | `Hello, World!` | 8O1 | 10.42 | |
-| `v44e` | `SER_Hello_8N2` | `Hello, World!` | **8N2** | 10.42 | decodes *as* 8N1; see trap 1 |
-| `v77` | `SER_Fox_8N1` | pangram + all 94 glyphs, 133 B | 8N1 | 10.42 | |
-| `v78` | `SER_Fox_7E1` | pangram + all 94 glyphs, 133 B | 7E1 | 10.42 | |
-| `v71` | `SER_Lorem1k_8N1` | lorem ipsum, 1024 B | 8N1 | 10.42 | |
-| `v72` | — | *byte-identical to `v71`* | | 10.42 | retire |
-| `v73` | — | *byte-identical to `v71`* | | 10.42 | retire |
-| `v74` | — | same payload, re-rendered | 8N1 | 8.68 | redundant; see decision 2 |
-| `v75` | — | same payload, re-rendered | 8N1 | 8.33 | redundant; see decision 2 |
-| `v80` | `SER_Hello_8N1_sp10` | `Hello, World!` | 8N1 | 10.00 | collides with `v41`; see decision 1 |
-| `v81` | — | *byte-identical to `v80`* | | 10.00 | retire |
-| `v82` | — | *byte-identical to `v80`* | | 10.00 | retire |
-| `v83` | — | *byte-identical to `v80`* | | 10.00 | retire |
-| `v84` | — | *byte-identical to `v80`* | | 10.00 | retire |
-| `v90` | `SER_Blocks64_8N1` | 64 each of `00 FF 55 AA` | 8N1 | 10.42 | reads as 7E1; see trap 2 |
-| `v91` | `SER_Random_Ref_8N1` | 256 random, seed 20260818 | 8N1 | 10.42 | exact prefix of `v93` |
-| `v92` | `SER_Walk_8N1` | walking-one / walking-zero | 8N1 | 10.42 | reads as 7O1; see trap 2 |
-| `r00` | `SER_Random_01_8N1` | 256 random | 8N1 | 10.42 | |
-| `r01` | `SER_Random_02_8N1` | 256 random | 8N1 | 10.42 | |
-| `r02` | `SER_Random_03_8N1` | 256 random | 8N1 | 10.42 | |
-| `r03` | `SER_Random_04_8N1` | 256 random | 8N1 | 10.42 | |
-| `r04` | `SER_Random_05_8N1` | 256 random | 8N1 | 10.42 | |
-| `r05` | `SER_Random_06_8N1` | 256 random | 8N1 | 10.42 | |
-| `r06` | `SER_Random_07_7E1` | 256 random | 7E1 | 10.42 | |
-| `r07` | `SER_Random_08_7E1` | 256 random | 7E1 | 10.42 | |
-| `r08` | `SER_Random_09_7E1` | 256 random | 7E1 | 10.42 | |
-| `r09` | `SER_Random_10_7E1` | 256 random | 7E1 | 10.42 | |
-| `r10` | `SER_Random_11_7E1` | 256 random | 7E1 | 10.42 | |
-| `r11` | `SER_Random_12_7E1` | 256 random | 7E1 | 10.42 | |
+| payload family | range | 5 | 6 | 7 | 8 | 9 |
+|---|---|---|---|---|---|---|
+| Hello / Fox / Lorem (ASCII) | `0D`–`7E` | no | no | **yes** | yes | yes |
+| Random (uniform) | `00`–`FF` | no | no | no | **yes** | yes |
+| Blocks (`00 FF 55 AA`) | `00`–`FF` | no | no | no | **yes** | yes |
+| Walk (`01`..`80`, `FE`..`7F`) | `01`–`FE` | no | no | no | **yes** | yes |
 
-The `Random` index runs 01..12 unbroken across both formats, so no two vectors share an index. Splitting
-it per format would give two different waveforms both called `01`.
+Three rules follow, and they are not the same rule:
 
-## Not on the instrument
+1. **Random and Blocks: discard the high-order bits.** `v & (2^w - 1)`. A 7-bit `Random` is the same
+   payload with bit 7 dropped; the vector keeps its purpose, which is that every decode path meets byte
+   values it cannot have been tuned for.
+2. **Walking patterns must be built AT the width, not masked.** Masking a walking-one to 7 bits turns
+   `80` into `00`, which duplicates an existing entry and destroys the one property the vector has —
+   each byte putting a single 1 in a *distinct* position. A 7-bit walk is `01 02 04 08 10 20 40`.
+3. **Text cannot go below 7 bits at all.** `H` is `0x48`; masked to 6 bits it is `0x08`. There is no
+   6-bit "Hello". The narrow-width vectors need purpose-built low-value payloads — `Low5`, `Low6`.
 
-In `manifest.tsv` but absent from `STL? USER`. Names proposed for consistency; several would need
-uploading before they could be used at all, which is presumably why they are missing.
+### One collision to know about
 
-| now | new name | payload | wire fmt |
+Blocks masked to 7 bits is `00 7F 55 2A`. That is **byte-for-byte what a 7E1 mis-decode of the 8-bit
+Blocks vector produces** — it is the `exp_hex` the manifest already records for `v90`. So
+`SER_Blocks64_7E1` and a wrong-format decode of `SER_Blocks64_8N1` yield identical bytes. That is
+useful — it is a matched pair for open issue #49 — but it has to be written down, because a bench
+result that cannot distinguish them will otherwise read as a decoder bug.
+
+## Renaming what already exists
+
+24 distinct waveforms behind 33 names, from `STL? USER` on 2026-08-19.
+
+| now | new name | payload | wire fmt | pts/bit |
+|---|---|---|---|---|
+| `v41` | `SER_Hello_8N1` | `Hello, World!` | 8N1 | 10.42 |
+| `v44a` | `SER_Hello_7E1` | `Hello, World!` | 7E1 | 10.42 |
+| `v44b` | `SER_Hello_7O1` | `Hello, World!` | 7O1 | 10.42 |
+| `v44c` | `SER_Hello_8E1` | `Hello, World!` | 8E1 | 10.42 |
+| `v44d` | `SER_Hello_8O1` | `Hello, World!` | 8O1 | 10.42 |
+| `v44e` | `SER_Hello_8N2` | `Hello, World!` | **8N2** | 10.42 |
+| `v77` | `SER_Fox_8N1` | pangram + 94 glyphs, 133 B | 8N1 | 10.42 |
+| `v78` | `SER_Fox_7E1` | pangram + 94 glyphs, 133 B | 7E1 | 10.42 |
+| `v71` | `SER_Lorem1k_8N1` | lorem ipsum, 1024 B | 8N1 | 10.42 |
+| `v90` | `SER_Blocks64_8N1` | 64 each of `00 FF 55 AA` | 8N1 | 10.42 |
+| `v91` | `SER_Random_Ref_8N1` | 256 random, seed 20260818 | 8N1 | 10.42 |
+| `v92` | `SER_Walk_8N1` | walking one / walking zero | 8N1 | 10.42 |
+| `r00`–`r05` | `SER_Random_01..06_8N1` | 256 random each | 8N1 | 10.42 |
+| `r06`–`r11` | `SER_Random_07..12_7E1` | 256 random each | 7E1 | 10.42 |
+| `v80` | `SER_Hello_8N1_sp10` | `Hello, World!` | 8N1 | 10.00 |
+| `v72` `v73` | — | byte-identical to `v71` | | retire |
+| `v81`–`v84` | — | byte-identical to `v80` | | retire |
+| `v74` `v75` | — | `Lorem1k` re-rendered, 8.68 / 8.33 | | retire |
+
+The `Random` index runs 01..12 unbroken across formats, so no two share an index. `v41` vs `v80` is
+unresolved: both are `Hello, World!` 8N1 differing only in render density, and both are load-bearing
+(`v41` is the plan's canonical row, `v80` is `RATE_ARB` in `bench_matrix.py`). `SER_Hello_8N1_sp10` is a
+placeholder, not a recommendation.
+
+**Two traps in the source data.** `manifest.tsv`'s `exp_fmt` is *what the decoder should report*, not
+what is on the wire. `v44e` is generated with two stop bits and its `exp_fmt` is `8N1` — correctly, a
+second stop bit being indistinguishable from idle — so naming it from that column would lose the only
+reason the vector exists. And `v90`, `v92`, `v94` carry `exp_fmt` of `7E1`/`7O1` while the `vec{}` calls
+pass no format at all and therefore render **8N1**: those payloads are format-ambiguous by construction,
+which is issue #49. Naming them `7E1` would freeze a decoder ambiguity into the vector set and a fix to
+#49 would make the names lies.
+
+## Filling out to 7E1 / 7O1 / 8N1 for every content
+
+Nine new renders, plus four re-renders that cost no extra names.
+
+| new name | from | note |
+|---|---|---|
+| `SER_Fox_7O1` | Fox payload | |
+| `SER_Lorem1k_7E1` | lorem 1 kB | **~213 kB, over the LAN ceiling** |
+| `SER_Lorem1k_7O1` | lorem 1 kB | **~213 kB, over the LAN ceiling** |
+| `SER_Blocks64_7E1` | masked to `00 7F 55 2A` | see the collision above |
+| `SER_Blocks64_7O1` | masked to `00 7F 55 2A` | |
+| `SER_Walk_7E1` | walk built at 7 bits | not masked — rule 2 |
+| `SER_Walk_7O1` | walk built at 7 bits | not masked — rule 2 |
+| `SER_Random_Ref_7E1` | masked, bit 7 dropped | |
+| `SER_Random_Ref_7O1` | masked, bit 7 dropped | |
+
+**The `Random` series regroups rather than triples.** Twelve payloads across three formats, four each:
+`01`–`04` 8N1, `05`–`08` 7E1, `09`–`12` 7O1. That keeps twelve distinct random payloads and all three
+formats for the same twelve uploads — only four need re-rendering, against 24 new vectors if every
+payload got every format.
+
+## A smattering of 5, 6 and 9 bits
+
+These widths are exactly the ones the decoder deliberately does **not** search: 5 and 6 only under
+"Auto (any width)" and heavily biased against, 9 reachable only by forcing. So they test the forced and
+rare-width paths, which nothing else does.
+
+| new name | payload | why this one |
+|---|---|---|
+| `SER_Low5_5N1` | 0–31, purpose-built | the rare-width path at all |
+| `SER_Low5_5E1` | 0–31 | parity on a rare width |
+| `SER_Low6_6N1` | 0–63, purpose-built | |
+| `SER_Low6_6O1` | 0–63 | |
+| `SER_Low6_6N1_Gap2` | 0–63, 2-bit gap | **the documented collision**: `uart_decode.tsp` notes that 6 data bits plus a stop plus two idle bits is exactly a 10-cell 8N1 frame, so both score equally and the loser's bytes are silently wrong |
+| `SER_Random9_9N1` | 0–511 | catches the `+256` laundering the format search warns about — a 9-bit rival absorbs 8N1 stop-bit damage into a data bit and reports *fewer* errors while every byte is 256 too large |
+| `SER_Hello_9N1` | `Hello, World!` | the forced-width path on a payload with a known answer |
+
+## Parity-error vectors
+
+**Purpose: prove a flagged byte reddens its row in the MIDDLE of the dump and reads `?` in the ASCII
+gutter.** Today's red-row work was verified only on *head* errors from a mid-byte start. An interior
+parity error has never been checked on hardware, and it is a different code path — the head is counted
+by extent, interior failures are counted individually.
+
+Two constraints:
+
+* **8N1 has no parity bit**, so a parity error is impossible there. These only exist on `7E1`, `7O1`,
+  `8E1`, `8O1`.
+* **Injections must be interior.** `sdec.ua_edge_frames` is 3 and the final frame is always excluded, so
+  an error in the first three bytes or the last one is treated as a windowing artefact and does not
+  count. An injection at byte 2 would prove nothing about the interior path.
+
+**Spacing makes the count assertable.** For a looping payload, if the injection interval divides the
+capture window the error count is the same wherever the capture lands. Computed over all 300 start
+offsets: a **300-byte payload with a parity error every 30 bytes yields exactly 8 errors in a 240-byte
+window, invariantly**. Nearby choices do not — every 25 bytes gives 9 or 10, and a 256-byte payload
+every 32 gives 7 or 8. The real window wanders a byte or two, so assert `8 ± 1`, or better, assert that
+`ERR` equals the number of `?` in the gutter, which is self-consistent at any window.
+
+| new name | payload | injected | note |
 |---|---|---|---|
-| `v42` | — | `Hello, World!` re-rendered for 115200 | 8N1 |
-| `v43` | — | `Hello, World!` re-rendered for 250000 | 8N1 |
-| `v45` | `SER_Hello_8N1_Inv` | `Hello, World!`, inverted (RS-232 sense) | 8N1 |
-| `v46` | `SER_Page200_8N1` | 200 B, sized for the paging boundary | 8N1 |
-| `v47` | `SER_Hello_8N1_Spike` | `Hello` + impulse spikes at the amplitude ceiling | 8N1 |
-| `v48a` | `SER_Hello_8N1_Drift06` | `Hello` + 0.6 V drift (inside tolerance) | 8N1 |
-| `v48b` | `SER_Hello_8N1_Drift10` | `Hello` + 1.0 V drift (beyond tolerance) | 8N1 |
-| `v51` | `SER_MIDI_8N1` | MIDI Note On / Note Off, 31250 | 8N1 |
-| `v61` | `SER_LIN_01` | LIN: two frames, enhanced checksum | LIN |
-| `v62` | `SER_LIN_02` | LIN: diagnostic 0x3C/0x3D, classic checksum | LIN |
-| `v63` | `SER_LIN_03` | LIN: header with no response, then a good frame | LIN |
-| `v76` | `SER_Lorem300_8N1` | lorem 300 B, loop-exact sweep vector | 8N1 |
-| `v93` | `SER_Random_1k_8N1` | 1024 random, seed 20260818 | 8N1 |
-| `v94` | `SER_Blocks128_8N1` | 128 each of `00 FF 55 AA` | 8N1 |
+| `SER_Fox_7E1_PErr1` | Fox, 133 B | 1, mid-payload | the minimum honest signal: `ERR 1`, one red row |
+| `SER_Lorem300_7E1_PErr8` | lorem 300 B | 8, every 30 B | the invariant-count vector; 8 red rows spread down the dump |
+| `SER_Lorem300_7O1_PErr8` | lorem 300 B | 8, every 30 B | same, odd parity |
+| `SER_Random_05_7E1_PErr8` | 256 random, masked | 8 | parity errors on a payload with no ASCII structure to lean on |
+| `SER_Hello_8E1_PErr1` | `Hello, World!` | 1 | 8-bit parity, so the width is not what is under test |
+| `SER_Fox_7E1_PErr64` | Fox, 133 B | ~half | deliberately unarbitrable: checks the search does not silently pick a laundering format rather than reporting a mess |
 
-`v42`, `v43`, `v74` and `v75` get no name: they are the same payload as a vector that already has one,
-re-rendered at a different points-per-bit. If the rate comes from `srate`, they carry no information.
+**This needs a renderer change.** `tools/gen_serial.lua` accepts only `nbits` and `par` (lines 67–68);
+there is no injection option in it or in `make_vectors.lua`. It needs something like
+`perr = {frame indices}` threaded through the frame builder, and `make_vectors.lua` has to expose it and
+record the injected positions in `manifest.tsv` so the expected bytes stay derivable rather than stored.
 
-## Two traps in the source data
+## Other injections worth building
 
-**1. `exp_fmt` is what the DECODER should report, not what is on the wire.** `v44e` is generated with
-**two stop bits** and the manifest's `exp_fmt` says `8N1` — correctly, because a second stop bit is
-indistinguishable from idle, so 8N1 is the right answer for a decode. Naming it from that column would
-lose the only thing that makes the vector worth having.
+Ordered by what each one catches. The strongest are the ones that turn a documented weakness or an open
+issue into a single named stimulus, so the answer stops depending on whether the bench happens to
+reproduce it. `<Variant>` carries the injection and its count or parameter.
 
-**2. Three vectors decode as a format they were not generated as, by construction.** `v90` and `v94`
-(blocks of `00 FF 55 AA`) carry `exp_fmt = 7E1`, and `v92` (walking bits) carries `7O1`, while
-`make_vectors.lua` generates all three as **8N1**. These payloads are format-ambiguous on purpose —
-that ambiguity is the open issue #49. Naming them `7E1`/`7O1` would bake a known decoder ambiguity into
-the vector names, and then a future fix to #49 would make every one of those names a lie. The table
-above names them `8N1`, the stimulus.
+### Framing, and the two exclusions we rely on
 
-## Two decisions left
+| name | injection | what it catches |
+|---|---|---|
+| `SER_Fox_8N1_StopErr8` | stop bit driven to space, 8 frames | **the only error vector 8N1 can have.** Parity errors are impossible without a parity bit, so today 8N1 has no error coverage at all — and the stop bit is what the whole format search leans on |
+| `SER_Lorem300_7E1_PErrHead3` | parity errors in frames 1–3 only | the **head exclusion**, deliberately. With no misaligned head, `ERR` must read 0 while the row is still **red** — the exact divergence pinned in `test_serial.lua` today. A vector makes it checkable on glass |
+| `SER_Lorem300_7E1_PErrTail1` | parity error in the final frame only | the **tail exclusion**: the capture boundary halves the last frame, so it must not count. Currently asserted offline only |
+| `SER_Fox_8N1_Runt4` | start bit, then idle before the frame completes | a glitch that looks like a frame opening. Nothing tests this; the framer's behaviour is unstated |
+| `SER_Fox_8N1_Break1` | line held at space > 10 bit times | a real UART break. The app has **no stated handling** — it should not report a break as a run of garbage bytes, and nobody knows which it does |
 
-**1. `v41` vs `v80`.** Both are `Hello, World!` 8N1; they differ only in render density, 10.42 against
-10.00 points per bit, and they are different files. `SER_Hello_8N1_sp10` above is a placeholder. Either
-keep both with the suffix, or retire one — `v41` is the plan's canonical row 4.1, `v80`..`v84` are the
-rate-ladder vectors (`RATE_ARB` in `bench_matrix.py`), so they are both load-bearing today.
+### The failure mode the app itself calls its worst
 
-**2. Whether to retire the re-rendered duplicates** (`v72`, `v73`, `v74`, `v75`, `v81`–`v84`, `v42`,
-`v43`). Nine of the 33 names on the instrument are duplicate or redundant renderings. Retiring them
-means the code that names them must select the survivor and set `srate` for the rate it wants;
-`bench_matrix.py` already does exactly that for the rate ladder via `RATE_ARB` + `RATE_SPB`.
+| name | injection | what it catches |
+|---|---|---|
+| `SER_Fox_8N1_BitFlip8` | narrow spike inside a **data** bit, framing intact | `serial_ui.tsp` says it outright: "Impulse noise on a data bit flips it undetectably — the start and stop bits are still in place, so the frame passes." This vector produces **wrong bytes with `ERR 0`**, which is the one thing the panel cannot warn about. It is a known-limitation vector: the pass condition is that the bytes differ from the payload and `ERR` is 0, documenting the hole rather than pretending it is closed |
 
-## What renaming actually costs
+### Timing, including a gap with no task yet
 
-There is no rename command on this generator: `ARWV NAME,x` selects, `WVDT` writes. A rename is a
-re-write under the new name, and then a delete of the old one.
+| name | injection | what it catches |
+|---|---|---|
+| `SER_Lorem300_8N1_RateStep` | first half 9600, second half 19200 | **the padlock gap seen on 2026-08-19**: the generator went 19.2 k → 76.8 k, 4×, and the locked rate was not abandoned despite the "abandon a locked rate the wire contradicts" defence. That has no repro and no task. One vector turns it into a bench point |
+| `SER_Fox_8N1_Sub2x` | bit pattern making the half-rate fit plausible | regression vector for **issue #29** — 9600 detected as 19200, which then reads as 7N1. Fixed in `ua_submultiple`, and `v44e`'s wrong-answer regression came back once already |
+| `SER_Fox_8N1_NoIdle` | zero gap at the loop seam | **issue #49**, open: 7E1 with no idle gap read as 8N1. It also forces the mid-byte start that today's `headbad` work is all about, on demand instead of one capture in eight |
+| `SER_Fox_8N1_Skew2pc` | payload 2 % fast of nominal | the sampling phase walks across the frame. Tests `FIT` and `refine_width` — and issue #40 is a width collapse on a forced wrong rate |
+| `SER_Fox_8N1_Jitter5pc` | per-edge random jitter | edge-timing tolerance, which `FIT` claims to measure |
 
-* **`SDG_UPLOAD_SAFE_BYTES` is 65536** (`tools/instruments.py`), and it is described there as a scar
-  rather than a spec: repeated large `WVDT` uploads have wedged this generator's LAN service.
-* **Seven vectors exceed it**: `v71` `v72` `v73` (213 750 B), `v74` (178 750), `v75` (171 000),
-  `v93` (213 750), `v94` (107 250). These **cannot go over the LAN**. `out/vectors/USB-TRANSFER.md`
-  covers `v93`/`v94` by USB key and does not mention the other five, so that document is incomplete.
-* Retiring the duplicates helps here more than anywhere: of those seven, `v72`, `v73`, `v74` and `v75`
-  are all redundant with `v71`, so the large-vector work drops from seven uploads to three.
-* **The name-length limit is unverified.** Every name currently on the instrument is 3–4 characters.
-  The longest proposed is `SER_Hello_8N1_Drift06` at 21, and `SER_Random_01_8N1` at 17. Establish the
-  limit with **one** upload before committing to the scheme.
+### Analogue, extending what `v47`/`v48` started
 
-Renaming also touches every harness that names a vector: `bench_matrix.py` (`RATE_ARB`, `LOREM_ARB`,
-and the suite tables), `bench_break.py`, `bench_panel.py`, `bench_priming.py`, `bench_longstream.py`,
-`bench_buttons.py`, plus `manifest.tsv` and `make_vectors.lua`, which is what produces the files and
-their names in the first place. Doing it as a mapping table in one place, rather than by find-and-
-replace, keeps the old names usable until the instrument catches up.
+| name | injection | what it catches |
+|---|---|---|
+| `SER_Fox_8N1_SlowEdge` | RC-limited transitions | threshold crossing away from the ideal point; nothing tests slew today |
+| `SER_Fox_8N1_LowSwing` | swing collapses mid-capture | the auto-threshold following a signal that stops separating. `Drift06`/`Drift10` move the whole band; this shrinks it |
+
+### Naming rule for these
+
+`<Injection><Count>` where the count is the number injected (`PErr8`, `StopErr8`, `Break1`), or
+`<Injection><Parameter>` where a magnitude is the point (`Skew2pc`, `Jitter5pc`). The count in the name
+is the assertion: `SER_Lorem300_7E1_PErr8` must produce `ERR 8`, so a bench result that disagrees with
+the vector's own name is a finding without anyone writing a test for it. That is the whole reason not to
+call it `v22` — the name is the expected value.
+
+Where a count is only invariant for a particular window, the invariance is a property of the spacing,
+not the name: see the 300 B / every 30 B calculation above.
+
+## Excluded from the "every format" rule, with reasons
+
+* **MIDI** (`v51`) is 8N1 at 31250 **by specification**. A 7E1 MIDI stream is not MIDI, so the variants
+  would be fiction dressed as coverage.
+* **LIN** (`v61`–`v63`) is likewise 8N1 by specification.
+* **The impairment vectors** — `Inv`, `Spike`, `Drift06`, `Drift10` — test analogue damage, which is
+  orthogonal to framing. Tripling them adds uploads and no information. One parity-format drift vector
+  would be worth having if parity-under-drift is ever a question.
+
+## Not on the instrument at all
+
+In `manifest.tsv` but absent from `STL? USER`, consistent with `select_arb`'s own note about twelve
+vectors added to a suite and never uploaded: `v42` `v43` `v45` `v46` `v47` `v48a` `v48b` `v51` `v61`
+`v62` `v63` `v76` `v93` `v94`. Proposed names: `SER_Hello_8N1_Inv`, `SER_Page200_8N1`,
+`SER_Hello_8N1_Spike`, `SER_Hello_8N1_Drift06`, `SER_Hello_8N1_Drift10`, `SER_MIDI_8N1`, `SER_LIN_01`
+`SER_LIN_02` `SER_LIN_03`, `SER_Lorem300_8N1`, `SER_Random_1k_8N1`, `SER_Blocks128_8N1`. `v42`, `v43`
+get none — same payload as `SER_Hello_8N1`, re-rendered for a rate that `srate` now supplies.
+
+## What this costs
+
+There is no rename command: `ARWV NAME,x` selects, `WVDT` writes. A rename is a re-write plus a delete
+of the old name.
+
+* **`SDG_UPLOAD_SAFE_BYTES` is 65536** (`tools/instruments.py`), described there as a scar rather than a
+  spec: repeated large `WVDT` uploads have wedged this generator's LAN service.
+* **Over the ceiling today**: `v71` `v72` `v73` (213 750 B), `v74` (178 750), `v75` (171 000), `v93`
+  (213 750), `v94` (107 250) — seven. `out/vectors/USB-TRANSFER.md` covers only `v93`/`v94`, so that
+  document is incomplete. Retiring the redundant renders takes the seven to three.
+* **The additions add two more over the ceiling**: `SER_Lorem1k_7E1` and `_7O1`, ~213 kB each. Every
+  other new vector is under it — Blocks/Walk/Random ~50–54 kB, Fox ~28 kB, Hello ~4 kB.
+* **Name length is unverified.** Everything on the instrument now is 3–4 characters; the longest
+  proposed is `SER_Hello_8N1_Drift06` at 21 and `SER_Lorem300_7E1_PErr8` at 22. Establish the limit with
+  **one** upload before committing to the scheme.
+
+Rough totals: 24 renames, 9 format fills, 4 re-renders, 7 narrow/wide, 6 parity-error — about 50
+waveform writes, four of which cannot go over the LAN.
+
+Renaming also touches every harness that names a vector: `bench_matrix.py` (`RATE_ARB`, `LOREM_ARB`, the
+suite tables), `bench_break.py`, `bench_panel.py`, `bench_priming.py`, `bench_longstream.py`,
+`bench_buttons.py`, plus `manifest.tsv` and `make_vectors.lua`, which produces the files and their names
+in the first place. Doing it as a mapping table in one place, rather than find-and-replace, keeps the old
+names working until the instrument catches up.
