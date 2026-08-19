@@ -262,6 +262,8 @@ a 20-minute backstop, so nothing can wait for ever — it only matters on very s
 verified with a 1024-byte non-repeating test pattern, where the decoded bytes were one unbroken slice
 of it.
 
+![The instrument's own backlog dialog, over a 32 kB recording at 76.8 kBd](img/panel-backlog-dialog.jpg)
+
 > **If a `Processing reading backlog...` dialog appears, ignore it. Do not press Abort.**
 >
 > It is the instrument's own message, not the app's: the digitizer is producing readings faster than
@@ -274,6 +276,13 @@ of it.
 >
 > Pressing **Abort** would stop the acquisition the dialog is describing, which is the one thing that
 > actually loses the capture. There is nothing to do but let it run.
+>
+> The photograph above is that dialog over a live 32 kB recording of a 76.8 kBd line at 332 kS/s, with
+> the progress bar behind it at 32 % of the buffer and the row beside it reading `no stop until it
+> ends`. It is a photograph rather than a screenshot for a reason worth knowing: **the instrument's web
+> interface stops answering while the digitizer runs**, so the remote screen grab cannot capture this
+> dialog at all -- eight attempts timed out. If you need to document or report something that happens
+> during an acquisition, a camera is the only way to see it.
 
 ### Which window size to pick
 
