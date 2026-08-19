@@ -387,7 +387,10 @@ def record_lap(d, cap, wall_s=1800):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--hours', type=float, default=8.0)
-    ap.add_argument('--suites', default='formats,rates',
+    # payloads included by default: it is the only suite where each lap's fourteen points are
+    # fourteen DIFFERENT payloads covering every byte value 0-255, so a long run accumulates
+    # pattern coverage instead of just repeating one stimulus.
+    ap.add_argument('--suites', default='formats,rates,lorem,payloads',
                     help='bench_matrix suites to loop; formats is where the intermittent lives')
     ap.add_argument('--rates', default=None, help='override the rate ladder')
     ap.add_argument('--record-every', type=int, default=0,

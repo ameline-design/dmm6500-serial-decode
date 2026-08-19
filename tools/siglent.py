@@ -224,6 +224,19 @@ class SDG:
         """
         self._check_vpp(amp_vpp)
         self.write(f'C{ch}:ARWV NAME,{name}')
+        # READ THE NAME BACK. Selecting a waveform that is not on the instrument does not fail --
+        # the previous one keeps playing, so every later measurement is attributed to the wrong
+        # stimulus. Measured 2026-08-19: twelve vectors added to a suite but never uploaded, and all
+        # twelve "failed" against the PREVIOUS vector's bytes. TrueArb was verified below; the name,
+        # which is the point of the call, was not.
+        got = self.query(f'C{ch}:ARWV?') or ''
+        want = name[:-4] if name.endswith('.bin') else name
+        if want.lower() not in got.lower():
+            raise RuntimeError(
+                'C%d:ARWV NAME,%s did not take -- the generator still reports %r. The waveform is '
+                'probably not on the instrument; upload it (bench_matrix.py --upload) rather than '
+                'trusting a silent select, which leaves the PREVIOUS waveform playing.'
+                % (ch, name, got.strip()))
         self.write(f'C{ch}:BSWV AMP,{amp_vpp},OFST,{offset_v}')
         self.truearb(srate_sa_s, ch=ch)
         self.assert_truearb(ch=ch)

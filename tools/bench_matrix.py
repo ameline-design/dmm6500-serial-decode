@@ -653,8 +653,73 @@ def suite_hard(d, g, a, rows):
            'sdec.force_par, sdec.force_nstop, sdec.force_invert = nil, nil, nil', timeout=20)
 
 
+# The fourteen. Coveyou's line -- "random number generation is too important to be left to chance"
+# (Oak Ridge, 1969) -- is why r00-r11 are SHUFFLES rather than uniform draws: a uniform 250-byte
+# draw leaves each value's presence to a Poisson tail, and about one value in 256 would have been
+# missing. Shuffling guarantees the coverage and keeps the ORDER random, which was the useful part.
+PAYLOAD_VECS = (['v77', 'v78'] + ['r%02d' % k for k in range(12)])
+
+
+def suite_payloads(d, g, a, rows):
+    """The full-glyph pair and the twelve shuffled vectors, one capture each.
+
+    WHY THESE AND NOT MORE LOREM. Every other suite replays ONE payload, so a long run measures
+    repeatability: the same bit patterns at the same phases, over and over. These fourteen are
+    fourteen different payloads, and between them they carry every byte value 0..255 -- the six
+    8N1 vectors are each a shuffle of 0..255 (every value exactly once) and the six 7E1 ones a
+    shuffle of 0..127 twice over, so coverage is guaranteed rather than sampled. v77/v78 add all
+    94 visible ASCII glyphs in both 8N1 and 7E1.
+
+    THE 7E1 HALF IS THE POINT, not symmetry. A uniformly shuffled 7-bit payload sets the parity
+    bit in about half its frames, which is the strongest available input to the 7E1-versus-8N1
+    disambiguation -- the ambiguity that read v78 as 8N1 on four captures in eight until
+    ua_refine_parity stopped letting one misaligned frame veto the vote. A decoder that cannot
+    tell the two apart has nowhere to hide here.
+
+    Every vector is 256 bytes at 9600 8N1/7E1, ~53.8 kB as a file: inside SDG_UPLOAD_SAFE_BYTES
+    with 18 % margin, so all fourteen are safe LAN uploads rather than USB-key transfers.
+    """
+    vecs = PAYLOAD_VECS
+    print('\n=== PAYLOADS -- %d distinct payloads, every byte value 0-255 covered ===' % len(vecs))
+    for vid in vecs:
+        try:
+            with open(os.path.join(BU.VECDIR, vid + '.txt'), 'rb') as f:
+                payload = f.read()
+        except IOError:
+            print('  %-6s SKIPPED -- no %s.txt; run tools/make_vectors.lua' % (vid, vid))
+            continue
+        srate = int(round(9600 * LOREM_SPB))
+        g.select_arb(vid, amp_for(NOMINAL_SWING), srate)
+        g.output(True, ch=1)
+        time.sleep(a.settle)
+        res, hexs, notes = press(d, 'pay_%s' % vid)
+        nf = int(num(res, 'nf', 0))
+        head = int(num(res, 'head', 0))
+        ok, det = False, 'no bytes decoded'
+        if 'fail' in res:
+            det = 'FAIL %s' % res['fail']
+        elif nf > head:
+            ok, det = BU.judge_payload(hexs[2 * head:], payload)
+            if head:
+                det = det + ' after a FLAGGED %d-byte head' % head
+        gb = num(res, 'baud')
+        close = gb is not None and abs(gb / 9600.0 - 1.0) <= 0.02
+        print('  %-6s %-5s %-6s %5s Bd  %-58s %d B payload'
+              % (vid, 'ok' if (ok and close) else 'BAD', res.get('fmt', '?'),
+                 fmt_num(res.get('baud'), '%.0f'), det, len(payload)))
+        n4915 = note_events(res)
+        if n4915:
+            print('      *** %d x event 4915 ***' % n4915)
+        for n in notes:
+            print('      note: %s' % n)
+        if not (ok and close):
+            print('      hex head %d: %s' % (head, hexs[2 * head:][:512]))
+        rows.append(('payload %s' % vid, ok and close, det))
+
+
 SUITES = {'formats': suite_formats, 'rates': suite_rates, 'lorem': suite_lorem,
-          'levels': suite_levels, 'offsets': suite_offsets, 'hard': suite_hard}
+          'levels': suite_levels, 'offsets': suite_offsets, 'hard': suite_hard,
+          'payloads': suite_payloads}
 
 
 def main():

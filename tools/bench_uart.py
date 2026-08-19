@@ -396,16 +396,12 @@ JP_MINVAL = 4
 JP_FLAG_FRAC = 0.02      # flag budget, as a fraction of the capture...
 JP_FLAG_FLOOR = 2        # ...or this many, whichever is kinder
 JP_COVER_MIN = 0.90      # how much of the capture must be positively verified byte-exact
-# Frames at the capture boundary that are NOT judged, because they cannot be. uart_decode.tsp states
-# that a gapless stream "RESYNCHRONISES a few frames in", and measured on hardware 2026-08-19 a v41
-# capture began '?? ?? ?? ?? DD 3B ?? ?? 76 C8' and then repeated 'Hello, World!' byte-exact -- the
-# DD 3B and 76 C8 are resync debris the decoder did not flag, sitting contiguous with good data, so a
-# run-based check merges them into one long run and condemns the whole capture.
-#
-# THIS IS A REAL LIMIT, NOT A CONVENIENCE. A wrong byte three frames into a capture is genuinely
-# indistinguishable from resync debris, so no judge can call it. What IS enforceable is everything
-# after: exact bytes, one alignment, a bounded flag count. Keep this small, and never raise it to
-# make a failure go away -- a wrong byte at frame 40 must still fail.
+# Boundary frames are NOT judged, because they cannot be. uart_decode.tsp says a gapless stream
+# "RESYNCHRONISES a few frames in"; measured 2026-08-19, a v41 capture opened
+# '?? ?? ?? ?? DD 3B ?? ?? 76 C8' then repeated 'Hello, World!' byte-exact. DD 3B and 76 C8 are
+# unflagged resync debris contiguous with good data, so a run-based check condemns the whole run.
+# A wrong byte three frames in is indistinguishable from debris; one at frame 40 is not. Keep this
+# small and never raise it to silence a failure.
 JP_HEADSKIP = 12
 JP_TAILSKIP = 1          # the buffer end slices the last frame the same way
 

@@ -146,6 +146,15 @@ def stages(outdir, shots):
               hardware=True,
               note='formats, the standard rate ladder, lorem, logic swings, DC offsets. '
                    'THIS STAGE SPENDS THE ONE UI BUILD.'),
+        # SEPARATE FROM hw-matrix on purpose. Fourteen more captures is ~100 s, and keeping it its
+        # own stage means a payload failure is named as one in the report instead of being buried in
+        # a 43-point matrix -- and it can be re-run alone with --no-start while diagnosing.
+        Stage('hw-payloads',
+              ['python3', 'tools/bench_matrix.py', '--suites', 'payloads', '--no-start',
+               '--shots', os.path.join(shots, 'payloads'), '--no-output-off'],
+              hardware=True,
+              note='every byte value 0-255: all 94 visible glyphs in 8N1 and 7E1, plus twelve '
+                   'shuffled 256-byte payloads, six 8N1 and six 7E1'),
         Stage('hw-odd-rates',
               ['python3', 'tools/bench_matrix.py', '--suites', 'rates', '--no-start',
                '--rates', ODD_RATES,
@@ -186,7 +195,7 @@ def summarise(name, out, rc):
     if name == 'lint':
         bad = [l for l in lines if ': OK' not in l]
         return 'all %d modules clean' % len(lines) if not bad else '; '.join(bad[:3])
-    if name in ('hw-matrix', 'hw-odd-rates'):
+    if name in ('hw-matrix', 'hw-odd-rates', 'hw-payloads'):
         pts = find(lambda l: 'points fully correct' in l)
         ev = find(lambda l: l.startswith('events:'))
         return ' | '.join(x for x in (pts, ev) if x)
@@ -342,7 +351,8 @@ def main():
     for st in S:
         # hw-panel drives the app hw-matrix built. If the build stage failed there is no app to
         # press, so running it would report a second failure with one cause.
-        if st.name in ('hw-odd-rates', 'hw-panel', 'hw-break') and 'hw-matrix' in failed_names:
+        if (st.name in ('hw-odd-rates', 'hw-payloads', 'hw-panel', 'hw-break')
+                and 'hw-matrix' in failed_names):
             print('%-14s %-6s %8s  skipped: hw-matrix failed, so there is no built app to drive'
                   % (st.name, 'skip', '-'))
             continue

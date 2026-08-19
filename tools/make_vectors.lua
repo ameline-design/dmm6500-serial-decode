@@ -572,6 +572,96 @@ vec{id = 'v78', desc = 'all 94 visible glyphs, 9600 7E1', fs = 100000, fsv = 5.0
     build = function() return ascii94_vec(9600, 100000, 7, 1) end}
 
 -- ---------------------------------------------------------------------------
+-- A DOZEN RANDOM VECTORS, for cycling through a long soak
+-- ---------------------------------------------------------------------------
+-- A soak that replays one payload for eight hours measures repeatability, not coverage: every lap
+-- decodes the same bit patterns at the same phases. Twelve distinct random payloads turn the same
+-- wall-clock into twelve times the pattern space, and because they are RANDOM they contain runs,
+-- alternations and near-misses nobody thought to write down.
+--
+-- SIZED 250 BYTES SO EVERY ONE IS A SAFE LAN UPLOAD. At 10.42 samples/bit a 250-byte payload at
+-- 10 bit times per frame is ~26.3 kpts = ~52.6 kB, comfortably inside SDG_UPLOAD_SAFE_BYTES
+-- (65536, tools/instruments.py) with room to spare -- 300 bytes would be 63 kB, which is inside
+-- the limit but leaves no margin, and this generator has wedged on uploads before. 250 is also
+-- still LONGER than the ~240-byte capture window, which is the property that makes a capture a
+-- unique substring rather than a repeat.
+--
+-- SIX 8N1 AND SIX 7E1, and the split is the point rather than symmetry. The 8-bit ones exercise
+-- byte values the 7-bit ones cannot reach at all -- everything with bit 7 set -- while the 7-bit
+-- ones are the only ones that exercise the PARITY path over uniformly distributed data, which is
+-- exactly where the 7E1/8N1 ambiguity lives (see ua_refine_parity). A random 7-bit payload is the
+-- strongest possible input to the bit-7-diversity guard: roughly half its frames set the parity
+-- bit, so a decoder that cannot tell 7E1 from 8N1 has nowhere to hide.
+--
+-- SHUFFLED PERMUTATIONS, NOT UNIFORM RANDOM BYTES, and that is a deliberate correction. Drawing
+-- 250 bytes uniformly gives an expected 5.9 occurrences of each value across six vectors, but
+-- coverage is then a lottery: with Poisson mean 5.9 the chance a given value never appears is
+-- 0.27 %, so about one value in the whole set would be MISSING, and which one would change with
+-- the seed. "Random" and "covers every byte" are different requirements and only one of them can
+-- be left to chance.
+--
+-- So each 8-bit vector is a shuffle of 0..255 -- every value EXACTLY ONCE per vector, six times
+-- across the group, guaranteed rather than probable. Each 7-bit vector is a shuffle of two copies
+-- of 0..127, so every 7-bit value appears exactly twice per vector and twelve times across the
+-- group. The ORDER is still random, which is what makes the bit patterns, run lengths and
+-- inter-symbol transitions unpredictable -- that was always the useful part, not the value
+-- histogram.
+--
+-- 256 bytes rather than 250: it is what a full permutation costs, it is still LONGER than the
+-- ~240-byte capture window so a capture stays a unique substring rather than a repeat, and at
+-- ~10.42 samples/bit it lands near 54 kB -- inside SDG_UPLOAD_SAFE_BYTES (65536) with real margin.
+--
+-- Fisher-Yates on the suite's own PRNG, reseeded per vector, so each payload is a function of its
+-- seed alone and regenerates from its manifest row with nothing stored.
+-- The byte table as a STRING, which is what makes <id>.txt get written beside the vector -- and
+-- without it the substring check at the bench has nothing to compare against. Built in chunks
+-- because string.char(unpack(t)) overflows the argument stack well before 256 values.
+local function bytes_to_str(by, nb)
+  local out, no, i = {}, 0, nil
+  local chunk, nc = {}, 0
+  for i = 1, nb do
+    nc = nc + 1; chunk[nc] = string.char(by[i])
+    if nc >= 64 then no = no + 1; out[no] = table.concat(chunk); chunk, nc = {}, 0 end
+  end
+  if nc > 0 then no = no + 1; out[no] = table.concat(chunk) end
+  return table.concat(out)
+end
+
+local function shuffled(hi, reps, seed)
+  GEN_RESEED(seed)
+  local by, nb, v, r, i = {}, 0, nil, nil, nil
+  for r = 1, reps do
+    for v = 0, hi do nb = nb + 1; by[nb] = v end
+  end
+  for i = nb, 2, -1 do
+    local j = math.floor(GEN_RAND() * i) + 1
+    if j > i then j = i end
+    by[i], by[j] = by[j], by[i]
+  end
+  return by, nb
+end
+
+local RSEED0 = 7100
+local rk
+for rk = 0, 11 do
+  local seed = RSEED0 + rk
+  local sevenbit = (rk >= 6)
+  local id = string.format('r%02d', rk)
+  local d = 'shuffled 256 B, 9600 '
+  if sevenbit then d = d .. '7E1 (0-127 x2)' else d = d .. '8N1 (0-255 x1)' end
+  vec{id = id, desc = d .. string.format(' seed %d', seed), fs = 100000, fsv = 5.0,
+      long = true,
+      build = function()
+        local by, nb
+        if sevenbit then by, nb = shuffled(127, 2, seed) else by, nb = shuffled(255, 1, seed) end
+        local opts = {bytes = by, baud = 9600, fs = 100000, gap = 0,
+                      lead = 10, tail = 10, loop = true}
+        if sevenbit then opts.nbits = 7; opts.par = 1 end
+        return opts, by, nb, nil, bytes_to_str(by, nb)
+      end}
+end
+
+-- ---------------------------------------------------------------------------
 -- THE STANDARD-RATE SWEEP, 300 to 38400
 -- ---------------------------------------------------------------------------
 -- The manifest had 1200, 9600, 19200, 31250, 57600, 115200 and 250000 -- chosen one at a time to
