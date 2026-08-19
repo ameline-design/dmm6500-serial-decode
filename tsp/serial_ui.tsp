@@ -397,7 +397,8 @@ end
 -- whole promise is that no byte is lost.
 sdec.strm_maxbaud = 4800
 
--- Whether mode `m` suits the current rate. Always true: there is one recording mode and it suits
+-- Whether mode `m` suits the current rate. Always true: the TWO recording sizes differ only in
+-- byte ceiling, so any rate one can run the other can, and it suits
 -- every rate it can run at. A rate too fast to stream is refused by mode_why(), which carries a
 -- reason to the panel; this exists because the panel and the harnesses call it.
 function sdec.mode_suits(m)
@@ -426,7 +427,7 @@ function sdec.mode_why(m)
   end
   -- NO RATE CAN DELIVER THE FLOOR AT THIS BAUD. Measured on hardware: a SimpleLoop capture runs
   -- 0.510 us/sample slower than requested, so the rate that would have given minsabit samples per
-  -- bit in theory gives less in fact, and above ~115 kBd no listed rate closes the gap. Refused
+  -- bit in theory gives less in fact, and above 165563 Bd no listed rate closes the gap. Refused
   -- with the number rather than run at 2.6 samples/bit while claiming 4 -- see fs_for_burst().
   if m.needbaud and sdec.force_baud ~= nil and sdec.force_baud > 0 and
      sdec.fs_for_burst ~= nil and sdec.fs_for_burst(sdec.force_baud) == nil then

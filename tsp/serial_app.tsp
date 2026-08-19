@@ -766,8 +766,10 @@ function sdec.stream_decode(got)
   return true
 end
 
--- Decode ONE SLICE, put the progress on the status row, and hand the panel back. Returns true
--- while there is more to do.
+-- Decode ONE SLICE, put the progress on the status row, and hand the panel back. Returns the
+-- decode's VERDICT, not its progress: true both for a slice still pending and for a clean finish,
+-- false when the step raised, produced no totals, or failed its file write. Whether work REMAINS
+-- is sdec.ck_job ~= nil, not this.
 function sdec.decode_step()
   local job = sdec.ck_job
   if job == nil then return false end
@@ -1758,7 +1760,9 @@ end
 -- ============================================================================
 -- View handlers
 -- ============================================================================
--- Advance through sdec.ui_views: text -> hex -> MIDI messages -> LIN frames -> text.
+-- Advance through the views THIS BUILD HAS -- text -> hex -> text in version 1, which ships
+-- without midi_decode.tsp and lin_decode.tsp, so ui_view_avail() hides the MIDI and LIN entries
+-- rather than landing the button on a list that could only ever be empty.
 function sdec.view_toggle()
   -- EVERY PROTOCOL VIEW IS OFFERED whatever the protocol setting says, because "is this stream
   -- MIDI at all?" -- or LIN -- is worth being able to ask of any capture, and each parser reports
@@ -1802,8 +1806,9 @@ function sdec.page_cycle()
   return pcall(function() sdec.ui_refresh() end)
 end
 
--- Show the next page of bytes. Bound to no button: this and page_prev() are how the host pages
--- the panel over the socket.
+-- Show the next page of bytes. Bound to the 'Page Dn' button down the dump area's right margin
+-- (serial_ui.tsp:1572), with page_prev() as 'Page Up' above it; the host drives both over the
+-- socket as well.
 function sdec.page_next()
   if sdec.ui_page + 1 < sdec.ui_npages() then sdec.ui_page = sdec.ui_page + 1 end
   return pcall(function() sdec.ui_refresh() end)
@@ -2088,8 +2093,9 @@ sdec.strm_absorb_s = sdec.strm_absorb_s or 1.0
 --
 -- ARMED ON EVERY ENDING, INCLUDING 'stopped'. This used to return early when a press had been SEEN,
 -- reasoning that nothing could be queued behind it -- true of one press, false of an operator, who
--- presses Capture, then TRIGGER, then Capture again. TRIGGER ends the run, so the two Capture presses
--- were exactly the ones left unabsorbed, and each started another uninterruptable recording.
+-- presses Capture, then TRIGGER, then Capture again. A finger on TRIGGER emits no blender event
+-- while a panel-initiated run executes (measured 2026-08-18), so the run ends at its own bounds
+-- with both Capture presses unabsorbed -- each starting another uninterruptable recording.
 function sdec.strm_absorb_arm()
   sdec.strm_stopped_by_press = nil
   sdec.strm_nabsorbed = 0

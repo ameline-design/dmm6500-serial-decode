@@ -153,7 +153,7 @@ end
 --   * the seam then falls in the middle of the overlap rather than at its rim, so the
 --     de-duplication is never deciding a near-tie.
 --
--- At 8.68 samples/bit and 10 bit frames that is 260 + 64 = 324 samples, 1.6 % of a
+-- At 8.68 samples/bit and 10 bit frames that is ceil(260.4) + 64 = 325 samples, 1.6 % of a
 -- 20 000-sample window: the redundant work is a rounding error against the cost of
 -- getting a seam wrong.
 function sdec.ck_overlap(T, framebits)
@@ -854,11 +854,11 @@ end
 -- left an 8 kB recording pageable over its last 9 % and the rest reachable only by unplugging the key.
 --
 -- MEASURED on the live app 2026-08-18, since the argument above rests on RAM: a Lua array of numbers
--- costs exactly 16 B per element (8192 -> 129 kB, 16384 -> 256 kB); the app sits at ~1470 kB of heap
+-- costs exactly 16 B per element (8192 -> 128 KiB, 16384 -> 256 KiB); the app sits at ~1470 kB of heap
 -- against gcinfo()'s 2861 kB threshold; and a 256 kB array allocated and freed with the event log
--- clean. Cost here is 129 kB for the ring plus 129 kB for ck_tail_result()'s copy.
+-- clean. Cost here is 128 KiB for the ring plus 128 KiB for ck_tail_result()'s copy.
 --
--- NOT 32768: that is 516 kB twice over, never demonstrated allocatable. The file still holds all of it.
+-- NOT 32768: that is 512 KiB twice over, never demonstrated allocatable. The file still holds all of it.
 sdec.ck_keep = 8192
 
 -- A fixed-size ring for the last bytes of a stream, so RAM does not grow with the run.

@@ -157,8 +157,10 @@ end
 -- fs.is_file() answers the same question silently. Verified on firmware 1.7.17a, 2026-08-17:
 -- eventlog.getcount() stayed 0 across both an existing and a missing path.
 --
--- NIL means "could not tell". Firmware without the fs table falls back to the open probe, and a nil
--- is treated as TAKEN -- losing a name is better than truncating a real file.
+-- Returns true or false, never nil. A PROBE THAT RAISES answers TAKEN: losing a name beats
+-- truncating a real file. A nil is NOT taken -- fs.is_file returning nil falls through to the open
+-- probe, and file.open returning nil (no key, or no such file) is the normal FREE answer, with the
+-- failure surfacing at the write where it belongs.
 function ulog.exists(path)
   if path == nil then return false end
   local got = nil

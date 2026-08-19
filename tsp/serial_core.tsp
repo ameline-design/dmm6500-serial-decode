@@ -1023,7 +1023,8 @@ sdec.acq_overhead = 0.510e-6
 -- about, and it appears only on hardware: offline, ladder snapping made minsabit look safe.
 --
 -- Returns nil when NO listed rate can deliver the floor, rather than a rate that cannot work.
--- At minsabit = 4 that bites above ~115 kBd on the stock ladder: 250 kBd needs 2.04 MS/s
+-- At minsabit = 4 that bites above 165563 Bd = 1/(4*(1/1e6 + 5.1e-7)) -- 153600 still gets 1 MS/s
+-- and 4.31 delivered samples/bit, 172800 gets nothing. 250 kBd needs 2.04 MS/s
 -- requested to deliver 1 MS/s, which does not exist, so streaming genuinely cannot reach it.
 function sdec.fs_for_burst(baud)
   if baud == nil or baud <= 0 then return sdec.fs_default end
@@ -1307,9 +1308,6 @@ function sdec.hw_config()
   dmm.digitize.aperture   = 1e-6
 end
 
--- Free and remake the capture buffer. Follows the project's object-lifetime
--- rule -- delete, nil, then create -- because creating over a live handle leaves
--- the old buffer allocated and unreachable until a power cycle.
 -- Clamp a request to what the buffer can hold, reserve included. A store past capacity posts 4915
 -- and truncates the capture.
 function sdec.acq_fit(n, buf)
@@ -1330,6 +1328,9 @@ function sdec.acq_fit(n, buf)
   return n
 end
 
+-- Free and remake the capture buffer. Follows the project's object-lifetime
+-- rule -- delete, nil, then create -- because creating over a live handle leaves
+-- the old buffer allocated and unreachable until a power cycle.
 function sdec.acq_make_buffer(n)
   -- NEVER REPLACE A BUFFER THE TRIGGER MODEL MAY STILL BE WRITING INTO.
   --
