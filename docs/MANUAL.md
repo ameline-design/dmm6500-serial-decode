@@ -142,6 +142,15 @@ is in the file, which is the thing you cannot otherwise tell from a screenful ta
 The offset column agrees with it — the rows above start at 25056, not at zero — and the status row
 carries the run's own summary: 32768 bytes, 1 error, 68 windows, and the file it went to.
 
+**The page count follows the view.** Press **View** on that same capture and it becomes 7 pages instead
+of 35, because a text row holds 80 characters and a hex row holds 16 bytes — 1200 bytes a page against
+240:
+
+![The same 32 kB capture in text view: page 2 of 7](img/panel-paged-text.png)
+
+Nothing about the capture changed; only how much of it fits on a screen. The byte range in the note row
+is the same, and so is the summary.
+
 ## The TRIGGER key — the one hardware button that matters
 
 The **TRIGGER** key is the physical key on the front panel, to the **right** of the screen — the lowest
