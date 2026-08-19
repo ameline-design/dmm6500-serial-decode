@@ -217,15 +217,27 @@ SDG_UPLOAD_SAFE_BYTES = 65536      # below this, uploads have never wedged it
 # at offset 1676). So TWO large uploads totalling 8.14 MB did not wedge it, while THREE totalling 533 kB
 # did. Bytes are not the variable; the number of large writes is.
 #
-# THE HARDWARE THIS ALL FOLLOWS FROM, per the owner: a CPU board carrying an ARM A8, 128 MB of flash and
-# 128 MB of RAM, joined by a SERIAL LINK to an analog board with 2 banks of 128 MB DDR feeding the FPGA
-# that drives the DAC. Two banks is plausibly one per channel -- it is a 2-channel generator -- rather
-# than double buffering.
+# THE HARDWARE THIS ALL FOLLOWS FROM, per the owner:
+#
+#   CPU board     ARM A8 + ONE 128 Meg DDR3 chip + ONE 128 Meg flash chip
+#      |
+#      |          a SERIAL LINK
+#      v
+#   analog board  FPGA with TWO 128 Meg DDR3 chips attached, driving the DAC
+#
+# "128 Meg" IS BYTES HERE, AND THE FREE-SPACE FIGURE IS WHAT PINS IT. DRAM and flash parts are specified
+# in bits or in address depth, so 128 Meg could have meant 16 MB (128 Mbit) -- and I had already been
+# wrong by a factor of a thousand once in this same paragraph. The front panel reports ~80 MB free on
+# internal flash, which a 16 MB chip cannot do. So the flash is 128 MB, and the DDR3 parts are read the
+# same way: 128 MB on the CPU board, 2 x 128 MB = 256 MB on the FPGA.
+#
+# Two chips on one FPGA is more likely a WIDER BUS than a bank per channel; nothing here distinguishes
+# them, and nothing in this project depends on which it is.
 #
 # WHAT THAT SETTLES:
 #
 #   * A WAVEFORM IS RESIDENT, NOT STREAMED. SDG_MAX_PTS is 8 388 608 points = 16 MB, which is 12% of ONE
-#     128 MB bank. So there is no ping-pong refill during playback and therefore no buffer-swap boundary
+#     128 MB chip. So there is no ping-pong refill during playback and therefore no buffer-swap boundary
 #     -- which kills, before it was built on, a tempting candidate mechanism for the periodic-payload
 #     failures: that errors might cluster at a fixed payload spacing as banks swapped. There is no swap.
 #     (That idea came from misreading the banks as 128 KB, where a 6.8 MB arb could not have been
@@ -238,8 +250,9 @@ SDG_UPLOAD_SAFE_BYTES = 65536      # below this, uploads have never wedged it
 #     -- which is what makes select_arb's 30 s readback timeout adequate for anything, rather than a
 #     number picked to clear the one case that failed.
 #
-#   * 128 MB of flash matches the ~80 MB free the front panel reports, with firmware and the 39 stored
-#     vectors (9.5 MB) accounting for the rest. Capacity is not a constraint for this project.
+#   * THE CONCLUSION IS INSENSITIVE TO THE READING ANYWAY, which is the useful part: at the SMALLEST
+#     interpretation (16 MB a chip) the largest possible arb is still only half of one, so a waveform is
+#     resident under every reading. Capacity is not a constraint for this project; the wedge COUNT is.
 
 # The ceiling is consequently a bound on HOW MANY large writes have happened since the last power cycle,
 # not on how big any one of them is. It stays at 65536 as the trigger for "count this one", because
