@@ -28,11 +28,12 @@ display = {
   -- A check object's value is display.ON / display.OFF, a different value type from an
   -- option field's 1-based index -- both go through the same setvalue call.
   OBJ_EDIT_CHECK = 'editcheck', ON = 1, OFF = 0,
-  OBJ_TIMER = 'timer', OBJ_RECT = 'rect',
+  OBJ_TIMER = 'timer', OBJ_RECT = 'rect', OBJ_LINE = 'line',
   EVENT_PRESS = 'press', EVENT_ENDAPP = 'endapp',
   FONT_SMALL = 1, FONT_MEDIUM = 2,
   JUST_LEFT = 0, JUST_CENTER = 1, JUST_RIGHT = 2,
   NFORMAT_PREFIX = 1, TIMER_FOREVER = -1,
+  FILL_LEFT = 'left', FILL_RIGHT = 'right', FILL_UP = 'up', FILL_DOWN = 'down',
 }
 
 function display.create(parent, kind, a, b, c, d, e, f, g, h, i, j, k, l, m, n)
@@ -51,6 +52,11 @@ function display.create(parent, kind, a, b, c, d, e, f, g, h, i, j, k, l, m, n)
     o.x, o.y, o.text, o.w = a, b, c, d
   elseif kind == display.OBJ_RECT then
     o.x, o.y, o.w, o.h = a, b, c, d
+  elseif kind == display.OBJ_LINE then
+    -- (x, y, x2, y2). w/h are derived so the geometry check below sees a line's extent like any
+    -- other object's; the renderer strokes it from the endpoints and the thickness.
+    o.x, o.y, o.x2, o.y2 = a, b, c, d
+    o.w, o.h = (c or a) - a + 1, (d or b) - b + 1
   elseif kind == display.OBJ_EDIT_NUMBER then
     o.x, o.y, o.label, o.desc, o.value, o.units = a, b, c, d, f, i
   elseif kind == display.OBJ_EDIT_OPTION then
@@ -78,8 +84,40 @@ function display.settext(id, s)
   if o == nil or not o.alive then error('settext on a dead object', 0) end
   o.text = s
 end
-function display.setcolor(id, c) if OBJ[id] then OBJ[id].color = c end end
-function display.setfill(id, c) if OBJ[id] then OBJ[id].fill = c end end
+-- The second colour is a rect's BACKGROUND -- what shows through the part a partial fill leaves.
+function display.setcolor(id, c, c2)
+  if OBJ[id] then
+    OBJ[id].color = c
+    if c2 ~= nil then OBJ[id].color2 = c2 end
+  end
+end
+-- FILL IS A PERCENTAGE, 0..100, and on this firmware it has NO VISIBLE EFFECT on a rect -- measured
+-- 2026-08-19. Recorded anyway: the renderer uses `fill >= 0` to mean "this rect was set up", and a
+-- later firmware may honour the number.
+function display.setfill(id, pct, dir)
+  if OBJ[id] then
+    OBJ[id].fill = pct
+    OBJ[id].filldir = dir
+  end
+end
+-- A rect's border width and a line's stroke width. 1..10 on the instrument.
+function display.setthickness(id, t) if OBJ[id] then OBJ[id].thick = t end end
+-- Move or resize. The progress bar's line is the only object the app repositions.
+function display.setposition(id, x, y, c, d)
+  local o = OBJ[id]
+  if o == nil then return end
+  o.x, o.y = x, y
+  if o.kind == display.OBJ_LINE then
+    o.x2, o.y2 = c, d
+    o.w, o.h = (c or x) - x + 1, (d or y) - y + 1
+  else
+    o.w, o.h = c or o.w, d or o.h
+  end
+end
+-- STATE_INVISIBLE is how the app hides a rect or a line -- recolouring does not work on the panel.
+-- Recorded so the renderer can leave a hidden object off the mockup.
+display.STATE_ENABLE, display.STATE_INVISIBLE = 'enable', 'invisible'
+function display.setstate(id, st) if OBJ[id] then OBJ[id].state = st end end
 function display.setvalue(id, v) if OBJ[id] then OBJ[id].value = v end end
 function display.getvalue(id) if OBJ[id] then return OBJ[id].value end end
 function display.setevent(id, ev, cmd)
@@ -122,7 +160,7 @@ local function dumpobjs(path)
   local f = io.open(path, 'w')
   -- `just` sits BEFORE text on purpose: text is the last column because it may itself contain tabs
   -- (an edit object packs label/desc/value into it), so anything after it could not be parsed out.
-  f:write('screen\tkind\tx\ty\tw\th\tfont\tcolor\tfill\tjust\ttext\n')
+  f:write('screen\tkind\tx\ty\tw\th\tfont\tcolor\tfill\tjust\tthick\tstate\ttext\n')
   local i
   for i = 1, nobj do
     local o = OBJ[i]
@@ -148,11 +186,17 @@ local function dumpobjs(path)
         txt = tostring(o.label) .. '\t' .. tostring(o.desc) .. '\t'
               .. ((o.value == 1) and 'ON' or 'OFF')
       end
-      f:write(string.format('%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n',
+      -- HIDDEN OBJECTS ARE DROPPED, not dumped dark. STATE_INVISIBLE is how the app takes a rect or
+      -- a line off the glass, so rendering one would put the progress bar in every mockup that has
+      -- no run in progress -- which is the bug it had on the instrument.
+      if o.state ~= display.STATE_INVISIBLE then
+      f:write(string.format('%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n',
         title, tostring(o.kind), tostring(o.x or 0), tostring(o.y or 0),
         tostring(o.w or 0), tostring(o.h or 0), tostring(o.font or 1),
         tostring(o.color or 16777215), tostring(o.fill or -1),
-        tostring(o.just or 0), tostring(txt or '')))
+        tostring(o.just or 0), tostring(o.thick or 1), tostring(o.state or 'enable'),
+        tostring(txt or '')))
+      end
     end
   end
   f:close()
@@ -185,7 +229,10 @@ local main, opts
 local i
 for i = 1, table.getn(SCREENS) do
   local s = SCREENS[i]
-  if s.title == sdec.ui_title then main = s end
+  -- PREFIX, NOT EQUALITY. The title bar now carries the capture mode too -- 'SERIAL DECODE - 240B
+  -- FRAME' -- so an exact match against sdec.ui_title finds no main screen at all and every dump
+  -- comes out empty.
+  if string.sub(s.title or '', 1, string.len(sdec.ui_title)) == sdec.ui_title then main = s end
   if s.title == 'SERIAL DECODE OPTIONS' then opts = s end
 end
 
@@ -374,6 +421,10 @@ do
   sdec.res = tail
   sdec.ui_mode = 'hex'
   sdec.ui_page = 0
+  -- AS IF THE OPERATOR HAD PRESSED Dn. The counter is latched on a page press, so a scenario that
+  -- only sets ui_page renders a blank note row and the mockup would show a paged screen with no
+  -- indication that paging is even possible.
+  sdec.ui_paged = true
   sdec.ui_refresh()
   print(string.format('recording tail: %d bytes kept of %d, %d pages, indicator %q',
         tail.nf, tail.ntotal, sdec.ui_npages(), tostring(sdec.ui_pgindtxt)))

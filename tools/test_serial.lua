@@ -1673,6 +1673,276 @@ do
         string.format('%d pages, state=%s', sdec.ui_npages(), tostring(vis())))
 end
 
+-- ---------------------------------------------------------------------------
+-- THE PAGE COUNTER ON THE NOTE ROW. Four objects -- 'page', N, 'of', M -- because one text object
+-- carries one colour and this line carries two intensities.
+--
+-- WHAT IT GUARDS: the counter must be ABSENT until the operator pages (the note it shares the row
+-- with is worth more than 'page 1 of 1'), it must not be drawn over by that note, and the numerals
+-- must be the full-white pair.
+do
+  local was = sdec.ui_paged
+  sdec.ui_paged = false
+  sdec.ui_refresh()
+  check('the page counter says nothing before the operator has paged',
+        sdec.ui_pgind_text() == '' and MD.text(sdec.ui_pgind_n) == '',
+        string.format('%q / %q', sdec.ui_pgind_text(), tostring(MD.text(sdec.ui_pgind_n))))
+  check('...and it costs the note row nothing while it is absent',
+        sdec.ui_pgind_px() == 0, tostring(sdec.ui_pgind_px()))
+  -- A PRESS IS WHAT REVEALS IT, and page_prev on page 1 counts: it moves nothing, and that is
+  -- exactly when being told which page you are on answers "why did nothing happen?".
+  sdec.page_prev()
+  local npg = sdec.ui_npages()
+  check('one press of Up reveals it, even though the page did not move',
+        sdec.ui_pgind_text() == string.format('page 1 of %d', npg),
+        string.format('%q', sdec.ui_pgind_text()))
+  check('the two numerals are separate objects at full white',
+        MD.text(sdec.ui_pgind_n) == '1' and MD.text(sdec.ui_pgind_m) == tostring(npg)
+        and MD.obj(sdec.ui_pgind_n).color == sdec.ui_c_pgnum
+        and MD.obj(sdec.ui_pgind_m).color == sdec.ui_c_pgnum,
+        string.format('%q %q', tostring(MD.text(sdec.ui_pgind_n)),
+                      tostring(MD.text(sdec.ui_pgind_m))))
+  check('...and the two words are dimmer, on their own objects',
+        MD.text(sdec.ui_pgind_w1) == 'page' and MD.text(sdec.ui_pgind_w2) == 'of'
+        and MD.obj(sdec.ui_pgind_w1).color == sdec.ui_c_pgword
+        and MD.obj(sdec.ui_pgind_w2).color == sdec.ui_c_pgword
+        and sdec.ui_c_pgword < sdec.ui_c_pgnum)
+  -- THE NUMERALS SIT IN FIXED COLUMNS, so the digits do not shuffle sideways as the page changes.
+  local xp, xn, xof, xm = sdec.ui_pgind_layout()
+  check('the pieces run left to right and end at the counter\'s right edge',
+        xp < xn and xn < xof and xof < xm and xm == sdec.ui_pgind_x,
+        string.format('page %d, N %d, of %d, M %d', xp, xn, xof, xm))
+  check('and the whole group stays inside the table\'s right rule',
+        xm <= sdec.ui_rule_x1 - 4, string.format('%d vs %d', xm, sdec.ui_rule_x1))
+  -- THE NOTE MUST BE FITTED AROUND IT. This is the collision seen on the panel: a full-width note
+  -- drew over the 'p' of 'page'. The budget the note gets has to leave the counter's whole extent
+  -- plus a gap, and ui_fit's own slack has to cover the width model reading narrow.
+  local room = sdec.ui_note_px - sdec.ui_pgind_px()
+  check('the counter takes its whole fixed extent out of the note cell',
+        sdec.ui_pgind_px() == (sdec.ui_pgind_x - xp) + sdec.ui_note_gap,
+        string.format('%d px reserved, group is %d wide', sdec.ui_pgind_px(),
+                      sdec.ui_pgind_x - xp))
+  local LONG = string.rep('the quick brown fox jumps over the lazy dog. ', 6)
+  local fitted = sdec.ui_fit(LONG, room)
+  check('a note long enough to fill the row ends clear of the counter',
+        sdec.ui_note_val_x + sdec.ui_textw(fitted) * sdec.ui_fit_slack < xp,
+        string.format('note ends ~%d, page starts %d',
+                      sdec.ui_note_val_x + sdec.ui_textw(fitted) * sdec.ui_fit_slack, xp))
+  check('ui_fit leaves headroom for the width model reading narrow',
+        sdec.ui_fit_slack > 1.0 and sdec.ui_textw(sdec.ui_fit(LONG, 700)) * sdec.ui_fit_slack <= 700,
+        string.format('slack %.2f, fitted %d px of 700', sdec.ui_fit_slack,
+                      sdec.ui_textw(sdec.ui_fit(LONG, 700))))
+  sdec.ui_paged = was
+  sdec.ui_page = 0
+  sdec.ui_refresh()
+end
+
+-- ---------------------------------------------------------------------------
+-- THE RIGHT-MARGIN PAGE BUTTONS. 'Up' and 'Dn', not 'Page Up' and 'Page Dn': the width they give
+-- back is width the dump rows get, and up is up whether or not the word 'page' is on the face.
+do
+  local o1 = MD.obj(sdec.ui_pgbtn[1])
+  local o2 = MD.obj(sdec.ui_pgbtn[2])
+  check('the page buttons are labelled Up and Dn',
+        o1.text == 'Up' and o2.text == 'Dn',
+        string.format('%q / %q', tostring(o1.text), tostring(o2.text)))
+  check('...right-aligned with Lock Rate, all three ending at 785',
+        o1.x + o1.w == 785 and o2.x + o2.w == 785
+        and MD.obj(sdec.ui_lockbtn).x + MD.obj(sdec.ui_lockbtn).w == 785,
+        string.format('%d / %d / %d', o1.x + o1.w, o2.x + o2.w,
+                      MD.obj(sdec.ui_lockbtn).x + MD.obj(sdec.ui_lockbtn).w))
+  check('...and narrower than Lock Rate, which is what freed the margin',
+        o1.w < MD.obj(sdec.ui_lockbtn).w and o1.w == o2.w,
+        string.format('%d vs %d', o1.w, MD.obj(sdec.ui_lockbtn).w))
+  -- A TWO-CHARACTER LABEL STILL NEEDS A PRESSABLE FACE. 36 px renders 'Up' uncut; the face is
+  -- wider than that on purpose, because a finger is not a pixel.
+  check('...while staying a comfortable touch target',
+        o1.w >= 48, tostring(o1.w))
+  -- THE DUMP'S WIDTH IS SET BY THE LEFTMOST MARGIN BUTTON, and that is still Lock Rate. Stated as a
+  -- test so nobody widens the TEXT view on the strength of the page buttons having shrunk.
+  local lb = MD.obj(sdec.ui_lockbtn)
+  local cols = sdec.ui_views[1].cols
+  local widest = string.rep('The quick brown fox jumps over the lazy dog. 0123456789 ', 3)
+  check('an 80-column TEXT row still clears the leftmost margin button',
+        sdec.ui_x + sdec.ui_textw(string.sub(widest, 1, cols)) < lb.x,
+        string.format('%d cols end at %d, Lock Rate starts at %d', cols,
+                      sdec.ui_x + sdec.ui_textw(string.sub(widest, 1, cols)), lb.x))
+end
+
+-- ---------------------------------------------------------------------------
+-- THE ACQUIRE / DECODE PROGRESS BAR, and the state it must NOT be drawn in.
+--
+-- It shipped visible in FRAME mode, as a grey box across the tail of the status row, because "hide"
+-- was a recolour to the background -- and a rect on this firmware is its border, which a background
+-- colour does not erase. STATE_INVISIBLE is the mechanism; these checks are on the mechanism, not on
+-- the colour, so the same mistake cannot come back as "it looks dark enough".
+do
+  local wasmode, wasrun = sdec.capmode, sdec.ck_running
+  local INVIS = display.STATE_INVISIBLE
+  local function barstate()
+    return MD.obj(sdec.ui_progbox).state, MD.obj(sdec.ui_progline).state
+  end
+  local function seelen()
+    local o = MD.obj(sdec.ui_progline)
+    return o.x2 - o.x + 1
+  end
+
+  sdec.capmode = 'frame'
+  sdec.ck_running, sdec.ck_tot, sdec.ck_nbytes = false, nil, nil
+  sdec.ui_refresh()
+  local bs, ls = barstate()
+  check('FRAME mode draws no progress bar at all -- frame and bar both invisible',
+        bs == INVIS and ls == INVIS, string.format('%s / %s', tostring(bs), tostring(ls)))
+  check('...and ck_pct has nothing to report there', sdec.ck_pct() == nil,
+        tostring(sdec.ck_pct()))
+
+  -- ACQUIRING: per cent of the buffer, which is the only honest number before anything is decoded.
+  sdec.capmode = 'med'
+  sdec.ck_running, sdec.ck_nbytes = true, nil
+  sdec.ck_acq_have, sdec.ck_acq_want = 1400000, 2800000
+  sdec.ui_refresh()
+  bs, ls = barstate()
+  check('acquiring shows the bar', bs ~= INVIS and ls ~= INVIS,
+        string.format('%s / %s', tostring(bs), tostring(ls)))
+  check('...at the fraction of the BUFFER, not a byte count',
+        math.abs(sdec.ck_pct() - 50) < 0.001, tostring(sdec.ck_pct()))
+  check('...and the cyan line is half the travel',
+        math.abs(seelen() - sdec.ui_prog_wmax / 2) <= 1,
+        string.format('%d px of %d', seelen(), sdec.ui_prog_wmax))
+
+  -- DECODING: bytes against the mode's cap. A different denominator, the same bar.
+  sdec.ck_nbytes = 8192
+  sdec.ui_refresh()
+  check('decoding switches the denominator to the mode cap',
+        math.abs(sdec.ck_pct() - 25) < 0.001, tostring(sdec.ck_pct()))
+  check('...and the bar follows it', math.abs(seelen() - sdec.ui_prog_wmax / 4) <= 1,
+        string.format('%d px of %d', seelen(), sdec.ui_prog_wmax))
+
+  -- 0 % IS NOT HIDDEN, AND HIDDEN IS NOT 0 %. A run that has started shows its empty frame.
+  sdec.ck_nbytes = nil
+  sdec.ck_acq_have = 0
+  sdec.ui_refresh()
+  bs, ls = barstate()
+  check('a run with nothing yet shows the frame and no cyan',
+        bs ~= INVIS and ls == INVIS, string.format('%s / %s', tostring(bs), tostring(ls)))
+
+  -- THE PRESS-DRIVEN RECORDING HAS NO HONEST FRACTION. No Lua of ours runs between the start press
+  -- and the stop press, so a bar drawn there would sit at 0 % for the whole recording and read as
+  -- "nothing is being recorded". Absent beats frozen.
+  sdec.strm_recording = true
+  sdec.ui_refresh()
+  bs, ls = barstate()
+  check('a press-driven recording draws no bar rather than a frozen one',
+        sdec.ck_pct() == nil and bs == INVIS and ls == INVIS,
+        string.format('%s / %s / %s', tostring(sdec.ck_pct()), tostring(bs), tostring(ls)))
+  sdec.strm_recording = nil
+
+  -- THE BAR NEVER LEAVES ITS SLOT, whatever the percentage, and never overruns the frame.
+  local pc
+  for pc = 0, 100, 5 do
+    sdec.ck_nbytes = math.floor(32768 * pc / 100)
+    if sdec.ck_nbytes < 1 then sdec.ck_nbytes = nil end
+    sdec.ui_refresh()
+    local o = MD.obj(sdec.ui_progline)
+    if o.x ~= sdec.ui_prog_x + 1 or o.x2 > sdec.ui_prog_x + sdec.ui_prog_w - 2 then
+      check(string.format('the bar stays inside its frame at %d %%', pc), false,
+            string.format('x %d..%d, frame %d..%d', o.x, o.x2, sdec.ui_prog_x,
+                          sdec.ui_prog_x + sdec.ui_prog_w - 1))
+      break
+    end
+  end
+  check('the bar stays inside its frame at every percentage, and its left edge never moves', true,
+        string.format('slot %d..%d, travel %d px', sdec.ui_prog_x,
+                      sdec.ui_prog_x + sdec.ui_prog_w - 1, sdec.ui_prog_wmax))
+  -- IT MUST ALSO CLEAR EVERY RUNNING MESSAGE, and these come from ck_status() ITSELF rather than
+  -- from strings copied out of it -- a copy would keep passing after the real format changed, which
+  -- is how the bar came to be sized for a message that no longer existed.
+  do
+    local worst, wtxt = 0, ''
+    local cases = {
+      {fc = false, nb = nil,   have = 2800000, want = 2800000},
+      {fc = true,  nb = nil,   have = 2800000, want = 2800000},
+      {fc = false, nb = 32768, have = 0,       want = 0},
+      {fc = true,  nb = 32768, have = 0,       want = 0},
+    }
+    local ci
+    sdec.ck_running = true
+    for ci = 1, table.getn(cases) do
+      local c = cases[ci]
+      sdec.fc_out, sdec.fc_win, sdec.fc_maxwin = c.fc, 31, 32
+      sdec.ck_nbytes, sdec.ck_acq_have, sdec.ck_acq_want = c.nb, c.have, c.want
+      local s = sdec.mode_cur().name .. '  ' .. sdec.ck_status()
+      local e = sdec.ui_x + sdec.ui_textw(s)
+      if e > worst then worst, wtxt = e, s end
+    end
+    sdec.fc_out, sdec.fc_win = nil, nil
+    check('every running status message ends 12+ px clear of the bar',
+          worst + 12 <= sdec.ui_prog_x,
+          string.format('widest is %q, ending %d; bar at %d', wtxt, worst, sdec.ui_prog_x))
+  end
+  check('...and the bar ends clear of the status divider by about as much',
+        sdec.ui_prog_x + sdec.ui_prog_w + 10 <= sdec.ui_stat_div,
+        string.format('bar ends %d, divider %d', sdec.ui_prog_x + sdec.ui_prog_w,
+                      sdec.ui_stat_div))
+  check('the bar is 80 % of the status row height',
+        sdec.ui_prog_h == math.floor(0.8 * (sdec.ui_stat_bot - sdec.ui_stat_top) + 0.5),
+        string.format('%d px of an %d px row', sdec.ui_prog_h,
+                      sdec.ui_stat_bot - sdec.ui_stat_top))
+  -- A THICKNESS OVER 10 IS REFUSED BY THE FIRMWARE and raises a MODAL DIALOG over the panel, which
+  -- pcall does not catch -- the refusal arrives as a queued event. The mock enforces the range, so
+  -- this is the check that keeps it offline.
+  check('the bar\'s stroke is inside the firmware\'s 1..10 thickness range',
+        sdec.ui_prog_lw >= 1 and sdec.ui_prog_lw <= 10, tostring(sdec.ui_prog_lw))
+
+  sdec.capmode, sdec.ck_running = wasmode, wasrun
+  sdec.ck_nbytes, sdec.ck_tot = nil, nil
+  sdec.ck_acq_have, sdec.ck_acq_want = nil, nil
+  sdec.ui_refresh()
+end
+
+-- ---------------------------------------------------------------------------
+-- NO MODE NAME IN THE STATUS ROW'S RIGHT-HAND CELL. It read 'Mode=Exit to FRAME' in every state that
+-- showed it, and Mode CYCLES -- from FRAME it reaches 8 kB, from 8 kB it reaches 32 kB, and only from
+-- 32 kB does it reach FRAME -- so two of the three were false. Naming the true destination was still
+-- confusing: this row sits under a MODE cell whose whole job is to say which mode you are IN.
+--
+-- The check is on the ABSENCE, in all three modes, because "fixed the wording" is what this app keeps
+-- having to undo.
+do
+  local wasmode = sdec.capmode
+  local function cellfor(m)
+    sdec.capmode = m
+    -- ck_tot non-nil is what puts this cell on screen in FRAME: the resting state after a recording,
+    -- which is where the old string was read most.
+    sdec.ck_tot = {nf = 10, nbad = 0, nwin = 1, path = '/usb1/x.txt', stopped = 'done'}
+    sdec.ck_running, sdec.strm_recording, sdec.ck_job = false, nil, nil
+    sdec.ui_refresh()
+    return MD.text(sdec.ui_log_t)
+  end
+  local mi
+  for mi = 1, sdec.ui_modes.n do
+    local id = sdec.ui_modes[mi].id
+    local cell = cellfor(id)
+    check(string.format('the status cell names no mode while idle in %s', id),
+          not has(cell, 'Mode') and not has(cell, 'FRAME') and not has(cell, 'kB'),
+          string.format('%q', tostring(cell)))
+  end
+  check('...and carries the log status instead, like FRAME mode does',
+        cellfor('med') == sdec.flog_status(), tostring(cellfor('med')))
+  -- MODE'S DESTINATION IS STILL COMPUTED BY ONE FUNCTION, so anything that names it later cannot
+  -- drift from what the press does.
+  for mi = 1, sdec.ui_modes.n do
+    sdec.capmode = sdec.ui_modes[mi].id
+    local named = sdec.mode_next().id
+    sdec.mode_cycle()
+    check(string.format('mode_next agrees with a Mode press from %s -> %s',
+                        sdec.ui_modes[mi].id, named),
+          sdec.capmode == named, sdec.capmode)
+  end
+  sdec.capmode, sdec.ck_tot = wasmode, nil
+  sdec.ui_refresh()
+end
+
 sdec.page_prev()
 check('prev on the first page stays put', sdec.ui_page == 0, tostring(sdec.ui_page))
 sdec.page_next()
@@ -1824,7 +2094,15 @@ do
             end
             local w1 = string.len(t1.text) * adv(t1.text)
             local w2 = string.len(t2.text) * adv(t2.text)
-            local xo = t1.x < t2.x + w2 and t2.x < t1.x + w1
+            -- JUSTIFICATION IS HONOURED. A JUST_RIGHT object's x is its RIGHT edge, so treating it
+            -- as a left edge puts the string a whole width to the right of where the panel draws it
+            -- -- off the screen, where it can overlap nothing. This check was blind to exactly the
+            -- collision it was later asked to catch: the note row's page counter is JUST_RIGHT, and
+            -- the yellow note DID draw over it on the instrument while this passed.
+            local x1, x2 = t1.x, t2.x
+            if t1.just == display.JUST_RIGHT then x1 = x1 - w1 end
+            if t2.just == display.JUST_RIGHT then x2 = x2 - w2 end
+            local xo = x1 < x2 + w2 and x2 < x1 + w1
             local yo = t1.y - i1 + 1 <= t2.y and t2.y - i2 + 1 <= t1.y
             if xo and yo then
               no = no + 1
@@ -5034,8 +5312,8 @@ local function test_modes()
   -- for FRAME mode's single 240-byte page, and wrong for a 32 kB streaming capture, which is
   -- 137 pages of which only the first was reachable. The margin came free when the position
   -- bar was removed.
-  -- NINE: six along the bottom, plus Page Up / Lock Rate / Page Dn down the right margin.
-  check('NINE buttons: six along the bottom plus Page Up / Lock Rate / Page Dn', nb == 9,
+  -- NINE: six along the bottom, plus Up / Lock Rate / Dn down the right margin.
+  check('NINE buttons: six along the bottom plus Up / Lock Rate / Dn', nb == 9,
         tostring(nb))
   -- EVERY BUTTON LABEL MUST FIT ITS FACE, on both screens.
   --
@@ -5089,6 +5367,50 @@ local function test_modes()
     end
     check('every option-field entry fits the value column without fading out', nof == 0,
           nof == 0 and 'all clear' or table.concat(bad, ' | '))
+  end
+  -- AND THE FIELD COLUMN MUST CLEAR THE BUTTON ROW BENEATH IT. The riskiest geometry in the app: the
+  -- pitch is a constant, the edit-object height is the firmware's, and a form that overruns is only
+  -- visible on a panel that costs a power cycle to rebuild.
+  --
+  -- MEASURED, NOT MODELLED. The box runs from y + ui_opt_edit_dy to + ui_opt_edit_h, both taken off
+  -- docs/img/options.png. The 38 px guess that preceded them is what let the 7-field arithmetic in
+  -- serial_ui claim 8 px of clearance where there would have been a 6 px overlap.
+  do
+    local worst, wname = -1, nil
+    local fields = {{'proto', sdec.opt_proto}, {'baud', sdec.opt_baud}, {'bits', sdec.opt_bits},
+                    {'par', sdec.opt_par}, {'pol', sdec.opt_pol}, {'trig', sdec.opt_trig},
+                    {'ext', sdec.opt_ext}}
+    local fi
+    for fi = 1, table.getn(fields) do
+      local o = MD.obj(fields[fi][2])
+      if o ~= nil and o.y ~= nil then
+        local bot = o.y + sdec.ui_opt_edit_dy + sdec.ui_opt_edit_h - 1
+        if bot > worst then worst, wname = bot, fields[fi][1] end
+      end
+    end
+    check('the last option field\'s box clears the options button row',
+          worst < sdec.ui_opt_btn_y,
+          string.format('%s ends at %d, buttons at %d', tostring(wname), worst,
+                        sdec.ui_opt_btn_y))
+    -- AND THE PITCH THAT WAS ACTUALLY USED, not the preference. sdec.ui_opt_dy is what the layout
+    -- ASKS for; build_options clamps it to what the field count allows, and reading the preference
+    -- here reported 'pitch 54, gap 4' about a form laid out at 50 with the boxes touching.
+    local used, nf = sdec.ui_opt_dy_used, sdec.ui_opt_nf_used
+    local gap = used - sdec.ui_opt_edit_h
+    check('the pitch used is the preference or the ceiling, whichever is smaller',
+          used <= sdec.ui_opt_dy and gap >= 0,
+          string.format('%d fields at pitch %d (asked %d), gap %d', nf, used, sdec.ui_opt_dy, gap))
+    -- SIX FIELDS -- what V1 ships -- MUST HAVE AIR BETWEEN THE BOXES. At 52 they were 2 px apart and
+    -- read as one block. Seven cannot: 50 is the only pitch that fits and the boxes are 50 tall, so
+    -- the gap is 0 and the remedy is to fold a control into another field.
+    if nf == 6 then
+      check('...and six fields leave a visible gap', gap >= 3,
+            string.format('pitch %d, box %d, gap %d', used, sdec.ui_opt_edit_h, gap))
+    else
+      check(string.format('...and %d fields fit at all, which is the most that can be asked', nf),
+            worst < sdec.ui_opt_btn_y,
+            string.format('pitch %d, gap %d -- fold a control to get air back', used, gap))
+    end
   end
   -- page_cycle() still EXISTS and is still correct -- it is only unbound from the bar. The MIDI
   -- and LIN views are one message per row and can still exceed 14 rows, so if the bench says the

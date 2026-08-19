@@ -191,10 +191,11 @@ end
 -- capacity. The comment above still holds for the bar itself: it spans x = 8..774 of a 798 px
 -- limit and a seventh button on that row would not fit.
 --
--- The two page buttons are in the strip the position bar used to occupy (x 584..792), and they
--- exist because paging had NO control at all: a hex page holds 240 bytes, which is the whole
+-- The two page buttons are in the strip the position bar used to occupy, right-aligned at 785, and
+-- they exist because paging had NO control at all: a hex page holds 240 bytes, which is the whole
 -- frame in FRAME mode, but a 32 kB streaming capture is 137 pages of which only the first was
--- reachable. They hide themselves when the capture fits one page (sdec.ui_page_btns).
+-- reachable. Labelled 'Up' and 'Dn' on 56 px faces -- the width they do not use is width the dump
+-- rows get. They hide themselves when the capture fits one page (sdec.ui_page_btns).
 check('every main-screen button calls a function that exists',
       table.getn(bad) == 0 and nbtn == 9,
       nbtn .. ' buttons; bad: ' .. table.concat(bad, ' '))

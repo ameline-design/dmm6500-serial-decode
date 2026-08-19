@@ -1147,10 +1147,7 @@ function sdec.progress_samples(have, want)
   -- IN SAMPLES, NOT BYTES: nothing has been decoded yet, so a byte count would be a fiction.
   -- Percent of the buffer is the honest number and the one the operator wants while waiting.
   sdec.ck_acq_have, sdec.ck_acq_want = have, want
-  return pcall(function()
-    local md = sdec.mode_cur()
-    sdec.ui_set(sdec.ui_page_t, string.format('%s  %s', md.name, sdec.ck_status()))
-  end)
+  return pcall(function() sdec.progress_row() end)
 end
 
 sdec.ck_bufmax = 2800000     -- readings; raise once the real ceiling is measured
@@ -1802,20 +1799,26 @@ function sdec.page_cycle()
   -- to come back. page_prev() below is kept for exactly that.
   local npg = sdec.ui_npages()
   if npg < 1 then npg = 1 end
+  sdec.ui_paged = true
   sdec.ui_page = math.mod(sdec.ui_page + 1, npg)
   return pcall(function() sdec.ui_refresh() end)
 end
 
--- Show the next page of bytes. Bound to the 'Page Dn' button down the dump area's right margin
--- (serial_ui.tsp:1572), with page_prev() as 'Page Up' above it; the host drives both over the
--- socket as well.
+-- Show the next page of bytes. Bound to the 'Dn' button down the dump area's right margin, with
+-- page_prev() as 'Up' above it; the host drives both over the socket as well.
+--
+-- ui_paged IS SET EVEN WHEN THE PAGE DOES NOT MOVE. It is what puts 'page N of M' on the note row,
+-- and a press at the last page is exactly when the operator most needs to be told which page they
+-- are on -- suppressing the counter there would answer "nothing happened, why?" with silence.
 function sdec.page_next()
+  sdec.ui_paged = true
   if sdec.ui_page + 1 < sdec.ui_npages() then sdec.ui_page = sdec.ui_page + 1 end
   return pcall(function() sdec.ui_refresh() end)
 end
 
 -- Show the previous page of bytes.
 function sdec.page_prev()
+  sdec.ui_paged = true
   if sdec.ui_page > 0 then sdec.ui_page = sdec.ui_page - 1 end
   return pcall(function() sdec.ui_refresh() end)
 end
@@ -2232,6 +2235,32 @@ function sdec.mode_exit(why)
   return was
 end
 
+-- Which mode an idle Mode press advances to -- the ENTRY, not the id.
+--
+-- FACTORED OUT SO THE PANEL CAN NAME IT. The status row said 'Mode=Exit to FRAME' in every recording
+-- mode, and from 8 kB the button goes to 32 kB: the cycle only reaches FRAME from the last mode. A
+-- label that names the wrong destination is this app's recurring defect, so the label and the action
+-- now read the SAME function rather than two descriptions of one behaviour.
+--
+-- Skips any mode that cannot be right at the locked rate (mode_suits), bounded by n steps and
+-- falling back to the first entry: mode_suits is data-driven, and a table where nothing suits must
+-- not spin inside a touch handler.
+--
+-- math.mod, not '%': Lua 5.0.2. at = 0 (an unrecognised capmode) lands on the first entry.
+function sdec.mode_next()
+  local n = sdec.ui_modes.n
+  local at, i = 0, nil
+  for i = 1, n do
+    if sdec.ui_modes[i].id == sdec.capmode then at = i end
+  end
+  local step
+  for step = 1, n do
+    local cand = sdec.ui_modes[math.mod(at + step - 1, n) + 1]
+    if sdec.mode_suits(cand) then return cand end
+  end
+  return sdec.ui_modes[1]
+end
+
 -- The Mode button. Two behaviours, and which one applies turns on whether a run is in progress:
 --
 --   RUNNING  -> abort. Stop the stream, flush, straight back to FRAME, one press.
@@ -2275,12 +2304,7 @@ function sdec.mode_cycle()
   --
   -- BOUNDED by n steps and falling back to the first entry: mode_suits() is data-driven, and a
   -- mode table where nothing suits must not spin here inside a touch handler.
-  local nxt, step = nil, nil
-  for step = 1, n do
-    local cand = sdec.ui_modes[math.mod(at + step - 1, n) + 1]
-    if sdec.mode_suits(cand) then nxt = cand.id; break end
-  end
-  if nxt == nil then nxt = sdec.ui_modes[1].id end
+  local nxt = sdec.mode_next().id
   sdec.mode_exit('switching')
   sdec.capmode = nxt
   -- Switching drops the streaming result: ck_tot describes a run in a mode that may no longer be

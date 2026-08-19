@@ -3088,6 +3088,10 @@ sdec.ui_rule_x0  = 4
 sdec.ui_rule_x1  = 792
 sdec.ui_note_lab_x = 8
 sdec.ui_note_val_x = 92
+sdec.ui_pgind_x  = 788
+sdec.ui_pgind_dig = '99'
+sdec.ui_pgind_gap = 6
+sdec.ui_note_gap = 20
 
 sdec.ui_note_y   = 48
 sdec.ui_row_y0   = 66                        -- first dump row
@@ -3097,6 +3101,13 @@ sdec.ui_stat_y   = 342
 sdec.ui_stat_top = 328   -- above the status ink (331..342)
 sdec.ui_stat_bot = 346   -- below it
 sdec.ui_stat_div = 462
+sdec.ui_prog_x = 339
+sdec.ui_prog_w = 108
+sdec.ui_prog_h = 14
+sdec.ui_prog_y = 330
+sdec.ui_prog_wmax = sdec.ui_prog_w - 2
+sdec.ui_prog_ly   = sdec.ui_prog_y + 7
+sdec.ui_prog_lw = 10
 sdec.ui_trig_div = 668
 sdec.ui_trig_x   = 677
 sdec.ui_btn_y    = 362
@@ -3127,12 +3138,12 @@ sdec.ui_sb_n   = sdec.ui_nrow                -- segments, one per dump row -- BY
 sdec.ui_sb_h   = 17                          -- segment height, 3 px of gap at 20 px pitch
 
 sdec.ui_modes = {
-  {id = 'frame', name = 'FRAME',  cap = nil,   log = true, view = true,
+  {id = 'frame', name = 'FRAME',  cap = nil,   log = true, view = true, title = '240B FRAME',
    c = 0xB0B0B0, desc = 'capture, show, and append to the message log'},
-  {id = 'sml',   name = '8 kB',   cap = 8192,  log = true, view = false,
+  {id = 'sml',   name = '8 kB',   cap = 8192,  log = true, view = false, title = '8K CAPTURE',
    needbaud = true, idlexit = true, c = 0x40C0FF,
    desc = 'shorter capture window -- quicker to bytes, more credits'},
-  {id = 'med',   name = '32 kB',  cap = 32768, log = true, view = false,
+  {id = 'med',   name = '32 kB',  cap = 32768, log = true, view = false, title = '32K CAPTURE',
    needbaud = true, idlexit = true, c = 0xFFC000,
    desc = 'long capture, decoded to a file'},
   n = 3,
@@ -3206,6 +3217,19 @@ function sdec.lock_state()
      sdec.force_nstop ~= nil or sdec.force_invert ~= nil then return 'locked' end
   if sdec.baud == nil or sdec.res == nil then return 'unknown' end
   return 'auto'
+end
+
+-- The title bar's text: the app's name and the capture mode, in the largest type on the screen.
+-- BOUNDED AT 31 CHARACTERS, which is the firmware's screen-title limit -- over it raises 1707 and the
+-- title is truncated without a word. The longest form is 'SERIAL DECODE - 32K CAPTURE' at 27, so the
+-- clamp never fires today; it is here because `title` is data and a longer entry must degrade rather
+-- than raise. tools/mock_display.lua enforces the same limit, so an over-long one fails a test.
+function sdec.ui_title_text()
+  local md = sdec.mode_cur()
+  local s = sdec.ui_title
+  if md ~= nil and md.title ~= nil then s = s .. ' - ' .. md.title end
+  if string.len(s) > 31 then s = string.sub(s, 1, 31) end
+  return s
 end
 
 -- Padlock colour for the current lock state.
@@ -3286,12 +3310,20 @@ sdec.ui_c_data = 0xFFFFFF    -- white: the decoded bytes
 sdec.ui_c_err  = 0xFF6060    -- red: a row containing a framing or parity error
 sdec.ui_c_sb_off = 0x282828  -- position bar, outside the current page
 sdec.ui_c_sb_on  = 0x00DCFF  -- position bar, current page
+sdec.ui_c_pgnum  = 0xFFFFFF    -- the numerals: 100 %
+sdec.ui_c_pgword = 0xA8A8A8    -- 'page' and 'of': 66 %
+sdec.ui_c_prog     = 0x00FFFF
+sdec.ui_c_prog_box = 0xCCCCCC
 
 sdec.ui_mode = sdec.ui_mode or 'text'    -- 'text', 'hex' or 'midi'
 sdec.ui_page = sdec.ui_page or 0          -- 0-based page index
+sdec.ui_paged = sdec.ui_paged or false
 sdec.ui_status = sdec.ui_status or 'ready'
 sdec.ui_opt_y0 = 8
-sdec.ui_opt_dy = 52
+sdec.ui_opt_dy = 54
+sdec.ui_opt_edit_h  = 50
+sdec.ui_opt_edit_dy = 4
+sdec.ui_opt_btn_y   = 360
 sdec.ui_opt_x  = 270   -- >= 270 so edit labels stay on screen
 sdec.ui_opt_nf = 7     -- fields, for the layout arithmetic above
 sdec.ui_opt_px = 96
@@ -3350,11 +3382,11 @@ function sdec.del_orphans()
   return nk
 end
 
--- set once at creation (see ui_fill_solid) and this function only ever changes the colour.
--- display.setfill is UNVERIFIED ON HARDWARE and carries the header table rules as well as the
--- position bar, so a silent refusal would make both invisible -- indistinguishable from a layout
--- mistake. The counter is the difference between "the rules are not drawn" and "the rules were
--- refused 19 times".
+-- WHICH MAKES ui_fill_solid INERT. It is kept because it costs one call at build time, it is the
+-- right thing to say if a later firmware honours the percentage, and its refusal counter is what
+-- would say so. Anything that must actually be solid uses geometry instead: 1 px, or an OBJ_LINE
+-- with a thickness (see ui_progbar_set).
+-- IT ALSO MEANS A RECT CANNOT BE HIDDEN BY COLOUR beyond 1 px -- see sdec.ui_setstate.
 function sdec.ui_fill(h, c)
   if h == nil then return false end
   local ok = pcall(function() display.setcolor(h, c) end)
@@ -3369,6 +3401,56 @@ function sdec.ui_fill_solid(h)
   local ok = pcall(function() display.setfill(h, 100) end)
   if not ok then sdec.fillfails = (sdec.fillfails or 0) + 1 end
   return ok
+end
+
+-- 2026-08-19: recolouring one to ui_c_hide does NOT hide it. The app hides its dump rules that way
+-- and they are 1 px wide, so the background-coloured pixel is the background; a 64 x 14 frame
+-- painted 0x000A0D stayed plainly visible on the panel and its own fillfails counter read 0.
+-- The reference lists OBJ_RECT and OBJ_LINE among setstate's allowable types, and both were
+-- confirmed on the instrument. Counted in fillfails on refusal like every other display write.
+function sdec.ui_setstate(h, st)
+  if h == nil then return false end
+  local ok = pcall(function() display.setstate(h, st) end)
+  if not ok then sdec.fillfails = (sdec.fillfails or 0) + 1 end
+  return ok
+end
+
+--   * an OBJ_LINE with thickness 10 IS solid, at any length, and display.setposition moves its
+--     endpoint. So one line is a bar with 1 px granularity and no ladder of segments.
+-- CACHED, because this runs at ~1 Hz from inside a capture and every display call is an IPC round
+-- trip to the second processor. Two entries: the percentage, and which of the three states the
+-- objects are in, so 40 -> 41 costs one setposition and no setstate.
+function sdec.ui_progbar_set(pct)
+  if sdec.ui_progbox == nil or sdec.ui_progline == nil then return false end
+  if pct ~= nil then
+    pct = math.floor(pct + 0.5)
+    if pct < 0 then pct = 0 end
+    if pct > 100 then pct = 100 end
+  end
+  local vis = 0
+  if pct ~= nil then vis = 1 end
+  if pct ~= nil and pct > 0 then vis = 2 end
+  if vis ~= sdec.ui_progvis then
+    local on, off = display.STATE_ENABLE, display.STATE_INVISIBLE
+    local boxst, barst = off, off
+    if vis > 0 then boxst = on end
+    if vis > 1 then barst = on end
+    sdec.ui_setstate(sdec.ui_progbox, boxst)
+    sdec.ui_setstate(sdec.ui_progline, barst)
+    sdec.ui_progvis = vis
+  end
+  if pct ~= sdec.ui_progpct then
+    if pct ~= nil and pct > 0 then
+      local w = math.floor(pct * sdec.ui_prog_wmax / 100 + 0.5)
+      if w < 1 then w = 1 end
+      local x0 = sdec.ui_prog_x + 1
+      pcall(function()
+        display.setposition(sdec.ui_progline, x0, sdec.ui_prog_ly, x0 + w - 1, sdec.ui_prog_ly)
+      end)
+    end
+    sdec.ui_progpct = pct
+  end
+  return true
 end
 
 -- Items per page, and per row, for the current view. A protocol view is one PARSED
@@ -3632,11 +3714,14 @@ function sdec.ui_textw(s)
   return w
 end
 
+sdec.ui_fit_slack = 1.04
+
 -- `s` clipped to fit `maxpx`, with '...' marking that it was clipped.
 -- The firmware clips at the PANEL EDGE and says nothing, so an over-long string is cut without a
 -- mark and the operator cannot tell a complete sentence from a truncated one.
 function sdec.ui_fit(s, maxpx)
   if s == nil then return '' end
+  maxpx = math.floor(maxpx / sdec.ui_fit_slack)
   if sdec.ui_textw(s) <= maxpx then return s end
   local ell = sdec.ui_textw('...')
   local budget = maxpx - ell
@@ -3655,15 +3740,53 @@ end
 
 sdec.ui_note_px = 700
 
--- The one note the cell has room for, plus how many others there are.
--- BOTH PARTS ARE FITTED TO THE CELL, and the marker wins when they compete: a note long enough to
--- fill the cell would otherwise push '(+N more)' off the panel, leaving no sign that a second note
+-- 1-BASED FOR THE OPERATOR: ui_page is a 0-based index and 'page 0 of 35' names a page no button
+-- can reach.
+-- COMPUTED, NOT CACHED, and read by two callers -- ui_page_btns writes it to the panel and
+-- ui_note_text reserves room for it. A second copy in a variable would let the reservation describe
+-- a string that is no longer on screen, and the note would then be fitted around nothing.
+function sdec.ui_pgind_text()
+  if not sdec.ui_paged then return '' end
+  local npg = sdec.ui_npages()
+  if npg <= 1 then return '' end
+  return string.format('page %d of %d', sdec.ui_page + 1, npg)
+end
+
+-- x_page, x_n, x_of, x_m -- and the two number x's are RIGHT edges (JUST_RIGHT), the two word x's
+-- LEFT edges.
+-- DERIVED FROM MEASURED WIDTHS rather than written as four literals, for the reason the dump columns
+-- are: the font is proportional and its advances are a measured table, so a literal here would be
+-- right only until someone believed the wrong number. Called at build time and by ui_pgind_px.
+function sdec.ui_pgind_layout()
+  local g = sdec.ui_pgind_gap
+  local wn = sdec.ui_textw(sdec.ui_pgind_dig)
+  local xm = sdec.ui_pgind_x
+  local xof = xm - wn - g - sdec.ui_textw('of')
+  local xn = xof - g
+  local xpage = xn - wn - g - sdec.ui_textw('page')
+  return xpage, xn, xof, xm
+end
+
+-- How much of the note cell the page counter is holding. ZERO when it is blank, so the common
+-- single-note case keeps the whole cell.
+-- THE FIXED GROUP EXTENT, not the width of today's string: the pieces do not move, so a two-digit
+-- page reserves exactly what a four-digit one does. Reserving the measured string instead would let
+-- the note grow into the digit columns and be overlapped there on the next press.
+function sdec.ui_pgind_px()
+  if sdec.ui_pgind_text() == '' then return 0 end
+  local xpage = sdec.ui_pgind_layout()
+  return (sdec.ui_pgind_x - xpage) + sdec.ui_note_gap
+end
+
 -- exists at all. The marker's width is reserved only when there IS a marker, so the whole cell
 -- stays available for the common single-note case.
+-- THE PAGE COUNTER SHARES THE ROW and is right-justified against the same rule, so its width comes
+-- off the cell too -- otherwise a full-width note is drawn straight through it and the firmware
+-- fades neither, it just overlaps them.
 function sdec.ui_note_text()
   local t, m = sdec.ui_notes()
   if m < 1 then return '' end
-  local px = sdec.ui_note_px
+  local px = sdec.ui_note_px - sdec.ui_pgind_px()
   if m == 1 then return sdec.ui_fit(t[1], px) end
   local mk = string.format('  (+%d more)', m - 1)
   return sdec.ui_fit(t[1], px - sdec.ui_textw(mk)) .. mk
@@ -3681,6 +3804,8 @@ function sdec.ui_invalidate()
   sdec.ui_fvalc, sdec.ui_modec, sdec.ui_logc = nil, nil, nil
   sdec.ui_trigc = nil
   sdec.ui_lockc = nil
+  sdec.ui_progpct, sdec.ui_progvis = nil, nil
+  sdec.ui_titletxt = nil
   return true
 end
 
@@ -3736,8 +3861,15 @@ function sdec.ui_destroy()
   sdec.ui_lockbody, sdec.ui_lockc, sdec.ui_lockhit = nil, nil, nil
   sdec.del_obj(sdec.ui_page_t)
   sdec.del_obj(sdec.ui_log_t)
-  sdec.del_obj(sdec.ui_pgind)
+  if sdec.ui_pgind ~= nil then
+    for i = 1, table.getn(sdec.ui_pgind) do sdec.del_obj(sdec.ui_pgind[i]) end
+  end
   sdec.ui_pgind, sdec.ui_pgindtxt = nil, nil
+  sdec.ui_pgind_w1, sdec.ui_pgind_n = nil, nil
+  sdec.ui_pgind_w2, sdec.ui_pgind_m = nil, nil
+  sdec.del_obj(sdec.ui_progbox)
+  sdec.del_obj(sdec.ui_progline)
+  sdec.ui_progbox, sdec.ui_progline = nil, nil
   sdec.del_obj(sdec.ui_scr)
   sdec.ui_scr, sdec.ui_note = nil, nil
   sdec.ui_flab, sdec.ui_fval = nil, nil
@@ -3760,7 +3892,7 @@ function sdec.ui_build()
   local left = display.JUST_LEFT
   local x = sdec.ui_x
 
-  sdec.ui_scr = create(display.ROOT, display.OBJ_SCREEN, sdec.ui_title)
+  sdec.ui_scr = create(display.ROOT, display.OBJ_SCREEN, sdec.ui_title_text())
 
   if sdec.ui_scr == nil then
     error('display object pool exhausted -- power cycle the instrument. (The firmware posts '
@@ -3868,6 +4000,16 @@ function sdec.ui_build()
   end
   sdec.ui_sbc = {}
 
+  sdec.ui_progbox = create(sdec.ui_scr, display.OBJ_RECT, sdec.ui_prog_x, sdec.ui_prog_y,
+                           sdec.ui_prog_w, sdec.ui_prog_h)
+  sdec.ui_fill(sdec.ui_progbox, sdec.ui_c_prog_box)
+  pcall(function() display.setthickness(sdec.ui_progbox, 1) end)
+  sdec.ui_progline = create(sdec.ui_scr, display.OBJ_LINE, sdec.ui_prog_x + 1, sdec.ui_prog_ly,
+                            sdec.ui_prog_x + 1, sdec.ui_prog_ly)
+  sdec.ui_fill(sdec.ui_progline, sdec.ui_c_prog)
+  pcall(function() display.setthickness(sdec.ui_progline, sdec.ui_prog_lw) end)
+  sdec.ui_progbar_set(nil)
+
   sdec.ui_page_t = create(sdec.ui_scr, display.OBJ_TEXT, x, sdec.ui_stat_y, '',
                           sdec.ui_c_dim, small, left)
   sdec.ui_log_t = create(sdec.ui_scr, display.OBJ_TEXT, sdec.ui_stat_div + 6,
@@ -3889,11 +4031,11 @@ function sdec.ui_build()
     {x = 526, w = 112, t = 'Save',       e = 'sdec.save()'},
     {x = 662, w = 112, t = 'Options',    e = 'sdec.options()'},
   }
-  local pbw, lbw = 125, 140
+  local pbw, lbw = 56, 140
   local pdef = {
-    {x = 785 - pbw, y = 58,  w = pbw, t = 'Page Up',   e = 'sdec.page_prev()',  pg = true},
+    {x = 785 - pbw, y = 58,  w = pbw, t = 'Up',        e = 'sdec.page_prev()',  pg = true},
     {x = 785 - lbw, y = 160, w = lbw, t = 'Lock Rate', e = 'sdec.lock_toggle()'},
-    {x = 785 - pbw, y = 262, w = pbw, t = 'Page Dn',   e = 'sdec.page_next()',  pg = true},
+    {x = 785 - pbw, y = 262, w = pbw, t = 'Dn',        e = 'sdec.page_next()',  pg = true},
   }
   local pk, npg = nil, 0
   sdec.ui_pgbtn = {}
@@ -3912,8 +4054,18 @@ function sdec.ui_build()
       end
     end
   end
-  sdec.ui_pgind = create(sdec.ui_scr, display.OBJ_TEXT, 770, 141, '',
-                         sdec.ui_c_dim, small, display.JUST_RIGHT)
+  local xpage, xn, xof, xm = sdec.ui_pgind_layout()
+  local ny = sdec.ui_note_y
+  sdec.ui_pgind = {}
+  local function pgpiece(px, pc, pj)
+    local h = create(sdec.ui_scr, display.OBJ_TEXT, px, ny, '', pc, small, pj)
+    if h ~= nil then sdec.ui_pgind[table.getn(sdec.ui_pgind) + 1] = h end
+    return h
+  end
+  sdec.ui_pgind_w1 = pgpiece(xpage, sdec.ui_c_pgword, left)
+  sdec.ui_pgind_n  = pgpiece(xn,    sdec.ui_c_pgnum,  display.JUST_RIGHT)
+  sdec.ui_pgind_w2 = pgpiece(xof,   sdec.ui_c_pgword, left)
+  sdec.ui_pgind_m  = pgpiece(xm,    sdec.ui_c_pgnum,  display.JUST_RIGHT)
   sdec.ui_pgindtxt = nil
   sdec.ui_pgvis = nil
   sdec.ui_lockvis = nil
@@ -3949,11 +4101,18 @@ function sdec.ui_page_btns()
   local npg = sdec.ui_npages()
   local want = false
   if npg > 1 then want = true end
-  if sdec.ui_pgind ~= nil then
-    local ptxt = ''
-    if want then ptxt = string.format('page %d of %d', sdec.ui_page + 1, npg) end
+  if sdec.ui_pgind_n ~= nil then
+    local ptxt = sdec.ui_pgind_text()
     if ptxt ~= sdec.ui_pgindtxt then
-      sdec.ui_set(sdec.ui_pgind, ptxt)
+      local w1, nn, w2, mm = '', '', '', ''
+      if ptxt ~= '' then
+        w1, w2 = 'page', 'of'
+        nn, mm = tostring(sdec.ui_page + 1), tostring(npg)
+      end
+      sdec.ui_set(sdec.ui_pgind_w1, w1)
+      sdec.ui_set(sdec.ui_pgind_n, nn)
+      sdec.ui_set(sdec.ui_pgind_w2, w2)
+      sdec.ui_set(sdec.ui_pgind_m, mm)
       sdec.ui_pgindtxt = ptxt
     end
   end
@@ -4012,6 +4171,10 @@ function sdec.ui_refresh()
   if sdec.ui_modec ~= mdc.c then
     sdec.ui_color(sdec.ui_modelab, mdc.c)
     sdec.ui_modec = mdc.c
+  end
+  local ttl = sdec.ui_title_text()
+  if sdec.ui_titletxt ~= ttl then
+    if pcall(function() display.settext(sdec.ui_scr, ttl) end) then sdec.ui_titletxt = ttl end
   end
   set(sdec.ui_note, sdec.ui_note_text())
 
@@ -4110,6 +4273,7 @@ function sdec.ui_refresh()
   else
     set(sdec.ui_page_t, string.format('%s  %s%s', md.name, sdec.ck_status(), warn))
   end
+  sdec.ui_progbar_set(sdec.ck_pct())
   local trigtxt, trigcol = 'EXT TRIG', sdec.ui_c_warn
   if sdec.trigext and sdec.trigmode ~= 'free' then
     trigcol = sdec.ui_c_locked
@@ -4130,7 +4294,9 @@ function sdec.ui_refresh()
       set(sdec.ui_log_t, 'Capture=step  Mode=Exit')
     elseif sdec.ck_running or sdec.strm_inflight then
       set(sdec.ui_log_t, 'no stop until it ends')
-    else set(sdec.ui_log_t, 'Mode=Exit to FRAME') end
+    else
+      set(sdec.ui_log_t, sdec.flog_status())
+    end
   else
     set(sdec.ui_log_t, sdec.flog_status())
   end
@@ -4176,13 +4342,18 @@ function sdec.ck_status()
       local have, want = sdec.ck_acq_have or 0, sdec.ck_acq_want or 0
       local pct = 0
       if want > 0 then pct = math.floor(100 * have / want) end
-      return string.format('recording...%s %d %% of the buffer', wtxt, pct)
+      if wtxt ~= '' then return string.format('recording...%s %d %%', wtxt, pct) end
+      return string.format('recording... %d %% of the buffer', pct)
     end
     local cap = md.cap
     if cap ~= nil then
-      return string.format('decoding...%s %d/%d bytes', wtxt, sdec.ck_nbytes, cap)
+      if wtxt ~= '' then
+        return string.format('decoding...%s %d/%d', wtxt, sdec.ck_nbytes, cap)
+      end
+      return string.format('decoding... %d/%d bytes', sdec.ck_nbytes, cap)
     end
-    return string.format('decoding...%s %d bytes', wtxt, sdec.ck_nbytes)
+    if wtxt ~= '' then return string.format('decoding...%s %d', wtxt, sdec.ck_nbytes) end
+    return string.format('decoding... %d bytes', sdec.ck_nbytes)
   end
   if t == nil then
     if sdec.mode_why(md) ~= nil then return 'not armed -- see the note' end
@@ -4202,14 +4373,38 @@ function sdec.ck_status()
                        t.nf, t.nbad, t.nwin, base, t.stopped or 'done')
 end
 
--- One settext on ONE object, called at ~1 Hz from the capture loop. Guarded, because a
+-- Nothing is decoded during the first, so a byte fraction there would be a fiction.
+-- nil FOR A PRESS-DRIVEN RECORDING, which is the case that would lie. Between the start press and
+-- the stop press no Lua of ours runs, so a bar drawn there would hold whatever the start press put
+-- in it for the whole recording -- empty, reading as "nothing is being recorded". An absent bar is
+-- honest; a frozen one is not. It is the same reason ck_status states its control and no figure.
+function sdec.ck_pct()
+  if not sdec.ck_running then return nil end
+  if sdec.strm_recording then return nil end
+  if sdec.ck_nbytes == nil or sdec.ck_nbytes < 1 then
+    local want = sdec.ck_acq_want or 0
+    if want <= 0 then return nil end
+    return 100 * (sdec.ck_acq_have or 0) / want
+  end
+  local cap = sdec.mode_cur().cap
+  if cap == nil or cap <= 0 then return nil end
+  return 100 * sdec.ck_nbytes / cap
+end
+
+-- The streaming status row: its text and its bar, written together so the two cannot disagree about
+-- which phase the run is in. sdec.progress and sdec.progress_samples are the callers -- one per
+-- phase -- and this is the only place that knows they paint the same row.
+function sdec.progress_row()
+  local md = sdec.mode_cur()
+  sdec.ui_set(sdec.ui_page_t, string.format('%s  %s', md.name, sdec.ck_status()))
+  return sdec.ui_progbar_set(sdec.ck_pct())
+end
+
+-- One settext and one setfill, called at ~1 Hz from the capture loop. Guarded, because a
 -- progress update must never be able to cost the capture it is reporting on.
 function sdec.progress(nbytes)
   sdec.ck_nbytes = nbytes
-  return pcall(function()
-    local md = sdec.mode_cur()
-    sdec.ui_set(sdec.ui_page_t, string.format('%s  %s', md.name, sdec.ck_status()))
-  end)
+  return pcall(function() sdec.progress_row() end)
 end
 
 -- Light the segments covering the current page.
@@ -4322,6 +4517,18 @@ function sdec.build_options()
   sdec.destroy_options()
   local create = display.create
   local y0, dy, x = sdec.ui_opt_y0, sdec.ui_opt_dy, sdec.ui_opt_x
+  local pv, pl = sdec.opt_proto_list()
+  local nf = 6
+  if pl.n >= 2 then nf = 7 end
+  local eh, edy = sdec.ui_opt_edit_h, sdec.ui_opt_edit_dy
+  local maxdy = math.floor((sdec.ui_opt_btn_y - y0 - edy - eh) / (nf - 1))
+  if dy > maxdy then dy = maxdy end
+  if dy < eh then
+    dy = eh
+    y0 = sdec.ui_opt_btn_y - edy - eh - (nf - 1) * dy
+    if y0 < 0 then y0 = 0 end
+  end
+  sdec.ui_opt_dy_used, sdec.ui_opt_nf_used, sdec.ui_opt_y0_used = dy, nf, y0
   local row = 0
   local function nexty()
     local y = y0 + row * dy
@@ -4336,7 +4543,6 @@ function sdec.build_options()
           .. 'instrument.', 0)
   end
 
-  local pv, pl = sdec.opt_proto_list()
   if pl.n >= 3 then
     sdec.opt_proto = create(sdec.optscr, display.OBJ_EDIT_OPTION, x, nexty(),
                             'Protocol', 'sets the wire parameters',
@@ -4374,7 +4580,7 @@ function sdec.build_options()
   local ok, nob = nil, 0
   for ok = 1, table.getn(odef) do
     local od = odef[ok]
-    local ob = create(sdec.optscr, display.OBJ_BUTTON, od.x, 366, od.t, od.w)
+    local ob = create(sdec.optscr, display.OBJ_BUTTON, od.x, sdec.ui_opt_btn_y, od.t, od.w)
     if ob ~= nil then
       display.setevent(ob, display.EVENT_PRESS, od.e)
       sdec.opt_btn[od.i] = ob
@@ -5002,10 +5208,7 @@ end
 -- Show acquisition progress on the mode row: have of want samples.
 function sdec.progress_samples(have, want)
   sdec.ck_acq_have, sdec.ck_acq_want = have, want
-  return pcall(function()
-    local md = sdec.mode_cur()
-    sdec.ui_set(sdec.ui_page_t, string.format('%s  %s', md.name, sdec.ck_status()))
-  end)
+  return pcall(function() sdec.progress_row() end)
 end
 
 sdec.ck_bufmax = 2800000     -- readings; raise once the real ceiling is measured
@@ -5381,20 +5584,25 @@ end
 function sdec.page_cycle()
   local npg = sdec.ui_npages()
   if npg < 1 then npg = 1 end
+  sdec.ui_paged = true
   sdec.ui_page = math.mod(sdec.ui_page + 1, npg)
   return pcall(function() sdec.ui_refresh() end)
 end
 
--- Show the next page of bytes. Bound to the 'Page Dn' button down the dump area's right margin
--- (serial_ui.tsp:1572), with page_prev() as 'Page Up' above it; the host drives both over the
--- socket as well.
+-- Show the next page of bytes. Bound to the 'Dn' button down the dump area's right margin, with
+-- page_prev() as 'Up' above it; the host drives both over the socket as well.
+-- ui_paged IS SET EVEN WHEN THE PAGE DOES NOT MOVE. It is what puts 'page N of M' on the note row,
+-- and a press at the last page is exactly when the operator most needs to be told which page they
+-- are on -- suppressing the counter there would answer "nothing happened, why?" with silence.
 function sdec.page_next()
+  sdec.ui_paged = true
   if sdec.ui_page + 1 < sdec.ui_npages() then sdec.ui_page = sdec.ui_page + 1 end
   return pcall(function() sdec.ui_refresh() end)
 end
 
 -- Show the previous page of bytes.
 function sdec.page_prev()
+  sdec.ui_paged = true
   if sdec.ui_page > 0 then sdec.ui_page = sdec.ui_page - 1 end
   return pcall(function() sdec.ui_refresh() end)
 end
@@ -5617,6 +5825,25 @@ function sdec.mode_exit(why)
   return was
 end
 
+-- now read the SAME function rather than two descriptions of one behaviour.
+-- Skips any mode that cannot be right at the locked rate (mode_suits), bounded by n steps and
+-- falling back to the first entry: mode_suits is data-driven, and a table where nothing suits must
+-- not spin inside a touch handler.
+-- math.mod, not '%': Lua 5.0.2. at = 0 (an unrecognised capmode) lands on the first entry.
+function sdec.mode_next()
+  local n = sdec.ui_modes.n
+  local at, i = 0, nil
+  for i = 1, n do
+    if sdec.ui_modes[i].id == sdec.capmode then at = i end
+  end
+  local step
+  for step = 1, n do
+    local cand = sdec.ui_modes[math.mod(at + step - 1, n) + 1]
+    if sdec.mode_suits(cand) then return cand end
+  end
+  return sdec.ui_modes[1]
+end
+
 -- The Mode button. Two behaviours, and which one applies turns on whether a run is in progress:
 --   RUNNING  -> abort. Stop the stream, flush, straight back to FRAME, one press.
 --   IDLE     -> advance to the next mode, flushing the one being left on the way out.
@@ -5634,12 +5861,7 @@ function sdec.mode_cycle()
   for i = 1, n do
     if sdec.ui_modes[i].id == sdec.capmode then at = i end
   end
-  local nxt, step = nil, nil
-  for step = 1, n do
-    local cand = sdec.ui_modes[math.mod(at + step - 1, n) + 1]
-    if sdec.mode_suits(cand) then nxt = cand.id; break end
-  end
-  if nxt == nil then nxt = sdec.ui_modes[1].id end
+  local nxt = sdec.mode_next().id
   sdec.mode_exit('switching')
   sdec.capmode = nxt
   sdec.ck_tot, sdec.ck_nbytes = nil, nil

@@ -24,7 +24,11 @@ MD = {}
 
 local OBJ, nextid = {}, 0
 local BUTTON_H = 58        -- measured from docs/panel-ref-chrome.png
-local EDIT_H   = 38
+-- MEASURED off docs/img/options.png on 2026-08-19, not guessed: a field created at y draws its box
+-- from y + 4 to y + 53. The 38 that was here understated it by 12 px, and the options-form pitch
+-- arithmetic was built on that number -- which is how a seven-field form came to be documented as
+-- fitting with 8 px clear when it would have overlapped the button row by 6.
+local EDIT_H   = 50
 local CONTENT_H = 480 - 49 -- panel height less the title bar; object y is relative
 
 display = {
@@ -34,11 +38,16 @@ display = {
   -- A check object's value is display.ON / display.OFF, a different value type from an
   -- option field's 1-based index -- both go through the same setvalue call.
   OBJ_EDIT_CHECK = 'editcheck', ON = 1, OFF = 0,
-  OBJ_TIMER = 'timer', OBJ_RECT = 'rect',
+  OBJ_TIMER = 'timer', OBJ_RECT = 'rect', OBJ_LINE = 'line',
   EVENT_PRESS = 'press', EVENT_ENDAPP = 'endapp',
   FONT_SMALL = 1, FONT_MEDIUM = 2,
   JUST_LEFT = 0, JUST_CENTER = 1, JUST_RIGHT = 2,
   NFORMAT_PREFIX = 1, TIMER_FOREVER = -1,
+  -- setfill's optional third argument. PRESENT HERE ONLY BECAUSE THE REFERENCE LISTS IT: the app
+  -- reads display.FILL_RIGHT rather than assuming it, since buffer.FILL_CONTINUOUS is documented
+  -- and does NOT exist on firmware 1.7.17a. Defining it here is what exercises that branch offline;
+  -- the other branch is what runs if this box turns out not to have it.
+  FILL_LEFT = 'left', FILL_RIGHT = 'right', FILL_UP = 'up', FILL_DOWN = 'down',
   active = nil, events = {},
 }
 
@@ -70,7 +79,10 @@ function display.create(parent, kind, a, b, c, d, e, f, g, h, i, j, k, l, m, n)
       error('screen title over 31 chars: "' .. a .. '"', 0)
     end
   elseif kind == display.OBJ_TEXT then
-    o.x, o.y, o.text, o.color, o.font = a, b, c, d, e
+    -- JUSTIFICATION IS RECORDED. Dropping it is what made the overlap check in test_serial blind to
+    -- a JUST_RIGHT object: with x read as a left edge, the page counter appeared to sit off the
+    -- right of the panel and could collide with nothing.
+    o.x, o.y, o.text, o.color, o.font, o.just = a, b, c, d, e, f
   elseif kind == display.OBJ_BUTTON then
     o.x, o.y, o.text, o.w = a, b, c, d
     -- Width outside 1..799 returns nil rather than raising.
@@ -82,6 +94,11 @@ function display.create(parent, kind, a, b, c, d, e, f, g, h, i, j, k, l, m, n)
   elseif kind == display.OBJ_RECT then
     o.x, o.y, o.w, o.h = a, b, c, d
     if c ~= nil and (c < 1 or c > 799) then return nil end
+  elseif kind == display.OBJ_LINE then
+    -- (x, y, x2, y2) -- ENDPOINTS, not a width and height. Held as both so a geometry check can
+    -- treat a line like any other extent.
+    o.x, o.y, o.x2, o.y2 = a, b, c, d
+    o.w, o.h = (c or a) - a + 1, (d or b) - b + 1
   elseif kind == display.OBJ_EDIT_NUMBER then
     o.x, o.y, o.label, o.value = a, b, c, f
     if b ~= nil and b + EDIT_H > CONTENT_H then
@@ -169,7 +186,13 @@ function display.settext(h, s)
   o.text = s
   o.sets = (o.sets or 0) + 1     -- counted, so tests can assert refresh traffic
 end
-function display.setcolor(h, c) use(h, 'setcolor').color = c end
+-- The second colour is a rect's BACKGROUND -- what shows through the part a partial fill has not
+-- covered. Recorded, not dropped, so a test can tell an empty progress bar from a hidden one.
+function display.setcolor(h, c, c2)
+  local o = use(h, 'setcolor')
+  o.color = c
+  if c2 ~= nil then o.color2 = c2 end
+end
 -- setfill's argument is a PERCENTAGE, 0..100. Anything else is refused by the firmware
 -- with "1130 Parameter fill percent, expected value from 0 to 100".
 --
@@ -191,6 +214,39 @@ function display.setfill(h, pct, dir)
   o.filldir = dir
   o.fills = (o.fills or 0) + 1
 end
+-- THE THICKNESS CEILING IS 10, and passing 12 is not a silent no-op: the firmware refuses with
+-- "1130 Parameter thickness, expected value from 1 to 10" at a severity that raises a MODAL DIALOG
+-- over the app's own panel, which has to be dismissed by hand. It happened while measuring the
+-- progress bar. Enforced here so an over-thick line fails a test instead of a bench session.
+--
+-- pcall DOES NOT CATCH IT ON THE INSTRUMENT -- the refusal arrives as a queued event, so the call
+-- returns true and the dialog appears anyway. Offline is the only place this can be caught cheaply.
+function display.setthickness(h, t)
+  local o = use(h, 'setthickness')
+  if type(t) ~= 'number' or t < 1 or t > 10 then
+    error('1130 Parameter thickness, expected value from 1 to 10, got ' .. tostring(t), 0)
+  end
+  o.thick = t
+end
+
+-- Move or resize an object. RECT, LINE, CIRCLE and IMAGE only: on an OBJ_EDIT_* the instrument
+-- answers "1717 Attribute position does not apply to an object of type EditNumber" -- again as a
+-- queued event a pcall cannot see, and again as a modal dialog. Measured while trying to widen the
+-- options fields, which is why those cannot be widened at all.
+function display.setposition(h, x, y, c, d)
+  local o = use(h, 'setposition')
+  if o.kind ~= display.OBJ_RECT and o.kind ~= display.OBJ_LINE then
+    error('1717 Attribute position does not apply to an object of type ' .. tostring(o.kind), 0)
+  end
+  o.x, o.y = x, y
+  if o.kind == display.OBJ_LINE then
+    o.x2, o.y2 = c, d
+    o.w, o.h = (c or x) - x + 1, (d or y) - y + 1
+  else
+    o.w, o.h = c or o.w, d or o.h
+  end
+end
+
 display.STATE_ENABLE = 'enable'
 display.STATE_DISABLE = 'disable'
 display.STATE_INVISIBLE = 'invisible'

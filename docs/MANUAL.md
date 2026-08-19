@@ -103,7 +103,7 @@ away.
 | **NewLog** | Start a new numbered log file on the USB key. |
 | **Save** | Write a full report of what is on screen to the USB key. |
 | **Options** | The settings screen. |
-| **Page ▲ / ▼** | Right-hand edge. Only appear when there is more than one page. |
+| **Up** / **Dn** | Right-hand edge. Only appear when there is more than one page. Once you press either, **page N of M** appears at the right of the FRAME line. |
 | **Lock Rate** | Right-hand edge. Only appears when the rate is not locked. |
 
 Every button responds immediately except the ones that take a capture. **Capture takes about 1.7

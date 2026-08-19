@@ -44,6 +44,9 @@ sdec = sdec or {}
 -- the title bar is available for saying what the app is doing. The bar cannot be RECOLOURED:
 -- display.setcolor on a screen is refused with 1717, 'does not apply to an object of type Custom
 -- Screen'. Words go in the bar; the mode cell carries the colour.
+-- THE BASE, and also the key every tool identifies the main screen by (tools/mockup.lua and
+-- tools/render_png.py both match on it). The bar shown on the panel is this plus the capture mode --
+-- see sdec.ui_title_text -- so those two match on the PREFIX, not the whole string.
 sdec.ui_title    = 'SERIAL DECODE'
 
 -- ---------- header field strip ----------
@@ -158,6 +161,27 @@ sdec.ui_note_lab_x = 8
 -- not one that overruns an INTERIOR rule -- so a cell bounded by its neighbour has to be
 -- measured against that neighbour by hand.
 sdec.ui_note_val_x = 92
+-- THE PAGE COUNTER SHARES THE NOTE ROW, ending 4 px inside the table's right rule at ui_rule_x1. It
+-- sat in the right margin between the page buttons until those shrank to 'Up' and 'Dn'; the margin
+-- is buttons now and nothing else.
+--
+-- x IS THE RIGHT EDGE of the last piece. The counter is four objects (see ui_c_pgnum) and their x
+-- positions are DERIVED from measured widths in ui_pgind_layout, not written here: the two numerals
+-- sit in right-aligned columns wide enough for four digits, so 'page 7 of 137' and 'page 137 of 137'
+-- put their digits in the same place and nothing shuffles as the page changes.
+sdec.ui_pgind_x  = 788
+-- Digit columns sized for TWO digits, and a wider count OVERFLOWS LEFT INTO THE GAP rather than
+-- being given a column of its own. Sizing them for the worst case (137 pages of a 32 kB hex capture,
+-- more in a protocol view) is what the first attempt did, and it rendered 'page    1 of    35' --
+-- 24 px of slack around every ordinary number to hold a case almost nobody meets. Two digits puts at
+-- most one digit of slack in the common case and lets three digits eat 8 px of the 6 px gap, which
+-- costs a tighter line and nothing else.
+sdec.ui_pgind_dig = '99'
+-- Clear space between the counter's pieces, and between the counter and the note beside it. 20 px
+-- for the note, not 12: 12 left an 8 px gap the note's own width model could overrun, and it did --
+-- the yellow note drew over the 'p' of 'page'. ui_fit_slack is the other half of that fix.
+sdec.ui_pgind_gap = 6
+sdec.ui_note_gap = 20
 
 sdec.ui_note_y   = 48
 sdec.ui_row_y0   = 66                        -- first dump row
@@ -176,6 +200,37 @@ sdec.ui_stat_top = 328   -- above the status ink (331..342)
 sdec.ui_stat_bot = 346   -- below it
 -- A divider before the right-hand cell, matching the note row's. ui_log_t starts 6 px after it.
 sdec.ui_stat_div = 462
+-- ---------- the acquire / decode progress bar ----------
+-- A FIXED SLOT IN THE LEFT STATUS CELL, right of the progress text and never moved. Following the
+-- text would make the bar's left edge track the digit count, so it would step sideways at 10 % and
+-- again at 100 % -- movement the eye reads as the thing itself changing.
+--
+-- x AND w ARE THE LEFTOVER SPACE, SPLIT ROUGHLY EVENLY, and the bar grows LEFTWARD -- its right
+-- edge at 447 is fixed by the divider's rule at 462, 15 px clear.
+--
+-- MEASURED with ui_textw against the WIDEST string ck_status() can return while running, which is
+-- the flow-controlled decode: '32 kB  decoding... win 32/32 32768/32768', 311 px, so it ends at 319.
+-- 20 px of clear space then puts the left edge at 339 and the bar is 108 px.
+--
+-- 108 AND NOT 112 -- 69 % wider than the first 64, not the 75 % it was asked to grow. The last 4 px
+-- are the margin over that flow-controlled string, which fits with 2 px to spare at 112 and 20 at
+-- 108. test_serial recomputes the 319 from the format strings themselves, so a longer message fails
+-- a test instead of being drawn through the bar.
+sdec.ui_prog_x = 339
+sdec.ui_prog_w = 108
+-- 80 % OF THE ROW, which is the 18 px status band (ui_stat_bot - ui_stat_top), not the 12 px glyph
+-- ink: the bar belongs to the row rather than to the text, and 14 px leaves clear space inside both
+-- rules. Height is fixed at create time -- there is no display call that resizes an object.
+sdec.ui_prog_h = 14
+sdec.ui_prog_y = 330
+-- The bar's travel, inside the frame's 1 px border, and the y its thick line is stroked along.
+-- DERIVED: moving or resizing the frame moves the bar with it.
+sdec.ui_prog_wmax = sdec.ui_prog_w - 2
+sdec.ui_prog_ly   = sdec.ui_prog_y + 7
+-- THICKNESS OF THAT LINE, and 10 is the firmware's CEILING -- 12 is refused with "1130 Parameter
+-- thickness, expected value from 1 to 10", which raises a modal dialog over the panel. It leaves
+-- 1 px of dark inside the frame above and below the bar, which reads as a trough.
+sdec.ui_prog_lw = 10
 -- THE EXTERNAL TRIGGER GETS ITS OWN CELL, so that what the app is writing and what it is waiting
 -- for are not two unrelated facts in one box. The log cell is 468..667, the trigger's 677..792.
 sdec.ui_trig_div = 668
@@ -278,8 +333,16 @@ sdec.ui_sb_h   = 17                          -- segment height, 3 px of gap at 2
 --   needbaud   refuses unless the baud rate is locked -- see sdec.mode_why()
 --   idlexit    a quiet line ends the run AND leaves the mode -- see sdec.mode_exit()
 --   c          the MODE cell's colour, which is the at-a-glance channel
+-- THE TITLE BAR CARRIES THE MODE TOO, as 'SERIAL DECODE - <title>'. The mode already has two
+-- indicators -- the MODE cell's colour and the status row's words -- and both are small text in a
+-- dense panel; the title bar is the largest type on the screen and was saying nothing that changes.
+--
+-- `title` IS NOT `name`. The cell wants the shortest thing that fits a 92 px column ('8 kB'); the
+-- title bar has room for the whole idea, and '8K CAPTURE' says what '8 kB' leaves to be inferred.
+-- Longest is 'SERIAL DECODE - 32K CAPTURE' at 27 characters, inside the firmware's 31-character
+-- screen-title limit (over it is error 1707, and the title is silently truncated).
 sdec.ui_modes = {
-  {id = 'frame', name = 'FRAME',  cap = nil,   log = true, view = true,
+  {id = 'frame', name = 'FRAME',  cap = nil,   log = true, view = true, title = '240B FRAME',
    c = 0xB0B0B0, desc = 'capture, show, and append to the message log'},
   -- TWO RECORDING SIZES, AND SIZE IS THE ONLY DIFFERENCE. Here rather than on the options form
   -- because the form has no room for an eighth field (ui_opt_y0) and because the MODE CELL ALREADY
@@ -290,10 +353,10 @@ sdec.ui_modes = {
   -- to a cancel, and credits sooner; a larger one spends less on seams and needs fewer credits. Both
   -- are lossless. At the measured ~250-360 byte/s, 8 kB is ~30 s of decoding and 32 kB about two
   -- minutes -- which is the responsiveness this choice is really about.
-  {id = 'sml',   name = '8 kB',   cap = 8192,  log = true, view = false,
+  {id = 'sml',   name = '8 kB',   cap = 8192,  log = true, view = false, title = '8K CAPTURE',
    needbaud = true, idlexit = true, c = 0x40C0FF,
    desc = 'shorter capture window -- quicker to bytes, more credits'},
-  {id = 'med',   name = '32 kB',  cap = 32768, log = true, view = false,
+  {id = 'med',   name = '32 kB',  cap = 32768, log = true, view = false, title = '32K CAPTURE',
    needbaud = true, idlexit = true, c = 0xFFC000,
    desc = 'long capture, decoded to a file'},
   -- THERE IS NO UNCAPPED MODE and that is deliberate: every recording is a window with a ceiling,
@@ -467,6 +530,20 @@ function sdec.lock_state()
   return 'auto'
 end
 
+-- The title bar's text: the app's name and the capture mode, in the largest type on the screen.
+--
+-- BOUNDED AT 31 CHARACTERS, which is the firmware's screen-title limit -- over it raises 1707 and the
+-- title is truncated without a word. The longest form is 'SERIAL DECODE - 32K CAPTURE' at 27, so the
+-- clamp never fires today; it is here because `title` is data and a longer entry must degrade rather
+-- than raise. tools/mock_display.lua enforces the same limit, so an over-long one fails a test.
+function sdec.ui_title_text()
+  local md = sdec.mode_cur()
+  local s = sdec.ui_title
+  if md ~= nil and md.title ~= nil then s = s .. ' - ' .. md.title end
+  if string.len(s) > 31 then s = string.sub(s, 1, 31) end
+  return s
+end
+
 -- Padlock colour for the current lock state.
 function sdec.lock_colour()
   local st = sdec.lock_state()
@@ -566,6 +643,19 @@ sdec.ui_c_err  = 0xFF6060    -- red: a row containing a framing or parity error
 -- to be a near-black value rather than true black.
 sdec.ui_c_sb_off = 0x282828  -- position bar, outside the current page
 sdec.ui_c_sb_on  = 0x00DCFF  -- position bar, current page
+-- THE PAGE COUNTER, on the note row, IN TWO INTENSITIES. The two numbers are what the operator
+-- reads; 'page' and 'of' are scaffolding that says what they mean, and dimming them puts the
+-- numerals a clear step in front rather than in a row of identical grey.
+--
+-- IT IS WHY THE COUNTER IS FOUR DISPLAY OBJECTS AND NOT ONE. A text object carries ONE colour, so
+-- two intensities in one line is two objects minimum and four once the words are not adjacent.
+sdec.ui_c_pgnum  = 0xFFFFFF    -- the numerals: 100 %
+sdec.ui_c_pgword = 0xA8A8A8    -- 'page' and 'of': 66 %
+-- THE PROGRESS BAR. Full-intensity cyan for the filled part, and an 80 % grey box around the whole
+-- extent so that what is LEFT is as visible as what is done -- a bare bar shows only the fraction
+-- already spent and leaves the denominator to be guessed.
+sdec.ui_c_prog     = 0x00FFFF
+sdec.ui_c_prog_box = 0xCCCCCC
 
 -- ---------- handles ----------
 -- Declared, not assigned: see the note in serial_core.tsp. Opening the installed
@@ -585,6 +675,13 @@ sdec.ui_c_sb_on  = 0x00DCFF  -- position bar, current page
 -- ---------- view state ----------
 sdec.ui_mode = sdec.ui_mode or 'text'    -- 'text', 'hex' or 'midi'
 sdec.ui_page = sdec.ui_page or 0          -- 0-based page index
+-- HAS THE OPERATOR PAGED YET. The page counter stays off the note row until they have: on a
+-- single-page capture it would say 'page 1 of 1', and a note is worth more than that. Latched, not
+-- momentary -- someone who pages once wants the counter for the rest of the session.
+--
+-- `or false` like every other piece of operator state: opening the installed App re-runs this file,
+-- and a plain assignment would forget it.
+sdec.ui_paged = sdec.ui_paged or false
 sdec.ui_status = sdec.ui_status or 'ready'
 -- sdec.ui_last   -- last text written per handle, to skip redundant settext
 
@@ -594,23 +691,41 @@ sdec.ui_status = sdec.ui_status or 'ready'
 --
 -- SEVEN FIELDS, AND THIS IS THE RISKIEST GEOMETRY IN THE APP.
 --
--- ui_opt_dy is the pitch between edit objects, and the real HEIGHT of an edit object on this
--- firmware is NOT MEASURED. 72 px is the only pitch confirmed working, at 3 fields.
--- Seven fields fit only at y0 = 8 and dy = 52, which puts the last field's bottom at 358 against
--- a button row at 366:
+-- THE EDIT-OBJECT HEIGHT IS NOW MEASURED, not guessed. Off docs/img/options.png, 2026-08-19: a field
+-- created at y draws its box from y + 4 to y + 53, so it is 50 px tall -- and the options button row
+-- starts at 367 and is 60 px, not the 58 the main screen's arithmetic assumes.
 --
---     fields  y0  dy   last bottom   buttons at 366
---        6    26  58       354          fits
---        7    26  58       412          COLLIDES
---        7    26  52       376          COLLIDES
---        7     8  52       358          fits, 8 px clear
+-- WHICH RETIRES THE TABLE THAT USED TO BE HERE. It was built on a 38 px guess and said seven fields
+-- at dy = 52 end at 358 with 8 px clear. At the measured 50 they end at 373 -- 6 px INSIDE the button
+-- row. V1 ships six fields (no Protocol: with only UART there is nothing to choose between, and
+-- OBJ_EDIT_OPTION refuses fewer than two options), so nothing collides today, but a build that
+-- restores MIDI and LIN brings the seventh field back and it does not fit at this pitch.
 --
--- WARNING: the edit-object height is a guess. If the true height is over 52 px the fields overlap
--- and the form is unusable; one screenshot settles it. The remedy is to fold a field's control
--- into another field as an extra option entry, which costs no vertical space at all -- the
--- firmware allows ten options per field.
+--     fields  y0  dy   last box bottom   buttons at 367
+--        6     8  52        321            46 px clear
+--        6     8  54        331            36 px clear   <- shipped
+--        6     8  61        366            1 px clear, the ceiling
+--        7     8  52        373            COLLIDES by 6
+--        7     8  50        361            fits, 6 px clear
+--
+-- 54, NOT 52: the gap between boxes was 2 px, which reads as one crowded block rather than six
+-- controls, and 54 makes it 4. The ceiling is 61 and test_serial checks the last box against the
+-- button row, so going further fails a test rather than the panel.
+--
+-- The remedy if a seventh field ever returns is to fold its control into another field as an extra
+-- option entry, which costs no vertical space at all -- the firmware allows ten options per field.
 sdec.ui_opt_y0 = 8
-sdec.ui_opt_dy = 52
+sdec.ui_opt_dy = 54
+-- MEASURED, and the offset of the box inside the object. Both are what test_serial checks the last
+-- field against; the mock carries the same height so an overflow fails offline.
+sdec.ui_opt_edit_h  = 50
+sdec.ui_opt_edit_dy = 4
+-- THE OPTIONS BUTTON ROW, 360 and not 366. A button is 60 px tall on this panel, not the 58 the main
+-- screen's arithmetic assumes -- measured off docs/img/options.png with the rest of this geometry --
+-- so at 366 the row ran 367..426 of a 431 px content area and 5 px from the bottom edge reads as
+-- clipped. 360 gives 11 px, matching the main screen's row, and still leaves 29 px under the last
+-- field. build_options() takes the row's y FROM HERE rather than repeating the number.
+sdec.ui_opt_btn_y   = 360
 sdec.ui_opt_x  = 270   -- >= 270 so edit labels stay on screen
 sdec.ui_opt_nf = 7     -- fields, for the layout arithmetic above
 -- HOW WIDE AN OPTION-FIELD ENTRY MAY BE, in px. Past this the firmware FADES the tail out
@@ -704,14 +819,17 @@ end
 -- from 0 to 100", and enough refusals per refresh make the instrument raise a MODAL ERROR DIALOG
 -- over the app's own panel -- which covers the hex dump and has to be dismissed by hand.
 --
--- FILL PERCENT MUST ALSO BE SET. display.create(..., OBJ_RECT, x, y, w, h) defaults the fill
--- percent to 0, so a rect is invisible whatever colour it is. Every rect here is solid, so 100 is
--- set once at creation (see ui_fill_solid) and this function only ever changes the colour.
+-- AN OBJ_RECT IS NOTHING BUT ITS BORDER, AND display.setfill DOES NOTHING TO IT. Measured on the
+-- panel 2026-08-19 while building the progress bar: a 64 x 14 rect at setfill(100) lit 137 px -- its
+-- perimeter -- and not the 896 a filled one would. So every rect this app draws is a hollow box, and
+-- the table rules only look solid because they are 1 px wide, where the border IS the rect.
 --
--- display.setfill is UNVERIFIED ON HARDWARE and carries the header table rules as well as the
--- position bar, so a silent refusal would make both invisible -- indistinguishable from a layout
--- mistake. The counter is the difference between "the rules are not drawn" and "the rules were
--- refused 19 times".
+-- WHICH MAKES ui_fill_solid INERT. It is kept because it costs one call at build time, it is the
+-- right thing to say if a later firmware honours the percentage, and its refusal counter is what
+-- would say so. Anything that must actually be solid uses geometry instead: 1 px, or an OBJ_LINE
+-- with a thickness (see ui_progbar_set).
+--
+-- IT ALSO MEANS A RECT CANNOT BE HIDDEN BY COLOUR beyond 1 px -- see sdec.ui_setstate.
 function sdec.ui_fill(h, c)
   if h == nil then return false end
   local ok = pcall(function() display.setcolor(h, c) end)
@@ -726,6 +844,82 @@ function sdec.ui_fill_solid(h)
   local ok = pcall(function() display.setfill(h, 100) end)
   if not ok then sdec.fillfails = (sdec.fillfails or 0) + 1 end
   return ok
+end
+
+-- Show or hide object `h`. THE ONLY WAY TO TAKE A RECT OR A LINE OFF THE GLASS, measured
+-- 2026-08-19: recolouring one to ui_c_hide does NOT hide it. The app hides its dump rules that way
+-- and they are 1 px wide, so the background-coloured pixel is the background; a 64 x 14 frame
+-- painted 0x000A0D stayed plainly visible on the panel and its own fillfails counter read 0.
+--
+-- The reference lists OBJ_RECT and OBJ_LINE among setstate's allowable types, and both were
+-- confirmed on the instrument. Counted in fillfails on refusal like every other display write.
+function sdec.ui_setstate(h, st)
+  if h == nil then return false end
+  local ok = pcall(function() display.setstate(h, st) end)
+  if not ok then sdec.fillfails = (sdec.fillfails or 0) + 1 end
+  return ok
+end
+
+-- Paint the acquire/decode bar at `pct` (0..100), or HIDE it when pct is nil -- which is what every
+-- state with no honest fraction passes. See sdec.ck_pct for which those are.
+--
+-- THREE VISUAL STATES, and nil is not 0:
+--   nil   gone. Frame and bar both STATE_INVISIBLE.
+--   0     the grey frame alone: a run has started and has nothing to show yet.
+--   > 0   the frame plus a cyan bar out to pct.
+--
+-- THE BAR IS A THICK LINE AND THE FRAME IS A RECT, and that split is forced by what this firmware
+-- actually draws -- all of it measured on the instrument on 2026-08-19, because the two comments
+-- this repo already carried about rect fills contradicted each other and BOTH were wrong in part:
+--
+--   * an OBJ_RECT is drawn as an OUTLINE `thickness` px wide, in its setcolor colour. That is
+--     exactly the 1 px 80 % grey frame this wants, for one object.
+--   * display.setfill's PERCENTAGE HAS NO VISIBLE EFFECT on a rect. A 64 x 14 rect at setfill(100)
+--     rendered as its perimeter -- 137 lit px, not 896. So the app's ui_fill_solid calls are inert,
+--     and every rect it draws is a hollow box; the table rules only look solid because they are 1 px
+--     wide. A partial fill was the first design here and it drew nothing at all.
+--   * setthickness caps at 10 ("1130 Parameter thickness, expected value from 1 to 10"), so a rect
+--     cannot be thickened into a solid 62 px bar either -- at thickness 6 it drew a 6 px border with
+--     a hollow middle.
+--   * an OBJ_LINE with thickness 10 IS solid, at any length, and display.setposition moves its
+--     endpoint. So one line is a bar with 1 px granularity and no ladder of segments.
+--
+-- CACHED, because this runs at ~1 Hz from inside a capture and every display call is an IPC round
+-- trip to the second processor. Two entries: the percentage, and which of the three states the
+-- objects are in, so 40 -> 41 costs one setposition and no setstate.
+function sdec.ui_progbar_set(pct)
+  if sdec.ui_progbox == nil or sdec.ui_progline == nil then return false end
+  if pct ~= nil then
+    pct = math.floor(pct + 0.5)
+    if pct < 0 then pct = 0 end
+    if pct > 100 then pct = 100 end
+  end
+  local vis = 0
+  if pct ~= nil then vis = 1 end
+  if pct ~= nil and pct > 0 then vis = 2 end
+  if vis ~= sdec.ui_progvis then
+    local on, off = display.STATE_ENABLE, display.STATE_INVISIBLE
+    local boxst, barst = off, off
+    if vis > 0 then boxst = on end
+    if vis > 1 then barst = on end
+    sdec.ui_setstate(sdec.ui_progbox, boxst)
+    sdec.ui_setstate(sdec.ui_progline, barst)
+    sdec.ui_progvis = vis
+  end
+  -- THE LENGTH, and only when it changed. Rounded to whole px, which is the granularity the panel
+  -- has: 62 px of travel, so one px is 1.6 %.
+  if pct ~= sdec.ui_progpct then
+    if pct ~= nil and pct > 0 then
+      local w = math.floor(pct * sdec.ui_prog_wmax / 100 + 0.5)
+      if w < 1 then w = 1 end
+      local x0 = sdec.ui_prog_x + 1
+      pcall(function()
+        display.setposition(sdec.ui_progline, x0, sdec.ui_prog_ly, x0 + w - 1, sdec.ui_prog_ly)
+      end)
+    end
+    sdec.ui_progpct = pct
+  end
+  return true
 end
 
 -- Items per page, and per row, for the current view. A protocol view is one PARSED
@@ -1150,12 +1344,25 @@ function sdec.ui_textw(s)
   return w
 end
 
+-- HEADROOM ON EVERY ui_fit BUDGET, because ui_cw is a MODEL and it reads narrow.
+--
+-- MEASURED 2026-08-19 on the panel: the 104-character mid-byte note fitted to 700 px came back at a
+-- modelled 696 and RENDERED 706 -- 1.4 % over, which from x = 92 put its tail past the 798 px edge,
+-- where the firmware cuts a string without a mark. The same 1.4 % is what let a full-width note
+-- overwrite the 'p' of the page counter beside it, since the gap between them is only 8 px.
+--
+-- 1.04, not 1.014: the error is a per-character model against a proportional face, so it is a bound
+-- and not a constant, and 4 % of the note cell is 28 px -- three characters of a sentence that is
+-- being ellipsised anyway, against a tail that would otherwise be silently cut.
+sdec.ui_fit_slack = 1.04
+
 -- `s` clipped to fit `maxpx`, with '...' marking that it was clipped.
 --
 -- The firmware clips at the PANEL EDGE and says nothing, so an over-long string is cut without a
 -- mark and the operator cannot tell a complete sentence from a truncated one.
 function sdec.ui_fit(s, maxpx)
   if s == nil then return '' end
+  maxpx = math.floor(maxpx / sdec.ui_fit_slack)
   if sdec.ui_textw(s) <= maxpx then return s end
   local ell = sdec.ui_textw('...')
   local budget = maxpx - ell
@@ -1175,16 +1382,65 @@ end
 -- The note cell runs from ui_note_val_x to the table's right rule at ui_rule_x1.
 sdec.ui_note_px = 700
 
+-- 'page N of M' for the note row, or '' when there is nothing worth saying: one page, or the
+-- operator has not paged yet.
+--
+-- 1-BASED FOR THE OPERATOR: ui_page is a 0-based index and 'page 0 of 35' names a page no button
+-- can reach.
+--
+-- COMPUTED, NOT CACHED, and read by two callers -- ui_page_btns writes it to the panel and
+-- ui_note_text reserves room for it. A second copy in a variable would let the reservation describe
+-- a string that is no longer on screen, and the note would then be fitted around nothing.
+function sdec.ui_pgind_text()
+  if not sdec.ui_paged then return '' end
+  local npg = sdec.ui_npages()
+  if npg <= 1 then return '' end
+  return string.format('page %d of %d', sdec.ui_page + 1, npg)
+end
+
+-- WHERE THE COUNTER'S FOUR PIECES GO, right to left from ui_pgind_x. Returns
+-- x_page, x_n, x_of, x_m -- and the two number x's are RIGHT edges (JUST_RIGHT), the two word x's
+-- LEFT edges.
+--
+-- DERIVED FROM MEASURED WIDTHS rather than written as four literals, for the reason the dump columns
+-- are: the font is proportional and its advances are a measured table, so a literal here would be
+-- right only until someone believed the wrong number. Called at build time and by ui_pgind_px.
+function sdec.ui_pgind_layout()
+  local g = sdec.ui_pgind_gap
+  local wn = sdec.ui_textw(sdec.ui_pgind_dig)
+  local xm = sdec.ui_pgind_x
+  local xof = xm - wn - g - sdec.ui_textw('of')
+  local xn = xof - g
+  local xpage = xn - wn - g - sdec.ui_textw('page')
+  return xpage, xn, xof, xm
+end
+
+-- How much of the note cell the page counter is holding. ZERO when it is blank, so the common
+-- single-note case keeps the whole cell.
+--
+-- THE FIXED GROUP EXTENT, not the width of today's string: the pieces do not move, so a two-digit
+-- page reserves exactly what a four-digit one does. Reserving the measured string instead would let
+-- the note grow into the digit columns and be overlapped there on the next press.
+function sdec.ui_pgind_px()
+  if sdec.ui_pgind_text() == '' then return 0 end
+  local xpage = sdec.ui_pgind_layout()
+  return (sdec.ui_pgind_x - xpage) + sdec.ui_note_gap
+end
+
 -- The one note the cell has room for, plus how many others there are.
 --
 -- BOTH PARTS ARE FITTED TO THE CELL, and the marker wins when they compete: a note long enough to
 -- fill the cell would otherwise push '(+N more)' off the panel, leaving no sign that a second note
 -- exists at all. The marker's width is reserved only when there IS a marker, so the whole cell
 -- stays available for the common single-note case.
+--
+-- THE PAGE COUNTER SHARES THE ROW and is right-justified against the same rule, so its width comes
+-- off the cell too -- otherwise a full-width note is drawn straight through it and the firmware
+-- fades neither, it just overlaps them.
 function sdec.ui_note_text()
   local t, m = sdec.ui_notes()
   if m < 1 then return '' end
-  local px = sdec.ui_note_px
+  local px = sdec.ui_note_px - sdec.ui_pgind_px()
   if m == 1 then return sdec.ui_fit(t[1], px) end
   local mk = string.format('  (+%d more)', m - 1)
   return sdec.ui_fit(t[1], px - sdec.ui_textw(mk)) .. mk
@@ -1220,6 +1476,13 @@ function sdec.ui_invalidate()
   sdec.ui_fvalc, sdec.ui_modec, sdec.ui_logc = nil, nil, nil
   sdec.ui_trigc = nil
   sdec.ui_lockc = nil
+  -- The progress bar's two: the percentage last written, and which of its three colour states the
+  -- rects are in. Omitting ui_progvis would leave a rebuilt bar believing it had already painted
+  -- itself away, so the first run of a fresh build would show a frame and no cyan.
+  sdec.ui_progpct, sdec.ui_progvis = nil, nil
+  -- The title bar's shadow. Omitting it would leave a rebuilt screen believing its bar already said
+  -- the current mode, so a build in 8 kB mode would keep the title it was created with forever.
+  sdec.ui_titletxt = nil
   return true
 end
 
@@ -1293,8 +1556,19 @@ function sdec.ui_destroy()
   sdec.ui_lockbody, sdec.ui_lockc, sdec.ui_lockhit = nil, nil, nil
   sdec.del_obj(sdec.ui_page_t)
   sdec.del_obj(sdec.ui_log_t)
-  sdec.del_obj(sdec.ui_pgind)
+  -- The page counter's four pieces, from the dense list ui_build appends them to, so a build where
+  -- one create failed still deletes the rest.
+  if sdec.ui_pgind ~= nil then
+    for i = 1, table.getn(sdec.ui_pgind) do sdec.del_obj(sdec.ui_pgind[i]) end
+  end
   sdec.ui_pgind, sdec.ui_pgindtxt = nil, nil
+  sdec.ui_pgind_w1, sdec.ui_pgind_n = nil, nil
+  sdec.ui_pgind_w2, sdec.ui_pgind_m = nil, nil
+  -- The progress bar's frame and line. Deleted HERE, before the screen, like every other child: a
+  -- delete against a dead parent is refused, counts in delfails and leaks what it meant to reclaim.
+  sdec.del_obj(sdec.ui_progbox)
+  sdec.del_obj(sdec.ui_progline)
+  sdec.ui_progbox, sdec.ui_progline = nil, nil
   sdec.del_obj(sdec.ui_scr)
   sdec.ui_scr, sdec.ui_note = nil, nil
   sdec.ui_flab, sdec.ui_fval = nil, nil
@@ -1321,7 +1595,7 @@ function sdec.ui_build()
   local left = display.JUST_LEFT
   local x = sdec.ui_x
 
-  sdec.ui_scr = create(display.ROOT, display.OBJ_SCREEN, sdec.ui_title)
+  sdec.ui_scr = create(display.ROOT, display.OBJ_SCREEN, sdec.ui_title_text())
 
   -- display.create RETURNS NIL WHEN THE POOL IS EXHAUSTED, POSTS NOTHING, AND DOES NOT RAISE.
   -- Event 1701 is logged the first time only; after that the failure is silent, every child is
@@ -1501,6 +1775,30 @@ function sdec.ui_build()
   end
   sdec.ui_sbc = {}
 
+  -- THE PROGRESS BAR, TWO RECTS, AND IT IS BUILT BEFORE ui_page_t ON PURPOSE. Creation order is
+  -- z-order on this firmware, so the status text must be created AFTER: the resting strings are
+  -- longer than the running ones -- '32768 bytes 999 err 9 win -> bytes009 [full]' reaches 404 px,
+  -- past the bar's 383 -- and a rect created later would paint over the tail of the sentence that
+  -- says where the file went.
+  --
+  --   ui_progbox   the extent, an OBJ_RECT drawn as a 1 px 80 % grey OUTLINE. A rect is nothing but
+  --                its border on this firmware, which is exactly what a frame is. It shows how much
+  --                is LEFT, which a bare bar cannot.
+  --   ui_progline  the bar, an OBJ_LINE stroked 10 px thick in cyan, its right endpoint moved by
+  --                setposition. See ui_progbar_set for why a rect cannot be the bar.
+  sdec.ui_progbox = create(sdec.ui_scr, display.OBJ_RECT, sdec.ui_prog_x, sdec.ui_prog_y,
+                           sdec.ui_prog_w, sdec.ui_prog_h)
+  sdec.ui_fill(sdec.ui_progbox, sdec.ui_c_prog_box)
+  pcall(function() display.setthickness(sdec.ui_progbox, 1) end)
+  sdec.ui_progline = create(sdec.ui_scr, display.OBJ_LINE, sdec.ui_prog_x + 1, sdec.ui_prog_ly,
+                            sdec.ui_prog_x + 1, sdec.ui_prog_ly)
+  sdec.ui_fill(sdec.ui_progline, sdec.ui_c_prog)
+  pcall(function() display.setthickness(sdec.ui_progline, sdec.ui_prog_lw) end)
+  -- Hidden until a run needs it. The caches are nil (ui_invalidate ran at the top of this function),
+  -- so this genuinely writes STATE_INVISIBLE to both rather than believing they are already away --
+  -- which is the bug that put a grey frame on the glass in FRAME mode.
+  sdec.ui_progbar_set(nil)
+
   sdec.ui_page_t = create(sdec.ui_scr, display.OBJ_TEXT, x, sdec.ui_stat_y, '',
                           sdec.ui_c_dim, small, left)
   sdec.ui_log_t = create(sdec.ui_scr, display.OBJ_TEXT, sdec.ui_stat_div + 6,
@@ -1545,8 +1843,8 @@ function sdec.ui_build()
     {x = 526, w = 112, t = 'Save',       e = 'sdec.save()'},
     {x = 662, w = 112, t = 'Options',    e = 'sdec.options()'},
   }
-  -- PAGE UP, LOCK RATE, PAGE DN, down the dump area's right margin in that vertical order: up is
-  -- up and down is down, so neither page button needs reading.
+  -- UP, LOCK RATE, DN, down the dump area's right margin in that vertical order: up is up and down
+  -- is down, so neither page button needs reading -- which is why the labels can be two characters.
   --
   -- A PAGING CONTROL IS NOT OPTIONAL. 240 bytes is one page only in FRAME mode; a 32 kB streaming
   -- capture is 137 pages, and without these the app collects 32768 bytes and shows the first 240.
@@ -1558,19 +1856,23 @@ function sdec.ui_build()
   -- All three hide themselves when they have nothing to do -- the page buttons when the capture
   -- fits one page, Lock Rate when there is no detected rate to pin -- which is why they are
   -- tracked separately from the bottom row. See sdec.ui_page_btns().
-  -- NARROWER THAN 185, RIGHT EDGES ALL AT 785. The width these buttons do not use is width the dump
-  -- rows get: a TEXT row is 80 columns of a proportional font, needing 636 px against the 592 it had,
-  -- so the right-hand characters were drawn under Page Up -- and the page arithmetic still counted
-  -- them, so paging stepped over bytes that were never visible.
+  -- RIGHT EDGES ALL AT 785, and each face only as wide as its own label. The width these buttons do
+  -- not use is width the dump rows get: a TEXT row is 80 columns of a proportional font, needing 636
+  -- px against the 592 it had at 185, so the right-hand characters were drawn under Page Up -- and
+  -- the page arithmetic still counted them, so paging stepped over bytes that were never visible.
   --
-  -- THE PAGE BUTTONS GO NARROWER THAN Lock Rate BECAUSE THEIR LABELS ARE SHORTER. 'Lock Rate'
-  -- measures 134 px and cannot follow them down; test_serial's label-fit check is what caught 130.
-  -- Right edges are what line up, since these sit against the panel edge.
-  local pbw, lbw = 125, 140
+  -- 'Up' AND 'Dn' RATHER THAN 'Page Up' AND 'Page Dn'. A face needs len * ui_adv_btn + 8 px, so two
+  -- characters fit in 36 and the 56 here is a comfortable touch target with room over.
+  --
+  -- WARNING: THIS DOES NOT WIDEN THE TEXT VIEW BY ITSELF. The dump's usable width is set by the
+  -- LEFTMOST margin button, and that is Lock Rate at 645 -- 'Lock Rate' measures 134 px and cannot
+  -- follow the page buttons down. Rows 7..10 sit under it, so cols stays at 80 (631 px, ending at
+  -- 639) until Lock Rate itself moves. tools/render_png.py measures every row against that edge.
+  local pbw, lbw = 56, 140
   local pdef = {
-    {x = 785 - pbw, y = 58,  w = pbw, t = 'Page Up',   e = 'sdec.page_prev()',  pg = true},
+    {x = 785 - pbw, y = 58,  w = pbw, t = 'Up',        e = 'sdec.page_prev()',  pg = true},
     {x = 785 - lbw, y = 160, w = lbw, t = 'Lock Rate', e = 'sdec.lock_toggle()'},
-    {x = 785 - pbw, y = 262, w = pbw, t = 'Page Dn',   e = 'sdec.page_next()',  pg = true},
+    {x = 785 - pbw, y = 262, w = pbw, t = 'Dn',        e = 'sdec.page_next()',  pg = true},
   }
   local pk, npg = nil, 0
   sdec.ui_pgbtn = {}
@@ -1589,15 +1891,31 @@ function sdec.ui_build()
       end
     end
   end
-  -- WHICH PAGE OF HOW MANY, in the gap between Page Up (ends at 116) and Lock Rate (starts at 160).
-  -- Paging blind is the complaint this answers: the buttons move the view but nothing said how much
-  -- there was or where in it you were. Shown and hidden with the page buttons -- 'page 1 of 1' is
-  -- noise -- and it costs ONE display object, unlike the 15 the position bar wants.
+  -- WHICH PAGE OF HOW MANY, on the NOTE ROW at the right-hand end. Paging blind is the complaint this
+  -- answers: the buttons move the view but nothing said how much there was or where in it you were.
   --
-  -- JUST_RIGHT against the panel edge, so the count does not shuffle sideways as it grows from
-  -- 'page 1 of 9' to 'page 27 of 35'. x is therefore the RIGHT edge, not the left.
-  sdec.ui_pgind = create(sdec.ui_scr, display.OBJ_TEXT, 770, 141, '',
-                         sdec.ui_c_dim, small, display.JUST_RIGHT)
+  -- ON THE NOTE ROW rather than in the right margin, where it used to sit between the page buttons.
+  -- The margin was the wrong home twice over: it put a sentence-sized fact in a 44 px gap between two
+  -- buttons, and it spent margin width the dump rows want.
+  --
+  -- FOUR OBJECTS, because a text object carries one colour and this line carries two: the numerals at
+  -- full white, 'page' and 'of' at 66 %. They are created with their colours and never recoloured, so
+  -- the counter needs no colour shadow cache -- one fewer entry ui_invalidate could be missing.
+  --
+  -- THE NUMERALS ARE JUST_RIGHT IN FIXED COLUMNS so the digits land in the same place at 7 and at
+  -- 137; the words are left-anchored. Nothing here moves as the page changes, which is the point.
+  local xpage, xn, xof, xm = sdec.ui_pgind_layout()
+  local ny = sdec.ui_note_y
+  sdec.ui_pgind = {}
+  local function pgpiece(px, pc, pj)
+    local h = create(sdec.ui_scr, display.OBJ_TEXT, px, ny, '', pc, small, pj)
+    if h ~= nil then sdec.ui_pgind[table.getn(sdec.ui_pgind) + 1] = h end
+    return h
+  end
+  sdec.ui_pgind_w1 = pgpiece(xpage, sdec.ui_c_pgword, left)
+  sdec.ui_pgind_n  = pgpiece(xn,    sdec.ui_c_pgnum,  display.JUST_RIGHT)
+  sdec.ui_pgind_w2 = pgpiece(xof,   sdec.ui_c_pgword, left)
+  sdec.ui_pgind_m  = pgpiece(xm,    sdec.ui_c_pgnum,  display.JUST_RIGHT)
   sdec.ui_pgindtxt = nil
   -- THESE TWO ARE VISIBILITY SHADOW CACHES, and nil means "unknown, so write it on the next
   -- refresh".
@@ -1649,13 +1967,26 @@ function sdec.ui_page_btns()
   local npg = sdec.ui_npages()
   local want = false
   if npg > 1 then want = true end
-  -- 1-BASED FOR THE OPERATOR: ui_page is a 0-based index and 'page 0 of 35' names a page no button
-  -- can reach. Cached like every other cell, so a refresh with the same page costs no display traffic.
-  if sdec.ui_pgind ~= nil then
-    local ptxt = ''
-    if want then ptxt = string.format('page %d of %d', sdec.ui_page + 1, npg) end
+  -- THE COUNTER IS NOT GATED THE SAME WAY THE BUTTONS ARE. They appear whenever a page 2 exists;
+  -- it waits until the operator has actually paged (ui_pgind_text), because until then the note it
+  -- shares the row with is worth more.
+  --
+  -- ONE CACHE FOR FOUR OBJECTS, keyed on the whole line, because all four are a function of the same
+  -- two numbers -- so there is no state in which some pieces are current and others are not. Blanked
+  -- rather than recoloured when there is nothing to say: settext('') is how every other cell here
+  -- goes away, and it leaves the colours alone.
+  if sdec.ui_pgind_n ~= nil then
+    local ptxt = sdec.ui_pgind_text()
     if ptxt ~= sdec.ui_pgindtxt then
-      sdec.ui_set(sdec.ui_pgind, ptxt)
+      local w1, nn, w2, mm = '', '', '', ''
+      if ptxt ~= '' then
+        w1, w2 = 'page', 'of'
+        nn, mm = tostring(sdec.ui_page + 1), tostring(npg)
+      end
+      sdec.ui_set(sdec.ui_pgind_w1, w1)
+      sdec.ui_set(sdec.ui_pgind_n, nn)
+      sdec.ui_set(sdec.ui_pgind_w2, w2)
+      sdec.ui_set(sdec.ui_pgind_m, mm)
       sdec.ui_pgindtxt = ptxt
     end
   end
@@ -1732,6 +2063,14 @@ function sdec.ui_refresh()
   if sdec.ui_modec ~= mdc.c then
     sdec.ui_color(sdec.ui_modelab, mdc.c)
     sdec.ui_modec = mdc.c
+  end
+  -- THE TITLE BAR NAMES THE MODE TOO, in the largest type on the panel. Retexted only when it
+  -- changes, like every other cell -- and the mode changes on a button press, so that is at most once
+  -- per press. settext on an OBJ_SCREEN is undocumented but verified on this firmware (see ui_title);
+  -- guarded anyway, because a refusal must cost the title bar and not the refresh.
+  local ttl = sdec.ui_title_text()
+  if sdec.ui_titletxt ~= ttl then
+    if pcall(function() display.settext(sdec.ui_scr, ttl) end) then sdec.ui_titletxt = ttl end
   end
   set(sdec.ui_note, sdec.ui_note_text())
 
@@ -1892,6 +2231,10 @@ function sdec.ui_refresh()
   else
     set(sdec.ui_page_t, string.format('%s  %s%s', md.name, sdec.ck_status(), warn))
   end
+  -- THE BAR FOLLOWS THE SAME STATE THE ROW ABOVE DOES, and this is the call that TAKES IT AWAY: a
+  -- run that ends leaves ck_running false, so ck_pct returns nil and both rects go. Without it the
+  -- bar would stay at its last percentage under a row that has moved on to naming the file.
+  sdec.ui_progbar_set(sdec.ck_pct())
   -- THE TRIGGER SOURCE, so that a capture which appears to hang is distinguishable from one
   -- waiting for an edge that is not coming.
   --
@@ -1941,7 +2284,18 @@ function sdec.ui_refresh()
       set(sdec.ui_log_t, 'Capture=step  Mode=Exit')
     elseif sdec.ck_running or sdec.strm_inflight then
       set(sdec.ui_log_t, 'no stop until it ends')
-    else set(sdec.ui_log_t, 'Mode=Exit to FRAME') end
+    else
+      -- NO 'Mode=...' HERE AT ALL. It read 'Mode=Exit to FRAME' in every state that showed it, which
+      -- was wrong in two of the three: Mode CYCLES, so from FRAME it reaches 8 kB and from 8 kB it
+      -- reaches 32 kB, and only from 32 kB does it reach FRAME. Naming the destination correctly was
+      -- the obvious fix and it was still confusing -- a mode name on the panel reads as the mode you
+      -- are IN, and this row sits under a MODE cell that means exactly that. Two mode names on one
+      -- screen meaning different things is worse than one fewer hint.
+      --
+      -- The log status goes here instead, which is what FRAME mode shows and is never a claim about
+      -- a control. sdec.mode_next() survives as the thing mode_cycle() steps with.
+      set(sdec.ui_log_t, sdec.flog_status())
+    end
   else
     set(sdec.ui_log_t, sdec.flog_status())
   end
@@ -2029,11 +2383,17 @@ function sdec.ck_status()
     -- TWO PHASES, and conflating them was tempting and wrong. While the digitizer fills the
     -- buffer nothing has been decoded, so a byte count would be a fiction; percent of the
     -- buffer is the honest number. Bytes only become real once the chunked decode starts.
+    --
+    -- THE TRAILING WORDS AND THE WINDOW COUNTER ARE ALTERNATIVES, NOT BOTH. This row now has to end
+    -- 20 px before the progress bar at 339, and 'win 32/32' together with 'of the buffer' runs to
+    -- 369 -- straight through it. The counter wins when it is there: it is the fact that says a
+    -- multi-window run is progressing, and the bar beside the figure shows what the words explained.
     if sdec.ck_nbytes == nil or sdec.ck_nbytes < 1 then
       local have, want = sdec.ck_acq_have or 0, sdec.ck_acq_want or 0
       local pct = 0
       if want > 0 then pct = math.floor(100 * have / want) end
-      return string.format('recording...%s %d %% of the buffer', wtxt, pct)
+      if wtxt ~= '' then return string.format('recording...%s %d %%', wtxt, pct) end
+      return string.format('recording... %d %% of the buffer', pct)
     end
     -- THE STOP CONTROL IS NOT SAID HERE. This string shares its line with the log status and has
     -- ~58 characters before the divider; 'TRIGGER stops' would cost 13 of them at exactly the
@@ -2041,9 +2401,13 @@ function sdec.ck_status()
     -- ui_refresh() fills with 'TRIGGER=stop' for the whole run.
     local cap = md.cap
     if cap ~= nil then
-      return string.format('decoding...%s %d/%d bytes', wtxt, sdec.ck_nbytes, cap)
+      if wtxt ~= '' then
+        return string.format('decoding...%s %d/%d', wtxt, sdec.ck_nbytes, cap)
+      end
+      return string.format('decoding... %d/%d bytes', sdec.ck_nbytes, cap)
     end
-    return string.format('decoding...%s %d bytes', wtxt, sdec.ck_nbytes)
+    if wtxt ~= '' then return string.format('decoding...%s %d', wtxt, sdec.ck_nbytes) end
+    return string.format('decoding... %d bytes', sdec.ck_nbytes)
   end
   -- SHORT, always. This row shares its line with the log status, so the left string has ~454 px
   -- before ui_stat_div; the reason a mode cannot run is a full sentence and lives on the note line
@@ -2074,14 +2438,43 @@ function sdec.ck_status()
                        t.nf, t.nbad, t.nwin, base, t.stopped or 'done')
 end
 
--- One settext on ONE object, called at ~1 Hz from the capture loop. Guarded, because a
+-- The fraction the progress bar shows, 0..100, or nil when no honest one exists.
+--
+-- THE TWO PHASES HAVE DIFFERENT DENOMINATORS, exactly as ck_status's text does: per cent of the
+-- BUFFER while the digitizer fills it, then bytes against the mode's cap once the decode starts.
+-- Nothing is decoded during the first, so a byte fraction there would be a fiction.
+--
+-- nil FOR A PRESS-DRIVEN RECORDING, which is the case that would lie. Between the start press and
+-- the stop press no Lua of ours runs, so a bar drawn there would hold whatever the start press put
+-- in it for the whole recording -- empty, reading as "nothing is being recorded". An absent bar is
+-- honest; a frozen one is not. It is the same reason ck_status states its control and no figure.
+function sdec.ck_pct()
+  if not sdec.ck_running then return nil end
+  if sdec.strm_recording then return nil end
+  if sdec.ck_nbytes == nil or sdec.ck_nbytes < 1 then
+    local want = sdec.ck_acq_want or 0
+    if want <= 0 then return nil end
+    return 100 * (sdec.ck_acq_have or 0) / want
+  end
+  local cap = sdec.mode_cur().cap
+  if cap == nil or cap <= 0 then return nil end
+  return 100 * sdec.ck_nbytes / cap
+end
+
+-- The streaming status row: its text and its bar, written together so the two cannot disagree about
+-- which phase the run is in. sdec.progress and sdec.progress_samples are the callers -- one per
+-- phase -- and this is the only place that knows they paint the same row.
+function sdec.progress_row()
+  local md = sdec.mode_cur()
+  sdec.ui_set(sdec.ui_page_t, string.format('%s  %s', md.name, sdec.ck_status()))
+  return sdec.ui_progbar_set(sdec.ck_pct())
+end
+
+-- One settext and one setfill, called at ~1 Hz from the capture loop. Guarded, because a
 -- progress update must never be able to cost the capture it is reporting on.
 function sdec.progress(nbytes)
   sdec.ck_nbytes = nbytes
-  return pcall(function()
-    local md = sdec.mode_cur()
-    sdec.ui_set(sdec.ui_page_t, string.format('%s  %s', md.name, sdec.ck_status()))
-  end)
+  return pcall(function() sdec.progress_row() end)
 end
 
 -- Light the segments covering the current page.
@@ -2220,6 +2613,39 @@ function sdec.build_options()
   sdec.destroy_options()
   local create = display.create
   local y0, dy, x = sdec.ui_opt_y0, sdec.ui_opt_dy, sdec.ui_opt_x
+  -- HOW MANY FIELDS THERE WILL BE, decided BEFORE the pitch, because the pitch depends on it. The
+  -- Protocol field exists only when a protocol module is loaded (OBJ_EDIT_OPTION refuses fewer than
+  -- two options, so a UART-only build must not create it at all), so a full build has seven fields
+  -- and V1 has six.
+  local pv, pl = sdec.opt_proto_list()
+  local nf = 6
+  if pl.n >= 2 then nf = 7 end
+  -- THE PITCH IS CLAMPED TO WHAT ACTUALLY FITS. ui_opt_dy is a PREFERENCE -- how much air the boxes
+  -- get -- and this is the ceiling: the last box must end above the button row.
+  --
+  -- WITHOUT THIS, A SEVENTH FIELD OVERLAPS THE BUTTONS AND NOTHING SAYS SO. At the shipped pitch six
+  -- fields end at 331 and seven at 385, against a button row at 366 -- and the arithmetic that was
+  -- supposed to prevent that was built on a 38 px edit height, 12 px under the measured 50, so it
+  -- reported 8 px of clearance where there would have been an overlap. Seven fields fit only at 50,
+  -- which butts the boxes together; the remedy is still to fold a control into another field as an
+  -- extra option entry, which costs no vertical space at all.
+  local eh, edy = sdec.ui_opt_edit_h, sdec.ui_opt_edit_dy
+  local maxdy = math.floor((sdec.ui_opt_btn_y - y0 - edy - eh) / (nf - 1))
+  if dy > maxdy then dy = maxdy end
+  -- A PITCH UNDER THE BOX HEIGHT OVERLAPS THE BOXES, which is worse than either thing it was
+  -- avoiding. Seven fields at y0 = 8 need a pitch of 49 to clear the button row and the box is 50, so
+  -- the clamp above alone would have drawn them 1 px on top of each other. When that happens the
+  -- COLUMN MOVES UP instead: the pitch goes to the box height, and y0 becomes whatever puts the last
+  -- box just above the buttons -- 6 for seven fields, which is 2 px of the 8 given back.
+  if dy < eh then
+    dy = eh
+    y0 = sdec.ui_opt_btn_y - edy - eh - (nf - 1) * dy
+    if y0 < 0 then y0 = 0 end
+  end
+  -- PUBLISHED, because ui_opt_dy is only the preference and a check that reads IT is checking the
+  -- wrong number. The gap assertion in test_serial did exactly that for one run: it reported
+  -- 'pitch 54, box 50, gap 4' about a form laid out at 50 with no gap at all.
+  sdec.ui_opt_dy_used, sdec.ui_opt_nf_used, sdec.ui_opt_y0_used = dy, nf, y0
   -- ROWS ARE ALLOCATED, NOT NUMBERED. Version 1 omits the Protocol field entirely -- with
   -- only UART present there is nothing to choose between, and display.OBJ_EDIT_OPTION
   -- REFUSES fewer than two options ("OBJ_EDIT_OPTION needs at least two options"), so a
@@ -2254,7 +2680,8 @@ function sdec.build_options()
   -- offline harness runs on a modern Lua where it moved to table.unpack -- so the clever form
   -- works on the DMM and raises in every test. There are exactly three possible protocols, so a
   -- branch per count is shorter than the portability shim.
-  local pv, pl = sdec.opt_proto_list()
+  --
+  -- pl is computed at the top of this function, because the field COUNT sets the pitch.
   if pl.n >= 3 then
     sdec.opt_proto = create(sdec.optscr, display.OBJ_EDIT_OPTION, x, nexty(),
                             'Protocol', 'sets the wire parameters',
@@ -2357,7 +2784,7 @@ function sdec.build_options()
   local ok, nob = nil, 0
   for ok = 1, table.getn(odef) do
     local od = odef[ok]
-    local ob = create(sdec.optscr, display.OBJ_BUTTON, od.x, 366, od.t, od.w)
+    local ob = create(sdec.optscr, display.OBJ_BUTTON, od.x, sdec.ui_opt_btn_y, od.t, od.w)
     if ob ~= nil then
       display.setevent(ob, display.EVENT_PRESS, od.e)
       sdec.opt_btn[od.i] = ob

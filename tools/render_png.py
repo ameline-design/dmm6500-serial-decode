@@ -108,7 +108,7 @@ def read_dump(path):
         next(fh)
         for line in fh:
             f = line.rstrip('\n').split('\t')
-            if len(f) < 11:
+            if len(f) < 13:
                 continue
             rows.append({
                 'screen': f[0], 'kind': f[1],
@@ -116,7 +116,8 @@ def read_dump(path):
                 'w': int(float(f[4])), 'h': int(float(f[5])),
                 'font': int(float(f[6])), 'color': int(float(f[7])),
                 'fill': int(float(f[8])), 'just': int(float(f[9])),
-                'text': '\t'.join(f[10:]),
+                'thick': int(float(f[10])), 'state': f[11],
+                'text': '\t'.join(f[12:]),
             })
     return rows
 
@@ -126,15 +127,22 @@ def draw_panel(rows, screen, title, out, scale, mono_rows, fonts):
     img = Image.new('RGB', (PANEL_W * S, PANEL_H * S), BG)
     d = ImageDraw.Draw(img)
 
+    overflow = []
+    # PREFIX, NOT EQUALITY. The main screen's title now carries the capture mode after the app's name
+    # ('SERIAL DECODE - 8K CAPTURE'), so an exact match selects no rows and renders an empty panel --
+    # which is the failure this filter has already had once, from the other direction.
+    mine = [r for r in rows if r['screen'] == screen or r['screen'].startswith(screen + ' -')]
+
     vgrad(img, (0, 0, PANEL_W * S, TITLE_H * S), TITLE_TOP, TITLE_BOT)
-    d.text((14 * S, 12 * S), title, font=fonts.b(21), fill=(255, 255, 255))
+    # THE BAR SHOWS THE DUMP'S OWN TITLE, not the filter key. The app puts the capture mode up there,
+    # so drawing the passed-in `title` would render every mockup with the same bar while the panel
+    # showed three different ones -- a mockup that quietly disagrees with the instrument.
+    d.text((14 * S, 12 * S), (mine[0]['screen'] if mine else title),
+           font=fonts.b(21), fill=(255, 255, 255))
     # The firmware draws End App itself; it is not one of the app's objects.
     d.rounded_rectangle([686 * S, 7 * S, 792 * S, 41 * S], radius=6 * S,
                         fill=(122, 82, 24), outline=(168, 123, 44), width=max(1, S))
     d.text((700 * S, 14 * S), 'End App', font=fonts.b(16), fill=(255, 255, 255))
-
-    overflow = []
-    mine = [r for r in rows if r['screen'] == screen]
     # THE RIGHT-MARGIN BUTTON COLUMN, found from the dump itself: any button sitting beside the dump
     # rather than in the bottom row. A dump row that reaches it is invisible from there rightwards.
     mbtn = [r for r in mine if r['kind'] == 'button' and r['y'] + BUTTON_H <= DUMP_Y1 + BUTTON_H
@@ -160,15 +168,38 @@ def draw_panel(rows, screen, title, out, scale, mono_rows, fonts):
         x = r['x'] * S
 
         if r['kind'] == 'rect':
-            # AN UNFILLED RECT PAINTS NOTHING, because that is what the firmware does -- it
-            # reads an unset fill as "no fill" and draws no pixels (see ui_c_rule in
-            # serial_ui.tsp). Drawing it as dark grey instead was a renderer fidelity bug and it
-            # produced a mockup that LIED: the padlock's invisible hit rect covered BAUD and
-            # FORMAT in the render while showing nothing at all on the instrument. A mockup that
-            # invents pixels is worse than a missing one, because it gets believed.
-            if r['fill'] < 0:
-                continue
-            d.rectangle([x, y, x + r['w'] * S, y + r['h'] * S], fill=rgb(r['fill']))
+            # AN OBJ_RECT IS DRAWN AS ITS BORDER, not as a filled block, and setfill's percentage
+            # does nothing to it -- measured on the panel 2026-08-19, where a 64 x 14 rect at
+            # setfill(100) lit its 137-pixel perimeter and nothing inside. This renderer drew rects
+            # SOLID, which is why the options mockup showed 480 px wide field boxes the instrument
+            # renders at 150, and why a progress bar that draws nothing at all on the glass looked
+            # correct here.
+            #
+            # EVERY RECT IS DRAWN, setfill or not, because setfill is not what makes one visible --
+            # its colour is. The old skip-if-never-filled rule left the progress bar's frame off the
+            # mockup entirely while the instrument drew it, which is the same class of lie in the
+            # other direction.
+            #
+            # THE COLOUR IS THE color COLUMN, NOT THE fill COLUMN. It was the fill column for as long
+            # as the app passed 24-bit colours to display.setfill -- every one of them refused on the
+            # instrument -- and this line kept rendering them faithfully, so the mockups were the
+            # only place those colours ever appeared. rgb(100) is (0, 0, 100), a dark blue, which is
+            # what a correct app now renders every rule as if this is not fixed with it.
+            wpx, hpx = r['w'] * S, r['h'] * S
+            # A rect 1 or 2 px on either axis has no interior, so border and block are the same
+            # pixels -- which is every rule, and the only reason the panel looks the way it does.
+            if r['w'] <= 2 or r['h'] <= 2:
+                d.rectangle([x, y, x + wpx, y + hpx], fill=rgb(r['color']))
+            else:
+                d.rectangle([x, y, x + wpx, y + hpx], outline=rgb(r['color']),
+                            width=max(1, S) * r['thick'])
+
+        elif r['kind'] == 'line':
+            # A THICK LINE IS THE ONLY SOLID BAR THIS FIRMWARE DRAWS -- see ui_progbar_set. w/h in
+            # the dump are derived from the endpoints, so the far end comes back from them.
+            x2 = (r['x'] + r['w'] - 1) * S
+            y2 = (r['y'] + r['h'] - 1 + TITLE_H) * S
+            d.line([x, y, x2, y2], fill=rgb(r['color']), width=max(1, S) * r['thick'])
 
         elif r['kind'] == 'text':
             px = FONT_MEDIUM if r['font'] == 2 else FONT_SMALL
@@ -294,9 +325,9 @@ def cmd_panel(args):
          'mockup-mode-stream-done', False),
         ('docs/mockup-objects-stream-gate.tsv', MAIN,
          'mockup-mode-stream-gate', False),
-        # THE RESTING STATE AFTER A RECORDING: FRAME, showing the retained tail, paged, with the
-        # page indicator between Page Up and Lock Rate. stream-done above cannot show this -- it
-        # leaves sdec.res at the earlier frame capture, so it renders a single page.
+        # THE RESTING STATE AFTER A RECORDING: FRAME, showing the retained tail, paged, with the page
+        # counter on the note row. stream-done above cannot show this -- it leaves sdec.res at the
+        # earlier frame capture, so it renders a single page and the counter stays away.
         ('docs/mockup-objects-stream-tail.tsv', MAIN,
          'mockup-stream-tail', True),
         # THE TWO LOSS REGIMES above the continuous ceiling -- the states that decide whether

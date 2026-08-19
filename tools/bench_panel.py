@@ -180,10 +180,19 @@ REGIONS = [
     ('buttons', 0, 415,  800, 480),   # the six along the bottom: static within a screen
 ]
 
-# The three conditional buttons down the right margin, as rectangles in grab coordinates.
-MARGIN_BTNS = {'PageUp': (600, 107, 785, 165),
-               'LockRate': (600, 209, 785, 267),
-               'PageDn': (600, 311, 785, 369)}
+# The three conditional buttons down the right margin, as rectangles in grab coordinates. Each rect
+# is the button's OWN face -- serial_ui.tsp's pdef x/y plus the 49 px title bar -- not a shared strip.
+#
+# THEY ARE NO LONGER THE SAME WIDTH, which is why. 'Up' and 'Dn' are 56 px faces at x = 729 and Lock
+# Rate is 140 at 645; the old shared 600..785 rect was 185 px wide, left over from when the page
+# buttons were too, and it measured a 56 px button as 30 % grey -- under BTN_GREY_PCT, so a button
+# plainly on the glass would have been reported ABSENT.
+#
+# The KEYS stay 'PageUp' and 'PageDn' -- they name the control, not the label on it, and eight press
+# cases below pass them as identifiers.
+MARGIN_BTNS = {'PageUp': (729, 107, 785, 165),
+               'LockRate': (645, 209, 785, 267),
+               'PageDn': (729, 311, 785, 369)}
 
 # A drawn button fills its rect with a mid-grey gradient; an empty margin is the near-black panel
 # background. Measured: 90 % grey when present, at most 6 % when absent (dump text can reach into
