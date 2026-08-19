@@ -2679,7 +2679,6 @@ function sdec.ck_decode(reader, ntotal, fmt, sink, opts)
     tot.nwin = tot.nwin + 1
     tot.nsmp = off + cnt
     tot.nfalse = tot.nfalse + r.nfalse
-
     local m = r.nf
     if m > 0 and maxbytes ~= nil and tot.nf + m > maxbytes then
       m = maxbytes - tot.nf
@@ -2692,6 +2691,9 @@ function sdec.ck_decode(reader, ntotal, fmt, sink, opts)
       for i = 1, m do
         if r.errs[i] == nil then tot.ngood = tot.ngood + 1
         else tot.nbad = tot.nbad + 1 end
+      end
+      if tot.nf == 0 and r.headsusp ~= nil and r.headsusp > 0 then
+        tot.headsusp = r.headsusp
       end
       local sok = true
       if sink ~= nil then sok = sink(r.vals, r.errs, m, tot.nf) end
@@ -2963,6 +2965,10 @@ function sdec.ck_job_step(job)
     tot, terr = sdec.ck_decode(job.reader, job.ntotal, job.fmt, job.sink, job.opts)
   end)
   job.opts.resume = nil               -- unconditionally: a raise must not leave it set
+  if tot ~= nil then
+    if job.headsusp == nil then job.headsusp = tot.headsusp end
+    tot.headsusp = job.headsusp
+  end
   if not pok then
     tot, praise = nil, perr
   end
@@ -3635,9 +3641,21 @@ function sdec.ui_notes()
     add(sdec.li_breaknote())
   end
 
+  local hs = nil
   if sdec.res ~= nil and sdec.res.headsusp ~= nil and sdec.res.headsusp > 0 then
-    add(string.format('capture began mid-byte -- the first %d byte(s) are misaligned; '
-                      .. 'everything from the first gap on is sound', sdec.res.headsusp))
+    hs = sdec.res.headsusp
+  elseif sdec.ck_tot ~= nil and sdec.ck_tot.headsusp ~= nil and sdec.ck_tot.headsusp > 0 then
+    hs = sdec.ck_tot.headsusp
+  end
+  if hs ~= nil then
+    local onscreen = (sdec.res == nil or sdec.res.first == nil or sdec.res.first <= 1)
+    if onscreen then
+      add(string.format('capture began mid-byte -- the first %d byte(s) are misaligned; '
+                        .. 'everything from the first gap on is sound', hs))
+    else
+      add(string.format('the run began mid-byte -- its first %d byte(s) are misaligned, in the '
+                        .. 'file; what is on screen is sound', hs))
+    end
   end
 
   if sdec.res ~= nil and sdec.res.nfalse ~= nil and sdec.res.nfalse > 0 then

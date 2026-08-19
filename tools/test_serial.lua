@@ -3599,6 +3599,55 @@ do
       check(string.format('a recording tail starting at byte %d says nothing about a FULL capture',
                           firstbyte), not full, table.concat(nt, ' | '))
     end
+      -- A MID-BYTE START IS REPORTED FOR A RECORDING TOO, and the WORDING turns on whether the
+    -- misaligned bytes are on screen. ck_decode computes r.headsusp per window and used to throw it
+    -- away, so an 8 kB run that began part way through a byte showed red bytes in its first two rows
+    -- and an EMPTY note row, while a frame capture on the same wire named the cause. Seen on the panel.
+    do
+      -- Head on screen: the run kept everything, so first = 1 and 'the first N bytes' is literally
+      -- what the operator is looking at.
+      sdec.res = {nf = 8192, nbad = 22, nbits = 8, par = sdec.PAR_NONE, nstop = 1,
+                  vals = {}, errs = {}, first = 1, ntotal = 8192}
+      sdec.ck_tot = {nf = 8192, nbad = 22, nwin = 17, path = '/usb1/bytes325.txt',
+                     stopped = 'cap', headsusp = 22}
+      local j = table.concat(sdec.ui_notes(), ' | ')
+      check('an 8 kB run that began mid-byte SAYS so, as a frame capture does',
+            has(j, 'began mid-byte') and has(j, '22 byte'), j)
+      check('...and says the bytes are on screen, not in the file', not has(j, 'in the file'), j)
+      -- Head NOT on screen: a 32 kB run's tail starts at 24577, so 'the first N bytes' would point at
+      -- the wrong end of the stream -- the mistake the tail note was written to fix.
+      sdec.res.first, sdec.res.ntotal = 24577, 32768
+      sdec.res.nf = 8192
+      sdec.ck_tot.nf, sdec.ck_tot.ntotal = 32768, 32768
+      j = table.concat(sdec.ui_notes(), ' | ')
+      check('a tail that does NOT contain the misaligned head says it is in the file',
+            has(j, 'began mid-byte') and has(j, 'in the file')
+            and has(j, 'on screen is sound'), j)
+      check('...and does not claim the bytes on screen are the first ones',
+            not has(j, 'the first 22 byte(s) are misaligned'), j)
+      -- NOT VERIFIED END TO END HERE, AND SAYING SO IS THE POINT. The two checks above SET
+      -- ck_tot.headsusp by hand, so they cover the PANEL's half -- the wording split, and that a
+      -- recording reports at all -- and say nothing about chunk_decode producing the figure.
+      --
+      -- TWO ATTEMPTS AT THAT FAILED FOR REASONS WORTH RECORDING, so the next person does not repeat them:
+      --   * a synthetic back-to-back stream never produces headsusp at all. ua_run needs an IDLE GAP
+      --     inside the window -- errors before the first gap, none after -- and GEN packs bytes with no
+      --     gap, so it decodes 240 bytes and marks nothing. A gapped waveform is what this needs.
+      --   * wrapping ua_run to fake the flag marks the wrong call. ck_job_step runs PRIMING steps that
+      --     call ua_run before any decode window, so a wrapper that marks 'the first call with bytes'
+      --     spends its mark on format detection and every decode window gets the later value.
+      -- The bench check is one press: an 8 kB capture on a busy line, which is how this was reported.
+      sdec.res = {nf = 8192, nbad = 22, nbits = 8, par = sdec.PAR_NONE, nstop = 1,
+                  vals = {}, errs = {}, first = 24577, ntotal = 32768}
+      sdec.ck_tot = {nf = 32768, nbad = 22, nwin = 68, path = '/usb1/bytes325.txt',
+                     stopped = 'cap', headsusp = 22}
+      -- NO HEADSUSP, NO NOTE. A clean recording must not acquire one.
+      sdec.ck_tot.headsusp = nil
+      j = table.concat(sdec.ui_notes(), ' | ')
+      check('a recording that did NOT begin mid-byte says nothing about one',
+            not has(j, 'mid-byte'), j)
+      sdec.ck_tot = nil
+    end
     -- AND THE NOTE THAT BELONGS TO THAT CASE IS STILL THERE, so this is a REPLACEMENT and not a
     -- deletion: the operator still learns the panel is showing a slice, and which bytes.
     local shown = false

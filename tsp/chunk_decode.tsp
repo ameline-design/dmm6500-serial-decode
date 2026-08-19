@@ -625,6 +625,11 @@ function sdec.ck_decode(reader, ntotal, fmt, sink, opts)
     tot.nwin = tot.nwin + 1
     tot.nsmp = off + cnt
     tot.nfalse = tot.nfalse + r.nfalse
+    -- A MID-BYTE START IS A PROPERTY OF THE RUN, AND ONLY THE FIRST WINDOW CAN SEE IT. ua_run marks
+    -- r.headsusp when the frames before the first idle gap carry errors and the frames after it do
+    -- not -- a capture that began part way through a byte. It was computed per window and thrown away
+    -- with the window, so a recording never reported what a frame capture reports on the same wire.
+    --
 
     local m = r.nf
     -- CLIP AT THE CAP, mid-window if need be. Emitting the whole window and then
@@ -641,6 +646,17 @@ function sdec.ck_decode(reader, ntotal, fmt, sink, opts)
       for i = 1, m do
         if r.errs[i] == nil then tot.ngood = tot.ngood + 1
         else tot.nbad = tot.nbad + 1 end
+      end
+      -- THE WINDOW THAT PRODUCED THE FIRST BYTES is the only one whose head can be a misaligned START,
+      -- and tot.nf == 0 here -- inside the emit, before the increment -- is what identifies it.
+      --
+      -- NOT 'THE FIRST WINDOW'. That was the first attempt and it was wrong: with a lead-in the first
+      -- window can decode NOTHING, so `tot.nf == 0` outside this block stayed true into window 2 and a
+      -- later window's head overwrote the figure. A later window's head is a SEAM the overlap machinery
+      -- already handles, so a head error there is not a misaligned start and claiming it is worse than
+      -- saying nothing. Caught by wrapping ua_run in test_serial and watching window 2 win.
+      if tot.nf == 0 and r.headsusp ~= nil and r.headsusp > 0 then
+        tot.headsusp = r.headsusp
       end
       local sok = true
       if sink ~= nil then sok = sink(r.vals, r.errs, m, tot.nf) end
@@ -1054,6 +1070,14 @@ function sdec.ck_job_step(job)
     tot, terr = sdec.ck_decode(job.reader, job.ntotal, job.fmt, job.sink, job.opts)
   end)
   job.opts.resume = nil               -- unconditionally: a raise must not leave it set
+  -- A MID-BYTE START BELONGS TO THE RUN, AND tot DOES NOT SURVIVE A STEP. ck_decode is called afresh
+  -- per step with its own tot, so the headsusp it takes from the first window it emits was overwritten
+  -- by every later step's first window -- the LAST step won, which is the opposite of what the figure
+  -- means. job outlives the steps, so the FIRST non-nil answer is kept and handed back every time.
+  if tot ~= nil then
+    if job.headsusp == nil then job.headsusp = tot.headsusp end
+    tot.headsusp = job.headsusp
+  end
   if not pok then
     tot, praise = nil, perr
   end

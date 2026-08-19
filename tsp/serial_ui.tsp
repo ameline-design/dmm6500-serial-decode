@@ -1235,9 +1235,32 @@ function sdec.ui_notes()
   -- idle. ua_run marks the region when the errors are confined to it. Worth saying because the
   -- bytes are THERE, on screen, looking like data; most are flagged but a frame can pass its
   -- stop bit and parity by chance.
+  --
+  -- A RECORDING SAYS IT TOO, and it did not before: ck_decode computes r.headsusp per window and threw
+  -- it away with the window, so an 8 kB run that began part way through a byte showed 22 red bytes in
+  -- its first two rows and an empty note row, while a FRAME capture on the same wire named the cause.
+  -- ck_tot.headsusp is that figure, taken from the first window only.
+  --
+  -- BUT THE WORDING TURNS ON WHETHER THOSE BYTES ARE ON SCREEN. A recording leaves its retained TAIL
+  -- showing, and for a 32 kB run the tail starts at byte 24577 -- the misaligned head is long gone from
+  -- the panel and is in the FILE. Saying 'the first N byte(s) are misaligned' over bytes 24577-32768
+  -- would point at the wrong end of the stream, which is the same mistake the tail note above was
+  -- written to fix. res.first tells the two apart: 1 means the head IS what you are looking at.
+  local hs = nil
   if sdec.res ~= nil and sdec.res.headsusp ~= nil and sdec.res.headsusp > 0 then
-    add(string.format('capture began mid-byte -- the first %d byte(s) are misaligned; '
-                      .. 'everything from the first gap on is sound', sdec.res.headsusp))
+    hs = sdec.res.headsusp
+  elseif sdec.ck_tot ~= nil and sdec.ck_tot.headsusp ~= nil and sdec.ck_tot.headsusp > 0 then
+    hs = sdec.ck_tot.headsusp
+  end
+  if hs ~= nil then
+    local onscreen = (sdec.res == nil or sdec.res.first == nil or sdec.res.first <= 1)
+    if onscreen then
+      add(string.format('capture began mid-byte -- the first %d byte(s) are misaligned; '
+                        .. 'everything from the first gap on is sound', hs))
+    else
+      add(string.format('the run began mid-byte -- its first %d byte(s) are misaligned, in the '
+                        .. 'file; what is on screen is sound', hs))
+    end
   end
 
   -- Impulse noise on a data bit flips it undetectably: the start and stop bits are
