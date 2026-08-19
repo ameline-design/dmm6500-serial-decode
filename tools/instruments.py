@@ -200,6 +200,17 @@ SDG_UPLOAD_SAFE_BYTES = 65536      # below this, uploads have never wedged it
 # hoping: a reachable shell AND credentials for it. This instrument runs stock 2.01.01.39R7, so even if a
 # port answered, the root hash is not ours to know. Do not plan on unbricking it.
 #
+# ONE UNVERIFIED LEAD: newer firmware is reported to accept a U-Boot-formatted USB key for recovery, which
+# would be a bootloader path rather than a shell and would not need credentials. Whether 39R7 counts as
+# "newer", what the key must contain, and whether the bootloader even looks for it are all UNKNOWN here.
+#
+# IF IT IS WORTH HAVING, IT IS WORTH HAVING BEFORE IT IS NEEDED. A recovery route you have to research
+# while the instrument is dead is barely a route at all -- you cannot query a blank LCD for its boot
+# sequence, and every fact you would want comes from the working machine. So the sensible order is: build
+# the key, confirm the bootloader looks at it, and park it in a drawer, all while the generator still runs.
+# Until that has actually been done, this note changes nothing about the refusal in write_raw() -- an
+# unverified recovery path is not a safety net, and treating it as one is how the guard gets relaxed.
+#
 # THE TRIGGER IS OUR OWN RECOVERY PROCEDURE. They power-cycled to clear a stuck TCP state -- which is the
 # WVDT wedge documented above. Wedge, then power-cycle, is what we do; it is also the step that turns a bad
 # stored waveform into a dead instrument. So the two hazards compose, and the empty-payload guard matters
