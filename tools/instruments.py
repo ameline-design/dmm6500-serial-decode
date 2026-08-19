@@ -258,6 +258,12 @@ SDG_UPLOAD_SAFE_BYTES = 65536      # below this, uploads have never wedged it
 #     CPU board, and the FPGA, DDR3 pair and DAC that make the signal are on the other board entirely,
 #     reachable only over the 8-pin serial link. A defect in one says nothing about the other.
 #
+#     Connector identification, owner's: the flex to the FPGA board is the one immediately ABOVE the flash
+#     chip; the connector on the far right edge goes to the colour LCD and touchscreen. So the whole
+#     waveform path to the analog board is 8 conductors -- with power and ground among them, that leaves
+#     only a handful of signals, which is why 311 kB/s is what the copy achieves and why selecting a large
+#     arb is the slowest thing this instrument does.
+#
 #   * A CLOSE-IN SPECTRUM OF A 40 MHz OUTPUT SUPPORTS THAT, with its limits stated. Owner's capture on a
 #     Siglent analyser: marker 40.000002 MHz against a 40.000000 MHz setting -- a 2 Hz error, 0.05 ppm --
 #     carrier ~42 dB above the noise floor at 10 Hz RBW, and no spur visible anywhere in the span. What it
