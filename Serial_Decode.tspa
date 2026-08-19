@@ -1523,6 +1523,40 @@ function sdec.ua_bad_interior(r)
   return nin, nedge
 end
 
+-- How far a misaligned head reaches: the last flagged frame inside headsusp, or 0. headsusp itself is
+-- the region before the first gap, not a count of damage, so quoting it over-claims. One place, because
+-- the note and ERR derived it separately and the panel said four bytes misaligned beside ERR 1.
+-- `hs` overrides r.headsusp: a recording's TAIL result carries none (ck_tail_result does not set it),
+-- so its caller supplies the run's figure and this still narrows it against the errs on screen.
+function sdec.ua_head_bad(r, hs)
+  if r == nil or r.errs == nil then return 0 end
+  if hs == nil then hs = r.headsusp end
+  if hs == nil then return 0 end
+  local last, i = 0, nil
+  if hs > r.nf then hs = r.nf end
+  for i = 1, hs do
+    if r.errs[i] ~= nil then last = i end
+  end
+  return last
+end
+
+-- wrong, so a frame there can pass parity and stop by luck and still hand back a plausible WRONG byte.
+-- An identified head therefore counts IN FULL, and the resync exclusion is dropped across it: that
+-- exclusion is for a healthy gapless line, and headsusp is evidence this is not one. The final frame
+-- stays excluded -- the capture boundary halves it regardless. With no head this is ua_bad_interior,
+-- so good captures still read 0. Measured 2026-08-19: '????UMPS OVER TH', note 4, ERR 1.
+function sdec.ua_err_count(r, hb)
+  if r == nil or r.errs == nil then return 0 end
+  if hb == nil then hb = sdec.ua_head_bad(r) end
+  if hb > r.nf then hb = r.nf end
+  local lo, n, i = sdec.ua_edge_frames, hb, nil
+  if hb > lo then lo = hb end
+  for i = lo + 1, r.nf do
+    if i ~= r.nf and r.errs[i] ~= nil then n = n + 1 end
+  end
+  return n
+end
+
 -- Rank a decode: good frames less three times the bad ones.
 function sdec.ua_score(r)
   return r.ngood - 3 * r.nbad
@@ -2694,11 +2728,17 @@ function sdec.ck_decode(reader, ntotal, fmt, sink, opts)
       end
       if tot.nf == 0 and r.headsusp ~= nil and r.headsusp > 0 then
         tot.headsusp = r.headsusp
-        local hb, hi = 0, nil
+        local hb, hn, hi = 0, 0, nil
         for hi = 1, r.headsusp do
-          if r.errs[hi] ~= nil then hb = hi end
+          if r.errs[hi] ~= nil then
+            hb = hi
+            hn = hn + 1
+          end
         end
-        if hb > 0 then tot.headbad = hb end
+        if hb > 0 then
+          tot.headbad = hb
+          tot.headnbad = hn
+        end
       end
       local sok = true
       if sink ~= nil then sok = sink(r.vals, r.errs, m, tot.nf) end
@@ -2973,7 +3013,9 @@ function sdec.ck_job_step(job)
   if tot ~= nil then
     if job.headsusp == nil then job.headsusp = tot.headsusp end
     if job.headbad == nil then job.headbad = tot.headbad end
+    if job.headnbad == nil then job.headnbad = tot.headnbad end
     tot.headsusp, tot.headbad = job.headsusp, job.headbad
+    tot.headnbad = job.headnbad
   end
   if not pok then
     tot, praise = nil, perr
@@ -3505,6 +3547,22 @@ function sdec.ui_unit()
   return sdec.ui_cur().unit or 'bytes'
 end
 
+-- THE ERR FIELD'S NUMBER, in one place. The value and its colour were computed apart, and by different
+-- rules: a recording took the count from ck_tot and the colour from the retained TAIL, so a run damaged
+-- only in its head showed a non-zero ERR in the all-clear colour. Returns nil when nothing is decoded.
+function sdec.ui_err_n()
+  local ct = sdec.ck_tot
+  if ct ~= nil then
+    local n = ct.nbad or 0
+    local hb = ct.headbad or 0
+    if hb > 0 then n = n - (ct.headnbad or 0) + hb end
+    return n
+  end
+  if sdec.res == nil then return nil end
+  if sdec.ua_err_count == nil then return sdec.res.nbad end
+  return sdec.ua_err_count(sdec.res)
+end
+
 -- The colour header value `j` is drawn in. The three lockable fields carry the lock state as a
 -- second channel, so the distinction survives even if setfill on a rect turns out not to work;
 -- everything else keeps its own column colour.
@@ -3518,11 +3576,8 @@ function sdec.ui_field_colour(j)
     return fd.c                               -- auto: the column's own colour, unchanged
   end
   if j == sdec.ui_errfield then
-    if sdec.res ~= nil then
-      local nin = sdec.ua_bad_interior and sdec.ua_bad_interior(sdec.res)
-                  or sdec.res.nbad
-      if nin > 0 then return sdec.ui_c_err end
-    end
+    local n = sdec.ui_err_n()
+    if n ~= nil and n > 0 then return sdec.ui_c_err end
     return fd.c
   end
   return fd.c
@@ -3572,13 +3627,12 @@ function sdec.ui_field_values()
       v[9] = '--'                     -- not known until the run finishes
     else
       v[8] = tostring(ct.nf)
-      v[9] = tostring(ct.nbad)
+      v[9] = tostring(sdec.ui_err_n())
     end
   elseif r == nil then v[8], v[9] = '--', '--'
   else
     v[8] = tostring(r.nf)
-    local nin = sdec.ua_bad_interior and sdec.ua_bad_interior(r) or r.nbad
-    v[9] = tostring(nin)
+    v[9] = tostring(sdec.ui_err_n())
   end
 
   v[10] = string.format('%.2f', sdec.fitq or 0)
@@ -3656,10 +3710,7 @@ function sdec.ui_notes()
   if hs ~= nil then
     local onscreen = (sdec.res == nil or sdec.res.first == nil or sdec.res.first <= 1)
     if onscreen and sdec.res ~= nil and sdec.res.errs ~= nil then
-      local last, i = 0, nil
-      for i = 1, hs do
-        if sdec.res.errs[i] ~= nil then last = i end
-      end
+      local last = sdec.ua_head_bad(sdec.res, hs)
       if last > 0 then hs = last end
     elseif sdec.ck_tot ~= nil and sdec.ck_tot.headbad ~= nil
            and sdec.ck_tot.headbad > 0 then

@@ -665,11 +665,19 @@ function sdec.ck_decode(reader, ntotal, fmt, sink, opts)
         -- COMPUTED HERE BECAUSE ONLY HERE HAS THE HEAD. A recording leaves its retained TAIL on screen,
         -- and a 32 kB tail starts at byte 24577 -- its errs array does not contain the opening bytes at
         -- all, so ui_notes cannot count them however it is written.
-        local hb, hi = 0, nil
+        -- AND HOW MANY WERE FLAGGED: a run keeps no errs of its own, only per window, so ERR cannot
+        -- recount the head later. Both figures let it swap count for extent: nbad - headnbad + headbad.
+        local hb, hn, hi = 0, 0, nil
         for hi = 1, r.headsusp do
-          if r.errs[hi] ~= nil then hb = hi end
+          if r.errs[hi] ~= nil then
+            hb = hi
+            hn = hn + 1
+          end
         end
-        if hb > 0 then tot.headbad = hb end
+        if hb > 0 then
+          tot.headbad = hb
+          tot.headnbad = hn
+        end
       end
       local sok = true
       if sink ~= nil then sok = sink(r.vals, r.errs, m, tot.nf) end
@@ -1090,7 +1098,9 @@ function sdec.ck_job_step(job)
   if tot ~= nil then
     if job.headsusp == nil then job.headsusp = tot.headsusp end
     if job.headbad == nil then job.headbad = tot.headbad end
+    if job.headnbad == nil then job.headnbad = tot.headnbad end
     tot.headsusp, tot.headbad = job.headsusp, job.headbad
+    tot.headnbad = job.headnbad
   end
   if not pok then
     tot, praise = nil, perr

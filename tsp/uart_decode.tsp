@@ -503,6 +503,41 @@ function sdec.ua_bad_interior(r)
   return nin, nedge
 end
 
+-- How far a misaligned head reaches: the last flagged frame inside headsusp, or 0. headsusp itself is
+-- the region before the first gap, not a count of damage, so quoting it over-claims. One place, because
+-- the note and ERR derived it separately and the panel said four bytes misaligned beside ERR 1.
+-- `hs` overrides r.headsusp: a recording's TAIL result carries none (ck_tail_result does not set it),
+-- so its caller supplies the run's figure and this still narrows it against the errs on screen.
+function sdec.ua_head_bad(r, hs)
+  if r == nil or r.errs == nil then return 0 end
+  if hs == nil then hs = r.headsusp end
+  if hs == nil then return 0 end
+  local last, i = 0, nil
+  if hs > r.nf then hs = r.nf end
+  for i = 1, hs do
+    if r.errs[i] ~= nil then last = i end
+  end
+  return last
+end
+
+-- BYTES YOU CANNOT TRUST, not frames that failed a check. In a misaligned head the bit boundaries are
+-- wrong, so a frame there can pass parity and stop by luck and still hand back a plausible WRONG byte.
+-- An identified head therefore counts IN FULL, and the resync exclusion is dropped across it: that
+-- exclusion is for a healthy gapless line, and headsusp is evidence this is not one. The final frame
+-- stays excluded -- the capture boundary halves it regardless. With no head this is ua_bad_interior,
+-- so good captures still read 0. Measured 2026-08-19: '????UMPS OVER TH', note 4, ERR 1.
+function sdec.ua_err_count(r, hb)
+  if r == nil or r.errs == nil then return 0 end
+  if hb == nil then hb = sdec.ua_head_bad(r) end
+  if hb > r.nf then hb = r.nf end
+  local lo, n, i = sdec.ua_edge_frames, hb, nil
+  if hb > lo then lo = hb end
+  for i = lo + 1, r.nf do
+    if i ~= r.nf and r.errs[i] ~= nil then n = n + 1 end
+  end
+  return n
+end
+
 -- Rank a decode: good frames less three times the bad ones.
 function sdec.ua_score(r)
   return r.ngood - 3 * r.nbad

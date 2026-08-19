@@ -983,6 +983,24 @@ function sdec.ui_unit()
   return sdec.ui_cur().unit or 'bytes'
 end
 
+-- THE ERR FIELD'S NUMBER, in one place. The value and its colour were computed apart, and by different
+-- rules: a recording took the count from ck_tot and the colour from the retained TAIL, so a run damaged
+-- only in its head showed a non-zero ERR in the all-clear colour. Returns nil when nothing is decoded.
+function sdec.ui_err_n()
+  local ct = sdec.ck_tot
+  if ct ~= nil then
+    -- A run keeps no errs of its own, so the head swap is arithmetic. See sdec.ua_err_count for why the
+    -- extent replaces the count there; the final-frame exclusion is frame-mode only.
+    local n = ct.nbad or 0
+    local hb = ct.headbad or 0
+    if hb > 0 then n = n - (ct.headnbad or 0) + hb end
+    return n
+  end
+  if sdec.res == nil then return nil end
+  if sdec.ua_err_count == nil then return sdec.res.nbad end
+  return sdec.ua_err_count(sdec.res)
+end
+
 -- The colour header value `j` is drawn in. The three lockable fields carry the lock state as a
 -- second channel, so the distinction survives even if setfill on a rect turns out not to work;
 -- everything else keeps its own column colour.
@@ -999,12 +1017,9 @@ function sdec.ui_field_colour(j)
   -- in a row of grey figures. fd.c, not a literal green: the "all clear" colour IS this column's
   -- colour, and writing it in two places lets the two drift.
   if j == sdec.ui_errfield then
-    -- Interior errors only, for the same reason as the value beside it.
-    if sdec.res ~= nil then
-      local nin = sdec.ua_bad_interior and sdec.ua_bad_interior(sdec.res)
-                  or sdec.res.nbad
-      if nin > 0 then return sdec.ui_c_err end
-    end
+    -- THE SAME NUMBER THE FIELD SHOWS, so the colour cannot contradict it.
+    local n = sdec.ui_err_n()
+    if n ~= nil and n > 0 then return sdec.ui_c_err end
     return fd.c
   end
   return fd.c
@@ -1078,17 +1093,15 @@ function sdec.ui_field_values()
       v[9] = '--'                     -- not known until the run finishes
     else
       v[8] = tostring(ct.nf)
-      v[9] = tostring(ct.nbad)
+      v[9] = tostring(sdec.ui_err_n())
     end
   elseif r == nil then v[8], v[9] = '--', '--'
   else
     v[8] = tostring(r.nf)
-    -- INTERIOR framing errors. A frame sliced by the capture boundary, or one lost while the
-    -- framer resynchronised at the head of a gapless stream, is a windowing artefact -- see
-    -- sdec.ua_bad_interior. Counting those made ERR read 1 or 2 on every healthy capture, which
-    -- is an error indicator that is never zero, and a red first row on a perfect signal.
-    local nin = sdec.ua_bad_interior and sdec.ua_bad_interior(r) or r.nbad
-    v[9] = tostring(nin)
+    -- Windowing artefacts are excluded and an identified misaligned head is not -- see
+    -- sdec.ua_err_count. Counting the artefacts made ERR read 1 or 2 on every healthy capture, an
+    -- indicator that is never zero; excluding the head made it read 1 beside a note naming four.
+    v[9] = tostring(sdec.ui_err_n())
   end
 
   v[10] = string.format('%.2f', sdec.fitq or 0)
@@ -1266,10 +1279,9 @@ function sdec.ui_notes()
     -- 32 kB tail does not carry its own head's errs -- so the other branch keeps no number at all
     -- rather than quoting the suspect region as if it were damage.
     if onscreen and sdec.res ~= nil and sdec.res.errs ~= nil then
-      local last, i = 0, nil
-      for i = 1, hs do
-        if sdec.res.errs[i] ~= nil then last = i end
-      end
+      -- THROUGH ua_head_bad, not a loop of its own: ERR counts this same region, and when the two
+      -- derived it separately the panel said four bytes were misaligned beside an ERR of 1.
+      local last = sdec.ua_head_bad(sdec.res, hs)
       if last > 0 then hs = last end
     elseif sdec.ck_tot ~= nil and sdec.ck_tot.headbad ~= nil
            and sdec.ck_tot.headbad > 0 then

@@ -1549,7 +1549,8 @@ check('clearing the errors takes the red back off -- the cache does not pin it',
 -- the first ua_edge_frames and the clipped last frame, exactly as the ERR count does -- so an 8 kB
 -- recording with ERR 3 drew '???OWN FOX JUMPS' in normal WHITE: three bytes rendered as '?' on a row
 -- that said nothing was wrong. The colour claims nothing the row is not already showing, so it now
--- fires on ANY flagged byte. ERR still counts interior errors only, which is why they disagree here.
+-- fires on ANY flagged byte. With NO headsusp set -- as here -- ERR still excludes resync debris, so
+-- the two legitimately disagree; the block below covers the case where headsusp makes them agree.
 do
   local sv, i = {}, nil
   for i = 1, 3 do sv[i] = sdec.res.errs[i]; sdec.res.errs[i] = 'framing' end
@@ -1570,6 +1571,126 @@ do
   check('and a row with nothing flagged is not red -- the colour cannot over-fire',
         MD.obj(sdec.ui_row[1]).color ~= sdec.ui_c_err,
         string.format('%06X', MD.obj(sdec.ui_row[1]).color or 0))
+end
+
+-- ============================================================================
+print('\nERR agrees with the mid-byte note (measured on the panel 2026-08-19)')
+-- ============================================================================
+-- THE PANEL CONTRADICTED ITSELF. '????UMPS OVER TH' with the note reading 'the first 4 bytes are
+-- misaligned' and ERR reading 1, because three of the four sat inside the resync exclusion. A count
+-- that disagrees with the sentence beside it is not believed, and the bytes it dropped are the ones
+-- most worth counting: inside a misaligned head the bit boundaries are wrong, so a frame can pass
+-- parity and stop by luck and hand back a plausible WRONG byte.
+--
+-- The invariant is ERR >= the note's number. Asserted against the NOTE TEXT, not against a literal,
+-- so a change to either derivation that breaks the agreement fails here.
+do
+  local sv, i = {}, nil
+  for i = 1, 6 do sv[i] = sdec.res.errs[i] end
+  local hs0, nbad0b = sdec.res.headsusp, sdec.res.nbad
+
+  local function noteN()
+    local ns = sdec.ui_notes()
+    local t = (type(ns) == 'table') and table.concat(ns, ' ') or tostring(ns)
+    local n = string.match(t, 'the first (%d+) bytes are misaligned')
+    if n == nil and string.find(t, 'the first byte is misaligned', 1, true) ~= nil then n = '1' end
+    return tonumber(n), t
+  end
+
+  -- THE MEASURED CASE: bytes 1..4 flagged, a gap at 5, so headsusp covers the head and headbad is 4.
+  for i = 1, 4 do sdec.res.errs[i] = 'framing' end
+  sdec.res.headsusp = 4
+  local n4, t4 = noteN()
+  check('the note names four misaligned bytes', n4 == 4, string.format('%q', t4))
+  check('and ERR agrees rather than reading 1', sdec.ui_err_n() == 4,
+        string.format('ERR %s vs note %s', tostring(sdec.ui_err_n()), tostring(n4)))
+  sdec.ui_refresh()
+  check('and it is RED, so the colour does not contradict the number either',
+        MD.obj(sdec.ui_fval[ef]).color == sdec.ui_c_err,
+        string.format('%06X', MD.obj(sdec.ui_fval[ef]).color or 0))
+
+  -- THE SINGULAR CASE, which read ERR 0 beside a note naming a byte.
+  for i = 1, 4 do sdec.res.errs[i] = nil end
+  sdec.res.errs[1] = 'framing'
+  sdec.res.headsusp = 1
+  local n1, t1 = noteN()
+  check('one misaligned byte is named in the singular', n1 == 1, string.format('%q', t1))
+  check('and ERR reads 1, not 0', sdec.ui_err_n() == 1, tostring(sdec.ui_err_n()))
+
+  -- A SPARSE HEAD: the extent counts in full, not just the frames that failed. Bytes 1,2,4 flagged
+  -- with a suspect region of 30 -- headbad is 4, and byte 3 decoded to a plausible wrong value.
+  for i = 1, 6 do sdec.res.errs[i] = nil end
+  sdec.res.errs[1], sdec.res.errs[2], sdec.res.errs[4] = 'framing', 'framing', 'framing'
+  sdec.res.headsusp = 30
+  local ns, ts = noteN()
+  check('a sparse head is named by its EXTENT, not its failure count', ns == 4, string.format('%q', ts))
+  check('and ERR matches that extent, counting the byte that failed no check',
+        sdec.ui_err_n() == 4, string.format('ERR %s vs note %s', tostring(sdec.ui_err_n()), tostring(ns)))
+
+  -- AND AN INTERIOR ERROR PAST THE HEAD STILL ADDS, so the head does not mask the rest of the run.
+  local mid = math.floor(sdec.res.nf / 2)
+  sdec.res.errs[mid] = 'framing'
+  check('an error past the head is counted on top of it', sdec.ui_err_n() == 5,
+        tostring(sdec.ui_err_n()))
+  sdec.res.errs[mid] = nil
+
+  -- NO HEAD IDENTIFIED -> unchanged behaviour, which is what keeps healthy captures at 0. This is the
+  -- reason the change is gated on headsusp rather than always counting the first frames.
+  for i = 1, 6 do sdec.res.errs[i] = nil end
+  sdec.res.headsusp = nil
+  sdec.res.errs[1], sdec.res.errs[2], sdec.res.errs[3] = 'framing', 'framing', 'framing'
+  check('with no misaligned head, resync debris is still excluded and ERR reads 0',
+        sdec.ui_err_n() == 0, tostring(sdec.ui_err_n()))
+  check('and ua_err_count agrees with ua_bad_interior there',
+        sdec.ua_err_count(sdec.res) == sdec.ua_bad_interior(sdec.res),
+        string.format('%s vs %s', tostring(sdec.ua_err_count(sdec.res)),
+                      tostring(sdec.ua_bad_interior(sdec.res))))
+  -- The LAST frame stays excluded whatever the head did: the capture boundary halves it.
+  for i = 1, 6 do sdec.res.errs[i] = nil end
+  sdec.res.errs[sdec.res.nf] = 'framing'
+  sdec.res.headsusp = 4
+  sdec.res.errs[1] = 'framing'
+  check('the clipped final frame is excluded even with a head identified',
+        sdec.ui_err_n() == 1, tostring(sdec.ui_err_n()))
+  sdec.res.errs[sdec.res.nf] = nil
+
+  -- ua_head_bad's OVERRIDE, which a recording's tail depends on: ck_tail_result sets no headsusp, so
+  -- the run's figure is passed in. Without it the note would quote the whole suspect region again.
+  local tail = {nf = 40, errs = {}, first = 1}
+  tail.errs[2], tail.errs[3] = 'framing', 'framing'
+  check('ua_head_bad narrows a supplied region against the errs it can see',
+        sdec.ua_head_bad(tail, 79) == 3, tostring(sdec.ua_head_bad(tail, 79)))
+  check('and returns 0 when the result carries no region and none is supplied',
+        sdec.ua_head_bad(tail) == 0, tostring(sdec.ua_head_bad(tail)))
+
+  for i = 1, 6 do sdec.res.errs[i] = sv[i] end
+  sdec.res.headsusp, sdec.res.nbad = hs0, nbad0b
+  sdec.ui_refresh()
+end
+
+-- A RECORDING'S ERR: the count comes from the run, the head swap is arithmetic, and -- the defect this
+-- pins -- the COLOUR used to come from the retained tail instead, so a run damaged only in its head
+-- showed a non-zero ERR in the all-clear colour.
+do
+  local res0, ct0 = sdec.res, sdec.ck_tot
+  sdec.res = nil
+  sdec.ck_tot = {nf = 8192, nbad = 4, headsusp = 79, headbad = 30, headnbad = 4, nwin = 3}
+  check('a recording reports the head by extent, plus failures past it',
+        sdec.ui_err_n() == 30, tostring(sdec.ui_err_n()))
+  sdec.ck_tot.nbad = 6                      -- two failures outside the head
+  check('and failures outside the head add to it', sdec.ui_err_n() == 32,
+        tostring(sdec.ui_err_n()))
+  -- THE COLOUR, WITH NO res AT ALL. This is the branch that read the tail: nil res meant no red,
+  -- however large the run's count was.
+  sdec.ui_refresh()
+  check('and a recording with no tail result still paints ERR red',
+        MD.obj(sdec.ui_fval[ef]).color == sdec.ui_c_err,
+        string.format('%06X', MD.obj(sdec.ui_fval[ef]).color or 0))
+  sdec.ck_tot.headbad, sdec.ck_tot.headnbad = nil, nil
+  check('with no head recorded it is the raw run count', sdec.ui_err_n() == 6,
+        tostring(sdec.ui_err_n()))
+  sdec.res, sdec.ck_tot = res0, ct0
+  sdec.ui_refresh()
 end
 
 -- ============================================================================
