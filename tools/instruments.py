@@ -240,6 +240,18 @@ SDG_UPLOAD_SAFE_BYTES = 65536      # below this, uploads have never wedged it
 # THE DAC IS DUAL-CHANNEL, 1.2 GSa/s, 16 BITS. Three consequences, and all three RULE THE GENERATOR OUT
 # as an explanation for a decode artefact, which is why they are worth writing down:
 #
+#   * THE PART IS AN ANALOG DEVICES AD9122 (datasheet in the owner's Downloads): dual 16-bit, 1230 MSPS,
+#     LVDS input on a 32-wire bus reducible to half or quarter width, 2x/4x/8x interpolation, digital
+#     inverse-sinc, 72-lead LFCSP. It is a COMMUNICATIONS DAC -- the datasheet's applications are W-CDMA,
+#     LTE, WiMAX, direct-conversion transmit -- repurposed as an AWG output stage, which is why features
+#     like the complex quadrature modulator have no role here.
+#
+#     THE LOAD-BEARING DETAIL IS THAT ALL THREE INTERPOLATION HALF-BANDS CAN BE BYPASSED (Bypass HB1/HB2/
+#     HB3). An interpolating FIR would RING on a step, and an arbitrary waveform is mostly steps -- so a
+#     generator wants the filters off and true zero-order hold, which is exactly what siglent.truearb()
+#     already assumes when it notes the SDG2000X exposes no interpolation control. The part supports the
+#     mode the driver relies on.
+#
 #   * 16 bits is why a .bin is what it is. The file is raw DAC codewords, -32768..32767 little-endian --
 #     native to the converter, not a format the firmware translates.
 #
