@@ -222,6 +222,19 @@ SDG_UPLOAD_SAFE_BYTES = 65536      # below this, uploads have never wedged it
 # against manifest.tsv before sending anything.
 SDG_ZERO_LENGTH_WAVEFORM_BRICKS_IT = True
 
+# THE MANUAL'S OWN BOUND, which is tighter than "not empty": the SDG Programming Guide states waveform data
+# for the SDG2000 series must be between 4 BYTES AND 16 MEGABYTES. So the floor is 2 points, not 1 -- and
+# nothing licenses the belief that a 2-byte waveform is safe merely because the reported brick was a
+# zero-length one. Out of spec is out of spec; the guard enforces the documented range rather than the one
+# failure someone happened to report.
+#
+# The ceiling agrees with SDG_MAX_PTS exactly: 8 388 608 points x 2 bytes = 16 MiB, so the two constants
+# are the same bound expressed in different units and neither may drift from the other.
+SDG_MIN_WAVE_BYTES = 4
+SDG_MAX_WAVE_BYTES = 16 * 1024 * 1024
+assert SDG_MAX_WAVE_BYTES == SDG_MAX_PTS * 2, 'the byte and point ceilings disagree'
+
+
 
 # RE-MEASURED ON 39R7, 2026-08-19, AND THE CEILING BOUNDS A COUNT AS MUCH AS A SIZE.
 #

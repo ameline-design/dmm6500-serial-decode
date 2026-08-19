@@ -25,11 +25,12 @@ import time
 
 try:
     from instruments import SDG_IP, SCPI_PORT, SDG_MAX_VPP, SDG_MAX_PTS, \
-        SDG_MIN_SRATE, SDG_MAX_SRATE
+        SDG_MIN_SRATE, SDG_MAX_SRATE, SDG_MIN_WAVE_BYTES, SDG_MAX_WAVE_BYTES
 except ImportError:      # standalone use, e.g. copied to another machine
     SDG_IP, SCPI_PORT = '10.0.1.79', 5025
     SDG_MAX_VPP, SDG_MAX_PTS = 20.0, 8388608
     SDG_MIN_SRATE, SDG_MAX_SRATE = 1e-6, 75e6
+    SDG_MIN_WAVE_BYTES, SDG_MAX_WAVE_BYTES = 4, 16 * 1024 * 1024
 
 SDG_PORT = SCPI_PORT     # kept: existing callers import this name
 
@@ -89,10 +90,17 @@ class SDG:
         # So this refuses rather than warns, and it refuses in the DRIVER rather than in one caller --
         # tools/upload_vectors.py writes WVDT through here directly and sorted payloads by size without
         # ever checking for zero.
-        if not payload:
+        # THE MANUAL'S RANGE, not merely "not empty": the programming guide requires SDG2000-series waveform
+        # data to be 4 bytes to 16 MB. A 2-byte waveform is out of spec, and nothing says it is safer than
+        # a 0-byte one -- the reported brick is the failure that got written up, not the only one available.
+        if 'WVDT' in prefix.upper() and not (SDG_MIN_WAVE_BYTES <= len(payload) <= SDG_MAX_WAVE_BYTES):
             raise ValueError(
-                'REFUSING an empty payload for %r. A zero-length waveform BRICKS the SDG at its next '
-                'power-up, and this instrument has no telnet to recover through.' % prefix[:40])
+                'REFUSING a %d-byte waveform: the SDG2000 series requires %d..%d bytes. A zero-length or '
+                'undersized waveform BRICKS the instrument at its next power-up, and this one has no shell '
+                'or credentials to recover through.'
+                % (len(payload), SDG_MIN_WAVE_BYTES, SDG_MAX_WAVE_BYTES))
+        if not payload:
+            raise ValueError('REFUSING an empty payload for %r.' % prefix[:40])
         if 'WVDT' in prefix.upper() and len(payload) % 2:
             raise ValueError(
                 'REFUSING a %d-byte WVDT payload: waveform data is 16-bit codewords, so an odd length '
@@ -296,8 +304,10 @@ class SDG:
         ints in -32768..32767.
         """
         n = len(codewords)
-        if not (1 <= n <= SDG_MAX_PTS):
-            raise ValueError(f'{n} points outside 1..{SDG_MAX_PTS}')
+        # TWO POINTS MINIMUM, per the manual's 4-byte floor -- this said 1, which is out of spec and would
+        # have produced a 2-byte waveform. write_raw refuses it anyway; this makes the two agree.
+        if not (SDG_MIN_WAVE_BYTES // 2 <= n <= SDG_MAX_PTS):
+            raise ValueError(f'{n} points outside {SDG_MIN_WAVE_BYTES // 2}..{SDG_MAX_PTS}')
         for c in codewords:
             if not (-32768 <= c <= 32767):
                 raise ValueError(f'codeword {c} outside -32768..32767')
