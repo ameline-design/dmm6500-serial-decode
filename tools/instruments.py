@@ -231,8 +231,11 @@ SDG_UPLOAD_SAFE_BYTES = 65536      # below this, uploads have never wedged it
 # internal flash, which a 16 MB chip cannot do. So the flash is 128 MB, and the DDR3 parts are read the
 # same way: 128 MB on the CPU board, 2 x 128 MB = 256 MB on the FPGA.
 #
-# Two chips on one FPGA is more likely a WIDER BUS than a bank per channel; nothing here distinguishes
-# them, and nothing in this project depends on which it is.
+# THE TWO CHIPS ARE A WIDER BUS, NOT A BANK PER CHANNEL, and bandwidth is what settles it. The owner
+# reports the FPGA and its DDR fast enough to stream BOTH 16-bit channels at the DAC's full rate: that is
+# 2 x 1.2 GSa/s x 2 B = 4.8 GB/s. A single x16 DDR3 chip does not reach that below DDR3-2400 (3.2 GB/s at
+# DDR3-1600), while two in parallel clear it from DDR3-1333 up -- 75% bus efficiency at DDR3-1600, and arb
+# playback is a purely SEQUENTIAL read, which is the best case DRAM has. So the pair has to be ganged.
 #
 # THE DAC IS DUAL-CHANNEL, 1.2 GSa/s, 16 BITS. Three consequences, and all three RULE THE GENERATOR OUT
 # as an explanation for a decode artefact, which is why they are worth writing down:
@@ -245,6 +248,11 @@ SDG_UPLOAD_SAFE_BYTES = 65536      # below this, uploads have never wedged it
 #     vectors use, 12 000 of them. DAC transition granularity is 0.833 ns against a rendered edge of
 #     15 us (rise = 1.5 samples), so our edge shaping dominates by ~18 000x. Any edge effect in a capture
 #     is the vector's or the analog path's, never the converter's.
+#
+#   * AND THERE IS FOUR ORDERS OF MAGNITUDE OF HEADROOM. This project drives ONE channel at 100 kS/s,
+#     200 kB/s, which is 1 part in 24 000 of that 4.8 GB/s. Playback starvation is therefore not a
+#     candidate mechanism for anything seen in a capture -- the second appealing explanation for the
+#     periodic-payload failures to be ruled out by a hardware fact rather than by an experiment.
 #
 #   * RESOLUTION IS NOT A FACTOR EITHER. Full scale 20 Vpp over 65536 codes is 305 uV per LSB; the 3.3 V
 #     logic swing these vectors use spans 10 813 codes, about 13.4 effective bits, and a threshold
