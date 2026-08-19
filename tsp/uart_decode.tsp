@@ -1007,7 +1007,14 @@ function sdec.ua_best_probe(st)
   local i = st.i
   local T, ratio, q = st.cands[i].T, st.cands[i].r, st.cands[i].q
   if st.mayrescale and ratio ~= 1 and q ~= nil and q >= st.qmin
-     and sdec.ua_plausible(T, st.n) and not sdec.ua_submultiple(T) then
+     and sdec.ua_plausible(T, st.n)
+     -- ONLY DEFEND A FIT THAT LANDED ON A STANDARD RATE. The gate exists to stop a GOOD fit being
+     -- displaced by its own halving; when the fit does not snap it is not a good fit, and a
+     -- rescaling is the only route to the truth. MEASURED: repeated 0xE0 at 8N1 gap 2 is all
+     -- 6-bit runs, so the fit lands on 1600 Bd (snapped false) and the TRUTH is the ratio-1/6
+     -- candidate, whose multiples are all k = 6 -- even, so an ungated test rejected it and handed
+     -- 4800 to the ratio-1/3 candidate: 20 frames of 0x1C, zero errors, against 40 exact 0xE0.
+     and not (st.snap1 and sdec.ua_submultiple(T)) then
     local _, snapped = sdec.sig_snap(st.fs / T)
     if snapped then
       local sc = sdec.ua_probe(st.rd, st.n, T)

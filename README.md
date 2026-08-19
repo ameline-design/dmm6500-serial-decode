@@ -4,7 +4,7 @@ A UART decoder that runs **on** a Keithley DMM6500 bench multimeter. It digitize
 instrument's own digitizer, recovers the baud rate, frame format and idle polarity from the signal,
 and shows the bytes on the front panel as text or hex. No host, no logic analyser, one probe.
 
-Ian Ameline · **version 1.02 — beta** · MIT licence (see [LICENSE](LICENSE)) ·
+Ian Ameline · **version 1.03 — beta** · MIT licence (see [LICENSE](LICENSE)) ·
 [user manual](docs/MANUAL.md)
 
 **Beta status.** Everything the manual claims was measured on the bench, and the release gate below

@@ -3,7 +3,7 @@ loadscript Serial_Decode
 -- $Product: DMM6500
 -- $Tag: Serial, UART, Decode, Digitize
 -- $Description: BETA. Decodes an asynchronous serial line with the instrument's own digitizer: recovers baud rate, frame format and bytes, shows them as text or hex, streams every byte to a USB key, and saves the capture. Everything auto-detects; everything can be locked down.
--- $Version: 1.02
+-- $Version: 1.03
 -- $Requires: 1.7.0
 -- $Author: Ian Ameline
 -- $License: MIT
@@ -140,11 +140,11 @@ function ulog.close()
   return true
 end
 
--- box -- which made the SUCCESSFUL path (finding a free name) produce one on every Save.
--- fs.is_file() answers the same question silently. Verified on firmware 1.7.17a, 2026-08-17:
 -- eventlog.getcount() stayed 0 across both an existing and a missing path.
--- NIL means "could not tell". Firmware without the fs table falls back to the open probe, and a nil
--- is treated as TAKEN -- losing a name is better than truncating a real file.
+-- Returns true or false, never nil. A PROBE THAT RAISES answers TAKEN: losing a name beats
+-- truncating a real file. A nil is NOT taken -- fs.is_file returning nil falls through to the open
+-- probe, and file.open returning nil (no key, or no such file) is the normal FREE answer, with the
+-- failure surfacing at the write where it belongs.
 function ulog.exists(path)
   if path == nil then return false end
   local got = nil
@@ -822,10 +822,10 @@ end
 
 sdec.acq_overhead = 0.510e-6
 
--- app believed it had cleared it. That is the confident-and-wrong failure this project cares most
 -- about, and it appears only on hardware: offline, ladder snapping made minsabit look safe.
 -- Returns nil when NO listed rate can deliver the floor, rather than a rate that cannot work.
--- At minsabit = 4 that bites above ~115 kBd on the stock ladder: 250 kBd needs 2.04 MS/s
+-- At minsabit = 4 that bites above 165563 Bd = 1/(4*(1/1e6 + 5.1e-7)) -- 153600 still gets 1 MS/s
+-- and 4.31 delivered samples/bit, 172800 gets nothing. 250 kBd needs 2.04 MS/s
 -- requested to deliver 1 MS/s, which does not exist, so streaming genuinely cannot reach it.
 function sdec.fs_for_burst(baud)
   if baud == nil or baud <= 0 then return sdec.fs_default end
@@ -978,9 +978,6 @@ function sdec.hw_config()
   dmm.digitize.aperture   = 1e-6
 end
 
--- Free and remake the capture buffer. Follows the project's object-lifetime
--- rule -- delete, nil, then create -- because creating over a live handle leaves
--- the old buffer allocated and unreachable until a power cycle.
 -- Clamp a request to what the buffer can hold, reserve included. A store past capacity posts 4915
 -- and truncates the capture.
 function sdec.acq_fit(n, buf)
@@ -996,6 +993,9 @@ function sdec.acq_fit(n, buf)
   return n
 end
 
+-- Free and remake the capture buffer. Follows the project's object-lifetime
+-- rule -- delete, nil, then create -- because creating over a live handle leaves
+-- the old buffer allocated and unreachable until a power cycle.
 function sdec.acq_make_buffer(n)
   pcall(function() sdec.trig_settle() end)
   if sdec.buf ~= nil then
@@ -1779,7 +1779,8 @@ function sdec.ua_best_probe(st)
   local i = st.i
   local T, ratio, q = st.cands[i].T, st.cands[i].r, st.cands[i].q
   if st.mayrescale and ratio ~= 1 and q ~= nil and q >= st.qmin
-     and sdec.ua_plausible(T, st.n) and not sdec.ua_submultiple(T) then
+     and sdec.ua_plausible(T, st.n)
+     and not (st.snap1 and sdec.ua_submultiple(T)) then
     local _, snapped = sdec.sig_snap(st.fs / T)
     if snapped then
       local sc = sdec.ua_probe(st.rd, st.n, T)
@@ -2390,7 +2391,7 @@ end
 
 --   * the seam then falls in the middle of the overlap rather than at its rim, so the
 --     de-duplication is never deciding a near-tie.
--- At 8.68 samples/bit and 10 bit frames that is 260 + 64 = 324 samples, 1.6 % of a
+-- At 8.68 samples/bit and 10 bit frames that is ceil(260.4) + 64 = 325 samples, 1.6 % of a
 -- 20 000-sample window: the redundant work is a rounding error against the cost of
 -- getting a seam wrong.
 function sdec.ck_overlap(T, framebits)
@@ -3130,7 +3131,8 @@ end
 
 sdec.strm_maxbaud = 4800
 
--- Whether mode `m` suits the current rate. Always true: there is one recording mode and it suits
+-- Whether mode `m` suits the current rate. Always true: the TWO recording sizes differ only in
+-- byte ceiling, so any rate one can run the other can, and it suits
 -- every rate it can run at. A rate too fast to stream is refused by mode_why(), which carries a
 -- reason to the panel; this exists because the panel and the harnesses call it.
 function sdec.mode_suits(m)
@@ -4727,8 +4729,10 @@ function sdec.stream_decode(got)
   return true
 end
 
--- Decode ONE SLICE, put the progress on the status row, and hand the panel back. Returns true
--- while there is more to do.
+-- Decode ONE SLICE, put the progress on the status row, and hand the panel back. Returns the
+-- decode's VERDICT, not its progress: true both for a slice still pending and for a clean finish,
+-- false when the step raised, produced no totals, or failed its file write. Whether work REMAINS
+-- is sdec.ck_job ~= nil, not this.
 function sdec.decode_step()
   local job = sdec.ck_job
   if job == nil then return false end
@@ -5323,10 +5327,11 @@ function sdec.save()
   return ok
 end
 
--- ============================================================================
 -- View handlers
 -- ============================================================================
--- Advance through sdec.ui_views: text -> hex -> MIDI messages -> LIN frames -> text.
+-- Advance through the views THIS BUILD HAS -- text -> hex -> text in version 1, which ships
+-- without midi_decode.tsp and lin_decode.tsp, so ui_view_avail() hides the MIDI and LIN entries
+-- rather than landing the button on a list that could only ever be empty.
 function sdec.view_toggle()
   local n = sdec.ui_nviews()
   if n < 1 then return false end
@@ -5354,8 +5359,9 @@ function sdec.page_cycle()
   return pcall(function() sdec.ui_refresh() end)
 end
 
--- Show the next page of bytes. Bound to no button: this and page_prev() are how the host pages
--- the panel over the socket.
+-- Show the next page of bytes. Bound to the 'Page Dn' button down the dump area's right margin
+-- (serial_ui.tsp:1572), with page_prev() as 'Page Up' above it; the host drives both over the
+-- socket as well.
 function sdec.page_next()
   if sdec.ui_page + 1 < sdec.ui_npages() then sdec.ui_page = sdec.ui_page + 1 end
   return pcall(function() sdec.ui_refresh() end)
@@ -5503,11 +5509,11 @@ end
 
 sdec.strm_absorb_s = sdec.strm_absorb_s or 1.0
 
--- Arm the queued-press absorb after a run that held the interpreter.
 -- ARMED ON EVERY ENDING, INCLUDING 'stopped'. This used to return early when a press had been SEEN,
 -- reasoning that nothing could be queued behind it -- true of one press, false of an operator, who
--- presses Capture, then TRIGGER, then Capture again. TRIGGER ends the run, so the two Capture presses
--- were exactly the ones left unabsorbed, and each started another uninterruptable recording.
+-- presses Capture, then TRIGGER, then Capture again. A finger on TRIGGER emits no blender event
+-- while a panel-initiated run executes (measured 2026-08-18), so the run ends at its own bounds
+-- with both Capture presses unabsorbed -- each starting another uninterruptable recording.
 function sdec.strm_absorb_arm()
   sdec.strm_stopped_by_press = nil
   sdec.strm_nabsorbed = 0

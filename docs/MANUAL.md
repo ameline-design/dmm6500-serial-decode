@@ -1,6 +1,6 @@
 # Serial Protocol Decode — user manual
 
-**Ian Ameline** · version 1.02 — **beta** · MIT licence
+**Ian Ameline** · version 1.03 — **beta** · MIT licence
 
 This app turns a Keithley DMM6500 into a serial decoder. Clip onto a UART line, press **Capture**,
 and read the bytes on the front panel. You do not have to tell it the baud rate, the frame format or
