@@ -229,7 +229,18 @@ class SDG:
         # stimulus. Measured 2026-08-19: twelve vectors added to a suite but never uploaded, and all
         # twelve "failed" against the PREVIOUS vector's bytes. TrueArb was verified below; the name,
         # which is the point of the call, was not.
-        got = self.query(f'C{ch}:ARWV?') or ''
+        # A GENEROUS READBACK TIMEOUT, because selecting a LARGE waveform is slow and the default 6 s
+        # turns that into a false "did not take". Measured 2026-08-19: a 3 413 625-point arb (6.51 MB)
+        # answered ARWV? at 10 s and not at 6, and the selection HAD taken -- so the raise below fired
+        # over a correct selection, which is the same false-alarm class as the wedge report in
+        # bench_sync.sdg_alive(). Loading millions of points into the playback buffer is real work.
+        #
+        # LIKELY MECHANISM, the owner's reading and it fits: selecting an arb copies it out of internal
+        # FLASH into the fast RAM that feeds the FPGA driving the DAC. That predicts the delay scales with
+        # the POINT COUNT rather than with anything else, which is what the two observations show -- a
+        # 1942-point arb answers instantly, a 3 413 625-point one needs more than 6 s. Inference, not a
+        # measurement: nothing here proves the copy exists, only that selection cost grows with size.
+        got = self.query(f'C{ch}:ARWV?', timeout=30) or ''
         want = name[:-4] if name.endswith('.bin') else name
         # NO FOLDER HANDLING HERE, DELIBERATELY: a waveform in a subdirectory CANNOT BE SELECTED AT ALL.
         # Measured 2026-08-19 -- 34 vectors written as 'SERIAL\name' were listed by STL? USER and then

@@ -205,6 +205,23 @@ SDG_UPLOAD_SAFE_BYTES = 65536      # below this, uploads have never wedged it
 # so 39R7 is no more tolerant. The constant therefore stays 65536, but the operational rule is: fewer
 # than three over-ceiling writes between power cycles, and prefer the USB key for a batch.
 #
+# AND SIZE IS NOT THE VARIABLE AT ALL. After the power cycle, ONE upload of 1 707 250 B -- 1.63 MB, 26x
+# the ceiling and 8x the largest that had ever been sent -- completed in 17.3 s, left the SCPI service
+# answering on the open session, appeared in STL? USER, selected, and PLAYED CORRECTLY: the DMM decoded
+# it at 9600 8N1 and 120 of its bytes were a contiguous run of the 8192-byte payload oracle (offset 8097,
+# wrapping the loop). A 1.63 MB single upload is therefore safer than a third 213 kB one.
+#
+# CONFIRMED AGAIN with a SECOND large upload after that power cycle: 6 827 250 B (6.51 MB, 104x the
+# ceiling, 3 413 625 points -- 41% of SDG_MAX_PTS) wrote in 69 s, stayed alive, selected, and played
+# correctly (the DMM decoded it at 9600 8N1 and 120 bytes were a contiguous run of the 32768-byte oracle
+# at offset 1676). So TWO large uploads totalling 8.14 MB did not wedge it, while THREE totalling 533 kB
+# did. Bytes are not the variable; the number of large writes is.
+#
+# The ceiling is consequently a bound on HOW MANY large writes have happened since the last power cycle,
+# not on how big any one of them is. It stays at 65536 as the trigger for "count this one", because
+# nothing here establishes where between 1 and 3 the real limit sits, and the cost of finding out is a
+# human walking to the bench.
+#
 # THE SDG SERVES ONE SCPI SESSION AT A TIME, and that is indistinguishable from a wedge if you probe with
 # a second socket: with a connection already open, a second one is accepted and answers nothing, which is
 # exactly the wedge symptom. It produced a false "the LAN service has wedged" over a healthy instrument
