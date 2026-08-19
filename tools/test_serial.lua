@@ -1689,6 +1689,19 @@ do
   sdec.ck_tot.headbad, sdec.ck_tot.headnbad = nil, nil
   check('with no head recorded it is the raw run count', sdec.ui_err_n() == 6,
         tostring(sdec.ui_err_n()))
+
+  -- AND THE STATUS ROW ON THE SAME SCREEN. Measured on the panel 2026-08-19: the header read 'ERR 7'
+  -- over a status row reading '1 err', because ck_status took t.nbad raw while the field took the trust
+  -- count. Two numbers for one fault, eight pixels apart.
+  sdec.ck_tot.nbad, sdec.ck_tot.headbad, sdec.ck_tot.headnbad = 1, 7, 1
+  sdec.ck_tot.path, sdec.ck_tot.nwin = '/usb1/bytes339.txt', 68
+  local st = sdec.ck_status()
+  check('the status row quotes the same count as the ERR field',
+        has(st, string.format('%d err', sdec.ui_err_n())),
+        string.format('ERR %s vs %q', tostring(sdec.ui_err_n()), st))
+  check('...and that is the trust count, not the raw failures',
+        sdec.ui_err_n() == 7 and not has(st, '1 err'),
+        string.format('%s / %q', tostring(sdec.ui_err_n()), st))
   sdec.res, sdec.ck_tot = res0, ct0
   sdec.ui_refresh()
 end

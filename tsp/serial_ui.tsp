@@ -986,15 +986,22 @@ end
 -- THE ERR FIELD'S NUMBER, in one place. The value and its colour were computed apart, and by different
 -- rules: a recording took the count from ck_tot and the colour from the retained TAIL, so a run damaged
 -- only in its head showed a non-zero ERR in the all-clear colour. Returns nil when nothing is decoded.
+-- The trust count for a RUN's totals. A run keeps no errs of its own, only per window, so the head swap
+-- is arithmetic -- see sdec.ua_err_count for why the extent replaces the failure count. Takes the table
+-- rather than reading ck_tot, so the status row and the ERR field cannot answer differently: they did,
+-- and the panel read 'ERR 7' beside '1 err' on the same screen.
+function sdec.ck_err_n(t)
+  if t == nil then return 0 end
+  local n = t.nbad or 0
+  local hb = t.headbad or 0
+  if hb > 0 then n = n - (t.headnbad or 0) + hb end
+  return n
+end
+
 function sdec.ui_err_n()
   local ct = sdec.ck_tot
   if ct ~= nil then
-    -- A run keeps no errs of its own, so the head swap is arithmetic. See sdec.ua_err_count for why the
-    -- extent replaces the count there; the final-frame exclusion is frame-mode only.
-    local n = ct.nbad or 0
-    local hb = ct.headbad or 0
-    if hb > 0 then n = n - (ct.headnbad or 0) + hb end
-    return n
+    return sdec.ck_err_n(ct)
   end
   if sdec.res == nil then return nil end
   if sdec.ua_err_count == nil then return sdec.res.nbad end
@@ -2576,8 +2583,10 @@ function sdec.ck_status()
                          sdec.fc_bytes or 0, sdec.fc_win, base,
                          sdec.fc_end or t.stopped or 'done')
   end
+  -- ck_err_n, NOT t.nbad: this string sits on the same screen as the ERR field, and reading the raw
+  -- failure count here put '1 err' under an 'ERR 7' on a run whose misaligned head reached byte 7.
   return string.format('%d bytes  %d err  %d win  -> %s  [%s]',
-                       t.nf, t.nbad, t.nwin, base, t.stopped or 'done')
+                       t.nf, sdec.ck_err_n(t), t.nwin, base, t.stopped or 'done')
 end
 
 -- The fraction the progress bar shows, 0..100, or nil when no honest one exists.

@@ -387,6 +387,12 @@ def record_lap(d, cap, wall_s=1800):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--hours', type=float, default=8.0)
+    # A LAP BOUND AS WELL AS A CLOCK, for the "did we break anything obvious" run. Expressing N laps as
+    # hours is a guess -- a lap is ~294 s measured over 89 of them, but that is the CURRENT suite set --
+    # and guessing low silently measures less than asked. Whichever bound is reached first wins, so
+    # --hours still protects an over-running lap. Counts ATTEMPTS, so a timed-out lap spends one.
+    ap.add_argument('--laps', type=int, default=None,
+                    help='stop after this many laps (default: run until --hours)')
     # payloads included by default: it is the only suite where each lap's fourteen points are
     # fourteen DIFFERENT payloads covering every byte value 0-255, so a long run accumulates
     # pattern coverage instead of just repeating one stimulus.
@@ -452,7 +458,7 @@ def main():
     incomplete = 0
     t_start = time.time()
 
-    while time.time() < deadline:
+    while time.time() < deadline and (a.laps is None or laps < a.laps):
         laps += 1
         try:
             rc, out, points, why = run_suite(a.suites, a.rates, expect=expect)

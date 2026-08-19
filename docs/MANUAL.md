@@ -125,9 +125,10 @@ During a recording the status row carries a live counter — `recording... 40 % 
 `decoding... 4096/8192 bytes` — with a **cyan progress bar** beside it, and the cell to its right reads
 `Capture or Mode = Stop`.
 
-**View** switches the same bytes to plain text, which is what you want for anything human-readable:
+**View** switches the byte display to plain text, which is what you want for anything human-readable —
+and a row carrying a flagged byte is red here too:
 
-![Main screen, text view](img/panel-text.png)
+![Main screen, text view — the first five bytes misaligned, ERR agreeing at 5](img/panel-text.png)
 
 **The note row is the important one.** Warnings appear there — an ambiguous baud rate, a line that
 disagrees with the rate you locked, a recording that stopped early. If more than one applies it ends
@@ -167,17 +168,21 @@ if the panel seems to ignore you, wait rather than pressing again.
 
 ### Paging through a long capture
 
-![Page 3 of 35 of a finished 32 kB recording, hex view](img/panel-paged.png)
+![Page 4 of 35 of a finished 32 kB recording, hex view](img/panel-paged.png)
 
 A 32 kB recording is far more than one screen, so **Up** and **Dn** appear down the right-hand edge and
 **page N of M** appears at the right of the note row — the two numbers in white, the words dimmed, so
 the count reads at a glance. The note beside it says which bytes are on screen and that the whole run
 is in the file, which is the thing you cannot otherwise tell from a screenful taken out of the middle:
 
-    panel shows bytes 24577-32768 of 32768; all are in bytes323.txt
+    panel shows bytes 24577-32768 of 32768; all are in bytes340.txt
 
-The offset column agrees with it — the rows above start at 25056, not at zero — and the status row
-carries the run's own summary: 32768 bytes, 1 error, 68 windows, and the file it went to.
+In the figure that note is abbreviated, ending `(+1 more)`: this run also began mid-byte, and two notes
+do not fit one row. **Save** writes both out in full.
+
+The offset column agrees with it — the rows start at 25296, not at zero — and the status row carries the
+run's own summary: 32768 bytes, 6 it cannot vouch for, 68 windows, and the file it went to. **That 6 is
+the same figure as `ERR`**, not a second opinion about it.
 
 **The page count follows the view.** Press **View** on that same capture and it becomes 7 pages instead
 of 35, because a text row holds 80 characters and a hex row holds 16 bytes — 1200 bytes a page against
