@@ -93,6 +93,10 @@ During a recording the status row carries a live counter — `recording... 40 % 
 `decoding... 4096/8192 bytes` — with a **cyan progress bar** beside it, and the cell to its right reads
 `Capture or Mode = Stop`.
 
+**View** switches the same bytes to plain text, which is what you want for anything human-readable:
+
+![Main screen, text view](img/panel-text.png)
+
 **The note row is the important one.** Warnings appear there — an ambiguous baud rate, a line that
 disagrees with the rate you locked, a recording that stopped early. If more than one applies it ends
 with `(+2 more)`, and pressing **Save** writes all of them to a file.
@@ -113,7 +117,7 @@ away.
 | **NewLog** | Start a new numbered log file on the USB key. |
 | **Save** | Write a full report of what is on screen to the USB key. |
 | **Options** | The settings screen. |
-| **Up** / **Dn** | Right-hand edge. Only appear when there is more than one page. Once you press either, **page N of M** appears at the right of the FRAME line. |
+| **Up** / **Dn** | Right-hand edge. Only appear when there is more than one page. Once you press either, **page N of M** appears at the right of the note row. |
 | **Lock Rate** | Right-hand edge. Only appears when the rate is not locked. |
 
 Every button responds immediately except the ones that take a capture. **Capture takes about 1.7
@@ -123,6 +127,20 @@ from press to press because it depends on where the traffic happens to be when y
 
 **A press during a capture is not lost — it is queued** and acted on when the capture finishes. So
 if the panel seems to ignore you, wait rather than pressing again.
+
+### Paging through a long capture
+
+![Page 3 of 35 of a finished 32 kB recording, hex view](img/panel-paged.png)
+
+A 32 kB recording is far more than one screen, so **Up** and **Dn** appear down the right-hand edge and
+**page N of M** appears at the right of the note row — the two numbers in white, the words dimmed, so
+the count reads at a glance. The note beside it says which bytes are on screen and that the whole run
+is in the file, which is the thing you cannot otherwise tell from a screenful taken out of the middle:
+
+    panel shows bytes 24577-32768 of 32768; all are in bytes323.txt
+
+The offset column agrees with it — the rows above start at 25056, not at zero — and the status row
+carries the run's own summary: 32768 bytes, 1 error, 68 windows, and the file it went to.
 
 ## The TRIGGER key — the one hardware button that matters
 
@@ -198,9 +216,13 @@ Press **Mode** until the cell reads `8 kB` or `32 kB`. **You must lock the baud 
 whole job: it records, decodes every byte, writes them to the USB key, and comes back with the tail on
 screen. There is nothing to press in the middle.
 
+![An 8 kB recording, part way through its decode](img/panel-recording.png)
+
 While it works, the counter on the status row moves — first `recording... N % of the buffer`, then
-`decoding... N/8192 bytes` — with a cyan progress bar beside it, and the cell to its right reads
-`Capture or Mode = Stop`. **There is no way to finish it early** — see the section on the TRIGGER key
+`decoding... N/8192 bytes` — with a cyan progress bar beside it, and the cell to its right says
+whether anything can stop it. The screenshot above is a real 8 kB run caught at 7772 of 8192 bytes
+decoded; the dump area is blank because nothing has been shown yet, and the note row is empty because
+there is nothing wrong. **There is no way to finish it early** — see the section on the TRIGGER key
 above for what bounds it instead.
 
 **When it finishes, the note row goes quiet.** The status row's summary — bytes, errors, window count
@@ -248,6 +270,14 @@ press.
 `8 kB` when you would rather see bytes soon than see all of them, or while you are still working out
 whether you are probing the right pin; go on to `32 kB` when you want the most data for the fewest
 presses.
+
+![After an 8 kB recording, with Mode pressed once to line up the next one](img/panel-after-recording.png)
+
+Above: an 8 kB recording has finished and **Mode** has been pressed once, so the title bar reads
+`32K CAPTURE` while the previous run's retained tail is still on screen. Note what the panel is saying
+— `Up` and `Dn` have appeared because the tail is more than one page, the status row states the next
+run's ceiling and that nothing will stop it, and **the note row is empty**, because a recording that
+worked has nothing to warn about.
 
 **The mode you choose stays chosen.** The title bar says which one you are in — `SERIAL DECODE - 240B
 FRAME`, `- 8K CAPTURE` or `- 32K CAPTURE` — and a recording that finishes leaves it alone, so pressing
