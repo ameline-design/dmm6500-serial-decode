@@ -56,7 +56,7 @@ early**, so decide the size before you press — see **The TRIGGER key** below.
 
 ## The screen
 
-![Main screen, hex view](img/panel-hex.png)
+![Main screen, hex view — a 240-byte frame capture, 235 bytes decoded with no errors](img/panel-hex.png)
 
 Along the top are the things the app worked out about your line:
 
@@ -100,6 +100,11 @@ During a recording the status row carries a live counter — `recording... 40 % 
 **The note row is the important one.** Warnings appear there — an ambiguous baud rate, a line that
 disagrees with the rate you locked, a recording that stopped early. If more than one applies it ends
 with `(+2 more)`, and pressing **Save** writes all of them to a file.
+
+Here it is doing that — a capture that started part way through a byte, which the app detected and
+said so rather than showing nine wrong bytes without comment:
+
+![The note row reporting a mid-byte start](img/panel-hex-note.png)
 
 **An empty note row is not a promise that everything is perfect.** It means the app did not detect
 anything wrong. A noise spike landing inside a data bit changes that byte with nothing to give it
