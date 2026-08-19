@@ -99,16 +99,17 @@ def main():
     ck(ok, '2400-shaped 238 B, 2 flags -> pass  [%s]' % det)
 
     print('\n-- a wrong byte in a SHORT run: the shipped gate passes this, the new one must not --')
-    # Flags at 3 and 10 -> runs 0..2 (3 B, too short to validate), 4..9 (6 B, CORRUPTED),
-    # 11..238 (228 B, clean). Shipped gate: longest = 228, 228/239 = 0.954 >= 0.95, and it only
-    # ever checks the longest run -> PASSES with a silently wrong byte in the capture.
-    got = capture(payload, 200, 239, flag_at=(3, 10), corrupt_at=(6,))
+    # MID-CAPTURE, deliberately. An earlier version corrupted frame 6, and that case had to be
+    # retired: JP_HEADSKIP excludes the first frames because a wrong byte three frames in is
+    # genuinely indistinguishable from the resync debris a real capture carries (measured on
+    # hardware -- a v41 capture opened '?? ?? ?? ?? DD 3B ?? ?? 76 C8' before repeating cleanly).
+    # What the judge must still catch is a wrong byte in a SHORT RUN well inside the capture, which
+    # the old longest-run gate passed: flags at 120 and 127 leave 13..119 (107 B, clean),
+    # 121..126 (6 B, CORRUPTED) and 128..237 (110 B, clean), so the longest run is clean and
+    # 110/239 of the capture -- but the 6-byte run is a lie and must fail.
+    got = capture(payload, 200, 239, flag_at=(120, 127), corrupt_at=(123,))
     ok, det = judge(got, payload)
-    ck(not ok, 'corrupt byte in a 6 B run -> FAIL  [%s]' % det)
-    shipped_run = 228
-    ck(shipped_run / 239.0 >= 0.95,
-       'and the shipped gate really would have passed it (%d/239 = %.4f >= 0.95)'
-       % (shipped_run, shipped_run / 239.0))
+    ck(not ok, 'corrupt byte in a 6 B run, mid-capture -> FAIL  [%s]' % det)
 
     print('\n-- genuine garbage must still fail --')
     # V1.01's v44e: 153 B, longest clean run 9, 35 interior flagged.

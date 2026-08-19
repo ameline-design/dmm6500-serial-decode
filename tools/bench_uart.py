@@ -11,10 +11,12 @@ app's OWN decoder. So a disagreement here is a fact about hardware.
 Four things get measured per baud rate, and they are the whole "what can we
 deliver" question:
 
-  correctness   decoded bytes must be a CONTIGUOUS CYCLIC SUBSTRING of the
-                1024-byte payload the manifest says was transmitted. Cyclic
-                because a TrueArb waveform LOOPS -- the capture window lands
-                wherever it lands, and may straddle the wrap.
+  correctness   judge_payload: EVERY run of bytes the decoder stood behind must be
+                byte-exact against the transmitted payload at ONE agreed alignment,
+                and the count of frames it declined must stay inside a budget.
+                Cyclic, because a TrueArb waveform LOOPS -- the window lands
+                wherever it lands and may straddle the wrap -- and the payload may
+                be SHORTER than the window, so it can span more than one period.
   acquire time  seconds for sdec.acquire(), which includes the probe capture,
                 the level learning and the armed capture
   decode time   seconds for sdec.decode() -- bit timing, format search, framing
@@ -394,6 +396,18 @@ JP_MINVAL = 4
 JP_FLAG_FRAC = 0.02      # flag budget, as a fraction of the capture...
 JP_FLAG_FLOOR = 2        # ...or this many, whichever is kinder
 JP_COVER_MIN = 0.90      # how much of the capture must be positively verified byte-exact
+# Frames at the capture boundary that are NOT judged, because they cannot be. uart_decode.tsp states
+# that a gapless stream "RESYNCHRONISES a few frames in", and measured on hardware 2026-08-19 a v41
+# capture began '?? ?? ?? ?? DD 3B ?? ?? 76 C8' and then repeated 'Hello, World!' byte-exact -- the
+# DD 3B and 76 C8 are resync debris the decoder did not flag, sitting contiguous with good data, so a
+# run-based check merges them into one long run and condemns the whole capture.
+#
+# THIS IS A REAL LIMIT, NOT A CONVENIENCE. A wrong byte three frames into a capture is genuinely
+# indistinguishable from resync debris, so no judge can call it. What IS enforceable is everything
+# after: exact bytes, one alignment, a bounded flag count. Keep this small, and never raise it to
+# make a failure go away -- a wrong byte at frame 40 must still fail.
+JP_HEADSKIP = 12
+JP_TAILSKIP = 1          # the buffer end slices the last frame the same way
 
 
 def runs_of(frames):
@@ -441,6 +455,14 @@ def judge_payload(got, want):
         return False, 'no bytes decoded'
     bad = [i for i, f in enumerate(frames) if f == '??']
     interior = [i for i in bad if i != 0 and i != body - 1]
+    # Judge only the interior. The head allowance is resync debris (see JP_HEADSKIP); trimming it
+    # from the FRAMES means a run that straddles the boundary is cut, not condemned whole.
+    lo = JP_HEADSKIP
+    hi = body - JP_TAILSKIP
+    if hi - lo < JP_MINVAL * 2:
+        return False, 'capture too short to judge (%d B, %d judged)' % (body, max(0, hi - lo))
+    frames = frames[lo:hi]
+    body = len(frames)
     rr = runs_of(frames)
     # ENOUGH COPIES, for the same reason as cyclic_find: a capture off a SHORT looping payload can
     # be longer than the payload, and a run is checked at (alignment + start) % len(want), so the
@@ -492,8 +514,8 @@ def judge_payload(got, want):
     if cover < JP_COVER_MIN:
         return False, ('only %.1f %% positively verified (need %.0f %%)'
                        % (100 * cover, 100 * JP_COVER_MIN))
-    return True, ('%d of %d B verified byte-exact at offset %d (%d flagged, budget %d)'
-                  % (verified, body, align, len(interior), budget))
+    return True, ('%d of %d B verified byte-exact at offset %d (%d flagged, budget %d, '
+                  'head %d skipped)' % (verified, body, align, len(interior), budget, lo))
 
 
 def parse_point(lines):
@@ -654,23 +676,33 @@ def main():
                                      why=(res or {}).get('fail', '?')))
                     continue
                 off, runlen, bad, interior = analyse(got, want)
+                # THE LONGEST-RUN MATCH IS NOT THE VERDICT, only a diagnostic. analyse() takes the
+                # longest unflagged run and searches for it whole, so ONE unflagged junk byte next to
+                # a flagged head poisons the run and the whole capture reads MISMATCH. Measured
+                # 2026-08-19: v41 captures whose bytes were '??FE' then 'Hello, World!' repeating
+                # byte-exact were reported MISMATCH on that basis alone.
+                #
+                # judge_payload decides instead: every diagnostic run checked at one agreed alignment,
+                # and the FLAG COUNT bounded rather than the run length. Same rule the long-payload
+                # suite in bench_matrix uses, and it is stricter, not laxer -- it also catches a wrong
+                # byte inside a short run, and a decode that lost and regained sync mid-capture.
+                jok, jdet = judge_payload(got, want)
                 clean = not interior
                 res.update(v=v, baud=baud, fs=fs, off=off, clean=clean,
-                           nbytes=len(got) // 2, runlen=runlen,
+                           nbytes=len(got) // 2, runlen=runlen, jok=jok, jdet=jdet,
                            bad=bad, interior=interior, fail=False)
                 rows.append(res)
                 print('  acq_fs %10.1f  sa/bit %5.2f  baud %8.0f  bytes %4d '
                       'bad %3d  acq %6.3f s  dec %6.3f s  %s'
                       % (res['acq_fs'], res['acq_fs'] / baud, res['baud'],
                          res['nf'], res['nbad'], res['tacq'], res['tdec'],
-                         'MATCH %d/%d @%d' % (runlen, res['nf'], off)
-                         if off >= 0 else 'MISMATCH'))
+                         ('OK  ' + jdet) if jok else ('BAD  ' + jdet)))
                 if bad:
                     print('    bad frames at %s of %d%s' %
                           (bad[:8], res['nf'],
                            '' if not interior else
                            '  <-- %d INTERIOR, not clipping' % len(interior)))
-                if off < 0 and got:
+                if not jok and got:
                     print('    got   %s' % got[:96])
                     print('    want  %s' % want.hex().upper()[:96])
                 else:
@@ -709,11 +741,14 @@ def main():
         print('%-5s %7d %8d %7.2f %8.0f %6d %5d %8.3f %8.3f %9.1f %s'
               % (r['v'], r['baud'], r['fs'], r['acq_fs'] / r['baud'],
                  r['baud'], r['nf'], r['nbad'], r['tacq'], r['tdec'], wire,
-                 'match @%d' % r['off'] if r['off'] >= 0 else
-                 ('MISMATCH' if r['clean'] else 'FRAMING ERRORS')))
+                 # The judge's verdict, not the longest-run search's -- see judge_payload at the
+                 # capture site. 'flagged N' is how many frames the DECODER declined to stand
+                 # behind, which is honest uncertainty and not a failure on its own.
+                 ('ok' if r.get('jok') else 'BAD') +
+                 ('' if not r['bad'] else '  flagged %d' % len(r['bad']))))
 
     ok = [r for r in rows if not r.get('fail')]
-    good = [r for r in ok if r.get('off', -1) >= 0]
+    good = [r for r in ok if r.get('jok')]
     print('\n%d/%d captures decoded, %d/%d byte-exact against the manifest'
           % (len(ok), len(rows), len(good), len(rows)))
     if ok:

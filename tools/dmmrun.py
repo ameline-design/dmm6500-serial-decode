@@ -9,6 +9,8 @@ import time
 
 _LOCK_PATH = '/tmp/dmm6500.lock'
 _lock_fh = None
+# PID of whoever refused us, when it could be read back -- so the error can name them.
+_lock_holder = [None]
 
 
 def acquire_single_instance(blocking=False):
@@ -18,13 +20,27 @@ def acquire_single_instance(blocking=False):
     global _lock_fh
     if _lock_fh is not None:
         return True
-    fh = open(_LOCK_PATH, 'w')
+    # 'a+', NOT 'w'. Opening for write TRUNCATES before flock is even attempted, so a client that
+    # then fails to acquire has already destroyed the incumbent's PID -- which is exactly why the
+    # refusal could not say who was holding it. The flock itself was always sound: it is
+    # kernel-released when the holder dies, SIGKILL included, so a crashed run cannot wedge the
+    # bench and the file being left behind means nothing.
+    fh = open(_LOCK_PATH, 'a+')
     flags = fcntl.LOCK_EX if blocking else (fcntl.LOCK_EX | fcntl.LOCK_NB)
     try:
         fcntl.flock(fh, flags)
     except OSError:
+        # Read the holder back so the caller can name it. Best effort: an older holder may predate
+        # this and have written nothing.
+        try:
+            fh.seek(0)
+            _lock_holder[0] = fh.read(64).strip() or None
+        except Exception:
+            pass
         fh.close()
         return False
+    fh.seek(0)
+    fh.truncate()
     fh.write(str(os.getpid()))
     fh.flush()
     _lock_fh = fh
@@ -77,9 +93,22 @@ def clear_dead_sockets(ip=IP, timeout=8):
 class DMM:
     def __init__(self, ip=IP, port=PORT, timeout=180, recover=True, exclusive=True):
         if exclusive and not acquire_single_instance():
+            # NAME THE HOLDER. The flock is kernel-released when its owner dies, so a refusal always
+            # means a LIVE client -- never a leftover file. Saying which pid turns "why is the bench
+            # refusing me" into one `ps` command, and stops the next person deleting the lock file in
+            # the belief it is stale. It is not, and deleting it does not help.
+            who = _lock_holder[0]
+            extra = ''
+            if who:
+                extra = ' (held by pid %s' % who
+                try:
+                    os.kill(int(who), 0)
+                    extra += ', which is RUNNING - stop it rather than removing the lock)'
+                except (OSError, ValueError):
+                    extra += ', which is not responding to signal 0)'
             raise RuntimeError(
-                'another DMM6500 client already holds %s - refusing to open a '
-                'second control socket (it would corrupt both sessions)' % _LOCK_PATH)
+                'another DMM6500 client already holds %s%s - refusing to open a '
+                'second control socket (it would corrupt both sessions)' % (_LOCK_PATH, extra))
         self.ip = ip
         self.port = port
         self._timeout = timeout
