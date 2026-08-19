@@ -1707,6 +1707,73 @@ do
 end
 
 -- ============================================================================
+print('\ninjected parity errors (GEN opts.perr)')
+-- ============================================================================
+-- The generator support behind the SER_..._PErrN vectors. A parity error inverts the PARITY BIT and
+-- nothing else, so the decoder must recover the correct byte and flag the frame -- which makes the
+-- expected bytes unchanged and only the expected error POSITIONS move. That is the property worth
+-- pinning: a corrupt-the-data implementation would pass a count check and fail this one.
+do
+  local res0 = sdec.res
+  clearforce()
+  local pay, npay = {}, 60
+  local i
+  for i = 1, npay do pay[i] = 32 + math.fmod(i * 7, 90) end   -- 7-bit safe, so 7E1 can carry it
+
+  local idx, nidx = GEN_PERR_EVERY(npay, 10)
+  check('GEN_PERR_EVERY starts past the excluded head frames',
+        idx[1] == sdec.ua_edge_frames + 1, tostring(idx[1]))
+  check('...and stops before the clipped final frame',
+        idx[nidx] < npay, string.format('%d of %d', idx[nidx], npay))
+  check('...and spaces them evenly', nidx == 6 and idx[2] - idx[1] == 10,
+        string.format('n=%d step=%d', nidx, idx[2] - idx[1]))
+
+  -- FORCED 7E1, because this tests the injection landing, not the format search.
+  sdec.force_nbits, sdec.force_par, sdec.force_nstop = 7, 1, 1
+  local r = run({bytes = pay, baud = 9600, fs = 100000, nbits = 7, par = 1, perr = idx})
+  check('the injected waveform still decodes', r ~= nil and r.nf ~= nil and r.nf >= npay,
+        r and tostring(r.nf) or 'nil')
+
+  if r ~= nil and r.errs ~= nil then
+    local want, miss, extra = {}, 0, 0
+    for i = 1, nidx do want[idx[i]] = true end
+    for i = 1, npay do
+      if want[i] and r.errs[i] == nil then miss = miss + 1 end
+      if not want[i] and r.errs[i] ~= nil then extra = extra + 1 end
+    end
+    check('every injected frame is flagged', miss == 0, string.format('%d missed', miss))
+    check('...and no other frame is', extra == 0, string.format('%d spurious', extra))
+
+    -- THE DATA SURVIVES. This is what separates a parity error from a corrupt byte.
+    local wrong = 0
+    for i = 1, npay do
+      if r.vals[i] ~= nil and r.vals[i] ~= pay[i] then wrong = wrong + 1 end
+    end
+    check('the byte values are untouched -- only the parity bit moved', wrong == 0,
+          string.format('%d wrong', wrong))
+
+    -- AND IT TIES TO THE PANEL. The vector is NAMED for its count, so ERR must equal it.
+    check('ERR equals the injected count, which is what the vector name promises',
+          sdec.ua_err_count(r) == nidx,
+          string.format('ERR %s vs %d injected', tostring(sdec.ua_err_count(r)), nidx))
+  end
+
+  -- IT REFUSES RATHER THAN QUIETLY SKIPPING, because a silent miss makes the name a lie.
+  local pok = pcall(function()
+    GEN({bytes = pay, baud = 9600, fs = 100000, par = 0, perr = {5}})
+  end)
+  check('perr with no parity bit raises rather than producing a clean wave', not pok)
+  pok = pcall(function()
+    GEN({bytes = pay, baud = 9600, fs = 100000, nbits = 7, par = 1, perr = {npay + 1}})
+  end)
+  check('an out-of-range frame index raises', not pok)
+
+  clearforce()
+  sdec.res = res0
+  sdec.ui_refresh()
+end
+
+-- ============================================================================
 print('\nview and paging handlers (real code)')
 -- ============================================================================
 sdec.ui_mode = 'text'

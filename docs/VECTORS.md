@@ -286,6 +286,72 @@ of the old name.
 Rough totals: 24 renames, 9 format fills, 4 re-renders, 7 narrow/wide, 6 parity-error — about 50
 waveform writes, four of which cannot go over the LAN.
 
+### Byte budget
+
+What is on the instrument today, from `manifest.tsv` for the 33 names `STL? USER` reports:
+
+| | bytes | |
+|---|---|---|
+| 33 vector waveforms | **1 895 000** | 1850 kB |
+| — of which 8 redundant duplicates | 792 786 | 774 kB — **42 % of everything stored** |
+| — of which 7 exceed the LAN ceiling | 991 000 | 968 kB |
+| 7 probe waveforms from the name-length test | 304 | negligible |
+| **total stored now** | **1 895 304** | **1.81 MB** |
+| after deleting the duplicates and probes | 1 102 214 | 1.08 MB |
+
+The five largest are `v71`, `v72`, `v73` (213 750 B each), `v74` (178 750) and `v75` (171 000) — and
+four of those five are the redundant renders.
+
+Projected for the 22 additions in this plan, from a cell-count model calibrated against the real files
+(exact on `v71`, `v90` and `v92`; within 0.4 % on `v77`; it over-predicts a 13-byte payload by ~23 %,
+where lead and tail dominate):
+
+| | bytes | |
+|---|---|---|
+| 22 additions | 1 288 580 | 1258 kB |
+| **projected total once built** | **2 390 794** | **2.28 MB** |
+
+**Only two additions exceed the 64 kB LAN ceiling**: `SER_Lorem1kB_7E1` and `SER_Lorem1kB_7O1`, at
+213 750 B each. Everything else fits the network path — `Blocks256B` and `RandomRef` land at 53 750,
+`Lorem300B` variants at ~63 000, `Random_9N1` at ~59 000. An earlier estimate here wrongly flagged six as
+over the ceiling; it assumed a 2-bit inter-frame gap, and the real `vec{}` calls pass `gap = 0`.
+
+The instrument's total internal capacity is **not known** — nothing in the repo records it and no query
+for it was found. 2.28 MB is the figure to check against it before starting.
+
+### Internal flash is limited, so the order of work matters
+
+Measured 2026-08-19: **an upload overwrites in place.** Re-writing an existing name left the `STL? USER`
+count unchanged at 40, so a rename never *duplicates* — but it does leave the old name behind, because
+the new name is a different entry.
+
+**No SCPI delete was found.** `ARWV` selects, `WVDT` writes, `STL?` lists; nothing in the guide sections
+this repo already uses deletes a stored waveform. Deletion appears to be front-panel only
+(Utility → Store/Recall). Treat that as the current state of knowledge, not a proven absence.
+
+So a rename holds **both copies resident** until the old one is deleted by hand, and the flash is not
+large. Do it in this order:
+
+1. **Delete the nine redundant duplicates first — biggest win, no new uploads.** `v72` and `v73`
+   (213 750 B each), `v74` (178 750), `v75` (171 000) are all redundant with `v71`; `v81`–`v84` are
+   redundant with `v80`. That frees roughly **760 kB** and removes four of the seven over-ceiling
+   vectors before anything is written.
+2. **Then rename in batches**, deleting each old name as its replacement lands, rather than uploading
+   all ~50 and deleting afterwards — which would need peak space for both sets at once.
+3. **Do the two over-ceiling additions by USB key**, with the `Lorem1kB` renames, in one trip:
+   `SER_Lorem1kB_8N1`, `_7E1`, `_7O1` at ~213 kB each.
+
+**Probe waveforms left by the name-length testing, to delete from the front panel.** Seven, all 16–32
+points, so a few hundred bytes in total — but they should not outlive the measurement:
+
+    SER_Zabcdefghijklmnopqrstuvwxyz
+    SER_Lorem300_7E1_PErrHead30
+    SER_Lorem300_7E1_PErrHead300
+    SER_DiscrimxxxxxxxxxxxxxxxxxxxA
+    SER_DiscrimxxxxxxxxxxxxxxxxxxxB
+    SER_DiscrimxxxxxxxxxxxxxxxxxxxxxxxxxxxxA
+    SER_DiscrimxxxxxxxxxxxxxxxxxxxxxxxxxxxxB
+
 Renaming also touches every harness that names a vector: `bench_matrix.py` (`RATE_ARB`, `LOREM_ARB`, the
 suite tables), `bench_break.py`, `bench_panel.py`, `bench_priming.py`, `bench_longstream.py`,
 `bench_buttons.py`, plus `manifest.tsv` and `make_vectors.lua`, which produces the files and their names

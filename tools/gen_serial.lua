@@ -46,6 +46,29 @@ local function popcount(v)
   return ones
 end
 
+-- INJECTED PARITY ERRORS: the frame indices to corrupt, evenly spaced. -> array, 1-based.
+--
+-- Even spacing is not cosmetic. For a payload that LOOPS on the generator, if the interval divides the
+-- capture window the number of errors a capture sees is the same wherever it lands -- so the count can be
+-- asserted instead of eyeballed. Computed over all 300 start offsets: 300 bytes with an error every 30
+-- yields exactly 8 in a 240-byte window; every 25 gives 9 or 10.
+--
+-- `first` defaults past sdec.ua_edge_frames, and that default is the point of this helper. The decoder
+-- excludes the first 3 frames and the last one as windowing artefacts, so an error injected at frame 2
+-- is not counted, not coloured, and proves nothing -- a vector built that way would be named for errors
+-- it cannot demonstrate.
+function GEN_PERR_EVERY(nb, step, first)
+  if step == nil or step < 1 then error('GEN_PERR_EVERY needs a step >= 1', 2) end
+  if first == nil then first = 4 end
+  local out, n, i = {}, 0, nil
+  -- Stops one short of nb: the final frame is excluded too, by the capture boundary that halves it.
+  for i = first, nb - 1, step do
+    n = n + 1
+    out[n] = i
+  end
+  return out, n
+end
+
 -- ============================================================================
 -- GEN(opts) -> rd, ts, ncells, nsamples
 -- ============================================================================
@@ -53,6 +76,7 @@ end
 --   baud    bit rate                      fs      sample rate
 --   nbits   data bits (8)                 par     0 none / 1 even / 2 odd
 --   nstop   stop bits (1)                 invert  true for an idle-low RS-232 sense
+--   perr    array of 1-based FRAME indices whose parity bit is inverted (see below)
 --   lo, hi  logic levels in volts (0 / 3.3)
 --   lead    bit times of idle before the first frame (20)
 --   gap     bit times of idle between frames (2)
@@ -73,6 +97,33 @@ function GEN(opts)
   local bytes = opts.bytes or {}
   local nb    = table.getn(bytes)
 
+  -- INJECTED PARITY ERRORS, as a lookup keyed by frame index.
+  --
+  -- IT RAISES RATHER THAN IGNORING. par == 0 has no parity bit, so there is nothing to invert; an index
+  -- outside 1..nb corrupts nothing. Either would hand back a waveform that silently lacks the errors the
+  -- caller asked for -- and since these vectors are NAMED for their error count (SER_..._PErr8), a quiet
+  -- miss makes the name a lie and every assertion built on it vacuous.
+  local perrset, nperr = nil, 0
+  if opts.perr ~= nil then
+    local np = table.getn(opts.perr)
+    if np > 0 then
+      if par == 0 then
+        error('opts.perr needs a parity bit to invert; par is 0 (no parity)', 2)
+      end
+      perrset = {}
+      local i
+      for i = 1, np do
+        local fi = opts.perr[i]
+        if fi == nil or fi < 1 or fi > nb then
+          error(string.format('opts.perr[%d] = %s is outside 1..%d frames',
+                              i, tostring(fi), nb), 2)
+        end
+        if perrset[fi] == nil then nperr = nperr + 1 end
+        perrset[fi] = true
+      end
+    end
+  end
+
   -- ---- logical bit cells: 1 = mark/idle, 0 = space ----
   local cells, nc = {}, 0
   local i, k
@@ -90,6 +141,10 @@ function GEN(opts)
       local pe = math.fmod(popcount(math.fmod(v, 2 ^ nbits)), 2)
       nc = nc + 1
       if par == 1 then cells[nc] = pe else cells[nc] = 1 - pe end
+      -- THE PARITY BIT ONLY. The data cells are already emitted and untouched, which is what makes this
+      -- a parity error rather than a corrupt byte: the decoder should recover the CORRECT value and flag
+      -- the frame. So the expected bytes are unchanged and only the expected error positions move.
+      if perrset ~= nil and perrset[i] then cells[nc] = 1 - cells[nc] end
     end
     for k = 1, nstop do nc = nc + 1; cells[nc] = 1 end
     if i < nb then
