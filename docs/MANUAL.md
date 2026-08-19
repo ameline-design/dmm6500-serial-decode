@@ -74,6 +74,17 @@ Along the top are the things the app worked out about your line:
 
 A dash means "not measured yet".
 
+**Broken bytes are shown, not hidden.** `ERR` turns red when there are any, and every row containing
+one is drawn red across its whole width — offset, hex and ASCII together — so damage is found by
+looking rather than by counting. Flagged bytes read as `?` in the ASCII gutter:
+
+![An 8 kB recording whose first two rows failed](img/panel-errors.png)
+
+That is a real 8 kB recording that began part way through a byte: 22 of 8192 bytes failed, all of them
+in the first two rows, and everything from the first gap onward decoded cleanly. The status row counts
+them (`8192 bytes  22 err`) and the file on the USB key holds all 8192 either way — a byte that failed
+its parity or stop bit is still written, marked, rather than dropped.
+
 Underneath: the **trigger cell**, the bytes, then two rows of text. The **status row** tells you where
 you are (`FRAME HEX pg 1/1 bytes 1-155/155 win 240 [done]`) and names the log file.
 
