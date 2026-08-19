@@ -3658,7 +3658,8 @@ function sdec.ui_notes()
   add(sdec.baud_note)
   add(sdec.fmt_note)
 
-  if sdec.res ~= nil and sdec.res.nf > 0 then
+  local istail = (sdec.res ~= nil and sdec.res.first ~= nil)
+  if sdec.res ~= nil and sdec.res.nf > 0 and not istail then
     local cap = sdec.window_bytes(sdec.baud, sdec.res.nbits, sdec.res.par,
                                   sdec.res.nstop)
     if cap ~= nil and cap > 0 and sdec.res.nf >= cap then

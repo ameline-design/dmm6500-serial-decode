@@ -1290,7 +1290,20 @@ function sdec.ui_notes()
   --
   -- The note names the remedy too: locking the detected baud rate drops the sample rate to suit it
   -- and lengthens the window, 19 bytes to 192 at 9600.
-  if sdec.res ~= nil and sdec.res.nf > 0 then
+  --
+  -- NOT FOR A RECORDING'S RETAINED TAIL, and this is the guard that was missing. After an 8 kB run the
+  -- result on screen is a SLICE of a capture that went to a file, so 'the capture was full' is not a
+  -- fact about it -- and the figure came out as the FRAME window at the recording's own sample rate
+  -- (423 bytes, measured on the panel), a number belonging to no capture that had happened. The remedy
+  -- it offered was wrong too: a recording mode requires a locked rate, so 'lock the baud rate for a
+  -- longer window' names a thing already done.
+  --
+  -- r.first IS THE TAIL MARKER. ck_tail_result() sets it -- the 1-based absolute index of the oldest
+  -- kept byte -- and nothing else in the app does, so a result carrying it is by construction a window
+  -- onto something larger. The note above it already states that case properly: 'panel shows bytes
+  -- N-M of T; all are in <file>'.
+  local istail = (sdec.res ~= nil and sdec.res.first ~= nil)
+  if sdec.res ~= nil and sdec.res.nf > 0 and not istail then
     local cap = sdec.window_bytes(sdec.baud, sdec.res.nbits, sdec.res.par,
                                   sdec.res.nstop)
     if cap ~= nil and cap > 0 and sdec.res.nf >= cap then

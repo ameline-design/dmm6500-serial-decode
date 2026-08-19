@@ -3575,6 +3575,38 @@ do
   end
   check('still says FULL at the longer window, but stops suggesting a done deed',
         full and not hint)
+  -- BUT NOT FOR A RECORDING'S RETAINED TAIL, which is a slice of a capture that went to a FILE. Seen
+  -- on the panel after an 8 kB run: 'capture FULL at 423 bytes -- the message may continue', where 423
+  -- is the FRAME window at the recording's own sample rate -- a number belonging to no capture that
+  -- had happened -- and the tail was 8192 bytes of a run that had already been filed. The remedy it
+  -- offered was wrong too: a recording mode requires a locked rate.
+  --
+  -- r.first is the marker. ck_tail_result() sets it and nothing else does, so a result carrying it is
+  -- by construction a window onto something larger. Checked at first = 1 as well as first > 1: a run
+  -- that kept everything still starts at byte 1, and keying the guard on the INDEX rather than on its
+  -- presence would let that case through.
+  do
+    local fi
+    for fi = 1, 2 do
+      local firstbyte = ({1, 7770})[fi]
+      sdec.res = {nf = 423, nbad = 0, nbits = 8, par = sdec.PAR_NONE, nstop = 1,
+                  vals = {}, errs = {}, first = firstbyte, ntotal = 8192}
+      sdec.ck_tot = {nf = 8192, nbad = 0, nwin = 20, path = '/usb1/bytes296.txt',
+                     stopped = 'cap'}
+      nt, nn = sdec.ui_notes()
+      full = false
+      for i = 1, nn do if has(nt[i], 'capture FULL') then full = true end end
+      check(string.format('a recording tail starting at byte %d says nothing about a FULL capture',
+                          firstbyte), not full, table.concat(nt, ' | '))
+    end
+    -- AND THE NOTE THAT BELONGS TO THAT CASE IS STILL THERE, so this is a REPLACEMENT and not a
+    -- deletion: the operator still learns the panel is showing a slice, and which bytes.
+    local shown = false
+    for i = 1, nn do if has(nt[i], 'panel shows bytes') then shown = true end end
+    check('...and the tail note that DOES describe it survives', shown,
+          table.concat(nt, ' | '))
+    sdec.ck_tot = nil
+  end
   clearforce()
   sdec.acq_fs = nil
   sdec.clear_result()
