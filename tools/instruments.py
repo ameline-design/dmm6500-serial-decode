@@ -249,6 +249,15 @@ SDG_UPLOAD_SAFE_BYTES = 65536      # below this, uploads have never wedged it
 #     15 us (rise = 1.5 samples), so our edge shaping dominates by ~18 000x. Any edge effect in a capture
 #     is the vector's or the analog path's, never the converter's.
 #
+#   * A CLOSE-IN SPECTRUM OF A 40 MHz OUTPUT SUPPORTS THAT, with its limits stated. Owner's capture on a
+#     Siglent analyser: marker 40.000002 MHz against a 40.000000 MHz setting -- a 2 Hz error, 0.05 ppm --
+#     carrier ~42 dB above the noise floor at 10 Hz RBW, and no spur visible anywhere in the span. What it
+#     does NOT show: the span is 1.5 kHz, so this is close-in phase noise and spurs only, not harmonic
+#     distortion or wideband spurious. It is also dated 2016 and taken on an SDG2042X, a sibling of this
+#     2122X -- the SDG2000X series shares the board with bandwidth set in firmware, so it is
+#     representative rather than literal. Nothing in it bears directly on UART edge timing at kHz rates;
+#     it is corroboration that the clock and DAC path are clean, not a substitute for the arithmetic above.
+#
 #   * THE SIGNAL PATH AND THE CONTROL PLANE ARE SEPARATE VERDICTS, and it matters that they not be
 #     collapsed. Web teardowns and the chip datasheets say this generator does what it claims without
 #     glitching, and everything computed here agrees: 16x oversampling at the DAC, three orders of
