@@ -337,16 +337,26 @@ def codewords(vid):
 
 
 def cyclic_find(hay, needle):
-    """Is `needle` a contiguous run of `hay` treated as a loop? -> offset or -1.
+    """Is `needle` a contiguous run of `hay` treated as a loop? -> offset into hay, or -1.
 
-    The waveform repeats, so the honest test is against hay+hay rather than hay.
-    Anything longer than hay itself cannot be a single contiguous run.
+    ENOUGH COPIES FOR THE NEEDLE, not two. This used to test against hay+hay and reject any
+    needle longer than hay outright, on the reasoning that "anything longer than hay itself
+    cannot be a single contiguous run". That is false for a LOOPING waveform: a 234-byte capture
+    off a 133-byte arb is one contiguous run spanning 1.76 periods.
+
+    The cost was a wrong verdict on a correct capture. Measured 2026-08-19 with v77/v78 (133-byte
+    payload, ~234-byte window): a window starting at offset k spans k..k+234, so it only fits in
+    hay+hay when k <= 32 -- only 33 of 133 start offsets, 25 %. The other 75 % were reported
+    MISMATCH having decoded byte-perfectly, v78 with zero bad frames.
+
+    The old form was safe only because every payload had been LONGER than a capture. It broke the
+    moment a short vector was added, which is worth remembering: this assumption was invisible
+    until the data changed.
     """
-    if not needle:
+    if not needle or not hay:
         return -1
-    if len(needle) > len(hay):
-        return -1
-    return (hay + hay).find(needle)
+    reps = len(needle) // len(hay) + 2
+    return (hay * reps).find(needle)
 
 
 def analyse(got, want):
@@ -432,7 +442,11 @@ def judge_payload(got, want):
     bad = [i for i, f in enumerate(frames) if f == '??']
     interior = [i for i in bad if i != 0 and i != body - 1]
     rr = runs_of(frames)
-    hay = want + want                    # the payload loops, so a window may straddle the wrap
+    # ENOUGH COPIES, for the same reason as cyclic_find: a capture off a SHORT looping payload can
+    # be longer than the payload, and a run is checked at (alignment + start) % len(want), so the
+    # haystack must reach len(want) + body. Two copies silently truncated the slice compare and
+    # reported a byte-perfect capture as silently wrong.
+    hay = want * (body // len(want) + 2)
 
     diag = [(s, f) for s, f in rr if len(f) >= JP_MINVAL]
     if not diag:

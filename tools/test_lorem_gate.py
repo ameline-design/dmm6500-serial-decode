@@ -1,27 +1,29 @@
 #!/usr/bin/env python3
-"""Offline test for a corrected lorem gate. No instruments; the payload comes off disk.
+"""Gates BU.judge_payload, the long-payload verdict. No instruments; the payload comes off disk.
 
-WHAT IS WRONG WITH THE SHIPPED GATE. bench_matrix.py:456 judges a lorem point on
-`longest_clean_run / body >= 0.95`, and BU.analyse validates only the SINGLE LONGEST run
-(bench_uart.py:375-377). That has two independent faults:
+WHAT IT GUARDS AGAINST is a judging rule that returns the wrong verdict, which is as dangerous as
+a decoder bug because it HIDES them. Three real ones are pinned here, each with the case that
+caught it:
 
-  1. It is a fragile ORDER STATISTIC. With k bytes flagged, the score depends on WHERE they
-     land, not how many there are, so the same signal quality passes or fails on luck. Measured:
-     143 lorem points across 13 runs, longest run byte-exact 141 of 141 times it was reported,
-     yet 1.4 % fell below the gate. 600 Bd scored 0.94979 and failed; 38400 Bd scored 0.95000
-     and passed, in the same lap.
-  2. Every run except the longest is NEVER COMPARED TO THE PAYLOAD. A wrong byte in a shorter
-     run is invisible today. test_short_run_corruption below is a case the shipped gate passes
-     and the replacement catches -- which is the whole reason the replacement is stricter, not
-     laxer.
+  1. A fragile ORDER STATISTIC. The old rule scored a capture on `longest_clean_run/body >= 0.95`,
+     so the verdict tracked WHERE flags landed, not how many. For one flag at index p in 239
+     frames the runs are p and 238-p, needing p <= 10 or p >= 228 -- 22 of 239 positions, 9.2 %.
+     Measured across 143 recorded points: the longest run was byte-exact 141 of 141 times it was
+     reported, yet 1.4 % fell below the gate. In one soak lap 600 Bd scored 0.94979 and failed
+     while 38400 Bd scored 0.95000 and passed.
+  2. ONLY THE LONGEST RUN WAS CHECKED against the payload, so a wrong byte in a shorter run was
+     invisible. The 'corrupt byte in a 6 B run' case below is one the old rule passed.
+  3. TWO COPIES OF THE PAYLOAD were assumed enough to search. False for a capture off a payload
+     SHORTER than the window: 234 bytes off a 133-byte loop is one contiguous run spanning 1.76
+     periods, and only 33 of 133 start offsets could be found. v78 decoded with ZERO bad frames
+     and was reported MISMATCH. That assumption was invisible until a short vector existed.
 
-THE REPLACEMENT separates the two questions the one threshold conflates:
-  correctness   -- every run long enough to be diagnostic must be byte-exact in the payload AND
-                   all such runs must agree on ONE alignment (the arb loops, so a single capture
-                   has a single offset; disagreeing runs mean a decode slipped)
-  signal quality-- bound the FLAG COUNT, a stable count statistic that does not move when a flag
-                   changes position, plus a floor on how much of the capture was positively
-                   verified
+THE RULE separates the two questions the single threshold conflated:
+  correctness    -- every run long enough to be diagnostic is byte-exact in the payload AND all
+                    such runs agree on ONE alignment (the arb loops, so a capture has a single
+                    offset; disagreeing runs mean a decode slipped mid-capture)
+  signal quality -- bound the FLAG COUNT, which does not move when a flag changes position, plus
+                    a floor on how much of the capture was positively verified
 
 Usage:  python3 tools/test_lorem_gate.py
 """
@@ -30,102 +32,18 @@ import os
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 PAYLOAD_PATH = os.path.join(ROOT, 'out', 'vectors', 'v71.txt')
 
-# A run shorter than this matches a 1 kB payload by chance often enough to prove nothing, so it
-# is neither validated nor counted as verified coverage. 4 bytes is ~1024/2**32.
-MINVAL = 4
-# Flag budget. A real analog capture of back-to-back 8N1 bytes with no idle to resync on will
-# flag the odd frame; 2 % or two bytes, whichever is kinder, is what 143 recorded points do.
-FLAG_FRAC = 0.02
-FLAG_FLOOR = 2
-# How much of the capture must be POSITIVELY VERIFIED byte-exact. Deliberately below the flag
-# budget's implied coverage so that short unvalidatable runs do not by themselves fail a point.
-COVER_MIN = 0.90
+# THE TEST GATES THE SHIPPED CODE, not a copy of it. This file used to carry its own duplicate of
+# the judging logic, and the copies diverged the moment cyclic_find's short-payload bug was fixed in
+# bench_uart and not here -- the test then passed a rule nothing shipped. Import instead.
+import bench_uart as BU
 
-
-def runs_of(frames):
-    """Every maximal run of non-flagged frames, as (start_index, [frames])."""
-    out, cur, start = [], [], 0
-    for i, f in enumerate(frames):
-        if f == '??':
-            if cur:
-                out.append((start, cur))
-            cur, start = [], i + 1
-        else:
-            if not cur:
-                start = i
-            cur.append(f)
-    if cur:
-        out.append((start, cur))
-    return out
-
-
-def judge(got_hex, payload):
-    """-> (ok, detail). got_hex is the concatenated 2-char-per-frame string, '??' for flagged."""
-    frames = [got_hex[i:i + 2] for i in range(0, len(got_hex), 2)]
-    body = len(frames)
-    if not body:
-        return False, 'no bytes decoded'
-    bad = [i for i, f in enumerate(frames) if f == '??']
-    interior = [i for i in bad if i != 0 and i != body - 1]
-    rr = runs_of(frames)
-
-    # --- correctness: every diagnostic run byte-exact, all agreeing on one alignment ----------
-    # ONE alignment is established for the whole capture and every run is then checked at the
-    # position it predicts -- NOT by searching for each run independently. A 4-8 byte run of
-    # lorem text really does occur more than once in 1 kB (repeated words, spaces), so a plain
-    # find() per run lands on the wrong copy and fakes a misalignment. Found by the position
-    # sweep below, which failed until this was rewritten.
-    hay = payload + payload           # the arb loops, so a window may straddle the wrap
-    diag = [(s, f) for s, f in rr if len(f) >= MINVAL]
-    if not diag:
-        return False, 'nothing long enough to validate (%d B in runs under %d)' % (body, MINVAL)
-    try:
-        asbytes = [(s, bytes(int(x, 16) for x in f)) for s, f in rr]
-    except ValueError:
-        return False, 'capture is not hex'
-    anchor_start, anchor = max(diag, key=lambda r: len(r[1]))
-    anchor_b = bytes(int(x, 16) for x in anchor)
-
-    # Every place the anchor could sit. Usually one; a short anchor may have several, and any of
-    # them is allowed to be the true one, so all are tried before the capture is called wrong.
-    cands, at = [], hay.find(anchor_b)
-    while at >= 0 and at < len(payload):
-        cands.append((at - anchor_start) % len(payload))
-        at = hay.find(anchor_b, at + 1)
-    if not cands:
-        return False, ('run of %d B at index %d is NOT in the payload -- silently wrong'
-                       % (len(anchor_b), anchor_start))
-
-    align, verified, whynot = None, 0, ''
-    for cand in cands:
-        v, ok_all = 0, True
-        for start, gb in asbytes:
-            if len(gb) < MINVAL:
-                continue                      # too short to prove anything either way
-            exp = (cand + start) % len(payload)
-            if hay[exp:exp + len(gb)] != gb:
-                ok_all = False
-                whynot = ('run of %d B at index %d does not match the payload at the alignment '
-                          'the rest of the capture agrees on -- silently wrong' % (len(gb), start))
-                break
-            v += len(gb)
-        if ok_all:
-            align, verified = cand, v
-            break
-    if align is None:
-        return False, whynot
-
-    # --- signal quality: a COUNT, not an order statistic --------------------------------------
-    budget = max(FLAG_FLOOR, int(math.ceil(FLAG_FRAC * body)))
-    if len(interior) > budget:
-        return False, '%d interior flagged, budget %d' % (len(interior), budget)
-    cover = float(verified) / body
-    if cover < COVER_MIN:
-        return False, 'only %.1f %% positively verified (need %.0f %%)' % (100 * cover, 100 * COVER_MIN)
-    return True, ('%d B verified of %d (%.1f %%) at offset %d, %d flagged (budget %d)'
-                  % (verified, body, 100 * cover, align, len(interior), budget))
+judge = BU.judge_payload
+runs_of = BU.runs_of
+MINVAL, FLAG_FRAC = BU.JP_MINVAL, BU.JP_FLAG_FRAC
+FLAG_FLOOR, COVER_MIN = BU.JP_FLAG_FLOOR, BU.JP_COVER_MIN
 
 
 # ==============================================================================
@@ -147,8 +65,12 @@ def hexs(bs):
 def capture(payload, offset, n, flag_at=(), corrupt_at=()):
     """A synthetic capture of n bytes starting at `offset` in the looping payload, with the given
     indices flagged '??' and the given indices' VALUES corrupted (still decoded, silently wrong).
+
+    Repeats the payload enough times for offset+n rather than assuming two copies -- the same
+    assumption that broke cyclic_find, and it broke this helper too the moment a 133-byte payload
+    met a 234-byte window.
     """
-    hay = payload + payload
+    hay = payload * ((offset + n) // len(payload) + 2)
     frames = ['%02x' % hay[offset + i] for i in range(n)]
     for i in corrupt_at:
         frames[i] = '%02x' % (hay[offset + i] ^ 0x20)     # one bit flip, a plausible slip
@@ -265,6 +187,30 @@ def main():
        'exactly the budget (%d flags) -> pass' % budget)
     ok, det = judge(capture(payload, 421, body, flag_at=over), payload)
     ck(not ok, 'budget + 1 (%d flags) -> FAIL  [%s]' % (budget + 1, det))
+
+    print('\n-- a SHORT looping payload: a capture longer than the payload must still pass --')
+    # The bug a 133-byte vector exposed on 2026-08-19. Both cyclic_find and judge_payload assumed
+    # two copies of the payload were enough, which is only true while every payload is LONGER than
+    # a capture. v77/v78 are 133 B and the window is ~234 B, so a window starting at offset k spans
+    # k..k+234 and fits in want+want only when k <= 32 -- 25 % of offsets. The other 75 % were
+    # called MISMATCH having decoded byte-perfectly.
+    import bench_uart as BU_
+    short = open(os.path.join(ROOT, 'out', 'vectors', 'v77.txt'), 'rb').read()
+    ck(len(short) == 133, 'the short vector is 133 B  [%d]' % len(short))
+    every = True
+    for k in range(len(short)):
+        got = capture(short, k, 234)
+        if not judge(got, short)[0]:
+            every = False
+            ck(False, 'short payload, 234 B window at offset %d -> should pass' % k)
+            break
+    ck(every, 'a 234 B window passes at ALL %d start offsets of a 133 B payload' % len(short))
+    # and the underlying primitive, directly
+    misses = [k for k in range(len(short))
+              if BU_.cyclic_find(short, (short + short + short)[k:k + 234]) < 0]
+    ck(not misses,
+       'cyclic_find finds a 234 B needle at all %d offsets of a 133 B loop  [%d missed]'
+       % (len(short), len(misses)))
 
     print()
     if FAILED:
