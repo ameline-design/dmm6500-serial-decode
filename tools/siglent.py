@@ -74,6 +74,29 @@ class SDG:
         Cheap insurance against the one failure mode on this bench that cannot be
         recovered from in software.
         """
+        # A ZERO-LENGTH WAVEFORM BRICKS THIS INSTRUMENT. Reported publicly and independently: a fumbled
+        # low-level SCPI upload stored an empty waveform, and the NEXT POWER-UP showed the logo for ~25 s,
+        # flashed the LEDs and left the LCD blank forever. The poster recovered only because their firmware
+        # was PATCHED and exposed telnet, letting them delete the file from
+        # /usr/bin/siglent/usr/usr by hand.
+        #
+        # WE HAVE NO SUCH ESCAPE. This generator runs stock 2.01.01.39R7 with no telnet, so a brick here is
+        # not a power-cycle away from fixed -- it is a dead instrument. And the path to it is one we walk
+        # routinely: the poster power-cycled to clear a STUCK TCP STATE, which is our WVDT wedge exactly.
+        # Wedge, then power-cycle, is our documented recovery, and it is also the step that detonates a bad
+        # stored waveform.
+        #
+        # So this refuses rather than warns, and it refuses in the DRIVER rather than in one caller --
+        # tools/upload_vectors.py writes WVDT through here directly and sorted payloads by size without
+        # ever checking for zero.
+        if not payload:
+            raise ValueError(
+                'REFUSING an empty payload for %r. A zero-length waveform BRICKS the SDG at its next '
+                'power-up, and this instrument has no telnet to recover through.' % prefix[:40])
+        if 'WVDT' in prefix.upper() and len(payload) % 2:
+            raise ValueError(
+                'REFUSING a %d-byte WVDT payload: waveform data is 16-bit codewords, so an odd length '
+                'means the file is truncated. Half a waveform is not a waveform.' % len(payload))
         self.log.append(f'{prefix}<{len(payload)} binary bytes>')
         if self.dry:
             return

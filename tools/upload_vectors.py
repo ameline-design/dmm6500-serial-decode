@@ -88,6 +88,23 @@ def main():
         if not os.path.exists(path):
             raise SystemExit('REFUSING: %s is mapped but %s is missing' % (vid, path))
         n = os.path.getsize(path)
+        # SIZE 0 IS NOT A SMALL UPLOAD, IT IS A BRICK. A zero-length waveform stored on this generator
+        # kills it at the next power-up -- see the note in siglent.write_raw. This sorted by size and
+        # would have put an empty or truncated .bin straight into the upload list.
+        if n == 0:
+            raise SystemExit('REFUSING: %s is ZERO BYTES. Uploading it would store an empty waveform, '
+                             'which bricks the instrument at its next power-up with no telnet to recover '
+                             'through. Regenerate the vectors with tools/make_vectors.lua.' % path)
+        if n % 2:
+            raise SystemExit('REFUSING: %s is %d bytes, an ODD length. Waveform data is 16-bit codewords, '
+                             'so the file is truncated.' % (path, n))
+        # The manifest is the second opinion: a file that does not match its recorded size is not the
+        # vector the oracle describes, whatever its contents are.
+        want = int(r.get('nbytes') or 0)
+        if want and want != n:
+            raise SystemExit('REFUSING: %s is %d bytes but manifest.tsv records %d. Regenerate rather '
+                             'than upload a vector whose expected bytes are for a different file.'
+                             % (path, n, want))
         (toobig if n > SDG_UPLOAD_SAFE_BYTES else todo).append((vid, MAP[vid], n, r))
 
     if a.only:

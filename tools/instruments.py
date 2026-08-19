@@ -189,6 +189,24 @@ SDG_UPLOAD_WEDGE_HAZARD = True
 SDG_FW = '2.01.01.39R7'
 SDG_UPLOAD_SAFE_BYTES = 65536      # below this, uploads have never wedged it
 
+# A ZERO-LENGTH WAVEFORM BRICKS THIS GENERATOR, AND WE HAVE NO RECOVERY. Reported publicly by an owner who
+# did it with low-level SCPI over TCP -- the same route this repo uses. An empty waveform got stored, the
+# instrument was power-cycled, and it never came back: logo for ~25 s, a brief LED flash, then a blank LCD
+# forever. They recovered ONLY because their firmware was patched and exposed telnet, which let them delete
+# the file from /usr/bin/siglent/usr/usr. This instrument runs stock 2.01.01.39R7 with no telnet.
+#
+# THE TRIGGER IS OUR OWN RECOVERY PROCEDURE. They power-cycled to clear a stuck TCP state -- which is the
+# WVDT wedge documented above. Wedge, then power-cycle, is what we do; it is also the step that turns a bad
+# stored waveform into a dead instrument. So the two hazards compose, and the empty-payload guard matters
+# most on exactly the day the wedge happens.
+#
+# Guarded in siglent.write_raw() rather than in a caller: it refuses an empty payload outright, and refuses
+# an odd-length WVDT payload because 16-bit codewords cannot come in odd bytes -- that means a truncated
+# file. tools/upload_vectors.py additionally refuses a zero-byte or odd .bin and cross-checks its size
+# against manifest.tsv before sending anything.
+SDG_ZERO_LENGTH_WAVEFORM_BRICKS_IT = True
+
+
 # RE-MEASURED ON 39R7, 2026-08-19, AND THE CEILING BOUNDS A COUNT AS MUCH AS A SIZE.
 #
 # One session, in this order:
