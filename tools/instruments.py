@@ -217,6 +217,30 @@ SDG_UPLOAD_SAFE_BYTES = 65536      # below this, uploads have never wedged it
 # at offset 1676). So TWO large uploads totalling 8.14 MB did not wedge it, while THREE totalling 533 kB
 # did. Bytes are not the variable; the number of large writes is.
 #
+# THE HARDWARE THIS ALL FOLLOWS FROM, per the owner: a CPU board carrying an ARM A8, 128 MB of flash and
+# 128 MB of RAM, joined by a SERIAL LINK to an analog board with 2 banks of 128 MB DDR feeding the FPGA
+# that drives the DAC. Two banks is plausibly one per channel -- it is a 2-channel generator -- rather
+# than double buffering.
+#
+# WHAT THAT SETTLES:
+#
+#   * A WAVEFORM IS RESIDENT, NOT STREAMED. SDG_MAX_PTS is 8 388 608 points = 16 MB, which is 12% of ONE
+#     128 MB bank. So there is no ping-pong refill during playback and therefore no buffer-swap boundary
+#     -- which kills, before it was built on, a tempting candidate mechanism for the periodic-payload
+#     failures: that errors might cluster at a fixed payload spacing as banks swapped. There is no swap.
+#     (That idea came from misreading the banks as 128 KB, where a 6.8 MB arb could not have been
+#     resident and the swap interval would have been a constant ~629 payload bytes at every baud rate.
+#     It was arithmetically pretty and the premise was wrong by a factor of a thousand.)
+#
+#   * SELECTION COST IS THE FLASH -> DDR COPY over that serial link, which is why it scales with point
+#     count and why ARWV? can be slow to answer. Measured: 6.51 MB needed 6-10 s, so 0.65-1.08 MB/s or
+#     roughly 5-9 Mbit/s. At the low end the largest arb the instrument accepts, 16 MB, would take ~25 s
+#     -- which is what makes select_arb's 30 s readback timeout adequate for anything, rather than a
+#     number picked to clear the one case that failed.
+#
+#   * 128 MB of flash matches the ~80 MB free the front panel reports, with firmware and the 39 stored
+#     vectors (9.5 MB) accounting for the rest. Capacity is not a constraint for this project.
+
 # The ceiling is consequently a bound on HOW MANY large writes have happened since the last power cycle,
 # not on how big any one of them is. It stays at 65536 as the trigger for "count this one", because
 # nothing here establishes where between 1 and 3 the real limit sits, and the cost of finding out is a
