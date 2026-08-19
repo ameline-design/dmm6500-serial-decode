@@ -39,6 +39,7 @@ import bench_uart as BU
 import bench_sync as BS
 import run_app as RA
 import screenshot as SS
+import vector_names as VN                                     # noqa: E402
 
 # The vectors are rendered 0..3.3 V against a 5 V full scale, so AMP scales the swing linearly and
 # the low level stays at 0 V. amp = 10 * swing / 3.3.
@@ -364,7 +365,7 @@ def suite_formats(d, g, a, rows):
     print('\n=== FORMATS -- %d Bd, %.1f V swing, one in-app Capture each ==='
           % (FORMAT_BAUD, NOMINAL_SWING))
     for vid, expect, why in FORMATS:
-        g.select_arb(vid, amp_for(NOMINAL_SWING), FORMAT_SRATE)
+        g.select_arb(VN.arb(vid), amp_for(NOMINAL_SWING), FORMAT_SRATE)
         g.output(True, ch=1)
         time.sleep(a.settle)
         res, hexs, notes = press(d, vid)
@@ -387,7 +388,7 @@ def suite_rates(d, g, a, rows):
         if srate > I.SDG_MAX_SRATE:
             print('  %7d Bd SKIPPED -- %g Sa/s over the SDG ceiling' % (baud, srate))
             continue
-        g.select_arb(RATE_ARB, amp_for(NOMINAL_SWING), srate)
+        g.select_arb(VN.arb(RATE_ARB), amp_for(NOMINAL_SWING), srate)
         g.output(True, ch=1)
         time.sleep(a.settle)
         res, hexs, notes = press(d, '%dBd' % baud)
@@ -404,7 +405,7 @@ def suite_levels(d, g, a, rows):
     print('\n=== LEVELS -- v41 at three logic swings, LOGIC and THRESH checked ===')
     for swing, families in LEVELS:
         amp = amp_for(swing)
-        g.select_arb('v41', amp, FORMAT_SRATE)
+        g.select_arb(VN.arb('v41'), amp, FORMAT_SRATE)
         g.output(True, ch=1)
         time.sleep(a.settle)
         res, hexs, notes = press(d, '%.1fV' % swing)
@@ -432,7 +433,7 @@ def suite_lorem(d, g, a, rows):
         if srate > I.SDG_MAX_SRATE:
             print('  %7d Bd SKIPPED -- %g Sa/s over the SDG ceiling' % (baud, srate))
             continue
-        g.select_arb(LOREM_ARB, amp_for(NOMINAL_SWING), srate)
+        g.select_arb(VN.arb(LOREM_ARB), amp_for(NOMINAL_SWING), srate)
         g.output(True, ch=1)
         time.sleep(a.settle)
         res, hexs, notes = press(d, 'lorem%d' % baud)
@@ -497,7 +498,7 @@ def suite_offsets(d, g, a, rows):
         print('  %.1f V swing (AMP %.2f): |OFST| <= %.2f V  -> %s'
               % (swing, amp, lim, ', '.join('%+.2f' % o for o in offs)))
         for ofst in offs:
-            g.select_arb('v41', amp, FORMAT_SRATE, offset_v=ofst)
+            g.select_arb(VN.arb('v41'), amp, FORMAT_SRATE, offset_v=ofst)
             g.output(True, ch=1)
             time.sleep(a.settle)
             # READ THE OFFSET BACK. The generator clamps rather than refusing, and a clamped
@@ -607,7 +608,7 @@ def suite_hard(d, g, a, rows):
             if srate > I.SDG_MAX_SRATE:
                 print('  %-5s %7d Bd SKIPPED -- %g Sa/s over the SDG ceiling' % (vid, baud, srate))
                 continue
-            g.select_arb(vid, amp_for(NOMINAL_SWING), srate)
+            g.select_arb(VN.arb(vid), amp_for(NOMINAL_SWING), srate)
             g.output(True, ch=1)
             time.sleep(a.settle)
             # PINNED, and pinned per point: press() clears the forced values when unlock is true, so
@@ -689,7 +690,7 @@ def suite_payloads(d, g, a, rows):
             print('  %-6s SKIPPED -- no %s.txt; run tools/make_vectors.lua' % (vid, vid))
             continue
         srate = int(round(9600 * LOREM_SPB))
-        g.select_arb(vid, amp_for(NOMINAL_SWING), srate)
+        g.select_arb(VN.arb(vid), amp_for(NOMINAL_SWING), srate)
         g.output(True, ch=1)
         time.sleep(a.settle)
         res, hexs, notes = press(d, 'pay_%s' % vid)
@@ -761,7 +762,10 @@ def main():
             # avoided exposure to the wedge -- so the stored list decides, not the flag.
             have = (g.query('STL? USER') or '')
             need = [v for v, _, _ in FORMATS] + [RATE_ARB, LOREM_ARB] + [v for v, _ in HARD]
-            need = [v for v in need if (',' + v) not in have.replace(' ', '')]
+            # EXACT NAMES. A substring test would report a present vector as missing after the rename
+            # -- or worse, a missing one as present -- and this branch UPLOADS what it thinks is
+            # missing, which is the path that wedges the generator.
+            need = VN.missing(have, need)
             print('missing from the generator: %s' % (', '.join(need) or 'nothing'))
             for vid in need:
                 cw = BU.codewords(vid)
@@ -770,7 +774,7 @@ def main():
                     print('  REFUSED: %d bytes is over the %d-byte safe ceiling'
                           % (2 * len(cw), I.SDG_UPLOAD_SAFE_BYTES))
                     continue
-                g.upload_arb(vid, cw, amp_for(NOMINAL_SWING), FORMAT_SRATE)
+                g.upload_arb(VN.arb(vid), cw, amp_for(NOMINAL_SWING), FORMAT_SRATE)
                 time.sleep(0.3)
         g.impair_off(ch=2)
         g.combine(False, ch=1)

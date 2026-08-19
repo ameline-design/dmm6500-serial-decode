@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from dmmrun import DMM
 from siglent import SDG
 import bench_matrix as MX
+import vector_names as VN                                     # noqa: E402
 
 DIAG_TSP = r'''
 function dg_point(vid, nb, par)
@@ -112,7 +113,7 @@ def main():
             if ln and ln != '===DONE===':
                 print('  dgmod: ' + ln)
         for vid in a.vectors.split(','):
-            g.select_arb(vid, MX.amp_for(3.3), MX.FORMAT_SRATE)
+            g.select_arb(VN.arb(vid), MX.amp_for(3.3), MX.FORMAT_SRATE)
             g.output(True, ch=1)
             time.sleep(0.4)
             # auto, then the format the file was WRITTEN in -- forced, so the choice is out of it

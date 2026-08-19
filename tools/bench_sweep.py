@@ -46,6 +46,7 @@ import instruments as I
 from dmmrun import DMM
 from siglent import SDG
 import bench_uart as BU
+import vector_names as VN                                     # noqa: E402
 
 # The standard ladder. 14400/28800/76800 are included because they are genuinely standard even
 # though they are less common, and 250000 because it is the documented wall -- the point of a
@@ -119,7 +120,7 @@ def main():
         if a.upload:
             cw = BU.codewords(ARB)
             print('uploading %s (%d points, %d bytes) ONCE' % (ARB, len(cw), 2 * len(cw)))
-            g.upload_arb(ARB, cw, a.amp, int(rates[0] * SAMPLES_PER_BIT))
+            g.upload_arb(VN.arb(ARB), cw, a.amp, int(rates[0] * SAMPLES_PER_BIT))
         # CH2 into CH1, or explicitly off -- set once, not per rate, so a rate change is only
         # ever an SRATE write.
         if a.noise == 'none':
@@ -143,7 +144,7 @@ def main():
                       % (baud, srate))
                 continue
             # SELECT, never re-upload: this is the whole point of the design.
-            g.select_arb(ARB, a.amp, srate)
+            g.select_arb(VN.arb(ARB), a.amp, srate)
             g.output(True, ch=1)
             time.sleep(a.settle)
 

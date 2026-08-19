@@ -285,7 +285,10 @@ def instrument_check():
         out.append('SDG: %s' % (g.idn() or '?').strip())
         stl = g.query('STL? USER') or ''
         need = ['v41', 'v44a', 'v44b', 'v44c', 'v44d', 'v44e', 'v80', 'v71']
-        missing = [v for v in need if (',' + v) not in stl.replace(' ', '')]
+        # THROUGH VN.missing(): the ids here are local, the instrument holds SER_ names, and an exact
+        # membership test is required rather than a substring one -- SER_Hello_8N1 is a prefix of
+        # SER_Hello_8N1_Sp10, so the old test read a missing vector as present.
+        missing = VN.missing(stl, need)
         if missing:
             ok = False
             out.append('REFUSED: waveforms missing from the generator: %s. Upload them with '

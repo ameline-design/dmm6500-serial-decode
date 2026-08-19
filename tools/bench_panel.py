@@ -53,6 +53,7 @@ from dmmrun import DMM
 import run_app as RA
 import bench_sync as BS
 import screenshot as SS
+import vector_names as VN                                     # noqa: E402
 
 # Trigger-model progress notices. Informational severity, posted by every armed capture, and not
 # something a press can avoid -- so they are excluded by number rather than by severity, which
@@ -552,7 +553,7 @@ def main():
         from siglent import SDG
         g = SDG()
         print('SDG: %s' % g.idn())
-        g.select_arb('v80', 10.0, a.baud * 10)
+        g.select_arb(VN.arb('v80'), 10.0, a.baud * 10)
         g.output(True, ch=1)
         print('playing v80 at %d baud (SRATE %d)' % (a.baud, a.baud * 10))
         time.sleep(0.4)
@@ -649,7 +650,7 @@ def run_sequence(p, g, a):
     def play(baud):
         if g is None:
             return
-        g.select_arb('v80', 10.0, baud * 10)
+        g.select_arb(VN.arb('v80'), 10.0, baud * 10)
         g.output(True, ch=1)
         time.sleep(0.4)
 

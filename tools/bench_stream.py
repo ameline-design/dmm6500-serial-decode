@@ -40,6 +40,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from dmmrun import DMM                                     # noqa: E402
 from siglent import SDG
 import bench_sync as BS                                    # noqa: E402
+import vector_names as VN                                     # noqa: E402
 
 # Informational trigger-model notices, excluded by number exactly as bench_panel.py does.
 INFO_EVENTS = ('2731', '2732', '2728', '4917')
@@ -118,7 +119,7 @@ def case(g, d, a, baud, capmode, record_s, label):
           % (label, baud, capmode, record_s))
     print('=' * 78)
 
-    g.select_arb('v80', 10.0, int(baud * 10.0), offset_v=0.0)
+    g.select_arb(VN.arb('v80'), 10.0, int(baud * 10.0), offset_v=0.0)
     g.write('C1:OUTP ON,LOAD,HZ,PLRT,NOR')
     time.sleep(0.4)
     d.exec('sdec.force_baud, sdec.force_nbits = %d, nil' % baud, timeout=10)

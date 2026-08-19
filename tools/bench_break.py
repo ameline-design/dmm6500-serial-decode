@@ -40,6 +40,7 @@ import instruments as I
 from dmmrun import DMM
 from siglent import SDG
 import screenshot as SS
+import vector_names as VN                                     # noqa: E402
 
 INFO_EVENTS = ('2731', '2732', '2728', '4917')
 
@@ -215,7 +216,7 @@ def cases(g, d, a):
     ZERO = b'\x00'
 
     def arb(baud, spb=10.0, amp=AMP, ofst=0.0, invert=False):
-        g.select_arb('v80', amp, int(baud * spb), offset_v=ofst)
+        g.select_arb(VN.arb('v80'), amp, int(baud * spb), offset_v=ofst)
         g.write('C1:OUTP %s,LOAD,HZ,PLRT,%s' % ('ON', 'INVT' if invert else 'NOR'))
         time.sleep(a.settle)
 

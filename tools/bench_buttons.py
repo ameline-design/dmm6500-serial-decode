@@ -36,6 +36,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import instruments as I
 from dmmrun import DMM
 import bench_uart as BU
+import vector_names as VN                                     # noqa: E402
 
 MODULES = ['tsp/usb_log.tsp', 'tsp/serial_core.tsp', 'tsp/uart_decode.tsp',
            'tsp/chunk_decode.tsp', 'tsp/serial_ui.tsp', 'tsp/serial_app.tsp']
@@ -87,7 +88,7 @@ def main():
         from siglent import SDG
         g = SDG()
         print('SDG: ' + g.idn())
-        g.select_arb('v80', 10.0, a.baud * 10)
+        g.select_arb(VN.arb('v80'), 10.0, a.baud * 10)
         g.output(True, ch=1)
         print('playing v80 at %d baud (SRATE %d)' % (a.baud, a.baud * 10))
         g.close()

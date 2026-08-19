@@ -39,6 +39,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from dmmrun import DMM                                     # noqa: E402
 from siglent import SDG                                    # noqa: E402
+import vector_names as VN                                     # noqa: E402
 
 # Trigger-model progress notices, informational severity, posted by EVERY armed capture -- so they
 # are excluded by number rather than by severity, which would also hide real errors. Same list and
@@ -133,7 +134,7 @@ def main():
 
     # ---- the signal both measurements share ---------------------------------------
     g = SDG()
-    g.select_arb('v80', 10.0, int(a.baud * 10.0), offset_v=0.0)
+    g.select_arb(VN.arb('v80'), 10.0, int(a.baud * 10.0), offset_v=0.0)
     g.write('C1:OUTP ON,LOAD,HZ,PLRT,NOR')
     time.sleep(0.4)
     d.exec('sdec.force_baud, sdec.force_nbits = %d, nil' % a.baud, timeout=10)

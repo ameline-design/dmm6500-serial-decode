@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from dmmrun import DMM
 from siglent import SDG
 import bench_matrix as MX
+import vector_names as VN                                     # noqa: E402
 
 YIELD_TSP = r'''
 -- The PROBE pass's answer, which nothing normally keeps: autoset() overwrites sdec.baud on the
@@ -69,7 +70,7 @@ def main():
 
     g, d = SDG(), DMM()
     try:
-        g.select_arb(a.arb, MX.amp_for(3.3), int(a.baud * MX.RATE_SPB))
+        g.select_arb(VN.arb(a.arb), MX.amp_for(3.3), int(a.baud * MX.RATE_SPB))
         g.output(True, ch=1)
         time.sleep(0.4)
         d.send('print("SYNC")')

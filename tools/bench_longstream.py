@@ -32,6 +32,7 @@ import bench_matrix as BM                                  # noqa: E402
 import bench_uart as BU                                    # noqa: E402
 from dmmrun import DMM                                     # noqa: E402
 from siglent import SDG                                    # noqa: E402
+import vector_names as VN                                     # noqa: E402
 
 ROW = re.compile(r'^(\d{4})\s+((?:[0-9A-F]{2}|--|\s{2})(?:\s+(?:[0-9A-F]{2}|--))*)\s*\|')
 
@@ -75,7 +76,7 @@ def main():
     print('payload: %d bytes, non-repeating (%r...)' % (len(payload), payload[:20]))
 
     g = SDG()
-    g.select_arb(BM.LOREM_ARB, 10.0, int(round(a.baud * BM.LOREM_SPB)))
+    g.select_arb(VN.arb(BM.LOREM_ARB), 10.0, int(round(a.baud * BM.LOREM_SPB)))
     g.write('C1:OUTP ON,LOAD,HZ,PLRT,NOR')
     time.sleep(0.5)
 

@@ -38,6 +38,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bench_sync as BS  # noqa: E402
+import vector_names as VN                                     # noqa: E402
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # THE SUMMARY BLOCK IS THE AUTHORITY ON WHICH POINTS EXIST, and these four patterns bracket it.
@@ -315,7 +316,7 @@ def record_wire(g):
     # and guessing it wrong would put the wrong voltage on the operator's wire.
     from bench_matrix import amp_for, NOMINAL_SWING, LOREM_ARB, LOREM_SPB
     srate = int(round(9600 * LOREM_SPB))
-    g.select_arb(LOREM_ARB, amp_for(NOMINAL_SWING), srate)
+    g.select_arb(VN.arb(LOREM_ARB), amp_for(NOMINAL_SWING), srate)
     g.output(True, ch=1)
     time.sleep(0.6)
     return '%s@9600' % LOREM_ARB

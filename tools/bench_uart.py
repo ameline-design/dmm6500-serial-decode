@@ -44,6 +44,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import instruments as I
 from dmmrun import DMM
 from siglent import SDG
+import vector_names as VN                                     # noqa: E402
 
 VECDIR = 'out/vectors'
 
@@ -53,7 +54,15 @@ VECDIR = 'out/vectors'
 # v71/72/73 are deliberately the same file at three sample rates, so if baud
 # detection tracked the file instead of the playback rate it would show up as
 # three identical answers.
-SWEEP = ['v75', 'v71', 'v72', 'v73', 'v74']    # 1200 9600 19200 57600 115200
+# ONE FILE, FIVE PLAYBACK RATES, written as vid@baud. This used to be five separate vectors -- v75, v71,
+# v72, v73, v74 -- and three of those were BYTE-IDENTICAL, which was the point: if detection tracked the
+# file instead of the playback rate, the identical ones would give identical answers. The experiment is
+# unchanged and now needs one waveform, because the rate comes from srate at selection time.
+#
+# It also has to be this way: v72-v75 were retired in the 2026-08-19 rename as duplicate renders and are
+# not on the instrument. And selecting a 213 kB arb costs ~1 s of flash-to-FPGA copy against ~0.01 s to
+# change srate (tools/instruments.py), so re-selecting per rate was paying for nothing.
+SWEEP = ['v71@1200', 'v71@9600', 'v71@19200', 'v71@57600', 'v71@115200']
 
 # The measurement function is appended to the module load so it exists once and
 # is called per point. Keeping it here rather than sending it per point avoids a
@@ -602,10 +611,18 @@ def main():
     try:
         load_modules(d, ['tsp/serial_core.tsp', 'tsp/uart_decode.tsp'])
         print()
-        for v in vids:
+        for spec in vids:
+            # vid@baud overrides the manifest's rate, keeping the vector's OWN points-per-bit so the
+            # rendered fidelity is unchanged -- only the playback clock moves.
+            v, _, at = spec.partition('@')
             m = man[v]
-            baud = int(m['baud'])
-            srate = float(m['srate_sa_s'])
+            if at:
+                spb = float(m['srate_sa_s']) / float(m['baud'])
+                baud = int(at)
+                srate = baud * spb
+            else:
+                baud = int(m['baud'])
+                srate = float(m['srate_sa_s'])
             amp = float(m['amp_vpp'])
             want = bytes(int(x, 16) for x in m['exp_hex'].split())
 
@@ -613,13 +630,13 @@ def main():
                 print('%s: SELECTING already-uploaded waveform at %g Sa/s, '
                       '%s Vpp, %d baud %s, %d expected bytes'
                       % (v, srate, amp, baud, m['exp_fmt'], len(want)))
-                sdg.select_arb(v, amp, srate, offset_v=float(m['ofst_v']), ch=1)
+                sdg.select_arb(VN.arb(v), amp, srate, offset_v=float(m['ofst_v']), ch=1)
             else:
                 cw = codewords(v)
                 print('%s: %d pts at %g Sa/s, %s Vpp, %d baud %s, %d expected '
                       'bytes' % (v, len(cw), srate, amp, baud, m['exp_fmt'],
                                  len(want)))
-                sdg.upload_arb(v, cw, amp, srate,
+                sdg.upload_arb(VN.arb(v), cw, amp, srate,
                                offset_v=float(m['ofst_v']), ch=1)
             sdg.output(True, ch=1, load='HZ')
             time.sleep(a.settle)

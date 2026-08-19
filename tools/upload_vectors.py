@@ -30,55 +30,10 @@ from siglent import SDG                                        # noqa: E402
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VECDIR = os.path.join(ROOT, 'out', 'vectors')
 
-# THE MAPPING, and it is the whole point of the file. Keyed by the id in manifest.tsv.
-#
-# The name states the payload and the WIRE format, never the baud rate -- the rate comes from the sample
-# rate at selection time, so one waveform serves every rate. See docs/VECTORS.md for why v44e is 8N2 when
-# the manifest's exp_fmt says 8N1, and why the pattern vectors are 8N1 when it says 7E1/7O1.
-MAP = {
-    'v41':  'SER_Hello_8N1',
-    'v44a': 'SER_Hello_7E1',
-    'v44b': 'SER_Hello_7O1',
-    'v44c': 'SER_Hello_8E1',
-    'v44d': 'SER_Hello_8O1',
-    'v44e': 'SER_Hello_8N2',          # two stop bits; nothing but this name records that
-    'v45':  'SER_Hello_8N1_Inv',
-    'v46':  'SER_Page200B_8N1',
-    'v47':  'SER_Hello_8N1_Spike',
-    'v48a': 'SER_Hello_8N1_Drift06',
-    'v48b': 'SER_Hello_8N1_Drift10',
-    'v51':  'SER_MIDI_8N1',
-    'v61':  'SER_LIN_01',
-    'v62':  'SER_LIN_02',
-    'v63':  'SER_LIN_03',
-    'v76':  'SER_Lorem300B_8N1',
-    'v77':  'SER_Fox_8N1',
-    'v78':  'SER_Fox_7E1',
-    'v80':  'SER_Hello_8N1_Sp10',     # 10.00 samples/bit; v41 is 10.42. See RETIRED note below.
-    'v90':  'SER_Blocks256B_8N1',
-    'v91':  'SER_RandomRef_8N1',
-    'v92':  'SER_Walk_8N1',
-    'v71':  'SER_Lorem1kB_8N1',       # over the ceiling -- USB key only, refused here
-    'v93':  'SER_Random1kB_8N1',      # over the ceiling
-    'v94':  'SER_Blocks512B_8N1',     # over the ceiling
-    # A PAYLOAD THE EXACT SIZE OF A RECORDING. Against a 1 kB loop a 32 kB recording sees the same
-    # 1024 bytes 32 times, so a systematically wrong byte repeats in every copy and reads as the
-    # payload. These make every position unique. 1.63 MB and 6.51 MB -- USB key, not close calls.
-    'v95':  'SER_Random8kB_8N1',
-    'v96':  'SER_Random32kB_8N1',
-}
-for _i in range(6):
-    MAP['r%02d' % _i] = 'SER_Random_%02d_8N1' % (_i + 1)
-for _i in range(6, 12):
-    MAP['r%02d' % _i] = 'SER_Random_%02d_7E1' % (_i + 1)
-
-# DELIBERATELY UNNAMED, so they are not uploaded: same payload as a vector that already has a name,
-# re-rendered at a different points-per-bit. With the rate set by srate they carry no information.
-#   v42 v43         Hello re-rendered for 115200 / 250000
-#   v72 v73         BYTE-IDENTICAL to v71 (checked: same Fletcher-32)
-#   v74 v75         Lorem1kB re-rendered at 8.68 / 8.33 points per bit
-#   v81 v82 v83 v84 BYTE-IDENTICAL to v80
-RETIRED = {'v42', 'v43', 'v72', 'v73', 'v74', 'v75', 'v81', 'v82', 'v83', 'v84'}
+# THE MAPPING LIVES IN tools/vector_names.py, because the harnesses need it too -- an id is the local
+# file and the point label, while the value is the name on the instrument, and a second copy of that
+# table is a second thing to forget to update.
+from vector_names import MAP, RETIRED                       # noqa: E402
 
 NAME_RE = re.compile(r'^SER_[A-Za-z0-9_]+$')
 
