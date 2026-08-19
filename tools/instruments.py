@@ -249,6 +249,16 @@ SDG_UPLOAD_SAFE_BYTES = 65536      # below this, uploads have never wedged it
 #     15 us (rise = 1.5 samples), so our edge shaping dominates by ~18 000x. Any edge effect in a capture
 #     is the vector's or the analog path's, never the converter's.
 #
+#   * THE SIGNAL PATH AND THE CONTROL PLANE ARE SEPARATE VERDICTS, and it matters that they not be
+#     collapsed. Web teardowns and the chip datasheets say this generator does what it claims without
+#     glitching, and everything computed here agrees: 16x oversampling at the DAC, three orders of
+#     magnitude of spare resolution at a logic threshold, four orders of spare bandwidth. So THE ANALOG
+#     SIDE IS TRUSTWORTHY -- when a capture looks wrong, the decoder or the coax is the place to look.
+#     That is not a licence to trust the REMOTE INTERFACE, which is demonstrably defective on this
+#     firmware and on the previous one: three over-ceiling WVDT writes stop the SCPI service dead. Good
+#     hardware with a buggy control plane is an ordinary combination, and dropping the wedge guard
+#     because the teardown was reassuring would cost a walk to the bench.
+#
 #   * AND THERE IS FOUR ORDERS OF MAGNITUDE OF HEADROOM. This project drives ONE channel at 100 kS/s,
 #     200 kB/s, which is 1 part in 24 000 of that 4.8 GB/s. Playback starvation is therefore not a
 #     candidate mechanism for anything seen in a capture -- the second appealing explanation for the
