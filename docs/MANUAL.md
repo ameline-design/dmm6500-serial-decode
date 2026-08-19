@@ -69,7 +69,7 @@ Along the top are the things the app worked out about your line:
 | **THRESH** | The voltage it is using to tell 0 from 1. |
 | **SA/BIT** | Samples per bit. More is better; 8 is comfortable, 4 still works. |
 | **RATE** | How fast the meter sampled. |
-| **BYTES / ERR** | How many bytes came out, and how many were broken. |
+| **BYTES / ERR** | How many bytes came out, and how many of them you cannot trust. |
 | **FIT** | How well one bit-length explains what it measured, from 0 to 1. Below about 0.9 means the timing was messy. |
 
 A dash means "not measured yet".
@@ -78,33 +78,33 @@ A dash means "not measured yet".
 one is drawn red across its whole width — offset, hex and ASCII together — so damage is found by
 looking rather than by counting. Flagged bytes read as `?` in the ASCII gutter:
 
-![An 8 kB recording whose first two rows failed](img/panel-errors.png)
+![A capture that began mid-byte: the note names 15 bytes and ERR reads 15](img/panel-errors.png)
 
-That is a real 8 kB recording that began part way through a byte. **The note row names the cause** —
+That is a real 240B capture that began part way through a byte. **The note row names the cause** —
 `began mid-byte -- the first N bytes are misaligned.` — which is the difference between a puzzle and a
 known condition: the app arms on a busy line, so it lands wherever the traffic happens to be, and the
-bytes before the first gap between messages cannot be framed.
+bytes before the first gap between messages cannot be framed. On a busy line roughly one capture in
+eight starts this way.
 
-The note's number is **how far the damage reaches**: the last byte in that opening region the decoder
-could not frame, so "the first N" is literally true and nothing past N is being accused. `ERR` is the
-**count** of failures. They answer different questions, but they no longer disagree wildly — an earlier
-version quoted the whole region before the first gap, which on one capture read 79 against 3 real
-failures. One deliberate difference is left: `ERR` ignores failures in the first three frames and in the
-last one, because a healthy gapless line always resynchronises at the start and always has its final
-frame cut in half — so a short misaligned head can leave `ERR` at 0 while the note still names it. The
-rows are red either way:
+**The note and `ERR` agree, and that is deliberate.** The note's number is how far the damage reaches:
+the last byte in the opening region the decoder could not frame, so "the first N" is literally true and
+nothing past N is being accused. `ERR` is then never less than N. Above, the note says 15 and `ERR` says
+15 — while only 11 of those bytes actually failed a check. The other four are the reason `ERR` counts
+the whole region: inside a misaligned head the bit boundaries are in the wrong places, so a frame there
+can satisfy its parity and stop bit by luck and still hand back a plausible wrong byte. `3`, `7`, `9`
+and `13` came out as `M`, `I`, `M` and `s` — perfectly ordinary characters, and wrong. **`ERR` counts
+bytes you cannot trust, not checks that failed**, because the silently wrong ones are the dangerous
+ones.
 
-![One misaligned byte: ERR reads 0, the row is red, the note names it](img/panel-err0.png)
+Two exclusions remain, and both keep `ERR` at 0 on good data. When no misaligned head is identified,
+the first three frames are ignored — a gapless line has no idle for the framer to anchor on, so it
+routinely resynchronises a frame or two in, and counting that made `ERR` read 1 or 2 on every healthy
+capture. The final frame is ignored always, because the capture boundary cuts it in half. Neither
+exclusion applies across a head the app has evidence for, which is what stopped the panel reading
+`ERR 1` beside a note naming four bytes.
 
-That is the smallest version of the same fault, on a 240B frame capture. Exactly one byte was
-misaligned — `?quick brown fox`, resynchronised by the second byte — so `ERR` counts nothing, because
-byte 1 is one of the three head frames it ignores. The **row is still red**, which is the whole reason
-the colour does not defer to the count: a reader who trusted `ERR` alone would see a warning with
-nothing to look at. On a busy line roughly one capture in eight starts this way.
-
-In the 8 kB capture above, everything from the first gap onward decoded cleanly, and the file on the USB
-key holds all 8192 bytes: a byte that failed its parity or stop bit is still written, marked, rather
-than dropped.
+Everything from the first gap onward decoded cleanly, and the log on the USB key holds every byte: one
+that failed its parity or stop bit is still written, marked, rather than dropped.
 
 Underneath: the **trigger cell**, the bytes, then two rows of text. The **status row** tells you where
 you are (`FRAME HEX pg 1/1 bytes 1-155/155 win 240 [done]`) and names the log file.
@@ -134,7 +134,7 @@ disagrees with the rate you locked, a recording that stopped early. If more than
 with `(+2 more)`, and pressing **Save** writes all of them to a file.
 
 Here it is doing that — a capture that started part way through a byte, which the app detected and
-said so rather than showing nine wrong bytes without comment:
+said so rather than showing two wrong bytes without comment:
 
 ![The note row reporting a mid-byte start](img/panel-hex-note.png)
 
