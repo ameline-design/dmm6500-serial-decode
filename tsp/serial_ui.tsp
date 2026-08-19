@@ -1254,12 +1254,17 @@ function sdec.ui_notes()
   end
   if hs ~= nil then
     local onscreen = (sdec.res == nil or sdec.res.first == nil or sdec.res.first <= 1)
+    -- SHORT ENOUGH TO SURVIVE THE PAGE COUNTER. Measured on the panel: the long form was 757 px
+    -- against the 556 the note has once the counter is showing, so it rendered as '...everythi...' --
+    -- cutting the REASSURING half and leaving the warning. The half that says the rest of the capture
+    -- is sound is the half an operator needs in order to carry on, so it is the half that must fit.
+    -- 'the rest is sound' is 520 px and survives with the counter, the ellipsis and the slack.
     if onscreen then
-      add(string.format('capture began mid-byte -- the first %d byte(s) are misaligned; '
-                        .. 'everything from the first gap on is sound', hs))
+      add(string.format('began mid-byte -- the first %d byte(s) are misaligned; '
+                        .. 'the rest is sound', hs))
     else
-      add(string.format('the run began mid-byte -- its first %d byte(s) are misaligned, in the '
-                        .. 'file; what is on screen is sound', hs))
+      add(string.format('the run began mid-byte -- its first %d byte(s) are in the file, '
+                        .. 'misaligned; what is on screen is sound', hs))
     end
   end
 

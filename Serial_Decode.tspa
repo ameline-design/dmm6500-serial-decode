@@ -3650,11 +3650,11 @@ function sdec.ui_notes()
   if hs ~= nil then
     local onscreen = (sdec.res == nil or sdec.res.first == nil or sdec.res.first <= 1)
     if onscreen then
-      add(string.format('capture began mid-byte -- the first %d byte(s) are misaligned; '
-                        .. 'everything from the first gap on is sound', hs))
+      add(string.format('began mid-byte -- the first %d byte(s) are misaligned; '
+                        .. 'the rest is sound', hs))
     else
-      add(string.format('the run began mid-byte -- its first %d byte(s) are misaligned, in the '
-                        .. 'file; what is on screen is sound', hs))
+      add(string.format('the run began mid-byte -- its first %d byte(s) are in the file, '
+                        .. 'misaligned; what is on screen is sound', hs))
     end
   end
 

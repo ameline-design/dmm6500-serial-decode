@@ -80,10 +80,17 @@ looking rather than by counting. Flagged bytes read as `?` in the ASCII gutter:
 
 ![An 8 kB recording whose first two rows failed](img/panel-errors.png)
 
-That is a real 8 kB recording that began part way through a byte: 22 of 8192 bytes failed, all of them
-in the first two rows, and everything from the first gap onward decoded cleanly. The status row counts
-them (`8192 bytes  22 err`) and the file on the USB key holds all 8192 either way — a byte that failed
-its parity or stop bit is still written, marked, rather than dropped.
+That is a real 8 kB recording that began part way through a byte. **The note row names the cause** —
+`capture began mid-byte -- the first 36 byte(s) are misaligned` — which is the difference between a
+puzzle and a known condition: the app arms on a busy line, so it lands wherever the traffic happens to
+be, and the bytes before the first gap between messages cannot be framed.
+
+Read the two figures together and they agree: 36 bytes sit before that first gap, of which **20
+actually failed** (`8192 bytes  20 err`), because a misaligned frame can still pass its stop bit and
+parity by chance. That is why the note gives the extent and `ERR` gives the count — they are different
+questions. Everything from the first gap onward decoded cleanly, and the file on the USB key holds all
+8192 bytes either way: a byte that failed its parity or stop bit is still written, marked, rather than
+dropped.
 
 Underneath: the **trigger cell**, the bytes, then two rows of text. The **status row** tells you where
 you are (`FRAME HEX pg 1/1 bytes 1-155/155 win 240 [done]`) and names the log file.

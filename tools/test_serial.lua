@@ -3614,6 +3614,24 @@ do
       check('an 8 kB run that began mid-byte SAYS so, as a frame capture does',
             has(j, 'began mid-byte') and has(j, '22 byte'), j)
       check('...and says the bytes are on screen, not in the file', not has(j, 'in the file'), j)
+      -- AND IT FITS BESIDE THE PAGE COUNTER. The long form was 757 px against the 556 the note keeps
+      -- once the counter is showing, so the panel rendered '...everythi...' -- cutting the half that
+      -- says the rest of the capture is sound, which is the half that lets the operator carry on.
+      do
+        -- THE WORST-CASE BUDGET, COMPUTED FROM THE LAYOUT, not ui_pgind_px() -- which returns 0 unless
+        -- this scenario happens to have more than one page, and did: the first version of this check
+        -- measured against the full 680 px and would have passed a note that the counter cuts.
+        local xpage = sdec.ui_pgind_layout()
+        local budget = sdec.ui_note_px - ((sdec.ui_pgind_x - xpage) + sdec.ui_note_gap)
+        local note = nil
+        local nt2, nn2 = sdec.ui_notes()
+        local k
+        for k = 1, nn2 do if has(nt2[k], 'began mid-byte') then note = nt2[k] end end
+        check('the mid-byte note survives the page counter uncut',
+              note ~= nil and sdec.ui_textw(note) * sdec.ui_fit_slack <= budget,
+              string.format('%d px of %d: %s', note and sdec.ui_textw(note) or -1, budget,
+                            tostring(note)))
+      end
       -- Head NOT on screen: a 32 kB run's tail starts at 24577, so 'the first N bytes' would point at
       -- the wrong end of the stream -- the mistake the tail note was written to fix.
       sdec.res.first, sdec.res.ntotal = 24577, 32768
