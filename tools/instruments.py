@@ -249,6 +249,15 @@ SDG_UPLOAD_SAFE_BYTES = 65536      # below this, uploads have never wedged it
 #     15 us (rise = 1.5 samples), so our edge shaping dominates by ~18 000x. Any edge effect in a capture
 #     is the vector's or the analog path's, never the converter's.
 #
+#   * THE CPU BOARD IS MARKED SDY8.007.075E / DMMD-150300, which is the identifier a vendor report should
+#     quote (see the Siglent bug-report task). Owner's photo: the ARM A8 sits centre with its DDR3 beside
+#     it and the flash above, and THE RJ45 IS ON THIS BOARD, next to them. Date codes on the parts read
+#     1624 and 1634, so a ~2016 build of a 2015-vintage design.
+#
+#     That physically corroborates keeping the two verdicts apart: the LAN stack that wedges lives on the
+#     CPU board, and the FPGA, DDR3 pair and DAC that make the signal are on the other board entirely,
+#     reachable only over the 8-pin serial link. A defect in one says nothing about the other.
+#
 #   * A CLOSE-IN SPECTRUM OF A 40 MHz OUTPUT SUPPORTS THAT, with its limits stated. Owner's capture on a
 #     Siglent analyser: marker 40.000002 MHz against a 40.000000 MHz setting -- a 2 Hz error, 0.05 ppm --
 #     carrier ~42 dB above the noise floor at 10 Hz RBW, and no spur visible anywhere in the span. What it
