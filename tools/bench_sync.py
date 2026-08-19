@@ -209,16 +209,26 @@ def preflight(d, who, need_built=True, timeout=30):
                          'Nothing has been touched.'
                          % (who, st.get('recording'), st.get('job'), st.get('running'),
                             st.get('inflight')))
-    # THROUGH mode_exit(), NEVER BY ASSIGNING capmode. Assigning it changes the app's idea of the mode
-    # and leaves the hardware and any open decode job behind it untouched; mode_exit() settles the
-    # acquisition, closes the job and flushes the log, which is what "back to FRAME" has to mean.
+    # mode_exit() FIRST, THEN THE ASSIGNMENT -- both, in that order, and neither alone.
+    #
+    # mode_exit() is what SETTLES the instrument: it stops the acquisition, closes any open decode job
+    # and flushes the log. Assigning capmode alone would change the app's idea of the mode and leave
+    # all of that behind it, which is why this used to be "through mode_exit(), never by assigning".
+    #
+    # BUT mode_exit() NO LONGER CHANGES THE MODE. As of 2026-08-19 it is a flush and nothing else: a
+    # recording that finishes leaves the operator in the mode they chose, because with the capture mode
+    # in the title bar a self-changing mode reads as the app deciding something. So the unwind settles
+    # the hardware and the assignment states the precondition this function exists to guarantee --
+    # without it the verification below refuses every time the app is resting in a recording mode, which
+    # is every soak lap after a `payloads` point.
     if st.get('capmode') != 'frame':
         print('  %s: app was resting in %r -- unwinding through mode_exit()' % (who, st.get('capmode')))
         # `who` IS NOT INTERPOLATED RAW. Every current caller passes a fixed literal, but this is Lua
         # SOURCE being built by string substitution: one quote in a caller-supplied name would change the
         # statement rather than the message inside it. Reduced to a safe alphabet instead of trusted.
         safe = re.sub(r'[^A-Za-z0-9_ -]', '', str(who))[:40] or 'preflight'
-        if not d.exec("pcall(function() sdec.mode_exit('%s preflight') end)" % safe, timeout=60):
+        if not d.exec("pcall(function() sdec.mode_exit('%s preflight') end) "
+                      "sdec.capmode = 'frame'" % safe, timeout=60):
             raise SystemExit('%s REFUSING: mode_exit() did not complete.' % who)
     # THE PREVIOUS RUN'S RESULT GOES TOO. ck_tot survives a mode change, and while it is set the status
     # row shows the STREAM summary rather than the frame row -- so the first point can report the
