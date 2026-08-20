@@ -147,6 +147,32 @@ end
 -- possible keeps the generator untouched between them; the spike rows need a
 -- wider scale and say so.
 -- ---------------------------------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- THE SRATE MULTIPLIER, AND IT IS IN EVERY NAME.
+--
+-- A vector is rendered at a whole number of samples per bit, so SRATE = baud x SPB and the operator
+-- turns one into the other in their head: SER_Fox_7E1_x10 at 19200 Bd wants 192 kSa/s. The multiplier
+-- goes in the NAME because, unlike the baud rate, it IS a property of the file -- a name that carries
+-- it cannot be silently mismatched to the render the way a manifest column can.
+--
+-- TEN FOR CLEAN TRAFFIC. An integer multiple also means every cell boundary lands exactly on a
+-- sample, so a clean vector carries no edge-placement error at all -- where a fractional render like
+-- 10.41667 quantises every edge to +-4.8 % of a bit whether you want it to or not.
+--
+-- A HUNDRED WHERE TEN CANNOT RENDER THE IMPAIRMENT. Ten samples per bit can only place an edge to
+-- +-5 % of a unit interval, which is the same order as the impairments worth testing -- so a 2 %
+-- jitter rendered at x10 is quantisation noise, not jitter. At x100 an edge places to +-0.5 % and a
+-- 1 % displacement is 100 arb samples wide at 19200 Bd. The cost is ten times the file: keep an x100
+-- payload at or under 31 bytes and it stays inside SDG_UPLOAD_SAFE_BYTES, so it goes over the LAN
+-- instead of onto the USB key.
+--
+-- Both are exact, so no row anywhere needs fs/N arithmetic, and the multiplier says which family a
+-- file belongs to.
+-- ---------------------------------------------------------------------------
+local SPB      = 10        -- clean traffic
+local SPB_FINE = 100       -- deliberate sub-bit impairment
+local function sr(baud, mult) return baud * (mult or SPB) end
+
 local HELLO = 'Hello, World!'
 local V = {}
 local function vec(t) V[table.getn(V) + 1] = t end
@@ -238,8 +264,8 @@ local function hello(o)
   return opts, by, nb
 end
 
-vec{id = 'v41', desc = "'Hello, World!' 9600 8N1", fs = 100000, fsv = 5.0,
-    build = function() return hello{baud = 9600, fs = 100000} end}
+vec{id = 'v41', desc = "'Hello, World!' 9600 8N1", fs = sr(9600), fsv = 5.0,
+    build = function() return hello{baud = 9600, fs = sr(9600)} end}
 -- The four parity formats, as DEFENSIVE coverage rather than expected traffic.
 -- Reported field experience: real serial data is almost always 8N1; 7E1, 7O1,
 -- 8E1 and 8O1 are all things that *might* turn up but have not actually been
@@ -254,38 +280,41 @@ vec{id = 'v41', desc = "'Hello, World!' 9600 8N1", fs = 100000, fsv = 5.0,
 -- ua_refine_parity decides it by checking whether bit 7 tracked parity across
 -- every frame. 8E1/8O1 are 11-bit frames and far less confusable, so they are
 -- cheap confirmation rather than a real test -- 4 KB each.
-vec{id = 'v44a', desc = '9600 7E1', fs = 100000, fsv = 5.0,
-    build = function() return hello{baud = 9600, fs = 100000, nbits = 7, par = 1} end}
-vec{id = 'v44b', desc = '9600 7O1', fs = 100000, fsv = 5.0,
-    build = function() return hello{baud = 9600, fs = 100000, nbits = 7, par = 2} end}
-vec{id = 'v44c', desc = '9600 8E1', fs = 100000, fsv = 5.0,
-    build = function() return hello{baud = 9600, fs = 100000, nbits = 8, par = 1} end}
-vec{id = 'v44d', desc = '9600 8O1', fs = 100000, fsv = 5.0,
-    build = function() return hello{baud = 9600, fs = 100000, nbits = 8, par = 2} end}
+vec{id = 'v44a', desc = '9600 7E1', fs = sr(9600), fsv = 5.0,
+    build = function() return hello{baud = 9600, fs = sr(9600), nbits = 7, par = 1} end}
+vec{id = 'v44b', desc = '9600 7O1', fs = sr(9600), fsv = 5.0,
+    build = function() return hello{baud = 9600, fs = sr(9600), nbits = 7, par = 2} end}
+vec{id = 'v44c', desc = '9600 8E1', fs = sr(9600), fsv = 5.0,
+    build = function() return hello{baud = 9600, fs = sr(9600), nbits = 8, par = 1} end}
+vec{id = 'v44d', desc = '9600 8O1', fs = sr(9600), fsv = 5.0,
+    build = function() return hello{baud = 9600, fs = sr(9600), nbits = 8, par = 2} end}
 -- Two stop bits, which the decoder deliberately does NOT search for: a second stop
 -- bit is a bit time of idle, and idle between frames is already tolerated. So the
 -- expected result is a byte-exact decode REPORTED AS 8N1, and this vector is what
 -- turns that claim from a comment into a measurement.
-vec{id = 'v44e', desc = '9600 8N2 (two stop bits)', fs = 100000, fsv = 5.0,
-    build = function() return hello{baud = 9600, fs = 100000, nstop = 2} end}
-vec{id = 'v45', desc = '9600 8N1 inverted (RS-232 sense)', fs = 100000, fsv = 5.0,
-    build = function() return hello{baud = 9600, fs = 100000, invert = true} end}
-vec{id = 'v46', desc = '200-byte payload, 9600 (paging)', fs = 100000, fsv = 5.0,
+vec{id = 'v44e', desc = '9600 8N2 (two stop bits)', fs = sr(9600), fsv = 5.0,
+    build = function() return hello{baud = 9600, fs = sr(9600), nstop = 2} end}
+vec{id = 'v45', desc = '9600 8N1 inverted (RS-232 sense)', fs = sr(9600), fsv = 5.0,
+    build = function() return hello{baud = 9600, fs = sr(9600), invert = true} end}
+vec{id = 'v46', desc = '200-byte payload, 9600 (paging)', fs = sr(9600), fsv = 5.0,
     build = function()
       local by, nb = {}, 0
       local i
       for i = 1, 200 do nb = nb + 1; by[nb] = 32 + math.fmod(i * 7, 95) end
-      return {bytes = by, baud = 9600, fs = 100000}, by, nb
+      return {bytes = by, baud = 9600, fs = sr(9600)}, by, nb
     end}
-vec{id = 'v47', desc = 'v41 + impulse spikes at the amplitude ceiling',
-    fs = 100000, fsv = 10.0,
+-- x100, because an impulse has to be NARROW. At x10 a one-sample spike is a tenth of a bit wide,
+-- which is a fat glitch the hysteresis has every right to reject on width alone; at x100 it is 1 %
+-- of a bit, which is what an impulse on a real wire looks like. 13 bytes keeps the file on the LAN.
+vec{id = 'v47', desc = 'v41 + impulse spikes at the amplitude ceiling', spb = SPB_FINE,
+    fs = sr(9600, SPB_FINE), fsv = 10.0,
     note = 'spikes are +/-3.0 V, NOT the +/-25 V of the offline case. The SDG ' ..
            'ceiling is +/-10 V, and GEN_SPIKES ADDS, so two spikes on one ' ..
            'sample stack: 3.3 + 2*3.0 = 9.3 V is the real worst case and it ' ..
            'has to fit. A larger figure clips at the generator, and a clipped ' ..
            'stimulus decodes wrongly while looking exactly like a decoder bug.',
     build = function()
-      local o, by, nb = hello{baud = 9600, fs = 100000}
+      local o, by, nb = hello{baud = 9600, fs = sr(9600, SPB_FINE)}
       return o, by, nb, function(rd, n) GEN_RESEED(4711); return GEN_SPIKES(rd, n, 12, 3.0, 2) end
     end}
 -- Drift is TWO vectors because it has two failure modes and one amplitude tests one. 0.6 V over 1.5
@@ -295,24 +324,24 @@ vec{id = 'v47', desc = 'v41 + impulse spikes at the amplitude ceiling',
 -- "baseline unstable" gate is anti-correlated with correctness there: 0.6 V computes the CORRECT
 -- threshold and is refused, while 0.5 V and 0.8 V compute a wrong one and are accepted with zero
 -- framing errors. See the table in notes/HANDOFF.md under "the drift knee is not 0.7 V".
-vec{id = 'v48a', desc = 'v41 + 0.6 V drift (inside tolerance)', fs = 100000, fsv = 5.0,
+vec{id = 'v48a', desc = 'v41 + 0.6 V drift (inside tolerance)', fs = sr(9600), fsv = 5.0,
     build = function()
-      local o, by, nb = hello{baud = 9600, fs = 100000}
+      local o, by, nb = hello{baud = 9600, fs = sr(9600)}
       return o, by, nb, function(rd, n) return GEN_DRIFT(rd, n, 0.6, 1.5) end
     end}
-vec{id = 'v48b', desc = 'v41 + 1.0 V drift (beyond tolerance)', fs = 100000, fsv = 5.0,
+vec{id = 'v48b', desc = 'v41 + 1.0 V drift (beyond tolerance)', fs = sr(9600), fsv = 5.0,
     note = 'bytes are EXPECTED to be lost here. The pass is that the panel ' ..
            'warns and does not claim a clean decode -- not that the bytes ' ..
            'survive. They do not survive offline either.',
     build = function()
-      local o, by, nb = hello{baud = 9600, fs = 100000}
+      local o, by, nb = hello{baud = 9600, fs = sr(9600)}
       return o, by, nb, function(rd, n) return GEN_DRIFT(rd, n, 1.0, 1.5) end
     end}
-vec{id = 'v51', desc = 'MIDI: Note On / Note Off at 31250', fs = 500000, fsv = 5.0,
+vec{id = 'v51', desc = 'MIDI: Note On / Note Off at 31250', fs = sr(31250), fsv = 5.0,
     build = function()
       local by = {0x90, 0x3C, 0x64, 0x80, 0x3C, 0x40, 0x90, 0x40, 0x7F,
                   0x43, 0x70, 0x45, 0x60}   -- running status on the tail
-      return {bytes = by, baud = 31250, fs = 500000}, by, table.getn(by)
+      return {bytes = by, baud = 31250, fs = sr(31250)}, by, table.getn(by)
     end}
 
 -- ---------------------------------------------------------------------------
@@ -348,8 +377,8 @@ vec{id = 'v51', desc = 'MIDI: Note On / Note Off at 31250', fs = 500000, fsv = 5
 -- two are not decoding under the same conditions. `sdec.fs = <the row's
 -- srate_sa_s>` over port 5025 before capturing makes them comparable.
 local LONG_N = 1024
-vec{id = 'v71', desc = 'lorem ipsum 1 kB, 9600 8N1', fs = 100000, fsv = 5.0,
-    long = true, build = function() return lorem_vec(9600, 100000, LONG_N) end}
+vec{id = 'v71', desc = 'lorem ipsum 1 kB, 9600 8N1', fs = sr(9600), fsv = 5.0,
+    long = true, build = function() return lorem_vec(9600, sr(9600), LONG_N) end}
 
 -- ============================================================================
 -- THE HARD VECTORS: patterns chosen to attack the decoder rather than resemble traffic
@@ -427,11 +456,11 @@ end
 -- service). 256 bytes is 53 kB and still longer than the ~240-byte capture window, so a capture is
 -- a unique substring rather than a repeat. The 128-byte version is worth building for a USB-key
 -- transfer, which is how v71's 213 kB got onto the generator.
-vec{id = 'v90', desc = '64 each of 0x00, 0xFF, 0x55, 0xAA -- 9600 8N1', fs = 100000, fsv = 5.0,
+vec{id = 'v90', desc = '64 each of 0x00, 0xFF, 0x55, 0xAA -- 9600 8N1', fs = sr(9600), fsv = 5.0,
     long = true,
     build = function()
       local by, nb = hard_blocks(64)
-      return {bytes = by, baud = 9600, fs = 100000, gap = 0, lead = 10, tail = 10,
+      return {bytes = by, baud = 9600, fs = sr(9600), gap = 0, lead = 10, tail = 10,
               loop = true}, by, nb, nil, bytes_to_string(by, nb)
     end}
 
@@ -444,11 +473,11 @@ vec{id = 'v90', desc = '64 each of 0x00, 0xFF, 0x55, 0xAA -- 9600 8N1', fs = 100
 -- random payload buys is that a capture is a UNIQUE substring and that every decode path meets byte
 -- values it cannot have been tuned for, and 256 > the ~240-byte window keeps both. A 1024-byte
 -- version is the USB-key vector to build next.
-vec{id = 'v91', desc = '256 uniform random bytes 0-255, 9600 8N1', fs = 100000, fsv = 5.0,
+vec{id = 'v91', desc = '256 uniform random bytes 0-255, 9600 8N1', fs = sr(9600), fsv = 5.0,
     long = true,
     build = function()
       local by, nb = rand_bytes(256, 20260818)
-      return {bytes = by, baud = 9600, fs = 100000, gap = 0, lead = 10, tail = 10,
+      return {bytes = by, baud = 9600, fs = sr(9600), gap = 0, lead = 10, tail = 10,
               loop = true}, by, nb, nil, bytes_to_string(by, nb)
     end}
 
@@ -457,7 +486,7 @@ vec{id = 'v91', desc = '256 uniform random bytes 0-255, 9600 8N1', fs = 100000, 
 -- a different bit position, so a decoder that samples one bit at the wrong phase gets exactly one
 -- byte wrong and the position of that byte says WHICH bit it mis-sampled. A count of bad bytes could
 -- not tell you that.
-vec{id = 'v92', desc = 'walking-one and walking-zero bytes, 9600 8N1', fs = 100000, fsv = 5.0,
+vec{id = 'v92', desc = 'walking-one and walking-zero bytes, 9600 8N1', fs = sr(9600), fsv = 5.0,
     long = true,
     build = function()
       local by, nb, r, b = {}, 0, 0, 0
@@ -476,7 +505,7 @@ vec{id = 'v92', desc = 'walking-one and walking-zero bytes, 9600 8N1', fs = 1000
       -- original 16, which clears the window without clearing the upload ceiling.
       local rep, i = nb, 0
       for i = 1, 14 * rep do nb = nb + 1; by[nb] = by[math.mod(i - 1, rep) + 1] end
-      return {bytes = by, baud = 9600, fs = 100000, gap = 0, lead = 10, tail = 10,
+      return {bytes = by, baud = 9600, fs = sr(9600), gap = 0, lead = 10, tail = 10,
               loop = true}, by, nb, nil, bytes_to_string(by, nb)
     end}
 
@@ -516,18 +545,18 @@ vec{id = 'v92', desc = 'walking-one and walking-zero bytes, 9600 8N1', fs = 1000
 --        nothing else -- with no relief anywhere in the window. That is the case the manual
 --        warns firmware authors about, and it is unreachable at 64.
 vec{id = 'v93', desc = '1024 uniform random bytes 0-255, 9600 8N1 (USB key)',
-    fs = 100000, fsv = 5.0, long = true,
+    fs = sr(9600), fsv = 5.0, long = true,
     build = function()
       local by, nb = rand_bytes(1024, 20260818)
-      return {bytes = by, baud = 9600, fs = 100000, gap = 0, lead = 10, tail = 10,
+      return {bytes = by, baud = 9600, fs = sr(9600), gap = 0, lead = 10, tail = 10,
               loop = true}, by, nb, nil, bytes_to_string(by, nb)
     end}
 
 vec{id = 'v94', desc = '128 each of 0x00, 0xFF, 0x55, 0xAA -- 9600 8N1 (USB key)',
-    fs = 100000, fsv = 5.0, long = true,
+    fs = sr(9600), fsv = 5.0, long = true,
     build = function()
       local by, nb = hard_blocks(128)
-      return {bytes = by, baud = 9600, fs = 100000, gap = 0, lead = 10, tail = 10,
+      return {bytes = by, baud = 9600, fs = sr(9600), gap = 0, lead = 10, tail = 10,
               loop = true}, by, nb, nil, bytes_to_string(by, nb)
     end}
 
@@ -550,18 +579,18 @@ vec{id = 'v94', desc = '128 each of 0x00, 0xFF, 0x55, 0xAA -- 9600 8N1 (USB key)
 -- generator's LAN service, at as little as 213 kB total -- so these are nowhere near a close call.
 -- Both fit SDG_MAX_PTS (8388608): 853542 and 3413542 points.
 vec{id = 'v95', desc = '8192 uniform random bytes 0-255, 9600 8N1 (USB key, one 8 kB recording)',
-    fs = 100000, fsv = 5.0, long = true,
+    fs = sr(9600), fsv = 5.0, long = true,
     build = function()
       local by, nb = rand_bytes(8192, 20260818)
-      return {bytes = by, baud = 9600, fs = 100000, gap = 0, lead = 10, tail = 10,
+      return {bytes = by, baud = 9600, fs = sr(9600), gap = 0, lead = 10, tail = 10,
               loop = true}, by, nb, nil, bytes_to_string(by, nb)
     end}
 
 vec{id = 'v96', desc = '32768 uniform random bytes 0-255, 9600 8N1 (USB key, one 32 kB recording)',
-    fs = 100000, fsv = 5.0, long = true,
+    fs = sr(9600), fsv = 5.0, long = true,
     build = function()
       local by, nb = rand_bytes(32768, 20260818)
-      return {bytes = by, baud = 9600, fs = 100000, gap = 0, lead = 10, tail = 10,
+      return {bytes = by, baud = 9600, fs = sr(9600), gap = 0, lead = 10, tail = 10,
               loop = true}, by, nb, nil, bytes_to_string(by, nb)
     end}
 
@@ -585,8 +614,8 @@ vec{id = 'v96', desc = '32768 uniform random bytes 0-255, 9600 8N1 (USB key, one
 -- wedged the generator, while still being long enough that a 240-byte capture is a SUBSTRING rather
 -- than a repeat -- which is the whole point of using lorem instead of 'Hello, World!'. Loop-exact,
 -- so replaying it at any SRATE gives a clean join.
-vec{id = 'v76', desc = 'lorem 300 B, 9600 8N1 (loop-exact sweep vector)', fs = 100000, fsv = 5.0,
-    build = function() return lorem_vec(9600, 100000, 300) end}
+vec{id = 'v76', desc = 'lorem 300 B, 9600 8N1 (loop-exact sweep vector)', fs = sr(9600), fsv = 5.0,
+    build = function() return lorem_vec(9600, sr(9600), 300) end}
 
 -- THE FULL-GLYPH VECTORS. NOT YET UPLOADED TO THE GENERATOR -- built here so the files and the
 -- manifest rows exist, and uploaded on the next deliberate `bench_matrix.py --upload`. Deferred on
@@ -597,10 +626,10 @@ vec{id = 'v76', desc = 'lorem 300 B, 9600 8N1 (loop-exact sweep vector)', fs = 1
 -- then computed over all 94 bit patterns rather than over the 40-odd that English prose produces.
 -- Every byte is <= 0x7E, so a seven-bit frame carries the whole payload with nothing truncated --
 -- which is what makes the 8N1 and 7E1 rows directly comparable.
-vec{id = 'v77', desc = 'all 94 visible glyphs, 9600 8N1', fs = 100000, fsv = 5.0,
-    build = function() return ascii94_vec(9600, 100000) end}
-vec{id = 'v78', desc = 'all 94 visible glyphs, 9600 7E1', fs = 100000, fsv = 5.0,
-    build = function() return ascii94_vec(9600, 100000, 7, 1) end}
+vec{id = 'v77', desc = 'all 94 visible glyphs, 9600 8N1', fs = sr(9600), fsv = 5.0,
+    build = function() return ascii94_vec(9600, sr(9600)) end}
+vec{id = 'v78', desc = 'all 94 visible glyphs, 9600 7E1', fs = sr(9600), fsv = 5.0,
+    build = function() return ascii94_vec(9600, sr(9600), 7, 1) end}
 
 -- ---------------------------------------------------------------------------
 -- A DOZEN RANDOM VECTORS, for cycling through a long soak
@@ -680,12 +709,12 @@ for rk = 0, 11 do
   local id = string.format('r%02d', rk)
   local d = 'shuffled 256 B, 9600 '
   if sevenbit then d = d .. '7E1 (0-127 x2)' else d = d .. '8N1 (0-255 x1)' end
-  vec{id = id, desc = d .. string.format(' seed %d', seed), fs = 100000, fsv = 5.0,
+  vec{id = id, desc = d .. string.format(' seed %d', seed), fs = sr(9600), fsv = 5.0,
       long = true,
       build = function()
         local by, nb
         if sevenbit then by, nb = shuffled(127, 2, seed) else by, nb = shuffled(255, 1, seed) end
-        local opts = {bytes = by, baud = 9600, fs = 100000, gap = 0,
+        local opts = {bytes = by, baud = 9600, fs = sr(9600), gap = 0,
                       lead = 10, tail = 10, loop = true}
         if sevenbit then opts.nbits = 7; opts.par = 1 end
         return opts, by, nb, nil, bytes_to_str(by, nb)
@@ -711,33 +740,86 @@ end
 -- asks for 8 x 300 = 2400 S/s and gets it. What the low end really costs is WINDOW TIME: at 8.33
 -- samples/bit a 20 000-sample capture is 240 bytes at every rate, but at 300 baud those 240
 -- bytes take 8 seconds of wall clock to arrive.
-vec{id = 'v80', desc = 'hello, 10.00 sa/bit render (300 8N1 at SRATE 3000; v41 is 10.42)',
-    fs = 3000, fsv = 5.0,
-    build = function() return hello{baud = 300, fs = 3000} end}
+vec{id = 'v80', desc = 'hello at 300 8N1, the slowest rung (SRATE 3000)',
+    fs = sr(300), fsv = 5.0,
+    build = function() return hello{baud = 300, fs = sr(300)} end}
 
 -- LIN: 0..6 V, a 12 V bus through the 2:1 divider the app asks for, which is
 -- what the instrument would actually see. fsv 7.5 covers it with headroom.
 vec{id = 'v61', desc = 'LIN 19200: two frames, enhanced checksum',
-    fs = 500000, fsv = 7.5, proto = 'lin',
+    fs = sr(19200), fsv = 7.5, proto = 'lin',
     build = function()
-      return {baud = 19200, fs = 500000, lo = 0, hi = 6.0,
+      return {baud = 19200, fs = sr(19200), lo = 0, hi = 6.0,
               frames = {{id = 0x11, data = {0x01, 0x02, 0x03, 0x04}},
                         {id = 0x22, data = {0xAA, 0xBB}}}}, nil, 0
     end, lin = true}
 vec{id = 'v62', desc = 'LIN 19200: diagnostic 0x3C/0x3D, classic checksum',
-    fs = 500000, fsv = 7.5, proto = 'lin',
+    fs = sr(19200), fsv = 7.5, proto = 'lin',
     build = function()
-      return {baud = 19200, fs = 500000, lo = 0, hi = 6.0,
+      return {baud = 19200, fs = sr(19200), lo = 0, hi = 6.0,
               frames = {{id = 0x3C, data = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}},
                         {id = 0x3D, data = {0x7F, 0x00}}}}, nil, 0
     end, lin = true}
 vec{id = 'v63', desc = 'LIN 9600: header with no response, then a good frame',
-    fs = 500000, fsv = 7.5, proto = 'lin',
+    fs = sr(9600), fsv = 7.5, proto = 'lin',
     build = function()
-      return {baud = 9600, fs = 500000, lo = 0, hi = 6.0,
+      return {baud = 9600, fs = sr(9600), lo = 0, hi = 6.0,
               frames = {{id = 0x15, nodata = true},
                         {id = 0x15, data = {0xDE, 0xAD}}}}, nil, 0
     end, lin = true}
+
+-- ---------------------------------------------------------------------------
+-- JITTER, ON THE BENCH, WHICH NOTHING ELSE HERE MEASURES.
+--
+-- Jitter tolerance is quoted from tools/tolerance.lua, and every number in it comes from a
+-- SIMULATED waveform: the offline suites displace edges in an array and decode the array. Nothing
+-- has ever put a jittered edge through the generator's DAC, the cable and the meter's front end,
+-- so the analog path has never been part of the measurement -- and the front end is exactly where
+-- a displaced edge might be smoothed, or made worse.
+--
+-- WHY x100 IS THE WHOLE REASON THESE CAN EXIST. GEN displaces each cell boundary independently by
+-- up to +-jitter of a bit time, and the render then quantises that displacement to the arb's sample
+-- grid. At x10 the grid IS +-5 % of a bit, so a 2 % request rounds to zero or to 10 % -- the
+-- quantisation is larger than the signal and the vector measures nothing it claims to. At x100 the
+-- grid is +-0.5 %, so 2 % is rendered as 2 %.
+--
+-- RANDOM, AND ONE SEED PER VECTOR. Every boundary draws independently from a uniform +-jitter, so
+-- the displacements are iid rather than a pattern the detector could lock to -- which is the point,
+-- because sig_bittime fits a greatest common period and it is the SPREAD of wrong multiples that
+-- collapses the fit. The seed is fixed per vector so the oracle in the manifest is reproducible:
+-- random in distribution, deterministic in bytes.
+--
+-- THE LADDER STRADDLES THE MEASURED LIMIT. tolerance.lua puts the offline exact-decode limit near
+-- +-15 % UI with a confident-wrong answer appearing by +-25 %, so 2 % must be untouched, 10 % should
+-- still be exact, and 20 % is expected to fail -- ANNOUNCING it, by framing errors or an unsnapped
+-- rate, never with confident wrong bytes. That last one is the vector worth having: a silent wrong
+-- answer under jitter is the failure this decoder exists to avoid.
+--
+-- 'Hello, World!' at 13 bytes keeps all three inside SDG_UPLOAD_SAFE_BYTES at x100, so they upload
+-- over the LAN and cost nothing against the over-ceiling write budget.
+-- ---------------------------------------------------------------------------
+local JIT = {{id = 'j02', pct = 2,  seed = 20260821, expect = 'exact'},
+             {id = 'j10', pct = 10, seed = 20260822, expect = 'exact'},
+             {id = 'j20', pct = 20, seed = 20260823, expect = 'may fail, but must SAY so'}}
+local ji
+for ji = 1, table.getn(JIT) do
+  local j = JIT[ji]
+  vec{id = j.id, spb = SPB_FINE, fs = sr(9600, SPB_FINE), fsv = 5.0,
+      desc = string.format('%s + %d%% UI random edge jitter', HELLO, j.pct),
+      note = string.format(
+        'Every cell boundary displaced independently by up to +/-%d%% of a bit time, uniform, ' ..
+        'seed %d. Jitter is SCALE-FREE -- a displacement expressed as a fraction of a bit stays ' ..
+        'that fraction at any SRATE -- so this one file is a %d%% jitter test at every baud rate ' ..
+        'the ladder reaches. %s.', j.pct, j.seed, j.pct,
+        (j.expect == 'exact') and 'Expected byte-exact' or
+        'Expected to struggle: what must NOT happen is confident wrong bytes'),
+      build = function()
+        local by, nb = GEN_BYTES(HELLO)
+        GEN_RESEED(j.seed)
+        return {bytes = by, baud = 9600, fs = sr(9600, SPB_FINE), gap = 0,
+                lead = 10, tail = 10, loop = true, jitter = j.pct / 100}, by, nb, nil, HELLO
+      end}
+end
 
 -- Everything above is DEFINITION; everything below writes files. sweep_startphase.lua stops here.
 VEC_LIST = V
@@ -815,7 +897,7 @@ for vi = 1, table.getn(V) do
 
   nrows = nrows + 1
   rows[nrows] = {id = v.id, desc = v.desc, npts = nsmp, nbytes = nbytes,
-                 fsv = v.fsv, amp = info.amp_vpp, fs = v.fs,
+                 fsv = v.fsv, amp = info.amp_vpp, fs = v.fs, spb = v.spb or SPB,
                  minv = info.min_v, maxv = info.max_v, cksum = info.cksum,
                  proto = v.proto or 'uart', baud = b.baud, fmt = b.fmt, nb = b.nb,
                  nbad = b.nbad, want = want, nwant = nwant,
@@ -832,14 +914,14 @@ end
 -- read at the bench, generated from the same rows so they cannot disagree.
 -- ---------------------------------------------------------------------------
 local f = io.open(OUT .. '/manifest.tsv', 'w')
-f:write('file\tproto\tbaud\texp_fmt\tsrate_sa_s\tnpts\tnbytes\tamp_vpp\tofst_v\t' ..
+f:write('file\tproto\tbaud\texp_fmt\tspb\tsrate_sa_s\tnpts\tnbytes\tamp_vpp\tofst_v\t' ..
         'min_v\tmax_v\tcksum\texp_nbytes\texp_hex\n')
 local ri
 for ri = 1, nrows do
   local r = rows[ri]
-  f:write(string.format('%s.bin\t%s\t%s\t%s\t%d\t%d\t%d\t%.1f\t0\t%.3f\t%.3f\t' ..
+  f:write(string.format('%s.bin\t%s\t%s\t%s\t%d\t%d\t%d\t%d\t%.1f\t0\t%.3f\t%.3f\t' ..
                         '%d\t%d\t%s\n',
-                        r.id, r.proto, tostring(r.baud), tostring(r.fmt), r.fs,
+                        r.id, r.proto, tostring(r.baud), tostring(r.fmt), r.spb, r.fs,
                         r.npts, r.nbytes, r.amp, r.minv, r.maxv, r.cksum, r.nb,
                         bhex(r.got, r.nb)))
 end
