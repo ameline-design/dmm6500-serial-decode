@@ -443,10 +443,26 @@ check('n_deliv is the armed yield, not the buffer depth',
 -- return returns r, and only the non-strict re-decode returns a DIFFERENT table.
 local real_refine = sdec.ua_refine_parity
 local nredecode, nilfmt, firstbad = 0, 0, ''
+local nownhead, nerased, firsterased = 0, 0, ''
 sdec.ua_refine_parity = function(r, rd, n, T)
   local out = real_refine(r, rd, n, T)
   if out ~= nil and r ~= nil and out ~= r then
     nredecode = nredecode + 1
+    -- THE RE-DECODE'S OWN HEAD EVIDENCE MUST SURVIVE. Same arguments the branch used, so this is the
+    -- headsusp it found for itself; `r2.headsusp = r.headsusp` used to replace it with the 8N1
+    -- result's, which is nil whenever that decode framed the head cleanly. ERR then counts no head at
+    -- all on a capture the 7E1 pass says is misaligned.
+    local own = sdec.ua_run(rd, n, T, 7, out.par, r.nstop, r.invert)
+    if own ~= nil and own.headsusp ~= nil then
+      nownhead = nownhead + 1
+      if out.headsusp == nil or out.headsusp < own.headsusp then
+        nerased = nerased + 1
+        if firsterased == '' then
+          firsterased = string.format('re-decode found headsusp %d, result carries %s (ERR %d)',
+                                      own.headsusp, tostring(out.headsusp), sdec.ua_err_count(out))
+        end
+      end
+    end
     -- ALL FOUR, not just nbits: invert feeds the idle level the panel reports and nstop the format
     -- name, so a nil in any of them is a wrong answer waiting for a caller to read it.
     if out.nbits == nil or out.par == nil or out.nstop == nil or out.invert == nil then
@@ -511,6 +527,13 @@ check('the non-strict 7E1 re-decode is reached, so the branch under test really 
       nredecode > 0, string.format('%d re-decodes over %d starts', nredecode, nstart))
 check('the promotion to 7 bits reaches the result the panel reads',
       npromote > 0, string.format('%d of %d starts read 7 bits', npromote, nstart))
+check('the 7E1 re-decode keeps its OWN suspect-head extent, so ERR counts the head it found',
+      nerased == 0, nerased == 0 and '' or string.format('%d of %d erased; first: %s',
+                                                         nerased, nownhead, firsterased))
+-- VACUOUS WITHOUT THIS, and more sharply than the checks above: the erasure is only observable when
+-- the re-decode finds a head the 8N1 pass did not, which is 2 of 7 firings on these seeds.
+check('a re-decode with its own head evidence is reached, so the check above can fail',
+      nownhead > 0, string.format('%d of %d re-decodes found their own headsusp', nownhead, nredecode))
 
 -- ============================================================================
 print(string.format('\n%d passed, %d failed   (%d decodes swept)', pass, fail, nrun))

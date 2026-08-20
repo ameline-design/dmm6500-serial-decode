@@ -31,6 +31,25 @@ KEYS = ['cases', 'ok', 'refused', 'fmtdiff', 'ratediff', 'shortrun', 'headbleed'
         'redecodes', 'skipped', 'HARD']
 LINE = re.compile(r'^SHARD (\d+)/(\d+) seed (\d+): (.*)$')
 
+# The BLEED line scores the two ways ua_head_bad could be wrong against the truth the sweep already
+# knows. Every name here is a distinct word, so a plain 'name N' search cannot cross-match -- the
+# SHARD line's 'headbleed 4 (worst 2)' taught that lesson.
+BKEYS = ['bleeds', 'bleedsum', 'bleedworst', 'hsset', 'hsover', 'hsoversum', 'hsoverworst', 'hsunder']
+BLINE = re.compile(r'^BLEED (\d+)/(\d+) (.*)$')
+
+
+def parse_bleed(line):
+    """A BLEED line -> dict of counter name to int. -> None if it is not one."""
+    m = BLINE.match(line.strip())
+    if not m:
+        return None
+    body = m.group(3)
+    out = {}
+    for k in BKEYS:
+        mm = re.search(r'\b' + re.escape(k) + r' (\d+)', body)
+        out[k] = int(mm.group(1)) if mm else 0
+    return out
+
 
 def parse(line):
     """A SHARD summary line -> dict of counter name to int. -> None if it is not one."""
@@ -73,6 +92,7 @@ def main():
     n = a.workers
     tot = dict((k, 0) for k in KEYS)
     tot['worst'] = 0
+    btot = dict((k, 0) for k in BKEYS)
     failed, detail = [], []
     # A SHARD THAT PRINTS NO SUMMARY IS A FAILURE, not a zero. It means the interpreter died before
     # the report -- a syntax error, a missing module -- and silently totalling nothing from it would
@@ -92,6 +112,14 @@ def main():
                     for key in KEYS:
                         tot[key] += d[key]
                     tot['worst'] = max(tot['worst'], d['worst'])
+                    continue
+                b = parse_bleed(line)
+                if b is not None:
+                    for key in BKEYS:
+                        if key.endswith('worst'):
+                            btot[key] = max(btot[key], b[key])
+                        else:
+                            btot[key] += b[key]
                 elif line.strip():
                     detail.append('  [shard %d] %s' % (k, line.rstrip()))
             if got is None:
@@ -118,6 +146,18 @@ def main():
                                                                               tot['redecodes']))
     print('  %-10s %d' % ('skipped', tot['skipped']))
     print('  %-10s %d' % ('HARD', tot['HARD']))
+
+    # THE TWO ERROR DIRECTIONS SIDE BY SIDE, which is the whole question in #49's headbleed half:
+    # narrowing to the last flagged frame under-reports by `bleedsum` bytes, and quoting headsusp
+    # instead would over-report by `hsoversum` -- on the cases where headsusp is set at all, and
+    # `hsunder` says how many it would still have missed.
+    print('\n-- head damage: what ua_head_bad costs either way --')
+    print('  narrow to the last flag  %d cases under-report, %d bytes total, worst %d'
+          % (btot['bleeds'], btot['bleedsum'], btot['bleedworst']))
+    print('  quote headsusp instead   %d of %d cases over-report, %d bytes total, worst %d'
+          % (btot['hsover'], btot['hsset'], btot['hsoversum'], btot['hsoverworst']))
+    print('  and headsusp would still miss %d case(s) -- damage outlives the first gap'
+          % btot['hsunder'])
 
     if nsummary != n:
         failed.append('%d shards ran but only %d printed a summary' % (n, nsummary))

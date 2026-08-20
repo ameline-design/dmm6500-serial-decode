@@ -167,6 +167,13 @@ local nv = table.getn(V)
 local hard, nhard = {}, 0           -- hard failures, with enough detail to rerun the case
 local ncase, nrefuse, nfmtdiff, nratediff, nshortrun, nok = 0, 0, 0, 0, 0, 0
 local nheadbleed, worstbleed, worstbleedwhat = 0, 0, ''
+-- WOULD QUOTING headsusp BE BETTER THAN NARROWING TO THE LAST FLAG? uart_decode.tsp:506 asserts that
+-- headsusp "over-claims" and narrows to the last flagged frame for that reason, which costs the bleed
+-- above. The assertion has never been measured, and this sweep already knows the truth for every case
+-- it matches against the payload -- the first byte that agrees with the payload is where the damage
+-- actually ends -- so both errors are counted here and the rule can be chosen from numbers.
+local nhs, nhsover, hsoversum, worsthsover, worsthsoverwhat = 0, 0, 0, 0, ''
+local nhsunder, bleedsum = 0, 0
 local nredecode = 0                 -- times refine_parity's non-strict branch ran, for coverage
 local nskip, skipped = 0, {}
 local WANT = sdec.n_deliv(sdec.n) or 19000
@@ -324,10 +331,29 @@ for vi = 1, nv do
                   if s ~= nil and string.find(pay2, s, 1, true) ~= nil then hit = shift; break end
                   shift = shift + 1
                 end
+                -- THE FIRST BYTE THAT AGREES WITH THE PAYLOAD IS WHERE THE DAMAGE ENDS, so a matched
+                -- case knows the truth and both candidate rules can be scored against it.
+                if hit ~= nil then
+                  local hs = r.headsusp or 0
+                  local truebad = first + hit - 1
+                  if hs > 0 then
+                    nhs = nhs + 1
+                    if hs > truebad then
+                      nhsover = nhsover + 1
+                      hsoversum = hsoversum + (hs - truebad)
+                      if hs - truebad > worsthsover then
+                        worsthsover, worsthsoverwhat = hs - truebad, tag
+                      end
+                    elseif hs < truebad then
+                      nhsunder = nhsunder + 1     -- headsusp would not have covered it either
+                    end
+                  end
+                end
                 if hit == 0 then
                   nok = nok + 1
                 elseif hit ~= nil then
                   nheadbleed = nheadbleed + 1
+                  bleedsum = bleedsum + hit
                   if hit > worstbleed then worstbleed, worstbleedwhat = hit, tag end
                 else
                   local s = bytes_str(r.vals, first, first + len - 1)
@@ -352,9 +378,19 @@ print(string.format('SHARD %d/%d seed %d: cases %d ok %d refused %d fmtdiff %d r
                     'shortrun %d headbleed %d (worst %d) redecodes %d skipped %d HARD %d',
                     A.shard, A.nshard, A.seed, ncase, nok, nrefuse, nfmtdiff, nratediff,
                     nshortrun, nheadbleed, worstbleed, nredecode, nskip, nhard))
+-- SECOND MACHINE-READABLE LINE: the two error directions, so the narrow-vs-headsusp choice is decided
+-- by totals across every shard rather than by one remembered case.
+print(string.format('BLEED %d/%d bleeds %d bleedsum %d bleedworst %d hsset %d hsover %d ' ..
+                    'hsoversum %d hsoverworst %d hsunder %d',
+                    A.shard, A.nshard, nheadbleed, bleedsum, worstbleed,
+                    nhs, nhsover, hsoversum, worsthsover, nhsunder))
 if worstbleed > 0 and not A.quiet then
   print(string.format('  worst head bleed %d bytes past ERR\'s exclusion: %s',
                       worstbleed, worstbleedwhat))
+end
+if worsthsover > 0 and not A.quiet then
+  print(string.format('  worst headsusp over-claim %d bytes past the real damage: %s',
+                      worsthsover, worsthsoverwhat))
 end
 if nskip > 0 and not A.quiet then
   -- NAMED, NEVER SILENT: a vector dropped for size is coverage this run did not have, and a

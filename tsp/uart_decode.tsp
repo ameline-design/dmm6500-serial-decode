@@ -164,6 +164,14 @@ sdec.try_stop  = {1}
 sdec.ratios      = {1, 0.5, 2, 0.3333333333, 3, 0.25, 4, 0.2, 5, 0.1666666667, 6, 8, 10}
 sdec.probe_nbits = {8, 7, 5}
 
+-- HOW FAR A FORCED RATE MAY DISAGREE WITH THE WIRE BEFORE THE PANEL SAYS SO.
+--
+-- 4 %, just inside the measured 5.26 % cliff (0.5/9.5 for 8N1 -- half a cell accumulated over the
+-- 9.5 bit times from the start edge to the stop sample). Deliberately advisory: it warns at the
+-- point where the NEXT percent could start corrupting bytes silently, rather than waiting for
+-- corruption that by construction leaves no other trace.
+sdec.ratemargin = sdec.ratemargin or 0.04
+
 -- How close to the best pulse-width consistency a candidate bit time must come to stay
 -- in the running. Relative, not absolute, so it needs no tuning against a noise level.
 --
@@ -175,14 +183,6 @@ sdec.probe_nbits = {8, 7, 5}
 -- still lands its stop bit in the gap every time. No frame-error score can prefer the
 -- truth. Pulse-width consistency is decisive though -- 0.855 against 0.497 -- because
 -- the real widths are multiples of the real bit time and of nothing else.
--- HOW FAR A FORCED RATE MAY DISAGREE WITH THE WIRE BEFORE THE PANEL SAYS SO.
---
--- 4 %, just inside the measured 5.26 % cliff (0.5/9.5 for 8N1 -- half a cell accumulated over the
--- 9.5 bit times from the start edge to the stop sample). Deliberately advisory: it warns at the
--- point where the NEXT percent could start corrupting bytes silently, rather than waiting for
--- corruption that by construction leaves no other trace.
-sdec.ratemargin = sdec.ratemargin or 0.04
-
 sdec.qgate = 0.8
 
 -- Fewest good frames before format alternatives are worth reporting. The search
@@ -1367,7 +1367,15 @@ function sdec.ua_refine_parity(r, rd, n, T)
     local r2 = sdec.ua_run(rd, n, T, 7, par, r.nstop, r.invert)
     if r2 == nil then return r end
     r2.score = sdec.ua_score(r2)
-    r2.headsusp = r.headsusp
+    -- WIDENED, NEVER OVERWRITTEN. This was `r2.headsusp = r.headsusp`, which erases the re-decode's
+    -- OWN head evidence whenever the 8N1 result had none -- measured 2 of 7 firings, the 7E1 pass
+    -- reporting 14 and 57 suspect frames that ua_head_bad narrowed to 5 and 4. Erasing it makes
+    -- ua_err_count skip a head it should count in full and the note claim nothing. Both formats frame
+    -- 10 bits, so the two figures are the same unit and comparable; the wider is the safe one because
+    -- headsusp only bounds ua_head_bad's scan and the narrowing is what prevents over-claiming.
+    if r.headsusp ~= nil and (r2.headsusp == nil or r.headsusp > r2.headsusp) then
+      r2.headsusp = r.headsusp
+    end
     -- STAMP THE FORMAT ON. ua_run returns values and errors, not which format produced them -- the search
     -- loop does that when it picks a winner -- so this re-decode came back with nbits/par/nstop/invert all
     -- NIL, and only score and headsusp were copied. The branch whose purpose is to change the format

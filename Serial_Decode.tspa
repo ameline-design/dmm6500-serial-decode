@@ -107,8 +107,8 @@ function ulog.line(s)
   return true
 end
 
--- The 5.0.2 vararg idiom, string.format(f, unpack(arg)), relies on an implicit
--- `arg` table that host Lua removed -- so it could not be exercised offline at
+-- string.format wrapper with EXPLICIT parameters rather than varargs.
+--   [...]
 -- all, which is unacceptable in a logger. Five slots cover every call site,
 -- string.format ignores surplus arguments, and this behaves identically on 5.0.2
 -- and 5.4. Guarded so a format mismatch cannot raise from inside a log call.
@@ -140,8 +140,8 @@ function ulog.close()
   return true
 end
 
--- eventlog.getcount() stayed 0 across both an existing and a missing path.
--- Returns true or false, never nil. A PROBE THAT RAISES answers TAKEN: losing a name beats
+-- DOES THIS FILE EXIST, WITHOUT LOGGING AN ERROR IF IT DOES NOT?
+--   [...]
 -- truncating a real file. A nil is NOT taken -- fs.is_file returning nil falls through to the open
 -- probe, and file.open returning nil (no key, or no such file) is the normal FREE answer, with the
 -- failure surfacing at the write where it belongs.
@@ -166,8 +166,8 @@ function ulog.exists(path)
   return got == true
 end
 
--- common path costs one open instead of N, but the probe still runs forward from there: a file the
--- index does not know about -- copied onto the key, or written by another prefix -- would otherwise
+-- First unused '<prefix>NNN<ext>' on the key, so successive saves do not overwrite each other.
+--   [...]
 -- be handed out and TRUNCATED by MODE_WRITE.
 -- 1000 names, three digits. At 100 the byte log simply stopped logging once prefix000..099 existed,
 -- and a bench session that presses NewLog per device reaches 100.
@@ -471,8 +471,8 @@ function sdec.sig_family(lo, hi)
   return string.format('%.1fVpp', hi - lo)
 end
 
--- Hysteresis makes this necessary: the trip is detected once the signal has passed
--- thr +- hyst, so thr itself was crossed one or more samples earlier -- several on
+-- Edge extraction
+--   [...]
 -- a slow RS-232 edge. Walking back to the straddling pair keeps edge positions
 -- independent of the hysteresis setting, which matters because the bit-time fit
 -- reads them as timing.
@@ -547,8 +547,8 @@ function sdec.sig_edges(rd, n)
   return ne
 end
 
--- LONGEST single run. Correct whenever the capture has any inter-byte gap, and it
--- separates TTL (idle high) from RS-232 (idle low) without being told.
+-- Which physical level is idle (the UART mark level): the level holding the
+--   [...]
 -- A gapless stream of 0x00 defeats it -- start bit plus eight zero data bits is a
 -- nine-bit low run against a one-bit stop -- so this is only a PRIOR.
 -- sdec.ua_autoformat scores both polarities and lets frame errors decide.
@@ -606,8 +606,8 @@ function sdec.sig_idle(rd, n)
   return sdec.idle
 end
 
--- bits, so the 10th percentile lands on a one-bit pulse; the minimum lands on
--- whatever the narrowest glitch in the capture was, and one bad sample would then
+-- One bit time in samples, from the EDGE LIST, before any bit-time fit has run.
+--   [...]
 -- halve the estimate and make every run look like idle.
 -- Interior gaps only. The runs before the first edge and after the last are cut
 -- short by the capture boundary, so they are not pulse widths.
@@ -631,8 +631,8 @@ function sdec.sig_onebit(ei, ne)
   return v
 end
 
--- and integer multiples m[k], the bit time is sum(w*m)/sum(m*m). Using every
--- pulse beats using the shortest -- a single short pulse carries the full sample
+-- Bit-time recovery
+--   [...]
 -- quantisation error, a 10-bit gap divided by 10 carries a tenth of it, and the
 -- fit weights long gaps accordingly.
 -- Returns bittime, quality, nfit -- or nil when nothing fits.
@@ -760,7 +760,7 @@ function sdec.sig_quality()
   return T
 end
 
--- ============================================================================
+-- Acquisition
 -- Pick the lowest exact sample rate that still gives at least `want` samples per
 -- bit. A lower rate covers more TIME in the same buffer, which is what decides
 -- how many bytes a capture holds -- at 9600 baud, 20 000 samples is 190 bytes at
@@ -789,8 +789,8 @@ function sdec.acq_measure_fs(buf, n)
   return (n - 1) / span
 end
 
--- dead one the moment relativetimestamps is unavailable in some configuration -- a large behavioural
--- change to guard a fault never seen on this instrument, where 80 000 requested measures 79 999.995. The
+-- The measured rate, or the REQUESTED one with a flag saying so. Every acquisition path uses this.
+--   [...]
 -- app's rule is that refusing with a reason is acceptable and confident nonsense is not; here it can
 -- keep working AND not be confident, which is strictly better than either alternative. ui_notes() says
 -- so whenever this flag is set.
@@ -822,8 +822,8 @@ end
 
 sdec.acq_overhead = 0.510e-6
 
--- about, and it appears only on hardware: offline, ladder snapping made minsabit look safe.
--- Returns nil when NO listed rate can deliver the floor, rather than a rate that cannot work.
+-- The rate that DELIVERS `want` samples per bit, not the rate that would if there were no
+--   [...]
 -- At minsabit = 4 that bites above 165563 Bd = 1/(4*(1/1e6 + 5.1e-7)) -- 153600 still gets 1 MS/s
 -- and 4.31 delivered samples/bit, 172800 gets nothing. 250 kBd needs 2.04 MS/s
 -- requested to deliver 1 MS/s, which does not exist, so streaming genuinely cannot reach it.
@@ -871,8 +871,8 @@ function sdec.fs_select()
   return sdec.fs
 end
 
--- buffers run to 2.8 M readings against a 6 M ceiling for all buffers together.
--- Capacity a capture of n samples needs. LoopUntilEvent takes its pre-trigger reserve out of
+-- How many bytes a capture can physically hold, at the rate actually used and the
+--   [...]
 -- CAPACITY, not out of `count`, so a buffer sized exactly n delivers n minus the reserve: measured
 -- 19 011 at capacity 20 000, 20 066 at 21 100. FRAME only -- SimpleLoop has no reserve, and its
 -- buffers run to 2.8 M readings against a 6 M ceiling for all buffers together.
@@ -883,8 +883,8 @@ function sdec.acq_cap(n)
   return n + math.ceil(n * (sdec.pretrig or 0) / 100) + 100
 end
 
--- 1 MS/s the 5 % reserve is only 1.05 ms, so it wrapped on every auto-detect probe.
--- buffer.FILL_CONTINUOUS the CONSTANT does not exist on firmware 1.7.17a and assigning it raises,
+-- FILL CONTINUOUSLY, SO NOTHING IS EVER STORED PAST THE END OF THE BUFFER.
+--   [...]
 -- which is what made this look unfixable. The ATTRIBUTE takes its numeric value: `fillmode = 1`
 -- reads back as 1. defbuffer1 ships in that mode, which is the confirmation that it is the normal
 -- one for a buffer something else is filling.
@@ -893,8 +893,8 @@ function sdec.acq_fillmode(buf)
   return pcall(function() buf.fillmode = 1 end)
 end
 
--- NOT fixed by raising `position`: the firmware makes post = count - count x position/100, so a
--- reserve big enough in time at 1 MS/s (66 %) would cost two thirds of the depth. Nor by a bigger
+-- Readings the pre-trigger reserve holds, and how long that is in TIME -- which is what decides
+--   [...]
 -- buffer alone -- 5 % of enough readings to cover 40 ms at 1 MS/s is an 800 000-reading buffer per
 -- capture. So the reserve stays at 5 % and the EVENT is muted for the capture instead
 -- (sdec.mute_events); the data is unaffected, verified byte-exact throughout.
@@ -925,8 +925,8 @@ function sdec.window_bytes(baud, nbits, par, nstop)
   return math.floor((sdec.n * baud) / (fs * framebits))
 end
 
--- trigger reset", and acq_triggered() calls trigger.ext.reset() on some paths. A one-time setup
--- would be silently undone by the app's own reset.
+-- Configure the digitizer. Fixed range and a 1 us aperture, both non-negotiable:
+--   [...]
 -- LOGIC_POSITIVE: a TTL-high pulse from an idle-low line, so the device watches for a RISING edge.
 -- Chosen because a rising-edge "go" is the convention a micro's pin-change interrupt expects, and
 -- because an idle-low line does not look like a permanently-granted credit if the DMM is off.
@@ -943,8 +943,8 @@ function sdec.fc_config()
   return ok
 end
 
--- localnode.showevents selects which severities are DISPLAYED, not which are LOGGED, so the log
--- stays complete for sdec.errcount and for diagnosis; this only suppresses the popup. Real
+-- STOP THE FIRMWARE POPPING DIALOGS OVER THE APP.
+--   [...]
 -- errors still show.
 -- Applied from hw_config so it is re-asserted per capture: it is instrument state, and an App
 -- relaunch or another app may have changed it.
@@ -954,8 +954,8 @@ function sdec.quiet_events()
   end)
 end
 
--- buffer.FILL_CONTINUOUS does not exist on firmware 1.7.17a -- assigning it raises. Data is
--- unaffected, so only the modal box is the harm.
+-- Mute the panel's event popups for a capture. The pre-trigger reserve is a CIRCULAR sub-region, so
+--   [...]
 -- THE LOG IS LEFT INTACT. Draining it was tried and is worse: eventlog.next CONSUMES and
 -- eventlog.post cannot put an event back, so real events became generic "1005 User" entries,
 -- multiplied per poll, and tripped 1707. Do not retry it.
@@ -1014,8 +1014,8 @@ function sdec.acq_make_buffer(n)
   return sdec.buf
 end
 
--- the deficit is throughput rather than a gap between captures.
--- Five lines to settle it, and worth doing early:
+-- Copy the capture out of the reading buffer into a PLAIN Lua array, once.
+--   [...]
 --   timer.cleartime(); local rd = buf.readings; local s = 0
 --   for i = 1, 20000 do s = s + rd[i] end
 --   print(timer.gettime() / 20000)        -- seconds per proxy read
@@ -1028,8 +1028,8 @@ function sdec.acq_copy(buf, n)
   return t
 end
 
--- stream_acquire() falls back to acq_free(nsmp) when SimpleLoop is refused, and nsmp there is 2.8-6
--- MILLION. acq_copy() copies the whole buffer into sdec.smp, so an uncapped fallback would defeat the
+-- Untriggered capture of n samples. Used for the level-learning probe and for
+--   [...]
 -- entire one-window memory design and could exhaust Lua memory on an instrument whose failure mode for
 -- that is a firmware panic. The samples stay in the reading buffer either way; only the Lua-side view
 -- is bounded.
@@ -1051,8 +1051,8 @@ function sdec.acq_free(n, ncopy, nofc)
   return sdec.nread
 end
 
--- trigger.model.state() returns three values; only the first is the state. IDLE is
--- also the state BEFORE initiate(), so idleness alone cannot mean "done" -- hence
+-- Capture armed on a start-bit edge, keeping sdec.pretrig percent of the buffer
+--   [...]
 -- the buffer check. pcall'd because a firmware without the constant must degrade to
 -- "not finished" (the caller then falls back on its timeout) rather than raise from
 -- inside a poll loop.
@@ -1300,8 +1300,8 @@ function sdec.ua_widths()
   return sdec.try_nbits
 end
 
--- other three set on its own was read by nothing and had no effect at all -- Options > Parity,
--- Stop Bits and Polarity were live fields that changed the decode only in combination with a
+-- A FORCED FIELD CONSTRAINS THE SEARCH; it does not merely sit in a variable.
+--   [...]
 -- fourth. These make each one independently effective by narrowing the candidate list the search
 -- walks, which keeps every scoring and margin rule below unchanged: a one-entry list simply has
 -- nothing to lose to.
@@ -1328,8 +1328,8 @@ sdec.alt_minframes = sdec.alt_minframes or 8
 
 sdec.fitratio = sdec.fitratio or 1    -- the rescaling ua_best() settled on
 
--- majority-voted rather than one sampled. A single sample is one ADC conversion,
--- so a noise excursion at that instant flips the bit; three taps spanning 40 % of
+-- Bit sampling
+--   [...]
 -- the cell need two wrong together. Skipped below 6 samples/bit, where the outer
 -- taps would sit too close to the cell edges.
 -- Returns 0, 1, or nil when the position falls outside the capture.
@@ -1382,8 +1382,8 @@ function sdec.ua_popcount(v)
   return ones
 end
 
--- centre is t0 + (k + 0.5)*T. Data bits are LSB first, which is universal for
--- asynchronous serial.
+-- One frame
+--   [...]
 -- Returns value, err -- nil on success, else 'start', 'parity', 'framing' or
 -- 'truncated'. A parity or framing failure still returns the value: a byte with a
 -- bad stop bit is usually the right byte at the wrong baud rate.
@@ -1424,8 +1424,8 @@ function sdec.ua_frame(rd, n, t0, T, nbits, par, nstop, invert)
   return val, nil
 end
 
--- before tmin0 are therefore not emitted at all, which is simultaneously the
--- continuation rule and the de-duplication rule for an overlapping window.
+-- Sequential decode of a whole capture
+--   [...]
 -- It has to be a parameter rather than a second copy of this loop: the sequential
 -- walk below is the subtlest code in the app, and a chunked variant of it would
 -- drift out of step with this one at the first bug fix.
@@ -1540,8 +1540,8 @@ function sdec.ua_head_bad(r, hs)
   return last
 end
 
--- wrong, so a frame there can pass parity and stop by luck and still hand back a plausible WRONG byte.
--- An identified head therefore counts IN FULL, and the resync exclusion is dropped across it: that
+-- BYTES YOU CANNOT TRUST, not frames that failed a check. In a misaligned head the bit boundaries are
+--   [...]
 -- exclusion is for a healthy gapless line, and headsusp is evidence this is not one. The final frame
 -- stays excluded -- the capture boundary halves it regardless. With no head this is ua_bad_interior,
 -- so good captures still read 0. Measured 2026-08-19: '????UMPS OVER TH', note 4, ERR 1.
@@ -1566,8 +1566,8 @@ sdec.rarewidth = 8
 
 sdec.polmargin = 4
 
--- there to stop noise deciding on a handful of frames, and quadrupling it made a rare
--- width unwinnable on exactly the short captures where it is easiest to be sure: genuine
+-- The bias multiplies the PROPORTIONAL term only, never the absolute floor. The floor is
+--   [...]
 -- back-to-back 5N1 over 8 bytes scores 8 against 8N1's 1, which is decisive evidence, and
 -- a floor of 8 rejected it by one point. Scaling only the proportional part means the
 -- bias grows with how much evidence the incumbent actually has.
@@ -1661,6 +1661,11 @@ end
 sdec.submult_minpulses = sdec.submult_minpulses or 20
 sdec.submult_oddfrac   = sdec.submult_oddfrac   or 0.10
 
+-- Is this candidate bit time a SUB-MULTIPLE of the one that generated the pulses?
+--   [...]
+-- a 42-bit loop-seam gap gives k = 169, whose parity is set by the capture phase, not the format,
+-- and one such width was enough to silence the gate and let ratio 0.25 through.
+-- Gates CANDIDATES only, never the fit, so a corrupt fit can still be rescaled.
 function sdec.ua_submultiple(T)
   if T == nil or T <= 0 then return false end
   local nw = sdec.nw or 0
@@ -1678,8 +1683,8 @@ function sdec.ua_submultiple(T)
   return odd < sdec.submult_oddfrac * seen
 end
 
--- drift cases -- and 3.0, 11 and 13 for the three spike-corrupted fits.
--- So when the fit is implausible AND consistent with its own widths, the line really is
+-- Whether the fit is consistent with the pulse-width distribution it came from.
+--   [...]
 -- out of range and rescaling would only manufacture a plausible-looking wrong answer.
 -- When it is grossly inconsistent, the fit is the thing that is wrong, and rescaling is
 -- exactly the right move.
@@ -1706,8 +1711,8 @@ function sdec.ua_implausible_why(T)
   return string.format('no frame fits a %.1f sample bit time', T)
 end
 
--- as idle and drops them from its own denominator.
--- The median cannot be moved that way: spikes are a minority of the widths however
+-- Bit times worth scoring: the fit rescaled by sdec.ratios, plus MEDIAN-DERIVED
+--   [...]
 -- many of them there are. Real widths are 1..maxmult bit times, so med/k for small k
 -- brackets the truth from a direction impulse noise cannot corrupt -- and med/1 alone
 -- recovers all three spike cases the ladder missed.
@@ -1766,8 +1771,8 @@ function sdec.ua_probe(rd, n, T)
   return sc, scbad, scgood
 end
 
--- checkpoint is four values -- the index and the winning triple -- and a slice boundary cannot
--- land anywhere awkward.
+-- Returns bittime, ratio.
+--   [...]
 -- The state table `st` holds everything the three share. Kept as one table rather than a dozen
 -- returns because the 200-active-locals ceiling is real on this instrument and this function was
 -- already among the largest.
@@ -1874,8 +1879,8 @@ function sdec.ua_best(rd, n, Tfit)
   return sdec.ua_best_end(st)
 end
 
--- Only an always-ONE bit qualifies. An always-zero MSB is ordinary 7-bit ASCII in an
--- 8-bit frame and must be left alone. Seven data bits plus MARK parity genuinely does
+-- Collapse data bits that are 1 in EVERY frame into the stop bit.
+--   [...]
 -- put a constant 1 there, which is why the collapse is reported rather than silent.
 -- Guards match ua_refine_parity: >= 6 good frames, and >= 3 distinct values in the bits
 -- being KEPT, so a repeated byte cannot drive it.
@@ -1951,6 +1956,7 @@ sdec.par_minvote_all  = sdec.par_minvote_all  or 6
 sdec.par_minvote_frac = sdec.par_minvote_frac or 20
 sdec.par_minboth = sdec.par_minboth or 2
 
+-- Votes required in EACH bit-7 state. The guard that stops a restricted alphabet faking parity.
 function sdec.ua_refine_parity(r, rd, n, T)
   if r == nil then return r end
   if sdec.force_par ~= nil then return r end
@@ -2005,7 +2011,9 @@ function sdec.ua_refine_parity(r, rd, n, T)
     local r2 = sdec.ua_run(rd, n, T, 7, par, r.nstop, r.invert)
     if r2 == nil then return r end
     r2.score = sdec.ua_score(r2)
-    r2.headsusp = r.headsusp
+    if r.headsusp ~= nil and (r2.headsusp == nil or r.headsusp > r2.headsusp) then
+      r2.headsusp = r.headsusp
+    end
     r2.nbits, r2.par, r2.nstop, r2.invert = 7, par, r.nstop, r.invert
     sdec.fmt_note = note
     return r2
@@ -2021,8 +2029,8 @@ function sdec.ua_refine_parity(r, rd, n, T)
   return r
 end
 
--- rewrites r.nbits/r.par in place -- so running afterwards compared 8N1-scored
--- alternatives against 7E1. Worse, refine_parity also sets fmt_note, which the old
+-- Top-level decode
+--   [...]
 -- version bailed on, so whenever the 7E1 reclassification fired NO alternative was
 -- ever reported at all. Composing the note is now a separate step (ua_note_fmt),
 -- which is what lets both notes coexist.
@@ -2068,6 +2076,11 @@ function sdec.decode_from(rd, n)
   if rd == nil or n == nil or n < 2 then return false, 'nothing captured' end
   local fs = sdec.acq_fs or sdec.fs
 
+  -- Any failure PAST the bit-time stage must retract the bit time as well.
+  --   [...]
+  -- "--", which is the same defect as H1 in a different dress: a number that looks
+  -- measured when nothing was decoded. A bit time that frames nothing is not a baud
+  -- rate, it is an artefact of noise.
   local function giveup(why)
     sdec.baud_probe = sdec.baud
     sdec.baud, sdec.baud_raw, sdec.bittime = nil, nil, nil
@@ -2193,9 +2206,7 @@ function sdec.decode()
   return sdec.decode_from(sdec.smp, sdec.nread)
 end
 
--- ============================================================================
 -- Presentation
--- ============================================================================
 -- "8N1", "7E2", ... from explicit fields, so a CANDIDATE format can be named as
 -- well as the chosen one (ua_alts needs exactly that).
 function sdec.ua_fmt_name(nbits, par, nstop)
@@ -2205,8 +2216,8 @@ function sdec.ua_fmt_name(nbits, par, nstop)
   return string.format('%d%s%d', nbits, p, nstop)
 end
 
--- during a run. That is right for the measured cells (nothing has been fitted) and wrong for the
--- forced ones: a streaming mode cannot even be ENTERED without a locked rate, so the format is
+-- FALLS BACK TO THE FORCED FORMAT, so a streaming capture names the format it is decoding with.
+--   [...]
 -- the one thing about a stream that is certain. Showing '--' for the two values the operator
 -- pinned themselves, while the app is actively using them, is the panel disclaiming knowledge it
 -- has.
@@ -2342,8 +2353,8 @@ function sdec.ua_hexrow(vals, errs, nf, i0, ncol, base)
                        table.concat(as))
 end
 
--- do that job at a fixed x -- and a '|' inside the string cannot, since it sits wherever the
--- preceding hex happened to render.
+-- THE SAME ROW, AS THREE PIECES, for the on-screen dump's three fixed-x text fields.
+--   [...]
 -- The hex block also loses ua_hexrow's leading space. There it separates the offset from the
 -- data inside one string; here the offset is a different object and the space would just push
 -- the block off its own column by one character.
@@ -2409,9 +2420,6 @@ sdec.ck_probes = 8
 
 sdec.ck_maxbytes = 32768
 
--- micro-optimisation: allocating a fresh 20 000-entry array 143 times is 143 times the
--- garbage, on a Lua whose collector behaviour under an app is one of the things
--- suspected in this firmware's panics.
 -- Over a plain Lua array. The test path, and also the way to run a chunked decode over
 -- a frame-mode capture that is already in memory.
 function sdec.ck_reader_table(rd, ntotal)
@@ -2450,8 +2458,8 @@ function sdec.ck_reader_buffer(buf, ntotal)
   end
 end
 
---   * the seam then falls in the middle of the overlap rather than at its rim, so the
---     de-duplication is never deciding a near-tie.
+-- Window geometry
+--   [...]
 -- At 8.68 samples/bit and 10 bit frames that is ceil(260.4) + 64 = 325 samples, 1.6 % of a
 -- 20 000-sample window: the redundant work is a rounding error against the cost of
 -- getting a seam wrong.
@@ -2460,8 +2468,8 @@ function sdec.ck_overlap(T, framebits)
   return math.ceil(sdec.ck_ovframes * framebits * T) + sdec.maxback
 end
 
--- REFUSES rather than clamps when the window cannot hold enough frames. The case is
--- real: force 1200 baud while fs is still 1 MSa/s and T is 833 samples, so one 12-bit
+-- Window size, overlap and stride for a bit time, or nil plus a reason.
+--   [...]
 -- frame is 10 000 samples and three of them do not fit in the window at all -- stride
 -- would go to zero and the loop would never advance. Refusing names the remedy, which
 -- is the sample rate, and is the same shape as every other refusal in this app.
@@ -2490,8 +2498,8 @@ function sdec.ck_nwin(ntotal, W, stride)
   return 1 + math.ceil((ntotal - W) / stride)
 end
 
--- tracking rate before seeing real drift on real hardware would be inventing a number.)
--- Returns ok, reason.
+-- Priming: measure the line ONCE
+--   [...]
 -- The decimated attempt alone, so priming can spend one press on it. Returns ok, why,
 -- fatal -- fatal means the source gave nothing, so the contiguous probes cannot help
 -- either and trying them would only cost time.
@@ -2508,8 +2516,8 @@ function sdec.ck_levels_dec(reader, ntotal, win)
   return ok, why, false
 end
 
--- level once the step is 140, and can reduce to none at all. Refusing instead would report a
--- recording whose levels are measurable from any window containing the burst as an idle line.
+-- ONE contiguous level probe, k = 0..ck_probes-1, spaced evenly across the recording.
+--   [...]
 -- SPACED ACROSS the recording, not just the head: reading only the first window covered
 -- 20 000 of 2 800 000 possible burst positions, 0.7 %. The decimated view is still tried
 -- FIRST, so the drift property that motivated decimation is untouched.
@@ -2545,8 +2553,8 @@ function sdec.ck_levels(reader, ntotal, win)
   return false, why
 end
 
---   read  the contiguous lead-in window
---   edge  sig_edges and sig_idle over it
+-- Format, on a CONTIGUOUS lead-in window, with the levels already established.
+--   [...]
 --   fmt   the format search
 -- pr.label names the current phase for the status row, so the operator sees priming
 -- advancing rather than a dead panel.
@@ -2780,8 +2788,8 @@ function sdec.ck_decode(reader, ntotal, fmt, sink, opts)
   return tot, nil
 end
 
--- where the assertion is about the bytes rather than about a file.
--- Positions come from `base`, not from a counter of its own. That is not a style
+-- Sinks
+--   [...]
 -- preference: base is the stream offset ck_decode has already committed to, so writing
 -- at base+i makes a mis-stepped seam show up as a WRONG BYTE at a known index instead
 -- of as a correctly-ordered array that is quietly one byte short.
@@ -2796,8 +2804,8 @@ function sdec.ck_sink_collect(vals, errs)
   end
 end
 
--- Rows are 16 bytes and a window boundary is not a multiple of 16, so a window's
--- leftover bytes are CARRIED to the next window rather than emitted as a short row.
+-- Append to a file on the USB key, as the same hex+ASCII rows the panel and the debug
+--   [...]
 -- Otherwise every seam would produce a ragged row and the file's offsets would stop
 -- lining up with the byte count the panel reports.
 -- Returns the sink and a finish() that flushes the carry and closes the file.
@@ -2820,6 +2828,8 @@ function sdec.ck_sink_file(path, ncol)
   local cbase = 0                  -- stream offset of cv[1]
   local dead = false
 
+  -- nrow valid bytes across ncol columns: ua_hexrow pads the difference, so the last
+  -- row of the file keeps its ASCII gutter in the same column as every other row.
   local function emit(nrow)
     local line = sdec.ua_hexrow(cv, ce, nrow, 1, ncol, cbase)
     local w = pcall(function() file.write(fh, line .. '\r\n') end)
@@ -2894,8 +2904,8 @@ function sdec.ck_tail_push(tl, vals, errs, m, base)
   if base ~= nil then tl.base = base end
 end
 
--- 1-based ABSOLUTE index of byte 1 of the view, which is what lets the dump label the
--- offsets truthfully instead of restarting them at zero halfway through a stream.
+-- Linearise into the shape sdec.res has, so every existing byte-view function works on
+--   [...]
 -- tpos is left EMPTY rather than absent: nothing in the byte views reads it, but
 -- lin_decode indexes it behind a nil guard and an empty table satisfies that guard
 -- while a missing key would not.
@@ -2919,8 +2929,8 @@ function sdec.ck_tail_result(tl, fmt, ntotal)
   return r
 end
 
---   * the TAIL ring, whose contents and total-pushed counter are the run's, not a slice's.
---   * the ck_decode STATE -- window cursor, seam, running totals.
+-- One call, for the app to hang a button on
+--   [...]
 -- and the format and window table, which are primed once and shared by every slice.
 -- Creating a job COSTS NOTHING: priming is deferred to the first step, so the press that
 -- creates one is charged for one phase rather than all of them.
@@ -2938,8 +2948,8 @@ function sdec.ck_job_new(reader, ntotal, path, opts)
           tail = nil, state = nil, done = false, tot = nil}, nil
 end
 
--- opts.sink is an EXTRA destination, chained ahead of the file rather than replacing it. The
--- offline suite wants the bytes in an array while the shipped path writes them to the key, and
+-- The sink chain, built once priming has SUCCEEDED and not before. Order matters: a recording
+--   [...]
 -- assigning over job.sink afterwards is not the way to get that -- it discards the tail tee
 -- built below, which is fed per sink call and would then hold nothing. Both sinks see every
 -- byte, and a false from EITHER stops the run.
@@ -3401,9 +3411,7 @@ function sdec.ui_optw(s)
   return nup * (sdec.ui_adv_upper or 10) + (n - nup) * (sdec.ui_adv_mixed or 8)
 end
 
--- ============================================================================
 -- Small helpers
--- ============================================================================
 -- settext `txt` on `h`, but only when the text actually changed. Returns true if it wrote.
 function sdec.ui_set(h, txt)
   if h == nil then return false end
@@ -3445,8 +3453,8 @@ function sdec.del_orphans()
   return nk
 end
 
--- WHICH MAKES ui_fill_solid INERT. It is kept because it costs one call at build time, it is the
--- right thing to say if a later firmware honours the percentage, and its refusal counter is what
+-- Recolour rect `h` to `c`, counting a refusal in sdec.fillfails, which the status row surfaces.
+--   [...]
 -- would say so. Anything that must actually be solid uses geometry instead: 1 px, or an OBJ_LINE
 -- with a thickness (see ui_progbar_set).
 -- IT ALSO MEANS A RECT CANNOT BE HIDDEN BY COLOUR beyond 1 px -- see sdec.ui_setstate.
@@ -3466,8 +3474,8 @@ function sdec.ui_fill_solid(h)
   return ok
 end
 
--- 2026-08-19: recolouring one to ui_c_hide does NOT hide it. The app hides its dump rules that way
--- and they are 1 px wide, so the background-coloured pixel is the background; a 64 x 14 frame
+-- Show or hide object `h`. THE ONLY WAY TO TAKE A RECT OR A LINE OFF THE GLASS, measured
+--   [...]
 -- painted 0x000A0D stayed plainly visible on the panel and its own fillfails counter read 0.
 -- The reference lists OBJ_RECT and OBJ_LINE among setstate's allowable types, and both were
 -- confirmed on the instrument. Counted in fillfails on refusal like every other display write.
@@ -3478,8 +3486,8 @@ function sdec.ui_setstate(h, st)
   return ok
 end
 
---   * an OBJ_LINE with thickness 10 IS solid, at any length, and display.setposition moves its
---     endpoint. So one line is a bar with 1 px granularity and no ladder of segments.
+-- Paint the acquire/decode bar at `pct` (0..100), or HIDE it when pct is nil -- which is what every
+--   [...]
 -- CACHED, because this runs at ~1 Hz from inside a capture and every display call is an IPC round
 -- trip to the second processor. Two entries: the percentage, and which of the three states the
 -- objects are in, so 40 -> 41 costs one setposition and no setstate.
@@ -3548,8 +3556,8 @@ function sdec.ui_unit()
   return sdec.ui_cur().unit or 'bytes'
 end
 
--- only in its head showed a non-zero ERR in the all-clear colour. Returns nil when nothing is decoded.
--- The trust count for a RUN's totals. A run keeps no errs of its own, only per window, so the head swap
+-- THE ERR FIELD'S NUMBER, in one place. The value and its colour were computed apart, and by different
+--   [...]
 -- is arithmetic -- see sdec.ua_err_count for why the extent replaces the failure count. Takes the table
 -- rather than reading ck_tot, so the status row and the ERR field cannot answer differently: they did,
 -- and the panel read 'ERR 7' beside '1 err' on the same screen.
@@ -3647,8 +3655,8 @@ function sdec.ui_field_values()
   return v
 end
 
--- Every note that applies, most important first. Returns the list and its count.
--- A LIST, NOT A FALL-THROUGH CHAIN. Seventeen sources feed one cell, and a chain shows only one of
+-- The note / warning line
+--   [...]
 -- them -- so a second real warning would not merely be hidden, nothing would say it existed. The
 -- cell shows one note because one is what fits, but it says HOW MANY MORE there are, and ulog and
 -- the saved file get all of them. Ordered by how badly an absence would mislead.
@@ -3830,8 +3838,8 @@ end
 
 sdec.ui_note_px = sdec.ui_rule_x1 - sdec.ui_note_val_x
 
--- 1-BASED FOR THE OPERATOR: ui_page is a 0-based index and 'page 0 of 35' names a page no button
--- can reach.
+-- 'page N of M' for the note row, or '' when there is nothing worth saying: one page, or the
+--   [...]
 -- COMPUTED, NOT CACHED, and read by two callers -- ui_page_btns writes it to the panel and
 -- ui_note_text reserves room for it. A second copy in a variable would let the reservation describe
 -- a string that is no longer on screen, and the note would then be fitted around nothing.
@@ -3842,8 +3850,8 @@ function sdec.ui_pgind_text()
   return string.format('page %d of %d', sdec.ui_page + 1, npg)
 end
 
--- x_page, x_n, x_of, x_m -- and the two number x's are RIGHT edges (JUST_RIGHT), the two word x's
--- LEFT edges.
+-- WHERE THE COUNTER'S FOUR PIECES GO, right to left from ui_pgind_x. Returns
+--   [...]
 -- DERIVED FROM MEASURED WIDTHS rather than written as four literals, for the reason the dump columns
 -- are: the font is proportional and its advances are a measured table, so a literal here would be
 -- right only until someone believed the wrong number. Called at build time and by ui_pgind_px.
@@ -3868,8 +3876,8 @@ function sdec.ui_pgind_px()
   return (sdec.ui_pgind_x - xpage) + sdec.ui_note_gap
 end
 
--- exists at all. The marker's width is reserved only when there IS a marker, so the whole cell
--- stays available for the common single-note case.
+-- The one note the cell has room for, plus how many others there are.
+--   [...]
 -- THE PAGE COUNTER SHARES THE ROW and is right-justified against the same rule, so its width comes
 -- off the cell too -- otherwise a full-width note is drawn straight through it and the firmware
 -- fades neither, it just overlaps them.
@@ -3882,8 +3890,8 @@ function sdec.ui_note_text()
   return sdec.ui_fit(t[1], px - sdec.ui_textw(mk)) .. mk
 end
 
--- Called from ui_destroy AND ui_build. Redundant in build, which destroys first, but the invariant
--- is "a cache never outlives its object", and stating it twice is what makes it an invariant
+-- Main screen
+--   [...]
 -- rather than a coincidence of call order.
 -- ui_page is NOT a cache. It is view state, and clearing it here would silently move the operator
 -- back to page 1.
@@ -4180,8 +4188,8 @@ function sdec.ui_build()
   return sdec.ui_scr
 end
 
--- one -- it invites a press and teaches that presses do nothing.
--- STATE_INVISIBLE, not STATE_DISABLE: the reference is explicit that DISABLE applies to
+-- Show or hide the right-margin buttons: the page buttons when there is somewhere to page to, Lock
+--   [...]
 -- display.OBJ_EDIT_* only, so a disabled button is not available on this firmware.
 -- Cached, because this runs on every refresh and a setstate per button per refresh is display
 -- traffic for a state that changes only when the page count does.
@@ -4393,8 +4401,8 @@ function sdec.ui_refresh()
   return true
 end
 
--- flog_why runs to 'no free /usb1/bytesNNN.txt name' and 'cannot append to /usb1/bytes000.txt' -- 432
--- px and 302 px against this cell's 200 -- and rendering it here at all put the words that say the app
+-- THE BYTE LOG, for the status row: which file is being appended to, and how many BYTES are in it
+--   [...]
 -- is DISCARDING the operator's bytes into the faded tail, which is the one thing on the row that must
 -- survive. 'log: NOT LOGGING' measures 156 px, so it always fits and never needs the clip; ui_notes
 -- carries the reason across the full table width, where all three reasons fit whole.
@@ -4463,8 +4471,8 @@ function sdec.ck_status()
                        t.nf, sdec.ck_err_n(t), t.nwin, base, t.stopped or 'done')
 end
 
--- Nothing is decoded during the first, so a byte fraction there would be a fiction.
--- nil FOR A PRESS-DRIVEN RECORDING, which is the case that would lie. Between the start press and
+-- The fraction the progress bar shows, 0..100, or nil when no honest one exists.
+--   [...]
 -- the stop press no Lua of ours runs, so a bar drawn there would hold whatever the start press put
 -- in it for the whole recording -- empty, reading as "nothing is being recorded". An absent bar is
 -- honest; a frozen one is not. It is the same reason ck_status states its control and no figure.
@@ -4706,8 +4714,6 @@ sdec.proto     = sdec.proto or 'uart'
 if sdec.strm_press == nil then sdec.strm_press = false end
 sdec.strm_maxsec = sdec.strm_maxsec or 1200
 sdec.strm_fallback_s = sdec.strm_fallback_s or 20
--- sdec.savedas  -- the last filename written, for the note line
--- sdec.stickyerr -- a fault that must outlive a capture (see install_cleanup)
 -- Drop every trace of the previous capture, and return true.
 function sdec.clear_result()
   sdec.res, sdec.midi, sdec.lin = nil, nil, nil
@@ -4728,9 +4734,7 @@ function sdec.clear_result()
   return true
 end
 
--- ============================================================================
 -- Capture orchestration
--- ============================================================================
 -- Pick the sample rate, capture, and decode. Returns ok, reason.
 function sdec.autoset()
   local target = sdec.force_baud
@@ -4798,10 +4802,10 @@ function sdec.autoset()
   return true
 end
 
--- metadata and no sample values. A 32 kB stream is 2.8 M samples, so a text dump of them is
+-- The byte log
+--   [...]
 -- ~28 MB against 32 kB of bytes -- a thousandfold, onto a USB key, for data nothing downstream
 -- can read. A waveform dump belongs behind its own control and its own filename, not in these.
--- ============================================================================
 -- Allocate the byte log's filename. Returns the path, or nil with sdec.flog_why set.
 function sdec.flog_alloc()
   if sdec.flog_path ~= nil then return sdec.flog_path end
@@ -4855,9 +4859,9 @@ function sdec.frame_log()
   return true
 end
 
--- Every entry point here is guarded end to end and returns ok, reason: they are all reached from
+-- Streaming capture
+--   [...]
 -- a touch handler.
--- ============================================================================
 -- Size a streaming capture, allocate its buffer, learn the levels and arm the idle watchdog.
 -- Returns ok, reason, and leaves the sample count in sdec.strm_nsmp.
 function sdec.stream_begin()
@@ -5536,9 +5540,7 @@ function sdec.autolock_try()
   return true
 end
 
--- ============================================================================
 -- Protocol layer
--- ============================================================================
 -- Run ONE protocol layer's parser over the bytes just decoded. mode names the view whose parser
 -- to run. Returns whether it ran.
 function sdec.proto_parse1(mode)
@@ -5577,9 +5579,7 @@ function sdec.proto_parse(which)
   return did
 end
 
--- ============================================================================
 -- Save the decoded stream to the USB key
--- ============================================================================
 -- Write a self-describing file to the USB key: the wire parameters, then the whole capture as a
 -- hex + ASCII dump, then every parsed protocol list. Returns ok.
 function sdec.save()
@@ -5650,7 +5650,6 @@ function sdec.save()
 end
 
 -- View handlers
--- ============================================================================
 -- Advance through the views THIS BUILD HAS -- text -> hex -> text in version 1, which ships
 -- without midi_decode.tsp and lin_decode.tsp, so ui_view_avail() hides the MIDI and LIN entries
 -- rather than landing the button on a list that could only ever be empty.
@@ -5840,8 +5839,8 @@ end
 
 sdec.strm_absorb_s = sdec.strm_absorb_s or 1.0
 
--- ARMED ON EVERY ENDING, INCLUDING 'stopped'. This used to return early when a press had been SEEN,
--- reasoning that nothing could be queued behind it -- true of one press, false of an operator, who
+-- Arm the queued-press absorb after a run that held the interpreter.
+--   [...]
 -- presses Capture, then TRIGGER, then Capture again. A finger on TRIGGER emits no blender event
 -- while a panel-initiated run executes (measured 2026-08-18), so the run ends at its own bounds
 -- with both Capture presses unabsorbed -- each starting another uninterruptable recording.
@@ -5861,8 +5860,8 @@ function sdec.strm_absorb_due()
   return el <= sdec.strm_absorb_s
 end
 
--- change nobody asked for.
--- The test that survives is the harm: Capture starts a run of tens of seconds that cannot be
+-- The one gate every handler that matters consults: was this press queued behind a run that has
+--   [...]
 -- interrupted and wipes the result on screen. Nothing else on the panel does that -- Save spends a
 -- filename, NewLog renumbers a log, Options opens a form, View and the page buttons only change what
 -- is displayed. All recoverable in one press, so none is worth a control that appears broken.
@@ -5888,8 +5887,8 @@ function sdec.press_absorbed(what)
   return true
 end
 
--- function's message ONLY when it is set: a recording that finished normally leaves the note row
--- EMPTY, because the status row's summary already names the bytes, the errors and the file.
+-- Leave the current capture mode, flushing its files, and return to FRAME. `why` goes on the note
+--   [...]
 -- NOT SNIFFED OUT OF `why`. Every caller that means "this failed" knows it -- strm_exit_why() is
 -- given the same ok flag -- and matching on words like 'failed' is how a protected failure gets
 -- narrowed to a boolean nobody checks, which is this app's dominant defect class.
@@ -5924,8 +5923,8 @@ function sdec.mode_exit(why, bad)
   return was
 end
 
--- now read the SAME function rather than two descriptions of one behaviour.
--- Skips any mode that cannot be right at the locked rate (mode_suits), bounded by n steps and
+-- Which mode an idle Mode press advances to -- the ENTRY, not the id.
+--   [...]
 -- falling back to the first entry: mode_suits is data-driven, and a table where nothing suits must
 -- not spin inside a touch handler.
 -- math.mod, not '%': Lua 5.0.2. at = 0 (an unrecognised capmode) lands on the first entry.
@@ -5943,8 +5942,8 @@ function sdec.mode_next()
   return sdec.ui_modes[1]
 end
 
---   IDLE     -> advance to the next mode, flushing the one being left on the way out.
--- THE RUNNING BRANCH NO LONGER LANDS IN FRAME. mode_exit() is a flush and does not touch capmode, so
+-- The Mode button. Two behaviours, and which one applies turns on whether a run is in progress:
+--   [...]
 -- an abort stops the run and leaves the setting that says what the next one is -- one press, one
 -- effect. Getting to FRAME from a recording mode is therefore up to two more presses of this button,
 -- which is the trade for the mode never changing itself.
@@ -5970,9 +5969,7 @@ function sdec.mode_cycle()
   return pcall(function() sdec.ui_refresh() end)
 end
 
--- ============================================================================
 -- The idle watchdog
--- ============================================================================
 -- Is there any activity in rd[1..n]? thr is the threshold and hyst its hysteresis, both
 -- defaulting to the current capture's. Returns true if the line crossed, false if it sat still.
 function sdec.smp_active(rd, n, thr, hyst)
@@ -6005,9 +6002,7 @@ function sdec.idle_window(fs)
   return n
 end
 
--- ============================================================================
 -- Options
--- ============================================================================
 -- Seed the form fields from the current force_* settings. Called on every open, and by anything
 -- that changes them, so the form always shows what is in effect without rebuilding it.
 function sdec.options_seed()
@@ -6188,9 +6183,7 @@ function sdec.options_cancel()
   return pcall(function() display.changescreen(sdec.ui_scr) end)
 end
 
--- ============================================================================
 -- Lifecycle
--- ============================================================================
 -- Hook End App on screen scr, so leaving the app tears it down. Returns whether the hook took.
 function sdec.install_cleanup(scr)
   local ok = pcall(function()

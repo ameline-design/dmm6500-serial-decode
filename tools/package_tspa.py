@@ -22,8 +22,9 @@ import os
 
 # Strip whole-line comments from the packaged archive (not from the source).
 STRIP_COMMENTS = True
-# Comment lines kept above each function in the archive: at least one, never more than this.
+# Comment lines kept above each definition in the archive: at least one, never more than this.
 KEEP_COMMENT_LINES = 5
+import re
 import struct
 import textwrap
 import zlib
@@ -60,6 +61,42 @@ YEAR = '2026'
 MODULES = ['tsp/usb_log.tsp', 'tsp/serial_core.tsp', 'tsp/uart_decode.tsp',
            'tsp/chunk_decode.tsp', 'tsp/serial_ui.tsp',
            'tsp/serial_app.tsp']
+
+# A MODULE-LEVEL CONSTANT DOES NOT CONSUME A DOC BLOCK, AND DOES NOT DESTROY ONE EITHER. The block
+# above `sdec.submult_minpulses` (uart_decode.tsp:742) is 25 lines describing the odd-multiple gate; two
+# assignments sat between it and `function sdec.ua_submultiple`, and an assignment used to flush the
+# block unshipped -- so the constants AND the function three lines below both shipped bare, as did
+# `sdec.qgate`. Treating every assignment as a definition instead was measured at +51 kB of archive,
+# because these modules are full of them. Passing through costs nothing and puts the block where a
+# reader looks for it: immediately above the function the constants tune.
+DEF_ASSIGN = re.compile(r'^(sdec|ulog)\.[A-Za-z_][A-Za-z0-9_]*\s*=')
+# A rule, a bare '--', or a row of ='s carries no text; it must not spend a line of the keep budget,
+# and `sig_cross` used to ship a banner as its entire first kept line.
+SEPARATOR = re.compile(r'^--\s*[=\-~*_]*\s*$')
+
+
+def is_definition(stripped):
+    return (stripped.startswith('function ') or stripped.startswith('local function ')
+            or ' = function' in stripped)
+
+
+def doc_for(block):
+    """The lines of one comment block worth shipping above its definition.
+
+    HEAD FIRST, THEN THE TAIL, because both block shapes exist here and taking only the tail broke the
+    commoner one. The old rule kept the LAST 5 lines "since these blocks put the reasoning first and
+    the summary last" -- true of some, but 64 of 222 documented definitions are summary-FIRST and
+    shipped starting mid-sentence, several mid-word ("relies on an implici"). A block's first line is
+    always the start of a sentence, so keeping it cannot truncate that way; keeping the tail as well
+    retains the closing summary where there is one. `[...]` marks the elision rather than letting two
+    distant fragments read as continuous prose.
+    """
+    body = [c for c in block if not SEPARATOR.match(c.strip())]
+    if len(body) <= KEEP_COMMENT_LINES:
+        return body
+    lead = body[0]
+    indent = lead[:len(lead) - len(lead.lstrip())]
+    return [lead] + [indent + '--   [...]'] + body[-(KEEP_COMMENT_LINES - 2):]
 
 MANIFEST = [
     ('Title', 'Serial Protocol Decode'),
@@ -275,34 +312,43 @@ def main():
         out.append('-- ================= %s =================' % m)
         with open(os.path.join(ROOT, m)) as f:
             body = f.read().split('\n')
-        pending = []
+        # BLOCKS, NOT ONE FLAT LIST. Comment runs separated by blank lines used to accumulate together
+        # and the keep window was taken across the concatenation, so a definition could ship lines from
+        # a block describing something else -- `ck_reader_table` shipped a micro-optimisation note and
+        # `clear_result` a field list. Only the block ADJACENT to the definition is its doc.
+        blocks, cur, carried = [], [], False
         for ln in body:
             ln = ln.rstrip('\r')
             stripped = ln.lstrip()
             if STRIP_COMMENTS and stripped.startswith('--'):
-                # Hold comment lines back rather than emitting or dropping them yet: whether a
-                # comment is worth shipping depends on what FOLLOWS it.
-                pending.append(ln)
+                # Held back rather than emitted or dropped yet: whether a comment is worth shipping
+                # depends on what FOLLOWS it.
+                cur.append(ln)
                 continue
+            if cur:
+                blocks.append(cur)
+                cur, carried = [], False
             # A BLANK LINE DOES NOT END THE ASSOCIATION. Many blocks here are separated from the
             # function they describe by one blank line, and treating that as a break left 40 of 183
-            # functions with no comment at all in the archive.
-            if STRIP_COMMENTS and pending and stripped == '':
-                continue
-            if STRIP_COMMENTS and pending:
-                # A comment block immediately above a definition is that definition's docstring, so
-                # ship the last KEEP_COMMENT_LINES of it -- the tail is the part that says what the
-                # function does, since these blocks put the reasoning first and the summary last.
-                # Everything else is reasoning that belongs in the source and not on the instrument.
-                if stripped.startswith('function ') or ' = function' in stripped:
-                    keep = [c for c in pending if c.strip() != '--'][-KEEP_COMMENT_LINES:]
-                    nstripped += len(pending) - len(keep)
+            # functions with no comment at all in the archive. Once a constant has been CARRIED past,
+            # though, the blank lines between those constants are ordinary layout and must survive --
+            # swallowing them ran sdec.probe_nbits, ratemargin and qgate together into one block.
+            if STRIP_COMMENTS and blocks and stripped == '':
+                if not carried:
+                    continue
+            elif STRIP_COMMENTS and blocks:
+                if DEF_ASSIGN.match(stripped):
+                    carried = True
+                elif is_definition(stripped):
+                    keep = doc_for(blocks[-1])
+                    nstripped += sum(len(b) for b in blocks) - len(keep)
                     out.extend(keep)
+                    blocks, carried = [], False
                 else:
-                    nstripped += len(pending)
-                pending = []
+                    nstripped += sum(len(b) for b in blocks)
+                    blocks, carried = [], False
             out.append(ln)
-        nstripped += len(pending)
+        nstripped += sum(len(b) for b in blocks) + len(cur)
         nlines += len(body)
         out.append('')
 
