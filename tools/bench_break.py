@@ -514,8 +514,13 @@ def main():
             for n, _, v, desc in bad:
                 print('  %-20s %s' % (n, v))
                 print('      (%s)' % desc)
+        # THE COUNT IS PRINTED, NOT IMPLIED BY SILENCE. Iterating and printing nothing leaves an empty
+        # log looking exactly like a check that never ran -- and "must be empty" above then reads as a
+        # claim nobody verified. bench_panel.py states its count for the same reason.
         print('\n--- residual event log (must be empty) ---')
-        for m in d.errors():
+        resid = list(d.errors())
+        print('  count: %d' % len(resid))
+        for m in resid:
             print('  ' + str(m))
     finally:
         try:
