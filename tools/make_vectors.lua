@@ -193,7 +193,7 @@ end
 -- each pass of the arb still offers one clean resync point.
 -- loop = true renders an EXACT whole number of bit times, so a TrueArb repeat joins seamlessly.
 -- Without it the last cell is partial and the frame straddling the junction is corrupt -- measured
--- as one interior bad frame in nearly every hardware capture of v71, which looks like a decoder
+-- as one interior bad frame in nearly every hardware capture of Lorem1kB (v71), which looks like a decoder
 -- fault and is a stimulus one. See GEN_RENDER.
 local function lorem_vec(baud, fs, nbytes)
   local s = lorem_text(nbytes or 1024, 64)
@@ -820,7 +820,7 @@ for vi = 1, table.getn(V) do
   end
   if qnote ~= 'identical' then nsuspect = nsuspect + 1 end
 
-  -- Peak as a fraction of full scale. Low utilisation is not an error -- v47
+  -- Peak as a fraction of full scale. Low utilisation is not an error -- Hello_Spike (v47)
   -- needs headroom for transients that a given seed may not realise -- but a
   -- silently over-wide scale throws away SNR, so it is shown rather than
   -- assumed. The quantisation check above is what proves it does not matter.

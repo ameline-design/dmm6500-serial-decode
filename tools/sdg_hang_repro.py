@@ -10,6 +10,11 @@ signal side. Waiting did not clear it (45 s), and it progressed from "touchscree
 responsive, LAN dead" to the front-panel Output button not responding either. Recovery was
 a power cycle, twice in one session, and this generator has no smart plug.
 
+SINCE RE-MEASURED ON 39R7, AND THE VARIABLE IS THE COUNT, NOT THE SIZE: the third over-ceiling
+write wedged it after 533 kB in total, while a 1.63 MB and then a 6.51 MB write on one power
+cycle -- 8.14 MB together -- left it answering and playing correctly. So this script's own
+--kb is the less interesting knob; --max is the one that reproduces.
+
 WHY A SCRIPT: the hang was found while doing something else, so the trigger is only known
 to within "several large uploads". A one-purpose script turns that into a number -- how
 many uploads, at what size -- which is what a firmware bug report needs and what tells us
@@ -155,9 +160,9 @@ def main():
             print('Recovery: POWER CYCLE the generator.')
             return 1
     print('\nSurvived %d uploads / %.1f kB without hanging.' % (n, total / 1024.0))
-    print('On 2.01.01.38R4 this hung within a handful of 170-210 kB uploads, so a clean')
-    print('run here is evidence the firmware changed something -- raise --max and --kb')
-    print('before concluding it is fixed.')
+    print('38R4 hung within a handful of 170-210 kB uploads and 39R7 on the THIRD over-ceiling')
+    print('write, so a clean run here is evidence only for the count reached -- raise --max')
+    print('rather than --kb before concluding anything is fixed.')
     return 0
 
 

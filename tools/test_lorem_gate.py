@@ -220,8 +220,8 @@ def main():
     # and 250000. Every one was a CORRECT decode -- the surviving hex read "Lorem ipsum dolor s" --
     # and the app's own note said 3 to 5 bytes were misaligned. The judge had been trimming by
     # r.headsusp, which uart_decode.tsp:506 states outright is "the region before the first gap, not
-    # a count of damage". v71 is gapless, so its first gap is the arb loop seam ~1024 B away and
-    # headsusp can cover the whole capture; v80 loops every 13 B, which is why the same baud rate
+    # a count of damage". Lorem1kB (v71) is gapless, so its first gap is the arb loop seam ~1024 B away
+    # and headsusp can cover the whole capture; Hello (v80) loops every 13 B, which is why the same rate
     # passed on one vector and failed on the other.
     clean = '41' * 250
     ck(BU.head_damage(clean, 226) == 0,

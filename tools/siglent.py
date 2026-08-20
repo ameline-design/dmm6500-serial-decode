@@ -158,17 +158,18 @@ class SDG:
         be encoded, decoded or newline-normalised on the way out.
 
         SETTLE IN PROPORTION TO THE PAYLOAD, which the fixed self.settle does not.
-        MEASURED 2026-08-16: four consecutive WVDT uploads of 170-210 kB WEDGED the
-        generator's remote interface completely -- it went on playing the loaded
-        waveform correctly and forever, while accepting TCP connections on both
-        5024 and 5025 and answering nothing on either, including *IDN?. Only a power
-        cycle brought it back, and it has no smart plug, so it costs a human.
+        The generator is still digesting an upload when the next command arrives: a
+        flat 0.1 s is plenty for a 40-byte BSWV and nowhere near enough for 200 kB,
+        so the wait scales ~1 s per 100 kB above the base settle.
 
-        The generator is evidently still digesting the upload when the next command
-        arrives. A flat 0.1 s is plenty for a 40-byte BSWV and nowhere near enough
-        for 200 kB, so the wait scales: ~1 s per 100 kB on top of the base settle.
-        Cheap insurance against the one failure mode on this bench that cannot be
-        recovered from in software.
+        THE HAZARD IS THE NUMBER OF LARGE WRITES, NOT THEIR SIZE, and that is measured
+        both ways (instruments.py carries the session log). The THIRD over-ceiling
+        upload wedged 39R7 after only 533 kB in total, while a single 1.63 MB and then
+        a 6.51 MB write on one power cycle -- 8.14 MB together -- left it answering and
+        playing correctly. A wedge leaves it playing the loaded waveform forever while
+        accepting TCP on 5024 and 5025 and answering nothing, *IDN? included; only a
+        power cycle recovers it, and it has no smart plug, so it costs a human. Hence
+        the rule: fewer than three over-ceiling writes between power cycles.
         """
         # A ZERO-LENGTH WAVEFORM BRICKS THIS INSTRUMENT. Reported publicly and independently: a fumbled
         # low-level SCPI upload stored an empty waveform, and the NEXT POWER-UP showed the logo for ~25 s,
@@ -420,12 +421,12 @@ class SDG:
     def select_arb(self, name, amp_vpp, srate_sa_s, offset_v=0.0, ch=1):
         """Play a waveform ALREADY UPLOADED, by name. No bulk transfer.
 
-        WHY THIS EXISTS: repeated 170-210 kB WVDT uploads wedge this generator's
-        LAN service (see write_raw). A sweep that re-uploads the same five vectors
-        on every run does hundreds of kilobytes of writes for no new information --
-        the waveforms are stored on the instrument and only need selecting. Once
-        each vector is up, this is the cheap path and it does not touch the failure
-        mode at all.
+        WHY THIS EXISTS: every large WVDT write spends part of a budget of about two
+        between power cycles (see write_raw). Re-uploading the same vectors each run
+        spends it for no new information, since they are already stored and only need
+        selecting. Once each is up this path is cheap and never touches the failure
+        mode -- and because the rate comes from srate here, one stored waveform serves
+        every baud rate rather than needing a render per speed.
 
         Same ordering discipline as load_arb_file: TrueArb last, then verified.
         """

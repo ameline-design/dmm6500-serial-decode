@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Sweep every standard baud rate to 250 kBd by REPLAYING ONE WAVEFORM AT DIFFERENT SPEEDS.
 
-WHY THIS EXISTS RATHER THAN MORE VECTORS. tools/bench_uart.py maps one uploaded .bin to one baud
-rate, so a sixteen-rate sweep meant sixteen uploads -- and repeated C1:WVDT uploads are what wedge
-the SDG's remote interface, a failure whose only recovery is a power cycle on an instrument with no
-smart plug. It costs a human.
+WHY THIS EXISTS RATHER THAN MORE VECTORS. A baud rate is set by the SAMPLE RATE at selection time,
+so one stored waveform serves every rate and a sixteen-rate sweep needs no uploads at all. Rendering
+one vector per speed instead would spend the generator's budget of about two large WVDT writes per
+power cycle, and a wedge is only recoverable by power-cycling an instrument with no smart plug.
 
 The generator's TrueArb SRATE is independent of the waveform DATA, so one waveform played at N
 sample rates is N baud rates, exactly:
@@ -95,8 +95,8 @@ def main():
     ap.add_argument('--noise', choices=['none', 'drift', 'spikes'], default='none')
     ap.add_argument('--noise-vpp', type=float, default=0.6)
     ap.add_argument('--upload', action='store_true',
-                    help='upload the waveform first. Needed ONCE per generator power cycle; '
-                         'repeated uploads are what wedge it.')
+                    help='upload the waveform first. Large writes wedge it after about two '
+                         'per power cycle, so this is a once-per-cycle flag.')
     ap.add_argument('--amp', type=float, default=10.0)
     ap.add_argument('--settle', type=float, default=0.35)
     ap.add_argument('--no-output-off', action='store_true')

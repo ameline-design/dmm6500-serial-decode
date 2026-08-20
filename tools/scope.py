@@ -185,7 +185,7 @@ class Scope:
     # Firmware 1.3.26 added the popup "Decoding to maximum frame number
     # limitation!" for exactly this. It is announced on screen rather than in a
     # status bit, so it lands on a screenshot and is detectable -- but only by
-    # looking for it. The 200-frame vector v46 is the one expected to trip it.
+    # looking for it. The 200-frame Page200B (v46) is the one expected to trip it.
     #
     # Consequences: prefer SHORT vectors as oracles (v41's 13 bytes, not v46's
     # 200), and never read "the scope decoded fewer frames than the DMM" as the

@@ -75,9 +75,10 @@ RATES = [300, 600, 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 250000]
 # states the swing, which is the honest thing to say about a level that is not a named family.
 LEVELS = [(5.0, ['5V TTL']), (3.3, ['3V3 CMOS']), (1.6, ['1V8 CMOS', '1.6Vpp'])]
 
-# THE LOREM SWEEP. v71 is a 1024-byte non-repeating payload rendered at 100 kSa/s for 9600 baud,
-# i.e. 10.41667 samples per bit -- so replaying it at SRATE = baud * 10.41667 gives any rate off one
-# waveform, and no upload (it is already on the generator; a 210 kB upload is the wedge hazard).
+# THE LOREM SWEEP. SER_Lorem1kB_8N1 (v71) is a 1024-byte non-repeating payload rendered at 100 kSa/s
+# for 9600 baud, i.e. 10.41667 samples per bit -- so replaying it at SRATE = baud * 10.41667 gives any
+# rate off ONE stored waveform. No upload, which is the point: large WVDT writes are the wedge hazard
+# and the budget is about two per power cycle.
 #
 # Better than the 13-byte 'Hello, World!' in two ways that matter: a 240-byte capture is a SUBSTRING
 # of the payload rather than eighteen repeats of it, so a decode that resynchronised in the wrong
@@ -688,8 +689,9 @@ PAYLOAD_VECS = (['v77', 'v78'] + ['r%02d' % k for k in range(12)])
 # rendered points-per-bit, payload length, content -- and the answer turned out to be PAYLOAD LENGTH
 # alone. The DMM's own samples-per-bit is NOT a variable here at all: fs_for_baud (serial_core.tsp:958)
 # takes baud and nothing else, so both suites sample at the same 8.68 / 4.00 sa/bit at 115200 / 250000,
-# and the same 20 capture offsets fail at 4.0 and at 8.0. What differs is the LOOP SEAM: v80 is 13 B so
-# a ~334 B capture spans ~26 seams and idle1 records only the first, bounding headsusp at 12; v71 is
+# and the same 20 capture offsets fail at 4.0 and at 8.0. What differs is the LOOP SEAM: Hello (v80) is
+# 13 B so a ~334 B capture spans ~26 seams and idle1 records only the first, bounding headsusp at 12;
+# Lorem1kB (v71) is
 # 1024 B, longer than any capture, so it holds at most one seam wherever the arb phase puts it.
 # These two are still the right additions -- they were never driven above 9600, they bracket the
 # length axis (133 B of text, 256 B of shuffled bytes), and r00's 256 B makes it 7.8 % exposed to the
@@ -801,8 +803,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--suites', default='formats,rates,lorem,levels,offsets')
     ap.add_argument('--upload', action='store_true',
-                    help='upload the vectors these suites need. Once per generator power '
-                         'cycle: repeated uploads are what wedge its LAN service.')
+                    help='upload the vectors these suites need. Large writes wedge it after '
+                         'about two per power cycle, so this is a once-per-cycle flag.')
     ap.add_argument('--settle', type=float, default=0.35)
     ap.add_argument('--offset-swings', default='3.3,1.6')
     ap.add_argument('--rates', help='comma-separated subset of the rate ladder')

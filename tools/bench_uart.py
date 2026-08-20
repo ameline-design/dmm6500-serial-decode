@@ -48,20 +48,15 @@ import vector_names as VN                                     # noqa: E402
 
 VECDIR = 'out/vectors'
 
-# The sweep. These five vectors are the 1024-byte lorem stream, which is the only
-# payload long enough that a capture window is a substring rather than the whole
-# thing -- i.e. the only one that measures YIELD rather than just correctness.
-# v71/72/73 are deliberately the same file at three sample rates, so if baud
-# detection tracked the file instead of the playback rate it would show up as
-# three identical answers.
-# ONE FILE, FIVE PLAYBACK RATES, written as vid@baud. This used to be five separate vectors -- v75, v71,
-# v72, v73, v74 -- and three of those were BYTE-IDENTICAL, which was the point: if detection tracked the
-# file instead of the playback rate, the identical ones would give identical answers. The experiment is
-# unchanged and now needs one waveform, because the rate comes from srate at selection time.
+# ONE FILE, FIVE PLAYBACK RATES, written as vid@baud. SER_Lorem1kB_8N1 (v71) is the only payload long
+# enough that a capture window is a SUBSTRING rather than the whole thing, so it is the only one that
+# measures YIELD rather than just correctness.
 #
-# It also has to be this way: v72-v75 were retired in the 2026-08-19 rename as duplicate renders and are
-# not on the instrument. And selecting a 213 kB arb costs ~1 s of flash-to-FPGA copy against ~0.01 s to
-# change srate (tools/instruments.py), so re-selecting per rate was paying for nothing.
+# This was five vectors -- v71 through v75 -- and three were BYTE-IDENTICAL, which WAS the experiment: if
+# detection tracked the file instead of the playback rate, the identical ones would answer identically.
+# Unchanged, and now one waveform, because the rate comes from srate at selection time. v72-v75 were
+# retired in the 2026-08-19 rename and are not on the instrument; selecting a 213 kB arb costs ~1 s of
+# flash-to-FPGA copy against ~0.01 s to change srate (tools/instruments.py).
 SWEEP = ['v71@1200', 'v71@9600', 'v71@19200', 'v71@57600', 'v71@115200']
 
 # The measurement function is appended to the module load so it exists once and
@@ -666,9 +661,9 @@ def main():
                     help='captures per vector; >1 shows capture-to-capture spread')
     ap.add_argument('--reuse', action='store_true',
                     help='select waveforms already on the generator instead of '
-                         'uploading them. Repeated 170-210 kB uploads WEDGE the '
-                         'SDG (see siglent.write_raw); use this after the first '
-                         'run of a power cycle has put the vectors up.')
+                         'uploading them. Large WVDT writes wedge the SDG after '
+                         'about two per power cycle (see siglent.write_raw); use '
+                         'this once a run has put the vectors up.')
     ap.add_argument('--fmt8n1', action='store_true',
                     help='force 8N1 non-inverted, bypassing the format search')
     ap.add_argument('--poldiag', action='store_true',

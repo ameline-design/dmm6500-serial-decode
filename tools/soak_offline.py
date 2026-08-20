@@ -32,7 +32,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRATCH = os.path.expanduser('~/tmp/soak_offline')
 
-# The single line whose absence is the r06 defect. Matched exactly, and the abort below is what makes
+# The single line whose absence is the r06 defect -- r06 being the 7-bit random vector that exposed it.
+# Matched exactly, and the abort below is what makes
 # a silent mismatch impossible: if this string ever stops appearing verbatim, the pairing is broken
 # and the run must stop rather than compare a tree against itself.
 REVERT_FILE = 'tsp/uart_decode.tsp'

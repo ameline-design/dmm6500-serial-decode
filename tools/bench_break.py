@@ -14,9 +14,9 @@ SO EVERY CASE DECLARES WHICH OUTCOMES ARE ACCEPTABLE, not what the answer should
                 trouble and said so.
     any         only "did not raise and logged nothing" is being checked here.
 
-NO WAVEFORM UPLOADS. Every stimulus is a generator built-in or an arb already on the box:
-repeated large uploads wedge the SDG's LAN service, and a wedge costs a human with a power
-switch. The degenerate cases turn out not to need files at all --
+NO WAVEFORM UPLOADS. Every stimulus is a generator built-in or an arb already on the box. Large
+WVDT writes are the wedge hazard and the budget is about two per power cycle -- the count, not the
+size -- and a wedge costs a human with a power switch. The degenerate cases need no files at all --
 
     all-0x00 8N1   is a 10 %-duty square at baud/10 -- SDG duty is the HIGH fraction, so that
                    is one high bit and nine low: the start bit plus eight zeros

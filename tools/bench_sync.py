@@ -261,7 +261,7 @@ def sdg_alive(ip=None, port=None, timeout=4, sdg=None):
 
     A SEPARATE, SHORT-TIMEOUT PROBE, because the SDG2122X's LAN service wedges while its network stack
     stays up: it PINGS normally and REFUSES the SCPI port, or accepts a connection and never answers.
-    Observed on this bench, and the reason tools/instruments.py warns against repeated large uploads.
+    Observed on this bench, and the reason tools/instruments.py caps large WVDT writes per cycle.
 
     Every harness should ask this BEFORE doing anything else, so a wedged generator produces one clear
     sentence naming the remedy (power-cycle it) rather than a traceback from whichever call happened to

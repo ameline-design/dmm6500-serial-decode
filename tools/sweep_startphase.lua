@@ -4,8 +4,8 @@
 -- WHY. The bench runs one capture per point and a soak lap is minutes; this host runs a decode in
 -- ~8 ms and has 12 cores to spare, so the same coverage costs seconds. The defects this project has
 -- actually shipped were all found by varying ONE thing the suites held fixed -- #29 by the sample
--- rate, r06 by where the capture opened -- so the cheap move is to vary everything at once, on every
--- vector, and let the machine find the holes.
+-- rate, r06 (a 7-bit random payload) by where the capture opened -- so the cheap move is to vary
+-- everything at once, on every vector, and let the machine find the holes.
 --
 -- THE VECTOR SET COMES FROM make_vectors.lua, not from a list here. It is dofile()d in define-only
 -- mode (VEC_DEFINE_ONLY) and VEC_LIST is read, so a vector added for the bench is swept from the day
@@ -193,7 +193,8 @@ end
 
 local vi
 for vi = 1, nv do
-  -- SHARDED BY (VECTOR x CONDITION), not by vector: v96 renders 3.4 M points and v41 renders 1.8 k,
+  -- SHARDED BY (VECTOR x CONDITION), not by vector: Random32kB (v96) renders 3.4 M points and
+  -- Hello (v41) 1.8 k,
   -- so sharding by vector alone would leave one core doing minutes of work while eleven idled.
   local v = V[vi]
   local ci

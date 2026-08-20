@@ -1,4 +1,4 @@
--- repro_v44.lua -- reproduce the intermittent v44d / v44e format misreads OFFLINE.
+-- repro_v44.lua -- reproduce the intermittent v44d (8O1) / v44e (8N2) format misreads OFFLINE.
 --
 -- Run from the repo root:   lua tools/repro_v44.lua [sweep|one|why] [v44d|v44e] ...
 --

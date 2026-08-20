@@ -552,7 +552,7 @@ SCOPE_BODE_HAZARD = True
 #
 # Enabling CH2 to diagnose therefore costs BOTH rate and depth on the signal
 # channel -- 500 MSa/s and 7 Mpts -- and does so silently. Still ample (the
-# binding vector, v46, is 254 ms and needs only ~1 MSa/s to corroborate 9600 baud,
+# binding vector, Page200B (v46), is 254 ms and needs only ~1 MSa/s to corroborate 9600 baud,
 # i.e. 254 kpts) but it is a real cost, so CH2 is diagnose-only.
 #
 # Plan windows with the manual's relation, and read the achieved depth off the
@@ -577,7 +577,7 @@ SCOPE_CH_IMPAIR = 2      # SDG CH2 alone. ENABLE ONLY WHEN DIAGNOSING -- halves 
 #
 # Retracted along the way: an earlier note here asserted the sync "DOES NOT" drive in TrueArb,
 # from CH3 reading flat over a 14 ms window. That window had a 1.31 % chance of containing a
-# 50 ns pulse at v71's 0.936 Hz, so it was equally consistent with a live pulse being missed.
+# 50 ns pulse at Lorem1kB's 0.936 Hz, so it was equally consistent with a live pulse being missed.
 # The claim was never supportable; it is gone rather than corrected.
 #
 # CH3 IS THEREFORE FREE -- but that changes nothing for the credit-pulse edge measurement (gate G0

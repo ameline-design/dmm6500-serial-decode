@@ -5,7 +5,7 @@
 -- each hard byte (its 'hard' table) and 300 of 0x55 and 0x00 through the streaming seams. What
 -- it does not do is the thing the bench vectors do: run each pattern at FULL BLOCK LENGTH, in
 -- BOTH the pinned and the auto format, at BOTH the top and the bottom of the sample-rate range.
--- Those three axes are what out/vectors/v93.bin and v94.bin will exercise on hardware, and
+-- Those three axes are what Random1kB (v93) and Blocks512B (v94) will exercise on hardware, and
 -- every one of them is testable here for free. A bench finding that could have been found
 -- offline is a wasted bench session.
 --

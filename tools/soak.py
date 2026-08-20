@@ -16,8 +16,9 @@ HOW IT KEEPS ITSELF HONEST:
   * IT REUSES THE APP ALREADY ON THE PANEL and never builds one. sdec.start() cannot build twice in a
     power cycle, so a soak that tried would die on its second iteration -- every child runs with
     --no-start / --reuse.
-  * IT NEVER UPLOADS A WAVEFORM. Repeated large uploads wedge the SDG2122X's LAN service (see
-    tools/instruments.py); selecting an already-loaded arb does not. The suites here only select.
+  * IT NEVER UPLOADS A WAVEFORM. Large WVDT writes wedge the SDG2122X after about two per power
+    cycle (see tools/instruments.py); selecting a stored arb never does, and since the baud rate
+    comes from the sample rate, selecting is all a rate sweep needs. The suites here only select.
   * IT KEEPS THE EVIDENCE FOR EVERY FAILURE. A run with a BAD point has its whole output saved, so the
     app's own notes -- rival formats, probe misfits, flagged heads -- are there in the morning. A
     frequency with no cause attached is only half an answer.
