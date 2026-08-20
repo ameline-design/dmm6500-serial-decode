@@ -14,11 +14,9 @@
 -- read cost the instrument may not have, and no amount of double buffering fixes a
 -- throughput deficit. Acquire long, then decode at leisure.
 --
--- WHAT THIS MODULE DOES NOT DO: acquire. Making the long capture (does
--- buffer.make(2.8e6) succeed with defbuffer1/2 alive?) and driving the 1 Hz panel
--- counter are bench work. Everything here is pure logic over a sample source and is
--- developed and tested with no instrument attached, against the same
--- tools/gen_serial.lua waveforms as the rest of the decoder.
+-- WHAT THIS MODULE DOES NOT DO: acquire -- serial_app owns that. Everything here is pure logic over a
+-- sample source, exercised offline against tools/gen_serial.lua; the timings quoted below are measured
+-- on the instrument.
 --
 -- Lua 5.0.2: no '#', math.mod for modulo, table.getn for length.
 
@@ -184,8 +182,8 @@ end
 
 -- How many windows a capture of ntotal samples takes at this stride. Exact, because
 -- the stride is CONSTANT -- the loop below advances by it unconditionally rather than
--- resuming from wherever the last frame happened to end. That costs a fraction of a
--- percent in redundant decoding and buys a window count that is known before the run
+-- resuming from wherever the last frame happened to end. That costs about 1.6 % in redundant
+-- decoding -- the overlap, once per window -- and buys a window count that is known before the run
 -- starts, which is what makes the progress indicator honest instead of a guess.
 function sdec.ck_nwin(ntotal, W, stride)
   if ntotal == nil or W == nil or stride == nil or stride < 1 then return nil end
@@ -208,7 +206,8 @@ end
 -- seen. sig_edges cannot be treated that way, because a threshold crossing is defined
 -- between adjacent samples; edges therefore stay window by window.
 --
--- full drift cycles are symmetric about the true levels and a quarter of one is not.
+-- Averaging over the WHOLE recording also absorbs slow drift better than any one window can: N full
+-- drift cycles are symmetric about the true levels and a quarter of one is not.
 --
 -- So chunked mode measures the line BETTER than frame mode can, not worse: frame mode's
 -- capture IS one window, so it has no whole recording to average over.
@@ -225,7 +224,6 @@ end
 -- The fix there is a threshold that TRACKS slowly, and it is not built: choosing a
 -- tracking rate before seeing real drift on real hardware would be inventing a number.)
 --
--- Returns ok, reason.
 -- The decimated attempt alone, so priming can spend one press on it. Returns ok, why,
 -- fatal -- fatal means the source gave nothing, so the contiguous probes cannot help
 -- either and trying them would only cost time.
@@ -284,6 +282,7 @@ function sdec.ck_levels_probe(reader, ntotal, win, k)
 end
 
 -- Establish the logic levels for a whole recording: decimated first, then contiguous probes.
+-- Returns ok, reason.
 function sdec.ck_levels(reader, ntotal, win)
   local ok, why, fatal = sdec.ck_levels_dec(reader, ntotal, win)
   if ok then return true end
@@ -306,8 +305,8 @@ end
 -- PRIMING IS PHASED, one bounded sub-operation per call, because it was the last unbounded
 -- thing a front-panel press could reach. Unphased it is up to eight contiguous 20 000-sample
 -- level probes plus a lead-in read plus edge extraction plus the format search -- seconds of
--- Lua in one call -- and a press is not dispatched while Lua runs, so the press that STOPS a
--- recording paid for all of it even though every decode slice after it was bounded.
+-- Lua in one call -- and a press is not dispatched while Lua runs, so any queued press pays for all
+-- of it. Only a caller that returns between phases collects the benefit, which is the harnesses.
 --
 -- Phases, in order, each one window's work or less:
 --   lvd   the decimated level pass
@@ -435,8 +434,6 @@ end
 -- file write, a cap reached). It must not retain vals/errs: they belong to the window
 -- and the next one overwrites them.
 --
--- Returns a totals table, or nil plus a reason.
-
 -- WHAT ONE WINDOW COSTS, so a latency budget can be spent without reading a clock.
 --
 -- Cost is dominated by the per-SAMPLE passes, so it scales with the window width and is near
@@ -491,14 +488,10 @@ sdec.ck_win_max = 20000           -- and never wider than this, whatever the bud
 sdec.ck_win_min = 2000            -- nor narrower: below this the per-window seam overhead dominates
 sdec.ck_win_ref = 20000           -- the width the phase timings above were taken at
 
--- How many windows fit in `budget_s`, for windows of width W. Never less than one: a budget
--- smaller than a single window cannot be honoured by stopping sooner, and returning zero would
--- make no progress at all and spin forever.
 -- Fraction of the budget available for the phase itself. The rest pays for what ck_job_step does
 -- around it and what the caller does after: the sink's file writes, the progress settext and the
--- ui_refresh. Those are milliseconds, now that ck_smp_us is measured over a whole step rather than
--- over the arithmetic inside one -- so this is a small margin, not the factor-of-two fudge it was
--- when the per-window figure itself was three times optimistic.
+-- ui_refresh. Those are milliseconds -- ck_smp_us is measured over a whole step, not over the
+-- arithmetic inside one -- so this is a small margin.
 sdec.ck_budget_frac = 0.9
 
 -- WHAT A DECODE WINDOW COSTS PER SAMPLE, as against ck_smp_us for the worst PRIMING phase. Keeping
@@ -567,14 +560,14 @@ function sdec.ck_decode(reader, ntotal, fmt, sink, opts)
   local win = opts.win
   if win == nil then return nil, 'no window table' end
 
+  -- Returns a totals table, or nil plus a reason.
   local T, framebits = fmt.T, fmt.framebits
   local W, ov, stride, why = sdec.ck_geometry(T, framebits)
   if W == nil then return nil, why end
 
   -- `opts.nocap` EXISTS BECAUSE LUA CANNOT TELL "key absent" FROM "key = nil", and the plain
-  -- `opts.maxbytes or sdec.ck_maxbytes` turned "no cap" into 32768 -- silently capping the
-  -- UNLIMITED mode, which then scanned 1.7 M of the 2.8 M samples it had just acquired, threw
-  -- away 31 744 decodable bytes, and told the operator the stream "may continue".
+  -- `opts.maxbytes or sdec.ck_maxbytes` turns "no cap" into 32768, which caps a caller that meant
+  -- unlimited. No shipped mode does (see ui_modes), but the key stays: nil cannot mean two things.
   local maxbytes = opts.maxbytes
   if maxbytes == nil and not opts.nocap then maxbytes = sdec.ck_maxbytes end
   local progress = opts.progress
@@ -626,11 +619,9 @@ function sdec.ck_decode(reader, ntotal, fmt, sink, opts)
     tot.nwin = tot.nwin + 1
     tot.nsmp = off + cnt
     tot.nfalse = tot.nfalse + r.nfalse
-    -- A MID-BYTE START IS A PROPERTY OF THE RUN, AND ONLY THE FIRST WINDOW CAN SEE IT. ua_run marks
-    -- r.headsusp when the frames before the first idle gap carry errors and the frames after it do
-    -- not -- a capture that began part way through a byte. It was computed per window and thrown away
-    -- with the window, so a recording never reported what a frame capture reports on the same wire.
-    --
+    -- A MID-BYTE START IS A PROPERTY OF THE RUN. ua_run marks r.headsusp when the frames before the
+    -- first idle gap carry errors and the frames after it do not -- a capture that began part way
+    -- through a byte. Held on the run rather than per window, or it goes with the window.
 
     local m = r.nf
     -- CLIP AT THE CAP, mid-window if need be. Emitting the whole window and then
@@ -702,9 +693,9 @@ function sdec.ck_decode(reader, ntotal, fmt, sink, opts)
     -- ui_refresh(), which touches ~20 display objects and would spend more IPC on
     -- saying so than on the work.
     --
-    -- IT IS ALSO THE STOP CHECK. Returning false aborts the run, which gives the panel
-    -- an interruptible four-minute decode without a second control and without this
-    -- module knowing anything about buttons. Once per window is a fine granularity for
+    -- IT IS ALSO THE STOP CHECK. Returning false aborts the run, without this module knowing anything
+    -- about buttons. The panel cannot reach it -- a press is not dispatched while Lua runs -- so only a
+    -- host-driven caller stops a run this way. Once per window is a fine granularity for
     -- a Stop: the alternative, checking per frame, would cost a call per byte to shave
     -- a fraction of a second off a response nobody can perceive.
     if progress ~= nil then
@@ -714,13 +705,9 @@ function sdec.ck_decode(reader, ntotal, fmt, sink, opts)
       end
     end
 
-    -- WHY the run ended, distinguished. 'exhausted' is not 'cap': a 32 kB run that stops at
-    -- 22399 because the buffer ran out must not report the same thing as one that reached the
-    -- cap, and a short read mid-stream must not read as a clean finish. tot.nsmp against ntotal
-    -- already holds the fact; this puts it where ck_summary can say it.
-    -- NOT 'exhausted' here: running out of samples is also how a short stream ends normally,
-    -- and ck_decode cannot tell the two apart. sdec.stream() sets it, because only it knows
-    -- whether the ACQUISITION filled the buffer it asked for.
+    -- NOT 'exhausted' HERE: running out of samples is also how a short stream ends normally, and
+    -- ck_decode cannot tell the two apart. stream_decode() and decode_step() set it, because only they
+    -- know whether the ACQUISITION filled the buffer it asked for.
     if ntotal ~= nil and off + cnt >= ntotal then break end
     if cnt < W then
       tot.stopped = 'short read'
@@ -891,7 +878,7 @@ end
 -- 8192 bytes = 35 pages of 240, and the whole of an 8 kB recording. It was 720 (three pages), which
 -- left an 8 kB recording pageable over its last 9 % and the rest reachable only by unplugging the key.
 --
--- MEASURED on the live app 2026-08-18, since the argument above rests on RAM: a Lua array of numbers
+-- MEASURED on the live app, since the argument above rests on RAM: a Lua array of numbers
 -- costs exactly 16 B per element (8192 -> 128 KiB, 16384 -> 256 KiB); the app sits at ~1470 kB of heap
 -- against gcinfo()'s 2861 kB threshold; and a 256 kB array allocated and freed with the event log
 -- clean. Cost here is 128 KiB for the ring plus 128 KiB for ck_tail_result()'s copy.
@@ -976,7 +963,6 @@ end
 -- this whole module exists to bound -- and this mode produces a FILE, not a view, so
 -- there is nothing on the panel for the previous bytes to be consistent with.
 --
--- Returns totals, reason. tot.tail is the retained view (see ck_tail_result).
 -- A RESUMABLE RUN, so a 37-second decode can be served 500 milliseconds at a time.
 --
 -- Stream mode decodes up to 32 kB, and at the measured 881 byte/s that is over half a minute
@@ -1143,8 +1129,8 @@ end
 function sdec.ck_job_abandon(job)
   if job == nil then return nil end
   if job.finish ~= nil and not job.done then pcall(function() job.finish() end) end
-  -- prime goes too: a job abandoned mid-priming must not be resumable, and its window table is
-  -- the only thing holding 20 000 samples.
+  -- prime goes too: a job abandoned mid-priming must not be resumable. It does not free the window
+  -- table -- job.opts.win holds it as well -- so only dropping the job itself releases either.
   job.done, job.state, job.prime = true, nil, nil
   local tot = job.tot
   if tot ~= nil then

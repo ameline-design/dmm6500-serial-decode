@@ -31,25 +31,24 @@ sdec.proto     = sdec.proto or 'uart'
 -- stops it, then steps the decode a slice per press: TWELVE PRESSES for a full buffer. false = one
 -- press does the whole job.
 --
--- THE ONE-PRESS PATH IS ONLY HONEST BECAUSE THE TRIGGER KEY CAN STOP IT -- a handler that holds the
--- panel for minutes with no way out needs a power cycle. sdec.cancel_setup() latches the key on a
--- blender and both long loops poll it: the acquisition twice a second, the decode once a window.
+-- THE ONE-PRESS PATH CANNOT BE STOPPED BY A FINGER. Both long loops poll the cancel latch -- the
+-- acquisition twice a second, the decode once a window -- but a press on TRIGGER emits no blender event
+-- while a panel-initiated run executes, so record_run()'s fc_maxwin/fc_maxsec bounds are the exits.
 --
--- The stepped path is still driven by test_streamfix.lua and bench_stream.py, and is the fallback for
--- a firmware whose blender cannot latch EVENT_DISPLAY -- there, chunking is the only way to stay
--- stoppable.
+-- The stepped path is driven by test_cancel.lua and test_serial.lua, and is the fallback for a firmware
+-- whose blender cannot latch EVENT_DISPLAY.
 --
 -- A NIL TEST RATHER THAN `or`, because false is meaningful here and `false or true` is true. Set it
 -- before this file loads to keep it.
 if sdec.strm_press == nil then sdec.strm_press = false end
 -- Wall-clock ceiling on one streaming ACQUISITION, seconds; nil means no bound. A BACKSTOP, not a
--- schedule: the run normally ends at the buffer, at a quiet line, or on a TRIGGER press, and
--- stream_maxwait() usually bounds the wait tighter than this from the sample count.
+-- schedule: the run normally ends at the buffer or at a quiet line, and stream_maxwait() usually bounds
+-- the wait tighter than this from the sample count.
 --
 -- 1200 s BECAUSE THAT IS WHERE stream_maxwait ALREADY CAPS. Two bounds that disagree means the
--- smaller one is a hidden cap: at 20 s -- the value from before there was any stop control -- every
--- recording slower than 9600 baud was silently truncated, and at 600 s a 300 baud run stopped at
--- 55 % of the window it had promised. A full 32 kB window is 1092 s at 300 baud, 273 s at 1200.
+-- smaller one is a hidden cap: at 20 s every recording slower than 9600 baud truncates, and at 600 s a
+-- 300 baud run reaches 55 % of the window it promised. A full 32 kB window is 1092 s at 300 baud,
+-- 273 s at 1200.
 sdec.strm_maxsec = sdec.strm_maxsec or 1200
 -- Seconds of signal the FALLBACK path may record when the trigger model refuses to arm. It is much
 -- shorter than strm_maxsec on purpose: that path is a blocking read, so nothing can poll the cancel
@@ -73,9 +72,10 @@ function sdec.clear_result()
   sdec.smp, sdec.nread = nil, 0
   sdec.fmt_note, sdec.baud_note, sdec.rate_note = nil, nil, nil
   sdec.lasterr, sdec.savedas, sdec.probe_idle = nil, nil, nil
-  -- THE SINGLE EVICTION POINT FOR THE NOTE CELL. Seventeen sources feed that one line; every
-  -- one of them is per-capture and they are cleared together here, so none can latch over the
-  -- others (sdec.ui_notes ranks them). Each of these three is set by a button press and must
+  -- THE MAIN EVICTION POINT FOR THE NOTE CELL. Most sources are per-capture and are cleared together
+  -- here so none can latch over the others (sdec.ui_notes ranks them). The exceptions each say so:
+  -- relocked below, rate_refused (retired per PRESS in capture()) and stickyerr, which must outlive a
+  -- capture. Each of these three is set by a button press and must
   -- survive until the NEXT capture, then go -- a latched one puts 'auto-locked 9600' or 'left
   -- 32 kB mode' on the panel above bytes from a later capture that did no such thing.
   sdec.mode_exited, sdec.lognote, sdec.autolocknote = nil, nil, nil
@@ -177,7 +177,7 @@ function sdec.autoset()
       -- therefore cannot fit a ten-bit frame at the bottom of the range however clean the signal
       -- is, and passing its refusal on makes 300 and 600 baud fail with "no frame fits a 3333.5
       -- sample bit time" -- a message containing the correct answer. Measured on the instrument
-      -- 2026-08-17; 1200 baud and up frame inside the window and are unaffected.
+      --; 1200 baud and up frame inside the window and are unaffected.
       --
       -- The retracted rate is used ONLY to choose the second pass's sample rate. That pass
       -- re-decodes from scratch and must still succeed on its own, so a bad guess here costs one
@@ -496,10 +496,9 @@ end
 -- to the same file. That is what makes a 20-minute ceiling the right trade rather than a truncation --
 -- the alternative is an hour-plus hold on a panel whose operator has no idea how long is left.
 --
--- THIS MATTERS MOST WHERE THE CANCEL DOES NOT WORK. On a firmware with no blender or no
--- EVENT_DISPLAY, cancel_ok is false, cancel_pressed() answers false for ever, and these bounds are
--- the ONLY exit from the loop. TRIGGER ends the run within about a second where it does work, and
--- when either bound fires the note row says which.
+-- THESE BOUNDS ARE THE EXIT. A press on TRIGGER emits no blender event while a panel-initiated run
+-- executes, and on a firmware with no blender or no EVENT_DISPLAY cancel_pressed() answers false for
+-- ever, so nothing else ends the loop. When either bound fires the note row says which.
 sdec.fc_maxwin = sdec.fc_maxwin or 32
 sdec.fc_maxsec = sdec.fc_maxsec or 1200
 
@@ -727,7 +726,7 @@ function sdec.stream_decode(got)
     -- NOT REACHABLE FROM THE PANEL, and the reason is worth stating precisely: strm_press defaults to
     -- FALSE and nothing sets it true, so the panel takes the one-shot record_run() path and never enters
     -- this branch at all. This block, stream_start and decode_step are reachable only from a harness that
-    -- sets strm_press itself -- test_streamfix.lua and bench_stream.py both do. The effect is decimation
+    -- sets strm_press itself -- test_cancel.lua and test_serial.lua do. The effect is decimation
     -- granularity, measured at thr 3.323 V against 3.307 V, and no wrong decode can be constructed from
     -- it. The fix is to pass W through `opts` rather than through globals, which means the three places
     -- chunk_decode reads ck_win_n.
@@ -832,7 +831,7 @@ function sdec.decode_step()
     sdec.mode_exit(sdec.strm_exit_why(sdec.ck_endwhy, dok, sdec.lasterr), not dok)
   end)
   pcall(function() sdec.ui_refresh() end)
-  -- dok, NOT true. This is capture()'s return value (serial_app.tsp:1303), and returning true on
+  -- dok, NOT true. This is capture()'s return value, and returning true on
   -- every path made a decode that RAISED, produced no totals, or failed its file write
   -- indistinguishable from one that worked -- and from the `true` above meaning "unfinished, press
   -- again". The panel was right either way; the CALLER could not tell. Whether work remains is
@@ -989,7 +988,7 @@ function sdec.stream_acquire(nsmp)
   if not ok then
     -- FALLS BACK TO A PLAIN BLOCKING READ, which loses the early exit AND every bound with it: a
     -- blocking read cannot be polled, so neither the cancel key nor the wall-clock limit below can act
-    -- while it runs, and the status row would advertise a stop with no way in. So it is SHORTENED to
+    -- while it runs. So it is SHORTENED to
     -- strm_fallback_s of signal. What is lost is length, and the note row says so; what is kept is a
     -- panel that always comes back.
     sdec.ck_endwhy = 'full'
@@ -1045,11 +1044,9 @@ function sdec.stream_acquire(nsmp)
   while true do
     local have = buf.n or 0
     if have >= nsmp then sdec.ck_endwhy = 'full'; break end
-    -- THE TRIGGER KEY IS READ HERE, which is what makes the wait itself cancellable rather than
-    -- only the decode after it. Twice a second against a poll costing 1.06 ms. Note that the
-    -- comment block above is now HALF true: a front-panel BUTTON still cannot be seen from inside
-    -- this loop, so the bounds below remain the guarantee -- but ck_stop can now become true from
-    -- the panel after all, by way of the one control the firmware latches for us.
+    -- THE CANCEL LATCH IS READ HERE, twice a second against a poll costing 1.06 ms, so a blended
+    -- stimulus can end the wait. A FINGER CANNOT: no blender event reaches this loop from the panel,
+    -- so the bounds below remain the guarantee.
     if sdec.cancel_asked() then sdec.ck_endwhy = 'stopped'; break end
     if waited >= limit then sdec.ck_endwhy = 'full'; break end
 
@@ -1145,7 +1142,7 @@ end
 
 -- Show acquisition progress on the mode row: have of want samples.
 function sdec.progress_samples(have, want)
-  -- IN SAMPLES, NOT BYTES: nothing has been decoded yet, so a byte count would be a fiction.
+  -- ON THE STATUS ROW, IN SAMPLES, NOT BYTES: nothing has been decoded yet, so a byte count is fiction.
   -- Percent of the buffer is the honest number and the one the operator wants while waiting.
   sdec.ck_acq_have, sdec.ck_acq_want = have, want
   return pcall(function() sdec.progress_row() end)
@@ -1372,15 +1369,14 @@ function sdec.capture()
     -- ck_running does not become true until stream_begin() is already inside the job, so without a
     -- flag of its own the cell would read 'Mode=Exit to FRAME' throughout a run Mode cannot exit.
     sdec.strm_inflight = true
-    -- NO REFRESH HERE. record_run() paints, immediately after it clears the cancel latch. When the cell
-    -- still named the TRIGGER key the order mattered for a second reason -- a press made between the
-    -- operator reading it and the run starting would be discarded by the very run it was aimed at.
-    -- One refresh, in record_run(), remains the right shape regardless.
+    -- NO REFRESH HERE. record_run() paints, immediately after it clears the cancel latch. Without a flag
+    -- of its own the cell falls through to the log status (serial_ui.tsp:2443) and says nothing about a
+    -- run that cannot be stopped. One refresh, in record_run(), is the right shape.
     local sok, swhy = false, nil
     -- THE WHOLE JOB, IN THIS ONE PRESS: record, decode, save, and under flow control repeat until
     -- the device stops. It holds the panel for as long as that takes, AND NOTHING CAN CUT IT SHORT --
     -- this comment used to say the hold "is only acceptable because TRIGGER stops it", and that premise
-    -- was measured false on 2026-08-18: the key emits no blender event while this runs. The bounds in
+    -- was measured false on: the key emits no blender event while this runs. The bounds in
     -- record_run() (fc_maxwin, fc_maxsec) are therefore the only exits, not a backstop to a cancel.
     local pok, perr = pcall(function() sok, swhy = sdec.record_run() end)
     sdec.strm_inflight = nil
@@ -1398,12 +1394,10 @@ function sdec.capture()
     else
       sdec.ui_status = 'done'
       pcall(function() ulog.line(sdec.ck_summary(sdec.ck_tot)) end)
-      -- EVERY WAY OUT OF A RECORDING LANDS IN FRAME, AND SHOWS THE BYTES IT KEPT. The resting
-      -- state after any finished recording is FRAME with the tail on screen, paged with the same
-      -- two buttons as a frame capture; the next block is one Mode press away, and the file on
-      -- the key holds everything the tail does not. Staying in the streaming mode instead means
-      -- the queued press that was meant to stop the run is honoured as a NEW recording, which
-      -- is what makes such a mode impossible to leave.
+      -- EVERY RECORDING LEAVES THE BYTES IT KEPT ON SCREEN, paged with the same two buttons as a
+      -- frame capture, and the file on the key holds everything the tail does not. The mode does not
+      -- change -- mode_exit() is a flush -- so the next Capture records another window; press_absorbed()
+      -- is what stops a queued press doing that by accident.
       if sdec.ck_tot ~= nil and sdec.ck_tot.tail ~= nil then
         -- No separate "this is a stream tail" flag: the view carries `first` and `ntotal`,
         -- so ui_notes() can tell a tail from a frame capture by looking at the view itself,
@@ -1414,9 +1408,8 @@ function sdec.capture()
     -- LEAVING THE MODE HAPPENS ON EVERY OUTCOME, not just the successful one. Inside the `else`
     -- above it would miss exactly the cases that matter -- a refused stream, a raise out of the
     -- acquisition, a decode that could not allocate -- each of which leaves capmode set to a
-    -- streaming mode with no run behind it, so the panel offers a Capture that will try the same
-    -- failing thing again and Mode is the only way out. The verdict and the message differ per
-    -- outcome; the resting state does not.
+    -- mode with no flush behind it -- flog_path still set, the log still open, the note row silent.
+    -- The verdict and the message differ per outcome; the flush does not.
     pcall(function()
       sdec.mode_exit(sdec.strm_exit_why(sdec.ck_endwhy, sok, sdec.lasterr), not sok)
     end)
@@ -1529,6 +1522,10 @@ end
 -- on the first successful capture makes it reachable after one press rather than after finding
 -- the padlock.
 --
+-- The streaming modes REQUIRE a locked rate (needbaud), so until something locks, Capture in them
+-- refuses -- locking on the first successful capture makes them usable after one press rather than
+-- after finding the padlock.
+--
 -- THE GATES ARE THE WHOLE DESIGN. Locking a WRONG detection is far worse than not locking,
 -- because it turns a one-capture mistake into a persistent one. The five gates in autolock_try()
 -- are independent -- timing, framing, sample size, fit quality and baseline stability -- which is
@@ -1627,7 +1624,7 @@ function sdec.autolock_try()
   -- decided on the DETECT capture, which is the shortest and least evidenced one the app takes:
   -- that pass runs at the top sample rate, so at 9600 baud it holds ~18 frames rather than ~240.
   --
-  -- Measured on the instrument 2026-08-16: the detect capture flipped to inverted, auto-lock
+  -- Measured on the instrument: the detect capture flipped to inverted, auto-lock
   -- froze it, and every capture afterwards was confidently wrong at 227 frames and zero errors.
   -- Baud rate and frame shape are worth locking because re-deriving them costs the whole extra
   -- capture and the format search; polarity costs one comparison per capture, and is the only
@@ -1830,8 +1827,9 @@ function sdec.page_cycle()
   -- ONE WRAPPING PAGE BUTTON IS ONLY SUFFICIENT BECAUSE A CAPTURE HOLDS AT MOST 500 BYTES: three
   -- hex pages, so any page is at most two presses away, and text never pages at all. IF THE
   -- CAPTURE CEILING EVER RISES -- a bigger sdec.n, or the streaming mode learning to show its
-  -- bytes on the panel rather than writing a file -- this stops being a fair trade and Prev has
-  -- to come back. page_prev() below is kept for exactly that.
+  -- bytes on the panel rather than writing a file. UNBOUND today: the panel wires page_prev and
+  -- page_next to 'Up' and 'Dn' (serial_ui.tsp:1990), and a stream tail runs to sdec.ck_keep = 8192
+  -- bytes -- 35 hex pages -- so one wrapping control is not enough for it.
   local npg = sdec.ui_npages()
   if npg < 1 then npg = 1 end
   sdec.ui_paged = true
@@ -1917,9 +1915,9 @@ end
 -- unlocks back to auto, red (nothing decoded) refuses with a reason. Either way it re-captures.
 function sdec.lock_toggle()
   -- LOCKING THE BAUD RATE CHANGES THE SAMPLE RATE, which is why this re-captures rather than
-  -- merely pinning. fs_for_baud() picks the lowest exact rate still giving 8 samples/bit, so
-  -- locking 9600 moves fs from the 1 MS/s the auto-detect pass used down to 100 kS/s: RATE
-  -- changes, SA/BIT goes from ~104 to 10.4, the capture WINDOW from 19 bytes to 192, and
+  -- merely pinning. fs_for_baud() picks the lowest LISTED rate still giving 8 samples/bit, so
+  -- locking 9600 moves fs from the 1 MS/s the auto-detect pass used down to 80 kS/s: RATE
+  -- changes, SA/BIT goes from ~104 to 8.3, the capture WINDOW from 19 bytes to 240, and
   -- window_bytes() reports something else again. Without the re-capture, three header cells and
   -- a note go on describing the capture that produced them while describing nothing the
   -- instrument will do next. Locking is the step that BUYS the longer window, which is the whole
@@ -2065,9 +2063,9 @@ function sdec.strm_exit_why(endwhy, ok, err)
   -- full -- the stream may continue', naming neither the limit that stopped the run nor the presses that
   -- continue it. Measured: a 25 s ceiling on a 'sml' run ends it at one window in 26.9 s.
   --
-  -- THE REMEDY IS TWO PRESSES AND A NEW FILE. EVERY way out of a recording goes through mode_exit() --
-  -- capture()'s own comment says so -- and mode_exit() sets capmode back to 'frame' AND nils flog_path.
-  -- So Capture alone takes a FRAME capture rather than another window, and the bytes that follow land in
+  -- THE REMEDY IS TWO PRESSES AND A NEW FILE. Every way out of a recording goes through mode_exit(),
+  -- which nils flog_path but does NOT change capmode -- so Capture alone records another window, and
+  -- the bytes that follow land in
   -- the next numbered file. What survives is the DATA: the sender is still waiting for a credit that has
   -- not gone out, so nothing is missed in between -- the recording is fragmented across two files, not
   -- truncated.
@@ -2140,7 +2138,7 @@ sdec.strm_absorb_s = sdec.strm_absorb_s or 1.0
 -- ARMED ON EVERY ENDING, INCLUDING 'stopped'. This used to return early when a press had been SEEN,
 -- reasoning that nothing could be queued behind it -- true of one press, false of an operator, who
 -- presses Capture, then TRIGGER, then Capture again. A finger on TRIGGER emits no blender event
--- while a panel-initiated run executes (measured 2026-08-18), so the run ends at its own bounds
+-- while a panel-initiated run executes (measured, so the run ends at its own bounds
 -- with both Capture presses unabsorbed -- each starting another uninterruptable recording.
 function sdec.strm_absorb_arm()
   sdec.strm_stopped_by_press = nil
@@ -2210,8 +2208,8 @@ function sdec.press_absorbed(what)
   return true
 end
 
--- Leave the current capture mode, flushing its files, and return to FRAME. `why` goes on the note
--- row. Returns the mode that was left, so a caller can say what happened.
+-- Flush the current capture mode's files and say why. `why` goes on the note row. Returns the mode that
+-- was left -- it does NOT change it; see the block below.
 -- `bad` says the run ENDED BADLY, and it is passed rather than inferred. The note row shows this
 -- function's message ONLY when it is set: a recording that finished normally leaves the note row
 -- EMPTY, because the status row's summary already names the bytes, the errors and the file.
@@ -2368,15 +2366,16 @@ function sdec.mode_cycle()
   for i = 1, n do
     if sdec.ui_modes[i].id == sdec.capmode then at = i end
   end
-  -- Flush the mode being left BEFORE selecting the next one, then select -- mode_exit()
-  -- always lands on frame, so the target is computed from `at`, not from what it leaves.
+  -- Flush the mode being left, then select the next. `at` is read before the flush; mode_exit() does
+  -- not touch capmode, so the order is not load-bearing.
   -- math.mod, not '%': 5.0.2. at = 0 (an unrecognised mode) lands on the first entry.
   --
   -- THE CYCLE SKIPS ANY MODE THAT CANNOT BE RIGHT at the locked rate, so the operator is never
   -- parked in one that is the wrong answer for their line. mode_suits() decides.
   --
-  -- BOUNDED by n steps and falling back to the first entry: mode_suits() is data-driven, and a
-  -- mode table where nothing suits must not spin here inside a touch handler.
+  -- BOUNDED by n steps and falling back to the first entry. mode_suits() is `return true`
+  -- (serial_ui.tsp:490) -- an unsuitable rate is refused by mode_why() instead -- so the bound guards
+  -- a future filter, not a live one.
   local nxt = sdec.mode_next().id
   sdec.mode_exit('switching')
   sdec.capmode = nxt
@@ -2587,6 +2586,7 @@ function sdec.options_apply()
     -- on a nonstandard line: they round too, see :2449 and :1909.
     --
     -- The field is an OBJ_EDIT_NUMBER with NFORMAT_PREFIX and no decimal-places argument, so whether
+    -- (the two rounding LOCK paths are lock_toggle and options_lock; both floor(baud + 0.5))
     -- it can hand back 9600.5 is a firmware question this code should not have to answer. Rounding
     -- rather than refusing -- 9600.4 plainly means 9600.
     if type(b) == 'number' and b >= 110 then sdec.force_baud = math.floor(b + 0.5)

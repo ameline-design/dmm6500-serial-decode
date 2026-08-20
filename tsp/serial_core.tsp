@@ -37,7 +37,7 @@ sdec = sdec or {}   -- the single global this app exposes
 -- 160000 = 2^8*5^4 is not -- it wants one more factor of two than the clock has.
 --
 -- fs_for_baud snaps UP to the lowest listed rate at or above baud x 8, so holes in the ladder are
--- spent oversampling. Hence the wide set: 38400 gets 400 k rather than 500 k.
+-- spent oversampling. Hence the wide set: 38400 gets 320 k rather than 500 k.
 --
 -- 1000 is the FLOOR: 900 is rejected outright (error 1130), so dmm.digitize.samplerate does
 -- not go below 1 kS/s.
@@ -117,9 +117,6 @@ sdec.fc_pulse = sdec.fc_pulse or 100e-6
 -- perfectly.
 sdec.trigwait     = sdec.trigwait or 3.0        -- seconds to wait for a start-bit edge
 sdec.trigwait_ext = sdec.trigwait_ext or 30.0   -- see acq_triggered: a person or a DUT event
--- M3: trigmode is an OPTIONS-FORM setting, so it uses `or` like every other piece of
--- operator state. Assigning operator state unconditionally reverted the trigger to
--- 'edge' on every App relaunch.
 -- sdec.buf                -- capture buffer handle
 -- sdec.smp                -- the capture as a PLAIN Lua array (see acq_copy)
 sdec.nread      = sdec.nread or 0
@@ -245,9 +242,8 @@ sdec.humpfrac = 0.2
 -- The two densest amplitudes within [v0, v1]. Returns lo, hi, modal -- the share of
 -- in-range samples belonging to either hump -- or nil when no pair is separable.
 --
--- Levels come from the histogram's own first moment over each hump, not from the bin
--- centres, so they are not quantised to the bin width and no extra pass over the
--- samples is needed.
+-- Each level is the TRUE MEAN of the samples in its hump, from one more pass over the capture --
+-- not the histogram's own moment, and not a bin centre. See the membership-by-bin-index note below.
 function sdec.sig_pair(rd, n, v0, v1)
   local floor = math.floor
   local nb = floor(n / sdec.binocc)
@@ -371,7 +367,8 @@ function sdec.sig_pair(rd, n, v0, v1)
   return v1m, v2m, (na + nbb) / cnt
 end
 
--- Returns ok, reason. Sets lo/hi/thr/hyst/swing/family and wlo/whi.
+-- Returns ok, reason. Sets lo/hi/thr/hyst/swing/family, wlo/whi, modal, and the remembered
+-- lvl_thr/lvl_hyst/lvl_swing that serial_app saves and restores.
 function sdec.sig_levels(rd, n)
   local vmin, vmax, nv = nil, nil, 0
   local i
@@ -605,7 +602,7 @@ function sdec.sig_idle(rd, n)
 
   -- A RUN IS ONLY EVIDENCE OF IDLE IF DATA COULD NOT HAVE PRODUCED IT.
   --
-  -- MEASURED AT THE BENCH 2026-08-16, real 9600-baud ASCII into the front
+  -- MEASURED AT THE BENCH, real 9600-baud ASCII into the front
   -- terminals: run0 = 63 samples, run1 = 42, and longest-run therefore said
   -- idle = 0 on a line that idles HIGH. Both runs are DATA. 63 samples at 10.42
   -- samples/bit is six bits -- a space, 0x20, whose start bit plus five zero data
@@ -657,7 +654,8 @@ end
 -- One bit time in samples, from the EDGE LIST, before any bit-time fit has run.
 --
 -- FROM ei, NOT FROM sdec.w. sdec.w is populated by sig_bittime(), which runs
--- during decode -- i.e. AFTER sig_idle -- so at this point sdec.w is either nil on
+-- during decode -- i.e. AFTER sig_idle -- so at this point sdec.w is either nil or left over from
+-- the previous capture.
 --
 -- A LOW PERCENTILE, NOT THE MINIMUM. Most pulses on a UART line are one or two
 -- bits, so the 10th percentile lands on a one-bit pulse; the minimum lands on
@@ -841,7 +839,7 @@ end
 -- ceiling at exactly 250 kBd, which is also what the harness measures on a CLEAN
 -- waveform -- a spiky or ringing line does worse, and is expected to.
 --
--- So it is a declared limit, not an emergent one: sdec.maxbaud is refused outright
+-- So it is a declared limit, not an emergent one: anything ABOVE sdec.maxbaud is refused outright
 -- rather than decoded into plausible-looking bytes, and 4.0 samples/bit itself warns,
 -- since being exactly at the wall is the marginal case rather than a comfortable one.
 sdec.minsabit = 4
@@ -861,8 +859,8 @@ end
 -- ============================================================================
 -- Acquisition
 -- ============================================================================
--- Pick the lowest exact sample rate that still gives at least `want` samples per
--- bit. A lower rate covers more TIME in the same buffer, which is what decides
+-- Pick the lowest LISTED sample rate that still gives at least `want` samples per bit; three listed
+-- rates are deliberately inexact (see sdec.rates). A lower rate covers more TIME in the same buffer, which is what decides
 -- how many bytes a capture holds -- at 9600 baud, 20 000 samples is 190 bytes at
 -- 100 kS/s but only 19 at 1 MS/s.
 function sdec.pick_fs(baud, want)
@@ -928,16 +926,16 @@ end
 -- capture, so the rate can be chosen deterministically -- no detect-then-retry,
 -- no state, no surprise. Lower rate, longer window, more bytes:
 --
---   forced baud   fs      samples/bit   bytes    was
---      1200      10 k        8.33        240       2
---      2400      20 k        8.33        240       4
---      4800      50 k       10.42        192       9
---      9600     100 k       10.42        192      19
---     19200     200 k       10.42        192      38
---     38400     500 k       13.02        153      76
---     57600     500 k        8.68        230     115
---    115200       1 M        8.68        230     230   (already at the ceiling)
---    250000       1 M        4.00        500     500
+--   forced baud   fs      samples/bit   bytes
+--      1200      10 k        8.33        240
+--      2400      20 k        8.33        240
+--      4800      40 k        8.33        240
+--      9600      80 k        8.33        240
+--     19200     160 k        8.33        240
+--     38400     320 k        8.33        240
+--     57600     500 k        8.68        230
+--    115200       1 M        8.68        230   (at the ceiling)
+--    250000       1 M        4.00        500
 --
 -- Two things this must get right:
 --
@@ -987,10 +985,10 @@ end
 --
 -- The measured consequence, at the predicted Tread of 8 us:
 --
---     baud     fs_for_baud        fs_for_burst        gain
---     115200   1 M   8.68 sa/bit  500 k  4.34 sa/bit  1440 -> 2880 B/s, 32 kB -> 64 kB/buffer
---      38400   500 k 13.02        200 k  5.21         1229 -> 2400 B/s
---       9600   100 k 10.42         50 k  5.21         1501 -> 2400 B/s
+--     baud     fs_for_baud       fs_for_burst   delivered   gain
+--     115200   1 M   8.68 sa/bit  640 k          4.19 sa/bit  1440 -> 2880 B/s, 32 kB -> 64 kB/buffer
+--      38400   320 k 8.33         200 k          4.73         1229 -> 2400 B/s
+--       9600   80 k  8.33          40 k          4.08         1501 -> 2400 B/s
 --
 -- 115200 was the WORST baud in the table -- slower to decode than 9600 -- purely because the
 -- ladder handed it 8.68 samples/bit. Both wins come from the same change and both reduce LOST
@@ -999,11 +997,11 @@ end
 --
 -- WHY minsabit AND NOT SOMETHING SAFER LIKE 5: the ladder is coarse, so asking for 5 snaps back
 -- up and gives nothing. 115200 x 5 = 576000, and the lowest listed rate at or above that is
--- 1 MS/s -- the very rate this is trying to avoid. Asking for 4 lands on 500 kS/s and 4.34
--- samples/bit. The snapping also means the result is usually comfortably ABOVE the floor
--- (5.21 at 9600, 19200 and 38400); only 250 kBd lands exactly on 4.0, which it already does.
+-- 1 MS/s -- the very rate this is trying to avoid. Asking for 4 lands 115200 on 640 kS/s and 4.19
+-- delivered samples/bit. Snapping usually leaves margin, but not always: 19200 lands on 80 kS/s and
+-- exactly 4.00 delivered, and 250 kBd is on 4.0 already.
 
--- MEASURED 2026-08-16: a SimpleLoop trigger model adds a CONSTANT 0.510 us to every sample
+-- MEASURED: a SimpleLoop trigger model adds a CONSTANT 0.510 us to every sample
 -- interval. Dead constant from 1250 S/s to 640 kS/s, and independent of aperture (AUTO and 1 us
 -- give identical results). dmm.digitize.read() does NOT pay it -- it hits requested rates exactly
 -- -- but it BLOCKS Lua for the whole acquisition, so the idle watchdog cannot poll buf.n, and
@@ -1012,7 +1010,7 @@ end
 -- rate is measured and compensated by acq_measure_fs(), whereas a seam is data that is gone.
 --
 -- It is also why an exact-rate table measured with digitize.read() does not describe this app:
--- digitize.read() and a trigger model do not
+-- digitize.read() and a trigger model do not pay the same per-sample cost.
 sdec.acq_overhead = 0.510e-6
 
 -- The rate that DELIVERS `want` samples per bit, not the rate that would if there were no
@@ -1063,7 +1061,7 @@ function sdec.fs_select()
   -- fs_default. So the second pass ran at 1 MS/s, exactly like the first, and an UNLOCKED
   -- capture could never return more than ~19 bytes at 9600 baud however long the line talked.
   --
-  -- Found on the instrument 2026-08-16 by pressing Options > Auto Detect and watching a 227-byte
+  -- Found on the instrument by pressing Options > Auto Detect and watching a 227-byte
   -- capture become an 18-byte one. It was not the button: nothing unlocked had ever produced a
   -- long window, and the auto-detect path is simply where that is most visible.
   --
@@ -1448,9 +1446,7 @@ end
 -- The comparison runs on the analog board's Cortex-M4, not in Lua, so arming
 -- costs nothing per sample and the edge is caught with hardware timing.
 --
--- UNVERIFIED ON HARDWARE: whether trigger.model.load() takes the buffer object or
--- its name, and whether the analog trigger needs re-arming per capture. The mock
--- exercises the code path only. Falls back to free-run if the model errors.
+-- Falls back to free-run if the model errors.
 -- Is the trigger model finished, as opposed to not started yet?
 --
 -- trigger.model.state() returns three values; only the first is the state. IDLE is
@@ -1735,7 +1731,7 @@ function sdec.acq_triggered(n, slope)
     -- condition -- the model never leaves its wait block and Lua never returns from
     -- inside a touch handler. That is an unresponsive panel needing a power cycle.
     --
-    -- MEASURED 2026-08-16, 9600 baud into the front terminals: a completed armed
+    -- MEASURED, 9600 baud into the front terminals: a completed armed
     -- capture holds 19011 of 20000 samples and then goes STATE_IDLE. Never 20000.
     -- `position` is the PRE-trigger percentage, and pre-trigger readings accumulate
     -- only until the trigger fires -- which on a continuously transmitting line is
@@ -1781,8 +1777,8 @@ function sdec.acq_triggered(n, slope)
     end
   end)
 
-  -- SETTLE BEFORE ANYTHING ELSE TOUCHES THE BUFFER, on both paths.
-  --
+  -- SETTLE BEFORE ANYTHING ELSE TOUCHES THE BUFFER, on both paths: the failure path below reaches it
+  -- too, through acq_free.
   sdec.trig_settle()
 
   -- BOTH exits restore the popups, including the failure one: a muted panel that stayed muted
