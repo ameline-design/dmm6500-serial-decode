@@ -356,7 +356,18 @@ assert SDG_MAX_WAVE_BYTES == SDG_MAX_PTS * 2, 'the byte and point ceilings disag
 #                                                  died immediately after it.
 #
 # So small writes do not accumulate risk -- 900 kB of them changed nothing -- while large ones do, and
-# THREE was enough. That is the same order as the original record of four consecutive 170-210 kB on 38R4,
+# THREE was enough in that run.
+#
+# BUT THREE IS NOT A RELIABLE THRESHOLD, and a later run says so: 102.8 kB, then 205.2 kB, then
+# 205.2 kB -- 513 kB total, three consecutive over-ceiling writes on 39R7 -- all completed, all
+# length-confirmed by read-back, SCPI answering throughout. That is the same count and nearly the same
+# total as the run that died, with the opposite outcome.
+#
+# WHAT DIFFERED WAS THE PACING: each of those three was followed by a WVDT? length read and a ~2 s
+# settle, where the wedging run sent them back to back. So the gap between large writes is a live
+# candidate for the real variable, and the count is not established as the cause. Treat a batch of
+# large writes as risky, pace them, verify each one -- and do not read "fewer than three" as a
+# guarantee in either direction. That is the same order as the original record of four consecutive 170-210 kB on 38R4,
 # so 39R7 is no more tolerant. The constant therefore stays 65536, but the operational rule is: fewer
 # than three over-ceiling writes between power cycles, and prefer the USB key for a batch.
 #
