@@ -364,6 +364,155 @@ for fi = 1, nfmt do
 end
 
 -- ============================================================================
+print('the 7-bit shuffled payload, capture starting at an arbitrary sample')
+-- THE CASE THE SOAK FOUND AND EVERY OFFLINE SUITE MISSED (r06, 2026-08-19).
+--
+-- ua_refine_parity's non-strict branch re-decodes at 7 bits and returned a result carrying
+-- nbits/par/nstop/invert all nil, because ua_run takes the format as ARGUMENTS and records none of
+-- it -- the search loop stamps the winner, and this branch copied only score and headsusp. The
+-- branch whose entire purpose is to change the format returned one with none. It surfaced as a
+-- raise in ua_note_fmt's %d, so capture() died DESCRIBING a decode that had succeeded, and the
+-- bench filed 'no bytes decoded' -- a symptom pointing at the wrong subsystem entirely.
+--
+-- WHY THE EXISTING SWEEPS ABOVE CANNOT REACH IT. They play 'Hello, World!', and cleanly generated
+-- text gives a UNANIMOUS parity vote, which takes the strict in-place path where r already has the
+-- fields. Reaching the broken branch needs a vote of 232 of 233 rather than 233 of 233: one
+-- dissenting frame, which is what a capture opening mid-byte on a GAPLESS 7E1 stream produces.
+-- Three conditions have to coincide -- 7-bit random payload, no inter-frame gap, arbitrary start --
+-- and no other case in this repo has all three.
+--
+-- THE ASSERTION IS AN INVARIANT, NOT AN ABSENCE OF A CRASH: a result handed back by the decoder
+-- always carries the format that produced it. That holds whichever branch ran, so it also covers
+-- the sibling call sites (ua_refine_width and the forced path both stamp; audited 2026-08-19).
+-- ============================================================================
+
+-- r06..r11's payloads, built here rather than read from out/vectors/: those files are generated
+-- output, so a gate that needs them fails on a fresh clone for a reason that is not a defect.
+-- Fisher-Yates over two copies of 0..127 on the suite's own PRNG -- see make_vectors.lua, which
+-- must produce the same bytes from the same seed.
+local function shuffled7(seed)
+  GEN_RESEED(seed)
+  local by, nb = {}, 0
+  local r, v, i
+  for r = 1, 2 do
+    for v = 0, 127 do nb = nb + 1; by[nb] = v end
+  end
+  for i = nb, 2, -1 do
+    local j = math.floor(GEN_RAND() * i) + 1
+    if j > i then j = i end
+    by[i], by[j] = by[j], by[i]
+  end
+  return by, nb
+end
+
+-- One capture from a looping ARB: read `want` samples starting at s0, WRAPPING, because the
+-- generator plays the waveform on repeat and a trigger lands wherever it lands. The wrap is not
+-- decoration -- without it the offsets near the end of the payload are the only ones that never
+-- get tested, and the seam is exactly where the head is least aligned.
+local function startphase_case(rd, ns, fs, s0, want)
+  local w, n = {}, 0
+  local i
+  for i = 0, want - 1 do
+    n = n + 1
+    w[n] = rd[math.mod(s0 + i, ns) + 1]
+  end
+  sdec.acq_fs = fs
+  sdec.sig_levels(w, n)
+  sdec.sig_edges(w, n)
+  sdec.sig_idle(w, n)
+  sdec.force_baud, sdec.force_nbits = nil, nil
+  sdec.force_par, sdec.force_nstop, sdec.force_invert = nil, nil, nil
+  local ok, why = pcall(function() return sdec.decode_from(w, n) end)
+  return ok, why, sdec.res
+end
+
+-- The armed path's real yield, from the app's own function rather than a literal: LoopUntilEvent
+-- keeps pretrig per cent of the buffer, so a completed capture is ~19000 of 20000 samples.
+local WANT = sdec.n_deliv(sdec.n) or 19000
+check('n_deliv is the armed yield, not the buffer depth',
+      WANT < sdec.n, string.format('%d of %d', WANT, sdec.n))
+
+-- WRAPPED, RATHER THAN INFERRED FROM sdec.res, and the difference decides whether this test can
+-- fail at all. When the format is missing, ua_note_fmt raises INSIDE decode_from -- before
+-- `sdec.res = r` -- so res stays nil and a check on it never sees the broken table. Worse, the
+-- raise needs an alternative format to have survived scoring, so the same defect goes SILENT
+-- whenever ua_alts came back empty: a result with no format, handed to the panel, no crash.
+--
+-- The wrapper sees the return value itself, so both paths are covered. `out ~= r` is an exact
+-- discriminator for the branch under test: the strict path mutates r and returns it, every early
+-- return returns r, and only the non-strict re-decode returns a DIFFERENT table.
+local real_refine = sdec.ua_refine_parity
+local nredecode, nilfmt, firstbad = 0, 0, ''
+sdec.ua_refine_parity = function(r, rd, n, T)
+  local out = real_refine(r, rd, n, T)
+  if out ~= nil and r ~= nil and out ~= r then
+    nredecode = nredecode + 1
+    -- ALL FOUR, not just nbits: invert feeds the idle level the panel reports and nstop the format
+    -- name, so a nil in any of them is a wrong answer waiting for a caller to read it.
+    if out.nbits == nil or out.par == nil or out.nstop == nil or out.invert == nil then
+      nilfmt = nilfmt + 1
+      if firstbad == '' then
+        firstbad = string.format('re-decode returned nbits=%s par=%s nstop=%s invert=%s',
+                                 tostring(out.nbits), tostring(out.par),
+                                 tostring(out.nstop), tostring(out.invert))
+      end
+    end
+  end
+  return out
+end
+
+-- STEPPED ACROSS THE WHOLE PAYLOAD, NOT DENSELY ACROSS THE FIRST FEW FRAMES, and that was measured
+-- rather than assumed. A first version stepped 1 sample through 220 samples -- every sub-bit phase
+-- of two whole frames -- and reached the non-strict branch ZERO times in 1320 starts. Which BYTES
+-- land in the window is the determining variable, not the sub-bit phase: the dissent that makes the
+-- vote 232-of-233 comes from the misaligned head, so it depends on the values there. Swept whole,
+-- the hits cluster in a handful of payload regions (seed 7108 has 2 in 538 starts, seed 7109 has 16).
+--
+-- 250 samples is 2.4 frame times, so the sub-bit phase still walks ~0.4 of a bit per step and gets
+-- covered incidentally. Measured: 18 re-decodes in 648 starts, against 21 in 1080 at step 150 and
+-- 64 in 3228 at step 50 -- so this is the cheap end of a flat curve, not a lucky sample.
+local STEP = 250
+local SEEDS = {7106, 7107, 7108, 7109, 7110, 7111}
+local nseed = table.getn(SEEDS)
+local raised, firstraise = 0, ''
+local nstart, npromote = 0, 0
+local si
+for si = 1, nseed do
+  local by, nb = shuffled7(SEEDS[si])
+  -- RENDERED ONCE PER SEED, outside the offset loop: the render is the expensive half and the
+  -- window is a slice of it. r06's own opts, so this is the waveform the SDG plays.
+  local rd, ts, nc, ns = GEN({bytes = by, nbits = 7, par = 1, baud = 9600, fs = 100000,
+                              gap = 0, lead = 10, tail = 10, loop = true})
+  local s0
+  for s0 = 0, ns - 1, STEP do
+    local ok, why, r = startphase_case(rd, ns, 100000, s0, WANT)
+    nrun = nrun + 1
+    nstart = nstart + 1
+    if not ok then
+      raised = raised + 1
+      if firstraise == '' then
+        firstraise = string.format('seed %d start %d: %s', SEEDS[si], s0, tostring(why))
+      end
+    elseif r ~= nil and r.nbits == 7 then
+      npromote = npromote + 1
+    end
+  end
+end
+sdec.ua_refine_parity = real_refine        -- a wrapper left in place poisons every later case
+check(string.format('%d mid-byte starts over %d 7E1 payloads: none raises', nstart, nseed),
+      raised == 0, raised == 0 and '' or string.format('%d raised; first: %s', raised, firstraise))
+check('every 7E1 re-decode carries the format that produced it (nbits, par, nstop, invert)',
+      nilfmt == 0, nilfmt == 0 and '' or string.format('%d of %d incomplete; %s',
+                                                       nilfmt, nredecode, firstbad))
+-- THE TWO CHECKS ABOVE ARE VACUOUS WITHOUT THESE. A sweep in which no start offset ever reaches the
+-- non-strict re-decode passes by not exercising the code at all -- which is exactly how the first
+-- regression test written for this bug came to pass with the fix removed.
+check('the non-strict 7E1 re-decode is reached, so the branch under test really ran',
+      nredecode > 0, string.format('%d re-decodes over %d starts', nredecode, nstart))
+check('the promotion to 7 bits reaches the result the panel reads',
+      npromote > 0, string.format('%d of %d starts read 7 bits', npromote, nstart))
+
+-- ============================================================================
 print(string.format('\n%d passed, %d failed   (%d decodes swept)', pass, fail, nrun))
 if table.getn(wrong) > 0 then
   print('\nevery wrong answer, so a rate can be read off rather than guessed:')

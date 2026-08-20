@@ -39,12 +39,19 @@ end
 MD.usb(false)
 
 local OUT = (arg and arg[1]) or 'out/vectors'
-os.execute('mkdir -p ' .. OUT)
--- Clear stale .bin files first. Renaming or splitting a vector otherwise leaves an
--- orphan behind that is absent from the manifest but still sitting on the USB key,
--- where its name makes it look like a plan row. That is a real trap at a bench:
--- the file loads, plays something, and matches nothing it is compared against.
-os.execute('rm -f ' .. OUT .. '/*.bin')
+-- DEFINE-ONLY MODE, for tools/sweep_startphase.lua, which needs the vector TABLE and not the files.
+-- It sets VEC_DEFINE_ONLY, dofile()s this script and reads VEC_LIST -- so the sweep covers whatever
+-- the bench covers, including vectors added later, instead of a hand-copied subset that goes stale.
+-- The guard has to be up here and not just around the build loop: the rm below would delete the
+-- bench's .bin files as a side effect of importing.
+if not VEC_DEFINE_ONLY then
+  os.execute('mkdir -p ' .. OUT)
+  -- Clear stale .bin files first. Renaming or splitting a vector otherwise leaves an
+  -- orphan behind that is absent from the manifest but still sitting on the USB key,
+  -- where its name makes it look like a plan row. That is a real trap at a bench:
+  -- the file loads, plays something, and matches nothing it is compared against.
+  os.execute('rm -f ' .. OUT .. '/*.bin')
+end
 
 -- ---------------------------------------------------------------------------
 -- Run the real decoder over a volt array and flatten the answer to strings.
@@ -747,6 +754,10 @@ vec{id = 'v63', desc = 'LIN 9600: header with no response, then a good frame',
               frames = {{id = 0x15, nodata = true},
                         {id = 0x15, data = {0xDE, 0xAD}}}}, nil, 0
     end, lin = true}
+
+-- Everything above is DEFINITION; everything below writes files. sweep_startphase.lua stops here.
+VEC_LIST = V
+if VEC_DEFINE_ONLY then return end
 
 -- ---------------------------------------------------------------------------
 -- Build, export, read back, decode both ways, compare.

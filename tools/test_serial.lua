@@ -4118,7 +4118,15 @@ print()
 print('-- SDG arb export --')
 do    -- scoped: the 200-active-locals ceiling applies to the main chunk
 local TMP = os.getenv('TMPDIR') or '/tmp'
-local path = TMP .. '/sdec_test_wave.bin'
+-- UNIQUE PER PROCESS, and that is not tidiness. This was one fixed name, and running the suite
+-- 16-ways parallel then made 3 runs of 16 fail: every process wrote and read the SAME file, so the
+-- odd-length and negative-codeword round trips read back another run's bytes. Two of the three did
+-- not even reach the summary line. A harness that reports a decoder defect when the only fault is
+-- its own scratch file is worse than a slow harness, and tools/soak_offline.py runs twelve at once.
+-- os.tmpname() for the unique part because the OS guarantees it; TMP for the directory so the file
+-- still lands where the rest of the suite's scratch goes.
+local uniq = string.gsub(os.tmpname(), '^.*[/\\]', '')
+local path = TMP .. '/sdec_test_wave_' .. uniq .. '.bin'
 
 -- Guide section 5.1.3: codewords 0x1000,0x2000..0x7000,0x7FFF are written as
 -- the byte pairs 00 10, 00 20, .. 00 70, FF 7F.

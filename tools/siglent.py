@@ -19,6 +19,7 @@ Offline use: pass transport='dry' to record the command stream instead of openin
 a socket. That is how the orchestration is verified with the hardware 300 km away
 and powered down.
 """
+import re
 import socket
 import struct
 import time
@@ -33,6 +34,96 @@ except ImportError:      # standalone use, e.g. copied to another machine
     SDG_MIN_WAVE_BYTES, SDG_MAX_WAVE_BYTES = 4, 16 * 1024 * 1024
 
 SDG_PORT = SCPI_PORT     # kept: existing callers import this name
+
+
+# ---------------------------------------------------------------------------
+# THE ONE CHOKE POINT FOR WAVEFORM DATA
+# ---------------------------------------------------------------------------
+# A ZERO-LENGTH OR UNDERSIZED WAVEFORM BRICKS THIS GENERATOR PERMANENTLY, and the guard that used to
+# live inside write_raw() was provably reachable-around. Three bypasses, found in review 2026-08-19:
+#
+#   1. write_raw('C1:', b'WVDT WVNM,x,WAVEDATA,' + b'\x00\x00')
+#      The check keyed on `'WVDT' in prefix`, and this prefix has no WVDT. The assembled command on
+#      the wire is a perfectly valid two-byte upload.
+#   2. write('C1:WVDT WVNM,x,WAVEDATA,')
+#      write() had NO check of any kind. This stores an EMPTY waveform -- the exact reported brick --
+#      in one line, through the ordinary public method. query() the same.
+#   3. sdg_hang_repro.upload() with --kb 0
+#      A raw socket, deliberately not using this driver, so no guard applied at all.
+#
+# So the rules are now structural rather than parameter-shaped, and they live at module level so the
+# raw-socket sender can call them too:
+#
+#   * TEXT commands (write/query) may not carry a WVDT store AT ALL. Waveform data is binary and
+#     cannot survive .encode(), so a WVDT+WAVEDATA in a text command is always either a mistake or a
+#     bypass. Refusing outright needs no length arithmetic and so cannot be fooled by one.
+#   * write_raw() validates the PAYLOAD OBJECT -- bytes-like, even, 4..16 MiB -- unconditionally,
+#     never keyed on the prefix, and additionally refuses a payload containing a WAVEDATA, marker,
+#     which is how bypass 1 smuggled the real command past a length check on the wrong bytes.
+#
+# WHY NOT SCAN THE ASSEMBLED BYTES AND VALIDATE THE TAIL. It looks stronger and is weaker: the tail
+# would have to be split off a trailing newline, and a legitimate codeword's high byte can BE 0x0A,
+# so stripping it would make a valid even payload look odd and refuse a good upload. Validating the
+# payload object is exact; there is nothing to parse.
+SDG_WAVEDATA_MARK = b'WAVEDATA,'
+
+
+def sdg_reject_text_wavedata(cmd):
+    """Refuse a TEXT command that would store waveform data. -> None, or raises ValueError.
+
+    `C1:WVDT?` is a READ and carries no data, so it is allowed; anything else naming WVDT is not.
+    """
+    up = cmd.upper()
+    i = up.find('WVDT')
+    if i < 0:
+        return
+    if up[i + 4:i + 5] == '?':
+        return
+    raise ValueError(
+        'REFUSING to send %r as text: it names WVDT, which STORES a waveform. A zero-length or '
+        'undersized waveform BRICKS this generator at its next power-up and it has no shell or '
+        'credentials to recover through. Waveform data is binary -- use write_raw(prefix, payload), '
+        'which validates the payload, or upload_arb(), which builds it.' % cmd[:80])
+
+
+def sdg_check_wave_payload(payload):
+    """Validate a WVDT payload object. -> len(payload), or raises ValueError.
+
+    Module level so tools/sdg_hang_repro.py, which uses a raw socket on purpose to reproduce the
+    original wedge, can enforce the same floor without going through the driver's mitigations.
+    """
+    if isinstance(payload, str):
+        raise ValueError('REFUSING a str payload: waveform data must be bytes, and encoding it '
+                         'could change its length. Pack the codewords with struct.')
+    if not isinstance(payload, (bytes, bytearray, memoryview)):
+        raise ValueError('REFUSING a %s payload: waveform data must be bytes-like, and an object '
+                         'without a fixed length cannot be checked before it is sent.'
+                         % type(payload).__name__)
+    n = len(payload)
+    # THE MANUAL'S RANGE, not merely "not empty": the programming guide requires SDG2000-series
+    # waveform data to be 4 bytes to 16 MB. A 2-byte waveform is out of spec, and nothing says it is
+    # safer than a 0-byte one -- the reported brick is the failure that got written up, not the only
+    # one available.
+    if not (SDG_MIN_WAVE_BYTES <= n <= SDG_MAX_WAVE_BYTES):
+        raise ValueError(
+            'REFUSING a %d-byte waveform: the SDG2000 series requires %d..%d bytes. A zero-length '
+            'or undersized waveform BRICKS the instrument at its next power-up, and this one has no '
+            'shell or credentials to recover through.'
+            % (n, SDG_MIN_WAVE_BYTES, SDG_MAX_WAVE_BYTES))
+    if n % 2:
+        raise ValueError(
+            'REFUSING a %d-byte WVDT payload: waveform data is 16-bit codewords, so an odd length '
+            'means the file is truncated. Half a waveform is not a waveform.' % n)
+    # COMMAND SMUGGLING. A payload holding its own WAVEDATA, marker means the caller put the command
+    # in the binary half, where a length check measures the command and not the waveform. Random
+    # codewords containing this exact nine-byte string is a ~1e-21 event per upload; a caller doing
+    # it deliberately is bypass 1 above.
+    if SDG_WAVEDATA_MARK in bytes(payload):
+        raise ValueError(
+            'REFUSING a payload that contains %r: the command belongs in the prefix. With it in the '
+            'payload, the length checked here is the command length and the real waveform could be '
+            'any size at all.' % SDG_WAVEDATA_MARK)
+    return n
 
 
 class SDG:
@@ -50,6 +141,10 @@ class SDG:
 
     # ---------------- transport ----------------
     def write(self, cmd):
+        # BEFORE self.log, so a refused command is not recorded as sent, and before the dry-run
+        # return, so transport='dry' refuses exactly what a socket would. A dry run that accepts a
+        # brick-shaped command teaches the caller that it is fine.
+        sdg_reject_text_wavedata(cmd)
         self.log.append(cmd)
         if self.dry:
             return
@@ -93,25 +188,106 @@ class SDG:
         # THE MANUAL'S RANGE, not merely "not empty": the programming guide requires SDG2000-series waveform
         # data to be 4 bytes to 16 MB. A 2-byte waveform is out of spec, and nothing says it is safer than
         # a 0-byte one -- the reported brick is the failure that got written up, not the only one available.
-        if 'WVDT' in prefix.upper() and not (SDG_MIN_WAVE_BYTES <= len(payload) <= SDG_MAX_WAVE_BYTES):
+        # UNCONDITIONAL, NOT KEYED ON THE PREFIX. Every caller of this method in the repo is a WVDT
+        # upload -- upload_arb and upload_vectors, nothing else -- so there is no legitimate payload
+        # here that is not waveform data, and keying the check on the prefix is what let
+        # write_raw('C1:', b'WVDT ... WAVEDATA,' + two bytes) through.
+        sdg_check_wave_payload(payload)
+        # The prefix must itself be the upload command, for the same reason: if the caller has put
+        # the command somewhere else, the bytes just validated are not the waveform.
+        up = prefix.upper()
+        if 'WVDT' not in up or 'WAVEDATA,' not in up:
             raise ValueError(
-                'REFUSING a %d-byte waveform: the SDG2000 series requires %d..%d bytes. A zero-length or '
-                'undersized waveform BRICKS the instrument at its next power-up, and this one has no shell '
-                'or credentials to recover through.'
-                % (len(payload), SDG_MIN_WAVE_BYTES, SDG_MAX_WAVE_BYTES))
-        if not payload:
-            raise ValueError('REFUSING an empty payload for %r.' % prefix[:40])
-        if 'WVDT' in prefix.upper() and len(payload) % 2:
-            raise ValueError(
-                'REFUSING a %d-byte WVDT payload: waveform data is 16-bit codewords, so an odd length '
-                'means the file is truncated. Half a waveform is not a waveform.' % len(payload))
+                'REFUSING %r as a write_raw prefix: this method exists only for the WVDT upload '
+                'path, so the prefix must name WVDT and end the WAVEDATA, field. A prefix that does '
+                'not means the command is being assembled somewhere the payload check cannot see.'
+                % prefix[:80])
         self.log.append(f'{prefix}<{len(payload)} binary bytes>')
         if self.dry:
             return
         self.s.sendall(prefix.encode() + payload + b'\n')
         time.sleep(self.settle + len(payload) / 100000.0)
 
+    # ---------------- what the generator says it stored ----------------
+    def stored_wave_length(self, name, timeout=180):
+        """Bytes the GENERATOR reports for a stored waveform. -> int, or None if it will not say.
+
+        BELT AND SUSPENDERS ON THE BRICK. Every guard in this file checks what we are about to SEND.
+        This checks what the instrument actually HAS, which is the one thing a sender cannot know: a
+        write that reported nothing, a truncated transfer, a wedge part way through. If the answer is
+        0 the file is the shape that bricks it at the next power-up, and there is a window -- the
+        generator is still alive and still answering -- in which DEL_STORE_FILE can remove it.
+
+        `WVDT? USER,<name>` per the programming guide, p.91 format 2. The reply is
+            WVDT POS,<path>, WVNM, <name>, LENGTH, 300B, TYPE, 10, WAVEDATA, <binary>
+        so LENGTH is a header field and this is the documented way to get it.
+
+        IT IS A DOWNLOAD, NOT A STAT, and that has to be handled rather than ignored: the WAVEDATA
+        follows in the same reply. So the whole thing is drained -- LENGTH tells us exactly how many
+        binary bytes to expect, so the read is bounded and not a guess. Draining rather than closing
+        early is deliberate: a half-read socket leaves the tail to be misread as the NEXT query's
+        answer, and closing mid-transfer is the stuck TCP state whose cure is a power cycle, which is
+        the step that detonates a bad stored waveform. At the measured 311 kB/s a 54 kB vector costs
+        ~0.2 s; the five over-ceiling ones cost proportionally more, which is why the timeout is large.
+        """
+        if self.dry:
+            self.log.append(f'WVDT? USER,{name}')
+            return None
+        self.log.append(f'WVDT? USER,{name}')
+        self.s.settimeout(timeout)
+        self.s.sendall((f'WVDT? USER,{name}' + '\n').encode())
+        buf = b''
+        want = None
+        while True:
+            try:
+                chunk = self.s.recv(65536)
+            except socket.timeout:
+                break
+            if not chunk:
+                break
+            buf += chunk
+            if want is None:
+                m = re.search(rb'LENGTH\s*,\s*(\d+)\s*B', buf, re.I)
+                w = buf.upper().find(b'WAVEDATA,')
+                if m is not None and w >= 0:
+                    want = w + len('WAVEDATA,') + int(m.group(1))
+            if want is not None and len(buf) >= want:
+                break
+        m = re.search(rb'LENGTH\s*,\s*(\d+)\s*B', buf, re.I)
+        if m is None:
+            return None
+        return int(m.group(1))
+
+    def delete_stored_wave(self, name, force=False):
+        """Delete a stored waveform. `DEL_STORE_FILE <name>.bin`.
+
+        NOT IN THE PROGRAMMING GUIDE -- it appears nowhere in PG02-E05C -- but Siglent publish it in
+        an application note, "How to delete files from the internal memory", 2021-12-07, which is
+        written for the SDG6000X and opens "SIGLENT SDG arbitrary waveform generators". So it is a
+        vendor-documented command that the manual omits, not a rumour.
+
+        THE .bin SUFFIX IS ADDED HERE because the two commands disagree about names: STL? USER reports
+        `SER_Hello_8N1` and the application note's example deletes `Test1.bin`. ARWV? has the same
+        split, and select_arb already strips a trailing .bin for it.
+
+        WILDCARDS REFUSED unless forced, and this is the sharp edge. A third-party report says the
+        command takes them; `DEL_STORE_FILE SER_*` would take all 34 uploaded vectors, and replacing
+        them is ~900 kB of WVDT writes, which is the activity that WEDGES this generator's LAN
+        service. A convenience that can cost an hour and a power cycle is not a convenience.
+        """
+        if not force and any(c in name for c in '*?'):
+            raise ValueError(
+                'REFUSING to delete %r: it contains a wildcard. DEL_STORE_FILE is reported to expand '
+                'them, so this could remove every stored vector, and re-uploading is the WVDT traffic '
+                'that wedges the LAN service. Pass force=True if that is genuinely what you want.'
+                % name)
+        fn = name if name.lower().endswith('.bin') else name + '.bin'
+        self.write(f'DEL_STORE_FILE {fn}')
+        return fn
+
     def query(self, cmd, timeout=6):
+        # query() sends before it reads, so it is a write path too and needs the same refusal.
+        sdg_reject_text_wavedata(cmd)
         self.log.append(cmd)
         if self.dry:
             return '<dry>'

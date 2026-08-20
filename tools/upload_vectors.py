@@ -164,8 +164,45 @@ def main():
         # is indistinguishable from one that did until something tries to select it -- at which point the
         # PREVIOUS waveform keeps playing and the measurement is attributed to the wrong stimulus.
         if stored in user_list():
-            done.append(stored)
-            print('  ok   %-30s %7d B  (%d/%d)' % (stored, n, k + 1, len(todo)))
+            # ASK THE INSTRUMENT WHAT IT ACTUALLY HAS, not just whether the name appeared. A name in
+            # STL? USER proves a file exists, not that it holds the bytes we sent -- and a ZERO-LENGTH
+            # file is the shape that bricks this generator at its NEXT POWER-UP. Which means there is
+            # a window, right now, while it is still alive and answering: read the length back, and if
+            # it is wrong, delete the file before anything power-cycles.
+            got = g.stored_wave_length(stored)
+            if got is None:
+                print('  ok?  %-30s %7d B  (%d/%d)  -- WVDT? gave no LENGTH, size unverified'
+                      % (stored, n, k + 1, len(todo)))
+                done.append(stored)
+            elif got == n:
+                done.append(stored)
+                print('  ok   %-30s %7d B  (%d/%d)  size confirmed' % (stored, n, k + 1, len(todo)))
+            else:
+                # 0 IS THE DANGEROUS ONE and it gets deleted rather than reported. Any other mismatch
+                # is also deleted: a truncated waveform is not the stimulus the oracle describes, and
+                # leaving it named correctly is how a bench run measures the wrong thing.
+                failed.append(stored)
+                print('  FAIL %-30s sent %d B, generator reports %d B' % (stored, n, got))
+                try:
+                    fn = g.delete_stored_wave(stored)
+                    gone = stored not in user_list()
+                    print('       deleted %s -- %s' % (fn, 'confirmed gone' if gone else
+                                                       'STILL LISTED, delete did not take'))
+                    if got == 0 and not gone:
+                        raise SystemExit(
+                            'STOPPING: a ZERO-LENGTH waveform is stored as %r and DEL_STORE_FILE did '
+                            'not remove it. DO NOT POWER-CYCLE THE GENERATOR -- that is what turns '
+                            'this into a dead instrument. Delete it from the front panel with '
+                            'Store/Recall while the box is still up.' % stored)
+                except SystemExit:
+                    raise
+                except Exception as e:
+                    print('       delete FAILED: %s' % e)
+                    if got == 0:
+                        raise SystemExit(
+                            'STOPPING: a ZERO-LENGTH waveform is stored as %r and it could not be '
+                            'deleted. DO NOT POWER-CYCLE THE GENERATOR. Remove it from the front '
+                            'panel with Store/Recall first.' % stored)
         else:
             failed.append(stored)
             print('  FAIL %-30s did not appear in STL? USER' % stored)

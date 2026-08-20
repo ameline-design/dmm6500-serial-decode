@@ -111,10 +111,25 @@ def stages(outdir, shots):
         # window length, and where the window opens. It reproduced #29 in 10 s.
         Stage('unit-analog', ['lua', 'tools/test_analog.lua'],
               note='the bench cases at the app\'s OWN sample rates, swept over sampling phase, '
-                   'jitter, noise and where the capture window opens'),
+                   'jitter, noise and where the capture window opens -- and the 7-bit shuffled '
+                   'payloads, where a mid-byte start makes the parity vote 232 of 233 and takes '
+                   'refine_parity\'s re-decode branch'),
         # Gates the HARNESS's own long-payload verdict, not the app. It earns a gate because the
         # gate it replaces passed a capture containing a silently wrong byte, and a judging rule
         # that can do that is as dangerous as a decoder bug -- it hides them.
+        # THE ONE GATE WHOSE SUBJECT IS AN UNRECOVERABLE HARDWARE FAILURE. A zero-length or undersized
+        # waveform bricks the SDG at its next power-up with no shell to recover through, and review
+        # found THREE live bypasses of the guard that was supposed to prevent it -- including
+        # write(), which had no check at all. Cheap, hermetic (transport='dry', no instrument), and
+        # it fails against the code as it was.
+        Stage('unit-sdgguard', ['python3', 'tools/test_sdg_guard.py'],
+              note='every route to an out-of-spec waveform refuses it -- the three bypasses found '
+                   'in review, plus the legitimate uploads still working'),
+        # The phase sweep across every bench vector, sharded over the cores. Its subject is the
+        # variable that both shipped decoder defects had in common: where the capture opened.
+        Stage('unit-phasesweep', ['python3', 'tools/sweep_all.py', '--quiet'],
+              note='every vector x capture start x phase/jitter/noise -- no raise, no result '
+                   'without a format, no wrong byte among the ones ERR calls trustworthy'),
         Stage('unit-loremgate', ['python3', 'tools/test_lorem_gate.py'],
               note='the long-payload judging rule: every clean run validated, flag COUNT bounded, '
                    'and the cases the old longest-run gate got wrong'),

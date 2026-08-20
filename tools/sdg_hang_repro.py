@@ -36,6 +36,8 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import instruments as I
+# For the size floor ONLY -- the socket work here stays raw on purpose (see upload()).
+import siglent as S
 
 PORTS = (5025, 5024)
 
@@ -75,6 +77,12 @@ def upload(ip, name, codewords, port=5025, settle=0.0):
     settles in proportion to payload size and retries its read-back, which are the
     mitigations -- this has to be able to reproduce the ORIGINAL behaviour."""
     payload = struct.pack('<%dh' % len(codewords), *codewords)
+    # THE SIZE FLOOR IS NOT ONE OF THE MITIGATIONS, so bypassing the driver must not bypass it.
+    # This script's whole purpose is to hammer the generator with WVDT writes until its LAN service
+    # wedges, and `--kb 0` produced a ZERO-LENGTH waveform on a raw socket with nothing in the way --
+    # which does not wedge the instrument, it BRICKS it at the next power-up, and the power cycle that
+    # this script's own recovery step calls for is what detonates it.
+    S.sdg_check_wave_payload(payload)
     s = socket.socket()
     s.settimeout(20)
     s.connect((ip, port))

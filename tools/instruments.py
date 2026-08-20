@@ -204,6 +204,97 @@ SDG_UPLOAD_SAFE_BYTES = 65536      # below this, uploads have never wedged it
 # would be a bootloader path rather than a shell and would not need credentials. Whether 39R7 counts as
 # "newer", what the key must contain, and whether the bootloader even looks for it are all UNKNOWN here.
 #
+# A SECOND LEAD, AND A BETTER ONE: `DEL_STORE_FILE <filename>.bin` deletes a stored waveform. First heard
+# as an EEVblog claim, then found to be VENDOR-DOCUMENTED -- Siglent's application note "How to delete files
+# from the internal memory for SDG6000X arbitrary function generators", dated 2021-12-07, gives exactly this
+# command and points at `STL? USER` to find the names. It appears NOWHERE in the programming guide
+# (PG02-E05C, checked), so the manual's silence is an omission and not a statement that it is unsupported.
+# The note is headed SDG6000X but opens "SIGLENT SDG arbitrary waveform generators"; it has not been run
+# against THIS instrument yet, so the command is documented and still unverified here.
+# The WILDCARD claim remains third-party only -- not in the vendor note -- and is treated as true anyway,
+# because the safe assumption is the destructive one: siglent.delete_stored_wave() refuses wildcards.
+#
+# THE NAMES DISAGREE, WHICH IS THE TRAP. `STL? USER` reports `SER_Hello_8N1` and the note deletes
+# `Test1.bin`, so a delete built from a listed name addresses a file that does not exist -- and a delete
+# that quietly does nothing is worse than an error, because the caller then believes a zero-length waveform
+# has been removed. delete_stored_wave() appends `.bin`; ARWV? has the identical split and select_arb strips
+# it. tools/test_sdg_guard.py pins both directions.
+#
+# AND THERE IS A WAY TO ASK WHAT IS ACTUALLY STORED: `WVDT? USER,<name>` (programming guide p.91, query
+# format 2) replies with a header carrying the byte count --
+#     WVDT POS,<path>, WVNM, <name>, LENGTH, 300B, TYPE, 10, WAVEDATA, <binary>
+# -- so the stored size is readable WITHOUT selecting the waveform, which is what makes a post-upload
+# verification possible at all. It is a DOWNLOAD rather than a stat: the WAVEDATA follows in the same reply,
+# so siglent.stored_wave_length() uses LENGTH to bound the read and drains the whole thing. Draining beats
+# closing early -- a half-read socket leaves the tail to be misread as the next query's answer, and closing
+# mid-transfer is the stuck TCP state whose cure is a power cycle, i.e. the step that detonates a bad file.
+# upload_vectors.py now checks it per upload and deletes anything whose reported length is not what we sent.
+#
+# WHY THIS ONE MATTERS MORE THAN THE USB KEY. The brick is not instant -- it happens AT THE NEXT POWER-UP.
+# So between storing a bad waveform and dying there is a window in which the instrument is still fully alive
+# and still answering SCPI. A working delete inside that window is not an unbricking procedure at all; it is
+# a way to never brick. That makes it the highest-value thing on this list to VERIFY, and to verify while
+# nothing is wrong: store a deliberately harmless throwaway, delete it, confirm with STL? USER, and only
+# then believe it. Order matters -- confirm the delete works BEFORE trusting it with anything that matters.
+#
+# TWO WARNINGS, and the wildcard is the sharper one. `DEL_STORE_FILE SER_*` -- or worse, a bare `*` -- would
+# take all 34 uploaded vectors with it, and re-uploading them costs ~900 kB of WVDT writes, which is the
+# activity that WEDGES this generator's LAN service. A wildcard delete is therefore not a convenience here;
+# any helper added for this command must take literal names and refuse a wildcard unless explicitly forced.
+# And nothing about a delete existing relaxes the refusals in siglent.py: a guard that stops the bad write
+# is still strictly better than a cleanup that has to be remembered, run, and confirmed before a power cut.
+#
+# NOT TESTED FROM THIS REPO YET, and deliberately not tested casually: it is a DESTRUCTIVE command aimed at
+# the one instrument, so it needs a throwaway target and a deliberate decision, not a spare moment.
+#
+# ---------------------------------------------------------------------------------------------------
+# WHY IT BRICKS: A MECHANISM, STILL A HYPOTHESIS, BUT THE ONE THAT FITS THE EVIDENCE
+# ---------------------------------------------------------------------------------------------------
+# The SDG2000X application enumerates the stored waveforms AT STARTUP and draws a preview of each. A
+# zero-length file makes that render throw, the application dies before it finishes starting, and the SAME
+# PROCESS implements the SCPI command engine as well as the LCD and touch UI -- so one unhandled exception
+# takes out the display and the LAN interface together. The instrument is not damaged; nothing is running.
+#
+# EVERY REPORTED SYMPTOM FOLLOWS, which is what makes this worth writing down rather than guessing again:
+#   * logo for ~25 s, an LED flash, then a blank LCD forever -- a process that starts, throws, never draws
+#   * no SCPI on either port -- same process, so it was never listening
+#   * AND THE DECISIVE ONE: the owner recovered by DELETING THE FILE over telnet from
+#     /usr/bin/siglent/usr/usr. Not a reflash, not a factory reset -- one file removed. If the empty
+#     waveform had corrupted NVRAM, the flash layout or the bootloader, deleting a file afterwards would
+#     not have fixed anything. That the cure was file removal says the file is read on every boot.
+#
+# IT ALSO EXPLAINS THE MANUAL'S 4-BYTE FLOOR BETTER THAN "EMPTY IS BAD" DOES. A preview that scales npts
+# points across a pixel width steps by width / (npts - 1). At ONE point that is a division by zero -- so a
+# 2-byte waveform is a second crash of the same kind, not merely something out of spec. The guard in
+# siglent.py refuses 2 bytes for exactly this reason and should stay that way.
+#
+# THREE CONSEQUENCES THAT CHANGE WHAT WE DO:
+#   1. DEL_STORE_FILE CANNOT UNBRICK IT. The SCPI engine is inside the dead application, so once the box
+#      has been power-cycled there is nothing left to accept the delete. The delete is only ever a
+#      PRE-power-cycle repair, which is what the note above says -- this mechanism is why.
+#   2. THE USB KEY IS THE SAFER PLACE FOR ANYTHING UNPROVEN. A bad file on internal flash is read on every
+#      boot and cannot be removed without a shell. A bad file on the USB key is removed by PULLING THE KEY.
+#      Same fault, reversible instead of terminal. For a waveform whose byte count we have not verified,
+#      out/vectors/USB-TRANSFER.md is the route with an undo.
+#   3. A U-BOOT USB RECOVERY WOULD WORK, if it exists, because the bootloader runs before the application
+#      and so is not affected by the file that kills it.
+#
+# THE REPORT IS FROM 2019, AND THAT CHANGES NOTHING ABOUT THE GUARD. Siglent may well have fixed it since;
+# a missing bounds check in a preview renderer is exactly the sort of thing that gets quietly repaired, and
+# this instrument's 2.01.01.39R7 is years newer than the firmware that died. But "probably fixed" is not a
+# fact we hold, and the two outcomes are not comparable: if the bug is gone, the guard costs a refused
+# upload that was out of spec anyway; if it is not, the cost is the one instrument, permanently, with no
+# shell and no credentials. Nobody publishes "I stored an empty waveform and it was fine", so silence since
+# 2019 is not evidence either way -- it is what a rare, catastrophic, self-selecting failure looks like.
+# The guard stays until an under-4-byte upload has been shown SAFE on this firmware, which is not an
+# experiment worth running.
+#
+# HOW TO TEST IT WITHOUT RISKING THE INSTRUMENT, and this is a genuinely reversible experiment: put a
+# zero-length .bin on the USB KEY -- never on internal flash -- and browse to it from the front panel. If
+# the theory holds the application dies there, and pulling the key and rebooting brings it back, because
+# nothing persistent was written. That distinguishes "the render crashes" from "storing it corrupts state"
+# at the cost of one reboot. Ask first: it is still a deliberate crash of the one generator we have.
+#
 # IF IT IS WORTH HAVING, IT IS WORTH HAVING BEFORE IT IS NEEDED. A recovery route you have to research
 # while the instrument is dead is barely a route at all -- you cannot query a blank LCD for its boot
 # sequence, and every fact you would want comes from the working machine. So the sensible order is: build
