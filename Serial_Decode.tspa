@@ -3,7 +3,7 @@ loadscript Serial_Decode
 -- $Product: DMM6500
 -- $Tag: Serial, UART, Decode, Digitize
 -- $Description: BETA. Decodes an asynchronous serial line with the instrument's own digitizer: recovers baud rate, frame format and bytes, shows them as text or hex, streams every byte to a USB key, and saves the capture. Everything auto-detects; everything can be locked down.
--- $Version: 1.03
+-- $Version: 1.04
 -- $Requires: 1.7.0
 -- $Author: Ian Ameline
 -- $License: MIT
