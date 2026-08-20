@@ -311,7 +311,17 @@ def main():
     for m in MODULES:
         out.append('-- ================= %s =================' % m)
         with open(os.path.join(ROOT, m)) as f:
-            body = f.read().split('\n')
+            src = f.read()
+        # REFUSE TO BUILD RATHER THAN SHIP AN UNTERMINATED COMMENT. Every rule here treats a '--' line
+        # as a whole-line comment it may keep or drop freely. A Lua LONG comment breaks that: keeping
+        # '--[[' while dropping '--]]' comments out the rest of the module, and the only symptom would be
+        # an archive that fails to load on the instrument. No module uses one today, so this costs
+        # nothing and converts a silent brick into a build error. Raised by review.
+        for delim in ('--[[', '--]]', '--[=['):
+            if delim in src:
+                raise SystemExit('%s contains a Lua long comment (%s); the comment rules here only '
+                                 'handle whole-line comments -- convert it to -- lines' % (m, delim))
+        body = src.split('\n')
         # BLOCKS, NOT ONE FLAT LIST. Comment runs separated by blank lines used to accumulate together
         # and the keep window was taken across the concatenation, so a definition could ship lines from
         # a block describing something else -- `ck_reader_table` shipped a micro-optimisation note and

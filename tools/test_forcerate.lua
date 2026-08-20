@@ -104,17 +104,28 @@ check('ui_notes() carries the refusal, so it reaches the panel', onrow,
       'notes=' .. tostring(notes and table.concat(notes, ' | ')))
 
 print('\n-- Use Detected Rate --')
--- capture() is stubbed because this is the OFFLINE suite: there is no instrument to re-acquire from.
--- What is under test is the contract -- accept clears the lock and re-captures -- so the stub records
--- that it was called and the assertion is on both halves.
-local realcap, ncap = sdec.capture, 0
-sdec.capture = function() ncap = ncap + 1; return true, 'stubbed' end
+-- capture() is stubbed because this is the OFFLINE suite: there is no instrument to re-acquire from, so
+-- what is checked here is the CONTRACT -- the lock is already gone by the time capture is called, and it
+-- is called exactly once. It deliberately does NOT prove the re-capture then decodes at the offered
+-- rate; a stub that always succeeds cannot. That half is gated on hardware by bench_break's
+-- accept-detected-rate, which requires the offer retired AND sdec.baud within 1 % of the rate offered.
+-- Raised by review, which was right that the assertions alone read stronger than they are.
+--
+-- ORDER IS PART OF THE CONTRACT: capture() must not run with the wrong rate still forced, or the
+-- re-capture repeats the refusal. The stub asserts that, which the call count alone cannot.
+local realcap, ncap, lockatcap = sdec.capture, 0, 'unset'
+sdec.capture = function()
+  ncap = ncap + 1
+  lockatcap = tostring(sdec.force_baud)
+  return true, 'stubbed'
+end
 local aok, awhy = sdec.rate_accept()
 sdec.capture = realcap
 check('accept returns the re-capture verdict', aok == true, tostring(awhy))
 check('accept clears the lock, so detection runs again', sdec.force_baud == nil,
       tostring(sdec.force_baud))
 check('accept re-captures exactly once', ncap == 1, tostring(ncap))
+check('...and the lock was already cleared when it re-captured', lockatcap == 'nil', lockatcap)
 check('accept retires the offer', sdec.rate_offer == nil and sdec.rate_refused == nil,
       tostring(sdec.rate_offer))
 
@@ -129,6 +140,21 @@ check('decline retires the question', sdec.rate_offer == nil, tostring(sdec.rate
 -- sentence explaining it must not vanish just because the question was dismissed.
 check('decline leaves the refusal on the note row', sdec.rate_refused ~= nil,
       tostring(sdec.rate_refused))
+
+print('\n-- a Mode press retires the offer, because it discards the capture --')
+-- RAISED BY REVIEW. capture() clears the offer once per press, but Mode is the other way out of a
+-- result: both its branches discard one. An offer that survived would let accept drop the operator's
+-- lock on the strength of a capture that no longer exists -- and into a streaming mode, which needs a
+-- lock and would refuse immediately after.
+fresh(4800)
+sdec.decode()
+local hadoffer = (sdec.rate_offer ~= nil)
+sdec.mode_cycle()
+check('the offer was raised, so this case is not vacuous', hadoffer, 'no offer to retire')
+check('Mode retires the offer', sdec.rate_offer == nil, tostring(sdec.rate_offer))
+local mok, mwhy = sdec.rate_accept()
+check('...so accept can no longer act on it', mok == false and mwhy == 'no rate was offered',
+      tostring(mwhy))
 
 print('\n-- answering nothing --')
 -- A stale press or a repeated remote call must not act on an offer already answered.
