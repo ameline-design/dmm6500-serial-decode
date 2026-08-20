@@ -26,6 +26,7 @@ FOUR SUITES, and each answers a question the offline suite cannot:
     python3 tools/bench_matrix.py --shots ~/tmp/appshots       # PNG of the panel per point
 """
 import argparse
+import csv
 import os
 import sys
 import time
@@ -36,6 +37,7 @@ import instruments as I
 from dmmrun import DMM
 from siglent import SDG
 import bench_uart as BU
+import soakplan as SP                                       # noqa: E402
 import bench_sync as BS
 import run_app as RA
 import screenshot as SS
@@ -64,7 +66,17 @@ FORMATS = [('v41', '8N1', 'the control -- must NOT be called 7E1'),
            ('v44d', '8O1', ''),
            ('v44e', '8N1', 'sent as 8N2 -- the extra stop bit is idle')]
 FORMAT_BAUD = 9600
-FORMAT_SRATE = 100000        # from the manifest; these vectors are 10.42 samples/bit
+# DERIVED FROM THE MANIFEST, NOT WRITTEN DOWN. Every clean vector renders at 10 samples per bit
+# and every impairment vector at 100, so a rate copied into this file is a rate that goes stale
+# the next time the render regime changes -- and it goes stale QUIETLY: a hard-coded 100000 plays
+# a 10-samples-per-bit vector at 10000 Bd while every label still says 9600, which is 4.2 % off
+# and past the 2 % the suites themselves demand. Read it instead.
+def _srate(vid, baud):
+    return int(round(baud * int((manifest().get(vid) or {}).get('spb') or 10)))
+
+
+def _spb(vid):
+    return float(int((manifest().get(vid) or {}).get('spb') or 10))
 
 RATE_ARB = 'v41'             # 'Hello, World!' 8N1, x10 like every clean vector
 RATE_SPB = 10.0
@@ -85,7 +97,7 @@ LEVELS = [(5.0, ['5V TTL']), (3.3, ['3V3 CMOS']), (1.6, ['1V8 CMOS', '1.6Vpp'])]
 # place cannot accidentally match; and the byte values are real varied text, which is what the
 # format search and the parity refinement actually have to cope with.
 LOREM_ARB = 'v71'
-LOREM_SPB = 100000.0 / 9600.0        # 10.41667 samples/bit, from the manifest
+# LOREM_SPB comes from _spb(LOREM_ARB); see the note on _srate.
 
 PAYLOAD = 'Hello, World!'
 
@@ -374,7 +386,7 @@ def suite_formats(d, g, a, rows):
     print('\n=== FORMATS -- %d Bd, %.1f V swing, one in-app Capture each ==='
           % (FORMAT_BAUD, NOMINAL_SWING))
     for vid, expect, why in FORMATS:
-        g.select_arb(VN.arb(vid), amp_for(NOMINAL_SWING), FORMAT_SRATE)
+        g.select_arb(VN.arb(vid), amp_for(NOMINAL_SWING), _srate(vid, FORMAT_BAUD))
         g.output(True, ch=1)
         time.sleep(a.settle)
         res, hexs, notes = press(d, vid)
@@ -414,7 +426,7 @@ def suite_levels(d, g, a, rows):
     print('\n=== LEVELS -- v41 at three logic swings, LOGIC and THRESH checked ===')
     for swing, families in LEVELS:
         amp = amp_for(swing)
-        g.select_arb(VN.arb('v41'), amp, FORMAT_SRATE)
+        g.select_arb(VN.arb('v41'), amp, _srate('v41', FORMAT_BAUD))
         g.output(True, ch=1)
         time.sleep(a.settle)
         res, hexs, notes = press(d, '%.1fV' % swing)
@@ -436,9 +448,9 @@ def suite_lorem(d, g, a, rows):
         payload = f.read()
     rates = [int(x) for x in a.rates.split(',')] if a.rates else RATES
     print('\n=== LOREM -- %s (%d bytes, %.4f sa/bit) at %d rates ==='
-          % (LOREM_ARB, len(payload), LOREM_SPB, len(rates)))
+          % (LOREM_ARB, len(payload), _spb(LOREM_ARB), len(rates)))
     for baud in rates:
-        srate = int(round(baud * LOREM_SPB))
+        srate = _srate(LOREM_ARB, baud)
         if srate > I.SDG_MAX_SRATE:
             print('  %7d Bd SKIPPED -- %g Sa/s over the SDG ceiling' % (baud, srate))
             continue
@@ -516,7 +528,7 @@ def suite_offsets(d, g, a, rows):
         print('  %.1f V swing (AMP %.2f): |OFST| <= %.2f V  -> %s'
               % (swing, amp, lim, ', '.join('%+.2f' % o for o in offs)))
         for ofst in offs:
-            g.select_arb(VN.arb('v41'), amp, FORMAT_SRATE, offset_v=ofst)
+            g.select_arb(VN.arb('v41'), amp, _srate('v41', FORMAT_BAUD), offset_v=ofst)
             g.output(True, ch=1)
             time.sleep(a.settle)
             # READ THE OFFSET BACK. The generator clamps rather than refusing, and a clamped
@@ -684,10 +696,10 @@ PAYLOAD_VECS = (['v77', 'v78'] + ['r%02d' % k for k in range(12)])
 # what this payload family needs, because without any the claim "the high-rate failures only happen on
 # lorem" is untested rather than established.
 #
-# WHY v77 AND r00. The v80-passes / v71-fails contrast has three candidate variables -- rendered
+# WHY v77 AND r00. The v41-passes / v71-fails contrast has three candidate variables -- rendered
 # points-per-bit, payload length, content -- and PAYLOAD LENGTH alone accounts for it. The DMM's own samples-per-bit is NOT a variable here at all: fs_for_baud (serial_core.tsp:958)
 # takes baud and nothing else, so both suites sample at the same 8.68 / 4.00 sa/bit at 115200 / 250000,
-# and the same 20 capture offsets fail at 4.0 and at 8.0. What differs is the LOOP SEAM: Hello (v80) is
+# and the same 20 capture offsets fail at 4.0 and at 8.0. What differs is the LOOP SEAM: Hello (v41) is
 # 13 B so a ~334 B capture spans ~26 seams and idle1 records only the first, bounding headsusp at 12;
 # Lorem1kB (v71) is
 # 1024 B, longer than any capture, so it holds at most one seam wherever the arb phase puts it.
@@ -722,7 +734,7 @@ def suite_payloads(d, g, a, rows):
     """
     vecs = PAYLOAD_VECS
     # SWEPT UP TO 250 kBd, WHICH IS WHAT SEPARATES CONTENT AND LENGTH FROM RATE. Run only at 9600,
-    # the fox and the twelve random payloads leave the v80-passes/v71-fails contrast confounded three
+    # the fox and the twelve random payloads leave the v41-passes/v71-fails contrast confounded three
     # ways: points-per-bit (10.0 vs 10.41667), payload length (3884 B vs 213750 B) and content. These
     # vectors break that tie, because they are 256-byte shuffles and 94-glyph text rendered at the
     # SAME 10.41667 sa/bit as v71.
@@ -749,7 +761,7 @@ def suite_payloads(d, g, a, rows):
         if vid in PAYLOAD_HIRATE_VECS:
             rlist = rlist + hirates
         for baud in rlist:
-            srate = int(round(baud * LOREM_SPB))
+            srate = _srate(LOREM_ARB, baud)
             if srate > I.SDG_MAX_SRATE:
                 print('  %-6s %7d Bd SKIPPED -- %g Sa/s over the SDG ceiling' % (vid, baud, srate))
                 continue
@@ -790,9 +802,189 @@ def suite_payloads(d, g, a, rows):
             rows.append(('payload %s@%d' % (vid, baud), ok and close, det))
 
 
+_MANIFEST = {}
+
+
+def manifest():
+    """out/vectors/manifest.tsv, keyed by vector id. Read once."""
+    if not _MANIFEST:
+        with open(os.path.join(BU.VECDIR, 'manifest.tsv')) as f:
+            for r in csv.DictReader(f, delimiter='\t'):
+                _MANIFEST[r['file'].replace('.bin', '')] = r
+    return _MANIFEST
+
+
+def plan_payload(vid):
+    """The expected bytes for a vector. -> bytes, or None if neither source has them.
+
+    PREFERS THE .txt AND FALLS BACK TO THE MANIFEST'S exp_hex. Fifteen of the 41 vectors have no
+    .txt -- the short fixed-payload ones, v41 and the v44 family among them -- but every manifest row
+    carries exp_hex, so an oracle exists for all 41 and no vector is skipped for want of a file.
+    """
+    p = os.path.join(BU.VECDIR, vid + '.txt')
+    if os.path.exists(p):
+        with open(p, 'rb') as f:
+            return f.read()
+    hx = (manifest().get(vid) or {}).get('exp_hex') or ''
+    parts = hx.split()
+    if not parts:
+        return None
+    return bytes(int(x, 16) for x in parts)
+
+
+def suite_plan(d, g, a, rows):
+    """Every vector, at every standard rate plus one drawn rate per gap, in a seeded order.
+
+    THE MOST DEMANDING SUITE HERE, and the only one whose content changes from lap to lap. What it
+    tests comes entirely from --iteration: see tools/soakplan.py for the draws. A failure prints the
+    iteration, so the case can be rebuilt without running the laps before it.
+
+    ONE SELECT PER VECTOR, THEN SRATE ONLY. Selecting costs 0.5 s plus the payload over the
+    CPU-to-FPGA link; an SRATE change is FPGA register writes. Across 43 rates that is the difference
+    between one upload per vector and 43 of them, and the waveform does not change between rates.
+
+    THE POINT NAME IS STABLE ACROSS LAPS, THE RATE IS NOT. A standard rate is named by its baud; a
+    drawn rate is named by its GAP INDEX, because the baud in that gap is different every iteration
+    and naming points by baud would give every lap a fresh set of names -- so nothing could be tallied
+    across laps and a rate-specific intermittent would never accumulate. The actual baud is in the
+    detail, where it belongs.
+    """
+    it = a.iteration
+    vecs = sorted(VN.MAP.keys())
+    order = SP.vector_subset(it, vecs, a.plan_vectors)
+    rates = SP.rates_for(it)
+    std = set(SP.standard_rates())
+    ladder = SP.rate_ladder()
+    gapno = {}
+    for baud, kind in rates:
+        if kind != 'std':
+            gapno[baud] = sum(1 for b in std if b < baud)
+    est = SP.estimate_secs(rates, len(order)) / 60.0
+    print('\n=== PLAN iteration %d -- %d vectors x %d rates (%d standard, %d drawn, %d ladder edge) '
+          '= %d cells, est %.0f min ==='
+          % (it, len(order), len(rates), sum(1 for _, k in rates if k == 'std'),
+             sum(1 for _, k in rates if k == 'rand'), sum(1 for _, k in rates if k == 'edge'),
+             len(order) * len(rates), est))
+    print('    order: %s' % ' '.join(order))
+    print('    FRAME mode only: above 165563 Bd sdec.fs_for_burst returns nil, so the streaming '
+          'paths cannot record 172800 and up at all.')
+
+    for vi, vid in enumerate(order):
+        payload = plan_payload(vid)
+        if payload is None:
+            print('  %-6s SKIPPED -- no .txt and no exp_hex in the manifest' % vid)
+            continue
+        row = manifest().get(vid) or {}
+        # SPB PER VECTOR, FROM THE MANIFEST. The clean vectors render at 10 samples per bit and the
+        # impairment ones at 100, so srate = baud * spb differs by 100x between them. Assuming 10
+        # would play every x100 vector at a tenth of the intended baud and blame the decoder.
+        spb = int(row.get('spb') or 10)
+        want_fmt = (row.get('exp_fmt') or '').strip()
+        expect = SP.expect_for(vid)
+        t_vec, ncell, nbadcell = time.time(), 0, 0
+        for ri, (baud, kind) in enumerate(rates):
+            srate = baud * spb
+            if srate > I.SDG_MAX_SRATE:
+                print('  %-6s %7d Bd SKIPPED -- %g Sa/s over the SDG ceiling (spb %d)'
+                      % (vid, baud, srate, spb))
+                continue
+            if ri == 0:
+                g.select_arb(VN.arb(vid), amp_for(NOMINAL_SWING), srate)
+                g.output(True, ch=1)
+            else:
+                g.truearb(srate)
+                g.assert_truearb()
+            time.sleep(a.settle)
+            # THE SEEDED WAIT, on top of settle and for a different reason: settle lets the generator
+            # take the new clock, this lands the capture on a different byte, bit and sub-bit phase.
+            # Uniform over 10 byte-times, so it scales with the rate.
+            wait = SP.wait_s(it, vi, ri, baud)
+            time.sleep(wait)
+            label = 'std%d' % baud if kind == 'std' else 'gap%02d' % gapno[baud]
+            res, hexs, notes = press(d, 'plan_%s_%s' % (vid, label))
+            nf = int(num(res, 'nf', 0))
+            head = BU.head_damage(hexs, int(num(res, 'head', 0)))
+            ok, det = False, 'no bytes decoded'
+            if 'fail' in res:
+                det = 'FAIL %s' % res['fail']
+            elif nf > head:
+                ok, det = BU.judge_payload(hexs[2 * head:], payload)
+                if head:
+                    det = det + ' after a FLAGGED %d-byte head' % head
+            gb = num(res, 'baud')
+            close = gb is not None and abs(gb / float(baud) - 1.0) <= 0.02
+            got_fmt = res.get('fmt', '?')
+            fmtok = bool(want_fmt) and got_fmt[:3] == want_fmt[:3]
+            exact = ok and close and fmtok
+            # SILENTLY WRONG, computed rather than read out of the judge's prose: bytes came back, the
+            # app raised nothing and flagged nothing, and they are not the payload. That is the one
+            # outcome no vector is allowed, impairment vectors included -- a decode that fails loudly
+            # costs an operator a retry, and one that lies costs them the measurement.
+            nbad = int(num(res, 'nbad', 0))
+            silent = (not exact) and nf > 0 and 'fail' not in res and nbad == 0
+            if expect == 'loud':
+                good = exact or not silent
+            else:
+                good = exact
+            ncell += 1
+            print('  %-6s %7d Bd %-5s %-5s %-5s %-6s %7s Bd  %-46s %5.2f sa/bit  wait %6.2f ms'
+                  % (vid, baud, kind, expect, 'ok' if good else 'BAD', got_fmt,
+                     fmt_num(res.get('baud'), '%.0f'), det,
+                     SP.pick_fs(baud, ladder) / float(baud), wait * 1000.0))
+            n4915 = note_events(res)
+            if n4915:
+                print('      *** %d x event 4915 ***' % n4915)
+            for n in notes:
+                print('      note: %s' % n)
+            if not good:
+                # EVERYTHING NEEDED TO REBUILD THE CASE, on the failure and not in a summary. The
+                # iteration gives the rates, the order and the commanded wait; the MEASURED head is
+                # what the seed cannot reproduce, because on hardware the capture phase is a race the
+                # wait only perturbs. Without the measured value a replay is a coin toss.
+                print('      REPRO iteration %d vector %s rate %d Bd (%s) srate %d spb %d '
+                      'wait %.4f ms measured-head %s nf %d fmt %s want %s'
+                      % (it, vid, baud, kind, srate, spb, wait * 1000.0,
+                         fmt_num(res.get('head'), '%.0f'), nf, got_fmt, want_fmt))
+                print('      hex head %d: %s' % (head, hexs[2 * head:][:512]))
+            rows.append(('plan %s@%s' % (vid, label), good,
+                         '%d Bd %s %s%s' % (baud, kind, det,
+                                            ' [SILENTLY WRONG]' if silent else '')))
+            if not good:
+                nbadcell += 1
+
+        # AFTER EVERY WAVEFORM, NOT ONLY AT THE END OF THE LAP. 43 cells is minutes; the lap is hours.
+        # Two questions get asked here, and both are cheap:
+        #
+        #   IS THE BENCH STILL THERE. A LUA round trip, not *IDN?: the SCPI parser can keep answering
+        #   after the app is gone, so a reply to *IDN? would prove the wrong thing. The generator gets
+        #   the same question, THROUGH THE OPEN SOCKET -- it serves one SCPI session, so probing it on
+        #   a second connection reports a wedge that is not there.
+        #
+        #   IS IT STILL RIGHT. A vector that has started failing is worth knowing about now rather
+        #   than after another 40 waveforms. Vectors ENTITLED to fail never stop anything: an
+        #   impairment vector missing bytes is the vector doing its job.
+        vsec = time.time() - t_vec
+        alive = d.alive()
+        sdg_ok, sdg_why = BS.sdg_alive(sdg=g)
+        print('  %-6s %s: %d cells in %.0f s (%.2f s/cell), %d not as expected  DMM %s  SDG %s'
+              % (vid, expect, ncell, vsec, vsec / max(1, ncell), nbadcell,
+                 'alive' if alive else 'NOT ANSWERING', 'alive' if sdg_ok else 'NO: %s' % sdg_why))
+        if not alive or not sdg_ok:
+            raise SystemExit(
+                'STOPPING after %s: the bench stopped answering (DMM %s, SDG %s). Nothing after this '
+                'point would mean anything, and the remaining waveforms would each wait for a timeout. '
+                'The app may be mid-capture and the generator is still driving its output.'
+                % (vid, 'alive' if alive else 'silent', 'alive' if sdg_ok else sdg_why))
+        if nbadcell and a.fail_fast:
+            raise SystemExit(
+                'STOPPING after %s: %d of %d cells did not behave as a %r vector must, and --fail-fast '
+                'is set. Iteration %d rebuilds this exactly; the REPRO lines above carry the rate and '
+                'the measured head for each one.' % (vid, nbadcell, ncell, expect, it))
+
+
 SUITES = {'formats': suite_formats, 'rates': suite_rates, 'lorem': suite_lorem,
           'levels': suite_levels, 'offsets': suite_offsets, 'hard': suite_hard,
-          'payloads': suite_payloads}
+          'payloads': suite_payloads, 'plan': suite_plan}
 
 
 def main():
@@ -804,6 +996,18 @@ def main():
     ap.add_argument('--settle', type=float, default=0.35)
     ap.add_argument('--offset-swings', default='3.3,1.6')
     ap.add_argument('--rates', help='comma-separated subset of the rate ladder')
+    # THE ONLY INPUT THE plan SUITE TAKES. Everything it tests -- vector order, the drawn rate
+    # in each gap, the wait before every capture -- comes from this number through
+    # tools/soakplan.py, so quoting it is enough to rebuild the lap.
+    ap.add_argument('--iteration', type=int, default=1,
+                    help='sweep iteration for the plan suite; picks every seeded choice')
+    ap.add_argument('--fail-fast', action='store_true',
+                    help='plan suite: stop at the end of the first waveform with an unexpected '
+                         'failure, rather than sweeping the remaining 40. For a gating sweep; a soak '
+                         'wants the whole lap so it can count rates')
+    ap.add_argument('--plan-vectors', type=int, default=None,
+                    help='a seeded subset of this many vectors, for a lap that must finish in '
+                         'minutes (the full 41 is about 2 h)')
     ap.add_argument('--payload-rates', default=None,
                     help='HIGH rates for %s in the payloads suite (default %s); all fourteen always '
                          'run at %d. Until 2026-08-20 they ran at %d only, so the fox and every '
@@ -853,7 +1057,7 @@ def main():
                     print('  REFUSED: %d bytes is over the %d-byte safe ceiling'
                           % (2 * len(cw), I.SDG_UPLOAD_SAFE_BYTES))
                     continue
-                g.upload_arb(VN.arb(vid), cw, amp_for(NOMINAL_SWING), FORMAT_SRATE)
+                g.upload_arb(VN.arb(vid), cw, amp_for(NOMINAL_SWING), _srate(vid, FORMAT_BAUD))
                 time.sleep(0.3)
         g.impair_off(ch=2)
         g.combine(False, ch=1)

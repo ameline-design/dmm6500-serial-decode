@@ -98,7 +98,7 @@ result that cannot distinguish them will otherwise read as a decoder bug.
 
 The `Random` index runs 01..12 unbroken across formats, so no two share an index. `v41` vs `v80` is
 unresolved: both are `Hello, World!` 8N1 differing only in render density, and both are load-bearing
-(`v41` is the plan's canonical row, `v80` is `RATE_ARB` in `bench_matrix.py`). `SER_Hello_8N1_Sp10` is a
+(`v41` is both the plan's canonical row and `RATE_ARB` in `bench_matrix.py`). `SER_Hello_8N1_Sp10` is a
 placeholder, not a recommendation — and `Sp10` is **samples per bit, not a baud rate**; if that reads as
 a rate to anyone it is the wrong suffix and the two vectors should be resolved by retiring one instead.
 

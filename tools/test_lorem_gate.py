@@ -219,7 +219,7 @@ def main():
     # surviving hex reading "Lorem ipsum dolor s" and the app's own note naming 3 to 5 misaligned
     # bytes. headsusp is "the region before the first gap, not a count of damage" (ua_run says so
     # outright). Lorem1kB (v71) is gapless, so its first gap is the arb loop seam ~1024 B away and
-    # headsusp can cover the whole capture; Hello (v80) loops every 13 B, so the same rate passes on
+    # headsusp can cover the whole capture; Hello (v41) loops every 13 B, so the same rate passes on
     # one vector and fails on the other.
     clean = '41' * 250
     ck(BU.head_damage(clean, 226) == 0,

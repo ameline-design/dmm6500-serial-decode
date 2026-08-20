@@ -90,7 +90,7 @@ def main():
         print('SDG: ' + g.idn())
         g.select_arb(VN.arb('v41'), 10.0, a.baud * 10)
         g.output(True, ch=1)
-        print('playing v80 at %d baud (SRATE %d)' % (a.baud, a.baud * 10))
+        print('playing v41 at %d baud (SRATE %d)' % (a.baud, a.baud * 10))
         g.close()
         time.sleep(0.4)
 

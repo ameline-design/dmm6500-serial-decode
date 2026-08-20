@@ -590,9 +590,9 @@ def main():
         from siglent import SDG
         g = SDG()
         print('SDG: %s' % g.idn())
-        g.select_arb(VN.arb('v80'), 10.0, a.baud * 10)
+        g.select_arb(VN.arb('v41'), 10.0, a.baud * 10)
         g.output(True, ch=1)
-        print('playing v80 at %d baud (SRATE %d)' % (a.baud, a.baud * 10))
+        print('playing v41 at %d baud (SRATE %d)' % (a.baud, a.baud * 10))
         time.sleep(0.4)
 
     d = DMM()
@@ -687,7 +687,7 @@ def run_sequence(p, g, a):
     def play(baud):
         if g is None:
             return
-        g.select_arb(VN.arb('v80'), 10.0, baud * 10)
+        g.select_arb(VN.arb('v41'), 10.0, baud * 10)
         g.output(True, ch=1)
         time.sleep(0.4)
 

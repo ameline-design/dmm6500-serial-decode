@@ -432,7 +432,7 @@ def head_damage(hexs, headsusp):
     invents failures is worse than no harness, because it spends the next morning being
     investigated.
     (v71 is gapless, so its first idle gap is the arb LOOP SEAM ~1024 bytes away and headsusp can be
-    the whole capture; v80 loops every 13 bytes, so its headsusp is bounded. That is the entire reason
+    the whole capture; v41 loops every 13 bytes, so its headsusp is bounded. That is the entire reason
     the same baud rate passed on one vector and failed on the other.)
 
     COMPUTED HOST-SIDE rather than read from the instrument, deliberately: ua_head_bad's definition is

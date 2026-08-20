@@ -119,7 +119,7 @@ def case(g, d, a, baud, capmode, record_s, label):
           % (label, baud, capmode, record_s))
     print('=' * 78)
 
-    g.select_arb(VN.arb('v80'), 10.0, int(baud * 10.0), offset_v=0.0)
+    g.select_arb(VN.arb('v41'), 10.0, int(baud * 10.0), offset_v=0.0)
     g.write('C1:OUTP ON,LOAD,HZ,PLRT,NOR')
     time.sleep(0.4)
     d.exec('sdec.force_baud, sdec.force_nbits = %d, nil' % baud, timeout=10)

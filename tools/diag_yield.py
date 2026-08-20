@@ -65,7 +65,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--baud', type=int, default=9600)
     ap.add_argument('--repeat', type=int, default=12)
-    ap.add_argument('--arb', default='v80')
+    ap.add_argument('--arb', default='v41')
     a = ap.parse_args()
 
     g, d = SDG(), DMM()

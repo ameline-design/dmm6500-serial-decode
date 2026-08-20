@@ -134,7 +134,7 @@ def main():
 
     # ---- the signal both measurements share ---------------------------------------
     g = SDG()
-    g.select_arb(VN.arb('v80'), 10.0, int(a.baud * 10.0), offset_v=0.0)
+    g.select_arb(VN.arb('v41'), 10.0, int(a.baud * 10.0), offset_v=0.0)
     g.write('C1:OUTP ON,LOAD,HZ,PLRT,NOR')
     time.sleep(0.4)
     d.exec('sdec.force_baud, sdec.force_nbits = %d, nil' % a.baud, timeout=10)

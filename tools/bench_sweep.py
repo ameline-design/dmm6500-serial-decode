@@ -11,7 +11,7 @@ sample rates is N baud rates, exactly:
 
     baud = SRATE / samples_per_bit
 
-v80 is "Hello, World!" 8N1 rendered at 10 samples per bit, so SRATE = baud x 10 covers 300 Bd
+v41 is "Hello, World!" 8N1 rendered at 10 samples per bit, so SRATE = baud x 10 covers 300 Bd
 (3 kSa/s) to 250 kBd (2.5 MSa/s), all far inside the 75 MSa/s ceiling. ONE upload per power cycle,
 and every rate after that is a single BSWV/SRATE write. The wedge hazard leaves the sweep entirely.
 
@@ -54,7 +54,7 @@ import vector_names as VN                                     # noqa: E402
 RATES = [300, 600, 1200, 2400, 4800, 9600, 14400, 19200, 28800, 38400,
          57600, 76800, 115200, 230400, 250000]
 
-ARB = 'v80'                 # "Hello, World!" 8N1 at 10 samples/bit
+ARB = 'v41'                 # "Hello, World!" 8N1 at 10 samples/bit
 SAMPLES_PER_BIT = 10.0
 PAYLOAD = 'Hello, World!'
 

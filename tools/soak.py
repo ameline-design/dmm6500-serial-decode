@@ -178,14 +178,29 @@ def judge_lap(out, rc, expect=None):
     return points, why
 
 
-def run_suite(suites, rates=None, timeout=1200, expect=None):
+# How much longer than the estimate a lap may take before it is declared hung. 2.0 is a 100 % margin,
+# against a floor of 50 %: the estimate is built from a measured per-cell cost, and a lap that needs
+# twice it is not slow, it is stuck.
+LAP_DEADLINE_MARGIN = 2.0
+
+
+def run_suite(suites, rates=None, timeout=1200, expect=None, iteration=None, plan_vectors=None):
     """One lap of bench_matrix. -> (rc, stdout, {point: (verdict, detail)}, why_incomplete).
 
     The judging is judge_lap()'s and needs no instrument and no subprocess, which is what makes it
     testable against a saved lap -- see --selftest.
+
+    THE LAP NUMBER IS THE ITERATION, and passing it is what makes a soak vary rather than repeat. The
+    plan suite derives its vector order, its drawn rates and every capture wait from it through
+    tools/soakplan.py, and the SAME number offline picks the same draws -- so a lap that fails on the
+    instrument and passes on the Mac at the same iteration has isolated the difference to hardware.
     """
     argv = ['python3', 'tools/bench_matrix.py', '--suites', suites,
             '--no-start', '--no-output-off']
+    if iteration is not None:
+        argv += ['--iteration', str(iteration)]
+    if plan_vectors is not None:
+        argv += ['--plan-vectors', str(plan_vectors)]
     if rates:
         argv += ['--rates', rates]
     p = subprocess.run(argv, cwd=ROOT, stdout=subprocess.PIPE,
@@ -400,6 +415,11 @@ def main():
     ap.add_argument('--suites', default='formats,rates,lorem,payloads',
                     help='bench_matrix suites to loop; formats is where the intermittent lives')
     ap.add_argument('--rates', default=None, help='override the rate ladder')
+    # THE PLAN SUITE'S SIZE. All 41 vectors is about 2 h a lap, right for an overnight run and useless
+    # for a ten-minute smoke -- so a subset is selectable, and it is a seeded PREFIX of the same order
+    # rather than a separate selection with its own behaviour.
+    ap.add_argument('--plan-vectors', type=int, default=None,
+                    help='plan suite: a seeded subset of this many vectors (default all 41)')
     ap.add_argument('--record-every', type=int, default=0,
                     help='also take a one-press recording every Nth lap (0 = never). Each costs '
                          'about a minute, so it trades laps for coverage of the recording path')
@@ -457,12 +477,28 @@ def main():
     # caught. Learned rather than configured: the count depends on which suites and rates were asked for.
     expect = None
     incomplete = 0
+    # A LAP DEADLINE DERIVED FROM THE PLAN, not a constant. A fixed 1200 s kills a plan lap twenty
+    # minutes into a two-hour job and reports a healthy instrument as a wedged one. Estimated from the
+    # rate list and the measured per-cell cost, then doubled: loose enough that a slow lap survives,
+    # tight enough that a hang costs one lap rather than half the run -- a lap has run 5.47 h once,
+    # and a deadline above that would not have caught it.
+    lap_timeout = 1200
+    if 'plan' in a.suites.split(','):
+        import soakplan as SP
+        from vector_names import MAP as VMAP
+        nvec = a.plan_vectors or len(VMAP)
+        est = SP.estimate_secs(SP.rates_for(1), nvec)
+        lap_timeout = int(max(1200, LAP_DEADLINE_MARGIN * est))
+        print('plan suite: %d vectors x %d rates, estimated %.0f min a lap, deadline %.0f min'
+              % (nvec, len(SP.rates_for(1)), est / 60.0, lap_timeout / 60.0))
     t_start = time.time()
 
     while time.time() < deadline and (a.laps is None or laps < a.laps):
         laps += 1
         try:
-            rc, out, points, why = run_suite(a.suites, a.rates, expect=expect)
+            rc, out, points, why = run_suite(a.suites, a.rates, timeout=lap_timeout,
+                                             expect=expect, iteration=laps,
+                                             plan_vectors=a.plan_vectors)
         except subprocess.TimeoutExpired:
             dead += 1
             print('lap %-4d TIMED OUT -- the suite did not finish' % laps)

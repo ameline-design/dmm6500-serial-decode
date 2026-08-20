@@ -374,7 +374,7 @@ def cases(g, d, a):
         d.exec('sdec.capture()')
 
     # 19200, NOT 4800, AND THAT IS MEASURED ON THIS BENCH. Only a rate the app can PROVE wrong raises an
-    # offer, and the two directions are not symmetric on the v80 waveform: forcing 2x relocks, while
+    # offer, and the two directions are not symmetric on the v41 waveform: forcing 2x relocks, while
     # forcing half stays under the 0.25 interior-bad gate and merely warns ('bytes may be WRONG if the
     # device runs at 9600 baud, 2x the 4800 you set'). With 4800 first, both cases below answer a
     # question that was never asked and fail for that reason rather than a real one.

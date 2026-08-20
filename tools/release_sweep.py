@@ -82,8 +82,24 @@ def stages(outdir, shots):
         Stage('parse', ['bash', '-c',
                         'for f in tsp/*.tsp; do luac -p "$f" || exit 1; done; echo "all parse"'],
               note='luac -p on every module'),
+        # A DELETION FROM MAP IS NOT A RETIREMENT, and this is the difference. Dropping a vector's row
+        # leaves every other reference to it dangling, and they fail where they are used rather than
+        # where they are declared: as VN.arb() raising inside a bench stage, or as the SDG preflight
+        # refusing the whole hardware half over one name and skipping every gate behind it.
+        Stage('vecrefs', ['python3', 'tools/lint_vecrefs.py'],
+              note='every vector id named in tools/ is in MAP or declared RETIRED'),
         Stage('unit', ['lua', 'tools/test_serial.lua'],
               note='the offline suite: decoder, UI, state machine, file paths'),
+        # BEFORE ANY SEEDED SUITE, because everything a seeded suite reports is worthless if the two
+        # generators have drifted: the offline suites would explore different cases from the ones the
+        # hardware sweep named, and every replay of a reported failure would come back clean.
+        Stage('soakrand', ['python3', 'tools/test_soakrand.py'],
+              note='mt19937.py and mt19937.lua produce one sequence, checked against CPython (which '
+                   'is the same algorithm) -- plus the 5.0.2 syntax scan that decides whether the '
+                   'module can load on the instrument at all'),
+        Stage('soakrand-dmm', ['python3', 'tools/test_soakrand.py', '--dmm'], hardware=True,
+              note="the third leg: the instrument's own Lua 5.0.2 runs the same driver and must "
+                   'produce the same words, floats, rejected draws and permutation'),
         # ONE STAGE PER DEFECT CLASS, not one merged regression stage. Each of these three files
         # covers one specific HIGH defect, and each check in them fails if that defect returns -- so
         # a failure here names the defect rather than just saying a regression suite went red.
@@ -202,6 +218,18 @@ def stages(outdir, shots):
               hardware=True,
               note='degenerate signals and contradictory settings -- a refusal with a reason '
                    'passes, confident garbage does not'),
+        # TWO WAVEFORMS, NOT 41. The seeded sweep is the soak's suite and a full lap is about 2.5 h,
+        # which is an overnight job rather than a gate. Two vectors at all 43 rates is under ten
+        # minutes and proves the parts a release cares about: that the plan is reproducible from its
+        # iteration number, that one select per waveform then SRATE-only really does play the right
+        # rate, and that a vector entitled to fail is judged differently from one that is not.
+        # --fail-fast, because a gate wants the first failure, not a census of them.
+        Stage('hw-plan',
+              ['python3', 'tools/bench_matrix.py', '--suites', 'plan', '--no-start',
+               '--iteration', '3', '--plan-vectors', '2', '--fail-fast', '--no-output-off'],
+              hardware=True,
+              note='the seeded sweep: two waveforms x 22 standard rates + 21 drawn rates, in a '
+                   'seeded order, with a seeded wait before every capture'),
     ]
     return S
 
@@ -314,7 +342,7 @@ def instrument_check():
         g = SDG()
         out.append('SDG: %s' % (g.idn() or '?').strip())
         stl = g.query('STL? USER') or ''
-        need = ['v41', 'v44a', 'v44b', 'v44c', 'v44d', 'v44e', 'v80', 'v71']
+        need = ['v41', 'v44a', 'v44b', 'v44c', 'v44d', 'v44e', 'v41', 'v71']
         # THROUGH VN.missing(): the ids here are local, the instrument holds SER_ names, and an exact
         # membership test is required rather than a substring one -- SER_Hello_8N1 is a prefix of
         # SER_Hello_8N1_Sp10, so a substring test reads a missing vector as present.
@@ -381,15 +409,25 @@ def main():
     print('\n%-14s %-6s %8s  %s' % ('STAGE', '', 'secs', 'RESULT'))
     print('-' * 78)
     done, failed_names = [], set()
+    # WHETHER hw-matrix GOT AS FAR AS BUILDING THE APP, which is a different question from whether it
+    # passed. It is the only stage without --no-start, so everything after it presses the app it built.
+    #
+    # A FAILED POINT IS NOT A MISSING APP, and conflating the two costs whole stages. hw-matrix reaching
+    # its own point summary proves the app exists and took a press per point; it can still fail on a
+    # verdict and leave a perfectly drivable app behind. Skipping the dependents in that case throws
+    # away four gates for no reason and reports a cause that is not true -- and a false skip reason is
+    # worse than a bare skip, because the next reader believes it. So the dependents wait only on a
+    # build that never happened.
+    app_built = [False]
     for st in S:
-        # hw-panel drives the app hw-matrix built. If the build stage failed there is no app to
-        # press, so running it would report a second failure with one cause.
-        if (st.name in ('hw-odd-rates', 'hw-payloads', 'hw-panel', 'hw-break')
-                and 'hw-matrix' in failed_names):
-            print('%-14s %-6s %8s  skipped: hw-matrix failed, so there is no built app to drive'
-                  % (st.name, 'skip', '-'))
+        if (st.name in ('hw-odd-rates', 'hw-payloads', 'hw-panel', 'hw-break', 'hw-plan')
+                and 'hw-matrix' in failed_names and not app_built[0]):
+            print('%-14s %-6s %8s  skipped: hw-matrix never reached its point summary, so no app '
+                  'was built to drive' % (st.name, 'skip', '-'))
             continue
         run(st, outdir, env)
+        if st.name == 'hw-matrix' and 'points fully correct' in (st.out or ''):
+            app_built[0] = True
         done.append(st)
         verdict = 'ok' if st.rc == 0 else ('BAD' if st.gate else 'warn')
         print('%-14s %-6s %8.1f  %s' % (st.name, verdict, st.secs, st.summary[:60]))
