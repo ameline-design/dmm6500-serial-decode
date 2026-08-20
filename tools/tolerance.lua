@@ -15,14 +15,19 @@
 --          announces itself, by framing errors or by an unsnapped rate. Past this the panel can
 --          show confident garbage, which is the only truly dangerous failure.
 --
--- WHY WHOLE BLOCKS OF ROWS ARE IDENTICAL, and why that is a RESULT rather than a bug: fs comes from
--- pick_fs, which snaps UP into sdec.rates, and it lands on 8.3333 sa/bit for every standard rate from
--- 300 to 76800 bar two. Those rates hand the decoder the SAME SAMPLE ARRAY -- same cells, same
--- oversampling, same everything but the wall-clock duration it was collected over -- so nothing
--- downstream of the ADC can tell them apart and the tolerance cannot differ either. The real axis is
--- SAMPLES PER BIT. It varies at the two rates that snap to a busy rung (28800 and 57600 at 8.6806,
--- 31250 at 8.0000) and then falls away above 115200 as fs clamps at 1 MSa/s: 7.81 at 128000, 6.51 at
--- 153600, 4.34 at 230400, 4.00 at 250000. Those are the rows to read.
+-- WHY THE FIRST SIX ROWS ARE IDENTICAL, and why that is a RESULT rather than a bug. fs comes from
+-- pick_fs, which snaps UP into sdec.rates, and across the ten rates swept below it delivers only four
+-- distinct samples-per-bit values:
+--
+--   300, 1200, 4800, 9600, 19200, 38400   8.3333 sa/bit
+--   57600, 115200                         8.6806
+--   230400                                4.3403   fs clamped at 1 MSa/s
+--   250000                                4.0000   the floor, sdec.minsabit
+--
+-- Every rate in a block hands the decoder the SAME SAMPLE ARRAY -- same cells, same oversampling,
+-- same everything but the wall-clock duration it was collected over -- so nothing downstream of the
+-- ADC can tell them apart and the tolerance cannot differ either. The real axis is SAMPLES PER BIT,
+-- and it is the block boundaries that carry information.
 --
 -- The upshot for the operator is a good one: a slow line is not more robust than a fast one, and
 -- quoting a tolerance per baud rate would imply it is. Tolerance is a property of oversampling.
@@ -45,15 +50,16 @@ local PAYLOAD = 'Hello, World!'
 local NSEED = 6
 if FAST then NSEED = 3 end
 
--- The ladder. fs follows what FRAME mode picks -- 8 samples/bit -- clamped at the instrument's
--- 1 MSa/s ceiling, which is why the top two rates are undersampled and expected to be worse.
+-- TEN RATES, NOT THE WHOLE OF sdec.stdbaud: one per samples-per-bit block plus enough inside the
+-- 8.3333 block to show that the block really is flat. fs follows what FRAME mode picks, clamped at
+-- the instrument's 1 MSa/s ceiling, which is why the top two rates are undersampled.
 local RATES = {300, 1200, 4800, 9600, 19200, 38400, 57600, 115200, 230400, 250000}
 if FAST then RATES = {1200, 9600, 38400, 115200} end
 
 -- THE RATE FRAME MODE REALLY PICKS, not baud x 8. pick_fs snaps UP into sdec.rates, so oversampling
--- is 8.33 at most rates and 8.68 at 57600/115200 -- never a flat 8.00, and baud x 8 asks for rates the
--- instrument cannot select at all. Tolerance follows SAMPLES PER BIT, so sweeping the wrong rate
--- measures a configuration the app never runs.
+-- is 8.3333 across the low block and 8.6806 at 57600 and 115200 -- never a flat 8.00, and baud x 8
+-- asks for rates the instrument cannot select at all. Tolerance follows SAMPLES PER BIT, so sweeping
+-- the wrong rate measures a configuration the app never runs.
 local function fs_for(baud)
   return sdec.pick_fs(baud, 8)
 end

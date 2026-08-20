@@ -3,9 +3,8 @@
 
 WHY THIS EXISTS. The app polls for a cancel and the polling demonstrably works: a firmware trigger
 timer blended in as blender 2's stimulus 2, fired 8 s into an 8 kB run, ends it inside one poll and
-keeps every byte decoded (measured 2026-08-18). What does not work is a FINGER -- pressed 20 % into a
-32 kB decode, the run finished 'full' and the latch was found EMPTY afterwards, so the press never
-reached the blender.
+keeps every byte decoded. What does not work is a FINGER -- pressed 20 % into a 32 kB decode, the run
+finishes 'full' with the latch EMPTY afterwards, so the press never reaches the blender.
 
 WHAT IS STILL UNKNOWN, AND IT IS THE WHOLE POINT OF THIS FILE. Two measurements disagree and neither
 covers the case that matters:

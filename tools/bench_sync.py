@@ -3,9 +3,9 @@
 
 A bench tool is an instrument that measures an instrument, so a tool that reports a false PASS is the
 same class of defect as an app that reports a confident wrong byte -- one level up, and harder to
-notice, because the only thing that would have caught it is the tool itself. This module holds the three
-checks that every harness needs and that each of them previously did differently, incompletely, or not
-at all.
+notice, because the only thing that could catch it is the tool itself. This module holds the three checks
+every harness needs, in ONE place -- per-harness copies drift, and a harness that skips one reports a
+false PASS.
 
 WHY A SOCKET NEEDS A SENTINEL. `d.q()` sends a statement and reads ONE line. It cannot tell whether that
 line is the answer to THIS statement or a leftover from the last conversation -- and every stale line is
@@ -43,8 +43,9 @@ whatever the last client left. Three inherited things are known to produce false
     and a perfectly good vector is filed as "no bytes decoded".
   * a previous run's ck_tot/res still set -- the first point reports the PREVIOUS recording's bytes.
   * strm_stopped_by_press armed -- the queued-press absorb eats the first Capture and the panel keeps
-    the old result. Worse, the absorb's age lives in the instrument's ONE global timer, so any harness
-    that calls timer.cleartime() to time a press makes a stale arm look current. See disarm_absorb().
+    the previous result. Worse, the absorb's age lives in the instrument's ONE global timer, so any
+    harness that calls timer.cleartime() to time a press makes a stale arm look current. See
+    disarm_absorb().
 
 AND WHY IT REFUSES RATHER THAN REPAIRS when something is genuinely in flight: a live recording or an
 open decode job means another client owns this instrument, and steering it gives a measurement of a
@@ -251,8 +252,8 @@ def sdg_alive(ip=None, port=None, timeout=4, sdg=None):
 
     PASS `sdg` IF YOU ALREADY HOLD A SOCKET, or this reports a wedge that is not there. The SDG2122X
     serves ONE SCPI session at a time: with a socket already open, a second connection is accepted and
-    then answers nothing -- which is character-for-character the wedge symptom below. Measured
-    2026-08-19, and it produced a false "the LAN service has wedged" immediately after a perfectly good
+    then answers nothing -- which is character-for-character the wedge symptom below. Measured: it
+    yields a false "the LAN service has wedged" immediately after a perfectly good
     107 kB upload, on a socket whose very next query succeeded. Closing the first socket made the probe
     answer at once.
 
@@ -277,7 +278,7 @@ def sdg_alive(ip=None, port=None, timeout=4, sdg=None):
             return False, '%s on the open session: %s' % (type(e).__name__, e)
         # POSITIVELY IDENTIFY THE ANSWER. siglent.query() returns the STRING '<timeout>' rather than
         # None or a raise, so `if not r` accepts it as a reply -- and this function then reported
-        # (True, '<timeout>') over a genuinely wedged instrument. Measured 2026-08-19, in this very
+        # (True, '<timeout>') over a genuinely wedged instrument. Measured in this very
         # function, minutes after it was written to fix the opposite error. A liveness check must
         # require the shape of a live answer, not merely the absence of an obvious failure.
         r = (r or '').strip()

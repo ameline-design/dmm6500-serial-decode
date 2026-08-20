@@ -4,8 +4,8 @@
 -- NOT SHIPPED IN V1: tools/package_tspa.py MODULES omits this module, so the Options form offers
 -- no LIN and the View button never reaches the frame list.
 --
--- THE CHECKSUM HAS NEVER BEEN CHECKED AGAINST A REAL FRAME -- hand-computed cases only
--- (notes/COVERAGE-session17.md). Shipping this module ships an unverified decode.
+-- THE CHECKSUM HAS NEVER BEEN CHECKED AGAINST A REAL FRAME -- hand-computed cases only. Shipping
+-- this module ships an unverified decode.
 --
 -- Works entirely on the BYTE STREAM that uart_decode.tsp already produced. LIN is
 -- ordinary 8N1 underneath -- no parity, one stop bit, idle recessive (high) -- so

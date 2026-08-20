@@ -5,14 +5,14 @@ WHAT IT GUARDS AGAINST is a judging rule that returns the wrong verdict, which i
 a decoder bug because it HIDES them. Three real ones are pinned here, each with the case that
 caught it:
 
-  1. A fragile ORDER STATISTIC. The old rule scored a capture on `longest_clean_run/body >= 0.95`,
+  1. A fragile ORDER STATISTIC. A run-length rule scores a capture on `longest_clean_run/body >= 0.95`,
      so the verdict tracked WHERE flags landed, not how many. For one flag at index p in 239
      frames the runs are p and 238-p, needing p <= 10 or p >= 228 -- 22 of 239 positions, 9.2 %.
      Measured across 143 recorded points: the longest run was byte-exact 141 of 141 times it was
      reported, yet 1.4 % fell below the gate. In one soak lap 600 Bd scored 0.94979 and failed
      while 38400 Bd scored 0.95000 and passed.
   2. ONLY THE LONGEST RUN WAS CHECKED against the payload, so a wrong byte in a shorter run was
-     invisible. The 'corrupt byte in a 6 B run' case below is one the old rule passed.
+     invisible. The 'corrupt byte in a 6 B run' case below is one a run-length rule passes.
   3. TWO COPIES OF THE PAYLOAD were assumed enough to search. False for a capture off a payload
      SHORTER than the window: 234 bytes off a 133-byte loop is one contiguous run spanning 1.76
      periods, and only 33 of 133 start offsets could be found. v78 decoded with ZERO bad frames

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Time every step of a streaming decode on the instrument, priming phases included.
 
-THIS IS THE VERIFICATION FOR THE PHASED PRIMING. `ck_prime` used to run inside the handler that
+THIS IS THE VERIFICATION FOR THE PHASED PRIMING. Unphased, `ck_prime` runs inside the handler that
 STOPS a recording -- up to eight contiguous 20 000-sample level probes plus a lead-in read plus edge
-extraction plus the format search -- so that one press was unbounded while every slice after it was
-bounded. Splitting it is only worth anything if each phase really lands inside sdec.ui_latency_s,
-and that is a fact about the instrument, not about the code.
+extraction plus the format search -- leaving that one press unbounded while every slice after it is
+bounded. Splitting it is worth something only if each phase really lands inside sdec.ui_latency_s,
+and that is a fact about the instrument rather than about the code.
 
 Needs no UI build: ck_job_* touch no display object, so this runs against the modules already
 loaded and does not spend against the display-object pool (event 1701).

@@ -874,8 +874,8 @@ end
 -- All three put the interesting bytes at the END. (Frame mode shows the START of its
 -- capture, which is not an inconsistency -- a frame capture IS its start, there is no
 -- tail for it to lose.)
--- 8192 bytes = 35 pages of 240, and the whole of an 8 kB recording. It was 720 (three pages), which
--- left an 8 kB recording pageable over its last 9 % and the rest reachable only by unplugging the key.
+-- 8192 bytes = 35 pages of 240, and the whole of an 8 kB recording. At 720 (three pages) an 8 kB
+-- recording is pageable over its last 9 % and the rest reachable only by unplugging the key.
 --
 -- MEASURED on the live app, since the argument above rests on RAM: a Lua array of numbers
 -- costs exactly 16 B per element (8192 -> 128 KiB, 16384 -> 256 KiB); the app sits at ~1470 kB of heap

@@ -178,7 +178,7 @@ class Scope:
     def single(self):
         """Arm for one acquisition. SINGLE rather than AUTO so the screenshot and
         any waveform readback describe the SAME capture -- in AUTO the display
-        advances between the two and they no longer refer to one event."""
+        advances between the two, so they describe different events."""
         self.write('TRMD SINGLE')
 
     # THE SCOPE CAPS HOW MANY SERIAL FRAMES IT WILL DECODE PER ACQUISITION.

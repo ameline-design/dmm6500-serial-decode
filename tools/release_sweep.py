@@ -158,7 +158,7 @@ def stages(outdir, shots):
         # Run from docs/, or pandoc resolves img/ against the repo root and the screenshots
         # silently drop out of the PDF.
         # EVERY SHIPPED DOCUMENT, not just the manual. Built by hand, a PDF ends up describing a build
-        # that no longer exists; built in the gate, a stale PDF is impossible rather than unlikely.
+        # that has since changed; built in the gate, a stale PDF is impossible rather than unlikely.
         # README.pdf is built from the repo root because its links are repo-relative; the two in
         # docs/ are built from docs/ or pandoc resolves img/ against the root and the screenshots
         # silently drop out.

@@ -27,9 +27,9 @@ sdec.saveext   = sdec.saveext or '.txt'
 -- Operator state, so `or` like the rest -- an App relaunch must not silently drop
 -- back to raw UART on someone who selected MIDI or LIN.
 sdec.proto     = sdec.proto or 'uart'
--- PRESS-DRIVEN STREAMING, AND NO LONGER WHAT THE PANEL USES. true = Capture starts a recording,
--- stops it, then steps the decode a slice per press: TWELVE PRESSES for a full buffer. false = one
--- press does the whole job.
+-- PRESS-DRIVEN STREAMING, WHICH THE PANEL DOES NOT USE. true = Capture starts a recording, stops it,
+-- then steps the decode a slice per press: TWELVE PRESSES for a full buffer. false = one press does
+-- the whole job, and that is what ships.
 --
 -- THE ONE-PRESS PATH CANNOT BE STOPPED BY A FINGER. Both long loops poll the cancel latch -- the
 -- acquisition twice a second, the decode once a window -- but a press on TRIGGER emits no blender event
@@ -901,7 +901,7 @@ end
 
 -- Re-measure the levels from the newest samples in buf when the watchdog is about to end a run on
 -- REUSED levels. buf holds `have` readings; iw is the window to look at. Returns true if the reused
--- threshold was wrong and a better one has been adopted, so the caller should keep going.
+-- reused threshold is wrong and a better one is now in force, so the caller should keep going.
 function sdec.strm_relevel(buf, have, iw)
   -- ONLY WHEN THE LEVELS WERE REUSED. A threshold measured from THIS capture's own probe has already
   -- seen this wire, so a quiet verdict taken with it is trustworthy and re-measuring it every second
@@ -922,7 +922,7 @@ function sdec.strm_relevel(buf, have, iw)
   -- conclude anything about the line from it.
   if not rok then return false, true end
   if m < 3 then return false, true end
-  -- THE OLD THRESHOLD IS KEPT until the new levels prove it wrong, because sig_levels() overwrites
+  -- THE REUSED THRESHOLD STANDS until the new levels disprove it, because sig_levels() overwrites
   -- sdec.thr as a side effect and a failed measurement must not leave the watchdog worse off than a
   -- reused threshold.
   --
@@ -2253,11 +2253,11 @@ function sdec.mode_exit(why, bad)
   sdec.flog_bytes = nil        -- or the next file reports the previous file's byte total
   -- THE MODE IS NOT CHANGED HERE, and that is the point of this function being only a flush.
   --
-  -- It used to set capmode = 'frame', so a recording that finished -- or hit its cap, or met a quiet
-  -- line -- moved the operator to a mode they had not chosen. With the capture mode now in the TITLE
-  -- BAR, that switch is a large caption changing itself, which is worse than the small grey one it
-  -- used to be: the panel appears to have decided something. A recording mode is a SETTING, and a
-  -- setting the app resets after every use is one the operator has to re-make every time.
+  -- Setting capmode = 'frame' here moves the operator to a mode they did not choose every time a
+  -- recording finishes -- or hits its cap, or meets a quiet line. With the capture mode in the TITLE
+  -- BAR that switch is a large caption changing itself, so the panel appears to have decided
+  -- something. A recording mode is a SETTING, and a setting the app resets after every use is one the
+  -- operator has to re-make every time.
   --
   -- So the mode stays where it was put and the Mode button is the only thing that moves it. The two
   -- callers that need FRAME for a REASON -- auto-detect, which is a frame-mode operation, and losing
@@ -2324,7 +2324,7 @@ end
 --   RUNNING  -> abort. Stop the stream and flush, in one press, STAYING in the mode.
 --   IDLE     -> advance to the next mode, flushing the one being left on the way out.
 --
--- THE RUNNING BRANCH NO LONGER LANDS IN FRAME. mode_exit() is a flush and does not touch capmode, so
+-- THE RUNNING BRANCH DOES NOT LAND IN FRAME. mode_exit() is a flush and does not touch capmode, so
 -- an abort stops the run and leaves the setting that says what the next one is -- one press, one
 -- effect. Getting to FRAME from a recording mode is therefore up to two more presses of this button,
 -- which is the trade for the mode never changing itself.
@@ -2375,8 +2375,8 @@ function sdec.mode_cycle()
   local nxt = sdec.mode_next().id
   sdec.mode_exit('switching')
   sdec.capmode = nxt
-  -- Switching drops the streaming result: ck_tot describes a run in a mode that may no longer be
-  -- selected, and a stale byte count under a different mode name reads as a measurement.
+  -- Switching drops the streaming result: ck_tot describes a run in a mode that is being left behind,
+  -- and a stale byte count under a different mode name reads as a measurement.
   sdec.ck_tot, sdec.ck_nbytes = nil, nil
   pcall(function() ulog.line('mode = ' .. sdec.capmode) end)
   return pcall(function() sdec.ui_refresh() end)
@@ -2575,10 +2575,10 @@ function sdec.options_apply()
     -- ROUNDED TO A WHOLE Bd. force_baud must stay integral because decode_from sets snapped = true
     -- for any forced rate, and the snapped display branches format it with %d.
     --
-    -- This is one of THREE sources that needed rounding, not the only one -- an earlier version of
-    -- this comment claimed the others were integral by construction and was wrong. Autolock's is
-    -- (gated on `snapped`, so sig_snap returned an exact sdec.stdbaud entry), and MIDI is the literal
-    -- 31250, but the two LOCK paths copy sdec.baud with no snapped test and so lock a raw measurement
+    -- ONE OF THREE SOURCES THAT NEED ROUNDING, and not the only one: autolock's is integral by
+    -- construction (gated on `snapped`, so sig_snap returned an exact sdec.stdbaud entry) and MIDI is
+    -- the literal 31250, but the two LOCK paths copy sdec.baud with no snapped test and so lock a raw
+    -- measurement
     -- on a nonstandard line: they round too, see :2449 and :1909.
     --
     -- The field is an OBJ_EDIT_NUMBER with NFORMAT_PREFIX and no decimal-places argument, so whether
@@ -2673,7 +2673,7 @@ function sdec.options_apply()
   elseif was ~= 'uart' then
     -- Leaving a protocol hands the wire back to the auto-detector. Necessary because the
     -- form still SHOWS the pinned values -- 8 data bits, None, Normal -- so simply
-    -- reading the fields back would keep them forced on a line that is no longer MIDI or
+    -- reading the fields back would keep them forced on a line that has stopped being MIDI or
     -- LIN.
     sdec.force_baud, sdec.force_nbits = nil, nil
     sdec.force_par, sdec.force_nstop = nil, nil
@@ -2740,8 +2740,8 @@ function sdec.stop()
   pcall(function() dmm.digitize.analogtrigger.mode = dmm.MODE_OFF end)
   -- RELEASE THE CANCEL LATCH, for the reason acq_triggered() gives for releasing blender 1: an app
   -- that configures a subsystem should un-configure it, or the next user of blender 2 inherits our
-  -- stimuli. sdec.cancel_ok goes with it, so a poll after teardown answers false rather than
-  -- reading a blender this app no longer owns.
+  -- stimuli. sdec.cancel_ok goes with it, so a poll after teardown answers false rather than reading
+  -- a blender this app has released.
   sdec.cancel_ok = false
   pcall(function() trigger.blender[sdec.cancel_blender].reset() end)
   sdec.destroy_options()

@@ -1622,7 +1622,7 @@ end
 -- presses kept showing all-red: the app had no way back, and the operator had to type 0 into Options
 -- to re-enable detection. A rate that explains nothing is not worth keeping.
 --
--- 0.25, AND IT WAS 0.9 UNTIL THE NUMBER WAS MEASURED. "Every byte is in error" is what the panel
+-- 0.25, AND THAT NUMBER IS MEASURED, NOT ASSUMED. "Every byte is in error" is what the panel
 -- LOOKS like -- a row is painted red if any of its 16 bytes failed, so a third of frames bad reddens
 -- essentially every row -- but the actual interior-bad fraction for the bench case (38400 on the wire
 -- under a 19200 lock at 8.3 samples/bit) is 0.37. A 0.9 gate would never have fired on the very
@@ -1683,7 +1683,7 @@ function sdec.decode()
   -- MIDI 1.0 SPECIFICATION rather than a detection (see options_apply), so a capture that does not
   -- decode at it means the wire is not MIDI -- not that the rate is wrong. And a LIN capture is full
   -- of framing errors from its break fields by design, which would trip the bad-fraction gate on a
-  -- perfectly good bus. Caught by test_serial's 'MIDI pins 31250', which this broke.
+  -- perfectly good bus. Gated by test_serial's 'MIDI pins 31250'.
   if sdec.proto ~= nil and sdec.proto ~= 'uart' then return ok, why end
   local bf = sdec.ua_badfrac(sdec.res)
   if bf == nil or bf < sdec.relock_badfrac then return ok, why end
@@ -1770,7 +1770,7 @@ end
 function sdec.baud_text()
   -- Same fallback as fmt_text(): a locked rate is knowledge, and a stream has one by definition.
   -- %.0f because a locked rate came from a MEASUREMENT and is fractional -- see the note in
-  -- serial_ui.tsp's mode_why. Identical characters on 5.0.2, and no longer untestable off the box.
+  -- serial_ui.tsp's mode_why. Identical characters on 5.0.2, so the offline suites cover it.
   if sdec.baud == nil and sdec.force_baud ~= nil then
     return string.format('%.0f baud', sdec.force_baud)
   end

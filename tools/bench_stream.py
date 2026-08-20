@@ -21,9 +21,9 @@ Rates are chosen so a full buffer arrives quickly: at 115200 Bd the 32 kB mode f
 in 2.8 s, where the same test at 9600 Bd takes 34 s. Slow rates take much longer -- 4800 Bd is 140 s
 of recording -- so that case is opt-in via --slow.
 
-ONE PRESS DOES THE WHOLE JOB, which is why this file no longer counts presses. It used to press
-start, sleep, press stop, then press once per decode slice -- and its per-press latency bound was the
-thing under test. The panel path now records, decodes and files everything inside a single handler,
+ONE PRESS DOES THE WHOLE JOB, which is why this file does not count presses. Under a press-per-slice
+path -- start, sleep, stop, then one press per decode slice -- the per-press latency bound is the thing
+under test. The panel path records, decodes and files everything inside a single handler,
 stoppable with the front-panel TRIGGER key, so what is under test here is that the press RETURNS,
 that the buffer's end posts no 4915, and that no decode job is left open behind it.
 
@@ -110,9 +110,9 @@ def press(d, tag, timeout=180):
 def case(g, d, a, baud, capmode, record_s, label):
     """ONE PRESS: record to the end of the buffer, decode all of it, file it, and return.
 
-    record_s is no longer a sleep between two presses -- one press does the whole job now -- so it
-    survives only as the expectation of how long that press should take, which is what the report
-    compares against.
+    record_s is not a sleep between two presses -- one press does the whole job -- so it serves only
+    as the expectation of how long that press should take, which is what the report compares
+    against.
     """
     print('\n' + '=' * 78)
     print('%s -- %d Bd, capmode %r, one press (expect roughly %g s of recording)'

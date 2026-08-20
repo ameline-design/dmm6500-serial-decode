@@ -349,7 +349,7 @@ def cases(g, d, a):
               lambda: (arb(9600), force(baud='19200', nbits='nil', par='nil',
                                        nstop='nil', invert='nil')),
               {'flagged', 'offer'}, b'Hello, World!'))
-    # 'relocked' IS NO LONGER ACCEPTED, and that is the decision in #61 rather than a tightening for its
+    # 'relocked' IS NOT ACCEPTED, and that is the decision in #61 rather than a tightening for its
     # own sake. Adopting the detected rate and decoding with it put bytes on the panel at a rate nobody
     # chose, with one note line as the only trace. The app now REFUSES and hands over the rate it
     # measured, which the operator answers with Use Detected Rate or Cancel.

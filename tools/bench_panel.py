@@ -67,7 +67,7 @@ INFO_EVENTS = ('2731', '2732', '2728', '4917')
 # to catch a frame at all. lock_toggle and options_apply both end in a capture on purpose, so they
 # carry the same bound.
 #
-# 12 s, NOT 9 s, AND THE MARGIN IS SIZED TO THE SPREAD RATHER THAN TO ONE SAMPLE. The old bound sat
+# 12 s, NOT 9 s, AND THE MARGIN IS SIZED TO THE SPREAD RATHER THAN TO ONE SAMPLE. A 9 s bound sat
 # 7% above that single 8.4 s measurement and a sweep crossed it at 9.086 s -- a gate that fails at
 # random is worse than no gate, because the next real regression gets read as flakiness. The
 # quantity varies because the probe steps its sample rate down until it catches traffic and how many
@@ -437,7 +437,7 @@ class Panel:
         return before, after
 
     def fail(self, label, why):
-        """Record a failure found by a check the press wrapper cannot make itself.
+        """Record a failure detected by a check the press wrapper cannot make itself.
 
         Some requirements are about state the predicate cannot see at press time -- whether a decode
         job was left open, whether a cancel was actually SEEN rather than the run having finished on
@@ -827,7 +827,7 @@ def run_sequence(p, g, a):
              lambda b2, a3: a3['status'] == 'stopping'))
     # The mode here is a streaming one, so the press that clears the latch carries on down the
     # streaming path rather than producing a frame decode. What must be true is that the panel is
-    # no longer absorbing every press as a stop, and that it SAYS a fault was found.
+    # not absorbing every press as a stop, and that it SAYS a fault was detected.
     p.press('Capture/latched-2', 'sdec.capture',
             ('the unanswered request clears the latch',
              lambda b2, a3: a3['status'] != 'stopping'),
@@ -896,7 +896,7 @@ def run_sequence(p, g, a):
 
     # ---- THE CANCEL, WITHOUT A FINGER ----------------------------------------------------------
     # The stop control is a physical key, so the honest test needs a hand -- tools/bench_cancelkey.py
-    # is that test, and it is where the mechanism was measured. What can be automated is the REST of
+    # is that test, and it is where the mechanism is measured. What can be automated is the REST of
     # the path: a firmware event reaching the blender latch mid-handler, the poll seeing it, and the
     # run winding up cleanly with the bytes it had.
     #

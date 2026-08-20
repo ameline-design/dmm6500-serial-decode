@@ -3863,7 +3863,7 @@ sdec.ui_note_px = sdec.ui_rule_x1 - sdec.ui_note_val_x
 --   [...]
 -- COMPUTED, NOT CACHED, and read by two callers -- ui_page_btns writes it to the panel and
 -- ui_note_text reserves room for it. A second copy in a variable would let the reservation describe
--- a string that is no longer on screen, and the note would then be fitted around nothing.
+-- a string that has since left the screen, and the note is then fitted around nothing.
 function sdec.ui_pgind_text()
   if not sdec.ui_paged then return '' end
   local npg = sdec.ui_npages()
@@ -5184,7 +5184,7 @@ end
 
 -- Re-measure the levels from the newest samples in buf when the watchdog is about to end a run on
 -- REUSED levels. buf holds `have` readings; iw is the window to look at. Returns true if the reused
--- threshold was wrong and a better one has been adopted, so the caller should keep going.
+-- reused threshold is wrong and a better one is now in force, so the caller should keep going.
 function sdec.strm_relevel(buf, have, iw)
   if not sdec.strm_lvlreuse then return false end
   if buf == nil or have == nil or have < 3 then return false end

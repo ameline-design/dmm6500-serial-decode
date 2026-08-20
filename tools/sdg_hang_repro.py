@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Reproduce the SDG2122X remote-interface hang, minimally and on demand.
 
-WHAT HAPPENED, 2026-08-16, on firmware 2.01.01.38R4:
+THE FAILURE, on firmware 2.01.01.38R4:
 repeated C1:WVDT waveform uploads of 170-210 kB stopped the generator answering on BOTH
 5025 and 5024. Connections were still ACCEPTED and nothing was ever answered, including
 *IDN?. It went on playing the loaded waveform correctly and indefinitely -- the DMM
 confirmed 3.31 V of signal while the LAN was dead -- so the failure is invisible from the
 signal side. Waiting did not clear it (45 s), and it progressed from "touchscreen
 responsive, LAN dead" to the front-panel Output button not responding either. Recovery was
-a power cycle, twice in one session, and this generator has no smart plug.
+a power cycle, and this generator has no smart plug.
 
 SINCE RE-MEASURED ON 39R7, AND THE VARIABLE IS THE COUNT, NOT THE SIZE: the third over-ceiling
 write wedged it after 533 kB in total, while a 1.63 MB and then a 6.51 MB write on one power

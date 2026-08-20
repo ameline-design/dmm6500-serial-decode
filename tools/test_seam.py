@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
 """The arb loop seam must not make the judge discard a correct capture.
 
-WHAT THIS PINS, AND WHY THE EXISTING GATE DID NOT. On 2026-08-19, five laps of 58 failed as
-`capture too short to judge (1 B, 0 judged) after a FLAGGED 226-byte head` on lorem at 115200 and
-250000. Every one was a CORRECT decode: the surviving hex read "Lorem ipsum dolor s". The bench had
-been trimming `r.headsusp` bytes before judging, and headsusp is the distance to the first idle gap --
-which, on a payload longer than one capture, is the ARB LOOP SEAM. When the seam landed late in the
-window the judge threw the whole capture away and then failed the point for being short.
+WHAT THIS PINS, AND WHY A HELPER-LEVEL GATE DOES NOT. Trimming `r.headsusp` bytes before judging
+fails five laps in 58 as `capture too short to judge (1 B, 0 judged) after a FLAGGED 226-byte head`
+on lorem at 115200 and 250000 -- every one a CORRECT decode, the surviving hex reading "Lorem ipsum
+dolor s". headsusp is the distance to the first idle gap, which on a payload longer than one capture
+is the ARB LOOP SEAM, so when the seam lands late in the window the judge throws the whole capture
+away and then fails the point for being short.
 
-The gate written alongside the fix pinned `head_damage()` with hand-built hex. **That would not have
-caught this bug**, because the defect was never in the helper -- it was in the CALLER'S ARGUMENT to
-judge_payload. So this file drives the real path: the real payload and render options taken from the
+Pinning `head_damage()` with hand-built hex CANNOT catch that, because the defect is not in the
+helper -- it is in the CALLER'S ARGUMENT to judge_payload. So this file drives the real path: the
+real payload and render options taken from the
 vector table, the real TSP decoder, a real capture window at every start offset across one arb period,
 and then BOTH judging rules applied to the identical captures.
 
 THE TEST IS THE DIFFERENCE BETWEEN THE TWO RULES, not the absence of failures under one of them. A
-regression test that cannot fail against the code as it was is not a regression test -- the first
-attempt at one for the r06 crash passed with the fix removed. So this REQUIRES the old rule to fail:
-if trimming by headsusp ever stops failing here, the reproduction has drifted and the gate is empty.
+regression test that cannot fail against the defect it names is not a regression test. So this
+REQUIRES trimming by headsusp to fail: if it ever stops failing here, the reproduction has drifted
+and the gate is empty.
 
     python3 tools/test_seam.py            # ~2 s, no instrument
 """

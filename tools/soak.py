@@ -61,9 +61,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HEAD = re.compile(r'^POINT\s+RESULT\s*$')
 RULE = re.compile(r'^-{20,}\s*$')
 # The name can itself contain spaces -- 'offset 3.3V +0.20V' (bench_matrix.py:516) is three words -- so
-# it runs up to the first STANDALONE verdict token instead of being a fixed two words. The old two-word
-# pattern matched none of the offsets suite's rows at all, which would have made every lap of
-# --suites offsets incomplete for the opposite reason: too few points, not too many.
+# it runs up to the first STANDALONE verdict token instead of being a fixed two words. A two-word
+# pattern matches none of the offsets suite's rows at all, which makes every lap of --suites offsets
+# incomplete for the opposite reason: too few points, not too many.
 ROW = re.compile(r'^(\S.*?)\s+(ok|BAD|skip)\s*(.*?)\s*$')
 FINAL = re.compile(r'(\d+) of (\d+) points fully correct')
 
@@ -74,8 +74,8 @@ FINAL = re.compile(r'(\d+) of (\d+) points fully correct')
 # IT LOCKS THE RATE FIRST, WITH A FRAME CAPTURE, exactly as an operator's first press does. A streaming
 # mode REFUSES outright without a locked baud rate -- 'lock the baud rate in Options -- streaming picks
 # the sample rate from it' -- and bench_matrix leaves force_baud nil (suite_hard's teardown clears the
-# pin). Measured: the first attempt at this soak returned `nil` bytes in 0.02 s on every recording lap,
-# a silent no-op that looked like a recording had happened. The frame capture is not scaffolding: it is
+# pin). Without it a recording lap returns `nil` bytes in 0.02 s -- a silent no-op that reads as a
+# recording having happened. The frame capture is not scaffolding: it is
 # the documented workflow, press Capture, then Mode, then Capture.
 RECORD_TSP = r'''
 function sk_record(cap)
@@ -135,13 +135,13 @@ def judge_lap(out, rc, expect=None):
     """Read one child's output. -> ({point: (verdict, detail)}, why_incomplete).
 
     A LAP THAT DID NOT FINISH IS NOT A LAP THAT PASSED, and `why` is what says so: the tally counts
-    per-point failures, so a child that stopped partway would otherwise enter a 'run' for every point it
-    reached and none for the points it never got to -- and absence is indistinguishable from success.
+    per-point failures, so a child that stops partway enters a 'run' for every point it reached and
+    none for the points it never got to -- and absence is indistinguishable from success.
 
-    BUT A LAP THAT FAILED A POINT DID FINISH. bench_matrix exits 1 whenever any point is BAD
-    (bench_matrix.py:755), so the old first test -- `rc != 0` means incomplete -- filed exactly the laps
-    this tool exists to count as unmeasured, dropped them from the tally, and reported "0 laps had at
-    least one bad point" while lapNNNN-INCOMPLETE.log files piled up beside it. `expect` was learned
+    BUT A LAP THAT FAILED A POINT DID FINISH. bench_matrix exits 1 whenever any point is BAD, so
+    treating `rc != 0` as incomplete files exactly the laps this tool exists to count as unmeasured,
+    drops them from the tally, and reports "0 laps had at least one bad point" while
+    lapNNNN-INCOMPLETE.log files pile up beside it. `expect` is taken
     after that test too, so once laps started failing it stayed None forever.
 
     So completeness is judged on the SUMMARY ALONE, and all three tests are about its self-consistency:
@@ -326,9 +326,9 @@ def record_lap(d, cap, wall_s=1800):
     """One one-press recording. -> dict, or None if the press never returned inside wall_s.
 
     A HARD HOST DEADLINE, because a per-read timeout is not a bound on the CALL. d.line(t) restarts its
-    timeout on every chunk that arrives, so any dribble of output keeps the loop alive indefinitely -- and
-    one lap of a five-hour soak once consumed 5.5 h here and then returned None, which the old code
-    silently dropped. Whatever the instrument was doing, a recording lap must cost one lap, not the run.
+    timeout on every chunk that arrives, so any dribble of output keeps the loop alive indefinitely: one
+    lap of a five-hour soak can consume 5.5 h and then return None. Whatever the instrument is doing, a
+    recording lap must cost one lap, not the run.
 
     wall_s is generous on purpose: the job is a frame capture to lock the rate, then a recording, then its
     decode, and under a bound the recording alone may run 20 minutes. It is a hang detector, not a

@@ -307,9 +307,9 @@ end
 --
 -- nloops IS SWEPT, not fixed, and that is not padding. The offset that misfits depends on where the
 -- window lands relative to the frame structure in ABSOLUTE samples, so changing the rendered length
--- moves every failing offset: a first draft of this test used 16 loops, sampled 32 offsets, and
--- passed -- while the same code at 26 loops reproduced the octave at 25/32. A test that only passes
--- because its geometry missed the hole is the thing this file exists to stop.
+-- moves every failing offset. At 16 loops and 32 offsets this passes; the same code at 26 loops
+-- reproduces the octave at 25/32. A test that only passes because its geometry missed the hole is
+-- the thing this file exists to stop.
 local function window_case(f, fs, startfrac, jitter, noise, nloops)
   local c, nc = loopcells(f.nbits, f.par, f.nstop, nloops)
   local rd, ts, ncc, ns = GEN_RENDER(c, nc,

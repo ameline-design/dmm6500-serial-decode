@@ -191,7 +191,7 @@ SDG_UPLOAD_SAFE_BYTES = 65536      # below this, uploads have never wedged it
 # A ZERO-LENGTH WAVEFORM BRICKS THIS GENERATOR, AND WE HAVE NO RECOVERY. Reported publicly by an owner who
 # did it with low-level SCPI over TCP -- the same route this repo uses. An empty waveform got stored, the
 # instrument was power-cycled, and it never came back: logo for ~25 s, a brief LED flash, then a blank LCD
-# forever. They recovered ONLY because their firmware had been patched SO THE ROOT PASSWORD HASH WAS A
+# forever. They recovered ONLY because their firmware carried a PATCHED ROOT PASSWORD HASH SET TO A
 # KNOWN VALUE -- that is what gave them a shell over telnet and let them delete the file from
 # /usr/bin/siglent/usr/usr.
 #
@@ -326,9 +326,9 @@ assert SDG_MAX_WAVE_BYTES == SDG_MAX_PTS * 2, 'the byte and point ceilings disag
 
 
 
-# RE-MEASURED ON 39R7, 2026-08-19, AND THE CEILING BOUNDS A COUNT AS MUCH AS A SIZE.
+# RE-MEASURED ON 39R7, AND THE CEILING BOUNDS A COUNT AS MUCH AS A SIZE.
 #
-# One session, in this order:
+# Within one power cycle, in this order:
 #   34 uploads of 3.8-63 kB, ~900 kB in total   -> fine, all 34 verified in STL? USER
 #   1st over-ceiling upload, 213 750 B          -> fine: wrote in 2.3 s, selected, DECODED on the DMM
 #   2nd over-ceiling upload, 107 250 B          -> fine; the "wedge" first reported here was a FALSE

@@ -191,8 +191,8 @@ sdec.ui_note_val_x = 112
 sdec.ui_pgind_x  = 788
 -- Digit columns sized for TWO digits, and a wider count OVERFLOWS LEFT INTO THE GAP rather than
 -- being given a column of its own. Sizing them for the worst case (137 pages of a 32 kB hex capture,
--- more in a protocol view) is what the first attempt did, and it rendered 'page    1 of    35' --
--- 24 px of slack around every ordinary number to hold a case almost nobody meets. Two digits puts at
+-- more in a protocol view) renders 'page    1 of    35' -- 24 px of slack around every ordinary
+-- number to hold a case almost nobody meets. Two digits puts at
 -- most one digit of slack in the common case and lets three digits eat 8 px of the 6 px gap, which
 -- costs a tighter line and nothing else.
 sdec.ui_pgind_dig = '99'
@@ -520,8 +520,8 @@ function sdec.mode_why(m)
     -- the SA/BIT cell reads 5.2 -- true, and measured from a FRAME capture, which gets very nearly
     -- the 1 MS/s it asks for -- while this said "no sample rate delivers 4 samples/bit". Both are
     -- right and together they read as a bug: a recording's burst acquisition loses acq_overhead per
-    -- sample, so the same 1 MS/s request delivers 662 kS/s and only 3.4 samples/bit. Reported by the
-    -- owner, who quoted the two cells against each other.
+    -- sample, so the same 1 MS/s request delivers 662 kS/s and only 3.4 samples/bit. The two cells
+    -- read as a contradiction to anyone holding them side by side.
     local dl = nil
     if sdec.rates ~= nil and sdec.fs_delivered ~= nil then
       dl = sdec.fs_delivered(sdec.rates[table.getn(sdec.rates)])
@@ -1379,7 +1379,7 @@ function sdec.ui_notes()
   -- result on screen is a SLICE of a capture that went to a file, so 'the capture was full' is not a
   -- fact about it -- and the figure came out as the FRAME window at the recording's own sample rate
   -- (423 bytes, measured on the panel), a number belonging to no capture that had happened. The remedy
-  -- it offered was wrong too: a recording mode requires a locked rate, so 'lock the baud rate for a
+  -- it offers is wrong too: a recording mode requires a locked rate, so 'lock the baud rate for a
   -- longer window' names a thing already done.
   --
   -- r.first IS THE TAIL MARKER. ck_tail_result() sets it -- the 1-based absolute index of the oldest
@@ -1456,10 +1456,10 @@ end
 
 -- HEADROOM ON EVERY ui_fit BUDGET, because ui_cw is a MODEL and it reads narrow.
 --
--- MEASURED 2026-08-19 on the panel: the 104-character mid-byte note fitted to 700 px came back at a
--- modelled 696 and RENDERED 706 -- 1.4 % over, which from x = 92 put its tail past the 798 px edge,
--- where the firmware cuts a string without a mark. The same 1.4 % is what let a full-width note
--- overwrite the 'p' of the page counter beside it, since the gap between them is only 8 px.
+-- MEASURED ON THE PANEL: the 104-character mid-byte note fitted to 700 px models at 696 and RENDERS
+-- 706 -- 1.4 % over, which from x = 92 puts its tail past the 798 px edge, where the firmware cuts a
+-- string without a mark. The same 1.4 % is enough for a full-width note to overwrite the 'p' of the
+-- page counter beside it, since the gap between them is only 8 px.
 --
 -- 1.04, not 1.014: the error is a per-character model against a proportional face, so it is a bound
 -- and not a constant, and 4 % of the note cell is 28 px -- three characters of a sentence that is
@@ -1502,7 +1502,7 @@ sdec.ui_note_px = sdec.ui_rule_x1 - sdec.ui_note_val_x
 --
 -- COMPUTED, NOT CACHED, and read by two callers -- ui_page_btns writes it to the panel and
 -- ui_note_text reserves room for it. A second copy in a variable would let the reservation describe
--- a string that is no longer on screen, and the note would then be fitted around nothing.
+-- a string that has since left the screen, and the note is then fitted around nothing.
 function sdec.ui_pgind_text()
   if not sdec.ui_paged then return '' end
   local npg = sdec.ui_npages()
@@ -1696,7 +1696,7 @@ end
 -- Build the main screen: status fields, dump rows, rules and buttons.
 function sdec.ui_build()
   -- Destroy first, ALWAYS. Creating over a live handle overwrites the only
-  -- reference to the old object, stranding it inside the firmware until a power
+  -- reference to the object beneath, stranding it inside the firmware until a power
   -- cycle; that accumulation is what walks this firmware toward a PC=002F751C
   -- panic.
   sdec.ui_destroy()
@@ -2009,9 +2009,9 @@ function sdec.ui_build()
   -- WHICH PAGE OF HOW MANY, on the NOTE ROW at the right-hand end. Paging blind is the complaint this
   -- answers: the buttons move the view but nothing said how much there was or where in it you were.
   --
-  -- ON THE NOTE ROW rather than in the right margin, where it used to sit between the page buttons.
-  -- The margin was the wrong home twice over: it put a sentence-sized fact in a 44 px gap between two
-  -- buttons, and it spent margin width the dump rows want.
+  -- ON THE NOTE ROW rather than in the right margin between the page buttons. The margin is the wrong
+  -- home twice over: it puts a sentence-sized fact in a 44 px gap between two buttons, and it spends
+  -- margin width the dump rows want.
   --
   -- FOUR OBJECTS, because a text object carries one colour and this line carries two: the numerals at
   -- full white, 'page' and 'of' at 66 %. They are created with their colours and never recoloured, so
@@ -2173,10 +2173,9 @@ function sdec.ui_refresh()
 
   -- The MODE cell, recoloured as well as retexted: the colour is what makes the mode
   -- readable without reading. Only written when it changes, like every other cell.
-  -- THE TRIGGER SOURCE, where the capture mode used to be. What a capture WAITS for is the fact this
-  -- row had no room for, and it is the one that distinguishes a capture that is hung from one waiting
-  -- for an edge that is not coming. Recoloured as well as retexted: the colour is what makes it
-  -- readable without reading, exactly as it was for the mode.
+  -- THE TRIGGER SOURCE. What a capture WAITS for is what distinguishes a capture that is hung from one
+  -- waiting for an edge that is not coming, and the capture mode has the title bar. Recoloured as well
+  -- as retexted: the colour is what makes it readable without reading.
   --
   -- FALLS BACK TO 'Start bit' RATHER THAN GOING BLANK on an unrecognised trigmode, because this cell
   -- now carries the front-panel key's only indicator -- see the rear-BNC cell, which is empty when the
@@ -2240,7 +2239,7 @@ function sdec.ui_refresh()
           -- describing: seen on the panel, an 8 kB run with ERR 3 drew '???OWN FOX JUMPS' in
           -- normal white. The bytes are ALREADY '??' in hex and '?' in ASCII, so the colour
           -- claims nothing new -- it agrees with what is on screen, and damage is meant to be
-          -- found by looking.
+          -- visible at a glance.
           --
           -- ERR STILL COUNTS INTERIOR ERRORS ONLY (ua_bad_interior): a permanently non-zero
           -- count on a healthy gapless line is decoration, not a fault indicator. The two
@@ -2369,9 +2368,9 @@ function sdec.ui_refresh()
   sdec.ui_progbar_set(sdec.ck_pct())
   -- THE REAR BNC, AND WHICH WAY IT IS POINTING -- and EMPTY when it is off.
   --
-  -- IT USED TO READ A PERMANENT AMBER 'EXT TRIG' while Options said Rear BNC = Off, which is the panel
-  -- asserting hardware that is not in use. Its own comment claimed the default said nothing; the code
-  -- had never done that. A marker that is always present is not a marker.
+  -- A PERMANENT AMBER 'EXT TRIG' over an Options page reading Rear BNC = Off is the panel asserting
+  -- hardware that is not in use. A marker that is always present is not a marker, so the off state
+  -- draws nothing at all.
   --
   -- THE DIRECTION IS THE FACT. Rear BNC is two independent booleans -- trigext (an input: wait for an
   -- edge) and fc_out (an output: pulse a credit per capture) -- and 'EXT TRIG' named neither, so the
@@ -2406,9 +2405,9 @@ function sdec.ui_refresh()
     -- 430 available.
     --
     -- WHICH CONTROL IS TRUE IS DECIDED BY THE STATE, AND FOR A ONE-PRESS RUN THE TRUE ANSWER IS NONE.
-    -- This cell said 'TRIGGER key = stop' on the strength of cancel_setup()'s blender latch. MEASURED
-    -- 2026-08-18 and it is not so: pressed 20 % into a 32 kB decode, with tens of seconds of polling
-    -- still to come, the run finished 'full' and the latch was EMPTY -- the key's event never reaches
+    -- 'TRIGGER key = stop' on the strength of cancel_setup()'s blender latch is FALSE, measured:
+    -- pressed 20 % into a 32 kB decode, with tens of seconds of polling still to come, the run
+    -- finishes 'full' and the latch is EMPTY -- the key's event never reaches
     -- the blender while a panel-initiated run executes. The plumbing behind it is sound (a firmware
     -- trigger timer blended in as stimulus 2 DID cancel at 8 s, keeping 497 bytes), so what is false
     -- is only the claim that a finger can deliver it. A touch press cannot act either: presses queue.
@@ -2419,9 +2418,9 @@ function sdec.ui_refresh()
     -- only the counter cell, so nothing overwrites this until the run returns. strm_inflight is what
     -- makes that possible -- it is set by capture() before the refresh, because ck_running does not
     -- become true until stream_begin() is already inside the job.
-    -- 'Stop', NOT 'Exit'. Mode aborts the RUN and no longer changes the mode, so a label promising
-    -- an exit was describing the behaviour it used to have. Either button stops; saying so twice in
-    -- one cell is better than naming a control that does something else.
+    -- 'Stop', NOT 'Exit'. Mode aborts the RUN without changing the mode, so a label promising an exit
+    -- describes behaviour the button does not have. Either button stops; saying so twice in one cell
+    -- is better than naming a control that does something else.
     if sdec.strm_recording then
       set(sdec.ui_log_t, 'Capture or Mode = Stop')
     elseif sdec.ck_job ~= nil then
@@ -2429,10 +2428,10 @@ function sdec.ui_refresh()
     elseif sdec.ck_running or sdec.strm_inflight then
       set(sdec.ui_log_t, 'no stop until it ends')
     else
-      -- NO 'Mode=...' HERE AT ALL. It read 'Mode=Exit to FRAME' in every state that showed it, which
-      -- was wrong in two of the three: Mode CYCLES, so from FRAME it reaches 8 kB and from 8 kB it
-      -- reaches 32 kB, and only from 32 kB does it reach FRAME. Naming the destination correctly was
-      -- the obvious fix and it was still confusing -- a mode name on the panel reads as the mode you
+      -- NO 'Mode=...' HERE AT ALL. 'Mode=Exit to FRAME' is wrong in two of the three states that show
+      -- this cell: Mode CYCLES, so from FRAME it reaches 8 kB and from 8 kB it reaches 32 kB, and only
+      -- from 32 kB does it reach FRAME. Naming the destination correctly is still confusing, because a
+      -- mode name on the panel reads as the mode you
       -- are IN, and this row sits under a MODE cell that means exactly that. Two mode names on one
       -- screen meaning different things is worse than one fewer hint.
       --
@@ -2565,9 +2564,9 @@ function sdec.ck_status()
     -- uncapped mode -- so the fallback below is unreachable and names no control.
     if md.cap ~= nil then
       -- AND THAT NOTHING CUTS IT SHORT, which is the other half of what the operator needs BEFORE
-      -- pressing: neither a button nor the TRIGGER key can (measured 2026-08-18). This is where that
-      -- warning lives now -- it used to be a note-line forecast that outlived the run it described
-      -- and quoted the LINE's time rather than the operation's.
+      -- pressing: neither a button nor the TRIGGER key can (measured). It belongs HERE and not on the
+      -- note line, where a forecast outlives the run it describes and quotes the LINE's time rather
+      -- than the operation's.
       --
       -- NO TIME FIGURE AT ALL. cap/bps is the device's sending time and the decode costs several
       -- times more, so any single number here would mislead; the byte ceiling is exact and the bar
@@ -2738,8 +2737,7 @@ end
 -- Delete every options-screen object and nil its handle.
 function sdec.destroy_options()
   if sdec.optscr ~= nil then
-    -- Switch away before deleting, or the firmware is left showing a screen that
-    -- no longer exists.
+    -- Switch away before deleting, or the firmware is left showing a deleted screen.
     pcall(function()
       if sdec.ui_scr ~= nil then display.changescreen(sdec.ui_scr)
       else display.changescreen(display.SCREEN_HOME) end
@@ -2780,9 +2778,9 @@ function sdec.build_options()
   -- get -- and this is the ceiling: the last box must end above the button row.
   --
   -- WITHOUT THIS, A SEVENTH FIELD OVERLAPS THE BUTTONS AND NOTHING SAYS SO. At the shipped pitch six
-  -- fields end at 331 and seven at 385, against a button row at 366 -- and the arithmetic that was
-  -- supposed to prevent that was built on a 38 px edit height, 12 px under the measured 50, so it
-  -- reported 8 px of clearance where there would have been an overlap. Seven fields fit only at 50,
+  -- fields end at 331 and seven at 385, against a button row at 366 -- and arithmetic built on a 38 px
+  -- edit height, 12 px under the measured 50, reports 8 px of clearance over an overlap. Seven fields
+  -- fit only at 50,
   -- which butts the boxes together; the remedy is still to fold a control into another field as an
   -- extra option entry, which costs no vertical space at all.
   local eh, edy = sdec.ui_opt_edit_h, sdec.ui_opt_edit_dy

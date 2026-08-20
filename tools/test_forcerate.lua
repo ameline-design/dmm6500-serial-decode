@@ -142,7 +142,7 @@ check('decline leaves the refusal on the note row', sdec.rate_refused ~= nil,
 print('\n-- a Mode press retires the offer, because it discards the capture --')
 -- capture() clears the offer once per press, and Mode is the other way out of a result: both its
 -- branches discard one. An offer that survived would let accept drop the operator's
--- lock on the strength of a capture that no longer exists -- and into a streaming mode, which needs a
+-- lock on the strength of a discarded capture -- and into a streaming mode, which needs a
 -- lock and would refuse immediately after.
 fresh(4800)
 sdec.decode()

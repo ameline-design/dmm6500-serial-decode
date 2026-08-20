@@ -374,7 +374,7 @@ class SDG:
         arithmetic step with nothing to gain.
 
         A TIMEOUT IS NOT A WRONG ANSWER, so it is retried rather than raised on.
-        Measured 2026-08-16: after a 178 kB WVDT upload the generator stops
+        Measured: after a 178 kB WVDT upload the generator stops
         answering queries for a moment, and the first SRATE? came back
         "<timeout>". Treating that as "not in TrueArb" aborted a sweep over a
         channel that was correctly configured -- a false alarm from the very check

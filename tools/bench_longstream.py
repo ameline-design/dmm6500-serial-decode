@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Does 4800 baud really deliver the longest stream the app offers, complete and in order?
 
-The STREAM mode used to be described in the app as "unlimited, until Stop or a quiet line", which
-was wrong twice over and is now "no byte cap -- runs until Stop or the buffer fills". At 4800 Bd it is
-actually bounded by `ck_bufmax` = 2 800 000 readings at 20 kS/s, which is 140 s -- and 4800 Bd is
+The app describes the STREAM mode as "no byte cap -- runs until Stop or the buffer fills", and
+neither "unlimited" nor "until a quiet line" would be true. At 4800 Bd it is bounded by
+`ck_bufmax` = 2 800 000 readings at 20 kS/s, which is 140 s -- and 4800 Bd is
 under the ~100 000 readings/s buffer-write ceiling, so those are real-time seconds. This tool settles
 all of that on the bench instead of by arithmetic:
 

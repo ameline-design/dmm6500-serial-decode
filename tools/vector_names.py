@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """The one mapping from a local vector id to its name on the generator.
 
-WHY THIS IS A SEPARATE MODULE. A vector id like `v41` is used for THREE different things across the
-harnesses, and after the 2026-08-19 rename they are no longer the same string:
+WHY THIS IS A SEPARATE MODULE. A vector id like `v41` names THREE different things across the
+harnesses, and they are not the same string:
 
     1. the name of the waveform ON THE INSTRUMENT      -> 'SER_Hello_8N1'
     2. the local oracle file the capture is checked against -> out/vectors/v41.txt
     3. the POINT LABEL in a soak log or a bench report  -> 'format v41'
 
-So a find-and-replace of the ids would have quietly broken every oracle lookup and renamed every point,
-making historical soak logs incomparable and rejudge_soak.py's matching fail. Instead the id stays
+So a find-and-replace of the ids quietly breaks every oracle lookup and renames every point, making
+soak logs incomparable across the change and rejudge_soak.py's matching fail. Instead the id stays
 canonical -- files and labels keep working, soak history stays comparable -- and it is translated to the
 instrument's name at exactly one place: the select_arb() call.
 
@@ -58,7 +58,7 @@ for _i in range(6, 12):
 RETIRED = {}
 
 # Over SDG_UPLOAD_SAFE_BYTES, so these reached the instrument the slow way and must not be re-uploaded
-# casually -- three over-ceiling WVDT writes in one session wedge the LAN service.
+# casually -- three over-ceiling WVDT writes in one power cycle wedge the LAN service.
 BIG = {'v71', 'v93', 'v94', 'v95', 'v96'}
 
 
@@ -82,8 +82,8 @@ def arb(vid):
 def stored(stl_reply):
     """Parse an `STL? USER` reply into a set of stored names. -> set of str.
 
-    EXACT NAMES, NOT A SUBSTRING TEST, and the rename is what makes that mandatory. Both presence checks
-    in this repo used `(',' + vid) in reply`, which was safe for three-character ids and is not safe now:
+    EXACT NAMES, NOT A SUBSTRING TEST, and the SER_ names are what make that mandatory. A check of the
+    form `(',' + vid) in reply` is safe for three-character ids and unsafe for these:
     'SER_Hello_8N1' is a PREFIX of 'SER_Hello_8N1_Sp10', so a missing vector reads as present whenever its
     longer sibling exists. A false "present" is the dangerous direction -- the suite then selects a name
     that is not there, ARWV NAME does nothing, and every measurement is attributed to whatever was playing

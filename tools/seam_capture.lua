@@ -65,7 +65,7 @@ print(string.format('# cap_bytes=%d payload_bytes=%d exposed=%s',
                     math.floor(NCAP / sbyte), nb,
                     tostring(nb > math.floor(NCAP / sbyte))))
 
--- The payload itself, so the host side judges against the SAME bytes this render was built from
+-- The payload itself, so the host side judges against the SAME bytes this render is built from
 -- rather than re-reading a file that may not exist or may have been regenerated.
 local ph, pk = {}, nil
 for pk = 1, nb do ph[pk] = string.format('%02X', string.byte(payload, pk)) end

@@ -334,11 +334,11 @@ print('\nD  the guard is what is doing the work, and must keep doing it')
 -- to provoke anything. So the gate is stubbed out and the bench signature must come back
 -- EXACTLY, both vectors, including the two clean-run lengths that differ between them.
 --
--- STUBBING THE PREDICATE, not a tunable, because the tunable is not the contract. The gate
--- has already been a median test (sdec.medratio) and an odd-multiple test
--- (sdec.submult_minpulses) within one session; both are named below and an unrecognised
--- successor makes this case fail loudly rather than pass vacuously -- if none of the names
--- is present, the misread must be there for real, which is what HEAD does.
+-- STUBBING THE PREDICATE, not a tunable, because the tunable is not the contract. Two different
+-- gates can hold this defect down -- a median test (sdec.medratio) and an odd-multiple test
+-- (sdec.submult_minpulses) -- so both are named below, and an unrecognised successor makes this
+-- case fail loudly rather than pass vacuously: with none of the names present, the misread has to
+-- be there for real.
 -- Named, so a rename fails loudly here rather than silently disarming the gate. ua_submultiple is the
 -- odd-multiple test that holds this defect down; a median test cannot, because all-0x00 is a nine-bit
 -- low run whose median rejects the truth.

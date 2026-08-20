@@ -343,19 +343,18 @@ def codewords(vid):
 def cyclic_find(hay, needle):
     """Is `needle` a contiguous run of `hay` treated as a loop? -> offset into hay, or -1.
 
-    ENOUGH COPIES FOR THE NEEDLE, not two. This used to test against hay+hay and reject any
-    needle longer than hay outright, on the reasoning that "anything longer than hay itself
-    cannot be a single contiguous run". That is false for a LOOPING waveform: a 234-byte capture
-    off a 133-byte arb is one contiguous run spanning 1.76 periods.
+    ENOUGH COPIES FOR THE NEEDLE, not two. Testing against hay+hay, and rejecting any needle
+    longer than hay outright, assumes "anything longer than hay itself cannot be a single
+    contiguous run" -- false for a LOOPING waveform, where a 234-byte capture off a 133-byte arb
+    is one contiguous run spanning 1.76 periods.
 
-    The cost was a wrong verdict on a correct capture. Measured 2026-08-19 with v77/v78 (133-byte
-    payload, ~234-byte window): a window starting at offset k spans k..k+234, so it only fits in
-    hay+hay when k <= 32 -- only 33 of 133 start offsets, 25 %. The other 75 % were reported
-    MISMATCH having decoded byte-perfectly, v78 with zero bad frames.
+    The cost is a wrong verdict on a correct capture. With a 133-byte payload and a ~234-byte
+    window, a window starting at offset k spans k..k+234, so it fits in hay+hay only when
+    k <= 32 -- 33 of 133 start offsets, 25 %. The other 75 % report MISMATCH having decoded
+    byte-perfectly, some with zero bad frames.
 
-    The old form was safe only because every payload had been LONGER than a capture. It broke the
-    moment a short vector was added, which is worth remembering: this assumption was invisible
-    until the data changed.
+    Two copies suffice only while every payload is LONGER than a capture, which makes this an
+    assumption that stays invisible until a short vector is added.
     """
     if not needle or not hay:
         return -1
@@ -419,21 +418,19 @@ JP_BODY_FRAC = 0.5
 def head_damage(hexs, headsusp):
     """How far a misaligned head ACTUALLY reaches: the last unrecoverable frame inside headsusp.
 
-    WHY THIS EXISTS, AND WHY TRIMMING BY headsusp WAS WRONG. Every caller used to slice
-    `hexs[2 * headsusp:]` before judging. But headsusp is the region BEFORE THE FIRST IDLE GAP, not a
-    count of damage -- uart_decode.tsp:506 says so in as many words: "headsusp itself is the region
-    before the first gap, not a count of damage, so quoting it over-claims." The app learned this in
-    session 19b, when the panel printed 'the first 4 bytes are misaligned' beside ERR 1, and
-    sdec.ua_head_bad() was added as the ONE place that narrows headsusp to the frames actually hurt.
-    The panel got that correction. The bench judge did not, and kept trimming by the raw region.
+    WHY THIS EXISTS, AND WHY TRIMMING BY headsusp IS WRONG. Slicing `hexs[2 * headsusp:]` before
+    judging treats headsusp as a count of damage. It is not: it is the region BEFORE THE FIRST IDLE
+    GAP, and uart_decode.tsp's ua_run says so in as many words -- "headsusp itself is the region
+    before the first gap, not a count of damage, so quoting it over-claims". sdec.ua_head_bad() is
+    the ONE place that narrows it to the frames actually hurt, and the judge has to narrow it too.
 
-    WHAT THAT COST, measured on the 2026-08-19 soak: five laps of 55 failed as
-    'capture too short to judge (1 B, 0 judged) after a FLAGGED 226-byte head' on lorem at 115200 and
-    250000. The decode was CORRECT in every one of them -- the surviving hex reads 4C6F72656D20697073
-    756D20646F6C6F722073, "Lorem ipsum dolor s" -- and the app's own note said only 3 to 5 bytes were
-    misaligned. The judge had thrown away 226 of 230 good bytes and then failed the point for being
-    too short. A harness that invents failures is worse than no harness, because it spends the next
-    morning being investigated.
+    WHAT THE RAW REGION COSTS, measured on a soak: five laps of 55 fail as 'capture too short to
+    judge (1 B, 0 judged) after a FLAGGED 226-byte head' on lorem at 115200 and 250000. The decode
+    is CORRECT in every one -- the surviving hex reads 4C6F72656D20697073756D20646F6C6F722073,
+    "Lorem ipsum dolor s" -- and the app's own note names only 3 to 5 misaligned bytes. The judge
+    throws away 226 of 230 good bytes and then fails the point for being too short. A harness that
+    invents failures is worse than no harness, because it spends the next morning being
+    investigated.
     (v71 is gapless, so its first idle gap is the arb LOOP SEAM ~1024 bytes away and headsusp can be
     the whole capture; v80 loops every 13 bytes, so its headsusp is bounded. That is the entire reason
     the same baud rate passed on one vector and failed on the other.)
@@ -505,14 +502,14 @@ def judge_payload(got, want):
     independent faults. It is STRICTER than what it replaces, not laxer -- see tools/test_lorem_gate.py,
     which holds the cases proving both.
 
-    1. The old gate was a fragile ORDER STATISTIC. With k bytes flagged the score depended on WHERE
-       they landed, not how many: for a single flag at index p in 239 frames the runs are p and
-       238-p, so it needed p <= 10 or p >= 228 -- only 22 of 239 positions (9.2 %) could pass. One
-       honestly-flagged byte more than ten from an edge failed the point outright. Measured across
-       143 recorded lorem points: the longest run was byte-exact 141 of 141 times it was reported,
-       yet 1.4 % of points fell below the gate. Those verdicts described flag position, not
-       correctness. Here the signal-quality test is a COUNT, which does not move when a flag does.
-    2. analyse() validates ONLY the longest run, so a wrong byte in a shorter run was invisible.
+    1. A run-length gate is a fragile ORDER STATISTIC. With k bytes flagged the score depends on
+       WHERE they land, not how many: for a single flag at index p in 239 frames the runs are p and
+       238-p, so it needs p <= 10 or p >= 228 -- 22 of 239 positions, 9.2 %. One honestly-flagged
+       byte more than ten from an edge fails the point outright. Measured across 143 recorded lorem
+       points: the longest run is byte-exact 141 of the 141 times it is reported, and yet 1.4 % of
+       points fall below the gate -- verdicts describing flag position, not correctness. Here the
+       signal-quality test is a COUNT, which does not move when a flag does.
+    2. analyse() validates ONLY the longest run, so a wrong byte in a shorter run is invisible.
        Here EVERY run long enough to be diagnostic is checked.
 
     ONE alignment is established for the whole capture and every run is checked at the position it

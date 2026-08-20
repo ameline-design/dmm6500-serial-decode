@@ -50,7 +50,7 @@ BTN_EDGE = (138, 138, 138)
 BTN_TEXT = (26, 26, 26)
 BUTTON_H = 58           # measured from the FFT app's Options button
 # THE DUMP BAND, from serial_ui.tsp: ui_row_y0 = 66 to ui_row_y0 + (ui_nrow-1) * ui_row_dy = 318.
-# Used to tell a dump row from the note and status lines, which pass beside the margin buttons
+# Distinguishes a dump row from the note and status lines, which pass beside the margin buttons
 # legitimately -- ui_note_y = 48 is deliberately truncated with '(+N more)'.
 DUMP_Y0, DUMP_Y1 = 66, 318
 
@@ -174,7 +174,7 @@ def draw_panel(rows, screen, title, out, scale, mono_rows, fonts):
             # draws nothing at all on the glass look correct.
             #
             # EVERY RECT IS DRAWN, setfill or not, because setfill is not what makes one visible --
-            # its colour is. The old skip-if-never-filled rule left the progress bar's frame off the
+            # its colour is. A skip-if-never-filled rule leaves the progress bar's frame off the
             # mockup entirely while the instrument drew it, which is the same class of lie in the
             # other direction.
             #

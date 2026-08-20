@@ -7,7 +7,7 @@ one instrument with no replacement. The refusal therefore has to be tested, not 
 and it has to be tested against the specific bypasses that were found, because the guard it replaces
 looked completely adequate while three of them existed.
 
-Reviewed 2026-08-19; the three that worked before this gate:
+The three routes that reach an out-of-spec waveform without this gate:
   1. write_raw('C1:', b'WVDT WVNM,x,WAVEDATA,' + b'\\x00\\x00')  -- the check keyed on `'WVDT' in
      prefix`, and this prefix has none, so a valid two-byte upload went out unexamined.
   2. write('C1:WVDT WVNM,x,WAVEDATA,')  -- write() had no check at all. One line, empty waveform,

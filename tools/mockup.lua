@@ -477,9 +477,9 @@ sdec.fc_out = false
 -- 240 bytes -- exactly 15 rows. At 100 kS/s the window is 192 bytes and neither screen would
 -- fill, which would make the comparison meaningless.
 -- gap = 0 and a 260-byte payload, both deliberate. The default 2-bit inter-byte gap makes a
--- frame 12 bit times rather than 10, which costs a sixth of the window -- the first attempt
--- decoded 199 bytes and left the bottom three rows of the 14-row screen empty, which is the one
--- thing these two mockups exist to show. A back-to-back stream is also the realistic case for a
+-- frame 12 bit times rather than 10, which costs a sixth of the window: 199 bytes, leaving the
+-- bottom three rows of the 14-row screen empty -- and a full screen is the one thing these two
+-- mockups exist to show. A back-to-back stream is also the realistic case for a
 -- device that is actually busy.
 --
 -- n = 21000, not 20000: 21000 / (8.33 x 10) is 252 bytes, enough to fill 240 with headroom, so

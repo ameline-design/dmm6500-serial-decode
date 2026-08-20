@@ -839,7 +839,7 @@ check('the triggered capture decodes cleanly from just before the start bit',
       sdec.res ~= nil and sdec.res.nbad == 0 and has(txt(sdec.res), HELLO),
       sdec.res and string.format('%q err=%d', txt(sdec.res), sdec.res.nbad) or 'nil')
 
--- Object-lifetime rule: a second acquire() must not leave the old buffer behind.
+-- Object-lifetime rule: a second acquire() must not strand the buffer beneath it.
 local b1 = LIVEBUFS()
 sdec.acquire()
 check('re-acquiring leaks no buffers', LIVEBUFS() == b1,
@@ -2706,8 +2706,8 @@ do
   local ok1 = sdec.start()
   local ok2, why2 = sdec.start()
   check('start() succeeds once', ok1 == true)
-  -- RESTARTING IS SAFE, so a second start() SUCCEEDS: it tears the old UI down first, and what
-  -- makes a rebuild safe is the teardown rather than a power cycle. Creating over a live handle is
+  -- RESTARTING IS SAFE, so a second start() SUCCEEDS: it tears the existing UI down first, and the
+  -- teardown is what makes a rebuild safe rather than a power cycle. Creating over a live handle is
   -- the hazard, and after cleanup() there are no live handles left to create over.
   check('a second start() SUCCEEDS -- restarting must never need a power cycle',
         ok2 == true, tostring(why2))
@@ -3309,8 +3309,8 @@ check('and it says the checksum could not be verified rather than that it is wro
       has(L.msg[1], 'missing') and has(L.msg[1], 'unverifiable'), L.msg[1])
 
 -- nframes counted a header-only frame and nids did not, so the summary undercounted the
--- distinct IDs on the bus. Found by reading the generated mockup: "6 frames 4 ID(s)" over
--- five distinct IDs.
+-- distinct IDs on the bus -- a summary reading "6 frames 4 ID(s)" over five distinct IDs is the
+-- failure.
 L = linres({0, 0x55, LIN_PID(0x2C),
             0, 0x55, P11, 0xA1, LIN_CSUM({0xA1}, 1, P11)}, {1, 4})
 check('a header with no response still counts its ID',
@@ -3546,7 +3546,7 @@ end
 -- ============================================================================
 print('\na rescaling that frames nothing must not displace a snapping fit (real code)')
 -- ============================================================================
--- Found by the LIN sweep, but it is a property of ua_best, not of LIN. A bus with NO
+-- A LIN capture reaches this, but it is a property of ua_best rather than of LIN. A bus with NO
 -- BREAK DELIMITER merges the break's 13 dominant bits into the sync byte's start bit, so
 -- every subsequent frame is two bit times out and nothing frames at all: the true 19200
 -- scored -20 at the probe and its own half scored -15. The half won on -15 > -20 and came
@@ -5310,9 +5310,9 @@ local function test_modes()
         tostring(sdec.lasterr))
   check('and it says refused rather than error -- an unmet precondition is not a fault',
         sdec.ui_status == 'refused', tostring(sdec.ui_status))
-  -- A REFUSED STREAM STAYS IN ITS MODE, and says why. Being bounced to FRAME was the old answer to
-  -- "must not keep offering the same failure", and it cost the operator the mode they chose: the
-  -- remedy is to lock the rate and press Capture again, which needs the mode still selected. What
+  -- A REFUSED STREAM STAYS IN ITS MODE, and says why. Bouncing to FRAME answers "must not keep
+  -- offering the same failure" at the cost of the mode the operator chose: the remedy is to lock the
+  -- rate and press Capture again, which needs that mode still selected. What
   -- must not happen is a SILENT refusal, and the two checks above are what cover that.
   check('a refused stream stays in its mode, with the reason on the panel',
         sdec.capmode == 'med' and sdec.mode_why() ~= nil,
@@ -5952,10 +5952,10 @@ local function test_modes()
         string.format('%d < %d < %d, buttons at %d', sdec.ui_stat_top, sdec.ui_stat_y,
                       sdec.ui_stat_bot, sdec.ui_btn_y))
   -- THE PAGE TEXT MUST FIT ITS CELL, expressed against the objects rather than as a
-  -- magic window around whatever the divider happened to be. The old form asserted
-  -- 400 < stat_div < 430, which said nothing about whether anything fitted -- and it
-  -- passed while the page string outgrew the cell and rendered straight through the log
-  -- field, so the panel showed 'win 240  [donkg: bytes000.txt': two overlapping strings.
+  -- magic window around whatever the divider happens to be. A bare 400 < stat_div < 430
+  -- says nothing about whether anything FITS, and passes while the page string outgrows
+  -- the cell and renders straight through the log field -- 'win 240  [donkg: bytes000.txt',
+  -- two overlapping strings.
   check('and its divider sits between the page cell and the trigger cell',
         sdec.ui_stat_div > sdec.ui_x and sdec.ui_stat_div < sdec.ui_trig_div,
         string.format('%d < %d < %d', sdec.ui_x, sdec.ui_stat_div,
@@ -6113,7 +6113,7 @@ local function test_modes()
   -- among two visibility caches, so the guard `if sdec.ui_lockbtn ~= nil` made the whole
   -- show/hide block dead code. Lock Rate stayed on the glass with the rate already locked --
   -- offering exactly the unlocking press its own comment forbids. It took a pixel measurement on
-  -- the bench to see it, because every state variable was correct; only the glass was wrong.
+  -- the bench to see it, because every state variable is correct and only the glass is wrong.
   local function lockvis()
     if sdec.ui_lockbtn == nil then return 'NO HANDLE' end
     local o = MD.obj(sdec.ui_lockbtn)
@@ -6576,9 +6576,9 @@ test_modes()
 -- ============================================================================
 -- ABANDONING A LOCKED RATE THE WIRE CONTRADICTS.
 --
--- Bench report 2026-08-18: the generator's rate was doubled under a 19200 lock, every frame failed,
--- and repeated Capture presses kept showing an all-red hex page. Nothing recovered -- the operator
--- had to type 0 into Options to get detection back. sdec.decode() now drops such a lock.
+-- With the generator's rate doubled under a 19200 lock, every frame fails and repeated Capture
+-- presses keep showing an all-red hex page. Nothing recovers it: the operator has to type 0 into
+-- Options to get detection back. sdec.decode() refuses such a lock instead.
 --
 -- THE GATE THAT MATTERS IS THE THIRD ONE, and it has its own test below: a rate that FITS but a
 -- format that does not also fails every frame, and that lock must survive. Discarding a rate the
@@ -6685,7 +6685,7 @@ do
   -- (5) IT IS PER-PRESS, NOT PER-ACQUIRE, and that distinction is the fix for a real failure.
   -- clear_result() runs on every acquire(), including autoset()'s re-capture after a rate change -- so
   -- evicting it there wiped the note between the relock and the end of the same press, leaving correct
-  -- bytes and nothing saying the operator's lock had been dropped. bench_break caught it.
+  -- bytes and nothing saying the operator's lock was dropped.
   sdec.relocked = 'kept'
   sdec.clear_result()
   check('clear_result KEEPS the note, so it survives an internal re-capture',
@@ -6727,10 +6727,10 @@ do
         sdec.mode_why({needbaud = true, cap = 8192}) == nil,
         tostring(sdec.mode_why({needbaud = true, cap = 8192})))
   -- THE REFUSAL MUST NOT CONTRADICT THE HEADER BESIDE IT. At 192024 Bd the SA/BIT cell reads 5.2,
-  -- measured from a FRAME capture that gets nearly the 1 MS/s it asks for, while the note used to say
-  -- "no sample rate delivers 4 samples/bit". Both true, and together they read as a bug -- the owner
-  -- quoted the two cells against each other. A recording's burst acquisition loses acq_overhead per
-  -- sample, so it gets 3.4, and the note has to say whose figure it means.
+  -- measured from a FRAME capture that gets nearly the 1 MS/s it asks for, against a note saying
+  -- "no sample rate delivers 4 samples/bit". Both are true and together they read as a bug. A
+  -- recording's burst acquisition loses acq_overhead per sample, so it gets 3.4 -- and the note has
+  -- to say whose figure it means.
   do
     local svb = sdec.force_baud
     sdec.force_baud = 192024
@@ -6969,10 +6969,10 @@ end
 test_tail_offsets()
 
 -- ============================================================================
--- A FRACTIONAL BAUD RATE, WHICH THE OPTIONS FORM IS THE ONLY SOURCE OF. The Baud Rate field used to
--- admit any number >= 110, so 9600.5 could be applied -- and force_baud is formatted with %d at
--- three sites, which TRUNCATES silently on the instrument's Lua 5.0.2 and RAISES on the 5.5 these
--- suites run. options_apply() now rounds at the point of entry, which is what makes the rest safe.
+-- A FRACTIONAL BAUD RATE, WHICH THE OPTIONS FORM IS THE ONLY SOURCE OF. A Baud Rate field admitting
+-- any number >= 110 lets 9600.5 through -- and force_baud is formatted with %d at three sites, which
+-- TRUNCATES silently on the instrument's Lua 5.0.2 and RAISES on the 5.5 these suites run.
+-- options_apply() rounds at the point of entry, which is what makes the rest safe.
 --
 -- Pinned here BOTH ways: the rounding, and the panel strings rendering a fractional rate anyway. The
 -- second half is what keeps the hazard visible -- a %d put back at any of those sites raises here
@@ -7150,22 +7150,21 @@ print('\nevery visible 7-bit glyph, in one payload (real code)')
   -- ============================================================================
   print('\n7E1 with no idle gap, captured from a mid-byte start (real code)')
   -- ============================================================================
-  -- THE HARDWARE DEFECT OF 2026-08-19, reproduced offline. v78 (94 glyphs, 7E1, gap = 0) captured
-  -- through the app returned 8N1 on four runs in eight, with ZERO flagged frames and every byte
-  -- carrying a spurious bit 7 -- 47 of 48 bytes had bit 7 equal to the parity of their low seven, and
-  -- the one exception was the FIRST frame. 8N1 is a genuinely self-consistent reading of a 7E1
+  -- THE HARDWARE DEFECT, REPRODUCED OFFLINE. v78 (94 glyphs, 7E1, gap = 0) captured through the app
+  -- comes back as 8N1 on four runs in eight, with ZERO flagged frames and every byte carrying a
+  -- spurious bit 7 -- 47 of 48 bytes with bit 7 equal to the parity of their low seven, the one
+  -- exception being the FIRST frame. 8N1 is a genuinely self-consistent reading of a 7E1
   -- waveform, so there was no framing error to report and nothing was flagged.
   --
   -- It needed hardware only to be NOTICED. The mechanism is entirely reproducible here: start the
-  -- window part-way through a frame on a gapless stream, and the misaligned head used to veto the
-  -- parity vote. gap = 0 matters -- with idle between bytes the framer resynchronises immediately.
+  -- window part-way through a frame on a gapless stream, where a misaligned head can veto the parity
+  -- vote. gap = 0 matters -- with idle between bytes the framer resynchronises immediately.
   do
-    -- Window offsets are taken DEEP INTO THE PAYLOAD, at fractional bit positions. A first attempt
-  -- sliced only a few bit times in and proved nothing -- it landed in the generator's lead-in idle,
-  -- where the framer anchors cleanly, so it passed under the OLD policy too. Verified to
-  -- discriminate: with par_skiphead = 0 and par_minfrac = 1.0 restored, 21 of these 60 offsets are
-  -- read as 8N1-with-bit-7; with the shipped values, none are. That 35 % also matches the 4-in-8
-  -- seen on hardware.
+    -- Window offsets are taken DEEP INTO THE PAYLOAD, at fractional bit positions. Slicing a few bit
+  -- times in proves nothing: it lands in the generator's lead-in idle, where the framer anchors
+  -- cleanly and a unanimous vote passes anyway. Verified to discriminate: with par_skiphead = 0 and
+  -- par_minfrac = 1.0, 21 of these 60 offsets read as 8N1-with-bit-7; with the shipped values, none
+  -- do. That 35 % also matches the 4-in-8 seen on hardware.
   local a94g = {bytes = a94b, baud = 9600, fs = sdec.pick_fs(9600, 8), nbits = 7, par = 1, gap = 0}
   local grd, gts, gnc, gn = GEN(a94g)
   local sabit = a94g.fs / a94g.baud

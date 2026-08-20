@@ -459,9 +459,9 @@ def suite_lorem(d, g, a, rows):
             # A FLAGGED framing error is not a wrong answer. What must hold is that the bytes the
             # decoder STANDS BEHIND are right, and that it did not decline too many.
             #
-            # THIS COMMENT USED TO CLAIM "r.idle1 stays nil, so headsusp does", AND THAT CLAIM IS
-            # FALSE -- it is the belief that made the headsusp byte-skip look harmless and cost five
-            # soak laps on correct decodes. Measured false on 495 of 1024 capture offsets. lorem IS
+            # "r.idle1 stays nil on a gapless vector, so headsusp does" IS FALSE, and believing it is
+            # what makes the headsusp byte-skip look harmless -- it costs five soak laps on correct
+            # decodes. Measured false on 495 of 1024 capture offsets. lorem IS
             # rendered gap = 0, so there is no inter-BYTE idle; but the ARB LOOPS, and
             # make_vectors.lua renders it with lead = 10, tail = 10, which leaves a 20-BIT IDLE AT THE
             # LOOP SEAM. uart_decode.tsp:437 sets r.idle1 on "a pitch of two frame times or more", and
@@ -571,7 +571,7 @@ def hard_compare(hexs, payload):
     verdict reads '238 of 238 B, 100 % clean, 0 bad' for a capture that does not match the payload.
     A failure whose detail line describes a success is the most dangerous shape a bench result takes.
 
-    But comparing values alone is too strict, and the first version of this was. These vectors are
+    But comparing values alone is too strict. These vectors are
     rendered gap = 0 -- bytes back to back, which is what a device dumping a buffer does -- so a
     capture STARTS MID-BYTE and has no idle to resynchronise on. Measured: 2 of 239 wrong at 9600 and
     1 of 229 at 57600, at indices 0 and 1 both times. That is the documented mid-capture head, not a

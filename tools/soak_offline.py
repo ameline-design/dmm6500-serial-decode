@@ -55,12 +55,10 @@ SUITES = [
 def build_nofix(dst):
     """Copy the WORKING tree to dst, then delete REVERT_LINE. -> raises if the deletion is a no-op.
 
-    THE WORKING TREE, NOT `git archive HEAD`, and the first version of this got it wrong in a way
-    that produced a confidently false result. git archive ships COMMITTED content only, so the copy
-    had the old tools/test_analog.lua -- without the section written to detect this very defect --
-    and no tools/sweep_startphase.lua at all, since it was untracked. The reverted tree then passed
-    every suite, and the run reported that the defect could not be reproduced. The tree under test
-    has to be the tree you are actually editing.
+    THE WORKING TREE, NOT `git archive HEAD`, because the difference produces a confidently false
+    result. git archive ships COMMITTED content only, so an uncommitted detector is absent from the
+    copy -- the reverted tree then passes every suite and the run reports that the defect cannot be
+    reproduced. The tree under test has to be the tree you are actually editing.
 
     out/ is excluded because it is 91 MB of generated vectors that nothing here reads: every suite
     builds its payloads in process, and make_vectors runs in define-only mode.
