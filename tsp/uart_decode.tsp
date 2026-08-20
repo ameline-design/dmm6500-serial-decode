@@ -1369,12 +1369,12 @@ function sdec.ua_refine_parity(r, rd, n, T)
     local r2 = sdec.ua_run(rd, n, T, 7, par, r.nstop, r.invert)
     if r2 == nil then return r end
     r2.score = sdec.ua_score(r2)
-    -- WIDENED, NEVER OVERWRITTEN. This was `r2.headsusp = r.headsusp`, which erases the re-decode's
-    -- OWN head evidence whenever the 8N1 result had none -- measured 2 of 7 firings, the 7E1 pass
-    -- reporting 14 and 57 suspect frames that ua_head_bad narrowed to 5 and 4. Erasing it makes
-    -- ua_err_count skip a head it should count in full and the note claim nothing. Both formats frame
-    -- 10 bits, so the two figures are the same unit and comparable; the wider is the safe one because
-    -- headsusp only bounds ua_head_bad's scan and the narrowing is what prevents over-claiming.
+    -- WIDENED, NEVER OVERWRITTEN. The re-decode finds its own suspect-head extent and the 8N1 result's
+    -- is nil whenever that pass framed the head cleanly, so overwriting loses the evidence and ERR then
+    -- counts no head on a capture this format says is misaligned. Measured over the firings on the
+    -- 7-bit random payload: 2 in 7 differ, at 14 and 57 frames, narrowing to 5 and 4. Both formats frame
+    -- 10 bits, so the figures share a unit; the wider is safe because headsusp only bounds
+    -- ua_head_bad's scan and the narrowing is what prevents over-claiming.
     if r.headsusp ~= nil and (r2.headsusp == nil or r.headsusp > r2.headsusp) then
       r2.headsusp = r.headsusp
     end

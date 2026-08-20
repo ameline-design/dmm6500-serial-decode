@@ -449,9 +449,9 @@ sdec.ua_refine_parity = function(r, rd, n, T)
   if out ~= nil and r ~= nil and out ~= r then
     nredecode = nredecode + 1
     -- THE RE-DECODE'S OWN HEAD EVIDENCE MUST SURVIVE. Same arguments the branch used, so this is the
-    -- headsusp it found for itself; `r2.headsusp = r.headsusp` used to replace it with the 8N1
-    -- result's, which is nil whenever that decode framed the head cleanly. ERR then counts no head at
-    -- all on a capture the 7E1 pass says is misaligned.
+    -- headsusp it found for itself. The 8N1 result's is nil whenever that pass framed the head cleanly,
+    -- so replacing rather than widening leaves ERR counting no head on a capture the 7E1 pass calls
+    -- misaligned.
     local own = sdec.ua_run(rd, n, T, 7, out.par, r.nstop, r.invert)
     if own ~= nil and own.headsusp ~= nil then
       nownhead = nownhead + 1

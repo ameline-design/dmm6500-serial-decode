@@ -52,10 +52,8 @@ VECDIR = 'out/vectors'
 # enough that a capture window is a SUBSTRING rather than the whole thing, so it is the only one that
 # measures YIELD rather than just correctness.
 #
-# This was five vectors -- v71 through v75 -- and three were BYTE-IDENTICAL, which WAS the experiment: if
-# detection tracked the file instead of the playback rate, the identical ones would answer identically.
-# Unchanged, and now one waveform, because the rate comes from srate at selection time. v72-v75 were
-# retired in the 2026-08-19 rename and are not on the instrument; selecting a 213 kB arb costs ~1 s of
+# ONE WAVEFORM, because the rate comes from srate at selection time: replaying it at five rates tests
+# that detection tracks the PLAYBACK RATE and not the file. Selecting a 213 kB arb costs ~1 s of
 # flash-to-FPGA copy against ~0.01 s to change srate (tools/instruments.py).
 SWEEP = ['v71@1200', 'v71@9600', 'v71@19200', 'v71@57600', 'v71@115200']
 

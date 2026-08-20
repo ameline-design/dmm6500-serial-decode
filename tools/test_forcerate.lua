@@ -1,9 +1,8 @@
 -- test_forcerate.lua -- a forced baud rate the wire does not carry must REFUSE and name the truth.
 --
--- WHAT THIS GATES. sdec.decode() used to unlock a proved-wrong forced rate, adopt the detected one and
--- decode with it, saying so on one note line. That is a rate nobody chose producing bytes on the panel,
--- and the whole premise of the break suite is that a refusal with a reason beats confident output. The
--- app now refuses, publishes the detected rate as an OFFER, and leaves the choice to the operator.
+-- WHAT THIS GATES. A forced baud rate the wire contradicts must REFUSE, publish the rate the wire does
+-- carry as an OFFER, and leave the choice to the operator. Substituting a detected rate and decoding
+-- with it would put bytes on the panel at a rate nobody chose; a refusal with a reason is the contract.
 --
 -- NO HUMAN IN THE LOOP, BY CONSTRUCTION. The offer is plain state and the two answers are plain
 -- functions, so both branches are driven here with ordinary calls -- no dialog, no event wait, nothing
@@ -109,7 +108,6 @@ print('\n-- Use Detected Rate --')
 -- is called exactly once. It deliberately does NOT prove the re-capture then decodes at the offered
 -- rate; a stub that always succeeds cannot. That half is gated on hardware by bench_break's
 -- accept-detected-rate, which requires the offer retired AND sdec.baud within 1 % of the rate offered.
--- Raised by review, which was right that the assertions alone read stronger than they are.
 --
 -- ORDER IS PART OF THE CONTRACT: capture() must not run with the wrong rate still forced, or the
 -- re-capture repeats the refusal. The stub asserts that, which the call count alone cannot.
@@ -142,8 +140,8 @@ check('decline leaves the refusal on the note row', sdec.rate_refused ~= nil,
       tostring(sdec.rate_refused))
 
 print('\n-- a Mode press retires the offer, because it discards the capture --')
--- RAISED BY REVIEW. capture() clears the offer once per press, but Mode is the other way out of a
--- result: both its branches discard one. An offer that survived would let accept drop the operator's
+-- capture() clears the offer once per press, and Mode is the other way out of a result: both its
+-- branches discard one. An offer that survived would let accept drop the operator's
 -- lock on the strength of a capture that no longer exists -- and into a streaming mode, which needs a
 -- lock and would refuse immediately after.
 fresh(4800)

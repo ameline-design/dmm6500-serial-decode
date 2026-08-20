@@ -6600,11 +6600,9 @@ do
   sdec.relocked, sdec.rate_note = nil, nil
   sdec.rate_offer, sdec.rate_refused = nil, nil
   local rok = sdec.decode()
-  -- REFUSED, NOT ADOPTED (#61, decided 2026-08-20). These two assertions used to demand the opposite --
-  -- that the app drop the lock and decode at the rate it measured. That put bytes on the panel at a rate
-  -- nobody chose, with one note line as the only trace, so the decision went the other way: the app
-  -- refuses, names the rate the wire carries, and offers it. The old behaviour is still reachable as
-  -- sdec.force_conflict = 'adopt' and is covered in tools/test_forcerate.lua.
+  -- REFUSED, NOT ADOPTED. A forced rate the wire contradicts is refused, named and offered rather than
+  -- silently replaced, because substituting one puts bytes on the panel at a rate nobody chose.
+  -- sdec.force_conflict = 'adopt' selects the substituting behaviour; tools/test_forcerate.lua covers it.
   check('a wire at 2x the locked rate makes the app REFUSE rather than substitute a rate',
         rok == false and sdec.res == nil,
         string.format('ok=%s res=%s', tostring(rok), tostring(sdec.res)))

@@ -62,16 +62,14 @@ MODULES = ['tsp/usb_log.tsp', 'tsp/serial_core.tsp', 'tsp/uart_decode.tsp',
            'tsp/chunk_decode.tsp', 'tsp/serial_ui.tsp',
            'tsp/serial_app.tsp']
 
-# A MODULE-LEVEL CONSTANT DOES NOT CONSUME A DOC BLOCK, AND DOES NOT DESTROY ONE EITHER. The block
-# above `sdec.submult_minpulses` (uart_decode.tsp:742) is 25 lines describing the odd-multiple gate; two
-# assignments sat between it and `function sdec.ua_submultiple`, and an assignment used to flush the
-# block unshipped -- so the constants AND the function three lines below both shipped bare, as did
-# `sdec.qgate`. Treating every assignment as a definition instead was measured at +51 kB of archive,
-# because these modules are full of them. Passing through costs nothing and puts the block where a
-# reader looks for it: immediately above the function the constants tune.
+# A MODULE-LEVEL CONSTANT NEITHER CONSUMES A DOC BLOCK NOR DESTROYS ONE. Constants sit between a block
+# and the function it describes -- the odd-multiple gate's 25 lines, then two assignments, then
+# ua_submultiple -- so flushing at an assignment would ship all three bare. Treating every assignment as
+# a definition instead costs +51 kB of archive, measured, because these modules are full of them.
+# Passing through costs nothing and leaves the block immediately above the function its constants tune.
 DEF_ASSIGN = re.compile(r'^(sdec|ulog)\.[A-Za-z_][A-Za-z0-9_]*\s*=')
-# A rule, a bare '--', or a row of ='s carries no text; it must not spend a line of the keep budget,
-# and `sig_cross` used to ship a banner as its entire first kept line.
+# A rule, a bare '--', or a row of ='s carries no text, so it must not spend a line of the keep budget
+# -- otherwise a section banner arrives as a definition's entire first kept line.
 SEPARATOR = re.compile(r'^--\s*[=\-~*_]*\s*$')
 
 
@@ -83,13 +81,11 @@ def is_definition(stripped):
 def doc_for(block):
     """The lines of one comment block worth shipping above its definition.
 
-    HEAD FIRST, THEN THE TAIL, because both block shapes exist here and taking only the tail broke the
-    commoner one. The old rule kept the LAST 5 lines "since these blocks put the reasoning first and
-    the summary last" -- true of some, but 64 of 222 documented definitions are summary-FIRST and
-    shipped starting mid-sentence, several mid-word ("relies on an implici"). A block's first line is
-    always the start of a sentence, so keeping it cannot truncate that way; keeping the tail as well
-    retains the closing summary where there is one. `[...]` marks the elision rather than letting two
-    distant fragments read as continuous prose.
+    HEAD FIRST, THEN THE TAIL, because both block shapes exist here. 64 of 222 documented definitions
+    are summary-FIRST, so keeping only the tail starts them mid-sentence and sometimes mid-word; a
+    block's first line always starts a sentence, so keeping it cannot truncate that way. Keeping the
+    tail too retains the closing summary where a block has one, and `[...]` marks the elision rather
+    than letting two distant fragments read as continuous prose.
     """
     body = [c for c in block if not SEPARATOR.match(c.strip())]
     if len(body) <= KEEP_COMMENT_LINES:
@@ -316,7 +312,7 @@ def main():
         # as a whole-line comment it may keep or drop freely. A Lua LONG comment breaks that: keeping
         # '--[[' while dropping '--]]' comments out the rest of the module, and the only symptom would be
         # an archive that fails to load on the instrument. No module uses one today, so this costs
-        # nothing and converts a silent brick into a build error. Raised by review.
+        # nothing, and an archive that will not load is worth a build error rather than a guess.
         for delim in ('--[[', '--]]', '--[=['):
             if delim in src:
                 raise SystemExit('%s contains a Lua long comment (%s); the comment rules here only '

@@ -2338,7 +2338,7 @@ function sdec.mode_cycle()
   -- A RATE OFFER DIES WITH THE CAPTURE THAT RAISED IT. Both branches below discard the result, so an
   -- offer surviving a Mode press would let rate_accept() drop the operator's lock on the strength of a
   -- capture that is gone -- and in a streaming mode, which needs a lock, it would refuse straight after.
-  -- Raised by review; capture() alone was not enough because Mode is the other way out.
+  -- capture() alone does not cover it: Mode is the other way out of a result.
   sdec.rate_offer, sdec.rate_offer_from, sdec.rate_refused = nil, nil, nil
   -- NOT ABSORBED. See sdec.press_absorbed: Mode is a way to STOP, and a dead Mode button in the
   -- second after a run is worse than a mode change nobody wanted. bench_panel's Mode/rec-exit caught
