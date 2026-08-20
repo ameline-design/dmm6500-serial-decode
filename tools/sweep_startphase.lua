@@ -43,7 +43,12 @@ local V = VEC_LIST
 if V == nil then print('make_vectors.lua did not publish VEC_LIST'); os.exit(1) end
 
 -- ---------- arguments ----------
-local A = {shard = 1, nshard = 1, offsets = 24, seed = 1, maxpts = 1200000, quiet = false}
+-- maxpts HIGH ENOUGH TO SKIP NOTHING, which is a measurement and not a guess. This was 1 200 000 on
+-- the first draft, chosen defensively, and it silently dropped v96 -- the 32 kB random vector, 3 413 625
+-- points -- from every run. Measured: v96 renders in 0.4 s and 148 MB resident, so on a 48 GB machine
+-- twelve workers all rendering it at once is under 2 GB. The guard stays because an unbounded render is
+-- still worth refusing, but it is now above the largest vector rather than below it.
+local A = {shard = 1, nshard = 1, offsets = 24, seed = 1, maxpts = 4000000, quiet = false}
 -- Bounds-checked below rather than trusted. An out-of-range shard makes the unit filter match
 -- NOTHING, and a shard that runs zero cases still prints a clean summary and exits 0 -- so a typo in
 -- the driver would report full coverage from a run that decoded nothing at all.

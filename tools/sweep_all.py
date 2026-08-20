@@ -62,8 +62,9 @@ def main():
     ap.add_argument('--seed', type=int, default=1,
                     help='skews the start offsets, so successive seeds probe different placements')
     ap.add_argument('--offsets', type=int, default=24, help='start offsets per vector x condition')
-    ap.add_argument('--maxpts', type=int, default=1200000,
-                    help='skip a vector whose render exceeds this many points (default 1.2 M)')
+    ap.add_argument('--maxpts', type=int, default=4000000,
+                    help='skip a vector whose render exceeds this many points (default 4 M, which '
+                         'is above v96 at 3.41 M so nothing is skipped -- measured 0.4 s, 148 MB)')
     ap.add_argument('--quiet', action='store_true', help='totals only, no per-shard lines')
     a = ap.parse_args()
     if a.workers < 1:

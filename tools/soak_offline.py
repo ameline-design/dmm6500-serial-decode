@@ -125,13 +125,32 @@ def main():
     ap.add_argument('--det-runs', type=int, default=12,
                     help='runs of each DETERMINISTIC suite before the budget goes to the seeded '
                          'sweep (default 12; more only re-computes the same answer)')
+    # ONCE THE PAIRING HAS BEEN DONE, THE REVERTED TREE IS SPENT. It exists to show the suites can
+    # SEE the defect; after that every lap spent on it is a lap not spent looking for something new,
+    # and it fails by design, which makes a long run's failure count meaningless at a glance. So a
+    # long run is 'fixed' only -- and the verdict below then states plainly that it is not a pairing.
+    ap.add_argument('--trees', default='fixed,nofix',
+                    help="which trees to run: 'fixed', 'nofix', or both (default both). A single "
+                         "tree cannot prove the fix works -- it can only fail to find a problem.")
     ap.add_argument('--outdir', default=None)
     a = ap.parse_args()
 
+    want = [t.strip() for t in a.trees.split(',') if t.strip()]
+    for t in want:
+        if t not in ('fixed', 'nofix'):
+            raise SystemExit('--trees takes fixed and/or nofix, not %r' % t)
+    if not want:
+        raise SystemExit('--trees selected nothing')
+
     fixed = ROOT
-    nofix = build_nofix(os.path.join(SCRATCH, 'nofix'))
+    nofix = None
     print('fixed tree: %s' % fixed)
-    print('nofix tree: %s   (%s deleted from %s)' % (nofix, REVERT_LINE, REVERT_FILE))
+    if 'nofix' in want:
+        # Built only when it is going to be used: the rsync copies the whole working tree.
+        nofix = build_nofix(os.path.join(SCRATCH, 'nofix'))
+        print('nofix tree: %s   (%s deleted from %s)' % (nofix, REVERT_LINE, REVERT_FILE))
+    else:
+        print('nofix tree: not built -- --trees %s' % a.trees)
 
     outdir = a.outdir or os.path.join(ROOT, 'out', 'offline_soak',
                                       time.strftime('%Y-%m-%dT%H-%M-%S'))
@@ -144,7 +163,7 @@ def main():
     # Running them in sequence would compare a cold cache against a warm one and a quiet machine
     # against a busy one, and the only number that matters here is a difference between them.
     stats = {}
-    for tag in ('fixed', 'nofix'):
+    for tag in want:
         stats[tag] = {'laps': 0, 'fail': 0, 'r06': 0, 'bysuite': {}}
     jsonl = open(os.path.join(outdir, 'laps.jsonl'), 'w')
     seed = 0
@@ -168,7 +187,7 @@ def main():
     # times -- enough to prove they are parallel-safe and stable, which is a real thing to check
     # after the scratch-file collision found earlier today -- and the entire remaining budget goes to
     # seeded laps, several at once, since separate shards and seeds share nothing.
-    units = [(tag, name, argv, sd) for tag in ('fixed', 'nofix') for (name, argv, sd) in SUITES]
+    units = [(tag, name, argv, sd) for tag in want for (name, argv, sd) in SUITES]
     treeof = {'fixed': fixed, 'nofix': nofix}
     nrun_unit = dict(((tag, name), 0) for (tag, name, _, _) in units)
     seeded = dict(((tag, name), sd) for (tag, name, _, sd) in units)
@@ -244,32 +263,42 @@ def main():
 
     print()
     print('%-6s %6s %6s %14s' % ('tree', 'laps', 'failed', 'r06 signature'))
-    for tag in ('fixed', 'nofix'):
+    for tag in want:
         s = stats[tag]
         print('%-6s %6d %6d %14d' % (tag, s['laps'], s['fail'], s['r06']))
     print()
-    for tag in ('fixed', 'nofix'):
+    for tag in want:
         parts = ['%s %d/%d' % (k, v['fail'], v['runs'])
                  for k, v in sorted(stats[tag]['bysuite'].items())]
         print('%-6s failed/runs by suite: %s' % (tag, '  '.join(parts)))
     print()
 
-    # THE VERDICT IS THE PAIR, and both halves have to hold. A clean fixed tree alone is what the
-    # vacuous test already gave us.
     ok = True
-    if stats['fixed']['fail'] != 0:
-        print('VERDICT: FAILED -- the fixed tree is not clean (%d of %d laps failed)'
+    if 'fixed' in stats and stats['fixed']['fail'] != 0:
+        print('VERDICT: FAILED -- the fixed tree is not clean (%d of %d laps failed). The failing '
+              'laps are in laps.jsonl with their output.'
               % (stats['fixed']['fail'], stats['fixed']['laps']))
         ok = False
-    if stats['nofix']['r06'] == 0:
-        print('VERDICT: INCONCLUSIVE -- the reverted tree never showed the r06 signature in %d '
-              'laps, so these suites cannot see the defect and a clean fixed tree proves nothing '
-              'about it.' % stats['nofix']['laps'])
-        ok = False
-    if ok:
-        print('VERDICT: the fixed tree ran %d laps with no failure, while the tree differing by '
-              'exactly one line showed the r06 signature in %d of %d laps.'
-              % (stats['fixed']['laps'], stats['nofix']['r06'], stats['nofix']['laps']))
+    if 'nofix' in stats:
+        # THE VERDICT IS THE PAIR, and both halves have to hold. A clean fixed tree alone is what the
+        # vacuous test already gave us.
+        if stats['nofix']['r06'] == 0:
+            print('VERDICT: INCONCLUSIVE -- the reverted tree never showed the r06 signature in %d '
+                  'laps, so these suites cannot see the defect and a clean fixed tree proves '
+                  'nothing about it.' % stats['nofix']['laps'])
+            ok = False
+        elif ok:
+            print('VERDICT: the fixed tree ran %d laps with no failure, while the tree differing by '
+                  'exactly one line showed the r06 signature in %d of %d laps.'
+                  % (stats['fixed']['laps'], stats['nofix']['r06'], stats['nofix']['laps']))
+    elif ok:
+        # SAYING WHAT THIS IS NOT is the point of this branch. One tree cannot show that a fix works;
+        # it can only fail to find a problem, and those are different claims. The discrimination comes
+        # from a PAIRED run, which is a different output directory -- name the distinction here rather
+        # than let a large clean lap count be read as proof.
+        print('VERDICT: no failure in %d laps on the fixed tree. THIS IS NOT A PAIRING: it shows '
+              'these suites found nothing wrong, not that the fix works -- for that, see a run with '
+              '--trees fixed,nofix, where the reverted tree has to fail.' % stats['fixed']['laps'])
     return 0 if ok else 1
 
 
