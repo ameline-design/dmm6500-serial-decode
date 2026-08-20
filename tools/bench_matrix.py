@@ -448,11 +448,18 @@ def suite_lorem(d, g, a, rows):
         if 'fail' in res:
             det = 'FAIL %s' % res['fail']
         elif nf > head:
-            # A FLAGGED framing error is not a wrong answer. lorem is rendered with gap = 0 -- bytes
-            # back to back, which is what a device dumping a buffer does -- so a capture that began
-            # mid-byte has no idle to resynchronise on and cannot report its own misaligned head
-            # (r.idle1 stays nil, so headsusp does). What must hold is that the bytes the decoder
-            # STANDS BEHIND are right, and that it did not decline too many.
+            # A FLAGGED framing error is not a wrong answer. What must hold is that the bytes the
+            # decoder STANDS BEHIND are right, and that it did not decline too many.
+            #
+            # THIS COMMENT USED TO CLAIM "r.idle1 stays nil, so headsusp does", AND THAT CLAIM IS
+            # FALSE -- it is the belief that made the headsusp byte-skip look harmless and cost five
+            # soak laps on correct decodes. Measured false on 495 of 1024 capture offsets. lorem IS
+            # rendered gap = 0, so there is no inter-BYTE idle; but the ARB LOOPS, and
+            # make_vectors.lua renders it with lead = 10, tail = 10, which leaves a 20-BIT IDLE AT THE
+            # LOOP SEAM. uart_decode.tsp:437 sets r.idle1 on "a pitch of two frame times or more", and
+            # 20 bits clears that bar, so the seam is a genuine idle and headsusp = idle1 - 1 becomes
+            # the DISTANCE TO THE SEAM -- up to 496 frames on a 1024-byte payload. Hence the skip
+            # below is head_damage(), not head: see BU.head_damage.
             #
             # This used to be `longest_clean_run/body >= 0.95`, which failed a point on WHERE a flag
             # landed rather than how many there were -- one honest flag more than ten bytes from an
@@ -670,12 +677,16 @@ PAYLOAD_VECS = (['v77', 'v78'] + ['r%02d' % k for k in range(12)])
 # 2026-08-20 the fox and all twelve random vectors ran at 9600 and nothing else, so only v80 (rates)
 # and v71 (lorem) ever went above it.
 #
-# TWO VECTORS IS ENOUGH TO SEPARATE THE CONFOUND, which is the whole purpose. The v80-passes /
-# v71-fails contrast had three differences tangled together: points-per-bit (10.0 vs 10.41667),
-# payload length (3884 B vs 213750 B) and content. v77 and r00 are both rendered at v71's OWN
-# 10.41667 sa/bit, so driving them high holds points-per-bit fixed and varies only length and
-# content -- 94 glyphs of text and a 256-byte shuffle of 0..255 against lorem's 1 kB.
-# Same class of gap as #29, where the suites tested rates the app never selects.
+# WHY v77 AND r00. The v80-passes / v71-fails contrast looked like it had three tangled variables --
+# rendered points-per-bit, payload length, content -- and the answer turned out to be PAYLOAD LENGTH
+# alone. The DMM's own samples-per-bit is NOT a variable here at all: fs_for_baud (serial_core.tsp:958)
+# takes baud and nothing else, so both suites sample at the same 8.68 / 4.00 sa/bit at 115200 / 250000,
+# and the same 20 capture offsets fail at 4.0 and at 8.0. What differs is the LOOP SEAM: v80 is 13 B so
+# a ~334 B capture spans ~26 seams and idle1 records only the first, bounding headsusp at 12; v71 is
+# 1024 B, longer than any capture, so it holds at most one seam wherever the arb phase puts it.
+# These two are still the right additions -- they were never driven above 9600, they bracket the
+# length axis (133 B of text, 256 B of shuffled bytes), and r00's 256 B makes it 7.8 % exposed to the
+# seam band per point where v77's 133 B is immune. Same class of gap as #29.
 PAYLOAD_BASE_RATE = 9600
 PAYLOAD_HIRATE_VECS = ['v77', 'r00']
 # 115200 is where three of the five lorem failures landed; 250000 is the 4.0-samples-per-bit wall the
