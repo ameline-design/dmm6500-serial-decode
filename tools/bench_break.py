@@ -311,10 +311,18 @@ def cases(g, d, a):
               lambda: (arb(9600), force(baud='19200', nbits='nil', par='nil',
                                        nstop='nil', invert='nil')),
               {'flagged', 'refuse', 'relocked'}, b'Hello, World!'))
+    # 'relocked' IS ACCEPTED HERE TOO, matching force-2x-rate above. Both cases force a rate the wire
+    # cannot support and the app does the same thing in both: rejects it, says so -- '4800 baud fit
+    # nothing -- unlocked, and this capture reads 9600', then 'auto-locked 9600 baud 8N1' -- and decodes
+    # correctly. That is uart_decode's documented "abandon a locked rate that explains nothing", and
+    # refusing to read a perfectly good capture because the operator typed a wrong number would be worse
+    # behaviour, not safer. Only the +100 % case allowed it, so the two disagreed and the -50 % one failed
+    # the 2026-08-20 release sweep on a correct decode of 324 bytes. Confident garbage still fails: the
+    # accepted outcomes are all honest ones, and a wrong ANSWER at either rate is not among them.
     C.append(('force-half-rate', '9600 wire, rate FORCED to 4800 (-50 %)',
               lambda: (arb(9600), force(baud='4800', nbits='nil', par='nil',
                                        nstop='nil', invert='nil')),
-              {'flagged', 'refuse'}, b'Hello, World!'))
+              {'flagged', 'refuse', 'relocked'}, b'Hello, World!'))
     C.append(('force-7bit-on-8', '8N1 wire, width FORCED to 7',
               lambda: (arb(9600), force(baud='nil', nbits='7', par='nil',
                                         nstop='nil', invert='nil')),
