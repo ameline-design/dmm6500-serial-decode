@@ -476,6 +476,7 @@ end
 -- is that a wrong format shows up as framing errors: a format that decodes 40
 -- bytes with 12 errors is not a better description of the line than one that
 -- decodes 30 with none.
+
 -- FRAMING ERRORS AT THE CAPTURE BOUNDARY ARE NOT SIGNAL ERRORS.
 --
 -- A capture of a continuously busy line starts and ends wherever the trigger and the buffer end
@@ -882,6 +883,7 @@ end
 -- frames. Parity is included: without it 8E1 traffic scores negative at EVERY
 -- candidate, because its parity bit reads as a bad stop bit, and the search then
 -- wanders off to a nonsense rescaling.
+
 -- HOW MANY SAMPLES A PROBE MAY LOOK AT. nil = all of them.
 --
 -- This is the search's cost knob, and the search is the app's worst latency offender: measured
@@ -1849,6 +1851,7 @@ end
 -- arrays -- which are not sdec.res and carry a stream offset the panel never needs.
 -- One formatter, so the file a long stream produces is byte-for-byte the same shape
 -- as the panel's view and the log's dump.
+
 -- TWO GROUPS OF EIGHT, WITH A GAP -- because the panel's font is PROPORTIONAL.
 --
 -- FONT_SMALL is not a fixed-pitch face: hex digits measure ~7.47 px against ~8 for a digit

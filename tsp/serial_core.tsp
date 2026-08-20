@@ -207,6 +207,7 @@ sdec.stdbaud = {110, 300, 600, 1200, 1800, 2400, 4800, 7200, 9600, 14400,
 -- wide spike train loses to the minority logic level on count. So: find the densest
 -- bin, then the densest bin at least minswing away from it. Nothing has to be assumed
 -- about how many outliers there are or how far out they sit.
+
 -- BIN COUNT IS ADAPTIVE, capped here. A fixed 512 bins over a 2000-sample probe
 -- averages four samples a bin, and at that occupancy Poisson scatter alone drops the
 -- occasional bin below any sensible threshold -- one such dip inside the idle hump
@@ -970,6 +971,7 @@ end
 
 -- Call before every capture. Stateless by construction: it derives fs from the
 -- current forced rate each time rather than remembering anything.
+
 -- THE STREAMING MODES WANT THE OPPOSITE RATE FROM FRAME, and this is the single most
 -- consequential piece of arithmetic in the app.
 --
@@ -1000,6 +1002,7 @@ end
 -- 1 MS/s -- the very rate this is trying to avoid. Asking for 4 lands on 500 kS/s and 4.34
 -- samples/bit. The snapping also means the result is usually comfortably ABOVE the floor
 -- (5.21 at 9600, 19200 and 38400); only 250 kBd lands exactly on 4.0, which it already does.
+
 -- MEASURED 2026-08-16: a SimpleLoop trigger model adds a CONSTANT 0.510 us to every sample
 -- interval. Dead constant from 1250 S/s to 640 kS/s, and independent of aperture (AUTO and 1 us
 -- give identical results). dmm.digitize.read() does NOT pay it -- it hits requested rates exactly
@@ -1127,20 +1130,7 @@ end
 -- seen WHOLE?", and every case where the division comes out exact -- i.e. every case where the
 -- sample rate was chosen to give a round samples/bit -- is a case where the operator was told
 -- the window was one byte smaller than it is.
--- HOW MANY SAMPLES A CAPTURE ACTUALLY DELIVERS, which is not sdec.n on the armed path.
---
--- LoopUntilEvent reserves `pretrig` per cent of the buffer for pre-trigger readings and makes only
--- the remainder as post-trigger ones; on a busy line the trigger fires within ~15 samples so the
--- reserve is never spent. Measured 19011 of 20000. Free-run (dmm.digitize.read) has no reserve and
--- delivers the lot.
---
--- window_bytes() used sdec.n, so it reported a capacity 5 % larger than any armed capture could
--- return -- the panel said 240 while the dump held 227, and "was this message seen WHOLE?" is the
--- one question that number exists to answer.
--- Capacity a capture of n samples needs. LoopUntilEvent takes its pre-trigger reserve out of
--- CAPACITY, not out of `count`, so a buffer sized exactly n delivers n minus the reserve: measured
--- 19 011 at capacity 20 000, 20 066 at 21 100. FRAME only -- SimpleLoop has no reserve, and its
--- buffers run to 2.8 M readings against a 6 M ceiling for all buffers together.
+
 -- Capacity a capture of n samples needs. LoopUntilEvent takes its pre-trigger reserve out of
 -- CAPACITY, not out of `count`, so a buffer sized exactly n delivers n minus the reserve: measured
 -- 19 011 at capacity 20 000, 20 066 at 21 100. FRAME only -- SimpleLoop has no reserve, and its
@@ -1196,6 +1186,16 @@ function sdec.acq_reserve(n)
   return math.ceil((sdec.acq_cap(n) or n) * pt / 100)
 end
 
+-- HOW MANY SAMPLES A CAPTURE ACTUALLY DELIVERS, which is not sdec.n on the armed path.
+--
+-- LoopUntilEvent reserves `pretrig` per cent of the buffer for pre-trigger readings and makes only
+-- the remainder as post-trigger ones; on a busy line the trigger fires within ~15 samples so the
+-- reserve is never spent. Measured 19011 of 20000. Free-run (dmm.digitize.read) has no reserve and
+-- delivers the lot.
+--
+-- window_bytes() used sdec.n, so it reported a capacity 5 % larger than any armed capture could
+-- return -- the panel said 240 while the dump held 227, and "was this message seen WHOLE?" is the
+-- one question that number exists to answer.
 function sdec.n_deliv(n)
   if n == nil then n = sdec.n end
   if n == nil then return nil end

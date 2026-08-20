@@ -436,6 +436,7 @@ end
 -- and the next one overwrites them.
 --
 -- Returns a totals table, or nil plus a reason.
+
 -- WHAT ONE WINDOW COSTS, so a latency budget can be spent without reading a clock.
 --
 -- Cost is dominated by the per-SAMPLE passes, so it scales with the window width and is near

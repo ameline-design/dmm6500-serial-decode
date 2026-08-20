@@ -2289,6 +2289,7 @@ function sdec.mode_exit(why, bad)
     -- Said on the note line, because a run ending is what the operator needs told -- and now that
     -- the mode does NOT change, the note must not claim it did. It names the mode still selected,
     -- so the next Capture press is not a surprise.
+
     -- ALWAYS SET, AND ALWAYS LOGGED -- the debug trace wants every exit, and tools/test_cancel.lua
     -- reads this string for the fault reason. Only the NOTE ROW is conditional (see ui_notes).
     sdec.mode_exited = string.format('%s run ended (%s)', md.name, tostring(why or 'exited'))

@@ -871,8 +871,7 @@ function sdec.fs_select()
   return sdec.fs
 end
 
--- How many bytes a capture can physically hold, at the rate actually used and the
---   [...]
+-- Capacity a capture of n samples needs. LoopUntilEvent takes its pre-trigger reserve out of
 -- CAPACITY, not out of `count`, so a buffer sized exactly n delivers n minus the reserve: measured
 -- 19 011 at capacity 20 000, 20 066 at 21 100. FRAME only -- SimpleLoop has no reserve, and its
 -- buffers run to 2.8 M readings against a 6 M ceiling for all buffers together.
@@ -905,6 +904,11 @@ function sdec.acq_reserve(n)
   return math.ceil((sdec.acq_cap(n) or n) * pt / 100)
 end
 
+-- HOW MANY SAMPLES A CAPTURE ACTUALLY DELIVERS, which is not sdec.n on the armed path.
+--   [...]
+-- window_bytes() used sdec.n, so it reported a capacity 5 % larger than any armed capture could
+-- return -- the panel said 240 while the dump held 227, and "was this message seen WHOLE?" is the
+-- one question that number exists to answer.
 function sdec.n_deliv(n)
   if n == nil then n = sdec.n end
   if n == nil then return nil end
@@ -5985,6 +5989,7 @@ end
 -- effect. Getting to FRAME from a recording mode is therefore up to two more presses of this button,
 -- which is the trade for the mode never changing itself.
 function sdec.mode_cycle()
+  sdec.rate_offer, sdec.rate_offer_from, sdec.rate_refused = nil, nil, nil
   if sdec.ck_running then
     sdec.mode_exit('Mode pressed')
     sdec.ck_tot, sdec.ck_nbytes = nil, nil
