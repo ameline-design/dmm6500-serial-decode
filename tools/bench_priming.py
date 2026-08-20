@@ -84,7 +84,7 @@ def main():
                     help='recording length. Big enough that priming is a small part of it, '
                          'which is the case the phasing exists for.')
     ap.add_argument('--budget', type=float, default=0.5)
-    ap.add_argument('--arb', default='v80')
+    ap.add_argument('--arb', default='v41')
     ap.add_argument('--load', action='store_true',
                     help='load the current decoder modules first. Needed after editing them; the '
                          'app on screen keeps its own copy until something reloads it.')

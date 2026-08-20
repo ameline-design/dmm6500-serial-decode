@@ -88,7 +88,7 @@ def main():
         from siglent import SDG
         g = SDG()
         print('SDG: ' + g.idn())
-        g.select_arb(VN.arb('v80'), 10.0, a.baud * 10)
+        g.select_arb(VN.arb('v41'), 10.0, a.baud * 10)
         g.output(True, ch=1)
         print('playing v80 at %d baud (SRATE %d)' % (a.baud, a.baud * 10))
         g.close()

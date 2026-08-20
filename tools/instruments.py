@@ -208,8 +208,10 @@ SDG_UPLOAD_SAFE_BYTES = 65536      # below this, uploads have never wedged it
 # from the internal memory for SDG6000X arbitrary function generators", dated 2021-12-07, gives exactly this
 # command and points at `STL? USER` to find the names. It appears NOWHERE in the programming guide
 # (PG02-E05C, checked), so the manual's silence is an omission and not a statement that it is unsupported.
-# The note is headed SDG6000X but opens "SIGLENT SDG arbitrary waveform generators"; it has not been run
-# against THIS instrument yet, so the command is documented and still unverified here.
+# The note is headed SDG6000X but opens "SIGLENT SDG arbitrary waveform generators", and the command is
+# VERIFIED ON THIS INSTRUMENT: 39 stored waveforms, one DEL_STORE_FILE, 38 left, and STL? USER showed the
+# named one gone with nothing else touched. Then 38 deletes in a row emptied the store, and the SCPI
+# service answered *IDN? throughout. It removes exactly the name it is given.
 # The WILDCARD claim remains third-party only -- not in the vendor note -- and is treated as true anyway,
 # because the safe assumption is the destructive one: siglent.delete_stored_wave() refuses wildcards.
 #
@@ -232,9 +234,12 @@ SDG_UPLOAD_SAFE_BYTES = 65536      # below this, uploads have never wedged it
 # WHY THIS ONE MATTERS MORE THAN THE USB KEY. The brick is not instant -- it happens AT THE NEXT POWER-UP.
 # So between storing a bad waveform and dying there is a window in which the instrument is still fully alive
 # and still answering SCPI. A working delete inside that window is not an unbricking procedure at all; it is
-# a way to never brick. That makes it the highest-value thing on this list to VERIFY, and to verify while
-# nothing is wrong: store a deliberately harmless throwaway, delete it, confirm with STL? USER, and only
-# then believe it. Order matters -- confirm the delete works BEFORE trusting it with anything that matters.
+# a way to NEVER BRICK: upload, read the stored length back, and delete anything that is not the length we
+# sent -- all before the next power cycle. upload_vectors.py does exactly that per file, and a zero-length
+# file that will not delete raises rather than continuing, because continuing means power-cycling a bomb.
+#
+# The delete was verified on a throwaway BEFORE being trusted with it, which is the right order: a repair
+# mechanism nobody has run is not a mechanism, and a hazard plan that rests on one is a hope.
 #
 # TWO WARNINGS, and the wildcard is the sharper one. `DEL_STORE_FILE SER_*` -- or worse, a bare `*` -- would
 # take all 34 uploaded vectors with it, and re-uploading them costs ~900 kB of WVDT writes, which is the
@@ -249,10 +254,23 @@ SDG_UPLOAD_SAFE_BYTES = 65536      # below this, uploads have never wedged it
 # ---------------------------------------------------------------------------------------------------
 # WHY IT BRICKS: A MECHANISM, STILL A HYPOTHESIS, BUT THE ONE THAT FITS THE EVIDENCE
 # ---------------------------------------------------------------------------------------------------
-# The SDG2000X application enumerates the stored waveforms AT STARTUP and draws a preview of each. A
-# zero-length file makes that render throw, the application dies before it finishes starting, and the SAME
-# PROCESS implements the SCPI command engine as well as the LCD and touch UI -- so one unhandled exception
-# takes out the display and the LAN interface together. The instrument is not damaged; nothing is running.
+# The SDG2000X application enumerates the stored waveforms and draws a preview of each. A zero-length file
+# makes that render throw, the application dies, and the SAME PROCESS implements the SCPI command engine as
+# well as the LCD and touch UI -- so one unhandled exception takes out the display and the LAN interface
+# together. The instrument is not damaged; nothing is running.
+#
+# THE PREVIEW RENDERS ON EVERY UPLOAD, NOT ONLY AT STARTUP -- observed directly on the panel, which draws
+# each waveform as it arrives. That is the render path, live, on this firmware, and it changes the hazard's
+# shape in both directions:
+#
+#   * BETTER: a malformed file throws WHEN IT IS WRITTEN, not at some later power-up. The failure is
+#     observable at the moment you cause it, while the delete window is still open.
+#   * WORSE: every write exercises the path, so a bad file can take the generator down MID-BATCH rather
+#     than at a reboot nobody has scheduled. Smallest-first upload ordering banks the cheap files first
+#     for exactly this reason.
+#
+# It also explains the upload cost: each write pays for a render, which is why a 36-file batch takes
+# minutes rather than seconds.
 #
 # EVERY REPORTED SYMPTOM FOLLOWS, which is what makes this worth writing down rather than guessing again:
 #   * logo for ~25 s, an LED flash, then a blank LCD forever -- a process that starts, throws, never draws

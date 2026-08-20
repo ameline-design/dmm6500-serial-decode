@@ -254,7 +254,7 @@ def cases(g, d, a):
     ZERO = b'\x00'
 
     def arb(baud, spb=10.0, amp=AMP, ofst=0.0, invert=False):
-        g.select_arb(VN.arb('v80'), amp, int(baud * spb), offset_v=ofst)
+        g.select_arb(VN.arb('v41'), amp, int(baud * spb), offset_v=ofst)
         g.write('C1:OUTP %s,LOAD,HZ,PLRT,%s' % ('ON', 'INVT' if invert else 'NOR'))
         time.sleep(a.settle)
 

@@ -267,6 +267,11 @@ class SDG:
         written for the SDG6000X and opens "SIGLENT SDG arbitrary waveform generators". So it is a
         vendor-documented command that the manual omits, not a rumour.
 
+        AND IT IS VERIFIED ON THIS INSTRUMENT, name by name: one call took one waveform out of 39 and
+        left the other 38 alone, and 38 consecutive calls emptied the store with the SCPI service still
+        answering. That matters more than tidiness -- it is what makes upload_vectors' read-back-and-
+        delete a real repair for a zero-length file rather than a plan nobody has run.
+
         THE .bin SUFFIX IS ADDED HERE because the two commands disagree about names: STL? USER reports
         `SER_Hello_8N1` and the application note's example deletes `Test1.bin`. ARWV? has the same
         split, and select_arb already strips a trailing .bin for it.

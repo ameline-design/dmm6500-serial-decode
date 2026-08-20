@@ -19,38 +19,43 @@ The names themselves, and why they carry no baud rate, are in docs/VECTORS.md.
 # Local id -> name on the SDG. Nothing here may contain anything but [A-Za-z0-9_]: a dot collides with
 # the '.bin' that ARWV? appends and select_arb strips, and a comma terminates the WVDT WVNM field.
 MAP = {
-    'v41':  'SER_Hello_8N1',
-    'v44a': 'SER_Hello_7E1',
-    'v44b': 'SER_Hello_7O1',
-    'v44c': 'SER_Hello_8E1',
-    'v44d': 'SER_Hello_8O1',
-    'v44e': 'SER_Hello_8N2',          # two stop bits; nothing but this name records that
-    'v45':  'SER_Hello_8N1_Inv',
-    'v46':  'SER_Page200B_8N1',
-    'v47':  'SER_Hello_8N1_Spike',
-    'v48a': 'SER_Hello_8N1_Drift06',
-    'v48b': 'SER_Hello_8N1_Drift10',
-    'v51':  'SER_MIDI_8N1',
-    'v61':  'SER_LIN_01',
-    'v62':  'SER_LIN_02',
-    'v63':  'SER_LIN_03',
-    'v71':  'SER_Lorem1kB_8N1',
-    'v76':  'SER_Lorem300B_8N1',
-    'v77':  'SER_Fox_8N1',
-    'v78':  'SER_Fox_7E1',
-    'v80':  'SER_Hello_8N1_Sp10',     # 10.00 samples/bit; v41 is 10.42
-    'v90':  'SER_Blocks256B_8N1',
-    'v91':  'SER_RandomRef_8N1',
-    'v92':  'SER_Walk_8N1',
-    'v93':  'SER_Random1kB_8N1',
-    'v94':  'SER_Blocks512B_8N1',
-    'v95':  'SER_Random8kB_8N1',
-    'v96':  'SER_Random32kB_8N1',
+    'v41':  'SER_Hello_8N1_x10',
+    'v44a': 'SER_Hello_7E1_x10',
+    'v44b': 'SER_Hello_7O1_x10',
+    'v44c': 'SER_Hello_8E1_x10',
+    'v44d': 'SER_Hello_8O1_x10',
+    'v44e': 'SER_Hello_8N2_x10',          # two stop bits; nothing but this name records that
+    'v45':  'SER_Hello_8N1_Inv_x10',
+    'v46':  'SER_Page200B_8N1_x10',
+    'v47':  'SER_Hello_8N1_Spike_x100',
+    'v48a': 'SER_Hello_8N1_Drift06_x10',
+    'v48b': 'SER_Hello_8N1_Drift10_x10',
+    'v51':  'SER_MIDI_8N1_x10',
+    'v61':  'SER_LIN_01_x10',
+    'v62':  'SER_LIN_02_x10',
+    'v63':  'SER_LIN_03_x10',
+    'v71':  'SER_Lorem1kB_8N1_x10',
+    'v76':  'SER_Lorem300B_8N1_x10',
+    'v77':  'SER_Fox_8N1_x10',
+    'v78':  'SER_Fox_7E1_x10',
+    'v90':  'SER_Blocks256B_8N1_x10',
+    'v91':  'SER_RandomRef_8N1_x10',
+    'v92':  'SER_Walk_8N1_x10',
+    'v93':  'SER_Random1kB_8N1_x10',
+    'v94':  'SER_Blocks512B_8N1_x10',
+    'v95':  'SER_Random8kB_8N1_x10',
+    'v96':  'SER_Random32kB_8N1_x10',
+    # x100, because a 2 % edge displacement cannot be rendered at x10 -- the sample grid there is
+    # +-5 % of a bit, so the quantisation would be larger than the impairment. The percentage is in
+    # the name: it is the one number that distinguishes these three from each other.
+    'j02':  'SER_Jitter02pct_x100',
+    'j10':  'SER_Jitter10pct_x100',
+    'j20':  'SER_Jitter20pct_x100',
 }
 for _i in range(6):
-    MAP['r%02d' % _i] = 'SER_Random_%02d_8N1' % (_i + 1)
+    MAP['r%02d' % _i] = 'SER_Random_%02d_8N1_x10' % (_i + 1)
 for _i in range(6, 12):
-    MAP['r%02d' % _i] = 'SER_Random_%02d_7E1' % (_i + 1)
+    MAP['r%02d' % _i] = 'SER_Random_%02d_7E1_x10' % (_i + 1)
 
 # EMPTY, and kept so that a future redundant render has somewhere to go. Baud comes from srate at
 # selection time, so ONE waveform serves every rate and a per-rate re-render carries no information --

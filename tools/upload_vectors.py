@@ -66,9 +66,25 @@ def main():
     # A BACKSLASH, AND ONLY A BACKSLASH. 'SERIAL\\name' stores and selects; 'SERIAL/name' and
     # '/SERIAL/name' are accepted by the write and then appear nowhere in STL? USER -- a silent
     # no-op, the worst of the three outcomes. Empty means the root.
-    ap.add_argument('--folder', default='SERIAL',
-                    help=r'internal-flash folder, joined with a backslash (default SERIAL; "" = root)')
+    # ROOT BY DEFAULT, AND A FOLDER IS REFUSED WITHOUT --force-folder. A waveform in a subdirectory
+    # CANNOT BE SELECTED AT ALL: STL? USER lists it, and ARWV NAME then refuses every form of the
+    # request -- by path, by basename -- and leaves the PREVIOUS waveform playing, so every later
+    # measurement is attributed to the wrong stimulus. WVDT? returns no LENGTH for one either, which
+    # disables the read-back that would otherwise catch a zero-length file before it bricks the
+    # generator at its next power-up. See siglent.select_arb. A tidy directory is worth neither.
+    ap.add_argument('--folder', default='',
+                    help='internal-flash folder. EMPTY IS CORRECT: a waveform in a subdirectory '
+                         'can never be selected. Needs --force-folder to be non-empty.')
+    ap.add_argument('--force-folder', action='store_true',
+                    help='permit a non-empty --folder, which produces unselectable waveforms')
     a = ap.parse_args()
+    if a.folder and not a.force_folder:
+        raise SystemExit(
+            'REFUSING: --folder %r would store waveforms in a subdirectory, and those can never be '
+            'selected -- ARWV NAME refuses every form of the name and the previous waveform keeps '
+            'playing, so a whole bench run measures the wrong stimulus. WVDT? also returns no LENGTH '
+            'for them, which silently disables the zero-length check that protects the generator. '
+            'Use the root (omit --folder), or --force-folder if you truly mean it.' % a.folder)
 
     bad = check_names()
     if bad:
@@ -106,6 +122,13 @@ def main():
                              'than upload a vector whose expected bytes are for a different file.'
                              % (path, n, want))
         (toobig if n > SDG_UPLOAD_SAFE_BYTES else todo).append((vid, MAP[vid], n, r))
+
+    # SMALLEST FIRST. A wedge costs a power cycle and a human, so the cheap files go first: if the
+    # generator stops answering, the most work is already banked and the failure is learned on a
+    # 20 kB write rather than a 200 kB one. It also front-loads the read-back check, so a broken
+    # verification path shows up in seconds instead of after the batch.
+    todo.sort(key=lambda t: t[2])
+    toobig.sort(key=lambda t: t[2])
 
     if a.only:
         keep = set(x.strip() for x in a.only.split(',') if x.strip())

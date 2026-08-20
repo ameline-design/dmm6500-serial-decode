@@ -735,17 +735,6 @@ end
 -- 10 samples/bit: 1300 points, 2.6 kB, forty times under SDG_UPLOAD_SAFE_BYTES. Note that fs
 -- here is the SDG's rendering rate, not the DMM's -- the DMM picks its own from the baud rate.
 --
--- 300 baud is the interesting end. The DMM's digitize floor is 1000 S/s, which at 300 baud is
--- 3.3 samples/bit and far too coarse -- but the floor is a MINIMUM, not a ceiling, so the app
--- asks for 8 x 300 = 2400 S/s and gets it. What the low end really costs is WINDOW TIME: at 8.33
--- samples/bit a 20 000-sample capture is 240 bytes at every rate, but at 300 baud those 240
--- bytes take 8 seconds of wall clock to arrive.
-vec{id = 'v80', desc = 'hello at 300 8N1, the slowest rung (SRATE 3000)',
-    fs = sr(300), fsv = 5.0,
-    build = function() return hello{baud = 300, fs = sr(300)} end}
-
--- LIN: 0..6 V, a 12 V bus through the 2:1 divider the app asks for, which is
--- what the instrument would actually see. fsv 7.5 covers it with headroom.
 vec{id = 'v61', desc = 'LIN 19200: two frames, enhanced checksum',
     fs = sr(19200), fsv = 7.5, proto = 'lin',
     build = function()

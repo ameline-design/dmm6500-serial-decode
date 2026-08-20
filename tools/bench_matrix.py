@@ -66,7 +66,7 @@ FORMATS = [('v41', '8N1', 'the control -- must NOT be called 7E1'),
 FORMAT_BAUD = 9600
 FORMAT_SRATE = 100000        # from the manifest; these vectors are 10.42 samples/bit
 
-RATE_ARB = 'v80'             # 'Hello, World!' 8N1 at 10 samples/bit
+RATE_ARB = 'v41'             # 'Hello, World!' 8N1, x10 like every clean vector
 RATE_SPB = 10.0
 RATES = [300, 600, 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 250000]
 
