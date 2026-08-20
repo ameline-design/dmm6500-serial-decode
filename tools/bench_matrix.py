@@ -78,6 +78,17 @@ def _srate(vid, baud):
 def _spb(vid):
     return float(int((manifest().get(vid) or {}).get('spb') or 10))
 
+
+def _amp(vid):
+    """The AMP a vector is rendered for, from the manifest.
+
+    NOT A CONSTANT, and four of the 41 prove it: the spike vector wants 20 Vpp because its transients
+    stack to 9.3 V, and the three LIN vectors want 15 for a 6 V bus. Playing those at the nominal 10
+    halves or two-thirds their swing, so the decoder is judged on a signal it was never shown -- and
+    it fails honestly, which makes the harness look like the app.
+    """
+    return float((manifest().get(vid) or {}).get('amp_vpp') or 10.0)
+
 RATE_ARB = 'v41'             # 'Hello, World!' 8N1, x10 like every clean vector
 RATE_SPB = 10.0
 RATES = [300, 600, 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 250000]
@@ -87,10 +98,11 @@ RATES = [300, 600, 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 250000]
 # states the swing, which is the honest thing to say about a level that is not a named family.
 LEVELS = [(5.0, ['5V TTL']), (3.3, ['3V3 CMOS']), (1.6, ['1V8 CMOS', '1.6Vpp'])]
 
-# THE LOREM SWEEP. SER_Lorem1kB_8N1 (v71) is a 1024-byte non-repeating payload rendered at 100 kSa/s
-# for 9600 baud, i.e. 10.41667 samples per bit -- so replaying it at SRATE = baud * 10.41667 gives any
-# rate off ONE stored waveform. No upload, which is the point: large WVDT writes are the wedge hazard
-# and the budget is about two per power cycle.
+# THE LOREM SWEEP. SER_Lorem1kB_8N1 (v71) is a 1024-byte non-repeating payload rendered at 10 samples
+# per bit like every other clean vector, so replaying it at SRATE = baud * 10 gives any rate off ONE
+# stored waveform. The samples-per-bit figure is READ FROM THE MANIFEST rather than written here; see
+# the note on _srate for what a copied one costs. No upload, which is the point: large WVDT writes are
+# the wedge hazard and the budget is about two per power cycle.
 #
 # Better than the 13-byte 'Hello, World!' in two ways that matter: a 240-byte capture is a SUBSTRING
 # of the payload rather than eighteen repeats of it, so a decode that resynchronised in the wrong
@@ -638,7 +650,7 @@ def suite_hard(d, g, a, rows):
             if srate > I.SDG_MAX_SRATE:
                 print('  %-5s %7d Bd SKIPPED -- %g Sa/s over the SDG ceiling' % (vid, baud, srate))
                 continue
-            g.select_arb(VN.arb(vid), amp_for(NOMINAL_SWING), srate)
+            g.select_arb(VN.arb(vid), _amp(vid), srate)
             g.output(True, ch=1)
             time.sleep(a.settle)
             # PINNED, and pinned per point: press() clears the forced values when unlock is true, so
@@ -766,7 +778,7 @@ def suite_payloads(d, g, a, rows):
                 print('  %-6s %7d Bd SKIPPED -- %g Sa/s over the SDG ceiling' % (vid, baud, srate))
                 continue
             if first:
-                g.select_arb(VN.arb(vid), amp_for(NOMINAL_SWING), srate)
+                g.select_arb(VN.arb(vid), _amp(vid), srate)
                 g.output(True, ch=1)
                 first = False
             else:
@@ -889,7 +901,7 @@ def suite_plan(d, g, a, rows):
                       % (vid, baud, srate, spb))
                 continue
             if ri == 0:
-                g.select_arb(VN.arb(vid), amp_for(NOMINAL_SWING), srate)
+                g.select_arb(VN.arb(vid), _amp(vid), srate)
                 g.output(True, ch=1)
             else:
                 g.truearb(srate)
@@ -966,8 +978,8 @@ def suite_plan(d, g, a, rows):
         vsec = time.time() - t_vec
         alive = d.alive()
         sdg_ok, sdg_why = BS.sdg_alive(sdg=g)
-        print('  %-6s %s: %d cells in %.0f s (%.2f s/cell), %d not as expected  DMM %s  SDG %s'
-              % (vid, expect, ncell, vsec, vsec / max(1, ncell), nbadcell,
+        print('  %-6s %s: %d cells in %.0f s (%.2f s/cell) at %.1f Vpp, %d not as expected  DMM %s  SDG %s'
+              % (vid, expect, ncell, vsec, vsec / max(1, ncell), _amp(vid), nbadcell,
                  'alive' if alive else 'NOT ANSWERING', 'alive' if sdg_ok else 'NO: %s' % sdg_why))
         if not alive or not sdg_ok:
             raise SystemExit(

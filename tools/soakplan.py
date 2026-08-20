@@ -82,8 +82,13 @@ VECTOR_EXPECT = {
     # given rate's sampling instants land on the spikes is a function of the rate, so which rates
     # survive is not knowable in advance.
     'v47': 'loud',
-    # Drift deliberately BEYOND tolerance. Failing is the point of the vector.
-    'v48b': 'loud',
+    # BOTH drift vectors, and 48a is the interesting one. Its 0.6 V is inside tolerance AT ITS NATIVE
+    # RATE; swept two decades away, the drift-to-window ratio changes and the two logic levels stop
+    # being the two densest amplitudes -- so the app reports "baseline unstable, only 8 % of samples
+    # sit at a logic level" and declines. Declining is the right answer to an unreadable signal, so it
+    # counts as one; a confident wrong byte here still fails, which is the whole point of the class.
+    # 48b drifts beyond tolerance by construction.
+    'v48a': 'loud', 'v48b': 'loud',
     # 20 % jitter is past what the decoder claims; 2 % and 10 % are inside it and stay 'exact'.
     'j20': 'loud',
     # LIN carries deliberate framing violations -- the break field is a dominant interval no UART
