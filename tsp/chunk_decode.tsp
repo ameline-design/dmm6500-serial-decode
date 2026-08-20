@@ -302,11 +302,11 @@ end
 -- statistical -- so run per window it could change its mind halfway through a file, and
 -- there would be nothing in the file to say it had. Detect once, state it, apply it.
 --
--- PRIMING IS PHASED, one bounded sub-operation per call, because it was the last unbounded
--- thing a front-panel press could reach. Unphased it is up to eight contiguous 20 000-sample
--- level probes plus a lead-in read plus edge extraction plus the format search -- seconds of
--- Lua in one call -- and a press is not dispatched while Lua runs, so any queued press pays for all
--- of it. Only a caller that returns between phases collects the benefit, which is the harnesses.
+-- PRIMING IS PHASED, one bounded sub-operation per call, because unphased it is the longest
+-- unbounded thing a front-panel press can reach: up to eight contiguous 20 000-sample level probes
+-- plus a lead-in read plus edge extraction plus the format search -- seconds of Lua in one call. A
+-- press is not dispatched while Lua runs, so any queued press pays for all of it. Only a caller that
+-- returns between phases collects the benefit, which is the harnesses.
 --
 -- Phases, in order, each one window's work or less:
 --   lvd   the decimated level pass
@@ -642,11 +642,10 @@ function sdec.ck_decode(reader, ntotal, fmt, sink, opts)
       -- THE WINDOW THAT PRODUCED THE FIRST BYTES is the only one whose head can be a misaligned START,
       -- and tot.nf == 0 here -- inside the emit, before the increment -- is what identifies it.
       --
-      -- NOT 'THE FIRST WINDOW'. That was the first attempt and it was wrong: with a lead-in the first
-      -- window can decode NOTHING, so `tot.nf == 0` outside this block stayed true into window 2 and a
-      -- later window's head overwrote the figure. A later window's head is a SEAM the overlap machinery
-      -- already handles, so a head error there is not a misaligned start and claiming it is worse than
-      -- saying nothing. Caught by wrapping ua_run in test_serial and watching window 2 win.
+      -- NOT 'THE FIRST WINDOW'. With a lead-in the first window can decode NOTHING, so `tot.nf == 0`
+      -- tested outside this block stays true into window 2 and a later window's head overwrites the
+      -- figure. A later window's head is a SEAM the overlap machinery already handles, so a head error
+      -- there is not a misaligned start, and claiming it is worse than saying nothing.
       if tot.nf == 0 and r.headsusp ~= nil and r.headsusp > 0 then
         tot.headsusp = r.headsusp
         -- AND HOW FAR THE DAMAGE ACTUALLY REACHES. headsusp is the bytes before the first inter-message
@@ -769,9 +768,9 @@ end
 -- Returns the sink and a finish() that flushes the carry and closes the file.
 function sdec.ck_sink_file(path, ncol)
   if ncol == nil then ncol = 16 end
-  -- MODE_APPEND, not MODE_WRITE. This sink now writes to the SHARED byte log that FRAME mode
-  -- also appends to, so opening for write would TRUNCATE every frame capture taken before this
-  -- stream -- silently, and only visible as a byte count that went backwards.
+  -- MODE_APPEND, not MODE_WRITE. This sink writes to the SHARED byte log that FRAME mode also
+  -- appends to, so opening for write TRUNCATES every frame capture taken before this stream --
+  -- silently, and visible only as a byte count that went backwards.
   local fh = nil
   local ok = pcall(function() fh = file.open(path, file.MODE_APPEND) end)
   if not ok or fh == nil then return nil, nil, 'cannot append to ' .. tostring(path) end

@@ -144,7 +144,7 @@ sdec.ui_errfield  = 9
 sdec.ui_c_rule = 0x484848
 -- THE SCREEN BACKGROUND, for HIDING an object. It must not be 0: the firmware reads a fill of 0
 -- as "unset" and paints NOTHING, so setfill(h, 0) is a refused write rather than a black
--- rectangle -- it climbs sdec.fillfails and leaves the object exactly as visible as it was.
+-- rectangle -- it climbs sdec.fillfails and leaves the object exactly as visible as before.
 sdec.ui_c_hide = 0x000A0D
 sdec.ui_rule_top = 1
 sdec.ui_rule_mid = 35                        -- under the value ink (medium 16..32)
@@ -154,16 +154,16 @@ sdec.ui_rule_x1  = 792
 -- The note is a labelled cell in the same table, spanning the full width under the
 -- field row, rather than a loose line floating beneath it.
 sdec.ui_note_lab_x = 8
--- THE TRIGGER SOURCE, in the note row's left cell -- where the CAPTURE MODE used to sit. The mode
--- moved to the title bar, and two indicators for one setting is one too many; what this row had no
--- room for was the thing a capture actually WAITS for.
+-- THE TRIGGER SOURCE, in the note row's left cell. The capture mode lives in the title bar, and two
+-- indicators for one setting is one too many; this cell carries the thing a capture actually WAITS
+-- for instead.
 --
 -- LABELS ARE THE OPTION FIELD'S OWN, letter for letter, and build_options() creates that field FROM
 -- this table -- so the cell cannot paraphrase the control that sets it, which is the defect this app
 -- keeps finding. Keys are sdec.trigmode's values (see ui_opt_trig_v).
 --
--- COLOUR IS THE GLANCE CHANNEL, as it was for the mode: green is the ordinary case (wait for the
--- line's own start bit), yellow is "do not wait for anything", cyan is "waiting for a finger".
+-- COLOUR IS THE GLANCE CHANNEL: green is the ordinary case (wait for the line's own start bit),
+-- yellow is "do not wait for anything", cyan is "waiting for a finger".
 sdec.ui_trigsrc = {
   edge  = {name = 'Start bit',   c = 0x40FF40},
   free  = {name = 'Free run',    c = 0xFFFF00},
@@ -231,10 +231,9 @@ sdec.ui_stat_div = 462
 -- the flow-controlled decode: '32 kB  decoding... win 32/32 32768/32768', 311 px, so it ends at 319.
 -- 20 px of clear space then puts the left edge at 339 and the bar is 108 px.
 --
--- 108 AND NOT 112 -- 69 % wider than the first 64, not the 75 % it was asked to grow. The last 4 px
--- are the margin over that flow-controlled string, which fits with 2 px to spare at 112 and 20 at
--- 108. test_serial recomputes the 319 from the format strings themselves, so a longer message fails
--- a test instead of being drawn through the bar.
+-- 108 AND NOT 112. The last 4 px are margin over that flow-controlled string, which fits with 2 px
+-- to spare at 112 and 20 at 108. test_serial recomputes the 319 from the format strings themselves,
+-- so a longer message fails a test instead of being drawn through the bar.
 sdec.ui_prog_x = 339
 sdec.ui_prog_w = 108
 -- 80 % OF THE ROW, which is the 18 px status band (ui_stat_bot - ui_stat_top), not the 12 px glyph
@@ -604,9 +603,9 @@ sdec.ui_views = {
 function sdec.ui_view_avail(v)
   if v == nil then return false end
   if v.res == nil then return true end          -- text and hex need no module
-  -- CHECKED LAZILY, not by pruning ui_views at load time: the app loads serial_ui AFTER the
-  -- protocol modules but the offline harnesses load them in the other order, so a load-time prune
-  -- would drop MIDI from a full build depending only on who loaded what first.
+  -- CHECKED LAZILY, not by pruning ui_views at load time: the app loads serial_ui AFTER the protocol
+  -- modules but the offline harnesses load them in the other order, so a load-time prune drops MIDI
+  -- from a full build depending only on who loaded what first.
   return v.parse ~= nil and sdec[v.parse] ~= nil
 end
 
@@ -680,8 +679,8 @@ sdec.ui_c_pgword = 0xA8A8A8    -- 'page' and 'of': 66 %
 sdec.ui_c_prog     = 0x00FFFF
 sdec.ui_c_prog_box = 0xCCCCCC
 -- THE REAR BNC's THREE STATES. Its cell is EMPTY when the connector is off -- a marker that is always
--- present is not a marker, and the old cell read a permanent amber 'EXT TRIG' while Options said the
--- rear BNC was off, which is the panel asserting hardware that is not in use.
+-- present is not a marker, and a permanent amber 'EXT TRIG' over an Options page saying the rear BNC
+-- is off is the panel asserting hardware that is not in use.
 sdec.ui_c_extin  = 0x40FF40   -- green: an input, armed
 sdec.ui_c_extout = 0xFFC000   -- amber: an output, pulsing a credit per capture
 sdec.ui_c_extio  = 0x00FFFF   -- cyan:  both directions live
@@ -720,12 +719,12 @@ sdec.ui_status = sdec.ui_status or 'ready'
 --
 -- SEVEN FIELDS, AND THIS IS THE RISKIEST GEOMETRY IN THE APP.
 --
--- THE EDIT-OBJECT HEIGHT IS NOW MEASURED, not guessed. Off docs/img/options.png, 2026-08-19: a field
--- created at y draws its box from y + 4 to y + 53, so it is 50 px tall -- and the options button row
--- starts at 367 and is 60 px, not the 58 the main screen's arithmetic assumes.
+-- THE EDIT-OBJECT HEIGHT IS MEASURED, not guessed. Off docs/img/options.png: a field created at y
+-- draws its box from y + 4 to y + 53, so it is 50 px tall -- and the options button row starts at 367
+-- and is 60 px, not the 58 the main screen's arithmetic assumes.
 --
--- WHICH RETIRES THE TABLE THAT USED TO BE HERE. It was built on a 38 px guess and said seven fields
--- at dy = 52 end at 358 with 8 px clear. At the measured 50 they end at 373 -- 6 px INSIDE the button
+-- WHICH IS WHY THE PITCH IS NOT DERIVED FROM A GUESS. On a 38 px height, seven fields at dy = 52 end
+-- at 358 with 8 px clear. At the measured 50 they end at 373 -- 6 px INSIDE the button
 -- row. V1 ships six fields (no Protocol: with only UART there is nothing to choose between, and
 -- OBJ_EDIT_OPTION refuses fewer than two options), so nothing collides today, but a build that
 -- restores MIDI and LIN brings the seventh field back and it does not fit at this pitch.
@@ -751,8 +750,8 @@ sdec.ui_opt_edit_h  = 50
 sdec.ui_opt_edit_dy = 4
 -- THE OPTIONS BUTTON ROW, 360 and not 366. A button is 60 px tall on this panel, not the 58 the main
 -- screen's arithmetic assumes -- measured off docs/img/options.png with the rest of this geometry --
--- so at 366 the row ran 367..426 of a 431 px content area and 5 px from the bottom edge reads as
--- clipped. 360 gives 11 px, matching the main screen's row, and still leaves 29 px under the last
+-- so at 366 the row occupies 367..426 of a 431 px content area, and 5 px from the bottom edge reads
+-- as clipped. 360 gives 11 px, matching the main screen's row, and still leaves 29 px under the last
 -- field. build_options() takes the row's y FROM HERE rather than repeating the number.
 sdec.ui_opt_btn_y   = 360
 sdec.ui_opt_x  = 270   -- >= 270 so edit labels stay on screen
@@ -849,9 +848,9 @@ end
 -- over the app's own panel -- which covers the hex dump and has to be dismissed by hand.
 --
 -- AN OBJ_RECT IS NOTHING BUT ITS BORDER, AND display.setfill DOES NOTHING TO IT. Measured on the
--- panel 2026-08-19 while building the progress bar: a 64 x 14 rect at setfill(100) lit 137 px -- its
--- perimeter -- and not the 896 a filled one would. So every rect this app draws is a hollow box, and
--- the table rules only look solid because they are 1 px wide, where the border IS the rect.
+-- panel: a 64 x 14 rect at setfill(100) lights 137 px -- its perimeter -- and not the 896 a filled
+-- one would. So every rect this app draws is a hollow box, and the table rules only look solid
+-- because they are 1 px wide, where the border IS the rect.
 --
 -- WHICH MAKES ui_fill_solid INERT. It is kept because it costs one call at build time, it is the
 -- right thing to say if a later firmware honours the percentage, and its refusal counter is what
@@ -875,13 +874,13 @@ function sdec.ui_fill_solid(h)
   return ok
 end
 
--- Show or hide object `h`. THE ONLY WAY TO TAKE A RECT OR A LINE OFF THE GLASS, measured
--- 2026-08-19: recolouring one to ui_c_hide does NOT hide it. The app hides its dump rules that way
--- and they are 1 px wide, so the background-coloured pixel is the background; a 64 x 14 frame
--- painted 0x000A0D stayed plainly visible on the panel and its own fillfails counter read 0.
+-- Show or hide object `h`. THE ONLY WAY TO TAKE A RECT OR A LINE OFF THE GLASS: recolouring one to
+-- ui_c_hide does NOT hide it. That works for the dump rules only because they are 1 px wide, where a
+-- background-coloured pixel IS the background -- a 64 x 14 frame painted 0x000A0D stays plainly
+-- visible on the panel with its own fillfails counter reading 0.
 --
--- The reference lists OBJ_RECT and OBJ_LINE among setstate's allowable types, and both were
--- confirmed on the instrument. Counted in fillfails on refusal like every other display write.
+-- The reference lists OBJ_RECT and OBJ_LINE among setstate's allowable types, and both are confirmed
+-- on the instrument. Counted in fillfails on refusal like every other display write.
 function sdec.ui_setstate(h, st)
   if h == nil then return false end
   local ok = pcall(function() display.setstate(h, st) end)
@@ -898,8 +897,7 @@ end
 --   > 0   the frame plus a cyan bar out to pct.
 --
 -- THE BAR IS A THICK LINE AND THE FRAME IS A RECT, and that split is forced by what this firmware
--- actually draws -- all of it measured on the instrument on 2026-08-19, because the two comments
--- this repo already carried about rect fills contradicted each other and BOTH were wrong in part:
+-- actually draws, measured on the instrument:
 --
 --   * an OBJ_RECT is drawn as an OUTLINE `thickness` px wide, in its setcolor colour. That is
 --     exactly the 1 px 80 % grey frame this wants, for one object.
@@ -1142,13 +1140,13 @@ function sdec.ui_notes()
     add('Rear BNC = Trig In is set but IGNORED -- Free run means do not wait for anything')
   end
 
-  -- NO RECORDING FORECAST ON THIS ROW. It used to add 'bounded at 8192 bytes -- ~2 s of this line,
-  -- and nothing stops it early', and it was wrong in two ways at once:
+  -- NO RECORDING FORECAST ON THIS ROW. A note like 'bounded at 8192 bytes -- ~2 s of this line, and
+  -- nothing stops it early' is wrong in two ways at once:
   --
-  --   * IT STAYED AFTER THE RUN. ui_notes has no idea whether the recording it is forecasting has
-  --     already happened, so a finished 8 kB capture sat under a yellow warning about a press the
-  --     operator had made a minute ago -- distracting, and above the notes that described the result.
-  --   * '~2 s' WAS THE LINE'S TIME, NOT THE OPERATION'S. It is cap/bps: how long the DEVICE takes to
+  --   * IT OUTLIVES THE RUN. ui_notes has no idea whether the recording it forecasts has already
+  --     happened, so a finished 8 kB capture sits under a yellow warning about a press made a minute
+  --     ago -- distracting, and above the notes describing the result.
+  --   * '~2 s' IS THE LINE'S TIME, NOT THE OPERATION'S. It is cap/bps: how long the DEVICE takes to
   --     send that many bytes. The meter then decodes at ~300 byte/s whatever the baud rate, so 8 kB is
   --     ~27 s of decoding after the acquisition -- an order of magnitude out, in the reassuring
   --     direction, which is the worst direction for a figure nothing can interrupt.
@@ -1161,16 +1159,15 @@ function sdec.ui_notes()
   -- whose effect is otherwise invisible: mode_exit() moves the MODE cell back to a grey FRAME, and
   -- log_new() changes a filename that only appears on the NEXT capture. Ranked above the wire
   -- warnings because they answer "what did that press just do?".
-  -- ONLY WHEN THE RUN ENDED BADLY. A recording that finished normally used to leave a yellow note
-  -- describing its own exit, which sat over the notes that described the RESULT and outlived the press
-  -- that caused it. The status row's summary -- bytes, errors, window count, filename -- is the
-  -- completion message, and it is enough. A FAILED run still says so here, because the summary cannot
-  -- carry a reason.
+  -- ONLY WHEN THE RUN ENDED BADLY. A normal ending here leaves a yellow note describing its own exit,
+  -- sitting over the notes that describe the RESULT and outliving the press that caused it. The status
+  -- row's summary -- bytes, errors, window count, filename -- is the completion message, and it is
+  -- enough. A FAILED run does say so here, because the summary cannot carry a reason.
   if sdec.mode_exited ~= nil and sdec.mode_exitbad then add(tostring(sdec.mode_exited)) end
   if sdec.lognote ~= nil then add(tostring(sdec.lognote)) end
   -- A RECORDING THAT CHANGED ITS OWN MEASUREMENT BASIS MID-RUN SAYS SO. strm_relevel() only fires when
-  -- the watchdog was about to end a run on levels REUSED from an earlier capture and this capture's own
-  -- samples disagree -- so the threshold the second half was judged against is not the one the first
+  -- the watchdog is about to end a run on levels REUSED from a previous capture and this capture's own
+  -- samples disagree -- so the threshold the second half is judged against is not the one the first
   -- half was. That is the same class as the two above: a consequence of the app's own decision, with no
   -- other trace on the panel. Ranked with them, above the wire warnings.
   if sdec.strm_releveled ~= nil then add(tostring(sdec.strm_releveled)) end

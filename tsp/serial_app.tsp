@@ -3,7 +3,7 @@
 --
 -- OBJECT-LIFETIME STANDARD, applied throughout: never create over a live handle.
 -- Delete -> nil -> create. Creating over a handle overwrites the only reference to
--- the old object and strands it inside the firmware until a power cycle; that
+-- the object beneath and strands it inside the firmware until a power cycle; that
 -- accumulation walks this firmware toward a PC=002F751C panic. sdec.delfails
 -- counts refused deletions and is the number to watch.
 --
@@ -39,7 +39,7 @@ sdec.proto     = sdec.proto or 'uart'
 -- whose blender cannot latch EVENT_DISPLAY.
 --
 -- A NIL TEST RATHER THAN `or`, because false is meaningful here and `false or true` is true. Set it
--- before this file loads to keep it.
+-- before this file loads and the setting survives.
 if sdec.strm_press == nil then sdec.strm_press = false end
 -- Wall-clock ceiling on one streaming ACQUISITION, seconds; nil means no bound. A BACKSTOP, not a
 -- schedule: the run normally ends at the buffer or at a quiet line, and stream_maxwait() usually bounds
@@ -53,7 +53,7 @@ sdec.strm_maxsec = sdec.strm_maxsec or 1200
 -- Seconds of signal the FALLBACK path may record when the trigger model refuses to arm. It is much
 -- shorter than strm_maxsec on purpose: that path is a blocking read, so nothing can poll the cancel
 -- key or the clock while it runs, and its whole length is time the panel cannot be stopped. 20 s is
--- the old uninterruptible ceiling, kept for the one case that is still uninterruptible.
+-- as long as this app is ever willing to be uninterruptible.
 sdec.strm_fallback_s = sdec.strm_fallback_s or 20
 -- sdec.savedas  -- the last filename written, for the note line
 -- sdec.stickyerr -- a fault that must outlive a capture (see install_cleanup)
@@ -86,11 +86,11 @@ function sdec.clear_result()
   -- capture must not accuse the next one, which may parse perfectly.
   sdec.strm_releveled, sdec.proto_why = nil, nil
   -- relocked IS NOT EVICTED HERE, and it is the one exception in this block. clear_result() runs on
-  -- every acquire(), including the RE-CAPTURE autoset() does after a rate changes -- so evicting it
-  -- here wiped the note between the relock and the end of the same press, leaving correct bytes and
-  -- nothing saying the operator's locked rate had been dropped. bench_break caught it as "EXACT with
-  -- the forced rate silently still in force". It is cleared at the top of capture() instead: once per
-  -- PRESS, which is what it describes.
+  -- every acquire(), including the RE-CAPTURE autoset() does after a rate changes, so evicting it here
+  -- wipes the note between the relock and the end of the SAME press -- leaving correct bytes and
+  -- nothing saying the operator's locked rate was dropped, which reads as "EXACT with the forced rate
+  -- silently still in force". It is cleared at the top of capture() instead: once per PRESS, which is
+  -- what it describes.
   sdec.probe_note = nil                 -- set by autoset() when it had to re-capture slower
   -- The previous capture's 20 000-entry sample table has just become unreachable. Collecting it
   -- here costs 8.3 ms measured, against a 1.6 s capture, and Lua memory pressure is on the
@@ -463,12 +463,11 @@ function sdec.stream()
   end
   -- A CANCEL DURING THE RECORDING STOPS THE RECORDING, NOT THE BYTES IT COLLECTED. ck_stop is still
   -- set here, and ck_progress reads it as "abort" -- so the decode below would end at window zero
-  -- and throw away everything the operator had just waited for. TRIGGER means "stop what is
-  -- happening now", and what happens next is the decode of what was captured, which is exactly what
-  -- the old Capture-to-stop press did.
+  -- and throw away everything the operator has just waited for. TRIGGER means "stop what is happening
+  -- now", and what happens next is the decode of what was captured.
   --
   -- NOT FOLLOWED BY A cancel_clear(). The latch auto-resets on the read that saw the press, so it is
-  -- already empty -- and clearing it again would discard a SECOND press made during stream_settle(),
+  -- already empty -- and clearing it again discards a SECOND press made during stream_settle(),
   -- which is exactly the operator asking to stop the decode as well. ck_cancel is deliberately left
   -- set: record_run() reads it to end a flow-controlled run, and the note row uses it to say who
   -- stopped this one.
@@ -540,11 +539,9 @@ function sdec.record_run()
   sdec.fc_clock = pcall(function() timer.cleartime() end)
   -- PAINTED AFTER THE CLEAR ABOVE AND BEFORE THE FIRST WINDOW. It is the last full refresh until the
   -- run ends -- sdec.progress() repaints only the counter -- so the control cell it writes stands for
-  -- the whole run, which is why it must be painted at all. That cell now reads 'no stop until it ends';
-  -- it used to say 'TRIGGER key = stop', and the order mattered then because the operator must not be
-  -- invited to press before a press could be seen. It invites nothing now, but the clear still belongs
-  -- above it: cancel_clear() must discard the previous run's press before this run can be cancelled by
-  -- anything at all.
+  -- the whole run, which is why it must be painted at all. That cell reads 'no stop until it ends' and
+  -- invites no press. The clear still belongs ABOVE it: cancel_clear() must discard the previous run's
+  -- press before this run can be cancelled by anything at all.
   pcall(function() sdec.ui_refresh() end)
   local keep = nil                 -- the last window that actually decoded something
   local ok, why = false, nil
@@ -1189,9 +1186,9 @@ function sdec.ck_progress(nbytes, nwin, nwin_est)
   return true
 end
 
--- Poll the TRIGGER key and record it as a stop request. True once a cancel is in force, INCLUDING
--- one seen by an earlier poll -- the blender's latch auto-resets on read, so a caller that polled
--- twice and expected the same answer would lose the press.
+-- Poll the TRIGGER key and record it as a stop request. True once a cancel is in force, INCLUDING one
+-- seen by a previous poll -- the blender's latch auto-resets on read, so a caller that polls twice and
+-- expects the same answer loses the press.
 function sdec.cancel_asked()
   if sdec.ck_stop then return true end
   if not sdec.cancel_pressed() then return false end
@@ -1374,10 +1371,9 @@ function sdec.capture()
     -- run that cannot be stopped. One refresh, in record_run(), is the right shape.
     local sok, swhy = false, nil
     -- THE WHOLE JOB, IN THIS ONE PRESS: record, decode, save, and under flow control repeat until
-    -- the device stops. It holds the panel for as long as that takes, AND NOTHING CAN CUT IT SHORT --
-    -- this comment used to say the hold "is only acceptable because TRIGGER stops it", and that premise
-    -- was measured false on: the key emits no blender event while this runs. The bounds in
-    -- record_run() (fc_maxwin, fc_maxsec) are therefore the only exits, not a backstop to a cancel.
+    -- the device stops. It holds the panel for as long as that takes, AND NOTHING CAN CUT IT SHORT:
+    -- the TRIGGER key emits no blender event while this runs, so it is no defence. The bounds in
+    -- record_run() (fc_maxwin, fc_maxsec) are the only exits, not a backstop to a cancel.
     local pok, perr = pcall(function() sok, swhy = sdec.record_run() end)
     sdec.strm_inflight = nil
     sdec.busy, sdec.ck_running = false, false
@@ -1594,7 +1590,7 @@ function sdec.autolock_try()
   -- GATE 3: enough frames that agreement means something. Two clean frames of noise agree with
   -- each other too.
   if (r.ngood or 0) < sdec.autolock_min then return false end
-  -- GATE 4: the least-squares bit time explained the pulse widths it was fitted to.
+  -- GATE 4: the least-squares bit time explains the pulse widths it was fitted to.
   if (sdec.fitq or 0) < sdec.autolock_fitq then return false end
   -- GATE 5, AND THE ONE THAT IS ABOUT THE SIGNAL RATHER THAN THE DECODE. An unstable baseline --
   -- too few samples sitting at a logic level, i.e. drift or noise -- is precisely when a
@@ -1608,9 +1604,9 @@ function sdec.autolock_try()
   -- ONLY THE FIELDS THE OPERATOR LEFT ON AUTO. Assigning all four unconditionally overwrites a
   -- hand-forced parity, width or stop count with whatever this capture happened to detect: a
   -- setting chosen in Options then survives exactly one capture, and the form reads the detected
-  -- value back as though it had been chosen. The guard above only catches a forced BAUD, because
-  -- that is the field that makes the second pass unnecessary; the other three are independent and
-  -- have to be checked one at a time.
+  -- value back as though the operator chose it. The guard above only catches a forced BAUD, because
+  -- that is the field that makes the second pass unnecessary; the other three are independent and have
+  -- to be checked one at a time.
   --
   -- The rate is locked either way, so forcing parity does not cost the operator the speed win.
   sdec.force_baud   = sdec.baud
@@ -1903,15 +1899,15 @@ function sdec.options_auto()
   local md = sdec.mode_cur()
   if md.needbaud then
     sdec.mode_exit('auto-detect is FRAME-mode only')
-    -- SET HERE, NOT IN mode_exit(). That function is a flush and no longer touches the mode, so the
-    -- two places a mode change is part of the MEANING say so themselves: auto-detect cannot run in a
+    -- SET HERE, NOT IN mode_exit(). That function is a flush and does not touch the mode, so the two
+    -- places a mode change is part of the MEANING say so themselves: auto-detect cannot run in a
     -- recording mode at all, so this press has to land in FRAME or it does nothing.
     sdec.capmode = 'frame'
   end
   return sdec.options_apply()
 end
 
--- THE PADLOCK'S ACTION: amber (auto) locks what was detected and goes green, green (locked)
+-- THE PADLOCK'S ACTION: amber (auto) locks the detected settings and goes green, green (locked)
 -- unlocks back to auto, red (nothing decoded) refuses with a reason. Either way it re-captures.
 function sdec.lock_toggle()
   -- LOCKING THE BAUD RATE CHANGES THE SAMPLE RATE, which is why this re-captures rather than
@@ -1942,9 +1938,9 @@ function sdec.lock_toggle()
     sdec.force_par, sdec.force_nstop, sdec.force_invert = nil, nil, nil
     sdec.autolock_defer()
     note = 'unlocked -- auto-detecting again, back to the top sample rate'
-    -- Unlocking disarms the streaming modes, so leave one rather than sit in a mode that can
-    -- no longer run. Same reasoning as options_auto(), and the mode change is set HERE for the same
-    -- reason: mode_exit() is a flush and the switch is part of what THIS press means.
+    -- Unlocking disarms the streaming modes, so leave one rather than sit in a mode that cannot run.
+    -- Same reasoning as options_auto(), and the mode change is set HERE for the same reason:
+    -- mode_exit() is a flush and the switch is part of what THIS press means.
     if sdec.mode_cur().needbaud then
       sdec.mode_exit('unlocked the baud rate')
       sdec.capmode = 'frame'
@@ -2135,11 +2131,11 @@ sdec.strm_absorb_s = sdec.strm_absorb_s or 1.0
 
 -- Arm the queued-press absorb after a run that held the interpreter.
 --
--- ARMED ON EVERY ENDING, INCLUDING 'stopped'. This used to return early when a press had been SEEN,
--- reasoning that nothing could be queued behind it -- true of one press, false of an operator, who
--- presses Capture, then TRIGGER, then Capture again. A finger on TRIGGER emits no blender event
--- while a panel-initiated run executes (measured, so the run ends at its own bounds
--- with both Capture presses unabsorbed -- each starting another uninterruptable recording.
+-- ARMED ON EVERY ENDING, INCLUDING 'stopped'. Returning early because a press was SEEN assumes
+-- nothing is queued behind it: true of one press, false of an operator, who presses Capture, then
+-- TRIGGER, then Capture again. A finger on TRIGGER emits no blender event while a panel-initiated run
+-- executes, so the run ends at its own bounds with BOTH Capture presses unabsorbed -- each starting
+-- another uninterruptable recording.
 function sdec.strm_absorb_arm()
   sdec.strm_stopped_by_press = nil
   sdec.strm_nabsorbed = 0

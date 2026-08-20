@@ -960,9 +960,9 @@ end
 
 -- Mute the panel's event popups for a capture. The pre-trigger reserve is a CIRCULAR sub-region, so
 --   [...]
--- THE LOG IS LEFT INTACT. Draining it was tried and is worse: eventlog.next CONSUMES and
--- eventlog.post cannot put an event back, so real events became generic "1005 User" entries,
--- multiplied per poll, and tripped 1707. Do not retry it.
+-- THE LOG IS LEFT INTACT. Draining it is worse: eventlog.next CONSUMES and eventlog.post cannot put
+-- an event back, so real events come out as generic "1005 User" entries, multiplied per poll, and
+-- trip 1707. Do not try it.
 function sdec.mute_events()
   return pcall(function() localnode.showevents = 0 end)
 end
@@ -997,9 +997,9 @@ function sdec.acq_fit(n, buf)
   return n
 end
 
--- Free and remake the capture buffer. Follows the project's object-lifetime
--- rule -- delete, nil, then create -- because creating over a live handle leaves
--- the old buffer allocated and unreachable until a power cycle.
+-- Free and remake the capture buffer. Follows the project's object-lifetime rule
+-- -- delete, nil, then create -- because creating over a live handle leaves the
+-- buffer beneath allocated and unreachable until a power cycle.
 function sdec.acq_make_buffer(n)
   pcall(function() sdec.trig_settle() end)
   if sdec.buf ~= nil then
@@ -1548,7 +1548,7 @@ end
 --   [...]
 -- exclusion is for a healthy gapless line, and headsusp is evidence this is not one. The final frame
 -- stays excluded -- the capture boundary halves it regardless. With no head this is ua_bad_interior,
--- so good captures still read 0. Measured 2026-08-19: '????UMPS OVER TH', note 4, ERR 1.
+-- so good captures still read 0. A real misaligned capture reads '????UMPS OVER TH', note 4, ERR 1.
 function sdec.ua_err_count(r, hb)
   if r == nil or r.errs == nil then return 0 end
   if hb == nil then hb = sdec.ua_head_bad(r) end
@@ -3494,11 +3494,11 @@ function sdec.ui_fill_solid(h)
   return ok
 end
 
--- Show or hide object `h`. THE ONLY WAY TO TAKE A RECT OR A LINE OFF THE GLASS, measured
+-- Show or hide object `h`. THE ONLY WAY TO TAKE A RECT OR A LINE OFF THE GLASS: recolouring one to
 --   [...]
--- painted 0x000A0D stayed plainly visible on the panel and its own fillfails counter read 0.
--- The reference lists OBJ_RECT and OBJ_LINE among setstate's allowable types, and both were
--- confirmed on the instrument. Counted in fillfails on refusal like every other display write.
+-- visible on the panel with its own fillfails counter reading 0.
+-- The reference lists OBJ_RECT and OBJ_LINE among setstate's allowable types, and both are confirmed
+-- on the instrument. Counted in fillfails on refusal like every other display write.
 function sdec.ui_setstate(h, st)
   if h == nil then return false end
   local ok = pcall(function() display.setstate(h, st) end)
@@ -5357,9 +5357,9 @@ function sdec.ck_progress(nbytes, nwin, nwin_est)
   return true
 end
 
--- Poll the TRIGGER key and record it as a stop request. True once a cancel is in force, INCLUDING
--- one seen by an earlier poll -- the blender's latch auto-resets on read, so a caller that polled
--- twice and expected the same answer would lose the press.
+-- Poll the TRIGGER key and record it as a stop request. True once a cancel is in force, INCLUDING one
+-- seen by a previous poll -- the blender's latch auto-resets on read, so a caller that polls twice and
+-- expects the same answer loses the press.
 function sdec.cancel_asked()
   if sdec.ck_stop then return true end
   if not sdec.cancel_pressed() then return false end
@@ -5772,7 +5772,7 @@ function sdec.options_auto()
   return sdec.options_apply()
 end
 
--- THE PADLOCK'S ACTION: amber (auto) locks what was detected and goes green, green (locked)
+-- THE PADLOCK'S ACTION: amber (auto) locks the detected settings and goes green, green (locked)
 -- unlocks back to auto, red (nothing decoded) refuses with a reason. Either way it re-captures.
 function sdec.lock_toggle()
   if sdec.busy then return false end
@@ -5883,9 +5883,9 @@ sdec.strm_absorb_s = sdec.strm_absorb_s or 1.0
 
 -- Arm the queued-press absorb after a run that held the interpreter.
 --   [...]
--- presses Capture, then TRIGGER, then Capture again. A finger on TRIGGER emits no blender event
--- while a panel-initiated run executes (measured, so the run ends at its own bounds
--- with both Capture presses unabsorbed -- each starting another uninterruptable recording.
+-- TRIGGER, then Capture again. A finger on TRIGGER emits no blender event while a panel-initiated run
+-- executes, so the run ends at its own bounds with BOTH Capture presses unabsorbed -- each starting
+-- another uninterruptable recording.
 function sdec.strm_absorb_arm()
   sdec.strm_stopped_by_press = nil
   sdec.strm_nabsorbed = 0

@@ -30,9 +30,9 @@ sdec.PAR_ODD  = 2
 -- searched. 5, 6 and 9 are excluded outright unless the operator asks for them, which is
 -- the "Data Bits: Auto (7/8)" versus "Auto (any width)" choice on the options form.
 --
--- The reason is NOISE TOLERANCE, and it was measured rather than assumed: the hostile sweep
--- was run both ways, and 5 of its 105 UART cases change. Every one of them changes the same
--- way. (The sweep's LIN cases cannot change, since LIN pins the width at 8.)
+-- The reason is NOISE TOLERANCE, measured rather than assumed: the hostile sweep run both ways
+-- changes 5 of its 105 UART cases, and every one changes the same way. (Its LIN cases cannot
+-- change, since LIN pins the width at 8.)
 --
 --   case                          7/8 only            any width
 --   60 spikes 5 V 8 wide          8N1, 2 err          9N1, 1 err   <- bytes all +256
@@ -432,8 +432,8 @@ function sdec.ua_run(rd, n, T, nbits, par, nstop, invert, tmin0)
 
       -- THE FIRST GENUINE IDLE. A pitch of two frame times or more is a gap no inter-byte
       -- spacing produces, so it is a message boundary -- and from there the framer is anchored
-      -- correctly whatever it was doing before. Only the FIRST one is recorded, because only
-      -- that one bounds the region a mid-byte capture start can have corrupted.
+      -- correctly whatever it did earlier in the capture. Only the FIRST one is recorded, because
+      -- only that one bounds the region a mid-byte capture start can corrupt.
       if r.idle1 == nil and prev ~= nil and (t0 - prev) >= 2 * framebits * T then
         r.idle1 = nf
       end
@@ -446,9 +446,9 @@ function sdec.ua_run(rd, n, T, nbits, par, nstop, invert, tmin0)
 
   -- A CAPTURE THAT BEGAN MID-BYTE corrupts the frames before the first idle and nothing after it.
   --
-  -- Measured on the instrument 2026-08-17, 8E1 at 9600 into the front terminals: the frames ahead
-  -- of the first idle came out at pitches of 11, 12 and 14.9 bit times instead of 13, and every
-  -- frame after it was exact. The cause is the anchor: for the first edge the mark run is only
+  -- Measured on the instrument, 8E1 at 9600 into the front terminals: the frames ahead of the first
+  -- idle come out at pitches of 11, 12 and 14.9 bit times instead of 13, and every frame after it
+  -- is exact. The cause is the anchor: for the first edge the mark run is only
   -- bounded BELOW, by the start of the capture, so two bit times of apparent mark is
   -- indistinguishable from a run of 1s in the middle of a byte -- and an armed capture legitimately
   -- starts a few samples before a real start bit, so the ambiguity cannot be resolved by requiring
@@ -482,10 +482,10 @@ end
 -- A capture of a continuously busy line starts and ends wherever the trigger and the buffer end
 -- put it, so the first and last frames are routinely sliced through the middle -- and a gapless
 -- stream has no idle for the framer to anchor on, so it also RESYNCHRONISES a few frames in.
--- Measured on the instrument 2026-08-16: every 9600-baud capture of a healthy line reported
--- ERR 1 or 2, with the errors in the first row, which coloured that row red on a signal with
--- nothing wrong with it. An error count that is never zero on good data is not a fault
--- indicator, it is decoration.
+-- Measured on the instrument: without the exclusion, every 9600-baud capture of a healthy line
+-- reports ERR 1 or 2 with the errors in the first row, colouring that row red on a signal with
+-- nothing wrong with it. An error count that is never zero on good data is not a fault indicator,
+-- it is decoration.
 --
 -- So the boundary region is excluded: `first` frames at the head and the last frame. Everything
 -- between them is real, and a genuine framing error there still shows.
@@ -526,7 +526,7 @@ end
 -- An identified head therefore counts IN FULL, and the resync exclusion is dropped across it: that
 -- exclusion is for a healthy gapless line, and headsusp is evidence this is not one. The final frame
 -- stays excluded -- the capture boundary halves it regardless. With no head this is ua_bad_interior,
--- so good captures still read 0. Measured 2026-08-19: '????UMPS OVER TH', note 4, ERR 1.
+-- so good captures still read 0. A real misaligned capture reads '????UMPS OVER TH', note 4, ERR 1.
 function sdec.ua_err_count(r, hb)
   if r == nil or r.errs == nil then return 0 end
   if hb == nil then hb = sdec.ua_head_bad(r) end
@@ -689,10 +689,10 @@ function sdec.ua_autoformat(rd, n, T)
     -- low). That is a physical fact about the wire, and a frame-count contest on one window
     -- should not be allowed to overturn physics on a 60 % margin.
     --
-    -- MEASURED ON THE INSTRUMENT 2026-08-16, and this is why the multiplier exists. Three
-    -- consecutive captures of the SAME 9600-baud line at 1 MS/s: the first decoded correctly,
-    -- the second flipped to inverted and returned 18 frames with ZERO errors, the third
-    -- inherited it. At 104 samples/bit a 19000-sample window holds only ~18 frames, and on
+    -- MEASURED ON THE INSTRUMENT, and this is why the multiplier exists. Three consecutive
+    -- captures of the SAME 9600-baud line at 1 MS/s: the first decodes correctly, the second
+    -- flips to inverted and returns 18 frames with ZERO errors, the third inherits it. At
+    -- 104 samples/bit a 19000-sample window holds only ~18 frames, and on
     -- that little evidence the inverted reading of ASCII text can out-score the correct one --
     -- because ASCII's always-zero top bit manufactures a periodic fake start edge nine bits
     -- after every real one. Self-consistent, confident, every byte wrong.
@@ -728,9 +728,9 @@ function sdec.ua_plausible(T, n)
   -- EVERY pulse is a whole number of bit times, so every observed width is at least
   -- one bit and the median is too: a candidate longer than the median pulse claims
   -- most pulses are shorter than a single bit. This is what rules out the long-bit-time
-  -- rescalings that a damaged capture otherwise rewards -- at 1 V of drift the fit was
-  -- right (10.36 samples against a true 10.42) but framed badly, and an 8x rescaling
-  -- framing one byte took over and reported 1200 baud.
+  -- rescalings that a damaged capture otherwise rewards: at 1 V of drift the fit is right
+  -- (10.36 samples against a true 10.42) but frames badly, and an 8x rescaling framing one
+  -- byte takes over and reports 1200 baud.
   if sdec.wmed ~= nil and sdec.wmed > 0 and T > 1.15 * sdec.wmed then return false end
   local fs = sdec.acq_fs or sdec.fs
   local b = fs / T
@@ -748,15 +748,15 @@ end
 -- catches 1/3 and 1/4 the same way. Not the median: all-0x00 is a nine-bit low run, so a median test
 -- rejected the truth (broke 'decodes all 0x00').
 --
--- IT IS A PRIOR ON REAL TRAFFIC, NOT A STRUCTURAL PROOF, and an earlier version of this comment
--- claimed otherwise. A payload can have no odd run at all: repeated 0xE6 at 8N1 with a 2-bit gap
--- gives runs of 2,2,2,6 -- 0 of 159 odd. Measured on that case and on 0x33/0xCC/0x0F/0x66/0x00 at
--- three gaps: the gate changes no answer for the worse, and fixes two (0xE6 gap 1 went from refused
--- to correct, 0xCC gap 1 from 19200 to 9600). The 0xE6 gap-2 capture does read as half rate -- but
--- identically with this gate disabled, so that is the documented harmonic ambiguity, not this.
+-- IT IS A PRIOR ON REAL TRAFFIC, NOT A STRUCTURAL PROOF. A payload can have no odd run at all:
+-- repeated 0xE6 at 8N1 with a 2-bit gap gives runs of 2,2,2,6 -- 0 of 159 odd. Measured on that case
+-- and on 0x33/0xCC/0x0F/0x66/0x00 at three gaps: the gate changes no answer for the worse and fixes
+-- two (0xE6 gap 1 refused -> correct, 0xCC gap 1 19200 -> 9600). The 0xE6 gap-2 capture does read as
+-- half rate, but identically with this gate disabled, so that is the documented harmonic ambiguity
+-- and not this.
 --
--- Both constants measured over 368640 paired decodes. A FRACTION, not zero: jitter leaves 6-13
--- stray odd multiples per ~1000 pulses and "exactly zero" repaired only 398 of 708 cases. Odd
+-- Both constants measured over 368640 paired decodes. A FRACTION, not zero: jitter leaves 6-13 stray
+-- odd multiples per ~1000 pulses, and demanding exactly zero repairs only 398 of 708 cases. Odd
 -- fraction is 0.011-0.013 at a halved T against 0.587-0.604 at the true one.
 --
 -- ONLY BIT RUNS MAY VOUCH, bounded by sdec.maxmult for the reason sig_fit already gives: a multiple
@@ -1123,11 +1123,11 @@ function sdec.ua_best_end(st)
   -- errors outnumber the good frames threefold: the candidate does not describe the
   -- capture, and ranking two such candidates against each other is ranking noise.
   --
-  -- Measured on the first waveform that made every candidate fail -- a LIN bus with no
-  -- break delimiter, where the merged break and start bit destroy the framing. The true
-  -- 19200 scored -20 and its own half scored -15, so the half won on -15 > -20 and was
-  -- reported as a confidently snapped 38400. The fit was right, snapped, and had the best
-  -- pulse-width q of any candidate; nothing about -15 was evidence.
+  -- Measured on a waveform where every candidate fails -- a LIN bus with no break delimiter,
+  -- where the merged break and start bit destroy the framing. The true 19200 scores -20 and its
+  -- own half scores -15, so the half wins on -15 > -20 and is reported as a confidently snapped
+  -- 38400. The fit is right, snapped, and has the best pulse-width q of any candidate; nothing
+  -- about -15 is evidence.
   --
   -- Both halves of the guard are load-bearing. `sc1 ~= nil` means the fit passed its own
   -- plausibility and q admission tests, so there is something worth protecting: when the
@@ -1155,8 +1155,8 @@ end
 -- indistinguishable from the stop bit that has to follow it: N data bits whose MSB is
 -- always 1 describe exactly the same cells as N-1 data bits with the stop bit one place
 -- earlier. Both readings are complete and consistent, so error scoring cannot separate
--- them, and the longer frame wins whenever noise gives it a single extra frame -- which
--- is how a spiked 9600 baud line came back as 9N1 with every byte 256 too large.
+-- them, and the longer frame wins whenever noise gives it a single extra frame -- which is how a
+-- spiked 9600 baud line comes back as 9N1 with every byte 256 too large.
 --
 -- The shorter reading is also almost always the physically right one. Nine-bit formats
 -- exist for multidrop address marking, where the ninth bit VARIES by design; a ninth
@@ -1237,8 +1237,8 @@ function sdec.ua_refine_width(r, rd, n, T)
 
   -- RE-DECODE rather than shifting the values in place. The shorter frame has a shorter
   -- framebits, so its resync point sits earlier and it can pick up a start edge the
-  -- longer reading stepped over -- shifting values would keep the longer reading's frame
-  -- count while claiming the shorter format.
+  -- longer reading steps over -- shifting values keeps the longer reading's frame count while
+  -- claiming the shorter format.
   local r2 = sdec.ua_run(rd, n, T, want, r.par, r.nstop, r.invert)
   if r2 == nil or r2.ngood < r.ngood then return r end
   r2.score  = sdec.ua_score(r2)
@@ -1295,15 +1295,13 @@ function sdec.ua_refine_parity(r, rd, n, T)
 
   -- SKIP THE CAPTURE BOUNDARIES, ALWAYS -- not only when headsusp says so.
   --
-  -- This test used to demand UNANIMITY, and its own defence against one frame vetoing a hundred and
-  -- forty was headsusp. That defence is conditioned on evidence this failure mode does not produce:
-  -- headsusp needs `nh > 0`, a framing ERROR in the head, and a misaligned head that happens to
-  -- frame cleanly as 8N1 produces NONE. Measured on hardware 2026-08-19 with v78 (7E1, gap = 0):
-  -- 4 of 8 captures came back with ZERO flagged frames and every byte carrying a spurious bit 7 --
-  -- 7E1 read as 8N1, parity absorbed into data bit 7, nothing flagged, because 8N1 is a genuinely
-  -- self-consistent reading of a 7E1 waveform. 47 of 48 bytes had bit 7 == the parity of their low
-  -- seven; the single exception was the FIRST frame. With gap = 0 there is often no idle1 either,
-  -- so headsusp had two independent reasons not to fire.
+  -- UNANIMITY WILL NOT DO, and headsusp cannot rescue it: headsusp needs `nh > 0`, a framing ERROR
+  -- in the head, and a misaligned head that happens to frame cleanly as 8N1 produces NONE. Measured
+  -- on hardware with v78 (7E1, gap = 0): 4 of 8 captures come back with ZERO flagged frames and every
+  -- byte carrying a spurious bit 7 -- 7E1 read as 8N1, parity absorbed into data bit 7, nothing
+  -- flagged, because 8N1 is a genuinely self-consistent reading of a 7E1 waveform. 47 of 48 bytes
+  -- have bit 7 == the parity of their low seven, the exception being the FIRST frame. With gap = 0
+  -- there is often no idle1 either, so headsusp has two independent reasons not to fire.
   local i0 = sdec.par_skiphead + 1
   if r.headsusp ~= nil and r.headsusp + 1 > i0 then i0 = r.headsusp + 1 end
   local i1 = r.nf - sdec.par_skiptail

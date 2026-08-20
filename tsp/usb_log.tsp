@@ -152,10 +152,10 @@ end
 -- Testing existence with file.open(path, MODE_READ) uses the FAILURE as the answer, and a failed
 -- open posts event 2205 at severity ERROR. The app sets localnode.showevents = eventlog.SEV_ERROR
 -- to suppress warning and info popups, so 2205 is precisely the severity that still raises a modal
--- box -- which made the SUCCESSFUL path (finding a free name) produce one on every Save.
+-- box -- which makes the SUCCESSFUL path (finding a free name) produce one on every Save.
 --
--- fs.is_file() answers the same question silently. Verified on firmware 1.7.17a, 2026-08-17:
--- eventlog.getcount() stayed 0 across both an existing and a missing path.
+-- fs.is_file() answers the same question silently. Verified on firmware 1.7.17a: eventlog.getcount()
+-- stays 0 across both an existing and a missing path.
 --
 -- Returns true or false, never nil. A PROBE THAT RAISES answers TAKEN: losing a name beats
 -- truncating a real file. A nil is NOT taken -- fs.is_file returning nil falls through to the open
@@ -210,10 +210,10 @@ function ulog.next_free(prefix, ext, limit)
   -- THE INDEX IS A STARTING POINT, NOT AN ANSWER.
   --
   -- The scan itself was the pathology: probing bytes000, bytes001, ... until file.open FAILED
-  -- used the failure as the "this one is free" signal, and every failure posts "2205 File not
-  -- found". Allocating bytes006 is seven opens, so repeated New Log presses generated errors
-  -- QUADRATICALLY and the panel raised a modal "Multiple errors have occurred" box over the hex
-  -- dump. Measured on the instrument 2026-08-16.
+  -- takes the failure as its "this one is free" signal, and every failure posts "2205 File not
+  -- found". Allocating bytes006 is seven opens, so repeated New Log presses generate errors
+  -- QUADRATICALLY and the panel raises a modal "Multiple errors have occurred" box over the hex
+  -- dump. Measured on the instrument.
   --
   -- Remembering where to start fixes that -- one open per allocation instead of N -- but it must
   --

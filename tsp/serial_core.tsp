@@ -483,7 +483,7 @@ end
 -- Fractional position of the threshold crossing at or before sample i.
 --
 -- Hysteresis makes this necessary: the trip is detected once the signal has passed
--- thr +- hyst, so thr itself was crossed one or more samples earlier -- several on
+-- thr +- hyst, so thr itself is crossed one or more samples before that -- several on
 -- a slow RS-232 edge. Walking back to the straddling pair keeps edge positions
 -- independent of the hysteresis setting, which matters because the bit-time fit
 -- reads them as timing.
@@ -1284,9 +1284,9 @@ end
 -- buffer.FILL_CONTINUOUS does not exist on firmware 1.7.17a -- assigning it raises. Data is
 -- unaffected, so only the modal box is the harm.
 --
--- THE LOG IS LEFT INTACT. Draining it was tried and is worse: eventlog.next CONSUMES and
--- eventlog.post cannot put an event back, so real events became generic "1005 User" entries,
--- multiplied per poll, and tripped 1707. Do not retry it.
+-- THE LOG IS LEFT INTACT. Draining it is worse: eventlog.next CONSUMES and eventlog.post cannot put
+-- an event back, so real events come out as generic "1005 User" entries, multiplied per poll, and
+-- trip 1707. Do not try it.
 function sdec.mute_events()
   return pcall(function() localnode.showevents = 0 end)
 end
@@ -1326,14 +1326,14 @@ function sdec.acq_fit(n, buf)
   return n
 end
 
--- Free and remake the capture buffer. Follows the project's object-lifetime
--- rule -- delete, nil, then create -- because creating over a live handle leaves
--- the old buffer allocated and unreachable until a power cycle.
+-- Free and remake the capture buffer. Follows the project's object-lifetime rule
+-- -- delete, nil, then create -- because creating over a live handle leaves the
+-- buffer beneath allocated and unreachable until a power cycle.
 function sdec.acq_make_buffer(n)
   -- NEVER REPLACE A BUFFER THE TRIGGER MODEL MAY STILL BE WRITING INTO.
   --
-  -- acq_free() settles first and acq_triggered() waits, but this function was reachable with a
-  -- model still armed -- acquire() calls it before any settle, and an armed capture that timed out
+  -- acq_free() settles first and acq_triggered() waits, but this function is reachable with a model
+  -- still armed -- acquire() calls it before any settle, and an armed capture that timed out
   -- or aborted leaves the model running. The model then stores into a buffer that has been deleted
   -- and replaced, which is what posts **4915 "attempting to store past the capacity of reading
   -- buffer"**: the store is measured against the wrong object. sdec.stop() needs the same discipline for
@@ -1588,8 +1588,8 @@ function sdec.acq_triggered(n, slope)
   -- NIL IS NOT A TRIGGER SOURCE, and it is checked here, before any instrument state is
   -- touched, so the refusal has nothing to undo. trigger.EVENT_DISPLAY is documented for the
   -- DMM6500, but on a firmware without it the constant reaches trigger.model.load() and the
-  -- blender stimulus below AS NIL -- where the front key vanishes silently and a ticked rear
-  -- BNC looks as though it had been chosen alone. acq_free() sets up its own capture.
+  -- blender stimulus below AS NIL -- where the front key vanishes silently and a ticked rear BNC
+  -- looks like a deliberate sole choice. acq_free() sets up its own capture.
   if sdec.trigmode == 'front' and trigger.EVENT_DISPLAY == nil then
     sdec.lasterr = 'no front-panel TRIGGER event on this firmware; captured free-running'
     return sdec.acq_free(n)
@@ -1691,7 +1691,7 @@ function sdec.acq_triggered(n, slope)
       dmm.digitize.analogtrigger.edge.level = sdec.thr
       dmm.digitize.analogtrigger.edge.slope = slope
     else
-      -- And OFF when it is not: a MODE_EDGE comparator left behind by an earlier 'edge'
+      -- And OFF when it is not: a MODE_EDGE comparator left behind by a previous 'edge'
       -- capture is instrument state the operator did not ask for, which is the same
       -- objection the blender release above makes.
       dmm.digitize.analogtrigger.mode = dmm.MODE_OFF
