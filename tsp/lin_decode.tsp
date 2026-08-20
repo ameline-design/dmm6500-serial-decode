@@ -1,6 +1,12 @@
 -- lin_decode.tsp -- LIN (Local Interconnect Network, ISO 17987) frame layer for the
 -- DMM6500 serial decoder (TSP / Lua 5.0.2).
 --
+-- NOT SHIPPED IN V1: tools/package_tspa.py MODULES omits this module, so the Options form offers
+-- no LIN and the View button never reaches the frame list.
+--
+-- THE CHECKSUM HAS NEVER BEEN CHECKED AGAINST A REAL FRAME -- hand-computed cases only
+-- (notes/COVERAGE-session17.md). Shipping this module ships an unverified decode.
+--
 -- Works entirely on the BYTE STREAM that uart_decode.tsp already produced. LIN is
 -- ordinary 8N1 underneath -- no parity, one stop bit, idle recessive (high) -- so
 -- selecting LIN on the options form forces 8N1 and normal polarity and leaves the
@@ -102,7 +108,7 @@ end
 -- ============================================================================
 -- The inverted eight-bit sum with the CARRY ADDED BACK -- modulo-255, not modulo-256. Pass
 -- pid for the enhanced checksum (LIN 2.x), nil for the classic one (LIN 1.x, and diagnostic
--- frames at any version).
+-- frames at any version). NEVER CHECKED AGAINST A REAL FRAME: hand-computed cases only.
 --
 -- sum stays <= 255 before every add and a byte is <= 255, so one subtraction restores the
 -- invariant; 255 - sum is the one's complement of a value in 0..255, which is what
@@ -149,8 +155,9 @@ function sdec.li_gapbits(r, i)
   return (b - a) / T
 end
 
--- Is byte i the break field? Value 0, a failed stop or parity bit, and a dominant
--- period longer than a whole frame.
+-- Is byte i the break field? Value 0, a flagged stop or parity bit, and a dominant period longer
+-- than any BYTE can be (sdec.li_minbreak bit times) -- not longer than a frame, which is ~34 bit
+-- times header-only and ~124 with eight data bytes.
 function sdec.li_break(r, i)
   if r == nil or r.vals == nil then return false end
   if r.vals[i] ~= 0 then return false end

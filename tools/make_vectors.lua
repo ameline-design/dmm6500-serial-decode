@@ -290,13 +290,13 @@ vec{id = 'v47', desc = 'v41 + impulse spikes at the amplitude ceiling',
       local o, by, nb = hello{baud = 9600, fs = 100000}
       return o, by, nb, function(rd, n) GEN_RESEED(4711); return GEN_SPIKES(rd, n, 12, 3.0, 2) end
     end}
--- Drift is TWO vectors because it makes two different claims, and one vector can
--- only test one of them. A sweep offline puts the knee at 0.7 V on a 3.3 V swing:
--- every byte survives to 0.6 V, bytes start being lost at 0.7 V, and the
--- "baseline unstable" warning appears at exactly the amplitude where loss
--- begins -- so the decoder never drops a byte silently. Both halves of that are
--- worth checking against real analog drift, and a single 1 V vector would have
--- checked only the second.
+-- Drift is TWO vectors because it has two failure modes and one amplitude tests one. 0.6 V over 1.5
+-- cycles decodes exactly and raises no warning; 1.0 V loses bytes and warns.
+--
+-- THE KNEE IS NOT AN AMPLITUDE. It depends on how many drift cycles fit the capture, and the
+-- "baseline unstable" gate is anti-correlated with correctness there: 0.6 V computes the CORRECT
+-- threshold and is refused, while 0.5 V and 0.8 V compute a wrong one and are accepted with zero
+-- framing errors. See the table in notes/HANDOFF.md under "the drift knee is not 0.7 V".
 vec{id = 'v48a', desc = 'v41 + 0.6 V drift (inside tolerance)', fs = 100000, fsv = 5.0,
     build = function()
       local o, by, nb = hello{baud = 9600, fs = 100000}
@@ -720,7 +720,8 @@ end
 -- asks for 8 x 300 = 2400 S/s and gets it. What the low end really costs is WINDOW TIME: at 8.33
 -- samples/bit a 20 000-sample capture is 240 bytes at every rate, but at 300 baud those 240
 -- bytes take 8 seconds of wall clock to arrive.
-vec{id = 'v80', desc = 'hello 300 8N1 (slowest standard rate)', fs = 3000, fsv = 5.0,
+vec{id = 'v80', desc = 'hello, 10.00 sa/bit render (300 8N1 at SRATE 3000; v41 is 10.42)',
+    fs = 3000, fsv = 5.0,
     build = function() return hello{baud = 300, fs = 3000} end}
 vec{id = 'v81', desc = 'hello 600 8N1', fs = 6000, fsv = 5.0,
     build = function() return hello{baud = 600, fs = 6000} end}

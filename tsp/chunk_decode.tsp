@@ -163,9 +163,9 @@ end
 --
 -- REFUSES rather than clamps when the window cannot hold enough frames. The case is
 -- real: force 1200 baud while fs is still 1 MSa/s and T is 833 samples, so one 12-bit
--- frame is 10 000 samples and three of them do not fit in the window at all -- stride
--- would go to zero and the loop would never advance. Refusing names the remedy, which
--- is the sample rate, and is the same shape as every other refusal in this app.
+-- frame is 10 000 samples and three of them do not fit in the window at all -- the overlap exceeds
+-- the window, so stride goes NEGATIVE and the loop would run backwards. Refusing names the remedy,
+-- which is the sample rate, and is the same shape as every other refusal in this app.
 function sdec.ck_geometry(T, framebits)
   local W = sdec.ck_win_n
   local ov = sdec.ck_overlap(T, framebits)

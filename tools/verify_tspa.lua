@@ -126,7 +126,7 @@ end
 
 local ok, perr = pcall(chunk)
 check('runs to completion, entry point included', ok, tostring(perr))
-check('it leaks no globals but sdec and ulog',
+check('no sig_/ua_/acq_/mi_ helper escaped to a global',
       (function()
          local extra, k = {}, nil
          for k in pairs(_G) do
@@ -327,8 +327,8 @@ sdec.built = false
 sdec.delfails = 0
 local rok, rwhy = sdec.start()
 check('with objects available the app builds normally again', rok == true, tostring(rwhy))
-check('and it has its full complement of buttons',
-      sdec.ui_btn ~= nil and table.getn(sdec.ui_btn) >= 6,
+check('and it has all nine buttons again',
+      sdec.ui_btn ~= nil and table.getn(sdec.ui_btn) == 9,
       tostring(sdec.ui_btn and table.getn(sdec.ui_btn)))
 
 print(string.format('%d passed, %d failed', pass, fail))

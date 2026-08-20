@@ -5199,7 +5199,11 @@ local function test_modes()
       end
       seen[v.c] = v.name
     end
-    check('three trigger sources, three distinct colours', true,
+    -- THE LOOP ABOVE IS THE ASSERTION -- it calls check(false) on a repeated colour. This line
+    -- reports the geometry alongside it, so it asserts the source COUNT rather than a literal true.
+    check('three trigger sources, three distinct colours', sdec.ui_trigsrc ~= nil
+          and sdec.ui_trigsrc.edge ~= nil and sdec.ui_trigsrc.free ~= nil
+          and sdec.ui_trigsrc.front ~= nil,
           string.format('%d labels, widest %d px, cell %d px',
                         3, math.max(sdec.ui_textw(sdec.ui_trigsrc.edge.name),
                                     sdec.ui_textw(sdec.ui_trigsrc.free.name),
@@ -6019,13 +6023,18 @@ local function test_modes()
   sdec.ui_refresh()
   -- '?' IS THE APP'S OWN UNCERTAINTY MARK, the one the BAUD cell uses for an unlocked rate: a rear
   -- INPUT is configured but NOT IN FORCE under free run, because free run means do not wait. The three
-  -- colours are spoken for by the three directions, so the marker is the text and the sentence is on
-  -- the note line -- which is where it always belonged.
-  check('a rear input ticked but IGNORED under free run is marked, not silently green',
+  -- colours are spoken for by the three directions, so the marker is the text and the sentence goes on
+  -- the note line.
+  check('a rear input set but IGNORED under free run is marked, not silently green',
         MD.text(sdec.ui_trig_t) == 'EXT TRIG IN?',
         string.format('%q', tostring(MD.text(sdec.ui_trig_t))))
-  check('and the note says so, which the code claimed but never did',
-        has(table.concat(sdec.ui_notes(), ' | '), 'ticked but IGNORED'),
+  -- THE NOTE MUST NAME THE CONTROL THAT SETS IT, and the control is an option FIELD -- Options > Rear
+  -- BNC, entries Off / Trig In / FC Out / In + FC Out. No OBJ_EDIT_CHECK exists anywhere in the app, so
+  -- a note saying "ticked" sends the operator looking for a checkbox there is none of. Asserted against
+  -- the field's own entry text rather than a hand-copied phrase, so the two cannot drift apart.
+  check('and the note names the field and the entry that set it',
+        has(table.concat(sdec.ui_notes(), ' | '), 'Rear BNC')
+        and has(table.concat(sdec.ui_notes(), ' | '), 'Trig In'),
         table.concat(sdec.ui_notes(), ' | '))
   -- THE DIRECTION IS THE FACT, and each has its own colour. 'EXT TRIG' named neither direction, so
   -- the cell could not distinguish a meter WAITING for a signal from one DRIVING another device.
@@ -6299,6 +6308,15 @@ local function test_modes()
   -- the failure would be silent in the worst way: pulsing a rear BNC nobody asked to be pulsed.
   sdec.allow_rebuild = true
   sdec.build_options()
+  -- THE NOTE AT ui_notes NAMES 'Rear BNC', SO THE CONTROL MUST BE THAT FIELD. Asserted here rather
+  -- than at the note, because opt_ext exists only once the options screen is built -- and a note that
+  -- said "ticked" would send the operator hunting a checkbox the app never creates.
+  check('the rear BNC control is an option FIELD',
+        MD.obj(sdec.opt_ext) ~= nil and MD.obj(sdec.opt_ext).kind == display.OBJ_EDIT_OPTION,
+        'kind = ' .. tostring(MD.obj(sdec.opt_ext) and MD.obj(sdec.opt_ext).kind))
+  check('...and the app creates no checkbox anywhere, on either screen',
+        MD.live(display.OBJ_EDIT_CHECK) == 0,
+        tostring(MD.live(display.OBJ_EDIT_CHECK)) .. ' live')
   local rt_ok, rk = true, nil
   for rk = 1, sdec.opt_rear_v.n do
     local want_ext, want_fc = sdec.opt_rear_v[rk][1], sdec.opt_rear_v[rk][2]

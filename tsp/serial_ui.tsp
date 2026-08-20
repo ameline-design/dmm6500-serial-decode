@@ -1135,10 +1135,11 @@ function sdec.ui_notes()
   if sdec.stickyerr ~= nil then add('NOTE: ' .. tostring(sdec.stickyerr)) end
 
   -- A SETTING THAT LOOKS APPLIED AND IS NOT: acq_triggered() skips blending under Free run,
-  -- because 'free' means do not wait -- so the checkbox stays ticked while the external trigger
-  -- does nothing. Same class as the 'parity was ASSUMED none' note below.
+  -- because 'free' means do not wait -- so the field still reads Trig In while the external trigger
+  -- does nothing. Same class as the 'parity was ASSUMED none' note below. The rear BNC is an option
+  -- FIELD, not a checkbox: no OBJ_EDIT_CHECK exists anywhere in the app.
   if sdec.trigext and sdec.trigmode == 'free' then
-    add('external trigger is ticked but IGNORED -- Free run means do not wait for anything')
+    add('Rear BNC = Trig In is set but IGNORED -- Free run means do not wait for anything')
   end
 
   -- NO RECORDING FORECAST ON THIS ROW. It used to add 'bounded at 8192 bytes -- ~2 s of this line,
@@ -2563,7 +2564,8 @@ function sdec.ck_status()
     if sdec.mode_why(md) ~= nil then return 'not armed -- see the note' end
     -- THE MAX FOR THIS MODE, stated before the capture rather than discovered after it. Frame
     -- mode shows its window in the row above (win N, which moves with the sample rate); the
-    -- streaming modes show their cap here, and 'no cap' is a real answer rather than a blank.
+    -- streaming modes show their cap here. Every mode with view = false has one -- there is no
+    -- uncapped mode -- so the fallback below is unreachable and names no control.
     if md.cap ~= nil then
       -- AND THAT NOTHING CUTS IT SHORT, which is the other half of what the operator needs BEFORE
       -- pressing: neither a button nor the TRIGGER key can (measured 2026-08-18). This is where that
@@ -2576,7 +2578,7 @@ function sdec.ck_status()
       -- not-running string has before the divider.
       return string.format('ready -- %d bytes to a file, no stop once started', md.cap)
     end
-    return 'ready -- no cap, until Stop or a quiet line'
+    return 'ready -- no cap'
   end
   local where = t.path or 'USB'
   local base = string.gsub(tostring(where), '^.*/', '')
