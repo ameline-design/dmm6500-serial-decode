@@ -20,7 +20,7 @@ The **front-panel TRIGGER key was meant to be the exception** — latched by the
 than delivered to the interpreter, so a running handler could see it. Measured 2026-08-18, it is not:
 the press does not reach the latch while a panel-initiated run executes, so **nothing makes a
 minutes-long press interruptible**, and what makes it acceptable is only that the run is bounded and
-says its cost beforehand. See **Cancelling a run: the TRIGGER key latch** below.
+says its cost beforehand.
 
 Measured over 50 button presses covering every control in every state:
 
@@ -54,7 +54,7 @@ compromise.** One press records a window, decodes all of it and files it: at 960
 recording plus ~110 s of decoding for 32 kB, or 8.5 s plus ~30 s for 8 kB. Decoding runs at ~300
 byte/s end to end and does not scale with the baud rate. `bench_panel.py` bounds such a press at
 **300 s**, which is a hang detector rather than a latency budget — the duration is the window size the
-operator chose, and nothing shortens it: see *Cancelling a run* below for why TRIGGER does not.
+operator chose, and nothing shortens it.
 
 ---
 
@@ -85,7 +85,7 @@ answer is flow control rather than a bigger buffer.
 
 The two differ only in size, at every rate, and the choice is a responsiveness trade rather than a
 capability: one press records a window, decodes it and files it, so `8 kB` reaches bytes in about a
-quarter of the time and loses a quarter as much if cancelled, while `32 kB` spends less of the run on
+quarter of the time, while `32 kB` spends less of the run on
 per-window overhead. Both are lossless.
 
 The capture buffer holds **2 800 000 readings** (`ck_bufmax`). A mode asks for whatever its ceiling
@@ -220,84 +220,13 @@ represented **1.054 s of signal**, and the 12 171 bytes decoded match 1.054 s ×
 So above ~19200 Bd, filling the buffer takes roughly `capacity / 100 000` seconds regardless of rate —
 about 17-20 s for every mode in the table.
 
-### Cancelling a run: the TRIGGER key latch, and why it does not reach the operator
+### Stopping a run: there is no control that does it
 
-> **Status, 2026-08-18: this mechanism works and cannot be triggered by a finger.** The plumbing below
-> is real — when the cancel event is delivered by a firmware trigger timer blended in as stimulus 2, a
-> run stops within one poll, keeps every byte decoded so far and files them (measured: fired 8 s into
-> an 8 kB run, `ck_cancel` true, `stopped` = `stopped`, 497 bytes kept, ended at 8.1 s against 20.5 s
-> uninterrupted). What does **not** happen is the key reaching it: pressed 20 % of the way through a
-> 32 kB decode, the run finished `full` and the latch was **empty** afterwards. The polls do run —
-> counters over a 20.5 s run show `ck_progress` called 15 times and `cancel_asked` 21 times.
->
-> The distinguishing detail, and the lead to test: the table below was gathered with
-> `bench_cancelkey.py` driving a **host-initiated** script, whereas every failure is a
-> **panel-initiated** run — the firmware executing a display button's event string. Presses may be
-> barred from generating trigger events inside a display event handler. The reference is consistent
-> with a state dependence: the key's action "depends on the instrument state" (3272), and running a
-> script selects the trigger-model measurement method, where the key means Initiate/Abort Trigger
-> Model (8060–8150).
->
-> So the panel promises no stop, and the manual says a recording runs to its own end.
-
-**The problem.** A decode long enough to need cancelling is a handler that has not returned, and a
-touch press is not delivered until it does. So the app cannot notice a Cancel button, and for a while
-the answer was to make the press *short* instead — one slice per press, which cost **twelve presses**
-to decode a full 32 kB recording.
-
-**What the latch does.** The front-panel TRIGGER key generates `trigger.EVENT_DISPLAY`, and an event
-blender is a latching detector for it: "if one or more trigger events were detected since the last time
-`trigger.blender[N].wait()` or `.clear()` was called, this function returns immediately" (ref 14-334).
-The latch lives in firmware, so the interpreter being busy is irrelevant. Measured on 1.7.17a by
-`tools/bench_cancelkey.py`, **against a host-initiated script** — which is the caveat above:
-
-| Question | Measured |
-|---|---|
-| Does a press latch with **nothing armed**? | **Yes** — latched 2.9 s after the press, no waiting trigger model needed |
-| Does the latch survive a **busy interpreter**? | **Yes** — pressed during a deliberate 10 s Lua spin, seen by the poll after it. Twice |
-| Does `wait(t)` block, like `display.waitevent`? | **No** — returned in 1.1 ms at `t` = 0.001, 50.1 ms at `t` = 0.05 |
-| What does a poll cost? | **1.06 ms**, amortised over 200 polls |
-| Does it disturb anything? | **No** — 0 event-log entries across every run |
-
-The app uses **blender 2**, because `acq_triggered()` owns blender 1 for the trigger-source OR. The
-poll timeout is **1 ms and never zero**: a zero timeout is exactly how `display.waitevent` wedges this
-instrument, and one API behaving that way is reason enough not to hand a zero to another.
-
-**Cancel latency is one decode window.** The poll sits in the progress hook, which runs once per
-window: 20 000 samples × 48 µs = **0.96 s** worst case during a decode, and 0.5 s during a recording,
-where the acquisition loop polls twice a second. A press is never lost in between, because the latch
-holds it until read.
-
-**A press before the run must not cancel it**, so every run calls `.clear()` first — the press that
-stopped the *last* run is still sitting in the latch, unread, because nothing polls it while the panel
-is idle.
-
-**A cancel during the recording stops the recording, not the bytes.** It ends the acquisition and goes
-on to decode what was captured, which is what the old Capture-to-stop press did; a second press then
-stops the decode too.
-
-#### Two mechanisms that do not work, and one that does for the harness
-
-- **`*TRG` (`trigger.EVENT_COMMAND`) cannot cancel a running handler.** Measured: sent 2 s into a 6 s
-  busy loop, it never reached the latch, because the command queue is only drained once the
-  interpreter is idle. It is therefore deliberately *not* wired as a second stimulus — a stimulus that
-  can only fire between runs, where `.clear()` discards it, would read as coverage and be none.
-- **`display.waitevent()`** wedges the instrument; see below.
-- **A trigger timer does fire mid-script**, because it is firmware: measured firing **2.019 s into a
-  6 s busy loop**. `bench_panel.py` wires `trigger.EVENT_TIMER1` as a temporary second stimulus so the
-  sweep can test a cancel with no finger on the panel, and removes it afterwards.
-
-#### What the cancel key changed elsewhere
-
-| Setting | Was | Now | Why |
-|---|---|---|---|
-| `strm_press` | `true` — a press per slice | `false` — one press does the job | a long press is stoppable now |
-| `strm_maxsec` | 20 s | 1200 s | 20 s was a wait an operator would tolerate without a stop control; it silently truncated every recording slower than 9600 baud. 1200 s is where `stream_maxwait` already caps, so the two bounds agree and neither is a hidden cap — a full 32 kB window is 1092 s at 300 baud |
-| Decode presses for a full buffer | 455, then 17, then 12 | **1** | the chunking survives only as the cancel granularity |
-
-The press-driven path is still in the app (`sdec.strm_press = true`) and still tested, because it is
-the fallback for a firmware whose blender cannot latch the key — there, chunking is the only way to
-stay stoppable.
+A decode long enough to want stopping is a handler that has not returned, and a touch press is
+not delivered until it does — so the panel cannot offer a control, and the front-panel TRIGGER
+key does not deliver `trigger.EVENT_DISPLAY` while a panel-initiated run executes. A run
+therefore lasts as long as its size requires. That is why the size is chosen before the press and
+why the panel states the byte ceiling and shows a progress bar rather than an estimate.
 
 #### The flow-control loop's bound
 
@@ -339,9 +268,8 @@ across two files*, not truncated.
 > `NewLog`'s "closed *file* — the next capture starts a new file" note and with the per-capture
 > eviction rules. That is a design change rather than a fix, so it is recorded here and not made.
 
-They matter most on a firmware where the cancel does not work at all. If the event blender or
-`trigger.EVENT_DISPLAY` is missing, `cancel_ok` is false, `cancel_pressed()` answers false for ever,
-and these two are the only exits the loop has.
+These two bounds are the only exits the loop has, so they are what keeps a talkative device from
+holding the panel indefinitely.
 
 #### The idle watchdog and remembered levels
 
@@ -359,8 +287,7 @@ worse than a long one.
 
 **`display.waitevent(0)` blocks and wedges the instrument. Do not use it.** The reference documents it
 as `<object id>, <sub id> = display.waitevent([timeout])`, and the instrument's own display example
-polls it with a 0 timeout inside a long loop to catch a Stop press -- the shape that would let a long
-operation stay cancellable.
+polls it with a 0 timeout inside a long loop to catch a Stop press.
 
 On firmware 1.7.17a a 0 timeout does not mean "return immediately with whatever is pending". With no
 waitevent-enabled object to report, it waits: the TSP interpreter stops answering, the control socket

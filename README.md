@@ -28,7 +28,7 @@ What that soak does **not** cover: it is depth rather than breadth — 43 stimul
 times, no front-panel interaction (that is `hw-panel`'s job), and one power cycle rather than many.
 
 **Nothing stops a long job early — there is no working stop control.** A touch press cannot be
-delivered while a script runs, so the app cannot show a Cancel button, and the front-panel TRIGGER key
+delivered while a script runs, so the panel cannot offer a stop control, and the front-panel TRIGGER key
 does not fill the gap: it does **not** deliver `trigger.EVENT_DISPLAY` while a panel-initiated run is
 executing. So a recording runs for its stated time and cannot be interrupted; decide the size before
 pressing.
@@ -80,7 +80,7 @@ python3 tools/release_sweep.py --offline
 |---|---|
 | `lint` `parse` | Lua 5.0.2 incompatibilities; `luac -p` on every module |
 | `unit` | 1,044 offline tests — decoder, UI, state machine, file paths, every visible ASCII glyph |
-| `unit-cancel` | the TRIGGER-key cancel latch, one-press recordings, both window sizes, the flow-control loop |
+| `unit-cancel` | one-press recordings, both window sizes, and the flow-control loop running with no interaction |
 | `stress` | hostile signals: never silently **wrong**, never **raises** |
 | `unit-analog` | the bench cases at the app's own sample rates, swept over sampling phase, jitter, noise and where the capture window opens |
 | `unit-phasesweep` | every stimulus vector × capture start × phase/jitter/noise, sharded across the cores — no raise, no result without a format, no wrong byte among those ERR calls trustworthy |
@@ -93,7 +93,7 @@ python3 tools/release_sweep.py --offline
 | `hw-matrix` | on the bench, through the app's own Capture button: six frame formats, the standard rate ladder, a 1 kB non-repeating payload, three logic swings, twelve DC offsets |
 | `hw-payloads` | fourteen distinct payloads covering every byte value 0–255, with the fox and a random vector also driven at 115 200 and 250 000 |
 | `hw-odd-rates` | nineteen **non-standard** baud rates — 900, 1500, 3600, 8123, 29127, 104857 … |
-| `hw-panel` | every button in every state, with the panel grabbed **before and after each press** and differenced by region — including a one-press recording and a cancel delivered mid-handler by a trigger timer, which is the only way a harness can exercise the cancel path at all |
+| `hw-panel` | every button in every state, with the panel grabbed **before and after each press** and differenced by region — including a one-press recording |
 | `hw-break` | degenerate signals and contradictory settings — no signal, DC only, all-`0x00`/`0xFF`/`0x55`, a break, 60 mV of swing, 19 Vpp, rates past the ceiling, and six wrong forced settings. A refusal with a reason passes; confident garbage does not |
 
 `hw-panel` is the one worth understanding: it checks six things per press — that the handler does not

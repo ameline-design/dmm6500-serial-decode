@@ -214,11 +214,6 @@ here: the time your *device* takes to send that many bytes, and the meter's deco
 times more — 8 kB is a couple of seconds on the wire and around half a minute to decode. A single
 number would be reassuring and wrong, so what you get is the exact byte ceiling and a progress bar.
 
-**The app's own side of this is sound,** which is why it is worth fixing rather than accepting: when
-the identical cancel is delivered by a firmware timer instead of a finger, the run stops inside a
-second, keeps every byte decoded up to that point, and files them. What is missing is a route from a
-key press to that mechanism.
-
 **What does bound a run,** so it can never hold the panel indefinitely:
 
 - the byte ceiling for the mode — 8192 or 32768;

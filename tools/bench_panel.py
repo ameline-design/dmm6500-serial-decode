@@ -168,14 +168,19 @@ def count_real_events(emsg):
 # the 49 px firmware title bar, so a diff can be attributed to the thing that owns those pixels
 # rather than reported as "something changed somewhere".
 #
-# The MODE cell is the LEFT cell of the note row, not part of the field strip -- ui_note_val_x = 92
-# is where the note text starts and everything left of it is the mode name. They are separate
-# regions because Mode and the notes change independently.
+# The LEFT cell of the note row is the TRIGGER SOURCE, not the mode. It held mode names once, and this
+# map still called it 'mode' with a stale ui_note_val_x = 92 long after serial_ui.tsp moved the
+# boundary to 112 to fit 'Trigger key' (serial_ui.tsp:175). That drift made three checks demand
+# repainted pixels in a cell Mode does not own: 7 presses of the 2026-08-20 release sweep reported
+# 'STALE DISPLAY: mode did not repaint (0 px)' while the handler returned true and the mode DID
+# advance. A region map naming the wrong owner reports a defect in the app for a defect in itself.
+# The mode is shown in the SCREEN TITLE ('SERIAL DECODE - 240B FRAME', ui_title_text), so that is the
+# region a Mode press must repaint. `a3['mode']` elsewhere is the parsed STATE, a different namespace.
 REGIONS = [
     ('title',   0,   0,  800,  49),
     ('fields',  0,  49,  800,  85),   # BAUD FORMAT IDLE LOGIC THRESH SA/BIT RATE BYTES ERR FIT
-    ('mode',    0,  85,   92, 107),   # FRAME / 32 kB
-    ('note',   92,  85,  800, 107),   # the one-note cell and its (+N more) marker
+    ('trigsrc', 0,  85,  103, 107),   # Start bit / Free run / Trigger key, up to the rule at 103
+    ('note',  112,  85,  800, 107),   # the one-note cell and its (+N more) marker
     ('dump',    0, 107,  800, 377),   # decoded bytes, whichever view is showing
     ('status',  0, 377,  800, 400),   # view, page x/n, byte range, window, log file, EXT TRIG
     ('buttons', 0, 415,  800, 480),   # the six along the bottom: static within a screen
@@ -801,7 +806,7 @@ def run_sequence(p, g, a):
         for k in range(3):
             _, a3 = p.press('Mode/%d@%d' % (k + 1, baud), 'sdec.mode_cycle',
                             ('mode advances', lambda b2, a4: a4['mode'] != b2['mode']),
-                            paints=['mode'])
+                            paints=['title'])
             modes.append(a3['mode'])
         print('      modes visited: %s' % ' -> '.join(modes))
         if modes != ['frame', 'sml', 'med', 'frame']:
@@ -836,9 +841,16 @@ def run_sequence(p, g, a):
     p.setup('sdec.ck_running, sdec.ck_stop = true, false '
             'sdec.ck_job, sdec.strm_recording = nil, nil '
             "sdec.capmode = 'med' pcall(function() sdec.ui_refresh() end)")
+    # STOPPING A RUN KEEPS THE MODE, so this asserts the stop and NOT a mode change. It used to expect
+    # mode == 'frame', which contradicts the contract at serial_app.tsp:2295: the running branch of
+    # mode_cycle stops the capture and deliberately leaves capmode alone. And because the mode does not
+    # change, the TITLE cannot change either -- so this one case paints the STATUS row (measured 2910 px
+    # against the title's 0) while the idle transitions above paint the title. Both were reported as app
+    # defects by an obsolete expectation and a mis-owned region.
     p.press('Mode/latched', 'sdec.mode_cycle',
-            ('Mode gets out and leaves no flag set',
-             lambda b2, a3: a3['mode'] == 'frame'), paints=['mode'])
+            ('Mode stops the run and stays in its selected mode',
+             lambda b2, a3: a3['mode'] == 'med' and a3['status'] == 'stopped'),
+            paints=['status'])
     p.setup('sdec.stickyerr = nil pcall(function() sdec.ui_refresh() end)')
 
     # ---- Capture in a recording mode: ONE press does the whole job ------------------------------
@@ -858,9 +870,15 @@ def run_sequence(p, g, a):
     p.setup("sdec.capmode = 'sml' pcall(function() sdec.ui_refresh() end)")
     st = p.state()
     p.note('8 kB: mode_suits = %s at %s Bd' % (st.get('suits'), st.get('force')))
+    # THE MODE STAYS WHERE IT WAS PUT. This expected mode == 'frame' afterwards, which is the behaviour
+    # serial_app.tsp:2226-2236 deliberately removed: a recording that finished used to move the operator
+    # to a mode they had not chosen, and with the capture mode now in the TITLE BAR that is a large
+    # caption changing itself. A recording mode is a SETTING; the Mode button is the only thing that
+    # moves it. So the assertion is that the press recorded and filed without error and left the mode
+    # alone -- which is the contract the app actually implements.
     p.press('Capture/8kB-oneshot', 'sdec.capture',
-            ('one press recorded, decoded and filed it -- and left FRAME behind it',
-             lambda b2, a3: a3['status'] != 'error' and a3['mode'] == 'frame'),
+            ('one press recorded, decoded and filed it, leaving the mode as set',
+             lambda b2, a3: a3['status'] != 'error' and a3['mode'] == 'sml'),
             timeout=600)
     nb = p.d.q('print(tostring(sdec.ck_tot and sdec.ck_tot.nf))')
     job = p.d.q('print(tostring(sdec.ck_job ~= nil))')
@@ -923,7 +941,7 @@ def run_sequence(p, g, a):
             "trigger.timer[1].reset()")
     p.press('Mode/rec-exit', 'sdec.mode_cycle',
             ('no run flag survives the press',
-             lambda b2, a3: a3['status'] != 'stopping'), paints=['mode'])
+             lambda b2, a3: a3['status'] != 'stopping'), paints=['title'])
     p.to_frame()
 
     # ---- options screen ------------------------------------------------------------------------
