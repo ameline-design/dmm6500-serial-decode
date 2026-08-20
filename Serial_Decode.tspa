@@ -2170,6 +2170,8 @@ end
 sdec.relock_badfrac   = 0.25     -- interior frames in error before the lock is doubted
 sdec.relock_minframes = 8        -- fewer frames than this and a bad fraction is not evidence
 
+sdec.force_conflict = sdec.force_conflict or 'ask'
+
 -- Fraction of INTERIOR frames that failed, or nil when there are too few to judge. Interior, because
 -- head resync and a clipped tail fail on healthy captures too.
 function sdec.ua_badfrac(r)
@@ -2180,6 +2182,9 @@ function sdec.ua_badfrac(r)
   return nin / ninter
 end
 
+-- Runs the whole chain on an already-acquired capture. serial_core.acquire()
+-- leaves the levels, edges and idle level in place; this adds bit timing,
+-- format and bytes. Returns ok, reason.
 function sdec.decode()
   if sdec.smp == nil then return false, 'nothing captured' end
   local ok, why = sdec.decode_from(sdec.smp, sdec.nread)
@@ -2197,9 +2202,19 @@ function sdec.decode()
   local ok2, why2 = sdec.decode_from(sdec.smp, sdec.nread)
   local bf2 = sdec.ua_badfrac(sdec.res)
   if ok2 and bf2 ~= nil and bf2 < sdec.relock_badfrac and sdec.baud ~= nil then
-    sdec.relocked = string.format('%g baud fit nothing -- unlocked, and this capture reads %.0f',
-                                  was, sdec.baud)
-    return ok2, why2
+    local found = sdec.baud
+    if sdec.force_conflict == 'adopt' then
+      sdec.relocked = string.format('%g baud fit nothing -- unlocked, and this capture reads %.0f',
+                                    was, found)
+      return ok2, why2
+    end
+    sdec.force_baud = was
+    sdec.res = nil
+    sdec.rate_offer, sdec.rate_offer_from = found, was
+    sdec.rate_refused = string.format(
+        '%g baud fits nothing -- this capture reads %.0f. Options > Baud 0 restores detection.',
+        was, found)
+    return false, string.format('%g baud fits nothing; this capture reads %.0f', was, found)
   end
   sdec.force_baud = was
   sdec.relocked = nil
@@ -3678,6 +3693,7 @@ function sdec.ui_notes()
   if sdec.lognote ~= nil then add(tostring(sdec.lognote)) end
   if sdec.strm_releveled ~= nil then add(tostring(sdec.strm_releveled)) end
   if sdec.relocked ~= nil then add(tostring(sdec.relocked)) end
+  if sdec.rate_refused ~= nil then add(tostring(sdec.rate_refused)) end
 
   local md = sdec.mode_cur()
   if not md.view then
@@ -5347,6 +5363,26 @@ function sdec.cancel_asked()
   return true
 end
 
+-- USE THE DETECTED RATE. Clears the lock instead of writing the detected number into it: detection
+-- found this rate unaided and will find it again, whereas locking the number freezes one measurement
+-- and would mislead the next capture on a different line. This is the same state typing 0 into
+-- Options > Baud produces, reached in one call.
+function sdec.rate_accept()
+  if sdec.rate_offer == nil then return false, 'no rate was offered' end
+  sdec.force_baud = nil
+  sdec.rate_offer, sdec.rate_offer_from, sdec.rate_refused = nil, nil, nil
+  return sdec.capture()
+end
+
+-- KEEP THE RATE THE OPERATOR SET. The question goes; the lock and the refusal both stand, so the panel
+-- does not fall back to looking like an ordinary empty capture with nothing to explain it.
+function sdec.rate_decline()
+  if sdec.rate_offer == nil then return false, 'no rate was offered' end
+  local why = sdec.rate_refused
+  sdec.rate_offer, sdec.rate_offer_from = nil, nil
+  return true, why
+end
+
 -- The Capture button handler: start a capture, or stop or step one already in progress. Fully
 -- guarded, and returns a verdict rather than raising.
 function sdec.capture()
@@ -5364,6 +5400,7 @@ function sdec.capture()
 
   if sdec.press_absorbed('Capture') then return true end
   sdec.relocked = nil
+  sdec.rate_offer, sdec.rate_offer_from, sdec.rate_refused = nil, nil, nil
   if sdec.busy then
     sdec.lasterr = 'previous capture did not finish (aborted?) -- starting a new one'
     pcall(function() ulog.line(sdec.lasterr) end)

@@ -138,12 +138,25 @@ def num(v, dflt=None):
         return dflt
 
 
-def judge(res, notes, hexs, accept, want_bytes=None):
+def judge(res, notes, hexs, accept, want_bytes=None, want_baud=None):
     """-> (ok, verdict). `accept` is a set of the outcomes this case tolerates."""
     if 'fail' in res:
         return False, 'HARNESS %s' % res['fail']
     if not res['ok']:
         return False, 'RAISED'
+
+    # 'adopted' IS CHECKED ON THE STATE, NOT ON THE BYTES, and that distinction is why this exists.
+    # Demanding byte-exactness after Use Detected Rate failed on the first hardware run for a reason
+    # that had nothing to do with the feature: the re-capture opened mid-byte, so three head bytes were
+    # misaligned and 2 frames flagged -- an ordinary capture artefact every other case here tolerates.
+    # What must be true is that the question was retired and the app really did move to the rate it
+    # offered; the byte outcome is then judged by the same rules as any other capture.
+    if 'adopted' in accept:
+        if res['offer'] != 'nil':
+            return False, 'still asking after Use Detected Rate (offer %s)' % res['offer']
+        got = num(res['baud'], 0) or 0
+        if want_baud is None or abs(got - want_baud) > want_baud * 0.01:
+            return False, 'accepted but decoded at %s, not the offered %s' % (res['baud'], want_baud)
     nev = real_events(res['events'])
     if nev:
         return False, 'LOGGED %d: %s' % (nev, res['events'][:60])
@@ -360,14 +373,21 @@ def cases(g, d, a):
         force(baud=baud, nbits='nil', par='nil', nstop='nil', invert='nil')
         d.exec('sdec.capture()')
 
+    # 19200, NOT 4800, AND THAT IS MEASURED ON THIS BENCH. Only a rate the app can PROVE wrong raises an
+    # offer, and the two directions are not symmetric on the v80 waveform: forcing 2x relocks, while
+    # forcing half stays under the 0.25 interior-bad gate and merely warns ('bytes may be WRONG if the
+    # device runs at 9600 baud, 2x the 4800 you set'). Written with 4800 first, both cases below would
+    # have answered a question that was never asked and failed for that reason rather than a real one.
+    #
     # USE DETECTED RATE -> the lock is dropped, detection runs, and the bytes are exact. This is the
     # outcome the old 'relocked' path reached on its own; the difference is that a person chose it.
     C.append(('accept-detected-rate', 'wrong forced rate REFUSED, then Use Detected Rate',
-              lambda: refuse_first('4800'), {'exact'}, b'Hello, World!'))
+              lambda: refuse_first('19200'), {'exact', 'flagged', 'adopted'}, b'Hello, World!',
+              9600))
     # CANCEL -> the operator's rate stands and so does the refusal. 'refuse' rather than 'offer'
     # because answering retires the offer: the sentence must survive, the question must not.
     C.append(('decline-detected-rate', 'wrong forced rate REFUSED, then Cancel',
-              lambda: refuse_first('4800'), {'refuse'}, None))
+              lambda: refuse_first('19200'), {'refuse'}, None))
     C.append(('force-7bit-on-8', '8N1 wire, width FORCED to 7',
               lambda: (arb(9600), force(baud='nil', nbits='7', par='nil',
                                         nstop='nil', invert='nil')),
@@ -464,10 +484,14 @@ def main():
               'not.\n' % len(C))
         print('%-20s %-5s %7s %-46s %s' % ('CASE', '', 'secs', 'VERDICT', 'accepts'))
         print('-' * 108)
-        for name, desc, setup, accept, want in C:
+        # A CASE MAY CARRY A SIXTH FIELD, the rate it expects the app to have moved to. Optional rather
+        # than added to all thirty, so one case that needs it does not churn twenty-nine that do not.
+        for case in C:
+            name, desc, setup, accept, want = case[:5]
+            want_baud = case[5] if len(case) > 5 else None
             setup()
             res, notes, hexs = press(d, name)
-            ok, verdict = judge(res, notes, hexs, accept, want)
+            ok, verdict = judge(res, notes, hexs, accept, want, want_baud)
             print('%-20s %-5s %7s %-46s %s'
                   % (name, 'ok' if ok else 'BAD',
                      '%.2f' % res.get('secs', 0) if 'fail' not in res else '-',
