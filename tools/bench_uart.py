@@ -415,6 +415,50 @@ JP_HEADSKIP = 12
 JP_TAILSKIP = 1          # the buffer end slices the last frame the same way
 
 
+def head_damage(hexs, headsusp):
+    """How far a misaligned head ACTUALLY reaches: the last unrecoverable frame inside headsusp.
+
+    WHY THIS EXISTS, AND WHY TRIMMING BY headsusp WAS WRONG. Every caller used to slice
+    `hexs[2 * headsusp:]` before judging. But headsusp is the region BEFORE THE FIRST IDLE GAP, not a
+    count of damage -- uart_decode.tsp:506 says so in as many words: "headsusp itself is the region
+    before the first gap, not a count of damage, so quoting it over-claims." The app learned this in
+    session 19b, when the panel printed 'the first 4 bytes are misaligned' beside ERR 1, and
+    sdec.ua_head_bad() was added as the ONE place that narrows headsusp to the frames actually hurt.
+    The panel got that correction. The bench judge did not, and kept trimming by the raw region.
+
+    WHAT THAT COST, measured on the 2026-08-19 soak: five laps of 55 failed as
+    'capture too short to judge (1 B, 0 judged) after a FLAGGED 226-byte head' on lorem at 115200 and
+    250000. The decode was CORRECT in every one of them -- the surviving hex reads 4C6F72656D20697073
+    756D20646F6C6F722073, "Lorem ipsum dolor s" -- and the app's own note said only 3 to 5 bytes were
+    misaligned. The judge had thrown away 226 of 230 good bytes and then failed the point for being
+    too short. A harness that invents failures is worse than no harness, because it spends the next
+    morning being investigated.
+    (v71 is gapless, so its first idle gap is the arb LOOP SEAM ~1024 bytes away and headsusp can be
+    the whole capture; v80 loops every 13 bytes, so its headsusp is bounded. That is the entire reason
+    the same baud rate passed on one vector and failed on the other.)
+
+    COMPUTED HOST-SIDE rather than read from the instrument, deliberately: ua_head_bad's definition is
+    "the last flagged frame at or before headsusp", and an unrecoverable frame is already reported as
+    '??' in the hex dump. So the figure is derivable from what the bench already has, and no app
+    change or reload is needed to fix a harness defect.
+
+    THE ONE WAY THIS DIFFERS FROM ua_head_bad, stated because it matters: a frame can be FLAGGED and
+    still carry a value -- a parity error, say -- and such a frame prints its hex rather than '??'.
+    So this can under-count relative to the instrument's own figure. It is still strictly closer than
+    headsusp, which over-counts by up to the whole capture, and under-trimming is the safe direction:
+    a damaged byte left inside the body is judged and can fail the point, whereas an over-trim
+    silently discards good evidence. -> int, 0 if nothing in the head is unrecoverable.
+    """
+    if not headsusp or headsusp < 1:
+        return 0
+    frames = [hexs[i:i + 2] for i in range(0, len(hexs), 2)]
+    last = 0
+    for i in range(min(headsusp, len(frames))):
+        if frames[i] == '??':
+            last = i + 1
+    return last
+
+
 def runs_of(frames):
     """Every maximal run of non-flagged frames, as (start_index, [frames])."""
     out, cur, start = [], [], 0

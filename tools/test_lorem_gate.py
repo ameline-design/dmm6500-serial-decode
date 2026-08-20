@@ -219,6 +219,31 @@ def main():
         for w in FAILED:
             print('  - %s' % w)
         return 1
+    # ------------------------------------------------------------------
+    print('\n-- head_damage: trim by the DAMAGE, never by the suspect region --')
+    # THE DEFECT THIS PINS, measured on out/soak/2026-08-19T20-32-34: five laps of 58 failed as
+    # 'capture too short to judge (1 B, 0 judged) after a FLAGGED 226-byte head' on lorem at 115200
+    # and 250000. Every one was a CORRECT decode -- the surviving hex read "Lorem ipsum dolor s" --
+    # and the app's own note said 3 to 5 bytes were misaligned. The judge had been trimming by
+    # r.headsusp, which uart_decode.tsp:506 states outright is "the region before the first gap, not
+    # a count of damage". v71 is gapless, so its first gap is the arb loop seam ~1024 B away and
+    # headsusp can cover the whole capture; v80 loops every 13 B, which is why the same baud rate
+    # passed on one vector and failed on the other.
+    clean = '41' * 250
+    ck(BU.head_damage(clean, 226) == 0,
+       'a clean head with headsusp 226 trims NOTHING (was: 226 of 230 bytes discarded)')
+    ck(BU.head_damage(clean, 0) == 0, 'headsusp 0 trims nothing')
+    ck(BU.head_damage(clean, None) == 0, 'headsusp absent trims nothing')
+    ck(BU.head_damage('??' * 3 + '41' * 250, 200) == 3,
+       'three unrecoverable frames then good data -> trim 3')
+    ck(BU.head_damage('41' * 7 + '??' + '41' * 250, 200) == 8,
+       'a lone bad frame at index 7 -> trim 8, i.e. through it')
+    # BOUNDED BY headsusp, which is the whole point of taking the minimum: damage AFTER the first
+    # idle gap is interior corruption and must be judged, not trimmed away as head debris.
+    ck(BU.head_damage('41' * 50 + '??' + '41' * 200, 10) == 0,
+       'a bad frame BEYOND headsusp is interior, not head -- trim 0')
+    ck(BU.head_damage('??' * 5, 200) == 5, 'headsusp past the end clamps to the frames present')
+
     print('all lorem-gate tests passed')
     return 0
 

@@ -313,7 +313,8 @@ def verdict(res, hexs):
     nf = int(num(res, 'nf', 0))
     if nf <= 0:
         return False, 'no bytes decoded'
-    head = int(num(res, 'head', 0))
+    # headsusp is the SUSPECT REGION, not the damage; see BU.head_damage.
+    head = BU.head_damage(hexs, int(num(res, 'head', 0)))
     body, nb = hexs[2 * head:], nf - head
     pos, run, bad, interior = BU.analyse(body, want(nb))
     if pos >= 0 and run >= nb and nb > 0:
@@ -440,7 +441,9 @@ def suite_lorem(d, g, a, rows):
         # Judged against the 1 kB payload as a CYCLIC substring -- the arb loops, so a window may
         # straddle the wrap, and a head the panel flagged as misaligned is skipped as elsewhere.
         nf = int(num(res, 'nf', 0))
-        head = int(num(res, 'head', 0))
+        # headsusp is the SUSPECT REGION, not the damage; trim by what is actually hurt.
+        # See BU.head_damage -- trimming by the raw region failed five soak laps on correct decodes.
+        head = BU.head_damage(hexs, int(num(res, 'head', 0)))
         ok, det = False, 'no bytes decoded'
         if 'fail' in res:
             det = 'FAIL %s' % res['fail']
@@ -618,7 +621,8 @@ def suite_hard(d, g, a, rows):
                    'sdec.force_invert = false' % baud, timeout=20)
             res, hexs, notes = press(d, '%s@%d' % (vid, baud), unlock=False)
             nf = int(num(res, 'nf', 0))
-            head = int(num(res, 'head', 0))
+            # headsusp is the SUSPECT REGION, not the damage; see BU.head_damage.
+            head = BU.head_damage(hexs, int(num(res, 'head', 0)))
             ok, det = False, 'no bytes decoded'
             if 'fail' in res:
                 det = 'FAIL %s' % res['fail']
@@ -659,6 +663,24 @@ def suite_hard(d, g, a, rows):
 # draw leaves each value's presence to a Poisson tail, and about one value in 256 would have been
 # missing. Shuffling guarantees the coverage and keeps the ORDER random, which was the useful part.
 PAYLOAD_VECS = (['v77', 'v78'] + ['r%02d' % k for k in range(12)])
+# ALL FOURTEEN AT 9600 AS BEFORE; TWO OF THEM ALSO DRIVEN HIGH. Sweeping every vector over every
+# rate is 154 captures and would take a lap from ~5 minutes to over 20, cutting the laps per night by
+# four -- and most of that would be re-measuring the middle of a ladder that the `rates` suite already
+# walks. What was actually MISSING is any high-rate point at all on this payload family: until
+# 2026-08-20 the fox and all twelve random vectors ran at 9600 and nothing else, so only v80 (rates)
+# and v71 (lorem) ever went above it.
+#
+# TWO VECTORS IS ENOUGH TO SEPARATE THE CONFOUND, which is the whole purpose. The v80-passes /
+# v71-fails contrast had three differences tangled together: points-per-bit (10.0 vs 10.41667),
+# payload length (3884 B vs 213750 B) and content. v77 and r00 are both rendered at v71's OWN
+# 10.41667 sa/bit, so driving them high holds points-per-bit fixed and varies only length and
+# content -- 94 glyphs of text and a 256-byte shuffle of 0..255 against lorem's 1 kB.
+# Same class of gap as #29, where the suites tested rates the app never selects.
+PAYLOAD_BASE_RATE = 9600
+PAYLOAD_HIRATE_VECS = ['v77', 'r00']
+# 115200 is where three of the five lorem failures landed; 250000 is the 4.0-samples-per-bit wall the
+# app itself warns about. The rungs between are the `rates` suite's job.
+PAYLOAD_HIRATES = [115200, 250000]
 
 
 def suite_payloads(d, g, a, rows):
@@ -681,7 +703,19 @@ def suite_payloads(d, g, a, rows):
     with 18 % margin, so all fourteen are safe LAN uploads rather than USB-key transfers.
     """
     vecs = PAYLOAD_VECS
-    print('\n=== PAYLOADS -- %d distinct payloads, every byte value 0-255 covered ===' % len(vecs))
+    # SWEPT UP TO 250 kBd, AND THAT WAS A REAL GAP. Until 2026-08-20 every one of these fourteen ran
+    # at 9600 and nothing else, so the fox and all twelve random payloads were NEVER driven above
+    # 9600 -- only v80 (rates) and v71 (lorem) went higher. That meant "the high-rate failures only
+    # happen on lorem" was untested rather than established, and the v80-passes/v71-fails contrast was
+    # confounded three ways: points-per-bit (10.0 vs 10.41667), payload length (3884 B vs 213750 B)
+    # and content. Sweeping THESE vectors at the same rates separates content and length from rate,
+    # because they are 256-byte shuffles and 94-glyph text at the SAME 10.41667 sa/bit as v71.
+    # Same class of gap as #29, where the suites tested rates the app never selects.
+    hirates = ([int(x) for x in a.payload_rates.split(',')]
+               if getattr(a, 'payload_rates', None) else PAYLOAD_HIRATES)
+    print('\n=== PAYLOADS -- %d payloads at %d Bd, every byte value 0-255 covered; %s also at %s ==='
+          % (len(vecs), PAYLOAD_BASE_RATE, '/'.join(PAYLOAD_HIRATE_VECS),
+             '/'.join(str(x) for x in hirates)))
     for vid in vecs:
         try:
             with open(os.path.join(BU.VECDIR, vid + '.txt'), 'rb') as f:
@@ -689,33 +723,55 @@ def suite_payloads(d, g, a, rows):
         except IOError:
             print('  %-6s SKIPPED -- no %s.txt; run tools/make_vectors.lua' % (vid, vid))
             continue
-        srate = int(round(9600 * LOREM_SPB))
-        g.select_arb(VN.arb(vid), amp_for(NOMINAL_SWING), srate)
-        g.output(True, ch=1)
-        time.sleep(a.settle)
-        res, hexs, notes = press(d, 'pay_%s' % vid)
-        nf = int(num(res, 'nf', 0))
-        head = int(num(res, 'head', 0))
-        ok, det = False, 'no bytes decoded'
-        if 'fail' in res:
-            det = 'FAIL %s' % res['fail']
-        elif nf > head:
-            ok, det = BU.judge_payload(hexs[2 * head:], payload)
-            if head:
-                det = det + ' after a FLAGGED %d-byte head' % head
-        gb = num(res, 'baud')
-        close = gb is not None and abs(gb / 9600.0 - 1.0) <= 0.02
-        print('  %-6s %-5s %-6s %5s Bd  %-58s %d B payload'
-              % (vid, 'ok' if (ok and close) else 'BAD', res.get('fmt', '?'),
-                 fmt_num(res.get('baud'), '%.0f'), det, len(payload)))
-        n4915 = note_events(res)
-        if n4915:
-            print('      *** %d x event 4915 ***' % n4915)
-        for n in notes:
-            print('      note: %s' % n)
-        if not (ok and close):
-            print('      hex head %d: %s' % (head, hexs[2 * head:][:512]))
-        rows.append(('payload %s' % vid, ok and close, det))
+        # SELECT ONCE, THEN SWEEP SRATE. Selecting costs 0.5 s plus the payload at a measured
+        # 311 kB/s across the CPU-board-to-FPGA serial link; an SRATE change is ~0.01 s of FPGA
+        # register writes. Since the waveform is constant across this vector's rates, re-selecting
+        # per rate would pay the expensive half N times for nothing -- which is what suite_rates and
+        # suite_lorem still do (see the note on SUITES below).
+        first = True
+        rlist = [PAYLOAD_BASE_RATE]
+        if vid in PAYLOAD_HIRATE_VECS:
+            rlist = rlist + hirates
+        for baud in rlist:
+            srate = int(round(baud * LOREM_SPB))
+            if srate > I.SDG_MAX_SRATE:
+                print('  %-6s %7d Bd SKIPPED -- %g Sa/s over the SDG ceiling' % (vid, baud, srate))
+                continue
+            if first:
+                g.select_arb(VN.arb(vid), amp_for(NOMINAL_SWING), srate)
+                g.output(True, ch=1)
+                first = False
+            else:
+                g.truearb(srate)          # same waveform, new playback clock
+                g.assert_truearb()
+            time.sleep(a.settle)
+            res, hexs, notes = press(d, 'pay_%s_%d' % (vid, baud))
+            nf = int(num(res, 'nf', 0))
+            # headsusp is the SUSPECT REGION, not the damage; trim by what is actually hurt.
+            # See BU.head_damage -- trimming by the raw region failed five soak laps on correct decodes.
+            head = BU.head_damage(hexs, int(num(res, 'head', 0)))
+            ok, det = False, 'no bytes decoded'
+            if 'fail' in res:
+                det = 'FAIL %s' % res['fail']
+            elif nf > head:
+                ok, det = BU.judge_payload(hexs[2 * head:], payload)
+                if head:
+                    det = det + ' after a FLAGGED %d-byte head' % head
+            gb = num(res, 'baud')
+            close = gb is not None and abs(gb / float(baud) - 1.0) <= 0.02
+            print('  %-6s %7d Bd %-5s %-6s %5s Bd  %-52s %d B payload srate %d'
+                  % (vid, baud, 'ok' if (ok and close) else 'BAD', res.get('fmt', '?'),
+                     fmt_num(res.get('baud'), '%.0f'), det, len(payload), srate))
+            n4915 = note_events(res)
+            if n4915:
+                print('      *** %d x event 4915 ***' % n4915)
+            for n in notes:
+                print('      note: %s' % n)
+            if not (ok and close):
+                print('      hex head %d: %s' % (head, hexs[2 * head:][:512]))
+            # THE POINT NAME CARRIES THE RATE, or soak.py merges every rate of a vector into one
+            # point and a rate-specific intermittent averages away into nothing.
+            rows.append(('payload %s@%d' % (vid, baud), ok and close, det))
 
 
 SUITES = {'formats': suite_formats, 'rates': suite_rates, 'lorem': suite_lorem,
@@ -732,6 +788,13 @@ def main():
     ap.add_argument('--settle', type=float, default=0.35)
     ap.add_argument('--offset-swings', default='3.3,1.6')
     ap.add_argument('--rates', help='comma-separated subset of the rate ladder')
+    ap.add_argument('--payload-rates', default=None,
+                    help='HIGH rates for %s in the payloads suite (default %s); all fourteen always '
+                         'run at %d. Until 2026-08-20 they ran at %d only, so the fox and every '
+                         'random payload were never driven high.'
+                         % ('/'.join(PAYLOAD_HIRATE_VECS),
+                            ','.join(str(x) for x in PAYLOAD_HIRATES),
+                            PAYLOAD_BASE_RATE, PAYLOAD_BASE_RATE))
     ap.add_argument('--no-start', action='store_true',
                     help='use the app already running rather than loading and rebuilding')
     ap.add_argument('--no-output-off', action='store_true')
