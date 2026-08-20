@@ -130,6 +130,15 @@ def stages(outdir, shots):
         Stage('unit-phasesweep', ['python3', 'tools/sweep_all.py', '--quiet'],
               note='every vector x capture start x phase/jitter/noise -- no raise, no result '
                    'without a format, no wrong byte among the ones ERR calls trustworthy'),
+        # THE ARB LOOP SEAM, END TO END. The lorem-gate stage below pins the judging RULE and
+        # test_lorem_gate's new cases pin head_damage as a function; neither drives the caller, which
+        # is where the 2026-08-19 defect actually was -- the bench trimmed by the suspect region and
+        # discarded five correct captures in 58 laps. This one renders the real vector, decodes real
+        # windows at every start offset, and REQUIRES the old rule to fail on them, so it cannot
+        # quietly become vacuous.
+        Stage('unit-seam', ['python3', 'tools/test_seam.py'],
+              note='a capture whose loop seam lands late must still be judged -- and trimming by '
+                   'headsusp instead of damage must still fail, or the reproduction has drifted'),
         Stage('unit-loremgate', ['python3', 'tools/test_lorem_gate.py'],
               note='the long-payload judging rule: every clean run validated, flag COUNT bounded, '
                    'and the cases the old longest-run gate got wrong'),
