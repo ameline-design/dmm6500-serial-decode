@@ -1396,7 +1396,7 @@ end
 -- ============================================================================
 print('\nM  decode_step() must not report a raise as progress')
 -- ============================================================================
--- THE FIFTH INSTANCE OF H2's DEFECT CLASS, and the one still open. decode_step() pcalls the slice and
+-- THE FIFTH INSTANCE OF H2's DEFECT CLASS. decode_step() pcalls the slice and
 -- narrows a raise to `done, err = true, tostring(perr)` (serial_app.tsp:777) -- then returns `true` on
 -- every path (:832). That is the SAME `true` it returns at :793 to mean "still working, press again",
 -- and the same one a finished decode returns. capture() hands it straight back (:1303), so a caller
@@ -1407,7 +1407,8 @@ print('\nM  decode_step() must not report a raise as progress')
 -- 'error', and strm_exit_why is given dok = false so the note row reads 'run failed: ...' rather than
 -- the acquisition's leftover 'buffer full -- the stream may continue'. Only the VERDICT is wrong.
 --
--- EXPECTED TO FAIL against today's source. The behaviour asserted is the intended one.
+-- PASSES: decode_step() returns dok, so a raise, a finish with no totals and a failed file write all
+-- report as failures. This block is what stops `return true` on every path coming back.
 do
   idle()
   clearforce()

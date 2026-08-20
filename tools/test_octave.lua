@@ -369,6 +369,8 @@ for ci = 1, table.getn(CASES) do
 end
 
 -- ============================================================================
+-- EXPECTED TO FAIL, 2 of 2: a forced rate still collapses the width. Blocks A-D pass, so a reader
+-- seeing "22 passed, 2 failed" is looking at this and not at a regression.
 print('\nE  half a bit time may not manufacture its own evidence')
 -- ============================================================================
 -- LINK 3, WHICH ua_med_wrong DOES NOT ADDRESS -- it stops the auto path REACHING a halved
