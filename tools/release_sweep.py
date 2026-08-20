@@ -143,6 +143,9 @@ def stages(outdir, shots):
         # discarded five correct captures in 58 laps. This one renders the real vector, decodes real
         # windows at every start offset, and REQUIRES the old rule to fail on them, so it cannot
         # quietly become vacuous.
+        Stage('unit-forcerate', ['lua', 'tools/test_forcerate.lua'],
+              note='a forced baud rate the wire does not carry must REFUSE and name the rate it does '
+                   'carry, and both answers to that offer must be drivable with no human present'),
         Stage('unit-seam', ['python3', 'tools/test_seam.py'],
               note='a capture whose loop seam lands late must still be judged -- and trimming by '
                    'headsusp instead of damage must still fail, or the reproduction has drifted'),

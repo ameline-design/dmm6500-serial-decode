@@ -49,7 +49,17 @@ function bk_point(tag)
   eventlog.clear()
   sdec.stickyerr = nil
   timer.cleartime()
-  local ok, err = pcall(function() return sdec.capture() end)
+  -- THE TAG CHOOSES THE ACTION, so answering a refused forced rate is measured through exactly the
+  -- same snapshot as a Capture press. sdec.rate_accept/rate_decline take no display event and no
+  -- operator, which is the property under test: the offer must be answerable with nobody at the panel.
+  local ok, err
+  if string.sub(tostring(tag), 1, 7) == 'accept-' then
+    ok, err = pcall(function() return sdec.rate_accept() end)
+  elseif string.sub(tostring(tag), 1, 8) == 'decline-' then
+    ok, err = pcall(function() return sdec.rate_decline() end)
+  else
+    ok, err = pcall(function() return sdec.capture() end)
+  end
   local t = timer.gettime()
   local r = sdec.res
   local ec, emsg = eventlog.getcount(), ''
@@ -58,11 +68,11 @@ function bk_point(tag)
     local n, m = eventlog.next()
     if m ~= nil then emsg = emsg .. string.format('[%s %s]', tostring(n), tostring(m)) end
   end
-  print(string.format('K %s|%s|%.3f|%s|%s|%s|%s|%s|%s|%s',
+  print(string.format('K %s|%s|%.3f|%s|%s|%s|%s|%s|%s|%s|%s',
         tostring(tag), tostring(ok), t,
         tostring(r and r.nf), tostring(r and r.nbad), tostring(sdec.baud),
         tostring(sdec.fmt_text and sdec.fmt_text()), tostring(sdec.ui_status),
-        emsg, tostring(sdec.lasterr)))
+        emsg, tostring(sdec.lasterr), tostring(sdec.rate_offer)))
   local nt, nn = sdec.ui_notes()
   for i = 1, nn do print('KN ' .. tostring(nt[i])) end
   if r ~= nil and r.nf ~= nil and r.nf > 0 then
@@ -97,7 +107,10 @@ def press(d, tag, timeout=300):
             f = ln[2:].split('|')
             res = {'tag': f[0], 'ok': f[1] == 'true', 'secs': float(f[2]),
                    'nf': f[3], 'nbad': f[4], 'baud': f[5], 'fmt': f[6],
-                   'status': f[7], 'events': f[8], 'lasterr': f[9]}
+                   'status': f[7], 'events': f[8], 'lasterr': f[9],
+                   # OPTIONAL, so a run against an older build parses instead of raising IndexError
+                   # and reporting a harness fault for a field that app simply does not publish.
+                   'offer': f[10] if len(f) > 10 else 'nil'}
         elif ln.startswith('KN '):
             notes.append(ln[3:])
         elif ln.startswith('KH '):
@@ -147,6 +160,18 @@ def judge(res, notes, hexs, accept, want_bytes=None):
          'may be wrong', 'assumed'))
 
     if nf == 0:
+        # REFUSED, AND IT HANDED OVER THE ANSWER. Stronger than 'refuse': a bare refusal on a capture the
+        # app could read is not much better than adopting silently, because the operator is left to guess
+        # the rate. The condition is that the refusal NAMES the rate the wire carries and publishes it as
+        # an answerable offer -- so a regression to a silent refusal fails here rather than passing as
+        # "well, it refused".
+        if 'offer' in accept:
+            if res['offer'] == 'nil':
+                return False, 'refused WITHOUT offering the detected rate: %s' % res['lasterr'][:44]
+            said = ' | '.join(notes) + ' ' + res['lasterr']
+            if res['offer'].split('.')[0] not in said:
+                return False, 'offered %s but never said so on the panel' % res['offer']
+            return True, 'refused, offered %s Bd, and said so' % res['offer'].split('.')[0]
         if 'refuse' in accept:
             if res['lasterr'] == 'nil' and not notes:
                 return False, 'no bytes and NO REASON GIVEN'
@@ -310,19 +335,39 @@ def cases(g, d, a):
     C.append(('force-2x-rate', '9600 wire, rate FORCED to 19200 (+100 %)',
               lambda: (arb(9600), force(baud='19200', nbits='nil', par='nil',
                                        nstop='nil', invert='nil')),
-              {'flagged', 'refuse', 'relocked'}, b'Hello, World!'))
-    # 'relocked' IS ACCEPTED HERE TOO, matching force-2x-rate above. Both cases force a rate the wire
-    # cannot support and the app does the same thing in both: rejects it, says so -- '4800 baud fit
-    # nothing -- unlocked, and this capture reads 9600', then 'auto-locked 9600 baud 8N1' -- and decodes
-    # correctly. That is uart_decode's documented "abandon a locked rate that explains nothing", and
-    # refusing to read a perfectly good capture because the operator typed a wrong number would be worse
-    # behaviour, not safer. Only the +100 % case allowed it, so the two disagreed and the -50 % one failed
-    # the 2026-08-20 release sweep on a correct decode of 324 bytes. Confident garbage still fails: the
-    # accepted outcomes are all honest ones, and a wrong ANSWER at either rate is not among them.
+              {'flagged', 'offer'}, b'Hello, World!'))
+    # 'relocked' IS NO LONGER ACCEPTED, and that is the decision in #61 rather than a tightening for its
+    # own sake. Adopting the detected rate and decoding with it put bytes on the panel at a rate nobody
+    # chose, with one note line as the only trace. The app now REFUSES and hands over the rate it
+    # measured, which the operator answers with Use Detected Rate or Cancel.
+    #
+    # 'flagged' STAYS, because the app does not always have proof. The relock needs an interior-bad
+    # fraction over 0.25, and a 2-bit gap at half rate tiles so cleanly that the measured fraction is
+    # 0.074 -- there the app warns and decodes, which is right: it has a suspicion, not evidence. So the
+    # rule this pair encodes is "warn, or refuse and offer -- never adopt in silence". Confident garbage
+    # still fails: every accepted outcome is an honest one, and a wrong ANSWER is not among them.
     C.append(('force-half-rate', '9600 wire, rate FORCED to 4800 (-50 %)',
               lambda: (arb(9600), force(baud='4800', nbits='nil', par='nil',
                                        nstop='nil', invert='nil')),
-              {'flagged', 'refuse', 'relocked'}, b'Hello, World!'))
+              {'flagged', 'offer'}, b'Hello, World!'))
+
+    # ---- ANSWERING THE OFFER, WITH NOBODY AT THE PANEL ---------------------------------
+    # The setup forces a wrong rate and takes the capture that raises the offer; the measured press is
+    # the ANSWER, dispatched by the tag prefix in bk_point. No display event is involved in either --
+    # which is the point, because a dialog that only a finger can answer would wedge every soak lap.
+    def refuse_first(baud):
+        arb(9600)
+        force(baud=baud, nbits='nil', par='nil', nstop='nil', invert='nil')
+        d.exec('sdec.capture()')
+
+    # USE DETECTED RATE -> the lock is dropped, detection runs, and the bytes are exact. This is the
+    # outcome the old 'relocked' path reached on its own; the difference is that a person chose it.
+    C.append(('accept-detected-rate', 'wrong forced rate REFUSED, then Use Detected Rate',
+              lambda: refuse_first('4800'), {'exact'}, b'Hello, World!'))
+    # CANCEL -> the operator's rate stands and so does the refusal. 'refuse' rather than 'offer'
+    # because answering retires the offer: the sentence must survive, the question must not.
+    C.append(('decline-detected-rate', 'wrong forced rate REFUSED, then Cancel',
+              lambda: refuse_first('4800'), {'refuse'}, None))
     C.append(('force-7bit-on-8', '8N1 wire, width FORCED to 7',
               lambda: (arb(9600), force(baud='nil', nbits='7', par='nil',
                                         nstop='nil', invert='nil')),

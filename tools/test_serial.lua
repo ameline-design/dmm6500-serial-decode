@@ -6598,19 +6598,26 @@ do
   sdec.smp, sdec.nread = rd, nsmp
   sdec.force_baud = 19200
   sdec.relocked, sdec.rate_note = nil, nil
-  sdec.decode()
-  check('a wire at 2x the locked rate makes the app abandon the lock',
-        sdec.relocked ~= nil and sdec.force_baud == nil,
-        string.format('relocked=%s force_baud=%s', tostring(sdec.relocked),
-                      tostring(sdec.force_baud)))
-  check('...it says so, naming the rate it dropped', has(tostring(sdec.relocked), '19200'),
-        tostring(sdec.relocked))
+  sdec.rate_offer, sdec.rate_refused = nil, nil
+  local rok = sdec.decode()
+  -- REFUSED, NOT ADOPTED (#61, decided 2026-08-20). These two assertions used to demand the opposite --
+  -- that the app drop the lock and decode at the rate it measured. That put bytes on the panel at a rate
+  -- nobody chose, with one note line as the only trace, so the decision went the other way: the app
+  -- refuses, names the rate the wire carries, and offers it. The old behaviour is still reachable as
+  -- sdec.force_conflict = 'adopt' and is covered in tools/test_forcerate.lua.
+  check('a wire at 2x the locked rate makes the app REFUSE rather than substitute a rate',
+        rok == false and sdec.res == nil,
+        string.format('ok=%s res=%s', tostring(rok), tostring(sdec.res)))
+  check('...it keeps the rate the operator set', sdec.force_baud == 19200,
+        tostring(sdec.force_baud))
+  check('...and offers the rate the wire actually carries', sdec.rate_offer == 38400,
+        tostring(sdec.rate_offer))
+  check('...naming both numbers', has(tostring(sdec.rate_refused), '19200')
+        and has(tostring(sdec.rate_refused), '38400'), tostring(sdec.rate_refused))
   check('...and the note fits the cell',
-        sdec.ui_textw(tostring(sdec.relocked)) <= sdec.ui_note_px,
-        string.format('%d px of %d', sdec.ui_textw(tostring(sdec.relocked)), sdec.ui_note_px))
-  check('...the warning about the rate it just dropped does not outlive it',
-        sdec.rate_note == nil, tostring(sdec.rate_note))
-  check('...and it reaches the note row', has(table.concat(sdec.ui_notes(), ' | '), '19200'),
+        sdec.ui_textw(tostring(sdec.rate_refused)) <= sdec.ui_note_px,
+        string.format('%d px of %d', sdec.ui_textw(tostring(sdec.rate_refused)), sdec.ui_note_px))
+  check('...and it reaches the note row', has(table.concat(sdec.ui_notes(), ' | '), '38400'),
         table.concat(sdec.ui_notes(), ' | '))
 
   -- (2) THE SAFETY GATE. A rate that fits, with a format that does not: every frame fails, and the

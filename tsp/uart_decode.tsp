@@ -1616,14 +1616,12 @@ function sdec.decode_from(rd, n)
   return true
 end
 
--- Runs the whole chain on an already-acquired capture. serial_core.acquire()
--- leaves the levels, edges and idle level in place; this adds bit timing,
--- format and bytes. Returns ok, reason.
--- WHEN A LOCKED RATE IS OBVIOUSLY WRONG, ABANDON IT RATHER THAN DEFEND IT.
+-- WHEN A LOCKED RATE IS OBVIOUSLY WRONG, SAY SO RATHER THAN DEFEND IT.
 --
 -- Doubling the generator's rate under a 19200 lock made every frame fail, and repeated Capture
 -- presses kept showing all-red: the app had no way back, and the operator had to type 0 into Options
 -- to re-enable detection. A rate that explains nothing is not worth keeping.
+--
 -- 0.25, AND IT WAS 0.9 UNTIL THE NUMBER WAS MEASURED. "Every byte is in error" is what the panel
 -- LOOKS like -- a row is painted red if any of its 16 bytes failed, so a third of frames bad reddens
 -- essentially every row -- but the actual interior-bad fraction for the bench case (38400 on the wire
@@ -1632,6 +1630,23 @@ end
 -- for a healthy capture, so a quarter separates them with room on both sides.
 sdec.relock_badfrac   = 0.25     -- interior frames in error before the lock is doubted
 sdec.relock_minframes = 8        -- fewer frames than this and a bad fraction is not evidence
+
+-- WHAT HAPPENS WHEN A FORCED RATE IS PROVED WRONG -- 'ask' or 'adopt'.
+--
+-- 'ask' REFUSES the decode, names the rate the wire actually carries, and leaves the choice with the
+-- operator: sdec.rate_accept() takes the detected rate, sdec.rate_decline() keeps theirs. 'adopt' is
+-- the older behaviour -- take the detected rate and say so on the note row.
+--
+-- ASK IS THE DEFAULT BECAUSE A FORCED SETTING IS AN INSTRUCTION, NOT A HINT. Adopting silently puts
+-- bytes on the panel decoded at a rate nobody chose, with one note line as the only trace, and the
+-- whole premise of the hw-break suite is that a refusal with a reason beats confident output. Refusing
+-- costs nothing here: the detected rate is already known, so it is named in the refusal rather than
+-- left as a guess.
+--
+-- NOTHING BLOCKS ON A HUMAN. There is no modal wait -- the offer is published as state and the two
+-- answers are ordinary functions, so a headless caller drives either branch and an unattended lap that
+-- never answers simply stays refused.
+sdec.force_conflict = sdec.force_conflict or 'ask'
 
 -- Fraction of INTERIOR frames that failed, or nil when there are too few to judge. Interior, because
 -- head resync and a clipped tail fail on healthy captures too.
@@ -1643,6 +1658,9 @@ function sdec.ua_badfrac(r)
   return nin / ninter
 end
 
+-- Runs the whole chain on an already-acquired capture. serial_core.acquire()
+-- leaves the levels, edges and idle level in place; this adds bit timing,
+-- format and bytes. Returns ok, reason.
 function sdec.decode()
   -- sdec.smp, not sdec.buf.readings: see sdec.acq_copy(). Every pass below would
   -- otherwise pay an IPC round trip per sample.
@@ -1692,9 +1710,24 @@ function sdec.decode()
   local ok2, why2 = sdec.decode_from(sdec.smp, sdec.nread)
   local bf2 = sdec.ua_badfrac(sdec.res)
   if ok2 and bf2 ~= nil and bf2 < sdec.relock_badfrac and sdec.baud ~= nil then
-    sdec.relocked = string.format('%g baud fit nothing -- unlocked, and this capture reads %.0f',
-                                  was, sdec.baud)
-    return ok2, why2
+    local found = sdec.baud
+    if sdec.force_conflict == 'adopt' then
+      sdec.relocked = string.format('%g baud fit nothing -- unlocked, and this capture reads %.0f',
+                                    was, found)
+      return ok2, why2
+    end
+    -- REFUSE, AND GIVE THE OPERATOR THEIR RATE BACK. This path reports a disagreement; it does not
+    -- edit a setting behind them.
+    sdec.force_baud = was
+    -- NO BYTES ON SCREEN. res currently holds the decode that PROVED the rate wrong -- correct bytes,
+    -- at a rate we are declining to use -- and showing them would be adopting by another route.
+    -- A refused capture with res nil is a state the panel already handles; that is what refusal is.
+    sdec.res = nil
+    sdec.rate_offer, sdec.rate_offer_from = found, was
+    sdec.rate_refused = string.format(
+        '%g baud fits nothing -- this capture reads %.0f. Options > Baud 0 restores detection.',
+        was, found)
+    return false, string.format('%g baud fits nothing; this capture reads %.0f', was, found)
   end
   -- Detection did no better, so the lock was not the problem. Put it back; rate_note is re-published
   -- by the decode below and still says the wire disagrees, which is the honest state.

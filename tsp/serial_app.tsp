@@ -1206,6 +1206,35 @@ function sdec.cancel_asked()
   return true
 end
 
+-- THE TWO ANSWERS TO A REFUSED FORCED RATE. sdec.decode() publishes sdec.rate_offer when the locked
+-- rate is proved wrong, and refuses rather than substituting a rate nobody chose; these are how the
+-- offer is answered. Both are ORDINARY FUNCTIONS with no display or event dependency, which is what
+-- makes the behaviour testable with no human at the panel -- the bench drives them over SCPI and the
+-- offline suite calls them directly. A future dialog is a view over the same two calls.
+--
+-- Each returns ok, reason, and refuses politely when there is nothing outstanding, so a stale press or
+-- a repeated remote call cannot act on an offer that has already been answered.
+
+-- USE THE DETECTED RATE. Clears the lock instead of writing the detected number into it: detection
+-- found this rate unaided and will find it again, whereas locking the number freezes one measurement
+-- and would mislead the next capture on a different line. This is the same state typing 0 into
+-- Options > Baud produces, reached in one call.
+function sdec.rate_accept()
+  if sdec.rate_offer == nil then return false, 'no rate was offered' end
+  sdec.force_baud = nil
+  sdec.rate_offer, sdec.rate_offer_from, sdec.rate_refused = nil, nil, nil
+  return sdec.capture()
+end
+
+-- KEEP THE RATE THE OPERATOR SET. The question goes; the lock and the refusal both stand, so the panel
+-- does not fall back to looking like an ordinary empty capture with nothing to explain it.
+function sdec.rate_decline()
+  if sdec.rate_offer == nil then return false, 'no rate was offered' end
+  local why = sdec.rate_refused
+  sdec.rate_offer, sdec.rate_offer_from = nil, nil
+  return true, why
+end
+
 -- The Capture button handler: start a capture, or stop or step one already in progress. Fully
 -- guarded, and returns a verdict rather than raising.
 function sdec.capture()
@@ -1258,6 +1287,11 @@ function sdec.capture()
   -- ONCE PER PRESS, not per acquire(): see clear_result(). A relock inside this press must still be on
   -- the note row when the press returns, however many internal re-captures happen after it.
   sdec.relocked = nil
+  -- THE RATE OFFER IS ALSO PER PRESS, and for the opposite reason to relocked: it must OUTLIVE the
+  -- press that raised it, because the operator answers it afterwards. Pressing Capture again is an
+  -- answer of its own -- a fresh capture supersedes the question -- so it is retired here rather than
+  -- in clear_result(), which runs on every internal re-capture.
+  sdec.rate_offer, sdec.rate_offer_from, sdec.rate_refused = nil, nil, nil
   -- BUSY ON ENTRY MEANS A PREVIOUS RUN DIED, not that one is in progress. A second press cannot
   -- arrive during a capture -- a front-panel press is not dispatched while a Lua script runs, and
   -- presses queue until the handler returns -- so the only way this flag is still set is that a

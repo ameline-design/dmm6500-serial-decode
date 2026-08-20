@@ -1177,6 +1177,12 @@ function sdec.ui_notes()
   -- asking, and the BAUD cell and padlock both change with no other explanation. Ranked with the
   -- others in this group for the same reason: it is a consequence of the app's own decision.
   if sdec.relocked ~= nil then add(tostring(sdec.relocked)) end
+  -- THE APP REFUSED A SETTING THE OPERATOR MADE, and unlike relocked there are no bytes on screen to
+  -- explain themselves -- an empty dump with a locked rate looks like a dead wire. So this outranks
+  -- every wire warning below: it names the rate the capture actually carries and the control that
+  -- takes it, which is the whole content of the refusal. Options > Baud 0 is named because it EXISTS;
+  -- rate_accept() is the same action for a caller, but the panel must not cite a control it lacks.
+  if sdec.rate_refused ~= nil then add(tostring(sdec.rate_refused)) end
 
   -- A streaming mode that cannot run says so BEFORE Capture is pressed, and here rather than in
   -- the status row: the remedy is a sentence, the status row shares its line with the log status,
