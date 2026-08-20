@@ -39,19 +39,19 @@ SDG_PORT = SCPI_PORT     # kept: existing callers import this name
 # ---------------------------------------------------------------------------
 # THE ONE CHOKE POINT FOR WAVEFORM DATA
 # ---------------------------------------------------------------------------
-# A ZERO-LENGTH OR UNDERSIZED WAVEFORM BRICKS THIS GENERATOR PERMANENTLY, and the guard that used to
-# live inside write_raw() was provably reachable-around. Three bypasses, found in review 2026-08-19:
+# A ZERO-LENGTH OR UNDERSIZED WAVEFORM BRICKS THIS GENERATOR PERMANENTLY, and a guard living inside
+# write_raw() is reachable-around by three separate routes:
 #
 #   1. write_raw('C1:', b'WVDT WVNM,x,WAVEDATA,' + b'\x00\x00')
-#      The check keyed on `'WVDT' in prefix`, and this prefix has no WVDT. The assembled command on
+#      A check keyed on `'WVDT' in prefix` misses this prefix entirely, and the assembled command on
 #      the wire is a perfectly valid two-byte upload.
 #   2. write('C1:WVDT WVNM,x,WAVEDATA,')
-#      write() had NO check of any kind. This stores an EMPTY waveform -- the exact reported brick --
-#      in one line, through the ordinary public method. query() the same.
+#      A check in write_raw() alone leaves write() open, and this stores an EMPTY waveform -- the
+#      exact reported brick -- in one line, through the ordinary public method. query() the same.
 #   3. sdg_hang_repro.upload() with --kb 0
 #      A raw socket, deliberately not using this driver, so no guard applied at all.
 #
-# So the rules are now structural rather than parameter-shaped, and they live at module level so the
+# So the rules are structural rather than parameter-shaped, and they live at module level so the
 # raw-socket sender can call them too:
 #
 #   * TEXT commands (write/query) may not carry a WVDT store AT ALL. Waveform data is binary and
@@ -434,27 +434,27 @@ class SDG:
         self.write(f'C{ch}:ARWV NAME,{name}')
         # READ THE NAME BACK. Selecting a waveform that is not on the instrument does not fail --
         # the previous one keeps playing, so every later measurement is attributed to the wrong
-        # stimulus. Measured 2026-08-19: twelve vectors added to a suite but never uploaded, and all
-        # twelve "failed" against the PREVIOUS vector's bytes. TrueArb was verified below; the name,
-        # which is the point of the call, was not.
-        # A GENEROUS READBACK TIMEOUT, because selecting a LARGE waveform is slow and the default 6 s
-        # turns that into a false "did not take". Measured 2026-08-19: a 3 413 625-point arb (6.51 MB)
-        # answered ARWV? at 10 s and not at 6, and the selection HAD taken -- so the raise below fired
-        # over a correct selection, which is the same false-alarm class as the wedge report in
-        # bench_sync.sdg_alive(). Loading millions of points into the playback buffer is real work.
+        # stimulus -- twelve vectors added to a suite but never uploaded all "fail" against the
+        # PREVIOUS vector's bytes. TrueArb is verified below; the name is the point of the call, so
+        # it is verified here.
+        # A GENEROUS READBACK TIMEOUT, because selecting a LARGE waveform is slow and a 6 s default
+        # turns that into a false "did not take": a 3 413 625-point arb (6.51 MB) answers ARWV? at
+        # 10 s and not at 6, with the selection having taken. Loading millions of points into the
+        # playback buffer is real work, and a raise over a correct selection is the same false-alarm
+        # class as a spurious wedge report.
         #
         # LIKELY MECHANISM, the owner's reading and it fits: selecting an arb copies it out of internal
         # FLASH into the fast RAM that feeds the FPGA driving the DAC. That predicts the delay scales with
-        # the POINT COUNT rather than with anything else, which is what the two observations show -- a
+        # the POINT COUNT rather than with anything else, which is what the observations show -- a
         # 1942-point arb answers instantly, a 3 413 625-point one needs more than 6 s. Inference, not a
         # measurement: nothing here proves the copy exists, only that selection cost grows with size.
         got = self.query(f'C{ch}:ARWV?', timeout=120) or ''
         want = name[:-4] if name.endswith('.bin') else name
         # NO FOLDER HANDLING HERE, DELIBERATELY: a waveform in a subdirectory CANNOT BE SELECTED AT ALL.
-        # Measured 2026-08-19 -- 34 vectors written as 'SERIAL\name' were listed by STL? USER and then
-        # ARWV NAME refused every form of the request, by path ('SERIAL\name', 'SERIAL/name') and by
-        # basename alike, leaving the previous selection playing. So the store is effectively flat and a
-        # name with a separator in it is a name that will never work.
+        # Measured -- 34 vectors written as 'SERIAL\name' are listed by STL? USER, and ARWV NAME then
+        # refuses every form of the request, by path ('SERIAL\name', 'SERIAL/name') and by basename
+        # alike, leaving the previous selection playing. The store is effectively flat, so a name with
+        # a separator in it is a name that will never work.
         #
         # This check is what found that. The first probe looked like a success because WVDT leaves its own
         # write selected, so reading ARWV? straight after an upload reports the upload rather than the

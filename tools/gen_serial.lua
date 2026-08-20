@@ -264,8 +264,8 @@ function GEN_RENDER(cells, nc, opts)
       local into = xs - cstart                     -- samples since the cell began
       local pv
       if ci - 1 < 1 or ci - 1 > nc then pv = 1 else pv = cells[ci - 1] end
-      -- WHICH time constant: a transition UP uses rise, a transition DOWN uses fall. Defaults to
-      -- rise for both, so an unset opts.fall keeps the old symmetric behaviour exactly.
+      -- WHICH time constant: a transition UP uses rise, a transition DOWN uses fall. An unset
+      -- opts.fall falls back to rise for both, which is symmetric.
       local edge = rise
       if pv ~= lvl and lvl < pv and fall ~= nil then edge = fall end
       if into < edge and pv ~= lvl then
@@ -848,9 +848,9 @@ function trigger.model.initiate()
   -- before the trigger edge, the rest from after. SRC.trigat is the sample index
   -- of the edge the analog comparator would have fired on.
   --
-  -- A COMPLETED CAPTURE IS SHORTER THAN `count`, AND THIS MOCK USED TO HIDE THAT.
-  -- Measured on hardware 2026-08-16: count = 20000 with position = 5 completes at
-  -- 19011 samples, twice, differing only in the last two digits. The rule is
+  -- A COMPLETED CAPTURE IS SHORTER THAN `count`, and the mock reproduces that.
+  -- Measured on hardware: count = 20000 with position = 5 completes at 19011
+  -- samples, twice, differing only in the last two digits. The rule is
   --     post = count - floor(count x position/100)      -- always made
   --     pre  = min(samples available before the trigger, that same budget)
   -- and on a continuously transmitting line pre is a dozen, not the 1000 the 5 %

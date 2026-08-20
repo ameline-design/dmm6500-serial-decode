@@ -89,8 +89,8 @@ check('the capture came from the armed path, not from digitize.read()',
       string.format('triggered=%d inits=%d', READS.triggered, TRIG.inits))
 check('the pre-trigger reserve is kept, so the start bit is not the first sample',
       TRIG.position == sdec.pretrig, tostring(TRIG.position))
--- The comparator is not a source for this mode, so leaving it armed from an earlier
--- 'edge' capture would be instrument state nobody asked for.
+-- The comparator is not a source for this mode, so an arm left over from an 'edge' capture is
+-- instrument state nobody asked for.
 check('the analog comparator is turned OFF when the key is the source',
       dmm.digitize.analogtrigger.mode == dmm.MODE_OFF,
       tostring(dmm.digitize.analogtrigger.mode))
@@ -161,10 +161,10 @@ check('with the key as one stimulus and the rear BNC as the other',
 check('and the pair actually captures', aok and sdec.nread > 1,
       string.format('%s nread=%s', tostring(awhy), tostring(sdec.nread)))
 
--- Rear BNC + Edge: the comparator is stimulus 1 of the blender, so it has to be
--- CONFIGURED. `ev` is reassigned to EVENT_BLENDER1 before the old test of it, so the
--- mode, level and slope went unset and the analog stimulus could never fire -- ticking
--- the rear BNC silently reduced an edge trigger to the BNC alone.
+-- Rear BNC + Edge: the comparator is stimulus 1 of the blender, so it has to be CONFIGURED. `ev` is
+-- reassigned to EVENT_BLENDER1 before any test of it, so a configure gated on `ev` leaves the mode,
+-- level and slope unset -- the analog stimulus can never fire, and ticking the rear BNC silently
+-- reduces an edge trigger to the BNC alone.
 sdec.trigmode, sdec.trigext = 'edge', true
 use_late()
 arm_reset()
@@ -237,8 +237,8 @@ check('and the pulse leaves AFTER the model is armed, not before',
       string.format('inits at assert = %s', tostring(TRIG.armed_at_assert[1])))
 sdec.fc_out = false
 
--- Repeated arming must not accumulate buffers, the same rule acquire() is held to on the
--- edge path -- and 'front' now takes that path too.
+-- Repeated arming must not accumulate buffers: the same rule acquire() is held to on the edge path,
+-- which 'front' also takes.
 sdec.trigmode = 'front'
 use_late()
 sdec.acquire()

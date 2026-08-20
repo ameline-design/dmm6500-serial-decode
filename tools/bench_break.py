@@ -199,12 +199,12 @@ def judge(res, notes, hexs, accept, want_bytes=None, want_baud=None):
         if exact:
             if 'exact' in accept:
                 return True, 'exact %d B' % nf
-            # A THIRD HONEST OUTCOME, ADDED 2026-08-18: the app can now NOTICE that a forced rate the
-            # wire contradicts explains nothing, drop it, and re-detect -- so a case written to demand
-            # 'flag or refuse' gets correct bytes instead. That is better than either, and it must not
-            # read as a failure. But it is only better BECAUSE IT SAYS SO: exact bytes with the wrong
-            # rate silently still in force would be the confident-and-wrong outcome this file exists to
-            # catch, so the note is the condition, not the byte match.
+            # A THIRD HONEST OUTCOME: the app NOTICES that a forced rate the wire contradicts explains
+            # nothing, drops it and re-detects -- so a case demanding 'flag or refuse' gets correct
+            # bytes instead. That is better than either and must not read as a failure. But it is only
+            # better BECAUSE IT SAYS SO: exact bytes with the wrong rate silently still in force is
+            # the confident-and-wrong outcome this file exists to catch, so the note is the condition,
+            # not the byte match.
             if 'relocked' in accept:
                 # EITHER OF THE TWO WAYS THE APP SAYS IT. sdec.decode() drops a contradicted lock and
                 # says "N baud fit nothing -- unlocked"; autoset() re-captures at the measured rate and
@@ -376,11 +376,11 @@ def cases(g, d, a):
     # 19200, NOT 4800, AND THAT IS MEASURED ON THIS BENCH. Only a rate the app can PROVE wrong raises an
     # offer, and the two directions are not symmetric on the v80 waveform: forcing 2x relocks, while
     # forcing half stays under the 0.25 interior-bad gate and merely warns ('bytes may be WRONG if the
-    # device runs at 9600 baud, 2x the 4800 you set'). Written with 4800 first, both cases below would
-    # have answered a question that was never asked and failed for that reason rather than a real one.
+    # device runs at 9600 baud, 2x the 4800 you set'). With 4800 first, both cases below answer a
+    # question that was never asked and fail for that reason rather than a real one.
     #
-    # USE DETECTED RATE -> the lock is dropped, detection runs, and the bytes are exact. This is the
-    # outcome the old 'relocked' path reached on its own; the difference is that a person chose it.
+    # USE DETECTED RATE -> the lock is dropped, detection runs, and the bytes are exact -- the same
+    # end state 'adopt' reaches on its own, except that a person chose it.
     C.append(('accept-detected-rate', 'wrong forced rate REFUSED, then Use Detected Rate',
               lambda: refuse_first('19200'), {'exact', 'flagged', 'adopted'}, b'Hello, World!',
               9600))

@@ -79,14 +79,13 @@ INFO_EVENTS = ('2731', '2732', '2728', '4917')
 CAPTURE_BUDGET_S = 12.0
 CAPTURES = ('Capture', 'LockRate', 'Opt:Apply', 'Opt:AutoDetect', 'Opt:LockDetected')
 
-# A RECORDING PRESS IS IN A THIRD CLASS, and pretending otherwise would either fail every sweep or
-# raise the ordinary bound until it stopped meaning anything. One press now records a whole window
-# and decodes it: 8 kB at 2400 baud is ~34 s of recording plus ~30 s of decoding, and the operator
-# is told so on the status row. What makes a minutes-long press acceptable is that it is BOUNDED and
-# states its cost beforehand -- NOT that TRIGGER stops it, which this comment used to claim and which
-# was measured false on 2026-08-18: the key's event does not reach the blender while a panel-initiated
-# run executes. The cancel case below still passes, because it delivers the event from a firmware timer
-# rather than a finger -- worth knowing when reading its verdict.
+# A RECORDING PRESS IS IN A THIRD CLASS, and folding it into the ordinary bound either fails every
+# sweep or raises that bound until it means nothing. One press records a whole window and decodes it:
+# 8 kB at 2400 baud is ~34 s of recording plus ~30 s of decoding, and the operator is told so on the
+# status row. What makes a minutes-long press acceptable is that it is BOUNDED and states its cost
+# beforehand -- NOT that TRIGGER stops it, which it does not: the key's event does not reach the
+# blender while a panel-initiated run executes. The cancel case below passes because it delivers the
+# event from a firmware timer rather than a finger -- worth knowing when reading its verdict.
 #
 # 300 s is a HANG DETECTOR, not a latency budget. It is sized to catch a press that never returns --
 # the failure that costs a power cycle -- and deliberately not to police the duration, which is the
@@ -171,8 +170,8 @@ def count_real_events(emsg):
 # The LEFT cell of the note row is the TRIGGER SOURCE, not the mode. It held mode names once, and this
 # map still called it 'mode' with a stale ui_note_val_x = 92 long after serial_ui.tsp moved the
 # boundary to 112 to fit 'Trigger key' (serial_ui.tsp:175). That drift made three checks demand
-# repainted pixels in a cell Mode does not own: 7 presses of the 2026-08-20 release sweep reported
-# 'STALE DISPLAY: mode did not repaint (0 px)' while the handler returned true and the mode DID
+# repainted pixels in a cell Mode does not own, and every Mode press then reports
+# 'STALE DISPLAY: mode did not repaint (0 px)' while the handler returns true and the mode DOES
 # advance. A region map naming the wrong owner reports a defect in the app for a defect in itself.
 # The mode is shown in the SCREEN TITLE ('SERIAL DECODE - 240B FRAME', ui_title_text), so that is the
 # region a Mode press must repaint. `a3['mode']` elsewhere is the parsed STATE, a different namespace.
@@ -189,10 +188,9 @@ REGIONS = [
 # The three conditional buttons down the right margin, as rectangles in grab coordinates. Each rect
 # is the button's OWN face -- serial_ui.tsp's pdef x/y plus the 49 px title bar -- not a shared strip.
 #
-# THEY ARE NO LONGER THE SAME WIDTH, which is why. 'Up' and 'Dn' are 56 px faces at x = 729 and Lock
-# Rate is 140 at 645; the old shared 600..785 rect was 185 px wide, left over from when the page
-# buttons were too, and it measured a 56 px button as 30 % grey -- under BTN_GREY_PCT, so a button
-# plainly on the glass would have been reported ABSENT.
+# THEY ARE NOT THE SAME WIDTH, which is why. 'Up' and 'Dn' are 56 px faces at x = 729 and Lock Rate
+# is 140 at 645, so one shared 185 px rect over 600..785 measures a 56 px button as 30 % grey --
+# under BTN_GREY_PCT, reporting a button plainly on the glass as ABSENT.
 #
 # The KEYS stay 'PageUp' and 'PageDn' -- they name the control, not the label on it, and eight press
 # cases below pass them as identifiers.
@@ -784,11 +782,9 @@ def run_sequence(p, g, a):
                      lambda b2, a3: a3['saved'] != 'nil' and a3['saved'] != b2['saved']))
 
     # ---- mode, at BOTH rates -------------------------------------------------------------------
-    # THE CYCLE IS THE SAME AT EVERY RATE, and that is the property worth pinning. It was not always:
-    # modes were once chosen for the operator either side of strm_maxbaud, and this block checked
-    # that whichever mode was wrong for the locked rate got skipped. Nothing is rate-dependent now --
-    # the two recording modes differ only in window size, and both work wherever a rate is locked --
-    # so a cycle that skipped one, or offered a fourth, is the regression to catch.
+    # THE CYCLE IS THE SAME AT EVERY RATE, and that is the property worth pinning. Nothing here is
+    # rate-dependent: the two recording modes differ only in window size and both work wherever a
+    # rate is locked, so a cycle that skips one, or offers a fourth, is the regression to catch.
     #
     # STILL RUN AT TWO RATES, because "the same everywhere" is only worth asserting somewhere it
     # could differ.
@@ -841,9 +837,9 @@ def run_sequence(p, g, a):
     p.setup('sdec.ck_running, sdec.ck_stop = true, false '
             'sdec.ck_job, sdec.strm_recording = nil, nil '
             "sdec.capmode = 'med' pcall(function() sdec.ui_refresh() end)")
-    # STOPPING A RUN KEEPS THE MODE, so this asserts the stop and NOT a mode change. It used to expect
-    # mode == 'frame', which contradicts the contract at serial_app.tsp:2295: the running branch of
-    # mode_cycle stops the capture and deliberately leaves capmode alone. And because the mode does not
+    # STOPPING A RUN KEEPS THE MODE, so this asserts the stop and NOT a mode change. Expecting
+    # mode == 'frame' contradicts mode_cycle's contract: its running branch stops the capture and
+    # deliberately leaves capmode alone. And because the mode does not
     # change, the TITLE cannot change either -- so this one case paints the STATUS row (measured 2910 px
     # against the title's 0) while the idle transitions above paint the title. Both were reported as app
     # defects by an obsolete expectation and a mis-owned region.
@@ -854,11 +850,11 @@ def run_sequence(p, g, a):
     p.setup('sdec.stickyerr = nil pcall(function() sdec.ui_refresh() end)')
 
     # ---- Capture in a recording mode: ONE press does the whole job ------------------------------
-    # It used to be START, STOP, then a slice per press -- twelve presses for a full buffer. One
-    # press now records, decodes, files it and returns, because the front-panel TRIGGER key can stop
-    # a running handler (sdec.cancel_setup) and a bounded press is no longer the only way to stay
-    # stoppable. So what this checks changed with it: not "each press is small" but "one press
-    # finishes the job and leaves nothing for a second press to do".
+    # One press records, decodes, files it and returns -- not START, STOP and a slice per press, which
+    # costs twelve presses for a full buffer. A bounded press is not the only way to stay stoppable,
+    # because the front-panel TRIGGER key can stop a running handler (sdec.cancel_setup). So what this
+    # checks is not "each press is small" but "one press finishes the job and leaves nothing for a
+    # second press to do".
     print('\n--- CAPTURE in a recording mode: one press, whole job ---')
     p.to_frame()
     play(a.slow_baud)
@@ -870,12 +866,10 @@ def run_sequence(p, g, a):
     p.setup("sdec.capmode = 'sml' pcall(function() sdec.ui_refresh() end)")
     st = p.state()
     p.note('8 kB: mode_suits = %s at %s Bd' % (st.get('suits'), st.get('force')))
-    # THE MODE STAYS WHERE IT WAS PUT. This expected mode == 'frame' afterwards, which is the behaviour
-    # serial_app.tsp:2226-2236 deliberately removed: a recording that finished used to move the operator
-    # to a mode they had not chosen, and with the capture mode now in the TITLE BAR that is a large
-    # caption changing itself. A recording mode is a SETTING; the Mode button is the only thing that
-    # moves it. So the assertion is that the press recorded and filed without error and left the mode
-    # alone -- which is the contract the app actually implements.
+    # THE MODE STAYS WHERE IT WAS PUT, so do not expect mode == 'frame' afterwards. A finished
+    # recording that moves the operator to a mode they did not choose is a large caption in the TITLE
+    # BAR changing itself. A recording mode is a SETTING; the Mode button is the only thing that moves
+    # it. So the assertion is that the press recorded and filed without error and left the mode alone.
     p.press('Capture/8kB-oneshot', 'sdec.capture',
             ('one press recorded, decoded and filed it, leaving the mode as set',
              lambda b2, a3: a3['status'] != 'error' and a3['mode'] == 'sml'),
@@ -891,7 +885,7 @@ def run_sequence(p, g, a):
     # After a recording that ended by itself, the app deliberately eats one Capture press as "the Stop
     # you queued while it was running" (sdec.strm_absorb_due). That is right for an operator and fatal
     # for this harness: the press returns in 25 ms having done nothing, and whatever it was meant to
-    # test is silently untested. The first run of the cancel case below failed for exactly that reason.
+    # test is silently untested -- which is how the cancel case below fails without a real defect.
     #
     # The window is measured with timer.gettime(), the instrument's ONE global timer -- and bp_press
     # calls timer.cleartime() at the start of every press to time it. So from the app's point of view

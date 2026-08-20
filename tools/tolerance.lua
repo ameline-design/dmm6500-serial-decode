@@ -5,11 +5,9 @@
 -- ladder and every impairment we can generate, it reports the largest level at which the decode
 -- is still byte-exact with the right rate and zero framing errors.
 --
--- MEASURED ACROSS SEVERAL SEEDS, NOT ONE. This matters, and it was learned the hard way: a single
--- seed said the jitter limit was +/-25 % UI, and the very next seed produced a CONFIDENT WRONG
--- ANSWER at that level -- zero framing errors, an unsnapped baud rate, and corrupted bytes. A
--- tolerance quoted from one draw is not a tolerance. A level passes here only if EVERY seed is
--- exact.
+-- MEASURED ACROSS SEVERAL SEEDS, NOT ONE. One draw is not a tolerance: at a jitter of +/-25 % UI
+-- one seed decodes byte-exact and the next produces a CONFIDENT WRONG ANSWER -- zero framing errors,
+-- an unsnapped baud rate, corrupted bytes. A level passes here only if EVERY seed is exact.
 --
 -- The two columns are different questions and both are reported:
 --   CLEAN  the largest level at which every seed is byte-exact
@@ -17,13 +15,14 @@
 --          announces itself, by framing errors or by an unsnapped rate. Past this the panel can
 --          show confident garbage, which is the only truly dangerous failure.
 --
--- WHY THE ROWS AT 8 SAMPLES/BIT ARE ALL IDENTICAL, and why that is a RESULT rather than a bug:
--- FRAME mode picks fs = 8 x baud, so at every rate below the instrument's 1 MSa/s ceiling the
--- decoder is handed the SAME SAMPLE ARRAY -- same cells, same oversampling, same everything but
--- the wall-clock duration it was collected over. Nothing downstream of the ADC can distinguish
--- them, so the tolerance cannot differ either. The real axis is SAMPLES PER BIT, and it only
--- starts varying above 125 kBd, where fs clamps and oversampling falls: 8.00 down to 4.34 at
--- 230400 and 4.00 at 250000. Those are the rows to read.
+-- WHY WHOLE BLOCKS OF ROWS ARE IDENTICAL, and why that is a RESULT rather than a bug: fs comes from
+-- pick_fs, which snaps UP into sdec.rates, and it lands on 8.3333 sa/bit for every standard rate from
+-- 300 to 76800 bar two. Those rates hand the decoder the SAME SAMPLE ARRAY -- same cells, same
+-- oversampling, same everything but the wall-clock duration it was collected over -- so nothing
+-- downstream of the ADC can tell them apart and the tolerance cannot differ either. The real axis is
+-- SAMPLES PER BIT. It varies at the two rates that snap to a busy rung (28800 and 57600 at 8.6806,
+-- 31250 at 8.0000) and then falls away above 115200 as fs clamps at 1 MSa/s: 7.81 at 128000, 6.51 at
+-- 153600, 4.34 at 230400, 4.00 at 250000. Those are the rows to read.
 --
 -- The upshot for the operator is a good one: a slow line is not more robust than a fast one, and
 -- quoting a tolerance per baud rate would imply it is. Tolerance is a property of oversampling.

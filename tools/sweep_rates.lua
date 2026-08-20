@@ -44,11 +44,10 @@ local function want(sec) return WHICH == nil or WHICH == sec end
 local CAND = {900, 1250, 2500, 5000, 15000, 30000, 40000, 60000, 80000, 120000, 160000,
               250000, 300000, 320000, 350000, 400000, 640000}
 
--- sdec.stdbaud, the app's OWN list, not a hand-written set of the common ones. The first version
--- of this tool used nine rates I typed out from memory; it had no entry below 1200 and therefore
--- reported a clean bill while 300 baud -- which IS in stdbaud, and is what slow bit-banged
--- hardware runs at -- was holding 60 bytes. Deriving the sweep from the app's own definition of
--- "standard" is the only version of this that cannot drift away from what the app believes.
+-- sdec.stdbaud, the app's OWN list, not a hand-written set of the common ones. A local list drifts
+-- away from what the app believes: one with no entry below 1200 reports a clean bill while 300 baud
+-- -- which IS in stdbaud, and is what slow bit-banged hardware runs at -- holds only 60 bytes.
+-- Deriving the sweep from the app's own definition of "standard" is what makes that impossible.
 local BAUDS = sdec.stdbaud
 local NAMED = {[31250] = 'MIDI', [250000] = 'DMX512'}
 

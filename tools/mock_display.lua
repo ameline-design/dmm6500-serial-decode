@@ -24,10 +24,9 @@ MD = {}
 
 local OBJ, nextid = {}, 0
 local BUTTON_H = 58        -- measured from docs/panel-ref-chrome.png
--- MEASURED off docs/img/options.png on 2026-08-19, not guessed: a field created at y draws its box
--- from y + 4 to y + 53. The 38 that was here understated it by 12 px, and the options-form pitch
--- arithmetic was built on that number -- which is how a seven-field form came to be documented as
--- fitting with 8 px clear when it would have overlapped the button row by 6.
+-- MEASURED off docs/img/options.png, not guessed: a field created at y draws its box from y + 4 to
+-- y + 53. The options-form pitch arithmetic is built on this number, so understating it by 12 px
+-- documents a seven-field form as fitting with 8 px clear when it overlaps the button row by 6.
 local EDIT_H   = 50
 local CONTENT_H = 480 - 49 -- panel height less the title bar; object y is relative
 
@@ -59,10 +58,10 @@ local function use(h, what)
   return o
 end
 
--- POOL EXHAUSTION, as the firmware really does it. Measured on the instrument 2026-08-17: once the
--- display object pool is gone, display.create returns NIL and posts NOTHING -- event 1701 is logged
--- the first time only. It does not raise. MD.poolcap(n) reproduces that so the build's refusal can
--- be tested without spending a power cycle on the bench.
+-- POOL EXHAUSTION, as the firmware really does it: once the display object pool is gone,
+-- display.create returns NIL and posts NOTHING -- event 1701 is logged the first time only -- and it
+-- does not raise. MD.poolcap(n) reproduces that, so the build's refusal is testable without spending
+-- a power cycle on the bench.
 POOLCAP = nil
 function MD.poolcap(n) POOLCAP = n end
 
@@ -196,14 +195,10 @@ end
 -- setfill's argument is a PERCENTAGE, 0..100. Anything else is refused by the firmware
 -- with "1130 Parameter fill percent, expected value from 0 to 100".
 --
--- THIS MOCK PREVIOUSLY GOT IT WRONG IN A WAY THAT HID A REAL BUG. It accepted any number
--- and only objected to 0, on the belief that the firmware read 0 as "unset" -- so the app
--- passed 24-bit COLOURS to setfill for its entire life, every one of them was rejected on
--- the instrument, and offline everything looked fine. On hardware the rejections came fast
--- enough to raise a MODAL ERROR DIALOG over the app's own hex dump.
---
--- Enforcing the real range is what makes that mistake unrepresentable rather than merely
--- fixed: a colour passed here now fails a test instead of a panel.
+-- THE RANGE IS ENFORCED HERE BECAUSE A LAX MOCK HIDES THE BUG ENTIRELY. Accept any number and a
+-- 24-bit COLOUR passed to setfill looks fine offline while the instrument rejects every call -- fast
+-- enough to raise a MODAL ERROR DIALOG over the app's own hex dump. Enforcing it makes the mistake
+-- unrepresentable: a colour passed here fails a test instead of a panel.
 function display.setfill(h, pct, dir)
   local o = use(h, 'setfill')
   if type(pct) ~= 'number' or pct < 0 or pct > 100 then

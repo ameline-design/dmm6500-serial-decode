@@ -1,9 +1,9 @@
 -- test_analog.lua -- the SAME cases the bench runs, swept over sampling phase, edge jitter and
 -- amplitude noise, at the sample rates the app itself selects.
 --
--- WHY THIS FILE EXISTS. The 2x baud misfit (#29) failed on the instrument two laps in seven while
--- 884 offline assertions stayed green, and the reason was not subtlety in the decoder -- it was
--- that the offline suite and the bench were not running the same experiment:
+-- WHY THIS FILE EXISTS. An offline suite that names its own conditions is not running the bench's
+-- experiment, and the gap between the two hides misfits that fail on the instrument several laps in
+-- ten. Three variables account for it:
 --
 --   * SAMPLE RATE. Every offline case names a round fs by hand -- both 8N2 cases used 100000, i.e.
 --     10.42 samples/bit -- but pick_fs(9600, 8) returns 80000, i.e. 8.33. That is not cosmetic: the
@@ -12,9 +12,9 @@
 --     tested 10.42 the halved candidate sits at 5.21, a comfortable 33 % clear. The suite only ever
 --     tested the safe side of the cliff the app actually operates on. So fs comes from pick_fs here,
 --     never from a literal.
---   * SAMPLING PHASE. GEN_RENDER takes opts.phase and defaults it to 0.37, and nothing varied it
---     before this file, so every offline assertion ran at one arbitrary sub-bit alignment. A real capture
---     starts wherever the trigger fired.
+--   * SAMPLING PHASE. GEN_RENDER takes opts.phase and defaults it to 0.37, so a case that does not
+--     vary it runs at one arbitrary sub-bit alignment. A real capture starts wherever the trigger
+--     fired, and this file sweeps the phase.
 --   * JITTER AND NOISE. Left at 0 in almost every case. The bench signal is quantised twice --
 --     the generator renders edges on its own 10 us grid at 10.4167 samples/bit, then the DMM
 --     resamples at 12.5 us -- and GEN_RENDER's own comment explains that per-edge displacement is
@@ -22,8 +22,8 @@
 --     cannot reproduce.
 --
 -- The standing rule this encodes: the only differences between an offline case and the same case on
--- the instrument should be the Lua version and analog effects that cannot be simulated. Anything
--- else is a gap where a defect can live, and #29 lived in exactly that gap.
+-- the instrument are the Lua version and analog effects that cannot be simulated. Anything else is a
+-- gap where a defect lives unseen.
 --
 -- Run from the repo root:  lua tools/test_analog.lua
 
@@ -187,11 +187,10 @@ end
 
 -- ============================================================================
 print('8N2 at every rate -- the format that failed on the bench')
--- The stop-bit count is NOT the mechanism, and an earlier version of this comment said it was.
--- Measured: 8O1 (one stop bit) misfits where 8N2 does not, the reverse of that prediction, and
--- med/T is 2.00 for this payload at both formats. 8N2 is the more frequent BENCH failure because its
--- entry point is the probe octave, which needs two independent misfits, not because of its stop bit.
--- Kept as a case because it is what the bench fails on, not because 8N2 is inherently susceptible.
+-- The stop-bit count is NOT the mechanism. Measured: 8O1 (one stop bit) misfits where 8N2 does not,
+-- and med/T is 2.00 for this payload at both formats. 8N2 is the more frequent BENCH failure because
+-- its entry point is the probe octave, which needs two independent misfits -- not because of its stop
+-- bit. It is here because it is what the bench fails on, not because 8N2 is inherently susceptible.
 -- ============================================================================
 for ri = 1, nr do
   local b = RATES[ri]
@@ -217,8 +216,8 @@ print('the probe\'s own conditions')
 -- The probe is a SEPARATE decode at a rate off sdec.probe_fs, and its answer chooses the full
 -- capture's sample rate. serial_app.tsp:216-241 records that it can be an octave out -- "two of
 -- ten identical 9600-baud captures fitted 19200" -- and the recovery there is keyed on the SECOND
--- pass disagreeing with it, so a probe error the second pass repeats is never corrected. Nothing
--- offline modelled the probe's view until now.
+-- pass disagreeing with it, so a probe error the second pass repeats is never corrected. This
+-- section models the probe's own view, which no other offline case does.
 -- ============================================================================
 local PFS = sdec.probe_fs or {1000000, 100000, 10000}
 local pfs1 = PFS[1]
@@ -365,25 +364,25 @@ end
 
 -- ============================================================================
 print('the 7-bit shuffled payload, capture starting at an arbitrary sample')
--- THE CASE THE SOAK FOUND AND EVERY OFFLINE SUITE MISSED (r06, 2026-08-19).
+-- THE CASE ONLY A SOAK REACHES, on the r06 payload.
 --
--- ua_refine_parity's non-strict branch re-decodes at 7 bits and returned a result carrying
--- nbits/par/nstop/invert all nil, because ua_run takes the format as ARGUMENTS and records none of
--- it -- the search loop stamps the winner, and this branch copied only score and headsusp. The
--- branch whose entire purpose is to change the format returned one with none. It surfaced as a
--- raise in ua_note_fmt's %d, so capture() died DESCRIBING a decode that had succeeded, and the
--- bench filed 'no bytes decoded' -- a symptom pointing at the wrong subsystem entirely.
+-- ua_refine_parity's non-strict branch re-decodes at 7 bits, and ua_run takes the format as
+-- ARGUMENTS and records none of it -- the search loop stamps the winner, so a branch that copies
+-- only score and headsusp hands back nbits/par/nstop/invert all nil. The branch whose entire purpose
+-- is to change the format returns one with none. The symptom points elsewhere entirely: a raise in
+-- ua_note_fmt's %d, so capture() dies DESCRIBING a decode that succeeded and the bench files
+-- 'no bytes decoded'.
 --
--- WHY THE EXISTING SWEEPS ABOVE CANNOT REACH IT. They play 'Hello, World!', and cleanly generated
--- text gives a UNANIMOUS parity vote, which takes the strict in-place path where r already has the
--- fields. Reaching the broken branch needs a vote of 232 of 233 rather than 233 of 233: one
--- dissenting frame, which is what a capture opening mid-byte on a GAPLESS 7E1 stream produces.
+-- WHY THE SWEEPS ABOVE CANNOT REACH IT. They play 'Hello, World!', and cleanly generated text gives
+-- a UNANIMOUS parity vote, which takes the strict in-place path where r already carries the fields.
+-- The non-strict branch needs a vote one short of unanimous -- a single dissenting frame, which is
+-- what a capture opening mid-byte on a GAPLESS 7E1 stream produces.
 -- Three conditions have to coincide -- 7-bit random payload, no inter-frame gap, arbitrary start --
 -- and no other case in this repo has all three.
 --
 -- THE ASSERTION IS AN INVARIANT, NOT AN ABSENCE OF A CRASH: a result handed back by the decoder
--- always carries the format that produced it. That holds whichever branch ran, so it also covers
--- the sibling call sites (ua_refine_width and the forced path both stamp; audited 2026-08-19).
+-- always carries the format that produced it. That holds whichever branch runs, so it also covers
+-- the sibling call sites -- ua_refine_width and the forced path both stamp.
 -- ============================================================================
 
 -- r06..r11's payloads, built here rather than read from out/vectors/: those files are generated
@@ -477,11 +476,11 @@ sdec.ua_refine_parity = function(r, rd, n, T)
   return out
 end
 
--- STEPPED ACROSS THE WHOLE PAYLOAD, NOT DENSELY ACROSS THE FIRST FEW FRAMES, and that was measured
--- rather than assumed. A first version stepped 1 sample through 220 samples -- every sub-bit phase
--- of two whole frames -- and reached the non-strict branch ZERO times in 1320 starts. Which BYTES
--- land in the window is the determining variable, not the sub-bit phase: the dissent that makes the
--- vote 232-of-233 comes from the misaligned head, so it depends on the values there. Swept whole,
+-- STEPPED ACROSS THE WHOLE PAYLOAD, NOT DENSELY ACROSS THE FIRST FEW FRAMES, and the difference is
+-- measured: stepping 1 sample through 220 -- every sub-bit phase of two whole frames -- reaches the
+-- non-strict branch ZERO times in 1320 starts. Which BYTES land in the window is the determining
+-- variable, not the sub-bit phase, because the one dissenting frame comes from the misaligned head
+-- and so depends on the values there. Swept whole,
 -- the hits cluster in a handful of payload regions (seed 7108 has 2 in 538 starts, seed 7109 has 16).
 --
 -- 250 samples is 2.4 frame times, so the sub-bit phase still walks ~0.4 of a bit per step and gets

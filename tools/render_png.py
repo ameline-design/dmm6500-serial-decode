@@ -128,9 +128,8 @@ def draw_panel(rows, screen, title, out, scale, mono_rows, fonts):
     d = ImageDraw.Draw(img)
 
     overflow = []
-    # PREFIX, NOT EQUALITY. The main screen's title now carries the capture mode after the app's name
-    # ('SERIAL DECODE - 8K CAPTURE'), so an exact match selects no rows and renders an empty panel --
-    # which is the failure this filter has already had once, from the other direction.
+    # PREFIX, NOT EQUALITY. The main screen's title carries the capture mode after the app's name
+    # ('SERIAL DECODE - 8K CAPTURE'), so an exact match selects no rows and renders an empty panel.
     mine = [r for r in rows if r['screen'] == screen or r['screen'].startswith(screen + ' -')]
 
     vgrad(img, (0, 0, PANEL_W * S, TITLE_H * S), TITLE_TOP, TITLE_BOT)
@@ -169,11 +168,10 @@ def draw_panel(rows, screen, title, out, scale, mono_rows, fonts):
 
         if r['kind'] == 'rect':
             # AN OBJ_RECT IS DRAWN AS ITS BORDER, not as a filled block, and setfill's percentage
-            # does nothing to it -- measured on the panel 2026-08-19, where a 64 x 14 rect at
-            # setfill(100) lit its 137-pixel perimeter and nothing inside. This renderer drew rects
-            # SOLID, which is why the options mockup showed 480 px wide field boxes the instrument
-            # renders at 150, and why a progress bar that draws nothing at all on the glass looked
-            # correct here.
+            # does nothing to it: on the panel a 64 x 14 rect at setfill(100) lights its 137-pixel
+            # perimeter and nothing inside. Drawing rects SOLID here shows the options form with
+            # 480 px wide field boxes the instrument renders at 150, and makes a progress bar that
+            # draws nothing at all on the glass look correct.
             #
             # EVERY RECT IS DRAWN, setfill or not, because setfill is not what makes one visible --
             # its colour is. The old skip-if-never-filled rule left the progress bar's frame off the
@@ -181,10 +179,10 @@ def draw_panel(rows, screen, title, out, scale, mono_rows, fonts):
             # other direction.
             #
             # THE COLOUR IS THE color COLUMN, NOT THE fill COLUMN. It was the fill column for as long
-            # as the app passed 24-bit colours to display.setfill -- every one of them refused on the
-            # instrument -- and this line kept rendering them faithfully, so the mockups were the
-            # only place those colours ever appeared. rgb(100) is (0, 0, 100), a dark blue, which is
-            # what a correct app now renders every rule as if this is not fixed with it.
+            # as a 24-bit colour passed to display.setfill is refused by the instrument while this
+            # line renders it faithfully -- making the mockups the only place that colour appears.
+            # rgb(100) is (0, 0, 100), a dark blue, which is what every rule looks like here if the
+            # percentage is not honoured.
             wpx, hpx = r['w'] * S, r['h'] * S
             # A rect 1 or 2 px on either axis has no interior, so border and block are the same
             # pixels -- which is every rule, and the only reason the panel looks the way it does.
@@ -203,8 +201,8 @@ def draw_panel(rows, screen, title, out, scale, mono_rows, fonts):
 
         elif r['kind'] == 'text':
             px = FONT_MEDIUM if r['font'] == 2 else FONT_SMALL
-            # Dump rows start at ui_row_y0 = 66, not 90 -- the old bound rendered the
-            # first two rows in the proportional face while the rest were monospace.
+            # Dump rows start at ui_row_y0 = 66, not 90: a bound at 90 renders the first two rows
+            # in the proportional face while the rest are monospace.
             f = fonts.m(px - 1) if (mono_rows and r['y'] >= 62 and r['y'] < 330) \
                 else fonts.r(px)
             # JUSTIFICATION IS HONOURED, because the app uses it. A JUST_RIGHT object's x is its
@@ -287,12 +285,11 @@ def cmd_panel(args):
     # THE MAIN SCREEN'S NAME, WHICH IS ALSO THE ROW FILTER (draw_panel keys on it) -- so it must be
     # the app's own sdec.ui_title and nothing else.
     #
-    # It read 'SERIAL PROTOCOL DECODE', which the app stopped calling the screen. The committed .tsv
-    # dumps still held that old name, so rendering from them matched and looked fine -- while drawing
-    # a title bar the instrument no longer shows. Re-running `lua tools/mockup.lua` (the documented
-    # first step) rewrote them with the real name, after which the filter matched NOTHING and every
-    # main-screen panel rendered EMPTY, reporting success and a size. The options mockups were never
-    # affected: their name never changed.
+    # A literal here goes stale silently in BOTH directions. While the committed .tsv dumps carry the
+    # same stale name, rendering from them matches and looks fine -- and draws a title bar the
+    # instrument does not show. Re-running `lua tools/mockup.lua` (the documented first step) rewrites
+    # them with the real name, after which the filter matches NOTHING and every main-screen panel
+    # renders EMPTY, reporting success and a size.
     MAIN = 'SERIAL DECODE'
 
     # mono=True renders the dump area in a fixed-pitch font, which is what the hex, MIDI
@@ -326,8 +323,8 @@ def cmd_panel(args):
         ('docs/mockup-objects-stream-gate.tsv', MAIN,
          'mockup-mode-stream-gate', False),
         # THE RESTING STATE AFTER A RECORDING: FRAME, showing the retained tail, paged, with the page
-        # counter on the note row. stream-done above cannot show this -- it leaves sdec.res at the
-        # earlier frame capture, so it renders a single page and the counter stays away.
+        # counter on the note row. stream-done above cannot show this -- it holds sdec.res at the
+        # frame capture, so it renders a single page and the counter stays away.
         ('docs/mockup-objects-stream-tail.tsv', MAIN,
          'mockup-stream-tail', True),
         # THE TWO LOSS REGIMES above the continuous ceiling -- the states that decide whether
@@ -337,9 +334,8 @@ def cmd_panel(args):
          'mockup-fc-losing', False),
         ('docs/mockup-objects-fc-ok.tsv', MAIN, 'mockup-fc-ok', False),
         # A COMPLETELY FULL hex screen at the CHOSEN geometry: 15 rows, 18 px pitch, 240 bytes.
-        # The 14-row comparison that picked it is gone -- it documented a decision, and keeping a
-        # mockup of a layout the app no longer has is the stale-render trap the check below
-        # exists for.
+        # Only the chosen geometry is rendered -- a mockup of a layout the app does not have is the
+        # stale-render trap the check below exists for.
         ('docs/mockup-objects-hex15.tsv', MAIN, 'mockup-hex-full', True),
     ]
     missing = [j[0] for j in jobs if not os.path.exists(os.path.join(ROOT, j[0]))]
@@ -354,10 +350,9 @@ def cmd_panel(args):
         for txt, end, why in over:
             print(f'    LAYOUT: {txt!r} ends at {end} — {why}')
 
-    # STALE RENDERS ARE REPORTED, because a renamed scenario leaves its old PNG behind and a
-    # mockup of a screen that no longer exists is worse than a missing one -- it gets believed.
-    # Found the hard way: condensing FRAME+LOG into FRAME left mockup-mode-log.png in both
-    # output directories, a panel for a mode that had ceased to exist.
+    # STALE RENDERS ARE REPORTED, because a renamed scenario leaves its old PNG behind and a mockup
+    # of a screen that does not exist is worse than a missing one -- it gets believed. Condensing two
+    # modes into one is enough to do it: the retired mode's PNG stays in both output directories.
     want = {j[2] + '.png' for j in jobs} | {'lin-divider.png'}
     for f in sorted(os.listdir(out)):
         if f.startswith('mockup-') and f.endswith('.png') and f not in want:
@@ -485,8 +480,7 @@ def cmd_schematic(args):
         d.text((x * S, y * S), s, font=f, fill=c, anchor=anchor)
 
     # ---- title ----
-    # Kept to one short line: the subtitle used to sit alongside it and collided
-    # with both the title and the C1 label.
+    # One short line: a subtitle alongside it collides with both the title and the C1 label.
     t(10, 6, 'LIN BUS 2:1 DIVIDER', fonts.b(17), (255, 255, 255))
     t(224, 9, 'automotive 8–18 V bus into the 10 V range', fonts.r(13), DIM)
 
@@ -543,7 +537,7 @@ def cmd_schematic(args):
     t(xtap - 22, 180, '47 kΩ  1 %', fonts.r(14), ACCENT, anchor='ra')
     t(xtap - 22, 200, 'match R1', fonts.r(11), DIM, anchor='ra')
 
-    # Worked values at the tap, in the space the clamp used to occupy.
+    # Worked values at the tap.
     t(xz - 4, 138, 'AT THE TAP', fonts.b(13), (255, 255, 255))
     t(xz - 4, 160, '12 V bus', fonts.r(13), DIM)
     t(xz + 78, 160, '6.0 V', fonts.r(13), ACCENT)

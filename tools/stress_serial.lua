@@ -490,11 +490,10 @@ case('20 nil holes scattered', {bytes = HELLO, baud = 9600, fs = 100000},
 -- collapse far below the true bit time. No amount of amplitude noise reproduces that -- a spike
 -- adds a spurious edge, whereas jitter moves the REAL ones.
 --
--- MEASURED ACROSS 24 SEEDS at 9600 baud, 8 samples/bit, 2026-08-17. One seed is not a
--- tolerance: the first version of this comment claimed "good to +/-25 % UI" on the strength of a
--- single lucky draw, and the suite's own seed immediately produced a CONFIDENT WRONG ANSWER at
--- that level -- baud reported as 9366 (not snapped to any standard rate), 13 of 13 bytes, ZERO
--- framing errors, and two bytes corrupted.
+-- MEASURED ACROSS 24 SEEDS at 9600 baud, 8 samples/bit. One seed is not a tolerance: a lucky draw
+-- supports "good to +/-25 % UI" while the suite's own seed produces a CONFIDENT WRONG ANSWER at that
+-- level -- baud reported as 9366 (not snapped to any standard rate), 13 of 13 bytes, ZERO framing
+-- errors, two bytes corrupted.
 --
 --     jitter   exact   flagged wrong   SILENTLY WRONG
 --     +/- 5%   24/24         0                0

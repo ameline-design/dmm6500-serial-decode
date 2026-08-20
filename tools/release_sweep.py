@@ -85,12 +85,11 @@ def stages(outdir, shots):
         Stage('unit', ['lua', 'tools/test_serial.lua'],
               note='the offline suite: decoder, UI, state machine, file paths'),
         # ONE STAGE PER DEFECT CLASS, not one merged regression stage. Each of these three files
-        # was written against a specific HIGH defect that shipped once, and each check in them
-        # fails against the code as it was -- so a failure here names the defect that came back
-        # rather than just saying a regression suite went red.
+        # covers one specific HIGH defect, and each check in them fails if that defect returns -- so
+        # a failure here names the defect rather than just saying a regression suite went red.
         Stage('unit-frontrig', ['lua', 'tools/test_frontrig.lua'],
-              note='Trigger key and rear-BNC arming THROUGH acquire() -- the routing that used '
-                   'to drop to free-run while the status row claimed the key was the source'),
+              note='Trigger key and rear-BNC arming THROUGH acquire() -- the routing that can drop '
+                   'to free-run while the status row claims the key is the source'),
         Stage('unit-usblog', ['lua', 'tools/test_usblog.lua'],
               note='USB log name allocation and the persistent index -- name exhaustion must '
                    'refuse, not loop forever and hang the panel'),
@@ -125,24 +124,22 @@ def stages(outdir, shots):
         # gate it replaces passed a capture containing a silently wrong byte, and a judging rule
         # that can do that is as dangerous as a decoder bug -- it hides them.
         # THE ONE GATE WHOSE SUBJECT IS AN UNRECOVERABLE HARDWARE FAILURE. A zero-length or undersized
-        # waveform bricks the SDG at its next power-up with no shell to recover through, and review
-        # found THREE live bypasses of the guard that was supposed to prevent it -- including
-        # write(), which had no check at all. Cheap, hermetic (transport='dry', no instrument), and
-        # it fails against the code as it was.
+        # waveform bricks the SDG at its next power-up with no shell to recover through, and a guard
+        # inside write_raw() alone has THREE live bypasses -- including write(), which carries no
+        # check at all. Cheap, hermetic (transport='dry', no instrument).
         Stage('unit-sdgguard', ['python3', 'tools/test_sdg_guard.py'],
-              note='every route to an out-of-spec waveform refuses it -- the three bypasses found '
-                   'in review, plus the legitimate uploads still working'),
+              note='every route to an out-of-spec waveform refuses it -- all three bypasses, plus '
+                   'the legitimate uploads still working'),
         # The phase sweep across every bench vector, sharded over the cores. Its subject is the
-        # variable that both shipped decoder defects had in common: where the capture opened.
+        # variable the decoder is most sensitive to: where the capture opens.
         Stage('unit-phasesweep', ['python3', 'tools/sweep_all.py', '--quiet'],
               note='every vector x capture start x phase/jitter/noise -- no raise, no result '
                    'without a format, no wrong byte among the ones ERR calls trustworthy'),
         # THE ARB LOOP SEAM, END TO END. The lorem-gate stage below pins the judging RULE and
-        # test_lorem_gate's new cases pin head_damage as a function; neither drives the caller, which
-        # is where the 2026-08-19 defect actually was -- the bench trimmed by the suspect region and
-        # discarded five correct captures in 58 laps. This one renders the real vector, decodes real
-        # windows at every start offset, and REQUIRES the old rule to fail on them, so it cannot
-        # quietly become vacuous.
+        # test_lorem_gate's cases pin head_damage as a function; neither drives the CALLER, which is
+        # where trimming by the suspect region discards correct captures -- five in 58 laps. This one
+        # renders the real vector, decodes real windows at every start offset, and REQUIRES the
+        # unfixed rule to fail on them, so it cannot quietly become vacuous.
         Stage('unit-forcerate', ['lua', 'tools/test_forcerate.lua'],
               note='a forced baud rate the wire does not carry must REFUSE and name the rate it does '
                    'carry, and both answers to that offer must be drivable with no human present'),
@@ -160,9 +157,8 @@ def stages(outdir, shots):
               note='builds both screens from the ARCHIVE against a mock front end'),
         # Run from docs/, or pandoc resolves img/ against the repo root and the screenshots
         # silently drop out of the PDF.
-        # EVERY SHIPPED DOCUMENT, not just the manual. They were being built by hand, which is how a
-        # PDF ends up describing a build that no longer exists -- the whole point of doing it in the
-        # gate is that a stale PDF becomes impossible rather than merely unlikely.
+        # EVERY SHIPPED DOCUMENT, not just the manual. Built by hand, a PDF ends up describing a build
+        # that no longer exists; built in the gate, a stale PDF is impossible rather than unlikely.
         # README.pdf is built from the repo root because its links are repo-relative; the two in
         # docs/ are built from docs/ or pandoc resolves img/ against the root and the screenshots
         # silently drop out.
@@ -321,7 +317,7 @@ def instrument_check():
         need = ['v41', 'v44a', 'v44b', 'v44c', 'v44d', 'v44e', 'v80', 'v71']
         # THROUGH VN.missing(): the ids here are local, the instrument holds SER_ names, and an exact
         # membership test is required rather than a substring one -- SER_Hello_8N1 is a prefix of
-        # SER_Hello_8N1_Sp10, so the old test read a missing vector as present.
+        # SER_Hello_8N1_Sp10, so a substring test reads a missing vector as present.
         missing = VN.missing(stl, need)
         if missing:
             ok = False

@@ -188,7 +188,7 @@ class DMM:
         does here. Reloading an existing name raises 1408, so drop it first.
         """
         self.drain()
-        # A previously loaded name must be cleared or the reload raises
+        # A name already loaded must be cleared or the reload raises
         # "1408 A script with the same name already exists".
         #
         # script.delete() wants the script OBJECT, not its name string - passing
@@ -199,10 +199,10 @@ class DMM:
         #
         # script.delete() succeeds but logs "-104 Data type error" to the event log
         # whichever way the script is identified. That is cosmetic -- the name really
-        # is freed -- but it lands in the same event log used to judge whether the
-        # APP is healthy, so it is cleared here. Only a re-load reaches this branch,
-        # which is why a first load after a power cycle shows a clean log and every
-        # reload afterwards used to show exactly one -104.
+        # is freed -- but it lands in the same event log that judges whether the APP
+        # is healthy, so it is cleared here. Only a re-load reaches this branch, so a
+        # first load after a power cycle shows a clean log either way and it is every
+        # reload afterwards that would carry exactly one -104.
         self.q('if %s ~= nil then '
                '  pcall(function() script.delete(%s) end) '
                '  %s = nil '

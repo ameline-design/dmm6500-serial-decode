@@ -184,8 +184,8 @@ end
 print('\nC  a cancel during the RECORDING keeps what was recorded')
 -- ============================================================================
 -- The recording loop polls the latch twice a second. A cancel there must end the ACQUISITION and
--- then decode what it collected -- which is what the old Capture-to-stop press did. Ending the
--- decode too would throw away everything the operator had just waited for.
+-- then decode what it collected. Ending the decode too would throw away everything the operator
+-- has just waited for.
 do
   idle()
   clearforce()
@@ -396,11 +396,11 @@ do
   restore()
   check('an endless sender does not run for ever', ok == true)
   check('it stops at the window bound', sdec.fc_win == 3, tostring(sdec.fc_win))
-  -- THE REMEDY HAS TO BE THE REAL ONE. It used to read 'press Capture to continue', which is wrong on
-  -- both halves: every exit from a recording runs mode_exit(), which puts capmode back to 'frame' and
-  -- nils flog_path -- so Capture alone takes a FRAME capture and the following bytes land in the NEXT
-  -- numbered file. The data survives (the sender is still waiting for a credit) but the recording is
-  -- fragmented, and an instruction that does not work is worse than none.
+  -- THE REMEDY HAS TO BE THE REAL ONE. 'press Capture to continue' is wrong on both halves: every
+  -- exit from a recording runs mode_exit(), which puts capmode back to 'frame' and nils flog_path --
+  -- so Capture alone takes a FRAME capture and the following bytes land in the NEXT numbered file.
+  -- The data survives (the sender is still waiting for a credit) but the recording is fragmented,
+  -- and an instruction that does not work is worse than none.
   check('and says so, with a remedy that actually continues it',
         has(sdec.strm_exit_why(sdec.ck_endwhy, true, nil), 'Mode, then Capture')
         and has(sdec.strm_exit_why(sdec.ck_endwhy, true, nil), 'new file'),
@@ -512,12 +512,12 @@ do
   end
   sdec.fc_win, sdec.fc_end = nil, nil
 
-  -- A DIGITIZER THAT FAULTS IS NOT A DEVICE THAT FINISHED, and it is not a keypress either. stream()
-  -- used to fold a RAISE out of stream_acquire into the same `strm_empty` flag as a legitimately empty
-  -- acquisition -- and two callers believe that flag: record_run() rewrites an empty window into
+  -- A DIGITIZER THAT FAULTS IS NOT A DEVICE THAT FINISHED, and it is not a keypress either. Folding
+  -- a RAISE out of stream_acquire into the same `strm_empty` flag as a legitimately empty acquisition
+  -- loses it: two callers believe that flag -- record_run() rewrites an empty window into
   -- fc_end='quiet' ("the device stopped sending") and strm_exit_why() lets a cancel outrank the
-  -- refusal. So a hardware fault was reported either as the operator's device finishing tidily, or, with
-  -- a press latched, as "stopped with the TRIGGER key" -- and the error text was thrown away.
+  -- refusal. A hardware fault then reads as the operator's device finishing tidily, or, with a press
+  -- latched, as "stopped with the TRIGGER key", and the error text is thrown away.
   idle()
   clearforce()
   sdec.cancel_setup()
@@ -547,9 +547,9 @@ end
 -- ============================================================================
 print('\nH2  a protected failure is never reported as a normal ending')
 -- ============================================================================
--- THE DEFECT CLASS THIS BLOCK EXISTS FOR, found four times in one session by an outside reviewer and
--- never once by this suite. Every one had the same shape: a pcall'd failure narrowed to a boolean, and a
--- LATER caller reading that boolean as good news --
+-- THE DEFECT CLASS THIS BLOCK EXISTS FOR, and the one this app produces most: a pcall'd failure
+-- narrowed to a boolean, and a LATER caller reading that boolean as good news. It is invisible to an
+-- assertion on the string, because the string is well-formed --
 --
 --   stream()        a raise in the acquisition set strm_empty, which record_run rewrites to
 --                   fc_end='quiet' ("the device stopped sending") and strm_exit_why lets a cancel claim
@@ -601,9 +601,9 @@ do
   -- than end to end. Through stream() the mock's source runs out, so `have` stops growing and the quiet
   -- timer advances on the ABSENCE of new samples -- which is a legitimate quiet line and not the defect.
   -- The defect is narrower: when the watchdog is about to end a run on REUSED levels, strm_relevel is the
-  -- last gate before that verdict, and it returned a plain `false` both for "measured, and the old
-  -- threshold is fine" and for "the read raised, so I could not measure at all". The caller believed the
-  -- second as evidence of silence.
+  -- last gate before that verdict, so a plain `false` cannot serve for both "measured, and the
+  -- existing threshold is fine" and "the read raised, so I could not measure at all" -- the caller
+  -- takes the second as evidence of silence.
   idle()
   clearforce()
   do
@@ -626,7 +626,7 @@ do
     -- borrow 'quiet's sentence -- the note must report a fault, not the operator's device finishing.
     sdec.strm_readfail = 'the capture buffer could not be re-measured to confirm a quiet line'
     -- WITH ok = false the run's OWN error outranks the endwhy, which is right and is tested elsewhere.
-    -- The endwhy sentence is what a run that DID decode bytes gets -- the case that used to read
+    -- The endwhy sentence is what a run that DID decode bytes gets, and it must not read
     -- '2.0 s with no line activity' over a watchdog check that never happened.
     local note = sdec.strm_exit_why('readfail', true, nil)
     check('...and the note reports a failure rather than a quiet line',
@@ -649,8 +649,8 @@ do
     -- baud rate and therefore every byte is scaled by it, and the readback lies for the three listed
     -- rates the hardware cannot synthesise. Substituting the REQUESTED rate silently made the panel
     -- report a measured rate, a measured baud and confident bytes derived from a number the source
-    -- itself calls untrustworthy. It still substitutes -- refusing would kill a working decoder -- but
-    -- it now says so.
+    -- itself calls untrustworthy. It substitutes anyway -- refusing would kill a working decoder --
+    -- and says so.
     local realm = sdec.acq_measure_fs
     sdec.acq_measure_fs = function(buf, n) return nil end
     sdec.fs = 80000
@@ -803,10 +803,10 @@ end
 -- ============================================================================
 print('\nI2  a quiet verdict taken on REUSED levels is checked before it is believed')
 -- ============================================================================
--- The failure this guards is a confident wrong reason: reused levels come from an earlier capture, and
--- if the wiring changed since -- a divider added, a different probe point -- the old threshold can sit
--- outside the new swing. Nothing crosses it, so a device transmitting happily reads as silent and the
--- run ends after idle_exit_s claiming no line activity.
+-- The failure this guards is a confident wrong reason: reused levels belong to a previous capture, so
+-- a change in wiring -- a divider added, a different probe point -- can leave the threshold outside
+-- the new swing. Nothing crosses it, so a device transmitting happily reads as silent and the run ends
+-- after idle_exit_s claiming no line activity.
 do
   idle()
   clearforce()
@@ -896,8 +896,8 @@ do
   sdec.ck_running, sdec.strm_inflight = true, true
   sdec.ui_refresh()
   local ctl = MD.text(sdec.ui_log_t)
-  -- NAMES NO CONTROL: measured 2026-08-18, the key's event does not reach the blender while a
-  -- panel-initiated run executes, and a touch press cannot be dispatched at all.
+  -- NAMES NO CONTROL: the key's event does not reach the blender while a panel-initiated run
+  -- executes, and a touch press cannot be dispatched at all.
   check('the control cell promises no control during a one-press run',
         not has(ctl, 'TRIGGER') and not has(ctl, 'Capture=') and has(ctl, 'no stop'),
         tostring(ctl))
@@ -911,8 +911,8 @@ print('\nJ2  the log cell fits at every byte count it can reach')
 -- ============================================================================
 -- The firmware FADES an overlong string rather than clipping it, so a cell that overflows makes its
 -- number unreadable rather than merely truncated -- and this cell carries the byte total that backs
--- the "no decoded byte is lost" promise. One press now files up to 32 kB, so four of them reach six
--- digits: the count has to keep fitting as it grows, which the previous format did not.
+-- the "no decoded byte is lost" promise. One press files up to 32 kB and four reach six digits, so
+-- the count has to keep fitting as it grows.
 do
   idle()
   sdec.flog_why, sdec.flog_path = nil, '/usb1/bytes127.txt'
@@ -956,8 +956,8 @@ do
   -- over could be pushed eight further over before it began coming back.
   --
   -- MEASURED THROUGH flog_status ITSELF, against a plain form built here from nothing but string.format.
-  -- Re-deriving the trim step in the test is what let this survive a fix: the scratch probe hard-coded
-  -- string.sub(base, 2) and so measured a formula the shipped code no longer uses. Every width from a
+  -- Re-deriving the trim step in the test is what lets a fix pass without taking effect: a hard-coded
+  -- string.sub(base, 2) measures the test's formula, not the shipped one. Every width from a
   -- 4-character name to a 40-character one, at the widest count.
   do
     local L, bad = 0, ''
@@ -1163,9 +1163,9 @@ do
 end
 
 -- ============================================================================
--- THE QUEUED-PRESS ABSORB. Bench report 2026-08-18: presses made during an 8 kB recording were
--- stored up and then each STARTED ANOTHER uninterruptable recording. The absorb existed but had
--- three holes, and none of them had a test -- this suite was 161 green while all three were open.
+-- THE QUEUED-PRESS ABSORB. Presses made during an 8 kB recording are stored up, and without the
+-- absorb each one STARTS ANOTHER uninterruptable recording. Its three failure modes are covered
+-- below one by one, because a suite can be entirely green with all three open.
 --
 -- OFFLINE THERE IS NO `timer`, so the arm's pcall fails and the absorb never engages: that is the
 -- degrade-to-honouring-the-press path, tested last. The window itself needs a fake clock.
@@ -1175,8 +1175,8 @@ do
   local CLK = {t = 0}
   timer = {cleartime = function() CLK.t = 0 end, gettime = function() return CLK.t end}
 
-  -- (1) ARMED ON EVERY ENDING. It used to return early for endwhy 'stopped', which is exactly the
-  -- run an operator stops with TRIGGER after having already pressed Capture twice.
+  -- (1) ARMED ON EVERY ENDING, endwhy 'stopped' included -- that is exactly the run an operator
+  -- stops with TRIGGER after having already pressed Capture twice.
   sdec.strm_absorb_arm('stopped')
   check('the absorb arms even for a run that ended stopped',
         sdec.strm_stopped_by_press == true, tostring(sdec.strm_stopped_by_press))
@@ -1319,7 +1319,7 @@ do
         CLK.clears >= 1, string.format('%d cleartime call(s)', CLK.clears))
   -- THE ORDER, read at the timer rather than inferred from the end state: cleared first, the flag is
   -- already nil when the stamp is taken. Cleared second -- or not at all -- it is still true here,
-  -- and the arm now dates from this run instead of from the one that set it.
+  -- and the arm dates from this run instead of from the one that set it.
   check('and it DISARMS the absorb before taking it, not after',
         CLK.armed_at_clear[1] == nil, tostring(CLK.armed_at_clear[1]))
   check('so the stale arm is gone rather than back-dated to this run',
@@ -1551,10 +1551,9 @@ end
 print('\nN  a full buffer is a NORMAL ending, and only a normal ending says so')
 -- ============================================================================
 -- 'buffer full -- the stream may continue' is what strm_exit_why() puts on the note row for the
--- commonest successful recording there is, and it was the one arm no suite ever executed. Two
--- shipped defects were already exactly this: an arm above it reaching first, and this sentence
--- standing over a run that had failed. A third hoist would put the wrong sentence on every
--- full-buffer recording and leave every suite green.
+-- commonest successful recording there is, so this arm needs executing by name: an arm hoisted above
+-- it reaches first, or this sentence stands over a run that failed, and either one puts the wrong
+-- sentence on every full-buffer recording while leaving every suite green.
 --
 -- DRIVEN, NOT POSED. The other strm_exit_why cases in this file pass ck_endwhy and a verdict by hand,
 -- which cannot show that a real full recording arrives with that combination -- fc_end nil, ck_cancel
@@ -1614,9 +1613,9 @@ do
   check('...and it is the reason the panel gives for leaving the mode',
         has(sdec.mode_exited, 'buffer full -- the stream may continue'),
         tostring(sdec.mode_exited))
-  -- BUT NOT ON THE NOTE ROW, because this outcome is a NORMAL end. The exit note used to go there on
-  -- every outcome, so a finished recording sat under a yellow line about its own exit, above the notes
-  -- describing the result. The status row's summary is the completion message; the note row is for
+  -- BUT NOT ON THE NOTE ROW, because this outcome is a NORMAL end. An exit note on every outcome
+  -- puts a finished recording under a yellow line about its own exit, above the notes describing the
+  -- result. The status row's summary is the completion message; the note row is for
   -- what went wrong. mode_exitbad is the flag, passed by the caller rather than sniffed out of the
   -- sentence -- a normal ending narrowed to a word match is how this app loses failures.
   check('...but NOT on the note row, because a full buffer is a normal ending',

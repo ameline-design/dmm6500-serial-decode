@@ -91,9 +91,9 @@ function display.setcolor(id, c, c2)
     if c2 ~= nil then OBJ[id].color2 = c2 end
   end
 end
--- FILL IS A PERCENTAGE, 0..100, and on this firmware it has NO VISIBLE EFFECT on a rect -- measured
--- 2026-08-19. Recorded anyway: the renderer uses `fill >= 0` to mean "this rect was set up", and a
--- later firmware may honour the number.
+-- FILL IS A PERCENTAGE, 0..100, and on this firmware it has NO VISIBLE EFFECT on a rect. Recorded
+-- anyway: the renderer uses `fill >= 0` to mean "this rect was set up", and a later firmware may
+-- honour the number.
 function display.setfill(id, pct, dir)
   if OBJ[id] then
     OBJ[id].fill = pct
@@ -229,7 +229,7 @@ local main, opts
 local i
 for i = 1, table.getn(SCREENS) do
   local s = SCREENS[i]
-  -- PREFIX, NOT EQUALITY. The title bar now carries the capture mode too -- 'SERIAL DECODE - 240B
+  -- PREFIX, NOT EQUALITY. The title bar carries the capture mode too -- 'SERIAL DECODE - 240B
   -- FRAME' -- so an exact match against sdec.ui_title finds no main screen at all and every dump
   -- comes out empty.
   if string.sub(s.title or '', 1, string.len(sdec.ui_title)) == sdec.ui_title then main = s end
@@ -314,8 +314,7 @@ dumpobjs('docs/mockup-objects-lin.tsv')
 -- per-mode colour, which is the at-a-glance channel; the status row says it in words.
 -- Five dumps, because each shows something the others cannot:
 --
---   frame-log    FRAME, with the message log accumulating -- the mode that used to be
---                FRAME+LOG and is now just what frame mode does
+--   frame-log    FRAME, with the message log accumulating -- what frame mode does
 --   stream-arm   32 kB selected and ARMED, before Capture: what "ready" looks like
 --   stream-run   mid-recording: the buffer percentage, and both controls named on the right
 --   stream-done  finished at the cap, five-digit BYTES, and the note reconciling it with a
@@ -379,7 +378,7 @@ dumpobjs('docs/mockup-objects-stream-arm.tsv')
 
 -- Mid-RECORDING. Nothing has been decoded yet -- the digitizer is filling the buffer in
 -- hardware -- so the honest number is percent of the buffer, not a byte count, and the state
--- must be clear of the previous capture or the mockup shows text no longer describing anything.
+-- must be cleared, or the mockup shows text left over from the previous capture.
 sdec.clear_result()
 sdec.baud, sdec.bittime, sdec.fitq = 9600, 10.42, 1.0
 sdec.acq_fs, sdec.fs = 100000, 100000
@@ -390,8 +389,8 @@ sdec.ui_refresh()
 print('32 kB recording: ' .. sdec.ck_status())
 dumpobjs('docs/mockup-objects-stream-run.tsv')
 
--- Finished at the cap. ck_running MUST be cleared before this capture or Capture reads the
--- press as Stop -- which is the Stop path working, and cost a confusing render to find out.
+-- Finished at the cap. ck_running MUST be cleared before this capture, or Capture reads the press
+-- as Stop and renders that instead.
 sdec.ck_running, sdec.ck_stop = false, false
 SRC.rd, SRC.ts, SRC.nsmp = rd, ts, nsmp
 sdec.capmode = 'frame'
@@ -406,8 +405,8 @@ print('32 kB done: ' .. sdec.ck_summary(sdec.ck_tot))
 dumpobjs('docs/mockup-objects-stream-done.tsv')
 
 -- THE RESTING STATE AFTER A RECORDING, and the one an operator actually reads: capture() lands in
--- FRAME with the retained tail on screen (sdec.res = ck_tot.tail), paged. The mockup above leaves
--- res at the earlier 97-byte frame capture, so it could not show the paging at all.
+-- FRAME with the retained tail on screen (sdec.res = ck_tot.tail), paged. The mockup above holds
+-- res at the 97-byte frame capture, which cannot show the paging at all.
 --
 -- sdec.ck_keep bytes, carrying `first` and `ntotal` exactly as ck_tail_result() builds them -- which
 -- is what lets ui_notes() tell a tail from a frame capture, and what puts the page count on screen.
@@ -533,9 +532,7 @@ end
 local ok2, err2 = sdec.capture()
 if not ok2 then print('full-screen capture failed: ' .. tostring(err2)) end
 -- 15 rows at an 18 px pitch is the CHOSEN geometry, and 18 px is not a guess: it is the row pitch
--- the instrument's own FFT app uses, measured off docs/panel-ref-chrome.png (see FINDINGS). The
--- 14-row variant that this comparison picked from is no longer generated -- it documented a
--- decision that has been taken.
+-- the instrument's own FFT app uses, measured off docs/panel-ref-chrome.png (see FINDINGS).
 fullhex(15, 18, 'docs/mockup-objects-hex15.tsv')
 
 -- ---------- geometry check ----------

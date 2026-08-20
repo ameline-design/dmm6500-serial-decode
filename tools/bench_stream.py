@@ -141,10 +141,10 @@ def case(g, d, a, baud, capmode, record_s, label):
 
     ev4915, realev, rows = 0, [], []
 
-    # ONE PRESS FOR THE WHOLE JOB. It used to be start, sleep, stop, then a press per decode slice --
-    # 12 presses for a full buffer, and this loop existed to spend them. The press-driven path is
-    # still in the app (sdec.strm_press = true) and tools/test_streamfix.lua covers it; what ships on
-    # the panel is this: the handler records, decodes and files everything before it returns.
+    # ONE PRESS FOR THE WHOLE JOB, rather than start, sleep, stop and a press per decode slice --
+    # 12 presses for a full buffer. The press-driven path is still in the app (sdec.strm_press = true)
+    # and tools/test_streamfix.lua covers it; what ships on the panel is this: the handler records,
+    # decodes and files everything before it returns.
     print('  ... one press: recording and decoding, no interaction (up to %d s) ...'
           % a.press_timeout)
     r = press(d, '%s-oneshot' % label, timeout=a.press_timeout)
@@ -166,9 +166,9 @@ def case(g, d, a, baud, capmode, record_s, label):
     if r.get('job'):
         print('  FAIL  a decode job is still open after the press returned')
         realev.append('[decode job left open]')
-    # THE APP'S OWN VERDICT IS PART OF THE TEST, and it was collected and then ignored. A capture that
-    # REFUSED -- no locked rate, no buffer, a mode that cannot run -- returns false without raising, and
-    # every other check here could still pass on the previous run's leftovers.
+    # THE APP'S OWN VERDICT IS PART OF THE TEST, not just collected. A capture that REFUSED -- no
+    # locked rate, no buffer, a mode that cannot run -- returns false without raising, and every other
+    # check here can still pass on the previous run's leftovers.
     if not r.get('ok'):
         print('  FAIL  the app refused or failed the capture: %s' % (r.get('lasterr') or 'no reason given'))
         realev.append('[capture returned false]')
@@ -196,9 +196,9 @@ def case(g, d, a, baud, capmode, record_s, label):
     if realev:
         print('  FAIL  real instrument event(s) logged: %s' % ' '.join(realev))
         ok = False
-    # NO PER-PRESS LATENCY BOUND ANY MORE, and removing it was the point rather than a concession: a
-    # press is a whole recording now, so its duration is the window size the operator chose. What is
-    # still a failure is a press that never returns, which the timeout above catches.
+    # NO PER-PRESS LATENCY BOUND, deliberately: a press is a whole recording, so its duration is the
+    # window size the operator chose. What IS a failure is a press that never returns, which the
+    # timeout above catches.
     try:
         if int(nf) <= 0:
             print('  FAIL  no bytes decoded')

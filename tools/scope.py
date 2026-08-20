@@ -380,11 +380,11 @@ class Scope:
         head = self._recv_exact(14, timeout=30)
         # RESYNC ON 'BM' RATHER THAN DEMANDING IT AT OFFSET ZERO.
         #
-        # Measured 2026-08-16: the SECOND SCDP of a session came back as
-        # b'\nBMB\xb8\x0b...' -- a leading newline left in the socket by the
-        # previous reply. The header check then failed on a screenshot that was
-        # perfectly good one byte later, which turns "take several screenshots"
-        # into a coin toss. Skip leading whitespace and top the header back up to
+        # The SECOND SCDP of a session comes back as b'\nBMB\xb8\x0b...' -- a
+        # leading newline left in the socket by the previous reply. A header check
+        # at offset zero then fails on a screenshot that is perfectly good one byte
+        # later, which turns "take several screenshots" into a coin toss. Skip
+        # leading whitespace and top the header back up to
         # 14 bytes; anything that is still not a BMP is a real failure.
         if head[:2] != b'BM':
             stripped = head.lstrip(b'\r\n\t ')

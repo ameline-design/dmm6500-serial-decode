@@ -36,9 +36,9 @@ SCOPE_IP = os.environ.get('SCOPE_IP', '10.0.1.163')   # SDS1204X-E, found 2026-0
 SCPI_PORT = 5025          # raw socket on all three
 TELNET_PORT = 5024        # scope only, echoes a prompt; 5025 is the clean one
 # ...except 5024 is open on the GENERATOR too, so it does not identify the scope. What does:
-# 5025 answers *IDN? on all three, and only one of them says SDS. Found by sweeping the subnet
-# for 5025 and asking each hit who it was, which took seconds -- worth doing again rather than
-# trusting a remembered address after anything is re-plugged.
+# 5025 answers *IDN? on all three, and only one of them says SDS. Sweeping the subnet for 5025 and
+# asking each hit who it is takes seconds -- worth doing rather than trusting a remembered address
+# after anything is re-plugged.
 #
 #   10.0.1.163  Siglent Technologies,SDS1204X-E,SDSMMDBC2R0625,7.3.6.1.37R17
 #   10.0.1.79   Siglent Technologies,SDG2122X,SDG2XCAD1R2808,2.01.01.38R4
@@ -93,10 +93,10 @@ DMM_ONE_BUILD_PER_POWER_CYCLE = True
 # interpreter stops answering, the control socket goes silent, clear_dead_sockets() and reconnecting
 # do not recover it, and only a power cycle does.
 #
-# Measured 2026-08-17, twice. Called as display.waitevent(0) -- documented as "number of seconds to
-# wait for an event, forever if not specified" -- FIRST from a script while the app was running (the
-# socket was reset), then from a bare instrument with no custom screen and no app built (no reply at
-# all, then four reconnect attempts returned nothing). So a timeout of 0 does NOT mean "poll and
+# Measured twice. Called as display.waitevent(0) -- documented as "number of seconds to wait for an
+# event, forever if not specified" -- FIRST from a script with the app running (the socket is reset),
+# then from a bare instrument with no custom screen and no app built (no reply at all, then four
+# reconnect attempts returning nothing). So a timeout of 0 does NOT mean "poll and
 # return immediately"; with no waitevent-enabled object to report, it blocks, and it takes the remote
 # interface down with it.
 #
@@ -110,7 +110,7 @@ DMM_WAITEVENT_WEDGES_THE_INSTRUMENT = True
 
 # HOW TO CANCEL A RUNNING HANDLER ON THIS INSTRUMENT. The only mechanism found, and the one the app
 # uses: the front-panel TRIGGER key generates trigger.EVENT_DISPLAY, an event blender LATCHES it in
-# firmware, and blender wait(t) reads the latch without blocking. Measured 2026-08-17 with
+# firmware, and blender wait(t) reads the latch without blocking. Measured with
 # tools/bench_cancelkey.py, on a bare instrument and with the app running:
 #
 #   * a press latches with NOTHING armed -- no trigger model has to be waiting on the key
@@ -121,11 +121,11 @@ DMM_WAITEVENT_WEDGES_THE_INSTRUMENT = True
 #   * 1.06 ms per poll amortised over 200; nothing reaches the event log
 DMM_TRIGGER_KEY_LATCHES_ON_A_BLENDER = True
 
-# AND TWO THINGS THAT DO NOT WORK, both measured the same day, so nobody re-derives them:
+# AND TWO THINGS THAT DO NOT WORK, recorded so nobody re-derives them:
 #
 # *TRG (trigger.EVENT_COMMAND) CANNOT cancel a running handler. Sent 2 s into a 6 s busy loop it never
-# reached the latch: the command queue is drained only when the interpreter is idle. It is useless as a
-# harness stand-in for a finger, which is what it was tried for.
+# reaches the latch: the command queue is drained only when the interpreter is idle. That rules it out
+# as a harness stand-in for a finger.
 DMM_BUS_TRIGGER_CANNOT_INTERRUPT_A_SCRIPT = True
 #
 # A TRIGGER TIMER *DOES* fire mid-script, because it is firmware: measured firing 2.019 s into a 6 s
@@ -168,24 +168,23 @@ DMM_DIGITIZE_BW_HZ = 440e3
 
 # HAZARD: LARGE WVDT UPLOADS WEDGE THE SDG, AND IT HAS NO SMART PLUG.
 #
-# Measured 2026-08-16. Repeated C1:WVDT uploads of 170-210 kB stop the generator
-# responding on BOTH 5025 and 5024 -- connections are accepted, nothing is ever
-# answered, including *IDN?. It goes on playing the loaded waveform correctly and
-# indefinitely, so the failure is invisible from the signal side. Waiting does not
-# clear it (45 s), and it progressed from "touchscreen fine, LAN dead" to the
-# front-panel Output button not responding either, so it is a firmware hang and not
-# merely a stale session. Recovery is a POWER CYCLE, and unlike the DMM6500 there is
-# no plug shortcut -- it costs a human.
+# Repeated C1:WVDT uploads of 170-210 kB stop the generator responding on BOTH
+# 5025 and 5024 -- connections are accepted, nothing is ever answered, including
+# *IDN?. It goes on playing the loaded waveform correctly and indefinitely, so the
+# failure is invisible from the signal side. Waiting does not clear it (45 s), and it
+# progresses from "touchscreen fine, LAN dead" to the front-panel Output button not
+# responding either, so it is a firmware hang and not merely a stale session.
+# Recovery is a POWER CYCLE, and unlike the DMM6500 there is no plug shortcut -- it
+# costs a human.
 #
 # So: upload each vector ONCE per power cycle and select it by name afterwards
-# (siglent.select_arb, tools/bench_uart.py --reuse). write_raw() also now settles in
+# (siglent.select_arb, tools/bench_uart.py --reuse). write_raw() settles in
 # proportion to the payload, and close() shuts the socket down rather than dropping
 # it. None of that is known to be sufficient; not re-uploading is what avoids it.
 SDG_UPLOAD_WEDGE_HAZARD = True
-# Generator firmware was updated 2026-08-17: 2.01.01.38R4 -> 2.01.01.39R7. The hazard above was
-# measured on 38R4 and has NOT yet been retested on 39R7 -- tools/sdg_hang_repro.py exists for
-# exactly that, and until it has been run with --arm this flag stays True. A firmware update is a
-# reason to re-measure, not a reason to assume.
+# The hazard holds on BOTH firmwares: first recorded on 2.01.01.38R4 and re-measured on 39R7, where
+# three over-ceiling writes in one power cycle wedged it again -- see the count/size note below the
+# ceiling constants. The flag stays True.
 SDG_FW = '2.01.01.39R7'
 SDG_UPLOAD_SAFE_BYTES = 65536      # below this, uploads have never wedged it
 
@@ -257,11 +256,11 @@ SDG_UPLOAD_SAFE_BYTES = 65536      # below this, uploads have never wedged it
 #
 # EVERY REPORTED SYMPTOM FOLLOWS, which is what makes this worth writing down rather than guessing again:
 #   * logo for ~25 s, an LED flash, then a blank LCD forever -- a process that starts, throws, never draws
-#   * no SCPI on either port -- same process, so it was never listening
+#   * no SCPI on either port -- same process, so nothing is listening
 #   * AND THE DECISIVE ONE: the owner recovered by DELETING THE FILE over telnet from
 #     /usr/bin/siglent/usr/usr. Not a reflash, not a factory reset -- one file removed. If the empty
-#     waveform had corrupted NVRAM, the flash layout or the bootloader, deleting a file afterwards would
-#     not have fixed anything. That the cure was file removal says the file is read on every boot.
+#     waveform corrupted NVRAM, the flash layout or the bootloader, deleting a file afterwards could not
+#     fix it. That the cure is file removal says the file is read on every boot.
 #
 # IT ALSO EXPLAINS THE MANUAL'S 4-BYTE FLOOR BETTER THAN "EMPTY IS BAD" DOES. A preview that scales npts
 # points across a pixel width steps by width / (npts - 1). At ONE point that is a division by zero -- so a
@@ -284,8 +283,8 @@ SDG_UPLOAD_SAFE_BYTES = 65536      # below this, uploads have never wedged it
 # this instrument's 2.01.01.39R7 is years newer than the firmware that died. But "probably fixed" is not a
 # fact we hold, and the two outcomes are not comparable: if the bug is gone, the guard costs a refused
 # upload that was out of spec anyway; if it is not, the cost is the one instrument, permanently, with no
-# shell and no credentials. Nobody publishes "I stored an empty waveform and it was fine", so silence since
-# 2019 is not evidence either way -- it is what a rare, catastrophic, self-selecting failure looks like.
+# shell and no credentials. Nobody publishes "I stored an empty waveform and it was fine", so the silence
+# since is not evidence either way -- it is what a rare, catastrophic, self-selecting failure looks like.
 # The guard stays until an under-4-byte upload has been shown SAFE on this firmware, which is not an
 # experiment worth running.
 #
@@ -455,18 +454,18 @@ assert SDG_MAX_WAVE_BYTES == SDG_MAX_PTS * 2, 'the byte and point ceilings disag
 #
 #   * A WAVEFORM IS RESIDENT, NOT STREAMED. SDG_MAX_PTS is 8 388 608 points = 16 MB, which is 12% of ONE
 #     128 MB chip. So there is no ping-pong refill during playback and therefore no buffer-swap boundary
-#     -- which kills, before it was built on, a tempting candidate mechanism for the periodic-payload
-#     failures: that errors might cluster at a fixed payload spacing as banks swapped. There is no swap.
-#     (That idea came from misreading the banks as 128 KB, where a 6.8 MB arb could not have been
-#     resident and the swap interval would have been a constant ~629 payload bytes at every baud rate.
-#     It was arithmetically pretty and the premise was wrong by a factor of a thousand.)
+#     -- which kills a tempting candidate mechanism for the periodic-payload failures: that errors
+#     cluster at a fixed payload spacing as banks swap. There is no swap. That mechanism needs 128 KB
+#     banks, where a 6.8 MB arb cannot be resident and the swap interval is a constant ~629 payload
+#     bytes at every baud rate. The banks are 128 MB, so the premise is wrong by a factor of a
+#     thousand -- and arithmetic that pretty is worth re-checking against the datasheet.
 #
 #   * SELECTION COST IS THE FLASH -> DDR COPY over that serial link, and it is the generator's one weak
 #     link. TIMED CLEANLY: 3884 B selects in 0.51 s, 6 827 250 B in 22.43 s -- a fit of 0.5 s fixed plus
 #     311 kB/s marginal, about 2.5 Mbit/s. The largest arb the instrument accepts, 16 MB, is therefore
-#     ~54 s. (An earlier figure here said 0.65-1.08 MB/s; it was bracketed from when a query happened to
-#     be answered rather than from the copy finishing, and it made select_arb's readback timeout too
-#     short for the very case it claimed to cover. 120 s now.)
+#     ~54 s, and select_arb's readback timeout is 120 s to cover it. Timing this from when a query
+#     happens to be answered rather than from the copy finishing brackets it several times too fast,
+#     and sizes that timeout too short for the very case it exists for.
 #
 #   * CHANGING THE SAMPLE RATE IS FREE, which is the useful corollary: srate is a few FPGA register
 #     writes, measured at 0.01 s of actual work against 22 s to change waveform. So a rate sweep should
@@ -497,7 +496,7 @@ assert SDG_MAX_WAVE_BYTES == SDG_MAX_PTS * 2, 'the byte and point ceilings disag
 
 # AND ON 39R7 THE LAN DIES WITH NO UPLOAD AT ALL -- SO SIZE IS NOT THE ONLY VARIABLE.
 #
-# Measured 2026-08-17, twice, same shape both times:
+# Measured twice, same shape both times:
 #   1. sdg_hang_repro.py --check  ->  BOTH ports answer, 5025 gives the full *IDN?
 #   2. bench_uart.py, seconds later  ->  ConnectionRefusedError on the FIRST socket,
 #      before a single byte of waveform was sent
@@ -507,11 +506,10 @@ assert SDG_MAX_WAVE_BYTES == SDG_MAX_PTS * 2, 'the byte and point ceilings disag
 # nothing. This REFUSES them -- a closed port, i.e. the listener is gone, not a busy firmware
 # thread. Different symptom, different cause, and zero bytes uploaded either time.
 #
-# FIRST SUSPECT WAS socket.shutdown(SHUT_RDWR) -- called by siglent.close() and by
-# sdg_hang_repro.alive(), and added THIS session as a mitigation for the 38R4 upload wedge, so a
-# mitigation causing a worse failure was the obvious story. TESTED AND REFUTED, 2026-08-17: three
-# plain-close *IDN? connections, then one closing with shutdown(), then three more -- all seven
-# answered. shutdown() does not take the listener down.
+# socket.shutdown(SHUT_RDWR) IS REFUTED as the cause -- it is called by siglent.close() and by
+# sdg_hang_repro.alive() as a mitigation for the 38R4 upload wedge, which makes it the obvious
+# suspect. Tested: three plain-close *IDN? connections, then one closing with shutdown(), then three
+# more -- all seven answered. shutdown() does not take the listener down.
 #
 # REMAINING SUSPECT: PORT 5024. Both refusals came right after sdg_hang_repro.py --check, which
 # probes 5024 as well as 5025. 5024 is the telnet-style port that echoes a '>>' prompt, and this
@@ -563,7 +561,7 @@ SCOPE_MSIZ_NONINTERLEAVED = ('7K', '70K', '700K', '7M')   # MSIZ, both per pair
 SCOPE_DEEP_CHANNELS = (1, 3)     # one from each pair: full rate and depth on both
 SCOPE_CH_SIGNAL = 1      # the summed stimulus, from the T
 SCOPE_CH_IMPAIR = 2      # SDG CH2 alone. ENABLE ONLY WHEN DIAGNOSING -- halves CH1
-# THE SDG's ARB SYNC IS ABANDONED, DECIDED 2026-08-19. Do not investigate it again.
+# THE SDG's ARB SYNC IS ABANDONED. Do not investigate it again.
 #
 # The reason is arithmetic, not a measurement: SDG2000X_UserManual 12.7 documents the sync as a
 # 50 ns pulse, and the DMM6500's EXT TRIG IN specs a MINIMUM PULSE WIDTH of 1 us
@@ -575,10 +573,9 @@ SCOPE_CH_IMPAIR = 2      # SDG CH2 alone. ENABLE ONLY WHEN DIAGNOSING -- halves 
 # removes a hazard: the BNC is bidirectional, so a sync output left enabled while the DMM drives
 # it would tie two push-pull drivers together.
 #
-# Retracted along the way: an earlier note here asserted the sync "DOES NOT" drive in TrueArb,
-# from CH3 reading flat over a 14 ms window. That window had a 1.31 % chance of containing a
-# 50 ns pulse at Lorem1kB's 0.936 Hz, so it was equally consistent with a live pulse being missed.
-# The claim was never supportable; it is gone rather than corrected.
+# AND CH3 READING FLAT PROVES NOTHING EITHER WAY, so do not conclude from it that the sync is dead:
+# a 14 ms window has a 1.31 % chance of containing a 50 ns pulse at Lorem1kB's 0.936 Hz, which is
+# equally consistent with a live pulse being missed.
 #
 # CH3 IS THEREFORE FREE -- but that changes nothing for the credit-pulse edge measurement (gate G0
 # of the flow-control proposal), and it is worth saying why so nobody rewires for no reason. EITHER

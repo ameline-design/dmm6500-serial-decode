@@ -10,8 +10,8 @@
 -- the failure mode: the defect was in the CALLER'S ARGUMENT to judge_payload, which hand-built hex
 -- never exercises. So this script produces the real thing -- real payload, real render, real windowing
 -- at real offsets, real TSP decoder -- and tools/test_seam.py applies both judging rules to it and
--- requires the old one to FAIL. A regression test that cannot fail against the code as it was is not
--- a regression test; see the vacuous first attempt at one in notes/HANDOFF.md session 19d.
+-- requires the unfixed one to FAIL. A regression test that cannot fail against the defect it names
+-- is not a regression test.
 --
 -- THE PAYLOAD AND THE RENDER OPTIONS COME FROM THE VECTOR TABLE, not from out/vectors/ and not from
 -- literals here. make_vectors.lua is loaded in define-only mode and v71's own build() hands back both

@@ -303,8 +303,8 @@ def verdict(res, hexs):
     """
     if 'fail' in res:
         return False, 'FAIL %s' % res['fail']
-    # THE APP'S OWN VERDICT IS THE FIRST TEST, and it was collected in the M line and never looked at.
-    # sdec.capture() returns FALSE without raising when it refuses -- no locked rate for a streaming
+    # THE APP'S OWN VERDICT IS THE FIRST TEST, and it is in the M line whether or not anything reads
+    # it. sdec.capture() returns FALSE without raising when it refuses -- no locked rate for a streaming
     # mode, a buffer it could not allocate, a mode that cannot run -- and on that path the panel keeps
     # the PREVIOUS capture's bytes. So every check below could pass on leftovers that happen to match the
     # stimulus, which is exactly how a refused point reads as a byte-exact one.
@@ -318,9 +318,9 @@ def verdict(res, hexs):
     # it says headsusp = h, so bytes h+1.. must be exact, and the pass condition below is that the
     # whole remaining body is ONE unbroken clean run (`run >= nb`). Substituting the narrower
     # head_damage leaves the head's resync debris inside the body, which breaks that run and fails a
-    # perfectly healthy capture -- measured 2026-08-20, laps 1 and 2 of the 7 h soak reported
-    # 'format v44e: 8N1 153 B (head 7), longest clean run 146, 0 bad (0 interior)': zero bad bytes and
-    # still BAD. head_damage belongs at the judge_payload call sites, where the judge does its own
+    # perfectly healthy capture: 'format v44e: 8N1 153 B (head 7), longest clean run 146, 0 bad
+    # (0 interior)' -- zero bad bytes and still BAD. head_damage belongs at the judge_payload call
+    # sites, where the judge does its own
     # alignment search and bounds a flag COUNT rather than demanding one perfect run.
     head = int(num(res, 'head', 0))
     body, nb = hexs[2 * head:], nf - head
@@ -469,10 +469,10 @@ def suite_lorem(d, g, a, rows):
             # the DISTANCE TO THE SEAM -- up to 496 frames on a 1024-byte payload. Hence the skip
             # below is head_damage(), not head: see BU.head_damage.
             #
-            # This used to be `longest_clean_run/body >= 0.95`, which failed a point on WHERE a flag
-            # landed rather than how many there were -- one honest flag more than ten bytes from an
-            # edge failed outright, and only 22 of 239 single-flag positions could pass. It also left
-            # every run but the longest unchecked against the payload. BU.judge_payload validates
+            # NOT `longest_clean_run/body >= 0.95`, which fails a point on WHERE a flag lands rather
+            # than how many there are -- one honest flag more than ten bytes from an edge fails
+            # outright, only 22 of 239 single-flag positions can pass, and every run but the longest
+            # goes unchecked against the payload. BU.judge_payload validates
             # every diagnostic run at one agreed alignment and bounds the flag COUNT; see its
             # docstring and tools/test_lorem_gate.py.
             ok, det = BU.judge_payload(hexs[2 * head:], payload)
@@ -489,9 +489,9 @@ def suite_lorem(d, g, a, rows):
         for n in notes:
             print('      note: %s' % n)
         # DUMP THE BYTES ON A FAILURE. Without this the record of a failed point is its summary line
-        # and nothing else, so the verdict can never be re-derived -- eleven soak laps were judged
-        # BAD by the old gate and none of them could be re-tested afterwards, because the hex was
-        # gone. Only on failure: 480 hex chars per passing point would bury the log.
+        # and nothing else, so the verdict can never be re-derived -- and a gate later found to be
+        # wrong cannot be re-run against the laps it condemned. Only on failure: 480 hex chars per
+        # passing point would bury the log.
         if not (ok and close):
             print('      hex head %d: %s' % (head, hexs[2 * head:][:512]))
         rows.append(('lorem %d' % baud, ok and close, det))
@@ -678,16 +678,14 @@ def suite_hard(d, g, a, rows):
 # draw leaves each value's presence to a Poisson tail, and about one value in 256 would have been
 # missing. Shuffling guarantees the coverage and keeps the ORDER random, which was the useful part.
 PAYLOAD_VECS = (['v77', 'v78'] + ['r%02d' % k for k in range(12)])
-# ALL FOURTEEN AT 9600 AS BEFORE; TWO OF THEM ALSO DRIVEN HIGH. Sweeping every vector over every
-# rate is 154 captures and would take a lap from ~5 minutes to over 20, cutting the laps per night by
-# four -- and most of that would be re-measuring the middle of a ladder that the `rates` suite already
-# walks. What was actually MISSING is any high-rate point at all on this payload family: until
-# 2026-08-20 the fox and all twelve random vectors ran at 9600 and nothing else, so only v80 (rates)
-# and v71 (lorem) ever went above it.
+# ALL FOURTEEN AT 9600, TWO OF THEM ALSO DRIVEN HIGH. Sweeping every vector over every rate is 154
+# captures and takes a lap from ~5 minutes to over 20, cutting the laps per night by four -- and most
+# of it re-measures the middle of a ladder the `rates` suite already walks. Two high-rate points are
+# what this payload family needs, because without any the claim "the high-rate failures only happen on
+# lorem" is untested rather than established.
 #
-# WHY v77 AND r00. The v80-passes / v71-fails contrast looked like it had three tangled variables --
-# rendered points-per-bit, payload length, content -- and the answer turned out to be PAYLOAD LENGTH
-# alone. The DMM's own samples-per-bit is NOT a variable here at all: fs_for_baud (serial_core.tsp:958)
+# WHY v77 AND r00. The v80-passes / v71-fails contrast has three candidate variables -- rendered
+# points-per-bit, payload length, content -- and PAYLOAD LENGTH alone accounts for it. The DMM's own samples-per-bit is NOT a variable here at all: fs_for_baud (serial_core.tsp:958)
 # takes baud and nothing else, so both suites sample at the same 8.68 / 4.00 sa/bit at 115200 / 250000,
 # and the same 20 capture offsets fail at 4.0 and at 8.0. What differs is the LOOP SEAM: Hello (v80) is
 # 13 B so a ~334 B capture spans ~26 seams and idle1 records only the first, bounding headsusp at 12;
@@ -723,13 +721,11 @@ def suite_payloads(d, g, a, rows):
     with 18 % margin, so all fourteen are safe LAN uploads rather than USB-key transfers.
     """
     vecs = PAYLOAD_VECS
-    # SWEPT UP TO 250 kBd, AND THAT WAS A REAL GAP. Until 2026-08-20 every one of these fourteen ran
-    # at 9600 and nothing else, so the fox and all twelve random payloads were NEVER driven above
-    # 9600 -- only v80 (rates) and v71 (lorem) went higher. That meant "the high-rate failures only
-    # happen on lorem" was untested rather than established, and the v80-passes/v71-fails contrast was
-    # confounded three ways: points-per-bit (10.0 vs 10.41667), payload length (3884 B vs 213750 B)
-    # and content. Sweeping THESE vectors at the same rates separates content and length from rate,
-    # because they are 256-byte shuffles and 94-glyph text at the SAME 10.41667 sa/bit as v71.
+    # SWEPT UP TO 250 kBd, WHICH IS WHAT SEPARATES CONTENT AND LENGTH FROM RATE. Run only at 9600,
+    # the fox and the twelve random payloads leave the v80-passes/v71-fails contrast confounded three
+    # ways: points-per-bit (10.0 vs 10.41667), payload length (3884 B vs 213750 B) and content. These
+    # vectors break that tie, because they are 256-byte shuffles and 94-glyph text rendered at the
+    # SAME 10.41667 sa/bit as v71.
     # Same class of gap as #29, where the suites tested rates the app never selects.
     hirates = ([int(x) for x in a.payload_rates.split(',')]
                if getattr(a, 'payload_rates', None) else PAYLOAD_HIRATES)

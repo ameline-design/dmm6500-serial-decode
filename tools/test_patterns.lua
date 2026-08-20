@@ -508,8 +508,8 @@ do
     {tag = 'slew = half a bit cell', o = {rise = 2.0}},
     -- rise = 3.5 of 4 is past slew-limited and into TRIANGLE: the stop bit is a one-sample spike
     -- that never dwells at the mark level, so the group-mean level estimator measures a 0.45 V
-    -- swing on a 0.0-3.3 V waveform and the threshold lands near the bottom. This is no longer a
-    -- UART signal, and the only defensible requirement is that the app not pretend otherwise.
+    -- swing on a 0.0-3.3 V waveform and the threshold lands near the bottom. This is not a UART
+    -- signal at all, and the only defensible requirement is that the app not pretend otherwise.
     {tag = 'slew = 7/8 of a bit cell (a triangle, not a UART)', o = {rise = 3.5}},
   }
   local wi

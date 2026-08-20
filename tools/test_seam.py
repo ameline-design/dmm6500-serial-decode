@@ -114,8 +114,8 @@ def main():
     for off, hs, hd, det in new_fail[:5]:
         print('       offset %d headsusp %d head_damage %d: %s' % (off, hs, hd, det))
 
-    # AND THE DECODES THEMSELVES WERE FINE ALL ALONG, which is the fact that makes the old failures
-    # false rather than merely harsh: no capture in the sweep carried many flagged frames.
+    # AND THE DECODES THEMSELVES ARE FINE, which is what makes a trim-driven failure false rather
+    # than merely harsh: no capture in the sweep carries many flagged frames.
     worst = max(c['nbad'] for c in caps)
     ck(worst <= 8, 'no capture has more than 8 flagged frames (worst %d) -- the decoder was never '
                    'the problem' % worst)

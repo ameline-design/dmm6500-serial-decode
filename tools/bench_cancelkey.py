@@ -299,8 +299,8 @@ def main():
             print('\nSKIPPING the busy test: nothing latched even with the interpreter free, so '
                   'there is nothing for it to prove.')
         return report(verdict, d)
-    # In whichever configuration latched. If it was B, the dummy model has to be back on the key
-    # before the spin, or the busy test would be testing configuration A.
+    # In whichever configuration latched. Under B the dummy model has to be back on the key before
+    # the spin, or the busy test tests configuration A instead.
     if verdict.get('armed_blender') and not verdict.get('idle_press'):
         d.send('ck_model_arm()')
         wait_line(d, 'MA', 20)

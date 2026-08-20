@@ -1,8 +1,7 @@
--- test_streamfix.lua -- the three streaming defects fixed on 2026-08-17, one test each.
+-- test_streamfix.lua -- three streaming defects, one test each.
 --
--- Separate from tools/test_serial.lua only because that file was being edited concurrently; the
--- preamble is the same, so these run against the REAL tsp/*.tsp sources and the same mocked
--- instrument. Each check below FAILS against the code as it was and passes against the fix.
+-- Shares tools/test_serial.lua's preamble, so these run against the REAL tsp/*.tsp sources and the
+-- same mocked instrument. Each check below fails if its defect is reintroduced.
 --
 -- Run from the repo root:  lua tools/test_streamfix.lua
 
@@ -172,28 +171,25 @@ do
 
   sdec.ui_refresh()
   local lg = MD.text(sdec.ui_log_t)
-  -- BOTH CONTROLS BY NAME, not one exact phrase. It read 'Capture=Stop  Mode=Exit' and now reads
-  -- 'Capture or Mode = Stop': Mode aborts the run and no longer changes the mode, so a label promising
-  -- an exit described behaviour it had stopped having. What has to hold is that the cell names the two
-  -- buttons that stop this run and calls what they do a stop.
+  -- BOTH CONTROLS BY NAME, not one exact phrase. Mode aborts the run without changing the mode, so
+  -- a label like 'Mode=Exit' promises behaviour the button does not have. What has to hold is that
+  -- the cell names the two buttons that stop this run and calls what they do a stop.
   check('the log cell offers the controls a press can reach, and calls them a stop',
         has(lg, 'Capture') and has(lg, 'Mode') and has(lg, 'Stop'),
         string.format('%q', tostring(lg)))
   check('and claims neither the 20 s ceiling nor the quiet-line exit, which this path has not',
         not has(lg, 'runs to') and not has(lg, 'quiet'), string.format('%q', tostring(lg)))
-  -- AGAINST ui_log_px, NOT A LITERAL. The cell was 221 px when this was written, then 200, and is 188
-  -- now that the rear-BNC cell beside it took 12 px to fit 'EXT TRIG OUT'. A literal here passes while
-  -- the string it measures runs into its neighbour.
+  -- AGAINST ui_log_px, NOT A LITERAL. The cell is 188 px and moves whenever the rear-BNC cell beside
+  -- it changes width. A literal keeps passing while the string it measures runs into its neighbour.
   check('the cell still fits the log cell as it is TODAY',
         sdec.ui_textw(lg) <= sdec.ui_log_px,
         string.format('%d px of %d', sdec.ui_textw(lg), sdec.ui_log_px))
 
-  -- THE POLLED PATH NAMES NOTHING, AND THAT IS THE THIRD ANSWER THIS CELL HAS HAD. It stated its
-  -- bounds; then it named the TRIGGER key, on the strength of the blender latch; and on 2026-08-18 the
-  -- key was measured NOT to deliver while a panel-initiated run executes -- pressed 20 % into a 32 kB
-  -- decode, the run still ended 'full' with the latch empty. The plumbing works (a blended firmware
-  -- timer cancels), so only the finger's part is false. Naming a control that cannot act is worse than
-  -- naming none, so the cell says it runs to its own end and the note line carries the duration.
+  -- THE POLLED PATH NAMES NOTHING, because nothing can act on it. The TRIGGER key does not deliver
+  -- while a panel-initiated run executes: pressed 20 % into a 32 kB decode, the run ends 'full' with
+  -- the blender latch empty. The plumbing itself works -- a blended firmware timer cancels -- so it is
+  -- only the finger's part that fails. Naming a control that cannot act is worse than naming none, so
+  -- the cell says it runs to its own end and the note line carries the duration.
   sdec.strm_recording = nil
   sdec.ui_refresh()
   check('a polled one-shot stream names no control, because none can act',

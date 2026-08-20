@@ -212,13 +212,13 @@ def preflight(d, who, need_built=True, timeout=30):
     # mode_exit() FIRST, THEN THE ASSIGNMENT -- both, in that order, and neither alone.
     #
     # mode_exit() is what SETTLES the instrument: it stops the acquisition, closes any open decode job
-    # and flushes the log. Assigning capmode alone would change the app's idea of the mode and leave
-    # all of that behind it, which is why this used to be "through mode_exit(), never by assigning".
+    # and flushes the log. Assigning capmode alone changes the app's idea of the mode and leaves all of
+    # that behind it.
     #
-    # BUT mode_exit() NO LONGER CHANGES THE MODE. As of 2026-08-19 it is a flush and nothing else: a
-    # recording that finishes leaves the operator in the mode they chose, because with the capture mode
-    # in the title bar a self-changing mode reads as the app deciding something. So the unwind settles
-    # the hardware and the assignment states the precondition this function exists to guarantee --
+    # BUT mode_exit() DOES NOT CHANGE THE MODE -- it is a flush and nothing else, so a recording that
+    # finishes leaves the operator in the mode they chose (with the capture mode in the title bar, a
+    # self-changing mode reads as the app deciding something). So the unwind settles the hardware and
+    # the assignment states the precondition this function exists to guarantee --
     # without it the verification below refuses every time the app is resting in a recording mode, which
     # is every soak lap after a `payloads` point.
     if st.get('capmode') != 'frame':

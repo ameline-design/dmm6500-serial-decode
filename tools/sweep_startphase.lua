@@ -2,14 +2,14 @@
 -- and jitter. One shard of an embarrassingly parallel sweep.
 --
 -- WHY. The bench runs one capture per point and a soak lap is minutes; this host runs a decode in
--- ~8 ms and runs 12 shards on a 16-core host, so the same coverage costs seconds. The defects this project has
--- actually shipped were all found by varying ONE thing the suites held fixed -- #29 by the sample
--- rate, Random 07 7E1 (r06) by where the capture opened -- so the cheap move is to vary
--- everything at once, on every vector, and let the machine find the holes.
+-- ~8 ms across 12 shards on 16 cores, so the same coverage costs seconds. Every defect this decoder
+-- ships hides behind something the suites hold FIXED -- a sample rate named by hand, a capture that
+-- always opens at the same place -- so the cheap move is to vary everything at once, on every vector,
+-- and let the machine find the holes.
 --
 -- THE VECTOR SET COMES FROM make_vectors.lua, not from a list here. It is dofile()d in define-only
--- mode (VEC_DEFINE_ONLY) and VEC_LIST is read, so a vector added for the bench is swept from the day
--- it exists. A hand-copied subset would have drifted the first time one was added.
+-- mode (VEC_DEFINE_ONLY) and VEC_LIST is read, so a vector added for the bench is swept from the
+-- moment it exists; a hand-copied subset drifts the first time one is added.
 --
 --   lua tools/sweep_startphase.lua --shard 1/12 --offsets 24 --seed 7
 --   python3 tools/sweep_all.py                       # fans out every shard and aggregates
@@ -25,8 +25,8 @@
 --   * a DIFFERENT format on a genuinely ambiguous payload -- 7E1 read as 8N1 on a gapless stream is
 --     open issue #49 and a real ambiguity, not a bug this sweep gets to relitigate;
 --   * a WRONG RATE on a periodic payload is open issue #46, mechanism still unresolved.
--- Counting them means a regression shows up as a count that moved, which is the honest signal
--- available today. Turning either into a gate needs the open issue closed first.
+-- Counting them means a regression shows up as a count that moved, which is the honest signal while
+-- the issues are open. Turning either into a gate needs its issue closed first.
 
 dofile('tools/mock_display.lua')
 dofile('tools/gen_serial.lua')
@@ -43,11 +43,10 @@ local V = VEC_LIST
 if V == nil then print('make_vectors.lua did not publish VEC_LIST'); os.exit(1) end
 
 -- ---------- arguments ----------
--- maxpts HIGH ENOUGH TO SKIP NOTHING, which is a measurement and not a guess. This was 1 200 000 on
--- the first draft, chosen defensively, and it silently dropped v96 -- the 32 kB random vector, 3 413 625
--- points -- from every run. Measured: v96 renders in 0.4 s and 148 MB resident, so on a 48 GB machine
--- twelve workers all rendering it at once is under 2 GB. The guard stays because an unbounded render is
--- still worth refusing, but it is now above the largest vector rather than below it.
+-- maxpts HIGH ENOUGH TO SKIP NOTHING, which is a measurement and not a guess. The bound must sit
+-- ABOVE the largest vector: below it, v96 -- the 32 kB random vector, 3 413 625 points -- is dropped
+-- from every run silently. Measured: v96 renders in 0.4 s and 148 MB resident, so twelve workers all
+-- rendering it at once is under 2 GB. The guard stays because an unbounded render is worth refusing.
 local A = {shard = 1, nshard = 1, offsets = 24, seed = 1, maxpts = 4000000, quiet = false}
 -- Bounds-checked below rather than trusted. An out-of-range shard makes the unit filter match
 -- NOTHING, and a shard that runs zero cases still prints a clean summary and exits 0 -- so a typo in
@@ -228,11 +227,11 @@ for vi = 1, nv do
         if pay == nil and want ~= nil and nwant ~= nil and nwant > 0 then
           pay = bytes_str(want, 1, nwant)
         end
-        -- REPEATED UNTIL IT COVERS A WHOLE WINDOW PLUS ONE PERIOD, not merely doubled. A doubled
-        -- payload is not enough for a short looping vector: the fox is 94 bytes and a 19 000-sample
-        -- window holds ~182, so a correct 182-byte run cannot be found inside 188 bytes at more than
-        -- a handful of alignments, and for a 13-byte payload it cannot be found at all. That would
-        -- read as a WRONG BYTES failure on a decode that was perfect.
+        -- REPEATED UNTIL IT COVERS A WHOLE WINDOW PLUS ONE PERIOD, not merely doubled. Payloads here
+        -- run from 13 bytes to 32 kB, and a 19 000-sample window holds ~182 bytes at 8.33 sa/bit, so
+        -- doubling a payload shorter than the window leaves nowhere for a correct full-window run to
+        -- match -- for a 13-byte payload, no alignment at all. That reads as a WRONG BYTES failure on
+        -- a decode that was perfect, so the multiple is computed from the window rather than fixed.
         -- npts is samples per bit; a frame is at most 13 cells, so this bounds the bytes a window can
         -- possibly hold. Two extra copies cover the alignment slack at both ends.
         local pay2 = nil

@@ -34,16 +34,12 @@ NAME = 'Serial_Decode'         # internal script name (loadscript <NAME>)
 ICON = 'sdec_icon'             # icon name (matches -- $Icon and loadimage)
 AUTHOR = 'Ian Ameline'
 YEAR = '2026'
-# chunk_decode.tsp IS included, and the reason it now is, is worth recording because it was
-# deliberately left out one session earlier: the Mode button reaches it. It was omitted while
-# nothing could invoke it, on the grounds that 13 % of archive growth for unreachable code
-# would confound the size-ladder experiment. Wiring the capture modes retired that argument --
-# the streaming modes are a feature the operator can press, so the code ships with them, and
-# the size ladder's top rung is simply this archive.
+# chunk_decode.tsp IS included, because the Mode button reaches it: the streaming modes are a
+# feature the operator can press, so the code that serves them ships. It is 13 % of the archive.
 #
-# serial_app.tsp still guards on `sdec.ck_run == nil` and refuses with a reason, the same way
-# the protocol views degrade when a protocol module is absent. Removing this line must produce
-# an app that says what is missing, not one that raises inside a touch handler.
+# serial_app.tsp guards on `sdec.ck_run == nil` and refuses with a reason, the same way the protocol
+# views degrade when a protocol module is absent. Removing this line must produce an app that says
+# what is missing, not one that raises inside a touch handler.
 # VERSION 1 IS UART ONLY. midi_decode.tsp and lin_decode.tsp are complete, tested and
 # deliberately NOT SHIPPED: one protocol is the simpler first release, and the LIN
 # checksum has never been checked against a real frame (notes/FINDINGS.md), so shipping
@@ -64,8 +60,8 @@ MODULES = ['tsp/usb_log.tsp', 'tsp/serial_core.tsp', 'tsp/uart_decode.tsp',
 
 # A MODULE-LEVEL CONSTANT NEITHER CONSUMES A DOC BLOCK NOR DESTROYS ONE. Constants sit between a block
 # and the function it describes -- the odd-multiple gate's 25 lines, then two assignments, then
-# ua_submultiple -- so flushing at an assignment would ship all three bare. Treating every assignment as
-# a definition instead costs +51 kB of archive, measured, because these modules are full of them.
+# ua_submultiple -- so flushing at an assignment ships all three bare. Treating every assignment as a
+# definition instead costs +51 kB of archive, measured, because these modules are full of them.
 # Passing through costs nothing and leaves the block immediately above the function its constants tune.
 DEF_ASSIGN = re.compile(r'^(sdec|ulog)\.[A-Za-z_][A-Za-z0-9_]*\s*=')
 # A rule, a bare '--', or a row of ='s carries no text, so it must not spend a line of the keep budget
@@ -108,15 +104,15 @@ MANIFEST = [
                     'locked down.'),
     # MATCHES THE GIT TAG, and stays a plain dotted number. This string goes into a manifest an
     # instrument installer parses and whose compares cannot be assumed numeric, so the version must
-    # never carry a pre-release suffix -- '1.0-beta' could fail a parse or sort anywhere. It was 0.9
-    # to sort below 1 as the beta marker; now the tag is what states the version and the word "beta"
-    # lives in the Description, which is free text the Manage Apps screen shows. As strings, each release
-    # so far sorts above the last ('1.04' > '1.03' > '1.02' > '0.9'), so an upgrade is never read as a
-    # downgrade. Two digits after the dot is what keeps that true -- '1.4' would sort BELOW '1.03'.
+    # never carry a pre-release suffix -- '1.0-beta' could fail a parse or sort anywhere. The word
+    # "beta" lives in the Description instead, which is free text the Manage Apps screen shows. As
+    # STRINGS, every release sorts above the last ('1.04' > '1.03' > '1.02' > '0.9'), so an upgrade is
+    # never read as a downgrade -- and two digits after the dot is what keeps that true, because
+    # '1.4' sorts BELOW '1.03'.
     ('Version', '1.04'),
     # Stated minimum firmware, kept deliberately low: if the installer compares this
     # field as a STRING then "1.7.3c" sorts above "1.7.17a" and the app refuses to
-    # install on the very unit it was written on. "1.7.0" satisfies either compare.
+    # install on the very unit it is developed on. "1.7.0" satisfies either compare.
     ('Requires', '1.7.0'),
     ('Author', AUTHOR),
     ('License', 'MIT'),
@@ -318,10 +314,10 @@ def main():
                 raise SystemExit('%s contains a Lua long comment (%s); the comment rules here only '
                                  'handle whole-line comments -- convert it to -- lines' % (m, delim))
         body = src.split('\n')
-        # BLOCKS, NOT ONE FLAT LIST. Comment runs separated by blank lines used to accumulate together
-        # and the keep window was taken across the concatenation, so a definition could ship lines from
-        # a block describing something else -- `ck_reader_table` shipped a micro-optimisation note and
-        # `clear_result` a field list. Only the block ADJACENT to the definition is its doc.
+        # BLOCKS, NOT ONE FLAT LIST. Accumulating comment runs across blank lines and taking the keep
+        # window over the concatenation ships a definition lines from a block describing something
+        # else -- `ck_reader_table` gets a micro-optimisation note, `clear_result` a field list. Only
+        # the block ADJACENT to the definition is its doc.
         blocks, cur, carried = [], [], False
         for ln in body:
             ln = ln.rstrip('\r')

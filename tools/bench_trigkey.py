@@ -204,12 +204,11 @@ def main():
         print('FAIL  the capture RAISED with the key as the trigger source')
     elif nev:
         print('FAIL  the armed capture logged a real instrument event: %s' % evtext)
-    # THE DISCRIMINATOR IS lasterr, NOT ELAPSED TIME, and getting that wrong cost a bench run. A
-    # capture that fell back to free-running ALWAYS says so -- serial_core sets 'front trigger
-    # unavailable; captured free-running' on the degrade path -- so an empty lasterr means the
-    # trigger genuinely fired. Elapsed time cannot carry the verdict on its own: an operator who
-    # presses promptly produces a time indistinguishable from a free run, and the first version of
-    # this file called that a failure on a run where the key had worked.
+    # THE DISCRIMINATOR IS lasterr, NOT ELAPSED TIME. A capture that falls back to free-running
+    # ALWAYS says so -- serial_core sets 'front trigger unavailable; captured free-running' on the
+    # degrade path -- so an empty lasterr means the trigger genuinely fired. Elapsed time cannot carry
+    # the verdict on its own: an operator who presses promptly produces a time indistinguishable from
+    # a free run, and calling that a failure condemns a run where the key worked.
     elif a.quiet_line and ('idle' in (key['lasterr'] or '')
                           or 'no transitions' in (key['lasterr'] or '')):
         print('PASS  the key FIRED. Armed on a deliberately idle line, the capture ran and refused\n'

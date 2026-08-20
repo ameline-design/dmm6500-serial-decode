@@ -1,4 +1,4 @@
--- verify_tspa.lua -- check the SHIPPED .tspa, not the sources it was built from.
+-- verify_tspa.lua -- check the SHIPPED .tspa, not the sources it is built from.
 --
 -- tools/test_serial.lua loads tsp/*.tsp module by module. That is not what the
 -- instrument does: opening an App runs one concatenated chunk, so anything that only
@@ -191,11 +191,10 @@ end
 -- capacity. The comment above still holds for the bar itself: it spans x = 8..774 of a 798 px
 -- limit and a seventh button on that row would not fit.
 --
--- The two page buttons are in the strip the position bar used to occupy, right-aligned at 785, and
--- they exist because paging had NO control at all: a hex page holds 240 bytes, which is the whole
--- frame in FRAME mode, but a 32 kB streaming capture is 137 pages of which only the first was
--- reachable. Labelled 'Up' and 'Dn' on 56 px faces -- the width they do not use is width the dump
--- rows get. They hide themselves when the capture fits one page (sdec.ui_page_btns).
+-- The two page buttons sit right-aligned at 785 and carry the only paging control there is: a hex
+-- page holds 240 bytes, the whole frame in FRAME mode, but a 32 kB streaming capture is 137 pages.
+-- Labelled 'Up' and 'Dn' on 56 px faces -- the width they do not use is width the dump rows get.
+-- They hide themselves when the capture fits one page (sdec.ui_page_btns).
 check('every main-screen button calls a function that exists',
       table.getn(bad) == 0 and nbtn == 9,
       nbtn .. ' buttons; bad: ' .. table.concat(bad, ' '))
@@ -232,10 +231,10 @@ print()
 -- ===========================================================================
 -- A POOL THAT RAN OUT MUST REFUSE, NOT SHOW A SCREEN WITH NO BUTTONS
 -- ===========================================================================
--- Measured on the instrument 2026-08-17: display.create returns NIL once the display object pool is
--- exhausted, posts nothing (1701 is logged the first time only), and does not raise. So start()'s
--- pcall saw success, `built` was set, and the panel showed a screen with no buttons and no message
--- anywhere saying why -- every child had been created against a nil parent.
+-- Measured on the instrument: display.create returns NIL once the display object pool is exhausted,
+-- posts nothing (1701 is logged the first time only), and does not raise. So start()'s pcall reports
+-- success, `built` is set, and the panel shows a screen with no buttons and nothing saying why --
+-- every child created against a nil parent.
 sdec.stop()
 sdec.built = false
 sdec.delfails = 0
@@ -295,8 +294,8 @@ do
     sdec.stop()
     sdec.built = false
     sdec.delfails = 0
-    -- OBJ accumulates across iterations, so the cascade count is taken as a DELTA rather than
-    -- as a total -- otherwise every later cap inherits the earlier ones' verdict.
+    -- OBJ accumulates across iterations, so the cascade count is a DELTA rather than a total --
+    -- as a total, every later cap inherits the earlier ones' verdict.
     local casc0 = MD.cascaded()
     MD.poolcap(full - slack)
     local bok, bwhy = sdec.start()

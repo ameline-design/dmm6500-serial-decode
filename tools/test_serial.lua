@@ -1,10 +1,10 @@
 -- test_serial.lua -- unit tests that run the REAL tsp/*.tsp serial decoder on the
 -- host, against a synthesised UART waveform.
 --
--- The instrument is away, and even on the bench a build costs a power cycle, so
--- the decoder is developed here. tools/gen_serial.lua loads the ACTUAL shipped
--- sources via loadfile -- not a re-implementation, which would drift from them --
--- and provides the waveform generator and the mocked instrument.
+-- A build costs a power cycle, so the decoder is developed here.
+-- tools/gen_serial.lua loads the ACTUAL shipped sources via loadfile -- not a
+-- re-implementation, which would drift from them -- and provides the waveform
+-- generator and the mocked instrument.
 --
 -- Run from the repo root:  lua tools/test_serial.lua
 -- When a test fails, tools/debug_serial.lua dumps the widths, seeds and every
@@ -111,8 +111,8 @@ check('threshold is midway', near(sdec.thr, 1.65, 0.03), string.format('thr=%.4f
 check('logic family named', sdec.family == '3V3 CMOS', sdec.family)
 check('idle is high on a TTL line', sdec.idle == 1, 'idle=' .. tostring(sdec.idle))
 -- Naming a family is a diagnostic -- "you are on the wrong pin" -- so naming the WRONG
--- one is worse than declining to name any. Each band is bounded at both ends; the 5 V
--- one used to be open-ended, so a 12 V LIN bus through its 2:1 divider read as 5V TTL.
+-- one is worse than declining to name any. Every band is bounded at BOTH ends, because an
+-- open-topped 5 V band reads a 12 V LIN bus through its 2:1 divider as 5V TTL.
 check('every logic-family band is bounded at both ends',
       sdec.sig_family(0, 3.3) == '3V3 CMOS' and sdec.sig_family(0, 5.0) == '5V TTL'
       and sdec.sig_family(0, 1.8) == '1V8 CMOS'
@@ -541,8 +541,8 @@ check('a gapless mid-stream capture still recovers the tail',
 -- 13-byte "Hello, World!" above is why: it is too SHORT and too mixed-case to
 -- put the longest run on the wrong level.
 --
--- Found on hardware 2026-08-16. Real 9600-baud lorem ipsum, no inter-byte gaps,
--- gave run0 = 63 samples against run1 = 42 -- because a space (0x20) runs its
+-- Real 9600-baud lorem ipsum with no inter-byte gaps gives
+-- run0 = 63 samples against run1 = 42 -- because a space (0x20) runs its
 -- start bit into five zero data bits for six low bits, while lowercase letters
 -- offer at most four consecutive ones. sig_idle's longest-run rule therefore
 -- said idle = 0 on a line idling at 3.3 V, ua_autoformat made that the incumbent,
@@ -886,10 +886,9 @@ check('pick_fs prefers the LOWEST adequate rate (more bytes per capture)',
 check('pick_fs saturates at 1 MS/s for rates it cannot oversample',
       sdec.pick_fs(460800, 8) == 1000000, tostring(sdec.pick_fs(460800, 8)))
 -- EVERY OFFERED RATE IS EITHER AN EXACT DIVISOR OF THE 66 MHz SAMPLE CLOCK, OR ONE
--- OF THREE NAMED EXCEPTIONS. This replaces a list of the eight rates the old ladder
--- happened to contain, and it is a stronger check: it re-derives what the hardware
--- will actually deliver from the divider model measured in BRINGUP 4b.11
--- (fs = 66e6 / ceil(66e6 / requested)) rather than trusting a table of names.
+-- OF THREE NAMED EXCEPTIONS. Derived rather than listed: a table of rate names passes
+-- unchanged as rungs are added, so this re-derives what the hardware delivers from the
+-- measured divider model (fs = 66e6 / ceil(66e6 / requested)) instead.
 --
 -- The three exceptions are listed deliberately -- see sdec.rates -- because 19200,
 -- 38400 and 76800 need them. They must still clear minsabit once the rounding-up of
@@ -1509,12 +1508,12 @@ check('an unchanged refresh costs ZERO display writes',
       (MD.obj(sdec.ui_row[1]).sets or 0) == sets,
       string.format('%d writes vs %d', MD.obj(sdec.ui_row[1]).sets or 0, sets))
 
--- ONE OBJECT, ONE SHADOW CACHE. The ERR field used to be written twice per refresh -- once by
--- the generic value loop from ui_field_colour, then again by a special-case block behind its
--- OWN cache -- so the two caches disagreed about the colour the object actually had. It worked
--- only because the special case ran last. The regression this pins is the disagreement itself:
--- with errors present the object is red, so the cache must say red. Under the two-writer
--- version it said the plain column colour, and the first thing to change ui_field_colour's
+-- ONE OBJECT, ONE SHADOW CACHE. Two writers per refresh -- the generic value loop from
+-- ui_field_colour plus a special-case block behind its own cache -- leave the two caches
+-- disagreeing about the colour the object actually has, and the disagreement is invisible for
+-- as long as the special case happens to run last. What this pins is the agreement: with
+-- errors present the object is red, so the cache must say red. Two writers make it say the
+-- plain column colour, and the first thing to change ui_field_colour's
 -- answer for this field would have repainted a red error count green -- with the error cache
 -- still saying red, so it would never have been repainted back.
 local ef = sdec.ui_errfield
@@ -1523,10 +1522,10 @@ check('a clean decode shows the ERR count in the column colour',
       MD.obj(sdec.ui_fval[ef]).color == sdec.ui_fields[ef].c,
       string.format('%06X vs %06X', MD.obj(sdec.ui_fval[ef]).color or 0,
                     sdec.ui_fields[ef].c))
--- An INTERIOR error, injected where it counts. Setting r.nbad alone no longer drives the
--- colour: ERR reports interior errors only, so a boundary frame -- which every capture of a
--- gapless line has -- cannot turn it red. The error therefore has to be placed in a frame
--- that is neither in the resync head nor the clipped tail.
+-- An INTERIOR error, injected where it counts. Setting r.nbad alone does not drive the colour:
+-- ERR reports interior errors only, so a boundary frame -- which every capture of a gapless
+-- line has -- cannot turn it red. The error has to land in a frame that is neither in the
+-- resync head nor the clipped tail.
 sdec.res.nbad = 1
 sdec.res.errs[math.floor(sdec.res.nf / 2)] = 'framing'
 sdec.ui_refresh()
@@ -1545,11 +1544,11 @@ check('clearing the errors takes the red back off -- the cache does not pin it',
       sdec.ui_fvalc[ef] == sdec.ui_fields[ef].c,
       string.format('%06X', MD.obj(sdec.ui_fval[ef]).color or 0))
 
--- ROW COLOUR IS NOT THE ERR RULE, AND THE PANEL CAUGHT THE DIFFERENCE. The row colour used to skip
--- the first ua_edge_frames and the clipped last frame, exactly as the ERR count does -- so an 8 kB
--- recording with ERR 3 drew '???OWN FOX JUMPS' in normal WHITE: three bytes rendered as '?' on a row
--- that said nothing was wrong. The colour claims nothing the row is not already showing, so it now
--- fires on ANY flagged byte. With NO headsusp set -- as here -- ERR still excludes resync debris, so
+-- ROW COLOUR IS NOT THE ERR RULE. It fires on ANY flagged byte, because skipping the first
+-- ua_edge_frames and the clipped last frame the way the ERR count does draws an 8 kB recording
+-- with ERR 3 as '???OWN FOX JUMPS' in normal WHITE -- three bytes rendered as '?' on a row saying
+-- nothing is wrong. The colour must claim nothing the row is not already showing. With NO
+-- headsusp set -- as here -- ERR still excludes resync debris, so
 -- the two legitimately disagree; the block below covers the case where headsusp makes them agree.
 do
   local sv, i = {}, nil
@@ -1668,9 +1667,9 @@ do
   sdec.ui_refresh()
 end
 
--- A RECORDING'S ERR: the count comes from the run, the head swap is arithmetic, and -- the defect this
--- pins -- the COLOUR used to come from the retained tail instead, so a run damaged only in its head
--- showed a non-zero ERR in the all-clear colour.
+-- A RECORDING'S ERR: the count comes from the run and the head swap is arithmetic. The COLOUR must
+-- come from the same place, not from the retained tail -- a tail-coloured field shows a run damaged
+-- only in its head as a non-zero ERR in the all-clear colour.
 do
   local res0, ct0 = sdec.res, sdec.ck_tot
   sdec.res = nil
@@ -1690,9 +1689,9 @@ do
   check('with no head recorded it is the raw run count', sdec.ui_err_n() == 6,
         tostring(sdec.ui_err_n()))
 
-  -- AND THE STATUS ROW ON THE SAME SCREEN. Measured on the panel 2026-08-19: the header read 'ERR 7'
-  -- over a status row reading '1 err', because ck_status took t.nbad raw while the field took the trust
-  -- count. Two numbers for one fault, eight pixels apart.
+  -- AND THE STATUS ROW ON THE SAME SCREEN. ck_status must take the trust count, not t.nbad raw: raw
+  -- puts a header reading 'ERR 7' over a status row reading '1 err' -- two numbers for one fault,
+  -- eight pixels apart.
   sdec.ck_tot.nbad, sdec.ck_tot.headbad, sdec.ck_tot.headnbad = 1, 7, 1
   sdec.ck_tot.path, sdec.ck_tot.nwin = '/usb1/bytes339.txt', 68
   local st = sdec.ck_status()
@@ -2087,8 +2086,8 @@ do
         string.format('slot %d..%d, travel %d px', sdec.ui_prog_x,
                       sdec.ui_prog_x + sdec.ui_prog_w - 1, sdec.ui_prog_wmax))
   -- IT MUST ALSO CLEAR EVERY RUNNING MESSAGE, and these come from ck_status() ITSELF rather than
-  -- from strings copied out of it -- a copy would keep passing after the real format changed, which
-  -- is how the bar came to be sized for a message that no longer existed.
+  -- from strings copied out of it: a copy keeps passing after the real format changes, which sizes
+  -- the bar for a message nothing emits.
   do
     local worst, wtxt = 0, ''
     local cases = {
@@ -2144,8 +2143,7 @@ do
   local wasmode = sdec.capmode
   local function cellfor(m)
     sdec.capmode = m
-    -- ck_tot non-nil is what puts this cell on screen in FRAME: the resting state after a recording,
-    -- which is where the old string was read most.
+    -- ck_tot non-nil is what puts this cell on screen in FRAME: the resting state after a recording.
     sdec.ck_tot = {nf = 10, nbad = 0, nwin = 1, path = '/usb1/x.txt', stopped = 'done'}
     sdec.ck_running, sdec.strm_recording, sdec.ck_job = false, nil, nil
     sdec.ui_refresh()
@@ -2257,18 +2255,17 @@ end
 -- NO HORIZONTAL RULE MAY BE STRUCK THROUGH A TEXT ROW.
 --
 -- A text object's y is the BOTTOM of its glyph box, so its ink occupies
--- [y - ui_ink + 1, y] and it grows UPWARD. Every rule in this layout was originally
--- placed as though y were the top, so four of them -- above the header labels, the
--- FRAME mode cell, the first dump row and the status line -- landed inside the ink of
--- the row above and rendered as a strike-through. See sdec.ui_ink.
+-- [y - ui_ink + 1, y] and it grows UPWARD. Placing a rule as though y were the top puts it
+-- inside the ink of the row above, where it renders as a strike-through -- the header labels,
+-- the FRAME mode cell, the first dump row and the status line are all one rule away from it.
+-- See sdec.ui_ink.
 --
--- THIS TEST EXISTS BECAUSE THE PANEL COSTS A POWER CYCLE TO LOOK AT. One UI build per
--- power cycle means a layout mistake is not a quick retry: it is a rebuild, and until
--- display.setfill was fixed the rules did not paint at all, so six sessions of
--- screenshots could not have shown it either. Geometry has to be checkable offline.
+-- THIS TEST EXISTS BECAUSE THE PANEL COSTS A POWER CYCLE TO LOOK AT. One UI build per power
+-- cycle means a layout mistake is not a quick retry, it is a rebuild -- so geometry has to be
+-- checkable offline.
 do
-  -- Per-font ink: FONT_MEDIUM is 17 px tall against FONT_SMALL's 12, and using one height
-  -- for both is what let the BAUD value overlap its own label undetected.
+  -- Per-font ink: FONT_MEDIUM is 17 px tall against FONT_SMALL's 12. One height for both lets
+  -- the BAUD value overlap its own label undetected.
   local ink = sdec.ui_ink or 12
   local bad, nbad2 = {}, 0
   local i, j
@@ -2327,10 +2324,10 @@ do
             local w1 = string.len(t1.text) * adv(t1.text)
             local w2 = string.len(t2.text) * adv(t2.text)
             -- JUSTIFICATION IS HONOURED. A JUST_RIGHT object's x is its RIGHT edge, so treating it
-            -- as a left edge puts the string a whole width to the right of where the panel draws it
-            -- -- off the screen, where it can overlap nothing. This check was blind to exactly the
-            -- collision it was later asked to catch: the note row's page counter is JUST_RIGHT, and
-            -- the yellow note DID draw over it on the instrument while this passed.
+            -- as a left edge puts the string a whole width to the right of where the panel draws
+            -- it -- off the screen, where it can overlap nothing. Skip this and the check goes
+            -- blind to the collision it exists for: the note row's page counter is JUST_RIGHT,
+            -- and the yellow note draws right over it.
             local x1, x2 = t1.x, t2.x
             if t1.just == display.JUST_RIGHT then x1 = x1 - w1 end
             if t2.just == display.JUST_RIGHT then x2 = x2 - w2 end
@@ -2533,8 +2530,8 @@ sdec.capture()
 print('\nthe 250 kBd ceiling and undersampling (real code)')
 -- ============================================================================
 -- 4 samples/bit is the wall, and at 1 MS/s that is exactly 250 kBd. Past it the
--- decoder must REFUSE rather than return plausible-looking bytes: a 921600 baud line
--- captured at 1 MS/s used to come back as four clean bytes labelled 230400 baud.
+-- decoder must REFUSE rather than return plausible-looking bytes: undersampled, a 921600
+-- baud line captured at 1 MS/s reads as four clean bytes labelled 230400 baud.
 clearforce()
 check('the ceiling is declared, not emergent',
       sdec.maxbaud == 250000 and sdec.minsabit == 4,
@@ -2573,8 +2570,8 @@ check('but it is reported as an unstable baseline',
       sdec.sig_levelwarn() ~= nil and has(sdec.ui_note_text(), 'baseline unstable'),
       tostring(sdec.ui_note_text()))
 
--- Broadband noise with no signal in it has no separable pair of levels, so there is
--- nothing to place a threshold between. It used to come back as 42 bytes at 14400 baud.
+-- Broadband noise with no signal in it has no separable pair of levels, so there is nothing
+-- to place a threshold between. Thresholding it anyway yields 42 bytes at 14400 baud.
 local nrd = {}
 local nseed = 12345
 for i = 1, 4000 do
@@ -2650,9 +2647,9 @@ sdec.capture()
 check('a later capture recovers', sdec.res ~= nil and sdec.res.nf == ulgn,
       sdec.res and tostring(sdec.res.nf) or 'nil')
 
--- A forced baud rate must still RE-READ the wire. The rate-reuse guard used to
--- test a leftover result rather than whether this call had captured, so forcing a
--- baud rate did no digitizer reads at all and reported the previous bytes as fresh.
+-- A forced baud rate must still RE-READ the wire. The rate-reuse guard has to test whether
+-- THIS call captured, not whether a result is lying around: a leftover-result test makes
+-- forcing a baud rate do no digitizer reads at all and report the previous bytes as fresh.
 SRC.rd, SRC.ts = urd, uts
 sdec.force_baud = 9600
 sdec.trigmode = 'free'
@@ -2768,11 +2765,10 @@ check('End App from the options screen frees every buffer', LIVEBUFS() == base_b
 -- unreachable and survive until a power cycle.
 sdec.start()
 local live2, bufs2 = MD.live(), LIVEBUFS()
--- SETTINGS, not just handles. The reload test only ever checked display objects and
--- buffers, which is why `range` and `trigmode` being assigned unconditionally at file
--- scope survived: an App relaunch silently reverted the range to 10 V and the trigger
--- to 'edge', and the next capture then reported "swing too small" on a line that had
--- been decoding a minute earlier.
+-- SETTINGS, not just handles. Checking only display objects and buffers lets an
+-- unconditional file-scope assignment to `range` or `trigmode` through: an App relaunch
+-- then silently reverts the range to 10 V and the trigger to 'edge', and the next capture
+-- reports "swing too small" on a line that decodes perfectly well.
 sdec.trigmode, sdec.proto = 'free', 'midi'
 sdec.force_baud, sdec.force_nbits, sdec.force_par = 31250, 8, sdec.PAR_NONE
 sdec.force_invert, sdec.force_nstop = false, 1
@@ -2937,9 +2933,9 @@ check('a row past the end is empty', sdec.mi_line(99) == '')
 sdec.midi = nil
 check('the summary is safe with nothing parsed', sdec.mi_summary() ~= nil
       and sdec.mi_nrows() == 0)
--- A channel message left short by the end of the capture used to VANISH: SysEx
--- truncation was reported but a Note On missing its velocity byte simply was not in
--- the list, so the message count disagreed with the byte dump and nothing said why.
+-- A channel message left short by the end of the capture must be REPORTED, not dropped.
+-- Reporting SysEx truncation alone leaves a Note On missing its velocity byte out of the
+-- list entirely, so the message count disagrees with the byte dump and nothing says why.
 m = midi({0x90, 0x3C, 0x80, 0x3C, 0x40})
 check('a truncated channel message is reported rather than dropped',
       has_msg(m, 'truncated'), table.concat(m.msg, ' | ', 1, m.n))
@@ -2957,9 +2953,9 @@ check('parsing with no bytes fails cleanly',
 -- ============================================================================
 print('\nMIDI end to end: waveform -> UART bytes -> messages (real code)')
 -- ============================================================================
--- Every test above hand-builds sdec.res, so mi_parse() had never once run on output
--- the real decoder produced -- which is exactly where a field-convention mismatch
--- (errs[] holding false rather than nil, vals[] 1-based or 0-based) would hide.
+-- Every test above hand-builds sdec.res, so none of them runs mi_parse() on output the real
+-- decoder produced -- which is exactly where a field-convention mismatch (errs[] holding
+-- false rather than nil, vals[] 1-based or 0-based) hides.
 -- This drives the whole app: 31250 baud on the wire, through acquire and decode, to
 -- the panel rows.
 local MIDIBYTES = {0xF8,                     -- clock, before anything
@@ -3675,12 +3671,11 @@ do
   check('a nonsense baud gives nil rather than a misleading number',
         sdec.window_bytes(0, 8, sdec.PAR_NONE, 1) == nil
         and sdec.window_bytes(nil, 8, sdec.PAR_NONE, 1) == nil)
-  -- AN EXACT DIVISION MUST NOT FLOOR TO ONE LESS. 20000 samples at 10 kS/s is 240 8N1 bytes
-  -- at 1200 baud EXACTLY, and the two-step form -- floor(n / (fs/baud * framebits)) -- gave
-  -- 239.99999999999997 and reported 239, disagreeing with the table in the comment above the
-  -- function. Found while sizing candidate sample rates (tools/sweep_rates.lua): every rate
-  -- picked to give a round samples/bit divides exactly, so the artifact was not an edge case,
-  -- it was the good cases.
+  -- AN EXACT DIVISION MUST NOT FLOOR TO ONE LESS. 20000 samples at 10 kS/s is 240 8N1 bytes at
+  -- 1200 baud EXACTLY, and the two-step form -- floor(n / (fs/baud * framebits)) -- yields
+  -- 239.99999999999997 and reports 239, disagreeing with the table above the function. This
+  -- afflicts the good cases, not the edge ones: every rate picked to give a round samples/bit
+  -- (tools/sweep_rates.lua) divides exactly, so every one of them is exposed.
   sdec.acq_fs = 10000
   check('an EXACT window is not floored away -- 1200 baud at 10 kS/s is 240, not 239',
         sdec.window_bytes(1200, 8, sdec.PAR_NONE, 1) == 240,
@@ -3803,16 +3798,16 @@ do
   end
   check('still says FULL at the longer window, but stops suggesting a done deed',
         full and not hint)
-  -- BUT NOT FOR A RECORDING'S RETAINED TAIL, which is a slice of a capture that went to a FILE. Seen
-  -- on the panel after an 8 kB run: 'capture FULL at 423 bytes -- the message may continue', where 423
-  -- is the FRAME window at the recording's own sample rate -- a number belonging to no capture that
-  -- had happened -- and the tail was 8192 bytes of a run that had already been filed. The remedy it
-  -- offered was wrong too: a recording mode requires a locked rate.
+  -- BUT NOT FOR A RECORDING'S RETAINED TAIL, which is a slice of a capture that went to a FILE. The
+  -- FULL note there reads 'capture FULL at 423 bytes -- the message may continue' after an 8 kB run,
+  -- where 423 is the FRAME window at the recording's own sample rate -- a number belonging to no
+  -- capture that took place, over a tail of 8192 bytes already filed. Its remedy is wrong too: a
+  -- recording mode requires a locked rate.
   --
   -- r.first is the marker. ck_tail_result() sets it and nothing else does, so a result carrying it is
   -- by construction a window onto something larger. Checked at first = 1 as well as first > 1: a run
-  -- that kept everything still starts at byte 1, and keying the guard on the INDEX rather than on its
-  -- presence would let that case through.
+  -- that keeps everything still starts at byte 1, so keying the guard on the INDEX rather than on
+  -- its presence lets that case through.
   do
     local fi
     for fi = 1, 2 do
@@ -3828,9 +3823,9 @@ do
                           firstbyte), not full, table.concat(nt, ' | '))
     end
       -- A MID-BYTE START IS REPORTED FOR A RECORDING TOO, and the WORDING turns on whether the
-    -- misaligned bytes are on screen. ck_decode computes r.headsusp per window and used to throw it
-    -- away, so an 8 kB run that began part way through a byte showed red bytes in its first two rows
-    -- and an EMPTY note row, while a frame capture on the same wire named the cause. Seen on the panel.
+    -- misaligned bytes are on screen. ck_decode computes r.headsusp per window and must KEEP it:
+    -- discarded, an 8 kB run that began part way through a byte shows red bytes in its first two
+    -- rows over an EMPTY note row, while a frame capture on the same wire names the cause.
     do
       -- Head on screen: the run kept everything, so first = 1 and 'the first N bytes' is literally
       -- what the operator is looking at.
@@ -3846,9 +3841,9 @@ do
       -- once the counter is showing, so the panel rendered '...everythi...' -- cutting the half that
       -- says the rest of the capture is sound, which is the half that lets the operator carry on.
       do
-        -- THE WORST-CASE BUDGET, COMPUTED FROM THE LAYOUT, not ui_pgind_px() -- which returns 0 unless
-        -- this scenario happens to have more than one page, and did: the first version of this check
-        -- measured against the full 680 px and would have passed a note that the counter cuts.
+        -- THE WORST-CASE BUDGET, COMPUTED FROM THE LAYOUT, not ui_pgind_px() -- which returns 0
+        -- unless this scenario happens to have more than one page. Measuring against the full
+        -- 680 px passes a note the counter cuts.
         local xpage = sdec.ui_pgind_layout()
         local budget = sdec.ui_note_px - ((sdec.ui_pgind_x - xpage) + sdec.ui_note_gap)
         local note = nil
@@ -3874,10 +3869,10 @@ do
             not has(j, 'the first 22 bytes are misaligned'), j)
       -- THE NUMBER IS THE DAMAGE, NOT THE SUSPICION. headsusp is idle1 - 1 -- the bytes before the first
       -- inter-message GAP, a conservative region ua_run drops from the parity vote -- and reporting it
-      -- as a count of bad bytes over-claimed badly: 'the first 79 byte(s) are misaligned' on a capture
-      -- with 3 flagged bytes and a first row that was not even red, because the fox vector runs 79 bytes
-      -- before its first gap. Seen on the panel. An earlier capture read 36 against 20 errors, close
-      -- enough to look plausible, which is how it survived.
+      -- as a count of bad bytes over-claims badly: 'the first 79 byte(s) are misaligned' on a capture
+      -- with 3 flagged bytes and a first row that is not even red, because the fox vector runs 79
+      -- bytes before its first gap. At smaller ratios -- 36 against 20 errors -- it reads plausibly
+      -- enough to pass unnoticed, so the check has to be exact.
       do
         local e79 = {}
         e79[1], e79[2], e79[3] = 'p', 'p', 'p'      -- only the first three could not be framed
@@ -3930,11 +3925,11 @@ do
       end
       -- THE CHECKS ABOVE SET ck_tot BY HAND, so they cover the PANEL's half only: the wording split,
       -- the two numbers, and that a recording reports at all. The RUN's half -- ck_decode actually
-      -- producing headsusp and headbad -- is checked in the chunked section, on a spliced waveform whose
-      -- first render carries no lead and whose tail is the gap. Two earlier attempts failed for reasons
-      -- worth keeping: a single GEN packs bytes with no gap, so ua_run finds no idle1 and marks nothing;
-      -- and wrapping ua_run to fake the flag spends its mark on ck_job_step's PRIMING call, which runs
-      -- before any decode window.
+      -- producing headsusp and headbad -- is checked in the chunked section, on a spliced waveform
+      -- whose first render carries no lead and whose tail is the gap. The splice is necessary: a
+      -- single GEN packs bytes with no gap, so ua_run finds no idle1 and marks nothing, and wrapping
+      -- ua_run to fake the flag spends its mark on ck_job_step's PRIMING call, which runs before any
+      -- decode window.
       sdec.res = {nf = 8192, nbad = 22, nbits = 8, par = sdec.PAR_NONE, nstop = 1,
                   vals = {}, errs = {}, first = 24577, ntotal = 32768}
       sdec.ck_tot = {nf = 32768, nbad = 22, nwin = 68, path = '/usb1/bytes325.txt',
@@ -4735,8 +4730,8 @@ local function test_chunked()
     check('and the partial file was closed rather than leaked',
           MD.files()['/usb1/stream09.txt'] == true)
 
-    -- PHASED PRIMING. The press that stops a recording used to pay for every level probe, the
-    -- lead-in read, the edge pass and the format search in one handler; each is now its own step.
+    -- PHASED PRIMING: the level probe, the lead-in read, the edge pass and the format search are
+    -- each their own step, so the press that stops a recording does not pay for all four at once.
     MD.forget_files()
     local pj = sdec.ck_job_new(sdec.ck_reader_table(rd, nsmp), nsmp,
                                '/usb1/stream10.txt', {budget_s = 0.000001})
@@ -4808,9 +4803,9 @@ local function test_chunked()
   end
 
   -- ---- A MID-BYTE START, THROUGH THE REAL ck_decode ----
-  -- The panel's half of this was set by hand in the ui_notes section, which says nothing about
-  -- ck_decode producing the figure. It needs a GAPPED waveform, and that is why two earlier attempts
-  -- failed: a single GEN packs bytes back to back, and ua_run only marks a head when it finds an idle
+  -- The panel's half of this is set by hand in the ui_notes section, which says nothing about
+  -- ck_decode producing the figure. It needs a GAPPED waveform: a single GEN packs bytes back to
+  -- back, and ua_run only marks a head when it finds an idle
   -- GAP inside the window with errors before it and none after. So two renders are spliced with the
   -- first one's TAIL as the gap -- 40 bit times of mark, four frames in -- and the first render carries
   -- NO LEAD, which is the hardware condition itself: the framer's first mark run is bounded only by
@@ -4866,8 +4861,8 @@ print('\nmuting event 4915 -- the instrument complaining about its own behaviour
 -- so it overwrites the oldest while waiting. A user-defined buffer is FILL_ONCE, where an overwrite
 -- is a discard, and each discard posts 4915 at ERROR severity -- a modal box over the hex dump.
 -- Measured: ten per capture at 300, 600 and 1200 baud, none at 9600 and above. FILL_CONTINUOUS does
--- not exist on this firmware. So the POPUPS are muted for the capture and the LOG is left intact --
--- draining it was tried and lost real events, because next() consumes and post() cannot put one back.
+-- not exist on this firmware. So the POPUPS are muted for the capture and the LOG is left intact:
+-- draining it loses real events, because next() consumes and post() cannot put one back.
 local function test_mute()
   sdec.quiet_events()
   check('normally the panel shows error-severity events', MD.showevents() == eventlog.SEV_ERROR,
@@ -5022,11 +5017,11 @@ local function test_midbyte()
         ra.nbits == 7 and ra.par == sdec.PAR_EVEN,
         string.format('%d bits par=%s', ra.nbits, tostring(ra.par)))
 
-  -- UNANIMITY IS NO LONGER THE GUARD, and the check that used to assert it has been retired
-  -- deliberately. It encoded the policy that CAUSED a hardware defect: measured 2026-08-19 with
-  -- v78 (7E1, gap = 0), four captures in eight came back as 8N1 with every byte carrying a spurious
-  -- bit 7 and NOTHING flagged, because one misaligned frame at the head vetoed a hundred and thirty
-  -- agreeing ones. The head is now skipped unconditionally, so a dissenter there cannot vote.
+  -- UNANIMITY IS NOT THE GUARD, and asserting it here would encode the policy that produces a
+  -- hardware defect: under a unanimous vote, v78 (7E1, gap = 0) comes back as 8N1 on half of its
+  -- captures with every byte carrying a spurious bit 7 and NOTHING flagged, because one misaligned
+  -- frame at the head vetoes a hundred and thirty agreeing ones. The head is skipped
+  -- unconditionally, so a dissenter there cannot vote.
   local rb = sdec.ua_refine_parity(mkpar(pv, pn, 2, nil))
   check('a dissenter in the always-skipped head does NOT veto, with no marking needed',
         rb.nbits == 7 and rb.par == sdec.PAR_EVEN,
@@ -5074,18 +5069,17 @@ test_midbyte()
 -- ===========================================================================
 print('\nthe bottom of the rate range -- a probe that cannot frame a byte')
 -- ===========================================================================
--- autoset()'s first pass runs at 1 MS/s, where 20 000 samples is 20 ms: six bit times at 300
--- baud. So the probe can measure the bit time and cannot fit a frame, and its refusal used to be
--- returned as the capture's -- "no frame fits a 3333.5 sample bit time", with the answer in the
--- message. Measured on the instrument 2026-08-17: 300 and 600 baud failed outright, 1200 and up
--- were fine, which is why it went unnoticed.
+-- autoset()'s first pass runs at 1 MS/s, where 20 000 samples is 20 ms: six bit times at 300 baud.
+-- So the probe can measure the bit time and cannot fit a frame, and returning ITS refusal as the
+-- capture's fails 300 and 600 baud outright -- "no frame fits a 3333.5 sample bit time", with the
+-- answer sitting in the message. 1200 and up are unaffected, which is what makes it easy to miss.
 local function test_slow_probe()
   clearforce()
   -- 300 baud sampled at 1 MS/s, cut to 20 000 samples -- what the probe actually captures. That
   -- is six bit times: enough edges to FIT a bit time if the data is transitioning, never enough
-  -- for a ten-bit frame. 0x55 back to back is the case that reaches the bit-time stage, which is
-  -- the one the fix is about; a window with too few edges to fit anything fails earlier and is
-  -- covered by the idle-line check below.
+  -- for a ten-bit frame. 0x55 back to back is the case that reaches the bit-time stage, which is the
+  -- one at issue; a window with too few edges to fit anything fails earlier and is covered by the
+  -- idle-line check below.
   local rd, ts, nc, n = GEN({bytes = {85, 85, 85}, baud = 300, fs = 1000000,
                              lead = 1, gap = 0, tail = 1})
   local nshort = 20000
@@ -5175,11 +5169,10 @@ local function test_modes()
 
   -- ---- the note row's left cell: THE TRIGGER SOURCE, the at-a-glance channel ----
   --
-  -- It held the CAPTURE MODE until the mode moved to the title bar. The block that checked it looped
-  -- over two modes and then compared cols[3] -- nil -- so 'each mode has its own colour' was two
-  -- comparisons against nothing; and 'the longest mode name still fits' asserted
-  -- string.len('STREAM') <= 8 about a mode that had been retired, plus a cell width, never the
-  -- rendered width of any string it would hold. Both are replaced by measurements.
+  -- BOTH PROPERTIES ARE MEASURED, not asserted about names. Looping the modes and comparing
+  -- cols[3] -- nil -- makes 'each mode has its own colour' two comparisons against nothing, and
+  -- string.len('STREAM') <= 8 checks a cell width against a name, never the rendered width of any
+  -- string the cell holds.
   do
     local wasmode, wastrig = sdec.capmode, sdec.trigmode
     local seen, k, v = {}, nil, nil
@@ -5246,11 +5239,11 @@ local function test_modes()
 
   -- ---- EXIT AND FLUSH: one path out, and it LEAVES THE MODE ALONE ----
   --
-  -- mode_exit() used to set capmode = 'frame', so a run that finished moved the operator to a mode
-  -- they had not chosen. With the capture mode in the TITLE BAR that is a large caption changing
-  -- itself. It is a flush now and nothing else; the Mode button is the only thing that moves the
-  -- mode. The two callers where a change is part of the MEANING -- auto-detect, and losing the baud
-  -- lock a recording needs -- set capmode themselves, and are checked separately below.
+  -- mode_exit() is a flush and nothing else; the Mode button is the only thing that moves the mode.
+  -- Setting capmode = 'frame' here would move a finished run to a mode the operator did not choose,
+  -- and with the capture mode in the TITLE BAR that is a large caption changing itself. The two
+  -- callers where a change is part of the MEANING -- auto-detect, and losing the baud lock a
+  -- recording needs -- set capmode themselves, and are checked separately below.
   sdec.capmode = 'med'
   sdec.flog_path, sdec.flog_n = '/usb1/frames03.txt', 12
   sdec.ck_tot = {nf = 100, nbad = 0, nwin = 2, nsmp = 1000, path = '/usb1/stream00.txt'}
@@ -5263,10 +5256,10 @@ local function test_modes()
   check('and it names the mode it left, for the debug trace and the failure path',
         sdec.mode_exited ~= nil and has(sdec.mode_exited, '32 kB'),
         tostring(sdec.mode_exited))
-  -- A NORMAL END LEAVES THE NOTE ROW ALONE. The exit note used to go there unconditionally, so a
-  -- finished recording sat under a yellow line describing its own exit -- above the notes that
-  -- described the RESULT, and outliving the press that caused it. The status row's summary (bytes,
-  -- errors, windows, filename) is the completion message.
+  -- A NORMAL END LEAVES THE NOTE ROW ALONE. An unconditional exit note puts a finished recording
+  -- under a yellow line describing its own exit -- above the notes describing the RESULT, and
+  -- outliving the press that caused it. The status row's summary (bytes, errors, windows, filename)
+  -- is the completion message.
   local nt, nn = sdec.ui_notes()
   check('a NORMAL exit stays OFF the note line',
         not has(table.concat(nt, ' | '), 'run ended'), table.concat(nt, ' | '))
@@ -5285,9 +5278,9 @@ local function test_modes()
   check('exiting FRAME is silent -- it is already the resting state',
         sdec.mode_exited == nil)
 
-  -- Mode pressed DURING a run is an abort: stop and flush, in one press, STAYING in the mode. It
-  -- used to land in FRAME, which made one press do two things -- stop this run, and change the
-  -- setting that says what the next one is.
+  -- Mode pressed DURING a run is an abort: stop and flush, in one press, STAYING in the mode.
+  -- Landing in FRAME would make one press do two things -- stop this run, and change the setting
+  -- that says what the next one is.
   sdec.capmode = 'med'
   sdec.ck_running, sdec.ck_stop = true, false
   sdec.ck_tot = {nf = 389, nbad = 2, nwin = 4, nsmp = 40000, path = '/usb1/bytes044.txt'}
@@ -5295,9 +5288,8 @@ local function test_modes()
   sdec.mode_cycle()
   check('Mode during a run ABORTS the run in one press, and does not also change the mode',
         sdec.capmode == 'med', tostring(sdec.capmode))
-  -- The old assertion here was ck_stop == true -- Mode REQUESTING a stop. It now clears the run
-  -- flags outright, because a handler cannot execute while a loop does, so there is no owner to
-  -- defer to and a deferred stop is what latched the panel.
+  -- Mode CLEARS the run flags outright rather than requesting a stop: a handler cannot execute
+  -- while a loop does, so there is no owner to defer to, and a deferred stop latches the panel.
   check('...leaving no run flag set, so the next Capture is a capture and not another stop',
         sdec.ck_running == false and sdec.ck_stop == false,
         string.format('running=%s stop=%s', tostring(sdec.ck_running), tostring(sdec.ck_stop)))
@@ -5527,11 +5519,11 @@ local function test_modes()
   sdec.ck_running = true
   sdec.ui_refresh()
   -- IT NAMES NO CONTROL, BECAUSE THERE IS NONE. This asserted 'TRIGGER key = stop' on the strength of
-  -- cancel_setup()'s blender latch. MEASURED FALSE 2026-08-18 on the instrument: pressed 20 % into a
-  -- 32 kB decode the run still finished 'full' and the latch was EMPTY, so the key's event does not
-  -- reach the blender while a panel-initiated run executes. A touch press cannot act either -- presses
-  -- queue. Advertising either one is the defect class this whole suite exists to catch, so the cell
-  -- must promise nothing and the duration lives on the note line.
+  -- cancel_setup()'s blender latch. It does not: pressed 20 % into a 32 kB decode the run finishes
+  -- 'full' with the latch EMPTY, so the key's event never reaches the blender while a panel-initiated
+  -- run executes. A touch press cannot act either -- presses queue. Advertising either one is the
+  -- defect class this whole suite exists to catch, so the cell promises nothing and the duration
+  -- lives on the note line.
   check('a running stream promises NO control, because none can act',
         not has(MD.text(sdec.ui_log_t), 'TRIGGER')
         and not has(MD.text(sdec.ui_log_t), 'Capture=')
@@ -5553,13 +5545,12 @@ local function test_modes()
   SRC.rd, SRC.ts, SRC.nsmp = GEN({bytes = hb, baud = 9600, fs = 100000})
   sdec.options_auto()
   -- CLEARS THEM AND THEN RE-DERIVES THEM, which is the contract the button's name implies:
-  -- 'Auto Detect' means "work it out and use it", so the capture it triggers is allowed to lock
-  -- what it finds. It used to defer the lock, which left the panel amber at the top sample rate
-  -- with a 19-byte window -- a press that made things worse, with the good outcome one press
-  -- away and nothing saying so.
+  -- 'Auto Detect' means "work it out and use it", so the capture it triggers locks what it finds.
+  -- Deferring the lock leaves the panel amber at the top sample rate with a 19-byte window -- a
+  -- press that makes things worse, with the good outcome one press away and nothing saying so.
   --
   -- So the assertion is not "nothing is forced afterwards" but "nothing STALE is": the values
-  -- now present were derived from a fresh capture, not carried over from the old lock.
+  -- present come from a fresh capture, not from the lock it replaced.
   check('Auto Detect re-derives the wire settings from a fresh capture',
         sdec.force_baud == sdec.baud and sdec.force_nbits == (sdec.res and sdec.res.nbits),
         string.format('forced=%s/%s decoded=%s/%s', tostring(sdec.force_baud),
@@ -5661,15 +5652,15 @@ local function test_modes()
 
   -- ---- the three cells a stream DOES know ----
   --
-  -- A streaming mode hands back a file rather than an sdec.res, so every cell derived from res
-  -- read '--' for the whole run. For the MEASURED cells that is right -- nothing has been fitted.
-  -- For BAUD, FORMAT and IDLE it was wrong: a streaming mode cannot be entered without a locked
-  -- rate, so those three are the only things about a stream that are certain, and the panel was
-  -- disclaiming knowledge the operator had pinned themselves while the app was actively using it.
+  -- A streaming mode hands back a file rather than an sdec.res, so a cell derived from res reads
+  -- '--' for the whole run. For the MEASURED cells that is right -- nothing has been fitted. For
+  -- BAUD, FORMAT and IDLE it is wrong: a streaming mode cannot be entered without a locked rate,
+  -- so those three are the only certain things about a stream, and '--' there disclaims knowledge
+  -- the operator pinned themselves while the app is actively using it.
   do
     -- Save and restore: this block deliberately clears the lock to check the '--' case, and the
-    -- tests after it are mid-scenario with a locked rate. Leaking cleared state out of here made
-    -- the NEXT check see "lock the baud rate in Options" instead of its own note.
+    -- tests after it are mid-scenario with a locked rate. Leaked cleared state makes the NEXT
+    -- check see "lock the baud rate in Options" instead of its own note.
     local sv1, sv2 = sdec.force_baud, sdec.force_nbits
     local sv3, sv4, sv5 = sdec.force_par, sdec.force_nstop, sdec.force_invert
     -- sdec.res too: clearing it is the whole point here (a stream has no decode result), and the
@@ -5707,10 +5698,10 @@ local function test_modes()
   check('a finished stream SAYS the panel shows only the first window',
         has(table.concat(nt, ' | '), 'panel shows the first'), table.concat(nt, ' | '))
 
-  -- A RETAINED TAIL IS NOT A PREFIX, and the note used to call it one: a recording ends with
-  -- sdec.res = ck_tot.tail -- the LAST ck_keep bytes -- while this line said 'the first 8192 bytes'
-  -- and the index column beside it counted from 24576. Two cells contradicting each other about
-  -- which end of the stream is on screen.
+  -- A RETAINED TAIL IS NOT A PREFIX, and the note must not call it one: a recording ends with
+  -- sdec.res = ck_tot.tail -- the LAST ck_keep bytes -- so 'the first 8192 bytes' sits beside an
+  -- index column counting from 24576, two cells contradicting each other about which end of the
+  -- stream is on screen.
   do
     local svres, svtot = sdec.res, sdec.ck_tot
     sdec.res = {nf = 8192, ngood = 8192, nbad = 0, vals = {}, errs = {},
@@ -5772,16 +5763,15 @@ local function test_modes()
     return table.concat(seen, ' ')
   end
   clearforce()
-  -- BOTH RECORDING MODES, OFFERED AT EVERY RATE. Modes were once chosen for the operator either
-  -- side of strm_maxbaud, and a block here checked that boundary from both directions. Nothing is
-  -- rate-dependent now -- the two windows differ only in size, and both work at every locked rate --
-  -- so what is left to assert is that the cycle is identical everywhere, which is the point.
+  -- BOTH RECORDING MODES, OFFERED AT EVERY RATE. Nothing here is rate-dependent: the two windows
+  -- differ only in size and both work at every locked rate, so what there is to assert is that the
+  -- cycle is identical everywhere.
   check('with nothing locked both recording windows are reachable -- the gate is at Capture',
         cycled() == '8 kB 32 kB FRAME', cycled())
   sdec.force_baud = 300
   check('...and at the slowest rate', cycled() == '8 kB 32 kB FRAME', cycled())
   sdec.force_baud = 4800
-  check('...and at the old ceiling, which no longer means anything',
+  check('...and at 4800, where nothing special happens',
         cycled() == '8 kB 32 kB FRAME', cycled())
   sdec.force_baud = 115200
   check('...and at a fast rate', cycled() == '8 kB 32 kB FRAME', cycled())
@@ -5817,10 +5807,9 @@ local function test_modes()
         tostring(nb))
   -- EVERY BUTTON LABEL MUST FIT ITS FACE, on both screens.
   --
-  -- Measured on the panel 2026-08-16: a face needs len * 14 + 8 px to render its label uncut.
-  -- Two shipped clipped -- 'Save USB' showed as 'Save USI' at 112 px, and 'Lock Detected' at
-  -- 150 px ran across the button beside it. The rule reproduces both, and reproduces 'Options'
-  -- (7 chars at 112) just fitting, so it is calibrated rather than guessed.
+  -- Measured on the panel: a face needs len * 14 + 8 px to render its label uncut. The rule is
+  -- calibrated, not guessed -- it reproduces 'Save USB' clipping to 'Save USI' at 112 px, 'Lock
+  -- Detected' running across its neighbour at 150 px, and 'Options' (7 chars at 112) just fitting.
   do
     local bad, nbb = {}, 0
     local function fits(h)
@@ -5926,9 +5915,9 @@ local function test_modes()
         type(sdec.mode_cycle) == 'function' and type(sdec.page_cycle) == 'function')
 
   -- ---- the MAX for the current mode is stated, not discovered ----
-  -- Frame mode shows its WINDOW in the status row -- the number that answers "was the message
-  -- seen whole?" -- and it moves with the sample rate, so it is shown continuously rather than
-  -- only once the capture is full (which is all the capture-FULL note ever did).
+  -- Frame mode shows its WINDOW in the status row -- the number that answers "was the message seen
+  -- whole?" -- and it moves with the sample rate, so it is shown continuously rather than only
+  -- once the capture is full.
   clearforce()
   sdec.capmode = 'frame'
   r = run({bytes = hb, baud = 9600, fs = 100000})
@@ -5943,17 +5932,15 @@ local function test_modes()
   sdec.capmode = 'med'
   sdec.ck_tot, sdec.ck_running = nil, false
   -- THE CEILING AND THE FACT THAT NOTHING CUTS IT SHORT, both on this row, because both are what the
-  -- operator needs BEFORE pressing. The warning used to be a note-line forecast that quoted the LINE's
-  -- sending time (cap/bps) while the decode costs several times more -- an order of magnitude out in
-  -- the reassuring direction. There is no time figure here at all; the bar shows progress once it runs.
+  -- operator needs BEFORE pressing. NO time figure: a forecast from the LINE's sending time (cap/bps)
+  -- lands an order of magnitude out in the reassuring direction, because the decode costs several
+  -- times the transmission. The bar shows progress once it runs.
   check('32 kB states its cap while armed, and that nothing stops it',
         has(sdec.ck_status(), '32768') and has(sdec.ck_status(), 'no stop'),
         sdec.ck_status())
-  -- THE 'no cap' CASE IS GONE WITH THE MODE. This used to set capmode = 'strm' and assert that
-  -- ck_status() said 'no cap'. That assertion still PASSED after the mode was removed -- capmode
-  -- 'strm' falls back to FRAME, whose cap is also nil -- so it was testing the fallback, not a
-  -- recording mode, and it would have hidden exactly the removal residue it should have caught.
-  -- What is worth pinning instead is that the surviving mode states a NUMBER.
+  -- ASSERTED ON A REAL MODE, because an unknown capmode falls back to FRAME, whose cap is also nil
+  -- -- so a 'no cap' assertion under a mode that does not exist passes by testing the fallback, and
+  -- hides the very residue it looks like it covers. Every mode named here states a NUMBER.
   sdec.capmode = 'med'
   check('...and it is a real byte count, not a vague promise',
         has(sdec.ck_status(), '32768') and not has(sdec.ck_status(), 'no cap'),
@@ -6218,14 +6205,11 @@ local function test_modes()
   check('the padlock is drawn from four rects, all deletable',
         sdec.ui_lock ~= nil and table.getn(sdec.ui_lock) == 4,
         tostring(sdec.ui_lock and table.getn(sdec.ui_lock)))
-  -- THERE IS NO HIT RECT, and this replaces three assertions about its size, its fill and
-  -- whether it stayed inside the table rules. All three described an object whose only purpose
-  -- was to catch a tap, and BRINGUP 4b.9 settled on hardware 2026-08-16 that EVENT_PRESS on an
-  -- OBJ_RECT is refused ("1717 Attribute event, does not apply to an object of type
-  -- Rectangle"). It caught nothing -- and worse, an OBJ_RECT draws an outline whether filled or
-  -- not, so it painted a box around the BAUD field brighter than every real rule in the header.
-  -- Two rects removed; the padlock glyph still shows lock state, and Options > Lock Detected is
-  -- the control. Asserting the absence keeps a future build from quietly reintroducing them.
+  -- THERE IS NO HIT RECT. A rect cannot catch a tap -- EVENT_PRESS on an OBJ_RECT is refused
+  -- ("1717 Attribute event, does not apply to an object of type Rectangle") -- and it draws an
+  -- outline whether filled or not, so one over the BAUD field paints a box brighter than every real
+  -- rule in the header. The padlock glyph shows lock state and Options > Lock Detected is the
+  -- control; asserting the absence keeps a future build from quietly reintroducing them.
   check('no press-catching rects: they cannot take events and they draw stray outlines',
         sdec.ui_lockhit == nil and sdec.ui_trighit == nil,
         string.format('lockhit=%s trighit=%s', tostring(sdec.ui_lockhit),
@@ -6370,16 +6354,16 @@ local function test_modes()
   check('no rate makes the panel claim bytes are lost between windows',
         claimed == nil, tostring(claimed))
 
-  -- AND IT SAYS NOTHING AT ALL ABOUT THE BOUND, at any rate. This note used to forecast
-  -- 'bounded at 8192 bytes -- ~2 s of this line, and nothing stops it early', and it was wrong twice:
+  -- AND IT SAYS NOTHING AT ALL ABOUT THE BOUND, at any rate. A note-row forecast like 'bounded at
+  -- 8192 bytes -- ~2 s of this line, and nothing stops it early' is wrong twice over:
   --
   --   * ui_notes cannot tell whether the run it forecasts has already happened, so a FINISHED 8 kB
-  --     capture sat under a yellow warning about a press made a minute earlier.
+  --     capture sits under a yellow warning about a press made a minute ago.
   --   * '~2 s' is cap/bps -- the DEVICE's sending time. The meter decodes at ~300 byte/s whatever the
   --     baud rate, so 8 kB is ~27 s of decoding on top: an order of magnitude out, in the reassuring
   --     direction, for an operation nothing can interrupt.
   --
-  -- The ceiling and the no-early-stop warning are on the STATUS ROW now, where they are properties of
+  -- The ceiling and the no-early-stop warning belong on the STATUS ROW, where they are properties of
   -- the armed mode rather than of a run and cannot outlive their subject -- asserted at ck_status().
   local bi
   for bi = 1, 2 do
@@ -6468,14 +6452,14 @@ local function test_modes()
         has(sdec.lasterr, 'captured free-running'), tostring(sdec.lasterr))
   sdec.trigext, sdec.trigmode = false, 'free'
 
-  -- ---- THREE REGRESSIONS FROM ADVERSARIAL REVIEW (session 5) ----
-  -- Each of these shipped, each was found by review rather than by the suite, and each is
-  -- pinned here because the failure mode was quiet in all three cases.
+  -- ---- THREE QUIET FAILURES ----
+  -- None of these three announces itself: each degrades a capture without raising, which is why
+  -- each is pinned explicitly rather than left to a broader assertion.
 
   -- 1. The idle watchdog read levels that clear_result() had just ZEROED. With thr = 0 and
-  -- hyst = 0, smp_active() starts a 0/3.3 V line in state 1 and waits for a sample below
-  -- 0 V, which never comes -- so continuous traffic measured as QUIET and every long
-  -- capture would have ended after idle_exit_s seconds.
+  -- hyst = 0, smp_active() starts a 0/3.3 V line in state 1 and waits for a sample below 0 V, which
+  -- never comes -- so continuous traffic measures as QUIET and every long capture ends after
+  -- idle_exit_s seconds.
   local act = {}
   for i = 1, 200 do act[i] = 3.3 end
   for i = 50, 59 do act[i] = 0 end          -- one real space bit: unambiguous traffic
@@ -6604,8 +6588,8 @@ print('\nabandoning a locked rate that fits nothing')
 do
   -- THE BENCH CASE, REPRODUCED AT THE INSTRUMENT'S OWN SAMPLE RATE. fs must be ~8.3 samples/bit at
   -- the LOCKED rate, as the app picks it: at a cleaner 400 kS/s the same mismatch decodes with a
-  -- badfrac of 0.06 and no framing trouble at all, which is the silent-wrong case and NOT what was
-  -- reported. Getting this wrong made the first version of this test pass while nothing happened.
+  -- badfrac of 0.06 and no framing trouble at all -- a different defect, and one that makes this
+  -- test pass while nothing happens.
   local FS = 160000
   clearforce()
 
@@ -6712,11 +6696,11 @@ end
 -- ============================================================================
 -- 153.6 kBd MUST SNAP, OR AUTO-LOCK CAN NEVER PIN IT.
 --
--- Bench, 2026-08-18: a 153.6 kBd line decoded correctly but the padlock never went green and the
--- recording modes stayed unarmed, because the rate ladder jumped 128000 -> 230400 and
--- autolock_try()'s first gate is `snapped`. The operator had to type the raw measured figure into
--- Options. Being in the list is not the claim worth testing -- SNAPPING is, and so is the auto-lock
--- that depends on it.
+-- A rate missing from the ladder decodes fine and still cannot be locked: autolock_try()'s first
+-- gate is `snapped`, so with the ladder jumping 128000 -> 230400 a 153.6 kBd line leaves the padlock
+-- amber and the recording modes unarmed, and the operator has to type the raw measured figure into
+-- Options. Membership in the list is not the claim worth testing -- SNAPPING is, and so is the
+-- auto-lock that depends on it.
 -- ============================================================================
 print('\n153.6 kBd snaps, so auto-lock can pin it')
 do
@@ -6734,7 +6718,7 @@ do
         string.format('snapped=%s baud=%s', tostring(sdec.snapped), tostring(sdec.baud)))
   check('...so the panel shows it without a question mark',
         not has(sdec.baud_text(), '?'), sdec.baud_text())
-  -- THE GATE THAT WAS FAILING. autolock_try() has five; only `snapped` was in the way.
+  -- THE GATE THAT DEPENDS ON THE LADDER. autolock_try() has five; `snapped` is the one at issue.
   sdec.autolock, sdec.autolock_skip = true, nil
   sdec.autolock_try()
   check('...and auto-lock pins it, so the recording modes arm',

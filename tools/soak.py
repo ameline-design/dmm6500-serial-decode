@@ -55,10 +55,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # -- a header, a rule, one row per point starting at COLUMN 0, then a blank line. Anchoring on that
 # structure is what keeps a BODY line out, and the body is not a hypothetical hazard: the rates suite
 # prints '  300 Bd  ok  8N1 ...' per point as it goes (bench_matrix.py:342), which is indented but
-# otherwise the same shape. MEASURED on out/soak/2026-08-18T18-45-46/lap0001-INCOMPLETE.log, whose own
-# summary counts 17 points: the previous parser read the whole output and produced 28 keys, '300 Bd'
-# sitting beside 'rate 300' for all eleven rates -- so the count test below fired on EVERY lap, clean
-# ones included, and a run of these two suites could not tally a single lap.
+# otherwise the same shape. A parser that reads the whole output instead produces 28 keys where the
+# summary counts 17, '300 Bd' sitting beside 'rate 300' for all eleven rates -- so the count test
+# below fires on EVERY lap, clean ones included, and a run of these two suites tallies nothing.
 HEAD = re.compile(r'^POINT\s+RESULT\s*$')
 RULE = re.compile(r'^-{20,}\s*$')
 # The name can itself contain spaces -- 'offset 3.3V +0.20V' (bench_matrix.py:516) is three words -- so
@@ -241,8 +240,8 @@ def selftest(path):
     ck(why is None, 'exit 1 with a self-consistent summary -> COMPLETE, so the lap IS tallied')
 
     # 2. THE SAME CHILD CUT OFF BEFORE ITS SUMMARY, exit 0. The whole body is still there, eleven
-    #    matching rates lines included, so this is also the check that a body line can no longer be
-    #    taken for a point: it must yield NOTHING.
+    #    matching rates lines included, so this is also the check that a body line is never taken for
+    #    a point: it must yield NOTHING.
     lines = full.splitlines(True)
     cut = [i for i, l in enumerate(lines) if HEAD.match(l.rstrip('\n'))]
     pts2, why2 = judge_lap(''.join(lines[:cut[0]]) if cut else '', 0)
@@ -431,9 +430,9 @@ def main():
         d = DMM()
         # RESYNC BEFORE ASKING ANYTHING. A previous client killed mid-conversation leaves unread
         # output on the instrument, and the next connection's replies then run one behind its
-        # questions: 'sdec ~= nil' answers with the PREVIOUS command's line. Measured tonight -- a
-        # healthy app read as absent and this refused to start. A sentinel is the only way to know
-        # the stream is aligned, because every stale line is itself a plausible answer.
+        # questions: 'sdec ~= nil' answers with the PREVIOUS command's line, so a healthy app reads as
+        # absent and this refuses to start. A sentinel is the only way to know the stream is aligned,
+        # because every stale line is itself a plausible answer.
         # THE SHARED PREFLIGHT (tools/bench_sync.py): sentinel alignment, one tagged state read, refuse a
         # live run, unwind a resting streaming mode through mode_exit(), clear the previous result, disarm
         # the queued-press absorb, and verify. Every one of those guards a false verdict this tool has
@@ -486,8 +485,8 @@ def main():
             jl.flush()
             # A LAP THAT PRODUCED NO POINTS AT ALL is the one this tool stops for: a meter that has
             # stopped answering, rather than a suite whose summary merely disagreed with itself. Its
-            # output is now kept either way, which the old 'produced no points' branch did not do --
-            # the laps whose evidence mattered most were the ones it printed one line about and dropped.
+            # output is kept either way: the laps whose evidence matters most are exactly the ones a
+            # 'produced no points' branch prints one line about and drops.
             if not points:
                 dead += 1
                 if dead >= 3:
@@ -559,11 +558,11 @@ def main():
         el = (time.time() - t_start) / 3600.0
         # THE RECORDING'S VERDICT, not just its byte count. A recording that REFUSED reports nf=nil in a
         # fraction of a second, and printing only the count made that read as though a recording had
-        # happened -- which is how the first attempt at this soak hid a silent no-op on every lap.
+        # happened, which hides a silent no-op on every lap.
         rtxt = ''
         if rec is not None:
-            # nf MUST BE A POSITIVE NUMBER. 'nil' and '0' both passed the old test, and so did any
-            # non-numeric text -- so a polite refusal counted as a clean recording.
+            # nf MUST BE A POSITIVE NUMBER. A truthiness test passes 'nil', '0' and any non-numeric
+            # text alike, so a polite refusal counts as a clean recording.
             bad = ((not rec['ok']) or rec['job'] or not rec['nf'].isdigit()
                    or int(rec['nf']) < 1)
             rtxt = '   [rec %s%s B in %.0f s @%s]' % ('FAILED ' if bad else '',

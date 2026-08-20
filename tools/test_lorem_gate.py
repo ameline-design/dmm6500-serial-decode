@@ -35,9 +35,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 PAYLOAD_PATH = os.path.join(ROOT, 'out', 'vectors', 'v71.txt')
 
-# THE TEST GATES THE SHIPPED CODE, not a copy of it. This file used to carry its own duplicate of
-# the judging logic, and the copies diverged the moment cyclic_find's short-payload bug was fixed in
-# bench_uart and not here -- the test then passed a rule nothing shipped. Import instead.
+# THE TEST GATES THE SHIPPED CODE, not a copy of it. A duplicate of the judging logic here diverges
+# the first time bench_uart is fixed and this file is not, and the test then passes a rule nothing
+# ships. Import instead.
 import bench_uart as BU
 
 judge = BU.judge_payload
@@ -99,12 +99,12 @@ def main():
     ck(ok, '2400-shaped 238 B, 2 flags -> pass  [%s]' % det)
 
     print('\n-- a wrong byte in a SHORT run: the shipped gate passes this, the new one must not --')
-    # MID-CAPTURE, deliberately. An earlier version corrupted frame 6, and that case had to be
-    # retired: JP_HEADSKIP excludes the first frames because a wrong byte three frames in is
-    # genuinely indistinguishable from the resync debris a real capture carries (measured on
-    # hardware -- a v41 capture opened '?? ?? ?? ?? DD 3B ?? ?? 76 C8' before repeating cleanly).
-    # What the judge must still catch is a wrong byte in a SHORT RUN well inside the capture, which
-    # the old longest-run gate passed: flags at 120 and 127 leave 13..119 (107 B, clean),
+    # MID-CAPTURE, deliberately -- corrupting frame 6 is not a case this can gate. JP_HEADSKIP
+    # excludes the first frames because a wrong byte three frames in is genuinely indistinguishable
+    # from the resync debris a real capture carries (measured on hardware: a capture opens
+    # '?? ?? ?? ?? DD 3B ?? ?? 76 C8' before repeating cleanly). What the judge must catch is a wrong
+    # byte in a SHORT RUN well inside the capture, which a longest-run gate passes: flags at 120 and
+    # 127 leave 13..119 (107 B, clean),
     # 121..126 (6 B, CORRUPTED) and 128..237 (110 B, clean), so the longest run is clean and
     # 110/239 of the capture -- but the 6-byte run is a lie and must fail.
     got = capture(payload, 200, 239, flag_at=(120, 127), corrupt_at=(123,))
@@ -168,9 +168,9 @@ def main():
        'on 3 flagged bytes in 239' % (min(fracs), max(fracs), len(SWEEP)))
 
     print('\n-- the lap 7 case: ONE flagged byte, 11 B in, fails the shipped gate --')
-    # Observed 2026-08-18 lap 7: lorem 19200, 239 B, 1 bad (1 interior), longest clean run 227.
-    # A single flag at index p leaves runs of p and 238-p, so the shipped gate needs p <= 10 or
-    # p >= 228: only 22 of 239 positions (9.2 %) pass. One honest flag anywhere else fails.
+    # A real soak case: lorem 19200, 239 B, 1 bad (1 interior), longest clean run 227. A single flag
+    # at index p leaves runs of p and 238-p, so a longest-run gate needs p <= 10 or p >= 228 -- only
+    # 22 of 239 positions (9.2 %) pass, and one honest flag anywhere else fails.
     got = capture(payload, 200, 239, flag_at=(11,))
     ok, det = judge(got, payload)
     ck(ok, 'one flag at index 11 -> pass  [%s]' % det)
@@ -190,10 +190,9 @@ def main():
     ck(not ok, 'budget + 1 (%d flags) -> FAIL  [%s]' % (budget + 1, det))
 
     print('\n-- a SHORT looping payload: a capture longer than the payload must still pass --')
-    # The bug a 133-byte vector exposed on 2026-08-19. Both cyclic_find and judge_payload assumed
-    # two copies of the payload were enough, which is only true while every payload is LONGER than
-    # a capture. v77/v78 are 133 B and the window is ~234 B, so a window starting at offset k spans
-    # k..k+234 and fits in want+want only when k <= 32 -- 25 % of offsets. The other 75 % were
+    # Two copies of the payload are only enough while every payload is LONGER than a capture, which
+    # a 133-byte vector breaks. v77/v78 are 133 B against a ~234 B window, so a window starting at
+    # offset k spans k..k+234 and fits in want+want only when k <= 32 -- 25 % of offsets. The rest
     # called MISMATCH having decoded byte-perfectly.
     import bench_uart as BU_
     short = open(os.path.join(ROOT, 'out', 'vectors', 'v77.txt'), 'rb').read()
@@ -215,14 +214,13 @@ def main():
 
     # ------------------------------------------------------------------
     print('\n-- head_damage: trim by the DAMAGE, never by the suspect region --')
-    # THE DEFECT THIS PINS, measured on out/soak/2026-08-19T20-32-34: five laps of 58 failed as
-    # 'capture too short to judge (1 B, 0 judged) after a FLAGGED 226-byte head' on lorem at 115200
-    # and 250000. Every one was a CORRECT decode -- the surviving hex read "Lorem ipsum dolor s" --
-    # and the app's own note said 3 to 5 bytes were misaligned. The judge had been trimming by
-    # r.headsusp, which uart_decode.tsp:506 states outright is "the region before the first gap, not
-    # a count of damage". Lorem1kB (v71) is gapless, so its first gap is the arb loop seam ~1024 B away
-    # and headsusp can cover the whole capture; Hello (v80) loops every 13 B, which is why the same rate
-    # passed on one vector and failed on the other.
+    # THE DEFECT THIS PINS: trimming by r.headsusp fails a CORRECT decode as 'capture too short to
+    # judge (1 B, 0 judged) after a FLAGGED 226-byte head', on lorem at 115200 and 250000, with the
+    # surviving hex reading "Lorem ipsum dolor s" and the app's own note naming 3 to 5 misaligned
+    # bytes. headsusp is "the region before the first gap, not a count of damage" (ua_run says so
+    # outright). Lorem1kB (v71) is gapless, so its first gap is the arb loop seam ~1024 B away and
+    # headsusp can cover the whole capture; Hello (v80) loops every 13 B, so the same rate passes on
+    # one vector and fails on the other.
     clean = '41' * 250
     ck(BU.head_damage(clean, 226) == 0,
        'a clean head with headsusp 226 trims NOTHING (was: 226 of 230 bytes discarded)')

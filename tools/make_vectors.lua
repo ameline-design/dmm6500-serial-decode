@@ -20,10 +20,9 @@
 --   5. compares that against the decode of the original unquantised array.
 --
 -- Step 5 is the one that earns its keep. It answers "does 16-bit quantisation at
--- this full scale damage the decode?" offline, before Sunday, instead of finding
--- out at the bench where a quantisation loss would be indistinguishable from a
--- front-end problem. Any row whose two decodes disagree is a vector that must
--- not be trusted as a bench oracle.
+-- this full scale damage the decode?" offline, rather than at the bench where a
+-- quantisation loss is indistinguishable from a front-end problem. Any row whose
+-- two decodes disagree is a vector that must not be trusted as a bench oracle.
 --
 -- The manifest carries the offline answer per file: expected bytes, baud, format
 -- and note text. At the bench the DMM's panel is then compared against a written
@@ -546,9 +545,10 @@ vec{id = 'v94', desc = '128 each of 0x00, 0xFF, 0x55, 0xAA -- 9600 8N1 (USB key)
 -- 32768. That is structural rather than incidental (see rand_bytes) and it is what makes a disagreement
 -- between two of them evidence about the TRANSPORT and not about the payload.
 --
--- USB KEY ONLY, and by a wide margin: 1.63 MB and 6.51 MB against a 65536-byte LAN ceiling. Measured
--- 2026-08-19, a THIRD consecutive large upload wedged the generator's LAN service at 213 kB, so these
--- are not close calls. Both fit SDG_MAX_PTS (8388608): 853542 and 3413542 points.
+-- USB KEY ONLY, and by a wide margin: 1.63 MB and 6.51 MB against a 65536-byte LAN ceiling. The LAN
+-- hazard is a COUNT rather than a size -- a third consecutive over-ceiling write wedges the
+-- generator's LAN service, at as little as 213 kB total -- so these are nowhere near a close call.
+-- Both fit SDG_MAX_PTS (8388608): 853542 and 3413542 points.
 vec{id = 'v95', desc = '8192 uniform random bytes 0-255, 9600 8N1 (USB key, one 8 kB recording)',
     fs = 100000, fsv = 5.0, long = true,
     build = function()

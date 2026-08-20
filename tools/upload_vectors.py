@@ -6,10 +6,10 @@ by hand is a rename done differently next time. This holds the mapping in one pl
 cannot go over the LAN, and VERIFIES each name landed rather than trusting a write that reports nothing.
 
 THE 65536-BYTE CEILING IS NOT ABOUT SPACE. The generator reports ~80 MB of internal flash free and the
-whole planned set is ~2.3 MB, so capacity is irrelevant. SDG_UPLOAD_SAFE_BYTES exists because four
-consecutive WVDT uploads of 170-210 kB WEDGED this generator's LAN service (tools/instruments.py, measured
-2026-08-16): it keeps answering pings and refuses the SCPI port until power-cycled. So the ceiling stands
-however much flash is free, and this tool refuses rather than warns.
+whole planned set is ~2.3 MB, so capacity is irrelevant. SDG_UPLOAD_SAFE_BYTES exists because a few
+consecutive WVDT uploads over it WEDGE this generator's LAN service (tools/instruments.py): it keeps
+answering pings and refuses the SCPI port until power-cycled. So the ceiling stands however much flash
+is free, and this tool refuses rather than warns.
 
     python3 tools/upload_vectors.py --dry-run     # what would go, and what cannot
     python3 tools/upload_vectors.py               # do it
@@ -59,13 +59,13 @@ def main():
     ap.add_argument('--dry-run', action='store_true')
     ap.add_argument('--pace', type=float, default=0.4,
                     help='seconds between uploads (default 0.4)')
-    # A BACKSLASH, AND ONLY A BACKSLASH. Measured 2026-08-19: 'SERIAL\\name' stores and selects;
-    # 'SERIAL/name' and '/SERIAL/name' were accepted by the write and then appeared nowhere in
-    # STL? USER -- a silent no-op, which is the worst of the three outcomes. Empty means the root.
     # FOR REPAIRING A GAP without re-writing the set. A front-panel delete can take a neighbour by
     # accident, and re-uploading all 34 to replace one is 900 kB of writes for 54 kB of need.
     ap.add_argument('--only', default=None,
                     help='comma-separated SER_ names to upload, instead of everything')
+    # A BACKSLASH, AND ONLY A BACKSLASH. 'SERIAL\\name' stores and selects; 'SERIAL/name' and
+    # '/SERIAL/name' are accepted by the write and then appear nowhere in STL? USER -- a silent
+    # no-op, the worst of the three outcomes. Empty means the root.
     ap.add_argument('--folder', default='SERIAL',
                     help=r'internal-flash folder, joined with a backslash (default SERIAL; "" = root)')
     a = ap.parse_args()
@@ -89,8 +89,8 @@ def main():
             raise SystemExit('REFUSING: %s is mapped but %s is missing' % (vid, path))
         n = os.path.getsize(path)
         # SIZE 0 IS NOT A SMALL UPLOAD, IT IS A BRICK. A zero-length waveform stored on this generator
-        # kills it at the next power-up -- see the note in siglent.write_raw. This sorted by size and
-        # would have put an empty or truncated .bin straight into the upload list.
+        # kills it at the next power-up -- see the note in siglent.write_raw. Sorting by size alone
+        # puts an empty or truncated .bin straight into the upload list.
         if n == 0:
             raise SystemExit('REFUSING: %s is ZERO BYTES. Uploading it would store an empty waveform, '
                              'which bricks the instrument at its next power-up with no telnet to recover '

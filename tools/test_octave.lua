@@ -2,17 +2,16 @@
 --
 -- Run from the repo root:  lua tools/test_octave.lua
 --
--- Pins the intermittent v44d / v44e misread measured on the instrument: an 8N2 (v44e) or
--- 8O1 (v44d) stream at 9600 Bd reported as 7N1 at 19200 Bd, with the bytes silently
--- wrong. From out/soak/2026-08-18T01-15-46 -- 55 laps, v44e failed 3 of them (5.5 %) --
--- the bench line is
+-- Pins the intermittent v44d / v44e misread: an 8N2 (v44e) or 8O1 (v44d) stream at 9600 Bd
+-- reported as 7N1 at 19200 Bd, with the bytes silently wrong. It fires on a few percent of
+-- laps, and the bench line reads
 --
 --     format v44e   BAD  7N1 153 B (head 0), longest clean run 9, 35 bad (35 interior)
 --         note: 8N1 also fits; chose 7N1 (the top 1 data bit(s) were 1 in every frame)
 --     format v44d   BAD  7N1 153 B (head 0), longest clean run 8, 41 bad (41 interior)
 --
--- and both reproduce here, digit for digit, including the two clean-run lengths that
--- differ per vector.
+-- which this reproduces digit for digit, including the two clean-run lengths that differ
+-- per vector.
 --
 -- WHY IT IS A SEPARATE FILE AND NOT A CASE IN test_serial.lua. test_serial decodes ONE
 -- capture per case at a sampling phase of its own choosing. This defect is not visible in
@@ -20,7 +19,7 @@
 -- captures, and it appears only for some capture START POINTS. So what is asserted here is
 -- a FRACTION of a swept space, which is a different shape of test.
 --
--- THE CHAIN, all three links measured offline (tools/repro_v44.lua):
+-- THE CHAIN, all three links reproducible offline (tools/repro_v44.lua):
 --
 --   1. sig_bittime() gets the bit time RIGHT on every pass -- q = 0.9989, snapped to 9600.
 --      It is not the fit that is wrong.
@@ -32,8 +31,8 @@
 --      reaches the final unguarded `return altT, altr`. The ratio-0.5 candidate wins on
 --      6 > -1, i.e. on ONE NET FRAME AND NO MARGIN AT ALL.
 --   3. At half the bit time an 8N1 frame samples data bit 7 at t0 + 8.25 T and the stop bit
---      at t0 + 9.5 T -- BOTH INSIDE THE SAME REAL CELL. So "the top data bit was 1 in every
---      error-free frame" is true by construction, not by observation: a frame is only
+--      at t0 + 9.5 T -- BOTH INSIDE THE SAME REAL CELL. So "the top data bit is 1 in every
+--      error-free frame" holds by construction, not by observation: a frame is only
 --      error-free when that cell reads 1, and bit 7 reads that same cell.
 --      ua_refine_width() takes it as evidence and collapses 8N1 to 7N1, which is what turns
 --      a flagged wrong answer into a confident one.
@@ -382,11 +381,11 @@ print('\nE  half a bit time may not manufacture its own evidence')
 -- runs at 9600 baud, 2x the 19200 you set'), which is the right behaviour and is asserted
 -- here so this case cannot be read as claiming otherwise. What is NOT warned about is the
 -- WIDTH: at half the bit time an 8N1 frame samples data bit 7 at t0 + 8.25 T and its stop
--- bit at t0 + 9.5 T, both inside the same real cell, so "the top data bit was 1 in every
+-- bit at t0 + 9.5 T, both inside the same real cell, so "the top data bit is 1 in every
 -- error-free frame" is a tautology -- a frame is only error-free when that cell reads 1.
 -- ua_refine_width takes the tautology as evidence and narrows the format on it, turning a
--- flagged 8N1 into a 7N1 whose values are also shifted. The guard it is missing is a test
--- that the always-one bit was observed INDEPENDENTLY of the stop bit that follows it.
+-- flagged 8N1 into a 7N1 whose values are also shifted. The guard it lacks is a test that
+-- the always-one bit is observed INDEPENDENTLY of the stop bit that follows it.
 for ci = 1, table.getn(CASES) do
   local c = CASES[ci]
   local v, na = arb(c.opt)
