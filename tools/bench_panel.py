@@ -103,18 +103,34 @@ function bp_state()
   pcall(function() npg = sdec.ui_npages() end)
   pcall(function() lock = tostring(sdec.lock_state()) end)
   pcall(function() suits = tostring(sdec.mode_suits()) end)
+  -- A FINGERPRINT OF THE BYTES, so "the dump did not repaint" can be told apart from "the dump had
+  -- nothing new to show". Two captures of a LOOPING payload that land on the same phase decode the
+  -- same bytes, and writing the same text to the same objects changes no pixel -- correct behaviour
+  -- that is indistinguishable from a dead dump without this. 'Hello, World!' repeats every 13 bytes,
+  -- so a matching pair comes up about one press in thirteen.
+  --
+  -- math.mod, NOT math.fmod: 5.0.2 has only the former, and a shim makes this pass every offline
+  -- test and die on the instrument.
+  local vsum = 'nil'
+  if r ~= nil and r.vals ~= nil then
+    local h, i = 0, nil
+    for i = 1, (r.nf or 0) do
+      h = math.mod(h * 31 + (r.vals[i] or 0), 1000000007)
+    end
+    vsum = string.format('%d', h)
+  end
   -- No 'which screen is showing' field is reported because the app does not keep one: the
   -- firmware owns that and nothing in the app needs to ask. A screen SWAP is therefore verified
   -- from the grabs -- it repaints every region -- not from a state variable.
   return string.format('view=%s mode=%s page=%s npg=%s nf=%s baud=%s force=%s saved=%s '
-                       .. 'log=%s logn=%s status=%s lock=%s suits=%s fcwin=%s err=%s',
+                       .. 'log=%s logn=%s status=%s lock=%s suits=%s fcwin=%s vsum=%s err=%s',
                        tostring(sdec.ui_mode), tostring(sdec.capmode),
                        tostring(sdec.ui_page), tostring(npg),
                        tostring(r and r.nf), tostring(sdec.baud),
                        tostring(sdec.force_baud), tostring(sdec.savedas),
                        tostring(sdec.flog_path), tostring(sdec.flog_n),
                        tostring(sdec.ui_status), lock, suits,
-                       tostring(sdec.fc_win), tostring(sdec.lasterr))
+                       tostring(sdec.fc_win), vsum, tostring(sdec.lasterr))
 end
 
 function bp_press(name, fn)
@@ -378,7 +394,7 @@ class Panel:
             if not got:
                 verdict.append('NO EFFECT: expected %s' % desc)
 
-        painted, seen_btns = {}, {}
+        painted, seen_btns, dump_excused = {}, {}, False
         if shot_b and shot_a:
             painted, total = region_diff(shot_b, shot_a)
             # A BYTE-IDENTICAL PAIR IS A GRAB FAULT, NOT A STALE DISPLAY, and the two must never be
@@ -396,10 +412,23 @@ class Panel:
             if quiet_screen and hot:
                 verdict.append('REPAINTED on a no-op: '
                                + ', '.join('%s %d px' % kv for kv in hot))
+            # AN IDENTICAL DUMP IS ONLY EXCUSED WHEN THE BYTES ARE IDENTICAL TOO, which is what vsum
+            # decides. A capture of a looping payload that lands on the phase the previous one did
+            # decodes the same bytes, and writing the same text changes no pixel -- so demanding a
+            # repaint fails a correct app about one press in thirteen on 'Hello, World!'. Gating on
+            # vsum keeps the check's teeth: if the bytes CHANGED and the dump did not move, that is
+            # still a stale display, which is the defect this exists to catch.
+            same_bytes = (before.get('vsum') not in (None, 'nil')
+                          and before.get('vsum') == after.get('vsum'))
+            dump_excused = False
             for want in (paints or []):
-                if painted.get(want, 0) < REPAINT_PX:
-                    verdict.append('STALE DISPLAY: %s did not repaint (%d px)'
-                                   % (want, painted.get(want, 0)))
+                if painted.get(want, 0) >= REPAINT_PX:
+                    continue
+                if want == 'dump' and same_bytes:
+                    dump_excused = True
+                    continue
+                verdict.append('STALE DISPLAY: %s did not repaint (%d px)'
+                               % (want, painted.get(want, 0)))
             if not swap and painted.get('buttons', 0) >= REPAINT_PX:
                 verdict.append('the button row repainted (%d px) on the same screen'
                                % painted['buttons'])
@@ -427,6 +456,11 @@ class Panel:
             print('      repainted: %-56s margin: %s'
                   % (', '.join(hot) if hot else 'nothing',
                      ', '.join(sorted(shown)) if shown else 'none shown'))
+            # SAID OUT LOUD, because a silently excused check reads as a check that passed. The
+            # operator needs to know the dump was compared and had nothing to redraw.
+            if dump_excused:
+                print('      dump held still because the bytes are identical (vsum %s) -- '
+                      'a repaint would have had nothing to show' % after.get('vsum'))
         for n in notes[:2]:
             print('      note: %s' % n[:104])
         self.rows.append({'label': label, 'ok': ok, 'secs': secs, 'events': nreal,
