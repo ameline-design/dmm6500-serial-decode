@@ -309,9 +309,8 @@ sdec.humpfrac = 0.2
 
 -- The two densest amplitudes within [v0, v1]. Returns lo, hi, modal -- the share of
 -- in-range samples belonging to either hump -- or nil when no pair is separable.
--- Levels come from the histogram's own first moment over each hump, not from the bin
--- centres, so they are not quantised to the bin width and no extra pass over the
--- samples is needed.
+-- Each level is the TRUE MEAN of the samples in its hump, from one more pass over the capture --
+-- not the histogram's own moment, and not a bin centre. See the membership-by-bin-index note below.
 function sdec.sig_pair(rd, n, v0, v1)
   local floor = math.floor
   local nb = floor(n / sdec.binocc)
@@ -386,7 +385,8 @@ function sdec.sig_pair(rd, n, v0, v1)
   return v1m, v2m, (na + nbb) / cnt
 end
 
--- Returns ok, reason. Sets lo/hi/thr/hyst/swing/family and wlo/whi.
+-- Returns ok, reason. Sets lo/hi/thr/hyst/swing/family, wlo/whi, modal, and the remembered
+-- lvl_thr/lvl_hyst/lvl_swing that serial_app saves and restores.
 function sdec.sig_levels(rd, n)
   local vmin, vmax, nv = nil, nil, 0
   local i
@@ -761,8 +761,8 @@ function sdec.sig_quality()
 end
 
 -- Acquisition
--- Pick the lowest exact sample rate that still gives at least `want` samples per
--- bit. A lower rate covers more TIME in the same buffer, which is what decides
+-- Pick the lowest LISTED sample rate that still gives at least `want` samples per bit; three listed
+-- rates are deliberately inexact (see sdec.rates). A lower rate covers more TIME in the same buffer, which is what decides
 -- how many bytes a capture holds -- at 9600 baud, 20 000 samples is 190 bytes at
 -- 100 kS/s but only 19 at 1 MS/s.
 function sdec.pick_fs(baud, want)
@@ -2489,9 +2489,9 @@ end
 
 -- Window size, overlap and stride for a bit time, or nil plus a reason.
 --   [...]
--- frame is 10 000 samples and three of them do not fit in the window at all -- stride
--- would go to zero and the loop would never advance. Refusing names the remedy, which
--- is the sample rate, and is the same shape as every other refusal in this app.
+-- frame is 10 000 samples and three of them do not fit in the window at all -- the overlap exceeds
+-- the window, so stride goes NEGATIVE and the loop would run backwards. Refusing names the remedy,
+-- which is the sample rate, and is the same shape as every other refusal in this app.
 function sdec.ck_geometry(T, framebits)
   local W = sdec.ck_win_n
   local ov = sdec.ck_overlap(T, framebits)
@@ -2508,8 +2508,8 @@ end
 
 -- How many windows a capture of ntotal samples takes at this stride. Exact, because
 -- the stride is CONSTANT -- the loop below advances by it unconditionally rather than
--- resuming from wherever the last frame happened to end. That costs a fraction of a
--- percent in redundant decoding and buys a window count that is known before the run
+-- resuming from wherever the last frame happened to end. That costs about 1.6 % in redundant
+-- decoding -- the overlap, once per window -- and buys a window count that is known before the run
 -- starts, which is what makes the progress indicator honest instead of a guess.
 function sdec.ck_nwin(ntotal, W, stride)
   if ntotal == nil or W == nil or stride == nil or stride < 1 then return nil end
@@ -2560,6 +2560,7 @@ function sdec.ck_levels_probe(reader, ntotal, win, k)
 end
 
 -- Establish the logic levels for a whole recording: decimated first, then contiguous probes.
+-- Returns ok, reason.
 function sdec.ck_levels(reader, ntotal, win)
   local ok, why, fatal = sdec.ck_levels_dec(reader, ntotal, win)
   if ok then return true end
@@ -3690,7 +3691,7 @@ function sdec.ui_notes()
   if sdec.stickyerr ~= nil then add('NOTE: ' .. tostring(sdec.stickyerr)) end
 
   if sdec.trigext and sdec.trigmode == 'free' then
-    add('external trigger is ticked but IGNORED -- Free run means do not wait for anything')
+    add('Rear BNC = Trig In is set but IGNORED -- Free run means do not wait for anything')
   end
 
   if sdec.mode_exited ~= nil and sdec.mode_exitbad then add(tostring(sdec.mode_exited)) end
@@ -4478,7 +4479,7 @@ function sdec.ck_status()
     if md.cap ~= nil then
       return string.format('ready -- %d bytes to a file, no stop once started', md.cap)
     end
-    return 'ready -- no cap, until Stop or a quiet line'
+    return 'ready -- no cap'
   end
   local where = t.path or 'USB'
   local base = string.gsub(tostring(where), '^.*/', '')
@@ -5883,7 +5884,7 @@ sdec.strm_absorb_s = sdec.strm_absorb_s or 1.0
 -- Arm the queued-press absorb after a run that held the interpreter.
 --   [...]
 -- presses Capture, then TRIGGER, then Capture again. A finger on TRIGGER emits no blender event
--- while a panel-initiated run executes (measured 2026-08-18), so the run ends at its own bounds
+-- while a panel-initiated run executes (measured, so the run ends at its own bounds
 -- with both Capture presses unabsorbed -- each starting another uninterruptable recording.
 function sdec.strm_absorb_arm()
   sdec.strm_stopped_by_press = nil
@@ -5928,7 +5929,7 @@ function sdec.press_absorbed(what)
   return true
 end
 
--- Leave the current capture mode, flushing its files, and return to FRAME. `why` goes on the note
+-- Flush the current capture mode's files and say why. `why` goes on the note row. Returns the mode that
 --   [...]
 -- NOT SNIFFED OUT OF `why`. Every caller that means "this failed" knows it -- strm_exit_why() is
 -- given the same ok flag -- and matching on words like 'failed' is how a protected failure gets

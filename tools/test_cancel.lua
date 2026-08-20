@@ -901,7 +901,7 @@ do
   check('the control cell promises no control during a one-press run',
         not has(ctl, 'TRIGGER') and not has(ctl, 'Capture=') and has(ctl, 'no stop'),
         tostring(ctl))
-  check('and fits its 221 px', sdec.ui_textw(ctl) <= 221,
+  check('and fits the log cell', sdec.ui_textw(ctl) <= sdec.ui_log_px,
         string.format('%d px: %q', sdec.ui_textw(ctl), tostring(ctl)))
   idle()
 end

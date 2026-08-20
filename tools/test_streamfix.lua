@@ -34,7 +34,7 @@ end
 -- A line the mocked digitizer can hand back: 9600 baud at 100 kS/s, the rate pick_fs lands on.
 local bytes = {}
 local i
-for i = 1, 60 do bytes[i] = 32 + math.fmod(i * 7, 90) end
+for i = 1, 60 do bytes[i] = 32 + math.mod(i * 7, 90) end
 local rd, ts, nc, nsmp = GEN({bytes = bytes, baud = 9600, fs = 100000, lead = 20, n = 12000})
 SRC.rd, SRC.ts, SRC.nsmp = rd, ts, nsmp
 MD.usb(true)
@@ -163,10 +163,11 @@ do
         has(st, 'press Capture to stop'), string.format('%q', st))
   check('and states no percentage, rather than a 0 % that can never advance',
         not has(st, '%'), string.format('%q', st))
-  -- The row shares its line with the log cell at x = 430, so the mode name and this string
-  -- together have ~420 px.
+  -- The row shares its line with the log cell at sdec.ui_stat_div + 6, so the mode name and this
+  -- string together have ui_stat_div - 8. Derived, never a literal: a hard-coded width outlives the
+  -- divider that set it.
   local row = string.format('%s  %s', sdec.mode_cur().name, st)
-  check('and it fits the status cell', sdec.ui_textw(row) <= 420,
+  check('and it fits the status cell', sdec.ui_textw(row) <= sdec.ui_stat_div - 8,
         string.format('%d px', sdec.ui_textw(row)))
 
   sdec.ui_refresh()

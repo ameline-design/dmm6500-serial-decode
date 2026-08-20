@@ -340,7 +340,10 @@ print('\nD  the guard is what is doing the work, and must keep doing it')
 -- (sdec.submult_minpulses) within one session; both are named below and an unrecognised
 -- successor makes this case fail loudly rather than pass vacuously -- if none of the names
 -- is present, the misread must be there for real, which is what HEAD does.
-local GATES = {'ua_submultiple', 'ua_med_wrong'}
+-- Named, so a rename fails loudly here rather than silently disarming the gate. ua_submultiple is the
+-- odd-multiple test that holds this defect down; a median test cannot, because all-0x00 is a nine-bit
+-- low run whose median rejects the truth.
+local GATES = {'ua_submultiple'}
 for ci = 1, table.getn(CASES) do
   local c = CASES[ci]
   local v, na = arb(c.opt)

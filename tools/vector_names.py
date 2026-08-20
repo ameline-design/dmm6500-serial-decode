@@ -52,14 +52,10 @@ for _i in range(6):
 for _i in range(6, 12):
     MAP['r%02d' % _i] = 'SER_Random_%02d_7E1' % (_i + 1)
 
-# DELIBERATELY UNNAMED, therefore not on the instrument: the same payload as a vector that already has a
-# name, re-rendered at a different points-per-bit. With the rate set by srate at selection time they carry
-# no information, and four of them were the largest files in the set.
-#   v42 v43          Hello re-rendered for 115200 / 250000
-#   v72 v73          BYTE-IDENTICAL to v71 (same Fletcher-32)
-#   v74 v75          Lorem1kB re-rendered at 8.68 / 8.33 points per bit
-#   v81 v82 v83 v84  BYTE-IDENTICAL to v80
-RETIRED = {'v42', 'v43', 'v72', 'v73', 'v74', 'v75', 'v81', 'v82', 'v83', 'v84'}
+# EMPTY, and kept so that a future redundant render has somewhere to go. Baud comes from srate at
+# selection time, so ONE waveform serves every rate and a per-rate re-render carries no information --
+# the ten that existed are deleted rather than listed here.
+RETIRED = {}
 
 # Over SDG_UPLOAD_SAFE_BYTES, so these reached the instrument the slow way and must not be re-uploaded
 # casually -- three over-ceiling WVDT writes in one session wedge the LAN service.

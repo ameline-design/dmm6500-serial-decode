@@ -50,7 +50,10 @@ if not VEC_DEFINE_ONLY then
   -- orphan behind that is absent from the manifest but still sitting on the USB key,
   -- where its name makes it look like a plan row. That is a real trap at a bench:
   -- the file loads, plays something, and matches nothing it is compared against.
+  -- .bin AND .txt: a vector removed from the table above leaves its oracle behind otherwise, absent
+  -- from the manifest but still on the key and still named like a plan row.
   os.execute('rm -f ' .. OUT .. '/*.bin')
+  os.execute('rm -f ' .. OUT .. '/*.txt')
 end
 
 -- ---------------------------------------------------------------------------
@@ -238,10 +241,6 @@ end
 
 vec{id = 'v41', desc = "'Hello, World!' 9600 8N1", fs = 100000, fsv = 5.0,
     build = function() return hello{baud = 9600, fs = 100000} end}
-vec{id = 'v42', desc = 'same at 115200', fs = 1000000, fsv = 5.0,
-    build = function() return hello{baud = 115200, fs = 1000000} end}
-vec{id = 'v43', desc = 'same at 250000 (the maxbaud wall)', fs = 1000000, fsv = 5.0,
-    build = function() return hello{baud = 250000, fs = 1000000} end}
 -- The four parity formats, as DEFENSIVE coverage rather than expected traffic.
 -- Reported field experience: real serial data is almost always 8N1; 7E1, 7O1,
 -- 8E1 and 8O1 are all things that *might* turn up but have not actually been
@@ -352,12 +351,6 @@ vec{id = 'v51', desc = 'MIDI: Note On / Note Off at 31250', fs = 500000, fsv = 5
 local LONG_N = 1024
 vec{id = 'v71', desc = 'lorem ipsum 1 kB, 9600 8N1', fs = 100000, fsv = 5.0,
     long = true, build = function() return lorem_vec(9600, 100000, LONG_N) end}
-vec{id = 'v72', desc = 'lorem ipsum 1 kB, 19200 8N1', fs = 200000, fsv = 5.0,
-    long = true, build = function() return lorem_vec(19200, 200000, LONG_N) end}
-vec{id = 'v73', desc = 'lorem ipsum 1 kB, 57600 8N1', fs = 600000, fsv = 5.0,
-    long = true, build = function() return lorem_vec(57600, 600000, LONG_N) end}
-vec{id = 'v74', desc = 'lorem ipsum 1 kB, 115200 8N1', fs = 1000000, fsv = 5.0,
-    long = true, build = function() return lorem_vec(115200, 1000000, LONG_N) end}
 
 -- ============================================================================
 -- THE HARD VECTORS: patterns chosen to attack the decoder rather than resemble traffic
@@ -594,8 +587,6 @@ vec{id = 'v96', desc = '32768 uniform random bytes 0-255, 9600 8N1 (USB key, one
 -- so replaying it at any SRATE gives a clean join.
 vec{id = 'v76', desc = 'lorem 300 B, 9600 8N1 (loop-exact sweep vector)', fs = 100000, fsv = 5.0,
     build = function() return lorem_vec(9600, 100000, 300) end}
-vec{id = 'v75', desc = 'lorem ipsum 1 kB, 1200 8N1 (paging)', fs = 10000, fsv = 5.0,
-    long = true, build = function() return lorem_vec(1200, 10000, LONG_N) end}
 
 -- THE FULL-GLYPH VECTORS. NOT YET UPLOADED TO THE GENERATOR -- built here so the files and the
 -- manifest rows exist, and uploaded on the next deliberate `bench_matrix.py --upload`. Deferred on
@@ -723,14 +714,6 @@ end
 vec{id = 'v80', desc = 'hello, 10.00 sa/bit render (300 8N1 at SRATE 3000; v41 is 10.42)',
     fs = 3000, fsv = 5.0,
     build = function() return hello{baud = 300, fs = 3000} end}
-vec{id = 'v81', desc = 'hello 600 8N1', fs = 6000, fsv = 5.0,
-    build = function() return hello{baud = 600, fs = 6000} end}
-vec{id = 'v82', desc = 'hello 2400 8N1', fs = 24000, fsv = 5.0,
-    build = function() return hello{baud = 2400, fs = 24000} end}
-vec{id = 'v83', desc = 'hello 4800 8N1 (the streaming ceiling)', fs = 48000, fsv = 5.0,
-    build = function() return hello{baud = 4800, fs = 48000} end}
-vec{id = 'v84', desc = 'hello 38400 8N1 (past the 19.2k continuous limit)', fs = 384000,
-    fsv = 5.0, build = function() return hello{baud = 38400, fs = 384000} end}
 
 -- LIN: 0..6 V, a 12 V bus through the 2:1 divider the app asks for, which is
 -- what the instrument would actually see. fsv 7.5 covers it with headroom.
@@ -889,12 +872,11 @@ f:write('  C1:OUTP ON,LOAD,HZ              high-Z suits the DMM 10 Mohm input.\n
 f:write('cksum is Fletcher-32 over the file bytes, so a truncated copy to the\n')
 f:write('USB key is detectable -- it would otherwise play as a short waveform\n')
 f:write('with nothing on screen to say so.\n\n')
-f:write('v71, v72 and v73 are DELIBERATELY THE SAME FILE -- identical checksums\n')
-f:write('are correct, not a mistake. They share a samples-per-bit ratio, so only\n')
-f:write('the SRATE differs, which makes them a clean test of one thing: the same\n')
-f:write('shape played at 100k, 200k and 600k Sa/s must be detected as 9600, 19200\n')
-f:write('and 57600 baud with an identical payload. Baud detection is thereby shown\n')
-f:write('to follow the playback rate rather than anything in the file.\n\n')
+f:write('ONE WAVEFORM SERVES EVERY BAUD RATE: the rate is set by SRATE at\n')
+f:write('selection time, so there is no per-rate render. The same shape played at\n')
+f:write('80k, 160k and 500k Sa/s must be detected as 9600, 19200 and 57600 with an\n')
+f:write('identical payload, which shows baud detection follows the playback rate\n')
+f:write('and not anything in the file.\n\n')
 f:write('exp_* columns are what the OFFLINE decoder returns for the quantised\n')
 f:write('file. The panel should match them exactly. It is the comparison that\n')
 f:write('makes a hardware disagreement a fact rather than an impression.\n\n')

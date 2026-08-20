@@ -51,11 +51,12 @@ if FAST then NSEED = 3 end
 local RATES = {300, 1200, 4800, 9600, 19200, 38400, 57600, 115200, 230400, 250000}
 if FAST then RATES = {1200, 9600, 38400, 115200} end
 
+-- THE RATE FRAME MODE REALLY PICKS, not baud x 8. pick_fs snaps UP into sdec.rates, so oversampling
+-- is 8.33 at most rates and 8.68 at 57600/115200 -- never a flat 8.00, and baud x 8 asks for rates the
+-- instrument cannot select at all. Tolerance follows SAMPLES PER BIT, so sweeping the wrong rate
+-- measures a configuration the app never runs.
 local function fs_for(baud)
-  local fs = baud * 8
-  if fs > 1000000 then fs = 1000000 end
-  if fs < 1000 then fs = 1000 end
-  return fs
+  return sdec.pick_fs(baud, 8)
 end
 
 -- ---------------------------------------------------------------------------

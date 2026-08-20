@@ -355,10 +355,11 @@ sdec.ui_refresh()
 print('FRAME, nothing decoded: padlock=' .. sdec.lock_state())
 dumpobjs('docs/mockup-objects-frame-nolock.tsv')
 
--- And LOCKED: green, with the values in green too as the second channel.
+-- And LOCKED: green, with the values in green too as the second channel. NO TOGGLE HERE -- capture()
+-- autolocks, so the state after it IS locked; toggling first rendered the amber auto state into the
+-- file named "locked", which left the green colour never rendered at all.
 SRC.rd, SRC.ts, SRC.nsmp = rd, ts, nsmp
 sdec.capture()
-sdec.lock_toggle()
 sdec.ui_refresh()
 print(string.format('FRAME, locked: padlock=%s  %s %s', sdec.lock_state(),
       sdec.baud_text(), sdec.fmt_text()))
