@@ -448,6 +448,23 @@ def head_damage(hexs, headsusp):
     headsusp, which over-counts by up to the whole capture, and under-trimming is the safe direction:
     a damaged byte left inside the body is judged and can fail the point, whereas an over-trim
     silently discards good evidence. -> int, 0 if nothing in the head is unrecoverable.
+
+    THE RULE THAT PREDICTS THE WHOLE FAILURE CLASS, measured over a 4732-capture factorial:
+    **a point is exposed iff len(payload) > nf**, i.e. iff the payload is longer than one capture.
+    Once a capture spans more than one arb period it always contains an EARLY seam, and idle1 records
+    only the first, so headsusp can never be late. The cleanest demonstration holds content, gap and
+    rendering all fixed and varies only the capture length: r00 (256 B) at 115200 has nf ~= 227 and
+    fails 12 of 256 start offsets; the SAME vector at 250000 has nf ~= 494 and fails 0 of 256.
+    Grid: hello 13 B 0/13, v77 133 B 0/133, r00 256 B 12/256 at 115200 and 0/256 at 250000,
+    v71 1024 B 10/512 at both rates. So v77/v78 are structurally immune at any rate, and the RANDOM
+    vectors are where high-rate coverage actually lands.
+
+    AND WHY 'JUST DO NOT TRIM' IS NOT THE ANSWER, since it is the obvious alternative: real damage
+    reaches 35 frames on v77, past JP_HEADSKIP's 12. Over the same factorial, trimming by headsusp
+    fails 88, trimming by nothing fails 194, trimming by this function fails 6. Removing the trim
+    would have traded one false-failure class for a bigger one.
+    (The 6 residuals are a separate defect -- see task #59, a pre-trim flag count against a post-trim
+    budget in judge_payload -- and are not reachable while the shipped vectors use gap = 0.)
     """
     if not headsusp or headsusp < 1:
         return 0
