@@ -213,12 +213,6 @@ def main():
        'cyclic_find finds a 234 B needle at all %d offsets of a 133 B loop  [%d missed]'
        % (len(short), len(misses)))
 
-    print()
-    if FAILED:
-        print('%d FAILED:' % len(FAILED))
-        for w in FAILED:
-            print('  - %s' % w)
-        return 1
     # ------------------------------------------------------------------
     print('\n-- head_damage: trim by the DAMAGE, never by the suspect region --')
     # THE DEFECT THIS PINS, measured on out/soak/2026-08-19T20-32-34: five laps of 58 failed as
@@ -242,8 +236,19 @@ def main():
     # idle gap is interior corruption and must be judged, not trimmed away as head debris.
     ck(BU.head_damage('41' * 50 + '??' + '41' * 200, 10) == 0,
        'a bad frame BEYOND headsusp is interior, not head -- trim 0')
-    ck(BU.head_damage('??' * 5, 200) == 5, 'headsusp past the end clamps to the frames present')
+    # CLAMPED, not trimmed away: 5 frames cannot spare JP_MINBODY, so head_damage refuses to
+    # trim at all and judge_payload then says 'too short' about a capture that really is short.
+    ck(BU.head_damage('??' * 5, 200) == 0,
+       'a capture too small to spare JP_MINBODY is not trimmed at all')
+    ck(BU.head_damage('??' * 40 + '41' * 200, 40) == 40,
+       'a 40-frame damaged head in a 240-frame capture trims in full')
 
+    print()
+    if FAILED:
+        print('%d FAILED:' % len(FAILED))
+        for w in FAILED:
+            print('  - %s' % w)
+        return 1
     print('all lorem-gate tests passed')
     return 0
 

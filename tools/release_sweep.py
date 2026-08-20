@@ -43,6 +43,13 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# VN WAS USED AND NEVER IMPORTED, and the way that presented is the reason this comment exists: the
+# SDG preflight calls VN.missing(), raised NameError, and the except around it reported
+# "REFUSED: cannot talk to the SDG2122X (name 'VN' is not defined)". So a release was blocked, and the
+# blocker named the instrument for a fault entirely in this file. An exception handler that reports a
+# hardware verdict must not also swallow our own bugs -- the reason string is printed verbatim, which
+# is what made it findable at all. Every other harness that touches vector names imports it this way.
+import vector_names as VN                                     # noqa: E402
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 TSPA = os.path.join(ROOT, 'Serial_Decode.tspa')

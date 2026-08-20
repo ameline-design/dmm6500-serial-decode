@@ -413,6 +413,14 @@ JP_COVER_MIN = 0.90      # how much of the capture must be positively verified b
 # small and never raise it to silence a failure.
 JP_HEADSKIP = 12
 JP_TAILSKIP = 1          # the buffer end slices the last frame the same way
+# The smallest body the short-capture test can still accept. head_damage clamps to it, so a TRIM can
+# never be why a capture is called too short -- that verdict must mean the capture really was short.
+JP_MINBODY = JP_HEADSKIP + JP_TAILSKIP + JP_MINVAL * 2
+# How much of the capture must reach the judge. JP_COVER_MIN is measured against the body that survived
+# trimming, so a big trim shrinks the denominator and 90 % becomes trivial: measured 2026-08-19, a point
+# validated 61 of 236 bytes and reported ok. Half is generous -- an honest head plus tail is ~13 of ~180
+# -- so this fires only when the trim has gone wrong.
+JP_BODY_FRAC = 0.5
 
 
 def head_damage(hexs, headsusp):
@@ -473,7 +481,11 @@ def head_damage(hexs, headsusp):
     for i in range(min(headsusp, len(frames))):
         if frames[i] == '??':
             last = i + 1
-    return last
+    # CLAMPED, so our own allowance can never produce 'capture too short to judge'. ua_head_bad reached
+    # 31 on v77 and 27 on v78 in the 2026-08-19 logs, and v77 now runs at 115200/250000 where captures
+    # are shorter. If damage really reaches that far the surviving bytes fail on CONTENT instead, which
+    # names the payload and is honest.
+    return min(last, max(0, len(frames) - JP_MINBODY))
 
 
 def runs_of(frames):
@@ -519,16 +531,21 @@ def judge_payload(got, want):
     body = len(frames)
     if not body:
         return False, 'no bytes decoded'
-    bad = [i for i, f in enumerate(frames) if f == '??']
-    interior = [i for i in bad if i != 0 and i != body - 1]
     # Judge only the interior. The head allowance is resync debris (see JP_HEADSKIP); trimming it
     # from the FRAMES means a run that straddles the boundary is cut, not condemned whole.
+    captured = body                       # frames handed in, before any of our own exclusions
     lo = JP_HEADSKIP
     hi = body - JP_TAILSKIP
     if hi - lo < JP_MINVAL * 2:
         return False, 'capture too short to judge (%d B, %d judged)' % (body, max(0, hi - lo))
     frames = frames[lo:hi]
     body = len(frames)
+    # COUNTED ON THE TRIMMED FRAMES. This used to count the untrimmed ones against a budget sized on the
+    # trimmed body -- a double penalty, since a flag inside JP_HEADSKIP is excluded from the correctness
+    # test above yet still spent budget. It explained every residual failure that survived the headsusp
+    # fix across a 4732-capture factorial. Both quantities now come from one list.
+    bad = [i for i, f in enumerate(frames) if f == '??']
+    interior = [i for i in bad if i != 0 and i != body - 1]
     rr = runs_of(frames)
     # ENOUGH COPIES, for the same reason as cyclic_find: a capture off a SHORT looping payload can
     # be longer than the payload, and a run is checked at (alignment + start) % len(want), so the
@@ -580,8 +597,17 @@ def judge_payload(got, want):
     if cover < JP_COVER_MIN:
         return False, ('only %.1f %% positively verified (need %.0f %%)'
                        % (100 * cover, 100 * JP_COVER_MIN))
+    # AND HOW MUCH OF THE CAPTURE REACHED THE JUDGE. cover above is relative to what survived our own
+    # exclusions, so a big trim makes it easy to satisfy. head_damage and the JP_MINBODY clamp make that
+    # hard to reach now, but nothing STATED the loss, so it was invisible in a passing line. It is in the
+    # pass message too: a number nobody prints is a number nobody checks.
+    if body < JP_BODY_FRAC * captured:
+        return False, ('only %d of %d captured B reached the judge (need %.0f %%) -- the head '
+                       'allowance is discarding the capture'
+                       % (body, captured, 100 * JP_BODY_FRAC))
     return True, ('%d of %d B verified byte-exact at offset %d (%d flagged, budget %d, '
-                  'head %d skipped)' % (verified, body, align, len(interior), budget, lo))
+                  'head %d skipped, %d of %d captured judged)'
+                  % (verified, body, align, len(interior), budget, lo, body, captured))
 
 
 def parse_point(lines):
