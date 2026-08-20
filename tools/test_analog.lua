@@ -12,8 +12,8 @@
 --     tested 10.42 the halved candidate sits at 5.21, a comfortable 33 % clear. The suite only ever
 --     tested the safe side of the cliff the app actually operates on. So fs comes from pick_fs here,
 --     never from a literal.
---   * SAMPLING PHASE. GEN_RENDER takes opts.phase and defaults it to 0.37; NO test in this repo
---     ever varied it, so all 884 assertions ran at one arbitrary sub-bit alignment. A real capture
+--   * SAMPLING PHASE. GEN_RENDER takes opts.phase and defaults it to 0.37, and nothing varied it
+--     before this file, so every offline assertion ran at one arbitrary sub-bit alignment. A real capture
 --     starts wherever the trigger fired.
 --   * JITTER AND NOISE. Left at 0 in almost every case. The bench signal is quantised twice --
 --     the generator renders edges on its own 10 us grid at 10.4167 samples/bit, then the DMM
@@ -531,7 +531,7 @@ check('the 7E1 re-decode keeps its OWN suspect-head extent, so ERR counts the he
       nerased == 0, nerased == 0 and '' or string.format('%d of %d erased; first: %s',
                                                          nerased, nownhead, firsterased))
 -- VACUOUS WITHOUT THIS, and more sharply than the checks above: the erasure is only observable when
--- the re-decode finds a head the 8N1 pass did not, which is 2 of 7 firings on these seeds.
+-- the re-decode finds a head the 8N1 pass did not, which is 3 of 18 firings on these seeds.
 check('a re-decode with its own head evidence is reached, so the check above can fail',
       nownhead > 0, string.format('%d of %d re-decodes found their own headsusp', nownhead, nredecode))
 

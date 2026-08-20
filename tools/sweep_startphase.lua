@@ -2,9 +2,9 @@
 -- and jitter. One shard of an embarrassingly parallel sweep.
 --
 -- WHY. The bench runs one capture per point and a soak lap is minutes; this host runs a decode in
--- ~8 ms and has 12 cores to spare, so the same coverage costs seconds. The defects this project has
+-- ~8 ms and runs 12 shards on a 16-core host, so the same coverage costs seconds. The defects this project has
 -- actually shipped were all found by varying ONE thing the suites held fixed -- #29 by the sample
--- rate, r06 (a 7-bit random payload) by where the capture opened -- so the cheap move is to vary
+-- rate, Random 07 7E1 (r06) by where the capture opened -- so the cheap move is to vary
 -- everything at once, on every vector, and let the machine find the holes.
 --
 -- THE VECTOR SET COMES FROM make_vectors.lua, not from a list here. It is dofile()d in define-only
@@ -167,11 +167,11 @@ local nv = table.getn(V)
 local hard, nhard = {}, 0           -- hard failures, with enough detail to rerun the case
 local ncase, nrefuse, nfmtdiff, nratediff, nshortrun, nok = 0, 0, 0, 0, 0, 0
 local nheadbleed, worstbleed, worstbleedwhat = 0, 0, ''
--- WOULD QUOTING headsusp BE BETTER THAN NARROWING TO THE LAST FLAG? uart_decode.tsp:506 asserts that
+-- WOULD QUOTING headsusp BE BETTER THAN NARROWING TO THE LAST FLAG? uart_decode.tsp:508 asserts that
 -- headsusp "over-claims" and narrows to the last flagged frame for that reason, which costs the bleed
--- above. The assertion has never been measured, and this sweep already knows the truth for every case
--- it matches against the payload -- the first byte that agrees with the payload is where the damage
--- actually ends -- so both errors are counted here and the rule can be chosen from numbers.
+-- above. The counters below measure both directions, since the first byte that agrees with the payload
+-- is where the damage actually ends. Measured over 4704 decodes: narrowing under-reports 396 bytes,
+-- quoting headsusp over-reports 57902 and catches nothing extra. The narrowing wins by 146x.
 local nhs, nhsover, hsoversum, worsthsover, worsthsoverwhat = 0, 0, 0, 0, ''
 local nhsunder, bleedsum = 0, 0
 local nredecode = 0                 -- times refine_parity's non-strict branch ran, for coverage
@@ -194,7 +194,7 @@ end
 local vi
 for vi = 1, nv do
   -- SHARDED BY (VECTOR x CONDITION), not by vector: Random32kB (v96) renders 3.4 M points and
-  -- Hello (v41) 1.8 k,
+  -- Hello (v41) 2.0 k,
   -- so sharding by vector alone would leave one core doing minutes of work while eleven idled.
   local v = V[vi]
   local ci
@@ -320,7 +320,7 @@ for vi = 1, nv do
                 -- THE RUN IS RE-TRIED FROM LATER STARTS, and the number of shifts it takes is the
                 -- measurement. A misaligned head that frames cleanly bleeds past what ERR excludes:
                 -- ua_head_bad narrows headsusp to the LAST FLAGGED frame on purpose (quoting
-                -- headsusp itself over-claims, uart_decode.tsp:506), so when the tail of a suspect
+                -- headsusp itself over-claims, uart_decode.tsp:508), so when the tail of a suspect
                 -- head carries no flags those bytes are wrong and uncounted. Measured on the fox at
                 -- gap = 0: headsusp 30, last flag 19, ERR 19, and frames 20..30 wrong.
                 -- That is open issue #49's family, not a regression, so it is COUNTED here rather
