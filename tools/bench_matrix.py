@@ -313,8 +313,15 @@ def verdict(res, hexs):
     nf = int(num(res, 'nf', 0))
     if nf <= 0:
         return False, 'no bytes decoded'
-    # headsusp is the SUSPECT REGION, not the damage; see BU.head_damage.
-    head = BU.head_damage(hexs, int(num(res, 'head', 0)))
+    # RAW headsusp HERE, DELIBERATELY, AND NOT head_damage. This function tests the APP'S OWN CLAIM:
+    # it says headsusp = h, so bytes h+1.. must be exact, and the pass condition below is that the
+    # whole remaining body is ONE unbroken clean run (`run >= nb`). Substituting the narrower
+    # head_damage leaves the head's resync debris inside the body, which breaks that run and fails a
+    # perfectly healthy capture -- measured 2026-08-20, laps 1 and 2 of the 7 h soak reported
+    # 'format v44e: 8N1 153 B (head 7), longest clean run 146, 0 bad (0 interior)': zero bad bytes and
+    # still BAD. head_damage belongs at the judge_payload call sites, where the judge does its own
+    # alignment search and bounds a flag COUNT rather than demanding one perfect run.
+    head = int(num(res, 'head', 0))
     body, nb = hexs[2 * head:], nf - head
     pos, run, bad, interior = BU.analyse(body, want(nb))
     if pos >= 0 and run >= nb and nb > 0:
