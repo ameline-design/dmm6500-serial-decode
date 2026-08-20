@@ -209,10 +209,10 @@ press. The status row says so before you commit:
 
     32 kB  ready -- 32768 bytes to a file, no stop once started
 
-**There is deliberately no time estimate.** The one that used to be there was the time your *device*
-takes to send that many bytes, and the meter's decode costs several times more — 8 kB is a couple of
-seconds on the wire and around half a minute to decode. A single number would have been reassuring and
-wrong, so what you get is the exact byte ceiling and, once it starts, a progress bar.
+**There is deliberately no time estimate.** Two different durations apply and only one is knowable
+here: the time your *device* takes to send that many bytes, and the meter's decode, which costs several
+times more — 8 kB is a couple of seconds on the wire and around half a minute to decode. A single
+number would be reassuring and wrong, so what you get is the exact byte ceiling and a progress bar.
 
 **The app's own side of this is sound,** which is why it is worth fixing rather than accepting: when
 the identical cancel is delivered by a firmware timer instead of a finger, the run stops inside a

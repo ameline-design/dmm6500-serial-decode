@@ -445,9 +445,8 @@ twice as many frames, which any error count rewards.
 **odd** number of its own bit times: real traffic has single- and three-bit runs, and at half the true
 rate every pulse is an even number of cells. Only runs up to 12 bit times count toward that, because a
 longer one is inter-byte idle whose length is set by when the capture started rather than by the format.
-Measured over 368 640 paired decodes: this removed every reproducible case — 0.38 % of capture start
-positions misread the rate before, none after — with no case that previously decoded correctly changing
-its answer.
+Measured over 368 640 decodes spanning every capture start position: no start position misreads the
+rate.
 
 This does not touch the *longer*-bit-time direction, so the genuine ambiguity below is preserved, and
 the note row still names a rival rate when one really fits.
