@@ -1,0 +1,22 @@
+#!/bin/sh
+# Refuse a push of tsp/ or tools/ that the smoke gate has not passed against.
+#
+# The receipt is content-addressed, so the one-line fix made AFTER the run invalidates it -- which is
+# the case worth catching, because that change is the least tested thing in the push.
+#
+# Install:  ln -sf ../../tools/hooks/pre-push .git/hooks/pre-push
+# Override: SMOKE_OVERRIDE="why" git push        (the reason is printed, so it is a decision on record)
+#
+# Docs-only pushes are unaffected: neither tree is hashed.
+set -e
+if [ -n "${SMOKE_OVERRIDE:-}" ]; then
+  echo "pre-push: smoke gate OVERRIDDEN -- $SMOKE_OVERRIDE"
+  exit 0
+fi
+if ! python3 tools/smoke_receipt.py --verify; then
+  echo ""
+  echo "pre-push REFUSED. Run the 11-minute gate, or push with a reason on record:"
+  echo "  python3 tools/bench_smoke.py"
+  echo "  SMOKE_OVERRIDE=\"bench occupied by an overnight soak\" git push"
+  exit 1
+fi

@@ -78,6 +78,20 @@ The soak runs the seeded sweep for hours and reports a **failure rate per test p
 number an intermittent actually has. Eight hours is about three laps of all 39 waveforms across 43
 baud rates each, which is the least that distinguishes "fails every lap" from "failed once".
 
+**Code changes do not get pushed without passing the smoke gate**, and that is enforced rather than
+remembered. On a pass, `bench_smoke.py` writes a receipt holding a hash of `tsp/` and `tools/` as they
+were; a `pre-push` hook recomputes it and refuses if either tree has moved since. So the one-line fix
+made *after* the run invalidates the receipt, which is the case worth catching — that change is the
+least tested thing in the push. Install it with:
+
+```sh
+ln -sf ../../tools/hooks/pre-push .git/hooks/pre-push
+```
+
+Documentation-only pushes are unaffected; neither tree is hashed. When the bench is genuinely
+unavailable — mid-soak, say — `SMOKE_OVERRIDE="reason" git push` proceeds and prints the reason, so the
+exception is a decision on record rather than a silent bypass.
+
 Every lap draws a different waveform order, different non-standard rates and a different wait before
 each capture, all from the lap number — so `--iteration N` rebuilds any lap exactly, without running
 the ones before it, and a failure replays offline in seconds. `docs/BENCH.md` has the commands.

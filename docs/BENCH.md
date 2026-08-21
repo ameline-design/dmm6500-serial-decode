@@ -74,6 +74,15 @@ cell reached this way is the same cell the soak runs.
 
 ---
 
+### The receipt
+
+A pass writes `out/smoke-receipt.json` holding a hash of `tsp/` and `tools/`. `tools/hooks/pre-push`
+recomputes that hash and refuses a push when either tree has moved, so "I ran the smoke test" becomes a
+claim about the exact code being pushed rather than about the past. The hash folds in the working tree,
+not just the index, so an unstaged edit invalidates it too.
+
+`SMOKE_OVERRIDE="reason" git push` proceeds and prints the reason. Docs-only pushes need no receipt.
+
 ## Reproducing a failure
 
 A failing cell prints a `REPRO` line carrying everything needed:

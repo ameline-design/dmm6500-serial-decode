@@ -94,6 +94,12 @@ def main():
         print('  python3 tools/soakplan.py --emit-lua --iteration %d > /tmp/p.lua' % a.iteration)
         print('  lua tools/sweep_plan.lua --plan /tmp/p.lua --cell <vector>:<baud>')
         return 1
+    # THE RECEIPT IS WRITTEN ONLY HERE, on the pass path, and it records a hash of tsp/ and tools/ as
+    # they are right now -- so an edit made after this run invalidates it and the pre-push hook says so.
+    subprocess.call(['python3', 'tools/smoke_receipt.py', '--write',
+                     '--iteration', str(a.iteration), '--cells', '86',
+                     '--presses', '0' if a.no_panel else '45',
+                     '--stamp', time.strftime('%Y-%m-%dT%H:%M:%S')], cwd=ROOT)
     print('SMOKE PASSED')
     return 0
 
