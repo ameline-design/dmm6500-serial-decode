@@ -185,7 +185,7 @@ LAP_DEADLINE_MARGIN = 2.0
 
 
 def run_suite(suites, rates=None, timeout=1200, expect=None, iteration=None, plan_vectors=None,
-              skip_vectors=''):
+              skip_vectors='', heartbeat=None):
     """One lap of bench_matrix. -> (rc, stdout, {point: (verdict, detail)}, why_incomplete).
 
     The judging is judge_lap()'s and needs no instrument and no subprocess, which is what makes it
@@ -204,6 +204,8 @@ def run_suite(suites, rates=None, timeout=1200, expect=None, iteration=None, pla
         argv += ['--plan-vectors', str(plan_vectors)]
     if skip_vectors:
         argv += ['--skip-vectors', skip_vectors]
+    if heartbeat:
+        argv += ['--heartbeat', heartbeat]
     if rates:
         argv += ['--rates', rates]
     p = subprocess.run(argv, cwd=ROOT, stdout=subprocess.PIPE,
@@ -504,7 +506,8 @@ def main():
             rc, out, points, why = run_suite(a.suites, a.rates, timeout=lap_timeout,
                                              expect=expect, iteration=laps,
                                              plan_vectors=a.plan_vectors,
-                                             skip_vectors=a.skip_vectors)
+                                             skip_vectors=a.skip_vectors,
+                                             heartbeat=os.path.join(outdir, 'heartbeat.txt'))
         except subprocess.TimeoutExpired:
             dead += 1
             print('lap %-4d TIMED OUT -- the suite did not finish' % laps)

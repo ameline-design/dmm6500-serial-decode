@@ -882,6 +882,19 @@ def plan_payloads(vid):
     return out
 
 
+def beat(a, msg):
+    """One flushed progress line. Best effort: a monitoring aid must never fail a run."""
+    path = getattr(a, 'heartbeat', None)
+    if not path:
+        return
+    try:
+        with open(path, 'a') as f:
+            f.write('%s %s\n' % (time.strftime('%Y-%m-%dT%H:%M:%S'), msg))
+            f.flush()
+    except Exception:                                              # noqa: BLE001
+        pass
+
+
 def suite_plan(d, g, a, rows):
     """Every vector, at every standard rate plus one drawn rate per gap, in a seeded order.
 
@@ -937,6 +950,8 @@ def suite_plan(d, g, a, rows):
         want_fmt = (row.get('exp_fmt') or '').strip()
         expect = SP.expect_for(vid)
         t_vec, ncell, nbadcell = time.time(), 0, 0
+        beat(a, 'iter %d START %d/%d %s (%s, %.1f Vpp, spb %d)'
+             % (it, vi + 1, len(order), vid, expect, _amp(vid), spb))
         for ri, (baud, kind) in enumerate(rates):
             srate = baud * spb
             if srate > I.SDG_MAX_SRATE:
@@ -1030,6 +1045,9 @@ def suite_plan(d, g, a, rows):
         print('  %-6s %s: %d cells in %.0f s (%.2f s/cell) at %.1f Vpp, %d not as expected  DMM %s  SDG %s'
               % (vid, expect, ncell, vsec, vsec / max(1, ncell), _amp(vid), nbadcell,
                  'alive' if alive else 'NOT ANSWERING', 'alive' if sdg_ok else 'NO: %s' % sdg_why))
+        beat(a, 'iter %d DONE  %d/%d %s %d cells %.0fs %.2fs/cell %d unexpected DMM=%s SDG=%s'
+             % (it, vi + 1, len(order), vid, ncell, vsec, vsec / max(1, ncell), nbadcell,
+                'alive' if alive else 'SILENT', 'alive' if sdg_ok else 'SILENT'))
         if not alive or not sdg_ok:
             # EXIT 3, NOT 1, AND THE DIFFERENCE MATTERS TO A SOAK. Exit 1 is "some cell failed", which
             # a soak should tally and carry on from. This is "there is no bench any more", and the
@@ -1072,6 +1090,15 @@ def main():
                          'wants the whole lap so it can count rates')
     # NAMED AND LOGGED, never silent. A waveform dropped without a word turns into a suite that
     # reports full coverage of a set it did not test.
+    # A PROGRESS FILE, because a plan lap is two and a half hours and soak.py captures the child's
+    # output rather than streaming it -- so from outside, a healthy lap and a stalled one look
+    # identical for the whole run. Written and flushed as each waveform starts and ends, which turns
+    # monitoring from a guess about CPU time into reading a timestamp. CPU time is a bad proxy twice
+    # over: the work is I/O bound on the instrument at about 0.6 s of CPU an hour, and the child's pid
+    # changes at every lap boundary with its counter resetting to zero, so a monotonic check fires an
+    # alarm exactly when a lap finishes.
+    ap.add_argument('--heartbeat', default=None,
+                    help='append per-waveform progress to this file, flushed, for a monitor to read')
     ap.add_argument('--skip-vectors', default='',
                     help='comma-separated vector ids to leave out of the plan, with the omission '
                          'printed in the header')
