@@ -68,15 +68,16 @@ python3 tools/soak.py --hours 8 --suites formats,plan --skip-vectors v95,v96
 random payload, each in 8N1 and 7E1 — paired crosswise so one pair takes the 22 standard baud rates
 and the other the 21 drawn ones, and each rate family therefore faces both formats and both content
 classes. Then all 45 button presses. 86 cells, 9.5 min; presses, 1.9 min. Run it after any change and
-before starting anything long: a soak lap is 155 minutes, and a harness defect found at minute 147 has
+before starting anything long: a soak lap is three hours, and a harness defect found at minute 147 has
 cost an evening.
 
 **No version is tagged without at least 8 hours of soak.** Not a guideline. A release sweep answers
 "does it pass?" once, which is the wrong question for anything that fails one run in ten — a single
 green sweep licenses an intermittent and a single red one reads as a regression nobody can reproduce.
 The soak runs the seeded sweep for hours and reports a **failure rate per test point**, which is the
-number an intermittent actually has. Eight hours is about three laps of all 39 waveforms across 43
-baud rates each, which is the least that distinguishes "fails every lap" from "failed once".
+number an intermittent actually has. At a measured 6.5 s per cell a lap of 39 waveforms across 43 baud
+rates is about three hours, so eight hours is between two and three laps -- the least that can
+distinguish "fails every lap" from "failed once".
 
 **Code changes do not get pushed without passing the smoke gate**, and that is enforced rather than
 remembered. On a pass, `bench_smoke.py` writes a receipt holding a hash of `tsp/` and `tools/` as they

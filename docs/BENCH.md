@@ -7,10 +7,13 @@ stops an expensive one.
 |---|---|---|---|
 | `tools/release_sweep.py --offline` | ~1 min | nothing | can this code possibly work |
 | `tools/bench_smoke.py` | 11.4 min | both instruments | is the bench and the harness sound |
-| `tools/soak.py --suites formats,plan` | 155 min a lap | both instruments | does it hold up over hours |
+| `tools/soak.py --suites formats,plan` | ~3.0 h a lap | both instruments | does it hold up over hours |
 
-Measured, not estimated: **6.5 s per cell**, so a 39-waveform lap of 43 rates is about 155 minutes.
-An offline lap of the same 1763 cells is **18 seconds**.
+Measured, not estimated: **6.5 s per cell**. A lap of 39 waveforms at 43 rates each is 1677 cells, so
+**about 3.0 hours**; all 41 waveforms is 3.2 h. An offline lap of the same cells is **18 seconds**.
+
+Eight hours is therefore between two and three laps. That is the floor, not a target: the point of the
+soak is a failure rate per point, and two laps can only ever say "twice" or "once" or "never".
 
 ---
 
