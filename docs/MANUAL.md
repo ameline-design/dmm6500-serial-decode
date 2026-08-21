@@ -613,9 +613,13 @@ only one narrow pulse per frame to measure. `0x00` padding is fine.
 
 ## Known failures of automatic rate detection
 
-Two cases are known where the app measures the wrong bit rate. **Both are fixed by typing the rate into
-`Options ▸ Baud Rate`** — verified, every frame decoded with zero errors once the rate was given. Both
-are rare, and the numbers are below so you can judge the risk yourself.
+**Read this in proportion.** Most serial decoders require you to tell them the baud rate. This one
+measures it, and gets it right on every standard rate and on arbitrary ones like 1379, 8123 and 104857.
+Two cases are known where the measurement goes wrong, together fewer than **one point in 200**, and in
+both of them the remedy is to supply the rate — which is what other tools ask for as a matter of course.
+
+**Both are fixed by typing the rate into `Options ▸ Baud Rate`** — verified, every frame decoded with
+zero errors once the rate was given. The numbers are below so you can judge the risk yourself.
 
 Automatic detection has no clock to refer to. It measures the gaps between transitions and finds the
 longest bit time that divides them all. Gaps of many different lengths pin that down well; gaps of only

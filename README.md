@@ -15,7 +15,8 @@ naming here: **flow control** is verified electrically — 4.92 V, ~10 µs, one 
 measures **9.4–9.8 µs**, so a device waiting for a credit needs an edge-triggered input rather than a
 polling loop.
 
-**Automatic rate detection has two known failures, both rare and both fixable by typing the rate in.**
+**Automatic rate detection has two known failures, both rare and both fixable by typing the rate in —
+which is what most decoders require of you anyway.**
 A short pattern repeated over and over — `00`/`FF`/`55`/`AA`, walking bits, a fixed string on a loop —
 can be measured at a small multiple of its true rate: **24 of 6,714** bench points across four full
 sweeps, **0.36 %**, every one a synthetic pattern at a non-standard rate, and no ordinary payload at a
