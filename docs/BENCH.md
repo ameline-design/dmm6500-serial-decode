@@ -86,6 +86,21 @@ not just the index, so an unstaged edit invalidates it too.
 
 `SMOKE_OVERRIDE="reason" git push` proceeds and prints the reason. Docs-only pushes need no receipt.
 
+### Changing your mind mid-run
+
+`--hours` and `--laps` are both decided before the first lap, so "make that four laps, not three" would
+otherwise cost a restart — and a restart throws away the laps already banked, which is the opposite of
+what one-more-lap means. Two files in the record directory are read before each lap:
+
+```sh
+echo 4 > <record dir>/LAPS      # run exactly this many laps, then stop
+touch  <record dir>/STOP        # stop cleanly after the lap in flight
+```
+
+Neither interrupts a lap. **A lap is the unit of evidence** — a truncated one is not tallied, so cutting
+one wastes every minute already spent on it. For the same reason the wall deadline from `--hours` only
+gates *starting* a lap: one that begins inside the budget always runs to completion.
+
 ## Reproducing a failure
 
 A failing cell prints a `REPRO` line carrying everything needed:

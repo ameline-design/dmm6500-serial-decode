@@ -501,7 +501,32 @@ def main():
               % (nvec, len(SP.rates_for(1)), est / 60.0, lap_timeout / 60.0))
     t_start = time.time()
 
-    while time.time() < deadline and (a.laps is None or laps < a.laps):
+    # A LAP TARGET THAT CAN CHANGE WHILE THE RUN IS UP. --hours and --laps are both decided before the
+    # first lap, so changing your mind about three laps versus four otherwise costs a restart -- and a
+    # restart throws away the laps already banked, which is the opposite of what "one more lap" means.
+    # Writing an integer into <record dir>/LAPS is read here, before each lap, and honoured; writing
+    # STOP ends the run cleanly after the lap in flight. Neither interrupts a lap: a lap is the unit of
+    # evidence, and half of one is not worth having.
+    def lap_target():
+        try:
+            with open(os.path.join(outdir, 'LAPS')) as f:
+                return int(f.read().strip())
+        except Exception:                                          # noqa: BLE001
+            return a.laps
+
+    while True:
+        want = lap_target()
+        if os.path.exists(os.path.join(outdir, 'STOP')):
+            print('STOP file present: ending after %d lap(s) as asked.' % laps)
+            break
+        if want is not None and laps >= want:
+            print('lap target %d reached; ending.' % want)
+            break
+        # THE WALL DEADLINE ONLY GATES STARTING A LAP, never a lap in flight -- so a lap that begins
+        # inside the budget always runs to completion. That is deliberate: a truncated lap is not
+        # tallied, so cutting one wastes every minute already spent on it.
+        if want is None and time.time() >= deadline:
+            break
         laps += 1
         try:
             rc, out, points, why = run_suite(a.suites, a.rates, timeout=lap_timeout,
