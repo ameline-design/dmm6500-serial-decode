@@ -493,7 +493,8 @@ def main():
     if 'plan' in a.suites.split(','):
         import soakplan as SP
         from vector_names import MAP as VMAP
-        nvec = a.plan_vectors or len(VMAP)
+        nskip = len([x for x in (a.skip_vectors or '').split(',') if x.strip()])
+        nvec = a.plan_vectors or (len(VMAP) - nskip)
         est = SP.estimate_secs(SP.rates_for(1), nvec)
         lap_timeout = int(max(1200, LAP_DEADLINE_MARGIN * est))
         print('plan suite: %d vectors x %d rates, estimated %.0f min a lap, deadline %.0f min'
