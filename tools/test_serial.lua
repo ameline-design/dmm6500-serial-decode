@@ -5041,11 +5041,41 @@ local function test_midbyte()
         rd2.nbits == 8 and rd2.par == sdec.PAR_NONE,
         string.format('%d bits par=%s', rd2.nbits, tostring(rd2.par)))
 
-  -- Almost the whole capture marked: too few votes left to be evidence of anything.
+  -- A HEADSUSP THAT SWALLOWS THE CAPTURE IS NOT EVIDENCE OF DAMAGE, and refusing to vote on it is
+  -- what issue #49 was: headsusp is the region before the first GAP, so on a gapless stream nothing
+  -- ends it. Measured on v78, headsusp claims 120 of 122 frames while ngood is 121 -- one frame in
+  -- error -- and excluding all of it leaves nvote 1, which fails par_minvote_all and ndist. The
+  -- promotion never runs and a 7E1 waveform is reported as 8N1 with every byte carrying a spurious
+  -- bit 7 and nothing flagged.
+  --
+  -- What protects against voting on a head that IS garbage is par_minfrac, not headsusp: bit 7 in a
+  -- misaligned frame bears no relation to the parity of its low seven, so agreement collapses well
+  -- below 95 %. Both directions are asserted, because the safety of widening the vote rests entirely
+  -- on the second one.
   local re = sdec.ua_refine_parity(mkpar(pv, pn, nil, pn - 2))
-  check('and a head that swallowed the capture leaves too few votes to reclassify on',
-        re.nbits == 8 and re.par == sdec.PAR_NONE,
+  check('a headsusp that swallowed the capture does NOT block a promotion the bytes support',
+        re.nbits == 7 and re.par == sdec.PAR_EVEN,
         string.format('%d bits par=%s', re.nbits, tostring(re.par)))
+
+  -- The same swallowed headsusp, but the head really is garbage: bit 7 agrees with parity in half of
+  -- those frames and not the other half, which is what a wrong alignment produces.
+  local function mkgarbage(vals, nv, head, upto)
+    local rr = mkpar(vals, nv, nil, head)
+    local k
+    for k = 1, upto do
+      local low = math.mod(vals[k], 128)
+      rr.vals[k] = low + 128 * math.mod(k, 2)
+    end
+    return rr
+  end
+  local gk
+  for gk = 1, 4 do
+    local g = ({10, 20, 30, pn - 2})[gk]
+    local rg = sdec.ua_refine_parity(mkgarbage(pv, pn, pn - 2, g))
+    check(string.format('...and a genuinely garbage head of %d frames is still refused', g),
+          rg.nbits == 8 and rg.par == sdec.PAR_NONE,
+          string.format('%d bits par=%s', rg.nbits, tostring(rg.par)))
+  end
 
   -- THE RESTRICTED-ALPHABET TRAP. ndist >= 3 does not protect: 48 of the 95 printable ASCII
   -- characters have EVEN popcount, so an 8N1 payload drawn only from those carries bit 7 = 0 in

@@ -574,6 +574,9 @@ they just cannot log or Save.
 rate fits rather than pretending to know. Irregular gaps between bytes remove the ambiguity
 completely.
 
+Two cases where automatic detection is known to fail are described under **Known failures of automatic
+rate detection**, below. Both are fixed by typing the rate in.
+
 ---
 
 ## What it can cope with
@@ -589,7 +592,8 @@ than quietly getting it wrong, except where noted.
 | Noise | about **40 %** of the logic swing — roughly 1.3 V on a 3.3 V line |
 | Slow edges, long cables, weak pull-ups | filtering up to **0.7 bit times** |
 | Logic swing | **1.6 V** up to 5 V TTL |
-| DC offset | anything that keeps the line inside ±10 V |
+| DC offset, logic low at or above 0 V | anything that keeps the line inside ±10 V |
+| DC offset, logic low **below** 0 V | works, but see the note below — one band is not reliable |
 
 **Rates from 300 to 250000 baud** decode byte-exact on the bench, and so do odd ones — 900, 1500,
 3600, 7200 and arbitrary values like 1379, 8123 and 104857. Two exceptions are known and both are
@@ -604,6 +608,58 @@ read `SA/BIT`.
 of a bit time (that is ±15.6 µs at 9600 baud but only ±1.3 µs at 115200, so if an interrupt can
 delay your transmit loop, send slower), and avoid padding with `0xFF`, which gives the rate detector
 only one narrow pulse per frame to measure. `0x00` padding is fine.
+
+---
+
+## Known failures of automatic rate detection
+
+Two cases are known where the app measures the wrong bit rate. **Both are fixed by typing the rate into
+`Options ▸ Baud Rate`** — verified, every frame decoded with zero errors once the rate was given. Both
+are rare, and the numbers are below so you can judge the risk yourself.
+
+Automatic detection has no clock to refer to. It measures the gaps between transitions and finds the
+longest bit time that divides them all. Gaps of many different lengths pin that down well; gaps of only
+a few lengths do not.
+
+### 1. A short pattern repeated over and over
+
+**What triggers it.** Data built from `0x00`, `0xFF`, `0x55`, `0xAA`, walking bits, or one fixed string
+sent on a loop — link-training patterns and idle fill, rather than real messages. Two things go wrong
+together: such data yields only a handful of distinct gap lengths, so there is little to fix the bit
+time; and because the same transition recurs in the same context thousands of times, any small
+imperfection on that edge (ringing, a threshold crossed twice) recurs with it, so it stops looking like
+a one-off glitch and starts looking like a real bit.
+
+**What you see.** The reported rate is a small whole-number multiple of the true one — two to five times
+— and always one of the standard rates. Expected 3572 and the panel says 7200, or expected 124000 and it
+says 250000. Usually the byte area also fills with error markers, because a wrong bit time shreds most
+frames; in the measured cases 83 to 119 frames of a few hundred were flagged. Occasionally the frames
+survive and the bytes are simply wrong, which is the case worth knowing about.
+
+**How rare.** **24 of 6 714** capture-and-decode points across four full bench sweeps — **0.36 %, about
+one in 280.** Every one was a synthetic repeating pattern at a non-standard rate. Of the 41 stimulus
+waveforms only three ever showed it, all of them deliberate `00`/`FF`/`55`/`AA` and walking-bit
+patterns. **No ordinary payload at a standard rate has ever shown it** — the fox, the 1 kB text payload
+and twelve random payloads are clean across every rate from 300 to 250 000 baud.
+
+**Besides locking the rate:** capture real traffic rather than a test pattern, or let the bytes have
+irregular gaps — either removes the ambiguity.
+
+### 2. Logic low sitting well below ground
+
+**What triggers it.** A line whose low level is *negative* with respect to the probe's reference, with
+the whole signal still inside ±10 V.
+
+**What you see.** The rate comes back wrong, in the same multiple-of-the-truth way as above.
+
+**How rare.** Most of the negative range is fine: measured clean at **−0.1, −0.25, −0.5, −1.0 and
+−3.0 V** on a 3.3 V swing. Around **−2 V** some payloads fail. It is not a threshold — **−3 V works
+where −2 V does not** — so it is a band rather than a limit. Across a full seeded sweep with amplitude
+and offset both varied, **12 of 1 763** points were affected (**0.68 %**), and varying the amplitude
+alone over 0.5× to 1.6× caused **no failures at all**. Signals sitting entirely at or above 0 V are
+unaffected at any offset inside ±10 V.
+
+**Besides locking the rate:** reference the probe to the line's own low level rather than to earth.
 
 ---
 

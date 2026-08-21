@@ -64,19 +64,23 @@ end
 -- ---------------------------------------------------------------------------
 -- The wire: the arb file in volts, exactly the bytes the generator holds.
 -- ---------------------------------------------------------------------------
-local wirecache = {}
-local function wire(v)
-  if wirecache[v.id] == nil then
+-- CODEWORDS ARE CACHED, VOLTS ARE NOT. Amplitude and offset are drawn PER CELL now, so a cache keyed
+-- on the vector alone would hand every rate the first cell's scaling and quietly decode a waveform the
+-- generator never played.
+local cwcache = {}
+local function wire(v, amp, ofst)
+  if cwcache[v.id] == nil then
     local cw, n = GEN_READ('out/vectors/' .. v.id .. '.bin')
-    local volts, i = {}, nil
-    -- fsv is AMP/2: the file's +32767 is +AMP/2. Four of the 41 are not 10 Vpp, so this comes from
-    -- the plan rather than from a constant.
-    local fsv = v.amp / 2
-    for i = 1, n do volts[i] = GEN_VOLTS(cw[i], fsv, v.ofst) end
-    wirecache[v.id] = {v = volts, n = n}
+    cwcache[v.id] = {cw = cw, n = n}
   end
-  local c = wirecache[v.id]
-  return c.v, c.n
+  local c = cwcache[v.id]
+  -- fsv is AMP/2: the file's +32767 is +AMP/2.
+  local fsv = (amp or v.amp) / 2
+  local o = ofst
+  if o == nil then o = v.ofst end
+  local volts, i = {}, nil
+  for i = 1, c.n do volts[i] = GEN_VOLTS(c.cw[i], fsv, o) end
+  return volts, c.n
 end
 
 -- One capture of the LOOPING arb, digitised independently of it.
@@ -84,8 +88,8 @@ end
 -- LINEAR BETWEEN ARB POINTS BY DEFAULT, not a step. A DAC feeding a reconstruction filter does not
 -- present a staircase, and the scope measured clean 0/3.26 V edges with real slope for the app's
 -- sub-sample interpolation to work on. --hold is the harsher model, swept as a robustness check.
-local function capture(v, arb_fs, fs, off, n)
-  local wv, na = wire(v)
+local function capture(v, arb_fs, fs, off, n, amp, ofst)
+  local wv, na = wire(v, amp, ofst)
   local step = arb_fs / fs
   local out, i = {}, nil
   local x = off
@@ -183,7 +187,21 @@ for vi = 1, table.getn(P.vectors) do
       local fs = pick_fs(baud)
       local waits = P.waits[vi] or {}
       local off = math.mod((waits[ri] or 0) * arb_fs, math.max(1, v.npts))
-      local rd, n = capture(v, arb_fs, fs, off, A.n)
+      -- The cell's OWN amplitude and offset. Absent from an older plan file, in which case the
+      -- vector's reference values stand in -- so a stale plan degrades to the previous behaviour
+      -- rather than silently mixing one cell's scaling into another's.
+      -- BOTH AXES OR NEITHER. Falling back per axis would pair a drawn amplitude with the reference
+      -- offset and decode a geometry the generator never played, for a reason that looks like neither
+      -- hardware nor app.
+      local amps = P.amps and P.amps[vi] or {}
+      local ofsts = P.ofsts and P.ofsts[vi] or {}
+      local camp, cofst = amps[ri], ofsts[ri]
+      if (camp == nil) ~= (cofst == nil) then
+        print(string.format('REFUSING %s at %d Bd: the plan carries one of amp/ofst and not the other',
+                            v.id, baud))
+        os.exit(1)
+      end
+      local rd, n = capture(v, arb_fs, fs, off, A.n, camp, cofst)
       local ran, why, r = decode(rd, n, fs)
       local good, det
       if not ran then

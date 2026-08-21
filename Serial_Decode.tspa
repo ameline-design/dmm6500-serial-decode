@@ -1968,8 +1968,16 @@ function sdec.ua_refine_parity(r, rd, n, T)
   if r.ngood < 6 then return r end
 
   local i0 = sdec.par_skiphead + 1
-  if r.headsusp ~= nil and r.headsusp + 1 > i0 then i0 = r.headsusp + 1 end
   local i1 = r.nf - sdec.par_skiptail
+  if r.headsusp ~= nil and r.headsusp + 1 > i0 then
+    local hs = r.headsusp + 1
+    if i1 - hs + 1 >= sdec.par_minvote_all then
+      i0 = hs
+    else
+      local hb = sdec.ua_head_bad(r) + 1
+      if hb > i0 then i0 = hb end
+    end
+  end
 
   local mod = math.mod
   local nev, nod, nvote = 0, 0, 0

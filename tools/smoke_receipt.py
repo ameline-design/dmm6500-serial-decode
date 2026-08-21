@@ -8,9 +8,8 @@ tsp/ and tools/ as they were when the gate passed, and `--verify` recomputes it.
 tree invalidates the receipt, including one made a minute later.
 
 WHAT IS HASHED, and why both trees. tsp/ is the shipped app. tools/ is the harness that judges it, and
-a harness defect is not a lesser problem -- a wrong oracle manufactured 129 false failures a lap, and a
-selection bug meant two waveforms were never played at all. Neither is caught by anything cheaper than
-the smoke gate.
+a harness defect is not a lesser problem: a wrong oracle invents failures by the hundred, and a
+selection fault leaves a waveform unplayed. Neither is catchable by anything cheaper than this gate.
 
 Docs, notes and out/ are not hashed, so a documentation push needs no bench.
 

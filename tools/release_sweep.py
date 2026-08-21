@@ -165,6 +165,10 @@ def stages(outdir, shots):
         Stage('unit-loremgate', ['python3', 'tools/test_lorem_gate.py'],
               note='the long-payload judging rule: every clean run validated, flag COUNT bounded, '
                    'and the cases the old longest-run gate got wrong'),
+        Stage('unit-judgev', ['python3', 'tools/test_judge_v.py'],
+              note='the three verdicts: a capture too short to read is INCONCLUSIVE not silent-wrong, '
+                   'an alignment survives one bad byte, and a loud vector may miss a bounded few -- '
+                   'each with the wrong capture that must still fail, including self-similar payloads'),
         Stage('tolerance', ['lua', 'tools/tolerance.lua'], gate=False,
               note='the envelope table in the manual, recomputed'),
         Stage('package', ['python3', 'tools/package_tspa.py'],

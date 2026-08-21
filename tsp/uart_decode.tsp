@@ -1303,8 +1303,27 @@ function sdec.ua_refine_parity(r, rd, n, T)
   -- have bit 7 == the parity of their low seven, the exception being the FIRST frame. With gap = 0
   -- there is often no idle1 either, so headsusp has two independent reasons not to fire.
   local i0 = sdec.par_skiphead + 1
-  if r.headsusp ~= nil and r.headsusp + 1 > i0 then i0 = r.headsusp + 1 end
   local i1 = r.nf - sdec.par_skiptail
+  -- headsusp IS THE REGION BEFORE THE FIRST GAP, NOT A COUNT OF DAMAGE (see ua_head_bad), so on a
+  -- GAPLESS stream there is no gap to end it and it reaches almost the whole capture: measured on v78
+  -- at 348 and 630 Bd, headsusp claims 130 of 136 and 120 of 122 frames while ngood is 135 and 121 --
+  -- one frame in error. Excluding all of that leaves nvote 5 and 1, which then fails par_minvote_all
+  -- and ndist, so the promotion never runs and a 7E1 waveform is reported as 8N1 with every byte
+  -- carrying a spurious bit 7. That is the whole of issue #49.
+  --
+  -- A gapless stream has ONE alignment for the whole run, so if the frames decode without error the
+  -- alignment is self-consistent and the only open question is 8N1 versus 7E1 -- which is exactly what
+  -- this vote settles. So headsusp is honoured only while it leaves a usable vote; where it would
+  -- starve one it carries no information and the MEASURED damage bounds the head instead.
+  if r.headsusp ~= nil and r.headsusp + 1 > i0 then
+    local hs = r.headsusp + 1
+    if i1 - hs + 1 >= sdec.par_minvote_all then
+      i0 = hs
+    else
+      local hb = sdec.ua_head_bad(r) + 1
+      if hb > i0 then i0 = hb end
+    end
+  end
 
   local mod = math.mod
   local nev, nod, nvote = 0, 0, 0

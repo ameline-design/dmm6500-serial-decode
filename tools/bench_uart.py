@@ -413,6 +413,13 @@ JP_MINBODY = JP_HEADSKIP + JP_TAILSKIP + JP_MINVAL * 2
 # 61 of 236 bytes and report ok. Half is generous, since an honest head plus tail is ~13 of ~180, so
 # this fires only when the trim has gone wrong.
 JP_BODY_FRAC = 0.5
+# A loud vector's mismatch allowance. In 8N1 a data sample that crosses into the neighbouring cell
+# yields a wrong byte with framing intact and no parity to catch it, so a jitter vector CANNOT be held
+# to zero: j20 lost 1-5 bytes in 256 at 172800-240959 Bd, j10 at half the jitter lost none. 3 % covers
+# that with headroom and still fails a wrong-rate decode, which misses nearly every byte.
+# Exact vectors get zero -- a clean vector losing one byte is still a defect.
+JP_LOUD_MISMATCH_FRAC = 0.03
+JP_LOUD_MISMATCH_FLOOR = 2
 
 
 def head_damage(hexs, headsusp):
@@ -498,6 +505,23 @@ def runs_of(frames):
 def judge_payload(got, want):
     """Judge a capture of a LOOPING payload. -> (ok, detail).
 
+    The original two-value form, kept because six call sites and three test files depend on it.
+    INCONCLUSIVE collapses to False here, which is what those callers already assumed.
+    """
+    verdict, det = judge_payload_v(got, want)
+    return verdict == 'PASS', det
+
+
+def judge_payload_v(got, want, expect='exact'):
+    """Judge a capture of a LOOPING payload. -> (verdict, detail).
+
+    verdict is 'PASS', 'FAIL' or 'INCONCLUSIVE'.
+
+    A capture of three bytes cannot be judged either way. Absence of evidence is not a wrong answer,
+    so it is INCONCLUSIVE rather than FAIL, and a caller must not fold it into a silent-wrong count.
+
+    `expect` is 'exact' or 'loud' and only widens the mismatch allowance; see JP_LOUD_MISMATCH_FRAC.
+
     REPLACES the `longest_clean_run/body >= 0.95` test for the long-payload suites, which had two
     independent faults. It is STRICTER than what it replaces, not laxer -- see tools/test_lorem_gate.py,
     which holds the cases proving both.
@@ -517,17 +541,22 @@ def judge_payload(got, want):
     occur more than once in 1 kB, so a per-run find() lands on the wrong copy and fakes a
     misalignment. All candidate anchor positions are tried before a capture is called wrong.
     """
+    if not want:
+        return 'FAIL', 'no payload to judge against'
     frames = [got[i:i + 2] for i in range(0, len(got), 2)]
     body = len(frames)
     if not body:
-        return False, 'no bytes decoded'
+        return 'FAIL', 'no bytes decoded'
     # Judge only the interior. The head allowance is resync debris (see JP_HEADSKIP); trimming it
     # from the FRAMES means a run that straddles the boundary is cut, not condemned whole.
     captured = body                       # frames handed in, before any of our own exclusions
     lo = JP_HEADSKIP
     hi = body - JP_TAILSKIP
     if hi - lo < JP_MINVAL * 2:
-        return False, 'capture too short to judge (%d B, %d judged)' % (body, max(0, hi - lo))
+        # INCONCLUSIVE, not FAIL: too few bytes to tell, which the caller must not convert into a
+        # silent-wrong verdict. With head 12, tail 1 and a minimum of 8 judged, this covers captures of
+        # 1..20 B -- the first judgeable capture is 21 B.
+        return 'INCONCLUSIVE', 'capture too short to judge (%d B, %d judged)' % (body, max(0, hi - lo))
     frames = frames[lo:hi]
     body = len(frames)
     # COUNTED ON THE TRIMMED FRAMES. Counting the untrimmed ones against a budget sized on the trimmed
@@ -544,59 +573,88 @@ def judge_payload(got, want):
 
     diag = [(s, f) for s, f in rr if len(f) >= JP_MINVAL]
     if not diag:
-        return False, 'nothing long enough to validate (%d B in runs under %d)' % (body, JP_MINVAL)
+        # Also INCONCLUSIVE: every run is under MINVAL, so none of them proves anything either way.
+        return 'INCONCLUSIVE', ('nothing long enough to validate (%d B in runs under %d)'
+                                % (body, JP_MINVAL))
     try:
         asbytes = [(s, bytes(int(x, 16) for x in f)) for s, f in rr]
     except ValueError:
-        return False, 'capture is not hex'
-    anchor_start, anchor = max(diag, key=lambda r: len(r[1]))
-    anchor_b = bytes(int(x, 16) for x in anchor)
-
-    cands, at = [], hay.find(anchor_b)
-    while 0 <= at < len(want):
-        cands.append((at - anchor_start) % len(want))
-        at = hay.find(anchor_b, at + 1)
-    if not cands:
-        return False, ('run of %d B at index %d is NOT in the payload -- silently wrong'
-                       % (len(anchor_b), anchor_start))
-
-    align, verified, whynot = None, 0, ''
-    for cand in cands:
-        v, ok_all = 0, True
-        for start, gb in asbytes:
-            if len(gb) < JP_MINVAL:
-                continue                 # too short to prove anything either way
+        return 'FAIL', 'capture is not hex'
+    # SCORE EVERY ALIGNMENT rather than find() the longest run. find() is all-or-nothing, so a single
+    # wrong byte anywhere in the anchor loses the alignment and the capture is called silently wrong --
+    # it cost v46 (debris at position 0) and j20 (one jitter-flipped byte at 150 of 256). There are only
+    # len(want) alignments, so trying all of them is cheap and exact.
+    #
+    # Mismatches at a run's first or last byte are NOT counted: resync debris is contiguous with good
+    # data and lands at run edges, which is the same exemption flags already get via `interior`.
+    if expect == 'loud':
+        mbudget = max(JP_LOUD_MISMATCH_FLOOR, int(math.ceil(JP_LOUD_MISMATCH_FRAC * body)))
+    else:
+        mbudget = 0
+    diagruns = [(s, gb) for s, gb in asbytes if len(gb) >= JP_MINVAL]
+    ndiag = sum(len(gb) for _, gb in diagruns)
+    # A byte is exempt only where the app ITSELF admitted damage, and only AFTER it. Resync debris
+    # follows damage in time -- a byte BEFORE a flagged frame is not explained by that frame, and
+    # exempting both neighbours lets one legal flag license two silently wrong bytes: four flags inside
+    # budget hid eight wrong bytes in an exact capture. The count is also capped by the flag budget, so
+    # exemptions cannot outnumber the damage that justifies them.
+    flagged = set(bad)
+    exempt = set(i + 1 for i in flagged)
+    best = None                            # (mismatches, -verified, alignment, verified, exempted)
+    for cand in range(len(want)):
+        mism, v, edge = 0, 0, 0
+        for start, gb in diagruns:
             exp = (cand + start) % len(want)
-            if hay[exp:exp + len(gb)] != gb:
-                ok_all = False
-                whynot = ('run of %d B at index %d does not match the payload at the alignment the '
-                          'rest of the capture agrees on -- silently wrong' % (len(gb), start))
-                break
-            v += len(gb)
-        if ok_all:
-            align, verified = cand, v
-            break
-    if align is None:
-        return False, whynot
+            ref = hay[exp:exp + len(gb)]
+            for j in range(len(gb)):
+                if j < len(ref) and gb[j] == ref[j]:
+                    v += 1
+                elif (start + j) in exempt:
+                    edge += 1
+                else:
+                    mism += 1
+        # Tie-break on VERIFIED, or a candidate with zero mismatches but poor coverage can beat an
+        # equally clean one that verifies far more, and the coverage floor then fails a good capture.
+        key = (mism, -v)
+        if best is None or key < best[0]:
+            best = (key, cand, v, edge, mism)
+    _, align, verified, edgeskip, mismatched = best
+    # A wrong alignment misses nearly every byte, so the best score must still be recognisably the
+    # payload before any budget is applied -- otherwise a 1 % budget would pass pure garbage on a
+    # payload short enough to have few alignments.
+    if verified < JP_COVER_MIN * ndiag:
+        return 'FAIL', ('best of %d alignments verifies only %d of %d run B (%.0f %%) -- not the '
+                        'payload, silently wrong'
+                        % (len(want), verified, ndiag, 100.0 * verified / max(1, ndiag)))
+    if mismatched > mbudget:
+        return 'FAIL', ('%d interior byte(s) miss the payload at the best of %d alignments, budget '
+                        '%d -- silently wrong' % (mismatched, len(want), mbudget))
 
     budget = max(JP_FLAG_FLOOR, int(math.ceil(JP_FLAG_FRAC * body)))
     if len(interior) > budget:
-        return False, '%d interior flagged, budget %d' % (len(interior), budget)
+        return 'FAIL', '%d interior flagged, budget %d' % (len(interior), budget)
+    # Exemptions cannot outnumber the flags that justify them.
+    if edgeskip > budget:
+        return 'FAIL', ('%d byte(s) exempted beside flagged frames, budget %d -- more debris than the '
+                        'damage explains' % (edgeskip, budget))
     cover = float(verified) / body
     if cover < JP_COVER_MIN:
-        return False, ('only %.1f %% positively verified (need %.0f %%)'
-                       % (100 * cover, 100 * JP_COVER_MIN))
+        return 'FAIL', ('only %.1f %% positively verified (need %.0f %%)'
+                        % (100 * cover, 100 * JP_COVER_MIN))
     # AND HOW MUCH OF THE CAPTURE REACHED THE JUDGE. cover above is relative to what survived our own
     # exclusions, so a big trim makes it easy to satisfy. head_damage and the JP_MINBODY clamp make that
     # hard to reach, but the loss is STATED regardless -- including in the pass message, because a
     # number nobody prints is a number nobody checks.
     if body < JP_BODY_FRAC * captured:
-        return False, ('only %d of %d captured B reached the judge (need %.0f %%) -- the head '
-                       'allowance is discarding the capture'
-                       % (body, captured, 100 * JP_BODY_FRAC))
-    return True, ('%d of %d B verified byte-exact at offset %d (%d flagged, budget %d, '
-                  'head %d skipped, %d of %d captured judged)'
-                  % (verified, body, align, len(interior), budget, lo, body, captured))
+        return 'FAIL', ('only %d of %d captured B reached the judge (need %.0f %%) -- the head '
+                        'allowance is discarding the capture'
+                        % (body, captured, 100 * JP_BODY_FRAC))
+    # The mismatch and anchor-trim counts are STATED even when zero: a tolerance nobody prints is a
+    # tolerance nobody checks.
+    return 'PASS', ('%d of %d B verified at offset %d (%d flagged, budget %d, %d mismatched of %d '
+                    'allowed, %d edge-exempt, head %d skipped, %d of %d captured judged)'
+                    % (verified, body, align, len(interior), budget, mismatched, mbudget, edgeskip,
+                       lo, body, captured))
 
 
 def parse_point(lines):

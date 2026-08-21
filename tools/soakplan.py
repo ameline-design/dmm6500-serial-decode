@@ -50,7 +50,28 @@ MAGIC = 0x5345524C
 
 # One per kind of decision. Distinct purposes keep the streams independent: without them the wait for
 # cell 0 and the rate for gap 0 would be the same number.
-P_ORDER, P_RATE, P_WAIT, P_SUBSET = 1, 2, 3, 4
+P_ORDER, P_RATE, P_WAIT, P_SUBSET, P_AMP, P_OFST = 1, 2, 3, 4, 5, 6
+
+# THE VERTICAL AXES. Amplitude and DC offset are swept per cell rather than per waveform, which costs
+# nothing: both are SCPI writes folded into the settle already paid, and the attenuator relay is rated
+# 10 M no-load cycles against ~1700 cells a lap.
+#
+# Scaled against each vector's OWN reference amplitude, not a global span. The 41 vectors do not share a
+# codeword span -- 35 sit at 33 % of full scale, the impairment vectors at 40-53 % because their spikes
+# and drift need the room -- so one global amplitude would shrink or clip them unequally. Scaling each
+# vector's validated geometry keeps every waveform the shape the scope measured.
+#
+# 0.5 takes a clean vector's 3.3 V swing to 1.65 V, well above the ~60 mV where the decoder fails by
+# design, and 1.6 is bounded by the generator's 20 Vpp ceiling anyway (v47 is already there, so its
+# scale is clamped down to 1.0).
+AMP_SCALE_LO, AMP_SCALE_HI = 0.5, 1.6
+SDG_MAX_VPP = 20.0
+# Keep the whole band inside this, which is inside both the generator's +/-10 V and the DMM's fixed
+# 10 V range. The margin absorbs the offset quantisation and leaves the signal unclipped at both rails.
+V_RAIL = 9.5
+# Decimals the amplitude and offset are written with. The values must be quantised BEFORE the safe
+# interval is derived from them, or a rounded offset lands outside the interval it came from.
+Q_DIGITS = 3
 
 BAUD_LO, BAUD_HI = 300, 250000
 # 10 byte-times, which is 100 bit-times: one continuous draw over that span randomises the byte the
@@ -210,6 +231,108 @@ def wait_s(iteration, vi, ri, baud):
     """
     g = MT19937([MAGIC, iteration, P_WAIT, vi, ri])
     return g.float() * WAIT_BYTE_TIMES * BITS_PER_BYTE / float(baud)
+
+
+def amp_ofst_u(iteration, vi, ri):
+    """The two vertical draws for cell (vector index, rate index). -> (u_amp, u_ofst), each in [0,1).
+
+    UNIT-INTERVAL, NOT VOLTS. The clip-safe range depends on the vector's own codeword span and
+    reference amplitude, which live in the manifest -- so the draw stays here where it is pure and
+    replayable in Lua, and the mapping to volts stays in bench_matrix where the manifest already is.
+    See amp_ofst_for() there.
+
+    Keyed like wait_s, so one cell replays without running the cells before it.
+    """
+    g = MT19937([MAGIC, iteration, P_AMP, vi, ri])
+    ua = g.float()
+    g = MT19937([MAGIC, iteration, P_OFST, vi, ri])
+    return ua, g.float()
+
+
+_MROWS = None
+
+
+def _manifest_rows():
+    """manifest.tsv keyed by vector id, read once."""
+    global _MROWS
+    if _MROWS is None:
+        import csv as _csv
+        with open(os.path.join(ROOT, 'out', 'vectors', 'manifest.tsv')) as f:
+            _MROWS = {r['file'].replace('.bin', ''): r for r in _csv.DictReader(f, delimiter='\t')}
+    return _MROWS
+
+
+def _cw_span(vid):
+    """A vector's codeword extremes, SIGNED, derived from the manifest. -> (min_cw, max_cw)
+
+    GEN_VOLTS is `ofst + c / 32767 * (amp / 2)`, so the words follow from min_v and max_v -- checked
+    against every .bin and agreeing on all 41. Derived rather than read because reading the words
+    unsigned turns a small negative excursion into a near-full-scale one: the drift vectors dip below
+    zero, and 45 % of full scale then reads as 100 %, which is the difference between a vector with
+    headroom and one with none.
+    """
+    r = _manifest_rows().get(vid) or {}
+    amp = float(r.get('amp_vpp') or 10.0)
+    ofst = float(r.get('ofst_v') or 0.0)
+    k = 32767.0 / (amp / 2.0)
+    return int(round((float(r.get('min_v') or 0.0) - ofst) * k)), \
+        int(round((float(r.get('max_v') or 0.0) - ofst) * k))
+
+
+def amp_ofst_for(vid, u_amp, u_ofst):
+    """Map two unit draws to a CLIP-SAFE amplitude and offset. -> (amp_vpp, ofst_v, note)
+
+    ONE IMPLEMENTATION, THREE CONSUMERS: the hardware sweep, the emitted plan the offline twin reads,
+    and the bounds test. A second copy of this arithmetic is a second thing to get subtly different,
+    and the difference would show up as the twin disagreeing with hardware for a reason that is neither.
+
+    The amplitude scales the vector's OWN reference, clamped to the generator's ceiling. The offset is
+    then placed inside whatever range keeps both extremes within +/-V_RAIL at that amplitude, so a
+    vector already near the rail gets a narrow range rather than a clipped waveform.
+    """
+    lo, hi = _cw_span(vid)
+    r = _manifest_rows().get(vid) or {}
+    amp = float(r.get('amp_vpp') or 10.0) * (AMP_SCALE_LO + u_amp * (AMP_SCALE_HI - AMP_SCALE_LO))
+    # QUANTISE BEFORE THE INTERVAL IS COMPUTED, not after. Rounding an offset that already sat exactly
+    # on the rail pushes it over, and assert_unclipped then kills the whole run: measured on v48b and
+    # v61 at u_ofst -> 1, which a long soak reaches. The interval must be derived from the values that
+    # will actually be written.
+    amp = round(min(amp, SDG_MAX_VPP), Q_DIGITS)
+    note = ''
+    for _ in range(2):
+        half = amp / 2.0
+        dlo = -V_RAIL - lo / 32767.0 * half
+        dhi = V_RAIL - hi / 32767.0 * half
+        if dhi >= dlo:
+            break
+        # No offset fits at this amplitude. Shrink rather than clip: a clipped waveform is a different
+        # stimulus that still reports as the one that was asked for.
+        amp = round(2.0 * V_RAIL * 2.0 * 32767.0 / max(hi - lo, 1), Q_DIGITS)
+        note = 'amplitude reduced to keep the band inside +/-%.1f V' % V_RAIL
+    # Quantise the offset, then pull it back inside the interval -- rounding may only ever move it
+    # toward the middle, never past an edge.
+    ofst = round(dlo + u_ofst * max(0.0, dhi - dlo), Q_DIGITS)
+    q = 10.0 ** -Q_DIGITS
+    if ofst > dhi:
+        ofst = math.floor(dhi / q) * q
+    if ofst < dlo:
+        ofst = math.ceil(dlo / q) * q
+    return amp, round(ofst, Q_DIGITS), note
+
+
+def assert_unclipped(vid, amp, ofst):
+    """Refuse a waveform whose band leaves the rails. -> (vmin, vmax)
+
+    Checked against the same formula the mapping used, immediately before the write: a blind write is
+    how a clipped stimulus gets filed as a clean one.
+    """
+    lo, hi = _cw_span(vid)
+    vmin = ofst + lo / 32767.0 * (amp / 2.0)
+    vmax = ofst + hi / 32767.0 * (amp / 2.0)
+    if amp > SDG_MAX_VPP + 1e-6 or vmin < -V_RAIL - 1e-6 or vmax > V_RAIL + 1e-6:
+        raise SystemExit('REFUSING %s at %.3f Vpp offset %.3f V: band %.3f..%.3f V leaves +/-%.1f V'
+                         % (vid, amp, ofst, vmin, vmax, V_RAIL))
+    return vmin, vmax
 
 
 def signature(iteration, vectors, nvectors=None):
@@ -385,6 +508,19 @@ def emit_lua(iteration, nvectors=None):
         vals = ', '.join('%.9g' % wait_s(iteration, vi, ri, p['rates'][ri][0]) for ri in range(nr))
         out.append('    {%s},' % vals)
     out.append('  },')
+    # amps[vi][ri] and ofsts[vi][ri]. WITHOUT THESE THE TWIN REPLAYS THE WRONG SIGNAL: the hardware
+    # sweep now draws a per-cell amplitude and offset, so a twin using the reference amplitude would
+    # decode a waveform the generator never played and disagree for a reason that is neither hardware
+    # nor app.
+    for name, idx in (('amps', 0), ('ofsts', 1)):
+        out.append('  %s = {' % name)
+        for vi, vid in enumerate(p['order']):
+            vals = []
+            for ri in range(nr):
+                ua, uo = amp_ofst_u(iteration, vi, ri)
+                vals.append('%.9g' % amp_ofst_for(vid, ua, uo)[idx])
+            out.append('    {%s},' % ', '.join(vals))
+        out.append('  },')
     out.append('}')
     return '\n'.join(out) + '\n'
 

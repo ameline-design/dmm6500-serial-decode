@@ -15,6 +15,14 @@ naming here: **flow control** is verified electrically — 4.92 V, ~10 µs, one 
 measures **9.4–9.8 µs**, so a device waiting for a credit needs an edge-triggered input rather than a
 polling loop.
 
+**Automatic rate detection has two known failures, both rare and both fixable by typing the rate in.**
+A short pattern repeated over and over — `00`/`FF`/`55`/`AA`, walking bits, a fixed string on a loop —
+can be measured at a small multiple of its true rate: **24 of 6,714** bench points across four full
+sweeps, **0.36 %**, every one a synthetic pattern at a non-standard rate, and no ordinary payload at a
+standard rate has ever shown it. Separately, a line whose logic low sits around **−2 V** can misdetect,
+while −0.1, −0.5, −1.0 and −3.0 V all measure clean. Both are characterised with their numbers under
+**Known failures of automatic rate detection** in the [manual](docs/MANUAL.md).
+
 **Endurance, measured.** A 7-hour soak of this build on one power cycle ran **81 laps — 3,726
 capture-and-decode cycles and 8 one-press recordings — with zero failures.** Every recording ended
 because its buffer filled, at 8 192 bytes, with no instrument events logged and no error left behind.

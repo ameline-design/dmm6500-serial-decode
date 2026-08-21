@@ -66,6 +66,18 @@ FORMATS = [('v41', '8N1', 'the control -- must NOT be called 7E1'),
            ('v44d', '8O1', ''),
            ('v44e', '8N1', 'sent as 8N2 -- the extra stop bit is idle')]
 FORMAT_BAUD = 9600
+# How far the app's REPORTED baud may sit from the commanded one. Matches sdec.snaptol, which is the
+# app's own promise: it snaps a measured rate to its ladder only within 2 %. Exceeding it is a REAL
+# failure and counts as one -- byte-exact content does not prove the rate was right, because
+# uart_decode.tsp records that 9600 7N1 can be bit-identical to 4800 8N1. It is reported as its own
+# verdict (BAUD) rather than as a wrong decode, so the two faults stay distinguishable.
+RATE_TOL = 0.02
+# How much of a waveform may be inconclusive before the waveform itself counts as a failure. An
+# individual undecidable cell is neutral, but a vector that is never READ has produced no evidence and
+# must not read as health. Measured over four laps: only v48a and v48b are ever undecidable, 12 cells
+# each across 172, and no more than 12 of a single lap's 43 -- so 28 % is the observed ceiling and 0.75
+# leaves it wide room while still catching a vector that has gone silent at nearly every rate.
+INCONC_MAX_FRAC = 0.75
 # DERIVED FROM THE MANIFEST, NOT WRITTEN DOWN. Every clean vector renders at 10 samples per bit
 # and every impairment vector at 100, so a rate copied into this file is a rate that goes stale
 # the next time the render regime changes -- and it goes stale QUIETLY: a hard-coded 100000 plays
@@ -976,7 +988,7 @@ def suite_plan(d, g, a, rows):
         spb = int(row.get('spb') or 10)
         want_fmt = (row.get('exp_fmt') or '').strip()
         expect = SP.expect_for(vid)
-        t_vec, ncell, nbadcell, firstcell = time.time(), 0, 0, True
+        t_vec, ncell, nbadcell, ninconc, nbaud, firstcell = time.time(), 0, 0, 0, 0, True
         beat(a, 'iter %d START %d/%d %s (%s, %.1f Vpp, spb %d)'
              % (it, vi + 1, len(order), vid, expect, _amp(vid), spb))
         for ri, (baud, kind) in enumerate(rates):
@@ -992,12 +1004,19 @@ def suite_plan(d, g, a, rows):
             # cell takes the truearb branch and the generator keeps playing the PREVIOUS waveform at
             # this one's rates. Measured -- two waveforms failed 21 of 21 cells each while the two
             # that happened to include rate index 0 passed everything.
+            # THE VERTICAL AXES, per cell. Amplitude and offset are drawn from the iteration exactly as
+            # the wait and the rate are, then mapped to a band that provably fits the rails -- and
+            # asserted, because a blind write is how a clipped stimulus gets filed as a clean one.
+            ua, uo = SP.amp_ofst_u(it, vi, ri)
+            camp, cofst, cnote = SP.amp_ofst_for(vid, ua, uo)
+            vmin_c, vmax_c = SP.assert_unclipped(vid, camp, cofst)
             if firstcell:
-                g.select_arb(VN.arb(vid), _amp(vid), srate)
+                g.select_arb(VN.arb(vid), camp, srate, offset_v=cofst)
                 g.output(True, ch=1)
                 firstcell = False
             else:
                 g.truearb(srate)
+                g.write('C1:BSWV AMP,%g,OFST,%g' % (camp, cofst))
                 g.assert_truearb()
             time.sleep(a.settle)
             # THE SEEDED WAIT, on top of settle and for a different reason: settle lets the generator
@@ -1012,17 +1031,18 @@ def suite_plan(d, g, a, rows):
             ok, det = False, 'no bytes decoded'
             if 'fail' in res:
                 det = 'FAIL %s' % res['fail']
-            elif nf > head:
+            verdict = 'FAIL'
+            if 'fail' not in res and nf > head:
                 # ANY legitimate reading of the wire passes. One candidate for all but the three
                 # ambiguously framed vectors; see plan_payloads.
                 for cand in payloads:
-                    ok, det = BU.judge_payload(hexs[2 * head:], cand)
-                    if ok:
+                    verdict, det = BU.judge_payload_v(hexs[2 * head:], cand, expect)
+                    if verdict == 'PASS':
                         break
+                ok = verdict == 'PASS'
                 if head:
                     det = det + ' after a FLAGGED %d-byte head' % head
             gb = num(res, 'baud')
-            close = gb is not None and abs(gb / float(baud) - 1.0) <= 0.02
             got_fmt = res.get('fmt', '?')
             # THE FORMAT IS ONLY CHECKED WHERE THERE IS ONE ANSWER. With two legitimate readings the
             # app is right either way, and requiring the manifest's one fails it at every rate that
@@ -1031,20 +1051,64 @@ def suite_plan(d, g, a, rows):
                 fmtok = True
             else:
                 fmtok = bool(want_fmt) and got_fmt[:3] == want_fmt[:3]
-            exact = ok and close and fmtok
-            # SILENTLY WRONG, computed rather than read out of the judge's prose: bytes came back, the
-            # app raised nothing and flagged nothing, and they are not the payload. That is the one
-            # outcome no vector is allowed, impairment vectors included -- a decode that fails loudly
-            # costs an operator a retry, and one that lies costs them the measurement.
+            # THREE INDEPENDENT VERDICTS, because a baud report that disagrees with the commanded rate
+            # is not a decode fault. The app snaps a measured rate to its ladder within sdec.snaptol,
+            # so a drawn rate 2.4 % from a ladder entry is reported as that entry and every byte still
+            # decodes byte-exact. Folding that into the cell's verdict fails a correct decode; the
+            # discrepancy is real and stays REPORTED, just not as a wrong answer.
+            content_ok = ok
+            rate_ok = gb is not None and abs(gb / float(baud) - 1.0) <= RATE_TOL
+            decode_ok = content_ok and fmtok
+            # SILENTLY WRONG keys on CONTENT alone: bytes came back, the app raised nothing and flagged
+            # nothing, and they are not the payload. INCONCLUSIVE is excluded -- the judge declining to
+            # read a 3-byte capture says nothing about whether those bytes are right.
             nbad = int(num(res, 'nbad', 0))
-            silent = (not exact) and nf > 0 and 'fail' not in res and nbad == 0
-            if expect == 'loud':
-                good = exact or not silent
+            silent = (not content_ok) and verdict != 'INCONCLUSIVE' and nf > 0 \
+                and 'fail' not in res and nbad == 0
+            # INCONCLUSIVE PASSES ONLY FOR A LOUD VECTOR. A drift vector genuinely may not return enough
+            # bytes to judge, and that is the vector doing its job. An EXACT vector returning one byte
+            # where two hundred belong is a defect, and treating it as neutral would let the app return
+            # nothing judgeable at every rate while the suite exited zero.
+            if verdict == 'INCONCLUSIVE':
+                good = expect == 'loud'
+            elif expect == 'loud':
+                good = decode_ok or not silent
             else:
-                good = exact
+                good = decode_ok
+            # A REPORTED BAUD OUTSIDE snaptol IS ITS OWN FAILURE, not a wrong decode and not nothing.
+            # Byte-exact content does NOT prove the rate was right: uart_decode.tsp records that 9600
+            # 7N1 can be bit-identical to 4800 8N1, and a periodic payload frames cleanly at rescaled
+            # rates. So the two verdicts are kept apart and BOTH count.
+            # SET INDEPENDENTLY OF `good`, so a cell that already failed on content still REPORTS its
+            # baud error -- tallying it only when everything else passed loses the data on exactly the
+            # cells that have two faults. A rate claim is only meaningful where bytes were judged, so
+            # INCONCLUSIVE is exempt: nothing was read, so nothing was claimed.
+            # ONLY WHERE A RATE WAS ACTUALLY CLAIMED. A capture that returned nothing claims no rate, and
+            # declining is the correct answer to an unreadable signal -- so requiring a baud there would
+            # fail every honest refusal a loud vector is entitled to make. INCONCLUSIVE is out for the
+            # same reason.
+            baudbad = False
+            if nf > 0 and verdict != 'INCONCLUSIVE':
+                if gb is None:
+                    # Bytes came back with NO reported rate. The panel shows a rate; absent is not right.
+                    baudbad = True
+                    det = det + ' [bytes returned with no baud reported]'
+                elif not rate_ok:
+                    baudbad = True
+                    det = det + ' [baud reported %.0f vs %d commanded, %+.2f %% -- outside snaptol]' % (
+                        gb, baud, 100.0 * (gb / float(baud) - 1.0))
+            good = good and not baudbad
             ncell += 1
+            # INCONCLUSIVE is its own token, never 'ok'. It is not a pass -- it is a cell that produced
+            # no evidence either way, and a run of them means the capture window is too short at this
+            # rate, which is worth seeing rather than counting as health.
+            tok = 'ok' if good else 'BAD'
+            if baudbad:
+                tok, nbaud = 'BAUD', nbaud + 1
+            elif verdict == 'INCONCLUSIVE':
+                tok, ninconc = ('skip' if good else 'BAD'), ninconc + 1
             print('  %-6s %7d Bd %-5s %-5s %-5s %-6s %7s Bd  %-46s %5.2f sa/bit  wait %6.2f ms'
-                  % (vid, baud, kind, expect, 'ok' if good else 'BAD', got_fmt,
+                  % (vid, baud, kind, expect, tok, got_fmt,
                      fmt_num(res.get('baud'), '%.0f'), det,
                      SP.pick_fs(baud, ladder) / float(baud), wait * 1000.0))
             n4915 = note_events(res)
@@ -1068,6 +1132,18 @@ def suite_plan(d, g, a, rows):
             if not good:
                 nbadcell += 1
 
+        # A WAVEFORM THAT PRODUCED NO EVIDENCE AT ALL IS A FAILURE, however entitled to fail it is.
+        # An individual inconclusive cell is neutral, which is right -- but a loud vector returning two
+        # bytes at every rate would otherwise be 43 neutral cells and a clean exit, indistinguishable
+        # from a working one. Being allowed to decline is not the same as never being read.
+        if ncell > 0 and ninconc >= INCONC_MAX_FRAC * ncell:
+            print('  %-6s %s: NO USABLE EVIDENCE -- %d of %d cells were inconclusive (limit %.0f %%)'
+                  % (vid, expect, ninconc, ncell, 100.0 * INCONC_MAX_FRAC))
+            rows.append(('plan %s@evidence' % vid, False,
+                         '%d of %d cells inconclusive -- the vector was never actually read'
+                         % (ninconc, ncell)))
+            nbadcell += 1
+
         # AFTER EVERY WAVEFORM, NOT ONLY AT THE END OF THE LAP. 43 cells is minutes; the lap is hours.
         # Two questions get asked here, and both are cheap:
         #
@@ -1082,12 +1158,17 @@ def suite_plan(d, g, a, rows):
         vsec = time.time() - t_vec
         alive = d.alive()
         sdg_ok, sdg_why = BS.sdg_alive(sdg=g)
-        print('  %-6s %s: %d cells in %.0f s (%.2f s/cell) at %.1f Vpp, %d not as expected  DMM %s  SDG %s'
-              % (vid, expect, ncell, vsec, vsec / max(1, ncell), _amp(vid), nbadcell,
+        # ninconc IS PRINTED EVEN WHEN ZERO. A cell the judge declined is neither a pass nor a defect,
+        # so it must not vanish into the pass count -- a rate where every capture is too short to read
+        # would otherwise look like 43 clean cells.
+        print('  %-6s %s: %d cells in %.0f s (%.2f s/cell) at %.1f Vpp, %d not as expected, '
+              '%d inconclusive, %d baud-misreported  DMM %s  SDG %s'
+              % (vid, expect, ncell, vsec, vsec / max(1, ncell), _amp(vid), nbadcell, ninconc, nbaud,
                  'alive' if alive else 'NOT ANSWERING', 'alive' if sdg_ok else 'NO: %s' % sdg_why))
-        beat(a, 'iter %d DONE  %d/%d %s %d cells %.0fs %.2fs/cell %d unexpected DMM=%s SDG=%s'
-             % (it, vi + 1, len(order), vid, ncell, vsec, vsec / max(1, ncell), nbadcell,
-                'alive' if alive else 'SILENT', 'alive' if sdg_ok else 'SILENT'))
+        beat(a, 'iter %d DONE  %d/%d %s %d cells %.0fs %.2fs/cell %d unexpected %d inconc %d baud '
+                'DMM=%s SDG=%s'
+             % (it, vi + 1, len(order), vid, ncell, vsec, vsec / max(1, ncell), nbadcell, ninconc,
+                nbaud, 'alive' if alive else 'SILENT', 'alive' if sdg_ok else 'SILENT'))
         if not alive or not sdg_ok:
             # EXIT 3, NOT 1, AND THE DIFFERENCE MATTERS TO A SOAK. Exit 1 is "some cell failed", which
             # a soak should tally and carry on from. This is "there is no bench any more", and the
