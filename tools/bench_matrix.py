@@ -794,12 +794,7 @@ def suite_payloads(d, g, a, rows):
             if 'fail' in res:
                 det = 'FAIL %s' % res['fail']
             elif nf > head:
-                # ANY legitimate reading of the wire passes. One candidate for all but the three
-                # ambiguously framed vectors; see plan_payloads.
-                for cand in payloads:
-                    ok, det = BU.judge_payload(hexs[2 * head:], cand)
-                    if ok:
-                        break
+                ok, det = BU.judge_payload(hexs[2 * head:], payload)
                 if head:
                     det = det + ' after a FLAGGED %d-byte head' % head
             gb = num(res, 'baud')
@@ -917,21 +912,53 @@ def suite_plan(d, g, a, rows):
     skip = set(x.strip() for x in (a.skip_vectors or '').split(',') if x.strip())
     if skip:
         vecs = [v for v in vecs if v not in skip]
-    order = SP.vector_subset(it, vecs, a.plan_vectors)
     rates = SP.rates_for(it)
+    kindmap = None
+    if getattr(a, 'plan_spec', None):
+        order, kindmap = [], {}
+        for item in a.plan_spec.split(','):
+            vid, _, kinds = item.strip().partition(':')
+            vid = vid.strip()
+            if vid not in VN.MAP:
+                raise SystemExit('REFUSING: --plan-spec names %r, which is not in vector_names.MAP'
+                                 % vid)
+            k = (kinds or 'all').strip()
+            want = {'std': {'std'}, 'nonstd': {'rand', 'edge'},
+                    'all': {'std', 'rand', 'edge'}}.get(k)
+            if want is None:
+                raise SystemExit("REFUSING: --plan-spec kind %r for %s; use std, nonstd or all"
+                                 % (k, vid))
+            order.append(vid)
+            kindmap[vid] = want
+    else:
+        order = SP.vector_subset(it, vecs, a.plan_vectors)
     std = set(SP.standard_rates())
     ladder = SP.rate_ladder()
     gapno = {}
     for baud, kind in rates:
         if kind != 'std':
             gapno[baud] = sum(1 for b in std if b < baud)
-    est = SP.estimate_secs(rates, len(order)) / 60.0
+    # THE COUNT AFTER THE FILTER, not before it. With --plan-spec most cells are skipped, and a header
+    # claiming 172 where 86 will run is a wrong number in the one line an operator reads.
+    if kindmap is None:
+        ncells = len(order) * len(rates)
+        est = SP.estimate_secs(rates, len(order)) / 60.0
+    else:
+        ncells, secs = 0, 0.0
+        for v in order:
+            sub = [r for r in rates if r[1] in kindmap[v]]
+            ncells += len(sub)
+            secs += SP.estimate_secs(sub, 1)
+        est = secs / 60.0
     print('\n=== PLAN iteration %d -- %d vectors x %d rates (%d standard, %d drawn, %d ladder edge) '
           '= %d cells, est %.0f min ==='
           % (it, len(order), len(rates), sum(1 for _, k in rates if k == 'std'),
              sum(1 for _, k in rates if k == 'rand'), sum(1 for _, k in rates if k == 'edge'),
-             len(order) * len(rates), est))
-    print('    order: %s' % ' '.join(order))
+             ncells, est))
+    if kindmap is None:
+        print('    order: %s' % ' '.join(order))
+    else:
+        print('    cells: %s' % '  '.join('%s:%s' % (v, '+'.join(sorted(kindmap[v]))) for v in order))
     if skip:
         print('    SKIPPED BY REQUEST, and therefore untested this lap: %s' % ' '.join(sorted(skip)))
     print('    FRAME mode only: above 165563 Bd sdec.fs_for_burst returns nil, so the streaming '
@@ -949,18 +976,26 @@ def suite_plan(d, g, a, rows):
         spb = int(row.get('spb') or 10)
         want_fmt = (row.get('exp_fmt') or '').strip()
         expect = SP.expect_for(vid)
-        t_vec, ncell, nbadcell = time.time(), 0, 0
+        t_vec, ncell, nbadcell, firstcell = time.time(), 0, 0, True
         beat(a, 'iter %d START %d/%d %s (%s, %.1f Vpp, spb %d)'
              % (it, vi + 1, len(order), vid, expect, _amp(vid), spb))
         for ri, (baud, kind) in enumerate(rates):
+            if kindmap is not None and kind not in kindmap[vid]:
+                continue
             srate = baud * spb
             if srate > I.SDG_MAX_SRATE:
                 print('  %-6s %7d Bd SKIPPED -- %g Sa/s over the SDG ceiling (spb %d)'
                       % (vid, baud, srate, spb))
                 continue
-            if ri == 0:
+            # SELECT ON THE FIRST CELL ACTUALLY RUN, not on rate index 0. With --plan-spec the first
+            # rates are filtered out, so keying the select on ri == 0 means it never happens: every
+            # cell takes the truearb branch and the generator keeps playing the PREVIOUS waveform at
+            # this one's rates. Measured -- two waveforms failed 21 of 21 cells each while the two
+            # that happened to include rate index 0 passed everything.
+            if firstcell:
                 g.select_arb(VN.arb(vid), _amp(vid), srate)
                 g.output(True, ch=1)
+                firstcell = False
             else:
                 g.truearb(srate)
                 g.assert_truearb()
@@ -978,7 +1013,12 @@ def suite_plan(d, g, a, rows):
             if 'fail' in res:
                 det = 'FAIL %s' % res['fail']
             elif nf > head:
-                ok, det = BU.judge_payload(hexs[2 * head:], payload)
+                # ANY legitimate reading of the wire passes. One candidate for all but the three
+                # ambiguously framed vectors; see plan_payloads.
+                for cand in payloads:
+                    ok, det = BU.judge_payload(hexs[2 * head:], cand)
+                    if ok:
+                        break
                 if head:
                     det = det + ' after a FLAGGED %d-byte head' % head
             gb = num(res, 'baud')
@@ -1097,6 +1137,13 @@ def main():
     # over: the work is I/O bound on the instrument at about 0.6 s of CPU an hour, and the child's pid
     # changes at every lap boundary with its counter resetting to zero, so a monotonic check fires an
     # alarm exactly when a lap finishes.
+    # AN EXPLICIT CELL SPEC, for a smoke run that has to finish in minutes rather than hours. Each
+    # entry is vector:kinds, kinds being std, nonstd or all -- so two waveforms can take the standard
+    # ladder while two others take only the drawn rates, at a quarter of the cells. The wait for a cell
+    # is still keyed on its index in the FULL rate list, so a cell reached this way is the same cell
+    # the soak would run and reproduces from the same iteration number.
+    ap.add_argument('--plan-spec', default=None,
+                    help='explicit cells, e.g. v77:std,r06:std,v78:nonstd,r00:nonstd')
     ap.add_argument('--heartbeat', default=None,
                     help='append per-waveform progress to this file, flushed, for a monitor to read')
     ap.add_argument('--skip-vectors', default='',
