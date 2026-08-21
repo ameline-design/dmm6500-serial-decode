@@ -184,7 +184,8 @@ def judge_lap(out, rc, expect=None):
 LAP_DEADLINE_MARGIN = 2.0
 
 
-def run_suite(suites, rates=None, timeout=1200, expect=None, iteration=None, plan_vectors=None):
+def run_suite(suites, rates=None, timeout=1200, expect=None, iteration=None, plan_vectors=None,
+              skip_vectors=''):
     """One lap of bench_matrix. -> (rc, stdout, {point: (verdict, detail)}, why_incomplete).
 
     The judging is judge_lap()'s and needs no instrument and no subprocess, which is what makes it
@@ -201,6 +202,8 @@ def run_suite(suites, rates=None, timeout=1200, expect=None, iteration=None, pla
         argv += ['--iteration', str(iteration)]
     if plan_vectors is not None:
         argv += ['--plan-vectors', str(plan_vectors)]
+    if skip_vectors:
+        argv += ['--skip-vectors', skip_vectors]
     if rates:
         argv += ['--rates', rates]
     p = subprocess.run(argv, cwd=ROOT, stdout=subprocess.PIPE,
@@ -420,6 +423,8 @@ def main():
     # rather than a separate selection with its own behaviour.
     ap.add_argument('--plan-vectors', type=int, default=None,
                     help='plan suite: a seeded subset of this many vectors (default all 41)')
+    ap.add_argument('--skip-vectors', default='',
+                    help='plan suite: vector ids to leave out, printed in every lap header')
     ap.add_argument('--record-every', type=int, default=0,
                     help='also take a one-press recording every Nth lap (0 = never). Each costs '
                          'about a minute, so it trades laps for coverage of the recording path')
@@ -498,7 +503,8 @@ def main():
         try:
             rc, out, points, why = run_suite(a.suites, a.rates, timeout=lap_timeout,
                                              expect=expect, iteration=laps,
-                                             plan_vectors=a.plan_vectors)
+                                             plan_vectors=a.plan_vectors,
+                                             skip_vectors=a.skip_vectors)
         except subprocess.TimeoutExpired:
             dead += 1
             print('lap %-4d TIMED OUT -- the suite did not finish' % laps)
@@ -511,6 +517,15 @@ def main():
         # set would enter a 'run' for every point it reached and none for the points it never got to --
         # so the missing ones silently improve their own pass rate, which is the opposite of what a soak
         # is for. Kept as evidence and counted separately.
+        # EXIT 3 MEANS THE BENCH IS GONE, and no later lap can mean anything. The generator's SCPI
+        # port needs a power cycle at the front panel, which an unattended run cannot do -- so
+        # continuing turns one wedge into a night of laps against a dead instrument.
+        if rc == 3:
+            print('lap %-4d STOPPED: the bench stopped answering. Ending the soak rather than '
+                  'running further laps against a dead instrument -- the generator needs a power '
+                  'cycle at the front panel.' % laps)
+            incomplete += 1
+            break
         if why is not None:
             incomplete += 1
             print('lap %-4d INCOMPLETE -- %s (not tallied)' % (laps, why))

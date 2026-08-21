@@ -189,7 +189,13 @@ for vi = 1, table.getn(P.vectors) do
       if not ran then
         good, det = false, 'RAISED ' .. tostring(why)
       else
+        -- EITHER legitimate reading passes; v.hex2 is set only where the wire genuinely supports
+        -- two framings and the app is right whichever it picks.
         good, det = judge(tohex(r), v.hex)
+        if good ~= true and v.hex2 ~= nil and v.hex2 ~= '' then
+          local g2, d2 = judge(tohex(r), v.hex2)
+          if g2 == true then good, det = g2, d2 .. ' (alternate framing)' end
+        end
         if det == nil then det = '' end
       end
       -- A cell that cannot be judged is neither a pass nor a failure, and is counted apart so a

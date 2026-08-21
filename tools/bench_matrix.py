@@ -794,7 +794,12 @@ def suite_payloads(d, g, a, rows):
             if 'fail' in res:
                 det = 'FAIL %s' % res['fail']
             elif nf > head:
-                ok, det = BU.judge_payload(hexs[2 * head:], payload)
+                # ANY legitimate reading of the wire passes. One candidate for all but the three
+                # ambiguously framed vectors; see plan_payloads.
+                for cand in payloads:
+                    ok, det = BU.judge_payload(hexs[2 * head:], cand)
+                    if ok:
+                        break
                 if head:
                     det = det + ' after a FLAGGED %d-byte head' % head
             gb = num(res, 'baud')
@@ -827,21 +832,54 @@ def manifest():
 
 
 def plan_payload(vid):
-    """The expected bytes for a vector. -> bytes, or None if neither source has them.
+    """The expected bytes for a vector. -> bytes, or None if the manifest has none.
 
-    PREFERS THE .txt AND FALLS BACK TO THE MANIFEST'S exp_hex. Fifteen of the 41 vectors have no
-    .txt -- the short fixed-payload ones, v41 and the v44 family among them -- but every manifest row
-    carries exp_hex, so an oracle exists for all 41 and no vector is skipped for want of a file.
+    exp_hex, NEVER THE .txt, AND THE DIFFERENCE IS NOT COSMETIC. The .txt holds the bytes that were
+    ENCODED; exp_hex holds the bytes make_vectors' own self-check DECODED off the rendered waveform,
+    and exp_fmt beside it is the format that decode reported. Those two agree with each other. The
+    .txt agrees with neither whenever the framing is ambiguous.
+
+    THREE VECTORS MAKE THAT CONCRETE. v90 and v94 are blocks of 0x00/0xFF/0x55/0xAA and v92 is
+    walking bits -- and EVERY byte value in them is a valid frame in 8N1 AND in 7E1, because bit 7
+    happens to track the parity its 7-bit reading would carry. So the wire genuinely says both things,
+    the app votes 7E1/7O1, and the manifest records that: v92's exp_hex is the .txt with bit 7
+    stripped, 80 -> 00 and FE -> 7E. Judging those bytes against the .txt while requiring exp_fmt's
+    format asks for two things that cannot both be true, and fails a correct decode at every rate.
+    exp_hex covers all 41 rows in full, so there is nothing to fall back to.
     """
-    p = os.path.join(BU.VECDIR, vid + '.txt')
-    if os.path.exists(p):
-        with open(p, 'rb') as f:
-            return f.read()
     hx = (manifest().get(vid) or {}).get('exp_hex') or ''
     parts = hx.split()
     if not parts:
         return None
     return bytes(int(x, 16) for x in parts)
+
+
+def plan_payloads(vid):
+    """EVERY byte reading the wire legitimately supports. -> list of bytes, commonest first.
+
+    Usually one, and then this is just plan_payload. It is a list because three vectors are framed
+    ambiguously BY CONSTRUCTION and the ambiguity is not resolvable from the signal: with 0x00, 0xFF,
+    0x55, 0xAA and walking bits, bit 7 tracks exactly the parity a 7-bit reading would carry, so 8N1
+    and 7E1 describe the same wire equally well. Which one the app votes for shifts with the rate --
+    v94 reads 8N1 at some and 7E1 at others, both correctly -- so pinning either expectation fails a
+    right answer at the rates that chose the other. Demanding either ONE of them is what turns an
+    ambiguous vector into 43 false failures a lap.
+
+    The .txt is the bytes as ENCODED; exp_hex is what the self-check DECODED, which for these three is
+    the same bytes with bit 7 stripped. For every other vector the two are identical and this returns
+    one entry.
+    """
+    out = []
+    dec = plan_payload(vid)
+    if dec:
+        out.append(dec)
+    p = os.path.join(BU.VECDIR, vid + '.txt')
+    if os.path.exists(p):
+        with open(p, 'rb') as f:
+            src = f.read()
+        if src and src not in out:
+            out.append(src)
+    return out
 
 
 def suite_plan(d, g, a, rows):
@@ -863,6 +901,9 @@ def suite_plan(d, g, a, rows):
     """
     it = a.iteration
     vecs = sorted(VN.MAP.keys())
+    skip = set(x.strip() for x in (a.skip_vectors or '').split(',') if x.strip())
+    if skip:
+        vecs = [v for v in vecs if v not in skip]
     order = SP.vector_subset(it, vecs, a.plan_vectors)
     rates = SP.rates_for(it)
     std = set(SP.standard_rates())
@@ -878,13 +919,15 @@ def suite_plan(d, g, a, rows):
              sum(1 for _, k in rates if k == 'rand'), sum(1 for _, k in rates if k == 'edge'),
              len(order) * len(rates), est))
     print('    order: %s' % ' '.join(order))
+    if skip:
+        print('    SKIPPED BY REQUEST, and therefore untested this lap: %s' % ' '.join(sorted(skip)))
     print('    FRAME mode only: above 165563 Bd sdec.fs_for_burst returns nil, so the streaming '
           'paths cannot record 172800 and up at all.')
 
     for vi, vid in enumerate(order):
-        payload = plan_payload(vid)
-        if payload is None:
-            print('  %-6s SKIPPED -- no .txt and no exp_hex in the manifest' % vid)
+        payloads = plan_payloads(vid)
+        if not payloads:
+            print('  %-6s SKIPPED -- no exp_hex in the manifest' % vid)
             continue
         row = manifest().get(vid) or {}
         # SPB PER VECTOR, FROM THE MANIFEST. The clean vectors render at 10 samples per bit and the
@@ -926,7 +969,13 @@ def suite_plan(d, g, a, rows):
             gb = num(res, 'baud')
             close = gb is not None and abs(gb / float(baud) - 1.0) <= 0.02
             got_fmt = res.get('fmt', '?')
-            fmtok = bool(want_fmt) and got_fmt[:3] == want_fmt[:3]
+            # THE FORMAT IS ONLY CHECKED WHERE THERE IS ONE ANSWER. With two legitimate readings the
+            # app is right either way, and requiring the manifest's one fails it at every rate that
+            # chose the other -- so for those vectors the bytes carry the whole verdict.
+            if len(payloads) > 1:
+                fmtok = True
+            else:
+                fmtok = bool(want_fmt) and got_fmt[:3] == want_fmt[:3]
             exact = ok and close and fmtok
             # SILENTLY WRONG, computed rather than read out of the judge's prose: bytes came back, the
             # app raised nothing and flagged nothing, and they are not the payload. That is the one
@@ -982,11 +1031,15 @@ def suite_plan(d, g, a, rows):
               % (vid, expect, ncell, vsec, vsec / max(1, ncell), _amp(vid), nbadcell,
                  'alive' if alive else 'NOT ANSWERING', 'alive' if sdg_ok else 'NO: %s' % sdg_why))
         if not alive or not sdg_ok:
-            raise SystemExit(
-                'STOPPING after %s: the bench stopped answering (DMM %s, SDG %s). Nothing after this '
-                'point would mean anything, and the remaining waveforms would each wait for a timeout. '
-                'The app may be mid-capture and the generator is still driving its output.'
-                % (vid, 'alive' if alive else 'silent', 'alive' if sdg_ok else sdg_why))
+            # EXIT 3, NOT 1, AND THE DIFFERENCE MATTERS TO A SOAK. Exit 1 is "some cell failed", which
+            # a soak should tally and carry on from. This is "there is no bench any more", and the
+            # generator's SCPI port cannot be recovered without a power cycle at the front panel --
+            # so every later lap would run against a dead instrument and produce laps of nothing.
+            print('STOPPING after %s: the bench stopped answering (DMM %s, SDG %s). Nothing after '
+                  'this point would mean anything, and the remaining waveforms would each wait for a '
+                  'timeout. The app may be mid-capture and the generator is still driving its output.'
+                  % (vid, 'alive' if alive else 'silent', 'alive' if sdg_ok else sdg_why))
+            raise SystemExit(3)
         if nbadcell and a.fail_fast:
             raise SystemExit(
                 'STOPPING after %s: %d of %d cells did not behave as a %r vector must, and --fail-fast '
@@ -1017,6 +1070,11 @@ def main():
                     help='plan suite: stop at the end of the first waveform with an unexpected '
                          'failure, rather than sweeping the remaining 40. For a gating sweep; a soak '
                          'wants the whole lap so it can count rates')
+    # NAMED AND LOGGED, never silent. A waveform dropped without a word turns into a suite that
+    # reports full coverage of a set it did not test.
+    ap.add_argument('--skip-vectors', default='',
+                    help='comma-separated vector ids to leave out of the plan, with the omission '
+                         'printed in the header')
     ap.add_argument('--plan-vectors', type=int, default=None,
                     help='a seeded subset of this many vectors, for a lap that must finish in '
                          'minutes (the full 41 is about 2 h)')

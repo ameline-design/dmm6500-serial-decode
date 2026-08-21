@@ -357,15 +357,22 @@ def emit_lua(iteration, nvectors=None):
            '  iteration = %d,' % iteration, '  vectors = {']
     for vi, vid in enumerate(p['order']):
         r = rows.get(vid) or {}
-        hexs = (r.get('exp_hex') or '').replace(' ', '')
+        # BOTH legitimate readings travel, because three vectors are framed ambiguously by
+        # construction and the app is right either way -- see bench_matrix.plan_payloads. exp_hex is
+        # what the self-check DECODED; the .txt is what was ENCODED, and for those three they differ
+        # by bit 7. hex2 is empty wherever there is only one reading.
+        hexs = (r.get('exp_hex') or '').replace(' ', '').upper()
+        hex2 = ''
         txt = os.path.join(ROOT, 'out', 'vectors', vid + '.txt')
         if os.path.exists(txt):
             with open(txt, 'rb') as fh:
-                hexs = fh.read().hex().upper()
+                alt = fh.read().hex().upper()
+            if alt and alt != hexs:
+                hex2 = alt
         out.append("    {id = '%s', amp = %s, ofst = %s, spb = %s, npts = %s, class = '%s', "
-                   "hex = '%s'},"
+                   "hex = '%s', hex2 = '%s'},"
                    % (vid, r.get('amp_vpp') or 10.0, r.get('ofst_v') or 0,
-                      r.get('spb') or 10, r.get('npts') or 0, expect_for(vid), hexs))
+                      r.get('spb') or 10, r.get('npts') or 0, expect_for(vid), hexs, hex2))
     out.append('  },')
     out.append('  rates = {')
     for baud, kind in p['rates']:
