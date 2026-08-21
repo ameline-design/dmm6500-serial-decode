@@ -69,18 +69,23 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--iteration', type=int, default=1)
     ap.add_argument('--no-panel', action='store_true', help='skip the button matrix')
+    ap.add_argument('--keep-combine', action='store_true',
+                    help='gate the stimulus WITH SDG CH2 summed into CH1, as the soak will run it')
     ap.add_argument('--out', default=os.path.expanduser('~/tmp/smoke'))
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
 
-    print('SMOKE  iteration %d  spec %s%s' % (a.iteration, SPEC,
-                                              '' if not a.no_panel else '  (no panel)'))
+    print('SMOKE  iteration %d  spec %s%s%s' % (a.iteration, SPEC,
+                                                '' if not a.no_panel else '  (no panel)',
+                                                '  (CH2 merged into CH1)' if a.keep_combine else ''))
     print()
-    rc1, bad1, s1, _ = run('plan', ['python3', '-u', 'tools/bench_matrix.py', '--suites', 'plan',
-                                    '--no-start', '--no-output-off', '--iteration', str(a.iteration),
-                                    '--plan-spec', SPEC,
-                                    '--heartbeat', os.path.join(a.out, 'heartbeat.txt')],
-                           os.path.join(a.out, 'plan.log'))
+    argv = ['python3', '-u', 'tools/bench_matrix.py', '--suites', 'plan',
+            '--no-start', '--no-output-off', '--iteration', str(a.iteration),
+            '--plan-spec', SPEC,
+            '--heartbeat', os.path.join(a.out, 'heartbeat.txt')]
+    if a.keep_combine:
+        argv += ['--keep-combine']
+    rc1, bad1, s1, _ = run('plan', argv, os.path.join(a.out, 'plan.log'))
     rc2, bad2, s2 = 0, 0, 0.0
     if not a.no_panel:
         rc2, bad2, s2, _ = run('panel', ['python3', '-u', 'tools/bench_panel.py', '--reuse'],

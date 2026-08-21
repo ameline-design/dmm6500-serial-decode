@@ -1243,6 +1243,8 @@ def main():
     ap.add_argument('--no-start', action='store_true',
                     help='use the app already running rather than loading and rebuilding')
     ap.add_argument('--no-output-off', action='store_true')
+    ap.add_argument('--keep-combine', action='store_true',
+                    help='leave CH2 summed into CH1 as an impairment rather than clearing the merge')
     ap.add_argument('--shots', help='directory for a front-panel PNG per test point')
     a = ap.parse_args()
 
@@ -1284,8 +1286,20 @@ def main():
                     continue
                 g.upload_arb(VN.arb(vid), cw, amp_for(NOMINAL_SWING), _srate(vid, FORMAT_BAUD))
                 time.sleep(0.3)
-        g.impair_off(ch=2)
-        g.combine(False, ch=1)
+        if a.keep_combine:
+            # CH2 is this run's impairment, summed into CH1 at the generator. Written here rather than
+            # left to whatever the front panel last did, and echoed, so the log says which stimulus
+            # every verdict below describes.
+            g.combine_pair(sum_ch=1)
+            g.output(True, ch=2)
+            print('CH2 merged into CH1: %s' % g.query('C2:BSWV?'))
+            print('  %s   %s   %s' % (g.query('C1:CMBN?'), g.query('C2:CMBN?'), g.query('C2:OUTP?')))
+        else:
+            # CMBN OFF is what actually removes CH2 from the sum. C2:OUTP OFF does NOT: the merge is
+            # taken ahead of the output relay, measured 2026-08-21 -- CH1 kept the spike to the last
+            # millivolt while CH2's own port went dead. So the order here is not interchangeable.
+            g.impair_off(ch=2)
+            g.combine(False, ch=1)
 
         print(d.q('print(localnode.model, localnode.version)'))
         if not a.no_start:

@@ -185,7 +185,7 @@ LAP_DEADLINE_MARGIN = 2.0
 
 
 def run_suite(suites, rates=None, timeout=1200, expect=None, iteration=None, plan_vectors=None,
-              skip_vectors='', heartbeat=None):
+              skip_vectors='', heartbeat=None, keep_combine=False):
     """One lap of bench_matrix. -> (rc, stdout, {point: (verdict, detail)}, why_incomplete).
 
     The judging is judge_lap()'s and needs no instrument and no subprocess, which is what makes it
@@ -206,6 +206,8 @@ def run_suite(suites, rates=None, timeout=1200, expect=None, iteration=None, pla
         argv += ['--skip-vectors', skip_vectors]
     if heartbeat:
         argv += ['--heartbeat', heartbeat]
+    if keep_combine:
+        argv += ['--keep-combine']
     if rates:
         argv += ['--rates', rates]
     p = subprocess.run(argv, cwd=ROOT, stdout=subprocess.PIPE,
@@ -430,6 +432,8 @@ def main():
     ap.add_argument('--record-every', type=int, default=0,
                     help='also take a one-press recording every Nth lap (0 = never). Each costs '
                          'about a minute, so it trades laps for coverage of the recording path')
+    ap.add_argument('--keep-combine', action='store_true',
+                    help='leave SDG CH2 summed into CH1 as an impairment for every lap')
     ap.add_argument('--out', default=os.path.join(ROOT, 'out', 'soak'))
     ap.add_argument('--selftest', nargs='?', const=SELFTEST_LOG, default=None, metavar='LOG',
                     help='replay a saved lap log through the completeness tests and exit. Touches no '
@@ -533,7 +537,8 @@ def main():
                                              expect=expect, iteration=laps,
                                              plan_vectors=a.plan_vectors,
                                              skip_vectors=a.skip_vectors,
-                                             heartbeat=os.path.join(outdir, 'heartbeat.txt'))
+                                             heartbeat=os.path.join(outdir, 'heartbeat.txt'),
+                                             keep_combine=a.keep_combine)
         except subprocess.TimeoutExpired:
             dead += 1
             print('lap %-4d TIMED OUT -- the suite did not finish' % laps)
