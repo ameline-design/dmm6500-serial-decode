@@ -55,6 +55,33 @@ avoid `#`, `%`, `string.gmatch` and bitwise operators throughout.
 
 ## Before releasing it to anyone
 
+Three gates, each about ten times the cost of the one before it. Run them in order, so a cheap failure
+stops an expensive one. `docs/BENCH.md` describes the harness in full.
+
+```sh
+python3 tools/release_sweep.py --offline   #  ~1 min, no instruments
+python3 tools/bench_smoke.py               #  11 min, both instruments
+python3 tools/soak.py --hours 8 --suites formats,plan --skip-vectors v95,v96
+```
+
+**The smoke gate is 11 minutes and covers the whole rate range.** Four waveforms — the fox and a
+random payload, each in 8N1 and 7E1 — paired crosswise so one pair takes the 22 standard baud rates
+and the other the 21 drawn ones, and each rate family therefore faces both formats and both content
+classes. Then all 45 button presses. 86 cells, 9.5 min; presses, 1.9 min. Run it after any change and
+before starting anything long: a soak lap is 155 minutes, and a harness defect found at minute 147 has
+cost an evening.
+
+**No version is tagged without at least 8 hours of soak.** Not a guideline. A release sweep answers
+"does it pass?" once, which is the wrong question for anything that fails one run in ten — a single
+green sweep licenses an intermittent and a single red one reads as a regression nobody can reproduce.
+The soak runs the seeded sweep for hours and reports a **failure rate per test point**, which is the
+number an intermittent actually has. Eight hours is about three laps of all 39 waveforms across 43
+baud rates each, which is the least that distinguishes "fails every lap" from "failed once".
+
+Every lap draws a different waveform order, different non-standard rates and a different wait before
+each capture, all from the lap number — so `--iteration N` rebuilds any lap exactly, without running
+the ones before it, and a failure replays offline in seconds. `docs/BENCH.md` has the commands.
+
 ```sh
 python3 tools/release_sweep.py
 ```
@@ -79,7 +106,9 @@ python3 tools/release_sweep.py --offline
 | Stage | Checks |
 |---|---|
 | `lint` `parse` | Lua 5.0.2 incompatibilities; `luac -p` on every module |
-| `unit` | 1,044 offline tests — decoder, UI, state machine, file paths, every visible ASCII glyph |
+| `vecrefs` | every waveform id named in `tools/` is in `MAP` or declared `RETIRED` — a deletion from `MAP` alone leaves references that fail where they are used, not where they are declared |
+| `soakrand` | `mt19937.py` and `mt19937.lua` produce one sequence, checked against CPython's `random`, which is the same algorithm — plus the 5.0.2 syntax scan that decides whether the module can load on the instrument at all |
+| `unit` | 1,047 offline tests — decoder, UI, state machine, file paths, every visible ASCII glyph |
 | `unit-cancel` | one-press recordings, both window sizes, and the flow-control loop running with no interaction |
 | `stress` | hostile signals: never silently **wrong**, never **raises** |
 | `unit-analog` | the bench cases at the app's own sample rates, swept over sampling phase, jitter, noise and where the capture window opens |
@@ -94,6 +123,8 @@ python3 tools/release_sweep.py --offline
 | `hw-payloads` | fourteen distinct payloads covering every byte value 0–255, with the fox and a random vector also driven at 115 200 and 250 000 |
 | `hw-odd-rates` | nineteen **non-standard** baud rates — 900, 1500, 3600, 8123, 29127, 104857 … |
 | `hw-panel` | every button in every state, with the panel grabbed **before and after each press** and differenced by region — including a one-press recording |
+| `soakrand-dmm` | the third leg: the instrument's **own** Lua 5.0.2 runs the same generator and must produce the same words, floats, rejected draws and permutation |
+| `hw-plan` | the seeded sweep on the bench: two waveforms across all 43 rates in a seeded order, with a seeded wait before every capture |
 | `hw-break` | degenerate signals and contradictory settings — no signal, DC only, all-`0x00`/`0xFF`/`0x55`, a break, 60 mV of swing, 19 Vpp, rates past the ceiling, and six wrong forced settings. A refusal with a reason passes; confident garbage does not |
 
 `hw-panel` is the one worth understanding: it checks six things per press — that the handler does not
