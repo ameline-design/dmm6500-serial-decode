@@ -27,17 +27,31 @@ Separately, a line whose logic low sits around **−2 V** can misdetect,
 while −0.1, −0.5, −1.0 and −3.0 V all measure clean. Both are characterised with their numbers under
 **Known failures of automatic rate detection** in the [manual](docs/MANUAL.md).
 
-**Endurance, measured.** A 7-hour soak of this build on one power cycle ran **81 laps — 3,726
-capture-and-decode cycles and 8 one-press recordings — with zero failures.** Every recording ended
-because its buffer filled, at 8 192 bytes, with no instrument events logged and no error left behind.
-The number worth more than the pass count is the **lap time**: a mean of 312.8 s over the first ten
-laps and 315.7 s over the last ten, **+0.9 %** across the full seven hours, so nothing accumulated. A
-leaked display object, a buffer handle never returned or a fragmenting allocator would each show up as
-laps getting slower — which matters because a leak here would not fail a lap, it would wedge the
-instrument around hour six.
+**Endurance, measured — 17 hours on one power cycle.** Two soaks, and they answer different
+questions. The long one ran **6 laps of the full 1,683-point matrix, 10,098 capture-and-decode
+cycles over 17.1 hours**, with **no instrument event logged, no buffer or display object leaked and
+no error left behind**. The number worth more than any pass count is the **lap time**: 10 467 s for
+the first lap and 10 370 s for the last, a mean of 10 327 s over the first three laps against
+10 237 s over the last three — **−0.9 %, so laps got slightly faster and nothing accumulated.** That
+is the measurement that matters, because a leaked display object, a buffer handle never returned or a
+fragmenting allocator would not fail a lap: it would wedge the instrument around hour six.
 
-What that soak does **not** cover: it is depth rather than breadth — 43 stimulus points repeated 98
-times, no front-panel interaction (that is `hw-panel`'s job), and one power cycle rather than many.
+The shorter one is the zero-failure run. Over 7 hours it took **81 laps — 3,726 capture-and-decode
+cycles and 8 one-press recordings — with zero failures**, every recording ending because its buffer
+filled at 8 192 bytes. It is the only evidence covering the **recording** path, which the long soak
+does not exercise.
+
+**The long soak is deliberately hostile, and 3.1 % of its points fail.** 318 of 10,098, and that
+number is not comparable to the rate-detection figure above: this matrix exists to attack the
+decoder, and it includes LIN traffic presented to a UART decoder, single-byte and walking-bit
+patterns, sinusoidal drift, and swings and offsets swept to the edge of the range. The failures are
+not scattered — they concentrate in six vectors, and **six cells failed in all six laps**: `v63` at
+five standard rates and `v94` at 1200. `v63` is a LIN frame whose 13-bit break field is not valid
+8N1 at all. What the concentration means is that the failure population is characterised rather than
+intermittent; the per-point rates are in `docs/BENCH.md`.
+
+What the soaks do **not** cover: one power cycle rather than many, and no front-panel interaction —
+that is `hw-panel`'s job.
 
 **Nothing stops a long job early — there is no working stop control.** A touch press cannot be
 delivered while a script runs, so the panel cannot offer a stop control, and the front-panel TRIGGER key
@@ -73,7 +87,7 @@ stops an expensive one. `docs/BENCH.md` describes the harness in full.
 ```sh
 python3 tools/release_sweep.py --offline   #  ~1 min, no instruments
 python3 tools/bench_smoke.py               #  11 min, both instruments
-python3 tools/soak.py --hours 8 --suites formats,plan --skip-vectors v95,v96
+python3 tools/soak.py --hours 17 --suites formats,plan --skip-vectors v95,v96
 ```
 
 **The smoke gate is 11 minutes and covers the whole rate range.** Four waveforms — the fox and a
@@ -83,13 +97,14 @@ classes. Then all 45 button presses. 86 cells, 9.5 min; presses, 1.9 min. Run it
 before starting anything long: a soak lap is three hours, and a harness defect found at minute 147 has
 cost an evening.
 
-**No version is tagged without at least 8 hours of soak.** Not a guideline. A release sweep answers
-"does it pass?" once, which is the wrong question for anything that fails one run in ten — a single
-green sweep licenses an intermittent and a single red one reads as a regression nobody can reproduce.
-The soak runs the seeded sweep for hours and reports a **failure rate per test point**, which is the
-number an intermittent actually has. At a measured 6.5 s per cell a lap of 39 waveforms across 43 baud
-rates is about three hours, so eight hours is between two and three laps -- the least that can
-distinguish "fails every lap" from "failed once".
+**No version is tagged without at least 8 hours of soak, and the last two took 17.** Not a
+guideline. A release sweep answers "does it pass?" once, which is the wrong question for anything that
+fails one run in ten — a single green sweep licenses an intermittent and a single red one reads as a
+regression nobody can reproduce. The soak reports a **failure rate per test point**, which is the
+number an intermittent actually has. A lap of 39 waveforms across 43 rates is 1,683 cells and about
+2.9 hours measured, so 8 hours is the least that can distinguish "fails every lap" from "failed once"
+and 17 hours gives six laps — enough that a cell failing in all six is a property of the cell rather
+than of the evening.
 
 **Code changes do not get pushed without passing the smoke gate**, and that is enforced rather than
 remembered. On a pass, `bench_smoke.py` writes a receipt holding a hash of `tsp/` and `tools/` as they
