@@ -658,10 +658,31 @@ are the whole of the signal, and where the frames happen to survive there is non
 pattern reports a standard rate you did not configure, distrust it and lock the rate.
 
 **How rare.** **24 of 6 714** capture-and-decode points across four full bench sweeps — **0.36 %, about
-one in 280.** Every one was a synthetic repeating pattern at a non-standard rate. Of the 41 stimulus
-waveforms only three ever showed it, all of them deliberate `00`/`FF`/`55`/`AA` and walking-bit
-patterns. **No ordinary payload at a standard rate has ever shown it** — the fox, the 1 kB text payload
-and twelve random payloads are clean across every rate from 300 to 250 000 baud.
+one in 280.** Every one was a repeating pattern at a non-standard rate. **No ordinary payload at a
+standard rate has ever shown it** — the fox, the 1 kB text payload and twelve random payloads are clean
+across every rate from 300 to 250 000 baud.
+
+**Split by rate, it is not spread evenly at all.** Over a separate 12 341-point sweep, seven laps across
+41 waveforms and 43 rates:
+
+| rate | points | affected | |
+|---|---|---|---|
+| a **standard** baud rate | 6 314 | **0** | **0.000 %** |
+| a **non-standard** rate | 6 027 | 24 | 0.398 % |
+
+Not one failure at a standard rate, and that is close to structural rather than luck: a bit time that
+lands on a standard rate and decodes without error is not overruled, because the check that would allow
+it requires the reading to be visibly failing first. **So on 9600, 115 200 or any other normal rate this
+has never been observed.** The worst case is the opposite — a rate that is an exact half of a standard
+one without being standard itself: **125 000 reported as 250 000 accounts for 7 of the 24.**
+
+One qualification, which is not this failure. Half of a standard rate is often *also* standard — 4800 is
+half of 9600 — and for perfectly regular traffic the two readings are the same waveform, as **Some traffic
+is genuinely ambiguous** above describes. That is not a misdetection and the panel names the rival rate
+when it happens; the failure in this section is the one where it does not.
+
+The bench deliberately spends **half** its points on non-standard rates, which is far more than ordinary
+use, so the figure above overstates the exposure of a typical setup by roughly five times.
 
 **Besides locking the rate:** capture real traffic rather than a test pattern, or let the bytes have
 irregular gaps — either removes the ambiguity.
