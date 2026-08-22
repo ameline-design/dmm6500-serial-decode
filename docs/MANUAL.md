@@ -621,24 +621,41 @@ both of them the remedy is to supply the rate — which is what other tools ask 
 **Both are fixed by typing the rate into `Options ▸ Baud Rate`** — verified, every frame decoded with
 zero errors once the rate was given. The numbers are below so you can judge the risk yourself.
 
-Automatic detection has no clock to refer to. It measures the gaps between transitions and finds the
-longest bit time that divides them all. Gaps of many different lengths pin that down well; gaps of only
-a few lengths do not.
+Automatic detection has no clock to refer to. It works in two steps: it measures the gaps between
+transitions and finds the longest bit time that divides them all, then weighs that answer against the
+standard rates, because a real device almost always uses one.
+
+Gaps of many different lengths pin the measurement down well; gaps of only a few lengths do not. But
+where detection fails it is usually not the measurement that is wrong — it is the second step. A
+different reading at a simple multiple of the measured rate can land on a standard value while the true
+rate does not, and that coincidence is allowed to outweigh a correct measurement. **This is why the
+failures below happen only on non-standard rates:** when the true rate is itself a standard one, nothing
+can outbid it.
 
 ### 1. A short pattern repeated over and over
 
 **What triggers it.** Data built from `0x00`, `0xFF`, `0x55`, `0xAA`, walking bits, or one fixed string
-sent on a loop — link-training patterns and idle fill, rather than real messages. Two things go wrong
-together: such data yields only a handful of distinct gap lengths, so there is little to fix the bit
-time; and because the same transition recurs in the same context thousands of times, any small
-imperfection on that edge (ringing, a threshold crossed twice) recurs with it, so it stops looking like
-a one-off glitch and starts looking like a real bit.
+sent on a loop — link-training patterns and idle fill, rather than real messages. Such data yields only a
+handful of distinct gap lengths, and a simple fraction of the true bit time then explains those gaps just
+as well as the truth: half the bit time reads the same square wave as twice as many bits, with no framing
+error anywhere to give it away. Both readings describe the waveform, so nothing in the signal can rank
+them — and where one of them lands on a standard rate and the true rate does not, the standard one wins.
+
+**The measurement is not the problem.** Traced on a failing case, the bit time was recovered as 8.3990
+samples against a true 8.3987, every one of the smallest gaps sat at the true bit time, and the decode at
+that rate framed every byte without a single error. It was then overruled by its own half, because 3572
+is not a standard rate and 7200 is.
 
 **What you see.** The reported rate is a small whole-number multiple of the true one — two to five times
 — and always one of the standard rates. Expected 3572 and the panel says 7200, or expected 124000 and it
 says 250000. Usually the byte area also fills with error markers, because a wrong bit time shreds most
 frames; in the measured cases 83 to 119 frames of a few hundred were flagged. Occasionally the frames
 survive and the bytes are simply wrong, which is the case worth knowing about.
+
+**There is no warning about the rate itself.** Where two rates fit a waveform the panel normally names the
+runner-up under the reading, but not in this case — verified, the note is empty here. So the error markers
+are the whole of the signal, and where the frames happen to survive there is none. If a repeating test
+pattern reports a standard rate you did not configure, distrust it and lock the rate.
 
 **How rare.** **24 of 6 714** capture-and-decode points across four full bench sweeps — **0.36 %, about
 one in 280.** Every one was a synthetic repeating pattern at a non-standard rate. Of the 41 stimulus
