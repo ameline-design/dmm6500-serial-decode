@@ -19,10 +19,11 @@ polling loop.
 which is what most decoders require of you anyway.**
 A short pattern repeated over and over — `00`/`FF`/`55`/`AA`, walking bits, a fixed string on a loop —
 can be measured at a small multiple of its true rate: **24 of 6,714** bench points across four full
-sweeps, **0.36 %**, every one a repeating pattern at a non-standard rate. **On a standard rate it has
-never been seen** — 0 of 6,314 such points in a separate 12,341-point sweep — and that is close to
-structural, because a bit time that lands on a standard rate and decodes without error is not allowed to
-be overruled. Separately, a line whose logic low sits around **−2 V** can misdetect,
+sweeps, **0.36 %**, every one a repeating pattern at a non-standard rate. Offline the split is stark —
+**0 of 6,314 standard-rate points** against 24 of 6,027 non-standard ones — but on the instrument a
+waveform carrying a **LIN-style break field**, which is not valid 8N1 at all, *was* measured at three times
+its true rate on standard rates, silently. No ordinary UART payload has shown it at any standard rate.
+Separately, a line whose logic low sits around **−2 V** can misdetect,
 while −0.1, −0.5, −1.0 and −3.0 V all measure clean. Both are characterised with their numbers under
 **Known failures of automatic rate detection** in the [manual](docs/MANUAL.md).
 

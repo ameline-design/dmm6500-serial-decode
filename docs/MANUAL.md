@@ -670,11 +670,22 @@ across every rate from 300 to 250 000 baud.
 | a **standard** baud rate | 6 314 | **0** | **0.000 %** |
 | a **non-standard** rate | 6 027 | 24 | 0.398 % |
 
-Not one failure at a standard rate, and that is close to structural rather than luck: a bit time that
-lands on a standard rate and decodes without error is not overruled, because the check that would allow
-it requires the reading to be visibly failing first. **So on 9600, 115 200 or any other normal rate this
-has never been observed.** The worst case is the opposite — a rate that is an exact half of a standard
-one without being standard itself: **125 000 reported as 250 000 accounts for 7 of the 24.**
+Not one failure at a standard rate **in that offline sweep**, and there is a structural reason: a bit time
+that lands on a standard rate and decodes without error is not overruled, because the check that would
+allow it requires the reading to be visibly failing first. The worst case there is the opposite — a rate
+that is an exact half of a standard one without being standard itself: **125 000 reported as 250 000
+accounts for 7 of the 24.**
+
+**On the instrument itself, however, standard rates are not immune, and one case is worth stating plainly.**
+A waveform carrying a **LIN-style break field** — 13 or more bits held low, which is not valid 8N1 at all —
+was measured at **three times** its true rate at 600, 19 200, 31 250, 38 400, 57 600 and 76 800 baud, in
+every lap of a 14-hour soak, and **with no framing errors to warn of it**. Expected 19 200, reported 57 600,
+and the bytes were confidently wrong. This decoder does not claim to read LIN, and a break field is outside
+UART by construction — but if you are probing a bus that begins frames with a long dominant field, set the
+rate by hand and do not trust the measured one.
+
+No **ordinary UART payload** at a standard rate has shown this: the fox, the 1 kB text payload and twelve
+random payloads are clean at every rate from 300 to 250 000 baud, on the bench and offline.
 
 One qualification, which is not this failure. Half of a standard rate is often *also* standard — 4800 is
 half of 9600 — and for perfectly regular traffic the two readings are the same waveform, as **Some traffic
