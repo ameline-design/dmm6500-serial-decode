@@ -44,11 +44,18 @@ does not exercise.
 **The long soak is deliberately hostile, and 3.1 % of its points fail.** 318 of 10,098, and that
 number is not comparable to the rate-detection figure above: this matrix exists to attack the
 decoder, and it includes LIN traffic presented to a UART decoder, single-byte and walking-bit
-patterns, sinusoidal drift, and swings and offsets swept to the edge of the range. The failures are
-not scattered — they concentrate in six vectors, and **six cells failed in all six laps**: `v63` at
-five standard rates and `v94` at 1200. `v63` is a LIN frame whose 13-bit break field is not valid
-8N1 at all. What the concentration means is that the failure population is characterised rather than
-intermittent; the per-point rates are in `docs/BENCH.md`.
+patterns, sinusoidal drift, and swings and offsets swept to the edge of the range.
+
+Two things about the shape of that 3.1 %, because the shape matters more than the number. **It
+concentrates**: four vectors — `v94`, `v63`, `v90`, `v71` — account for **76 %** of every failure, and
+`v63` alone is a LIN frame whose 13-bit break field is not valid 8N1 at all. And **it is mostly
+intermittent**: those 318 failures are only **162 distinct cells**, of which **88 failed in exactly one
+lap of the six** and just **6 failed in all six**. Most of what fails, fails occasionally.
+
+Which is the whole argument for soaking rather than sweeping. One green sweep would have licensed
+those 88; one red sweep would have reported a regression nobody could reproduce. Six laps is what
+turns "it failed" into a rate — and it is why a cell that fails in all six, `v63` at five standard
+rates and `v94` at 1200, is a property of the cell rather than of the evening.
 
 What the soaks do **not** cover: one power cycle rather than many, and no front-panel interaction —
 that is `hw-panel`'s job.
