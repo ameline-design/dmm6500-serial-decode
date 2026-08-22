@@ -72,6 +72,11 @@ function sdec.clear_result()
   sdec.smp, sdec.nread = nil, 0
   sdec.fmt_note, sdec.baud_note, sdec.rate_note = nil, nil, nil
   sdec.lasterr, sdec.savedas, sdec.probe_idle = nil, nil, nil
+  -- THE INTERMEDIATE MEASUREMENTS, which are not results but are what the next search runs ON:
+  -- acq_fs, the pulse widths and their median, polarity, and the run statistics. Each has a writer
+  -- that only reaches it on the good path, so a capture that fails part-way leaves the previous
+  -- capture's figure in place for the next one to build on. See sdec.clear_measured.
+  sdec.clear_measured()
   -- THE MAIN EVICTION POINT FOR THE NOTE CELL. Most sources are per-capture and are cleared together
   -- here so none can latch over the others (sdec.ui_notes ranks them). The exceptions each say so:
   -- relocked below, rate_refused (retired per PRESS in capture()) and stickyerr, which must outlive a
@@ -97,6 +102,44 @@ function sdec.clear_result()
   -- suspect list for this firmware's panics. It does NOT help the DISPLAY object pool -- those
   -- are firmware objects, which del_obj deletes explicitly.
   pcall(function() collectgarbage() end)
+  return true
+end
+
+-- Drop the whole lock -- every forced setting, not just the rate. Returns true.
+--
+-- ALL FIVE OR NONE. sdec.force_baud is the one with a control of its own, so it is the one that
+-- gets cleared by hand, and clearing it ALONE leaves the format pinned: autolock_try() sets nbits,
+-- par and nstop together with the rate, so an app that has locked once is still deciding the frame
+-- format from the previous capture's answer while appearing unlocked. That cost real bench time --
+-- a run labelled "unlocked" was neither, and its disagreement with a clean one read as an
+-- intermittent.
+function sdec.unlock_all()
+  sdec.force_baud, sdec.force_nbits = nil, nil
+  sdec.force_par, sdec.force_nstop, sdec.force_invert = nil, nil, nil
+  return true
+end
+
+-- EVERYTHING THE APP AND THE DECODER LEARNED, BACK TO A KNOWN VALUE, before any attempt to
+-- determine a baud rate or decode a signal. Returns true.
+--
+-- Called once per press at the top of capture(). clear_result() plus clear_measured() already run
+-- on every internal re-capture; what this adds is the REQUESTED sample rate, which they must not
+-- touch: autoset() deliberately carries sdec.fs and sdec.fs_want from its probe pass into its real
+-- one, so a per-acquire reset of those would undo the two-pass design and cap every unlocked
+-- capture at ~19 bytes.
+--
+-- fs_select() rather than an assignment, because the deterministic value is not a constant -- it is
+-- whatever the current lock and mode imply, which is exactly what that function computes, and
+-- computing it in two places is how the two drift apart. The fs_want = nil ahead of it retires any
+-- one-shot a previous press left behind.
+--
+-- WHAT IT DOES NOT DO IS UNLOCK. A forced rate is a decision the operator can see on the padlock
+-- and must survive a press. A harness that wants a virgin app calls sdec.unlock_all() first -- and
+-- should: the state this function clears is only half of what a leftover lock carries.
+function sdec.detect_reset()
+  sdec.clear_result()
+  sdec.fs_want = nil
+  sdec.fs_select()
   return true
 end
 
@@ -1340,7 +1383,7 @@ function sdec.capture()
     -- START a recording and return. sdec.strm_press is what selects the press-driven path over
     -- the one-shot sdec.stream(); the one-shot form is kept for the host harnesses and the
     -- offline suite, which have no panel to protect.
-    sdec.clear_result()
+    sdec.detect_reset()
     local sok, swhy = false, nil
     local pok, perr = pcall(function() sok, swhy = sdec.stream_start() end)
     sdec.busy = false
@@ -1359,7 +1402,7 @@ function sdec.capture()
 
   if not md.view then
     -- STREAMING: produces a file, not a view, so the panel shows progress and a summary.
-    sdec.clear_result()
+    sdec.detect_reset()
     sdec.ui_status = 'capturing'
     -- SET BEFORE THE REFRESH, so the control cell says 'no stop until it ends' for the whole run. Only
     -- this refresh paints that cell -- sdec.progress() writes the counter and nothing else -- and
@@ -1432,7 +1475,10 @@ function sdec.capture()
   -- The multi-window counters go with them, for the same reason: they describe the recording whose
   -- summary is being evicted, and a stale one would put '3 windows' on a frame capture.
   sdec.fc_win, sdec.fc_bytes, sdec.fc_end, sdec.fc_secs = nil, nil, nil, nil
-  sdec.clear_result()
+  -- NOT JUST clear_result(): the REQUESTED sample rate goes back to what the lock and mode imply,
+  -- so the detection about to run starts from the settings rather than from the last capture's
+  -- answer. See sdec.detect_reset.
+  sdec.detect_reset()
   sdec.ui_status = 'capturing'
   pcall(function() sdec.ui_refresh() end)
 
@@ -1882,8 +1928,7 @@ function sdec.options_auto()
   -- so this is a one-press way back to it rather than a new capability. By hand it is six
   -- interactions on the form (baud to 0, three fields to Auto, Apply), which is enough friction
   -- that a locked rate tends to stay locked onto the next line it does not describe.
-  sdec.force_baud, sdec.force_nbits = nil, nil
-  sdec.force_par, sdec.force_nstop, sdec.force_invert = nil, nil, nil
+  sdec.unlock_all()
   -- NO autolock_defer() HERE: 'Auto Detect' means "work it out and use it", so the capture this
   -- triggers is allowed to lock what it finds. Deferring instead leaves the panel amber at the
   -- top sample rate with a 19-byte window -- a press that makes things worse, with the good
@@ -1934,8 +1979,7 @@ function sdec.lock_toggle()
   local st = sdec.lock_state()
   local note = nil
   if st == 'locked' then
-    sdec.force_baud, sdec.force_nbits = nil, nil
-    sdec.force_par, sdec.force_nstop, sdec.force_invert = nil, nil, nil
+    sdec.unlock_all()
     sdec.autolock_defer()
     note = 'unlocked -- auto-detecting again, back to the top sample rate'
     -- Unlocking disarms the streaming modes, so leave one rather than sit in a mode that cannot run.
@@ -2675,9 +2719,7 @@ function sdec.options_apply()
     -- form still SHOWS the pinned values -- 8 data bits, None, Normal -- so simply
     -- reading the fields back would keep them forced on a line that has stopped being MIDI or
     -- LIN.
-    sdec.force_baud, sdec.force_nbits = nil, nil
-    sdec.force_par, sdec.force_nstop = nil, nil
-    sdec.force_invert = nil
+    sdec.unlock_all()
     sdec.autolock_defer()
     if sdec.ui_view() ~= nil and sdec.ui_view().res ~= nil then sdec.ui_mode = 'text' end
   end

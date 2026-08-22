@@ -367,6 +367,47 @@ function sdec.sig_pair(rd, n, v0, v1)
   return v1m, v2m, (na + nbb) / cnt
 end
 
+-- Every field the signal chain MEASURES, back to its power-on value. Called from
+-- sdec.clear_result(), so it runs before every acquisition.
+--
+-- THE RULE: A CAPTURE MUST NOT INHERIT A MEASUREMENT FROM THE CAPTURE BEFORE IT. Rate, format and
+-- polarity are derived FROM THE SIGNAL, and a value carried across a capture boundary turns that
+-- derivation into a feedback loop -- the app's own previous answer becomes an input to the next one.
+-- Measured on the instrument, on a 19200 line: a leftover 500 kS/s makes a 19200 bit 26.04 samples,
+-- the width fit lands on 8.679 -- exactly one third -- 57600 is reported with nbad 0, and
+-- pick_fs(57600) writes 500 kS/s back for next time. It is a two-state flip-flop rather than a
+-- one-way latch, so clearing once is not enough; it has to be every time.
+--
+-- WHY THESE ARE NOT ALREADY ON clear_result()'S LIST. That list drops the RESULT -- bytes, notes,
+-- levels, edges. These are the intermediate MEASUREMENTS the search runs on, and each has a writer
+-- that only reaches it on the good path: sig_bittime() returns 'need at least two edges' without
+-- touching w/nw/wmed, and acq_fs is only rewritten by a read that came back with samples. Every one
+-- is re-derived by any capture that gets that far, so clearing them can only remove a wrong answer.
+--
+-- WHAT IS DELIBERATELY LEFT ALONE, each for a reason of its own:
+--   * sdec.force_baud/nbits/par/nstop/invert -- the lock. Operator state, shown by the padlock, and
+--     sdec.unlock_all() is how it goes.
+--   * sdec.lvl_thr/lvl_hyst/lvl_swing -- the recording watchdog's fallback threshold, kept ACROSS
+--     captures on purpose: under flow control the device is silent until the credit pulse goes out,
+--     so the probe that normally supplies a threshold looks at an idle line. See sig_levels.
+--   * sdec.buf -- a live firmware handle under the delete -> nil -> create rule.
+--   * sdec.flog_path/flog_n/flog_bytes -- the byte log, which spans captures by design.
+function sdec.clear_measured()
+  -- The MEASURED sample rate and the flag saying it was not measured. Every bit time, the baud
+  -- rate and therefore every byte is scaled by this one number.
+  sdec.acq_fs, sdec.acq_fs_est = nil, nil
+  -- The pulse widths and their median. sdec.wmed GATES candidate rates in ua_cands(), so a stale
+  -- one rejects the true bit time of the capture in hand.
+  sdec.w, sdec.nw, sdec.wmed = nil, 0, nil
+  -- Polarity, and the flag saying the evidence for it was thin.
+  sdec.idle, sdec.idle_weak = nil, nil
+  -- Level and run statistics: the fraction of samples near the two levels, and the longest run of
+  -- each. sig_idle() reads st0, so it goes back to its declared default rather than to nil.
+  sdec.modal, sdec.run0, sdec.run1 = nil, nil, nil
+  sdec.st0 = 1
+  return true
+end
+
 -- Returns ok, reason. Sets lo/hi/thr/hyst/swing/family, wlo/whi, modal, and the remembered
 -- lvl_thr/lvl_hyst/lvl_swing that serial_app saves and restores.
 function sdec.sig_levels(rd, n)

@@ -385,6 +385,20 @@ function sdec.sig_pair(rd, n, v0, v1)
   return v1m, v2m, (na + nbb) / cnt
 end
 
+-- Every field the signal chain MEASURES, back to its power-on value. Called from
+--   [...]
+--     so the probe that normally supplies a threshold looks at an idle line. See sig_levels.
+--   * sdec.buf -- a live firmware handle under the delete -> nil -> create rule.
+--   * sdec.flog_path/flog_n/flog_bytes -- the byte log, which spans captures by design.
+function sdec.clear_measured()
+  sdec.acq_fs, sdec.acq_fs_est = nil, nil
+  sdec.w, sdec.nw, sdec.wmed = nil, 0, nil
+  sdec.idle, sdec.idle_weak = nil, nil
+  sdec.modal, sdec.run0, sdec.run1 = nil, nil, nil
+  sdec.st0 = 1
+  return true
+end
+
 -- Returns ok, reason. Sets lo/hi/thr/hyst/swing/family, wlo/whi, modal, and the remembered
 -- lvl_thr/lvl_hyst/lvl_swing that serial_app saves and restores.
 function sdec.sig_levels(rd, n)
@@ -4755,11 +4769,35 @@ function sdec.clear_result()
   sdec.smp, sdec.nread = nil, 0
   sdec.fmt_note, sdec.baud_note, sdec.rate_note = nil, nil, nil
   sdec.lasterr, sdec.savedas, sdec.probe_idle = nil, nil, nil
+  sdec.clear_measured()
   sdec.mode_exited, sdec.lognote, sdec.autolocknote = nil, nil, nil
   sdec.mode_exitbad = false
   sdec.strm_releveled, sdec.proto_why = nil, nil
   sdec.probe_note = nil                 -- set by autoset() when it had to re-capture slower
   pcall(function() collectgarbage() end)
+  return true
+end
+
+-- Drop the whole lock -- every forced setting, not just the rate. Returns true.
+--   [...]
+-- format from the previous capture's answer while appearing unlocked. That cost real bench time --
+-- a run labelled "unlocked" was neither, and its disagreement with a clean one read as an
+-- intermittent.
+function sdec.unlock_all()
+  sdec.force_baud, sdec.force_nbits = nil, nil
+  sdec.force_par, sdec.force_nstop, sdec.force_invert = nil, nil, nil
+  return true
+end
+
+-- EVERYTHING THE APP AND THE DECODER LEARNED, BACK TO A KNOWN VALUE, before any attempt to
+--   [...]
+-- WHAT IT DOES NOT DO IS UNLOCK. A forced rate is a decision the operator can see on the padlock
+-- and must survive a press. A harness that wants a virgin app calls sdec.unlock_all() first -- and
+-- should: the state this function clears is only half of what a leftover lock carries.
+function sdec.detect_reset()
+  sdec.clear_result()
+  sdec.fs_want = nil
+  sdec.fs_select()
   return true
 end
 
@@ -5442,7 +5480,7 @@ function sdec.capture()
   end
 
   if not md.view and sdec.strm_press then
-    sdec.clear_result()
+    sdec.detect_reset()
     local sok, swhy = false, nil
     local pok, perr = pcall(function() sok, swhy = sdec.stream_start() end)
     sdec.busy = false
@@ -5460,7 +5498,7 @@ function sdec.capture()
   end
 
   if not md.view then
-    sdec.clear_result()
+    sdec.detect_reset()
     sdec.ui_status = 'capturing'
     sdec.strm_inflight = true
     local sok, swhy = false, nil
@@ -5494,7 +5532,7 @@ function sdec.capture()
 
   sdec.ck_tot, sdec.ck_nbytes = nil, nil
   sdec.fc_win, sdec.fc_bytes, sdec.fc_end, sdec.fc_secs = nil, nil, nil, nil
-  sdec.clear_result()
+  sdec.detect_reset()
   sdec.ui_status = 'capturing'
   pcall(function() sdec.ui_refresh() end)
 
@@ -5768,8 +5806,7 @@ end
 -- Clear every forced setting and re-capture: the inverse of Lock Detected, which is the button
 -- beside it on the options form.
 function sdec.options_auto()
-  sdec.force_baud, sdec.force_nbits = nil, nil
-  sdec.force_par, sdec.force_nstop, sdec.force_invert = nil, nil, nil
+  sdec.unlock_all()
   pcall(function() ulog.line('auto-detect: all forced settings cleared') end)
   pcall(function() sdec.options_seed() end)
   local md = sdec.mode_cur()
@@ -5787,8 +5824,7 @@ function sdec.lock_toggle()
   local st = sdec.lock_state()
   local note = nil
   if st == 'locked' then
-    sdec.force_baud, sdec.force_nbits = nil, nil
-    sdec.force_par, sdec.force_nstop, sdec.force_invert = nil, nil, nil
+    sdec.unlock_all()
     sdec.autolock_defer()
     note = 'unlocked -- auto-detecting again, back to the top sample rate'
     if sdec.mode_cur().needbaud then
@@ -6208,9 +6244,7 @@ function sdec.options_apply()
     sdec.force_invert = false
     sdec.ui_mode = 'lin'
   elseif was ~= 'uart' then
-    sdec.force_baud, sdec.force_nbits = nil, nil
-    sdec.force_par, sdec.force_nstop = nil, nil
-    sdec.force_invert = nil
+    sdec.unlock_all()
     sdec.autolock_defer()
     if sdec.ui_view() ~= nil and sdec.ui_view().res ~= nil then sdec.ui_mode = 'text' end
   end

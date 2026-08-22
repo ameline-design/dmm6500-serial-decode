@@ -7230,6 +7230,174 @@ print('\nevery visible 7-bit glyph, in one payload (real code)')
   end
 
 end)()
+
+-- ============================================================================
+print('\nthe same signal decodes the same way twice, and after any other signal (real code)')
+-- ============================================================================
+-- WHY THIS SECTION EXISTS AND WHY IT IS LAST. Every other case in this file runs ONCE from a clean
+-- interpreter. The instrument does not: the app is long-lived, a soak lap runs 1,683 cells back to
+-- back inside one power cycle, and a field carried across a capture boundary is invisible to a suite
+-- that never takes two captures in a row. 6,314 assertions could not see it by construction.
+--
+-- The property asserted is the one the app promises: THE ANSWER DEPENDS ONLY ON THE SIGNAL AND THE
+-- SETTINGS. Rate, format and polarity are derived from the waveform, so a second look at the same
+-- waveform must agree with the first, and a look at waveform B must not depend on whether A came
+-- before it.
+--
+-- SRC.native_fs IS NOT OPTIONAL HERE. With the mock handing samples back verbatim, acq_fs is
+-- re-derived from SRC.ts whatever rate the app asked for -- so a leaked sdec.fs cannot move a single
+-- sample and every case below passes no matter what the app does. Measured: with the reset defeated
+-- these tests were 39 for 39 green until the mock started honouring the requested rate. A test that
+-- cannot fail is not a test.
+--
+-- THE LEADING SEMICOLON IS LOAD-BEARING, as it is on the section above: without it Lua reads the
+-- print() on the line before and this parenthesis as one expression -- print(...)(function() ...
+-- end)() -- and calls print's return value.
+;(function()
+local CASES = {
+  {id = 'fox 9600',   baud = 9600,  text = 'The quick brown fox jumps over the lazy dog. '},
+  {id = 'fox 19200',  baud = 19200, text = 'The quick brown fox jumps over the lazy dog. '},
+  {id = '0x55 19200', baud = 19200, byte = 0x55},
+  {id = '0x00 9600',  baud = 9600,  byte = 0x00},
+  {id = '0xFF 57600', baud = 57600, byte = 0xFF},
+  {id = 'AA55 38400', baud = 38400, pair = true},
+}
+
+local function build(c)
+  local bytes = {}
+  if c.text then
+    local s = ''
+    while string.len(s) < 400 do s = s .. c.text end
+    local i
+    for i = 1, string.len(s) do bytes[i] = string.byte(s, i) end
+  elseif c.pair then
+    local i
+    for i = 1, 400 do
+      if math.fmod(i, 2) == 1 then bytes[i] = 0xAA else bytes[i] = 0x55 end
+    end
+  else
+    local i
+    for i = 1, 400 do bytes[i] = c.byte end
+  end
+  return GEN({bytes = bytes, baud = c.baud, fs = 1000000, lo = 0, hi = 3.3, n = 20000})
+end
+
+-- One press, through capture(). `clean` asks for the state a freshly-loaded app has, which means
+-- the LOCK as well as the measurements: clearing sdec.force_baud alone leaves nbits, par and nstop
+-- pinned by the last autolock, and a run labelled "unlocked" that is not one disagrees with a clean
+-- one for a reason that looks like an intermittent. See sdec.unlock_all.
+local function shot(c, clean)
+  local rd, ts, _, nsmp = build(c)
+  SRC.rd, SRC.ts, SRC.nsmp = rd, ts, nsmp
+  SRC.native_fs, SRC.loop = 1000000, true
+  sdec.capmode = 'frame'
+  if clean then sdec.unlock_all() end
+  sdec.detect_reset()
+  sdec.capture()
+  local r, nf, nbad, head = sdec.res, 0, -1, ''
+  if r ~= nil and r.nf ~= nil then
+    nf, nbad = r.nf, r.nbad or 0
+    local i
+    for i = 1, math.min(16, nf) do head = head .. string.format('%02X', r.vals[i] or 0) end
+  end
+  -- The whole answer as one string, so a difference anywhere shows as a difference: rate, timing,
+  -- fit quality, byte count, error count and the leading bytes.
+  return string.format('baud=%s bt=%.4f fitq=%.4f nf=%d nbad=%d %s',
+                       tostring(sdec.baud), sdec.bittime or 0, sdec.fitq or 0, nf, nbad, head)
+end
+
+local ci, cj
+for ci = 1, table.getn(CASES) do
+  local c = CASES[ci]
+  local a, b = shot(c, true), shot(c, true)
+  check('twice in a row: ' .. c.id, a == b, '1st ' .. a .. '  2nd ' .. b)
+end
+
+-- Reference answers, each with nothing before it but a reset.
+local ref = {}
+for ci = 1, table.getn(CASES) do ref[CASES[ci].id] = shot(CASES[ci], true) end
+local ndirty = 0
+local worstd = ''
+for ci = 1, table.getn(CASES) do
+  for cj = 1, table.getn(CASES) do
+    if ci ~= cj then
+      shot(CASES[ci], true)                       -- a different rate and a different payload
+      local got = shot(CASES[cj], true)
+      if got ~= ref[CASES[cj].id] then
+        ndirty = ndirty + 1
+        worstd = string.format('%s after %s: clean %s / after %s',
+                               CASES[cj].id, CASES[ci].id, ref[CASES[cj].id], got)
+      end
+    end
+  end
+end
+check('no cross-contamination across all 30 ordered pairs', ndirty == 0,
+      string.format('%d pairs differed  %s', ndirty, worstd))
+
+-- THE LEFTOVERS PLANTED BY HAND, which is the only way to test a partial capture's residue without
+-- a partial capture: a rate, a median pulse width, a polarity and a run statistic from a capture
+-- that never happened. capture() alone must absorb all of it -- no unlock_all() on this one, since
+-- what is being tested is what a PRESS does, not what a harness can do for it.
+local V = CASES[2]
+local clean19 = shot(V, true)
+local nleft, worstl = 0, ''
+local li
+local LEFT = {500000, 1000000, 20000}
+for li = 1, table.getn(LEFT) do
+  sdec.unlock_all()
+  sdec.fs, sdec.acq_fs, sdec.acq_fs_est = LEFT[li], LEFT[li], true
+  sdec.wmed, sdec.nw = 8.679, 177          -- the instrument's own misfit: 52.08 / 3
+  sdec.idle, sdec.st0, sdec.modal = 0, 0, 0.5
+  sdec.run0, sdec.run1 = 3, 4
+  local got = shot(V, false)
+  if got ~= clean19 then
+    nleft = nleft + 1
+    worstl = string.format('after %g: clean %s / after %s', LEFT[li], clean19, got)
+  end
+end
+check('planted leftovers -- rate, wmed, polarity, runs -- change nothing', nleft == 0,
+      string.format('%d of 3 differed  %s', nleft, worstl))
+
+-- clear_measured() must leave NOTHING of its own behind, which is the invariant the list depends on:
+-- a field added to the signal chain and not added here is exactly how this class of defect returns.
+sdec.clear_measured()
+check('clear_measured leaves no measured field set',
+      sdec.acq_fs == nil and sdec.acq_fs_est == nil and sdec.w == nil and sdec.nw == 0
+      and sdec.wmed == nil and sdec.idle == nil and sdec.idle_weak == nil
+      and sdec.modal == nil and sdec.run0 == nil and sdec.run1 == nil and sdec.st0 == 1,
+      string.format('acq_fs %s wmed %s idle %s modal %s st0 %s',
+                    tostring(sdec.acq_fs), tostring(sdec.wmed), tostring(sdec.idle),
+                    tostring(sdec.modal), tostring(sdec.st0)))
+
+-- unlock_all() must drop all five, not the one with a control of its own.
+sdec.force_baud, sdec.force_nbits = 9600, 8
+sdec.force_par, sdec.force_nstop, sdec.force_invert = 0, 1, false
+sdec.unlock_all()
+check('unlock_all drops the whole lock, not just the rate',
+      sdec.force_baud == nil and sdec.force_nbits == nil and sdec.force_par == nil
+      and sdec.force_nstop == nil and sdec.force_invert == nil,
+      string.format('baud %s bits %s par %s stop %s inv %s',
+                    tostring(sdec.force_baud), tostring(sdec.force_nbits),
+                    tostring(sdec.force_par), tostring(sdec.force_nstop),
+                    tostring(sdec.force_invert)))
+
+-- detect_reset() must put the REQUESTED rate back to what the settings imply, from either direction:
+-- unlocked it is fs_default, and locked it is the rate the lock implies. Not "whatever the last
+-- capture used", which is the value it is there to discard.
+sdec.fs, sdec.fs_want = 500000, 500000
+sdec.detect_reset()
+check('detect_reset restores the requested rate when nothing is locked',
+      sdec.fs == sdec.fs_default and sdec.fs_want == nil,
+      string.format('fs %s want %s', tostring(sdec.fs), tostring(sdec.fs_want)))
+sdec.force_baud = 9600
+sdec.fs, sdec.fs_want = 500000, nil
+sdec.detect_reset()
+check('detect_reset derives the requested rate from the lock, not from the last capture',
+      sdec.fs == sdec.fs_for_baud(9600),
+      string.format('fs %s, expected %s', tostring(sdec.fs), tostring(sdec.fs_for_baud(9600))))
+sdec.unlock_all()
+end)()
+
 print()
 print(string.format('%d passed, %d failed', pass, fail))
 os.exit(fail == 0 and 0 or 1)

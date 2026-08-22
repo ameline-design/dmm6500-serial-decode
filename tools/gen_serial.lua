@@ -686,7 +686,24 @@ end
 
 -- The waveform the mocked digitizer hands back. Tests set SRC before calling into
 -- the app so acquisition and decode can be exercised end to end.
-SRC   = {rd = nil, ts = nil, nsmp = 0, trigat = nil}
+--
+-- SRC.native_fs OPTIONALLY MAKES THE MOCK HONOUR THE RATE THE APP ASKED FOR, and without it a
+-- whole class of defect is invisible here. By default the samples come back verbatim, so
+-- acq_fs is re-derived from SRC.ts and comes out the same whatever dmm.digitize.samplerate was
+-- set to -- which means no offline test can see the app CHOOSE a rate, only what it does once
+-- chosen. The rate-selection failure that cost a bench session was exactly that shape: a 19200
+-- line acquired at 500 kS/s, where a 19200 bit is 26.04 samples and the width fit lands on
+-- 8.679, one third of it, so 57600 is reported with nbad 0.
+--
+-- Set SRC.native_fs to the rate SRC was RENDERED at and the read resamples to the requested rate,
+-- nearest neighbour, with timestamps to match. Two honest limits, both of which decide how a
+-- vector must be built rather than being hidden:
+--   * nearest neighbour is DECIMATION, not an analog front end. Asking for a rate above native
+--     repeats samples rather than inventing detail, so render at or above the highest rate under
+--     test -- 1 MS/s covers the app's whole ladder.
+--   * SRC.loop = true wraps at SRC.nsmp, which is what the generator does with an arb on repeat.
+--     Without it a slower rate runs off the end of the render and the capture comes back short.
+SRC   = {rd = nil, ts = nil, nsmp = 0, trigat = nil, native_fs = nil, loop = false}
 READS = {n = 0, triggered = 0}
 TRIG  = {}
 
@@ -697,15 +714,41 @@ dmm = {
   digitize = {analogtrigger = {edge = {}}},
 }
 
+-- Source samples per delivered sample, and the delivered sample interval. 1 and nil mean "hand
+-- SRC back as it is", which is every test that has not opted in.
+function SRC_step()
+  if SRC.native_fs == nil or SRC.native_fs <= 0 then return 1, nil end
+  local want = dmm.digitize.samplerate
+  if want == nil or want <= 0 then return 1, nil end
+  return SRC.native_fs / want, 1 / want
+end
+
+-- Source index for delivered sample i counting from `from`, or nil once the render runs out.
+function SRC_at(from, i, step)
+  local j = from + math.floor((i - 1) * step)
+  if SRC.loop and SRC.nsmp ~= nil and SRC.nsmp > 0 then
+    j = math.fmod(j - 1, SRC.nsmp) + 1
+  end
+  return j
+end
+
 function dmm.digitize.read(b)
   local count = dmm.digitize.count or 1000
+  local step, dt = SRC_step()
   b.clear()
   local i
   for i = 1, count do
-    if SRC.rd[i] == nil then break end
+    local j = SRC_at(1, i, step)
+    if SRC.rd[j] == nil then break end
     b.n = i
-    b.readings[i] = SRC.rd[i]
-    b.relativetimestamps[i] = SRC.ts[i]
+    b.readings[i] = SRC.rd[j]
+    if dt == nil then
+      b.relativetimestamps[i] = SRC.ts[j]
+    else
+      -- THE REQUESTED RATE, not the source's. This is the number acq_measure_fs() divides by, so
+      -- it is what makes the app's rate choice observable at all.
+      b.relativetimestamps[i] = (i - 1) * dt
+    end
   end
   READS.n = READS.n + 1
   return b.readings[1]
@@ -871,11 +914,15 @@ function trigger.model.initiate()
   local start = (SRC.trigat or 1) - pre
   if start < 1 then start = 1 end
   local total = pre + post
-  local dt = SRC.ts[2] - SRC.ts[1]
+  -- SRC.native_fs makes the armed path honour the requested rate too, on the same terms as
+  -- dmm.digitize.read(). Both or neither: an app that chose the rate on the free-run probe and
+  -- captured on the armed path would otherwise be tested at two different rates in one capture.
+  local step, dt = SRC_step()
+  if dt == nil then dt = SRC.ts[2] - SRC.ts[1] end
   b.clear()
   local i
   for i = 1, total do
-    local j = start + i - 1
+    local j = SRC_at(start, i, step)
     if SRC.rd[j] == nil then break end
     b.n = i
     b.readings[i] = SRC.rd[j]
