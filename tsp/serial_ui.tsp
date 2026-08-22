@@ -70,11 +70,10 @@ sdec.ui_title    = 'SERIAL DECODE'
 -- value row has to sit low enough that the TALLER font still clears the labels.
 sdec.ui_ink = 12
 sdec.ui_ink_med = 17
--- Character advances, MEASURED. FONT_SMALL is 8 px (docs/panel-ref-chrome.png, and
--- sdec.ui_ch_w below is the same number). FONT_MEDIUM is ~13.4 px, from the panel screenshot
--- where an 8-character LOGIC value spanned exactly its 107 px column.
-sdec.ui_adv_small = 8
-sdec.ui_adv_med   = 14
+-- Character advances, MEASURED, and stated here because the x positions below are sized from them:
+-- FONT_SMALL is 8 px (docs/panel-ref-chrome.png, and sdec.ui_ch_w below is the same number),
+-- FONT_MEDIUM ~13.4 px, from the panel screenshot where an 8-character LOGIC value spanned exactly
+-- its 107 px column.
 sdec.ui_lab_y = 14
 sdec.ui_val_y = 32
 -- x positions are sized from the measured width of each label and its widest plausible value,
@@ -451,50 +450,12 @@ function sdec.mode_cur()
   return sdec.ui_modes[1]
 end
 
--- ---------- the continuous ceiling ----------
--- A MEASURED NUMBER WEARING A CONSTANT'S CLOTHES, and NOTHING READS IT AT RUNTIME. It survives
--- because the harnesses print it and because the derivation is worth not repeating.
---
--- A ping-pong (acquire into one buffer while Lua decodes the other) only keeps up while
--- decoding a buffer finishes before the other fills:
---
---     nsmp * Tread  <  nsmp / fs     =>     fs < 1 / Tread
---
--- and fs must still clear baud * minsabit, so continuous is possible only while
--- baud < 1 / (Tread * minsabit). Continuous means the decoder keeps up with the wire, so the
--- per-sample cost bounds the sample rate:
---
---   Tread = 21.73 us      buffer -> Lua copy, measured
---   + ~5.6 us             the conditioning passes over the copied window (measured end to end)
---   = ~27.3 us/sample     so continuous needs fs < 1/27.3us = 36.6 kS/s
---
--- THAT 27.3 IS READ PLUS EDGE DETECTION AND OMITS ua_run, the pass that frames bytes. The
--- applicable per-sample figure is ck_win_us = 48 us, which makes the inequality baud < 5208 -- so
--- 4800 clears it by luck of the rate ladder, at 95 % duty.
---
--- fs_for_burst() picks the lowest listed rate DELIVERING minsabit samples/bit, so 4800 baud
--- takes 20 kS/s (duty 0.55, keeps up) and 9600 takes 40 kS/s (duty 1.09, does not). 4800 is
--- therefore the highest standard rate that is genuinely continuous.
---
--- WARNING: do not raise this on the strength of Tread alone, which would allow 9600. The
--- conditioning passes are real work on the same samples, and a ceiling that ignores them is not
--- a ceiling -- it makes the panel state a rate the instrument cannot deliver, on a mode whose
--- whole promise is that no byte is lost.
-sdec.strm_maxbaud = 4800
-
 -- Whether mode `m` suits the current rate. Always true: the TWO recording sizes differ only in
 -- byte ceiling, so any rate one can run the other can, and it suits
 -- every rate it can run at. A rate too fast to stream is refused by mode_why(), which carries a
 -- reason to the panel; this exists because the panel and the harnesses call it.
 function sdec.mode_suits(m)
   return true
-end
-
--- The recording mode id for the locked rate, or nil when no rate is locked.
-function sdec.mode_for_rate()
-  local b = sdec.force_baud
-  if b == nil or b <= 0 then return nil end
-  return 'med'
 end
 
 -- Why mode `m` cannot run right now, as a sentence for the note line, or nil if it can. `m`
@@ -652,7 +613,6 @@ function sdec.ui_cur()
 end
 
 -- ---------- colours ----------
-sdec.ui_c_head = 0x00DCFF    -- cyan: the headline wire parameters
 sdec.ui_c_dim  = 0xB0B0B0    -- grey: secondary detail
 -- The dump's offset column. Dimmer than ui_c_dim because it is the least important thing on the
 -- row: it is metadata the eye uses to navigate, not data being read, and at full brightness a
@@ -755,7 +715,6 @@ sdec.ui_opt_edit_dy = 4
 -- field. build_options() takes the row's y FROM HERE rather than repeating the number.
 sdec.ui_opt_btn_y   = 360
 sdec.ui_opt_x  = 270   -- >= 270 so edit labels stay on screen
-sdec.ui_opt_nf = 7     -- fields, for the layout arithmetic above
 -- HOW WIDE AN OPTION-FIELD ENTRY MAY BE, in px. Past this the firmware FADES the tail out
 -- rather than clipping, so an over-long entry is unreadable AND can be mistaken for a shorter
 -- entry in the same field ('Trig In+FC Out' draws as 'Trig In+FC', beside a real 'Trig In').
@@ -2560,8 +2519,8 @@ function sdec.ck_status()
     if sdec.mode_why(md) ~= nil then return 'not armed -- see the note' end
     -- THE MAX FOR THIS MODE, stated before the capture rather than discovered after it. Frame
     -- mode shows its window in the row above (win N, which moves with the sample rate); the
-    -- streaming modes show their cap here. Every mode with view = false has one -- there is no
-    -- uncapped mode -- so the fallback below is unreachable and names no control.
+    -- streaming modes show their cap here. Every mode with view = false has a cap, so the fallback
+    -- below is unreachable and names no control.
     if md.cap ~= nil then
       -- AND THAT NOTHING CUTS IT SHORT, which is the other half of what the operator needs BEFORE
       -- pressing: neither a button nor the TRIGGER key can (measured). It belongs HERE and not on the

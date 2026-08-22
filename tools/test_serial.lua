@@ -5759,7 +5759,10 @@ local function test_modes()
   check('and shows no page/of counters -- there is no view',
         not has(strow, 'page'), string.format('%q', strow))
 
-  -- ---- one wrapping Page button ----
+  -- ---- the Up and Dn page buttons ----
+  -- THEY CLAMP, THEY DO NOT WRAP, and that is the point worth asserting: a wrapping pager on a
+  -- 35-page stream tail puts the operator back at the head with no way to tell they have passed the
+  -- end, so 'Dn' at the last page must be a no-op rather than a jump.
   clearforce()
   r = run({bytes = GEN_BYTES(string.rep('abcdefghij', 30)), baud = 9600, fs = 100000})
   sdec.capmode = 'frame'
@@ -5770,22 +5773,24 @@ local function test_modes()
   local pages = {}
   for i = 1, npg + 1 do
     pages[i] = sdec.ui_page
-    sdec.page_cycle()
+    sdec.page_next()
   end
-  check('Page advances through every page and WRAPS to the first',
-        pages[1] == 0 and pages[npg] == npg - 1 and sdec.ui_page == 1,
+  check('Dn advances through every page and stops at the last',
+        pages[1] == 0 and pages[npg] == npg - 1 and sdec.ui_page == npg - 1,
         table.concat(pages, ','))
+  local pk
+  for pk = 1, npg + 1 do sdec.page_prev() end
+  check('Up walks back to the first page and stops there', sdec.ui_page == 0,
+        tostring(sdec.ui_page))
   sdec.clear_result()
   sdec.ui_page = 5
-  sdec.page_cycle()
-  check('Page on an empty capture lands on page 0 rather than raising',
-        sdec.ui_page == 0, tostring(sdec.ui_page))
+  check('a page button on an empty capture does not raise', sdec.page_next() == true,
+        tostring(sdec.page_next()))
 
-  -- ---- the streaming mode is CHOSEN FROM THE LOCKED RATE, not by the operator ----
-  -- Below sdec.strm_maxbaud a continuous run is possible, and it is unlimited AND lossless, so
-  -- 32 kB is strictly worse there and the cycle must not offer it. Above the ceiling continuous
-  -- cannot keep up and STREAM must not be offered. The point is that at any given rate the Mode
-  -- button walks TWO modes, never three, and never parks on the wrong answer.
+  -- ---- the Mode button offers the same two recording windows at every rate ----
+  -- Both windows work at every locked rate -- they differ only in byte ceiling -- so the cycle is
+  -- rate-independent, and what there is to assert is that it walks TWO modes plus FRAME, never
+  -- more, and never parks on one the rate cannot run.
   local function cycled()
     sdec.capmode = 'frame'
     local seen, k = {}, nil
@@ -5805,13 +5810,6 @@ local function test_modes()
         cycled() == '8 kB 32 kB FRAME', cycled())
   sdec.force_baud = 115200
   check('...and at a fast rate', cycled() == '8 kB 32 kB FRAME', cycled())
-  check('mode_for_rate names a recording mode at any rate, and nil with nothing locked',
-        (function()
-           sdec.force_baud = 300;    local a = sdec.mode_for_rate()
-           sdec.force_baud = 115200; local b = sdec.mode_for_rate()
-           sdec.force_baud = nil;    local c = sdec.mode_for_rate()
-           return a == 'med' and b == 'med' and c == nil
-         end)())
   clearforce()
   sdec.capmode = 'frame'
 
@@ -5931,18 +5929,18 @@ local function test_modes()
             string.format('pitch %d, gap %d -- fold a control to get air back', used, gap))
     end
   end
-  -- page_cycle() still EXISTS and is still correct -- it is only unbound from the bar. The MIDI
-  -- and LIN views are one message per row and can still exceed 14 rows, so if the bench says the
-  -- protocol views need scrolling, the handler is already there and only a button is missing.
-  check('page_cycle survives the button removal, so paging can be restored',
-        type(sdec.page_cycle) == 'function' and sdec.ui_npages() >= 1,
+  -- Paging IS bound: 'Up' and 'Dn' carry page_prev and page_next, and both clamp. The MIDI and LIN
+  -- views are one message per row and can exceed 14 rows, so the pager has to serve them too.
+  check('the pager handlers exist and report at least one page',
+        type(sdec.page_prev) == 'function' and type(sdec.page_next) == 'function'
+        and sdec.ui_npages() >= 1,
         tostring(sdec.ui_npages()))
   check('and the row ends inside the 798 px limit with room to spare',
         ends <= 798 and ends >= 700, string.format('ends at %d', ends))
   -- Every event string must resolve, including the two new ones.
   check('log_new and options_auto exist and are bound',
         type(sdec.log_new) == 'function' and type(sdec.options_auto) == 'function' and
-        type(sdec.mode_cycle) == 'function' and type(sdec.page_cycle) == 'function')
+        type(sdec.mode_cycle) == 'function' and type(sdec.page_next) == 'function')
 
   -- ---- the MAX for the current mode is stated, not discovered ----
   -- Frame mode shows its WINDOW in the status row -- the number that answers "was the message seen
@@ -6370,11 +6368,11 @@ local function test_modes()
   end
 
   -- THE NOTE MUST NOT CLAIM BYTES ARE LOST, at any rate. The press-driven path arms ONE hardware
-  -- acquisition, so there are no windows to lose bytes between -- measured at 9600 baud, twice
-  -- strm_maxbaud, a recording came back 1925 of 1925 bytes contiguous against a non-repeating
-  -- payload. A loss warning there sends the operator to wire up flow control they do not need.
+  -- acquisition, so there are no windows to lose bytes between -- measured at 9600 baud, a recording
+  -- came back 1925 of 1925 bytes contiguous against a non-repeating payload. A loss warning there
+  -- sends the operator to wire up flow control they do not need.
   sdec.capmode, sdec.fc_out = 'med', false
-  local rates = {300, 1200, sdec.strm_maxbaud, sdec.strm_maxbaud + 1, 9600, 115200, 250000}
+  local rates = {300, 1200, 4800, 4801, 9600, 115200, 250000}
   local ri, claimed = nil, nil
   for ri = 1, table.getn(rates) do
     sdec.force_baud = rates[ri]

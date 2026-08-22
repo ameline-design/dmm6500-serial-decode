@@ -443,10 +443,10 @@ dumpobjs('docs/mockup-objects-stream-gate.tsv')
 
 sdec.capmode = 'frame'
 
--- THE TWO LOSS REGIMES ABOVE THE CONTINUOUS CEILING. These are the states that decide whether
--- the app is keeping its central promise, and neither had a mockup: at a locked rate above
--- sdec.strm_maxbaud the streaming modes cannot keep up with the wire, so either the device waits
--- for a flow-control credit or traffic is lost between windows. The panel has to say which.
+-- THE TWO LOSS REGIMES. These are the states that decide whether the app is keeping its central
+-- promise, and neither had a mockup: at a fast locked rate the decode between windows cannot keep up
+-- with the wire, so either the device waits for a flow-control credit or traffic is lost between
+-- windows. The panel has to say which.
 sdec.clear_result()
 sdec.capmode = 'med'
 sdec.force_baud, sdec.force_nbits = 115200, 8

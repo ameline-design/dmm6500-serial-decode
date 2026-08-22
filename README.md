@@ -65,15 +65,14 @@ The same key does still *gate* an armed capture when
 a free-running capture.
 
 **How much it captures, and how many presses.** A screenful is ~240 bytes; a recording holds **8 192
-or 32 768 bytes** to a file, and **one press** records it, decodes all of it and files it — no stepping. Beyond one window, flow control makes the
-window a chunk size rather than a total: one press then credits the device, records, decodes and
-credits again until it stops sending, so an unlimited amount can be captured losslessly **with no
-interaction per window** by a device built to wait for the credit — bounded at 32 windows or 20
-minutes per press, then Mode and Capture resume the same conversation in the next file -- the
-sender is still waiting for its credit, so nothing is lost in the gap. There is
-deliberately no uncapped
-mode: continuous decode-to-file is drain-bound at 2400 baud, too slow to be worth a mode. The
-arithmetic is in [docs/REFERENCE.md](docs/REFERENCE.md).
+or 32 768 bytes** to a file, and **one press** records it, decodes all of it and files it — no
+stepping. Beyond one window, flow control makes the window a chunk size rather than a total: one
+press then credits the device, records, decodes and credits again until it stops sending, so an
+unlimited amount can be captured losslessly **with no interaction per window** by a device built to
+wait for the credit — bounded at 32 windows or 20 minutes per press, then Mode and Capture resume the
+same conversation in the next file, with the sender still waiting for its credit so nothing is lost in
+the gap. Every recording mode has a byte ceiling; the arithmetic is in
+[docs/REFERENCE.md](docs/REFERENCE.md).
 
 Ships as `Serial_Decode.tspa`, installed from a USB key through the instrument's own **Manage Apps**
 screen. Written in TSP — Lua **5.0.2** embedded in the instrument firmware, which is why the sources

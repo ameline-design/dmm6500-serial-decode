@@ -1,0 +1,105 @@
+/* Print stylesheet for the shipped docs. Rendered through HTML rather than typst: the tables in
+   these documents are wide and typst was breaking them badly. */
+
+@page {
+  size: A4;
+  margin: 18mm 16mm 18mm 16mm;
+}
+
+html { font-size: 10.5pt; }
+
+body {
+  font-family: -apple-system, "Helvetica Neue", "Segoe UI", Arial, sans-serif;
+  line-height: 1.45;
+  color: #14171a;
+  max-width: none;
+  margin: 0;
+  hyphens: none;
+}
+
+/* Headings: distinct without shouting, and never orphaned from what follows. */
+h1, h2, h3, h4 {
+  font-weight: 650;
+  line-height: 1.2;
+  color: #0b0d0f;
+  break-after: avoid;
+  page-break-after: avoid;
+  margin-top: 1.35em;
+  margin-bottom: 0.45em;
+}
+h1 { font-size: 1.85em; letter-spacing: -0.01em; margin-top: 0; }
+h2 {
+  font-size: 1.32em;
+  border-bottom: 1px solid #d8dde2;
+  padding-bottom: 0.22em;
+  margin-top: 1.7em;
+}
+h3 { font-size: 1.1em; }
+h4 { font-size: 1em; color: #333a41; }
+
+p { margin: 0.55em 0; orphans: 3; widows: 3; }
+
+strong { font-weight: 650; color: #0b0d0f; }
+
+/* Code: the reason for the HTML route. Wraps instead of running off the page. */
+code, kbd, pre {
+  font-family: "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+  font-size: 0.87em;
+}
+code {
+  background: #f2f4f6;
+  padding: 0.1em 0.32em;
+  border-radius: 3px;
+  border: 1px solid #e4e8ec;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+pre {
+  background: #f7f9fa;
+  border: 1px solid #dfe4e9;
+  border-left: 3px solid #9aa7b2;
+  border-radius: 4px;
+  padding: 0.7em 0.9em;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  break-inside: avoid;
+  page-break-inside: avoid;
+  line-height: 1.35;
+}
+pre code { background: none; border: none; padding: 0; font-size: 1em; }
+
+/* Tables: these documents are mostly tables, so this is what had to improve. */
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.9em 0;
+  font-size: 0.9em;
+  break-inside: auto;
+}
+thead { display: table-header-group; }      /* repeat the header on every page */
+tr { break-inside: avoid; page-break-inside: avoid; }
+th, td {
+  border: 1px solid #d8dde2;
+  padding: 0.34em 0.55em;
+  text-align: left;
+  vertical-align: top;
+}
+th { background: #eef1f4; font-weight: 650; }
+tbody tr:nth-child(even) { background: #fafbfc; }
+
+blockquote {
+  margin: 0.8em 0;
+  padding: 0.1em 0 0.1em 0.9em;
+  border-left: 3px solid #c9d1d8;
+  color: #3d454c;
+}
+
+ul, ol { margin: 0.55em 0; padding-left: 1.5em; }
+li { margin: 0.2em 0; }
+
+img { max-width: 100%; height: auto; break-inside: avoid; }
+
+a { color: #0b5cad; text-decoration: none; overflow-wrap: break-word; }
+
+hr { border: none; border-top: 1px solid #d8dde2; margin: 1.4em 0; }

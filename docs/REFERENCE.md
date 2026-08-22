@@ -80,8 +80,7 @@ up to 115200 Bd. Read `SA/BIT` rather than assuming a slow line is the robust on
 ## Recording length, and where the limits come from
 
 There are **two recording modes**, capped at **8 192** and **32 768 bytes**. Nothing records without a
-byte ceiling; *Why there is no continuous mode* below gives the arithmetic, and beyond the ceiling the
-answer is flow control rather than a bigger buffer.
+byte ceiling, and beyond the ceiling the answer is flow control rather than a bigger buffer.
 
 The two differ only in size, at every rate, and the choice is a responsiveness trade rather than a
 capability: one press records a window, decodes it and files it, so `8 kB` reaches bytes in about a
@@ -149,37 +148,6 @@ an edge-triggered input, an interrupt or a latch** -- 10 us is 2.5 bit times at 
 loop can miss it. NOT measured as a closed loop -- the SDG2122X cannot be gated by the DMM's trigger output on this bench, so no device
 that actually obeys the credit has been tried. Sound by construction, untested end to end.
 
-### Why there is no continuous mode
-
-Continuous decode-to-file requires drain >= fill. Drain is `1/ck_win_us` = **20 833 samples/s**; fill
-is `fs_for_burst(baud)`, roughly 4x baud. The duty cycle that leaves:
-
-| baud | fill delivered | duty | slack per 16-byte file row |
-|---|---|---|---|
-| 2400 | 9 949/s | **0.478** | 34.8 ms |
-| 4800 | 19 798/s | **0.950** | 1.66 ms |
-| 9600 | 39 200/s | 1.882 | impossible |
-
-**2400 Bd is therefore the honest continuous ceiling.** 4800 Bd is arithmetically alive on 5 % margin,
-but that margin must cover ~30 `file.write()` calls a second to /usb1, bookkeeping, a repaint and a
-stop check, and the USB write cost is **unmeasured** -- so it is not a number to put on a panel. A mode
-that only worked at 2400 Bd would be too slow to be worth having, so the app offers a byte ceiling
-plus flow control instead.
-
-`strm_maxbaud` = 4800 comes from the same inequality using a read cost of 27.3 us, which counts the
-buffer read and edge detection but **not** `ua_run`, the pass that frames bytes. With the applicable
-`ck_win_us` = 48 us the inequality is baud < 5208, so 4800 sits inside its own derivation only because
-the rate ladder has no entry between it and 9600 -- at 95 % duty. Nothing reads the constant at
-runtime.
-
-The shape for a continuous mode, if one is ever wanted, is **one ring buffer in `FILL_CONTINUOUS`**
-rather than two alternating buffers. A Lua re-arm between two buffers cannot be gapless -- `abort()`
-is asynchronous and setting `fillmode` clears the buffer -- whereas a ring driven by a
-`BLOCK_MEASURE_DIGITIZE` with `COUNT_INFINITE` has no seam, and `acq_fillmode()` already sets that
-mode. Three behaviours it depends on are undocumented on this instrument and need measuring first:
-reading a buffer while the trigger model writes to it, cursor semantics across the wrap, and
-`buffer.saveappend()` on a buffer being filled. `notes/DESIGN-double-buffer.md` has the analysis and
-the experiments.
 ### The reading buffer accepts ~100 000 readings/s, and that is wall clock, not signal
 
 The durations above are **signal** time — buffer size ÷ the sample rate the app asks for — and they

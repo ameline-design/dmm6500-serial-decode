@@ -367,8 +367,9 @@ function sdec.sig_pair(rd, n, v0, v1)
   return v1m, v2m, (na + nbb) / cnt
 end
 
--- Every field the signal chain MEASURES, back to its power-on value. Called from
--- sdec.clear_result(), so it runs before every acquisition.
+-- Every field the signal chain MEASURES, back to its power-on value. Called from sdec.acquire(), so
+-- it runs before every acquisition, and from sdec.clear_result(), so a press that refuses before it
+-- ever acquires still leaves nothing behind for the next one.
 --
 -- THE RULE: A CAPTURE MUST NOT INHERIT A MEASUREMENT FROM THE CAPTURE BEFORE IT. Rate, format and
 -- polarity are derived FROM THE SIGNAL, and a value carried across a capture boundary turns that
@@ -1848,6 +1849,12 @@ end
 -- measures them; the real capture arms at the midpoint. Returns ok, reason.
 function sdec.acquire()
   sdec.lasterr = nil
+  -- EVERY ACQUISITION, NOT EVERY PRESS, and the difference is four acquisitions wide: autoset()
+  -- runs the three-step probe ladder, then the real capture, then an octave retry, so a press that
+  -- cleared only at its start would have its later looks reading the earlier looks' measurements.
+  -- Safe here because every field this drops is written further down this same function -- acq_fs by
+  -- the read, the rest by sig_levels/sig_edges/sig_idle -- before anything reads it.
+  sdec.clear_measured()
   sdec.hw_config()
   -- The pre-trigger reserve comes out of CAPACITY, so ask for it on top -- see sdec.acq_cap.
   sdec.acq_make_buffer(sdec.acq_cap(sdec.n))

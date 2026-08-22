@@ -919,6 +919,14 @@ function trigger.model.initiate()
   -- captured on the armed path would otherwise be tested at two different rates in one capture.
   local step, dt = SRC_step()
   if dt == nil then dt = SRC.ts[2] - SRC.ts[1] end
+  -- THE PRE-TRIGGER ORIGIN IS IN SOURCE SAMPLES, `pre` IS IN DELIVERED ONES. Every delivered sample
+  -- advances `step` source samples, so a reserve of `pre` delivered samples spans pre*step of the
+  -- render. Without this the trigger lands pre/step samples into the capture instead of pre: at
+  -- native 1 MS/s and a requested 100 kS/s, 100 rather than 1000.
+  if step ~= 1 then
+    start = (SRC.trigat or 1) - math.floor(pre * step)
+    if start < 1 then start = 1 end
+  end
   b.clear()
   local i
   for i = 1, total do

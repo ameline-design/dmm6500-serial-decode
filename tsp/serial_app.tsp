@@ -90,12 +90,11 @@ function sdec.clear_result()
   -- a later capture that did no such thing. proto_why is the same: a MIDI parser that raised on one
   -- capture must not accuse the next one, which may parse perfectly.
   sdec.strm_releveled, sdec.proto_why = nil, nil
-  -- relocked IS NOT EVICTED HERE, and it is the one exception in this block. clear_result() runs on
-  -- every acquire(), including the RE-CAPTURE autoset() does after a rate changes, so evicting it here
-  -- wipes the note between the relock and the end of the SAME press -- leaving correct bytes and
-  -- nothing saying the operator's locked rate was dropped, which reads as "EXACT with the forced rate
-  -- silently still in force". It is cleared at the top of capture() instead: once per PRESS, which is
-  -- what it describes.
+  -- relocked IS NOT EVICTED HERE, and it is the one exception in this block. A relock happens inside a
+  -- press, and its note has to survive to the end of that press: evicting it here would leave correct
+  -- bytes and nothing saying the operator's locked rate was dropped, which reads as "EXACT with the
+  -- forced rate silently still in force". It is cleared at the top of capture() instead: once per
+  -- PRESS, which is what it describes.
   sdec.probe_note = nil                 -- set by autoset() when it had to re-capture slower
   -- The previous capture's 20 000-entry sample table has just become unreachable. Collecting it
   -- here costs 8.3 ms measured, against a 1.6 s capture, and Lua memory pressure is on the
@@ -132,6 +131,12 @@ end
 -- whatever the current lock and mode imply, which is exactly what that function computes, and
 -- computing it in two places is how the two drift apart. The fs_want = nil ahead of it retires any
 -- one-shot a previous press left behind.
+--
+-- WHICH MEANS A CALLER CANNOT PRE-SET sdec.fs_want AND THEN PRESS CAPTURE: this discards it. That is
+-- the intent -- a one-shot surviving into the next press is the leak -- and no caller does it:
+-- fs_want is written by autoset(), which runs after this, and by tools/bench_priming.py, which calls
+-- hw_config() directly. A caller that really wants a rate for one capture should set sdec.force_baud,
+-- which is the supported way and which fs_select() reads.
 --
 -- WHAT IT DOES NOT DO IS UNLOCK. A forced rate is a decision the operator can see on the padlock
 -- and must survive a press. A harness that wants a virgin app calls sdec.unlock_all() first -- and
@@ -1321,13 +1326,13 @@ function sdec.capture()
   -- bytes stay up, and the note row says the press was taken as the Stop. EVERY press in the
   -- window, not just the first -- see sdec.press_absorbed().
   if sdec.press_absorbed('Capture') then return true end
-  -- ONCE PER PRESS, not per acquire(): see clear_result(). A relock inside this press must still be on
-  -- the note row when the press returns, however many internal re-captures happen after it.
+  -- ONCE PER PRESS, ahead of the mode dispatch, so it is retired for every path below and not only the
+  -- frame one. A relock inside this press must still be on the note row when the press returns,
+  -- however many internal re-captures happen after it.
   sdec.relocked = nil
   -- THE RATE OFFER IS ALSO PER PRESS, and for the opposite reason to relocked: it must OUTLIVE the
   -- press that raised it, because the operator answers it afterwards. Pressing Capture again is an
-  -- answer of its own -- a fresh capture supersedes the question -- so it is retired here rather than
-  -- in clear_result(), which runs on every internal re-capture.
+  -- answer of its own -- a fresh capture supersedes the question -- so it is retired here.
   sdec.rate_offer, sdec.rate_offer_from, sdec.rate_refused = nil, nil, nil
   -- BUSY ON ENTRY MEANS A PREVIOUS RUN DIED, not that one is in progress. A second press cannot
   -- arrive during a capture -- a front-panel press is not dispatched while a Lua script runs, and
@@ -1861,21 +1866,6 @@ function sdec.view_toggle()
   if nx.res ~= nil and sdec[nx.res] == nil then sdec.proto_parse(nx.mode) end
   sdec.ui_page = 0
   sdec.ui_rowc = nil          -- force a colour re-evaluation on the new layout
-  return pcall(function() sdec.ui_refresh() end)
-end
-
--- Advance one page of bytes, wrapping at the last.
-function sdec.page_cycle()
-  -- ONE WRAPPING PAGE BUTTON IS ONLY SUFFICIENT BECAUSE A CAPTURE HOLDS AT MOST 500 BYTES: three
-  -- hex pages, so any page is at most two presses away, and text never pages at all. IF THE
-  -- CAPTURE CEILING EVER RISES -- a bigger sdec.n, or the streaming mode learning to show its
-  -- bytes on the panel rather than writing a file. UNBOUND today: the panel wires page_prev and
-  -- page_next to 'Up' and 'Dn' (serial_ui.tsp:1990), and a stream tail runs to sdec.ck_keep = 8192
-  -- bytes -- 35 hex pages -- so one wrapping control is not enough for it.
-  local npg = sdec.ui_npages()
-  if npg < 1 then npg = 1 end
-  sdec.ui_paged = true
-  sdec.ui_page = math.mod(sdec.ui_page + 1, npg)
   return pcall(function() sdec.ui_refresh() end)
 end
 

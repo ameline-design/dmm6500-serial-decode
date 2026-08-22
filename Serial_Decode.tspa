@@ -385,7 +385,7 @@ function sdec.sig_pair(rd, n, v0, v1)
   return v1m, v2m, (na + nbb) / cnt
 end
 
--- Every field the signal chain MEASURES, back to its power-on value. Called from
+-- Every field the signal chain MEASURES, back to its power-on value. Called from sdec.acquire(), so
 --   [...]
 --     so the probe that normally supplies a threshold looks at an idle line. See sig_levels.
 --   * sdec.buf -- a live firmware handle under the delete -> nil -> create rule.
@@ -1249,6 +1249,7 @@ end
 -- measures them; the real capture arms at the midpoint. Returns ok, reason.
 function sdec.acquire()
   sdec.lasterr = nil
+  sdec.clear_measured()
   sdec.hw_config()
   sdec.acq_make_buffer(sdec.acq_cap(sdec.n))
 
@@ -3160,8 +3161,6 @@ sdec.ui_title    = 'SERIAL DECODE'
 
 sdec.ui_ink = 12
 sdec.ui_ink_med = 17
-sdec.ui_adv_small = 8
-sdec.ui_adv_med   = 14
 sdec.ui_lab_y = 14
 sdec.ui_val_y = 32
 sdec.ui_fields = {
@@ -3278,21 +3277,12 @@ function sdec.mode_cur()
   return sdec.ui_modes[1]
 end
 
-sdec.strm_maxbaud = 4800
-
 -- Whether mode `m` suits the current rate. Always true: the TWO recording sizes differ only in
 -- byte ceiling, so any rate one can run the other can, and it suits
 -- every rate it can run at. A rate too fast to stream is refused by mode_why(), which carries a
 -- reason to the panel; this exists because the panel and the harnesses call it.
 function sdec.mode_suits(m)
   return true
-end
-
--- The recording mode id for the locked rate, or nil when no rate is locked.
-function sdec.mode_for_rate()
-  local b = sdec.force_baud
-  if b == nil or b <= 0 then return nil end
-  return 'med'
 end
 
 -- Why mode `m` cannot run right now, as a sentence for the note line, or nil if it can. `m`
@@ -3414,7 +3404,6 @@ function sdec.ui_cur()
   return sdec.ui_view() or sdec.ui_views[1]
 end
 
-sdec.ui_c_head = 0x00DCFF    -- cyan: the headline wire parameters
 sdec.ui_c_dim  = 0xB0B0B0    -- grey: secondary detail
 sdec.ui_c_off  = 0x808080
 sdec.ui_c_warn = 0xFFC000    -- amber: ambiguity and warnings
@@ -3440,7 +3429,6 @@ sdec.ui_opt_edit_h  = 50
 sdec.ui_opt_edit_dy = 4
 sdec.ui_opt_btn_y   = 360
 sdec.ui_opt_x  = 270   -- >= 270 so edit labels stay on screen
-sdec.ui_opt_nf = 7     -- fields, for the layout arithmetic above
 sdec.ui_opt_px = 96
 
 sdec.ui_log_px = sdec.ui_trig_div - (sdec.ui_stat_div + 6)
@@ -5757,15 +5745,6 @@ function sdec.view_toggle()
   if nx.res ~= nil and sdec[nx.res] == nil then sdec.proto_parse(nx.mode) end
   sdec.ui_page = 0
   sdec.ui_rowc = nil          -- force a colour re-evaluation on the new layout
-  return pcall(function() sdec.ui_refresh() end)
-end
-
--- Advance one page of bytes, wrapping at the last.
-function sdec.page_cycle()
-  local npg = sdec.ui_npages()
-  if npg < 1 then npg = 1 end
-  sdec.ui_paged = true
-  sdec.ui_page = math.mod(sdec.ui_page + 1, npg)
   return pcall(function() sdec.ui_refresh() end)
 end
 

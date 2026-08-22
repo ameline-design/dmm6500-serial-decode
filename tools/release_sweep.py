@@ -175,19 +175,15 @@ def stages(outdir, shots):
               note='rebuild the archive from the sources just checked'),
         Stage('archive', ['lua', 'tools/verify_tspa.lua'],
               note='builds both screens from the ARCHIVE against a mock front end'),
-        # Run from docs/, or pandoc resolves img/ against the repo root and the screenshots
-        # silently drop out of the PDF.
         # EVERY SHIPPED DOCUMENT, not just the manual. Built by hand, a PDF ends up describing a build
         # that has since changed; built in the gate, a stale PDF is impossible rather than unlikely.
-        # README.pdf is built from the repo root because its links are repo-relative; the two in
-        # docs/ are built from docs/ or pandoc resolves img/ against the root and the screenshots
-        # silently drop out.
-        Stage('manual', ['bash', '-c',
-                         'cd docs && pandoc MANUAL.md -o MANUAL.pdf --pdf-engine=typst '
-                         '&& pandoc REFERENCE.md -o REFERENCE.pdf --pdf-engine=typst '
-                         '&& cd .. && pandoc README.md -o README.pdf --pdf-engine=typst '
-                         '&& ls -l docs/MANUAL.pdf docs/REFERENCE.pdf README.pdf'],
-              note='rebuild every shipped PDF: the manual, the measured reference, and the README'),
+        #
+        # THROUGH HTML, NOT typst -- see tools/mkpdf.sh. These documents are mostly wide tables and
+        # typst broke them across pages without repeating a header; the HTML route repeats the header
+        # row, keeps rows and code blocks whole, and wraps long code spans instead of letting them run
+        # off the page. It also owns the --resource-path that keeps the manual's 10 screenshots in.
+        Stage('manual', ['sh', 'tools/mkpdf.sh'],
+              note='rebuild every shipped PDF through HTML: manual, measured reference, README'),
 
         Stage('hw-matrix',
               ['python3', 'tools/bench_matrix.py',
