@@ -140,13 +140,24 @@ throughput.
 inside the one press, so the operator presses Capture once for a transmission of any length. What
 ends it is under **The flow-control loop's bound** below.
 
-Measured electrically: one pulse after arming, **4.92 V peak, -0.96 V baseline, 9.4-9.8 us wide** --
-SDS1204X-E at 1 GSa/s, armed SINGLE on the rising edge, two trials. The width CANNOT BE SET on this
-firmware: `trigger.extout.pulsewidth` is nil on 1.7.17a, so `sdec.fc_pulse` (100 us) is never applied
-and what comes out is the firmware default of ~10 us. **A device waiting for a credit therefore needs
-an edge-triggered input, an interrupt or a latch** -- 10 us is 2.5 bit times at 250 kBd, and a polling
-loop can miss it. NOT measured as a closed loop -- the SDG2122X cannot be gated by the DMM's trigger output on this bench, so no device
-that actually obeys the credit has been tried. Sound by construction, untested end to end.
+Measured electrically, on the 50 Ω matched cabling, with the pulse read on the same split that feeds
+the generator: **idle-low at +0.20 V, high +4.45 V, peak +4.82 V, 5.72 µs wide** — and the width is the
+same at three thresholds (5.72 µs at 50 %, 5.71 at 2.5 V, 5.73 at 2.0 V), so it is a real width rather
+than an artefact of where it was measured. **Rise 10–90 % is 436 ns, 7.6 % of the pulse: the corners are
+square.** An earlier bench observation that it "looked like the top of a sine wave" is not reproduced.
+
+Those figures supersede an earlier **4.92 V peak, −0.96 V baseline, 9.4–9.8 µs** taken on 1 m RG179
+75 Ω cabling. The width differs by 1.7× and the −0.96 V undershoot is absent, which is what a
+reflection on the old unterminated path would look like. The old numbers are not wrong about that
+bench; they do not describe this one.
+
+The width CANNOT BE SET on this firmware: `trigger.extout.pulsewidth` reads nil on 1.7.17a, confirmed
+again here, so `sdec.fc_pulse` (100 µs) is never applied. **A device waiting for a credit therefore
+needs an edge-triggered input, an interrupt or a latch** — 5.7 µs is under 1.5 bit times at 250 kBd, and
+a polling loop can miss it.
+
+**Still not closed as a loop, and now for a located reason.** See *Triggering, in both directions*
+below: the generator's burst machinery does accept the arbs, but it did not act on this pulse.
 
 ### The reading buffer accepts ~100 000 readings/s, and that is wall clock, not signal
 
@@ -396,6 +407,72 @@ wait for it.
 One press then runs the whole conversation, one credit per window, until a credited window comes back
 silent or the 32-window bound fires. The device has to go quiet when it has nothing to send: that
 silence is the only signal the app has that the transmission is over.
+
+---
+
+## Triggering, in both directions: what is tested
+
+The bench wires both directions permanently — SDG CH2 into the DMM's rear TRIGGER IN, and the DMM's
+rear TRIGGER OUT into the generator's rear In/Out — with every line also on a scope channel. What
+follows separates what has been **measured** from what has not, in each direction.
+
+### Into the DMM: an external pulse starts a decode — WORKS
+
+| | |
+|---|---|
+| the marker, measured on the scope | **0 to +4.972 V**, 50.00 µs wide, **100 ns** rise, +8 mV overshoot |
+| against the DMM's EXT TRIG IN spec | ≥ 1 µs wide, 0–5 V TTL — **50× the width floor, 3 V of level margin** |
+| pulse present, quiet line | capture completes in **1.1 s** |
+| pulse absent, quiet line | **refuses after the full wait**, `edge trigger unavailable; captured free-running` |
+
+The negative is the evidence. `acq_triggered()` falls back to a free-running capture when no trigger
+arrives, and a free-run on a quiet line still returns samples — so "it completed" proves nothing on its
+own. What proves it is that removing the pulse changes the outcome *and* names the reason.
+
+**`Rear BNC` alone is not enough for an anchored capture, and `sdec.trigext_only` is why.** `trigext`
+**OR**s the rear input with the analog start-bit trigger — the right default, because "start on a start
+bit, or when the DUT asserts its GPIO, whichever comes first" is not expressible as a single choice. But
+on a line that never stops transmitting the start bit always wins, so the external pulse cannot decide
+*where* the window opens. Measured on a live line:
+
+| mode | marker | result |
+|---|---|---|
+| `trigext` (OR) | off | completes in **1.1 s**, `trigblended = true` — the start bit won |
+| `trigext_only` | off | **times out at 6 s**, `trigblended = false` — the busy line is ignored |
+| `trigext_only` | on | completes in **1.2 s** — the marker armed it |
+
+The middle row is the one that cannot be faked: without exclusivity a busy line completes every
+capture. `sdec.trigext_only` is **off by default** and has no panel control — it makes a capture depend
+on equipment the product does not require, and a user with one probe must never wait on a pulse that
+cannot arrive.
+
+**What is NOT yet shown is anchoring to a payload offset.** That needs the marker phase-locked to the
+signal arb, which needs a marker waveform uploaded alongside it. Proven here is that an external pulse,
+and only that pulse, starts the capture.
+
+### Out of the DMM: a credit makes the generator send more — NOT YET
+
+Three gates, in order, and it fails at the third:
+
+| gate | result |
+|---|---|
+| **shape of the credit pulse** | **PASS** — idle-low, +4.45 V, 5.72 µs, 436 ns rise, square corners (above) |
+| **does burst keep TrueArb?** | **PASS** — `BTWV STATE,ON` leaves `SRATE MODE,TARB,VALUE,96000Sa/s` intact, and `STPS,0` needs no change. This was the make-or-break: had burst forced DDS, every stored vector would be resampled and interpolated, and none of them would be valid stimulus any more |
+| **does the generator act on the pulse?** | **FAIL** — with `TRSR,EXT`, `GATE_NCYC,NCYC`, `TIME,1` and the output on, the generator stayed silent through a credit |
+
+The negative control holds: armed and uncredited, the generator was silent for 2.5 s and the scope
+stayed `Ready`, so "no burst" is a real observation rather than a missed one.
+
+**What has not been separated** is the burst machinery from the external input — the manual-trigger
+control that would distinguish them (`TRSR,MAN` + `MTRIG`) returned no status, so it is unresolved
+rather than answered. The leading suspect is **pulse width**: the generator's minimum trigger width is
+nowhere specified, and 5.7 µs is the narrowest thing this bench can present. Widening it to ~100 µs is
+the next test, and it needs a one-shot on the credit line rather than any change to the app, since
+`trigger.extout.pulsewidth` cannot be set.
+
+So the README's standing claim is unchanged and still correct: flow control is **verified electrically
+but never closed as a loop against a device that waits for it.** What is new is that the reason is now
+located in the generator's trigger input rather than unknown.
 
 ---
 

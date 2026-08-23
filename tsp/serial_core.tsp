@@ -85,6 +85,19 @@ sdec.trigmode   = sdec.trigmode or 'edge'
 -- operator state that must survive an App relaunch. OFF by default -- a serial decoder must work
 -- with one probe and nothing else attached.
 if sdec.trigext == nil then sdec.trigext = false end
+-- REAR BNC ALONE, rather than OR'd with the start-bit trigger. Only meaningful with trigext set.
+--
+-- WHY IT IS NEEDED AT ALL. trigext OR's the rear input WITH the analog start-bit trigger, which is
+-- the right default: "start on a start bit, or when the DUT asserts its GPIO, whichever comes
+-- first". But on a line that is ALWAYS transmitting, the start bit always wins -- so an external
+-- marker can never decide WHERE a capture begins, and OR'ing silently makes an anchored capture
+-- unanchored. Measured: with the marker off and the line quiet the capture refuses in 6 s, and with
+-- the line live it completes immediately on the start bit whether the marker is there or not.
+--
+-- OFF by default, with an explicit nil test like trigext, because it makes the capture depend on
+-- equipment the product does not require. A user with one probe must never wait on a pulse that
+-- cannot arrive.
+if sdec.trigext_only == nil then sdec.trigext_only = false end
 -- FLOW CONTROL OUT: pulse the rear EXT TRIG OUT once the instrument is armed, as a "send the next
 -- frame" credit to a device that waits for it. Off by default and an explicit nil test, like
 -- trigext -- it drives a rear BNC that may be wired to other equipment, so it must be asked for.
@@ -1706,7 +1719,19 @@ function sdec.acq_triggered(n, slope)
   if not sdec.trigext then
     pcall(function() trigger.blender[1].reset() end)
   end
-  if sdec.trigext and sdec.trigmode ~= 'free' then
+  if sdec.trigext and sdec.trigext_only and sdec.trigmode ~= 'free' then
+    -- THE REAR BNC ALONE. No blender, and the comparator turned OFF below by clearing useanalog --
+    -- leaving it armed would keep the start-bit trigger as a live stimulus of the model even though
+    -- the model no longer waits on it, which is exactly the confusion the blender comment warns
+    -- about in the other direction.
+    --
+    -- This is what makes an ANCHORED capture possible: the marker, and nothing else, decides where
+    -- the window opens. It is also the only configuration in which "no trigger arrived" is a real
+    -- answer on a busy line, because otherwise the start bit answers first every time.
+    ev = trigger.EVENT_EXTERNAL
+    useanalog = false
+    pcall(function() trigger.blender[1].reset() end)
+  elseif sdec.trigext and sdec.trigmode ~= 'free' then
     local bok = pcall(function()
       trigger.blender[1].reset()
       trigger.blender[1].orenable = true

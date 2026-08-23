@@ -271,6 +271,7 @@ sdec.probe_fs = sdec.probe_fs or {1000000, 100000, 10000}
 sdec.pretrig    = 5         -- pre-trigger percentage for the analog-trigger path
 sdec.trigmode   = sdec.trigmode or 'edge'
 if sdec.trigext == nil then sdec.trigext = false end
+if sdec.trigext_only == nil then sdec.trigext_only = false end
 if sdec.fc_out == nil then sdec.fc_out = false end
 sdec.fc_pulse = sdec.fc_pulse or 100e-6
 sdec.trigwait     = sdec.trigwait or 3.0        -- seconds to wait for a start-bit edge
@@ -1180,7 +1181,11 @@ function sdec.acq_triggered(n, slope)
   if not sdec.trigext then
     pcall(function() trigger.blender[1].reset() end)
   end
-  if sdec.trigext and sdec.trigmode ~= 'free' then
+  if sdec.trigext and sdec.trigext_only and sdec.trigmode ~= 'free' then
+    ev = trigger.EVENT_EXTERNAL
+    useanalog = false
+    pcall(function() trigger.blender[1].reset() end)
+  elseif sdec.trigext and sdec.trigmode ~= 'free' then
     local bok = pcall(function()
       trigger.blender[1].reset()
       trigger.blender[1].orenable = true
