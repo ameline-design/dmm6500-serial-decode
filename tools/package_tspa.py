@@ -106,10 +106,10 @@ MANIFEST = [
     # instrument installer parses and whose compares cannot be assumed numeric, so the version must
     # never carry a pre-release suffix -- '1.0-beta' could fail a parse or sort anywhere. The word
     # "beta" lives in the Description instead, which is free text the Manage Apps screen shows. As
-    # STRINGS, every release sorts above the last ('1.04' > '1.03' > '1.02' > '0.9'), so an upgrade is
+    # STRINGS, every release sorts above the last ('1.05' > '1.04' > '1.03' > '0.9'), so an upgrade is
     # never read as a downgrade -- and two digits after the dot is what keeps that true, because
     # '1.4' sorts BELOW '1.03'.
-    ('Version', '1.04'),
+    ('Version', '1.05'),
     # Stated minimum firmware, kept deliberately low: if the installer compares this
     # field as a STRING then "1.7.3c" sorts above "1.7.17a" and the app refuses to
     # install on the very unit it is developed on. "1.7.0" satisfies either compare.

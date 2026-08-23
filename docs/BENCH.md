@@ -202,9 +202,11 @@ replaying a single cell does not depend on how many ran before it, including any
 
 ## Instrument hazards
 
-**The generator's LAN service wedges, and there is no way to recover it remotely.** `tools/power.py`
-drives a HomeKit plug for the DMM6500; the SDG2122X has none. Two known triggers: a few consecutive
-large `WVDT` uploads, and sweeping SRATE across many rates on a very large stored waveform.
+**The generator's LAN service wedges, and there is no way to recover it remotely.** **No instrument on
+this bench has a smart plug**, so every power cycle — a wedged SDG, the DMM's once-per-power-cycle UI
+build limit, a DMM control socket left held by a client that died — costs a human at the bench, and an
+unattended run that wedges is over until someone arrives. Two known triggers for the generator: a few
+consecutive large `WVDT` uploads, and sweeping SRATE across many rates on a very large stored waveform.
 
 So a per-waveform health check asks both instruments whether they are still answering, using a Lua
 round trip rather than `*IDN?` — the SCPI parser can keep answering after the app is gone. On a silent

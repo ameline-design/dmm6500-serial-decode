@@ -4,7 +4,7 @@ A UART decoder that runs **on** a Keithley DMM6500 bench multimeter. It digitize
 instrument's own digitizer, recovers the baud rate, frame format and idle polarity from the signal,
 and shows the bytes on the front panel as text or hex. No host, no logic analyser, one probe.
 
-Ian Ameline · **version 1.04 — beta** · MIT licence (see [LICENSE](LICENSE)) ·
+Ian Ameline · **version 1.05 — beta** · MIT licence (see [LICENSE](LICENSE)) ·
 [user manual](docs/MANUAL.md)
 
 **Beta status.** Everything the manual claims was measured on the bench, and the release gate below
@@ -27,24 +27,36 @@ Separately, a line whose logic low sits around **−2 V** can misdetect,
 while −0.1, −0.5, −1.0 and −3.0 V all measure clean. Both are characterised with their numbers under
 **Known failures of automatic rate detection** in the [manual](docs/MANUAL.md).
 
-**Endurance, measured — 17 hours on one power cycle.** Two soaks, and they answer different
-questions. The long one ran **6 laps of the full 1,683-point matrix, 10,098 capture-and-decode
-cycles over 17.1 hours**, with **no instrument event logged, no buffer or display object leaked and
-no error left behind**. The number worth more than any pass count is the **lap time**: 10 467 s for
-the first lap and 10 370 s for the last, a mean of 10 327 s over the first three laps against
-10 237 s over the last three — **−0.9 %, so laps got slightly faster and nothing accumulated.** That
-is the measurement that matters, because a leaked display object, a buffer handle never returned or a
-fragmenting allocator would not fail a lap: it would wedge the instrument around hour six.
+**Endurance, measured — and reproduced.** Two independent 17-hour soaks, each **6 laps of the full
+1,683-point matrix, 10,098 capture-and-decode cycles on one power cycle**, with **no instrument event
+logged, no buffer or display object leaked and no error left behind** in either. They were run on
+different cabling and with a change to the app's state handling between them, and they agree:
 
-The shorter one is the zero-failure run. Over 7 hours it took **81 laps — 3,726 capture-and-decode
+| | duration | failures of 10,098 | drift |
+|---|---|---|---|
+| first | 17.14 h | 318 | −0.9 % |
+| second | 17.17 h | 313 | −1.5 % |
+
+**Within 0.2 % on duration and 1.6 % on failure count**, across 20,196 capture-and-decode cycles. Two
+runs that reproduce each other are worth much more than one that passed, because a single run cannot
+distinguish a stable failure rate from a lucky evening.
+
+The number worth more than any pass count is still the **lap time**, and in both runs it *fell* — the
+second's six laps ran 10 567, 10 219, 10 254, 10 282, 10 173 and 10 299 s, every one within ±1 % of its
+counterpart in the first. That is the measurement that matters, because a leaked display object, a
+buffer handle never returned or a fragmenting allocator would not fail a lap: it would wedge the
+instrument around hour six.
+
+A third, shorter soak is the zero-failure run. Over 7 hours it took **81 laps — 3,726 capture-and-decode
 cycles and 8 one-press recordings — with zero failures**, every recording ending because its buffer
-filled at 8 192 bytes. It is the only evidence covering the **recording** path, which the long soak
-does not exercise.
+filled at 8 192 bytes. It is the only evidence covering the **recording** path, which neither long soak
+exercises.
 
-**The long soak is deliberately hostile, and 3.1 % of its points fail.** 318 of 10,098, and that
-number is not comparable to the rate-detection figure above: this matrix exists to attack the
-decoder, and it includes LIN traffic presented to a UART decoder, single-byte and walking-bit
-patterns, sinusoidal drift, and swings and offsets swept to the edge of the range.
+**The long soaks are deliberately hostile, and 3.1 % of their points fail** — 318 of 10,098 in one and
+313 in the other, which is **the same rate arrived at twice**. That number is not comparable to the
+rate-detection figure above: this matrix exists to attack the decoder, and it includes LIN traffic
+presented to a UART decoder, single-byte and walking-bit patterns, sinusoidal drift, and swings and
+offsets swept to the edge of the range.
 
 Two things about the shape of that 3.1 %, because the shape matters more than the number. **It
 concentrates**: four vectors — `v94`, `v63`, `v90`, `v71` — account for **76 %** of every failure, and
@@ -56,6 +68,12 @@ Which is the whole argument for soaking rather than sweeping. One green sweep wo
 those 88; one red sweep would have reported a regression nobody could reproduce. Six laps is what
 turns "it failed" into a rate — and it is why a cell that fails in all six, `v63` at five standard
 rates and `v94` at 1200, is a property of the cell rather than of the evening.
+
+The second soak is what shows that reasoning holds. Comparing which fixed-stimulus cells failed, **a lap
+of the second run differs from its counterpart in the first by less than two laps of the first run differ
+from each other** — 11 to 16 cells against 21 to 32 for every pair of first-run laps. The two runs are
+closer to each other than one run is to itself, which is the strongest statement available here: the
+failure set is a property of the matrix, not of the run.
 
 What the soaks do **not** cover: one power cycle rather than many, and no front-panel interaction —
 that is `hw-panel`'s job.

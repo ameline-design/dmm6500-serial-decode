@@ -2,7 +2,7 @@
 """REPLACE NAMED FUNCTIONS ON THE LIVE APP, without rebuilding the UI.
 
 WHY THIS EXISTS. sdec.start() can build the panel ONCE per power cycle -- a second build crashes the
-firmware hard enough to need the smart plug -- and tools/run_app.py's prelude CLEARS sdec before
+firmware hard enough to need a power cycle, which costs a human -- and tools/run_app.py's prelude CLEARS sdec before
 loading, which strands every display handle the running app owns. So the usual "edit, reload, retest"
 loop costs a power cycle per iteration, and overnight there is nobody to press the button.
 

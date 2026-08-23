@@ -7,7 +7,8 @@ sdec.start() itself, which is what the archive's entry point does -- so it exerc
 the shipping code path without a physical visit.
 
 THIS SPENDS THE ONE UI BUILD THIS POWER CYCLE. sdec.start() refuses a second build
-because rebuilding crashes the firmware hard enough to need the smart plug, so:
+because rebuilding crashes the firmware hard enough to need a power cycle, and there
+is no smart plug, so it costs a human. Hence:
 
   * every module is syntax-checked offline first (luac -p, tools/lint_tsp.py)
   * tools/verify_tspa.lua builds BOTH screens against a mock front end and asserts

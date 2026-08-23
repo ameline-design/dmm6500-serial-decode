@@ -20,9 +20,13 @@ The bench:
                                                       Bode plots -- see the
                                                       hazard note below)
 
-All three on one gigabit switch at 100 Mbit, plus a HomeKit smart plug feeding
-the DMM6500 so the once-per-power-cycle UI build limit can be recovered from
-without a human present.
+All three on one gigabit switch at 100 Mbit.
+
+NO INSTRUMENT HAS A SMART PLUG. Every recovery that needs a power cycle -- the
+once-per-power-cycle UI build limit, a wedged SDG LAN service, a DMM control
+socket held by a client that died -- costs a human at the bench. Nothing here
+may assume it can restart an instrument on its own, and an unattended run that
+wedges is over until someone arrives.
 """
 import os
 
@@ -55,22 +59,6 @@ DMM_USER = os.environ.get('DMM_USER', 'admin')
 DMM_PASSWORD = os.environ.get('DMM_PASSWORD', 'admin')
 
 # --------------------------------------------------------------------------
-# The smart plug. HomeKit, so it is driven through the macOS Shortcuts CLI
-# rather than any network protocol -- there is no IP to put here.
-# --------------------------------------------------------------------------
-PLUG_ON_SHORTCUT = os.environ.get('PLUG_ON_SHORTCUT', 'DMM Power On')
-PLUG_OFF_SHORTCUT = os.environ.get('PLUG_OFF_SHORTCUT', 'DMM Power Off')
-
-# Seconds the DMM must stay unpowered for a power cycle to be a power cycle.
-# A short interruption can leave the mainboard powered through bulk capacitance
-# and the firmware never restarts, which looks exactly like a cycle that did not
-# fix anything.
-PLUG_MIN_OFF_S = 15.0
-# Seconds to allow for the LXI stack after power returns. It answers ICMP well
-# before it accepts a socket, so readiness is polled with *IDN? not ping.
-PLUG_BOOT_TIMEOUT_S = 90.0
-
-# --------------------------------------------------------------------------
 # Hard facts that shape what the drivers may do. These are not preferences.
 # --------------------------------------------------------------------------
 
@@ -86,7 +74,8 @@ DMM_SINGLE_CLIENT = True
 
 # One UI build per power cycle. sdec.start() may be called once; every refresh
 # after it is settext-only. A second build crashes the firmware hard enough to
-# need intervention -- which is what the smart plug is for.
+# need a power cycle, and there is no smart plug, so it costs a human. Budget
+# the builds: about four app reloads per power cycle before ids run out.
 DMM_ONE_BUILD_PER_POWER_CYCLE = True
 
 # NEVER CALL display.waitevent() FROM A REMOTELY LOADED SCRIPT. It wedges the instrument: the TSP
@@ -174,8 +163,8 @@ DMM_DIGITIZE_BW_HZ = 440e3
 # failure is invisible from the signal side. Waiting does not clear it (45 s), and it
 # progresses from "touchscreen fine, LAN dead" to the front-panel Output button not
 # responding either, so it is a firmware hang and not merely a stale session.
-# Recovery is a POWER CYCLE, and unlike the DMM6500 there is no plug shortcut -- it
-# costs a human.
+# Recovery is a POWER CYCLE, and no instrument here has a plug shortcut -- it costs
+# a human.
 #
 # So: upload each vector ONCE per power cycle and select it by name afterwards
 # (siglent.select_arb, tools/bench_uart.py --reuse). write_raw() settles in
@@ -688,7 +677,7 @@ def describe():
         lines.append(f'SDS1204X-E  {SCOPE_IP}:{SCPI_PORT}    independent oracle')
     else:
         lines.append('SDS1204X-E  ADDRESS UNKNOWN -- set SCOPE_IP to enable the oracle')
-    lines.append(f'plug        shortcuts "{PLUG_ON_SHORTCUT}" / "{PLUG_OFF_SHORTCUT}"')
+    lines.append('power       no smart plug on any instrument -- a cycle costs a human')
     return '\n'.join(lines)
 
 
