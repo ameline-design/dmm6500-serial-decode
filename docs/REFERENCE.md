@@ -447,6 +447,28 @@ capture. `sdec.trigext_only` is **off by default** and has no panel control — 
 on equipment the product does not require, and a user with one probe must never wait on a pulse that
 cannot arrive.
 
+So `Rear BNC` means something different in each of the three Trigger modes, and only two of them are
+useful:
+
+| `Options ▸ Trigger` | what the rear input does | how |
+|---|---|---|
+| `Start bit` | **OR'd** with the analog start-bit trigger | `blender[1]` over `EVENT_ANALOGTRIGGER` + `EVENT_EXTERNAL`, `orenable = true` |
+| `Trigger key` | **OR'd** with the front key — the only competing source is the operator, so this is the panel-reachable way to make the pulse matter on a busy line | same blender, `EVENT_DISPLAY` + `EVENT_EXTERNAL` |
+| `Free run` | **ignored entirely** | the blender branch is guarded `sdec.trigmode ~= 'free'`, and free run never reaches `acq_triggered()` at all |
+
+**The Free-run case is reported, and by the one mechanism that cannot be reached by the wrong path.**
+`sdec.options_apply()` assigns `sdec.trigext` without a note of its own, and the one-shot lognote in
+`sdec.trigext_toggle()` fires only if that speculatively-wired status-row rect ever delivers a press —
+so neither is what carries the warning. `sdec.ui_notes()` **derives it from state instead of announcing
+it on change**: while the combination holds, every refresh re-adds `Rear BNC = Trig In is set but
+IGNORED -- Free run means do not wait for anything`, and `ui_trig_t` appends a `?` to `EXT TRIG IN`.
+A recomputed note cannot be missed by arriving through a path nobody thought to instrument, which is
+why the setting-looks-applied-but-is-not class of warning belongs there and not in a handler.
+
+When the blender is unavailable the code falls back to the rear BNC **alone** and says so
+(`no trigger blender; using the rear BNC alone`) rather than dropping the operator's request. Four-case
+regression proof: `tools/bench_trigin.py`, to be re-run after any change to `acq_triggered()`.
+
 **What is NOT yet shown is anchoring to a payload offset.** That needs the marker phase-locked to the
 signal arb, which needs a marker waveform uploaded alongside it. Proven here is that an external pulse,
 and only that pulse, starts the capture.

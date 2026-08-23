@@ -235,8 +235,9 @@ timing out.
 If the trigger you chose never arrives, the capture goes ahead free-running after a few seconds rather
 than failing, and the note row says which one was missing.
 
-These two jobs never collide: the key times a capture only when you have asked for that in Options,
-and stops a run only while one is going.
+So the key has exactly one job here: it times a capture, and only when you have asked for that in
+`Options ▸ Trigger`. At every other moment — including all the way through a recording — it does
+nothing.
 
 ---
 
@@ -372,8 +373,8 @@ is one conversation split across two files, in order, with nothing missing betwe
 
 Three things your device has to get right:
 
-- **Catch a 10 µs pulse.** That is short: use an interrupt, an edge-triggered input or a hardware
-  latch. A firmware polling a GPIO in a loop can miss it, and at 250000 baud 10 µs is only 2.5 bit
+- **Catch a 5.7 µs pulse.** That is short: use an interrupt, an edge-triggered input or a hardware
+  latch. A firmware polling a GPIO in a loop can miss it, and at 250000 baud 5.7 µs is under 1.5 bit
   times. It is a pulse per window, not a level you can poll once.
 - **Send no more than one window per pulse** — 8 192 or 32 768 bytes depending on the mode. The pulse
   carries no size information, so the limit has to be built into your firmware.
@@ -382,10 +383,12 @@ Three things your device has to get right:
 
 **Honest limitation:** the pulse itself is verified — +4.45 V, 5.72 µs, 436 ns rise, one per arm,
 measured on a scope — and the loop that issues them is tested. The full round trip, with a device that
-actually waits for the pulse, has **not** been tested here, because the signal generator on this bench
-cannot be
-gated by the meter's trigger output. The mechanism is sound by construction; you would be the first to
-close the loop.
+actually waits for the pulse, has **not** been tested here: the signal generator on this bench stayed
+silent through a credit, and whether that is its trigger input or its burst arming has not been
+separated yet. The leading suspect is the width, since 5.72 µs is the narrowest pulse this bench can
+present and the generator's own minimum is not specified anywhere. So the mechanism is sound by
+construction and you would be the first to close the loop. **Triggering, in both directions** in
+[REFERENCE.md](REFERENCE.md) has it gate by gate.
 
 ### How long a recording gets you
 
@@ -538,9 +541,22 @@ Two settings you can ignore unless you need them:
   flow-control credit pulse out of EXT TRIG OUT. `FC Out` is what turns a recording into an unlimited
   one; see **More than one window: flow control** above.
 
-This setting affects FRAME captures. **A recording ignores it** and starts as soon as you press
+An external pulse on the rear connector really does start a capture — verified on this hardware, and
+verified by the negative as well: take the pulse away and the capture refuses rather than quietly
+grabbing something, with the note row naming what was missing. Two things to know before you rely on
+it. The rear input is **OR'd with** whatever **Trigger** says rather than replacing it, so the first
+of the two to happen wins the capture — and on a line that is always transmitting that is the start
+bit, every time, which leaves your pulse no say in where the window opens. Point it at a line that is
+otherwise quiet, or pair it with `Trigger key` so that the only thing it competes with is your own
+finger. And under `Free run` the rear input is ignored altogether, because free run means do not wait
+for anything — the app says so rather than leaving you to notice: the note row reads `Rear BNC = Trig
+In is set but IGNORED`, and the status cell marks it by appending a `?` to `EXT TRIG IN`.
+
+**Trigger** applies to FRAME captures. **A recording ignores it** and starts as soon as you press
 Capture — for a recording, the thing that decides when the device talks is the flow-control credit,
-not a trigger.
+not a trigger. `FC Out` is not confined that way — it pulses once per armed capture whichever mode you
+are in, a FRAME capture included. What a recording adds is the repetition: credit, record, decode,
+credit again.
 
 ---
 
