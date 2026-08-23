@@ -764,9 +764,10 @@ function sdec.stream_decode(got)
     -- see ck_smp_us for the per-phase timings it comes from. Only the panel path narrows it: the
     -- one-shot callers have nothing to protect and want the fewest seams.
     local W = sdec.ck_win_for(sdec.ui_latency_s)
-    -- KNOWN SCOPE LEAK: these two are globals and nothing restores them, so a host-driven one-shot
-    -- ck_run() later in the SAME session (the else branch below) inherits the narrowed W instead of the
-    -- 20000 default.
+    -- THESE TWO ARE GLOBALS AND THIS PATH CANNOT RESTORE THEM: the decode_step() calls that follow
+    -- still need the narrowed W, so it has to outlive this function. The one-shot branch below
+    -- therefore asserts its own values rather than trusting what it inherits, which is what closes
+    -- the leak -- see the comment there.
     --
     -- NOT REACHABLE FROM THE PANEL, and the reason is worth stating precisely: strm_press defaults to
     -- FALSE and nothing sets it true, so the panel takes the one-shot record_run() path and never enters
@@ -782,6 +783,13 @@ function sdec.stream_decode(got)
     sdec.ck_running = true
     return sdec.decode_step()
   end
+  -- CLOSE THE SCOPE LEAK AT THE POINT OF CONSUMPTION. The streaming branch above narrows ck_win_n
+  -- and ck_level_max and cannot restore them -- later decode_step() calls still need the narrowed
+  -- window, and ck_running is cleared in a dozen places, so hooking teardown would risk a half-fixed
+  -- state. Asserting the documented one-shot values HERE closes it however the stream ended, and
+  -- these are exactly the values chunk_decode says this path wants: the 20000 default, and a nil
+  -- latency cap so the one-shot callers and the offline suite keep the full decimated view.
+  sdec.ck_win_n, sdec.ck_level_max = 20000, nil
   local tot, terr = nil, nil
   local dok = pcall(function()
     tot, terr = sdec.ck_run(sdec.ck_reader_buffer(sdec.buf, got), got, path, opts)

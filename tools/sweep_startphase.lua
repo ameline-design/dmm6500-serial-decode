@@ -24,9 +24,15 @@
 --   * a REFUSAL on a short or badly placed window is the correct answer;
 --   * a DIFFERENT format on a genuinely ambiguous payload -- 7E1 read as 8N1 on a gapless stream is
 --     open issue #49 and a real ambiguity, not a bug this sweep gets to relitigate;
---   * a WRONG RATE on a periodic payload is open issue #46, mechanism still unresolved.
+--   * a WRONG RATE on a periodic payload is open issue #46. The MECHANISM IS NOW KNOWN: on a looping
+--     periodic payload the reported rate flips with the CAPTURE START PHASE, measured at 25 of 48
+--     phases on v63 at 19200, where a 52.08-sample bit fits 8.68 -- exactly one third. Still not
+--     fixed, so still counted rather than failed.
 -- Counting them means a regression shows up as a count that moved, which is the honest signal while
--- the issues are open. Turning either into a gate needs its issue closed first.
+-- the issues are open -- but a count nobody compares against anything is not evidence, and this one
+-- sat at 148 of 3936 while #46 was recorded as "the offline twin does not reproduce it". So both
+-- counters are now BOUNDED by a ratchet in tools/sweep_all.py: they may fall, and a rise fails the
+-- gate. That is what a known-but-unfixed defect can be held to without pretending it is fixed.
 
 dofile('tools/mock_display.lua')
 dofile('tools/gen_serial.lua')

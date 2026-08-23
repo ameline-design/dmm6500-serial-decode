@@ -29,26 +29,42 @@ TREES = ('tsp', 'tools')
 
 
 def tree_hash():
-    """A hash over the CONTENT of every tracked file in tsp/ and tools/. -> (hex, count)
+    """A hash over the CONTENT of every tracked file in tsp/ and tools/, AS IT SITS ON DISK.
+    -> (hex, count)
 
-    git hash-object rather than mtimes: a file touched but unchanged must not invalidate a receipt,
-    and a file changed back to a previous content must not appear changed.
+    THE WORKING TREE, AND NOTHING ELSE. This function used to hash `git ls-files -s` -- which reports
+    the INDEX -- and fold in the unstaged `git diff` on top. Those two describe the same bytes in two
+    different ways depending on what has been STAGED, so `git add` of a file whose content never
+    changed moved the hash and invalidated a receipt the code had genuinely earned. The receipt then
+    went stale on COMMIT rather than on EDIT, which is backwards: committing is the one action that
+    cannot alter what was tested. Measured cost, 2026-08-22: seven SMOKE_OVERRIDE pushes, several of
+    them for commits whose tsp/ and tools/ were byte-identical to the gate run that had just passed.
+    It also broke the docs-only exemption, because once the hash had flipped a commit touching nothing
+    but README.md was refused too.
+
+    Reading the files directly is what makes the hash depend on content alone. `git ls-files` is still
+    used, but only to enumerate TRACKED paths -- so an untracked scratch file or a stray .pyc under
+    tools/ cannot invalidate a receipt, which is a second way the old form misfired.
+
+    A path that is tracked but missing from disk is hashed as absent rather than skipped: deleting a
+    module is exactly the kind of change the gate must not sit through silently.
     """
     h, n = hashlib.sha256(), 0
     for tree in TREES:
-        out = subprocess.run(['git', 'ls-files', '-s', tree], cwd=ROOT,
-                             capture_output=True, text=True).stdout
-        for line in sorted(out.strip().split('\n')):
-            if not line.strip():
+        out = subprocess.run(['git', 'ls-files', '-z', tree], cwd=ROOT,
+                             capture_output=True).stdout
+        for raw in sorted(out.split(b'\0')):
+            if not raw:
                 continue
-            # "<mode> <sha1> <stage>\t<path>" -- the sha1 IS the content hash git records.
-            h.update(line.encode())
+            path = raw.decode('utf-8', 'surrogateescape')
+            h.update(raw)
+            full = os.path.join(ROOT, path)
+            try:
+                with open(full, 'rb') as fh:
+                    h.update(hashlib.sha256(fh.read()).digest())
+            except OSError:
+                h.update(b'<absent>')
             n += 1
-    # Uncommitted work is the case that matters most, and ls-files -s reports the INDEX. So the working
-    # tree is folded in too, or a receipt would survive an edit that was never staged.
-    diff = subprocess.run(['git', 'diff', '--'] + list(TREES), cwd=ROOT,
-                          capture_output=True, text=True).stdout
-    h.update(diff.encode())
     return h.hexdigest()[:16], n
 
 

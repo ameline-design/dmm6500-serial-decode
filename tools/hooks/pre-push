@@ -1,18 +1,51 @@
 #!/bin/sh
 # Refuse a push of tsp/ or tools/ that the smoke gate has not passed against.
 #
-# The receipt is content-addressed, so the one-line fix made AFTER the run invalidates it -- which is
-# the case worth catching, because that change is the least tested thing in the push.
+# The receipt is content-addressed over the WORKING TREE, so the one-line fix made AFTER the run
+# invalidates it -- which is the case worth catching, because that change is the least tested thing in
+# the push. Staging or committing the same bytes does not, which is the case that must NOT be caught.
 #
 # Install:  ln -sf ../../tools/hooks/pre-push .git/hooks/pre-push
 # Override: SMOKE_OVERRIDE="why" git push        (the reason is printed, so it is a decision on record)
-#
-# Docs-only pushes are unaffected: neither tree is hashed.
 set -e
 if [ -n "${SMOKE_OVERRIDE:-}" ]; then
   echo "pre-push: smoke gate OVERRIDDEN -- $SMOKE_OVERRIDE"
   exit 0
 fi
+
+# THE DOCS-ONLY EXEMPTION, ACTUALLY IMPLEMENTED. It was asserted in a comment here for months and
+# never coded, so a README-only push was gated on a bench run it could not possibly affect.
+#
+# It reads the RANGE BEING PUSHED off stdin, which is the only thing that describes the push rather
+# than the working directory: git feeds each ref as "<local ref> <local sha> <remote ref> <remote sha>".
+# Judging by `git diff HEAD` instead would exempt a push whose commits touch tsp/ merely because the
+# working tree is clean -- exactly backwards.
+#
+# A new branch arrives with an all-zero remote sha and no cheap range, and a delete arrives with an
+# all-zero local sha. Neither is exempted: falling through to the receipt check is the safe direction.
+RANGE_PATHS=""
+EXEMPT=yes
+while read -r LREF LSHA RREF RSHA; do
+  [ -z "$LREF" ] && continue
+  case "$LSHA" in *[!0]*) : ;; *) EXEMPT=no; break ;; esac      # deleting a ref
+  case "$RSHA" in
+    *[!0]*) SPAN="$RSHA..$LSHA" ;;
+    *)      EXEMPT=no; break ;;                                  # new branch: no range to trust
+  esac
+  P=$(git diff --name-only "$SPAN" -- tsp tools 2>/dev/null) || { EXEMPT=no; break; }
+  [ -n "$P" ] && { EXEMPT=no; RANGE_PATHS="$P"; break; }
+  RANGE_PATHS="$RANGE_PATHS$(git diff --name-only "$SPAN" 2>/dev/null)"
+done
+# No refs on stdin at all (some git invocations) means nothing was proved, so do not exempt.
+[ -z "$RANGE_PATHS" ] && [ "$EXEMPT" = yes ] && EXEMPT=no
+
+if [ "$EXEMPT" = yes ]; then
+  echo "pre-push: docs-only push -- no commit in this range touches tsp/ or tools/, so the smoke"
+  echo "          receipt does not apply. Files changed:"
+  echo "$RANGE_PATHS" | sed 's/^/            /' | head -20
+  exit 0
+fi
+
 if ! python3 tools/smoke_receipt.py --verify; then
   echo ""
   echo "pre-push REFUSED. Run the 11-minute gate, or push with a reason on record:"

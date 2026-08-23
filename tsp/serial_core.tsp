@@ -708,9 +708,9 @@ end
 
 -- One bit time in samples, from the EDGE LIST, before any bit-time fit has run.
 --
--- FROM ei, NOT FROM sdec.w. sdec.w is populated by sig_bittime(), which runs
--- during decode -- i.e. AFTER sig_idle -- so at this point sdec.w is either nil or left over from
--- the previous capture.
+-- FROM ei, NOT FROM sdec.w. sdec.w is populated by sig_bittime(), which runs during decode -- i.e.
+-- AFTER sig_idle -- so at this point sdec.w is ALWAYS nil: clear_measured() runs at the top of every
+-- acquire(), and sig_bittime() is its only writer. Reading it here would read nothing, ever.
 --
 -- A LOW PERCENTILE, NOT THE MINIMUM. Most pulses on a UART line are one or two
 -- bits, so the 10th percentile lands on a one-bit pulse; the minimum lands on

@@ -11,14 +11,25 @@ The bench:
 
     +--------------+                    +------------------+
     | SDG2122X     | CH1 out --+--coax--| DMM6500 INPUT HI |   the decoder
-    | 16-bit AWG   |           |        +------------------+
-    | CH2 combined |           |        +------------------+
-    | into CH1     |           +--coax--| SDS1204X-E CH1   |   the oracle
-    +--------------+   splitter         +------------------+
+    | 16-bit AWG   |           +--coax--| SDS1204X-E CH1   |   the oracle
+    |              |
+    |              | CH2 out --+--coax--| DMM6500 rear TRIGGER IN |  anchor marker
+    |              |           +--coax--| SDS1204X-E CH3          |
+    |              |
+    | rear In/Out  |<-----+--coax-------| DMM6500 rear TRIGGER OUT |  credit pulse
+    +--------------+      +--coax-------| SDS1204X-E CH4           |
            ^                                     ^
            +----------------- USB ---------------+   (scope drives the SDG for
                                                       Bode plots -- see the
                                                       hazard note below)
+
+    Three outputs, each split at its own connector into two matched 5 ft RG316
+    runs, and each landing on a scope channel so all three can be read in one
+    timing context. SDS CH2 is NOT CONNECTED -- deliberately, so CH1 sits alone
+    in the CH1+CH2 ADC pair and the signal channel is never halved by watching
+    a trigger. CH2 can still be SUMMED INTO CH1 inside the generator (CMBN) as
+    an impairment; that is independent of its output port. Full account, with
+    the measured pulse shapes: notes/BENCH-cabling.md.
 
 All three on one gigabit switch at 100 Mbit.
 
@@ -601,10 +612,12 @@ SCOPE_CH_IMPAIR = 2      # SDG CH2 alone. ENABLE ONLY WHEN DIAGNOSING -- halves 
 # halves them. So CH4, already wired to the DMM's EXT TRIG OUT, is ALREADY optimal for G0 with CH3
 # left off -- CH1 and CH4 are two full-bandwidth channels in different pairs. SCOPE_DEEP_CHANNELS
 # below is one valid choice of one-per-pair, not the only one; (1, 4) is equally deep.
-# What freeing CH3 actually buys is a SPARE deep channel, for a case that needs to watch a third
-# signal at full rate. Nothing today does.
-SCOPE_CH_ARBSYNC = 3     # unused; a spare deep channel, no longer allocated to the abandoned sync
-SCOPE_CH_DMMWIN = 4      # DMM EXT TRIG OUT: marks the DMM's capture window
+#
+# CH3 IS NO LONGER SPARE. It carries SDG CH2's anchor marker, which is why the marker is on CH3 and
+# not CH2: CH1 then sits ALONE in the CH1+CH2 pair, so watching the marker never costs the signal
+# channel rate or depth. The unconnected channel is CH2.
+SCOPE_CH_ANCHOR = 3      # SDG CH2 -> DMM rear TRIGGER IN, split here: the capture anchor marker
+SCOPE_CH_DMMWIN = 4      # DMM rear TRIGGER OUT, split here: the credit pulse / capture window
 
 
 # --------------------------------------------------------------------------
@@ -671,7 +684,7 @@ def have_scope():
 def describe():
     lines = [
         f'DMM6500     {DMM_IP}:{SCPI_PORT}    the decoder under test',
-        f'SDG2122X    {SDG_IP}:{SCPI_PORT}    stimulus, CH1 + CH2 combined',
+        f'SDG2122X    {SDG_IP}:{SCPI_PORT}    stimulus on CH1; CH2 is the anchor marker',
     ]
     if have_scope():
         lines.append(f'SDS1204X-E  {SCOPE_IP}:{SCPI_PORT}    independent oracle')

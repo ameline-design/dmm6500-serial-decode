@@ -112,6 +112,11 @@ class Scope:
         helpers are not accepted by this firmware, and a measurement then runs at a setting nobody
         chose. Exponential notation ('2.00E-04') is what works. This is the house rule for both
         Siglent boxes -- write, then read back -- applied where it was missing.
+
+        A LOOSE `tol` DEFEATS THIS CHECK ON SUB-UNITY VALUES, because the scale below is floored at
+        1.0 so that `want = 0` (a trigger level) stays comparable. tol=1e-3 against want=2e-6 allows
+        1e-3 of error -- five hundred times the value -- so a clamp to the 1e-9 minimum would PASS.
+        Leave tol at its default for timebases and volts-per-division, which read back exactly.
         """
         self.write(cmd)
         got = self.query(query)
@@ -157,16 +162,28 @@ class Scope:
 
     # ---------------- acquisition ----------------
     def channel(self, ch, vdiv=None, ofst=None, coupling='D1', on=True):
-        """coupling: D1 = DC 1x, A1 = AC 1x -- Siglent's spelling of probe+coupling."""
+        """coupling: D1 = DC 1x, A1 = AC 1x -- Siglent's spelling of probe+coupling.
+
+        VDIV AND OFST GO THROUGH setq, IN EXPONENTIAL NOTATION, because this firmware CLAMPS THEM
+        SILENTLY: `C3:VDIV 1.25` left the channel at its 5.00E-04 minimum with no error and no event,
+        and waveform() then scaled 8-bit codes by that -- turning a 5 V pulse into a flat line three
+        millivolts tall. Nothing detected it; the trace simply looked dead.
+
+        So vdiv MUST be a valid 1-2-5 step (0.0005 .. 10). An invalid one like 1.25 now RAISES rather
+        than being rounded away silently, which is the point.
+        """
         self.write(f'C{ch}:TRA {"ON" if on else "OFF"}')
         if vdiv is not None:
-            self.write(f'C{ch}:VDIV {vdiv}')
+            self.setq('C%d:VDIV %.2E' % (ch, vdiv), 'C%d:VDIV?' % ch, vdiv)
         if ofst is not None:
-            self.write(f'C{ch}:OFST {ofst}')
+            self.setq('C%d:OFST %.2E' % (ch, ofst), 'C%d:OFST?' % ch, ofst)
         self.write(f'C{ch}:CPL {coupling}')
 
     def timebase(self, tdiv):
-        self.write(f'TDIV {tdiv}')
+        """Seconds per division, verified. `TDIV 200US` left this at 1.00E-09 -- the minimum -- so the
+        suffix form is not usable and a silent clamp is the failure mode. Default tolerance
+        deliberately: see setq on why a loose tol cannot catch a clamp on a sub-unity value."""
+        self.setq('TDIV %.2E' % tdiv, 'TDIV?', tdiv)
 
     def memory(self, size='14M'):
         """Capture depth. 14 Mpt is the maximum on this model, and it is only
@@ -206,7 +223,9 @@ class Scope:
         CH4 is not on by default. channel() before trigger_edge(), always.
         """
         self.write(f'TRSE EDGE,SR,C{ch},HT,OFF')
-        self.write(f'C{ch}:TRLV {level}')
+        # Verified in exponential notation, like VDIV and TDIV: a trigger level that clamped silently
+        # arms on the wrong threshold, and the capture then looks merely unlucky rather than misset.
+        self.setq('C%d:TRLV %.2E' % (ch, level), 'C%d:TRLV?' % ch, level, tol=1e-2)
         self.write(f'C{ch}:TRSL {slope}')
 
     def sample_rate(self):

@@ -29,6 +29,28 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # The counters sweep_startphase.lua prints on its SHARD line, in the order they appear there.
 KEYS = ['cases', 'ok', 'refused', 'fmtdiff', 'ratediff', 'shortrun', 'headbleed',
         'redecodes', 'skipped', 'HARD']
+
+# RATCHETS FOR THE TWO OPEN-ISSUE COUNTERS. Measured 2026-08-22 at seed 1, 24 offsets, and verified
+# BIT-IDENTICAL across two consecutive runs -- 3936 decodes, 2221 byte-exact, both counters unmoved.
+#
+# WHY A RATCHET AND NOT A TARGET. These count defects that are UNDERSTOOD BUT NOT FIXED, so demanding
+# zero would fail the gate on a known state, and printing them with no bound lets them grow unnoticed
+# -- which is what happened: the sweep has been reporting the #46 rate misfit since it was written, at
+# 148 of 3936, while the issue was recorded as "the offline twin does not reproduce it". A number
+# nobody compares against anything is not evidence.
+#
+# sweep_startphase.lua's own header says turning either counter into a gate "needs its issue closed
+# first". #46's mechanism is now closed -- the reported rate flips with the CAPTURE START PHASE on a
+# looping periodic payload, measured at 25 of 48 phases on v63 -- so the count can be bounded even
+# though the defect remains. #49 is a genuine 7E1/8N1 ambiguity and is bounded for the same reason.
+#
+# ONLY AT THE GATE'S OWN SETTINGS. A different seed or offset count draws different windows, so the
+# baselines do not describe it and the ratchet is skipped rather than applied wrongly.
+RATCHET_SEED, RATCHET_OFFSETS = 1, 24
+RATCHET = {
+    'ratediff': (148, 'periodic-payload rate misfit, issue #46'),
+    'fmtdiff': (533, '7E1/8N1 ambiguity, issue #49'),
+}
 LINE = re.compile(r'^SHARD (\d+)/(\d+) seed (\d+): (.*)$')
 
 # The BLEED line scores the two ways ua_head_bad could be wrong against the truth the sweep already
@@ -161,6 +183,34 @@ def main():
 
     if nsummary != n:
         failed.append('%d shards ran but only %d printed a summary' % (n, nsummary))
+
+    # THE RATCHET. Applied only at the settings the baselines were measured at.
+    if a.seed == RATCHET_SEED and a.offsets == RATCHET_OFFSETS:
+        print('\n-- open-issue ratchets (seed %d, %d offsets) --' % (a.seed, a.offsets))
+        for key in sorted(RATCHET):
+            base, why = RATCHET[key]
+            got = tot[key]
+            if got > base:
+                # A COUNT THAT GREW IS A REGRESSION, whatever the pass line says. The whole point of
+                # bounding a known defect is that it must not spread to cases it did not affect.
+                failed.append('%s rose to %d from a measured %d (%s) -- %d new case(s). '
+                              'Either a change made it worse, or it reached vectors it did not touch '
+                              'before. Do not raise the baseline to make this pass.'
+                              % (key, got, base, why, got - base))
+                print('  %-10s %4d  WORSE than %d   %s' % (key, got, base, why))
+            elif got < base:
+                # Not a failure -- but it must not pass silently, or the baseline stays loose enough
+                # to let the defect come back later and still pass.
+                print('  %-10s %4d  IMPROVED from %d   %s' % (key, got, base, why))
+                print('             ^ set RATCHET[%r] to %d in this file, or the gain is not held'
+                      % (key, got))
+            else:
+                print('  %-10s %4d  unchanged        %s' % (key, got, why))
+    else:
+        print('\n-- open-issue ratchets SKIPPED: seed %d / %d offsets is not the measured '
+              'configuration (%d / %d), so the baselines do not describe this run --'
+              % (a.seed, a.offsets, RATCHET_SEED, RATCHET_OFFSETS))
+
     if failed:
         print()
         for x in failed:
