@@ -398,9 +398,10 @@ inverted, entirely wrong decode happens.
 
 ## Flow control
 
-`Options ▸ Rear BNC = FC Out` makes the rear EXT TRIG OUT emit **one** ~5 V, ~10 µs pulse once the
-digitizer is armed — 4.92 V and 9.4–9.8 µs on a scope. The width is the firmware's own and cannot be
-set here, so the receiving device needs an edge-triggered input rather than a polling loop. It is a **credit, not CTS**: treat the pulse as
+`Options ▸ Rear BNC = FC Out` makes the rear EXT TRIG OUT emit **one** pulse once the digitizer is
+armed: idle-low at **+0.20 V, +4.45 V high, 5.72 µs wide, 436 ns rise** on a scope — the same figures
+given above, not the superseded 75 Ω-cabling ones. The width is the firmware's own and cannot be set
+here, so the receiving device needs an edge-triggered input rather than a polling loop. It is a **credit, not CTS**: treat the pulse as
 permission to send no more than one capture can hold. It does nothing unless the device is built to
 wait for it.
 

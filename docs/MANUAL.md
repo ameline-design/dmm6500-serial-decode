@@ -346,9 +346,10 @@ A window is not a total. If your device is built to wait, you can capture as muc
 losing a byte, **and without pressing anything per window** — up to 32 windows or 20 minutes per press,
 whichever comes first. To carry on past that, press **Capture** again; it resumes where it stopped, in a new file.
 
-Set `Options ▸ Rear BNC = FC Out`. The rear EXT TRIG OUT then emits **one ~5 V, ~10 µs pulse each
-time a capture is armed** (measured on a scope: 4.92 V, 9.4–9.8 µs — the width is the meter's own
-default and this firmware does not let the app change it) — a credit meaning *"send now, and send no more than one window's worth"*.
+Set `Options ▸ Rear BNC = FC Out`. The rear EXT TRIG OUT then emits **one pulse each time a capture is
+armed** (measured on a scope: idle-low at +0.20 V, +4.45 V high, 5.72 µs wide with a 436 ns rise — the
+width is the meter's own default and this firmware does not let the app change it) — a credit meaning
+*"send now, and send no more than one window's worth"*.
 Then one press of **Capture** runs the whole conversation: credit, record, decode, file, credit
 again — round and round, with the window number on the status row, until the device stops sending.
 While the app is decoding, nothing is armed, no credit is issued, and a device that waits stays quiet,
@@ -379,9 +380,10 @@ Three things your device has to get right:
 - **Go quiet when it has nothing to send.** That silence is what tells the app the transmission is
   over.
 
-**Honest limitation:** the pulse itself is verified — 4.92 V, ~10 µs, one per arm, measured on a
-scope — and the loop that issues them is tested. The full round trip, with a device that actually waits
-for the pulse, has **not** been tested here, because the signal generator on this bench cannot be
+**Honest limitation:** the pulse itself is verified — +4.45 V, 5.72 µs, 436 ns rise, one per arm,
+measured on a scope — and the loop that issues them is tested. The full round trip, with a device that
+actually waits for the pulse, has **not** been tested here, because the signal generator on this bench
+cannot be
 gated by the meter's trigger output. The mechanism is sound by construction; you would be the first to
 close the loop.
 

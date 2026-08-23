@@ -1212,8 +1212,9 @@ function sdec.stream_samples(md, fs)
   -- framebits*(fs/baud) samples each. md.cap = nil takes whatever the buffer allows. Both are
   -- clamped to sdec.ck_bufmax, so a mode cannot ask for more than the instrument has.
   if md.cap == nil then return sdec.ck_bufmax end
-  -- 8N1 unless a width is forced; the cap is a byte count, so a wider frame simply needs
-  -- more samples for the same bytes.
+  -- 8N1 unless the FRAME FORMAT is forced -- and all three forced fields widen it, not just the data
+  -- width: force_nbits, force_par and force_nstop each add to framebits below. The cap is a byte
+  -- count, so a wider frame simply needs more samples for the same bytes.
   local nbits = sdec.force_nbits or 8
   local parbits = 0
   if sdec.force_par ~= nil and sdec.force_par ~= sdec.PAR_NONE then parbits = 1 end

@@ -9,11 +9,14 @@ Ian Ameline · **version 1.05 — beta** · MIT licence (see [LICENSE](LICENSE))
 
 **Beta status.** Everything the manual claims was measured on the bench, and the release gate below
 is what measures it — it must pass with zero failures before a build goes out. One rough edge worth
-naming here: **flow control** is verified electrically — 4.92 V, ~10 µs, one credit pulse per armed capture — but has never been closed as a loop against a device that actually waits for it, so the
-"unlimited with flow control" claim is sound by construction rather than demonstrated. The pulse width is
-**not settable** on this firmware — `trigger.extout.pulsewidth` is nil on 1.7.17a — and the default
-measures **9.4–9.8 µs**, so a device waiting for a credit needs an edge-triggered input rather than a
-polling loop.
+naming here: **flow control** is verified electrically — one credit pulse per armed capture, measured
+idle-low at **+0.20 V, +4.45 V high, 5.72 µs wide with a 436 ns rise** — but has never been closed as a
+loop against a device that actually waits for it, so the "unlimited with flow control" claim is sound by
+construction rather than demonstrated. The pulse width is **not settable** on this firmware —
+`trigger.extout.pulsewidth` is nil on 1.7.17a — so a device waiting for a credit needs an edge-triggered
+input rather than a polling loop. What *has* been located since is where the loop fails: the generator's
+burst machinery accepts the arbs, and it did not act on this pulse. See **Triggering, in both
+directions** in [docs/REFERENCE.md](docs/REFERENCE.md).
 
 **Automatic rate detection has two known failures, both rare and both fixable by typing the rate in —
 which is what most decoders require of you anyway.**
