@@ -1,4 +1,4 @@
--- serial_ui.tsp -- front-panel screens for the DMM6500 serial decoder
+-- serial_ui.tsp -- front-panel screens for the Keithley TSP serial decoder
 -- (TSP / Lua 5.0.2).
 --
 -- PANEL CONSTRAINTS (measured, taken as given):

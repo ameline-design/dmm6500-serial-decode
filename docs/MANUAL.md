@@ -2,9 +2,14 @@
 
 **Ian Ameline** · version 1.05 — **beta** · MIT licence
 
-This app turns a Keithley DMM6500 into a serial decoder. Clip onto a UART line, press **Capture**,
-and read the bytes on the front panel. You do not have to tell it the baud rate, the frame format or
-which way up the signal is — it works all of that out from the signal itself.
+This app turns a Keithley bench instrument into a serial decoder. Clip onto a UART line, press
+**Capture**, and read the bytes on the front panel. You do not have to tell it the baud rate, the frame
+format or which way up the signal is — it works all of that out from the signal itself.
+
+It was written on a **DMM6500** and that is **the only instrument it has been tested on**. It should
+run as it is on the rest of the Keithley TSP range that has a digitizer and the touchscreen app API —
+the DAQ6510 and DMM7510 in particular — but nobody has run it there yet. `Which instruments` in the
+README says what is measured and what is inference.
 
 Three things make it worth reaching for over a scope's decode: the **window is large** (a screenful
 is ~240 bytes, and a recording holds 32 768), every capture is **appended to the USB key

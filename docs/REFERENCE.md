@@ -7,6 +7,13 @@ The detail behind [MANUAL.md](MANUAL.md). Everything here was measured on a DMM6
 written for someone using the app; this file is for someone who needs the numbers or is changing the
 code.
 
+**Every number in this file is a DMM6500 number.** The app is expected to run on the wider Keithley TSP
+family — the README's **Which instruments** section sets out which models and on what grounds — but
+nothing here has been reproduced on any of them, and several of these figures are ones you would expect
+to move. The sample-rate ceiling, the press latencies, the display-object budget and the reading-buffer
+throughput are all properties of this instrument's hardware and firmware, not of the decoder. Treat them
+as measurements of one machine until someone repeats them.
+
 ---
 
 ## Press latency

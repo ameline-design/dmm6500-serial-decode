@@ -1,5 +1,5 @@
 -- lin_decode.tsp -- LIN (Local Interconnect Network, ISO 17987) frame layer for the
--- DMM6500 serial decoder (TSP / Lua 5.0.2).
+-- Keithley TSP serial decoder (TSP / Lua 5.0.2).
 --
 -- NOT SHIPPED IN V1: tools/package_tspa.py MODULES omits this module, so the Options form offers
 -- no LIN and the View button never reaches the frame list.

@@ -1,5 +1,5 @@
 -- usb_log.tsp -- best-effort debug logging to the USB flash drive, for TSP apps
--- on the DMM6500 (Lua 5.0.2).
+-- on Keithley Touch-Test-Invent instruments (Lua 5.0.2).
 --
 -- A .tspa launched from the Apps menu has nowhere to print: no host socket is
 -- attached, `print()` goes to an interface nobody is reading, and the event log

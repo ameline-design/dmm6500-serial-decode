@@ -75,9 +75,40 @@ check('loadimage / endimage found and closed', iname ~= nil and state == 'done',
       tostring(iname) .. ', ' .. nb64 .. ' base64 lines')
 check('the manifest names the icon that loadimage defines', manifest.Icon == iname,
       '$Icon=' .. tostring(manifest.Icon) .. ' loadimage=' .. tostring(iname))
-check('the manifest carries a title, product and version',
-      manifest.Title ~= nil and manifest.Product == 'DMM6500' and manifest.Version ~= nil,
-      tostring(manifest.Title) .. ' / ' .. tostring(manifest.Product))
+-- $Product: IS A LIST, so this is a per-token whitelist and not an equality. An equality on
+-- 'DMM6500' fails the moment a second model is declared, and a bare not-nil would let a typo like
+-- DMM7150 ship -- where the symptom is an app that installs on NOTHING, discovered on a bench with a
+-- USB key in hand.
+--
+-- THE SET HERE IS NARROWER THAN THE ONE THE SPEC PERMITS, deliberately. Keithley's app-header spec
+-- allows 2450, 2460, 2461, 2470, DMM6500 and DAQ6510, but the 2400-series SMUs have NO DIGITIZE
+-- FUNCTION -- the 2470 manual says so outright, and the 2450 reference documents smu.measure.* with
+-- no digitize anywhere -- so the app would install on one and fail at the first capture. $Product:
+-- means "can run the script without errors", which makes listing an SMU a false claim rather than an
+-- untested one. Rejecting them here turns that into a gate failure instead of a support question.
+-- DMM7510 is included although the published list omits it; Keithley ship apps of their own
+-- declaring it.
+--
+-- DMM6500 MUST BE PRESENT. It is the only model the app is tested on, so a build that dropped it
+-- would leave every measured claim in docs/ describing an instrument the package does not target.
+local PRODUCT_OK = {['DMM6500'] = true, ['DAQ6510'] = true, ['DMM7510'] = true}
+local prodn, prodbad, prodtested = 0, '', false
+if manifest.Product ~= nil then
+  -- The loop variable is CONST under the host's Lua 5.5, so the trim goes to a fresh local.
+  for raw in string.gmatch(manifest.Product, '[^,%s][^,]*') do
+    local tok = string.gsub(raw, '%s+$', '')
+    prodn = prodn + 1
+    if not PRODUCT_OK[tok] then prodbad = prodbad .. ' ' .. tok end
+    if tok == 'DMM6500' then prodtested = true end
+  end
+end
+check('the manifest carries a title, a version and only known products',
+      manifest.Title ~= nil and manifest.Version ~= nil
+        and prodn > 0 and prodbad == '' and prodtested,
+      tostring(manifest.Title) .. ' / ' .. tostring(manifest.Product)
+        .. ' / ' .. prodn .. ' model(s)'
+        .. (prodbad == '' and '' or ('  UNKNOWN:' .. prodbad))
+        .. (prodtested and '' or '  MISSING DMM6500'))
 -- A stray 'endscript' or 'endimage' inside the TSP would truncate the archive silently.
 local stray = 0
 local i

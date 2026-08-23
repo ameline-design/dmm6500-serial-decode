@@ -1,5 +1,5 @@
--- uart_decode.tsp -- asynchronous serial (UART) framing for the DMM6500 serial
--- decoder (TSP / Lua 5.0.2).
+-- uart_decode.tsp -- asynchronous serial (UART) framing for the Keithley TSP
+-- serial decoder (TSP / Lua 5.0.2).
 --
 -- Works from what serial_core.tsp produced: threshold, edge list, bit time. It
 -- never scans the samples linearly -- it samples ~14 computed positions per frame,

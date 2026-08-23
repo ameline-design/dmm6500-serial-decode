@@ -1,5 +1,6 @@
 -- serial_core.tsp -- acquisition, signal conditioning and bit-timing recovery
--- for the DMM6500 serial decoder (TSP / Lua 5.0.2).
+-- for the Keithley TSP serial decoder (TSP / Lua 5.0.2). Instrument scope is in serial_app.tsp:
+-- tested on a DMM6500 only.
 --
 -- The PROTOCOL-INDEPENDENT layer:
 --

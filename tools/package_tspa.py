@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Package the serial protocol decoder as a single .tspa TTI App for the DMM6500.
+"""Package the serial protocol decoder as a single .tspa TTI App for Keithley TSP instruments.
 
 Concatenates the TSP modules into one `loadscript` wrapper with an App manifest, an
 auto-start entry point and an embedded base64 PNG icon -- matching the layout of the
@@ -92,7 +92,28 @@ def doc_for(block):
 
 MANIFEST = [
     ('Title', 'Serial Protocol Decode'),
-    ('Product', 'DMM6500'),
+    # WHERE THE APP WILL INSTALL, which the instrument decides from this field alone -- it is not
+    # inferred from what the code calls. All three models have the digitizer, the touchscreen app API
+    # and the Lua 5.0.2 the app needs; the DAQ6510 runs the same boards and firmware as the DMM6500,
+    # differing in its scanner cards. ONLY THE DMM6500 IS TESTED. The other two are listed so that
+    # they can be.
+    #
+    # DMM7510 IS NOT IN THE DOCUMENTED VALUE SET. Keithley's app-header spec gives the permitted
+    # $Product: values as 2450, 2460, 2461, 2470, DMM6500, DAQ6510, yet Keithley ship TSP apps of
+    # their own declaring DMM7510 support -- so the spec list is either stale or incomplete. Listed
+    # here as a deliberate decision, with the risk named: if the installer validates tokens strictly,
+    # an unrecognised one could be rejected, and rejection might not be scoped to that model.
+    # THE CHECK IS ONE INSTALL ON THE DMM6500 -- if the app still installs there, the token is
+    # accepted; if it does not, this field is the first thing to revert.
+    #
+    # THE 2400-SERIES SMUs ARE OMITTED BECAUSE THEY HAVE NO DIGITIZER, which is a harder barrier than
+    # the namespace difference it took a while to see past. The 2470 manual states that digitized
+    # measurements are not a feature of the instrument, and the 2450 reference documents smu.measure.*
+    # with no digitize function anywhere in it. So there is nothing for this app to read a waveform
+    # with, whatever the commands were called. $Product: means "can run the script without errors",
+    # which makes listing one a false claim rather than an untested one -- and tools/verify_tspa.lua
+    # fails the archive gate if one ever appears here.
+    ('Product', 'DMM6500, DAQ6510, DMM7510'),
     # No MIDI or LIN in the tag or the description: version 1 does not ship them, and an
     # app store entry promising a protocol the build cannot decode is the same dead control
     # as an Options field offering it.
@@ -125,7 +146,7 @@ MANIFEST = [
 # to live. Emitted as Lua line comments, since the archive body is a Lua chunk.
 LICENSE = '''
 -- ============================================================================
--- Serial Protocol Decode -- a UART decoder for the Keithley DMM6500
+-- Serial Protocol Decode -- a UART decoder for Keithley TSP instruments
 --
 -- Copyright (c) %s %s
 --

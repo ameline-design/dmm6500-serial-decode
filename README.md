@@ -1,8 +1,12 @@
-# Serial Protocol Decode — DMM6500
+# Serial Protocol Decode — Keithley DMM6500, DAQ6510, DMM7510
 
-A UART decoder that runs **on** a Keithley DMM6500 bench multimeter. It digitizes the line with the
+A UART decoder that runs **on** a Keithley bench instrument. It digitizes the line with the
 instrument's own digitizer, recovers the baud rate, frame format and idle polarity from the signal,
 and shows the bytes on the front panel as text or hex. No host, no logic analyser, one probe.
+
+**Tested on a DMM6500 and nothing else** — every measured number in these documents came off that one
+instrument. What it should run on unmodified is the wider TSP family; see **Which instruments** below
+for what is claim and what is measurement.
 
 Ian Ameline · **version 1.05 — beta** · MIT licence (see [LICENSE](LICENSE)) ·
 [user manual](docs/MANUAL.md)
@@ -105,6 +109,47 @@ the gap. Every recording mode has a byte ceiling; the arithmetic is in
 Ships as `Serial_Decode.tspa`, installed from a USB key through the instrument's own **Manage Apps**
 screen. Written in TSP — Lua **5.0.2** embedded in the instrument firmware, which is why the sources
 avoid `#`, `%`, `string.gmatch` and bitwise operators throughout.
+
+## Which instruments
+
+**Only the DMM6500 has been tested.** Everything else here is reasoning from the API surface, and it is
+labelled as such. The app needs three things from an instrument: a **digitizer** reachable as
+`dmm.digitize`, the **touchscreen app API** (`display.create` and friends, which is what makes it an
+app rather than a script), and **Lua 5.0.2**.
+
+| | |
+|---|---|
+| **DMM6500** | **Tested.** Two 17-hour soaks, 20 196 capture-and-decode cycles, firmware 1.7.17a |
+| **DAQ6510** | Expected to run unmodified — same boards and firmware, the difference being the multi-channel scanner cards. Untested |
+| **DMM7510** | Expected to run unmodified. Same `dmm.digitize` namespace and a faster digitizer. Untested, and see the `$Product` note below |
+| **2450 / 2460 / 2461 / 2470 SMU** | **No.** Those instruments have no digitize function at all, so there is nothing here to read a waveform with |
+
+The SMU answer is worth spelling out, because the obvious objection is the wrong one. Their measurement
+subsystem is `smu.`, not `dmm.` — but that alone would only be a porting inconvenience. The barrier is
+that the **2400 Graphical Series has no digitizer**: the 2470 manual states that digitized measurements
+are not a feature of the instrument, and Keithley's 2450 reference (rev D, May 2015) documents
+`smu.measure.*` with no digitize function anywhere in it. No amount of renaming reaches a sampler that
+is not there.
+
+Should a future Keithley SMU ship one, the port is small and bounded. The app's entire instrument
+surface is **14 `dmm.*` symbols** — `dmm.digitize.{read, count, samplerate, aperture, range, func,
+analogtrigger.mode, analogtrigger.edge.level, analogtrigger.edge.slope}`, `dmm.FUNC_DIGITIZE_VOLTAGE`,
+`dmm.MODE_EDGE`, `dmm.MODE_OFF`, `dmm.SLOPE_RISING`, `dmm.SLOPE_FALLING` — so one indirection table
+covers it. Whether that model also had an **analog trigger** would decide how *well* it worked rather
+than whether it worked: without one the app falls back to the free-running path it already has.
+
+**The `.tspa` header decides where it will install**, independently of whether the code would run. The
+shipped build declares `$Product: DMM6500, DAQ6510, DMM7510`, so all three are offered the app; the
+2450-series SMUs are deliberately absent, because `$Product:` means *"can run the script without
+errors"* and an SMU would install it and then fail at the first capture. That is a false claim rather
+than an untested one.
+
+One caveat on that header, recorded because it is cheap to check and annoying to debug: Keithley's
+app-header spec gives the permitted values as `2450, 2460, 2461, 2470, DMM6500, DAQ6510`, so
+**`DMM7510` is not in the documented set** — yet Keithley ship TSP apps of their own declaring DMM7510
+support, which makes the published list stale or incomplete rather than authoritative. If a future
+firmware validates the field strictly and rejects the unknown token, the symptom would be an install
+failure, and `$Product:` is the first thing to revert.
 
 ## Before releasing it to anyone
 

@@ -1,4 +1,4 @@
--- midi_decode.tsp -- MIDI 1.0 message layer for the DMM6500 serial decoder
+-- midi_decode.tsp -- MIDI 1.0 message layer for the Keithley TSP serial decoder
 -- (TSP / Lua 5.0.2).
 --
 -- Works entirely on the BYTE STREAM that uart_decode.tsp already produced. MIDI is

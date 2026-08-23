@@ -1,5 +1,25 @@
 -- serial_app.tsp -- lifecycle, touch handlers and capture orchestration for the
--- DMM6500 serial decoder (TSP / Lua 5.0.2).
+-- Keithley TSP serial decoder (TSP / Lua 5.0.2).
+--
+-- INSTRUMENT SCOPE. Three things are required: a digitizer reachable as dmm.digitize, the
+-- touchscreen app API (display.create and the OBJ_* types), and Lua 5.0.2. The DMM6500, DAQ6510
+-- and DMM7510 all have them -- but ONLY THE DMM6500 HAS BEEN TESTED, and every measured figure in
+-- docs/ came off that one instrument.
+--
+-- THE 2400-SERIES SMUs ARE NOT CANDIDATES, and not for the reason it first looks like. They do run
+-- TSP apps and they do have the touchscreen display API, and their measurement subsystem is smu.*
+-- rather than dmm.* -- but that is only a porting inconvenience. What rules them out is that they
+-- have NO DIGITIZE FUNCTION AT ALL: the 2470 manual states digitized measurements are not a feature
+-- of the instrument, and the 2450 reference documents smu.measure.* with no digitize anywhere. There
+-- is nothing to read a waveform with, so no renaming helps.
+--
+-- If a future Keithley SMU does ship a digitizer, the port is small and bounded: the app's ENTIRE
+-- instrument surface is 14 dmm.* symbols, so one indirection table covers it. An ANALOG TRIGGER on
+-- that model would decide how WELL it worked, not whether it worked -- without one, acq_triggered()
+-- already degrades to the free-running path.
+--
+-- WHERE IT WILL INSTALL is decided separately from whether the code would run, by $Product: in the
+-- .tspa header that tools/package_tspa.py writes.
 --
 -- OBJECT-LIFETIME STANDARD, applied throughout: never create over a live handle.
 -- Delete -> nil -> create. Creating over a handle overwrites the only reference to
