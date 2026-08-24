@@ -121,9 +121,24 @@ app rather than a script), and **Lua 5.0.2**.
 |---|---|
 | **DMM6500** | **Tested.** Two 17-hour soaks, 20 196 capture-and-decode cycles, firmware 1.7.17a |
 | **DAQ6510** | Expected to run unmodified — same boards and firmware, the difference being the multi-channel scanner cards. Untested |
-| **DMM7510** | Expected to run unmodified. Same `dmm.digitize` namespace and a faster digitizer. Untested, and see the `$Product` note below |
+| **DMM7510** | Expected to run unmodified — close to the DAQ6510 platform, with more digitizer **resolution at the same sample rate**, and front-panel hardware nearly identical to the DMM6500's. Untested; see the `$Product` note below |
 | **2461 SMU** | **Would need a port.** It has the hardware — Keithley call it a *Digitizing SourceMeter* with **dual 18-bit 1 MS/s digitizers** — but reaches it as `smu.`, not `dmm.` |
 | **2450 / 2460 / 2470 SMU** | **No.** None of the three lists a digitize capability, and the 2470 manual says outright that digitized measurements are not a feature of the instrument |
+
+**On the 7510, the sample rate matters and the extra bits do not.** Every rate figure in
+[REFERENCE.md](docs/REFERENCE.md) descends from a 1 MS/s digitizer feeding a buffer that accepts about
+100 000 readings/s, so an instrument at the same sample rate inherits the same baud ceiling and the same
+arithmetic. Resolution is the one axis this app is indifferent to: it thresholds each sample into a one
+or a zero, so more bits buy nothing here and cost nothing either.
+
+**And the front panel is the part that would actually have broken.** The fourteen `dmm.*` calls are the
+obvious porting surface and the least worrying one. The risk sits in `serial_ui.tsp` — 1 300 lines of
+pixel-positioned display code built against measured panel constants: object `y` is relative to a content
+area **49 px below the panel top**, the screen title has a **31-character** limit, and a full build is
+**122 display objects** from a pool the firmware does not fully reclaim. None of that is negotiated at
+runtime; it is all baked in. Front-panel hardware nearly identical to the DMM6500's is therefore the
+strongest single reason to expect the app to come up looking right, and if it were wrong it would at
+least be wrong **visibly** rather than silently.
 
 **The SMU row is split because the series is not uniform, and the spec sheet hides that.** Keithley's
 own 2400-series page carries *"1 MSamples/s digitized measurement speed"* in the family highlights and
