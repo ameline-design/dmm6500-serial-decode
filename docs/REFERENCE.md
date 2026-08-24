@@ -524,6 +524,40 @@ located in the generator's trigger input rather than unknown.
 
 ---
 
+## Endurance: what the soaks measured
+
+Two 17-hour soaks, each **6 laps of the full 1 683-point matrix, 10 098 capture-and-decode cycles on one
+power cycle**, agreeing within **0.2 % on duration and 1.6 % on failure count** — 318 failures against
+313. The headline is in the [README](../README.md); this is the shape of it.
+
+**Lap time is the leak indicator**, because a leaked display object, an unreturned buffer handle or a
+fragmenting allocator wedges the instrument around hour six without failing a single point. It fell in
+both runs. The second's six laps ran **10 567, 10 219, 10 254, 10 282, 10 173 and 10 299 s**, each within
+±1 % of its counterpart in the first.
+
+**3.1 % of points fail, against a matrix built to attack the decoder** — LIN traffic presented to a UART
+decoder, single-byte and walking-bit patterns, sinusoidal drift, and swings and offsets swept to the edge
+of range. It is not comparable to the rate-detection figures under **Known failures of automatic rate
+detection** in the [manual](MANUAL.md). Two properties:
+
+* **It concentrates.** Four vectors — `v94`, `v63`, `v90`, `v71` — account for **76 %** of all failures;
+  `v63` is a LIN frame whose 13-bit break field is not valid 8N1.
+* **It is mostly intermittent.** The 318 failures are **162 distinct cells**, of which **88 failed in
+  exactly one lap of the six** and **6 in all six**.
+
+**Cross-run agreement is stronger than within-run agreement.** Comparing which fixed-stimulus cells
+failed, a lap of the second run differs from its counterpart in the first by **11–16 cells**, against
+**21–32** for every pair of laps inside the first run. The failure set is a property of the matrix, not
+of the run — which is what licenses reading a cell that fails in all six laps as a property of the cell.
+
+A third, 7-hour soak covers the **recording** path, which neither long soak exercises: **81 laps,
+3 726 cycles and 8 one-press recordings, zero failures**, every recording ending on its byte ceiling.
+
+**Not covered by any soak:** many power cycles rather than one, and front-panel interaction — that is
+`hw-panel`'s job, under **The release gate, stage by stage** in [BENCH.md](BENCH.md).
+
+---
+
 ## Firmware limits worth knowing
 
 **One app build per power cycle.** `sdec.start()` builds the display objects and the firmware does not
@@ -535,6 +569,11 @@ development, not normal use.
 
 The build itself is **122 display objects** live after `ui_build()`, and **134** once the options
 screen has been built too. Counted with the harness census, not estimated.
+
+**The panel geometry is baked in, not negotiated at runtime**, which is what makes a port to another
+model a display question before it is an acquisition question. Object `y` is relative to a content area
+**49 px below the panel top**, and a screen title is limited to **31 characters**. `serial_ui.tsp` is
+1 300 lines built against those constants.
 
 **Event 4915** — "attempting to store past the capacity of a reading buffer" — is ERROR severity,
 which the front panel shows as a **modal dialog over the app** whatever `localnode.showevents` says.

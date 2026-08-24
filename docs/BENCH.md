@@ -101,6 +101,61 @@ Neither interrupts a lap. **A lap is the unit of evidence** — a truncated one 
 one wastes every minute already spent on it. For the same reason the wall deadline from `--hours` only
 gates *starting* a lap: one that begins inside the budget always runs to completion.
 
+## The release gate, stage by stage
+
+`tools/release_sweep.py` runs every check in one go and writes an auditable record to
+`out/release/<timestamp>/`: a `REPORT.md`, a `summary.json`, every stage's full output, every
+front-panel screenshot, and the exact `.tspa` and `MANUAL.pdf` the results describe with their
+SHA-256s. It exits non-zero if any gate fails. `--offline` skips every stage needing an instrument and
+runs in seconds; `--skip name,name` drops named stages, and a skipped gate is reported as *not passed*
+rather than passed.
+
+**The full sweep needs a freshly power-cycled DMM6500.** `sdec.start()` builds the display objects and
+the app refuses a second build in one power cycle, so the sweep checks that up front rather than failing
+forty minutes in. It also needs the SDG2122X loaded with the stimulus waveforms
+(`bench_matrix.py --upload`), and only one client may hold the DMM's control socket at a time.
+
+| Stage | Checks |
+|---|---|
+| `lint` `parse` | Lua 5.0.2 incompatibilities; `luac -p` on every module |
+| `vecrefs` | every waveform id named in `tools/` is in `MAP` or declared `RETIRED` — deleting from `MAP` alone leaves references that fail where they are used, not where they are declared |
+| `soakrand` | `mt19937.py` and `mt19937.lua` produce one sequence, checked against CPython's `random`, plus the 5.0.2 scan deciding whether the module can load on the instrument |
+| `unit` | 1 063 offline tests — decoder, UI, state machine, file paths, every visible ASCII glyph |
+| `unit-cancel` | one-press recordings, both window sizes, and the flow-control loop with no interaction |
+| `unit-frontrig` | TRIGGER-key and rear-BNC arming *through* `acquire()` — the routing that can drop to free-run while the status row still claims the key is the source |
+| `unit-usblog` | USB log name allocation and the persistent index: exhaustion must refuse rather than loop and hang the panel |
+| `unit-stream` | the streaming arm — both 4915 defences, one press per slice rather than per window |
+| `unit-patterns` | byte-exactness on the hard payloads: edge-density extremes, walking bits and known random data, at the sample rates the panel actually picks |
+| `unit-forcerate` | a forced rate the wire does not carry must **refuse** and name the rate it does carry, with both answers drivable unattended |
+| `unit-judgev` | the harness's three verdicts — too short to read is **inconclusive**, not silently wrong; an alignment survives one bad byte; a loud vector may miss a bounded few. Each with the wrong capture that must still fail |
+| `stress` | hostile signals: never silently **wrong**, never **raises** |
+| `unit-analog` | the bench cases at the app's own sample rates, swept over sampling phase, jitter, noise and where the window opens |
+| `unit-phasesweep` | every vector × capture start × phase/jitter/noise, sharded across the cores — no raise, no result without a format, no wrong byte among trustworthy calls |
+| `unit-seam` | a capture whose arb loop seam lands late must still be judged, and the narrower trim still required |
+| `unit-sdgguard` | every route by which an out-of-spec waveform could reach the generator refuses it |
+| `unit-loremgate` | the harness's own long-payload verdict: every clean run validated, flag count bounded |
+| `tolerance` | recomputes the envelope table printed in the manual |
+| `package` `archive` | rebuilds the `.tspa`, then builds both screens *from the archive* against a mock front end |
+| `manual` | rebuilds every shipped PDF: `README.pdf`, `MANUAL.pdf`, `REFERENCE.pdf`, `BENCH.pdf` |
+| `hw-matrix` | through the app's own Capture button: six frame formats, the standard rate ladder, a 1 kB non-repeating payload, three logic swings, twelve DC offsets |
+| `hw-payloads` | fourteen payloads covering every byte value 0–255, two of them also at 115 200 and 250 000 |
+| `hw-odd-rates` | nineteen **non-standard** baud rates — 900, 1500, 3600, 8123, 29127, 104857 … |
+| `hw-panel` | every button in every state, including a one-press recording. Six checks per press: the handler does not raise, logs no instrument event, returns inside its latency budget, reports what it did, changed the state it was supposed to, and **the panel actually shows it** — grabbed before and after each press and differenced by region |
+| `soakrand-dmm` | the third leg: the instrument's **own** Lua 5.0.2 must produce the same words, floats, rejected draws and permutation |
+| `hw-plan` | the seeded sweep on the bench: two waveforms across all 43 rates in a seeded order, with a seeded wait before every capture |
+| `hw-break` | degenerate signals and contradictory settings — no signal, DC only, all-`0x00`/`0xFF`/`0x55`, a break, 60 mV of swing, 19 Vpp, rates past the ceiling, six wrong forced settings. A refusal with a reason passes; confident garbage does not |
+
+This table must list every stage `release_sweep.py` defines, or the published inventory of what a
+release passed is incomplete. The check:
+
+```python
+import re
+code = set(re.findall(r"Stage\(\s*'([^']+)'", open('tools/release_sweep.py').read()))
+doc  = {n for l in open('docs/BENCH.md') if l.startswith('| `')
+          for n in re.findall(r'`([a-z0-9-]+)`', l.split('|')[1])}
+assert not (code - doc), sorted(code - doc)
+```
+
 ## Reproducing a failure
 
 A failing cell prints a `REPRO` line carrying everything needed:
