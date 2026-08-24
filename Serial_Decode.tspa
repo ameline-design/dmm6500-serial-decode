@@ -1,6 +1,6 @@
 loadscript Serial_Decode
 -- $Title: Serial Protocol Decode
--- $Product: DMM6500, DAQ6510, DMM7510
+-- $Product: DMM6500, DAQ6510, DMM7510, SMU2461
 -- $Tag: Serial, UART, Decode, Digitize
 -- $Description: BETA. Decodes an asynchronous serial line with the instrument's own digitizer: recovers baud rate, frame format and bytes, shows them as text or hex, streams every byte to a USB key, and saves the capture. Everything auto-detects; everything can be locked down.
 -- $Version: 1.05
@@ -260,6 +260,41 @@ end
 
 -- ================= tsp/serial_core.tsp =================
 sdec = sdec or {}   -- the single global this app exposes
+local ns, nskey = nil, nil
+if     dmm ~= nil and dmm.digitize ~= nil then ns, nskey = dmm, 'dmm_'
+elseif smu ~= nil and smu.digitize ~= nil then ns, nskey = smu, 'smu_' end
+
+sdec.ns_key = nskey
+sdec.dig    = nil       -- the digitize table itself
+sdec.atrig  = nil       -- .analogtrigger, or nil where the instrument has no comparator
+sdec.atedge = nil       -- .analogtrigger.edge
+sdec.k      = {}        -- the constants, copied by value
+
+if ns ~= nil then
+  sdec.dig = ns.digitize
+  if ns.digitize.analogtrigger ~= nil then
+    sdec.atrig = ns.digitize.analogtrigger
+    if ns.digitize.analogtrigger.edge ~= nil then
+      sdec.atedge = ns.digitize.analogtrigger.edge
+    end
+  end
+  sdec.k.FUNC_VOLT     = ns.FUNC_DIGITIZE_VOLTAGE
+  sdec.k.MODE_EDGE     = ns.MODE_EDGE
+  sdec.k.MODE_OFF      = ns.MODE_OFF
+  sdec.k.SLOPE_RISING  = ns.SLOPE_RISING
+  sdec.k.SLOPE_FALLING = ns.SLOPE_FALLING
+end
+
+local PREP = {
+  dmm_ = function() end,
+  smu_ = function()
+    smu.source.output = smu.OFF
+    if smu.source.output ~= smu.OFF then
+      error('cannot confirm the SMU source output is off -- refusing to capture', 0)
+    end
+  end,
+}
+sdec.acq_prep = PREP[nskey] or function() end
 sdec.rates      = {1000, 1250, 2500, 5000, 10000, 15000, 20000, 30000, 40000,
                    50000, 60000, 80000, 100000, 120000, 160000, 200000, 250000,
                    300000, 320000, 400000, 500000, 640000, 1000000}
@@ -991,10 +1026,11 @@ function sdec.hw_config()
   sdec.quiet_events()
   sdec.fs_select()
   sdec.fc_config()
-  dmm.digitize.func       = dmm.FUNC_DIGITIZE_VOLTAGE
-  dmm.digitize.range      = sdec.range
-  dmm.digitize.samplerate = sdec.fs
-  dmm.digitize.aperture   = 1e-6
+  sdec.acq_prep()
+  sdec.dig.func       = sdec.k.FUNC_VOLT
+  sdec.dig.range      = sdec.range
+  sdec.dig.samplerate = sdec.fs
+  sdec.dig.aperture   = 1e-6
 end
 
 -- Clamp a request to what the buffer can hold, reserve included. A store past capacity posts 4915
@@ -1056,12 +1092,12 @@ function sdec.acq_free(n, ncopy, nofc)
   local buf = sdec.buf
   sdec.trig_settle()
   n = sdec.acq_fit(n, buf)
-  dmm.digitize.count = n
+  sdec.dig.count = n
   buf.clear()
   if sdec.fc_out and not nofc then
     sdec.fc_credit()
   end
-  dmm.digitize.read(buf)
+  sdec.dig.read(buf)
   sdec.nread = buf.n or 0
   sdec.acq_fs = sdec.acq_fs_or_requested(buf, sdec.nread)
   local ncp = sdec.nread
@@ -1164,7 +1200,7 @@ function sdec.acq_triggered(n, slope)
   buf.clear()
   sdec.acq_fillmode(buf)
   n = sdec.acq_fit(n, buf)
-  dmm.digitize.count = n
+  sdec.dig.count = n
   sdec.mute_events()
 
   local ev = trigger.EVENT_ANALOGTRIGGER
@@ -1204,11 +1240,11 @@ function sdec.acq_triggered(n, slope)
 
   local ok = pcall(function()
     if useanalog then
-      dmm.digitize.analogtrigger.mode       = dmm.MODE_EDGE
-      dmm.digitize.analogtrigger.edge.level = sdec.thr
-      dmm.digitize.analogtrigger.edge.slope = slope
+      sdec.atrig.mode        = sdec.k.MODE_EDGE
+      sdec.atedge.level      = sdec.thr
+      sdec.atedge.slope      = slope
     else
-      dmm.digitize.analogtrigger.mode = dmm.MODE_OFF
+      sdec.atrig.mode = sdec.k.MODE_OFF
     end
     trigger.model.load('LoopUntilEvent', ev,
                        sdec.pretrig, trigger.CLEAR_ENTER, 0, buf)
@@ -1238,7 +1274,7 @@ function sdec.acq_triggered(n, slope)
   if not ok then
     sdec.lasterr = tostring(sdec.trigmode) ..
                    ' trigger unavailable; captured free-running'
-    dmm.digitize.analogtrigger.mode = dmm.MODE_OFF
+    sdec.atrig.mode = sdec.k.MODE_OFF
     return sdec.acq_free(n)
   end
 
@@ -1286,8 +1322,8 @@ function sdec.acquire()
   if sdec.trigmode == 'edge' or sdec.trigmode == 'front' then
     local slope = nil
     if sdec.trigmode == 'edge' then
-      slope = dmm.SLOPE_FALLING
-      if sdec.idle == 0 then slope = dmm.SLOPE_RISING end
+      slope = sdec.k.SLOPE_FALLING
+      if sdec.idle == 0 then slope = sdec.k.SLOPE_RISING end
     end
     if sdec.acq_triggered(sdec.n, slope) < 2 then
       return false, 'triggered capture returned nothing'
@@ -5199,7 +5235,7 @@ function sdec.stream_arm(nsmp)
   local buf = sdec.buf
   buf.clear()
   sdec.acq_fillmode(buf)
-  dmm.digitize.count = 1
+  sdec.dig.count = 1
   local ok = pcall(function()
     trigger.model.load('SimpleLoop', nsmp, 0, buf)
     trigger.model.initiate()
@@ -6275,7 +6311,7 @@ function sdec.stop()
   end
   sdec.ck_running, sdec.ck_stop = false, false
   pcall(function() trigger.model.abort() end)
-  pcall(function() dmm.digitize.analogtrigger.mode = dmm.MODE_OFF end)
+  pcall(function() sdec.atrig.mode = sdec.k.MODE_OFF end)
   sdec.cancel_ok = false
   pcall(function() trigger.blender[sdec.cancel_blender].reset() end)
   sdec.destroy_options()

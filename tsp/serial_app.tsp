@@ -948,7 +948,7 @@ function sdec.stream_arm(nsmp)
   -- change unwinding another way, never reaches, leaving the panel muted for every later
   -- firmware error.
   sdec.acq_fillmode(buf)
-  dmm.digitize.count = 1
+  sdec.dig.count = 1
   local ok = pcall(function()
     trigger.model.load('SimpleLoop', nsmp, 0, buf)
     trigger.model.initiate()
@@ -2803,7 +2803,7 @@ function sdec.stop()
   end
   sdec.ck_running, sdec.ck_stop = false, false
   pcall(function() trigger.model.abort() end)
-  pcall(function() dmm.digitize.analogtrigger.mode = dmm.MODE_OFF end)
+  pcall(function() sdec.atrig.mode = sdec.k.MODE_OFF end)
   -- RELEASE THE CANCEL LATCH, for the reason acq_triggered() gives for releasing blender 1: an app
   -- that configures a subsystem should un-configure it, or the next user of blender 2 inherits our
   -- stimuli. sdec.cancel_ok goes with it, so a poll after teardown answers false rather than reading

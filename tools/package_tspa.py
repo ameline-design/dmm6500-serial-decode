@@ -117,7 +117,16 @@ MANIFEST = [
     # capture until that port exists. $Product: means "can run the script without errors", which makes
     # listing ANY SMU today a false claim -- and tools/verify_tspa.lua fails the archive gate if one
     # appears here. When the port lands, 2461 is the one to add, and only it.
-    ('Product', 'DMM6500, DAQ6510, DMM7510'),
+    # 2461 IS LISTED SO IT CAN BE TRIED, and it is the only SMU listed. serial_core.tsp resolves the
+    # acquisition namespace at load, so the app reaches smu.digitize where dmm.digitize is absent --
+    # UNTESTED ON ANY SMU, and the README says so and asks for reports. The 2470 stays out because its
+    # own manual says digitized measurements are not a feature of it; 2450 and 2460 claim no digitizer.
+    # SMU2461, not 2461. The only list of permitted values to hand -- the DMM6500 display
+    # documentation -- gives "2450, 2460, 2461, 2470, DMM6500, DAQ6510", but that list is written from
+    # a DMM's point of view and is already known incomplete: it omits DMM7510 while Keithley ship
+    # DMM7510 apps of their own. The instrument matches this field against its own model identity, and
+    # SMU2461 is that identity.
+    ('Product', 'DMM6500, DAQ6510, DMM7510, SMU2461'),
     # No MIDI or LIN in the tag or the description: version 1 does not ship them, and an
     # app store entry promising a protocol the build cannot decode is the same dead control
     # as an Options field offering it.

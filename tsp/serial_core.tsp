@@ -55,6 +55,77 @@ sdec = sdec or {}   -- the single global this app exposes
 -- The true rate is still re-derived from buffer timestamps after every capture (sdec.acq_fs),
 -- because the readback lies for any rate the hardware cannot synthesise -- and for these three
 -- it certainly does.
+-- BEGIN NAMESPACE RESOLVER -- the only place in tsp/ that may name dmm. or smu. directly.
+--
+-- WHICH NAMESPACE OWNS THE DIGITIZER, decided ONCE here so that no capture path ever tests it: the
+-- call sites index sdec.dig / sdec.atrig / sdec.atedge / sdec.k, so a table lookup REPLACES a
+-- comparison rather than adding one.
+--
+-- Capability detection rather than a model list. localnode.model would need an entry per variant and
+-- would refuse an instrument nobody thought of; "does it have a digitize table" is the actual
+-- requirement. dmm is tried FIRST if both somehow exist, because it is the only tested path.
+--
+-- UNTESTED ON ANY SMU. The 2461 has dual 18-bit 1 MS/s digitizers and reaches them as smu.*, so this
+-- gives it a chance -- but nothing here has run on one. See the README.
+local ns, nskey = nil, nil
+if     dmm ~= nil and dmm.digitize ~= nil then ns, nskey = dmm, 'dmm_'
+elseif smu ~= nil and smu.digitize ~= nil then ns, nskey = smu, 'smu_' end
+
+-- THE KEYS CARRY A TRAILING UNDERSCORE ON PURPOSE. `PREP.dmm.foo` contains the substring "dmm.", so
+-- it is caught by the instrument-surface inventory grep in the README and reported as a call that
+-- does not exist. `PREP.dmm_.foo` cannot match it. The table VALUES below still name the real
+-- namespaces, which is correct: an audit should see those.
+sdec.ns_key = nskey
+sdec.dig    = nil       -- the digitize table itself
+sdec.atrig  = nil       -- .analogtrigger, or nil where the instrument has no comparator
+sdec.atedge = nil       -- .analogtrigger.edge
+sdec.k      = {}        -- the constants, copied by value
+
+if ns ~= nil then
+  sdec.dig = ns.digitize
+  -- Cached two and three deep because acq_triggered indexes analogtrigger.edge three times in
+  -- succession. Guarded: a digitizer with no analog comparator is a SUPPORTED configuration --
+  -- acq_triggered already degrades to the free-running path and says so.
+  if ns.digitize.analogtrigger ~= nil then
+    sdec.atrig = ns.digitize.analogtrigger
+    if ns.digitize.analogtrigger.edge ~= nil then
+      sdec.atedge = ns.digitize.analogtrigger.edge
+    end
+  end
+  -- CONSTANTS ARE SAFE TO COPY however the firmware implements the tables: these are values, not
+  -- assignment targets, so no setter is involved.
+  sdec.k.FUNC_VOLT     = ns.FUNC_DIGITIZE_VOLTAGE
+  sdec.k.MODE_EDGE     = ns.MODE_EDGE
+  sdec.k.MODE_OFF      = ns.MODE_OFF
+  sdec.k.SLOPE_RISING  = ns.SLOPE_RISING
+  sdec.k.SLOPE_FALLING = ns.SLOPE_FALLING
+end
+
+-- Per-namespace preparation before a capture, resolved to ONE function so the path carries no test.
+-- The dmm_ entry is deliberately an empty function and not nil: a call site that must check for nil
+-- is exactly the branch this table exists to remove.
+local PREP = {
+  dmm_ = function() end,
+  smu_ = function()
+    -- AN SMU SOURCES AS WELL AS MEASURING. Used as a voltmeter with its output live it drives the
+    -- circuit under test, which is a hazard rather than a bug -- so this runs per capture, not once
+    -- at startup, because the output can be re-enabled from the front panel in between.
+    --
+    -- DELIBERATELY NOT pcall'd, and the read-back is the point. The constant names here are
+    -- UNVERIFIED -- no SMU has been available to check them -- so the failure that has to be designed
+    -- for is `smu.OFF` being nil and this assignment doing nothing. Swallowing that would leave the app
+    -- digitizing while the instrument sources into the circuit, silently. Refusing the capture is the
+    -- safe direction: capture() already turns an error here into a note on the panel, and a decoder
+    -- that will not run is a far smaller problem than one that drives a DUT.
+    smu.source.output = smu.OFF
+    if smu.source.output ~= smu.OFF then
+      error('cannot confirm the SMU source output is off -- refusing to capture', 0)
+    end
+  end,
+}
+sdec.acq_prep = PREP[nskey] or function() end
+-- END NAMESPACE RESOLVER
+
 sdec.rates      = {1000, 1250, 2500, 5000, 10000, 15000, 20000, 30000, 40000,
                    50000, 60000, 80000, 100000, 120000, 160000, 200000, 250000,
                    300000, 320000, 400000, 500000, 640000, 1000000}
@@ -1356,10 +1427,11 @@ function sdec.hw_config()
   sdec.quiet_events()
   sdec.fs_select()
   sdec.fc_config()
-  dmm.digitize.func       = dmm.FUNC_DIGITIZE_VOLTAGE
-  dmm.digitize.range      = sdec.range
-  dmm.digitize.samplerate = sdec.fs
-  dmm.digitize.aperture   = 1e-6
+  sdec.acq_prep()
+  sdec.dig.func       = sdec.k.FUNC_VOLT
+  sdec.dig.range      = sdec.range
+  sdec.dig.samplerate = sdec.fs
+  sdec.dig.aperture   = 1e-6
 end
 
 -- Clamp a request to what the buffer can hold, reserve included. A store past capacity posts 4915
@@ -1468,7 +1540,7 @@ function sdec.acq_free(n, ncopy, nofc)
   -- Never read into a buffer a trigger model might still be writing.
   sdec.trig_settle()
   n = sdec.acq_fit(n, buf)
-  dmm.digitize.count = n
+  sdec.dig.count = n
   buf.clear()
   -- FLOW CONTROL ON THE FREE-RUN PATH TOO. An armed capture degrades silently to free-run when the
   -- trigger source is refused, so a credit issued only on the armed path can never fire -- and
@@ -1483,7 +1555,7 @@ function sdec.acq_free(n, ncopy, nofc)
   if sdec.fc_out and not nofc then
     sdec.fc_credit()
   end
-  dmm.digitize.read(buf)
+  sdec.dig.read(buf)
   sdec.nread = buf.n or 0
   sdec.acq_fs = sdec.acq_fs_or_requested(buf, sdec.nread)
   local ncp = sdec.nread
@@ -1656,7 +1728,7 @@ function sdec.acq_triggered(n, slope)
   -- is why it goes here rather than after clear().
   sdec.acq_fillmode(buf)
   n = sdec.acq_fit(n, buf)
-  dmm.digitize.count = n
+  sdec.dig.count = n
   -- The pre-trigger reserve posts 4915 while it waits -- see sdec.mute_events. Muted for the
   -- capture and restored below whichever way it ends.
   sdec.mute_events()
@@ -1755,14 +1827,14 @@ function sdec.acq_triggered(n, slope)
     -- The analog trigger is configured ONLY when it is a source. Setting a level and slope
     -- for an external event would be harmless but misleading to read.
     if useanalog then
-      dmm.digitize.analogtrigger.mode       = dmm.MODE_EDGE
-      dmm.digitize.analogtrigger.edge.level = sdec.thr
-      dmm.digitize.analogtrigger.edge.slope = slope
+      sdec.atrig.mode        = sdec.k.MODE_EDGE
+      sdec.atedge.level      = sdec.thr
+      sdec.atedge.slope      = slope
     else
       -- And OFF when it is not: a MODE_EDGE comparator left behind by a previous 'edge'
       -- capture is instrument state the operator did not ask for, which is the same
       -- objection the blender release above makes.
-      dmm.digitize.analogtrigger.mode = dmm.MODE_OFF
+      sdec.atrig.mode = sdec.k.MODE_OFF
     end
     -- position is the PRE-trigger percentage: at 5 % of a 20 000-sample buffer
     -- the trigger model keeps 1000 samples before the edge and 19 000 after.
@@ -1858,7 +1930,7 @@ function sdec.acq_triggered(n, slope)
     -- to the wrong place.
     sdec.lasterr = tostring(sdec.trigmode) ..
                    ' trigger unavailable; captured free-running'
-    dmm.digitize.analogtrigger.mode = dmm.MODE_OFF
+    sdec.atrig.mode = sdec.k.MODE_OFF
     return sdec.acq_free(n)
   end
 
@@ -1935,8 +2007,8 @@ function sdec.acquire()
     -- the comparator is not a source there, so a slope would be dead state on the board.
     local slope = nil
     if sdec.trigmode == 'edge' then
-      slope = dmm.SLOPE_FALLING
-      if sdec.idle == 0 then slope = dmm.SLOPE_RISING end
+      slope = sdec.k.SLOPE_FALLING
+      if sdec.idle == 0 then slope = sdec.k.SLOPE_RISING end
     end
     if sdec.acq_triggered(sdec.n, slope) < 2 then
       return false, 'triggered capture returned nothing'

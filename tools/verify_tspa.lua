@@ -97,7 +97,11 @@ check('the manifest names the icon that loadimage defines', manifest.Icon == ina
 --
 -- DMM6500 MUST BE PRESENT. It is the only model the app is tested on, so a build that dropped it
 -- would leave every measured claim in docs/ describing an instrument the package does not target.
-local PRODUCT_OK = {['DMM6500'] = true, ['DAQ6510'] = true, ['DMM7510'] = true}
+local PRODUCT_OK = {['DMM6500'] = true, ['DAQ6510'] = true, ['DMM7510'] = true,
+                    -- SMU2461 only, now that the namespace resolver reaches smu.digitize. The other
+                    -- three SMUs stay rejected: no digitizer to reach. A bare '2461' is rejected too,
+                    -- deliberately -- the instrument matches this field against its model identity.
+                    ['SMU2461'] = true}
 local prodn, prodbad, prodtested = 0, '', false
 if manifest.Product ~= nil then
   -- The loop variable is CONST under the host's Lua 5.5, so the trim goes to a fresh local.
