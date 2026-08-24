@@ -95,6 +95,14 @@ value set Keithley's app-header spec publishes, though Keithley ship TSP apps of
 an install failure is the symptom if a firmware validates the field strictly, and this field is the first
 thing to revert.
 
+**If you run this on anything but a DMM6500, please say so** — [open an
+issue](https://github.com/ameline-design/dmm6500-serial-decode/issues). Every row above except the first
+is inference from API surfaces and vendor documents, and one report from real hardware outweighs all of
+it. What makes a report useful: `localnode.model` and `localnode.version`, whether **Manage Apps**
+offered the app at all, whether both screens built, and whether a capture decoded. If it works, the
+figures worth re-measuring are the acquisition-board ones above rather than the rate ladder — those
+should already hold.
+
 ## Before releasing it to anyone
 
 Three gates, each about ten times the cost of the one before it. Run them in order.
