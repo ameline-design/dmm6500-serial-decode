@@ -106,13 +106,17 @@ MANIFEST = [
     # THE CHECK IS ONE INSTALL ON THE DMM6500 -- if the app still installs there, the token is
     # accepted; if it does not, this field is the first thing to revert.
     #
-    # THE 2400-SERIES SMUs ARE OMITTED BECAUSE THEY HAVE NO DIGITIZER, which is a harder barrier than
-    # the namespace difference it took a while to see past. The 2470 manual states that digitized
-    # measurements are not a feature of the instrument, and the 2450 reference documents smu.measure.*
-    # with no digitize function anywhere in it. So there is nothing for this app to read a waveform
-    # with, whatever the commands were called. $Product: means "can run the script without errors",
-    # which makes listing one a false claim rather than an untested one -- and tools/verify_tspa.lua
-    # fails the archive gate if one ever appears here.
+    # THE 2400-SERIES SMUs ARE OMITTED, but not because the series lacks a digitizer -- it splits, and
+    # the family spec sheet hides where. Only the 2461's own section claims digitizers ("dual 18-bit
+    # 1 MS/s"); the 2470 manual denies the feature outright and the 2450 reference documents
+    # smu.measure.* with no digitize at all, while the FAMILY highlights still print "1 MSamples/s
+    # digitized measurement speed". Check the model, not the series.
+    #
+    # The 2461 is therefore a real candidate that this build cannot serve: every SMU reaches its
+    # measurement subsystem as smu.*, not dmm.*, so the app would install and fail at the first
+    # capture until that port exists. $Product: means "can run the script without errors", which makes
+    # listing ANY SMU today a false claim -- and tools/verify_tspa.lua fails the archive gate if one
+    # appears here. When the port lands, 2461 is the one to add, and only it.
     ('Product', 'DMM6500, DAQ6510, DMM7510'),
     # No MIDI or LIN in the tag or the description: version 1 does not ship them, and an
     # app store entry promising a protocol the build cannot decode is the same dead control

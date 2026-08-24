@@ -122,21 +122,28 @@ app rather than a script), and **Lua 5.0.2**.
 | **DMM6500** | **Tested.** Two 17-hour soaks, 20 196 capture-and-decode cycles, firmware 1.7.17a |
 | **DAQ6510** | Expected to run unmodified — same boards and firmware, the difference being the multi-channel scanner cards. Untested |
 | **DMM7510** | Expected to run unmodified. Same `dmm.digitize` namespace and a faster digitizer. Untested, and see the `$Product` note below |
-| **2450 / 2460 / 2461 / 2470 SMU** | **No.** Those instruments have no digitize function at all, so there is nothing here to read a waveform with |
+| **2461 SMU** | **Would need a port.** It has the hardware — Keithley call it a *Digitizing SourceMeter* with **dual 18-bit 1 MS/s digitizers** — but reaches it as `smu.`, not `dmm.` |
+| **2450 / 2460 / 2470 SMU** | **No.** None of the three lists a digitize capability, and the 2470 manual says outright that digitized measurements are not a feature of the instrument |
 
-The SMU answer is worth spelling out, because the obvious objection is the wrong one. Their measurement
-subsystem is `smu.`, not `dmm.` — but that alone would only be a porting inconvenience. The barrier is
-that the **2400 Graphical Series has no digitizer**: the 2470 manual states that digitized measurements
-are not a feature of the instrument, and Keithley's 2450 reference (rev D, May 2015) documents
-`smu.measure.*` with no digitize function anywhere in it. No amount of renaming reaches a sampler that
-is not there.
+**The SMU row is split because the series is not uniform, and the spec sheet hides that.** Keithley's
+own 2400-series page carries *"1 MSamples/s digitized measurement speed"* in the family highlights and
+*"1 MS/s sampling"* in the spec banner — but the only model whose own section claims digitizers is the
+**2461** (*"dual 1 MS/s digitizers for fast sampling measurements"*). A family-level figure that belongs
+to one model reads as a series capability, which is how the 2450's decade-old reference documenting
+`smu.measure.*` with no digitize function at all, and a 2470 manual denying the feature outright, sit
+next to a 1 MS/s headline without any of them being wrong. **Check the model, not the series.**
 
-Should a future Keithley SMU ship one, the port is small and bounded. The app's entire instrument
-surface is **14 `dmm.*` symbols** — `dmm.digitize.{read, count, samplerate, aperture, range, func,
-analogtrigger.mode, analogtrigger.edge.level, analogtrigger.edge.slope}`, `dmm.FUNC_DIGITIZE_VOLTAGE`,
-`dmm.MODE_EDGE`, `dmm.MODE_OFF`, `dmm.SLOPE_RISING`, `dmm.SLOPE_FALLING` — so one indirection table
-covers it. Whether that model also had an **analog trigger** would decide how *well* it worked rather
-than whether it worked: without one the app falls back to the free-running path it already has.
+So the 2461 is a genuine candidate and the others are not. The port it needs is small and bounded: the
+app's entire instrument surface is **14 `dmm.*` symbols** — `dmm.digitize.{read, count, samplerate,
+aperture, range, func, analogtrigger.mode, analogtrigger.edge.level, analogtrigger.edge.slope}`,
+`dmm.FUNC_DIGITIZE_VOLTAGE`, `dmm.MODE_EDGE`, `dmm.MODE_OFF`, `dmm.SLOPE_RISING`, `dmm.SLOPE_FALLING` —
+so one indirection table covers it. Two things are unverified and would decide how well it worked rather
+than whether it worked. Whether that digitizer exposes an **analog trigger**: without one the app falls
+back to the free-running path it already has. And what the **buffer** accepts rather than what the ADC
+samples — the same page quotes *"100 kS/s to buffer"* alongside the 1 MS/s figure, and this app reads
+captures out of the reading buffer, so the lower number would be the one that sets a baud ceiling. The
+DMM6500 has that same shape, measured: **~100 000 readings/s into the buffer** against a 1 MS/s
+digitizer.
 
 **The `.tspa` header decides where it will install**, independently of whether the code would run. The
 shipped build declares `$Product: DMM6500, DAQ6510, DMM7510`, so all three are offered the app; the

@@ -6,17 +6,22 @@
 -- and DMM7510 all have them -- but ONLY THE DMM6500 HAS BEEN TESTED, and every measured figure in
 -- docs/ came off that one instrument.
 --
--- THE 2400-SERIES SMUs ARE NOT CANDIDATES, and not for the reason it first looks like. They do run
--- TSP apps and they do have the touchscreen display API, and their measurement subsystem is smu.*
--- rather than dmm.* -- but that is only a porting inconvenience. What rules them out is that they
--- have NO DIGITIZE FUNCTION AT ALL: the 2470 manual states digitized measurements are not a feature
--- of the instrument, and the 2450 reference documents smu.measure.* with no digitize anywhere. There
--- is nothing to read a waveform with, so no renaming helps.
+-- THE 2400-SERIES SMUs SPLIT, and the series spec sheet hides where. Keithley's family highlights
+-- say "1 MSamples/s digitized measurement speed", but the only model whose own section claims
+-- digitizers is the 2461 -- "dual 18-bit 1 MS/s". The 2470 manual states digitized measurements are
+-- not a feature of that instrument, and the 2450 reference documents smu.measure.* with no digitize
+-- anywhere in it. All of those are true at once; a family-level number belonging to one model is what
+-- makes them look contradictory. CHECK THE MODEL, NOT THE SERIES.
 --
--- If a future Keithley SMU does ship a digitizer, the port is small and bounded: the app's ENTIRE
--- instrument surface is 14 dmm.* symbols, so one indirection table covers it. An ANALOG TRIGGER on
--- that model would decide how WELL it worked, not whether it worked -- without one, acq_triggered()
--- already degrades to the free-running path.
+-- So the 2461 is a real candidate and 2450/2460/2470 are not. It still needs a port, because every
+-- SMU reaches its measurement subsystem as smu.* rather than dmm.* -- but that port is small and
+-- bounded: the app's ENTIRE instrument surface is 14 dmm.* symbols, so one indirection table covers
+-- it. Two unknowns would decide how WELL it worked rather than whether it worked. Whether that
+-- digitizer exposes an ANALOG TRIGGER -- without one, acq_triggered() already degrades to the
+-- free-running path. And what the READING BUFFER accepts rather than what the ADC samples: the same
+-- page quotes "100 kS/s to buffer" beside the 1 MS/s figure, and chunk_decode reads captures out of
+-- the buffer, so the lower number is the one that would set a baud ceiling. This instrument has the
+-- same shape, measured -- ~100 000 readings/s into the buffer against a 1 MS/s digitizer.
 --
 -- WHERE IT WILL INSTALL is decided separately from whether the code would run, by $Product: in the
 -- .tspa header that tools/package_tspa.py writes.

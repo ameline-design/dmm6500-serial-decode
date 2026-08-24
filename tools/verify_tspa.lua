@@ -81,11 +81,17 @@ check('the manifest names the icon that loadimage defines', manifest.Icon == ina
 -- USB key in hand.
 --
 -- THE SET HERE IS NARROWER THAN THE ONE THE SPEC PERMITS, deliberately. Keithley's app-header spec
--- allows 2450, 2460, 2461, 2470, DMM6500 and DAQ6510, but the 2400-series SMUs have NO DIGITIZE
--- FUNCTION -- the 2470 manual says so outright, and the 2450 reference documents smu.measure.* with
--- no digitize anywhere -- so the app would install on one and fail at the first capture. $Product:
--- means "can run the script without errors", which makes listing an SMU a false claim rather than an
--- untested one. Rejecting them here turns that into a gate failure instead of a support question.
+-- allows 2450, 2460, 2461, 2470, DMM6500 and DAQ6510. Every SMU in that list is rejected here because
+-- they reach their measurement subsystem as smu.*, not dmm.*, so the app would install on one and fail
+-- at the first capture -- and $Product: means "can run the script without errors", which makes listing
+-- one a false claim rather than an untested one. Rejecting them turns that into a gate failure instead
+-- of a support question.
+--
+-- NOT because the SMUs lack digitizers, which was the first answer here and was wrong: the 2461 has
+-- dual 18-bit 1 MS/s digitizers, while the 2470 manual denies the feature and the 2450 reference shows
+-- none. The series splits and the family spec sheet prints the 2461's number as a family capability.
+-- So 2461 is the one to allow WHEN the smu.* port lands, and it stays rejected until then.
+--
 -- DMM7510 is included although the published list omits it; Keithley ship apps of their own
 -- declaring it.
 --
