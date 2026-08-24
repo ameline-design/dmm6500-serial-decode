@@ -121,15 +121,23 @@ app rather than a script), and **Lua 5.0.2**.
 |---|---|
 | **DMM6500** | **Tested.** Two 17-hour soaks, 20 196 capture-and-decode cycles, firmware 1.7.17a |
 | **DAQ6510** | Expected to run unmodified, and on the strongest grounds of the three: it **shares the UI board and the acquisition board** with the DMM6500. Only the channel-board plugin is physically different. Untested |
-| **DMM7510** | Expected to run unmodified — close to the DMM6500/DAQ6510 platform, with front-panel hardware nearly identical and more digitizer **resolution at the same sample rate**. Its acquisition boards are a significant step up. Untested; see the `$Product` note below |
+| **DMM7510** | Expected to run unmodified — close to the DMM6500/DAQ6510 platform, front-panel hardware nearly identical, and an **18-bit digitizer at the same 1 MS/s** against the 6500's 16-bit. Its acquisition boards are a significant step up. Untested; see the `$Product` note below |
 | **2461 SMU** | **Would need a port.** It has the hardware — Keithley call it a *Digitizing SourceMeter* with **dual 18-bit 1 MS/s digitizers** — but reaches it as `smu.`, not `dmm.` |
-| **2450 / 2460 / 2470 SMU** | **No.** None of the three lists a digitize capability, and the 2470 manual says outright that digitized measurements are not a feature of the instrument |
+| **2470 SMU** | **No**, on the instrument's own authority: *"Digitized measurements are not a feature on the 2470"* — its reference manual, rev D, October 2024, in three separate places |
+| **2450 / 2460 SMU** | **Almost certainly not**, but this one is inference: neither model's section claims a digitizer, and the 2450 reference documents `smu.measure.*` with no digitize function. That is absence of evidence from one current page and one 2015 manual, not a denial |
 
-**On the 7510, the timing figures should transfer and the analog ones should not.** Every rate figure in
+**The digitizing hardware pairs off, which makes this one fact rather than several.** The DMM6500 and
+DAQ6510 are **16-bit** — *"Maximum resolution 16 bits"*, DMM6500 specifications, April 2018 — while the
+DMM7510 and the 2461 are **18-bit**, and all of them sample at **1 MS/s**. So "the 7510 has better
+acquisition" and "the 2461 has better acquisition" are the same statement about one shared tier of
+hardware, and the sample rate is constant across the whole line.
+
+**Which means the timing figures should transfer and the analog ones should not.** Every rate figure in
 [REFERENCE.md](docs/REFERENCE.md) descends from a 1 MS/s digitizer feeding a buffer that accepts about
 100 000 readings/s, so an instrument at the same sample rate inherits the same baud ceiling and the same
 arithmetic. Raw resolution is the one axis this app is indifferent to — it thresholds each sample into a
-one or a zero, so extra bits buy nothing and cost nothing.
+one or a zero, so **two extra bits buy nothing here and cost nothing**. What could move the analog
+figures is the board around the converter, not the converter's word length.
 
 **Its better acquisition boards are a different matter, and they are the interesting part.** The tolerance
 envelope, the verified level and offset limits, and both characterised rate-detection failures — including
@@ -163,7 +171,14 @@ own 2400-series page carries *"1 MSamples/s digitized measurement speed"* in the
 **2461**. A family-level figure that belongs to one model reads as a series capability, which is how the
 2450's decade-old reference documenting `smu.measure.*` with no digitize function at all, and a 2470
 manual denying the feature outright, sit next to a 1 MS/s headline without any of them being wrong.
-**Check the model, not the series.**
+**Check the model, not the series** — and grade the evidence, because a current manual saying *"not a
+feature"* and a ten-year-old manual simply not mentioning one are not the same finding. Treating the
+second as the first is what produced the wrong claim this section used to carry.
+
+One trap in the other direction, since it looks like exactly the citation you want: the 2461 datasheet
+carries a comparison table whose Digitizers row reads **`Dual 18-bit 1 MS/s | None | None`** — but its
+header is *"Comparison of 2461 vs. 2420, 2425, 2430, 2440"*. Those are the **legacy** 2400-series
+SourceMeters. That table says nothing whatever about the 2450, 2460 or 2470.
 
 Nobody should hold their breath for the 2461 port. It is bounded work — the app's whole instrument
 surface is 14 `dmm.*` symbols, so one indirection table covers it — but a 2461 costs an order of
