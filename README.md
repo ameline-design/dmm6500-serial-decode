@@ -1,10 +1,10 @@
-# Serial Protocol Decode — Keithley DMM6500, DAQ6510, DMM7510
+# Serial Protocol Decode — Keithley DMM6500, DAQ6510, DMM7510, SMU2461
 
 A UART decoder that runs **on** a Keithley bench instrument. It digitizes the line with the
 instrument's own digitizer, recovers the baud rate, frame format and idle polarity from the signal,
 and shows the bytes on the front panel as text or hex. No host, no logic analyser, one probe.
 
-Ian Ameline · **version 1.05 — beta** · MIT licence (see [LICENSE](LICENSE))
+Ian Ameline · **version 1.10** · MIT licence (see [LICENSE](LICENSE))
 
 | | |
 |---|---|
@@ -45,37 +45,38 @@ size and credits the device until it stops sending. Ceilings and arithmetic are 
 
 ## Endurance, measured — and reproduced
 
-Two independent 17-hour soaks, each **6 laps of the full 1 683-point matrix, 10 098 capture-and-decode
-cycles on one power cycle**, with **no instrument event logged, no buffer or display object leaked and
-no error left behind**. They ran on different cabling, with a change to the app's state handling between
-them:
+**Three independent 17-hour soaks**, each **6 laps of the full 1 683-point matrix, 10 098
+capture-and-decode cycles on one power cycle**, with **no instrument event logged, no buffer or display
+object leaked and no error left behind**. Different cabling, and changes to the app's state handling
+between them:
 
-| | duration | failures | drift |
+| | duration | failures of 10 098 | rate |
 |---|---|---|---|
-| first | 17.14 h | 318 | −0.9 % |
-| second | 17.17 h | 313 | −1.5 % |
+| first | 17.14 h | 318 | 3.15 % |
+| second | 17.17 h | 313 | 3.10 % |
+| third | 17.18 h | 301 | 2.98 % |
 
-**Within 0.2 % on duration and 1.6 % on failure count** across 20 196 cycles, and **lap time fell in
-both runs** — the measurement that catches a leak, since a leak wedges the instrument without failing a
-point.
+**30 294 capture-and-decode cycles, and the failure rate reproduces inside 0.17 percentage points.** Lap
+time did not rise in any of the three — the measurement that catches a leak, since a leak wedges the
+instrument without failing a point.
 
-**3.1 % of those points fail, against a matrix built to attack the decoder.** That failure set
-concentrates in four vectors, is mostly intermittent, and matches across the two runs more closely than
-one run matches itself. A third, 7-hour soak covers the recording path with zero failures. The numbers
+**Around 3 % of those points fail, against a matrix built to attack the decoder.** That failure set
+concentrates in four vectors, is mostly intermittent, and matches across runs more closely than any one
+run matches itself. A third, 7-hour soak covers the recording path with zero failures. The numbers
 are under **Endurance** in [REFERENCE.md](docs/REFERENCE.md).
 
 ## Which instruments
 
-The app needs a digitizer reachable as **`dmm.digitize`**, the **touchscreen app API**
-(`display.create` and friends), and **Lua 5.0.2**. Every digitizer below runs at **1 MS/s**, and the
+The app needs a digitizer reachable as **`dmm.digitize`** or **`smu.digitize`**, the **touchscreen app
+API** (`display.create` and friends), and **Lua 5.0.2**. Every digitizer below runs at **1 MS/s**, and the
 **panel is pixel-identical across the whole TSP range**, so the app's screens carry over as they are.
 
 | | |
 |---|---|
-| **DMM6500** | **Tested**, firmware 1.7.17a. 16-bit digitizer — *"maximum resolution 16 bits"*, specifications, April 2018 |
-| **DAQ6510** | Should run unmodified, on the strongest grounds of the three: it **shares the UI board and the acquisition board** with the DMM6500, only the channel-board plugin differing. Untested |
+| **DMM6500** | **Tested**, firmware 1.7.17a — three 17-hour soaks, and the namespace resolver verified here. 16-bit digitizer, *"maximum resolution 16 bits"*, specifications, April 2018 |
+| **DAQ6510** | Should run unmodified, on the strongest grounds of any untested model: it **shares the UI board and the acquisition board** with the DMM6500, only the channel-board plugin differing. Untested |
 | **DMM7510** | Should run unmodified: 18-bit digitizer, better acquisition boards. Untested |
-| **2461 SMU** | Would need a port — **dual 18-bit digitizers**, reached as `smu.` rather than `dmm.` |
+| **SMU2461** | **Will install and try; may or may not work.** Dual 18-bit digitizers, reached as `smu.digitize` by a namespace the app resolves at load. That mechanism is verified on the DMM6500; no SMU has ever run it. Three unknowns below |
 | **2470 SMU** | **No.** *"Digitized measurements are not a feature on the 2470"* — its reference manual, rev D, October 2024 |
 | **2450 / 2460 SMU** | Almost certainly not, by absence rather than denial: neither claims a digitizer, and the 2450 reference (rev D, May 2015) documents `smu.measure.*` with no digitize function |
 
@@ -84,16 +85,26 @@ the sample rate and the reading buffer's throughput. Resolution is the one axis 
 to, thresholding each sample into a one or a zero. What is measured *through the acquisition board* —
 the tolerance envelope, the level and offset limits, the −2 V band — is the part to re-measure: the
 DAQ6510 shares that board, so a deviation there is a real finding, while the DMM7510's differs and those
-figures may move either way. **A port is an acquisition question only** — the display layer carries over
-untouched, so the 2461's would be the 14 `dmm.*` symbols and nothing else. The panel constants are under
-**Firmware limits worth knowing** in [REFERENCE.md](docs/REFERENCE.md).
+figures may move either way. **Porting is an acquisition question only** — the panel is identical, so the
+display layer carries over untouched, and the app resolves `dmm.digitize` or `smu.digitize` once at load
+with no test on any capture path. The panel constants are under **Firmware limits worth knowing** in
+[REFERENCE.md](docs/REFERENCE.md).
+
+**On an SMU2461 the app will install and try. Three things are unverified, and any of them could stop
+it.** *What the reading buffer holds* — a 2461 digitizes voltage and current **simultaneously**, and the
+decoder trusts consecutive indices, so a buffer carrying current or source values alongside voltage would
+be read as a waveform and surface as garbage bytes rather than an error. *The range* — the app pins
+**10 V**, a DMM range chosen for having the widest digitize bandwidth, which a 2461 may not offer. *The
+source output* — an SMU sources as well as measures, so the app sets the output off before every capture
+and **reads it back, refusing the capture if it cannot confirm it**; those constant names are unverified,
+and that refusal is the failure it is designed for.
 
 **The `.tspa` header decides where it installs**, independently of whether the code would run. The build
-declares `$Product: DMM6500, DAQ6510, DMM7510`. SMUs are absent: `$Product:` means *"can run the script
-without errors"*, and an SMU would install and then fail at the first capture. `DMM7510` is not in the
-value set Keithley's app-header spec publishes, though Keithley ship TSP apps of their own declaring it —
-an install failure is the symptom if a firmware validates the field strictly, and this field is the first
-thing to revert.
+declares `$Product: DMM6500, DAQ6510, DMM7510, SMU2461`. The other three SMUs are absent because they
+have no digitizer to reach. Neither `DMM7510` nor `SMU2461` appears in the value set Keithley's
+app-header spec publishes, though Keithley ship TSP apps of their own declaring DMM7510 — an install
+failure is the symptom if a firmware validates the field strictly, and this field is the first thing to
+revert.
 
 **If you run this on anything but a DMM6500, please say so** — [open an
 issue](https://github.com/ameline-design/dmm6500-serial-decode/issues). Every row above except the first

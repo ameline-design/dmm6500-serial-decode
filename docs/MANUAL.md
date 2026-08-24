@@ -1,6 +1,6 @@
 # Serial Protocol Decode — user manual
 
-**Ian Ameline** · version 1.05 — **beta** · MIT licence
+**Ian Ameline** · version 1.10 · MIT licence
 
 This app turns a Keithley bench instrument into a serial decoder. Clip onto a UART line, press
 **Capture**, and read the bytes on the front panel. You do not have to tell it the baud rate, the frame
@@ -8,7 +8,8 @@ format or which way up the signal is — it works all of that out from the signa
 
 It was written on a **DMM6500** and that is **the only instrument it has been tested on**. It should
 run as it is on the rest of the Keithley TSP range that has a digitizer and the touchscreen app API —
-the DAQ6510 and DMM7510 in particular — but nobody has run it there yet. `Which instruments` in the
+the DAQ6510 and DMM7510 in particular, and it will install on an SMU2461 and try — but nobody has run it
+there yet. `Which instruments` in the
 README says what is measured and what is inference.
 
 Three things make it worth reaching for over a scope's decode: the **window is large** (a screenful
@@ -16,7 +17,7 @@ is ~240 bytes, and a recording holds 32 768), every capture is **appended to the
 automatically** while a key is in the slot, so you have a log without asking for one, and the **serial parameters are detected rather than
 configured**. For most debugging that is the whole job — connect, press, read.
 
-> **This is a beta.** Every number in this manual was measured on a real DMM6500 against a real
+> **Every number in this manual was measured on a real DMM6500** against a real
 > signal generator unless the text says otherwise — and where something is calculated rather than
 > measured, or untested, it says so in that spot. What that cannot cover is the variety of real devices, so if the app tells you
 > something you can prove is wrong, that is the bug worth reporting. It is built so that **refusing
