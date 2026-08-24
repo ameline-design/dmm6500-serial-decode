@@ -128,22 +128,25 @@ app rather than a script), and **Lua 5.0.2**.
 **The SMU row is split because the series is not uniform, and the spec sheet hides that.** Keithley's
 own 2400-series page carries *"1 MSamples/s digitized measurement speed"* in the family highlights and
 *"1 MS/s sampling"* in the spec banner — but the only model whose own section claims digitizers is the
-**2461** (*"dual 1 MS/s digitizers for fast sampling measurements"*). A family-level figure that belongs
-to one model reads as a series capability, which is how the 2450's decade-old reference documenting
-`smu.measure.*` with no digitize function at all, and a 2470 manual denying the feature outright, sit
-next to a 1 MS/s headline without any of them being wrong. **Check the model, not the series.**
+**2461**. A family-level figure that belongs to one model reads as a series capability, which is how the
+2450's decade-old reference documenting `smu.measure.*` with no digitize function at all, and a 2470
+manual denying the feature outright, sit next to a 1 MS/s headline without any of them being wrong.
+**Check the model, not the series.**
 
-So the 2461 is a genuine candidate and the others are not. The port it needs is small and bounded: the
-app's entire instrument surface is **14 `dmm.*` symbols** — `dmm.digitize.{read, count, samplerate,
-aperture, range, func, analogtrigger.mode, analogtrigger.edge.level, analogtrigger.edge.slope}`,
-`dmm.FUNC_DIGITIZE_VOLTAGE`, `dmm.MODE_EDGE`, `dmm.MODE_OFF`, `dmm.SLOPE_RISING`, `dmm.SLOPE_FALLING` —
-so one indirection table covers it. Two things are unverified and would decide how well it worked rather
-than whether it worked. Whether that digitizer exposes an **analog trigger**: without one the app falls
-back to the free-running path it already has. And what the **buffer** accepts rather than what the ADC
-samples — the same page quotes *"100 kS/s to buffer"* alongside the 1 MS/s figure, and this app reads
-captures out of the reading buffer, so the lower number would be the one that sets a baud ceiling. The
-DMM6500 has that same shape, measured: **~100 000 readings/s into the buffer** against a 1 MS/s
-digitizer.
+Nobody should hold their breath for the 2461 port. It is bounded work — the app's whole instrument
+surface is 14 `dmm.*` symbols, so one indirection table covers it — but a 2461 costs an order of
+magnitude more than a DMM6500, so the population that would benefit is small, and two unknowns would
+still need answering on hardware. The reasoning is in the header comment of `tsp/serial_app.tsp`, and the
+surface itself is one command away rather than a list that can go stale:
+
+```sh
+grep -hv '^[[:space:]]*--' tsp/*.tsp | grep -oh 'dmm\.[A-Za-z0-9_.]*' | sort -u   # 14
+```
+
+Strip the comments first or the count comes out at 16: the prose explaining the requirement mentions
+`dmm.digitize` in passing, and a bare prefix is not a call site.
+
+**The interesting untested target is the DAQ6510**, which should need no port at all.
 
 **The `.tspa` header decides where it will install**, independently of whether the code would run. The
 shipped build declares `$Product: DMM6500, DAQ6510, DMM7510`, so all three are offered the app; the
