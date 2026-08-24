@@ -120,7 +120,7 @@ app rather than a script), and **Lua 5.0.2**.
 | | |
 |---|---|
 | **DMM6500** | **Tested.** Two 17-hour soaks, 20 196 capture-and-decode cycles, firmware 1.7.17a |
-| **DAQ6510** | Expected to run unmodified — same boards and firmware, the difference being the multi-channel scanner cards. Untested |
+| **DAQ6510** | Expected to run unmodified, and on the strongest grounds of the three: it **shares the UI board and the acquisition board** with the DMM6500. Only the channel-board plugin is physically different. Untested |
 | **DMM7510** | Expected to run unmodified — close to the DMM6500/DAQ6510 platform, with front-panel hardware nearly identical and more digitizer **resolution at the same sample rate**. Its acquisition boards are a significant step up. Untested; see the `$Product` note below |
 | **2461 SMU** | **Would need a port.** It has the hardware — Keithley call it a *Digitizing SourceMeter* with **dual 18-bit 1 MS/s digitizers** — but reaches it as `smu.`, not `dmm.` |
 | **2450 / 2460 / 2470 SMU** | **No.** None of the three lists a digitize capability, and the 2470 manual says outright that digitized measurements are not a feature of the instrument |
@@ -138,6 +138,15 @@ board rather than properties of the decoder. A significant step up in that hardw
 those live on, so on a 7510 they could move, plausibly for the better. That makes them the first things to
 re-measure rather than assume, because **better is still different**: a wider envelope would be welcome, a
 shifted one would quietly invalidate the published table.
+
+**The DAQ6510 is the opposite case, and that is what makes it the useful one.** Sharing the acquisition
+board means *both* classes should transfer — not just the rate ladder but the tolerance envelope, the
+level and offset limits, and the −2 V band as well. Every number in `REFERENCE.md` ought to hold there,
+which is a far more falsifiable claim than "it should run": any deviation is a real finding rather than
+an expected difference. It also makes the pair a controlled experiment if both are ever to hand. The
+DAQ6510 holds the hardware constant and varies only the firmware's model identity; the DMM7510 holds the
+platform roughly constant and varies the acquisition board. Run the DAQ6510 first — it is the one that
+can fail cleanly.
 
 **And the front panel is the part that would actually have broken.** The fourteen `dmm.*` calls are the
 obvious porting surface and the least worrying one. The risk sits in `serial_ui.tsp` — 1 300 lines of

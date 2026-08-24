@@ -26,6 +26,12 @@ the app's favour**: its acquisition boards and digitizer are a significant step 
 axis the −2 V band and the threshold picker's histogram sensitivity live on. Better is still different.
 A wider envelope would be welcome; a *shifted* one would quietly invalidate the table.
 
+**On a DAQ6510 there is no such split, and every figure here should hold.** It shares both the UI board
+and the acquisition board with the DMM6500 — only the channel-board plugin differs — so the analog
+numbers are measurements of the same hardware, not of comparable hardware. That makes it the one model
+against which this file is a **falsifiable** document rather than an approximate one: a deviation is a
+finding, not an expected difference. It is therefore the first port to try and the cheapest to interpret.
+
 ---
 
 ## Press latency
