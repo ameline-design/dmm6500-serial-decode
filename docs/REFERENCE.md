@@ -570,10 +570,14 @@ development, not normal use.
 The build itself is **122 display objects** live after `ui_build()`, and **134** once the options
 screen has been built too. Counted with the harness census, not estimated.
 
-**The panel geometry is baked in, not negotiated at runtime**, which is what makes a port to another
-model a display question before it is an acquisition question. Object `y` is relative to a content area
+**The panel geometry is baked in rather than negotiated at runtime, and it does not need to be: the
+panel is pixel-identical across the entire TSP range.** Object `y` is relative to a content area
 **49 px below the panel top**, and a screen title is limited to **31 characters**. `serial_ui.tsp` is
-1 300 lines built against those constants.
+1 300 lines built against those constants, and they carry to another TSP model unmodified — so a port is
+an acquisition question only, never a layout one.
+
+The display-side unknown is not geometry but the **object pool** above: an allocation limit, not a
+dimension, and uncharacterised on every model including this one.
 
 **Event 4915** — "attempting to store past the capacity of a reading buffer" — is ERROR severity,
 which the front panel shows as a **modal dialog over the app** whatever `localnode.showevents` says.

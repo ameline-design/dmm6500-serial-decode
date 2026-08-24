@@ -67,13 +67,14 @@ are under **Endurance** in [REFERENCE.md](docs/REFERENCE.md).
 ## Which instruments
 
 The app needs a digitizer reachable as **`dmm.digitize`**, the **touchscreen app API**
-(`display.create` and friends), and **Lua 5.0.2**. Every digitizer below runs at **1 MS/s**.
+(`display.create` and friends), and **Lua 5.0.2**. Every digitizer below runs at **1 MS/s**, and the
+**panel is pixel-identical across the whole TSP range**, so the app's screens carry over as they are.
 
 | | |
 |---|---|
 | **DMM6500** | **Tested**, firmware 1.7.17a. 16-bit digitizer — *"maximum resolution 16 bits"*, specifications, April 2018 |
 | **DAQ6510** | Should run unmodified, on the strongest grounds of the three: it **shares the UI board and the acquisition board** with the DMM6500, only the channel-board plugin differing. Untested |
-| **DMM7510** | Should run unmodified: near-identical front panel, 18-bit digitizer, better acquisition boards. Untested |
+| **DMM7510** | Should run unmodified: 18-bit digitizer, better acquisition boards. Untested |
 | **2461 SMU** | Would need a port — **dual 18-bit digitizers**, reached as `smu.` rather than `dmm.` |
 | **2470 SMU** | **No.** *"Digitized measurements are not a feature on the 2470"* — its reference manual, rev D, October 2024 |
 | **2450 / 2460 SMU** | Almost certainly not, by absence rather than denial: neither claims a digitizer, and the 2450 reference (rev D, May 2015) documents `smu.measure.*` with no digitize function |
@@ -83,8 +84,9 @@ the sample rate and the reading buffer's throughput. Resolution is the one axis 
 to, thresholding each sample into a one or a zero. What is measured *through the acquisition board* —
 the tolerance envelope, the level and offset limits, the −2 V band — is the part to re-measure: the
 DAQ6510 shares that board, so a deviation there is a real finding, while the DMM7510's differs and those
-figures may move either way. A port is a display question before it is an acquisition one; the panel
-constants are under **Firmware limits worth knowing** in [REFERENCE.md](docs/REFERENCE.md).
+figures may move either way. **A port is an acquisition question only** — the display layer carries over
+untouched, so the 2461's would be the 14 `dmm.*` symbols and nothing else. The panel constants are under
+**Firmware limits worth knowing** in [REFERENCE.md](docs/REFERENCE.md).
 
 **The `.tspa` header decides where it installs**, independently of whether the code would run. The build
 declares `$Product: DMM6500, DAQ6510, DMM7510`. SMUs are absent: `$Product:` means *"can run the script
