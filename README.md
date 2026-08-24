@@ -27,7 +27,8 @@ settable on this firmware, so a receiver needs an edge-triggered input rather th
 Figures and the gate-by-gate account of where it fails are under **Triggering, in both directions** in
 [REFERENCE.md](docs/REFERENCE.md).
 
-**Automatic rate detection has two known failures**, both rare and both fixed by typing the rate in: a
+**Automatic rate detection has two known failures**, both rare (together **under 0.5 %** of bench
+points) and both fixed by typing the rate in: a
 short pattern repeated over and over can measure at a small multiple of its true rate, and a logic low
 near **−2 V** can misdetect. Both are characterised with their numbers under **Known failures of
 automatic rate detection** in the [manual](docs/MANUAL.md).
