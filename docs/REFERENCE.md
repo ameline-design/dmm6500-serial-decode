@@ -14,6 +14,18 @@ to move. The sample-rate ceiling, the press latencies, the display-object budget
 throughput are all properties of this instrument's hardware and firmware, not of the decoder. Treat them
 as measurements of one machine until someone repeats them.
 
+**The figures split into two classes, and only one of them should transfer.** Anything descending from
+the **sample rate** — the rate ladder, the samples-per-bit table, the recording-length arithmetic — is
+timing, and a model at the same 1 MS/s inherits it unchanged. Anything descending from the **analog front
+end** is not: the **Tolerance envelope** below, **Levels and offsets**, the **marginal at 2400 Bd**, and
+both characterised rate-detection failures in the manual — the repeating-pattern misfit and the
+**−2 V logic-low band** — are all measurements of one acquisition board.
+
+Those are the ones to re-measure first on another model, and on a DMM7510 they could plausibly move **in
+the app's favour**: its acquisition boards and digitizer are a significant step up, which is exactly the
+axis the −2 V band and the threshold picker's histogram sensitivity live on. Better is still different.
+A wider envelope would be welcome; a *shifted* one would quietly invalidate the table.
+
 ---
 
 ## Press latency

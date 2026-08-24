@@ -121,15 +121,23 @@ app rather than a script), and **Lua 5.0.2**.
 |---|---|
 | **DMM6500** | **Tested.** Two 17-hour soaks, 20 196 capture-and-decode cycles, firmware 1.7.17a |
 | **DAQ6510** | Expected to run unmodified — same boards and firmware, the difference being the multi-channel scanner cards. Untested |
-| **DMM7510** | Expected to run unmodified — close to the DAQ6510 platform, with more digitizer **resolution at the same sample rate**, and front-panel hardware nearly identical to the DMM6500's. Untested; see the `$Product` note below |
+| **DMM7510** | Expected to run unmodified — close to the DMM6500/DAQ6510 platform, with front-panel hardware nearly identical and more digitizer **resolution at the same sample rate**. Its acquisition boards are a significant step up. Untested; see the `$Product` note below |
 | **2461 SMU** | **Would need a port.** It has the hardware — Keithley call it a *Digitizing SourceMeter* with **dual 18-bit 1 MS/s digitizers** — but reaches it as `smu.`, not `dmm.` |
 | **2450 / 2460 / 2470 SMU** | **No.** None of the three lists a digitize capability, and the 2470 manual says outright that digitized measurements are not a feature of the instrument |
 
-**On the 7510, the sample rate matters and the extra bits do not.** Every rate figure in
+**On the 7510, the timing figures should transfer and the analog ones should not.** Every rate figure in
 [REFERENCE.md](docs/REFERENCE.md) descends from a 1 MS/s digitizer feeding a buffer that accepts about
 100 000 readings/s, so an instrument at the same sample rate inherits the same baud ceiling and the same
-arithmetic. Resolution is the one axis this app is indifferent to: it thresholds each sample into a one
-or a zero, so more bits buy nothing here and cost nothing either.
+arithmetic. Raw resolution is the one axis this app is indifferent to — it thresholds each sample into a
+one or a zero, so extra bits buy nothing and cost nothing.
+
+**Its better acquisition boards are a different matter, and they are the interesting part.** The tolerance
+envelope, the verified level and offset limits, and both characterised rate-detection failures — including
+the **−2 V logic-low band**, where −3 V works and −2 V does not — are all measurements of one acquisition
+board rather than properties of the decoder. A significant step up in that hardware is precisely the axis
+those live on, so on a 7510 they could move, plausibly for the better. That makes them the first things to
+re-measure rather than assume, because **better is still different**: a wider envelope would be welcome, a
+shifted one would quietly invalidate the published table.
 
 **And the front panel is the part that would actually have broken.** The fourteen `dmm.*` calls are the
 obvious porting surface and the least worrying one. The risk sits in `serial_ui.tsp` — 1 300 lines of
