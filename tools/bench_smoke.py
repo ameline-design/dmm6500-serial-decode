@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""THE ELEVEN-MINUTE GATE: four waveforms across the rate range, then every button.
+"""THE THIRTEEN-MINUTE GATE: four waveforms across the rate range, then every button.
 
 WHY IT EXISTS. A full soak lap is 157 minutes, so a broken harness costs an evening to discover --
 and it did: a lap ran 147 minutes and its headline failures turned out to be an oracle asking for two
@@ -22,6 +22,11 @@ Then the button matrix: 45 presses, every button in every state, with the panel 
 of each press. It is 2.8 of the 12 minutes and one press is 50 s of it -- the 8 kB one-shot -- which is
 also the press most likely to catch the recording-path defects, so it stays.
 
+Then the LEVELS sweep, ~1 min: the same waveform at 5 V, 3.3 V, 1.6 V, 1.0 V, 0.5 V and 0.25 V of
+logic swing, checking the family, the threshold and the bytes. The documented range is 0.5 V to 8 V,
+and the plan stage drives its own drawn amplitude rather than the published floor -- so without this
+a regression that cost the app small swings would pass every other stage here.
+
 Then eight RATE cases from bench_break, ~1 min, covering the two things the stages above cannot:
 
   a lock the wire CONTRADICTS -- 2x and half-rate misfit, the +6 % silent-corruption edge, the offer
@@ -42,9 +47,11 @@ replay it: python3 tools/soakplan.py --emit-lua --iteration N > p.lua && lua too
     python3 tools/bench_smoke.py --iteration 7   # a different draw of the non-standard rates
     python3 tools/bench_smoke.py --no-panel      # the plan half only, about 8 minutes
     python3 tools/bench_smoke.py --no-rates      # skip the wrong-lock cases
+    python3 tools/bench_smoke.py --no-levels     # skip the logic-swing sweep
 
-Skipping a stage is recorded in the receipt, not just in this log: --no-panel writes 0 presses and
---no-rates writes 0 rate cases, so a partial run cannot later be mistaken for a full one.
+Skipping a stage is recorded in the receipt, not just in this log: --no-panel writes 0 presses,
+--no-rates writes 0 rate cases and --no-levels writes 0 levels, so a partial run cannot later be
+mistaken for a full one.
 """
 import argparse
 import os
@@ -53,6 +60,10 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# For LEVELS alone, so the receipt records the number of swings that actually ran rather than a
+# literal here that a change to the list would leave behind. Importing it contacts nothing.
+import bench_matrix as BM                                                # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -98,6 +109,8 @@ def main():
     ap.add_argument('--no-panel', action='store_true', help='skip the button matrix')
     ap.add_argument('--no-rates', action='store_true',
                     help='skip the wrong-locked-rate cases (adopt and back-off)')
+    ap.add_argument('--no-levels', action='store_true',
+                    help='skip the logic-swing sweep (5 V down to 0.25 V)')
     ap.add_argument('--keep-combine', action='store_true',
                     help='gate the stimulus WITH SDG CH2 summed into CH1, as the soak will run it')
     ap.add_argument('--out', default=os.path.expanduser('~/tmp/smoke'))
@@ -119,7 +132,20 @@ def main():
     if not a.no_panel:
         rc2, bad2, s2, _ = run('panel', ['python3', '-u', 'tools/bench_panel.py', '--reuse'],
                                os.path.join(a.out, 'panel.log'))
-    # AFTER the panel matrix, because rate-backoff stubs sdec.ua_badfrac on the instrument. bench_break
+    # THE CLAIMED SWING RANGE, ~1 min. Six captures of one waveform at 5 V down to 0.25 V, checking the
+    # LOGIC family, that THRESH landed near mid-swing, and the bytes. The plan stage above drives its own
+    # drawn amplitude, but the DOCUMENTED floor is a specific claim and nothing else here tests it: a
+    # regression that cost the app small swings would pass every other stage in this gate.
+    #
+    # BEFORE the rate cases, for the reason given below, and after the panel matrix because these
+    # captures leave a locked rate that the button matrix would then inherit.
+    rc4, bad4, s4 = 0, 0, 0.0
+    if not a.no_levels:
+        rc4, bad4, s4, _ = run('levels', ['python3', '-u', 'tools/bench_matrix.py',
+                                          '--suites', 'levels', '--no-start', '--no-output-off'],
+                               os.path.join(a.out, 'levels.log'))
+
+    # AFTER everything else, because rate-backoff stubs sdec.ua_badfrac on the instrument. bench_break
     # restores it in its own teardown, but running last means a teardown that failed cannot silently
     # change the verdict of anything else in this gate.
     rc3, bad3, s3 = 0, 0, 0.0
@@ -129,8 +155,14 @@ def main():
                                os.path.join(a.out, 'rates.log'))
 
     print()
-    print('%.1f min total, %d BAD' % ((s1 + s2 + s3) / 60.0, bad1 + bad2 + bad3))
-    if rc1 or rc2 or rc3:
+    print('%.1f min total, %d BAD' % ((s1 + s2 + s3 + s4) / 60.0, bad1 + bad2 + bad3 + bad4))
+    if rc4 and not (rc1 or rc2 or rc3):
+        # NAMED, because this stage is the one whose failure is a DOCUMENTATION question as much as a
+        # code one: the swing floor is a published claim, so a failure here means either the claim or
+        # the bench is wrong, and which one it is decides whether the fix is in tsp/ or in docs/.
+        print('The levels stage failed and everything else passed. docs/REFERENCE.md and '
+              'docs/MANUAL.md claim 0.5 V to 8 V; read tools/../levels.log before changing either.')
+    if rc1 or rc2 or rc3 or rc4:
         print('SMOKE FAILED -- do not start a soak on this. Logs in %s' % a.out)
         print('Reproduce a failing cell offline:')
         print('  python3 tools/soakplan.py --emit-lua --iteration %d > /tmp/p.lua' % a.iteration)
@@ -142,6 +174,7 @@ def main():
                      '--iteration', str(a.iteration), '--cells', '86',
                      '--presses', '0' if a.no_panel else '45',
                      '--rates', '0' if a.no_rates else str(len(RATE_CASES.split(','))),
+                     '--levels', '0' if a.no_levels else str(len(BM.LEVELS)),
                      '--stamp', time.strftime('%Y-%m-%dT%H:%M:%S')], cwd=ROOT)
     print('SMOKE PASSED')
     return 0

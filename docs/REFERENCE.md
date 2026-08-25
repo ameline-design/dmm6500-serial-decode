@@ -1,6 +1,6 @@
 # Serial Protocol Decode — measured reference
 
-**Ian Ameline** · version 1.10 · MIT licence
+**Ian Ameline** · version 1.11 · MIT licence
 
 The detail behind [MANUAL.md](MANUAL.md). Everything here was measured on a DMM6500 (firmware
 1.7.17a) against an SDG2122X generator, verified where noted with an SDS1204X-E scope. The manual is
@@ -322,7 +322,7 @@ silent, except where noted.
 | Clock error, rate **locked** | **±4 %** — past this, running *fast* corrupts bytes silently |
 | Clock error, **auto-detect** | ±12 % and beyond — it measures rather than assumes |
 | Timing jitter | **±15 %** of a bit time — ±15.6 µs at 9600 Bd, ±1.3 µs at 115200. Past ±20 % it can fail silently |
-| Amplitude noise | ~40 % of the logic swing — ~1.3 V p-p on a 3.3 V line |
+| Amplitude noise | ~40 % of the logic swing — ~1.3 V p-p on a 3.3 V line, which the panel reports as **13 dB** |
 | Low-pass filtering (poor probe, long cable) | RC up to **0.7 bit times** — a ~2.2 kHz filter at 9600 Bd |
 | Slow edges (open-drain pull-up) | rise up to ~40 % of a bit time — 42 µs at 9600 Bd, 3.5 µs at 115200 |
 | Impulse spikes / dropouts | usually costs bytes and raises errors; a spike confined to a *data* bit changes that byte undetectably |
@@ -345,19 +345,122 @@ phases × 9600 and 38400 Bd × four noise levels, a 236-byte payload riding a 2 
 from **0.12 V to 9.30 V** decodes byte-exact at every noise level, 16 points of 16 each. 0.10 V
 refuses: it sits exactly on `minswing` and the trimmed histogram measures 0.0996 V, just under. A
 60 mV swing refuses at every noise level, and the swing it *reports* grows with the noise, 0.06 V to
-0.16 V at 50 mV peak, because peak-to-peak rises while the logic swing does not. **The 0.5 V end of
-the range above is this offline measurement; the bench confirmation is outstanding.**
+0.16 V at 50 mV peak, because peak-to-peak rises while the logic swing does not.
+
+**The 0.5 V end of the range is confirmed on the instrument, not only offline.** The `levels` stage of
+`tools/bench_smoke.py` plays one waveform at **5 V, 3.3 V, 1.6 V, 1.0 V, 0.5 V and 0.25 V** of swing
+and takes one in-app Capture at each, checking the `LOGIC` cell against the swing the app measured,
+that `THRESH` landed within a quarter of the swing of mid-swing, and the bytes. 0.25 V is below the
+claimed floor deliberately: a floor with nothing measured beneath it is a guess.
 
 **The noise budget is a fraction of the swing, not a voltage.** The generator's `noise` is a peak
 amplitude in volts, so the same 50 mV is 1.5 % of a 3.3 V swing and 10 % of a 0.5 V one. A small
 swing does not fail because it is small; it fails when the noise on it reaches the ~40 % above.
 
-**The swing is a swept axis.** Every plan cell draws its own amplitude and
-DC offset, scaling the vector's own rendered span by 0.5…1.6 and then placing the offset wherever
-keeps both levels inside ±9.5 V. One 1677-cell hardware lap drove **1.652 V to 9.300 V p-p** and
-1634 cells decoded byte-exact. The largest **two-level** swing that decoded is **8.000 V**, on the
-LIN vectors at 2400, 9600, 38400 and 76800 Bd; the largest span of any kind is **9.300 V p-p**, on
-the impulse-spike vector, whose ±3 V transients ride a 3.3 V logic swing.
+---
+
+## Signal-to-noise, and the cliff it warns about
+
+The `S/N` cell reports the noise sitting on the two logic levels, in dB, as
+20·log₁₀(swing / noise<sub>rms</sub>). It is unsigned because it is a ratio of signal over noise, and
+positive by construction: a line whose noise exceeds its swing has no logic levels, and `sig_levels`
+has already refused it before the figure is computed.
+
+**Edges are excluded by POSITION, not by voltage, and that is the whole measurement.** A sample partway
+up an edge is indistinguishable from a noisy one by amplitude, so an amplitude window measures **slew**
+and calls it noise. Measured on a **noiseless** capture, a `thr ± hyst` window reports 24.8 dB and a
+within-15 %-of-level window 38.4 dB — both of them pure edge slew — and **neither figure moves** when
+real noise is injected 40 dB below. Requiring both immediate neighbours on the same side of
+`thr ± hyst` drops every sample within one place of a transition; that tracks injected noise to 0.3 dB
+from 24.8 dB down to 84.8 dB, and costs 23 % of the samples.
+
+**~1000 samples, strided across the whole capture rather than taken from the front.** A thousand
+contiguous samples at 1 MS/s span 1 ms — a twentieth of a 50 Hz cycle — so mains pickup inside that
+window is a slow tilt that reads as signal rather than as noise; and at the head of a capture they can
+all land in the opening idle, where only one of the two levels exists. Residuals are taken about each
+level's own mean and pooled, because measuring about the threshold would report half the swing as
+noise.
+
+**It is not derived from `wlo`/`whi`.** Those are histogram-quantised — `nb = floor(n/binocc)` capped at
+512 bins, ~23 mV per bin over 3.3 V — which would cap the reportable figure near 43 dB at a 3.3 V swing
+and 21 dB at 0.25 V, both well inside the range that matters.
+
+### Where the decode actually fails
+
+Swept offline at 9600 Bd, 12 capture start phases per point, injecting uniform noise as a fraction of
+the logic swing and running the app's own `sig_levels` → `sig_edges` → `sig_idle` → `decode_from`:
+
+| noise, peak | reported `S/N` | byte-exact | at the swing |
+|---|---|---|---|
+| 0 % | >99 dB (clamped) | 12 of 12 | 3.3 V, 1.0 V, 0.5 V |
+| 8 % | 26.7 dB | 12 of 12 | all three |
+| 20 % | 18.7 dB | 12 of 12 | all three |
+| 35 % | 13.8 dB | 12 of 12 | all three |
+| 45 % | 12.5 dB | 12 of 12 | all three |
+| 50 % | — | **0 of 12 — all twelve refused** | all three |
+| 60 % | 10.3 dB | 0 of 12, 8–9 refused | all three |
+
+**The cliff is at 12 dB, and past it the app refuses rather than guessing.** There is no band where it
+decodes confidently and wrongly: between 45 % and 50 % of the swing it goes from byte-exact on every
+capture to `no clear logic levels` on every capture.
+
+**The same dB figures at 3.3 V, 1.0 V and 0.5 V of swing, agreeing to 0.1 dB.** That is the measurement
+behind "the budget is a fraction of the swing": the voltage at which a line fails scales with the
+swing, and the *dB* at which it fails does not move at all. It is also what justifies one pair of
+thresholds on the panel for every line the app will ever meet.
+
+The sweep doubles as an end-to-end check of the measurement itself: predicted 20·log₁₀(√3/frac) against
+reported, over 14 noise levels and three swings, agrees within **0.5 dB** everywhere except where the
+prediction is meaningless (0 % noise) or the levels are collapsing (60 %).
+
+### The bands
+
+| | green | amber | red |
+|---|---|---|---|
+| `FIT` | ≥ 0.90 | 0.72 … 0.89 | < 0.72 |
+| `S/N` | ≥ 30 dB | 15 … 29 dB | < 15 dB |
+
+`FIT` 0.90 is `autolock_fitq` itself, so green means "good enough for the app to pin the rate". 0.72
+sits 10 % above a structural knee at 0.65: `sig_fit`'s quality is (1 − mean_err/T) × (nfit/nsmall) and
+only widths within 0.35·T of a multiple count, so tightness alone cannot take it below 0.65 and
+anything under that means *coverage* is collapsing rather than tightness.
+
+`S/N` green at **30 dB** is noise under ~5.5 % of the swing; **red at 15 dB** is noise around a third of
+it, which still decodes 12 of 12 in the sweep above. **Both thresholds sit above the 12 dB cliff on
+purpose** — a band that turned red only at the cliff would light up on captures that were about to
+refuse anyway, which warns nobody. The 8 dB figure that `20·log₁₀(1/0.4)` gives from the 40 % noise
+tolerance is not the cliff in these units and nothing should be derived that way: that tolerance is a
+**peak** amplitude and this cell is an **RMS** one, and the rms equivalent of 40 % peak is 12.7 dB.
+
+Both bands are keyed on the number the cell **prints**, rounded exactly as the cell rounds it, so the
+colour can never contradict the figure beside it. Banding the raw value instead is visibly wrong on the
+panel: a raw 0.8996 prints as `0.90` and would be coloured as the 0.899 it really is, putting an amber
+figure on a green threshold. A nil figure prints `--` and keeps the column's own colour, because a red
+dash reports a bad measurement where there is no measurement.
+
+**The swing is a swept axis.** Every plan cell draws its own target swing — uniformly from **0.45 V to
+8 V** — and then a DC offset from whatever is left inside ±9.5 V. One 1677-cell hardware lap drove
+**1.652 V to 9.300 V p-p** and 1634 cells decoded byte-exact. The largest **two-level** swing that
+decoded is **8.000 V**, on the LIN vectors at 2400, 9600, 38400 and 76800 Bd; the largest span of any
+kind is **9.300 V p-p**, on the impulse-spike vector, whose ±3 V transients ride a 3.3 V logic swing.
+
+**And the failure rate does not depend on the swing.** 100 offline laps of the full plan, **176 300
+cells**, each cell's swing drawn independently:
+
+| drawn swing | cells | failed | rate |
+|---|---|---|---|
+| 0.45 … 1.0 V | 12 865 | 45 | 0.35 % |
+| 1.0 … 2.0 V | 23 360 | 62 | 0.27 % |
+| 2.0 … 3.5 V | 34 805 | 84 | 0.24 % |
+| 3.5 … 5.0 V | 35 340 | 96 | 0.27 % |
+| 5.0 … 6.5 V | 34 812 | 104 | 0.30 % |
+| 6.5 … 8.0 V | 35 118 | 105 | 0.30 % |
+
+Flat within a factor of 1.5 and **not monotonic** — the middle bands are the best, and the spread is
+about two standard errors on the smallest bin. This is the measurement that retired an apparent
+"failures rise with the swing" gradient of 2.3 % → 37.3 % across the same bands: that gradient was the
+harness placing single-supply bands across ground, not the decoder minding large swings. See the
+vertical draw in [BENCH.md](BENCH.md).
 
 **8 V is a generator ceiling, not a decoder one.** The LIN vectors render 0…6 V inside a 15 Vpp full
 scale, so 1.6× reaches 24 Vpp and clamps to the SDG's 20 Vpp — 6.0 × 20/15 = exactly 8.000 V. No

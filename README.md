@@ -4,7 +4,7 @@ A UART decoder that runs **on** a Keithley bench instrument. It digitizes the li
 instrument's own digitizer, recovers the baud rate, frame format and idle polarity from the signal,
 and shows the bytes on the front panel as text or hex. No host, no logic analyser, one probe.
 
-Ian Ameline · **version 1.10** · MIT licence (see [LICENSE](LICENSE))
+Ian Ameline · **version 1.11** · MIT licence (see [LICENSE](LICENSE))
 
 | | |
 |---|---|

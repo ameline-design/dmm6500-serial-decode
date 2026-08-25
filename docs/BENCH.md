@@ -22,12 +22,41 @@ soak is a failure rate per point, and two laps can only ever say "twice" or "onc
 `tools/soakplan.py` decides what one iteration tests. Everything comes from the iteration number, so
 **iteration 129 is reachable without running 128 first**.
 
-Per iteration, three things vary and nothing else does:
+Per iteration, four things vary and nothing else does:
 
 * the **order** waveforms load in, so a state leak out of one stops looking like a defect in whichever
   waveform always follows it
 * the **non-standard rate** drawn in each gap between standard rates
 * the **wait** before each capture, per cell
+* the **vertical placement** of each cell: a target logic swing drawn uniformly from **0.45 V to 8 V**,
+  and a DC offset drawn from what is left inside the rails
+
+### The vertical draw, and the one region it will not use
+
+The swing is asked for **in volts**, not as a scale factor. Scaling each vector's own rendered span
+bottoms out at 1.65 V p-p on the 3.3 V vectors, which left the bottom of the claimed range untested by
+construction; asking for a span in volts covers 0.45 V to 8 V on every vector that can reach it, and
+reports the achieved figure per row so a generator ceiling shows up as a ceiling rather than as
+coverage. A 3.3 V-span vector needs 24.2 Vpp for an 8 V swing and the SDG stops at 20, so its achieved
+span caps at 5.28 V — stated, not silently absorbed.
+
+**The offset draw skips the window that would put a single-supply band across ground, and that
+exclusion is not cosmetic.** `sig_levels` decides idle polarity from the levels when no run in the
+window reaches ten bit times: `lo < -flatfloor and hi > flatfloor` means RS-232, which marks at its
+*negative* level. So a 0…6.6 V logic waveform shifted until its low is below −1 V and its high above
++1 V is, to the app, correctly read as an inverted line — right rate, right format, self-consistent
+bytes matching nothing, one frame short. Measured over 150 laps before the constraint went in, **17.3 %
+of cells were placed that way and they accounted for 86.8 % of every offline failure**; the genuine
+rate was ~0.23 % against the 1.79 % the raw count showed, and the apparent "failures rise with swing"
+gradient was the same artifact, since a large span is simply what lets a shifted band clear 1 V on both
+sides. `sweep_plan` on a fresh plan went from 22–41 BAD a lap to 11.
+
+Only the straddling window is cut, and this matters: raising the lower bound instead also removes the
+legitimate wholly-negative region, ~57.5 % of the interval on some vectors, and offline had already
+shown an offset of −6.5 V passing where −3.6 V failed. `soakplan.py --selftest` asserts the span range,
+that the draw reaches both ends of it, that nothing clips, and that nothing straddles ground.
+`FLATFLOOR` is **read out of `tsp/serial_core.tsp`** rather than copied, so the constraint cannot drift
+away from the rule it exists to respect.
 
 Fixed: the 22 standard baud rates in `[300, 250000]`, tested on every waveform every iteration.
 `250000` is `sdec.maxbaud`; below 300 costs 8 s of capture for a rate nothing here speaks.
@@ -74,6 +103,17 @@ vote get tested.
 86 cells in 9.5 min, then 45 presses in 1.9 min. `--plan-spec vector:std|nonstd|all` is what makes the
 quarter-coverage expressible; a cell's wait is still keyed on its index in the **full** rate list, so a
 cell reached this way is the same cell the soak runs.
+
+Then two stages of about a minute each. **`levels`** plays one waveform at 5 V, 3.3 V, 1.6 V, 1.0 V,
+0.5 V and 0.25 V of logic swing and checks the `LOGIC` cell, that `THRESH` landed within a quarter of
+the swing of mid-swing, and the bytes — the published range is 0.5 V to 8 V, and the plan stage drives
+its own *drawn* amplitude rather than the claimed floor, so nothing else in the gate tests it. **`rates`**
+runs eight wrong-lock cases from `bench_break`, which is the only stage where the lock CONTRADICTS the
+wire. `rates` goes last because it stubs `sdec.ua_badfrac` on the instrument, so a teardown that failed
+cannot quietly change another stage's verdict.
+
+`--no-panel`, `--no-levels` and `--no-rates` each skip a stage, and each writes a **zero** into the
+receipt for what it skipped, so a partial run cannot later be read as a full one.
 
 ---
 
@@ -137,12 +177,12 @@ forty minutes in. It also needs the SDG2122X loaded with the stimulus waveforms
 | `tolerance` | recomputes the envelope table printed in the manual |
 | `package` `archive` | rebuilds the `.tspa`, then builds both screens *from the archive* against a mock front end |
 | `manual` | rebuilds every shipped PDF: `README.pdf`, `MANUAL.pdf`, `REFERENCE.pdf`, `BENCH.pdf` |
-| `hw-matrix` | through the app's own Capture button: six frame formats, the standard rate ladder, a 1 kB non-repeating payload, three logic swings, twelve DC offsets |
+| `hw-matrix` | through the app's own Capture button: six frame formats, the standard rate ladder, a 1 kB non-repeating payload, **six logic swings from 5 V down to 0.25 V**, twelve DC offsets |
 | `hw-payloads` | fourteen payloads covering every byte value 0–255, two of them also at 115 200 and 250 000 |
 | `hw-odd-rates` | nineteen **non-standard** baud rates — 900, 1500, 3600, 8123, 29127, 104857 … |
 | `hw-panel` | every button in every state, including a one-press recording. Six checks per press: the handler does not raise, logs no instrument event, returns inside its latency budget, reports what it did, changed the state it was supposed to, and **the panel actually shows it** — grabbed before and after each press and differenced by region |
 | `soakrand-dmm` | the third leg: the instrument's **own** Lua 5.0.2 must produce the same words, floats, rejected draws and permutation |
-| `hw-plan` | the seeded sweep on the bench: every waveform across all 43 rates in a seeded order, with a seeded wait, amplitude and DC offset drawn per cell. `--plan-vectors` cuts it to a subset for a lap that must finish in minutes. The vertical draw scales each vector's own rendered span by 0.5…1.6 and places the offset wherever keeps both levels inside ±9.5 V, so one full lap covers roughly 1.6 V to 9.3 V p-p |
+| `hw-plan` | the seeded sweep on the bench: every waveform across all 43 rates in a seeded order, with a seeded wait, amplitude and DC offset drawn per cell. `--plan-vectors` cuts it to a subset for a lap that must finish in minutes. The vertical draw asks for a **target swing in volts, 0.45 V to 8 V**, and places the offset wherever keeps both levels inside ±9.5 V *and* does not put a single-supply band across ground. Every row records the swing it drove and the `S/N` the app reported |
 | `hw-break` | degenerate signals and contradictory settings — no signal, DC only, all-`0x00`/`0xFF`/`0x55`, a break, 60 mV of swing, 19 Vpp, rates past the ceiling, six wrong forced settings. A refusal with a reason passes; confident garbage does not |
 
 This table must list every stage `release_sweep.py` defines, or the published inventory of what a

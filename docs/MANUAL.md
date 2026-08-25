@@ -1,6 +1,6 @@
 # Serial Protocol Decode — user manual
 
-**Ian Ameline** · version 1.10 · MIT licence
+**Ian Ameline** · version 1.11 · MIT licence
 
 This app turns a Keithley bench instrument into a serial decoder. Clip onto a UART line, press
 **Capture**, and read the bytes on the front panel. You do not have to tell it the baud rate, the frame
@@ -83,8 +83,32 @@ Along the top are the things the app worked out about your line:
 | **RATE** | How fast the meter sampled. |
 | **BYTES / ERR** | How many bytes came out, and how many of them you cannot trust. |
 | **FIT** | How well one bit-length explains what it measured, from 0 to 1. Below about 0.9 means the timing was messy. |
+| **S/N** | How far your two logic levels stand above the noise sitting on them, in dB. Bigger is quieter. |
 
 A dash means "not measured yet".
+
+**`FIT` and `S/N` are coloured, and the colour is the quick read.** Green means there is margin, amber
+means there is some but not much, red means you are close to the edge — so the top line can be checked
+at a glance instead of remembering two sets of numbers:
+
+| | green | amber | red |
+|---|---|---|---|
+| **FIT** | 0.90 and up | 0.72 to 0.89 | below 0.72 |
+| **S/N** | 30 dB and up | 15 to 29 dB | below 15 dB |
+
+`FIT` 0.90 is the same figure auto-lock requires, so a green `FIT` is also "this capture was good
+enough to lock". **Red means close to failing, not failing.** A red `S/N` still decodes: the point
+where captures stop working is around 12 dB, and past it the app says `no clear logic levels` rather
+than handing you wrong bytes. Green `S/N` is noise under about 5 % of your swing, amber down to about
+a third of it.
+
+**`S/N` describes your wiring, not the app.** It is measured on the flat parts of the signal, away from
+the edges, so it reports what is riding on your levels — mains hum picked up by a long unshielded lead,
+a switching supply, a noisy ground. If it reads low, the wiring is worth fixing before anything else:
+every other tolerance in this manual is a fraction of the swing, so noise spends the same budget that
+jitter and slow edges do. The cell stops at `>99 dB` rather than counting higher: above that it would
+be reporting the meter's own digitizer resolution rather than anything about your line, so what it
+shows there is a limit and not a measurement.
 
 **Broken bytes are shown, not hidden.** `ERR` turns red when there are any, and every row containing
 one is drawn red across its whole width — offset, hex and ASCII together — so damage is found by

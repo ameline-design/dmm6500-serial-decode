@@ -139,10 +139,10 @@ MANIFEST = [
     # MATCHES THE GIT TAG, and stays a plain dotted number. This string goes into a manifest an
     # instrument installer parses and whose compares cannot be assumed numeric, so the version must
     # never carry a pre-release suffix -- '1.0-beta' could fail a parse or sort anywhere. As STRINGS,
-    # every release sorts above the last ('1.10' > '1.05' > '1.04' > '0.9'), so an upgrade is never read
+    # every release sorts above the last ('1.11' > '1.10' > '1.05' > '0.9'), so an upgrade is never read
     # as a downgrade -- and TWO DIGITS AFTER THE DOT is what keeps that true, because '1.4' sorts BELOW
     # '1.03'.
-    ('Version', '1.10'),
+    ('Version', '1.11'),
     # Stated minimum firmware, kept deliberately low: if the installer compares this
     # field as a STRING then "1.7.3c" sorts above "1.7.17a" and the app refuses to
     # install on the very unit it is developed on. "1.7.0" satisfies either compare.

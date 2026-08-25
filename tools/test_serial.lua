@@ -7894,8 +7894,18 @@ print('\nthe FIT and S/N cells are banded on the figure they print (real code)')
   -- figure printed beside it.
   check('FIT bands the rounded figure, so 0.8996 shows 0.90 and is green',
         fitcol(0.8996) == sdec.ui_c_sn_ok, tostring(fitcol(0.8996)))
-  check('...and S/N does the same, so 24.6 shows 25 dB and is green',
-        sncol(24.6) == sdec.ui_c_sn_ok, tostring(sncol(24.6)))
+  -- KEYED ON THE CONSTANT, NOT ON A LITERAL. A fixture that named 24.6 and 'green' silently became a
+  -- test of the wrong band the moment ui_sn_good moved, and it is the rounding that is under test here,
+  -- not the threshold: 0.4 below the boundary prints AS the boundary, so it must take the boundary's
+  -- colour. Both directions, or a cell that rounded the wrong way would pass one of them.
+  check('...and S/N does the same: 0.4 under ui_sn_good prints as it and is green',
+        sncol(sdec.ui_sn_good - 0.4) == sdec.ui_c_sn_ok,
+        string.format('%.1f dB -> %s', sdec.ui_sn_good - 0.4,
+                      tostring(sncol(sdec.ui_sn_good - 0.4))))
+  check('...and 0.6 under it prints one dB lower and is amber',
+        sncol(sdec.ui_sn_good - 0.6) == sdec.ui_c_sn_warn,
+        string.format('%.1f dB -> %s', sdec.ui_sn_good - 0.6,
+                      tostring(sncol(sdec.ui_sn_good - 0.6))))
 
   check('S/N 41 dB is green, 18 amber, 9 red',
         sncol(41) == sdec.ui_c_sn_ok and sncol(18) == sdec.ui_c_sn_warn and
@@ -7907,12 +7917,24 @@ print('\nthe FIT and S/N cells are banded on the figure they print (real code)')
         sncol(sdec.ui_sn_bad) == sdec.ui_c_sn_warn and
         sncol(sdec.ui_sn_bad - 1) == sdec.ui_c_sn_bad)
   check('S/N nil keeps the column colour', sncol(nil) == sdec.ui_fields[sdec.ui_snfield].c)
-  -- The cliff the amber band exists to warn about: the decoder tolerates noise to ~40 % of the swing,
-  -- and 20*log10(1/0.4) is 8 dB, so ui_sn_bad must sit above it.
-  check('ui_sn_bad leaves margin over the ~8 dB decode cliff',
-        sdec.ui_sn_bad > 20 * (math.log(1 / 0.4) / math.log(10)),
-        string.format('ui_sn_bad=%s cliff=%.1f', tostring(sdec.ui_sn_bad),
-                      20 * (math.log(1 / 0.4) / math.log(10))))
+  -- THE CLIFF IS 12 dB, MEASURED, and red exists to appear BEFORE it: swept at 9600 Bd over 12 capture
+  -- phases per point, the decode is byte-exact 12/12 down to 12.5 dB -- noise at 45 % of the swing --
+  -- and sig_levels refuses 12/12 at 50 %. So ui_sn_bad has to sit strictly above 12, or red only ever
+  -- appears on captures that were about to refuse anyway and warns nobody.
+  --
+  -- NOT DERIVED FROM THE 40 % NOISE TOLERANCE. That is a PEAK figure and snr_db is an RMS one, so
+  -- 20*log10(1/0.4) = 8 dB compares the wrong quantities; the rms equivalent is 20*log10(sqrt(3)/0.4).
+  local SN_CLIFF_DB = 12
+  check('ui_sn_bad warns above the measured decode cliff rather than at it',
+        sdec.ui_sn_bad > SN_CLIFF_DB,
+        string.format('ui_sn_bad=%s cliff=%d, rms equivalent of 40%% peak=%.1f',
+                      tostring(sdec.ui_sn_bad), SN_CLIFF_DB,
+                      20 * (math.log(math.sqrt(3) / 0.4) / math.log(10))))
+  -- AND THE GREEN EDGE IS NOT SO HIGH THAT ORDINARY WIRING CANNOT REACH IT. 30 dB is noise at 5.5 % of
+  -- the swing; the offline generator with no noise asked for reaches the '>99 dB' clamp, so this bound
+  -- is about the claim being meetable on a bench rather than about the arithmetic.
+  check('the S/N bands are ordered and both sit inside what the cell can print',
+        sdec.ui_sn_bad < sdec.ui_sn_good and sdec.ui_sn_good < 99)
 
   -- The field indices must point at the cells whose labels they claim, or every band above is testing
   -- the wrong column.

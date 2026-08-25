@@ -3,7 +3,7 @@ loadscript Serial_Decode
 -- $Product: DMM6500, DAQ6510, DMM7510, SMU2461
 -- $Tag: Serial, UART, Decode, Digitize
 -- $Description: Decodes an asynchronous serial line with the instrument's own digitizer: recovers baud rate, frame format and bytes, shows them as text or hex, streams every byte to a USB key, and saves the capture. Everything auto-detects; everything can be locked down.
--- $Version: 1.10
+-- $Version: 1.11
 -- $Requires: 1.7.0
 -- $Author: Ian Ameline
 -- $License: MIT
@@ -429,6 +429,7 @@ end
 function sdec.clear_measured()
   sdec.acq_fs, sdec.acq_fs_est = nil, nil
   sdec.w, sdec.nw, sdec.wmed, sdec.wshort = nil, 0, nil, nil
+  sdec.snr_db, sdec.noise_v = nil, nil
   sdec.idle, sdec.idle_weak = nil, nil
   sdec.modal, sdec.run0, sdec.run1 = nil, nil, nil
   sdec.st0 = 1
@@ -438,6 +439,7 @@ end
 -- Returns ok, reason. Sets lo/hi/thr/hyst/swing/family, wlo/whi, modal, and the remembered
 -- lvl_thr/lvl_hyst/lvl_swing that serial_app saves and restores.
 function sdec.sig_levels(rd, n)
+  sdec.snr_db, sdec.noise_v = nil, nil
   local vmin, vmax, nv = nil, nil, 0
   local i
 
@@ -498,7 +500,50 @@ function sdec.sig_levels(rd, n)
                                 100 * modal)
   end
   sdec.lvl_thr, sdec.lvl_hyst, sdec.lvl_swing = sdec.thr, sdec.hyst, sdec.swing
+  sdec.sig_noise(rd, n)
   return true
+end
+
+sdec.noise_nsamp = 1000
+
+-- Signal-to-noise on the two logic levels, in dB. Sets sdec.snr_db and sdec.noise_v.
+--   [...]
+-- question, and being a fraction of the swing it scales down with it.
+-- RESIDUALS ABOUT EACH GROUP'S OWN MEAN, pooled. Measuring about thr instead would report half the
+-- swing as noise.
+function sdec.sig_noise(rd, n)
+  local floor, sqrt, log = math.floor, math.sqrt, math.log
+  sdec.snr_db, sdec.noise_v = nil, nil
+  if rd == nil or n == nil or n < 8 then return end
+  local thr, hy, sw = sdec.thr, sdec.hyst, sdec.swing
+  if thr == nil or hy == nil or sw == nil or sw <= 0 then return end
+  local step = floor(n / sdec.noise_nsamp)
+  if step < 1 then step = 1 end
+  local nlo, slo, qlo, nhi, shi, qhi = 0, 0, 0, 0, 0, 0
+  local i = 2
+  while i <= n - 1 do
+    local v = rd[i]
+    if v ~= nil then
+      local up = v > thr + hy
+      local dn = v < thr - hy
+      local a, b = rd[i - 1], rd[i + 1]
+      if up and a ~= nil and b ~= nil and a > thr + hy and b > thr + hy then
+        nhi = nhi + 1; shi = shi + v; qhi = qhi + v * v
+      elseif dn and a ~= nil and b ~= nil and a < thr - hy and b < thr - hy then
+        nlo = nlo + 1; slo = slo + v; qlo = qlo + v * v
+      end
+    end
+    i = i + step
+  end
+  local ss, k = 0, 0
+  if nlo > 1 then ss = ss + (qlo - slo * slo / nlo); k = k + nlo - 1 end
+  if nhi > 1 then ss = ss + (qhi - shi * shi / nhi); k = k + nhi - 1 end
+  if k < 1 then return end
+  if ss < 0 then ss = 0 end          -- rounding only, but a negative would kill the sqrt
+  local rms = sqrt(ss / k)
+  sdec.noise_v = rms
+  if rms < 1e-6 then rms = 1e-6 end
+  sdec.snr_db = 20 * (log(sw / rms) / log(10))
 end
 
 -- Wire-quality warning about the levels themselves, for the note line. Separate from
@@ -3279,7 +3324,8 @@ sdec.ui_fields = {
   {lab = 'RATE',   x = 490, c = 0xFFFFFF, wid = '80 kS/s'},
   {lab = 'BYTES',  x = 573, c = 0x80FF80, wid = '999999'},
   {lab = 'ERR',    x = 636, c = 0x80FF80, wid = '999'},
-  {lab = 'FIT',    x = 679, c = 0xB0B0B0, wid = '1.00'},
+  {lab = 'FIT',    x = 679, c = 0xFFFFFF, wid = '1.00'},
+  {lab = 'S/N',    x = 721, c = 0xFFFFFF, wid = '>99 dB'},
 }
 
 sdec.ui_adv_upper = 10       -- uppercase, measured 9.67 worst case
@@ -3291,9 +3337,19 @@ sdec.ui_c_locked  = 0x40FF40   -- green:  the operator pinned this
 sdec.ui_c_auto    = 0xFFC000   -- amber:  the app worked it out
 sdec.ui_c_unknown = 0xFF6060   -- red:    nothing to lock -- no decode
 sdec.ui_errfield  = 9
-sdec.ui_c_rule = 0x484848
+sdec.ui_snfield   = 11
+sdec.ui_fitfield  = 10
+sdec.ui_fit_good  = 0.90
+sdec.ui_fit_bad   = 0.72
+sdec.ui_sn_good   = 30       -- at or above: green
+sdec.ui_sn_bad    = 15       -- below: red. Between the two: amber
+sdec.ui_c_sn_ok   = 0x80FF80 -- green:  the same "all clear" green BYTES and ERR carry
+sdec.ui_c_sn_warn = 0xFFFF00 -- yellow: margin, but not much
+sdec.ui_c_sn_bad  = 0xFF6060 -- red:    the same red ERR goes when it has something to report
+sdec.ui_c_rule = 0x808080
 sdec.ui_c_hide = 0x000A0D
 sdec.ui_rule_top = 1
+sdec.ui_rule_hdr = 15
 sdec.ui_rule_mid = 35                        -- under the value ink (medium 16..32)
 sdec.ui_rule_bot = 51                        -- under the note row's ink (37..48)
 sdec.ui_rule_x0  = 4
@@ -3732,6 +3788,22 @@ function sdec.ui_field_colour(j)
     if n ~= nil and n > 0 then return sdec.ui_c_err end
     return fd.c
   end
+  if j == sdec.ui_fitfield then
+    local q = sdec.fitq
+    if q == nil then return fd.c end
+    q = math.floor(q * 100 + 0.5) / 100
+    if q < sdec.ui_fit_bad then return sdec.ui_c_sn_bad end
+    if q < sdec.ui_fit_good then return sdec.ui_c_sn_warn end
+    return sdec.ui_c_sn_ok
+  end
+  if j == sdec.ui_snfield then
+    local db = sdec.snr_db
+    if db == nil then return fd.c end
+    db = math.floor(db + 0.5)
+    if db < sdec.ui_sn_bad then return sdec.ui_c_sn_bad end
+    if db < sdec.ui_sn_good then return sdec.ui_c_sn_warn end
+    return sdec.ui_c_sn_ok
+  end
   return fd.c
 end
 
@@ -3787,7 +3859,18 @@ function sdec.ui_field_values()
     v[9] = tostring(sdec.ui_err_n())
   end
 
-  v[10] = string.format('%.2f', sdec.fitq or 0)
+  if sdec.fitq == nil then
+    v[10] = '--'
+  else
+    v[10] = string.format('%.2f', sdec.fitq)
+  end
+  if sdec.snr_db == nil then
+    v[11] = '--'
+  elseif sdec.snr_db >= 99 then
+    v[11] = '>99 dB'
+  else
+    v[11] = string.format('%.0f dB', sdec.snr_db)
+  end
   return v
 end
 
@@ -4164,11 +4247,12 @@ function sdec.ui_build()
   rule(sdec.ui_stat_div, sdec.ui_stat_top, 1, sdec.ui_stat_bot - sdec.ui_stat_top)
   rule(sdec.ui_trig_div, sdec.ui_stat_top, 1, sdec.ui_stat_bot - sdec.ui_stat_top)
   rule(sdec.ui_rule_x0, sdec.ui_rule_top, rw, 1)
+  rule(sdec.ui_rule_x0, sdec.ui_rule_hdr, rw, 1)
   rule(sdec.ui_rule_x0, sdec.ui_rule_mid, rw, 1)
   rule(sdec.ui_rule_x0, sdec.ui_rule_bot, rw, 1)
   rule(sdec.ui_rule_x0, sdec.ui_rule_top, 1, sdec.ui_rule_bot - sdec.ui_rule_top)
   rule(sdec.ui_rule_x1, sdec.ui_rule_top, 1, sdec.ui_rule_bot - sdec.ui_rule_top)
-  rule(sdec.ui_note_val_x - 9, sdec.ui_rule_mid, 1,
+  rule(sdec.ui_fields[2].x - 9, sdec.ui_rule_mid, 1,
        sdec.ui_rule_bot - sdec.ui_rule_mid)
 
   sdec.ui_vr = {}
@@ -4211,10 +4295,11 @@ function sdec.ui_build()
     end
     return h
   end
-  lockpart(lx + 2, sdec.ui_lab_y + 0, 5, 1)     -- shackle: top bar
-  lockpart(lx + 2, sdec.ui_lab_y + 1, 1, 4)     -- shackle: left post
-  lockpart(lx + 6, sdec.ui_lab_y + 1, 1, 4)     -- shackle: right post
-  sdec.ui_lockbody = lockpart(lx, sdec.ui_lab_y + 5, 9, 7)   -- body
+  local lock_y = sdec.ui_lab_y + 5
+  lockpart(lx + 2, lock_y + 0, 5, 1)     -- shackle: top bar
+  lockpart(lx + 2, lock_y + 1, 1, 4)     -- shackle: left post
+  lockpart(lx + 6, lock_y + 1, 1, 4)     -- shackle: right post
+  sdec.ui_lockbody = lockpart(lx, lock_y + 5, 9, 7)   -- body
   sdec.ui_trigsrc_t = create(sdec.ui_scr, display.OBJ_TEXT, sdec.ui_note_lab_x,
                              sdec.ui_note_y, sdec.ui_trigsrc.edge.name, sdec.ui_c_dim, small, left)
   sdec.ui_flab[nf + 1] = sdec.ui_trigsrc_t

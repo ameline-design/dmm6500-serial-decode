@@ -102,8 +102,8 @@ sdec.ui_fields = {
   {lab = 'BYTES',  x = 573, c = 0x80FF80, wid = '999999'},
   {lab = 'ERR',    x = 636, c = 0x80FF80, wid = '999'},
   {lab = 'FIT',    x = 679, c = 0xFFFFFF, wid = '1.00'},
-  -- S/N, so the value is UNSIGNED and bigger is better. The cliff is near 8 dB: the decoder tolerates
-  -- noise up to about 40 % of the swing, and 20*log10(1/0.4) is 8.
+  -- S/N, so the value is UNSIGNED and bigger is better. The cliff is at 12 dB, measured -- see
+  -- sdec.ui_sn_bad for the measurement and for the unit error that put it at 8.
   {lab = 'S/N',    x = 721, c = 0xFFFFFF, wid = '>99 dB'},
 }
 
@@ -140,9 +140,21 @@ sdec.ui_c_unknown = 0xFF6060   -- red:    nothing to lock -- no decode
 -- disagreeing about what colour an object is, and the loser never repaints -- a red error count
 -- painted in a non-error colour, with the error cache still saying red.
 sdec.ui_errfield  = 9
--- S/N is the third. Its thresholds are the point of the cell: the decoder tolerates noise up to
--- about 40 % of the swing, which is 20*log10(1/0.4) = 8 dB, so 12 dB is the last band with real
--- margin over the cliff and below it a capture is running on luck.
+-- S/N is the third, and its thresholds are the point of the cell.
+--
+-- 12 dB IS THE MEASURED CLIFF, not a margin above one. Swept offline at 9600 Bd over 12 capture
+-- phases per point, injecting uniform noise as a fraction of the swing: byte-exact 12/12 at every
+-- level down to 45 % of the swing, which reports 12.5 dB -- and at 50 % sig_levels REFUSES all
+-- twelve. So the band boundary sits one step above a refusal, and what lies past it is 'no clear
+-- logic levels' rather than a wrong answer.
+--
+-- THE SAME THREE dB FIGURES AT 3.3 V, 1.0 V AND 0.5 V of swing, to 0.1 dB. That is what justifies one
+-- pair of thresholds for every line the app will ever see: the tolerance is a fraction of the swing,
+-- so the dB at which it fails does not move with the swing.
+--
+-- THE 40 % NOISE TOLERANCE IS A PEAK FIGURE AND THIS CELL IS AN RMS ONE, so 20*log10(1/0.4) = 8 dB is
+-- not the cliff in these units and nothing should be derived that way. gen_serial's `noise` is the
+-- peak of a uniform draw, whose rms is 1/sqrt(3) of it; 40 % peak is 23 % rms, which is 12.7 dB.
 sdec.ui_snfield   = 11
 -- FIT bands. 0.90 is not a taste: it is sdec.autolock_fitq, the quality the app itself demands before
 -- it will pin a rate, so green means "good enough to autolock". 0.72 sits 10 % above a structural
@@ -153,8 +165,11 @@ sdec.ui_snfield   = 11
 sdec.ui_fitfield  = 10
 sdec.ui_fit_good  = 0.90
 sdec.ui_fit_bad   = 0.72
-sdec.ui_sn_good   = 25       -- at or above: green
-sdec.ui_sn_bad    = 12       -- below: red. Between the two: amber
+-- ABOVE THE MEASURED 12 dB CLIFF, NOT ON IT. Red has to mean "close to failing" rather than "failing",
+-- which is only useful if it appears while the capture is still byte-exact: 15 dB is noise at ~31 % of
+-- the swing, which decodes 12/12, and the cliff is at 45-50 %. Green at 30 dB is noise under ~5.5 %.
+sdec.ui_sn_good   = 30       -- at or above: green
+sdec.ui_sn_bad    = 15       -- below: red. Between the two: amber
 sdec.ui_c_sn_ok   = 0x80FF80 -- green:  the same "all clear" green BYTES and ERR carry
 sdec.ui_c_sn_warn = 0xFFFF00 -- yellow: margin, but not much
 sdec.ui_c_sn_bad  = 0xFF6060 -- red:    the same red ERR goes when it has something to report

@@ -79,6 +79,7 @@ def main():
     # not leave a receipt indistinguishable from a full one: the tree hash proves WHICH code passed, and
     # these counts prove WHAT it passed.
     ap.add_argument('--rates', type=int, default=0)
+    ap.add_argument('--levels', type=int, default=0)
     ap.add_argument('--stamp', default='')
     a = ap.parse_args()
 
@@ -87,7 +88,8 @@ def main():
         os.makedirs(os.path.dirname(RECEIPT), exist_ok=True)
         with open(RECEIPT, 'w') as f:
             json.dump({'tree': hx, 'files': n, 'iteration': a.iteration, 'cells': a.cells,
-                       'presses': a.presses, 'rates': a.rates, 'stamp': a.stamp},
+                       'presses': a.presses, 'rates': a.rates, 'levels': a.levels,
+                       'stamp': a.stamp},
                       f, indent=2, sort_keys=True)
             f.write('\n')
         print('smoke receipt written: tree %s over %d files' % (hx, n))
@@ -112,11 +114,12 @@ def main():
             print('uncommitted in those trees:\n%s' % changed)
         print('Re-run the gate:\n  python3 tools/bench_smoke.py')
         return 1
-    # rates via .get with a default, because a receipt written before the field existed has none and
-    # must still verify rather than crash -- the tree hash is what decides validity.
-    print('smoke receipt ok: tree %s, iteration %s, %s cells, %s presses, %s rate cases%s'
+    # rates and levels via .get with a default, because a receipt written before either field existed
+    # has none and must still verify rather than crash -- the tree hash is what decides validity.
+    print('smoke receipt ok: tree %s, iteration %s, %s cells, %s presses, %s rate cases, '
+          '%s levels%s'
           % (hx, r.get('iteration'), r.get('cells'), r.get('presses'), r.get('rates', 0),
-             (', ' + r['stamp']) if r.get('stamp') else ''))
+             r.get('levels', 0), (', ' + r['stamp']) if r.get('stamp') else ''))
     return 0
 
 

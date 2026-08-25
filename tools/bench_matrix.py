@@ -119,7 +119,21 @@ RATES = [300, 600, 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 250000]
 # The family names sig_family() gives. 1.6 V sits exactly ON its 1V8 boundary (hi >= 1.6), and the
 # measured high comes in at 1.59, so BOTH names are correct answers there -- the fallback '1.6Vpp'
 # states the swing, which is the honest thing to say about a level that is not a named family.
-LEVELS = [(5.0, ['5V TTL']), (3.3, ['3V3 CMOS']), (1.6, ['1V8 CMOS', '1.6Vpp'])]
+#
+# THE THREE LOW ENTRIES ARE THE CLAIMED FLOOR AND THE MARGIN UNDER IT. The docs claim 0.5 V to 8 V, so
+# 1.0 and 0.5 test the claim and 0.25 tests that it has room beneath it -- a floor with nothing below it
+# measured is a guess. Offline the app decodes byte-exact down to 0.12 V, which is what makes 0.25 a
+# reasonable thing to demand of the bench rather than a stunt.
+#
+# BELOW 1.6 V sig_family HAS NO NAME and falls through to its '%.1fVpp' fallback, so the expected
+# string IS the measured swing to one decimal -- and the analog path does not deliver the requested
+# swing exactly, so each entry accepts the neighbouring tenth on either side. Accepting a wider set
+# than that would stop the check being a check: at these levels the family cell is the only thing
+# asserting the app measured the swing it was given.
+LEVELS = [(5.0, ['5V TTL']), (3.3, ['3V3 CMOS']), (1.6, ['1V8 CMOS', '1.6Vpp']),
+          (1.0, ['0.9Vpp', '1.0Vpp', '1.1Vpp']),
+          (0.5, ['0.4Vpp', '0.5Vpp', '0.6Vpp']),
+          (0.25, ['0.2Vpp', '0.3Vpp'])]
 
 # THE LOREM SWEEP. SER_Lorem1kB_8N1 (v71) is a 1024-byte non-repeating payload rendered at 10 samples
 # per bit like every other clean vector, so replaying it at SRATE = baud * 10 gives any rate off ONE
@@ -176,15 +190,19 @@ function mx_point(unlock, tag)
   print('A fam ' .. tostring(sdec.family))
   print('A idle ' .. tostring(sdec.idle))
   print('A err ' .. tostring(sdec.lasterr))
+  -- sn AND nv TRAVEL WITH EVERY POINT, not just the levels suite. They are the app's own measurement
+  -- of the noise on the line it just decoded, so carrying them here is what makes a soak lap a
+  -- measurement of S/N against swing against outcome rather than three separate runs.
   print(string.format('M %s ok=%s t=%.3f baud=%s fmt=%s thr=%s ' ..
                       'fs=%s nf=%s ngood=%s nbad=%s fit=%s vmin=%s vmax=%s lo=%s hi=%s ' ..
-                      'head=%s ec=%s',
+                      'head=%s ec=%s sn=%s nv=%s',
                       tostring(tag), tostring(ok), t, tostring(sdec.baud), tostring(fmt),
                       tostring(sdec.thr),
                       tostring(sdec.acq_fs), tostring(r and r.nf), tostring(r and r.ngood),
                       tostring(r and r.nbad), tostring(sdec.fitq), tostring(sdec.vmin),
                       tostring(sdec.vmax), tostring(sdec.lo), tostring(sdec.hi),
-                      tostring(r and r.headsusp), tostring(eventlog.getcount())))
+                      tostring(r and r.headsusp), tostring(eventlog.getcount()),
+                      tostring(sdec.snr_db), tostring(sdec.noise_v)))
   -- EVENTS PER POINT, 4915 counted separately. The panel shows error-severity events whatever
   -- localnode.showevents says, so a non-zero count here is a popup the operator would have seen.
   local n4915, nother = 0, 0
@@ -458,14 +476,20 @@ def suite_rates(d, g, a, rows):
 
 
 def suite_levels(d, g, a, rows):
-    print('\n=== LEVELS -- v41 at three logic swings, LOGIC and THRESH checked ===')
+    """v41 at every swing in LEVELS. LOGIC, THRESH and the reported S/N.
+
+    THE SWING IS THE POINT, so the row carries the measured one and not the requested one: the analog
+    path between the generator and the digitiser is what decides it, and a stage that only ever
+    reported what it asked for could not tell a delivered 0.25 V from a delivered 0.4 V.
+    """
+    print('\n=== LEVELS -- v41 at %d logic swings, LOGIC / THRESH / S/N checked ===' % len(LEVELS))
     for swing, families in LEVELS:
         amp = amp_for(swing)
         g.select_arb(VN.arb('v41'), amp, _srate('v41', FORMAT_BAUD))
         g.output(True, ch=1)
         time.sleep(a.settle)
-        res, hexs, notes = press(d, '%.1fV' % swing)
-        ok, det = show('%.1f V swing (AMP %.2f)' % (swing, amp), res, hexs, notes,
+        res, hexs, notes = press(d, '%.2fV' % swing)
+        ok, det = show('%.2f V swing (AMP %.2f)' % (swing, amp), res, hexs, notes,
                        'want %s' % '/'.join(families))
         famok = res.get('fam') in families
         if not famok:
@@ -473,8 +497,17 @@ def suite_levels(d, g, a, rows):
         # The threshold must land near mid-swing, which is the whole basis of the decode.
         th = num(res, 'thr')
         throk = th is not None and abs(th - swing / 2.0) <= 0.25 * swing
-        rows.append(('level %.1fV' % swing, ok and famok and throk,
-                     '%s thr %s %s' % (res.get('fam'), fmt_num(res.get('thr'), '%.2f'), det)))
+        # THE MEASURED SWING AND S/N, REPORTED WHETHER OR NOT THEY GATE. A small swing that fails is
+        # only interesting beside the noise that was on it -- without the figure the row cannot
+        # distinguish "the app cannot read 0.25 V" from "this bench cannot deliver a clean 0.25 V".
+        lo, hi, sn = num(res, 'lo'), num(res, 'hi'), num(res, 'sn')
+        got = None if (lo is None or hi is None) else hi - lo
+        print('      measured swing %s V, S/N %s dB, noise %s V'
+              % (fmt_num(got, '%.3f'), fmt_num(sn, '%.1f'), fmt_num(num(res, 'nv'), '%.4f')))
+        rows.append(('level %.2fV' % swing, ok and famok and throk,
+                     '%s thr %s swing %s S/N %s %s'
+                     % (res.get('fam'), fmt_num(res.get('thr'), '%.2f'), fmt_num(got, '%.3f'),
+                        fmt_num(sn, '%.0f'), det)))
 
 
 def suite_lorem(d, g, a, rows):
@@ -1143,9 +1176,13 @@ def suite_plan(d, g, a, rows):
             # from the printed `order:` line and getting that wrong mislabels every cell silently.
             # The span is what a scope reads p-p; camp/cofst are what the generator was told.
             span_v = vspan(vid) * camp / _amp(vid)
+            # AND THE APP'S OWN S/N, for the same reason and one more: the swing is what the harness
+            # DROVE, while this is what the instrument RECEIVED. A cell that fails at a large swing and
+            # a poor S/N is a different finding from one that fails at a large swing and a clean one.
             rows.append(('plan %s@%s' % (vid, label), good,
-                         '%d Bd %s %.3f Vpp-signal (%.3f Vpp gen, ofst %+.3f) %s%s'
-                         % (baud, kind, span_v, camp, cofst, det,
+                         '%d Bd %s %.3f Vpp-signal (%.3f Vpp gen, ofst %+.3f) S/N %s %s%s'
+                         % (baud, kind, span_v, camp, cofst,
+                            fmt_num(num(res, 'sn'), '%.0f'), det,
                             ' [SILENTLY WRONG]' if silent else '')))
             if not good:
                 nbadcell += 1
@@ -1264,8 +1301,16 @@ def main():
     ap.add_argument('--keep-combine', action='store_true',
                     help='leave CH2 summed into CH1 as an impairment rather than clearing the merge')
     ap.add_argument('--shots', help='directory for a front-panel PNG per test point')
+    # THE WIRING IS A CONDITION, AND AN UNRECORDED CONDITION IS AN UNREPEATABLE RESULT. The S/N the
+    # app reports is a property of the whole path -- generator, leads, loop area, whatever is coupling
+    # into it -- so a run on 6 ft of unshielded lead draped over the mains cord and a run on matched
+    # RG316 differ in a way no field of the result mentions. This puts it in the log's own header.
+    ap.add_argument('--note', default='',
+                    help='free text describing the physical setup, printed in the header')
     a = ap.parse_args()
 
+    if a.note:
+        print('SETUP: %s' % a.note)
     if a.shots:
         SHOTS['dir'] = os.path.expanduser(a.shots)
         os.makedirs(SHOTS['dir'], exist_ok=True)
