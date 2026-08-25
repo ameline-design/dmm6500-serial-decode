@@ -45,15 +45,14 @@ exclusion is not cosmetic.** `sig_levels` decides idle polarity from the levels 
 window reaches ten bit times: `lo < -flatfloor and hi > flatfloor` means RS-232, which marks at its
 *negative* level. So a 0…6.6 V logic waveform shifted until its low is below −1 V and its high above
 +1 V is, to the app, correctly read as an inverted line — right rate, right format, self-consistent
-bytes matching nothing, one frame short. Measured over 150 laps before the constraint went in, **17.3 %
-of cells were placed that way and they accounted for 86.8 % of every offline failure**; the genuine
-rate was ~0.23 % against the 1.79 % the raw count showed, and the apparent "failures rise with swing"
-gradient was the same artifact, since a large span is simply what lets a shifted band clear 1 V on both
-sides. `sweep_plan` on a fresh plan went from 22–41 BAD a lap to 11.
+bytes matching nothing, one frame short. Unconstrained, **17.3 % of a lap's cells land in that window
+and they account for 86.8 % of all offline failures** — enough to put the true rate at ~0.23 % behind a
+measured 1.79 %, and enough to manufacture a "failures rise with swing" gradient, since a large span is
+what lets a shifted band clear 1 V on both sides.
 
 Only the straddling window is cut, and this matters: raising the lower bound instead also removes the
-legitimate wholly-negative region, ~57.5 % of the interval on some vectors, and offline had already
-shown an offset of −6.5 V passing where −3.6 V failed. `soakplan.py --selftest` asserts the span range,
+legitimate wholly-negative region, ~57.5 % of the interval on some vectors, where an offset of −6.5 V
+decodes while −3.6 V does not. `soakplan.py --selftest` asserts the span range,
 that the draw reaches both ends of it, that nothing clips, and that nothing straddles ground.
 `FLATFLOOR` is **read out of `tsp/serial_core.tsp`** rather than copied, so the constraint cannot drift
 away from the rule it exists to respect.

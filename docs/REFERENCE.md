@@ -17,7 +17,7 @@ as measurements of one machine until someone repeats them.
 **The figures split into two classes, and only one of them should transfer.** Anything descending from
 the **sample rate** — the rate ladder, the samples-per-bit table, the recording-length arithmetic — is
 timing, and a model at the same 1 MS/s inherits it unchanged. Anything descending from the **analog front
-end** is not: the **Tolerance envelope** below, **Levels and offsets**, the **marginal at 2400 Bd** and
+end** is not: the **Tolerance envelope** below, **Levels and offsets** and
 the **−2 V logic-low band** are all measurements of one acquisition board.
 
 **The repeating-pattern rate misfit belongs to neither class.** It is arbitration between two readings of
@@ -420,13 +420,47 @@ dB tracks the swing so closely, falling about 6 dB for every halving of it.
 better, because the generator's own output noise scales with its amplitude while the instrument's floor
 does not. The two effects cross somewhere around 3 V on this bench.
 
-**The figure is not comparable between FRAME mode and a recording.** A 32 kB recording of the same
-9600 Bd 3.3 V line reported **35 dB** where FRAME mode reads 80 dB, and the difference is the sample
-rate: recordings run at ~4.2 samples per bit against FRAME's 8.3, and the exclusion in `sig_noise`
-drops a fixed number of samples either side of a transition rather than a fixed fraction of a bit. At
-4 samples per bit that leaves surviving samples proportionally closer to the edges, and partial slew
-re-enters the residual. **35 dB is still green and still decoded**, but read `S/N` against other
-captures in the same mode, not across modes.
+**The figure is not comparable between FRAME mode and a recording, and the reason is not yet known.** A
+32 kB recording of the same 9600 Bd 3.3 V line reported **35 dB** where FRAME mode reads 80 dB. Both
+decoded byte-exact, so this is a reporting discrepancy rather than a decode one — but until it is
+explained, read `S/N` against other captures in the same mode and not across modes.
+
+Two causes are ruled out by measurement:
+
+* **Not the oversampling.** Swept from 4 to 32 samples per bit on a noiseless capture, the reported
+  figure is the 1 µV floor — **exactly zero measurement error** — at every oversampling, and it stays
+  there with the digitizer's aperture modelled from instantaneous to fully integrating. `sig_noise`'s
+  run gate excludes every partial sample at 4 samples per bit as completely as at 32.
+* **Not the window length against mains.** With 10 mV of 60 Hz hum injected, a 25 ms window — 1.5
+  cycles — reports 53.4 dB and an 8.5 s window reports 53.6: the same answer, and the correct one for
+  that hum's rms. A window shorter than a mains cycle sees hum as well as a long one does.
+
+The next candidate is the `lvl_*` threshold cache, which is a known history-dependence in the recording
+path specifically: a threshold or hysteresis carried over from a different capture would misplace the
+band the run gate uses.
+
+### The floor at 0.1 V is the app's own, not the noise
+
+Measured on the bench at **19 200 Bd 8N1, 0.1 V p-p**, threshold 0.06 V: it decodes, and reports
+**58 dB**. That implies a noise floor of **0.13 mV rms** — quieter still than the 0.2 mV at larger
+swings, because the generator contributes less noise at a smaller amplitude — and it leaves **46 dB of
+margin above the 12 dB cliff**. Nothing about the signal is marginal at 0.1 V.
+
+What refuses below it is `sdec.minswing` = **0.10 V**, a declared guard: `hi - lo < minswing` means the
+line is dead, and a dead line is refused rather than decoded. So 0.1 V p-p sits *exactly on* that
+boundary and which side it falls is decided by the trimmed histogram, not by the noise — the same 0.1 V
+measured 0.0996 V offline and refused, and measured a shade over on the bench and decoded.
+
+**The bracket is two generator settings wide.** At **400 mV** of generator amplitude the line is 0.1 V
+p-p and decodes; at **300 mV** it is 0.075 V and does not. Those two straddle the 0.10 V guard, and
+nothing else changed between them — so the transition from decoding to refusing happens at the declared
+floor rather than anywhere the noise could put it.
+
+**That is why the published floor stays at 0.33 V:** it is the smallest swing with margin against the
+*guard*, not against the noise, and the noise budget has three orders of magnitude in hand. Lowering the
+claim below 0.33 V is a change to `minswing`, not to this document — and whatever became the new limit
+would be the histogram's bin resolution or the threshold picker, since at 0.13 mV rms the 12 dB cliff
+does not arrive until about 0.5 mV of swing.
 
 ### Where the decode actually fails
 
@@ -500,10 +534,35 @@ cells**, each cell's swing drawn independently:
 | 6.5 … 8.0 V | 35 118 | 105 | 0.30 % |
 
 Flat within a factor of 1.5 and **not monotonic** — the middle bands are the best, and the spread is
-about two standard errors on the smallest bin. This is the measurement that retired an apparent
-"failures rise with the swing" gradient of 2.3 % → 37.3 % across the same bands: that gradient was the
-harness placing single-supply bands across ground, not the decoder minding large swings. See the
-vertical draw in [BENCH.md](BENCH.md).
+about two standard errors on the smallest bin. The swing is not an axis the failure rate depends on. Any
+apparent dependence is worth checking against the vertical draw in [BENCH.md](BENCH.md) first, since a
+band placed across ground is read as RS-232 and fails for a reason that has nothing to do with its size.
+
+### Where the failures are, by rate
+
+The same 100 laps, split by baud. Every standard rate is tested on all 41 waveforms every lap, so each
+row is **4 100 cells**:
+
+| standard rate | BAD of 4 100 cells |
+|---|---|
+| 300, 600, 1200, 1800, 2400, 4800, 7200, 9600, 14400, 19200, 28800 | **0** |
+| 31250 | 2 — 0.05 % |
+| 38400, 57600, 76800, 115200 | **0** |
+| 128000 | 1 — 0.02 % |
+| 153600 | **0** |
+| 172800 | 9 — 0.22 % |
+| 192000 | 61 — 1.49 % |
+| 230400 | 62 — 1.51 % |
+| 250000 | 21 — 0.51 % |
+
+**From 300 Bd to 153600 Bd that is 3 failing cells in 73 800 — 0.004 %.** Two are the LIN-break vector
+at 31250 Bd and one is a random 7E1 payload at 128000 Bd on a 0.491 V swing. **The four rates above
+153600 carry 153 of the 156 standard-rate failures.** Separately, 340 of the 496 failures in the run
+were at *drawn non-standard* rates rather than standard ones — the rate ladder's top end and the
+interstitial rates are where the difficulty is, not the range a device is likely to use.
+
+On hardware, a 1 kB non-repeating payload is byte-exact at all eleven of 300, 600, 1200, 2400, 4800,
+9600, 19200, 38400, 57600, 115200 and 250000 Bd, with no flagged bytes at any of them.
 
 **8 V is a generator ceiling, not a decoder one.** The LIN vectors render 0…6 V inside a 15 Vpp full
 scale, so 1.6× reaches 24 Vpp and clamps to the SDG's 20 Vpp — 6.0 × 20/15 = exactly 8.000 V. No
@@ -553,13 +612,6 @@ edges inside the start bit, which surfaces as rejected false starts rather than 
 ~55 operations per second a 110 Bd link spends a 10⁵-cycle contact rating in half an hour. The
 sample-rate ladder is not the obstacle — 1 kS/s is 9 samples/bit at 110 Bd — and no figure in this
 document is measured below 300 Bd.
-
-### A known marginal at 2400 Bd
-
-The 1 kB non-repeating payload at 2400 Bd (25 kS/s) has produced flagged bytes in every sweep run:
-1 flagged in two runs, 2 bad interior frames in a third. **The app flags them — it has never decoded
-that point silently wrong.** Whether the cause is the generator's arb playback at that rate or the
-decoder is not yet established; the offsets need checking for repeatability. Tracked, not fixed.
 
 ---
 
