@@ -125,6 +125,10 @@ function ds_setmode(m, v)
   print('DS setmode ' .. tostring(m) .. '/' .. tostring(v) .. ' ok=' .. tostring(ok))
   ds_state('setmode')
 end
+-- THE SENTINEL load_script WAITS FOR, at chunk scope so executing the chunk prints it. Without it the
+-- loader reads lines until its own timeout expires: 300 s of silence before the first shot, with no
+-- output at all to say what is happening. Every harness here that loads a helper script ends this way.
+print('===DONE===')
 '''
 
 

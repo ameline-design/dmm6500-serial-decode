@@ -120,7 +120,11 @@ sdec.ui_adv_upper = 10       -- uppercase, measured 9.67 worst case
 -- at a width of 112, 'Lock Detected' at 150, and 'Options' (7 chars) just fits at 112.
 sdec.ui_adv_btn = 14
 sdec.ui_adv_mixed = 8        -- digits and mixed-case, measured 7.80 worst case
-sdec.ui_c_lab  = 0x707070                    -- the label row
+-- THE LABEL ROW, at 66 %. Read off the instrument rather than off a render: 0x70 (44 %) is legible in
+-- a screen grab and hard to read on the LCD itself, which is a 5-inch panel seen from a bench away and
+-- under room light a grab does not model. The labels are static text an operator learns once, so they
+-- stay dimmer than the values they head -- but not so dim they have to be hunted for.
+sdec.ui_c_lab  = 0xA8A8A8                    -- the label row
 -- ---------- lock state ----------
 -- Which header fields are ASSERTED by the operator rather than measured. BAUD, FORMAT and IDLE
 -- are the three the options form can force; everything else in the table is a measurement and
@@ -176,7 +180,11 @@ sdec.ui_c_sn_bad  = 0xFF6060 -- red:    the same red ERR goes when it has someth
 -- Rules boxing the strip into a table. Thin OBJ_RECTs, created once and never
 -- touched again, so they cost nothing per refresh. A fill of 0 would paint NOTHING
 -- (the firmware reads it as "unset"), hence a near-black grey.
-sdec.ui_c_rule = 0x808080
+--
+-- 66 %, THE SAME AS THE LABELS, and for the same reason: on the LCD 0x80 rules read as barely-there
+-- smudges where a grab shows a clean grid. Matching ui_c_lab is deliberate -- the grid and the labels
+-- it separates are one piece of chrome, and two different greys there look like a rendering fault.
+sdec.ui_c_rule = 0xA8A8A8
 -- THE SCREEN BACKGROUND, for HIDING an object. It must not be 0: the firmware reads a fill of 0
 -- as "unset" and paints NOTHING, so setfill(h, 0) is a refused write rather than a black
 -- rectangle -- it climbs sdec.fillfails and leaves the object exactly as visible as before.

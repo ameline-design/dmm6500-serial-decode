@@ -326,7 +326,7 @@ silent, except where noted.
 | Low-pass filtering (poor probe, long cable) | RC up to **0.7 bit times** — a ~2.2 kHz filter at 9600 Bd |
 | Slow edges (open-drain pull-up) | rise up to ~40 % of a bit time — 42 µs at 9600 Bd, 3.5 µs at 115200 |
 | Impulse spikes / dropouts | usually costs bytes and raises errors; a spike confined to a *data* bit changes that byte undetectably |
-| Logic swing | **0.5 V to 8 V** two-level, and up to **9.3 V p-p** where the extra span is spikes — the limit is the swing, not the family |
+| Logic swing | **0.33 V to 8 V** two-level, and up to **9.3 V p-p** where the extra span is spikes — the limit is the swing, not the family |
 | DC offset | anything keeping both levels inside ±10 V |
 
 The UART framing cliff itself is 0.5/9.5 = 5.26 %; `ratemargin` = 0.04 is where the app starts
@@ -339,7 +339,7 @@ Byte-exact from −5 V to +5 V of offset with a 3.3 V swing, and across the same
 measured swing) or as a line with no transitions, depending on which test trips first. The useful
 floor is between the two.
 
-**The floor is 0.12 V, so 0.5 V carries four times the margin it needs.** Swept through the app's own
+**The floor is 0.12 V, so 0.33 V carries nearly three times the margin it needs.** Swept through the app's own
 `sig_levels`, `sig_edges`, `sig_idle` and `decode_from` at the rates it picks itself — 8 sub-bit
 phases × 9600 and 38400 Bd × four noise levels, a 236-byte payload riding a 2 V offset — every swing
 from **0.12 V to 9.30 V** decodes byte-exact at every noise level, 16 points of 16 each. 0.10 V
@@ -384,6 +384,49 @@ noise.
 **It is not derived from `wlo`/`whi`.** Those are histogram-quantised — `nb = floor(n/binocc)` capped at
 512 bins, ~23 mV per bin over 3.3 V — which would cap the reportable figure near 43 dB at a 3.3 V swing
 and 21 dB at 0.25 V, both well inside the range that matters.
+
+### What it reads on the bench
+
+Measured through the app's own Capture on a DMM6500, one waveform at 9600 Bd 8N1 played at seven
+swings, **and on two kinds of wiring**. The right-hand column is deliberately bad: a **6 ft unshielded
+silicone test lead wrapped three times around the instrument's own mains cord** for signal, against a
+**3 ft** ground lying on top of the instrument — unshielded, length-mismatched, and coupled to the
+mains on purpose, because matched shielded RG316 of equal lengths is not what anyone debugging a
+bit-banged UART actually has.
+
+| swing delivered | matched RG316 | unshielded, mains-coupled | cost |
+|---|---|---|---|
+| 5.007 V | 80 dB | 76 dB | −3.4 |
+| 3.302 V | 80 dB | 75 dB | −4.7 |
+| 1.599 V | 76 dB | 73 dB | −3.2 |
+| 1.000 V | 74 dB | 72 dB | −2.0 |
+| 0.500 V | 68 dB | 66 dB | −2.6 |
+| 0.330 V | 65 dB | 63 dB | −1.7 |
+| 0.250 V | 64 dB | 60 dB | −3.2 |
+
+**Every point decoded byte-exact on both, 7 of 7 either way**, and the swing the app measured was
+identical to the millivolt across the two — 5.007, 3.302, 1.599, 1.000, 0.500, 0.330, 0.250 V — so the
+wiring moved the noise and nothing else.
+
+**Deliberately awful wiring costs 2 to 5 dB.** That is the useful number: it is nowhere near the 15 dB
+amber threshold, let alone the 12 dB cliff, so on this bench the figure is dominated by the
+instrument's own front end rather than by the leads. Piling active electronics onto the same lead — a
+powered-on iPhone 14 Pro and two running HP calculators resting on it — moved nothing: 7 of 7 again, and
+59.6 to 79.8 dB against the 60.3 to 76.4 dB without them, which is inside the run-to-run spread. The measured noise is **0.2 mV to 0.5 mV rms** on
+good cable and 0.2 mV to 0.8 mV on bad, i.e. roughly constant in **volts** — which is why the reported
+dB tracks the swing so closely, falling about 6 dB for every halving of it.
+
+**A larger swing is not automatically quieter.** 3.302 V reads the same 80 dB as 5.007 V and sometimes
+better, because the generator's own output noise scales with its amplitude while the instrument's floor
+does not. The two effects cross somewhere around 3 V on this bench.
+
+**The figure is not comparable between FRAME mode and a recording.** A 32 kB recording of the same
+9600 Bd 3.3 V line reported **35 dB** where FRAME mode reads 80 dB, and the difference is the sample
+rate: recordings run at ~4.2 samples per bit against FRAME's 8.3, and the exclusion in `sig_noise`
+drops a fixed number of samples either side of a transition rather than a fixed fraction of a bit. At
+4 samples per bit that leaves surviving samples proportionally closer to the edges, and partial slew
+re-enters the residual. **35 dB is still green and still decoded**, but read `S/N` against other
+captures in the same mode, not across modes.
 
 ### Where the decode actually fails
 

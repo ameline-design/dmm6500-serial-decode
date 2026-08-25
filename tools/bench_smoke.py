@@ -161,7 +161,8 @@ def main():
         # code one: the swing floor is a published claim, so a failure here means either the claim or
         # the bench is wrong, and which one it is decides whether the fix is in tsp/ or in docs/.
         print('The levels stage failed and everything else passed. docs/REFERENCE.md and '
-              'docs/MANUAL.md claim 0.5 V to 8 V; read tools/../levels.log before changing either.')
+              'docs/MANUAL.md claim 0.33 V to 8 V; read levels.log in the output directory before '
+              'changing either.')
     if rc1 or rc2 or rc3 or rc4:
         print('SMOKE FAILED -- do not start a soak on this. Logs in %s' % a.out)
         print('Reproduce a failing cell offline:')

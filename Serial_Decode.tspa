@@ -3331,7 +3331,7 @@ sdec.ui_fields = {
 sdec.ui_adv_upper = 10       -- uppercase, measured 9.67 worst case
 sdec.ui_adv_btn = 14
 sdec.ui_adv_mixed = 8        -- digits and mixed-case, measured 7.80 worst case
-sdec.ui_c_lab  = 0x707070                    -- the label row
+sdec.ui_c_lab  = 0xA8A8A8                    -- the label row
 sdec.ui_lockfields = {baud = 1, fmt = 2, idle = 3}
 sdec.ui_c_locked  = 0x40FF40   -- green:  the operator pinned this
 sdec.ui_c_auto    = 0xFFC000   -- amber:  the app worked it out
@@ -3346,7 +3346,7 @@ sdec.ui_sn_bad    = 15       -- below: red. Between the two: amber
 sdec.ui_c_sn_ok   = 0x80FF80 -- green:  the same "all clear" green BYTES and ERR carry
 sdec.ui_c_sn_warn = 0xFFFF00 -- yellow: margin, but not much
 sdec.ui_c_sn_bad  = 0xFF6060 -- red:    the same red ERR goes when it has something to report
-sdec.ui_c_rule = 0x808080
+sdec.ui_c_rule = 0xA8A8A8
 sdec.ui_c_hide = 0x000A0D
 sdec.ui_rule_top = 1
 sdec.ui_rule_hdr = 15

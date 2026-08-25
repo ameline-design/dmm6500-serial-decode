@@ -133,6 +133,9 @@ RATES = [300, 600, 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 250000]
 LEVELS = [(5.0, ['5V TTL']), (3.3, ['3V3 CMOS']), (1.6, ['1V8 CMOS', '1.6Vpp']),
           (1.0, ['0.9Vpp', '1.0Vpp', '1.1Vpp']),
           (0.5, ['0.4Vpp', '0.5Vpp', '0.6Vpp']),
+          # THE PUBLISHED FLOOR ITSELF. 0.25 already passes below it, which is the margin, but a claimed
+          # limit should be a tested point rather than an interpolation between two tested ones.
+          (0.33, ['0.3Vpp', '0.4Vpp']),
           (0.25, ['0.2Vpp', '0.3Vpp'])]
 
 # THE LOREM SWEEP. SER_Lorem1kB_8N1 (v71) is a 1024-byte non-repeating payload rendered at 10 samples

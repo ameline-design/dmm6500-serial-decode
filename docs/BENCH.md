@@ -105,8 +105,8 @@ quarter-coverage expressible; a cell's wait is still keyed on its index in the *
 cell reached this way is the same cell the soak runs.
 
 Then two stages of about a minute each. **`levels`** plays one waveform at 5 V, 3.3 V, 1.6 V, 1.0 V,
-0.5 V and 0.25 V of logic swing and checks the `LOGIC` cell, that `THRESH` landed within a quarter of
-the swing of mid-swing, and the bytes — the published range is 0.5 V to 8 V, and the plan stage drives
+0.5 V, 0.33 V and 0.25 V of logic swing and checks the `LOGIC` cell, that `THRESH` landed within a quarter of
+the swing of mid-swing, and the bytes — the published range is 0.33 V to 8 V, and the plan stage drives
 its own *drawn* amplitude rather than the claimed floor, so nothing else in the gate tests it. **`rates`**
 runs eight wrong-lock cases from `bench_break`, which is the only stage where the lock CONTRADICTS the
 wire. `rates` goes last because it stubs `sdec.ua_badfrac` on the instrument, so a teardown that failed

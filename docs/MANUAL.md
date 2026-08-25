@@ -41,7 +41,7 @@ transceiver first, or you need to tap one side of the pair against ground.
 
 **A DC offset does not matter.** The app measures the two voltage levels on your line and puts its
 decision threshold between them, so it does not care where they sit — only that both fit inside
-±10 V. A 1.6 V swing sitting up at 6 V decodes fine. **The tested range is a 0.5 V swing to an 8 V
+±10 V. A 1.6 V swing sitting up at 6 V decodes fine. **The tested range is a 0.33 V swing to an 8 V
 swing**, and signals spanning 9.3 V peak-to-peak decode when the extra span is spikes on a smaller
 logic swing. A 60 mV swing is refused outright.
 
@@ -68,7 +68,7 @@ early**, so decide the size before you press — see **The TRIGGER key** below.
 
 ## The screen
 
-![Main screen, hex view — a 240-byte frame capture, 235 bytes decoded with no errors](img/panel-hex.png)
+![Main screen, hex view — a 240-byte frame capture: 239 bytes decoded, no errors, S/N 79 dB](img/panel-hex.png)
 
 Along the top are the things the app worked out about your line:
 
@@ -114,7 +114,7 @@ shows there is a limit and not a measurement.
 one is drawn red across its whole width — offset, hex and ASCII together — so damage is found by
 looking rather than by counting. Flagged bytes read as `?` in the ASCII gutter:
 
-![A capture that began mid-byte: the note names 15 bytes and ERR reads 15](img/panel-errors.png)
+![A capture that began mid-byte: the note names 5 bytes and ERR reads 5](img/panel-errors.png)
 
 That is a real 240B capture that began part way through a byte. **The note row names the cause** —
 `began mid-byte -- the first N bytes are misaligned.` — which is the difference between a puzzle and a
@@ -124,13 +124,12 @@ eight starts this way.
 
 **The note and `ERR` agree, and that is deliberate.** The note's number is how far the damage reaches:
 the last byte in the opening region the decoder could not frame, so "the first N" is literally true and
-nothing past N is being accused. `ERR` is then never less than N. Above, the note says 15 and `ERR` says
-15 — while only 11 of those bytes actually failed a check. The other four are the reason `ERR` counts
-the whole region: inside a misaligned head the bit boundaries are in the wrong places, so a frame there
-can satisfy its parity and stop bit by luck and still hand back a plausible wrong byte. `3`, `7`, `9`
-and `13` came out as `M`, `I`, `M` and `s` — perfectly ordinary characters, and wrong. **`ERR` counts
-bytes you cannot trust, not checks that failed**, because the silently wrong ones are the dangerous
-ones.
+nothing past N is being accused. `ERR` is then never less than N. Above, the note says 5 and `ERR` says
+5. `ERR` counts the whole region rather than only the frames that failed a check, because inside a
+misaligned head the bit boundaries are in the wrong places: a frame there can satisfy its parity and
+its stop bit by luck and still hand back a perfectly ordinary character that is the wrong byte.
+**`ERR` counts bytes you cannot trust, not checks that failed**, because the silently wrong ones are
+the dangerous ones.
 
 Two exclusions remain, and both keep `ERR` at 0 on good data. When no misaligned head is identified,
 the first three frames are ignored — a gapless line has no idle for the framer to anchor on, so it
@@ -164,7 +163,7 @@ During a recording the status row carries a live counter — `recording... 40 % 
 **View** switches the byte display to plain text, which is what you want for anything human-readable —
 and a row carrying a flagged byte is red here too:
 
-![Main screen, text view — the first five bytes misaligned, ERR agreeing at 5](img/panel-text.png)
+![Main screen, text view — one byte misaligned at the start, ERR agreeing at 1](img/panel-text.png)
 
 **The note row is the important one.** Warnings appear there — an ambiguous baud rate, a line that
 disagrees with the rate you locked, a recording that stopped early. If more than one applies it ends
@@ -204,9 +203,9 @@ if the panel seems to ignore you, wait rather than pressing again.
 
 ### Paging through a long capture
 
-![Page 4 of 35 of a finished 32 kB recording, hex view](img/panel-paged.png)
+![Page 3 of 35 of a finished 8 kB recording, hex view](img/panel-paged.png)
 
-A 32 kB recording is far more than one screen, so **Up** and **Dn** appear down the right-hand edge and
+A recording is far more than one screen, so **Up** and **Dn** appear down the right-hand edge and
 **page N of M** appears at the right of the note row — the two numbers in white, the words dimmed, so
 the count reads at a glance. The note beside it says which bytes are on screen and that the whole run
 is in the file, which is the thing you cannot otherwise tell from a screenful taken out of the middle:
@@ -222,9 +221,10 @@ the same figure as `ERR`**, not a second opinion about it.
 
 **The page count follows the view.** Press **View** on that same capture and it becomes 7 pages instead
 of 35, because a text row holds 80 characters and a hex row holds 16 bytes — 1200 bytes a page against
-240:
+240. Those two counts are for the 8 192-byte window above; a 32 768-byte one pages 137 and 28 the same
+way:
 
-![The same 32 kB capture in text view: page 2 of 7](img/panel-paged-text.png)
+![The same 8 kB capture in text view: page 6 of 7](img/panel-paged-text.png)
 
 Nothing about the capture changed; only how much of it fits on a screen. The byte range in the note row
 is the same, and so is the summary.
@@ -618,7 +618,7 @@ they just cannot log or Save.
 | What you see | What it means |
 |---|---|
 | `line is idle (no transitions)` | Nothing is crossing the threshold. Check your connection, and check the device is actually talking while you capture. |
-| `no clear logic levels` | Too much noise, or the swing is too small. 0.5 V works; 60 mV is refused outright. |
+| `no clear logic levels` | Too much noise, or the swing is too small. 0.33 V works on the bench, and 0.25 V did too; 60 mV is refused outright. |
 | Wrong rate reported | The traffic may be genuinely ambiguous (below). Lock the rate if you know it. |
 | Bytes wrong but `ERR 0`, with the rate locked | The device is not running at the rate you locked. The note row warns when the line disagrees by more than 4 %. |
 | A baud rate that is not a round number | It is reporting what it measured, because the measurement was not within 2 % of a standard rate. |
@@ -645,7 +645,7 @@ than quietly getting it wrong, except where noted.
 | Jitter | **±15 %** of a bit; past ±20 % it can fail quietly |
 | Noise | about **40 %** of the logic swing — roughly 1.3 V on a 3.3 V line |
 | Slow edges, long cables, weak pull-ups | filtering up to **0.7 bit times** |
-| Logic swing | **0.5 V to 8 V** — the limit is the swing, not the logic family |
+| Logic swing | **0.33 V to 8 V** — the limit is the swing, not the logic family |
 | DC offset, logic low at or above 0 V | anything that keeps the line inside ±10 V |
 | DC offset, logic low **below** 0 V | works, but see the note below — one band is not reliable |
 
