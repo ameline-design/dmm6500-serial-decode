@@ -326,7 +326,7 @@ silent, except where noted.
 | Low-pass filtering (poor probe, long cable) | RC up to **0.7 bit times** — a ~2.2 kHz filter at 9600 Bd |
 | Slow edges (open-drain pull-up) | rise up to ~40 % of a bit time — 42 µs at 9600 Bd, 3.5 µs at 115200 |
 | Impulse spikes / dropouts | usually costs bytes and raises errors; a spike confined to a *data* bit changes that byte undetectably |
-| Logic swing | **1.6 V** to 5 V TTL — the limit is the swing, not the family |
+| Logic swing | **0.5 V to 8 V** two-level, and up to **9.3 V p-p** where the extra span is spikes — the limit is the swing, not the family |
 | DC offset | anything keeping both levels inside ±10 V |
 
 The UART framing cliff itself is 0.5/9.5 = 5.26 %; `ratemargin` = 0.04 is where the app starts
@@ -339,13 +339,47 @@ Byte-exact from −5 V to +5 V of offset with a 3.3 V swing, and across the same
 measured swing) or as a line with no transitions, depending on which test trips first. The useful
 floor is between the two.
 
+**The floor is 0.12 V, so 0.5 V carries four times the margin it needs.** Swept through the app's own
+`sig_levels`, `sig_edges`, `sig_idle` and `decode_from` at the rates it picks itself — 8 sub-bit
+phases × 9600 and 38400 Bd × four noise levels, a 236-byte payload riding a 2 V offset — every swing
+from **0.12 V to 9.30 V** decodes byte-exact at every noise level, 16 points of 16 each. 0.10 V
+refuses: it sits exactly on `minswing` and the trimmed histogram measures 0.0996 V, just under. A
+60 mV swing refuses at every noise level, and the swing it *reports* grows with the noise, 0.06 V to
+0.16 V at 50 mV peak, because peak-to-peak rises while the logic swing does not. **The 0.5 V end of
+the range above is this offline measurement; the bench confirmation is outstanding.**
+
+**The noise budget is a fraction of the swing, not a voltage.** The generator's `noise` is a peak
+amplitude in volts, so the same 50 mV is 1.5 % of a 3.3 V swing and 10 % of a 0.5 V one. A small
+swing does not fail because it is small; it fails when the noise on it reaches the ~40 % above.
+
+**The swing is a swept axis.** Every plan cell draws its own amplitude and
+DC offset, scaling the vector's own rendered span by 0.5…1.6 and then placing the offset wherever
+keeps both levels inside ±9.5 V. One 1677-cell hardware lap drove **1.652 V to 9.300 V p-p** and
+1634 cells decoded byte-exact. The largest **two-level** swing that decoded is **8.000 V**, on the
+LIN vectors at 2400, 9600, 38400 and 76800 Bd; the largest span of any kind is **9.300 V p-p**, on
+the impulse-spike vector, whose ±3 V transients ride a 3.3 V logic swing.
+
+**8 V is a generator ceiling, not a decoder one.** The LIN vectors render 0…6 V inside a 15 Vpp full
+scale, so 1.6× reaches 24 Vpp and clamps to the SDG's 20 Vpp — 6.0 × 20/15 = exactly 8.000 V. No
+clean two-level vector can be driven past it by amplitude alone, and nothing in the decoder objects
+at 8 V.
+
+**Failure rate does not track the swing.** Per band over that lap, in V p-p: 1.6–2.5 1.9 % of 324
+cells, 2.5–4.0 2.3 % of 659, 4.0–5.0 2.3 % of 427, 5.0–6.5 5.1 % of 156, 6.5–8.0 3.8 % of 79,
+8.0–9.3 3.1 % of 32. The peak is mid-range rather than at either end, and the 5.0–6.5 band's eight
+failures are the LIN and periodic-payload vectors, which sit at those swings by construction and fail
+on **rate**, not on level. Reading a swing effect off these bands needs the vector held constant:
+only six of the 41 can be driven past 6.6 V p-p at all, and every one of them is an impairment
+waveform.
+
 ---
 
 ## Rates verified on hardware
 
 **43 matrix points and 19 non-standard rates**, byte-exact, with no instrument event logged: six
-frame formats, the standard ladder 300 – 250 000 Bd, a 1 kB non-repeating payload, three logic swings
-and twelve DC offsets.
+frame formats, the standard ladder 300 – 250 000 Bd, a 1 kB non-repeating payload, three named logic
+swings and twelve DC offsets. The plan stage sweeps the swing continuously on top of that ladder —
+1.652 V to 9.300 V p-p across one 1677-cell lap.
 
 Non-standard rates matter because a device with an awkward crystal divisor does not sit on the
 standard ladder: 900, 1500, 2800, 3600, 7200, 12000 and 16000 Bd all decode byte-exact, as do

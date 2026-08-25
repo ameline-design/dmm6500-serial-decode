@@ -29,8 +29,9 @@ configured**. For most debugging that is the whole job — connect, press, read.
 ## Hooking it up — read this part
 
 **The line must stay between −10 V and +10 V.** The app fixes the meter on its 10 V range. 3.3 V
-CMOS and 5 V TTL are both fine as they are. For a 12 V line, put a 2:1 resistor divider in front of
-it — and if it is an open-drain bus, pick resistors big enough not to load it down.
+CMOS, 5 V TTL and a 6 V LIN line tapped to ground are all fine as they are. For a 12 V line, put a
+2:1 resistor divider in front of it — and if it is an open-drain bus, pick resistors big enough not
+to load it down.
 
 **Connect INPUT LO to the ground of the circuit you are probing.** Everything is measured at INPUT HI
 relative to INPUT LO, so without a shared ground the readings mean nothing.
@@ -40,8 +41,13 @@ transceiver first, or you need to tap one side of the pair against ground.
 
 **A DC offset does not matter.** The app measures the two voltage levels on your line and puts its
 decision threshold between them, so it does not care where they sit — only that both fit inside
-±10 V. A 1.6 V swing sitting up at 6 V decodes fine. **1.6 V is the smallest swing tested.** A 60 mV
-swing is refused outright.
+±10 V. A 1.6 V swing sitting up at 6 V decodes fine. **The tested range is a 0.5 V swing to an 8 V
+swing**, and signals spanning 9.3 V peak-to-peak decode when the extra span is spikes on a smaller
+logic swing. A 60 mV swing is refused outright.
+
+**A small swing needs a quiet line, not a special setting.** The noise the app tolerates is a
+fraction of your swing, around 40 %, so 50 mV of noise is nothing on a 3.3 V line and a tenth of the
+budget on a 0.5 V one.
 
 ---
 
@@ -588,7 +594,7 @@ they just cannot log or Save.
 | What you see | What it means |
 |---|---|
 | `line is idle (no transitions)` | Nothing is crossing the threshold. Check your connection, and check the device is actually talking while you capture. |
-| `no clear logic levels` | Too much noise, or the swing is too small. 1.6 V works; 60 mV is refused outright. |
+| `no clear logic levels` | Too much noise, or the swing is too small. 0.5 V works; 60 mV is refused outright. |
 | Wrong rate reported | The traffic may be genuinely ambiguous (below). Lock the rate if you know it. |
 | Bytes wrong but `ERR 0`, with the rate locked | The device is not running at the rate you locked. The note row warns when the line disagrees by more than 4 %. |
 | A baud rate that is not a round number | It is reporting what it measured, because the measurement was not within 2 % of a standard rate. |
@@ -615,7 +621,7 @@ than quietly getting it wrong, except where noted.
 | Jitter | **±15 %** of a bit; past ±20 % it can fail quietly |
 | Noise | about **40 %** of the logic swing — roughly 1.3 V on a 3.3 V line |
 | Slow edges, long cables, weak pull-ups | filtering up to **0.7 bit times** |
-| Logic swing | **1.6 V** up to 5 V TTL |
+| Logic swing | **0.5 V to 8 V** — the limit is the swing, not the logic family |
 | DC offset, logic low at or above 0 V | anything that keeps the line inside ±10 V |
 | DC offset, logic low **below** 0 V | works, but see the note below — one band is not reliable |
 
