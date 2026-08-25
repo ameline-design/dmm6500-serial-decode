@@ -170,7 +170,7 @@ disagrees with the rate you locked, a recording that stopped early. If more than
 with `(+2 more)`, and pressing **Save** writes all of them to a file.
 
 Here it is doing that — a capture that started part way through a byte, which the app detected and
-said so rather than showing two wrong bytes without comment:
+said so rather than showing the misaligned bytes without comment — four of them, here:
 
 ![The note row reporting a mid-byte start](img/panel-hex-note.png)
 
@@ -190,7 +190,7 @@ away.
 | **NewLog** | Start a new numbered log file on the USB key. |
 | **Save** | Write a full report of what is on screen to the USB key. |
 | **Options** | The settings screen. |
-| **Up** / **Dn** | Right-hand edge. Only appear when there is more than one page. Once you press either, **page N of M** appears at the right of the note row. |
+| **Up** / **Dn** | Right-hand edge. Only appear when there is more than one page. Once you press either, **page N of M** appears at the right of the note row — and stays for later captures, which is why some figures here show it on a screen nobody has just paged. |
 | **Lock Rate** | Right-hand edge. Only appears when the rate is not locked. |
 
 Every button responds immediately except the ones that take a capture. **Capture takes about 1.7
@@ -203,28 +203,29 @@ if the panel seems to ignore you, wait rather than pressing again.
 
 ### Paging through a long capture
 
-![Page 3 of 35 of a finished 8 kB recording, hex view](img/panel-paged.png)
+![Page 4 of 35 of a finished 32 kB recording, hex view](img/panel-paged.png)
 
 A recording is far more than one screen, so **Up** and **Dn** appear down the right-hand edge and
 **page N of M** appears at the right of the note row — the two numbers in white, the words dimmed, so
 the count reads at a glance. The note beside it says which bytes are on screen and that the whole run
 is in the file, which is the thing you cannot otherwise tell from a screenful taken out of the middle:
 
-    panel shows bytes 24577-32768 of 32768; all are in bytes340.txt
-
-In the figure that note is abbreviated, ending `(+1 more)`: this run also began mid-byte, and two notes
-do not fit one row. **Save** writes both out in full.
+    panel shows bytes 24577-32768 of 32768; all are in bytes569.txt
 
 The offset column agrees with it — the rows start at 25296, not at zero — and the status row carries the
-run's own summary: 32768 bytes, 6 it cannot vouch for, 68 windows, and the file it went to. **That 6 is
+run's own summary: 32768 bytes, 1 it cannot vouch for, 68 windows, and the file it went to. **That 1 is
 the same figure as `ERR`**, not a second opinion about it.
+
+**You page through the tail, not the whole run.** The panel keeps the last **8 192 bytes** of a
+recording however long the run was; the file keeps all of it. That is why this 32 768-byte capture
+shows bytes 24577-32768 and pages 35, not 137 — and why the count is the same in either recording
+mode, since 8 kB is its own tail.
 
 **The page count follows the view.** Press **View** on that same capture and it becomes 7 pages instead
 of 35, because a text row holds 80 characters and a hex row holds 16 bytes — 1200 bytes a page against
-240. Those two counts are for the 8 192-byte window above; a 32 768-byte one pages 137 and 28 the same
-way:
+240, over the same 8 192:
 
-![The same 8 kB capture in text view: page 6 of 7](img/panel-paged-text.png)
+![The same 32 kB capture in text view: page 7 of 7](img/panel-paged-text.png)
 
 Nothing about the capture changed; only how much of it fits on a screen. The byte range in the note row
 is the same, and so is the summary.
@@ -299,13 +300,14 @@ Press **Mode** until the cell reads `8 kB` or `32 kB`. **You must lock the baud 
 whole job: it records, decodes every byte, writes them to the USB key, and comes back with the tail on
 screen. There is nothing to press in the middle.
 
-![An 8 kB recording, part way through its decode](img/panel-recording.png)
+![An 8 kB recording at 98 % of its buffer, still acquiring](img/panel-recording.png)
 
 While it works, the counter on the status row moves — first `recording... N % of the buffer`, then
 `decoding... N/8192 bytes` — with a cyan progress bar beside it, and the cell to its right says
-whether anything can stop it. The screenshot above is a real 8 kB run caught at 7772 of 8192 bytes
-decoded; the dump area is blank because nothing has been shown yet, and the note row is empty because
-there is nothing wrong. **There is no way to finish it early** — see the section on the TRIGGER key
+whether anything can stop it. The screenshot above is a real 8 kB run caught in the first of those two
+phases, at 98 % of the buffer, with `no stop until it ends` in that cell; the top row reads `--` across
+because nothing has been decoded yet to describe, the dump area is blank for the same reason, and the
+note row is empty because there is nothing wrong. **There is no way to finish it early** — see the section on the TRIGGER key
 above for what bounds it instead.
 
 **When it finishes, the note row goes quiet.** The status row's summary — bytes, errors, window count

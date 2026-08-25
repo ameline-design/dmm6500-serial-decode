@@ -6,7 +6,7 @@ stops an expensive one.
 | gate | cost | needs | what it answers |
 |---|---|---|---|
 | `tools/release_sweep.py --offline` | ~1 min | nothing | can this code possibly work |
-| `tools/bench_smoke.py` | 11.4 min | both instruments | is the bench and the harness sound |
+| `tools/bench_smoke.py` | 12.8 min | both instruments | is the bench and the harness sound |
 | `tools/soak.py --suites formats,plan` | ~3.0 h a lap | both instruments | does it hold up over hours |
 
 Measured, not estimated: **6.5 s per cell**. A lap of 39 waveforms at 43 rates each is 1677 cells, so
@@ -323,3 +323,30 @@ instrument answered. A healthy run appends one every ~2.5 min.
 Do **not** use the child's CPU time as a liveness signal. The work is I/O bound at about 0.6 s of CPU
 an hour, and the child's pid changes at every lap boundary with its counter resetting to zero — so a
 monotonic check reports a stall at precisely the moment a lap completes.
+
+---
+
+## Regrabbing the manual's figures
+
+`tools/doc_shots.py` drives all nine panel screenshots in one pass and writes them into `docs/img`,
+which is version-controlled — so a bad grab replaces a shipped figure and the only way back is
+`git checkout`. Each shot therefore lands through a staging file renamed into place, and each is gated
+on three separate things:
+
+| check | asks | why it is not the others |
+|---|---|---|
+| `acted` | did the handler actually run | `ds_call` pcalls it and prints `ok=`. A refused press still leaves a screen to photograph. |
+| `decoded` | did the capture produce bytes | only the frame shots consult a capture *shape*; a recording that got nothing has none. |
+| `paged_ok` | is there really a page 2 | `ui_page` is 0-based, so `page 0 of 1` passes any check that only reads the count. |
+
+A grab succeeding says the screen was read — not that anything was on it, and not that the press did
+anything. `--selftest` runs all three against nine recorded field sets with no instrument attached.
+`--only NAME[,NAME]` regrabs a subset, and `--retries` bounds the stochastic shapes: a mid-byte start
+is about one capture in eight, so the head shots retry.
+
+**A recording shot needs a locked rate**, and clearing the lock is what makes the 32 kB shots come back
+empty. **Rewrite the captions from the new images rather than carrying them over** — a caption is a
+claim about a picture, and a stale one survives because nobody re-reads the figure. The trap when
+writing them: the paged figures are 32 kB recordings showing their retained **8 192-byte tail**
+(`sdec.ck_keep`), so the page counts are the tail's arithmetic, not the run's, and neither the byte
+count nor the page count can be read off the other.
