@@ -135,11 +135,13 @@ MANIFEST = [
     # app store entry promising a protocol the build cannot decode is the same dead control
     # as an Options field offering it.
     ('Tag', 'Serial, UART, Decode, Digitize'),
+    # UNDER 240 CHARACTERS, which is what the display documentation gives as the ceiling for
+    # $Description: in the Apps Menu. verify_tspa measures it, because the overflow is the instrument's
+    # to handle and nothing here would otherwise notice a description that had grown past it.
     ('Description', 'Decodes an asynchronous serial line with the instrument\'s own '
                     'digitizer: recovers baud rate, frame format and bytes, shows '
-                    'them as text or hex, streams every byte to a USB key, and '
-                    'saves the capture. Everything auto-detects; everything can be '
-                    'locked down.'),
+                    'them as text or hex, and saves bytes to USB key. Everything '
+                    'auto-detects; everything can be locked.'),
     # MATCHES THE GIT TAG, and stays a plain dotted number. This string goes into a manifest an
     # instrument installer parses and whose compares cannot be assumed numeric, so the version must
     # never carry a pre-release suffix -- '1.0-beta' could fail a parse or sort anywhere. As STRINGS,

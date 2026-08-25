@@ -128,6 +128,14 @@ check('the manifest title is the script name, spaces for underscores',
       want_sname == tostring(sname),
       '$Title=' .. tostring(manifest.Title) .. ' -> ' .. want_sname
         .. '  loadscript=' .. tostring(sname))
+-- '$Description: A short description which will appear in the Apps Menu (< 240 characters)' -- the
+-- display documentation's own words. STRICTLY UNDER, not at: the doc says < 240, so 240 itself is out.
+-- What an over-long one does in the menu is the instrument's business and it is not going to say, which
+-- is exactly why the length is measured here instead of being trusted.
+local dlen = string.len(tostring(manifest.Description))
+check('the description fits the Apps Menu ceiling of 240 characters',
+      manifest.Description ~= nil and dlen < 240,
+      dlen .. ' characters')
 -- A stray 'endscript' or 'endimage' inside the TSP would truncate the archive silently.
 local stray = 0
 local i
