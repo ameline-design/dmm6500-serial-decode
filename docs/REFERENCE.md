@@ -420,6 +420,14 @@ dB tracks the swing so closely, falling about 6 dB for every halving of it.
 better, because the generator's own output noise scales with its amplitude while the instrument's floor
 does not. The two effects cross somewhere around 3 V on this bench.
 
+**Below that crossover the figure is reporting the meter, and the ~6 dB per halving of swing is the
+evidence.** Inference rather than measurement, but it follows from where the parts sit: the generator's
+amplitude control is a relay-switched resistor ladder *after* its DAC, so it attenuates that DAC's noise
+along with the signal — a generator-dominated figure would therefore stay roughly flat as the amplitude
+fell. Falling 6 dB per octave instead means the dominant noise is constant in **volts** and downstream of
+the attenuator, which is the instrument's own front end. That is also why deliberately bad cabling costs
+only a few dB: on this bench the leads are never the limit.
+
 **The figure is not comparable between FRAME mode and a recording, and the reason is not yet known.** A
 32 kB recording of the same 9600 Bd 3.3 V line reported **35 dB** where FRAME mode reads 80 dB. Both
 decoded byte-exact, so this is a reporting discrepancy rather than a decode one — but until it is
