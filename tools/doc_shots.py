@@ -167,6 +167,47 @@ def call(d, tag, fn, timeout=300):
     return read_state(d, timeout)
 
 
+def acted(fields):
+    """Did the handler actually run, rather than raising or declining? -> (bool, why).
+
+    ds_call prints `ok=` from its own pcall and read_state already collects it, so this is a check that
+    was available and unused. Without it a REFUSED action still gets photographed: a failed options()
+    grabs whatever screen was already up and files it as the options form, a failed mode_cycle files the
+    wrong mode, and a failed page_next files page 1 under a caption about paging. A grab succeeding says
+    the screen was read, not that the press did anything.
+    """
+    v = fields.get('ok')
+    if v is None:
+        return False, 'no ok= from the handler'
+    if v != 'true':
+        return False, 'handler declined or raised: ok=%s err=%s' % (v, fields.get('err'))
+    return True, ''
+
+
+def decoded(fields):
+    """Did this capture actually produce bytes? -> (bool, why).
+
+    EVERY SHOT GOES THROUGH THIS, and the recordings are the reason it exists separately from
+    shape_ok: only the frame shots consulted a shape, so a recording that captured NOTHING was
+    grabbed anyway, reported ok, and overwrote a good shipped image with a blank panel. A grab
+    succeeding says the screen was read, not that there was anything on it.
+    """
+    nf = num(fields, 'nf')
+    if nf is None:
+        return False, 'no capture: nf is nil'
+    if nf < 1:
+        return False, 'no bytes decoded: nf=%g' % nf
+    return True, ''
+
+
+def paged_ok(fields):
+    """Is this capture actually paged? -> (bool, why). A one-page capture cannot illustrate paging."""
+    npg = num(fields, 'npages')
+    if npg is None or npg < 2:
+        return False, 'not paged: npages=%s' % fields.get('npages')
+    return True, ''
+
+
 def shape_ok(want, fields):
     """Does this capture have the shape the caption needs? -> bool."""
     head, nf = num(fields, 'head'), num(fields, 'nf')
@@ -182,20 +223,73 @@ def shape_ok(want, fields):
 
 
 def grab(path, tries=3):
-    """One PNG. -> True if written. The LCD lags the handler's return, hence the settle."""
+    """One PNG, written via a staging file. -> True if written.
+
+    STAGED BECAUSE THE DESTINATION IS A SHIPPED IMAGE. Writing straight to docs/img means a grab that
+    reads a blank or wrong panel replaces a good figure in the manual, and the only way back is git.
+    The temporary lands beside the target so the rename cannot cross a filesystem.
+
+    The LCD lags the handler's return, hence the settle.
+    """
+    tmp = path + '.staging'
     time.sleep(0.35)
     for k in range(tries):
         try:
-            SS.capture(path)
+            SS.capture(tmp)
+            os.replace(tmp, path)
             return True
         except Exception as e:                                       # noqa: BLE001
             print('      grab failed (%d/%d): %s' % (k + 1, tries, e))
             time.sleep(1.0)
+    if os.path.exists(tmp):
+        os.remove(tmp)
     return False
+
+
+def selftest():
+    """The validity checks, against field sets recorded from real runs. No instrument. -> exit code.
+
+    THE CASES ARE THE ONES THAT HAPPENED, not invented ones: a `--only panel-paged` run with no locked
+    rate reported nf=nil and 'page 0 of 1', was grabbed anyway, counted ok, and overwrote a shipped
+    figure. Both checks below refuse it.
+    """
+    bad = 0
+    # The handler check, which is what makes a refused press unphotographable.
+    handlers = [({'ok': 'true'}, True, 'handler ran'),
+                ({'ok': 'false', 'err': 'nil'}, False, 'handler declined'),
+                ({}, False, 'no ok= reported at all')]
+    for fields, want, what in handlers:
+        got = acted(fields)[0]
+        if got != want:
+            bad += 1
+        print('  %-4s %-34s acted=%s' % ('ok' if got == want else 'BAD', what, got))
+    cases = [
+        # fields,                                     decoded, paged, what it was
+        ({'nf': 'nil', 'npages': '1'},                False, False, 'refused recording, no lock'),
+        ({'nf': '0', 'npages': '1'},                  False, False, 'captured nothing'),
+        ({'nf': '8192', 'npages': '35'},              True,  True,  'good 8 kB recording, hex'),
+        ({'nf': '8192', 'npages': '7'},               True,  True,  'the same, text view'),
+        ({'nf': '239', 'npages': '1'},                True,  False, 'a frame capture: decoded, unpaged'),
+        ({'nf': '239', 'npages': 'nil'},              True,  False, 'no page count reported'),
+    ]
+    for fields, want_dec, want_pg, what in cases:
+        got_dec = decoded(fields)[0]
+        got_pg = paged_ok(fields)[0]
+        ok = (got_dec == want_dec) and (got_pg == want_pg)
+        if not ok:
+            bad += 1
+        print('  %-4s %-34s decoded=%-5s paged=%-5s  %s'
+              % ('ok' if ok else 'BAD', what, got_dec, got_pg,
+                 '' if ok else '(wanted %s/%s)' % (want_dec, want_pg)))
+    n = len(handlers) + len(cases)
+    print('%d of %d case(s) wrong' % (bad, n) if bad else 'all %d cases hold' % n)
+    return 1 if bad else 0
 
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument('--selftest', action='store_true',
+                    help='check the validity rules against recorded field sets; no instrument')
     ap.add_argument('--out', default=IMGDIR)
     ap.add_argument('--only', help='comma-separated shot names')
     ap.add_argument('--budget-min', type=float, default=20.0)
@@ -204,6 +298,8 @@ def main():
                          'about one capture in eight)')
     ap.add_argument('--settle', type=float, default=0.6)
     a = ap.parse_args()
+    if a.selftest:
+        return selftest()
     os.makedirs(a.out, exist_ok=True)
 
     want = [s.strip() for s in a.only.split(',')] if a.only else [s[0] for s in SHOTS]
@@ -244,10 +340,17 @@ def main():
                 # NO CAPTURE. The form is reached from whatever is on screen, and it is grabbed and
                 # then CANCELLED rather than applied -- Apply ends in a capture (options_apply), so
                 # applying here would leave the next shot's state decided by this one.
-                call(d, 'options', 'sdec.options')
-                ok = grab(os.path.join(a.out, name + '.png'))
+                fields, _, _ = call(d, 'options', 'sdec.options')
+                aok, awhy = acted(fields)
+                ok = aok and grab(os.path.join(a.out, name + '.png'))
+                # CANCELLED WHATEVER HAPPENED, so a failed grab cannot leave the form open for the
+                # next shot. Apply is not used: options_apply ends in a capture.
                 call(d, 'options-cancel', 'sdec.options_cancel')
-                (got if ok else missed).append((name, 'grabbed' if ok else 'grab failed'))
+                if ok:
+                    got.append((name, 'grabbed'))
+                else:
+                    print('%-22s NOT WRITTEN -- %s' % (name, awhy or 'grab failed'))
+                    missed.append((name, awhy or 'grab failed'))
                 continue
 
             if mode == 'frame':
@@ -276,29 +379,77 @@ def main():
             # sent and the grab taken over the LXI interface without waiting for the reply -- the
             # screen grab does not travel on this socket, which is what makes that possible at all.
             if name == 'panel-recording':
+                # GRABBED BEFORE THE STATE IS KNOWN, unavoidably: the point of the shot is a run in
+                # progress. So it goes to a scratch path and is only promoted once the run that was
+                # being photographed is confirmed to have decoded something.
                 d.drain()
                 d.send('ds_call(%r, %s)' % (name, 'sdec.capture'))
                 time.sleep(min(12.0, COST_S[mode] / 3.0))
-                ok = grab(os.path.join(a.out, name + '.png'))
-                fields, note, _ = read_state(d, timeout=600)
-                print('      mid-run grab; the run then finished nf=%s' % fields.get('nf'))
-                (got if ok else missed).append((name, 'mid-run, nf=%s' % fields.get('nf')))
+                pending = os.path.join(a.out, name + '.pending.png')
+                # ITS OWN try/finally: read_state or the promotion below can raise, and the outer
+                # finally restores instrument state without knowing about this file.
+                try:
+                    ok = grab(pending)
+                    fields, note, _ = read_state(d, timeout=600)
+                    good, why = decoded(fields)
+                    if ok and good:
+                        os.replace(pending, os.path.join(a.out, name + '.png'))
+                        print('      mid-run grab; the run then finished nf=%s' % fields.get('nf'))
+                        got.append((name, 'mid-run, nf=%s' % fields.get('nf')))
+                    else:
+                        print('%-22s NOT WRITTEN -- %s' % (name, why or 'grab failed'))
+                        missed.append((name, why or 'grab failed'))
+                finally:
+                    if os.path.exists(pending):
+                        os.remove(pending)
                 continue
 
             fields, note, _ = call(d, name, 'sdec.capture', timeout=600)
+            # THE RECORDING HAS TO HAVE PRODUCED BYTES before its screen is worth photographing. A
+            # 32 kB mode refuses outright without a locked rate, and the refusal looks like a normal
+            # empty panel in a grab.
+            good, why = decoded(fields)
+            if not good:
+                print('%-22s NOT WRITTEN -- %s' % (name, why))
+                missed.append((name, why))
+                continue
             if name == 'panel-after-recording':
                 # ONE Mode PRESS, which is what the caption says: it lines up the next recording and
                 # is the state an operator is actually left looking at.
                 fields, note, _ = call(d, name + '-mode', 'sdec.mode_cycle')
-                ok = grab(os.path.join(a.out, name + '.png'))
-                (got if ok else missed).append((name, 'capmode now %s' % fields.get('capmode')))
+                aok, awhy = acted(fields)
+                ok = aok and grab(os.path.join(a.out, name + '.png'))
+                if ok:
+                    got.append((name, 'capmode now %s' % fields.get('capmode')))
+                else:
+                    print('%-22s NOT WRITTEN -- %s' % (name, awhy or 'grab failed'))
+                    missed.append((name, awhy or 'grab failed'))
                 continue
 
             # PAGED IN, not page 1: the caption is about the page indicator, and page 1 of n does not
             # show that paging happened. Three presses in, or as far as the capture allows.
+            pok, pwhy = paged_ok(fields)
+            if not pok:
+                # A CAPTION ABOUT PAGING NEEDS MORE THAN ONE PAGE. Page 1 of 1 shows no page controls
+                # at all, so the figure would contradict the text it illustrates.
+                print('%-22s NOT WRITTEN -- %s' % (name, pwhy))
+                missed.append((name, pwhy))
+                continue
             npg = num(fields, 'npages') or 1
+            aok, awhy = True, ''
             for _ in range(min(3, int(npg) - 1)):
                 fields, note, _ = call(d, name + '-page', 'sdec.page_next')
+                aok, awhy = acted(fields)
+                if not aok:
+                    break
+            # PAGE MOVED, not merely pressed. ui_page is 0-based, so a shot captioned as paged in has
+            # to be past 0 -- otherwise the figure shows page 1 under text about paging.
+            if aok and (num(fields, 'page') or 0) < 1:
+                aok, awhy = False, 'paging did not move: page=%s' % fields.get('page')
+            if not aok:
+                print('%-22s NOT WRITTEN -- %s' % (name, awhy))
+                missed.append((name, awhy))
+                continue
             ok = grab(os.path.join(a.out, name + '.png'))
             print('      page %s of %s, nf=%s' % (fields.get('page'), fields.get('npages'),
                                                   fields.get('nf')))

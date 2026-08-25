@@ -7935,6 +7935,15 @@ print('\nthe FIT and S/N cells are banded on the figure they print (real code)')
   -- is about the claim being meetable on a bench rather than about the arithmetic.
   check('the S/N bands are ordered and both sit inside what the cell can print',
         sdec.ui_sn_bad < sdec.ui_sn_good and sdec.ui_sn_good < 99)
+  -- THE VALUES THEMSELVES, PINNED. The bounds above admit pairs that contradict the measurement they
+  -- came from -- 13/25 satisfies every one of them while putting red barely off the cliff and green
+  -- below the noise level ordinary wiring reaches. These two figures are a decision: red at 15 dB is
+  -- noise at ~31 % of the swing, which still decodes 12/12, and green at 30 dB is noise under ~5.5 %.
+  -- Bench: matched cable reads 60-80 dB, and 6 ft of unshielded lead wrapped round the mains cord
+  -- costs 2-5 dB, so green is reachable and amber means something. Moving either must be deliberate.
+  check('the S/N band edges are the measured pair, 15 dB and 30 dB',
+        sdec.ui_sn_bad == 15 and sdec.ui_sn_good == 30,
+        string.format('bad=%s good=%s', tostring(sdec.ui_sn_bad), tostring(sdec.ui_sn_good)))
 
   -- The field indices must point at the cells whose labels they claim, or every band above is testing
   -- the wrong column.
