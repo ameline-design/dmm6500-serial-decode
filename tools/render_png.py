@@ -215,7 +215,13 @@ def draw_panel(rows, screen, title, out, scale, mono_rows, fonts):
                 xl = r['x'] - wpx
             elif r['just'] == 1:                   # display.JUST_CENTER
                 xl = r['x'] - wpx / 2
-            d.text((xl * S, y), r['text'], font=f, fill=rgb(r['color']))
+            # THE OBJECT'S y IS THE INK BOTTOM, NOT THE TOP OF THE BOX. serial_ui documents the
+            # band as [y - ui_ink + 1, y] and test_serial asserts it, but PIL's default anchor treats
+            # y as the top -- so every string landed about one ink height low. Measured: the top
+            # table's value row was drawn BELOW the mid rule at y=35 instead of inside the 16..32
+            # band above it, which made the column separators look like they covered only the labels
+            # and sent a real UI review chasing lines that were already there.
+            d.text((xl * S, y), r['text'], font=f, fill=rgb(r['color']), anchor='ls')
             if xl + wpx > 798:
                 overflow.append((r['text'][:46], round(xl + wpx), 'past 798 px'))
             # AND AGAINST THE RIGHT-MARGIN BUTTONS, not just the panel edge. A dump row that runs
@@ -298,6 +304,12 @@ def cmd_panel(args):
     jobs = [
         ('docs/mockup-objects-text.tsv', MAIN, 'mockup-main-text', False),
         ('docs/mockup-objects-hex.tsv', MAIN, 'mockup-main-hex', True),
+        ('docs/mockup-objects-fit-green.tsv', MAIN, 'mockup-fit-green', False),
+        ('docs/mockup-objects-fit-amber.tsv', MAIN, 'mockup-fit-amber', False),
+        ('docs/mockup-objects-fit-red.tsv', MAIN, 'mockup-fit-red', False),
+        ('docs/mockup-objects-sn-green.tsv', MAIN, 'mockup-sn-green', False),
+        ('docs/mockup-objects-sn-amber.tsv', MAIN, 'mockup-sn-amber', False),
+        ('docs/mockup-objects-sn-red.tsv', MAIN, 'mockup-sn-red', False),
         ('docs/mockup-objects-midi.tsv', MAIN, 'mockup-main-midi', True),
         ('docs/mockup-objects-lin.tsv', MAIN, 'mockup-main-lin', True),
         ('docs/mockup-objects-opts.tsv', 'SERIAL DECODE OPTIONS', 'mockup-options', False),
@@ -375,6 +387,20 @@ def cmd_panel(args):
                  '<img src="mockup-main-text.png">'
                  '<h2>Main screen &mdash; HEX view</h2>'
                  '<img src="mockup-main-hex.png">'
+                 # THE BAND SCREENS. Six, not three: one field moves at a time with the other held
+                 # green, so each cell is seen banding on its own rather than the pair always
+                 # agreeing. A clean synthesised capture is 41 dB at fitq 1.00, so amber and red are
+                 # unreachable from the mock's own signal and are forced in tools/mockup.lua.
+                 '<h2>FIT bands &mdash; green &ge;0.90, amber &ge;0.72, red below '
+                 '(0.90 is autolock_fitq; 0.72 is 10 % above sig_fit&rsquo;s 0.65 knee)</h2>'
+                 '<img src="mockup-fit-green.png">'
+                 '<img src="mockup-fit-amber.png">'
+                 '<img src="mockup-fit-red.png">'
+                 '<h2>S/N bands &mdash; green &ge;25 dB, amber &ge;12 dB, red below '
+                 '(the decode cliff is ~8 dB, 40 % of the swing)</h2>'
+                 '<img src="mockup-sn-green.png">'
+                 '<img src="mockup-sn-amber.png">'
+                 '<img src="mockup-sn-red.png">'
                  '<h2>Main screen &mdash; MIDI message view</h2>'
                  '<img src="mockup-main-midi.png">'
                  '<h2>Main screen &mdash; LIN frame view</h2>'

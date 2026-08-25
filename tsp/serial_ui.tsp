@@ -101,7 +101,10 @@ sdec.ui_fields = {
   -- right-hand end, out to the table's right rule at 792.
   {lab = 'BYTES',  x = 573, c = 0x80FF80, wid = '999999'},
   {lab = 'ERR',    x = 636, c = 0x80FF80, wid = '999'},
-  {lab = 'FIT',    x = 679, c = 0xB0B0B0, wid = '1.00'},
+  {lab = 'FIT',    x = 679, c = 0xFFFFFF, wid = '1.00'},
+  -- S/N, so the value is UNSIGNED and bigger is better. The cliff is near 8 dB: the decoder tolerates
+  -- noise up to about 40 % of the swing, and 20*log10(1/0.4) is 8.
+  {lab = 'S/N',    x = 721, c = 0xFFFFFF, wid = '>99 dB'},
 }
 
 -- MEASURED CHARACTER ADVANCES. The font is proportional and UPPERCASE IS ~25 % WIDER THAN
@@ -137,15 +140,36 @@ sdec.ui_c_unknown = 0xFF6060   -- red:    nothing to lock -- no decode
 -- disagreeing about what colour an object is, and the loser never repaints -- a red error count
 -- painted in a non-error colour, with the error cache still saying red.
 sdec.ui_errfield  = 9
+-- S/N is the third. Its thresholds are the point of the cell: the decoder tolerates noise up to
+-- about 40 % of the swing, which is 20*log10(1/0.4) = 8 dB, so 12 dB is the last band with real
+-- margin over the cliff and below it a capture is running on luck.
+sdec.ui_snfield   = 11
+-- FIT bands. 0.90 is not a taste: it is sdec.autolock_fitq, the quality the app itself demands before
+-- it will pin a rate, so green means "good enough to autolock". 0.72 sits 10 % above a structural
+-- knee at 0.65 -- sig_fit's quality is (1 - mean_err/T) * (nfit/nsmall) and only widths within
+-- 0.35*T of a multiple count, so tightness alone cannot fall below 0.65 and anything under it means
+-- COVERAGE is collapsing. At 0.72 either the mean width error is a quarter of a bit time or a
+-- quarter of the widths match no multiple, and both are close to losing bits.
+sdec.ui_fitfield  = 10
+sdec.ui_fit_good  = 0.90
+sdec.ui_fit_bad   = 0.72
+sdec.ui_sn_good   = 25       -- at or above: green
+sdec.ui_sn_bad    = 12       -- below: red. Between the two: amber
+sdec.ui_c_sn_ok   = 0x80FF80 -- green:  the same "all clear" green BYTES and ERR carry
+sdec.ui_c_sn_warn = 0xFFFF00 -- yellow: margin, but not much
+sdec.ui_c_sn_bad  = 0xFF6060 -- red:    the same red ERR goes when it has something to report
 -- Rules boxing the strip into a table. Thin OBJ_RECTs, created once and never
 -- touched again, so they cost nothing per refresh. A fill of 0 would paint NOTHING
 -- (the firmware reads it as "unset"), hence a near-black grey.
-sdec.ui_c_rule = 0x484848
+sdec.ui_c_rule = 0x808080
 -- THE SCREEN BACKGROUND, for HIDING an object. It must not be 0: the firmware reads a fill of 0
 -- as "unset" and paints NOTHING, so setfill(h, 0) is a refused write rather than a black
 -- rectangle -- it climbs sdec.fillfails and leaves the object exactly as visible as before.
 sdec.ui_c_hide = 0x000A0D
 sdec.ui_rule_top = 1
+-- BETWEEN THE LABEL INK (3..14) AND THE VALUE INK (16..32), which leaves exactly one free row.
+-- A rule inside either band draws a line struck through the text, and test_serial asserts against it.
+sdec.ui_rule_hdr = 15
 sdec.ui_rule_mid = 35                        -- under the value ink (medium 16..32)
 sdec.ui_rule_bot = 51                        -- under the note row's ink (37..48)
 sdec.ui_rule_x0  = 4
@@ -986,6 +1010,33 @@ function sdec.ui_field_colour(j)
     if n ~= nil and n > 0 then return sdec.ui_c_err end
     return fd.c
   end
+  -- S/N BANDS. Read from sdec.snr_db, which is the same number the cell prints, so the colour and
+  -- the figure cannot disagree. nil keeps the column's own colour: the value is '--' already and a
+  -- red '--' would report a bad measurement where there is none.
+  -- FIT BANDS, ON THE NUMBER THE CELL PRINTS AND NOTHING ELSE. Guarding on sdec.res or on q <= 0
+  -- instead put a WHITE 1.00 on every streaming and flow-control screen, where there is no frame
+  -- result but the fit is real, and a WHITE 0.00 wherever nothing fitted -- a figure the operator
+  -- reads as unbanded while the two beside it are banded. If the cell shows a number, band it.
+  if j == sdec.ui_fitfield then
+    local q = sdec.fitq
+    if q == nil then return fd.c end
+    -- BAND THE DISPLAYED VALUE, NOT THE RAW ONE. The cell prints '%.2f', so 0.8996 shows as '0.90' --
+    -- banding the raw number put an amber '0.90' on the panel, which is the colour contradicting the
+    -- figure beside it, the exact thing these bands exist to avoid.
+    q = math.floor(q * 100 + 0.5) / 100
+    if q < sdec.ui_fit_bad then return sdec.ui_c_sn_bad end
+    if q < sdec.ui_fit_good then return sdec.ui_c_sn_warn end
+    return sdec.ui_c_sn_ok
+  end
+  if j == sdec.ui_snfield then
+    local db = sdec.snr_db
+    if db == nil then return fd.c end
+    -- Same rounding as the cell's '%.0f dB', so 24.6 cannot print '25 dB' in amber.
+    db = math.floor(db + 0.5)
+    if db < sdec.ui_sn_bad then return sdec.ui_c_sn_bad end
+    if db < sdec.ui_sn_good then return sdec.ui_c_sn_warn end
+    return sdec.ui_c_sn_ok
+  end
   return fd.c
 end
 
@@ -1068,7 +1119,25 @@ function sdec.ui_field_values()
     v[9] = tostring(sdec.ui_err_n())
   end
 
-  v[10] = string.format('%.2f', sdec.fitq or 0)
+  -- '--' WHEN THERE IS NO FIT, not '0.00'. `or 0` printed a number for a capture that fitted nothing,
+  -- which then took the column's own colour and put an UNBANDED figure between two banded ones.
+  if sdec.fitq == nil then
+    v[10] = '--'
+  else
+    v[10] = string.format('%.2f', sdec.fitq)
+  end
+  -- '--' RATHER THAN A NUMBER when sig_levels refused or has not run: a noise figure with no
+  -- measured swing behind it is not a small number, it is no number.
+  if sdec.snr_db == nil then
+    v[11] = '--'
+  elseif sdec.snr_db >= 99 then
+    -- CLAMPED WITH A '>', not rounded into two digits. A synthesised capture reaches 130 dB and the
+    -- instrument's own ADC floors near 97; reporting either as '99 dB' would state a measurement
+    -- where there is only a limit.
+    v[11] = '>99 dB'
+  else
+    v[11] = string.format('%.0f dB', sdec.snr_db)
+  end
   return v
 end
 
@@ -1710,13 +1779,17 @@ function sdec.ui_build()
   rule(sdec.ui_stat_div, sdec.ui_stat_top, 1, sdec.ui_stat_bot - sdec.ui_stat_top)
   rule(sdec.ui_trig_div, sdec.ui_stat_top, 1, sdec.ui_stat_bot - sdec.ui_stat_top)
   rule(sdec.ui_rule_x0, sdec.ui_rule_top, rw, 1)
+  rule(sdec.ui_rule_x0, sdec.ui_rule_hdr, rw, 1)
   rule(sdec.ui_rule_x0, sdec.ui_rule_mid, rw, 1)
   rule(sdec.ui_rule_x0, sdec.ui_rule_bot, rw, 1)
   -- Outer verticals close the box at both ends.
   rule(sdec.ui_rule_x0, sdec.ui_rule_top, 1, sdec.ui_rule_bot - sdec.ui_rule_top)
   rule(sdec.ui_rule_x1, sdec.ui_rule_top, 1, sdec.ui_rule_bot - sdec.ui_rule_top)
   -- ...and one after the NOTE label, so the note reads as a cell too.
-  rule(sdec.ui_note_val_x - 9, sdec.ui_rule_mid, 1,
+  -- THE NOTE ROW IS ONE WIDE CELL, not part of the grid: carrying every separator through it draws
+  -- lines across the note text. Only the trigger-source divider continues, and it takes its x from
+  -- ui_fields[2] so it and the separator above it are one line.
+  rule(sdec.ui_fields[2].x - 9, sdec.ui_rule_mid, 1,
        sdec.ui_rule_bot - sdec.ui_rule_mid)
 
   -- THE DUMP'S TWO VERTICAL RULES: offset | hex | ascii.
@@ -1808,10 +1881,13 @@ function sdec.ui_build()
     end
     return h
   end
-  lockpart(lx + 2, sdec.ui_lab_y + 0, 5, 1)     -- shackle: top bar
-  lockpart(lx + 2, sdec.ui_lab_y + 1, 1, 4)     -- shackle: left post
-  lockpart(lx + 6, sdec.ui_lab_y + 1, 1, 4)     -- shackle: right post
-  sdec.ui_lockbody = lockpart(lx, sdec.ui_lab_y + 5, 9, 7)   -- body
+  -- DROPPED CLEAR OF ui_rule_hdr. Anchored on the label ink the shackle started at ui_lab_y itself,
+  -- so the header rule ran straight through it; one offset moves the whole glyph rather than four.
+  local lock_y = sdec.ui_lab_y + 5
+  lockpart(lx + 2, lock_y + 0, 5, 1)     -- shackle: top bar
+  lockpart(lx + 2, lock_y + 1, 1, 4)     -- shackle: left post
+  lockpart(lx + 6, lock_y + 1, 1, 4)     -- shackle: right post
+  sdec.ui_lockbody = lockpart(lx, lock_y + 5, 9, 7)   -- body
   -- No setevent on these either: EVENT_PRESS on an OBJ_RECT is refused (1717) at severity 2, which
   -- raises an error dialog over the panel.
 

@@ -91,6 +91,17 @@ def _spb(vid):
     return float(int((manifest().get(vid) or {}).get('spb') or 10))
 
 
+def vspan(vid):
+    """The vector's rendered p-p span in volts at its reference amplitude, from the manifest.
+
+    Paired with _amp so a cell's DRIVEN span is vspan(vid) * camp / _amp(vid) -- what a scope reads,
+    which is the figure a failure has to be correlated against. The generator amplitude alone does not
+    say it: the same 20 Vpp gives 9.3 V on the spike vector and 6.6 V on a 3.3 V line.
+    """
+    r = manifest().get(vid) or {}
+    return float(r.get('max_v') or 0.0) - float(r.get('min_v') or 0.0)
+
+
 def _amp(vid):
     """The AMP a vector is rendered for, from the manifest.
 
@@ -1126,9 +1137,16 @@ def suite_plan(d, g, a, rows):
                       % (it, vid, baud, kind, srate, spb, wait * 1000.0,
                          fmt_num(res.get('head'), '%.0f'), nf, got_fmt, want_fmt))
                 print('      hex head %d: %s' % (head, hexs[2 * head:][:512]))
+            # THE DRIVEN SWING TRAVELS WITH THE RESULT, on every row and not just the failures.
+            # Without it, correlating failure against voltage means recomputing the draw from the
+            # iteration afterwards -- doable, since it is deterministic, but the vi index has to come
+            # from the printed `order:` line and getting that wrong mislabels every cell silently.
+            # The span is what a scope reads p-p; camp/cofst are what the generator was told.
+            span_v = vspan(vid) * camp / _amp(vid)
             rows.append(('plan %s@%s' % (vid, label), good,
-                         '%d Bd %s %s%s' % (baud, kind, det,
-                                            ' [SILENTLY WRONG]' if silent else '')))
+                         '%d Bd %s %.3f Vpp-signal (%.3f Vpp gen, ofst %+.3f) %s%s'
+                         % (baud, kind, span_v, camp, cofst, det,
+                            ' [SILENTLY WRONG]' if silent else '')))
             if not good:
                 nbadcell += 1
 

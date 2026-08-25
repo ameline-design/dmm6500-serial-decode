@@ -486,6 +486,8 @@ function sdec.clear_measured()
   -- ua_cands() and sdec.wshort gates them in ua_minrun_absurd(), so a stale one rejects the true bit
   -- time of the capture in hand.
   sdec.w, sdec.nw, sdec.wmed, sdec.wshort = nil, 0, nil, nil
+  -- The S/N figure is per capture too: it belongs to the samples, not to the session.
+  sdec.snr_db, sdec.noise_v = nil, nil
   -- Polarity, and the flag saying the evidence for it was thin.
   sdec.idle, sdec.idle_weak = nil, nil
   -- Level and run statistics: the fraction of samples near the two levels, and the longest run of
@@ -498,6 +500,11 @@ end
 -- Returns ok, reason. Sets lo/hi/thr/hyst/swing/family, wlo/whi, modal, and the remembered
 -- lvl_thr/lvl_hyst/lvl_swing that serial_app saves and restores.
 function sdec.sig_levels(rd, n)
+  -- CLEARED HERE, NOT ONLY IN sig_noise. Every refusal path below returns BEFORE sig_noise runs, so
+  -- clearing them there left the previous capture's figure on the panel beside a refused one -- the
+  -- same stale-cache shape as lvl_thr/lvl_hyst/lvl_swing, which are kept across captures on purpose
+  -- and these are not.
+  sdec.snr_db, sdec.noise_v = nil, nil
   local vmin, vmax, nv = nil, nil, 0
   local i
 
@@ -582,7 +589,73 @@ function sdec.sig_levels(rd, n)
   -- noisy look could poison the watchdog threshold for every recording after it. Only a measurement
   -- good enough to return true is good enough to keep.
   sdec.lvl_thr, sdec.lvl_hyst, sdec.lvl_swing = sdec.thr, sdec.hyst, sdec.swing
+  sdec.sig_noise(rd, n)
   return true
+end
+
+-- Signal-to-noise on the two logic levels, in dB. Sets sdec.snr_db and sdec.noise_v.
+--
+-- POSITIVE BY CONSTRUCTION, because it is signal OVER noise: a capture whose noise exceeds its swing
+-- has no logic levels and sig_levels has already refused it by the time this runs.
+--
+-- STRIDED, NOT THE FIRST N. A thousand contiguous samples at 1 MS/s span 1 ms, a twentieth of a
+-- 50 Hz cycle, so mains pickup inside that window is a slow tilt that reads as SIGNAL and not as
+-- noise -- and at the head of a capture they can all land in the opening idle, where only one level
+-- exists. Striding the whole capture costs the same and sees both.
+--
+-- SAMPLES IN TRANSIT ARE EXCLUDED, or the answer is dominated by them: there are about two per bit
+-- and they sit nowhere near either level. thr +- hyst is the band already computed for exactly this
+-- question, and being a fraction of the swing it scales down with it.
+--
+-- RESIDUALS ABOUT EACH GROUP'S OWN MEAN, pooled. Measuring about thr instead would report half the
+-- swing as noise.
+sdec.noise_nsamp = 1000
+
+function sdec.sig_noise(rd, n)
+  -- Localised here because serial_core takes math.* per function rather than once at file scope.
+  local floor, sqrt, log = math.floor, math.sqrt, math.log
+  sdec.snr_db, sdec.noise_v = nil, nil
+  if rd == nil or n == nil or n < 8 then return end
+  local thr, hy, sw = sdec.thr, sdec.hyst, sdec.swing
+  if thr == nil or hy == nil or sw == nil or sw <= 0 then return end
+  local step = floor(n / sdec.noise_nsamp)
+  if step < 1 then step = 1 end
+  local nlo, slo, qlo, nhi, shi, qhi = 0, 0, 0, 0, 0, 0
+  local i = 2
+  while i <= n - 1 do
+    local v = rd[i]
+    if v ~= nil then
+      local up = v > thr + hy
+      local dn = v < thr - hy
+      -- EXCLUDED BY POSITION, NOT BY VOLTAGE, and that is the whole measurement: a sample partway up
+      -- an edge is indistinguishable from a noisy one by amplitude, so an amplitude window cannot
+      -- separate them. Measured on a noiseless capture -- a thr+-hyst window reports 24.8 dB and a
+      -- within-15-%-of-level window 38.4 dB, both of them pure slew, and NEITHER moves when real
+      -- noise is injected 40 dB below that. Requiring both neighbours on the same side drops
+      -- everything within one sample of a transition and tracks injected noise to 0.3 dB from
+      -- -24.8 dB down to -84.8. It costs 23 % of the samples.
+      local a, b = rd[i - 1], rd[i + 1]
+      if up and a ~= nil and b ~= nil and a > thr + hy and b > thr + hy then
+        nhi = nhi + 1; shi = shi + v; qhi = qhi + v * v
+      elseif dn and a ~= nil and b ~= nil and a < thr - hy and b < thr - hy then
+        nlo = nlo + 1; slo = slo + v; qlo = qlo + v * v
+      end
+    end
+    i = i + step
+  end
+  -- A VARIANCE NEEDS TWO SAMPLES, and one level is enough to report from: a capture that opens in a
+  -- long idle legitimately offers only one.
+  local ss, k = 0, 0
+  if nlo > 1 then ss = ss + (qlo - slo * slo / nlo); k = k + nlo - 1 end
+  if nhi > 1 then ss = ss + (qhi - shi * shi / nhi); k = k + nhi - 1 end
+  if k < 1 then return end
+  if ss < 0 then ss = 0 end          -- rounding only, but a negative would kill the sqrt
+  local rms = sqrt(ss / k)
+  sdec.noise_v = rms
+  -- FLOORED AT THE DIGITISER, not at zero. A synthesised capture can be noiseless, and log(0) is
+  -- -inf; the instrument cannot resolve below its own LSB anyway, so that is the honest floor.
+  if rms < 1e-6 then rms = 1e-6 end
+  sdec.snr_db = 20 * (log(sw / rms) / log(10))
 end
 
 -- Wire-quality warning about the levels themselves, for the note line. Separate from

@@ -64,10 +64,33 @@ P_ORDER, P_RATE, P_WAIT, P_SUBSET, P_AMP, P_OFST = 1, 2, 3, 4, 5, 6
 # 0.5 takes a clean vector's 3.3 V swing to 1.65 V, well above the ~60 mV where the decoder fails by
 # design, and 1.6 is bounded by the generator's 20 Vpp ceiling anyway (v47 is already there, so its
 # scale is clamped down to 1.0).
-AMP_SCALE_LO, AMP_SCALE_HI = 0.5, 1.6
+# THE SWING IS DRAWN AS A TARGET SPAN IN VOLTS, not as a scale of each vector's own span. A scale
+# bottoms out at 1.65 V p-p on the 3.3 V vectors and clusters every cell mid-range; a target span
+# spreads them evenly and reaches the 0.45 V end a hardware hacker's line actually sits at.
+SWING_LO, SWING_HI = 0.45, 8.0
+AMP_SCALE_LO, AMP_SCALE_HI = 0.5, 1.6      # kept for signature(); the span draw supersedes them
 SDG_MAX_VPP = 20.0
 # Keep the whole band inside this, which is inside both the generator's +/-10 V and the DMM's fixed
 # 10 V range. The margin absorbs the offset quantisation and leaves the signal unclipped at both rails.
+def _tsp_number(name):
+    """A scalar constant read out of the TSP source. -> float
+
+    READ, NOT COPIED, for the same reason the standard-rate list is: a number duplicated here silently
+    stops matching the decoder the day someone tunes it in tsp/, and the stimulus would then be drawn
+    against a threshold the app no longer uses.
+    """
+    import re as _re
+    with open(os.path.join(ROOT, 'tsp', 'serial_core.tsp')) as f:
+        m = _re.search(r'^sdec\.' + name + r'\s*=\s*([0-9.]+)', f.read(), _re.M)
+    if m is None:
+        raise SystemExit('soakplan: cannot find sdec.%s in tsp/serial_core.tsp' % name)
+    return float(m.group(1))
+
+
+# The level below which sig_levels treats an idle level as sitting at ground. Straddling it in BOTH
+# directions is what makes the app read a line as RS-232 -- see amp_ofst_for.
+FLATFLOOR = _tsp_number('flatfloor')
+
 V_RAIL = 9.5
 # Decimals the amplitude and offset are written with. The values must be quantised BEFORE the safe
 # interval is derived from them, or a rounded offset lands outside the interval it came from.
@@ -292,7 +315,10 @@ def amp_ofst_for(vid, u_amp, u_ofst):
     """
     lo, hi = _cw_span(vid)
     r = _manifest_rows().get(vid) or {}
-    amp = float(r.get('amp_vpp') or 10.0) * (AMP_SCALE_LO + u_amp * (AMP_SCALE_HI - AMP_SCALE_LO))
+    ref_amp = float(r.get('amp_vpp') or 10.0)
+    ref_span = float(r.get('max_v') or 0.0) - float(r.get('min_v') or 0.0)
+    target = SWING_LO + u_amp * (SWING_HI - SWING_LO)
+    amp = ref_amp * target / max(ref_span, 1e-9)
     # QUANTISE BEFORE THE INTERVAL IS COMPUTED, not after. Rounding an offset that already sat exactly
     # on the rail pushes it over, and assert_unclipped then kills the whole run: measured on v48b and
     # v61 at u_ofst -> 1, which a long soak reaches. The interval must be derived from the values that
@@ -311,7 +337,58 @@ def amp_ofst_for(vid, u_amp, u_ofst):
         note = 'amplitude reduced to keep the band inside +/-%.1f V' % V_RAIL
     # Quantise the offset, then pull it back inside the interval -- rounding may only ever move it
     # toward the middle, never past an edge.
-    ofst = round(dlo + u_ofst * max(0.0, dhi - dlo), Q_DIGITS)
+    # A SINGLE-SUPPLY LINE MAY NOT BE DRAWN STRADDLING GROUND. sig_levels decides polarity from the
+    # LEVELS when no run in the window reaches ten bit times, and reads lo < -flatfloor with
+    # hi > +flatfloor as RS-232 at line levels, marking at its NEGATIVE level. That is correct for a
+    # real ground-straddling line and wrong for a 0..6.6 V logic waveform this draw shifted there, and
+    # the decode comes back inverted: right rate, right format, self-consistent bytes matching nothing.
+    #
+    # MEASURED before this constraint existed: 17.3 % of cells were driven straddling ground and they
+    # accounted for 86.8 % of every offline failure -- v71, v76 and v92 at 100 % of theirs. The app was
+    # right every time; the stimulus could not exist.
+    #
+    # Only vectors whose own rendering is single-supply are constrained. A vector that genuinely
+    # straddles ground in the file is RS-232-shaped by construction and must keep being drawn that way.
+    # A SINGLE-SUPPLY LINE MAY NOT BE DRAWN STRADDLING GROUND. sig_levels decides polarity from the
+    # LEVELS when no run in the window reaches ten bit times, and reads lo < -flatfloor with
+    # hi > +flatfloor as RS-232 at line levels, marking at its NEGATIVE level. That is correct for a
+    # real ground-straddling line and wrong for a 0..6.6 V logic waveform this draw shifted there: the
+    # decode comes back inverted -- right rate, right format, self-consistent bytes matching nothing.
+    #
+    # MEASURED before this constraint: 17.3 % of cells were driven straddling ground and they accounted
+    # for 86.8 % of every offline failure. The app was right each time; the stimulus could not exist.
+    #
+    # ONLY THE STRADDLING WINDOW IS REMOVED, NOT EVERYTHING BELOW IT. Straddling needs BOTH levels
+    # clear of ground, so it is the open interval (B, A) with
+    #     A = -FLATFLOOR - lo/32767*half     (above this the low level is >= -FLATFLOOR)
+    #     B = +FLATFLOOR - hi/32767*half     (below this the high level is <= +FLATFLOOR)
+    # A wholly-negative band is legitimate and decodes -- measured, offset -6.5 V passes where -3.6 V
+    # fails -- so cutting the whole range below A threw away real coverage: 57.5 % of the interval on
+    # some vectors. The draw maps onto [dlo, B] + [A, dhi] instead, preserving both valid regions.
+    # Vectors whose own rendering already goes negative are RS-232-shaped by construction and exempt.
+    keep = None
+    if float(r.get('min_v') or 0.0) >= 0.0:
+        half_c = amp / 2.0
+        a_edge = -FLATFLOOR - lo / 32767.0 * half_c
+        b_edge = FLATFLOOR - hi / 32767.0 * half_c
+        if a_edge > b_edge:                       # a straddling window exists at this amplitude
+            lower = (dlo, min(b_edge, dhi))
+            upper = (max(a_edge, dlo), dhi)
+            keep = [seg for seg in (lower, upper) if seg[1] > seg[0]]
+            if not keep:
+                keep = None                       # nothing legal; fall through to the plain mapping
+    if keep is not None:
+        total = sum(hi_s - lo_s for lo_s, hi_s in keep)
+        want = u_ofst * total
+        ofst = keep[-1][1]
+        for lo_s, hi_s in keep:
+            if want <= hi_s - lo_s:
+                ofst = lo_s + want
+                break
+            want = want - (hi_s - lo_s)
+        ofst = round(ofst, Q_DIGITS)
+    else:
+        ofst = round(dlo + u_ofst * max(0.0, dhi - dlo), Q_DIGITS)
     q = 10.0 ** -Q_DIGITS
     if ofst > dhi:
         ofst = math.floor(dhi / q) * q
@@ -376,6 +453,11 @@ def estimate_secs(rates, nvec, depth=20000, per_cell=4.9):
 # ---------------------------------------------------------------------------- self-check
 
 
+def _MAP_KEYS():
+    from vector_names import MAP as _M
+    return _M.keys()
+
+
 def selftest():
     from vector_names import MAP
     vecs = sorted(MAP.keys())
@@ -426,6 +508,39 @@ def selftest():
     # The edge rule fires sometimes and not always.
     edges = set(ladder_edges(rate_ladder()))
     hits = [sum(1 for x in rates_for(it) if x[1] == 'edge') for it in range(1, 61)]
+    # THE VERTICAL AXES. Nothing asserted these before, and the only guard anywhere was
+    # assert_unclipped at the hardware write site, which catches a clipped band but not a wrong range.
+    spans, strad, nvcell = [], 0, 0
+    for it in (1, 7, 41):
+        pv = plan(it, sorted(_MAP_KEYS()), None)
+        for vi, vid in enumerate(pv['order']):
+            r = _manifest_rows()[vid]
+            ref = float(r['amp_vpp'])
+            rspan = float(r['max_v']) - float(r['min_v'])
+            for ri in range(len(pv['rates'])):
+                ua, uo = amp_ofst_u(it, vi, ri)
+                amp, ofst, _note = amp_ofst_for(vid, ua, uo)
+                assert_unclipped(vid, amp, ofst)
+                nvcell += 1
+                spans.append(rspan * amp / ref)
+                if float(r['min_v']) >= 0.0:
+                    lo = ofst + float(r['min_v']) / (ref / 2.0) * (amp / 2.0)
+                    hi = ofst + float(r['max_v']) / (ref / 2.0) * (amp / 2.0)
+                    if lo < -FLATFLOOR and hi > FLATFLOOR:
+                        strad += 1
+    ck(min(spans) >= SWING_LO - 0.01 and max(spans) <= SWING_HI + 0.01,
+       'every drawn span is inside [%.2f, %.2f], got %.3f..%.3f'
+       % (SWING_LO, SWING_HI, min(spans), max(spans)))
+    # REACHES BOTH ENDS. A draw that silently collapsed to a narrow band would pass the bound above
+    # while testing almost nothing, and would look like full coverage in the log.
+    ck(min(spans) < SWING_LO + 0.2, 'the draw reaches the bottom of the range, got %.3f' % min(spans))
+    ck(max(spans) > SWING_HI - 0.5, 'the draw reaches the top of the range, got %.3f' % max(spans))
+    # NO SINGLE-SUPPLY VECTOR STRADDLES GROUND. sig_levels would read it as RS-232 and invert the
+    # decode -- correctly, on a stimulus that cannot exist. Measured before the constraint: 17.3 % of
+    # cells, and 86.8 % of every offline failure.
+    ck(strad == 0, 'no single-supply vector is drawn straddling ground, got %d of %d cells'
+       % (strad, nvcell))
+
     ck(sum(hits) > 0, 'the ladder-edge rule fires across 60 iterations')
     ck(min(hits) < max(hits), 'the number of edges drawn varies by iteration')
     ck(all(x[0] in edges for it in range(1, 61) for x in rates_for(it) if x[1] == 'edge'),

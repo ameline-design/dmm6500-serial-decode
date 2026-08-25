@@ -238,6 +238,29 @@ end
 
 dumpobjs('docs/mockup-objects-text.tsv')
 
+-- THE FIT AND S/N BANDS, forced -- SIX SCREENS, one per colour per field. A clean synthesised
+-- capture is 41 dB at fitq 1.00, so the amber and red bands are unreachable from the mock's own
+-- signal and would ship unseen. ONE FIELD MOVES AT A TIME, the other held green, so each cell is
+-- shown banding on its own rather than the pair always agreeing. Set on the values the cells read --
+-- sdec.snr_db and sdec.fitq -- so ui_field_colour is exercised rather than bypassed.
+local keep_sn, keep_q = sdec.snr_db, sdec.fitq
+local bands = {
+  {'fit-green', 41, 1.00},   -- FIT >= ui_fit_good
+  {'fit-amber', 41, 0.83},   -- FIT in ui_fit_bad..ui_fit_good
+  {'fit-red',   41, 0.61},   -- FIT < ui_fit_bad
+  {'sn-green',  41, 1.00},   -- S/N >= ui_sn_good
+  {'sn-amber',  18, 1.00},   -- S/N in ui_sn_bad..ui_sn_good
+  {'sn-red',     9, 1.00},   -- S/N < ui_sn_bad
+}
+local bi
+for bi = 1, table.getn(bands) do
+  sdec.snr_db, sdec.fitq = bands[bi][2], bands[bi][3]
+  sdec.ui_refresh()
+  dumpobjs('docs/mockup-objects-' .. bands[bi][1] .. '.tsv')
+end
+sdec.snr_db, sdec.fitq = keep_sn, keep_q
+sdec.ui_refresh()
+
 sdec.view_toggle()
 dumpobjs('docs/mockup-objects-hex.tsv')
 

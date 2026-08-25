@@ -7772,6 +7772,163 @@ check('detect_reset derives the requested rate from the lock, not from the last 
 sdec.unlock_all()
 end)()
 
+-- ============================================================================
+print('\nS/N is measured, not inferred from the edges (real code)')
+-- ============================================================================
+-- WHY THIS SECTION EXISTS. sdec.sig_noise runs inside sig_levels on EVERY capture, so a mistake here
+-- costs time on every decode and puts a wrong figure on the panel. The trap it exists to prevent:
+-- measuring EDGE SLEW instead of noise. A sample partway up an edge is indistinguishable from a noisy
+-- one by amplitude, so an amplitude window cannot separate them -- measured, a thr+-hyst window reports
+-- 24.8 dB on a NOISELESS capture and a within-15-%-of-level window 38.4 dB, and NEITHER moves when real
+-- noise is injected 40 dB below that. Requiring both immediate neighbours on the same side of the
+-- threshold is what makes the figure track the noise, and these cases pin that.
+;(function()
+  local function cap(noise, sw)
+    local b, nb = GEN_BYTES('Hello, World! The quick brown fox jumps over it. ')
+    local bytes, n = {}, 0
+    local i, j
+    for i = 1, 4 do for j = 1, nb do n = n + 1; bytes[n] = b[j] end end
+    local fs = sdec.pick_fs(9600, 8)
+    local rd, ts, nc, nsmp = GEN({bytes = bytes, baud = 9600, fs = fs, lo = 0, hi = sw,
+                                  noise = noise, phase = 0.37, gap = 2})
+    sdec.fs, sdec.acq_fs = fs, fs
+    sdec.lvl_thr, sdec.lvl_hyst, sdec.lvl_swing = nil, nil, nil
+    local ok = sdec.sig_levels(rd, nsmp)
+    return ok, sdec.snr_db
+  end
+
+  -- GEN's `noise` is a PEAK amplitude of a uniform draw, so its RMS is peak/sqrt(3) and the expected
+  -- figure is 20*log10(swing / rms). Tolerance is 3 dB: the estimate's own precision at ~750 surviving
+  -- samples is far tighter, so a 3 dB miss means the method changed, not that the sample got unlucky.
+  local ok1, q1 = cap(0.033, 3.3)
+  local want1 = 20 * (math.log(3.3 / (0.033 / math.sqrt(3))) / math.log(10))
+  check('S/N tracks injected noise at 3.3 V swing',
+        ok1 and q1 ~= nil and math.abs(q1 - want1) < 3,
+        string.format('got %s, expected ~%.1f dB', tostring(q1), want1))
+
+  local ok2, q2 = cap(0.0033, 3.3)
+  local want2 = 20 * (math.log(3.3 / (0.0033 / math.sqrt(3))) / math.log(10))
+  check('...and 20 dB further down, so it is a measurement and not a constant',
+        ok2 and q2 ~= nil and math.abs(q2 - want2) < 3,
+        string.format('got %s, expected ~%.1f dB', tostring(q2), want2))
+  check('...and the two differ by about the 20 dB the injection differs by',
+        q1 ~= nil and q2 ~= nil and math.abs((q2 - q1) - 20) < 3,
+        string.format('%s vs %s', tostring(q1), tostring(q2)))
+
+  -- THE SLEW TRAP. A noiseless capture must report a FLOOR far above any real signal, not the ~25 dB an
+  -- amplitude window derives from the edges. Anything at or under 60 dB here means edge samples are
+  -- leaking into the statistic again.
+  local ok3, q3 = cap(0, 3.3)
+  check('a NOISELESS capture reports a floor, not the edge slew',
+        ok3 and q3 ~= nil and q3 > 60, string.format('got %s dB, must exceed 60', tostring(q3)))
+
+  -- Scale invariance: the same relative noise at a different swing must give the same dB.
+  local _, q4 = cap(0.01, 1.0)
+  local _, q5 = cap(0.033, 3.3)
+  check('S/N is a ratio, so the same relative noise reads the same at 1.0 V and 3.3 V',
+        q4 ~= nil and q5 ~= nil and math.abs(q4 - q5) < 3,
+        string.format('1.0 V -> %s, 3.3 V -> %s', tostring(q4), tostring(q5)))
+
+  -- A REFUSAL LEAVES NO FIGURE. sig_levels returning false must not leave a stale or invented number
+  -- for the panel to print: the cell shows '--' and the colour falls back to the column's own.
+  local flat = {}
+  local k
+  for k = 1, 4000 do flat[k] = 1.0 end
+  sdec.lvl_thr, sdec.lvl_hyst, sdec.lvl_swing = nil, nil, nil
+  local okf = sdec.sig_levels(flat, 4000)
+  check('a refused capture leaves sdec.snr_db nil rather than a stale figure',
+        okf == false and sdec.snr_db == nil, string.format('ok=%s snr=%s', tostring(okf),
+        tostring(sdec.snr_db)))
+
+  -- NAME COLLISION, the way sdec.wlo already collided with a voltage. snr_db must be the only owner.
+  check('sdec.snr_db is a dB figure and sdec.noise_v is the volts behind it',
+        cap(0.033, 3.3) ~= nil and sdec.noise_v ~= nil and sdec.noise_v > 0 and sdec.noise_v < 1,
+        string.format('noise_v=%s', tostring(sdec.noise_v)))
+end)()
+
+-- ============================================================================
+print('\nthe FIT and S/N cells are banded on the figure they print (real code)')
+-- ============================================================================
+-- The bands only mean anything if the colour agrees with the number in the same cell. Guarding on
+-- anything ELSE is how a WHITE 1.00 reached every streaming screen and a WHITE 0.00 every no-fit one:
+-- both were banded on sdec.res and on q <= 0 rather than on the printed value.
+;(function()
+  local function fitcol(q)
+    sdec.fitq = q
+    return sdec.ui_field_colour(sdec.ui_fitfield)
+  end
+  local function sncol(db)
+    sdec.snr_db = db
+    return sdec.ui_field_colour(sdec.ui_snfield)
+  end
+  local keepq, keepdb = sdec.fitq, sdec.snr_db
+
+  check('FIT 1.00 is green, and green is ui_fit_good = autolock_fitq',
+        fitcol(1.00) == sdec.ui_c_sn_ok and sdec.ui_fit_good == sdec.autolock_fitq,
+        string.format('%s / good=%s autolock=%s', tostring(fitcol(1.00)),
+                      tostring(sdec.ui_fit_good), tostring(sdec.autolock_fitq)))
+  -- STEPPED BY THE DISPLAY QUANTUM, not by an arbitrary epsilon. The cell prints 2 dp and the band
+  -- reads the rounded figure, so 0.899 IS '0.90' and is green -- a 0.001 step tests nothing and
+  -- asserted the opposite of the intended behaviour.
+  check('FIT one printed step under ui_fit_good is amber, at it is green',
+        fitcol(sdec.ui_fit_good - 0.01) == sdec.ui_c_sn_warn and
+        fitcol(sdec.ui_fit_good) == sdec.ui_c_sn_ok)
+  check('FIT one printed step under ui_fit_bad is red, at it is amber',
+        fitcol(sdec.ui_fit_bad - 0.01) == sdec.ui_c_sn_bad and
+        fitcol(sdec.ui_fit_bad) == sdec.ui_c_sn_warn)
+  -- 0.00 IS BANDED. It prints as a number, so leaving it the column's own colour puts an unbanded
+  -- figure between two banded ones.
+  check('FIT 0.00 is red, because the cell prints a number and not a dash',
+        fitcol(0) == sdec.ui_c_sn_bad, tostring(fitcol(0)))
+  check('FIT nil keeps the column colour, and the cell really does print no number',
+        fitcol(nil) == sdec.ui_fields[sdec.ui_fitfield].c)
+  -- CODEX FOUND THIS: v[10] was string.format('%.2f', sdec.fitq or 0), so a nil fit printed '0.00' in
+  -- the column's own white while the two cells beside it were banded -- the same unbanded-figure defect
+  -- as before, surviving on the nil path after the q == 0 path was fixed.
+  sdec.fitq = nil
+  local vnil = sdec.ui_field_values()
+  check('...which means a nil fit prints a dash, not 0.00',
+        vnil[sdec.ui_fitfield] == '--', tostring(vnil[sdec.ui_fitfield]))
+  -- BANDED ON THE DISPLAYED VALUE. The cell rounds to 2 dp, so a raw 0.8996 shows as '0.90' and must
+  -- be GREEN: banding the raw number put an amber 0.90 on the panel, the colour contradicting the
+  -- figure printed beside it.
+  check('FIT bands the rounded figure, so 0.8996 shows 0.90 and is green',
+        fitcol(0.8996) == sdec.ui_c_sn_ok, tostring(fitcol(0.8996)))
+  check('...and S/N does the same, so 24.6 shows 25 dB and is green',
+        sncol(24.6) == sdec.ui_c_sn_ok, tostring(sncol(24.6)))
+
+  check('S/N 41 dB is green, 18 amber, 9 red',
+        sncol(41) == sdec.ui_c_sn_ok and sncol(18) == sdec.ui_c_sn_warn and
+        sncol(9) == sdec.ui_c_sn_bad)
+  -- Whole dB, for the same reason: the cell prints '%.0f dB'.
+  check('the S/N band edges are ui_sn_good and ui_sn_bad, inclusive at the top of each',
+        sncol(sdec.ui_sn_good) == sdec.ui_c_sn_ok and
+        sncol(sdec.ui_sn_good - 1) == sdec.ui_c_sn_warn and
+        sncol(sdec.ui_sn_bad) == sdec.ui_c_sn_warn and
+        sncol(sdec.ui_sn_bad - 1) == sdec.ui_c_sn_bad)
+  check('S/N nil keeps the column colour', sncol(nil) == sdec.ui_fields[sdec.ui_snfield].c)
+  -- The cliff the amber band exists to warn about: the decoder tolerates noise to ~40 % of the swing,
+  -- and 20*log10(1/0.4) is 8 dB, so ui_sn_bad must sit above it.
+  check('ui_sn_bad leaves margin over the ~8 dB decode cliff',
+        sdec.ui_sn_bad > 20 * (math.log(1 / 0.4) / math.log(10)),
+        string.format('ui_sn_bad=%s cliff=%.1f', tostring(sdec.ui_sn_bad),
+                      20 * (math.log(1 / 0.4) / math.log(10))))
+
+  -- The field indices must point at the cells whose labels they claim, or every band above is testing
+  -- the wrong column.
+  check('ui_fitfield and ui_snfield index the FIT and S/N columns',
+        sdec.ui_fields[sdec.ui_fitfield].lab == 'FIT' and
+        sdec.ui_fields[sdec.ui_snfield].lab == 'S/N')
+  -- The new header rule must sit OUTSIDE both ink bands, or it strikes through the text.
+  check('ui_rule_hdr sits between the label ink and the value ink, touching neither',
+        sdec.ui_rule_hdr > sdec.ui_lab_y and
+        sdec.ui_rule_hdr < sdec.ui_val_y - sdec.ui_ink + 1,
+        string.format('hdr=%s lab_y=%s val ink top=%s', tostring(sdec.ui_rule_hdr),
+                      tostring(sdec.ui_lab_y), tostring(sdec.ui_val_y - sdec.ui_ink + 1)))
+
+  sdec.fitq, sdec.snr_db = keepq, keepdb
+end)()
+
 print()
 print(string.format('%d passed, %d failed', pass, fail))
 os.exit(fail == 0 and 0 or 1)
