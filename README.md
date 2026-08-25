@@ -1,4 +1,4 @@
-# Serial Protocol Decode — Keithley DMM6500, DAQ6510, DMM7510, SMU2461
+# Serial Decode — Keithley DMM6500, DAQ6510, DMM7510, SMU2461
 
 A UART decoder that runs **on** a Keithley bench instrument. It digitizes the line with the
 instrument's own digitizer, recovers the baud rate, frame format and idle polarity from the signal,

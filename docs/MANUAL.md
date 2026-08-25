@@ -1,4 +1,4 @@
-# Serial Protocol Decode — user manual
+# Serial Decode — user manual
 
 **Ian Ameline** · version 1.11 · MIT licence
 

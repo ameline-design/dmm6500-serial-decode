@@ -119,6 +119,15 @@ check('the manifest carries a title, a version and only known products',
         .. ' / ' .. prodn .. ' model(s)'
         .. (prodbad == '' and '' or ('  UNKNOWN:' .. prodbad))
         .. (prodtested and '' or '  MISSING DMM6500'))
+-- THE DISPLAYED NAME AND THE SCRIPT NAME ARE ONE DECISION, so this derives them from each other rather
+-- than hard-coding the string a second time -- a second copy is just another place for them to drift.
+-- The instrument shows $Title in its app list and the panel's own title bar is built from the script,
+-- so a mismatch is the app introducing itself by two different names on the same screen.
+local want_sname = string.gsub(tostring(manifest.Title), ' ', '_')
+check('the manifest title is the script name, spaces for underscores',
+      want_sname == tostring(sname),
+      '$Title=' .. tostring(manifest.Title) .. ' -> ' .. want_sname
+        .. '  loadscript=' .. tostring(sname))
 -- A stray 'endscript' or 'endimage' inside the TSP would truncate the archive silently.
 local stray = 0
 local i
@@ -186,10 +195,18 @@ print('\nlaunch against a dead front end')
 check('both screens were built', MD.live('screen') == 2,
       MD.live('screen') .. ' screens, ' .. MD.live() .. ' objects'
       .. (sdec.lasterr and ('  lasterr: ' .. tostring(sdec.lasterr)) or ''))
+-- IT COMPARES THEM, rather than only asserting the screen has some title of a legal length: a name check
+-- that never reads the manifest passes while the app calls itself one thing in the instrument's app list
+-- and another on its own title bar. The screen title carries the mode after the name -- 'SERIAL DECODE -
+-- 240B FRAME' -- so the relation is a prefix, uppercased, and the 31-char ceiling still applies to the
+-- whole string because that is what the firmware truncates.
+local scrtitle = MD.obj(sdec.ui_scr).title
+local apptitle = string.upper(tostring(manifest.Title))
 check('the screen title is the app title, under the 31-char limit',
-      MD.obj(sdec.ui_scr).title ~= nil
-      and string.len(MD.obj(sdec.ui_scr).title) <= 31,
-      tostring(MD.obj(sdec.ui_scr).title))
+      scrtitle ~= nil
+      and string.sub(scrtitle, 1, string.len(apptitle)) == apptitle
+      and string.len(scrtitle) <= 31,
+      tostring(scrtitle) .. '  vs $Title -> ' .. apptitle)
 check('the app is alive and reports the failure rather than dying',
       sdec.ui_status ~= nil and sdec.ui_status ~= 'ready',
       'status=' .. tostring(sdec.ui_status))

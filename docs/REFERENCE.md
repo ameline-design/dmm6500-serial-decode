@@ -1,4 +1,4 @@
-# Serial Protocol Decode — measured reference
+# Serial Decode — measured reference
 
 **Ian Ameline** · version 1.11 · MIT licence
 

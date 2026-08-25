@@ -91,7 +91,11 @@ def doc_for(block):
     return [lead] + [indent + '--   [...]'] + body[-(KEEP_COMMENT_LINES - 2):]
 
 MANIFEST = [
-    ('Title', 'Serial Protocol Decode'),
+    # THE NAME THE INSTRUMENT DISPLAYS, and it must match what the app calls itself everywhere else:
+    # the script is Serial_Decode, the archive is Serial_Decode.tspa, the title bar reads SERIAL DECODE
+    # and the docs are titled Serial Decode. A longer name here is the app introducing itself as
+    # something the panel never says.
+    ('Title', 'Serial Decode'),
     # WHERE THE APP WILL INSTALL, which the instrument decides from this field alone -- it is not
     # inferred from what the code calls. All three models have the digitizer, the touchscreen app API
     # and the Lua 5.0.2 the app needs; the DAQ6510 runs the same boards and firmware as the DMM6500,
@@ -158,7 +162,7 @@ MANIFEST = [
 # to live. Emitted as Lua line comments, since the archive body is a Lua chunk.
 LICENSE = '''
 -- ============================================================================
--- Serial Protocol Decode -- a UART decoder for Keithley TSP instruments
+-- Serial Decode -- a UART decoder for Keithley TSP instruments
 --
 -- Copyright (c) %s %s
 --
