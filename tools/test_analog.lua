@@ -274,8 +274,12 @@ print('the capture window opens at an arbitrary sample')
 
 -- The cells the ARB actually plays, with the loop repeated so each seam carries a 40-bit idle run.
 -- Written out rather than reusing GEN because GEN emits ONE message and the wire carries the loop.
-local function loopcells(nbits, par, nstop, nloops)
-  local by, nb = GEN_BYTES(PAYLOAD)
+-- gap defaults to 2 idle bits between bytes; 0 makes the line GAPLESS, which is what the arb vectors
+-- play and what lets a mid-byte start stay misaligned for tens of frames instead of re-syncing at the
+-- next byte. Measured: the odd-submultiple misfit below needs gap 0 and never appears at gap 2.
+local function loopcells(nbits, par, nstop, nloops, gap, payload)
+  if gap == nil then gap = 2 end
+  local by, nb = GEN_BYTES(payload or PAYLOAD)
   local c, n = {}, 0
   local L, i, k
   for L = 1, nloops do
@@ -296,7 +300,7 @@ local function loopcells(nbits, par, nstop, nloops)
         if par == 1 then c[n] = pe else c[n] = 1 - pe end
       end
       for k = 1, nstop do n = n + 1; c[n] = 1 end
-      if i < nb then for k = 1, 2 do n = n + 1; c[n] = 1 end end
+      if i < nb and gap > 0 then for k = 1, gap do n = n + 1; c[n] = 1 end end
     end
     for i = 1, 20 do n = n + 1; c[n] = 1 end
   end
@@ -310,10 +314,11 @@ end
 -- moves every failing offset. At 16 loops and 32 offsets this passes; the same code at 26 loops
 -- reproduces the octave at 25/32. A test that only passes because its geometry missed the hole is
 -- the thing this file exists to stop.
-local function window_case(f, fs, startfrac, jitter, noise, nloops)
-  local c, nc = loopcells(f.nbits, f.par, f.nstop, nloops)
+local function window_case(f, fs, startfrac, jitter, noise, nloops, baud, gap, payload)
+  if baud == nil then baud = 9600 end
+  local c, nc = loopcells(f.nbits, f.par, f.nstop, nloops, gap, payload)
   local rd, ts, ncc, ns = GEN_RENDER(c, nc,
-      {baud = 9600, fs = fs, phase = 0.37, jitter = jitter, noise = noise})
+      {baud = baud, fs = fs, phase = 0.37, jitter = jitter, noise = noise})
   local want = math.floor(ns / 2)
   local s0 = 1 + math.floor(startfrac * (ns - want))
   local w, n = {}, 0
@@ -360,6 +365,71 @@ for fi = 1, nfmt do
                       f.name, NOFF, nloopc), bad == 0,
         bad == 0 and '' or string.format('%d of %d wrong; first: %s',
                                          bad, NOFF * nloopc, worst))
+end
+
+-- ============================================================================
+print('the PROBE pass: 31250 Bd digitised at 1 MS/s, where an odd submultiple is admissible')
+-- THE REGIME EVERY OTHER OFFLINE CASE MISSES, and the one the app's own first capture uses.
+--
+-- autoset() free-runs a probe at fs_default before it knows the baud, so MIDI's 31250 arrives at 32
+-- samples/bit. There Tfit/5 is 6.4 samples and ua_plausible admits it; at the second pass's 8 sa/bit
+-- it is 1.6 and ua_plausible throws it out -- which is why the plan suites, which digitise at
+-- pick_fs(true baud), have never seen this. 5 x 31250 = 156250 then SNAPS to 153600, so the candidate
+-- looks like a standard rate and the reported multiple reads as 4.9152x rather than a round 5x.
+-- Measured on the bench: v77@std31250 failed one smoke run in three with
+-- '153600 baud fits far better than 31250 (score 18 vs 3, 2 framing error(s))'.
+--
+-- BOTH FIXTURE PROPERTIES ARE LOAD-BEARING, and each was measured by removing it: at gap 2 the misfit
+-- never appears at any offset or loop count, because a mid-byte start re-syncs at the next byte
+-- instead of staying misaligned across the probe window; and with 'Hello, World!' it never appears
+-- either, because whether the 1/5 framing scores well is a property of the byte values. So the
+-- payload is long and varied and the line is gapless, as the arb vectors are.
+local MIDIFS = 1000000
+local MIDIPAY = 'the quick brown fox jumps over the lazy dog. ' ..
+                'THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG. 0123456789'
+local mf = {name = '8N1', nbits = 8, par = 0, nstop = 1, want = '8N'}
+local MLOOPS = {4, 6, 8}
+local nmloop = table.getn(MLOOPS)
+
+local function midi_sweep()
+  local nwrong, first = 0, ''
+  local li, oi
+  for li = 1, nmloop do
+    for oi = 0, NOFF - 1 do
+      local baud, fmt, txt = window_case(mf, MIDIFS, oi / NOFF, 0, 0, MLOOPS[li], 31250, 0, MIDIPAY)
+      nrun = nrun + 1
+      local why = nil
+      if baud == nil then why = 'refused'
+      elseif math.abs(baud / 31250 - 1) > 0.02 then why = string.format('%.0f Bd', baud)
+      elseif fmt ~= mf.want then why = 'read as ' .. fmt
+      elseif not carries(txt, 'lazy dog') then why = 'bytes wrong'
+      end
+      if why ~= nil then
+        nwrong = nwrong + 1
+        if first == '' then
+          first = string.format('%s at %d loops offset %.3f', why, MLOOPS[li], oi / NOFF)
+        end
+      end
+    end
+  end
+  return nwrong, first
+end
+
+local mbad, mworst = midi_sweep()
+check(string.format('31250 at 32 sa/bit: the rate is right wherever the window opens (%d x %d)',
+                    NOFF, nmloop), mbad == 0,
+      mbad == 0 and '' or string.format('%d of %d wrong; first: %s', mbad, NOFF * nmloop, mworst))
+
+-- AND ua_minrun_absurd IS WHAT DOES IT. Without checking the other direction this section passes
+-- unchanged on a build where the guard never fires, which is how it read before the guard existed --
+-- measured, it reported 0 of 96 wrong either way until the fixture went gapless.
+do
+  local keep = sdec.submult_maxrunlo
+  sdec.submult_maxrunlo = 1e9
+  local nmis, seen = midi_sweep()
+  sdec.submult_maxrunlo = keep
+  check('and with ua_minrun_absurd disabled the same sweep misfits -- the guard is load-bearing',
+        nmis > 0, string.format('%d of %d wrong without it, first %s', nmis, NOFF * nmloop, seen))
 end
 
 -- ============================================================================

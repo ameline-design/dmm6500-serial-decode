@@ -140,6 +140,9 @@ end
 function sdec.unlock_all()
   sdec.force_baud, sdec.force_nbits = nil, nil
   sdec.force_par, sdec.force_nstop, sdec.force_invert = nil, nil, nil
+  -- The provenance goes with the lock it describes. Left behind, it would claim the app had chosen
+  -- fields that are no longer set, and the next back-off would clear whatever was typed afterwards.
+  sdec.autolock_set = nil
   return true
 end
 
@@ -1364,6 +1367,9 @@ function sdec.capture()
   -- frame one. A relock inside this press must still be on the note row when the press returns,
   -- however many internal re-captures happen after it.
   sdec.relocked = nil
+  -- rate_backoff with it: it requests one re-capture within THIS press, so a value surviving into the
+  -- next one would spend a press re-capturing for a lock that is already gone.
+  sdec.rate_backoff = nil
   -- THE RATE OFFER IS ALSO PER PRESS, and for the opposite reason to relocked: it must OUTLIVE the
   -- press that raised it, because the operator answers it afterwards. Pressing Capture again is an
   -- answer of its own -- a fresh capture supersedes the question -- so it is retired here.
@@ -1523,6 +1529,27 @@ function sdec.capture()
 
   local ok, why = false, nil
   local pok, perr = pcall(function() ok, why = sdec.autoset() end)
+
+  -- ONE FRESH CAPTURE AFTER A BACK-OFF. decode() sets rate_backoff when a locked rate fit nothing and
+  -- neither did anything else, so the lock is now gone and this acquisition re-runs detection from
+  -- scratch at the top sample rate. sdec.relocked already carries the reason to the note row.
+  --
+  -- CLEARED BEFORE THE RETRY, NOT AFTER: cleared after, a retry that backed off again would be seen
+  -- still set and retry forever -- inside a touch handler, on a panel that is unresponsive while Lua
+  -- runs. One retry is the whole allowance.
+  local rb = sdec.rate_backoff
+  sdec.rate_backoff = nil
+  if pok and rb then
+    pcall(function() ulog.line('rate back-off: ' .. tostring(sdec.relocked)) end)
+    sdec.ui_status = 'retrying'
+    pcall(function() sdec.ui_refresh() end)
+    local keep = sdec.relocked
+    pok, perr = pcall(function() ok, why = sdec.autoset() end)
+    -- The retry's own decode does not clear relocked, but an autolock inside it publishes
+    -- autolocknote, and both belong on the row: what was dropped and what replaced it.
+    if sdec.relocked == nil then sdec.relocked = keep end
+    sdec.rate_backoff = nil
+  end
   sdec.busy = false
 
   if not pok then
@@ -1652,9 +1679,17 @@ function sdec.autolock_try()
   if sdec.force_baud ~= nil then return false end       -- already locked, nothing to do
   local r = sdec.res
   if r == nil or sdec.baud == nil then return false end
-  -- GATE 1, SNAPPED: the baud rate matched a standard rate within snaptol rather than being
-  -- whatever fs/bittime came to. A real line runs at a real rate.
-  if not sdec.snapped then return false end
+  -- GATE 1, A CREDIBLE RATE: the measurement either matched a standard rate within snaptol, or it
+  -- rounds to a 10 Bd (100 Bd over 10 kBd) boundary inside 1 % -- see sdec.baud_round. A real line
+  -- runs at a real rate, and both of those are what a real rate looks like.
+  --
+  -- SNAPPING ALONE WAS NOT ENOUGH, and the cost was paid on the panel: a device at 16 kBd never
+  -- autolocked, so the padlock stayed amber, every recording mode refused for want of a locked rate
+  -- (mode_cur().needbaud), and the only route to 8 kB was typing the number into Options -- which is
+  -- also how a wrong rate gets typed in. Rounding is what replaces snapping as the credibility test;
+  -- the other four gates are unchanged and still have to pass.
+  local lockb, lockok = sdec.baud_round(sdec.baud)
+  if not sdec.snapped and not lockok then return false end
   -- GATE 2, THE LONGEST CONTIGUOUS CLEAN RUN -- not an error count, and not an error POSITION.
   -- What justifies locking a format is that the format explains a long unbroken stretch of the
   -- capture. That tolerates head resync and tail clipping without having to guess where they are
@@ -1694,10 +1729,18 @@ function sdec.autolock_try()
   -- to be checked one at a time.
   --
   -- The rate is locked either way, so forcing parity does not cost the operator the speed win.
-  sdec.force_baud   = sdec.baud
-  if sdec.force_nbits == nil then sdec.force_nbits = r.nbits end
-  if sdec.force_par   == nil then sdec.force_par   = r.par end
-  if sdec.force_nstop == nil then sdec.force_nstop = r.nstop end
+  --
+  -- WHICH FIELDS THIS SET IS RECORDED, because a later back-off has to be able to drop what the app
+  -- chose without touching what the operator typed -- see sdec.rate_backoff. Provenance cannot be
+  -- recovered afterwards: a forced 8 is a forced 8 whoever wrote it.
+  sdec.autolock_set = {}
+  -- ROUNDED, so a non-standard measurement locks as a number an operator could have typed. 16099
+  -- locks as 16100. baud_round leaves a standard rate exactly as it is.
+  sdec.force_baud   = lockb
+  sdec.autolock_set.baud = true
+  if sdec.force_nbits == nil then sdec.force_nbits = r.nbits; sdec.autolock_set.nbits = true end
+  if sdec.force_par   == nil then sdec.force_par   = r.par;   sdec.autolock_set.par   = true end
+  if sdec.force_nstop == nil then sdec.force_nstop = r.nstop; sdec.autolock_set.nstop = true end
   -- POLARITY IS DELIBERATELY NOT LOCKED, and this is the one asymmetry in the set.
   --
   -- Left nil, decode_from() falls back to `inv = (sdec.idle == 0)` -- the level-based physical
@@ -1719,6 +1762,18 @@ function sdec.autolock_try()
   -- SIZED TO FIT THE NOTE CELL: 685 px at the widest field values against the cell's 700
   -- (sdec.ui_note_px). ui_fit() clips gracefully, but a note that is always clipped is a note
   -- whose tail is never read.
+  -- THE PANEL MUST SHOW WHAT WAS LOCKED, not what was measured. The BAUD cell reads baud_text(),
+  -- which formats sdec.baud and marks an unsnapped rate with '?', so locking a rounded 16100 while
+  -- sdec.baud still held 16099 drew '16099?' beside a green padlock -- and the next capture, which
+  -- decodes AT the lock, drew '16100'. Publishing the locked value here makes the cell stable across
+  -- the lock instead of changing on a press that changed nothing.
+  --
+  -- snapped too, for the same reason and by the same convention: decode_from already sets it for any
+  -- forced rate, so a locked rate is shown without the '?' everywhere else.
+  --
+  -- baud_raw IS LEFT ALONE. It is the honest measurement, the summaries have already logged it, and
+  -- the rate cross-check compares against it on the next capture.
+  sdec.baud, sdec.snapped = sdec.force_baud, true
   local fs = sdec.fs_for_baud(sdec.force_baud)
   local nb = sdec.window_bytes(sdec.force_baud, r.nbits, r.par, r.nstop)
   sdec.autolocknote = string.format(
@@ -2019,13 +2074,18 @@ function sdec.lock_toggle()
       sdec.lasterr = 'nothing decoded yet -- capture first, then lock'
       return pcall(function() sdec.ui_refresh() end)
     end
-    -- Rounded, for the reason given at the Options Lock path: sdec.baud is a standard rate only
-    -- when sdec.snapped, and this button has no such test.
-    sdec.force_baud   = math.floor(sdec.baud + 0.5)
+    -- Through baud_round, for the reason given at the Options Lock path: sdec.baud is a standard rate
+    -- only when sdec.snapped, and this button has no such test.
+    sdec.force_baud   = math.floor(sdec.baud_round(sdec.baud) + 0.5)
     sdec.force_nbits  = r.nbits
     sdec.force_par    = r.par
     sdec.force_nstop  = r.nstop
     sdec.force_invert = r.invert
+    -- The operator pressed Lock Rate over these values, so none of them is autolock's to withdraw.
+    sdec.autolock_set = nil
+    -- baud_text reads sdec.baud, so the note would name the measurement while the lock holds the
+    -- rounded value. Same reason as autolock_try.
+    sdec.baud, sdec.snapped = sdec.force_baud, true
     note = string.format('locked %s %s', sdec.baud_text(), sdec.fmt_text())
   else
     sdec.lasterr = 'nothing decoded yet -- capture first, then lock'
@@ -2544,11 +2604,16 @@ function sdec.options_save()
   -- breaks that promise: it writes the live forced settings the moment it is pressed, so without
   -- a snapshot Cancel closes the screen over a wire configuration the operator has just declined.
   -- Taken on the way in, it covers every route the form has to that state rather than one of them.
+  --
+  -- THE PROVENANCE IS PART OF THE STATE, not separate from it: autolock_set says which of the forced
+  -- fields the app chose for itself, so restoring the fields without it leaves a lock whose owner is
+  -- forgotten -- and a later back-off then declines to clear a width autolock picked.
   sdec.opt_snap = {baud = sdec.force_baud, nbits = sdec.force_nbits,
                    par = sdec.force_par, nstop = sdec.force_nstop,
                    invert = sdec.force_invert, proto = sdec.proto,
                    any = sdec.widths_any, trig = sdec.trigmode,
-                   ext = sdec.trigext, fc = sdec.fc_out, view = sdec.ui_mode}
+                   ext = sdec.trigext, fc = sdec.fc_out, view = sdec.ui_mode,
+                   aset = sdec.autolock_set}
   return true
 end
 
@@ -2561,6 +2626,7 @@ function sdec.options_restore()
   sdec.proto, sdec.widths_any = s.proto, s.any
   sdec.trigmode, sdec.trigext, sdec.fc_out = s.trig, s.ext, s.fc
   sdec.ui_mode = s.view
+  sdec.autolock_set = s.aset
   return true
 end
 
@@ -2615,15 +2681,23 @@ function sdec.options_lock()
   -- measured 9611 would put the sampling point a bit further into the next cell on every
   -- frame, which is the error a 10-bit frame accumulates worst.
   --
-  -- ROUNDED, because sdec.baud is only a standard rate when sdec.snapped -- this path has no such
-  -- test and a nonstandard line locks its raw measurement, e.g. 12345.6. force_baud must stay whole:
-  -- decode_from sets snapped = true for any forced rate, so a fraction then reaches the %d in
-  -- baud_text's snapped branch. At 0.003 % the rounding is far inside sdec.ratemargin.
-  sdec.force_baud  = math.floor(sdec.baud + 0.5)
+  -- THROUGH baud_round, because sdec.baud is a standard rate only when sdec.snapped and this path has
+  -- no such test: a nonstandard line would otherwise lock its raw measurement, 12345.6 or 16099.
+  -- force_baud must also stay whole -- decode_from sets snapped = true for any forced rate, so a
+  -- fraction reaches the %d in baud_text's snapped branch -- and baud_round returns a multiple of 10
+  -- or 100, or the measurement unchanged when rounding would shift it over 1 %. The floor covers that
+  -- last case.
+  sdec.force_baud  = math.floor(sdec.baud_round(sdec.baud) + 0.5)
   sdec.force_nbits = sdec.res.nbits
   sdec.force_par   = sdec.res.par
   sdec.force_nstop = sdec.res.nstop
   sdec.force_invert = sdec.res.invert
+  -- EVERY FORCED FIELD IS NOW THE OPERATOR'S. They pressed Lock Detected over these values, so a
+  -- later back-off must not treat any of them as the app's own guess to withdraw.
+  sdec.autolock_set = nil
+  -- The BAUD cell reads sdec.baud through baud_text, so without this it draws '16099?' beside a green
+  -- padlock holding 16100. Same reason as autolock_try and lock_toggle.
+  sdec.baud, sdec.snapped = sdec.force_baud, true
   sdec.options_seed()
   ulog.fmt('locked: baud=%s bits=%s par=%s inv=%s', tostring(sdec.force_baud),
            tostring(sdec.force_nbits), tostring(sdec.force_par),
@@ -2639,6 +2713,10 @@ function sdec.options_apply()
   -- the operator then captures against a setting nobody chose. The failure is recorded and the
   -- capture at the end is skipped, so the panel says so instead of guessing.
   local readok, readerr = pcall(function()
+    -- EVERY FIELD BELOW IS NOW THE OPERATOR'S, so none of it is autolock's to take back. A typed rate
+    -- is honoured: the back-off may still drop it when it fits nothing, but it will not quietly drop
+    -- a width or parity that was chosen on this form.
+    sdec.autolock_set = nil
     local b = display.getvalue(sdec.opt_baud)
     -- ROUNDED TO A WHOLE Bd. force_baud must stay integral because decode_from sets snapped = true
     -- for any forced rate, and the snapped display branches format it with %d.
@@ -2725,6 +2803,10 @@ function sdec.options_apply()
     -- the detector would otherwise have to report.
     sdec.force_baud, sdec.force_nbits = 31250, 8
     sdec.force_par, sdec.force_nstop = sdec.PAR_NONE, 1
+    -- A SPECIFICATION IS NOT AUTOLOCK'S GUESS. decode()'s back-off already refuses to run on a
+    -- non-uart protocol, so this is insurance rather than a live path -- but stale provenance naming
+    -- fields the app no longer chose is the kind of state that becomes a live path later.
+    sdec.autolock_set = nil
     sdec.ui_mode = 'midi'
   elseif sdec.proto == 'lin' then
     -- LIN is 8N1, one stop bit, idle RECESSIVE (high), all by specification. Pinning them

@@ -68,11 +68,15 @@ function bk_point(tag)
     local n, m = eventlog.next()
     if m ~= nil then emsg = emsg .. string.format('[%s %s]', tostring(n), tostring(m)) end
   end
-  print(string.format('K %s|%s|%.3f|%s|%s|%s|%s|%s|%s|%s|%s',
+  -- force_baud IS REPORTED SEPARATELY FROM baud, and the distinction is the whole point of the
+  -- autolock cases: sdec.baud is what the capture measured, force_baud is what the app decided to
+  -- KEEP. A case that reads only baud cannot tell a lock from a lucky measurement.
+  print(string.format('K %s|%s|%.3f|%s|%s|%s|%s|%s|%s|%s|%s|%s',
         tostring(tag), tostring(ok), t,
         tostring(r and r.nf), tostring(r and r.nbad), tostring(sdec.baud),
         tostring(sdec.fmt_text and sdec.fmt_text()), tostring(sdec.ui_status),
-        emsg, tostring(sdec.lasterr), tostring(sdec.rate_offer)))
+        emsg, tostring(sdec.lasterr), tostring(sdec.rate_offer),
+        tostring(sdec.force_baud)))
   local nt, nn = sdec.ui_notes()
   for i = 1, nn do print('KN ' .. tostring(nt[i])) end
   if r ~= nil and r.nf ~= nil and r.nf > 0 then
@@ -110,7 +114,8 @@ def press(d, tag, timeout=300):
                    'status': f[7], 'events': f[8], 'lasterr': f[9],
                    # OPTIONAL, so a run against an older build parses instead of raising IndexError
                    # and reporting a harness fault for a field that app simply does not publish.
-                   'offer': f[10] if len(f) > 10 else 'nil'}
+                   'offer': f[10] if len(f) > 10 else 'nil',
+                   'forced': f[11] if len(f) > 11 else 'nil'}
         elif ln.startswith('KN '):
             notes.append(ln[3:])
         elif ln.startswith('KH '):
@@ -157,6 +162,23 @@ def judge(res, notes, hexs, accept, want_bytes=None, want_baud=None):
         got = num(res['baud'], 0) or 0
         if want_baud is None or abs(got - want_baud) > want_baud * 0.01:
             return False, 'accepted but decoded at %s, not the offered %s' % (res['baud'], want_baud)
+    # 'autolocked' IS ABOUT force_baud, NOT sdec.baud, and that is the distinction the token exists for.
+    # A capture that MEASURES 16099 proves the decoder works; only a lock the app KEPT makes the
+    # recording modes reachable, and those refuse without one (mode_cur().needbaud). Before this,
+    # nothing on the bench went red if autolock stopped locking non-standard rates -- the byte
+    # assertions pass either way, because locking changes what the NEXT capture does, not this one.
+    #
+    # want_baud here is the ROUNDED value expected, so it gates sdec.baud_round's grid too: 16099 must
+    # come back as 16100, not as 16099 and not as 16000.
+    if 'autolocked' in accept:
+        if res['forced'] in ('nil', None, ''):
+            return False, 'never locked -- force_baud is nil, so 8 kB would still refuse'
+        got = num(res['forced'], None)
+        if got is None:
+            return False, 'force_baud is not a number: %s' % res['forced']
+        if want_baud is None or abs(got - want_baud) >= 0.5:
+            return False, 'locked %s, expected the rounded %s' % (res['forced'], want_baud)
+
     nev = real_events(res['events'])
     if nev:
         return False, 'LOGGED %d: %s' % (nev, res['events'][:60])
@@ -206,12 +228,18 @@ def judge(res, notes, hexs, accept, want_bytes=None, want_baud=None):
             # the confident-and-wrong outcome this file exists to catch, so the note is the condition,
             # not the byte match.
             if 'relocked' in accept:
-                # EITHER OF THE TWO WAYS THE APP SAYS IT. sdec.decode() drops a contradicted lock and
-                # says "N baud fit nothing -- unlocked"; autoset() re-captures at the measured rate and
-                # says "probe fitted N Bd, wire is M". Both tell the operator their forced rate lost,
-                # which is the condition. Silence is not.
+                # EVERY WAY THE APP SAYS IT. decode() adopts a contradicted lock and says "N baud fit
+                # nothing -- now locked to M"; when nothing fit it says "N baud fits nothing, and no
+                # other rate fit either -- back to auto-detect"; autoset() re-captures at the measured
+                # rate and says "probe fitted N Bd, wire is M". All three tell the operator their forced
+                # rate lost, which is the condition. Silence is not.
+                #
+                # 'fit nothing' DOES NOT MATCH 'fits nothing' -- the s makes them different substrings,
+                # so both spellings are listed rather than one assumed to cover the other.
                 joined = ' | '.join(notes)
-                if ('fit nothing' in joined or 'unlocked' in joined or 'wire is' in joined):
+                if ('fit nothing' in joined or 'fits nothing' in joined
+                        or 'unlocked' in joined or 'back to auto-detect' in joined
+                        or 'wire is' in joined):
                     return True, 'exact %d B, forced rate overridden and said so' % nf
                 return False, ('EXACT with nothing said about the forced rate: %d B' % nf)
             return False, 'EXACT, but this case must not decode: %d B' % nf
@@ -339,8 +367,18 @@ def cases(g, d, a):
     # ---- contradictory forced settings: the dangerous class ----------------------------
     # A forced rate the device is not using is the one way this decoder can be confidently
     # wrong, so each of these must either decode correctly or FLAG.
+    # force_conflict IS RESTATED ON EVERY CASE, not set once. Two cases below switch it to 'ask' to
+    # exercise the offer, and without this they would leak that policy into every case after them --
+    # which reads as an app that refuses where it should adopt.
     def force(**kw):
-        stmt = ["sdec.capmode = 'frame'", 'sdec.stickyerr = nil']
+        stmt = ["sdec.capmode = 'frame'", 'sdec.stickyerr = nil',
+                "sdec.force_conflict = 'adopt'",
+                # UNDO rate-backoff's STUB whatever order the cases run in. It replaces ua_badfrac to
+                # make every decode look equally bad, and a leftover would make every case after it
+                # back off too -- so the restore is here as well as in the teardown, because relying on
+                # case order for correctness is how a suite starts testing the wrong thing.
+                'if sdec.ua_badfrac_real ~= nil then '
+                'sdec.ua_badfrac = sdec.ua_badfrac_real; sdec.ua_badfrac_real = nil end']
         for k, v in kw.items():
             stmt.append('sdec.force_%s = %s' % (k, v))
         d.exec(' '.join(stmt))
@@ -348,29 +386,33 @@ def cases(g, d, a):
     C.append(('force-2x-rate', '9600 wire, rate FORCED to 19200 (+100 %)',
               lambda: (arb(9600), force(baud='19200', nbits='nil', par='nil',
                                        nstop='nil', invert='nil')),
-              {'flagged', 'offer'}, b'Hello, World!'))
-    # 'relocked' IS NOT ACCEPTED, and that is the decision in #61 rather than a tightening for its
-    # own sake. Adopting the detected rate and decoding with it put bytes on the panel at a rate nobody
-    # chose, with one note line as the only trace. The app now REFUSES and hands over the rate it
-    # measured, which the operator answers with Use Detected Rate or Cancel.
+              {'flagged', 'relocked'}, b'Hello, World!'))
+    # 'relocked' IS NOW ACCEPTED, reversing the decision in #61. Refusing was unanswerable from the
+    # front panel: rate_accept() has no button, and 'Lock Rate' hides itself while a rate is locked --
+    # which in this state it is. The operator's only exit was Options and the number typed by hand.
+    # 'offer' is no longer accepted, because reaching it means the default reverted to 'ask'.
     #
     # 'flagged' STAYS, because the app does not always have proof. The relock needs an interior-bad
     # fraction over 0.25, and a 2-bit gap at half rate tiles so cleanly that the measured fraction is
     # 0.074 -- there the app warns and decodes, which is right: it has a suspicion, not evidence. So the
-    # rule this pair encodes is "warn, or refuse and offer -- never adopt in silence". Confident garbage
+    # rule this pair encodes is "warn, or adopt and SAY SO -- never adopt in silence". Confident garbage
     # still fails: every accepted outcome is an honest one, and a wrong ANSWER is not among them.
     C.append(('force-half-rate', '9600 wire, rate FORCED to 4800 (-50 %)',
               lambda: (arb(9600), force(baud='4800', nbits='nil', par='nil',
                                        nstop='nil', invert='nil')),
-              {'flagged', 'offer'}, b'Hello, World!'))
+              {'flagged', 'relocked'}, b'Hello, World!'))
 
     # ---- ANSWERING THE OFFER, WITH NOBODY AT THE PANEL ---------------------------------
     # The setup forces a wrong rate and takes the capture that raises the offer; the measured press is
     # the ANSWER, dispatched by the tag prefix in bk_point. No display event is involved in either --
     # which is the point, because a dialog that only a finger can answer would wedge every soak lap.
+    # 'ask' IS SELECTED EXPLICITLY, because it is no longer the default -- adopt is. These two cases are
+    # the only coverage the offer mechanism has on hardware, and it stays a supported setting, so they
+    # opt into it rather than the file assuming it. force() restores 'adopt' for every later case.
     def refuse_first(baud):
         arb(9600)
         force(baud=baud, nbits='nil', par='nil', nstop='nil', invert='nil')
+        d.exec("sdec.force_conflict = 'ask'")
         d.exec('sdec.capture()')
 
     # 19200, NOT 4800, AND THAT IS MEASURED ON THIS BENCH. Only a rate the app can PROVE wrong raises an
@@ -388,6 +430,63 @@ def cases(g, d, a):
     # because answering retires the offer: the sentence must survive, the question must not.
     C.append(('decline-detected-rate', 'wrong forced rate REFUSED, then Cancel',
               lambda: refuse_first('19200'), {'refuse'}, None))
+    # ---- AUTOLOCK ON A NON-STANDARD RATE, WHICH IS WHAT MAKES 8 kB REACHABLE ------------
+    # Gate 1 used to require the rate to SNAP to sdec.stdbaud, so a device on an awkward divisor never
+    # locked: the padlock stayed amber, every recording mode refused for want of a locked rate, and the
+    # only route to 8 kB was typing the number into Options.
+    #
+    # NEITHER OTHER SMOKE STAGE CAN CATCH A REGRESSION HERE. The plan suite's std cells all snap, so
+    # they passed under the old rule too; its nonstd cells do run this path but assert only the BYTES,
+    # and locking changes what the NEXT capture does, not this one. So both stages stay green whether
+    # autolock locks or not -- which is exactly why these two cases assert force_baud directly.
+    #
+    # ONE EITHER SIDE OF THE 10 kBd CROSSOVER, because baud_round changes step there and a single case
+    # would gate half the grid. The expected value is the ROUNDED one: 16099 -> 16100 on the 100 Bd
+    # step, 4444 -> 4440 on the 10 Bd step. Both are far outside snaptol of any standard rate (16099 is
+    # 10.5 % off 14400; 4444 is 8 % off 4800), so neither can pass by snapping instead.
+    def autolock_at(baud):
+        def go():
+            arb(baud)
+            force(baud='nil', nbits='nil', par='nil', nstop='nil', invert='nil')
+        return go
+    C.append(('autolock-16099', 'non-standard 16099 Bd must autolock, rounded to 16100',
+              autolock_at(16099), {'autolocked', 'exact', 'flagged'}, b'Hello, World!', 16100))
+    C.append(('autolock-4444', 'non-standard 4444 Bd must autolock, rounded to 4440',
+              autolock_at(4444), {'autolocked', 'exact', 'flagged'}, b'Hello, World!', 4440))
+
+    # ---- THE BACK-OFF: THE LOCK FAILED AND SO DID EVERYTHING ELSE ----------------------
+    # decode() reaches this branch only when the forced rate fits nothing AND detection does no better
+    # on the same samples. No clean signal on this bench produces it -- a good 9600 line always
+    # detects -- so ua_badfrac is stubbed to make every decode look equally bad. That is the only route
+    # to the branch on hardware, and it is stated rather than hidden: the JUDGEMENT is proven offline
+    # (test_serial's 'a retry that is no better backs off to auto'), and what this case gates is the
+    # PLUMBING that only the instrument can show.
+    #
+    # WHICH IS WORTH A HARDWARE CASE because the retry happens inside a touch handler, where the panel
+    # is unresponsive while Lua runs. If capture() honoured a back-off raised BY the retry it would
+    # loop forever and the instrument would need a power cycle. Passing here means the lock was
+    # dropped, exactly one re-acquisition happened, and the handler returned.
+    #
+    # 'adopted' with want_baud 9600 IS THE END STATE, not an offer being answered: no offer is raised on
+    # this path, so requiring offer == nil says nothing was left asking, and the rate check says the app
+    # re-detected the wire after throwing 19200 away. autolock then re-locks 9600 on its own, which is
+    # the whole point -- the operator gets a working lock back without touching Options.
+    def backoff():
+        arb(9600)
+        force(baud='19200', nbits='nil', par='nil', nstop='nil', invert='nil')
+        d.exec('sdec.ua_badfrac_real = sdec.ua_badfrac '
+               'sdec.ua_badfrac = function() return 0.95 end')
+    # 'flagged' IS IN THE SET FOR THE REASON THE 'adopted' NOTE ABOVE GIVES, and leaving it out cost a
+    # run to learn: the re-capture opens wherever it opens, so a mid-byte start flags a few head bytes
+    # on a looping arb. Measured, first run -- 7 err, byte-inexact, everything else exactly right.
+    # force-2x-rate tolerates the same artefact for the same reason.
+    #
+    # THE STATE IS WHAT THIS CASE ASSERTS, and 'adopted' with want_baud carries it: the offer must be
+    # retired and the app must have re-detected 9600 after throwing 19200 away. That is checked before
+    # any byte comparison and fails loudly on its own. The bytes are then judged like any other capture.
+    C.append(('rate-backoff', '9600 wire, FORCED 19200, and nothing else fits either',
+              backoff, {'adopted', 'exact', 'flagged', 'relocked'}, b'Hello, World!', 9600))
+
     C.append(('force-7bit-on-8', '8N1 wire, width FORCED to 7',
               lambda: (arb(9600), force(baud='nil', nbits='7', par='nil',
                                         nstop='nil', invert='nil')),
@@ -523,6 +622,16 @@ def main():
         for m in resid:
             print('  ' + str(m))
     finally:
+        # THE STUB MUST NOT OUTLIVE THIS TOOL. rate-backoff replaces sdec.ua_badfrac, and the app stays
+        # loaded after this exits -- a soak started next would inherit a decoder that thinks every
+        # capture is 95 % bad and would back off on every lap. In the `finally` so a raised case cannot
+        # skip it, and separately in force() so case order cannot either.
+        try:
+            d.exec('if sdec.ua_badfrac_real ~= nil then '
+                   'sdec.ua_badfrac = sdec.ua_badfrac_real; sdec.ua_badfrac_real = nil end '
+                   "sdec.force_conflict = 'adopt'")
+        except Exception as e:
+            print('WARNING: could not restore ua_badfrac -- reload the app before a soak (%s)' % e)
         try:
             g.write('C1:OUTP OFF,LOAD,HZ,PLRT,NOR')
             g.close()

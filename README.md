@@ -27,11 +27,13 @@ settable on this firmware, so a receiver needs an edge-triggered input rather th
 Figures and the gate-by-gate account of where it fails are under **Triggering, in both directions** in
 [REFERENCE.md](docs/REFERENCE.md).
 
-**Automatic rate detection has two known failures**, both rare (together **under 0.5 %** of bench
-points) and both fixed by typing the rate in: a
-short pattern repeated over and over can measure at a small multiple of its true rate, and a logic low
-near **−2 V** can misdetect. Both are characterised with their numbers under **Known failures of
-automatic rate detection** in the [manual](docs/MANUAL.md).
+**Automatic rate detection has two known failures**, both rare — **8 points in 860** on a full bench plan
+— and both fixed by typing the rate in: a short pattern repeated over and over can measure at a small
+multiple of its true rate, and a logic low near **−2 V** can misdetect. **Neither reaches an ordinary
+payload at a standard baud rate:** across 171 600 captures at standard rates, opened from 200 different
+points in the waveform, the fox, the 1 kB text payload, twelve random payloads and the walking-bit
+patterns are clean at every rate from 300 to 250 000 baud. Both are characterised with their numbers under
+**Known failures of automatic rate detection** in the [manual](docs/MANUAL.md).
 
 **Nothing stops a long job early.** A touch press cannot be delivered while a script runs, and the
 front-panel TRIGGER key does **not** deliver `trigger.EVENT_DISPLAY` during a panel-initiated run, so a

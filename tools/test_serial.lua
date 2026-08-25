@@ -772,6 +772,76 @@ check('115200 decodes exactly at 1 MS/s (8.68 samples/bit)', ceiling >= 115200,
 check('115200 still decodes with noise and ringing', nceiling >= 115200,
       'noisy ceiling ' .. tostring(nceiling) .. ' baud')
 
+-- THE FLOOR, WHICH IS THE CEILING'S MIRROR AND MUST CARRY THE SAME TOLERANCE. It did not: the
+-- ceiling read maxbaud * (1 + plaustol) and the floor a bare `b >= 50`, so a line AT the floor whose
+-- fit came out a fraction of a per cent long was refused for being under it -- measured with +/-1
+-- sample of edge jitter, 50 Bd gave "no frame fits a 100.0 sample bit time" while 51 Bd with the
+-- same jitter decoded byte-exact. Forcing that rate framed all 13 bytes with zero errors, which is
+-- what proves the framer was never the problem.
+--
+-- Rendered at 100 samples/bit, because +/-1 sample has to be a SMALL fraction of a bit for this to
+-- test the floor rather than the jitter.
+do
+  clearforce()
+  local function jittered(baud)
+    local spb = 100
+    local fs = baud * spb
+    local jb, jn = GEN_BYTES(HELLO)
+    local rd, ts, nc, ns = GEN({bytes = jb, baud = baud, fs = fs, nbits = 8, par = 0,
+                                gap = 2, lead = 20, tail = 20, loop = false})
+    GEN_RESEED(2468)
+    GEN_RELAY(rd, ns, {jitter_sa = 1})
+    sdec.res, sdec.ck_tot = nil, nil
+    sdec.acq_fs, sdec.smp, sdec.nread = fs, rd, ns
+    sdec.sig_levels(rd, ns); sdec.sig_edges(rd, ns); sdec.sig_idle(rd, ns)
+    local ok, why = sdec.decode_from(rd, ns)
+    return ok, why, (ok and sdec.res ~= nil) and txt(sdec.res) or ''
+  end
+  -- AT the floor: the tolerance is the whole point, so this must decode.
+  local fok, fwhy, ftxt = jittered(sdec.minbaud)
+  check('a line AT the baud floor survives a fit that lands a hair long',
+        fok and has(ftxt, HELLO), string.format('ok=%s why=%s', tostring(fok), tostring(fwhy)))
+  -- And just above it, which is where the real lowest rate lives.
+  local lok, lwhy, ltxt = jittered(110)
+  check('...and so does 110 Bd, the lowest rate on the standard ladder',
+        lok and has(ltxt, HELLO), string.format('ok=%s why=%s', tostring(lok), tostring(lwhy)))
+  -- BELOW the floor it must refuse, and NAME THE FLOOR. Falling through to 'no frame fits' was not
+  -- merely vague: forcing the same rate frames every byte, so that message was false.
+  local bok, bwhy = jittered(50)
+  check('a line below the floor is refused', not bok, tostring(bwhy))
+  check('...and the refusal names the floor rather than blaming the framer',
+        not bok and has(tostring(bwhy), 'floor')
+        and not has(tostring(bwhy), 'no frame fits'), tostring(bwhy))
+  -- THE TWO LIMITS ARE SYMMETRIC NOW, checked directly on ua_plausible and driven from the constants
+  -- rather than from literals, so changing either one cannot leave this passing vacuously.
+  --
+  -- acq_fs IS SET AND wmed CLEARED FIRST. ua_plausible derives the rate from sdec.acq_fs and also
+  -- rejects any T over 1.15 * sdec.wmed -- both left behind by the last capture, and either would
+  -- make this measure something other than the floor.
+  do
+    -- AT THE TOP SAMPLE RATE, so both ends are reachable from one fs: 250 kBd is exactly 4.0
+    -- samples/bit there, which is minsabit, and 100 Bd is 10 000. At a lower fs the ceiling would be
+    -- refused by the samples/bit floor instead and the check would pass for the wrong reason.
+    local kfs, kmed = sdec.acq_fs, sdec.wmed
+    sdec.acq_fs, sdec.wmed = sdec.fs_default, nil
+    local function plaus(b) return sdec.ua_plausible(sdec.acq_fs / b, 80000000) end
+    local tol = sdec.plaustol
+    check('the floor carries plaustol, so a rate just under it is still admissible',
+          plaus(sdec.minbaud) == true and plaus(sdec.minbaud * (1 - tol / 2)) == true,
+          string.format('minbaud %s tol %s', tostring(sdec.minbaud), tostring(tol)))
+    check('...and a rate clearly under the floor is not',
+          plaus(sdec.minbaud * (1 - 2 * tol)) == false,
+          string.format('%.1f Bd', sdec.minbaud * (1 - 2 * tol)))
+    -- The ceiling for comparison. maxbaud and minsabit coincide at this fs, so this asserts the pair
+    -- admits its own limit rather than isolating which of the two did the admitting.
+    check('and the ceiling admits its own limit, as the floor now does',
+          plaus(sdec.maxbaud) == true and plaus(sdec.maxbaud * (1 + 2 * tol)) == false,
+          string.format('maxbaud %s', tostring(sdec.maxbaud)))
+    sdec.acq_fs, sdec.wmed = kfs, kmed
+  end
+  clearforce()
+end
+
 -- ============================================================================
 print('\nacquisition path (real code, mocked instrument)')
 -- ============================================================================
@@ -1322,6 +1392,31 @@ do
     end
     check('Cancel restores every field the form can change, not just some of them', nm == 0,
           nm == 0 and '11 fields round-tripped' or table.concat(miss, ' | '))
+
+    -- AND THE PROVENANCE WITH THEM. options_apply clears autolock_set inside the pcall'd read, so a
+    -- getvalue that raises half way through restores the forced fields and would have left the
+    -- provenance cleared -- the autolock-chosen width then forced, but no longer recorded as
+    -- autolock's, so a later back-off declines to drop it. Raised by review.
+    --
+    -- INSIDE THIS BLOCK because it must leave force_baud as `want` left it: the check after this one
+    -- asserts a restore with no snapshot does not clear the live settings, and reads that value.
+    do
+      local kb, kn, ka = sdec.force_baud, sdec.force_nbits, sdec.autolock_set
+      local aset = {baud = true, nbits = true}
+      sdec.force_baud, sdec.force_nbits = 9600, 8
+      sdec.autolock_set = aset
+      sdec.options_save()
+      sdec.autolock_set = nil                 -- as options_apply does, before a read raises
+      sdec.options_restore()
+      check('Cancel restores the lock PROVENANCE, not only the forced values',
+            sdec.autolock_set == aset and sdec.autolock_set.nbits == true,
+            tostring(sdec.autolock_set))
+      sdec.force_baud, sdec.force_nbits, sdec.autolock_set = kb, kn, ka
+      sdec.opt_snap = {baud = want.baud, nbits = want.nbits, par = want.par,
+                       nstop = want.nstop, invert = want.invert, proto = want.proto,
+                       any = want.any, trig = want.trig, ext = want.ext, fc = want.fc,
+                       view = want.view, aset = ka}
+    end
     -- A restore with no snapshot must decline rather than nil out live settings.
     sdec.opt_snap = nil
     check('a restore with nothing snapshotted declines instead of clearing the settings',
@@ -1332,6 +1427,95 @@ do
     sdec.widths_any, sdec.ui_mode = false, 'text'
   end
 
+  -- ROUNDING A MEASURED RATE TO A CREDIBLE SETTING. What makes a non-standard rate lockable at all,
+  -- so the operator never has to type a number in.
+  do
+    local cases = {
+      {16099, 16100, true,  'nearest 100 above 10 kBd'},
+      {16051, 16100, true,  'rounds up across the midpoint'},
+      {9599,   9600, true,  'nearest 10 below 10 kBd'},
+      {9604,   9600, true,  'rounds down'},
+      {1234,   1230, true,  'a 4 Bd shift at 1234 is 0.32 %'},
+      -- 31250 IS ON THE LADDER and the 100 Bd step would move it to 31300 -- a 0.16 % shift, inside
+      -- the 1 % cap, so only the ladder guard stops it. That is MIDI's rate, from a specification.
+      {31250, 31250, true,  'a standard rate is never moved -- 31250 must not become 31300'},
+      {115200, 115200, true, 'and neither is one that is already a multiple of the step'},
+      {110,     110,  true,  'the lowest supported rate is exact'},
+      -- THE CASCADE. A 10 Bd step at 115 would shift 4.3 %, over the cap, so the whole-baud step
+      -- takes it instead -- untidy but exact, and lockable, which a refusal was not. These three
+      -- returned credible=false under the fixed grid and could not be auto-locked at all.
+      {115,     115,  true,  '10 Bd would shift 4.3 %, so it falls to whole baud'},
+      {113,     113,  true,  'likewise 2.7 %'},
+      {105,     105,  true,  'and 4.8 %, the worst case on the 10 Bd grid'},
+      {0,         0,  false, 'zero is not a rate'},
+    }
+    local bad, nb = {}, 0
+    local ci
+    for ci = 1, table.getn(cases) do
+      local c = cases[ci]
+      local got, cred = sdec.baud_round(c[1])
+      if got ~= c[2] or cred ~= c[3] then
+        nb = nb + 1
+        bad[nb] = string.format('%s: %s got %s/%s want %s/%s', c[4], tostring(c[1]),
+                                tostring(got), tostring(cred), tostring(c[2]), tostring(c[3]))
+      end
+    end
+    check('baud_round rounds, refuses and never moves a standard rate', nb == 0,
+          nb == 0 and string.format('%d cases', table.getn(cases)) or table.concat(bad, ' | '))
+    -- NO STANDARD RATE IS EVER MOVED, swept rather than spot-checked: the ladder is data, and an
+    -- entry added later must not be silently re-rounded.
+    local moved, nmv = {}, 0
+    local si
+    for si = 1, table.getn(sdec.stdbaud) do
+      local s = sdec.stdbaud[si]
+      local g, cr = sdec.baud_round(s)
+      if g ~= s or cr ~= true then
+        nmv = nmv + 1
+        moved[nmv] = string.format('%d -> %s (%s)', s, tostring(g), tostring(cr))
+      end
+    end
+    check('...for every rate on the standard ladder', nmv == 0,
+          nmv == 0 and string.format('%d rates unmoved', table.getn(sdec.stdbaud))
+          or table.concat(moved, ' | '))
+    -- AND NOTHING IT RETURNS AS CREDIBLE CAN FAIL THE DECODER'S OWN CROSS-CHECK, which warns over
+    -- sdec.ratemargin. Swept across the range the app supports.
+    local over, nov = {}, 0
+    local b = 110
+    while b <= sdec.maxbaud do
+      local g, cr = sdec.baud_round(b)
+      if cr and g ~= b then
+        local d = g / b - 1
+        if d < 0 then d = -d end
+        if d > sdec.ratemargin then
+          nov = nov + 1
+          over[nov] = string.format('%d -> %d is %.2f %%', b, g, d * 100)
+        end
+      end
+      b = b + 1
+    end
+    check('...and a credible rounding never exceeds the rate cross-check margin', nov == 0,
+          nov == 0 and string.format('110..%d swept, worst inside %.0f %%', sdec.maxbaud,
+                                     sdec.ratemargin * 100) or table.concat(over, ' | '))
+    -- EVERY RATE IN RANGE MUST BE LOCKABLE. This is the assertion the cascade exists for: with a
+    -- single 10 Bd step, 160 of the 901 integer rates from 100 to 1000 Bd came back not credible, so
+    -- autolock declined them, every recording mode refused for want of a lock, and the operator had
+    -- to type the number -- which is what the rounding was added to prevent. Swept, not sampled: the
+    -- failures were a whole residue class and a spot check of round numbers misses all of them.
+    local nolock, nnl, firstnl = 0, 0, nil
+    local rb = sdec.minbaud
+    while rb <= sdec.maxbaud do
+      local _, cr = sdec.baud_round(rb)
+      if not cr then
+        nnl = nnl + 1
+        if firstnl == nil then firstnl = rb end
+      end
+      rb = rb + 1
+    end
+    check('no rate between the floor and the ceiling is refused as untidy', nnl == 0,
+          nnl == 0 and string.format('%d..%d all lockable', sdec.minbaud, sdec.maxbaud)
+          or string.format('%d refused, first at %s Bd', nnl, tostring(firstnl)))
+  end
+
   -- Apply, by contrast, must KEEP them: the two buttons have to differ.
   sdec.options()
   sdec.options_lock()
@@ -1340,6 +1524,38 @@ do
   check('Apply keeps what Lock Detected pinned, so the two buttons differ',
         sdec.force_baud == kept and kept ~= nil, tostring(sdec.force_baud))
   clearforce()
+
+  -- A HAND-DRIVEN LOCK OWNS ITS FIELDS, and it locks a ROUNDED rate. Both manual lock paths write
+  -- force_* directly, so stale provenance would let a back-off withdraw a width the operator pinned;
+  -- and locking 16099 rather than 16100 is what makes an operator reach for the keypad.
+  do
+    local r0, b0, s0 = sdec.res, sdec.baud, sdec.snapped
+    local pairs2 = {{'Lock Detected', sdec.options_lock}, {'Lock Rate', sdec.lock_toggle}}
+    -- capture() IS STUBBED, because lock_toggle re-captures on purpose -- locking changes the sample
+    -- rate, so the header cells would otherwise describe the old one. A real re-acquire against the
+    -- mock overwrites force_baud and sdec.baud with whatever it decodes, hiding what was locked.
+    local realcap = sdec.capture
+    sdec.capture = function() return true end
+    local pi
+    for pi = 1, 2 do
+      clearforce()
+      sdec.autolock_set = {baud = true, nbits = true, par = true}
+      sdec.res = {nf = 40, errs = {}, nbits = 8, par = sdec.PAR_NONE, nstop = 1,
+                  invert = false, ngood = 40, nbad = 0}
+      sdec.baud, sdec.snapped = 16099, false
+      pairs2[pi][2]()
+      check(pairs2[pi][1] .. ' takes ownership, clearing autolock provenance',
+            sdec.autolock_set == nil, tostring(sdec.autolock_set))
+      check('...and ' .. pairs2[pi][1] .. ' locks 16099 as 16100, a 100 Bd boundary above 10 kBd',
+            sdec.force_baud == 16100, tostring(sdec.force_baud))
+      -- The BAUD cell reads sdec.baud, so it must name the locked value rather than the measurement.
+      check('...and the panel names what was locked, not what was measured',
+            sdec.baud == 16100 and not has(sdec.baud_text(), '?'), sdec.baud_text())
+    end
+    sdec.capture = realcap
+    clearforce()
+    sdec.res, sdec.baud, sdec.snapped = r0, b0, s0
+  end
 end
 
 -- ============================================================================
@@ -1661,6 +1877,63 @@ do
         sdec.ua_head_bad(tail, 79) == 3, tostring(sdec.ua_head_bad(tail, 79)))
   check('and returns 0 when the result carries no region and none is supplied',
         sdec.ua_head_bad(tail) == 0, tostring(sdec.ua_head_bad(tail)))
+
+  -- THE WHOLE HEAD IS RED, NOT ONLY THE ROWS THAT HAPPENED TO FAIL A CHECK. Measured on the panel:
+  -- 'the first 35 bytes are misaligned' beside ERR 35, with the second hex row white because bytes
+  -- 17-32 all passed their stop bit by luck. Every byte in a head is untrustworthy -- that is what
+  -- ERR and the note both count -- so the colour has to cover the same extent.
+  --
+  -- HEX MODE, because 16 bytes per row is what puts a middle row entirely inside the head with
+  -- nothing flagged in it. At 80 columns the text view holds the whole head in row 1 and the bug
+  -- is unreachable.
+  do
+    -- Saves the FULL range it clears. The enclosing block's `sv` covers errs[1..6] only, so
+    -- clearing 64 of them here and leaning on that restore would silently drop the capture's own
+    -- flags for every test after this one.
+    local mode0, page0, ev = sdec.ui_mode, sdec.ui_page, {}
+    local j
+    for j = 1, 64 do ev[j] = sdec.res.errs[j]; sdec.res.errs[j] = nil end
+    sdec.res.errs[1], sdec.res.errs[35] = 'framing', 'framing'
+    sdec.res.headsusp = 40
+    sdec.ui_mode, sdec.ui_page = 'hex', 0
+    check('the extent is the last flagged byte in the region, not the region',
+          sdec.ui_head_extent() == 35, tostring(sdec.ui_head_extent()))
+    sdec.ui_refresh()
+    local function rowred(n)
+      return MD.obj(sdec.ui_row[n]).color == sdec.ui_c_err
+         and MD.obj(sdec.ui_rhx[n]).color == sdec.ui_c_err
+         and MD.obj(sdec.ui_ras[n]).color == sdec.ui_c_err
+    end
+    check('row 1 of the head is red', rowred(1),
+          string.format('%06X', MD.obj(sdec.ui_row[1]).color or 0))
+    check('row 2 is red WITH NO FLAGGED BYTE IN IT -- bytes 17-32 framed cleanly by luck', rowred(2),
+          string.format('%06X', MD.obj(sdec.ui_row[2]).color or 0))
+    check('row 3 is red, holding the last three bytes of the head', rowred(3),
+          string.format('%06X', MD.obj(sdec.ui_row[3]).color or 0))
+    check('and row 4 is NOT -- the colour stops where the extent does', not rowred(4),
+          string.format('%06X', MD.obj(sdec.ui_row[4]).color or 0))
+    check('ERR counts that same extent', sdec.ui_err_n() == 35, tostring(sdec.ui_err_n()))
+    local nh, th = noteN()
+    check('and the note names it, so all three agree', nh == 35, string.format('%q', th))
+
+    -- A HEAD OFF SCREEN COLOURS NOTHING. A 32 kB recording shows its retained tail, so reddening
+    -- row 1 there would flag bytes 24577+ for damage that happened at byte 1.
+    sdec.res.first = 24577
+    sdec.ui_refresh()
+    check('a head that is not on screen reddens no row', not rowred(2),
+          string.format('%06X', MD.obj(sdec.ui_row[2]).color or 0))
+    sdec.res.first = nil
+
+    for j = 1, 64 do sdec.res.errs[j] = nil end
+    sdec.res.headsusp = nil
+    sdec.ui_refresh()
+    check('with no head identified the hex rows go back to white',
+          not rowred(1) and not rowred(2),
+          string.format('%06X %06X', MD.obj(sdec.ui_row[1]).color or 0,
+                        MD.obj(sdec.ui_row[2]).color or 0))
+    for j = 1, 64 do sdec.res.errs[j] = ev[j] end
+    sdec.ui_mode, sdec.ui_page = mode0, page0
+  end
 
   for i = 1, 6 do sdec.res.errs[i] = sv[i] end
   sdec.res.headsusp, sdec.res.nbad = hs0, nbad0b
@@ -4689,6 +4962,92 @@ local function test_chunked()
       check('and a nil state is refused rather than raising',
             sdec.ua_best_probe(nil) == false)
 
+      -- ---- the two sub-multiple guards, and why neither covers the other ----
+      --
+      -- 32 samples/bit, which is what the app's own probe pass gives MIDI's 31250 -- and the only
+      -- regime where a 1/5 candidate is admissible at all, since at 8 sa/bit it is 1.6 samples and
+      -- ua_plausible refuses it. Asserted in BOTH directions: ua_submultiple must be shown NOT to
+      -- catch the odd divisors, or a later simplification deletes ua_minrun_absurd as redundant.
+      do
+        clearforce()
+        local rd4, ts4, nc4, ns4 = GEN({bytes = GEN_BYTES('the quick brown fox jumps over a dog'),
+                                        baud = 31250, fs = 1000000})
+        sdec.acq_fs, sdec.fs = 1000000, 1000000
+        sdec.sig_levels(rd4, ns4)
+        sdec.sig_edges(rd4, ns4)
+        local T4 = sdec.sig_bittime(sdec.w, sdec.nw)
+        check('32 sa/bit fixture fits its own bit time', T4 ~= nil and near(T4, 32, 0.5),
+              tostring(T4))
+        check('wshort is a PULSE WIDTH, about one bit at this rate',
+              sdec.wshort ~= nil and near(sdec.wshort, 32, 1),
+              string.format('wshort=%s', tostring(sdec.wshort)))
+        -- The name collision that made the panel's own range figure report a pulse width. Nothing in
+        -- a decode path reads wlo, so every assertion in this file stayed green while it was wrong.
+        check('and sdec.wlo is still the VOLTAGE sig_levels set, not a width',
+              sdec.wlo ~= nil and sdec.wlo < 10,
+              string.format('wlo=%s V', tostring(sdec.wlo)))
+        check('ua_submultiple catches 1/2', sdec.ua_submultiple(T4 / 2) == true)
+        check('...and 1/4', sdec.ua_submultiple(T4 / 4) == true)
+        check('...and 1/6', sdec.ua_submultiple(T4 / 6) == true)
+        check('but NOT 1/3 -- an odd divisor keeps every multiple\'s parity',
+              sdec.ua_submultiple(T4 / 3) == false)
+        check('and NOT 1/5, which is the misfit the bench reported as 153600',
+              sdec.ua_submultiple(T4 / 5) == false)
+        check('ua_minrun_absurd catches 1/3', sdec.ua_minrun_absurd(T4 / 3) == true)
+        check('...and 1/5', sdec.ua_minrun_absurd(T4 / 5) == true)
+        check('and never the fit itself, whose shortest run is one bit',
+              sdec.ua_minrun_absurd(T4) == false)
+        check('nor 1/2, where 2.0 bit times is inside the 2.5 bound the 0x00 case needs',
+              sdec.ua_minrun_absurd(T4 / 2) == false)
+        check('a nil or zero bit time is refused rather than raising',
+              sdec.ua_minrun_absurd(nil) == false and sdec.ua_minrun_absurd(0) == false)
+        -- WHAT THE 2.5 BOUND COSTS, pinned rather than left to be discovered. A payload whose shortest
+        -- genuine run is three bit times -- 0x00 at 8N1 with a two-bit gap, nine low against three
+        -- high -- has a width GCD of three bit times, so the fit lands on a THIRD of the true rate and
+        -- the truth is the 1/3 candidate. This test refuses that candidate. It is not a regression:
+        -- the same capture reports the third with the test and without it, because the candidate never
+        -- won on score either. Asserted so that moving the bound to 3 or beyond shows up here, since
+        -- that is the change that would let 3x misfits back in.
+        do
+          local zc, znc = {}, 0
+          local L, q, k
+          for L = 1, 3 do
+            for q = 1, 20 do znc = znc + 1; zc[znc] = 1 end
+            for q = 1, 40 do
+              znc = znc + 1; zc[znc] = 0
+              for k = 1, 8 do znc = znc + 1; zc[znc] = 0 end
+              znc = znc + 1; zc[znc] = 1
+              znc = znc + 1; zc[znc] = 1
+              znc = znc + 1; zc[znc] = 1
+            end
+          end
+          local zfs = sdec.pick_fs(28800, 8)
+          local zrd, zts, znn, zns = GEN_RENDER(zc, znc, {baud = 28800, fs = zfs, phase = 0.37})
+          clearforce()
+          sdec.acq_fs, sdec.fs = zfs, zfs
+          sdec.sig_levels(zrd, zns)
+          sdec.sig_edges(zrd, zns)
+          local zT = sdec.sig_bittime(sdec.w, sdec.nw)
+          check('all-0x00 with a two-bit gap fits a THIRD of its true rate',
+                zT ~= nil and near(zfs / zT, 9600, 200),
+                string.format('Tfit %s = %.0f Bd', tostring(zT), zfs / (zT or 1)))
+          check('...and its shortest run is 3.0 of the 1/3 candidate\'s bit times',
+                sdec.wshort ~= nil and near(sdec.wshort / (zT / 3), 3.0, 0.15),
+                string.format('%.2f', (sdec.wshort or 0) / ((zT or 1) / 3)))
+          check('...so the 1/3 candidate is refused -- 3.0 is over the 2.5 bound',
+                sdec.ua_minrun_absurd(zT / 3) == true)
+          check('...while the fit itself is admissible, at 1.0',
+                sdec.ua_minrun_absurd(zT) == false)
+        end
+        -- Too few pulses is not evidence either way, the same floor ua_submultiple uses.
+        local keepnw = sdec.nw
+        sdec.nw = sdec.submult_minpulses - 1
+        check('and too few pulses abstains rather than rejecting',
+              sdec.ua_minrun_absurd(T4 / 5) == false)
+        sdec.nw = keepnw
+        clearforce()
+      end
+
       -- The probe cap: its DEFAULT must be on, since the 4.376 s auto-detect measured on the
       -- instrument is what it exists for, and a nil default would silently restore that.
       check('the ranking probe is capped by default -- the search is the latency offender',
@@ -6605,8 +6964,9 @@ test_modes()
 -- ABANDONING A LOCKED RATE THE WIRE CONTRADICTS.
 --
 -- With the generator's rate doubled under a 19200 lock, every frame fails and repeated Capture
--- presses keep showing an all-red hex page. Nothing recovers it: the operator has to type 0 into
--- Options to get detection back. sdec.decode() refuses such a lock instead.
+-- presses keep showing an all-red hex page. sdec.decode() ADOPTS the rate the wire carries and locks
+-- it, because refusing could not be answered from the panel: rate_accept() has no button, and 'Lock
+-- Rate' hides itself while a rate is locked, which in this state it is.
 --
 -- THE GATE THAT MATTERS IS THE THIRD ONE, and it has its own test below: a rate that FITS but a
 -- format that does not also fails every frame, and that lock must survive. Discarding a rate the
@@ -6630,23 +6990,30 @@ do
   sdec.relocked, sdec.rate_note = nil, nil
   sdec.rate_offer, sdec.rate_refused = nil, nil
   local rok = sdec.decode()
-  -- REFUSED, NOT ADOPTED. A forced rate the wire contradicts is refused, named and offered rather than
-  -- silently replaced, because substituting one puts bytes on the panel at a rate nobody chose.
-  -- sdec.force_conflict = 'adopt' selects the substituting behaviour; tools/test_forcerate.lua covers it.
-  check('a wire at 2x the locked rate makes the app REFUSE rather than substitute a rate',
-        rok == false and sdec.res == nil,
+  -- ADOPTED AND LOCKED. Leaving it unlocked was the earlier adopt behaviour and it stranded the
+  -- recording modes, which refuse without a locked rate.
+  check('a wire at 2x the locked rate is DECODED, not refused',
+        rok ~= false and sdec.res ~= nil,
         string.format('ok=%s res=%s', tostring(rok), tostring(sdec.res)))
-  check('...it keeps the rate the operator set', sdec.force_baud == 19200,
+  check('...and the wire\'s rate replaces the one that fit nothing', sdec.force_baud == 38400,
         tostring(sdec.force_baud))
-  check('...and offers the rate the wire actually carries', sdec.rate_offer == 38400,
-        tostring(sdec.rate_offer))
-  check('...naming both numbers', has(tostring(sdec.rate_refused), '19200')
-        and has(tostring(sdec.rate_refused), '38400'), tostring(sdec.rate_refused))
+  check('...with no offer left outstanding, because nothing is being asked',
+        sdec.rate_offer == nil and sdec.rate_refused == nil,
+        string.format('offer=%s refused=%s', tostring(sdec.rate_offer),
+                      tostring(sdec.rate_refused)))
+  check('...the note names both numbers', has(tostring(sdec.relocked), '19200')
+        and has(tostring(sdec.relocked), '38400'), tostring(sdec.relocked))
   check('...and the note fits the cell',
-        sdec.ui_textw(tostring(sdec.rate_refused)) <= sdec.ui_note_px,
-        string.format('%d px of %d', sdec.ui_textw(tostring(sdec.rate_refused)), sdec.ui_note_px))
+        sdec.ui_textw(tostring(sdec.relocked)) <= sdec.ui_note_px,
+        string.format('%d px of %d', sdec.ui_textw(tostring(sdec.relocked)), sdec.ui_note_px))
   check('...and it reaches the note row', has(table.concat(sdec.ui_notes(), ' | '), '38400'),
         table.concat(sdec.ui_notes(), ' | '))
+  -- THE PANEL AGREES WITH THE LOCK. baud_text formats sdec.baud, so an adopted rate left in sdec.baud
+  -- as the raw measurement would draw a different number from the one now locked.
+  check('...and the BAUD cell shows the adopted rate, unqualified',
+        sdec.baud == 38400 and not has(sdec.baud_text(), '?'), sdec.baud_text())
+  check('...and no back-off was requested, since a rate was found',
+        sdec.rate_backoff == nil, tostring(sdec.rate_backoff))
 
   -- (2) THE SAFETY GATE. A rate that fits, with a format that does not: every frame fails, and the
   -- lock MUST survive because the evidence is against the format, not the rate. rate_note nil is
@@ -6689,25 +7056,34 @@ do
         string.format('force_baud=%s relocked=%s', tostring(sdec.force_baud),
                       tostring(sdec.relocked)))
 
-  -- (4b) THE RETRY HAS TO EARN IT. Raised by review: rate_note also fires on healthy captures (its
-  -- integer-multiple branch is usually the fit erring short), so a CORRECT hand-typed rate with a wrong
-  -- forced FORMAT could have its rate thrown away. Driven deterministically by making every decode look
-  -- equally bad -- detection then beats nothing, so the operator's rate must come back.
+  -- (4b) NOTHING FIT, SO NEITHER RATE IS KEPT. Driven deterministically by making every decode look
+  -- equally bad, so detection beats nothing and there is no rate to adopt. Restoring the failed lock
+  -- here is what left the operator at an all-red panel with Options as the only way out.
   do
     clearforce()
     local rd5, ts5, nc5, nsmp5 = GEN({bytes = hb, baud = 38400, fs = FS})
     analyse(rd5, nsmp5, FS)
     sdec.smp, sdec.nread = rd5, nsmp5
     sdec.force_baud = 19200
-    sdec.relocked = nil
+    sdec.force_nbits, sdec.force_par = 8, sdec.PAR_NONE
+    -- Provenance: the width is autolock's, the parity was typed. Only the first may be dropped.
+    sdec.autolock_set = {baud = true, nbits = true}
+    sdec.relocked, sdec.rate_backoff = nil, nil
     local realbf = sdec.ua_badfrac
     sdec.ua_badfrac = function() return 0.95 end     -- nothing improves on anything
     sdec.decode()
     sdec.ua_badfrac = realbf
-    check('a retry that is no better restores the operator rate',
-          sdec.force_baud == 19200, tostring(sdec.force_baud))
-    check('...and claims no relock, because none helped',
-          sdec.relocked == nil, tostring(sdec.relocked))
+    check('a retry that is no better backs off to auto rather than keeping a rate that failed',
+          sdec.force_baud == nil, tostring(sdec.force_baud))
+    check('...says so on the note row, naming the rate it dropped',
+          has(tostring(sdec.relocked), '19200'), tostring(sdec.relocked))
+    check('...and asks for one fresh capture', sdec.rate_backoff == true,
+          tostring(sdec.rate_backoff))
+    check('...dropping the width autolock chose', sdec.force_nbits == nil,
+          tostring(sdec.force_nbits))
+    check('...but NOT the parity the operator typed', sdec.force_par == sdec.PAR_NONE,
+          tostring(sdec.force_par))
+    sdec.rate_backoff = nil
   end
 
   -- (5) IT IS PER-PRESS, NOT PER-ACQUIRE, and that distinction is the fix for a real failure.

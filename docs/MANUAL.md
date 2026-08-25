@@ -639,8 +639,9 @@ only one narrow pulse per frame to measure. `0x00` padding is fine.
 
 **Read this in proportion.** Most serial decoders require you to tell them the baud rate. This one
 measures it, and gets it right on every standard rate and on arbitrary ones like 1379, 8123 and 104857.
-Two cases are known where the measurement goes wrong, together fewer than **one point in 200**, and in
-both of them the remedy is to supply the rate — which is what other tools ask for as a matter of course.
+Two cases are known where the measurement goes wrong — **8 points in 860** on a full bench plan, and none
+of them an ordinary payload at a standard rate — and in both the remedy is to supply the rate, which is
+what other tools ask for as a matter of course.
 
 **Both are fixed by typing the rate into `Options ▸ Baud Rate`** — verified, every frame decoded with
 zero errors once the rate was given. The numbers are below so you can judge the risk yourself.
@@ -652,9 +653,23 @@ standard rates, because a real device almost always uses one.
 Gaps of many different lengths pin the measurement down well; gaps of only a few lengths do not. But
 where detection fails it is usually not the measurement that is wrong — it is the second step. A
 different reading at a simple multiple of the measured rate can land on a standard value while the true
-rate does not, and that coincidence is allowed to outweigh a correct measurement. **This is why the
-failures below happen only on non-standard rates:** when the true rate is itself a standard one, nothing
-can outbid it.
+rate does not, and that coincidence is allowed to outweigh a correct measurement.
+
+**Two checks stand between a correct measurement and its own multiples**, and both apply only once the
+measurement itself lands on a standard rate — where the true rate is non-standard there is nothing to
+defend, which is why the failures below concentrate there.
+
+* **Where the pulses fall.** At the true bit time some pulses span an odd number of bit cells; divide
+  that bit time by an even number and every pulse spans an even count. So a halved, quartered or
+  sixthed reading is recognisable from the pulse lengths alone.
+* **How short the shortest pulse is.** Dividing by an *odd* number leaves the counts' parity exactly as
+  it was, so thirds and fifths are invisible to the first check. What gives them away is that they claim
+  a longer minimum. Ordinary traffic has single-bit runs — a ten-bit frame opens with a one-bit start
+  bit — so a reading whose shortest run is three or five bit times is describing something else, and a
+  reading past about two and a half is refused. **The cost is real and worth knowing:** a payload whose
+  shortest genuine run *is* three bit times or more, such as `0x00` sent with a two-bit gap between
+  bytes, cannot have a third-of-the-rate reading accepted. Such a payload reports a third of its true
+  rate either way, so this refuses nothing that was working, but it is the shape to watch for.
 
 ### 1. A short pattern repeated over and over
 
@@ -681,35 +696,29 @@ runner-up under the reading, but not in this case — verified, the note is empt
 are the whole of the signal, and where the frames happen to survive there is none. If a repeating test
 pattern reports a standard rate you did not configure, distrust it and lock the rate.
 
-**How rare.** **24 of 6 714** capture-and-decode points across four full bench sweeps — **0.36 %, about
-one in 280.** Every one was a repeating pattern at a non-standard rate. **No ordinary payload at a
-standard rate has ever shown it** — the fox, the 1 kB text payload and twelve random payloads are clean
-across every rate from 300 to 250 000 baud.
+**How rare, and where.** Measured over **1 677 waveform-and-rate cells, each captured from 200 different
+points in the waveform — 335 400 captures.** The capture's opening point matters more than anything else
+here, because it decides how much of the first byte is missing and therefore how damaged the reading looks:
 
-**Split by rate, it is not spread evenly at all.** Over a separate 12 341-point sweep, seven laps across
-41 waveforms and 43 rates:
-
-| rate | points | affected | |
+| the true rate is | captures | reported wrong | |
 |---|---|---|---|
-| a **standard** baud rate | 6 314 | **0** | **0.000 %** |
-| a **non-standard** rate | 6 027 | 24 | 0.398 % |
+| a **standard** baud rate | 171 600 | 882 | **0.51 %** |
+| a **non-standard** rate | 163 800 | 4 554 | 2.78 % |
 
-Not one failure at a standard rate **in that offline sweep**, and there is a structural reason: a bit time
-that lands on a standard rate and decodes without error is not overruled, because the check that would
-allow it requires the reading to be visibly failing first. The worst case there is the opposite — a rate
-that is an exact half of a standard one without being standard itself: **125 000 reported as 250 000
-accounts for 7 of the 24.**
+**Every one of the 882 is an impaired signal, not merely a repeating pattern:** three waveforms carrying
+0.6 V of sinusoidal drift and one carrying heavy edge jitter. **No ordinary payload misreports at a
+standard rate at all** — the fox, the 1 kB text payload, twelve random payloads and the walking-bit
+patterns are clean at every standard rate from 300 to 250 000 baud, across all 200 opening points. That
+is 171 600 captures, and the split above is drawn from the same run.
 
-**On the instrument itself, however, standard rates are not immune, and one case is worth stating plainly.**
-A waveform carrying a **LIN-style break field** — 13 or more bits held low, which is not valid 8N1 at all —
-was measured at **three times** its true rate at 600, 19 200, 31 250, 38 400, 57 600 and 76 800 baud, in
-every lap of a 14-hour soak, and **with no framing errors to warn of it**. Expected 19 200, reported 57 600,
-and the bytes were confidently wrong. This decoder does not claim to read LIN, and a break field is outside
-UART by construction — but if you are probing a bus that begins frames with a long dominant field, set the
-rate by hand and do not trust the measured one.
+A **LIN-style break field** — 13 or more bits held low, which is not valid 8N1 at all — is the hardest
+case the bench carries, and it reads correctly at 600, 19 200, 31 250, 38 400, 57 600 and 76 800 baud from
+every one of the 200 openings. This decoder does not claim to read LIN, and a break field is outside
+UART by construction; if you are probing a bus that begins frames with a long dominant field, the rate is
+worth setting by hand.
 
-No **ordinary UART payload** at a standard rate has shown this: the fox, the 1 kB text payload and twelve
-random payloads are clean at every rate from 300 to 250 000 baud, on the bench and offline.
+**On the instrument the same plan gives 8 wrong rates in 860 capture-and-decode points**, on three
+waveforms: the repeating single-value blocks, a LIN frame, and a heavy-jitter case.
 
 One qualification, which is not this failure. Half of a standard rate is often *also* standard — 4800 is
 half of 9600 — and for perfectly regular traffic the two readings are the same waveform, as **Some traffic

@@ -999,6 +999,104 @@ function GEN_RING(rd, n, frac, period, decay)
   return rd
 end
 
+-- A LINE DRIVEN BY A MECHANICAL RELAY, which fails in ways no electronic driver does.
+--
+-- Three independent artefacts, and each breaks a different assumption:
+--
+--   ASYMMETRIC DELAY. Operate is coil-inductance limited and release is spring limited, so make and
+--   break times differ -- commonly 2:1. Every edge therefore lands late, and by a DIFFERENT amount
+--   depending on direction, which is pulse-width distortion the bit-time fit cannot model: it fits
+--   one period to widths that have been stretched one way and squeezed the other.
+--
+--   CONTACT BOUNCE. The contact chatters on arrival, so one commanded transition delivers several
+--   edges. On a start bit that is a false start rather than a framing error -- it surfaces in
+--   sdec.res.nfalse, not in ERR, which is exactly why the two counters are separate.
+--
+--   JITTER. Operate time varies with coil temperature and contact wear, so the delay is not even a
+--   constant that pre-compensation could remove.
+--
+-- Edges are found by THRESHOLD CROSSING, one index per transition, and collected from the pristine
+-- array BEFORE anything is written -- rewriting as it scans would re-detect the bounce edges it had
+-- just created and bounce the bounce. A delay long enough to swallow the following edge is left to
+-- swallow it: that is what a relay too slow for the bit rate does, and suppressing it would hide the
+-- failure this vector exists to produce.
+--
+-- Delays are in SAMPLES, so the caller converts from milliseconds using the render's sample rate.
+-- The post-delay edge is a STEP, not a ramp: contact closure really is abrupt once the armature
+-- moves, and the ramp GEN put there belongs to the commanded edge that is being displaced.
+function GEN_RELAY(rd, n, o)
+  o = o or {}
+  local mk    = math.floor((o.make_sa or 0) + 0.5)    -- delay on a transition toward `closed`
+  local bk    = math.floor((o.break_sa or 0) + 0.5)   -- delay on the transition away from it
+  local jit   = o.jitter_sa or 0
+  local bn    = o.bounce_n or 0
+  local bsa   = o.bounce_sa or 0
+  -- Which direction the relay CLOSES in. A relay pulling the line down closes on a falling edge;
+  -- one sourcing the mark closes on a rising one. It changes which delay applies to the start bit,
+  -- and the start bit is the edge the receiver synchronises on, so it is not a detail.
+  local closefall = o.close_is_fall
+  if closefall == nil then closefall = true end
+
+  local lo, hi = rd[1], rd[1]
+  local i
+  for i = 1, n do
+    if rd[i] < lo then lo = rd[i] end
+    if rd[i] > hi then hi = rd[i] end
+  end
+  local thr = (lo + hi) / 2
+  if hi - lo < 0.05 then return rd end          -- a flat line has no edges to displace
+
+  -- Pass 1: collect crossings and the level each one moves to.
+  local ei, ne = {}, 0
+  for i = 2, n do
+    local was, now = rd[i-1] >= thr, rd[i] >= thr
+    if was ~= now then
+      ne = ne + 1
+      ei[ne] = {at = i, rising = now, from = rd[i-1], to = rd[i]}
+    end
+  end
+
+  -- Pass 2: displace each edge, then chatter it.
+  local k
+  for k = 1, ne do
+    local e = ei[k]
+    local closing = (e.rising and not closefall) or ((not e.rising) and closefall)
+    local d = bk
+    if closing then d = mk end
+    if jit > 0 then d = d + math.floor(rnd() * jit + 0.5) end
+    if d < 0 then d = 0 end
+    -- Hold the OLD level across the delay, overwriting the commanded ramp.
+    local j
+    for j = 0, d - 1 do
+      local p = e.at + j
+      if p > n then break end
+      rd[p] = e.from
+    end
+    local land = e.at + d
+    if land <= n then rd[land] = e.to end
+    -- BOUNCE ONLY ON CLOSE. An opening contact separates and stays separated; it is the closing one
+    -- whose armature and contact spring ring. bn half-cycles spread over bsa samples.
+    if closing and bn > 0 and bsa > 0 then
+      local seg = bsa / bn
+      local b
+      for b = 1, bn do
+        local v = e.from                       -- odd bounces fall back to the old level
+        if math.mod(b, 2) == 0 then v = e.to end
+        local s0 = land + math.floor((b - 1) * seg + 0.5)
+        local s1 = land + math.floor(b * seg + 0.5) - 1
+        local p
+        for p = s0, s1 do
+          if p >= 1 and p <= n then rd[p] = v end
+        end
+      end
+      -- Settled, and it must be the NEW level however the chatter count came out odd.
+      local after = land + bsa
+      if after <= n then rd[after] = e.to end
+    end
+  end
+  return rd
+end
+
 -- Slow baseline wander: ground bounce, thermal drift, a common-mode offset the
 -- probe return does not share. Dangerous because the threshold is decided ONCE
 -- for the whole capture, so drift eats the hysteresis budget.

@@ -47,9 +47,14 @@ KEYS = ['cases', 'ok', 'refused', 'fmtdiff', 'ratediff', 'shortrun', 'headbleed'
 # ONLY AT THE GATE'S OWN SETTINGS. A different seed or offset count draws different windows, so the
 # baselines do not describe it and the ratchet is skipped rather than applied wrongly.
 RATCHET_SEED, RATCHET_OFFSETS = 1, 24
+# LOWERED 2026-08-24 by ua_minrun_absurd, which rejects the ODD sub-multiples ua_submultiple cannot
+# see: ratediff 148 -> 130, and fmtdiff 533 -> 515 as a consequence, since a decode at the wrong rate
+# also reads the wrong format. HARD stayed 0 and headbleed 96; shortrun rose 966 -> 977, which is the
+# honest cost -- blocking a rescaling removes the frames a shorter bit time invented, so a few cells
+# now have too few trusted bytes to judge instead of a confident wrong rate.
 RATCHET = {
-    'ratediff': (148, 'periodic-payload rate misfit, issue #46'),
-    'fmtdiff': (533, '7E1/8N1 ambiguity, issue #49'),
+    'ratediff': (130, 'periodic-payload rate misfit, issue #46'),
+    'fmtdiff': (515, '7E1/8N1 ambiguity, issue #49'),
 }
 LINE = re.compile(r'^SHARD (\d+)/(\d+) seed (\d+): (.*)$')
 

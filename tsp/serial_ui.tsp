@@ -1072,6 +1072,52 @@ function sdec.ui_field_values()
   return v
 end
 
+-- How far a misaligned head reaches, and whether it is on screen. Returns extent, onscreen --
+-- extent nil when no head was identified.
+--
+-- ONE FUNCTION BECAUSE THREE INDICATORS SHARE THIS NUMBER and must agree: the note names the
+-- extent, ERR counts it (sdec.ua_err_count), and the hex rows covering it are red. Asked
+-- separately, the colour asked the narrower question -- did this byte FAIL a check -- so a head
+-- reddened only where it happened to fail: 'the first 35 bytes are misaligned' beside ERR 35, with
+-- bytes 17-32 painted white for passing their stop bit by luck.
+--
+-- A RECORDING'S HEAD MAY BE OFF SCREEN. ck_decode discards r.headsusp with its window, so the run's
+-- figure comes from ck_tot's first window; but a 32 kB run shows its retained TAIL, and both the
+-- note and the colour would then point at the wrong end. res.first == 1 means the head is on screen.
+function sdec.ui_head_extent()
+  local hs = nil
+  if sdec.res ~= nil and sdec.res.headsusp ~= nil and sdec.res.headsusp > 0 then
+    hs = sdec.res.headsusp
+  elseif sdec.ck_tot ~= nil and sdec.ck_tot.headsusp ~= nil and sdec.ck_tot.headsusp > 0 then
+    hs = sdec.ck_tot.headsusp
+  end
+  if hs == nil then return nil, true end
+  local onscreen = (sdec.res == nil or sdec.res.first == nil or sdec.res.first <= 1)
+  -- HOW FAR THE DAMAGE ACTUALLY REACHES, not how far the SUSPICION does. headsusp is idle1 - 1: the
+  -- bytes before the first inter-message GAP, which ua_run excludes from the parity vote as a
+  -- conservative region. It is not a count of bad bytes, and reporting it as one over-claimed badly
+  -- -- 'the first 79 byte(s) are misaligned' over a capture with 3 flagged bytes and a first row that
+  -- was not even red, because the fox vector runs 79 bytes before its first gap. An earlier capture
+  -- said 36 against 20 errors, close enough to look plausible, which is how it survived.
+  --
+  -- THE LAST FLAGGED BYTE IN THAT REGION, so 'the first N' is literally true: N covers every byte the
+  -- decoder could not frame, and nothing beyond. Only countable when the head is ON SCREEN -- a
+  -- 32 kB tail does not carry its own head's errs -- so the other branch keeps no number at all
+  -- rather than quoting the suspect region as if it were damage.
+  if onscreen and sdec.res ~= nil and sdec.res.errs ~= nil then
+    -- THROUGH ua_head_bad, not a loop of its own: ERR counts this same region, and when the two
+    -- derived it separately the panel said four bytes were misaligned beside an ERR of 1.
+    local last = sdec.ua_head_bad(sdec.res, hs)
+    if last > 0 then hs = last end
+  elseif sdec.ck_tot ~= nil and sdec.ck_tot.headbad ~= nil
+         and sdec.ck_tot.headbad > 0 then
+    -- FROM THE RUN, for a tail that does not contain its own head. ck_decode counted it on the window
+    -- that produced the first bytes, which is the only place the opening bytes exist.
+    hs = sdec.ck_tot.headbad
+  end
+  return hs, onscreen
+end
+
 -- ============================================================================
 -- The note / warning line
 -- ============================================================================
@@ -1219,46 +1265,10 @@ function sdec.ui_notes()
   -- bytes are THERE, on screen, looking like data; most are flagged but a frame can pass its
   -- stop bit and parity by chance.
   --
-  -- A RECORDING SAYS IT TOO, and it did not before: ck_decode computes r.headsusp per window and threw
-  -- it away with the window, so an 8 kB run that began part way through a byte showed 22 red bytes in
-  -- its first two rows and an empty note row, while a FRAME capture on the same wire named the cause.
-  -- ck_tot.headsusp is that figure, taken from the first window only.
-  --
-  -- BUT THE WORDING TURNS ON WHETHER THOSE BYTES ARE ON SCREEN. A recording leaves its retained TAIL
-  -- showing, and for a 32 kB run the tail starts at byte 24577 -- the misaligned head is long gone from
-  -- the panel and is in the FILE. Saying 'the first N byte(s) are misaligned' over bytes 24577-32768
-  -- would point at the wrong end of the stream, which is the same mistake the tail note above was
-  -- written to fix. res.first tells the two apart: 1 means the head IS what you are looking at.
-  local hs = nil
-  if sdec.res ~= nil and sdec.res.headsusp ~= nil and sdec.res.headsusp > 0 then
-    hs = sdec.res.headsusp
-  elseif sdec.ck_tot ~= nil and sdec.ck_tot.headsusp ~= nil and sdec.ck_tot.headsusp > 0 then
-    hs = sdec.ck_tot.headsusp
-  end
+  -- THE EXTENT AND WHETHER IT IS ON SCREEN both come from sdec.ui_head_extent, which the hex rows
+  -- read too -- see there for why one function rather than two.
+  local hs, onscreen = sdec.ui_head_extent()
   if hs ~= nil then
-    local onscreen = (sdec.res == nil or sdec.res.first == nil or sdec.res.first <= 1)
-    -- HOW FAR THE DAMAGE ACTUALLY REACHES, not how far the SUSPICION does. headsusp is idle1 - 1: the
-    -- bytes before the first inter-message GAP, which ua_run excludes from the parity vote as a
-    -- conservative region. It is not a count of bad bytes, and reporting it as one over-claimed badly
-    -- -- 'the first 79 byte(s) are misaligned' over a capture with 3 flagged bytes and a first row that
-    -- was not even red, because the fox vector runs 79 bytes before its first gap. An earlier capture
-    -- said 36 against 20 errors, close enough to look plausible, which is how it survived.
-    --
-    -- THE LAST FLAGGED BYTE IN THAT REGION, so 'the first N' is literally true: N covers every byte the
-    -- decoder could not frame, and nothing beyond. Only countable when the head is ON SCREEN -- a
-    -- 32 kB tail does not carry its own head's errs -- so the other branch keeps no number at all
-    -- rather than quoting the suspect region as if it were damage.
-    if onscreen and sdec.res ~= nil and sdec.res.errs ~= nil then
-      -- THROUGH ua_head_bad, not a loop of its own: ERR counts this same region, and when the two
-      -- derived it separately the panel said four bytes were misaligned beside an ERR of 1.
-      local last = sdec.ua_head_bad(sdec.res, hs)
-      if last > 0 then hs = last end
-    elseif sdec.ck_tot ~= nil and sdec.ck_tot.headbad ~= nil
-           and sdec.ck_tot.headbad > 0 then
-      -- FROM THE RUN, for a tail that does not contain its own head. ck_decode counted it on the window
-      -- that produced the first bytes, which is the only place the opening bytes exist.
-      hs = sdec.ck_tot.headbad
-    end
     -- IT STATES THE EXTENT AND STOPS. The note shares its row with the page counter, which leaves it
     -- 556 px, and every trailing reassurance was what got cut: measured on the panel, the long form was
     -- 757 px and rendered as '...everythi...'. Ending at 'misaligned.' removes the clause rather than
@@ -2164,6 +2174,10 @@ function sdec.ui_refresh()
   local mode = sdec.ui_mode
   local vw = sdec.ui_cur()
   local r = sdec.res
+  -- The misaligned head, once for the whole loop rather than per row: it is one number about the
+  -- capture, and ua_head_bad walks the errs array to get it.
+  local hext, honscr = sdec.ui_head_extent()
+  if not honscr then hext = nil end
   local i
   for i = 1, sdec.ui_nrow do
     local i0 = base + (i - 1) * cols + 1
@@ -2190,6 +2204,11 @@ function sdec.ui_refresh()
       -- bit. Per-character colour is impossible with one object per row, and per-row
       -- is enough to find the damage.
       bad = false
+      -- OR WHEN IT LIES INSIDE A MISALIGNED HEAD, whether or not those frames failed a check. In a
+      -- head the bit boundaries are wrong, so a frame can pass its stop bit and parity by luck and
+      -- still hand back a plausible WRONG byte -- and the note and ERR both already count the whole
+      -- extent. Reaching only part of a row still reddens it: the row is the unit of colour.
+      if hext ~= nil and i0 <= hext then bad = true end
       if r ~= nil then
         local j
         for j = i0, i0 + cols - 1 do
@@ -2200,9 +2219,10 @@ function sdec.ui_refresh()
           -- claims nothing new -- it agrees with what is on screen, and damage is meant to be
           -- visible at a glance.
           --
-          -- ERR STILL COUNTS INTERIOR ERRORS ONLY (ua_bad_interior): a permanently non-zero
-          -- count on a healthy gapless line is decoration, not a fault indicator. The two
-          -- differ on purpose; do not re-unify them.
+          -- ERR EXCLUDES THE SAME EDGES (sdec.ua_err_count skips resync debris and the clipped
+          -- final frame), so a row can be red with ERR at 0. That is deliberate: a count that is
+          -- never zero on a healthy gapless line is decoration, while the colour only ever agrees
+          -- with the '??' already drawn in it.
           if j <= r.nf and r.errs[j] ~= nil then bad = true end
         end
       end

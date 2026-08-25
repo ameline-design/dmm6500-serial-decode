@@ -428,7 +428,7 @@ end
 --   * sdec.flog_path/flog_n/flog_bytes -- the byte log, which spans captures by design.
 function sdec.clear_measured()
   sdec.acq_fs, sdec.acq_fs_est = nil, nil
-  sdec.w, sdec.nw, sdec.wmed = nil, 0, nil
+  sdec.w, sdec.nw, sdec.wmed, sdec.wshort = nil, 0, nil, nil
   sdec.idle, sdec.idle_weak = nil, nil
   sdec.modal, sdec.run0, sdec.run1 = nil, nil, nil
   sdec.st0 = 1
@@ -751,6 +751,8 @@ function sdec.sig_bittime()
   table.sort(s)
   sdec.wmed = s[math.floor(nw / 2) + 1]
 
+  sdec.wshort = s[math.floor(nw * 0.05) + 1]
+
   local seeds, nseed, last = {}, 0, 0
   for k = 1, nw do
     local v = s[k]
@@ -796,8 +798,41 @@ function sdec.sig_snap(b)
   return b, false
 end
 
+sdec.baud_round_lo   = 10       -- step below the crossover
+sdec.baud_round_hi   = 100      -- step above it
+sdec.baud_round_at   = 10000    -- crossover
+sdec.baud_round_fine = 1        -- the fallback: always inside the cap above sdec.minbaud
+sdec.baud_round_tol  = 0.01     -- largest shift any step may make
+-- Round a MEASURED rate to a credible setting: the COARSEST step that moves it less than 1 %.
+--   [...]
+-- Refusing here rather than at each call site means no caller can reintroduce it.
+-- THE 1 % CAP STILL DECIDES EACH STEP, so a coarse step is taken only where it is nearly free: a
+-- wrong rate is far worse than an untidy one, and the decoder's own margin (sdec.ratemargin) is 4 %.
+function sdec.baud_round(b)
+  if b == nil or b <= 0 then return b, false end
+  local i
+  for i = 1, table.getn(sdec.stdbaud) do
+    if sdec.stdbaud[i] == b then return b, true end
+  end
+  local steps, ns = {}, 0
+  if b >= sdec.baud_round_at then ns = ns + 1; steps[ns] = sdec.baud_round_hi end
+  ns = ns + 1; steps[ns] = sdec.baud_round_lo
+  ns = ns + 1; steps[ns] = sdec.baud_round_fine
+  local k
+  for k = 1, ns do
+    local r = math.floor(b / steps[k] + 0.5) * steps[k]
+    if r > 0 then
+      local d = r / b - 1
+      if d < 0 then d = -d end
+      if d <= sdec.baud_round_tol then return r, true end
+    end
+  end
+  return b, false
+end
+
 sdec.minsabit = 4
 sdec.maxbaud  = 250000
+sdec.minbaud  = 100
 
 -- One-line verdict on the signal, for the panel and the log.
 function sdec.sig_quality()
@@ -1715,7 +1750,8 @@ function sdec.ua_plausible(T, n)
   if sdec.wmed ~= nil and sdec.wmed > 0 and T > 1.15 * sdec.wmed then return false end
   local fs = sdec.acq_fs or sdec.fs
   local b = fs / T
-  return b >= 50 and b <= sdec.maxbaud * (1 + sdec.plaustol)
+  return b >= sdec.minbaud * (1 - sdec.plaustol)
+     and b <= sdec.maxbaud * (1 + sdec.plaustol)
 end
 
 sdec.submult_minpulses = sdec.submult_minpulses or 20
@@ -1743,6 +1779,21 @@ function sdec.ua_submultiple(T)
   return odd < sdec.submult_oddfrac * seen
 end
 
+sdec.submult_maxrunlo = sdec.submult_maxrunlo or 2.5
+
+-- Does this candidate claim the SHORTEST pulse on the wire is several bit times long?
+--   [...]
+-- THE 5TH PERCENTILE, NOT THE MINIMUM: one 2-sample notch would silence this as one loop-seam width
+-- silenced the odd test -- and that notch is itself how a fifth-of-the-bit-time fit arises.
+-- Gates CANDIDATES only, never the fit, and only behind snap1 -- see ua_best_probe.
+function sdec.ua_minrun_absurd(T)
+  if T == nil or T <= 0 then return false end
+  if (sdec.nw or 0) < sdec.submult_minpulses then return false end
+  local lo = sdec.wshort
+  if lo == nil or lo <= 0 then return false end
+  return lo / T > sdec.submult_maxrunlo
+end
+
 -- Whether the fit is consistent with the pulse-width distribution it came from.
 --   [...]
 -- out of range and rescaling would only manufacture a plausible-looking wrong answer.
@@ -1767,6 +1818,9 @@ function sdec.ua_implausible_why(T)
   if fs / T > sdec.maxbaud * (1 + sdec.snaptol) then
     return string.format('%.0f baud is past the %d kBd ceiling',
                          fs / T, sdec.maxbaud / 1000)
+  end
+  if fs / T < sdec.minbaud * (1 - sdec.plaustol) then
+    return string.format('%.0f baud is below the %d baud floor', fs / T, sdec.minbaud)
   end
   return string.format('no frame fits a %.1f sample bit time', T)
 end
@@ -1879,7 +1933,7 @@ function sdec.ua_best_probe(st)
   local T, ratio, q = st.cands[i].T, st.cands[i].r, st.cands[i].q
   if st.mayrescale and ratio ~= 1 and q ~= nil and q >= st.qmin
      and sdec.ua_plausible(T, st.n)
-     and not (st.snap1 and sdec.ua_submultiple(T)) then
+     and not (st.snap1 and (sdec.ua_submultiple(T) or sdec.ua_minrun_absurd(T))) then
     local _, snapped = sdec.sig_snap(st.fs / T)
     if snapped then
       local sc = sdec.ua_probe(st.rd, st.n, T)
@@ -2238,7 +2292,7 @@ end
 sdec.relock_badfrac   = 0.25     -- interior frames in error before the lock is doubted
 sdec.relock_minframes = 8        -- fewer frames than this and a bad fraction is not evidence
 
-sdec.force_conflict = sdec.force_conflict or 'ask'
+sdec.force_conflict = sdec.force_conflict or 'adopt'
 
 -- Fraction of INTERIOR frames that failed, or nil when there are too few to judge. Interior, because
 -- head resync and a clipped tail fail on healthy captures too.
@@ -2272,8 +2326,11 @@ function sdec.decode()
   if ok2 and bf2 ~= nil and bf2 < sdec.relock_badfrac and sdec.baud ~= nil then
     local found = sdec.baud
     if sdec.force_conflict == 'adopt' then
-      sdec.relocked = string.format('%g baud fit nothing -- unlocked, and this capture reads %.0f',
-                                    was, found)
+      local adopt = sdec.baud_round(found)
+      sdec.force_baud = adopt
+      sdec.baud, sdec.snapped = adopt, true
+      sdec.relocked = string.format('%g baud fit nothing -- now locked to %.0f, which this capture reads',
+                                    was, adopt)
       return ok2, why2
     end
     sdec.force_baud = was
@@ -2284,9 +2341,17 @@ function sdec.decode()
         was, found)
     return false, string.format('%g baud fits nothing; this capture reads %.0f', was, found)
   end
-  sdec.force_baud = was
-  sdec.relocked = nil
-  return sdec.decode_from(sdec.smp, sdec.nread)
+  sdec.relocked = string.format('%g baud fits nothing, and no other rate fit either -- ' ..
+                                'back to auto-detect', was)
+  sdec.rate_backoff = true
+  sdec.force_baud = nil
+  if sdec.autolock_set ~= nil then
+    if sdec.autolock_set.nbits then sdec.force_nbits = nil end
+    if sdec.autolock_set.par   then sdec.force_par   = nil end
+    if sdec.autolock_set.nstop then sdec.force_nstop = nil end
+    sdec.autolock_set = nil
+  end
+  return ok2, why2
 end
 
 -- Presentation
@@ -3726,6 +3791,30 @@ function sdec.ui_field_values()
   return v
 end
 
+-- How far a misaligned head reaches, and whether it is on screen. Returns extent, onscreen --
+--   [...]
+-- A RECORDING'S HEAD MAY BE OFF SCREEN. ck_decode discards r.headsusp with its window, so the run's
+-- figure comes from ck_tot's first window; but a 32 kB run shows its retained TAIL, and both the
+-- note and the colour would then point at the wrong end. res.first == 1 means the head is on screen.
+function sdec.ui_head_extent()
+  local hs = nil
+  if sdec.res ~= nil and sdec.res.headsusp ~= nil and sdec.res.headsusp > 0 then
+    hs = sdec.res.headsusp
+  elseif sdec.ck_tot ~= nil and sdec.ck_tot.headsusp ~= nil and sdec.ck_tot.headsusp > 0 then
+    hs = sdec.ck_tot.headsusp
+  end
+  if hs == nil then return nil, true end
+  local onscreen = (sdec.res == nil or sdec.res.first == nil or sdec.res.first <= 1)
+  if onscreen and sdec.res ~= nil and sdec.res.errs ~= nil then
+    local last = sdec.ua_head_bad(sdec.res, hs)
+    if last > 0 then hs = last end
+  elseif sdec.ck_tot ~= nil and sdec.ck_tot.headbad ~= nil
+         and sdec.ck_tot.headbad > 0 then
+    hs = sdec.ck_tot.headbad
+  end
+  return hs, onscreen
+end
+
 -- The note / warning line
 --   [...]
 -- them -- so a second real warning would not merely be hidden, nothing would say it existed. The
@@ -3789,21 +3878,8 @@ function sdec.ui_notes()
     add(sdec.li_breaknote())
   end
 
-  local hs = nil
-  if sdec.res ~= nil and sdec.res.headsusp ~= nil and sdec.res.headsusp > 0 then
-    hs = sdec.res.headsusp
-  elseif sdec.ck_tot ~= nil and sdec.ck_tot.headsusp ~= nil and sdec.ck_tot.headsusp > 0 then
-    hs = sdec.ck_tot.headsusp
-  end
+  local hs, onscreen = sdec.ui_head_extent()
   if hs ~= nil then
-    local onscreen = (sdec.res == nil or sdec.res.first == nil or sdec.res.first <= 1)
-    if onscreen and sdec.res ~= nil and sdec.res.errs ~= nil then
-      local last = sdec.ua_head_bad(sdec.res, hs)
-      if last > 0 then hs = last end
-    elseif sdec.ck_tot ~= nil and sdec.ck_tot.headbad ~= nil
-           and sdec.ck_tot.headbad > 0 then
-      hs = sdec.ck_tot.headbad
-    end
     if onscreen then
       if hs == 1 then
         add('began mid-byte -- the first byte is misaligned.')
@@ -4357,6 +4433,8 @@ function sdec.ui_refresh()
   local mode = sdec.ui_mode
   local vw = sdec.ui_cur()
   local r = sdec.res
+  local hext, honscr = sdec.ui_head_extent()
+  if not honscr then hext = nil end
   local i
   for i = 1, sdec.ui_nrow do
     local i0 = base + (i - 1) * cols + 1
@@ -4373,6 +4451,7 @@ function sdec.ui_refresh()
       if mode == 'hex' then txt, hxs, hxs2, ass = sdec.ua_hex_parts_line(i0, cols)
       else txt = sdec.ua_text_line(i0, cols) end
       bad = false
+      if hext ~= nil and i0 <= hext then bad = true end
       if r ~= nil then
         local j
         for j = i0, i0 + cols - 1 do
@@ -4815,6 +4894,7 @@ end
 function sdec.unlock_all()
   sdec.force_baud, sdec.force_nbits = nil, nil
   sdec.force_par, sdec.force_nstop, sdec.force_invert = nil, nil, nil
+  sdec.autolock_set = nil
   return true
 end
 
@@ -5481,6 +5561,7 @@ function sdec.capture()
 
   if sdec.press_absorbed('Capture') then return true end
   sdec.relocked = nil
+  sdec.rate_backoff = nil
   sdec.rate_offer, sdec.rate_offer_from, sdec.rate_refused = nil, nil, nil
   if sdec.busy then
     sdec.lasterr = 'previous capture did not finish (aborted?) -- starting a new one'
@@ -5568,6 +5649,18 @@ function sdec.capture()
 
   local ok, why = false, nil
   local pok, perr = pcall(function() ok, why = sdec.autoset() end)
+
+  local rb = sdec.rate_backoff
+  sdec.rate_backoff = nil
+  if pok and rb then
+    pcall(function() ulog.line('rate back-off: ' .. tostring(sdec.relocked)) end)
+    sdec.ui_status = 'retrying'
+    pcall(function() sdec.ui_refresh() end)
+    local keep = sdec.relocked
+    pok, perr = pcall(function() ok, why = sdec.autoset() end)
+    if sdec.relocked == nil then sdec.relocked = keep end
+    sdec.rate_backoff = nil
+  end
   sdec.busy = false
 
   if not pok then
@@ -5628,7 +5721,8 @@ function sdec.autolock_try()
   if sdec.force_baud ~= nil then return false end       -- already locked, nothing to do
   local r = sdec.res
   if r == nil or sdec.baud == nil then return false end
-  if not sdec.snapped then return false end
+  local lockb, lockok = sdec.baud_round(sdec.baud)
+  if not sdec.snapped and not lockok then return false end
   local best, cur, i = 0, 0, nil
   for i = 1, r.nf do
     if r.errs[i] == nil then
@@ -5644,12 +5738,15 @@ function sdec.autolock_try()
   if (sdec.fitq or 0) < sdec.autolock_fitq then return false end
   if sdec.sig_levelwarn ~= nil and sdec.sig_levelwarn() ~= nil then return false end
 
-  sdec.force_baud   = sdec.baud
-  if sdec.force_nbits == nil then sdec.force_nbits = r.nbits end
-  if sdec.force_par   == nil then sdec.force_par   = r.par end
-  if sdec.force_nstop == nil then sdec.force_nstop = r.nstop end
+  sdec.autolock_set = {}
+  sdec.force_baud   = lockb
+  sdec.autolock_set.baud = true
+  if sdec.force_nbits == nil then sdec.force_nbits = r.nbits; sdec.autolock_set.nbits = true end
+  if sdec.force_par   == nil then sdec.force_par   = r.par;   sdec.autolock_set.par   = true end
+  if sdec.force_nstop == nil then sdec.force_nstop = r.nstop; sdec.autolock_set.nstop = true end
   sdec.force_invert = nil
 
+  sdec.baud, sdec.snapped = sdec.force_baud, true
   local fs = sdec.fs_for_baud(sdec.force_baud)
   local nb = sdec.window_bytes(sdec.force_baud, r.nbits, r.par, r.nstop)
   sdec.autolocknote = string.format(
@@ -5858,11 +5955,13 @@ function sdec.lock_toggle()
       sdec.lasterr = 'nothing decoded yet -- capture first, then lock'
       return pcall(function() sdec.ui_refresh() end)
     end
-    sdec.force_baud   = math.floor(sdec.baud + 0.5)
+    sdec.force_baud   = math.floor(sdec.baud_round(sdec.baud) + 0.5)
     sdec.force_nbits  = r.nbits
     sdec.force_par    = r.par
     sdec.force_nstop  = r.nstop
     sdec.force_invert = r.invert
+    sdec.autolock_set = nil
+    sdec.baud, sdec.snapped = sdec.force_baud, true
     note = string.format('locked %s %s', sdec.baud_text(), sdec.fmt_text())
   else
     sdec.lasterr = 'nothing decoded yet -- capture first, then lock'
@@ -6151,7 +6250,8 @@ function sdec.options_save()
                    par = sdec.force_par, nstop = sdec.force_nstop,
                    invert = sdec.force_invert, proto = sdec.proto,
                    any = sdec.widths_any, trig = sdec.trigmode,
-                   ext = sdec.trigext, fc = sdec.fc_out, view = sdec.ui_mode}
+                   ext = sdec.trigext, fc = sdec.fc_out, view = sdec.ui_mode,
+                   aset = sdec.autolock_set}
   return true
 end
 
@@ -6164,6 +6264,7 @@ function sdec.options_restore()
   sdec.proto, sdec.widths_any = s.proto, s.any
   sdec.trigmode, sdec.trigext, sdec.fc_out = s.trig, s.ext, s.fc
   sdec.ui_mode = s.view
+  sdec.autolock_set = s.aset
   return true
 end
 
@@ -6196,11 +6297,13 @@ function sdec.options_lock()
     pcall(function() sdec.ui_refresh() end)
     return false
   end
-  sdec.force_baud  = math.floor(sdec.baud + 0.5)
+  sdec.force_baud  = math.floor(sdec.baud_round(sdec.baud) + 0.5)
   sdec.force_nbits = sdec.res.nbits
   sdec.force_par   = sdec.res.par
   sdec.force_nstop = sdec.res.nstop
   sdec.force_invert = sdec.res.invert
+  sdec.autolock_set = nil
+  sdec.baud, sdec.snapped = sdec.force_baud, true
   sdec.options_seed()
   ulog.fmt('locked: baud=%s bits=%s par=%s inv=%s', tostring(sdec.force_baud),
            tostring(sdec.force_nbits), tostring(sdec.force_par),
@@ -6211,6 +6314,7 @@ end
 -- Read every options field back, apply it, return to the main screen and capture.
 function sdec.options_apply()
   local readok, readerr = pcall(function()
+    sdec.autolock_set = nil
     local b = display.getvalue(sdec.opt_baud)
     if type(b) == 'number' and b >= 110 then sdec.force_baud = math.floor(b + 0.5)
     else
@@ -6259,6 +6363,7 @@ function sdec.options_apply()
   if sdec.proto == 'midi' then
     sdec.force_baud, sdec.force_nbits = 31250, 8
     sdec.force_par, sdec.force_nstop = sdec.PAR_NONE, 1
+    sdec.autolock_set = nil
     sdec.ui_mode = 'midi'
   elseif sdec.proto == 'lin' then
     sdec.force_nbits, sdec.force_par, sdec.force_nstop = 8, sdec.PAR_NONE, 1

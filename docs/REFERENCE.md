@@ -17,9 +17,13 @@ as measurements of one machine until someone repeats them.
 **The figures split into two classes, and only one of them should transfer.** Anything descending from
 the **sample rate** — the rate ladder, the samples-per-bit table, the recording-length arithmetic — is
 timing, and a model at the same 1 MS/s inherits it unchanged. Anything descending from the **analog front
-end** is not: the **Tolerance envelope** below, **Levels and offsets**, the **marginal at 2400 Bd**, and
-both characterised rate-detection failures in the manual — the repeating-pattern misfit and the
-**−2 V logic-low band** — are all measurements of one acquisition board.
+end** is not: the **Tolerance envelope** below, **Levels and offsets**, the **marginal at 2400 Bd** and
+the **−2 V logic-low band** are all measurements of one acquisition board.
+
+**The repeating-pattern rate misfit belongs to neither class.** It is arbitration between two readings of
+the same pulse lengths, it reproduces with no acquisition board in the path at all, and it therefore
+transfers to every model unchanged — including the sample-rate dependence that drives it, since the
+candidates a reading admits depend on how many samples per bit the capture holds.
 
 Those are the ones to re-measure first on another model, and on a DMM7510 they could plausibly move **in
 the app's favour**: its acquisition boards and digitizer are a significant step up, which is exactly the
@@ -355,6 +359,21 @@ bytes are unaffected.
 **Above the 250 kBd ceiling it refuses by name** rather than reporting a submultiple: 255 kBd, 260 kBd
 and 300 kBd were each declined with the samples-per-bit reason.
 
+**100 baud is the declared floor** (`sdec.minbaud`), refused by name the way the 250 kBd ceiling is,
+and it carries `plaustol` at both ends so a rate sitting on a limit is not rejected for a rounding
+error. Nothing below it is supported: `stdbaud` starts at 110 Bd, and a rate typed under 110 reads as 0,
+meaning auto-detect.
+
+**That floor is what rules out relay-driven links.** A mechanical relay must be settled before the
+receiver's mid-bit sample, so switching time caps the rate at `1 / (2 · t_settle)` — about 100 Bd for a
+5 ms micro-relay, putting 300 Bd out of reach threefold and 110 Bd short by a tenth. The rates that
+would actually fit are 75 Bd and below, which is under the floor. Relays make a poor transmitter
+regardless: make and break times differ, so each edge carries a systematic offset; contact bounce adds
+edges inside the start bit, which surfaces as rejected false starts rather than framing errors; and at
+~55 operations per second a 110 Bd link spends a 10⁵-cycle contact rating in half an hour. The
+sample-rate ladder is not the obstacle — 1 kS/s is 9 samples/bit at 110 Bd — and no figure in this
+document is measured below 300 Bd.
+
 ### A known marginal at 2400 Bd
 
 The 1 kB non-repeating payload at 2400 Bd (25 kS/s) has produced flagged bytes in every sweep run:
@@ -372,14 +391,39 @@ pulse that is a whole number of bit times is also a whole number of *half* bit t
 fit equally well: measured 0.99999999 for each, on the same capture. The halved reading then finds
 twice as many frames, which any error count rewards.
 
-**So a halved bit time is rejected on separate evidence.** A candidate rate must leave some pulse an
-**odd** number of its own bit times: real traffic has single- and three-bit runs, and at half the true
-rate every pulse is an even number of cells. Only runs up to 12 bit times count toward that, because a
-longer one is inter-byte idle whose length is set by when the capture started rather than by the format.
-Measured over 368 640 decodes spanning every capture start position: no start position misreads the
-rate.
+**So a shorter bit time is rejected on separate evidence, by two tests that divide the work between
+them.** Both are consulted only when the measurement itself lands on a standard rate; where it does not,
+a rescaling is the only route to the truth and neither test runs.
 
-This does not touch the *longer*-bit-time direction, so the genuine ambiguity below is preserved, and
+* **Some pulse must span an odd number of the candidate's bit cells.** Real traffic has single- and
+  three-bit runs, and at half the true rate every pulse spans an even count. Only runs up to 12 bit times
+  count, because a longer one is inter-byte idle whose length is set by when the capture started rather
+  than by the format. Measured over 368 640 decodes spanning every capture start position: at a halved
+  bit time no start position misreads the rate.
+* **The short end of the widths must not span more than ~2.5 of the candidate's bit cells.** The test
+  above is arithmetically confined to even divisors — halving, quartering and sixthing a bit time make
+  every count even, while dividing by an odd number leaves the counts' parity exactly as it was, so
+  thirds and fifths pass it whatever the payload. What separates those is the minimum: ordinary traffic
+  has single-bit runs, since a ten-bit frame opens with a one-bit start bit. Measured on one capture, the
+  short end against the candidate's own bit time: **1.00** at the truth, 2.00 at a half, 3.00 at a third,
+  5.00 at a fifth. **The bound must sit below 3**, because a 3x misfit lands at exactly 3.00 and that is
+  the largest family — measured on the LIN-break vector at 19 200, 57 600 and 76 800 Bd over 60 capture
+  openings each, 2.0, 2.5 and 2.9 report the true rate every time while 3.0 and 3.5 give back 42, 60 and
+  60 wrong answers. 2.5 is the middle of that range, so neither edge is load-bearing. **What it costs:** a
+  payload whose shortest genuine run is three bit times or more — `0x00` with a two-bit gap — cannot have
+  a third-of-the-rate reading admitted once the fit snaps; measured, that capture reports a third of its
+  true rate with the test and without it alike. The **5th percentile** of the widths is used rather than
+  the outright minimum, since one narrow glitch would otherwise silence it — and such a glitch is itself
+  a route to a fifth-of-the-bit-time reading.
+
+**Samples per bit decides how many candidates are admissible at all**, which is why the rate a capture is
+digitised at matters as much as the waveform. A reading is refused outright below 4 samples per bit, so at
+the ~8 samples/bit a locked rate gives, only the halved candidate clears that floor; at the 1 MS/s the
+first probe of an unlocked capture uses, a 31 250 Bd line arrives at 32 samples per bit and every divisor
+from 2 to 6 clears it. The probe pass is therefore where a misfit is decided, and it keeps its own answer
+whenever no lower listed rate would oversample adequately.
+
+Neither test touches the *longer*-bit-time direction, so the genuine ambiguity below is preserved, and
 the note row still names a rival rate when one really fits.
 
 Perfectly periodic traffic can be genuinely undecidable: eight `0x00` frames at 9600 Bd 7N1 with a
@@ -410,10 +454,20 @@ idle, which the decoder already tolerates. A 2-stop line decodes correctly and r
 
 Auto-lock is on by default and conditional. It locks only when **all** of these hold:
 
-- the rate snapped to a standard one (within 2 %)
+- the rate is above the 100 Bd floor and below the 250 kBd ceiling
 - at least 8 good frames, and a clean unbroken run covering ~60 % of the capture
 - `FIT` at 0.9 or better
 - the logic levels were stable — no drifting or noisy baseline
+
+**A non-standard rate locks too, and that is the point.** The first condition asks only whether the
+figure is a rate at all; landing on the standard ladder is not required, so a device on an awkward
+divisor is lockable and its recording modes work without a hand-typed number. The three conditions after
+it are what judge the evidence — snapping would judge only tidiness.
+
+**What gets locked is rounded, not the raw measurement**: the coarsest step that moves the rate under
+1 % — nearest 100 Bd above 10 kBd, else nearest 10, else whole baud. So a device set to 16100 Bd
+measuring 16099 locks as **16100**, while 105 Bd locks as 105 rather than being dragged to 110. A rate
+already on the standard ladder is never moved, which is what keeps MIDI's 31250 from becoming 31300.
 
 Otherwise the padlock stays amber and **Lock Rate** is offered. Polarity is **never** locked; it is
 re-derived every capture, because freezing it off one short detect capture is how a confidently

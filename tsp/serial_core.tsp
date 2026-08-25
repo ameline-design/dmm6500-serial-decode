@@ -482,9 +482,10 @@ function sdec.clear_measured()
   -- The MEASURED sample rate and the flag saying it was not measured. Every bit time, the baud
   -- rate and therefore every byte is scaled by this one number.
   sdec.acq_fs, sdec.acq_fs_est = nil, nil
-  -- The pulse widths and their median. sdec.wmed GATES candidate rates in ua_cands(), so a stale
-  -- one rejects the true bit time of the capture in hand.
-  sdec.w, sdec.nw, sdec.wmed = nil, 0, nil
+  -- The pulse widths, their median and their short end. sdec.wmed GATES candidate rates in
+  -- ua_cands() and sdec.wshort gates them in ua_minrun_absurd(), so a stale one rejects the true bit
+  -- time of the capture in hand.
+  sdec.w, sdec.nw, sdec.wmed, sdec.wshort = nil, 0, nil, nil
   -- Polarity, and the flag saying the evidence for it was thin.
   sdec.idle, sdec.idle_weak = nil, nil
   -- Level and run statistics: the fraction of samples near the two levels, and the longest run of
@@ -898,6 +899,10 @@ function sdec.sig_bittime()
   -- least-squares fit below, which they capture outright.
   sdec.wmed = s[math.floor(nw / 2) + 1]
 
+  -- The SHORT end of the same sort, for sdec.ua_minrun_absurd(). NOT named wlo: sig_levels owns that
+  -- name for a voltage, and overwriting it made the panel's range figure report a pulse width.
+  sdec.wshort = s[math.floor(nw * 0.05) + 1]
+
   -- Candidate seeds: the smallest widths, but only CORROBORATED ones -- another
   -- width must sit within 25 %. Seeds are then thinned to be >30 % apart.
   --
@@ -960,6 +965,62 @@ function sdec.sig_snap(b)
   return b, false
 end
 
+-- Round a MEASURED rate to a credible setting: the COARSEST step that moves it less than 1 %.
+-- Nearest 100 Bd over 10 kBd, else nearest 10, else nearest whole baud. Returns rate, credible.
+--
+-- FOR A RATE THAT IS NOT ON THE STANDARD LADDER, which sig_snap leaves exactly as measured -- 16099
+-- from a device set to 16100. Those last digits are the fit's noise, not the device's setting, and a
+-- rate the app is about to lock has to read like something an operator could have typed.
+--
+-- IT CASCADES, AND THAT IS THE WHOLE POINT: a single fixed step made tidiness a CAPABILITY TEST. With
+-- 10 Bd the only option below 10 kBd, every rate more than 1 % off a 10 Bd boundary was refused --
+-- measured, 160 of the 901 integer rates from 100 to 1000 Bd, so 105 Bd could not be locked, every
+-- recording mode refused it, and the operator was back at the keypad the rounding exists to avoid.
+-- Whole-baud always fits above the floor (half a baud is under 1 % of anything over 50), so
+-- `credible` is now true for any rate the decoder would accept at all.
+--
+-- WHICH MAKES autolock's GATE 1 VACUOUS, deliberately. Credibility moves from "does this land on a
+-- tidy boundary" to "is this a rate at all", and the four gates after it carry the whole judgement:
+-- longest clean run over 60 % of frames, at least 8 good frames, fitq over 0.9, and a stable
+-- baseline. Those are about evidence; a boundary is about presentation, and presentation was never a
+-- reason to refuse a lock.
+--
+-- A RATE ALREADY ON THE LADDER IS RETURNED UNTOUCHED, and this guard is not cosmetic: 31250 is on it
+-- and the 100 Bd step would move it to 31300, a 0.16 % shift that passes the tolerance. That is
+-- MIDI's rate, the one figure in the app that comes from a specification rather than a measurement.
+-- Refusing here rather than at each call site means no caller can reintroduce it.
+--
+-- THE 1 % CAP STILL DECIDES EACH STEP, so a coarse step is taken only where it is nearly free: a
+-- wrong rate is far worse than an untidy one, and the decoder's own margin (sdec.ratemargin) is 4 %.
+sdec.baud_round_lo   = 10       -- step below the crossover
+sdec.baud_round_hi   = 100      -- step above it
+sdec.baud_round_at   = 10000    -- crossover
+sdec.baud_round_fine = 1        -- the fallback: always inside the cap above sdec.minbaud
+sdec.baud_round_tol  = 0.01     -- largest shift any step may make
+function sdec.baud_round(b)
+  if b == nil or b <= 0 then return b, false end
+  local i
+  for i = 1, table.getn(sdec.stdbaud) do
+    if sdec.stdbaud[i] == b then return b, true end
+  end
+  -- Coarsest first. The 100 Bd step is offered only above the crossover, so the rule stays "100 over
+  -- 10 kBd, 10 below" and the fine step is what rescues the rates a fixed grid refused.
+  local steps, ns = {}, 0
+  if b >= sdec.baud_round_at then ns = ns + 1; steps[ns] = sdec.baud_round_hi end
+  ns = ns + 1; steps[ns] = sdec.baud_round_lo
+  ns = ns + 1; steps[ns] = sdec.baud_round_fine
+  local k
+  for k = 1, ns do
+    local r = math.floor(b / steps[k] + 0.5) * steps[k]
+    if r > 0 then
+      local d = r / b - 1
+      if d < 0 then d = -d end
+      if d <= sdec.baud_round_tol then return r, true end
+    end
+  end
+  return b, false
+end
+
 -- THE CEILING. 4 samples per bit is the wall: below it the mid-bit sampling point
 -- cannot be held across a ten-bit frame, because the accumulated edge-position error
 -- walks it into the neighbouring cell. At the top sample rate of 1 MS/s that puts the
@@ -971,6 +1032,17 @@ end
 -- since being exactly at the wall is the marginal case rather than a comfortable one.
 sdec.minsabit = 4
 sdec.maxbaud  = 250000
+-- THE FLOOR ON THE RATE ITSELF, as maxbaud is the ceiling. Below this a candidate bit time is not a
+-- rate any device runs at, it is the fit having landed on a long multiple.
+--
+-- 100 Bd, which is BELOW the lowest rate the app supports and above the historical telex rates it
+-- does not: stdbaud starts at 110, and 75, 50 and 45.45 Bd cannot be locked at all (a typed rate
+-- under 110 reads as auto-detect). So the floor states a scope decision rather than a capability.
+--
+-- Named here rather than left a literal inside ua_plausible, so it sits beside the ceiling it
+-- mirrors and the two are read together -- the ceiling carried sdec.plaustol and the floor did not,
+-- and a 50 Bd line whose fit came out 0.05 % long was refused for being under its own floor.
+sdec.minbaud  = 100
 
 -- One-line verdict on the signal, for the panel and the log.
 function sdec.sig_quality()

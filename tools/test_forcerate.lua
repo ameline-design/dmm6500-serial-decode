@@ -172,16 +172,28 @@ check('a correct forced rate decodes', gok == true and sdec.res ~= nil, tostring
 check('and raises no offer', sdec.rate_offer == nil, tostring(sdec.rate_offer))
 check('and keeps the lock', sdec.force_baud == 9600, tostring(sdec.force_baud))
 
-print('\n-- force_conflict = adopt restores the older behaviour --')
--- KEPT REACHABLE ON PURPOSE, so the change is one setting rather than a code edit, and so the bench can
--- prove both policies on the same capture.
+print('\n-- force_conflict = adopt, which is the default --')
+-- ADOPT TAKES THE DETECTED RATE AND LOCKS IT. Locking is the part that matters: leaving the app
+-- unlocked was the older behaviour and it stranded every recording mode, which refuses without a
+-- locked rate. 'ask' is kept reachable so both policies can be proven on the same capture.
 sdec.force_conflict = 'adopt'
 fresh(4800)
 local pok = sdec.decode()
 check('adopt decodes instead of refusing', pok == true and sdec.res ~= nil, tostring(pok))
-check('adopt clears the lock', sdec.force_baud == nil, tostring(sdec.force_baud))
-check('adopt says so on the note row', sdec.relocked ~= nil, tostring(sdec.relocked))
+check('adopt LOCKS the detected rate rather than leaving the app unlocked',
+      sdec.force_baud == 9600, tostring(sdec.force_baud))
+check('adopt says so on the note row, naming both rates',
+      sdec.relocked ~= nil and string.find(tostring(sdec.relocked), '4800', 1, true) ~= nil
+      and string.find(tostring(sdec.relocked), '9600', 1, true) ~= nil, tostring(sdec.relocked))
 check('adopt raises no offer', sdec.rate_offer == nil, tostring(sdec.rate_offer))
+check('adopt asks for no re-capture, because a rate was found',
+      sdec.rate_backoff == nil, tostring(sdec.rate_backoff))
+-- THE DEFAULT IS ADOPT, asserted rather than assumed: the refusal it replaces could not be answered
+-- from the front panel, so a default that quietly reverted to 'ask' would restore that dead end.
+sdec.force_conflict = nil
+dofile('tsp/uart_decode.tsp')
+check('and adopt is what a fresh load defaults to', sdec.force_conflict == 'adopt',
+      tostring(sdec.force_conflict))
 sdec.force_conflict = 'ask'
 
 print(string.format('\n%d passed, %d failed', pass, fail))

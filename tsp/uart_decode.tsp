@@ -734,7 +734,12 @@ function sdec.ua_plausible(T, n)
   if sdec.wmed ~= nil and sdec.wmed > 0 and T > 1.15 * sdec.wmed then return false end
   local fs = sdec.acq_fs or sdec.fs
   local b = fs / T
-  return b >= 50 and b <= sdec.maxbaud * (1 + sdec.plaustol)
+  -- BOTH ENDS CARRY plaustol. The floor did not, and the failure was the mirror image of the one the
+  -- comment above describes for the ceiling: a 50 Bd line whose fit measured 100.05 samples instead
+  -- of 100.00 computed to 49.975 Bd and was refused, while 51 Bd with identical jitter decoded
+  -- byte-exact. A limit that a rounding error can cross is not a limit.
+  return b >= sdec.minbaud * (1 - sdec.plaustol)
+     and b <= sdec.maxbaud * (1 + sdec.plaustol)
 end
 
 -- Is this candidate bit time a SUB-MULTIPLE of the one that generated the pulses?
@@ -744,9 +749,14 @@ end
 -- separate them (measured 0.99999999 for both), while the halved reading finds twice the frames.
 --
 -- The ODD multiples separate them. At the true bit time some pulses are an odd number of cells --
--- a frame of varied data has single- and three-bit runs -- and at half it every pulse is even. It
--- catches 1/3 and 1/4 the same way. Not the median: all-0x00 is a nine-bit low run, so a median test
--- rejected the truth (broke 'decodes all 0x00').
+-- a frame of varied data has single- and three-bit runs -- and at half it every pulse is even. Not
+-- the median: all-0x00 is a nine-bit low run, so a median test rejected the truth (broke 'decodes
+-- all 0x00').
+--
+-- EVEN DIVISORS ONLY, and that is structural: an even divisor multiplies every k by an even number so
+-- nothing odd survives, while an odd one leaves k's parity as it was at the truth. Measured on the fox
+-- at 31250 Bd, 1 MS/s -- odd/seen 0/358, 248/344, 0/333, 220/305, 0/305 for 1/2..1/6. So 1/3 and 1/5
+-- always pass, whatever the payload, which is why ua_minrun_absurd below exists.
 --
 -- IT IS A PRIOR ON REAL TRAFFIC, NOT A STRUCTURAL PROOF. A payload can have no odd run at all:
 -- repeated 0xE6 at 8N1 with a 2-bit gap gives runs of 2,2,2,6 -- 0 of 159 odd. Measured on that case
@@ -789,6 +799,40 @@ function sdec.ua_submultiple(T)
   return odd < sdec.submult_oddfrac * seen
 end
 
+-- Does this candidate claim the SHORTEST pulse on the wire is several bit times long?
+--
+-- Covers the odd divisors ua_submultiple structurally cannot. A ten-bit frame opens with a one-bit
+-- start bit, so hundreds of pulses hold single-bit runs: measured 1.00 bit times at the truth against
+-- 5.00 at the 1/5 candidate that displaced it.
+--
+-- THE BOUND MUST SIT BELOW 3, and that is what fixes it: a 3x misfit puts the shortest run at exactly
+-- 3.00 candidate bit times, and 3x is the largest family on the bench. Measured on the LIN-break vector
+-- at 19200/57600/76800, 60 capture openings each: 2.0, 2.5 and 2.9 all report the true rate every time;
+-- 3.0 and 3.5 hand back 42, 60 and 60 wrong. 2.5 is the middle of the working range, so neither edge is
+-- load-bearing.
+--
+-- WHAT IT COSTS. A payload whose shortest genuine run is 3 bit times or more cannot have a 1/3 or
+-- coarser rescaling admitted once the fit snaps -- repeated 0x00 at 8N1 with a two-bit gap is that
+-- shape, nine low bits against three high. Measured: that capture reports a third of its true rate
+-- with this test and without it alike, so nothing is lost there, but the exposure is real.
+--
+-- Over 1677 plan cells x 200 presses, 2.5 moves standard-rate misreports from 2604 to 882 and makes no
+-- cell worse.
+--
+-- THE 5TH PERCENTILE, NOT THE MINIMUM: one 2-sample notch would silence this as one loop-seam width
+-- silenced the odd test -- and that notch is itself how a fifth-of-the-bit-time fit arises.
+--
+-- Gates CANDIDATES only, never the fit, and only behind snap1 -- see ua_best_probe.
+sdec.submult_maxrunlo = sdec.submult_maxrunlo or 2.5
+
+function sdec.ua_minrun_absurd(T)
+  if T == nil or T <= 0 then return false end
+  if (sdec.nw or 0) < sdec.submult_minpulses then return false end
+  local lo = sdec.wshort
+  if lo == nil or lo <= 0 then return false end
+  return lo / T > sdec.submult_maxrunlo
+end
+
 -- Whether the fit is consistent with the pulse-width distribution it came from.
 --
 -- This is the one number that separates "the line is faster than this instrument" from
@@ -821,6 +865,12 @@ function sdec.ua_implausible_why(T)
   if fs / T > sdec.maxbaud * (1 + sdec.snaptol) then
     return string.format('%.0f baud is past the %d kBd ceiling',
                          fs / T, sdec.maxbaud / 1000)
+  end
+  -- THE FLOOR NEEDS ITS OWN SENTENCE, or a rate below it falls through to 'no frame fits' -- which is
+  -- not merely vague but false: forcing that same rate frames every byte. A refusal has to name the
+  -- limit it applied.
+  if fs / T < sdec.minbaud * (1 - sdec.plaustol) then
+    return string.format('%.0f baud is below the %d baud floor', fs / T, sdec.minbaud)
   end
   return string.format('no frame fits a %.1f sample bit time', T)
 end
@@ -1051,7 +1101,9 @@ function sdec.ua_best_probe(st)
      -- 6-bit runs, so the fit lands on 1600 Bd (snapped false) and the TRUTH is the ratio-1/6
      -- candidate, whose multiples are all k = 6 -- even, so an ungated test rejected it and handed
      -- 4800 to the ratio-1/3 candidate: 20 frames of 0x1C, zero errors, against 40 exact 0xE0.
-     and not (st.snap1 and sdec.ua_submultiple(T)) then
+     -- BOTH SUB-MULTIPLE TESTS, and the snap1 gate is what makes the pair safe: in the 0xE0 case the
+     -- fit does not snap, so neither is consulted and the 1/6 truth is still reachable.
+     and not (st.snap1 and (sdec.ua_submultiple(T) or sdec.ua_minrun_absurd(T))) then
     local _, snapped = sdec.sig_snap(st.fs / T)
     if snapped then
       local sc = sdec.ua_probe(st.rd, st.n, T)
@@ -1650,22 +1702,27 @@ end
 sdec.relock_badfrac   = 0.25     -- interior frames in error before the lock is doubted
 sdec.relock_minframes = 8        -- fewer frames than this and a bad fraction is not evidence
 
--- WHAT HAPPENS WHEN A FORCED RATE IS PROVED WRONG -- 'ask' or 'adopt'.
+-- WHAT HAPPENS WHEN A FORCED RATE IS PROVED WRONG -- 'adopt' or 'ask'.
 --
--- 'ask' REFUSES the decode, names the rate the wire actually carries, and leaves the choice with the
--- operator: sdec.rate_accept() takes the detected rate, sdec.rate_decline() keeps theirs. 'adopt' is
--- the older behaviour -- take the detected rate and say so on the note row.
+-- 'adopt' TAKES THE DETECTED RATE, rounded to a credible boundary, locks it and says so on the note
+-- row. 'ask' refuses the decode, names the rate the wire carries, and leaves the choice with the
+-- operator: sdec.rate_accept() takes the detected rate, sdec.rate_decline() keeps theirs.
 --
--- ASK IS THE DEFAULT BECAUSE A FORCED SETTING IS AN INSTRUCTION, NOT A HINT. Adopting silently puts
--- bytes on the panel decoded at a rate nobody chose, with one note line as the only trace, and the
--- whole premise of the hw-break suite is that a refusal with a reason beats confident output. Refusing
--- costs nothing here: the detected rate is already known, so it is named in the refusal rather than
--- left as a guess.
+-- ADOPT IS THE DEFAULT BECAUSE THE REFUSAL COULD NOT BE ANSWERED FROM THE PANEL. Measured on the
+-- instrument: BAUD read '16099?' locked, the note read '18700 baud fits nothing; this capture reads
+-- 16099', no bytes, and no control offered the detected rate -- rate_accept() has no button, and
+-- 'Lock Rate' hides itself while a rate is locked, which it was. The only route out was Options and
+-- the number typed by hand, which is also how the wrong rate got there.
 --
--- NOTHING BLOCKS ON A HUMAN. There is no modal wait -- the offer is published as state and the two
--- answers are ordinary functions, so a headless caller drives either branch and an unattended lap that
--- never answers simply stays refused.
-sdec.force_conflict = sdec.force_conflict or 'ask'
+-- The case against adopting was that it puts bytes on the panel at a rate nobody chose. That still
+-- holds, and what answers it is the note row plus the gates: the rate is adopted only when it has
+-- been decoded at successfully AND the operator's own rate failed AND the wire's measured bit time
+-- disagreed with it. A rate that explains the capture is not "a rate nobody chose".
+--
+-- NOTHING BLOCKS ON A HUMAN in either mode. There is no modal wait -- the offer is published as state
+-- and the two answers are ordinary functions, so a headless caller drives either branch and an
+-- unattended lap that never answers simply stays refused.
+sdec.force_conflict = sdec.force_conflict or 'adopt'
 
 -- Fraction of INTERIOR frames that failed, or nil when there are too few to judge. Interior, because
 -- head resync and a clipped tail fail on healthy captures too.
@@ -1731,8 +1788,24 @@ function sdec.decode()
   if ok2 and bf2 ~= nil and bf2 < sdec.relock_badfrac and sdec.baud ~= nil then
     local found = sdec.baud
     if sdec.force_conflict == 'adopt' then
-      sdec.relocked = string.format('%g baud fit nothing -- unlocked, and this capture reads %.0f',
-                                    was, found)
+      -- LOCK IT, rather than leaving the app unlocked and hoping autolock picks it up. It will not
+      -- always: autolock is skipped for one capture after any request for auto-detect, and it has
+      -- four more gates of its own. Leaving this unlocked is what made the panel read 'unlocked'
+      -- while the recording modes stayed unreachable for want of a locked rate.
+      --
+      -- ROUNDED, so what gets locked reads like a setting: 16099 locks as 16100. Not rounded when
+      -- the value is a standard rate, and not rounded when the shift would exceed 1 % -- baud_round
+      -- decides both, and hands back `credible` for the second case.
+      local adopt = sdec.baud_round(found)
+      sdec.force_baud = adopt
+      sdec.baud, sdec.snapped = adopt, true
+      -- THE FORMAT LOCK STAYS. This branch is the one where the decode SUCCEEDED -- ok2 with a bad
+      -- fraction under the threshold, framed with whatever width, parity and stop count were forced
+      -- -- so the format is evidenced, and clearing it would discard working knowledge and pay for
+      -- the format search again on the next capture. The back-off branch below is where nothing
+      -- worked, and that is where the format is dropped.
+      sdec.relocked = string.format('%g baud fit nothing -- now locked to %.0f, which this capture reads',
+                                    was, adopt)
       return ok2, why2
     end
     -- REFUSE, AND GIVE THE OPERATOR THEIR RATE BACK. This path reports a disagreement; it does not
@@ -1748,11 +1821,24 @@ function sdec.decode()
         was, found)
     return false, string.format('%g baud fits nothing; this capture reads %.0f', was, found)
   end
-  -- Detection did no better, so the lock was not the problem. Put it back; rate_note is re-published
-  -- by the decode below and still says the wire disagrees, which is the honest state.
-  sdec.force_baud = was
-  sdec.relocked = nil
-  return sdec.decode_from(sdec.smp, sdec.nread)
+  -- NO RATE FIT THESE SAMPLES, so there is nothing to adopt -- but the locked one failed too, and
+  -- putting it back left the operator pressing Capture at an all-red panel with no way out but
+  -- Options. So back off to auto and ask capture() for one fresh acquisition: these samples were
+  -- taken through a window sized for the failed rate, so re-deciding on them is not a new
+  -- measurement. Only what autolock chose is dropped; a typed width or parity is a decision.
+  sdec.relocked = string.format('%g baud fits nothing, and no other rate fit either -- ' ..
+                                'back to auto-detect', was)
+  sdec.rate_backoff = true
+  sdec.force_baud = nil
+  if sdec.autolock_set ~= nil then
+    if sdec.autolock_set.nbits then sdec.force_nbits = nil end
+    if sdec.autolock_set.par   then sdec.force_par   = nil end
+    if sdec.autolock_set.nstop then sdec.force_nstop = nil end
+    sdec.autolock_set = nil
+  end
+  -- The UNLOCKED decode, not another pass at the rate just abandoned: that would publish rate_note
+  -- about a lock which no longer exists.
+  return ok2, why2
 end
 
 -- ============================================================================
