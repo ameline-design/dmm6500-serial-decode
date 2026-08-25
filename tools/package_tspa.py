@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Package the serial protocol decoder as a single .tspa TTI App for Keithley TSP instruments.
+"""Package Serial Decode as a single .tspa TTI App for Keithley TSP instruments.
 
 Concatenates the TSP modules into one `loadscript` wrapper with an App manifest, an
 auto-start entry point and an embedded base64 PNG icon -- matching the layout of the
