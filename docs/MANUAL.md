@@ -607,9 +607,30 @@ Two different files, and they are not the same thing:
 | `/usb1/SerialFiles/bytesNNN.txt` | automatically, on every capture | the running log — every capture's bytes as text and hex. **NewLog** starts a new number. |
 | `/usb1/SerialFiles/serial_NNN.txt` | only when you press **Save** | a full report of what is on screen: settings, all the notes, the whole dump. |
 
-**Everything goes in `/usb1/SerialFiles`,** and the app creates that directory the first time it needs
-it — there is nothing to set up, and nothing lands in the root of your key. The panel still shows the
-bare filename rather than the path, because the directory never changes and the row is narrow.
+**Everything goes in `/usb1/SerialFiles`,** and the app creates that directory when it starts — there is
+nothing to set up, and nothing lands in the root of your key. The panel still shows the bare filename
+rather than the path, because the directory never changes and the row is narrow.
+
+### Put the key in before you start the app, and take it out after you end it
+
+**The USB key must be in the slot before the app is launched, and must stay there until you press
+End App.** The app checks for the key and makes its directory once, at startup.
+
+Removing the key while the app is running — or inserting one part way through — **is not supported**, and
+the instrument may show its own error pop-ups if you do: `2205, File not found` or `2208, Cannot create
+directory`. Those come from the instrument's firmware, not from the app, and the app cannot suppress
+them. Nothing is damaged and the app carries on, but the capture that was writing will say it could not,
+and later captures will keep failing until the app is ended and started again.
+
+So: **End App first, then swap the key.**
+
+**With no key in the slot, the `Save` button is hidden.** Save exists only to write a file, so with
+nowhere to write there is no press that could succeed — the button reappears by itself once a key is
+inserted. Capture and decode work perfectly well without a key; you simply get no log and no report.
+
+**You may also see `2205, File not found` during normal use, with a key inserted.** Choosing the next
+`bytesNNN.txt` means asking the instrument about names until it finds one that is free, and the
+instrument reports each name that is not there. It is a question, not a fault.
 
 A recording decodes into the log file, so the file holds the whole run while the panel shows only the
 tail of it. The note row says so when they differ.

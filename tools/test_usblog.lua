@@ -168,8 +168,10 @@ seed_key('/usb1/s_', 1, 0, '5\n')
 MD.failread(0)
 p, n = capped('/usb1/s_', '.txt', 1000, 2500)
 MD.failread(nil)
-check('a read that RAISES (key pulled between open and read) degrades to 0, does not propagate',
-      p == '/usb1/s_000.txt', tostring(p))
+-- A READ THAT RAISES is a key that went away mid-question, so the directory cannot be confirmed and
+-- next_free refuses instead of guessing. What matters is that nothing propagates out.
+check('a read that RAISES (key pulled between open and read) refuses without propagating',
+      p == nil, tostring(p))
 
 seed_key('/usb1/s_', 1, 0, '5\n')
 p = capped('/usb1/s_', '.txt', 1000, 2500)
@@ -261,19 +263,24 @@ seed_key('/usb1/s_', 1, 0, '5\n')
 MD.usb(false)
 p, n = capped('/usb1/s_', '.txt', 1000, 2500)
 MD.usb(true)
-check('with no key every probe answers "free", so a name comes back rather than nil',
-      p == '/usb1/s_000.txt', tostring(p))
-check('and no exception escapes -- logging must never take the app down', p ~= nil)
+-- THE CONTRACT CHANGED, DELIBERATELY. This used to hand a name back with no key, on the grounds that a
+-- probe cannot tell 'absent' from 'no key'. It now REFUSES -- because every one of those probes posts a
+-- 2205 the operator sees, and the name would not have opened anyway.
+MD.forget_fevents()
+check('with no key next_free refuses rather than probing a thousand names', p == nil, tostring(p))
+check('and it does so SILENTLY -- no event is posted for a key that is simply not there',
+      MD.fevent_count() == 0, 'events=' .. MD.fevent_count())
+check('and no exception escapes -- logging must never take the app down', true)
 
 MD.forget_files()
-check('and next_free explains an index it could not save, for the status row',
+check('and next_free says WHY it refused, for the status row',
       (function()
          seed_key('/usb1/s_', 1, 0, nil)
          MD.usb(false)
          local path = ulog.next_free('/usb1/s_', '.txt', 1000)
          MD.usb(true)
-         return path ~= nil and ulog.idx_why
-       end)() ~= nil and has(tostring(ulog.idx_why), 'index not saved'),
+         return path == nil and ulog.idx_why
+       end)() ~= nil and has(tostring(ulog.idx_why), 'no USB key'),
       tostring(ulog.idx_why))
 
 -- ---------- the SerialFiles directory ----------
@@ -292,6 +299,10 @@ check('the event log lives in it',
 
 check('it does not exist yet, so the test below is not measuring a directory it inherited',
       MD.dirs()[ulog.usbdir] == nil)
+-- A FRESH SESSION, explicitly. ensuredir caches a confirmed directory because the listing that confirms
+-- it costs 64 kB, so a test that removes the directory behind its back must say so or it is asserting
+-- against the cache rather than against the key.
+ulog.dirlost()
 local made, why = ulog.ensuredir()
 check('ensuredir reports it can be written to', made == true, tostring(made) .. ' ' .. tostring(why))
 check('and the directory is really there now', MD.dirs()[ulog.usbdir] == true)
@@ -309,8 +320,15 @@ check('with no key it says so, rather than blaming the directory',
 MD.usb(true)
 
 -- END TO END: allocate a name under the new directory and write to it, from a key with no directory.
+--
+-- dirlost() FIRST, because this models the SUPPORTED sequence -- a key in the slot before the app starts,
+-- and the directory made once at launch. A directory that vanishes mid-session is a key swapped under a
+-- running app, which the manual documents as unsupported and which the app deliberately does not try to
+-- recover from: retrying would mean re-reading the root on a write, and the failed open that triggered it
+-- has already posted its event.
 MD.forget_files()
 MD.rmdir(ulog.usbdir)
+ulog.dirlost()
 local p = ulog.next_free(ulog.usbdir .. '/bytes', '.txt', 20)
 check('next_free hands back a name inside the directory',
       p == '/usb1/SerialFiles/bytes000.txt', tostring(p))
@@ -334,6 +352,61 @@ check('and it fails on the directory, not on the name it was given',
       pbad == '/usb1/SerialFiles/bytes000.txt', tostring(pbad))
 MD.usb(true)
 ulog.ensuredir()
+
+-- ---------- the instrument must not pop an error at the operator ----------
+--
+-- THIS IS THE REQUIREMENT, AND IT IS THE ONLY THING THAT MEASURES IT. Every check above passes whether or
+-- not the app is filing 2208s behind the operator's back, because none of them look. The mock counts what
+-- the firmware would post -- 2208 for a mkdir that already exists, for a bare name or for no key, 2205 for
+-- an open of a path that is not there -- so the count IS the assertion.
+print('\nthe quiet path is quiet')
+
+MD.usb(true)
+MD.forget_files()
+ulog.dirlost()
+MD.forget_fevents()
+local made3 = ulog.ensuredir()
+check('creating the directory on a fresh key posts NO 2208',
+      made3 == true and MD.fevent_count(2208) == 0,
+      'made=' .. tostring(made3) .. ' 2208=' .. MD.fevent_count(2208))
+
+-- The case that a speculative mkdir would ruin: the directory is already there, and the app is asked
+-- again and again, as every capture does.
+MD.forget_fevents()
+local r1 = ulog.ensuredir()
+local r2 = ulog.ensuredir()
+local r3 = ulog.ensuredir()
+check('asking three more times posts nothing at all -- no mkdir is ever speculative',
+      r1 and r2 and r3 and MD.fevent_count() == 0,
+      'events=' .. MD.fevent_count())
+
+MD.forget_fevents()
+local wq, wqe = ulog.write_file('/usb1/SerialFiles/quiet.txt', {'x'}, 1)
+check('and a write into it is silent too', wq == true and MD.fevent_count() == 0,
+      tostring(wq) .. ' ' .. tostring(wqe) .. ' events=' .. MD.fevent_count())
+
+-- No key at all: the gate answers from usbdriveexists, which names no path, so nothing is posted.
+MD.usb(false)
+MD.forget_fevents()
+local nk, nkw = ulog.open_write('/usb1/SerialFiles/nokey.txt', file.MODE_APPEND)
+check('with no key the refusal is silent -- no path is ever named',
+      nk == nil and MD.fevent_count() == 0,
+      tostring(nkw) .. ' events=' .. MD.fevent_count())
+check('and it says both what is wrong and which file', has(tostring(nkw), 'no USB key')
+      and has(tostring(nkw), 'nokey.txt'), tostring(nkw))
+MD.usb(true)
+
+-- THE NEGATIVE. A speculative mkdir is what the design exists to avoid, so prove the counter would catch
+-- one: call it directly on a directory that already exists, exactly as a naive implementation would.
+MD.forget_fevents()
+file.mkdir(ulog.usbdir)
+check('a mkdir on an existing directory DOES post 2208, so the checks above can fail',
+      MD.fevent_count(2208) == 1, '2208=' .. MD.fevent_count(2208))
+MD.forget_fevents()
+file.mkdir('SerialFiles')
+check('and so does a bare relative name, which is why only absolute paths are issued',
+      MD.fevent_count(2208) == 1, '2208=' .. MD.fevent_count(2208))
+MD.forget_fevents()
 
 print()
 print(string.format('%d passed, %d failed', pass, fail))

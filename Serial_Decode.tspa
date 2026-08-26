@@ -49,20 +49,86 @@ ulog.tag       = ulog.tag or '?'       -- short app name, prefixed to every line
 if ulog.enabled == nil then ulog.enabled = true end
 if ulog.autoflush == nil then ulog.autoflush = true end
 
--- Make sure ulog.usbdir exists, so the files below have somewhere to land. -> true if writing there
+-- Is a key in the slot? -> true, or false when the firmware says there is none.
 --   [...]
--- NOT MEMOISED. A key can be pulled and a different one pushed in between two captures, and a cached
--- 'already made it' would then send every file to a directory that does not exist on this key. mkdir on
--- an existing directory costs one raised error per capture, which is nothing next to a decode.
+-- behind this, and answers 'no key' silently rather than filing an event about it.
+-- UNKNOWN COUNTS AS PRESENT: on a firmware without usbdriveexists the pcall fails, and refusing to log
+-- on those instruments would be a regression in behaviour for a question we could not ask.
+function ulog.haskey()
+  local ok, present = pcall(function() return file.usbdriveexists() end)
+  if ok and present == 0 then return false end
+  return true
+end
+
+-- Is `name` listed in the USB root? -> true, false, or nil when the question could not be asked.
+--   [...]
+-- so could a deleted entry whose bytes still sit in the table. Both mis-answer towards 'it is there',
+-- which costs a failed open and a reported reason rather than a 2208 -- the safer direction of the two.
+-- A short uppercase name would need only the first form; that is the argument for naming it that way.
+function ulog.rootlists(name)
+  if name == nil or name == '' then return nil end
+  local fh = nil
+  pcall(function() fh = file.open('/usb1', file.MODE_READ) end)
+  if fh == nil then return nil end
+  local raw = nil
+  pcall(function() raw = file.read(fh, file.READ_ALL) end)
+  pcall(function() file.close(fh) end)
+  if raw == nil then return nil end
+  local up = string.upper(name)
+  if string.find(raw, up, 1, 1) ~= nil then return true end
+  local i, wide, wideup = nil, '', ''
+  for i = 1, string.len(name) do
+    wide = wide .. string.sub(name, i, i) .. string.char(0)
+    wideup = wideup .. string.sub(up, i, i) .. string.char(0)
+  end
+  if string.find(raw, wide, 1, 1) ~= nil then return true end
+  if string.find(raw, wideup, 1, 1) ~= nil then return true end
+  return false
+end
+
+-- Make sure ulog.usbdir exists. -> true if it should be writable now, or false and why not.
+-- SILENT IN EVERY ORDINARY CASE: no key answers from usbdriveexists, a directory that is already there
+-- answers from the root listing, and only a genuine absence issues the one mkdir -- which succeeds
+-- quietly. mkdir is never called speculatively, because there is no such thing as a free one.
 function ulog.ensuredir(dir)
   if dir == nil then dir = ulog.usbdir end
   if dir == nil or dir == '' then return false, 'no directory configured' end
-  local haskey, present = pcall(function() return file.usbdriveexists() end)
-  if haskey and present == 0 then return false, 'no USB key' end
+  if not ulog.haskey() then return false, 'no USB key' end
+  if ulog.dirok == dir then return true end
+  if string.sub(dir, 1, 1) ~= '/' then return false, 'directory must be absolute: ' .. dir end
   local leaf = string.gsub(dir, '^.*/', '')
+  local listed = ulog.rootlists(leaf)
+  if listed == true then ulog.dirok = dir; return true end
+  if listed == nil then return false, 'cannot read the USB root' end
   pcall(function() file.mkdir(dir) end)
-  if leaf ~= dir then pcall(function() file.mkdir(leaf) end) end
-  return true
+  if ulog.rootlists(leaf) == true then ulog.dirok = dir; return true end
+  return false, 'cannot create ' .. dir
+end
+
+-- Forget that the directory was confirmed, so the next ensuredir looks again.
+-- USED BY THE HARNESS AND BY THE no-key GATE, not by a recovery path: there is no retry-after-failure in
+-- this module, because swapping a key under a running app is unsupported. It exists so a caller that KNOWS
+-- the key changed -- a test modelling a relaunch -- can say so.
+function ulog.dirlost()
+  ulog.dirok = nil
+end
+
+-- Open a file for writing. -> handle, or nil and why.
+--   [...]
+-- failed open is REPORTED, not worked around. Retrying would mean re-reading the root, and the failed open
+-- that triggered it has already posted 2205 -- so the retry could not have kept the panel quiet anyway,
+-- only made the app appear to cope with something it does not support.
+function ulog.open_write(path, mode)
+  if path == nil then return nil, 'no filename available' end
+  if mode == nil then mode = file.MODE_APPEND end
+  if not ulog.haskey() then return nil, 'no USB key -- ' .. tostring(path) end
+  local ready, rwhy = ulog.ensuredir()
+  if not ready then return nil, tostring(rwhy) .. ' -- cannot open ' .. tostring(path) end
+  local fh = nil
+  pcall(function() fh = file.open(path, mode) end)
+  if fh ~= nil then return fh end
+  return nil, 'cannot open ' .. tostring(path)
+                .. ' -- key may be absent, full, write-protected, or refusing the directory'
 end
 
 -- Open the log. `truncate` starts a fresh file; the default appends across
@@ -76,25 +142,13 @@ function ulog.open(path, truncate)
   if not ulog.enabled then return false end
   if path ~= nil then ulog.path = path end
 
-  local dirok, dirwhy = ulog.ensuredir()
-
-  local ok, err = pcall(function()
-    local mode = file.MODE_APPEND
-    if truncate then mode = file.MODE_WRITE end
-    ulog.fh = file.open(ulog.path, mode)
-  end)
-  if not ok then
-    ulog.fh, ulog.on, ulog.lasterr = nil, false, tostring(err)
-    return false
-  end
+  local mode = file.MODE_APPEND
+  if truncate then mode = file.MODE_WRITE end
+  local why = nil
+  ulog.fh, why = ulog.open_write(ulog.path, mode)
   if ulog.fh == nil then
     ulog.on = false
-    if not dirok then
-      ulog.lasterr = tostring(dirwhy) .. ' -- cannot open ' .. tostring(ulog.path)
-    else
-      ulog.lasterr = 'cannot open ' .. tostring(ulog.path)
-                     .. ' -- key may be absent, full, write-protected, or refusing the directory'
-    end
+    ulog.lasterr = tostring(why)
     return false
   end
 
@@ -198,7 +252,11 @@ end
 -- and a bench session that presses NewLog per device reaches 100.
 function ulog.next_free(prefix, ext, limit)
   if limit == nil then limit = 1000 end
-  ulog.ensuredir()
+  local dok, dwhy = ulog.ensuredir()
+  if not dok then
+    ulog.idx_why = tostring(dwhy)
+    return nil
+  end
   local idxpath = prefix .. 'idx.txt'
 
   ulog.idx_ram = ulog.idx_ram or {}
@@ -225,7 +283,7 @@ function ulog.next_free(prefix, ext, limit)
     if not ulog.exists(path) then
       ulog.idx_ram[prefix] = i
       local wh = nil
-      pcall(function() wh = file.open(idxpath, file.MODE_WRITE) end)
+      wh = ulog.open_write(idxpath, file.MODE_WRITE)
       local wrote = false
       if wh ~= nil then
         wrote = pcall(function()
@@ -250,14 +308,8 @@ end
 -- ulog.fh's lifetime. Returns ok, reason.
 function ulog.write_file(path, lines, n)
   if path == nil then return false, 'no filename available' end
-  local dirok, dirwhy = ulog.ensuredir()
-  local fh = nil
-  local ok, err = pcall(function() fh = file.open(path, file.MODE_WRITE) end)
-  if not ok then return false, tostring(err) end
-  if fh == nil then
-    if not dirok then return false, tostring(dirwhy) .. ' -- cannot write ' .. tostring(path) end
-    return false, 'cannot write ' .. tostring(path)
-  end
+  local fh, why = ulog.open_write(path, file.MODE_WRITE)
+  if fh == nil then return false, tostring(why) end
 
   local wrote = true
   local i
@@ -3035,10 +3087,8 @@ end
 -- Returns the sink and a finish() that flushes the carry and closes the file.
 function sdec.ck_sink_file(path, ncol)
   if ncol == nil then ncol = 16 end
-  pcall(function() ulog.ensuredir() end)
-  local fh = nil
-  local ok = pcall(function() fh = file.open(path, file.MODE_APPEND) end)
-  if not ok or fh == nil then return nil, nil, 'cannot append to ' .. tostring(path) end
+  local fh, owhy = ulog.open_write(path, file.MODE_APPEND)
+  if fh == nil then return nil, nil, 'cannot append to ' .. tostring(path) end
   local hok = pcall(function()
     file.write(fh, string.format('---- stream  %s %s\r\n',
                sdec.baud_text and sdec.baud_text() or '?',
@@ -4390,7 +4440,7 @@ function sdec.ui_build()
     {x = 152, w = 90,  t = 'View',       e = 'sdec.view_toggle()'},
     {x = 266, w = 100, t = 'Mode',       e = 'sdec.mode_cycle()'},
     {x = 390, w = 112, t = 'NewLog',     e = 'sdec.log_new()'},
-    {x = 526, w = 112, t = 'Save',       e = 'sdec.save()'},
+    {x = 526, w = 112, t = 'Save',       e = 'sdec.save()', hide = 'ui_savebtn'},
     {x = 662, w = 112, t = 'Options',    e = 'sdec.options()'},
   }
   local pbw, lbw = 56, 140
@@ -4431,6 +4481,8 @@ function sdec.ui_build()
   sdec.ui_pgindtxt = nil
   sdec.ui_pgvis = nil
   sdec.ui_lockvis = nil
+  sdec.ui_savevis = nil
+  sdec.ui_savebtn = nil
   local k
   local nb = 0
   for k = 1, table.getn(bdef) do
@@ -4439,6 +4491,7 @@ function sdec.ui_build()
     if b ~= nil then
       display.setevent(b, display.EVENT_PRESS, bd.e)
       sdec.ui_btn[k] = b
+      if bd.hide ~= nil then sdec[bd.hide] = b end
       sdec.ui_allbtn[table.getn(sdec.ui_allbtn) + 1] = b
       nb = nb + 1
     end
@@ -4496,6 +4549,17 @@ function sdec.ui_page_btns()
       if lw then lst = display.STATE_ENABLE end
       pcall(function() display.setstate(sdec.ui_lockbtn, lst) end)
       sdec.ui_lockvis = lw
+    end
+  end
+
+  if sdec.ui_savebtn ~= nil then
+    local sw = true
+    if ulog ~= nil and ulog.haskey ~= nil then sw = ulog.haskey() end
+    if sw ~= sdec.ui_savevis then
+      local sst = display.STATE_INVISIBLE
+      if sw then sst = display.STATE_ENABLE end
+      pcall(function() display.setstate(sdec.ui_savebtn, sst) end)
+      sdec.ui_savevis = sw
     end
   end
   return true
@@ -5120,10 +5184,8 @@ end
 function sdec.frame_log()
   if sdec.res == nil or sdec.res.nf < 1 then return false end
   if sdec.flog_alloc() == nil then return false end
-  pcall(function() ulog.ensuredir() end)
-  local fh = nil
-  local ok = pcall(function() fh = file.open(sdec.flog_path, file.MODE_APPEND) end)
-  if not ok or fh == nil then
+  local fh, fwhy = ulog.open_write(sdec.flog_path, file.MODE_APPEND)
+  if fh == nil then
     sdec.flog_why = 'cannot append to ' .. tostring(sdec.flog_path)
     return false
   end
@@ -6594,6 +6656,7 @@ function sdec.start()
 
   local ok, err = pcall(function()
     ulog.tag = 'SDEC'
+    ulog.ensuredir()
     ulog.open(sdec.logpath)
 
     sdec.cancel_setup()

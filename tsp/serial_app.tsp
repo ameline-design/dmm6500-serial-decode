@@ -363,14 +363,11 @@ end
 function sdec.frame_log()
   if sdec.res == nil or sdec.res.nf < 1 then return false end
   if sdec.flog_alloc() == nil then return false end
-  -- HERE AND NOT ONLY IN flog_alloc, which returns the CACHED name without touching the key once one
-  -- has been allocated. Pull key A after the first capture, push key B in, and this open is the first
-  -- thing to touch a key that has no SerialFiles on it -- so the directory has to be confirmed per
-  -- append, not once per session.
-  pcall(function() ulog.ensuredir() end)
-  local fh = nil
-  local ok = pcall(function() fh = file.open(sdec.flog_path, file.MODE_APPEND) end)
-  if not ok or fh == nil then
+  -- open_write, NOT file.open: it carries the no-key gate and the reason string, so a missing key is a
+  -- silent refusal rather than an event. It does NOT recover from a key swapped since the name was
+  -- allocated -- that is unsupported and reported, not worked around.
+  local fh, fwhy = ulog.open_write(sdec.flog_path, file.MODE_APPEND)
+  if fh == nil then
     sdec.flog_why = 'cannot append to ' .. tostring(sdec.flog_path)
     return false
   end
@@ -3002,6 +2999,10 @@ function sdec.start()
 
   local ok, err = pcall(function()
     ulog.tag = 'SDEC'
+    -- ONCE, HERE, AND NOT PER WRITE. Confirming the directory means reading the USB root, which returns
+    -- the whole 64 kB FAT table, so it is done one time at launch and cached. Every writer afterwards
+    -- just opens. See THE DIRECTORY in usb_log.tsp for why there is no cheaper way to ask.
+    ulog.ensuredir()
     ulog.open(sdec.logpath)
 
     -- THE CANCEL KEY, WIRED ONCE. Every long job polls the latch this arms; without it they fall

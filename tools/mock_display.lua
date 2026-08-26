@@ -309,31 +309,92 @@ local function parentof(path)
   if d == '' then return '/' end
   return d
 end
--- 'The name of the directory must not already exist on the flash drive' (14-255), and it raises rather
--- than returning a code -- so the second call in a session is an error, and the app must expect that.
+-- MODELLED FROM THE INSTRUMENT, NOT THE MANUAL. Measured on firmware 1.7.17a: file.mkdir never raises
+-- and returns nothing -- pcall reports ok=true even for calls that did nothing at all. A failure POSTS
+-- EVENT 2208 instead, which pcall cannot see or suppress, and which pops up on the operator's panel.
+-- The failing cases are a name that already exists, a BARE relative name, and no key.
+--
+-- EVENTS ARE COUNTED HERE BECAUSE THEIR ABSENCE IS THE REQUIREMENT. The instrument must never pop an
+-- error at the operator, so 'how many did we cause' is the property under test -- and a mock that only
+-- modelled success could not express it. Opening a missing path posts 2205 the same way.
+local EVENTS = {}
+local function post(code)
+  EVENTS[table.getn(EVENTS) + 1] = code
+end
 function file.mkdir(path)
-  if not USB then error('no USB flash drive', 0) end
-  local p = abs(path)
-  if DIRS[p] then error('directory already exists: ' .. p, 0) end
+  local p = tostring(path)
+  if not USB then post(2208); return end
+  if string.sub(p, 1, 1) ~= '/' then post(2208); return end     -- bare names always fail
+  if DIRS[p] then post(2208); return end                        -- and so does one that exists
   -- ONE level only: the firmware creates a directory, not a path of them.
-  if not DIRS[parentof(p)] then error('no such parent directory: ' .. parentof(p), 0) end
+  if not DIRS[parentof(p)] then post(2208); return end
   DIRS[p] = true
-  return true
 end
 function file.usbdriveexists() if USB then return 1 end return 0 end
 -- What the app actually created, so a test can assert the directory rather than infer it.
 function MD.dirs() return DIRS end
 function MD.rmdir(path) DIRS[abs(path)] = nil end
+-- Posted instrument events, so a test can require that the quiet path really is quiet.
+function MD.fevents() return EVENTS end
+function MD.forget_fevents() EVENTS = {} end
+function MD.fevent_count(code)
+  local n, i = 0, nil
+  for i = 1, table.getn(EVENTS) do
+    if code == nil or EVENTS[i] == code then n = n + 1 end
+  end
+  return n
+end
+
+-- A DIRECTORY OPENS FOR READ AND YIELDS ITS RAW FAT TABLE on this firmware -- measured: /usb1 returns
+-- 65536 bytes of directory entries, with 8.3 names in plain ASCII and long names as UTF-16LE fragments.
+-- That is the only silent way to ask whether a directory exists, so the mock has to provide it or the
+-- app's one safe path is untestable. Synthesised rather than byte-accurate: it carries each child's name
+-- in both forms, which is what a name search actually reads.
+local function fat_table(dir)
+  local out, k = '', nil
+  local pfx = dir
+  if string.sub(pfx, -1) ~= '/' then pfx = pfx .. '/' end
+  local function addname(nm)
+    local wide, i = '', nil
+    for i = 1, string.len(nm) do wide = wide .. string.sub(nm, i, i) .. string.char(0) end
+    out = out .. string.upper(nm) .. '    ' .. wide .. string.char(0) .. '  '
+  end
+  for k in pairs(DIRS) do
+    if k ~= dir and string.sub(k, 1, string.len(pfx)) == pfx then
+      addname(string.gsub(string.sub(k, string.len(pfx) + 1), '/.*$', ''))
+    end
+  end
+  for k in pairs(FILES) do
+    if string.sub(k, 1, string.len(pfx)) == pfx then
+      addname(string.gsub(string.sub(k, string.len(pfx) + 1), '/.*$', ''))
+    end
+  end
+  -- PADDED, BECAUSE THE REAL TABLE IS NEVER EMPTY. Measured: /usb1 returns 65536 bytes whatever it
+  -- holds, since a FAT directory is a fixed allocation of mostly-blank entries. An empty string here
+  -- would come back from READ_ALL as nil -- 'the root could not be read' -- and an EMPTY directory would
+  -- then be indistinguishable from an unreadable one, which is precisely the distinction the app relies
+  -- on to decide whether creating is safe.
+  return out .. string.rep(string.char(0), 64)
+end
 
 function file.open(path, mode)
-  if not USB then return nil end            -- no key: NIL, not an error
+  -- NO KEY POSTS 2205 TOO. Measured: with the key out even /usb1 is 'File not found', so a mock that
+  -- returned a quiet nil here hid every open the app performs without a key -- which is exactly the class
+  -- of leak the event counter exists to catch.
+  if not USB then post(2205); return nil end
   -- A missing parent fails EVERY mode, including READ. A filesystem cannot hold /usb1/SerialFiles/x
   -- while /usb1/SerialFiles is absent, so letting a seeded file stay readable through a deleted
   -- directory would model something the instrument cannot do -- and it would do it in the app's favour,
   -- which is worse than not modelling directories at all.
-  if not DIRS[parentof(path)] then return nil end
+  if not DIRS[parentof(path)] and not DIRS[path] then post(2205); return nil end
   if mode == file.MODE_READ then
-    if FILES[path] == nil then return nil end
+    -- The directory case first: a handle whose contents are the listing.
+    if DIRS[path] then
+      nextfh = nextfh + 1
+      RPOS[nextfh] = {path = path, pos = 1, listing = fat_table(path)}
+      return nextfh
+    end
+    if FILES[path] == nil then post(2205); return nil end
     nextfh = nextfh + 1
     RPOS[nextfh] = {path = path, pos = 1}
     return nextfh
@@ -367,7 +428,12 @@ function MD.forget_files()
   -- harness exists to reach -- a second key, mid-session, with the app holding an allocated name from
   -- the first -- silently could not happen.
   DIRS = {['/usb1'] = true}
-  if ulog ~= nil then ulog.idx_ram = nil end
+  -- AND THE APP'S CACHES, both of them, for the reason already given above about idx_ram: a cache that
+  -- outlives the filesystem describes a key that is no longer there. ulog.dirok is the same shape of
+  -- claim -- 'the directory exists' -- so a fresh key must invalidate it too, which is what makes this
+  -- 'a new key in the slot before the app starts' rather than 'a key swapped under a running app'. The
+  -- second of those is unsupported and is modelled by leaving dirok alone; see the swap tests.
+  if ulog ~= nil then ulog.idx_ram = nil; ulog.dirok = nil end
 end
 
 -- WITHOUT file.read THE INDEX-READING BRANCH OF ulog.next_free() NEVER RAN OFFLINE AT ALL. The
@@ -392,7 +458,9 @@ function file.read(h, act)
     RFAIL = RFAIL - 1
     if RFAIL < 0 then error('USB read failed (key removed)', 0) end
   end
-  local body = CONTENT[r.path] or ''
+  -- A directory handle reads back its listing, not file content: that is how the app asks whether a
+  -- directory exists without risking an event.
+  local body = r.listing or CONTENT[r.path] or ''
   local len = string.len(body)
   if r.pos > len then return nil end        -- position is at end of file
   if act == file.READ_ALL then

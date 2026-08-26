@@ -1170,16 +1170,11 @@ check('next_free returns nil when every candidate is taken',
       ulog.next_free('/usb1/f_', '.txt', 5) == nil,
       tostring(ulog.next_free('/usb1/f_', '.txt', 5)))
 MD.usb(false)
--- A NAME, not a specific number. With no key every probe fails, so every candidate looks free
--- and the first one tried is returned -- and which one that is depends on the session's index
--- cache, which is legitimate history rather than a defect. The property that matters is that a
--- missing key does not make this return nil and strand the caller with no filename: probing
--- cannot distinguish "absent" from "no key", and write_file is what reports the real failure.
-check('next_free with no key still yields a name rather than nil',
-      (function()
-         local nm = ulog.next_free('/usb1/s_', '.txt')
-         return type(nm) == 'string' and has(nm, '/usb1/s_') and has(nm, '.txt')
-       end)(),
+-- NIL, AND THAT IS THE POINT. This used to hand back a name -- with no key every probe fails, so every
+-- candidate looked free -- and the name was useless because nothing could open it. Worse, each of those
+-- probes posts an instrument event the operator sees. Refusing is both honest and quiet.
+check('next_free with no key REFUSES, because every probe would post an event',
+      ulog.next_free('/usb1/s_', '.txt') == nil,
       tostring(ulog.next_free('/usb1/s_', '.txt')))
 MD.usb(true)
 
@@ -2271,6 +2266,32 @@ do
         sdec.ui_x + sdec.ui_textw(string.sub(widest, 1, cols)) < lb.x,
         string.format('%d cols end at %d, Lock Rate starts at %d', cols,
                       sdec.ui_x + sdec.ui_textw(string.sub(widest, 1, cols)), lb.x))
+
+  -- SAVE IS HIDDEN WITH NO KEY, because a Save with nowhere to write is a press that can only fail.
+  -- STATE_INVISIBLE is the only hide this firmware has -- STATE_DISABLE is documented as applying to
+  -- OBJ_EDIT_* alone -- so that is what is asserted, not a colour.
+  check('the Save button is remembered by NAME, not by its index in the row',
+        sdec.ui_savebtn ~= nil, tostring(sdec.ui_savebtn))
+  MD.usb(true)
+  sdec.ui_page_btns()
+  check('with a key in the slot Save is offered',
+        MD.obj(sdec.ui_savebtn).state == display.STATE_ENABLE,
+        tostring(MD.obj(sdec.ui_savebtn).state))
+  MD.usb(false)
+  sdec.ui_page_btns()
+  check('with no key Save is hidden rather than left to fail',
+        MD.obj(sdec.ui_savebtn).state == display.STATE_INVISIBLE,
+        tostring(MD.obj(sdec.ui_savebtn).state))
+  -- IT COMES BACK, which is the half a cached flag would get wrong.
+  MD.usb(true)
+  sdec.ui_page_btns()
+  check('and it returns when a key is inserted again',
+        MD.obj(sdec.ui_savebtn).state == display.STATE_ENABLE,
+        tostring(MD.obj(sdec.ui_savebtn).state))
+  -- NewLog is NOT hidden: it renames the next log rather than writing one, so it still means something.
+  check('NewLog is left alone -- it chooses a name, it does not write a file',
+        MD.obj(sdec.ui_btn[4]).state ~= display.STATE_INVISIBLE,
+        tostring(MD.obj(sdec.ui_btn[4]).state))
 end
 
 -- ---------------------------------------------------------------------------
@@ -5946,25 +5967,29 @@ local function test_modes()
   check('the byte log writes to a key that had no SerialFiles on it',
         sdec.frame_log() == true, tostring(sdec.flog_why))
   local swapped = sdec.flog_path
-  MD.forget_files()                                  -- key pulled, a different one pushed in
-  run({bytes = hb, baud = 9600, fs = 100000})
-  check('and again after the key is swapped, with the name already allocated',
-        sdec.frame_log() == true and sdec.flog_path == swapped,
-        tostring(sdec.flog_path) .. ' ' .. tostring(sdec.flog_why))
-  check('Save works on the swapped key too',
-        sdec.save() == true, tostring(sdec.lasterr))
-
-  -- THE NEGATIVE, which is what makes the two checks above mean something: with the directory no longer
-  -- confirmed per append, the same swap must FAIL. Without this, both pass on code that never creates
-  -- anything after the first key.
-  local realdir = ulog.ensuredir
-  ulog.ensuredir = function() return true end
+  -- A KEY PRESENT BEFORE THE APP STARTS, which is the supported way to run: MD.forget_files() models a
+  -- fresh key AND drops the app's directory cache with it, exactly as a relaunch would.
   MD.forget_files()
   run({bytes = hb, baud = 9600, fs = 100000})
-  local swapfail = sdec.frame_log()
-  ulog.ensuredir = realdir
-  check('WITHOUT the per-append directory check the swap fails, so this pair can tell',
-        swapfail == false, tostring(swapfail) .. ' ' .. tostring(sdec.flog_why))
+  check('a fresh key with no SerialFiles gets one made, and the name is unchanged',
+        sdec.frame_log() == true and sdec.flog_path == swapped,
+        tostring(sdec.flog_path) .. ' ' .. tostring(sdec.flog_why))
+  check('Save works on it too', sdec.save() == true, tostring(sdec.lasterr))
+
+  -- AND THE UNSUPPORTED CASE, asserted as what it is rather than quietly working. A key swapped UNDER a
+  -- running app leaves ulog.dirok describing the key that left, so this drops the directory WITHOUT
+  -- clearing the cache -- the one thing forget_files does not model. The app must report, not recover:
+  -- recovering would mean re-reading the 64 kB root on a write, and the failed open has already posted
+  -- its event, so a retry could not have kept the panel quiet -- only made the app look like it supports
+  -- something the manual says it does not.
+  MD.rmdir(ulog.usbdir)
+  run({bytes = hb, baud = 9600, fs = 100000})
+  local midswap = sdec.frame_log()
+  check('a key swapped UNDER the running app is reported, not silently worked around',
+        midswap == false and sdec.flog_why ~= nil,
+        tostring(midswap) .. ' ' .. tostring(sdec.flog_why))
+  check('...and the reason names the file, so the note row can say which one',
+        has(tostring(sdec.flog_why), 'bytes000.txt'), tostring(sdec.flog_why))
   MD.forget_files()
   sdec.flog_why = nil
 
