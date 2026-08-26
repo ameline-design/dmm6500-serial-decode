@@ -2076,26 +2076,58 @@ check('no field carries a | -- the vertical RULES delimit the ASCII column now',
 -- content can cross is worse than none. Nothing follows the gutter, so nothing needs closing.
 check('and there are TWO of them, spanning the dump block',
       table.getn(sdec.ui_vr) == 2, tostring(table.getn(sdec.ui_vr or {})))
--- THE RULES BELONG TO A DUMP, so they need BOTH a hex view and a mode that paints rows. A
--- streaming mode paints none, and on the view test alone three rules stood over an empty area
--- delimiting nothing -- which the MOCKUP caught, not this suite, so it is pinned here now.
+-- THE RULES FOLLOW THE VIEW, AND ONLY THE VIEW. The capture mode has no say: 'sml' and 'med' both
+-- carry view = false in sdec.ui_modes, and testing that flag as well left the two separators missing
+-- for the whole of the 8 kB and 32 kB modes until a capture had finished. The grid appearing and
+-- disappearing as the Mode button is pressed reads as a fault, not as information.
 -- Asserted on ui_vrc, the shadow cache the fill is written from.
--- do...end, NOT two more top-level locals: this file's main chunk is at Lua 5.0's 200-active-local
+-- do...end, NOT more top-level locals: this file's main chunk is at Lua 5.0's 200-active-local
 -- ceiling, and adding them raised 'too many local variables (limit is 200) in main function' 900
 -- lines further down. A nested block releases its registers at `end`, which is the cheap version
 -- of the wrap-a-section-in-a-function fix used elsewhere in this file.
 do
-  local vr_hex = sdec.ui_vrc
-  sdec.capmode = 'med'
+  local seen = {}
+  local m, v
+  for _, m in ipairs({'frame', 'sml', 'med'}) do
+    for _, v in ipairs({'hex', 'text'}) do
+      sdec.capmode, sdec.ui_mode = m, v
+      sdec.ui_refresh()
+      seen[m .. '/' .. v] = sdec.ui_vrc
+    end
+  end
+  -- EVERY capture mode, not just the one that was broken: pinning only 'med' would let 'sml'
+  -- regress on its own. EVERY failure is COLLECTED rather than assigned over -- both streaming modes
+  -- fail together, and a message naming only the last one invites half a fix.
+  local bad = {}
+  for _, m in ipairs({'frame', 'sml', 'med'}) do
+    if seen[m .. '/hex'] ~= sdec.ui_c_rule then
+      table.insert(bad, m .. ' hid the rules in HEX view')
+    end
+    if seen[m .. '/text'] ~= sdec.ui_c_hide then
+      table.insert(bad, m .. ' showed the rules in TEXT view')
+    end
+  end
+  check('the dump rules show in HEX and hide in TEXT, in all three capture modes',
+        table.getn(bad) == 0, table.concat(bad, '; '))
+  -- MIDI AND LIN HIDE TOO, and that is deliberate rather than an oversight: both are cols = 1 in
+  -- sdec.ui_views, one message or frame of free text per row, so a column separator would strike
+  -- through the text exactly as it would in TEXT view. Asserted so nobody "fixes" it back.
+  local hid = {}
+  for _, v in ipairs({'midi', 'lin'}) do
+    sdec.capmode, sdec.ui_mode = 'med', v
+    sdec.ui_refresh()
+    hid[v] = sdec.ui_vrc
+  end
+  check('the dump rules hide in the MIDI and LIN views, which have no columns either',
+        hid.midi == sdec.ui_c_hide and hid.lin == sdec.ui_c_hide,
+        string.format('midi=%s lin=%s', tostring(hid.midi), tostring(hid.lin)))
+  -- LEFT AS FOUND. The next assertion in this file reads the dump, and a view or mode left over from
+  -- here would have it reading a different one.
+  sdec.capmode, sdec.ui_mode = 'frame', 'hex'
   sdec.ui_refresh()
-  local vr_stream = sdec.ui_vrc
-  sdec.capmode = 'frame'
-  sdec.ui_refresh()
-  check('the dump rules hide in a mode that paints no rows, and come back',
-        vr_hex == sdec.ui_c_rule and vr_stream == sdec.ui_c_hide and
-        sdec.ui_vrc == sdec.ui_c_rule,
-        string.format('hex=%s stream=%s back=%s', tostring(vr_hex), tostring(vr_stream),
-                      tostring(sdec.ui_vrc)))
+  check('and the rules are back on, with the view restored for what follows',
+        sdec.ui_vrc == sdec.ui_c_rule and sdec.ui_mode == 'hex',
+        string.format('vrc=%s mode=%s', tostring(sdec.ui_vrc), tostring(sdec.ui_mode)))
 end
 -- ...but the FILE form is unchanged: a log line has to be parseable standing alone, where the
 -- pipes are the only thing marking where the ASCII field starts.
@@ -2118,6 +2150,24 @@ local gw = sdec.ui_ch_w
 check('the offset field clears rule 1',
       sdec.ui_col_ix + string.len(gix) * gw < sdec.ui_vr1_x,
       string.format('ends %d, rule at %d', sdec.ui_col_ix + string.len(gix) * gw, sdec.ui_vr1_x))
+-- A 32 kB RECORDING'S LAST ROW, which is the case the four-digit column could not hold. The offset is
+-- DECIMAL and '%04d' is a MINIMUM width: byte 32752 renders five digits however the format reads, and
+-- at ui_ixn = 4 it reached exactly ui_vr1_x, so the separator was drawn through the text in 32 kB mode.
+-- ASKED OF ua_hexparts rather than of a hand-written '32752', so a change to the offset format is
+-- caught here instead of on the panel.
+do
+  local bigix = sdec.ua_hexparts({}, {}, 0, 32753, 16, 0)
+  check('a 32 kB offset -- five digits -- still clears rule 1',
+        string.len(bigix) == 5 and
+        sdec.ui_col_ix + string.len(bigix) * gw < sdec.ui_vr1_x,
+        string.format('%q is %d chars, ends %d, rule at %d', bigix, string.len(bigix),
+                      sdec.ui_col_ix + string.len(bigix) * gw, sdec.ui_vr1_x))
+  -- AND THE COLUMN CONSTANT MUST DESCRIBE IT. ui_ixn is what every x right of the offset is derived
+  -- from, so a constant that undercounts the digits moves the whole dump, not just this field.
+  check('ui_ixn is wide enough for the widest offset the app can show',
+        sdec.ui_ixn >= string.len(bigix),
+        string.format('ui_ixn=%d, widest offset %d chars', sdec.ui_ixn, string.len(bigix)))
+end
 check('the hex block clears rule 2 -- the one that was 0 px',
       sdec.ui_col_hx + string.len(ghx) * gw < sdec.ui_vr2_x,
       string.format('%d chars ends %d, rule at %d', string.len(ghx),
@@ -2128,6 +2178,25 @@ check('the second hex group clears rule 2',
       sdec.ui_col_hx2 + string.len(ghx2) * gw < sdec.ui_vr2_x,
       string.format('%d chars ends %d, rule at %d', string.len(ghx2),
                     sdec.ui_col_hx2 + string.len(ghx2) * gw, sdec.ui_vr2_x))
+-- RULE 2 AND THE STATUS BAND'S DIVIDER ARE THE SAME COLUMN. They are stacked one above the other on
+-- the screen, so any difference at all reads as a misalignment -- and it is only visible by eye on the
+-- instrument, which is the kind of defect that ships. ui_vr2_x is DERIVED from ui_stat_div, so this
+-- asserts the derivation still exists rather than re-deriving it.
+check('the ASCII separator lines up with the rule left of "log:"',
+      sdec.ui_vr2_x == sdec.ui_stat_div,
+      string.format('vr2=%s stat_div=%s', tostring(sdec.ui_vr2_x), tostring(sdec.ui_stat_div)))
+-- AND THE GUTTER IT LEAVES IS A REAL ONE. Because rule 2 now follows ui_stat_div, moving the status
+-- divider LEFT would walk this rule into the second hex group -- the checks above would catch a full
+-- overlap, but a 1 px gap is already a rendering fault, and the hex advance is only an estimate.
+--
+-- SCOPED IN A `do` BLOCK, not declared at file level: this chunk already carries 199 of the 200 locals
+-- Lua allows in one function, so a single further top-level `local` stops the whole suite COMPILING --
+-- 'too many local variables' -- and a suite that cannot compile is a suite that cannot fail.
+do
+  local gut = sdec.ui_vr2_x - (sdec.ui_col_hx2 + sdec.ui_hxn * sdec.ui_ch_w)
+  check('rule 2 leaves at least a full character of gutter after the hex',
+        gut >= sdec.ui_ch_w, string.format('gutter %d px, one char is %d', gut, sdec.ui_ch_w))
+end
 -- The two groups must not overlap each other -- the whole reason for splitting the row.
 check('the two hex groups do not overlap',
       sdec.ui_col_hx + string.len(ghx) * gw < sdec.ui_col_hx2,
@@ -2140,9 +2209,17 @@ check('the ASCII block fits on screen',
       sdec.ui_col_as + string.len(gas) * gw < 700,
       string.format('ends %d', sdec.ui_col_as + string.len(gas) * gw))
 -- ...and the constants must MATCH the strings, so a future edit to either is caught.
+--
+-- EXACT FOR hx AND as, BUT NOT FOR ix. Those two are fixed-width by construction -- two chars per byte
+-- and one char per byte, padded for a short final row -- so any difference is a defect. The offset is
+-- not: '%04d' is a MINIMUM width, so it renders four characters up to byte 9999 and five beyond, and an
+-- equality against one sample row can only ever describe one side of that boundary. ui_ixn is the width
+-- the COLUMN is sized for, so `<=` is the true relation here, and the widest-offset check further up
+-- pins the other side -- ui_ixn too narrow fails there, too wide fails the clears-rule-1 and gutter
+-- checks. Both directions stay covered; only the wrong relation is gone.
 check('ui_hxn and ui_asn describe the strings ua_hexparts actually returns',
       string.len(ghx) == sdec.ui_hxn and string.len(ghx2) == sdec.ui_hxn
-      and string.len(gas) == sdec.ui_asn and string.len(gix) == sdec.ui_ixn,
+      and string.len(gas) == sdec.ui_asn and string.len(gix) <= sdec.ui_ixn,
       string.format('ix %d/%d hx %d+%d/%d as %d/%d', string.len(gix), sdec.ui_ixn,
                     string.len(ghx), string.len(ghx2), sdec.ui_hxn,
                     string.len(gas), sdec.ui_asn))
@@ -6460,7 +6537,7 @@ local function test_modes()
         sdec.ui_trig_x > sdec.ui_trig_div,
         string.format('div %d, x %d', sdec.ui_trig_div, sdec.ui_trig_x))
   check('armed and in force reads GREEN',
-        has(MD.text(sdec.ui_trig_t) or '', 'EXT TRIG') and
+        has(MD.text(sdec.ui_trig_t) or '', 'TRIG') and
         MD.obj(sdec.ui_trig_t).color == sdec.ui_c_locked,
         string.format('%q 0x%06X', MD.text(sdec.ui_trig_t),
                       MD.obj(sdec.ui_trig_t).color))
@@ -6471,7 +6548,7 @@ local function test_modes()
   -- colours are spoken for by the three directions, so the marker is the text and the sentence goes on
   -- the note line.
   check('a rear input set but IGNORED under free run is marked, not silently green',
-        MD.text(sdec.ui_trig_t) == 'EXT TRIG IN?',
+        MD.text(sdec.ui_trig_t) == 'TRIG IN?',
         string.format('%q', tostring(MD.text(sdec.ui_trig_t))))
   -- THE NOTE MUST NAME THE CONTROL THAT SETS IT, and the control is an option FIELD -- Options > Rear
   -- BNC, entries Off / Trig In / FC Out / In + FC Out. No OBJ_EDIT_CHECK exists anywhere in the app, so
@@ -6481,38 +6558,40 @@ local function test_modes()
         has(table.concat(sdec.ui_notes(), ' | '), 'Rear BNC')
         and has(table.concat(sdec.ui_notes(), ' | '), 'Trig In'),
         table.concat(sdec.ui_notes(), ' | '))
-  -- THE DIRECTION IS THE FACT, and each has its own colour. 'EXT TRIG' named neither direction, so
+  -- THE DIRECTION IS THE FACT, and each has its own colour. A bare 'TRIG' names neither, so
   -- the cell could not distinguish a meter WAITING for a signal from one DRIVING another device.
   sdec.trigmode = 'edge'
   sdec.trigext, sdec.fc_out = false, true
   sdec.ui_refresh()
-  check('an output-only rear BNC reads EXT TRIG OUT in amber',
-        MD.text(sdec.ui_trig_t) == 'EXT TRIG OUT'
+  check('an output-only rear BNC reads TRIG OUT in amber',
+        MD.text(sdec.ui_trig_t) == 'TRIG OUT'
         and MD.obj(sdec.ui_trig_t).color == sdec.ui_c_extout,
         string.format('%q 0x%06X', tostring(MD.text(sdec.ui_trig_t)),
                       MD.obj(sdec.ui_trig_t).color))
   sdec.trigext, sdec.fc_out = true, true
   sdec.ui_refresh()
-  check('both directions read EXT TRIG I/O in cyan',
-        MD.text(sdec.ui_trig_t) == 'EXT TRIG I/O'
+  check('both directions read TRIG I/O in cyan',
+        MD.text(sdec.ui_trig_t) == 'TRIG I/O'
         and MD.obj(sdec.ui_trig_t).color == sdec.ui_c_extio,
         string.format('%q 0x%06X', tostring(MD.text(sdec.ui_trig_t)),
                       MD.obj(sdec.ui_trig_t).color))
-  -- EVERY LABEL MUST FIT ITS CELL. 'EXT TRIG OUT' is 123 px and the cell had 115, which is why the
+  -- EVERY LABEL MUST FIT ITS CELL. This is what forced the 'EXT ' off them: the cell is 122 px and
+  -- 'EXT TRIG OUT' was 123, and the firmware fades an overlong tail rather than clipping it. The
   -- divider moved -- measured here rather than trusted, since it is bounded by an INTERIOR rule that
   -- render_png's panel-edge check cannot see.
   do
     local cellpx = sdec.ui_rule_x1 - sdec.ui_trig_x
     local bad, li = nil, nil
-    for li, lbl in ipairs({'EXT TRIG IN', 'EXT TRIG OUT', 'EXT TRIG I/O',
-                           'EXT TRIG IN?', 'EXT TRIG I/O?'}) do
+    for li, lbl in ipairs({'TRIG IN', 'TRIG OUT', 'TRIG I/O',
+                           'TRIG IN?', 'TRIG I/O?'}) do
       if sdec.ui_textw(lbl) > cellpx - 2 then bad = lbl end
     end
     check('every rear-BNC label fits the cell, marker included', bad == nil,
-          bad == nil and string.format('widest 123 px of %d', cellpx)
+          bad == nil and string.format('widest 84 px of %d', cellpx)
           or string.format('%q needs %d of %d', bad, sdec.ui_textw(bad), cellpx))
   end
-  -- ...AND THE LOG CELL BESIDE IT MUST STILL HOLD ITS OWN CONTENT after giving up those 12 px.
+  -- ...AND THE LOG CELL BESIDE IT MUST STILL HOLD ITS OWN CONTENT. It keeps 188 px because
+  -- ui_trig_div moved right with ui_stat_div; the rear BNC cell paid for the shift, not this one.
   check('the log cell still fits a six-digit byte count after the divider moved',
         sdec.ui_textw('log: bytes007  999999 B') <= sdec.ui_log_px,
         string.format('%d px of %d', sdec.ui_textw('log: bytes007  999999 B'), sdec.ui_log_px))
@@ -8027,6 +8106,64 @@ print('\nthe FIT and S/N cells are banded on the figure they print (real code)')
         sdec.ui_rule_hdr < sdec.ui_val_y - sdec.ui_ink + 1,
         string.format('hdr=%s lab_y=%s val ink top=%s', tostring(sdec.ui_rule_hdr),
                       tostring(sdec.ui_lab_y), tostring(sdec.ui_val_y - sdec.ui_ink + 1)))
+  -- PER CELL, THROUGH ui_field_band, because the check above uses the SMALL ink height and the two
+  -- FONT_MEDIUM cells reach 5 px higher -- so the only cells that can actually touch ui_rule_hdr were
+  -- the ones it did not measure. A cell also carries fd.dy, and an optical nudge that pushed a value
+  -- onto ui_rule_mid would otherwise be invisible until someone power-cycled the instrument to look.
+  local rules = {sdec.ui_rule_top, sdec.ui_rule_hdr, sdec.ui_rule_mid, sdec.ui_rule_bot}
+  local rnames = {'top', 'hdr', 'mid', 'bot'}
+  local clash = nil
+  for j = 1, table.getn(sdec.ui_fields) do
+    local top, bot = sdec.ui_field_band(j)
+    for r = 1, table.getn(rules) do
+      if rules[r] >= top and rules[r] <= bot then
+        clash = string.format('%s ink %d..%d contains ui_rule_%s at %d',
+                              sdec.ui_fields[j].lab, top, bot, rnames[r], rules[r])
+      end
+    end
+  end
+  check('no header rule lands inside any value cell ink band, medium font and fd.dy included',
+        clash == nil, tostring(clash))
+  -- fd.dy IS AN OPTICAL CORRECTION, NOT A LAYOUT KNOB. Bounding it is what keeps it from being used
+  -- to move a cell somewhere the grid does not describe -- at which point every x and y derived from
+  -- ui_val_y would be reasoning about a position the panel no longer uses.
+  local baddy = nil
+  for j = 1, table.getn(sdec.ui_fields) do
+    local dy = sdec.ui_fields[j].dy
+    if dy ~= nil and (dy < 0 or dy > 2) then
+      baddy = string.format('%s dy=%d', sdec.ui_fields[j].lab, dy)
+    end
+  end
+  check('any fd.dy is a nudge of 0..2 px, not a relocation', baddy == nil, tostring(baddy))
+  -- Only the two headline cells are nudged, and both by the same amount -- BAUD a pixel below FORMAT
+  -- would be worse than both being a pixel high.
+  check('BAUD and FORMAT are dropped by the same 1 px, and nothing else is dropped',
+        sdec.ui_fields[1].dy == 1 and sdec.ui_fields[2].dy == 1 and
+        sdec.ui_fields[3].dy == nil,
+        string.format('baud=%s fmt=%s idle=%s', tostring(sdec.ui_fields[1].dy),
+                      tostring(sdec.ui_fields[2].dy), tostring(sdec.ui_fields[3].dy)))
+  -- THE COLUMN SEPARATORS MUST REACH THE STATUS BAND'S TOP RULE. Stopping short read as an
+  -- unfinished table, and deriving the end from the row grid is what let it drift 8 px.
+  check('the dump vertical rules end exactly on ui_stat_top',
+        sdec.ui_vr_y1 == sdec.ui_stat_top,
+        string.format('vr_y1=%s stat_top=%s', tostring(sdec.ui_vr_y1), tostring(sdec.ui_stat_top)))
+  -- ...and must not run back up into the last dump row's text.
+  check('the dump vertical rules clear the last row ink',
+        sdec.ui_vr_y1 > sdec.ui_row_y0 + (sdec.ui_nrow - 1) * sdec.ui_row_dy,
+        string.format('vr_y1=%s last row baseline=%s', tostring(sdec.ui_vr_y1),
+                      tostring(sdec.ui_row_y0 + (sdec.ui_nrow - 1) * sdec.ui_row_dy)))
+  -- THE TABLE SPANS THE WHOLE COORDINATE SPACE. Anything less leaves a visible dark margin down one
+  -- side of the screen, which is what prompted this.
+  check('the header and status boxes start at x = 1',
+        sdec.ui_rule_x0 == 1, tostring(sdec.ui_rule_x0))
+  -- AND THE RIGHT EDGE IS THE LAST LEGAL COLUMN, NOT ONE PAST IT. A rect draws through x + w
+  -- INCLUSIVE, so the 1 px right-hand vertical at x1 occupies x1 and x1 + 1: x1 = 798 would reach 799,
+  -- past the documented X limit, and display.create returns NIL for an out-of-range object rather than
+  -- raising -- so the table's right edge would silently not be drawn at all.
+  check('the right-hand vertical rule ends on 798, the last legal column, not past it',
+        sdec.ui_rule_x1 + 1 == 798,
+        string.format('x1=%s so the vertical reaches %s, limit 798',
+                      tostring(sdec.ui_rule_x1), tostring(sdec.ui_rule_x1 + 1)))
 
   sdec.fitq, sdec.snr_db = keepq, keepdb
 end)()

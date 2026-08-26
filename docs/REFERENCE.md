@@ -780,7 +780,7 @@ useful:
 `sdec.trigext_toggle()` fires only if that speculatively-wired status-row rect ever delivers a press —
 so neither is what carries the warning. `sdec.ui_notes()` **derives it from state instead of announcing
 it on change**: while the combination holds, every refresh re-adds `Rear BNC = Trig In is set but
-IGNORED -- Free run means do not wait for anything`, and `ui_trig_t` appends a `?` to `EXT TRIG IN`.
+IGNORED -- Free run means do not wait for anything`, and `ui_trig_t` appends a `?` to `TRIG IN`.
 A recomputed note cannot be missed by arriving through a path nobody thought to instrument, which is
 why the setting-looks-applied-but-is-not class of warning belongs there and not in a handler.
 

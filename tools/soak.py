@@ -30,6 +30,7 @@ HOW IT KEEPS ITSELF HONEST:
     python3 tools/soak.py --selftest                        # replay a saved lap; no instrument at all
 """
 import argparse
+import glob
 import json
 import os
 import re
@@ -407,6 +408,20 @@ def record_lap(d, cap, wall_s=1800):
             print('    (further volunteered lines kept but not printed)')
 
 
+def retag_lap(outdir, laps, src, suffix):
+    """Rename a lap log so its name carries its verdict, and return the path that now holds it.
+
+    Best effort by design. The bytes are the evidence and the name is a convenience, so a rename that
+    fails must leave the log where it is rather than raise and lose a three-hour lap.
+    """
+    dst = os.path.join(outdir, 'lap%04d-%s.log' % (laps, suffix))
+    try:
+        os.rename(src, dst)
+        return dst
+    except OSError:
+        return src
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--hours', type=float, default=8.0)
@@ -482,6 +497,11 @@ def main():
 
     deadline = time.time() + a.hours * 3600
     laps, bad_laps, dead, odd_rc = 0, 0, 0, 0
+    # SET ONLY BY THE EXIT-3 PATH, and it decides the exit code. A run the bench died under measured
+    # nothing it can be believed about, which is exactly the '2' the exit-code comment at the bottom
+    # describes -- but the incomplete-fraction test that produced it cannot fire on a short run:
+    # `1 >= max(3, 1 // 4)` is false, so a soak that wedged on its only lap exited 0, meaning success.
+    stopped_dead = False
     tally = {}            # point -> [runs, failures]
     recs = []
     # THE POINT COUNT THE FIRST COMPLETE LAP PRODUCED, so a later lap that quietly produces fewer is
@@ -547,26 +567,47 @@ def main():
                       'possibly wedged instrument')
                 break
             continue
+        # THE LAP'S OUTPUT GOES TO DISK HERE, BEFORE ANY BRANCH DECIDES WHAT IT MEANS, and is retagged by
+        # verdict afterwards. The branch that most needs the evidence is the one that ends the run: a lap
+        # the generator wedges under can still have reached 33 of 41 vectors, which is 1400-odd cells of
+        # real measurement. An unwritten log is indistinguishable from a clean one -- grep for an event
+        # code in text that was never written and the answer is 0, which reads as "no such event". That
+        # is the one answer a soak must never be able to give.
+        lap_log = os.path.join(outdir, 'lap%04d.log' % laps)
+        with open(lap_log, 'w') as fh:
+            fh.write(out)
         # AN INCOMPLETE LAP IS EVIDENCE OF NOTHING, and must not be tallied. Counting its partial point
         # set would enter a 'run' for every point it reached and none for the points it never got to --
         # so the missing ones silently improve their own pass rate, which is the opposite of what a soak
-        # is for. Kept as evidence and counted separately.
+        # is for. Kept as evidence and counted separately. Not tallied is not the same as not examinable.
         # EXIT 3 MEANS THE BENCH IS GONE, and no later lap can mean anything. The generator's SCPI
         # port needs a power cycle at the front panel, which an unattended run cannot do -- so
         # continuing turns one wedge into a night of laps against a dead instrument.
         if rc == 3:
+            kept = retag_lap(outdir, laps, lap_log, 'STOPPED')
             print('lap %-4d STOPPED: the bench stopped answering. Ending the soak rather than '
                   'running further laps against a dead instrument -- the generator needs a power '
                   'cycle at the front panel.' % laps)
+            # WHERE THE EVIDENCE IS, said out loud. The lap measured everything up to the wedge and a
+            # reader has no way to guess that a log exists unless told.
+            print('lap %-4d reached %d point(s) before the bench went; output kept in %s'
+                  % (laps, len(points), kept))
             incomplete += 1
+            stopped_dead = True
+            # A ROW EVEN THOUGH NOTHING IS TALLIED, so a zero-byte laps.jsonl means "no lap ever ran"
+            # rather than "a lap ran for hours and we recorded none of it".
+            jl.write(json.dumps({'lap': laps, 'secs': round(time.time() - t_start, 1),
+                                 'rc': rc, 'npoints': len(points),
+                                 'incomplete': 'the bench stopped answering', 'log': kept}) + '\n')
+            jl.flush()
             break
         if why is not None:
             incomplete += 1
-            print('lap %-4d INCOMPLETE -- %s (not tallied)' % (laps, why))
-            with open(os.path.join(outdir, 'lap%04d-INCOMPLETE.log' % laps), 'w') as fh:
-                fh.write(out)
+            kept = retag_lap(outdir, laps, lap_log, 'INCOMPLETE')
+            print('lap %-4d INCOMPLETE -- %s (not tallied; output in %s)' % (laps, why, kept))
             jl.write(json.dumps({'lap': laps, 'secs': round(time.time() - t_start, 1),
-                                 'rc': rc, 'npoints': len(points), 'incomplete': why}) + '\n')
+                                 'rc': rc, 'npoints': len(points), 'incomplete': why,
+                                 'log': kept}) + '\n')
             jl.flush()
             # A LAP THAT PRODUCED NO POINTS AT ALL is the one this tool stops for: a meter that has
             # stopped answering, rather than a suite whose summary merely disagreed with itself. Its
@@ -600,13 +641,14 @@ def main():
         if rc != 0 and not fails:
             odd_rc += 1
             fails.append('the child exited %d with every point ok -- output kept' % rc)
+        # THE WHOLE OUTPUT, kept for every lap. The frequency is one half of the answer and the app's own
+        # notes are the other -- which format it chose, what else fitted, whether the probe misfitted the
+        # rate. It is already on disk; this only tags the name so a failing lap is findable by ls.
         if fails:
             bad_laps += 1
-            # THE WHOLE OUTPUT, kept per failing lap. The frequency is one half of the answer and the
-            # app's own notes are the other -- which format it chose, what else fitted, whether the
-            # probe misfitted the rate.
-            with open(os.path.join(outdir, 'lap%04d-FAILED.log' % laps), 'w') as fh:
-                fh.write(out)
+            retag_lap(outdir, laps, lap_log, 'FAILED')
+        else:
+            retag_lap(outdir, laps, lap_log, 'ok')
 
         rec = None
         if a.record_every > 0 and laps % a.record_every == 0:
@@ -676,6 +718,11 @@ def main():
     if odd_rc:
         print('%d lap(s) exited nonzero with every point ok -- a child that died after its summary; '
               'their output is kept' % odd_rc)
+    # SAID OUT LOUD, because a reader cannot guess that detail exists. Every lap's per-cell output is on
+    # disk under its verdict, including the laps this summary declines to tally.
+    logs = sorted(os.path.basename(p) for p in glob.glob(os.path.join(outdir, 'lap*.log')))
+    if logs:
+        print('per-cell output, every lap: %s' % ', '.join(logs))
     print('%-26s %6s %6s  %s' % ('POINT', 'RUNS', 'FAILS', 'RATE'))
     print('-' * 78)
     flaky = sorted(tally.items(), key=lambda kv: -kv[1][1])
@@ -703,12 +750,23 @@ def main():
         json.dump({'stamp': stamp, 'laps': laps, 'bad_laps': bad_laps,
                    'hours': round((time.time() - t_start) / 3600.0, 3),
                    'incomplete_laps': incomplete, 'odd_exit_laps': odd_rc,
+                   # SO A READER OF THE JSON ALONE knows the bench died and that per-lap detail exists.
+                   'stopped_dead': stopped_dead, 'lap_logs': logs,
                    'tally': {k: {'runs': v[0], 'fails': v[1]} for k, v in tally.items()},
                    'records': recs}, fh, indent=1)
     print('\nrecord: %s' % outdir)
     # THE EXIT CODE SAYS WHAT HAPPENED. It was always 0, so a soak that found a hard fault every lap
     # reported success to whatever ran it -- and this tool exists precisely to be believed about failures.
     # 1 = something failed, 2 = the run could not be trusted to have measured anything.
+    # A RUN THE BENCH DIED UNDER MEASURED NOTHING, whatever its lap count says. This is checked before
+    # the fraction test because the fraction cannot catch it on a short run: one incomplete lap out of
+    # one is `1 >= max(3, 0)`, which is false, so the two nights that wedged on lap 1 both exited 0 and
+    # reported success to whatever ran them. Tallying nothing is not a clean result.
+    if stopped_dead:
+        print('REFUSING TO CALL THIS A CLEAN RUN: the bench stopped answering during lap %d, so %d '
+              'lap(s) were tallied. The per-lap output is kept -- see the lap*.log files above.'
+              % (laps, laps - incomplete))
+        return 2
     if incomplete >= max(3, laps // 4):
         print('REFUSING TO CALL THIS A CLEAN RUN: %d of %d laps were incomplete.' % (incomplete, laps))
         return 2

@@ -1036,6 +1036,12 @@ def suite_plan(d, g, a, rows):
         want_fmt = (row.get('exp_fmt') or '').strip()
         expect = SP.expect_for(vid)
         t_vec, ncell, nbadcell, ninconc, nbaud, firstcell = time.time(), 0, 0, 0, 0, True
+        # EVENTS['other'] IS CUMULATIVE over the run, so the per-vector count is a delta against a
+        # snapshot taken here. Surfaced in the heartbeat below because the count of unexpected INSTRUMENT
+        # events is the number a live monitor most wants and could not see at all: the child's stdout is
+        # captured by soak.py and not printed until the lap ends, so the `*** unexpected event 2208 ***`
+        # lines stay invisible for up to three hours.
+        ev0 = EVENTS['other']
         beat(a, 'iter %d START %d/%d %s (%s, %.1f Vpp, spb %d)'
              % (it, vi + 1, len(order), vid, expect, _amp(vid), spb))
         for ri, (baud, kind) in enumerate(rates):
@@ -1223,10 +1229,17 @@ def suite_plan(d, g, a, rows):
               '%d inconclusive, %d baud-misreported  DMM %s  SDG %s'
               % (vid, expect, ncell, vsec, vsec / max(1, ncell), _amp(vid), nbadcell, ninconc, nbaud,
                  'alive' if alive else 'NOT ANSWERING', 'alive' if sdg_ok else 'NO: %s' % sdg_why))
-        beat(a, 'iter %d DONE  %d/%d %s %d cells %.0fs %.2fs/cell %d unexpected %d inconc %d baud '
-                'DMM=%s SDG=%s'
+        # `badcells`, NOT `unexpected`. This field is nbadcell -- cells that did not decode as expected,
+        # the same number the print above words as "not as expected". Calling it "unexpected" collided
+        # with the established meaning of an unexpected INSTRUMENT event, and the two readings differ by
+        # orders of magnitude in what they imply: v96's 22 known-bad cells read as 22 instrument events,
+        # and a loud impairment vector doing its job read as an alarm. `events` below is the instrument
+        # count, and it is the one that must be zero.
+        beat(a, 'iter %d DONE  %d/%d %s %d cells %.0fs %.2fs/cell %d badcells %d inconc %d baud '
+                '%d events DMM=%s SDG=%s'
              % (it, vi + 1, len(order), vid, ncell, vsec, vsec / max(1, ncell), nbadcell, ninconc,
-                nbaud, 'alive' if alive else 'SILENT', 'alive' if sdg_ok else 'SILENT'))
+                nbaud, EVENTS['other'] - ev0,
+                'alive' if alive else 'SILENT', 'alive' if sdg_ok else 'SILENT'))
         if not alive or not sdg_ok:
             # EXIT 3, NOT 1, AND THE DIFFERENCE MATTERS TO A SOAK. Exit 1 is "some cell failed", which
             # a soak should tally and carry on from. This is "there is no bench any more", and the

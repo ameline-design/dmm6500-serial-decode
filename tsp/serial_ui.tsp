@@ -89,8 +89,11 @@ sdec.ui_fields = {
   -- for a typical one: BAUD holds six medium digits (115200, 250000) = 84 px, so its column
   -- runs 8..115. A collision that appears only when someone probes a fast line is the kind
   -- that ships.
-  {lab = 'BAUD',   x = 8,   c = 0x00DCFF, med = true, wid = '115200'},
-  {lab = 'FORMAT', x = 115, c = 0x00DCFF, med = true, wid = '8N1'},
+  -- `dy` DROPS A CELL BY N PX, and only these two carry it. FONT_MEDIUM's ink box is 17 px against
+  -- FONT_SMALL's 12, and drawing both rows off one baseline sits the two big values a pixel high
+  -- against the nine small ones beside them. One px down is what makes the row read as level.
+  {lab = 'BAUD',   x = 8,   c = 0x00DCFF, med = true, dy = 1, wid = '115200'},
+  {lab = 'FORMAT', x = 115, c = 0x00DCFF, med = true, dy = 1, wid = '8N1'},
   {lab = 'IDLE',   x = 188, c = 0xFFFFFF, wid = 'HIGH'},
   {lab = 'LOGIC',  x = 241, c = 0xFFFFFF, wid = '3V3 CMOS'},
   {lab = 'THRESH', x = 334, c = 0xFFFFFF, wid = '-6.00 V'},
@@ -98,7 +101,7 @@ sdec.ui_fields = {
   {lab = 'RATE',   x = 490, c = 0xFFFFFF, wid = '80 kS/s'},
   -- BYTES must hold SIX digits: the streaming modes report 32768 and up, which is ~48 px at
   -- this font. FIT never shows more than '1.00', so the slack it does not need lives at the
-  -- right-hand end, out to the table's right rule at 792.
+  -- right-hand end, out to the table's right rule at ui_rule_x1.
   {lab = 'BYTES',  x = 573, c = 0x80FF80, wid = '999999'},
   {lab = 'ERR',    x = 636, c = 0x80FF80, wid = '999'},
   {lab = 'FIT',    x = 679, c = 0xFFFFFF, wid = '1.00'},
@@ -106,6 +109,22 @@ sdec.ui_fields = {
   -- sdec.ui_sn_bad for the measurement and for the unit error that put it at 8.
   {lab = 'S/N',    x = 721, c = 0xFFFFFF, wid = '>99 dB'},
 }
+
+-- THE INK BAND OF ONE VALUE CELL, [top, bottom] inclusive, as ONE function so the panel and
+-- tools/test_serial.lua cannot disagree about where a cell's glyphs land. A text object's y is the
+-- BOTTOM of its glyph box and it grows upward, so the band is [y - ink + 1, y].
+--
+-- IT MUST ACCOUNT FOR BOTH THE FONT AND fd.dy. FONT_MEDIUM inks 17 px against FONT_SMALL's 12, so the
+-- two headline cells reach 5 px HIGHER than the nine beside them: their band top is 17 where the small
+-- cells' is 21, and ui_rule_hdr sits at 15. A check written against the small band alone leaves the
+-- tallest cells -- the only ones that can actually reach the rule -- unguarded.
+function sdec.ui_field_band(j)
+  local fd = sdec.ui_fields[j]
+  local y = sdec.ui_val_y + (fd.dy or 0)
+  local ink = sdec.ui_ink
+  if fd.med then ink = sdec.ui_ink_med end
+  return y - ink + 1, y
+end
 
 -- MEASURED CHARACTER ADVANCES. The font is proportional and UPPERCASE IS ~25 % WIDER THAN
 -- EVERYTHING ELSE, so a label's width does not follow from its length:
@@ -195,8 +214,20 @@ sdec.ui_rule_top = 1
 sdec.ui_rule_hdr = 15
 sdec.ui_rule_mid = 35                        -- under the value ink (medium 16..32)
 sdec.ui_rule_bot = 51                        -- under the note row's ink (37..48)
-sdec.ui_rule_x0  = 4
-sdec.ui_rule_x1  = 792
+-- THE FULL WIDTH THE COORDINATE SPACE ALLOWS. Both the header strip and the status band are boxed
+-- from this pair, so they end flush with each other.
+--
+-- 797 AND NOT 798, THOUGH 798 IS THE X LIMIT. mockup.lua's geometry check reads a rect's extent as
+-- x + w, so at x1 = 798 the right-hand vertical is reported as reaching 799 and refused as off-screen.
+-- That matters more than a pixel: display.create REFUSES an out-of-range object and returns NIL rather
+-- than raising, so the right edge of the table would simply not be drawn, and the one-build-per-power-
+-- cycle rule means nobody would find out until the panel was up.
+--
+-- MEASURED ON THE PANEL, the firmware inks exactly w columns from x: the horizontal rules run 1..796
+-- and the 1 px vertical at 797 inks column 797 alone. So the render's arithmetic is one pixel more
+-- generous than the instrument's, and 798..799 stay dark. Do not "reclaim" them on the render's word.
+sdec.ui_rule_x0  = 1
+sdec.ui_rule_x1  = 797
 -- The note is a labelled cell in the same table, spanning the full width under the
 -- field row, rather than a loose line floating beneath it.
 sdec.ui_note_lab_x = 8
@@ -264,7 +295,11 @@ sdec.ui_stat_y   = 342
 sdec.ui_stat_top = 328   -- above the status ink (331..342)
 sdec.ui_stat_bot = 346   -- below it
 -- A divider before the right-hand cell, matching the note row's. ui_log_t starts 6 px after it.
-sdec.ui_stat_div = 462
+--
+-- IT CARRIES THE DUMP'S ASCII SEPARATOR WITH IT: ui_vr2_x is derived from this, so the two stay one
+-- column. 472 rather than 462 because widening the offset field to five digits pushed both hex groups
+-- 8 px right, and the gutter after the hex wants more than the 10 px that would have left.
+sdec.ui_stat_div = 472
 -- ---------- the acquire / decode progress bar ----------
 -- A FIXED SLOT IN THE LEFT STATUS CELL, right of the progress text and never moved. Following the
 -- text would make the bar's left edge track the digit count, so it would step sideways at 10 % and
@@ -296,13 +331,19 @@ sdec.ui_prog_ly   = sdec.ui_prog_y + 7
 -- 1 px of dark inside the frame above and below the bar, which reads as a trough.
 sdec.ui_prog_lw = 10
 -- THE REAR BNC GETS ITS OWN CELL, so that what the app is writing and what its back panel is doing
--- are not two unrelated facts in one box. The log cell is 468..655, the rear BNC's 665..792.
+-- are not two unrelated facts in one box. The log cell is 478..665, the rear BNC's 675..ui_rule_x1.
 --
--- 656, NOT 668. The cell said 'EXT TRIG' at 81 px; it now names the DIRECTION, and 'EXT TRIG OUT' is
--- 123 px against the 115 it had. 12 px come off the log cell, which keeps 188 -- enough for
--- 'log: bytes007  999999 B' at 180, and its name already trims with a '~' beyond that.
-sdec.ui_trig_div = 656
-sdec.ui_trig_x   = 665
+-- BOTH MOVED RIGHT WITH ui_stat_div, so the log cell keeps its 188 px: it needs 180 for
+-- 'log: bytes007  999999 B', and its name already trims with a '~' beyond that. The rear BNC cell pays
+-- for it instead, dropping from 141 px to 131.
+--
+-- WHICH IS WHY ITS LABELS LOST THE 'EXT '. At x = 675 the cell offers 122 px and 'EXT TRIG OUT' is
+-- 123 -- one px over, and the firmware FADES an overlong string's tail rather than clipping it, so the
+-- direction would have gone unreadable exactly when it was set. 'TRIG OUT' is 84 px. Nothing is lost:
+-- this instrument has one external trigger connector, the direction is the fact the cell exists to
+-- carry, and Options names it in full as the Rear BNC.
+sdec.ui_trig_div = 666
+sdec.ui_trig_x   = 675
 -- A BUTTON IS ~58 PX TALL (measured from docs/panel-ref-chrome.png). The content area is only
 -- 480 - 49 = 431 px, so a button needs y + 58 <= 431, i.e. y <= 373.
 --
@@ -326,7 +367,12 @@ sdec.ui_x        = 8
 -- follow -- overlapping text, not merely ugly.
 sdec.ui_ch_w     = 8                         -- character advance, ESTIMATE
 sdec.ui_col_gap  = 8                         -- clear space each side of a vertical rule
-sdec.ui_ixn      = 4                         -- offset field, '%04d'
+-- FIVE, NOT FOUR. The offset is DECIMAL and '%04d' is a minimum width, not a maximum: a 32 kB
+-- recording's last row is offset 32752, which renders five digits whatever the format string says. At
+-- four the column was 32 px, a five-digit offset reached exactly 48, and rule 1 also stood at 48 -- so
+-- in 32 kB mode the separator was drawn through the offset text. Five keeps the same 8 px of clearance
+-- a four-digit offset had, and every column right of it derives from this one number.
+sdec.ui_ixn      = 5                         -- offset field, '%04d', five digits past 9999
 -- Hex block width, DERIVED rather than written. Changing the grouping has to move the ASCII
 -- column and the vertical rule with it, and a literal here would not.
 sdec.ui_hxn      = sdec.ua_hexwidth(8)      -- ONE group of 8 bytes: 8*3 - 1 = 23 chars
@@ -334,21 +380,42 @@ sdec.ui_col_gap2 = 12                       -- clear space BETWEEN the two hex g
 sdec.ui_asn      = 16                        -- ASCII block, one char per byte
 
 sdec.ui_col_ix   = sdec.ui_x
-sdec.ui_vr1_x    = sdec.ui_col_ix + sdec.ui_ixn * sdec.ui_ch_w + sdec.ui_col_gap
--- DOUBLE the standard gap after the offset column. The offset is metadata and painted dim;
--- pushing the data away from it makes the separation structural rather than only tonal.
-sdec.ui_col_hx   = sdec.ui_vr1_x + 2 * sdec.ui_col_gap
+-- WIDER THAN ui_col_gap, AND THE SAME ON BOTH SIDES OF RULE 1. The offset is metadata and painted dim,
+-- so pushing the data away from it makes the separation structural rather than only tonal -- that much
+-- was already true when the gap ran 8 px before the rule and 16 after. Using one constant for both
+-- centres the rule in its own clear space instead, which is what the eye reads as a column boundary.
+-- The hex columns do not move: 8 + 5*8 + 12 puts the rule at 60 and the hex still starts at 72.
+sdec.ui_ix_gap   = 12
+sdec.ui_vr1_x    = sdec.ui_col_ix + sdec.ui_ixn * sdec.ui_ch_w + sdec.ui_ix_gap
+sdec.ui_col_hx   = sdec.ui_vr1_x + sdec.ui_ix_gap
 -- The second group of eight, at a FIXED x one group plus a gap along. The proportional font makes
 -- the first group's rendered width depend on which digits it holds, so a second group positioned
 -- by string content would drift row to row.
 sdec.ui_col_hx2  = sdec.ui_col_hx + sdec.ui_hxn * sdec.ui_ch_w + sdec.ui_col_gap2
-sdec.ui_vr2_x    = sdec.ui_col_hx2 + sdec.ui_hxn * sdec.ui_ch_w + sdec.ui_col_gap
-sdec.ui_col_as   = sdec.ui_vr2_x + sdec.ui_col_gap
+-- ALIGNED WITH THE STATUS BAND'S DIVIDER, the rule left of 'log:', because the two are stacked in the
+-- same column of the screen and 10 px of disagreement between them read as a mistake. TAKEN FROM
+-- ui_stat_div rather than set to 462 beside it: two literals that must be equal are two literals that
+-- will eventually differ, and this one is only checkable by eye on the panel.
+--
+-- The cost is paid in the GUTTER AFTER THE HEX, which widens from 8 px to 18: the second group of
+-- eight ends at 444 and the rule now stands at 462. The ASCII block moves right with it and still ends
+-- at 598, well clear of the position bar at ui_sb_x. test_serial pins both bounds, because a future
+-- ui_stat_div moved left would otherwise walk this rule into the hex digits.
+sdec.ui_vr2_x    = sdec.ui_stat_div
+-- WIDER THAN ui_col_gap, and the rule does NOT move with it: rule 2 stays on ui_stat_div, which is what
+-- keeps it aligned with the divider left of 'log:' in the band below. This gap only pushes the
+-- characters off the line, so the ASCII block reads as its own column rather than as text hung on a
+-- boundary. It costs nothing downstream -- the gutter after it is empty to the position bar.
+sdec.ui_as_gap   = 16
+sdec.ui_col_as   = sdec.ui_vr2_x + sdec.ui_as_gap
 sdec.ui_vr3_x    = sdec.ui_col_as + sdec.ui_asn * sdec.ui_ch_w + sdec.ui_col_gap
--- The vertical rules span the dump block: two px above the first row's text to the bottom of
--- the last row's.
+-- The vertical rules span the dump block: two px above the first row's text down to the status
+-- band's own top rule, so the column separators MEET that line instead of stopping in mid-air.
+-- DERIVED from ui_stat_top rather than from the row grid: ending at the last row's baseline left
+-- them 8 px short, and the gap read as an unfinished table. Moving the status band now moves these
+-- with it. There is no text between the last row's ink and the rule for them to strike through.
 sdec.ui_vr_y0    = sdec.ui_row_y0 - sdec.ui_ink
-sdec.ui_vr_y1    = sdec.ui_row_y0 + (sdec.ui_nrow - 1) * sdec.ui_row_dy + 2
+sdec.ui_vr_y1    = sdec.ui_stat_top
 
 -- ---------- position bar ----------
 -- A proportional INDICATOR, not a draggable scrollbar: gestures do not reach custom display
@@ -1873,7 +1940,11 @@ function sdec.ui_build()
     -- decoded), which is a stronger signal than 5 px of glyph.
     local fnt = small
     if fd.med then fnt = med end
-    sdec.ui_fval[j] = create(sdec.ui_scr, display.OBJ_TEXT, fd.x, sdec.ui_val_y,
+    -- fd.dy IS PER-CELL, so the shared ui_val_y stays the one baseline everything is reasoned from
+    -- and an optical correction cannot quietly become the grid. Only the two FONT_MEDIUM cells set
+    -- it; ui_field_band() below derives each cell's ink band from the same sum, so the no-rule-inside
+    -- -a-glyph-band invariant is checked against where the text ACTUALLY lands.
+    sdec.ui_fval[j] = create(sdec.ui_scr, display.OBJ_TEXT, fd.x, sdec.ui_val_y + (fd.dy or 0),
                              '--', fd.c, fnt, left)
   end
   -- THE PADLOCK, drawn from RECTS because the panel font has no padlock glyph: TSP strings are
@@ -1995,7 +2066,7 @@ function sdec.ui_build()
   -- Likewise no setevent: rects do not take presses on this firmware (see the padlock).
   -- Options > Rear BNC is the reliable control.
   sdec.ui_trig_t = create(sdec.ui_scr, display.OBJ_TEXT, sdec.ui_trig_x, sdec.ui_stat_y,
-                          'EXT TRIG', sdec.ui_c_warn, small, left)
+                          'TRIG', sdec.ui_c_warn, small, left)
 
   -- Buttons. Widths chosen so the row ends well inside the 798 px limit.
   local by = sdec.ui_btn_y
@@ -2396,7 +2467,9 @@ function sdec.ui_refresh()
   end
 
   -- THE VERTICAL RULES BELONG TO THE HEX VIEW, so they are hidden in the others -- otherwise two
-  -- hairlines cut across an 80-column TEXT row that has no columns to divide.
+  -- hairlines cut across an 80-column TEXT row that has no columns to divide. MIDI and LIN are hidden
+  -- for the same reason and not as an oversight: both are `cols = 1` in sdec.ui_views, one message or
+  -- frame of free text per row, so they have no column boundary either.
   --
   -- Hidden by painting them sdec.ui_c_hide, which matches the background, and NOT 0. The two look
   -- identical on screen and only one works: the firmware reads a fill of 0 as "unset" and paints
@@ -2407,14 +2480,13 @@ function sdec.ui_refresh()
   -- Recolouring is the ONLY way to take an object off the screen: display objects have no
   -- visibility attribute, and setposition ERRORS on some types.
   --
-  -- BOTH conditions, not just the view. `mode == 'hex'` says the columns would be meaningful IF
-  -- there were a dump; md.view says whether there is one. A streaming mode paints no rows at all,
-  -- so the view test alone would leave the rules standing over an empty area, delimiting nothing.
+  -- THE VIEW DECIDES, AND ONLY THE VIEW. The capture mode has no say: in the 8 kB and 32 kB modes the
+  -- table structure is the same table, and a grid that appears and disappears as the Mode button is
+  -- pressed reads as a fault rather than as information. Testing the mode's own `view` flag as well
+  -- left the rules missing for the whole of a recording mode until a capture had finished -- which is
+  -- exactly when an operator is looking at the panel and deciding whether it is working.
   local vwant = sdec.ui_c_hide
-  -- OR A FINISHED RECORDING, whose retained tail IS a dump and is now shown WITHOUT the mode having
-  -- changed to FRAME first. md.view alone hid the rules under the very bytes they delimit.
-  if mode == 'hex' and (sdec.mode_cur().view
-                        or (sdec.ck_tot ~= nil and not sdec.ck_running)) then
+  if mode == 'hex' then
     vwant = sdec.ui_c_rule
   end
   if sdec.ui_vrc ~= vwant then
@@ -2490,9 +2562,9 @@ function sdec.ui_refresh()
   -- edge) and fc_out (an output: pulse a credit per capture) -- and 'EXT TRIG' named neither, so the
   -- cell could not distinguish a meter waiting for a signal from one driving another device.
   --
-  --   trigext          EXT TRIG IN    green
-  --   fc_out           EXT TRIG OUT   amber
-  --   both             EXT TRIG I/O   cyan
+  --   trigext          TRIG IN    green
+  --   fc_out           TRIG OUT   amber
+  --   both             TRIG I/O   cyan
   --   neither          (empty)
   --
   -- THE '?' IS THE APP'S OWN UNCERTAINTY MARK, the one the BAUD cell uses for an unlocked rate. A rear
@@ -2501,9 +2573,12 @@ function sdec.ui_refresh()
   -- spoken for) and ui_notes carries the sentence.
   local trigtxt, trigcol = '', sdec.ui_c_dim
   local tin, tout = (sdec.trigext == true), (sdec.fc_out == true)
-  if tin and tout then trigtxt, trigcol = 'EXT TRIG I/O', sdec.ui_c_extio
-  elseif tin then trigtxt, trigcol = 'EXT TRIG IN', sdec.ui_c_extin
-  elseif tout then trigtxt, trigcol = 'EXT TRIG OUT', sdec.ui_c_extout
+  -- 'TRIG', NOT 'EXT TRIG': the cell is 122 px wide since the status divider moved right, and
+  -- 'EXT TRIG OUT' is 123. The instrument has one external trigger connector, so the direction is the
+  -- only part that carries information.
+  if tin and tout then trigtxt, trigcol = 'TRIG I/O', sdec.ui_c_extio
+  elseif tin then trigtxt, trigcol = 'TRIG IN', sdec.ui_c_extin
+  elseif tout then trigtxt, trigcol = 'TRIG OUT', sdec.ui_c_extout
   end
   if tin and sdec.trigmode == 'free' then trigtxt = trigtxt .. '?' end
   set(sdec.ui_trig_t, trigtxt)
@@ -2563,8 +2638,8 @@ end
 -- so far. Both, always, in every mode -- the app's promise is that no decoded byte is lost, and a
 -- promise the operator cannot see is one they have to take on trust.
 --
--- IT HAS 200 px, AND THE OBVIOUS FORM DOES NOT FIT. Measured with ui_textw against the real
--- geometry: the cell runs from ui_stat_div + 6 = 468 to ui_trig_div = 668, and
+-- IT HAS 188 px, AND THE OBVIOUS FORM DOES NOT FIT. Measured with ui_textw against the real
+-- geometry: the cell runs from ui_stat_div + 6 = 468 to ui_trig_div = 656, and
 -- 'log: bytes007.txt  12345 B' is 195 px -- inside it by 5 px, which held only while byte counts
 -- stayed at five digits. A SIX-digit count is 204 px and a megabyte 213 px, and the firmware fades an
 -- overlong string's tail rather than clipping it, so the number goes unreadable exactly as it gets

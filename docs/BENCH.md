@@ -317,12 +317,37 @@ wedge that is not there.
 
 `soak.py` captures each lap's output rather than streaming it, so a 155-minute lap is otherwise opaque
 from outside. `bench_matrix --heartbeat FILE` appends a flushed, timestamped line as each waveform
-starts and finishes, with cells, seconds per cell, amplitude, unexpected count, and whether each
-instrument answered. A healthy run appends one every ~2.5 min.
+starts and finishes. A healthy run appends one every ~2.5 min:
+
+```
+2026-08-26T05:46:18 iter 1 DONE  32/41 v51 43 cells 246s 5.72s/cell 0 badcells 0 inconc 0 baud 0 events DMM=alive SDG=alive
+```
+
+Read the fields as:
+
+| field | meaning |
+|---|---|
+| `32/41 v51` | waveform 32 of 41 this lap, and which one |
+| `43 cells` | rate cells swept on this waveform |
+| `0 badcells` | cells that did **not** decode as expected. Named to match the console's "not as expected"; double digits are normal for an impairment waveform, tagged `(loud, …)`, and for `v96`, which has an open issue |
+| `0 inconc` | cells the judge declined — neither a pass nor a defect |
+| `0 baud` | cells that misreported their rate |
+| `0 events` | unexpected **instrument** events on this waveform. **This is the one that must be zero.** A `2205` or `2208` here means the app is filing file-system errors, which also pops them up on the panel |
+| `DMM= SDG=` | whether each instrument still answered at the end of the waveform |
+
+`badcells` and `events` are different measurements and are easy to confuse: `events` counts the
+`*** unexpected event NNNN ***` lines, and those otherwise stay invisible until the lap ends, since the
+child's stdout is captured rather than streamed.
 
 Do **not** use the child's CPU time as a liveness signal. The work is I/O bound at about 0.6 s of CPU
 an hour, and the child's pid changes at every lap boundary with its counter resetting to zero — so a
-monotonic check reports a stall at precisely the moment a lap completes.
+monotonic check reports a stall at precisely the moment a lap completes. Judge liveness by the
+waveform number advancing and by the `DMM=`/`SDG=` footer: an `*IDN?` reply is not evidence, because
+the generator answers it with its waveform service wedged.
+
+Every lap's per-cell output is written to `<record dir>/lap<n>-<verdict>.log` — including a lap the
+bench died under, tagged `STOPPED`. A lap that is not tallied is still examinable, which is what makes
+a later `grep` for an event code mean something.
 
 ---
 

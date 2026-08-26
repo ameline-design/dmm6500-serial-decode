@@ -3392,8 +3392,8 @@ sdec.ui_ink_med = 17
 sdec.ui_lab_y = 14
 sdec.ui_val_y = 32
 sdec.ui_fields = {
-  {lab = 'BAUD',   x = 8,   c = 0x00DCFF, med = true, wid = '115200'},
-  {lab = 'FORMAT', x = 115, c = 0x00DCFF, med = true, wid = '8N1'},
+  {lab = 'BAUD',   x = 8,   c = 0x00DCFF, med = true, dy = 1, wid = '115200'},
+  {lab = 'FORMAT', x = 115, c = 0x00DCFF, med = true, dy = 1, wid = '8N1'},
   {lab = 'IDLE',   x = 188, c = 0xFFFFFF, wid = 'HIGH'},
   {lab = 'LOGIC',  x = 241, c = 0xFFFFFF, wid = '3V3 CMOS'},
   {lab = 'THRESH', x = 334, c = 0xFFFFFF, wid = '-6.00 V'},
@@ -3404,6 +3404,19 @@ sdec.ui_fields = {
   {lab = 'FIT',    x = 679, c = 0xFFFFFF, wid = '1.00'},
   {lab = 'S/N',    x = 721, c = 0xFFFFFF, wid = '>99 dB'},
 }
+
+-- THE INK BAND OF ONE VALUE CELL, [top, bottom] inclusive, as ONE function so the panel and
+--   [...]
+-- two headline cells reach 5 px HIGHER than the nine beside them: their band top is 17 where the small
+-- cells' is 21, and ui_rule_hdr sits at 15. A check written against the small band alone leaves the
+-- tallest cells -- the only ones that can actually reach the rule -- unguarded.
+function sdec.ui_field_band(j)
+  local fd = sdec.ui_fields[j]
+  local y = sdec.ui_val_y + (fd.dy or 0)
+  local ink = sdec.ui_ink
+  if fd.med then ink = sdec.ui_ink_med end
+  return y - ink + 1, y
+end
 
 sdec.ui_adv_upper = 10       -- uppercase, measured 9.67 worst case
 sdec.ui_adv_btn = 14
@@ -3429,8 +3442,8 @@ sdec.ui_rule_top = 1
 sdec.ui_rule_hdr = 15
 sdec.ui_rule_mid = 35                        -- under the value ink (medium 16..32)
 sdec.ui_rule_bot = 51                        -- under the note row's ink (37..48)
-sdec.ui_rule_x0  = 4
-sdec.ui_rule_x1  = 792
+sdec.ui_rule_x0  = 1
+sdec.ui_rule_x1  = 797
 sdec.ui_note_lab_x = 8
 sdec.ui_trigsrc = {
   edge  = {name = 'Start bit',   c = 0x40FF40},
@@ -3450,7 +3463,7 @@ sdec.ui_nrow     = 15
 sdec.ui_stat_y   = 342
 sdec.ui_stat_top = 328   -- above the status ink (331..342)
 sdec.ui_stat_bot = 346   -- below it
-sdec.ui_stat_div = 462
+sdec.ui_stat_div = 472
 sdec.ui_prog_x = 339
 sdec.ui_prog_w = 108
 sdec.ui_prog_h = 14
@@ -3458,28 +3471,30 @@ sdec.ui_prog_y = 330
 sdec.ui_prog_wmax = sdec.ui_prog_w - 2
 sdec.ui_prog_ly   = sdec.ui_prog_y + 7
 sdec.ui_prog_lw = 10
-sdec.ui_trig_div = 656
-sdec.ui_trig_x   = 665
+sdec.ui_trig_div = 666
+sdec.ui_trig_x   = 675
 sdec.ui_btn_y    = 362
 sdec.ui_btn_h    = 58                        -- for layout arithmetic, not passed to the API
 sdec.ui_x        = 8
 
 sdec.ui_ch_w     = 8                         -- character advance, ESTIMATE
 sdec.ui_col_gap  = 8                         -- clear space each side of a vertical rule
-sdec.ui_ixn      = 4                         -- offset field, '%04d'
+sdec.ui_ixn      = 5                         -- offset field, '%04d', five digits past 9999
 sdec.ui_hxn      = sdec.ua_hexwidth(8)      -- ONE group of 8 bytes: 8*3 - 1 = 23 chars
 sdec.ui_col_gap2 = 12                       -- clear space BETWEEN the two hex groups
 sdec.ui_asn      = 16                        -- ASCII block, one char per byte
 
 sdec.ui_col_ix   = sdec.ui_x
-sdec.ui_vr1_x    = sdec.ui_col_ix + sdec.ui_ixn * sdec.ui_ch_w + sdec.ui_col_gap
-sdec.ui_col_hx   = sdec.ui_vr1_x + 2 * sdec.ui_col_gap
+sdec.ui_ix_gap   = 12
+sdec.ui_vr1_x    = sdec.ui_col_ix + sdec.ui_ixn * sdec.ui_ch_w + sdec.ui_ix_gap
+sdec.ui_col_hx   = sdec.ui_vr1_x + sdec.ui_ix_gap
 sdec.ui_col_hx2  = sdec.ui_col_hx + sdec.ui_hxn * sdec.ui_ch_w + sdec.ui_col_gap2
-sdec.ui_vr2_x    = sdec.ui_col_hx2 + sdec.ui_hxn * sdec.ui_ch_w + sdec.ui_col_gap
-sdec.ui_col_as   = sdec.ui_vr2_x + sdec.ui_col_gap
+sdec.ui_vr2_x    = sdec.ui_stat_div
+sdec.ui_as_gap   = 16
+sdec.ui_col_as   = sdec.ui_vr2_x + sdec.ui_as_gap
 sdec.ui_vr3_x    = sdec.ui_col_as + sdec.ui_asn * sdec.ui_ch_w + sdec.ui_col_gap
 sdec.ui_vr_y0    = sdec.ui_row_y0 - sdec.ui_ink
-sdec.ui_vr_y1    = sdec.ui_row_y0 + (sdec.ui_nrow - 1) * sdec.ui_row_dy + 2
+sdec.ui_vr_y1    = sdec.ui_stat_top
 
 if sdec.ui_sb_show == nil then sdec.ui_sb_show = false end
 sdec.ui_sb_x   = 778
@@ -4358,7 +4373,7 @@ function sdec.ui_build()
                              fd.lab, sdec.ui_c_lab, small, left)
     local fnt = small
     if fd.med then fnt = med end
-    sdec.ui_fval[j] = create(sdec.ui_scr, display.OBJ_TEXT, fd.x, sdec.ui_val_y,
+    sdec.ui_fval[j] = create(sdec.ui_scr, display.OBJ_TEXT, fd.x, sdec.ui_val_y + (fd.dy or 0),
                              '--', fd.c, fnt, left)
   end
   local lx = 95
@@ -4425,7 +4440,7 @@ function sdec.ui_build()
                          sdec.ui_c_dim, small, left)
   sdec.ui_trighit = nil
   sdec.ui_trig_t = create(sdec.ui_scr, display.OBJ_TEXT, sdec.ui_trig_x, sdec.ui_stat_y,
-                          'EXT TRIG', sdec.ui_c_warn, small, left)
+                          'TRIG', sdec.ui_c_warn, small, left)
 
   local by = sdec.ui_btn_y
   sdec.ui_btn = {}
@@ -4666,8 +4681,7 @@ function sdec.ui_refresh()
   end
 
   local vwant = sdec.ui_c_hide
-  if mode == 'hex' and (sdec.mode_cur().view
-                        or (sdec.ck_tot ~= nil and not sdec.ck_running)) then
+  if mode == 'hex' then
     vwant = sdec.ui_c_rule
   end
   if sdec.ui_vrc ~= vwant then
@@ -4707,9 +4721,9 @@ function sdec.ui_refresh()
   sdec.ui_progbar_set(sdec.ck_pct())
   local trigtxt, trigcol = '', sdec.ui_c_dim
   local tin, tout = (sdec.trigext == true), (sdec.fc_out == true)
-  if tin and tout then trigtxt, trigcol = 'EXT TRIG I/O', sdec.ui_c_extio
-  elseif tin then trigtxt, trigcol = 'EXT TRIG IN', sdec.ui_c_extin
-  elseif tout then trigtxt, trigcol = 'EXT TRIG OUT', sdec.ui_c_extout
+  if tin and tout then trigtxt, trigcol = 'TRIG I/O', sdec.ui_c_extio
+  elseif tin then trigtxt, trigcol = 'TRIG IN', sdec.ui_c_extin
+  elseif tout then trigtxt, trigcol = 'TRIG OUT', sdec.ui_c_extout
   end
   if tin and sdec.trigmode == 'free' then trigtxt = trigtxt .. '?' end
   set(sdec.ui_trig_t, trigtxt)

@@ -169,6 +169,10 @@ def stages(outdir, shots):
               note='the three verdicts: a capture too short to read is INCONCLUSIVE not silent-wrong, '
                    'an alignment survives one bad byte, and a loud vector may miss a bounded few -- '
                    'each with the wrong capture that must still fail, including self-similar payloads'),
+        Stage('unit-soaklog', ['python3', 'tools/test_soaklog.py'],
+              note='the soak keeps every lap\'s per-cell output, above all the lap the bench died '
+                   'under -- and a run that tallied nothing exits 2, not 0. Also pins the heartbeat '
+                   'fields, whose only live reader is a human watching an overnight run'),
         Stage('tolerance', ['lua', 'tools/tolerance.lua'], gate=False,
               note='the envelope table in the manual, recomputed'),
         Stage('package', ['python3', 'tools/package_tspa.py'],

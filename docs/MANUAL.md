@@ -68,7 +68,7 @@ early**, so decide the size before you press — see **The TRIGGER key** below.
 
 ## The screen
 
-![Main screen, hex view — a 240-byte frame capture: 239 bytes decoded, no errors, S/N 79 dB](img/panel-hex.png)
+![Main screen, hex view — a 240-byte frame capture: 240 bytes decoded, no errors, S/N 78 dB](img/panel-hex.png)
 
 Along the top are the things the app worked out about your line:
 
@@ -114,7 +114,7 @@ shows there is a limit and not a measurement.
 one is drawn red across its whole width — offset, hex and ASCII together — so damage is found by
 looking rather than by counting. Flagged bytes read as `?` in the ASCII gutter:
 
-![A capture that began mid-byte: the note names 5 bytes and ERR reads 5](img/panel-errors.png)
+![A capture that began mid-byte: the note names 2 bytes and ERR reads 2](img/panel-errors.png)
 
 That is a real 240B capture that began part way through a byte. **The note row names the cause** —
 `began mid-byte -- the first N bytes are misaligned.` — which is the difference between a puzzle and a
@@ -152,8 +152,8 @@ enough: green `Start bit` (the normal case — it waits for the line's own start
 (it does not wait for anything), cyan `Trigger key` (it waits for the physical key).
 
 **The cell at the bottom right is the rear BNC**, and it is **empty when the rear BNC is off** — which
-is the default. When it is not, it names the direction: green `EXT TRIG IN`, amber `EXT TRIG OUT`,
-cyan `EXT TRIG I/O`. A trailing `?` means the input is switched on but *not in force*, which happens
+is the default. When it is not, it names the direction: green `TRIG IN`, amber `TRIG OUT`,
+cyan `TRIG I/O`. A trailing `?` means the input is switched on but *not in force*, which happens
 under `Free run` — free run means do not wait, so there is nothing for the input to gate.
 
 During a recording the status row carries a live counter — `recording... 40 % of the buffer`, then
@@ -163,14 +163,14 @@ During a recording the status row carries a live counter — `recording... 40 % 
 **View** switches the byte display to plain text, which is what you want for anything human-readable —
 and a row carrying a flagged byte is red here too:
 
-![Main screen, text view — one byte misaligned at the start, ERR agreeing at 1](img/panel-text.png)
+![Main screen, text view — eight bytes misaligned at the start, ERR agreeing at 8](img/panel-text.png)
 
 **The note row is the important one.** Warnings appear there — an ambiguous baud rate, a line that
 disagrees with the rate you locked, a recording that stopped early. If more than one applies it ends
 with `(+2 more)`, and pressing **Save** writes all of them to a file.
 
 Here it is doing that — a capture that started part way through a byte, which the app detected and
-said so rather than showing the misaligned bytes without comment — four of them, here:
+said so rather than showing the misaligned bytes without comment — eight of them, here:
 
 ![The note row reporting a mid-byte start](img/panel-hex-note.png)
 
@@ -210,7 +210,7 @@ A recording is far more than one screen, so **Up** and **Dn** appear down the ri
 the count reads at a glance. The note beside it says which bytes are on screen and that the whole run
 is in the file, which is the thing you cannot otherwise tell from a screenful taken out of the middle:
 
-    panel shows bytes 24577-32768 of 32768; all are in bytes569.txt
+    panel shows bytes 24577-32768 of 32768; all are in bytes024.txt
 
 The offset column agrees with it — the rows start at 25296, not at zero — and the status row carries the
 run's own summary: 32768 bytes, 1 it cannot vouch for, 68 windows, and the file it went to. **That 1 is
@@ -300,14 +300,16 @@ Press **Mode** until the cell reads `8 kB` or `32 kB`. **You must lock the baud 
 whole job: it records, decodes every byte, writes them to the USB key, and comes back with the tail on
 screen. There is nothing to press in the middle.
 
-![An 8 kB recording at 98 % of its buffer, still acquiring](img/panel-recording.png)
+![An 8 kB recording part way through its decode, 4847 of 8192 bytes](img/panel-recording.png)
 
 While it works, the counter on the status row moves — first `recording... N % of the buffer`, then
 `decoding... N/8192 bytes` — with a cyan progress bar beside it, and the cell to its right says
-whether anything can stop it. The screenshot above is a real 8 kB run caught in the first of those two
-phases, at 98 % of the buffer, with `no stop until it ends` in that cell; the top row reads `--` across
-because nothing has been decoded yet to describe, the dump area is blank for the same reason, and the
-note row is empty because there is nothing wrong. **There is no way to finish it early** — see the section on the TRIGGER key
+whether anything can stop it. The screenshot above is a real 8 kB run caught in the *second* of those
+two phases, decoding 4847 of its 8192 bytes, with `no stop until it ends` in that cell. The measured
+cells of the top row read `--` because nothing has been decoded yet to describe — the baud rate and
+format are shown only because they were locked rather than measured — the dump area is blank for the
+same reason, and the note row is empty because there is nothing wrong. **There is no way to finish it
+early** — see the section on the TRIGGER key
 above for what bounds it instead.
 
 **When it finishes, the note row goes quiet.** The status row's summary — bytes, errors, window count
@@ -588,7 +590,7 @@ bit, every time, which leaves your pulse no say in where the window opens. Point
 otherwise quiet, or pair it with `Trigger key` so that the only thing it competes with is your own
 finger. And under `Free run` the rear input is ignored altogether, because free run means do not wait
 for anything — the app says so rather than leaving you to notice: the note row reads `Rear BNC = Trig
-In is set but IGNORED`, and the status cell marks it by appending a `?` to `EXT TRIG IN`.
+In is set but IGNORED`, and the status cell marks it by appending a `?` to `TRIG IN`.
 
 **Trigger** applies to FRAME captures. **A recording ignores it** and starts as soon as you press
 Capture — for a recording, the thing that decides when the device talks is the flow-control credit,
