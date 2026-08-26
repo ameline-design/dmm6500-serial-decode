@@ -1251,7 +1251,7 @@ MD.usb(false)
 check('a save with no USB key fails cleanly rather than raising',
       sdec.save() == false and sdec.lasterr ~= nil, tostring(sdec.lasterr))
 MD.usb(true)
-sdec.savepfx = '/usb1/serial_'
+sdec.savepfx = sdec.usbdir .. '/serial_'   -- back to the default, DERIVED so it cannot go stale
 
 -- ============================================================================
 -- A WIDER FRAME MUST NOT LAUNDER THE EVIDENCE OF DAMAGE
@@ -3285,7 +3285,7 @@ sdec.savepfx = '/usb1/midi_'
 check('the saved file includes the parsed messages', sdec.save() == true
       and has(MD.logtext(), 'MIDI messages') and has(MD.logtext(), 'Note On'),
       tostring(sdec.lasterr))
-sdec.savepfx = '/usb1/serial_'
+sdec.savepfx = sdec.usbdir .. '/serial_'   -- back to the default, DERIVED so it cannot go stale
 
 -- Leaving MIDI must hand the wire back to the auto-detector: the form still SHOWS
 -- 31250 / 8 / None, so reading the fields back would keep them forced.
@@ -3727,7 +3727,7 @@ sdec.savepfx = '/usb1/lin_'
 check('the saved file includes the parsed frames', sdec.save() == true
       and has(MD.logtext(), 'LIN frames') and has(MD.logtext(), 'ID 11'),
       tostring(sdec.lasterr))
-sdec.savepfx = '/usb1/serial_'
+sdec.savepfx = sdec.usbdir .. '/serial_'   -- back to the default, DERIVED so it cannot go stale
 MD.usb(false)
 
 -- A longer break, inter-byte space, and 9600 baud: all legal, none of it may matter.
@@ -5926,6 +5926,47 @@ local function test_modes()
   check('no USB key makes frame_log a no-op rather than a raise',
         sdec.frame_log() == false)
   MD.usb(true)
+
+  -- ---- the SerialFiles directory, across a KEY SWAP ----
+  --
+  -- THE CACHED NAME IS THE TRAP. flog_alloc() returns the name it already chose without touching the
+  -- key, so the append is the first thing a replacement key sees -- and MD.forget_files() models that
+  -- key by dropping the directories with the files. Before the directory was confirmed per append this
+  -- pair failed, which is the whole point of testing the swap rather than the helper.
+  MD.usb(true)
+  MD.forget_files()
+  clearforce()
+  sdec.capmode = 'frame'
+  sdec.flog_path, sdec.flog_n, sdec.flog_why = nil, nil, nil
+  run({bytes = hb, baud = 9600, fs = 100000})
+  check('every path the app writes sits under SerialFiles',
+        has(sdec.flogpfx, '/usb1/SerialFiles/') and has(sdec.savepfx, '/usb1/SerialFiles/')
+          and has(sdec.logpath, '/usb1/SerialFiles/') and has(ulog.path, '/usb1/SerialFiles/'),
+        sdec.flogpfx .. ' ' .. sdec.savepfx)
+  check('the byte log writes to a key that had no SerialFiles on it',
+        sdec.frame_log() == true, tostring(sdec.flog_why))
+  local swapped = sdec.flog_path
+  MD.forget_files()                                  -- key pulled, a different one pushed in
+  run({bytes = hb, baud = 9600, fs = 100000})
+  check('and again after the key is swapped, with the name already allocated',
+        sdec.frame_log() == true and sdec.flog_path == swapped,
+        tostring(sdec.flog_path) .. ' ' .. tostring(sdec.flog_why))
+  check('Save works on the swapped key too',
+        sdec.save() == true, tostring(sdec.lasterr))
+
+  -- THE NEGATIVE, which is what makes the two checks above mean something: with the directory no longer
+  -- confirmed per append, the same swap must FAIL. Without this, both pass on code that never creates
+  -- anything after the first key.
+  local realdir = ulog.ensuredir
+  ulog.ensuredir = function() return true end
+  MD.forget_files()
+  run({bytes = hb, baud = 9600, fs = 100000})
+  local swapfail = sdec.frame_log()
+  ulog.ensuredir = realdir
+  check('WITHOUT the per-append directory check the swap fails, so this pair can tell',
+        swapfail == false, tostring(swapfail) .. ' ' .. tostring(sdec.flog_why))
+  MD.forget_files()
+  sdec.flog_why = nil
 
   -- ---- Auto Detect: the inverse of Lock Detected ----
   clearforce()

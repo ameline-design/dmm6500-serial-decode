@@ -292,8 +292,46 @@ local CONTENT = {}
 local RPOS = {}       -- read handle -> {path, pos}, pos being the offset of the next line
 local WPATH = nil     -- the path handle 42 currently points at
 local nextfh = 42
+
+-- DIRECTORIES, because an open into one that does not exist has to FAIL here or the app's mkdir is
+-- untestable offline: a mock that accepts every path passes whether or not the directory was ever
+-- created, which is the same as not testing it. The key's root always exists.
+local DIRS = {['/usb1'] = true}
+-- mkdir takes a bare name in the reference's own example and an absolute path in its Details, so both
+-- are accepted and normalised the same way -- a bare name is relative to the key's root.
+local function abs(p)
+  p = tostring(p)
+  if string.sub(p, 1, 1) ~= '/' then p = '/usb1/' .. p end
+  return (string.gsub(p, '/$', ''))
+end
+local function parentof(path)
+  local d = string.gsub(tostring(path), '/[^/]*$', '')
+  if d == '' then return '/' end
+  return d
+end
+-- 'The name of the directory must not already exist on the flash drive' (14-255), and it raises rather
+-- than returning a code -- so the second call in a session is an error, and the app must expect that.
+function file.mkdir(path)
+  if not USB then error('no USB flash drive', 0) end
+  local p = abs(path)
+  if DIRS[p] then error('directory already exists: ' .. p, 0) end
+  -- ONE level only: the firmware creates a directory, not a path of them.
+  if not DIRS[parentof(p)] then error('no such parent directory: ' .. parentof(p), 0) end
+  DIRS[p] = true
+  return true
+end
+function file.usbdriveexists() if USB then return 1 end return 0 end
+-- What the app actually created, so a test can assert the directory rather than infer it.
+function MD.dirs() return DIRS end
+function MD.rmdir(path) DIRS[abs(path)] = nil end
+
 function file.open(path, mode)
   if not USB then return nil end            -- no key: NIL, not an error
+  -- A missing parent fails EVERY mode, including READ. A filesystem cannot hold /usb1/SerialFiles/x
+  -- while /usb1/SerialFiles is absent, so letting a seeded file stay readable through a deleted
+  -- directory would model something the instrument cannot do -- and it would do it in the app's favour,
+  -- which is worse than not modelling directories at all.
+  if not DIRS[parentof(path)] then return nil end
   if mode == file.MODE_READ then
     if FILES[path] == nil then return nil end
     nextfh = nextfh + 1
@@ -324,6 +362,11 @@ function MD.forget_files()
   CONTENT = {}
   RPOS = {}
   WPATH = nil
+  -- AND THE DIRECTORIES, because "different key" means a key with no SerialFiles on it. Keeping DIRS
+  -- across the wipe made the swap unmodellable: every path stayed openable, so the one case this
+  -- harness exists to reach -- a second key, mid-session, with the app holding an allocated name from
+  -- the first -- silently could not happen.
+  DIRS = {['/usb1'] = true}
   if ulog ~= nil then ulog.idx_ram = nil end
 end
 

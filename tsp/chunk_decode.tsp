@@ -771,6 +771,9 @@ function sdec.ck_sink_file(path, ncol)
   -- MODE_APPEND, not MODE_WRITE. This sink writes to the SHARED byte log that FRAME mode also
   -- appends to, so opening for write TRUNCATES every frame capture taken before this stream --
   -- silently, and visible only as a byte count that went backwards.
+  -- The path was allocated before the recording armed, and a key can be swapped in between, so the
+  -- directory is confirmed here rather than assumed from that earlier call.
+  pcall(function() ulog.ensuredir() end)
   local fh = nil
   local ok = pcall(function() fh = file.open(path, file.MODE_APPEND) end)
   if not ok or fh == nil then return nil, nil, 'cannot append to ' .. tostring(path) end

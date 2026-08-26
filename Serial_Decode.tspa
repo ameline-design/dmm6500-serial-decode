@@ -38,7 +38,9 @@ loadscript Serial_Decode
 -- ================= tsp/usb_log.tsp =================
 ulog = ulog or {}
 
-ulog.path      = ulog.path or '/usb1/dmm6500_log.txt'
+ulog.usbdir    = ulog.usbdir or '/usb1/SerialFiles'
+ulog.path      = ulog.path or (ulog.usbdir .. '/dmm6500_log.txt')
+if ulog.path == '/usb1/dmm6500_log.txt' then ulog.path = ulog.usbdir .. '/dmm6500_log.txt' end
 ulog.on        = ulog.on or false      -- true once a file is genuinely open
 ulog.nlines    = ulog.nlines or 0
 ulog.dropped   = ulog.dropped or 0     -- lines refused after the cap
@@ -46,6 +48,22 @@ ulog.maxlines  = ulog.maxlines or 20000  -- per-session cap, so a runaway loop c
 ulog.tag       = ulog.tag or '?'       -- short app name, prefixed to every line
 if ulog.enabled == nil then ulog.enabled = true end
 if ulog.autoflush == nil then ulog.autoflush = true end
+
+-- Make sure ulog.usbdir exists, so the files below have somewhere to land. -> true if writing there
+--   [...]
+-- NOT MEMOISED. A key can be pulled and a different one pushed in between two captures, and a cached
+-- 'already made it' would then send every file to a directory that does not exist on this key. mkdir on
+-- an existing directory costs one raised error per capture, which is nothing next to a decode.
+function ulog.ensuredir(dir)
+  if dir == nil then dir = ulog.usbdir end
+  if dir == nil or dir == '' then return false, 'no directory configured' end
+  local haskey, present = pcall(function() return file.usbdriveexists() end)
+  if haskey and present == 0 then return false, 'no USB key' end
+  local leaf = string.gsub(dir, '^.*/', '')
+  pcall(function() file.mkdir(dir) end)
+  if leaf ~= dir then pcall(function() file.mkdir(leaf) end) end
+  return true
+end
 
 -- Open the log. `truncate` starts a fresh file; the default appends across
 -- sessions, since comparing this run against the last is usually the point.
@@ -58,6 +76,8 @@ function ulog.open(path, truncate)
   if not ulog.enabled then return false end
   if path ~= nil then ulog.path = path end
 
+  local dirok, dirwhy = ulog.ensuredir()
+
   local ok, err = pcall(function()
     local mode = file.MODE_APPEND
     if truncate then mode = file.MODE_WRITE end
@@ -69,7 +89,12 @@ function ulog.open(path, truncate)
   end
   if ulog.fh == nil then
     ulog.on = false
-    ulog.lasterr = 'no USB key at ' .. tostring(ulog.path)
+    if not dirok then
+      ulog.lasterr = tostring(dirwhy) .. ' -- cannot open ' .. tostring(ulog.path)
+    else
+      ulog.lasterr = 'cannot open ' .. tostring(ulog.path)
+                     .. ' -- key may be absent, full, write-protected, or refusing the directory'
+    end
     return false
   end
 
@@ -173,6 +198,7 @@ end
 -- and a bench session that presses NewLog per device reaches 100.
 function ulog.next_free(prefix, ext, limit)
   if limit == nil then limit = 1000 end
+  ulog.ensuredir()
   local idxpath = prefix .. 'idx.txt'
 
   ulog.idx_ram = ulog.idx_ram or {}
@@ -224,10 +250,14 @@ end
 -- ulog.fh's lifetime. Returns ok, reason.
 function ulog.write_file(path, lines, n)
   if path == nil then return false, 'no filename available' end
+  local dirok, dirwhy = ulog.ensuredir()
   local fh = nil
   local ok, err = pcall(function() fh = file.open(path, file.MODE_WRITE) end)
   if not ok then return false, tostring(err) end
-  if fh == nil then return false, 'cannot write ' .. tostring(path) end
+  if fh == nil then
+    if not dirok then return false, tostring(dirwhy) .. ' -- cannot write ' .. tostring(path) end
+    return false, 'cannot write ' .. tostring(path)
+  end
 
   local wrote = true
   local i
@@ -3005,6 +3035,7 @@ end
 -- Returns the sink and a finish() that flushes the carry and closes the file.
 function sdec.ck_sink_file(path, ncol)
   if ncol == nil then ncol = 16 end
+  pcall(function() ulog.ensuredir() end)
   local fh = nil
   local ok = pcall(function() fh = file.open(path, file.MODE_APPEND) end)
   if not ok or fh == nil then return nil, nil, 'cannot append to ' .. tostring(path) end
@@ -4942,9 +4973,15 @@ sdec.delfails  = sdec.delfails or 0
 sdec.fillfails = sdec.fillfails or 0
 sdec.errcount  = sdec.errcount or 0
 sdec.busy      = sdec.busy or false
-sdec.logpath   = sdec.logpath or '/usb1/serial_decode_log.txt'
-sdec.flogpfx   = sdec.flogpfx or '/usb1/bytes'
-sdec.savepfx   = sdec.savepfx or '/usb1/serial_'
+sdec.usbdir    = sdec.usbdir or (ulog ~= nil and ulog.usbdir) or '/usb1/SerialFiles'
+sdec.logpath   = sdec.logpath or (sdec.usbdir .. '/serial_decode_log.txt')
+sdec.flogpfx   = sdec.flogpfx or (sdec.usbdir .. '/bytes')
+sdec.savepfx   = sdec.savepfx or (sdec.usbdir .. '/serial_')
+if sdec.logpath == '/usb1/serial_decode_log.txt' then
+  sdec.logpath = sdec.usbdir .. '/serial_decode_log.txt'
+end
+if sdec.flogpfx == '/usb1/bytes' then sdec.flogpfx = sdec.usbdir .. '/bytes' end
+if sdec.savepfx == '/usb1/serial_' then sdec.savepfx = sdec.usbdir .. '/serial_' end
 sdec.saveext   = sdec.saveext or '.txt'
 sdec.proto     = sdec.proto or 'uart'
 if sdec.strm_press == nil then sdec.strm_press = false end
@@ -5083,6 +5120,7 @@ end
 function sdec.frame_log()
   if sdec.res == nil or sdec.res.nf < 1 then return false end
   if sdec.flog_alloc() == nil then return false end
+  pcall(function() ulog.ensuredir() end)
   local fh = nil
   local ok = pcall(function() fh = file.open(sdec.flog_path, file.MODE_APPEND) end)
   if not ok or fh == nil then

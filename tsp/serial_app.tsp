@@ -43,10 +43,22 @@ sdec.delfails  = sdec.delfails or 0
 sdec.fillfails = sdec.fillfails or 0
 sdec.errcount  = sdec.errcount or 0
 sdec.busy      = sdec.busy or false
-sdec.logpath   = sdec.logpath or '/usb1/serial_decode_log.txt'
+-- ALL THREE DERIVE FROM ulog.usbdir, which names the one directory every file goes to. usb_log.tsp is
+-- the first module the archive loads, so it is always defined by the time this runs; the fallback is for
+-- a bare serial_app.tsp loaded on its own by a harness.
+sdec.usbdir    = sdec.usbdir or (ulog ~= nil and ulog.usbdir) or '/usb1/SerialFiles'
+sdec.logpath   = sdec.logpath or (sdec.usbdir .. '/serial_decode_log.txt')
 -- Prefix of THE BYTE LOG, which every mode appends to -- not just FRAME.
-sdec.flogpfx   = sdec.flogpfx or '/usb1/bytes'
-sdec.savepfx   = sdec.savepfx or '/usb1/serial_'
+sdec.flogpfx   = sdec.flogpfx or (sdec.usbdir .. '/bytes')
+sdec.savepfx   = sdec.savepfx or (sdec.usbdir .. '/serial_')
+-- MIGRATED, NOT JUST DEFAULTED, for the reason ulog.path is: `or` keeps whatever a previous load left
+-- behind, so an App reload over a build that wrote to the key's ROOT would keep writing there with no
+-- power cycle to clear it. Only the exact old defaults move; an override set by a harness stays.
+if sdec.logpath == '/usb1/serial_decode_log.txt' then
+  sdec.logpath = sdec.usbdir .. '/serial_decode_log.txt'
+end
+if sdec.flogpfx == '/usb1/bytes' then sdec.flogpfx = sdec.usbdir .. '/bytes' end
+if sdec.savepfx == '/usb1/serial_' then sdec.savepfx = sdec.usbdir .. '/serial_' end
 sdec.saveext   = sdec.saveext or '.txt'
 -- Protocol layer sitting on top of the UART bytes: 'uart' (none), 'midi' or 'lin'.
 -- Operator state, so `or` like the rest -- an App relaunch must not silently drop
@@ -337,7 +349,7 @@ end
 function sdec.flog_alloc()
   if sdec.flog_path ~= nil then return sdec.flog_path end
   -- LAZY: the scan is 1000 file.open calls, and allocating at power-on would burn a filename
-  -- per session whether or not anything was ever captured.
+  -- per session whether or not anything was ever captured. next_free makes the directory first.
   sdec.flog_path = ulog.next_free(sdec.flogpfx, '.txt', 1000)
   if sdec.flog_path == nil then
     sdec.flog_why = 'no free ' .. sdec.flogpfx .. 'NNN.txt name -- NOT LOGGING'
@@ -351,6 +363,11 @@ end
 function sdec.frame_log()
   if sdec.res == nil or sdec.res.nf < 1 then return false end
   if sdec.flog_alloc() == nil then return false end
+  -- HERE AND NOT ONLY IN flog_alloc, which returns the CACHED name without touching the key once one
+  -- has been allocated. Pull key A after the first capture, push key B in, and this open is the first
+  -- thing to touch a key that has no SerialFiles on it -- so the directory has to be confirmed per
+  -- append, not once per session.
+  pcall(function() ulog.ensuredir() end)
   local fh = nil
   local ok = pcall(function() fh = file.open(sdec.flog_path, file.MODE_APPEND) end)
   if not ok or fh == nil then

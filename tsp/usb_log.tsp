@@ -16,6 +16,8 @@
 --   file.open(path, file.MODE_APPEND) -> file number, or NIL on failure
 --   file.write(n, s) / file.flush(n) / file.close(n)
 --   MODE_APPEND creates the file if absent; paths are absolute, USB root /usb1/.
+--   file.mkdir("path") at 14-255 creates ONE directory. It does NOT create a file's parent, and
+--   'the name of the directory must not already exist' -- so it RAISES on the second run.
 --
 -- The nil return matters: no USB key is a NORMAL condition, so every call here
 -- degrades to a no-op rather than raising. An app must never fail because logging
@@ -30,7 +32,17 @@ ulog = ulog or {}
 -- default below therefore uses `or`, and the handle is not assigned at all.
 -- ulog.fh      -- file number from file.open, or nil
 -- ulog.lasterr
-ulog.path      = ulog.path or '/usb1/dmm6500_log.txt'
+-- EVERY FILE THE APP WRITES LIVES HERE, and this is the only place the directory is named: the byte
+-- log, the Save reports and this event log all build their paths from it, so they cannot disagree about
+-- where they are. A bare /usb1/ scatters a dozen files across the root of a key the operator also uses
+-- for other instruments.
+ulog.usbdir    = ulog.usbdir or '/usb1/SerialFiles'
+ulog.path      = ulog.path or (ulog.usbdir .. '/dmm6500_log.txt')
+-- MIGRATED, NOT JUST DEFAULTED. Every assignment here uses `or` so an App reload keeps live state, and
+-- that is exactly what strands a path: loading this build over one that wrote to the key's ROOT inherits
+-- the root path and quietly goes on writing there, with no power cycle to clear it. Only the exact old
+-- default is moved, so a deliberate override survives.
+if ulog.path == '/usb1/dmm6500_log.txt' then ulog.path = ulog.usbdir .. '/dmm6500_log.txt' end
 ulog.on        = ulog.on or false      -- true once a file is genuinely open
 ulog.nlines    = ulog.nlines or 0
 ulog.dropped   = ulog.dropped or 0     -- lines refused after the cap
@@ -39,6 +51,35 @@ ulog.tag       = ulog.tag or '?'       -- short app name, prefixed to every line
 -- Booleans need an explicit nil test: `or true` would resurrect a deliberate false.
 if ulog.enabled == nil then ulog.enabled = true end
 if ulog.autoflush == nil then ulog.autoflush = true end
+
+-- Make sure ulog.usbdir exists, so the files below have somewhere to land. -> true if writing there
+-- should now work, plus the reason when it should not.
+--
+-- THE DOCUMENTED FAILURE IS SUCCESS HERE. file.mkdir refuses a name that already exists, which is the
+-- ordinary case on every run after the first, and it RAISES rather than returning a code -- so the call
+-- is wrapped and its failure is not treated as one. Nor is its success trusted: what settles the
+-- question is whether the target file opens afterwards, which the callers already check, so this only
+-- has to try and never has to be believed.
+--
+-- BOTH SPELLINGS, because the reference contradicts itself: file.mkdir's own Details say 'the directory
+-- path must be absolute', while the example on the facing page passes the bare name 'TestData5' and then
+-- writes to /usb1/TestData5/. The absolute form is tried first, on the documented rule; the leaf name
+-- second, on the documented example.
+--
+-- NOT MEMOISED. A key can be pulled and a different one pushed in between two captures, and a cached
+-- 'already made it' would then send every file to a directory that does not exist on this key. mkdir on
+-- an existing directory costs one raised error per capture, which is nothing next to a decode.
+function ulog.ensuredir(dir)
+  if dir == nil then dir = ulog.usbdir end
+  if dir == nil or dir == '' then return false, 'no directory configured' end
+  -- No key is a NORMAL condition, and a clearer answer than whatever mkdir would say about it.
+  local haskey, present = pcall(function() return file.usbdriveexists() end)
+  if haskey and present == 0 then return false, 'no USB key' end
+  local leaf = string.gsub(dir, '^.*/', '')
+  pcall(function() file.mkdir(dir) end)
+  if leaf ~= dir then pcall(function() file.mkdir(leaf) end) end
+  return true
+end
 
 -- Open the log. `truncate` starts a fresh file; the default appends across
 -- sessions, since comparing this run against the last is usually the point.
@@ -52,6 +93,12 @@ function ulog.open(path, truncate)
   if not ulog.enabled then return false end
   if path ~= nil then ulog.path = path end
 
+  -- BEFORE THE OPEN, NOT AFTER A FAILURE: MODE_APPEND creates a missing file but not a missing parent,
+  -- so on a fresh key the open below would simply fail with nothing to say about why. Its answer is KEPT
+  -- rather than discarded: it is the only thing that can tell an absent key from a directory that could
+  -- not be made, and a nil open on its own cannot.
+  local dirok, dirwhy = ulog.ensuredir()
+
   local ok, err = pcall(function()
     local mode = file.MODE_APPEND
     if truncate then mode = file.MODE_WRITE end
@@ -63,7 +110,18 @@ function ulog.open(path, truncate)
   end
   if ulog.fh == nil then
     ulog.on = false
-    ulog.lasterr = 'no USB key at ' .. tostring(ulog.path)
+    -- 'no USB key' WAS ASSERTED, NOT MEASURED. A key that is present but full, write-protected, or
+    -- missing the directory reaches here too, and blaming its absence sends the operator to check the
+    -- one thing that is fine.
+    if not dirok then
+      ulog.lasterr = tostring(dirwhy) .. ' -- cannot open ' .. tostring(ulog.path)
+    else
+      -- LISTED, NOT DIAGNOSED. Saying 'key present' would be an assertion of the same kind as the 'no
+      -- USB key' this replaced: usbdriveexists may raise on a firmware that lacks it, and a key can be
+      -- pulled between that call and this open, so presence is not a fact here either.
+      ulog.lasterr = 'cannot open ' .. tostring(ulog.path)
+                     .. ' -- key may be absent, full, write-protected, or refusing the directory'
+    end
     return false
   end
 
@@ -205,6 +263,11 @@ end
 -- and a bench session that presses NewLog per device reaches 100.
 function ulog.next_free(prefix, ext, limit)
   if limit == nil then limit = 1000 end
+  -- BEFORE THE SCAN, because the scan reads absence as availability. With no directory every candidate
+  -- probes absent, so 000 comes back free and the caller is later told it 'cannot append' to a perfectly
+  -- good name -- a diagnosis pointing away from the only thing that was wrong. The index below is
+  -- written into this directory too.
+  ulog.ensuredir()
   local idxpath = prefix .. 'idx.txt'
 
   -- THE INDEX IS A STARTING POINT, NOT AN ANSWER.
@@ -293,10 +356,17 @@ end
 -- ulog.fh's lifetime. Returns ok, reason.
 function ulog.write_file(path, lines, n)
   if path == nil then return false, 'no filename available' end
+  -- MODE_WRITE creates the file, never its parent, so Save into a directory that is not there fails
+  -- with 'cannot write' and no clue that a directory was the whole of it. The reason is carried into the
+  -- message for that reason -- Save puts this string on the note row, and it is all the operator gets.
+  local dirok, dirwhy = ulog.ensuredir()
   local fh = nil
   local ok, err = pcall(function() fh = file.open(path, file.MODE_WRITE) end)
   if not ok then return false, tostring(err) end
-  if fh == nil then return false, 'cannot write ' .. tostring(path) end
+  if fh == nil then
+    if not dirok then return false, tostring(dirwhy) .. ' -- cannot write ' .. tostring(path) end
+    return false, 'cannot write ' .. tostring(path)
+  end
 
   local wrote = true
   local i

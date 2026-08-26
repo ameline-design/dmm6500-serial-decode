@@ -604,8 +604,12 @@ Two different files, and they are not the same thing:
 
 | File | Written | Holds |
 |---|---|---|
-| `/usb1/bytesNNN.txt` | automatically, on every capture | the running log — every capture's bytes as text and hex. **NewLog** starts a new number. |
-| `/usb1/serial_NNN.txt` | only when you press **Save** | a full report of what is on screen: settings, all the notes, the whole dump. |
+| `/usb1/SerialFiles/bytesNNN.txt` | automatically, on every capture | the running log — every capture's bytes as text and hex. **NewLog** starts a new number. |
+| `/usb1/SerialFiles/serial_NNN.txt` | only when you press **Save** | a full report of what is on screen: settings, all the notes, the whole dump. |
+
+**Everything goes in `/usb1/SerialFiles`,** and the app creates that directory the first time it needs
+it — there is nothing to set up, and nothing lands in the root of your key. The panel still shows the
+bare filename rather than the path, because the directory never changes and the row is narrow.
 
 A recording decodes into the log file, so the file holds the whole run while the panel shows only the
 tail of it. The note row says so when they differ.

@@ -276,6 +276,65 @@ check('and next_free explains an index it could not save, for the status row',
        end)() ~= nil and has(tostring(ulog.idx_why), 'index not saved'),
       tostring(ulog.idx_why))
 
+-- ---------- the SerialFiles directory ----------
+--
+-- THE MOCK REFUSES AN OPEN INTO A DIRECTORY THAT IS NOT THERE, which is what makes any of this a test
+-- rather than a restatement. The last check proves that by removing the mkdir and watching the write
+-- fail: without it, every assertion here would hold on code that never created anything.
+print('\nthe SerialFiles directory')
+
+MD.usb(true)
+MD.rmdir(ulog.usbdir)
+check('the directory is named once and everything else is built from it',
+      ulog.usbdir == '/usb1/SerialFiles', tostring(ulog.usbdir))
+check('the event log lives in it',
+      ulog.path == '/usb1/SerialFiles/dmm6500_log.txt', tostring(ulog.path))
+
+check('it does not exist yet, so the test below is not measuring a directory it inherited',
+      MD.dirs()[ulog.usbdir] == nil)
+local made, why = ulog.ensuredir()
+check('ensuredir reports it can be written to', made == true, tostring(made) .. ' ' .. tostring(why))
+check('and the directory is really there now', MD.dirs()[ulog.usbdir] == true)
+
+-- The ordinary case on every run after the first: mkdir refuses a name that exists, and RAISES.
+local made2, why2 = ulog.ensuredir()
+check('a second call is not a failure, because "already exists" is the state we wanted',
+      made2 == true, tostring(made2) .. ' ' .. tostring(why2))
+check('and it did not delete or replace what was there', MD.dirs()[ulog.usbdir] == true)
+
+MD.usb(false)
+local nokey, nowhy = ulog.ensuredir()
+check('with no key it says so, rather than blaming the directory',
+      nokey == false and has(tostring(nowhy), 'no USB key'), tostring(nokey) .. ' ' .. tostring(nowhy))
+MD.usb(true)
+
+-- END TO END: allocate a name under the new directory and write to it, from a key with no directory.
+MD.forget_files()
+MD.rmdir(ulog.usbdir)
+local p = ulog.next_free(ulog.usbdir .. '/bytes', '.txt', 20)
+check('next_free hands back a name inside the directory',
+      p == '/usb1/SerialFiles/bytes000.txt', tostring(p))
+local wok, werr = ulog.write_file(p, {'one', 'two'}, 2)
+check('and the file can actually be written there, on a key that had no such directory',
+      wok == true, tostring(wok) .. ' ' .. tostring(werr))
+check('the file is on the key', MD.files()[p] == true)
+
+-- THE NEGATIVE. Neuter ensuredir and the same sequence must FAIL -- otherwise the checks above pass
+-- with or without the feature and prove nothing about it.
+local real = ulog.ensuredir
+ulog.ensuredir = function() return true end
+MD.forget_files()
+MD.rmdir(ulog.usbdir)
+local pbad = ulog.next_free(ulog.usbdir .. '/bytes', '.txt', 20)
+local bok, berr = ulog.write_file(pbad, {'one'}, 1)
+ulog.ensuredir = real
+check('WITHOUT the mkdir the write fails, so these tests can tell the difference',
+      bok == false, tostring(bok) .. ' ' .. tostring(berr))
+check('and it fails on the directory, not on the name it was given',
+      pbad == '/usb1/SerialFiles/bytes000.txt', tostring(pbad))
+MD.usb(true)
+ulog.ensuredir()
+
 print()
 print(string.format('%d passed, %d failed', pass, fail))
 os.exit(fail == 0 and 0 or 1)
