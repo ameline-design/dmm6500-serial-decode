@@ -2022,7 +2022,7 @@ function sdec.ui_build()
     {x = 8,   w = 120, t = 'Capture',    e = 'sdec.capture()'},
     {x = 152, w = 90,  t = 'View',       e = 'sdec.view_toggle()'},
     {x = 266, w = 100, t = 'Mode',       e = 'sdec.mode_cycle()'},
-    {x = 390, w = 112, t = 'NewLog',     e = 'sdec.log_new()'},
+    {x = 390, w = 112, t = 'NewLog',     e = 'sdec.log_new()', hide = 'ui_newlogbtn'},
     -- `hide` marks a button whose handle is kept by NAME as well as by index, because ui_page_btns has
     -- to reach it every refresh. ui_btn is positional and can have a hole, so an index is the wrong
     -- handle to remember: reordering this table would hide the wrong control.
@@ -2116,6 +2116,7 @@ function sdec.ui_build()
   sdec.ui_lockvis = nil
   sdec.ui_savevis = nil
   sdec.ui_savebtn = nil
+  sdec.ui_newlogbtn = nil
   local k
   local nb = 0
   for k = 1, table.getn(bdef) do
@@ -2213,25 +2214,31 @@ function sdec.ui_page_btns()
     end
   end
 
-  -- SAVE IS HIDDEN WITH NO KEY IN THE SLOT, because Save writes a file and nothing else: with no key
-  -- there is no press that can succeed, and a button that only ever reports a failure is worse than no
-  -- button. Same reasoning as Lock Rate above -- do not offer a press that cannot do its job.
+  -- SAVE AND NewLog ARE HIDDEN WITH NO KEY IN THE SLOT. Both exist only to put a file on the key -- Save
+  -- writes the report, NewLog starts the next byte log -- so with no key neither has a press that can
+  -- succeed, and a button that can only report a failure is worse than no button. Same reasoning as Lock
+  -- Rate above: do not offer a press that cannot do its job.
   --
   -- STATE_INVISIBLE, not STATE_DISABLE: the display reference is explicit that DISABLE applies to
   -- display.OBJ_EDIT_* only, so a disabled button is not available on this firmware.
   --
-  -- ulog.haskey() IS THE TEST, and it names no path -- so asking on every refresh costs nothing and
-  -- posts nothing. That is also what lets the button come back by itself when a key is inserted.
+  -- ulog.haskey() IS THE TEST, and it names no path -- so asking on every refresh costs nothing and posts
+  -- nothing. It is also what lets both buttons come back by themselves when a key is inserted.
   --
-  -- NOT NewLog, deliberately: it renames the next log rather than writing one, so it is still a
-  -- meaningful press with no key -- the name it chooses is used once a key is there.
-  if sdec.ui_savebtn ~= nil then
+  -- ONE CACHED FLAG FOR BOTH, because they are a function of the same single fact: there is no state in
+  -- which one should be showing and the other hidden.
+  if sdec.ui_savebtn ~= nil or sdec.ui_newlogbtn ~= nil then
     local sw = true
     if ulog ~= nil and ulog.haskey ~= nil then sw = ulog.haskey() end
     if sw ~= sdec.ui_savevis then
       local sst = display.STATE_INVISIBLE
       if sw then sst = display.STATE_ENABLE end
-      pcall(function() display.setstate(sdec.ui_savebtn, sst) end)
+      if sdec.ui_savebtn ~= nil then
+        pcall(function() display.setstate(sdec.ui_savebtn, sst) end)
+      end
+      if sdec.ui_newlogbtn ~= nil then
+        pcall(function() display.setstate(sdec.ui_newlogbtn, sst) end)
+      end
       sdec.ui_savevis = sw
     end
   end

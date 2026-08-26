@@ -2270,28 +2270,33 @@ do
   -- SAVE IS HIDDEN WITH NO KEY, because a Save with nowhere to write is a press that can only fail.
   -- STATE_INVISIBLE is the only hide this firmware has -- STATE_DISABLE is documented as applying to
   -- OBJ_EDIT_* alone -- so that is what is asserted, not a colour.
-  check('the Save button is remembered by NAME, not by its index in the row',
-        sdec.ui_savebtn ~= nil, tostring(sdec.ui_savebtn))
+  check('Save and NewLog are remembered by NAME, not by index in the row',
+        sdec.ui_savebtn ~= nil and sdec.ui_newlogbtn ~= nil,
+        tostring(sdec.ui_savebtn) .. ' ' .. tostring(sdec.ui_newlogbtn))
   MD.usb(true)
   sdec.ui_page_btns()
-  check('with a key in the slot Save is offered',
-        MD.obj(sdec.ui_savebtn).state == display.STATE_ENABLE,
-        tostring(MD.obj(sdec.ui_savebtn).state))
+  check('with a key in the slot both are offered',
+        MD.obj(sdec.ui_savebtn).state == display.STATE_ENABLE
+          and MD.obj(sdec.ui_newlogbtn).state == display.STATE_ENABLE,
+        tostring(MD.obj(sdec.ui_savebtn).state) .. ' ' .. tostring(MD.obj(sdec.ui_newlogbtn).state))
   MD.usb(false)
   sdec.ui_page_btns()
-  check('with no key Save is hidden rather than left to fail',
-        MD.obj(sdec.ui_savebtn).state == display.STATE_INVISIBLE,
-        tostring(MD.obj(sdec.ui_savebtn).state))
+  check('with no key BOTH are hidden rather than left to fail',
+        MD.obj(sdec.ui_savebtn).state == display.STATE_INVISIBLE
+          and MD.obj(sdec.ui_newlogbtn).state == display.STATE_INVISIBLE,
+        tostring(MD.obj(sdec.ui_savebtn).state) .. ' ' .. tostring(MD.obj(sdec.ui_newlogbtn).state))
   -- IT COMES BACK, which is the half a cached flag would get wrong.
   MD.usb(true)
   sdec.ui_page_btns()
-  check('and it returns when a key is inserted again',
-        MD.obj(sdec.ui_savebtn).state == display.STATE_ENABLE,
-        tostring(MD.obj(sdec.ui_savebtn).state))
-  -- NewLog is NOT hidden: it renames the next log rather than writing one, so it still means something.
-  check('NewLog is left alone -- it chooses a name, it does not write a file',
-        MD.obj(sdec.ui_btn[4]).state ~= display.STATE_INVISIBLE,
-        tostring(MD.obj(sdec.ui_btn[4]).state))
+  check('and both return when a key is inserted again',
+        MD.obj(sdec.ui_savebtn).state == display.STATE_ENABLE
+          and MD.obj(sdec.ui_newlogbtn).state == display.STATE_ENABLE,
+        tostring(MD.obj(sdec.ui_savebtn).state) .. ' ' .. tostring(MD.obj(sdec.ui_newlogbtn).state))
+  -- NEITHER IS EVER HALF-HIDDEN. They answer to one fact, so one showing while the other hides would mean
+  -- the cached flag had been applied to only one of them.
+  check('they are never in disagreement about it',
+        MD.obj(sdec.ui_savebtn).state == MD.obj(sdec.ui_newlogbtn).state,
+        tostring(MD.obj(sdec.ui_savebtn).state) .. ' vs ' .. tostring(MD.obj(sdec.ui_newlogbtn).state))
 end
 
 -- ---------------------------------------------------------------------------

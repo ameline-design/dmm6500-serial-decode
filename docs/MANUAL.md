@@ -624,9 +624,10 @@ and later captures will keep failing until the app is ended and started again.
 
 So: **End App first, then swap the key.**
 
-**With no key in the slot, the `Save` button is hidden.** Save exists only to write a file, so with
-nowhere to write there is no press that could succeed — the button reappears by itself once a key is
-inserted. Capture and decode work perfectly well without a key; you simply get no log and no report.
+**With no key in the slot, the `Save` and `NewLog` buttons are hidden.** Both exist only to put a file on
+the key — Save writes the report, NewLog starts the next byte log — so with nowhere to write, neither has
+a press that could succeed. They reappear by themselves once a key is inserted. Capture and decode work
+perfectly well without a key; you simply get no log and no report.
 
 **You may also see `2205, File not found` during normal use, with a key inserted.** Choosing the next
 `bytesNNN.txt` means asking the instrument about names until it finds one that is free, and the

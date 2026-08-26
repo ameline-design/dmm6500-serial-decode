@@ -4435,7 +4435,7 @@ function sdec.ui_build()
     {x = 8,   w = 120, t = 'Capture',    e = 'sdec.capture()'},
     {x = 152, w = 90,  t = 'View',       e = 'sdec.view_toggle()'},
     {x = 266, w = 100, t = 'Mode',       e = 'sdec.mode_cycle()'},
-    {x = 390, w = 112, t = 'NewLog',     e = 'sdec.log_new()'},
+    {x = 390, w = 112, t = 'NewLog',     e = 'sdec.log_new()', hide = 'ui_newlogbtn'},
     {x = 526, w = 112, t = 'Save',       e = 'sdec.save()', hide = 'ui_savebtn'},
     {x = 662, w = 112, t = 'Options',    e = 'sdec.options()'},
   }
@@ -4479,6 +4479,7 @@ function sdec.ui_build()
   sdec.ui_lockvis = nil
   sdec.ui_savevis = nil
   sdec.ui_savebtn = nil
+  sdec.ui_newlogbtn = nil
   local k
   local nb = 0
   for k = 1, table.getn(bdef) do
@@ -4548,13 +4549,18 @@ function sdec.ui_page_btns()
     end
   end
 
-  if sdec.ui_savebtn ~= nil then
+  if sdec.ui_savebtn ~= nil or sdec.ui_newlogbtn ~= nil then
     local sw = true
     if ulog ~= nil and ulog.haskey ~= nil then sw = ulog.haskey() end
     if sw ~= sdec.ui_savevis then
       local sst = display.STATE_INVISIBLE
       if sw then sst = display.STATE_ENABLE end
-      pcall(function() display.setstate(sdec.ui_savebtn, sst) end)
+      if sdec.ui_savebtn ~= nil then
+        pcall(function() display.setstate(sdec.ui_savebtn, sst) end)
+      end
+      if sdec.ui_newlogbtn ~= nil then
+        pcall(function() display.setstate(sdec.ui_newlogbtn, sst) end)
+      end
       sdec.ui_savevis = sw
     end
   end
