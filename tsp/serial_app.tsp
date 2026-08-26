@@ -46,7 +46,7 @@ sdec.busy      = sdec.busy or false
 -- ALL THREE DERIVE FROM ulog.usbdir, which names the one directory every file goes to. usb_log.tsp is
 -- the first module the archive loads, so it is always defined by the time this runs; the fallback is for
 -- a bare serial_app.tsp loaded on its own by a harness.
-sdec.usbdir    = sdec.usbdir or (ulog ~= nil and ulog.usbdir) or '/usb1/SerialFiles'
+sdec.usbdir    = sdec.usbdir or (ulog ~= nil and ulog.usbdir) or '/usb1/SERDEC'
 sdec.logpath   = sdec.logpath or (sdec.usbdir .. '/serial_decode_log.txt')
 -- Prefix of THE BYTE LOG, which every mode appends to -- not just FRAME.
 sdec.flogpfx   = sdec.flogpfx or (sdec.usbdir .. '/bytes')

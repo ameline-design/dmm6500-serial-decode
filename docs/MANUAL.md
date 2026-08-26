@@ -604,10 +604,10 @@ Two different files, and they are not the same thing:
 
 | File | Written | Holds |
 |---|---|---|
-| `/usb1/SerialFiles/bytesNNN.txt` | automatically, on every capture | the running log — every capture's bytes as text and hex. **NewLog** starts a new number. |
-| `/usb1/SerialFiles/serial_NNN.txt` | only when you press **Save** | a full report of what is on screen: settings, all the notes, the whole dump. |
+| `/usb1/SERDEC/bytesNNN.txt` | automatically, on every capture | the running log — every capture's bytes as text and hex. **NewLog** starts a new number. |
+| `/usb1/SERDEC/serial_NNN.txt` | only when you press **Save** | a full report of what is on screen: settings, all the notes, the whole dump. |
 
-**Everything goes in `/usb1/SerialFiles`,** and the app creates that directory when it starts — there is
+**Everything goes in `/usb1/SERDEC`,** and the app creates that directory when it starts — there is
 nothing to set up, and nothing lands in the root of your key. The panel still shows the bare filename
 rather than the path, because the directory never changes and the row is narrow.
 

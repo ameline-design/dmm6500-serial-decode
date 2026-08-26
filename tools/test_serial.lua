@@ -5948,7 +5948,7 @@ local function test_modes()
         sdec.frame_log() == false)
   MD.usb(true)
 
-  -- ---- the SerialFiles directory, across a KEY SWAP ----
+  -- ---- the SERDEC directory, across a KEY SWAP ----
   --
   -- THE CACHED NAME IS THE TRAP. flog_alloc() returns the name it already chose without touching the
   -- key, so the append is the first thing a replacement key sees -- and MD.forget_files() models that
@@ -5960,18 +5960,18 @@ local function test_modes()
   sdec.capmode = 'frame'
   sdec.flog_path, sdec.flog_n, sdec.flog_why = nil, nil, nil
   run({bytes = hb, baud = 9600, fs = 100000})
-  check('every path the app writes sits under SerialFiles',
-        has(sdec.flogpfx, '/usb1/SerialFiles/') and has(sdec.savepfx, '/usb1/SerialFiles/')
-          and has(sdec.logpath, '/usb1/SerialFiles/') and has(ulog.path, '/usb1/SerialFiles/'),
+  check('every path the app writes sits under SERDEC',
+        has(sdec.flogpfx, '/usb1/SERDEC/') and has(sdec.savepfx, '/usb1/SERDEC/')
+          and has(sdec.logpath, '/usb1/SERDEC/') and has(ulog.path, '/usb1/SERDEC/'),
         sdec.flogpfx .. ' ' .. sdec.savepfx)
-  check('the byte log writes to a key that had no SerialFiles on it',
+  check('the byte log writes to a key that had no SERDEC on it',
         sdec.frame_log() == true, tostring(sdec.flog_why))
   local swapped = sdec.flog_path
   -- A KEY PRESENT BEFORE THE APP STARTS, which is the supported way to run: MD.forget_files() models a
   -- fresh key AND drops the app's directory cache with it, exactly as a relaunch would.
   MD.forget_files()
   run({bytes = hb, baud = 9600, fs = 100000})
-  check('a fresh key with no SerialFiles gets one made, and the name is unchanged',
+  check('a fresh key with no SERDEC gets one made, and the name is unchanged',
         sdec.frame_log() == true and sdec.flog_path == swapped,
         tostring(sdec.flog_path) .. ' ' .. tostring(sdec.flog_why))
   check('Save works on it too', sdec.save() == true, tostring(sdec.lasterr))

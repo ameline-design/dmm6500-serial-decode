@@ -37,7 +37,7 @@ ulog = ulog or {}
 -- log, the Save reports and this event log all build their paths from it, so they cannot disagree about
 -- where they are. A bare /usb1/ scatters a dozen files across the root of a key the operator also uses
 -- for other instruments.
-ulog.usbdir    = ulog.usbdir or '/usb1/SerialFiles'
+ulog.usbdir    = ulog.usbdir or '/usb1/SERDEC'
 ulog.path      = ulog.path or (ulog.usbdir .. '/dmm6500_log.txt')
 -- MIGRATED, NOT JUST DEFAULTED. Every assignment here uses `or` so an App reload keeps live state, and
 -- that is exactly what strands a path: loading this build over one that wrote to the key's ROOT inherits
@@ -66,7 +66,7 @@ if ulog.autoflush == nil then ulog.autoflush = true end
 --     cannot suppress it: it reaches the event log and pops up on the panel.
 --   * A NAME THAT ALREADY EXISTS FAILS THAT WAY. So a speculative mkdir files a 2208 on a healthy
 --     instrument, once per call.
---   * A BARE NAME ALWAYS FAILS: file.mkdir('SerialFiles') posts 2208, file.mkdir('/usb1/SerialFiles')
+--   * A BARE NAME ALWAYS FAILS: file.mkdir('SERDEC') posts 2208, file.mkdir('/usb1/SERDEC')
 --     succeeds silently. The reference's Details are right that the path must be absolute; the worked
 --     example on the same page, file.mkdir("TestData5"), is wrong and is not imitated.
 --   * OPENING A MISSING PATH POSTS 2205, 'File not found' -- so probing the directory to see whether it
@@ -100,12 +100,23 @@ end
 -- name was not in it, nil means the root could not be read at all. Treating nil as absence would order a
 -- mkdir on no evidence, which is how a 2208 gets posted.
 --
--- THE MATCH IS OVER RAW BYTES, so it is a name search and not a FAT parser. Two forms are looked for: the
--- plain uppercase 8.3 entry, and the UTF-16LE long-name run. Both are what this app's own mkdir leaves
--- behind. It is therefore approximate in ways worth naming: a FILE of the same name would satisfy it, and
--- so could a deleted entry whose bytes still sit in the table. Both mis-answer towards 'it is there',
--- which costs a failed open and a reported reason rather than a 2208 -- the safer direction of the two.
--- A short uppercase name would need only the first form; that is the argument for naming it that way.
+-- ONE EXACT SEARCH, AND THAT IS WHY THE DIRECTORY IS NAMED 'SERDEC'. Measured on firmware 1.7.17a: a name
+-- of eight characters or fewer, uppercase, is stored as a single plain ASCII 8.3 entry, contiguous in the
+-- table, and 'SERDEC' is found by one string.find. A LONGER name is not:
+--
+--     SERIALFILES = false     -- no plain entry exists for an 11-character name
+--     utf16_full  = false     -- and the UTF-16LE long name is NOT CONTIGUOUS
+--     utf16_5     = true      -- only its first FIVE characters are
+--     SERIAL~1    = true      -- there is a tilde alias, but its number is not predictable
+--
+-- FAT splits a long-name record's characters into three fields -- 5, then 6, then 2 -- with record
+-- metadata in between, so no search for the whole name can match. An earlier version of this searched the
+-- full UTF-16 run, found nothing, and ordered a mkdir on a directory that existed: 2208 on the panel, and
+-- no logging for the rest of the run. A five-character probe had 'confirmed' the approach.
+--
+-- Still not a FAT parser: a FILE of this name would satisfy the search, as could a deleted entry whose
+-- bytes remain. Both err towards 'it is there', which costs a failed open and a reported reason rather
+-- than an event -- the safer of the two directions.
 function ulog.rootlists(name)
   if name == nil or name == '' then return nil end
   local fh = nil
@@ -115,26 +126,9 @@ function ulog.rootlists(name)
   pcall(function() raw = file.read(fh, file.READ_ALL) end)
   pcall(function() file.close(fh) end)
   if raw == nil then return nil end
-  local up = string.upper(name)
-  -- THE TILDE ALIAS IS NOT SEARCHED. 'SERIAL~' matches the alias of any long name beginning SERIAL --
-  -- SerialCaptures, serial_old -- so it answers a different question than the one asked. The two forms
-  -- below are the ones this app's own mkdir produces. `1` for a plain find, no patterns.
-  if string.find(raw, up, 1, 1) ~= nil then return true end
-  -- The long-name records: UTF-16LE, so every character is followed by a zero byte. BOTH CASES, because
-  -- the directory may have been made on a PC rather than by this app -- 'SERIALFILES' and 'SerialFiles'
-  -- are the same directory to the operator and to the firmware, and missing it would order a mkdir on one
-  -- that exists, which is a 2208 on the panel.
-  local i, wide, wideup = nil, '', ''
-  for i = 1, string.len(name) do
-    wide = wide .. string.sub(name, i, i) .. string.char(0)
-    wideup = wideup .. string.sub(up, i, i) .. string.char(0)
-  end
-  if string.find(raw, wide, 1, 1) ~= nil then return true end
-  if string.find(raw, wideup, 1, 1) ~= nil then return true end
-  -- STILL APPROXIMATE, and the residue is stated rather than hidden: a directory stored ONLY as an 8.3
-  -- alias this search cannot reconstruct -- SERIAL~1 for an 11-character name -- is not found, so the
-  -- mkdir below runs and posts one 2208 at startup. Once. Not per capture, and not on any key this app
-  -- made the directory on itself. An 8.3-clean directory name would remove the case entirely.
+  -- `1` for a plain find, no patterns. Nothing else is searched: the tilde alias would match any long name
+  -- beginning the same way, and a partial UTF-16 run would match a different directory entirely.
+  if string.find(raw, string.upper(name), 1, 1) ~= nil then return true end
   return false
 end
 
@@ -155,6 +149,17 @@ function ulog.ensuredir(dir)
   -- between captures therefore re-checks, driven by the failure rather than by a guess.
   if ulog.dirok == dir then return true end
   if string.sub(dir, 1, 1) ~= '/' then return false, 'directory must be absolute: ' .. dir end
+  -- THE NAME MUST BE 8.3-CLEAN, and this refuses rather than letting a rename break the search silently.
+  -- rootlists finds a directory by looking for its name in the raw FAT table, and only a name of eight
+  -- characters or fewer in upper case is stored there contiguously -- a longer one becomes a long-name
+  -- record whose characters FAT splits 5/6/2, plus a tilde alias whose number is unpredictable. Renaming
+  -- ulog.usbdir to something longer would therefore make every lookup answer 'absent', order a mkdir on a
+  -- directory that exists, and post 2208 -- which is exactly what an 11-character name did. Refusing here
+  -- turns that into a reported reason instead of a silent event.
+  local leafchk = string.gsub(dir, '^.*/', '')
+  if string.len(leafchk) > 8 or leafchk ~= string.upper(leafchk) then
+    return false, 'directory name must be 8 upper-case characters or fewer: ' .. leafchk
+  end
   local leaf = string.gsub(dir, '^.*/', '')
   local listed = ulog.rootlists(leaf)
   if listed == true then ulog.dirok = dir; return true end

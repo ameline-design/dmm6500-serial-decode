@@ -382,8 +382,8 @@ function file.open(path, mode)
   -- returned a quiet nil here hid every open the app performs without a key -- which is exactly the class
   -- of leak the event counter exists to catch.
   if not USB then post(2205); return nil end
-  -- A missing parent fails EVERY mode, including READ. A filesystem cannot hold /usb1/SerialFiles/x
-  -- while /usb1/SerialFiles is absent, so letting a seeded file stay readable through a deleted
+  -- A missing parent fails EVERY mode, including READ. A filesystem cannot hold /usb1/SERDEC/x
+  -- while /usb1/SERDEC is absent, so letting a seeded file stay readable through a deleted
   -- directory would model something the instrument cannot do -- and it would do it in the app's favour,
   -- which is worse than not modelling directories at all.
   if not DIRS[parentof(path)] and not DIRS[path] then post(2205); return nil end
@@ -423,7 +423,7 @@ function MD.forget_files()
   CONTENT = {}
   RPOS = {}
   WPATH = nil
-  -- AND THE DIRECTORIES, because "different key" means a key with no SerialFiles on it. Keeping DIRS
+  -- AND THE DIRECTORIES, because "different key" means a key with no SERDEC on it. Keeping DIRS
   -- across the wipe made the swap unmodellable: every path stayed openable, so the one case this
   -- harness exists to reach -- a second key, mid-session, with the app holding an allocated name from
   -- the first -- silently could not happen.

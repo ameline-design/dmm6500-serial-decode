@@ -283,19 +283,19 @@ check('and next_free says WHY it refused, for the status row',
        end)() ~= nil and has(tostring(ulog.idx_why), 'no USB key'),
       tostring(ulog.idx_why))
 
--- ---------- the SerialFiles directory ----------
+-- ---------- the SERDEC directory ----------
 --
 -- THE MOCK REFUSES AN OPEN INTO A DIRECTORY THAT IS NOT THERE, which is what makes any of this a test
 -- rather than a restatement. The last check proves that by removing the mkdir and watching the write
 -- fail: without it, every assertion here would hold on code that never created anything.
-print('\nthe SerialFiles directory')
+print('\nthe SERDEC directory')
 
 MD.usb(true)
 MD.rmdir(ulog.usbdir)
 check('the directory is named once and everything else is built from it',
-      ulog.usbdir == '/usb1/SerialFiles', tostring(ulog.usbdir))
+      ulog.usbdir == '/usb1/SERDEC', tostring(ulog.usbdir))
 check('the event log lives in it',
-      ulog.path == '/usb1/SerialFiles/dmm6500_log.txt', tostring(ulog.path))
+      ulog.path == '/usb1/SERDEC/dmm6500_log.txt', tostring(ulog.path))
 
 check('it does not exist yet, so the test below is not measuring a directory it inherited',
       MD.dirs()[ulog.usbdir] == nil)
@@ -331,7 +331,7 @@ MD.rmdir(ulog.usbdir)
 ulog.dirlost()
 local p = ulog.next_free(ulog.usbdir .. '/bytes', '.txt', 20)
 check('next_free hands back a name inside the directory',
-      p == '/usb1/SerialFiles/bytes000.txt', tostring(p))
+      p == '/usb1/SERDEC/bytes000.txt', tostring(p))
 local wok, werr = ulog.write_file(p, {'one', 'two'}, 2)
 check('and the file can actually be written there, on a key that had no such directory',
       wok == true, tostring(wok) .. ' ' .. tostring(werr))
@@ -349,7 +349,7 @@ ulog.ensuredir = real
 check('WITHOUT the mkdir the write fails, so these tests can tell the difference',
       bok == false, tostring(bok) .. ' ' .. tostring(berr))
 check('and it fails on the directory, not on the name it was given',
-      pbad == '/usb1/SerialFiles/bytes000.txt', tostring(pbad))
+      pbad == '/usb1/SERDEC/bytes000.txt', tostring(pbad))
 MD.usb(true)
 ulog.ensuredir()
 
@@ -381,14 +381,14 @@ check('asking three more times posts nothing at all -- no mkdir is ever speculat
       'events=' .. MD.fevent_count())
 
 MD.forget_fevents()
-local wq, wqe = ulog.write_file('/usb1/SerialFiles/quiet.txt', {'x'}, 1)
+local wq, wqe = ulog.write_file('/usb1/SERDEC/quiet.txt', {'x'}, 1)
 check('and a write into it is silent too', wq == true and MD.fevent_count() == 0,
       tostring(wq) .. ' ' .. tostring(wqe) .. ' events=' .. MD.fevent_count())
 
 -- No key at all: the gate answers from usbdriveexists, which names no path, so nothing is posted.
 MD.usb(false)
 MD.forget_fevents()
-local nk, nkw = ulog.open_write('/usb1/SerialFiles/nokey.txt', file.MODE_APPEND)
+local nk, nkw = ulog.open_write('/usb1/SERDEC/nokey.txt', file.MODE_APPEND)
 check('with no key the refusal is silent -- no path is ever named',
       nk == nil and MD.fevent_count() == 0,
       tostring(nkw) .. ' events=' .. MD.fevent_count())
@@ -403,10 +403,30 @@ file.mkdir(ulog.usbdir)
 check('a mkdir on an existing directory DOES post 2208, so the checks above can fail',
       MD.fevent_count(2208) == 1, '2208=' .. MD.fevent_count(2208))
 MD.forget_fevents()
-file.mkdir('SerialFiles')
+file.mkdir('SERDEC')
 check('and so does a bare relative name, which is why only absolute paths are issued',
       MD.fevent_count(2208) == 1, '2208=' .. MD.fevent_count(2208))
 MD.forget_fevents()
+
+-- THE NAME ITSELF IS A LOAD-BEARING DECISION, so it is pinned. rootlists can only find a directory whose
+-- name FAT stores contiguously, which means 8 characters or fewer, upper case. An 11-character name broke
+-- a whole smoke run: SERIALFILES had no plain entry, its UTF-16 long name was split 5/6/2 and unfindable,
+-- so the app decided the directory was absent and posted 2208.
+print('\nthe directory name is 8.3-clean, and must stay that way')
+local leaf = string.gsub(ulog.usbdir, '^.*/', '')
+check('the directory name is 8 characters or fewer', string.len(leaf) <= 8, leaf)
+check('and upper case, so FAT needs no long-name record for it',
+      leaf == string.upper(leaf), leaf)
+check('a longer name is REFUSED rather than silently unfindable',
+      (function()
+         local ok, why = ulog.ensuredir('/usb1/SerialFiles')
+         return ok == false and has(tostring(why), '8 upper-case')
+       end)())
+check('and so is a lower-case one',
+      (function()
+         local ok, why = ulog.ensuredir('/usb1/serdec')
+         return ok == false and has(tostring(why), '8 upper-case')
+       end)())
 
 print()
 print(string.format('%d passed, %d failed', pass, fail))

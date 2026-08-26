@@ -38,7 +38,7 @@ loadscript Serial_Decode
 -- ================= tsp/usb_log.tsp =================
 ulog = ulog or {}
 
-ulog.usbdir    = ulog.usbdir or '/usb1/SerialFiles'
+ulog.usbdir    = ulog.usbdir or '/usb1/SERDEC'
 ulog.path      = ulog.path or (ulog.usbdir .. '/dmm6500_log.txt')
 if ulog.path == '/usb1/dmm6500_log.txt' then ulog.path = ulog.usbdir .. '/dmm6500_log.txt' end
 ulog.on        = ulog.on or false      -- true once a file is genuinely open
@@ -62,9 +62,9 @@ end
 
 -- Is `name` listed in the USB root? -> true, false, or nil when the question could not be asked.
 --   [...]
--- so could a deleted entry whose bytes still sit in the table. Both mis-answer towards 'it is there',
--- which costs a failed open and a reported reason rather than a 2208 -- the safer direction of the two.
--- A short uppercase name would need only the first form; that is the argument for naming it that way.
+-- Still not a FAT parser: a FILE of this name would satisfy the search, as could a deleted entry whose
+-- bytes remain. Both err towards 'it is there', which costs a failed open and a reported reason rather
+-- than an event -- the safer of the two directions.
 function ulog.rootlists(name)
   if name == nil or name == '' then return nil end
   local fh = nil
@@ -74,15 +74,7 @@ function ulog.rootlists(name)
   pcall(function() raw = file.read(fh, file.READ_ALL) end)
   pcall(function() file.close(fh) end)
   if raw == nil then return nil end
-  local up = string.upper(name)
-  if string.find(raw, up, 1, 1) ~= nil then return true end
-  local i, wide, wideup = nil, '', ''
-  for i = 1, string.len(name) do
-    wide = wide .. string.sub(name, i, i) .. string.char(0)
-    wideup = wideup .. string.sub(up, i, i) .. string.char(0)
-  end
-  if string.find(raw, wide, 1, 1) ~= nil then return true end
-  if string.find(raw, wideup, 1, 1) ~= nil then return true end
+  if string.find(raw, string.upper(name), 1, 1) ~= nil then return true end
   return false
 end
 
@@ -96,6 +88,10 @@ function ulog.ensuredir(dir)
   if not ulog.haskey() then return false, 'no USB key' end
   if ulog.dirok == dir then return true end
   if string.sub(dir, 1, 1) ~= '/' then return false, 'directory must be absolute: ' .. dir end
+  local leafchk = string.gsub(dir, '^.*/', '')
+  if string.len(leafchk) > 8 or leafchk ~= string.upper(leafchk) then
+    return false, 'directory name must be 8 upper-case characters or fewer: ' .. leafchk
+  end
   local leaf = string.gsub(dir, '^.*/', '')
   local listed = ulog.rootlists(leaf)
   if listed == true then ulog.dirok = dir; return true end
@@ -5037,7 +5033,7 @@ sdec.delfails  = sdec.delfails or 0
 sdec.fillfails = sdec.fillfails or 0
 sdec.errcount  = sdec.errcount or 0
 sdec.busy      = sdec.busy or false
-sdec.usbdir    = sdec.usbdir or (ulog ~= nil and ulog.usbdir) or '/usb1/SerialFiles'
+sdec.usbdir    = sdec.usbdir or (ulog ~= nil and ulog.usbdir) or '/usb1/SERDEC'
 sdec.logpath   = sdec.logpath or (sdec.usbdir .. '/serial_decode_log.txt')
 sdec.flogpfx   = sdec.flogpfx or (sdec.usbdir .. '/bytes')
 sdec.savepfx   = sdec.savepfx or (sdec.usbdir .. '/serial_')
