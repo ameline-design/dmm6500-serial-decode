@@ -8137,16 +8137,61 @@ print('\nthe FIT and S/N cells are banded on the figure they print (real code)')
   check('any fd.dy is a nudge of 0..2 px, not a relocation', baddy == nil, tostring(baddy))
   -- Only the two headline cells are nudged, and both by the same amount -- BAUD a pixel below FORMAT
   -- would be worse than both being a pixel high.
-  check('BAUD and FORMAT are dropped by the same 1 px, and nothing else is dropped',
-        sdec.ui_fields[1].dy == 1 and sdec.ui_fields[2].dy == 1 and
+  check('BAUD and FORMAT are dropped by the same 2 px, and nothing else is dropped',
+        sdec.ui_fields[1].dy == 2 and sdec.ui_fields[2].dy == 2 and
         sdec.ui_fields[3].dy == nil,
         string.format('baud=%s fmt=%s idle=%s', tostring(sdec.ui_fields[1].dy),
                       tostring(sdec.ui_fields[2].dy), tostring(sdec.ui_fields[3].dy)))
+  -- CLEARANCE, NOT MERE ABSENCE OF A COLLISION. The check above only proves no rule lands INSIDE the
+  -- ink; at one free row the rule still reads as an underline under the two dropped cells, which is
+  -- what dropping them a second pixel caused. Two free rows is the whole reason ui_rule_mid moved.
+  do
+    local tight = nil
+    for j = 1, table.getn(sdec.ui_fields) do
+      local top, bot = sdec.ui_field_band(j)
+      if sdec.ui_rule_mid - bot < 3 then
+        tight = string.format('%s ink ends %d, ui_rule_mid at %d -- %d free row(s)',
+                              sdec.ui_fields[j].lab, bot, sdec.ui_rule_mid,
+                              sdec.ui_rule_mid - bot - 1)
+      end
+      if top - sdec.ui_rule_hdr < 3 then
+        tight = string.format('%s ink starts %d, ui_rule_hdr at %d',
+                              sdec.ui_fields[j].lab, top, sdec.ui_rule_hdr)
+      end
+    end
+    check('every value cell keeps two free rows above ui_rule_mid, dy included',
+          tight == nil, tostring(tight))
+  end
   -- THE COLUMN SEPARATORS MUST REACH THE STATUS BAND'S TOP RULE. Stopping short read as an
   -- unfinished table, and deriving the end from the row grid is what let it drift 8 px.
   check('the dump vertical rules end exactly on ui_stat_top',
         sdec.ui_vr_y1 == sdec.ui_stat_top,
         string.format('vr_y1=%s stat_top=%s', tostring(sdec.ui_vr_y1), tostring(sdec.ui_stat_top)))
+  -- ...AND MUST MEET THE NOTE ROW'S BOTTOM RULE AT THE OTHER END. Anchored on the row grid instead,
+  -- the top sat 2 px below ui_rule_bot: too small to look deliberate, big enough to look broken. Both
+  -- ends now derive from the rule they touch, so a row-pitch or ink change cannot reopen either gap.
+  check('the dump vertical rules start on the row after ui_rule_bot',
+        sdec.ui_vr_y0 == sdec.ui_rule_bot + 1,
+        string.format('vr_y0=%s rule_bot=%s', tostring(sdec.ui_vr_y0), tostring(sdec.ui_rule_bot)))
+  -- ...and must not run up into the note row's own text.
+  check('the dump vertical rules clear the note row ink',
+        sdec.ui_vr_y0 > sdec.ui_note_y,
+        string.format('vr_y0=%s note_y=%s', tostring(sdec.ui_vr_y0), tostring(sdec.ui_note_y)))
+  -- THE NOTE ROW'S OWN CLEARANCE UNDER ui_rule_bot. The note and the trigger-source cell share
+  -- ui_note_y and are FONT_SMALL, so their ink ends on that line; ui_rule_bot one row later would
+  -- underline them and on the same row would strike through. Nothing else asserts this, and the
+  -- headline cells' clearance check above covers only the value row, so a further nudge to ui_note_y
+  -- had no gate at all.
+  check('the note row ink keeps a free row above ui_rule_bot',
+        sdec.ui_note_y + 1 < sdec.ui_rule_bot,
+        string.format('note ink ends %d, ui_rule_bot at %d -- %d free row(s)',
+                      sdec.ui_note_y, sdec.ui_rule_bot,
+                      sdec.ui_rule_bot - sdec.ui_note_y - 1))
+  -- ...and stays clear of the rule ABOVE it too, which bounds how far it can drop from either side.
+  check('the note row ink starts below ui_rule_mid',
+        sdec.ui_note_y - sdec.ui_ink + 1 > sdec.ui_rule_mid,
+        string.format('note ink top %d, ui_rule_mid at %d',
+                      sdec.ui_note_y - sdec.ui_ink + 1, sdec.ui_rule_mid))
   -- ...and must not run back up into the last dump row's text.
   check('the dump vertical rules clear the last row ink',
         sdec.ui_vr_y1 > sdec.ui_row_y0 + (sdec.ui_nrow - 1) * sdec.ui_row_dy,

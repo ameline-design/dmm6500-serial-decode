@@ -92,8 +92,8 @@ sdec.ui_fields = {
   -- `dy` DROPS A CELL BY N PX, and only these two carry it. FONT_MEDIUM's ink box is 17 px against
   -- FONT_SMALL's 12, and drawing both rows off one baseline sits the two big values a pixel high
   -- against the nine small ones beside them. One px down is what makes the row read as level.
-  {lab = 'BAUD',   x = 8,   c = 0x00DCFF, med = true, dy = 1, wid = '115200'},
-  {lab = 'FORMAT', x = 115, c = 0x00DCFF, med = true, dy = 1, wid = '8N1'},
+  {lab = 'BAUD',   x = 8,   c = 0x00DCFF, med = true, dy = 2, wid = '115200'},
+  {lab = 'FORMAT', x = 115, c = 0x00DCFF, med = true, dy = 2, wid = '8N1'},
   {lab = 'IDLE',   x = 188, c = 0xFFFFFF, wid = 'HIGH'},
   {lab = 'LOGIC',  x = 241, c = 0xFFFFFF, wid = '3V3 CMOS'},
   {lab = 'THRESH', x = 334, c = 0xFFFFFF, wid = '-6.00 V'},
@@ -212,8 +212,11 @@ sdec.ui_rule_top = 1
 -- BETWEEN THE LABEL INK (3..14) AND THE VALUE INK (16..32), which leaves exactly one free row.
 -- A rule inside either band draws a line struck through the text, and test_serial asserts against it.
 sdec.ui_rule_hdr = 15
-sdec.ui_rule_mid = 35                        -- under the value ink (medium 16..32)
-sdec.ui_rule_bot = 51                        -- under the note row's ink (37..48)
+-- 37, THREE ROWS UNDER THE VALUE INK, not one. BAUD and FORMAT carry fd.dy = 2, so their medium ink
+-- reaches 34 where the rest of the row stops at 32; at 35 the rule sat one row under the two lowered
+-- cells and read as underlining them.
+sdec.ui_rule_mid = 37                        -- under the value ink (medium 18..34 on the dy cells)
+sdec.ui_rule_bot = 53                        -- under the note row's ink (40..51), one free row
 -- THE FULL WIDTH THE COORDINATE SPACE ALLOWS. Both the header strip and the status band are boxed
 -- from this pair, so they end flush with each other.
 --
@@ -279,21 +282,21 @@ sdec.ui_pgind_dig = '99'
 sdec.ui_pgind_gap = 6
 sdec.ui_note_gap = 20
 
-sdec.ui_note_y   = 48
-sdec.ui_row_y0   = 66                        -- first dump row
+sdec.ui_note_y   = 51
+sdec.ui_row_y0   = 68                        -- first dump row
 sdec.ui_row_dy   = 18                        -- row pitch (see docs/panel-ref-rows.png)
 -- 15 rows x 16 bytes = 240 bytes, so a hex page holds an exact number of 16-byte rows.
 --
 -- A button cannot be made shorter to find vertical space for another row: display.create takes
 -- (x, y, text, WIDTH) and there is no height parameter -- 58 px is the firmware's.
 sdec.ui_nrow     = 15
-sdec.ui_stat_y   = 342
+sdec.ui_stat_y   = 344
 -- THE STATUS ROW IS BOXED like the header table: it holds state about the capture rather than
 -- the capture itself, and without a rule around it the two run together into one wall of small
--- grey text. The dump's last row inks up to 318 and the buttons start at 362, so the band
+-- grey text. The dump's last row inks up to 320 and the buttons start at 362, so the band
 -- clears both.
-sdec.ui_stat_top = 328   -- above the status ink (331..342)
-sdec.ui_stat_bot = 346   -- below it
+sdec.ui_stat_top = 330   -- above the status ink (333..344)
+sdec.ui_stat_bot = 348   -- below it
 -- A divider before the right-hand cell, matching the note row's. ui_log_t starts 6 px after it.
 --
 -- IT CARRIES THE DUMP'S ASCII SEPARATOR WITH IT: ui_vr2_x is derived from this, so the two stay one
@@ -409,12 +412,17 @@ sdec.ui_vr2_x    = sdec.ui_stat_div
 sdec.ui_as_gap   = 16
 sdec.ui_col_as   = sdec.ui_vr2_x + sdec.ui_as_gap
 sdec.ui_vr3_x    = sdec.ui_col_as + sdec.ui_asn * sdec.ui_ch_w + sdec.ui_col_gap
--- The vertical rules span the dump block: two px above the first row's text down to the status
--- band's own top rule, so the column separators MEET that line instead of stopping in mid-air.
--- DERIVED from ui_stat_top rather than from the row grid: ending at the last row's baseline left
--- them 8 px short, and the gap read as an unfinished table. Moving the status band now moves these
--- with it. There is no text between the last row's ink and the rule for them to strike through.
-sdec.ui_vr_y0    = sdec.ui_row_y0 - sdec.ui_ink
+-- The vertical rules span the dump block: from the row of the note row's own bottom rule down to the
+-- status band's top rule, so the column separators MEET both lines instead of stopping in mid-air.
+--
+-- BOTH ENDS ARE DERIVED FROM THE RULES THEY TOUCH, never from the row grid. Anchored on the grid the
+-- bottom ended at the last row's baseline, 8 px short, and the top sat at ui_row_y0 - ui_ink, which
+-- left a 2 px gap under ui_rule_bot -- close enough to read as a rendering fault rather than a
+-- boundary. A grid anchor also silently reopens the gap the moment the row pitch or the ink height
+-- changes, because neither of those has anything to do with where the rule above is. Moving the note
+-- row or the status band now moves these with them, and there is no text in either gap for them to
+-- strike through.
+sdec.ui_vr_y0    = sdec.ui_rule_bot + 1
 sdec.ui_vr_y1    = sdec.ui_stat_top
 
 -- ---------- position bar ----------

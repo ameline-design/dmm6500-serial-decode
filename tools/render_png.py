@@ -49,10 +49,10 @@ BTN_BOT = (168, 168, 168)
 BTN_EDGE = (138, 138, 138)
 BTN_TEXT = (26, 26, 26)
 BUTTON_H = 58           # measured from the FFT app's Options button
-# THE DUMP BAND, from serial_ui.tsp: ui_row_y0 = 66 to ui_row_y0 + (ui_nrow-1) * ui_row_dy = 318.
+# THE DUMP BAND, from serial_ui.tsp: ui_row_y0 = 68 to ui_row_y0 + (ui_nrow-1) * ui_row_dy = 320.
 # Distinguishes a dump row from the note and status lines, which pass beside the margin buttons
-# legitimately -- ui_note_y = 48 is deliberately truncated with '(+N more)'.
-DUMP_Y0, DUMP_Y1 = 66, 318
+# legitimately -- ui_note_y = 50 is deliberately truncated with '(+N more)'.
+DUMP_Y0, DUMP_Y1 = 68, 320
 
 FONT_SMALL, FONT_MEDIUM = 15, 19
 
@@ -201,9 +201,10 @@ def draw_panel(rows, screen, title, out, scale, mono_rows, fonts):
 
         elif r['kind'] == 'text':
             px = FONT_MEDIUM if r['font'] == 2 else FONT_SMALL
-            # Dump rows start at ui_row_y0 = 66, not 90: a bound at 90 renders the first two rows
-            # in the proportional face while the rest are monospace.
-            f = fonts.m(px - 1) if (mono_rows and r['y'] >= 62 and r['y'] < 330) \
+            # Dump rows start at ui_row_y0 = 68, not 90: a bound at 90 renders the first two rows
+            # in the proportional face while the rest are monospace. The band ends below the last row
+            # at 320 and above the status text at ui_stat_y = 344, which must stay proportional.
+            f = fonts.m(px - 1) if (mono_rows and r['y'] >= 64 and r['y'] < 332) \
                 else fonts.r(px)
             # JUSTIFICATION IS HONOURED, because the app uses it. A JUST_RIGHT object's x is its
             # RIGHT edge, so drawing it left-anchored -- which is what this did before the dump

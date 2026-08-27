@@ -533,15 +533,19 @@ local function fullhex(nrow, pitch, path)
   sdec.ui_destroy()
   sdec.ui_nrow, sdec.ui_row_dy = nrow, pitch
   sdec.ui_sb_n = nrow
-  -- The band and the button row sit below the dump, so they move with it. Same clearances the
-  -- hand-built layout uses: 5 px under the last row's text, 2 px under the band.
-  local textbot = sdec.ui_row_y0 + (nrow - 1) * pitch + 15
-  sdec.ui_stat_top = textbot + 5
-  sdec.ui_stat_bot = sdec.ui_stat_top + 22
-  sdec.ui_stat_y   = sdec.ui_stat_top + 4
-  sdec.ui_btn_y    = sdec.ui_stat_bot + 2
-  sdec.ui_vr_y0    = sdec.ui_row_y0 - 2
-  sdec.ui_vr_y1    = textbot
+  -- The band and the button row sit below the dump, so they move with it -- using THE APP'S OWN
+  -- CLEARANCES, expressed against the last row's ink, so that fullhex(ui_nrow, ui_row_dy) reproduces
+  -- the shipped layout exactly rather than a near-miss. Its own arithmetic put the band 10 px low and
+  -- 4 px too tall, and left the column separators short of the rule above them -- so the one render
+  -- that shows a full page of hex was the one render that did not show the panel.
+  local lastink = sdec.ui_row_y0 + (nrow - 1) * pitch
+  sdec.ui_stat_top = lastink + 10
+  sdec.ui_stat_bot = sdec.ui_stat_top + 18
+  sdec.ui_stat_y   = sdec.ui_stat_top + 14
+  sdec.ui_btn_y    = sdec.ui_stat_bot + 14
+  -- Both ends anchored on the rules they touch, exactly as serial_ui.tsp derives them.
+  sdec.ui_vr_y0    = sdec.ui_rule_bot + 1
+  sdec.ui_vr_y1    = sdec.ui_stat_top
   sdec.ui_invalidate()
   sdec.ui_build()
   sdec.ui_mode, sdec.ui_page = 'hex', 0

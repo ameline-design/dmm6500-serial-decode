@@ -68,7 +68,7 @@ early**, so decide the size before you press — see **The TRIGGER key** below.
 
 ## The screen
 
-![Main screen, hex view — a 240-byte frame capture: 240 bytes decoded, no errors, S/N 78 dB](img/panel-hex.png)
+![Main screen, hex view — a 240-byte frame capture: 240 bytes decoded, no errors, S/N 74 dB](img/panel-hex.png)
 
 Along the top are the things the app worked out about your line:
 
@@ -114,7 +114,7 @@ shows there is a limit and not a measurement.
 one is drawn red across its whole width — offset, hex and ASCII together — so damage is found by
 looking rather than by counting. Flagged bytes read as `?` in the ASCII gutter:
 
-![A capture that began mid-byte: the note names 2 bytes and ERR reads 2](img/panel-errors.png)
+![A capture that began mid-byte: the note names 6 bytes and ERR reads 6](img/panel-errors.png)
 
 That is a real 240B capture that began part way through a byte. **The note row names the cause** —
 `began mid-byte -- the first N bytes are misaligned.` — which is the difference between a puzzle and a
@@ -163,7 +163,7 @@ During a recording the status row carries a live counter — `recording... 40 % 
 **View** switches the byte display to plain text, which is what you want for anything human-readable —
 and a row carrying a flagged byte is red here too:
 
-![Main screen, text view — eight bytes misaligned at the start, ERR agreeing at 8](img/panel-text.png)
+![Main screen, text view — three bytes misaligned at the start, ERR agreeing at 3](img/panel-text.png)
 
 **The note row is the important one.** Warnings appear there — an ambiguous baud rate, a line that
 disagrees with the rate you locked, a recording that stopped early. If more than one applies it ends
@@ -300,12 +300,12 @@ Press **Mode** until the cell reads `8 kB` or `32 kB`. **You must lock the baud 
 whole job: it records, decodes every byte, writes them to the USB key, and comes back with the tail on
 screen. There is nothing to press in the middle.
 
-![An 8 kB recording part way through its decode, 4847 of 8192 bytes](img/panel-recording.png)
+![An 8 kB recording part way through its decode, 972 of 8192 bytes](img/panel-recording.png)
 
 While it works, the counter on the status row moves — first `recording... N % of the buffer`, then
 `decoding... N/8192 bytes` — with a cyan progress bar beside it, and the cell to its right says
 whether anything can stop it. The screenshot above is a real 8 kB run caught in the *second* of those
-two phases, decoding 4847 of its 8192 bytes, with `no stop until it ends` in that cell. The measured
+two phases, decoding 972 of its 8192 bytes, with `no stop until it ends` in that cell. The measured
 cells of the top row read `--` because nothing has been decoded yet to describe — the baud rate and
 format are shown only because they were locked rather than measured — the dump area is blank for the
 same reason, and the note row is empty because there is nothing wrong. **There is no way to finish it
