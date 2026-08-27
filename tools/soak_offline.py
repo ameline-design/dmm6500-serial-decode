@@ -11,6 +11,7 @@ gone".
 
     python3 tools/soak_offline.py --minutes 30
     python3 tools/soak_offline.py --minutes 5 --workers 8      # a quick check
+    python3 tools/soak_offline.py --laps 20 --trees fixed      # a fixed number of passes, not a clock
 
 The reverted tree is built with `git archive HEAD` into a scratch directory and then edited by
 deleting REVERT_LINE. If that deletion does not change the file the run ABORTS: a "nofix" tree that
@@ -23,12 +24,15 @@ rather than re-running one grid. That is what makes thirty minutes worth more th
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import plan_sweep as PS                                        # noqa: E402
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRATCH = os.path.expanduser('~/tmp/soak_offline')
 
@@ -48,7 +52,12 @@ SUITES = [
     ('stress',    ['lua', 'tools/stress_serial.lua'],          False),
     ('cancel',    ['lua', 'tools/test_cancel.lua'],            False),
     ('streamfix', ['lua', 'tools/test_streamfix.lua'],         False),
+    ('ratefit',   ['lua', 'tools/test_ratefit.lua'],           False),
     ('phase',     ['lua', 'tools/sweep_startphase.lua'],       True),
+    # SEEDED, because its --iteration IS the seed: each value draws a different set of baud rates,
+    # amplitudes, offsets and waits, so another lap replays a soak night nobody has run yet. It is also
+    # the only unit here whose sample rate is fractional and whose edge comes from a real arb file.
+    ('plan',      ['lua', 'tools/sweep_plan.lua'],             True),
 ]
 
 
@@ -82,6 +91,13 @@ def build_nofix(dst):
         raise SystemExit('ABORTING: deleting the fix line changed nothing')
     with open(path, 'w') as f:
         f.write(after)
+    # out/vectors IS INPUT, NOT OUTPUT, and it is the only part of out/ that is. The plan suite reads
+    # the arb files from there, so without this it would fail in this tree for a missing file and the
+    # pairing would report the defect as unreproducible. SYMLINKED rather than copied, because both
+    # trees must decode the SAME samples -- a second copy is a second thing that can drift, and the
+    # only difference between the trees is meant to be REVERT_LINE.
+    os.makedirs(os.path.join(dst, 'out'), exist_ok=True)
+    os.symlink(os.path.join(ROOT, 'out', 'vectors'), os.path.join(dst, 'out', 'vectors'))
     return dst
 
 
@@ -93,6 +109,18 @@ def run_one(tree, name, argv, seed, shards):
         # covers the whole vector set without a nested driver competing for the same cores.
         cmd += ['--shard', '%d/%d' % (1 + (seed % shards), shards), '--offsets', '16',
                 '--seed', str(seed), '--quiet']
+    elif name == 'plan':
+        # THE PLAN IS EMITTED, NEVER READ FROM A FILE ON DISK: a plan is a snapshot of the draw, and a
+        # plan drawn under different soakplan constraints describes a different experiment with nothing
+        # in its name to say so. tools/plan_sweep.py carries the measurement.
+        #
+        # sweep_plan.lua is run DIRECTLY rather than through plan_sweep.py, one shard per lap, for the
+        # same reason as `phase`: the driver would open its own 12-wide pool inside this one.
+        # The path is ABSOLUTE, so the reverted tree reads the same plan while its out/vectors symlink
+        # resolves relative to its own cwd.
+        plan, _ = PS.emit_plan(1 + (seed % 64))
+        cmd += ['--plan', plan, '--shard', '%d/%d' % (1 + (seed % shards), shards),
+                '--offsets', '8', '--quiet']
     t0 = time.time()
     try:
         p = subprocess.run(cmd, cwd=tree, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -101,6 +129,32 @@ def run_one(tree, name, argv, seed, shards):
     except subprocess.TimeoutExpired:
         rc, out = 124, '<timed out after 900 s>'
     return {'suite': name, 'rc': rc, 'secs': round(time.time() - t0, 2), 'out': out, 'seed': seed}
+
+
+# SUITES WHOSE EXIT CODE IS NOT A VERDICT, and this is not a convenience. sweep_plan.lua exits 1
+# whenever any point behaves worse than its class allows, and on the current tree that is ~11 of 1763
+# cells at one offset and ~333 of 14104 points at eight -- all of them #46 and #125, both open and
+# deliberately unfixed. Counting rc as failure here would make the plan unit fail every lap forever,
+# which is a gate that cannot pass and therefore says nothing when it goes red.
+#
+# So the plan unit is judged on the two things that are wrong at ANY capture placement: a decode that
+# RAISED, and a run that printed no summary at all (the interpreter died before the report, and
+# totalling nothing from it would turn a broken run into a clean one).
+RC_NOT_A_VERDICT = {'plan'}
+PLAN_LINE = re.compile(r'^PLAN \d+/\d+ iteration (\d+): (.*)$', re.M)
+
+
+def plan_verdict(out):
+    """(failed, counters) for a plan unit. counters is None when no summary was printed."""
+    m = PLAN_LINE.search(out or '')
+    if m is None:
+        return True, None
+    got = {}
+    for k in PS.KEYS:
+        mm = re.search(r'\b' + re.escape(k) + r' (\d+)', m.group(2))
+        got[k] = int(mm.group(1)) if mm else 0
+    got['iteration'] = int(m.group(1))
+    return (got['raised'] > 0 or got['ok'] + got['bad'] == 0), got
 
 
 def r06_signature(out):
@@ -118,6 +172,13 @@ def r06_signature(out):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--minutes', type=float, default=30.0)
+    # LAPS INSTEAD OF A CLOCK, for the case where the question is "run the suites N times" rather than
+    # "keep busy until T". A LAP IS ONE RUN OF EVERY SUITE IN EVERY SELECTED TREE, so 20 laps is 20
+    # runs of each -- and the seeded ones get a distinct seed per lap, which is the whole reason a lap
+    # count means anything. --laps overrides --minutes; the deterministic-suite cap does not apply,
+    # because with laps the count IS the request.
+    ap.add_argument('--laps', type=int, default=None,
+                    help='run every suite exactly N times instead of running for --minutes')
     ap.add_argument('--workers', type=int, default=12)
     ap.add_argument('--shards', type=int, default=12,
                     help='shard count the phase sweep divides itself into (default 12)')
@@ -155,7 +216,15 @@ def main():
                                       time.strftime('%Y-%m-%dT%H-%M-%S'))
     os.makedirs(outdir, exist_ok=True)
     deadline = time.time() + a.minutes * 60.0
-    print('running %.0f minutes on %d workers, results in %s' % (a.minutes, a.workers, outdir))
+    if a.laps is not None:
+        # SPELLED OUT, because this file already calls one (tree, suite) run a "lap" in its own tally
+        # and the two numbers differ by a factor of the suite count. A reader who takes the summary's
+        # lap count for the requested one is out by 8x per tree.
+        print('running %d lap(s) of %d suite(s) x %d tree(s) = %d unit run(s) on %d workers'
+              % (a.laps, len(SUITES), len(want), a.laps * len(SUITES) * len(want), a.workers))
+    else:
+        print('running %.0f minutes on %d workers' % (a.minutes, a.workers))
+    print('results in %s' % outdir)
     print()
 
     # HALF THE POOL EACH, so the two trees see the same machine load at the same wall-clock moment.
@@ -198,21 +267,32 @@ def main():
         def submit_next():
             """Submit the next useful unit. -> True if one was submitted.
 
-            Deterministic units are eligible until they have had --det-runs runs and never run twice
-            at once; seeded units are always eligible and may run concurrently, because a different
-            seed is a different experiment.
+            IN LAPS MODE EVERY UNIT IS EQUAL and is eligible until it has had --laps runs: the count
+            IS the request, so --det-runs does not apply and a lap of `unit` is as wanted as a lap of
+            `phase`. Deterministic units are still never in flight twice at once.
+
+            Otherwise deterministic units are eligible until they have had --det-runs runs and never
+            run twice at once; seeded units are always eligible and may run concurrently, because a
+            different seed is a different experiment.
             """
             nonlocal seed
-            det = [u for u in units
-                   if not u[3] and (u[0], u[1]) not in busy
-                   and nrun_unit[(u[0], u[1])] < a.det_runs]
-            if det:
-                tag, name, argv, _ = min(det, key=lambda u: nrun_unit[(u[0], u[1])])
-            else:
-                sd = [u for u in units if u[3]]
-                if not sd:
+            if a.laps is not None:
+                elig = [u for u in units if nrun_unit[(u[0], u[1])] < a.laps
+                        and (u[3] or (u[0], u[1]) not in busy)]
+                if not elig:
                     return False
-                tag, name, argv, _ = min(sd, key=lambda u: nrun_unit[(u[0], u[1])])
+                tag, name, argv, _ = min(elig, key=lambda u: nrun_unit[(u[0], u[1])])
+            else:
+                det = [u for u in units
+                       if not u[3] and (u[0], u[1]) not in busy
+                       and nrun_unit[(u[0], u[1])] < a.det_runs]
+                if det:
+                    tag, name, argv, _ = min(det, key=lambda u: nrun_unit[(u[0], u[1])])
+                else:
+                    sd = [u for u in units if u[3]]
+                    if not sd:
+                        return False
+                    tag, name, argv, _ = min(sd, key=lambda u: nrun_unit[(u[0], u[1])])
             nrun_unit[(tag, name)] += 1
             seed += 1
             # Only the deterministic units are held to one at a time. A seeded unit is a different
@@ -236,22 +316,40 @@ def main():
             st['laps'] += 1
             bs = st['bysuite'].setdefault(name, {'runs': 0, 'fail': 0})
             bs['runs'] += 1
-            if r['rc'] != 0:
+            counters = None
+            if name in RC_NOT_A_VERDICT:
+                bad, counters = plan_verdict(r['out'])
+            else:
+                bad = r['rc'] != 0
+            if bad:
                 st['fail'] += 1
                 bs['fail'] += 1
             if r06_signature(r['out']):
                 st['r06'] += 1
             rec = {'tree': tag, 'suite': name, 'rc': r['rc'], 'secs': r['secs'],
                    'seed': r['seed'], 'r06': r06_signature(r['out']),
-                   'tail': r['out'][-1500:] if r['rc'] != 0 else ''}
+                   'failed': bad,
+                   # THE PLAN UNIT'S COUNTS ARE KEPT EVERY LAP, PASS OR FAIL. They are the whole point
+                   # of running it repeatedly: #46 and #125 are open, so what a soak adds is the
+                   # DISTRIBUTION of their counts across draws nobody has run, and a tail kept only on
+                   # failure would throw exactly that away.
+                   'plan': counters,
+                   'tail': r['out'][-1500:] if bad else ''}
             jsonl.write(json.dumps(rec) + '\n')
             jsonl.flush()
-            mark = 'ok  ' if r['rc'] == 0 else 'FAIL'
-            print('%6.1f min  %-5s %-10s %s  %5.1fs%s'
+            mark = 'ok  ' if not bad else 'FAIL'
+            extra = ''
+            if counters is not None:
+                extra = ('  it %d: %d bad of %d, %d rate %d bytes %d nobytes'
+                         % (counters['iteration'], counters['bad'], counters['points'],
+                            counters['rate'], counters['bytes'], counters['nobytes']))
+            print('%6.1f min  %-5s %-10s %s  %5.1fs%s%s'
                   % ((time.time() - t0) / 60.0, tag, name, mark, r['secs'],
-                     '  <r06 signature>' if rec['r06'] else ''))
+                     '  <r06 signature>' if rec['r06'] else '', extra))
 
-            if time.time() < deadline:
+            # IN LAPS MODE THERE IS NO DEADLINE: submit_next() returns False once every unit has had
+            # its --laps runs, which is what ends the run.
+            if a.laps is not None or time.time() < deadline:
                 while len(inflight) < a.workers:
                     if not submit_next():
                         break

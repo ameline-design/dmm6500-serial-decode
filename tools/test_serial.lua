@@ -2433,6 +2433,21 @@ do
   check('a run with nothing yet shows the frame and no cyan',
         bs ~= INVIS and ls == INVIS, string.format('%s / %s', tostring(bs), tostring(ls)))
 
+  -- A FINISHED RECORDING LEAVES NO BAR BEHIND, and this is the case the FRAME-mode check above does
+  -- NOT cover: at rest after a run the mode is still a RECORDING mode and ck_nbytes still holds the
+  -- byte count, so a bar keyed on bytes alone would sit at 100 % over the results the operator is now
+  -- reading. ck_running is what makes it nil, and only this asserts that ordering.
+  sdec.ck_running = false
+  sdec.ck_nbytes = sdec.mode_cur().cap
+  sdec.ck_acq_have, sdec.ck_acq_want = 2800000, 2800000
+  sdec.ui_refresh()
+  bs, ls = barstate()
+  check('a COMPLETED capture and decode leaves neither frame nor bar on the glass',
+        sdec.ck_pct() == nil and bs == INVIS and ls == INVIS,
+        string.format('pct %s, %s / %s', tostring(sdec.ck_pct()), tostring(bs), tostring(ls)))
+  sdec.ck_running = true
+  sdec.ck_nbytes, sdec.ck_acq_have = nil, 0
+
   -- THE PRESS-DRIVEN RECORDING HAS NO HONEST FRACTION. No Lua of ours runs between the start press
   -- and the stop press, so a bar drawn there would sit at 0 % for the whole recording and read as
   -- "nothing is being recorded". Absent beats frozen.
@@ -2487,14 +2502,44 @@ do
           worst + 12 <= sdec.ui_prog_x,
           string.format('widest is %q, ending %d; bar at %d', wtxt, worst, sdec.ui_prog_x))
   end
-  check('...and the bar ends clear of the status divider by about as much',
-        sdec.ui_prog_x + sdec.ui_prog_w + 10 <= sdec.ui_stat_div,
-        string.format('bar ends %d, divider %d', sdec.ui_prog_x + sdec.ui_prog_w,
-                      sdec.ui_stat_div))
-  check('the bar is 80 % of the status row height',
-        sdec.ui_prog_h == math.floor(0.8 * (sdec.ui_stat_bot - sdec.ui_stat_top) + 0.5),
-        string.format('%d px of an %d px row', sdec.ui_prog_h,
-                      sdec.ui_stat_bot - sdec.ui_stat_top))
+  -- THE FRAME IS PINNED TO THE THREE RULES THAT BOUND THE STATUS CELL, so these assert CLEARANCES and
+  -- not positions. A rect spans x..x+w-1 and y..y+h-1 -- measured on a real grab, where the divider
+  -- declared (472, 330, 1, 19) inks rows 330..348 and row 349 belongs to the bottom rule.
+  --
+  -- WHY EXACT AND NOT AN INEQUALITY. The bar is INVISIBLE in frame mode, so a frame that has drifted
+  -- into a rule shows only while a recording runs -- the one state nobody inspects the geometry in. An
+  -- inequality would let it drift anywhere inside the band and still pass.
+  local pright = sdec.ui_prog_x + sdec.ui_prog_w - 1
+  local pbot = sdec.ui_prog_y + sdec.ui_prog_h - 1
+  check('the bar\'s frame leaves exactly 3 clear columns before the status divider',
+        sdec.ui_stat_div - pright - 1 == 3,
+        string.format('frame ends %d, divider %d, gap %d', pright, sdec.ui_stat_div,
+                      sdec.ui_stat_div - pright - 1))
+  check('...one clear row under the rule above it',
+        sdec.ui_prog_y - sdec.ui_stat_top - 1 == 1,
+        string.format('rule %d, frame top %d', sdec.ui_stat_top, sdec.ui_prog_y))
+  check('...and one clear row over the rule below it',
+        sdec.ui_stat_bot - pbot - 1 == 1,
+        string.format('frame bottom %d, rule %d', pbot, sdec.ui_stat_bot))
+  -- THE CYAN BAR IS CENTRED IN THE FRAME, asserted as EQUAL troughs rather than as a row number. A
+  -- stroke of thickness lw declared at row r inks r - floor(lw/2) upward and the rest downward --
+  -- measured on a real grab, lw = 10 at row 339 inking 334..343, which is what made the trough 1 px
+  -- above and 3 below before it was derived.
+  --
+  -- 1 px EACH SIDE IS UNREACHABLE and that is the firmware's doing, not a choice: the frame's interior
+  -- is ui_prog_h - 2 = 14 rows, so a single blank row each side needs a 12 px stroke, and setthickness
+  -- refuses anything over 10 with event 1130 -- a MODAL DIALOG over the panel. So the spare rows are
+  -- split evenly and the assertion is evenness.
+  local stop = sdec.ui_prog_ly - math.floor(sdec.ui_prog_lw / 2)
+  local sbot = stop + sdec.ui_prog_lw - 1
+  local above, below = stop - (sdec.ui_prog_y + 1), (pbot - 1) - sbot
+  check('the cyan bar is centred in its frame -- equal trough above and below',
+        above == below and above >= 1,
+        string.format('stroke %d..%d in frame %d..%d: %d above, %d below',
+                      stop, sbot, sdec.ui_prog_y, pbot, above, below))
+  check('...and the bar spans the frame\'s full inside width, touching neither border',
+        sdec.ui_prog_wmax == sdec.ui_prog_w - 2,
+        string.format('travel %d px in a %d px frame', sdec.ui_prog_wmax, sdec.ui_prog_w))
   -- A THICKNESS OVER 10 IS REFUSED BY THE FIRMWARE and raises a MODAL DIALOG over the panel, which
   -- pcall does not catch -- the refusal arrives as a queued event. The mock enforces the range, so
   -- this is the check that keeps it offline.
@@ -8182,11 +8227,26 @@ print('\nthe FIT and S/N cells are banded on the figure they print (real code)')
   -- underline them and on the same row would strike through. Nothing else asserts this, and the
   -- headline cells' clearance check above covers only the value row, so a further nudge to ui_note_y
   -- had no gate at all.
-  check('the note row ink keeps a free row above ui_rule_bot',
-        sdec.ui_note_y + 1 < sdec.ui_rule_bot,
-        string.format('note ink ends %d, ui_rule_bot at %d -- %d free row(s)',
-                      sdec.ui_note_y, sdec.ui_rule_bot,
-                      sdec.ui_rule_bot - sdec.ui_note_y - 1))
+  -- DESCENDERS ARE NOT IN ui_ink. ui_ink is the glyph box, and a lower-case 'p' or 'y' inks below it:
+  -- measured on the panel, the note row's deepest tip is 4 rows past ui_note_y. A clearance checked
+  -- against ui_note_y alone therefore passes while the rule is drawn straight through the descenders,
+  -- which is what one free row allowed. The note row is prose, so it always has some.
+  do
+    local desc = 4
+    check('ui_rule_bot clears the note row DESCENDERS, not just its glyph box',
+          sdec.ui_rule_bot - sdec.ui_note_y >= desc + 1,
+          string.format('note_y %d + %d descender rows vs ui_rule_bot %d -- %d clear row(s)',
+                        sdec.ui_note_y, desc, sdec.ui_rule_bot,
+                        sdec.ui_rule_bot - sdec.ui_note_y - desc))
+    -- The status row is the other prose row under a rule. It clears by exactly zero: its tip lands one
+    -- row above ui_stat_bot. Asserted at no-overlap rather than at a clear row, because that is what
+    -- the panel actually draws -- tightening it here would fail a layout that is correct.
+    check('ui_stat_bot clears the status row descenders too',
+          sdec.ui_stat_bot - sdec.ui_stat_y >= desc + 1,
+          string.format('stat_y %d + %d descender rows vs ui_stat_bot %d -- %d clear row(s)',
+                        sdec.ui_stat_y, desc, sdec.ui_stat_bot,
+                        sdec.ui_stat_bot - sdec.ui_stat_y - desc))
+  end
   -- ...and stays clear of the rule ABOVE it too, which bounds how far it can drop from either side.
   check('the note row ink starts below ui_rule_mid',
         sdec.ui_note_y - sdec.ui_ink + 1 > sdec.ui_rule_mid,

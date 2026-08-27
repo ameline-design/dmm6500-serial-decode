@@ -68,7 +68,7 @@ early**, so decide the size before you press — see **The TRIGGER key** below.
 
 ## The screen
 
-![Main screen, hex view — a 240-byte frame capture: 240 bytes decoded, no errors, S/N 74 dB](img/panel-hex.png)
+![Main screen, hex view — a 240-byte frame capture: 239 bytes decoded, no errors, S/N 74 dB](img/panel-hex.png)
 
 Along the top are the things the app worked out about your line:
 
@@ -114,7 +114,7 @@ shows there is a limit and not a measurement.
 one is drawn red across its whole width — offset, hex and ASCII together — so damage is found by
 looking rather than by counting. Flagged bytes read as `?` in the ASCII gutter:
 
-![A capture that began mid-byte: the note names 6 bytes and ERR reads 6](img/panel-errors.png)
+![A capture that began mid-byte: the note names 1 byte and ERR reads 1](img/panel-errors.png)
 
 That is a real 240B capture that began part way through a byte. **The note row names the cause** —
 `began mid-byte -- the first N bytes are misaligned.` — which is the difference between a puzzle and a
@@ -124,8 +124,8 @@ eight starts this way.
 
 **The note and `ERR` agree, and that is deliberate.** The note's number is how far the damage reaches:
 the last byte in the opening region the decoder could not frame, so "the first N" is literally true and
-nothing past N is being accused. `ERR` is then never less than N. Above, the note says 5 and `ERR` says
-5. `ERR` counts the whole region rather than only the frames that failed a check, because inside a
+nothing past N is being accused. `ERR` is then never less than N. Above, the note says 1 and `ERR` says
+1. `ERR` counts the whole region rather than only the frames that failed a check, because inside a
 misaligned head the bit boundaries are in the wrong places: a frame there can satisfy its parity and
 its stop bit by luck and still hand back a perfectly ordinary character that is the wrong byte.
 **`ERR` counts bytes you cannot trust, not checks that failed**, because the silently wrong ones are
@@ -142,7 +142,7 @@ Everything from the first gap onward decoded cleanly, and the log on the USB key
 that failed its parity or stop bit is still written, marked, rather than dropped.
 
 Underneath: the **trigger cell**, the bytes, then two rows of text. The **status row** tells you where
-you are (`FRAME HEX pg 1/1 bytes 1-155/155 win 240 [done]`) and names the log file.
+you are (`FRAME HEX pg 1/1 bytes 1-239/239 win 240 [done]`) and names the log file.
 
 **Which mode you are in is in the title bar** — `SERIAL DECODE - 240B FRAME`, `- 8K CAPTURE` or
 `- 32K CAPTURE`, in the largest type on the screen.
@@ -163,14 +163,14 @@ During a recording the status row carries a live counter — `recording... 40 % 
 **View** switches the byte display to plain text, which is what you want for anything human-readable —
 and a row carrying a flagged byte is red here too:
 
-![Main screen, text view — three bytes misaligned at the start, ERR agreeing at 3](img/panel-text.png)
+![Main screen, text view — five bytes misaligned at the start, ERR agreeing at 5](img/panel-text.png)
 
 **The note row is the important one.** Warnings appear there — an ambiguous baud rate, a line that
 disagrees with the rate you locked, a recording that stopped early. If more than one applies it ends
 with `(+2 more)`, and pressing **Save** writes all of them to a file.
 
 Here it is doing that — a capture that started part way through a byte, which the app detected and
-said so rather than showing the misaligned bytes without comment — eight of them, here:
+said so rather than showing the misaligned bytes without comment — 13 of them, here:
 
 ![The note row reporting a mid-byte start](img/panel-hex-note.png)
 
@@ -210,7 +210,7 @@ A recording is far more than one screen, so **Up** and **Dn** appear down the ri
 the count reads at a glance. The note beside it says which bytes are on screen and that the whole run
 is in the file, which is the thing you cannot otherwise tell from a screenful taken out of the middle:
 
-    panel shows bytes 24577-32768 of 32768; all are in bytes024.txt
+    panel shows bytes 24577-32768 of 32768; all are in bytes054.txt
 
 The offset column agrees with it — the rows start at 25296, not at zero — and the status row carries the
 run's own summary: 32768 bytes, 1 it cannot vouch for, 68 windows, and the file it went to. **That 1 is
@@ -225,10 +225,11 @@ mode, since 8 kB is its own tail.
 of 35, because a text row holds 80 characters and a hex row holds 16 bytes — 1200 bytes a page against
 240, over the same 8 192:
 
-![The same 32 kB capture in text view: page 7 of 7](img/panel-paged-text.png)
+![A 32 kB capture in text view: page 4 of 7](img/panel-paged-text.png)
 
-Nothing about the capture changed; only how much of it fits on a screen. The byte range in the note row
-is the same, and so is the summary.
+Nothing about paging changes the capture; only how much of it fits on a screen, and the byte range in
+the note row is the same 24577-32768 either way. The two figures above are separate 32 kB recordings of
+the same line, so their `ERR` and filenames differ — the page counts are what to compare.
 
 ## The TRIGGER key — the one hardware button that matters
 
@@ -300,12 +301,12 @@ Press **Mode** until the cell reads `8 kB` or `32 kB`. **You must lock the baud 
 whole job: it records, decodes every byte, writes them to the USB key, and comes back with the tail on
 screen. There is nothing to press in the middle.
 
-![An 8 kB recording part way through its decode, 972 of 8192 bytes](img/panel-recording.png)
+![An 8 kB recording part way through its decode, 5331 of 8192 bytes](img/panel-recording.png)
 
 While it works, the counter on the status row moves — first `recording... N % of the buffer`, then
 `decoding... N/8192 bytes` — with a cyan progress bar beside it, and the cell to its right says
 whether anything can stop it. The screenshot above is a real 8 kB run caught in the *second* of those
-two phases, decoding 972 of its 8192 bytes, with `no stop until it ends` in that cell. The measured
+two phases, decoding 5331 of its 8192 bytes, with `no stop until it ends` in that cell. The measured
 cells of the top row read `--` because nothing has been decoded yet to describe — the baud rate and
 format are shown only because they were locked rather than measured — the dump area is blank for the
 same reason, and the note row is empty because there is nothing wrong. **There is no way to finish it

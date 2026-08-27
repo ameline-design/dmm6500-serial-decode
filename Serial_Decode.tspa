@@ -3393,14 +3393,14 @@ sdec.ui_lab_y = 14
 sdec.ui_val_y = 32
 sdec.ui_fields = {
   {lab = 'BAUD',   x = 8,   c = 0x00DCFF, med = true, dy = 2, wid = '115200'},
-  {lab = 'FORMAT', x = 115, c = 0x00DCFF, med = true, dy = 2, wid = '8N1'},
+  {lab = 'FORMAT', x = 115, c = 0x00DCFF, med = true, dy = 2, labdx = -4, wid = '8N1'},
   {lab = 'IDLE',   x = 188, c = 0xFFFFFF, wid = 'HIGH'},
   {lab = 'LOGIC',  x = 241, c = 0xFFFFFF, wid = '3V3 CMOS'},
   {lab = 'THRESH', x = 334, c = 0xFFFFFF, wid = '-6.00 V'},
   {lab = 'SA/BIT', x = 417, c = 0xFFFFFF, wid = '10.42'},
   {lab = 'RATE',   x = 490, c = 0xFFFFFF, wid = '80 kS/s'},
   {lab = 'BYTES',  x = 573, c = 0x80FF80, wid = '999999'},
-  {lab = 'ERR',    x = 636, c = 0x80FF80, wid = '999'},
+  {lab = 'ERR',    x = 636, c = 0x80FF80, labdx = -2, wid = '999'},
   {lab = 'FIT',    x = 679, c = 0xFFFFFF, wid = '1.00'},
   {lab = 'S/N',    x = 721, c = 0xFFFFFF, wid = '>99 dB'},
 }
@@ -3441,7 +3441,7 @@ sdec.ui_c_hide = 0x000A0D
 sdec.ui_rule_top = 1
 sdec.ui_rule_hdr = 15
 sdec.ui_rule_mid = 37                        -- under the value ink (medium 18..34 on the dy cells)
-sdec.ui_rule_bot = 53                        -- under the note row's ink (40..51), one free row
+sdec.ui_rule_bot = 56                        -- one clear row under the descender tip at 55
 sdec.ui_rule_x0  = 1
 sdec.ui_rule_x1  = 797
 sdec.ui_note_lab_x = 8
@@ -3457,20 +3457,21 @@ sdec.ui_pgind_gap = 6
 sdec.ui_note_gap = 20
 
 sdec.ui_note_y   = 51
-sdec.ui_row_y0   = 68                        -- first dump row
+sdec.ui_row_y0   = 71                        -- first dump row
 sdec.ui_row_dy   = 18                        -- row pitch (see docs/panel-ref-rows.png)
 sdec.ui_nrow     = 15
 sdec.ui_stat_y   = 344
 sdec.ui_stat_top = 330   -- above the status ink (333..344)
-sdec.ui_stat_bot = 348   -- below it
+sdec.ui_stat_bot = 349   -- below it, one clear row under the descender tip at 347
 sdec.ui_stat_div = 472
 sdec.ui_prog_x = 339
-sdec.ui_prog_w = 108
-sdec.ui_prog_h = 14
-sdec.ui_prog_y = 330
-sdec.ui_prog_wmax = sdec.ui_prog_w - 2
-sdec.ui_prog_ly   = sdec.ui_prog_y + 7
+sdec.ui_prog_y = sdec.ui_stat_top + 2
+sdec.ui_prog_h = sdec.ui_stat_bot - 2 - sdec.ui_prog_y + 1
+sdec.ui_prog_w = sdec.ui_stat_div - 3 - sdec.ui_prog_x
 sdec.ui_prog_lw = 10
+sdec.ui_prog_wmax = sdec.ui_prog_w - 2
+sdec.ui_prog_pad  = math.floor((sdec.ui_prog_h - 2 - sdec.ui_prog_lw) / 2)
+sdec.ui_prog_ly   = sdec.ui_prog_y + 1 + sdec.ui_prog_pad + math.floor(sdec.ui_prog_lw / 2)
 sdec.ui_trig_div = 666
 sdec.ui_trig_x   = 675
 sdec.ui_btn_y    = 362
@@ -4369,7 +4370,7 @@ function sdec.ui_build()
   end
   for j = 1, nf do
     local fd = sdec.ui_fields[j]
-    sdec.ui_flab[j] = create(sdec.ui_scr, display.OBJ_TEXT, fd.x, sdec.ui_lab_y,
+    sdec.ui_flab[j] = create(sdec.ui_scr, display.OBJ_TEXT, fd.x + (fd.labdx or 0), sdec.ui_lab_y,
                              fd.lab, sdec.ui_c_lab, small, left)
     local fnt = small
     if fd.med then fnt = med end

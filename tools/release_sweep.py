@@ -123,6 +123,18 @@ def stages(outdir, shots):
         Stage('unit-patterns', ['lua', 'tools/test_patterns.lua'],
               note='byte-exactness on the hard payloads -- edge-density extremes, walking bits and '
                    'known random data, at the sample rates the panel actually picks'),
+        # THE ONE SUITE THAT RENDERS THE EDGE IN TIME RATHER THAN IN SAMPLES, which is why it is the
+        # only one that can see the #46 family at all. gen_serial's `rise` is in SAMPLE PERIODS, so at
+        # a fixed 1.5 the edge sharpens as fs falls -- the opposite of the instrument, where the
+        # digitiser's bandwidth fixes it in time. Combined with vectors built at a round 10 samples per
+        # bit, the misfit window (floor(sa/bit)/(sa/bit) inside 0.8696..0.9326) is unreachable by
+        # construction, and #46 spent weeks recorded as "does not reproduce offline" for that reason.
+        # This file pins the reproduction AND two nulls, so a render that fires on everything cannot
+        # pass as a reproduction.
+        Stage('unit-ratefit', ['lua', 'tools/test_ratefit.lua'],
+              note='the rate misfit reproduced offline: the edge fixed in TIME and fractional samples '
+                   'per bit, with the window as the discriminator and two payloads that must stay '
+                   'clean'),
         Stage('stress', ['lua', 'tools/stress_serial.lua'],
               note='hostile signals -- must never be silently WRONG and never RAISE'),
         # THE GAP EVERY STAGE ABOVE SHARED: they all name a round sample rate by hand and all start
@@ -151,6 +163,16 @@ def stages(outdir, shots):
         Stage('unit-phasesweep', ['python3', 'tools/sweep_all.py', '--quiet'],
               note='every vector x capture start x phase/jitter/noise -- no raise, no result '
                    'without a format, no wrong byte among the ones ERR calls trustworthy'),
+        # THE SOAK'S OWN LAP, OFFLINE. Not another hand-built sweep: it replays the plan the overnight
+        # soak draws -- the same rates, amplitudes, offsets and waits -- against the arb files in
+        # out/vectors resampled to pick_fs(baud), so samples per bit is fractional the way the bench's
+        # is. A hardware lap is 2.85 h and 1683 cells; this is 1763 cells at eight capture phases each
+        # in half a minute, and its counts are ratcheted, so a defect that spreads to a cell it did not
+        # affect before fails the release instead of being reported as an unchanged-looking total.
+        Stage('unit-plansweep', ['python3', 'tools/plan_sweep.py', '--offsets', '8', '--quiet'],
+              note='the overnight soak\'s iteration-1 plan replayed offline at eight capture phases '
+                   'per cell, classified into rate misfit (#46), wrong-bytes-at-the-right-rate (#125) '
+                   'and honest refusal, each bounded by a measured ratchet'),
         # THE ARB LOOP SEAM, END TO END. The lorem-gate stage below pins the judging RULE and
         # test_lorem_gate's cases pin head_damage as a function; neither drives the CALLER, which is
         # where trimming by the suspect region discards correct captures -- five in 58 laps. This one

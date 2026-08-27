@@ -93,7 +93,7 @@ sdec.ui_fields = {
   -- FONT_SMALL's 12, and drawing both rows off one baseline sits the two big values a pixel high
   -- against the nine small ones beside them. One px down is what makes the row read as level.
   {lab = 'BAUD',   x = 8,   c = 0x00DCFF, med = true, dy = 2, wid = '115200'},
-  {lab = 'FORMAT', x = 115, c = 0x00DCFF, med = true, dy = 2, wid = '8N1'},
+  {lab = 'FORMAT', x = 115, c = 0x00DCFF, med = true, dy = 2, labdx = -4, wid = '8N1'},
   {lab = 'IDLE',   x = 188, c = 0xFFFFFF, wid = 'HIGH'},
   {lab = 'LOGIC',  x = 241, c = 0xFFFFFF, wid = '3V3 CMOS'},
   {lab = 'THRESH', x = 334, c = 0xFFFFFF, wid = '-6.00 V'},
@@ -103,7 +103,7 @@ sdec.ui_fields = {
   -- this font. FIT never shows more than '1.00', so the slack it does not need lives at the
   -- right-hand end, out to the table's right rule at ui_rule_x1.
   {lab = 'BYTES',  x = 573, c = 0x80FF80, wid = '999999'},
-  {lab = 'ERR',    x = 636, c = 0x80FF80, wid = '999'},
+  {lab = 'ERR',    x = 636, c = 0x80FF80, labdx = -2, wid = '999'},
   {lab = 'FIT',    x = 679, c = 0xFFFFFF, wid = '1.00'},
   -- S/N, so the value is UNSIGNED and bigger is better. The cliff is at 12 dB, measured -- see
   -- sdec.ui_sn_bad for the measurement and for the unit error that put it at 8.
@@ -216,7 +216,11 @@ sdec.ui_rule_hdr = 15
 -- reaches 34 where the rest of the row stops at 32; at 35 the rule sat one row under the two lowered
 -- cells and read as underlining them.
 sdec.ui_rule_mid = 37                        -- under the value ink (medium 18..34 on the dy cells)
-sdec.ui_rule_bot = 53                        -- under the note row's ink (40..51), one free row
+-- 56, FIVE ROWS UNDER ui_note_y, because ui_ink MEASURES THE GLYPH BOX AND EXCLUDES DESCENDERS. The
+-- note row is lower-case prose, so a 'p' or 'y' inks four rows past the nominal bottom -- measured on
+-- the panel, the deepest tip is at 55 against a nominal 51. A rule placed by ui_ink alone lands inside
+-- the descenders and draws through them.
+sdec.ui_rule_bot = 56                        -- one clear row under the descender tip at 55
 -- THE FULL WIDTH THE COORDINATE SPACE ALLOWS. Both the header strip and the status band are boxed
 -- from this pair, so they end flush with each other.
 --
@@ -283,7 +287,7 @@ sdec.ui_pgind_gap = 6
 sdec.ui_note_gap = 20
 
 sdec.ui_note_y   = 51
-sdec.ui_row_y0   = 68                        -- first dump row
+sdec.ui_row_y0   = 71                        -- first dump row
 sdec.ui_row_dy   = 18                        -- row pitch (see docs/panel-ref-rows.png)
 -- 15 rows x 16 bytes = 240 bytes, so a hex page holds an exact number of 16-byte rows.
 --
@@ -296,7 +300,7 @@ sdec.ui_stat_y   = 344
 -- grey text. The dump's last row inks up to 320 and the buttons start at 362, so the band
 -- clears both.
 sdec.ui_stat_top = 330   -- above the status ink (333..344)
-sdec.ui_stat_bot = 348   -- below it
+sdec.ui_stat_bot = 349   -- below it, one clear row under the descender tip at 347
 -- A divider before the right-hand cell, matching the note row's. ui_log_t starts 6 px after it.
 --
 -- IT CARRIES THE DUMP'S ASCII SEPARATOR WITH IT: ui_vr2_x is derived from this, so the two stay one
@@ -308,31 +312,46 @@ sdec.ui_stat_div = 472
 -- text would make the bar's left edge track the digit count, so it would step sideways at 10 % and
 -- again at 100 % -- movement the eye reads as the thing itself changing.
 --
--- x AND w ARE THE LEFTOVER SPACE, SPLIT ROUGHLY EVENLY, and the bar grows LEFTWARD -- its right
--- edge at 447 is fixed by the divider's rule at 462, 15 px clear.
---
--- MEASURED with ui_textw against the WIDEST string ck_status() can return while running, which is
--- the flow-controlled decode: '32 kB  decoding... win 32/32 32768/32768', 311 px, so it ends at 319.
--- 20 px of clear space then puts the left edge at 339 and the bar is 108 px.
---
--- 108 AND NOT 112. The last 4 px are margin over that flow-controlled string, which fits with 2 px
--- to spare at 112 and 20 at 108. test_serial recomputes the 319 from the format strings themselves,
--- so a longer message fails a test instead of being drawn through the bar.
+-- THE LEFT EDGE IS THE TEXT'S, THE RIGHT EDGE IS THE DIVIDER'S. x is MEASURED with ui_textw against
+-- the WIDEST string ck_status() can return while running, which is the flow-controlled decode:
+-- '32 kB  decoding... win 32/32 32768/32768', 311 px, so it ends at 319. 20 px of clear space then puts
+-- the left edge at 339. test_serial recomputes the 319 from the format strings themselves, so a longer
+-- message fails a test instead of being drawn through the bar.
 sdec.ui_prog_x = 339
-sdec.ui_prog_w = 108
--- 80 % OF THE ROW, which is the 18 px status band (ui_stat_bot - ui_stat_top), not the 12 px glyph
--- ink: the bar belongs to the row rather than to the text, and 14 px leaves clear space inside both
--- rules. Height is fixed at create time -- there is no display call that resizes an object.
-sdec.ui_prog_h = 14
-sdec.ui_prog_y = 330
--- The bar's travel, inside the frame's 1 px border, and the y its thick line is stroked along.
--- DERIVED: moving or resizing the frame moves the bar with it.
-sdec.ui_prog_wmax = sdec.ui_prog_w - 2
-sdec.ui_prog_ly   = sdec.ui_prog_y + 7
--- THICKNESS OF THAT LINE, and 10 is the firmware's CEILING -- 12 is refused with "1130 Parameter
--- thickness, expected value from 1 to 10", which raises a modal dialog over the panel. It leaves
--- 1 px of dark inside the frame above and below the bar, which reads as a trough.
+-- ---------- PINNED TO THE BOX, NOT TO NUMBERS ----------
+-- Every extent below is derived from the three rules that bound the status cell -- ui_stat_top,
+-- ui_stat_bot and ui_stat_div -- so moving any of them moves the bar with it. Written as literals they
+-- go stale SILENTLY: the bar is invisible in frame mode, so a stale y draws a grey frame through a rule
+-- only while a recording runs, which is the one state nobody is looking at the geometry in.
+--
+-- A RECT SPANS y..y+h-1 AND x..x+w-1, measured on a real grab rather than inferred: the divider
+-- declared at (472, 330, 1, 19) inks object rows 330..348, and row 349 at that column belongs to the
+-- bottom rule, which is what makes it look 20 rows tall.
+--
+-- ONE CLEAR ROW INSIDE EACH RULE. The band's interior is rows ui_stat_top+1 .. ui_stat_bot-1; leaving
+-- the first and last of those empty puts the frame at 332..347 in a 330/349 band.
+sdec.ui_prog_y = sdec.ui_stat_top + 2
+sdec.ui_prog_h = sdec.ui_stat_bot - 2 - sdec.ui_prog_y + 1
+-- THREE CLEAR COLUMNS BEFORE THE DIVIDER, so the frame's last column is ui_stat_div - 4.
+sdec.ui_prog_w = sdec.ui_stat_div - 3 - sdec.ui_prog_x
+-- THICKNESS OF THE BAR, and 10 is the firmware's CEILING -- 12 is refused with "1130 Parameter
+-- thickness, expected value from 1 to 10", which raises a MODAL DIALOG over the panel.
+--
+-- THAT CEILING IS WHY THE TROUGH IS 2 px AND NOT 1. The frame's interior is ui_prog_h - 2 = 14 rows,
+-- so a single empty row above and below the bar would need a 12 px stroke. 10 is the most the firmware
+-- will take, so the 4 spare rows are split evenly instead -- even matters more than thin, because an
+-- uneven trough reads as the bar sitting crookedly in its frame.
 sdec.ui_prog_lw = 10
+-- The bar's travel, inside the frame's 1 px border, and the row its thick line is stroked along.
+--
+-- MEASURED, NOT ASSUMED: a stroke of thickness lw declared at row r inks r - floor(lw/2) upward and
+-- lw - 1 - floor(lw/2) downward -- on a real grab, lw = 10 at row 339 inks 334..343. So centring the
+-- stroke in the interior means offsetting the interior's top by half the leftover and then by half the
+-- thickness. Everything here follows ui_prog_y, ui_prog_h and ui_prog_lw, so changing the band or the
+-- thickness keeps the trough even without a second edit.
+sdec.ui_prog_wmax = sdec.ui_prog_w - 2
+sdec.ui_prog_pad  = math.floor((sdec.ui_prog_h - 2 - sdec.ui_prog_lw) / 2)
+sdec.ui_prog_ly   = sdec.ui_prog_y + 1 + sdec.ui_prog_pad + math.floor(sdec.ui_prog_lw / 2)
 -- THE REAR BNC GETS ITS OWN CELL, so that what the app is writing and what its back panel is doing
 -- are not two unrelated facts in one box. The log cell is 478..665, the rear BNC's 675..ui_rule_x1.
 --
@@ -1015,7 +1034,7 @@ function sdec.ui_progbar_set(pct)
     sdec.ui_progvis = vis
   end
   -- THE LENGTH, and only when it changed. Rounded to whole px, which is the granularity the panel
-  -- has: 62 px of travel, so one px is 1.6 %.
+  -- has: ui_prog_wmax px of travel, so one px is under 1 %.
   if pct ~= sdec.ui_progpct then
     if pct ~= nil and pct > 0 then
       local w = math.floor(pct * sdec.ui_prog_wmax / 100 + 0.5)
@@ -1935,7 +1954,12 @@ function sdec.ui_build()
   end
   for j = 1, nf do
     local fd = sdec.ui_fields[j]
-    sdec.ui_flab[j] = create(sdec.ui_scr, display.OBJ_TEXT, fd.x, sdec.ui_lab_y,
+    -- fd.labdx NUDGES THE LABEL ONLY, never the value under it. Labels sit at a uniform 9 px inset
+    -- from their cell's left rule, which reads as a grid everywhere the label is narrower than its
+    -- column. Where it is not -- FORMAT is 63 px in a 72 px cell -- that same inset leaves nothing on
+    -- the right and the word butts against the divider. The nudge centres those cells instead, and is
+    -- separate from fd.x because fd.x also positions the value, whose own centring is already right.
+    sdec.ui_flab[j] = create(sdec.ui_scr, display.OBJ_TEXT, fd.x + (fd.labdx or 0), sdec.ui_lab_y,
                              fd.lab, sdec.ui_c_lab, small, left)
     -- SMALL, not MEDIUM, for every cell but the two flagged `med`. Each field x in sdec.ui_fields
     -- is sized on the MEASURED 8 px FONT_SMALL advance (sdec.ui_ch_w), which also governs the dump

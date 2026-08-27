@@ -540,7 +540,7 @@ local function fullhex(nrow, pitch, path)
   -- that shows a full page of hex was the one render that did not show the panel.
   local lastink = sdec.ui_row_y0 + (nrow - 1) * pitch
   sdec.ui_stat_top = lastink + 10
-  sdec.ui_stat_bot = sdec.ui_stat_top + 18
+  sdec.ui_stat_bot = sdec.ui_stat_top + 19
   sdec.ui_stat_y   = sdec.ui_stat_top + 14
   sdec.ui_btn_y    = sdec.ui_stat_bot + 14
   -- Both ends anchored on the rules they touch, exactly as serial_ui.tsp derives them.

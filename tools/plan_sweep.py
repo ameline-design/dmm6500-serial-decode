@@ -1,0 +1,277 @@
+#!/usr/bin/env python3
+"""Run tools/sweep_plan.lua -- the offline twin of the soak's plan suite -- sharded, ratcheted, over
+as many iterations as asked for.
+
+WHAT THIS IS THE TWIN OF, AND WHY THAT MATTERS MORE THAN THE OTHER OFFLINE SUITES. Every other offline
+harness names its own sample rate and renders at a whole number of samples per bit. This one replays
+the SOAK'S OWN PLAN: the drawn baud rates, the drawn amplitude and offset, the drawn wait, the arb file
+from out/vectors/ resampled to pick_fs(baud) exactly as the instrument digitises it. So sa/bit is
+fractional the way the bench's is -- 8.68, 13.19, 8.06 -- and the edge is the arb's own edge resampled
+rather than a fixed number of samples. Those two properties are what #124 records as the offline
+twin's blind spots, and this file does not have them. A hardware lap is ~2.85 h; a lap here is ~4 s
+across the cores.
+
+    python3 tools/plan_sweep.py                          # iteration 1, 1 offset -- the ratcheted gate
+    python3 tools/plan_sweep.py --iterations 20 --offsets 8
+    python3 tools/plan_sweep.py --iteration 7 --offsets 16 --quiet
+
+THE PLAN IS ALWAYS REGENERATED, NEVER READ FROM DISK, and that is a correctness rule rather than a
+convenience. A plan file is a snapshot of the DRAW, and the draw changes whenever soakplan's
+constraints do -- a plan emitted before the ground-straddle constraint reports 23 BAD at iteration 1
+where the current draw gives 11, and the extra twelve are the stimulus rather than the app (#108).
+Nothing in a plan's name says which rules drew it, so a file on disk silently describes a DIFFERENT
+EXPERIMENT from the one the soak runs. Regenerating costs 0.4 s and makes that impossible.
+
+EXIT 1 IF a decode RAISED, if any shard printed no summary, or if a ratcheted count rose. A raise is
+never the right answer at any placement, so it gates unconditionally; the rest are known-but-unfixed
+defects (#46, #125) and are bounded rather than demanded to be zero.
+"""
+import argparse
+import hashlib
+import os
+import re
+import subprocess
+import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PLANDIR = os.path.join(ROOT, 'out', 'plans', 'auto')
+
+# The counters sweep_plan.lua prints on its PLAN line, in the order they appear there.
+KEYS = ['cells', 'badcells', 'points', 'ok', 'bad', 'skip',
+        'raised', 'nobytes', 'norate', 'rate', 'bytes', 'bleed', 'bleedworst']
+# bleedworst is a MAXIMUM across shards, not a sum: totalling worst-cases would report a number no
+# single point ever produced.
+MAXKEYS = frozenset(['bleedworst'])
+LINE = re.compile(r'^PLAN (\d+)/(\d+) iteration (\d+): (.*)$')
+
+# RATCHETS, KEYED ON (iteration, offsets). Every baseline here is a measurement on a freshly drawn plan
+# and is reproducible run to run; re-measure with --no-ratchet rather than editing one from memory.
+#
+# WHY A RATCHET AND NOT A TARGET, same reasoning as tools/sweep_all.py: these count defects that are
+# UNDERSTOOD AND DELIBERATELY UNFIXED, so demanding zero would fail the gate on a known state, and
+# printing them unbounded lets them grow unnoticed -- which is exactly how #46 sat at 148 of 3936 in
+# the phase sweep for weeks while its issue said the offline twin could not reproduce it.
+#
+# ONLY AT THE CONFIGURATION EACH BASELINE DESCRIBES. A different iteration draws different rates, waits
+# and amplitudes, and a different offset count draws different capture phases, so a baseline from one
+# configuration does not describe another and the ratchet is SKIPPED rather than applied wrongly.
+#
+# `bad` is the point count and `badcells` the number of (vector, rate) cells with at least one bad
+# point. Both are bounded because they move independently: a defect that spreads to new cells and one
+# that becomes more likely at a cell it already affected are different regressions.
+#
+# WHAT THE OFFSET AXIS IS WORTH, measured rather than argued: one capture per cell finds 11 affected
+# cells of 1763, eight find 93. Eight times the yield for eight times the work, and the 11 were never
+# the interesting number -- they were whichever phase the plan's wait happened to draw.
+RATCHET = {
+    (1, 1): {'bad': 11, 'badcells': 11, 'rate': 4, 'bytes': 7, 'nobytes': 0, 'bleed': 253},
+    (1, 8): {'bad': 167, 'badcells': 93, 'rate': 27, 'bytes': 35, 'nobytes': 105, 'bleed': 1467},
+}
+WHY = {
+    'bad': 'failing points',
+    'badcells': 'cells with at least one failing point',
+    'rate': 'rate misreported outside snaptol, issue #46',
+    'bytes': 'right rate, bytes are not the payload, issue #125',
+    'nobytes': 'nothing decoded on a vector that should decode',
+    'bleed': 'bytes wrong past the head ERR excludes, issue #49',
+}
+
+
+def parse(line):
+    """A PLAN summary line -> (iteration, dict of counter name to int). -> (None, None) if not one."""
+    m = LINE.match(line.strip())
+    if not m:
+        return None, None
+    body, out = m.group(4), {}
+    for k in KEYS:
+        mm = re.search(r'\b' + re.escape(k) + r' (\d+)', body)
+        out[k] = int(mm.group(1)) if mm else 0
+    return int(m.group(3)), out
+
+
+def emit_plan(iteration):
+    """Regenerate the plan for `iteration` and return (path, sha256[:12]). Never reads an existing one."""
+    os.makedirs(PLANDIR, exist_ok=True)
+    path = os.path.join(PLANDIR, 'plan-%d.lua' % iteration)
+    p = subprocess.run(['python3', 'tools/soakplan.py', '--emit-lua', '--iteration', str(iteration)],
+                       cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if p.returncode != 0:
+        raise SystemExit('soakplan.py --iteration %d exited %d:\n%s'
+                         % (iteration, p.returncode, p.stderr.decode('utf-8', 'replace')))
+    # A PLAN THAT IS SUSPICIOUSLY SMALL IS A FAILED EMIT, not a small plan. soakplan writes the whole
+    # table in one go, so a truncated file would make every shard skip cells and still report cleanly.
+    if len(p.stdout) < 10000:
+        raise SystemExit('soakplan.py --iteration %d emitted only %d bytes; that is not a plan'
+                         % (iteration, len(p.stdout)))
+    # WRITTEN ATOMICALLY, because tools/soak_offline.py calls this from several worker threads at once
+    # and a reader that opened the file mid-write would see a truncated Lua table -- which loads as a
+    # plan with fewer cells and reports a clean shard. The content for an iteration is deterministic, so
+    # two racing writers put the same bytes there; only the partial state has to be made unreachable.
+    # PID AND THREAD, not pid alone: soak_offline's callers are threads of ONE process, so a pid-only
+    # scratch name is shared by every one of them and they would overwrite each other's partial writes.
+    tmp = '%s.%d.%d.tmp' % (path, os.getpid(), threading.get_ident())
+    with open(tmp, 'wb') as fh:
+        fh.write(p.stdout)
+    os.replace(tmp, path)
+    return path, hashlib.sha256(p.stdout).hexdigest()[:12]
+
+
+def run_shard(k, n, plan, offsets):
+    argv = ['lua', 'tools/sweep_plan.lua', '--plan', plan, '--shard', '%d/%d' % (k, n),
+            '--offsets', str(offsets), '--quiet']
+    p = subprocess.run(argv, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    return k, p.returncode, p.stdout.decode('utf-8', 'replace')
+
+
+def one_lap(iteration, workers, offsets, quiet):
+    """One iteration across every shard. -> (totals dict, list of failure strings, detail lines)."""
+    plan, digest = emit_plan(iteration)
+    tot = dict((k, 0) for k in KEYS)
+    failed, detail, nsummary = [], [], 0
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futs = [ex.submit(run_shard, k, workers, plan, offsets) for k in range(1, workers + 1)]
+        for f in futs:
+            k, rc, out = f.result()
+            got = False
+            for line in out.splitlines():
+                it, d = parse(line)
+                if d is not None:
+                    # THE SHARD'S OWN IDEA OF WHICH ITERATION IT RAN, checked rather than assumed. A
+                    # mismatch means the plan file changed under the run, which would total two
+                    # different experiments into one number.
+                    if it != iteration:
+                        failed.append('shard %d ran iteration %d, not %d' % (k, it, iteration))
+                    got = True
+                    nsummary += 1
+                    for key in KEYS:
+                        if key in MAXKEYS:
+                            tot[key] = max(tot[key], d[key])
+                        else:
+                            tot[key] += d[key]
+                elif line.startswith('  ') and line.strip():
+                    # sweep_plan.lua indents per-cell rows and nothing else, so this keeps the
+                    # failures and drops both its banners without matching on their wording.
+                    detail.append('  [shard %d] %s' % (k, line.strip()))
+            # rc 1 is the EXPECTED exit for a shard that found a known failure, so it is not itself a
+            # failure here -- the summary line is. A shard that printed no summary died before the
+            # report, and totalling nothing from it would turn a broken run into a clean one.
+            if not got:
+                failed.append('shard %d printed no summary (exit %d)' % (k, rc))
+    if nsummary != workers:
+        failed.append('%d shards ran but only %d printed a summary' % (workers, nsummary))
+    if tot['raised'] > 0:
+        failed.append('%d decode(s) RAISED. There is no capture placement for which that is the '
+                      'right answer.' % tot['raised'])
+    if tot['ok'] + tot['bad'] == 0:
+        failed.append('nothing was judged at all')
+    return tot, failed, detail, digest
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--iteration', type=int, default=1, help='soak plan iteration to replay')
+    ap.add_argument('--iterations', type=int, default=None,
+                    help='replay iterations 1..N as N laps instead of a single one')
+    ap.add_argument('--offsets', type=int, default=1,
+                    help='capture start offsets per cell (default 1: the plan\'s own wait only). One '
+                         'capture of a looping arb is a coin flip, so a real measurement wants 8+')
+    ap.add_argument('--workers', type=int, default=12,
+                    help='parallel shards, and therefore the shard count (default 12)')
+    ap.add_argument('--quiet', action='store_true', help='totals only, no per-cell failure lines')
+    ap.add_argument('--no-ratchet', action='store_true',
+                    help='report the counts without gating on them')
+    a = ap.parse_args()
+    if a.workers < 1:
+        raise SystemExit('--workers must be at least 1')
+    if a.offsets < 1:
+        raise SystemExit('--offsets must be at least 1')
+
+    laps = list(range(1, a.iterations + 1)) if a.iterations else [a.iteration]
+    print('offline plan sweep: %d lap(s), %d offset(s) per cell, %d shards'
+          % (len(laps), a.offsets, a.workers))
+    print('plans regenerated into %s' % os.path.relpath(PLANDIR, ROOT))
+    print()
+
+    hdr = ('%-5s %-13s %6s %6s %8s %6s %6s %7s %6s %6s %6s %6s'
+           % ('lap', 'plan', 'cells', 'bad', 'badcell', 'raised', 'nobyte', 'norate', 'rate', 'bytes',
+              'bleed', 'worst'))
+    print(hdr)
+    print('-' * len(hdr))
+    allfail, rows = [], []
+    for it in laps:
+        tot, failed, detail, digest = one_lap(it, a.workers, a.offsets, a.quiet)
+        rows.append((it, tot))
+        if not a.quiet:
+            for d in detail:
+                print(d)
+        print('%-5d %-13s %6d %6d %8d %6d %6d %7d %6d %6d %6d %6d'
+              % (it, digest, tot['cells'], tot['bad'], tot['badcells'], tot['raised'],
+                 tot['nobytes'], tot['norate'], tot['rate'], tot['bytes'],
+                 tot['bleed'], tot['bleedworst']))
+        allfail.extend('lap %d: %s' % (it, x) for x in failed)
+
+    if len(rows) > 1:
+        # ACROSS LAPS, the interesting numbers are the spread and the union: a defect present in every
+        # lap is a property of the decoder, one appearing in a single lap is a property of that draw.
+        print()
+        for key in ('bad', 'badcells', 'rate', 'bytes', 'nobytes', 'bleed'):
+            vals = sorted(t[key] for _, t in rows)
+            print('  %-9s per lap  min %d  median %d  max %d  total %d'
+                  % (key, vals[0], vals[len(vals) // 2], vals[-1], sum(vals)))
+
+    # THE RATCHET, applied only at the configuration its baselines were measured at, and only to a
+    # single-lap run: across laps the counts are per-draw and a baseline drawn from iteration 1 says
+    # nothing about iteration 12.
+    key = (a.iteration, a.offsets)
+    if a.no_ratchet:
+        print('\n-- ratchet DISABLED by --no-ratchet: the counts above gate nothing --')
+    elif len(laps) > 1:
+        print('\n-- ratchet SKIPPED for a multi-lap run: each lap is a different draw, so a baseline '
+              'measured on one iteration does not describe the others --')
+    elif key not in RATCHET:
+        print('\n-- ratchet SKIPPED: iteration %d at %d offset(s) is not a measured configuration '
+              '(%s), so no baseline describes this run --'
+              % (a.iteration, a.offsets,
+                 ', '.join('iteration %d/%d offsets' % k for k in sorted(RATCHET))))
+    else:
+        base, tot = RATCHET[key], rows[0][1]
+        print('\n-- ratchets (iteration %d, %d offset(s)) --' % key)
+        for k in sorted(base):
+            got, want = tot[k], base[k]
+            if got > want:
+                allfail.append('%s rose to %d from a measured %d (%s) -- %d new case(s). Either a '
+                               'change made it worse, or it reached cells it did not affect before. '
+                               'Do not raise the baseline to make this pass.'
+                               % (k, got, want, WHY[k], got - want))
+                print('  %-9s %4d  WORSE than %d   %s' % (k, got, want, WHY[k]))
+            elif got < want:
+                print('  %-9s %4d  IMPROVED from %d   %s' % (k, got, want, WHY[k]))
+                print('            ^ set RATCHET[%r][%r] to %d in this file, or the gain is not held'
+                      % (key, k, got))
+            else:
+                print('  %-9s %4d  unchanged        %s' % (k, got, WHY[k]))
+
+    # LAST LINE, ONE LINE, because tools/release_sweep.py summarises an unrecognised stage by its final
+    # line of output -- and without this that would be whichever ratchet counter sorted last, which
+    # says nothing about the run.
+    print()
+    tp = sum(t['points'] for _, t in rows)
+    tb = sum(t['bad'] for _, t in rows)
+    print('%d lap(s), %d point(s) over %d cell(s): %d bad -- %d rate (#46), %d bytes (#125), '
+          '%d nobytes, %d raised'
+          % (len(rows), tp, sum(t['cells'] for _, t in rows), tb,
+             sum(t['rate'] for _, t in rows), sum(t['bytes'] for _, t in rows),
+             sum(t['nobytes'] for _, t in rows), sum(t['raised'] for _, t in rows)))
+
+    if allfail:
+        print()
+        for x in allfail:
+            print('FAILED: %s' % x)
+        return 1
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
