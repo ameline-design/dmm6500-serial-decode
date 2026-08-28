@@ -199,6 +199,56 @@ check('a clean capture -> True', ok is True, det)
 ok, det = BU.judge_payload(hexs(cyc(W13, 0, 3)), W13)
 check('an INCONCLUSIVE capture collapses to False', ok is False, det)
 
+# --------------------------------------------------- the offline twin uses the SAME allowance
+# THE ALLOWANCE LIVES IN TWO LANGUAGES AND MUST BE ONE RULE. tools/sweep_plan.lua cannot import this
+# file, so it carries LOUD_MISS_FRAC and LOUD_MISS_FLOOR and its own loud_budget() -- and a copy that
+# drifts is how the twin starts judging a loud vector by a rule the bench does not apply. Holding a loud
+# vector to zero where the bench allows 3 % accounts for 11 of the 73 cells the twin failed and the bench
+# passed on soak lap 1, so this is the specific divergence being pinned, not a general tidiness check.
+#
+# THE ARITHMETIC IS RUN, NOT READ. Matching the two constants is not enough: the same numbers with a
+# floor() instead of a ceil(), or a floor applied before the fraction, give a different allowance at every
+# body size. So sweep_plan.lua's own loud_budget is extracted and EXECUTED under lua, and its answer
+# compared with this file's expression across the sizes a real capture produces.
+print('\n-- sweep_plan.lua carries the same loud allowance --')
+import math as _math                                           # noqa: E402
+import re as _re                                               # noqa: E402
+import subprocess as _sp                                       # noqa: E402
+_here = os.path.dirname(os.path.abspath(__file__))
+_src = open(os.path.join(_here, 'sweep_plan.lua')).read()
+_m = _re.search(r'local LOUD_MISS_FRAC, LOUD_MISS_FLOOR = ([\d.]+), (\d+)', _src)
+check('sweep_plan.lua declares LOUD_MISS_FRAC and LOUD_MISS_FLOOR', _m is not None)
+if _m:
+    check('LOUD_MISS_FRAC %s == JP_LOUD_MISMATCH_FRAC %s' % (_m.group(1), BU.JP_LOUD_MISMATCH_FRAC),
+          float(_m.group(1)) == BU.JP_LOUD_MISMATCH_FRAC)
+    check('LOUD_MISS_FLOOR %s == JP_LOUD_MISMATCH_FLOOR %s'
+          % (_m.group(2), BU.JP_LOUD_MISMATCH_FLOOR),
+          int(_m.group(2)) == BU.JP_LOUD_MISMATCH_FLOOR)
+_fn = _re.search(r'(local function loud_budget\(nbody\).*?\nend)', _src, _re.S)
+check('sweep_plan.lua defines loud_budget(nbody)', _fn is not None)
+if _m and _fn:
+    _sizes = [1, 8, 20, 66, 67, 100, 121, 240, 328, 497]
+    _prog = ('%s\n%s\nfor _, n in ipairs({%s}) do io.write(loud_budget(n), " ") end'
+             % (_m.group(0), _fn.group(1), ', '.join(str(s) for s in _sizes)))
+    _p = _sp.run(['lua', '-e', _prog], capture_output=True, text=True)
+    _got = [int(float(x)) for x in _p.stdout.split()] if _p.returncode == 0 else []
+    _wants = [max(BU.JP_LOUD_MISMATCH_FLOOR,
+                  int(_math.ceil(BU.JP_LOUD_MISMATCH_FRAC * s))) for s in _sizes]
+    check('loud_budget agrees with bench_uart at %s' % _sizes, _got == _wants,
+          'lua %s vs python %s %s' % (_got, _wants, _p.stderr.strip()))
+# SIZED ON THE BODY BEING COMPARED, not on the untrimmed capture. sweep_plan tries up to MAXSHIFT extra
+# byte shifts, and an allowance computed once outside that loop would grant a forty-byte shift the 3 %
+# its longer body earned -- a tolerance growing as the evidence shrinks.
+check('the allowance is sized inside the shift loop, from nb - skip',
+      _re.search(r'local mbudget = loud_budget\(nb - skip\)', _src) is not None)
+# AND THE EXACT CLASS STILL GETS ZERO on both sides, which is the half that must not move: judge() only
+# reaches the allowance when the caller passes the vector's class as loud.
+check("only class 'loud' turns the allowance on",
+      _re.search(r"local loud = v\.class == 'loud'", _src) is not None
+      and _re.search(r'judge\(hx, v\.hex, hs, loud\)', _src) is not None)
+check('an exact vector gets zero from judge_payload_v',
+      BU.judge_payload_v(hexs(cyc(W13, 0, 240)), W13, 'exact')[0] == 'PASS')
+
 print()
 if FAILED:
     print('%d FAILED: %s' % (len(FAILED), ', '.join(FAILED)))

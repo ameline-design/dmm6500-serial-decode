@@ -13,12 +13,36 @@
 -- standard-rate list read out of the TSP source. Two implementations of that is two things to get
 -- subtly different, on a night when both look right.
 --
+-- THE SKIPPED SET IS PART OF THE PLAN, and leaving it out is not a small error. soakplan applies
+-- --skip-vectors BEFORE the shuffle, so dropping two waveforms moves every remaining vector's index --
+-- and that index keys the amplitude, the offset AND the wait for every cell. Every hardware lap skips
+-- v95 and v96, so a twin lap emitted without them drove a different waveform in all 1677 cells:
+-- v94 at 300 Bd was 20.000 Vpp at -8.220 V on the bench and 8.595 Vpp at +2.347 V here. Pass the
+-- bench's own flag through:
+--   python3 tools/plan_sweep.py --iteration 1 --skip-vectors v95,v96 --offsets 8
+--
+-- badcells IS A UNION OVER CAPTURE PHASES AND IS NOT COMPARABLE TO A BENCH LAP. With --offsets 8 a cell
+-- is called bad if any ONE of eight phases failed, where the bench takes one capture and asks once.
+-- Measured against soak lap 1: 65 cells fail here and passed on the bench, and not one of them fails at
+-- all eight phases -- 41 fail at one of eight, 20 at two, none past five. Per CAPTURE this harness fails
+-- 1.09 % against the bench's 2.80 %, so it is not harsher; the union is. Compare bad/points, or badall,
+-- and never badcells.
+--
 -- WHAT THIS IS NOT. It is not the app. bench_matrix presses the real Capture button and reads the
 -- real panel; this calls sdec directly, so it never exercises pick_fs's two-pass probe, autolock, or
--- anything the operator sees. It also judges more simply -- the decoded bytes must be a cyclic
--- substring of the payload -- where bench_uart.judge_payload weighs flag budgets and head damage. So
--- a pass here is the narrower claim "these samples decode to the right bytes", which is exactly the
--- claim needed to acquit or convict the analogue path.
+-- anything the operator sees. In particular the bench digitises at pick_fs(the baud its own PROBE
+-- measured) and this digitises at pick_fs(the baud that was COMMANDED); on soak lap 1 those disagreed
+-- on 26 of 1385 cells, 1.9 %. It also judges more simply -- the decoded bytes must be a cyclic
+-- substring of the payload, save for the loud mismatch allowance below which is bench_uart's own
+-- number -- where bench_uart.judge_payload_v additionally weighs flag budgets, coverage floors and
+-- head damage. So a pass here is the narrower claim "these samples decode to the right bytes", which is
+-- exactly the claim needed to acquit or convict the analogue path.
+--
+-- WHERE THIS IS LAXER THAN THE BENCH, stated because the asymmetry runs both ways and the other
+-- direction is easy to miss: a cell whose bytes are right and whose REPORTED BAUD is outside snaptol
+-- fails on the bench and passes here, because classify() is only reached once the payload verdict is
+-- already BAD. The bench also fails an INCONCLUSIVE cell on an exact vector where this counts it as
+-- unjudgeable, and checks the reported format, which this does not.
 --
 --   lua tools/sweep_plan.lua --plan out/plans/plan-3.lua
 --   lua tools/sweep_plan.lua --plan out/plans/plan-3.lua --hold      # zero-order hold instead
@@ -184,8 +208,73 @@ end
 -- wrong and uncounted -- open issue #49's family, which tools/sweep_startphase.lua also counts as
 -- headbleed rather than failing. A run matching at NO shift inside the bound is the real failure,
 -- because nothing about a capture boundary explains it.
+-- A loud VECTOR'S MISMATCH ALLOWANCE, which is the bench's own and not this file's.
+--
+-- THE NUMBERS ARE bench_uart.py's JP_LOUD_MISMATCH_FRAC and JP_LOUD_MISMATCH_FLOOR, and that file
+-- records why they are these numbers: in 8N1 a data sample that crosses into the neighbouring cell
+-- yields a wrong byte with framing intact and NO parity to catch it, so nothing is flagged and a jitter
+-- vector cannot be held to zero. bench_uart measured j20 losing 1-5 bytes in 256 at 172800-240959 Bd.
+-- tools/test_judge_v.py runs loud_budget under lua and compares it with bench_uart's expression at ten
+-- body sizes, so the copy cannot drift in its constants or in its arithmetic.
+--
+-- WHAT IT IS WORTH. Holding a loud vector to byte-exactness where the bench allows 3 % is how a harness
+-- invents failures: on soak lap 1 that accounts for 11 of the 73 cells this twin failed and the bench
+-- passed -- seven j20 cells the bench logged as "6 mismatched of 6 allowed" and the like, and four v47.
+-- The app was right in all eleven.
+--
+-- EXACT VECTORS GET ZERO. A clean vector losing one byte is still a defect, and this allowance may never
+-- reach one -- which is why judge() takes the CLASS and not a number.
+--
+-- AND EVERY BYTE IT FORGIVES IS COUNTED, in `loudmiss`. A tolerance that moves no counter cannot be
+-- bounded, so a regression that started losing bytes on every loud vector would read as an unchanged
+-- run -- the same trap `loudquiet` exists to close.
+local LOUD_MISS_FRAC, LOUD_MISS_FLOOR = 0.03, 2
+local function loud_budget(nbody)
+  local b = math.ceil(LOUD_MISS_FRAC * nbody)
+  if b < LOUD_MISS_FLOOR then b = LOUD_MISS_FLOOR end
+  return b
+end
+
+-- The fewest byte mismatches `body` has against any cyclic alignment of `want`. -> (mismatches, offset)
+--
+-- EVERY ALIGNMENT IS SCORED, not searched for, exactly as bench_uart.judge_payload_v does and for the
+-- reason recorded there: find() is all-or-nothing, so one jitter-flipped byte anywhere loses the
+-- alignment and the capture is called silently wrong. The loud payloads are 9 to 18 bytes, so there
+-- are at most 18 alignments and trying all of them is exact and free.
+local function best_align(body, want)
+  local nb, nw = string.len(body) / 2, string.len(want) / 2
+  local hay = string.rep(want, math.ceil((string.len(body) + string.len(want))
+                                         / string.len(want)) + 1)
+  local bestm, besto = nil, 0
+  local a
+  for a = 0, nw - 1 do
+    local mism, j = 0, nil
+    for j = 0, nb - 1 do
+      if string.sub(body, j * 2 + 1, j * 2 + 2) ~= string.sub(hay, (a + j) * 2 + 1, (a + j) * 2 + 2)
+      then
+        mism = mism + 1
+        -- Nothing more to learn once this alignment is already worse than the best.
+        if bestm ~= nil and mism >= bestm then break end
+      end
+    end
+    if bestm == nil or mism < bestm then bestm, besto = mism, a end
+    if bestm == 0 then break end
+  end
+  return bestm or 0, besto
+end
+
 local MINJUDGE, MAXSHIFT = 8, 40
-local function judge(got, want, skip0)
+-- `loud` IS THE CLASS, NOT A BUDGET, and the budget is sized INSIDE the loop from the body actually
+-- being compared at that shift. Sizing it once outside would hand a 40-byte shift the allowance its
+-- unshifted body earned -- 3 % of forty bytes is up to two mismatches the shorter body has not paid
+-- for -- and a tolerance that grows as the evidence shrinks is the wrong way round.
+--
+-- IT IS STILL 3 % OF A LONGER BODY THAN THE BENCH JUDGES, and the difference is stated rather than
+-- corrected: bench_uart trims head_damage, then JP_HEADSKIP = 12 and JP_TAILSKIP = 1 on top, where this
+-- trims max(ua_head_bad, ua_edge_frames) and no tail. So this body runs up to 13 bytes longer and the
+-- allowance can be one byte larger. The RATE is the same 3 %, which is the rule bench_uart states, and
+-- every byte it forgives is counted in loudmiss where the difference stays bounded and visible.
+local function judge(got, want, skip0, loud)
   if want == '' then return nil, 'no expected payload' end
   if got == '' then return false, 'no bytes decoded' end
   local nb = string.len(got) / 2
@@ -210,8 +299,22 @@ local function judge(got, want, skip0)
       return true, string.format('%d B cyclic-exact at offset %d, head %d+%d',
                                  nb - skip,
                                  math.mod(math.floor((at - 1) / 2), string.len(want) / 2),
-                                 skip0, sh), sh
+                                 skip0, sh), sh, 0
     end
+    if loud then
+      local mbudget = loud_budget(nb - skip)
+      local mism, at2 = best_align(body, want)
+      if mism <= mbudget then
+        return true, string.format('%d B at offset %d with %d of %d allowed mismatch(es), head %d+%d',
+                                   nb - skip, at2, mism, mbudget, skip0, sh), sh, mism
+      end
+    end
+  end
+  if loud and nb - skip0 >= MINJUDGE then
+    local mism = best_align(string.sub(got, skip0 * 2 + 1), want)
+    return false, string.format('%d B miss the payload by %d byte(s) at the best alignment past a '
+                                .. '%d-byte head, budget %d',
+                                nb - skip0, mism, skip0, loud_budget(nb - skip0))
   end
   return false, string.format('%d B do NOT appear in the payload past a %d-byte head, at any of %d '
                               .. 'further shifts', nb - skip0, skip0, MAXSHIFT)
@@ -298,6 +401,16 @@ local nbleed, worstbleed = 0, 0
 -- verdict block for why counting a correct refusal as a failure is the harness lying, and why leaving it
 -- uncounted lets total byte suppression hide.
 local nloudquiet = 0
+-- EVERY BYTE THE loud MISMATCH BUDGET FORGAVE, and the worst single point. Same reasoning as nbleed:
+-- an allowance the bench has must be here too, and an allowance nobody counts is one nobody checks.
+local nloudmiss, worstloudmiss = 0, 0
+-- CELLS THAT FAILED AT EVERY OFFSET, which is the only cell-level number a ONE-CAPTURE hardware lap can
+-- be set beside. `badcells` is a UNION over A.offsets capture phases, so it rises with the offset count
+-- for a fixed defect: measured against soak lap 1, 65 cells fail here and passed on the bench, and not
+-- one of them fails at all eight phases -- 41 fail at one of eight and 20 at two. Compared against a lap
+-- that took one capture per cell, `badcells` at 8 offsets reads as 1.8x the bench's failure rate while
+-- the PER-CAPTURE rate is 0.39x it. Both numbers are honest; only one of them is comparable.
+local nbadall = 0
 -- The four r* entries are SUBDIVISIONS OF `rate`, not siblings of it: rate stays the total so the
 -- ratchet keyed on it keeps meaning what it measured, and the routes sum to it.
 local CLS = {'raised', 'nobytes', 'norate', 'rate', 'bytes',
@@ -307,6 +420,20 @@ do local i; for i = 1, table.getn(CLS) do cls[CLS[i]] = 0 end end
 print(string.format('=== OFFLINE PLAN iteration %d -- %d vectors x %d rates x %d offset(s)%s ===',
                     P.iteration, table.getn(P.vectors), table.getn(P.rates), A.offsets,
                     A.hold and ' (zero-order hold)' or ''))
+-- THE SKIPPED SET, PRINTED, because it is half of the plan's identity and the half a reader assumes.
+-- soakplan applies it BEFORE the shuffle, so it moves every vector's vi and therefore every cell's
+-- amplitude, offset and wait: a twin lap run without the bench's own skip set drives a different
+-- waveform in all 1677 cells. A plan file with no `skipped` field is itself the warning -- nothing in
+-- it says which vectors the draw covered, so it cannot be matched to a lap that skipped anything.
+if P.skipped == nil then
+  print('    skipped: UNRECORDED -- this plan predates --skip-vectors. If the bench lap skipped a '
+        .. 'vector, every cell here has the wrong amplitude, offset and wait.')
+elseif table.getn(P.skipped) > 0 then
+  print('    skipped, and therefore the reason every vi moved: '
+        .. table.concat(P.skipped, ' '))
+else
+  print('    skipped: nothing -- comparable only to a bench lap that also skipped nothing')
+end
 local nrate = table.getn(P.rates)
 local vi
 for vi = 1, table.getn(P.vectors) do
@@ -350,22 +477,30 @@ for vi = 1, table.getn(P.vectors) do
         local rd, n = capture(v, arb_fs, fs, off, A.n, camp, cofst)
         local ran, why, r = decode(rd, n, fs)
         local rb = sdec.baud
-        local good, det, bleed
+        local good, det, bleed, lmiss
         if not ran then
           good, det = false, 'RAISED ' .. tostring(why)
         else
           local hs = head_skip(r)
+          local hx = tohex(r)
+          -- THE CLASS TRAVELS, NOT A NUMBER. judge() sizes the allowance from the body it is actually
+          -- comparing at each shift, which a value computed here could not do.
+          local loud = v.class == 'loud'
           -- EITHER legitimate reading passes; v.hex2 is set only where the wire genuinely supports
           -- two framings and the app is right whichever it picks.
-          good, det, bleed = judge(tohex(r), v.hex, hs)
+          good, det, bleed, lmiss = judge(hx, v.hex, hs, loud)
           if good ~= true and v.hex2 ~= nil and v.hex2 ~= '' then
-            local g2, d2, b2 = judge(tohex(r), v.hex2, hs)
-            if g2 == true then good, det, bleed = g2, d2 .. ' (alternate framing)', b2 end
+            local g2, d2, b2, m2 = judge(hx, v.hex2, hs, loud)
+            if g2 == true then good, det, bleed, lmiss = g2, d2 .. ' (alternate framing)', b2, m2 end
           end
           if det == nil then det = '' end
           if bleed ~= nil and bleed > 0 then
             nbleed = nbleed + 1
             if bleed > worstbleed then worstbleed = bleed end
+          end
+          if good == true and lmiss ~= nil and lmiss > 0 then
+            nloudmiss = nloudmiss + lmiss
+            if lmiss > worstloudmiss then worstloudmiss = lmiss end
           end
         end
         -- A point that cannot be judged is neither a pass nor a failure, and is counted apart so a
@@ -430,6 +565,9 @@ for vi = 1, table.getn(P.vectors) do
         end
       end
       if cellbad > 0 then nbadcell = nbadcell + 1 end
+      -- A CELL THAT FAILED AT EVERY PHASE IT WAS OFFERED. At --offsets 1 this equals badcells, which is
+      -- correct: with one capture there is no distinction to draw.
+      if cellbad >= A.offsets then nbadall = nbadall + 1 end
     end
   end
   if not A.quiet and vcell > 0 then
@@ -441,13 +579,22 @@ end
 -- MACHINE-READABLE FIRST, so tools/plan_sweep.py totals the shards without parsing prose. POINTS and
 -- CELLS are both reported because they answer different questions: points is the rate at which a
 -- capture of this plan comes back wrong, cells is how much of the plan is affected at all.
-print(string.format('\nPLAN %d/%d iteration %d: cells %d badcells %d points %d ok %d bad %d skip %d '
+--
+-- THREE CELL NUMBERS, NOT ONE, and which of them to quote depends on what is being compared:
+--   badcells  a UNION over the offsets -- at least one phase failed. Grows with --offsets for a fixed
+--             defect, so it must NEVER be set beside a hardware lap's failing-cell count.
+--   badall    the INTERSECTION -- every phase failed. The phase-independent defects.
+--   bad/points the per-CAPTURE rate, which is the one directly comparable to a bench lap that took one
+--             capture per cell.
+print(string.format('\nPLAN %d/%d iteration %d: cells %d badcells %d badall %d points %d ok %d bad %d '
+                    .. 'skip %d '
                     .. 'raised %d nobytes %d norate %d rate %d bytes %d bleed %d bleedworst %d '
-                    .. 'r46b %d rfit1 %d rstdC %d rother %d loudquiet %d',
-                    A.shard, A.nshard, P.iteration, ncell, nbadcell, nok + nbad + nskip,
+                    .. 'r46b %d rfit1 %d rstdC %d rother %d loudquiet %d loudmiss %d loudmissworst %d',
+                    A.shard, A.nshard, P.iteration, ncell, nbadcell, nbadall, nok + nbad + nskip,
                     nok, nbad, nskip,
                     cls.raised, cls.nobytes, cls.norate, cls.rate, cls.bytes, nbleed, worstbleed,
-                    cls.r46b, cls.rfit1, cls.rstdC, cls.rother, nloudquiet))
+                    cls.r46b, cls.rfit1, cls.rstdC, cls.rother, nloudquiet,
+                    nloudmiss, worstloudmiss))
 -- THE ROUTES MUST SUM TO `rate`, and this is checked rather than assumed: rate_route returns exactly
 -- one of the four for every rate point, so a mismatch means a point was counted twice or lost, and a
 -- subdivision that does not reconcile with its total is worse than no subdivision at all.
@@ -463,8 +610,17 @@ do
   end
 end
 print(string.format('%d ok, %d BAD, %d unjudgeable of %d point(s) over %d cell(s), %d cell(s) '
-                    .. 'affected, %d head bleed (worst %d)',
-                    nok, nbad, nskip, nok + nbad + nskip, ncell, nbadcell, nbleed, worstbleed))
+                    .. 'affected at any phase and %d at every phase, %d head bleed (worst %d), '
+                    .. '%d byte(s) inside the loud budget (worst %d)',
+                    nok, nbad, nskip, nok + nbad + nskip, ncell, nbadcell, nbadall,
+                    nbleed, worstbleed, nloudmiss, worstloudmiss))
+-- THE COMPARABLE FIGURE, SPELT OUT, because getting this wrong is how 73 harness failures were filed
+-- against the app. A bench lap takes ONE capture per cell; this takes A.offsets of them and unions.
+if nok + nbad > 0 then
+  print(string.format('per-CAPTURE failure rate %.2f %% (%d of %d) -- this, not the %d affected '
+                      .. 'cell(s), is what a one-capture bench lap can be compared with',
+                      100 * nbad / (nok + nbad + nskip), nbad, nok + nbad + nskip, nbadcell))
+end
 if nok + nbad == 0 then
   print('REFUSING to report success: nothing was judged at all.')
   os.exit(1)

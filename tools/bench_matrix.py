@@ -196,12 +196,24 @@ function mx_point(unlock, tag)
   -- sn AND nv TRAVEL WITH EVERY POINT, not just the levels suite. They are the app's own measurement
   -- of the noise on the line it just decoded, so carrying them here is what makes a soak lap a
   -- measurement of S/N against swing against outcome rather than three separate runs.
+  -- nread TRAVELS TOO, because with fs it is the CAPTURE GEOMETRY the offline twin has to assume.
+  -- Without it the twin's window length can only be inferred from the app's autolock note, and that note
+  -- forecasts the NEXT capture rather than describing this one -- so a disagreement was attributable to
+  -- nothing. acq_cap asks for sdec.n plus the pre-trigger reserve plus headroom, so a completed capture
+  -- delivers about sdec.n on either path and the interesting case is the one that does not.
+  --
+  -- trigreq IS THE MODE THAT WAS ASKED FOR, NOT THE PATH THAT RAN, and the distinction matters here: an
+  -- armed capture that never triggers falls back to acq_free and does NOT clear sdec.trigmode, so a row
+  -- reading 'edge' may be a free-running capture. sdec.lasterr is where that shows, and it carries
+  -- spaces, so it is not put in this key=value line.
   print(string.format('M %s ok=%s t=%.3f baud=%s fmt=%s thr=%s ' ..
-                      'fs=%s nf=%s ngood=%s nbad=%s fit=%s vmin=%s vmax=%s lo=%s hi=%s ' ..
+                      'fs=%s nread=%s trigreq=%s ' ..
+                      'nf=%s ngood=%s nbad=%s fit=%s vmin=%s vmax=%s lo=%s hi=%s ' ..
                       'head=%s ec=%s sn=%s nv=%s',
                       tostring(tag), tostring(ok), t, tostring(sdec.baud), tostring(fmt),
                       tostring(sdec.thr),
-                      tostring(sdec.acq_fs), tostring(r and r.nf), tostring(r and r.ngood),
+                      tostring(sdec.acq_fs), tostring(sdec.nread), tostring(sdec.trigmode),
+                      tostring(r and r.nf), tostring(r and r.ngood),
                       tostring(r and r.nbad), tostring(sdec.fitq), tostring(sdec.vmin),
                       tostring(sdec.vmax), tostring(sdec.lo), tostring(sdec.hi),
                       tostring(r and r.headsusp), tostring(eventlog.getcount()),
@@ -953,8 +965,10 @@ def suite_plan(d, g, a, rows):
     """Every vector, at every standard rate plus one drawn rate per gap, in a seeded order.
 
     THE MOST DEMANDING SUITE HERE, and the only one whose content changes from lap to lap. What it
-    tests comes entirely from --iteration: see tools/soakplan.py for the draws. A failure prints the
-    iteration, so the case can be rebuilt without running the laps before it.
+    tests comes from --iteration AND --skip-vectors together: see tools/soakplan.py for the draws, and
+    plan_order for why the skip is drawn on -- it is applied before the shuffle, so it moves every
+    cell's amplitude, offset and wait. A failure prints the iteration, and the header prints the skip
+    set and the offline replay line, so the case can be rebuilt without running the laps before it.
 
     ONE SELECT PER VECTOR, THEN SRATE ONLY. Selecting costs 0.5 s plus the payload over the
     CPU-to-FPGA link; an SRATE change is FPGA register writes. Across 43 rates that is the difference
@@ -968,9 +982,7 @@ def suite_plan(d, g, a, rows):
     """
     it = a.iteration
     vecs = sorted(VN.MAP.keys())
-    skip = set(x.strip() for x in (a.skip_vectors or '').split(',') if x.strip())
-    if skip:
-        vecs = [v for v in vecs if v not in skip]
+    skip = SP.parse_skip(a.skip_vectors)
     rates = SP.rates_for(it)
     kindmap = None
     if getattr(a, 'plan_spec', None):
@@ -990,7 +1002,10 @@ def suite_plan(d, g, a, rows):
             order.append(vid)
             kindmap[vid] = want
     else:
-        order = SP.vector_subset(it, vecs, a.plan_vectors)
+        # SP.plan_order, NOT a filter here plus a shuffle there. The skip has to be applied before the
+        # shuffle and the offline twin has to apply it identically, because vi keys the amplitude, the
+        # offset and the wait -- see soakplan.plan_order for the 1677 cells this cost.
+        order = SP.plan_order(it, vecs, skip, a.plan_vectors)
     std = set(SP.standard_rates())
     ladder = SP.rate_ladder()
     gapno = {}
@@ -1022,6 +1037,11 @@ def suite_plan(d, g, a, rows):
         print('    SKIPPED BY REQUEST, and therefore untested this lap: %s' % ' '.join(sorted(skip)))
     print('    FRAME mode only: above 165563 Bd sdec.fs_for_burst returns nil, so the streaming '
           'paths cannot record 172800 and up at all.')
+    # THE OFFLINE REPLAY LINE, PRINTED, because getting it wrong is silent. The skip moves every vi,
+    # and vi keys the amplitude, the offset and the wait -- so a twin run without this flag drives a
+    # different waveform in every cell and disagrees for a reason that is neither hardware nor app.
+    print('    replay offline: python3 tools/plan_sweep.py --iteration %d%s --offsets 8'
+          % (it, (' --skip-vectors ' + ','.join(sorted(skip))) if skip else ''))
 
     for vi, vid in enumerate(order):
         payloads = plan_payloads(vid)
@@ -1188,10 +1208,22 @@ def suite_plan(d, g, a, rows):
             # AND THE APP'S OWN S/N, for the same reason and one more: the swing is what the harness
             # DROVE, while this is what the instrument RECEIVED. A cell that fails at a large swing and
             # a poor S/N is a different finding from one that fails at a large swing and a clean one.
+            # AND THE CAPTURE GEOMETRY THE INSTRUMENT ACTUALLY USED, which is the pair the offline twin
+            # has to assume. The twin digitises at SP.pick_fs(the COMMANDED baud) for sdec.n samples; the
+            # app digitises at pick_fs(the baud its own PROBE measured) for however many an armed capture
+            # delivers. Both can differ, and printed here they are attributable per cell instead of being
+            # inferred from the app's autolock note -- which forecasts the NEXT capture, not this one.
+            fs_want = SP.pick_fs(baud, ladder)
+            fs_got = num(res, 'fs')
+            geom = 'fs %s/%d' % (fmt_num(fs_got, '%.0f'), fs_want)
+            if fs_got is not None and abs(float(fs_got) - fs_want) > 1:
+                geom = geom + ' DIFFERS'
+            geom = geom + ' n %s trig-req %s' % (fmt_num(num(res, 'nread'), '%.0f'),
+                                                 res.get('trigreq', '?'))
             rows.append(('plan %s@%s' % (vid, label), good,
-                         '%d Bd %s %.3f Vpp-signal (%.3f Vpp gen, ofst %+.3f) S/N %s %s%s'
+                         '%d Bd %s %.3f Vpp-signal (%.3f Vpp gen, ofst %+.3f) S/N %s %s %s%s'
                          % (baud, kind, span_v, camp, cofst,
-                            fmt_num(num(res, 'sn'), '%.0f'), det,
+                            fmt_num(num(res, 'sn'), '%.0f'), geom, det,
                             ' [SILENTLY WRONG]' if silent else '')))
             if not good:
                 nbadcell += 1
@@ -1271,9 +1303,10 @@ def main():
     ap.add_argument('--settle', type=float, default=0.35)
     ap.add_argument('--offset-swings', default='3.3,1.6')
     ap.add_argument('--rates', help='comma-separated subset of the rate ladder')
-    # THE ONLY INPUT THE plan SUITE TAKES. Everything it tests -- vector order, the drawn rate
-    # in each gap, the wait before every capture -- comes from this number through
-    # tools/soakplan.py, so quoting it is enough to rebuild the lap.
+    # Everything the plan suite tests -- vector order, the drawn rate in each gap, the amplitude,
+    # offset and wait for every cell -- comes from this number through tools/soakplan.py.
+    # THE ITERATION ALONE IS NOT THE LAP: --skip-vectors is drawn on too, because the skip is applied
+    # before the shuffle and vi keys the vertical draws. Quote both or the replay is a different lap.
     ap.add_argument('--iteration', type=int, default=1,
                     help='sweep iteration for the plan suite; picks every seeded choice')
     ap.add_argument('--fail-fast', action='store_true',
