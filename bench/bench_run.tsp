@@ -165,6 +165,14 @@ brun.planread = 0
 brun.iter = 0
 brun.cell = 0
 brun.planrsub = nil
+-- CELLS IN ONE LAP, WHICH IS NOT brun.planrows. planrows is the '# rows=' header -- the whole FILE, so
+-- 279 930 for a 210-lap plan -- and using it as the lap size read 'cell 114 of 279930 (0 % of the lap)'
+-- and made the hours-remaining figure 210x too large. Three sources, best first:
+--   the plan's own '# cells-per-lap=' header, when it has one;
+--   planrows / iterwant, when the plan holds exactly the laps that were asked for;
+--   the highest cell number seen so far, which is exact from the first lap boundary onwards.
+brun.percell = 0          -- cells per lap, 0 until known
+brun.cellmax = 0          -- highest cell number seen this lap
 
 function brun.planopen()
   brun.planclose()
@@ -209,6 +217,8 @@ function brun.nextrow()
     -- again: 5.0.2 has no string.match.
     local _, _, rs = string.find(ln, 'random%-per%-lap=(%a*%d*)')
     if rs ~= nil and rs ~= '' then brun.planrsub = rs end
+    local _, _, cp = string.find(ln, 'cells%-per%-lap=(%d+)')
+    if cp ~= nil then brun.percell = tonumber(cp) end
     return brun.nextrow()
   end
   local f, nf = brun.split(ln)
@@ -864,19 +874,33 @@ function brun.healthline()
   return string.format('SOAK HEALTH %.1f %%', h), col
 end
 
+-- The lap size before any lap boundary has been seen. planrows is the whole file, so it only tells us
+-- the lap size when the plan holds exactly the laps that were asked for -- checked by divisibility rather
+-- than assumed. 0 means 'not known yet', and the screen then prints the cell number with no total.
+function brun.perlap_guess()
+  local n, k = brun.planrows, brun.iterwant
+  if n == nil or n <= 0 then return 0 end
+  if k == nil or k <= 0 then return 0 end
+  if math.mod(n, k) ~= 0 then return 0 end
+  return n / k
+end
+
 function brun.ui_show(c, arb)
   local u = brun.ui
   if u == nil then return end
   local vid = tostring(c.vid or '?')
-  local nlap = brun.planrows
+  -- FOUR NUMBERS, AND NONE OF THEM IS brun.planrows. planrows is the whole FILE, so on a 210-lap plan
+  -- this line read 'cell 114 of 279930 (0 % of the lap)'. The lap size is brun.percell.
+  local nlap = brun.percell
+  if nlap <= 0 then nlap = brun.perlap_guess() end
   local lap = 'lap ' .. brun.int(c.iter)
   if brun.iterwant ~= nil and brun.iterwant > 0 then
     lap = lap .. ' of ' .. brun.int(brun.iterwant)
   end
   local cell = 'cell ' .. brun.int(c.cell)
   if nlap > 0 then
-    cell = cell .. ' of ' .. brun.int(nlap) .. string.format('  (%.0f %% of the lap)',
-                                                             100.0 * (c.cell or 0) / nlap)
+    cell = cell .. ' of ' .. brun.int(nlap)
+                .. string.format('  (%.0f %%)', 100.0 * (c.cell or 0) / nlap)
   end
   brun.ui_set(u.prog, lap .. '    ' .. cell, brun.c_val)
 
@@ -889,8 +913,15 @@ function brun.ui_show(c, arb)
   if el ~= nil and el > 0 and brun.ncell > 0 and ntot > brun.ncell then
     left = brun.hours(el * (ntot - brun.ncell) / brun.ncell)
   end
-  brun.ui_set(u.time, 'ran ' .. brun.hours(el) .. '    left ' .. left
-                      .. '    ' .. brun.int(brun.ncell) .. ' cell(s) done', brun.c_lab)
+  -- CELLS DONE OUT OF THE WHOLE RUN, and what share of it that is -- the counterpart to the per-lap
+  -- share above. '%s cell(s) done' alone could not answer 'how far through the fortnight is it'.
+  local done = brun.int(brun.ncell)
+  if ntot > 0 then
+    done = done .. ' of ' .. brun.int(ntot) .. string.format('  (%.1f %%)', 100.0 * brun.ncell / ntot)
+  else
+    done = done .. ' cell(s) done'
+  end
+  brun.ui_set(u.time, 'ran ' .. brun.hours(el) .. '   left ' .. left .. '   ' .. done, brun.c_lab)
 
   brun.ui_set(u.stim, vid .. '  ' .. brun.int(c.baud) .. ' Bd  ' .. brun.fmtof(arb)
                       .. '  ' .. tostring(arb or '?'), brun.c_val)
@@ -1461,6 +1492,13 @@ function brun.soak(iterations, tag)
     -- which is the truth: nothing is being played.
     -- PER VECTOR, counted where the cell is attempted rather than where it succeeds, so the two
     -- numbers on the screen are 'failed' out of 'attempted' and not out of 'measured'.
+    -- THE LAP SIZE, LEARNED. A lap ends when the iteration number moves, and the highest cell seen in
+    -- the lap just finished IS the lap size -- exact, without trusting any header.
+    if lastiter ~= nil and c.iter ~= lastiter and brun.cellmax > 0 then
+      brun.percell = brun.cellmax
+      brun.cellmax = 0
+    end
+    if (c.cell or 0) > brun.cellmax then brun.cellmax = c.cell end
     brun.iter, brun.cell = c.iter or 0, c.cell or 0
     local vk = tostring(c.vid or '?')
     brun.vcell[vk] = (brun.vcell[vk] or 0) + 1

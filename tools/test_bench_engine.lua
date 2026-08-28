@@ -1054,12 +1054,20 @@ do
 
   -- EVERY FIELD THE OPERATOR ASKED FOR, and n-of-m rather than a bare index: 'cell 412' says nothing
   -- about how much is left, which is the question a soak screen exists to answer.
+  -- THE LAP SIZE IS NOT brun.planrows, and this is the assertion that would have caught it: planrows is
+  -- the whole FILE, so a 210-lap plan read 'cell 114 of 279930 (0 %)' on the instrument and the
+  -- hours-remaining figure came out 210x too large.
+  brun.percell, brun.iterwant, brun.ncell = 1677, 210, 412
   brun.screen({iter = 3, cell = 412, vid = 'v48b', baud = 153600}, 'SER_Hello_8N1_Drift10_x10')
   local prog, tim = MD.text(brun.ui.prog), MD.text(brun.ui.time)
   local stim, fail = MD.text(brun.ui.stim), MD.text(brun.ui.fail)
-  ck(string.find(prog, 'lap 3', 1, true) ~= nil and string.find(prog, 'cell 412 of', 1, true) ~= nil
-     and string.find(prog, '% of the lap', 1, true) ~= nil,
-     'the progress line is lap n of m, cell n of m, and how far through the lap', prog)
+  ck(string.find(prog, 'lap 3 of 210', 1, true) ~= nil
+     and string.find(prog, 'cell 412 of 1677', 1, true) ~= nil
+     and string.find(prog, '(25 %)', 1, true) ~= nil,
+     'the progress line is lap n of m, cell n of the LAP, and the share of the lap', prog)
+  -- AND THE WHOLE RUN, on the time line: 210 x 1677 = 352 170 cells, of which 412 is 0.1 %.
+  ck(string.find(tim, '412 of 352170', 1, true) ~= nil and string.find(tim, '(0.1 %)', 1, true) ~= nil,
+     'and the time line carries cells done out of the whole run, with its share', tim)
   ck(string.find(tim, 'ran ', 1, true) ~= nil and string.find(tim, 'left ', 1, true) ~= nil,
      'the time line is hours run and hours left', tim)
   ck(string.find(stim, 'v48b', 1, true) ~= nil and string.find(stim, '153600 Bd', 1, true) ~= nil
