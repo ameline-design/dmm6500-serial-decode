@@ -41,7 +41,12 @@ PLANDIR = os.path.join(ROOT, 'out', 'plans', 'auto')
 # The counters sweep_plan.lua prints on its PLAN line, in the order they appear there.
 KEYS = ['cells', 'badcells', 'points', 'ok', 'bad', 'skip',
         'raised', 'nobytes', 'norate', 'rate', 'bytes', 'bleed', 'bleedworst',
-        'r46b', 'rfit1', 'rstdC', 'rother', 'loudquiet']
+        'r46b', 'rfit1', 'rstdC', 'rother', 'loudquiet',
+        # `label` and its lr* split are byte-exact captures whose REPORTED rate is wrong. The leading \b in
+        # parse() is what keeps 'r46b' from also matching 'lr46b': 'l' and 'r' are both word characters, so
+        # there is no boundary between them and the two counters stay distinct.
+        'label', 'lr46b', 'lrfit1', 'lrstdC', 'lrother']
+LABEL_ROUTES = ['lr46b', 'lrfit1', 'lrstdC', 'lrother']
 # THE FOUR ROUTES SUBDIVIDE `rate` AND MUST SUM TO IT. Issue #46 was one counter over three
 # mechanisms -- a snapped harmonic, sig_fit's second fixed point, and a drift into a neighbouring
 # standard rate's basin -- with three different fixes, so a single number could say it moved but never
@@ -74,9 +79,9 @@ LINE = re.compile(r'^PLAN (\d+)/(\d+) iteration (\d+): (.*)$')
 # the interesting number -- they were whichever phase the plan's wait happened to draw.
 RATCHET = {
     (1, 1): {'bad': 11, 'badcells': 11, 'rate': 4, 'bytes': 7, 'nobytes': 0, 'bleed': 253,
-             'skip': 0, 'judged': 1763, 'loudquiet': 17},
+             'skip': 0, 'judged': 1763, 'loudquiet': 17, 'label': 3},
     (1, 8): {'bad': 167, 'badcells': 93, 'rate': 27, 'bytes': 35, 'nobytes': 105, 'bleed': 1467,
-             'skip': 0, 'judged': 14104, 'loudquiet': 90},
+             'skip': 0, 'judged': 14104, 'loudquiet': 90, 'label': 25},
 }
 WHY = {
     'bad': 'failing points',
@@ -98,6 +103,11 @@ WHY = {
     # that suppressed every byte on every loud vector would move nothing at all. Ratcheted upward for
     # that reason, and deliberately NOT downward: loud vectors starting to decode is not a defect.
     'loudquiet': 'loud vectors that declined -- a pass, bounded so mass suppression cannot hide',
+    # THE DIMENSION NO BYTE COMPARISON CAN SEE. judge() compares bytes; framing uses the unsnapped
+    # bittime while the DISPLAYED rate goes through sig_snap, so a capture can be byte-perfect and still
+    # name a rate 2.4-2.7 % wrong -- and be marked snapped, which removes the panel's approximate marker.
+    # Uncounted, that class scored ZERO in 141040 decodes while one hardware lap found three of it.
+    'label': 'byte-exact captures whose REPORTED RATE is still wrong (cluster C)',
 }
 
 
@@ -209,6 +219,10 @@ def one_lap(iteration, workers, offsets, quiet):
                       'right answer.' % tot['raised'])
     if tot['ok'] + tot['bad'] == 0:
         failed.append('nothing was judged at all')
+    lsum = sum(tot[k] for k in LABEL_ROUTES)
+    if lsum != tot['label']:
+        failed.append('the %d label misreport(s) split into %d route(s) -- a subdivision that does not '
+                      'reconcile with its total cannot be read as evidence' % (tot['label'], lsum))
     rsum = sum(tot[k] for k in ROUTES)
     if rsum != tot['rate']:
         failed.append('the %d rate point(s) split into %d route(s) -- a subdivision that does not '
@@ -271,6 +285,10 @@ def main():
         # THE ROUTE SHARES, which is the number worth reading: 46b at 73 % and cluster C at 14.5 % of
         # the hardware misreports are what say where to look, and a share is not recoverable from the
         # per-lap spread above once the laps are summed.
+        ltot = sum(sum(t[k] for _, t in rows) for k in LABEL_ROUTES)
+        if ltot > 0:
+            print('  label rts   ' + ',  '.join(
+                '%s %d' % (k, sum(t[k] for _, t in rows)) for k in LABEL_ROUTES))
         rtot = sum(sum(t[k] for _, t in rows) for k in ROUTES)
         if rtot > 0:
             print('  #46 routes  ' + ',  '.join(
