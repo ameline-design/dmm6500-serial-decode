@@ -426,10 +426,12 @@ def main():
                     help='carry on after the last cell the record on the key already holds, instead of '
                          'starting at the top of the plan. Refuses if the plan does not contain that '
                          'cell, because that means it is not the plan that produced the record')
-    ap.add_argument('--sdg-hold', type=int, default=0, metavar='SECS',
-                    help='when the generator goes silent, retry it every SECS instead of parking the '
-                         'run. 0 (default) parks, which is right for a lap; a multi-day run should hold, '
-                         'because a wedge on day 2 otherwise costs every day after it')
+    ap.add_argument('--sdg-hold', type=int, default=None, metavar='SECS',
+                    help='seconds between retries when the generator goes silent. The engine already '
+                         'holds -- a fault reports itself and the run carries on until it is stopped -- '
+                         'so this only changes the PERIOD. 0 restores the old behaviour of parking the '
+                         'run, which a multi-day soak should never ask for: a wedge on day 2 then costs '
+                         'every day after it')
     ap.add_argument('--listen', default=None, metavar='IP',
                     help='host address for live progress pushes (see tools/soak_listen.py)')
     ap.add_argument('--out', default=os.path.join(ROOT, 'out', 'bench'))
@@ -477,12 +479,20 @@ def main():
                 if not d.exec('do brun.resume = true end'):
                     raise SystemExit('the instrument would not accept the resume flag')
                 print('  resuming after the last cell the record holds')
-            if a.sdg_hold:
+            if a.sdg_hold is not None:
                 # SET BEFORE THE RUN STARTS, because brun.soak reads it at the give-up point and nothing
                 # can reach the instrument once the loop holds the interpreter.
+                #
+                # `is not None` AND NOT TRUTHINESS, so that --sdg-hold 0 is honoured rather than silently
+                # dropped. It is the one value that changes the CONTRACT rather than a period -- it puts
+                # the run back to parking on a fault -- so it is said out loud instead of ignored.
                 if not d.exec('do brun.holdsecs = %d end' % a.sdg_hold):
                     raise SystemExit('the instrument would not accept the generator hold interval')
-                print('  generator hold: retry every %d s instead of parking' % a.sdg_hold)
+                if a.sdg_hold > 0:
+                    print('  generator hold: retry every %d s' % a.sdg_hold)
+                else:
+                    print('  generator hold DISABLED: a silent generator will PARK this run, and a '
+                          'parked run cannot be restarted by anyone who is not standing there')
             if a.listen:
                 d.exec('do brun.listenip = %s end' % lua_str(a.listen))
             # STARTED AND LEFT. The call does not return until the loop ends, so it is sent without

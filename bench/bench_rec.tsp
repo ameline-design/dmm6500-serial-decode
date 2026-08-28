@@ -220,6 +220,35 @@ function brec.row(s)
   return true
 end
 
+-- Try to record again after recording stopped. -> true if the record is live again.
+--
+-- BECAUSE A FAULT MUST NOT END A RUN. brec.stopped means rows are being thrown away, which is bad enough
+-- to paint the screen red -- but the run keeps measuring until somebody stops it, so this is the retry
+-- that lets a transient failure heal instead of costing the rest of a fortnight. The failures worth
+-- retrying are the ones that are really about the volume rather than the budget: a key that was briefly
+-- unreadable, a write that failed once, a reopen that lost a race.
+--
+-- THE BYTE BUDGET IS NOT RETRIED, and that is why this lives here rather than as a file.open in the loop:
+-- a spent budget will still be spent in five minutes, so retrying it would be a red line that never
+-- changes and a key filled to its ceiling anyway. brec.stopped stays true and the run says so.
+--
+-- A HEADER MARKS THE GAP. Rows that stop and resume with nothing between them read as one unbroken run,
+-- so the resumed stretch declares itself -- tag=resumed, which judge_bench.py's split_runs treats as a
+-- continuation of the run above it rather than as a new run whose counts get judged on their own.
+function brec.reopen()
+  if brec.ntotbyte >= brec.maxtotal then return false end
+  if brec.fh ~= nil and not brec.stopped then return true end
+  if brec.fh ~= nil then pcall(function() file.close(brec.fh) end) end
+  brec.fh = nil
+  local fh, path = brec.newfile(brec.pfx)
+  if fh == nil then return false end
+  brec.fh, brec.path = fh, path
+  brec.stopped, brec.why = false, nil
+  brec.sincesync = 0
+  brec.header('resumed', nil, nil)
+  return true
+end
+
 -- One progress line. Cheap and frequent: this is what a reader looks at first, and what says how far
 -- an interrupted run got.
 function brec.note(iter, cell, ncell, note, nbad, nsdgfail)

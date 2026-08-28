@@ -61,8 +61,11 @@ def split_runs(lines):
     the verdict is about a mixture nobody ran. That is exactly the kind of quietly-wrong answer this
     project keeps finding, so the default is the LAST run and everything else takes a flag.
 
-    A 'tag=roll' header is a CONTINUATION, not a new run: brec.roll writes one when a single run passes
-    the per-file byte cap, and its rows belong to the run above it.
+    'tag=roll' AND 'tag=resumed' ARE CONTINUATIONS, not new runs. brec.roll writes the first when a single
+    run passes the per-file byte cap; brec.reopen writes the second when recording failed and came back,
+    which happens because a fault no longer ends a run -- the soak keeps measuring, retries the record, and
+    carries on. Both mark a seam in one run's rows, and treating either as a new run would split a
+    fortnight into pieces and judge each piece's counts on its own.
     """
     runs, cur = [], None
     for ln in lines:
@@ -71,8 +74,8 @@ def split_runs(lines):
             for part in ln.split():
                 if part.startswith('tag='):
                     tag = part[4:]
-            if tag == 'roll' and cur is not None:
-                continue                      # same run, next file
+            if tag in ('roll', 'resumed') and cur is not None:
+                continue                      # same run, next file or after a gap
             cur = (tag, [])
             runs.append(cur)
             continue

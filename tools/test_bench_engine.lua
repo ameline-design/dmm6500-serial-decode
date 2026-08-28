@@ -26,6 +26,19 @@ for _, m in ipairs({'bench/arb_names.tsp', 'bench/sdg_net.tsp', 'bench/bench_rec
 end
 MD.usb(true)
 
+-- THE SHIPPED DEFAULTS, CAPTURED BEFORE ANY TEST TOUCHES THEM, because the assertion that matters most in
+-- this file is about what an UNCONFIGURED run does and every test here reconfigures. Restoring to a
+-- literal instead cost this suite its whole point once already: with `brun.holdsecs = 300` typed into a
+-- teardown, four assertions claiming the shipped default never parks passed against a build whose default
+-- was 0 -- the earlier block had set the value they were reading. A test that writes the number it is
+-- checking is checking itself.
+local SHIP = {holdsecs = brun.holdsecs, holdslice = brun.holdslice, holdmax = brun.holdmax,
+              recretry = brun.recretry, maxsdgfail = brun.maxsdgfail}
+local function shipdefaults()
+  brun.holdsecs, brun.holdslice, brun.holdmax = SHIP.holdsecs, SHIP.holdslice, SHIP.holdmax
+  brun.recretry, brun.maxsdgfail, brun.maxcell = SHIP.recretry, SHIP.maxsdgfail, 0
+end
+
 -- THE REAL STORED NAMES, read out of tools/vector_names.py rather than typed here: the whole reason a
 -- wrong ARWV reached an instrument is that the mock understood a name this test had invented. Parsing
 -- the host's own map means the mock answers to exactly what the plan will carry.
@@ -328,9 +341,14 @@ do
              '1,5,v77,' .. ARB.v77 .. ',9600,std,5.0000,0.0000,96000,0.000',
              '1,6,v77,' .. ARB.v77 .. ',9600,std,5.0000,0.0000,96000,0.000'})
   MOCKB.sdg.wedged = true
+  -- BOUNDED, BECAUSE IT NO LONGER PARKS. A wedged generator now holds and retries until somebody stops
+  -- the run, so a test has to be the thing that stops it: holdmax is the bound, and delay() being a no-op
+  -- offline means an unbounded hold would SPIN rather than wait.
+  brun.holdslice, brun.holdsecs, brun.holdmax = 1, 1, 3
   local ok, why = brun.soak(1, 'dead')
-  ck(ok == true and why ~= nil and string.find(why, 'in a row', 1, true) ~= nil,
-     'a wedged generator PARKS the run with a reason rather than filling the key', tostring(why))
+  shipdefaults()
+  ck(ok == true and why ~= nil and string.find(why, 'gave up after', 1, true) ~= nil,
+     'a wedged generator holds and retries rather than filling the key', tostring(why))
   local s = slurp(brec.path)
   ck(s ~= nil and string.find(s, 'sdg failed', 1, true) ~= nil,
      'and the record names the generator, so a reader is not left guessing')
@@ -398,7 +416,7 @@ end
 
 -- ---------------------------------------------------------------------------
 print('')
-print('-- a wedged generator: park by default, hold when a long run asks --')
+print('-- a wedged generator: never parks, holds until somebody stops the run --')
 do
   bsdg.timeout = 0.05
   brun.maxsdgfail = 3
@@ -408,19 +426,58 @@ do
     plan[i] = '1,' .. i .. ',v77,' .. ARB.v77 .. ',9600,std,5.0000,0.0000,96000,0.000'
   end
 
-  -- (a) THE DEFAULT IS UNCHANGED. holdsecs = 0 parks the run, which is right for a lap somebody will
-  -- look at within the hour and wrong for a fortnight.
+  -- (a) THE DEFAULT MUST NOT PARK. A run ends when the iteration count runs out, when the TRIGGER key is
+  -- pressed, or when the stop file appears -- and a fault is none of those. This is the assertion that
+  -- says so: with nothing but the default set, a generator that never answers is still being waited for
+  -- when holdmax -- the test's own bound, not the instrument's -- ends it.
+  --
+  -- CHECKED AGAINST THE SHIPPED DEFAULT rather than a value the test sets, because the whole point is
+  -- what an unattended run does when nobody has configured it. brun.holdsecs is read here, not written.
+  ck(SHIP.holdsecs > 0, 'the SHIPPED default holds rather than parks',
+     string.format('brun.holdsecs = %s at load', tostring(SHIP.holdsecs)))
   MOCKB_SDG({})
   bsdg.reset()
   writeplan(plan)
-  brun.holdsecs = 0
+  brun.holdslice, brun.holdmax = 1, 4
   MOCKB.sdg.wedged = true
-  local ok1, why1 = brun.soak(1, 'park')
-  ck(ok1 == true and string.find(tostring(why1), 'in a row', 1, true) ~= nil,
-     'by default a wedged generator still parks the run', tostring(why1))
+  local ok1, why1 = brun.soak(1, 'nopark')
+  ck(ok1 == true and string.find(tostring(why1), 'gave up after', 1, true) ~= nil
+     and string.find(tostring(why1), 'in a row', 1, true) == nil,
+     'a wedged generator is held for, not parked on -- only holdmax ends it', tostring(why1))
+  -- SECONDS HELD, NOT RETRIES ATTEMPTED, and the difference is the point of running this at the shipped
+  -- period: brun.nhold counts COMPLETED holdsecs waits, and holdsecs is 300 here because nothing set it,
+  -- so a test bounded at 4 s cannot see one. What it can see is that the run spent those 4 s waiting for
+  -- the generator rather than ending. Retries are counted in (c), where the period is 1 s.
+  ck(brun.heldsecs > 0, 'and it really did wait, at the shipped 300 s period',
+     string.format('%d s held, %d completed retry(s)', brun.heldsecs, brun.nhold))
 
-  -- (b) WITH A HOLD it waits, retries, and carries on from where it stopped. The generator comes back on
-  -- the second call to alive() -- the first is soak's own pre-flight check.
+  -- (b) A GENERATOR THAT ANSWERS IS NOT WAITED FOR. maxsdgfail counts cells with no stimulus, and a stale
+  -- arb_names.tsp produces those with the generator perfectly alive -- a static fault no amount of holding
+  -- fixes. Holding 300 s per 20 cells for it would turn a 1.6 h lap into a 7 h one and call it recovery.
+  MOCKB_SDG({})
+  bsdg.reset()
+  bsdg.timeout = 5
+  writeplan({'1,1,v77,SER_NoSuchWaveform_8N1_x10,9600,std,5.0000,0.0000,96000,0.000',
+             '1,2,v77,SER_NoSuchWaveform_8N1_x10,9600,std,5.0000,0.0000,96000,0.000',
+             '1,3,v77,SER_NoSuchWaveform_8N1_x10,9600,std,5.0000,0.0000,96000,0.000',
+             '1,4,v77,SER_NoSuchWaveform_8N1_x10,9600,std,5.0000,0.0000,96000,0.000'})
+  brun.holdslice, brun.holdmax = 1, 4
+  local heldb = brun.heldsecs
+  local okb, whyb = brun.soak(1, 'aliveb')
+  ck(okb == true and string.find(tostring(whyb), 'iteration', 1, true) ~= nil,
+     'a plan the arb table disagrees with does not stop or hold the run', tostring(whyb))
+  ck(brun.heldsecs == 0, 'and nothing was waited for, because the generator answers',
+     string.format('%d s held', brun.heldsecs))
+  ck(brun.nsdgalive >= 1, 'and the record says the fault is not the wire',
+     string.format('%d time(s)', brun.nsdgalive))
+  local sa = slurp(brec.path)
+  ck(sa ~= nil and string.find(sa, 'generator ANSWERS', 1, true) ~= nil,
+     'in those words, so nobody power cycles a working generator')
+  bsdg.timeout = 0.05
+  MOCKB.sdg.wedged = true
+
+  -- (c) IT CARRIES ON FROM WHERE IT STOPPED once the generator answers. It comes back on the second call
+  -- to alive() -- the first is soak's own pre-flight check.
   MOCKB_SDG({})
   bsdg.reset()
   writeplan(plan)
@@ -428,10 +485,15 @@ do
   -- SPINS, and a suite that spins until something kills it reports exit 0 through a pipeline.
   brun.holdsecs, brun.holdslice, brun.holdmax = 1, 1, 60
   MOCKB.sdg.wedged = true
+  -- THREE CALLS, NOT TWO, and the third is what makes this test the one it claims to be. sdghold now asks
+  -- alive() BEFORE it waits, so the calls are: soak's pre-flight (1), sdghold's is-it-really-the-wire
+  -- check (2), and the check after the first hold (3). Coming back on call 2 would mean the run never
+  -- held at all -- which is correct behaviour for a generator that answers, and is asserted in (b), but
+  -- it is not this case.
   local realalive, nalive = bsdg.alive, 0
   bsdg.alive = function()
     nalive = nalive + 1
-    if nalive >= 2 then MOCKB.sdg.wedged = false end
+    if nalive >= 3 then MOCKB.sdg.wedged = false end
     return realalive()
   end
   local ok2, why2 = brun.soak(1, 'hold')
@@ -446,8 +508,8 @@ do
   ck(sh ~= nil and string.find(sh, 'holding for the generator', 1, true) ~= nil,
      'and every retry is written to the key, so the gap is readable')
 
-  -- (c) AND IT GIVES UP IF TOLD TO. holdmax bounds the total wait; without it a wedge holds for as long
-  -- as the run had left, which is the right default on the instrument and unusable in a test.
+  -- (d) AND IT GIVES UP ONLY IF TOLD TO. holdmax bounds the total wait; it is 0 on the instrument, which
+  -- is what 'until it is stopped' means, and it is the only reason a test can end one of these runs.
   MOCKB_SDG({})
   bsdg.reset()
   writeplan(plan)
@@ -458,9 +520,139 @@ do
      'a hold that runs past holdmax ends the run with a reason', tostring(why3))
   ck(brun.stopbad == true, 'and it is marked as a fault, so the screen goes red')
 
-  brun.holdsecs, brun.holdmax, brun.holdslice = 0, 0, 10
+  -- RESTORED TO THE SHIPPED DEFAULTS, not to zero. Leaving holdsecs = 0 here would put every test after
+  -- this one back into the parking configuration -- so the assertions would pass against a module
+  -- configured the way the instrument never is, which is the shape of half the bugs in this file's
+  -- history.
+  shipdefaults()
   brun.maxsdgfail = 20
   bsdg.timeout = 5
+end
+
+-- ---------------------------------------------------------------------------
+print('')
+print('-- a fault is a report, not an ending: the run keeps going --')
+do
+  -- THE RULE THIS BLOCK EXISTS FOR: a run stops when the iteration count runs out, when the TRIGGER key
+  -- is pressed, or when the stop file appears. Nothing else. Every fault below used to end it.
+  local plan, i = {}, nil
+  for i = 1, 6 do
+    plan[i] = '1,' .. i .. ',v77,' .. ARB.v77 .. ',9600,std,5.0000,0.0000,96000,0.000'
+  end
+
+  -- (a) THE RECORD STOPS BEING WRITEABLE MID-LAP. The cells keep being measured, the record is retried,
+  -- and the lap still reaches its end -- because the app is still being exercised whether or not anything
+  -- is writing the transcript down, and the operator is the only one who gets to decide to stop.
+  MOCKB_SDG({})
+  bsdg.reset()
+  writeplan(plan)
+  brun.recretry = 2
+  local nrow0 = 0
+  local realrow = brec.row
+  brec.row = function(s)
+    nrow0 = nrow0 + 1
+    -- FAIL THE WAY THE INSTRUMENT FAILS: brec.row sets stopped and returns false, which is what a pulled
+    -- key produces. Faking it any other way would test a path the hardware cannot reach.
+    if nrow0 == 2 then
+      brec.stopped, brec.why = true, 'write failed and SOAK.csv will not reopen -- key pulled?'
+      return false
+    end
+    return realrow(s)
+  end
+  local okr, whyr = brun.soak(1, 'recfail')
+  brec.row = realrow
+  brun.recretry = 50
+  ck(okr == true and string.find(tostring(whyr), 'iteration', 1, true) ~= nil,
+     'a record that stops being writeable does NOT end the run', tostring(whyr))
+  ck(brun.ncell == 6, 'and every cell in the lap was still measured',
+     string.format('%d cell(s)', brun.ncell))
+  ck(brun.nreclost >= 1, 'and the cells nobody wrote down are counted',
+     string.format('%d cell(s) unrecorded', brun.nreclost))
+  ck(brun.nrecback >= 1, 'and recording came back by itself',
+     string.format('%d recovery(s)', brun.nrecback))
+  local sr = slurp(brec.path)
+  ck(sr ~= nil and string.find(sr, 'tag=resumed', 1, true) ~= nil,
+     'and the gap is declared in the file, so a reader is not told a lie by omission')
+  ck(sr ~= nil and string.find(sr, 'unrecorded cell', 1, true) ~= nil,
+     'with the number of cells it cost')
+  -- THE SCREEN SAYS SO FOR THE REST OF THE RUN. Those cells are gone -- no later pass recovers them --
+  -- so the amber outlives the fault, unlike the generator's.
+  --
+  -- stopwhy IS CLEARED FOR THE CHECK, because this is a claim about what the screen says WHILE the run is
+  -- going: a finished run reports its ending first and rightly outranks every warning below it, which is
+  -- asserted where the end-of-run screen is. Restored immediately, since leaving a run's stop reason
+  -- cleared would make the next test's screen read as one still in progress.
+  local savewhy = brun.stopwhy
+  brun.stopwhy = nil
+  local rcol, rmsg = brun.ui_status()
+  brun.stopwhy = savewhy
+  ck(rcol == brun.c_warn and string.find(rmsg, 'never recorded', 1, true) ~= nil,
+     'and the screen keeps saying so after the record recovers', tostring(rmsg))
+
+  -- (b) THE PLAN FILE GOES AWAY at the wrap. It holds and retries instead of parking, and comes back.
+  --
+  -- THE CELL CAP IS WHAT ENDS THIS ONE, and that is the assertion rather than a workaround. asking for two
+  -- iterations of a plan that holds only iteration 1 wraps FOR EVER -- the end-of-plan test wraps unless
+  -- the last row's iteration has reached the count -- which is correct for the indefinite run the wrap was
+  -- written for, and offline, where delay() is a no-op, that is a spin rather than a wait. So the run is
+  -- bounded by brun.maxcell, and the plan failure has to not be what stopped it.
+  MOCKB_SDG({})
+  bsdg.reset()
+  writeplan(plan)
+  brun.maxcell = 40
+  brun.holdslice, brun.holdsecs, brun.holdmax = 1, 1, 30
+  local realopen, nopen = brun.planopen, 0
+  brun.planopen = function()
+    nopen = nopen + 1
+    -- The first reopen after the wrap fails; the next succeeds, which is what a key that was briefly
+    -- unreadable looks like.
+    if nopen == 2 then return false end
+    return realopen()
+  end
+  local okp, whyp = brun.soak(2, 'planfail')
+  brun.planopen = realopen
+  shipdefaults()
+  brun.maxcell = 0
+  ck(okp == true and string.find(tostring(whyp), 'plan file', 1, true) == nil,
+     'a plan file that will not reopen does NOT end the run', tostring(whyp))
+  ck(string.find(tostring(whyp), 'cell cap', 1, true) ~= nil,
+     'it runs until something that is not a fault stops it', tostring(whyp))
+  ck(brun.ncell == 40, 'and it kept measuring straight through the gap',
+     string.format('%d cell(s)', brun.ncell))
+  ck(nopen >= 3, 'having reopened the plan after the failed attempt',
+     string.format('%d open(s)', nopen))
+  local sp = slurp(brec.path)
+  ck(sp ~= nil and string.find(sp, 'unreadable or empty', 1, true) ~= nil,
+     'and the hold is on the key, so the gap in the timestamps is explained')
+  ck(sp ~= nil and string.find(sp, 'readable again', 1, true) ~= nil,
+     'as is the recovery')
+
+  -- (c) THE TRIGGER KEY STILL ENDS IT, and that is the point of the rule rather than an exception to it:
+  -- the operator is what stops a run. Pressed during a hold, which is the case that would be easiest to
+  -- get wrong -- a hold that ignored the key would need the power cycle the key exists to avoid.
+  MOCKB_SDG({})
+  bsdg.reset()
+  writeplan(plan)
+  bsdg.timeout = 0.05
+  brun.maxsdgfail = 2
+  brun.holdslice, brun.holdsecs, brun.holdmax = 1, 1, 600
+  MOCKB.sdg.wedged = true
+  local realhit, nhit = brun.stopkey_hit, 0
+  brun.stopkey_hit = function()
+    nhit = nhit + 1
+    return nhit >= 4          -- not at once: let the hold start first
+  end
+  local okk, whyk = brun.soak(1, 'keyinhold')
+  brun.stopkey_hit = realhit
+  shipdefaults()
+  brun.maxsdgfail = 20
+  bsdg.timeout = 5
+  MOCKB.sdg.wedged = false
+  ck(okk == true and string.find(tostring(whyk), 'TRIGGER key', 1, true) ~= nil,
+     'the TRIGGER key ends a run even from inside a hold', tostring(whyk))
+  ck(string.find(tostring(whyk), 'holding for the generator', 1, true) ~= nil,
+     'and says what it was holding for when it was pressed', tostring(whyk))
+  ck(brun.stopbad ~= true, 'and an operator stop is not a fault, so the screen does not go red')
 end
 
 -- ---------------------------------------------------------------------------
@@ -747,24 +939,32 @@ do
   local hl1, hcol1 = brun.healthline()
   ck(hcol1 == brun.c_bad, 'while a silent generator is red from the third cell, figure or no figure', hl1)
   brun.nbadsdg = 0
-  brun.ncell, brun.nunexp, brun.nexp = 400, 4, 78
+  -- THE BAND THAT MATTERS IS WHERE A REAL LAP SITS, and the measurement of that moved by fourteen points
+  -- when brun.point stopped capturing 20 ms at 1 MS/s regardless of what it asked for. A lap driven at the
+  -- rate it requests reads 1 unexpected cell in 586 and 2 in the high hundreds -- about 0.3 %, or 99.7 %
+  -- health -- so THREE unexpected cells in 400 is what 'working' looks like and it has to be green.
+  brun.ncell, brun.nunexp, brun.nexp = 400, 3, 78
   local hl, hcol = brun.healthline()
-  ck(hl == 'SOAK HEALTH 99.0 %' and hcol == brun.c_good,
-     'the headline is one health figure, green above 85 %', hl)
+  ck(hl == 'SOAK HEALTH 99.2 %' and hcol == brun.c_good,
+     'the headline is one health figure, and the rate a working lap runs at is green', hl)
   brun.nunexp = 0
   hl, hcol = brun.healthline()
   ck(hl == 'SOAK HEALTH 100.0 %' and hcol == brun.c_good,
      'and 100 % with 78 ALLOWED refusals is green', hl)
-  -- THE BAND THAT MATTERS, because it is where a real lap sits: 92 % is what hardware measured while
-  -- working, so it must read as healthy. A light that turns amber at 99.9 % is amber all week.
+  -- THE TRIP ITSELF, ASSERTED AT THE BOUNDARY. Four in 400 is exactly brun.healthwarn, and the comparison
+  -- is <=, so the threshold value is amber rather than green. Worth pinning: a band tested only well
+  -- inside and well outside cannot tell which side of it the boundary falls on, and the boundary is the
+  -- only value an operator will ever argue about.
+  brun.nunexp = 4
+  hl, hcol = brun.healthline()
+  ck(hl == 'SOAK HEALTH 99.0 %' and hcol == brun.c_warn,
+     'exactly at the threshold is amber, not green', hl)
+  -- AND THE FIGURE THAT USED TO BE THE STANDARD IS NOW AMBER, which is the whole point of moving it: 92 %
+  -- was measured on laps that were starving the decoder of payload, so treating it as healthy would be
+  -- carrying the harness bug forward as a specification.
   brun.nunexp = 32
   hl, hcol = brun.healthline()
-  ck(hcol == brun.c_good, 'a 92 % lap -- what hardware actually measures -- is still green', hl)
-  -- THE MEASURED FLOOR: 89.8 % was the worst this lap read while healthy, so it has to be green or the
-  -- headline flickers for two hours.
-  brun.nunexp = 41
-  hl, hcol = brun.healthline()
-  ck(hcol == brun.c_good, 'and 89.8 %, the worst a healthy lap read, is green rather than flickering', hl)
+  ck(hcol == brun.c_warn, 'a 92 % lap -- what a STARVED lap read -- is no longer called healthy', hl)
   brun.nunexp = 80
   hl, hcol = brun.healthline()
   ck(hcol == brun.c_warn, 'while 80 % is amber -- worse than a good lap', hl)

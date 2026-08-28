@@ -249,6 +249,33 @@ check("only class 'loud' turns the allowance on",
 check('an exact vector gets zero from judge_payload_v',
       BU.judge_payload_v(hexs(cyc(W13, 0, 240)), W13, 'exact')[0] == 'PASS')
 
+# ---------------------------------------------------------------------------
+# WHICH ROWS BELONG TO WHICH RUN, and it is judged here because getting it wrong produces a VERDICT rather
+# than an error. One record holds many runs -- a fixed filename opened for append, because a numbered name
+# means probing for a free one and a probe that misses posts a popup -- so the reader splits on header
+# lines. Two of those headers are seams inside ONE run and must not start a new one: brec.roll writes
+# tag=roll when a run passes the per-file byte cap, and brec.reopen writes tag=resumed when recording
+# failed and came back, which happens because a fault no longer ends a run.
+#
+# WHAT MISREADING IT COSTS: a fortnight that hit one recording gap would be split into two runs, the
+# default 'last run' would judge only the rows after the gap, and the answer would look completely
+# reasonable. Nothing raises.
+import judge_bench as JB                                       # noqa: E402
+
+_SC = JB.SCHEMA
+_R = 'R,1,%d,v77,9600,std,5,0,96000,0,10000,1.04,y,9600,8N1,20,20,0,0,0,false,false,,41'
+_lines = ['# %s tag=soak iterations=1 plan=/usb1/SERDEC/PLAN.CSV randomperlap=4 file=1' % _SC, _R % 1,
+          '# %s tag=resumed iterations=forever plan= randomperlap=4 file=1' % _SC, _R % 2,
+          '# %s tag=roll iterations=forever plan= randomperlap=4 file=2' % _SC, _R % 3,
+          '# %s tag=smoke iterations=1 plan=x randomperlap=all file=1' % _SC, _R % 4]
+_runs = JB.split_runs(_lines)
+check('a resumed record and a rolled file are seams in ONE run, not new runs',
+      len(_runs) == 2 and _runs[0][0] == 'soak' and len(_runs[0][1]) == 3,
+      '%s' % [(t, len(b)) for t, b in _runs])
+check('while a genuinely different run still splits',
+      len(_runs) == 2 and _runs[1][0] == 'smoke' and len(_runs[1][1]) == 1,
+      '%s' % [(t, len(b)) for t, b in _runs])
+
 print()
 if FAILED:
     print('%d FAILED: %s' % (len(FAILED), ', '.join(FAILED)))
