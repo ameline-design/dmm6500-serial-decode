@@ -954,7 +954,9 @@ end
 function sdec.sig_bittime()
   local ne, ei = sdec.ne, sdec.ei
   sdec.bittime, sdec.baud_raw, sdec.baud = nil, nil, nil
-  sdec.fitq, sdec.snapped = 0, false
+  -- snapfirm starts TRUE because nothing has been claimed yet: with no rate reported there is no
+  -- overstated snap to warn about, and a false here would mark every pre-capture panel approximate.
+  sdec.fitq, sdec.snapped, sdec.snapfirm = 0, false, true
   if ne == nil or ne < 2 then return nil, 'need at least two edges' end
 
   local nw = ne - 1
@@ -1017,14 +1019,31 @@ function sdec.sig_bittime()
   sdec.fitq    = bestq
   local fs = sdec.acq_fs or sdec.fs
   sdec.baud_raw = fs / bestT
-  sdec.baud, sdec.snapped = sdec.sig_snap(sdec.baud_raw)
+  sdec.baud, sdec.snapped, sdec.snapfirm = sdec.sig_snap(sdec.baud_raw)
   return bestT
 end
 
+-- HOW CLOSE THE MEASUREMENT HAS TO LAND FOR A SNAP TO BE PRESENTED AS CERTAIN, as opposed to merely
+-- chosen. Inside snaptol the standard rate is still the reported answer, because real devices use
+-- standard rates and that prior is worth keeping; but past this inner band the measurement and the label
+-- disagree by more than the fit's own accuracy, and calling the result exact overstates it.
+--
+-- 1.25 % IS CALIBRATED, NOT PICKED. On one side sits the behaviour docs/REFERENCE.md documents and wants:
+-- 29127 Bd reading as 28800, which is 1.14 % away. On the other sit the three measured cluster-C cases,
+-- whose raw fits land 1.63 %, 1.81 % and 1.97 % from the standard rate they were relabelled as. A band at
+-- 1.25 % keeps the first confident and makes all three of the second approximate.
+sdec.snaptol_firm = sdec.snaptol_firm or 0.0125
+
 -- Snap a measured rate to a standard one when it is within tolerance.
--- Returns rate, snapped.
+-- Returns rate, snapped, firm.
+--
+-- THE THIRD RETURN IS SEPARATE FROM THE SECOND ON PURPOSE. `snapped` is not a display flag: ua_best reads
+-- it as evidence when protecting the fitted rate, arming the submultiple guards and admitting alternative
+-- candidates, so narrowing IT would change which bytes come back and risks the harmonic regressions every
+-- branch there carries a counterexample for. `firm` is new, additive, and read only where CONFIDENCE is
+-- claimed -- the panel's approximate marker and the rate auto-lock commits to.
 function sdec.sig_snap(b)
-  if b == nil then return nil, false end
+  if b == nil then return nil, false, false end
   local best, bestd = nil, nil
   local i
   local nb = table.getn(sdec.stdbaud)
@@ -1034,8 +1053,12 @@ function sdec.sig_snap(b)
     if d < 0 then d = -d end
     if bestd == nil or d < bestd then best, bestd = r, d end
   end
-  if bestd ~= nil and bestd <= sdec.snaptol then return best, true end
-  return b, false
+  if bestd ~= nil and bestd <= sdec.snaptol then
+    return best, true, bestd <= sdec.snaptol_firm
+  end
+  -- NOT SNAPPED IS FIRM. The measurement is reported as itself, so nothing has been overstated -- the
+  -- approximate marker for an unsnapped rate is already earned by it not being a standard rate.
+  return b, false, true
 end
 
 -- Round a MEASURED rate to a credible setting: the COARSEST step that moves it less than 1 %.

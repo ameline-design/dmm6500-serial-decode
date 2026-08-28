@@ -143,6 +143,65 @@ ck(results[15].bias * 100 < SNAP_NEEDS,
 ck(results[0].bias * 100 < 0.01, 'a jitter-free line fits its rate to better than 0.01 %',
    string.format('%+.4f %%', results[0].bias * 100))
 
+-- ---------------------------------------------------------------------------
+-- THE FIX: a snap that the measurement does not support is still LABELLED, but no longer CLAIMED.
+--
+-- Cluster C's harm is not the label, it is that auto-lock rounds the already-snapped rate and commits it.
+-- Measured: a 37422 Bd line fitting 37703 was relabelled 38400 and LOCKED there -- 2.6 % out and
+-- persistent, because the lock gate reads `snapped` and never looks past it. sig_snap now returns a third
+-- value, `firm`, which is false when the raw fit sat further from the standard rate than the fit's own
+-- accuracy; the panel keeps its '?' and auto-lock falls back to the raw measurement.
+--
+-- `snapped` ITSELF IS DELIBERATELY UNCHANGED, because ua_best reads it as arbitration evidence -- to
+-- protect the fitted rate, arm the submultiple guards and admit alternatives. Narrowing that boolean
+-- would change which BYTES come back, and every branch there carries a measured counterexample.
+-- ---------------------------------------------------------------------------
+print('')
+do
+  local firmtol = sdec.snaptol_firm
+  ck(firmtol ~= nil and firmtol > 0 and firmtol < (sdec.snaptol or 0.02),
+     'the firm band exists and is strictly inside snaptol',
+     string.format('firm %.4f, snaptol %.4f', firmtol or -1, sdec.snaptol or -1))
+
+  -- THE DOCUMENTED CASE STAYS CONFIDENT. docs/REFERENCE.md states 29127 Bd reads as 28800 and wants that;
+  -- it is 1.14 % away, inside the firm band, so it must keep reporting without a marker.
+  local b1, s1, f1 = sdec.sig_snap(29127)
+  ck(b1 == 28800 and s1 == true and f1 == true,
+     'the documented 29127 -> 28800 snap stays FIRM, so nothing regresses there',
+     string.format('%s snapped=%s firm=%s (%.3f %% away)', tostring(b1), tostring(s1), tostring(f1),
+                   100 * (29127 / 28800 - 1)))
+
+  -- AND THE THREE MEASURED CLUSTER-C FITS BECOME APPROXIMATE. These are the raw fits the plan sweep
+  -- recorded, not invented numbers: 37703.6, 150577.6 and 188874.4.
+  local cc = {{37703.6, 38400}, {150577.6, 153600}, {188874.4, 192000}}
+  local allsoft, det, i = true, {}, nil
+  for i = 1, table.getn(cc) do
+    local raw, std = cc[i][1], cc[i][2]
+    local b, s, f = sdec.sig_snap(raw)
+    if not (b == std and s == true and f == false) then allsoft = false end
+    det[i] = string.format('%.1f->%s firm=%s (%.2f %%)', raw, tostring(b), tostring(f),
+                           100 * (raw / std - 1))
+  end
+  ck(allsoft, 'all three measured cluster-C fits still snap, but NOT firmly',
+     table.concat(det, '; '))
+
+  -- THE PANEL KEEPS ITS MARKER, which is the operator-visible half of the fix.
+  local keepb, keeps, keepf = sdec.baud, sdec.snapped, sdec.snapfirm
+  sdec.baud, sdec.snapped, sdec.snapfirm = 38400, true, false
+  local soft = sdec.baud_text()
+  sdec.snapfirm = true
+  local hard = sdec.baud_text()
+  ck(string.find(soft, '?', 1, true) ~= nil and string.find(hard, '?', 1, true) == nil,
+     'a non-firm snap keeps the approximate marker; a firm one does not',
+     string.format('non-firm %q, firm %q', soft, hard))
+  sdec.baud, sdec.snapped, sdec.snapfirm = keepb, keeps, keepf
+
+  -- AN UNSNAPPED RATE IS FIRM, or every non-standard measurement would be double-marked.
+  local b2, s2, f2 = sdec.sig_snap(16099)
+  ck(s2 == false and f2 == true, 'an unsnapped measurement reports itself and is not called overstated',
+     string.format('%s snapped=%s firm=%s', tostring(b2), tostring(s2), tostring(f2)))
+end
+
 print('')
 print('  CONCLUSION: jitter is not the cause. The reproduction that matters is tools/sweep_plan.lua')
 print('  against the real arbs, where resampling a looping waveform biases the fit by +0.70 to +0.75 %.')

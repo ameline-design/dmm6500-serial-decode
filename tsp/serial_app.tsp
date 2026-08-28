@@ -1702,7 +1702,19 @@ function sdec.autolock_try()
   -- (mode_cur().needbaud), and the only route to 8 kB was typing the number into Options -- which is
   -- also how a wrong rate gets typed in. Rounding is what replaces snapping as the credibility test;
   -- the other four gates are unchanged and still have to pass.
-  local lockb, lockok = sdec.baud_round(sdec.baud)
+  -- LOCK THE MEASUREMENT, NOT AN OVERSTATED SNAP. sdec.baud has already been relabelled by sig_snap, so
+  -- rounding IT commits whatever the snap chose -- and when the snap was not firm that is a rate the fit
+  -- does not support. Measured: a 37422 Bd line whose fit read 37703 was relabelled 38400 and locked
+  -- there, 2.6 % out and persistent, because `snapped` was true and this gate never looks past it. Using
+  -- the raw fit in that case locks ~37700 instead: 0.7 % out rather than 2.6 %, and still a rate an
+  -- operator could have typed once baud_round has rounded it.
+  --
+  -- STILL AUTOLOCKING, deliberately. Refusing the lock is the other available answer and it is worse:
+  -- the comment above records what that cost when a 16 kBd device could not autolock at all -- amber
+  -- padlock, every recording mode refused. This keeps the lock and only corrects the number.
+  local lockfrom = sdec.baud
+  if sdec.snapped and sdec.snapfirm == false and sdec.baud_raw ~= nil then lockfrom = sdec.baud_raw end
+  local lockb, lockok = sdec.baud_round(lockfrom)
   if not sdec.snapped and not lockok then return false end
   -- GATE 2, THE LONGEST CONTIGUOUS CLEAN RUN -- not an error count, and not an error POSITION.
   -- What justifies locking a format is that the format explains a long unbroken stretch of the

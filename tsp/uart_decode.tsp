@@ -1660,7 +1660,7 @@ function sdec.decode_from(rd, n)
     sdec.bittime  = T
     sdec.fitratio = ratio
     sdec.baud_raw = fs / T
-    sdec.baud, sdec.snapped = sdec.sig_snap(sdec.baud_raw)
+    sdec.baud, sdec.snapped, sdec.snapfirm = sdec.sig_snap(sdec.baud_raw)
   end
   if T == nil or T <= 0 then return giveup('no bit timing') end
 
@@ -1894,7 +1894,12 @@ function sdec.baud_text()
   if sdec.baud == nil then return '--' end
   -- %.0f here too: `snapped` is true for any FORCED rate (see decode_from), not only for one
   -- sig_snap matched, so this branch is not guaranteed a standard-rate integer by itself.
-  if sdec.snapped then return string.format('%.0f baud', sdec.baud) end
+  --
+  -- A SNAP THAT IS NOT FIRM KEEPS THE '?'. The standard rate is still the answer -- real devices use
+  -- standard rates -- but when the measurement sat further from it than the fit's own accuracy, the
+  -- number is a choice rather than a reading, and dropping the marker is what made a 2.6 % error look
+  -- exact. See sdec.snaptol_firm for where that boundary is and how it was calibrated.
+  if sdec.snapped and sdec.snapfirm ~= false then return string.format('%.0f baud', sdec.baud) end
   return string.format('%.0f baud?', sdec.baud)
 end
 
