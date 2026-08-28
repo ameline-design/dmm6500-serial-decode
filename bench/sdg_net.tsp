@@ -43,6 +43,13 @@ bsdg.minsrate = bsdg.minsrate or 1e-6
 -- SDG_MAX_SRATE so the instrument refuses exactly what the host refuses.
 bsdg.maxsrate = bsdg.maxsrate or 40e6
 
+-- HOW HARD THE WAVEFORM SWITCH IS VERIFIED. 4 of the 39 real switches in a 1677-cell lap answered
+-- C1:ARWV? with the PREVIOUS name and had the new one moments later, so the verify retries rather than
+-- believing the first answer. Only the 39 cells where the vector changes pay anything, and only the rare
+-- late one waits at all.
+bsdg.arwvtries = bsdg.arwvtries or 4
+bsdg.arwvwait = bsdg.arwvwait or 0.4
+
 -- ---------------------------------------------------------------------------
 -- Connection
 -- ---------------------------------------------------------------------------
@@ -223,19 +230,31 @@ function bsdg.select(name, amp, ofst, srate)
   -- lap were thrown away on 'no reply to C1:ARWV? within 5 s' from a generator that was working -- 17 %
   -- of a run, recorded as stimulus failures, on an instrument nobody could power cycle.
   --
-  -- ONLY A MISSING REPLY IS RETRIED. A reply that arrives naming the WRONG waveform is a different fact
-  -- and fails immediately: the name was not accepted, the previous waveform is still playing, and waiting
-  -- longer cannot change that.
-  local r, tries = nil, nil
-  for tries = 1, 3 do
+  -- A STALE NAME IS RETRIED TOO, and this comment used to say the opposite: that a reply naming the
+  -- previous waveform proved the name was rejected, so waiting could not help. A full 1677-cell lap
+  -- refutes it. ARWV only performs a REAL switch on the 39 cells where the vector changes -- every other
+  -- cell re-selects what is already playing -- and 4 of those 39 answered with the previous name. Each
+  -- one then succeeded when the NEXT cell selected the SAME name a fraction of a second later, and that
+  -- vector's other 42 cells all decoded. So the generator had the waveform and the switch had simply not
+  -- landed yet, while the recorded reason blamed a missing file: a wrong diagnosis, ~650 times over a
+  -- fortnight.
+  --
+  -- A GENUINELY ABSENT WAVEFORM STILL FAILS, one wait later, and the message no longer asserts which of
+  -- the two it was.
+  local ok, r, tries = false, nil, nil
+  for tries = 1, bsdg.arwvtries do
+    if tries > 1 then delay(bsdg.arwvwait) end
     r = bsdg.ask('C1:ARWV?')
-    if r ~= nil then break end
-    delay(0.5)
+    if r ~= nil and string.find(string.upper(r), string.upper(want), 1, true) ~= nil then
+      ok = true
+      break
+    end
   end
-  if r == nil then return false, bsdg.why end
-  if string.find(string.upper(r), string.upper(want), 1, true) == nil then
-    return false, string.format('ARWV? still names %s after selecting %s -- the generator does not '
-                                .. 'have that waveform', tostring(r), name)
+  if not ok then
+    if r == nil then return false, bsdg.why end
+    return false, string.format('ARWV? still names %s after %d tries selecting %s -- the switch did '
+                                .. 'not land, or the generator does not have it',
+                                tostring(r), bsdg.arwvtries, name)
   end
   if not bsdg.cmd(string.format('C1:BSWV AMP,%.4f,OFST,%.4f', amp, ofst or 0)) then
     return false, bsdg.why

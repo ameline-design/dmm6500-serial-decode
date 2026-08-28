@@ -667,6 +667,39 @@ end
 
 -- ---------------------------------------------------------------------------
 print('')
+print('-- a waveform switch that lands late is not a missing waveform --')
+do
+  -- MEASURED ON HARDWARE, and it refutes what this code used to assert. ARWV performs a REAL switch only
+  -- on the cells where the vector changes -- 39 of a 1677-cell lap, all at 300 Bd, the first rate in each
+  -- vector's block -- and 4 of those 39 answered C1:ARWV? with the PREVIOUS name. Each succeeded when the
+  -- next cell selected the same name, so the generator had it and the switch had not landed yet, while
+  -- the recorded reason blamed a missing file.
+  MOCKB_SDG({slow_arb = 2})       -- the new name is reported only from the 2nd ARWV? onwards
+  bsdg.reset()
+  bsdg.arwvtries, bsdg.arwvwait = 4, 0
+  local ok1 = bsdg.select(ARB.v77, 5.0, 0.0, 96000)
+  ck(ok1 == true, 'a first switch, with nothing playing yet, is accepted')
+  local ok2, why2 = bsdg.select(ARB.v78, 5.0, 0.0, 96000)
+  ck(ok2 == true, 'and a switch that reports the PREVIOUS name is retried, not failed', tostring(why2))
+  ck(MOCKB.sdg.arb == string.gsub(string.gsub(ARB.v78, '^.*/', ''), '%.bin$', ''),
+     'and the generator ends up playing the waveform that was asked for', tostring(MOCKB.sdg.arb))
+
+  -- AND A GENUINELY ABSENT WAVEFORM STILL FAILS -- one wait later, and without asserting which of the two
+  -- it was, because from here they are indistinguishable.
+  MOCKB_SDG({refuse_arb = 'SER_Fox_8N1_x10'})
+  bsdg.reset()
+  local ok3, why3 = bsdg.select(ARB.v78, 5.0, 0.0, 96000)
+  ck(ok3 == true, 'a waveform the generator has is still selected', tostring(why3))
+  local ok4, why4 = bsdg.select('SER_Fox_8N1_x10', 5.0, 0.0, 96000)
+  ck(ok4 == false and string.find(tostring(why4), 'did not land', 1, true) ~= nil,
+     'while one it does not have fails, naming both possibilities', tostring(why4))
+  bsdg.arwvtries, bsdg.arwvwait = 4, 0.4
+  MOCKB_SDG({})
+  bsdg.reset()
+end
+
+-- ---------------------------------------------------------------------------
+print('')
 print('-- one repeating condition must not fill the five-line log --')
 do
   -- MEASURED ON HARDWARE: 4 generator misses in 1578 cells, so a fortnight's 273 000 is ~650. Deduping on

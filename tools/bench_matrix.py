@@ -1414,7 +1414,15 @@ def main():
             g.combine(False, ch=1)
 
         print(d.q('print(localnode.model, localnode.version)'))
-        if not a.no_start:
+        # --no-start MEANS 'DO NOT REBUILD THE UI', NOT 'ASSUME THE APP IS LOADED'. It skipped the load as
+        # well, so on a freshly power cycled instrument sdec does not exist, there is nothing to reuse, and
+        # every cell raises -286 'attempt to index global sdec' -- on the panel. bench_smoke.py passes
+        # --no-start unconditionally, which made the 13-minute gate unrunnable in exactly the state its own
+        # instructions ask the operator to create.
+        have = str(d.q('print(type(sdec))') or '').strip()
+        if not a.no_start or have != 'table':
+            if a.no_start:
+                print('  sdec is %s, so there is nothing to reuse -- loading the app' % (have or 'absent'))
             RA.load_app(d)
             d.drain()
             d.send('local ok, why = sdec.start() '

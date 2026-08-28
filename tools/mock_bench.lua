@@ -61,6 +61,10 @@ function MOCKB_SDG(opts)
   MOCKB.sdg = {arb = nil, amp = nil, ofst = nil, srate = nil, mode = nil, out = false,
                dead = opts.dead or false, wedged = opts.wedged or false,
                nconnect = 0, ncmd = 0, refuse_arb = opts.refuse_arb or nil,
+               -- A SWITCH THAT LANDS LATE, which refuse_arb cannot model: it refuses for ever, and the
+               -- real generator answered with the PREVIOUS name and then had the new one moments later.
+               -- Measured on hardware: 4 of a lap's 39 real waveform switches did this.
+               slow_arb = opts.slow_arb or 0, arb_next = nil,
                dds_after_arb = opts.dds_after_arb or false, pending = nil, log = {}, nlog = 0}
   return MOCKB.sdg
 end
@@ -151,6 +155,12 @@ function MOCKB_SDG_DO(g, cmd)
     -- read leaves the PREVIOUS waveform selected and says nothing. That is why bench/sdg_net.tsp
     -- compares the ARWV? reply instead of trusting the write.
     if g.refuse_arb ~= nil and g.refuse_arb == name then return end
+    -- The new name is accepted but not yet REPORTED: ARWV? keeps naming the old one for slow_arb
+    -- queries, which is exactly what the instrument saw.
+    if g.slow_arb > 0 and g.arb ~= nil and g.arb ~= name then
+      g.arb_next, g.slow_left = name, g.slow_arb
+      return
+    end
     g.arb = name
     if g.dds_after_arb then g.mode = 'DDS' end
     MOCKB_SDG_ARB(g)
@@ -158,6 +168,13 @@ function MOCKB_SDG_DO(g, cmd)
   end
   if up == 'C1:ARWV?' then
     g.pending = 'C1:ARWV INDEX,0,NAME,' .. tostring(g.arb or '')
+    if g.arb_next ~= nil then
+      g.slow_left = (g.slow_left or 0) - 1
+      if g.slow_left <= 0 then
+        g.arb, g.arb_next = g.arb_next, nil
+        MOCKB_SDG_ARB(g)
+      end
+    end
     return
   end
   if string.find(up, 'SRATE MODE,TARB', 1, true) ~= nil then g.mode = 'TARB'; return end
