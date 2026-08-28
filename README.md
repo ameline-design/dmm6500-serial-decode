@@ -122,15 +122,16 @@ Three gates, each about ten times the cost of the one before it. Run them in ord
 
 ```sh
 python3 tools/release_sweep.py --offline   #  ~1 min, no instruments
-python3 tools/bench_smoke.py               #  11 min, both instruments
+python3 tools/bench_smoke.py               #  13 min, both instruments
 python3 tools/soak.py --hours 17 --suites formats,plan --skip-vectors v95,v96
 python3 tools/release_sweep.py             #  the whole thing, instruments included
 ```
 
-**The smoke gate covers the whole rate range in 11 minutes.** Four waveforms — the fox and a random
+**The smoke gate covers the whole rate range in 13 minutes.** Four waveforms — the fox and a random
 payload, each in 8N1 and 7E1 — paired crosswise, so one pair takes the 22 standard baud rates and the
 other the 21 drawn ones, and each rate family faces both formats and both content classes. Then all 45
-button presses. 86 cells in 9.5 min; presses in 1.9.
+button presses, then seven logic swings from 5 V down to 0.25 V, then eight wrong-locked-rate cases.
+Four stages, measured: 86 cells in 9.7 min, 45 presses in 1.9, 7 levels in 0.7, 8 rate cases in 0.9.
 
 **No version is tagged without at least 8 hours of soak**, and the last two took 17. A soak reports a
 **failure rate per test point**; a sweep reports one pass or one failure. A lap is 1 683 cells and about
@@ -175,3 +176,62 @@ Three instruments over LAN: the DMM6500 under test, an SDG2122X generating the s
 verifying the stimulus is what it claims to be. `tools/instruments.py` holds the addresses and the
 hazards — repeated large waveform uploads wedge the generator's LAN service, and calibration state is
 off limits on both.
+
+## Fixed since V1.10
+
+Each row is the defect, not the repair. The harness rows are here because a gate that cannot fail is a
+defect in the same sense: it makes every result after it worth less than it looks.
+
+**Decoder**
+
+| | |
+|---|---|
+| Odd sub-multiples were invisible to the rate detector | MIDI's 31250 Bd read as **153600**. The probe free-runs at 32 samples/bit, where `Tfit/6` still clears the plausibility floor, and 5 × 31250 snaps inside `snaptol` — so a sub-multiple looked standard, and a mid-byte start made a fit exact to 32.0000 look like the failing one. |
+| A refusal named a limit that had not fired | Built from constants that do not match the test that refuses, so the baud-ceiling sentence was unreachable and the one that fired claimed "faster than the 250 kBd ceiling" for lines **under** it — false at 7477 of 9177 points, worst case a 251 baud line. |
+| A panel warning contradicted the decode beside it | 4.0 samples/bit is 250 kBd only at 1 MS/s. At 20 kS/s it is a 5000 baud line, yet a correct 5000 Bd result was annotated "at or past the 250 kBd ceiling" — a warning on a **successful** decode, naming a limit fifty times away. |
+
+**Signal quality**
+
+| | |
+|---|---|
+| An amplitude-windowed S/N measured slew, not noise | A sample partway up an edge is indistinguishable from a noisy one by amplitude. A noiseless capture read 24.8 dB and 38.4 dB by two windows, and neither moved when real noise was injected 40 dB below. |
+| The noise cliff was a unit error | 8 dB came from comparing a peak amplitude ratio against an RMS measurement. The documented 40 % peak tolerance is 23 % rms — **12.7 dB** — so the reported bands sat below the real cliff. |
+| The 6 dB-per-halving trend had no stated cause | It reads as a generator artefact, and the evidence points the other way: the generator's ladder attenuates its own DAC noise, so a generator-dominated figure would stay flat. A source constant in volts and downstream of the attenuator — the instrument's front end — fits, though this is inference from the trend rather than an isolating measurement. |
+
+**USB logging**
+
+| | |
+|---|---|
+| An 11-character directory has no *predictable* FAT entry | `/usb1/SerialFiles` existed and the app still could not find it: no plain 8.3 entry, a non-contiguous UTF-16 long name, and only a `SERIAL~1` tilde alias whose number cannot be relied on. The smoke caught it — panel 16 BAD, rates 7 BAD, while plan 86/86 and levels 7/7 passed, because decode never touches the key and logging does. |
+| `file.mkdir` posts an event instead of raising | It never raises, but pops event 2208 — so creating a directory the obvious way puts an instrument error dialog in front of the operator. |
+| Files scattered across a shared key | Byte log, Save reports and both event logs went to the root of `/usb1`, with their paths written in four places that could drift. |
+| `NewLog` stayed pressable with no key | `Save` was already hidden. A control whose only possible outcome is a failure report is worse than no control. |
+
+**Panel**
+
+| | |
+|---|---|
+| The mid rule read as an underline | Dropping the two headline cells by a row put their medium ink at y 34 while the rest of the value row ends at 32, and the rule at y 35 then sat one row beneath them. |
+| An out-of-range display object returns nil rather than raising | So a mis-placed element goes silently missing instead of failing loudly. `mockup.lua` compounded it by reading a rect's extent as `x + w`, one pixel wide of the truth, which would have put the right-hand vertical off-screen at x 798. |
+| Labels and grid were too dim on the LCD | 44 % and 50 % grey are legible in a screen grab and hard to read on a 5-inch panel across a bench. A renderer cannot settle that question. |
+
+**Documentation that described something that never happened**
+
+| | |
+|---|---|
+| The manual's page counts were unreachable | It claimed a 32 768-byte capture pages 137 and 28. The panel's retained tail is bounded at 8192 bytes, so nothing pages past 35. |
+| Screenshots were gated on the capture, never the action | A **refused** press was photographed and filed under a caption describing what it was supposed to have done — a declined `options()` filed whatever screen was already up. |
+| The swing row documented a ladder, not the bench | "1.6 V to 5 V TTL" against a hardware lap covering 1.652 to 9.300 V p-p. |
+| The app introduced itself by two names | `$Title` said "Serial Protocol Decode" in the app list while its own screen read SERIAL DECODE, and the menu description was 255 characters against a documented 240 ceiling. |
+
+**Test harness**
+
+| | |
+|---|---|
+| The plan judge trimmed a fixed 12-byte head | The app's own bound reaches 34 on v77, so byte-exact decodes were failed at every one of 43 rates — **3377 invented failures over 20 laps**, 82 % of them attributed to one issue. The soak's offline twin also gated nothing at all. |
+| A `loud` vector that declined moved no counter at all | Declining *is* the correct answer for a `loud` waveform, so it rightly passes — but it was counted nowhere, which left it unbounded. A regression that suppressed every byte on those vectors would have read as a completely unchanged run. Measured at 17 declines a lap at one offset and 90 at eight. |
+| A `loud` vector that RAISED was counted as a pass | The same licence to fail swallowed a decoder exception: a raise arrives with no result, which is indistinguishable from a decline unless the raise flag itself is checked — so `raised`, the one counter that gates unconditionally at every capture placement, could sit at zero while the decoder was throwing. |
+| #46 was one counter over three mechanisms | It could say the rate was wrong, never which of three unrelated mechanisms did it. Split and measured, **cluster C is 14.5 % of hardware misreports and 0 of 141 040 offline decodes** — it has no offline counterpart at all. |
+| `test_ratefit` asserted a floor of one, and dropped its own `pcall` result | Five of six reproducing cells could go quiet, or the decoder could raise on all 640 captures, with every assertion still green. |
+| `sweep_all` discarded shard identity | Two workers on the same shard reconcile perfectly — n summaries for n workers — while a third of the plan is never swept. |
+| Per-function coverage was misattributed | An indented four-line nested `giveup` owned 195 lines of `sdec.decode_from`, so every per-function figure for the decoder was wrong. |

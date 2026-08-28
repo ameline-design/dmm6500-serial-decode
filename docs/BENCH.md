@@ -10,7 +10,8 @@ stops an expensive one.
 | `tools/soak.py --suites formats,plan` | ~3.0 h a lap | both instruments | does it hold up over hours |
 
 Measured, not estimated: **6.5 s per cell**. A lap of 39 waveforms at 43 rates each is 1677 cells, so
-**about 3.0 hours**; all 41 waveforms is 3.2 h. An offline lap of the same cells is **18 seconds**.
+**about 3.0 hours**; all 41 waveforms is 3.2 h. An offline lap of the same cells is **about 4 seconds** at
+one capture offset per cell and **19 seconds** at eight, measured on 12 workers.
 
 Eight hours is therefore between two and three laps. That is the floor, not a target: the point of the
 soak is a failure rate per point, and two laps can only ever say "twice" or "once" or "never".
@@ -159,7 +160,7 @@ forty minutes in. It also needs the SDG2122X loaded with the stimulus waveforms
 | `lint` `parse` | Lua 5.0.2 incompatibilities; `luac -p` on every module |
 | `vecrefs` | every waveform id named in `tools/` is in `MAP` or declared `RETIRED` — deleting from `MAP` alone leaves references that fail where they are used, not where they are declared |
 | `soakrand` | `mt19937.py` and `mt19937.lua` produce one sequence, checked against CPython's `random`, plus the 5.0.2 scan deciding whether the module can load on the instrument |
-| `unit` | 1 063 offline tests — decoder, UI, state machine, file paths, every visible ASCII glyph |
+| `unit` | 1 194 offline tests — decoder, UI, state machine, file paths, every visible ASCII glyph |
 | `unit-cancel` | one-press recordings, both window sizes, and the flow-control loop with no interaction |
 | `unit-frontrig` | TRIGGER-key and rear-BNC arming *through* `acquire()` — the routing that can drop to free-run while the status row still claims the key is the source |
 | `unit-usblog` | USB log name allocation and the persistent index: exhaustion must refuse rather than loop and hang the panel |
@@ -167,6 +168,9 @@ forty minutes in. It also needs the SDG2122X loaded with the stimulus waveforms
 | `unit-patterns` | byte-exactness on the hard payloads: edge-density extremes, walking bits and known random data, at the sample rates the panel actually picks |
 | `unit-forcerate` | a forced rate the wire does not carry must **refuse** and name the rate it does carry, with both answers drivable unattended |
 | `unit-judgev` | the harness's three verdicts — too short to read is **inconclusive**, not silently wrong; an alignment survives one bad byte; a loud vector may miss a bounded few. Each with the wrong capture that must still fail |
+| `unit-ratefit` | the #46 rate-misfit window, pinned per cell and per capture phase against a recorded table — every cell that reproduces must reproduce at every phase, and every cell that does not must be silent at all of them |
+| `unit-plansweep` | the offline twin against the soak's own drawn plan, ratcheted on nine counters at the configuration each baseline was measured at |
+| `unit-soaklog` | the soak's own lap log replayed through the completeness tests, so a lap that recorded nothing cannot read as a lap that found nothing |
 | `stress` | hostile signals: never silently **wrong**, never **raises** |
 | `unit-analog` | the bench cases at the app's own sample rates, swept over sampling phase, jitter, noise and where the window opens |
 | `unit-phasesweep` | every vector × capture start × phase/jitter/noise, sharded across the cores — no raise, no result without a format, no wrong byte among trustworthy calls |
@@ -176,7 +180,7 @@ forty minutes in. It also needs the SDG2122X loaded with the stimulus waveforms
 | `tolerance` | recomputes the envelope table printed in the manual |
 | `package` `archive` | rebuilds the `.tspa`, then builds both screens *from the archive* against a mock front end |
 | `manual` | rebuilds every shipped PDF: `README.pdf`, `MANUAL.pdf`, `REFERENCE.pdf`, `BENCH.pdf` |
-| `hw-matrix` | through the app's own Capture button: six frame formats, the standard rate ladder, a 1 kB non-repeating payload, **six logic swings from 5 V down to 0.25 V**, twelve DC offsets |
+| `hw-matrix` | through the app's own Capture button: six frame formats, the standard rate ladder, a 1 kB non-repeating payload, **seven logic swings from 5 V down to 0.25 V**, twelve DC offsets |
 | `hw-payloads` | fourteen payloads covering every byte value 0–255, two of them also at 115 200 and 250 000 |
 | `hw-odd-rates` | nineteen **non-standard** baud rates — 900, 1500, 3600, 8123, 29127, 104857 … |
 | `hw-panel` | every button in every state, including a one-press recording. Six checks per press: the handler does not raise, logs no instrument event, returns inside its latency budget, reports what it did, changed the state it was supposed to, and **the panel actually shows it** — grabbed before and after each press and differenced by region |
@@ -241,6 +245,17 @@ the operator sees — and it never exercises waveform selection, which is why a 
 on hardware and passes here. It also judges more simply: the bytes must be a cyclic substring of the
 payload, where `bench_uart.judge_payload` weighs flag budgets and head damage.
 
+**Its head bound is the app's own**, not a constant. It trims `max(ua_edge_frames, ua_head_bad)` bytes and
+then tries a bounded run of further shifts, counting any shift it actually needed as `bleed` rather than
+absorbing it. A fixed trim cannot work: `ua_head_bad` reads 34 on `v77` at 19200 Bd, so a 12-byte constant
+failed byte-exact decodes at all 43 rates and manufactured 3377 failures across 20 laps.
+
+**What it is worth, measured:** 328 plan runs of ~1172 points in 11.7 min of soak wall time is **548
+decodes a second**, against a hardware lap's 1683 cells in 2.9 h — 0.16 a second, so about **3400×**.
+Three hours here is roughly a year of soak *decodes*, and only of decodes: the paths listed above are
+covered 0× however long it runs, which is why `rstdC` is 14.5 % of hardware rate misreports and 0 of
+141 040 offline ones. Volume is not coverage, and this ratio is the argument for running both.
+
 ---
 
 ## What a waveform is entitled to do
@@ -250,6 +265,19 @@ Two classes, in `soakplan.VECTOR_EXPECT`:
 * **`exact`** — must decode byte-exact at every rate. Anything else is a defect.
 * **`loud`** — may fail, and **must not be silently wrong**. Declining, or failing with flags raised,
   is a pass. Confident bytes that are not the payload fail for these too.
+
+**A decline is a pass, and it is still counted.** `sweep_plan.lua` tallies these as `loudquiet` —
+17 a lap at one capture offset, 90 at eight — and `plan_sweep.py` ratchets that count at both measured
+configurations. Both halves matter: calling a correct refusal a failure is a harness inventing defects,
+measured at about 80 a lap when it was tried, while leaving it uncounted means a regression that
+suppressed *every* byte on *every* `loud` vector would move no counter at all and read as a completely
+unchanged run. The ratchet is deliberately one-directional: loud vectors starting to decode is not a
+defect, so only a rise is gated.
+
+**A RAISE IS NOT A DECLINE, and the licence to fail must not cover it.** A decode that threw arrives with
+no result, which is indistinguishable from an honest refusal unless the raise flag itself is tested — so
+granting the `loud` pass without checking it leaves `raised` at zero while the decoder is throwing, and
+`raised` is the one counter that gates unconditionally at every capture placement.
 
 `loud`: `v47` (spikes stacking to 9.3 V), `v48a` and `v48b` (drift), `j20` (20 % jitter), `v61`–`v63`
 (LIN carries framing violations no UART frame can contain).

@@ -348,7 +348,7 @@ refuses: it sits exactly on `minswing` and the trimmed histogram measures 0.0996
 0.16 V at 50 mV peak, because peak-to-peak rises while the logic swing does not.
 
 **The 0.5 V end of the range is confirmed on the instrument, not only offline.** The `levels` stage of
-`tools/bench_smoke.py` plays one waveform at **5 V, 3.3 V, 1.6 V, 1.0 V, 0.5 V and 0.25 V** of swing
+`tools/bench_smoke.py` plays one waveform at **5 V, 3.3 V, 1.6 V, 1.0 V, 0.5 V, 0.33 V and 0.25 V** of swing
 and takes one in-app Capture at each, checking the `LOGIC` cell against the swing the app measured,
 that `THRESH` landed within a quarter of the swing of mid-swing, and the bytes. 0.25 V is below the
 claimed floor deliberately: a floor with nothing measured beneath it is a guess.
@@ -608,6 +608,11 @@ bytes are unaffected.
 250 kBd ceiling" — rather than by a samples-per-bit count. The two are the same limit only at 1 MSa/s,
 where the 4 samples/bit floor is exactly 250 kBd; below that sample rate a bit time under 4 samples is
 an ordinary rate captured too slowly, so it is refused by naming the capture rate instead.
+
+**The panel's marginal-rate warning follows the same rule,** and it matters more there because that
+warning sits beside a decode that *succeeded*. At 1 MS/s "only 4.0 samples/bit — at or past the 250 kBd
+ceiling" is true; at 20 kS/s the same 4.0 samples/bit is a 5000 baud line, a fiftieth of the ceiling, and
+the warning names the capture rate it has run out of instead.
 
 **100 baud is the declared floor** (`sdec.minbaud`), refused by name the way the 250 kBd ceiling is,
 and it carries `plaustol` at both ends so a rate sitting on a limit is not rejected for a rounding

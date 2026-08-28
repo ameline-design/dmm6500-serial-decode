@@ -294,6 +294,10 @@ local ncell, nbadcell = 0, 0
 -- own head bound before the bytes matched, i.e. bytes the panel presents as trustworthy and are not.
 -- Counting it here is what stops the judge's tolerance from quietly absorbing a real defect.
 local nbleed, worstbleed = 0, 0
+-- loud VECTORS THAT DECLINED, which is a pass and must still be visible. Not part of `bad`: see the
+-- verdict block for why counting a correct refusal as a failure is the harness lying, and why leaving it
+-- uncounted lets total byte suppression hide.
+local nloudquiet = 0
 -- The four r* entries are SUBDIVISIONS OF `rate`, not siblings of it: rate stays the total so the
 -- ratchet keyed on it keeps meaning what it measured, and the routes sum to it.
 local CLS = {'raised', 'nobytes', 'norate', 'rate', 'bytes',
@@ -384,14 +388,24 @@ for vi = 1, table.getn(P.vectors) do
               if r.errs ~= nil and r.errs[k] ~= nil then silent = false end
             end
           end
-          -- A DECODE THAT RETURNED NO FRAMES HAS NOT BEEN LOUD. `silent` is false for an empty result
-          -- as well as for a flagged one, so without this a loud vector that decodes NOTHING satisfies
-          -- the loud contract and is counted ok -- and every counter stays still. That routes around
-          -- both ratchets and `judged` at once: a regression that suppresses every byte on the loud
-          -- vectors would read as an unchanged run. Saying nothing is the other way to be silent.
+          -- A DECLINE IS THE DOCUMENTED PASS FOR A loud VECTOR, not a failure: docs/BENCH.md states
+          -- "Declining, or failing with flags raised, is a pass", and v47's spikes stack to 9.3 V so it
+          -- decodes nothing at many rates. Refusing an unreadable signal is the right answer, and
+          -- counting it BAD is a harness inventing failures -- 81 a lap, measured.
+          --
+          -- WHAT WAS ACTUALLY WRONG IS THAT IT MOVED NO COUNTER. A pass that increments nothing cannot
+          -- be bounded, so a regression suppressing every byte on every loud vector reads as a
+          -- completely unchanged run. `loudquiet` counts it and plan_sweep.py ratchets it, which bounds
+          -- the case without calling a correct refusal a defect.
+          -- `ran` IS REQUIRED FOR THE loud PASS, and this is the sharp edge. A decode that RAISED arrives
+          -- here with ran = false and r = nil, so `silent` is false and the loud contract would grant it a
+          -- pass -- leaving cls.raised at zero, because classify() is only reached down the BAD path. A
+          -- raise is the one thing that gates unconditionally at every placement, so hiding it behind a
+          -- waveform's licence to fail is the worst reading this file could produce.
           local spoke = r ~= nil and (r.nf or 0) > 0
-          if v.class == 'loud' and not silent and spoke then
+          if v.class == 'loud' and ran and not silent then
             verdict = 'ok'; nok = nok + 1
+            if not spoke then nloudquiet = nloudquiet + 1 end
           else
             verdict = 'BAD'; nbad = nbad + 1; vbad = vbad + 1; cellbad = cellbad + 1
             local c = classify(ran, r, rb, baud)
@@ -429,11 +443,11 @@ end
 -- capture of this plan comes back wrong, cells is how much of the plan is affected at all.
 print(string.format('\nPLAN %d/%d iteration %d: cells %d badcells %d points %d ok %d bad %d skip %d '
                     .. 'raised %d nobytes %d norate %d rate %d bytes %d bleed %d bleedworst %d '
-                    .. 'r46b %d rfit1 %d rstdC %d rother %d',
+                    .. 'r46b %d rfit1 %d rstdC %d rother %d loudquiet %d',
                     A.shard, A.nshard, P.iteration, ncell, nbadcell, nok + nbad + nskip,
                     nok, nbad, nskip,
                     cls.raised, cls.nobytes, cls.norate, cls.rate, cls.bytes, nbleed, worstbleed,
-                    cls.r46b, cls.rfit1, cls.rstdC, cls.rother))
+                    cls.r46b, cls.rfit1, cls.rstdC, cls.rother, nloudquiet))
 -- THE ROUTES MUST SUM TO `rate`, and this is checked rather than assumed: rate_route returns exactly
 -- one of the four for every rate point, so a mismatch means a point was counted twice or lost, and a
 -- subdivision that does not reconcile with its total is worse than no subdivision at all.

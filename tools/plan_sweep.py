@@ -41,7 +41,7 @@ PLANDIR = os.path.join(ROOT, 'out', 'plans', 'auto')
 # The counters sweep_plan.lua prints on its PLAN line, in the order they appear there.
 KEYS = ['cells', 'badcells', 'points', 'ok', 'bad', 'skip',
         'raised', 'nobytes', 'norate', 'rate', 'bytes', 'bleed', 'bleedworst',
-        'r46b', 'rfit1', 'rstdC', 'rother']
+        'r46b', 'rfit1', 'rstdC', 'rother', 'loudquiet']
 # THE FOUR ROUTES SUBDIVIDE `rate` AND MUST SUM TO IT. Issue #46 was one counter over three
 # mechanisms -- a snapped harmonic, sig_fit's second fixed point, and a drift into a neighbouring
 # standard rate's basin -- with three different fixes, so a single number could say it moved but never
@@ -74,9 +74,9 @@ LINE = re.compile(r'^PLAN (\d+)/(\d+) iteration (\d+): (.*)$')
 # the interesting number -- they were whichever phase the plan's wait happened to draw.
 RATCHET = {
     (1, 1): {'bad': 11, 'badcells': 11, 'rate': 4, 'bytes': 7, 'nobytes': 0, 'bleed': 253,
-             'skip': 0, 'judged': 1763},
+             'skip': 0, 'judged': 1763, 'loudquiet': 17},
     (1, 8): {'bad': 167, 'badcells': 93, 'rate': 27, 'bytes': 35, 'nobytes': 105, 'bleed': 1467,
-             'skip': 0, 'judged': 14104},
+             'skip': 0, 'judged': 14104, 'loudquiet': 90},
 }
 WHY = {
     'bad': 'failing points',
@@ -92,6 +92,12 @@ WHY = {
     # and invite the baseline to be lowered. `judged` is ok+bad and pins how much was compared at all.
     'skip': 'points the app left too short to judge',
     'judged': 'points actually compared against the payload (ok + bad)',
+    # A PASS THAT HAS TO STAY VISIBLE. docs/BENCH.md makes declining the correct answer for a `loud`
+    # waveform, so these are not failures and must never be counted as any -- v47's spikes stack to
+    # 9.3 V and decoding nothing is right. But an uncounted pass cannot be bounded, and a regression
+    # that suppressed every byte on every loud vector would move nothing at all. Ratcheted upward for
+    # that reason, and deliberately NOT downward: loud vectors starting to decode is not a defect.
+    'loudquiet': 'loud vectors that declined -- a pass, bounded so mass suppression cannot hide',
 }
 
 
@@ -257,7 +263,8 @@ def main():
         # ACROSS LAPS, the interesting numbers are the spread and the union: a defect present in every
         # lap is a property of the decoder, one appearing in a single lap is a property of that draw.
         print()
-        for key in ('bad', 'badcells', 'rate', 'bytes', 'nobytes', 'bleed', 'skip') + tuple(ROUTES):
+        for key in (('bad', 'badcells', 'rate', 'bytes', 'nobytes', 'bleed', 'skip', 'loudquiet')
+                    + tuple(ROUTES)):
             vals = sorted(t[key] for _, t in rows)
             print('  %-9s per lap  min %d  median %d  max %d  total %d'
                   % (key, vals[0], vals[len(vals) // 2], vals[-1], sum(vals)))
