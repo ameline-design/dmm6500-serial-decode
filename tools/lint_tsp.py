@@ -154,6 +154,14 @@ def check_globals(code, name):
 
 
 def main(paths):
+    # NO PATHS IS NOT A CLEAN RUN. `python3 tools/lint_tsp.py` with no arguments linted zero files and
+    # exited 0, which reads in a transcript exactly like every file passing -- a verdict derived from no
+    # evidence, which is this project's worst failure mode and the one it keeps writing comments about.
+    # release_sweep.py passes tsp_files(); anyone invoking this by hand has to as well.
+    if not paths:
+        print('REFUSING: no files given, and linting nothing is not passing.')
+        print('  python3 tools/lint_tsp.py tsp/*.tsp')
+        return 2
     bad = 0
     for p in paths:
         src = open(p).read()
