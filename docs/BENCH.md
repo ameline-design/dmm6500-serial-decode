@@ -250,11 +250,20 @@ then tries a bounded run of further shifts, counting any shift it actually neede
 absorbing it. A fixed trim cannot work: `ua_head_bad` reads 34 on `v77` at 19200 Bd, so a 12-byte constant
 failed byte-exact decodes at all 43 rates and manufactured 3377 failures across 20 laps.
 
-**What it is worth, measured:** 328 plan runs of ~1172 points in 11.7 min of soak wall time is **548
-decodes a second**, against a hardware lap's 1683 cells in 2.9 h — 0.16 a second, so about **3400×**.
-Three hours here is roughly a year of soak *decodes*, and only of decodes: the paths listed above are
-covered 0× however long it runs, which is why `rstdC` is 14.5 % of hardware rate misreports and 0 of
-141 040 offline ones. Volume is not coverage, and this ratio is the argument for running both.
+**What it is worth, measured over a whole run rather than sampled from one.** A 172.3 min offline soak
+put 2818 plan runs of 1176 points through the shipping tree — 3 313 968 decodes, **321 a second** — against
+a hardware lap's 1683 cells in 2.9 h, which is 0.16 a second. That is **1989×**: those 2.9 offline hours
+are **238 days** of soak decodes, about 83 days an hour.
+
+**Take that rate from a completed run, not from the first few minutes.** The same figure measured over the
+opening 11.7 min came out 548 a second — 71 % high — because the short suites cycle first and the seeded
+sweeps that dominate the wall clock had barely started.
+
+**And it is decode volume, not coverage.** The paths listed above are covered 0× however long it runs.
+Lap 1 of a hardware soak put 15 distinct rate misreports on the board, of which 3 — `37422→38400`,
+`149527→153600`, `187477→192000` — were the `rstdC` shape at 1.024–1.027×, 20 % of the lap. Offline that
+route fired **0 times in 141 040 decodes**. Volume is not coverage, and that contrast is the whole
+argument for running both.
 
 ---
 
