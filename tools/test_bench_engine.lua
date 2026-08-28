@@ -502,6 +502,40 @@ end
 
 -- ---------------------------------------------------------------------------
 print('')
+print('-- every plan rate is captured at a rate that can see it --')
+do
+  -- THE ARITHMETIC IS NOT ENOUGH, AND THIS IS WHAT THAT COST. pick_fs(300, 8) asks for 2500 Sa/s; the
+  -- instrument captured at 1 000 000, measured from its own timestamps, which is 3333 samples a bit --
+  -- so ua_probe's 4000-sample window spanned 1.2 bit times and no format could be fitted to it. Every
+  -- unexpected failure below 2400 baud in a 117-cell hardware lap was this one thing.
+  --
+  -- SO THE PROPERTY UNDER TEST IS PHYSICAL, not a rate comparison: at the rate a cell will be captured
+  -- at, does the probe window hold enough BIT TIMES to contain a frame? A 10-bit frame needs ten, and
+  -- anything under about twenty leaves no room for the anchor the walk starts from.
+  local rates = {300, 379, 600, 630, 1200, 1207, 1800, 2400, 4800, 9600, 19200, 38400, 57600,
+                 115200, 153600, 250000}
+  local worst, wb, k = 1e9, nil, nil
+  for k = 1, table.getn(rates) do
+    local b = rates[k]
+    local fs = sdec.pick_fs(b, 8)
+    if fs < brun.minfs then fs = brun.minfs end
+    local bits = sdec.ua_probe_n / (fs / b)
+    if bits < worst then worst, wb = bits, b end
+  end
+  ck(worst >= 20, 'the probe window holds at least twenty bit times at every rate the plan drives',
+     string.format('worst %.1f bit(s) at %s baud', worst, tostring(wb)))
+  -- AND THE FLOOR IS A RATE THE APP ITSELF USES. serial_app's probe ladder bottoms at 10 kSa/s because
+  -- 20 000 samples there is 2 s -- sixty frames at 300 baud -- so this is not a new claim about the
+  -- hardware, it is the one the app already relies on.
+  local inladder, j = false, nil
+  for j = 1, table.getn(sdec.probe_fs) do
+    if sdec.probe_fs[j] == brun.minfs then inladder = true end
+  end
+  ck(inladder, 'and the rate floor is one the app already captures at', tostring(brun.minfs))
+end
+
+-- ---------------------------------------------------------------------------
+print('')
 print('-- the status screen: what it says, and what its colours claim --')
 do
   MOCKB_SDG({})

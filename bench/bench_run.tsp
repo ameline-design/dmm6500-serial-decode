@@ -67,6 +67,25 @@ brun.maxcell = brun.maxcell or 0
 -- number the rows are built from, and test_bench_engine.lua checks the two against each other.
 brun.nmeascol = 12
 
+-- THE SLOWEST SAMPLE RATE A CELL MAY BE CAPTURED AT, and it exists because trusting the arithmetic cost
+-- 10 % of a lap. sdec.pick_fs(baud, 8) asks for eight samples a bit, which at 300 baud is 2500 Sa/s -- a
+-- rate the ladder lists and the instrument does not deliver: MEASURED, from the buffer's own
+-- relativetimestamps, a cell commanding 300 baud captured at 1 000 000 Sa/s. That is 3333 samples a bit,
+-- so ua_probe's 4000-sample window spans 1.2 BIT TIMES and no format can be fitted to it. Every failure
+-- below 2400 baud in a 117-cell lap was this, and none above it.
+--
+-- serial_app.tsp already solved the same problem for the operator's own capture, and its comment is the
+-- evidence: its probe ladder is {1e6, 1e5, 1e4}, dropping the rate to cover ten times as long, and it
+-- stops at 10 kSa/s because 20 000 samples there is 2 s -- sixty frames at 300 baud. So the floor here is
+-- that same 10 kSa/s: a rate the app uses, on hardware, at these baud rates.
+--
+-- WHAT THIS DOES NOT DO is model the app's two-pass probe -- the ladder sweep, then a second decode at a
+-- rate chosen from sdec.baud_probe. brun.point deliberately mirrors bench_point in tools/bench_uart.py so
+-- soak results stay comparable with every bench result on record, and both take one capture at one rate.
+-- Modelling the two passes is the larger fidelity fix, in both places at once; this makes the single
+-- capture use a rate that can actually see the line.
+brun.minfs = brun.minfs or 10000
+
 -- THE EVENT WATCHDOG, and it exists because getting this right by inspection FAILED. A single wrong
 -- argument in brun.announce -- tspnet.connect's initString, nil where a string is required -- turned
 -- every cell into an event 1138 on the panel, 1677 of them across a lap, on an instrument whose one
@@ -1024,6 +1043,7 @@ function brun.soak(iterations, tag)
       if c.wait ~= nil and c.wait > 0 then delay(c.wait / 1000) end
 
       local fs = sdec.pick_fs(c.baud, 8)
+      if fs < brun.minfs then fs = brun.minfs end
       local p = brun.point(fs, c.baud, false)
       -- RE-MUTED AFTER EVERY CAPTURE. sdec.acquire calls sdec.quiet_events(), which sets
       -- localnode.showevents = SEV_ERROR -- so the mute taken once at the top of this function is undone
