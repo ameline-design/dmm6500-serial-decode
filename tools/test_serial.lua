@@ -2835,6 +2835,58 @@ do
         sdec.ui_textw(sdec.autolocknote) <= sdec.ui_note_px,
         string.format('%d px of %d', sdec.ui_textw(sdec.autolocknote), sdec.ui_note_px))
 
+  -- WHAT AUTOLOCK COMMITS WHEN THE SNAP IS NOT FIRM, driven through the real autolock_try() rather than
+  -- by reading the flag. This is the gate that turned cluster C from a wrong label into a wrong LOCK: it
+  -- rounds sdec.baud, which sig_snap has already relabelled, and passes on `snapped` alone. Measured on
+  -- the instrument, a 37422 Bd line fitting 37703 locked at 38400 and stayed there.
+  --
+  -- THE FIVE GATES ARE SATISFIED BY A REAL CAPTURE FIRST, then only the rate fields are substituted --
+  -- so this exercises the gate's arithmetic without inventing a decode that never happened.
+  do
+    fresh({bytes = lb2, baud = 9600, fs = 100000, gap = 2})
+    sdec.baud, sdec.baud_raw = 38400, 37703.6
+    sdec.snapped, sdec.snapfirm = true, false
+    sdec.force_baud = nil
+    sdec.autolock, sdec.autolock_skip = true, nil
+    local locked = sdec.autolock_try()
+    local want = sdec.baud_round(37703.6)
+    check('a snapped-but-NOT-FIRM rate still auto-locks -- refusing would strand the padlock',
+          locked == true and sdec.force_baud ~= nil,
+          string.format('locked=%s force_baud=%s', tostring(locked), tostring(sdec.force_baud)))
+    check('...but it locks the MEASUREMENT, not the overstated standard rate',
+          sdec.force_baud ~= 38400 and sdec.force_baud == want,
+          string.format('locked %s, wanted %s (raw 37703.6), NOT 38400',
+                        tostring(sdec.force_baud), tostring(want)))
+    -- AND THE ERROR IT COMMITS IS SMALLER, which is the whole point rather than a side effect.
+    check('...which is nearer the true 37422 than the snap would have been',
+          math.abs(sdec.force_baud / 37422 - 1) < math.abs(38400 / 37422 - 1),
+          string.format('%.2f %% out instead of %.2f %%', 100 * math.abs(sdec.force_baud / 37422 - 1),
+                        100 * math.abs(38400 / 37422 - 1)))
+
+    -- A FIRM SNAP IS UNAFFECTED, or the fix would have quietly stopped locking standard rates.
+    fresh({bytes = lb2, baud = 9600, fs = 100000, gap = 2})
+    sdec.baud, sdec.baud_raw = 28800, 29127
+    sdec.snapped, sdec.snapfirm = true, true
+    sdec.force_baud = nil
+    sdec.autolock, sdec.autolock_skip = true, nil
+    sdec.autolock_try()
+    check('a FIRM snap still locks the standard rate itself',
+          sdec.force_baud == 28800, tostring(sdec.force_baud))
+
+    -- THE fitq GATE'S NEGATIVE SIDE, which nothing reached: every existing fitq assertion checks a GOOD
+    -- fit or the colour band, so autolock_fitq could have been raised to 2.0 or the comparison inverted
+    -- and the suite would not have noticed. A poor fit must refuse the lock.
+    fresh({bytes = lb2, baud = 9600, fs = 100000, gap = 2})
+    sdec.force_baud = nil
+    sdec.autolock, sdec.autolock_skip = true, nil
+    sdec.fitq = sdec.autolock_fitq - 0.05
+    local badq = sdec.autolock_try()
+    check('a fit below autolock_fitq REFUSES the lock, and locks nothing',
+          badq == false and sdec.force_baud == nil,
+          string.format('locked=%s force_baud=%s at fitq %.2f (gate %.2f)', tostring(badq),
+                        tostring(sdec.force_baud), sdec.fitq, sdec.autolock_fitq))
+  end
+
   -- An explicit request for auto-detect must survive the capture that follows it.
   clearforce()
   sdec.autolock_defer()
