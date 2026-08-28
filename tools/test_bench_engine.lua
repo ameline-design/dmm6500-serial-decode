@@ -667,6 +667,44 @@ end
 
 -- ---------------------------------------------------------------------------
 print('')
+print('-- one repeating condition must not fill the five-line log --')
+do
+  -- MEASURED ON HARDWARE: 4 generator misses in 1578 cells, so a fortnight's 273 000 is ~650. Deduping on
+  -- exact text pushes a line per increment, and five lines of 'missed 648 cell(s)' is a log with every
+  -- one-off event scrolled off the top.
+  brun.ui_build()
+  brun.iter, brun.cell, brun.stopwhy, brun.keyarmed = 1, 0, nil, true
+  brun.ncell, brun.nunexp, brun.nexp, brun.nbadsdg, brun.nevtot = 0, 0, 0, 0, 0
+  brun.nreclost, brun.nsdgtot, brun.nsdgalive = 0, 0, 0
+  brun.msgs, brun.lastmsg, brun.lastshape, brun.lastn = nil, nil, nil, 0
+  local pushed, n = 0, nil
+  for n = 1, 650 do
+    brun.nsdgtot, brun.cell = n, n * 420
+    local col, msg = brun.ui_status()
+    if col ~= brun.c_ok and brun.newsworthy(msg) then
+      brun.lastmsg = msg
+      brun.msg(col, msg)
+      pushed = pushed + 1
+    end
+  end
+  ck(pushed > 4 and pushed <= 14,
+     'a counter that reaches 650 pushes about ten lines, not 650',
+     string.format('%d line(s)', pushed))
+  -- AND A GENUINELY DIFFERENT CONDITION IS STILL PUSHED AT ONCE, which is the half that makes the
+  -- suppression safe: it is the SHAPE that repeats, not the news.
+  brun.nreclost = 3
+  local col2, msg2 = brun.ui_status()
+  local said = brun.newsworthy(msg2)
+  if said then brun.lastmsg = msg2; brun.msg(col2, msg2) end
+  ck(said == true, 'while a different condition appears immediately', tostring(msg2))
+  ck(string.find(MD.text(brun.ui.msg[brun.msgn]) or '', 'never recorded', 1, true) ~= nil,
+     'and it is the newest line, at the bottom, not lost behind the counter',
+     tostring(MD.text(brun.ui.msg[brun.msgn])))
+  brun.nreclost, brun.nsdgtot = 0, 0
+end
+
+-- ---------------------------------------------------------------------------
+print('')
 print('-- the faults that used to end a run before it started --')
 do
   local plan, i = {}, nil

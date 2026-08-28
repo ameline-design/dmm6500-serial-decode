@@ -514,6 +514,41 @@ brun.ui = nil
 brun.msgn = brun.msgn or 5
 brun.msgs = nil          -- oldest first; the newest is at the bottom of the screen
 brun.lastmsg = nil       -- so an unchanged state is not pushed again
+brun.lastshape = nil     -- the same state with a different count in it, ditto
+brun.lastn = 0
+
+-- ONE CONDITION MUST NOT FILL THE RING. Dedup on exact text lets a counter push a new line every time it
+-- increments: measured on hardware at 4 generator misses in 1578 cells, a fortnight's 273 000 cells is
+-- ~650 of them, and five lines of 'generator missed 648 cell(s)' is a log with every one-off event --
+-- a hold, a recording gap, a plan wrap -- scrolled off the top.
+--
+-- SO THE DIGITS COME OUT and the message is compared by SHAPE. A repeat is pushed again only when its
+-- number has DOUBLED, which gives 1, 2, 4, 8 ... about ten lines over a fortnight: the early detail that
+-- says when something started, and no more. Every occurrence is on the key regardless.
+function brun.shape(s)
+  return string.gsub(tostring(s or ''), '%d', '')
+end
+
+function brun.firstn(s)
+  local _, _, d = string.find(tostring(s or ''), '(%d+)')
+  if d == nil then return 0 end
+  return tonumber(d) or 0
+end
+
+-- -> true if this message says something the log is not already showing.
+function brun.newsworthy(msg)
+  if msg == brun.lastmsg then return false end
+  local sh, n = brun.shape(msg), brun.firstn(msg)
+  if sh ~= brun.lastshape then
+    brun.lastshape, brun.lastn = sh, n
+    return true
+  end
+  if n >= brun.lastn * 2 then
+    brun.lastn = n
+    return true
+  end
+  return false
+end
 
 -- WHEN, AS WALL CLOCK IF THE FIRMWARE HAS IT AND ELAPSED TIME IF IT DOES NOT. After six days away
 -- '03:14' answers a question that '2:41 into the run' does not, so os.date is tried first -- guarded,
@@ -761,7 +796,7 @@ function brun.ui_end()
   -- which is what it is for; an alarm that replaced it left the operator looking at a warning with no
   -- instruction under it.
   local col, msg = brun.ui_status()
-  if col ~= brun.c_ok and msg ~= brun.lastmsg then
+  if col ~= brun.c_ok and brun.newsworthy(msg) then
     brun.lastmsg = msg
     brun.msg(col, msg)
   end
@@ -889,7 +924,7 @@ function brun.ui_show(c, arb)
   -- which is what it is for; an alarm that replaced it left the operator looking at a warning with no
   -- instruction under it.
   local col, msg = brun.ui_status()
-  if col ~= brun.c_ok and msg ~= brun.lastmsg then
+  if col ~= brun.c_ok and brun.newsworthy(msg) then
     brun.lastmsg = msg
     brun.msg(col, msg)
   end
