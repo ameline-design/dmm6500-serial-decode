@@ -152,8 +152,51 @@ rather than passed.
 
 **The full sweep needs a freshly power-cycled DMM6500.** `sdec.start()` builds the display objects and
 the app refuses a second build in one power cycle, so the sweep checks that up front rather than failing
-forty minutes in. It also needs the SDG2122X loaded with the stimulus waveforms
+forty minutes in. It also needs the generator loaded with the stimulus waveforms
 (`bench_matrix.py --upload`), and only one client may hold the DMM's control socket at a time.
+
+### Which generator and scope will do
+
+The bench here uses an **SDG2122X**, but nothing in this project needs the top of that line. What it
+actually asks of a generator, measured from the plan and the driver rather than from a datasheet:
+
+| Requirement | Where it comes from |
+|---|---|
+| TrueArb at an explicit sample rate, up to **25 MSa/s** | the highest `srate` any plan cell draws. `SDG_MAX_SRATE` is capped at **40 MSa/s** — the family's floor, not this unit's 75 — and `bsdg.select()`, `bench_matrix`, `bench_sweep` and `soakplan --selftest` all refuse a cell above it, so a future rate ladder cannot quietly outgrow an SDG2042X |
+| **20 Vpp** into high-Z | the largest amplitude the plan draws (`bsdg.maxvpp`) |
+| ~41 stored arbitrary waveforms, selected by name | `C1:ARWV NAME,…`, uploaded once by `tools/upload_vectors.py` |
+| Signal bandwidth under ~1 MHz | the fastest stimulus is 250 kBd, so its edges are slow by any generator's standard |
+
+Those are series-wide properties of the **SDG2000X** family: the arbitrary-waveform engine, its
+sample-rate range and the 20 Vpp output are the same across it, and the model number is the *sine*
+bandwidth — 40 MHz on the SDG2042X, 80 on the 2082X, 120 on the 2122X. Even the bottom of the range
+has more than a hundred times the bandwidth a 250 kBd edge needs. **So an SDG2042X, the cheapest of
+the line, is sufficient**, and the extra bandwidth of a 2122X buys this project nothing.
+
+**Only the SDG2122X has actually been run.** That claim about the family is from the published series
+specifications, not from a second unit on this bench, so on a different one check exactly two numbers
+before trusting a soak: that `C1:SRATE?` reports **25 MSa/s** accepted in TrueArb mode, and that
+**20 Vpp** into high-Z is accepted. Both fail loudly rather than silently — `bsdg.select()` refuses an
+amplitude or rate outside its bounds, and `bsdg.truearb()` re-reads the mode after setting everything
+else precisely because a silent fall back to DDS resamples the stored points and destroys the
+sub-sample edge timing this bench exists to measure.
+
+The two documented hazards are firmware behaviour rather than model behaviour, so expect them on any
+unit in the family: repeated large waveform uploads wedge the LAN service (`tools/instruments.py`), and
+`C1:ARWV?` can take longer than 5 s to answer after a selection — 15 of 86 cells in one lap were lost
+to that before `bsdg.select()` learned to retry the query.
+
+**The same is true of the scope.** The oracle here is an SDS1204X-E, and `tools/scope.py` is already
+written against the **SDS1000X-E** family rather than that model — the two decode buses, the decode
+availability table and the 1 GSa/s waveform read are all series properties. What the bench needs of it
+is UART decode, two buses, and 1 GSa/s for the tiebreaker read; the model number is again the analog
+bandwidth, 100 MHz on the **SDS1104X-E** against 200 on the 1204X-E. A 250 kBd bit is 4 µs and the
+impairments under test are ~2 % of one, so 80 ns is the finest edge displacement that matters — three
+orders of magnitude inside either model. **An SDS1104X-E is sufficient.**
+
+Both family claims rest on the published series specifications; only the SDG2122X and the SDS1204X-E
+have been run on this bench. Nothing enforces the scope's limits in code the way `SDG_MAX_SRATE` does,
+because the scope only ever reads.
 
 | Stage | Checks |
 |---|---|

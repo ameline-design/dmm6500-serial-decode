@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""SCPI driver for the Siglent SDS1204X-E oscilloscope -- the bench's independent oracle.
+"""SCPI driver for the Siglent SDS1000X-E oscilloscopes -- the bench's independent oracle.
+
+WRITTEN FOR THE FAMILY, not for the model on this bench. Everything here -- the two decode buses,
+the decode availability table, the 1 GSa/s waveform read -- is a series property, and the model
+number is the analog bandwidth: 100 MHz on an SDS1104X-E against 200 on the SDS1204X-E used here.
+A 250 kBd bit is 4 us and the impairments under test are ~2 % of one, so either is ample; see
+docs/BENCH.md. Only the 1204X-E has actually been run.
 
 WHY THIS FILE MATTERS MORE THAN ITS SIZE SUGGESTS
 

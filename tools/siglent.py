@@ -30,7 +30,8 @@ try:
 except ImportError:      # standalone use, e.g. copied to another machine
     SDG_IP, SCPI_PORT = '10.0.1.79', 5025
     SDG_MAX_VPP, SDG_MAX_PTS = 20.0, 8388608
-    SDG_MIN_SRATE, SDG_MAX_SRATE = 1e-6, 75e6
+    # 40e6 is the PORTABILITY cap -- see instruments.SDG_MAX_SRATE. The 2122X does 75e6.
+    SDG_MIN_SRATE, SDG_MAX_SRATE = 1e-6, 40e6
     SDG_MIN_WAVE_BYTES, SDG_MAX_WAVE_BYTES = 4, 16 * 1024 * 1024
 
 SDG_PORT = SCPI_PORT     # kept: existing callers import this name

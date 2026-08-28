@@ -157,8 +157,20 @@ SDG_MAX_VPP = 20.0
 # SDG2000X arb: bin length 4 B to 16 MB at 2 bytes per point.
 SDG_MAX_PTS = 8388608
 # TrueArb sample rate range, Sa/s.
+#
+# 40 MSa/s IS A PORTABILITY LIMIT, NOT THE HARDWARE'S. The SDG2122X on this bench does 75 MSa/s in
+# TrueArb, and every rate this project asks for is far below either figure -- the highest any plan cell
+# draws is 25 MSa/s, for a stimulus whose fastest edge is a 250 kBd bit. Capping at 40 keeps the bench
+# runnable on ANY SDG2000X, including the cheapest: the model number in that line is the sine bandwidth
+# (40 MHz on the SDG2042X, 120 on the 2122X), and 40 MSa/s with 40 MHz of bandwidth is the floor of the
+# family. Enforced here rather than written in docs/BENCH.md alone, because a limit a future plan can
+# exceed silently is not a limit -- bench_matrix and bench_sweep both refuse a cell above this, and
+# soakplan's selftest checks the emitted plan against it.
 SDG_MIN_SRATE = 1e-6
-SDG_MAX_SRATE = 75e6
+SDG_MAX_SRATE = 40e6
+# What the SDG2122X on this bench will actually do, kept because it is the measured hardware figure and
+# the reason a rate between the two is a portability failure rather than an impossible one.
+SDG_MAX_SRATE_2122X = 75e6
 
 # The DMM6500 digitizes at 1 MSa/s maximum. The app fixes the 10 V range, whose
 # digitize bandwidth is 440 kHz -- against 210 kHz on 1 V and 17 kHz on 100 V --

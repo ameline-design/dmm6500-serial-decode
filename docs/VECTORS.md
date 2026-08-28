@@ -1,6 +1,7 @@
 # Bench test vectors — naming and coverage plan
 
-The stimulus waveforms stored on the SDG2122X. Current names (`v41`, `r07`, `v44c`) encode nothing, so
+The stimulus waveforms stored on the generator — an SDG2122X here, though any SDG2000X will do and
+`docs/BENCH.md` says why. Current names (`v41`, `r07`, `v44c`) encode nothing, so
 choosing one at the bench means consulting `out/vectors/manifest.tsv`. This is the proposed rename plus
 the coverage the set is missing.
 

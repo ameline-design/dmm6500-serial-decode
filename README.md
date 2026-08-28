@@ -172,10 +172,17 @@ start, how to replay a failing cell offline, and the hazards worth knowing.
 
 ## Bench
 
-Three instruments over LAN: the DMM6500 under test, an SDG2122X generating the stimulus, an SDS1204X-E
-verifying the stimulus is what it claims to be. `tools/instruments.py` holds the addresses and the
-hazards — repeated large waveform uploads wedge the generator's LAN service, and calibration state is
-off limits on both.
+Three instruments over LAN: the DMM6500 under test, an SDG2000X-series generator producing the stimulus,
+an SDS1000X-E scope verifying the stimulus is what it claims to be. `tools/instruments.py` holds the addresses
+and the hazards — repeated large waveform uploads wedge the generator's LAN service, and calibration
+state is off limits on both.
+
+The units here are an SDG2122X and an SDS1204X-E, but neither line's top model is needed. The bench asks
+the generator for 25 MSa/s of TrueArb, 20 Vpp and ~41 stored waveforms, and the scope for UART decode,
+two buses and 1 GSa/s; in both lines the model number is the *analog bandwidth*, and the fastest edge
+here is a 250 kBd bit. So an **SDG2042X (40 MHz) and an SDS1104X-E (100 MHz) are sufficient**.
+`SDG_MAX_SRATE` is capped at 40 MSa/s so a plan cannot quietly outgrow the cheapest generator; see
+[docs/BENCH.md](docs/BENCH.md) for what to check on a unit that is not the one on this bench.
 
 ## Fixed since V1.10
 

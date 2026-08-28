@@ -37,7 +37,11 @@ bsdg.timeout = bsdg.timeout or 5   -- seconds; the tspnet default of 20 is far t
 bsdg.maxvpp = bsdg.maxvpp or 20.0
 -- TrueArb's rate limits, from the datasheet via tools/instruments.py.
 bsdg.minsrate = bsdg.minsrate or 1e-6
-bsdg.maxsrate = bsdg.maxsrate or 75e6
+-- 40 MSa/s, WHICH IS THE FAMILY'S FLOOR AND NOT THIS UNIT'S CEILING. The SDG2122X here does 75e6,
+-- but the cheapest SDG2000X -- an SDG2042X -- is 40 MHz and 40 MSa/s, and nothing this project asks
+-- for comes close: the highest rate any plan cell draws is 25e6. Matching tools/instruments.py's
+-- SDG_MAX_SRATE so the instrument refuses exactly what the host refuses.
+bsdg.maxsrate = bsdg.maxsrate or 40e6
 
 -- ---------------------------------------------------------------------------
 -- Connection

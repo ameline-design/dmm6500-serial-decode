@@ -736,6 +736,39 @@ def selftest():
         ck(nmis == 0, 'every CSV cell carries the Lua table\'s own amplitude, offset and wait '
                       '(%d disagree)' % nmis)
 
+    # THE CAP MUST NOT BE COSTING COVERAGE, which is the failure a rate cap actually has. Asserting
+    # that no cell exceeds SDG_MAX_SRATE is VACUOUS -- bench_matrix filters those cells out while
+    # building the plan, so lowering the cap does not produce an illegal plan, it produces a SMALLER one:
+    # measured, dropping the cap to 1 MSa/s takes the plan from 1677 cells to 1110 and every remaining
+    # cell is legal. A gate that cannot fail was the first version of this check, and it passed.
+    #
+    # So the property is that capping at 40 MSa/s -- the SDG2042X's ceiling, chosen so any SDG2000X can
+    # run this bench -- costs nothing against the 75 MSa/s the SDG2122X on this bench would allow.
+    try:
+        import instruments as _I
+        def _rows(cap):
+            was = _I.SDG_MAX_SRATE
+            _I.SDG_MAX_SRATE = cap
+            try:
+                return [ln for ln in emit_csv(1, 1, None, (), None).split('\n')
+                        if ln and ln[0].isdigit()]
+            finally:
+                _I.SDG_MAX_SRATE = was
+        at_cap = _rows(_I.SDG_MAX_SRATE)
+        at_2122x = _rows(_I.SDG_MAX_SRATE_2122X)
+        ck(len(at_cap) == len(at_2122x),
+           'the %.0f MSa/s cap costs no plan coverage against the %.0f MSa/s this bench could do, '
+           'so any SDG2000X runs the same plan (%d vs %d cells)'
+           % (_I.SDG_MAX_SRATE / 1e6, _I.SDG_MAX_SRATE_2122X / 1e6, len(at_cap), len(at_2122x)))
+        worst = max(float(ln.split(',')[8]) for ln in at_cap) if at_cap else 0.0
+        ck(worst <= _I.SDG_MAX_SRATE,
+           'and no emitted cell exceeds it (worst %.0f of %.0f Sa/s)' % (worst, _I.SDG_MAX_SRATE))
+        overv = [ln for ln in at_cap if float(ln.split(',')[6]) > _I.SDG_MAX_VPP]
+        ck(not overv, 'and none exceeds SDG_MAX_VPP (%d cell(s) over %.1f Vpp)'
+                      % (len(overv), _I.SDG_MAX_VPP))
+    except ImportError:
+        ck(False, 'tools/instruments.py must be importable to check the generator limits')
+
     print('\n%s' % ('%d FAILED' % len(bad) if bad else 'selftest: all properties hold'))
     return 1 if bad else 0
 
