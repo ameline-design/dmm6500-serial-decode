@@ -522,6 +522,16 @@ def judge_payload(got, want):
     return verdict == 'PASS', det
 
 
+def _boff(i):
+    """'Bxxxxx: ' for a byte offset, or '' when there is not one. ONLY WHERE IT IS ALREADY KNOWN --
+    the offset comes out of a loop the judge already runs, so it costs nothing; nothing here goes
+    looking for one, because a verdict that spends time locating a byte it is about to report as wrong
+    is a verdict that runs slower on exactly the captures there are most of."""
+    if i is None:
+        return ''
+    return 'B%05d: ' % i
+
+
 def judge_payload_v(got, want, expect='exact'):
     """Judge a capture of a LOOPING payload. -> (verdict, detail).
 
@@ -612,7 +622,11 @@ def judge_payload_v(got, want, expect='exact'):
     exempt = set(i + 1 for i in flagged)
     best = None                            # (mismatches, -verified, alignment, verified, exempted)
     for cand in range(len(want)):
-        mism, v, edge = 0, 0, 0
+        # firstbad IS THE BYTE OFFSET OF THE FIRST MISMATCH at this alignment, in the decoded stream, so
+        # a verdict can name the byte it is talking about: 'B00042' indexes the record's own hex column
+        # at two characters a byte. A count alone says how much is wrong and gives a reader nowhere to
+        # look, and on a fortnight's record 'find the wrong byte' is otherwise a search through 160 MB.
+        mism, v, edge, firstbad = 0, 0, 0, None
         for start, gb in diagruns:
             exp = (cand + start) % len(want)
             ref = hay[exp:exp + len(gb)]
@@ -623,12 +637,14 @@ def judge_payload_v(got, want, expect='exact'):
                     edge += 1
                 else:
                     mism += 1
+                    if firstbad is None:
+                        firstbad = start + j
         # Tie-break on VERIFIED, or a candidate with zero mismatches but poor coverage can beat an
         # equally clean one that verifies far more, and the coverage floor then fails a good capture.
         key = (mism, -v)
         if best is None or key < best[0]:
-            best = (key, cand, v, edge, mism)
-    _, align, verified, edgeskip, mismatched = best
+            best = (key, cand, v, edge, mism, firstbad)
+    _, align, verified, edgeskip, mismatched, firstbad = best
     # A wrong alignment misses nearly every byte, so the best score must still be recognisably the
     # payload before any budget is applied -- otherwise a 1 % budget would pass pure garbage on a
     # payload short enough to have few alignments.
@@ -637,12 +653,14 @@ def judge_payload_v(got, want, expect='exact'):
                         'payload, silently wrong'
                         % (len(want), verified, ndiag, 100.0 * verified / max(1, ndiag)))
     if mismatched > mbudget:
-        return 'FAIL', ('%d interior byte(s) miss the payload at the best of %d alignments, budget '
-                        '%d -- silently wrong' % (mismatched, len(want), mbudget))
+        return 'FAIL', ('%s%d interior byte(s) miss the payload at the best of %d alignments, budget '
+                        '%d -- silently wrong'
+                        % (_boff(firstbad), mismatched, len(want), mbudget))
 
     budget = max(JP_FLAG_FLOOR, int(math.ceil(JP_FLAG_FRAC * body)))
     if len(interior) > budget:
-        return 'FAIL', '%d interior flagged, budget %d' % (len(interior), budget)
+        return 'FAIL', ('%s%d interior flagged, budget %d'
+                        % (_boff(min(interior) if interior else None), len(interior), budget))
     # Exemptions cannot outnumber the flags that justify them.
     if edgeskip > budget:
         return 'FAIL', ('%d byte(s) exempted beside flagged frames, budget %d -- more debris than the '
