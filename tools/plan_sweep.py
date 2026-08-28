@@ -111,21 +111,32 @@ LINE = re.compile(r'^PLAN (\d+)/(\d+) iteration (\d+): (.*)$')
 # eight phases. `badall` is the intersection, and it is bounded here for that reason: it counts the
 # defects no capture placement escapes, which is a far stronger claim than badcells makes. It is
 # ratcheted like every other counter rather than demanded to be zero.
+# nobytes IS ZERO AT EVERY CONFIGURATION BELOW, and it is a bound rather than an absence: the class had
+# 105-106 points at 8 offsets until ua_run stopped choosing a frame anchor outside the window it is
+# scoring. Every one of them was v90 or v94 and no other vector, so a single number holds the whole
+# family -- and if the anchor bound is ever lost, this is the counter that says so first.
+#
+# skip 1 AND judged ONE LOWER AT 8 OFFSETS, at the two configurations that reach it, is the price of
+# that fix and is named here rather than left as a puzzle: v94 at 630 Bd digitises at 15.87 sa/bit, so
+# a 20000-sample capture holds 126 bytes and the 128-byte 0x55 block is longer than the whole window.
+# That point used to decode NOTHING and count as bad; it now returns 5 bytes, and 5 minus the app's own
+# 3-byte head allowance leaves too few for judge() to compare. The app improved and the harness lost
+# the ability to score it, which is exactly what `skip` is bounded to make visible.
 RATCHET = {
-    (1, 1, ()): {'bad': 15, 'badcells': 15, 'badall': 15, 'rate': 13, 'flags': 0, 'bytes': 2,
+    (1, 1, ()): {'bad': 14, 'badcells': 14, 'badall': 14, 'rate': 13, 'flags': 0, 'bytes': 1,
                  'nobytes': 0, 'bleed': 211, 'skip': 0, 'judged': 1763, 'loudquiet': 9,
                  'loudmiss': 131, 'label': 3},
-    (1, 8, ()): {'bad': 216, 'badcells': 92, 'badall': 11, 'rate': 106, 'flags': 0, 'bytes': 5,
-                 'nobytes': 105, 'bleed': 1205, 'skip': 0, 'judged': 14104, 'loudquiet': 53,
+    (1, 8, ()): {'bad': 110, 'badcells': 20, 'badall': 11, 'rate': 106, 'flags': 0, 'bytes': 4,
+                 'nobytes': 0, 'bleed': 1205, 'skip': 1, 'judged': 14103, 'loudquiet': 53,
                  'loudmiss': 656, 'label': 24},
     # THE TWO CONFIGURATIONS A BENCH LAP CAN ACTUALLY BE COMPARED WITH, because every hardware soak
     # skips v95 and v96 -- v96 wedges the generator at vector 33 -- and the skip is drawn on. These are
     # the ones tools/soak_offline.py and the default CLI run.
-    (1, 1, SP.HW_SKIP): {'bad': 16, 'badcells': 16, 'badall': 16, 'rate': 14, 'flags': 0, 'bytes': 2,
+    (1, 1, SP.HW_SKIP): {'bad': 15, 'badcells': 15, 'badall': 15, 'rate': 13, 'flags': 0, 'bytes': 2,
                          'nobytes': 0, 'bleed': 200, 'skip': 0, 'judged': 1677, 'loudquiet': 5,
                          'loudmiss': 122, 'label': 3},
-    (1, 8, SP.HW_SKIP): {'bad': 217, 'badcells': 93, 'badall': 10, 'rate': 108, 'flags': 0,
-                         'bytes': 3, 'nobytes': 106, 'bleed': 1050, 'skip': 0, 'judged': 13416,
+    (1, 8, SP.HW_SKIP): {'bad': 110, 'badcells': 22, 'badall': 10, 'rate': 107, 'flags': 0,
+                         'bytes': 3, 'nobytes': 0, 'bleed': 1050, 'skip': 1, 'judged': 13415,
                          'loudquiet': 54, 'loudmiss': 622, 'label': 24},
 }
 WHY = {
@@ -398,6 +409,13 @@ def main():
     key = (a.iteration, a.offsets, skip)
     if a.no_ratchet:
         print('\n-- ratchet DISABLED by --no-ratchet: the counts above gate nothing --')
+    elif os.environ.get('SDEC_PROBE_N'):
+        # A SWEPT PROBE CAP IS A DIFFERENT DECODER. sweep_plan.lua honours SDEC_PROBE_N so the format
+        # search's ranking window can be measured rather than argued about, and every count in RATCHET
+        # was measured at the shipped default. Comparing a run at another cap against those baselines
+        # would read a deliberate improvement as an unexplained gain -- or worse, latch it.
+        print('\n-- ratchet SKIPPED: SDEC_PROBE_N=%s is set, so this is not the shipped decoder and no '
+              'baseline here describes it --' % os.environ['SDEC_PROBE_N'])
     elif len(laps) > 1:
         print('\n-- ratchet SKIPPED for a multi-lap run: each lap is a different draw, so a baseline '
               'measured on one iteration does not describe the others --')

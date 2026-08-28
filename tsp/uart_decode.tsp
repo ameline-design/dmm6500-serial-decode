@@ -364,11 +364,42 @@ function sdec.ua_run(rd, n, T, nbits, par, nstop, invert, tmin0)
   local want = 0
   if invert then want = 1 end
 
+  -- AN ANCHOR HAS TO BE INSIDE `n`. The edge arrays span the whole capture and
+  -- `n` need not: sdec.ua_probe scores a format over ua_probe_n samples from the first edge, and the
+  -- edges past that are still in ei. Without this bound the search below returns an anchor beyond `n`,
+  -- whose first frame reads off the end, comes back 'truncated' and BREAKS the walk before one frame
+  -- is emitted -- so the probe reports that nothing frames while the format is right.
+  --
+  -- The failure needs the anchor to be reachable in the capture and not in the window, which a block
+  -- payload produces exactly: 64 or 128 bytes of 0x55 put a one-bit mark run between every frame and
+  -- never satisfy the 1.5-bit test, while the 0xAA block after them ends every frame with mark, mark
+  -- and does. So the anchor lands in the 0xAA block, 129 bytes past a 48-byte probe window, and a
+  -- correct 8.3333-sample bit time with 111 framable bytes behind it is reported as 'no frame fits'.
+  -- Measured over the soak plan: 106 of 13416 points, every one of them v90 or v94 and no other
+  -- vector, and they go to zero at every cap from 2000 samples up.
+  --
+  -- THE BOUND IS `n`, NOT "room for a whole frame", and the difference is not cosmetic. Requiring
+  -- room for a frame ALSO discards an in-window anchor that cannot complete one, and then the fallback
+  -- frames from the window's start instead -- which on a payload with no 1.5-bit mark run of its own is
+  -- mid-byte, so every frame carries a valid start and stop bit and a shifted value. Measured on 200
+  -- bytes of 0x12 with one 0xAA near the end: 201 frames, 201 marked good, every byte 0x22. Refusing
+  -- is the better answer there, and `<= n` keeps it.
+  --
+  -- It also makes the bound INERT for every caller that passes the whole capture: sig_edges only
+  -- records edges inside it, so `ei[k] <= n` holds for all of them by construction. Only the truncated
+  -- probe window can exclude anything, which is the one place the defect lives. Chunked streaming
+  -- reaches this search -- ck_decode passes tmin0 = nil for its first window and for every window after
+  -- one that emitted nothing -- and is inert for the same reason: chunk_decode.tsp rebuilds the edges
+  -- per window and then calls ua_run with that window's own count.
+  --
+  -- ONLY THE 1.5-BIT SEARCH IS BOUNDED. The fallback takes the FIRST candidate edge and ei ascends, so
+  -- if that one is out of the window then so is every other -- bounding it would trade nf = 0 for
+  -- nf = 0.
   local anchor = nil
   local k
   if tmin0 == nil then
     for k = 1, ne do
-      if es[k] == want then
+      if es[k] == want and ei[k] <= n then
         local markrun
         if k == 1 then markrun = ei[1] - 1 else markrun = ei[k] - ei[k-1] end
         if markrun >= 1.5 * T then anchor = k; break end
@@ -962,19 +993,29 @@ end
 --
 -- The FINAL decode is unaffected -- it runs over everything. Only the ranking is truncated.
 --
--- 4000 IS MEASURED, NOT CHOSEN. Sweeping the cap against the 142-case hostile suite, edge-anchored:
+-- 4000 IS MEASURED, NOT CHOSEN. Sweeping the cap against the 148-case hostile suite, edge-anchored:
 --
---     none 8000 6000 4000 3000 2000 1500   ->  121 ok, 21 degraded, 0 WRONG, 0 RAISED  (identical)
---     1000                                 ->  120 ok, 22 degraded, 0 WRONG, 0 RAISED
+--     none 16000 12000 8000 6000 4000 2000 1500   ->  127 ok, 21 degraded, 0 WRONG, 0 RAISED
+--     1000                                        ->  126 ok, 22 degraded, 0 WRONG, 0 RAISED
+--     500                                         ->  125 ok, 22 degraded, 1 WRONG, 0 RAISED
 --
--- So discrimination is intact down to 1500 samples and starts costing at 1000. 4000 keeps 2.7x
--- margin over that floor while cutting the search's work 5x against a 20 000-sample capture --
--- which should take the measured 4.376 s auto-detect at 38400 baud to roughly 0.9 s. It is ~48
--- bytes at 8.33 samples/bit: plenty to rank formats, far less than a page.
+-- So discrimination is intact down to 1500 samples, starts costing at 1000, and produces a WRONG
+-- answer at 500. 4000 keeps 2.7x margin over the degradation floor while cutting the search's work
+-- 5x against a 20 000-sample capture. Measured on the host, the whole search costs 3.3x more
+-- uncapped than at 4000, which puts the instrument's 4.376 s at about 1.1 s. It is ~48 bytes at
+-- 8.33 samples/bit: plenty to rank formats, far less than a page.
 --
 -- Re-run that sweep (SDEC_PROBE_N=N lua tools/stress_serial.lua) before changing this. The
 -- failure mode of too small a value is not a crash, it is a QUIETLY WORSE ANSWER -- a degraded
--- case rather than a wrong one -- and only the suite makes that visible.
+-- case rather than a wrong one until 500 -- and only the suite makes that visible.
+--
+-- THE CAP DOES NOT DECIDE WHETHER A BLOCK PAYLOAD DECODES, and it used to look as though it did.
+-- v90 and v94 -- 64 and 128 bytes each of 0x00, 0xFF, 0x55, 0xAA -- lost 106 of 13416 soak-plan
+-- points to 'no frame fits', and the count fell monotonically as the cap rose, to zero only with no
+-- cap at all. That was the frame anchor being chosen outside the window the probe scores, not the
+-- window being too small: see the bound on nlast in ua_run. With it, the class is empty at every cap
+-- from 2000 samples up, and raising this number buys nothing on that family.
+-- tools/sweep_plan.lua honours SDEC_PROBE_N too, which is how that surface was measured.
 sdec.ua_probe_n = sdec.ua_probe_n or 4000
 
 -- How much better a snapped RESCALING must score before it may displace the width fit, and how

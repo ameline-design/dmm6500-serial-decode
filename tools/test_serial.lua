@@ -5286,6 +5286,72 @@ local function test_chunked()
       sdec.ua_probe_n = oldcap
       check('an absurdly small cap still finds a bit time, because the window follows the '
             .. 'traffic rather than starting at sample 1', lateT ~= nil, tostring(lateT))
+
+      -- AN ANCHOR THE PROBE WINDOW CANNOT REACH. ua_run's frame anchor is chosen from the whole
+      -- capture's edge list while the probe scores only ua_probe_n samples of it, so an anchor past
+      -- that window truncates on its first frame and BREAKS the walk with nothing emitted -- the probe
+      -- then reports that no format fits a bit time that is exactly right.
+      --
+      -- THE FIXTURE IS THE SOAK'S OWN v94: blocks of one repeated byte, captured inside the 0x55 one.
+      -- 0x55 frames as 0,1,0,1,0,1,0,1,0,1 -- alternating throughout, so every mark run is ONE bit and
+      -- the 1.5-bit anchor test never fires inside the block. The 0xAA block after it ends every frame
+      -- with mark, mark and does fire, 129 bytes away. That is the whole mechanism: an anchor that
+      -- exists in the capture and not in the window.
+      do
+        local bb, bn, bi, bk = {}, 0, nil, nil
+        local pats = {0, 255, 0x55, 0xAA}
+        for bi = 1, 4 do
+          for bk = 1, 128 do bn = bn + 1; bb[bn] = pats[bi] end
+        end
+        local bfs = sdec.pick_fs(9600, 8)
+        -- loop = true renders a whole number of bit times, so the wrap below is seamless -- the arb
+        -- these vectors are played from repeats, and a capture straddles the seam.
+        local bwv, _, _, bna = GEN({bytes = bb, baud = 9600, fs = bfs, nbits = 8, par = 0,
+                                    gap = 0, lead = 10, tail = 10, loop = true})
+        -- Half a period in: byte 257 of 512, which is the third block -- the 0x55 one.
+        local boff = math.floor(bna / 2)
+        local brd, bns = {}, 20000
+        for bi = 1, bns do brd[bi] = bwv[math.mod(boff + bi - 1, bna) + 1] end
+        clearforce()
+        sdec.acq_fs, sdec.fs = bfs, bfs
+        sdec.sig_levels(brd, bns)
+        sdec.sig_edges(brd, bns)
+        sdec.sig_idle(brd, bns)
+        local bT = sdec.sig_bittime(sdec.w, sdec.nw)
+        check('a capture inside a 128-byte 0x55 block still fits its own bit time exactly',
+              bT ~= nil and near(bfs / bT, 9600, 20),
+              string.format('T %s = %.0f Bd', tostring(bT), bfs / (bT or 1)))
+        -- THE PRECONDITION, ASSERTED. Without this the two checks below could pass on a fixture whose
+        -- anchor happens to sit inside the window, which is the same capture with the defect absent --
+        -- a test that cannot fail. The anchor here must be PAST sdec.ua_probe_n.
+        local banch = nil
+        for bk = 1, sdec.ne do
+          if sdec.es[bk] == 0 then
+            local mrun
+            if bk == 1 then mrun = sdec.ei[1] - 1 else mrun = sdec.ei[bk] - sdec.ei[bk - 1] end
+            if mrun >= 1.5 * bT then banch = sdec.ei[bk]; break end
+          end
+        end
+        check('...and its only 1.5-bit mark run lies BEYOND the probe window, which is the defect\'s '
+              .. 'precondition', banch ~= nil and banch > sdec.ua_probe_n,
+              string.format('anchor at %.0f, cap %s', banch or -1, tostring(sdec.ua_probe_n)))
+        check('...so the ranking probe scores it anyway, framing from the window\'s own start',
+              sdec.ua_probe(brd, bns, bT) ~= nil,
+              tostring(sdec.ua_probe(brd, bns, bT)))
+        local bok, bwhy = sdec.decode_from(brd, bns)
+        check('...and the decode returns bytes rather than "no frame fits" at the shipped cap',
+              bok == true and sdec.res ~= nil and (sdec.res.nf or 0) > 50,
+              string.format('ok=%s nf=%d why=%s', tostring(bok),
+                            (sdec.res ~= nil and sdec.res.nf) or 0, tostring(bwhy)))
+        check('...at the commanded rate, so nothing was traded for the frames',
+              sdec.baud ~= nil and near(sdec.baud, 9600, 20), tostring(sdec.baud))
+        -- THE NEGATIVE SIDE. The bound must not fabricate an anchor where no frame can fit: a window
+        -- shorter than one frame has to come back empty, not with a frame read off the end.
+        local bshort = sdec.ua_run(brd, math.floor(5 * bT), bT, 8, sdec.PAR_NONE, 1, false)
+        check('and a window under one frame long still emits nothing',
+              bshort ~= nil and bshort.nf == 0, string.format('nf=%d', (bshort or {}).nf or -1))
+        clearforce()
+      end
     end
 
     -- Abandoning mid-run has to close the file and keep what was decoded. Stepping to the

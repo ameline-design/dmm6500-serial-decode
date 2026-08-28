@@ -29,11 +29,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # The counters sweep_startphase.lua prints on its SHARD line, in the order they appear there.
 # EVERY ONE MUST APPEAR EXACTLY ONCE on the line; see parse(). Reading a missing counter as 0 would let
 # a renamed field report a clean run, and these feed the ratchet that bounds #46 and #49.
-KEYS = ['cases', 'ok', 'refused', 'fmtdiff', 'ratediff', 'shortrun', 'headbleed',
+KEYS = ['cases', 'ok', 'exact', 'refused', 'fmtdiff', 'ratediff', 'shortrun', 'headbleed',
         'redecodes', 'skipped', 'HARD']
 
 # RATCHETS FOR THE TWO OPEN-ISSUE COUNTERS. Measured 2026-08-22 at seed 1, 24 offsets, and verified
-# BIT-IDENTICAL across two consecutive runs -- 3936 decodes, 2221 byte-exact, both counters unmoved.
+# BIT-IDENTICAL across two consecutive runs -- 3936 decodes, both counters unmoved. The 2221 figure
+# recorded here was `ok`, which is not byte-exact: see RATCHET_FLOOR below.
 #
 # WHY A RATCHET AND NOT A TARGET. These count defects that are UNDERSTOOD BUT NOT FIXED, so demanding
 # zero would fail the gate on a known state, and printing them with no bound lets them grow unnoticed
@@ -54,9 +55,22 @@ RATCHET_SEED, RATCHET_OFFSETS = 1, 24
 # also reads the wrong format. HARD stayed 0 and headbleed 96; shortrun rose 966 -> 977, which is the
 # honest cost -- blocking a rescaling removes the frames a shorter bit time invented, so a few cells
 # now have too few trusted bytes to judge instead of a confident wrong rate.
+# RAISED 2026-08-28 by the frame-anchor bound in ua_run, and the arithmetic is the whole justification:
+# refused fell 120 -> 94, byte-exact rose 2196 -> 2218, fmtdiff rose 515 -> 519. 26 = 22 + 4, so every
+# case that moved came OUT of refused, and the four that landed on the 7E1/8N1 ambiguity are cases the
+# sweep could not previously reach at all -- not cases that got worse. ratediff, headbleed, shortrun and
+# HARD did not move.
 RATCHET = {
     'ratediff': (130, 'periodic-payload rate misfit, issue #46'),
-    'fmtdiff': (515, '7E1/8N1 ambiguity, issue #49'),
+    'fmtdiff': (519, '7E1/8N1 ambiguity, issue #49'),
+}
+# AND A FLOOR, because the ratchet above is one-directional and that is a hole this very change walked
+# through. A rise in fmtdiff is indistinguishable from a fall in byte-exact when only fmtdiff is
+# bounded: pushing 4 correct decodes into the ambiguity, and reaching 4 windows that used to decode
+# nothing, move the same counter the same way. Bounding byte-exact from below tells them apart -- the
+# first drops it, the second does not.
+RATCHET_FLOOR = {
+    'exact': (2218, 'decodes whose bytes match the payload at zero shift'),
 }
 LINE = re.compile(r'^SHARD (\d+)/(\d+) seed (\d+): (.*)$')
 
@@ -199,7 +213,12 @@ def main():
         print()
     print('%d shards, seed %d, %d offsets per vector x condition' % (nsummary, a.seed, a.offsets))
     print('  %-10s %d' % ('decodes', tot['cases']))
-    print('  %-10s %d' % ('byte-exact', tot['ok']))
+    # `ok` IS NOT "byte-exact", and labelling it that hid the difference for as long as the label
+    # existed. sweep_startphase.lua increments nok for three outcomes: bytes matching the payload at
+    # zero shift, a right-format decode whose RATE is wrong, and a vector with no payload to compare.
+    # Only the first means the decode was right, so both are printed and only the first is floored.
+    print('  %-10s %d   (bytes match the payload at zero shift)' % ('exact', tot['exact']))
+    print('  %-10s %d   (exact, or rate-only wrong, or nothing to match)' % ('ok', tot['ok']))
     print('  %-10s %d   (an honest answer on a short or badly placed window)'
           % ('refused', tot['refused']))
     print('  %-10s %d   (7E1/8N1 ambiguity -- open issue #49)' % ('fmtdiff', tot['fmtdiff']))
@@ -247,6 +266,23 @@ def main():
                 # to let the defect come back later and still pass.
                 print('  %-10s %4d  IMPROVED from %d   %s' % (key, got, base, why))
                 print('             ^ set RATCHET[%r] to %d in this file, or the gain is not held'
+                      % (key, got))
+            else:
+                print('  %-10s %4d  unchanged        %s' % (key, got, why))
+        for key in sorted(RATCHET_FLOOR):
+            base, why = RATCHET_FLOOR[key]
+            got = tot[key]
+            if got < base:
+                # LESS CORRECTNESS IS A REGRESSION even when every bounded defect held: a decode that
+                # stopped being byte-exact went somewhere, and the counter it went to may not be one
+                # this file watches.
+                failed.append('%s FELL to %d from a measured %d (%s) -- %d case(s) stopped being '
+                              'right. A bounded defect holding does not make that a pass.'
+                              % (key, got, base, why, base - got))
+                print('  %-10s %4d  WORSE, below %d   %s' % (key, got, base, why))
+            elif got > base:
+                print('  %-10s %4d  IMPROVED from %d   %s' % (key, got, base, why))
+                print('             ^ set RATCHET_FLOOR[%r] to %d in this file, or the gain is not held'
                       % (key, got))
             else:
                 print('  %-10s %4d  unchanged        %s' % (key, got, why))

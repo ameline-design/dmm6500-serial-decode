@@ -171,6 +171,13 @@ end
 local nv = table.getn(V)
 local hard, nhard = {}, 0           -- hard failures, with enough detail to rerun the case
 local ncase, nrefuse, nfmtdiff, nratediff, nshortrun, nok = 0, 0, 0, 0, 0, 0
+-- nok IS A COMPOSITE AND CANNOT BE FLOORED. It counts three different outcomes: a decode whose bytes
+-- match the payload at zero shift, a decode at the right format whose RATE is wrong (already counted in
+-- nratediff, and its bytes cannot be judged against a payload it did not read at), and a vector with no
+-- payload to match at all. So a run can hold nok steady while byte-exact matches turn into rate errors.
+-- nexact is the first of those three on its own, which is the only one that means "this decode was
+-- right", and therefore the only one a lower bound can be placed on.
+local nexact = 0
 local nheadbleed, worstbleed, worstbleedwhat = 0, 0, ''
 -- WOULD QUOTING headsusp BE BETTER THAN NARROWING TO THE LAST FLAG? uart_decode.tsp:508 asserts that
 -- headsusp "over-claims" and narrows to the last flagged frame for that reason, which costs the bleed
@@ -357,6 +364,7 @@ for vi = 1, nv do
                 end
                 if hit == 0 then
                   nok = nok + 1
+                  nexact = nexact + 1
                 elseif hit ~= nil then
                   nheadbleed = nheadbleed + 1
                   bleedsum = bleedsum + hit
@@ -380,9 +388,9 @@ sdec.ua_refine_parity = real_refine
 
 -- ---------- report ----------
 -- MACHINE-READABLE FIRST LINE, so sweep_all.py can total the shards without parsing prose.
-print(string.format('SHARD %d/%d seed %d: cases %d ok %d refused %d fmtdiff %d ratediff %d ' ..
+print(string.format('SHARD %d/%d seed %d: cases %d ok %d exact %d refused %d fmtdiff %d ratediff %d ' ..
                     'shortrun %d headbleed %d (worst %d) redecodes %d skipped %d HARD %d',
-                    A.shard, A.nshard, A.seed, ncase, nok, nrefuse, nfmtdiff, nratediff,
+                    A.shard, A.nshard, A.seed, ncase, nok, nexact, nrefuse, nfmtdiff, nratediff,
                     nshortrun, nheadbleed, worstbleed, nredecode, nskip, nhard))
 -- SECOND MACHINE-READABLE LINE: the two error directions, so the narrow-vs-headsusp choice is decided
 -- by totals across every shard rather than by one remembered case.

@@ -76,6 +76,24 @@ math.mod   = math.mod   or math.fmod
 dofile('tools/mock_display.lua')
 dofile('tools/gen_serial.lua')
 
+-- SDEC_PROBE_N overrides the format search's ranking window, the same knob and the same name
+-- tools/stress_serial.lua exposes. It is here because the v90/v94 family is a CAP failure: those
+-- vectors are blocks of one repeated byte, and a probe window shorter than a whole block sees one
+-- byte repeating, where every rescaling of the waveform is self-consistent and no score can prefer
+-- the truth. Sweeping the cap is how the requirement gets measured instead of guessed.
+--
+-- A RUN WITH THIS SET IS NOT A BASELINE. tools/plan_sweep.py skips its ratchet when it sees the
+-- variable, because every count in RATCHET was measured at the shipped default.
+local PROBE_N = tonumber(os.getenv('SDEC_PROBE_N') or '')
+-- READ FROM THE MODULE, not written here, so the banner below names the value the app actually
+-- ships rather than a copy of it that a later edit to tsp/ would leave lying.
+local PROBE_SHIPPED = sdec.ua_probe_n
+if PROBE_N ~= nil and PROBE_N >= 0 then
+  -- 0 means NO CAP -- probe the whole capture -- since sdec.ua_probe treats any non-positive cap
+  -- that way and an env var cannot carry nil.
+  if PROBE_N == 0 then sdec.ua_probe_n = nil else sdec.ua_probe_n = PROBE_N end
+end
+
 local A = {plan = nil, hold = false, raw = false, quiet = false, cell = nil, n = 20000,
            offsets = 1, shard = 1, nshard = 1}
 local ai = 1
@@ -606,6 +624,14 @@ elseif table.getn(P.skipped) > 0 then
         .. table.concat(P.skipped, ' '))
 else
   print('    skipped: nothing -- comparable only to a bench lap that also skipped nothing')
+end
+-- THE PROBE CAP, PRINTED WHEN IT IS NOT THE SHIPPED ONE, so a swept run cannot be read later as a
+-- measurement of the app as it ships.
+if PROBE_N ~= nil and sdec.ua_probe_n ~= PROBE_SHIPPED then
+  print(string.format('    probe cap: %s, NOT the shipped %s -- this run does not describe the app '
+                      .. 'as built',
+                      sdec.ua_probe_n and (tostring(sdec.ua_probe_n) .. ' samples') or 'NO CAP',
+                      tostring(PROBE_SHIPPED)))
 end
 local nrate = table.getn(P.rates)
 local vi
