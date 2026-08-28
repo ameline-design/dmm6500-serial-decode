@@ -117,9 +117,16 @@ function brec.begin(tag, iterations, planid)
 end
 
 function brec.header(tag, iterations, planid)
-  brec.rawwrite(brec.fh, string.format('# %s tag=%s iterations=%s plan=%s file=%d\n',
+  -- THE PLAN VARIANT IN THE HEADER, because a lap is reproducible from its iteration number ONLY
+  -- against the plan it was run from. random-per-lap changes the skip, the skip is applied before the
+  -- shuffle, and the shuffle keys every cell's amplitude, offset and wait -- so lap 7 of a four-random
+  -- plan and lap 7 of a full one are different stimulus with the same number. Recorded rather than
+  -- remembered.
+  local rsub = 'all'
+  if brun ~= nil and brun.planrsub ~= nil then rsub = tostring(brun.planrsub) end
+  brec.rawwrite(brec.fh, string.format('# %s tag=%s iterations=%s plan=%s randomperlap=%s file=%d\n',
                                        brec.schema, brec.q(tag), tostring(iterations or 'forever'),
-                                       brec.q(planid), brec.nfile))
+                                       brec.q(planid), brec.q(rsub), brec.nfile))
   -- THE COLUMN NAMES, IN THE FILE, for both row kinds. A reader told the schema out of band is a
   -- reader that will one day be told the wrong one.
   brec.rawwrite(brec.fh,

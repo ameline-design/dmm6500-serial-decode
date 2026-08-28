@@ -57,6 +57,9 @@ SMOKE_SPEC = 'v77:std,r06:std,v78:nonstd,r00:nonstd'
 USBDIR = '/usb1/SERDEC'
 PLAN = USBDIR + '/PLAN.CSV'
 PUSH_MAX_ROWS = 200000
+# One chunk of the plan push, in bytes. 780 kB is what the app itself loads in 1.0 s and the only
+# load size this instrument has been measured at.
+PUSH_CHUNK_BYTES = 780000
 
 
 # CLEARED BEFORE THE LOAD, run_app.py's own prelude: sdec.buf is the only reference to a firmware
@@ -123,8 +126,34 @@ def load_modules(d, paths, timeout=300):
                          % (probe, '\n  '.join(ev) or 'the event log said nothing'))
 
 
+def keysize(d, name):
+    """The byte length of one file on the key, out of the FAT directory entry. -> int, or None.
+
+    THE SAME TRICK keyfiles() USES, for the same reason: a 32-byte directory entry carries the file's
+    length little-endian at offset 28, so 'is it there and how long is it' costs one read of a directory
+    that exists -- no event, and no pulling the file itself back through a socket. Verifying a 9 MB plan
+    by READ_ALL would mean holding 9 MB in a Lua string on a 2016 instrument and then sending it back
+    over the wire to be counted.
+    """
+    n83 = name83(name.split('.')[0], name.split('.')[-1])
+    out = qtag(d, 'do local fh = file.open("%s", file.MODE_READ) local raw = nil '
+                  'if fh ~= nil then raw = file.read(fh, file.READ_ALL) file.close(fh) end '
+                  'local n = -1 '
+                  'if raw ~= nil then local a = string.find(raw, "%s", 1, true) '
+                  '  if a ~= nil then n = string.byte(raw, a+28) + string.byte(raw, a+29)*256 '
+                  '      + string.byte(raw, a+30)*65536 + string.byte(raw, a+31)*16777216 end end '
+                  'print("KEYSIZE=" .. tostring(n)) end' % (USBDIR, n83), 'KEYSIZE=', timeout=90)
+    if out is None:
+        return None
+    try:
+        v = int(out)
+    except ValueError:
+        return None
+    return v if v >= 0 else None
+
+
 def push_plan(d, rows):
-    """Write the plan onto the key by LOADING IT AS A SCRIPT, not by executing statements.
+    """Write the plan onto the key by LOADING IT AS SCRIPTS, in chunks, not by executing statements.
 
     THE OBVIOUS WAY DOES NOT WORK, and it fails in a way worth recording. Sending the rows as chunked
     file.write statements overruns the instrument's socket input buffer -- '-363 input buffer overrun' on
@@ -134,9 +163,15 @@ def push_plan(d, rows):
     buffer holds while the interpreter works through what it already has.
 
     loadscript has no such problem -- it STORES lines rather than executing them, and the app itself
-    arrives that way: 726 kB and 13 336 lines in 0.9 s, measured. So the plan travels as one long-string
-    constant inside a script that writes it out in a single file.write, and the whole transfer is one
-    load and one call.
+    arrives that way: 780 kB in 1.0 s, measured. So the plan travels as a long-string constant inside a
+    script that writes it out in one file.write.
+
+    IN CHUNKS, THOUGH, AND THAT IS WHAT SIX DAYS COSTS. A lap is 1677 cells and each iteration of the
+    plan draws its own amplitudes, offsets and waits -- so an indefinite run over a ONE-iteration plan
+    wraps and replays identical stimulus, buying nothing but arb phase. Six days is ~76 laps, which is
+    134 000 rows and 9.4 MB, and a single long string that size would have to sit in the instrument's Lua
+    heap in one piece before a byte of it reached the key. Each chunk is its own script, the first opening
+    the file for WRITE and the rest for APPEND, so the peak memory is one chunk rather than one plan.
 
     The plan text cannot contain ']]' -- it is digits, commas, letters, dots and dashes -- so a long
     string is safe. It is checked anyway, because a silent truncation here is a short plan, and a short
@@ -146,44 +181,59 @@ def push_plan(d, rows):
     if ']]' in text:
         raise SystemExit('REFUSING: the plan contains a long-string terminator, so it cannot be sent '
                          'this way. Copy PLAN.CSV onto the key by hand.')
-    body = ('do\n'
-            # PLAIN [[ ]], because the [=[ level syntax is Lua 5.1 and this interpreter is 5.0.2:
-            # '[==[' is a TSP syntax error, not a longer delimiter.
-            'local PLANTEXT = [[\n' + text + ']]\n'
-            'local fh = file.open("%s", file.MODE_WRITE)\n'
-            'if fh == nil then print("PLANFAIL open") else\n'
-            '  file.write(fh, PLANTEXT)\n'
-            '  file.flush(fh)\n'
-            '  file.close(fh)\n'
-            '  print("PLANOK " .. tostring(string.len(PLANTEXT)))\n'
-            'end\n'
-            'end\n'
-            'print("===DONE===")\n') % PLAN
+    if len(rows) > PUSH_MAX_ROWS:
+        raise SystemExit('REFUSING: %d rows is past PUSH_MAX_ROWS (%d). Copy PLAN.CSV onto the key.'
+                         % (len(rows), PUSH_MAX_ROWS))
+    # ONE CHUNK IS THE SIZE THE APP ITSELF LOADS, which is the only load size this instrument has been
+    # measured at -- 780 kB in 1.0 s. Guessing larger would be guessing.
+    chunks, cur, curn = [], [], 0
+    for r in rows:
+        cur.append(r)
+        curn += len(r) + 1
+        if curn >= PUSH_CHUNK_BYTES:
+            chunks.append(cur)
+            cur, curn = [], 0
+    if cur:
+        chunks.append(cur)
     t0 = time.time()
-    out = d.load_script('sdecplan', body, timeout=300)
-    said = ' '.join(x for x in out if x)
-    print('  plan script: %.1f s  %s' % (time.time() - t0, said[:120]))
-    if 'PLANOK' not in said:
-        raise SystemExit('the plan did not land on the key: %s' % said[:300])
-    # VERIFIED BY BYTE LENGTH, NOT BY COUNTING LINES, and the difference is an event. Counting lines
-    # means reading until file.read returns nil -- which is a read PAST THE END, and that posts 2201
-    # 'File read error' on this instrument: a box on the panel, from the verification step itself.
-    # Measured in the attribution table: read-3-lines is 0 events, read-past-EOF is 1. READ_ALL stops at
-    # the end without going past it, so one read and a length comparison prove the same thing silently.
+    for k, ch in enumerate(chunks):
+        part = '\n'.join(ch) + '\n'
+        mode = 'file.MODE_WRITE' if k == 0 else 'file.MODE_APPEND'
+        body = ('do\n'
+                # PLAIN [[ ]], because the [=[ level syntax is Lua 5.1 and this interpreter is 5.0.2:
+                # '[==[' is a TSP syntax error, not a longer delimiter.
+                'local PLANTEXT = [[\n' + part + ']]\n'
+                'local fh = file.open("%s", %s)\n'
+                'if fh == nil then print("PLANFAIL open") else\n'
+                '  file.write(fh, PLANTEXT)\n'
+                '  file.flush(fh)\n'
+                '  file.close(fh)\n'
+                '  print("PLANOK " .. tostring(string.len(PLANTEXT)))\n'
+                'end\n'
+                'end\n'
+                'print("===DONE===")\n') % (PLAN, mode)
+        out = d.load_script('sdecplan', body, timeout=300)
+        said = ' '.join(x for x in out if x)
+        if 'PLANOK' not in said:
+            raise SystemExit('chunk %d of %d did not land on the key: %s'
+                             % (k + 1, len(chunks), said[:300]))
+        if len(chunks) > 1:
+            print('  chunk %d/%d: %d row(s), %d byte(s)' % (k + 1, len(chunks), len(ch), len(part)))
+    print('  plan script: %.1f s in %d chunk(s)' % (time.time() - t0, len(chunks)))
+    # VERIFIED FROM THE DIRECTORY ENTRY, not by reading the plan back. Counting lines would mean reading
+    # until file.read returns nil -- a read PAST THE END, which posts 2201 'File read error' on this
+    # instrument: a box on the panel, from the verification step itself. READ_ALL avoids that but would
+    # hold the whole plan in a Lua string, which is exactly what the chunking above exists to avoid.
     #
     # The write still has to be checked somehow: file.write posts an event rather than raising, so a
     # partial write reports success and a short plan does not fail -- it wraps sooner and repeats
     # stimulus without saying so.
-    n = qtag(d, 'do local fh = file.open("%s", file.MODE_READ) local n = -1 '
-                'if fh ~= nil then local raw = file.read(fh, file.READ_ALL) file.close(fh) '
-                'n = string.len(raw or "") end '
-                'print("PLANBYTES=" .. tostring(n)) end' % PLAN, 'PLANBYTES=', timeout=180)
-    if n is None:
+    got = keysize(d, os.path.basename(PLAN))
+    if got is None:
         raise SystemExit('the instrument did not report the plan size on the key')
-    got, want = int(n or 0), len(text)
-    if got != want:
+    if got != len(text):
         raise SystemExit('REFUSING to start: the key holds %d plan byte(s), not the %d sent.'
-                         % (got, want))
+                         % (got, len(text)))
     print('  plan on the key: %d byte(s) verified, %d row(s)' % (got, len(rows)))
 
 
@@ -362,6 +412,10 @@ def main():
     ap.add_argument('--iteration', type=int, default=1, help='first plan iteration')
     ap.add_argument('--spec', default=None, help='bench_matrix --plan-spec grammar for a subset')
     ap.add_argument('--skip-vectors', default=','.join(I.__dict__.get('HW_SKIP', ()) or ('v95', 'v96')))
+    ap.add_argument('--random-per-lap', type=int, default=None, metavar='N',
+                    help='play only N of the twelve random-payload vectors each lap (they are 31 %% of '
+                         'a lap and produced no failures of either kind on a full offline lap). N=4 '
+                         'takes a lap from 2.07 h to 1.64 h')
     ap.add_argument('--push-plan', action='store_true', help='write the plan onto the key first')
     ap.add_argument('--no-load', action='store_true', help='the app and engine are already loaded')
     ap.add_argument('--start', action='store_true', help='start the loop and disconnect')
@@ -395,6 +449,8 @@ def main():
         else:
             argv += ['--iterations', str(max(a.iteration, a.iteration + max(a.iterations, 1) - 1)),
                      '--skip-vectors', a.skip_vectors]
+            if a.random_per_lap is not None:
+                argv += ['--random-per-lap', str(a.random_per_lap)]
         text = subprocess.check_output(argv, cwd=ROOT).decode()
         rows = [ln for ln in text.split('\n') if ln.strip()]
         print('plan: %d line(s)%s' % (len(rows), (' spec %s' % a.spec) if a.spec else ''))

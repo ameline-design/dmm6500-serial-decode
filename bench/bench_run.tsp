@@ -132,6 +132,16 @@ end
 -- a comment line of the form '# rows=N' written by soakplan.py --emit-csv.
 brun.planrows = 0
 brun.planread = 0
+-- WHICH LAP AND CELL THE RUN IS ON, kept on brun so that every message can name them. A soak is
+-- reproducible from its iteration number alone -- every amplitude, offset, wait and vector order is keyed
+-- on it -- so a log line without the lap number is a failure nobody can replay. The plan's own
+-- random-per-lap setting is captured too, because a lap that played four of the twelve random vectors
+-- draws differently from one that played all twelve: the subset is applied as a skip BEFORE the shuffle,
+-- which moves every remaining vector's index and therefore its amplitude. Replaying lap 7 needs both
+-- numbers, so both go in the record's header.
+brun.iter = 0
+brun.cell = 0
+brun.planrsub = nil
 
 function brun.planopen()
   brun.planclose()
@@ -172,6 +182,10 @@ function brun.nextrow()
     -- now refuses both names.
     local _, _, n = string.find(ln, 'rows=(%d+)')
     if n ~= nil then brun.planrows = tonumber(n) end
+    -- THE PLAN VARIANT, so the record can say what it was run against. string.find with a capture
+    -- again: 5.0.2 has no string.match.
+    local _, _, rs = string.find(ln, 'random%-per%-lap=(%a*%d*)')
+    if rs ~= nil and rs ~= '' then brun.planrsub = rs end
     return brun.nextrow()
   end
   local f, nf = brun.split(ln)
@@ -505,7 +519,8 @@ function brun.msg(col, txt)
     brun.msgs[brun.msgn] = nil
     n = brun.msgn - 1
   end
-  brun.msgs[n + 1] = {txt = brun.stamp() .. ' #' .. brun.int(brun.ncell) .. ' ' .. tostring(txt),
+  brun.msgs[n + 1] = {txt = brun.stamp() .. ' L' .. brun.int(brun.iter) .. '#' .. brun.int(brun.cell)
+                            .. ' ' .. tostring(txt),
                       col = col or brun.c_lab}
   brun.ui_msgs()
 end
@@ -597,7 +612,8 @@ function brun.msg(col, txt)
     brun.msgs[brun.msgn] = nil
     n = brun.msgn - 1
   end
-  brun.msgs[n + 1] = {txt = brun.stamp() .. ' #' .. brun.int(brun.ncell) .. ' ' .. tostring(txt),
+  brun.msgs[n + 1] = {txt = brun.stamp() .. ' L' .. brun.int(brun.iter) .. '#' .. brun.int(brun.cell)
+                            .. ' ' .. tostring(txt),
                       col = col or brun.c_lab}
   brun.ui_msgs()
 end
@@ -1131,7 +1147,8 @@ function brun.soak(iterations, tag)
     -- THE KEY, READ ONCE PER CELL. Costs about a millisecond and no event, so unlike the stop file it
     -- can be checked every time round rather than every two hundredth.
     if brun.keyarmed and brun.stopkey_hit() then
-      brun.stopwhy = 'the TRIGGER key was pressed'
+      brun.stopwhy = string.format('the TRIGGER key was pressed at lap %d cell %d',
+                                   c.iter or 0, c.cell or 0)
       break
     end
     if brun.maxcell > 0 and brun.ncell >= brun.maxcell then
@@ -1139,7 +1156,8 @@ function brun.soak(iterations, tag)
       break
     end
     if brec.stopped then
-      brun.stopwhy = 'recording stopped: ' .. tostring(brec.why)
+      brun.stopwhy = string.format('lap %d cell %d: recording stopped: %s',
+                                   c.iter or 0, c.cell or 0, tostring(brec.why))
       brun.stopbad = true
       break
     end
@@ -1160,6 +1178,7 @@ function brun.soak(iterations, tag)
     -- which is the truth: nothing is being played.
     -- PER VECTOR, counted where the cell is attempted rather than where it succeeds, so the two
     -- numbers on the screen are 'failed' out of 'attempted' and not out of 'measured'.
+    brun.iter, brun.cell = c.iter or 0, c.cell or 0
     local vk = tostring(c.vid or '?')
     brun.vcell[vk] = (brun.vcell[vk] or 0) + 1
     brun.screen(c, arb)
@@ -1196,8 +1215,8 @@ function brun.soak(iterations, tag)
                .. string.rep(',', brun.nmeascol + 1) .. 'SDG:' .. brec.q(swhy) .. ',')
       brec.note(c.iter, c.cell, brun.ncell, 'sdg failed: ' .. tostring(swhy), brun.nbad, brun.nbadsdg)
       if brun.nbadsdg >= brun.maxsdgfail then
-        brun.stopwhy = string.format('the generator failed %d cells in a row: %s',
-                                     brun.nbadsdg, tostring(swhy))
+        brun.stopwhy = string.format('lap %d cell %d: the generator failed %d cells in a row: %s',
+                                     c.iter or 0, c.cell or 0, brun.nbadsdg, tostring(swhy))
         brun.stopbad = true
         break
       end
@@ -1287,10 +1306,13 @@ function brun.soak(iterations, tag)
   brun.settext(string.format('DONE F%s %s', brun.int(brun.nbad), brun.pct(brun.nbad, brun.ncell)),
                tostring(brun.stopwhy or 'ended'))
   brun.ui_end()
-  brec.note(-1, -1, 0, string.format('run total: %d cell(s), %d failed, %d event(s) instigated '
-                                     .. '(%d from the panel)',
-                                     brun.ncell, brun.nbad, brun.nevtot, brun.nevpanel))
-  brec.finish(brun.stopwhy or 'ended')
+  -- THE LAST LAP AND CELL, not -1. A run-total line whose lap column says -1 cannot be placed in the
+  -- run, and 'where did it get to' is the first question a returning operator asks.
+  brec.note(brun.iter, brun.cell, brun.ncell,
+            string.format('run total: %d cell(s), %d failed, %d event(s) instigated (%d from the panel)',
+                          brun.ncell, brun.nbad, brun.nevtot, brun.nevpanel))
+  brec.finish(string.format('lap %d cell %d: %s', brun.iter, brun.cell,
+                            tostring(brun.stopwhy or 'ended')))
   -- RESTORED, so a run ending does not leave the instrument silently swallowing real errors for the
   -- next operator. The app's own unmute, not a literal.
   pcall(function() sdec.unmute_events() end)

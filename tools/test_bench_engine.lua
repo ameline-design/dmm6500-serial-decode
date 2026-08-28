@@ -254,6 +254,11 @@ do
   ck(s ~= nil and n >= 12, 'every row is on disk with the file still open -- no close required',
      string.format('%d line(s)', n))
   ck(string.find(L[1], 'serdec%-soak%-1') ~= nil, 'the schema version is the first line', L[1])
+  -- THE PLAN VARIANT, because lap 7 of a four-random plan and lap 7 of a full one are different
+  -- stimulus with the same number: the subset is a skip, applied before the shuffle, and the shuffle
+  -- keys every cell's amplitude.
+  ck(string.find(L[1], 'randomperlap=', 1, true) ~= nil,
+     'and the header says which plan variant produced it', L[1])
   ck(string.find(L[2], 'iter,cell,vid,baud', 1, true) ~= nil,
      'and the column names are in the file, not only in a tool that reads it')
   ck(string.find(s, 'ten cells in', 1, true) ~= nil,
@@ -753,19 +758,33 @@ do
   -- operator was left with a warning and no way to act on it.
   brun.msgs, brun.lastmsg = nil, nil
   brun.nsdgtot, brun.ncell = 1, 200
+  -- brun.screen sets brun.iter/brun.cell from the row, which is what the log prefix uses: the PLAN's
+  -- lap and cell, not the run's running total, because those two numbers are what replay a cell.
+  brun.iter, brun.cell = 1, 200
   brun.screen({iter = 1, cell = 200, vid = 'v77', baud = 9600}, 'SER_Fox_8N1_x10')
   ck(MD.text(brun.ui.note) == 'Running -- press TRIGGER to stop and flush',
      'an alarm leaves the prompt alone', tostring(MD.text(brun.ui.note)))
   local m5 = MD.text(brun.ui.msg[1])
   ck(m5 ~= nil and string.find(m5, 'generator missed', 1, true) ~= nil
-     and string.find(m5, '#200', 1, true) ~= nil,
-     'and appears in the log below it, stamped with the time and the cell', tostring(m5))
+     and string.find(m5, 'L1#200', 1, true) ~= nil,
+     'and appears in the log below it, stamped with the time, the lap and the cell', tostring(m5))
   -- ONCE, NOT PER CELL. A log that repeats the same line for four hundred cells cannot say when
   -- anything started.
   brun.screen({iter = 1, cell = 201, vid = 'v77', baud = 9600}, 'SER_Fox_8N1_x10')
   brun.screen({iter = 1, cell = 202, vid = 'v77', baud = 9600}, 'SER_Fox_8N1_x10')
   ck(MD.text(brun.ui.msg[2]) == '' and table.getn(brun.msgs) == 1,
      'and an unchanged state is not pushed again', tostring(MD.text(brun.ui.msg[2])))
+  -- THE LAP NUMBER IS IN EVERY LINE. A soak is reproducible from its iteration number alone -- every
+  -- amplitude, offset, wait and vector order is keyed on it -- so a log line naming only the cell is a
+  -- failure nobody can replay a fortnight later.
+  brun.iter, brun.cell = 7, 1234
+  brun.msg(brun.c_warn, 'something happened')
+  -- THE LAST POPULATED LINE, not the last line. The log fills downward from the top of its area the way
+  -- a console does, and only scrolls once it is full -- so with two entries the newest is on line 2.
+  local ml = tostring(MD.text(brun.ui.msg[table.getn(brun.msgs)]))
+  ck(string.find(ml, 'L7#1234', 1, true) ~= nil,
+     'every log line names the lap as well as the cell', ml)
+
   -- NEWEST AT THE BOTTOM, and bounded: a sixth message drops the first.
   local mi
   for mi = 1, 6 do brun.msg(brun.c_lab, 'event ' .. tostring(mi)) end

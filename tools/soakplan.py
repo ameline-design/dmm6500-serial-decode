@@ -61,6 +61,9 @@ MAGIC = 0x5345524C
 # One per kind of decision. Distinct purposes keep the streams independent: without them the wait for
 # cell 0 and the rate for gap 0 would be the same number.
 P_ORDER, P_RATE, P_WAIT, P_SUBSET, P_AMP, P_OFST = 1, 2, 3, 4, 5, 6
+# The per-lap choice of WHICH random vectors to play. Its own purpose constant, so adding it does
+# not disturb any draw that already exists -- every other stream is keyed on its own P_*.
+P_RSUB = 7
 
 # THE VECTORS THE HARDWARE LAP DOES NOT PLAY, and therefore the ones the offline twin must not play
 # either. README.md documents the lap as
@@ -265,6 +268,51 @@ def vector_subset(iteration, vectors, k):
     if k is None or k >= len(order):
         return order
     return order[:max(1, k)]
+
+
+def random_vectors():
+    """The twelve random-payload vectors, r00..r11, sorted. Named by pattern rather than listed because
+    vector_names.MAP builds them in a loop and a hand list would go stale silently."""
+    from vector_names import MAP as _M
+    return sorted(v for v in _M if len(v) == 3 and v[0] == 'r' and v[1:].isdigit())
+
+
+def random_drop(iteration, keep):
+    """Which random vectors this iteration does NOT play, as a sorted tuple. () when keeping them all.
+
+    WHY THIS IS WORTH DOING. The twelve random-payload vectors are 516 of a 1677-cell lap -- 31 % of it --
+    and on a full offline lap they produced ZERO failures of either kind: no refusals and no byte errors,
+    against 151 failures elsewhere. Playing six of them a lap costs 15 % of the lap time and, on that
+    evidence, no yield; the six that sit out this lap are played in others, so nothing is dropped from
+    the coverage, only from each individual lap.
+
+    IMPLEMENTED AS A SKIP, DELIBERATELY, and that is the whole reason it is safe. plan_order applies the
+    skip BEFORE the shuffle because `vi` keys the amplitude, the offset and the wait -- so a per-lap
+    subset introduces no new interaction with the draw, it uses the one that is already there and already
+    tested. Anything else would be a second way of choosing cells, and two ways of choosing cells is how
+    1677 of 1677 cells once ran at another vector's amplitude.
+
+    SEEDED ON THE ITERATION, so the plan is reproducible from the iteration number alone -- the same
+    property every other draw in this file has, and what lets a failing cell be replayed a fortnight
+    later.
+    """
+    rs = random_vectors()
+    if keep is None or keep >= len(rs):
+        return ()
+    g = MT19937([MAGIC, iteration, P_RSUB, 0])
+    return tuple(sorted(g.shuffle(list(rs))[max(1, keep):]))
+
+
+def skip_for(iteration, skip, rkeep):
+    """The skip set for ONE iteration: the run's own skip, plus the random vectors sitting this lap out.
+
+    ONE PLACE, for the same reason plan_order exists: two call sites computing a skip themselves is
+    exactly what let the hardware lap and the offline twin drive different waveforms while comparing
+    their results.
+    """
+    if rkeep is None:
+        return skip
+    return tuple(sorted(set(skip or ()) | set(random_drop(iteration, rkeep))))
 
 
 def parse_skip(spec):
@@ -736,6 +784,36 @@ def selftest():
         ck(nmis == 0, 'every CSV cell carries the Lua table\'s own amplitude, offset and wait '
                       '(%d disagree)' % nmis)
 
+    # THE DECLARED ROW COUNT MUST BE THE ROW COUNT. bench_run stops at '# rows=N' precisely so it never
+    # reads past the end -- a read past EOF posts 2201 'File read error' as a popup on the panel -- so an
+    # over-declared count re-creates the popup the header exists to prevent. It was computed as
+    # len(out) - 3 and adding one comment line to the header broke it silently.
+    for _rk in (None, 4):
+        _txt = emit_csv(1, 2, None, ('v95', 'v96'), None, _rk)
+        _decl = [l for l in _txt.split('\n') if l.startswith('# rows=')]
+        _rows = [l for l in _txt.split('\n') if l and l[0].isdigit()]
+        ck(len(_decl) == 1 and int(_decl[0].split('=')[1]) == len(_rows),
+           'the plan declares exactly as many rows as it has, random-per-lap=%s (%s vs %d)'
+           % (_rk, _decl[0].split('=')[1] if _decl else 'none', len(_rows)))
+
+    # THE PER-LAP RANDOM SUBSET. Default must change nothing -- all twelve play -- and a subset must play
+    # exactly what it says, differently each lap, with none of them starved over a run's worth of laps.
+    _rs = set(random_vectors())
+    ck(len(_rs) == 12, 'there are twelve random-payload vectors (%d)' % len(_rs))
+    _full = emit_csv(1, 1, None, ('v95', 'v96'), None, None)
+    _played = set(l.split(',')[2] for l in _full.split('\n') if l and l[0].isdigit())
+    ck(_rs <= _played, 'by default every random vector plays every lap (%d of 12 missing)'
+                       % len(_rs - _played))
+    _sub = emit_csv(1, 1, None, ('v95', 'v96'), None, 4)
+    _subplayed = set(l.split(',')[2] for l in _sub.split('\n') if l and l[0].isdigit()) & _rs
+    ck(len(_subplayed) == 4, 'random-per-lap=4 plays exactly four of them (%d)' % len(_subplayed))
+    _seen = set()
+    for _it in range(1, 40):
+        _seen |= (_rs - set(random_drop(_it, 4)))
+    ck(_seen == _rs, 'and all twelve are reached within forty laps (%d)' % len(_seen))
+    ck(random_drop(7, 4) == random_drop(7, 4), 'the choice is reproducible from the iteration alone')
+    ck(random_drop(7, 4) != random_drop(8, 4), 'and differs between laps')
+
     # THE CAP MUST NOT BE COSTING COVERAGE, which is the failure a rate cap actually has. Asserting
     # that no cell exceeds SDG_MAX_SRATE is VACUOUS -- bench_matrix filters those cells out while
     # building the plan, so lowering the cap does not produce an illegal plan, it produces a SMALLER one:
@@ -773,7 +851,7 @@ def selftest():
     return 1 if bad else 0
 
 
-def emit_lua(iteration, nvectors=None, skip=None):
+def emit_lua(iteration, nvectors=None, skip=None, rkeep=None):
     """The whole plan as a Lua table, for the offline twin to dofile.
 
     `skip` MUST BE THE SAME SET THE BENCH LAP SKIPPED. It goes through plan_order, so it moves every
@@ -796,7 +874,10 @@ def emit_lua(iteration, nvectors=None, skip=None):
     from vector_names import MAP as _MAP
     with open(os.path.join(ROOT, 'out', 'vectors', 'manifest.tsv')) as f:
         rows = {r['file'].replace('.bin', ''): r for r in _csv.DictReader(f, delimiter='\t')}
-    p = plan(iteration, sorted(_MAP.keys()), nvectors, skip)
+    # THE SAME PER-LAP SKIP AS emit_csv, through the same one function. The offline twin has to play
+    # the cells the hardware lap played or the comparison is between two different laps -- which is
+    # the failure plan_order's own comment describes, and it was silent.
+    p = plan(iteration, sorted(_MAP.keys()), nvectors, skip_for(iteration, skip, rkeep))
     out = ['-- generated by tools/soakplan.py --emit-lua; do not edit', 'return {',
            '  iteration = %d,' % iteration,
            "  skipped = {%s},"
@@ -1010,7 +1091,7 @@ def spec_order(spec):
     return order, kindmap
 
 
-def emit_csv(first, last, nvectors=None, skip=None, spec=None):
+def emit_csv(first, last, nvectors=None, skip=None, spec=None, rkeep=None):
     """The plan as flat CSV for bench/bench_run.tsp to stream off the USB key.
 
     WHY A THIRD FORM, after the Lua table and the hardware sweep's own iteration. The on-instrument
@@ -1033,6 +1114,9 @@ def emit_csv(first, last, nvectors=None, skip=None, spec=None):
     vecs = sorted(_MAP.keys())
     out = ['# generated by tools/soakplan.py --emit-csv; one row per cell, streamed by bench_run.tsp',
            '# rows=@@ROWS@@',
+           # RECORDED IN THE FILE, because a reader cannot otherwise tell a lap that played six random
+           # vectors from one that played twelve, and the cell count alone would look like a short plan.
+           '# random-per-lap=%s' % ('all' if rkeep is None else rkeep),
            'iter,cell,vid,arb,baud,kind,amp_vpp,ofst_v,srate,wait_ms']
     import instruments as _I
     for it in range(first, last + 1):
@@ -1040,7 +1124,9 @@ def emit_csv(first, last, nvectors=None, skip=None, spec=None):
         if spec:
             order, kindmap = spec_order(spec)
         else:
-            order, kindmap = plan_order(it, vecs, skip, nvectors), None
+            # THE SKIP IS PER ITERATION when --random-per-lap is in force: the run's own skip plus
+            # whichever random vectors sit this lap out. skip_for is the only place that is decided.
+            order, kindmap = plan_order(it, vecs, skip_for(it, skip, rkeep), nvectors), None
         n = 0
         for vi, vid in enumerate(order):
             row = _manifest_rows().get(vid) or {}
@@ -1072,7 +1158,11 @@ def emit_csv(first, last, nvectors=None, skip=None, spec=None):
     # THE ROW COUNT IN THE HEADER, so the instrument can stop at the last row instead of discovering the
     # end by reading past it -- which posts event 2201, 'File read error', as a popup on the panel once
     # per pass. Substituted at the end because it is not known until the rows are built.
-    nrows = len(out) - 3
+    # COUNTED, NOT len(out) MINUS THE NUMBER OF HEADER LINES I HAPPEN TO REMEMBER. That subtraction was
+    # `- 3` and adding one comment line to this header made it over-declare by one -- which sends
+    # bench_run past the last row, and a read past the end posts 2201 'File read error' as a popup on the
+    # panel. The count is the thing the instrument trusts to never do that, so it is derived from the rows.
+    nrows = len([x for x in out if x and x[0] != '#' and not x.startswith('iter,')])
     return '\n'.join(out).replace('@@ROWS@@', str(nrows)) + '\n'
 
 
@@ -1087,6 +1177,11 @@ def main():
     ap.add_argument('--spec', default=None,
                     help='with --emit-csv: bench_matrix\'s --plan-spec grammar (vid:std|nonstd|all, '
                          'comma separated), for the smoke\'s 86-cell subset')
+    ap.add_argument('--random-per-lap', type=int, default=None, metavar='N',
+                    help='play only N of the twelve random-payload vectors each lap, drawn from the '
+                         'iteration seed. They are 31 %% of a lap and produced zero failures of either '
+                         'kind on a full offline lap, so six saves ~15 %% of the lap time and every one '
+                         'of them is still played across laps. Default: all twelve')
     ap.add_argument('--iteration', type=int, default=1)
     ap.add_argument('--vectors', type=int, default=None, help='a seeded subset of this many vectors')
     ap.add_argument('--rates', action='store_true', help='print only the rate list')
@@ -1116,7 +1211,8 @@ def main():
             print('REFUSING: --iterations %d is below --iteration %d, so the range is empty and the '
                   'instrument would read a plan with no cells in it.' % (last, a.iteration))
             return 2
-        sys.stdout.write(emit_csv(a.iteration, last, a.vectors, skip, a.spec))
+        sys.stdout.write(emit_csv(a.iteration, last, a.vectors, skip, a.spec,
+                                  a.random_per_lap))
         return 0
 
     from vector_names import MAP
