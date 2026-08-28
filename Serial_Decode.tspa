@@ -1677,7 +1677,7 @@ function sdec.ua_run(rd, n, T, nbits, par, nstop, invert, tmin0)
   local k
   if tmin0 == nil then
     for k = 1, ne do
-      if es[k] == want then
+      if es[k] == want and ei[k] <= n then
         local markrun
         if k == 1 then markrun = ei[1] - 1 else markrun = ei[k] - ei[k-1] end
         if markrun >= 1.5 * T then anchor = k; break end
