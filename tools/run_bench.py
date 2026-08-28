@@ -26,6 +26,7 @@ PUSH_MAX_ROWS rather than appearing to hang.
 """
 import argparse
 import os
+import re
 import subprocess
 import sys
 import time
@@ -434,6 +435,11 @@ def main():
                          'every day after it')
     ap.add_argument('--listen', default=None, metavar='IP',
                     help='host address for live progress pushes (see tools/soak_listen.py)')
+    # A PLAN ALREADY GENERATED, because generating 210 laps takes ~5 minutes of CPU and needs no
+    # instrument -- so it must not sit inside a limited access window. The file is soakplan --emit-csv's
+    # own output, header lines included.
+    ap.add_argument('--plan-file', default=None, metavar='PATH',
+                    help='push this already-generated plan instead of regenerating it')
     ap.add_argument('--out', default=os.path.join(ROOT, 'out', 'bench'))
     a = ap.parse_args()
 
@@ -450,7 +456,23 @@ def main():
         ap.error('nothing to do: pass --smoke, --start, --push-plan or --fetch')
 
     rows = None
-    if a.push_plan:
+    if a.push_plan and a.plan_file:
+        # REFUSES A PLAN THAT DOES NOT DECLARE ITS OWN ROW COUNT, because the instrument stops reading at
+        # the declared count: without it the loop reads past EOF and posts 2201 on the panel.
+        with open(a.plan_file) as f:
+            rows = [ln for ln in f.read().split('\n') if ln.strip()]
+        ndecl = None
+        for ln in rows[:8]:
+            m = re.search(r'rows=(\d+)', ln)
+            if m:
+                ndecl = int(m.group(1))
+        ndata = len([x for x in rows if x and x[0].isdigit()])
+        if ndecl is None or ndecl != ndata:
+            raise SystemExit('REFUSING: %s declares rows=%s but holds %d data row(s).'
+                             % (a.plan_file, ndecl, ndata))
+        print('plan: %d line(s) from %s (%d data rows, declared %d)'
+              % (len(rows), a.plan_file, ndata, ndecl))
+    elif a.push_plan:
         argv = ['python3', os.path.join(ROOT, 'tools', 'soakplan.py'), '--emit-csv',
                 '--iteration', str(a.iteration)]
         if a.spec:
