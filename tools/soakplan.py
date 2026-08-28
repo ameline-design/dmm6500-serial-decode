@@ -1203,7 +1203,12 @@ def main():
     if a.check_log:
         return check_log(a.check_log, a.iteration, skip)
     if a.emit_lua:
-        sys.stdout.write(emit_lua(a.iteration, a.vectors, skip))
+        # rkeep IS PASSED HERE TOO. emit_lua has always taken it and this caller did not hand it over,
+        # so --emit-lua --random-per-lap 4 emitted the FULL twelve-random plan and said nothing -- and
+        # that is the offline twin's only input. Since the subset is applied before the shuffle, and the
+        # shuffle keys every amplitude, offset and wait, the twin would sweep different stimulus in every
+        # cell while appearing to sweep the same lap.
+        sys.stdout.write(emit_lua(a.iteration, a.vectors, skip, a.random_per_lap))
         return 0
     if a.emit_csv:
         last = a.iterations if a.iterations is not None else a.iteration

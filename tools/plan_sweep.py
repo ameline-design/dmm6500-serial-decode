@@ -207,7 +207,7 @@ def parse(line):
     return int(m.group(1)), int(m.group(2)), int(m.group(3)), out
 
 
-def emit_plan(iteration, skip=SP.HW_SKIP):
+def emit_plan(iteration, skip=SP.HW_SKIP, rkeep=None):
     """Regenerate the plan for `iteration` and return (path, sha256[:12]). Never reads an existing one.
 
     THE DEFAULT IS THE BENCH'S OWN SKIP, not an empty tuple, and that is the difference between a
@@ -223,10 +223,16 @@ def emit_plan(iteration, skip=SP.HW_SKIP):
     """
     os.makedirs(PLANDIR, exist_ok=True)
     tag = '-skip-' + '-'.join(skip) if skip else ''
+    # rkeep IS IN THE FILENAME: a 4-random lap and a full one are different plans for the same
+    # iteration, and a shared name serves one from the other's cached file.
+    if rkeep is not None:
+        tag = tag + '-r%d' % rkeep
     path = os.path.join(PLANDIR, 'plan-%d%s.lua' % (iteration, tag))
     argv = ['python3', 'tools/soakplan.py', '--emit-lua', '--iteration', str(iteration)]
     if skip:
         argv += ['--skip-vectors', ','.join(skip)]
+    if rkeep is not None:
+        argv += ['--random-per-lap', str(rkeep)]
     p = subprocess.run(argv, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if p.returncode != 0:
         raise SystemExit('soakplan.py --iteration %d exited %d:\n%s'
@@ -256,9 +262,9 @@ def run_shard(k, n, plan, offsets):
     return k, p.returncode, p.stdout.decode('utf-8', 'replace')
 
 
-def one_lap(iteration, workers, offsets, quiet, skip=SP.HW_SKIP):
+def one_lap(iteration, workers, offsets, quiet, skip=SP.HW_SKIP, rkeep=None):
     """One iteration across every shard. -> (totals dict, list of failure strings, detail lines)."""
-    plan, digest = emit_plan(iteration, skip)
+    plan, digest = emit_plan(iteration, skip, rkeep)
     tot = dict((k, 0) for k in KEYS)
     failed, detail, nsummary = [], [], 0
     with ThreadPoolExecutor(max_workers=workers) as ex:
@@ -339,6 +345,12 @@ def main():
                          'the plan, not a filter: it reshuffles the order every wait, amplitude and '
                          'offset is keyed on. Pass "" to sweep all %d vectors, which is NOT the lap '
                          'the bench runs' % (DEFAULT_SKIP, len(SP._MAP_KEYS())))
+    # THE SUBSET THE INSTRUMENT IS RUNNING. Without this the twin can only sweep the full twelve-random
+    # lap, so a 4-random hardware run has no offline counterpart -- and since the subset is applied
+    # before the shuffle, the two would differ in every cell's amplitude, offset and wait.
+    ap.add_argument('--random-per-lap', type=int, default=None, metavar='N',
+                    help='play only N of the 12 random vectors, drawn from the iteration seed, as '
+                         '--random-per-lap N does for the instrument. Omit to sweep all twelve')
     a = ap.parse_args()
     if a.workers < 1:
         raise SystemExit('--workers must be at least 1')
@@ -354,6 +366,9 @@ def main():
     # iteration, and nothing else in the output names which of them a number belongs to.
     print('skipping %s -- %d vector(s) swept, as the bench sweeps them'
           % (', '.join(skip) or '(nothing)', len(SP._MAP_KEYS()) - len(skip)))
+    if a.random_per_lap is not None:
+        print('random-per-lap=%d -- the per-lap subset, drawn per iteration as the instrument draws it'
+              % a.random_per_lap)
     print()
 
     # badall SITS NEXT TO badcell because the pair is the point: badcell is the union over capture
@@ -369,7 +384,8 @@ def main():
     print('-' * len(hdr))
     allfail, rows = [], []
     for it in laps:
-        tot, failed, detail, digest = one_lap(it, a.workers, a.offsets, a.quiet, skip)
+        tot, failed, detail, digest = one_lap(it, a.workers, a.offsets, a.quiet, skip,
+                                               a.random_per_lap)
         rows.append((it, tot))
         if not a.quiet:
             for d in detail:
