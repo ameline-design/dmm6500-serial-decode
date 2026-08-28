@@ -131,13 +131,16 @@ check('one acknowledged batch per %d rows' % RB.PUSH_BATCH_ROWS, d.nbatch == nb,
       '%d batch(es) for %d row(s)' % (d.nbatch, len(ROWS)))
 longest = max(len(r) for r in ROWS)
 stmt = longest * RB.PUSH_BATCH_ROWS + 200
-# THE NUMBER, NOT A REASSURANCE. The overrun this design answers was cumulative, and the handshake bounds
-# that to one statement at any plan size -- but the longest statement this project has seen accepted is
-# ~700 characters and a 20-row batch is nearly three times that. Only the instrument can settle it, and
-# the 86-row smoke push runs this same code at this same width before any long run.
-check('a batch statement is one line, and its length is stated rather than assumed',
-      stmt < 2048, 'longest row %d -> ~%d char statement, vs ~700 measured working on hardware'
-      % (longest, stmt))
+# MEASURED ON THE INSTRUMENT, AND IT SETTLED THE QUESTION THIS COMMENT USED TO LEAVE OPEN. A 20-row batch
+# is a ~1960-character statement and the DMM6500 answers -363 'input buffer overrun' on the panel within
+# seconds -- even though the handshake means the host is never more than ONE statement ahead, so the buffer
+# is smaller than a single statement of that size. At 5 rows (~640 chars) the identical code pushed 279 934
+# rows / 18.9 MB clean at 571 rows/s. Only the statement size changed between the two.
+#
+# 1024 IS THE GATE, not 2048: it is above the ~640 that works and well below the ~1960 that does not, so
+# raising PUSH_BATCH_ROWS back toward 20 fails here instead of on the panel.
+check('a batch statement stays under the size the instrument answered -363 at',
+      stmt < 1024, 'longest row %d -> ~%d char statement (640 works, 1960 overruns)' % (longest, stmt))
 
 print('')
 print('-- what the handshake is FOR: it must refuse, not report success --')

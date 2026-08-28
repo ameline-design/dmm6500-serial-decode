@@ -67,7 +67,11 @@ PUSH_MAX_ROWS = 400000
 # Rows per acknowledged batch. ~1.5 kB a statement, and the handshake means the host is never
 # more than one statement ahead of the interpreter -- so this trades round trips for a bound
 # that holds at any plan size, rather than a throttle that only moves the overrun.
-PUSH_BATCH_ROWS = 20
+# FIVE, NOT TWENTY, AND THE INSTRUMENT SETTLED IT. Twenty rows makes a ~1960-character statement and
+# the longest this instrument has ever been measured to accept is ~700: a 210-lap push raised
+# -363 'input buffer overrun' on the panel within seconds. The handshake bounds how far the HOST can get
+# ahead of the interpreter; it cannot make one oversized statement fit. Five rows is ~570 characters.
+PUSH_BATCH_ROWS = 5
 
 
 # CLEARED BEFORE THE LOAD, run_app.py's own prelude: sdec.buf is the only reference to a firmware
