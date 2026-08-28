@@ -115,6 +115,16 @@ def stages(outdir, shots):
         Stage('unit-cancel', ['lua', 'tools/test_cancel.lua'],
               note='the TRIGGER-key cancel latch, one press for a whole transmission, the two '
                    'window sizes, and flow control looping with no interaction at all'),
+        # THE ONE SUITE THAT COVERS CODE NOBODY WILL BE STANDING NEXT TO. bench/bench_run.tsp drives the
+        # instrument for a fortnight with no host attached, and the branches that decide whether it
+        # survives -- a generator that stops answering, a record that will not write, a plan file that
+        # goes away, the TRIGGER key inside a hold -- cannot be arranged on hardware on purpose. It was
+        # absent from this list while it grew to 149 assertions, so the release gate has been passing
+        # without ever running them.
+        Stage('unit-benchengine', ['lua', 'tools/test_bench_engine.lua'],
+              note='the on-instrument soak engine: brun.point against bench_uart.py\'s own bench_point, '
+                   'every status line at its widest, and the fault paths that must report rather than '
+                   'end the run'),
         # THE HOSTILE PAYLOADS, as opposed to the hostile SIGNALS the stress stage covers. Every check
         # here is a byte-exactness assertion against a payload chosen to break a value-dependent
         # decoder -- blocks of 00/FF/55/AA, walking ones and zeros, and 1024 uniform random bytes from

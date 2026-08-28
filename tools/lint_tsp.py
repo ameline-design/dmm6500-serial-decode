@@ -167,6 +167,47 @@ def check_globals(code, name):
     return errs
 
 
+def check_dupes(code, name):
+    """One name, one definition, and no named function nested inside another.
+
+    NEITHER SHAPE IS A SYNTAX ERROR, which is why this exists: a 57-line block containing three
+    functions was duplicated into the body of brun.ui_destroy in bench_run.tsp, and the real Lua 5.0.2
+    parser, the block-nesting check and 127 offline assertions all passed on it, before and after the
+    repair. Nothing in this repo could see it. A human reading the file found it.
+
+    WHAT IT ACTUALLY COSTS, because 'dead duplicate code' understates it. The second definition WINS --
+    it is the later assignment -- but only once the enclosing function is CALLED, so the file reads as
+    though the first one is in force. Two consequences, both silent: ui_destroy re-ran `brun.msgs = nil`
+    on every screen rebuild, wiping the rolling log it has no business touching; and the next edit to
+    brun.msg at the top of the file would have been reverted by the stale copy the first time the screen
+    was rebuilt. That is this project's worst failure shape -- two definitions of one thing, where on the
+    night they disagree both look right -- and it is exactly what the judge-on-the-instrument comment in
+    tools/judge_bench.py refuses to allow for the same reason.
+
+    THE INDENTATION HALF IS THE ONE THAT GENERALISES. The duplicate was byte-identical, so the
+    same-name test caught it; had the merge nested a DIFFERENT function, only the indentation would have.
+    Every module here hangs its functions off one table at file scope -- `local function` inside a body
+    is how a genuine helper is written, and it does not match this -- so an indented `function ns.name`
+    is an editing accident every time it has occurred.
+    """
+    seen, errs = {}, []
+    for lineno, line in enumerate(code.split('\n'), 1):
+        m = re.match(r'(\s+)?function\s+([A-Za-z_][A-Za-z0-9_.:]*)\s*\(', line)
+        if not m:
+            continue
+        indent, fn = m.group(1), m.group(2)
+        if indent:
+            errs.append(f'{name}:{lineno}: `function {fn}` is indented, so it is defined INSIDE another '
+                        f'function body -- redefined on every call, and invisible until that call. Use '
+                        f'`local function` for a helper, or move it to file scope')
+        if fn in seen:
+            errs.append(f'{name}:{lineno}: `function {fn}` is already defined at line {seen[fn]} -- the '
+                        f'later one silently wins, and only when its enclosing scope runs')
+        else:
+            seen[fn] = lineno
+    return errs
+
+
 # A REAL LUA 5.0.2 PARSER, WHICH THE DOCSTRING ABOVE USED TO SAY DID NOT EXIST. It does: 5.0.2 is a
 # 150 kB tarball that builds in seconds, and tools/get_lua502.sh puts luac in out/lua502/bin. Everything
 # in INCOMPAT above is a hand-written approximation of what that parser does exactly, and the parser also
@@ -237,7 +278,8 @@ def main(paths):
                 continue
             body = '\n'.join(lines[a + 1:b])
         code = strip(body)
-        errs = check_blocks(code, p) + check_compat(code, p) + check_globals(code, p)
+        errs = (check_blocks(code, p) + check_compat(code, p) + check_globals(code, p)
+                + check_dupes(code, p))
         # THE PARSER RUNS ON THE UNSTRIPPED BODY, because a string or a comment that opens a long
         # bracket and never closes it is a syntax error the blanking pass would have hidden.
         if luac is not None:
