@@ -132,8 +132,8 @@ def run_one(tree, name, argv, seed, shards):
 
 
 # SUITES WHOSE EXIT CODE IS NOT A VERDICT, and this is not a convenience. sweep_plan.lua exits 1
-# whenever any point behaves worse than its class allows, and on the current tree that is ~11 of 1763
-# cells at one offset and ~333 of 14104 points at eight -- all of them #46 and #125, both open and
+# whenever any point behaves worse than its class allows, and on the current tree that is 16 of 1677
+# cells at one offset and 221 of 13416 points at eight -- all of them #46 and #125, both open and
 # deliberately unfixed. Counting rc as failure here would make the plan unit fail every lap forever,
 # which is a gate that cannot pass and therefore says nothing when it goes red.
 #
