@@ -40,7 +40,14 @@ PLANDIR = os.path.join(ROOT, 'out', 'plans', 'auto')
 
 # The counters sweep_plan.lua prints on its PLAN line, in the order they appear there.
 KEYS = ['cells', 'badcells', 'points', 'ok', 'bad', 'skip',
-        'raised', 'nobytes', 'norate', 'rate', 'bytes', 'bleed', 'bleedworst']
+        'raised', 'nobytes', 'norate', 'rate', 'bytes', 'bleed', 'bleedworst',
+        'r46b', 'rfit1', 'rstdC', 'rother']
+# THE FOUR ROUTES SUBDIVIDE `rate` AND MUST SUM TO IT. Issue #46 was one counter over three
+# mechanisms -- a snapped harmonic, sig_fit's second fixed point, and a drift into a neighbouring
+# standard rate's basin -- with three different fixes, so a single number could say it moved but never
+# which one moved. sweep_plan.lua reconciles per shard; this reconciles the totals, because a
+# subdivision that does not add up invites exactly the confident wrong reading it was built to remove.
+ROUTES = ['r46b', 'rfit1', 'rstdC', 'rother']
 # bleedworst is a MAXIMUM across shards, not a sum: totalling worst-cases would report a number no
 # single point ever produced.
 MAXKEYS = frozenset(['bleedworst'])
@@ -66,8 +73,10 @@ LINE = re.compile(r'^PLAN (\d+)/(\d+) iteration (\d+): (.*)$')
 # cells of 1763, eight find 93. Eight times the yield for eight times the work, and the 11 were never
 # the interesting number -- they were whichever phase the plan's wait happened to draw.
 RATCHET = {
-    (1, 1): {'bad': 11, 'badcells': 11, 'rate': 4, 'bytes': 7, 'nobytes': 0, 'bleed': 253},
-    (1, 8): {'bad': 167, 'badcells': 93, 'rate': 27, 'bytes': 35, 'nobytes': 105, 'bleed': 1467},
+    (1, 1): {'bad': 11, 'badcells': 11, 'rate': 4, 'bytes': 7, 'nobytes': 0, 'bleed': 253,
+             'skip': 0, 'judged': 1763},
+    (1, 8): {'bad': 167, 'badcells': 93, 'rate': 27, 'bytes': 35, 'nobytes': 105, 'bleed': 1467,
+             'skip': 0, 'judged': 14104},
 }
 WHY = {
     'bad': 'failing points',
@@ -76,19 +85,37 @@ WHY = {
     'bytes': 'right rate, bytes are not the payload, issue #125',
     'nobytes': 'nothing decoded on a vector that should decode',
     'bleed': 'bytes wrong past the head ERR excludes, issue #49',
+    # BOUNDED BOTH WAYS, and this one is the trap the others are not. judge() returns "unjudgeable"
+    # when the app's own head bound leaves too few bytes to compare, which counts as `skip` and NOT as
+    # `bad`. So a regression that inflates ua_head_bad, shortens results or suppresses bytes moves
+    # points out of `bad` into `skip`, and an unbounded `skip` would let the driver call that IMPROVED
+    # and invite the baseline to be lowered. `judged` is ok+bad and pins how much was compared at all.
+    'skip': 'points the app left too short to judge',
+    'judged': 'points actually compared against the payload (ok + bad)',
 }
 
 
 def parse(line):
-    """A PLAN summary line -> (iteration, dict of counter name to int). -> (None, None) if not one."""
+    """A PLAN summary line -> (shard, nshard, iteration, counters). -> None if it is not one.
+
+    EVERY KEY MUST BE PRESENT. Defaulting a missing counter to 0 reads a renamed or dropped field as a
+    clean zero -- a verdict derived from absent evidence, which is this project's worst failure mode. A
+    summary that does not carry all of KEYS is a MALFORMED REPORT and raises rather than totalling.
+    """
     m = LINE.match(line.strip())
     if not m:
-        return None, None
-    body, out = m.group(4), {}
+        return None
+    body, out, missing = m.group(4), {}, []
     for k in KEYS:
-        mm = re.search(r'\b' + re.escape(k) + r' (\d+)', body)
-        out[k] = int(mm.group(1)) if mm else 0
-    return int(m.group(3)), out
+        hits = re.findall(r'\b' + re.escape(k) + r' (\d+)', body)
+        if len(hits) != 1:
+            missing.append('%s x%d' % (k, len(hits)))
+        else:
+            out[k] = int(hits[0])
+    if missing:
+        raise SystemExit('MALFORMED PLAN summary -- %s not present exactly once in: %s'
+                         % (', '.join(missing), body))
+    return int(m.group(1)), int(m.group(2)), int(m.group(3)), out
 
 
 def emit_plan(iteration):
@@ -134,16 +161,20 @@ def one_lap(iteration, workers, offsets, quiet):
         futs = [ex.submit(run_shard, k, workers, plan, offsets) for k in range(1, workers + 1)]
         for f in futs:
             k, rc, out = f.result()
-            got = False
+            got = 0
             for line in out.splitlines():
-                it, d = parse(line)
-                if d is not None:
-                    # THE SHARD'S OWN IDEA OF WHICH ITERATION IT RAN, checked rather than assumed. A
-                    # mismatch means the plan file changed under the run, which would total two
-                    # different experiments into one number.
+                p = parse(line)
+                if p is not None:
+                    sh, nsh, it, d = p
+                    # THE SUMMARY MUST BE THE ONE THIS SHARD WAS ASKED FOR. Without checking sh/nsh a
+                    # duplicate summary from one worker can stand in for a silent one from another and
+                    # the count still reconciles; without checking `it` a plan file replaced under the
+                    # run totals two different experiments into one number.
+                    if (sh, nsh) != (k, workers):
+                        failed.append('shard %d printed a summary for %d/%d' % (k, sh, nsh))
                     if it != iteration:
                         failed.append('shard %d ran iteration %d, not %d' % (k, it, iteration))
-                    got = True
+                    got = got + 1
                     nsummary += 1
                     for key in KEYS:
                         if key in MAXKEYS:
@@ -154,11 +185,17 @@ def one_lap(iteration, workers, offsets, quiet):
                     # sweep_plan.lua indents per-cell rows and nothing else, so this keeps the
                     # failures and drops both its banners without matching on their wording.
                     detail.append('  [shard %d] %s' % (k, line.strip()))
-            # rc 1 is the EXPECTED exit for a shard that found a known failure, so it is not itself a
-            # failure here -- the summary line is. A shard that printed no summary died before the
-            # report, and totalling nothing from it would turn a broken run into a clean one.
-            if not got:
+            # EXACTLY ONE SUMMARY, AND AN EXPECTED EXIT CODE. rc 1 is normal for a shard that found a
+            # known failure and rc 0 for a clean one; anything else -- a raise, a signal, a crash AFTER
+            # the summary was flushed -- is a dead shard whose numbers must not be trusted just because
+            # it managed to print a line first.
+            if got == 0:
                 failed.append('shard %d printed no summary (exit %d)' % (k, rc))
+            elif got > 1:
+                failed.append('shard %d printed %d summaries' % (k, got))
+            if rc not in (0, 1):
+                failed.append('shard %d exited %d, which is neither clean (0) nor known-failure (1)'
+                              % (k, rc))
     if nsummary != workers:
         failed.append('%d shards ran but only %d printed a summary' % (workers, nsummary))
     if tot['raised'] > 0:
@@ -166,6 +203,10 @@ def one_lap(iteration, workers, offsets, quiet):
                       'right answer.' % tot['raised'])
     if tot['ok'] + tot['bad'] == 0:
         failed.append('nothing was judged at all')
+    rsum = sum(tot[k] for k in ROUTES)
+    if rsum != tot['rate']:
+        failed.append('the %d rate point(s) split into %d route(s) -- a subdivision that does not '
+                      'reconcile with its total cannot be read as evidence' % (tot['rate'], rsum))
     return tot, failed, detail, digest
 
 
@@ -195,7 +236,7 @@ def main():
     print()
 
     hdr = ('%-5s %-13s %6s %6s %8s %6s %6s %7s %6s %6s %6s %6s'
-           % ('lap', 'plan', 'cells', 'bad', 'badcell', 'raised', 'nobyte', 'norate', 'rate', 'bytes',
+           % ('lap', 'plan', 'cells', 'bad', 'badcell', 'raised', 'nobyte', 'skip', 'rate', 'bytes',
               'bleed', 'worst'))
     print(hdr)
     print('-' * len(hdr))
@@ -208,7 +249,7 @@ def main():
                 print(d)
         print('%-5d %-13s %6d %6d %8d %6d %6d %7d %6d %6d %6d %6d'
               % (it, digest, tot['cells'], tot['bad'], tot['badcells'], tot['raised'],
-                 tot['nobytes'], tot['norate'], tot['rate'], tot['bytes'],
+                 tot['nobytes'], tot['skip'], tot['rate'], tot['bytes'],
                  tot['bleed'], tot['bleedworst']))
         allfail.extend('lap %d: %s' % (it, x) for x in failed)
 
@@ -216,10 +257,19 @@ def main():
         # ACROSS LAPS, the interesting numbers are the spread and the union: a defect present in every
         # lap is a property of the decoder, one appearing in a single lap is a property of that draw.
         print()
-        for key in ('bad', 'badcells', 'rate', 'bytes', 'nobytes', 'bleed'):
+        for key in ('bad', 'badcells', 'rate', 'bytes', 'nobytes', 'bleed', 'skip') + tuple(ROUTES):
             vals = sorted(t[key] for _, t in rows)
             print('  %-9s per lap  min %d  median %d  max %d  total %d'
                   % (key, vals[0], vals[len(vals) // 2], vals[-1], sum(vals)))
+        # THE ROUTE SHARES, which is the number worth reading: 46b at 73 % and cluster C at 14.5 % of
+        # the hardware misreports are what say where to look, and a share is not recoverable from the
+        # per-lap spread above once the laps are summed.
+        rtot = sum(sum(t[k] for _, t in rows) for k in ROUTES)
+        if rtot > 0:
+            print('  #46 routes  ' + ',  '.join(
+                '%s %d (%.1f %%)' % (k, sum(t[k] for _, t in rows),
+                                     100.0 * sum(t[k] for _, t in rows) / rtot)
+                for k in ROUTES))
 
     # THE RATCHET, applied only at the configuration its baselines were measured at, and only to a
     # single-lap run: across laps the counts are per-draw and a baseline drawn from iteration 1 says
@@ -236,7 +286,8 @@ def main():
               % (a.iteration, a.offsets,
                  ', '.join('iteration %d/%d offsets' % k for k in sorted(RATCHET))))
     else:
-        base, tot = RATCHET[key], rows[0][1]
+        base, tot = RATCHET[key], dict(rows[0][1])
+        tot['judged'] = tot['ok'] + tot['bad']
         print('\n-- ratchets (iteration %d, %d offset(s)) --' % key)
         for k in sorted(base):
             got, want = tot[k], base[k]
@@ -246,6 +297,11 @@ def main():
                                'Do not raise the baseline to make this pass.'
                                % (k, got, want, WHY[k], got - want))
                 print('  %-9s %4d  WORSE than %d   %s' % (k, got, want, WHY[k]))
+            elif k == 'judged' and got < want:
+                allfail.append('judged FELL to %d from %d -- %d point(s) are no longer compared '
+                               'against the payload at all. Less evidence is not an improvement.'
+                               % (got, want, want - got))
+                print('  %-9s %4d  FEWER than %d   %s' % (k, got, want, WHY[k]))
             elif got < want:
                 print('  %-9s %4d  IMPROVED from %d   %s' % (k, got, want, WHY[k]))
                 print('            ^ set RATCHET[%r][%r] to %d in this file, or the gain is not held'

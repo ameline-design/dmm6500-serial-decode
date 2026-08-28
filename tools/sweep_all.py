@@ -27,6 +27,8 @@ from concurrent.futures import ThreadPoolExecutor
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # The counters sweep_startphase.lua prints on its SHARD line, in the order they appear there.
+# EVERY ONE MUST APPEAR EXACTLY ONCE on the line; see parse(). Reading a missing counter as 0 would let
+# a renamed field report a clean run, and these feed the ratchet that bounds #46 and #49.
 KEYS = ['cases', 'ok', 'refused', 'fmtdiff', 'ratediff', 'shortrun', 'headbleed',
         'redecodes', 'skipped', 'HARD']
 
@@ -71,27 +73,47 @@ def parse_bleed(line):
     if not m:
         return None
     body = m.group(3)
-    out = {}
+    out, missing = {}, []
     for k in BKEYS:
-        mm = re.search(r'\b' + re.escape(k) + r' (\d+)', body)
-        out[k] = int(mm.group(1)) if mm else 0
+        hits = re.findall(r'\b' + re.escape(k) + r' (\d+)', body)
+        if len(hits) != 1:
+            missing.append('%s x%d' % (k, len(hits)))
+        else:
+            out[k] = int(hits[0])
+    if missing:
+        raise SystemExit('MALFORMED BLEED line -- %s not present exactly once in: %s'
+                         % (', '.join(missing), body))
     return out
 
 
 def parse(line):
-    """A SHARD summary line -> dict of counter name to int. -> None if it is not one."""
+    """A SHARD summary line -> (shard, nshard, seed, counters). -> None if it is not one.
+
+    THE SHARD'S OWN IDENTITY IS RETURNED, not just its numbers. Totalling counters without checking
+    which shard and which seed produced them means two workers running the SAME shard reconcile
+    perfectly -- n summaries for n workers -- while a third of the plan was never swept and a third
+    was swept twice. parse_bleed needs no such check: it is totalled, never matched to a worker.
+    """
     m = LINE.match(line.strip())
     if not m:
         return None
-    out = {}
+    out, missing = {}, []
     body = m.group(4)
     for k in KEYS:
         # 'headbleed 4 (worst 2)' -- the parenthesised worst is read separately below.
-        mm = re.search(re.escape(k) + r' (\d+)', body)
-        out[k] = int(mm.group(1)) if mm else 0
+        # ANCHORED ON BOTH SIDES. Without the leading \b, 'notok 3' satisfies key 'ok' and 'ok' is
+        # then reported as absent from its own line -- or worse, present twice.
+        hits = re.findall(r'\b' + re.escape(k) + r' (\d+)', body)
+        if len(hits) != 1:
+            missing.append('%s x%d' % (k, len(hits)))
+        else:
+            out[k] = int(hits[0])
+    if missing:
+        raise SystemExit('MALFORMED SHARD line -- %s not present exactly once in: %s'
+                         % (', '.join(missing), body))
     mw = re.search(r'worst (\d+)', body)
     out['worst'] = int(mw.group(1)) if mw else 0
-    return out
+    return int(m.group(1)), int(m.group(2)), int(m.group(3)), out
 
 
 def run_shard(k, n, seed, offsets, maxpts):
@@ -131,10 +153,21 @@ def main():
         for f in futs:
             k, rc, out = f.result()
             got = None
+            ngot = 0
             for line in out.splitlines():
-                d = parse(line)
-                if d is not None:
+                p = parse(line)
+                if p is not None:
+                    sh, nsh, seed, d = p
+                    # THE SUMMARY MUST BE THE ONE THIS WORKER WAS ASKED FOR. A worker reporting another
+                    # shard's identity means the plan was not partitioned the way the run claims: some
+                    # slice was swept twice and another not at all, and every total below is drawn from
+                    # a different experiment than the one named.
+                    if (sh, nsh) != (k, n):
+                        failed.append('shard %d printed a summary for %d/%d' % (k, sh, nsh))
+                    if seed != a.seed:
+                        failed.append('shard %d ran seed %d, not %d' % (k, seed, a.seed))
                     got = d
+                    ngot += 1
                     nsummary += 1
                     for key in KEYS:
                         tot[key] += d[key]
@@ -151,6 +184,12 @@ def main():
                     detail.append('  [shard %d] %s' % (k, line.rstrip()))
             if got is None:
                 failed.append('shard %d printed no summary (exit %d)' % (k, rc))
+            elif ngot > 1:
+                # TOTALLED ONCE PER SHARD OR NOT AT ALL. Two summaries from one worker are added twice
+                # above, so the counters come out inflated by a whole shard's worth of a real sweep --
+                # which reads as a regression rather than as a broken run.
+                failed.append('shard %d printed %d summaries, so its counters were totalled %d times'
+                              % (k, ngot, ngot))
             elif rc != 0:
                 failed.append('shard %d exited %d' % (k, rc))
 

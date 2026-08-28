@@ -43,6 +43,23 @@ local RISE_S = 1.5e-6              -- edge transition time, seconds; see the hea
 local NPHASE = 16                  -- capture start phases per cell
 local SNAP = 0.02                  -- sdec.snaptol: how close a report must be to count as right
 
+-- WHICH CELLS REPRODUCE #46, PINNED PER CELL AND PER PHASE. An aggregate count is a floor of one: every
+-- cell but one could stop reproducing and the suite would stay green. Measured, the behaviour is
+-- ALL-OR-NOTHING -- a cell that misreports does so at all NPHASE capture phases and a cell that does
+-- not misreports at none -- so the expectation can be exact rather than a threshold, and any drift in
+-- either direction is a failure that names the cell.
+local REPRO = {
+  [28800] = true, [5810] = true, [8189] = true, [18138] = true, [777] = true,
+  -- 57600 IS INSIDE THE WINDOW AND DOES NOT FIRE. That is the fact this table exists to hold: it shares
+  -- 8.68 sa/bit with 28800 to the digit, so frac(sa/bit) inside (0.8696, 0.9326) is NECESSARY AND NOT
+  -- SUFFICIENT, and the window alone cannot predict a misreport. What differs is the edge -- RISE_S is
+  -- fixed in TIME, so 1.5 us is 4.3 % of a 28800 bit and 8.6 % of a 57600 one, and the blurrier edge
+  -- denies sig_fit's second fixed point the corroboration it needs to stay stable.
+  [57600] = false,
+  -- Outside the window, and none of them fire.
+  [9600] = false, [19200] = false, [1800] = false, [124077] = false,
+}
+
 local pass, fail = 0, 0
 local function ck(cond, what, detail)
   if cond then pass = pass + 1 else fail = fail + 1 end
@@ -92,6 +109,12 @@ local function decode_cell(by, nb, baud, fs, phase)
   sdec.force_baud, sdec.force_nbits = nil, nil
   sdec.force_par, sdec.force_nstop, sdec.force_invert = nil, nil, nil
   sdec.baud, sdec.baud_raw = nil, nil
+  -- RESEEDED PER POINT, from the point's own coordinates. One GEN_RESEED at the top of the file makes
+  -- every cell's noise depend on how much of the stream every earlier render consumed, so inserting a
+  -- render anywhere above -- or reordering the payload list -- changes the outcome of cells that have
+  -- nothing to do with the edit. The per-cell verdicts in REPRO are pinned exactly, so that coupling
+  -- would turn an unrelated change into a failure here and teach everyone to loosen the pin.
+  GEN_RESEED(20260827 + baud * 31 + phase)
   sdec.clear_result()
   local rd, ts, nc, nsmp = GEN({bytes = by, baud = baud, fs = fs, gap = 0, noise = 0.02,
                                 lead = 20 + phase,
@@ -134,17 +157,22 @@ end
 -- sample rates are the FRACTIONAL ones SP.pick_fs actually selects -- expressed here as sa/bit so the
 -- window arithmetic in the header is checkable by eye.
 -- ---------------------------------------------------------------------------
-local CELLS = {
-  -- baud,   sa/bit,  in the (0.8696, 0.9326) window?
-  {28800,  11.97, true},
-  {28800,   8.33, false},
-  {5810,   12.87, true},
-  {8189,    9.78, true},
-  {57600,   8.68, true},
-  {9600,    8.00, false},
-  {19200,   8.33, false},
-  {1800,    8.33, false},
-}
+-- BAUD ONLY: the sample rate is DERIVED from sdec.pick_fs, because a hand-copied sa/bit can name an
+-- operating point the app cannot reach. Four of the values here once did -- 28800 at 11.97 sa/bit
+-- implies fs 344736, and 5810 at 12.87 implies 74775; neither is in sdec.rates, so pick_fs could never
+-- select either, and the file was testing a machine that does not exist.
+local BAUDS = {28800, 5810, 8189, 57600, 9600, 19200, 1800, 124077, 777, 18138}
+local CELLS = {}
+do
+  local i
+  for i = 1, table.getn(BAUDS) do
+    local b = BAUDS[i]
+    local fs = sdec.pick_fs(b, 8)
+    local sab = fs / b
+    local fr = math.floor(sab) / sab
+    CELLS[i] = {b, sab, (fr > 0.8696 and fr < 0.9326)}
+  end
+end
 
 local PAYLOADS = {
   {'blocks256', blocks256, 'v90'},
@@ -162,13 +190,19 @@ local pi, ci, ph
 for pi = 1, table.getn(PAYLOADS) do
   local name, fn, tag = PAYLOADS[pi][1], PAYLOADS[pi][2], PAYLOADS[pi][3]
   local by, nb = fn()
-  local nrate, nwrong, ncell = 0, 0, 0
+  local nrate, nwrong, ncell, nraise = 0, 0, 0, 0
   for ci = 1, table.getn(CELLS) do
     local baud, sab = CELLS[ci][1], CELLS[ci][2]
     local fs = baud * sab
     for ph = 0, NPHASE - 1 do
       ncell = ncell + 1
       local rb, raw, res, ok = decode_cell(by, nb, baud, fs, ph)
+      -- A RAISE IS COUNTED, NEVER SKIPPED PAST. decode_cell wraps the decode in a pcall, so a raising
+      -- decode returns ok=false and every counter below simply does not increment -- which makes a
+      -- crash indistinguishable from a clean decode, and lets the null assertions pass BECAUSE nothing
+      -- could be measured. Mutating the app to raise on the fox payload would leave "fox is never
+      -- rate-misreported" green. Protected failure read as success is this project's dominant defect.
+      if not ok then nraise = nraise + 1 end
       if ok and rb ~= nil then
         local d = (rb - baud) / baud
         if d < 0 then d = -d end
@@ -182,9 +216,9 @@ for pi = 1, table.getn(PAYLOADS) do
       end
     end
   end
-  results[name] = {rate = nrate, wrong = nwrong, cells = ncell, tag = tag}
-  print(string.format('  %-10s %-5s %3d cells   %3d rate-misreport   %3d silently-wrong-at-right-rate',
-                      name, tag, ncell, nrate, nwrong))
+  results[name] = {rate = nrate, wrong = nwrong, cells = ncell, tag = tag, raise = nraise}
+  print(string.format('  %-10s %-5s %3d cells   %3d rate-misreport   %3d silently-wrong-at-right-rate'
+                      .. '   %3d RAISED', name, tag, ncell, nrate, nwrong, nraise))
 end
 print('')
 
@@ -193,6 +227,18 @@ print('')
 -- ---------------------------------------------------------------------------
 local B, L = results['blocks256'], results['lorem1k']
 local F, R = results['fox256'], results['rand256']
+
+-- NOTHING RAISED, CHECKED FIRST AND FOR EVERY PAYLOAD. Every assertion below is a count that a raising
+-- decode leaves at zero, so without this the whole file can go green on a decoder that crashes on all
+-- 640 captures -- the nulls by measuring nothing, the reproduction by its cells reading as silent.
+do
+  local names, i = {'blocks256', 'lorem1k', 'fox256', 'rand256'}, nil
+  for i = 1, table.getn(names) do
+    local R = results[names[i]]
+    ck(R.raise == 0, string.format('%s: no capture RAISED -- a crash is not a clean decode', names[i]),
+       string.format('%d of %d raised', R.raise, R.cells))
+  end
+end
 
 -- #46 REPRODUCES. This is the assertion no existing suite can make.
 ck(B.rate > 0, 'blocks256 misreports the rate offline (#46 reproduces)',
@@ -209,6 +255,12 @@ ck(R.rate == 0, 'random is never rate-misreported (null holds)',
 do
   local by, nb = blocks256()
   local inwin, outwin = 0, 0
+  -- PER CELL, NOT JUST IN TOTAL. An aggregate `inwin > 0` is a floor of ONE: every in-window cell but
+  -- one could stop reproducing #46 and the suite stays green, which is the same vacuous pass as
+  -- asserting a count is non-negative. What the window claims is that EACH cell inside it misreports,
+  -- so that is what gets checked -- and the cell that stopped is named.
+  local nin, nrepro, wrong = 0, 0, {}
+  local blockraise = 0
   local ci, ph
   for ci = 1, table.getn(CELLS) do
     local baud, sab, want = CELLS[ci][1], CELLS[ci][2], CELLS[ci][3]
@@ -217,18 +269,48 @@ do
     local isin = (fr > 0.8696 and fr < 0.9326)
     ck(isin == want, string.format('sa/bit %.2f -> floor/sab %.4f, in-window = %s', sab, fr,
                                    tostring(isin)))
+    local cellfired = 0
     for ph = 0, NPHASE - 1 do
-      local rb = decode_cell(by, nb, baud, fs, ph)
-      if rb ~= nil then
+      -- `ok` IS READ HERE TOO. Dropping it makes a raising cell look like a cell that simply does not
+      -- misreport, so a decoder that crashed at exactly 57600 would satisfy that cell's recorded
+      -- verdict of zero firings.
+      local rb, _, _, ok = decode_cell(by, nb, baud, fs, ph)
+      if not ok then blockraise = blockraise + 1 end
+      if ok and rb ~= nil then
         local d = (rb - baud) / baud
         if d < 0 then d = -d end
         if d > SNAP then
+          cellfired = cellfired + 1
           if isin then inwin = inwin + 1 else outwin = outwin + 1 end
         end
       end
     end
+    if isin then nin = nin + 1 end
+    -- EVERY CELL IS CHECKED AGAINST ITS RECORDED VERDICT, in both directions. A cell missing from REPRO
+    -- is a failure rather than a default, or adding a baud to BAUDS would silently widen the sweep
+    -- without anyone deciding what it should do.
+    local exp = REPRO[baud]
+    local expn = nil
+    if exp == true then expn = NPHASE elseif exp == false then expn = 0 end
+    if expn == nil or cellfired ~= expn then
+      wrong[table.getn(wrong) + 1] =
+        string.format('%d Bd @ %.2f sa/bit: %d/%d fired, expected %s', baud, sab, cellfired, NPHASE,
+                      expn ~= nil and tostring(expn) or 'NO RECORDED VERDICT')
+    end
+    if exp == true then nrepro = nrepro + 1 end
   end
-  ck(inwin > 0, 'blocks256 misreports INSIDE the window', inwin)
+  ck(blockraise == 0, 'no window capture RAISED, so a zero firing count means what it says',
+     string.format('%d of %d raised', blockraise, table.getn(CELLS) * NPHASE))
+  ck(nin > 0, 'the window contains cells at all -- otherwise everything below passes vacuously', nin)
+  ck(table.getn(wrong) == 0,
+     'every cell reproduces #46 exactly as recorded, at every phase or at none',
+     table.getn(wrong) > 0 and table.concat(wrong, ' | ') or
+       string.format('%d cell(s), %d reproducing, all as recorded', table.getn(CELLS), nrepro))
+  -- THE TOTAL IS DERIVED FROM THE TABLE, not written down beside it: two numbers that have to agree by
+  -- hand disagree eventually, and then the weaker one is the one that gets believed.
+  ck(inwin == nrepro * NPHASE,
+     string.format('the in-window firings reconcile with the %d recorded cell(s)', nrepro),
+     string.format('%d firings vs %d x %d expected', inwin, nrepro, NPHASE))
   ck(outwin == 0, 'blocks256 never misreports OUTSIDE the window', outwin)
 end
 

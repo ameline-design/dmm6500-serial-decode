@@ -855,22 +855,34 @@ end
 -- Why no bit time was usable, in the operator's terms. "Too fast for this sample
 -- rate" and "nothing resembling a frame" are different faults with different actions
 -- -- lower the baud rate, versus check the probe.
+-- EVERY LIMIT NAMED HERE IS THE ONE ua_plausible REFUSED WITH, constant for constant. A sentence
+-- built from a different threshold blames a limit that did not fire: the floor rejects below
+-- minsabit * (1 - plaustol), which is 3.92 rather than 4, so a fit at 3.95 that the q gate threw out
+-- would be reported as too fast for a ceiling that admitted it.
 function sdec.ua_implausible_why(T)
-  if T == nil then return 'no bit timing' end
-  if T < sdec.minsabit then
-    return string.format('%.1f samples/bit -- the line is faster than the %d kBd ceiling',
-                         T, sdec.maxbaud / 1000)
-  end
+  if T == nil or T <= 0 then return 'no bit timing' end
   local fs = sdec.acq_fs or sdec.fs
-  if fs / T > sdec.maxbaud * (1 + sdec.snaptol) then
-    return string.format('%.0f baud is past the %d kBd ceiling',
-                         fs / T, sdec.maxbaud / 1000)
+  if fs == nil or fs <= 0 then return 'no sample rate' end
+  local b = fs / T
+  -- THE CEILING IS CHECKED BEFORE THE SAMPLES-PER-BIT FLOOR, and in baud, because the two coincide at
+  -- exactly one sample rate: the top of sdec.rates over minsabit is 1 MSa/s / 4 = maxbaud. Checked
+  -- second the floor swallows every case that reaches here, and the ceiling sentence -- the true one,
+  -- since ua_plausible refuses on b > maxbaud * (1 + plaustol) there -- can never print.
+  if b > sdec.maxbaud * (1 + sdec.plaustol) then
+    return string.format('%.0f baud is past the %d kBd ceiling', b, sdec.maxbaud / 1000)
+  end
+  -- TOO FEW SAMPLES PER BIT IS NOT THE INSTRUMENT'S CEILING once the check above has ruled that out,
+  -- and saying so would be false rather than vague: 3.5 samples/bit at 20 kSa/s is 5714 baud, nowhere
+  -- near 250 kBd. What is wrong is the capture rate under it, so that is what the sentence names.
+  if T < sdec.minsabit * (1 - sdec.plaustol) then
+    return string.format('%.1f samples/bit -- %.0f baud needs a faster capture than %.0f kSa/s',
+                         T, b, fs / 1000)
   end
   -- THE FLOOR NEEDS ITS OWN SENTENCE, or a rate below it falls through to 'no frame fits' -- which is
   -- not merely vague but false: forcing that same rate frames every byte. A refusal has to name the
   -- limit it applied.
-  if fs / T < sdec.minbaud * (1 - sdec.plaustol) then
-    return string.format('%.0f baud is below the %d baud floor', fs / T, sdec.minbaud)
+  if b < sdec.minbaud * (1 - sdec.plaustol) then
+    return string.format('%.0f baud is below the %d baud floor', b, sdec.minbaud)
   end
   return string.format('no frame fits a %.1f sample bit time', T)
 end

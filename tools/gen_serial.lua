@@ -679,8 +679,19 @@ function buffer.make(cap, style)
   if cap ~= nil and cap < 10 then error('buffer.make below the 10 minimum', 0) end
   return newbuf(cap)
 end
+-- A REFUSABLE DELETE, because the firmware can refuse one and the app has a branch for it that no
+-- test could reach: acq_make_buffer sets delfails and the 'power cycle the instrument' stickyerr, then
+-- deliberately KEEPS the handle so a retry is possible. With an always-succeeding stub that path is
+-- unreachable offline, which is how the one message telling the operator to power-cycle went untested.
+-- Off by default; GEN_BUFDEL_FAIL(n) refuses the next n deletes.
+local BUFDEL_FAIL = 0
+function GEN_BUFDEL_FAIL(n) BUFDEL_FAIL = n or 0 end
 function buffer.delete(b)
   if type(b) ~= 'table' or not b.alive then error('buffer.delete on a dead buffer', 0) end
+  if BUFDEL_FAIL > 0 then
+    BUFDEL_FAIL = BUFDEL_FAIL - 1
+    error('buffer.delete refused by the instrument', 0)
+  end
   b.alive = false
 end
 

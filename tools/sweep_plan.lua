@@ -231,6 +231,54 @@ end
 -- diagnostic value: a wrong RATE is issue #46, right rate with wrong BYTES is #125, and NOBYTES is an
 -- honest refusal. A bare BAD count merges all three and hides which one moved.
 local SNAP = sdec.snaptol or 0.02
+
+-- Whether `b` is a rate the panel would present as STANDARD. sig_snap returns the ladder entry
+-- itself when it snaps, so an exact compare is right and a tolerance here would fold in the
+-- near-misses this is meant to separate from.
+local function is_std(b)
+  if b == nil then return false end
+  local i
+  local nb = table.getn(sdec.stdbaud)
+  for i = 1, nb do
+    if math.abs(b / sdec.stdbaud[i] - 1) <= 1e-6 then return true end
+  end
+  return false
+end
+
+-- WHICH ROUTE A RATE MISREPORT CAME DOWN. Issue #46 is one counter over three different defects with
+-- three different fixes, and merging them is how a 14.5 % share sat uncharacterised: the counter can
+-- only say the rate was wrong, not which mechanism made it wrong.
+--
+-- Split on reported/commanded, which is the one number available at every point without reaching into
+-- arbitration state. The bands are measured on the 124 hardware misreports, not chosen:
+local function rate_route(rb, baud)
+  local a = rb / baud
+  if a < 1 then a = 1 / a end
+  -- 46b -- ua_best_end let a SNAPPED HARMONIC win on score alone, entered when the width fit lands on
+  -- a non-standard rate so both guards switch off. Harmonics are 2x and up and their reciprocals,
+  -- which is why this band starts at 1.8 rather than at a fraction of a per cent: 11374->57600,
+  -- 5810->28800, 3572->14400 are all near-exact doublings or better.
+  if a >= 1.8 then return 'r46b' end
+  -- route 1 -- sig_fit's SECOND FIXED POINT. 0.91 Tb is stable once enough 9-bit runs corroborate it,
+  -- so reported lands ~1.10x commanded; the hardware cases sit at 1.09-1.11.
+  if a >= 1.05 then return 'rfit1' end
+  -- cluster C -- the fit drifts into a NEIGHBOURING STANDARD RATE'S basin and then snaps to it, so
+  -- reported is on the ladder while commanded is past snaptol away. That is what makes it interesting:
+  -- an accurate fit cannot reach a standard rate that far off, so the drift came first. This is the
+  -- shape a real user meets, because drawn rates near the ladder are where equipment sits.
+  --
+  -- THE BAND IS (snaptol, 1.05), NOT the 2.4-2.7 % the hardware cases happen to sit at. Those six are
+  -- observations inside this band, not its definition, and writing the narrower number here would claim
+  -- an attribution the test does not make -- a 4 % standard-rate miss also lands in rstdC and is not
+  -- known to share a mechanism with them. The ratio is printed on every failure row so the spread
+  -- inside the band stays visible rather than being asserted away.
+  if is_std(rb) then return 'rstdC' end
+  -- NOT FORCED INTO A BAND IT DOES NOT FIT. A misreport just outside snaptol that is NOT on the ladder
+  -- is none of the three, and bucketing it as the nearest one would put invented evidence under a
+  -- defect's name -- the error this harness has already made once by fixing its head trim.
+  return 'rother'
+end
+
 local function classify(ran, r, rb, baud)
   if not ran then return 'raised' end
   if r == nil or (r.nf or 0) < 1 then return 'nobytes' end
@@ -246,7 +294,10 @@ local ncell, nbadcell = 0, 0
 -- own head bound before the bytes matched, i.e. bytes the panel presents as trustworthy and are not.
 -- Counting it here is what stops the judge's tolerance from quietly absorbing a real defect.
 local nbleed, worstbleed = 0, 0
-local CLS = {'raised', 'nobytes', 'norate', 'rate', 'bytes'}
+-- The four r* entries are SUBDIVISIONS OF `rate`, not siblings of it: rate stays the total so the
+-- ratchet keyed on it keeps meaning what it measured, and the routes sum to it.
+local CLS = {'raised', 'nobytes', 'norate', 'rate', 'bytes',
+             'r46b', 'rfit1', 'rstdC', 'rother'}
 local cls = {}
 do local i; for i = 1, table.getn(CLS) do cls[CLS[i]] = 0 end end
 print(string.format('=== OFFLINE PLAN iteration %d -- %d vectors x %d rates x %d offset(s)%s ===',
@@ -333,15 +384,29 @@ for vi = 1, table.getn(P.vectors) do
               if r.errs ~= nil and r.errs[k] ~= nil then silent = false end
             end
           end
-          if v.class == 'loud' and not silent then
+          -- A DECODE THAT RETURNED NO FRAMES HAS NOT BEEN LOUD. `silent` is false for an empty result
+          -- as well as for a flagged one, so without this a loud vector that decodes NOTHING satisfies
+          -- the loud contract and is counted ok -- and every counter stays still. That routes around
+          -- both ratchets and `judged` at once: a regression that suppresses every byte on the loud
+          -- vectors would read as an unchanged run. Saying nothing is the other way to be silent.
+          local spoke = r ~= nil and (r.nf or 0) > 0
+          if v.class == 'loud' and not silent and spoke then
             verdict = 'ok'; nok = nok + 1
           else
             verdict = 'BAD'; nbad = nbad + 1; vbad = vbad + 1; cellbad = cellbad + 1
             local c = classify(ran, r, rb, baud)
             cls[c] = cls[c] + 1
+            -- THE ROUTE GOES IN THE ROW TOO. A count says #46 moved; only the row says which of the
+            -- three mechanisms moved it, and that is the difference between a number and a lead.
+            local route = ''
+            if c == 'rate' then
+              local rt = rate_route(rb, baud)
+              cls[rt] = cls[rt] + 1
+              route = string.format(' %s x%.3f', rt, rb / baud)
+            end
             -- ROUNDED, because sdec.baud is a measurement: 379.00138669341982 in a failure row is
             -- eighteen digits of noise over the one fact that matters, which is that it read 379.
-            det = string.format('[%s, read %s Bd] %s', c,
+            det = string.format('[%s%s, read %s Bd] %s', c, route,
                                 rb ~= nil and string.format('%.0f', rb) or 'nil', det)
           end
         end
@@ -363,10 +428,26 @@ end
 -- CELLS are both reported because they answer different questions: points is the rate at which a
 -- capture of this plan comes back wrong, cells is how much of the plan is affected at all.
 print(string.format('\nPLAN %d/%d iteration %d: cells %d badcells %d points %d ok %d bad %d skip %d '
-                    .. 'raised %d nobytes %d norate %d rate %d bytes %d bleed %d bleedworst %d',
+                    .. 'raised %d nobytes %d norate %d rate %d bytes %d bleed %d bleedworst %d '
+                    .. 'r46b %d rfit1 %d rstdC %d rother %d',
                     A.shard, A.nshard, P.iteration, ncell, nbadcell, nok + nbad + nskip,
                     nok, nbad, nskip,
-                    cls.raised, cls.nobytes, cls.norate, cls.rate, cls.bytes, nbleed, worstbleed))
+                    cls.raised, cls.nobytes, cls.norate, cls.rate, cls.bytes, nbleed, worstbleed,
+                    cls.r46b, cls.rfit1, cls.rstdC, cls.rother))
+-- THE ROUTES MUST SUM TO `rate`, and this is checked rather than assumed: rate_route returns exactly
+-- one of the four for every rate point, so a mismatch means a point was counted twice or lost, and a
+-- subdivision that does not reconcile with its total is worse than no subdivision at all.
+do
+  local rsum = cls.r46b + cls.rfit1 + cls.rstdC + cls.rother
+  if rsum ~= cls.rate then
+    -- EXIT 2, NOT 1. This check runs AFTER the summary line, and 1 is the code a shard uses for a
+    -- known failure -- so exiting 1 here would print a reconciled-looking summary and be totalled as
+    -- an ordinary bad lap. 2 is what tools/plan_sweep.py refuses to trust the numbers of.
+    print(string.format('REFUSING: the %d rate point(s) split into %d route(s) -- they must reconcile',
+                        cls.rate, rsum))
+    os.exit(2)
+  end
+end
 print(string.format('%d ok, %d BAD, %d unjudgeable of %d point(s) over %d cell(s), %d cell(s) '
                     .. 'affected, %d head bleed (worst %d)',
                     nok, nbad, nskip, nok + nbad + nskip, ncell, nbadcell, nbleed, worstbleed))

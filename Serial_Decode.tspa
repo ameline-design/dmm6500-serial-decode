@@ -962,8 +962,13 @@ function sdec.sig_quality()
   local T = sdec.bittime
   if T == nil then return nil, 'no bit time' end
   if T <= sdec.minsabit then
-    return T, string.format('only %.1f samples/bit -- at or past the %d kBd ceiling',
-                            T, sdec.maxbaud / 1000)
+    local fs = sdec.acq_fs or sdec.fs
+    if fs ~= nil and fs > 0 and fs / T > sdec.maxbaud * (1 - sdec.plaustol) then
+      return T, string.format('only %.1f samples/bit -- at or past the %d kBd ceiling',
+                              T, sdec.maxbaud / 1000)
+    end
+    return T, string.format('only %.1f samples/bit at %.0f kSa/s -- no margin left in the capture rate',
+                            T, (fs or 0) / 1000)
   end
   return T
 end
@@ -1929,21 +1934,24 @@ function sdec.ua_fit_corrupt(Tfit)
 end
 
 -- Why no bit time was usable, in the operator's terms. "Too fast for this sample
--- rate" and "nothing resembling a frame" are different faults with different actions
--- -- lower the baud rate, versus check the probe.
+--   [...]
+-- built from a different threshold blames a limit that did not fire: the floor rejects below
+-- minsabit * (1 - plaustol), which is 3.92 rather than 4, so a fit at 3.95 that the q gate threw out
+-- would be reported as too fast for a ceiling that admitted it.
 function sdec.ua_implausible_why(T)
-  if T == nil then return 'no bit timing' end
-  if T < sdec.minsabit then
-    return string.format('%.1f samples/bit -- the line is faster than the %d kBd ceiling',
-                         T, sdec.maxbaud / 1000)
-  end
+  if T == nil or T <= 0 then return 'no bit timing' end
   local fs = sdec.acq_fs or sdec.fs
-  if fs / T > sdec.maxbaud * (1 + sdec.snaptol) then
-    return string.format('%.0f baud is past the %d kBd ceiling',
-                         fs / T, sdec.maxbaud / 1000)
+  if fs == nil or fs <= 0 then return 'no sample rate' end
+  local b = fs / T
+  if b > sdec.maxbaud * (1 + sdec.plaustol) then
+    return string.format('%.0f baud is past the %d kBd ceiling', b, sdec.maxbaud / 1000)
   end
-  if fs / T < sdec.minbaud * (1 - sdec.plaustol) then
-    return string.format('%.0f baud is below the %d baud floor', fs / T, sdec.minbaud)
+  if T < sdec.minsabit * (1 - sdec.plaustol) then
+    return string.format('%.1f samples/bit -- %.0f baud needs a faster capture than %.0f kSa/s',
+                         T, b, fs / 1000)
+  end
+  if b < sdec.minbaud * (1 - sdec.plaustol) then
+    return string.format('%.0f baud is below the %d baud floor', b, sdec.minbaud)
   end
   return string.format('no frame fits a %.1f sample bit time', T)
 end

@@ -249,9 +249,28 @@ check('the unsnapped label is marked as approximate', has(sdec.baud_text(), '?')
 run({bytes = hb, baud = 250000, fs = 1000000})       -- 4.0 samples/bit
 local _, warn = sdec.sig_quality()
 check('4 samples/bit is flagged as marginal', warn ~= nil, tostring(warn))
+check('...and names the 250 kBd ceiling, because at 1 MS/s that IS what 4 samples/bit means',
+      has(tostring(warn), 'ceiling'), tostring(warn))
 run({bytes = hb, baud = 9600, fs = 1000000})
 local _, warn2 = sdec.sig_quality()
 check('104 samples/bit is not flagged', warn2 == nil)
+
+-- THE SAME 4.0 SAMPLES/BIT AT A LOW SAMPLE RATE IS NOT THE INSTRUMENT'S CEILING. 5000 Bd captured at
+-- 20 kSa/s is a fiftieth of maxbaud, and this warning sits beside a decode that SUCCEEDED -- so naming
+-- the 250 kBd ceiling here annotates a correct 5000 Bd result with a limit the line is nowhere near.
+-- Both branches are asserted, or fixing the wording in one direction breaks the other silently.
+--
+-- A do BLOCK, because the main chunk is at Lua's 200-local ceiling: two more top-level locals here fail
+-- to LOAD, with an error at whatever line happens to be number 201.
+do
+  run({bytes = hb, baud = 5000, fs = 20000})
+  local _, warn3 = sdec.sig_quality()
+  check('4 samples/bit at a LOW sample rate still warns', warn3 ~= nil, tostring(warn3))
+  check('...but blames the capture rate, not the 250 kBd ceiling the line is 50x below',
+        warn3 ~= nil and has(warn3, 'capture rate') and not has(warn3, 'ceiling'), tostring(warn3))
+  check('...and says which capture rate, so the number can be acted on',
+        warn3 ~= nil and has(warn3, '20 kSa/s'), tostring(warn3))
+end
 
 -- A harmonic of the true bit time that ALSO snaps to a standard rate is a genuine
 -- ambiguity, not an error: eight 0x00 frames at 9600 7N1 with a one-bit gap are the
@@ -2460,6 +2479,10 @@ do
   sdec.strm_recording = nil
 
   -- THE BAR NEVER LEAVES ITS SLOT, whatever the percentage, and never overruns the frame.
+  -- TRACKED, NOT ASSUMED. This was `check(..., true, ...)` -- a literal pass, so the named aggregate
+  -- reported ok however the loop went. The loop's own failing check kept the SUITE red, but the line a
+  -- reader trusts said the opposite.
+  local allin = true
   local pc
   for pc = 0, 100, 5 do
     sdec.ck_nbytes = math.floor(32768 * pc / 100)
@@ -2470,10 +2493,11 @@ do
       check(string.format('the bar stays inside its frame at %d %%', pc), false,
             string.format('x %d..%d, frame %d..%d', o.x, o.x2, sdec.ui_prog_x,
                           sdec.ui_prog_x + sdec.ui_prog_w - 1))
+      allin = false
       break
     end
   end
-  check('the bar stays inside its frame at every percentage, and its left edge never moves', true,
+  check('the bar stays inside its frame at every percentage, and its left edge never moves', allin,
         string.format('slot %d..%d, travel %d px', sdec.ui_prog_x,
                       sdec.ui_prog_x + sdec.ui_prog_w - 1, sdec.ui_prog_wmax))
   -- IT MUST ALSO CLEAR EVERY RUNNING MESSAGE, and these come from ck_status() ITSELF rather than
@@ -8272,6 +8296,153 @@ print('\nthe FIT and S/N cells are banded on the figure they print (real code)')
 
   sdec.fitq, sdec.snr_db = keepq, keepdb
 end)()
+
+-- ============================================================================
+-- Branches nothing reached: measured with a line-coverage pass over tsp/, not guessed at
+-- ============================================================================
+-- WHY THESE FOUR AND NOT OTHERS. A coverage pass over the whole offline suite put uart_decode at 97.6 %
+-- and serial_core at 94.9 % with no function unentered, so what is left is specific branches rather
+-- than whole features -- and a branch no test enters is a branch whose first execution is in front of
+-- an operator. Each block below names the branch and the reason it stayed dark.
+--
+-- A do BLOCK, not the (function() ... end)() this file uses elsewhere: after the preceding block's
+-- `end)()` a following `(function()` is parsed as a CALL on its result, which fails with "attempt to
+-- call a nil value" at load time rather than anywhere near the mistake.
+do
+  -- n_deliv's non-default paths. Every caller passes a real n with an armed trigmode and no pretrig
+  -- reserve, so the nil handling, the free-run shortcut and the reserve arithmetic never ran.
+  local keepn, keeptm, keeppt = sdec.n, sdec.trigmode, sdec.pretrig
+  sdec.n, sdec.trigmode, sdec.pretrig = 20000, 'startbit', 0
+  check('n_deliv with no argument falls back to sdec.n', sdec.n_deliv() == 20000,
+        tostring(sdec.n_deliv()))
+  sdec.n = nil
+  check('...and returns nil rather than 0 when there is no depth at all', sdec.n_deliv() == nil,
+        tostring(sdec.n_deliv()))
+  sdec.n, sdec.trigmode = 20000, 'free'
+  check('free run delivers the WHOLE buffer -- nothing is reserved for pre-trigger',
+        sdec.n_deliv(20000) == 20000, tostring(sdec.n_deliv(20000)))
+  sdec.trigmode, sdec.pretrig = 'startbit', 5
+  -- THE RESERVE COMES OUT OF WHAT AN ARMED CAPTURE CAN RETURN, which is the whole reason this
+  -- function exists: the panel said 240 bytes while the dump held 227.
+  check('an armed capture with a 5 % pre-trigger reserve delivers less than the depth',
+        sdec.n_deliv(20000) == 20000 - math.floor(20000 * 5 / 100),
+        string.format('%s of 20000', tostring(sdec.n_deliv(20000))))
+  sdec.n, sdec.trigmode, sdec.pretrig = keepn, keeptm, keeppt
+
+  -- ua_implausible_why's FOUR SENTENCES, one case each. Coverage is what surfaced this: the ceiling
+  -- sentence was unreachable, because it was checked AFTER a samples-per-bit floor that swallows every
+  -- case -- the ceiling needed T < fsmax/(maxbaud*(1+tol)) = 3.92 and the floor caught T < 4. Ordering
+  -- the baud check first makes both reachable, and each is asserted at a REAL (fs, T) the ladder
+  -- offers rather than forced with an impossible acq_fs.
+  --
+  -- acq_fs IS SAVED AND RESTORED. It is the rate this function derives baud from, and a rate left
+  -- behind here is read by every later assertion in this file as though a capture had set it.
+  do
+    local keepfs = sdec.acq_fs
+    local fsmax = sdec.rates[table.getn(sdec.rates)]
+    -- 1) PAST THE CEILING. 921600 on a 1 MS/s capture fits 1.09 samples/bit, the case that once came
+    -- back as four plausible bytes labelled 230400.
+    sdec.acq_fs = fsmax
+    local wc = sdec.ua_implausible_why(fsmax / 921600)
+    check('an over-fast line is refused by naming the baud CEILING it passed',
+          wc ~= nil and has(wc, 'ceiling') and has(wc, '921'), tostring(wc))
+    -- 2) THE ORDERING, at the one place the two limits nearly coincide: fsmax over minsabit is exactly
+    -- maxbaud, so just under the floor the line is also just past the ceiling. The ceiling is the true
+    -- sentence there, because that is the limit ua_plausible refused on.
+    local Tsliver = sdec.minsabit * (1 - sdec.plaustol)
+    local ws = sdec.ua_implausible_why(Tsliver)
+    check('...and where the floor and the ceiling overlap, the CEILING is what gets named',
+          ws ~= nil and has(ws, 'ceiling'),
+          string.format('T %.4f at %d Sa/s is %.0f Bd: %s', Tsliver, fsmax, fsmax / Tsliver,
+                        tostring(ws)))
+    -- 3) TOO FEW SAMPLES PER BIT, WITHOUT CLAIMING THE INSTRUMENT'S CEILING. At 20 kSa/s, 3.5
+    -- samples/bit is 5714 baud -- a fourtieth of maxbaud -- so "faster than the 250 kBd ceiling" is
+    -- false there, not merely vague. This is the sentence that has to name the capture rate instead.
+    sdec.acq_fs = 20000
+    local wu = sdec.ua_implausible_why(3.5)
+    check('an undersampled SLOW line names the capture rate, not the 250 kBd ceiling',
+          wu ~= nil and has(wu, 'samples/bit') and not has(wu, 'ceiling'), tostring(wu))
+    check('...and quotes the baud it actually implies, which is nowhere near maxbaud',
+          wu ~= nil and has(wu, '5714'), tostring(wu))
+    -- 4) BELOW THE BAUD FLOOR, and 5) admissible but unframeable -- the honest vague one.
+    local wf = sdec.ua_implausible_why(300)
+    check('a line under the baud floor is refused by naming the FLOOR',
+          wf ~= nil and has(wf, 'floor') and not has(wf, 'no frame fits'), tostring(wf))
+    local wn = sdec.ua_implausible_why(10)
+    check('a bit time inside BOTH limits is refused as unframeable, naming neither limit',
+          wn ~= nil and has(wn, 'no frame fits') and not has(wn, 'ceiling')
+          and not has(wn, 'floor'), tostring(wn))
+    -- THE DEGENERATE INPUTS, because this function divides by T and by nothing else: a zero or
+    -- negative bit time would make every sentence above read 'inf baud', and the operator would be
+    -- shown a number rather than a fault.
+    check('a zero or negative bit time is named as missing, not divided by',
+          sdec.ua_implausible_why(0) == 'no bit timing'
+          and sdec.ua_implausible_why(-4) == 'no bit timing'
+          and sdec.ua_implausible_why(nil) == 'no bit timing',
+          string.format('%s / %s / %s', tostring(sdec.ua_implausible_why(0)),
+                        tostring(sdec.ua_implausible_why(-4)),
+                        tostring(sdec.ua_implausible_why(nil))))
+    local keepplain = sdec.fs
+    sdec.acq_fs, sdec.fs = nil, nil
+    check('...and so is a missing sample rate, which is the other divisor',
+          sdec.ua_implausible_why(10) == 'no sample rate',
+          tostring(sdec.ua_implausible_why(10)))
+    sdec.fs = keepplain
+    sdec.acq_fs = keepfs
+  end
+
+  -- acq_make_buffer's REFUSED-DELETE path -- the one that tells the operator to power cycle. It was
+  -- unreachable offline until buffer.delete could be made to fail: a stub that always succeeds cannot
+  -- exercise the branch, so the only message in the app that asks for a power cycle had never once run.
+  if GEN_BUFDEL_FAIL ~= nil then
+    local keepbuf, keepdf, keepse = sdec.buf, sdec.delfails, sdec.stickyerr
+    -- THE LIVE COUNT IS THE ASSERTION THAT BITES, not the returned handle. "Keeps the handle" is
+    -- satisfied by an implementation that allocates a SECOND buffer and returns the first -- which is
+    -- the defect itself, one stranded buffer per retry with nothing but a power cycle to free it. The
+    -- handle compare cannot see that; a count of live buffers can, and only both together can.
+    local basebuf = LIVEBUFS()
+    sdec.buf = buffer.make(100, buffer.STYLE_STANDARD)
+    local was = sdec.buf
+    sdec.delfails, sdec.stickyerr = 0, nil
+    -- ARMED AND CLEARED AROUND A pcall. GEN_BUFDEL_FAIL is a latch in the mock, so a raise between
+    -- arming and clearing it leaves the NEXT test's delete refused and makes suite order decide the
+    -- result -- the shape of the recorded capmode/fc_* leak. The reset sits outside the pcall so it
+    -- runs on both paths.
+    GEN_BUFDEL_FAIL(1)
+    local pok, got = pcall(sdec.acq_make_buffer, 2000)
+    GEN_BUFDEL_FAIL(0)
+    check('a refused buffer delete is handled rather than raised at the operator', pok, tostring(got))
+    check('a refused buffer delete KEEPS the handle rather than allocating on top of it',
+          pok and got == was and sdec.buf == was,
+          string.format('returned %s, sdec.buf %s, was %s', tostring(got), tostring(sdec.buf),
+                        tostring(was)))
+    check('...and allocates NOTHING on top of it, so a retry strands no buffer per attempt',
+          LIVEBUFS() == basebuf + 1,
+          string.format('%d live, expected %d at entry + 1 for this test', LIVEBUFS(), basebuf))
+    check('...counts the failure', sdec.delfails == 1, tostring(sdec.delfails))
+    check('...and says to power cycle, because nothing else can free it',
+          sdec.stickyerr ~= nil and string.find(sdec.stickyerr, 'power cycle', 1, true) ~= nil,
+          tostring(sdec.stickyerr))
+    -- THIS BLOCK PUTS ITS OWN BUFFER BACK. Left alive it strands exactly what it just asserted against,
+    -- and every LIVEBUFS() baseline taken after it reads one too high.
+    pcall(buffer.delete, was)
+    check('...and the block leaves the live-buffer count where it found it',
+          LIVEBUFS() == basebuf, string.format('%d live vs %d at entry', LIVEBUFS(), basebuf))
+    sdec.buf, sdec.delfails, sdec.stickyerr = keepbuf, keepdf, keepse
+  end
+
+  -- THE BAR MUST HAVE ENOUGH TRAVEL TO BE A BAR. The exact-clearance assertions above cannot catch a
+  -- degenerate slot, because both sides of each one derive from the same formula: measured, moving
+  -- ui_stat_div to 345 leaves ui_prog_w = 3 and ONE pixel of travel, and all three still pass.
+  -- STRICTLY MORE THAN 100, WHICH IS THE NUMBER ui_progbar_set's OWN COMMENT CLAIMS. It says "one px is
+  -- under 1 %", and that is a statement about ui_prog_wmax: at exactly 100 px one pixel is exactly 1 %,
+  -- so >= 100 admits the one value that makes the comment false. A floor of 64 admitted 1.6 % per pixel.
+  -- Live value is 128, which is 0.78 %.
+  check('the bar has the travel its own comment claims -- strictly under 1 % per pixel',
+        sdec.ui_prog_wmax > 100,
+        string.format('%d px of travel in a %d px frame, %.2f %% per px', sdec.ui_prog_wmax,
+                      sdec.ui_prog_w, 100.0 / sdec.ui_prog_wmax))
+end
 
 print()
 print(string.format('%d passed, %d failed', pass, fail))

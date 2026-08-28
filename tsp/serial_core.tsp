@@ -1122,8 +1122,19 @@ function sdec.sig_quality()
   local T = sdec.bittime
   if T == nil then return nil, 'no bit time' end
   if T <= sdec.minsabit then
-    return T, string.format('only %.1f samples/bit -- at or past the %d kBd ceiling',
-                            T, sdec.maxbaud / 1000)
+    -- WHICH LIMIT IS ACTUALLY TIGHT, the same question ua_implausible_why answers. minsabit samples per
+    -- bit IS maxbaud, but only at the top sample rate, where 1 MSa/s over 4 is exactly 250 kBd. At
+    -- 20 kSa/s the same 4.0 samples/bit is a 5000 baud line -- a fiftieth of the ceiling -- and naming
+    -- the 250 kBd ceiling there is false. It is worse than the refusal case: this warning sits beside a
+    -- decode that SUCCEEDED, so the operator reads a correct 5000 Bd result annotated with a limit the
+    -- line is nowhere near, and the real warning (no margin left in the capture rate) is not given.
+    local fs = sdec.acq_fs or sdec.fs
+    if fs ~= nil and fs > 0 and fs / T > sdec.maxbaud * (1 - sdec.plaustol) then
+      return T, string.format('only %.1f samples/bit -- at or past the %d kBd ceiling',
+                              T, sdec.maxbaud / 1000)
+    end
+    return T, string.format('only %.1f samples/bit at %.0f kSa/s -- no margin left in the capture rate',
+                            T, (fs or 0) / 1000)
   end
   return T
 end

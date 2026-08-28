@@ -603,8 +603,11 @@ A rate within **2 %** (`snaptol`) of a standard one is *reported* as the standar
 as 28800 — because real devices use standard rates and 2 % is far inside the framing margin. The
 bytes are unaffected.
 
-**Above the 250 kBd ceiling it refuses by name** rather than reporting a submultiple: 255 kBd, 260 kBd
-and 300 kBd were each declined with the samples-per-bit reason.
+**Above the 250 kBd ceiling it refuses by name** rather than reporting a submultiple: 255 kBd, 260 kBd,
+300 kBd, 400 kBd and 921600 Bd were each declined by the baud they imply — "255026 baud is past the
+250 kBd ceiling" — rather than by a samples-per-bit count. The two are the same limit only at 1 MSa/s,
+where the 4 samples/bit floor is exactly 250 kBd; below that sample rate a bit time under 4 samples is
+an ordinary rate captured too slowly, so it is refused by naming the capture rate instead.
 
 **100 baud is the declared floor** (`sdec.minbaud`), refused by name the way the 250 kBd ceiling is,
 and it carries `plaustol` at both ends so a rate sitting on a limit is not rejected for a rounding
