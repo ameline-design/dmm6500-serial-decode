@@ -56,10 +56,17 @@ SMOKE_SPEC = 'v77:std,r06:std,v78:nonstd,r00:nonstd'
 
 USBDIR = '/usb1/SERDEC'
 PLAN = USBDIR + '/PLAN.CSV'
-PUSH_MAX_ROWS = 200000
+# THE ROW CEILING IS NOW ABOUT TIME, NOT SAFETY. With one acknowledged batch in flight the transfer
+# cannot overrun the input buffer at any size, so this bounds how long a push may take rather than
+# whether it works: a fortnight is ~272 000 rows, which is ~13 600 round trips. Raised from 200 000,
+# which predated the handshake and was a guess at where the old unbounded push would break.
+PUSH_MAX_ROWS = 400000
 # One chunk of the plan push, in bytes. 780 kB is what the app itself loads in 1.0 s and the only
 # load size this instrument has been measured at.
-PUSH_CHUNK_BYTES = 780000
+# Rows per acknowledged batch. ~1.5 kB a statement, and the handshake means the host is never
+# more than one statement ahead of the interpreter -- so this trades round trips for a bound
+# that holds at any plan size, rather than a throttle that only moves the overrun.
+PUSH_BATCH_ROWS = 20
 
 
 # CLEARED BEFORE THE LOAD, run_app.py's own prelude: sdec.buf is the only reference to a firmware
@@ -153,81 +160,73 @@ def keysize(d, name):
 
 
 def push_plan(d, rows):
-    """Write the plan onto the key by LOADING IT AS SCRIPTS, in chunks, not by executing statements.
+    """Write the plan onto the key over the LAN, in batches the instrument ACKNOWLEDGES one at a time.
 
-    THE OBVIOUS WAY DOES NOT WORK, and it fails in a way worth recording. Sending the rows as chunked
-    file.write statements overruns the instrument's socket input buffer -- '-363 input buffer overrun' on
-    the panel -- and it does so CUMULATIVELY: row 21 with forty rows a statement, row 921 with ten and a
-    pause, row 921 again with a drain between chunks. Every mitigation moved the failure without removing
-    it, because the limit is not any one statement's length: it is how much unexecuted text the input
-    buffer holds while the interpreter works through what it already has.
+    ALL COMMUNICATION WITH THE DMM IS OVER THE LAN. The key is never touched by hand, so a 19 MB plan for
+    a fortnight has to arrive down this socket, and neither of the two obvious ways survives that size.
 
-    loadscript has no such problem -- it STORES lines rather than executing them, and the app itself
-    arrives that way: 780 kB in 1.0 s, measured. So the plan travels as a long-string constant inside a
-    script that writes it out in one file.write.
+    NOT AS EXECUTED STATEMENTS WITHOUT FLOW CONTROL, which is what was tried first: '-363 input buffer
+    overrun' on the panel, CUMULATIVELY -- row 21 at forty rows a statement, row 921 with ten and a pause,
+    row 921 again with a DRAIN between chunks. A drain discards what has arrived; it does not make the
+    host wait. The limit is not any one statement's length, it is how much unexecuted text the input
+    buffer holds while the interpreter works through what it already has, and nothing that only throttles
+    the sender can bound that.
 
-    IN CHUNKS, THOUGH, AND THAT IS WHAT SIX DAYS COSTS. A lap is 1677 cells and each iteration of the
-    plan draws its own amplitudes, offsets and waits -- so an indefinite run over a ONE-iteration plan
-    wraps and replays identical stimulus, buying nothing but arb phase. Six days is ~76 laps, which is
-    134 000 rows and 9.4 MB, and a single long string that size would have to sit in the instrument's Lua
-    heap in one piece before a byte of it reached the key. Each chunk is its own script, the first opening
-    the file for WRITE and the rest for APPEND, so the peak memory is one chunk rather than one plan.
+    NOT AS loadscript EITHER, at this size. loadscript stores rather than executes and has no buffer
+    limit -- 780 kB of app arrives in 1.0 s that way -- but a plan this big has to be split, and every
+    reload of a script name calls script.delete first, which logs '-104 Data type error'. Twenty-five
+    chunks is twenty-five chances of putting a box on the panel of an instrument that must never show one.
+    Giving each chunk its own name avoids the delete and leaves 19 MB of orphaned scripts in the
+    instrument's memory instead.
 
-    The plan text cannot contain ']]' -- it is digits, commas, letters, dots and dashes -- so a long
-    string is safe. It is checked anyway, because a silent truncation here is a short plan, and a short
-    plan does not fail: it wraps sooner and repeats stimulus without saying so.
+    SO: ONE HANDSHAKE PER BATCH. Each statement writes its rows and prints a tagged acknowledgement
+    carrying the running total; the host reads that line before sending the next. The host therefore
+    cannot get ahead of the interpreter by more than one statement, whatever the plan's size, and the
+    running total is checked as it goes rather than only at the end. 20 rows a batch is ~1.5 kB a line,
+    and a fortnight's 272 000 rows is ~13 600 round trips.
+
+    The row text cannot contain a double quote -- it is digits, commas, letters, dots and dashes -- so it
+    goes inside a Lua string literal as-is, with the row separator written as the two characters
+    backslash-n so the STATEMENT stays one line while the FILE gets real newlines. send_lua refuses any
+    statement carrying a real control character, which is the mistake that form invites.
     """
     text = '\n'.join(rows) + '\n'
-    if ']]' in text:
-        raise SystemExit('REFUSING: the plan contains a long-string terminator, so it cannot be sent '
-                         'this way. Copy PLAN.CSV onto the key by hand.')
+    for bad in ('"', '\\'):
+        if bad in text:
+            raise SystemExit('REFUSING: the plan contains %r, which cannot go inside a Lua string '
+                             'literal unescaped.' % bad)
     if len(rows) > PUSH_MAX_ROWS:
-        raise SystemExit('REFUSING: %d rows is past PUSH_MAX_ROWS (%d). Copy PLAN.CSV onto the key.'
-                         % (len(rows), PUSH_MAX_ROWS))
-    # ONE CHUNK IS THE SIZE THE APP ITSELF LOADS, which is the only load size this instrument has been
-    # measured at -- 780 kB in 1.0 s. Guessing larger would be guessing.
-    chunks, cur, curn = [], [], 0
-    for r in rows:
-        cur.append(r)
-        curn += len(r) + 1
-        if curn >= PUSH_CHUNK_BYTES:
-            chunks.append(cur)
-            cur, curn = [], 0
-    if cur:
-        chunks.append(cur)
+        raise SystemExit('REFUSING: %d rows is past PUSH_MAX_ROWS (%d).' % (len(rows), PUSH_MAX_ROWS))
     t0 = time.time()
-    for k, ch in enumerate(chunks):
-        part = '\n'.join(ch) + '\n'
-        mode = 'file.MODE_WRITE' if k == 0 else 'file.MODE_APPEND'
-        body = ('do\n'
-                # PLAIN [[ ]], because the [=[ level syntax is Lua 5.1 and this interpreter is 5.0.2:
-                # '[==[' is a TSP syntax error, not a longer delimiter.
-                'local PLANTEXT = [[\n' + part + ']]\n'
-                'local fh = file.open("%s", %s)\n'
-                'if fh == nil then print("PLANFAIL open") else\n'
-                '  file.write(fh, PLANTEXT)\n'
-                '  file.flush(fh)\n'
-                '  file.close(fh)\n'
-                '  print("PLANOK " .. tostring(string.len(PLANTEXT)))\n'
-                'end\n'
-                'end\n'
-                'print("===DONE===")\n') % (PLAN, mode)
-        out = d.load_script('sdecplan', body, timeout=300)
-        said = ' '.join(x for x in out if x)
-        if 'PLANOK' not in said:
-            raise SystemExit('chunk %d of %d did not land on the key: %s'
-                             % (k + 1, len(chunks), said[:300]))
-        if len(chunks) > 1:
-            print('  chunk %d/%d: %d row(s), %d byte(s)' % (k + 1, len(chunks), len(ch), len(part)))
-    print('  plan script: %.1f s in %d chunk(s)' % (time.time() - t0, len(chunks)))
+    if not d.exec('do _pw = file.open("%s", file.MODE_WRITE) _pn = 0 end' % PLAN):
+        raise SystemExit('the instrument would not open %s for writing' % PLAN)
+    sent, nb = 0, 0
+    while sent < len(rows):
+        batch = rows[sent:sent + PUSH_BATCH_ROWS]
+        payload = '\\n'.join(batch) + '\\n'
+        stmt = ('do if _pw == nil then print("PW=-1") else file.write(_pw, "%s") '
+                '_pn = _pn + %d print("PW=" .. tostring(_pn)) end end' % (payload, len(batch)))
+        got = qtag(d, stmt, 'PW=', timeout=120)
+        if got is None:
+            raise SystemExit('the instrument stopped acknowledging the plan after %d row(s)' % sent)
+        if int(got) < 0:
+            raise SystemExit('the plan file handle closed under us after %d row(s)' % sent)
+        sent += len(batch)
+        nb += sum(len(r) + 1 for r in batch)
+        if int(got) != sent:
+            raise SystemExit('REFUSING: the instrument has written %s row(s) where %d were sent'
+                             % (got, sent))
+        if len(rows) > 20000 and sent % 20000 < PUSH_BATCH_ROWS:
+            print('    %d/%d rows (%.0f kB) %.0f s' % (sent, len(rows), nb / 1024.0,
+                                                      time.time() - t0))
+    d.exec('do file.flush(_pw) file.close(_pw) _pw = nil end')
+    print('  plan pushed: %d row(s) in %.1f s (%d batch(es) of %d)'
+          % (sent, time.time() - t0, (sent + PUSH_BATCH_ROWS - 1) // PUSH_BATCH_ROWS,
+             PUSH_BATCH_ROWS))
     # VERIFIED FROM THE DIRECTORY ENTRY, not by reading the plan back. Counting lines would mean reading
     # until file.read returns nil -- a read PAST THE END, which posts 2201 'File read error' on this
-    # instrument: a box on the panel, from the verification step itself. READ_ALL avoids that but would
-    # hold the whole plan in a Lua string, which is exactly what the chunking above exists to avoid.
-    #
-    # The write still has to be checked somehow: file.write posts an event rather than raising, so a
-    # partial write reports success and a short plan does not fail -- it wraps sooner and repeats
-    # stimulus without saying so.
+    # instrument: a box on the panel, from the verification step itself. READ_ALL avoids that and would
+    # hold the whole plan in a Lua string, which at 19 MB it will not.
     got = keysize(d, os.path.basename(PLAN))
     if got is None:
         raise SystemExit('the instrument did not report the plan size on the key')

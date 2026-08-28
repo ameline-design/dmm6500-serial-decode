@@ -440,7 +440,7 @@ end
 -- byte was correct. It means every cell came back with something.
 function brun.screen(c, arb)
   if brun.ui ~= nil then brun.ui_show(c, arb) end
-  brun.settext(string.format('L%s#%s F%s %s',
+  brun.settext(string.format('L%sC%s F%s %s',
                              brun.int(c.iter), brun.int(c.cell), brun.int(brun.nbad),
                              brun.pct(brun.nbad, brun.ncell)),
                brun.cellline(c, arb))
@@ -519,7 +519,7 @@ function brun.msg(col, txt)
     brun.msgs[brun.msgn] = nil
     n = brun.msgn - 1
   end
-  brun.msgs[n + 1] = {txt = brun.stamp() .. ' L' .. brun.int(brun.iter) .. '#' .. brun.int(brun.cell)
+  brun.msgs[n + 1] = {txt = brun.stamp() .. ' L' .. brun.int(brun.iter) .. 'C' .. brun.int(brun.cell)
                             .. ' ' .. tostring(txt),
                       col = col or brun.c_lab}
   brun.ui_msgs()
@@ -612,7 +612,7 @@ function brun.msg(col, txt)
     brun.msgs[brun.msgn] = nil
     n = brun.msgn - 1
   end
-  brun.msgs[n + 1] = {txt = brun.stamp() .. ' L' .. brun.int(brun.iter) .. '#' .. brun.int(brun.cell)
+  brun.msgs[n + 1] = {txt = brun.stamp() .. ' L' .. brun.int(brun.iter) .. 'C' .. brun.int(brun.cell)
                             .. ' ' .. tostring(txt),
                       col = col or brun.c_lab}
   brun.ui_msgs()
@@ -1147,8 +1147,7 @@ function brun.soak(iterations, tag)
     -- THE KEY, READ ONCE PER CELL. Costs about a millisecond and no event, so unlike the stop file it
     -- can be checked every time round rather than every two hundredth.
     if brun.keyarmed and brun.stopkey_hit() then
-      brun.stopwhy = string.format('the TRIGGER key was pressed at lap %d cell %d',
-                                   c.iter or 0, c.cell or 0)
+      brun.stopwhy = string.format('L%dC%d: the TRIGGER key was pressed', c.iter or 0, c.cell or 0)
       break
     end
     if brun.maxcell > 0 and brun.ncell >= brun.maxcell then
@@ -1156,7 +1155,7 @@ function brun.soak(iterations, tag)
       break
     end
     if brec.stopped then
-      brun.stopwhy = string.format('lap %d cell %d: recording stopped: %s',
+      brun.stopwhy = string.format('L%dC%d: recording stopped: %s',
                                    c.iter or 0, c.cell or 0, tostring(brec.why))
       brun.stopbad = true
       break
@@ -1215,7 +1214,7 @@ function brun.soak(iterations, tag)
                .. string.rep(',', brun.nmeascol + 1) .. 'SDG:' .. brec.q(swhy) .. ',')
       brec.note(c.iter, c.cell, brun.ncell, 'sdg failed: ' .. tostring(swhy), brun.nbad, brun.nbadsdg)
       if brun.nbadsdg >= brun.maxsdgfail then
-        brun.stopwhy = string.format('lap %d cell %d: the generator failed %d cells in a row: %s',
+        brun.stopwhy = string.format('L%dC%d: the generator failed %d cells in a row: %s',
                                      c.iter or 0, c.cell or 0, brun.nbadsdg, tostring(swhy))
         brun.stopbad = true
         break
@@ -1311,7 +1310,7 @@ function brun.soak(iterations, tag)
   brec.note(brun.iter, brun.cell, brun.ncell,
             string.format('run total: %d cell(s), %d failed, %d event(s) instigated (%d from the panel)',
                           brun.ncell, brun.nbad, brun.nevtot, brun.nevpanel))
-  brec.finish(string.format('lap %d cell %d: %s', brun.iter, brun.cell,
+  brec.finish(string.format('L%dC%d: %s', brun.iter, brun.cell,
                             tostring(brun.stopwhy or 'ended')))
   -- RESTORED, so a run ending does not leave the instrument silently swallowing real errors for the
   -- next operator. The app's own unmute, not a literal.

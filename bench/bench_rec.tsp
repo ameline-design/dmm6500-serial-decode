@@ -212,6 +212,14 @@ end
 -- an interrupted run got.
 function brec.note(iter, cell, ncell, note, nbad, nsdgfail)
   if brec.fh == nil then return end
+  -- THE LAP NUMBER IS NEVER OMITTED. Several callers pass -1 because they are not inside a cell -- a
+  -- rolled file, a disabled progress push, the closing line -- and a status row whose lap column says -1
+  -- cannot be placed in a run that is 200 laps long. Where the run knows which lap it is on, that is
+  -- what gets written; -1 survives only before the first row has been read, where it is the truth.
+  if brun ~= nil then
+    if iter == nil or iter == -1 then iter = brun.iter end
+    if cell == nil or cell == -1 then cell = brun.cell end
+  end
   -- os.time() IS THE ONLY CLOCK A RESTARTED INSTRUMENT AGREES WITH ITSELF ABOUT, and it is recorded
   -- as seconds rather than formatted, so a reader can subtract two of them without parsing.
   local t = 0

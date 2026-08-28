@@ -405,7 +405,7 @@ do
   brun.nbad, brun.ncell = 12, 1677
   brun.vcell, brun.vbad = {}, {}
   brun.screen({iter = 3, cell = 412, vid = 'v77', baud = 9600}, 'SER_Fox_8N1_x10')
-  ck(MD.usertext(display.TEXT1) == 'L3#412 F12 0.7%',
+  ck(MD.usertext(display.TEXT1) == 'L3C412 F12 0.7%',
      'the top line is lap, cell, failed cells and fail rate', tostring(MD.usertext(display.TEXT1)))
   ck(MD.usertext(display.TEXT2) == 'v77 9600 8N1 Fox',
      'and the bottom line is vector, baud, format and waveform',
@@ -766,7 +766,7 @@ do
      'an alarm leaves the prompt alone', tostring(MD.text(brun.ui.note)))
   local m5 = MD.text(brun.ui.msg[1])
   ck(m5 ~= nil and string.find(m5, 'generator missed', 1, true) ~= nil
-     and string.find(m5, 'L1#200', 1, true) ~= nil,
+     and string.find(m5, 'L1C200', 1, true) ~= nil,
      'and appears in the log below it, stamped with the time, the lap and the cell', tostring(m5))
   -- ONCE, NOT PER CELL. A log that repeats the same line for four hundred cells cannot say when
   -- anything started.
@@ -782,7 +782,7 @@ do
   -- THE LAST POPULATED LINE, not the last line. The log fills downward from the top of its area the way
   -- a console does, and only scrolls once it is full -- so with two entries the newest is on line 2.
   local ml = tostring(MD.text(brun.ui.msg[table.getn(brun.msgs)]))
-  ck(string.find(ml, 'L7#1234', 1, true) ~= nil,
+  ck(string.find(ml, 'L7C1234', 1, true) ~= nil,
      'every log line names the lap as well as the cell', ml)
 
   -- NEWEST AT THE BOTTOM, and bounded: a sixth message drops the first.

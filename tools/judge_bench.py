@@ -162,7 +162,8 @@ def main():
                 npass += 1
             else:
                 nnodec += 1
-                fails.append((vid, r['baud'], 'no decode: ' + r['why']))
+                fails.append((r['iter'], r['cell'], vid, r['baud'],
+                              'no decode: ' + r['why']))
             continue
         want = payloads(vid)
         got = r['hex'].upper()
@@ -186,7 +187,7 @@ def main():
         else:
             nfail += 1
             byvec[vid] += 1
-            fails.append((vid, r['baud'],
+            fails.append((r['iter'], r['cell'], vid, r['baud'],
                           ('rate %s for %s commanded' % (r['read_baud'], r['baud'])) if ratebad
                           else detail))
 
@@ -204,8 +205,15 @@ def main():
         print('  last progress row: %s' % ','.join(last[1:]))
     if a.verbose and fails:
         print()
-        for vid, baud, why in fails[:80]:
-            print('  %-6s %8s Bd  %s' % (vid, baud, why[:110]))
+        # THE LAP AND CELL, ON EVERY LINE. A fortnight is two hundred laps of the same 39 vectors, so
+        # 'v77 at 9600 Bd failed' names a cell that occurs two hundred times. With the lap and cell the
+        # exact stimulus is reproducible -- every amplitude, offset, wait and vector order is keyed on the
+        # iteration -- which is the difference between a failure that can be replayed and one that cannot.
+        # LnnnCmmm IS THE PROJECT'S FORMAT for a lap and a cell -- 'C' rather than '#' because these
+        # files use '#' to mean a comment line, in the plan's header and the record's own -- the same string the instrument's own
+        # status log writes -- so a failure quoted from either place reads the same way.
+        for it, cell, vid, baud, why in fails[:80]:
+            print('  %-10s %-6s %8s Bd  %s' % ('L%sC%s' % (it, cell), vid, baud, why[:100]))
     bad = nfail + nnodec
     print()
     if bad:
