@@ -250,7 +250,11 @@ class DMM:
         cycle is never needed.
         """
         try:
-            self.q('display.lightstate = display.STATE_LCD_100', timeout=20)
+            # 25 %, NEVER 100. The operator's standing instruction is that this panel's backlight is
+            # never set above 30 %, and the firmware's only steps are 100/75/50/25 -- so 25 is the one
+            # this may use. It used to restore 100, which meant every tool that closed with
+            # restore=True turned the lights back up on an instrument left running overnight.
+            self.q('display.lightstate = display.STATE_LCD_25', timeout=20)
             self.q('display.changescreen(display.SCREEN_HOME)', timeout=20)
         except Exception:
             pass

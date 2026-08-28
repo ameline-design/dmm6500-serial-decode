@@ -48,10 +48,16 @@ function bsdg.open()
   if bsdg.id ~= nil then return true end
   local ok, err = pcall(function()
     tspnet.timeout = bsdg.timeout
-    -- NO initString. tspnet.connect's third argument is sent to the device on connect, and the
-    -- manual's own example sends *rst -- which on this generator would drop the output and the
-    -- loaded waveform mid-soak. There is nothing this side needs to say on connect.
-    bsdg.id = tspnet.connect(bsdg.ip, bsdg.port, nil)
+    -- AN EMPTY initString, WHICH IS NOT THE SAME AS NONE. The manual's non-TSP procedure gives
+    -- tspnet.connect(ip, port, initString) and the argument is not optional in practice: measured on
+    -- this instrument, both tspnet.connect(ip, port) and tspnet.connect(ip, port, nil) return NIL
+    -- WITHOUT RAISING, while tspnet.connect(ip, port, '') returns a handle. A silent nil is the worst
+    -- shape that failure could take -- it cost a full 86-cell run that parked itself with
+    -- 'connect failed: nil' after 20 cells, which is the give-up path working correctly on a bug.
+    --
+    -- EMPTY RATHER THAN THE MANUAL'S EXAMPLE, which sends *rst: on this generator that would drop the
+    -- output and the loaded waveform mid-soak. There is nothing this side needs to say on connect.
+    bsdg.id = tspnet.connect(bsdg.ip, bsdg.port, '')
     -- PER CONNECTION, not once: the manual states the termination has to be set after every
     -- connect. Siglent replies are CRLF-terminated.
     tspnet.termination(bsdg.id, tspnet.TERM_CRLF)
@@ -186,8 +192,13 @@ end
 -- ARWV? IS THE AUTHORITATIVE CHECK that the file was readable, because a file the generator cannot
 -- open leaves the PREVIOUS waveform selected -- so a reply naming the old vector is the failure
 -- signature, and it is indistinguishable from success unless the reply is actually compared.
-function bsdg.select(id, amp, ofst, srate)
-  if id == nil then return false, 'no vector id' end
+-- `name` IS THE GENERATOR'S STORED WAVEFORM NAME, e.g. SER_Fox_8N1_x10, exactly the string
+-- tools/siglent.py's select_arb sends -- not a local vector id and not a path. A name with a slash in
+-- it is a file on the key (U-disk0/v94.bin) and is quoted; a bare stored name is not, which is how the
+-- host sends it. Getting this wrong is silent: ARWV NAME with an unknown name does nothing and the
+-- previous waveform keeps playing, which is why the reply is compared below.
+function bsdg.select(name, amp, ofst, srate)
+  if name == nil or name == '' then return false, 'no waveform name' end
   if amp == nil or amp <= 0 or amp > bsdg.maxvpp then
     return false, string.format('amplitude %s Vpp is outside 0..%.1f', tostring(amp), bsdg.maxvpp)
   end
@@ -195,13 +206,32 @@ function bsdg.select(id, amp, ofst, srate)
     return false, string.format('sample rate %s is outside %g..%g', tostring(srate),
                                 bsdg.minsrate, bsdg.maxsrate)
   end
-  if not bsdg.cmd(string.format('C1:ARWV NAME,"U-disk0/%s.bin"', id)) then return false, bsdg.why end
-  -- Compared, not assumed. The name in the reply has no .bin on it.
-  local r = bsdg.ask('C1:ARWV?')
+  local sel = name
+  if string.find(name, '/', 1, true) ~= nil then sel = '"' .. name .. '"' end
+  if not bsdg.cmd('C1:ARWV NAME,' .. sel) then return false, bsdg.why end
+  -- Compared, not assumed. A file on the key answers without its .bin, so the comparison is against
+  -- the name with any path and extension stripped.
+  local want = string.gsub(name, '^.*/', '')
+  want = string.gsub(want, '%.bin$', '')
+  -- THREE TRIES FOR THE REPLY, HALF A SECOND APART, for the same measured reason bsdg.truearb has them:
+  -- selecting a waveform makes this generator briefly stop answering, and a single timeout is not
+  -- evidence that the selection failed. It is evidence about the query. MEASURED: 15 of 86 cells in one
+  -- lap were thrown away on 'no reply to C1:ARWV? within 5 s' from a generator that was working -- 17 %
+  -- of a run, recorded as stimulus failures, on an instrument nobody could power cycle.
+  --
+  -- ONLY A MISSING REPLY IS RETRIED. A reply that arrives naming the WRONG waveform is a different fact
+  -- and fails immediately: the name was not accepted, the previous waveform is still playing, and waiting
+  -- longer cannot change that.
+  local r, tries = nil, nil
+  for tries = 1, 3 do
+    r = bsdg.ask('C1:ARWV?')
+    if r ~= nil then break end
+    delay(0.5)
+  end
   if r == nil then return false, bsdg.why end
-  if string.find(string.upper(r), string.upper(id), 1, true) == nil then
-    return false, string.format('ARWV? still names %s after selecting %s -- the generator could not '
-                                .. 'read the file off the key', tostring(r), id)
+  if string.find(string.upper(r), string.upper(want), 1, true) == nil then
+    return false, string.format('ARWV? still names %s after selecting %s -- the generator does not '
+                                .. 'have that waveform', tostring(r), name)
   end
   if not bsdg.cmd(string.format('C1:BSWV AMP,%.4f,OFST,%.4f', amp, ofst or 0)) then
     return false, bsdg.why

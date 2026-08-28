@@ -41,6 +41,10 @@ display = {
   EVENT_PRESS = 'press', EVENT_ENDAPP = 'endapp',
   FONT_SMALL = 1, FONT_MEDIUM = 2,
   JUST_LEFT = 0, JUST_CENTER = 1, JUST_RIGHT = 2,
+  -- The backlight states the firmware has, and only those: a soak dims the panel for the days it
+  -- runs, and there is no value between 25 and 50.
+  STATE_LCD_100 = 'lcd100', STATE_LCD_75 = 'lcd75', STATE_LCD_50 = 'lcd50',
+  STATE_LCD_25 = 'lcd25', STATE_LCD_OFF = 'lcdoff', STATE_BLACKOUT = 'blackout',
   NFORMAT_PREFIX = 1, TIMER_FOREVER = -1,
   -- setfill's optional third argument. PRESENT HERE ONLY BECAUSE THE REFERENCE LISTS IT: the app
   -- reads display.FILL_RIGHT rather than assuming it, since buffer.FILL_CONTINUOUS is documented
@@ -180,7 +184,49 @@ function display.changescreen(h)
   display.active = h
 end
 
+-- THE FIRMWARE'S OWN TWO TEXT LINES, which are NOT created objects. display.TEXT1 and TEXT2 belong to
+-- the USER swipe screen and always exist, so settext on them costs no object id -- which is the whole
+-- reason a long soak uses them for its progress line instead of display.create. Modelled here because
+-- without the constants a caller's settext(display.TEXT1, ...) passes nil to use() and does nothing:
+-- the call would be inert offline and correct on the instrument, or the reverse, with no test able to
+-- tell. MD.usertext() reads them back.
+display.TEXT1, display.TEXT2 = 'usertext1', 'usertext2'
+display.SCREEN_USER_SWIPE = 'user_swipe'
+local USERTEXT = {}
+-- THE FIRMWARE'S LENGTH LIMITS, AND WHAT IT CHARGES FOR EXCEEDING THEM. The reference manual on
+-- display.settext(): TEXT1 takes "up to 20 characters", TEXT2 "up to 32", and "if you enter too many
+-- characters, the instrument displays a warning event and shortens the message to fit". So an over-long
+-- line is not a harmless clip on an instrument whose one inviolable rule is that it never puts a message
+-- in front of anybody -- it is a box on the panel, once per write, which for a soak means once per cell
+-- for as long as the run lasts.
+--
+-- MODELLED HERE RATHER THAN LEFT TO THE INSTRUMENT TO REVEAL, because this is precisely the class of bug
+-- the bench engine keeps being bitten by: a mock that accepts anything agrees with the code it was
+-- written after. The first soak panel line was 21 characters and no offline test could say so.
+--
+-- THE EVENT NUMBER IS NOT MODELLED, because the manual does not give one and nothing has measured it.
+-- The count is the property under test, so it is posted through eventlog.post() -- which the run's own
+-- watchdog reads -- without asserting a code this project has never seen.
+local USERLIM = {}
+USERLIM[display.TEXT1] = 20
+USERLIM[display.TEXT2] = 32
+function MD.usertext(which) return USERTEXT[which or display.TEXT1] end
+function MD.usertext_sets(which) return (USERTEXT[(which or display.TEXT1) .. ':n'] or 0) end
+function MD.usertext_over(which) return (USERTEXT[(which or display.TEXT1) .. ':over'] or 0) end
+function MD.usertext_lim(which) return USERLIM[which or display.TEXT1] end
+
 function display.settext(h, s)
+  if h == display.TEXT1 or h == display.TEXT2 then
+    local t = tostring(s)
+    if string.len(t) > USERLIM[h] then
+      USERTEXT[h .. ':over'] = (USERTEXT[h .. ':over'] or 0) + 1
+      if eventlog ~= nil and eventlog.post ~= nil then eventlog.post() end
+      t = string.sub(t, 1, USERLIM[h])       -- "shortens the message to fit"
+    end
+    USERTEXT[h] = t
+    USERTEXT[h .. ':n'] = (USERTEXT[h .. ':n'] or 0) + 1
+    return
+  end
   local o = use(h, 'settext')
   o.text = s
   o.sets = (o.sets or 0) + 1     -- counted, so tests can assert refresh traffic

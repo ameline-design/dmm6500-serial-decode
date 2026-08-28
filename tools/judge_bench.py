@@ -49,10 +49,44 @@ def payloads(vid):
     return BM.plan_payloads(vid)
 
 
+def split_runs(lines):
+    """-> [(tag, [lines])], one entry per RUN in the file, in the order they were written.
+
+    ONE FILE HOLDS MANY RUNS, and that is by design rather than by accident: the record is a single fixed
+    filename opened for append, because a numbered name means probing candidates for a free one and a
+    probe that misses posts event 2205 -- a box on the panel of an instrument that must never show one.
+    bench_rec.tsp therefore separates runs by their header line, and this is the reader that honours it.
+
+    Judging the whole file instead merges a smoke into a soak: the counts add up, no error is raised, and
+    the verdict is about a mixture nobody ran. That is exactly the kind of quietly-wrong answer this
+    project keeps finding, so the default is the LAST run and everything else takes a flag.
+
+    A 'tag=roll' header is a CONTINUATION, not a new run: brec.roll writes one when a single run passes
+    the per-file byte cap, and its rows belong to the run above it.
+    """
+    runs, cur = [], None
+    for ln in lines:
+        if ln.startswith('#') and SCHEMA in ln:
+            tag = 'unnamed'
+            for part in ln.split():
+                if part.startswith('tag='):
+                    tag = part[4:]
+            if tag == 'roll' and cur is not None:
+                continue                      # same run, next file
+            cur = (tag, [])
+            runs.append(cur)
+            continue
+        if cur is not None:
+            cur[1].append(ln)
+    return runs
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('path')
     ap.add_argument('--verbose', action='store_true', help='one line per failing cell')
+    ap.add_argument('--run', default=None,
+                    help='which run in the file: a 1-based index, a tag, or "all" to merge them')
     a = ap.parse_args()
 
     with open(a.path) as f:
@@ -65,6 +99,34 @@ def main():
         raise SystemExit('REFUSING: %s does not declare schema %s in a header line. Its columns cannot '
                          'be trusted to be the ones this tool reads.' % (a.path, SCHEMA))
 
+    runs = split_runs(lines)
+    print('%s holds %d run(s):' % (a.path, len(runs)))
+    for i, (tag, body) in enumerate(runs):
+        print('  %d  tag=%-10s %5d result row(s)'
+              % (i + 1, tag, len([x for x in body if x.startswith('R,')])))
+    if a.run is None or a.run == 'last':
+        chosen = [runs[-1]] if runs else []
+    elif a.run == 'all':
+        chosen = runs
+    elif a.run.isdigit() and 1 <= int(a.run) <= len(runs):
+        chosen = [runs[int(a.run) - 1]]
+    else:
+        chosen = [r for r in runs if r[0] == a.run]
+        if not chosen:
+            raise SystemExit('REFUSING: no run in %s matches %r. The runs above are what it holds.'
+                             % (a.path, a.run))
+    print('  judging: %s' % ', '.join('%s (%d rows)'
+                                      % (t, len([x for x in b if x.startswith('R,')]))
+                                      for t, b in chosen))
+    lines = []
+    for _, body in chosen:
+        lines.extend(body)
+    # ONLY THE FILE'S LAST ROW MAY BE TORN. A power cycle is the stop button, so the final write can be
+    # half-finished -- but a short row in the MIDDLE of the file means something else went wrong, and
+    # excusing it would hide that. When an earlier run is selected, its last row is followed by more data,
+    # so nothing here is allowed to be short.
+    torn_ok = lines[-1] if (chosen and runs and chosen[-1] is runs[-1] and lines) else None
+
     rrows, srows = [], []
     for ln in lines:
         if ln.startswith('#'):
@@ -74,7 +136,7 @@ def main():
             if len(f) - 1 < len(RCOLS):
                 # A TORN LAST LINE IS EXPECTED, not an error: a power cycle is the stop button, so the
                 # final row can be half-written. Anything earlier is a real problem and says so.
-                if ln is lines[-1]:
+                if ln is torn_ok:
                     print('note: the last row is short (%d of %d fields) -- consistent with the power '
                           'being cut mid-write, which is how a run ends' % (len(f) - 1, len(RCOLS)))
                     continue

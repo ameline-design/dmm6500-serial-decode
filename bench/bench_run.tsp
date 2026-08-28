@@ -35,12 +35,58 @@ brun.nwrap    = 0        -- times the plan file has been re-read from the start
 brun.ncell    = 0        -- cells attempted this run
 brun.nbadsdg  = 0        -- consecutive generator failures
 brun.stopwhy  = nil
+brun.stopbad  = false   -- did it park because something is wrong, or finish what it was asked?
 
 -- HOW MANY GENERATOR FAILURES IN A ROW BEFORE PARKING. With nobody to power cycle the SDG, a wedged
 -- generator means every remaining cell is stimulus-free -- and thousands of rows recording "no bytes"
 -- against a dead wire would read, to anyone judging later, exactly like a decoder that had collapsed.
 -- Better to stop with a reason on the key than to fill it with evidence for a false conclusion.
 brun.maxsdgfail = brun.maxsdgfail or 20
+
+-- HOW OFTEN THE STOP FILE IS LOOKED FOR, in cells. Not every cell, and the reason is measured: any
+-- look at a file or directory that is not readable POSTS AN EVENT -- 2201 'File read error' for the
+-- directory read, 2205 'File not found' for a missing file -- and at one per cell that is 86 events in
+-- a smoke and about 1.4 million across eight days. The power cycle is the documented way to end a run;
+-- the stop file is a convenience, and a convenience does not get to spend an event per cell. At 200
+-- cells this is roughly one look every 20 minutes.
+brun.stopevery = brun.stopevery or 0     -- 0 = never look; see the note in the loop
+
+-- A HARD CEILING ON CELLS, 0 MEANING NONE, AND IT IS FOR THE OFFLINE SUITE. An indefinite run is
+-- stopped by cutting the power, which a test cannot do -- so a test drives brun.soak(0) and arranges for
+-- something to end it. When the thing that was supposed to end it does not, the loop does not fail: it
+-- spins, and a suite that spins until something kills it reports through a pipeline as exit 0, which
+-- reads exactly like a pass. That happened here: the stop-file test drove an indefinite run after the
+-- stop-file check had been switched off by default, and the suite looked green while never reaching its
+-- last third. A cap turns that hang into an assertion.
+brun.maxcell = brun.maxcell or 0
+
+-- HOW MANY MEASUREMENT COLUMNS A RESULT ROW CARRIES between the plan's nine and the 'why' text: fs,
+-- sa_bit, ran, read_baud, fmt, nf, ngood, nbad, nflag, headsusp, snapped, snapfirm. Named because a
+-- stimulus-free cell has to write that many empty ones, and counting commas in a format string is how
+-- a 22-field row got into a 23-field schema. bench_rec.tsp's header is the declaration; this is the
+-- number the rows are built from, and test_bench_engine.lua checks the two against each other.
+brun.nmeascol = 12
+
+-- THE EVENT WATCHDOG, and it exists because getting this right by inspection FAILED. A single wrong
+-- argument in brun.announce -- tspnet.connect's initString, nil where a string is required -- turned
+-- every cell into an event 1138 on the panel, 1677 of them across a lap, on an instrument whose one
+-- inviolable rule is that it never puts a message in front of anybody. Nothing detected it; a human
+-- watching the front panel did.
+--
+-- So the loop now watches its OWN event count instead of trusting that every call it makes is quiet.
+-- brun.point already clears the log and reads the count back per cell, which is exactly the measurement
+-- needed: if cells keep posting events, the optional machinery is switched off in order -- the progress
+-- push first, since it is a convenience -- and the reason is written to the key. A run that goes quiet
+-- and says why beats a run that is right in principle.
+brun.evbudget = brun.evbudget or 3      -- events per cell above which a cell counts as noisy
+brun.evstreak = brun.evstreak or 5      -- consecutive noisy cells before shedding a subsystem
+brun.nevstreak = 0
+brun.evshed = nil                       -- what was switched off, for the record
+-- THE RUN TOTAL, reported when the run ends. The per-cell count is what the watchdog acts on; this is
+-- the number that answers the only question that matters for an unattended instrument -- did the run put
+-- anything in front of anybody -- and it has to be a single figure, not something a reader totals by
+-- hand from a thousand rows.
+brun.nevtot = 0
 
 -- ---------------------------------------------------------------------------
 -- The plan file
@@ -62,12 +108,19 @@ function brun.split(s)
   return out, n
 end
 
+-- THE ROW COUNT COMES OUT OF THE HEADER, so the loop never reads past the end of the file. Reading
+-- past EOF posts event 2201 -- 'File read error' -- which is a popup on the panel, once per pass. It is
+-- a comment line of the form '# rows=N' written by soakplan.py --emit-csv.
+brun.planrows = 0
+brun.planread = 0
+
 function brun.planopen()
   brun.planclose()
   local fh = nil
   pcall(function() fh = file.open(brun.planpath, file.MODE_READ) end)
   if fh == nil then return false, 'cannot open ' .. brun.planpath end
   brun.pfh = fh
+  brun.planread = 0
   return true
 end
 
@@ -83,22 +136,39 @@ end
 -- the key pulled mid-line -- must not leave the handle open, because the allocator then cannot reuse it.
 function brun.nextrow()
   if brun.pfh == nil then return nil end
+  -- STOP AT THE DECLARED COUNT rather than at EOF, for the event reason above. A plan with no rows=
+  -- header falls back to reading until EOF, which still works and costs one event per pass.
+  if brun.planrows > 0 and brun.planread >= brun.planrows then return nil end
   local ln = nil
   local ok = pcall(function() ln = file.read(brun.pfh, file.READ_LINE) end)
   if not ok then brun.planclose(); return nil end
   if ln == nil or ln == '' then return nil end
   ln = string.gsub(ln, '[\r\n]', '')
   if ln == '' then return brun.nextrow() end
-  if string.sub(ln, 1, 1) == '#' then return brun.nextrow() end
+  if string.sub(ln, 1, 1) == '#' then
+    -- string.find WITH A CAPTURE, because 5.0.2 HAS NO string.match. It returns the two indices first
+    -- and the captures after them. This is the same trap as math.fmod: the host Lua has string.match, so
+    -- a module using it passes every offline suite and then dies on the instrument -- measured, '-286
+    -- attempt to call field `match`' killed an 86-cell run at its first plan line. tools/lint_tsp.py
+    -- now refuses both names.
+    local _, _, n = string.find(ln, 'rows=(%d+)')
+    if n ~= nil then brun.planrows = tonumber(n) end
+    return brun.nextrow()
+  end
   local f, nf = brun.split(ln)
-  -- iter,cell,vid,baud,kind,amp_vpp,ofst_v,srate,wait_ms -- nine fields. A row with fewer is a
+  -- iter,cell,vid,arb,baud,kind,amp_vpp,ofst_v,srate,wait_ms -- ten fields. A row with fewer is a
   -- truncated or foreign file, and guessing at the missing ones would drive the generator from
   -- whatever happened to be in the next column.
-  if nf < 9 then return brun.nextrow() end
-  if tonumber(f[1]) == nil or tonumber(f[4]) == nil then return brun.nextrow() end
-  return {iter = tonumber(f[1]), cell = tonumber(f[2]), vid = f[3], baud = tonumber(f[4]),
-          kind = f[5], amp = tonumber(f[6]), ofst = tonumber(f[7]),
-          srate = tonumber(f[8]), wait = tonumber(f[9])}
+  --
+  -- `arb` IS THE GENERATOR'S OWN NAME and is not derived from `vid`. ARWV NAME takes a stored
+  -- waveform's name; a local id sent instead does nothing at all and the PREVIOUS waveform keeps
+  -- playing, so the cell would be measured against the wrong stimulus and recorded as this one.
+  if nf < 10 then return brun.nextrow() end
+  if tonumber(f[1]) == nil or tonumber(f[5]) == nil then return brun.nextrow() end
+  brun.planread = brun.planread + 1
+  return {iter = tonumber(f[1]), cell = tonumber(f[2]), vid = f[3], arb = f[4],
+          baud = tonumber(f[5]), kind = f[6], amp = tonumber(f[7]), ofst = tonumber(f[8]),
+          srate = tonumber(f[9]), wait = tonumber(f[10])}
 end
 
 -- ---------------------------------------------------------------------------
@@ -113,7 +183,19 @@ function brun.point(fs, baud, lock)
   sdec.force_par, sdec.force_nstop, sdec.force_invert = nil, nil, nil
   if lock then sdec.force_baud = baud end
   sdec.fs = fs
-  sdec.trigmode = sdec.trigmode or 'edge'
+  -- FREE-RUN, NOT EDGE-ARMED, and this is a requirement rather than a preference: the analog-trigger
+  -- path goes through trigger.model, which posts 2731 'path initiated' and 2732 'path idled' on EVERY
+  -- capture -- two events a cell, 3354 across a lap, on an instrument that must never put anything in
+  -- front of an operator. Suppressing them is not enough because localnode.showevents governs the
+  -- REMOTE interface only (serial_app.tsp says so where it declines to mute); the events must not be
+  -- instigated at all. Measured with trigmode 'free': 8 cells, 0 events, no codes at all.
+  --
+  -- WHAT IT COSTS, stated because it is a real difference from the host bench: a free-run capture is not
+  -- armed on a start-bit edge, so it opens at an arbitrary phase of the arb. For a soak that is closer
+  -- to harmless than it sounds -- the plan already draws a per-cell wait precisely to randomise phase,
+  -- and the offline twin samples eight phases per cell for the same reason -- but head alignment is not
+  -- comparable with an edge-armed bench capture, and a judge must not read it as though it were.
+  sdec.trigmode = 'free'
 
   local ok, why = false, nil
   local okc = pcall(function() ok, why = sdec.acquire() end)
@@ -196,6 +278,440 @@ function brun.hex(res)
 end
 
 -- ---------------------------------------------------------------------------
+-- What the front panel says
+-- ---------------------------------------------------------------------------
+-- SO SOMEONE WALKING PAST CAN SEE IT IS ALIVE, and how it is doing. A soak that runs headless leaves
+-- the panel showing whatever was there before, which is indistinguishable from a wedged instrument --
+-- and the announce push only helps someone with a listener running. Two lines, six facts:
+--
+--     L3#412 F12 0.7%              lap, cell, failed cells, fail rate
+--     v77 9600 8N1 Fox             vector, baud, frame format, waveform
+--
+-- display.settext ON THE USER SWIPE SCREEN, NOT display.create. Object ids are never reclaimed on this
+-- instrument, so creating a text object per cell would exhaust them; settext writes into the two lines
+-- the firmware already owns, so a lap costs no objects at all. serial_app.tsp uses the same call for
+-- its own progress row, at about the same rate.
+--
+-- THE LENGTH LIMITS ARE A POPUP, NOT A CLIP, and that is the whole reason these lines are built by
+-- measurement rather than by eye. The reference manual is explicit: TEXT1 holds up to 20 characters and
+-- TEXT2 up to 32, and "if you enter too many characters, the instrument displays a warning event and
+-- shortens the message to fit". A warning event is a box on the panel of an instrument that must never
+-- put one in front of anybody -- so an over-long line is not cosmetic, it is the failure. The first
+-- version of this line was 'SOAK 1  cell 412/1677', which is 21 characters: one over, once per cell,
+-- for eight days. tools/mock_display.lua now enforces both limits so the offline suite says so, and
+-- test_bench_engine.lua asserts the widest possible line of each kind still fits.
+--
+-- AND THE PANEL CANNOT HIDE ITS OWN EVENTS. brun.point clears the log at the top of every cell, so
+-- anything this posts is wiped before the run's own event count is read -- the watchdog would never see
+-- it. So the count is taken around the two writes here and added to the run total directly.
+brun.panellim1 = 20      -- TEXT1, characters. Firmware limit, not a style choice.
+brun.panellim2 = 32      -- TEXT2
+-- AND THE CUSTOM SCREEN'S OWN BUDGET, in characters at FONT_MEDIUM: ~13.4 px an advance into about 780
+-- usable px. Nothing enforces this -- the firmware just draws past the edge and the far end of the line
+-- is gone -- so it is a number every line here is written against and a test checks each of them at its
+-- widest. The first version of the alarm lines were 66 to 90 characters, which clipped away the half
+-- that said what to DO: 'GENERATOR SILENT for 5 cell(s) -- nothing is on the wire. Power cycle the SDG
+-- and restart.' rendered as far as 'nothing is on the'.
+brun.panelw = 58
+
+-- THE BACKLIGHT, DIMMED FOR THE DURATION OF A RUN. An unattended soak leaves one screen lit for days,
+-- and this panel's backlight has a finite life it does not need to spend on a room with nobody in it.
+--
+-- 25 %, BECAUSE THE FIRMWARE HAS NO 30. display.lightstate takes STATE_LCD_100, _75, _50, _25, _OFF or
+-- BLACKOUT and nothing between them, so a request for 30 % lands on 25. Not restored at the end: a run
+-- that finishes at four in the morning should not turn the lights back up.
+--
+-- nil IF THE CONSTANT IS NOT THERE. The offline mock need not carry every display constant, and a nil
+-- assigned to lightstate would be an event on the panel rather than a dim screen.
+brun.backlight = brun.backlight or display.STATE_LCD_25
+brun.nevpanel = 0
+
+-- CLIPPED HERE RATHER THAN BY THE FIRMWARE, because the firmware charges an event for the service.
+-- Every caller below is width-checked by a test, so reaching this is already a bug; it exists so that
+-- the bug is a shortened line instead of a message on the screen.
+function brun.fit(s, lim)
+  local t = tostring(s or '')
+  if string.len(t) <= lim then return t end
+  return string.sub(t, 1, lim)
+end
+
+function brun.settext(l1, l2)
+  local n0 = brun.eventcount()
+  pcall(function()
+    display.settext(display.TEXT1, brun.fit(l1, brun.panellim1))
+    display.settext(display.TEXT2, brun.fit(l2, brun.panellim2))
+  end)
+  local d = brun.eventcount() - n0
+  if d > 0 then
+    brun.nevpanel = brun.nevpanel + d
+    brun.nevtot = brun.nevtot + d
+  end
+end
+
+-- THE FRAME FORMAT OF THE STIMULUS, read out of the generator's own name for the waveform -- which is
+-- where this project records it and the only place it exists: vector_names.py carries no format column,
+-- and docs/VECTORS.md says the name is what distinguishes v44e (8N2) from v41 (8N1). It is the STIMULUS
+-- format, not what the decoder read: the panel says what is being played, and whether the app agreed is
+-- a question for the record. Six vectors have no format token in their name -- the three LIN frames and
+-- the three jitter waveforms -- and they get an empty string rather than a guess.
+function brun.fmtof(arb)
+  if arb == nil then return '' end
+  local _, _, f = string.find(arb, '_(%d[NEO]%d)_')
+  if f == nil then return '' end
+  return f
+end
+
+-- THE WAVEFORM, MINUS THE BOILERPLATE EVERY NAME CARRIES. All 41 begin 'SER_' and end '_x10' or
+-- '_x100', so those characters distinguish nothing on a 32-character line; the format token is dropped
+-- too because it is printed as its own field beside it. 'SER_Hello_8N1_Drift10_x10' -> 'Hello_Drift10',
+-- which is 13 characters instead of 25 and is what makes the whole line fit at 153600 baud.
+function brun.wave(arb)
+  if arb == nil or arb == '' then return '?' end
+  local s = string.gsub(arb, '^SER_', '')
+  s = string.gsub(s, '_x%d+$', '')
+  local f = brun.fmtof(arb)
+  if f ~= '' then
+    s = string.gsub(s, '_' .. f .. '_', '_')
+    s = string.gsub(s, '_' .. f .. '$', '')
+  end
+  return s
+end
+
+-- FAILED CELLS AS A PERCENTAGE OF CELLS RUN. One decimal below 10 % and none above, so the field is
+-- never wider than four characters -- '0.0%' through '9.9%', then '10%' to '100%'.
+--
+-- %.0f AND NOT %d, because the offline twin runs on a modern Lua where string.format('%d', 12.5) is an
+-- error rather than a truncation. This is the mirror image of the math.mod trap: a construct the
+-- instrument accepts and the host refuses.
+function brun.pct(nbad, ncell)
+  local n = ncell or 0
+  if n < 1 then return '0%' end
+  local p = 100.0 * (nbad or 0) / n
+  if p >= 9.95 then return string.format('%.0f%%', p) end
+  return string.format('%.1f%%', p)
+end
+
+-- WHAT COUNTS AS A FAILURE HERE: a cell that produced no decode -- no stimulus, a refused acquire, or
+-- 'no frame fits'. It is deliberately NOT a byte-level verdict: whether the bytes were right is decided
+-- by tools/judge_bench.py against the oracle, off the key, and 0.0 % on this screen does not mean every
+-- byte was correct. It means every cell came back with something.
+function brun.screen(c, arb)
+  if brun.ui ~= nil then brun.ui_show(c, arb) end
+  brun.settext(string.format('L%s#%s F%s %s',
+                             brun.int(c.iter), brun.int(c.cell), brun.int(brun.nbad),
+                             brun.pct(brun.nbad, brun.ncell)),
+               brun.cellline(c, arb))
+end
+
+-- ---------------------------------------------------------------------------
+-- The status screen
+-- ---------------------------------------------------------------------------
+-- WHY A SCREEN OF ITS OWN, when the USER swipe screen already carries two lines. Because those lines
+-- hold 20 and 32 characters and the questions an unattended run has to answer do not fit in 52: which
+-- lap of how many, how far through it, how long it has run and how much longer, what is playing, how
+-- many cells have failed both overall and for THIS vector, and -- the one no character count can carry --
+-- whether what has gone wrong is worth walking over to fix. display.create takes a FONT, so a screen
+-- built here gets FONT_SMALL's 8 px advance and about ninety characters a line, and it gets COLOUR.
+--
+-- SIX OBJECTS, CREATED ONCE. Display object ids are never reclaimed on this firmware -- display.create
+-- returns nil when the pool is exhausted, posts event 1701 the first time only, and is silent after
+-- that -- so a text object per cell would walk the instrument into that state inside one lap. These are
+-- built at the start of a run and only ever settext'd and setcolor'd afterwards, which costs nothing.
+-- serial_ui.tsp's ui_build makes the same trade for the same reason and its comment explains the panic
+-- this avoids.
+--
+-- AND THE SWIPE LINES ARE STILL WRITTEN. If the pool is exhausted, or display.create is not there at
+-- all, brun.settext is the fallback and the run still says where it is. A status display is not worth
+-- risking a run over.
+brun.c_lab  = (sdec ~= nil and sdec.ui_c_lab) or 0xA8A8A8       -- grey: labels
+brun.c_val  = (sdec ~= nil and sdec.ui_c_data) or 0xFFFFFF      -- white: values
+-- THE PANEL'S OWN BLUE FOR 'NOTHING TO SEE HERE', which is what the rest of this instrument's
+-- chrome uses for a live value (serial_ui.tsp's BAUD and FORMAT cells are the same constant).
+-- Green would be a third signal competing with amber and red; the point of the colour here is
+-- that ONLY a colour change means anything.
+brun.c_ok   = (sdec ~= nil and sdec.ui_c_sb_on) or 0x00DCFF     -- the panel blue
+brun.c_warn = (sdec ~= nil and sdec.ui_c_warn) or 0xFFC000      -- amber
+brun.c_bad  = (sdec ~= nil and sdec.ui_c_err) or 0xFF6060       -- red
+brun.ui = nil
+
+-- HOW BAD IS BAD ENOUGH TO GO RED. The colour is a claim about whether someone should intervene, so
+-- these are the thresholds that claim is made on, named rather than buried in the comparison.
+-- THE RATE THESE APPLY TO IS THE UNEXPECTED ONE, not every refusal, and the difference is most of the
+-- number: about a third of a healthy lap produces no result because the plan asks seven vectors to
+-- decode signals where refusing is correct. Judging the raw rate showed 20 % on a working instrument and
+-- called it amber, which is crying wolf on the one screen that must not.
+--
+-- WHERE THE NUMBERS COME FROM, so the next person can move them with evidence rather than taste. Two
+-- measurements exist: one full lap through the offline twin gave 23 % unexpected (the offline model is
+-- the pessimistic one -- issue #46 is most of it), and 41 hardware cells gave 10 %. So amber sits above
+-- the hardware figure and red well above the offline one; anything under 20 % is within what both have
+-- already produced while working. THESE ARE PROVISIONAL: the first complete hardware lap is what should
+-- set them, and until one exists they are deliberately loose rather than falsely precise.
+brun.warnrate = brun.warnrate or 20      -- % of cells refusing UNEXPECTEDLY: amber above this
+brun.badrate  = brun.badrate  or 40      -- and red above this
+brun.raten    = brun.raten    or 50      -- but neither before this many cells have run
+brun.badsdgwarn = brun.badsdgwarn or 3   -- consecutive generator failures that mean the stimulus is gone
+
+function brun.ui_destroy()
+  if brun.ui == nil then return end
+  local u, k = brun.ui, nil
+  -- IN REVERSE CREATION ORDER, children before the screen, and each handle visited EXACTLY ONCE.
+  -- sdec.del_obj is not idempotent: a second delete of the same handle is refused, and a refused handle
+  -- goes on sdec.orphans, where it looks like a leaked object and blocks the next rebuild.
+  for k = u.n, 1, -1 do
+    if sdec ~= nil and sdec.del_obj ~= nil then
+      pcall(function() sdec.del_obj(u.all[k]) end)
+    else
+      pcall(function() display.delete(u.all[k]) end)
+    end
+    u.all[k] = nil
+  end
+  brun.ui = nil
+end
+
+function brun.ui_build()
+  brun.ui_destroy()
+  if display == nil or display.create == nil then return false end
+  local u = {all = {}, n = 0}
+  local ok = pcall(function()
+    -- FONT_MEDIUM, not SMALL. FONT_SMALL advances 8 px and MEDIUM about 13.4 (both measured, see
+    -- serial_ui.tsp's note on the panel grid), so a 780 px line holds ~97 characters small and ~58
+    -- medium. Every line below is written to fit the 58, which is why the waveform's short form was
+    -- dropped from the stimulus line -- the generator's full name is there and says the same thing.
+    local create, small, left = display.create, display.FONT_MEDIUM, display.JUST_LEFT
+    local function add(h)
+      -- display.create RETURNS NIL ON AN EXHAUSTED POOL, silently after the first time. A nil parent
+      -- then makes every child nil too and the whole screen is inert with nothing said, so it is caught
+      -- at the first one.
+      if h == nil then error('display object pool exhausted', 0) end
+      u.n = u.n + 1
+      u.all[u.n] = h
+      return h
+    end
+    u.scr  = add(create(display.ROOT, display.OBJ_SCREEN, 'SERIAL DECODE SOAK'))
+    -- THE HEADLINE FIRST, because it is the one line that answers the question from across the room.
+    -- FONT_MEDIUM is the largest this firmware has -- the reference lists FONT_SMALL and FONT_MEDIUM and
+    -- nothing else -- so it is emphasised by position and colour rather than by size.
+    u.health = add(create(u.scr, display.OBJ_TEXT, 12, 20, 'SOAK HEALTH --', brun.c_ok, small, left))
+    u.prog = add(create(u.scr, display.OBJ_TEXT, 12, 58, '--', brun.c_val, small, left))
+    u.time = add(create(u.scr, display.OBJ_TEXT, 12, 92, '--', brun.c_lab, small, left))
+    u.stim = add(create(u.scr, display.OBJ_TEXT, 12, 126, '--', brun.c_val, small, left))
+    u.fail = add(create(u.scr, display.OBJ_TEXT, 12, 160, '--', brun.c_lab, small, left))
+    u.vfail = add(create(u.scr, display.OBJ_TEXT, 12, 194, '--', brun.c_lab, small, left))
+    u.note = add(create(u.scr, display.OBJ_TEXT, 12, 228, 'starting', brun.c_ok, small, left))
+  end)
+  if not ok then
+    brun.ui = u                    -- so ui_destroy frees whatever did get created
+    brun.ui_destroy()
+    return false
+  end
+  brun.ui = u
+  pcall(function() display.changescreen(u.scr) end)
+  return true
+end
+
+function brun.ui_set(h, txt, col)
+  if h == nil then return end
+  pcall(function() display.settext(h, txt) end)
+  if col ~= nil then pcall(function() display.setcolor(h, col) end) end
+end
+
+-- HOURS, NOT SECONDS, and '--' where it cannot be known. An indefinite run has no end to count down to,
+-- and a run that has finished no cells has no rate to extrapolate from -- printing 0.0 there would be a
+-- number standing in for an unknown, which is the kind of screen that gets believed.
+function brun.hours(sec)
+  if sec == nil or sec < 0 then return '--' end
+  return string.format('%.1f h', sec / 3600.0)
+end
+
+-- THE TRAFFIC LIGHT. It answers one question -- is this worth walking over for -- so every red is
+-- something a person has to do something about, and everything self-correcting is amber at worst.
+--
+-- RED: the run has parked, the generator has stopped answering for several cells in a row (its waveform
+-- is not on the wire, so every cell after this measures nothing), the record is no longer being written,
+-- something put an event in the log (which on this instrument means a box on the panel), or the no-decode
+-- rate has gone past brun.badrate over enough cells to mean it.
+-- AMBER: a generator hiccup that recovered, a rate above brun.warnrate, the progress push switched off.
+function brun.ui_status()
+  if brun.stopwhy ~= nil then
+    -- A RUN THAT FINISHED WHAT IT WAS ASKED TO DO IS NOT RED. Red is a request for someone to come and
+    -- fix something, so 'iterations complete' and 'STOP.TXT found' end blue while a parked generator or a
+    -- dead record end red. brun.stopbad is set at the break, where the reason is known, rather than
+    -- inferred here by matching on the text of a message.
+    -- THE REASON IS CLIPPED TO THE GLASS, and it is the only line here that has to be: a stop reason
+    -- can be as long as the generator's own error text. The full text is on the key, in the last S row.
+    if brun.stopbad then
+      return brun.c_bad, brun.fit('STOPPED: ' .. tostring(brun.stopwhy), brun.panelw)
+    end
+    return brun.c_ok, brun.fit('finished: ' .. tostring(brun.stopwhy), brun.panelw)
+  end
+  if brec ~= nil and brec.stopped then
+    return brun.c_bad, brun.fit('NOT RECORDING: ' .. tostring(brec.why), brun.panelw)
+  end
+  if brun.nbadsdg >= brun.badsdgwarn then
+    return brun.c_bad, string.format('GENERATOR SILENT %d cells -- power cycle the SDG',
+                                     brun.nbadsdg)
+  end
+  if brun.nevtot > 0 then
+    return brun.c_bad, string.format('%d EVENTS POSTED -- a message reached the panel',
+                                     brun.nevtot)
+  end
+  local rate = 0
+  if brun.ncell > 0 then rate = 100.0 * brun.nunexp / brun.ncell end
+  if brun.ncell >= brun.raten and rate > brun.badrate then
+    return brun.c_bad, string.format('%.0f %% refused unexpectedly -- check wiring, restart', rate)
+  end
+  if brun.ncell >= brun.raten and rate > brun.warnrate then
+    return brun.c_warn, string.format('%.0f %% refused unexpectedly -- worth watching', rate)
+  end
+  if brun.nsdgtot > 0 then
+    return brun.c_warn, string.format('generator missed %d cell(s) and recovered', brun.nsdgtot)
+  end
+  if brun.evshed ~= nil then
+    return brun.c_warn, brun.fit('the ' .. tostring(brun.evshed) .. ' was switched off',
+                                 brun.panelw)
+  end
+  -- AND THE ONE INSTRUCTION THE OPERATOR NEEDS. A stop control nobody knows about is not a stop control,
+  -- and this one is not where anybody would look: it is the TRIGGER key, not a button on the screen,
+  -- because a touch press cannot be read while a script runs.
+  if brun.keyarmed then
+    return brun.c_ok, 'Running -- press TRIGGER to stop and flush'
+  end
+  return brun.c_ok, 'running'
+end
+
+-- THE LAST THING THE SCREEN SAYS, and it has to keep saying it for days. The cell lines are left showing
+-- whatever ran last; the two that change are the totals and the verdict, because after six days away the
+-- questions are 'did it finish' and 'is anything wrong', in that order.
+function brun.ui_end()
+  local u = brun.ui
+  if u == nil then return end
+  local el = nil
+  if brun.t0 ~= nil then el = os.time() - brun.t0 end
+  brun.ui_set(u.time, 'ran ' .. brun.hours(el) .. '    ended    '
+                      .. brun.int(brun.ncell) .. ' cell(s) done', brun.c_lab)
+  -- THE BENIGN COUNT FIRST, AND ONLY ONE PERCENTAGE ON THE SCREEN. Leading with 'no result 82 of 412 =
+  -- 20 %' reads as a fifth of the run being broken, and it is not: most of those cells refused because
+  -- the plan asked them to decode something a correct decoder declines. Health above is the one figure
+  -- meant to be read as a verdict, so these two lines are counts -- what was allowed, what was not, out
+  -- of how many -- rather than a second, scarier percentage competing with it.
+  brun.ui_set(u.fail, string.format('allowed refusals %s    UNEXPECTED %s    of %s cells',
+                                    brun.int(brun.nexp), brun.int(brun.nunexp),
+                                    brun.int(brun.ncell)), brun.c_lab)
+  brun.ui_set(u.vfail, string.format('generator missed %s cell(s)', brun.int(brun.nsdgtot)),
+              brun.c_lab)
+  local hl, hcol = brun.healthline()
+  brun.ui_set(u.health, hl, hcol)
+  local col, msg = brun.ui_status()
+  brun.ui_set(u.note, msg, col)
+end
+
+-- ONE NUMBER FOR THE WHOLE RUN: the share of cells that behaved as they were supposed to. A cell counts
+-- as healthy if it decoded, OR if it refused on one of the vectors the plan allows to refuse. So 100 %
+-- means nothing unexpected has happened yet, and every point below it is a cell that came back empty when
+-- it should not have -- or a cell the generator never played at all.
+--
+-- WHAT IT DOES NOT MEAN, and this matters because a single percentage invites more trust than it has
+-- earned: it is not a claim that the BYTES were right. Nothing on the instrument judges bytes -- that is
+-- tools/judge_bench.py's job against the oracle, and doing it here would be a second judge, which is the
+-- failure this project keeps writing comments about. 100 % health means every cell produced the KIND of
+-- result it should have. Whether it produced the right one is decided off the key.
+function brun.health()
+  if brun.ncell == nil or brun.ncell < 1 then return 100.0 end
+  return 100.0 * (brun.ncell - brun.nunexp) / brun.ncell
+end
+
+-- BELOW THIS, THE HEADLINE GOES RED. Above it and under 100 it is amber: something unexpected has
+-- happened and the number says how much, which is the point of showing a number rather than a light.
+brun.healthbad = brun.healthbad or 60
+
+function brun.healthline()
+  local h = brun.health()
+  local col = brun.c_ok
+  if h < 100 then col = brun.c_warn end
+  if h < brun.healthbad then col = brun.c_bad end
+  -- AND THE HEADLINE NEVER LOOKS BETTER THAN THE DETAIL. A silent generator or an event on the panel is
+  -- red on the bottom line, and a health figure of 100 % above it would contradict that -- so the worse
+  -- of the two wins.
+  local ncol = brun.ui_status()
+  if ncol == brun.c_bad then col = brun.c_bad end
+  return string.format('SOAK HEALTH %.1f %%', h), col
+end
+
+function brun.ui_show(c, arb)
+  local u = brun.ui
+  if u == nil then return end
+  local vid = tostring(c.vid or '?')
+  local nlap = brun.planrows
+  local lap = 'lap ' .. brun.int(c.iter)
+  if brun.iterwant ~= nil and brun.iterwant > 0 then
+    lap = lap .. ' of ' .. brun.int(brun.iterwant)
+  end
+  local cell = 'cell ' .. brun.int(c.cell)
+  if nlap > 0 then
+    cell = cell .. ' of ' .. brun.int(nlap) .. string.format('  (%.0f %% of the lap)',
+                                                             100.0 * (c.cell or 0) / nlap)
+  end
+  brun.ui_set(u.prog, lap .. '    ' .. cell, brun.c_val)
+
+  -- TIME REMAINING IS EXTRAPOLATED FROM THIS RUN'S OWN CELL RATE, not from a nominal seconds-per-cell:
+  -- a cell is a capture plus a plan wait plus however long the generator took, and those vary by rate.
+  local el, left = nil, '--'
+  if brun.t0 ~= nil then el = os.time() - brun.t0 end
+  local ntot = 0
+  if brun.iterwant ~= nil and brun.iterwant > 0 and nlap > 0 then ntot = brun.iterwant * nlap end
+  if el ~= nil and el > 0 and brun.ncell > 0 and ntot > brun.ncell then
+    left = brun.hours(el * (ntot - brun.ncell) / brun.ncell)
+  end
+  brun.ui_set(u.time, 'ran ' .. brun.hours(el) .. '    left ' .. left
+                      .. '    ' .. brun.int(brun.ncell) .. ' cell(s) done', brun.c_lab)
+
+  brun.ui_set(u.stim, vid .. '  ' .. brun.int(c.baud) .. ' Bd  ' .. brun.fmtof(arb)
+                      .. '  ' .. tostring(arb or '?'), brun.c_val)
+
+  -- BOTH RATES, because they answer different questions: the run's rate says whether the soak is
+  -- healthy, and this vector's says whether ONE waveform is the reason it is not.
+  local vn, vb = brun.vcell[vid] or 0, brun.vbad[vid] or 0
+  -- EVERY PERCENTAGE SAYS WHAT IT IS A PERCENTAGE OF, and the split is the whole point of this line.
+  -- A bare '20 %' reads as a fifth of the run being broken; it is not. About a third of a HEALTHY lap
+  -- produces no result, because the plan drives seven vectors into conditions where refusing is the
+  -- documented right answer -- and judge_bench.py scores those refusals as passes. Measured on the
+  -- offline twin over one full lap: 539 of 1677 cells with no result, 151 of them exactly that.
+  --
+  -- So the number that means something is UNEXPECTED: a refusal on a vector that should have decoded.
+  -- THE BENIGN COUNT FIRST, AND ONLY ONE PERCENTAGE ON THE SCREEN. Leading with 'no result 82 of 412 =
+  -- 20 %' reads as a fifth of the run being broken, and it is not: most of those cells refused because
+  -- the plan asked them to decode something a correct decoder declines. Health above is the one figure
+  -- meant to be read as a verdict, so these two lines are counts -- what was allowed, what was not, out
+  -- of how many -- rather than a second, scarier percentage competing with it.
+  --
+  -- 58 CHARACTERS IS THE BUDGET AT FONT_MEDIUM, and both are written against their own widest values --
+  -- four-digit counts -- rather than the ones a screenshot happens to show.
+  brun.ui_set(u.fail, string.format('allowed refusals %s    UNEXPECTED %s    of %s cells',
+                                    brun.int(brun.nexp), brun.int(brun.nunexp),
+                                    brun.int(brun.ncell)), brun.c_lab)
+  brun.ui_set(u.vfail, string.format('this vector %s: %d of %d refused', vid, vb, vn), brun.c_lab)
+  local hl, hcol = brun.healthline()
+  brun.ui_set(u.health, hl, hcol)
+  local col, msg = brun.ui_status()
+  brun.ui_set(u.note, msg, col)
+end
+
+function brun.cellline(c, arb)
+  local s = tostring(c.vid or '?') .. ' ' .. brun.int(c.baud)
+  local f = brun.fmtof(arb)
+  if f ~= '' then s = s .. ' ' .. f end
+  return s .. ' ' .. brun.wave(arb)
+end
+
+-- %.0f for the same reason as brun.pct, and tostring() would print 9600 as '9600' but a rate that
+-- arrived as a float as '9600.0000001'.
+function brun.int(n)
+  if n == nil then return '0' end
+  return string.format('%.0f', n)
+end
+
+-- ---------------------------------------------------------------------------
 -- Live progress, when someone is listening
 -- ---------------------------------------------------------------------------
 -- PUSHED, NOT POLLED, and that is forced rather than chosen: while a TSP script runs it holds the
@@ -203,15 +719,40 @@ end
 -- announces itself instead -- one short line per cell to a listener on the host -- wrapped so that the
 -- listener being absent costs a failed connect and nothing else. That is the whole mechanism behind
 -- "monitorable when connected, self-completing when not".
+-- THE EMPTY initString AGAIN, and it has to be here too. bsdg.open carries the same note: this
+-- interpreter returns nil from tspnet.connect(ip, port) and from tspnet.connect(ip, port, nil), and only
+-- a STRING third argument works. Passing nil here made every announce fail into tspnet.write(nil, ...),
+-- which posts event 1138 -- 'Parameter 1, expected type number' -- once per cell. Measured: 1677 events
+-- across a lap, on an instrument that must never put a message in front of anybody.
+--
+-- AND A FAILURE IS COUNTED, NOT JUST SWALLOWED. A pcall that hides everything cannot be distinguished
+-- from a listener that is simply absent, which is exactly how the above went unnoticed: after
+-- brun.maxannfail consecutive failures the announcing stops for the rest of the run, so a broken push
+-- costs a bounded number of events instead of one per cell for eight days.
+brun.nannfail = 0
+brun.maxannfail = brun.maxannfail or 5
+
 function brun.announce(s)
   if brun.listenip == nil then return end
+  if brun.nannfail >= brun.maxannfail then return end
+  local sent = false
   pcall(function()
-    local id = tspnet.connect(brun.listenip, brun.listenport, nil)
+    local id = tspnet.connect(brun.listenip, brun.listenport, '')
     if id ~= nil then
       tspnet.write(id, s .. '\n')
       tspnet.disconnect(id)
+      sent = true
     end
   end)
+  if sent then
+    brun.nannfail = 0
+  else
+    brun.nannfail = brun.nannfail + 1
+    if brun.nannfail == brun.maxannfail then
+      brec.note(-1, -1, 0, 'progress pushes disabled after ' .. tostring(brun.maxannfail)
+                           .. ' failures -- nothing is listening at ' .. tostring(brun.listenip))
+    end
+  end
 end
 
 -- ---------------------------------------------------------------------------
@@ -219,12 +760,63 @@ end
 -- ---------------------------------------------------------------------------
 -- A FILE, checked between cells, so a run can be ended cleanly by dropping STOP.TXT on the key without
 -- a power cycle -- which matters when the alternative is losing the last unflushed rows.
+--
+-- FOUND BY LISTING THE DIRECTORY, NOT BY OPENING IT. file.open on a file that is not there POSTS AN
+-- EVENT on this instrument, and this check runs once per cell -- 86 events in a smoke and about 1.4
+-- million across eight days, every one of them a popup on the panel. Opening the directory, which does
+-- exist, and searching its listing costs no event at all. usb_log.tsp's ensuredir uses the same
+-- technique and its comment is why the directory is called SERDEC: only an 8.3 name can be found by one
+-- string.find in the FAT table.
 function brun.stopped()
   local fh = nil
-  pcall(function() fh = file.open(brun.stoppath, file.MODE_READ) end)
+  pcall(function() fh = file.open(brun.dir, file.MODE_READ) end)
   if fh == nil then return false end
+  local raw = nil
+  pcall(function() raw = file.read(fh, file.READ_ALL) end)
   pcall(function() file.close(fh) end)
-  return true
+  if raw == nil then return false end
+  return string.find(raw, 'STOP', 1, true) ~= nil
+end
+
+-- ---------------------------------------------------------------------------
+-- The stop control that works: the front-panel TRIGGER key
+-- ---------------------------------------------------------------------------
+-- A BUTTON ON THE GLASS CANNOT DO THIS, and the reason is measured rather than assumed. serial_core.tsp
+-- carries it in full: a touch press is NOT DISPATCHED while Lua runs -- presses queue until the script
+-- returns -- so no OBJ_BUTTON on any screen can stop a loop that has not finished. display.waitevent()
+-- is worse than useless here: it BLOCKS, reads a zero timeout as 'wait for ever', and wedging the
+-- instrument that way cost a power cycle.
+--
+-- THE TRIGGER KEY WORKS BECAUSE IT IS FIRMWARE. The key raises trigger.EVENT_DISPLAY, an event blender
+-- LATCHES it with no interpreter involved, and the latch can be read afterwards -- measured on 1.7.17a:
+-- a press during a deliberate 10 s busy loop was still there when the poll came round, wait(0.001)
+-- returns in 1.1 ms, and NOTHING REACHES THE EVENT LOG. That last part is what makes it usable here at
+-- all; the STOP.TXT file it replaces costs an event every time it is looked for.
+--
+-- ONCE PER CELL, which is what was asked for: a press lands mid-capture, is latched by the firmware, and
+-- is acted on when the cell finishes. So the run ends between cells, with brec.finish closing the record
+-- -- and a close, not a flush, is what updates the FAT directory entry that says how long the file is.
+-- The key is then safe to read.
+--
+-- THE APP OWNS THE BLENDER SETUP, so this borrows it rather than reimplementing it: same blender, same
+-- 1 ms poll, same auto-reset-on-read semantics, and the answer is recorded rather than polled twice.
+brun.stopkey = brun.stopkey or true      -- false disables the key without touching the loop
+
+function brun.stopkey_setup()
+  if not brun.stopkey then return false end
+  if sdec == nil or sdec.cancel_setup == nil then return false end
+  local ok = false
+  pcall(function() ok = sdec.cancel_setup() end)
+  if ok then pcall(function() sdec.cancel_clear() end) end
+  return ok == true
+end
+
+function brun.stopkey_hit()
+  if not brun.stopkey then return false end
+  if sdec == nil or sdec.cancel_pressed == nil then return false end
+  local hit = false
+  pcall(function() hit = sdec.cancel_pressed() end)
+  return hit == true
 end
 
 -- ---------------------------------------------------------------------------
@@ -236,6 +828,17 @@ function brun.soak(iterations, tag)
   end
   local forever = (iterations == nil or iterations == 0)
   brun.ncell, brun.nwrap, brun.nbadsdg, brun.stopwhy = 0, 0, 0, nil
+  brun.stopbad = false
+  brun.nevtot, brun.nevstreak, brun.nevpanel = 0, 0, 0
+  -- THE RUN'S OWN TALLIES, on brun rather than as locals, because the status screen reads them and a
+  -- screen that has to be handed every number it draws is a screen that gets handed a stale one.
+  brun.nbad, brun.nsdgtot = 0, 0
+  brun.nexp, brun.nunexp = 0, 0
+  brun.vcell, brun.vbad = {}, {}
+  brun.iterwant = 0
+  if not forever then brun.iterwant = iterations end
+  brun.t0 = nil
+  pcall(function() brun.t0 = os.time() end)
 
   if not brec.begin(tag or 'soak', forever and 0 or iterations, brun.planpath) then
     return false, 'cannot record: ' .. tostring(brec.why)
@@ -245,13 +848,35 @@ function brun.soak(iterations, tag)
     return false, 'no plan file at ' .. brun.planpath
   end
 
+  -- NO POPUPS FOR THE DURATION. sdec.mute_events sets localnode.showevents = 0, which is the app's own
+  -- tested call and deliberately leaves the LOG intact -- so brun.point's per-cell event count still
+  -- polices the app's behaviour while nothing reaches the panel. An unattended week must not end with a
+  -- modal box waiting for a keypress that nobody is there to give.
+  pcall(function() sdec.mute_events() end)
+  -- THE STATUS SCREEN, BUILT ONCE, and the USER swipe screen if it cannot be. Either way the two swipe
+  -- lines are written every cell, so a run is never invisible.
+  --
+  -- ONCE, not per cell: changescreen is a user-visible jump and doing it repeatedly would fight
+  -- anybody trying to look at another screen.
+  if brun.backlight ~= nil then
+    pcall(function() display.lightstate = brun.backlight end)
+  end
+  brun.keyarmed = brun.stopkey_setup()
+  if not brun.ui_build() then
+    pcall(function() display.changescreen(display.SCREEN_USER_SWIPE) end)
+  end
+  brun.settext('SOAK starting', 'reaching the generator')
   bsdg.reset()
   local live, idn = bsdg.alive()
+  -- THE GENERATOR'S ANSWER, ON THE PANEL, BEFORE THE FIRST CELL. A soak whose stimulus never arrives
+  -- records 1677 rows of nothing and parks on brun.maxsdgfail twenty cells later; seeing it here is the
+  -- difference between an operator fixing it in the first minute and finding out on their return.
+  brun.settext('SOAK starting', live and tostring(idn) or 'SDG UNREACHABLE')
   brec.note(0, 0, 0, 'start: sdg ' .. (live and tostring(idn) or ('UNREACHABLE ' .. tostring(idn))))
   brun.announce(string.format('START iterations=%s sdg=%s', tostring(iterations or 'forever'),
                               tostring(live)))
 
-  local lastiter, nbadtot = nil, 0
+  local lastiter = nil
   while true do
     local c = brun.nextrow()
     if c == nil then
@@ -263,11 +888,11 @@ function brun.soak(iterations, tag)
       end
       brec.note(lastiter or -1, -1, 0, string.format('plan wrapped, pass %d', brun.nwrap + 1))
       if not brun.planopen() then
-        brun.stopwhy = 'plan file will not reopen'
+        brun.stopwhy, brun.stopbad = 'plan file will not reopen', true
         break
       end
       c = brun.nextrow()
-      if c == nil then brun.stopwhy = 'plan file is empty'; break end
+      if c == nil then brun.stopwhy, brun.stopbad = 'plan file is empty', true; break end
     end
     if not forever and c.iter > iterations then
       brun.stopwhy = string.format('%d iteration(s) complete', iterations)
@@ -275,22 +900,84 @@ function brun.soak(iterations, tag)
     end
     lastiter = c.iter
 
-    if brun.stopped() then brun.stopwhy = 'STOP.TXT found'; break end
-    if brec.stopped then brun.stopwhy = 'recording stopped: ' .. tostring(brec.why); break end
+    -- OFF BY DEFAULT, because looking costs an event. Any look at the key -- opening a file that is not
+    -- there, or reading a directory -- posts one (2205 or 2201), and this check runs in the loop. The
+    -- power cycle is the documented way to end a run, so the convenience does not get to spend events
+    -- on an instrument nobody is standing at. brun.stopevery = N re-enables it for an attended run.
+    if brun.stopevery > 0 and (brun.ncell == 0 or math.mod(brun.ncell, brun.stopevery) == 0) then
+      if brun.stopped() then brun.stopwhy = 'STOP.TXT found'; break end
+    end
+    -- THE KEY, READ ONCE PER CELL. Costs about a millisecond and no event, so unlike the stop file it
+    -- can be checked every time round rather than every two hundredth.
+    if brun.keyarmed and brun.stopkey_hit() then
+      brun.stopwhy = 'the TRIGGER key was pressed'
+      break
+    end
+    if brun.maxcell > 0 and brun.ncell >= brun.maxcell then
+      brun.stopwhy = string.format('cell cap %d reached', brun.maxcell)
+      break
+    end
+    if brec.stopped then
+      brun.stopwhy = 'recording stopped: ' .. tostring(brec.why)
+      brun.stopbad = true
+      break
+    end
 
+    -- THE NAME COMES FROM THE TABLE, and the plan's own column is used to CHECK it rather than as an
+    -- alternative. bench/arb_names.tsp is generated from vector_names.py, so a stale copy is possible;
+    -- the plan was emitted from the same source at the same moment, so the two agreeing is evidence and
+    -- the two disagreeing is a reason to measure nothing. Choosing one silently is how a cell gets
+    -- recorded against a waveform that never played.
+    local arb = barb.of(c.vid)
+    if arb == nil then
+      arb = c.arb
+    elseif c.arb ~= nil and c.arb ~= '' and c.arb ~= arb then
+      arb = nil
+    end
+    -- WRITTEN AFTER THE NAME IS RESOLVED, so the panel names the waveform that is about to play rather
+    -- than the one the plan asked for. A cell refused because the table and the plan disagree shows '?',
+    -- which is the truth: nothing is being played.
+    -- PER VECTOR, counted where the cell is attempted rather than where it succeeds, so the two
+    -- numbers on the screen are 'failed' out of 'attempted' and not out of 'measured'.
+    local vk = tostring(c.vid or '?')
+    brun.vcell[vk] = (brun.vcell[vk] or 0) + 1
+    brun.screen(c, arb)
     -- THE GENERATOR FIRST. A cell measured against the previous cell's waveform is worse than no cell
     -- at all: it is a wrong answer that looks like a right one, which is the failure mode the whole
     -- amplitude-index bug turned out to be.
-    local sok, swhy = bsdg.select(c.vid, c.amp, c.ofst, c.srate)
+    local sok, swhy
+    if arb == nil then
+      sok, swhy = false, string.format('arb_names.tsp says %s for %s and the plan says %s -- '
+                                       .. 'regenerate with tools/gen_arb_names.py',
+                                       tostring(barb.of(c.vid)), tostring(c.vid), tostring(c.arb))
+    else
+      sok, swhy = bsdg.select(arb, c.amp, c.ofst, c.srate)
+    end
     if not sok then
       brun.nbadsdg = brun.nbadsdg + 1
-      brec.row(string.format('%d,%d,%s,%d,%s,%.4f,%.4f,%.6f,%.3f,,,,,,,,,,,,SDG:%s,',
+      -- A CELL WITH NO STIMULUS IS A FAILED CELL. It is separated from a decode failure in the record
+      -- (the row says SDG:) and by the judge, but on the screen 'fail rate' means cells that produced no
+      -- result, and a silent generator produces none.
+      brun.nsdgtot = brun.nsdgtot + 1
+      brun.nbad = brun.nbad + 1
+      brun.vbad[vk] = (brun.vbad[vk] or 0) + 1
+      -- A MISSING STIMULUS IS NEVER AN EXPECTED REFUSAL. The vector might be one that is allowed to
+      -- refuse, but it was not asked: nothing was on the wire.
+      brun.nunexp = brun.nunexp + 1
+      -- THE EMPTY COLUMNS ARE COUNTED, NOT TYPED. A cell with no stimulus has nothing to say in the
+      -- twelve measurement columns, and the first version of this row wrote eleven commas where twelve
+      -- belonged -- a 22-field row in a 23-field schema. It cost nothing on the instrument and everything
+      -- on the host: judge_bench.py refused the whole file, correctly, because a short row means every
+      -- column after it might be the wrong one. A row you cannot count by eye should not be typed by eye.
+      brec.row(string.format('%d,%d,%s,%d,%s,%.4f,%.4f,%.6f,%.3f',
                              c.iter, c.cell, brec.q(c.vid), c.baud, brec.q(c.kind),
-                             c.amp or 0, c.ofst or 0, c.srate or 0, c.wait or 0, brec.q(swhy)))
-      brec.note(c.iter, c.cell, brun.ncell, 'sdg failed: ' .. tostring(swhy), nbadtot, brun.nbadsdg)
+                             c.amp or 0, c.ofst or 0, c.srate or 0, c.wait or 0)
+               .. string.rep(',', brun.nmeascol + 1) .. 'SDG:' .. brec.q(swhy) .. ',')
+      brec.note(c.iter, c.cell, brun.ncell, 'sdg failed: ' .. tostring(swhy), brun.nbad, brun.nbadsdg)
       if brun.nbadsdg >= brun.maxsdgfail then
         brun.stopwhy = string.format('the generator failed %d cells in a row: %s',
                                      brun.nbadsdg, tostring(swhy))
+        brun.stopbad = true
         break
       end
       brun.ncell = brun.ncell + 1
@@ -304,7 +991,23 @@ function brun.soak(iterations, tag)
 
       local fs = sdec.pick_fs(c.baud, 8)
       local p = brun.point(fs, c.baud, false)
-      if not p.ran then nbadtot = nbadtot + 1 end
+      -- RE-MUTED AFTER EVERY CAPTURE. sdec.acquire calls sdec.quiet_events(), which sets
+      -- localnode.showevents = SEV_ERROR -- so the mute taken once at the top of this function is undone
+      -- by the first cell, and every event after that is a popup again. One assignment per cell is
+      -- nothing against a modal box on an instrument nobody is standing at.
+      pcall(function() sdec.mute_events() end)
+      if not p.ran then
+        brun.nbad = brun.nbad + 1
+        brun.vbad[vk] = (brun.vbad[vk] or 0) + 1
+        -- SPLIT AT THE POINT OF FAILURE, using the same list the host judge uses. A refusal on a loud
+        -- vector is the documented right answer and is counted as such; a refusal anywhere else is the
+        -- number the traffic light is allowed to react to.
+        if barb ~= nil and barb.loud ~= nil and barb.loud(vk) then
+          brun.nexp = brun.nexp + 1
+        else
+          brun.nunexp = brun.nunexp + 1
+        end
+      end
       brec.row(string.format('%d,%d,%s,%d,%s,%.4f,%.4f,%.6f,%.3f,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s',
                              c.iter, c.cell, brec.q(c.vid), c.baud, brec.q(c.kind),
                              c.amp or 0, c.ofst or 0, c.srate or 0, c.wait or 0,
@@ -315,20 +1018,60 @@ function brun.soak(iterations, tag)
                              tostring(p.snapped), tostring(p.snapfirm),
                              brec.q(p.why)) .. ',' .. (p.hex or ''))
       brun.ncell = brun.ncell + 1
-      -- ONE STATUS LINE PER CELL. At ~6 s a cell this is a trickle, and it is the file that answers
-      -- "how far did it get" after a power cycle.
-      brec.note(c.iter, c.cell, brun.ncell, p.ran and 'ok' or ('FAIL ' .. tostring(p.why)),
-                nbadtot, 0)
       brun.announce(string.format('CELL %d/%d %s@%d %s nf=%s ev=%s', c.iter, c.cell,
                                   tostring(c.vid), c.baud, p.ran and 'ok' or 'FAIL',
                                   tostring(p.nf or 0), tostring(p.nev or 0)))
+      -- THE CELL'S EVENT COUNT IS TAKEN HERE, AT THE END OF THE CELL, and not from brun.point -- and
+      -- that gap was not hypothetical. p.nev is sampled inside brun.point, before the row is written,
+      -- before the status note and before the progress push; so the one bug this watchdog exists to
+      -- catch, announce posting event 1138 on every cell for a whole lap, was invisible to it. The log
+      -- is cleared at the top of brun.point and nothing clears it again, so a count taken after the
+      -- push covers everything the cell did. brun.settext accounts for the panel separately, because
+      -- the next cell's clear wipes the panel's events before this line is reached.
+      local cellev = brun.eventcount()
+      if (p.nev or 0) > cellev then cellev = p.nev end
+      brun.nevtot = brun.nevtot + cellev
+      -- ONE STATUS LINE PER CELL. At ~6 s a cell this is a trickle, and it is the file that answers
+      -- "how far did it get" after a power cycle. ev= is written ONLY when something was posted, so a
+      -- clean run's status rows stay identical and a reader can find the noisy cell with one grep.
+      local nt = p.ran and 'ok' or ('FAIL ' .. tostring(p.why))
+      if cellev > 0 then nt = nt .. ' ev=' .. brun.int(cellev) end
+      brec.note(c.iter, c.cell, brun.ncell, nt, brun.nbad, 0)
+      if cellev > brun.evbudget then
+        brun.nevstreak = brun.nevstreak + 1
+        if brun.nevstreak >= brun.evstreak and brun.evshed == nil then
+          -- THE PUSH GOES FIRST: it is the only optional thing in this loop, and it is the one that
+          -- reaches the network on every cell.
+          brun.evshed = 'progress push'
+          brun.listenip = nil
+          brec.note(c.iter, c.cell, brun.ncell,
+                    string.format('%d cells in a row posted more than %d event(s) -- progress push '
+                                  .. 'switched off to stop them', brun.nevstreak, brun.evbudget))
+        end
+      else
+        brun.nevstreak = 0
+      end
     end
   end
 
   brun.planclose()
   bsdg.output(false)
   bsdg.reset()
+  -- THE VERDICT STAYS ON THE PANEL. A run that ends on its own -- iterations complete, or parked
+  -- because the generator went away -- otherwise leaves the last cell's line up, which reads exactly
+  -- like a run still in progress. After six days away the first question is whether it finished, and
+  -- this answers it from across the room. The reason is clipped to 32 characters, so it is written in
+  -- full to the key as well.
+  brun.settext(string.format('DONE F%s %s', brun.int(brun.nbad), brun.pct(brun.nbad, brun.ncell)),
+               tostring(brun.stopwhy or 'ended'))
+  brun.ui_end()
+  brec.note(-1, -1, 0, string.format('run total: %d cell(s), %d failed, %d event(s) instigated '
+                                     .. '(%d from the panel)',
+                                     brun.ncell, brun.nbad, brun.nevtot, brun.nevpanel))
   brec.finish(brun.stopwhy or 'ended')
+  -- RESTORED, so a run ending does not leave the instrument silently swallowing real errors for the
+  -- next operator. The app's own unmute, not a literal.
+  pcall(function() sdec.unmute_events() end)
   brun.announce('END ' .. tostring(brun.stopwhy))
   return true, brun.stopwhy
 end

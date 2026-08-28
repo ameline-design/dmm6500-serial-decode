@@ -16,6 +16,7 @@ hand edit and expensive to find on hardware:
 Comments and string literals are blanked out first so keywords inside them do not
 count. Usage: lint_tsp.py <file> [...]   (exit 1 if any file fails)
 """
+import os
 import re
 import sys
 
@@ -39,6 +40,19 @@ INCOMPAT = [
     # measured, a build using it refused every capture with "attempt to call field `fmod' (a nil
     # value)" after 368640 clean offline decodes.
     (r'math\.fmod\s*\(', "math.fmod (5.1+; 5.0.2 has math.mod -- and the offline shim hides this)"),
+    # THE SAME TRAP AS math.fmod, AND IT COST A RUN. string.match and string.gmatch arrived in 5.1;
+    # 5.0.2 has string.find (which returns its captures after the two indices) and string.gfind. The
+    # host Lua has all four, so a module using string.match passes every offline suite and then dies on
+    # the instrument -- measured: '-286 TSP Runtime error attempt to call field `match` (a nil value)'
+    # killed an 86-cell run at its first plan line, after 51 offline assertions had gone green.
+    (r'string\.match\s*\(', "string.match (5.1+; 5.0.2 has string.find with captures)"),
+    # LONG-STRING LEVELS ARE 5.1 TOO. 5.0.2 has [[ ]] and nothing else, so [=[ or [==[ is a syntax
+    # error on the instrument -- measured, it refused a whole script that loaded fine on the host.
+    (r'\[=+\[', "long-string level [=[ (5.1+; 5.0.2 has only [[ ]])"),
+    (r'string\.gmatch\s*\(', "string.gmatch (5.1+; 5.0.2 has string.gfind)"),
+    # Method-call syntax on a string value is 5.1+ too, and reads so naturally that it is easy to write.
+    (r'\)\s*:\s*(format|match|gmatch|gsub|find|sub|rep|byte|upper|lower)\s*\(',
+     "string method syntax s:format(...) (5.1+; 5.0.2 needs string.format(s, ...))"),
 ]
 
 
@@ -153,6 +167,38 @@ def check_globals(code, name):
     return errs
 
 
+# A REAL LUA 5.0.2 PARSER, WHICH THE DOCSTRING ABOVE USED TO SAY DID NOT EXIST. It does: 5.0.2 is a
+# 150 kB tarball that builds in seconds, and tools/get_lua502.sh puts luac in out/lua502/bin. Everything
+# in INCOMPAT above is a hand-written approximation of what that parser does exactly, and the parser also
+# catches the constructs nobody thought to add -- it found the one that mattered on its first run.
+#
+# HEX LITERALS ARE NORMALISED FIRST, and this is a MEASURED divergence rather than a convenience. Stock
+# 5.0.2 does not lex 0x00DCFF: its numeral scanner stops at the 'x', so the colour constants throughout
+# serial_ui.tsp read as `0` followed by a name and the parse fails. The instrument's Lua accepts them --
+# proved by the app loading and running -- so refusing them here would be the gate contradicting the
+# hardware. Every other 5.0.2 rule is enforced as written.
+LUAC = 'out/lua502/bin/luac'
+HEXLIT = re.compile(r'\b0[xX][0-9A-Fa-f]+\b')
+
+
+def parse502(path, body, luac):
+    import subprocess
+    import tempfile
+    src = HEXLIT.sub(lambda m: str(int(m.group(0), 16)), body)
+    fh = tempfile.NamedTemporaryFile('w', suffix='.lua', delete=False)
+    fh.write(src)
+    fh.close()
+    try:
+        r = subprocess.run([luac, '-p', fh.name], capture_output=True, text=True)
+        if r.returncode == 0:
+            return []
+        # The parser names ITS temporary file; rewrite that to the real path so the line is clickable.
+        msg = (r.stderr or r.stdout or 'parse failed').strip().replace(fh.name, path)
+        return [m.replace(luac + ': ', '') for m in msg.split('\n') if m.strip()]
+    finally:
+        os.unlink(fh.name)
+
+
 def main(paths):
     # NO PATHS IS NOT A CLEAN RUN. `python3 tools/lint_tsp.py` with no arguments linted zero files and
     # exited 0, which reads in a transcript exactly like every file passing -- a verdict derived from no
@@ -162,6 +208,19 @@ def main(paths):
         print('REFUSING: no files given, and linting nothing is not passing.')
         print('  python3 tools/lint_tsp.py tsp/*.tsp')
         return 2
+    require = '--require-parser' in paths
+    paths = [p for p in paths if not p.startswith('--')]
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    luac = os.path.join(root, LUAC)
+    if not os.path.exists(luac):
+        # SAID OUT LOUD, because a gate that quietly covers less than it says it does is how a syntax
+        # error reached the instrument twice. --require-parser makes this fatal, which is what anything
+        # about to spend instrument time should pass.
+        print('NOTE: no Lua 5.0.2 parser at %s -- structural checks only.' % LUAC)
+        print('      build it once with: sh tools/get_lua502.sh')
+        if require:
+            return 2
+        luac = None
     bad = 0
     for p in paths:
         src = open(p).read()
@@ -179,6 +238,10 @@ def main(paths):
             body = '\n'.join(lines[a + 1:b])
         code = strip(body)
         errs = check_blocks(code, p) + check_compat(code, p) + check_globals(code, p)
+        # THE PARSER RUNS ON THE UNSTRIPPED BODY, because a string or a comment that opens a long
+        # bracket and never closes it is a syntax error the blanking pass would have hidden.
+        if luac is not None:
+            errs = errs + parse502(p, body, luac)
         if errs:
             bad += 1
             print(f'{p}: {len(errs)} problem(s)')

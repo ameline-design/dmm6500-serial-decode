@@ -24,7 +24,8 @@ for _, m in ipairs({'tsp/usb_log.tsp', 'tsp/serial_ui.tsp', 'tsp/serial_app.tsp'
   if chunk == nil then print('LOAD FAILED ' .. m .. ': ' .. tostring(err)); os.exit(1) end
   chunk()
 end
-for _, m in ipairs({'bench/sdg_net.tsp', 'bench/bench_rec.tsp', 'bench/bench_run.tsp'}) do
+for _, m in ipairs({'bench/arb_names.tsp', 'bench/sdg_net.tsp', 'bench/bench_rec.tsp',
+                    'bench/bench_run.tsp'}) do
   local chunk, err = loadfile(m)
   if chunk == nil then print('LOAD FAILED ' .. m .. ': ' .. tostring(err)); os.exit(1) end
   chunk()
@@ -63,6 +64,10 @@ local fh = file.open(brun.planpath, file.MODE_WRITE)
 if fh == nil then print('cannot write ' .. brun.planpath .. ' in the mock filesystem'); os.exit(2) end
 file.write(fh, text)
 file.close(fh)
+
+-- The generator knows waveforms by their stored SER_ names and the repo stores files by vector id;
+-- the plan carries both in every row, so the mock's mapping comes from the plan itself.
+MOCKB_ARBMAP_FROM_PLAN(text)
 
 local nrow = 0
 string.gsub(text, '\n', function() nrow = nrow + 1 end)

@@ -42,6 +42,13 @@ eventlog = {}
 function eventlog.clear() MOCKB.events = 0 end
 function eventlog.getcount() return MOCKB.events end
 function eventlog.next() return nil end
+-- NOT AN INSTRUMENT FUNCTION. The firmware has no eventlog.post(); this is how the other mocks tell
+-- this counter that the instrument would have filed something -- mock_display's settext calls it when a
+-- line is longer than the USER swipe screen accepts. It exists because the run's watchdog reads
+-- eventlog.getcount() and nothing else, so a modelled event that does not reach this counter is a
+-- modelled event no test can see. bench/ must never call it; tools/lint_tsp.py has no way to know it is
+-- host-only, so the name is deliberately unlike anything in the TSP reference.
+function eventlog.post() MOCKB.events = MOCKB.events + 1 end
 
 -- ---------------------------------------------------------------------------
 -- The generator
@@ -60,9 +67,25 @@ end
 
 tspnet = {TERM_LF = 1, TERM_CR = 2, TERM_CRLF = 4, timeout = 20}
 
+-- WHO ANSWERS. Only the generator's own address does, plus anything a test registers with
+-- MOCKB_LISTEN. Everything else returns nil the way a refused connection does here -- the real
+-- interpreter does NOT raise on a refusal, it hands back nil, which is why a broken progress push went
+-- unnoticed for a whole lap.
+MOCKB.listeners = {}
+function MOCKB_LISTEN(ip, port) MOCKB.listeners[tostring(ip) .. ':' .. tostring(port)] = true end
+
 function tspnet.connect(ip, port, init)
+  -- THE initString IS NOT OPTIONAL, and this is the fidelity that matters most in this file. Measured on
+  -- the instrument: tspnet.connect(ip, port) and tspnet.connect(ip, port, nil) both return NIL WITHOUT
+  -- RAISING, and only a string third argument works. Two runs were lost to that -- one parked after 20
+  -- cells with 'connect failed: nil', one posted event 1138 on every cell of a lap -- and the offline
+  -- suite passed both times because this mock accepted any arity.
+  if type(init) ~= 'string' then return nil end
   local g = MOCKB.sdg
+  local key = tostring(ip) .. ':' .. tostring(port)
+  if MOCKB.listeners[key] then return 2 end
   if g == nil then error('MOCKB_SDG() was not called, so there is no generator to connect to') end
+  if ip ~= bsdg.ip then return nil end
   if g.dead then error('connection refused') end
   g.nconnect = g.nconnect + 1
   return 1
@@ -73,6 +96,8 @@ function tspnet.reset() if MOCKB.sdg ~= nil then MOCKB.sdg.pending = nil end end
 function tspnet.termination(id, t) end
 
 function tspnet.write(id, s)
+  -- A LISTENER SWALLOWS whatever it is sent; only the generator interprets commands.
+  if id == 2 then MOCKB.nannounce = (MOCKB.nannounce or 0) + 1; return end
   local g = MOCKB.sdg
   if g == nil or g.dead then error('write to a dead generator') end
   g.ncmd = g.ncmd + 1
@@ -111,10 +136,17 @@ function MOCKB_SDG_DO(g, cmd)
     g.pending = 'Siglent Technologies,SDG2122X,SDG2XCAQ5R2571,2.01.01.39R7'
     return
   end
-  local a = string.find(cmd, 'ARWV NAME,"U%-disk0/([^"]+)"')
+  -- BOTH FORMS THE HOST USES, and the bare one is the form the plan suite actually sends:
+  -- siglent.py's select_arb writes `C1:ARWV NAME,SER_Fox_8N1_x10` with no quotes and no path, and
+  -- load_arb_file writes `C1:ARWV NAME,"U-disk0/v94.bin"` for a file on the key. A mock that only
+  -- understood the path form validated an invented command rather than the real one -- which is
+  -- exactly how a wrong ARWV reached the point of being run on an instrument.
+  local a = string.find(cmd, 'ARWV NAME,')
   if a ~= nil then
-    local name = string.match(cmd, 'ARWV NAME,"U%-disk0/([^"]+)"')
-    name = string.gsub(name or '', '%.bin$', '')
+    local name = string.match(cmd, 'ARWV NAME,"([^"]+)"')
+    if name == nil then name = string.match(cmd, 'ARWV NAME,([^,]+)') end
+    name = string.gsub(name or '', '^U%-disk0/', '')
+    name = string.gsub(name, '%.bin$', '')
     -- refuse_arb IMITATES THE REAL FAILURE, which is not an error reply: a file the generator cannot
     -- read leaves the PREVIOUS waveform selected and says nothing. That is why bench/sdg_net.tsp
     -- compares the ARWV? reply instead of trusting the write.
@@ -156,15 +188,45 @@ end
 -- this the runner could be tested only against silence, and every cell would fail for a reason that
 -- says nothing about the runner.
 MOCKB.arbcache = {}
+-- STORED NAME -> LOCAL FILE. The generator knows waveforms as SER_Fox_8N1_x10; the repo stores them as
+-- out/vectors/v77.bin. tools/vector_names.py holds that mapping on the host side, and MOCKB_ARBMAP is
+-- how a caller hands it over -- built by the test rather than duplicated here, so the two cannot drift.
+MOCKB.arbmap = {}
+function MOCKB_ARBMAP(t) MOCKB.arbmap = t or {} end
+
+-- DERIVED FROM THE PLAN, which is the same artifact the instrument reads. The first attempt parsed
+-- tools/vector_names.py directly and found only 29 of the 41 names, because the eight r-series entries
+-- are generated in a loop rather than written as literals -- so eight vectors silently had no mapping.
+-- The plan carries both the local id and the generator's name in every row, so taking it from there
+-- cannot be incomplete: if a cell is in the plan, its mapping is too.
+function MOCKB_ARBMAP_FROM_PLAN(text)
+  local byvid, byser = {}, {}
+  string.gsub(text, '[^\n]+', function(ln)
+    if string.sub(ln, 1, 1) == '#' then return end
+    local f, n, i0 = {}, 0, 1
+    while true do
+      local a = string.find(ln, ',', i0, true)
+      if a == nil then n = n + 1; f[n] = string.sub(ln, i0); break end
+      n = n + 1; f[n] = string.sub(ln, i0, a - 1); i0 = a + 1
+    end
+    if n >= 4 and f[3] ~= 'vid' and f[4] ~= 'arb' then
+      byvid[f[3]] = f[4]
+      byser[f[4]] = f[3]
+    end
+  end)
+  MOCKB.arbmap = byser
+  return byvid, byser
+end
 
 function MOCKB_SDG_ARB(g)
   if g.arb == nil or g.amp == nil or g.srate == nil then return end
-  local c = MOCKB.arbcache[g.arb]
+  local vid = MOCKB.arbmap[g.arb] or g.arb
+  local c = MOCKB.arbcache[vid]
   if c == nil then
-    local cw, n = GEN_READ('out/vectors/' .. g.arb .. '.bin')
+    local cw, n = GEN_READ('out/vectors/' .. vid .. '.bin')
     if cw == nil then return end
     c = {cw = cw, n = n}
-    MOCKB.arbcache[g.arb] = c
+    MOCKB.arbcache[vid] = c
   end
   -- fsv is AMP/2: the file's +32767 is +AMP/2, the same convention sweep_plan.lua's wire() uses.
   local fsv = g.amp / 2

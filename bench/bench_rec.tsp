@@ -32,10 +32,9 @@
 brec = brec or {}
 
 brec.dir      = brec.dir or '/usb1/SERDEC'
--- FULL PATH, because ulog.next_free numbers whatever prefix it is handed and does not prepend a
--- directory -- serial_app.tsp builds sdec.flogpfx the same way. A bare 'SOAK' yields 'SOAK000.CSV',
--- which file.open refuses since the path must be absolute.
-brec.pfx      = brec.pfx or (brec.dir .. '/SOAK')   -- SOAKnnn.CSV, 8.3 like everything else here
+-- FULL PATH, because file.open on this instrument requires an absolute one -- a bare 'SOAK.CSV' is
+-- refused. serial_app.tsp builds sdec.flogpfx the same way.
+brec.pfx      = brec.pfx or (brec.dir .. '/SOAK')   -- SOAK.CSV, 8.3 like everything else here
 brec.ext      = brec.ext or '.csv'
 brec.maxfile  = brec.maxfile or 268435456   -- 256 MB, far under the 2 GB per-file ceiling and still
                                             -- small enough to pull over the socket in one piece
@@ -70,16 +69,25 @@ function brec.q(s)
   return t
 end
 
--- Open a numbered file. Returns handle, path, or nil and a reason. ulog.next_free makes the directory
--- first and is the tested allocator -- a second one here would be a second thing to get wrong.
+-- ONE FIXED NAME, OPENED FOR APPEND, AND NOT A NUMBERED SLOT. ulog.next_free is the tested allocator
+-- and it works, but it finds a free number by OPENING CANDIDATES -- and an open on a name that is not
+-- there posts event 2205 on this instrument, which is a box on the panel. One per run is one too many
+-- for a machine that has to sit unattended for days: the requirement is that nothing is instigated at
+-- all, not that it is rare. MODE_APPEND on a fixed path always succeeds, creating the file if it is
+-- absent, so nothing is ever probed.
+--
+-- RUNS ARE SEPARATED BY THEIR HEADER, not by their filename. Every run writes a '# serdec-soak-1 tag=..'
+-- line first, so a reader splits the file on those; and one file per key is kinder to a FAT volume than
+-- a new directory entry per run. brec.roll still numbers ROLLED files, which only happens when a single
+-- run passes brec.maxfile -- rare, and the roll opens for append too.
 function brec.newfile(pfx)
-  if ulog == nil or ulog.next_free == nil then
-    return nil, nil, 'usb_log.tsp is not loaded, so there is no allocator and no directory'
+  if ulog ~= nil and ulog.ensuredir ~= nil then
+    -- The directory, made once. ensuredir looks in the FAT listing before ordering a mkdir precisely so
+    -- a speculative one is never issued -- see its own note on why that matters.
+    pcall(function() ulog.ensuredir(brec.dir) end)
   end
-  local path = ulog.next_free(pfx, brec.ext, 999)
-  if path == nil then
-    return nil, nil, 'no free ' .. pfx .. 'NNN' .. brec.ext .. ' name on the key'
-  end
+  local path = pfx .. brec.ext
+  if brec.nfile > 1 then path = pfx .. tostring(brec.nfile) .. brec.ext end
   local fh = nil
   -- file.open RETURNS NIL rather than raising, and a pcall around it reports ok = true either way, so
   -- the handle is what has to be tested.
