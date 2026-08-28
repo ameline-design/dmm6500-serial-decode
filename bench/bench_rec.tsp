@@ -128,6 +128,17 @@ function brec.begin(tag, iterations, planid)
   return true
 end
 
+-- HEADER BYTES COUNT TOWARDS THE BUDGETS. They did not, in any of the three paths that write one, so
+-- every run and every roll under-reported the file by ~250 bytes -- and brec.reopen made that unbounded:
+-- a key that fails and recovers repeatedly writes a header each time and could pass maxfile and maxtotal
+-- while both counters said otherwise. -> the bytes written, so callers can add them.
+function brec.hwrite(s)
+  if not brec.rawwrite(brec.fh, s) then return 0 end
+  brec.nbyte = brec.nbyte + string.len(s)
+  brec.ntotbyte = brec.ntotbyte + string.len(s)
+  return string.len(s)
+end
+
 function brec.header(tag, iterations, planid)
   -- THE PLAN VARIANT IN THE HEADER, because a lap is reproducible from its iteration number ONLY
   -- against the plan it was run from. random-per-lap changes the skip, the skip is applied before the
@@ -136,15 +147,16 @@ function brec.header(tag, iterations, planid)
   -- remembered.
   local rsub = 'all'
   if brun ~= nil and brun.planrsub ~= nil then rsub = tostring(brun.planrsub) end
-  brec.rawwrite(brec.fh, string.format('# %s tag=%s iterations=%s plan=%s randomperlap=%s file=%d\n',
-                                       brec.schema, brec.q(tag), tostring(iterations or 'forever'),
-                                       brec.q(planid), brec.q(rsub), brec.nfile))
+  local n = brec.hwrite(string.format('# %s tag=%s iterations=%s plan=%s randomperlap=%s file=%d\n',
+                                     brec.schema, brec.q(tag), tostring(iterations or 'forever'),
+                                     brec.q(planid), brec.q(rsub), brec.nfile))
   -- THE COLUMN NAMES, IN THE FILE, for both row kinds. A reader told the schema out of band is a
   -- reader that will one day be told the wrong one.
-  brec.rawwrite(brec.fh,
+  n = n + brec.hwrite(
     '# R,iter,cell,vid,baud,kind,amp_vpp,ofst_v,srate,wait_ms,fs,sa_bit,'
     .. 'ran,read_baud,fmt,nf,ngood,nbad,nflag,headsusp,snapped,snapfirm,why,hex\n')
-  brec.rawwrite(brec.fh, '# S,stamp_s,iter,cell,ncell,nrow,nbad,nsdgfail,note\n')
+  n = n + brec.hwrite('# S,stamp_s,iter,cell,ncell,nrow,nbad,nsdgfail,note\n')
+  return n > 0
 end
 
 -- ROLL rather than grow past the per-file cap, and count the total so an indefinite run cannot fill
@@ -222,19 +234,15 @@ end
 
 -- Try to record again after recording stopped. -> true if the record is live again.
 --
--- BECAUSE A FAULT MUST NOT END A RUN. brec.stopped means rows are being thrown away, which is bad enough
--- to paint the screen red -- but the run keeps measuring until somebody stops it, so this is the retry
--- that lets a transient failure heal instead of costing the rest of a fortnight. The failures worth
--- retrying are the ones that are really about the volume rather than the budget: a key that was briefly
--- unreadable, a write that failed once, a reopen that lost a race.
+-- BECAUSE A FAULT MUST NOT END A RUN. The run keeps measuring until somebody stops it, so this is the
+-- retry that lets a transient failure -- a briefly unreadable key, a write that failed once -- heal
+-- instead of costing the rest of a fortnight.
 --
--- THE BYTE BUDGET IS NOT RETRIED, and that is why this lives here rather than as a file.open in the loop:
--- a spent budget will still be spent in five minutes, so retrying it would be a red line that never
--- changes and a key filled to its ceiling anyway. brec.stopped stays true and the run says so.
+-- THE BYTE BUDGET IS NOT RETRIED, which is why this lives here rather than as a file.open in the loop: a
+-- spent budget is still spent in five minutes. brec.stopped stays true and the run says so.
 --
--- A HEADER MARKS THE GAP. Rows that stop and resume with nothing between them read as one unbroken run,
--- so the resumed stretch declares itself -- tag=resumed, which judge_bench.py's split_runs treats as a
--- continuation of the run above it rather than as a new run whose counts get judged on their own.
+-- A HEADER MARKS THE GAP, tagged `resumed`, which judge_bench's split_runs reads as a continuation --
+-- otherwise the rows either side look like one unbroken run.
 function brec.reopen()
   if brec.ntotbyte >= brec.maxtotal then return false end
   if brec.fh ~= nil and not brec.stopped then return true end
@@ -243,9 +251,15 @@ function brec.reopen()
   local fh, path = brec.newfile(brec.pfx)
   if fh == nil then return false end
   brec.fh, brec.path = fh, path
-  brec.stopped, brec.why = false, nil
   brec.sincesync = 0
-  brec.header('resumed', nil, nil)
+  -- THE HEADER HAS TO LAND BEFORE THIS IS CALLED RECOVERED. Marking the record live first and ignoring
+  -- the write meant a still-failing key could report 'recording resumed' and count a recovery.
+  if not brec.header('resumed', nil, nil) then
+    pcall(function() file.close(brec.fh) end)
+    brec.fh = nil
+    return false
+  end
+  brec.stopped, brec.why = false, nil
   return true
 end
 

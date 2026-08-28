@@ -43,24 +43,14 @@ brun.stopbad  = false   -- did it park because something is wrong, or finish wha
 -- Better to stop with a reason on the key than to fill it with evidence for a false conclusion.
 brun.maxsdgfail = brun.maxsdgfail or 20
 
--- A RUN ENDS WHEN SOMEBODY ENDS IT, AND NOT OTHERWISE. Three things stop a soak: the iteration count
--- running out, the TRIGGER key, and the stop file. A FAULT IS NOT ONE OF THEM. Everything that used to
--- park -- a wedged generator, a record that will not write, a plan file that has gone away -- now paints
--- the screen red, writes the reason to the key, and keeps going or keeps retrying until it is stopped.
+-- A RUN ENDS WHEN SOMEBODY ENDS IT: the iteration count, the TRIGGER key, or the stop file. A FAULT IS
+-- NOT ONE OF THEM. Everything that used to park -- a wedged generator, a record that will not write, a
+-- plan file that has gone -- now goes red, writes the reason to the key, and keeps retrying. This
+-- generator has stopped answering three times in the project's history, and parking on day 2 of a
+-- fortnight throws away twelve days nobody is there to restart.
 --
--- WHY, IN ONE MEASURED SENTENCE: this generator has stopped answering three times in the project's
--- history, and parking on day 2 of a fortnight throws away twelve days of a run nobody can restart
--- because nobody is there. Red is a REPORT, not a decision. The operator decides.
---
--- brun.holdsecs IS THE RETRY PERIOD: stop measuring, keep the record, retry every holdsecs until the
--- fault clears. A wedge that needs a power cycle then costs the hours until someone notices instead of
--- the whole run, and a wedge that is really a dropped LAN session -- which is what a tspnet write failure
--- looks like -- recovers on the first retry. 0 restores the old parking behaviour and nothing sets it.
---
--- HELD IN SLICES, NOT IN ONE delay(). A five-minute delay freezes the panel, and an operator looking at a
--- screen that has not changed for five minutes is looking at what a hung instrument looks like. Slices
--- also let the TRIGGER key stop a hold, which matters: without it the only way out of a hold is the
--- power, and the whole point of the key is that it closes the record first.
+-- holdsecs is the retry period. HELD IN SLICES, not one delay(), so the panel keeps changing and the
+-- TRIGGER key still works -- without it the only way out of a hold is the power. 0 restores parking.
 brun.holdsecs = brun.holdsecs or 300      -- seconds between retries; 0 parks, and nothing asks for that
 brun.holdslice = brun.holdslice or 10     -- how long a single delay() may be, so the panel stays alive
 brun.holdmax = brun.holdmax or 0          -- give up after this many seconds of holding; 0 = never
@@ -74,6 +64,7 @@ brun.recretry = brun.recretry or 50      -- cells between attempts to record aga
 brun.nrecfail = 0                        -- consecutive cells measured but not recorded
 brun.nreclost = 0                        -- cells this run that were never written down
 brun.nrecback = 0                        -- times recording recovered
+brun.nsdgalive = 0                       -- cells with no stimulus while the generator answered
 
 -- HOW OFTEN THE STOP FILE IS LOOKED FOR, in cells. Not every cell, and the reason is measured: any
 -- look at a file or directory that is not readable POSTS AN EVENT -- 2201 'File read error' for the
@@ -721,10 +712,8 @@ function brun.ui_status()
   if brun.ncell >= brun.raten and rate > brun.warnrate then
     return brun.c_warn, string.format('%.0f %% refused unexpectedly -- worth watching', rate)
   end
-  -- A GAP THAT HEALED IS STILL A GAP, and it outranks a generator hiccup because those cells are gone
-  -- rather than merely unmeasured: nothing on the key will ever say what they read. Amber and not red,
-  -- because it does not warrant a restart -- the run recovered and is recording again -- but it stays up
-  -- for the rest of the run so the number is on the screen when somebody comes back to it.
+  -- A GAP THAT HEALED IS STILL A GAP, and outranks a generator hiccup: those cells are gone, not merely
+  -- unmeasured. Amber rather than red -- it needs no restart -- but it stays up for the rest of the run.
   if (brun.nreclost or 0) > 0 then
     return brun.c_warn, string.format('%d cell(s) were never recorded -- gap in the file',
                                       brun.nreclost)
@@ -1113,12 +1102,22 @@ end
 -- asked for. Shared rather than copied because the interruptible-slice logic is the part that must not
 -- diverge between the generator, the record and the plan; three copies of it is three chances for one of
 -- them to stop honouring the key.
+-- Its own name so a test can watch the hold WAIT, rather than infer it from a counter incremented
+-- beside the call. delay() is also the plan's per-cell wait, so spying on delay itself cannot separate
+-- the two -- measured, 24 calls and 9.05 s where the hold accounted for 4.
+function brun.holddelay(secs)
+  pcall(function() delay(secs) end)
+end
+
 function brun.holdwait(what)
   local waited = 0
   while waited < brun.holdsecs do
+    -- AT LEAST ONE SECOND. A slice of zero or less never advances `waited`, and offline delay() is a
+    -- no-op, so the loop would spin instead of wait.
     local slice = brun.holdslice
+    if slice < 1 then slice = 1 end
     if slice > brun.holdsecs - waited then slice = brun.holdsecs - waited end
-    pcall(function() delay(slice) end)
+    brun.holddelay(slice)
     waited = waited + slice
     brun.heldsecs = brun.heldsecs + slice
     -- THE KEY STILL WORKS DURING A HOLD. The latch is firmware, so a press lands whatever the
@@ -1147,11 +1146,10 @@ end
 -- between, which is indistinguishable from a run that was restarted by hand.
 function brun.sdghold()
   if brun.holdsecs <= 0 then return false end
-  -- THE GENERATOR MAY NOT BE THE PROBLEM AT ALL, so its reachability is tested BEFORE anything waits on
-  -- it. maxsdgfail counts consecutive cells that produced no stimulus, and one way to produce none is for
-  -- bench/arb_names.tsp to disagree with the plan about a waveform's name -- a static fault that a wedged
-  -- generator's remedy cannot touch. Holding five minutes per twenty cells for a generator that is
-  -- answering would turn a 1.6 h lap into a 7 h one and call it a recovery.
+  -- THE GENERATOR MAY NOT BE THE PROBLEM, so its reachability is tested BEFORE anything waits on it.
+  -- maxsdgfail counts cells with no stimulus, and a stale bench/arb_names.tsp produces those with the
+  -- generator answering -- a static fault no amount of holding fixes, and holding 300 s per 20 cells for
+  -- it would turn a 1.6 h lap into a 7 h one and call it recovery.
   local live0 = false
   pcall(function() live0 = bsdg.alive() end)
   if live0 then
@@ -1202,20 +1200,13 @@ end
 -- ---------------------------------------------------------------------------
 -- A record that stopped, and a plan that went away
 -- ---------------------------------------------------------------------------
--- MEASURE ON, AND KEEP TRYING TO WRITE. brec.stopped means rows are being discarded, which used to end
--- the run -- and ending it is the one response that cannot be undone by the operator who returns six days
--- later. So the cells keep being measured, the screen goes red, and the record is retried every
--- brun.recretry cells. A pulled-and-reseated key, or a volume that was briefly unreadable, then costs the
--- cells in between rather than the rest of the fortnight.
+-- MEASURE ON, AND KEEP TRYING TO WRITE. brec.stopped means rows are being discarded; the cells keep
+-- being measured, the screen goes red, and the record is retried every brun.recretry cells, so a key
+-- that was briefly unreadable costs the cells in between rather than the rest of the fortnight.
 --
--- WHAT IS LOST IS COUNTED. Carrying on quietly through a recording failure would leave a file with a gap
--- in it and nothing to say how wide, so the resumed header, the note and the run total all carry the
--- number of cells that were measured and never written down.
---
--- NO HOLD HERE, DELIBERATELY: unlike a silent generator, an unwritable record does not make the
--- measurement worthless -- the app is still being exercised, the panel is still being driven, and the only
--- thing missing is the transcript. So the run keeps its cadence instead of pausing, and only the retry
--- is paced.
+-- NO HOLD HERE, deliberately: unlike a silent generator, an unwritable record still exercises the app --
+-- only the transcript is missing -- so the cadence is kept and only the retry is paced. What is lost is
+-- COUNTED, or the file would have a gap with nothing to say how wide.
 function brun.rechold()
   local why = tostring(brec.why)
   brun.nrecfail = brun.nrecfail + 1
@@ -1240,13 +1231,9 @@ end
 -- The next plan row, waiting for the plan file if it has to. -> a cell, or nil only when the run is to
 -- stop -- which is to say when the operator stopped it or holdmax expired.
 --
--- A PLAN THAT WILL NOT OPEN USED TO END THE RUN, and on a key that is written to every cell that is a
--- plausible transient: the file is there, the volume answered a moment ago, and one failed open threw
--- away a fortnight. Now it holds and retries like everything else, so the same event costs a gap.
---
--- AN EMPTY PLAN IS THE SAME FAULT ARRIVING DIFFERENTLY -- the open succeeded and the first read gave
--- nothing -- and it must be paced the same way, or a plan whose rows have gone spins as fast as the
--- interpreter can reopen it.
+-- A PLAN THAT WILL NOT OPEN USED TO END THE RUN, and on a key written to every cell that is a plausible
+-- transient. An empty plan is the same fault arriving differently -- the open succeeded, the first read
+-- gave nothing -- and is paced the same way, or it spins as fast as the interpreter can reopen it.
 function brun.planwait()
   local nfail = 0
   while true do
@@ -1298,12 +1285,16 @@ function brun.soak(iterations, tag)
   brun.t0 = nil
   pcall(function() brun.t0 = os.time() end)
 
+  -- A FAULT AT STARTUP IS STILL ONLY A FAULT. Both used to return, losing a fortnight to a key that was
+  -- briefly unreadable. Now brec.stopped is retried by rechold, and a closed plan handle makes nextrow
+  -- answer nil, which puts the loop into planwait.
+  brun.startfault = nil
   if not brec.begin(tag or 'soak', forever and 0 or iterations, brun.planpath) then
-    return false, 'cannot record: ' .. tostring(brec.why)
+    brun.startfault = 'cannot record: ' .. tostring(brec.why)
   end
   if not brun.planopen() then
-    brec.finish('no plan file at ' .. brun.planpath)
-    return false, 'no plan file at ' .. brun.planpath
+    brun.startfault = (brun.startfault and (brun.startfault .. '; ') or '')
+                      .. 'no plan file at ' .. brun.planpath
   end
   -- RESUMED, IF ASKED. brun.resume = true means: find the last cell the record holds and carry on after
   -- it. The scan reads the whole record, which is minutes on a fortnight's 160 MB -- once, against days
@@ -1359,6 +1350,10 @@ function brun.soak(iterations, tag)
       brun.msg(brun.c_bad, 'SDG UNREACHABLE at start')
     end
   end
+  if brun.startfault ~= nil then
+    brun.msg(brun.c_bad, brun.fit('AT START: ' .. brun.startfault, brun.panelw))
+    brec.note(0, 0, 0, 'start fault, holding rather than refusing: ' .. brun.startfault)
+  end
   brec.note(0, 0, 0, 'start: sdg ' .. (live and tostring(idn) or ('UNREACHABLE ' .. tostring(idn))))
   brun.announce(string.format('START iterations=%s sdg=%s', tostring(iterations or 'forever'),
                               tostring(live)))
@@ -1373,8 +1368,12 @@ function brun.soak(iterations, tag)
         brun.stopwhy = string.format('%d iteration(s) complete', iterations)
         break
       end
-      brec.note(lastiter or -1, -1, 0, string.format('plan wrapped, pass %d', brun.nwrap + 1))
-      brun.msg(brun.c_lab, string.format('plan wrapped -- pass %d, stimulus repeats', brun.nwrap + 1))
+      if lastiter ~= nil then
+        brec.note(lastiter, -1, 0, string.format('plan wrapped, pass %d', brun.nwrap + 1))
+        brun.msg(brun.c_lab, string.format('plan wrapped -- pass %d, stimulus repeats', brun.nwrap + 1))
+      else
+        brun.nwrap = brun.nwrap - 1     -- nothing has been read, so nothing has wrapped
+      end
       -- HOLDS RATHER THAN PARKING, for the same reason as everything else here: nil comes back only when
       -- the operator has stopped the run.
       c = brun.planwait()
@@ -1458,10 +1457,12 @@ function brun.soak(iterations, tag)
       -- belonged -- a 22-field row in a 23-field schema. It cost nothing on the instrument and everything
       -- on the host: judge_bench.py refused the whole file, correctly, because a short row means every
       -- column after it might be the wrong one. A row you cannot count by eye should not be typed by eye.
-      brec.row(string.format('%d,%d,%s,%d,%s,%.4f,%.4f,%.6f,%.3f',
+      if not brec.row(string.format('%d,%d,%s,%d,%s,%.4f,%.4f,%.6f,%.3f',
                              c.iter, c.cell, brec.q(c.vid), c.baud, brec.q(c.kind),
                              c.amp or 0, c.ofst or 0, c.srate or 0, c.wait or 0)
-               .. string.rep(',', brun.nmeascol + 1) .. 'SDG:' .. brec.q(swhy) .. ',')
+               .. string.rep(',', brun.nmeascol + 1) .. 'SDG:' .. brec.q(swhy) .. ',') then
+        brun.rechold()
+      end
       brec.note(c.iter, c.cell, brun.ncell, 'sdg failed: ' .. tostring(swhy), brun.nbad, brun.nbadsdg)
       if brun.nbadsdg >= brun.maxsdgfail then
         -- HOLDS. brun.sdghold answers false only when the operator pressed TRIGGER or a test set
@@ -1505,7 +1506,8 @@ function brun.soak(iterations, tag)
           brun.nunexp = brun.nunexp + 1
         end
       end
-      brec.row(string.format('%d,%d,%s,%d,%s,%.4f,%.4f,%.6f,%.3f,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s',
+      if not brec.row(string.format(
+                             '%d,%d,%s,%d,%s,%.4f,%.4f,%.6f,%.3f,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s',
                              c.iter, c.cell, brec.q(c.vid), c.baud, brec.q(c.kind),
                              c.amp or 0, c.ofst or 0, c.srate or 0, c.wait or 0,
                              brun.fsnum(p.fs), brun.num(p.fs, c.baud),
@@ -1513,7 +1515,12 @@ function brun.soak(iterations, tag)
                              tostring(p.nf or ''), tostring(p.ngood or ''), tostring(p.nbad or ''),
                              tostring(p.nflag or ''), tostring(p.headsusp or ''),
                              tostring(p.snapped), tostring(p.snapfirm),
-                             brec.q(p.why)) .. ',' .. (p.hex or ''))
+                             brec.q(p.why)) .. ',' .. (p.hex or '')) then
+        -- CHECKED HERE, because the last cell of a run has no next pass to notice a failed write in:
+        -- brec.stopped is tested at the TOP of a cell, so a record that died on the final row went
+        -- uncounted and unretried.
+        brun.rechold()
+      end
       brun.ncell = brun.ncell + 1
       brun.announce(string.format('CELL %d/%d %s@%d %s nf=%s ev=%s', c.iter, c.cell,
                                   tostring(c.vid), c.baud, p.ran and 'ok' or 'FAIL',
@@ -1564,11 +1571,9 @@ function brun.soak(iterations, tag)
   brun.ui_end()
   -- THE LAST LAP AND CELL, not -1. A run-total line whose lap column says -1 cannot be placed in the
   -- run, and 'where did it get to' is the first question a returning operator asks.
-  -- THE WAITS AND THE LOSSES ARE PART OF THE TOTAL. A fortnight that held for the generator for nine
-  -- hours and lost fifty cells to a key that came loose is not the same run as one that did neither, and
-  -- the difference has to be one line a reader finds rather than something they reconstruct from the S
-  -- rows. Written unconditionally, including the zeros, because a line that appears only when something
-  -- went wrong is a line whose absence has to be interpreted.
+  -- THE WAITS AND THE LOSSES ARE PART OF THE TOTAL, in one line rather than reconstructed from the S
+  -- rows -- and written even when they are zero, since a line that appears only on failure makes its
+  -- absence something to interpret.
   brec.note(brun.iter, brun.cell, brun.ncell,
             string.format('run total: %d cell(s), %d failed, %d event(s) instigated (%d from the panel), '
                           .. 'held %d s over %d retry(s), %d cell(s) unrecorded in %d gap(s)',

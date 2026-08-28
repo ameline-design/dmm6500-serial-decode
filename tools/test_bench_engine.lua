@@ -440,7 +440,13 @@ do
   writeplan(plan)
   brun.holdslice, brun.holdmax = 1, 4
   MOCKB.sdg.wedged = true
+  -- delay() IS SPIED ON, not inferred from a counter. brun.heldsecs increments next to the delay call
+  -- rather than because of it, so asserting on the counter alone would still pass with the waiting
+  -- removed -- and offline delay() is a no-op, so nothing else can tell the difference.
+  local realdelay, ndelay, delayed = brun.holddelay, 0, 0
+  brun.holddelay = function(s) ndelay = ndelay + 1; delayed = delayed + s; return realdelay(s) end
   local ok1, why1 = brun.soak(1, 'nopark')
+  brun.holddelay = realdelay
   ck(ok1 == true and string.find(tostring(why1), 'gave up after', 1, true) ~= nil
      and string.find(tostring(why1), 'in a row', 1, true) == nil,
      'a wedged generator is held for, not parked on -- only holdmax ends it', tostring(why1))
@@ -448,8 +454,12 @@ do
   -- period: brun.nhold counts COMPLETED holdsecs waits, and holdsecs is 300 here because nothing set it,
   -- so a test bounded at 4 s cannot see one. What it can see is that the run spent those 4 s waiting for
   -- the generator rather than ending. Retries are counted in (c), where the period is 1 s.
-  ck(brun.heldsecs > 0, 'and it really did wait, at the shipped 300 s period',
-     string.format('%d s held, %d completed retry(s)', brun.heldsecs, brun.nhold))
+  ck(ndelay > 0 and delayed >= brun.holdmax and brun.heldsecs == delayed,
+     'and it really did wait -- delay() was called, for as long as the counter claims',
+     string.format('%d call(s), %g s delayed, counter says %g', ndelay, delayed, brun.heldsecs))
+  ck(delayed <= brun.holdmax + brun.holdslice,
+     'and it stopped waiting when holdmax said to, not later',
+     string.format('%g s against holdmax %g', delayed, brun.holdmax))
 
   -- (b) A GENERATOR THAT ANSWERS IS NOT WAITED FOR. maxsdgfail counts cells with no stimulus, and a stale
   -- arb_names.tsp produces those with the generator perfectly alive -- a static fault no amount of holding
@@ -653,6 +663,79 @@ do
   ck(string.find(tostring(whyk), 'holding for the generator', 1, true) ~= nil,
      'and says what it was holding for when it was pressed', tostring(whyk))
   ck(brun.stopbad ~= true, 'and an operator stop is not a fault, so the screen does not go red')
+end
+
+-- ---------------------------------------------------------------------------
+print('')
+print('-- the faults that used to end a run before it started --')
+do
+  local plan, i = {}, nil
+  for i = 1, 3 do
+    plan[i] = '1,' .. i .. ',v77,' .. ARB.v77 .. ',9600,std,5.0000,0.0000,96000,0.000'
+  end
+
+  -- (a) A PLAN THAT WILL NOT OPEN AT STARTUP. This returned before the loop, which loses a fortnight to a
+  -- key that was briefly unreadable at nine in the morning.
+  MOCKB_SDG({})
+  bsdg.reset()
+  writeplan(plan)
+  brun.holdslice, brun.holdsecs, brun.holdmax = 1, 1, 30
+  local realopen, nopen = brun.planopen, 0
+  brun.planopen = function()
+    nopen = nopen + 1
+    if nopen == 1 then return false end        -- the startup open, and only that one
+    return realopen()
+  end
+  local oks, whys = brun.soak(1, 'startplan')
+  brun.planopen = realopen
+  shipdefaults()
+  ck(oks == true and string.find(tostring(whys), 'iteration', 1, true) ~= nil,
+     'a plan that will not open at startup holds instead of refusing', tostring(whys))
+  ck(brun.ncell == 3, 'and the lap runs once it opens', string.format('%d cell(s)', brun.ncell))
+
+  -- (b) A RECORD THAT DIES ON THE LAST CELL. brec.stopped is tested at the TOP of a cell, so the final
+  -- row's failure had no next pass to be noticed in: it was neither counted nor retried.
+  MOCKB_SDG({})
+  bsdg.reset()
+  writeplan(plan)
+  local realrow, nrow = brec.row, 0
+  brec.row = function(s)
+    nrow = nrow + 1
+    if nrow == 3 then
+      brec.stopped, brec.why = true, 'write failed twice on SOAK.csv'
+      return false
+    end
+    return realrow(s)
+  end
+  local okl = brun.soak(1, 'lastcell')
+  brec.row = realrow
+  ck(okl == true and brun.nreclost >= 1, 'a record that fails on the LAST cell is still counted',
+     string.format('%d cell(s) unrecorded', brun.nreclost))
+
+  -- (c) THE HEADER'S OWN BYTES COUNT. Three header lines per run, per roll and per recovery went into the
+  -- file and not into the budgets, so a key that failed and recovered repeatedly could pass maxfile and
+  -- maxtotal while both counters said otherwise.
+  brec.finish('done')
+  brec.begin('bytes', 1, 'x')
+  ck(brec.nbyte > 200 and brec.ntotbyte == brec.nbyte,
+     'a header is charged to the file it is written to',
+     string.format('%d byte(s) after begin', brec.nbyte))
+  local before = brec.nbyte
+  brec.stopped, brec.why = true, 'pretend'
+  ck(brec.reopen() == true and brec.nbyte > before,
+     'and so is the resumed header', string.format('%d -> %d', before, brec.nbyte))
+
+  -- (d) A REOPEN WHOSE HEADER DOES NOT LAND IS NOT A RECOVERY. Marking the record live before writing it
+  -- let a still-failing key report 'recording resumed' and count a recovery.
+  brec.stopped, brec.why = true, 'pretend again'
+  local realraw = brec.rawwrite
+  brec.rawwrite = function(fh, s) return false end
+  local back = brec.reopen()
+  brec.rawwrite = realraw
+  ck(back == false and brec.stopped == true,
+     'a reopen whose header will not write reports failure, not recovery',
+     string.format('reopen said %s, stopped=%s', tostring(back), tostring(brec.stopped)))
+  brec.finish('done')
 end
 
 -- ---------------------------------------------------------------------------
