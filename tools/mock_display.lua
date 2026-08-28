@@ -418,6 +418,17 @@ function MD.content(path) return CONTENT[path] end
 -- have to re-probe every existing file (which posts a "2205 File not found" per miss on the
 -- instrument) -- and a cache that outlived the filesystem would have it skipping names on a key
 -- it has never seen. Wiping FILES is the harness's way of saying "different key".
+-- ONE FILE, GONE, which forget_files cannot express and a caller should not have to fake by wiping the
+-- whole key. The instrument has no file.delete, so nothing in tsp/ can reach this -- it exists because
+-- a run's control file (STOP.TXT) is dropped by a HUMAN and removed by one, and a test of the
+-- stop-and-then-continue path has to be able to do the removing.
+function MD.rmfile(path)
+  local p = abs(path)
+  FILES[p] = nil
+  CONTENT[p] = nil
+  if WPATH == p then WPATH = nil end
+end
+
 function MD.forget_files()
   FILES = {}
   CONTENT = {}

@@ -697,6 +697,41 @@ def selftest():
         ck(min(w) >= 0 and max(w) < cap, '%d Bd: waits inside [0, %.4f s)' % (baud, cap))
         ck(max(w) > 0.6 * cap, '%d Bd: the draw reaches the top of its span' % baud)
 
+    # THE CSV AND THE LUA TABLE MUST DESCRIBE THE SAME CELLS. They are two serialisations of one draw,
+    # read by two different harnesses -- the offline twin and the on-instrument soak -- and the failure
+    # this pins is the one that has already happened once in this project by another route: two
+    # descriptions of the same plan that quietly disagree about a cell's amplitude, so a run measures a
+    # stimulus nobody intended and every number it produces is about the wrong signal. Asserted per
+    # cell rather than by row count, because a count matches while the values are shifted by one.
+    csvtext = emit_csv(1, 1, None, HW_SKIP)
+    luatext = emit_lua(1, None, HW_SKIP)
+    crows = [ln.split(',') for ln in csvtext.strip().split('\n')
+             if ln and not ln.startswith('#') and not ln.startswith('iter')]
+    lamps = re.findall(r'^  amps = \{(.*?)^  \},', luatext, re.S | re.M)
+    lofst = re.findall(r'^  ofsts = \{(.*?)^  \},', luatext, re.S | re.M)
+    lwait = re.findall(r'^  waits = \{(.*?)^  \},', luatext, re.S | re.M)
+    ck(len(lamps) == 1 and len(lofst) == 1 and len(lwait) == 1,
+       'emit_lua carries exactly one amps, ofsts and waits block')
+    if len(lamps) == 1 and len(lofst) == 1 and len(lwait) == 1:
+        def flat(block):
+            return [float(x) for row in re.findall(r'\{([^{}]*)\}', block)
+                    for x in row.split(',') if x.strip()]
+        fa, fo, fw = flat(lamps[0]), flat(lofst[0]), flat(lwait[0])
+        ck(len(crows) == len(fa) == len(fo) == len(fw),
+           'the CSV has one row per (vi, ri) the Lua table has: %d vs %d/%d/%d'
+           % (len(crows), len(fa), len(fo), len(fw)))
+        nmis = 0
+        for i, r in enumerate(crows):
+            if i >= len(fa):
+                break
+            # 0.5 mV and 1 us of print rounding are allowed; a real disagreement is orders larger.
+            if abs(float(r[5]) - fa[i]) > 5e-4 or abs(float(r[6]) - fo[i]) > 5e-4:
+                nmis += 1
+            elif abs(float(r[8]) / 1000.0 - fw[i]) > 1e-6:
+                nmis += 1
+        ck(nmis == 0, 'every CSV cell carries the Lua table\'s own amplitude, offset and wait '
+                      '(%d disagree)' % nmis)
+
     print('\n%s' % ('%d FAILED' % len(bad) if bad else 'selftest: all properties hold'))
     return 1 if bad else 0
 
@@ -910,10 +945,100 @@ def check_log(path, iteration, skip):
     return 0
 
 
+def spec_order(spec):
+    """Parse bench_matrix's --plan-spec into (order, kindmap). Same grammar, same refusals.
+
+    THE SPEC REPLACES THE SHUFFLE, and that is the part worth stating: with a spec, bench_matrix
+    enumerates the SPEC's own list, so vi is a vector's position in what was typed -- not its position
+    in plan_order. vi keys the amplitude, the offset and the wait, so a smoke plan built from the
+    shuffled order would drive every cell at a different amplitude than the host smoke drives it at,
+    and the two would disagree for a reason that is neither hardware nor app. This project has already
+    paid for that mistake once by the other route (the skip set moving vi), so the indexing is copied
+    rather than re-derived.
+    """
+    from vector_names import MAP as _MAP
+    order, kindmap = [], {}
+    for item in spec.split(','):
+        vid, _, kinds = item.strip().partition(':')
+        vid = vid.strip()
+        if vid not in _MAP:
+            raise SystemExit('REFUSING: --spec names %r, which is not in vector_names.MAP' % vid)
+        k = (kinds or 'all').strip()
+        want = {'std': {'std'}, 'nonstd': {'rand', 'edge'},
+                'all': {'std', 'rand', 'edge'}}.get(k)
+        if want is None:
+            raise SystemExit("REFUSING: --spec kind %r for %s; use std, nonstd or all" % (k, vid))
+        order.append(vid)
+        kindmap[vid] = want
+    return order, kindmap
+
+
+def emit_csv(first, last, nvectors=None, skip=None, spec=None):
+    """The plan as flat CSV for bench/bench_run.tsp to stream off the USB key.
+
+    WHY A THIRD FORM, after the Lua table and the hardware sweep's own iteration. The on-instrument
+    soak reads its plan a LINE AT A TIME: a long run is tens of thousands of cells, and the DMM6500 has
+    no memory to spare for a table it visits once per entry. Flat rows also mean a soak killed by a
+    power cycle resumes by reading forward rather than by reconstructing anything.
+
+    SAME FUNCTIONS AS emit_lua, deliberately -- plan(), amp_ofst_u() and amp_ofst_for(). This adds a
+    serialisation, NOT a second draw. The one number computed here that emit_lua does not carry is the
+    generator's sample rate, and it comes from bench_matrix's own rule (baud x the manifest's spb),
+    because that is what the hardware sweep programs and any other value would play the vector at the
+    wrong speed.
+
+    ITERATIONS ARE A RANGE because the instrument cannot draw its own: an 8-day soak is ~66 laps at
+    ~2.9 h each, so the file has to cover more iterations than the run will reach. Running past the
+    last row wraps to the first, which repeats stimulus already seen -- so emit generously and let it
+    never wrap.
+    """
+    from vector_names import MAP as _MAP
+    vecs = sorted(_MAP.keys())
+    out = ['# generated by tools/soakplan.py --emit-csv; one row per cell, streamed by bench_run.tsp',
+           'iter,cell,vid,baud,kind,amp_vpp,ofst_v,srate,wait_ms']
+    import instruments as _I
+    for it in range(first, last + 1):
+        rates = rates_for(it)
+        if spec:
+            order, kindmap = spec_order(spec)
+        else:
+            order, kindmap = plan_order(it, vecs, skip, nvectors), None
+        n = 0
+        for vi, vid in enumerate(order):
+            row = _manifest_rows().get(vid) or {}
+            # THE SAME TWO SKIPS bench_matrix APPLIES, and each changes the cell COUNT rather than only
+            # an outcome: a vector with no expected bytes cannot be judged, and a sample rate past the
+            # generator's ceiling cannot be played. Emitting either would put a row on the key that the
+            # host bench never runs, so the two would not be the same cells.
+            if not (row.get('exp_hex') or '').strip():
+                continue
+            spb = int(row.get('spb') or 10)
+            for ri, (baud, kind) in enumerate(rates):
+                if kindmap is not None and kind not in kindmap[vid]:
+                    continue
+                srate = int(round(baud * spb))
+                if srate > _I.SDG_MAX_SRATE:
+                    continue
+                ua, uo = amp_ofst_u(it, vi, ri)
+                amp, ofst = amp_ofst_for(vid, ua, uo)[0:2]
+                n += 1
+                out.append('%d,%d,%s,%d,%s,%.4f,%.4f,%d,%.3f'
+                           % (it, n, vid, baud, kind, amp, ofst, srate,
+                              1000.0 * wait_s(it, vi, ri, baud)))
+    return '\n'.join(out) + '\n'
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--emit-lua', action='store_true',
                     help='print the plan as a Lua table for tools/sweep_plan.lua')
+    ap.add_argument('--emit-csv', action='store_true',
+                    help='print the plan as flat CSV for the on-instrument soak (bench/bench_run.tsp)')
+    ap.add_argument('--iterations', type=int, default=None,
+                    help='with --emit-csv: emit iterations --iteration..N inclusive')
+    ap.add_argument('--spec', default=None,
+                    help='with --emit-csv: bench_matrix\'s --plan-spec grammar (vid:std|nonstd|all, '
+                         'comma separated), for the smoke\'s 86-cell subset')
     ap.add_argument('--iteration', type=int, default=1)
     ap.add_argument('--vectors', type=int, default=None, help='a seeded subset of this many vectors')
     ap.add_argument('--rates', action='store_true', help='print only the rate list')
@@ -936,6 +1061,14 @@ def main():
         return check_log(a.check_log, a.iteration, skip)
     if a.emit_lua:
         sys.stdout.write(emit_lua(a.iteration, a.vectors, skip))
+        return 0
+    if a.emit_csv:
+        last = a.iterations if a.iterations is not None else a.iteration
+        if last < a.iteration:
+            print('REFUSING: --iterations %d is below --iteration %d, so the range is empty and the '
+                  'instrument would read a plan with no cells in it.' % (last, a.iteration))
+            return 2
+        sys.stdout.write(emit_csv(a.iteration, last, a.vectors, skip, a.spec))
         return 0
 
     from vector_names import MAP
