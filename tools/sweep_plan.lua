@@ -298,6 +298,11 @@ local nbleed, worstbleed = 0, 0
 -- verdict block for why counting a correct refusal as a failure is the harness lying, and why leaving it
 -- uncounted lets total byte suppression hide.
 local nloudquiet = 0
+-- BYTE-EXACT CAPTURES WHOSE REPORTED RATE IS STILL WRONG. Counted apart from `bad` because the data is
+-- correct and only the panel's number is not -- a different defect with a different severity, and one no
+-- byte comparison can ever see.
+local nlabel = 0
+local labelroute = {r46b = 0, rfit1 = 0, rstdC = 0, rother = 0}
 -- The four r* entries are SUBDIVISIONS OF `rate`, not siblings of it: rate stays the total so the
 -- ratchet keyed on it keeps meaning what it measured, and the routes sum to it.
 local CLS = {'raised', 'nobytes', 'norate', 'rate', 'bytes',
@@ -370,11 +375,41 @@ for vi = 1, table.getn(P.vectors) do
         end
         -- A point that cannot be judged is neither a pass nor a failure, and is counted apart so a
         -- clean-looking run cannot be clean because nothing was checked.
+        -- THE REPORTED RATE IS CHECKED EVEN WHEN THE BYTES ARE RIGHT, and its absence here is why this
+        -- harness reported ZERO cluster-C cases in 141040 decodes while a single hardware lap produced
+        -- three. judge() compares bytes and nothing else, so a capture whose bytes are cyclic-exact
+        -- returns ok and classify() -- the only place the rate is looked at -- is never reached. A wrong
+        -- rate with right bytes was therefore invisible BY CONSTRUCTION, which is the exact shape of the
+        -- defect: sig_snap moves the LABEL and framing keeps using the unsnapped bittime, so the bytes
+        -- survive and the panel still names a rate that is 2.4-2.7 % wrong.
+        --
+        -- COUNTED, NOT YET GATED. This is a new measurement and the ratchets have no baseline for it, so
+        -- it reports and does not fail; turning it into a verdict without a measured bound is how a
+        -- harness starts inventing failures.
+        local labelbad = false
+        if good == true and rb ~= nil and math.abs(rb / baud - 1) > SNAP then
+          labelbad = true
+          nlabel = nlabel + 1
+          labelroute[rate_route(rb, baud)] = labelroute[rate_route(rb, baud)] + 1
+        end
         local verdict
         if good == nil then
           verdict = 'skip'; nskip = nskip + 1
         elseif good then
           verdict = 'ok'; nok = nok + 1
+          if labelbad then
+            -- THE RAW FIT IS PRINTED BESIDE THE LABEL, because the two answer different questions: the
+            -- label says what the panel claimed, the raw fit says how far the MEASUREMENT actually was.
+            -- Cluster C is the gap between them -- a fit off by a fraction of a per cent that snapping
+            -- turns into a 2.5 % claim -- and without both numbers the row cannot show that.
+            local raw = sdec.baud_raw
+            det = string.format('%s  [RATE LABEL %s x%.3f: read %.0f Bd for %d commanded; raw fit %s '
+                                .. '(%+.3f %%); fitq %.4f over %s pulses]',
+                                det, rate_route(rb, baud), rb / baud, rb, baud,
+                                raw ~= nil and string.format('%.1f', raw) or 'nil',
+                                raw ~= nil and 100 * (raw / baud - 1) or 0,
+                                sdec.fitq or -1, tostring(sdec.nw))
+          end
         else
           -- 'loud' vectors may fail; they may not be SILENTLY WRONG. Silent means bytes came back AND
           -- NOT ONE FRAME WAS FLAGGED: a decode that raised a flag has told the operator something is
@@ -443,11 +478,13 @@ end
 -- capture of this plan comes back wrong, cells is how much of the plan is affected at all.
 print(string.format('\nPLAN %d/%d iteration %d: cells %d badcells %d points %d ok %d bad %d skip %d '
                     .. 'raised %d nobytes %d norate %d rate %d bytes %d bleed %d bleedworst %d '
-                    .. 'r46b %d rfit1 %d rstdC %d rother %d loudquiet %d',
+                    .. 'r46b %d rfit1 %d rstdC %d rother %d loudquiet %d '
+                    .. 'label %d lr46b %d lrfit1 %d lrstdC %d lrother %d',
                     A.shard, A.nshard, P.iteration, ncell, nbadcell, nok + nbad + nskip,
                     nok, nbad, nskip,
                     cls.raised, cls.nobytes, cls.norate, cls.rate, cls.bytes, nbleed, worstbleed,
-                    cls.r46b, cls.rfit1, cls.rstdC, cls.rother, nloudquiet))
+                    cls.r46b, cls.rfit1, cls.rstdC, cls.rother, nloudquiet,
+                    nlabel, labelroute.r46b, labelroute.rfit1, labelroute.rstdC, labelroute.rother))
 -- THE ROUTES MUST SUM TO `rate`, and this is checked rather than assumed: rate_route returns exactly
 -- one of the four for every rate point, so a mismatch means a point was counted twice or lost, and a
 -- subdivision that does not reconcile with its total is worse than no subdivision at all.
