@@ -134,16 +134,25 @@ def check_compat(code, name):
     return errs
 
 
-def app_namespace(code, default='sdec'):
-    """The single global table this module hangs everything off.
+def app_namespaces(code, default='sdec'):
+    """Every global table this file hangs things off, as a set.
 
-    Detected from the idempotent declaration every module opens with,
+    Detected from the idempotent declaration each module opens with,
     `<ns> = <ns> or {}`, rather than hardcoded: `usb_log.tsp` deliberately uses
     `ulog` so it can be shared with other apps, and a linter that only knew one
     name would report every correct line in the other module as an error.
+
+    ALL OF THEM, NOT THE FIRST. A .tspa is six modules concatenated, and it
+    declares both `ulog` and `sdec` -- so taking the first match called every
+    `sdec.*` assignment in the other five modules a bare global: 249 of them,
+    rc=1, on a package that is perfectly correct. That is worse than not checking,
+    because a real bare global would have been the 250th line of a wall nobody
+    reads. The check stays strict: a name that was never declared with the
+    idempotent idiom is still refused, and a single-module file still has exactly
+    one namespace, so nothing about linting tsp/*.tsp changes.
     """
-    m = re.search(r'^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\1\s+or\s+\{\}', code, re.M)
-    return m.group(1) if m else default
+    ns = set(re.findall(r'^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\1\s+or\s+\{\}', code, re.M))
+    return ns or {default}
 
 
 def check_globals(code, name):
@@ -153,42 +162,32 @@ def check_globals(code, name):
     share one Lua global environment, and event command strings resolve names
     there too, so a generic global is a real collision risk.
     """
-    ns = app_namespace(code)
+    ns = app_namespaces(code)
+    shown = '/'.join(sorted(ns))
     errs = []
     for lineno, line in enumerate(code.split('\n'), 1):
         m = re.match(r'([A-Za-z_][A-Za-z0-9_.]*)\s*=[^=]', line)
-        if m and m.group(1).split('.')[0] != ns:
+        if m and m.group(1).split('.')[0] not in ns:
             errs.append(f'{name}:{lineno}: bare global assignment `{m.group(1)}` '
-                        f'(everything must hang off the {ns} table)')
+                        f'(everything must hang off the {shown} table)')
         m = re.match(r'function\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(', line)
         if m:
             errs.append(f'{name}:{lineno}: bare global function `{m.group(1)}` '
-                        f'(must be {ns}.{m.group(1)})')
+                        f'(must be {shown}.{m.group(1)})')
     return errs
 
 
 def check_dupes(code, name):
     """One name, one definition, and no named function nested inside another.
 
-    NEITHER SHAPE IS A SYNTAX ERROR, which is why this exists: a 57-line block containing three
-    functions was duplicated into the body of brun.ui_destroy in bench_run.tsp, and the real Lua 5.0.2
-    parser, the block-nesting check and 127 offline assertions all passed on it, before and after the
-    repair. Nothing in this repo could see it. A human reading the file found it.
+    NEITHER SHAPE IS A SYNTAX ERROR, which is why this exists: a 57-line block of three functions was
+    duplicated into brun.ui_destroy's body, and the 5.0.2 parser, the nesting check and 127 assertions
+    all passed on it. The later copy wins, but only once the enclosing function runs -- so ui_destroy
+    silently cleared brun.msgs, and the next edit to brun.msg would have been reverted on a rebuild.
 
-    WHAT IT ACTUALLY COSTS, because 'dead duplicate code' understates it. The second definition WINS --
-    it is the later assignment -- but only once the enclosing function is CALLED, so the file reads as
-    though the first one is in force. Two consequences, both silent: ui_destroy re-ran `brun.msgs = nil`
-    on every screen rebuild, wiping the rolling log it has no business touching; and the next edit to
-    brun.msg at the top of the file would have been reverted by the stale copy the first time the screen
-    was rebuilt. That is this project's worst failure shape -- two definitions of one thing, where on the
-    night they disagree both look right -- and it is exactly what the judge-on-the-instrument comment in
-    tools/judge_bench.py refuses to allow for the same reason.
-
-    THE INDENTATION HALF IS THE ONE THAT GENERALISES. The duplicate was byte-identical, so the
-    same-name test caught it; had the merge nested a DIFFERENT function, only the indentation would have.
-    Every module here hangs its functions off one table at file scope -- `local function` inside a body
-    is how a genuine helper is written, and it does not match this -- so an indented `function ns.name`
-    is an editing accident every time it has occurred.
+    THE INDENTATION HALF IS WHAT GENERALISES: the duplicate was byte-identical, so the name test caught
+    it, but a nested DIFFERENT function would only trip the indentation. `local function` is how a real
+    helper is written here and does not match.
     """
     seen, errs = {}, []
     for lineno, line in enumerate(code.split('\n'), 1):

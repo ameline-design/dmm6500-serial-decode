@@ -26,6 +26,7 @@ STRIP_COMMENTS = True
 KEEP_COMMENT_LINES = 5
 import re
 import struct
+import sys
 import textwrap
 import zlib
 
@@ -325,6 +326,8 @@ def main():
     ap.add_argument('--out', default=os.path.join(ROOT, NAME + '.tspa'))
     ap.add_argument('--icon-png', default=os.path.join(ROOT, 'docs', 'sdec_icon.png'),
                     help='also write the icon on its own, for review')
+    ap.add_argument('--check', action='store_true',
+                    help='write nothing: exit 1 if the package on disk is not what these sources build')
     args = ap.parse_args()
 
     out = []
@@ -404,6 +407,28 @@ def main():
     out.append('endimage')
 
     text = '\r\n'.join(out) + '\r\n'        # CRLF, like the Keithley examples
+
+    # IS THE COMMITTED PACKAGE THE ONE THESE SOURCES BUILD? Nothing asked that until the package was
+    # found six commits behind tsp/uart_decode.tsp -- shipping a decoder in which an anchor outside the
+    # probe's window still counted as evidence that no format fits. It went unnoticed because every
+    # harness in this repo loads tsp/*.tsp over the LAN, so only an install through Manage Apps gets the
+    # packaged code and no test installs one. Linting the .tspa does not catch it either: stale code is
+    # still valid Lua.
+    if args.check:
+        try:
+            with open(args.out, newline='') as f:
+                have = f.read()
+        except IOError:
+            print('STALE: %s does not exist' % args.out)
+            return 1
+        if have == text:
+            print('current: %s is what these %d module(s) build' % (args.out, len(MODULES)))
+            return 0
+        print('STALE: %s is not what these sources build (%d bytes on disk, %d from the modules)'
+              % (args.out, len(have), len(text)))
+        print('  regenerate it:  python3 tools/package_tspa.py')
+        return 1
+
     with open(args.out, 'w', newline='') as f:
         f.write(text)
 
@@ -420,4 +445,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main() or 0)

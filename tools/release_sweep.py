@@ -77,8 +77,12 @@ class Stage:
 
 def stages(outdir, shots):
     S = [
-        Stage('lint', ['python3', 'tools/lint_tsp.py'] + tsp_files(),
-              note='Lua 5.0.2 incompatibilities: #, %, gmatch, string args to collectgarbage'),
+        # THE PACKAGE IS LINTED TOO, because it is what ships -- and it could not be before now: the
+        # namespace check took the FIRST `<ns> = <ns> or {}`, so a concatenation declaring both ulog and
+        # sdec produced 249 false positives.
+        Stage('lint', ['python3', 'tools/lint_tsp.py'] + tsp_files() + ['Serial_Decode.tspa'],
+              note='Lua 5.0.2 incompatibilities: #, %, gmatch, string args to collectgarbage -- on '
+                   'every module AND on the packaged .tspa that actually ships'),
         Stage('parse', ['bash', '-c',
                         'for f in tsp/*.tsp; do luac -p "$f" || exit 1; done; echo "all parse"'],
               note='luac -p on every module'),
@@ -88,6 +92,12 @@ def stages(outdir, shots):
         # refusing the whole hardware half over one name and skipping every gate behind it.
         Stage('vecrefs', ['python3', 'tools/lint_vecrefs.py'],
               note='every vector id named in tools/ is in MAP or declared RETIRED'),
+        # IS WHAT SHIPS BUILT FROM WHAT WAS TESTED? Serial_Decode.tspa spent six commits behind
+        # tsp/uart_decode.tsp. Nothing could see it: every harness loads tsp/*.tsp over the LAN, so only
+        # a Manage Apps install gets the packaged code, and stale code still lints and parses.
+        Stage('tspa-current', ['python3', 'tools/package_tspa.py', '--check'],
+              note='the committed .tspa is what the current modules build -- a stale package installs '
+                   'code no test in this repo has ever run'),
         Stage('unit', ['lua', 'tools/test_serial.lua'],
               note='the offline suite: decoder, UI, state machine, file paths'),
         # BEFORE ANY SEEDED SUITE, because everything a seeded suite reports is worthless if the two
@@ -115,12 +125,15 @@ def stages(outdir, shots):
         Stage('unit-cancel', ['lua', 'tools/test_cancel.lua'],
               note='the TRIGGER-key cancel latch, one press for a whole transmission, the two '
                    'window sizes, and flow control looping with no interaction at all'),
-        # THE ONE SUITE THAT COVERS CODE NOBODY WILL BE STANDING NEXT TO. bench/bench_run.tsp drives the
-        # instrument for a fortnight with no host attached, and the branches that decide whether it
-        # survives -- a generator that stops answering, a record that will not write, a plan file that
-        # goes away, the TRIGGER key inside a hold -- cannot be arranged on hardware on purpose. It was
-        # absent from this list while it grew to 149 assertions, so the release gate has been passing
-        # without ever running them.
+        # THE ONE SUITE COVERING CODE NOBODY WILL BE STANDING NEXT TO. bench/bench_run.tsp runs for a
+        # fortnight with no host, and its fault branches cannot be arranged on hardware on purpose. It
+        # was absent from this list while it grew to 156 assertions.
+        # THE PLAN HAS TO ARRIVE INTACT FIRST, and the push is a protocol whose interesting failures are
+        # disagreements between the two ends. None can be provoked on hardware, and the first real 19 MB
+        # push carries a fortnight.
+        Stage('unit-pushplan', ['python3', 'tools/test_pushplan.py'],
+              note='the acknowledged-batch plan push against a modelled instrument: the plan arrives '
+                   'byte-exact, and each way it can go wrong is REFUSED rather than reported as success'),
         Stage('unit-benchengine', ['lua', 'tools/test_bench_engine.lua'],
               note='the on-instrument soak engine: brun.point against bench_uart.py\'s own bench_point, '
                    'every status line at its widest, and the fault paths that must report rather than '
