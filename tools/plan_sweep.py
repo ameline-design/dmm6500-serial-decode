@@ -36,11 +36,29 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, 'tools'))
+
+import soakplan as SP                                                          # noqa: E402
+
 PLANDIR = os.path.join(ROOT, 'out', 'plans', 'auto')
+
+# THE SKIP LIST IS PART OF THE PLAN, and the default is the bench's own so the twin replays the lap
+# that is actually run. README.md documents it:
+#   python3 tools/soak.py --hours 17 --suites formats,plan --skip-vectors v95,v96
+#
+# WHY THE DEFAULT IS NOT EMPTY. soakplan's vector_order shuffles the list it is handed and every
+# per-cell wait, amplitude and offset is keyed on a vector's POSITION in that shuffle -- so a twin that
+# emits the 41-vector plan for a 39-vector lap does not test two extra vectors, it plays a DIFFERENT
+# vector's amplitude, offset and capture phase in every single cell. Measured against the bench's own
+# per-cell record for iteration 1, all 1677 cells disagreed:
+#   python3 tools/soakplan.py --iteration 1 --skip-vectors v95,v96 --check-log <a lap log>
+# An empty default is therefore the wrong experiment by default, which is the one thing an offline twin
+# must not be.
+DEFAULT_SKIP = ','.join(SP.HW_SKIP)
 
 # The counters sweep_plan.lua prints on its PLAN line, in the order they appear there.
 KEYS = ['cells', 'badcells', 'points', 'ok', 'bad', 'skip',
-        'raised', 'nobytes', 'norate', 'rate', 'bytes', 'bleed', 'bleedworst',
+        'raised', 'nobytes', 'norate', 'rate', 'flags', 'bytes', 'bleed', 'bleedworst',
         'r46b', 'rfit1', 'rstdC', 'rother', 'loudquiet',
         # `label` and its lr* split are byte-exact captures whose REPORTED rate is wrong. The leading \b in
         # parse() is what keeps 'r46b' from also matching 'lr46b': 'l' and 'r' are both word characters, so
@@ -58,8 +76,14 @@ ROUTES = ['r46b', 'rfit1', 'rstdC', 'rother']
 MAXKEYS = frozenset(['bleedworst'])
 LINE = re.compile(r'^PLAN (\d+)/(\d+) iteration (\d+): (.*)$')
 
-# RATCHETS, KEYED ON (iteration, offsets). Every baseline here is a measurement on a freshly drawn plan
-# and is reproducible run to run; re-measure with --no-ratchet rather than editing one from memory.
+# RATCHETS, KEYED ON (iteration, offsets, skip). Every baseline here is a measurement on a freshly drawn
+# plan and is reproducible run to run; re-measure with --no-ratchet rather than editing one from memory.
+#
+# THE SKIP IS IN THE KEY because it is not a filter on the results, it is a different draw: dropping two
+# names reshuffles the order every wait, amplitude and offset is keyed on, so a baseline measured over 41
+# vectors describes no run over 39. The previous (1,1) and (1,8) baselines were measured on the
+# 41-vector plan -- 1763 cells, none of them replaying the stimulus the bench played -- and are not
+# convertible to these; they were re-measured, not scaled.
 #
 # WHY A RATCHET AND NOT A TARGET, same reasoning as tools/sweep_all.py: these count defects that are
 # UNDERSTOOD AND DELIBERATELY UNFIXED, so demanding zero would fail the gate on a known state, and
@@ -78,10 +102,12 @@ LINE = re.compile(r'^PLAN (\d+)/(\d+) iteration (\d+): (.*)$')
 # cells of 1763, eight find 93. Eight times the yield for eight times the work, and the 11 were never
 # the interesting number -- they were whichever phase the plan's wait happened to draw.
 RATCHET = {
-    (1, 1): {'bad': 11, 'badcells': 11, 'rate': 4, 'bytes': 7, 'nobytes': 0, 'bleed': 253,
-             'skip': 0, 'judged': 1763, 'loudquiet': 17, 'label': 3},
-    (1, 8): {'bad': 167, 'badcells': 93, 'rate': 27, 'bytes': 35, 'nobytes': 105, 'bleed': 1467,
-             'skip': 0, 'judged': 14104, 'loudquiet': 90, 'label': 25},
+    (1, 1, SP.HW_SKIP): {'bad': 16, 'badcells': 16, 'rate': 14, 'flags': 0, 'bytes': 2,
+                         'nobytes': 0, 'bleed': 250, 'skip': 0, 'judged': 1677,
+                         'loudquiet': 5, 'label': 3},
+    (1, 8, SP.HW_SKIP): {'bad': 221, 'badcells': 96, 'rate': 108, 'flags': 0, 'bytes': 7,
+                         'nobytes': 106, 'bleed': 1309, 'skip': 0, 'judged': 13416,
+                         'loudquiet': 54, 'label': 24},
 }
 WHY = {
     'bad': 'failing points',
@@ -108,6 +134,11 @@ WHY = {
     # name a rate 2.4-2.7 % wrong -- and be marked snapped, which removes the panel's approximate marker.
     # Uncounted, that class scored ZERO in 141040 decodes while one hardware lap found three of it.
     'label': 'byte-exact captures whose REPORTED RATE is still wrong (cluster C)',
+    # THE APP'S OWN UNCERTAINTY, BOUNDED. bench_uart.judge_payload fails a capture that flagged more
+    # interior frames than 2 % of the body or two, whichever is kinder; the offline judge had no such
+    # test and read a flagged frame's value as a good byte, so v46 at 80000 Bd -- whose entire bench
+    # verdict is "5 interior flagged, budget 3" -- came back byte-exact here.
+    'flags': 'right bytes, more interior frames flagged than the app\'s own budget allows',
 }
 
 
@@ -134,12 +165,27 @@ def parse(line):
     return int(m.group(1)), int(m.group(2)), int(m.group(3)), out
 
 
-def emit_plan(iteration):
-    """Regenerate the plan for `iteration` and return (path, sha256[:12]). Never reads an existing one."""
+def emit_plan(iteration, skip=SP.HW_SKIP):
+    """Regenerate the plan for `iteration` and return (path, sha256[:12]). Never reads an existing one.
+
+    THE DEFAULT IS THE BENCH'S OWN SKIP, not an empty tuple, and that is the difference between a
+    default and a trap. tools/soak_offline.py calls this with the iteration alone, so a `()` default
+    would leave the LONGEST-RUNNING offline harness in the repo emitting the 41-vector plan -- the exact
+    experiment this file now documents as invalid -- while plan_sweep's own CLI got it right. A caller
+    that has not thought about the skip should get the lap the instrument runs.
+
+    THE SKIP IS IN THE FILENAME, not only in the file. Two skip lists give the same iteration two
+    different plans, and a single plan-N.lua would let one caller's write land under another's running
+    shards -- tools/soak_offline.py calls this from several threads at once, and a shard that re-read a
+    replaced file would total two different experiments into one number.
+    """
     os.makedirs(PLANDIR, exist_ok=True)
-    path = os.path.join(PLANDIR, 'plan-%d.lua' % iteration)
-    p = subprocess.run(['python3', 'tools/soakplan.py', '--emit-lua', '--iteration', str(iteration)],
-                       cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    tag = '-skip-' + '-'.join(skip) if skip else ''
+    path = os.path.join(PLANDIR, 'plan-%d%s.lua' % (iteration, tag))
+    argv = ['python3', 'tools/soakplan.py', '--emit-lua', '--iteration', str(iteration)]
+    if skip:
+        argv += ['--skip-vectors', ','.join(skip)]
+    p = subprocess.run(argv, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if p.returncode != 0:
         raise SystemExit('soakplan.py --iteration %d exited %d:\n%s'
                          % (iteration, p.returncode, p.stderr.decode('utf-8', 'replace')))
@@ -168,9 +214,9 @@ def run_shard(k, n, plan, offsets):
     return k, p.returncode, p.stdout.decode('utf-8', 'replace')
 
 
-def one_lap(iteration, workers, offsets, quiet):
+def one_lap(iteration, workers, offsets, quiet, skip=SP.HW_SKIP):
     """One iteration across every shard. -> (totals dict, list of failure strings, detail lines)."""
-    plan, digest = emit_plan(iteration)
+    plan, digest = emit_plan(iteration, skip)
     tot = dict((k, 0) for k in KEYS)
     failed, detail, nsummary = [], [], 0
     with ThreadPoolExecutor(max_workers=workers) as ex:
@@ -243,16 +289,26 @@ def main():
     ap.add_argument('--quiet', action='store_true', help='totals only, no per-cell failure lines')
     ap.add_argument('--no-ratchet', action='store_true',
                     help='report the counts without gating on them')
+    ap.add_argument('--skip-vectors', default=DEFAULT_SKIP,
+                    help='comma list the lap does not play (default %s, the bench\'s own). Part of '
+                         'the plan, not a filter: it reshuffles the order every wait, amplitude and '
+                         'offset is keyed on. Pass "" to sweep all %d vectors, which is NOT the lap '
+                         'the bench runs' % (DEFAULT_SKIP, len(SP._MAP_KEYS())))
     a = ap.parse_args()
     if a.workers < 1:
         raise SystemExit('--workers must be at least 1')
     if a.offsets < 1:
         raise SystemExit('--offsets must be at least 1')
+    skip = SP.parse_skip(a.skip_vectors)
 
     laps = list(range(1, a.iterations + 1)) if a.iterations else [a.iteration]
     print('offline plan sweep: %d lap(s), %d offset(s) per cell, %d shards'
           % (len(laps), a.offsets, a.workers))
     print('plans regenerated into %s' % os.path.relpath(PLANDIR, ROOT))
+    # PRINTED EVERY RUN, because two runs differing only in this produce different numbers for the same
+    # iteration, and nothing else in the output names which of them a number belongs to.
+    print('skipping %s -- %d vector(s) swept, as the bench sweeps them'
+          % (', '.join(skip) or '(nothing)', len(SP.filter_vectors(sorted(SP._MAP_KEYS()), skip))))
     print()
 
     hdr = ('%-5s %-13s %6s %6s %8s %6s %6s %7s %6s %6s %6s %6s'
@@ -262,7 +318,7 @@ def main():
     print('-' * len(hdr))
     allfail, rows = [], []
     for it in laps:
-        tot, failed, detail, digest = one_lap(it, a.workers, a.offsets, a.quiet)
+        tot, failed, detail, digest = one_lap(it, a.workers, a.offsets, a.quiet, skip)
         rows.append((it, tot))
         if not a.quiet:
             for d in detail:
@@ -299,21 +355,24 @@ def main():
     # THE RATCHET, applied only at the configuration its baselines were measured at, and only to a
     # single-lap run: across laps the counts are per-draw and a baseline drawn from iteration 1 says
     # nothing about iteration 12.
-    key = (a.iteration, a.offsets)
+    key = (a.iteration, a.offsets, skip)
     if a.no_ratchet:
         print('\n-- ratchet DISABLED by --no-ratchet: the counts above gate nothing --')
     elif len(laps) > 1:
         print('\n-- ratchet SKIPPED for a multi-lap run: each lap is a different draw, so a baseline '
               'measured on one iteration does not describe the others --')
-    elif key not in RATCHET:
-        print('\n-- ratchet SKIPPED: iteration %d at %d offset(s) is not a measured configuration '
-              '(%s), so no baseline describes this run --'
-              % (a.iteration, a.offsets,
-                 ', '.join('iteration %d/%d offsets' % k for k in sorted(RATCHET))))
+    elif not RATCHET.get(key):
+        print('\n-- ratchet SKIPPED: iteration %d at %d offset(s) skipping %s is not a measured '
+              'configuration (%s), so no baseline describes this run --'
+              % (a.iteration, a.offsets, ', '.join(skip) or '(nothing)',
+                 ', '.join('iteration %d/%d offsets/skip %s' % (i, o, ','.join(s) or '(nothing)')
+                           for i, o, s in sorted(RATCHET) if RATCHET[(i, o, s)])
+                 or 'none are measured yet'))
     else:
         base, tot = RATCHET[key], dict(rows[0][1])
         tot['judged'] = tot['ok'] + tot['bad']
-        print('\n-- ratchets (iteration %d, %d offset(s)) --' % key)
+        print('\n-- ratchets (iteration %d, %d offset(s), skipping %s) --'
+              % (key[0], key[1], ', '.join(key[2]) or '(nothing)'))
         for k in sorted(base):
             got, want = tot[k], base[k]
             if got > want:

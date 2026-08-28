@@ -235,9 +235,30 @@ construction.
 generator actually holds, converts codewords to volts at the amplitude the file was encoded for,
 resamples to the rate the app would pick, starts at the phase the seeded wait produces, and decodes.
 
-Interpolation is **linear** between arb points, not a step: a DAC into a reconstruction filter presents
-slope, and the scope measured clean 0/3.26 V edges. `--hold` is the harsher zero-order-hold model,
-available as a robustness sweep.
+Interpolation is **linear** between arb points, not a step. The generator itself is a zero-order-hold
+device — TrueArb, with the AD9122's interpolation half-bands bypassed — so a staircase is the better
+source model on paper, and it was tried: at iteration 1 over 8 capture phases it agrees with the bench on
+the same 26 cells as linear and invents fifteen more failures the bench does not have. `--hold` runs it.
+
+**The plan the twin replays is the plan the bench played**, which needs the lap's own `--skip-vectors`
+list: `soakplan.vector_order` shuffles the list it is handed and every per-cell wait, amplitude and offset
+is keyed on a vector's *position* in that shuffle, so dropping two names renumbers all 39 survivors and
+hands each of them another vector's stimulus. `tools/plan_sweep.py` therefore defaults `--skip-vectors` to
+the soak's own `v95,v96`, and the pairing is checkable against a finished lap:
+
+```
+python3 tools/soakplan.py --iteration 1 --skip-vectors v95,v96 \
+        --check-log out/soak/<dir>/lap0001-FAILED.log
+```
+
+which reads the emitted plan and compares every cell against the `N Vpp gen, ofst M` the log records.
+Without the skip, all 1677 cells of iteration 1 disagree; with it, none do.
+
+**The digitiser is modelled, not assumed.** Two settings the app pins are fixed in *time*, so their effect
+in samples changes with the rate, and both are applied in the arb time base before decimation: the 1 µs
+aperture (`sdec.dig.aperture`) and one pole at the 10 V range's 440 kHz digitize bandwidth. `--raw`
+disables them. The sample rate is the one the clock can synthesise, `66e6/ceil(66e6/fs)` — so 80000 Bd at
+a listed 640 kS/s is 7.933 samples/bit here as on the bench, not a round 8.000.
 
 **What it is not.** It is not the app. `bench_matrix` presses the real Capture button and reads the
 real panel; this calls `sdec` directly, so it never exercises the two-pass probe, autolock, or anything
