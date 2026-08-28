@@ -74,7 +74,17 @@ function bench_point(baud, fs, trig, lock, fmt)
     sdec.force_nbits, sdec.force_par = 8, sdec.PAR_NONE
     sdec.force_nstop, sdec.force_invert = 1, false
   end
-  sdec.fs = fs
+  -- fs_want, NOT JUST sdec.fs, AND THE DIFFERENCE IS EVERY UNLOCKED CAPTURE IN THIS PROJECT'S
+  -- HISTORY. hw_config() consults force_baud: with nothing locked it resets sdec.fs to
+  -- sdec.fs_default -- 1 MS/s -- and throws away whatever the caller asked for. serial_core.tsp:1360
+  -- documents the same trap being found on the instrument, and fs_want is the one-shot that beats it;
+  -- serial_app's own second pass uses it for exactly this reason.
+  --
+  -- MEASURED, in the soak's own record: 108 of 108 cells captured at 1000000 Sa/s whatever the plan
+  -- asked for. At 1 MS/s the 20 000-sample buffer is 20 ms, which is 19 bytes at 9600 baud against 240
+  -- at the rate that was requested -- so an unlocked point has been judged on a twelfth of the payload
+  -- it should have had, and 'too few trusted bytes to judge' was the harness's own doing.
+  sdec.fs, sdec.fs_want = fs, fs
   sdec.trigmode = trig
 
   timer.cleartime()

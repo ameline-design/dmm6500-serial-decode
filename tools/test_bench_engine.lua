@@ -502,6 +502,36 @@ end
 
 -- ---------------------------------------------------------------------------
 print('')
+print('-- the rate a cell asks for is the rate it gets --')
+do
+  MOCKB_SDG({})
+  bsdg.reset()
+  -- THE ONE THAT GOT AWAY WITH IT FOR A WHOLE PROJECT. brun.point set sdec.fs and nothing else, and
+  -- hw_config() resets sdec.fs to fs_default -- 1 MS/s -- whenever no baud is locked. So EVERY unlocked
+  -- capture ran at 1 MS/s: measured, 108 of 108 cells in a hardware lap, and 1139 of 1139 offline. At
+  -- 1 MS/s the 20 000-sample buffer is 20 ms, which is 19 bytes at 9600 baud against 240 at the rate
+  -- asked for, and the judge's 'too few trusted bytes' was the harness starving itself.
+  --
+  -- THE ASSERTION IS THE EFFECTIVE RATE, not the assignment. Testing that fs_want was set would pass
+  -- against a build that set it and then had it ignored, which is the whole failure mode: an assignment
+  -- that looks right and is discarded one call later.
+  local want = sdec.pick_fs(9600, 8)
+  local p = brun.point(want, 9600, false)
+  ck(p.fs ~= nil and math.abs(p.fs - want) / want < 0.05,
+     'an UNLOCKED capture runs at the rate it was given, not at fs_default',
+     string.format('asked %g, captured %s (fs_default %g)', want, tostring(p.fs), sdec.fs_default))
+  -- AND THE PAYLOAD IS THE POINT OF IT. The same window at the right rate holds an order of magnitude
+  -- more bytes, which is the difference between a judged cell and an inconclusive one.
+  ck(p.ran == true and (p.nf or 0) > 40,
+     'and it therefore returns a payload worth judging, not a 20 ms sliver',
+     string.format('%s frame(s) at %g Sa/s', tostring(p.nf), tostring(p.fs)))
+  -- A LOCKED capture picks its own rate from the locked baud and must not regress either.
+  local p2 = brun.point(want, 9600, true)
+  ck(p2.ran == true and p2.fs ~= nil, 'a locked capture still works', tostring(p2.fs))
+end
+
+-- ---------------------------------------------------------------------------
+print('')
 print('-- every plan rate is captured at a rate that can see it --')
 do
   -- THE ARITHMETIC IS NOT ENOUGH, AND THIS IS WHAT THAT COST. pick_fs(300, 8) asks for 2500 Sa/s; the
