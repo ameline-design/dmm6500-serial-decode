@@ -1025,6 +1025,86 @@ function brun.stopped()
 end
 
 -- ---------------------------------------------------------------------------
+-- Resuming a run that stopped
+-- ---------------------------------------------------------------------------
+-- WHY THIS IS POSSIBLE AT ALL: brec.syncrows is 1, so the record's directory entry is current after every
+-- cell. A crash, a wedge or a power cut therefore costs the row in flight and nothing else -- which means
+-- the record itself says where to start again, and a fortnight's run can carry on from the failure point
+-- instead of from the beginning.
+--
+-- THE LAST R ROW IS THE RESUME POINT, and it is positional: every plan row produces exactly one result
+-- row, measured or SDG-failed, so the lap and cell in that row locate the plan exactly. A count of rows
+-- would do the same job and be wrong quietly if anything ever wrote two rows for one cell.
+--
+-- BOUNDED BY THE DIRECTORY ENTRY, not by reading until nil. A read past EOF posts 2201 'File read error'
+-- as a box on the panel, and this runs at the start of a run that must not put one there. The 8.3 name in
+-- the FAT table carries the file's length at offset 28, which is the same trick tools/run_bench.py's
+-- fetch uses -- measured: SOAK    CSV at offset 7425 of a 16384-byte table, size 76514.
+function brun.keysize(n83)
+  local fh = nil
+  pcall(function() fh = file.open(brun.dir, file.MODE_READ) end)
+  if fh == nil then return nil end
+  local raw = nil
+  pcall(function() raw = file.read(fh, file.READ_ALL) end)
+  pcall(function() file.close(fh) end)
+  if raw == nil then return nil end
+  local a = string.find(raw, n83, 1, true)
+  if a == nil then return nil end
+  local sz = nil
+  pcall(function()
+    sz = string.byte(raw, a + 28) + string.byte(raw, a + 29) * 256
+         + string.byte(raw, a + 30) * 65536 + string.byte(raw, a + 31) * 16777216
+  end)
+  return sz
+end
+
+-- -> iter, cell of the last complete result row, or nil if there is not one.
+function brun.resume_scan()
+  local sz = brun.keysize('SOAK    CSV')
+  if sz == nil or sz <= 0 then return nil end
+  local fh = nil
+  pcall(function() fh = file.open(brec.path, file.MODE_READ) end)
+  if fh == nil then return nil end
+  local nb, it, ce = 0, nil, nil
+  while nb < sz do
+    local l = nil
+    local ok = pcall(function() l = file.read(fh, file.READ_LINE) end)
+    if not ok or l == nil then break end
+    nb = nb + string.len(l)
+    if string.sub(l, 1, 2) == 'R,' then
+      local f, nf = brun.split(l)
+      -- A TORN LAST ROW IS THE NORMAL ENDING, so a row without both numbers is ignored rather than
+      -- trusted: resuming one cell early repeats a cell, resuming from a half-written number could
+      -- resume anywhere.
+      if nf >= 3 and tonumber(f[2]) ~= nil and tonumber(f[3]) ~= nil then
+        it, ce = tonumber(f[2]), tonumber(f[3])
+      end
+    end
+  end
+  pcall(function() file.close(fh) end)
+  return it, ce
+end
+
+-- Discard plan rows up to and including (iter, cell). -> true when positioned, false if it is not there.
+--
+-- REFUSES RATHER THAN STARTING OVER. A resume point the plan does not contain means the plan on the key is
+-- not the plan that produced the record -- a different --random-per-lap, a different skip, a regenerated
+-- file -- and silently starting from row one would replay days of stimulus while reporting a resume.
+function brun.resume_to(iter, cell)
+  if iter == nil or cell == nil then return false end
+  local n = 0
+  while true do
+    local c = brun.nextrow()
+    if c == nil then return false end
+    n = n + 1
+    if c.iter == iter and c.cell == cell then
+      brun.nskipped = n
+      return true
+    end
+  end
+end
+
+-- ---------------------------------------------------------------------------
 -- The stop control that works: the front-panel TRIGGER key
 -- ---------------------------------------------------------------------------
 -- A BUTTON ON THE GLASS CANNOT DO THIS, and the reason is measured rather than assumed. serial_core.tsp
@@ -1150,6 +1230,25 @@ function brun.soak(iterations, tag)
   if not brun.planopen() then
     brec.finish('no plan file at ' .. brun.planpath)
     return false, 'no plan file at ' .. brun.planpath
+  end
+  -- RESUMED, IF ASKED. brun.resume = true means: find the last cell the record holds and carry on after
+  -- it. The scan reads the whole record, which is minutes on a fortnight's 160 MB -- once, against days
+  -- of stimulus it saves replaying.
+  brun.nskipped = 0
+  if brun.resume then
+    local rit, rce = brun.resume_scan()
+    if rit == nil then
+      brec.note(0, 0, 0, 'resume asked for but the record holds no completed cell -- starting at the top')
+    else
+      if not brun.resume_to(rit, rce) then
+        brec.finish(string.format('REFUSED to resume: the plan does not contain L%dC%d, so it is not '
+                                  .. 'the plan that produced this record', rit, rce))
+        return false, string.format('the plan does not contain L%dC%d', rit, rce)
+      end
+      brun.iter, brun.cell = rit, rce
+      brec.note(rit, rce, 0, string.format('resumed after L%dC%d, skipping %d plan row(s)',
+                                           rit, rce, brun.nskipped))
+    end
   end
 
   -- NO POPUPS FOR THE DURATION. sdec.mute_events sets localnode.showevents = 0, which is the app's own

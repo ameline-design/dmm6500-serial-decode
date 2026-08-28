@@ -410,9 +410,33 @@ local function fat_table(dir)
       addname(string.gsub(string.sub(k, string.len(pfx) + 1), '/.*$', ''))
     end
   end
+  -- A REAL 32-BYTE DIRECTORY ENTRY FOR EACH FILE, because its LENGTH lives in one. Measured on the
+  -- instrument: the 8.3 name is 11 bytes -- eight of name, space padded, then three of extension -- and
+  -- the file's size is little-endian at offset 28 of the entry. 'SOAK    CSV' sat at offset 7425 of a
+  -- 16384-byte table with size 76514.
+  --
+  -- WHY THE MOCK NEEDS IT. Both the fetch and brun.resume_scan read a file's length from here rather than
+  -- by reading to the end, because a read past EOF posts 2201 as a box on the panel. Synthesising only
+  -- the NAME made that code untestable offline -- resume_scan returned nil and the run silently started
+  -- from the top, which is the failure the refusal was written to prevent.
+  local function addfile(nm, sz)
+    local base, ext = nm, ''
+    local dot = string.find(nm, '%.[^.]*$')
+    if dot ~= nil then base, ext = string.sub(nm, 1, dot - 1), string.sub(nm, dot + 1) end
+    base = string.upper(string.sub(base .. '        ', 1, 8))
+    ext = string.upper(string.sub(ext .. '   ', 1, 3))
+    local b0 = math.mod(sz, 256)
+    local b1 = math.mod(math.floor(sz / 256), 256)
+    local b2 = math.mod(math.floor(sz / 65536), 256)
+    local b3 = math.mod(math.floor(sz / 16777216), 256)
+    out = out .. base .. ext .. string.rep(string.char(0), 17)
+              .. string.char(b0) .. string.char(b1) .. string.char(b2) .. string.char(b3)
+    addname(nm)
+  end
   for k in pairs(FILES) do
     if string.sub(k, 1, string.len(pfx)) == pfx then
-      addname(string.gsub(string.sub(k, string.len(pfx) + 1), '/.*$', ''))
+      addfile(string.gsub(string.sub(k, string.len(pfx) + 1), '/.*$', ''),
+              string.len(CONTENT[k] or ''))
     end
   end
   -- PADDED, BECAUSE THE REAL TABLE IS NEVER EMPTY. Measured: /usb1 returns 65536 bytes whatever it

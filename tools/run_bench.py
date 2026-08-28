@@ -422,6 +422,10 @@ def main():
                     help='start and let go of the socket, whatever the iteration count')
     ap.add_argument('--fetch', action='store_true', help='pull the newest record off the key')
     ap.add_argument('--judge', default=None, help='judge a fetched record')
+    ap.add_argument('--resume', action='store_true',
+                    help='carry on after the last cell the record on the key already holds, instead of '
+                         'starting at the top of the plan. Refuses if the plan does not contain that '
+                         'cell, because that means it is not the plan that produced the record')
     ap.add_argument('--sdg-hold', type=int, default=0, metavar='SECS',
                     help='when the generator goes silent, retry it every SECS instead of parking the '
                          'run. 0 (default) parks, which is right for a lap; a multi-day run should hold, '
@@ -469,6 +473,10 @@ def main():
             fetch(d, a.out)
             return 0
         if a.start:
+            if a.resume:
+                if not d.exec('do brun.resume = true end'):
+                    raise SystemExit('the instrument would not accept the resume flag')
+                print('  resuming after the last cell the record holds')
             if a.sdg_hold:
                 # SET BEFORE THE RUN STARTS, because brun.soak reads it at the give-up point and nothing
                 # can reach the instrument once the loop holds the interpreter.

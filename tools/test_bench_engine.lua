@@ -350,6 +350,54 @@ end
 
 -- ---------------------------------------------------------------------------
 print('')
+print('-- resuming a run from the last cell the record holds --')
+do
+  MOCKB_SDG({})
+  bsdg.reset()
+  local plan, i = {}, nil
+  for i = 1, 8 do
+    plan[i] = '1,' .. i .. ',v77,' .. ARB.v77 .. ',9600,std,5.0000,0.0000,96000,0.000'
+  end
+  writeplan(plan)
+  -- Run four cells, then stop the way a crash does: by ending the lap early.
+  brun.maxcell = 4
+  brun.resume = false
+  brun.soak(1, 'part1')
+  brun.maxcell = 0
+  local it, ce = brun.resume_scan()
+  ck(it == 1 and ce == 4, 'the record names the last completed cell',
+     string.format('L%sC%s', tostring(it), tostring(ce)))
+
+  -- RESUMED: the next cell measured must be the one AFTER it, not the first in the plan.
+  brun.resume = true
+  local ok, why = brun.soak(1, 'part2')
+  brun.resume = false
+  ck(ok == true, 'a resumed run completes', tostring(why))
+  ck(brun.nskipped == 4, 'and it skipped exactly the cells already recorded',
+     string.format('%d row(s) skipped', brun.nskipped))
+  local s2 = slurp(brec.path)
+  ck(s2 ~= nil and string.find(s2, 'resumed after L1C4', 1, true) ~= nil,
+     'and the record says where it resumed from')
+  -- THE CELLS AFTER IT, AND ONLY THOSE. Four remained, so a resumed lap of an eight-row plan runs four.
+  local L, n = lines(s2)
+  local start, k, ndata = 0, nil, 0
+  for k = 1, n do if string.find(L[k], 'tag=part2', 1, true) ~= nil then start = k end end
+  for k = start, n do if string.sub(L[k], 1, 2) == 'R,' then ndata = ndata + 1 end end
+  ck(ndata == 4, 'measuring only the cells that were left', string.format('%d cell(s)', ndata))
+
+  -- A RESUME POINT THE PLAN DOES NOT CONTAIN IS REFUSED, not quietly restarted. That means the plan on the
+  -- key is not the plan that produced the record -- a different --random-per-lap, a different skip, a
+  -- regenerated file -- and starting from row one would replay days of stimulus while reporting a resume.
+  writeplan({'9,777,v77,' .. ARB.v77 .. ',9600,std,5.0000,0.0000,96000,0.000'})
+  brun.resume = true
+  local ok3, why3 = brun.soak(1, 'part3')
+  brun.resume = false
+  ck(ok3 == false and string.find(tostring(why3), 'does not contain', 1, true) ~= nil,
+     'a resume point missing from the plan refuses the run', tostring(why3))
+end
+
+-- ---------------------------------------------------------------------------
+print('')
 print('-- a wedged generator: park by default, hold when a long run asks --')
 do
   bsdg.timeout = 0.05

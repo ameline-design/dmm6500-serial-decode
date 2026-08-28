@@ -39,6 +39,18 @@ brec.ext      = brec.ext or '.csv'
 brec.maxfile  = brec.maxfile or 268435456   -- 256 MB, far under the 2 GB per-file ceiling and still
                                             -- small enough to pull over the socket in one piece
 brec.maxtotal = brec.maxtotal or 4294967296 -- 4 GB, inside the 6 GB budget with headroom
+-- FIFTY ROWS, WHICH IS ABOUT FOUR MINUTES, AND THAT IS DELIBERATE RATHER THAN LEFTOVER. Every cell is
+-- written and flushed as it completes, so the bytes reach the key almost immediately -- but on FAT the
+-- DIRECTORY ENTRY only learns the file's new length when the handle is CLOSED. Flush pushes bytes; close
+-- updates the size field a reader trusts. So this number is how much a machine that stops without warning
+-- can leave behind: fifty cells of bytes no reader will see, because the directory says the file ends
+-- before them.
+--
+-- WHY NOT ONE. Because brun.resume exists: a restarted run finds the last row the record HOLDS and
+-- carries on after it, so an unwritten tail costs those cells being MEASURED AGAIN, not lost. Set against
+-- that, closing per row adds a FAT directory write to every one of a fortnight's 280 000 cells, and the
+-- latency of one on this key has never been measured -- an unmeasured cost on every cell, to avoid
+-- repeating four minutes of work that the resume repeats anyway.
 brec.syncrows = brec.syncrows or 50         -- rows between close/reopen
 
 brec.fh       = nil     -- the one open file, or nil
