@@ -432,6 +432,10 @@ brun.c_val  = (sdec ~= nil and sdec.ui_c_data) or 0xFFFFFF      -- white: values
 brun.c_ok   = (sdec ~= nil and sdec.ui_c_sb_on) or 0x00DCFF     -- the panel blue
 brun.c_warn = (sdec ~= nil and sdec.ui_c_warn) or 0xFFC000      -- amber
 brun.c_bad  = (sdec ~= nil and sdec.ui_c_err) or 0xFF6060       -- red
+-- GREEN IS RESERVED FOR THE HEALTH HEADLINE, and only above brun.healthwarn. Nothing else on this screen
+-- uses it, so green means one thing: the share of cells behaving as expected is better than a good lap
+-- manages. The blue above stays the colour of 'running, nothing to report'.
+brun.c_good = (sdec ~= nil and sdec.ui_c_locked) or 0x40FF40    -- green
 brun.ui = nil
 
 -- HOW BAD IS BAD ENOUGH TO GO RED. The colour is a claim about whether someone should intervene, so
@@ -449,7 +453,8 @@ brun.ui = nil
 -- set them, and until one exists they are deliberately loose rather than falsely precise.
 brun.warnrate = brun.warnrate or 20      -- % of cells refusing UNEXPECTEDLY: amber above this
 brun.badrate  = brun.badrate  or 40      -- and red above this
-brun.raten    = brun.raten    or 50      -- but neither before this many cells have run
+brun.raten    = brun.raten    or 100     -- but neither before this many cells have run, and the
+                                         -- health headline shows no figure at all until then
 brun.badsdgwarn = brun.badsdgwarn or 3   -- consecutive generator failures that mean the stimulus is gone
 
 function brun.ui_destroy()
@@ -621,19 +626,48 @@ function brun.health()
   return 100.0 * (brun.ncell - brun.nunexp) / brun.ncell
 end
 
--- BELOW THIS, THE HEADLINE GOES RED. Above it and under 100 it is amber: something unexpected has
--- happened and the number says how much, which is the point of showing a number rather than a light.
+-- THE TWO HEALTH BANDS, AND WHY THEY ARE NOT 100 AND 0. A healthy lap of this plan does not reach 100 %:
+-- measured on hardware, 5 cells of 65 refused unexpectedly (92.2 % health) on an instrument that was
+-- working, and the earlier 41-cell run gave the same ~10 %. Some of that is real defect and some is the
+-- per-vector allowance being coarser than the per-cell truth -- either way, a light that turns amber at
+-- 99.9 % is amber for the whole week and stops carrying information.
+--
+-- So green above 85 means 'no worse than a good lap', amber below it means 'worse than one', and red
+-- below 60 means the run is not measuring anything much. The number is on the screen either way; the
+-- colour is only there to say whether the number is worth walking over for.
+--
+-- 85 AND NOT 90, AND THE DIFFERENCE IS THE NOISE BAND. Three hardware samples of the same lap read
+-- 90.2 % at 41 cells, 92.2 % at 65 and 89.8 % at 100 -- so a threshold at 90 sits inside the variation
+-- and would flicker green to amber and back for two hours, which is worse than no colour at all. 85 is
+-- below what a working lap does and still catches a doubling of the unexpected rate. THIS NUMBER IS
+-- EMPIRICAL: reset it from the first complete 1677-cell lap rather than defending it as a design.
+brun.healthwarn = brun.healthwarn or 85
 brun.healthbad = brun.healthbad or 60
 
 function brun.healthline()
-  local h = brun.health()
-  local col = brun.c_ok
-  if h < 100 then col = brun.c_warn end
-  if h < brun.healthbad then col = brun.c_bad end
-  -- AND THE HEADLINE NEVER LOOKS BETTER THAN THE DETAIL. A silent generator or an event on the panel is
-  -- red on the bottom line, and a health figure of 100 % above it would contradict that -- so the worse
-  -- of the two wins.
+  -- THE DETAIL LINE'S COLOUR IS READ FIRST, because the headline may never look better than it: a silent
+  -- generator or an event on the panel is red down there, and a health figure above it must not disagree.
   local ncol = brun.ui_status()
+
+  -- NO FIGURE AT ALL UNTIL THERE ARE ENOUGH CELLS TO DIVIDE BY. One unexpected refusal on cell 1 is
+  -- 0.0 % health, which paints the headline red on a perfectly good instrument in the first ten seconds
+  -- of a two-hour lap -- and a screen that starts by crying wolf is a screen nobody reads by Wednesday.
+  -- The same brun.raten that gates the rate alarm gates this, so the two agree about when a proportion
+  -- starts meaning something.
+  --
+  -- A HARD FAULT IS STILL RED IMMEDIATELY. This suppresses the ARITHMETIC, not the alarms: a generator
+  -- that has gone quiet by cell 3 has nothing to do with sample size and says so at once.
+  if brun.ncell == nil or brun.ncell < brun.raten then
+    local col0 = brun.c_ok
+    if ncol == brun.c_bad then col0 = brun.c_bad end
+    return string.format('SOAK HEALTH -- %s of %s cells so far',
+                         brun.int(brun.ncell), brun.int(brun.raten)), col0
+  end
+
+  local h = brun.health()
+  local col = brun.c_good
+  if h <= brun.healthwarn then col = brun.c_warn end
+  if h < brun.healthbad then col = brun.c_bad end
   if ncol == brun.c_bad then col = brun.c_bad end
   return string.format('SOAK HEALTH %.1f %%', h), col
 end

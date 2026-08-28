@@ -551,17 +551,42 @@ do
   -- stopwhy IS CLEARED FIRST, because a run that has ENDED reports its ending and nothing else -- which
   -- is right, and which quietly made this block's last assertion vacuous until it was cleared here.
   brun.stopwhy, brun.stopbad = nil, false
+  -- NOTHING BUT A CELL COUNT BEFORE THERE ARE ENOUGH CELLS TO DIVIDE BY. One unexpected refusal on cell 1
+  -- is 0.0 % health, and a headline that opens red on a healthy instrument is a headline nobody believes
+  -- by the third day.
+  brun.ncell, brun.nunexp, brun.nexp = 1, 1, 0
+  local hl0, hcol0 = brun.healthline()
+  ck(string.find(hl0, 'of 100 cells', 1, true) ~= nil and hcol0 == brun.c_ok,
+     'the headline shows no figure, and no alarm, until 100 cells have run', hl0)
+  -- BUT A HARD FAULT IS NOT A SAMPLE-SIZE QUESTION. A generator silent by cell 3 is red at once.
+  brun.nbadsdg = brun.badsdgwarn
+  local hl1, hcol1 = brun.healthline()
+  ck(hcol1 == brun.c_bad, 'while a silent generator is red from the third cell, figure or no figure', hl1)
+  brun.nbadsdg = 0
   brun.ncell, brun.nunexp, brun.nexp = 400, 4, 78
   local hl, hcol = brun.healthline()
-  ck(hl == 'SOAK HEALTH 99.0 %' and hcol == brun.c_warn,
-     'the headline is one health figure, amber once anything is unexpected', hl)
+  ck(hl == 'SOAK HEALTH 99.0 %' and hcol == brun.c_good,
+     'the headline is one health figure, green above 85 %', hl)
   brun.nunexp = 0
   hl, hcol = brun.healthline()
-  ck(hl == 'SOAK HEALTH 100.0 %' and hcol == brun.c_ok,
-     'and 100 % with 78 ALLOWED refusals is the blue of a healthy run', hl)
+  ck(hl == 'SOAK HEALTH 100.0 %' and hcol == brun.c_good,
+     'and 100 % with 78 ALLOWED refusals is green', hl)
+  -- THE BAND THAT MATTERS, because it is where a real lap sits: 92 % is what hardware measured while
+  -- working, so it must read as healthy. A light that turns amber at 99.9 % is amber all week.
+  brun.nunexp = 32
+  hl, hcol = brun.healthline()
+  ck(hcol == brun.c_good, 'a 92 % lap -- what hardware actually measures -- is still green', hl)
+  -- THE MEASURED FLOOR: 89.8 % was the worst this lap read while healthy, so it has to be green or the
+  -- headline flickers for two hours.
+  brun.nunexp = 41
+  hl, hcol = brun.healthline()
+  ck(hcol == brun.c_good, 'and 89.8 %, the worst a healthy lap read, is green rather than flickering', hl)
+  brun.nunexp = 80
+  hl, hcol = brun.healthline()
+  ck(hcol == brun.c_warn, 'while 80 % is amber -- worse than a good lap', hl)
   brun.nunexp = 300
   hl, hcol = brun.healthline()
-  ck(hcol == brun.c_bad, 'while 25 % health is red', hl)
+  ck(hcol == brun.c_bad, 'and 25 % health is red', hl)
   -- AND IT NEVER LOOKS BETTER THAN THE DETAIL BELOW IT: a silent generator is red on the bottom line, so
   -- a green headline above it would be the screen contradicting itself.
   brun.nunexp, brun.nbadsdg = 0, brun.badsdgwarn
