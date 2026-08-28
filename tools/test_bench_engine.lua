@@ -482,8 +482,8 @@ do
   -- a text object per cell would exhaust the pool long before a week was up. The two swipe lines cost
   -- nothing at all -- they are the firmware's own -- and the status screen costs a fixed five texts
   -- under one screen, whatever the run's length. The status-screen block below asserts that directly.
-  ck(MD.live(display.OBJ_TEXT) <= 7,
-     'and the object count is fixed -- the swipe lines cost none, the screen a bounded seven',
+  ck(MD.live(display.OBJ_TEXT) <= 12,
+     'and the object count is fixed -- the swipe lines cost none, the screen a bounded twelve',
      tostring(MD.live(display.OBJ_TEXT)))
 
   -- THE DETECTOR ITSELF, FIRED ON PURPOSE. Without this the two assertions above pass just as happily
@@ -578,11 +578,11 @@ do
   brun.ui_destroy()
   local live0 = MD.live(display.OBJ_TEXT)
   local ok = brun.ui_build()
-  ck(ok == true and brun.ui ~= nil and brun.ui.n == 8,
-     'the screen is eight objects, built once', string.format('ok=%s n=%s', tostring(ok),
+  ck(ok == true and brun.ui ~= nil and brun.ui.n == 13,
+     'the screen is thirteen objects, built once', string.format('ok=%s n=%s', tostring(ok),
                                                              tostring(brun.ui and brun.ui.n)))
   brun.soak(1, 'uiscreen')
-  ck(MD.live(display.OBJ_TEXT) - live0 == 7,
+  ck(MD.live(display.OBJ_TEXT) - live0 == 12,
      'and a whole run adds no more of them -- settext only, per cell',
      string.format('%d text object(s)', MD.live(display.OBJ_TEXT) - live0))
 
@@ -745,9 +745,35 @@ do
   brun.stopwhy, brun.stopbad, brun.evshed = nil, false, nil
   brun.nbadsdg, brun.nevtot, brun.nsdgtot = 0, 0, 0
   brun.ncell, brun.nbad, brun.nunexp = 100, 0, 0
-  local _, run2 = brun.ui_status()
-  ck(run2 == 'Running -- press TRIGGER to stop and flush',
-     'and the line it shows all week is the one that says how to stop it', run2)
+  brun.keyarmed = true
+  ck(brun.prompt() == 'Running -- press TRIGGER to stop and flush',
+     'and the prompt line it shows all week is the one that says how to stop it', brun.prompt())
+  -- THE ALARM MUST NOT BE ABLE TO TAKE THE PROMPT'S PLACE. It did: 'generator missed 1 cell and
+  -- recovered' replaced the only instruction on the screen, so the moment something went wrong the
+  -- operator was left with a warning and no way to act on it.
+  brun.msgs, brun.lastmsg = nil, nil
+  brun.nsdgtot, brun.ncell = 1, 200
+  brun.screen({iter = 1, cell = 200, vid = 'v77', baud = 9600}, 'SER_Fox_8N1_x10')
+  ck(MD.text(brun.ui.note) == 'Running -- press TRIGGER to stop and flush',
+     'an alarm leaves the prompt alone', tostring(MD.text(brun.ui.note)))
+  local m5 = MD.text(brun.ui.msg[1])
+  ck(m5 ~= nil and string.find(m5, 'generator missed', 1, true) ~= nil
+     and string.find(m5, '#200', 1, true) ~= nil,
+     'and appears in the log below it, stamped with the time and the cell', tostring(m5))
+  -- ONCE, NOT PER CELL. A log that repeats the same line for four hundred cells cannot say when
+  -- anything started.
+  brun.screen({iter = 1, cell = 201, vid = 'v77', baud = 9600}, 'SER_Fox_8N1_x10')
+  brun.screen({iter = 1, cell = 202, vid = 'v77', baud = 9600}, 'SER_Fox_8N1_x10')
+  ck(MD.text(brun.ui.msg[2]) == '' and table.getn(brun.msgs) == 1,
+     'and an unchanged state is not pushed again', tostring(MD.text(brun.ui.msg[2])))
+  -- NEWEST AT THE BOTTOM, and bounded: a sixth message drops the first.
+  local mi
+  for mi = 1, 6 do brun.msg(brun.c_lab, 'event ' .. tostring(mi)) end
+  ck(string.find(tostring(MD.text(brun.ui.msg[brun.msgn])), 'event 6', 1, true) ~= nil
+     and string.find(tostring(MD.text(brun.ui.msg[1])), 'event 2', 1, true) ~= nil,
+     'the newest message is at the bottom and the log is bounded',
+     tostring(MD.text(brun.ui.msg[1])) .. ' .. ' .. tostring(MD.text(brun.ui.msg[brun.msgn])))
+  brun.nsdgtot, brun.msgs, brun.lastmsg = 0, nil, nil
 
   -- TEARDOWN VISITS EACH HANDLE EXACTLY ONCE. sdec.del_obj is not idempotent: a second delete is refused
   -- and the handle goes on sdec.orphans, where it reads as a leaked object and blocks the next rebuild.
@@ -757,7 +783,7 @@ do
      'and teardown frees every object with no refused deletes',
      string.format('live=%d delfails=%d', MD.live(display.OBJ_TEXT) - live0,
                    (sdec.delfails or 0) - nfail0))
-  ck(brun.ui_build() == true and brun.ui.n == 8, 'and it can be built again afterwards')
+  ck(brun.ui_build() == true and brun.ui.n == 13, 'and it can be built again afterwards')
   brun.ui_destroy()
 end
 

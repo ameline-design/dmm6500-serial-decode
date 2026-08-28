@@ -467,6 +467,63 @@ brun.c_bad  = (sdec ~= nil and sdec.ui_c_err) or 0xFF6060       -- red
 brun.c_good = (sdec ~= nil and sdec.ui_c_locked) or 0x40FF40    -- green
 brun.ui = nil
 
+-- A ROLLING LOG OF THINGS WORTH KNOWING, under the prompt rather than over it. The status line used to
+-- do both jobs and they conflict: an alarm replaced 'press TRIGGER to stop', so the moment something went
+-- wrong the screen stopped saying how to act on it. Now the prompt is permanent and anything notable
+-- scrolls beneath it, newest at the bottom, each line stamped with the time and the cell number.
+--
+-- ONLY STATE CHANGES ARE PUSHED, not one line per cell. A log that repeats 'generator missed 1 cell' for
+-- four hundred cells has thrown away the one thing a log is for -- knowing WHEN something started.
+brun.msgn = brun.msgn or 5
+brun.msgs = nil          -- oldest first; the newest is at the bottom of the screen
+brun.lastmsg = nil       -- so an unchanged state is not pushed again
+
+-- WHEN, AS WALL CLOCK IF THE FIRMWARE HAS IT AND ELAPSED TIME IF IT DOES NOT. After six days away
+-- '03:14' answers a question that '2:41 into the run' does not, so os.date is tried first -- guarded,
+-- because bench_rec.tsp's note says os.time() is the only clock this instrument agrees with itself about
+-- and does not claim os.date exists at all. A nil field raises, pcall catches it, and nothing is posted.
+function brun.stamp()
+  local t = nil
+  pcall(function() t = os.date('%H:%M') end)
+  if type(t) == 'string' and string.len(t) >= 4 then return t end
+  local el = 0
+  if brun.t0 ~= nil then pcall(function() el = os.time() - brun.t0 end) end
+  return string.format('%d:%02d', math.floor(el / 3600), math.floor(math.mod(el, 3600) / 60))
+end
+
+-- NEWEST AT THE BOTTOM, so the log reads the way a log reads and the eye follows it downward. The array
+-- is oldest-first and the head is dropped when it is full.
+--
+-- THE CELL NUMBER AS WELL AS THE TIME, because 'the generator missed a cell' matters much less than which
+-- one, and this screen is the only place a reader sees it before the key is fetched.
+function brun.msg(col, txt)
+  if brun.msgs == nil then brun.msgs = {} end
+  local n = table.getn(brun.msgs)
+  if n >= brun.msgn then
+    local k
+    for k = 1, brun.msgn - 1 do brun.msgs[k] = brun.msgs[k + 1] end
+    brun.msgs[brun.msgn] = nil
+    n = brun.msgn - 1
+  end
+  brun.msgs[n + 1] = {txt = brun.stamp() .. ' #' .. brun.int(brun.ncell) .. ' ' .. tostring(txt),
+                      col = col or brun.c_lab}
+  brun.ui_msgs()
+end
+
+function brun.ui_msgs()
+  local u = brun.ui
+  if u == nil or u.msg == nil then return end
+  local k
+  for k = 1, brun.msgn do
+    local m = (brun.msgs ~= nil and brun.msgs[k]) or nil
+    if m == nil then
+      brun.ui_set(u.msg[k], '', brun.c_lab)
+    else
+      brun.ui_set(u.msg[k], brun.fit(m.txt, brun.panelw), m.col)
+    end
+  end
+end
+
 -- HOW BAD IS BAD ENOUGH TO GO RED. The colour is a claim about whether someone should intervene, so
 -- these are the thresholds that claim is made on, named rather than buried in the comparison.
 -- THE RATE THESE APPLY TO IS THE UNEXPECTED ONE, not every refusal, and the difference is most of the
@@ -501,6 +558,63 @@ function brun.ui_destroy()
     u.all[k] = nil
   end
   brun.ui = nil
+
+-- A ROLLING LOG OF THINGS WORTH KNOWING, under the prompt rather than over it. The status line used to
+-- do both jobs and they conflict: an alarm replaced 'press TRIGGER to stop', so the moment something went
+-- wrong the screen stopped saying how to act on it. Now the prompt is permanent and anything notable
+-- scrolls beneath it, newest at the bottom, each line stamped with the time and the cell number.
+--
+-- ONLY STATE CHANGES ARE PUSHED, not one line per cell. A log that repeats 'generator missed 1 cell' for
+-- four hundred cells has thrown away the one thing a log is for -- knowing WHEN something started.
+brun.msgn = brun.msgn or 5
+brun.msgs = nil          -- oldest first; the newest is at the bottom of the screen
+brun.lastmsg = nil       -- so an unchanged state is not pushed again
+
+-- WHEN, AS WALL CLOCK IF THE FIRMWARE HAS IT AND ELAPSED TIME IF IT DOES NOT. After six days away
+-- '03:14' answers a question that '2:41 into the run' does not, so os.date is tried first -- guarded,
+-- because bench_rec.tsp's note says os.time() is the only clock this instrument agrees with itself about
+-- and does not claim os.date exists at all. A nil field raises, pcall catches it, and nothing is posted.
+function brun.stamp()
+  local t = nil
+  pcall(function() t = os.date('%H:%M') end)
+  if type(t) == 'string' and string.len(t) >= 4 then return t end
+  local el = 0
+  if brun.t0 ~= nil then pcall(function() el = os.time() - brun.t0 end) end
+  return string.format('%d:%02d', math.floor(el / 3600), math.floor(math.mod(el, 3600) / 60))
+end
+
+-- NEWEST AT THE BOTTOM, so the log reads the way a log reads and the eye follows it downward. The array
+-- is oldest-first and the head is dropped when it is full.
+--
+-- THE CELL NUMBER AS WELL AS THE TIME, because 'the generator missed a cell' matters much less than which
+-- one, and this screen is the only place a reader sees it before the key is fetched.
+function brun.msg(col, txt)
+  if brun.msgs == nil then brun.msgs = {} end
+  local n = table.getn(brun.msgs)
+  if n >= brun.msgn then
+    local k
+    for k = 1, brun.msgn - 1 do brun.msgs[k] = brun.msgs[k + 1] end
+    brun.msgs[brun.msgn] = nil
+    n = brun.msgn - 1
+  end
+  brun.msgs[n + 1] = {txt = brun.stamp() .. ' #' .. brun.int(brun.ncell) .. ' ' .. tostring(txt),
+                      col = col or brun.c_lab}
+  brun.ui_msgs()
+end
+
+function brun.ui_msgs()
+  local u = brun.ui
+  if u == nil or u.msg == nil then return end
+  local k
+  for k = 1, brun.msgn do
+    local m = (brun.msgs ~= nil and brun.msgs[k]) or nil
+    if m == nil then
+      brun.ui_set(u.msg[k], '', brun.c_lab)
+    else
+      brun.ui_set(u.msg[k], brun.fit(m.txt, brun.panelw), m.col)
+    end
+  end
+end
 end
 
 function brun.ui_build()
@@ -532,7 +646,18 @@ function brun.ui_build()
     u.stim = add(create(u.scr, display.OBJ_TEXT, 12, 126, '--', brun.c_val, small, left))
     u.fail = add(create(u.scr, display.OBJ_TEXT, 12, 160, '--', brun.c_lab, small, left))
     u.vfail = add(create(u.scr, display.OBJ_TEXT, 12, 194, '--', brun.c_lab, small, left))
+    -- THE PROMPT, WHICH NEVER CHANGES WHILE THE RUN LASTS. It is the only instruction on the screen and
+    -- an alarm must not be able to take its place.
     u.note = add(create(u.scr, display.OBJ_TEXT, 12, 228, 'starting', brun.c_ok, small, left))
+    -- AND THE LOG BENEATH IT. Five lines at a 34 px pitch ends at y=396, inside the 420 the firmware
+    -- allows and the 431 px content area -- checked, because display.create returns nil rather than
+    -- raising for a y it will not take, and a nil parent makes every later object nil in silence.
+    u.msg = {}
+    local mk
+    for mk = 1, brun.msgn do
+      u.msg[mk] = add(create(u.scr, display.OBJ_TEXT, 12, 262 + (mk - 1) * 34, '',
+                             brun.c_lab, small, left))
+    end
   end)
   if not ok then
     brun.ui = u                    -- so ui_destroy frees whatever did get created
@@ -566,6 +691,14 @@ end
 -- something put an event in the log (which on this instrument means a box on the panel), or the no-decode
 -- rate has gone past brun.badrate over enough cells to mean it.
 -- AMBER: a generator hiccup that recovered, a rate above brun.warnrate, the progress push switched off.
+-- THE ONE INSTRUCTION, ON ITS OWN LINE, FOR THE WHOLE RUN. Not a status: a control the operator cannot
+-- guess at, since it is the physical TRIGGER key and not anything on the glass.
+function brun.prompt()
+  if brun.stopwhy ~= nil then return 'ended -- ' .. brun.fit(tostring(brun.stopwhy), 40) end
+  if brun.keyarmed then return 'Running -- press TRIGGER to stop and flush' end
+  return 'Running'
+end
+
 function brun.ui_status()
   if brun.stopwhy ~= nil then
     -- A RUN THAT FINISHED WHAT IT WAS ASKED TO DO IS NOT RED. Red is a request for someone to come and
@@ -636,8 +769,15 @@ function brun.ui_end()
               brun.c_lab)
   local hl, hcol = brun.healthline()
   brun.ui_set(u.health, hl, hcol)
+  brun.ui_set(u.note, brun.prompt(), brun.c_ok)
+  -- ANYTHING WORTH SAYING GOES TO THE LOG, ONCE. The prompt above keeps saying how to stop the run,
+  -- which is what it is for; an alarm that replaced it left the operator looking at a warning with no
+  -- instruction under it.
   local col, msg = brun.ui_status()
-  brun.ui_set(u.note, msg, col)
+  if col ~= brun.c_ok and msg ~= brun.lastmsg then
+    brun.lastmsg = msg
+    brun.msg(col, msg)
+  end
 end
 
 -- ONE NUMBER FOR THE WHOLE RUN: the share of cells that behaved as they were supposed to. A cell counts
@@ -756,8 +896,15 @@ function brun.ui_show(c, arb)
   brun.ui_set(u.vfail, string.format('this vector %s: %d of %d refused', vid, vb, vn), brun.c_lab)
   local hl, hcol = brun.healthline()
   brun.ui_set(u.health, hl, hcol)
+  brun.ui_set(u.note, brun.prompt(), brun.c_ok)
+  -- ANYTHING WORTH SAYING GOES TO THE LOG, ONCE. The prompt above keeps saying how to stop the run,
+  -- which is what it is for; an alarm that replaced it left the operator looking at a warning with no
+  -- instruction under it.
   local col, msg = brun.ui_status()
-  brun.ui_set(u.note, msg, col)
+  if col ~= brun.c_ok and msg ~= brun.lastmsg then
+    brun.lastmsg = msg
+    brun.msg(col, msg)
+  end
 end
 
 function brun.cellline(c, arb)
@@ -935,6 +1082,16 @@ function brun.soak(iterations, tag)
   -- records 1677 rows of nothing and parks on brun.maxsdgfail twenty cells later; seeing it here is the
   -- difference between an operator fixing it in the first minute and finding out on their return.
   brun.settext('SOAK starting', live and tostring(idn) or 'SDG UNREACHABLE')
+  if brun.ui ~= nil then
+    -- THE FIRST LINE IN THE LOG IS WHETHER THE GENERATOR ANSWERED, because a soak whose stimulus never
+    -- arrived looks identical to a decoder that stopped working, and this is where that is cheapest to
+    -- notice.
+    if live then
+      brun.msg(brun.c_ok, 'started -- ' .. brun.fit(tostring(idn), 34))
+    else
+      brun.msg(brun.c_bad, 'SDG UNREACHABLE at start')
+    end
+  end
   brec.note(0, 0, 0, 'start: sdg ' .. (live and tostring(idn) or ('UNREACHABLE ' .. tostring(idn))))
   brun.announce(string.format('START iterations=%s sdg=%s', tostring(iterations or 'forever'),
                               tostring(live)))
@@ -950,6 +1107,7 @@ function brun.soak(iterations, tag)
         break
       end
       brec.note(lastiter or -1, -1, 0, string.format('plan wrapped, pass %d', brun.nwrap + 1))
+      brun.msg(brun.c_lab, string.format('plan wrapped -- pass %d, stimulus repeats', brun.nwrap + 1))
       if not brun.planopen() then
         brun.stopwhy, brun.stopbad = 'plan file will not reopen', true
         break
