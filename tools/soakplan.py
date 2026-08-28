@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""What one sweep iteration tests, derived from its iteration number alone.
+"""What one sweep iteration tests, derived from its iteration number and its vector set.
 
 THE POINT IS THAT ITERATION 129 IS REACHABLE WITHOUT RUNNING 128 FIRST. Every choice here comes from
 a KEYED substream -- mt19937 seeded with {MAGIC, iteration, purpose, index} -- rather than from one
@@ -7,11 +7,19 @@ running generator, so a plan rebuilds identically from its number and a single c
 on its own however many cells failed or were skipped before it. A soak whose failures cannot be
 replayed exactly is a soak that manufactures ghosts.
 
+THE ITERATION IS NOT THE WHOLE IDENTITY, and this is the trap: the `index` in those keys is the
+vector's POSITION IN THE ORDER, and the order is a shuffle of whatever vector list it was handed. So
+--skip-vectors is drawn on too -- drop two waveforms and every remaining cell gets a different
+amplitude, a different offset and a different wait. See plan_order, and HW_SKIP for the set every
+hardware lap leaves out. --check-log measures the pairing against a finished soak's own record, which
+is the only oracle available for it: the two plans are internally consistent either way.
+
 WHAT VARIES PER ITERATION, and nothing else does:
   * the ORDER vectors are loaded in, so a state leak out of one vector stops looking like a defect
     in whichever vector always follows it
   * the NON-STANDARD rate drawn in each gap between standard rates
   * the WAIT before each capture, per cell
+  * the AMPLITUDE and DC OFFSET of each cell
 
 WHAT IS FIXED: the 22 standard rates, which every iteration tests on every vector.
 
@@ -31,6 +39,8 @@ So a gap containing an edge yields that edge one time in three. Above 125 kBd fs
     python3 tools/soakplan.py --iteration 129 --rates      # just the rate list
     python3 tools/soakplan.py --iteration 1 --vectors 4    # a seeded subset, for a smoke lap
     python3 tools/soakplan.py --selftest                   # properties, no instrument
+    python3 tools/soakplan.py --iteration 1 --skip-vectors v95,v96 \
+            --check-log out/soak/<dir>/lap0001-FAILED.log  # does the twin replay that lap?
 """
 import argparse
 import math
@@ -51,6 +61,20 @@ MAGIC = 0x5345524C
 # One per kind of decision. Distinct purposes keep the streams independent: without them the wait for
 # cell 0 and the rate for gap 0 would be the same number.
 P_ORDER, P_RATE, P_WAIT, P_SUBSET, P_AMP, P_OFST = 1, 2, 3, 4, 5, 6
+
+# THE VECTORS THE HARDWARE LAP DOES NOT PLAY, and therefore the ones the offline twin must not play
+# either. README.md documents the lap as
+#   python3 tools/soak.py --hours 17 --suites formats,plan --skip-vectors v95,v96
+# because v96 wedges the generator at vector 33 every time.
+#
+# NAMED HERE BECAUSE THE SKIP IS PART OF THE PLAN, not a detail of one night's operation. plan_order
+# shuffles the list it is handed and every wait, amplitude and offset is keyed on a vector's POSITION in
+# that order, so dropping two names renumbers all 39 survivors and hands each of them another vector's
+# stimulus. Emitting the 41-vector plan for a 39-vector lap replayed a waveform the generator never
+# played, at a phase it never started from, in 1677 of 1677 cells -- checked row by row against
+# out/soak/2026-08-27T21-38-33's own per-cell record, where every single one disagreed. That is what
+# --check-log now measures and what the offline twin defaults to.
+HW_SKIP = ('v95', 'v96')
 
 # THE VERTICAL AXES. Amplitude and DC offset are swept per cell rather than per waveform, which costs
 # nothing: both are SCPI writes folded into the settle already paid, and the attenuator relay is rated
@@ -243,6 +267,55 @@ def vector_subset(iteration, vectors, k):
     return order[:max(1, k)]
 
 
+def parse_skip(spec):
+    """A --skip-vectors comma list -> a sorted tuple of vector ids. Refuses a name that is not one.
+
+    REFUSES RATHER THAN IGNORES, because a mistyped name does not skip a smaller set -- it skips
+    NOTHING, which restores the full-list shuffle and silently changes every cell's stimulus. The
+    failure that motivates this file's skip plumbing is invisible in a log, so the typo that
+    reintroduces it must not be.
+
+    A TUPLE RATHER THAN A SET, so it can key a ratchet baseline: tools/plan_sweep.py keys on
+    (iteration, offsets, skip) and a set is unhashable. Sorted, so two spellings of the same skip are
+    the same key.
+    """
+    from vector_names import MAP as _M
+    out = []
+    for x in (spec or '').split(','):
+        x = x.strip()
+        if not x:
+            continue
+        if x not in _M:
+            raise SystemExit('REFUSING: --skip-vectors names %r, which is not in vector_names.MAP. '
+                             'A name that matches nothing skips nothing, and an unskipped lap draws '
+                             'a different stimulus for every cell.' % x)
+        out.append(x)
+    return tuple(sorted(set(out)))
+
+
+def plan_order(iteration, vectors, skip=None, nvectors=None):
+    """THE ONE PLACE A LAP'S VECTOR ORDER IS DECIDED, for hardware and for the offline twin alike.
+
+    THE SKIP IS APPLIED BEFORE THE SHUFFLE, and that is not a detail: `vi` is the position in THIS
+    list, and vi keys both wait_s and amp_ofst_u. Drop two vectors and every remaining vector's index
+    moves, so the whole lap draws a different amplitude, a different offset and a different wait.
+
+    WHY THIS FUNCTION EXISTS AT ALL. The hardware sweep filtered and then shuffled; --emit-lua
+    shuffled the whole manifest, because it had no way to be told about a skip. Every hardware lap
+    skips v95 and v96 -- v96 wedges the generator -- so EVERY offline-versus-hardware comparison drove
+    a different waveform than it compared against: measured on soak lap 1, all 1677 of 1677 cells
+    differed in BOTH amplitude and offset, v94 at 300 Bd being 20.000 Vpp at -8.220 V on the bench
+    against 8.595 Vpp at +2.347 V offline. Two call sites doing the filter themselves is what let that
+    happen, so now there is one.
+
+    Filtering AFTER the shuffle would keep vi stable across skips, which sounds better and is not
+    available: the hardware laps already on disk were drawn this way, and their receipts are the
+    ground truth the twin has to reproduce.
+    """
+    keep = [v for v in vectors if v not in (skip or ())]
+    return vector_subset(iteration, keep, nvectors)
+
+
 def wait_s(iteration, vi, ri, baud):
     """Seconds to idle before the capture, for cell (vector index, rate index).
 
@@ -412,7 +485,7 @@ def assert_unclipped(vid, amp, ofst):
     return vmin, vmax
 
 
-def signature(iteration, vectors, nvectors=None):
+def signature(iteration, vectors, nvectors=None, skip=None):
     """The cheap half of a plan: the order and the rate list. -> (tuple, tuple)
 
     Exists because proving `plan(n)` is a pure function of n means comparing many iterations, and the
@@ -420,19 +493,20 @@ def signature(iteration, vectors, nvectors=None):
     if 129 iterations are walked to make the point. Order and rates carry the same property at 23
     seedings, and individual waits are checked directly instead.
     """
-    return (tuple(vector_subset(iteration, vectors, nvectors)), tuple(rates_for(iteration)))
+    return (tuple(plan_order(iteration, vectors, skip, nvectors)), tuple(rates_for(iteration)))
 
 
-def plan(iteration, vectors, nvectors=None):
+def plan(iteration, vectors, nvectors=None, skip=None):
     """-> dict with the whole iteration: order, rates, and the wait for every cell."""
-    order = vector_subset(iteration, vectors, nvectors)
+    order = plan_order(iteration, vectors, skip, nvectors)
     rates = rates_for(iteration)
     cells = []
     for vi, vid in enumerate(order):
         for ri, (baud, kind) in enumerate(rates):
             cells.append({'vi': vi, 'ri': ri, 'vector': vid, 'baud': baud, 'kind': kind,
                           'wait_s': wait_s(iteration, vi, ri, baud)})
-    return {'iteration': iteration, 'magic': MAGIC, 'order': order, 'rates': rates, 'cells': cells}
+    return {'iteration': iteration, 'magic': MAGIC, 'order': order, 'rates': rates, 'cells': cells,
+            'skipped': sorted(skip or ())}
 
 
 def estimate_secs(rates, nvec, depth=20000, per_cell=4.9):
@@ -558,6 +632,61 @@ def selftest():
     ck(vector_subset(129, vecs, 4) == order[:4], 'a subset is a prefix of the full order')
     ck(vector_subset(129, vecs, 999) == order, 'a subset larger than the set is the whole set')
 
+    # A SKIP IS PART OF THE PLAN'S IDENTITY, asserted in BOTH directions. The whole failure mode is that
+    # a skipped lap and an unskipped one look identical in every artifact either produces, so the first
+    # property is that they are NOT the same plan and the second is that emit_lua carries the
+    # difference. Without the first, a skip that silently did nothing would satisfy the second.
+    skip = HW_SKIP
+    po = plan_order(1, vecs, skip)
+    ck(po == vector_order(1, [v for v in vecs if v not in skip]),
+       'plan_order is the shuffle of the FILTERED list, not the filtered shuffle')
+    ck(set(po) == set(vecs) - set(skip), 'a skipped vector is absent from the order')
+    ck(len(po) == len(vecs) - len(skip),
+       'plan_order drops exactly the %d skipped vector(s)' % len(skip))
+    ofull = vector_order(1, vecs)
+    ck(po != [v for v in ofull if v not in skip],
+       'skipping renumbers the survivors -- it is not the full order with names deleted')
+    moved = sum(1 for v in po if po.index(v) != ofull.index(v))
+    ck(moved > 0, 'skipping moves indices, so a plan is only comparable to a lap that skipped the '
+                  'same set -- %d of %d vectors moved' % (moved, len(po)))
+    ck(wait_s(1, po.index('v71'), 6, 1800) != wait_s(1, ofull.index('v71'), 6, 1800),
+       'the same vector draws a different wait once the list it was shuffled in changes')
+    ck(amp_ofst_u(1, po.index('v71'), 6) != amp_ofst_u(1, ofull.index('v71'), 6),
+       'the same vector draws a different amplitude and offset once the list changes')
+    a1 = amp_ofst_for(po[0], *amp_ofst_u(1, 0, 0))
+    a2 = amp_ofst_for(po[0], *amp_ofst_u(1, ofull.index(po[0]), 0))
+    ck(a1 != a2 or ofull.index(po[0]) == 0,
+       'the first skipped-plan cell draws a different amplitude/offset than the unskipped plan gave '
+       'that same vector')
+    ck(plan(1, vecs, None, skip)['skipped'] == sorted(skip),
+       'the plan records what it skipped, so a mismatch is visible and not merely numerical')
+    # THE WHOLE PLAN, NOT A FOUR-VECTOR PREFIX, for the omission checks. v96 sits at index 32 of the
+    # unfiltered order and v95 at 34, so a 4-vector subset does not contain either and would satisfy
+    # "the skipped vectors are absent" no matter what emit_lua did with the skip.
+    lua_skipped = emit_lua(1, None, skip)
+    ck("skipped = {'v95', 'v96'}," in lua_skipped, 'emit_lua records the skip list in the plan')
+    for v in skip:
+        ck(("{id = '%s'," % v) not in lua_skipped, 'emit_lua omits skipped vector %s' % v)
+    unskipped = emit_lua(1, None)
+    ck("skipped = {}," in unskipped, 'an unskipped plan says so rather than saying nothing')
+    for v in skip:
+        ck(("{id = '%s'," % v) in unskipped, 'and without a skip it still carries %s' % v)
+    # And the emitted vectors really are this iteration's order over the FILTERED list, so the row
+    # index the waits and amps are written at is the index the bench would have used.
+    ck(re.findall(r"\{id = '([^']+)'", lua_skipped) == po,
+       'emit_lua emits the filtered order, in order')
+
+    # parse_skip REFUSES, and the refusal is run rather than described. A name that matches nothing
+    # skips nothing, which restores the 41-vector shuffle -- the exact silent failure this plumbing
+    # exists to prevent, reached by a typo.
+    ck(parse_skip('v96,v95') == skip, 'parse_skip sorts, so two spellings give one key')
+    ck(parse_skip('') == () and parse_skip(None) == (), 'no skip parses to the empty tuple')
+    try:
+        parse_skip('v95,v9x')
+        ck(False, 'parse_skip REFUSES a name that is not a vector')
+    except SystemExit as e:
+        ck('v9x' in str(e), 'parse_skip REFUSES a name that is not a vector, and names it')
+
     # Waits: keyed, in range, and scaled by baud.
     ck(wait_s(129, 3, 4, 9600) == wait_s(129, 3, 4, 9600), 'a cell wait is reproducible')
     ck(wait_s(129, 3, 4, 9600) != wait_s(129, 3, 5, 9600), 'adjacent cells draw different waits')
@@ -572,8 +701,13 @@ def selftest():
     return 1 if bad else 0
 
 
-def emit_lua(iteration, nvectors=None):
+def emit_lua(iteration, nvectors=None, skip=None):
     """The whole plan as a Lua table, for the offline twin to dofile.
+
+    `skip` MUST BE THE SAME SET THE BENCH LAP SKIPPED. It goes through plan_order, so it moves every
+    vector's vi and therefore every cell's amplitude, offset and wait -- see plan_order for what
+    omitting it cost. The set travels in the emitted table so the twin can print it and a mismatch is
+    visible in the log rather than only in the numbers.
 
     WHY EMIT RATHER THAN RECOMPUTE. mt19937.lua is proven to match the Python word for word, so the
     Lua side COULD draw its own. It must not: the plan is more than its draws -- log-uniform placement
@@ -590,9 +724,12 @@ def emit_lua(iteration, nvectors=None):
     from vector_names import MAP as _MAP
     with open(os.path.join(ROOT, 'out', 'vectors', 'manifest.tsv')) as f:
         rows = {r['file'].replace('.bin', ''): r for r in _csv.DictReader(f, delimiter='\t')}
-    p = plan(iteration, sorted(_MAP.keys()), nvectors)
+    p = plan(iteration, sorted(_MAP.keys()), nvectors, skip)
     out = ['-- generated by tools/soakplan.py --emit-lua; do not edit', 'return {',
-           '  iteration = %d,' % iteration, '  vectors = {']
+           '  iteration = %d,' % iteration,
+           "  skipped = {%s},"
+           % ', '.join("'%s'" % v for v in p['skipped']),
+           '  vectors = {']
     for vi, vid in enumerate(p['order']):
         r = rows.get(vid) or {}
         # BOTH legitimate readings travel, because three vectors are framed ambiguously by
@@ -640,6 +777,139 @@ def emit_lua(iteration, nvectors=None):
     return '\n'.join(out) + '\n'
 
 
+# ---------------------------------------------------------------------------- the hardware receipt
+
+
+# bench_matrix prints one of these per cell in the compact tail of a soak log. The two numbers this
+# reads are the ones the GENERATOR was actually programmed with, so they are the ground truth for what
+# amp_ofst_for produced on the night.
+LOGCELL = re.compile(r'^plan (\S+)@(\S+)\s+\S+\s+(\d+) Bd \S+ '
+                     r'[\d.]+ Vpp-signal \(([\d.]+) Vpp gen, ofst ([+-][\d.]+)\)')
+LOGORDER = re.compile(r'^\s*order: (.+)$')
+
+
+def _parse_emitted(text):
+    """Pull the tables back out of an emit_lua() string. -> (vector ids, rates, amps, ofsts, waits).
+
+    READS THE EMITTED FILE, NOT plan(), and that is the point of the whole receipt. Re-deriving the draw
+    and comparing it to the bench proves the DRAW agrees; it says nothing about the artifact the twin
+    actually loads. A wrong row order, a dropped row, a %.9g that lost a digit -- every one of those lives
+    between plan() and the file, and only parsing the file can see them.
+    """
+    vids = re.findall(r"\{id = '([^']+)'", text)
+    rates = [int(x) for x in re.findall(r'^\s*\{(\d+), \'\w+\'\},$', text, re.M)]
+
+    def table(name):
+        m = re.search(r'\n  ' + name + r' = \{\n(.*?)\n  \},', text, re.S)
+        if m is None:
+            raise SystemExit('REFUSING: the emitted plan has no %s table' % name)
+        rows = []
+        for line in m.group(1).split('\n'):
+            line = line.strip()
+            if not line.startswith('{'):
+                continue
+            rows.append([float(x) for x in line.strip('{},').split(', ')])
+        return rows
+    return vids, rates, table('amps'), table('ofsts'), table('waits')
+
+
+def check_log(path, iteration, skip):
+    """Assert the plan this file emits is the plan a finished soak actually played. -> 0 or 1.
+
+    WHY A RECEIPT AND NOT A UNIT TEST. Everything about the draw is internally consistent whichever
+    vector list it is given; the only thing that can tell the two apart is a record of what the
+    generator was set to. A soak log carries that per cell, so it is the one available oracle for
+    "the twin replays the bench", and it is checked against rather than trusted to agree.
+
+    EVERY CELL, EXACTLY ONCE, OR IT IS NOT A RECEIPT. A count of agreeing rows is not evidence unless
+    the rows COVER the plan: a single fabricated matching line satisfies a bare count. So the
+    log's cells must be exactly the plan's (vector, rate) set with no duplicates and none missing, and
+    the log's own order line must be present -- a soak log always prints it, so its absence means this
+    is not the file it was pointed at.
+
+    An amplitude and offset pair that matches to the quantisation soakplan writes them at (Q_DIGITS) is
+    a match; anything else is not.
+    """
+    # `badorder` is kept apart from `bad` so the per-cell count stays a count OF CELLS: folded together
+    # it prints "1678 of 1677", which is the sort of number that makes a reader distrust the whole line.
+    order, nrow, bad, badorder, samples = None, 0, 0, False, []
+    vids, rates, amps, ofsts, waits = _parse_emitted(emit_lua(iteration, None, skip))
+    rateidx = {}
+    for ri, baud in enumerate(rates):
+        rateidx.setdefault(baud, ri)
+    pos = dict((vid, vi) for vi, vid in enumerate(vids))
+    nr = len(rates)
+    if not (len(amps) == len(ofsts) == len(waits) == len(vids)) or \
+       any(len(row) != nr for row in amps + ofsts + waits):
+        print('REFUSING: the emitted plan\'s amps/ofsts/waits are not %d x %d'
+              % (len(vids), nr))
+        return 1
+    want = set((v, b) for v in vids for b in rates)
+    seen = {}
+    with open(path, errors='replace') as fh:
+        for line in fh:
+            mo = LOGORDER.match(line)
+            if mo is not None and order is None:
+                order = mo.group(1).split()
+            m = LOGCELL.match(line)
+            if m is None:
+                continue
+            vid, _cell, baud, vgen, vofst = m.group(1), m.group(2), int(m.group(3)), \
+                float(m.group(4)), float(m.group(5))
+            nrow += 1
+            seen[(vid, baud)] = seen.get((vid, baud), 0) + 1
+            vi, ri = pos.get(vid), rateidx.get(baud)
+            if vi is None or ri is None:
+                bad += 1
+                if len(samples) < 8:
+                    samples.append('%-6s %7d Bd is not in this plan at all' % (vid, baud))
+                continue
+            tol = 0.5 * 10.0 ** -Q_DIGITS
+            if abs(amps[vi][ri] - vgen) > tol or abs(ofsts[vi][ri] - vofst) > tol:
+                bad += 1
+                if len(samples) < 8:
+                    samples.append('%-6s %7d Bd  bench %8.3f Vpp ofst %+7.3f   plan %8.3f Vpp '
+                                   'ofst %+7.3f' % (vid, baud, vgen, vofst,
+                                                    amps[vi][ri], ofsts[vi][ri]))
+    ap = os.path.abspath(path)
+    print('receipt: %s' % (os.path.relpath(ap, ROOT) if ap.startswith(ROOT + os.sep) else ap))
+    print('  iteration %d, skipping %s -> %d vectors x %d rates, read from the emitted plan'
+          % (iteration, ', '.join(skip) or '(nothing)', len(vids), nr))
+    # A LOG WITH NO CELLS IN IT IS NOT A PASS. Reading nothing and printing a clean receipt is the
+    # exact failure this whole check exists to make impossible.
+    if nrow == 0:
+        print('REFUSING: no per-cell "plan <vector>@<cell>" rows in that file, so nothing was checked.')
+        return 1
+    missing = want - set(seen)
+    dup = [c for c, k in seen.items() if k > 1]
+    if missing or dup:
+        print('REFUSING: the log covers %d of the plan\'s %d cell(s); %d missing, %d duplicated'
+              % (len(want) - len(missing), len(want), len(missing), len(dup)))
+        for c in sorted(missing)[:6]:
+            print('    missing  %-6s %7d Bd' % c)
+        for c in sorted(dup)[:6]:
+            print('    %d rows for %-6s %7d Bd' % (seen[c], c[0], c[1]))
+        return 1
+    if order is None:
+        print('REFUSING: that file has no "order:" line, so it is not a plan-suite log.')
+        return 1
+    same = order == list(vids)
+    print('  the log\'s own vector order %s this plan\'s' % ('MATCHES' if same else 'DIFFERS from'))
+    if not same:
+        badorder = True
+        print('    log:  %s' % ' '.join(order[:8]))
+        print('    plan: %s' % ' '.join(list(vids)[:8]))
+    for s in samples:
+        print('  MISMATCH %s' % s)
+    print('  %d of %d cell(s) disagree with the bench\'s own amplitude and offset' % (bad, nrow))
+    if bad or badorder:
+        print('FAILED: the offline twin would replay a stimulus the generator never played. The skip '
+              'list is part of the plan -- see HW_SKIP.')
+        return 1
+    print('OK: every cell replays the amplitude and offset the generator was set to.')
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--emit-lua', action='store_true',
@@ -647,17 +917,30 @@ def main():
     ap.add_argument('--iteration', type=int, default=1)
     ap.add_argument('--vectors', type=int, default=None, help='a seeded subset of this many vectors')
     ap.add_argument('--rates', action='store_true', help='print only the rate list')
+    # SPELT AND PARSED EXACTLY AS bench_matrix.py --skip-vectors, because the two values have to be
+    # the same string for the two plans to be the same plan. Applied BEFORE the order is shuffled,
+    # exactly where bench_matrix applies it, because every wait, amplitude and offset is keyed on a
+    # vector's position in that order.
+    ap.add_argument('--skip-vectors', default='',
+                    help='comma-separated vector ids to leave out, as the bench lap left them out '
+                         '(the lap runs %s); this MOVES every remaining cell\'s amplitude, offset '
+                         'and wait' % ','.join(HW_SKIP))
+    ap.add_argument('--check-log', default=None,
+                    help='a finished soak log: assert this plan is the one it played')
     ap.add_argument('--selftest', action='store_true')
     a = ap.parse_args()
     if a.selftest:
         return selftest()
+    skip = parse_skip(a.skip_vectors)
+    if a.check_log:
+        return check_log(a.check_log, a.iteration, skip)
     if a.emit_lua:
-        sys.stdout.write(emit_lua(a.iteration, a.vectors))
+        sys.stdout.write(emit_lua(a.iteration, a.vectors, skip))
         return 0
 
     from vector_names import MAP
     vecs = sorted(MAP.keys())
-    p = plan(a.iteration, vecs, a.vectors)
+    p = plan(a.iteration, vecs, a.vectors, skip)
     if a.rates:
         for baud, kind in p['rates']:
             print('%7d  %s' % (baud, kind))
@@ -676,6 +959,9 @@ def main():
               % (baud, kind, fs, fs / float(baud), '   <- ladder edge' if kind == 'edge' else ''))
     print('\nvector order:')
     print('  %s' % ' '.join(p['order']))
+    if p['skipped']:
+        print('  SKIPPED BY REQUEST, and the reason every remaining index moved: %s'
+              % ' '.join(p['skipped']))
     return 0
 
 

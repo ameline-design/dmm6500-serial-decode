@@ -167,9 +167,9 @@ forty minutes in. It also needs the SDG2122X loaded with the stimulus waveforms
 | `unit-stream` | the streaming arm — both 4915 defences, one press per slice rather than per window |
 | `unit-patterns` | byte-exactness on the hard payloads: edge-density extremes, walking bits and known random data, at the sample rates the panel actually picks |
 | `unit-forcerate` | a forced rate the wire does not carry must **refuse** and name the rate it does carry, with both answers drivable unattended |
-| `unit-judgev` | the harness's three verdicts — too short to read is **inconclusive**, not silently wrong; an alignment survives one bad byte; a loud vector may miss a bounded few. Each with the wrong capture that must still fail |
+| `unit-judgev` | the harness's three verdicts — too short to read is **inconclusive**, not silently wrong; an alignment survives one bad byte; a loud vector may miss a bounded few. Each with the wrong capture that must still fail, and the offline twin's copy of the allowance *executed* under `lua` against this file's own expression |
 | `unit-ratefit` | the #46 rate-misfit window, pinned per cell and per capture phase against a recorded table — every cell that reproduces must reproduce at every phase, and every cell that does not must be silent at all of them |
-| `unit-plansweep` | the offline twin against the soak's own drawn plan, ratcheted on nine counters at the configuration each baseline was measured at |
+| `unit-plansweep` | the offline twin against the soak's own drawn plan, ratcheted on thirteen counters at the configuration each baseline was measured at — iteration, offset count **and skipped set**, because all three change the draw |
 | `unit-soaklog` | the soak's own lap log replayed through the completeness tests, so a lap that recorded nothing cannot read as a lap that found nothing |
 | `stress` | hostile signals: never silently **wrong**, never **raises** |
 | `unit-analog` | the bench cases at the app's own sample rates, swept over sampling phase, jitter, noise and where the window opens |
@@ -235,15 +235,62 @@ construction.
 generator actually holds, converts codewords to volts at the amplitude the file was encoded for,
 resamples to the rate the app would pick, starts at the phase the seeded wait produces, and decodes.
 
-Interpolation is **linear** between arb points, not a step: a DAC into a reconstruction filter presents
-slope, and the scope measured clean 0/3.26 V edges. `--hold` is the harsher zero-order-hold model,
-available as a robustness sweep.
+Interpolation is **linear** between arb points, not a step. The generator itself is a zero-order-hold
+device — TrueArb, with the AD9122's interpolation half-bands bypassed — so a staircase is the better
+source model on paper, and it was tried: at iteration 1 over 8 capture phases it agrees with the bench on
+the same 26 cells as linear and invents fifteen more failures the bench does not have. `--hold` runs it.
+
+**The plan the twin replays is the plan the bench played**, which needs the lap's own `--skip-vectors`
+list. `soakplan` applies the skip **before** the shuffle, so dropping two waveforms moves every remaining
+vector's index — and that index keys the amplitude, the offset *and* the wait for every cell. Every
+hardware lap skips `v95` and `v96`, so a twin lap emitted without them drove a different waveform in
+**all 1677 cells**: `v94` at 300 Bd was 20.000 Vpp at −8.220 V on the bench and 8.595 Vpp at +2.347 V
+offline. `tools/plan_sweep.py` therefore defaults `--skip-vectors` to the soak's own `v95,v96`, the
+emitted plan carries its `skipped` set and `sweep_plan.lua` prints it, and the pairing is checkable
+against a finished lap:
+
+```
+python3 tools/soakplan.py --iteration 1 --skip-vectors v95,v96 \
+        --check-log out/soak/<dir>/lap0001-FAILED.log
+```
+
+which reads the emitted plan and compares every cell against the `N Vpp gen, ofst M` the log records.
+Without the skip, all 1677 cells of iteration 1 disagree; with it, none do.
+
+**The digitiser is modelled, not assumed.** Two settings the app pins are fixed in *time*, so their effect
+in samples changes with the rate, and both are applied in the arb time base before decimation: the 1 µs
+aperture (`sdec.dig.aperture`) and one pole at the 10 V range's 440 kHz digitize bandwidth. `--raw`
+disables them. The sample rate is the one the clock can synthesise, `66e6/ceil(66e6/fs)` — so 80000 Bd at
+a listed 640 kS/s is 7.93 samples/bit here as on the bench, not a round 8.000.
+
+**`badcells` is a union over capture phases and must never be set beside a bench lap's failing-cell
+count.** With `--offsets 8` a cell is called bad if any *one* of eight phases failed; the bench takes one
+capture and asks once. Measured against soak lap 1: 65 cells fail here and passed on the bench, and not
+one of them fails at all eight phases — 41 fail at one of eight, 20 at two, none past five. Per *capture*
+this harness fails 1.09 % against the bench's 2.80 %, so it is not harsher; the union is. `badall` is the
+intersection — the cells no capture placement saves — and it is the cell figure the two harnesses can be
+compared on.
 
 **What it is not.** It is not the app. `bench_matrix` presses the real Capture button and reads the
 real panel; this calls `sdec` directly, so it never exercises the two-pass probe, autolock, or anything
 the operator sees — and it never exercises waveform selection, which is why a selection fault shows up
-on hardware and passes here. It also judges more simply: the bytes must be a cyclic substring of the
-payload, where `bench_uart.judge_payload` weighs flag budgets and head damage.
+on hardware and passes here. In particular the bench digitises at `pick_fs(`the baud its own **probe**
+measured`)` and this digitises at `pick_fs(`the baud that was **commanded**`)`; on soak lap 1 those
+disagreed on 26 of 1385 cells, 1.9 %. It also judges more simply: the bytes must be a cyclic substring of
+the payload — save for the `loud` mismatch allowance below, which is `bench_uart`'s own number — where
+`bench_uart.judge_payload_v` additionally weighs coverage floors and head damage.
+
+**And it is laxer than the bench in two places**, which is the asymmetry that is easy to miss because it
+runs the other way. The bench fails an inconclusive cell on an `exact` vector where this counts it as
+unjudgeable — which is why `skip` is ratcheted, so points cannot quietly move out of `bad` into it. And
+the bench checks the reported **format**, which this does not.
+
+**A misreported rate is not one of them.** A cell whose bytes are right and whose reported baud is outside
+`snaptol` fails here, counted as `label` and classified by route, because `bench_matrix` ends its verdict
+with `good = good and not baudbad` — *after* its `loud` rule, so a waveform's licence to fail on content
+is not a licence to be wrong about the number on the panel. Thirteen of the bench's own iteration-1
+failures are BAUD rows on `loud` vectors, so a check conditioned on the payload verdict passing would see
+none of them.
 
 **Its head bound is the app's own**, not a constant. It trims `max(ua_edge_frames, ua_head_bad)` bytes and
 then tries a bounded run of further shifts, counting any shift it actually needed as `bleed` rather than
@@ -275,10 +322,31 @@ Two classes, in `soakplan.VECTOR_EXPECT`:
 * **`loud`** — may fail, and **must not be silently wrong**. Declining, or failing with flags raised,
   is a pass. Confident bytes that are not the payload fail for these too.
 
+**A `loud` vector may also miss a bounded number of bytes, and the bench says how many.** In 8N1 a data
+sample that crosses into the neighbouring cell yields a wrong byte with framing intact and no parity to
+catch it, so nothing is flagged and a jitter vector cannot be held to zero — `bench_uart` measured `j20`
+losing 1–5 bytes in 256 at 172800–240959 Bd and allows `max(2, 3 %` of the judged body`)`. The offline
+twin allows the same — sized inside its shift loop, from the body it is actually comparing, so a shifted
+match cannot spend an allowance its longer unshifted body earned — and `tools/test_judge_v.py` *executes*
+the twin's `loud_budget` under `lua` and compares it with `bench_uart`'s expression at ten body sizes, so
+the copy cannot drift in its constants or in its arithmetic. Holding a `loud` vector to byte-exactness
+where the bench allows 3 % accounted for **11 of the 73 cells** the twin failed and the bench passed on
+soak lap 1 — seven `j20` cells the bench logged as "6 mismatched of 6 allowed" and the like, and four
+`v47`. Every byte the allowance forgives is counted as `loudmiss` and ratcheted, for the same reason
+`loudquiet` is: a tolerance nobody counts is one nobody can bound. An `exact` vector still gets zero.
+
+**The app's own flag budget is applied too**, and it is `bench_uart`'s: a capture whose bytes are right but
+which flagged more interior frames than `max(2, 2 %` of the body`)` fails as `flags`, counted on the same
+trimmed body the bench counts on. It measures **zero** at every ratcheted configuration and at iterations
+1 to 5, which is the finding rather than a disappointment: the judge now applies the bench's rule, so the
+remaining disagreement on `v46` at 80000 Bd — five interior frames flagged on the bench, 203 bytes
+cyclic-exact and nothing flagged here — sits in the signal chain and not in the judge.
+
 **A decline is a pass, and it is still counted.** `sweep_plan.lua` tallies these as `loudquiet` —
-17 a lap at one capture offset, 90 at eight — and `plan_sweep.py` ratchets that count at both measured
-configurations. Both halves matter: calling a correct refusal a failure is a harness inventing defects,
-measured at about 80 a lap when it was tried, while leaving it uncounted means a regression that
+5 a lap at one capture offset, 54 at eight, skipping `v95,v96` — and `plan_sweep.py` ratchets that count
+at every measured configuration. Both halves matter: calling a correct refusal a failure is a harness
+inventing defects, measured at about 80 a lap when it was tried, while leaving it uncounted means a
+regression that
 suppressed *every* byte on *every* `loud` vector would move no counter at all and read as a completely
 unchanged run. The ratchet is deliberately one-directional: loud vectors starting to decode is not a
 defect, so only a rise is gated.

@@ -14,6 +14,11 @@ across the cores.
     python3 tools/plan_sweep.py                          # iteration 1, 1 offset -- the ratcheted gate
     python3 tools/plan_sweep.py --iterations 20 --offsets 8
     python3 tools/plan_sweep.py --iteration 7 --offsets 16 --quiet
+    python3 tools/plan_sweep.py --skip-vectors ""         # all 41 vectors: NOT the lap the bench runs
+
+THE SKIPPED SET IS PART OF THE PLAN, not a filter on it, and it defaults to the bench's own v95,v96 for
+that reason -- see DEFAULT_SKIP. soakplan applies it BEFORE the shuffle, so dropping two names moves
+every remaining vector's index and that index keys the amplitude, the offset and the wait of every cell.
 
 THE PLAN IS ALWAYS REGENERATED, NEVER READ FROM DISK, and that is a correctness rule rather than a
 convenience. A plan file is a snapshot of the DRAW, and the draw changes whenever soakplan's
@@ -36,15 +41,33 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, 'tools'))
+
+import soakplan as SP                                                          # noqa: E402
+
 PLANDIR = os.path.join(ROOT, 'out', 'plans', 'auto')
 
+# THE SKIP LIST IS PART OF THE PLAN, and the default is the bench's own so the twin replays the lap
+# that is actually run. README.md documents it:
+#   python3 tools/soak.py --hours 17 --suites formats,plan --skip-vectors v95,v96
+#
+# WHY THE DEFAULT IS NOT EMPTY. soakplan.plan_order shuffles the list it is handed and every per-cell
+# wait, amplitude and offset is keyed on a vector's POSITION in that shuffle -- so a twin that emits the
+# 41-vector plan for a 39-vector lap does not test two extra vectors, it plays a DIFFERENT vector's
+# amplitude, offset and capture phase in every single cell. Measured against the bench's own per-cell
+# record for iteration 1, all 1677 cells disagreed:
+#   python3 tools/soakplan.py --iteration 1 --skip-vectors v95,v96 --check-log <a lap log>
+# An empty default is therefore the wrong experiment by default, which is the one thing an offline twin
+# must not be. Both are ratcheted, so `--skip-vectors ""` is still a gated configuration.
+DEFAULT_SKIP = ','.join(SP.HW_SKIP)
+
 # The counters sweep_plan.lua prints on its PLAN line, in the order they appear there.
-KEYS = ['cells', 'badcells', 'points', 'ok', 'bad', 'skip',
-        'raised', 'nobytes', 'norate', 'rate', 'bytes', 'bleed', 'bleedworst',
-        'r46b', 'rfit1', 'rstdC', 'rother', 'loudquiet',
-        # `label` and its lr* split are byte-exact captures whose REPORTED rate is wrong. The leading \b in
-        # parse() is what keeps 'r46b' from also matching 'lr46b': 'l' and 'r' are both word characters, so
-        # there is no boundary between them and the two counters stay distinct.
+KEYS = ['cells', 'badcells', 'badall', 'points', 'ok', 'bad', 'skip',
+        'raised', 'nobytes', 'norate', 'rate', 'flags', 'bytes', 'bleed', 'bleedworst',
+        'r46b', 'rfit1', 'rstdC', 'rother', 'loudquiet', 'loudmiss', 'loudmissworst',
+        # `label` and its lr* split are captures whose bytes were accepted and whose REPORTED rate is
+        # wrong. The leading \b in parse() is what keeps 'r46b' from also matching 'lr46b': 'l' and 'r'
+        # are both word characters, so there is no boundary between them and the two stay distinct.
         'label', 'lr46b', 'lrfit1', 'lrstdC', 'lrother']
 LABEL_ROUTES = ['lr46b', 'lrfit1', 'lrstdC', 'lrother']
 # THE FOUR ROUTES SUBDIVIDE `rate` AND MUST SUM TO IT. Issue #46 was one counter over three
@@ -55,11 +78,15 @@ LABEL_ROUTES = ['lr46b', 'lrfit1', 'lrstdC', 'lrother']
 ROUTES = ['r46b', 'rfit1', 'rstdC', 'rother']
 # bleedworst is a MAXIMUM across shards, not a sum: totalling worst-cases would report a number no
 # single point ever produced.
-MAXKEYS = frozenset(['bleedworst'])
+MAXKEYS = frozenset(['bleedworst', 'loudmissworst'])
 LINE = re.compile(r'^PLAN (\d+)/(\d+) iteration (\d+): (.*)$')
 
-# RATCHETS, KEYED ON (iteration, offsets). Every baseline here is a measurement on a freshly drawn plan
-# and is reproducible run to run; re-measure with --no-ratchet rather than editing one from memory.
+# RATCHETS, KEYED ON (iteration, offsets, skip). Every baseline here is a measurement on a freshly drawn
+# plan and is reproducible run to run; re-measure with --no-ratchet rather than editing one from memory.
+#
+# THE SKIP IS IN THE KEY because it is not a filter on the results, it is a different draw: dropping two
+# names reshuffles the order every wait, amplitude and offset is keyed on, so a baseline measured over 41
+# vectors describes no run over 39. An unmeasured combination is SKIPPED rather than gated wrongly.
 #
 # WHY A RATCHET AND NOT A TARGET, same reasoning as tools/sweep_all.py: these count defects that are
 # UNDERSTOOD AND DELIBERATELY UNFIXED, so demanding zero would fail the gate on a known state, and
@@ -74,18 +101,40 @@ LINE = re.compile(r'^PLAN (\d+)/(\d+) iteration (\d+): (.*)$')
 # point. Both are bounded because they move independently: a defect that spreads to new cells and one
 # that becomes more likely at a cell it already affected are different regressions.
 #
-# WHAT THE OFFSET AXIS IS WORTH, measured rather than argued: one capture per cell finds 11 affected
-# cells of 1763, eight find 93. Eight times the yield for eight times the work, and the 11 were never
-# the interesting number -- they were whichever phase the plan's wait happened to draw.
+# WHAT THE OFFSET AXIS IS WORTH, measured rather than argued: one capture per cell finds a handful of
+# affected cells, eight find an order of magnitude more, and the handful were never the interesting
+# number -- they were whichever phase the plan's wait happened to draw.
+#
+# AND WHAT badcells IS NOT. It is a UNION over the capture phases -- at least one of the eight failed --
+# so it is NOT the number to set beside a hardware lap, which takes one capture per cell and asks once.
+# Measured against soak lap 1: 65 cells fail here and passed on the bench, and NONE of them fails at all
+# eight phases. `badall` is the intersection, and it is bounded here for that reason: it counts the
+# defects no capture placement escapes, which is a far stronger claim than badcells makes. It is
+# ratcheted like every other counter rather than demanded to be zero.
 RATCHET = {
-    (1, 1): {'bad': 11, 'badcells': 11, 'rate': 4, 'bytes': 7, 'nobytes': 0, 'bleed': 253,
-             'skip': 0, 'judged': 1763, 'loudquiet': 17, 'label': 3},
-    (1, 8): {'bad': 167, 'badcells': 93, 'rate': 27, 'bytes': 35, 'nobytes': 105, 'bleed': 1467,
-             'skip': 0, 'judged': 14104, 'loudquiet': 90, 'label': 25},
+    (1, 1, ()): {'bad': 15, 'badcells': 15, 'badall': 15, 'rate': 13, 'flags': 0, 'bytes': 2,
+                 'nobytes': 0, 'bleed': 211, 'skip': 0, 'judged': 1763, 'loudquiet': 9,
+                 'loudmiss': 131, 'label': 3},
+    (1, 8, ()): {'bad': 216, 'badcells': 92, 'badall': 11, 'rate': 106, 'flags': 0, 'bytes': 5,
+                 'nobytes': 105, 'bleed': 1205, 'skip': 0, 'judged': 14104, 'loudquiet': 53,
+                 'loudmiss': 656, 'label': 24},
+    # THE TWO CONFIGURATIONS A BENCH LAP CAN ACTUALLY BE COMPARED WITH, because every hardware soak
+    # skips v95 and v96 -- v96 wedges the generator at vector 33 -- and the skip is drawn on. These are
+    # the ones tools/soak_offline.py and the default CLI run.
+    (1, 1, SP.HW_SKIP): {'bad': 16, 'badcells': 16, 'badall': 16, 'rate': 14, 'flags': 0, 'bytes': 2,
+                         'nobytes': 0, 'bleed': 200, 'skip': 0, 'judged': 1677, 'loudquiet': 5,
+                         'loudmiss': 122, 'label': 3},
+    (1, 8, SP.HW_SKIP): {'bad': 217, 'badcells': 93, 'badall': 10, 'rate': 108, 'flags': 0,
+                         'bytes': 3, 'nobytes': 106, 'bleed': 1050, 'skip': 0, 'judged': 13416,
+                         'loudquiet': 54, 'loudmiss': 622, 'label': 24},
 }
 WHY = {
     'bad': 'failing points',
-    'badcells': 'cells with at least one failing point',
+    'badcells': 'cells with at least one failing point -- a UNION over phases, not a bench figure',
+    # THE PHASE-INDEPENDENT DEFECTS, and the one cell figure a hardware lap can be set beside. A cell
+    # that fails at one of eight capture phases is a cell the bench passes seven times in eight; a cell
+    # that fails at all eight is a defect no placement escapes.
+    'badall': 'cells that failed at EVERY capture phase',
     'rate': 'rate misreported outside snaptol, issue #46',
     'bytes': 'right rate, bytes are not the payload, issue #125',
     'nobytes': 'nothing decoded on a vector that should decode',
@@ -103,11 +152,24 @@ WHY = {
     # that suppressed every byte on every loud vector would move nothing at all. Ratcheted upward for
     # that reason, and deliberately NOT downward: loud vectors starting to decode is not a defect.
     'loudquiet': 'loud vectors that declined -- a pass, bounded so mass suppression cannot hide',
+    # THE OTHER TOLERANCE THAT HAS TO STAY VISIBLE. bench_uart allows a loud vector max(2, 3 % of body)
+    # mismatched bytes, because a jitter-flipped byte in 8N1 has no parity to flag it, and this harness
+    # now allows the same -- which is what stopped it failing 11 cells the bench passed. Bounded upward
+    # so a regression that started losing bytes inside the allowance still moves a number.
+    'loudmiss': 'bytes forgiven by the loud mismatch budget -- inside the bench\'s own allowance',
     # THE DIMENSION NO BYTE COMPARISON CAN SEE. judge() compares bytes; framing uses the unsnapped
     # bittime while the DISPLAYED rate goes through sig_snap, so a capture can be byte-perfect and still
     # name a rate 2.4-2.7 % wrong -- and be marked snapped, which removes the panel's approximate marker.
-    # Uncounted, that class scored ZERO in 141040 decodes while one hardware lap found three of it.
-    'label': 'byte-exact captures whose REPORTED RATE is still wrong (cluster C)',
+    # Uncounted, that class scored ZERO in 141040 decodes while one hardware lap found three of it. It is
+    # a SUBSET of `rate` now that a misreport fails the point, as it does on the bench.
+    'label': 'bytes accepted but the REPORTED RATE is still wrong (cluster C)',
+    # THE APP'S OWN UNCERTAINTY, BOUNDED. bench_uart.judge_payload fails a capture that flagged more
+    # interior frames than 2 % of the body or two, whichever is kinder; the offline judge had no such
+    # test and read a flagged frame's value as a good byte. It measures ZERO at every configuration
+    # below and at iterations 1-5, which is a finding and not a dead gate: the judge applies the bench's
+    # own rule on this axis, so what still differs on v46 at 80000 Bd -- 5 interior flagged on the
+    # bench, 203 bytes cyclic-exact and nothing flagged here -- is the signal chain.
+    'flags': 'right bytes, more interior frames flagged than the app\'s own budget allows',
 }
 
 
@@ -134,12 +196,27 @@ def parse(line):
     return int(m.group(1)), int(m.group(2)), int(m.group(3)), out
 
 
-def emit_plan(iteration):
-    """Regenerate the plan for `iteration` and return (path, sha256[:12]). Never reads an existing one."""
+def emit_plan(iteration, skip=SP.HW_SKIP):
+    """Regenerate the plan for `iteration` and return (path, sha256[:12]). Never reads an existing one.
+
+    THE DEFAULT IS THE BENCH'S OWN SKIP, not an empty tuple, and that is the difference between a
+    default and a trap. tools/soak_offline.py calls this with the iteration alone, so a `()` default
+    would leave the LONGEST-RUNNING offline harness in the repo emitting the 41-vector plan -- the exact
+    experiment this file documents as invalid -- while plan_sweep's own CLI got it right. A caller that
+    has not thought about the skip should get the lap the instrument runs.
+
+    THE SKIP IS IN THE FILENAME, not only in the file. Two skip lists give the same iteration two
+    different plans, and a single plan-N.lua would let one caller's write land under another's running
+    shards -- tools/soak_offline.py calls this from several threads at once, and a shard that re-read a
+    replaced file would total two different experiments into one number.
+    """
     os.makedirs(PLANDIR, exist_ok=True)
-    path = os.path.join(PLANDIR, 'plan-%d.lua' % iteration)
-    p = subprocess.run(['python3', 'tools/soakplan.py', '--emit-lua', '--iteration', str(iteration)],
-                       cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    tag = '-skip-' + '-'.join(skip) if skip else ''
+    path = os.path.join(PLANDIR, 'plan-%d%s.lua' % (iteration, tag))
+    argv = ['python3', 'tools/soakplan.py', '--emit-lua', '--iteration', str(iteration)]
+    if skip:
+        argv += ['--skip-vectors', ','.join(skip)]
+    p = subprocess.run(argv, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if p.returncode != 0:
         raise SystemExit('soakplan.py --iteration %d exited %d:\n%s'
                          % (iteration, p.returncode, p.stderr.decode('utf-8', 'replace')))
@@ -168,9 +245,9 @@ def run_shard(k, n, plan, offsets):
     return k, p.returncode, p.stdout.decode('utf-8', 'replace')
 
 
-def one_lap(iteration, workers, offsets, quiet):
+def one_lap(iteration, workers, offsets, quiet, skip=SP.HW_SKIP):
     """One iteration across every shard. -> (totals dict, list of failure strings, detail lines)."""
-    plan, digest = emit_plan(iteration)
+    plan, digest = emit_plan(iteration, skip)
     tot = dict((k, 0) for k in KEYS)
     failed, detail, nsummary = [], [], 0
     with ThreadPoolExecutor(max_workers=workers) as ex:
@@ -243,42 +320,61 @@ def main():
     ap.add_argument('--quiet', action='store_true', help='totals only, no per-cell failure lines')
     ap.add_argument('--no-ratchet', action='store_true',
                     help='report the counts without gating on them')
+    # SPELT AS THE BENCH SPELLS IT, and it must be the SAME STRING the bench lap used: the skip is
+    # applied before the shuffle, so it moves every cell's amplitude, offset and wait. A twin lap run
+    # without the bench's own skip set drives a different waveform in every cell.
+    ap.add_argument('--skip-vectors', default=DEFAULT_SKIP,
+                    help='comma list the lap does not play (default %s, the bench\'s own). Part of '
+                         'the plan, not a filter: it reshuffles the order every wait, amplitude and '
+                         'offset is keyed on. Pass "" to sweep all %d vectors, which is NOT the lap '
+                         'the bench runs' % (DEFAULT_SKIP, len(SP._MAP_KEYS())))
     a = ap.parse_args()
     if a.workers < 1:
         raise SystemExit('--workers must be at least 1')
     if a.offsets < 1:
         raise SystemExit('--offsets must be at least 1')
+    skip = SP.parse_skip(a.skip_vectors)
 
     laps = list(range(1, a.iterations + 1)) if a.iterations else [a.iteration]
     print('offline plan sweep: %d lap(s), %d offset(s) per cell, %d shards'
           % (len(laps), a.offsets, a.workers))
     print('plans regenerated into %s' % os.path.relpath(PLANDIR, ROOT))
+    # PRINTED EVERY RUN, because two runs differing only in this produce different numbers for the same
+    # iteration, and nothing else in the output names which of them a number belongs to.
+    print('skipping %s -- %d vector(s) swept, as the bench sweeps them'
+          % (', '.join(skip) or '(nothing)', len(SP._MAP_KEYS()) - len(skip)))
     print()
 
-    hdr = ('%-5s %-13s %6s %6s %8s %6s %6s %7s %6s %6s %6s %6s'
-           % ('lap', 'plan', 'cells', 'bad', 'badcell', 'raised', 'nobyte', 'skip', 'rate', 'bytes',
-              'bleed', 'worst'))
+    # badall SITS NEXT TO badcell because the pair is the point: badcell is the union over capture
+    # phases and badall the intersection, and only the second is comparable with a bench lap.
+    # EVERY RATCHETED COUNTER IS IN THIS ROW, including the three tolerances. A counter that only appears
+    # inside the ratchet block cannot be re-measured, because --no-ratchet is exactly the run you make to
+    # re-measure it -- so lquiet, lmiss, flags and label are printed here or the documented workflow
+    # does not work.
+    hdr = ('%-5s %-13s %6s %5s %7s %6s %6s %6s %5s %5s %5s %5s %5s %5s %6s %5s %5s'
+           % ('lap', 'plan', 'cells', 'bad', 'badcell', 'badall', 'raised', 'nobyte', 'skip', 'rate',
+              'flags', 'bytes', 'label', 'bleed', 'worst', 'lquiet', 'lmiss'))
     print(hdr)
     print('-' * len(hdr))
     allfail, rows = [], []
     for it in laps:
-        tot, failed, detail, digest = one_lap(it, a.workers, a.offsets, a.quiet)
+        tot, failed, detail, digest = one_lap(it, a.workers, a.offsets, a.quiet, skip)
         rows.append((it, tot))
         if not a.quiet:
             for d in detail:
                 print(d)
-        print('%-5d %-13s %6d %6d %8d %6d %6d %7d %6d %6d %6d %6d'
-              % (it, digest, tot['cells'], tot['bad'], tot['badcells'], tot['raised'],
-                 tot['nobytes'], tot['skip'], tot['rate'], tot['bytes'],
-                 tot['bleed'], tot['bleedworst']))
+        print('%-5d %-13s %6d %5d %7d %6d %6d %6d %5d %5d %5d %5d %5d %5d %6d %5d %5d'
+              % (it, digest, tot['cells'], tot['bad'], tot['badcells'], tot['badall'], tot['raised'],
+                 tot['nobytes'], tot['skip'], tot['rate'], tot['flags'], tot['bytes'], tot['label'],
+                 tot['bleed'], tot['bleedworst'], tot['loudquiet'], tot['loudmiss']))
         allfail.extend('lap %d: %s' % (it, x) for x in failed)
 
     if len(rows) > 1:
         # ACROSS LAPS, the interesting numbers are the spread and the union: a defect present in every
         # lap is a property of the decoder, one appearing in a single lap is a property of that draw.
         print()
-        for key in (('bad', 'badcells', 'rate', 'bytes', 'nobytes', 'bleed', 'skip', 'loudquiet')
-                    + tuple(ROUTES)):
+        for key in (('bad', 'badcells', 'badall', 'rate', 'flags', 'bytes', 'nobytes', 'bleed',
+                     'skip', 'loudquiet', 'loudmiss', 'label') + tuple(ROUTES)):
             vals = sorted(t[key] for _, t in rows)
             print('  %-9s per lap  min %d  median %d  max %d  total %d'
                   % (key, vals[0], vals[len(vals) // 2], vals[-1], sum(vals)))
@@ -299,21 +395,27 @@ def main():
     # THE RATCHET, applied only at the configuration its baselines were measured at, and only to a
     # single-lap run: across laps the counts are per-draw and a baseline drawn from iteration 1 says
     # nothing about iteration 12.
-    key = (a.iteration, a.offsets)
+    key = (a.iteration, a.offsets, skip)
     if a.no_ratchet:
         print('\n-- ratchet DISABLED by --no-ratchet: the counts above gate nothing --')
     elif len(laps) > 1:
         print('\n-- ratchet SKIPPED for a multi-lap run: each lap is a different draw, so a baseline '
               'measured on one iteration does not describe the others --')
-    elif key not in RATCHET:
-        print('\n-- ratchet SKIPPED: iteration %d at %d offset(s) is not a measured configuration '
-              '(%s), so no baseline describes this run --'
-              % (a.iteration, a.offsets,
-                 ', '.join('iteration %d/%d offsets' % k for k in sorted(RATCHET))))
+    elif not RATCHET.get(key):
+        # AN EMPTY BASELINE SET IS NOT A MEASURED ONE. A configuration whose dict is `{}` gates on
+        # nothing while `key in RATCHET` still reads True, so it is reported as unmeasured rather than
+        # passed silently -- a gate that checks zero counters is worse than an absent one.
+        print('\n-- ratchet SKIPPED: iteration %d at %d offset(s) skipping %s is not a measured '
+              'configuration (%s), so no baseline describes this run --'
+              % (a.iteration, a.offsets, ', '.join(skip) or '(nothing)',
+                 ', '.join('iteration %d/%d offsets/skip %s' % (i, o, ','.join(s) or '(nothing)')
+                           for i, o, s in sorted(RATCHET) if RATCHET[(i, o, s)])
+                 or 'none are measured yet'))
     else:
         base, tot = RATCHET[key], dict(rows[0][1])
         tot['judged'] = tot['ok'] + tot['bad']
-        print('\n-- ratchets (iteration %d, %d offset(s)) --' % key)
+        print('\n-- ratchets (iteration %d, %d offset(s), skipping %s) --'
+              % (key[0], key[1], ', '.join(key[2]) or '(nothing)'))
         for k in sorted(base):
             got, want = tot[k], base[k]
             if got > want:
