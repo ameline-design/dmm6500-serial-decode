@@ -422,6 +422,10 @@ def main():
                     help='start and let go of the socket, whatever the iteration count')
     ap.add_argument('--fetch', action='store_true', help='pull the newest record off the key')
     ap.add_argument('--judge', default=None, help='judge a fetched record')
+    ap.add_argument('--sdg-hold', type=int, default=0, metavar='SECS',
+                    help='when the generator goes silent, retry it every SECS instead of parking the '
+                         'run. 0 (default) parks, which is right for a lap; a multi-day run should hold, '
+                         'because a wedge on day 2 otherwise costs every day after it')
     ap.add_argument('--listen', default=None, metavar='IP',
                     help='host address for live progress pushes (see tools/soak_listen.py)')
     ap.add_argument('--out', default=os.path.join(ROOT, 'out', 'bench'))
@@ -465,6 +469,12 @@ def main():
             fetch(d, a.out)
             return 0
         if a.start:
+            if a.sdg_hold:
+                # SET BEFORE THE RUN STARTS, because brun.soak reads it at the give-up point and nothing
+                # can reach the instrument once the loop holds the interpreter.
+                if not d.exec('do brun.holdsecs = %d end' % a.sdg_hold):
+                    raise SystemExit('the instrument would not accept the generator hold interval')
+                print('  generator hold: retry every %d s instead of parking' % a.sdg_hold)
             if a.listen:
                 d.exec('do brun.listenip = %s end' % lua_str(a.listen))
             # STARTED AND LEFT. The call does not return until the loop ends, so it is sent without

@@ -350,6 +350,73 @@ end
 
 -- ---------------------------------------------------------------------------
 print('')
+print('-- a wedged generator: park by default, hold when a long run asks --')
+do
+  bsdg.timeout = 0.05
+  brun.maxsdgfail = 3
+  local plan = {}
+  local i
+  for i = 1, 8 do
+    plan[i] = '1,' .. i .. ',v77,' .. ARB.v77 .. ',9600,std,5.0000,0.0000,96000,0.000'
+  end
+
+  -- (a) THE DEFAULT IS UNCHANGED. holdsecs = 0 parks the run, which is right for a lap somebody will
+  -- look at within the hour and wrong for a fortnight.
+  MOCKB_SDG({})
+  bsdg.reset()
+  writeplan(plan)
+  brun.holdsecs = 0
+  MOCKB.sdg.wedged = true
+  local ok1, why1 = brun.soak(1, 'park')
+  ck(ok1 == true and string.find(tostring(why1), 'in a row', 1, true) ~= nil,
+     'by default a wedged generator still parks the run', tostring(why1))
+
+  -- (b) WITH A HOLD it waits, retries, and carries on from where it stopped. The generator comes back on
+  -- the second call to alive() -- the first is soak's own pre-flight check.
+  MOCKB_SDG({})
+  bsdg.reset()
+  writeplan(plan)
+  -- BOUNDED, ALWAYS, IN A TEST. delay() is a no-op offline, so an unbounded hold does not wait -- it
+  -- SPINS, and a suite that spins until something kills it reports exit 0 through a pipeline.
+  brun.holdsecs, brun.holdslice, brun.holdmax = 1, 1, 60
+  MOCKB.sdg.wedged = true
+  local realalive, nalive = bsdg.alive, 0
+  bsdg.alive = function()
+    nalive = nalive + 1
+    if nalive >= 2 then MOCKB.sdg.wedged = false end
+    return realalive()
+  end
+  local ok2, why2 = brun.soak(1, 'hold')
+  bsdg.alive = realalive
+  ck(ok2 == true and brun.nhold >= 1
+     and string.find(tostring(why2), 'iteration', 1, true) ~= nil,
+     'with a hold it waits for the generator and finishes the lap',
+     string.format('%d retry(s), ended: %s', brun.nhold, tostring(why2)))
+  -- THE GAP HAS TO BE ON THE KEY. Cells that stop and resume with nothing in between are
+  -- indistinguishable from a run somebody restarted by hand.
+  local sh = slurp(brec.path)
+  ck(sh ~= nil and string.find(sh, 'holding for the generator', 1, true) ~= nil,
+     'and every retry is written to the key, so the gap is readable')
+
+  -- (c) AND IT GIVES UP IF TOLD TO. holdmax bounds the total wait; without it a wedge holds for as long
+  -- as the run had left, which is the right default on the instrument and unusable in a test.
+  MOCKB_SDG({})
+  bsdg.reset()
+  writeplan(plan)
+  brun.holdsecs, brun.holdslice, brun.holdmax = 1, 1, 3
+  MOCKB.sdg.wedged = true
+  local ok3, why3 = brun.soak(1, 'holdmax')
+  ck(ok3 == true and string.find(tostring(why3), 'gave up after', 1, true) ~= nil,
+     'a hold that runs past holdmax ends the run with a reason', tostring(why3))
+  ck(brun.stopbad == true, 'and it is marked as a fault, so the screen goes red')
+
+  brun.holdsecs, brun.holdmax, brun.holdslice = 0, 0, 10
+  brun.maxsdgfail = 20
+  bsdg.timeout = 5
+end
+
+-- ---------------------------------------------------------------------------
+print('')
 print('-- no popups: the checks that run every cell must not post events --')
 do
   MOCKB_SDG({})

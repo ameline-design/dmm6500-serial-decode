@@ -43,6 +43,26 @@ brun.stopbad  = false   -- did it park because something is wrong, or finish wha
 -- Better to stop with a reason on the key than to fill it with evidence for a false conclusion.
 brun.maxsdgfail = brun.maxsdgfail or 20
 
+-- HOLD INSTEAD OF PARKING, FOR A RUN LONG ENOUGH THAT PARKING IS THE WORSE ANSWER. 0 keeps the old
+-- behaviour: maxsdgfail consecutive generator failures end the run with a reason on the key, which is
+-- right for a lap someone will look at within the hour. It is wrong for a fortnight -- this generator has
+-- stopped answering three times in the project's history, and parking on day 2 throws away twelve days.
+--
+-- brun.holdsecs > 0 turns that into a GAP: stop measuring, keep the record open, and retry the generator
+-- every holdsecs until it answers. A wedge that needs a power cycle costs the hours until someone
+-- notices instead of the whole run, and a wedge that is really a dropped LAN session -- which is what a
+-- tspnet write failure looks like -- recovers on the first retry.
+--
+-- HELD IN SLICES, NOT IN ONE delay(). A five-minute delay freezes the panel, and an operator looking at a
+-- screen that has not changed for five minutes is looking at what a hung instrument looks like. Slices
+-- also let the TRIGGER key stop a hold, which matters: without it the only way out of a hold is the
+-- power, and the whole point of the key is that it closes the record first.
+brun.holdsecs = brun.holdsecs or 0        -- seconds between retries; 0 = park, as before
+brun.holdslice = brun.holdslice or 10     -- how long a single delay() may be, so the panel stays alive
+brun.holdmax = brun.holdmax or 0          -- give up after this many seconds of holding; 0 = never
+brun.nhold = 0                            -- retries attempted this run
+brun.heldsecs = 0                         -- seconds spent holding this run
+
 -- HOW OFTEN THE STOP FILE IS LOOKED FOR, in cells. Not every cell, and the reason is measured: any
 -- look at a file or directory that is not readable POSTS AN EVENT -- 2201 'File read error' for the
 -- directory read, 2205 'File not found' for a missing file -- and at one per cell that is 86 events in
@@ -1045,6 +1065,63 @@ function brun.stopkey_hit()
   return hit == true
 end
 
+-- Wait for the generator to come back. -> true if it answered, false to give up.
+--
+-- EVERY WAIT IS ACCOUNTED FOR ON THE KEY. A gap in a fortnight's record is only readable if the record
+-- says it was a gap: without a note per retry, a reader sees cells stop and cells resume with nothing
+-- between, which is indistinguishable from a run that was restarted by hand.
+function brun.sdghold()
+  if brun.holdsecs <= 0 then return false end
+  brun.msg(brun.c_bad, 'generator silent -- holding, will retry')
+  while true do
+    local waited = 0
+    while waited < brun.holdsecs do
+      local slice = brun.holdslice
+      if slice > brun.holdsecs - waited then slice = brun.holdsecs - waited end
+      pcall(function() delay(slice) end)
+      waited = waited + slice
+      brun.heldsecs = brun.heldsecs + slice
+      -- THE KEY STILL WORKS DURING A HOLD. The latch is firmware, so a press lands whatever the
+      -- interpreter is doing, and this is the only way out that closes the record.
+      if brun.keyarmed and brun.stopkey_hit() then
+        brun.stopwhy = string.format('L%dC%d: the TRIGGER key was pressed while holding for the '
+                                     .. 'generator', brun.iter, brun.cell)
+        return false
+      end
+      if brun.holdmax > 0 and brun.heldsecs >= brun.holdmax then
+        brun.stopwhy = string.format('L%dC%d: gave up after %d s holding for the generator',
+                                     brun.iter, brun.cell, brun.heldsecs)
+        brun.stopbad = true
+        return false
+      end
+      brun.ui_hold()
+    end
+    brun.nhold = brun.nhold + 1
+    bsdg.reset()
+    local live, idn = bsdg.alive()
+    brec.note(brun.iter, brun.cell, brun.ncell,
+              string.format('holding for the generator: retry %d after %d s -- %s',
+                            brun.nhold, brun.heldsecs, live and 'BACK' or tostring(idn)),
+              brun.nbad, brun.nbadsdg)
+    if live then
+      brun.msg(brun.c_warn, string.format('generator back after %d s and %d retry(s)',
+                                          brun.heldsecs, brun.nhold))
+      brun.nbadsdg = 0
+      return true
+    end
+    brun.msg(brun.c_bad, string.format('generator still silent -- retry %d, %d s held',
+                                       brun.nhold, brun.heldsecs))
+  end
+end
+
+-- The screen during a hold: the counters do not change, so the one thing worth refreshing is that it is
+-- still waiting rather than wedged.
+function brun.ui_hold()
+  if brun.ui == nil then return end
+  brun.ui_set(brun.ui.time, string.format('HOLDING for the generator -- %d s, %d retry(s)',
+                                          brun.heldsecs, brun.nhold), brun.c_bad)
+end
+
 -- ---------------------------------------------------------------------------
 -- The loop
 -- ---------------------------------------------------------------------------
@@ -1059,6 +1136,7 @@ function brun.soak(iterations, tag)
   -- THE RUN'S OWN TALLIES, on brun rather than as locals, because the status screen reads them and a
   -- screen that has to be handed every number it draws is a screen that gets handed a stale one.
   brun.nbad, brun.nsdgtot = 0, 0
+  brun.nhold, brun.heldsecs = 0, 0
   brun.nexp, brun.nunexp = 0, 0
   brun.vcell, brun.vbad = {}, {}
   brun.iterwant = 0
@@ -1214,10 +1292,15 @@ function brun.soak(iterations, tag)
                .. string.rep(',', brun.nmeascol + 1) .. 'SDG:' .. brec.q(swhy) .. ',')
       brec.note(c.iter, c.cell, brun.ncell, 'sdg failed: ' .. tostring(swhy), brun.nbad, brun.nbadsdg)
       if brun.nbadsdg >= brun.maxsdgfail then
-        brun.stopwhy = string.format('L%dC%d: the generator failed %d cells in a row: %s',
-                                     c.iter or 0, c.cell or 0, brun.nbadsdg, tostring(swhy))
-        brun.stopbad = true
-        break
+        -- HOLD, OR PARK. brun.holdsecs decides, and it is 0 unless a long run asked for the hold.
+        if not brun.sdghold() then
+          if brun.stopwhy == nil then
+            brun.stopwhy = string.format('L%dC%d: the generator failed %d cells in a row: %s',
+                                         c.iter or 0, c.cell or 0, brun.nbadsdg, tostring(swhy))
+            brun.stopbad = true
+          end
+          break
+        end
       end
       brun.ncell = brun.ncell + 1
       -- Nothing to measure, so do not spend a capture on it.
