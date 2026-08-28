@@ -22,7 +22,18 @@
 -- below move and the assertions fail. That is the boundary worth pinning, because a jitter-biased fit
 -- would put every rate near the standard ladder at risk rather than the handful of drawn ones.
 
+dofile('tools/mock_display.lua')
 dofile('tools/gen_serial.lua')
+-- THE UI IS LOADED TOO, because the fix has a panel half: the BAUD cell and the text row are
+-- rendered by different functions from the same state, and the assertion that they agree cannot be
+-- made without both. Loading only the decode modules made ui_field_values nil, and a guarded
+-- `if fn then` there passed vacuously -- the exact shape this file is meant to catch.
+for _, m in ipairs({'tsp/usb_log.tsp', 'tsp/serial_ui.tsp', 'tsp/serial_app.tsp'}) do
+  local chunk, err = loadfile(m)
+  if chunk == nil then print('LOAD FAILED ' .. m .. ': ' .. tostring(err)); os.exit(1) end
+  chunk()
+end
+MD.usb(false)
 
 local NPHASE   = 8          -- capture start phases per cell
 local JITTERS  = {0, 2, 4, 6, 8, 10, 12, 15, 25}     -- per cent of a bit time
@@ -200,6 +211,38 @@ do
   local b2, s2, f2 = sdec.sig_snap(16099)
   ck(s2 == false and f2 == true, 'an unsnapped measurement reports itself and is not called overstated',
      string.format('%s snapped=%s firm=%s', tostring(b2), tostring(s2), tostring(f2)))
+
+  -- THE PANEL MUST NOT CONTRADICT ITSELF. The BAUD cell and the text row are rendered by different
+  -- functions from the same state, so a marker added to one and not the other makes the same capture read
+  -- two ways and gives the operator no way to tell which to believe.
+  local kb, ks, kf, kr = sdec.baud, sdec.snapped, sdec.snapfirm, sdec.res
+  sdec.res = sdec.res or {nf = 1, nbad = 0, vals = {65}, errs = {}}
+  local ci
+  for ci = 1, 2 do
+    sdec.baud, sdec.snapped, sdec.snapfirm = 38400, true, (ci == 2)
+    -- ui_field_values() is the panel's own renderer -- NAMED, not probed. Guarding this with
+    -- `if fn then` would make the assertion pass when the name is wrong, which is how a check that
+    -- cannot fail gets shipped; the first run of exactly that mistake is what put this comment here.
+    local cell = sdec.ui_field_values()
+    local txt = sdec.baud_text()
+    local cellq = string.find(tostring(cell[1]), '?', 1, true) ~= nil
+    local txtq = string.find(txt, '?', 1, true) ~= nil
+    ck(cellq == txtq,
+       string.format('the BAUD cell and the text row agree when firm=%s', tostring(ci == 2)),
+       string.format('cell %q vs text %q', tostring(cell[1]), txt))
+  end
+  sdec.baud, sdec.snapped, sdec.snapfirm, sdec.res = kb, ks, kf, kr
+
+  -- A STALE false MUST NOT SURVIVE A LOCK. Every path that publishes a forced rate sets snapped true;
+  -- if it leaves snapfirm false from an earlier soft snap, the app reports 'auto-locked 37700 baud?'
+  -- about the very number it just locked.
+  local kfb = sdec.force_baud
+  sdec.snapfirm = false
+  sdec.force_baud = 37700
+  sdec.baud, sdec.snapped, sdec.snapfirm = sdec.force_baud, true, true
+  ck(sdec.snapfirm == true and string.find(sdec.baud_text(), '?', 1, true) == nil,
+     'publishing a locked rate clears a stale non-firm flag', sdec.baud_text())
+  sdec.force_baud, sdec.baud, sdec.snapped, sdec.snapfirm = kfb, kb, ks, kf
 end
 
 print('')

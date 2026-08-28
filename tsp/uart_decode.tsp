@@ -1552,7 +1552,7 @@ function sdec.decode_from(rd, n)
     -- rate below ~1200 baud fail outright with the answer already in hand.
     sdec.baud_probe = sdec.baud
     sdec.baud, sdec.baud_raw, sdec.bittime = nil, nil, nil
-    sdec.snapped, sdec.fitq = false, 0
+    sdec.snapped, sdec.fitq, sdec.snapfirm = false, 0, true
     return false, why
   end
 
@@ -1561,7 +1561,10 @@ function sdec.decode_from(rd, n)
   if sdec.force_baud ~= nil then
     T = fs / sdec.force_baud
     sdec.bittime, sdec.fitratio, sdec.fitq = T, 1, 1
-    sdec.baud, sdec.baud_raw, sdec.snapped = sdec.force_baud, sdec.force_baud, true
+    -- snapfirm TRUE alongside snapped: what is published here is exactly the rate that is locked, so
+  -- nothing has been rounded away from a measurement and the '?' would be about nothing. A stale
+  -- false retained from an earlier soft snap would print 'auto-locked 37700 baud?'.
+  sdec.baud, sdec.baud_raw, sdec.snapped, sdec.snapfirm = sdec.force_baud, sdec.force_baud, true, true
 
     -- CROSS-CHECK THE FORCED RATE AGAINST THE WIRE, because the one dangerous failure this
     -- decoder has is a forced rate the device is not using.
@@ -1596,7 +1599,11 @@ function sdec.decode_from(rd, n)
     -- So the advisory call is fenced: snapshot, call, restore unconditionally. Restoring after the
     -- pcall rather than inside it covers the raise path too.
     local keepT, keepR, keepQ = sdec.bittime, sdec.fitratio, sdec.fitq
+    -- snapfirm IS PART OF THE FENCE. sig_bittime publishes it alongside baud and snapped, so leaving it
+    -- out of the snapshot lets an ADVISORY measurement add or remove a forced rate's '?' -- the same
+    -- overwrite this fence exists to prevent for the other three.
     local keepB, keepRaw, keepSnap = sdec.baud, sdec.baud_raw, sdec.snapped
+    local keepFirm = sdec.snapfirm
     pcall(function()
       local Tm = sdec.sig_bittime()
       if Tm == nil or Tm <= 0 then return end
@@ -1643,6 +1650,7 @@ function sdec.decode_from(rd, n)
     end)
     sdec.bittime, sdec.fitratio, sdec.fitq = keepT, keepR, keepQ
     sdec.baud, sdec.baud_raw, sdec.snapped = keepB, keepRaw, keepSnap
+    sdec.snapfirm = keepFirm
   else
     -- sig_bittime() publishes sdec.bittime and sdec.baud as it goes, so both of these
     -- failures have to retract them -- hence giveup rather than a bare return.
@@ -1808,9 +1816,17 @@ function sdec.decode()
       -- ROUNDED, so what gets locked reads like a setting: 16099 locks as 16100. Not rounded when
       -- the value is a standard rate, and not rounded when the shift would exceed 1 % -- baud_round
       -- decides both, and hands back `credible` for the second case.
+      -- FROM THE MEASUREMENT WHEN THE SNAP WAS NOT FIRM, for the same reason autolock_try does it:
+      -- `found` is sdec.baud, which sig_snap has already relabelled, so adopting it here relocks the
+      -- overstated standard rate and makes a one-capture mislabel permanent. Cluster C reached the
+      -- instrument through exactly this shape.
+      if sdec.snapfirm == false and sdec.baud_raw ~= nil then found = sdec.baud_raw end
       local adopt = sdec.baud_round(found)
       sdec.force_baud = adopt
-      sdec.baud, sdec.snapped = adopt, true
+      -- snapfirm GOES TRUE WITH snapped. What is published now is a rate the app chose deliberately and
+      -- rounded to something typeable, so it is not an overstated snap -- and leaving a stale false here
+      -- would print 'auto-locked 37700 baud?' about a number that is exactly what was locked.
+      sdec.baud, sdec.snapped, sdec.snapfirm = adopt, true, true
       -- THE FORMAT LOCK STAYS. This branch is the one where the decode SUCCEEDED -- ok2 with a bad
       -- fraction under the threshold, framed with whatever width, parity and stop count were forced
       -- -- so the format is evidenced, and clearing it would discard working knowledge and pay for

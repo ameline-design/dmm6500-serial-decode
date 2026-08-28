@@ -1176,7 +1176,10 @@ function sdec.ui_field_values()
   if sdec.baud == nil and sdec.force_baud ~= nil then
     v[1] = string.format('%.0f', sdec.force_baud)
   elseif sdec.baud == nil then v[1] = '--'
-  elseif sdec.snapped then v[1] = string.format('%.0f', sdec.baud)
+  -- THE SAME CONDITION baud_text() USES, or the two disagree about the same capture: the cell would read
+  -- 38400 while the text row read '38400 baud?'. A panel that contradicts itself is worse than either
+  -- answer alone, because the operator cannot tell which one to believe.
+  elseif sdec.snapped and sdec.snapfirm ~= false then v[1] = string.format('%.0f', sdec.baud)
   else v[1] = string.format('%.0f?', sdec.baud) end
 
   v[2] = sdec.fmt_text()

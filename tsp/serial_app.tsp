@@ -101,7 +101,7 @@ function sdec.clear_result()
   -- decode_from() ever runs, so clearing must not depend on the decode reaching it.
   sdec.res, sdec.midi, sdec.lin = nil, nil, nil
   sdec.baud, sdec.baud_raw, sdec.bittime = nil, nil, nil
-  sdec.snapped, sdec.fitq = false, 0
+  sdec.snapped, sdec.fitq, sdec.snapfirm = false, 0, true
   sdec.lo, sdec.hi, sdec.family = nil, nil, '?'
   sdec.vmin, sdec.vmax, sdec.wlo, sdec.whi = nil, nil, nil, nil
   sdec.thr, sdec.hyst, sdec.swing = 0, 0, 0
@@ -1799,7 +1799,10 @@ function sdec.autolock_try()
   --
   -- baud_raw IS LEFT ALONE. It is the honest measurement, the summaries have already logged it, and
   -- the rate cross-check compares against it on the next capture.
-  sdec.baud, sdec.snapped = sdec.force_baud, true
+  -- snapfirm TRUE alongside snapped: what is published here is exactly the rate that is locked, so
+  -- nothing has been rounded away from a measurement and the '?' would be about nothing. A stale
+  -- false retained from an earlier soft snap would print 'auto-locked 37700 baud?'.
+  sdec.baud, sdec.snapped, sdec.snapfirm = sdec.force_baud, true, true
   local fs = sdec.fs_for_baud(sdec.force_baud)
   local nb = sdec.window_bytes(sdec.force_baud, r.nbits, r.par, r.nstop)
   sdec.autolocknote = string.format(
@@ -2111,7 +2114,10 @@ function sdec.lock_toggle()
     sdec.autolock_set = nil
     -- baud_text reads sdec.baud, so the note would name the measurement while the lock holds the
     -- rounded value. Same reason as autolock_try.
-    sdec.baud, sdec.snapped = sdec.force_baud, true
+    -- snapfirm TRUE alongside snapped: what is published here is exactly the rate that is locked, so
+  -- nothing has been rounded away from a measurement and the '?' would be about nothing. A stale
+  -- false retained from an earlier soft snap would print 'auto-locked 37700 baud?'.
+  sdec.baud, sdec.snapped, sdec.snapfirm = sdec.force_baud, true, true
     note = string.format('locked %s %s', sdec.baud_text(), sdec.fmt_text())
   else
     sdec.lasterr = 'nothing decoded yet -- capture first, then lock'
@@ -2723,7 +2729,10 @@ function sdec.options_lock()
   sdec.autolock_set = nil
   -- The BAUD cell reads sdec.baud through baud_text, so without this it draws '16099?' beside a green
   -- padlock holding 16100. Same reason as autolock_try and lock_toggle.
-  sdec.baud, sdec.snapped = sdec.force_baud, true
+  -- snapfirm TRUE alongside snapped: what is published here is exactly the rate that is locked, so
+  -- nothing has been rounded away from a measurement and the '?' would be about nothing. A stale
+  -- false retained from an earlier soft snap would print 'auto-locked 37700 baud?'.
+  sdec.baud, sdec.snapped, sdec.snapfirm = sdec.force_baud, true, true
   sdec.options_seed()
   ulog.fmt('locked: baud=%s bits=%s par=%s inv=%s', tostring(sdec.force_baud),
            tostring(sdec.force_nbits), tostring(sdec.force_par),

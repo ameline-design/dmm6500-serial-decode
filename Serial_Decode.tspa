@@ -2344,7 +2344,7 @@ function sdec.decode_from(rd, n)
   local function giveup(why)
     sdec.baud_probe = sdec.baud
     sdec.baud, sdec.baud_raw, sdec.bittime = nil, nil, nil
-    sdec.snapped, sdec.fitq = false, 0
+    sdec.snapped, sdec.fitq, sdec.snapfirm = false, 0, true
     return false, why
   end
 
@@ -2352,11 +2352,12 @@ function sdec.decode_from(rd, n)
   if sdec.force_baud ~= nil then
     T = fs / sdec.force_baud
     sdec.bittime, sdec.fitratio, sdec.fitq = T, 1, 1
-    sdec.baud, sdec.baud_raw, sdec.snapped = sdec.force_baud, sdec.force_baud, true
+  sdec.baud, sdec.baud_raw, sdec.snapped, sdec.snapfirm = sdec.force_baud, sdec.force_baud, true, true
 
     sdec.rate_note = nil
     local keepT, keepR, keepQ = sdec.bittime, sdec.fitratio, sdec.fitq
     local keepB, keepRaw, keepSnap = sdec.baud, sdec.baud_raw, sdec.snapped
+    local keepFirm = sdec.snapfirm
     pcall(function()
       local Tm = sdec.sig_bittime()
       if Tm == nil or Tm <= 0 then return end
@@ -2385,6 +2386,7 @@ function sdec.decode_from(rd, n)
     end)
     sdec.bittime, sdec.fitratio, sdec.fitq = keepT, keepR, keepQ
     sdec.baud, sdec.baud_raw, sdec.snapped = keepB, keepRaw, keepSnap
+    sdec.snapfirm = keepFirm
   else
     local Tfit, why = sdec.sig_bittime()
     if Tfit == nil then return giveup(why or 'no bit timing') end
@@ -2464,9 +2466,10 @@ function sdec.decode()
   if ok2 and bf2 ~= nil and bf2 < sdec.relock_badfrac and sdec.baud ~= nil then
     local found = sdec.baud
     if sdec.force_conflict == 'adopt' then
+      if sdec.snapfirm == false and sdec.baud_raw ~= nil then found = sdec.baud_raw end
       local adopt = sdec.baud_round(found)
       sdec.force_baud = adopt
-      sdec.baud, sdec.snapped = adopt, true
+      sdec.baud, sdec.snapped, sdec.snapfirm = adopt, true, true
       sdec.relocked = string.format('%g baud fit nothing -- now locked to %.0f, which this capture reads',
                                     was, adopt)
       return ok2, why2
@@ -3924,7 +3927,7 @@ function sdec.ui_field_values()
   if sdec.baud == nil and sdec.force_baud ~= nil then
     v[1] = string.format('%.0f', sdec.force_baud)
   elseif sdec.baud == nil then v[1] = '--'
-  elseif sdec.snapped then v[1] = string.format('%.0f', sdec.baud)
+  elseif sdec.snapped and sdec.snapfirm ~= false then v[1] = string.format('%.0f', sdec.baud)
   else v[1] = string.format('%.0f?', sdec.baud) end
 
   v[2] = sdec.fmt_text()
@@ -5087,7 +5090,7 @@ sdec.strm_fallback_s = sdec.strm_fallback_s or 20
 function sdec.clear_result()
   sdec.res, sdec.midi, sdec.lin = nil, nil, nil
   sdec.baud, sdec.baud_raw, sdec.bittime = nil, nil, nil
-  sdec.snapped, sdec.fitq = false, 0
+  sdec.snapped, sdec.fitq, sdec.snapfirm = false, 0, true
   sdec.lo, sdec.hi, sdec.family = nil, nil, '?'
   sdec.vmin, sdec.vmax, sdec.wlo, sdec.whi = nil, nil, nil, nil
   sdec.thr, sdec.hyst, sdec.swing = 0, 0, 0
@@ -5965,7 +5968,7 @@ function sdec.autolock_try()
   if sdec.force_nstop == nil then sdec.force_nstop = r.nstop; sdec.autolock_set.nstop = true end
   sdec.force_invert = nil
 
-  sdec.baud, sdec.snapped = sdec.force_baud, true
+  sdec.baud, sdec.snapped, sdec.snapfirm = sdec.force_baud, true, true
   local fs = sdec.fs_for_baud(sdec.force_baud)
   local nb = sdec.window_bytes(sdec.force_baud, r.nbits, r.par, r.nstop)
   sdec.autolocknote = string.format(
@@ -6180,7 +6183,7 @@ function sdec.lock_toggle()
     sdec.force_nstop  = r.nstop
     sdec.force_invert = r.invert
     sdec.autolock_set = nil
-    sdec.baud, sdec.snapped = sdec.force_baud, true
+  sdec.baud, sdec.snapped, sdec.snapfirm = sdec.force_baud, true, true
     note = string.format('locked %s %s', sdec.baud_text(), sdec.fmt_text())
   else
     sdec.lasterr = 'nothing decoded yet -- capture first, then lock'
@@ -6522,7 +6525,7 @@ function sdec.options_lock()
   sdec.force_nstop = sdec.res.nstop
   sdec.force_invert = sdec.res.invert
   sdec.autolock_set = nil
-  sdec.baud, sdec.snapped = sdec.force_baud, true
+  sdec.baud, sdec.snapped, sdec.snapfirm = sdec.force_baud, true, true
   sdec.options_seed()
   ulog.fmt('locked: baud=%s bits=%s par=%s inv=%s', tostring(sdec.force_baud),
            tostring(sdec.force_nbits), tostring(sdec.force_par),
