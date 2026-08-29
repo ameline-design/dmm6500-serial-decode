@@ -700,11 +700,11 @@ only one narrow pulse per frame to measure. `0x00` padding is fine.
 
 **Read this in proportion.** Most serial decoders require you to tell them the baud rate. This one
 measures it, and gets it right on every standard rate and on arbitrary ones like 1379, 8123 and 104857.
-Two cases are known where the measurement goes wrong — **8 points in 860** on a full bench plan, and none
-of them an ordinary payload at a standard rate — and in both the remedy is to supply the rate, which is
-what other tools ask for as a matter of course.
+Three cases are known where the measurement goes wrong — **8 points in 860** on a full bench plan for the
+first two, and 3 in a million for the third — and none of them is an ordinary payload at an ordinary rate.
+In all three the remedy is to supply the rate, which is what other tools ask for as a matter of course.
 
-**Both are fixed by typing the rate into `Options ▸ Baud Rate`** — verified, every frame decoded with
+**All three are fixed by typing the rate into `Options ▸ Baud Rate`** — verified, every frame decoded with
 zero errors once the rate was given. The numbers are below so you can judge the risk yourself.
 
 Automatic detection has no clock to refer to. It works in two steps: it measures the gaps between
@@ -807,6 +807,47 @@ alone over 0.5× to 1.6× caused **no failures at all**. Signals sitting entirel
 unaffected at any offset inside ±10 V.
 
 **Besides locking the rate:** reference the probe to the line's own low level rather than to earth.
+
+### 3. Long runs of one repeated byte, above 115 200 baud
+
+**What triggers it.** All three of: a line faster than **115 200 baud**, a payload carrying **64 or more
+consecutive identical bytes**, and an unlucky capture placement. All three are needed.
+
+**Why the rate matters.** The instrument digitises at 1 MS/s at most, and the app asks for eight samples
+per bit. Up to 115 200 it gets them; past that it cannot:
+
+| baud | samples per bit |
+|---|---|
+| 9 600 – 76 800 | 8.33 |
+| **115 200** | **8.68 — fine, and it is the commonest fast rate** |
+| 128 000 | 7.81 |
+| **153 600** | **6.51 — where this is observed** |
+| 230 400 | 4.34 |
+| 250 000 | 4.00 |
+
+**Why the payload matters.** Inside a long run of one byte the wire carries only two gap lengths — nine
+bit times at one level and one at the other, over and over. Rate detection has nothing else to work from,
+and with six and a half samples per bit that is not enough to settle a bit time.
+
+**What you see.** **No decode at all** — the byte area stays empty and no rate is reported. Unlike cases 1
+and 2 this does not give you a wrong number; it declines, which is at least honest.
+
+**How rare.** Measured over **2.7 million decodes** at eight capture placements each: **3.2 per million**,
+every one between 6.2 and 6.5 samples per bit, and never at 8 or more. Only 2 of the bench's 41 test
+waveforms produce it, and they are the two whose payloads carry 64- and 128-byte runs of a single value;
+a third waveform built the same way, but whose bytes never repeat consecutively, never produces it.
+
+**What to do — either of these is enough.**
+
+* **Lock the rate.** Type it into `Options ▸ Baud Rate`. **Verified on the exact failing capture: unlocked
+  it failed 1 of 8 placements, locked it decoded 8 of 8.** Six and a half samples per bit is plenty to
+  *decode* with; it is only the measurement that cannot be made.
+* **If you control the link, run it at 115 200 or below** when you expect long runs of one byte — a
+  flash dump reading back as solid `FF`, a zero-padded frame, protocol fill. Every standard rate from
+  9 600 to 115 200 gets at least 8.3 samples per bit and none of them shows this.
+
+An idle line is **not** an instance of this. Idle is a continuous level with no framing at all, which the
+app handles separately; this needs a long run of framed bytes that happen to be equal.
 
 ---
 

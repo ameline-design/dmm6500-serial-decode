@@ -472,9 +472,25 @@ why. It is **not** the known second fixed point in `sig_fit` — that one needs 
 are 6.51 and 6.20, fractions 0.51 and 0.20 — so it is a different degeneracy and the entry condition is
 unknown. No minimal case has been reduced.
 
-**What can be done is bounded rather than nothing.** The rate cannot be raised. But if this is a run-length
-degeneracy then it is a **decoder** question merely *exposed* by the ceiling rather than caused by it, which
-is worth knowing and is not yet known.
+**IT IS THE RATE MEASUREMENT AND NOTHING ELSE, and locking the rate proves it.** The failing capture was
+re-run at all eight phases with `sdec.force_baud` set to the commanded 153 600, which is what a user typing
+into `Options ▸ Baud Rate` does:
+
+| | 8 phases | `nobytes` | per-capture failure |
+|---|---|---|---|
+| unlocked | 7 ok, **1 BAD** | 1 | **12.50 %** |
+| locked to 153 600 | **8 ok, 0 BAD** | 0 | **0.00 %** |
+
+So **6.51 samples a bit is enough to decode with** — the same samples, the same phase, byte-exact once the
+rate is supplied. What 6.51 samples a bit is not enough for is *measuring* a bit time from a payload that
+offers only two run lengths. That narrows the class to the rate-detection step and rules out framing, level
+detection and byte extraction, all of which work fine at 4–6 sa/bit given a rate.
+
+**And the decoder is deliberately NOT being changed for it.** The bit-time estimator currently reads
+2.7 M offline points with zero raises; re-tuning it to chase a 3.2 ppm case, at rates above 115 200, on two
+synthetic vectors, is a large risk for no payoff. The remedy is documented in `docs/MANUAL.md` as the third
+known failure of automatic rate detection, alongside the two that were already there — and it is the same
+remedy as both of those: supply the rate.
 
 #### How much of this a real user can reach
 
