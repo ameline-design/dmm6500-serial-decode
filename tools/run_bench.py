@@ -164,6 +164,23 @@ def keysize(d, name):
     return v if v >= 0 else None
 
 
+def run_tag(a):
+    """The tag brun.soak writes into the record's header line for this run.
+
+    NOT COSMETIC, AND NOT A LABEL. judge_bench.split_runs treats 'roll' and 'resumed' as CONTINUATIONS of
+    the run above them in the file and everything else as a new run -- because the record is one
+    append-only file and the header is the only thing separating runs in it. So the tag on a resumed leg
+    decides whether a hundred-lap soak is judged as one run or as two of fifty, and the judge's default is
+    the LAST run. Started with 'soak', a resume silently halved the thing being judged; the record's own
+    'resumed after LnnnCmmm' note is invisible to the judge, which reads the header.
+    """
+    if getattr(a, 'smoke', False):
+        return 'smoke'
+    if getattr(a, 'resume', False):
+        return 'resumed'
+    return 'soak'
+
+
 def push_plan(d, rows):
     """Write the plan onto the key over the LAN, in batches the instrument ACKNOWLEDGES one at a time.
 
@@ -528,7 +545,7 @@ def main():
             # waits the full timeout for a line that is never coming and then reports "(nothing)" on a
             # run that finished perfectly well.
             d.send('brun.soak(%d, "%s") print("===SOAKDONE=== " .. tostring(brun.stopwhy))'
-                   % (a.iterations, 'smoke' if a.smoke else 'soak'))
+                   % (a.iterations, run_tag(a)))
             # LET GO OF THE SOCKET, WHATEVER THE COUNT. A finite run is normally waited for because the
             # point of --smoke is a verdict now -- but a 1677-cell lap is about two hours, and holding the
             # instrument's one control socket for two hours is the opposite of what this engine is for.

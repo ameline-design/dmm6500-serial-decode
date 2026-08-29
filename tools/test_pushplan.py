@@ -209,6 +209,39 @@ check('and it is inside PUSH_MAX_ROWS', n14 < RB.PUSH_MAX_ROWS,
       '%d of %d' % (n14, RB.PUSH_MAX_ROWS))
 
 print('')
+print('-- the header tag, which decides whether a resumed soak is one run or two --')
+# judge_bench.split_runs TREATS 'roll' AND 'resumed' AS CONTINUATIONS and everything else as a new run,
+# because the record is one append-only file and the header is all that separates runs in it. So this
+# one string decides whether a hundred-lap soak stopped and resumed halfway is judged as a hundred laps
+# or as the fifty after the seam -- the judge's default being the LAST run. It was 'soak' either way.
+
+
+class _A(object):
+    def __init__(self, **kw):
+        self.smoke = False
+        self.resume = False
+        for k, v in kw.items():
+            setattr(self, k, v)
+
+
+check('a plain soak is tagged soak', RB.run_tag(_A()) == 'soak', RB.run_tag(_A()))
+check('a resumed soak is tagged resumed, which the judge reads as a CONTINUATION',
+      RB.run_tag(_A(resume=True)) == 'resumed', RB.run_tag(_A(resume=True)))
+# AND THE TAG IS ONE THE JUDGE ACTUALLY HONOURS. Asserting the literal 'resumed' against a hand-typed
+# copy would pass while split_runs looked for something else -- so the judge's own list is the oracle.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import judge_bench as JB                                                        # noqa: E402
+_seam = JB.split_runs(['# %s tag=soak' % JB.SCHEMA, 'R,1,1,x', 'R,1,2,x',
+                       '# %s tag=%s' % (JB.SCHEMA, RB.run_tag(_A(resume=True))), 'R,1,3,x'])
+check('and the judge merges the resumed rows into the run above them, rather than splitting',
+      len(_seam) == 1 and len(_seam[0][1]) == 3,
+      '%d run(s), %s row(s)' % (len(_seam), [len(b) for _, b in _seam]))
+_split = JB.split_runs(['# %s tag=soak' % JB.SCHEMA, 'R,1,1,x', 'R,1,2,x',
+                        '# %s tag=%s' % (JB.SCHEMA, RB.run_tag(_A())), 'R,1,3,x'])
+check('while a plain soak start after one really is a second run -- the check can fail',
+      len(_split) == 2, '%d run(s)' % len(_split))
+
+print('')
 if FAIL:
     print('%d FAILED: %s' % (len(FAIL), ', '.join(FAIL)))
     sys.exit(1)

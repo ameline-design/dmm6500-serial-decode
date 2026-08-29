@@ -927,10 +927,16 @@ function brun.ui_show(c, arb)
   if brun.tlap ~= nil then lapel = os.time() - brun.tlap end
   local ntot = 0
   if brun.iterwant ~= nil and brun.iterwant > 0 and nlap > 0 then ntot = brun.iterwant * nlap end
-  local rate = nil                      -- seconds a cell, over this run
+  local rate = nil                      -- seconds a cell, over THIS session only
   if el ~= nil and el > 0 and brun.ncell > 0 then rate = el / brun.ncell end
-  if rate ~= nil and ntot > brun.ncell then
-    left = brun.hours(rate * (ntot - brun.ncell))
+  -- TWO COUNTERS, AND A RESUME IS WHY. brun.ncell counts what THIS session measured, which is what the
+  -- rate must be divided by; the run's POSITION in the plan is that plus everything a resume skipped.
+  -- With one counter a run resumed at lap 9 read '500 of 279930 (0.2 %)' and put 8 laps of completed work
+  -- back on the clock -- an 8-day screen understating progress and overstating what is left, for the whole
+  -- 8 days.
+  local ndone = brun.ncell + (brun.nskipped or 0)
+  if rate ~= nil and ntot > ndone then
+    left = brun.hours(rate * (ntot - ndone))
   end
   -- TIME TO THE END OF THIS LAP, which is the question the operator actually acts on: a run is stopped
   -- with the TRIGGER key, and stopping 90 % of the way through a lap throws that lap's partial away as
@@ -962,17 +968,25 @@ function brun.ui_show(c, arb)
   -- share above. '%s cell(s) done' alone could not answer 'how far through the fortnight is it'.
   local tot = '--'
   if rate ~= nil and ntot > 0 then tot = brun.hshort(rate * ntot) end
-  local done = brun.int(brun.ncell)
+  local done = brun.int(ndone)
   if ntot > 0 then
     done = done .. ' of ' .. brun.int(ntot) .. ' cells'
-                .. string.format(' (%.1f%%)', 100.0 * brun.ncell / ntot)
+                .. string.format(' (%.1f%%)', 100.0 * ndone / ntot)
   else
     done = done .. ' cell(s) done'
   end
   -- 'of --' IS LEFT OUT RATHER THAN PRINTED. Until the first cell finishes there is no rate, so the
   -- projection is unknown -- and 'Total: 0.0h of -- - 1 of 352170 cells' puts two dashes meaning different
   -- things three characters apart on the line a reader meets first.
-  local ran = 'Total: ' .. brun.hshort(el)
+  -- ELAPSED AT THIS SESSION'S RATE, NOT WALL CLOCK SINCE THIS SESSION STARTED, and for a run that was
+  -- never resumed the two are IDENTICAL -- rate is el/ncell, so rate * ndone is el exactly when nothing
+  -- was skipped. It differs only after a resume, and there it is the better number twice over: a session
+  -- elapsed of 0.7 h beside '4.0 % of 412.1 h' is a line disagreeing with itself, and the wall clock
+  -- since the FIRST start would count the hours the instrument spent doing something else. What this
+  -- reports is soak time.
+  local elshown = el
+  if rate ~= nil then elshown = rate * ndone end
+  local ran = 'Total: ' .. brun.hshort(elshown)
   if tot ~= '--' then ran = ran .. ' of ' .. tot end
   brun.ui_set(u.time, ran .. ' - ' .. done, brun.c_lab)
 

@@ -405,6 +405,33 @@ do
   for k = start, n do if string.sub(L[k], 1, 2) == 'R,' then ndata = ndata + 1 end end
   ck(ndata == 4, 'measuring only the cells that were left', string.format('%d cell(s)', ndata))
 
+  -- AND THE SCREEN COUNTS THE WHOLE RUN, NOT JUST THIS SESSION. brun.ncell is what this session measured,
+  -- which is what the RATE has to be divided by; the run's POSITION is that plus whatever the resume
+  -- skipped. With one counter a soak resumed at lap 9 would read '500 of 279930 (0.2 %)' and put eight
+  -- completed laps back on the clock, understating progress and overstating what is left for eight days.
+  brun.ui_build()
+  brun.percell, brun.iterwant = 1333, 210
+  brun.ncell, brun.nskipped = 500, 10664          -- resumed after 8 laps, 500 cells into the 9th
+  brun.t0, brun.tlap = os.time() - 2650, os.time() - 2650
+  brun.screen({iter = 9, cell = 500, vid = 'v77', baud = 9600}, ARB.v77)
+  local tres = tostring(MD.text(brun.ui.time))
+  ck(string.find(tres, '11164 of 279930', 1, true) ~= nil
+     and string.find(tres, '(4.0%)', 1, true) ~= nil,
+     'a resumed run counts the cells it skipped as done', tres)
+  -- AND THE RATE STILL COMES FROM THIS SESSION ONLY. 2650 s over 500 cells is 5.3 s a cell, so the
+  -- 268 766 cells left are 395.8 h -- dividing the session's seconds by the RUN's cells would read 9 s a
+  -- cell and claim a fortnight that never existed.
+  ck(string.find(tres, 'of 412.1h', 1, true) ~= nil,
+     'and the projection uses this session\'s rate, not the whole run\'s', tres)
+  -- AND THE LINE AGREES WITH ITSELF. 4.0 % of 412.1 h is 16.4 h, so an elapsed of 0.7 h -- this session's
+  -- wall clock -- would be the line contradicting its own percentage. The figure shown is elapsed AT THIS
+  -- RATE, which for a run that was never resumed is the wall clock exactly, and after a resume excludes
+  -- the hours the instrument spent doing something else.
+  ck(string.find(tres, 'Total: 16.4h of 412.1h', 1, true) ~= nil,
+     'and the elapsed figure agrees with the percentage rather than the session', tres)
+  brun.nskipped = 0
+  brun.ui_destroy()
+
   -- A RESUME POINT THE PLAN DOES NOT CONTAIN IS REFUSED, not quietly restarted. That means the plan on the
   -- key is not the plan that produced the record -- a different --random-per-lap, a different skip, a
   -- regenerated file -- and starting from row one would replay days of stimulus while reporting a resume.
