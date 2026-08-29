@@ -79,7 +79,7 @@ API** (`display.create` and friends), and **Lua 5.0.2**. Every digitizer below r
 
 | | |
 |---|---|
-| **DMM6500** | **Tested**, firmware 1.7.17a — three 17-hour soaks, and the namespace resolver verified here. 16-bit digitizer, *"maximum resolution 16 bits"*, specifications, April 2018 |
+| **DMM6500** | **Tested**, firmware 1.7.17a — 15.5 hours driven by the instrument itself, three 17-hour host-driven soaks, and the namespace resolver verified here. 16-bit digitizer, *"maximum resolution 16 bits"*, specifications, April 2018 |
 | **DAQ6510** | Should run unmodified, on the strongest grounds of any untested model: it **shares the UI board and the acquisition board** with the DMM6500, only the channel-board plugin differing. Untested |
 | **DMM7510** | Should run unmodified: 18-bit digitizer, better acquisition boards. Untested |
 | **SMU2461** | **Will install and try; may or may not work.** Dual 18-bit digitizers, reached as `smu.digitize` by a namespace the app resolves at load. That mechanism is verified on the DMM6500; no SMU has ever run it. Three unknowns below |
@@ -159,7 +159,6 @@ how to replay a failing cell offline, and the hazards worth knowing.
 | `tsp/` | the app. `serial_core` acquisition, `uart_decode` framing, `chunk_decode` resumable decode, `serial_ui` panel, `serial_app` orchestration |
 | `tools/` | harnesses. `release_sweep.py` is the entry point; the rest are the authorities it calls |
 | `docs/` | the manual, instrument references, panel mockups |
-| `notes/` | bring-up log, findings, handoffs — **not published**, being unreviewed detail about one specific bench. Everything a reader needs is in `docs/` |
 
 `tsp/midi_decode.tsp` and `tsp/lin_decode.tsp` are complete and tested but **not shipped** in version 1
 — the LIN checksum has never been checked against a real frame. Re-adding either is one line in
