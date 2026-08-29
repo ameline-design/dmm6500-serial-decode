@@ -66,6 +66,16 @@ brun.nreclost = 0                        -- cells this run that were never writt
 brun.nrecback = 0                        -- times recording recovered
 brun.nsdgalive = 0                       -- cells with no stimulus while the generator answered
 
+-- HOW MANY TIMES A CELL RE-SENDS THE WHOLE WAVEFORM SELECTION before it is recorded as stimulus-free.
+-- MEASURED, twice: every miss in the qualifying lap and the one in the lap after it answered C1:ARWV?
+-- with the PREVIOUS name, and every one of them succeeded when the next cell sent the IDENTICAL name a
+-- fraction of a second later. So the operation that recovers a late switch is sending the selection
+-- again -- bsdg.arwvtries cannot, since it only re-asks about a command already sent. One retry has
+-- been enough every time it has been observed; three leaves two spare.
+brun.selretry = brun.selretry or 3
+brun.selwait = brun.selwait or 0.5       -- seconds between attempts
+brun.nselback = 0                        -- cells whose stimulus needed more than one attempt
+
 -- HOW OFTEN THE STOP FILE IS LOOKED FOR, in cells. Not every cell, and the reason is measured: any
 -- look at a file or directory that is not readable POSTS AN EVENT -- 2201 'File read error' for the
 -- directory read, 2205 'File not found' for a missing file -- and at one per cell that is 86 events in
@@ -763,6 +773,13 @@ function brun.ui_status()
     return brun.c_warn, string.format('%d cell(s) were never recorded -- gap in the file',
                                       brun.nreclost)
   end
+  -- STILL MISSING, OR MISSED AND BACK: two states, two lines. One line saying 'and recovered' covered
+  -- both, because it is pushed while brun.nbadsdg is still non-zero -- so a generator failing one or two
+  -- cells at a time for ever, never reaching brun.badsdgwarn in a row, reported itself as recovered the
+  -- whole time. The operator's decision to intervene is made from this line.
+  if brun.nbadsdg > 0 then
+    return brun.c_warn, string.format('no stimulus for %d cell(s) now -- retrying', brun.nbadsdg)
+  end
   if brun.nsdgtot > 0 then
     return brun.c_warn, string.format('generator missed %d cell(s) and recovered', brun.nsdgtot)
   end
@@ -802,14 +819,7 @@ function brun.ui_end()
   local hl, hcol = brun.healthline()
   brun.ui_set(u.health, hl, hcol)
   brun.ui_set(u.note, brun.prompt(), brun.c_ok)
-  -- ANYTHING WORTH SAYING GOES TO THE LOG, ONCE. The prompt above keeps saying how to stop the run,
-  -- which is what it is for; an alarm that replaced it left the operator looking at a warning with no
-  -- instruction under it.
-  local col, msg = brun.ui_status()
-  if col ~= brun.c_ok and brun.newsworthy(msg) then
-    brun.lastmsg = msg
-    brun.msg(col, msg)
-  end
+  brun.ui_note()
 end
 
 -- ONE NUMBER FOR THE WHOLE RUN: the share of cells that behaved as they were supposed to. A cell counts
@@ -951,9 +961,22 @@ function brun.ui_show(c, arb)
   local hl, hcol = brun.healthline()
   brun.ui_set(u.health, hl, hcol)
   brun.ui_set(u.note, brun.prompt(), brun.c_ok)
-  -- ANYTHING WORTH SAYING GOES TO THE LOG, ONCE. The prompt above keeps saying how to stop the run,
-  -- which is what it is for; an alarm that replaced it left the operator looking at a warning with no
-  -- instruction under it.
+end
+
+-- ANYTHING WORTH SAYING GOES TO THE LOG, ONCE. The prompt above keeps saying how to stop the run, which
+-- is what it is for; an alarm that replaced it left the operator looking at a warning with no
+-- instruction under it.
+--
+-- CALLED AT THE END OF A CELL, NOT FROM ui_show. brun.msg stamps LnnnCmmm from brun.cell, and the screen
+-- is drawn BEFORE the generator and the capture run -- so a fault raised its counter too late for its own
+-- cell's draw and the line was pushed by the NEXT one. MEASURED: a stimulus failure the record puts at
+-- L1C173 reached the screen as L1C174. The screen is the only account of a fault anybody has without
+-- fetching the key, and it named the cell after the one that failed -- which for these misses is the
+-- SECOND cell of a vector's block, and would have refuted the finding that only the 39 real waveform
+-- switches can fail. It is not enough for the key to be right.
+--
+-- OUTSIDE THE u == nil GUARD, so the ring is maintained whether or not the status objects exist.
+function brun.ui_note()
   local col, msg = brun.ui_status()
   if col ~= brun.c_ok and brun.newsworthy(msg) then
     brun.lastmsg = msg
@@ -1344,6 +1367,10 @@ function brun.soak(iterations, tag)
   brun.nbad, brun.nsdgtot = 0, 0
   brun.nhold, brun.heldsecs = 0, 0
   brun.nrecfail, brun.nreclost, brun.nrecback, brun.nsdgalive = 0, 0, 0, 0
+  brun.nselback = 0
+  -- BEFORE THE FIRST CELL THERE IS NO CELL, and brun.msg stamps every log line from these -- so a second
+  -- run in one session opened its log with the PREVIOUS run's last cell number against 'started'.
+  brun.iter, brun.cell = 0, 0
   brun.nexp, brun.nunexp = 0, 0
   brun.vcell, brun.vbad = {}, {}
   brun.iterwant = 0
@@ -1512,7 +1539,34 @@ function brun.soak(iterations, tag)
                                        .. 'regenerate with tools/gen_arb_names.py',
                                        tostring(barb.of(c.vid)), tostring(c.vid), tostring(c.arb))
     else
-      sok, swhy = bsdg.select(arb, c.amp, c.ofst, c.srate)
+      -- THE WHOLE SELECT IS RETRIED, not just the ARWV? verify inside it, and the record says why: a
+      -- miss answers with the PREVIOUS waveform's name, and the next cell sending the same name gets it.
+      -- Only the 39 cells a lap where the vector changes can fail this way; the rest re-select what is
+      -- already playing and cost one attempt.
+      local why1 = nil
+      local try
+      for try = 1, brun.selretry do
+        sok, swhy = bsdg.select(arb, c.amp, c.ofst, c.srate)
+        if sok then
+          if why1 ~= nil then
+            brun.nselback = brun.nselback + 1
+            -- RECORDED, NOT ALARMED. A recovered switch is not worth the screen -- it reached it before
+            -- as 'generator missed 1 cell', which is the log line this removes -- but a phenomenon
+            -- nobody counts cannot be sized afterwards, so the try and the first reason go on the key.
+            brec.note(c.iter, c.cell, brun.ncell,
+                      string.format('sdg select recovered on try %d: %s', try, tostring(why1)),
+                      brun.nbad, brun.nbadsdg)
+          end
+          break
+        end
+        if why1 == nil then why1 = swhy end
+        -- RETRIED ONLY WHILE THE GENERATOR IS STILL ANSWERING. bsdg.nfail is zeroed by every reply and
+        -- raised by every timeout, so nfail > 0 is the wedge that needs a power cycle -- where two more
+        -- attempts cost a minute a cell and cannot change the answer. A stale name arrives as a REPLY,
+        -- so the case this retry exists for leaves nfail at 0.
+        if bsdg.nfail > 0 then break end
+        brun.holddelay(brun.selwait)
+      end
     end
     if not sok then
       brun.nbadsdg = brun.nbadsdg + 1
@@ -1629,6 +1683,9 @@ function brun.soak(iterations, tag)
         brun.nevstreak = 0
       end
     end
+    -- THE LOG LINE IS PUSHED HERE, at the end of the cell, so brun.cell still names the cell that caused
+    -- it. See brun.ui_note. A break above skips it and brun.ui_end pushes instead.
+    brun.ui_note()
   end
 
   brun.planclose()
@@ -1647,13 +1704,22 @@ function brun.soak(iterations, tag)
   -- THE WAITS AND THE LOSSES ARE PART OF THE TOTAL, in one line rather than reconstructed from the S
   -- rows -- and written even when they are zero, since a line that appears only on failure makes its
   -- absence something to interpret.
+  -- AND THE STIMULUS RETRIES, because they are the count that says whether the late-switch retry earned
+  -- its place: cells whose waveform needed a second selection are cells that used to be recorded as
+  -- stimulus failures, and nothing else on the key distinguishes 'never happened' from 'fixed'.
   brec.note(brun.iter, brun.cell, brun.ncell,
             string.format('run total: %d cell(s), %d failed, %d event(s) instigated (%d from the panel), '
-                          .. 'held %d s over %d retry(s), %d cell(s) unrecorded in %d gap(s)',
+                          .. 'held %d s over %d retry(s), %d cell(s) unrecorded in %d gap(s), '
+                          .. '%d stimulus retry(s)',
                           brun.ncell, brun.nbad, brun.nevtot, brun.nevpanel,
-                          brun.heldsecs, brun.nhold, brun.nreclost, brun.nrecback))
-  brec.finish(string.format('L%dC%d: %s', brun.iter, brun.cell,
-                            tostring(brun.stopwhy or 'ended')))
+                          brun.heldsecs, brun.nhold, brun.nreclost, brun.nrecback, brun.nselback))
+  -- THE STOP REASON ALREADY CARRIES ITS OWN LAP AND CELL wherever one is known, so prefixing another
+  -- produced 'L1C247: L1C248: the TRIGGER key was pressed' -- two cell numbers, one line, disagreeing.
+  local why = tostring(brun.stopwhy or 'ended')
+  if string.find(why, '^L%d+C%d+:') == nil then
+    why = string.format('L%dC%d: %s', brun.iter, brun.cell, why)
+  end
+  brec.finish(why)
   -- RESTORED, so a run ending does not leave the instrument silently swallowing real errors for the
   -- next operator. The app's own unmute, not a literal.
   pcall(function() sdec.unmute_events() end)

@@ -158,7 +158,11 @@ function MOCKB_SDG_DO(g, cmd)
     -- The new name is accepted but not yet REPORTED: ARWV? keeps naming the old one for slow_arb
     -- queries, which is exactly what the instrument saw.
     if g.slow_arb > 0 and g.arb ~= nil and g.arb ~= name then
-      g.arb_next, g.slow_left = name, g.slow_arb
+      -- RE-SELECTING THE SAME NAME DOES NOT RESTART THE COUNTDOWN, and the instrument is why: every
+      -- observed miss was followed by the next cell sending the IDENTICAL name and getting it back at
+      -- once, so the switch was already in flight. A mock that restarted the latency would make retrying
+      -- the selection useless offline and hide the fix that works on hardware.
+      if g.arb_next ~= name then g.arb_next, g.slow_left = name, g.slow_arb end
       return
     end
     g.arb = name
@@ -167,7 +171,10 @@ function MOCKB_SDG_DO(g, cmd)
     return
   end
   if up == 'C1:ARWV?' then
-    g.pending = 'C1:ARWV INDEX,0,NAME,' .. tostring(g.arb or '')
+    -- THE REPLY SHAPE IS THE INSTRUMENT'S, taken from a failure the key recorded verbatim:
+    -- 'C1:ARWV NAME,SER_Hello_8N1_Drift10_x10.bin'. No INDEX field, and the .bin is present -- which is
+    -- what bsdg.select's stripping of the extension from the WANTED name exists to survive.
+    g.pending = 'C1:ARWV NAME,' .. tostring(g.arb or '') .. '.bin'
     if g.arb_next ~= nil then
       g.slow_left = (g.slow_left or 0) - 1
       if g.slow_left <= 0 then

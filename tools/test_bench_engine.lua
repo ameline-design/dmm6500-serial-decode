@@ -33,10 +33,12 @@ MD.usb(true)
 -- was 0 -- the earlier block had set the value they were reading. A test that writes the number it is
 -- checking is checking itself.
 local SHIP = {holdsecs = brun.holdsecs, holdslice = brun.holdslice, holdmax = brun.holdmax,
-              recretry = brun.recretry, maxsdgfail = brun.maxsdgfail}
+              recretry = brun.recretry, maxsdgfail = brun.maxsdgfail,
+              selretry = brun.selretry, selwait = brun.selwait}
 local function shipdefaults()
   brun.holdsecs, brun.holdslice, brun.holdmax = SHIP.holdsecs, SHIP.holdslice, SHIP.holdmax
   brun.recretry, brun.maxsdgfail, brun.maxcell = SHIP.recretry, SHIP.maxsdgfail, 0
+  brun.selretry, brun.selwait = SHIP.selretry, SHIP.selwait
 end
 
 -- THE REAL STORED NAMES, read out of tools/vector_names.py rather than typed here: the whole reason a
@@ -700,6 +702,116 @@ end
 
 -- ---------------------------------------------------------------------------
 print('')
+print('-- a switch too late for the verify is recovered by sending it again --')
+do
+  -- THE RECORD'S OWN WORDS, from the lap AFTER bsdg.arwvtries was added:
+  --   L1C173 j20 300 Bd  SDG:ARWV? still names C1:ARWV NAME SER_Hello_8N1_Drift10_x10.bin
+  --                      after 4 tries selecting SER_Jitter20pct_x100
+  -- So four tries at the verify are not always enough, and a fifth would not help either: the operation
+  -- that recovers a late switch is SENDING THE SELECTION AGAIN, which is what the next cell did every
+  -- time one was observed. The likely mechanism is the generator's own CPU-to-FPGA link, which takes
+  -- about a second to load a large waveform -- so the wait needed scales with the waveform, not with
+  -- anything this side can see.
+  --
+  -- slow_arb IS PAST bsdg.arwvtries ON PURPOSE, so the verify cannot reach it and only brun.selretry can.
+  -- COUNTED AS A DELTA. The record is one append-only file holding every run this suite has driven, so an
+  -- absolute count of SDG: rows is a count of the whole file -- 18 of them, from tests that are supposed
+  -- to produce them. Only the rows this soak added say anything about this soak.
+  local function nsdgrows()
+    local L, n = lines(slurp(brec.path))
+    local nsdg, nback, k = 0, 0, nil
+    for k = 1, n do
+      if string.find(L[k], 'SDG:', 1, true) ~= nil then nsdg = nsdg + 1 end
+      if string.find(L[k], 'sdg select recovered', 1, true) ~= nil then nback = nback + 1 end
+    end
+    return nsdg, nback
+  end
+
+  -- THREE CELLS, NOT TWO, and the third is what makes the log stamp testable: the failure is at cell 2, so
+  -- a line pushed at the top of the NEXT cell would read L1C3. Cell 3 re-selects the same name, which is
+  -- the 1638-cells-a-lap case that costs one attempt.
+  local function lateswitch(nsel)
+    MOCKB_SDG({slow_arb = 5})
+    bsdg.reset()
+    bsdg.arwvwait = 0
+    brun.selretry, brun.selwait = nsel, 0
+    brun.msgs, brun.lastmsg, brun.lastshape, brun.lastn = nil, nil, nil, 0
+    writeplan({'1,1,v77,' .. ARB.v77 .. ',9600,std,5.0000,0.0000,96000,0.000',
+               '1,2,v78,' .. ARB.v78 .. ',9600,std,5.0000,0.0000,96000,0.000',
+               '1,3,v78,' .. ARB.v78 .. ',9600,std,5.0000,0.0000,96000,0.000'})
+    local sdg0 = nsdgrows()
+    brun.soak(1, 'late')
+    local sdg1, nback = nsdgrows()
+    return sdg1 - sdg0, nback, brun.nselback
+  end
+
+  local nsdg2, nback2, nsel2 = lateswitch(3)
+  ck(nsdg2 == 0, 'a switch too late for the verify is no longer a stimulus failure',
+     string.format('%d row(s) marked SDG:', nsdg2))
+  ck(nback2 >= 1 and nsel2 == 1,
+     'and the retry that recovered it is counted on the key, since the screen no longer says so',
+     string.format('%d note(s), nselback=%d', nback2, nsel2))
+
+  -- AND THE ASSERTION CAN FAIL. One attempt is the old behaviour and it has to lose the cell -- without
+  -- this pair the two above would also pass against a mock that simply never misses.
+  local nsdg1 = lateswitch(1)
+  ck(nsdg1 == 1, 'while a single attempt loses the cell, which is what this replaces',
+     string.format('%d row(s) marked SDG:', nsdg1))
+  -- AND THE LOG NAMES CELL 2, THE ONE THAT FAILED. Pushed from brun.ui_show it named cell 3, because the
+  -- screen is drawn before the generator runs and cell 2's own draw came too early to see the counter
+  -- move. On hardware that turned a failure the record puts at L1C173 into an L1C174 on the glass -- and
+  -- 173 is the first cell of a vector's block, the only kind of cell that can fail this way.
+  -- SEARCHED, NOT INDEXED. The ring opens with the run's own 'started -- <IDN>' line, so a fixed index
+  -- reads whichever line happens to sit there.
+  local function findmsg(sub)
+    local k
+    for k = 1, (brun.msgs ~= nil and table.getn(brun.msgs)) or 0 do
+      if string.find(brun.msgs[k].txt, sub, 1, true) ~= nil then return brun.msgs[k].txt end
+    end
+    return nil
+  end
+  local m1, m2 = findmsg('no stimulus'), findmsg('recovered')
+  ck(m1 ~= nil and string.find(m1, 'L1C2 ', 1, true) ~= nil
+     and string.find(m1, 'no stimulus', 1, true) ~= nil,
+     'and the log line names the cell that failed, not the one after it', tostring(m1))
+  -- AND THE RECOVERY IS ITS OWN LINE, AT THE CELL THAT RECOVERED. A single line reading 'generator missed
+  -- 1 cell(s) and recovered' had to serve both states, and it was pushed while brun.nbadsdg was still
+  -- non-zero -- so a generator failing one or two cells at a time for ever, never reaching badsdgwarn in a
+  -- row, described itself as recovered the whole time.
+  ck(m2 ~= nil and string.find(m2, 'L1C3 ', 1, true) ~= nil
+     and string.find(m2, 'recovered', 1, true) ~= nil,
+     'while the recovery is a second line, at the cell where it recovered', tostring(m2))
+
+  -- A WEDGED GENERATOR IS NOT RETRIED, and the reason is arithmetic: three attempts at four ARWV? tries
+  -- apiece, each waiting out bsdg.timeout, is a minute a cell spent proving what the first one proved.
+  -- bsdg.nfail separates the two -- a stale name ARRIVES as a reply and leaves it 0, a wedge raises it.
+  -- COUNTED IN ARWV NAME SENDS, not in commands: brun.sdghold's own bsdg.alive() probe is on the same
+  -- socket, so a command count cannot tell a retried selection from the liveness check after it.
+  MOCKB_SDG({wedged = true})
+  bsdg.reset()
+  bsdg.timeout, bsdg.arwvwait = 0.05, 0
+  brun.selretry, brun.selwait = 3, 0
+  writeplan({'1,1,v77,' .. ARB.v77 .. ',9600,std,5.0000,0.0000,96000,0.000'})
+  brun.holdslice, brun.holdsecs, brun.holdmax, brun.maxsdgfail = 1, 1, 2, 1
+  MOCKB.sdg.log, MOCKB.sdg.nlog = {}, 0
+  brun.soak(1, 'wedge')
+  local narwv, k = 0, nil
+  for k = 1, MOCKB.sdg.nlog do
+    if string.find(string.upper(MOCKB.sdg.log[k]), 'ARWV NAME', 1, true) ~= nil then
+      narwv = narwv + 1
+    end
+  end
+  ck(narwv == 1, 'a generator that answers nothing is asked once, not three times over',
+     string.format('%d ARWV NAME send(s) for one cell', narwv))
+
+  bsdg.timeout, bsdg.arwvtries, bsdg.arwvwait = 5, 4, 0.4
+  shipdefaults()
+  MOCKB_SDG({})
+  bsdg.reset()
+end
+
+-- ---------------------------------------------------------------------------
+print('')
 print('-- one repeating condition must not fill the five-line log --')
 do
   -- MEASURED ON HARDWARE: 4 generator misses in 1578 cells, so a fortnight's 273 000 is ~650. Deduping on
@@ -1235,20 +1347,40 @@ do
   -- operator was left with a warning and no way to act on it.
   brun.msgs, brun.lastmsg = nil, nil
   brun.nsdgtot, brun.ncell = 1, 200
-  -- brun.screen sets brun.iter/brun.cell from the row, which is what the log prefix uses: the PLAN's
-  -- lap and cell, not the run's running total, because those two numbers are what replay a cell.
+  -- brun.screen does NOT set brun.iter/brun.cell -- brun.soak does, before it calls screen -- and the log
+  -- prefix reads those, not the row it is handed. The PLAN's lap and cell, not the run's running total,
+  -- because those two numbers are what replay a cell.
   brun.iter, brun.cell = 1, 200
   brun.screen({iter = 1, cell = 200, vid = 'v77', baud = 9600}, 'SER_Fox_8N1_x10')
+  brun.ui_note()
   ck(MD.text(brun.ui.note) == 'Running -- press TRIGGER to stop and flush',
      'an alarm leaves the prompt alone', tostring(MD.text(brun.ui.note)))
   local m5 = MD.text(brun.ui.msg[1])
   ck(m5 ~= nil and string.find(m5, 'generator missed', 1, true) ~= nil
      and string.find(m5, 'L1C200', 1, true) ~= nil,
      'and appears in the log below it, stamped with the time, the lap and the cell', tostring(m5))
+  -- THE STAMP NAMES THE CELL THAT CAUSED THE LINE, NOT THE NEXT ONE, and that is why the push is not in
+  -- brun.ui_show: the screen is drawn at the TOP of a cell, before the generator and the capture, so a
+  -- fault raised its counter too late for its own draw and the following cell pushed the line. MEASURED:
+  -- a stimulus failure the record puts at L1C173 reached the glass as L1C174, and 173 is the first cell
+  -- of a vector's block -- the only kind that can fail this way -- while 174 is not.
+  brun.msgs, brun.lastmsg, brun.lastshape, brun.lastn = nil, nil, nil, 0
+  brun.nsdgtot = 0
+  brun.iter, brun.cell = 1, 173
+  brun.screen({iter = 1, cell = 173, vid = 'j20', baud = 300}, 'SER_Jitter20pct_x100')
+  ck(brun.msgs == nil or table.getn(brun.msgs) == 0,
+     'the top-of-cell draw pushes nothing, because the cell has not run yet')
+  brun.nsdgtot = 1                                  -- as the select failure would leave it, mid-cell
+  brun.ui_note()
+  local m6 = MD.text(brun.ui.msg[1])
+  ck(m6 ~= nil and string.find(m6, 'L1C173', 1, true) ~= nil,
+     'and the end-of-cell push carries the cell it was raised in', tostring(m6))
   -- ONCE, NOT PER CELL. A log that repeats the same line for four hundred cells cannot say when
   -- anything started.
   brun.screen({iter = 1, cell = 201, vid = 'v77', baud = 9600}, 'SER_Fox_8N1_x10')
+  brun.ui_note()
   brun.screen({iter = 1, cell = 202, vid = 'v77', baud = 9600}, 'SER_Fox_8N1_x10')
+  brun.ui_note()
   ck(MD.text(brun.ui.msg[2]) == '' and table.getn(brun.msgs) == 1,
      'and an unchanged state is not pushed again', tostring(MD.text(brun.ui.msg[2])))
   -- THE LAP NUMBER IS IN EVERY LINE. A soak is reproducible from its iteration number alone -- every
