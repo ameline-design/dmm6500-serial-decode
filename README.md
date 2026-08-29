@@ -159,7 +159,7 @@ how to replay a failing cell offline, and the hazards worth knowing.
 | `tsp/` | the app. `serial_core` acquisition, `uart_decode` framing, `chunk_decode` resumable decode, `serial_ui` panel, `serial_app` orchestration |
 | `tools/` | harnesses. `release_sweep.py` is the entry point; the rest are the authorities it calls |
 | `docs/` | the manual, instrument references, panel mockups |
-| `notes/` | bring-up log, findings, handoffs |
+| `notes/` | bring-up log, findings, handoffs — **not published**, being unreviewed detail about one specific bench. Everything a reader needs is in `docs/` |
 
 `tsp/midi_decode.tsp` and `tsp/lin_decode.tsp` are complete and tested but **not shipped** in version 1
 — the LIN checksum has never been checked against a real frame. Re-adding either is one line in
