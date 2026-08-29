@@ -444,15 +444,52 @@ It is **phase-dependent, not systematic**: `badall`, the count of cells failing 
 capture phases, is 0 on those laps. The same cell decodes at the other seven placements, so what fails is
 a particular alignment of a 20 000-sample window against a block payload at 6.5 samples a bit.
 
-**Nothing is to be done about it, and that is the point of writing it down.** The instrument samples at
-1 MS/s. A decoder cannot recover a bit time it has 6.5 samples of more reliably than it already does, and
-the two vectors affected are the two whose payloads are long runs of a single repeated byte.
+#### The rate is necessary and NOT sufficient, and the rest is not characterised
 
-**What it predicts for a hardware lap, which is the reason it matters.** A bench cell takes ONE capture,
-not eight, so the offline rate translates to **0.034 cells a lap — about 4 cells over 111 laps.** `v90`
-and `v94` are not `loud`, so those cells are counted as **UNEXPECTED**. A long run finishing with an
-`UNEXPECTED` of three to five, on `v90` or `v94` at the top of the rate range, is this ceiling and not a
-regression. Anywhere else, or many more than that, is not.
+It would be comfortable to stop at "the instrument samples at 1 MS/s", and it would be wrong. **341 cells
+a lap run below eight samples a bit, across all 31 vectors, and only two of them ever return nothing.**
+Every other vector decodes at 6.51 sa/bit — including at 4.00 — so the sample rate is necessary and not
+sufficient, and something about `v90` and `v94` is the rest of it.
+
+**`v92` is the control, and it settles which property matters.** All three of `v90`, `v92` and `v94` are
+"blocks of `00/FF/55/AA` and walking bits" built on the same parity construction, so any explanation
+resting on that construction has to explain why only two fail. The payloads separate them on one axis:
+
+| vector | payload | distinct byte values | longest run of one byte | ever returns nothing |
+|---|---|---|---|---|
+| `v90` | 256 B | 4 | **64** | yes |
+| `v94` | 512 B | 4 | **128** | yes |
+| `v92` | 240 B | 16 | **1** | **never** |
+
+So the failing vectors are exactly the ones carrying **long constant-byte runs**, and the one that never
+fails is the one whose bytes never repeat. Inside a 64- or 128-byte run of `00` the wire is nine bit-times
+low and one high, over and over: the bit-time estimator is handed **two run lengths and no others**, and at
+6.5 samples a bit those are ~6.5 and ~59 samples. A 20 000-sample window can land wholly inside such a run,
+which is also why the failure is phase-dependent.
+
+**That is a narrowed hypothesis, not a mechanism.** `read nil Bd` says a bit time was never settled on, not
+why. It is **not** the known second fixed point in `sig_fit` — that one needs `frac(sa/bit) > 0.6` and these
+are 6.51 and 6.20, fractions 0.51 and 0.20 — so it is a different degeneracy and the entry condition is
+unknown. No minimal case has been reduced.
+
+**What can be done is bounded rather than nothing.** The rate cannot be raised. But if this is a run-length
+degeneracy then it is a **decoder** question merely *exposed* by the ceiling rather than caused by it — and
+it would equally affect a real capture of a line idle in one state for a long stretch, which is a common
+thing for a real line to do. That is worth knowing and is not yet known.
+
+**These cells stay counted as failures, deliberately.** The tempting fix is to add `v90`/`v94` at the top
+rates to `VECTOR_EXPECT` as `loud`, which makes refusing there a documented pass and takes the number to
+zero. That would be hiding it: `loud` is for waveforms *built* to break something, and these two are
+clean traffic the app should read. Reclassifying them would also suppress any genuine defect at exactly
+the rates and the vectors most likely to expose one. Four visible, bounded, explained cells over a
+hundred laps are worth more than a clean column.
+
+**What it predicts for a hardware lap, which is the reason it matters now.** A bench cell takes ONE
+capture, not eight, so the offline rate translates to **0.034 cells a lap — about 4 cells over 111 laps.**
+Those are counted as **UNEXPECTED**. So a long run finishing with an `UNEXPECTED` of three to five on
+`v90`/`v94` near the top of the rate range is **this class, which is understood as far as the paragraph
+above and no further** — not a generator fault, and not a reason to discard the run. Anywhere else, or
+many more than that, is neither.
 
 ---
 
