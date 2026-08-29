@@ -1173,15 +1173,54 @@ do
   brun.screen({iter = 3, cell = 412, vid = 'v48b', baud = 153600}, 'SER_Hello_8N1_Drift10_x10')
   local prog, tim = MD.text(brun.ui.prog), MD.text(brun.ui.time)
   local stim, fail = MD.text(brun.ui.stim), MD.text(brun.ui.fail)
-  ck(string.find(prog, 'lap 3 of 210', 1, true) ~= nil
-     and string.find(prog, 'cell 412 of 1677', 1, true) ~= nil
-     and string.find(prog, '(25 %)', 1, true) ~= nil,
+  ck(string.find(prog, 'lap 3/210', 1, true) ~= nil
+     and string.find(prog, 'cell 412/1677', 1, true) ~= nil
+     and string.find(prog, '(25%)', 1, true) ~= nil,
      'the progress line is lap n of m, cell n of the LAP, and the share of the lap', prog)
   -- AND THE WHOLE RUN, on the time line: 210 x 1677 = 352 170 cells, of which 412 is 0.1 %.
-  ck(string.find(tim, '412 of 352170', 1, true) ~= nil and string.find(tim, '(0.1 %)', 1, true) ~= nil,
+  ck(string.find(tim, '412 of 352170 cells', 1, true) ~= nil
+     and string.find(tim, '(0.1%)', 1, true) ~= nil,
      'and the time line carries cells done out of the whole run, with its share', tim)
-  ck(string.find(tim, 'ran ', 1, true) ~= nil and string.find(tim, 'left ', 1, true) ~= nil,
-     'the time line is hours run and hours left', tim)
+  ck(string.find(tim, 'Total: ', 1, true) == 1 and string.find(tim, ' of ', 1, true) ~= nil,
+     'the time line is labelled Total and reads elapsed of projected total', tim)
+
+  -- HOW LONG THIS LAP HAS TO RUN, which is the field the operator acts on rather than reads: a run ends
+  -- with the TRIGGER key, and stopping nine tenths of the way through a lap discards that lap as far as
+  -- whole-laps-completed goes. One hour over 412 cells is 8.74 s a cell, so the 1265 cells left in the lap
+  -- are 3.1 h and the 351 758 left in the run are 853.9 h. BOTH SCOPES, ON THEIR OWN LINES: two remaining
+  -- times a space apart on one line would be two numbers labelled 'left' meaning different things.
+  -- 8.737864 s a cell: the 1265 cells left in the lap are 3.1 h, and 352 170 cells at that rate is a
+  -- 854.8 h run. Pinned to the digit, because both figures come off the SAME rate and a layout change that
+  -- silently re-derived one of them from something else would still look plausible.
+  brun.t0, brun.tlap = os.time() - 3600, os.time() - 3600
+  brun.screen({iter = 3, cell = 412, vid = 'v48b', baud = 153600}, 'SER_Hello_8N1_Drift10_x10')
+  local prog2, tim2 = MD.text(brun.ui.prog), MD.text(brun.ui.time)
+  ck(string.find(prog2, 'ran 1.0h left 3.1h', 1, true) ~= nil,
+     'the lap line says how long THIS lap has run and has left', prog2)
+  ck(string.find(tim2, 'Total: 1.0h of 854.8h', 1, true) ~= nil,
+     'while the total line is the run: elapsed of what the whole run will take', tim2)
+  -- AND IT FITS AT ITS WIDEST, which is what the firmware punishes: over 58 characters it clips the field
+  -- at the END of the line, and the countdown is now the field at the end. Two extremes -- the last cell of
+  -- the last lap, and a run ten times slower than any measured so that the countdown needs two figures.
+  local wide, wtxt, kk = 0, nil, nil
+  local ext = {{it = 210, ce = 1677, nc = 352170, el = 783000},   -- the last cell of the last lap
+               {it = 210, ce = 1000, nc = 1000, el = 70000}}      -- ten times slower: two-figure hours
+  for kk = 1, table.getn(ext) do
+    brun.ncell = ext[kk].nc
+    brun.t0, brun.tlap = os.time() - ext[kk].el, os.time() - ext[kk].el
+    brun.screen({iter = ext[kk].it, cell = ext[kk].ce, vid = 'v48b', baud = 153600},
+                'SER_Hello_8N1_Drift10_x10')
+    local jj
+    for jj = 1, 2 do
+      local t = MD.text(jj == 1 and brun.ui.prog or brun.ui.time)
+      if t ~= nil and string.len(t) > wide then wide, wtxt = string.len(t), t end
+    end
+  end
+  ck(wide <= 58, 'and both lines still fit the glass with four times on them',
+     string.format('widest %d of 58: %s', wide, tostring(wtxt)))
+  brun.ncell = 412
+  brun.t0, brun.tlap = os.time() - 3600, os.time() - 3600
+  brun.screen({iter = 3, cell = 412, vid = 'v48b', baud = 153600}, 'SER_Hello_8N1_Drift10_x10')
   ck(string.find(stim, 'v48b', 1, true) ~= nil and string.find(stim, '153600 Bd', 1, true) ~= nil
      and string.find(stim, '8N1', 1, true) ~= nil
      and string.find(stim, 'SER_Hello_8N1_Drift10_x10', 1, true) ~= nil,

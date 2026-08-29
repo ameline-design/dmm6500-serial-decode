@@ -719,6 +719,14 @@ function brun.hours(sec)
   return string.format('%.1f h', sec / 3600.0)
 end
 
+-- THE SAME FIGURE WITHOUT THE SPACE, for the two lines that now carry four of them. At FONT_MEDIUM the
+-- glass holds 58 characters and MEDIUM is the largest font this firmware has, so the four spaces this
+-- saves are the difference between the layout fitting and the field at the end being clipped away.
+function brun.hshort(sec)
+  if sec == nil or sec < 0 then return '--' end
+  return string.format('%.1fh', sec / 3600.0)
+end
+
 -- THE ONE INSTRUCTION, ON ITS OWN LINE, FOR THE WHOLE RUN. Not a status: a control the operator cannot
 -- guess at, since it is the physical TRIGGER key and not anything on the glass.
 function brun.prompt()
@@ -903,35 +911,70 @@ function brun.ui_show(c, arb)
   -- this line read 'cell 114 of 279930 (0 % of the lap)'. The lap size is brun.percell.
   local nlap = brun.percell
   if nlap <= 0 then nlap = brun.perlap_guess() end
+  -- n/m RATHER THAN 'n of m', ON BOTH LINES. Four times shows what it buys: at FONT_MEDIUM the glass holds
+  -- 58 characters, MEDIUM is the largest font the firmware has, and the layout with ' of ' spelled out
+  -- needs 64 -- so the field at the end, which is the countdown, is the one the firmware would clip away.
   local lap = 'lap ' .. brun.int(c.iter)
   if brun.iterwant ~= nil and brun.iterwant > 0 then
-    lap = lap .. ' of ' .. brun.int(brun.iterwant)
+    lap = lap .. '/' .. brun.int(brun.iterwant)
   end
-  local cell = 'cell ' .. brun.int(c.cell)
-  if nlap > 0 then
-    cell = cell .. ' of ' .. brun.int(nlap)
-                .. string.format('  (%.0f %%)', 100.0 * (c.cell or 0) / nlap)
-  end
-  brun.ui_set(u.prog, lap .. '    ' .. cell, brun.c_val)
-
   -- TIME REMAINING IS EXTRAPOLATED FROM THIS RUN'S OWN CELL RATE, not from a nominal seconds-per-cell:
   -- a cell is a capture plus a plan wait plus however long the generator took, and those vary by rate.
-  local el, left = nil, '--'
+  local el, left, lapleft, lapel = nil, '--', '--', nil
   if brun.t0 ~= nil then el = os.time() - brun.t0 end
+  -- MEASURED FROM THE LAP BOUNDARY, not divided out of the run's average, so a lap that ran slower than
+  -- its predecessors says so instead of being smoothed away.
+  if brun.tlap ~= nil then lapel = os.time() - brun.tlap end
   local ntot = 0
   if brun.iterwant ~= nil and brun.iterwant > 0 and nlap > 0 then ntot = brun.iterwant * nlap end
-  if el ~= nil and el > 0 and brun.ncell > 0 and ntot > brun.ncell then
-    left = brun.hours(el * (ntot - brun.ncell) / brun.ncell)
+  local rate = nil                      -- seconds a cell, over this run
+  if el ~= nil and el > 0 and brun.ncell > 0 then rate = el / brun.ncell end
+  if rate ~= nil and ntot > brun.ncell then
+    left = brun.hours(rate * (ntot - brun.ncell))
   end
+  -- TIME TO THE END OF THIS LAP, which is the question the operator actually acts on: a run is stopped
+  -- with the TRIGGER key, and stopping 90 % of the way through a lap throws that lap's partial away as
+  -- far as 'whole laps completed' is concerned. THE SAME RATE ANSWERS IT, and it is accurate rather than
+  -- lucky: the plan sweeps rates ASCENDING within each vector's block, so the one slow cell per vector
+  -- is spread evenly through the shuffled lap and the lap percentage tracks elapsed time to within 0.1
+  -- points at 25/50/75/90/95 %. If a plan were ever sorted by baud this would stop being true.
+  local cellsleft = nil
+  if nlap > 0 and (c.cell or 0) <= nlap then cellsleft = nlap - (c.cell or 0) end
+  if rate ~= nil and cellsleft ~= nil then lapleft = brun.hshort(rate * cellsleft) end
+
+  local cell = 'cell ' .. brun.int(c.cell)
+  if nlap > 0 then
+    cell = cell .. '/' .. brun.int(nlap)
+                .. string.format('  (%.0f%%)', 100.0 * (c.cell or 0) / nlap)
+  end
+  -- THE LAP'S OWN TWO TIMES GO ON THE LAP'S OWN LINE, and the run's are labelled 'Total:' below, because
+  -- both scopes carry an elapsed and a remaining and two of them a space apart would be four numbers with
+  -- nothing saying which lap or run each belongs to.
+  if nlap > 0 then
+    cell = cell .. '  ran ' .. brun.hshort(lapel) .. ' left ' .. lapleft
+  end
+  brun.ui_set(u.prog, lap .. '  ' .. cell, brun.c_val)
+  -- ELAPSED OF PROJECTED TOTAL, not a second countdown. 'left 853.8h' answers how long remains and says
+  -- nothing about how long the whole thing was ever going to be, which is the figure that places a run in
+  -- its plan -- and the two together are the same information twice.
+  --
   -- CELLS DONE OUT OF THE WHOLE RUN, and what share of it that is -- the counterpart to the per-lap
   -- share above. '%s cell(s) done' alone could not answer 'how far through the fortnight is it'.
+  local tot = '--'
+  if rate ~= nil and ntot > 0 then tot = brun.hshort(rate * ntot) end
   local done = brun.int(brun.ncell)
   if ntot > 0 then
-    done = done .. ' of ' .. brun.int(ntot) .. string.format('  (%.1f %%)', 100.0 * brun.ncell / ntot)
+    done = done .. ' of ' .. brun.int(ntot) .. ' cells'
+                .. string.format(' (%.1f%%)', 100.0 * brun.ncell / ntot)
   else
     done = done .. ' cell(s) done'
   end
-  brun.ui_set(u.time, 'ran ' .. brun.hours(el) .. '   left ' .. left .. '   ' .. done, brun.c_lab)
+  -- 'of --' IS LEFT OUT RATHER THAN PRINTED. Until the first cell finishes there is no rate, so the
+  -- projection is unknown -- and 'Total: 0.0h of -- - 1 of 352170 cells' puts two dashes meaning different
+  -- things three characters apart on the line a reader meets first.
+  local ran = 'Total: ' .. brun.hshort(el)
+  if tot ~= '--' then ran = ran .. ' of ' .. tot end
+  brun.ui_set(u.time, ran .. ' - ' .. done, brun.c_lab)
 
   brun.ui_set(u.stim, vid .. '  ' .. brun.int(c.baud) .. ' Bd  ' .. brun.fmtof(arb)
                       .. '  ' .. tostring(arb or '?'), brun.c_val)
@@ -1377,6 +1420,10 @@ function brun.soak(iterations, tag)
   if not forever then brun.iterwant = iterations end
   brun.t0 = nil
   pcall(function() brun.t0 = os.time() end)
+  -- THE CURRENT LAP'S OWN START, so the lap line can say how long the lap has run rather than deriving it
+  -- from the run's average. Equal to t0 for lap 1; reset at every lap boundary. A --resume start lands
+  -- mid-lap, so that first lap's elapsed UNDERSTATES -- the laps after it are exact.
+  brun.tlap = brun.t0
 
   -- A FAULT AT STARTUP IS STILL ONLY A FAULT. Both used to return, losing a fortnight to a key that was
   -- briefly unreadable. Now brec.stopped is retried by rechold, and a closed plan handle makes nextrow
@@ -1524,6 +1571,9 @@ function brun.soak(iterations, tag)
     if lastiter ~= nil and c.iter ~= lastiter and brun.cellmax > 0 then
       brun.percell = brun.cellmax
       brun.cellmax = 0
+      -- AND THE NEW LAP'S CLOCK STARTS HERE, at the same boundary the lap size is learned at, so the two
+      -- numbers on the lap line always describe the same lap.
+      pcall(function() brun.tlap = os.time() end)
     end
     if (c.cell or 0) > brun.cellmax then brun.cellmax = c.cell end
     brun.iter, brun.cell = c.iter or 0, c.cell or 0
