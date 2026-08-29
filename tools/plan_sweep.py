@@ -81,12 +81,22 @@ ROUTES = ['r46b', 'rfit1', 'rstdC', 'rother']
 MAXKEYS = frozenset(['bleedworst', 'loudmissworst'])
 LINE = re.compile(r'^PLAN (\d+)/(\d+) iteration (\d+): (.*)$')
 
-# RATCHETS, KEYED ON (iteration, offsets, skip). Every baseline here is a measurement on a freshly drawn
-# plan and is reproducible run to run; re-measure with --no-ratchet rather than editing one from memory.
+# RATCHETS, KEYED ON (iteration, offsets, skip, random_per_lap). Every baseline here is a measurement on
+# a freshly drawn plan and is reproducible run to run; re-measure with --no-ratchet rather than editing
+# one from memory.
 #
 # THE SKIP IS IN THE KEY because it is not a filter on the results, it is a different draw: dropping two
 # names reshuffles the order every wait, amplitude and offset is keyed on, so a baseline measured over 41
 # vectors describes no run over 39. An unmeasured combination is SKIPPED rather than gated wrongly.
+#
+# AND SO IS random_per_lap, FOR THE SAME REASON AND ONE WORSE. It is implemented AS a skip -- applied
+# before the shuffle -- so it moves every remaining cell's draw exactly as the skip list does, and it
+# also changes how many cells exist: 1333 against 1677. Left out of the key, the documented
+# `--random-per-lap 4` form was gated against the all-twelve baseline and FAILED with rc=1 on two counts
+# that were the plan's design rather than a regression -- 'judged FELL to 1333 from 1677' and a loudmiss
+# rise -- while inviting the reader to lower `rate` to 12 in this file, which would have written a
+# 1333-cell measurement into the 1677-cell baseline. A gate that fails correctly-working code is bad; one
+# that fails it and then tells you which baseline to corrupt is how a ratchet loses its authority.
 #
 # WHY A RATCHET AND NOT A TARGET, same reasoning as tools/sweep_all.py: these count defects that are
 # UNDERSTOOD AND DELIBERATELY UNFIXED, so demanding zero would fail the gate on a known state, and
@@ -123,21 +133,26 @@ LINE = re.compile(r'^PLAN (\d+)/(\d+) iteration (\d+): (.*)$')
 # 3-byte head allowance leaves too few for judge() to compare. The app improved and the harness lost
 # the ability to score it, which is exactly what `skip` is bounded to make visible.
 RATCHET = {
-    (1, 1, ()): {'bad': 14, 'badcells': 14, 'badall': 14, 'rate': 13, 'flags': 0, 'bytes': 1,
-                 'nobytes': 0, 'bleed': 211, 'skip': 0, 'judged': 1763, 'loudquiet': 9,
-                 'loudmiss': 131, 'label': 3},
-    (1, 8, ()): {'bad': 110, 'badcells': 20, 'badall': 11, 'rate': 106, 'flags': 0, 'bytes': 4,
-                 'nobytes': 0, 'bleed': 1205, 'skip': 1, 'judged': 14103, 'loudquiet': 53,
-                 'loudmiss': 656, 'label': 24},
+    (1, 1, (), None): {'bad': 14, 'badcells': 14, 'badall': 14, 'rate': 13, 'flags': 0, 'bytes': 1,
+                       'nobytes': 0, 'bleed': 211, 'skip': 0, 'judged': 1763, 'loudquiet': 9,
+                       'loudmiss': 131, 'label': 3},
+    (1, 8, (), None): {'bad': 110, 'badcells': 20, 'badall': 11, 'rate': 106, 'flags': 0, 'bytes': 4,
+                       'nobytes': 0, 'bleed': 1205, 'skip': 1, 'judged': 14103, 'loudquiet': 53,
+                       'loudmiss': 656, 'label': 24},
     # THE TWO CONFIGURATIONS A BENCH LAP CAN ACTUALLY BE COMPARED WITH, because every hardware soak
     # skips v95 and v96 -- v96 wedges the generator at vector 33 -- and the skip is drawn on. These are
     # the ones tools/soak_offline.py and the default CLI run.
-    (1, 1, SP.HW_SKIP): {'bad': 15, 'badcells': 15, 'badall': 15, 'rate': 13, 'flags': 0, 'bytes': 2,
-                         'nobytes': 0, 'bleed': 200, 'skip': 0, 'judged': 1677, 'loudquiet': 5,
-                         'loudmiss': 122, 'label': 3},
-    (1, 8, SP.HW_SKIP): {'bad': 110, 'badcells': 22, 'badall': 10, 'rate': 107, 'flags': 0,
-                         'bytes': 3, 'nobytes': 0, 'bleed': 1050, 'skip': 1, 'judged': 13415,
-                         'loudquiet': 54, 'loudmiss': 622, 'label': 24},
+    (1, 1, SP.HW_SKIP, None): {'bad': 15, 'badcells': 15, 'badall': 15, 'rate': 13, 'flags': 0,
+                               'bytes': 2, 'nobytes': 0, 'bleed': 200, 'skip': 0, 'judged': 1677,
+                               'loudquiet': 5, 'loudmiss': 122, 'label': 3},
+    (1, 8, SP.HW_SKIP, None): {'bad': 110, 'badcells': 22, 'badall': 10, 'rate': 107, 'flags': 0,
+                               'bytes': 3, 'nobytes': 0, 'bleed': 1050, 'skip': 1, 'judged': 13415,
+                               'loudquiet': 54, 'loudmiss': 622, 'label': 24},
+    # THE 14-DAY RUN'S OWN CONFIGURATION, four random vectors a lap, which is what the instrument plays.
+    # 1333 cells rather than 1677, so none of the four baselines above describes it.
+    (1, 1, SP.HW_SKIP, 4): {'bad': 13, 'badcells': 13, 'badall': 13, 'rate': 12, 'flags': 0,
+                            'bytes': 1, 'nobytes': 0, 'bleed': 176, 'skip': 0, 'judged': 1333,
+                            'loudquiet': 5, 'loudmiss': 163, 'label': 3},
 }
 WHY = {
     'bad': 'failing points',
@@ -422,7 +437,7 @@ def main():
     # THE RATCHET, applied only at the configuration its baselines were measured at, and only to a
     # single-lap run: across laps the counts are per-draw and a baseline drawn from iteration 1 says
     # nothing about iteration 12.
-    key = (a.iteration, a.offsets, skip)
+    key = (a.iteration, a.offsets, skip, a.random_per_lap)
     if a.no_ratchet:
         print('\n-- ratchet DISABLED by --no-ratchet: the counts above gate nothing --')
     elif os.environ.get('SDEC_PROBE_N'):
@@ -439,11 +454,13 @@ def main():
         # AN EMPTY BASELINE SET IS NOT A MEASURED ONE. A configuration whose dict is `{}` gates on
         # nothing while `key in RATCHET` still reads True, so it is reported as unmeasured rather than
         # passed silently -- a gate that checks zero counters is worse than an absent one.
-        print('\n-- ratchet SKIPPED: iteration %d at %d offset(s) skipping %s is not a measured '
-              'configuration (%s), so no baseline describes this run --'
+        print('\n-- ratchet SKIPPED: iteration %d at %d offset(s) skipping %s with random-per-lap %s is '
+              'not a measured configuration (%s), so no baseline describes this run --'
               % (a.iteration, a.offsets, ', '.join(skip) or '(nothing)',
-                 ', '.join('iteration %d/%d offsets/skip %s' % (i, o, ','.join(s) or '(nothing)')
-                           for i, o, s in sorted(RATCHET) if RATCHET[(i, o, s)])
+                 'all twelve' if a.random_per_lap is None else str(a.random_per_lap),
+                 ', '.join('iteration %d/%d offsets/skip %s/rkeep %s'
+                           % (i, o, ','.join(s) or '(nothing)', 'all' if r is None else r)
+                           for i, o, s, r in sorted(RATCHET, key=repr) if RATCHET[(i, o, s, r)])
                  or 'none are measured yet'))
     else:
         base, tot = RATCHET[key], dict(rows[0][1])
