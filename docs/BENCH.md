@@ -473,9 +473,33 @@ are 6.51 and 6.20, fractions 0.51 and 0.20 — so it is a different degeneracy a
 unknown. No minimal case has been reduced.
 
 **What can be done is bounded rather than nothing.** The rate cannot be raised. But if this is a run-length
-degeneracy then it is a **decoder** question merely *exposed* by the ceiling rather than caused by it — and
-it would equally affect a real capture of a line idle in one state for a long stretch, which is a common
-thing for a real line to do. That is worth knowing and is not yet known.
+degeneracy then it is a **decoder** question merely *exposed* by the ceiling rather than caused by it, which
+is worth knowing and is not yet known.
+
+#### How much of this a real user can reach
+
+Narrow, and the rate half is the reason: **every standard baud rate up to and including 115 200 is above
+the eight-sample target**, because 115 200 × 8 = 921 600 fits under the ceiling.
+
+| baud | sa/bit | |
+|---|---|---|
+| 9 600 – 76 800 | 8.33 | fine |
+| **115 200** | **8.68** | **fine — the commonest fast rate is not affected** |
+| 128 000 | 7.81 | below target |
+| **153 600** | **6.51** | the band where this is observed |
+| 230 400 | 4.34 | below target |
+| 250 000 | 4.00 | below target |
+
+So reaching it needs a line **above 115 200** — 153 600, 230 400 and 250 000 being the real ones — *and* a
+payload carrying a long run of one repeated byte, *and* an unlucky window placement.
+
+**The payload half is not exotic, though, and that is the part worth taking seriously.** These two vectors
+are synthetic, but the property that trips them is not: erased flash reads back as a solid run of `FF`,
+padding and protocol fill are runs of `00`, and a memory dump over a serial link is mostly one or the
+other. A `00`-padded frame at 230 400 baud is an ordinary thing and sits squarely in the affected region.
+
+An idle line is *not* an instance of this — idle is continuous mark with no framing at all, which the
+decoder handles separately. It takes a long run of framed bytes that all happen to be equal.
 
 **These cells stay counted as failures, deliberately.** The tempting fix is to add `v90`/`v94` at the top
 rates to `VECTOR_EXPECT` as `loud`, which makes refusing there a documented pass and takes the number to
