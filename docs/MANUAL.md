@@ -1,28 +1,26 @@
 # Serial Decode — user manual
 
-**Ian Ameline** · version 1.11 · MIT licence
+**Ian Ameline** · version 1.20 · MIT licence
 
 This app turns a Keithley bench instrument into a serial decoder. Clip onto a UART line, press
 **Capture**, and read the bytes on the front panel. You do not have to tell it the baud rate, the frame
 format or which way up the signal is — it works all of that out from the signal itself.
 
-It was written on a **DMM6500** and that is **the only instrument it has been tested on**. It should
-run as it is on the rest of the Keithley TSP range that has a digitizer and the touchscreen app API —
-the DAQ6510 and DMM7510 in particular, and it will install on an SMU2461 and try — but nobody has run it
-there yet. `Which instruments` in the
+It was written on a **DMM6500**, and that is **the only instrument it has been tested on**. It should run
+as it is on the rest of the Keithley TSP range that has a digitizer and the touchscreen app API — the
+DAQ6510 and DMM7510 in particular — and it will install on an SMU2461 and try. **Which instruments** in the
 README says what is measured and what is inference.
 
-Three things make it worth reaching for over a scope's decode: the **window is large** (a screenful
-is ~240 bytes, and a recording holds 32 768), every capture is **appended to the USB key
-automatically** while a key is in the slot, so you have a log without asking for one, and the **serial parameters are detected rather than
-configured**. For most debugging that is the whole job — connect, press, read.
+Three things make it worth reaching for over a scope's decode: the **window is large** — a screenful is
+~240 bytes and a recording holds 32 768 — every capture is **appended to the USB key automatically** while
+a key is in the slot, and the **serial parameters are detected rather than configured**. Connect, press,
+read.
 
-> **Every number in this manual was measured on a real DMM6500** against a real
-> signal generator unless the text says otherwise — and where something is calculated rather than
-> measured, or untested, it says so in that spot. What that cannot cover is the variety of real devices, so if the app tells you
-> something you can prove is wrong, that is the bug worth reporting. It is built so that **refusing
-> with a reason is acceptable and confident nonsense is not**, and anything it is unsure about it
-> says on the note row at the bottom of the screen.
+> **Every number in this manual was measured on a real DMM6500** against a real signal generator unless
+> the text says otherwise; anything calculated or untested says so where it appears. What that cannot
+> cover is the variety of real devices, so if the app tells you something you can prove is wrong, that is
+> the bug worth reporting. It is built so that **refusing with a reason is acceptable and confident
+> nonsense is not**, and anything it is unsure of it says on the note row at the bottom of the screen.
 
 ---
 
@@ -122,24 +120,21 @@ known condition: the app arms on a busy line, so it lands wherever the traffic h
 bytes before the first gap between messages cannot be framed. On a busy line roughly one capture in
 eight starts this way.
 
-**The note and `ERR` agree, and that is deliberate.** The note's number is how far the damage reaches:
-the last byte in the opening region the decoder could not frame, so "the first N" is literally true and
-nothing past N is being accused. `ERR` is then never less than N. Above, the note says 1 and `ERR` says
-1. `ERR` counts the whole region rather than only the frames that failed a check, because inside a
-misaligned head the bit boundaries are in the wrong places: a frame there can satisfy its parity and
-its stop bit by luck and still hand back a perfectly ordinary character that is the wrong byte.
-**`ERR` counts bytes you cannot trust, not checks that failed**, because the silently wrong ones are
-the dangerous ones.
+**The note and `ERR` agree, and that is deliberate.** The note's number is how far the damage reaches —
+the last byte in the opening region the decoder could not frame — so "the first N" is literally true,
+nothing past N is being accused, and `ERR` is never less than N. Above, both say 1. `ERR` counts the whole
+region rather than only the frames that failed a check: inside a misaligned head the bit boundaries are in
+the wrong places, so a frame there can satisfy its parity and its stop bit by luck and still hand back an
+ordinary character that is the wrong byte. **`ERR` counts bytes you cannot trust, not checks that failed.**
 
-Two exclusions remain, and both keep `ERR` at 0 on good data. When no misaligned head is identified,
-the first three frames are ignored — a gapless line has no idle for the framer to anchor on, so it
-routinely resynchronises a frame or two in, and counting that made `ERR` read 1 or 2 on every healthy
-capture. The final frame is ignored always, because the capture boundary cuts it in half. Neither
-exclusion applies across a head the app has evidence for, which is what stopped the panel reading
-`ERR 1` beside a note naming four bytes.
+Two exclusions keep `ERR` at 0 on good data. Where no misaligned head is identified, the first three
+frames are ignored: a gapless line has no idle for the framer to anchor on, so it routinely resynchronises
+a frame or two in, and counting those would read `ERR 1` or `ERR 2` on every healthy capture. The final
+frame is ignored always, because the capture boundary cuts it in half. Neither exclusion applies across a
+head the app has evidence for.
 
 Everything from the first gap onward decoded cleanly, and the log on the USB key holds every byte: one
-that failed its parity or stop bit is still written, marked, rather than dropped.
+that failed its parity or stop bit is written and marked, not dropped.
 
 Underneath: the **trigger cell**, the bytes, then two rows of text. The **status row** tells you where
 you are (`FRAME HEX pg 1/1 bytes 1-239/239 win 240 [done]`) and names the log file.
@@ -304,14 +299,11 @@ screen. There is nothing to press in the middle.
 ![An 8 kB recording part way through its decode, 5331 of 8192 bytes](img/panel-recording.png)
 
 While it works, the counter on the status row moves — first `recording... N % of the buffer`, then
-`decoding... N/8192 bytes` — with a cyan progress bar beside it, and the cell to its right says
-whether anything can stop it. The screenshot above is a real 8 kB run caught in the *second* of those
-two phases, decoding 5331 of its 8192 bytes, with `no stop until it ends` in that cell. The measured
-cells of the top row read `--` because nothing has been decoded yet to describe — the baud rate and
-format are shown only because they were locked rather than measured — the dump area is blank for the
-same reason, and the note row is empty because there is nothing wrong. **There is no way to finish it
-early** — see the section on the TRIGGER key
-above for what bounds it instead.
+`decoding... N/8192 bytes` — with a cyan progress bar beside it, and the cell to its right says whether
+anything can stop it. Above is a real 8 kB run in the *second* phase, decoding 5331 of its 8192 bytes,
+with `no stop until it ends` beside it. The measured cells read `--` and the dump area is blank because
+nothing has been decoded yet; the baud rate and format show only because they were locked rather than
+measured. **There is no way to finish it early** — see **The TRIGGER key** above for what bounds it.
 
 **When it finishes, the note row goes quiet.** The status row's summary — bytes, errors, window count
 and filename — is the completion message; the yellow note row is reserved for what went wrong, so an
@@ -363,24 +355,20 @@ straight trade, and neither choice affects what gets decoded — both are lossle
 second whatever the baud rate. That is why `8 kB` feels much more responsive even though both are one
 press.
 
-**The app starts in FRAME**, and one press of **Mode** reaches `8 kB`, a second `32 kB`. Stop at
-`8 kB` when you would rather see bytes soon than see all of them, or while you are still working out
-whether you are probing the right pin; go on to `32 kB` when you want the most data for the fewest
-presses.
+**The app starts in FRAME**, and one press of **Mode** reaches `8 kB`, a second `32 kB`.
 
 ![After an 8 kB recording, with Mode pressed once to line up the next one](img/panel-after-recording.png)
 
 Above: an 8 kB recording has finished and **Mode** has been pressed once, so the title bar reads
-`32K CAPTURE` while the previous run's retained tail is still on screen. Note what the panel is saying
-— `Up` and `Dn` have appeared because the tail is more than one page, the status row states the next
-run's ceiling and that nothing will stop it, and **the note row is empty**, because a recording that
-worked has nothing to warn about.
+`32K CAPTURE` while the previous run's retained tail is still on screen. `Up` and `Dn` have appeared
+because the tail is more than one page, the status row states the next run's ceiling and that nothing will
+stop it, and **the note row is empty**, because a recording that worked has nothing to warn about.
 
 **The mode you choose stays chosen.** The title bar says which one you are in — `SERIAL DECODE - 240B
 FRAME`, `- 8K CAPTURE` or `- 32K CAPTURE` — and a recording that finishes leaves it alone, so pressing
-Capture again records another window. Only **Mode** changes it. Two things move it for you, and both
-say so on the note line: **Options ▸ Auto Detect**, because auto-detection cannot run in a recording
-mode at all, and clearing the baud rate, because a recording needs it locked.
+Capture again records another window. Only **Mode** changes it. Two things move it for you, and both say so
+on the note line: **Options ▸ Auto Detect**, because auto-detection cannot run in a recording mode at all,
+and clearing the baud rate, because a recording needs it locked.
 
 ### More than one window: flow control
 
@@ -403,14 +391,11 @@ cannot leave the panel busy for ever, and the 20 minutes is usually the one you 
 window takes longer than recording it, so 20 minutes is about eight windows at 9600 baud rather than
 32.
 
-If it stops for either reason it says which, and it tells you how to carry on: **press Capture
-again.** A finished recording leaves you in the mode you chose — the title bar still reads
-`SERIAL DECODE - 32K CAPTURE` — so it is one press, and the bytes that follow go into a **new**
-numbered file rather than the one it was just writing.
-
-**No bytes are lost in the gap.** Your device only transmits when it is credited, and no credit goes
-out until the next recording arms, so it is still waiting exactly where the run stopped. What you get
-is one conversation split across two files, in order, with nothing missing between them.
+If it stops for either reason it says which, and how to carry on: **press Capture again.** A finished
+recording leaves you in the mode you chose, so it is one press, and the bytes that follow go into a **new**
+numbered file. **Nothing is lost in the gap** — your device only transmits when it is credited and no
+credit goes out until the next recording arms, so it is still waiting exactly where the run stopped. You
+get one conversation split across two files, in order.
 
 Three things your device has to get right:
 
@@ -433,21 +418,15 @@ construction and you would be the first to close the loop. **Triggering, in both
 
 ### How long a recording gets you
 
-There are two different times here and it is worth keeping them apart:
+Two different times, worth keeping apart: the **signal** that ends up in the file, and the **waiting**
+before the buffer is full. Below about 19200 baud they are the same. Above it they are not, because the
+meter writes about **100 000 readings a second** into its memory however fast the digitizer is told to
+sample. The samples are properly spaced and the record is complete — gathering them just takes longer than
+the stretch of line they represent.
 
-- **Signal** — how much of the line ends up in the file.
-- **Waiting** — how long you stand there before the buffer is full.
-
-Below about 19200 baud they are the same. Above it they are not, because the meter writes about
-**100 000 readings a second** into its memory however fast the digitizer is told to sample. The samples
-are properly spaced and the record is complete; gathering them just takes longer than the stretch of
-line they represent, so you stand there longer than the signal you get.
-
-That ceiling is a separate thing from the sample rate, and the two are easy to confuse. The **sample
-rate** decides how many samples land in each bit — a frame capture gets very nearly the rate it asks
-for, a recording's burst gets somewhat less, and that difference is what limits recording to 153600
-baud (above). The **100 000 readings a second** is not about fidelity at all: it is how fast readings
-reach memory, and it decides only how long you wait.
+Do not confuse that ceiling with the sample rate. The **sample rate** decides how many samples land in each
+bit, and it is what limits recording to 153600 baud (below). The **100 000 readings a second** is not about
+fidelity at all: it is how fast readings reach memory, and it decides only how long you wait.
 
 | Locked rate | Signal you get | Waiting for the full 32 kB |
 |---|---|---|
@@ -659,8 +638,8 @@ they just cannot log or Save.
 rate fits rather than pretending to know. Irregular gaps between bytes remove the ambiguity
 completely.
 
-Two cases where automatic detection is known to fail are described under **Known failures of automatic
-rate detection**, below. Both are fixed by typing the rate in.
+Three cases where automatic detection is known to fail are described under **Known failures of automatic
+rate detection**, below. All three are fixed by typing the rate in.
 
 ---
 

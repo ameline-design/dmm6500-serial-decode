@@ -1,6 +1,6 @@
 # Serial Decode — measured reference
 
-**Ian Ameline** · version 1.11 · MIT licence
+**Ian Ameline** · version 1.20 · MIT licence
 
 The detail behind [MANUAL.md](MANUAL.md). Everything here was measured on a DMM6500 (firmware
 1.7.17a) against an SDG2122X generator, verified where noted with an SDS1204X-E scope. The manual is
@@ -173,12 +173,11 @@ Measured electrically, on the 50 Ω matched cabling, with the pulse read on the 
 the generator: **idle-low at +0.20 V, high +4.45 V, peak +4.82 V, 5.72 µs wide** — and the width is the
 same at three thresholds (5.72 µs at 50 %, 5.71 at 2.5 V, 5.73 at 2.0 V), so it is a real width rather
 than an artefact of where it was measured. **Rise 10–90 % is 436 ns, 7.6 % of the pulse: the corners are
-square.** An earlier bench observation that it "looked like the top of a sine wave" is not reproduced.
+square.**
 
-Those figures supersede an earlier **4.92 V peak, −0.96 V baseline, 9.4–9.8 µs** taken on 1 m RG179
-75 Ω cabling. The width differs by 1.7× and the −0.96 V undershoot is absent, which is what a
-reflection on the old unterminated path would look like. The old numbers are not wrong about that
-bench; they do not describe this one.
+**The cabling is part of the measurement.** On 1 m RG179 75 Ω, unterminated, the same pulse reads 4.92 V
+peak, a −0.96 V baseline and 9.4–9.8 µs — 1.7× the width, with an undershoot that is what a reflection on
+an unmatched path looks like. Re-measure the pulse on the path a receiver will actually see.
 
 The width CANNOT BE SET on this firmware: `trigger.extout.pulsewidth` reads nil on 1.7.17a, confirmed
 again here, so `sdec.fc_pulse` (100 µs) is never applied. **A device waiting for a credit therefore
@@ -529,48 +528,93 @@ dash reports a bad measurement where there is no measurement.
 decoded is **8.000 V**, on the LIN vectors at 2400, 9600, 38400 and 76800 Bd; the largest span of any
 kind is **9.300 V p-p**, on the impulse-spike vector, whose ±3 V transients ride a 3.3 V logic swing.
 
-**And the failure rate does not depend on the swing.** 100 offline laps of the full plan, **176 300
-cells**, each cell's swing drawn independently:
+**And the failure rate barely moves with the swing.** 100 offline laps of the plan the instrument itself
+runs — **133 300 cells and 1 066 400 decodes**, eight capture phases a cell — with each cell's swing drawn
+independently and recovered from the plan it was drawn into:
 
-| drawn swing | cells | failed | rate |
-|---|---|---|---|
-| 0.45 … 1.0 V | 12 865 | 45 | 0.35 % |
-| 1.0 … 2.0 V | 23 360 | 62 | 0.27 % |
-| 2.0 … 3.5 V | 34 805 | 84 | 0.24 % |
-| 3.5 … 5.0 V | 35 340 | 96 | 0.27 % |
-| 5.0 … 6.5 V | 34 812 | 104 | 0.30 % |
-| 6.5 … 8.0 V | 35 118 | 105 | 0.30 % |
+| drawn swing | cells | decodes | failed | rate / bytes | rate |
+|---|---|---|---|---|---|
+| 0.45 … 1.0 V | 9 733 | 77 864 | 528 | 501 / 27 | 0.678 % |
+| 1.0 … 2.0 V | 17 616 | 140 928 | 954 | 915 / 38 | 0.677 % |
+| 2.0 … 3.5 V | 26 237 | 209 896 | 1 354 | 1 299 / 55 | 0.645 % |
+| 3.5 … 5.0 V | 26 730 | 213 840 | 1 252 | 1 203 / 49 | 0.585 % |
+| 5.0 … 6.5 V | 26 365 | 210 920 | 1 496 | 1 438 / 58 | 0.709 % |
+| 6.5 … 8.0 V | 26 619 | 212 952 | 1 295 | 1 241 / 53 | 0.608 % |
 
-Flat within a factor of 1.5 and **not monotonic** — the middle bands are the best, and the spread is
-about two standard errors on the smallest bin. The swing is not an axis the failure rate depends on. Any
-apparent dependence is worth checking against the vertical draw in [BENCH.md](BENCH.md) first, since a
+**Within a factor of 1.21 across the whole range, and not monotonic** — the best band is 3.5–5.0 V, the
+worst 5.0–6.5 V, and the narrowest swing is neither. The `rate / bytes` column is the split defined below
+and it holds nearly the same proportion in every band, so **neither failure has a useful trend against the
+swing**.
+
+**That is not the same as independence, and the run is large enough to tell the difference.** Across the
+six bands the counts differ by more than chance — Pearson χ² = 33.5 on 5 degrees of freedom — so something
+band-dependent is present at the 0.1 percentage-point scale. What the measurement supports is that the
+effect is small, unordered and not a design limit; what it does not support is "the swing does not matter".
+Any apparent dependence is worth checking against the vertical draw in [BENCH.md](BENCH.md) first, since a
 band placed across ground is read as RS-232 and fails for a reason that has nothing to do with its size.
 
-### Where the failures are, by rate
+### Rate detection and decode, counted separately
 
-The same 100 laps, split by baud. Every standard rate is tested on all 41 waveforms every lap, so each
-row is **4 100 cells**:
+**These are two unrelated failures and one blended number hides which of them moved.** A capture can name
+the wrong baud rate, or it can name the right one and still hand back the wrong bytes. The same 100 laps,
+**1 066 400 decodes**, against a plan built to attack the decoder:
 
-| standard rate | BAD of 4 100 cells |
-|---|---|
-| 300, 600, 1200, 1800, 2400, 4800, 7200, 9600, 14400, 19200, 28800 | **0** |
-| 31250 | 2 — 0.05 % |
-| 38400, 57600, 76800, 115200 | **0** |
-| 128000 | 1 — 0.02 % |
-| 153600 | **0** |
-| 172800 | 9 — 0.22 % |
-| 192000 | 61 — 1.49 % |
-| 230400 | 62 — 1.51 % |
-| 250000 | 21 — 0.51 % |
+| | decodes | of all decodes | of the failures |
+|---|---|---|---|
+| **the reported rate is wrong** | 6 597 | 0.619 % | **95.9 %** |
+| — and the bytes are right anyway | 2 621 | 0.246 % | 38.1 % |
+| — and the bytes are wrong too | 3 976 | 0.373 % | 57.8 % |
+| **the rate is right, the bytes are wrong** | 280 | **0.026 %** | 4.1 % |
+| nothing decoded where something should be | 2 | 0.0002 % | 0.03 % |
+| more frames flagged than the app's own budget allows | **0** | — | — |
+| total | 6 879 | 0.645 % | 100 % |
 
-**From 300 Bd to 153600 Bd that is 3 failing cells in 73 800 — 0.004 %.** Two are the LIN-break vector
-at 31250 Bd and one is a random 7E1 payload at 128000 Bd on a 0.491 V swing. **This too is an upper
-bound**: the two LIN cells were judged before `lin_repair()` and their failure mode was not recorded, so if
-they were the break artefact described under **Endurance** the real figure is 1 in 73 800. It has not been
-recomputed, so 0.004 % stands as the number that was measured. **The four rates above
-153600 carry 153 of the 156 standard-rate failures.** Separately, 340 of the 496 failures in the run
-were at *drawn non-standard* rates rather than standard ones — the rate ladder's top end and the
-interstitial rates are where the difficulty is, not the range a device is likely to use.
+**Given the right rate, a byte comes out wrong on 0.026 % of decodes — one in 3 809 — against 0.619 %
+where the number on the panel is wrong.** Rate detection is 24 times more likely to be the fault than
+framing and sampling are, and **38 % of the rate failures decode every byte correctly** and only mislabel
+the rate: that is the cluster-C class under **Ambiguity** below, and on the panel it is a wrong `BAUD` cell
+above a correct dump. Of 133 300 cells, 1 415 (1.06 %) failed at **at least one** of their eight capture
+phases and **617 (0.46 %) failed at all eight**. Only the second figure is a property of the cell rather
+than of where the capture happened to open, and it is the one to set beside a bench lap, which asks once.
+
+**By standard rate.** Each row is 31 waveforms a lap over 100 laps — **3 100 cells, 24 800 decodes**:
+
+| standard rate | rate wrong | bytes wrong | nothing decoded | per 10 000 decodes |
+|---|---|---|---|---|
+| 300 | 9 | 0 | 0 | 3.6 |
+| 600 | 11 | 0 | 0 | 4.4 |
+| 1200 | 18 | 0 | 0 | 7.3 |
+| 1800 | 12 | 0 | 0 | 4.8 |
+| 2400 | 5 | 0 | 0 | 2.0 |
+| 4800 | 8 | 0 | 0 | 3.2 |
+| 7200 | 5 | 0 | 0 | 2.0 |
+| 9600 | 12 | 0 | 0 | 4.8 |
+| 14400 | 14 | 0 | 0 | 5.6 |
+| 19200 | 14 | 0 | 0 | 5.6 |
+| 28800 | 0 | 7 | 0 | 2.8 |
+| 31250 | 0 | 19 | 0 | 7.7 |
+| 38400 | **0** | **0** | 0 | **0** |
+| 57600 | 0 | 12 | 0 | 4.8 |
+| 76800 | **0** | **0** | 0 | **0** |
+| 115200 | 0 | 8 | 0 | 3.2 |
+| 128000 | 0 | 1 | 0 | 0.4 |
+| 153600 | 0 | 0 | 2 | 0.8 |
+| 172800 | **0** | **0** | 0 | **0** |
+| 192000 | **0** | **0** | 0 | **0** |
+| 230400 | **0** | **0** | 0 | **0** |
+| 250000 | 0 | 44 | 0 | 17.7 |
+| **all 22** | **108** | **91** | **2** | **3.7** |
+
+**201 failures in 545 600 decodes at standard rates — 0.037 %** — against **6 678 in 520 800 at the drawn
+non-standard ones, 1.28 %**. **A device sitting on the ladder is 35 times better off than one between its
+rungs**, which is where the interstitial rates in the plan exist to put pressure.
+
+**And the split inverts at 28 800 Bd.** Every standard-rate failure from 300 to 19 200 is a misreported
+rate with **not one wrong byte**; from 28 800 up, every one is a wrong byte with **the rate correct**. Five
+standard rates — 38 400, 76 800, 172 800, 192 000 and 230 400 — produced no failure of either kind in
+24 800 decodes each. The worst row is 250 000 Bd, which the 1 MS/s ceiling digitises at 4.00 samples a bit,
+the app's own floor; the two decodes that produced nothing at all are both at 153 600 Bd. See **Sample
+rates and samples per bit** above for what each rate is sampled at.
 
 On hardware, a 1 kB non-repeating payload is byte-exact at all eleven of 300, 600, 1200, 2400, 4800,
 9600, 19200, 38400, 57600, 115200 and 250000 Bd, with no flagged bytes at any of them.
@@ -833,10 +877,8 @@ located in the generator's trigger input rather than unknown.
 
 ### The longest run: 15.5 hours unattended, on the instrument itself
 
-**2026-08-28/29. 10 671 cells over 8 complete laps and 15.5 h, driven entirely by the DMM6500** — the
-generator selected over the LAN by the instrument, the record written to its own USB key, no host connected
-after the start. This is the first soak where the Mac was not in the loop, which is what makes its headline
-number meaningful:
+**10 671 cells over 8 complete laps and 15.5 h, driven entirely by the DMM6500** — the generator selected
+over the LAN by the instrument, the record written to its own USB key, no host connected after the start:
 
 | | |
 |---|---|
@@ -848,8 +890,8 @@ number meaningful:
 | **late waveform switches recovered** | **18 of 19** |
 
 **Zero events is the one that matters**, because on this firmware an event is a modal box on the panel and
-nothing suppresses it — `localnode.showevents` governs the remote interface only. An unattended week must
-instigate none, and 10 671 cells instigated none.
+nothing suppresses it — `localnode.showevents` governs the remote interface only. A run nobody is watching
+must instigate none, and 10 671 cells instigated none.
 
 **The two unexpected cells are different things and the record separates them.** One was the generator
 failing to change waveform after three attempts, counted as `SDG failed` rather than as a decode failure.
@@ -858,25 +900,23 @@ One was the app declining to decode, which at 4–6.5 samples a bit is arguably 
 `loud`/`exact` classification exists to keep.
 
 **18 of 19 late switches recovered** is the ARWV retry measured in use rather than inferred from an absence:
-`brun.nselback` counts cells whose waveform needed a second selection. Over ~233 real switches at the
-previously measured 10.3 % late rate, ~24 were expected; 19 occurred and 18 were repaired. Before the retry
-all 19 would have been lost cells.
+`brun.nselback` counts cells whose waveform needed a second selection. A lap makes ~233 real switches and
+about 10 % of them land late, so ~24 were expected; 19 occurred and 18 were repaired. An unrepaired one
+costs the cell, not the run.
 
-### The earlier host-driven soaks
+### The host-driven soaks
 
-Two 17-hour soaks, each **6 laps of the full 1 683-point matrix, 10 098 capture-and-decode cycles on one
-power cycle**, agreeing within **0.2 % on duration and 1.6 % on failure count** — 318 failures against
-313. The headline is in the [README](../README.md); this is the shape of it.
+Three 17-hour soaks, each **6 laps of the full 1 683-point matrix, 10 098 capture-and-decode cycles on one
+power cycle** — 318, 313 and 301 failures, listed in the [README](../README.md). Everything below is the
+shape of the **two whose per-cell records are retained**, which agree within **0.2 % on duration and 1.6 %
+on failure count**.
 
-> **THE FAILURE COUNTS BELOW ARE AN UPPER BOUND, and `v63`'s share of them is mostly an artefact of the
-> judge rather than the decoder.** Every LIN frame opens with a break — a dominant interval longer than any
-> UART character — which the decoder correctly flags and the judge counted against a flag budget, so a
-> byte-exact LIN capture failed on the flag count alone. Fixed 2026-08-29 in `bench_uart.lin_repair()`.
-> MEASURED across the two retained multi-lap soaks: **493 of 494 and 363 of 364 flag-budget failures were
-> LIN**, 100 % in both, about 120 a lap and spread evenly over v61, v62 and v63. On the 2026-08-28 record
-> the same fix took 129 LIN cells from **0 passing to 126**. These two 17-hour runs' logs are not retained
-> in a parseable form, so their numbers have **not** been recomputed — read 318 and 313 as ceilings, and
-> read `v63`'s place in the four-vector concentration below as largely this artefact.
+> **READ 318 AND 313 AS UPPER BOUNDS.** A LIN frame opens with a break — a dominant interval longer than
+> any UART character — which the decoder flags, correctly, while the oracle holds the byte the wire
+> carried. A byte-exact LIN capture can therefore fail on flag count alone, and in these two runs
+> **493 of 494 and 363 of 364 flag-budget failures are LIN**, ~120 a lap over v61, v62 and v63. The judge
+> substitutes the break byte where the oracle says one belongs; these two runs' logs are not retained
+> parseably, so their counts are not recomputed. Read `v63`'s place in the concentration below the same way.
 
 **Lap time is the leak indicator**, because a leaked display object, an unreturned buffer handle or a
 fragmenting allocator wedges the instrument around hour six without failing a single point. It fell in
@@ -885,8 +925,11 @@ both runs. The second's six laps ran **10 567, 10 219, 10 254, 10 282, 10 173 an
 
 **3.1 % of points fail, against a matrix built to attack the decoder** — LIN traffic presented to a UART
 decoder, single-byte and walking-bit patterns, sinusoidal drift, and swings and offsets swept to the edge
-of range. It is not comparable to the rate-detection figures under **Known failures of automatic rate
-detection** in the [manual](MANUAL.md). Two properties:
+of range. **That figure blends two unrelated failures**, and the split is under **Rate detection and
+decode, counted separately** above: on the current build almost all of it is the *reported rate* being
+wrong, not a byte. These runs' logs cannot be re-split, so the blended figure is all they support. It is
+not comparable to the rate-detection figures under **Known failures of automatic rate detection** in the
+[manual](MANUAL.md). Two properties:
 
 * **It concentrates.** Four vectors — `v94`, `v63`, `v90`, `v71` — account for **76 %** of all failures;
   `v63` is a LIN frame whose 13-bit break field is not valid 8N1.

@@ -61,6 +61,27 @@ MANUAL_PDF = os.path.join(ROOT, 'docs', 'MANUAL.pdf')
 ODD_RATES = ('900,1500,2800,3600,7200,12000,16000,'
              '1379,2731,5333,8123,13333,21600,29127,41666,53333,71111,89123,104857')
 
+# THE PUBLISHED STAGE INVENTORY, RUN RATHER THAN ASSERTED. docs/BENCH.md carries the table of what a
+# release passed, states that it must list every stage this file defines, and printed the check as a
+# snippet for the reader to run -- so nothing ran it, and three stages had already drifted out of the
+# table. This is that snippet, executed. It is the same class of defect as an undocumented gate: the
+# inventory is what a reader trusts when deciding what a version was tested against.
+STAGEDOC = r'''
+import re, sys
+# BOTH QUOTE STYLES, so a stage renamed with double quotes cannot become invisible to its own check.
+code = set(x or y for x, y in
+           re.findall(r'Stage\(\s*(?:\'([^\']+)\'|"([^"]+)")', open('tools/release_sweep.py').read()))
+doc = set()
+for line in open('docs/BENCH.md'):
+    if line.startswith('| `'):
+        doc |= set(re.findall(r'`([a-z0-9-]+)`', line.split('|')[1]))
+missing = sorted(code - doc)
+if missing:
+    print('docs/BENCH.md has no row for: %s' % ', '.join(missing))
+    sys.exit(1)
+print('all %d stages appear in the published table' % len(code))
+'''
+
 
 class Stage:
     def __init__(self, name, argv, hardware=False, gate=True, note=''):
@@ -233,6 +254,19 @@ def stages(outdir, shots):
         # off the page. It also owns the --resource-path that keeps the manual's 10 screenshots in.
         Stage('manual', ['sh', 'tools/mkpdf.sh'],
               note='rebuild every shipped PDF through HTML: manual, measured reference, README'),
+        # AFTER `manual` AND AFTER `package`, and the order is the whole point: this stage reads the
+        # rebuilt PDFs and the rebuilt archive, so running it earlier would fail a correctly edited
+        # markdown for the sole reason that the gate had not regenerated its PDF yet.
+        #
+        # V1.20 was tagged over a tree whose manifest, three documents and three PDFs all said 1.11.
+        # Every artefact was internally consistent, nothing compared them with each other, and a human
+        # opening a PDF is what found it.
+        Stage('version', ['python3', 'tools/check_version.py'],
+              note='one release version in the manifest, the .tspa, every shipped .md, every shipped '
+                   'PDF and the git tag -- read out of the PDFs, not inferred from their sources'),
+        Stage('stagedoc', ['python3', '-c', STAGEDOC],
+              note='every stage this file defines has a row in docs/BENCH.md -- the inventory a reader '
+                   'trusts when deciding what a version was tested against'),
 
         Stage('hw-matrix',
               ['python3', 'tools/bench_matrix.py',

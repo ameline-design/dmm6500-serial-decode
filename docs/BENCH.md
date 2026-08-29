@@ -1,5 +1,7 @@
 # The bench harness
 
+**Ian Ameline** · version 1.20 · MIT licence
+
 Three gates, each roughly ten times the cost of the one before it. Run them in order; a cheap failure
 stops an expensive one.
 
@@ -214,17 +216,21 @@ against the app for something the generator did.
 missed — both switched cleanly.** So there is nothing to be gained by scaling any wait with the waveform.
 All misses on record are at the first rate of a block, i.e. the switch itself is the trigger.
 
-**The same is true of the scope.** The oracle here is an SDS1204X-E, and `tools/scope.py` is already
-written against the **SDS1000X-E** family rather than that model — the two decode buses, the decode
-availability table and the 1 GSa/s waveform read are all series properties. What the bench needs of it
-is UART decode, two buses, and 1 GSa/s for the tiebreaker read; the model number is again the analog
-bandwidth, 100 MHz on the **SDS1104X-E** against 200 on the 1204X-E. A 250 kBd bit is 4 µs and the
-impairments under test are ~2 % of one, so 80 ns is the finest edge displacement that matters — three
-orders of magnitude inside either model. **An SDS1104X-E is sufficient.**
+**The scope is OPTIONAL.** No stage of the release gate contacts it — `tools/scope.py` is reached only
+through `tools/instruments.py`, by hand, when a stimulus needs verifying independently of the app. The
+whole gate runs on a DMM and a generator.
 
-Both family claims rest on the published series specifications; only the SDG2122X and the SDS1204X-E
-have been run on this bench. Nothing enforces the scope's limits in code the way `SDG_MAX_SRATE` does,
-because the scope only ever reads.
+Where one is used, the oracle here is an SDS1204X-E and `tools/scope.py` is written against the
+**SDS1000X-E** family rather than that model: the two decode buses, the decode availability table and the
+1 GSa/s waveform read are all series properties. What it is asked for is UART decode, two buses, and
+1 GSa/s for the tiebreaker read; the model number is again the analog bandwidth, 100 MHz on the
+**SDS1104X-E** against 200 on the 1204X-E. A 250 kBd bit is 4 µs and the impairments under test are ~2 % of
+one, so 80 ns is the finest edge displacement that matters — three orders of magnitude inside either model.
+**An SDS1104X-E is sufficient.**
+
+Both family claims rest on the published series specifications; only the SDG2122X and the SDS1204X-E have
+been run on this bench. Nothing enforces the scope's limits in code the way `SDG_MAX_SRATE` does, because
+the scope only ever reads.
 
 | Stage | Checks |
 |---|---|
@@ -242,6 +248,9 @@ because the scope only ever reads.
 | `unit-ratefit` | the #46 rate-misfit window, pinned per cell and per capture phase against a recorded table — every cell that reproduces must reproduce at every phase, and every cell that does not must be silent at all of them |
 | `unit-plansweep` | the offline twin against the soak's own drawn plan, ratcheted on thirteen counters at the configuration each baseline was measured at — iteration, offset count **and skipped set**, because all three change the draw |
 | `unit-soaklog` | the soak's own lap log replayed through the completeness tests, so a lap that recorded nothing cannot read as a lap that found nothing |
+| `unit-benchengine` | the on-instrument soak engine, driven down the branches a run on the box cannot arrange on purpose: a dead generator mid-lap, a waveform file it cannot read, TrueArb falling back to DDS, the plan ending, the key refusing a write — plus the fidelity check that `brun.point()` measures what `bench_point()` measures, the Python extracted and run side by side |
+| `unit-pushplan` | the acknowledged-batch handshake that puts ~280 000 plan rows on the key over the LAN. A protocol, so what is gated is disagreement between the two ends — a batch silently short, an acknowledgement that skips, a closed handle — none of which can be provoked on hardware on purpose |
+| `tspa-current` | the committed `.tspa` is what the current modules build. A stale package installs code no test in this repo has ever run: every harness loads `tsp/*.tsp` over the LAN, so only a Manage Apps install gets the packaged code, and stale code still lints and parses |
 | `stress` | hostile signals: never silently **wrong**, never **raises** |
 | `unit-analog` | the bench cases at the app's own sample rates, swept over sampling phase, jitter, noise and where the window opens |
 | `unit-phasesweep` | every vector × capture start × phase/jitter/noise, sharded across the cores — no raise, no result without a format, no wrong byte among trustworthy calls |
@@ -251,6 +260,8 @@ because the scope only ever reads.
 | `tolerance` | recomputes the envelope table printed in the manual |
 | `package` `archive` | rebuilds the `.tspa`, then builds both screens *from the archive* against a mock front end |
 | `manual` | rebuilds every shipped PDF: `README.pdf`, `MANUAL.pdf`, `REFERENCE.pdf`, `BENCH.pdf` |
+| `version` | one release version in the manifest, the `.tspa`, every shipped `.md`, every shipped PDF and the git tag. **Read out of the PDFs with `pdftotext`, not inferred from their markdown** — and the tag is checked in both directions: none may sort above the declared version, and this version's own tag must point at a tree that declares it |
+| `stagedoc` | every stage `release_sweep.py` defines has a row in this table — the published inventory checked against the code rather than trusted |
 | `hw-matrix` | through the app's own Capture button: six frame formats, the standard rate ladder, a 1 kB non-repeating payload, **seven logic swings from 5 V down to 0.25 V**, twelve DC offsets |
 | `hw-payloads` | fourteen payloads covering every byte value 0–255, two of them also at 115 200 and 250 000 |
 | `hw-odd-rates` | nineteen **non-standard** baud rates — 900, 1500, 3600, 8123, 29127, 104857 … |
@@ -260,7 +271,8 @@ because the scope only ever reads.
 | `hw-break` | degenerate signals and contradictory settings — no signal, DC only, all-`0x00`/`0xFF`/`0x55`, a break, 60 mV of swing, 19 Vpp, rates past the ceiling, six wrong forced settings. A refusal with a reason passes; confident garbage does not |
 
 This table must list every stage `release_sweep.py` defines, or the published inventory of what a
-release passed is incomplete. The check:
+release passed is incomplete. **The `stagedoc` stage runs this check**, and it is printed here so the
+reader can run it too:
 
 ```python
 import re
