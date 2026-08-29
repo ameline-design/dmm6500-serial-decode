@@ -419,6 +419,41 @@ others, correctly both times. The judge therefore accepts **either** reading, an
 stands down where there is more than one. Demanding either single answer fails a correct decode at
 every rate that chose the other.
 
+### The rate ceiling, and the quarter of every lap below eight samples a bit
+
+**The digitize ladder stops at 1 MS/s.** `sdec.pick_fs(baud, 8)` asks for eight samples a bit and returns
+the lowest listed rate that gives it, or the ceiling when none does — so **every rate above 125 000 Bd
+runs below the target, and no software choice changes that.** The plan's top eleven rates across 31
+vectors are **341 of a 1333-cell lap, 26 %**, and the floor is **4.00 sa/bit at 250 000 Bd**:
+
+| baud | sa/bit at 1 MS/s |
+|---|---|
+| 128 000 | 7.81 |
+| 153 600 | 6.51 |
+| 192 000 | 5.21 |
+| 250 000 | 4.00 |
+
+**What that costs, measured over 204 freshly drawn laps at eight capture phases — 2.18 M judged points.**
+The `nobytes` class, meaning nothing decoded at all on a vector that should decode, occurs on **6 laps and
+7 points: 3.2 parts per million.** Every single one is **`v90` or `v94` and no other vector**, which is
+what `tools/plan_sweep.py`'s ratchet comment already claimed and this confirms against fresh draws. Four
+reproduced exactly: three at 153 600 Bd / 6.51 sa/bit and one at 161 259 Bd / 6.20. All four report
+**`read nil Bd`** — no bit time measured at all, rather than a wrong one.
+
+It is **phase-dependent, not systematic**: `badall`, the count of cells failing at every one of the eight
+capture phases, is 0 on those laps. The same cell decodes at the other seven placements, so what fails is
+a particular alignment of a 20 000-sample window against a block payload at 6.5 samples a bit.
+
+**Nothing is to be done about it, and that is the point of writing it down.** The instrument samples at
+1 MS/s. A decoder cannot recover a bit time it has 6.5 samples of more reliably than it already does, and
+the two vectors affected are the two whose payloads are long runs of a single repeated byte.
+
+**What it predicts for a hardware lap, which is the reason it matters.** A bench cell takes ONE capture,
+not eight, so the offline rate translates to **0.034 cells a lap — about 4 cells over 111 laps.** `v90`
+and `v94` are not `loud`, so those cells are counted as **UNEXPECTED**. A long run finishing with an
+`UNEXPECTED` of three to five, on `v90` or `v94` at the top of the rate range, is this ceiling and not a
+regression. Anywhere else, or many more than that, is not.
+
 ---
 
 ## The random numbers
