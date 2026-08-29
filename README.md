@@ -47,6 +47,19 @@ size and credits the device until it stops sending. Ceilings and arithmetic are 
 
 ## Endurance, measured — and reproduced
 
+**15.5 hours with no computer attached, and zero events.** On 2026-08-28/29 the DMM6500 ran **10 671 cells
+over 8 complete laps** entirely on its own: it selected each waveform on the generator over the LAN, wrote
+its own record to its own USB key, and had no host connected after the start. Of 10 671 captures,
+**0 instigated an instrument event** — which on this firmware means a modal box on the panel, and nothing
+suppresses it. **723 cells returned no result and 721 of those are refusals the plan's own class allows**;
+of the two that are not, one was the generator failing to change waveform and one was the app declining at
+4–6.5 samples a bit, where declining is the better answer. **Confidently wrong bytes: none.** Details, and
+the 18-of-19 waveform-switch recoveries, are under **Endurance** in the
+[measured reference](docs/REFERENCE.md).
+
+That run matters because it removes the last thing standing between the app and an unattended week: the Mac.
+The three soaks below are the host-driven predecessors.
+
 **Three independent 17-hour soaks**, each **6 laps of the full 1 683-point matrix, 10 098
 capture-and-decode cycles on one power cycle**, with **no instrument event logged, no buffer or display
 object leaked and no error left behind**. Different cabling, and changes to the app's state handling
@@ -133,7 +146,8 @@ other the 21 drawn ones, and each rate family faces both formats and both conten
 button presses, then seven logic swings from 5 V down to 0.25 V, then eight wrong-locked-rate cases.
 Four stages, measured: 86 cells in 9.7 min, 45 presses in 1.9, 7 levels in 0.7, 8 rate cases in 0.9.
 
-**No version is tagged without at least 8 hours of soak**, and the last two took 17. A soak reports a
+**No version is tagged without at least 8 hours of soak**, and the last three took 17, 17 and 15.5. A soak
+reports a
 **failure rate per test point**; a sweep reports one pass or one failure. A lap is 1 683 cells and about
 2.9 hours, so 8 hours is the least that separates "fails every lap" from "failed once", and 17 gives six
 laps.

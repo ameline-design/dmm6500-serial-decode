@@ -564,7 +564,10 @@ row is **4 100 cells**:
 | 250000 | 21 — 0.51 % |
 
 **From 300 Bd to 153600 Bd that is 3 failing cells in 73 800 — 0.004 %.** Two are the LIN-break vector
-at 31250 Bd and one is a random 7E1 payload at 128000 Bd on a 0.491 V swing. **The four rates above
+at 31250 Bd and one is a random 7E1 payload at 128000 Bd on a 0.491 V swing. **This too is an upper
+bound**: the two LIN cells were judged before `lin_repair()` and their failure mode was not recorded, so if
+they were the break artefact described under **Endurance** the real figure is 1 in 73 800. It has not been
+recomputed, so 0.004 % stands as the number that was measured. **The four rates above
 153600 carry 153 of the 156 standard-rate failures.** Separately, 340 of the 496 failures in the run
 were at *drawn non-standard* rates rather than standard ones — the rate ladder's top end and the
 interstitial rates are where the difficulty is, not the range a device is likely to use.
@@ -828,9 +831,52 @@ located in the generator's trigger input rather than unknown.
 
 ## Endurance: what the soaks measured
 
+### The longest run: 15.5 hours unattended, on the instrument itself
+
+**2026-08-28/29. 10 671 cells over 8 complete laps and 15.5 h, driven entirely by the DMM6500** — the
+generator selected over the LAN by the instrument, the record written to its own USB key, no host connected
+after the start. This is the first soak where the Mac was not in the loop, which is what makes its headline
+number meaningful:
+
+| | |
+|---|---|
+| **events instigated** | **0** across 10 671 cells |
+| cells with no result | 723 — **721 of them refusals the plan's own class allows** |
+| unexpected | **2**: one generator switch, one refusal at the sample-rate ceiling |
+| confidently wrong bytes | **0** |
+| holds, unrecorded cells | 0, 0 |
+| **late waveform switches recovered** | **18 of 19** |
+
+**Zero events is the one that matters**, because on this firmware an event is a modal box on the panel and
+nothing suppresses it — `localnode.showevents` governs the remote interface only. An unattended week must
+instigate none, and 10 671 cells instigated none.
+
+**The two unexpected cells are different things and the record separates them.** One was the generator
+failing to change waveform after three attempts, counted as `SDG failed` rather than as a decode failure.
+One was the app declining to decode, which at 4–6.5 samples a bit is arguably the right answer — see
+**The rate ceiling** in [BENCH.md](BENCH.md). Neither was a wrong byte, which is the distinction the whole
+`loud`/`exact` classification exists to keep.
+
+**18 of 19 late switches recovered** is the ARWV retry measured in use rather than inferred from an absence:
+`brun.nselback` counts cells whose waveform needed a second selection. Over ~233 real switches at the
+previously measured 10.3 % late rate, ~24 were expected; 19 occurred and 18 were repaired. Before the retry
+all 19 would have been lost cells.
+
+### The earlier host-driven soaks
+
 Two 17-hour soaks, each **6 laps of the full 1 683-point matrix, 10 098 capture-and-decode cycles on one
 power cycle**, agreeing within **0.2 % on duration and 1.6 % on failure count** — 318 failures against
 313. The headline is in the [README](../README.md); this is the shape of it.
+
+> **THE FAILURE COUNTS BELOW ARE AN UPPER BOUND, and `v63`'s share of them is mostly an artefact of the
+> judge rather than the decoder.** Every LIN frame opens with a break — a dominant interval longer than any
+> UART character — which the decoder correctly flags and the judge counted against a flag budget, so a
+> byte-exact LIN capture failed on the flag count alone. Fixed 2026-08-29 in `bench_uart.lin_repair()`.
+> MEASURED across the two retained multi-lap soaks: **493 of 494 and 363 of 364 flag-budget failures were
+> LIN**, 100 % in both, about 120 a lap and spread evenly over v61, v62 and v63. On the 2026-08-28 record
+> the same fix took 129 LIN cells from **0 passing to 126**. These two 17-hour runs' logs are not retained
+> in a parseable form, so their numbers have **not** been recomputed — read 318 and 313 as ceilings, and
+> read `v63`'s place in the four-vector concentration below as largely this artefact.
 
 **Lap time is the leak indicator**, because a leaked display object, an unreturned buffer handle or a
 fragmenting allocator wedges the instrument around hour six without failing a single point. It fell in

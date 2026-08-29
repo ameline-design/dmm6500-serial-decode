@@ -186,6 +186,34 @@ unit in the family: repeated large waveform uploads wedge the LAN service (`tool
 `C1:ARWV?` can take longer than 5 s to answer after a selection — 15 of 86 cells in one lap were lost
 to that before `bsdg.select()` learned to retry the query.
 
+### A waveform selection that lands late, and what it costs
+
+**`C1:ARWV?` answers with the PREVIOUS waveform's name on about one real switch in ten.** A selection is a
+real switch only where the vector changes — 31 cells of a 1333-cell lap, since the plan sweeps rates within
+a vector — so a per-switch rate must be divided by 31 and not by the lap. Measured on a full lap: **4 of 39
+switches**, all at the first rate in a block, with each one succeeding when the *next* cell sent the same
+name a fraction of a second later.
+
+**Retrying the query does not fix it; re-sending the SELECTION does.** `bsdg.arwvtries` = 4 at 0.4 s was not
+enough, and the record says so in its own words: `ARWV? still names …SER_Hello_8N1_Drift10_x10.bin after 4
+tries selecting SER_Jitter20pct_x100`. So `brun.selretry` re-sends the whole selection, guarded by
+`bsdg.nfail` — a stale name arrives as a *reply*, while a wedged generator raises `nfail`, and retrying a
+wedge would spend a minute a cell proving what the first attempt proved.
+
+**Measured over 8 laps and ~233 real switches: 19 landed late, 18 were repaired, 1 was lost.** Before the
+retry all 19 would have been stimulus-free cells. `brun.nselback` counts them and the run-total row carries
+it, which is the only thing distinguishing "it stopped happening" from "it is being fixed".
+
+**That one loss is why `selretry` is 5 and not 3.** Two further attempts cost nothing on the 1638 cells a
+lap that re-select what is already playing, nothing on a switch that lands first time, and are spent only
+where three attempts have already been spent and lost — while a lost switch is a stimulus-free cell counted
+against the app for something the generator did.
+
+**It is not the waveform's size.** Over the qualifying lap's 39 switches the 4 that missed average
+**15 878 B** and the 35 clean ones **44 679 B**; the two largest at **205 200 B — 53x the smallest that
+missed — both switched cleanly.** So there is nothing to be gained by scaling any wait with the waveform.
+All misses on record are at the first rate of a block, i.e. the switch itself is the trigger.
+
 **The same is true of the scope.** The oracle here is an SDS1204X-E, and `tools/scope.py` is already
 written against the **SDS1000X-E** family rather than that model — the two decode buses, the decode
 availability table and the 1 GSa/s waveform read are all series properties. What the bench needs of it

@@ -70,9 +70,15 @@ brun.nsdgalive = 0                       -- cells with no stimulus while the gen
 -- MEASURED, twice: every miss in the qualifying lap and the one in the lap after it answered C1:ARWV?
 -- with the PREVIOUS name, and every one of them succeeded when the next cell sent the IDENTICAL name a
 -- fraction of a second later. So the operation that recovers a late switch is sending the selection
--- again -- bsdg.arwvtries cannot, since it only re-asks about a command already sent. One retry has
--- been enough every time it has been observed; three leaves two spare.
-brun.selretry = brun.selretry or 3
+-- again -- bsdg.arwvtries cannot, since it only re-asks about a command already sent.
+--
+-- FIVE, NOT THREE, AND THE 8-LAP RUN IS WHY. Over ~233 real switches, 19 landed late: 18 were repaired
+-- inside three attempts and ONE was not, and a switch that fails is a stimulus-free cell counted against
+-- the app for something the generator did. Two more attempts cost nothing on the 1638 cells a lap that
+-- re-select what is already playing, and nothing on a switch that lands first time; they are spent only
+-- where three were already spent and lost. The wedge case is still bounded by the bsdg.nfail guard below,
+-- so this does not lengthen a dead generator's cell.
+brun.selretry = brun.selretry or 5
 brun.selwait = brun.selwait or 0.5       -- seconds between attempts
 brun.nselback = 0                        -- cells whose stimulus needed more than one attempt
 
