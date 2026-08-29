@@ -310,11 +310,11 @@ def _cap(payload, reps, flag_at):
 for nm, pay, brk in (('v61', V61, {0, 8}), ('v63', V63, {0, 3})):
     raw = _cap(pay, 6, brk)
     v0, d0 = BU.judge_payload_v(raw, pay, 'loud')
-    fixed, nrep = BU.lin_repair(raw, pay)
-    v1, d1 = BU.judge_payload_v(fixed, pay, 'loud')
+    fixed, syn = BU.lin_repair(raw, pay)
+    v1, d1 = BU.judge_payload_v(fixed, pay, 'loud', synth=syn)
     check('%s: a byte-perfect LIN capture FAILS before the repair' % nm, v0 != 'PASS', '%s %s' % (v0, d0[:60]))
     check('%s: and PASSES after it, with every break filled' % nm,
-          v1 == 'PASS' and nrep == len(brk) * 6, '%s nrep=%d: %s' % (v1, nrep, d1[:60]))
+          v1 == 'PASS' and len(syn) == len(brk) * 6, '%s nsyn=%d: %s' % (v1, len(syn), d1[:60]))
 
 # v63 IS THE ONE THAT PROVES SUBSTITUTION RATHER THAN EXEMPTION IS NEEDED. Its breaks at 0 and 3 leave a
 # 2-byte run, under JP_MINVAL, so those bytes are never diagnostic and its coverage ceiling is 77.8 %
@@ -327,20 +327,80 @@ raw = _cap(V61, 6, set())
 fr = [raw[i:i + 2] for i in range(0, len(raw), 2)]
 for k in (5, 19, 33, 47, 61):                                # none of these is a break offset
     fr[k] = '??'
-g, n = BU.lin_repair(''.join(fr), V61)
-v, d = BU.judge_payload_v(g, V61, 'loud')
+g, syn = BU.lin_repair(''.join(fr), V61)
+n = len(syn)
+v, d = BU.judge_payload_v(g, V61, 'loud', synth=syn)
 check('a ?? away from a break is not filled in, and still fails', n == 0 and v != 'PASS',
       'repaired=%d -> %s: %s' % (n, v, d[:60]))
 # AND A WRONG DECODE STILL FAILS, breaks or no breaks: only the break offsets are ever touched, so every
 # other byte must still match. Without this the substitution would be a way to pass garbage.
 wrong = _cap(bytes(bytearray((b + 1) & 0xFF for b in V61)), 6, {0, 8})
-g2, n2 = BU.lin_repair(wrong, V61)
-v2, d2 = BU.judge_payload_v(g2, V61, 'loud')
+g2, syn2 = BU.lin_repair(wrong, V61)
+n2 = len(syn2)
+v2, d2 = BU.judge_payload_v(g2, V61, 'loud', synth=syn2)
 check('a capture that is not the payload still fails after repair', v2 != 'PASS',
       'repaired=%d -> %s: %s' % (n2, v2, d2[:60]))
 # A NON-LIN PAYLOAD IS NEVER TOUCHED, so nothing outside LIN can change behaviour at all.
-g3, n3 = BU.lin_repair(_cap(NOT_LIN, 8, {2}), NOT_LIN)
+g3, syn3 = BU.lin_repair(_cap(NOT_LIN, 8, {2}), NOT_LIN)
+n3 = len(syn3)
 check('and a payload with no break is returned untouched', n3 == 0, 'repaired=%d' % n3)
+
+print()
+print('-- and the three guards a review of it asked for --')
+# 1. THE STATISTICS MUST NOT LIE. A substituted byte is unflagged, sits in a diagnostic run and matches by
+# construction, so left in the ratios it would be counted among the bytes the CAPTURE verified -- a PASS
+# claiming '0 flagged' about a capture the app declined twelve frames of.
+raw = _cap(V63, 8, {0, 3})
+g, syn = BU.lin_repair(raw, V63)
+v, d = BU.judge_payload_v(g, V63, 'loud', synth=syn)
+check('a PASS states how many breaks the ORACLE supplied', v == 'PASS' and 'supplied by the oracle' in d,
+      '%s: %s' % (v, d[:90]))
+# COMPARED WITHIN THE MESSAGE, not against len(syn): nsyn counts only the synthetic frames inside the
+# TRIMMED body, so with head 12 and tail 1 an 8-period v63 capture supplies 16 breaks of which 13 are
+# judged. The invariant that matters is that with no genuine flags the two figures AGREE -- every frame
+# counted as flagged is one the oracle supplied, and none of them is counted as verified.
+import re as _re                                                       # noqa: E402
+_m = _re.search(r'\((\d+) flagged,.*?(\d+) break\(s\) supplied', d)
+check('  ...and counts them as flagged, not as verified',
+      v == 'PASS' and _m is not None and _m.group(1) == _m.group(2) and int(_m.group(2)) > 0,
+      d[:120])
+# The same capture judged WITHOUT telling it which bytes were synthetic reports more verified bytes than
+# the capture contained -- which is the defect, stated as a difference rather than asserted.
+_, d_lie = BU.judge_payload_v(g, V63, 'loud')
+n_true = int(d.split(' of ')[0]); n_lie = int(d_lie.split(' of ')[0])
+check('  ...and without synth= it would claim %d verified instead of %d' % (n_lie, n_true),
+      n_lie > n_true, 'honest=%d unlabelled=%d' % (n_true, n_lie))
+
+# 2. A PAYLOAD THAT IS MOSTLY BREAK IS NOT LIN. All-0055 is the maximal form of the pattern-matching
+# hazard: every other byte reads as a break. Refusing beats repairing half of it.
+DEGEN = bytes.fromhex('0055' * 6)
+check('a payload of nothing but 00 55 is refused, not repaired',
+      BU.lin_repair('??' * 40, DEGEN)[1] == set(),
+      'share %.0f %% vs cap %.0f %%' % (100.0 * len(BU.lin_breaks(DEGEN)) / len(DEGEN),
+                                        100 * BU.JP_LIN_BREAK_MAX))
+# AND THE CAP DOES NOT REJECT A REAL ONE. v63 at 22 % is the closest of the three to it.
+for nm, pay in (('v61', V61), ('v62', bytes.fromhex('00553C01020304050607089F00557D7F0003')), ('v63', V63)):
+    share = float(len(BU.lin_breaks(pay))) / len(pay)
+    check('  ...while %s at %.0f %% break is still accepted' % (nm, 100 * share),
+          share <= BU.JP_LIN_BREAK_MAX and BU.lin_repair(_cap(pay, 6, BU.lin_breaks(pay)), pay)[1],
+          '%.3f vs %.3f' % (share, BU.JP_LIN_BREAK_MAX))
+
+# 3. EVERY OCCURRENCE, OR NONE. A real break is flagged every time it comes round; a data byte declined
+# once is not. An offset seen unflagged anywhere is therefore data and is left alone.
+fr = ['%02X' % V61[i % len(V61)] for i in range(len(V61) * 6)]
+for i in range(len(fr)):
+    if i % len(V61) == 0:
+        fr[i] = '??'
+fr[8] = '??'                        # offset 8 IS a break offset, but flagged in ONE period only
+g4, syn4 = BU.lin_repair(''.join(fr), V61)
+check('a break offset left unflagged in some periods is treated as data',
+      8 not in syn4 and all((i % len(V61)) == 0 for i in syn4),
+      'filled %s' % sorted(syn4)[:8])
+
+# 4. ODD-LENGTH HEX IS REFUSED. A trailing nibble becomes a one-character frame that int(x, 16) reads as a
+# byte and that scores here as an unflagged frame, so it can move the alignment.
+check('odd-length hex is refused rather than scored',
+      BU.lin_repair(_cap(V61, 6, {0, 8}) + 'A', V61)[1] == set())
 
 print()
 if FAILED:

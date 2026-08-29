@@ -455,9 +455,27 @@ def lin_breaks(want):
     return set(i for i in range(n) if want[i] == 0x00 and want[(i + 1) % n] == 0x55)
 
 
+# HOW MUCH OF A PAYLOAD MAY BE BREAK before lin_breaks refuses to believe it is looking at LIN. A payload
+# of nothing but 00 55 pairs would have every other byte read as a break, which is the maximal form of the
+# pattern-matching hazard the docstring below describes. Measured on the three real vectors: v62 11 %,
+# v61 14 %, v63 22 %. A third is comfortably above all of them and well below the degenerate 50 %.
+JP_LIN_BREAK_MAX = 1.0 / 3.0
+
+
 def lin_repair(got, want):
     """Put the payload's own break byte back where the app flagged a frame and the oracle says a break
-    belongs. -> (repaired hex, count repaired). Returns `got` unchanged when nothing lines up.
+    belongs. -> (repaired hex, set of frame indices filled). Returns `got` unchanged when nothing lines up.
+
+    THE ONE ASSUMPTION THIS RESTS ON, STATED BECAUSE IT IS NOT PROVEN: that a 0x00-then-0x55 pair in a LIN
+    payload is a break rather than data. It is true of v61, v62 and v63 -- checked -- and it is NOT true in
+    general. A LIN payload carrying 00 55 inside its data or checksum would have that byte repaired too, and
+    if the decoder systematically flagged it the repair would launder a real failure. v62 already has a 0x00
+    in its data (at offset 16, followed by 0x03) and is one byte from being such a case.
+    THE PROPER FIX IS FOR make_vectors.lua TO EMIT THE BREAK OFFSETS into out/vectors/manifest.tsv, since it
+    is the only thing that knows where the frames start. That is deferred rather than dismissed: regenerating
+    the manifest regenerates the waveforms, and those are loaded on the generator and referenced by the plan
+    a running soak is streaming. Two guards narrow the exposure meanwhile -- see JP_LIN_BREAK_MAX and the
+    every-occurrence test below.
 
     WHY SUBSTITUTE RATHER THAN EXEMPT. Exempting the break from the flag budget is not enough, and v63
     proves it: its payload is 00 55 55 | 00 55 55 DE AD 1E, so the breaks at offsets 0 and 3 leave a
@@ -479,11 +497,20 @@ def lin_repair(got, want):
     """
     brk = lin_breaks(want)
     if not brk or not got:
-        return got, 0
+        return got, set()
+    # A PAYLOAD THAT IS MOSTLY 'BREAK' IS NOT LIN, and refusing is safer than repairing half of it.
+    if float(len(brk)) / len(want) > JP_LIN_BREAK_MAX:
+        return got, set()
+    # ODD-LENGTH HEX IS REFUSED rather than carried, because the trailing nibble becomes a one-character
+    # frame that int(x, 16) reads as a byte and that scores here as an unflagged frame -- so it can move the
+    # alignment. A record row that is half a byte long is a torn write, and the caller's own torn-row rule
+    # is what should decide it.
+    if len(got) % 2:
+        return got, set()
     frames = [got[i:i + 2] for i in range(0, len(got), 2)]
     bad = [i for i, f in enumerate(frames) if f == '??']
     if not bad:
-        return got, 0
+        return got, set()
     n = len(want)
     best, bestscore = None, 0
     for cand in range(n):
@@ -492,14 +519,24 @@ def lin_repair(got, want):
         if hit - miss > bestscore:
             best, bestscore = cand, hit - miss
     if best is None:
-        return got, 0
-    nrep = 0
+        return got, set()
+    # EVERY OCCURRENCE, OR NONE. A real break is flagged every single time it comes round; a data byte the
+    # decoder happened to decline once is not. So an offset that appears unflagged anywhere in the capture is
+    # treated as data and left alone, which narrows the pattern-matching hazard above from 'any flagged
+    # 00 55' to 'a systematically flagged 00 55'.
+    seen, unflagged = {}, {}
+    for i, f in enumerate(frames):
+        oi = (best + i) % n
+        seen[oi] = seen.get(oi, 0) + 1
+        if f != '??':
+            unflagged[oi] = unflagged.get(oi, 0) + 1
+    synth = set()
     for i in bad:
         oi = (best + i) % n
-        if oi in brk:
+        if oi in brk and not unflagged.get(oi):
             frames[i] = '%02X' % want[oi]
-            nrep += 1
-    return ''.join(frames), nrep
+            synth.add(i)
+    return ''.join(frames), synth
 
 
 def head_damage(hexs, headsusp):
@@ -602,7 +639,7 @@ def _boff(i):
     return 'B%05d: ' % i
 
 
-def judge_payload_v(got, want, expect='exact'):
+def judge_payload_v(got, want, expect='exact', synth=None):
     """Judge a capture of a LOOPING payload. -> (verdict, detail).
 
     verdict is 'PASS', 'FAIL' or 'INCONCLUSIVE'.
@@ -611,6 +648,12 @@ def judge_payload_v(got, want, expect='exact'):
     so it is INCONCLUSIVE rather than FAIL, and a caller must not fold it into a silent-wrong count.
 
     `expect` is 'exact' or 'loud' and only widens the mismatch allowance; see JP_LOUD_MISMATCH_FRAC.
+
+    `synth` is the set of frame indices lin_repair() FILLED IN from the oracle rather than captured, and it
+    exists so that this function's own numbers do not become a lie. A substituted byte is unflagged, sits in
+    a diagnostic run and matches by construction, so without this it would be counted among the bytes the
+    capture positively verified -- and a PASS would report '0 flagged' about a capture the app declined 12
+    frames of. Synthetic bytes are removed from BOTH sides of every ratio and stated separately.
 
 
     REPLACES the `longest_clean_run/body >= 0.95` test for the long-payload suites, which had two
@@ -716,13 +759,24 @@ def judge_payload_v(got, want, expect='exact'):
         if best is None or key < best[0]:
             best = (key, cand, v, edge, mism, firstbad)
     _, align, verified, edgeskip, mismatched, firstbad = best
+    # SYNTHETIC BYTES COME OUT OF BOTH SIDES OF EVERY RATIO BELOW. lin_repair() filled these in from the
+    # oracle, so they are unflagged, sit inside a diagnostic run and match by construction -- and left in,
+    # they would be counted among the bytes the CAPTURE positively verified. A v63 point would then PASS
+    # claiming '0 flagged' about a capture the app declined twelve frames of. Removing them from numerator
+    # and denominator alike leaves the ratios saying what they claim: of the bytes the capture actually
+    # supplied, this many verified.
+    nsyn = 0
+    if synth:
+        nsyn = len([j for j in synth if lo <= j < hi])
+    vsyn = min(nsyn, verified)
     # A wrong alignment misses nearly every byte, so the best score must still be recognisably the
     # payload before any budget is applied -- otherwise a 1 % budget would pass pure garbage on a
     # payload short enough to have few alignments.
-    if verified < JP_COVER_MIN * ndiag:
+    if (verified - vsyn) < JP_COVER_MIN * max(0, ndiag - vsyn):
         return 'FAIL', ('best of %d alignments verifies only %d of %d run B (%.0f %%) -- not the '
                         'payload, silently wrong'
-                        % (len(want), verified, ndiag, 100.0 * verified / max(1, ndiag)))
+                        % (len(want), verified - vsyn, ndiag - vsyn,
+                           100.0 * (verified - vsyn) / max(1, ndiag - vsyn)))
     if mismatched > mbudget:
         return 'FAIL', ('%s%d interior byte(s) miss the payload at the best of %d alignments, budget '
                         '%d -- silently wrong'
@@ -736,7 +790,7 @@ def judge_payload_v(got, want, expect='exact'):
     if edgeskip > budget:
         return 'FAIL', ('%d byte(s) exempted beside flagged frames, budget %d -- more debris than the '
                         'damage explains' % (edgeskip, budget))
-    cover = float(verified) / body
+    cover = float(verified - vsyn) / max(1, body - nsyn)
     if cover < JP_COVER_MIN:
         return 'FAIL', ('only %.1f %% positively verified (need %.0f %%)'
                         % (100 * cover, 100 * JP_COVER_MIN))
@@ -750,10 +804,14 @@ def judge_payload_v(got, want, expect='exact'):
                         % (body, captured, 100 * JP_BODY_FRAC))
     # The mismatch and anchor-trim counts are STATED even when zero: a tolerance nobody prints is a
     # tolerance nobody checks.
+    # The mismatch, anchor-trim and oracle-supplied counts are STATED even when zero: a tolerance nobody
+    # prints is a tolerance nobody checks, and a byte the capture did not provide must never be reported
+    # as one it did.
     return 'PASS', ('%d of %d B verified at offset %d (%d flagged, budget %d, %d mismatched of %d '
-                    'allowed, %d edge-exempt, head %d skipped, %d of %d captured judged)'
-                    % (verified, body, align, len(interior), budget, mismatched, mbudget, edgeskip,
-                       lo, body, captured))
+                    'allowed, %d edge-exempt, %d break(s) supplied by the oracle, head %d skipped, '
+                    '%d of %d captured judged)'
+                    % (verified - vsyn, body - nsyn, align, len(interior) + nsyn, budget, mismatched,
+                       mbudget, edgeskip, nsyn, lo, body, captured))
 
 
 def parse_point(lines):

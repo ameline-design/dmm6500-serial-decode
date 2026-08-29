@@ -189,15 +189,17 @@ def main():
         # a byte comparison to reconcile. MEASURED on one lap: 129 cells ran with bytes on v61/v62/v63 and
         # ALL 129 failed, with the payload behind each break byte-exact. Over a hundred laps that is
         # ~14 000 phantom failures, which would have been the headline number of the fortnight.
-        nrep = 0
-        if want and is_lin(vid):
-            got, nrep = BU.lin_repair(got, want[0])
+        lin = bool(want) and is_lin(vid)
         for w in (want or []):
-            verdict, detail = BU.judge_payload_v(got, w, SP.expect_for(vid))
+            # PER ORACLE, NOT ONCE. Where a vector has two legitimate readings the repair belongs inside
+            # this loop: repairing against want[0] and then judging the MUTATED capture against want[1]
+            # judges a string neither oracle describes -- bytes inserted for one reading altering the
+            # verdict on the other. No LIN vector is multi-oracle today, which is exactly why this would
+            # have gone unnoticed until one was.
+            g, syn = (BU.lin_repair(got, w) if lin else (got, set()))
+            verdict, detail = BU.judge_payload_v(g, w, SP.expect_for(vid), synth=syn)
             if verdict == 'PASS':
                 break
-        if nrep:
-            detail = '%s (%d LIN break(s) filled in)' % (detail, nrep)
         # THE RATE IS JUDGED TOO, and separately: a capture can be byte-exact and still name a rate
         # 2.5 % wrong, which is cluster C and is invisible to any byte comparison.
         ratebad = False
