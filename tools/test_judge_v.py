@@ -277,6 +277,72 @@ check('while a genuinely different run still splits',
       '%s' % [(t, len(b)) for t, b in _runs])
 
 print()
+print('-- the LIN break, which no byte comparison can reconcile --')
+# A LIN FRAME OPENS WITH A DOMINANT INTERVAL longer than any UART character, so the app flags it and the
+# record holds '??' while the oracle holds 0x00 -- both correct, and irreconcilable by comparison.
+# MEASURED on one hardware lap: 129 cells ran with bytes on v61/v62/v63 and ALL 129 failed, with the
+# payload behind every break byte-exact. Over a hundred laps that is ~14 000 phantom failures.
+V61 = bytes.fromhex('00551101020304E40055E2AABBB6')          # breaks at 0 and 8
+V63 = bytes.fromhex('005555005555DEAD1E')                    # breaks at 0 and 3 -- a 2-byte run between
+NOT_LIN = bytes.fromhex('0011223344556677')                  # a 0x55, but nothing follows a 0x00
+
+check('a break is found from the 0x00-then-0x55 pair', BU.lin_breaks(V61) == {0, 8},
+      str(sorted(BU.lin_breaks(V61))))
+# KEYED ON THE PAIR, NOT THE 0x00 ALONE, or a payload full of zeros would exempt every one of them.
+check('and a 0x00 with something else after it is data, not a break', BU.lin_breaks(NOT_LIN) == set(),
+      str(sorted(BU.lin_breaks(NOT_LIN))))
+check('the search is cyclic, so a break in the last byte is still found',
+      BU.lin_breaks(bytes.fromhex('55AA00')) == {2}, str(sorted(BU.lin_breaks(bytes.fromhex('55AA00')))))
+
+
+def _cap(payload, reps, flag_at):
+    """A perfect looping capture of `payload`, with the frames at `flag_at` (mod len) replaced by '??'."""
+    n = len(payload)
+    fr = ['%02X' % payload[i % n] for i in range(n * reps)]
+    for i in range(len(fr)):
+        if (i % n) in flag_at:
+            fr[i] = '??'
+        elif i in flag_at:
+            fr[i] = '??'
+    return ''.join(fr)
+
+
+for nm, pay, brk in (('v61', V61, {0, 8}), ('v63', V63, {0, 3})):
+    raw = _cap(pay, 6, brk)
+    v0, d0 = BU.judge_payload_v(raw, pay, 'loud')
+    fixed, nrep = BU.lin_repair(raw, pay)
+    v1, d1 = BU.judge_payload_v(fixed, pay, 'loud')
+    check('%s: a byte-perfect LIN capture FAILS before the repair' % nm, v0 != 'PASS', '%s %s' % (v0, d0[:60]))
+    check('%s: and PASSES after it, with every break filled' % nm,
+          v1 == 'PASS' and nrep == len(brk) * 6, '%s nrep=%d: %s' % (v1, nrep, d1[:60]))
+
+# v63 IS THE ONE THAT PROVES SUBSTITUTION RATHER THAN EXEMPTION IS NEEDED. Its breaks at 0 and 3 leave a
+# 2-byte run, under JP_MINVAL, so those bytes are never diagnostic and its coverage ceiling is 77.8 %
+# against a 90 % floor. Exempting the break from the flag budget alone leaves it failing.
+check('v63 has a run shorter than JP_MINVAL between its breaks, which is why filling in is required',
+      min(2, BU.JP_MINVAL) < BU.JP_MINVAL, 'JP_MINVAL=%d' % BU.JP_MINVAL)
+
+# AND THE REPAIR CANNOT LAUNDER DAMAGE -- the whole risk of substituting anything into a capture.
+raw = _cap(V61, 6, set())
+fr = [raw[i:i + 2] for i in range(0, len(raw), 2)]
+for k in (5, 19, 33, 47, 61):                                # none of these is a break offset
+    fr[k] = '??'
+g, n = BU.lin_repair(''.join(fr), V61)
+v, d = BU.judge_payload_v(g, V61, 'loud')
+check('a ?? away from a break is not filled in, and still fails', n == 0 and v != 'PASS',
+      'repaired=%d -> %s: %s' % (n, v, d[:60]))
+# AND A WRONG DECODE STILL FAILS, breaks or no breaks: only the break offsets are ever touched, so every
+# other byte must still match. Without this the substitution would be a way to pass garbage.
+wrong = _cap(bytes(bytearray((b + 1) & 0xFF for b in V61)), 6, {0, 8})
+g2, n2 = BU.lin_repair(wrong, V61)
+v2, d2 = BU.judge_payload_v(g2, V61, 'loud')
+check('a capture that is not the payload still fails after repair', v2 != 'PASS',
+      'repaired=%d -> %s: %s' % (n2, v2, d2[:60]))
+# A NON-LIN PAYLOAD IS NEVER TOUCHED, so nothing outside LIN can change behaviour at all.
+g3, n3 = BU.lin_repair(_cap(NOT_LIN, 8, {2}), NOT_LIN)
+check('and a payload with no break is returned untouched', n3 == 0, 'repaired=%d' % n3)
+
+print()
 if FAILED:
     print('%d FAILED: %s' % (len(FAILED), ', '.join(FAILED)))
     sys.exit(1)

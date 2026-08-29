@@ -49,6 +49,18 @@ def payloads(vid):
     return BM.plan_payloads(vid)
 
 
+def is_lin(vid):
+    """Does this vector carry LIN framing? -> bool.
+
+    THE MANIFEST'S OWN proto COLUMN IS THE ORACLE, not a list of ids typed here. out/vectors/manifest.tsv
+    is written by tools/make_vectors.lua alongside the waveform, so it says 'lin' for exactly the vectors
+    rendered as LIN -- and a hand-kept copy is a copy to forget when a fourth LIN vector is added. Measured:
+    v61, v62, v63.
+    """
+    import bench_matrix as BM
+    return ((BM.manifest().get(vid) or {}).get('proto') or '') == 'lin'
+
+
 def split_runs(lines):
     """-> [(tag, [lines])], one entry per RUN in the file, in the order they were written.
 
@@ -171,10 +183,21 @@ def main():
         want = payloads(vid)
         got = r['hex'].upper()
         verdict, detail = 'INCONCLUSIVE', 'no payload for %s' % vid
+        # THE LIN BREAK IS FILLED IN BEFORE JUDGING, and only for a vector the manifest calls 'lin'. Every
+        # LIN frame opens with a dominant interval no UART character can contain, so the app flags it and
+        # the record holds '??' where the oracle holds 0x00 -- correctly on both sides, and impossible for
+        # a byte comparison to reconcile. MEASURED on one lap: 129 cells ran with bytes on v61/v62/v63 and
+        # ALL 129 failed, with the payload behind each break byte-exact. Over a hundred laps that is
+        # ~14 000 phantom failures, which would have been the headline number of the fortnight.
+        nrep = 0
+        if want and is_lin(vid):
+            got, nrep = BU.lin_repair(got, want[0])
         for w in (want or []):
             verdict, detail = BU.judge_payload_v(got, w, SP.expect_for(vid))
             if verdict == 'PASS':
                 break
+        if nrep:
+            detail = '%s (%d LIN break(s) filled in)' % (detail, nrep)
         # THE RATE IS JUDGED TOO, and separately: a capture can be byte-exact and still name a rate
         # 2.5 % wrong, which is cluster C and is invisible to any byte comparison.
         ratebad = False

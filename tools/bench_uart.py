@@ -432,6 +432,76 @@ JP_LOUD_MISMATCH_FRAC = 0.03
 JP_LOUD_MISMATCH_FLOOR = 2
 
 
+def lin_breaks(want):
+    """The oracle offsets a LIN break occupies. -> set of indices into `want`.
+
+    A LIN FRAME OPENS WITH A DOMINANT INTERVAL LONGER THAN ANY UART CHARACTER, so the app flags it and
+    brun.hex writes '??' -- correctly, because that is the one thing a UART decoder must not stand behind.
+    The oracle records 0x00 there, since that is what make_vectors' self-check decoded off the wire. So the
+    byte comparison CANNOT pass at that offset, and it is the judge that is wrong rather than the decoder:
+    measured, 129 of one lap's cells ran with bytes on v61/v62/v63 and every one of them failed on
+    '8 interior flagged, budget 2' with the payload behind the break byte-perfect.
+
+    BREAK-PLUS-SYNC IS THE SIGNATURE, not the 0x00 alone. LIN defines the break as followed immediately by
+    the sync field 0x55, so a 0x00 with 0x55 after it is a break and a bare 0x00 is data. Keying on the
+    pair means a payload full of zeros gets no exemptions at all.
+
+    CYCLIC, because the arb loops and a capture starts anywhere in it -- the last byte's successor is the
+    first, so a break at the end of the payload is still found.
+    """
+    if not want or len(want) < 2:
+        return set()
+    n = len(want)
+    return set(i for i in range(n) if want[i] == 0x00 and want[(i + 1) % n] == 0x55)
+
+
+def lin_repair(got, want):
+    """Put the payload's own break byte back where the app flagged a frame and the oracle says a break
+    belongs. -> (repaired hex, count repaired). Returns `got` unchanged when nothing lines up.
+
+    WHY SUBSTITUTE RATHER THAN EXEMPT. Exempting the break from the flag budget is not enough, and v63
+    proves it: its payload is 00 55 55 | 00 55 55 DE AD 1E, so the breaks at offsets 0 and 3 leave a
+    TWO-byte run between them -- below JP_MINVAL, therefore never diagnostic, therefore never counted as
+    verified. Its ceiling on coverage is 77.8 % against a 90 % floor however perfect the decode is. The
+    break does not merely cost budget, it FRAGMENTS the payload into pieces too short to judge, and only
+    filling it in undoes that. Measured: exempting alone took 129 LIN cells from 0 to 84 passing; this takes
+    the rest.
+
+    THE ALIGNMENT COMES FROM THE FLAG PATTERN ITSELF, which is a strong signal because it is periodic: the
+    score is flagged frames landing on a break MINUS breaks landing on an unflagged frame, so an alignment
+    that merely puts one '??' near a break loses to the one that explains them all. A non-positive best
+    score means the flags are not the payload's breaks and nothing is touched.
+
+    IT CANNOT LAUNDER A WRONG DECODE. Only frames the app itself flagged are filled, and only at offsets
+    the oracle calls a break -- at most one byte in 4.5 for v63. Every other byte must still match the
+    payload at that alignment, so a capture that is wrong elsewhere still fails on the bytes that were
+    never touched.
+    """
+    brk = lin_breaks(want)
+    if not brk or not got:
+        return got, 0
+    frames = [got[i:i + 2] for i in range(0, len(got), 2)]
+    bad = [i for i, f in enumerate(frames) if f == '??']
+    if not bad:
+        return got, 0
+    n = len(want)
+    best, bestscore = None, 0
+    for cand in range(n):
+        hit = sum(1 for i in bad if (cand + i) % n in brk)
+        miss = sum(1 for i, f in enumerate(frames) if f != '??' and (cand + i) % n in brk)
+        if hit - miss > bestscore:
+            best, bestscore = cand, hit - miss
+    if best is None:
+        return got, 0
+    nrep = 0
+    for i in bad:
+        oi = (best + i) % n
+        if oi in brk:
+            frames[i] = '%02X' % want[oi]
+            nrep += 1
+    return ''.join(frames), nrep
+
+
 def head_damage(hexs, headsusp):
     """How far a misaligned head ACTUALLY reaches: the last unrecoverable frame inside headsusp.
 
@@ -541,6 +611,7 @@ def judge_payload_v(got, want, expect='exact'):
     so it is INCONCLUSIVE rather than FAIL, and a caller must not fold it into a silent-wrong count.
 
     `expect` is 'exact' or 'loud' and only widens the mismatch allowance; see JP_LOUD_MISMATCH_FRAC.
+
 
     REPLACES the `longest_clean_run/body >= 0.95` test for the long-payload suites, which had two
     independent faults. It is STRICTER than what it replaces, not laxer -- see tools/test_lorem_gate.py,
