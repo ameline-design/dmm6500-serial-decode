@@ -34,6 +34,10 @@ fresh clone.
 the generator's internal flash under their `SER_` names, which is what lets a run select one with a bare
 `ARWV NAME`.
 
+**Uploading is a setup step, done once and then not again.** A lap selects from flash 1 677 times and a
+fortnight's soak about 230 000 times, without a single upload — so the hazards below are paid once, which
+is why the tool is deliberately slow and verifies everything. Re-upload only when a vector's bytes change.
+
 **Five vectors exceed `SDG_UPLOAD_SAFE_BYTES` (65 536) and `upload_vectors.py` refuses them:** `v94`,
 `v71`, `v93`, `v95`, `v96`. The hazard is **the number of large writes, not their size** — the third
 over-ceiling upload wedged firmware 39R7 after only 533 kB, while 1.63 MB then 6.51 MB on one power cycle

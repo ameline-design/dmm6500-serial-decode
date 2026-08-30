@@ -301,10 +301,10 @@ SDG_UPLOAD_SAFE_BYTES = 65536      # below this, uploads have never wedged it
 #   1. DEL_STORE_FILE CANNOT UNBRICK IT. The SCPI engine is inside the dead application, so once the box
 #      has been power-cycled there is nothing left to accept the delete. The delete is only ever a
 #      PRE-power-cycle repair, which is what the note above says -- this mechanism is why.
-#   2. THE USB KEY IS THE SAFER PLACE FOR ANYTHING UNPROVEN. A bad file on internal flash is read on every
-#      boot and cannot be removed without a shell. A bad file on the USB key is removed by PULLING THE KEY.
-#      Same fault, reversible instead of terminal. For a waveform whose byte count we have not verified,
-#      out/vectors/USB-TRANSFER.md is the route with an undo.
+#   2. A BAD FILE ON INTERNAL FLASH IS TERMINAL, where one on a USB key comes off by pulling the key.
+#      This bench uploads to flash, so that undo does not exist here: the length read back BEFORE any
+#      power cycle is the whole protection, which is why upload_vectors.py verifies and deletes on the
+#      spot.
 #   3. A U-BOOT USB RECOVERY WOULD WORK, if it exists, because the bootloader runs before the application
 #      and so is not affected by the file that kills it.
 #
@@ -312,8 +312,9 @@ SDG_UPLOAD_SAFE_BYTES = 65536      # below this, uploads have never wedged it
 # a missing bounds check in a preview renderer is exactly the sort of thing that gets quietly repaired, and
 # this instrument's 2.01.01.39R7 is years newer than the firmware that died. But "probably fixed" is not a
 # fact we hold, and the two outcomes are not comparable: if the bug is gone, the guard costs a refused
-# upload that was out of spec anyway; if it is not, the cost is the one instrument, permanently, with no
-# shell and no credentials. Nobody publishes "I stored an empty waveform and it was fine", so the silence
+# upload that was out of spec anyway; if it is not, the cost is the one generator we have, out of action
+# until Siglent supplies a recovery image they do not publish. Nobody publishes "I stored an empty waveform
+# and it was fine", so the silence
 # since is not evidence either way -- it is what a rare, catastrophic, self-selecting failure looks like.
 # The guard stays until an under-4-byte upload has been shown SAFE on this firmware, which is not an
 # experiment worth running.
@@ -333,8 +334,9 @@ SDG_UPLOAD_SAFE_BYTES = 65536      # below this, uploads have never wedged it
 #
 # THE TRIGGER IS OUR OWN RECOVERY PROCEDURE. They power-cycled to clear a stuck TCP state -- which is the
 # WVDT wedge documented above. Wedge, then power-cycle, is what we do; it is also the step that turns a bad
-# stored waveform into a dead instrument. So the two hazards compose, and the empty-payload guard matters
-# most on exactly the day the wedge happens.
+# stored waveform into a generator that will not boot -- reportedly recoverable only with a key built from
+# a disk image Siglent does not publish and has to be asked for. So the two hazards compose, and the
+# empty-payload guard matters most on exactly the day the wedge happens.
 #
 # Guarded in siglent.write_raw() rather than in a caller: it refuses an empty payload outright, and refuses
 # an odd-length WVDT payload because 16-bit codewords cannot come in odd bytes -- that means a truncated
@@ -381,7 +383,7 @@ assert SDG_MAX_WAVE_BYTES == SDG_MAX_PTS * 2, 'the byte and point ceilings disag
 # large writes as risky, pace them, verify each one -- and do not read "fewer than three" as a
 # guarantee in either direction. That is the same order as the original record of four consecutive 170-210 kB on 38R4,
 # so 39R7 is no more tolerant. The constant therefore stays 65536, but the operational rule is: fewer
-# than three over-ceiling writes between power cycles, and prefer the USB key for a batch.
+# than three over-ceiling writes between power cycles, paced, with each one's length read back.
 #
 # AND SIZE IS NOT THE VARIABLE AT ALL. After the power cycle, ONE upload of 1 707 250 B -- 1.63 MB, 26x
 # the ceiling and 8x the largest that had ever been sent -- completed in 17.3 s, left the SCPI service

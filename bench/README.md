@@ -62,10 +62,11 @@ there — an open on a missing name posts an event, and an event is a box on the
   first. A Manage Apps install is for an operator using the app by hand, not for a soak.
 * **Only one client may be connected to the DMM,** and a previous run killed mid-command leaves the reply
   stream out of step. The preflight refuses rather than guess.
-* **Display object ids are never reclaimed on this firmware.** The status screen builds six objects, and
-  `display.create` returns nil once the pool is out — silently, after the first time. That bounds how many
-  times the app can be reloaded onto a running instrument to roughly four; power cycle rather than push
-  past it. The app's own `sdec.start()` will not build its UI twice in one power cycle either.
+* **Display object ids are never reclaimed on this firmware.** The status screen builds thirteen objects
+  — a screen, seven text rows and five log lines — and `display.create` returns nil once the pool is out,
+  silently after the first time. That bounds how many times the app can be reloaded onto a running
+  instrument to roughly four; power cycle rather than push past it. The app's own `sdec.start()` will not
+  build its UI twice in one power cycle either.
 * **A power cycle leaves `sdec` and `brun` nil**, so `--no-load` after one finds nothing loaded. Load
   first, or check `type(sdec)` before trusting `--no-load`.
 * **Take the scope out of Bode mode before an unattended run.** The scope also drives the SDG over USB
@@ -119,6 +120,12 @@ gitignored, so this step is required on a fresh clone.
 waveforms end up in the generator's **internal flash** under their `SER_` names, which is what lets the
 soak select one with a bare `ARWV NAME` and no transfer.
 
+**This is a rare step — ideally done once.** The waveforms then sit in flash and get reused indefinitely:
+a single lap selects from them 1 677 times and a fortnight's run about 230 000 times, all of it `ARWV`
+and no upload at all. So the upload hazards below are a one-off cost paid at setup, not something a run
+goes near — which is also why it is worth being slow and careful here rather than convenient. Re-upload
+only when a vector's bytes actually change.
+
 ```sh
 python3 tools/upload_vectors.py --dry-run     # what would go. Opens no socket at all
 python3 tools/upload_vectors.py               # the 36 under the ceiling
@@ -126,9 +133,12 @@ python3 tools/upload_vectors.py               # the 36 under the ceiling
 
 Names come from `tools/vector_names.py`, the single source — the tool refuses a malformed or duplicated
 name rather than uploading one, and verifies each landed by reading its stored length back. That
-read-back matters: a **zero-length** stored waveform bricks this generator at its next power-up, and
-the only window to delete it is while the box is still answering. Uploads go smallest first, so if the
-generator does stop answering the most work is already banked.
+read-back matters: on earlier firmware it has been **reported on EEVblog** that a stored **zero-length**
+waveform crashes the SDG at startup — logo, flashing LEDs, then a blank screen. Recovery reportedly needs
+a USB key built from a disk image **Siglent does not publish** — you have to ask them for it — so this is
+not a fault to walk into casually. The length is therefore checked and anything too small deleted while
+the box is still answering. Uploads go smallest first, so if the generator does stop answering the most
+work is already banked.
 
 ### The five above the ceiling
 
@@ -157,7 +167,7 @@ over the LAN in batches of at most two, naming each one explicitly:
 # 1. raise SDG_UPLOAD_SAFE_BYTES in tools/instruments.py far enough to admit the ones you want
 # 2. name them -- never let a raised ceiling sweep the whole set back up again
 python3 tools/upload_vectors.py --only SER_Blocks512B_8N1_x10,SER_Lorem1kB_8N1_x10
-# 3. let the generator rest, then confirm each stored length came back right
+# 3. give the generator time before you ask it for anything else
 # 4. power cycle before the next pair. Put the ceiling back when the set is complete
 ```
 
@@ -165,16 +175,26 @@ python3 tools/upload_vectors.py --only SER_Blocks512B_8N1_x10,SER_Lorem1kB_8N1_x
 mapped file below the new ceiling — including the large ones already uploaded — which is how a
 "careful" second pass performs three over-ceiling writes in one power cycle and wedges the box.
 
-The read-back in step 3 is `siglent.stored_wave_length()`: it asks `WVDT?` for the `LENGTH` field and
-allows 180 s for the reply. `upload_vectors.py` does it per upload, and it is what catches a zero-length
-or truncated waveform **while the box is still alive to delete it from** — a zero-length stored waveform
-bricks this generator at its *next power-up*, and there is no telnet on stock firmware to recover through.
-If a length comes back wrong, delete that waveform before anything power-cycles.
+**The tool verifies each upload itself**, so there is nothing to check by hand: it calls
+`siglent.stored_wave_length()` — a `WVDT?` `LENGTH` query with a 180 s allowance — immediately after each
+write, and **deletes** anything whose length does not match. That is the point of the check: a stored
+zero-length waveform has been reported (EEVblog, earlier firmware) to crash the SDG at startup. Recovery
+reportedly needs a recovery-key image Siglent does not publish and you have to request, so treat it as
+effectively unrecoverable when planning. The deletion has to happen *while the box is still answering* —
+after a power cycle there is nothing left to accept it. If the tool reports a length it could not
+confirm, resolve that before anything power-cycles.
+
+**"Fewer than three" is an operational rule, not a guarantee.** `tools/instruments.py` is explicit that
+the count is *not* established as the cause: the three writes that wedged it were sent back to back, while
+the clean pair were each followed by a length read and a ~2 s settle — so **pacing is a live candidate for
+the real variable**. Pace them, verify each, and do not read the number as a safe budget in either
+direction.
 
 Do none of this while a run is going.
 
-`out/vectors/USB-TRANSFER.md`, written by `make_vectors.lua`, carries the per-file sizes and checksums;
-it is generated and gitignored, and its title predates the LAN path.
+`lua tools/make_vectors.lua` writes `out/vectors/manifest.tsv` and `out/vectors/README.txt` with the
+per-file sizes, checksums and the exact commands; both are generated, so a fresh clone has neither until
+step 1 has run.
 
 **Nothing on the instrument side can upload.** `bsdg.cmd()` refuses any string containing `WVDT`
 outright, so a soak cannot do it even if a caller asks.
@@ -214,13 +234,16 @@ lap, every time; two nights of bench time have been lost to omitting it. Note th
 — so a lap run with a different skip is *different stimulus under the same lap number*. The plan
 records both the skip and `--random-per-lap` in its header for that reason.
 
-With `v95,v96` skipped a lap is **1 677 cells**, estimated at 2.07 h. `--random-per-lap 4` plays four of
-the twelve random-payload vectors each lap, which is **1 333 cells** and estimated at 1.64 h — every
-vector is still played, just across laps rather than within one.
+With `v95,v96` skipped a lap is **1 677 cells**; `--random-per-lap 4` plays four of the twelve
+random-payload vectors and makes it **1 333 cells** — every vector is still played, just across laps
+rather than within one.
 
-**Budget from a measured lap, not from the estimate.** A 210-lap run at `--random-per-lap 4` measures
-**1.96 h a lap** on this bench, not 1.64 — the estimate does not carry the per-cell plan wait or the
-generator's own latency. Cell counts, unlike times, are exact, and the plan declares its own:
+**Budget from measured cell rates, not from the tool's estimates.** At ~6.3 s a cell — the rate the
+86-cell smoke actually runs at — 1 677 cells is about **2.9 h**, which is what `docs/BENCH.md` and
+`README.md` both quote. A 210-lap run at `--random-per-lap 4` measures **1.96 h** for its 1 333 cells.
+`run_bench.py --help` offers 2.07 h and 1.64 h for the same two laps; those are estimates that omit the
+per-cell plan wait and the generator's latency, and they run about 20 % short. Cell counts, unlike times,
+are exact, and the plan declares its own:
 
 ```sh
 # grep, not head: soakplan.py writes the whole plan and does not handle a closed pipe,
@@ -299,7 +322,9 @@ Read three numbers, in this order:
 * **Calibration is off limits** on both instruments.
 * **A fault does not end a run.** A wedged generator, an unwritable key or a missing plan all go red,
   write the reason to the key, and keep retrying — parking on day 2 of a fortnight throws away twelve
-  days nobody is there to restart. Only the iteration count, the TRIGGER key or the cell cap end one.
+  days nobody is there to restart. An operator has exactly two ways to end a run: the iteration count it
+  was started with, and the TRIGGER key. (`brun.maxcell` is a third, but it defaults to 0 and exists for
+  the offline suite, which cannot cut the power to stop an indefinite run.)
 * **`STOP.TXT` is not armed by default,** despite the file existing on the key path. `brun.stopevery` is
   0 and `run_bench.py` exposes no flag to change it, because *looking* for a file that is not there posts
   an event per cell — about 1.4 million across eight days, each one a box on the panel. The TRIGGER key

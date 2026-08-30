@@ -25,8 +25,8 @@ bsdg.id      = nil                 -- tspnet connection id, nil when closed
 bsdg.why     = nil                 -- why the last call failed, for the status file
 bsdg.nfail   = 0                   -- consecutive failures, so a caller can give up deliberately
 bsdg.ncmd    = 0
-bsdg.timeout = bsdg.timeout or 5   -- seconds; the tspnet default of 20 is far too long to wait
-                                   -- 1677 times a lap when the generator has stopped answering
+bsdg.timeout = bsdg.timeout or 5   -- seconds; the tspnet default of 20 is far too long to spend on
+                                   -- every query of a cell whose generator has gone quiet
 
 -- Vpp CEILING. The vectors are built for a 20 Vpp part into high-Z; a value past that is a plan
 -- error rather than a stimulus, and clipping would be measured as a decode failure.
@@ -100,7 +100,8 @@ function bsdg.forbidden(s)
   local up = string.upper(s)
   if string.find(up, 'WVDT', 1, true) ~= nil then
     return 'WVDT is refused: a waveform upload can wedge this generator\'s LAN service, and '
-           .. 'recovery is a power cycle by hand. Play the file off the key with ARWV instead.'
+           .. 'recovery is a power cycle by hand. Every waveform is already in internal flash -- '
+           .. 'select it by name with ARWV. Uploading is tools/upload_vectors.py\'s job, not a run\'s.'
   end
   -- *RST would drop the output and the selected waveform, which mid-soak reads as a signal fault.
   if string.find(up, '*RST', 1, true) ~= nil then
@@ -216,8 +217,8 @@ function bsdg.select(name, amp, ofst, srate)
   local want = string.gsub(name, '^.*/', '')
   want = string.gsub(want, '%.bin$', '')
   -- ASKED AGAIN BECAUSE THE REPLY CAN LAG. Selecting makes this generator briefly stop answering, and
-  -- 15 of 86 cells in one lap were thrown away on 'no reply to C1:ARWV? within 5 s' from a generator
-  -- that was working -- 17 % of a run, recorded as stimulus failures.
+  -- 15 of the 86 cells in a smoke run were thrown away on 'no reply to C1:ARWV? within 5 s' from a
+  -- generator that was working -- 17 % of the run, recorded as stimulus failures.
   --
   -- A REPLY THAT NAMES THE PREVIOUS WAVEFORM IS A LATE SWITCH, not a missing file: 4 of the 39 real
   -- switches in a lap answer that way and the generator has the waveform. Asking again does not recover

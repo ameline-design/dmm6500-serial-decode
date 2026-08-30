@@ -484,7 +484,8 @@ end
 -- whether what has gone wrong is worth walking over to fix. display.create takes a FONT, so a screen
 -- built here gets FONT_SMALL's 8 px advance and about ninety characters a line, and it gets COLOUR.
 --
--- SIX OBJECTS, CREATED ONCE. Display object ids are never reclaimed on this firmware -- display.create
+-- THIRTEEN OBJECTS, CREATED ONCE: a screen, seven text rows and brun.msgn log lines. Display object ids
+-- are never reclaimed on this firmware -- display.create
 -- returns nil when the pool is exhausted, posts event 1701 the first time only, and is silent after
 -- that -- so a text object per cell would walk the instrument into that state inside one lap. These are
 -- built at the start of a run and only ever settext'd and setcolor'd afterwards, which costs nothing.
@@ -972,12 +973,10 @@ function brun.ui_show(c, arb)
   -- BOTH RATES, because they answer different questions: the run's rate says whether the soak is
   -- healthy, and this vector's says whether ONE waveform is the reason it is not.
   local vn, vb = brun.vcell[vid] or 0, brun.vbad[vid] or 0
-  -- COUNTS, NOT A SECOND PERCENTAGE. A bare '20 %' reads as a fifth of the run being broken and it is
-  -- not: about a third of a HEALTHY lap produces no result, because the plan drives seven vectors into
-  -- conditions where refusing is the documented right answer, and judge_bench.py scores those refusals as
-  -- passes. Measured on the offline twin over one full lap: 539 of 1677 cells with no result, 151 of them
-  -- exactly that. So the number that means something is UNEXPECTED -- a refusal on a vector that should
-  -- have decoded -- and the health headline is the one figure meant to be read as a verdict.
+  -- COUNTS, NOT A SECOND PERCENTAGE. About a third of a HEALTHY lap produces no result -- measured on the
+  -- offline twin, 539 of 1677 cells -- because the plan drives seven vectors into conditions where
+  -- refusing is the documented right answer. barb.loud excuses 151 of those, so UNEXPECTED is 388 of
+  -- 1677: the number that means something, and the one the health headline is built from.
   --
   -- 58 CHARACTERS IS THE BUDGET AT FONT_MEDIUM, and both lines are written against their own widest
   -- values -- four-digit counts -- rather than the ones a screenshot happens to show.

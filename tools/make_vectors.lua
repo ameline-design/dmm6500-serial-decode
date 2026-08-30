@@ -2,7 +2,8 @@
 -- offline answer recorded beside each one.
 --
 -- Run from the repo root:  lua tools/make_vectors.lua [outdir]
--- Default outdir is out/vectors/. Copy the whole directory to the SDG's USB key.
+-- Default outdir is out/vectors/. Send them to the generator's INTERNAL FLASH with
+-- tools/upload_vectors.py; every waveform this bench plays is selected from flash by name.
 --
 -- WHY THIS EXISTS, and why it is more than a file converter:
 --
@@ -46,11 +47,11 @@ local OUT = (arg and arg[1]) or 'out/vectors'
 if not VEC_DEFINE_ONLY then
   os.execute('mkdir -p ' .. OUT)
   -- Clear stale .bin files first. Renaming or splitting a vector otherwise leaves an
-  -- orphan behind that is absent from the manifest but still sitting on the USB key,
-  -- where its name makes it look like a plan row. That is a real trap at a bench:
-  -- the file loads, plays something, and matches nothing it is compared against.
+  -- orphan behind that is absent from the manifest but still sitting in out/vectors/,
+  -- where its name makes it look like a plan row. That is a real trap: the file uploads,
+  -- plays something, and matches nothing it is compared against.
   -- .bin AND .txt: a vector removed from the table above leaves its oracle behind otherwise, absent
-  -- from the manifest but still on the key and still named like a plan row.
+  -- from the manifest but still present and still named like a plan row.
   os.execute('rm -f ' .. OUT .. '/*.bin')
   os.execute('rm -f ' .. OUT .. '/*.txt')
 end
@@ -163,8 +164,8 @@ end
 -- +-5 % of a unit interval, which is the same order as the impairments worth testing -- so a 2 %
 -- jitter rendered at x10 is quantisation noise, not jitter. At x100 an edge places to +-0.5 % and a
 -- 1 % displacement is 100 arb samples wide at 19200 Bd. The cost is ten times the file: keep an x100
--- payload at or under 31 bytes and it stays inside SDG_UPLOAD_SAFE_BYTES, so it goes over the LAN
--- instead of onto the USB key.
+-- payload at or under 31 bytes and it stays inside SDG_UPLOAD_SAFE_BYTES, so it uploads without
+-- anyone having to raise the ceiling for it.
 --
 -- Both are exact, so no row anywhere needs fs/N arithmetic, and the multiplier says which family a
 -- file belongs to.
@@ -245,9 +246,9 @@ local ASCII94 = 'the quick brown fox jumps over the lazy dog. ' ..
                 'THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG. ' ..
                 '0123456789 !"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~'
 
--- SIZED FOR A LAN UPLOAD. 133 bytes at ~10.4 samples/bit is about 14 kpts / 28 kB, comfortably
--- under SDG_UPLOAD_SAFE_BYTES (tools/instruments.py) -- unlike the 1 kB lorem vectors, whose 213 kB
--- has to reach the generator on a USB key. gap/lead/tail and loop match lorem_vec for the same
+-- SIZED FOR AN ORDINARY UPLOAD. 133 bytes at ~10.4 samples/bit is about 14 kpts / 28 kB, comfortably
+-- under SDG_UPLOAD_SAFE_BYTES (tools/instruments.py) -- unlike the 1 kB lorem vectors, whose 213 kB is
+-- past the ceiling and needs a deliberate one-at-a-time send. gap/lead/tail and loop match lorem_vec for the same
 -- reasons stated there; loop = true especially, since without it the frame across the arb's repeat
 -- seam is corrupt and reads as a decoder fault rather than a stimulus one.
 local function ascii94_vec(baud, fs, nbits, par)
@@ -510,7 +511,7 @@ vec{id = 'v92', desc = 'walking-one and walking-zero bytes, 9600 8N1', fs = sr(9
     end}
 
 -- ============================================================================
--- THE FULL-LENGTH HARD VECTORS -- USB KEY ONLY, NOT LAN
+-- THE FULL-LENGTH HARD VECTORS -- PAST THE UPLOAD CEILING
 -- ============================================================================
 -- v90 and v91 are the SHORTENED forms of these two, and the shortening was forced by the
 -- transport rather than by the test: a byte is ~104 codewords at 100 kSa/s and 9600 baud, so
@@ -519,10 +520,10 @@ vec{id = 'v92', desc = 'walking-one and walking-zero bytes, 9600 8N1', fs = sr(9
 -- the generator's LAN service. Recovery from that wedge is a power cycle on an instrument with
 -- no smart plug, so it costs a human -- which is why the ceiling is treated as hard.
 --
--- The USB key has no such ceiling. C1:ARWV NAME,"U-disk0/<file>" plays straight off the key
--- (guide section 3.9.1), no upload and no bulk transfer at all, which is exactly how v71's
--- 213 kB reached the generator. So these two are built to the size the OWNER ASKED FOR and
--- carried by hand: see out/vectors/USB-TRANSFER.md.
+-- SO THESE ARE BUILT TO THE SIZE ASKED FOR AND UPLOADED DELIBERATELY -- over the LAN, into internal
+-- flash, like every other vector: raise SDG_UPLOAD_SAFE_BYTES, name the file with upload_vectors.py's
+-- --only, pace it, read the stored length back. bench/README.md has the procedure. Nothing here plays
+-- off the generator's own key; every name in bench/arb_names.tsp is a bare stored name.
 --
 -- WHAT THE EXTRA LENGTH BUYS, given the short forms already exist:
 --
@@ -544,7 +545,7 @@ vec{id = 'v92', desc = 'walking-one and walking-zero bytes, 9600 8N1', fs = sr(9
 --        it can be handed 128 consecutive 0xFF -- one narrow start-bit pulse per frame and
 --        nothing else -- with no relief anywhere in the window. That is the case the manual
 --        warns firmware authors about, and it is unreachable at 64.
-vec{id = 'v93', desc = '1024 uniform random bytes 0-255, 9600 8N1 (USB key)',
+vec{id = 'v93', desc = '1024 uniform random bytes 0-255, 9600 8N1 (over the upload ceiling)',
     fs = sr(9600), fsv = 5.0, long = true,
     build = function()
       local by, nb = rand_bytes(1024, 20260818)
@@ -552,7 +553,7 @@ vec{id = 'v93', desc = '1024 uniform random bytes 0-255, 9600 8N1 (USB key)',
               loop = true}, by, nb, nil, bytes_to_string(by, nb)
     end}
 
-vec{id = 'v94', desc = '128 each of 0x00, 0xFF, 0x55, 0xAA -- 9600 8N1 (USB key)',
+vec{id = 'v94', desc = '128 each of 0x00, 0xFF, 0x55, 0xAA -- 9600 8N1 (over the upload ceiling)',
     fs = sr(9600), fsv = 5.0, long = true,
     build = function()
       local by, nb = hard_blocks(128)
@@ -574,11 +575,12 @@ vec{id = 'v94', desc = '128 each of 0x00, 0xFF, 0x55, 0xAA -- 9600 8N1 (USB key)
 -- 32768. That is structural rather than incidental (see rand_bytes) and it is what makes a disagreement
 -- between two of them evidence about the TRANSPORT and not about the payload.
 --
--- USB KEY ONLY, and by a wide margin: 1.63 MB and 6.51 MB against a 65536-byte LAN ceiling. The LAN
+-- FAR PAST THE CEILING: 1.63 MB and 6.51 MB against 65536 bytes. Both still upload over the LAN into
+-- internal flash, one at a time and paced -- see bench/README.md. The
 -- hazard is a COUNT rather than a size -- a third consecutive over-ceiling write wedges the
 -- generator's LAN service, at as little as 213 kB total -- so these are nowhere near a close call.
 -- Both fit SDG_MAX_PTS (8388608): 853542 and 3413542 points.
-vec{id = 'v95', desc = '8192 uniform random bytes 0-255, 9600 8N1 (USB key, one 8 kB recording)',
+vec{id = 'v95', desc = '8192 uniform random bytes 0-255, 9600 8N1 (over the upload ceiling, one 8 kB recording)',
     fs = sr(9600), fsv = 5.0, long = true,
     build = function()
       local by, nb = rand_bytes(8192, 20260818)
@@ -586,7 +588,7 @@ vec{id = 'v95', desc = '8192 uniform random bytes 0-255, 9600 8N1 (USB key, one 
               loop = true}, by, nb, nil, bytes_to_string(by, nb)
     end}
 
-vec{id = 'v96', desc = '32768 uniform random bytes 0-255, 9600 8N1 (USB key, one 32 kB recording)',
+vec{id = 'v96', desc = '32768 uniform random bytes 0-255, 9600 8N1 (over the upload ceiling, one 32 kB recording)',
     fs = sr(9600), fsv = 5.0, long = true,
     build = function()
       local by, nb = rand_bytes(32768, 20260818)
@@ -937,11 +939,11 @@ f:write('                                  directly, so no f = fs/N arithmetic.\
 f:write('  C1:BSWV AMP,<amp_vpp>           and OFST,0. WRONG AMP MEANS WRONG\n')
 f:write('                                  LOGIC LEVELS and every threshold\n')
 f:write('                                  result is then meaningless.\n')
-f:write('  C1:ARWV NAME,"U-disk0/<file>"   USB paths load directly; there is no\n')
-f:write('                                  need to copy into internal flash.\n')
+f:write('  C1:ARWV NAME,<SER_ name>        the stored name in INTERNAL FLASH, where\n')
+f:write('                                  every vector here lives.\n')
 f:write('  C1:OUTP ON,LOAD,HZ              high-Z suits the DMM 10 Mohm input.\n\n')
-f:write('cksum is Fletcher-32 over the file bytes, so a truncated copy to the\n')
-f:write('USB key is detectable -- it would otherwise play as a short waveform\n')
+f:write('cksum is Fletcher-32 over the file bytes, so a truncated upload is\n')
+f:write('detectable -- it would otherwise play as a short waveform\n')
 f:write('with nothing on screen to say so.\n\n')
 f:write('ONE WAVEFORM SERVES EVERY BAUD RATE: the rate is set by SRATE at\n')
 f:write('selection time, so there is no per-rate render. The same shape played at\n')

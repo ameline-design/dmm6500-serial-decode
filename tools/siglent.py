@@ -40,8 +40,9 @@ SDG_PORT = SCPI_PORT     # kept: existing callers import this name
 # ---------------------------------------------------------------------------
 # THE ONE CHOKE POINT FOR WAVEFORM DATA
 # ---------------------------------------------------------------------------
-# A ZERO-LENGTH OR UNDERSIZED WAVEFORM BRICKS THIS GENERATOR PERMANENTLY, and a guard living inside
-# write_raw() is reachable-around by three separate routes:
+# A ZERO-LENGTH OR UNDERSIZED WAVEFORM STOPS THIS GENERATOR BOOTING -- reportedly recoverable only with a
+# key built from a disk image Siglent does not publish -- and a guard living inside write_raw() is
+# reachable-around by three separate routes:
 #
 #   1. write_raw('C1:', b'WVDT WVNM,x,WAVEDATA,' + b'\x00\x00')
 #      A check keyed on `'WVDT' in prefix` misses this prefix entirely, and the assembled command on
@@ -172,17 +173,18 @@ class SDG:
         power cycle recovers it, and it has no smart plug, so it costs a human. Hence
         the rule: fewer than three over-ceiling writes between power cycles.
         """
-        # A ZERO-LENGTH WAVEFORM BRICKS THIS INSTRUMENT. Reported publicly and independently: a fumbled
+        # A ZERO-LENGTH WAVEFORM BRICKS THIS INSTRUMENT. Reported on EEVblog, on earlier firmware: a fumbled
         # low-level SCPI upload stored an empty waveform, and the NEXT POWER-UP showed the logo for ~25 s,
         # flashed the LEDs and left the LCD blank forever. The poster recovered only because their firmware
         # was PATCHED SO THE ROOT PASSWORD HASH WAS A KNOWN VALUE, which gave them a shell over telnet
         # and let them delete the file from /usr/bin/siglent/usr/usr by hand.
         #
-        # WE HAVE NO SUCH ESCAPE. This generator runs stock 2.01.01.39R7 with no telnet, so a brick here is
-        # not a power-cycle away from fixed -- it is a dead instrument. And the path to it is one we walk
-        # routinely: the poster power-cycled to clear a STUCK TCP STATE, which is our WVDT wedge exactly.
-        # Wedge, then power-cycle, is our documented recovery, and it is also the step that detonates a bad
-        # stored waveform.
+        # WE HAVE NO SUCH ESCAPE ON THE WIRE. This generator runs stock 2.01.01.39R7 with no telnet, so a
+        # brick here is not a power-cycle away from fixed. Recovery reportedly needs a USB key built from a
+        # disk image Siglent does NOT make public -- you have to ask them for it -- so this is not a fault
+        # to plan around. And the path to it is one we walk routinely: the poster power-cycled a STUCK TCP
+        # STATE, which is our WVDT wedge exactly. Wedge, then power-cycle, is our documented recovery, and
+        # it is also the step that detonates a bad stored waveform.
         #
         # So this refuses rather than warns, and it refuses in the DRIVER rather than in one caller --
         # tools/upload_vectors.py writes WVDT through here directly and sorted payloads by size without

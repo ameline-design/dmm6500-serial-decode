@@ -3,7 +3,7 @@
 -- The generator's own name for each local vector id. C1:ARWV NAME takes a STORED WAVEFORM NAME, so
 -- sending a local id like 'v77' does nothing at all and the previously selected waveform keeps playing
 -- -- which would be recorded as this cell's stimulus. tools/vector_names.py is the single source, and
--- eight of these entries are generated there in a loop, so this file is emitted rather than typed.
+-- twelve of these entries are generated there in a loop, so this file is emitted rather than typed.
 --
 -- tools/test_bench_engine.lua asserts this file is current. A vector renamed in vector_names.py without
 -- regenerating here would otherwise leave the instrument playing the wrong waveform silently.
@@ -57,9 +57,10 @@ barb.name['v96'] = 'SER_Random32kB_8N1_x10'
 -- WHICH VECTORS ARE ALLOWED TO REFUSE. A 'loud' vector is one the plan drives into conditions where
 -- declining to decode is the DOCUMENTED RIGHT ANSWER -- 20 % jitter, a spike, a drifting clock, a LIN
 -- break field -- and tools/judge_bench.py counts a refusal there as a pass. The instrument needs the
--- same list, because a status screen that shows every refusal as a failure reports about a third of a
--- healthy lap as broken: measured, 539 of 1677 cells produced no result offline and 151 of those were
--- exactly this. Anything not named here is expected to decode, so a refusal IS a failure.
+-- same list, because a screen counting every refusal as a failure would show 539 of 1677 cells -- about
+-- a third of a healthy lap -- as broken. This list excuses 151 of them, taking the panel's UNEXPECTED
+-- figure to 388 of 1677, or 23 %. It does not account for the rest: the host judge has four more rules
+-- the instrument cannot apply. Anything not named here is expected to decode, so a refusal IS a failure.
 --
 -- GENERATED FROM tools/soakplan.py's VECTOR_EXPECT, for the same reason the names above are generated:
 -- two copies of a judgement drift, and the night they disagree both look right.

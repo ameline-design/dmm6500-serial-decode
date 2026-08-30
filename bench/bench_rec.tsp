@@ -12,8 +12,9 @@
 --
 -- ONE FILE, WITH TAGGED ROWS, and that is forced rather than tidy: the firmware hands out a SINGLE
 -- write handle, so a results file and a status file cannot be open at once -- opening the second
--- silently redirects the first's writes. Results are 'R,...' rows and progress is 'S,...' rows in one
--- file, which also puts the last status line immediately before whatever the run was doing when it
+-- silently redirects the first's writes. tools/mock_display.lua models that one handle and 67
+-- assertions in test_usblog.lua run against it. Results are 'R,...' rows and progress is 'S,...' rows in
+-- one file, which also puts the last status line immediately before whatever the run was doing when it
 -- stopped.
 --
 -- CLOSED AND REOPENED PERIODICALLY, because flush and close are not the same promise on FAT: flush
@@ -43,7 +44,8 @@ brec.maxtotal = brec.maxtotal or 4294967296 -- 4 GB, inside the 6 GB budget with
 --
 -- WHY NOT ONE. brun.resume finds the last row the record HOLDS and carries on after it, so an
 -- uncommitted tail costs those cells being MEASURED AGAIN, not lost -- against a FAT directory write on
--- every one of a fortnight's 280 000 cells, at a latency this key has never been measured for.
+-- every one of the ~230 000 cells a fortnight completes, at a latency this key has never been measured
+-- for.
 brec.syncrows = brec.syncrows or 50         -- rows between close/reopen
 
 brec.fh       = nil     -- the one open file, or nil

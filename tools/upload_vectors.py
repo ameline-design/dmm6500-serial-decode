@@ -2,8 +2,13 @@
 """Upload the bench vectors to the SDG2122X under their SER_ names.
 
 WHY A TOOL RATHER THAN A ONE-OFF. The names are the contract -- see docs/VECTORS.md -- and a rename done
-by hand is a rename done differently next time. This holds the mapping in one place, refuses anything that
-cannot go over the LAN, and VERIFIES each name landed rather than trusting a write that reports nothing.
+by hand is a rename done differently next time. This holds the mapping in one place, refuses anything past
+the upload ceiling, and VERIFIES each name landed rather than trusting a write that reports nothing.
+
+RUN THIS RARELY -- IDEALLY ONCE. The waveforms then live in internal flash and are reused indefinitely:
+a bench lap selects from them 1677 times and a fortnight's soak about 230 000 times, every one of those an
+ARWV by name with no transfer. So the hazards guarded below are a one-off setup cost, not something a run
+can trip over, and being slow and paranoid here is cheap. Re-upload only when a vector's bytes change.
 
 THE 65536-BYTE CEILING IS NOT ABOUT SPACE. The generator reports ~80 MB of internal flash free and the
 whole planned set is ~2.3 MB, so capacity is irrelevant. SDG_UPLOAD_SAFE_BYTES exists because a few
@@ -60,7 +65,9 @@ def main():
     ap.add_argument('--pace', type=float, default=0.4,
                     help='seconds between uploads (default 0.4)')
     # FOR REPAIRING A GAP without re-writing the set. A front-panel delete can take a neighbour by
-    # accident, and re-uploading all 34 to replace one is 900 kB of writes for 54 kB of need.
+    # accident, and re-uploading all 36 under-ceiling vectors to replace one is ~1.2 MB of writes for
+    # 54 kB of need. IT IS ALSO THE ONLY WAY TO SEND AN OVER-CEILING VECTOR SAFELY: raising the ceiling
+    # without --only sweeps every large file back into one batch, which is the wedge.
     ap.add_argument('--only', default=None,
                     help='comma-separated SER_ names to upload, instead of everything')
     # A BACKSLASH, AND ONLY A BACKSLASH. 'SERIAL\\name' stores and selects; 'SERIAL/name' and
@@ -104,13 +111,16 @@ def main():
         if not os.path.exists(path):
             raise SystemExit('REFUSING: %s is mapped but %s is missing' % (vid, path))
         n = os.path.getsize(path)
-        # SIZE 0 IS NOT A SMALL UPLOAD, IT IS A BRICK. A zero-length waveform stored on this generator
-        # kills it at the next power-up -- see the note in siglent.write_raw. Sorting by size alone
-        # puts an empty or truncated .bin straight into the upload list.
+        # SIZE 0 IS NOT A SMALL UPLOAD. Reported on EEVblog, on earlier firmware: a stored zero-length
+        # waveform crashes the generator at STARTUP. Recovery reportedly needs a key built from a disk
+        # image Siglent does NOT publish and you have to ask for -- see the note in siglent.write_raw --
+        # so treat it as unrecoverable. Sorting by size alone puts an empty or truncated .bin straight
+        # into the upload list, so the length is checked here.
         if n == 0:
-            raise SystemExit('REFUSING: %s is ZERO BYTES. Uploading it would store an empty waveform, '
-                             'which bricks the instrument at its next power-up with no telnet to recover '
-                             'through. Regenerate the vectors with tools/make_vectors.lua.' % path)
+            raise SystemExit('REFUSING: %s is ZERO BYTES. Storing an empty waveform has been reported '
+                             '(EEVblog, earlier firmware) to crash the generator at STARTUP; recovery '
+                             'then needs a recovery-key image Siglent does not publish. Regenerate the '
+                             'vectors with tools/make_vectors.lua.' % path)
         if n % 2:
             raise SystemExit('REFUSING: %s is %d bytes, an ODD length. Waveform data is 16-bit codewords, '
                              'so the file is truncated.' % (path, n))
@@ -153,7 +163,10 @@ def main():
         print('  %-5s -> %-24s %7d B  %s %s' % (vid, name, n, r['baud'], r['exp_fmt']))
     if toobig:
         print()
-        print('  CANNOT GO OVER THE LAN -- USB key only (see out/vectors/USB-TRANSFER.md):')
+        print('  OVER THE CEILING, so refused here -- these are uploaded DELIBERATELY, not by this run.')
+        print('  They still go over the LAN into internal flash: raise SDG_UPLOAD_SAFE_BYTES, name them')
+        print('  with --only, pace them, verify each length, and keep it under three per power cycle.')
+        print('  See bench/README.md. There is no USB-key path in use on this bench.')
         for vid, name, n, r in toobig:
             print('  %-5s -> %-24s %7d B  (%.1fx the ceiling)'
                   % (vid, name, n, float(n) / SDG_UPLOAD_SAFE_BYTES))
