@@ -848,7 +848,7 @@ function brun.healthline()
 
   -- NO FIGURE AT ALL UNTIL THERE ARE ENOUGH CELLS TO DIVIDE BY. One unexpected refusal on cell 1 is
   -- 0.0 % health, which paints the headline red on a perfectly good instrument in the first ten seconds
-  -- of a two-hour lap -- and a screen that starts by crying wolf is a screen nobody reads by Wednesday.
+  -- of a two-hour lap -- and a screen that starts by crying wolf is a screen nobody reads by day three.
   -- The same brun.raten that gates the rate alarm gates this, so the two agree about when a proportion
   -- starts meaning something.
   --
@@ -1074,7 +1074,7 @@ end
 -- A FILE, checked between cells, so a run can be ended cleanly by dropping STOP.TXT on the key without
 -- a power cycle -- which matters when the alternative is losing the last unflushed rows.
 --
--- FOUND BY LISTING THE DIRECTORY, NOT BY OPENING IT. file.open on a file that is not there POSTS AN
+-- LOCATED BY LISTING THE DIRECTORY, NOT BY OPENING IT. file.open on a file that is not there POSTS AN
 -- EVENT on this instrument, and this check runs once per cell -- 86 events in a smoke and about 1.4
 -- million across eight days, every one of them a popup on the panel. Opening the directory, which does
 -- exist, and searching its listing costs no event at all. usb_log.tsp's ensuredir uses the same

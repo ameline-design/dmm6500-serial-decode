@@ -6,6 +6,12 @@ and shows the bytes on the front panel as text or hex. No host, no logic analyse
 
 Ian Ameline · **version 1.20** · MIT licence (see [LICENSE](LICENSE))
 
+![The main screen in hex view: a 240-byte frame capture, 239 bytes decoded, no errors, S/N 74 dB](docs/img/panel-hex.png)
+
+*The instrument's own front panel, no host attached: 239 bytes of a 240-byte capture at 9600 baud 8N1,
+no framing errors, S/N 74 dB. The padlock on the BAUD cell means the rate is pinned here rather than
+re-detected each capture.*
+
 | | |
 |---|---|
 | [docs/MANUAL.md](docs/MANUAL.md) | using it: hooking up, the screen, the buttons, what it copes with, where it fails |
@@ -157,6 +163,7 @@ how to replay a failing cell offline, and the hazards worth knowing.
 | | |
 |---|---|
 | `tsp/` | the app. `serial_core` acquisition, `uart_decode` framing, `chunk_decode` resumable decode, `serial_ui` panel, `serial_app` orchestration |
+| `bench/` | the soak that runs **on** the instrument, loaded beside the app for a multi-day run and never shipped inside it. [bench/README.md](bench/README.md) is the runbook |
 | `tools/` | harnesses. `release_sweep.py` is the entry point; the rest are the authorities it calls |
 | `docs/` | the manual, instrument references, panel mockups |
 

@@ -429,7 +429,8 @@ def main():
     ap.add_argument('--smoke', action='store_true',
                     help='the 86-cell smoke subset, one iteration, then fetch and judge')
     ap.add_argument('--iterations', type=int, default=1,
-                    help='0 means indefinitely -- ended by a power cycle or STOP.TXT')
+                    help='0 means indefinitely -- ended by the front-panel TRIGGER key, which closes '
+                         'the record, or by cutting the power, which does not')
     ap.add_argument('--iteration', type=int, default=1, help='first plan iteration')
     ap.add_argument('--spec', default=None, help='bench_matrix --plan-spec grammar for a subset')
     ap.add_argument('--skip-vectors', default=','.join(I.__dict__.get('HW_SKIP', ()) or ('v95', 'v96')))
