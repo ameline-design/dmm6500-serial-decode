@@ -366,8 +366,8 @@ end
 --
 -- display.settext ON THE USER SWIPE SCREEN, NOT display.create. Object ids are never reclaimed on this
 -- instrument, so a text object per cell would exhaust them; settext writes into the two lines the
--- firmware already owns, so a lap costs no objects at all. serial_app.tsp uses the same call for its own
--- progress row, at about the same rate.
+-- firmware already owns, so a lap costs no objects at all. THE APP NEVER TOUCHES THESE TWO LINES --
+-- nothing in tsp/ names display.TEXT1 or TEXT2 -- so a soak writing them collides with nothing.
 --
 -- THE LENGTH LIMITS ARE A POPUP, NOT A CLIP, which is why these lines are built by measurement rather
 -- than by eye. The reference manual is explicit: TEXT1 holds up to 20 characters and TEXT2 up to 32, and
