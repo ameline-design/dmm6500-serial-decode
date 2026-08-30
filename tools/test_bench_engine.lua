@@ -492,7 +492,7 @@ do
 
   -- (b) A GENERATOR THAT ANSWERS IS NOT WAITED FOR. maxsdgfail counts cells with no stimulus, and a stale
   -- arb_names.tsp produces those with the generator perfectly alive -- a static fault no amount of holding
-  -- fixes. Holding 300 s per 20 cells for it would turn a 1.6 h lap into a 7 h one and call it recovery.
+  -- fixes. Holding 300 s per 20 cells would add ~7 h to a lap that runs in under three, and call it recovery.
   MOCKB_SDG({})
   bsdg.reset()
   bsdg.timeout = 5
@@ -841,7 +841,7 @@ end
 print('')
 print('-- one repeating condition must not fill the five-line log --')
 do
-  -- MEASURED ON HARDWARE: 4 generator misses in 1578 cells, so a fortnight's 273 000 is ~650. Deduping on
+  -- MEASURED ON HARDWARE: 4 generator misses in 1578 cells, so a fortnight's 273 000 is ~690. Deduping on
   -- exact text pushes a line per increment, and five lines of 'missed 648 cell(s)' is a log with every
   -- one-off event scrolled off the top.
   brun.ui_build()
@@ -956,7 +956,7 @@ do
   bsdg.reset()
   -- file.open ON A MISSING FILE POSTS AN EVENT on this instrument, and mock_display.lua models that.
   -- brun.stopped() runs once per cell, so probing for an absent STOP.TXT that way is 86 popups in a
-  -- smoke and about 1.4 million across eight days. It reads the DIRECTORY listing instead.
+  -- smoke and ~120 000 across eight days. It reads the DIRECTORY listing instead.
   MD.rmfile(brun.stoppath)
   eventlog.clear()
   local i

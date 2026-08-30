@@ -196,10 +196,10 @@ end
 -- the panel to say so.
 --
 -- `name` IS THE GENERATOR'S STORED WAVEFORM NAME, e.g. SER_Fox_8N1_x10 -- not a local vector id and not
--- a path. Every vector the plan names is in internal flash and arrives here as a bare stored name. The
--- quoted form is for a file on the generator's own USB key ("U-disk0/<file>.bin"), which this bench does
--- not use. ARWV NAME with an unknown name does nothing and the previous waveform keeps playing, so the
--- reply is compared rather than assumed.
+-- a path. Every vector the plan names is in internal flash and arrives here as a bare stored name, so the
+-- path-quoting and .bin-stripping below are DEFENSIVE AND UNEXERCISED on this bench; they exist only for
+-- the "U-disk0/<file>.bin" form, which nothing here sends. ARWV NAME with an unknown name does nothing and
+-- the previous waveform keeps playing, so the reply is compared rather than assumed.
 function bsdg.select(name, amp, ofst, srate)
   if name == nil or name == '' then return false, 'no waveform name' end
   if amp == nil or amp <= 0 or amp > bsdg.maxvpp then
@@ -212,8 +212,8 @@ function bsdg.select(name, amp, ofst, srate)
   local sel = name
   if string.find(name, '/', 1, true) ~= nil then sel = '"' .. name .. '"' end
   if not bsdg.cmd('C1:ARWV NAME,' .. sel) then return false, bsdg.why end
-  -- Compared, not assumed. A file on the key answers without its .bin, so the comparison is against
-  -- the name with any path and extension stripped.
+  -- Compared, not assumed. A bare flash name needs no stripping; the path and .bin removal is for the
+  -- key-file form, which answers without its extension.
   local want = string.gsub(name, '^.*/', '')
   want = string.gsub(want, '%.bin$', '')
   -- ASKED AGAIN BECAUSE THE REPLY CAN LAG. Selecting makes this generator briefly stop answering, and

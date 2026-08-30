@@ -43,7 +43,8 @@ brun.stopbad  = false   -- did it park because something is wrong, or finish wha
 -- -- brun.sdghold, which retries until the operator ends the run.
 brun.maxsdgfail = brun.maxsdgfail or 20
 
--- A RUN ENDS WHEN SOMEBODY ENDS IT: the iteration count, the TRIGGER key, or the stop file. A FAULT IS
+-- A RUN ENDS WHEN SOMEBODY ENDS IT: the iteration count or the TRIGGER key (the stop file is off by
+-- default -- see brun.stopevery). A FAULT IS
 -- NOT ONE OF THEM. A wedged generator, a record that will not write and a plan file that has gone all go
 -- red, write the reason to the key, and keep retrying. Parking on day 2 of a fortnight throws away
 -- twelve days nobody is there to restart.
@@ -80,9 +81,9 @@ brun.nselback = 0                        -- cells whose stimulus needed more tha
 
 -- HOW OFTEN THE STOP FILE IS LOOKED FOR, in cells. Not every cell: any look at a file or directory that
 -- is not readable POSTS AN EVENT -- 2201 'File read error' for the directory read, 2205 'File not found'
--- for a missing file -- and at one per cell that is 86 events in a smoke and about 1.4 million across
--- eight days. The TRIGGER key and the power cycle end a run without spending one; the stop file is a
--- convenience, and a convenience does not get to spend an event per cell.
+-- for a missing file -- and at one per cell that is 86 events in a smoke and ~120 000 across eight days.
+-- The TRIGGER key and the power cycle end a run without spending one; the stop file is a convenience,
+-- and a convenience does not get to spend an event per cell.
 brun.stopevery = brun.stopevery or 0     -- 0 = never look; see the note in the loop
 
 -- A HARD CEILING ON CELLS, 0 MEANING NONE, AND IT IS FOR THE OFFLINE SUITE. An indefinite run is
@@ -95,15 +96,15 @@ brun.maxcell = brun.maxcell or 0
 -- HOW MANY MEASUREMENT COLUMNS A RESULT ROW CARRIES between the plan's nine and the 'why' text: fs,
 -- sa_bit, ran, read_baud, fmt, nf, ngood, nbad, nflag, headsusp, snapped, snapfirm. Named because a
 -- stimulus-free cell has to write that many empty ones, and a comma miscounted in a format string is a
--- 22-field row in a 23-field schema. bench_rec.tsp's header is the declaration; this is the number the
--- rows are built from, and test_bench_engine.lua checks the two against each other.
+-- 22-field row in a 23-field schema. bench_rec.tsp's header is the declaration and this is the number the
+-- rows are built from; NOTHING ON THE INSTRUMENT COMPARES THEM. judge_bench.py catches a short row on the
+-- host, after the run, by refusing the whole file.
 brun.nmeascol = 12
 
 -- THE SLOWEST SAMPLE RATE A CELL MAY BE CAPTURED AT. sdec.pick_fs(baud, 8) asks for eight samples a bit,
--- which at 300 baud is 2500 Sa/s -- a rate the ladder lists and the instrument does not deliver:
--- MEASURED, from the buffer's own relativetimestamps, a cell commanding 300 baud captures at
--- 1 000 000 Sa/s. That is 3333 samples a bit, so ua_probe's 4000-sample window spans 1.2 BIT TIMES and no
--- format fits it. Every failure below 2400 baud in a 117-cell lap was this, and none above it.
+-- which at 300 baud is 2500 Sa/s. But an UNLOCKED capture lands at 1 MS/s whatever it asked for -- see the
+-- fs_want note in brun.point -- and that is 3333 samples a bit, so ua_probe's 4000-sample window spans
+-- 1.2 BIT TIMES and no format fits it. Every failure below 2400 baud in a 117-cell lap was this.
 --
 -- 10 kSa/s IS THE APP'S OWN FLOOR: serial_app.tsp's probe ladder is {1e6, 1e5, 1e4} and stops there
 -- because 20 000 samples at 10 kSa/s is 2 s -- sixty frames at 300 baud.
@@ -263,9 +264,10 @@ function brun.point(fs, baud, lock)
   sdec.fs, sdec.fs_want = fs, fs
   -- FREE-RUN, NOT EDGE-ARMED, and that is a requirement rather than a preference: the analog-trigger path
   -- goes through trigger.model, which posts 2731 'path initiated' and 2732 'path idled' on EVERY capture
-  -- -- two events a cell, 3354 across a lap. Suppressing them is not enough, because localnode.showevents
-  -- governs the REMOTE interface only; they must not be instigated at all. Measured with trigmode 'free':
-  -- 8 cells, 0 events.
+  -- -- two events a cell, 3354 across a lap. showevents hides the POPUP but not the LOG ENTRY, and an
+  -- accumulating log raises 'Multiple errors have occurred' on its own -- which this loop's own watchdog
+  -- would then count. So they must not be instigated at all. Measured with trigmode 'free': 8 cells,
+  -- 0 events.
   --
   -- WHAT IT COSTS, because it is a real difference from the host bench: a free-run capture is not armed on
   -- a start-bit edge, so it opens at an arbitrary phase of the arb. The plan's per-cell wait randomises
@@ -357,9 +359,9 @@ end
 -- ---------------------------------------------------------------------------
 -- SO SOMEONE WALKING PAST CAN SEE IT IS ALIVE, and how it is doing. A headless soak otherwise leaves the
 -- panel showing whatever was there before, which is indistinguishable from a wedged instrument, and the
--- announce push only helps someone with a listener running. Two lines, six facts:
+-- announce push only helps someone with a listener running. Two lines, eight facts:
 --
---     L3C412 F12 0.7%              lap, cell, failed cells, fail rate
+--     L3C412 F12 0.3%              lap, cell, failed cells, fail rate
 --     v77 9600 8N1 Fox             vector, baud, frame format, waveform
 --
 -- display.settext ON THE USER SWIPE SCREEN, NOT display.create. Object ids are never reclaimed on this
@@ -481,8 +483,8 @@ end
 -- hold 20 and 32 characters and the questions an unattended run has to answer do not fit in 52: which
 -- lap of how many, how far through it, how long it has run and how much longer, what is playing, how
 -- many cells have failed both overall and for THIS vector, and -- the one no character count can carry --
--- whether what has gone wrong is worth walking over to fix. display.create takes a FONT, so a screen
--- built here gets FONT_SMALL's 8 px advance and about ninety characters a line, and it gets COLOUR.
+-- whether what has gone wrong is worth walking over to fix. display.create takes a FONT and a COLOUR, so
+-- a screen built here gets ~58 characters a line at FONT_MEDIUM instead of 20 and 32.
 --
 -- THIRTEEN OBJECTS, CREATED ONCE: a screen, seven text rows and brun.msgn log lines. Display object ids
 -- are never reclaimed on this firmware -- display.create
@@ -524,7 +526,7 @@ brun.lastshape = nil     -- the same state with a different count in it, ditto
 brun.lastn = 0
 
 -- ONE CONDITION MUST NOT FILL THE RING. Dedup on exact text lets a counter push a new line every time it
--- increments: at the measured 4 generator misses in 1578 cells, a fortnight's 273 000 cells is ~650 of
+-- increments: at the measured 4 generator misses in 1578 cells, a fortnight's 273 000 cells is ~690 of
 -- them, and five lines of 'generator missed 648 cell(s)' scrolls every one-off event -- a hold, a
 -- recording gap, a plan wrap -- off the top.
 --
@@ -610,10 +612,12 @@ end
 -- signals where refusing is correct. Judging the raw rate reads 20 % on a working instrument and calls it
 -- amber, which is crying wolf on the one screen that must not.
 --
--- THESE GATE THE DETAIL LINE ONLY. The health headline has its own, tighter pair -- brun.healthwarn and
--- brun.healthbad -- so the headline turns amber long before this line does. Two measurements bound these:
--- one full offline lap gave 23 % unexpected, the offline model being the pessimistic one, and 41 hardware
--- cells gave 10 %. So amber sits above the hardware figure and red well above the offline one.
+-- THE AMBER TRIPS ARE 20x APART; THE RED ONES ARE ONE TRIP WRITTEN TWICE. health is 100 minus this rate,
+-- so healthbad 60 and badrate 40 are the same condition on the same brun.raten gate -- while healthwarn 99
+-- fires at 1 % unexpected where warnrate needs 20 %, which is what makes the headline warn first. The
+-- headline can never be greener than this line either: healthline adopts a red ui_status colour outright.
+-- Two measurements bound the pair here: a full offline lap gave 23 % unexpected, the offline model being
+-- the pessimistic one, and 41 hardware cells gave 10 %.
 brun.warnrate = brun.warnrate or 20      -- % of cells refusing UNEXPECTEDLY: amber above this
 brun.badrate  = brun.badrate  or 40      -- and red above this
 brun.raten    = brun.raten    or 100     -- but neither before this many cells have run, and the
@@ -644,8 +648,8 @@ function brun.ui_build()
   local ok = pcall(function()
     -- FONT_MEDIUM, not SMALL. FONT_SMALL advances 8 px and MEDIUM about 13.4 (both measured, see
     -- serial_ui.tsp's note on the panel grid), so a 780 px line holds ~97 characters small and ~58
-    -- medium. Every line below is written to fit the 58, which is why the waveform's short form was
-    -- dropped from the stimulus line -- the generator's full name is there and says the same thing.
+    -- medium. Every line below is written to fit the 58, which is why the stimulus line carries the
+    -- generator's full name rather than the waveform's short form -- they say the same thing.
     local create, small, left = display.create, display.FONT_MEDIUM, display.JUST_LEFT
     local function add(h)
       -- display.create RETURNS NIL ON AN EXHAUSTED POOL, silently after the first time. A nil parent
@@ -669,7 +673,7 @@ function brun.ui_build()
     -- THE PROMPT, WHICH NEVER CHANGES WHILE THE RUN LASTS. It is the only instruction on the screen and
     -- an alarm must not be able to take its place.
     u.note = add(create(u.scr, display.OBJ_TEXT, 12, 228, 'starting', brun.c_ok, small, left))
-    -- AND THE LOG BENEATH IT. Five lines at a 34 px pitch ends at y=396, inside the 420 the firmware
+    -- AND THE LOG BENEATH IT. Five lines at a 34 px pitch ends at y=398, inside the 420 the firmware
     -- allows and the 431 px content area -- checked, because display.create returns nil rather than
     -- raising for a y it will not take, and a nil parent makes every later object nil in silence.
     u.msg = {}
@@ -703,7 +707,7 @@ function brun.hours(sec)
   return string.format('%.1f h', sec / 3600.0)
 end
 
--- THE SAME FIGURE WITHOUT THE SPACE, for the two lines that now carry four of them. At FONT_MEDIUM the
+-- THE SAME FIGURE WITHOUT THE SPACE, for the two lines that carry four of them. At FONT_MEDIUM the
 -- glass holds 58 characters and MEDIUM is the largest font this firmware has, so the four spaces this
 -- saves are the difference between the layout fitting and the field at the end being clipped away.
 function brun.hshort(sec)
@@ -838,7 +842,7 @@ end
 -- times what a working lap produces, far enough out not to flicker and close enough in to catch a real
 -- doubling. THIS NUMBER IS EMPIRICAL: move it with evidence from a complete lap, and only from one
 -- captured at the rate the plan asked for. A lap starved at 1 MS/s reads 89.8-92.2 % and would set this
--- fourteen points too low.
+-- about nine points too low.
 brun.healthwarn = brun.healthwarn or 99
 brun.healthbad = brun.healthbad or 60
 
@@ -885,8 +889,8 @@ function brun.ui_show(c, arb)
   local u = brun.ui
   if u == nil then return end
   local vid = tostring(c.vid or '?')
-  -- FOUR NUMBERS, AND NONE OF THEM IS brun.planrows. planrows is the whole FILE, so on a 210-lap plan
-  -- this line read 'cell 114 of 279930 (0 % of the lap)'. The lap size is brun.percell.
+  -- FOUR NUMBERS, AND NONE OF THEM IS brun.planrows. planrows is the whole FILE -- 279 930 for a 210-lap
+  -- plan -- so using it here pins the lap percentage at 0 %. The lap size is brun.percell.
   local nlap = brun.percell
   if nlap <= 0 then nlap = brun.perlap_guess() end
   -- n/m RATHER THAN 'n of m', ON BOTH LINES. Four times shows what it buys: at FONT_MEDIUM the glass holds
@@ -1074,8 +1078,8 @@ end
 -- a power cycle -- which matters when the alternative is losing the last unflushed rows.
 --
 -- LOCATED BY LISTING THE DIRECTORY, NOT BY OPENING IT. file.open on a file that is not there POSTS AN
--- EVENT on this instrument, and this check runs once per cell -- 86 events in a smoke and about 1.4
--- million across eight days, every one of them a popup on the panel. Opening the directory, which does
+-- EVENT on this instrument, and this check runs once per cell -- 86 events in a smoke and ~120 000 across
+-- eight days, every one of them a popup on the panel. Opening the directory, which does
 -- exist, and searching its listing costs no event at all. usb_log.tsp's ensuredir uses the same
 -- technique and its comment is why the directory is called SERDEC: only an 8.3 name can be found by one
 -- string.find in the FAT table.
@@ -1193,7 +1197,7 @@ end
 --
 -- THE APP OWNS THE BLENDER SETUP, so this borrows it rather than reimplementing it: same blender, same
 -- 1 ms poll, same auto-reset-on-read semantics, and the answer is recorded rather than polled twice.
-brun.stopkey = brun.stopkey or true      -- false disables the key without touching the loop
+brun.stopkey = brun.stopkey or true      -- assign false AFTER load to disable; a preset false is ignored
 
 function brun.stopkey_setup()
   if not brun.stopkey then return false end
@@ -1264,7 +1268,7 @@ function brun.sdghold()
   -- THE GENERATOR MAY NOT BE THE PROBLEM, so its reachability is tested BEFORE anything waits on it.
   -- maxsdgfail counts cells with no stimulus, and a stale bench/arb_names.tsp produces those with the
   -- generator answering -- a static fault no amount of holding fixes, and holding 300 s per 20 cells for
-  -- it would turn a 1.6 h lap into a 7 h one and call it recovery.
+  -- it would add ~7 h of holding to a lap that runs in under three, and call it recovery.
   local live0 = false
   pcall(function() live0 = bsdg.alive() end)
   if live0 then
@@ -1510,15 +1514,15 @@ function brun.soak(iterations, tag)
     end
     lastiter = c.iter
 
-    -- OFF BY DEFAULT, because looking costs an event. Any look at the key -- opening a file that is not
-    -- there, or reading a directory -- posts one (2205 or 2201), and this check runs in the loop. The
-    -- power cycle is the documented way to end a run, so the convenience does not get to spend events
-    -- on an instrument nobody is standing at. brun.stopevery = N re-enables it for an attended run.
+    -- OFF BY DEFAULT. brun.stopped() reads the DIRECTORY, which costs no event while the key is there --
+    -- but a pulled or unreadable key makes that read post 2201, once per check, for the rest of the run.
+    -- The TRIGGER key ends a run without spending anything, so the convenience does not get to.
+    -- brun.stopevery = N re-enables it for an attended run.
     if brun.stopevery > 0 and (brun.ncell == 0 or math.mod(brun.ncell, brun.stopevery) == 0) then
       if brun.stopped() then brun.stopwhy = 'STOP.TXT found'; break end
     end
     -- THE KEY, READ ONCE PER CELL. Costs about a millisecond and no event, so unlike the stop file it
-    -- can be checked every time round rather than every two hundredth.
+    -- can be checked every cell, where the stop file is off by default.
     if brun.keyarmed and brun.stopkey_hit() then
       brun.stopwhy = string.format('L%dC%d: the TRIGGER key was pressed', c.iter or 0, c.cell or 0)
       break
