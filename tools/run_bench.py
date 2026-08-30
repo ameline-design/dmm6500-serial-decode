@@ -19,10 +19,10 @@ readable two ways, neither of which needs the command interface:
   * the record on the key, tagged 'S,' per cell, read afterwards with --fetch
   * a live push, if --listen gave the instrument somewhere to send it (tools/soak_listen.py)
 
-WHY THE PLAN GOES OVER THE SOCKET FOR A SMOKE AND BY HAND FOR A SOAK. 86 rows is ~6 kB and writes in
-seconds. A week's plan is ~167 000 rows and ~10 MB, which is minutes of TSP string handling on a 2016
-instrument for data that could be copied onto the key in one drag. --push-plan refuses above
-PUSH_MAX_ROWS rather than appearing to hang.
+THE PLAN GOES OVER THE SOCKET AT EVERY SIZE, because the key is never touched by hand. 86 rows is ~6 kB
+and writes in seconds; a fortnight's ~272 000 rows is ~19 MB and takes an acknowledged batch at a time,
+which is why push_plan handshakes rather than streams. --push-plan refuses above PUSH_MAX_ROWS rather
+than appearing to hang.
 """
 import argparse
 import os
@@ -204,8 +204,8 @@ def push_plan(d, rows):
     SO: ONE HANDSHAKE PER BATCH. Each statement writes its rows and prints a tagged acknowledgement
     carrying the running total; the host reads that line before sending the next. The host therefore
     cannot get ahead of the interpreter by more than one statement, whatever the plan's size, and the
-    running total is checked as it goes rather than only at the end. 20 rows a batch is ~1.5 kB a line,
-    and a fortnight's 272 000 rows is ~13 600 round trips.
+    running total is checked as it goes rather than only at the end. PUSH_BATCH_ROWS rows a batch is
+    ~570 characters a statement, and a fortnight's 272 000 rows is ~54 000 round trips.
 
     The row text cannot contain a double quote -- it is digits, commas, letters, dots and dashes -- so it
     goes inside a Lua string literal as-is, with the row separator written as the two characters

@@ -2,32 +2,29 @@
 --
 -- THE POWER CYCLE IS THE STOP BUTTON. An indefinite soak has no clean shutdown: it ends whenever
 -- someone cuts the power, at an instant nothing here chooses. So there is no end-of-run summary to
--- write, no in-memory tally to flush, and nothing that becomes readable only after a graceful exit.
--- Every fact a reader will want is committed as it is measured, and the last row is the only thing a
--- torn write can cost.
+-- write and no in-memory tally to flush -- every fact a reader will want is committed as it is
+-- measured. What a cut costs is the row in flight plus whatever the directory entry has not yet
+-- admitted to, which brec.syncrows bounds.
 --
--- APPEND-ONLY, INCLUDING THE STATUS. The obvious design for progress is one small file rewritten each
--- cell -- and rewriting means truncating, so a cut at exactly the wrong instant leaves an EMPTY status
--- file and no idea how far the run got. Appending instead means a torn last line still has an intact
--- line above it, so the worst case is losing one cell's worth of knowledge rather than all of it.
+-- APPEND-ONLY, INCLUDING THE STATUS. Rewriting one small progress file per cell means truncating it,
+-- so a cut at the wrong instant leaves an EMPTY file and no idea how far the run got. Appending leaves
+-- a torn last line with an intact line above it.
 --
 -- ONE FILE, WITH TAGGED ROWS, and that is forced rather than tidy: the firmware hands out a SINGLE
--- write handle (tools/mock_display.lua enforces it, and 67 assertions in test_usblog.lua run against
--- that), so a results file and a status file cannot be open at the same time. Opening the second would
--- silently redirect the first's writes. So results are 'R,...' rows and progress is 'S,...' rows in one
--- append-only file, which also halves the file count on a FAT volume and puts the last status line
--- immediately before whatever the run was doing when it stopped -- the thing a post-mortem wants most.
+-- write handle, so a results file and a status file cannot be open at once -- opening the second
+-- silently redirects the first's writes. Results are 'R,...' rows and progress is 'S,...' rows in one
+-- file, which also puts the last status line immediately before whatever the run was doing when it
+-- stopped.
 --
 -- CLOSED AND REOPENED PERIODICALLY, because flush and close are not the same promise on FAT: flush
 -- pushes the bytes, close updates the directory entry that says how long the file is. A key pulled
--- with a long-open handle can hold data the directory does not admit to. Reopening every
--- brec.syncrows bounds that to a known number of rows. THIS IS THE ONE ASSUMPTION HERE THAT OFFLINE
--- TESTING CANNOT SETTLE -- it needs a real power cycle mid-run to confirm.
+-- with a long-open handle holds data the directory does not admit to. THIS IS THE ONE ASSUMPTION HERE
+-- THAT OFFLINE TESTING CANNOT SETTLE -- it needs a real power cycle mid-run to confirm.
 --
 -- SIZE. The key is 8 GB with a 6 GB working budget and a 2 GB per-file ceiling. A cell row is ~600
 -- bytes with its decoded bytes in hex, so a 1677-cell lap is ~1 MB and a week of laps is ~60 MB. The
--- caps below are therefore not expected to bind; they exist because "indefinite" plus one unexpectedly
--- verbose path is how a key fills, and a full key would silently stop recording a run that keeps going.
+-- caps below are not expected to bind; they exist because a full key would silently stop recording a
+-- run that keeps going.
 
 brec = brec or {}
 
@@ -39,18 +36,14 @@ brec.ext      = brec.ext or '.csv'
 brec.maxfile  = brec.maxfile or 268435456   -- 256 MB, far under the 2 GB per-file ceiling and still
                                             -- small enough to pull over the socket in one piece
 brec.maxtotal = brec.maxtotal or 4294967296 -- 4 GB, inside the 6 GB budget with headroom
--- FIFTY ROWS, WHICH IS ABOUT FOUR MINUTES, AND THAT IS DELIBERATE RATHER THAN LEFTOVER. Every cell is
--- written and flushed as it completes, so the bytes reach the key almost immediately -- but on FAT the
--- DIRECTORY ENTRY only learns the file's new length when the handle is CLOSED. Flush pushes bytes; close
--- updates the size field a reader trusts. So this number is how much a machine that stops without warning
--- can leave behind: fifty cells of bytes no reader will see, because the directory says the file ends
--- before them.
+-- FIFTY ROWS, ABOUT FOUR MINUTES. Every cell is written and flushed as it completes, so the bytes reach
+-- the key at once -- but on FAT the DIRECTORY ENTRY only learns the file's length when the handle is
+-- CLOSED. So this is how much a machine that stops without warning leaves behind: fifty cells of bytes
+-- no reader will see, because the directory says the file ends before them.
 --
--- WHY NOT ONE. Because brun.resume exists: a restarted run finds the last row the record HOLDS and
--- carries on after it, so an unwritten tail costs those cells being MEASURED AGAIN, not lost. Set against
--- that, closing per row adds a FAT directory write to every one of a fortnight's 280 000 cells, and the
--- latency of one on this key has never been measured -- an unmeasured cost on every cell, to avoid
--- repeating four minutes of work that the resume repeats anyway.
+-- WHY NOT ONE. brun.resume finds the last row the record HOLDS and carries on after it, so an
+-- uncommitted tail costs those cells being MEASURED AGAIN, not lost -- against a FAT directory write on
+-- every one of a fortnight's 280 000 cells, at a latency this key has never been measured for.
 brec.syncrows = brec.syncrows or 50         -- rows between close/reopen
 
 brec.fh       = nil     -- the one open file, or nil
@@ -81,17 +74,14 @@ function brec.q(s)
   return t
 end
 
--- ONE FIXED NAME, OPENED FOR APPEND, AND NOT A NUMBERED SLOT. ulog.next_free is the tested allocator
--- and it works, but it finds a free number by OPENING CANDIDATES -- and an open on a name that is not
--- there posts event 2205 on this instrument, which is a box on the panel. One per run is one too many
--- for a machine that has to sit unattended for days: the requirement is that nothing is instigated at
--- all, not that it is rare. MODE_APPEND on a fixed path always succeeds, creating the file if it is
--- absent, so nothing is ever probed.
+-- ONE FIXED NAME, OPENED FOR APPEND, AND NOT A NUMBERED SLOT. ulog.next_free finds a free number by
+-- OPENING CANDIDATES, and an open on a name that is not there posts event 2205 -- a box on the panel.
+-- One per run is one too many for a machine that sits unattended for days. MODE_APPEND on a fixed path
+-- always succeeds, creating the file if it is absent, so nothing is ever probed.
 --
--- RUNS ARE SEPARATED BY THEIR HEADER, not by their filename. Every run writes a '# serdec-soak-1 tag=..'
--- line first, so a reader splits the file on those; and one file per key is kinder to a FAT volume than
--- a new directory entry per run. brec.roll still numbers ROLLED files, which only happens when a single
--- run passes brec.maxfile -- rare, and the roll opens for append too.
+-- RUNS ARE SEPARATED BY THEIR HEADER, not by their filename: every run writes a '# serdec-soak-1 tag=..'
+-- line first and a reader splits the file on those. brec.roll numbers ROLLED files, which happens only
+-- when one run passes brec.maxfile, and the roll opens for append too.
 function brec.newfile(pfx)
   if ulog ~= nil and ulog.ensuredir ~= nil then
     -- The directory, made once. ensuredir looks in the FAT listing before ordering a mkdir precisely so
@@ -128,10 +118,9 @@ function brec.begin(tag, iterations, planid)
   return true
 end
 
--- HEADER BYTES COUNT TOWARDS THE BUDGETS. They did not, in any of the three paths that write one, so
--- every run and every roll under-reported the file by ~250 bytes -- and brec.reopen made that unbounded:
--- a key that fails and recovers repeatedly writes a header each time and could pass maxfile and maxtotal
--- while both counters said otherwise. -> the bytes written, so callers can add them.
+-- HEADER BYTES COUNT TOWARDS THE BUDGETS. A header is ~250 bytes and three paths write one; brec.reopen
+-- writes another on every recovery, so a key that fails and recovers repeatedly would pass maxfile and
+-- maxtotal while both counters said otherwise. -> the bytes written, so callers can add them.
 function brec.hwrite(s)
   if not brec.rawwrite(brec.fh, s) then return 0 end
   brec.nbyte = brec.nbyte + string.len(s)
@@ -252,8 +241,8 @@ function brec.reopen()
   if fh == nil then return false end
   brec.fh, brec.path = fh, path
   brec.sincesync = 0
-  -- THE HEADER HAS TO LAND BEFORE THIS IS CALLED RECOVERED. Marking the record live first and ignoring
-  -- the write meant a still-failing key could report 'recording resumed' and count a recovery.
+  -- THE HEADER HAS TO LAND BEFORE THIS IS CALLED RECOVERED, or a still-failing key reports 'recording
+  -- resumed' and counts a recovery it did not make.
   if not brec.header('resumed', nil, nil) then
     pcall(function() file.close(brec.fh) end)
     brec.fh = nil

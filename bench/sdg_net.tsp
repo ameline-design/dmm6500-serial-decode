@@ -1,25 +1,21 @@
 -- sdg_net.tsp -- the DMM6500 driving the SDG2122X directly, over tspnet.
 --
--- WHY THIS EXISTS. Every bench run so far has had a Mac in the critical path: the host sets the
--- generator, presses the app's buttons and judges the result. That caps a soak at as long as someone
--- is watching. With the DMM talking to the generator itself, a run continues while nobody is
--- connected -- which is the difference between four laps a night and a week of them.
+-- WHY THIS EXISTS. With the instrument selecting its own stimulus, no host sits in the critical path
+-- and a run continues while nobody is connected. That is what makes a multi-day soak possible.
 --
 -- NOT IN tsp/. This is not part of the app and must never ship inside it: package_tspa.py's MODULES
--- list is explicit, and a bench harness in the shipped .tspa would be dead weight on an instrument
--- that never soaks. It is loaded alongside the app for a soak and not otherwise.
+-- list is explicit. It is loaded alongside the app for a soak and not otherwise.
 --
 -- THE ONE COMMAND THIS MODULE CANNOT SEND. C1:WVDT uploads waveform data, and repeated uploads over
--- 65536 bytes have twice stopped this generator answering on BOTH SCPI ports -- connections accepted,
--- nothing ever replied, including *IDN?. It goes on playing correctly, so the failure is invisible
--- from the signal side, and recovery is a power cycle on an instrument with no smart plug. During an
--- unattended week there is nobody to perform one, so the whole run would be lost from that moment.
--- bsdg.cmd() therefore REFUSES any string containing WVDT rather than trusting every future caller
--- not to write one. Waveforms are played off the generator's own USB key with ARWV, which needs no
--- transfer at all (programming guide 3.9.1).
+-- 65536 bytes stop this generator answering on BOTH SCPI ports -- connections accepted, nothing ever
+-- replied to, including *IDN?. It goes on playing correctly, so the failure is invisible from the
+-- signal side, and recovery is a power cycle by hand. bsdg.cmd() therefore REFUSES any string
+-- containing WVDT rather than trusting every future caller not to write one -- and nothing here needs
+-- it: tools/upload_vectors.py has already put every waveform in the generator's internal flash, so a
+-- soak only ever SELECTS one by name with ARWV.
 --
--- PORT 5025, NEVER 5024. The LAN has also died twice with ZERO bytes uploaded, and probing 5024 is
--- the remaining suspect for that -- see SDG_SHUTDOWN_SUSPECTED_HAZARD in tools/instruments.py.
+-- PORT 5025, NEVER 5024. The LAN has also died with ZERO bytes uploaded, and probing 5024 is the
+-- remaining suspect -- see SDG_SHUTDOWN_SUSPECTED_HAZARD in tools/instruments.py.
 
 bsdg = bsdg or {}
 
@@ -37,16 +33,16 @@ bsdg.timeout = bsdg.timeout or 5   -- seconds; the tspnet default of 20 is far t
 bsdg.maxvpp = bsdg.maxvpp or 20.0
 -- TrueArb's rate limits, from the datasheet via tools/instruments.py.
 bsdg.minsrate = bsdg.minsrate or 1e-6
--- 40 MSa/s, WHICH IS THE FAMILY'S FLOOR AND NOT THIS UNIT'S CEILING. The SDG2122X here does 75e6,
--- but the cheapest SDG2000X -- an SDG2042X -- is 40 MHz and 40 MSa/s, and nothing this project asks
--- for comes close: the highest rate any plan cell draws is 25e6. Matching tools/instruments.py's
--- SDG_MAX_SRATE so the instrument refuses exactly what the host refuses.
+-- 40 MSa/s, WHICH IS THE FAMILY'S FLOOR AND NOT THIS UNIT'S CEILING. The SDG2122X here does 75e6, but
+-- the cheapest SDG2000X does 40e6 and the highest rate any plan cell draws is 25e6. Matches
+-- tools/instruments.py's SDG_MAX_SRATE, so the instrument refuses exactly what the host refuses.
 bsdg.maxsrate = bsdg.maxsrate or 40e6
 
--- HOW HARD THE WAVEFORM SWITCH IS VERIFIED. 4 of the 39 real switches in a 1677-cell lap answered
--- C1:ARWV? with the PREVIOUS name and had the new one moments later, so the verify retries rather than
--- believing the first answer. Only the 39 cells where the vector changes pay anything, and only the rare
--- late one waits at all.
+-- HOW MANY TIMES THE SWITCH VERIFY ASKS. Selecting a waveform makes this generator briefly stop
+-- answering, so one timeout is evidence about the query rather than about the selection. Asking again
+-- covers that. It does NOT cure a reply naming the PREVIOUS waveform: only re-sending the selection
+-- does, which is brun.selretry's job. Only the 39 cells a lap where the vector changes need either.
+-- arwvwait is seconds between asks.
 bsdg.arwvtries = bsdg.arwvtries or 4
 bsdg.arwvwait = bsdg.arwvwait or 0.4
 
@@ -59,15 +55,13 @@ function bsdg.open()
   if bsdg.id ~= nil then return true end
   local ok, err = pcall(function()
     tspnet.timeout = bsdg.timeout
-    -- AN EMPTY initString, WHICH IS NOT THE SAME AS NONE. The manual's non-TSP procedure gives
-    -- tspnet.connect(ip, port, initString) and the argument is not optional in practice: measured on
-    -- this instrument, both tspnet.connect(ip, port) and tspnet.connect(ip, port, nil) return NIL
-    -- WITHOUT RAISING, while tspnet.connect(ip, port, '') returns a handle. A silent nil is the worst
-    -- shape that failure could take -- it cost a full 86-cell run that parked itself with
-    -- 'connect failed: nil' after 20 cells, which is the give-up path working correctly on a bug.
+    -- AN EMPTY initString, WHICH IS NOT THE SAME AS NONE. Measured on this instrument: both
+    -- tspnet.connect(ip, port) and tspnet.connect(ip, port, nil) return NIL WITHOUT RAISING, while
+    -- tspnet.connect(ip, port, '') returns a handle. A silent nil is the worst shape that failure
+    -- could take, because every later call fails against a nil id.
     --
-    -- EMPTY RATHER THAN THE MANUAL'S EXAMPLE, which sends *rst: on this generator that would drop the
-    -- output and the loaded waveform mid-soak. There is nothing this side needs to say on connect.
+    -- EMPTY RATHER THAN THE MANUAL'S EXAMPLE, which sends *rst: that would drop the output and the
+    -- loaded waveform mid-soak. There is nothing this side needs to say on connect.
     bsdg.id = tspnet.connect(bsdg.ip, bsdg.port, '')
     -- PER CONNECTION, not once: the manual states the termination has to be set after every
     -- connect. Siglent replies are CRLF-terminated.
@@ -194,20 +188,17 @@ end
 -- ---------------------------------------------------------------------------
 -- Selecting a vector
 -- ---------------------------------------------------------------------------
--- THE ORDER IS THE MEASURED ONE, and tools/siglent.py's load_arb_file records why: ARWV first, then
--- BSWV, then SRATE MODE,TARB LAST and verified. Neither manual says whether ARWV or BSWV resets the
--- sample-rate mode, so setting TrueArb first risks it being silently undone -- and a silent fall back
--- to DDS resamples the stored points, corrupting the sub-sample edge timing this project exists to
--- measure, with nothing on the panel to say so.
+-- THE ORDER IS THE MEASURED ONE, matching tools/siglent.py's load_arb_file: ARWV first, then BSWV, then
+-- SRATE MODE,TARB last and verified. Neither manual says whether ARWV or BSWV resets the sample-rate
+-- mode, so setting TrueArb first risks it being silently undone -- and a fall back to DDS resamples the
+-- stored points, corrupting the sub-sample edge timing this project exists to measure, with nothing on
+-- the panel to say so.
 --
--- ARWV? IS THE AUTHORITATIVE CHECK that the file was readable, because a file the generator cannot
--- open leaves the PREVIOUS waveform selected -- so a reply naming the old vector is the failure
--- signature, and it is indistinguishable from success unless the reply is actually compared.
--- `name` IS THE GENERATOR'S STORED WAVEFORM NAME, e.g. SER_Fox_8N1_x10, exactly the string
--- tools/siglent.py's select_arb sends -- not a local vector id and not a path. A name with a slash in
--- it is a file on the key (U-disk0/v94.bin) and is quoted; a bare stored name is not, which is how the
--- host sends it. Getting this wrong is silent: ARWV NAME with an unknown name does nothing and the
--- previous waveform keeps playing, which is why the reply is compared below.
+-- `name` IS THE GENERATOR'S STORED WAVEFORM NAME, e.g. SER_Fox_8N1_x10 -- not a local vector id and not
+-- a path. Every vector the plan names is in internal flash and arrives here as a bare stored name. The
+-- quoted form is for a file on the generator's own USB key ("U-disk0/<file>.bin"), which this bench does
+-- not use. ARWV NAME with an unknown name does nothing and the previous waveform keeps playing, so the
+-- reply is compared rather than assumed.
 function bsdg.select(name, amp, ofst, srate)
   if name == nil or name == '' then return false, 'no waveform name' end
   if amp == nil or amp <= 0 or amp > bsdg.maxvpp then
@@ -224,23 +215,14 @@ function bsdg.select(name, amp, ofst, srate)
   -- the name with any path and extension stripped.
   local want = string.gsub(name, '^.*/', '')
   want = string.gsub(want, '%.bin$', '')
-  -- THREE TRIES FOR THE REPLY, HALF A SECOND APART, for the same measured reason bsdg.truearb has them:
-  -- selecting a waveform makes this generator briefly stop answering, and a single timeout is not
-  -- evidence that the selection failed. It is evidence about the query. MEASURED: 15 of 86 cells in one
-  -- lap were thrown away on 'no reply to C1:ARWV? within 5 s' from a generator that was working -- 17 %
-  -- of a run, recorded as stimulus failures, on an instrument nobody could power cycle.
+  -- ASKED AGAIN BECAUSE THE REPLY CAN LAG. Selecting makes this generator briefly stop answering, and
+  -- 15 of 86 cells in one lap were thrown away on 'no reply to C1:ARWV? within 5 s' from a generator
+  -- that was working -- 17 % of a run, recorded as stimulus failures.
   --
-  -- A STALE NAME IS RETRIED TOO, and this comment used to say the opposite: that a reply naming the
-  -- previous waveform proved the name was rejected, so waiting could not help. A full 1677-cell lap
-  -- refutes it. ARWV only performs a REAL switch on the 39 cells where the vector changes -- every other
-  -- cell re-selects what is already playing -- and 4 of those 39 answered with the previous name. Each
-  -- one then succeeded when the NEXT cell selected the SAME name a fraction of a second later, and that
-  -- vector's other 42 cells all decoded. So the generator had the waveform and the switch had simply not
-  -- landed yet, while the recorded reason blamed a missing file: a wrong diagnosis, ~650 times over a
-  -- fortnight.
-  --
-  -- A GENUINELY ABSENT WAVEFORM STILL FAILS, one wait later, and the message no longer asserts which of
-  -- the two it was.
+  -- A REPLY THAT NAMES THE PREVIOUS WAVEFORM IS A LATE SWITCH, not a missing file: 4 of the 39 real
+  -- switches in a lap answer that way and the generator has the waveform. Asking again does not recover
+  -- it -- re-sending the selection does, which brun.selretry handles. So the failure below does not
+  -- assert which of the two it was.
   local ok, r, tries = false, nil, nil
   for tries = 1, bsdg.arwvtries do
     if tries > 1 then delay(bsdg.arwvwait) end
@@ -266,11 +248,9 @@ function bsdg.select(name, amp, ofst, srate)
   return bsdg.output(true)
 end
 
--- THREE TRIES, HALF A SECOND APART, and the reason is measured: after a large upload this generator
--- stops answering queries for a moment, and treating that first timeout as "not in TrueArb" aborted a
--- sweep over a channel that was configured correctly -- a false alarm from the check that exists to
--- prevent silent misconfiguration, which is how a check loses its authority. A reply that ARRIVES and
--- says the wrong thing still fails immediately, because that is the real fault being guarded against.
+-- THREE TRIES, HALF A SECOND APART. After a large upload this generator stops answering for a moment,
+-- and reading that timeout as "not in TrueArb" fails a channel that is configured correctly. A reply
+-- that ARRIVES and says the wrong thing fails at once: that is the real fault being guarded against.
 function bsdg.truearb()
   local i, r
   for i = 1, 3 do
