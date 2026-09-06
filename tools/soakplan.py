@@ -130,6 +130,18 @@ def _tsp_number(name):
 FLATFLOOR = _tsp_number('flatfloor')
 
 V_RAIL = 9.5
+# THE GENERATOR'S ENVELOPE, WHICH IS A LIMIT ON THE NOMINAL PAIR AND NOT ON THE BAND. The SDG2122X
+# offsets the whole DAC span, so |OFST| + AMP/2 must fit 10 V into Hi-Z -- bench_matrix.py says the same
+# thing and has always applied it. V_RAIL above bounds the DATA band, which is a different quantity: a
+# vector whose codewords fill 0.33 of full scale is rendered at 3x the amplitude its band needs, so a
+# band sitting comfortably inside +/-9.5 V can require a nominal pair the generator cannot produce.
+#
+# WHAT IT COST TO LEAVE THIS OUT. Over the 100-lap soak's 133 301 cells, 50.8 % commanded a pair outside
+# this envelope and 12.3 % ended up with a band the generator had recentred across ground -- where
+# sig_levels reads RS-232 and marks at the negative level, correctly. Byte failures ran 9.55x on those
+# cells (chi-square 2420) while RATE failures ran 0.97x (chi-square 0.14), which is the control: polarity
+# cannot move bit timing, and "large signals are simply harder" would have moved both.
+SDG_ENV_V = SDG_MAX_VPP / 2.0
 # Decimals the amplitude and offset are written with. The values must be quantised BEFORE the safe
 # interval is derived from them, or a rounded offset lands outside the interval it came from.
 Q_DIGITS = 3
@@ -461,6 +473,21 @@ def amp_ofst_for(vid, u_amp, u_ofst):
         half = amp / 2.0
         dlo = -V_RAIL - lo / 32767.0 * half
         dhi = V_RAIL - hi / 32767.0 * half
+        # AND THE GENERATOR'S ENVELOPE, WHICH IS THE TIGHTER BOUND WHENEVER THE VECTOR FILLS PART OF FULL
+        # SCALE. The two lines above bound the DATA band; these bound the NOMINAL pair, because the DAC
+        # span moves with the offset whether the codewords use it or not. Without them the draw asks for
+        # things like 17.084 Vpp at -8.895 V -- a band of -8.90..-3.26 V, entirely legal, from a nominal
+        # -17.44..-0.35 V that this generator cannot make. It clamps the offset instead, and the band
+        # arrives centred near ground, which is the one place the app is required to read RS-232.
+        #
+        # AMPLITUDE AND OFFSET ARE THEREFORE NOT INDEPENDENT, and that is the real change here: at 20 Vpp
+        # the only legal offset is 0. The largest-swing cells lose their offset range entirely, which is
+        # not lost coverage -- it is coverage that was never reaching the wire.
+        if half > SDG_ENV_V:
+            dlo = dhi = 0.0
+        else:
+            dlo = max(dlo, -(SDG_ENV_V - half))
+            dhi = min(dhi, SDG_ENV_V - half)
         if dhi >= dlo:
             break
         # No offset fits at this amplitude. Shrink rather than clip: a clipped waveform is a different
@@ -469,18 +496,6 @@ def amp_ofst_for(vid, u_amp, u_ofst):
         note = 'amplitude reduced to keep the band inside +/-%.1f V' % V_RAIL
     # Quantise the offset, then pull it back inside the interval -- rounding may only ever move it
     # toward the middle, never past an edge.
-    # A SINGLE-SUPPLY LINE MAY NOT BE DRAWN STRADDLING GROUND. sig_levels decides polarity from the
-    # LEVELS when no run in the window reaches ten bit times, and reads lo < -flatfloor with
-    # hi > +flatfloor as RS-232 at line levels, marking at its NEGATIVE level. That is correct for a
-    # real ground-straddling line and wrong for a 0..6.6 V logic waveform this draw shifted there, and
-    # the decode comes back inverted: right rate, right format, self-consistent bytes matching nothing.
-    #
-    # MEASURED before this constraint existed: 17.3 % of cells were driven straddling ground and they
-    # accounted for 86.8 % of every offline failure -- v71, v76 and v92 at 100 % of theirs. The app was
-    # right every time; the stimulus could not exist.
-    #
-    # Only vectors whose own rendering is single-supply are constrained. A vector that genuinely
-    # straddles ground in the file is RS-232-shaped by construction and must keep being drawn that way.
     # A SINGLE-SUPPLY LINE MAY NOT BE DRAWN STRADDLING GROUND. sig_levels decides polarity from the
     # LEVELS when no run in the window reaches ten bit times, and reads lo < -flatfloor with
     # hi > +flatfloor as RS-232 at line levels, marking at its NEGATIVE level. That is correct for a
@@ -541,6 +556,16 @@ def assert_unclipped(vid, amp, ofst):
     if amp > SDG_MAX_VPP + 1e-6 or vmin < -V_RAIL - 1e-6 or vmax > V_RAIL + 1e-6:
         raise SystemExit('REFUSING %s at %.3f Vpp offset %.3f V: band %.3f..%.3f V leaves +/-%.1f V'
                          % (vid, amp, ofst, vmin, vmax, V_RAIL))
+    # AND THE ENVELOPE, CHECKED SEPARATELY BECAUSE IT FAILS SEPARATELY. The band test above passed on
+    # every one of the 67 728 cells the 100-lap soak drove outside this bound: a legal band is exactly
+    # what an illegal nominal pair produces on a vector that fills part of full scale. bsdg.select does
+    # not check it and writes BSWV without reading it back, so nothing downstream can notice -- the
+    # record keeps the commanded offset and the wire carries a clamped one.
+    if abs(ofst) + amp / 2.0 > SDG_ENV_V + 1e-6:
+        raise SystemExit('REFUSING %s at %.3f Vpp offset %.3f V: |OFST| + AMP/2 = %.3f V is past the '
+                         'generator envelope of %.1f V, so it would clamp the offset and put a band on '
+                         'the wire that nothing recorded'
+                         % (vid, amp, ofst, abs(ofst) + amp / 2.0, SDG_ENV_V))
     return vmin, vmax
 
 
@@ -664,6 +689,26 @@ def selftest():
     ck(min(spans) >= SWING_LO - 0.01 and max(spans) <= SWING_HI + 0.01,
        'every drawn span is inside [%.2f, %.2f], got %.3f..%.3f'
        % (SWING_LO, SWING_HI, min(spans), max(spans)))
+    # THE ENVELOPE, BOTH DIRECTIONS. assert_unclipped above ran over every cell of three laps, which
+    # proves it does not fire on a correct draw -- and proves nothing about whether it CAN fire. The pair
+    # below is the one v71 cell L1C34 actually drove during the 100-lap soak: a legal band of -8.90..-3.26 V
+    # from a nominal pair of 17.437 V that the generator cannot produce, which it silently clamped.
+    envmax = 0.0
+    for it in (1, 7, 41):
+        pv = plan(it, sorted(_MAP_KEYS()), None)
+        for vi, vid in enumerate(pv['order']):
+            for ri in range(len(pv['rates'])):
+                amp, ofst, _n = amp_ofst_for(vid, *amp_ofst_u(it, vi, ri))
+                envmax = max(envmax, abs(ofst) + amp / 2.0)
+    ck(envmax <= SDG_ENV_V + 1e-6,
+       'no drawn cell leaves the generator envelope, worst |OFST| + AMP/2 = %.4f of %.1f V'
+       % (envmax, SDG_ENV_V))
+    refused = False
+    try:
+        assert_unclipped('v71', 17.084, -8.895)
+    except SystemExit:
+        refused = True
+    ck(refused, 'assert_unclipped REFUSES an out-of-envelope pair whose band is inside the rails')
     # REACHES BOTH ENDS. A draw that silently collapsed to a narrow band would pass the bound above
     # while testing almost nothing, and would look like full coverage in the log.
     ck(min(spans) < SWING_LO + 0.2, 'the draw reaches the bottom of the range, got %.3f' % min(spans))
@@ -723,7 +768,12 @@ def selftest():
     # unfiltered order and v95 at 34, so a 4-vector subset does not contain either and would satisfy
     # "the skipped vectors are absent" no matter what emit_lua did with the skip.
     lua_skipped = emit_lua(1, None, skip)
-    ck("skipped = {'v95', 'v96'}," in lua_skipped, 'emit_lua records the skip list in the plan')
+    # DERIVED FROM HW_SKIP, NOT SPELLED OUT. This assertion carried the literal "{'v95', 'v96'}" and went
+    # red the moment a third name joined the tuple -- the same defect as the two hardcoded copies of the
+    # skip list found in run_bench.py and test_pushplan.py, and it stayed red because --selftest is not a
+    # gate stage. A test that names a constant instead of reading it tests the spelling.
+    want_skip = 'skipped = {%s},' % ', '.join("'%s'" % v for v in sorted(skip))
+    ck(want_skip in lua_skipped, 'emit_lua records the skip list in the plan (%s)' % want_skip)
     for v in skip:
         ck(("{id = '%s'," % v) not in lua_skipped, 'emit_lua omits skipped vector %s' % v)
     unskipped = emit_lua(1, None)
@@ -738,7 +788,8 @@ def selftest():
     # parse_skip REFUSES, and the refusal is run rather than described. A name that matches nothing
     # skips nothing, which restores the 41-vector shuffle -- the exact silent failure this plumbing
     # exists to prevent, reached by a typo.
-    ck(parse_skip('v96,v95') == skip, 'parse_skip sorts, so two spellings give one key')
+    ck(parse_skip(','.join(reversed(sorted(skip)))) == skip,
+       'parse_skip sorts, so two spellings give one key')
     ck(parse_skip('') == () and parse_skip(None) == (), 'no skip parses to the empty tuple')
     try:
         parse_skip('v95,v9x')

@@ -71,7 +71,12 @@ RATCHET_SEED, RATCHET_OFFSETS = 1, 24
 #     window that now yields a judgeable answer, not a decode that became ambiguous. ratediff and
 #     headbleed do not move.
 # So the fmtdiff rise costs nothing: 7 + 1 cases moved, 7 out of HARD and 1 out of shortrun, and the floor
-# below rises by exactly the seven. Verified by a paired run of every offline suite against an otherwise
+# below rises by exactly the seven.
+# THE REVERSE WAS MEASURED TOO, and the floor is what caught it: dropping sdec.idlemult back to 10 puts
+# HARD at 7 and exact at 2307 -- the same seven captures, silently wrong again. It was very nearly reverted
+# on the grounds that the hardware inversions all took sig_idle's OTHER branch, which is true and does not
+# bear on these seven. A guard that the bench never reaches is not thereby useless.
+# Verified by a paired run of every offline suite against an otherwise
 # identical tree -- test_serial 1205/0, cancel 228/0, patterns 75/0, ratefit 22/0, analog 43/0,
 # forcerate 31/0, streamfix 22/0, frontrig 31/0, usblog 67/0, stress 127 ok/21 degraded/0 WRONG, seam 6/0,
 # and the offline twin at 110 bad -- all identical on both sides.

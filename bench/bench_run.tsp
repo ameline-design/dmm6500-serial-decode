@@ -85,6 +85,10 @@ brun.nselback = 0                        -- cells whose stimulus needed more tha
 -- The TRIGGER key and the power cycle end a run without spending one; the stop file is a convenience,
 -- and a convenience does not get to spend an event per cell.
 brun.stopevery = brun.stopevery or 0     -- 0 = never look; see the note in the loop
+-- OFF, so the status rows a normal soak writes are unchanged. Set true for a diagnostic lap and every
+-- cell's status note carries sig_idle's own inputs -- run0, run1, onebit and the ratio the polarity
+-- decision turns on. See the append site in the cell loop.
+brun.idlediag = brun.idlediag or false
 
 -- A HARD CEILING ON CELLS, 0 MEANING NONE, AND IT IS FOR THE OFFLINE SUITE. An indefinite run is
 -- stopped by cutting the power, which a test cannot do -- so a test drives brun.soak(0) and arranges for
@@ -1402,6 +1406,11 @@ function brun.soak(iterations, tag)
   -- BEFORE THE FIRST CELL THERE IS NO CELL, and brun.msg stamps every log line from these -- without the
   -- reset a second run in one session opens its log with the PREVIOUS run's last cell number.
   brun.iter, brun.cell = 0, 0
+  -- AND NO LAP HAS BEEN SEEN YET. cellmax accumulates the highest cell number of the lap in progress and
+  -- the boundary turns it into the learned lap size, so without this a second run in one session sizes its
+  -- first lap from the PREVIOUS run's longest one. That is the state a resume starts in: the app is already
+  -- loaded and brun.soak is simply called again.
+  brun.cellmax = 0
   brun.nexp, brun.nunexp = 0, 0
   brun.vcell, brun.vbad = {}, {}
   brun.iterwant = 0
@@ -1512,6 +1521,10 @@ function brun.soak(iterations, tag)
       brun.stopwhy = string.format('%d iteration(s) complete', iterations)
       break
     end
+    -- THE PREVIOUS ROW'S ITERATION, HELD SEPARATELY. The lap-boundary test further down needs the
+    -- iteration of the row BEFORE this one; from here on lastiter is this row's, so comparing c.iter
+    -- against lastiter there compares a value with itself and the boundary is never seen.
+    local previter = lastiter
     lastiter = c.iter
 
     -- OFF BY DEFAULT. brun.stopped() reads the DIRECTORY, which costs no event while the key is there --
@@ -1557,7 +1570,7 @@ function brun.soak(iterations, tag)
     -- numbers on the screen are 'failed' out of 'attempted' and not out of 'measured'.
     -- THE LAP SIZE, LEARNED. A lap ends when the iteration number moves, and the highest cell seen in
     -- the lap just finished IS the lap size -- exact, without trusting any header.
-    if lastiter ~= nil and c.iter ~= lastiter and brun.cellmax > 0 then
+    if previter ~= nil and c.iter ~= previter and brun.cellmax > 0 then
       brun.percell = brun.cellmax
       brun.cellmax = 0
       -- AND THE NEW LAP'S CLOCK STARTS HERE, at the same boundary the lap size is learned at, so the two
@@ -1704,6 +1717,34 @@ function brun.soak(iterations, tag)
       -- clean run's status rows stay identical and a reader can find the noisy cell with one grep.
       local nt = p.ran and 'ok' or ('FAIL ' .. tostring(p.why))
       if cellev > 0 then nt = nt .. ' ev=' .. brun.int(cellev) end
+      -- THE IDLE DECISION'S OWN INPUTS, appended only when brun.idlediag is set, so a normal soak's
+      -- status rows stay byte-identical and nothing a reader greps for moves. It rides the status note
+      -- that already exists rather than adding a second S row, so the record grows by characters rather
+      -- than by rows and judge_bench needs no schema change to ignore it.
+      --
+      -- WHAT IT IS FOR: sig_idle picks its branch by comparing the longest run against 10 * onebit, and
+      -- then the WEAK branch decides polarity from the two logic LEVELS -- inverted when the line
+      -- straddles ground. run0, run1, onebit and ratio say which branch was taken; lo and hi say what
+      -- the branch was looking at.
+      --
+      -- lo AND hi ARE THE ONLY WITNESS TO WHAT THE GENERATOR ACTUALLY DID. The record's amp_vpp and
+      -- ofst_v are what the plan COMMANDED, bsdg.select writes BSWV without reading it back, and the
+      -- SDG2122X's envelope is |OFST| + AMP/2 <= 10 V -- which soakplan's draw does not respect, because
+      -- it constrains the data band rather than the nominal pair. So a cell can be recorded at an offset
+      -- of -8.9 V while the wire carried a band centred near ground. These two fields are the difference
+      -- between inferring that and measuring it.
+      if brun.idlediag then
+        local lg = sdec.run1 or 0
+        if (sdec.run0 or 0) > lg then lg = sdec.run0 end
+        local ob = sdec.onebit
+        nt = nt .. string.format(' idle=%s weak=%s run0=%.1f run1=%.1f onebit=%s ratio=%s lo=%s hi=%s',
+                                 tostring(sdec.idle), sdec.idle_weak and 'y' or 'n',
+                                 sdec.run0 or -1, sdec.run1 or -1,
+                                 (ob ~= nil) and string.format('%.3f', ob) or 'nil',
+                                 (ob ~= nil and ob > 0) and string.format('%.3f', lg / ob) or 'nil',
+                                 (sdec.lo ~= nil) and string.format('%.3f', sdec.lo) or 'nil',
+                                 (sdec.hi ~= nil) and string.format('%.3f', sdec.hi) or 'nil')
+      end
       brec.note(c.iter, c.cell, brun.ncell, nt, brun.nbad, 0)
       if cellev > brun.evbudget then
         brun.nevstreak = brun.nevstreak + 1

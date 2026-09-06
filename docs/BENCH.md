@@ -256,6 +256,7 @@ the scope only ever reads.
 | `unit-phasesweep` | every vector × capture start × phase/jitter/noise, sharded across the cores — no raise, no result without a format, no wrong byte among trustworthy calls |
 | `unit-seam` | a capture whose arb loop seam lands late must still be judged, and the narrower trim still required |
 | `unit-sdgguard` | every route by which an out-of-spec waveform could reach the generator refuses it |
+| `unit-soakplan` | the plan draw: pure in the iteration, the skip keys the shuffle, and every cell inside both the rails and the generator's `\|OFST\| + AMP/2 <= 10 V` envelope |
 | `unit-loremgate` | the harness's own long-payload verdict: every clean run validated, flag count bounded |
 | `tolerance` | recomputes the envelope table printed in the manual |
 | `package` `archive` | rebuilds the `.tspa`, then builds both screens *from the archive* against a mock front end |

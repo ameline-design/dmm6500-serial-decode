@@ -304,6 +304,36 @@ sdec.binocc    = 16    -- target samples per BIN
 sdec.minhump   = 2
 sdec.flatfloor = 1.0    -- below this an idle level counts as sitting at ground
 sdec.flatoffs  = 0.5    -- and the guessed threshold goes this far above it
+-- HOW LONG A RUN MUST BE BEFORE sig_idle WILL BELIEVE IT IS IDLE, in estimated bit times.
+--
+-- At 8N1 the longest run DATA can make is nine bit times -- a start bit plus eight zero data bits, or
+-- eight ones plus the stop bit -- so ten is the smallest whole number that must be idle. Ten is still
+-- too tight, because both terms of the comparison carry error: the run is measured on a jittered edge
+-- and one bit time is a low percentile of the pulse widths, so a nine-bit data run and a ten-bit
+-- threshold can cross.
+--
+-- MEASURED, on 1024 random bytes with bit 7 cleared at 10 % jitter and 2 % noise: the longest run is
+-- 90.88 samples against a threshold of 90.7, so the guard misses by 0.2 samples -- 0.2 % -- and
+-- sig_idle takes its run-length branch on a window that holds no idle at all. There the longest run
+-- is a LOW data run, so idle comes back 0, ua_autoformat takes the inverted reading as its incumbent,
+-- and the capture decodes self-consistently with every byte wrong. 10.5 restores the margin the whole
+-- nine-against-ten argument assumes: the sweep in tools/sweep_all.py goes from 7 silent wrong answers
+-- to 0 and from 2307 exact decodes to 2314, at a cost of one more capture landing in the 7E1/8N1
+-- ambiguity it counts separately. Reverting it to 10 puts all seven back, measured both ways.
+--
+-- A CLEARED TOP BIT IS WHAT MAKES THIS REACHABLE, and it is why the paired vectors exist: v93 and v97
+-- are the same 1024 bytes and only v97 has bit 7 masked off. Clearing it removes the long HIGH runs, so
+-- the longest run in a window becomes a low one and the comparison above is what decides polarity. v93
+-- inverts in 0 of 24 captures, v97 in 8 of 24.
+--
+-- THIS IS NOT WHAT INVERTS CAPTURES ON THE BENCH, and the distinction matters because the two look
+-- identical in a record: a self-consistent decode with every byte wrong. This constant guards the
+-- RUN-LENGTH branch. Every inverted cell in a 258-cell hardware diagnostic took the LEVELS branch, at
+-- longest/onebit ~ 6 against a guard at 10.5, so no value of this constant could have reached them --
+-- their cause is a ground-straddling wire, which the branch below reads as RS-232 and is right to. Two
+-- mechanisms, one fix each; raising this constant to chase the bench inversions would be tuning the
+-- wrong one, and lowering it to 10 because the bench ignored it costs the seven above for nothing.
+sdec.idlemult  = 10.5
 -- Share of samples sitting at one of the two levels. A clean line is ~0.95. It falls
 -- with anything that spreads the samples out, and the two thresholds separate the two
 -- meanings of that:
@@ -823,10 +853,21 @@ function sdec.sig_idle(rd, n)
   -- or eight ones + stop), so ten bit times is the smallest run that must be idle.
   -- One bit time is estimated as a low percentile of the pulse widths rather than
   -- their minimum, so a single narrow glitch cannot shrink it.
+  --
+  -- sdec.idlemult CARRIES THE MARGIN THAT ARGUMENT NEEDS -- see its comment for the
+  -- measurement. Nine-against-ten leaves nothing for jitter on the run or scatter on
+  -- the percentile, and the two crossing is what lets a data run be read as idle.
   local onebit = sdec.sig_onebit(ei, ne)
+  -- PUBLISHED FOR THE RECORD, and read by nothing that decides anything. run0, run1 and idle_weak are
+  -- already on sdec; this is the fourth input to the comparison below and the only one that was a local,
+  -- so a bench record could show three quarters of the decision and not the quarter that matters. The
+  -- comparison is what picks the branch, and a bench lap that cannot see it cannot say which branch a
+  -- capture took -- which is the difference between a decoder defect and a stimulus the wire never
+  -- carried. Written every capture, so the cost is one store.
+  sdec.onebit = onebit
   local longest = best1
   if best0 > longest then longest = best0 end
-  if onebit ~= nil and longest < 10 * onebit then
+  if onebit ~= nil and longest < sdec.idlemult * onebit then
     -- The runs carry no information about idle. Decide from the LEVELS instead,
     -- which is a fact about signalling rather than a guess about this capture: a
     -- single-supply logic line marks HIGH, and one that straddles ground is RS-232

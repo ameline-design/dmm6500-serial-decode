@@ -202,6 +202,16 @@ def stages(outdir, shots):
         Stage('unit-sdgguard', ['python3', 'tools/test_sdg_guard.py'],
               note='every route to an out-of-spec waveform refuses it -- all three bypasses, plus '
                    'the legitimate uploads still working'),
+        # THE DRAW ITSELF, WHICH NO STAGE USED TO RUN. soakplan --selftest has always existed and
+        # asserts the properties every hardware lap depends on: that the plan is a pure function of the
+        # iteration, that the skip changes the shuffle, that the emitted plan and the Lua table agree,
+        # and that no cell leaves the generator's envelope or the rails. It was not a stage, so two of
+        # its assertions sat RED through a full release gate -- both of them checks that named the skip
+        # list literally instead of reading HW_SKIP, which is the same defect the list's other two
+        # hardcoded copies had. A suite nobody runs is documentation.
+        Stage('unit-soakplan', ['python3', 'tools/soakplan.py', '--selftest'],
+              note='the plan draw: pure in the iteration, the skip keys the shuffle, and every cell '
+                   'inside both the rails and |OFST| + AMP/2 <= 10 V'),
         # The phase sweep across every bench vector, sharded over the cores. Its subject is the
         # variable the decoder is most sensitive to: where the capture opens.
         Stage('unit-phasesweep', ['python3', 'tools/sweep_all.py', '--quiet'],

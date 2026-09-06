@@ -416,6 +416,7 @@ sdec.binocc    = 16    -- target samples per BIN
 sdec.minhump   = 2
 sdec.flatfloor = 1.0    -- below this an idle level counts as sitting at ground
 sdec.flatoffs  = 0.5    -- and the guessed threshold goes this far above it
+sdec.idlemult  = 10.5
 sdec.minmodal  = 0.15
 sdec.warnmodal = 0.50
 
@@ -761,9 +762,10 @@ function sdec.sig_idle(rd, n)
   sdec.run1, sdec.run0 = best1, best0
 
   local onebit = sdec.sig_onebit(ei, ne)
+  sdec.onebit = onebit
   local longest = best1
   if best0 > longest then longest = best0 end
-  if onebit ~= nil and longest < 10 * onebit then
+  if onebit ~= nil and longest < sdec.idlemult * onebit then
     sdec.idle_weak = true
     if sdec.lo ~= nil and sdec.hi ~= nil and
        sdec.lo < -sdec.flatfloor and sdec.hi > sdec.flatfloor then
