@@ -403,6 +403,175 @@ check('odd-length hex is refused rather than scored',
       BU.lin_repair(_cap(V61, 6, {0, 8}) + 'A', V61)[1] == set())
 
 print()
+print('-- the per-band decoder-defect report --')
+# THE BAND CUT IS A PROPERTY OF THE LADDER, not a threshold chosen to suit an answer: a lap sweeps 43 rates
+# and there is a real gap between 115200 and the next one up at 121098. The boundary rate itself belongs to
+# the band the claim is made ABOUT, so 115200 is 'low' and an off-by-one here would move a whole rate's
+# worth of cells across the line the claim is written on.
+check('the boundary rate belongs to the low band', JB.band_of(115200) == 'low', JB.band_of(115200))
+check('and the next rate up is high', JB.band_of(115201) == 'high', JB.band_of(115201))
+check('the ladder really does gap over the cut, so no commanded rate lands between',
+      JB.band_of(121098) == 'high' and JB.CLAIM_BAUD == 115200, str(JB.CLAIM_BAUD))
+# AN UNPARSABLE RATE IS ITS OWN BAND. Folding it into either one would move cells onto the wrong side of a
+# published claim, and folding it into 'low' is the direction that flatters the app.
+check('an unparsable rate is neither band', JB.band_of('') == 'unparsable', JB.band_of(''))
+
+# BOTH SNAP-CONFUSABLE PAIRS ARE THE SAME RATIO, 625/576 = 8.51 %, which is the same pair scaled by eight.
+# Every other adjacent pair in sdec.stdbaud is 11 % or more apart, and ratebad trips at 2 % -- so these are
+# the only two sites in the ladder where snapping to a neighbour is a FAIL rather than a rounding.
+for _lo, _hi in JB.SNAP_PAIRS:
+    check('%d/%d are 625/576 apart, so a snap between them exceeds the 2 %% rate gate' % (_lo, _hi),
+          abs((_hi / _lo) - (625.0 / 576.0)) < 1e-9 and (_hi / _lo - 1) > 0.02,
+          '%.6f' % (_hi / _lo))
+
+# ZERO FAILURES IS A CEILING, NOT A MEASURED ZERO, and that ceiling is the strongest honest form of the
+# claim: 88 415 clean cells is 'better than 1 in 29 000'. For k = 0 the closed form is 1 - 0.05**(1/n).
+_N0 = 88415
+_hi0 = JB._prop_bound(0, _N0, 0.05, upper=True)
+check('a clean band gives the exact one-sided ceiling, not a zero',
+      abs(_hi0 - (1.0 - 0.05 ** (1.0 / _N0))) < 1e-12,
+      '%.10g vs %.10g' % (_hi0, 1.0 - 0.05 ** (1.0 / _N0)))
+check('and that ceiling reads as better than 1 in 29 000',
+      29000 < 1.0 / _hi0 < 30000, '1 in %d' % (1.0 / _hi0))
+check('a clean band has a lower bound of exactly zero',
+      JB._prop_bound(0, _N0, 0.05, upper=False) == 0.0)
+
+# A PROPORTION BOUND IS IN [0, 1] BY CONSTRUCTION, which is why this is binomial rather than a Poisson count
+# bound divided by n: that form exceeded 100 % on a small band and had to be clamped to hide it.
+for _k, _n in ((1, 1), (1, 2), (3, 3), (1, 5)):
+    _hiT = JB._prop_bound(_k, _n, 0.025, upper=True)
+    check('%d of %d gives an upper bound inside 100 percent' % (_k, _n), 0.0 <= _hiT <= 1.0, '%.6f' % _hiT)
+
+# THE INTERVAL MUST STRADDLE THE OBSERVED PROPORTION, or a published range excludes the figure beside it.
+for _k, _n in ((1, 1205), (2, 1205), (34, 34221), (44, 1673), (500, 10000), (3200, 122636)):
+    _loT = JB._prop_bound(_k, _n, 0.025, upper=False)
+    _hiT = JB._prop_bound(_k, _n, 0.025, upper=True)
+    check('the 95 pct CI for %d of %d straddles the observed rate' % (_k, _n),
+          _loT < float(_k) / _n < _hiT, '%.6f < %.6f < %.6f' % (_loT, float(_k) / _n, _hiT))
+    # AND THE BOUND IS EXACT, checked against the CDF that defines it rather than against another estimate.
+    check('  ...and its upper bound puts 2.5 pct in the tail',
+          abs(JB._binom_cdf(_k, _n, _hiT) - 0.025) < 1e-6, '%.9f' % JB._binom_cdf(_k, _n, _hiT))
+
+# THE UNDERFLOW REGRESSION. Written as p**i * (1-p)**(n-i) both factors vanish long before n reaches a
+# fortnight's cell count and the sum silently returns 0.0 -- a confident wrong bound rather than an error.
+# At k equal to the mean the CDF must sit near a half; a zero here is the shape of that bug.
+_cdfmid = JB._binom_cdf(3200, 122636, 3200.0 / 122636)
+check('the binomial CDF does not underflow at a fortnight-sized n', 0.4 < _cdfmid < 0.6, '%.6f' % _cdfmid)
+
+# AND THE 34-FAILURE CASE IS THE ONE A CLAIM WOULD BE WRITTEN FROM. 34 of 34 221 is 0.0994 %, under 0.1 % --
+# but the interval reaches past it, so the count does NOT support 'under 0.1 %'.
+_hi34 = JB._prop_bound(34, 34221, 0.025, upper=True)
+check('34 of 34 221 does not support an "under 0.1 %" claim',
+      100.0 * 34 / 34221 < 0.1 < 100.0 * _hi34,
+      'point %.4f%%, upper %.4f%%' % (100.0 * 34 / 34221, 100.0 * _hi34))
+
+# THE BANDS MUST ADD UP TO THE TOTAL, AND THIS RUNS THE REAL TOOL TO CHECK IT. Summing a dictionary built
+# here would only test this file's arithmetic: every production increment could be deleted and it would stay
+# green. So a record is written covering all five buckets on both sides of the cut, judge_bench is executed
+# on it, and the printed band table is reconciled against the printed total. Delete any one per_band
+# increment -- including either early-continue path -- and the two stop matching.
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _rrow(cell, baud, ran='y', why='', hx='41', vid='v77'):
+    return ('R,1,%d,%s,%s,std,5,0,96000,0,10000,1.04,%s,%s,8N1,20,20,0,0,0,false,false,%s,%s'
+            % (cell, vid, baud, ran, baud or '0', why, hx))
+
+
+# THE ROWS CARRY THE REAL ORACLE, not a token byte. v77's payload is 133 bytes and its class is 'exact', so
+# a one-byte hex field lands in 'inconclusive' -- which is OUTSIDE the judged denominator, and a record of
+# those would exercise only the no-decode increment while looking like a full test.
+_PAY = JB.payloads('v77')[0]
+_GOOD = (_PAY * 2).hex().upper()
+_BADB = bytearray(_PAY * 2)
+for _i in range(0, len(_BADB), 7):
+    _BADB[_i] ^= 0xFF
+_BAD = bytes(_BADB).hex().upper()
+
+# ONE ROW PER INCREMENT SITE, and there are SIX sites across five categories: 'pass' is reached twice, once
+# for a decoded capture that matches and once for a refusal on a vector whose class ALLOWS it. A record
+# without a loud-vector refusal and without an inconclusive row leaves three of the six untested, and the
+# reconciliation below still passes -- which is how a band table starts under-counting silently.
+_rec = ['# %s tag=soak iterations=1 plan=x randomperlap=all file=1' % _SC,
+        _rrow(1, 9600, hx=_GOOD),                      # low band  -> pass (decoded)
+        _rrow(2, 38400, hx=_BAD),                      # low band  -> FAIL on bytes
+        _rrow(3, 230400, hx=_GOOD),                    # high band -> pass (decoded)
+        _rrow(4, 250000, hx=_BAD),                     # high band -> FAIL on bytes
+        _rrow(5, 28800, ran='n', why='declined'),      # low band  -> no decode (v77 is not loud)
+        _rrow(6, 9600, why='SDG: no stimulus'),        # low band  -> SDG, NOT judged
+        _rrow(7, '', hx=_GOOD),                        # unparsable rate -> its own band
+        _rrow(8, 57600, ran='n', why='declined', vid='v47'),   # low band -> ALLOWED refusal, counts pass
+        _rrow(9, 76800, hx='41')]                      # low band -> inconclusive, OUTSIDE judged
+_recpath = os.path.join(_ROOT, 'out', 'bench', 'TESTBANDS.csv')
+os.makedirs(os.path.dirname(_recpath), exist_ok=True)
+with open(_recpath, 'w') as _fh:
+    _fh.write('\n'.join(_rec) + '\n')
+_out = _sp.run([sys.executable, os.path.join('tools', 'judge_bench.py'), _recpath],
+               cwd=_ROOT, capture_output=True, text=True).stdout
+_mtot = _re.search(r'(\d+) BAD of (\d+) judged', _out)
+# EVERY NUMERIC COLUMN OF EVERY BAND ROW, so each of the five categories can be reconciled against its own
+# total line. Matching only the first column reconciles 'judged' and leaves the SDG and inconclusive
+# increments free to be deleted without any test noticing.
+_mrows = _re.findall(r'^\s+(?:<=|>|unparsable)\s*\S*\s*Bd((?:\s+\d+){6})\s', _out, _re.M)
+_bandcols = [[int(x) for x in r.split()] for r in _mrows]
+check('judge_bench prints a total and a band table on the same record',
+      _mtot is not None and len(_bandcols) >= 2, '%s / %s' % (bool(_mtot), _bandcols))
+
+
+def _col(i):
+    return sum(row[i] for row in _bandcols)
+
+
+if _mtot and _bandcols:
+    check('the band table judged counts sum to the run total',
+          _col(0) == int(_mtot.group(2)),
+          'bands sum %d vs total %s' % (_col(0), _mtot.group(2)))
+    for _i, _name in ((1, 'FAIL'), (2, 'no decode'), (3, 'inconclusive'), (4, 'SDG failed'),
+                      (5, 'low credib')):
+        _m = _re.search(r'^  %s\s+(\d+)' % _re.escape(_name), _out, _re.M)
+        check('the band table %r column reconciles with its total' % _name,
+              _m is not None and _col(_i) == int(_m.group(1)),
+              'bands %d vs total %s' % (_col(_i), _m.group(1) if _m else '?'))
+# AND THE GENERATOR ROW IS OUT OF THE DENOMINATOR BUT STILL ON THE PAGE. Of the nine rows, seven are
+# judgeable: the SDG fault and the inconclusive capture are both excluded. A denominator of eight would
+# charge the decoder for the generator, and dropping either row would hide it entirely.
+check('the SDG row is reported and excluded from the judged denominator',
+      _mtot is not None and int(_mtot.group(2)) == 7 and 'SDG failed   ' in _out,
+      'judged %s' % (_mtot.group(2) if _mtot else '?'))
+# ALL SIX INCREMENT SITES ARE REACHED, which is what makes the reconciliations above load-bearing. 'pass' is
+# two sites -- a decoded capture that matches, and a refusal on a vector whose class allows it -- so a pass
+# count of 3 over 2 decoded matches is the evidence the allowed-refusal site fired as well.
+check('every band increment site is exercised: 3 pass (2 decoded + 1 allowed refusal), 3 FAIL',
+      _re.search(r'\bpass\s+3\b', _out) is not None and _re.search(r'\bFAIL\s+3\b', _out) is not None
+      and _re.search(r'\binconclusive\s+1\b', _out) is not None
+      and _re.search(r'\bno decode\s+1\b', _out) is not None,
+      _out[_out.find('  pass'):_out.find('  pass') + 220])
+check('an unparsable rate is shown as its own band rather than folded into one',
+      'unparsable Bd' in _out, _out[-200:])
+
+# THE LOW-CREDIBILITY COUNTER MIRRORS THE APP'S OWN LOCKED-RATE STANDARD, and must keep mirroring it: the
+# whole argument for the number is that uart_decode already refuses to defend a LOCKED rate on these terms
+# and applies no such test to one it detected itself. Two different figures for one question is how they
+# drift, so the constants are pinned to the values sdec declares.
+_src = open(os.path.join(_ROOT, 'tsp', 'uart_decode.tsp')).read()
+for _nm, _val in (('relock_badfrac', JB.RELOCK_BADFRAC), ('relock_minframes', JB.RELOCK_MINFRAMES),
+                  ('ua_edge_frames', JB.UA_EDGE_FRAMES)):
+    _m = _re.search(r'sdec\.%s\s*=\s*([0-9.]+)' % _nm, _src)
+    check('sdec.%s in the app is the %s this judge uses' % (_nm, _val),
+          _m is not None and float(_m.group(1)) == float(_val),
+          'app %s vs judge %s' % (_m.group(1) if _m else '?', _val))
+
+# A HANDFUL OF FRAMES IS NOT EVIDENCE, which is why the app carries relock_minframes at all: a two-frame
+# capture with one bad frame is 50 % and means nothing.
+check('a capture with too few frames is never called low-credibility',
+      not JB.lowcred({'nf': '5', 'nbad': '4'}), 'nf=5 nbad=4')
+check('a healthy capture is not low-credibility', not JB.lowcred({'nf': '200', 'nbad': '1'}))
+check('a capture whose framing contradicts its own rate is',
+      JB.lowcred({'nf': '226', 'nbad': '75'}), 'the 28800->31250 cell: 75 bad of 222 interior')
+check('and an unparsable frame count is not, rather than raising',
+      not JB.lowcred({'nf': '', 'nbad': ''}))
+
+print()
 if FAILED:
     print('%d FAILED: %s' % (len(FAILED), ', '.join(FAILED)))
     sys.exit(1)

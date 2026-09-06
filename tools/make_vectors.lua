@@ -553,6 +553,35 @@ vec{id = 'v93', desc = '1024 uniform random bytes 0-255, 9600 8N1 (over the uplo
               loop = true}, by, nb, nil, bytes_to_string(by, nb)
     end}
 
+-- v93 WITH BIT 7 CLEARED, AND IT EXISTS TO ISOLATE ONE VARIABLE. A 100-lap soak measured v71
+-- (1024 B of Lorem ipsum, every byte under 0x80) failing 8.628 % of cells against v93 (1024 B of
+-- uniform random bytes) at 0.0698 % -- a factor of 124 at the same length, the same format and the
+-- same rate ladder. The mechanism proposed for that is the top data bit: at 8N1 a payload that never
+-- sets bit 7 puts a rising edge exactly nine bit times after every start bit, so the INVERTED reading
+-- frames as cleanly as the correct one and ua_autoformat needs only to beat the incumbent polarity by
+-- 60 % (see sdec.sig_idle's comment in tsp/serial_core.tsp).
+--
+-- BUT THE TWO VECTORS DIFFER IN MORE THAN THE TOP BIT: one is natural-language text and the other is
+-- uniform random, so entropy, symbol count, ordering and run-length structure all co-vary with it and
+-- the 124x cannot be attributed. Masking v93's own bytes to 7 bits changes the top bit and NOTHING
+-- else -- same seed, same helper, same length, same byte ORDER -- so v97 against v93 is the paired
+-- comparison that either confirms the alphabet or refutes it. v46 already shows the alphabet alone is
+-- not sufficient: 200 B, all under 0x80, and zero inverted decodes in 4300 cells.
+--
+-- MASKED WITH math.mod, NOT AN AND OPERATOR, because Lua 5.0.2 has no bitwise operators at all and
+-- this file's payloads must be reproducible by the same source the instrument's Lua would accept.
+-- For a byte in 0..255, math.mod(b, 128) is b & 0x7F.
+vec{id = 'v97', desc = '1024 random bytes masked to 7 bits -- v93 with bit 7 cleared, 9600 8N1 '
+                       .. '(over the upload ceiling)',
+    fs = sr(9600), fsv = 5.0, long = true,
+    build = function()
+      local by, nb = rand_bytes(1024, 20260818)
+      local i
+      for i = 1, nb do by[i] = math.mod(by[i], 128) end
+      return {bytes = by, baud = 9600, fs = sr(9600), gap = 0, lead = 10, tail = 10,
+              loop = true}, by, nb, nil, bytes_to_string(by, nb)
+    end}
+
 vec{id = 'v94', desc = '128 each of 0x00, 0xFF, 0x55, 0xAA -- 9600 8N1 (over the upload ceiling)',
     fs = sr(9600), fsv = 5.0, long = true,
     build = function()

@@ -696,6 +696,49 @@ end
 
 -- ---------------------------------------------------------------------------
 print('')
+print('-- a lap ends when the iteration number moves --')
+do
+  -- THE BOUNDARY CARRIES TWO FACTS: the lap size, which is the highest cell seen in the lap just
+  -- finished, and the start of the new lap's clock. One branch sets both.
+  --
+  -- A PLAN THAT WRAPS CANNOT TEST IT. Wrapping replays iteration 1, so the iteration number never moves
+  -- and the boundary is never reached -- which is why this drive uses a plan holding two real iterations
+  -- rather than reusing one of the single-iteration plans above.
+  MOCKB_SDG({})
+  bsdg.reset()
+  writeplan({'1,1,v77,' .. ARB.v77 .. ',9600,std,5.0000,0.0000,96000,0.000',
+             '1,2,v77,' .. ARB.v77 .. ',9600,std,5.0000,0.0000,96000,0.000',
+             '1,3,v77,' .. ARB.v77 .. ',9600,std,5.0000,0.0000,96000,0.000',
+             '2,1,v77,' .. ARB.v77 .. ',9600,std,5.0000,0.0000,96000,0.000',
+             '2,2,v77,' .. ARB.v77 .. ',9600,std,5.0000,0.0000,96000,0.000'})
+  brun.percell = 0
+  -- os.time IS STUBBED TO ADVANCE ONE SECOND PER CALL, and that is what makes the lap clock checkable by
+  -- value. The real clock has one-second resolution and this drive finishes well inside a second, so a
+  -- clock restarted at the boundary and one still sitting at brun.t0 hold the SAME integer -- the
+  -- assertion would pass either way. Ticking every call separates them: tlap can only exceed t0 if
+  -- something assigned it after the run began.
+  local realtime = os.time
+  local tick = realtime()
+  os.time = function() tick = tick + 1; return tick end
+  local okc, whyc = brun.soak(2, 'lapclock')
+  os.time = realtime
+  ck(okc == true, 'the two-lap drive runs to the end of the plan', tostring(whyc))
+  ck(brun.tlap ~= nil and brun.t0 ~= nil and brun.tlap > brun.t0,
+     'the lap clock is restarted at the boundary rather than left at the run start',
+     string.format('tlap - t0 = %s', tostring((brun.tlap or 0) - (brun.t0 or 0))))
+  -- THREE, LEARNED FROM THE PLAN RATHER THAN FROM A HEADER. Iteration 1 holds cells 1..3, so the lap
+  -- size is 3. While the boundary goes unseen this stays 0 and every per-lap figure on the screen falls
+  -- back to brun.perlap_guess(), which divides the whole file by the iteration count and cannot see a
+  -- plan whose laps are not all the same length.
+  ck(brun.percell == 3, 'the lap size is learned from the lap that just finished',
+     string.format('percell %d', brun.percell))
+  -- THE RENDERING HALF OF THE SAME DEFECT -- the lap line reporting the whole run's elapsed as this lap's
+  -- -- is pinned where brun.screen is checked, with t0 and tlap deliberately set apart.
+  shipdefaults()
+end
+
+-- ---------------------------------------------------------------------------
+print('')
 print('-- a waveform switch that lands late is not a missing waveform --')
 do
   -- MEASURED ON HARDWARE, and it refutes what this code used to assert. ARWV performs a REAL switch only
@@ -1219,10 +1262,15 @@ do
   -- 8.737864 s a cell: the 1265 cells left in the lap are 3.1 h, and 352 170 cells at that rate is a
   -- 854.8 h run. Pinned to the digit, because both figures come off the SAME rate and a layout change that
   -- silently re-derived one of them from something else would still look plausible.
-  brun.t0, brun.tlap = os.time() - 3600, os.time() - 3600
+  -- THE TWO CLOCKS ARE SET APART, which is what makes this a test of SCOPE and not merely of format:
+  -- with t0 and tlap equal, a lap clock still sitting at the run's start satisfies the assertion exactly
+  -- as a correct one does. The run has been going an hour and this lap for half of it, so the lap line
+  -- must say 0.5h while the total line says 1.0h. The rate still comes off t0, so 'left' and the
+  -- projection below are unchanged.
+  brun.t0, brun.tlap = os.time() - 3600, os.time() - 1800
   brun.screen({iter = 3, cell = 412, vid = 'v48b', baud = 153600}, 'SER_Hello_8N1_Drift10_x10')
   local prog2, tim2 = MD.text(brun.ui.prog), MD.text(brun.ui.time)
-  ck(string.find(prog2, 'ran 1.0h left 3.1h', 1, true) ~= nil,
+  ck(string.find(prog2, 'ran 0.5h left 3.1h', 1, true) ~= nil,
      'the lap line says how long THIS lap has run and has left', prog2)
   ck(string.find(tim2, 'Total: 1.0h of 854.8h', 1, true) ~= nil,
      'while the total line is the run: elapsed of what the whole run will take', tim2)

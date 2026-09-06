@@ -45,6 +45,9 @@ MAP = {
     'v94':  'SER_Blocks512B_8N1_x10',
     'v95':  'SER_Random8kB_8N1_x10',
     'v96':  'SER_Random32kB_8N1_x10',
+    # v93's own bytes with bit 7 cleared. '7bit' is in the name because that is the ONE thing that
+    # distinguishes it from v93, and the pair is only worth having if the difference is legible here.
+    'v97':  'SER_Random1kB7bit_8N1_x10',
     # x100, because a 2 % edge displacement cannot be rendered at x10 -- the sample grid there is
     # +-5 % of a bit, so the quantisation would be larger than the impairment. The percentage is in
     # the name: it is the one number that distinguishes these three from each other.
@@ -64,7 +67,7 @@ RETIRED = {}
 
 # Over SDG_UPLOAD_SAFE_BYTES, so these reached the instrument the slow way and must not be re-uploaded
 # casually -- three over-ceiling WVDT writes in one power cycle wedge the LAN service.
-BIG = {'v71', 'v93', 'v94', 'v95', 'v96'}
+BIG = {'v71', 'v93', 'v94', 'v95', 'v96', 'v97'}
 
 
 def arb(vid):

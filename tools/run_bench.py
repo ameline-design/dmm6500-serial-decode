@@ -38,6 +38,19 @@ import lint_tsp                                                          # noqa:
 from dmmrun import DMM                                                   # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _hw_skip():
+    """The vectors a hardware lap does not play, from soakplan -- the one place the list is defined.
+
+    IMPORTED LAZILY rather than at module scope because everything else here reaches soakplan by running
+    it as a subprocess, and importing it eagerly would make this module fail to load on a machine where
+    soakplan cannot import. A missing tuple is not defaulted: the whole hazard is a list one name short.
+    """
+    import soakplan
+    return soakplan.HW_SKIP
+
+
 # The Lua 5.0.2 parser, if this machine has built one. None means send_lua checks less; it says so.
 LUAC = os.path.join(ROOT, lint_tsp.LUAC)
 if not os.path.exists(LUAC):
@@ -433,7 +446,16 @@ def main():
                          'the record, or by cutting the power, which does not')
     ap.add_argument('--iteration', type=int, default=1, help='first plan iteration')
     ap.add_argument('--spec', default=None, help='bench_matrix --plan-spec grammar for a subset')
-    ap.add_argument('--skip-vectors', default=','.join(I.__dict__.get('HW_SKIP', ()) or ('v95', 'v96')))
+    # FROM soakplan, WHICH IS WHERE HW_SKIP IS DEFINED. This looked for the tuple on `instruments`, where
+    # there is none, so it fell through to a hardcoded copy -- and a hardcoded copy of the skip list is the
+    # one thing soakplan's own comment says must not exist: the skip is applied before the shuffle, so a
+    # list that is one name short reshuffles every vector's position and hands each of them another
+    # vector's amplitude, offset and wait. The fallback agreed with the real tuple, so nothing was wrong
+    # until a third name was added to it.
+    ap.add_argument('--skip-vectors', default=','.join(_hw_skip()))
+    ap.add_argument('--idle-diag', action='store_true',
+                    help="append sig_idle's own inputs (run0/run1/onebit/ratio) to every "
+                         'status note -- a diagnostic lap, not a soak setting')
     ap.add_argument('--random-per-lap', type=int, default=None, metavar='N',
                     help='play only N of the twelve random-payload vectors each lap (they are 31 %% of '
                          'a lap and produced no failures of either kind on a full offline lap). N=4 '
@@ -523,6 +545,12 @@ def main():
                 if not d.exec('do brun.resume = true end'):
                     raise SystemExit('the instrument would not accept the resume flag')
                 print('  resuming after the last cell the record holds')
+            if a.idle_diag:
+                # SET BEFORE THE RUN STARTS, same reason as --sdg-hold below: once brun.soak has
+                # the interpreter nothing from the host reaches the instrument.
+                if not d.exec('do brun.idlediag = true end'):
+                    raise SystemExit('the instrument would not accept the idle-diag flag')
+                print('  recording sig_idle inputs on every cell (diagnostic lap)')
             if a.sdg_hold is not None:
                 # SET BEFORE THE RUN STARTS, because brun.soak reads it at the give-up point and nothing
                 # can reach the instrument once the loop holds the interpreter.

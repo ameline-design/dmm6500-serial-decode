@@ -77,7 +77,18 @@ P_RSUB = 7
 # played, at a phase it never started from, in 1677 of 1677 cells -- checked row by row against
 # out/soak/2026-08-27T21-38-33's own per-cell record, where every single one disagreed. That is what
 # --check-log now measures and what the offline twin defaults to.
-HW_SKIP = ('v95', 'v96')
+#
+# v97 IS SKIPPED FOR A DIFFERENT REASON FROM THE OTHER TWO, and it is the reason this tuple exists rather
+# than a v96-specific guard. v96 wedges the generator; v97 is perfectly playable and is simply not part of
+# the standard lap. It is the paired control for v93 (the same 1024 bytes with bit 7 cleared) and is meant
+# to be driven as a two-vector comparison. Leaving it IN the lap would do two unwanted things at once: the
+# lap becomes 40 x 43 = 1720 cells, contradicting the 1677 that docs/BENCH.md derives and that six
+# comments here quote; and because the skip is applied BEFORE the shuffle, every one of the 39 survivors
+# would take another vector's amplitude, offset and wait, making the 100-lap soak's per-cell record
+# incomparable with everything measured afterwards. With v97 skipped the kept list is identical to the
+# 39-vector one, so the plan, the ratchet baselines in tools/plan_sweep.py and the lap size are all
+# unchanged -- verified by emitting a plan before and after and diffing it row for row.
+HW_SKIP = ('v95', 'v96', 'v97')
 
 # THE VERTICAL AXES. Amplitude and DC offset are swept per cell rather than per waveform, which costs
 # nothing: both are SCPI writes folded into the settle already paid, and the attenuator relay is rated

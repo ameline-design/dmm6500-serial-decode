@@ -53,6 +53,7 @@ barb.name['v93'] = 'SER_Random1kB_8N1_x10'
 barb.name['v94'] = 'SER_Blocks512B_8N1_x10'
 barb.name['v95'] = 'SER_Random8kB_8N1_x10'
 barb.name['v96'] = 'SER_Random32kB_8N1_x10'
+barb.name['v97'] = 'SER_Random1kB7bit_8N1_x10'
 
 -- WHICH VECTORS ARE ALLOWED TO REFUSE. A 'loud' vector is one the plan drives into conditions where
 -- declining to decode is the DOCUMENTED RIGHT ANSWER -- 20 % jitter, a spike, a drifting clock, a LIN
@@ -78,7 +79,7 @@ function barb.loud(vid)
 end
 
 -- The count, so a truncated file is detectable rather than merely short.
-barb.n = 41
+barb.n = 42
 
 -- Returns the generator's name for a vector id, or nil. Never guesses: a fallback to the id itself is
 -- exactly the silent failure this table exists to prevent.

@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import run_bench as RB                                                  # noqa: E402
+import soakplan as SP                                                    # noqa: E402
 
 PASS, FAIL = [], []
 
@@ -106,7 +107,11 @@ def plan_rows(n):
     only soakplan.py can say whether its own output contains any."""
     out = subprocess.check_output(
         ['python3', os.path.join(ROOT, 'tools', 'soakplan.py'), '--emit-csv',
-         '--iteration', '1', '--iterations', str(n), '--skip-vectors', 'v95,v96',
+         # FROM soakplan.HW_SKIP, NOT A COPY OF IT. A hardcoded skip list here silently measures a
+         # different lap the moment a vector is added to vector_names.MAP -- the assertion below is on
+         # the ROW COUNT of a 210-lap plan, so it fails with a size complaint that says nothing about
+         # the actual change. Deriving it means this test tracks the bench's own definition.
+         '--iteration', '1', '--iterations', str(n), '--skip-vectors', ','.join(SP.HW_SKIP),
          '--random-per-lap', '4'], cwd=ROOT).decode()
     return [ln for ln in out.split('\n') if ln.strip()]
 

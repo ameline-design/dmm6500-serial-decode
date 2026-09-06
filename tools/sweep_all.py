@@ -60,9 +60,24 @@ RATCHET_SEED, RATCHET_OFFSETS = 1, 24
 # case that moved came OUT of refused, and the four that landed on the 7E1/8N1 ambiguity are cases the
 # sweep could not previously reach at all -- not cases that got worse. ratediff, headbleed, shortrun and
 # HARD did not move.
+# RAISED by sdec.idlemult, and the accounting is the justification -- every case that moved is traceable
+# and none of them is a correct decode that got worse. Two changes land together:
+#   * v97 joins the vector set (v93's 1024 bytes with bit 7 cleared, the paired control for the payload
+#     alphabet). exact 2218 -> 2307 on the new vector's own clean decodes; fmtdiff, ratediff, headbleed and
+#     shortrun do not move; HARD goes 0 -> 7, all seven on v97 -- silent wrong answers, so the gate fails.
+#   * sdec.idlemult 10 -> 10.5 widens sig_idle's idle-run guard. HARD 7 -> 0 and exact 2307 -> 2314: the
+#     same seven captures, now decoding correctly. Separately shortrun 977 -> 976 and fmtdiff 519 -> 520,
+#     which is ONE capture moving from 'too few trusted bytes to judge' into the 7E1/8N1 ambiguity -- a
+#     window that now yields a judgeable answer, not a decode that became ambiguous. ratediff and
+#     headbleed do not move.
+# So the fmtdiff rise costs nothing: 7 + 1 cases moved, 7 out of HARD and 1 out of shortrun, and the floor
+# below rises by exactly the seven. Verified by a paired run of every offline suite against an otherwise
+# identical tree -- test_serial 1205/0, cancel 228/0, patterns 75/0, ratefit 22/0, analog 43/0,
+# forcerate 31/0, streamfix 22/0, frontrig 31/0, usblog 67/0, stress 127 ok/21 degraded/0 WRONG, seam 6/0,
+# and the offline twin at 110 bad -- all identical on both sides.
 RATCHET = {
     'ratediff': (130, 'periodic-payload rate misfit, issue #46'),
-    'fmtdiff': (519, '7E1/8N1 ambiguity, issue #49'),
+    'fmtdiff': (520, '7E1/8N1 ambiguity, issue #49'),
 }
 # AND A FLOOR, because the ratchet above is one-directional and that is a hole this very change walked
 # through. A rise in fmtdiff is indistinguishable from a fall in byte-exact when only fmtdiff is
@@ -70,7 +85,7 @@ RATCHET = {
 # nothing, move the same counter the same way. Bounding byte-exact from below tells them apart -- the
 # first drops it, the second does not.
 RATCHET_FLOOR = {
-    'exact': (2218, 'decodes whose bytes match the payload at zero shift'),
+    'exact': (2314, 'decodes whose bytes match the payload at zero shift'),
 }
 LINE = re.compile(r'^SHARD (\d+)/(\d+) seed (\d+): (.*)$')
 
