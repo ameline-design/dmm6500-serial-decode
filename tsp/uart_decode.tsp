@@ -1250,7 +1250,14 @@ end
 -- The unchunked form. Every current caller uses this; the stepper exists for the panel.
 function sdec.ua_best(rd, n, Tfit)
   local st = sdec.ua_best_begin(rd, n, Tfit)
-  while sdec.ua_best_probe(st) do end
+  -- ONE TICK PER CANDIDATE, because the candidate is this loop's atom and the only boundary inside
+  -- the decode that carries no state: ua_best_probe checkpoints into st, so a caller that runs
+  -- between two probes cannot land anywhere awkward. A candidate is ~76 ms at 38400 baud, which is
+  -- the granularity a liveness indicator needs. sdec.tick is nil in the shipped app, so the cost is
+  -- one nil compare per candidate.
+  while sdec.ua_best_probe(st) do
+    if sdec.tick ~= nil then pcall(sdec.tick) end
+  end
   return sdec.ua_best_end(st)
 end
 

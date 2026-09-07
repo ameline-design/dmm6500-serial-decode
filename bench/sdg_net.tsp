@@ -46,6 +46,38 @@ bsdg.maxsrate = bsdg.maxsrate or 40e6
 bsdg.arwvtries = bsdg.arwvtries or 4
 bsdg.arwvwait = bsdg.arwvwait or 0.4
 
+-- WHAT THE GENERATOR IS ALREADY PLAYING, so a cell that asks for the same thing can skip the asking.
+-- A lap sweeps 43 rates across one waveform before moving to the next, so 97.7 % of cells re-select a
+-- waveform that is already selected -- and re-selecting is not free in either direction: the ARWV write
+-- is what makes this generator briefly stop answering, and the ARWV? that verifies it is then blocking
+-- on a stall the write itself caused. Skipping both when the name is unchanged removes a self-inflicted
+-- round trip from almost every cell of every lap.
+--
+-- CONFIRMED, NOT COMMANDED. bsdg.cur is set only after ARWV? has named the waveform back, so the cache
+-- can never assert a switch that did not land -- which is the failure the verify exists to catch, and
+-- one that would silently mis-attribute every cell after it to the wrong stimulus. Every failure path
+-- in select() clears it, as do close() and reset(), because a reconnected session knows nothing.
+bsdg.cur     = nil     -- waveform name last CONFIRMED by ARWV?; nil means unknown
+bsdg.curamp  = nil     -- the BSWV/SRATE values last written and not since disturbed
+bsdg.curofst = nil
+bsdg.cursrate = nil
+bsdg.nskip   = 0       -- consecutive selects that skipped the ARWV verify
+bsdg.nsame   = 0       -- selects that skipped the conversation entirely, for the run's own accounting
+
+-- A CEILING ON HOW LONG A STALE CACHE COULD GO UNNOTICED. Nothing in this module can change the
+-- selected waveform behind the cache, but the generator is a third party: a front-panel press or a
+-- firmware quirk could, and then every later cell would be recorded against a waveform it never played.
+-- One forced verify per this many skips bounds the damage at a known number of cells while keeping
+-- 49 of every 50 savings, which is a better trade than trusting the cache indefinitely.
+--
+-- ZERO DISABLES BOTH SKIPS AND RESTORES THE OLD CONVERSATION EXACTLY -- measured in the mock, 602 SCPI
+-- messages for 86 cells either way. That makes this the A/B knob for the saving itself: two laps of one
+-- plan, `bsdg.arwvevery = 0` against the default, and the wall-time difference is what the skip is
+-- worth. The traffic reduction is measurable on the host; the TIME it buys is not, because the cost is
+-- the generator's response latency and only the generator can be asked. It is also the runtime revert
+-- if anything about the cache misbehaves on the bench -- one assignment over the socket, no reload.
+bsdg.arwvevery = bsdg.arwvevery or 50
+
 -- ---------------------------------------------------------------------------
 -- Connection
 -- ---------------------------------------------------------------------------
@@ -77,10 +109,20 @@ function bsdg.open()
   return true
 end
 
+-- FORGET WHAT THE GENERATOR IS PLAYING. Called wherever the answer stops being knowable: a dropped
+-- session, a reset, and every failure inside select(). Cheap, and the only safe default -- a cache that
+-- survives a reconnect would let the next cell skip the one verify that could have caught a generator
+-- that came back playing something else.
+function bsdg.forget()
+  bsdg.cur, bsdg.curamp, bsdg.curofst, bsdg.cursrate = nil, nil, nil, nil
+  bsdg.nskip = 0
+end
+
 function bsdg.close()
   if bsdg.id == nil then return end
   pcall(function() tspnet.disconnect(bsdg.id) end)
   bsdg.id = nil
+  bsdg.forget()
 end
 
 -- EVERY SESSION, not just ours. tspnet sessions survive a script ending, and a stale one holds the
@@ -88,6 +130,7 @@ end
 -- generator. Called at both ends of a run.
 function bsdg.reset()
   bsdg.id = nil
+  bsdg.forget()
   pcall(function() tspnet.reset() end)
 end
 
@@ -172,6 +215,86 @@ end
 
 -- Does the generator answer at all? Everything else is meaningless if this fails, so a caller checks
 -- it once per lap rather than interpreting a thousand downstream failures.
+-- WHAT THE GENERATOR SAYS IT IS DOING, as one compact line for a record. -> string
+--
+-- FOR A CELL THAT ALREADY FAILED, and only for one. 24 % of a diagnostic lap came back 'line is idle (no
+-- transitions)' -- deterministically on particular (vector, rate) pairs, at every amplitude from 1.4 to
+-- 20 Vpp -- and nothing in the record could say whether the generator was driving the wrong waveform,
+-- the wrong amplitude, the wrong sample rate, or nothing at all. bench_matrix.py has always read BSWV
+-- back and failed the point when it did not match; the soak path never did, which is the same gap that
+-- let a clamped offset be measured as a decoder result for a hundred laps.
+--
+-- FOUR QUERIES IS FOUR ROUND TRIPS, which is why this is not on the healthy path. A cell that produced no
+-- stimulus has already spent its time; spending four more round trips to learn WHY is the cheapest
+-- diagnostic on this bench. On a lap where nothing fails it costs nothing at all.
+-- READ AND THROW AWAY ANYTHING STILL BUFFERED. -> reads discarded
+--
+-- WHY IT IS NEEDED, AND ONLY BY snapshot(). bsdg.ask() returns after ONE tspnet.read as soon as any
+-- bytes are available, so a reply longer than a chunk is TRUNCATED and its tail stays in the socket for
+-- the next reader. Four queries in a row therefore desynchronise: measured on the bench, a snapshot came
+-- back with `srate=0S` and the SRATE reply sitting in the `outp=` field, every value plausible and every
+-- label wrong. The soak's own two queries survive this because they are substring tests on content that
+-- arrives in the first chunk -- so ask() is deliberately left alone, and the draining is done here.
+function bsdg.drain()
+  if bsdg.id == nil then return 0 end
+  local n, guard = 0, 0
+  -- BOUNDED. A generator streaming without end would otherwise hold the interpreter for ever, and this
+  -- runs inside a soak that has to survive eight days unattended.
+  while guard < 40 do
+    guard = guard + 1
+    local avail = 0
+    if not pcall(function() avail = tspnet.readavailable(bsdg.id) or 0 end) then return n end
+    if avail <= 0 then return n end
+    if not pcall(function() tspnet.read(bsdg.id) end) then return n end
+    n = n + 1
+  end
+  return n
+end
+
+-- IT MUST NOT DISTURB bsdg.nfail, AND THAT IS NOT TIDINESS. nfail is the wedge detector:
+-- bench_run.tsp's select retry loop breaks the moment it is non-zero, on the reasoning that retrying a
+-- wedged generator costs a minute a cell and cannot help. A query with no reply raises it. So four
+-- queries charged to a stimulus-free cell left nfail at 1, and the NEXT cell's select got one try
+-- instead of five -- turning a recoverable late ARWV switch into a hard failure and printing GENERATOR
+-- SILENT within the first lap of the very run this diagnostic was added for. A read that mutates shared
+-- failure state is not a read. Saved and restored around the whole snapshot.
+function bsdg.snapshot()
+  local out, k = {}, nil
+  local keep, keepwhy = bsdg.nfail, bsdg.why
+  -- NOT ASKED OF A GENERATOR THAT IS ALREADY NOT ANSWERING. Four queries at bsdg.timeout each is 20 s,
+  -- and the answer would be four nils -- which is what nfail already said. The cells worth asking about
+  -- are the ones where the generator IS talking and the capture still came back empty.
+  if keep > 0 then return 'skipped: nfail=' .. tostring(keep) end
+  -- A SHORT TIMEOUT FOR THE WHOLE SNAPSHOT, restored below. At the standard bsdg.timeout of 5 s four
+  -- unanswered queries would cost 20 s on a cell that has already failed, and on a plan built out of
+  -- failing cells that is most of the lap. One second is ample for a generator that is answering at all,
+  -- and a query this misses is recorded as nil -- which is itself the finding.
+  local keept = bsdg.timeout
+  bsdg.timeout = 1
+  local q = {{'arwv', 'C1:ARWV?'}, {'bswv', 'C1:BSWV?'}, {'srate', 'C1:SRATE?'}, {'outp', 'C1:OUTP?'}}
+  for k = 1, table.getn(q) do
+    -- DRAINED BEFORE EACH QUERY, so this label carries the first chunk of ITS OWN reply rather than the
+    -- previous one's tail. A long reply is still truncated -- ARWV's name, BSWV's AMP and OFST and
+    -- SRATE's MODE all arrive in the first chunk, which is what this is for -- but nothing is misattributed.
+    bsdg.drain()
+    local r = bsdg.ask(q[k][2])
+    -- THE REPLY IS FLATTENED, not parsed. A parser here would have to know every field of four different
+    -- replies and would fail silently on a firmware that reorders one; the host has judge code and can
+    -- afford to parse. Commas would break the record's own CSV, so they become semicolons.
+    if r == nil then
+      out[k] = q[k][1] .. '=nil'
+    else
+      r = string.gsub(r, '[\r\n]', '')
+      r = string.gsub(r, ',', ';')
+      out[k] = q[k][1] .. '=' .. r
+    end
+  end
+  -- RESTORED WHATEVER HAPPENED ABOVE, including on the path where every query timed out: the caller's
+  -- view of how healthy the generator is must be the one it had before it asked a diagnostic question.
+  bsdg.nfail, bsdg.why, bsdg.timeout = keep, keepwhy, keept
+  return table.concat(out, ' ')
+end
+
 function bsdg.alive()
   local r = bsdg.ask('*IDN?')
   if r == nil then return false, bsdg.why end
@@ -209,44 +332,87 @@ function bsdg.select(name, amp, ofst, srate)
     return false, string.format('sample rate %s is outside %g..%g', tostring(srate),
                                 bsdg.minsrate, bsdg.maxsrate)
   end
-  local sel = name
-  if string.find(name, '/', 1, true) ~= nil then sel = '"' .. name .. '"' end
-  if not bsdg.cmd('C1:ARWV NAME,' .. sel) then return false, bsdg.why end
-  -- Compared, not assumed. A bare flash name needs no stripping; the path and .bin removal is for the
-  -- key-file form, which answers without its extension.
-  local want = string.gsub(name, '^.*/', '')
-  want = string.gsub(want, '%.bin$', '')
-  -- ASKED AGAIN BECAUSE THE REPLY CAN LAG. Selecting makes this generator briefly stop answering, and
-  -- 15 of the 86 cells in a smoke run were thrown away on 'no reply to C1:ARWV? within 5 s' from a
-  -- generator that was working -- 17 % of the run, recorded as stimulus failures.
+  -- NOTHING CHANGED, SO NOTHING IS SENT. A repeat cell -- same waveform, same amplitude, offset and
+  -- sample rate -- needs no conversation at all: the arb is already looping and the capture opens on
+  -- whatever phase the wait lands on. That makes a second look at one operating point cost a capture and
+  -- a decode instead of a capture, a decode and seven SCPI messages of which two block.
   --
-  -- A REPLY THAT NAMES THE PREVIOUS WAVEFORM IS A LATE SWITCH, not a missing file: 4 of the 39 real
-  -- switches in a lap answer that way and the generator has the waveform. Asking again does not recover
-  -- it -- re-sending the selection does, which brun.selretry handles. So the failure below does not
-  -- assert which of the two it was.
-  local ok, r, tries = false, nil, nil
-  for tries = 1, bsdg.arwvtries do
-    if tries > 1 then delay(bsdg.arwvwait) end
-    r = bsdg.ask('C1:ARWV?')
-    if r ~= nil and string.find(string.upper(r), string.upper(want), 1, true) ~= nil then
-      ok = true
-      break
-    end
+  -- AND IT IS PROBABLY BETTER STIMULUS, NOT JUST CHEAPER: re-sending SRATE VALUE may restart the arb,
+  -- which would tie the capture phase to the command timing. Free-running between captures cannot.
+  -- That is a hypothesis about this generator, not a measurement -- the phase would have to be measured
+  -- to claim it -- but it is a reason this path is not merely an optimisation.
+  if name == bsdg.cur and amp == bsdg.curamp and (ofst or 0) == bsdg.curofst
+      and srate == bsdg.cursrate and bsdg.id ~= nil and bsdg.nskip < bsdg.arwvevery then
+    bsdg.nskip = bsdg.nskip + 1
+    bsdg.nsame = bsdg.nsame + 1
+    return true
   end
-  if not ok then
-    if r == nil then return false, bsdg.why end
-    return false, string.format('ARWV? still names %s after %d tries selecting %s -- the switch did '
-                                .. 'not land, or the generator does not have it',
-                                tostring(r), bsdg.arwvtries, name)
+
+  -- THE WAVEFORM IS ALREADY THE RIGHT ONE, so neither the write nor the verify is sent. Only the 39
+  -- cells a lap that genuinely change vector pay for either, and bsdg.arwvevery forces the verify back
+  -- periodically so a cache that has gone stale cannot stay stale.
+  if name == bsdg.cur and bsdg.id ~= nil and bsdg.nskip < bsdg.arwvevery then
+    bsdg.nskip = bsdg.nskip + 1
+  else
+    -- FORGOTTEN BEFORE THE WRITE, not after the verify fails. From the moment ARWV NAME goes out, what
+    -- the generator is playing is unknown, and an early return between here and the confirmation must
+    -- not leave a name behind that the next cell would trust.
+    bsdg.forget()
+    local sel = name
+    if string.find(name, '/', 1, true) ~= nil then sel = '"' .. name .. '"' end
+    if not bsdg.cmd('C1:ARWV NAME,' .. sel) then return false, bsdg.why end
+    -- Compared, not assumed. A bare flash name needs no stripping; the path and .bin removal is for the
+    -- key-file form, which answers without its extension.
+    local want = string.gsub(name, '^.*/', '')
+    want = string.gsub(want, '%.bin$', '')
+    -- ASKED AGAIN BECAUSE THE REPLY CAN LAG. Selecting makes this generator briefly stop answering, and
+    -- 15 of the 86 cells in a smoke run were thrown away on 'no reply to C1:ARWV? within 5 s' from a
+    -- generator that was working -- 17 % of the run, recorded as stimulus failures.
+    --
+    -- A REPLY THAT NAMES THE PREVIOUS WAVEFORM IS A LATE SWITCH, not a missing file: 4 of the 39 real
+    -- switches in a lap answer that way and the generator has the waveform. Asking again does not recover
+    -- it -- re-sending the selection does, which brun.selretry handles. So the failure below does not
+    -- assert which of the two it was.
+    local vok, r, tries = false, nil, nil
+    for tries = 1, bsdg.arwvtries do
+      if tries > 1 then delay(bsdg.arwvwait) end
+      r = bsdg.ask('C1:ARWV?')
+      if r ~= nil and string.find(string.upper(r), string.upper(want), 1, true) ~= nil then
+        vok = true
+        break
+      end
+    end
+    if not vok then
+      if r == nil then return false, bsdg.why end
+      return false, string.format('ARWV? still names %s after %d tries selecting %s -- the switch did '
+                                  .. 'not land, or the generator does not have it',
+                                  tostring(r), bsdg.arwvtries, name)
+    end
+    -- CONFIRMED, and this is the only assignment to bsdg.cur -- downstream of the comparison, never of
+    -- the command. A cache set from what was asked for could assert a switch that never landed.
+    bsdg.cur, bsdg.nskip = name, 0
   end
   if not bsdg.cmd(string.format('C1:BSWV AMP,%.4f,OFST,%.4f', amp, ofst or 0)) then
+    bsdg.forget()
     return false, bsdg.why
   end
-  if not bsdg.cmd('C1:SRATE MODE,TARB') then return false, bsdg.why end
-  if not bsdg.cmd(string.format('C1:SRATE VALUE,%.6f', srate)) then return false, bsdg.why end
+  -- TrueArb IS STILL SET AND STILL VERIFIED ON EVERY CELL, deliberately. Neither manual says whether
+  -- BSWV resets the sample-rate mode, and a silent fall back to DDS resamples the stored points and
+  -- corrupts the sub-sample edge timing this project exists to measure. That is the one failure worth a
+  -- blocking query per cell, so the saving above stops here rather than taking the last round trip.
+  if not bsdg.cmd('C1:SRATE MODE,TARB') then bsdg.forget(); return false, bsdg.why end
+  if not bsdg.cmd(string.format('C1:SRATE VALUE,%.6f', srate)) then
+    bsdg.forget()
+    return false, bsdg.why
+  end
   local ok, why = bsdg.truearb()
-  if not ok then return false, why end
-  return bsdg.output(true)
+  if not ok then bsdg.forget(); return false, why end
+  local ook, owhy = bsdg.output(true)
+  if not ook then bsdg.forget(); return false, owhy end
+  -- Recorded only once the whole conversation has succeeded, so a repeat cell can only skip a state
+  -- that was fully established.
+  bsdg.curamp, bsdg.curofst, bsdg.cursrate = amp, ofst or 0, srate
+  return true
 end
 
 -- THREE TRIES, HALF A SECOND APART. After a large upload this generator stops answering for a moment,

@@ -41,11 +41,9 @@ local function shipdefaults()
   brun.selretry, brun.selwait = SHIP.selretry, SHIP.selwait
 end
 
--- THE REAL STORED NAMES, read out of tools/vector_names.py rather than typed here: the whole reason a
--- wrong ARWV reached an instrument is that the mock understood a name this test had invented. Parsing
--- the host's own map means the mock answers to exactly what the plan will carry.
 -- THE REAL STORED NAMES, from soakplan.py's own output rather than typed here: the reason a wrong ARWV
--- reached an instrument at all is that the mock understood a name this file had invented.
+-- reached an instrument at all is that the mock understood a name this file had invented. Parsing the
+-- plan the instrument will actually stream means the mock answers to exactly what the cells carry.
 local ARB
 do
   local ph = io.popen("python3 tools/soakplan.py --emit-csv --iteration 1 "
@@ -201,6 +199,189 @@ do
   ck(iarwv ~= nil and ibswv ~= nil and itarb ~= nil and itarb > iarwv and itarb > ibswv,
      'TrueArb is set LAST, after ARWV and BSWV',
      string.format('arwv@%s bswv@%s tarb@%s', tostring(iarwv), tostring(ibswv), tostring(itarb)))
+end
+
+-- ---------------------------------------------------------------------------
+print('')
+print('-- not re-asking for what the generator is already playing --')
+-- A LAP SWEEPS 43 RATES ACROSS ONE WAVEFORM, so 97.7 % of cells used to re-select a waveform that was
+-- already selected. That is not free in either direction: the ARWV write is what makes this generator
+-- briefly stop answering, and the ARWV? verifying it then blocks on a stall the write itself caused.
+-- These assertions are about SCPI TRAFFIC rather than about time, because traffic is what a mock can
+-- measure and time is not -- but the two queries removed here are the round trips.
+do
+  -- How many log lines match, and the log is read rather than the mock's final state: the state cannot
+  -- distinguish "set once" from "set forty-three times", which is the entire question.
+  local function nlog(pat)
+    local n, k = 0, nil
+    for k = 1, MOCKB.sdg.nlog do
+      if string.find(string.upper(MOCKB.sdg.log[k]), string.upper(pat), 1, true) ~= nil then
+        n = n + 1
+      end
+    end
+    return n
+  end
+
+  MOCKB_SDG({})
+  bsdg.reset()
+  bsdg.alive()
+  local base = MOCKB.sdg.nlog
+  -- 43 rates on ONE waveform: what a lap actually does between vector changes.
+  local i, allok = nil, true
+  for i = 1, 43 do
+    local ok = bsdg.select(ARB.v77, 5.0, 0.0, 96000 + i)
+    if not ok then allok = false end
+  end
+  ck(allok, '43 rates on one waveform all select')
+  ck(nlog('ARWV NAME') == 1,
+     'one ARWV NAME for 43 cells on the same waveform, not 43', nlog('ARWV NAME'))
+  ck(nlog('ARWV?') == 1,
+     'and one ARWV? verify, not 43 -- the blocking query is what this saves', nlog('ARWV?'))
+  ck(nlog('BSWV AMP') == 43, 'while every cell still sets its own amplitude and offset', nlog('BSWV AMP'))
+  ck(nlog('SRATE VALUE') == 43, 'and its own sample rate', nlog('SRATE VALUE'))
+  -- THE ONE ROUND TRIP DELIBERATELY KEPT. Neither manual says whether BSWV resets the sample-rate mode,
+  -- and a silent fall back to DDS resamples the stored points and corrupts the sub-sample edge timing
+  -- this project exists to measure. So TrueArb is still asserted and still verified on every cell.
+  ck(nlog('SRATE?') == 43, 'and TrueArb is still VERIFIED on every cell, not cached', nlog('SRATE?'))
+  local per = (MOCKB.sdg.nlog - base) / 43
+  ck(per > 4.9 and per < 5.2,
+     'so a same-waveform cell costs 5 messages instead of 7', string.format('%.2f', per))
+
+  -- A REPEAT CELL -- the user-facing point of the cache. Same waveform, same amplitude, same offset,
+  -- same rate: a second look at one operating point at a fresh capture phase. Nothing needs to be sent
+  -- at all, because the arb is already looping.
+  MOCKB_SDG({})
+  bsdg.reset()
+  bsdg.alive()
+  ck(bsdg.select(ARB.v77, 5.0, 0.0, 96000) == true, 'a first cell at an operating point selects')
+  local after1 = MOCKB.sdg.nlog
+  local r, nrep = nil, 0
+  for r = 1, 8 do
+    if bsdg.select(ARB.v77, 5.0, 0.0, 96000) then nrep = nrep + 1 end
+  end
+  ck(nrep == 8, 'and eight repeats of the identical operating point all succeed', nrep)
+  ck(MOCKB.sdg.nlog == after1,
+     'sending NOTHING to the generator: 0 messages for 8 repeat captures',
+     MOCKB.sdg.nlog - after1)
+  ck(bsdg.nsame == 8, 'and the run can account for them', bsdg.nsame)
+
+  -- CHANGING ANY ONE OF THE FOUR BREAKS THE SKIP. A cache that ignored the offset would drive a
+  -- stimulus the record does not describe, which is the failure mode this project has already spent a
+  -- soak on -- so each field is checked on its own rather than trusting one composite key.
+  local fields = {{'amplitude', 6.0, 0.0, 96000}, {'offset', 5.0, 1.0, 96000},
+                  {'sample rate', 5.0, 0.0, 48000}}
+  local f
+  for f = 1, 3 do
+    MOCKB_SDG({})
+    bsdg.reset()
+    bsdg.alive()
+    bsdg.select(ARB.v77, 5.0, 0.0, 96000)
+    local n0 = MOCKB.sdg.nlog
+    bsdg.select(ARB.v77, fields[f][2], fields[f][3], fields[f][4])
+    ck(MOCKB.sdg.nlog > n0,
+       'a change of ' .. fields[f][1] .. ' is still sent, never skipped',
+       MOCKB.sdg.nlog - n0)
+  end
+
+  -- A DIFFERENT WAVEFORM STILL VERIFIES. The cache must not be able to suppress the check that catches
+  -- a switch that did not land.
+  MOCKB_SDG({})
+  bsdg.reset()
+  bsdg.alive()
+  bsdg.select(ARB.v77, 5.0, 0.0, 96000)
+  local n0 = nlog('ARWV?')
+  bsdg.select(ARB.v78, 5.0, 0.0, 96000)
+  ck(nlog('ARWV?') == n0 + 1, 'a real vector change still sends ARWV and verifies the reply')
+
+  -- A DROPPED SESSION FORGETS. A reconnected generator knows nothing about what it was playing, and a
+  -- cache that survived the reconnect would skip the one verify able to notice.
+  MOCKB_SDG({})
+  bsdg.reset()
+  bsdg.alive()
+  bsdg.select(ARB.v77, 5.0, 0.0, 96000)
+  bsdg.close()
+  ck(bsdg.cur == nil, 'closing the session forgets what was selected')
+  local n1 = nlog('ARWV NAME')
+  bsdg.select(ARB.v77, 5.0, 0.0, 96000)
+  ck(nlog('ARWV NAME') == n1 + 1, 'so the next cell re-selects and re-verifies')
+
+  -- A FAILED SELECT FORGETS, which is what makes brun.selretry able to recover. If a failure left the
+  -- name cached, every one of the five retries would skip the selection and the run would report the
+  -- same failure five times without ever re-sending anything.
+  MOCKB_SDG({refuse_arb = ARB.v78})
+  bsdg.reset()
+  bsdg.alive()
+  bsdg.select(ARB.v77, 5.0, 0.0, 96000)
+  local ok2 = bsdg.select(ARB.v78, 5.0, 0.0, 96000)
+  ck(ok2 == false, 'a refused waveform still fails')
+  ck(bsdg.cur == nil, 'and the failure forgets, so brun.selretry re-sends instead of re-skipping')
+  local n2 = nlog('ARWV NAME')
+  bsdg.select(ARB.v78, 5.0, 0.0, 96000)
+  ck(nlog('ARWV NAME') == n2 + 1, 'which the retry demonstrably does')
+
+  -- THE CEILING ON A STALE CACHE. Nothing in this module can change the selected waveform behind the
+  -- cache, but the generator is a third party -- a front-panel press could. One forced verify every
+  -- arwvevery skips bounds how many cells a stale cache could misattribute.
+  MOCKB_SDG({})
+  bsdg.reset()
+  bsdg.alive()
+  bsdg.arwvevery = 10
+  for i = 1, 25 do bsdg.select(ARB.v77, 5.0, 0.0, 96000 + i) end
+  bsdg.arwvevery = 50
+  ck(nlog('ARWV?') == 3,
+     'the verify comes back every arwvevery cells, so a stale cache is bounded', nlog('ARWV?'))
+
+  -- ZERO IS AN EXACT REVERT, and that is what makes the saving measurable rather than merely argued:
+  -- two laps of one plan, this at 0 against the default, and the wall-time difference is what the skip
+  -- is worth on the real generator. It is also the escape hatch -- one assignment over the socket, no
+  -- reload -- which matters on an instrument where a reload costs a display-object generation.
+  MOCKB_SDG({})
+  bsdg.reset()
+  bsdg.alive()
+  bsdg.arwvevery = 0
+  local z0 = MOCKB.sdg.nlog
+  for i = 1, 43 do bsdg.select(ARB.v77, 5.0, 0.0, 96000 + i) end
+  local zoff = MOCKB.sdg.nlog - z0
+  MOCKB_SDG({})
+  bsdg.reset()
+  bsdg.alive()
+  bsdg.arwvevery = 50
+  local o0 = MOCKB.sdg.nlog
+  for i = 1, 43 do bsdg.select(ARB.v77, 5.0, 0.0, 96000 + i) end
+  local zon = MOCKB.sdg.nlog - o0
+  ck(zoff == 43 * 7, 'arwvevery = 0 sends the full 7-message conversation on every cell', zoff)
+  ck(zon < zoff, 'and the default sends fewer', string.format('%d vs %d', zon, zoff))
+end
+
+-- ---------------------------------------------------------------------------
+print('')
+print('-- reading the generator back on a stimulus-free cell --')
+-- THE DIAGNOSTIC MUST NOT CREATE THE FAULT IT OBSERVES. bsdg.nfail is the wedge detector: bench_run's
+-- select retry loop breaks the moment it is non-zero. bsdg.snapshot() asks four questions, and a query
+-- with no reply raises nfail -- so charging four of them to a stimulus-free cell left nfail at 1 and gave
+-- the NEXT cell one select attempt instead of five. That printed GENERATOR SILENT inside the first lap of
+-- the run this diagnostic was written for, on a generator that was answering perfectly.
+do
+  MOCKB_SDG({})
+  bsdg.reset()
+  bsdg.alive()
+  bsdg.select(ARB.v77, 5.0, 0.0, 96000)
+  local snap = bsdg.snapshot()
+  ck(bsdg.nfail == 0, 'a snapshot of a healthy generator leaves nfail at 0', bsdg.nfail)
+  ck(snap ~= nil and string.find(snap, 'arwv=', 1, true) ~= nil,
+     'and it reports what the generator says it is playing', tostring(snap))
+  ck(string.find(snap, ',', 1, true) == nil,
+     'with no commas, which would break the record it is written into', tostring(snap))
+
+  -- AND ON A GENERATOR THAT HAS STOPPED ANSWERING: nfail must come back exactly as it went in, and the
+  -- snapshot must not spend four timeouts discovering what nfail already said.
+  MOCKB_SDG({dead = true})
+  bsdg.reset()
+  bsdg.nfail = 3
+  local s2 = bsdg.snapshot()
+  ck(bsdg.nfail == 3, 'a snapshot never changes nfail, even when nothing answers', bsdg.nfail)
+  ck(s2 ~= nil and string.find(s2, 'skipped', 1, true) ~= nil,
+     'and it does not ask a generator that is already known silent', tostring(s2))
 end
 
 -- ---------------------------------------------------------------------------
@@ -429,6 +610,33 @@ do
   -- the hours the instrument spent doing something else.
   ck(string.find(tres, 'Total: 16.4h of 412.1h', 1, true) ~= nil,
      'and the elapsed figure agrees with the percentage rather than the session', tres)
+
+  -- A CELL NUMBER PAST THE LAP SIZE MUST NOT PRINT A PERCENTAGE. A plan whose cell numbers run
+  -- cumulatively instead of restarting each lap makes brun.percell -- learned as the highest cell of the
+  -- previous lap -- smaller than this lap's numbers. Observed on the glass: 'cell 240/197  (122%)', which
+  -- an operator reasonably read as the run being broken. The cell number is always true so it is always
+  -- shown; the denominator and the share are withheld, exactly as 'left' already was.
+  brun.percell, brun.iterwant = 47, 6
+  brun.ncell, brun.nskipped = 251, 0
+  brun.t0, brun.tlap = os.time() - 900, os.time() - 900
+  brun.screen({iter = 6, cell = 251, pos = 7, vid = 'v77', baud = 9600}, ARB.v77)
+  local pres = tostring(MD.text(brun.ui.prog))
+  ck(string.find(pres, '7/47', 1, true) ~= nil,
+     'a cumulative plan shows the COUNTED position in the lap, not the label', pres)
+  ck(string.find(pres, '251/47', 1, true) == nil and string.find(pres, '(534%)', 1, true) == nil,
+     'so the panel cannot print a share over 100 %', pres)
+  ck(string.find(pres, 'r251', 1, true) ~= nil,
+     'and the plan label is still shown, because the record keys its rows on it', pres)
+  ck(string.find(pres, 'left', 1, true) ~= nil
+     and string.find(pres, 'left --', 1, true) == nil,
+     'and the lap countdown is a number rather than --, which is the point of the fix', pres)
+  -- AND THE ORDINARY CASE IS UNCHANGED: no pos on the row means the label IS the position, and no
+  -- redundant label is appended.
+  brun.percell = 197
+  brun.screen({iter = 5, cell = 100, vid = 'v77', baud = 9600}, ARB.v77)
+  local qres = tostring(MD.text(brun.ui.prog))
+  ck(string.find(qres, '100/197', 1, true) ~= nil and string.find(qres, 'r100', 1, true) == nil,
+     'a plan that restarts its numbering reads exactly as before', qres)
   brun.nskipped = 0
   brun.ui_destroy()
 
@@ -687,10 +895,20 @@ do
   brun.maxsdgfail = 20
   bsdg.timeout = 5
   MOCKB.sdg.wedged = false
-  ck(okk == true and string.find(tostring(whyk), 'TRIGGER key', 1, true) ~= nil,
-     'the TRIGGER key ends a run even from inside a hold', tostring(whyk))
-  ck(string.find(tostring(whyk), 'holding for the generator', 1, true) ~= nil,
-     'and says what it was holding for when it was pressed', tostring(whyk))
+  -- EXACTLY 'TRIGGER Pressed', because that is the whole message and the panel prints it after
+  -- 'STOPPED: '. Two things ride on the literal: brun.statesuffix() picks the amber STOPPED state by
+  -- searching the reason for bare uppercase 'TRIGGER', so a reword that drops it turns an operator stop
+  -- into ' - FINISHED' in green -- the one thing that line must never say about a cut-short run; and
+  -- brec.finish() only supplies the lap and cell when the reason does not already carry them, so a
+  -- reason that grows an 'L1C2:' prefix back would put two disagreeing cell numbers on one line.
+  ck(okk == true and tostring(whyk) == 'TRIGGER Pressed',
+     'the TRIGGER key ends a run even from inside a hold, and that is the whole message',
+     tostring(whyk))
+  -- WHAT IT WAS HOLDING FOR IS STILL RECORDED, just not in the stop reason: the run-total line carries
+  -- heldsecs over nhold retry(s). Asserted here so shortening the message cannot quietly lose it.
+  ck((brun.heldsecs or 0) > 0 and (brun.nhold or 0) > 0,
+     'and the hold it was pressed during is still counted for the run total',
+     string.format('%s s over %s retry(s)', tostring(brun.heldsecs), tostring(brun.nhold)))
   ck(brun.stopbad ~= true, 'and an operator stop is not a fault, so the screen does not go red')
 end
 
@@ -732,6 +950,32 @@ do
   -- plan whose laps are not all the same length.
   ck(brun.percell == 3, 'the lap size is learned from the lap that just finished',
      string.format('percell %d', brun.percell))
+  -- AND NOTHING GUESSES IT BEFORE THAT. perlap_guess used to divide brun.planrows by brun.iterwant and
+  -- offer the quotient, guarded only by divisibility -- which is nearly vacuous, and which assumes the
+  -- plan holds exactly the laps that were asked for. Plans are deliberately emitted with far more laps
+  -- than a run will reach so they never wrap, so that assumption is false by design. Measured on the
+  -- bench: a 4200-row 40-lap plan run with iterations=2 made the panel announce 2100 cells a lap, 4200
+  -- total and 5.9 HOURS REMAINING for a run that stopped 19 minutes later at 210 cells.
+  local keeprows, keepwant = brun.planrows, brun.iterwant
+  brun.planrows, brun.iterwant = 4200, 2
+  ck(brun.perlap_guess() == 0,
+     'an oversized plan gets NO guessed lap size -- 4200/2 is not 2100 cells a lap',
+     brun.perlap_guess())
+  brun.planrows, brun.iterwant = 1720, 1
+  ck(brun.perlap_guess() == 0,
+     'and the lap size is never inferred from the file at all: a plan declares it or it is unknown',
+     brun.perlap_guess())
+  brun.planrows, brun.iterwant = keeprows, keepwant
+  -- THE DECLARED FORM IS WHAT REPLACES IT, read straight into percell by nextrow.
+  writeplan({'# cells-per-lap=7',
+             '1,1,v77,' .. ARB.v77 .. ',9600,std,5.0000,0.0000,96000,0.000'})
+  brun.percell = 0
+  brun.planclose()
+  brun.planopen()
+  brun.nextrow()
+  ck(brun.percell == 7, 'a plan header declaring the lap size sets it before any cell runs',
+     string.format('percell %d', brun.percell))
+  brun.planclose()
   -- THE RENDERING HALF OF THE SAME DEFECT -- the lap line reporting the whole run's elapsed as this lap's
   -- -- is pinned where brun.screen is checked, with t0 and tlap deliberately set apart.
   shipdefaults()
@@ -1113,6 +1357,17 @@ do
      'it is rewritten for every cell, not just at the start',
      string.format('%d write(s) for 2 cells', MD.usertext_sets(display.TEXT1) - n0))
   -- THE RUN'S OWN VERDICT STAYS UP. After six days away the first question is whether it finished.
+  -- AND THE APP'S OWN PANEL SAYS SO, IN GREEN. The DONE line above goes to the home screen's TEXT1, which
+  -- the app's own screen covers -- so until this existed ui_end left the progress line showing the last
+  -- cell it drew ('lap 6/6  cell 251/244'), which is indistinguishable from a run still working, while
+  -- every other line it touched went grey. An operator across the room could not tell it had ended.
+  ck(string.find(tostring(MD.text(brun.ui.prog)), 'FINISHED', 1, true) ~= nil,
+     'the progress line becomes FINISHED when the run ends',
+     tostring(MD.text(brun.ui.prog)))
+  ck(MD.obj(brun.ui.prog) ~= nil and MD.obj(brun.ui.prog).color == brun.c_good,
+     'and it is green, which STOPPED (red) must not be confused with',
+     string.format('%s vs c_good %s', tostring((MD.obj(brun.ui.prog) or {}).color),
+                   tostring(brun.c_good)))
   ck(string.find(tostring(MD.usertext(display.TEXT1)), 'DONE', 1, true) ~= nil
      and string.find(tostring(MD.usertext(display.TEXT2)), 'iteration', 1, true) ~= nil,
      'and the finished run says so, with its reason',
@@ -1130,8 +1385,12 @@ do
   -- a text object per cell would exhaust the pool long before a week was up. The two swipe lines cost
   -- nothing at all -- they are the firmware's own -- and the status screen costs a fixed five texts
   -- under one screen, whatever the run's length. The status-screen block below asserts that directly.
-  ck(MD.live(display.OBJ_TEXT) <= 12,
-     'and the object count is fixed -- the swipe lines cost none, the screen a bounded twelve',
+  -- THIRTEEN SINCE THE LIVENESS SPINNER, which is a 1-character JUST_RIGHT object of its own. It could not
+  -- share the headline: FONT_MEDIUM is proportional, so padding with spaces moves a glyph ~4 px each and it
+  -- sat nowhere near the right edge. One object per BUILD -- not per cell -- is the price of right
+  -- alignment, and the number is pinned here because the pool is never reclaimed.
+  ck(MD.live(display.OBJ_TEXT) <= 13,
+     'and the object count is fixed -- the swipe lines cost none, the screen a bounded thirteen',
      tostring(MD.live(display.OBJ_TEXT)))
 
   -- THE DETECTOR ITSELF, FIRED ON PURPOSE. Without this the two assertions above pass just as happily
@@ -1226,11 +1485,11 @@ do
   brun.ui_destroy()
   local live0 = MD.live(display.OBJ_TEXT)
   local ok = brun.ui_build()
-  ck(ok == true and brun.ui ~= nil and brun.ui.n == 13,
-     'the screen is thirteen objects, built once', string.format('ok=%s n=%s', tostring(ok),
+  ck(ok == true and brun.ui ~= nil and brun.ui.n == 14,
+     'the screen is fourteen objects, built once -- thirteen plus the liveness spinner', string.format('ok=%s n=%s', tostring(ok),
                                                              tostring(brun.ui and brun.ui.n)))
   brun.soak(1, 'uiscreen')
-  ck(MD.live(display.OBJ_TEXT) - live0 == 12,
+  ck(MD.live(display.OBJ_TEXT) - live0 == 13,
      'and a whole run adds no more of them -- settext only, per cell',
      string.format('%d text object(s)', MD.live(display.OBJ_TEXT) - live0))
 
@@ -1429,7 +1688,7 @@ do
   local states = {
     {why = 'the generator failed 20 cells in a row: no reply to C1:ARWV? within 5 s', bad = true},
     {why = '1 iteration(s) complete'},
-    {why = 'the TRIGGER key was pressed'},
+    {why = 'TRIGGER Pressed'},
     {nbadsdg = 9999}, {nevtot = 99999},
     {ncell = 9999, nbad = 9999, nunexp = 9999},      -- 100 % unexpected: the red rate
     {ncell = 9999, nbad = 3000, nunexp = 3000},      -- amber
@@ -1454,7 +1713,7 @@ do
   brun.nbadsdg, brun.nevtot, brun.nsdgtot = 0, 0, 0
   brun.ncell, brun.nbad, brun.nunexp = 100, 0, 0
   brun.keyarmed = true
-  ck(brun.prompt() == 'Running -- press TRIGGER to stop and flush',
+  ck(brun.prompt() == 'Running',
      'and the prompt line it shows all week is the one that says how to stop it', brun.prompt())
   -- THE ALARM MUST NOT BE ABLE TO TAKE THE PROMPT'S PLACE. It did: 'generator missed 1 cell and
   -- recovered' replaced the only instruction on the screen, so the moment something went wrong the
@@ -1467,7 +1726,7 @@ do
   brun.iter, brun.cell = 1, 200
   brun.screen({iter = 1, cell = 200, vid = 'v77', baud = 9600}, 'SER_Fox_8N1_x10')
   brun.ui_note()
-  ck(MD.text(brun.ui.note) == 'Running -- press TRIGGER to stop and flush',
+  ck(MD.text(brun.ui.note) == 'Running',
      'an alarm leaves the prompt alone', tostring(MD.text(brun.ui.note)))
   local m5 = MD.text(brun.ui.msg[1])
   ck(m5 ~= nil and string.find(m5, 'generator missed', 1, true) ~= nil
@@ -1508,11 +1767,14 @@ do
   ck(string.find(ml, 'L7C1234', 1, true) ~= nil,
      'every log line names the lap as well as the cell', ml)
 
-  -- NEWEST AT THE BOTTOM, and bounded: a sixth message drops the first.
+  -- NEWEST AT THE BOTTOM, and bounded: with brun.msgn log lines, the oldest kept is 'event 6 - msgn + 1'.
+  -- FOUR LINES, NOT FIVE, since one row was traded for the colour-banded 'Errors:' count -- the log rarely fills
+  -- even four on a healthy run, and object ids are never reclaimed so a new row would have cost the pool.
   local mi
   for mi = 1, 6 do brun.msg(brun.c_lab, 'event ' .. tostring(mi)) end
   ck(string.find(tostring(MD.text(brun.ui.msg[brun.msgn])), 'event 6', 1, true) ~= nil
-     and string.find(tostring(MD.text(brun.ui.msg[1])), 'event 2', 1, true) ~= nil,
+     and string.find(tostring(MD.text(brun.ui.msg[1])),
+                     'event ' .. tostring(6 - brun.msgn + 1), 1, true) ~= nil,
      'the newest message is at the bottom and the log is bounded',
      tostring(MD.text(brun.ui.msg[1])) .. ' .. ' .. tostring(MD.text(brun.ui.msg[brun.msgn])))
   brun.nsdgtot, brun.msgs, brun.lastmsg = 0, nil, nil
@@ -1525,7 +1787,7 @@ do
      'and teardown frees every object with no refused deletes',
      string.format('live=%d delfails=%d', MD.live(display.OBJ_TEXT) - live0,
                    (sdec.delfails or 0) - nfail0))
-  ck(brun.ui_build() == true and brun.ui.n == 13, 'and it can be built again afterwards')
+  ck(brun.ui_build() == true and brun.ui.n == 14, 'and it can be built again afterwards')
   brun.ui_destroy()
 end
 

@@ -1735,11 +1735,38 @@ end
 --   timer.cleartime(); local rd = buf.readings; local s = 0
 --   for i = 1, 20000 do s = s + rd[i] end
 --   print(timer.gettime() / 20000)        -- seconds per proxy read
+-- AN OPTIONAL LIVENESS HOOK, nil in the shipped app and set by nothing inside it.
+--
+-- WHY IT IS HERE. The bench's panel spinner can only be advanced from code that is RUNNING, and the longest
+-- thing a soak cell does is sdec.acquire() -- 3.4 s of a 5.8 s cell, measured, of which the copy below is
+-- ~0.455 s per capture and there are about five captures a cell. Nothing in bench/ executes during any of
+-- it, so a spinner driven only from the bench freezes for seconds at exactly the point where a wedged
+-- instrument would hang. This is the smallest hook that fixes that: one call per chunk of samples.
+--
+-- READ BY NOTHING THAT DECIDES ANYTHING, like sdec.onebit. When sdec.tick is nil -- always, in the shipped
+-- app -- the only cost is one nil comparison per chunk, not per sample.
+sdec.tick = nil
+sdec.tickevery = sdec.tickevery or 2000    -- samples between hook calls; the bench caps the
+                                           -- redraw rate itself, so this only has to be small enough
+
+-- CHUNKED SO THE HOOK COSTS NOTHING PER SAMPLE. The obvious form -- `if sdec.tick ~= nil and
+-- math.mod(i, every) == 0` inside the loop -- puts a modulo on all 20 000 iterations of the hottest loop in
+-- the acquisition path, which is 0.455 s at 21.8 us a proxy read and does not need help getting slower.
+-- Slicing the range instead leaves the inner loop byte for byte what it was.
 function sdec.acq_copy(buf, n)
   local rd = buf.readings
   local t = {}
-  local i
-  for i = 1, n do t[i] = rd[i] end
+  local step = sdec.tickevery
+  if step == nil or step < 1 then step = n end
+  local i = 1
+  while i <= n do
+    local j = i + step - 1
+    if j > n then j = n end
+    local k
+    for k = i, j do t[k] = rd[k] end
+    if sdec.tick ~= nil then pcall(sdec.tick) end
+    i = j + 1
+  end
   sdec.smp = t
   return t
 end
@@ -1757,7 +1784,12 @@ end
 -- is bounded.
 function sdec.acq_free(n, ncopy, nofc)
   local buf = sdec.buf
-  -- Never read into a buffer a trigger model might still be writing.
+  -- Try not to read into a buffer a trigger model might still be writing. BEST EFFORT ONLY: the verdict
+  -- is discarded, so a settle that timed out is followed by buf.clear() and dig.read() regardless, and
+  -- the buffer is in continuous fill mode -- an overwrite is an overwrite. That is the documented route
+  -- to 4915 "attempting to store past the capacity of reading buffer". Rare: trig_settle aborts the model
+  -- first and polls 50 times at 10 ms, so false needs half a second of a model that will not idle, or ten
+  -- consecutive state() raises.
   sdec.trig_settle()
   n = sdec.acq_fit(n, buf)
   sdec.dig.count = n
@@ -1835,8 +1867,15 @@ function sdec.trig_settle()
     else
       unread = unread + 1
       -- KEEP TRYING FIRST, because a transient refusal is likelier than a broken firmware and the whole
-      -- loop is only half a second. Persistent failure returns FALSE -- the callers already treat false
-      -- as "do not touch the buffer", which is the safe direction.
+      -- loop is only half a second. Persistent failure returns FALSE.
+      --
+      -- NO CALLER READS THAT FALSE. All four call sites discard the result: acq_make_buffer,
+      -- acq_free, acq_triggered and serial_app's teardown. So this function is BEST EFFORT, not a
+      -- guarantee, and the two sites that go on to touch the buffer say so beside themselves.
+      -- acq_make_buffer is nonetheless safe, but by a different mechanism -- buffer.delete() fails
+      -- while the model owns the buffer and its `delok` path keeps the handle rather than allocating
+      -- over it. Making a caller act on false is a behaviour change on the acquisition path and wants
+      -- hardware to confirm; the honest comment is cheaper and comes first.
       if unread >= 10 then return false end
     end
     delay(0.01)
@@ -2138,7 +2177,7 @@ function sdec.acq_triggered(n, slope)
   end)
 
   -- SETTLE BEFORE ANYTHING ELSE TOUCHES THE BUFFER, on both paths: the failure path below reaches it
-  -- too, through acq_free.
+  -- too, through acq_free. BEST EFFORT -- the verdict is discarded here as well; see trig_settle().
   sdec.trig_settle()
 
   -- BOTH exits restore the popups, including the failure one: a muted panel that stayed muted
@@ -2240,7 +2279,13 @@ function sdec.acquire()
   -- Re-measure the levels on the real capture; the probe was only a scout.
   ok, why = sdec.sig_levels(sdec.smp, sdec.nread)
   if not ok then return false, why end
+  -- STAGE BOUNDARIES, for the liveness hook. Each of these three walks all sdec.nread samples, so on
+  -- the real capture they are the coarsest remaining steps; a tick between them costs one nil compare
+  -- and cannot affect what they compute, because each reads sdec.smp afresh and none carries state
+  -- into the next through anything a tick can reach.
+  if sdec.tick ~= nil then pcall(sdec.tick) end
   sdec.sig_edges(sdec.smp, sdec.nread)
+  if sdec.tick ~= nil then pcall(sdec.tick) end
   sdec.sig_idle(sdec.smp, sdec.nread)
   return true
 end

@@ -19,7 +19,7 @@ cd "$ROOT"
 # EVERY TRACKED .pdf MUST BE IN THIS DEFAULT LIST. release_sweep.py's `manual` stage runs this script
 # with no arguments, so a shipped PDF left out of the default is never rebuilt by the gate and rots
 # silently against its own source.
-DOCS="${*:-README.md docs/MANUAL.md docs/REFERENCE.md docs/BENCH.md}"
+DOCS="${*:-README.md docs/MANUAL.md docs/REFERENCE.md docs/BENCH.md docs/BETA.md}"
 
 for md in $DOCS; do
   base=$(echo "$md" | sed 's/\.md$//')

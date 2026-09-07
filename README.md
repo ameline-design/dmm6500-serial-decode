@@ -120,6 +120,21 @@ inference from API surfaces and vendor documents, and one report from real hardw
 Useful to include: `localnode.model` and `localnode.version`, whether **Manage Apps** offered the app at
 all, whether both screens built, and whether a capture decoded.
 
+## How to report bugs
+
+[**docs/BETA.md**](docs/BETA.md) ([PDF](docs/BETA.pdf)) is the note to read first, and the one to hand to
+anybody trying this on their own bench. It lists the four behaviours that **look** like defects and are
+not — chiefly that a signal whose band straddles ground is decoded inverted, deliberately — so a tester
+does not spend their evening rediscovering them.
+
+Then [open an issue](https://github.com/ameline-design/dmm6500-serial-decode/issues) with, as far as you
+can: a **screen grab** of the whole 800x480 frame (`tools/screenshot.py` takes one over LXI with nothing
+loaded), the **text that should have been decoded**, the **bit rate** you set, and the **framing** you
+sent. The expected payload is the one piece that cannot be reconstructed from anything else — it turns
+"the decode looks wrong" into a difference that can be computed.
+
+A wrong number that looks plausible is worth more than a crash.
+
 ## Before releasing it to anyone
 
 Three gates, each about ten times the cost of the one before it. Run them in order.
@@ -165,7 +180,7 @@ how to replay a failing cell offline, and the hazards worth knowing.
 | `tsp/` | the app. `serial_core` acquisition, `uart_decode` framing, `chunk_decode` resumable decode, `serial_ui` panel, `serial_app` orchestration |
 | `bench/` | the soak that runs **on** the instrument, loaded beside the app for a multi-day run and never shipped inside it. [bench/README.md](bench/README.md) is the runbook |
 | `tools/` | harnesses. `release_sweep.py` is the entry point; the rest are the authorities it calls |
-| `docs/` | the manual, instrument references, panel mockups |
+| `docs/` | the manual, instrument references, panel mockups, and [BETA.md](docs/BETA.md) for testers |
 
 `tsp/midi_decode.tsp` and `tsp/lin_decode.tsp` are complete and tested but **not shipped** in version 1
 — the LIN checksum has never been checked against a real frame. Re-adding either is one line in

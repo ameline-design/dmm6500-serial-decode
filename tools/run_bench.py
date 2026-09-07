@@ -453,9 +453,36 @@ def main():
     # vector's amplitude, offset and wait. The fallback agreed with the real tuple, so nothing was wrong
     # until a third name was added to it.
     ap.add_argument('--skip-vectors', default=','.join(_hw_skip()))
+    ap.add_argument('--rate-diag', action='store_true',
+                    help='record the PRE-SNAP rate fit on every cell: baud_raw, bittime, fitq and the '
+                         'snap flags. 63 %% of what still fails is a rate misfit and the record keeps '
+                         'only the post-snap rate, so a wrong fit and a wrong snap look identical')
     ap.add_argument('--idle-diag', action='store_true',
                     help="append sig_idle's own inputs (run0/run1/onebit/ratio) to every "
                          'status note -- a diagnostic lap, not a soak setting')
+    ap.add_argument('--timing', action='store_true',
+                    help='time each cell in four phases -- select+wait, acquire, decode, record -- on '
+                         'the instrument\'s own timer, written to the status note as t=a/b/c/d '
+                         '(cumulative seconds from the top of the cell). A cell costs ~4 s and nothing '
+                         'in the record says where it goes; the schema\'s only clock is os.time() at 1 s '
+                         'resolution, which cannot resolve a 0.2 s change. Takes the single global '
+                         'timer, so it disarms the recording absorb first')
+    ap.add_argument('--sdg-verify', action='store_true',
+                    help='on every cell that produced NO usable capture, read the generator back '
+                         '(ARWV?/BSWV?/SRATE?/OUTP?) and record what it said. 24 %% of one diagnostic '
+                         'lap came back "line is idle" and nothing in the record could say whether the '
+                         'generator was driving the wrong thing or nothing. Four round trips, charged '
+                         'only to cells that had already failed')
+    ap.add_argument('--no-sdg-skip', action='store_true',
+                    help='shorthand for --arwv-every 0: re-select and re-verify the waveform on EVERY '
+                         'cell even when it has not changed, which is what the tree did before the '
+                         'selection cache. The A half of the A/B that measures what the skip is worth')
+    ap.add_argument('--arwv-every', type=int, default=None, metavar='N',
+                    help='set bsdg.arwvevery explicitly. 0 disables the waveform-selection cache '
+                         'entirely; the shipped default is 50. SAY IT IN BOTH DIRECTIONS FOR AN A/B: in '
+                         'Lua 0 is TRUTHY, so `bsdg.arwvevery = bsdg.arwvevery or 50` PRESERVES a 0 '
+                         'across a module reload -- an arm that set 0 would silently poison the next arm '
+                         'and the comparison would be of one condition against itself')
     ap.add_argument('--random-per-lap', type=int, default=None, metavar='N',
                     help='play only N of the twelve random-payload vectors each lap (they are 31 %% of '
                          'a lap and produced no failures of either kind on a full offline lap). N=4 '
@@ -551,6 +578,38 @@ def main():
                 if not d.exec('do brun.idlediag = true end'):
                     raise SystemExit('the instrument would not accept the idle-diag flag')
                 print('  recording sig_idle inputs on every cell (diagnostic lap)')
+            if a.rate_diag:
+                # SET BEFORE THE RUN STARTS, same reason as every other flag here: brun.soak holds the
+                # interpreter once it is called and nothing from the host reaches the instrument again.
+                if not d.exec('do brun.ratediag = true end'):
+                    raise SystemExit('the instrument would not accept the rate-diag flag')
+                print('  recording the pre-snap rate fit on every cell (diagnostic lap)')
+            if a.timing:
+                # SET BEFORE THE RUN STARTS, same reason as every other flag here.
+                if not d.exec('do brun.timing = true end'):
+                    raise SystemExit('the instrument would not accept the timing flag')
+                print('  timing every cell in four phases (diagnostic lap)')
+            if a.sdg_verify:
+                # SET BEFORE THE RUN STARTS, same reason as every other flag here.
+                if not d.exec('do brun.sdgverify = true end'):
+                    raise SystemExit('the instrument would not accept the sdg-verify flag')
+                print('  reading the generator back on every stimulus-free cell (diagnostic lap)')
+            # SET BEFORE THE RUN STARTS, same reason as every other flag here. Zero disables both skips
+            # in bsdg.select, so every cell pays the full seven-message conversation including the two
+            # blocking queries -- which is what the tree did before the cache existed.
+            #
+            # STATED WHENEVER EITHER FLAG IS GIVEN, never left to a default. Lua treats 0 as TRUE, so the
+            # declaration `bsdg.arwvevery = bsdg.arwvevery or 50` cannot undo a 0 -- not even on a module
+            # reload -- and only a power cycle would. An A/B whose second arm inherited the first arm's 0
+            # would compare a condition with itself and report no difference, which is the answer that
+            # looks most like a real result.
+            every = 0 if a.no_sdg_skip else a.arwv_every
+            if every is not None:
+                if not d.exec('do bsdg.arwvevery = %d end' % every):
+                    raise SystemExit('the instrument would not accept the arwv-every setting')
+                print('  bsdg.arwvevery = %d (%s)'
+                      % (every, 'waveform re-selected on EVERY cell' if every == 0
+                         else 'selection cached, verify forced every %d cells' % every))
             if a.sdg_hold is not None:
                 # SET BEFORE THE RUN STARTS, because brun.soak reads it at the give-up point and nothing
                 # can reach the instrument once the loop holds the interpreter.

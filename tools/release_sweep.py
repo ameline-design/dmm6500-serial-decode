@@ -212,6 +212,15 @@ def stages(outdir, shots):
         Stage('unit-soakplan', ['python3', 'tools/soakplan.py', '--selftest'],
               note='the plan draw: pure in the iteration, the skip keys the shuffle, and every cell '
                    'inside both the rails and |OFST| + AMP/2 <= 10 V'),
+        # THE GENERATOR-REPLY PARSER, whose failure mode is a wrong answer that reads like a real one.
+        # probe_sdg_cost decides whether BSWV resets the sample-rate mode -- the unknown that costs a
+        # blocking query on every cell of every lap -- and it decides it by reading MODE out of a
+        # C1:SRATE? reply. Splitting that reply on punctuation alone leaves 'SRATE MODE' as one token, so
+        # MODE read None, and a None mode is indistinguishable from a mode that did not survive. The
+        # instrument would have answered correctly and the probe would have concluded the opposite.
+        Stage('unit-sdgreply', ['python3', 'tools/probe_sdg_cost.py', '--selftest'],
+              note='the SDG reply parser against known replies, including a DDS mode and an absent '
+                   'key -- the probe that reads them touches the instrument, this does not'),
         # The phase sweep across every bench vector, sharded over the cores. Its subject is the
         # variable the decoder is most sensitive to: where the capture opens.
         Stage('unit-phasesweep', ['python3', 'tools/sweep_all.py', '--quiet'],

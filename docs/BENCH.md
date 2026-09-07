@@ -206,6 +206,55 @@ wedge would spend a minute a cell proving what the first attempt proved.
 retry all 19 would have been stimulus-free cells. `brun.nselback` counts them and the run-total row carries
 it, which is the only thing distinguishing "it stopped happening" from "it is being fixed".
 
+### The selection is sent once per waveform, not once per cell
+
+A lap sweeps every rate across one waveform before moving to the next, so **97.7 % of cells used to
+re-select the waveform that was already playing** — and that is not free in either direction. The `ARWV
+NAME` write is what makes this generator briefly stop answering, and the `C1:ARWV?` verifying it then
+blocks on a stall the write itself caused. `bsdg.select()` therefore remembers what `ARWV?` last
+*confirmed* and sends neither when the name is unchanged.
+
+| per 86 cells (2 waveforms × 43 rates) | re-selecting every cell | selection cached |
+|---|---|---|
+| SCPI messages | 602 (7.00 per cell) | 434 (5.05 per cell) |
+| `ARWV NAME` writes | 86 | **2** |
+| `ARWV?` blocking queries | 86 | **2** |
+| `SRATE?` blocking queries | 86 | 86 |
+| **blocking round trips** | **172 (2.00 per cell)** | **88 (1.02 per cell)** |
+
+`C1:SRATE?` is still asked on every cell **deliberately**: neither manual says whether `BSWV` resets the
+sample-rate mode, and a silent fall back to DDS resamples the stored points and corrupts the sub-sample
+edge timing this bench exists to measure. That is the one failure worth a round trip per cell.
+
+The cache is set only from a *confirmed* reply, never from the command, so it cannot assert a switch that
+did not land; every failure path, `bsdg.close()` and `bsdg.reset()` all forget it, which is what lets
+`brun.selretry` re-send rather than re-skip. `bsdg.arwvevery` = 50 forces the verify back periodically so a
+cache made stale by something outside this module — a front-panel press — can only misattribute a bounded
+number of cells.
+
+**`bsdg.arwvevery = 0` restores the old conversation exactly** (measured: 602 messages either way), which
+makes this its own A/B: one lap of a plan each way, and the wall-time difference is what the skip is worth.
+`tools/run_bench.py --no-sdg-skip` is the B half. The traffic reduction is measured on the host; the *time*
+it buys is not, because the cost is the generator's response latency and only the generator can be asked.
+
+### Looking at one operating point more than once
+
+`tools/soakplan.py --emit-csv --repeats N` emits each operating point N times in a row, redrawing **only**
+the wait, so the capture phase changes and nothing else does. Because the repeats are consecutive and every
+other field matches, `bsdg.select()` sends the generator **nothing at all** for the 2nd..Nth — a repeat
+costs a capture and a decode instead of a capture, a decode and seven SCPI messages.
+
+The wait is drawn in **byte times**, not milliseconds, which is what makes it mean the same thing at every
+rate: ten byte-times is 0.4 ms at 250 kBd and 333 ms at 300 Bd. A fixed 0–9 ms window would cover 2250 bit
+times at the top of the ladder and 2.7 at the bottom.
+
+Repeats are for a **diagnostic** lap, not for the soak. One capture per condition cannot separate "always
+fails" from "fails at some capture phases", and a coin flip read as a property has already faked a leak
+here once. A soak looking for new failures wants more operating points instead. `--repeats 1` is the
+default and emits byte-for-byte what it always did — the first look keeps the original four-element draw
+key, because MT19937 seeds from the whole array and appending even a zero would change every wait in every
+plan already on disk.
+
 **That one loss is why `selretry` is 5 and not 3.** Two further attempts cost nothing on the 1638 cells a
 lap that re-select what is already playing, nothing on a switch that lands first time, and are spent only
 where three attempts have already been spent and lost — while a lost switch is a stimulus-free cell counted
@@ -257,6 +306,7 @@ the scope only ever reads.
 | `unit-seam` | a capture whose arb loop seam lands late must still be judged, and the narrower trim still required |
 | `unit-sdgguard` | every route by which an out-of-spec waveform could reach the generator refuses it |
 | `unit-soakplan` | the plan draw: pure in the iteration, the skip keys the shuffle, and every cell inside both the rails and the generator's `\|OFST\| + AMP/2 <= 10 V` envelope |
+| `unit-sdgreply` | the SDG reply parser against known replies, including a DDS mode and an absent key — the probe that reads them touches the instrument, this does not |
 | `unit-loremgate` | the harness's own long-payload verdict: every clean run validated, flag count bounded |
 | `tolerance` | recomputes the envelope table printed in the manual |
 | `package` `archive` | rebuilds the `.tspa`, then builds both screens *from the archive* against a mock front end |
@@ -334,7 +384,7 @@ emitted plan carries its `skipped` set and `sweep_plan.lua` prints it, and the p
 against a finished lap:
 
 ```
-python3 tools/soakplan.py --iteration 1 --skip-vectors v95,v96 \
+python3 tools/soakplan.py --iteration 1 --skip-vectors v95,v96,v97 \
         --check-log out/soak/<dir>/lap0001-FAILED.log
 ```
 
@@ -649,6 +699,56 @@ the generator answers it with its waveform service wedged.
 Every lap's per-cell output is written to `<record dir>/lap<n>-<verdict>.log` — including a lap the
 bench died under, tagged `STOPPED`. A lap that is not tallied is still examinable, which is what makes
 a later `grep` for an event code mean something.
+
+### The `run_bench.py` soak's own budget, and why it is not the 6.5 s above
+
+`run_bench.py --start` is a different path from `soak.py`, with a different lap and a different cell time.
+Measured over 1607 and 116 cells with `--timing`, on the standard plan with all four diagnostics on:
+
+| phase | mean | note |
+|---|---|---|
+| `select+wait` | 0.377 s | the generator conversation and the plan's wait |
+| `acquire` | 3.293 s | median 2.883, **p90 4.810** — the spread is the whole story |
+| `decode` | 1.736 s | |
+| `record+panel` | 0.010 s | 0.2 % of the cell; the panel is not worth throttling |
+| **cell** | **5.42–5.55 s** | phase sum, and wall clock over a full lap, agreeing |
+
+**The cell time belongs to the PLAN, not to the harness.** The same engine measured **4.945 s** on a plan
+built by `mkplan_rescale.py`, because that plan carries no low-baud cells — and it is the low-baud cells
+where `dmm.digitize.read` blocks longest in firmware, which is what the p90 of 4.81 s against a median of
+2.88 s is showing. Quote the figure for the plan you are about to run, or do not quote one.
+
+### Do not pass `--skip-vectors` to `run_bench.py` at all
+
+Its default is already `soakplan.HW_SKIP`, which is **`v95,v96,v97`**. Naming only the first two overrides
+that and re-admits v97, and the comment above `HW_SKIP` sets out exactly what that costs. Measured on two
+runs made that way, because this document's own next-step once spelled out the two-name form:
+
+* the lap becomes 40 × 43 = **1720** instead of 39 × 43 = **1677**, contradicting the top of this document
+* the skip is applied *before* the shuffle, so all 39 survivors take another vector's amplitude, offset and
+  wait — the per-cell record stops being comparable with the archive, which is the whole point of a seeded
+  plan. Aggregate rates survive; anything paired or keyed on (vector, rate, amplitude) does not
+* **v97 then fails 100 % of its 43 cells, in every lap**, as one contiguous burst reported
+  `SDG:ARWV? still names …` against whichever waveform preceded it in the draw — a different one each lap.
+  That reads convincingly like a generator wedge, and it is a configuration error
+
+**A lap-size disagreement between the offline twin and the instrument is a bug, not a property of the two
+harnesses.** Both should say 1677.
+
+Deriving the lap is still better than assuming it: `run_bench.py` waits `60 + 12 × plan_rows` seconds, so
+the "waiting up to N min" line at startup gives the row count for *all* laps. One run cannot separate the
+header lines from the lap; two can. 1 lap gave 1725 rows and 4 gave 6885, so `h + d = 1725` and
+`h + 4d = 6885` give 5 header lines — and a lap of whatever the skip list left in.
+
+**The instrument's clock is hours off the host's** — ~4 h behind as measured. A record's progress rows are
+stamped with the DMM's own `os.time()`, so a difference between two record stamps is sound (that is where
+5.55 s/cell comes from) and subtracting a host time from a record stamp is not.
+
+Two fields on the panel exist for an unattended run. `spin N` on the note line is the count of spinner
+redraws in the cell just finished, which distinguishes a wedged run from a coalesced display: measured 10
+redraws a cell arriving as 2 visible glyph steps, because the LCD only repaints where the interpreter
+yields. `mem NNNk` is the heap after the last collection — flat across lap boundaries is the answer you
+want, and a figure that only climbs is the one failure the cell counters cannot show.
 
 ---
 

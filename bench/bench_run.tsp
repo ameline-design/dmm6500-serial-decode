@@ -89,6 +89,34 @@ brun.stopevery = brun.stopevery or 0     -- 0 = never look; see the note in the 
 -- cell's status note carries sig_idle's own inputs -- run0, run1, onebit and the ratio the polarity
 -- decision turns on. See the append site in the cell loop.
 brun.idlediag = brun.idlediag or false
+-- OFF, for the same reason. Set true and every cell's status note carries the rate fit's own inputs --
+-- the PRE-SNAP estimate, the bit time it came from, and the fit quality.
+--
+-- WHY THE RECORD NEEDS IT. read_baud is the rate AFTER sig_snap has pulled it to a standard value, so a
+-- misreported rate is today indistinguishable between two unrelated faults: the fit was right and the snap
+-- went to the wrong neighbour -- 28800/31250 and 230400/250000 are only 8.51 % apart, and snaptol is 2 % --
+-- or the fit itself landed on the wrong solution. baud_raw / commanded separates them in one division, and
+-- its VALUE names the mechanism: ~1.10 is the 0.91-bit-time second fixed point, ~0.5 or ~2 or ~3 an
+-- odd sub-multiple. 63 % of what still fails on a realizable stimulus is a rate misfit, so this is the
+-- field the remaining defect population is made of.
+brun.ratediag = brun.ratediag or false
+
+-- READ THE GENERATOR BACK ON EVERY CELL THAT PRODUCED NO STIMULUS. Off by default because it costs four
+-- round trips, and on for a diagnostic lap because it is the only thing that can distinguish a decoder
+-- that could not read a good signal from a generator that was not producing one. 24 % of one diagnostic
+-- lap came back with no usable capture and the record could not tell those two apart.
+brun.sdgverify = brun.sdgverify or false
+
+-- TIME EACH CELL'S FOUR PHASES: select+wait, acquire, decode, record. Off by default; it takes the
+-- instrument's ONE global timer, and anything that does must disarm the recording absorb first.
+--
+-- WHY IT IS WORTH A FLAG. A cell costs ~4 s -- 2.95 s of it on cells that never decode at all -- and
+-- nothing in the record says where that goes. The only per-cell clock in the schema is os.time() at 1 s
+-- resolution, which cannot resolve a 0.2 s change: every per-pair median computed from it comes out an
+-- integer. Optimising instrument throughput without this is guesswork, and one round of that guesswork
+-- already produced a saving too small to see on the panel. serial_core.tsp's acq_copy carries a note
+-- proposing exactly this measurement for the buffer proxy read and calls it 'worth doing early'.
+brun.timing = brun.timing or false
 
 -- A HARD CEILING ON CELLS, 0 MEANING NONE, AND IT IS FOR THE OFFLINE SUITE. An indefinite run is
 -- stopped by cutting the power, which a test cannot do -- so a test drives brun.soak(0) and arranges for
@@ -182,7 +210,44 @@ brun.planrsub = nil
 --   planrows / iterwant, when the plan holds exactly the laps that were asked for;
 --   the highest cell number seen so far, which is exact from the first lap boundary onwards.
 brun.percell = 0          -- cells per lap, 0 until known
+-- WHY CELLS PRODUCED NOTHING, COUNTED SEPARATELY BY REASON. The single hardest thing to see on this bench
+-- was that 'line is idle (no transitions)' and 'no clear logic levels' are UNRELATED failures: over one
+-- 2746-cell lap the first was 457 cells of accumulated instrument state that a power cycle cleared
+-- completely, and the second was 196 cells of the drift vectors legitimately refusing, unchanged by the
+-- same power cycle. Both showed on the panel only as one 'failed' total, and separating them afterwards
+-- took a record fetch and a host script. One line of counters answers it while the run is going.
+brun.nidle, brun.nlevels, brun.nswing, brun.nwhyother = 0, 0, 0, 0
+-- SPINNER REDRAWS: nspin accumulates during a cell, nspinlast is the finished cell's total. Two fields
+-- because the panel draws at the TOP of a cell, so the only count it can honestly show is the previous
+-- one -- and because ui_show and ui_end both read it, a single-writer swap is what stops the second
+-- reader seeing a zero the first reader left behind.
+brun.nspin = 0
+brun.nspinlast = 0
+
+-- A COLLECTION AT A KNOWN POINT. sdec.acq_copy builds a FRESH 20 000-entry Lua table per capture and there
+-- are about five captures a cell, so a 9.5 h run makes roughly 35 000 of them. Left to Lua's own schedule
+-- the pauses fall wherever the allocator happens to trip, which is usually mid-decode -- inside one of the
+-- four phases brun.timing measures, where it is indistinguishable from a slow decode.
+--
+-- cells between collections; 0 disables. A LAP BOUNDARY ALWAYS COLLECTS whatever this says, because that is
+-- the one natural seam a long run has, and comparing the figure lap to lap is what shows growth.
+--
+-- 500, NOT 1, AND NOT 0. A run that looked like it had 'a large number of errors' turned out to be the
+-- normal 1.53 % rate seen over 1564 cells for the first time -- the 116-of-116 run before it was too small
+-- a sample to mean anything, since 1.5 % of 116 is 1.7 expected failures. So there is no evidence a
+-- collection harms a cell. But a collection per cell is also unmeasured, and 500 buys the thing that
+-- actually matters -- a heap figure at a known point, several times a lap -- at a duty low enough that it
+-- cannot plausibly be what a failure is blamed on next time.
+brun.gcevery = brun.gcevery or 500
+brun.memk = nil           -- heap KB after the last collection, shown on the note line
 brun.cellmax = 0          -- highest cell number seen this lap
+-- CELLS MEASURED IN THIS LAP, COUNTED HERE RATHER THAN READ OFF THE PLAN. `c.cell` is a LABEL the plan
+-- supplies, and a plan may number cells cumulatively across the whole file instead of restarting each lap
+-- -- hot1's does: lap 5 is cells 198..244 and lap 6 is 245..291. Using that label as a position inside the
+-- lap made the panel read 'cell 251/244 (103%)', and withholding the figure left no way to tell how much
+-- longer the run had. This counter is the position, is always right, and is what the per-lap countdown
+-- divides by. The plan's own label is still shown, because the record keys its rows on it.
+brun.lapcell = 0
 
 function brun.planopen()
   brun.planclose()
@@ -256,6 +321,18 @@ function brun.point(fs, baud, lock)
   pcall(function() eventlog.clear() end)
   sdec.force_baud, sdec.force_nbits = nil, nil
   sdec.force_par, sdec.force_nstop, sdec.force_invert = nil, nil, nil
+  -- THE RATE FIT'S OUTPUTS ARE CLEARED PER CELL, and this is not housekeeping. This function returns
+  -- EARLY when sdec.acquire() fails -- 'line is idle (no transitions)', 24 % of a diagnostic lap -- so
+  -- nothing downstream runs and these keep the PREVIOUS cell's values. The status note then records the
+  -- last decoding cell's baud_raw against this cell's commanded rate, and the quotient is a plausible
+  -- looking number: a reading of one such lap found 'harmonic fits' at exactly 1/16, 1/96 and 1/128
+  -- which were nothing but ratios of adjacent plan rates. A stale diagnostic is worse than an absent
+  -- one, because absent cannot be mistaken for a measurement.
+  sdec.baud_raw, sdec.bittime, sdec.fitratio = nil, nil, nil
+  sdec.fitq, sdec.snapped, sdec.snapfirm = nil, nil, nil
+  -- SAME REASON, ONE LINE DOWN: this function returns early on an acquire failure, so a phase time left
+  -- from the previous cell would be reported against this one.
+  brun.tacq, brun.tdec = nil, nil
   if lock then sdec.force_baud = baud end
   -- fs_want, NOT JUST sdec.fs. hw_config() consults force_baud: with nothing locked it resets sdec.fs to
   -- sdec.fs_default -- 1 MS/s -- and throws away whatever the caller asked for. sdec.fs_select() in
@@ -281,11 +358,17 @@ function brun.point(fs, baud, lock)
 
   local ok, why = false, nil
   local okc = pcall(function() ok, why = sdec.acquire() end)
+  -- READ BEFORE THE EARLY RETURNS, so a cell that failed to acquire still reports what the acquire cost.
+  -- Those are the cells worth timing: a quarter of a hot lap ends here and they are not free.
+  if brun.timing then pcall(function() brun.tacq = timer.gettime() end) end
+  brun.spin_tick()                      -- 3 of 6: the capture is in
   if not okc then r.why = 'acquire raised'; return r end
   if not ok then r.why = 'acq: ' .. tostring(why); return r end
 
   local okd, whyd = false, nil
   local okc2 = pcall(function() okd, whyd = sdec.decode() end)
+  if brun.timing then pcall(function() brun.tdec = timer.gettime() end) end
+  brun.spin_tick()                      -- 4 of 6: the decode is done
   if not okc2 then r.why = 'decode raised'; return r end
   if not okd then
     r.why = 'dec: ' .. tostring(whyd)
@@ -523,7 +606,7 @@ brun.ui = nil
 --
 -- ONLY STATE CHANGES ARE PUSHED, not one line per cell. A log that repeats 'generator missed 1 cell' for
 -- four hundred cells has thrown away the one thing a log is for -- knowing WHEN something started.
-brun.msgn = brun.msgn or 5
+brun.msgn = brun.msgn or 4
 brun.msgs = nil          -- oldest first; the newest is at the bottom of the screen
 brun.lastmsg = nil       -- so an unchanged state is not pushed again
 brun.lastshape = nil     -- the same state with a different count in it, ditto
@@ -664,11 +747,18 @@ function brun.ui_build()
       u.all[u.n] = h
       return h
     end
-    u.scr  = add(create(display.ROOT, display.OBJ_SCREEN, 'SERIAL DECODE SOAK'))
+    -- THE STOP INSTRUCTION LIVES IN THE TITLE, which is the one piece of the screen that never changes and
+    -- never scrolls. It used to occupy 31 of the note line's 58 characters on every draw of an eight-day
+    -- run to say something that is true the whole time. 'SD' rather than 'SERIAL DECODE' to make room, and
+    -- 'TRIGGER TO STOP' rather than 'PRESS TRIGGER TO STOP' -- the verb is the only word a title can drop.
+    u.scr  = add(create(display.ROOT, display.OBJ_SCREEN, 'SD SOAK - TRIGGER TO STOP'))
     -- THE HEADLINE FIRST, because it is the one line that answers the question from across the room.
     -- FONT_MEDIUM is the largest this firmware has -- the reference lists FONT_SMALL and FONT_MEDIUM and
     -- nothing else -- so it is emphasised by position and colour rather than by size.
     u.health = add(create(u.scr, display.OBJ_TEXT, 12, 20, 'SOAK HEALTH --', brun.c_ok, small, left))
+    -- 788 mirrors the 12 px left inset of every other line. One character, redrawn six times a cell, so it
+    -- gets its own object rather than making each tick rewrite the whole 58-character headline.
+    u.spin = add(create(u.scr, display.OBJ_TEXT, 788, 20, '|', brun.c_good, small, display.JUST_RIGHT))
     u.prog = add(create(u.scr, display.OBJ_TEXT, 12, 58, '--', brun.c_val, small, left))
     u.time = add(create(u.scr, display.OBJ_TEXT, 12, 92, '--', brun.c_lab, small, left))
     u.stim = add(create(u.scr, display.OBJ_TEXT, 12, 126, '--', brun.c_val, small, left))
@@ -680,6 +770,11 @@ function brun.ui_build()
     -- AND THE LOG BENEATH IT. Five lines at a 34 px pitch ends at y=398, inside the 420 the firmware
     -- allows and the 431 px content area -- checked, because display.create returns nil rather than
     -- raising for a y it will not take, and a nil parent makes every later object nil in silence.
+    -- ERRS ON ITS OWN ROW, in the y-slot the fifth log line used to occupy: brun.msgn went 5 -> 4 so this
+    -- costs no display object, and object ids are never reclaimed on this instrument. A soak that is going
+    -- well writes almost nothing to the log, so a line spent on the count that matters is a better trade.
+    u.errs = add(create(u.scr, display.OBJ_TEXT, 12, 262 + brun.msgn * 34, 'Errors: 0',
+                        brun.c_good, small, left))
     u.msg = {}
     local mk
     for mk = 1, brun.msgn do
@@ -723,8 +818,31 @@ end
 -- guess at, since it is the physical TRIGGER key and not anything on the glass.
 function brun.prompt()
   if brun.stopwhy ~= nil then return 'ended -- ' .. brun.fit(tostring(brun.stopwhy), 40) end
-  if brun.keyarmed then return 'Running -- press TRIGGER to stop and flush' end
-  return 'Running'
+  -- THE TITLE CARRIES 'PRESS TRIGGER TO STOP', so this no longer repeats it -- but the title is static and
+  -- brun.keyarmed is the result of stopkey_setup(), which can fail. When it does, the title is WRONG and
+  -- this line is the only thing that can say so: a panel instructing an operator to press a key that will
+  -- not be read is worse than one that says nothing.
+  -- AN EXPLICIT CALL TO ACTION WHEN THE RUN IS RED. brun.ui_status() is the traffic light: it goes red only
+  -- for things a person has to act on -- the run parked, the generator silent for several cells in a row
+  -- (its waveform is not on the wire, so every later cell measures nothing), the record no longer being
+  -- written, or the no-decode rate past brun.badrate over enough cells to mean it. In every one of those the
+  -- right move is to stop and look, and a soak left running is hours of instrument time spent on nothing.
+  --
+  -- THE HOST CANNOT PUT THIS THERE. brun.soak owns the interpreter for the whole run, so nothing from the
+  -- host reaches the panel until it ends -- the run has to notice its own condition and say so.
+  -- PCALLED AND GATED ON THERE BEING A RUN. brun.ui_status reads the run's tallies and raises if they are
+  -- still nil, which is the state before brun.soak initialises them -- and a raise anywhere in the UI path
+  -- puts a modal box on the panel of an instrument nobody is standing at. A prompt is decoration; it must
+  -- never be the thing that stops a soak.
+  if (brun.ncell or 0) > 0 then
+    local red = false
+    pcall(function() red = (brun.ui_status() == brun.c_bad) end)
+    if red then
+      return 'PRESS TRIGGER TO STOP NOW -- this run is not measuring anything'
+    end
+  end
+  if brun.keyarmed then return 'Running' end
+  return 'Running -- TRIGGER NOT ARMED: stop by cutting power'
 end
 
 -- THE TRAFFIC LIGHT. It answers one question -- is this worth walking over for -- so every red is
@@ -800,21 +918,55 @@ end
 -- whatever ran last; the two that change are the totals and the verdict, because after six days away the
 -- questions are 'did it finish' and 'is anything wrong', in that order.
 function brun.ui_end()
+  -- THE HOOK IS THE RUN'S, not the app's: released here so a later capture from the panel does not
+  -- redraw a spinner belonging to a soak that has finished.
+  if sdec ~= nil then sdec.tick = nil end
   local u = brun.ui
   if u == nil then return end
   local el = nil
   if brun.t0 ~= nil then el = os.time() - brun.t0 end
+  -- THE PROGRESS LINE BECOMES THE VERDICT, IN COLOUR. Until now this function left u.prog showing the last
+  -- cell it drew -- 'lap 6/6  cell 251/244' -- which is indistinguishable from a run still working, and
+  -- every other line it touches goes GREY. The first question from across the room is whether the thing has
+  -- finished, and the answer was written only to the home screen's TEXT1, which the app's own screen covers.
+  --
+  -- GREEN FOR A CLEAN END, RED FOR A STOP. brun.stopbad is set where a run gives up -- a generator that
+  -- went away, a record that could not be written -- so the two endings must not look alike: 'FINISHED' on
+  -- a run that actually died would be the worst line on the panel.
+  brun.ui_set(u.prog,
+              string.format('%s  %s lap(s)  %s cell(s)  ran %s',
+                            brun.stopbad and 'STOPPED' or 'FINISHED',
+                            brun.int(brun.iter), brun.int(brun.ncell), brun.hours(el)),
+              brun.stopbad and brun.c_bad or brun.c_good)
   brun.ui_set(u.time, 'ran ' .. brun.hours(el) .. '    ended    '
                       .. brun.int(brun.ncell) .. ' cell(s) done', brun.c_lab)
   -- THE SAME TWO COUNTS AS brun.ui_show, for the reason given there.
   brun.ui_set(u.fail, string.format('allowed refusals %s    UNEXPECTED %s    of %s cells',
                                     brun.int(brun.nexp), brun.int(brun.nunexp),
                                     brun.int(brun.ncell)), brun.c_lab)
-  brun.ui_set(u.vfail, string.format('generator missed %s cell(s)', brun.int(brun.nsdgtot)),
-              brun.c_lab)
+  brun.ui_set(u.vfail, string.format('nostim %s  idle %s  lvl %s  swing %s  other %s',
+                                     brun.int(brun.nsdgtot), brun.int(brun.nidle),
+                                     brun.int(brun.nlevels), brun.int(brun.nswing),
+                                     brun.int(brun.nwhyother)), brun.c_lab)
   local hl, hcol = brun.healthline()
-  brun.ui_set(u.health, hl, hcol)
-  brun.ui_set(u.note, brun.prompt(), brun.c_ok)
+  -- A RUN THAT GAVE UP SAYS SO ON THE HEADLINE, IN RED. brun.stopbad is set where the run parked -- the
+  -- generator gone, the record unwritable -- as opposed to finishing the laps it was asked for. The green
+  -- FINISHED on the progress line already covers the good ending; this covers the one an operator has to do
+  -- something about, on the line they read first. Only when it was stopped: appending nothing on a clean
+  -- finish keeps the headline meaning exactly what it means during the run.
+  local sfx, scol = brun.statesuffix()
+  hl = hl .. sfx
+  hcol = scol
+  brun.ui_set(u.health, brun.fit(hl, brun.panelw), hcol)
+  local el_, ecol_ = brun.errsline()
+  brun.ui_set(u.errs, el_, ecol_)
+  -- RED WHEN IT IS CARRYING THE STOP INSTRUCTION, so the one line telling the operator to act is not drawn
+  -- in the same colour as 'Running'.
+  local ncol_ = brun.c_ok
+  if brun.stopwhy == nil and (brun.ncell or 0) > 0 then
+    pcall(function() if brun.ui_status() == brun.c_bad then ncol_ = brun.c_bad end end)
+  end
+  brun.ui_set(u.note, brun.fit(brun.prompt() .. brun.diagflags(), brun.panelw), ncol_)
   brun.ui_note()
 end
 
@@ -850,6 +1002,149 @@ end
 brun.healthwarn = brun.healthwarn or 99
 brun.healthbad = brun.healthbad or 60
 
+-- THE DIAGNOSTIC FLAGS IN FORCE, as a short suffix. A run configured wrongly is silently worthless and
+-- nothing on the panel said which flags were on. bsdg.arwvevery is included for a specific reason: Lua
+-- treats 0 as TRUE, so `bsdg.arwvevery = bsdg.arwvevery or 50` cannot undo a 0 and a run can inherit one
+-- from the run before it -- an A/B whose second arm silently repeated the first is exactly the error this
+-- makes visible. Only non-default values are named, so a plain soak's headline is unchanged.
+function brun.diagflags()
+  -- SPELLED OUT, ON THE NOTE LINE. These were initials on the headline -- 'diag:RIST' -- and two things were
+  -- wrong with that: an operator cannot read it, and the headline had no room, so it CLIPPED to 'diag:RIS'
+  -- and silently claimed timing was off when it was on. A truncated flag string is worse than no flag
+  -- string. Moving the stop instruction into the screen title left the note line holding 7 characters of
+  -- its 58, which is where these belong.
+  local f = ''
+  if brun.ratediag then f = f .. ' rate' end
+  if brun.idlediag then f = f .. ' idle' end
+  if brun.sdgverify then f = f .. ' sdg' end
+  if brun.timing then f = f .. ' timing' end
+  if bsdg ~= nil and bsdg.arwvevery ~= nil and bsdg.arwvevery ~= 50 then
+    f = f .. ' arwv' .. brun.int(bsdg.arwvevery)
+  end
+  -- ONLY ON A DIAGNOSTIC RUN, which is why this sits after the empty test: a plain soak's note line holds
+  -- the prompt and nothing else, and that is the line an operator reads all week.
+  --
+  -- WHAT IT IS FOR. The spinner's redraw count for the cell just finished, which is the only thing that
+  -- separates the two reasons a spinner can look frozen. MEASURED: 10 redraws a cell against 2 visible
+  -- 45 deg steps, and 10 mod 4 = 2, so the writes land and the LCD does not repaint mid-script -- it shows
+  -- the accumulated glyph at the ~2 points a cell where the interpreter yields. 10 redraws over a 4.945 s
+  -- cell is one write every 0.49 s, so the write rate already meets the half-second target and the ceiling
+  -- is the repaint, not the tick. Raising the tick rate cannot help; this number is the evidence.
+  if f == '' then return '' end
+  f = f .. ' spin' .. brun.int(brun.nspinlast or 0)
+  -- AND THE HEAP AFTER THE LAST COLLECTION. On an unattended 9.5 h run a number that only ever climbs is
+  -- the failure nothing else on this screen would show: the record keeps being written and the cells keep
+  -- passing right up to the point the interpreter cannot allocate. Two laps' worth of this figure side by
+  -- side is the whole test, which is why a lap boundary always collects.
+  if brun.memk ~= nil then f = f .. ' mem' .. brun.int(brun.memk) .. 'k' end
+  return '   diag:' .. f
+end
+
+-- THE RUN'S STATE AS A SUFFIX FOR THE HEADLINE, and its colour. -> text, colour
+--
+-- FOUR STATES, NOT TWO. 'stopped' by the TRIGGER key is an operator deciding they have enough data; it is
+-- AMBER because the laps asked for were not completed, so a lap count read off this run is short -- but
+-- nothing is wrong. brun.stopbad is the run PARKING -- generator gone, record unwritable -- and is red
+-- because somebody has to do something. Completing the requested iterations is green, and so is running.
+-- A ONE-CHARACTER LIFE SIGN at the end of the headline, advanced at each real step of a cell.
+--
+-- WHY IT IS WORTH A FIRMWARE CALL. A cell takes ~5.8 s and 58 % of that is inside sdec.acquire(), so for
+-- most of every cell nothing on the panel changes at all. A wedged instrument and a working one both show a
+-- still screen, and this bench has already lost a night to a generator that stopped driving while every
+-- liveness signal stayed green. A character that stops turning says 'stuck HERE' -- and because it advances
+-- at six named points, WHERE it stopped narrows which one.
+--
+-- THE WHOLE LINE IS REWRITTEN rather than given its own object: display objects are never reclaimed on this
+-- instrument, ~4 host reloads exhaust the pool, and one more object per build is a real cost for one glyph.
+-- A settext is about 1.5 ms, so six a cell is ~9 ms against 5800.
+brun.spinchars = {'|', '/', '-', '\\'}
+brun.spini = 0
+brun.hlcol = nil
+
+function brun.spin()
+  brun.spini = math.mod(brun.spini + 1, 4)
+  return brun.spinchars[brun.spini + 1]
+end
+
+-- Rewrite ONLY the headline, with the next character. Silent when the screen has not been built or the
+-- headline has not been composed yet, so a call from anywhere is safe.
+brun.spinmin = brun.spinmin or 0.5        -- seconds between redraws: 2 fps ceiling. The FLOOR is
+                                          -- set by how often the hook is reached, not by this.
+brun.spint = nil
+
+-- THE YIELD THAT MAKES A WRITE VISIBLE, and the reason a redraw ceiling of 2 fps is now the right one.
+--
+-- MEASURED: 10 writes a cell arrived as 2 visible 45 deg steps, and 10 mod 4 = 2 -- so the writes were
+-- landing and the LCD was only showing the accumulated glyph at the ~2 points a cell where the interpreter
+-- handed control back. The tick rate was never the constraint; the repaint was.
+--
+-- brun.holdslice IS THE PRECEDENT. A hold is deliberately sliced into separate delay() calls rather than
+-- one long one 'so the panel stays alive' -- which is the same observation from the other direction: a
+-- delay() is what lets the firmware repaint. So one tiny delay after the write turns a coalesced write
+-- into a visible one.
+--
+-- OFF BY DEFAULT, AND THE REASON IS A MEASURED FAILURE, not caution. Enabling it at 1 ms produced a large
+-- number of failing cells within minutes of a soak whose immediately preceding run was 116 of 116 clean on
+-- the same plan and the same freshly cycled instruments. The mechanism is that sdec.tick fires from inside
+-- sdec.acq_copy, BETWEEN proxy reads of a capture buffer -- so a delay there stretches the window over
+-- which one capture is copied, and a copy of a live buffer is not a thing to make slower. A spinner is
+-- never worth a cell.
+--
+-- Set to a small number of seconds to re-test deliberately, on a short lap, never on an overnight run.
+brun.spinyield = brun.spinyield or 0
+
+function brun.spin_tick()
+  if brun.ui == nil or brun.ui.spin == nil then return end
+  -- READ, NEVER CLEARED. The global timer belongs to the cell's phase timing and to the recording absorb;
+  -- clearing it here would make an absorb from minutes ago look current, which once made a host tool file
+  -- good vectors as BAD for a whole soak. A read is free and cannot do that.
+  local t = nil
+  pcall(function() t = timer.gettime() end)
+  if t ~= nil then
+    -- t < brun.spint means the timer was cleared under us (a new cell took it), so the elapsed comparison
+    -- is meaningless and the tick is allowed through rather than suppressed for a whole cell.
+    if brun.spint ~= nil and t >= brun.spint and t - brun.spint < brun.spinmin then return end
+    brun.spint = t
+  end
+  -- THE HEADLINE'S COLOUR, so an alarm turns the spinner too and the two cannot disagree about whether
+  -- anything is wrong.
+  brun.ui_set(brun.ui.spin, brun.spin(), brun.hlcol or brun.c_good)
+  -- COUNTED AFTER THE RATE LIMIT, so this is redraws and not calls: a call the ceiling suppressed did not
+  -- reach the glass and must not be claimed as if it had.
+  brun.nspin = (brun.nspin or 0) + 1
+  -- AFTER THE WRITE, NEVER BEFORE: the point is to give the firmware a slice in which to paint what was
+  -- just written. pcall because delay() is absent in the offline harness, where the count is what matters.
+  if brun.spinyield ~= nil and brun.spinyield > 0 then
+    pcall(function() delay(brun.spinyield) end)
+  end
+end
+
+-- THE ERROR COUNT AND ITS COLOUR. -> text, colour
+--
+-- GREEN AT ZERO, AMBER AT 1-5, RED ABOVE 5. Deliberately NOT a rate: a proportion needs a denominator and
+-- reads 0.0 % for the first several cells of a run, which is exactly when one error matters most. The raw
+-- count is the number an operator acts on, and the three bands are what make it readable from across the
+-- room without doing arithmetic.
+function brun.errsline()
+  local n = brun.nbad or 0
+  local col = brun.c_good
+  if n > 5 then
+    col = brun.c_bad
+  elseif n > 0 then
+    col = brun.c_warn
+  end
+  return 'Errors: ' .. brun.int(n), col
+end
+
+function brun.statesuffix()
+  if brun.stopwhy == nil then return ' - RUNNING', brun.c_good end
+  if brun.stopbad then return ' - STOPPED', brun.c_bad end
+  if string.find(tostring(brun.stopwhy), 'TRIGGER', 1, true) ~= nil then
+    return ' - STOPPED', brun.c_warn
+  end
+  return ' - FINISHED', brun.c_good
+end
+
 function brun.healthline()
   -- THE DETAIL LINE'S COLOUR IS READ FIRST, because the headline may never look better than it: a silent
   -- generator or an event on the panel is red down there, and a health figure above it must not disagree.
@@ -878,20 +1173,35 @@ function brun.healthline()
   return string.format('SOAK HEALTH %.1f %%', h), col
 end
 
--- The lap size before any lap boundary has been seen. planrows is the whole file, so it only tells us
--- the lap size when the plan holds exactly the laps that were asked for -- checked by divisibility rather
--- than assumed. 0 means 'not known yet', and the screen then prints the cell number with no total.
+-- THERE IS NO SOUND GUESS AT THE LAP SIZE, so this no longer makes one. It returns 0 -- 'not known yet' --
+-- and the screen prints the cell number with no total until the first lap boundary sets brun.percell, or
+-- until a plan header declares it.
+--
+-- WHAT IT USED TO DO AND WHY THAT WAS WRONG. It divided brun.planrows by brun.iterwant and offered the
+-- quotient as the lap size, guarded only by divisibility. That guard is nearly vacuous: it assumes the
+-- plan holds EXACTLY the laps that were asked for, and a plan is deliberately emitted with far more laps
+-- than a run will reach so that it never wraps. Measured on a 4200-row / 40-lap plan run with
+-- iterations = 2: 4200 % 2 == 0, so the panel announced 2100 cells a lap, 4200 cells total and
+-- 5.9 HOURS REMAINING for a run that stopped 19 minutes later at 210 cells. An operator planning their
+-- evening around that number is being misinformed by a factor of eighteen.
+--
+-- The divisibility test cannot see either failure: a plan whose laps differ in length, or -- far more
+-- common -- a plan that simply holds more laps than were requested. Nothing derivable from those two
+-- numbers distinguishes them, so the honest answer is that the lap size is unknown. Generators declare
+-- it instead: `# cells-per-lap=N`, read at brun.nextrow, which makes the total right from cell 1.
 function brun.perlap_guess()
-  local n, k = brun.planrows, brun.iterwant
-  if n == nil or n <= 0 then return 0 end
-  if k == nil or k <= 0 then return 0 end
-  if math.mod(n, k) ~= 0 then return 0 end
-  return n / k
+  return 0
 end
 
 function brun.ui_show(c, arb)
   local u = brun.ui
   if u == nil then return end
+  -- THE ONLY WRITER OF nspinlast, and it runs before anything reads it. This draw is at the TOP of a cell,
+  -- so brun.nspin still holds the cell that just ENDED -- which is the count to publish. Swapping here
+  -- rather than inside diagflags() matters because ui_end() calls diagflags() too, and a reset in the
+  -- reader would hand the second caller a zero.
+  brun.nspinlast = brun.nspin or 0
+  brun.nspin = 0
   local vid = tostring(c.vid or '?')
   -- FOUR NUMBERS, AND NONE OF THEM IS brun.planrows. planrows is the whole FILE -- 279 930 for a 210-lap
   -- plan -- so using it here pins the lap percentage at 0 %. The lap size is brun.percell.
@@ -929,15 +1239,39 @@ function brun.ui_show(c, arb)
   -- lucky: the plan sweeps rates ASCENDING within each vector's block, so the one slow cell per vector
   -- is spread evenly through the shuffled lap and the lap percentage tracks elapsed time to within 0.1
   -- points at 25/50/75/90/95 %. If a plan were ever sorted by baud this would stop being true.
+  -- POSITION IN THE LAP IS COUNTED, NOT READ OFF THE PLAN. See brun.lapcell: a plan that numbers cells
+  -- cumulatively makes the LABEL larger than the lap, and every per-lap figure derived from it wrong.
+  --
+  -- CARRIED ON THE ROW, not read from brun.lapcell here. The counter is global state and this function is
+  -- called directly by tests that fabricate a row; reading the global made those tests depend on whatever
+  -- the previous test had left in it, which is the same coupling that produced the stale-diagnostic and
+  -- leaked-nfail bugs. `pos` absent means "the label IS the position", which is true of every plan this
+  -- repo generates.
+  local pos = c.pos or c.cell or 0
   local cellsleft = nil
-  if nlap > 0 and (c.cell or 0) <= nlap then cellsleft = nlap - (c.cell or 0) end
+  if nlap > 0 and pos <= nlap then cellsleft = nlap - pos end
   if rate ~= nil and cellsleft ~= nil then lapleft = brun.hshort(rate * cellsleft) end
 
-  local cell = 'cell ' .. brun.int(c.cell)
-  if nlap > 0 then
+  -- THE TOTAL IS SHOWN ONLY WHILE IT DESCRIBES THIS PLAN, which is the same condition cellsleft above
+  -- already applies to 'left'. A plan whose cell numbers run CUMULATIVELY rather than restarting each lap
+  -- makes brun.percell -- learned as the highest cell of the previous lap -- smaller than this lap's cell
+  -- numbers, and the panel then reads 'cell 223/197  (113%)'. Observed on a plan from a scratch generator
+  -- that numbered cells across the whole file; soakplan and mkplan_stim both restart per lap, and a plan
+  -- can also declare 'cells-per-lap=N' in its header.
+  --
+  -- The cell number itself is always true, so it is always shown; only the denominator and the percentage
+  -- are withheld, on the same principle as brun.perlap_guess -- do not print a figure that cannot be
+  -- stood behind. A percentage over 100 makes the operator distrust every other number on the glass.
+  local cell = 'cell ' .. brun.int(pos)
+  if nlap > 0 and pos <= nlap then
     cell = cell .. '/' .. brun.int(nlap)
-                .. string.format('  (%.0f%%)', 100.0 * (c.cell or 0) / nlap)
+                .. string.format('  (%.0f%%)', 100.0 * pos / nlap)
   end
+  -- THE PLAN'S OWN CELL LABEL, shown only when it differs from the position -- which is exactly when the
+  -- plan numbers cumulatively. The record writes rows as L<iter>C<label>, so an operator reading a failure
+  -- off the glass needs the label to find the row; but on a normal plan the two are equal and repeating
+  -- the number would spend characters the countdown needs.
+  if (c.cell or 0) ~= pos then cell = cell .. ' r' .. brun.int(c.cell) end
   -- THE LAP'S OWN TWO TIMES GO ON THE LAP'S OWN LINE, and the run's are labelled 'Total:' below, because
   -- both scopes carry an elapsed and a remaining and two of them a space apart would be four numbers with
   -- nothing saying which lap or run each belongs to.
@@ -991,10 +1325,30 @@ function brun.ui_show(c, arb)
   brun.ui_set(u.fail, string.format('allowed refusals %s    UNEXPECTED %s    of %s cells',
                                     brun.int(brun.nexp), brun.int(brun.nunexp),
                                     brun.int(brun.ncell)), brun.c_lab)
-  brun.ui_set(u.vfail, string.format('this vector %s: %d of %d refused', vid, vb, vn), brun.c_lab)
+  -- AND THE RUN'S FAILURES BY REASON, on the same line. 'refused' is one number that hides two unrelated
+  -- causes: a dead line and a signal the decoder legitimately would not guess at. Naming them here is what
+  -- lets an operator tell 'the generator stopped driving' from 'these vectors always refuse' without
+  -- fetching the record -- a distinction that took hours to make afterwards.
+  brun.ui_set(u.vfail, string.format('cur vec %s: %d of %d refused   idle %s lvl %s sw %s',
+                                     vid, vb, vn, brun.int(brun.nidle), brun.int(brun.nlevels),
+                                     brun.int(brun.nswing)), brun.c_lab)
   local hl, hcol = brun.healthline()
-  brun.ui_set(u.health, hl, hcol)
-  brun.ui_set(u.note, brun.prompt(), brun.c_ok)
+  local sfx, scol = brun.statesuffix()
+  hl = hl .. sfx
+  if hcol == brun.c_ok then hcol = scol end
+  -- KEPT SO THE SPINNER CAN REDRAW IT without recomputing the health figure six times a cell. Fitted to
+  -- one character short of the budget, so appending the glyph cannot push the line over the glass.
+  brun.hlcol = hcol
+  brun.ui_set(u.health, brun.fit(hl, brun.panelw), hcol)
+  local el_, ecol_ = brun.errsline()
+  brun.ui_set(u.errs, el_, ecol_)
+  -- RED WHEN IT IS CARRYING THE STOP INSTRUCTION, so the one line telling the operator to act is not drawn
+  -- in the same colour as 'Running'.
+  local ncol_ = brun.c_ok
+  if brun.stopwhy == nil and (brun.ncell or 0) > 0 then
+    pcall(function() if brun.ui_status() == brun.c_bad then ncol_ = brun.c_bad end end)
+  end
+  brun.ui_set(u.note, brun.fit(brun.prompt() .. brun.diagflags(), brun.panelw), ncol_)
 end
 
 -- ANYTHING WORTH SAYING GOES TO THE LOG, ONCE. The prompt above keeps saying how to stop the run, which
@@ -1029,6 +1383,21 @@ end
 function brun.int(n)
   if n == nil then return '0' end
   return string.format('%.0f', n)
+end
+
+-- THE HEAP IN KB, ON BOTH LUAS. -> number or nil
+--
+-- The instrument is Lua 5.0.2, where gcinfo() is the only way to ask and collectgarbage() takes a numeric
+-- limit -- so collectgarbage('count') is not available there. The offline harness is 5.5, where gcinfo()
+-- WAS REMOVED and 'count' is the only way. A single call therefore works on exactly one of the two, and the
+-- pcall that keeps it safe also hides which: written as gcinfo() alone this field displayed on hardware and
+-- was silently unreachable in every offline test, so nothing could check it. Probing both is what puts a
+-- panel field under test, and an untested panel field is what put 'Errs' on a clipped line.
+function brun.heapk()
+  local k = nil
+  pcall(function() k = gcinfo() end)
+  if k == nil then pcall(function() k = collectgarbage('count') end) end
+  return k
 end
 
 -- ---------------------------------------------------------------------------
@@ -1246,8 +1615,11 @@ function brun.holdwait(what)
     -- THE KEY STILL WORKS DURING A HOLD. The latch is firmware, so a press lands whatever the
     -- interpreter is doing, and this is the only way out that closes the record.
     if brun.keyarmed and brun.stopkey_hit() then
-      brun.stopwhy = string.format('L%dC%d: the TRIGGER key was pressed while holding for %s',
-                                   brun.iter, brun.cell, what)
+      -- THE BARE PHRASE, no lap/cell prefix and no 'while holding for': the panel prints this after
+      -- 'STOPPED: ' and an operator stop needs no explanation. Nothing is lost -- brec.finish() adds the
+      -- lap and cell itself when the reason does not carry them, and what the run was holding for is
+      -- already in the run-total line as heldsecs over nhold retry(s).
+      brun.stopwhy = 'TRIGGER Pressed'
       return false
     end
     if brun.holdmax > 0 and brun.heldsecs >= brun.holdmax then
@@ -1410,7 +1782,16 @@ function brun.soak(iterations, tag)
   -- the boundary turns it into the learned lap size, so without this a second run in one session sizes its
   -- first lap from the PREVIOUS run's longest one. That is the state a resume starts in: the app is already
   -- loaded and brun.soak is simply called again.
+  -- DRIVE THE SPINNER FROM INSIDE THE APP'S LONG LOOPS. sdec.tick is nil in the shipped app; the bench sets
+  -- it for the duration of a run so the glyph keeps moving through sdec.acquire(), which is 58 % of a cell
+  -- and the place a hang is most likely. Cleared in ui_end, so nothing outside a soak advances it.
+  if sdec ~= nil then sdec.tick = brun.spin_tick end
+  brun.nidle, brun.nlevels, brun.nswing, brun.nwhyother = 0, 0, 0, 0
+  brun.nspin, brun.nspinlast = 0, 0
   brun.cellmax = 0
+  -- SAME REASON FOR THE POSITION COUNTER: a second run in one session would otherwise start its first lap
+  -- part-way through, and every per-lap figure on the screen would be offset for the whole first lap.
+  brun.lapcell = 0
   brun.nexp, brun.nunexp = 0, 0
   brun.vcell, brun.vbad = {}, {}
   brun.iterwant = 0
@@ -1537,7 +1918,7 @@ function brun.soak(iterations, tag)
     -- THE KEY, READ ONCE PER CELL. Costs about a millisecond and no event, so unlike the stop file it
     -- can be checked every cell, where the stop file is off by default.
     if brun.keyarmed and brun.stopkey_hit() then
-      brun.stopwhy = string.format('L%dC%d: the TRIGGER key was pressed', c.iter or 0, c.cell or 0)
+      brun.stopwhy = 'TRIGGER Pressed'
       break
     end
     if brun.maxcell > 0 and brun.ncell >= brun.maxcell then
@@ -1568,20 +1949,70 @@ function brun.soak(iterations, tag)
     -- which is the truth: nothing is being played.
     -- PER VECTOR, counted where the cell is attempted rather than where it succeeds, so the two
     -- numbers on the screen are 'failed' out of 'attempted' and not out of 'measured'.
-    -- THE LAP SIZE, LEARNED. A lap ends when the iteration number moves, and the highest cell seen in
-    -- the lap just finished IS the lap size -- exact, without trusting any header.
-    if previter ~= nil and c.iter ~= previter and brun.cellmax > 0 then
-      brun.percell = brun.cellmax
+    -- THE LAP SIZE, LEARNED BY COUNTING THE CELLS -- not by taking the highest cell NUMBER. Those are the
+    -- same thing only for a plan that restarts its numbering each lap. hot1's plan numbers cells across the
+    -- whole file, so lap 5 is cells 198..244: the count is 47 and the highest number is 244. Learning 244
+    -- made the panel read 'cell 251/244 (103%)' AND made the run total iterwant x 244 = 1464 against an
+    -- actual 291 -- so neither the per-lap countdown nor the overall one could be believed, which is the
+    -- state an operator described as making it impossible to tell how much longer the run had.
+    --
+    -- The comment this replaces claimed the highest cell seen "IS the lap size -- exact, without trusting
+    -- any header". It is exact only for the plans this repo happens to generate.
+    -- COLLECT AT THE TOP OF A CELL, which is after the previous one finished and outside every timed
+    -- phase. One place rather than two: the cell tail has a decoded path and a refused path, and a hook on
+    -- each would drift apart. pcall'd because neither call is guaranteed to exist on every firmware, and a
+    -- missing garbage collector must not be what ends an overnight run.
+    if brun.gcevery > 0
+       and (math.mod(brun.ncell, brun.gcevery) == 0 or (previter ~= nil and c.iter ~= previter)) then
+      pcall(function() collectgarbage() end)
+      brun.memk = brun.heapk()
+    end
+    if previter ~= nil and c.iter ~= previter and brun.lapcell > 0 then
+      -- THE HEAP AT THE LAP SEAM, INTO THE RECORD. brun.memk reached the panel as `mem NNNk` and nothing
+      -- else, so a 7.74 h run's entire memory trend was unrecoverable once the run ended -- the one failure
+      -- an unattended soak cannot otherwise show, since the cells keep passing and the record keeps being
+      -- written right up to the point the interpreter cannot allocate. A lap boundary is the only place the
+      -- figure is comparable, because the block above always collects there whatever brun.gcevery says, so
+      -- every sample is post-collection. Carries the lap SIZE too: one line then says whether a growing
+      -- heap tracked the work done or the time elapsed.
+      pcall(function()
+        brec.note(previter, brun.cell or 0, brun.ncell or 0,
+                  string.format('lap %s end: heap %s kB, %d cell(s) this lap, %d in the run',
+                                tostring(previter), brun.int(brun.memk), brun.lapcell, brun.ncell or 0))
+      end)
+      brun.percell = brun.lapcell
+      brun.lapcell = 0
       brun.cellmax = 0
       -- AND THE NEW LAP'S CLOCK STARTS HERE, at the same boundary the lap size is learned at, so the two
       -- numbers on the lap line always describe the same lap.
       pcall(function() brun.tlap = os.time() end)
     end
+    -- COUNTED BEFORE THE CELL RUNS, so brun.lapcell is this cell's 1-based position in its lap and the
+    -- screen below can divide by it directly.
+    brun.lapcell = brun.lapcell + 1
+    -- HANDED TO THE SCREEN ON THE ROW rather than read back off brun, so brun.screen has no hidden
+    -- dependency on global state and a caller that fabricates a row gets the obvious behaviour.
+    c.pos = brun.lapcell
     if (c.cell or 0) > brun.cellmax then brun.cellmax = c.cell end
     brun.iter, brun.cell = c.iter or 0, c.cell or 0
     local vk = tostring(c.vid or '?')
     brun.vcell[vk] = (brun.vcell[vk] or 0) + 1
     brun.screen(c, arb)
+    brun.spin_tick()                    -- 1 of 6: the cell has started
+    -- THE CELL'S STOPWATCH STARTS HERE, when brun.timing is set. Everything after this point is charged
+    -- to one of four phases and the four are written to the status note, because a cell costs ~4 s and
+    -- NOTHING in the record says which part of it. os.time() is 1 s granular, so the per-cell figures
+    -- derived from it cannot see a 0.2 s effect and every per-pair median comes out an integer.
+    --
+    -- THE ABSORB IS DISARMED FIRST, and that is mandatory rather than defensive. There is ONE timer on
+    -- this instrument; strm_absorb_arm() uses it as a TIMESTAMP meaning "a recording just ended", so an
+    -- unrelated cleartime() makes an arm from minutes ago look current and the next Capture press is
+    -- swallowed. That exact hazard made a host tool file good vectors as BAD for a whole soak.
+    -- tools/bench_matrix.py's mx_point() takes the timer the same way, in the same order.
+    if brun.timing then
+      sdec.strm_stopped_by_press = nil
+      pcall(function() timer.cleartime() end)
+    end
     -- THE GENERATOR FIRST. A cell measured against the previous cell's waveform is worse than no cell
     -- at all: it is a wrong answer that looks like a right one, which is the failure mode the whole
     -- amplitude-index bug turned out to be.
@@ -1663,6 +2094,10 @@ function brun.soak(iterations, tag)
       -- looping arb, which is the variable that decides the answer on a periodic payload.
       if c.wait ~= nil and c.wait > 0 then delay(c.wait / 1000) end
 
+      -- CHARGED TO THE SELECT, and it includes the plan's own wait: both happen before any measurement
+      -- and a reader can subtract c.wait, which the row already carries.
+      if brun.timing then pcall(function() brun.tsel = timer.gettime() end) end
+      brun.spin_tick()                  -- 2 of 6: stimulus selected and the plan wait is over
       local fs = sdec.pick_fs(c.baud, 8)
       if fs < brun.minfs then fs = brun.minfs end
       local p = brun.point(fs, c.baud, false)
@@ -1674,6 +2109,29 @@ function brun.soak(iterations, tag)
       if not p.ran then
         brun.nbad = brun.nbad + 1
         brun.vbad[vk] = (brun.vbad[vk] or 0) + 1
+        -- ASK THE GENERATOR WHAT IT WAS ACTUALLY PLAYING, on this cell, before anything else moves it.
+        -- A cell that produced no decodable capture is the one case where the four round trips are worth
+        -- taking, and it must happen HERE rather than at the end of the cell: the next select would
+        -- overwrite the state being asked about.
+        if brun.sdgverify then
+          local snap = nil
+          pcall(function() snap = bsdg.snapshot() end)
+          brec.note(c.iter, c.cell, brun.ncell,
+                    string.format('nostim %s: %s', tostring(p.why), tostring(snap)),
+                    brun.nbad, brun.nbadsdg)
+        end
+        -- AND SPLIT BY REASON TOO, which is a different question from expected-vs-not: an allowed refusal
+        -- and a dead line are both 'expected' on a loud vector and mean completely different things.
+        local w = tostring(p.why or '')
+        if string.find(w, 'line is idle', 1, true) ~= nil then
+          brun.nidle = brun.nidle + 1
+        elseif string.find(w, 'no clear logic levels', 1, true) ~= nil then
+          brun.nlevels = brun.nlevels + 1
+        elseif string.find(w, 'swing only', 1, true) ~= nil then
+          brun.nswing = brun.nswing + 1
+        else
+          brun.nwhyother = brun.nwhyother + 1
+        end
         -- SPLIT AT THE POINT OF FAILURE, using the same list the host judge uses. A refusal on a loud
         -- vector is the documented right answer and is counted as such; a refusal anywhere else is the
         -- number the traffic light is allowed to react to.
@@ -1698,6 +2156,7 @@ function brun.soak(iterations, tag)
         -- uncounted and unretried.
         brun.rechold()
       end
+      brun.spin_tick()                  -- 5 of 6: the row is on the key
       brun.ncell = brun.ncell + 1
       brun.announce(string.format('CELL %d/%d %s@%d %s nf=%s ev=%s', c.iter, c.cell,
                                   tostring(c.vid), c.baud, p.ran and 'ok' or 'FAIL',
@@ -1745,7 +2204,63 @@ function brun.soak(iterations, tag)
                                  (sdec.lo ~= nil) and string.format('%.3f', sdec.lo) or 'nil',
                                  (sdec.hi ~= nil) and string.format('%.3f', sdec.hi) or 'nil')
       end
+      -- THE RATE FIT'S OWN INPUTS, appended only when brun.ratediag is set. Three fields sdec already
+      -- computes and the record already discards -- see the flag's comment for why they are the ones that
+      -- matter. Cost is one string.format on a cell that spent ~6 s talking to the generator.
+      --
+      -- rawbaud IS THE PRE-SNAP VALUE and that is the entire point: r.read_baud is sdec.baud, which
+      -- sig_snap may have moved. Recording only the post-snap rate is what makes a wrong snap and a wrong
+      -- fit look identical afterwards.
+      --
+      -- fitratio REPLACES bittime. bittime is recoverable as fs/rawbaud and carried no independent
+      -- information; fitratio is the rescaling ua_best() settled on (uart_decode.tsp), and without it a
+      -- wrong WIDTH fit and a correct fit that was then rescaled are indistinguishable in the record.
+      -- The exact-doubling family reads rawbaud/commanded = 2.0000 either way, so only fitratio says
+      -- whether sig_bittime found the double or ua_best chose it.
+      -- THE FOUR PHASES, CUMULATIVE FROM THE TOP OF THE CELL. Cumulative rather than per-phase because
+      -- there is one timer and clearing it mid-cell would collide with the absorb arm; a reader
+      -- subtracts. 'row' is taken last and includes the record append, which on a FAT key syncs every
+      -- brec.syncrows cells and is therefore not uniform.
+      if brun.timing then
+        local function ts(v) if v == nil then return 'nil' end return string.format('%.3f', v) end
+        local trow = nil
+        pcall(function() trow = timer.gettime() end)
+        nt = nt .. string.format(' t=%s/%s/%s/%s', ts(brun.tsel), ts(brun.tacq), ts(brun.tdec), ts(trow))
+      end
+      -- THE RUNNER-UP'S QUALITY, on cells where ua_best RESCALED the fit. uart_decode accepts a rescale on
+      -- `q >= st.qmin` where `qmin = sdec.qgate * qbest` -- a threshold RELATIVE to the best candidate --
+      -- and nothing in the record says what the UNRESCALED candidate scored. That is the difference between
+      -- a rescale that won 0.95 to 0.60, which is the mechanism working, and one that won 0.95 to 0.94,
+      -- which is a coin flip deciding the reported baud rate. The doubling family (fitratio 0.5, three
+      -- vectors at 125000 and one at 312) cannot be judged without it.
+      --
+      -- RECOMPUTED HERE RATHER THAN PUBLISHED FROM THE APP, deliberately: tsp/ is what ships, the archive
+      -- has just been handed to an outside tester, and sig_fit is a pure function of already-published
+      -- state -- Tfit is sdec.bittime / sdec.fitratio, and sdec.w/sdec.nw survive the decode.
+      --
+      -- ONLY WHEN A RESCALE HAPPENED. At fitratio 1 the two bit times are identical and q1 would just be
+      -- fitq again, so the six-pass fit costs nothing on a cell that did not rescale.
+      if brun.ratediag then
+        local br = sdec.baud_raw
+        local q1 = nil
+        if sdec.fitratio ~= nil and sdec.fitratio ~= 1 and sdec.fitratio ~= 0
+            and sdec.bittime ~= nil and sdec.w ~= nil and (sdec.nw or 0) > 0 then
+          pcall(function()
+            local _, q = sdec.sig_fit(sdec.w, sdec.nw, sdec.bittime / sdec.fitratio)
+            q1 = q
+          end)
+        end
+        nt = nt .. string.format(' q1=%s',
+                                 (q1 ~= nil) and string.format('%.4f', q1) or 'nil')
+        nt = nt .. string.format(' rawbaud=%s fitratio=%s fitq=%s snap=%s/%s',
+                                 (br ~= nil) and string.format('%.2f', br) or 'nil',
+                                 (sdec.fitratio ~= nil) and string.format('%.4f', sdec.fitratio)
+                                                        or 'nil',
+                                 tostring(sdec.fitq),
+                                 tostring(sdec.snapped), tostring(sdec.snapfirm))
+      end
       brec.note(c.iter, c.cell, brun.ncell, nt, brun.nbad, 0)
+      brun.spin_tick()                  -- 6 of 6: the status note is written
       if cellev > brun.evbudget then
         brun.nevstreak = brun.nevstreak + 1
         if brun.nevstreak >= brun.evstreak and brun.evshed == nil then
@@ -1785,14 +2300,22 @@ function brun.soak(iterations, tag)
   -- AND THE STIMULUS RETRIES, because they are the count that says whether the late-switch retry earns its
   -- place: a cell whose waveform needed a second selection would otherwise be a stimulus failure, and
   -- nothing else on the key distinguishes 'never happened' from 'recovered'.
+  -- THE FINAL LAP HAS NO BOUNDARY AFTER IT, so the lap-seam note above never samples the heap for the last
+  -- lap -- which on a 1-lap run is every lap there is. Collected here so the figure is post-collection like
+  -- the others and the series is comparable end to end.
+  if brun.gcevery > 0 then
+    pcall(function() collectgarbage() end)
+    brun.memk = brun.heapk()
+  end
   brec.note(brun.iter, brun.cell, brun.ncell,
             string.format('run total: %d cell(s), %d failed, %d event(s) instigated (%d from the panel), '
                           .. 'held %d s over %d retry(s), %d cell(s) unrecorded in %d gap(s), '
-                          .. '%d stimulus retry(s)',
+                          .. '%d stimulus retry(s), heap %s kB',
                           brun.ncell, brun.nbad, brun.nevtot, brun.nevpanel,
-                          brun.heldsecs, brun.nhold, brun.nreclost, brun.nrecback, brun.nselback))
+                          brun.heldsecs, brun.nhold, brun.nreclost, brun.nrecback, brun.nselback,
+                          brun.int(brun.memk)))
   -- THE STOP REASON ALREADY CARRIES ITS OWN LAP AND CELL wherever one is known, so an unconditional prefix
-  -- writes 'L1C247: L1C248: the TRIGGER key was pressed' -- two cell numbers, one line, disagreeing.
+  -- writes 'L1C247: L1C248: TRIGGER Pressed' -- two cell numbers, one line, disagreeing.
   local why = tostring(brun.stopwhy or 'ended')
   if string.find(why, '^L%d+C%d+:') == nil then
     why = string.format('L%dC%d: %s', brun.iter, brun.cell, why)

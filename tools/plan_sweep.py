@@ -16,9 +16,10 @@ across the cores.
     python3 tools/plan_sweep.py --iteration 7 --offsets 16 --quiet
     python3 tools/plan_sweep.py --skip-vectors ""         # all 41 vectors: NOT the lap the bench runs
 
-THE SKIPPED SET IS PART OF THE PLAN, not a filter on it, and it defaults to the bench's own v95,v96 for
-that reason -- see DEFAULT_SKIP. soakplan applies it BEFORE the shuffle, so dropping two names moves
-every remaining vector's index and that index keys the amplitude, the offset and the wait of every cell.
+THE SKIPPED SET IS PART OF THE PLAN, not a filter on it, and it defaults to the bench's own
+v95,v96,v97 for that reason -- see DEFAULT_SKIP. soakplan applies it BEFORE the shuffle, so dropping
+three names moves every remaining vector's index and that index keys the amplitude, the offset and the
+wait of every cell. 42 vectors less those three is the 39 x 43 = 1677 cells this file's baselines assume.
 
 THE PLAN IS ALWAYS REGENERATED, NEVER READ FROM DISK, and that is a correctness rule rather than a
 convenience. A plan file is a snapshot of the DRAW, and the draw changes whenever soakplan's
@@ -49,14 +50,14 @@ PLANDIR = os.path.join(ROOT, 'out', 'plans', 'auto')
 
 # THE SKIP LIST IS PART OF THE PLAN, and the default is the bench's own so the twin replays the lap
 # that is actually run. README.md documents it:
-#   python3 tools/soak.py --hours 17 --suites formats,plan --skip-vectors v95,v96
+#   python3 tools/soak.py --hours 17 --suites formats,plan --skip-vectors v95,v96,v97
 #
 # WHY THE DEFAULT IS NOT EMPTY. soakplan.plan_order shuffles the list it is handed and every per-cell
 # wait, amplitude and offset is keyed on a vector's POSITION in that shuffle -- so a twin that emits the
 # 41-vector plan for a 39-vector lap does not test two extra vectors, it plays a DIFFERENT vector's
 # amplitude, offset and capture phase in every single cell. Measured against the bench's own per-cell
 # record for iteration 1, all 1677 cells disagreed:
-#   python3 tools/soakplan.py --iteration 1 --skip-vectors v95,v96 --check-log <a lap log>
+#   python3 tools/soakplan.py --iteration 1 --skip-vectors v95,v96,v97 --check-log <a lap log>
 # An empty default is therefore the wrong experiment by default, which is the one thing an offline twin
 # must not be. Both are ratcheted, so `--skip-vectors ""` is still a gated configuration.
 DEFAULT_SKIP = ','.join(SP.HW_SKIP)
@@ -85,9 +86,12 @@ LINE = re.compile(r'^PLAN (\d+)/(\d+) iteration (\d+): (.*)$')
 # a freshly drawn plan and is reproducible run to run; re-measure with --no-ratchet rather than editing
 # one from memory.
 #
-# THE SKIP IS IN THE KEY because it is not a filter on the results, it is a different draw: dropping two
-# names reshuffles the order every wait, amplitude and offset is keyed on, so a baseline measured over 41
+# THE SKIP IS IN THE KEY because it is not a filter on the results, it is a different draw: dropping
+# names reshuffles the order every wait, amplitude and offset is keyed on, so a baseline measured over 42
 # vectors describes no run over 39. An unmeasured combination is SKIPPED rather than gated wrongly.
+# MEASURED THE HARD WAY: naming only v95,v96 on the instrument left v97 in, made the lap 40 x 43 = 1720,
+# and v97 then failed 100 % of its 43 cells in every lap while reporting SDG:ARWV? against whichever
+# waveform preceded it -- which reads exactly like a generator wedge and is not one.
 #
 # AND SO IS random_per_lap, FOR THE SAME REASON AND ONE WORSE. It is implemented AS a skip -- applied
 # before the shuffle -- so it moves every remaining cell's draw exactly as the skip list does, and it
@@ -125,6 +129,37 @@ LINE = re.compile(r'^PLAN (\d+)/(\d+) iteration (\d+): (.*)$')
 # 105-106 points at 8 offsets until ua_run stopped choosing a frame anchor outside the window it is
 # scoring. Every one of them was v90 or v94 and no other vector, so a single number holds the whole
 # family -- and if the anchor bound is ever lost, this is the counter that says so first.
+#
+# ZERO HERE IS NOT ZERO EVERYWHERE, AND THAT IS NOT A REGRESSION. These baselines are all iteration 1;
+# the class survives at other draws at ~2.3e-5, which is the residual the anchor fix measured for itself
+# (one point in five laps / 67080). Swept deliberately: the 2428-lap offline soak flagged 71 iterations,
+# and replaying all 71 reproduces exactly 74 no-byte points. What they are:
+#
+#   ALL 74 START INSIDE THE 0x55 RUN. v90 is 4 x 64-byte blocks 0x00, 0x7F, 0x55, 0x2A and v94 is the
+#   same in 128-byte blocks, both 7E1 at spb 10, so one byte is 100 samples and 0x55 is bytes 128..191
+#   (v90) or 256..383 (v94). 72 of the 74 land unambiguously in that block and the other 2 sit on the
+#   0x7F/0x55 edge, where npts carrying 200 samples more than 100*nbytes is what decides. No no-byte
+#   point lands in 0x00, 0x7F or 0x2A. That is the mechanism the anchor fix names, from the other end:
+#   inside a 0x55 run every mark run is one bit, so no anchor exists there to be found.
+#
+#   TWO RATE REGIMES, not one. 70 points at fs 1 MSa/s, 81553..161579 Bd, 6.19..12.26 sa/bit; and 4 at
+#   fs 10000..20000, 350..750 Bd, 13.33..15.92 sa/bit. A description written from the single instance the
+#   fix could see -- v90 @ 153600 Bd -- misses the low-rate four entirely.
+#
+#   THE OFFSET IS DETERMINISTIC IN THE RATE, not scattered: v94 at 153600 Bd lands in 32451.8..32457.6
+#   every time, a ~6-sample window across 11 iterations, and it slides smoothly with baud
+#   (32500.9 at 152335, 32815.0 at 144610, 33031.5 at 139107). So this is positional, and a lap either
+#   draws the offset that hits it or does not.
+#
+#   WHICH IS WHY ONLY CERTAIN RATES HIT IT: the rates are not special, the WAIT GEOMETRY is. The plan's
+#   wait is scaled by baud, so wait_s(baud) is what maps a rate onto a position in the payload, and the
+#   vulnerable rates are exactly those whose scaled wait lands the capture start inside 0x55.
+#
+#   CONFIRMED ON A DISJOINT DRAW. A second 1083-lap sweep over iterations 2429..3511 (1443639 cells,
+#   11549112 points, `raised` 0 everywhere) flagged 35 more, and replaying all 35 puts 35 of 35 inside
+#   0x55 -- 109 of 109 across the two ranges. Its rate matched: 2.42e-05 per cell against 2.29e-05.
+#   So THE INVARIANT TO TEST IS THE BLOCK, NOT THE RATE: the rate depends on which rates an iteration
+#   draws and two ranges may legitimately differ, while a hit in 0x00, 0x7F or 0x2A would be new.
 #
 # skip 1 AND judged ONE LOWER AT 8 OFFSETS, at the two configurations that reach it, is the price of
 # that fix and is named here rather than left as a puzzle: v94 at 630 Bd digitises at 15.87 sa/bit, so

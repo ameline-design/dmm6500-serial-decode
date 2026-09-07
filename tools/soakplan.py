@@ -39,10 +39,11 @@ So a gap containing an edge yields that edge one time in three. Above 125 kBd fs
     python3 tools/soakplan.py --iteration 129 --rates      # just the rate list
     python3 tools/soakplan.py --iteration 1 --vectors 4    # a seeded subset, for a smoke lap
     python3 tools/soakplan.py --selftest                   # properties, no instrument
-    python3 tools/soakplan.py --iteration 1 --skip-vectors v95,v96 \
+    python3 tools/soakplan.py --iteration 1 --skip-vectors v95,v96,v97 \
             --check-log out/soak/<dir>/lap0001-FAILED.log  # does the twin replay that lap?
 """
 import argparse
+import collections
 import math
 import os
 import re
@@ -67,7 +68,7 @@ P_RSUB = 7
 
 # THE VECTORS THE HARDWARE LAP DOES NOT PLAY, and therefore the ones the offline twin must not play
 # either. README.md documents the lap as
-#   python3 tools/soak.py --hours 17 --suites formats,plan --skip-vectors v95,v96
+#   python3 tools/soak.py --hours 17 --suites formats,plan --skip-vectors v95,v96,v97
 # because v96 wedges the generator at vector 33 every time.
 #
 # NAMED HERE BECAUSE THE SKIP IS PART OF THE PLAN, not a detail of one night's operation. plan_order
@@ -387,16 +388,28 @@ def plan_order(iteration, vectors, skip=None, nvectors=None):
     return vector_subset(iteration, keep, nvectors)
 
 
-def wait_s(iteration, vi, ri, baud):
-    """Seconds to idle before the capture, for cell (vector index, rate index).
+def wait_s(iteration, vi, ri, baud, rep=0):
+    """Seconds to idle before the capture, for cell (vector index, rate index, repeat).
 
     KEYED, NOT CONSUMED IN ORDER, so replaying one cell does not depend on how many ran before it.
     The value is reproducible; THE PHASE IT PRODUCES ON HARDWARE IS NOT -- scheduling jitter around
     the wait is larger than the wait itself above about 20 kBd. That is deliberate, and it is why a
     failure has to record the MEASURED head alignment: the seed reproduces the schedule, and only
     the measurement reproduces the case.
+
+    SCALED TO A BYTE TIME, not a fixed number of milliseconds, and that is what makes the draw mean the
+    same thing at every rate: 10 byte-times is 0.4 ms at 250 kBd and 333 ms at 300 Bd. A fixed 0..9 ms
+    window would cover 2250 bit times at the top of the ladder and 2.7 at the bottom, so it would
+    randomise the byte phase at one end of the sweep and barely move it at the other.
+
+    THE FIRST LOOK KEEPS THE ORIGINAL FOUR-ELEMENT KEY. MT19937 seeds from the whole array, so
+    appending even a zero would change the draw for every cell of every plan already on disk and no
+    recorded lap would reproduce. rep=0 is therefore spelled as absence, not as a zero.
     """
-    g = MT19937([MAGIC, iteration, P_WAIT, vi, ri])
+    key = [MAGIC, iteration, P_WAIT, vi, ri]
+    if rep:
+        key.append(rep)
+    g = MT19937(key)
     return g.float() * WAIT_BYTE_TIMES * BITS_PER_BYTE / float(baud)
 
 
@@ -909,6 +922,44 @@ def selftest():
     except ImportError:
         ck(False, 'tools/instruments.py must be importable to check the generator limits')
 
+    # REPEATS. The property that matters most is the one that is easiest to break by accident: the
+    # DEFAULT must emit exactly what it emitted before repeats existed, or every lap already on disk
+    # stops reproducing and no paired comparison is valid. MT19937 seeds from the whole key array, so
+    # `rep=0` has to be spelled as an ABSENT element rather than a zero.
+    # PINNED TO A LITERAL, because the obvious assertion is a tautology. `wait_s(..) ==
+    # wait_s(.., 0)` compares the function with its own default and passes however the key is built --
+    # verified by appending rep unconditionally, which breaks every plan on disk and still passed. The
+    # only thing that can catch that is the VALUE, measured on the tree before repeats existed.
+    ck(abs(wait_s(1, 3, 7, 9600) - 0.007587612706023113) < 1e-15,
+       'the default draw is unchanged from the tree before repeats existed (rep=0 is an ABSENT key '
+       'element, not a zero -- MT19937 seeds from the whole array). Got %r' % wait_s(1, 3, 7, 9600))
+    ck(wait_s(1, 3, 7, 9600, 1) != wait_s(1, 3, 7, 9600),
+       'and a later repeat draws a different wait, so the capture phase is redrawn')
+    one = [ln for ln in emit_csv(1, 1, None, (), 'v90:std').split('\n') if ln and ln[0].isdigit()]
+    four = [ln for ln in emit_csv(1, 1, None, (), 'v90:std', None, 4).split('\n')
+            if ln and ln[0].isdigit()]
+    ck(len(four) == 4 * len(one),
+       'reps=4 emits four rows per operating point (%d vs %d)' % (len(four), len(one)))
+    ck([ln.split(',', 2)[2] for ln in one]
+       == [ln.split(',', 2)[2] for ln in four[0::4]],
+       'and the first of each group is the row reps=1 would have emitted')
+    # ONLY THE WAIT MAY DIFFER INSIDE A GROUP. If amplitude, offset or sample rate moved, bsdg.select
+    # would have to talk to the generator again and the repeat would cost what a fresh cell costs --
+    # and worse, the group would no longer be repeated looks at ONE operating point.
+    fixed = [tuple(ln.split(',')[2:9]) for ln in four]
+    ck(all(fixed[i] == fixed[i - i % 4] for i in range(len(fixed))),
+       'every field except the wait is identical within a group, which is what makes the repeat free')
+    waits = [ln.split(',')[9] for ln in four[:4]]
+    ck(len(set(waits)) == 4, 'and the four waits within a group are all different: %s' % waits)
+    # THE ROW COUNT IN THE HEADER IS WHAT THE INSTRUMENT TRUSTS not to read past the end -- reading past
+    # it posts 2201 'File read error' as a panel popup once per pass. Repeats multiply the rows, so the
+    # declared count has to follow.
+    txt = emit_csv(1, 1, None, (), 'v90:std', None, 4)
+    hdr = [ln for ln in txt.split('\n') if ln.startswith('# rows=')]
+    ck(hdr and int(hdr[0].split('=')[1]) == len(four),
+       'the declared # rows= matches the rows actually emitted with repeats in force')
+    ck('# repeats=4' in txt, 'and the plan records its own repeat count for a reader')
+
     print('\n%s' % ('%d FAILED' % len(bad) if bad else 'selftest: all properties hold'))
     return 1 if bad else 0
 
@@ -1153,7 +1204,7 @@ def spec_order(spec):
     return order, kindmap
 
 
-def emit_csv(first, last, nvectors=None, skip=None, spec=None, rkeep=None):
+def emit_csv(first, last, nvectors=None, skip=None, spec=None, rkeep=None, reps=1):
     """The plan as flat CSV for bench/bench_run.tsp to stream off the USB key.
 
     WHY A THIRD FORM, after the Lua table and the hardware sweep's own iteration. The on-instrument
@@ -1179,6 +1230,10 @@ def emit_csv(first, last, nvectors=None, skip=None, spec=None, rkeep=None):
            # RECORDED IN THE FILE, because a reader cannot otherwise tell a lap that played six random
            # vectors from one that played twelve, and the cell count alone would look like a short plan.
            '# random-per-lap=%s' % ('all' if rkeep is None else rkeep),
+           # RECORDED FOR THE SAME REASON: with repeats in force the cell count is a multiple of the
+           # operating points, and a reader that assumed one row per point would divide every rate by
+           # this number without noticing.
+           '# repeats=%d' % reps,
            'iter,cell,vid,arb,baud,kind,amp_vpp,ofst_v,srate,wait_ms']
     import instruments as _I
     for it in range(first, last + 1):
@@ -1207,16 +1262,27 @@ def emit_csv(first, last, nvectors=None, skip=None, spec=None, rkeep=None):
                     continue
                 ua, uo = amp_ofst_u(it, vi, ri)
                 amp, ofst = amp_ofst_for(vid, ua, uo)[0:2]
-                n += 1
                 # THE GENERATOR'S OWN NAME TRAVELS WITH THE CELL, from vector_names.MAP -- the same
                 # place bench_matrix gets it. The instrument must not derive it: ARWV NAME takes the
                 # stored waveform's name, and sending a local id like 'v77' does NOTHING while the
                 # PREVIOUS waveform keeps playing, so the measurement would be attributed to a
                 # waveform that never played. vector_names.arb() raises rather than guessing and this
                 # keeps that property on the instrument side.
-                out.append('%d,%d,%s,%s,%d,%s,%.4f,%.4f,%d,%.3f'
-                           % (it, n, vid, _MAP[vid], baud, kind, amp, ofst, srate,
-                              1000.0 * wait_s(it, vi, ri, baud)))
+                # REPEATS ARE CONSECUTIVE, AND THAT IS THE WHOLE MECHANISM. bsdg.select sends nothing at
+                # all when the waveform, amplitude, offset and sample rate all match what the generator
+                # is already playing, so the second and later looks at an operating point cost a capture
+                # and a decode with no SCPI conversation and no blocking query. Measured in the mock:
+                # 7 messages for the first look, 0 for each repeat.
+                #
+                # WHY REPEATS AT ALL, rather than more operating points. One capture per condition
+                # cannot separate "always fails" from "fails at some capture phases" -- a coin flip read
+                # as a property once faked an sdec.fs leak. Only the wait differs between repeats, so
+                # the phase is redrawn and nothing else is.
+                for rep in range(reps):
+                    n += 1
+                    out.append('%d,%d,%s,%s,%d,%s,%.4f,%.4f,%d,%.3f'
+                               % (it, n, vid, _MAP[vid], baud, kind, amp, ofst, srate,
+                                  1000.0 * wait_s(it, vi, ri, baud, rep)))
     # THE ROW COUNT IN THE HEADER, so the instrument can stop at the last row instead of discovering the
     # end by reading past it -- which posts event 2201, 'File read error', as a popup on the panel once
     # per pass. Substituted at the end because it is not known until the rows are built.
@@ -1224,7 +1290,20 @@ def emit_csv(first, last, nvectors=None, skip=None, spec=None, rkeep=None):
     # `- 3` and adding one comment line to this header made it over-declare by one -- which sends
     # bench_run past the last row, and a read past the end posts 2201 'File read error' as a popup on the
     # panel. The count is the thing the instrument trusts to never do that, so it is derived from the rows.
-    nrows = len([x for x in out if x and x[0] != '#' and not x.startswith('iter,')])
+    body = [x for x in out if x and x[0] != '#' and not x.startswith('iter,')]
+    nrows = len(body)
+    # THE LAP SIZE, DECLARED, so the instrument's panel can show a total from the first cell instead of
+    # from the second lap. bench_run.tsp reads `cells-per-lap=N` straight into brun.percell.
+    #
+    # ONLY WHEN EVERY LAP IS THE SAME SIZE, counted rather than assumed. Laps CAN differ: rates_for()
+    # draws a different interstitial per lap, and a cell whose srate would exceed the generator's ceiling
+    # is dropped -- so a lap's length depends on the rates it happened to draw. Declaring one number for
+    # laps of two lengths would put a wrong total on the panel, which is the defect this exists to fix.
+    # bench_run's own guess was removed for making exactly that assumption: it divided the whole file by
+    # the requested iteration count and announced 5.9 hours for a 19-minute run.
+    per = collections.Counter(ln.split(',', 1)[0] for ln in body)
+    if per and len(set(per.values())) == 1:
+        out.insert(4, '# cells-per-lap=%d' % next(iter(per.values())))
     return '\n'.join(out).replace('@@ROWS@@', str(nrows)) + '\n'
 
 
@@ -1244,6 +1323,14 @@ def main():
                          'iteration seed. They are 31 %% of a lap and produced zero failures of either '
                          'kind on a full offline lap, so six saves ~15 %% of the lap time and every one '
                          'of them is still played across laps. Default: all twelve')
+    ap.add_argument('--repeats', type=int, default=1, metavar='N',
+                    help='with --emit-csv: look at each operating point N times in a row, redrawing '
+                         'only the wait so the capture phase changes and nothing else does. The '
+                         'repeats are consecutive, so bsdg.select sends the generator NOTHING for the '
+                         '2nd..Nth -- a repeat costs a capture and a decode instead of seven SCPI '
+                         'messages of which two block. For a diagnostic lap that has to tell "always '
+                         'fails" from "fails at some phases"; the general soak wants more points '
+                         'instead. Default 1, which emits exactly what it always did')
     ap.add_argument('--iteration', type=int, default=1)
     ap.add_argument('--vectors', type=int, default=None, help='a seeded subset of this many vectors')
     ap.add_argument('--rates', action='store_true', help='print only the rate list')
@@ -1278,8 +1365,10 @@ def main():
             print('REFUSING: --iterations %d is below --iteration %d, so the range is empty and the '
                   'instrument would read a plan with no cells in it.' % (last, a.iteration))
             return 2
+        if a.repeats < 1:
+            raise SystemExit('--repeats must be at least 1')
         sys.stdout.write(emit_csv(a.iteration, last, a.vectors, skip, a.spec,
-                                  a.random_per_lap))
+                                  a.random_per_lap, a.repeats))
         return 0
 
     from vector_names import MAP
