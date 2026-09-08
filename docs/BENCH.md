@@ -375,14 +375,28 @@ the AD9122's interpolation half-bands bypassed — and it was tried: at iteratio
 it agrees with the bench on the same 26 cells as linear and invents fifteen more failures the bench does
 not have. `--hold` runs it. Linear is kept because it fits, and that is the whole of the case for it.
 
-**A SCOPE READING OF `RISE = FALL = 8.02 µs` AT 125 kSa/s DOES NOT SUPPORT LINEAR, AND WAS BRIEFLY
-DOCUMENTED HERE AS IF IT DID.** The arithmetic omitted that **the vectors encode their own edge ramp**:
-`GEN_RENDER`'s default `rise` is 1.5 samples, so a shipped edge carries one intermediate codeword between
-the rails — measured, 814 of 814 transitions in `v77.bin`. A hold therefore steps rail → mid → rail at
-the arb period and its **10–90 % rise is one full sample period, 8.00 µs**; linear ramps continuously
-across both intervals and gives **12.8 µs**. The 8.02 µs reading matches the hold to 0.25 % and rejects
-linear by 60 %. The claim that "a zero-order hold would step in nanoseconds" was only true for a pure
-step, which these vectors are not.
+**THE GENERATOR HOLDS, AND THE MEASUREMENT THAT SHOWS IT IS RATE-INDEPENDENT.** `C1:PAVA? RISE` on the
+same waveform at two arb rates, twenty times apart, with only `SRATE` changed:
+
+| arb rate | arb period `T` | measured RISE | hold predicts | linear predicts |
+|---|---|---|---|---|
+| 125 kSa/s | 8.000 µs | **39.5 ns** | 8.000 µs | 12.80 µs |
+| 2.5 MSa/s | 0.400 µs | **40.5 ns** | 0.400 µs | 0.640 µs |
+
+**Rise does not scale with the arb period at all** — 39.5 against 40.5 ns across a 20× change. Linear
+reconstruction would draw a continuous ramp lasting `2T`, so its 10–90 % time would scale with `T` and
+differ 20-fold between these rows. It does not differ. What is being measured is the generator's own
+analog output bandwidth, ~40 ns for a 3.3 V step, which is the signature of a **step** — the DAC holds and
+the output amplifier slews between held values. This is the discriminating experiment: the absolute number
+is an instrument property, but its **invariance across rate** is decidable and it decides for the hold.
+
+**An earlier `RISE = FALL = 8.02 µs` reading at 125 kSa/s was documented here as proving LINEAR, and it
+cannot be reproduced.** The reasoning attached to it was also wrong twice over: "a zero-order hold would
+step in nanoseconds" is true only for a pure step, and these vectors are not pure steps — `GEN_RENDER`'s
+default `rise` is 1.5 samples, so a shipped edge carries one intermediate codeword between the rails, 814
+of 814 transitions in `v77.bin`. Reinterpreting 8.02 µs as matching a hold's one-sample-period prediction
+happened to reach the right conclusion, but the reading itself is unexplained and nothing should be built
+on it.
 
 `v47`'s spikes do not discriminate either way and should not be cited as if they do: they are **two
 codewords wide and flat-topped** (`10813, 10813, 20643, 20643, 10813, 10813`), not the one-sample impulse
@@ -390,9 +404,26 @@ they were described as, and a symmetric trapezoid and a rectangle have the **sam
 16 µs. The "~16 µs triangle with a single-point apex" came from digitising at 10 kSa/s, where a 16 µs
 feature is sub-sample and one extreme sample per spike is a sampling artifact rather than a shape.
 
-So the source model rests on fit, not on physics, and the two are not known to agree. `SRC.interp` in
-`tools/gen_serial.lua` carries the linear model for the bench mock and is **off by default** for exactly
-this reason.
+So `sweep_plan`'s linear default rests on **fit**, the physics says **hold**, and the two disagree. Linear
+is kept there because it is what agrees with the bench and because changing it costs a soak to re-baseline
+— not because the generator interpolates. It does not.
+
+**AND A GROUND-TRUTH CAPTURE NOW EXISTS**, which is the first time the offline stimulus has been compared
+against real samples rather than against a pass/fail verdict. 20 000 samples of `v94` at 250 kBd, arb
+2.5 MSa/s, 20 Vpp, digitised at 1 MS/s with the 1 µs aperture, run through the app's own `sig_levels`
+beside both mock variants:
+
+| | min/max | app `lo`/`hi` | swing | family |
+|---|---|---|---|---|
+| hardware | −0.0159 … 6.6186 | −0.0080 … 6.6101 | 6.6181 V | 6.6 Vpp |
+| mock, front end off | 0.0000 … 6.5999 | 0.0000 … 6.5999 | 6.5999 V | 6.6 Vpp |
+| mock, front end on | −0.0000 … 6.5999 | 0.0007 … 6.5993 | 6.5986 V | 6.6 Vpp |
+
+All three agree to within 0.02 V, so at this operating point the mock's **levels** are faithful with or
+without a front-end model, and the level metric is not what separates them.
+
+`SRC.interp`, `SRC.truefs` and `SRC.frontend` in `tools/gen_serial.lua` carry the three candidate models
+and are all **off by default**; the evidence for each is in `notes/DESIGN-interp.md`.
 
 **The plan the twin replays is the plan the bench played**, which needs the lap's own `--skip-vectors`
 list. `soakplan` applies the skip **before** the shuffle, so dropping two waveforms moves every remaining
