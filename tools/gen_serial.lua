@@ -442,9 +442,18 @@ end
 --           adjusts the command rather than flat-topping the waveform.
 --   'off'   no envelope at all -- the unfaithful model, kept for an A/B.
 --
--- WHAT IS STILL A PLACEHOLDER is only clamp_v: 10.0 V is SDG_ENV_V, `SDG_MAX_VPP / 2`, which is the
--- datasheet envelope into Hi-Z rather than a figure measured on this unit. Replace it from static levels
--- read with the DMM in 6.5-digit DCV mode, hot, straight after a soak.
+-- MEASURED ON THE INSTRUMENT, 2026-09-08, not assumed. The SDG2122X reports the APPLIED pair through
+-- `C1:BSWV?`, so four commanded pairs settle it without a scope. AMP came back preserved exactly and OFST
+-- reduced to precisely 10 - AMP/2, with HLEV pinned at 10.000 V every time:
+--
+--   commanded AMP 17.0 OFST +8.5  ->  AMP 17.0 OFST 1.5  HLEV 10.0 LLEV -7.0
+--   commanded AMP 10.0 OFST +6.0  ->  AMP 10.0 OFST 5.0  HLEV 10.0 LLEV  0.0
+--   commanded AMP  4.0 OFST +12.0 ->  AMP  4.0 OFST 8.0  HLEV 10.0 LLEV  6.0
+--   commanded AMP 20.0 OFST +3.0  ->  AMP 20.0 OFST 0.0  HLEV 10.0 LLEV -10.0
+--
+-- The last confirms soakplan.py's "at 20 Vpp the only legal offset is 0" on the hardware. clamp_v = 10.0
+-- is therefore a measurement, and `C1:OUTP?` reads LOAD,HZ so commanded amplitudes reach the wire as
+-- commanded. tools/test_bench_engine.lua asserts these four pairs so the law cannot drift away from them.
 --
 -- NOT a field on GEN: `GEN` is the waveform generator FUNCTION in this file, so `GEN = GEN or {}` keeps
 -- the function and the next line raises "attempt to index a function value". Its own table.

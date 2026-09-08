@@ -1960,6 +1960,53 @@ end
 
 -- ---------------------------------------------------------------------------
 print('')
+-- THE GENERATOR'S OUTPUT ENVELOPE, AGAINST FOUR PAIRS READ OFF THE INSTRUMENT.
+--
+-- Measured on the SDG2122X 2026-09-08 by commanding each pair and reading C1:BSWV? back. The law is that
+-- AMP survives and OFST is pulled to 10 - AMP/2; the alternatives considered before measuring -- clip the
+-- samples, or shrink the amplitude -- both predict different numbers here, so these four rows are what
+-- stops the model drifting back to a guess. The 20 Vpp row is soakplan.py's "at 20 Vpp the only legal
+-- offset is 0", confirmed on hardware.
+print('-- the generator envelope matches the instrument --')
+do
+  local save = GENLIM.clamp_mode
+  GEN_CLAMP('ofst')
+  local hw = {
+    {17.0,  8.5, 17.0,  1.5,  10.0,  -7.0},
+    {10.0,  6.0, 10.0,  5.0,  10.0,   0.0},
+    { 4.0, 12.0,  4.0,  8.0,  10.0,   6.0},
+    {20.0,  3.0, 20.0,  0.0,  10.0, -10.0},
+  }
+  local i
+  for i = 1, table.getn(hw) do
+    local h = hw[i]
+    local fsv, o = GEN_ENVELOPE(h[1] / 2, h[2])
+    ck(math.abs(fsv * 2 - h[3]) < 1e-6 and math.abs(o - h[4]) < 1e-6,
+       string.format('AMP %.1f OFST %+.1f is applied as AMP %.1f OFST %+.1f', h[1], h[2], h[3], h[4]),
+       string.format('got AMP %.4f OFST %.4f', fsv * 2, o))
+    ck(math.abs((o + fsv) - h[5]) < 1e-6 and math.abs((o - fsv) - h[6]) < 1e-6,
+       string.format('and reports HLEV %+.1f LLEV %+.1f', h[5], h[6]),
+       string.format('got HLEV %.4f LLEV %.4f', o + fsv, o - fsv))
+  end
+  -- A PAIR INSIDE THE ENVELOPE MUST BE UNTOUCHED, which is what proves the clamp is not simply always on:
+  -- soakplan refuses to emit an out-of-envelope pair, so every cell of a real plan takes this path.
+  local fsv, o = GEN_ENVELOPE(12.088 / 2, 1.894)
+  ck(math.abs(fsv * 2 - 12.088) < 1e-6 and math.abs(o - 1.894) < 1e-6,
+     'an in-envelope pair passes through unchanged',
+     string.format('got AMP %.4f OFST %.4f', fsv * 2, o))
+  -- AND THE MOCK REPORTS THE APPLIED PAIR, because the instrument does: bsdg.select writes BSWV without
+  -- reading it back, so a clamped offset is only ever visible through this query.
+  MOCKB_SDG({})
+  bsdg.reset()
+  bsdg.select(ARB.v77, 17.0, 8.5, 96000)
+  local rep = bsdg.ask('C1:BSWV?')
+  ck(rep ~= nil and string.find(rep, 'OFST,1.5000V', 1, true) ~= nil,
+     'BSWV? reports the CLAMPED offset, not the commanded one', tostring(rep))
+  ck(rep ~= nil and string.find(rep, 'HLEV,10.0000V', 1, true) ~= nil,
+     'and HLEV pinned at the 10 V envelope', tostring(rep))
+  GEN_CLAMP(save)
+end
+
 print('-- the flagged-frame convention --')
 do
   -- '??' FOR A FLAGGED FRAME is what stops a byte passing the host's substring check only because the

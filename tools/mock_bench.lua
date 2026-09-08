@@ -207,6 +207,26 @@ function MOCKB_SDG_DO(g, cmd)
     MOCKB_SDG_ARB(g)
     return
   end
+  -- THE APPLIED PAIR, NOT THE COMMANDED ONE. Measured on the SDG2122X 2026-09-08: commanding a pair past
+  -- the envelope keeps AMP and pulls OFST to 10 - AMP/2, and the instrument REPORTS the applied values here
+  -- along with HLEV and LLEV. Without this reply nothing offline can test what a caller reads back, which
+  -- is the whole reason a clamp is detectable on hardware at all -- bsdg.select writes BSWV and does not
+  -- read it, so the record keeps the commanded offset while the wire carries a clamped one.
+  if up == 'C1:BSWV?' then
+    local amp = g.amp or 0
+    local fsv, o = GEN_ENVELOPE(amp / 2, g.ofst or 0)
+    g.pending = string.format(
+      'C1:BSWV WVTP,ARB,AMP,%.4fV,MAX_OUTPUT_AMP,20V,OFST,%.4fV,HLEV,%.4fV,LLEV,%.4fV,PHSE,0,DLY,0S',
+      fsv * 2, o, o + fsv, o - fsv)
+    return
+  end
+  if up == 'C1:OUTP?' then
+    -- LOAD,HZ is what the bench reads: measured, and it is why commanded amplitudes reach the wire
+    -- unscaled. A 50-ohm setting driving a high-Z input would double everything.
+    g.pending = string.format('C1:OUTP %s,LOAD,HZ,POWERON_STATE,OFF,PLRT,NOR',
+                              g.out and 'ON' or 'OFF')
+    return
+  end
   if string.find(up, 'OUTP ON', 1, true) ~= nil then g.out = true; return end
   if string.find(up, 'OUTP OFF', 1, true) ~= nil then g.out = false; return end
 end

@@ -369,10 +369,12 @@ construction.
 generator actually holds, converts codewords to volts at the amplitude the file was encoded for,
 resamples to the rate the app would pick, starts at the phase the seeded wait produces, and decodes.
 
-Interpolation is **linear** between arb points, not a step. The generator itself is a zero-order-hold
-device — TrueArb, with the AD9122's interpolation half-bands bypassed — so a staircase is the better
-source model on paper, and it was tried: at iteration 1 over 8 capture phases it agrees with the bench on
-the same 26 cells as linear and invents fifteen more failures the bench does not have. `--hold` runs it.
+Interpolation is **linear** between arb points, not a step — and that is now a measured property of the
+generator rather than a lucky choice. On the scope at 125 kSa/s the transitions read **RISE = FALL =
+8.02 µs, exactly one arb sample period**; a zero-order hold would step in nanoseconds. A staircase was
+argued for on paper (TrueArb, with the AD9122's interpolation half-bands bypassed) and it was tried: at
+iteration 1 over 8 capture phases it agrees with the bench on the same 26 cells as linear and invents
+fifteen more failures the bench does not have. `--hold` runs it. The measurement explains why it lost.
 
 **The plan the twin replays is the plan the bench played**, which needs the lap's own `--skip-vectors`
 list. `soakplan` applies the skip **before** the shuffle, so dropping two waveforms moves every remaining
@@ -776,3 +778,64 @@ claim about a picture, and a stale one survives because nobody re-reads the figu
 writing them: the paged figures are 32 kB recordings showing their retained **8 192-byte tail**
 (`sdec.ck_keep`), so the page counts are the tail's arithmetic, not the run's, and neither the byte
 count nor the page count can be read off the other.
+
+## What the instruments actually do, measured
+
+Four things were measured directly rather than assumed, on 2026-09-07/08.
+
+**The generator's output envelope clamps the OFFSET.** `|OFST| + AMP/2` cannot exceed 10 V, and when a
+commanded pair breaks that the SDG2122X keeps the amplitude and pulls the offset in. Its own `C1:BSWV?`
+reports the applied pair, so no scope is needed:
+
+| commanded | applied AMP | applied OFST | HLEV | LLEV |
+|---|---|---|---|---|
+| AMP 17.0, OFST +8.5 | 17.0 | 1.5 | 10.0 | −7.0 |
+| AMP 10.0, OFST +6.0 | 10.0 | 5.0 | 10.0 | 0.0 |
+| AMP 4.0, OFST +12.0 | 4.0 | 8.0 | 10.0 | 6.0 |
+| AMP 20.0, OFST +3.0 | 20.0 | 0.0 | 10.0 | −10.0 |
+
+`OFST` lands on exactly `10 − AMP/2` every time and `HLEV` pins at 10.0 V, which confirms `soakplan`'s
+"at 20 Vpp the only legal offset is 0". `GEN_ENVELOPE` in `tools/gen_serial.lua` reproduces all four to
+1e-6. `C1:OUTP?` reads `LOAD,HZ`, so commanded amplitudes reach the wire as commanded.
+
+**Reconstruction is linear, not a staircase** — see *The offline twin* above.
+
+**`v47`'s refusals are an edge-timing failure, not a level failure.** `SER_Hello_8N1_Spike_x100` carries
+spikes in **both** directions, symmetric about the data: with the data at 1.88 V / 3.84 V, they reach
+0.059 V and 5.696 V, i.e. 1.82 V below the space and 1.86 V above the mark. Because they are symmetric a
+min/max threshold is barely disturbed — 2.878 V against a true midpoint of 2.860 V — so the decision level
+is *not* corrupted. What breaks is timing: each spike is a single arb sample rendered as a ~16 µs triangle
+with a single-point apex, and every crossing makes a spurious edge **pair**. At the cell's 100 µs sampling
+that is one sample wide, so `sig_bittime` floors at one sample and the app refuses with
+`0.9 samples/bit -- 11250 baud needs a faster capture`. Measured apex-hit rate: about **6 % of spikes**.
+
+A scope window is not the waveform. At 100 µs/div the screen holds 1 ms of a 155 ms loop, and its honest
+`MAX 3.92 V` describes that 0.6 %. **Capture more than one loop period before describing a looping
+waveform** — a bare TSP digitize over 0.2 s at 1 MSa/s is what found the upward spike.
+
+## Soak results
+
+**Hardware, `out/bench/soak44`, 7 laps × 1677 = 11 739 cells over 17.3 h.** 143 BAD, **1.22 %**
+(≤115200 Bd: 1.34 % [1.10–1.60]; >115200 Bd: 0.89 % [0.59–1.27]). **0 SDG failures**, against 129 in the
+previous run where a mis-specified skip list re-admitted `v97` — see the `--skip-vectors` warning above.
+0 cells unrecorded, 0 events posted.
+
+`acq: line is idle` was **0 in every one of the seven laps**. An earlier run degraded to 71.6 % idle at
+12.5 h of DMM uptime, but two full `bench_smoke` runs had executed inside that uptime; 17.3 h clean with
+none rules out uptime alone. Heap at the six lap seams and the run total: 2678, 2678, 2679, 2678, 2679,
+2678, 2678 kB — **flat to 1 kB over 10 062 cells**, so nothing leaks. Read the seam notes, not the panel's
+`mem`, which shows the *previous cell's* working set and varies by ±100 kB with its rate.
+
+One trend did appear, in a counter nobody was watching: **`v47`'s refusals rose 7, 7, 7, 9, 9, 11, 14
+across the seven laps** — +1.11/lap, 5.1 σ, monotone, while `v48a` and `v48b` stayed flat. Mean commanded
+amplitude (correlation +0.43) and mean samples-per-bit (+0.22) do not explain it; lap number does (+0.92).
+The 6 % apex-hit rate above is the quantity that would have to drift. Unconfirmed on one run.
+
+**Offline, two pools of `tools/soak_offline_bench.py` under Lua 5.0.2, 6 h.** 5068 laps, **8.50 M cells** —
+comparable to the entire prior offline history, and the first with a varying capture phase. Zero `raised`,
+zero crashes, zero lost records, zero `nobytes`. The pools differed in one variable: half the cells in the
+second commanded an out-of-envelope pair, so 838 were recentred a lap and 517 straddled ground. Paired by
+seed over 742 laps the cost was **+4.635 fails/lap, 95 % CI +4.53 to +4.74, higher in 742 of 742 pairs** —
+about 0.9 % of the cells affected. The archive's 9.55× byte-failure ratio on recentred cells implies ~49,
+so something outside the envelope model accounts for the rest; the DMM front end is the largest path still
+unmodelled.
