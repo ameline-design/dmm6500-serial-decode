@@ -7,9 +7,14 @@
 -- CSV dropped on the host filesystem so tools/judge_bench.py can be run against it for real. Together
 -- they mean the only thing left untested before instrument time is the instrument itself.
 --
--- NOT A FIDELITY CLAIM. There is no DMM front end here and no noise -- gen_serial's SRC hands the app
--- the vector's own samples, decimated. tools/sweep_plan.lua is where signal fidelity is argued about.
--- What this validates is the ENGINE and the FILE FORMAT: that a plan in, a judgeable record out.
+-- WHAT IT VALIDATES IS THE ENGINE AND THE FILE FORMAT: a plan in, a judgeable record out. The stimulus
+-- models are OPT-IN and each one is printed on the record, because a run whose conditions are not stated
+-- cannot be compared with anything later: --interp (linear between arb samples), --truefs (the digitiser's
+-- real 66e6/ceil rate) and --frontend (the DMM's 440 kHz pole and 1 us aperture). All three default OFF,
+-- so a bare run is the generator's samples decimated with no instrument in the path -- and there is still
+-- no noise and no 16-bit quantisation in any mode. tools/sweep_plan.lua models the front end by default
+-- and is where signal fidelity has been argued about; it reached 110 bad WITH it, against this engine's
+-- 1.48x over-prediction without.
 --
 --   python3 tools/soakplan.py --emit-csv --iteration 1 --spec 'v77:std,r06:std,v78:nonstd,r00:nonstd' \
 --       > out/bench/PLAN.CSV
@@ -31,7 +36,8 @@ for _, m in ipairs({'bench/arb_names.tsp', 'bench/sdg_net.tsp', 'bench/bench_rec
   chunk()
 end
 
-local A = {plan = nil, out = nil, iterations = 1, phaseseed = nil, clamp = nil, interp = nil}
+local A = {plan = nil, out = nil, iterations = 1, phaseseed = nil, clamp = nil, interp = nil,
+           truefs = nil, frontend = nil}
 local ai = 1
 while arg ~= nil and arg[ai] ~= nil do
   local k, v = arg[ai], arg[ai + 1]
@@ -50,6 +56,14 @@ while arg ~= nil and arg[ai] ~= nil do
   -- condition on the record, where a single flag would leave one arm unlabelled.
   elseif k == '--interp' then A.interp = true; ai = ai + 1
   elseif k == '--no-interp' then A.interp = false; ai = ai + 1
+  -- THE DIGITISER'S ACTUAL RATE, 66e6/ceil(66e6/requested). Same paired-flag reasoning as --interp:
+  -- resampling at the requested rate manufactures round samples-per-bit the bench never gives.
+  elseif k == '--truefs' then A.truefs = true; ai = ai + 1
+  elseif k == '--no-truefs' then A.truefs = false; ai = ai + 1
+  -- THE DMM'S 440 kHz POLE AND 1 us APERTURE. Without them the mock is the generator and not the
+  -- instrument, and a perfect staircase carries content the DMM cannot see.
+  elseif k == '--frontend' then A.frontend = true; ai = ai + 1
+  elseif k == '--no-frontend' then A.frontend = false; ai = ai + 1
   else print('unknown argument: ' .. tostring(k)); os.exit(2) end
 end
 if A.plan == nil or A.out == nil then
@@ -73,10 +87,14 @@ elseif A.phaseseed ~= nil then
 end
 if A.clamp ~= nil then GEN_CLAMP(A.clamp) end
 if A.interp ~= nil then SRC_INTERP(A.interp) end
-print(string.format('stimulus: capture phase %s, generator envelope %s at %.3f V, reconstruction %s',
+if A.truefs ~= nil then SRC_TRUEFS(A.truefs) end
+if A.frontend ~= nil then SRC_FRONTEND(A.frontend) end
+print(string.format('stimulus: capture phase %s, envelope %s at %.3f V, reconstruction %s, rate %s, front end %s',
                     SRC.phaserand and ('random, seed ' .. tostring(SRC.phaseseed)) or 'fixed at sample 1',
                     tostring(GENLIM.clamp_mode), GENLIM.clamp_v,
-                    SRC.interp and 'linear between arb samples' or 'zero-order hold'))
+                    SRC.interp and 'linear between arb samples' or 'zero-order hold',
+                    SRC.truefs and '66e6/ceil(66e6/requested)' or 'as requested',
+                    SRC.frontend and '440 kHz pole + 1 us aperture' or 'none'))
 
 -- COPY THE HOST'S PLAN INTO THE MOCK FILESYSTEM, because the engine reads it through the instrument's
 -- file API and must not be handed a host path -- that difference is exactly what the mock is for.

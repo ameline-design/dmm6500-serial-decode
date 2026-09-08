@@ -923,13 +923,118 @@ dmm = {
   digitize = {analogtrigger = {edge = {}}},
 }
 
+-- ---------- THE DMM'S FRONT END, WHICH IS THE OTHER HALF OF THE SIGNAL CHAIN ----------
+-- WITHOUT THIS THE MOCK IS THE GENERATOR AND NOT THE INSTRUMENT. A perfect staircase sampled
+-- instantaneously carries more high-frequency content than this DMM can see, and it MANUFACTURES rate
+-- misfits: tools/sweep_plan.lua measured iteration 1 at 8 offsets going from 31 rate misreports to 242
+-- against the bench's 20 when its front end was removed -- overshooting by 10x. Its comment is blunt that
+-- neither effect is optional, and this file models neither, which makes it the best remaining explanation
+-- for the bench mock over-predicting hardware by 1.48x.
+--
+-- TWO EFFECTS, BOTH DATASHEET FIGURES THAT ALREADY LIVE IN tsp/:
+--   * BANDWIDTH. sdec pins the 10 V range for the widest digitize bandwidth of any range, 440 kHz, so one
+--     pole at tau = 1/(2*pi*440e3) = 0.36 us.
+--   * APERTURE. sdec.dig.aperture is fixed at 1e-6 and its comment calls it non-negotiable: a 1 us boxcar
+--     integration ending at each sample instant, which at 1 MS/s fills the whole interval.
+--
+-- IT ALSO RECONCILES THE RECONSTRUCTION ARGUMENT. The generator really does hold -- measured, see
+-- SRC.interp below -- and it is the DMM's aperture and pole that put a threshold crossing BETWEEN two
+-- sample instants, which is the sub-sample information tsp/serial_core.tsp's fractional edge list exists
+-- to recover. So smoothing belongs in the instrument model, not in the source model: SRC.interp was the
+-- right problem in the wrong layer.
+--
+-- APPLIED IN THE ARB TIME BASE, BEFORE DECIMATION, because that is where a real filter sits. Filtering
+-- after resampling band-limits relative to the sample rate instead of to the instrument -- an edge fixed
+-- in samples rather than in time, which is the exact error this removes.
+--
+-- CYCLIC, over two passes keeping the second, because the generator plays the file on repeat and a filter
+-- started from rest puts a settling transient at the arb seam that the hardware does not have.
+--
+-- A FAITHFUL PORT of sweep_plan.lua's frontend(), constants included. The duplication is deliberate for
+-- now: unifying them means editing sweep_plan, which would re-baseline plansweep's 110 bad, and that is a
+-- separate change with its own evidence. The constants must not drift -- both read them from tsp/.
+FE_BW_HZ = 440e3
+FE_APERTURE_S = 1e-6
+SRC.frontend = false
+function SRC_FRONTEND(on) SRC.frontend = (on == true) end
+
+-- A 1-BASED CYCLIC INDEX THAT SURVIVES A NEGATIVE ARGUMENT. math.mod keeps the sign of its first argument
+-- -- math.mod(-3, 10) is -3, not 7 -- so a bare math.mod here would read wv[-2]. That returns nil and the
+-- arithmetic raises, which at least fails loudly; the worse case is an array long enough that the filter
+-- silently averages the wrong samples.
+local function fe_wrapi(i, na)
+  local j = math.mod(i, na)
+  if j < 0 then j = j + na end
+  return j + 1
+end
+
+-- The rendered waveform as the DMM's front end would present it. Returns a NEW array; the input is left
+-- alone so a caller can keep the unfiltered wire for comparison.
+function GEN_FRONTEND(wv, na, arb_fs)
+  if wv == nil or na == nil or na < 2 or arb_fs == nil or arb_fs <= 0 then return wv end
+  local out, i = wv, nil
+  -- THE APERTURE FIRST: a boxcar of w arb samples. Under one arb sample the window sits inside a single
+  -- held DAC value and averages nothing, which is what it does on the bench at these rates -- so it is
+  -- skipped rather than approximated.
+  local w = math.floor(arb_fs * FE_APERTURE_S + 0.5)
+  if w > 1 then
+    local acc, box, k = 0, {}, nil
+    for k = 1, w do acc = acc + out[fe_wrapi(na - w + k, na)] end
+    for i = 1, na do
+      box[i] = acc / w
+      -- Advance the trailing window from (i-w+1 .. i) to (i-w+2 .. i+1): drop the oldest, take the NEXT
+      -- sample. out[i] here shifts the window by one, which agrees with a direct trailing average at the
+      -- first position and nowhere else.
+      acc = acc - out[fe_wrapi(i - w, na)] + out[fe_wrapi(i, na)]
+    end
+    out = box
+  end
+  local tau = 1 / (2 * math.pi * FE_BW_HZ)
+  local a = 1 - math.exp(-1 / (arb_fs * tau))
+  -- At low arb rates `a` is 1 to machine precision and the pole is a no-op, which is the truth: a 0.36 us
+  -- time constant cannot round an edge the generator takes tens of microseconds to make.
+  if a >= 1 then return out end
+  local pole, y = {}, out[na]
+  for i = 1, na do y = y + (out[i] - y) * a end
+  for i = 1, na do y = y + (out[i] - y) * a; pole[i] = y end
+  return pole
+end
+
+-- ---------- THE RATE THE DIGITISER CAN ACTUALLY SYNTHESISE ----------
+-- NOT ALWAYS THE ONE IT WAS ASKED FOR. tsp/serial_core.tsp records the measurement: the sample clock is
+-- 66 MHz with an integer divider rounded UP, so fs_actual = 66e6/ceil(66e6/fs_requested), which predicted
+-- all 25 accepted rates to within 4.3e-7 over 26 rates. A rate is exact if and only if it divides 66e6,
+-- and 66e6 = 2^7 * 3 * 5^6 * 11 -- so THREE LISTED RATES ARE INEXACT ON PURPOSE: 160000, 320000 and
+-- 640000, off by -0.121 %, -0.362 % and -0.841 %, because they are exactly what 19200, 38400 and 76800
+-- need. Measured over soak44's 11 174 cells, 11.0 % ran at a rate the divider moved.
+--
+-- WHY IT MATTERS RATHER THAN BEING A ROUNDING DETAIL: resampling at the REQUESTED rate hands the decoder a
+-- round number of samples per bit where the instrument gives it a fraction. 80000 Bd at a listed 640000 is
+-- exactly 8.000 sa/bit if this is ignored and 7.933 on the bench, and round sa/bit is the documented blind
+-- spot of every offline suite -- tools/test_ratefit.lua's own header says so, and round fs values once hid
+-- a real defect from 884 assertions. tools/sweep_plan.lua models this (its fs_true) and found v46 at
+-- 80000 Bd decoding with fitq 1.0000 and not one flagged frame against the bench's five.
+--
+-- OFF BY DEFAULT, on the same terms as SRC.interp: a paired A/B on identical seeds has to attribute the
+-- difference before the default moves. Unlike the reconstruction model, the physics here is not in doubt --
+-- it is a measured property of this digitiser and the app already scales every bit time by the MEASURED
+-- acq_fs rather than by the request.
+SRC.truefs = false
+function SRC_TRUEFS(on) SRC.truefs = (on == true) end
+
 -- Source samples per delivered sample, and the delivered sample interval. 1 and nil mean "hand
 -- SRC back as it is", which is every test that has not opted in.
 function SRC_step()
   if SRC.native_fs == nil or SRC.native_fs <= 0 then return 1, nil end
   local want = dmm.digitize.samplerate
   if want == nil or want <= 0 then return 1, nil end
-  return SRC.native_fs / want, 1 / want
+  -- THE TIMESTAMPS MOVE WITH THE STEP, both derived from the same rate. dmm.digitize.read hands
+  -- b.relativetimestamps back as (i-1)*dt and acq_measure_fs() divides by exactly that, so a step taken at
+  -- the actual rate with an interval taken at the requested one would report a rate the samples do not
+  -- have -- worse than either model on its own.
+  local fs = want
+  if SRC.truefs then fs = 66e6 / math.ceil(66e6 / want) end
+  return SRC.native_fs / fs, 1 / fs
 end
 
 -- Source index for delivered sample i counting from `from`, or nil once the render runs out. This is

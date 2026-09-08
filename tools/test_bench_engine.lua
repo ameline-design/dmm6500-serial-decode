@@ -2128,6 +2128,132 @@ do
   if sv.phon then SRC_PHASE(sv.phseed) else SRC_PHASE(nil) end
 end
 
+print('-- the DMM front end, which is the other half of the signal chain --')
+do
+  -- THE CONSTANTS ARE NOT FREE PARAMETERS. Both come from tsp/, which is the shipped source, so a test
+  -- that only checked the filter's shape would let either drift silently. 440 kHz is the 10 V range's
+  -- digitize bandwidth and 1 us is sdec.dig.aperture, whose own comment calls it non-negotiable.
+  local f = io.open('tsp/serial_core.tsp', 'r')
+  local core = f and f:read('*a') or ''
+  if f then f:close() end
+  ck(string.find(core, '440', 1, true) ~= nil,
+     'tsp/serial_core.tsp still states the 440 kHz digitize bandwidth GEN_FRONTEND uses')
+  ck(FE_BW_HZ == 440e3 and FE_APERTURE_S == 1e-6,
+     'and GEN_FRONTEND carries those two figures',
+     string.format('%g Hz, %g s', FE_BW_HZ, FE_APERTURE_S))
+
+  -- DC GAIN IS EXACTLY 1 in both stages, which is what makes it a filter rather than a scaling. A boxcar
+  -- of any width and a one-pole low pass both pass a constant unchanged, so a flat input must come back
+  -- flat -- and if it does not, the logic LEVELS have moved and every threshold test downstream is wrong.
+  local flat, i = {}, nil
+  for i = 1, 64 do flat[i] = 3.3 end
+  local g = GEN_FRONTEND(flat, 64, 2000000)
+  local worst = 0
+  for i = 1, 64 do
+    local e = g[i] - 3.3
+    if e < 0 then e = -e end
+    if e > worst then worst = e end
+  end
+  ck(worst < 1e-9, 'a constant passes through the front end unchanged', string.format('worst %g V', worst))
+
+  -- THE APERTURE IS SKIPPED BELOW ONE ARB SAMPLE, which is the truth rather than an optimisation: a 1 us
+  -- window inside a DAC value held for longer averages nothing. At 125 kSa/s the tread is 8 us.
+  local step = {}
+  for i = 1, 64 do step[i] = (i <= 32) and 0 or 3.3 end
+  -- A TOLERANCE, NOT EQUALITY, and the reason is worth stating: at 125 kSa/s `a` is 1 - 2.2e-10, which is
+  -- NOT 1 to double precision, so the pole does run. Its residue decays as (1-a)^n and reaches 3e-96 ten
+  -- samples in -- a no-op in effect, but never exactly zero, and an equality test here fails for a reason
+  -- that has nothing to do with the model.
+  local slow = GEN_FRONTEND(step, 64, 125000)
+  ck(math.abs(slow[10]) < 1e-9 and math.abs(slow[40] - 3.3) < 1e-9,
+     'at 125 kSa/s neither stage moves a held level -- w < 1 and the pole settles in under a sample',
+     string.format('%g .. %g', slow[10], slow[40]))
+
+  -- AND AT A HIGH ARB RATE IT GENUINELY SMOOTHS, which is the whole point: a step becomes a transition
+  -- spread over several samples, so a threshold crossing lands BETWEEN sample instants and the app's
+  -- fractional edge list has something to recover. A hold alone puts every crossing on the grid.
+  local fast = GEN_FRONTEND(step, 64, 4000000)
+  local mid = 0
+  for i = 1, 64 do
+    if fast[i] > 0.05 and fast[i] < 3.25 then mid = mid + 1 end
+  end
+  ck(mid >= 2, 'at 4 MSa/s a step becomes a multi-sample transition', tostring(mid) .. ' intermediate')
+
+  -- THE INPUT IS NOT MUTATED, so a caller can keep the unfiltered wire beside the filtered one.
+  ck(step[10] == 0 and step[40] == 3.3, 'and the caller\'s array is left alone')
+
+  -- CYCLIC, TESTED AS SHIFT INVARIANCE, which is what "cyclic" actually means and is exact. Rotating the
+  -- input by k and filtering must equal filtering and then rotating by k. A filter started from rest fails
+  -- this at the seam, which is the transient the hardware does not have -- and it would land exactly where
+  -- the looping-arb seam already causes trouble.
+  --
+  -- NOT tested with a ramp: 1..64 is discontinuous at the seam by construction, so a CORRECT cyclic filter
+  -- shows a large step there and the test would be asserting the opposite of the property.
+  local sq, k = {}, 21
+  for i = 1, 64 do sq[i] = (math.mod(i - 1, 16) < 8) and 0 or 3.3 end
+  local rot = {}
+  for i = 1, 64 do rot[i] = sq[math.mod(i - 1 + k, 64) + 1] end
+  local fa = GEN_FRONTEND(sq, 64, 4000000)
+  local fb = GEN_FRONTEND(rot, 64, 4000000)
+  local worstshift = 0
+  for i = 1, 64 do
+    local e = fb[i] - fa[math.mod(i - 1 + k, 64) + 1]
+    if e < 0 then e = -e end
+    if e > worstshift then worstshift = e end
+  end
+  ck(worstshift < 1e-9, 'the filter is cyclic: rotating the input just rotates the output',
+     string.format('worst %g V over a %d-sample rotation', worstshift, k))
+end
+
+print('-- the digitiser synthesises the rate it can, not the one it was asked for --')
+do
+  local sv = {rd = SRC.rd, ts = SRC.ts, nsmp = SRC.nsmp, native_fs = SRC.native_fs, loop = SRC.loop,
+              truefs = SRC.truefs, rate = dmm.digitize.samplerate}
+
+  -- THE THREE INEXACT LISTED RATES, against the figures tsp/serial_core.tsp states from 26 measured
+  -- rates. They are listed on purpose -- they are what 19200, 38400 and 76800 need -- so a change that
+  -- "fixed" them into round numbers would be undoing a deliberate choice.
+  SRC.rd, SRC.nsmp, SRC.native_fs, SRC.loop = {0, 1}, 2, 1000000, true
+  SRC.ts = {0, 1e-6}
+  SRC_TRUEFS(true)
+  local want = {[640000] = -0.841, [320000] = -0.362, [160000] = -0.121}
+  local f
+  for f in pairs(want) do
+    dmm.digitize.samplerate = f
+    local step, dt = SRC_step()
+    local fs = 1 / dt
+    local err = 100 * (fs - f) / f
+    ck(math.abs(err - want[f]) < 0.001,
+       string.format('%d S/s is synthesised as %.1f, %+.3f %%', f, fs, err),
+       string.format('expected %+.3f %%', want[f]))
+    -- AND THE STEP MOVES WITH IT, not just the timestamp: acq_measure_fs divides the delivered interval
+    -- into the sample count, so the two must come from one rate or the mock reports a rate it did not use.
+    ck(math.abs(step - 1000000 / fs) < 1e-9, '  and the resampling step uses that same rate',
+       tostring(step))
+  end
+
+  -- AN EXACT RATE IS UNTOUCHED, which is what makes the flag safe to leave on: 66e6 = 2^7*3*5^6*11, so
+  -- every rate that divides it is synthesised exactly and 11.0 % of a lap's cells are the ones that move.
+  local exact = {1000000, 500000, 250000, 120000, 100000, 80000, 60000, 10000}
+  local allexact, i = true, nil
+  for i = 1, table.getn(exact) do
+    dmm.digitize.samplerate = exact[i]
+    local _, dt = SRC_step()
+    if math.abs(1 / dt - exact[i]) > 1e-6 then allexact = false end
+  end
+  ck(allexact, 'every rate that divides 66e6 is synthesised exactly', 'checked 8 of them')
+
+  -- FLAG OFF IS THE REQUEST, unchanged, so the arms of an A/B differ only in this.
+  SRC_TRUEFS(false)
+  dmm.digitize.samplerate = 640000
+  local _, dt = SRC_step()
+  ck(math.abs(1 / dt - 640000) < 1e-6,
+     'with the flag off the requested rate is delivered verbatim', tostring(1 / dt))
+
+  SRC.rd, SRC.ts, SRC.nsmp, SRC.native_fs, SRC.loop = sv.rd, sv.ts, sv.nsmp, sv.native_fs, sv.loop
+  SRC.truefs, dmm.digitize.samplerate = sv.truefs, sv.rate
+end
+
 print('-- the flagged-frame convention --')
 do
   -- '??' FOR A FLAGGED FRAME is what stops a byte passing the host's substring check only because the

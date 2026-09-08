@@ -287,6 +287,12 @@ function MOCKB_SDG_ARB(g)
   fsv, ofst = GEN_ENVELOPE(fsv, ofst)
   local volts, i = {}, nil
   for i = 1, c.n do volts[i] = GEN_VOLTS(c.cw[i], fsv, ofst) end
+  -- THE DMM'S FRONT END, IN THE ARB TIME BASE. gen_serial's GEN_FRONTEND, not a copy here, for the same
+  -- reason GEN_ENVELOPE lives there: tools/sweep_plan.lua builds its own stimulus and the two must not be
+  -- able to disagree about the instrument. Applied to the volts BEFORE they reach SRC, because that is
+  -- where a real filter sits -- after decimation it would band-limit against the sample rate instead of
+  -- against the instrument.
+  if SRC.frontend then volts = GEN_FRONTEND(volts, c.n, g.srate) end
   SRC.rd, SRC.nsmp, SRC.native_fs, SRC.loop = volts, c.n, g.srate, true
   SRC.ts = nil
   local ts = {}

@@ -62,6 +62,10 @@ def main(argv):
     # LINEAR RECONSTRUCTION BETWEEN ARB SAMPLES. Off unless asked, matching gen_serial's default, so a
     # run that does not name it is the zero-order-hold arm rather than an unlabelled mixture.
     interp = '--interp' in argv
+    # THE DIGITISER'S ACTUAL RATE. Off unless asked, matching gen_serial's default.
+    truefs = '--truefs' in argv
+    # THE DMM'S FRONT END. Off unless asked, matching gen_serial's default.
+    frontend = '--frontend' in argv
     if hours <= 0 and laps <= 0:
         print('REFUSING: pass --hours H or --laps N. A soak with no end condition is not a soak.')
         return 2
@@ -173,6 +177,8 @@ def main(argv):
         # point of this pass-through is a paired A/B on identical seeds: an unlabelled arm cannot be
         # compared with anything later, and the default is expected to move once the A/B settles.
         cmd += ['--interp'] if interp else ['--no-interp']
+        cmd += ['--truefs'] if truefs else ['--no-truefs']
+        cmd += ['--frontend'] if frontend else ['--no-frontend']
         fh = open(os.path.join(outdir, 'w%d.out' % (n % (2 * workers))), 'w')
         return {'p': subprocess.Popen(cmd, cwd=STAGE, stdout=fh, stderr=subprocess.STDOUT),
                 'rec': rec, 'seed': seed, 'fh': fh, 'n': n}
