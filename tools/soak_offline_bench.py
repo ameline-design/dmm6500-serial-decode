@@ -59,6 +59,9 @@ def main(argv):
     plan = opt(argv, '--plan', None)
     outdir = opt(argv, '--out', '/tmp/soak_bench')
     seed0 = int(opt(argv, '--seed0', '1'))
+    # LINEAR RECONSTRUCTION BETWEEN ARB SAMPLES. Off unless asked, matching gen_serial's default, so a
+    # run that does not name it is the zero-order-hold arm rather than an unlabelled mixture.
+    interp = '--interp' in argv
     if hours <= 0 and laps <= 0:
         print('REFUSING: pass --hours H or --laps N. A soak with no end condition is not a soak.')
         return 2
@@ -166,6 +169,10 @@ def main(argv):
         seed = seed0 + n
         cmd = [LUA502, 'tools/offline_bench.lua', '--plan', plan, '--out', rec,
                '--iterations', '1', '--phase-seed', str(seed)]
+        # RECONSTRUCTION IS STATED EXPLICITLY IN BOTH ARMS, never left to the default, because the whole
+        # point of this pass-through is a paired A/B on identical seeds: an unlabelled arm cannot be
+        # compared with anything later, and the default is expected to move once the A/B settles.
+        cmd += ['--interp'] if interp else ['--no-interp']
         fh = open(os.path.join(outdir, 'w%d.out' % (n % (2 * workers))), 'w')
         return {'p': subprocess.Popen(cmd, cwd=STAGE, stdout=fh, stderr=subprocess.STDOUT),
                 'rec': rec, 'seed': seed, 'fh': fh, 'n': n}

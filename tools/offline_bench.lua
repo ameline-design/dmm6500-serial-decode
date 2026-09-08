@@ -31,7 +31,7 @@ for _, m in ipairs({'bench/arb_names.tsp', 'bench/sdg_net.tsp', 'bench/bench_rec
   chunk()
 end
 
-local A = {plan = nil, out = nil, iterations = 1, phaseseed = nil, clamp = nil}
+local A = {plan = nil, out = nil, iterations = 1, phaseseed = nil, clamp = nil, interp = nil}
 local ai = 1
 while arg ~= nil and arg[ai] ~= nil do
   local k, v = arg[ai], arg[ai + 1]
@@ -43,6 +43,13 @@ while arg ~= nil and arg[ai] ~= nil do
   elseif k == '--phase-seed' then A.phaseseed = tonumber(v); ai = ai + 2
   elseif k == '--no-phase' then A.phaseseed = -1; ai = ai + 1
   elseif k == '--clamp' then A.clamp = v; ai = ai + 2
+  -- LINEAR RECONSTRUCTION BETWEEN ARB SAMPLES, which is an alternative source model and NOT the
+  -- generator's measured behaviour -- the one scope measurement of it matches a hold once the vectors'
+  -- own encoded ramp is counted. See gen_serial.lua's SRC.interp. A PAIR of flags with no default here,
+  -- because the point of the pair is a paired A/B on one seed: --interp and --no-interp each state the
+  -- condition on the record, where a single flag would leave one arm unlabelled.
+  elseif k == '--interp' then A.interp = true; ai = ai + 1
+  elseif k == '--no-interp' then A.interp = false; ai = ai + 1
   else print('unknown argument: ' .. tostring(k)); os.exit(2) end
 end
 if A.plan == nil or A.out == nil then
@@ -65,9 +72,11 @@ elseif A.phaseseed ~= nil then
   SRC_PHASE(A.phaseseed)
 end
 if A.clamp ~= nil then GEN_CLAMP(A.clamp) end
-print(string.format('stimulus: capture phase %s, generator envelope %s at %.3f V',
+if A.interp ~= nil then SRC_INTERP(A.interp) end
+print(string.format('stimulus: capture phase %s, generator envelope %s at %.3f V, reconstruction %s',
                     SRC.phaserand and ('random, seed ' .. tostring(SRC.phaseseed)) or 'fixed at sample 1',
-                    tostring(GENLIM.clamp_mode), GENLIM.clamp_v))
+                    tostring(GENLIM.clamp_mode), GENLIM.clamp_v,
+                    SRC.interp and 'linear between arb samples' or 'zero-order hold'))
 
 -- COPY THE HOST'S PLAN INTO THE MOCK FILESYSTEM, because the engine reads it through the instrument's
 -- file API and must not be handed a host path -- that difference is exactly what the mock is for.

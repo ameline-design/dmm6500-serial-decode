@@ -369,12 +369,30 @@ construction.
 generator actually holds, converts codewords to volts at the amplitude the file was encoded for,
 resamples to the rate the app would pick, starts at the phase the seeded wait produces, and decodes.
 
-Interpolation is **linear** between arb points, not a step — and that is now a measured property of the
-generator rather than a lucky choice. On the scope at 125 kSa/s the transitions read **RISE = FALL =
-8.02 µs, exactly one arb sample period**; a zero-order hold would step in nanoseconds. A staircase was
-argued for on paper (TrueArb, with the AD9122's interpolation half-bands bypassed) and it was tried: at
-iteration 1 over 8 capture phases it agrees with the bench on the same 26 cells as linear and invents
-fifteen more failures the bench does not have. `--hold` runs it. The measurement explains why it lost.
+Interpolation is **linear** between arb points, not a step, and the reason is **empirical agreement with
+the bench, not a measurement of the generator**. A staircase is what the part argues for — TrueArb, with
+the AD9122's interpolation half-bands bypassed — and it was tried: at iteration 1 over 8 capture phases
+it agrees with the bench on the same 26 cells as linear and invents fifteen more failures the bench does
+not have. `--hold` runs it. Linear is kept because it fits, and that is the whole of the case for it.
+
+**A SCOPE READING OF `RISE = FALL = 8.02 µs` AT 125 kSa/s DOES NOT SUPPORT LINEAR, AND WAS BRIEFLY
+DOCUMENTED HERE AS IF IT DID.** The arithmetic omitted that **the vectors encode their own edge ramp**:
+`GEN_RENDER`'s default `rise` is 1.5 samples, so a shipped edge carries one intermediate codeword between
+the rails — measured, 814 of 814 transitions in `v77.bin`. A hold therefore steps rail → mid → rail at
+the arb period and its **10–90 % rise is one full sample period, 8.00 µs**; linear ramps continuously
+across both intervals and gives **12.8 µs**. The 8.02 µs reading matches the hold to 0.25 % and rejects
+linear by 60 %. The claim that "a zero-order hold would step in nanoseconds" was only true for a pure
+step, which these vectors are not.
+
+`v47`'s spikes do not discriminate either way and should not be cited as if they do: they are **two
+codewords wide and flat-topped** (`10813, 10813, 20643, 20643, 10813, 10813`), not the one-sample impulse
+they were described as, and a symmetric trapezoid and a rectangle have the **same width at half height**,
+16 µs. The "~16 µs triangle with a single-point apex" came from digitising at 10 kSa/s, where a 16 µs
+feature is sub-sample and one extreme sample per spike is a sampling artifact rather than a shape.
+
+So the source model rests on fit, not on physics, and the two are not known to agree. `SRC.interp` in
+`tools/gen_serial.lua` carries the linear model for the bench mock and is **off by default** for exactly
+this reason.
 
 **The plan the twin replays is the plan the bench played**, which needs the lap's own `--skip-vectors`
 list. `soakplan` applies the skip **before** the shuffle, so dropping two waveforms moves every remaining
@@ -798,14 +816,18 @@ reports the applied pair, so no scope is needed:
 "at 20 Vpp the only legal offset is 0". `GEN_ENVELOPE` in `tools/gen_serial.lua` reproduces all four to
 1e-6. `C1:OUTP?` reads `LOAD,HZ`, so commanded amplitudes reach the wire as commanded.
 
-**Reconstruction is linear, not a staircase** — see *The offline twin* above.
+**Reconstruction is NOT known to be linear.** `sweep_plan` interpolates linearly because that fits the
+bench better than a hold, and the one scope measurement taken of it — `RISE = FALL = 8.02 µs` at
+125 kSa/s — actually matches a **hold**, once the vectors' own encoded edge ramp is accounted for. See
+*The offline twin* above; this entry previously asserted the opposite as measured fact.
 
 **`v47`'s refusals are an edge-timing failure, not a level failure.** `SER_Hello_8N1_Spike_x100` carries
 spikes in **both** directions, symmetric about the data: with the data at 1.88 V / 3.84 V, they reach
 0.059 V and 5.696 V, i.e. 1.82 V below the space and 1.86 V above the mark. Because they are symmetric a
 min/max threshold is barely disturbed — 2.878 V against a true midpoint of 2.860 V — so the decision level
-is *not* corrupted. What breaks is timing: each spike is a single arb sample rendered as a ~16 µs triangle
-with a single-point apex, and every crossing makes a spurious edge **pair**. At the cell's 100 µs sampling
+is *not* corrupted. What breaks is timing: each spike is **two codewords wide and flat-topped** —
+`10813, 10813, 20643, 20643, 10813, 10813` in `v47.bin`, 5 of 5 — so it spans **16 µs at 125 kSa/s under
+any reconstruction**, and every crossing makes a spurious edge **pair**. At the cell's 100 µs sampling
 that is one sample wide, so `sig_bittime` floors at one sample and the app refuses with
 `0.9 samples/bit -- 11250 baud needs a faster capture`. Measured apex-hit rate: about **6 % of spikes**.
 

@@ -932,13 +932,101 @@ function SRC_step()
   return SRC.native_fs / want, 1 / want
 end
 
--- Source index for delivered sample i counting from `from`, or nil once the render runs out.
+-- Source index for delivered sample i counting from `from`, or nil once the render runs out. This is
+-- the ZERO-ORDER HOLD position -- math.floor discards where between two arb samples the delivered
+-- sample actually falls. SRC_val() below is the reconstructing read; this stays because both callers
+-- need the base index for the end-of-render test and for SRC.ts.
 function SRC_at(from, i, step)
   local j = from + math.floor((i - 1) * step)
   if SRC.loop and SRC.nsmp ~= nil and SRC.nsmp > 0 then
     j = math.mod(j - 1, SRC.nsmp) + 1
   end
   return j
+end
+
+-- ---------- RECONSTRUCTION BETWEEN ARB SAMPLES ----------
+-- AN ALTERNATIVE SOURCE MODEL, OFF BY DEFAULT, AND THE EVIDENCE IS AGAINST IT. Linear reconstruction
+-- reads a delivered sample that falls 30 % of the way between two arb samples as 30 % of the way between
+-- their voltages. tools/sweep_plan.lua's capture() does this and chose it on bench agreement -- at 8
+-- offsets against 47 failing cells, linear gave 97 failing / 26 shared against hold's 112 / 26.
+--
+-- THE ONE PHYSICAL MEASUREMENT OF THE GENERATOR POINTS THE OTHER WAY, which is why this is not the
+-- default here. RISE = FALL = 8.02 us on the scope at 125 kSa/s was once read as proof of interpolation,
+-- on the grounds that a hold "would step in nanoseconds". That holds only for a PURE STEP, and these
+-- vectors are not pure steps: GEN_RENDER's default rise is 1.5 samples, so every edge carries an
+-- intermediate codeword -- 814 of 814 transitions in v77.bin, at 46.67 % of the swing. So:
+--
+--     hold    steps rail -> mid -> rail one arb period apart    10-90 % rise  =  8.00 us
+--     linear  ramps continuously across both intervals                        = 12.79 us
+--     MEASURED                                                                   8.02 us
+--
+-- The scope defines RISE as 10-90 % and its 200 MHz bandwidth contributes ~1.75 ns, and band-limiting
+-- broadens rather than shortens -- so 12.79 us cannot present as 8.02 us. v47's spikes cannot settle it
+-- either: they are TWO codewords wide and flat-topped, and a trapezoid and a rectangle have the same
+-- width at half height.
+--
+-- A paired A/B agrees, 24 seeds and 40 248 cells an arm: linear 12.88 fails/lap against the hold's 29.75,
+-- where hardware is 20.4. Linear is nearer in absolute terms but lands on the far side, and a harness
+-- that fails LESS than the bench hides defects instead of inventing them. Keeping the hold is a choice
+-- about which direction to err in plus the measurement above -- NOT a claim that it fits better.
+--
+-- WHAT IT WOULD FIX IF IT WERE RIGHT, kept because the mechanism is real and specific: tsp/serial_core
+-- builds its edge list as FRACTIONAL sample positions interpolated to the threshold crossing, because at
+-- 115200 baud and 1 MS/s there are 8.68 samples per bit, so grid-quantised edges carry up to +-5.8 % of
+-- a bit time -- enough to walk the mid-bit sampling point into the next bit across a 10-bit frame. A
+-- hold puts every crossing on a sample boundary, leaving nothing sub-sample for that interpolation to
+-- recover.
+--
+-- SRC_INTERP(true) turns it on. Two omissions must be modelled before an A/B on it means anything: the
+-- DMM's real rate, 66e6/ceil(66e6/requested), which this file ignores and sweep_plan models, and a
+-- FRACTIONAL capture origin -- SRC_NEXTPHASE returns an integer index, so delivered sample 1 always
+-- lands exactly on an arb sample, which no asynchronous pair of clocks ever does.
+SRC.interp = false
+-- DELIVERED SAMPLES THAT LANDED BETWEEN TWO ARB SAMPLES, counted whether or not interpolation is on,
+-- because the count is what proves the blast radius rather than arguing it: a suite that reports zero
+-- here cannot have changed a single value, and one that reports a nonzero count says exactly how much
+-- of it is exposed. SRC.frac_n is delivered samples with a nonzero fractional position, SRC.rd_n every
+-- delivered sample through SRC_val.
+--
+-- SRC.interp_n IS THE ONE THAT DEFEATS A VACUOUS PASS. frac_n counts positions and does not depend on
+-- the flag, so a suite that passes with interpolation ON tells you nothing until you can show the
+-- interpolating branch actually ran: interp_n must be 0 with the flag off and close to frac_n with it
+-- on, short by the samples that hit a non-looping render's last sample and were held.
+SRC.frac_n = 0
+SRC.rd_n = 0
+SRC.interp_n = 0
+SRC.held_n = 0
+
+function SRC_INTERP(on) SRC.interp = (on == true) end
+
+-- The voltage at delivered sample i counting from `from`, and the base source index. Returns nil once
+-- the render runs out, which is the caller's end-of-capture test.
+function SRC_val(from, i, step)
+  local pos = (i - 1) * step
+  -- COMPUTED, NOT ACCUMULATED. sweep_plan's capture() advances x = x + step per sample; over a
+  -- 200 000-sample capture that accumulates rounding. Recomputing from i keeps every position exact.
+  local k = math.floor(pos)
+  local nw = (SRC.loop and SRC.nsmp ~= nil and SRC.nsmp > 0)
+  local j = from + k
+  if nw then j = math.mod(j - 1, SRC.nsmp) + 1 end
+  local a = SRC.rd[j]
+  if a == nil then return nil, j end
+  SRC.rd_n = SRC.rd_n + 1
+  local frac = pos - k
+  if frac ~= 0 then SRC.frac_n = SRC.frac_n + 1 end
+  -- AN INTEGRAL POSITION IS BIT-EXACT, not approximately equal: no arithmetic runs at all. Every
+  -- caller that leaves SRC.native_fs nil gets step exactly 1 from SRC_step() and lands here, so the
+  -- flag-off and integral-step paths return the identical value the plain index read returned.
+  if not SRC.interp or frac == 0 then return a, j end
+  local jn = from + k + 1
+  if nw then jn = math.mod(jn - 1, SRC.nsmp) + 1 end
+  local b = SRC.rd[jn]
+  -- NOWHERE TO WRAP TO on a non-looping render, so hold the last sample. Interpolating toward nil
+  -- would raise, and ending the capture a sample early would make the delivered count depend on the
+  -- reconstruction model.
+  if b == nil then SRC.held_n = SRC.held_n + 1; return a, j end
+  SRC.interp_n = SRC.interp_n + 1
+  return a + (b - a) * frac, j
 end
 
 function dmm.digitize.read(b)
@@ -951,11 +1039,13 @@ function dmm.digitize.read(b)
   SRC.phase = SRC_NEXTPHASE()
   local i
   for i = 1, count do
-    local j = SRC_at(SRC.phase, i, step)
-    if SRC.rd[j] == nil then break end
+    local v, j = SRC_val(SRC.phase, i, step)
+    if v == nil then break end
     b.n = i
-    b.readings[i] = SRC.rd[j]
+    b.readings[i] = v
     if dt == nil then
+      -- SRC.ts[j] IS EXACT HERE. This branch only runs when SRC_step() returned no interval, which it
+      -- does only for step exactly 1, so the position is integral and j is the sample, not a neighbour.
       b.relativetimestamps[i] = SRC.ts[j]
     else
       -- THE REQUESTED RATE, not the source's. This is the number acq_measure_fs() divides by, so
@@ -1143,10 +1233,10 @@ function trigger.model.initiate()
   b.clear()
   local i
   for i = 1, total do
-    local j = SRC_at(start, i, step)
-    if SRC.rd[j] == nil then break end
+    local v = SRC_val(start, i, step)
+    if v == nil then break end
     b.n = i
-    b.readings[i] = SRC.rd[j]
+    b.readings[i] = v
     b.relativetimestamps[i] = (i - 1) * dt
   end
   READS.triggered = READS.triggered + 1

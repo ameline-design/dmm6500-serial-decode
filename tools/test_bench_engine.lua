@@ -2007,6 +2007,127 @@ do
   GEN_CLAMP(save)
 end
 
+print('-- reconstruction between arb samples --')
+do
+  -- RESTORE THE STIMULUS, WHICH IS NOT THE SAME AS RESTORING EVERYTHING. This block rewrites SRC
+  -- wholesale and drives both read paths, so a later block that inherited a 2-sample render would fail
+  -- for a reason that says nothing about it. What is put back: SRC's render, rate, loop and interp flag,
+  -- SRC.trigat, the digitize rate and count, and the phase setting.
+  --
+  -- WHAT IS NOT, deliberately or unavoidably: SRC.frac_n/interp_n/held_n and READS are run-cumulative
+  -- diagnostics and resetting them would corrupt the totals a caller reads at exit; TRIG.inits and the
+  -- other trigger-model fields are left as the last load left them, with only TRIG.loaded put back; and
+  -- the phase PRNG's STREAM POSITION cannot be restored at all -- SRC_PHASE(seed) reseeds, so a later
+  -- capture draws from the start of the sequence rather than where it would have been. Nothing after this
+  -- block captures through a drawn phase, which is why that is survivable rather than fine.
+  local sv = {rd = SRC.rd, ts = SRC.ts, nsmp = SRC.nsmp, native_fs = SRC.native_fs, loop = SRC.loop,
+              interp = SRC.interp, trigat = SRC.trigat, phon = SRC.phaserand, phseed = SRC.phaseseed,
+              rate = dmm.digitize.samplerate, count = dmm.digitize.count, loaded = TRIG.loaded}
+  -- A FIXED START PHASE, because every assertion below names an exact sample and the per-capture draw
+  -- would move all of them.
+  SRC_PHASE(nil)
+
+  local function setsrc(vals, native, loop)
+    SRC.rd, SRC.nsmp, SRC.native_fs, SRC.loop = vals, table.getn(vals), native, loop
+    local ts, i = {}, nil
+    for i = 1, SRC.nsmp do ts[i] = (i - 1) / native end
+    SRC.ts = ts
+  end
+
+  setsrc({0, 1, 2, 3}, 1000, true)
+  SRC_INTERP(true)
+  local v = SRC_val(1, 3, 1)
+  ck(v == 2, 'an integral position returns the source sample unchanged', tostring(v))
+
+  v = SRC_val(1, 2, 0.5)
+  ck(v == 0.5, 'a half-sample position returns the mean of its two neighbours', tostring(v))
+
+  -- THE SEAM, AND THE OFF-BY-ONE IN IT. A looping arb joins its last sample to its first, so the
+  -- interpolation point is nsmp-1+frac counting from sample 1 -- at nsmp the position has already
+  -- wrapped onto rd[1] and there is nothing left to interpolate.
+  setsrc({0, 0, 0, 8}, 1000, true)
+  v = SRC_val(1, 5, 0.75)
+  ck(v == 8, 'position 3.0 lands exactly on the last sample', tostring(v))
+  v = SRC_val(4, 2, 0.5)
+  ck(v == 4, 'and half a sample past the last one interpolates toward the FIRST', tostring(v))
+
+  -- NOWHERE TO WRAP TO on a non-looping render, so the last sample is held. Interpolating toward a nil
+  -- neighbour would raise, and ending the capture early would make the delivered count depend on the
+  -- reconstruction model rather than on the requested rate.
+  -- i = 2, NOT 1: delivered sample 1 is always at position 0 with frac 0, so it takes the exact-sample
+  -- short circuit and never reaches the branch under test -- returning the right value for the wrong
+  -- reason. SRC.held_n is what tells the two apart.
+  setsrc({0, 10}, 1000, false)
+  local held0 = SRC.held_n
+  v = SRC_val(2, 2, 0.5)
+  ck(v == 10 and SRC.held_n == held0 + 1,
+     'a non-looping render holds its last sample rather than interpolating toward nil',
+     tostring(v) .. ', held_n +' .. tostring(SRC.held_n - held0))
+
+  -- A ONE-SAMPLE LOOP IS A CONSTANT, not an error: every position wraps onto the same sample.
+  setsrc({7}, 1000, true)
+  v = SRC_val(1, 4, 0.3)
+  ck(v == 7, 'a one-sample loop returns that constant at every position', tostring(v))
+
+  -- THE FLAG OFF IS THE OLD ARITHMETIC EXACTLY, not merely close to it: the same index SRC_at picks.
+  setsrc({0, 1, 2, 3}, 1000, true)
+  SRC_INTERP(false)
+  local n0, same, i = SRC.interp_n, true, nil
+  for i = 1, 12 do
+    if SRC_val(1, i, 0.7) ~= SRC.rd[SRC_at(1, i, 0.7)] then same = false end
+  end
+  ck(same and SRC.interp_n == n0,
+     'with the flag off every read equals the plain SRC_at index read and nothing interpolates',
+     'interp_n moved by ' .. tostring(SRC.interp_n - n0))
+
+  -- AND NOW THROUGH THE READS THEMSELVES. The six assertions above all pass while either call site
+  -- still indexes SRC.rd directly, so they cannot show that a capture reconstructs -- only that the
+  -- helper can. rd = {0, 4} at half a source sample per delivered sample makes every odd delivered
+  -- sample a midpoint, so one reading tells the two models apart: 0 2 4 2 against 0 0 4 4.
+  setsrc({0, 4}, 1000, true)
+  dmm.digitize.samplerate, dmm.digitize.count = 2000, 4
+  local b = buffer.make(1000)
+
+  SRC_INTERP(false)
+  dmm.digitize.read(b)
+  ck(b.n == 4 and b.readings[2] == 0 and b.readings[4] == 4,
+     'the free-running read holds between arb samples with the flag off',
+     string.format('%s %s %s %s', tostring(b.readings[1]), tostring(b.readings[2]),
+                   tostring(b.readings[3]), tostring(b.readings[4])))
+
+  SRC_INTERP(true)
+  local m0 = SRC.interp_n
+  dmm.digitize.read(b)
+  ck(b.n == 4 and b.readings[2] == 2 and b.readings[4] == 2,
+     'and interpolates between them with it on',
+     string.format('%s %s %s %s', tostring(b.readings[1]), tostring(b.readings[2]),
+                   tostring(b.readings[3]), tostring(b.readings[4])))
+  ck(SRC.interp_n > m0, 'through SRC_val, not around it',
+     'interp_n moved by ' .. tostring(SRC.interp_n - m0))
+
+  -- THE ARMED PATH TOO, on the same terms: it has its own read loop and its own origin arithmetic, so
+  -- it can regress to a hold independently of the free-running one. trigat 2 with a 50 % position
+  -- reserves one pre-trigger sample, so the delivered run is rd[2], the seam midpoint, rd[1].
+  SRC.trigat = 2
+  trigger.model.load('LoopUntilEvent', trigger.EVENT_ANALOGTRIGGER, 50, trigger.CLEAR_ENTER, nil, b)
+
+  SRC_INTERP(false)
+  trigger.model.initiate()
+  ck(b.readings[2] == 4, 'the armed read holds between arb samples with the flag off',
+     tostring(b.readings[2]))
+
+  SRC_INTERP(true)
+  trigger.model.initiate()
+  ck(b.readings[2] == 2, 'and interpolates between them with it on', tostring(b.readings[2]))
+
+  buffer.delete(b)
+  TRIG.loaded = sv.loaded
+  SRC.rd, SRC.ts, SRC.nsmp, SRC.native_fs = sv.rd, sv.ts, sv.nsmp, sv.native_fs
+  SRC.loop, SRC.interp, SRC.trigat = sv.loop, sv.interp, sv.trigat
+  dmm.digitize.samplerate, dmm.digitize.count = sv.rate, sv.count
+  if sv.phon then SRC_PHASE(sv.phseed) else SRC_PHASE(nil) end
+end
+
 print('-- the flagged-frame convention --')
 do
   -- '??' FOR A FLAGGED FRAME is what stops a byte passing the host's substring check only because the
