@@ -31,13 +31,18 @@ for _, m in ipairs({'bench/arb_names.tsp', 'bench/sdg_net.tsp', 'bench/bench_rec
   chunk()
 end
 
-local A = {plan = nil, out = nil, iterations = 1}
+local A = {plan = nil, out = nil, iterations = 1, phaseseed = nil, clamp = nil}
 local ai = 1
 while arg ~= nil and arg[ai] ~= nil do
   local k, v = arg[ai], arg[ai + 1]
   if k == '--plan' then A.plan = v; ai = ai + 2
   elseif k == '--out' then A.out = v; ai = ai + 2
   elseif k == '--iterations' then A.iterations = tonumber(v); ai = ai + 2
+  -- ONE SEED PER RUN, so a soak can cover phase space across laps while each lap stays reproducible on
+  -- its own. Without this every lap would draw the same phase sequence and extra laps would add nothing.
+  elseif k == '--phase-seed' then A.phaseseed = tonumber(v); ai = ai + 2
+  elseif k == '--no-phase' then A.phaseseed = -1; ai = ai + 1
+  elseif k == '--clamp' then A.clamp = v; ai = ai + 2
   else print('unknown argument: ' .. tostring(k)); os.exit(2) end
 end
 if A.plan == nil or A.out == nil then
@@ -50,6 +55,19 @@ end
 MD.usb(true)
 MOCKB_SDG({})
 bsdg.reset()
+
+-- THE STIMULUS MODEL, ANNOUNCED. Both of these change what the app is shown, so a record produced with
+-- them differs from one produced without and the log has to say which it is -- a run whose conditions are
+-- not on the record cannot be compared with anything later.
+if A.phaseseed == -1 then
+  SRC_PHASE(nil)
+elseif A.phaseseed ~= nil then
+  SRC_PHASE(A.phaseseed)
+end
+if A.clamp ~= nil then GEN_CLAMP(A.clamp) end
+print(string.format('stimulus: capture phase %s, generator envelope %s at %.3f V',
+                    SRC.phaserand and ('random, seed ' .. tostring(SRC.phaseseed)) or 'fixed at sample 1',
+                    tostring(GENLIM.clamp_mode), GENLIM.clamp_v))
 
 -- COPY THE HOST'S PLAN INTO THE MOCK FILESYSTEM, because the engine reads it through the instrument's
 -- file API and must not be handed a host path -- that difference is exactly what the mock is for.
@@ -78,6 +96,11 @@ local ok, why = brun.soak(A.iterations, 'offline')
 local dt = os.clock() - t0
 print(string.format('soak returned %s: %s  (%.1f s, %d cell(s))', tostring(ok), tostring(why), dt,
                     brun.ncell))
+-- HOW OFTEN THE ENVELOPE ACTUALLY BIT. Zero is the expected answer on a plan soakplan.py emitted, because
+-- it refuses to write a pair outside the envelope -- so a non-zero count here means the plan came from
+-- somewhere else, or the envelope was narrowed, and either way the run is not comparable with the archive.
+print(string.format('envelope: %d stimulus(es) altered over %d render(s), %d sample(s) limited',
+                    GENLIM.clamp_stimuli, GENLIM.clamp_renders, GENLIM.clamp_samples))
 
 -- AND OUT TO A REAL FILE, so the judge is exercised on bytes rather than on a table in this process.
 local rfh = file.open(brec.path, file.MODE_READ)

@@ -24,6 +24,10 @@
 
 MOCKB = {sdg = nil, events = 0}
 
+-- The generator's output envelope is modelled in tools/gen_serial.lua -- GEN_CLAMP, GEN_ENVELOPE and
+-- GEN_VOLTS -- so that this file and tools/sweep_plan.lua, which each build their own stimulus, cannot
+-- disagree about it.
+
 -- ---------------------------------------------------------------------------
 -- timer
 -- ---------------------------------------------------------------------------
@@ -147,8 +151,11 @@ function MOCKB_SDG_DO(g, cmd)
   -- exactly how a wrong ARWV reached the point of being run on an instrument.
   local a = string.find(cmd, 'ARWV NAME,')
   if a ~= nil then
-    local name = string.match(cmd, 'ARWV NAME,"([^"]+)"')
-    if name == nil then name = string.match(cmd, 'ARWV NAME,([^,]+)') end
+    -- string.find WITH A CAPTURE, not string.match: 5.0.2 has no string.match, and this mock stands in
+    -- for the instrument, so it has to be runnable under the instrument's own interpreter. The captures
+    -- follow the two indices. Same rule bench/bench_run.tsp states for the code under test.
+    local _, _, name = string.find(cmd, 'ARWV NAME,"([^"]+)"')
+    if name == nil then _, _, name = string.find(cmd, 'ARWV NAME,([^,]+)') end
     name = string.gsub(name or '', '^U%-disk0/', '')
     name = string.gsub(name, '%.bin$', '')
     -- refuse_arb IMITATES THE REAL FAILURE, which is not an error reply: a file the generator cannot
@@ -185,15 +192,15 @@ function MOCKB_SDG_DO(g, cmd)
     return
   end
   if string.find(up, 'SRATE MODE,TARB', 1, true) ~= nil then g.mode = 'TARB'; return end
-  local v = string.match(cmd, 'SRATE VALUE,([%-%d%.eE+]+)')
+  local _, _, v = string.find(cmd, 'SRATE VALUE,([%-%d%.eE+]+)')
   if v ~= nil then g.srate = tonumber(v); MOCKB_SDG_ARB(g); return end
   if up == 'C1:SRATE?' then
     g.pending = string.format('C1:SRATE MODE,%s,VALUE,%s,INTER,LINE',
                               tostring(g.mode or 'DDS'), tostring(g.srate or 0))
     return
   end
-  local am = string.match(cmd, 'BSWV AMP,([%-%d%.eE+]+)')
-  local om = string.match(cmd, 'OFST,([%-%d%.eE+]+)')
+  local _, _, am = string.find(cmd, 'BSWV AMP,([%-%d%.eE+]+)')
+  local _, _, om = string.find(cmd, 'OFST,([%-%d%.eE+]+)')
   if am ~= nil then
     g.amp = tonumber(am)
     if om ~= nil then g.ofst = tonumber(om) end
@@ -254,8 +261,12 @@ function MOCKB_SDG_ARB(g)
   end
   -- fsv is AMP/2: the file's +32767 is +AMP/2, the same convention sweep_plan.lua's wire() uses.
   local fsv = g.amp / 2
+  local ofst = g.ofst or 0
+  -- THE GENERATOR'S OUTPUT ENVELOPE lives in gen_serial.lua's GEN_ENVELOPE/GEN_VOLTS, not here, because
+  -- tools/sweep_plan.lua has its own wire() and would not inherit a copy kept in this file.
+  fsv, ofst = GEN_ENVELOPE(fsv, ofst)
   local volts, i = {}, nil
-  for i = 1, c.n do volts[i] = GEN_VOLTS(c.cw[i], fsv, g.ofst or 0) end
+  for i = 1, c.n do volts[i] = GEN_VOLTS(c.cw[i], fsv, ofst) end
   SRC.rd, SRC.nsmp, SRC.native_fs, SRC.loop = volts, c.n, g.srate, true
   SRC.ts = nil
   local ts = {}

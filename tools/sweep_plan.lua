@@ -243,6 +243,9 @@ local function wire(v, amp, ofst)
   local fsv = (amp or v.amp) / 2
   local o = ofst
   if o == nil then o = v.ofst end
+  -- THE GENERATOR'S OUTPUT ENVELOPE, from gen_serial.lua so this harness and the bench mock cannot
+  -- disagree about it. Without it this sweep drives amplitude/offset pairs no generator can deliver.
+  fsv, o = GEN_ENVELOPE(fsv, o)
   local volts, i = {}, nil
   for i = 1, c.n do volts[i] = GEN_VOLTS(c.cw[i], fsv, o) end
   return volts, c.n

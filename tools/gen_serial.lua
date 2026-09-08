@@ -15,18 +15,29 @@
 --          SRC, TRIG, READS, LIVEBUFS()
 --          GEN_WRITE/GEN_READ/GEN_CODE/GEN_VOLTS/GEN_CKSUM (SDG arb export)
 
--- ---------- Lua 5.0.2 compatibility shims ----------
--- The instrument runs 5.0.2; host Lua is 5.4/5.5 and dropped these two.
--- tools/lint_tsp.py separately guards against 5.0.2 SYNTAX incompatibilities.
-table.getn = table.getn or function(t) return #t end
-math.mod   = math.mod   or math.fmod
+-- ---------- ONE TARGET: the instrument's Lua 5.0.2 ----------
+-- This file loads the real tsp/ modules for every offline suite AND for tools/offline502.py, which runs
+-- them under the instrument's own 5.0.2. So it may use only what 5.0.2 has, and the shims below point
+-- ONE WAY: they give the host's 5.5 the names 5.0.2 already carries, never the reverse. A shim in the
+-- other direction is the defect itself -- math.fmod passed every offline suite and raised
+-- '-286 attempt to call field `fmod`' on the instrument.
+--
+-- table.getn's fallback goes through loadstring/load because `#` is a SYNTAX error in 5.0.2 and Lua
+-- parses a whole file before it runs any of it. Written as `table.getn or function(t) return #t end`,
+-- the line added to make this file work on 5.5 is precisely what stopped it loading under 5.0.2: the
+-- never-taken branch still has to parse. A string is not compiled until it is loaded, so this form
+-- parses under both, and on 5.0.2 the branch is never taken at all.
+if table.getn == nil then
+  table.getn = (loadstring or load)('return function(t) return #t end')()
+end
+math.mod = math.mod or math.fmod
 
 -- Deterministic Park-Miller PRNG. Tests must be reproducible, and the modulus
 -- and multiplier keep every intermediate under 2^53 and therefore exact in a
 -- double; math.random would vary across Lua versions.
 local rs = 12345
 local function rnd()
-  rs = math.fmod(rs * 16807, 2147483647)
+  rs = math.mod(rs * 16807, 2147483647)
   return rs / 2147483647
 end
 function GEN_RESEED(s) rs = s or 12345 end
@@ -40,7 +51,7 @@ function GEN_RAND() return rnd() end
 local function popcount(v)
   local ones, t = 0, v
   while t > 0 do
-    if math.fmod(t, 2) >= 1 then ones = ones + 1 end
+    if math.mod(t, 2) >= 1 then ones = ones + 1 end
     t = math.floor(t / 2)
   end
   return ones
@@ -134,11 +145,11 @@ function GEN(opts)
     local t = v
     for k = 1, nbits do                              -- data, LSB first
       nc = nc + 1
-      cells[nc] = math.fmod(t, 2)
+      cells[nc] = math.mod(t, 2)
       t = math.floor(t / 2)
     end
     if par ~= 0 then
-      local pe = math.fmod(popcount(math.fmod(v, 2 ^ nbits)), 2)
+      local pe = math.mod(popcount(math.mod(v, 2 ^ nbits)), 2)
       nc = nc + 1
       if par == 1 then cells[nc] = pe else cells[nc] = 1 - pe end
       -- THE PARITY BIT ONLY. The data cells are already emitted and untouched, which is what makes this
@@ -404,8 +415,115 @@ end
 
 -- codeword -> volts. +32767 is +fsv by construction; -32768 is a half-LSB
 -- beyond -fsv, which at 20 Vpp is 0.3 mV and below anything that matters here.
+-- ---------- THE GENERATOR'S OUTPUT ENVELOPE ----------
+-- HERE, NOT IN A wire() FUNCTION, because there are two of them: tools/mock_bench.lua builds the bench
+-- path's stimulus and tools/sweep_plan.lua builds its own, and both call GEN_VOLTS. An envelope
+-- implemented in one of them silently does not apply to the other harness -- which is exactly what a first
+-- attempt at this did, leaving plan_sweep.py driving a stimulus no generator could produce.
+--
+-- THE NUMBER IS A PLACEHOLDER. 10 V is what the plan generator assumes (`|OFST| + AMP/2 <= 10`), not
+-- something measured on this generator, which has not been calibrated since its factory cal. Replace
+-- GENLIM.clamp_v, and GENLIM.clamp_mode, from static levels read with the DMM in 6.5-digit DCV mode -- taken hot,
+-- straight after a soak, since the generator has a real tempco and the archive was recorded warm.
+--
+-- THE LAW IS ALREADY RECORDED -- IT DID NOT NEED GUESSING. tools/soakplan.py's own comment says what this
+-- generator does: "It clamps the offset instead, and the band arrives centred near ground." So AMP is
+-- kept and |OFST| is reduced until the pair fits. That file also measured the cost: over the 100-lap
+-- soak's 133 301 cells, 50.8 % commanded a pair outside the envelope and 12.3 % ended up with a band the
+-- generator had RECENTRED ACROSS GROUND -- where sig_levels reads RS-232 and marks at the negative level,
+-- correctly. Byte failures ran 9.55x on those cells (chi-square 2420) against a rate-failure control of
+-- 0.97x (chi-square 0.14). Recentring is therefore the behaviour that changed decode outcomes, and the
+-- one worth modelling.
+--
+--   'ofst'  keep AMP, pull |OFST| in. THE DEFAULT, because it is what was observed.
+--   'amp'   keep OFST, reduce AMP. Not what was observed; kept for an A/B.
+--   'clip'  saturate the samples. Not what was observed, and the wrong LAYER besides -- the instrument
+--           clamps the SETTING and reports the applied value back through BSWV?, so a faithful model
+--           adjusts the command rather than flat-topping the waveform.
+--   'off'   no envelope at all -- the unfaithful model, kept for an A/B.
+--
+-- WHAT IS STILL A PLACEHOLDER is only clamp_v: 10.0 V is SDG_ENV_V, `SDG_MAX_VPP / 2`, which is the
+-- datasheet envelope into Hi-Z rather than a figure measured on this unit. Replace it from static levels
+-- read with the DMM in 6.5-digit DCV mode, hot, straight after a soak.
+--
+-- NOT a field on GEN: `GEN` is the waveform generator FUNCTION in this file, so `GEN = GEN or {}` keeps
+-- the function and the next line raises "attempt to index a function value". Its own table.
+GENLIM = GENLIM or {}
+GENLIM.clamp_v = 10.0
+GENLIM.clamp_mode = 'ofst'
+-- THREE COUNTERS BECAUSE THEY COUNT THREE DIFFERENT THINGS, and naming one of them 'cells' was wrong:
+-- mock_bench.lua calls the renderer from FIVE places (waveform, sample rate, amplitude, offset, output),
+-- so ONE cell re-rendering its stimulus inflates a naive counter several-fold and it then reads as a cell
+-- count. clamp_stimuli dedupes consecutive renders of the same pair; the other two are honest about being
+-- render-level and sample-level.
+GENLIM.clamp_stimuli = 0      -- distinct (amplitude, offset) pairs the envelope altered
+GENLIM.clamp_renders = 0      -- render passes affected, several per stimulus
+GENLIM.clamp_samples = 0      -- source samples limited, summed over those render passes
+GENLIM.clamp_lastsig = nil
+
+function GEN_CLAMP(mode, v)
+  GENLIM.clamp_mode = mode or 'off'
+  if v ~= nil then GENLIM.clamp_v = v end
+  GENLIM.clamp_stimuli, GENLIM.clamp_renders, GENLIM.clamp_samples = 0, 0, 0
+  GENLIM.clamp_lastsig = nil
+end
+
+-- THE APPLIED (amplitude, offset) PAIR, given the commanded one. Callers pass AMP/2, which is what the
+-- +32767 full-scale code means, and get back the pair the generator would actually use -- BOTH values,
+-- because the observed law moves the offset and a single return value cannot express that.
+-- Accounting happens here in every mode, because whether a stimulus was out of envelope is a fact about
+-- the plan rather than about which law is being modelled.
+function GEN_ENVELOPE(fsv, ofst)
+  local o = ofst or 0
+  if GENLIM.clamp_mode == 'off' then return fsv, o end
+  local mag = o
+  if mag < 0 then mag = -mag end
+  if (mag + fsv) <= GENLIM.clamp_v then return fsv, o end
+  local sig = tostring(fsv) .. '/' .. tostring(o)
+  if sig ~= GENLIM.clamp_lastsig then
+    GENLIM.clamp_lastsig = sig
+    GENLIM.clamp_stimuli = GENLIM.clamp_stimuli + 1
+  end
+  GENLIM.clamp_renders = GENLIM.clamp_renders + 1
+  if GENLIM.clamp_mode == 'amp' then
+    -- Keep the offset, shrink the swing. An offset already past the envelope leaves no amplitude at all:
+    -- a flat line, which is what sig_levels must decline, and GEN_VOLTS still clips the residual offset.
+    local room = GENLIM.clamp_v - mag
+    if room < 0 then room = 0 end
+    return room, o
+  end
+  if GENLIM.clamp_mode == 'ofst' then
+    -- Keep the swing, pull the offset in -- and cap the swing itself first, because at the full 20 Vpp the
+    -- only offset the generator can hold is 0, which is soakplan.py's "amplitude and offset are therefore
+    -- not independent". After this the pair is inside the envelope by construction, so nothing downstream
+    -- needs to clip: the recentred band is a real signal, not a saturated one.
+    local cap = fsv
+    if cap > GENLIM.clamp_v then cap = GENLIM.clamp_v end
+    local room = GENLIM.clamp_v - cap
+    if o > room then o = room elseif o < -room then o = -room end
+    return cap, o
+  end
+  return fsv, o
+end
+
+-- SATURATION IS FOR 'clip' AND 'amp' ONLY, and deliberately NOT for the default 'ofst'. Under 'ofst' the
+-- pair is already inside the envelope when it gets here, so clipping could only ever fire on rounding --
+-- and a flat-topped waveform is a different signal from a recentred one, so a stray clip would quietly
+-- replace the law being modelled. 'amp' still needs it, because reducing the amplitude cannot rescue an
+-- offset that is itself past the limit. It also catches the one-code overshoot: code -32768 is -1.00003
+-- full scale, not -1.
 function GEN_VOLTS(c, fsv, ofst)
-  return ofst + c / 32767 * fsv
+  local v = ofst + c / 32767 * fsv
+  if GENLIM.clamp_mode == 'clip' or GENLIM.clamp_mode == 'amp' then
+    if v > GENLIM.clamp_v then
+      GENLIM.clamp_samples = GENLIM.clamp_samples + 1
+      return GENLIM.clamp_v
+    elseif v < -GENLIM.clamp_v then
+      GENLIM.clamp_samples = GENLIM.clamp_samples + 1
+      return -GENLIM.clamp_v
+    end
+  end
+  return v
 end
 
 -- Fletcher-32 over the encoded bytes. Not cryptographic and not meant to be:
@@ -416,8 +534,8 @@ function GEN_CKSUM(s)
   local a, b = 1, 0
   local i
   for i = 1, string.len(s) do
-    a = math.fmod(a + string.byte(s, i), 65521)
-    b = math.fmod(b + a, 65521)
+    a = math.mod(a + string.byte(s, i), 65521)
+    b = math.mod(b + a, 65521)
   end
   return b * 65536 + a
 end
@@ -471,7 +589,7 @@ function GEN_WRITE(path, rd, n, o)
     if -c > peak then peak = -c end
     local u = c
     if u < 0 then u = u + 65536 end
-    local blo = math.fmod(u, 256)
+    local blo = math.mod(u, 256)
     ncw = ncw + 1
     chunk[ncw] = string.char(blo, (u - blo) / 256)
     if ncw >= 4096 then
@@ -509,7 +627,7 @@ function GEN_READ(path)
   local s = f:read('*a')
   f:close()
   local len = string.len(s)
-  if math.fmod(len, 2) ~= 0 then
+  if math.mod(len, 2) ~= 0 then
     error(string.format('GEN_READ: %s is %d bytes, not a whole number of ' ..
                         '16-bit points', path, len), 0)
   end
@@ -533,10 +651,10 @@ end
 -- field definitions, and tools/test_serial.lua additionally pins them to the four PIDs
 -- that are common knowledge (ID 0x00 -> 0x80, 0x01 -> 0xC1, 0x3C -> 0x3C, 0x3D -> 0x7D).
 function LIN_PID(id)
-  local function b(k) return math.fmod(math.floor(id / (2 ^ k)), 2) end
-  local p0 = math.fmod(b(0) + b(1) + b(2) + b(4), 2)
-  local p1 = 1 - math.fmod(b(1) + b(3) + b(4) + b(5), 2)
-  return math.fmod(id, 64) + 64 * p0 + 128 * p1
+  local function b(k) return math.mod(math.floor(id / (2 ^ k)), 2) end
+  local p0 = math.mod(b(0) + b(1) + b(2) + b(4), 2)
+  local p1 = 1 - math.mod(b(1) + b(3) + b(4) + b(5), 2)
+  return math.mod(id, 64) + 64 * p0 + 128 * p1
 end
 
 -- Inverted sum with the carry added back. pid = nil for the classic checksum (data
@@ -599,7 +717,7 @@ function GEN_LIN(opts)
     local t = v
     for k = 1, 8 do
       nc = nc + 1
-      cells[nc] = math.fmod(t, 2)
+      cells[nc] = math.mod(t, 2)
       t = math.floor(t / 2)
     end
     nc = nc + 1; cells[nc] = 1
@@ -718,6 +836,77 @@ SRC   = {rd = nil, ts = nil, nsmp = 0, trigat = nil, native_fs = nil, loop = fal
 READS = {n = 0, triggered = 0}
 TRIG  = {}
 
+-- ---------- CAPTURE START PHASE ----------
+-- WHAT THIS MODELS. The generator plays a looping arb continuously and the DMM starts its capture at an
+-- uncontrolled point in that loop, so the payload byte the capture opens on differs cell to cell. The
+-- free-running read below used to start at source sample 1 every single time, which made every offline
+-- bench cell open on byte 0 of the vector -- a condition hardware produces with probability 1/nsmp.
+--
+-- WHY UNIFORM RANDOM AND NOT THE PLAN'S WAIT. The plan's wait is a host-side delay before the trigger, so
+-- it would set the phase only if everything after it were deterministic. Hardware says it is not: the rate
+-- rescale fires on 2 of 6 to 5 of 8 cells at the SAME rate, vector and commanded wait, which is direct
+-- evidence that the phase is effectively redrawn per capture rather than fixed by the wait. Uniform over
+-- the loop is the model that evidence supports.
+--
+-- ON BY DEFAULT, WITH A FIXED SEED, and both halves of that matter. On, because starting every capture at
+-- sample 1 is the less faithful model and a default should be the faithful one. Fixed seed, because a
+-- RANDOM default would make every offline run non-reproducible: no ratchet could hold, and no failing cell
+-- could be replayed. A soak varies the seed deliberately, through SRC_PHASE(n), to cover phase space; a
+-- gate leaves it alone and gets the same answer every time.
+--
+-- TURNING IT ON MOVED THE OFFLINE BASELINES, which is expected and was re-recorded rather than suppressed:
+-- the stimulus genuinely changed, so the old numbers describe a different experiment. SRC_PHASE(nil)
+-- restores the sample-1 behaviour, which is what a test asserting exact bytes for a known window wants.
+--
+-- ITS OWN PRNG STREAM, not the shared rnd() above: sharing would make the phase draw depend on how many
+-- times anything else in a test happened to call rnd(), so a reordered test would silently change the
+-- stimulus. Park-Miller again, same reason -- every intermediate stays exact in a double.
+SRC.phaserand = true
+SRC.phaseseed = 20260907
+-- THE PHASE THE MOST RECENT CAPTURE USED, and it is only valid until the next one: dmm.digitize.read
+-- overwrites it. So it must be read IMMEDIATELY after the capture whose phase is wanted -- by the time a
+-- cell is judged and its failure reported, this holds a later cell's value. To replay a specific cell,
+-- reproduce the whole run from SRC.phaseseed rather than trying to set one phase: the sequence is
+-- deterministic for a given seed, but every draw depends on how many captures preceded it, so inserting
+-- or reordering a capture shifts every phase after it.
+SRC.phase = 1
+local phst = 20260907
+
+-- Enable per-capture phase with a reproducible stream. SRC_PHASE(nil) turns it off again.
+function SRC_PHASE(seed)
+  if seed == nil then
+    SRC.phaserand, SRC.phase = false, 1
+    return
+  end
+  -- THE SEED IS NORMALISED, and this is not defensive tidying: Park-Miller is only a generator for an
+  -- integer state in 1..2147483646, and a state that reaches 0 STAYS there -- every later capture then
+  -- returns phase 1, silently reverting to the unfaithful sample-1 behaviour while still reporting phase
+  -- randomisation as ON. MEASURED: seeds 2147483647 and 4294967294 both stick at phase 1 immediately,
+  -- because any multiple of the modulus maps to 0. A soak sweeping seeds would hit that eventually.
+  -- Floats are floored, since a non-integer state is not a Park-Miller state; large values are folded by
+  -- the modulus BEFORE any multiplication, which keeps phst * 16807 inside 2^53 and therefore exact.
+  local s = math.floor(seed)
+  if s < 0 then s = -s end
+  s = math.mod(s, 2147483647)
+  if s == 0 then s = 1 end
+  SRC.phaserand, SRC.phaseseed = true, s
+  phst = s
+end
+
+-- The next start sample, uniform over the loop. Returns 1 unchanged when phase is off or the source is
+-- not looping -- a non-looping render has nowhere to wrap to, so a phase would just truncate the capture.
+function SRC_NEXTPHASE()
+  if not SRC.phaserand or not SRC.loop then return 1 end
+  if SRC.nsmp == nil or SRC.nsmp < 2 then return 1 end
+  phst = math.mod(phst * 16807, 2147483647)
+  -- The state cannot reach 0 from a normalised seed, so this cannot fire -- it is here because if it ever
+  -- did, the failure would be silent: phase 1 for the rest of the run, which looks like a working run.
+  if phst <= 0 then phst = 1 end
+  -- Not exactly uniform: the modulus does not partition evenly into nsmp. The bias is of order nsmp/2^31,
+  -- which against a payload of a few hundred thousand samples is far below one sample.
+  return 1 + math.floor((phst / 2147483647) * SRC.nsmp)
+end
+
 dmm = {
   FUNC_DIGITIZE_VOLTAGE = 'digv',
   MODE_EDGE = 'edge', MODE_WINDOW = 'window', MODE_OFF = 'off',
@@ -738,7 +927,7 @@ end
 function SRC_at(from, i, step)
   local j = from + math.floor((i - 1) * step)
   if SRC.loop and SRC.nsmp ~= nil and SRC.nsmp > 0 then
-    j = math.fmod(j - 1, SRC.nsmp) + 1
+    j = math.mod(j - 1, SRC.nsmp) + 1
   end
   return j
 end
@@ -747,9 +936,13 @@ function dmm.digitize.read(b)
   local count = dmm.digitize.count or 1000
   local step, dt = SRC_step()
   b.clear()
+  -- ONE DRAW PER CAPTURE, taken here rather than where the stimulus is selected: this is the point at
+  -- which the instrument would begin sampling, and a cell can re-send its amplitude or rate without
+  -- starting a new acquisition. SRC.phase keeps the value so a failing cell can be replayed exactly.
+  SRC.phase = SRC_NEXTPHASE()
   local i
   for i = 1, count do
-    local j = SRC_at(1, i, step)
+    local j = SRC_at(SRC.phase, i, step)
     if SRC.rd[j] == nil then break end
     b.n = i
     b.readings[i] = SRC.rd[j]

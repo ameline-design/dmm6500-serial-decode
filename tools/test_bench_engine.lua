@@ -1918,10 +1918,20 @@ do
       bsdg.select(ARB.v77, 5.0, 0.0, 96000)
       local fs = sdec.pick_fs(9600, 8)
       -- brun.point first, then bench_point on the same stimulus, and compare the fields both report.
+      --
+      -- THE PHASE IS PINNED ACROSS THE PAIR, and it has to be: this asserts that two READERS agree about
+      -- ONE capture, while the start phase is drawn per capture, so two successive reads see different
+      -- windows of the looping arb and disagree legitimately. Measured when phase went on: 228 frames
+      -- against 234, with the rate, sample count and read baud all still agreeing -- the signature of a
+      -- different window rather than a different reader. The phase model is what a sweep exercises; here
+      -- it would only break an equivalence check. Restored afterwards, and only if it was on.
+      local phon, phseed = SRC.phaserand, SRC.phaseseed
+      SRC_PHASE(nil)
       local p = brun.point(fs, 9600, false)
       print = function(s) nout = nout + 1; out[nout] = s end
       bench_point(9600, fs, sdec.trigmode, false, nil)
       print = realprint
+      if phon then SRC_PHASE(phseed) end
       local head = nil
       local k
       for k = 1, nout do
