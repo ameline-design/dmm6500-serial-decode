@@ -52,70 +52,48 @@ credits the device until it stops sending. Ceilings and arithmetic are in the [m
 
 ## Endurance, measured
 
-**Seven and a half days, 136 247 captures, and not one instrument event.** The longest run spans
-**182.2 h — 08-29 to 09-05 — in twelve segments on the instrument's own bench loop**, reading its plan from
-its USB key and writing every cell back to it. Every segment's own closing total reports the same two
-figures: **0 events instigated, 0 from the panel**, and **0 cells unrecorded in 0 gaps**. On this firmware an
-event means a modal box on the panel and nothing suppresses it, so that count is the one that decides
-whether the app is fit to leave alone. The generator needed **270 waveform re-selections** across the week
-and every one recovered — 241 on the second try, 28 on the third, 1 on the fourth. It ended when the
-TRIGGER key was pressed, not because anything failed.
-
-**15.5 of those hours ran with no computer attached at all** — 10 671 cells over 8 complete laps, the
-instrument driving the generator over the LAN by itself. 723 cells returned no result, **721 of them
-refusals the plan's own class allows**; of the other two, one was the generator failing to change waveform
-and one the app declining at 4–6.5 samples a bit, where declining is the better answer.
-
-**The most recent 17-hour run is the one to judge the current build by**, because it is the only long run
-on it: **11 739 cells over 7 laps of the 1 677-point matrix, 17.24 h on one power cycle.**
+**Seven and a half days with no computer attached, 136 247 captures, not one instrument event.** 182.2 h,
+08-29 to 09-05, twelve segments of the instrument's own bench loop: it read its plan from its USB key, drove
+the generator over the LAN itself, and wrote every cell back to the key. Every segment's closing total
+reports **0 events instigated, 0 from the panel** — on this firmware an event is a modal box nothing
+suppresses — and **0 cells unrecorded in 0 gaps**. The generator needed **270 waveform re-selections**, all
+recovered: 241 on the second try, 28 on the third, 1 on the fourth.
 
 | | duration | cells | judged BAD | rate |
 |---|---|---|---|---|
 | the week, 08-29 → 09-05 | 182.2 h | 133 297 judged | 2 462 | **1.85 %** |
 | the night of 09-07 | 17.24 h | 11 739 | 143 | **1.22 %** |
 
-**Those two rates are not directly comparable and the difference is not a measured improvement.** The week
-ran on an older build and on a different matrix — laps of 1 326 and 1 333 cells against today's 1 677, a
-different vector set with different amplitudes and waits — so the composition differs as much as the code
-does. Both are quoted by the same judge on the same field, and that is all the comparison supports.
+The second is the only long run on the current build — 7 laps of the 1 677-point matrix on one power cycle.
+**The two rates are not comparable:** the week ran an older build *and* a different matrix, laps of 1 326
+and 1 333 cells with a different vector set, amplitudes and waits. The drop is not a measured improvement.
 
-**A low single-digit rate is the expected shape here, because the vectors are deliberately hostile.** The
-matrix carries impulse spikes stacking to 9.3 V on a 3.3 V line, noise and a second signal riding on the
-logic from generator CH2 summed into CH1 at a sweepable level, baud drifting 6 % and 10 % mid-waveform,
-2/10/20 % jitter, an inverted line, LIN break fields no UART frame can legally contain, 256- and 512-byte
-runs of one value with almost no transitions, and payloads longer than the capture. **Every vector is then
-swept across all 43 rates**, including rates two decades off the one it was built for — so much of the
-matrix asks the app to read signals that are genuinely unreadable.
+**A low single-digit rate is the expected shape, because the vectors are deliberately hostile:** impulse
+spikes stacking to 9.3 V on a 3.3 V line, noise and a second signal riding on the logic from generator CH2
+summed into CH1 at a sweepable level, baud drifting 6 % and 10 % mid-waveform, 2/10/20 % jitter, an inverted
+line, LIN break fields no UART frame can legally contain, 256- and 512-byte runs of one value with almost no
+transitions, payloads longer than the capture — and **every one swept across all 43 rates**, including rates
+two decades off the one it was built for.
 
-Two things stop that being an excuse. **Only the seven vectors built to break something may fail** —
+Composition is what stops that being an excuse. Only the seven vectors built to break something may fail —
 `v47`, `v48a/b`, `j20`, `v61/62/63`, class `loud` in `tools/soakplan.py` — and they carry just **32 % of the
-week's failures; the other 68 % are on `exact` vectors, where a failure is a defect by this project's own
-rule** and is counted as one. And **a confidently wrong byte fails every class, `loud` included**: refusing
-is a pass, being wrong while claiming to be right never is. The number to watch is the composition, not the
-percentage.
+week's failures; the other 68 % are `exact` vectors, where a failure is a defect** and counted as one. **A
+confidently wrong byte fails every class**, `loud` included: refusing is a pass, being wrong while claiming
+to be right never is.
 
-What the 17-hour run adds beyond the rate:
+The 17-hour run also **leaked nothing** — heap after collection at the six lap seams read 2678, 2678, 2679,
+2678, 2679, 2678 and 2678 kB, flat to 1 kB over 10 062 cells, and lap time did not rise, which catches a
+leak no failure count can. **`line is idle` did not occur once**, which rules out instrument uptime by
+itself, and **generator failures were 0** against 129 in the run before it — all of those one mis-specified
+skip list rather than the instrument.
 
-* **Nothing leaked.** Heap after collection at the six lap seams read 2678, 2678, 2679, 2678, 2679, 2678
-  and 2678 kB — flat to 1 kB over 10 062 cells. Lap time did not rise either, which is the measurement
-  that catches a leak a failure count cannot: a leak wedges the instrument without failing a point.
-* **`line is idle` did not occur once**, in any lap. An earlier run reached 71.6 % idle at 12.5 h of
-  instrument uptime — but two full smoke gates had run inside that uptime, and 17.24 h clean with none
-  rules out uptime by itself.
-* **0 generator failures** by the run's own counter, against 129 in the run before it, all of which were
-  one mis-specified skip list rather than the instrument.
-* **0 events, 0 cells unrecorded**, on the same terms as the week.
-
-**Confidently wrong bytes, in any of it: none.** Every failure above is the app reporting a rate that its
-own framing contradicts, or declining to decode. Measured separately over **1 066 400 offline decodes of
-the same plan: 95.9 % of failures are the reported rate being wrong, and 0.026 % of decodes get a byte
-wrong with the rate right.** Both, and what a plain payload at a standard rate does, are under **Rate
-detection and decode, counted separately** in [REFERENCE.md](docs/REFERENCE.md).
-
-The offline twin is deliberately pessimistic and is checked against these runs rather than trusted: over
-**167 700 cells in 100 laps** it fails on 1.785 % where the bench fails on 1.210 %, **over-predicting by
-1.48×**. Which way that error points is the property worth having — see
-[BENCH.md](docs/BENCH.md).
+**Confidently wrong bytes, in any of it: none.** Every failure is the app reporting a rate its own framing
+contradicts, or declining. Separately, over **1 066 400 offline decodes: 95.9 % of failures are the rate
+being wrong and 0.026 % get a byte wrong with the rate right** — see **Rate detection and decode, counted
+separately** in [REFERENCE.md](docs/REFERENCE.md). The offline twin is deliberately pessimistic and checked
+against these runs rather than trusted: over **167 700 cells in 100 laps** it fails on 1.785 % where the
+bench fails on 1.210 %, **over-predicting by 1.48×** — and which way that error points is the property worth
+having ([BENCH.md](docs/BENCH.md)).
 
 ## Which instruments
 
@@ -125,7 +103,7 @@ API** (`display.create` and friends), and **Lua 5.0.2**. Every digitizer below r
 
 | | |
 |---|---|
-| **DMM6500** | **Tested**, firmware 1.7.17a — a 7.6-day run of 136 247 captures with zero instrument events, 15.5 of those hours driven by the instrument itself with no host attached, a 17.24-hour run on the current build, and the namespace resolver verified here. 16-bit digitizer, *"maximum resolution 16 bits"*, specifications, April 2018 |
+| **DMM6500** | **Tested**, firmware 1.7.17a — a 7.6-day run of 136 247 captures with no computer attached and zero instrument events, a 17.24-hour run on the current build, and the namespace resolver verified here. 16-bit digitizer, *"maximum resolution 16 bits"*, specifications, April 2018 |
 | **DAQ6510** | Should run unmodified, on the strongest grounds of any untested model: it **shares the UI board and the acquisition board** with the DMM6500, only the channel-board plugin differing. Untested |
 | **DMM7510** | Should run unmodified: 18-bit digitizer, better acquisition boards. Untested |
 | **SMU2461** | **Will install and try; may or may not work.** Dual 18-bit digitizers, reached as `smu.digitize` by a namespace the app resolves at load. That mechanism is verified on the DMM6500; no SMU has ever run it. Three unknowns below |
