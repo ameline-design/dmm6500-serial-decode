@@ -422,6 +422,36 @@ beside both mock variants:
 All three agree to within 0.02 V, so at this operating point the mock's **levels** are faithful with or
 without a front-end model, and the level metric is not what separates them.
 
+**The capture's real use is as a metric.** Scoring a source model by the judge's fail count is a downstream
+proxy that can improve for the wrong reason; the RMS residual against real samples cannot. Swing 6.6345 V:
+
+| source model | residual | % of swing |
+|---|---|---|
+| zero-order hold — the shipped default | 0.51636 V | 7.78 % |
+| the 440 kHz + 1 µs front end, then ZOH | 0.31189 V | 4.70 % |
+| the front end, then linear | 0.19374 V | 2.92 % |
+| linear interpolation | 0.09004 V | 1.36 % |
+| the aperture as an **integral** of the held staircase | 0.01409 V | **0.21 %** |
+| the capture's own noise + quantisation floor | — | ~0.14 % |
+
+So the faithful model is an **integral**, not a point sample: the generator holds, and the DMM integrates
+over its aperture. Linear interpolation is a cheap approximation to that average, which is why it beats a
+hold by 5.7× and still loses by 6.4×; and the arb-domain front end **double-counts**, filtering and then
+resampling, which is why adding it makes linear worse.
+
+**It is not implemented, because the fitted aperture width does not transfer between sample rates** —
+1.126 µs at 1 MS/s against 1.388 µs at 500 kS/s, and unidentifiable at 250 kS/s where the aperture is a
+quarter of the sample period. A width fixed in time is confirmed (scaling it with the sample period gives
+19–34 % residuals), but one identifiable operating point is not a calibration. Details and the measurements
+that would settle it are in `notes/FINDING-aperture-residual.md`.
+
+Three things the same captures retired as candidates: **noise** is 1.92 mV sd at held rails, 0.029 % of
+swing and 2 % of the linear residual; the **arb-to-DMM sample ratio** fits to 2.500000, +0.0 ppm, so there
+is no clock drift to model; and **resolution is ~11 bits, not 16** — 692 distinct values in 20 000 samples,
+~9.6 mV apart where the 10 V range's LSB is 0.305 mV. And **99.7 % of the squared error sits within two
+samples of an edge** while held levels are already at the floor, so edge shape is the entire remaining gap
+— which is exactly the quantity `sig_bittime` fits.
+
 `SRC.interp`, `SRC.truefs` and `SRC.frontend` in `tools/gen_serial.lua` carry the three candidate models
 and are all **off by default**; the evidence for each is in `notes/DESIGN-interp.md`.
 
