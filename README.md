@@ -79,6 +79,21 @@ ran on an older build and on a different matrix — laps of 1 326 and 1 333 cell
 different vector set with different amplitudes and waits — so the composition differs as much as the code
 does. Both are quoted by the same judge on the same field, and that is all the comparison supports.
 
+**A low single-digit rate is the expected shape here, because the vectors are deliberately hostile.** The
+matrix carries impulse spikes stacking to 9.3 V on a 3.3 V line, noise and a second signal riding on the
+logic from generator CH2 summed into CH1 at a sweepable level, baud drifting 6 % and 10 % mid-waveform,
+2/10/20 % jitter, an inverted line, LIN break fields no UART frame can legally contain, 256- and 512-byte
+runs of one value with almost no transitions, and payloads longer than the capture. **Every vector is then
+swept across all 43 rates**, including rates two decades off the one it was built for — so much of the
+matrix asks the app to read signals that are genuinely unreadable.
+
+Two things stop that being an excuse. **Only the seven vectors built to break something may fail** —
+`v47`, `v48a/b`, `j20`, `v61/62/63`, class `loud` in `tools/soakplan.py` — and they carry just **32 % of the
+week's failures; the other 68 % are on `exact` vectors, where a failure is a defect by this project's own
+rule** and is counted as one. And **a confidently wrong byte fails every class, `loud` included**: refusing
+is a pass, being wrong while claiming to be right never is. The number to watch is the composition, not the
+percentage.
+
 What the 17-hour run adds beyond the rate:
 
 * **Nothing leaked.** Heap after collection at the six lap seams read 2678, 2678, 2679, 2678, 2679, 2678
