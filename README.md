@@ -52,30 +52,55 @@ credits the device until it stops sending. Ceilings and arithmetic are in the [m
 
 ## Endurance, measured
 
-**15.5 hours with no computer attached, and zero events.** The DMM6500 ran **10 671 cells over 8 complete
-laps** entirely on its own: it selected each waveform on the generator over the LAN, wrote its record to
-its own USB key, and had no host connected after the start. **0 captures instigated an instrument
-event** — which on this firmware means a modal box on the panel, and nothing suppresses it. 723 cells
-returned no result, **721 of them refusals the plan's own class allows**; of the other two, one was the
-generator failing to change waveform and one the app declining at 4–6.5 samples a bit, where declining is
-the better answer. **Confidently wrong bytes: none.**
+**Seven and a half days, 136 247 captures, and not one instrument event.** The longest run spans
+**182.2 h — 08-29 to 09-05 — in twelve segments on the instrument's own bench loop**, reading its plan from
+its USB key and writing every cell back to it. Every segment's own closing total reports the same two
+figures: **0 events instigated, 0 from the panel**, and **0 cells unrecorded in 0 gaps**. On this firmware an
+event means a modal box on the panel and nothing suppresses it, so that count is the one that decides
+whether the app is fit to leave alone. The generator needed **270 waveform re-selections** across the week
+and every one recovered — 241 on the second try, 28 on the third, 1 on the fourth. It ended when the
+TRIGGER key was pressed, not because anything failed.
 
-Three 17-hour soaks before it, each 6 laps of the full 1 683-point matrix — 10 098 cycles on one power
-cycle — logged no instrument event, leaked no buffer or display object and left no error behind:
+**15.5 of those hours ran with no computer attached at all** — 10 671 cells over 8 complete laps, the
+instrument driving the generator over the LAN by itself. 723 cells returned no result, **721 of them
+refusals the plan's own class allows**; of the other two, one was the generator failing to change waveform
+and one the app declining at 4–6.5 samples a bit, where declining is the better answer.
 
-| | duration | failures of 10 098 | rate |
-|---|---|---|---|
-| first | 17.14 h | 318 | 3.15 % |
-| second | 17.17 h | 313 | 3.10 % |
-| third | 17.18 h | 301 | 2.98 % |
+**The most recent 17-hour run is the one to judge the current build by**, because it is the only long run
+on it: **11 739 cells over 7 laps of the 1 677-point matrix, 17.24 h on one power cycle.**
 
-Lap time did not rise in any of the three, which is the measurement that catches a leak: a leak wedges the
-instrument without failing a point. **Those failure counts are upper bounds** and they blend two unrelated
-failures; the per-cell records of these runs cannot be re-split. Measured separately, on the current build,
-over **1 066 400 offline decodes of the same plan: 95.9 % of failures are the reported rate being wrong,
-and 0.026 % of decodes get a byte wrong with the rate right.** Both, and what a plain payload at a standard
-rate does, are under **Rate detection and decode, counted separately** in
-[REFERENCE.md](docs/REFERENCE.md).
+| | duration | cells | judged BAD | rate |
+|---|---|---|---|---|
+| the week, 08-29 → 09-05 | 182.2 h | 133 297 judged | 2 462 | **1.85 %** |
+| the night of 09-07 | 17.24 h | 11 739 | 143 | **1.22 %** |
+
+**Those two rates are not directly comparable and the difference is not a measured improvement.** The week
+ran on an older build and on a different matrix — laps of 1 326 and 1 333 cells against today's 1 677, a
+different vector set with different amplitudes and waits — so the composition differs as much as the code
+does. Both are quoted by the same judge on the same field, and that is all the comparison supports.
+
+What the 17-hour run adds beyond the rate:
+
+* **Nothing leaked.** Heap after collection at the six lap seams read 2678, 2678, 2679, 2678, 2679, 2678
+  and 2678 kB — flat to 1 kB over 10 062 cells. Lap time did not rise either, which is the measurement
+  that catches a leak a failure count cannot: a leak wedges the instrument without failing a point.
+* **`line is idle` did not occur once**, in any lap. An earlier run reached 71.6 % idle at 12.5 h of
+  instrument uptime — but two full smoke gates had run inside that uptime, and 17.24 h clean with none
+  rules out uptime by itself.
+* **0 generator failures** by the run's own counter, against 129 in the run before it, all of which were
+  one mis-specified skip list rather than the instrument.
+* **0 events, 0 cells unrecorded**, on the same terms as the week.
+
+**Confidently wrong bytes, in any of it: none.** Every failure above is the app reporting a rate that its
+own framing contradicts, or declining to decode. Measured separately over **1 066 400 offline decodes of
+the same plan: 95.9 % of failures are the reported rate being wrong, and 0.026 % of decodes get a byte
+wrong with the rate right.** Both, and what a plain payload at a standard rate does, are under **Rate
+detection and decode, counted separately** in [REFERENCE.md](docs/REFERENCE.md).
+
+The offline twin is deliberately pessimistic and is checked against these runs rather than trusted: over
+**167 700 cells in 100 laps** it fails on 1.785 % where the bench fails on 1.210 %, **over-predicting by
+1.48×**. Which way that error points is the property worth having — see
+[BENCH.md](docs/BENCH.md).
 
 ## Which instruments
 
@@ -85,7 +110,7 @@ API** (`display.create` and friends), and **Lua 5.0.2**. Every digitizer below r
 
 | | |
 |---|---|
-| **DMM6500** | **Tested**, firmware 1.7.17a — 15.5 hours driven by the instrument itself, three 17-hour host-driven soaks, and the namespace resolver verified here. 16-bit digitizer, *"maximum resolution 16 bits"*, specifications, April 2018 |
+| **DMM6500** | **Tested**, firmware 1.7.17a — a 7.6-day run of 136 247 captures with zero instrument events, 15.5 of those hours driven by the instrument itself with no host attached, a 17.24-hour run on the current build, and the namespace resolver verified here. 16-bit digitizer, *"maximum resolution 16 bits"*, specifications, April 2018 |
 | **DAQ6510** | Should run unmodified, on the strongest grounds of any untested model: it **shares the UI board and the acquisition board** with the DMM6500, only the channel-board plugin differing. Untested |
 | **DMM7510** | Should run unmodified: 18-bit digitizer, better acquisition boards. Untested |
 | **SMU2461** | **Will install and try; may or may not work.** Dual 18-bit digitizers, reached as `smu.digitize` by a namespace the app resolves at load. That mechanism is verified on the DMM6500; no SMU has ever run it. Three unknowns below |
