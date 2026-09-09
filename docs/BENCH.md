@@ -461,11 +461,15 @@ over its aperture. Linear interpolation is a cheap approximation to that average
 hold by 5.7× and still loses by 6.4×; and the arb-domain front end **double-counts**, filtering and then
 resampling, which is why adding it makes linear worse.
 
-**It is not implemented, because the fitted aperture width does not transfer between sample rates** —
-1.126 µs at 1 MS/s against 1.388 µs at 500 kS/s, and unidentifiable at 250 kS/s where the aperture is a
-quarter of the sample period. A width fixed in time is confirmed (scaling it with the sample period gives
-19–34 % residuals), but one identifiable operating point is not a calibration. Details and the measurements
-that would settle it are in `notes/FINDING-aperture-residual.md`.
+**It is implemented and it is the default**, as `SRC.aperture` in `tools/gen_serial.lua`, at a width fixed
+in *time* of 0.85 µs. Against real captured samples it takes the residual from 5.62 % of swing to 1.07 %.
+
+**The width is only identifiable at some operating points, which is what made it look untransferable.**
+The count of distinct sub-arb-sample phases the capture visits is the denominator of `STEP = arb/dmm` in
+lowest terms: at a denominator of 1 the samples carry no information about the width at all, at 2 the fit
+is observationally **degenerate** — a width of 1.5797 µs reproduces data generated at 2.815 µs to 2 µV —
+and at 5 it recovers exactly. Earlier fits of 1.126 µs and 1.388 µs came from degenerate points, so they
+were not two measurements of a drifting width; they were two arbitrary members of a flat valley.
 
 Three things the same captures retired as candidates: **noise** is 1.92 mV sd at held rails, 0.029 % of
 swing and 2 % of the linear residual; the **arb-to-DMM sample ratio** fits to 2.500000, +0.0 ppm, so there
@@ -474,8 +478,55 @@ is no clock drift to model; and **resolution is ~11 bits, not 16** — 692 disti
 samples of an edge** while held levels are already at the floor, so edge shape is the entire remaining gap
 — which is exactly the quantity `sig_bittime` fits.
 
-`SRC.interp`, `SRC.truefs` and `SRC.frontend` in `tools/gen_serial.lua` carry the three candidate models
-and are all **off by default**; the evidence for each is in `notes/DESIGN-interp.md`.
+`tools/gen_serial.lua` carries five source models, and `tools/offline_bench.lua` prints which are active on
+every run's `stimulus:` line rather than leaving it to be inferred:
+
+| model | `SRC` flag | default | why |
+|---|---|---|---|
+| aperture integral of the held staircase, 0.85 µs | `SRC.aperture` | **on** | the residual above: 5.62 % → 1.07 % of swing |
+| the rate the clock can synthesise, `66e6/ceil(66e6/fs)` | `SRC.truefs` | **on** | the requested rate manufactures round samples-per-bit the bench never delivers |
+| sub-sample capture origin | `SRC.fracorigin` | **on** | two independent clocks never align on a sample |
+| linear interpolation between arb points | `SRC.interp` | off | under-predicts, and is a cheap approximation to the integral rather than something to compose with it |
+| the 440 kHz pole + 1 µs boxcar in the arb domain | `SRC.frontend` | off | double-counts the aperture |
+
+Only the aperture is carried by a **measurement**; `truefs` and `fracorigin` are rate-null and on because
+they are physically true. `--aperture` with either `--interp` or `--frontend` is **refused** rather than
+silently ignored: `SRC_val` returns from the aperture branch first, so the other model would be inert while
+the header claimed it had been applied.
+
+### Never set an offline rate beside a bench rate without matching the envelope
+
+`tools/soak_offline_bench.py` defaults to `--stress-envelope 0.508`, which inflates the commanded offset on
+every second cell until `|OFST| + AMP/2` exceeds 10 V so that `GEN_ENVELOPE`'s recentring law is exercised.
+That reproduces a condition the archive really ran. **It is not the condition a current hardware lap runs**:
+`soakplan` refuses any pair past `SDG_ENV_V`, so a modern lap has **0 cells outside the envelope** — checked
+on the record's own `amp_vpp`/`ofst_v` columns, maximum exactly 10.0000 V. A recentred band straddles
+ground, `sig_levels` reads it as RS-232 and inverts, so the stressed arm is a *different experiment* rather
+than a harsher one. Within one stressed run the two halves score 0.911 % inside the envelope against
+2.054 % outside it, a factor of 2.26.
+
+**Matched (`--stress-envelope 0`), the current defaults reproduce the bench:**
+
+| arm | laps | cells | BAD rate |
+|---|---|---|---|
+| hardware | 11 | 18 447 | **1.1872 %** (219 BAD) |
+| offline, shipped defaults | 265 | 444 405 | **1.1348 %** — 0.96× hardware, 0.67 σ from parity |
+| offline, all five models off | 336 | 563 472 | 1.7760 % — 1.50× |
+
+**The aggregate agreeing is partly cancellation, so read the per-vector table too.** Offline runs
+`v90`/`v94`/`j10`/`v63` about 1.3× hot and adds ~1.5 failures a lap on random vectors the bench never
+fails, while scoring zero on `v48a`/`v48b`.
+
+**Zero on those two is not blindness, and the refusal counts are what say so.** Both are drift vectors, and
+both sides decline nearly every cell at the acquisition gate with the same reason, `acq: no clear logic
+levels (8–9 % of samples near them)` — offline **100 %**, hardware **92–98 %**. Offline is the harsher
+side; the hardware failures are the ~8 % of drift cells that stay just readable enough to answer wrongly,
+and a refusal on a `loud` vector is not a failure. Only `v48b`, `v48a` and `v47` refuse at all in a hardware
+lap (168, 158 and 32 cells of a 1677-cell lap); nothing else does.
+
+**`v47` refusals are an independent check on the aperture, on a quantity nothing was fitted to** — hardware
+8.0 a lap, shipped defaults 9.1 (1.14×), all models off 14.9 (1.86×). A 0.85 µs integrating window
+attenuates a spike two codewords wide, so the mock stops inventing refusals the bench does not have.
 
 **The plan the twin replays is the plan the bench played**, which needs the lap's own `--skip-vectors`
 list. `soakplan` applies the skip **before** the shuffle, so dropping two waveforms moves every remaining
@@ -765,6 +816,20 @@ laps against a dead bench. Exit 1 means "a cell failed" and a soak should carry 
 connection silently steals replies. `sdg_alive` must be passed an already-open handle or it reports a
 wedge that is not there.
 
+**Do not start a soak straight after a smoke — power cycle the DMM in between.** `acq: line is idle (no
+transitions)` is accumulated **DMM-side** state, and the controlled pairing is unambiguous: an identical
+88-cell spec gave 63 idle of 88 cells with a stale DMM and a fresh SDG, and **0 of 88** with both fresh,
+the generator untouched between the halves. A soak started 30 minutes after a passing smoke went **33 idle
+of its first 49 cells**; after a DMM power cycle the same plan ran **0 idle in 6708 cells over 8.3 h**.
+`bench_smoke`'s `levels` stage sweeps the DMM down to 0.25 V of logic swing and its `rates` stage stubs
+`sdec.ua_badfrac` on the instrument, and `sdec.hw_config()` does not reset whatever this is.
+
+**It presents as a generator fault and is not one.** The DMM reports a flat line while the generator reads
+back on the correct waveform with per-cell amplitude changes landing, and the record shows `SDG failed 0`
+because the engine's own generator checks never fire. Power-cycling the SDG changes nothing. **The cheap
+tell is cell time:** an idle cell fails in ~1 s against a healthy 5.4–6.4 s, so a poisoned run visibly
+races. It is not uptime either — the DMM has run a 7-day soak clean, so do not power cycle on a clock.
+
 ---
 
 ## Watching a long run
@@ -936,6 +1001,27 @@ One trend did appear, in a counter nobody was watching: **`v47`'s refusals rose 
 across the seven laps** — +1.11/lap, 5.1 σ, monotone, while `v48a` and `v48b` stayed flat. Mean commanded
 amplitude (correlation +0.43) and mean samples-per-bit (+0.22) do not explain it; lap number does (+0.92).
 The 6 % apex-hit rate above is the quantity that would have to drift. Unconfirmed on one run.
+
+**Hardware, `out/bench/soak45_20260909.csv`, 4 laps × 1677 = 6708 cells over 8.3 h.** 76 BAD, **1.13 %**
+(≤115200 Bd: 1.28 % [0.98–1.64]; >115200 Bd: 0.75 % [0.41–1.25]), and **0 no-decode, 0 inconclusive,
+0 SDG failures, 0 events instigated, 0 s held over 0 retries, 0 cells unrecorded**, ending
+`4 iteration(s) complete`. Heap at the three lap seams: 2687, 2687, 2687 kB — **flat to 0 kB over 5031
+cells**. Pooled with `soak44` the bench rate is **219 BAD of 18 447 = 1.19 %**, and the two runs agree
+within 0.6 σ.
+
+`acq: line is idle` was **0 in every lap** — but the first attempt at this run, started 30 minutes after a
+passing smoke, went 33 idle in its first 49 cells and had to be abandoned. See the smoke warning under
+*Instrument hazards*: 8.3 h clean after a power cycle is further evidence against uptime.
+
+**`v47`'s refusal trend did not reproduce**: 9, 9, 6, 8 across the four laps, flat and non-monotone. Every
+refusal in the run is on one of three vectors — `v48b` 168, `v48a` 158, `v47` 32 — and nothing else refuses
+at all. Four laps is short against a claimed +1.11/lap, so this neither confirms nor kills the `soak44`
+trend; it does mean it is not reliably present.
+
+**The late ARWV switch reproduced at exactly its documented rate.** 16 recoveries over 4 laps — 4 a lap
+against 39 real switches, **10.3 %** — every one logged `sdg select recovered on try 2` or `try 3` after the
+4 in-call `ARWV?` retries had all returned the previous waveform's name. Re-sending the *selection* is what
+recovers it; re-reading is what does not.
 
 **Offline, two pools of `tools/soak_offline_bench.py` under Lua 5.0.2, 6 h.** 5068 laps, **8.50 M cells** —
 comparable to the entire prior offline history, and the first with a varying capture phase. Zero `raised`,
