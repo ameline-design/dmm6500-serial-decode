@@ -169,6 +169,25 @@ actually asks of a generator, measured from the plan and the driver rather than 
 | ~41 stored arbitrary waveforms, selected by name | `C1:ARWV NAME,…`, uploaded once by `tools/upload_vectors.py` |
 | Signal bandwidth under ~1 MHz | the fastest stimulus is 250 kBd, so its edges are slow by any generator's standard |
 
+**THE FAMILY FLOOR IS 2000X, AND AN SDG1000X WILL NOT DO.** TrueArb is selected by `SRATE`, and Siglent's
+programming guide (`docs/SDG_Programming-Guide_PG02-E05C.txt`, the per-command availability table) lists it
+family by family:
+
+| | SDG800 | SDG1000 | **SDG2000X** | SDG5000 | **SDG1000X** | SDG6000X/X-E | SDG7000A |
+|---|---|---|---|---|---|---|---|
+| `SRATE` | no | no | **yes** | no | **no** | yes | yes |
+| `INTER` | no | no | no | no | no | yes | yes |
+
+So the substitution to avoid is the cheap one: an **SDG1000X is not an SDG2000X minus bandwidth**, it has no
+settable sample rate at all. It stores and plays arbitrary waveforms DDS-only, and DDS **resamples** the
+stored points — the exact fall-back `SDG.assert_truearb()` checks for on every load, and fatal here rather
+than merely degrading, because sub-sample edge timing is the quantity being measured. The scope being an
+SDS**1000X**-E is what makes this easy to get wrong; the two "1000X" families are unrelated.
+
+`INTER` being `no` on the SDG2000X is also worth keeping in view: the interpolation-method control exists
+only on the 6000X/7000A, so a 2000X in TrueArb emits a plain held staircase and there is nothing to switch
+off — which is consistent with what the rise measurements above show the generator doing.
+
 Those are series-wide properties of the **SDG2000X** family: the arbitrary-waveform engine, its
 sample-rate range and the 20 Vpp output are the same across it, and the model number is the *sine*
 bandwidth — 40 MHz on the SDG2042X, 80 on the 2082X, 120 on the 2122X. Even the bottom of the range

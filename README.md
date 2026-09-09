@@ -309,3 +309,18 @@ number is the *analog bandwidth*, and the fastest edge here is a 250 kBd bit. An
 an SDS1104X-E (100 MHz) are sufficient**; the units here are an SDG2122X and an SDS1204X-E.
 `SDG_MAX_SRATE` is capped at 40 MSa/s so a plan cannot quietly outgrow the cheapest generator; see
 [docs/BENCH.md](docs/BENCH.md) for what to check on a unit that is not the one on this bench.
+
+**The generator must be 2000X-series or better, and an SDG1000X will NOT do** — worth stating because the
+scope here is a 1000X-E and the numbers invite the wrong substitution. TrueArb is selected by the `SRATE`
+command, and Siglent's programming guide lists its availability per family:
+
+| | SDG800 | SDG1000 | **SDG2000X** | SDG5000 | **SDG1000X** | SDG6000X/X-E | SDG7000A |
+|---|---|---|---|---|---|---|---|
+| `SRATE` | no | no | **yes** | no | **no** | yes | yes |
+
+An SDG1000X stores and plays arbitrary waveforms, but DDS-only — and DDS **resamples** the stored points,
+which is precisely the fall-back `SDG.assert_truearb()` checks for on every load. It would not merely be
+less accurate; the vectors would stop being valid stimulus, because sub-sample edge timing is the quantity
+this project measures. Note also that `INTER`, the interpolation-method control, is `no` even on the
+SDG2000X — reachable only on the 6000X/7000A — which is why a 2000X's TrueArb output is a plain held
+staircase with nothing to switch off.
