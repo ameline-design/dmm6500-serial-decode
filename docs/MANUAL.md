@@ -1,6 +1,6 @@
 # Serial Decode — user manual
 
-**Ian Ameline** · version 1.22 · MIT licence
+**Ian Ameline** · version 1.23 · MIT licence
 
 This app turns a Keithley bench instrument into a serial decoder. Clip onto a UART line, press
 **Capture**, and read the bytes on the front panel. You do not have to tell it the baud rate, the frame
