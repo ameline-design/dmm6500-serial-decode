@@ -1711,6 +1711,28 @@ function sdec.mode_save()
   return true
 end
 
+-- Is a digitize function selected RIGHT NOW?
+--
+-- WHY ANYONE NEEDS TO ASK. Everything under sdec.dig and sdec.atrig belongs to the digitize function, and
+-- writing one of those attributes while a BASIC function is selected posts **2800, "the digitize
+-- analogtrigger mode attribute is not available for the Not Active function"**. That is an EVENT -- a modal
+-- box on the panel -- and NOT a Lua error, so wrapping the write in pcall does not suppress it. It is the
+-- same class as the file API posting 2208 rather than raising.
+--
+-- The state is READ rather than tracked, because a tracking flag would have to be right on every path that
+-- can select or deselect either engine, and the instrument already knows.
+--
+-- TRUE WHEN IT CANNOT TELL, which is the safe direction for the caller this exists for: teardown. An
+-- instrument whose namespace has no FUNC_NONE cannot be asked, and skipping the un-configure there would
+-- leave a comparator armed for whatever uses it next -- a worse outcome than a spurious event.
+function sdec.digitizing()
+  if sdec.dig == nil then return false end
+  if sdec.k.FUNC_NONE == nil then return true end
+  local f = nil
+  if not pcall(function() f = sdec.dig.func end) then return true end
+  return f ~= sdec.k.FUNC_NONE
+end
+
 -- Put back what mode_save() found. Safe to call with nothing saved, and safe to call twice.
 function sdec.mode_restore()
   local m = sdec.entrymode

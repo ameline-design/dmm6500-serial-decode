@@ -3,7 +3,7 @@ loadscript Serial_Decode
 -- $Product: DMM6500, DAQ6510, DMM7510, SMU2461
 -- $Tag: Serial, UART, Decode, Digitize
 -- $Description: Decodes an asynchronous serial line with the instrument's own digitizer: recovers baud rate, frame format and bytes, shows them as text or hex, and saves bytes to USB key. Everything auto-detects; everything can be locked.
--- $Version: 1.21
+-- $Version: 1.22
 -- $Requires: 1.7.0
 -- $Author: Ian Ameline
 -- $License: MIT
@@ -1217,6 +1217,19 @@ function sdec.mode_save()
   if not ok or m == nil or m.func == nil then return false end
   sdec.entrymode = m
   return true
+end
+
+-- Is a digitize function selected RIGHT NOW?
+--   [...]
+-- TRUE WHEN IT CANNOT TELL, which is the safe direction for the caller this exists for: teardown. An
+-- instrument whose namespace has no FUNC_NONE cannot be asked, and skipping the un-configure there would
+-- leave a comparator armed for whatever uses it next -- a worse outcome than a spurious event.
+function sdec.digitizing()
+  if sdec.dig == nil then return false end
+  if sdec.k.FUNC_NONE == nil then return true end
+  local f = nil
+  if not pcall(function() f = sdec.dig.func end) then return true end
+  return f ~= sdec.k.FUNC_NONE
 end
 
 -- Put back what mode_save() found. Safe to call with nothing saved, and safe to call twice.
@@ -6698,7 +6711,9 @@ function sdec.stop()
   end
   sdec.ck_running, sdec.ck_stop = false, false
   pcall(function() trigger.model.abort() end)
-  pcall(function() sdec.atrig.mode = sdec.k.MODE_OFF end)
+  if sdec.digitizing() then
+    pcall(function() sdec.atrig.mode = sdec.k.MODE_OFF end)
+  end
   sdec.cancel_ok = false
   pcall(function() trigger.blender[sdec.cancel_blender].reset() end)
   sdec.destroy_options()

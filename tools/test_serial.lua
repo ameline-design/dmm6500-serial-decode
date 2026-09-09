@@ -3259,6 +3259,58 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+-- TEARDOWN MUST NOT TOUCH THE COMPARATOR WITH A BASIC FUNCTION SELECTED.
+--
+-- Everything under dmm.digitize belongs to the digitize function, so writing
+-- analogtrigger.mode while a basic function is active posts 2800 -- "not
+-- available for the Not Active function" -- as a modal box. It is an EVENT and
+-- not a Lua error, so the pcall around the write does not catch it and no
+-- pass/fail count would ever have shown it. The sentinel is the only way to
+-- assert a write did NOT happen.
+--
+-- It is reachable on any exit that followed no capture, which became the COMMON
+-- case once mode_restore() started leaving a basic function selected: the next
+-- launch then starts with the digitizer deselected, and hw_config() -- the only
+-- thing that selects it -- runs per capture, never at startup.
+-- ---------------------------------------------------------------------------
+do
+  local saved_dig = dmm.digitize.func
+
+  check('digitizing() is false with a basic function selected',
+        (function() dmm.digitize.func = dmm.FUNC_NONE; return sdec.digitizing() end)() == false)
+  check('digitizing() is true with a digitize function selected',
+        (function() dmm.digitize.func = dmm.FUNC_DIGITIZE_VOLTAGE; return sdec.digitizing() end)() == true)
+  -- CANNOT TELL -> TRUE. An instrument with no FUNC_NONE must still get its
+  -- comparator released; a spurious event is the lesser fault.
+  check('digitizing() answers true when the namespace has no FUNC_NONE',
+        (function()
+           local k = sdec.k.FUNC_NONE
+           sdec.k.FUNC_NONE = nil
+           local r = sdec.digitizing()
+           sdec.k.FUNC_NONE = k
+           return r
+         end)() == true)
+
+  -- THE REGRESSION ITSELF, both directions.
+  dmm.digitize.analogtrigger.mode = 'SENTINEL'
+  dmm.digitize.func = dmm.FUNC_NONE
+  sdec.stop()
+  check('stop() leaves the comparator alone when the digitizer is deselected',
+        dmm.digitize.analogtrigger.mode == 'SENTINEL',
+        tostring(dmm.digitize.analogtrigger.mode))
+
+  dmm.digitize.analogtrigger.mode = 'SENTINEL'
+  dmm.digitize.func = dmm.FUNC_DIGITIZE_VOLTAGE
+  sdec.stop()
+  check('...and still turns it off when the digitizer IS selected',
+        dmm.digitize.analogtrigger.mode == dmm.MODE_OFF,
+        tostring(dmm.digitize.analogtrigger.mode))
+
+  dmm.digitize.func = saved_dig
+  dmm.digitize.analogtrigger.mode = nil
+end
+
+-- ---------------------------------------------------------------------------
 -- The one-build-per-power-cycle guard.
 --
 -- A second ui_build() crashes the firmware, and there is NO remote way to bring

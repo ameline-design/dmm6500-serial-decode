@@ -2920,7 +2920,18 @@ function sdec.stop()
   end
   sdec.ck_running, sdec.ck_stop = false, false
   pcall(function() trigger.model.abort() end)
-  pcall(function() sdec.atrig.mode = sdec.k.MODE_OFF end)
+  -- ONLY WHILE THE DIGITIZER IS THE SELECTED FUNCTION -- see sdec.digitizing(), which explains why the
+  -- pcall here is not enough on its own. Turning the comparator off is un-configuring a subsystem this app
+  -- configured, which is right, but the attribute does not exist while a BASIC function is selected and
+  -- writing it then posts 2800 as a modal box.
+  --
+  -- REACHABLE ON EVERY EXIT THAT FOLLOWED NO CAPTURE, and that became the common case rather than a corner
+  -- one when mode_restore() started leaving a basic function selected: the next launch then begins with the
+  -- digitizer deselected, and a launch closed without pressing Capture never selects it. hw_config() is what
+  -- selects it, and it runs per capture, not at startup.
+  if sdec.digitizing() then
+    pcall(function() sdec.atrig.mode = sdec.k.MODE_OFF end)
+  end
   -- RELEASE THE CANCEL LATCH, for the reason acq_triggered() gives for releasing blender 1: an app
   -- that configures a subsystem should un-configure it, or the next user of blender 2 inherits our
   -- stimuli. sdec.cancel_ok goes with it, so a poll after teardown answers false rather than reading
