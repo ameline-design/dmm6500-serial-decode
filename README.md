@@ -50,6 +50,14 @@ recording runs to its stated size. That key does still *gate* an armed capture u
 to a file, decoded and filed without stepping; beyond that, flow control makes the window a chunk size and
 credits the device until it stops sending. Ceilings and arithmetic are in the [manual](docs/MANUAL.md).
 
+**It takes over the measurement function and gives it back.** Capturing means digitizing, so every press of
+Capture selects **Digitize Voltage** on the 10 V range whatever the meter was measuring. The mode is read
+once at startup and restored when you press **End App**, so ending the app leaves the meter measuring what
+it was measuring when you launched it, on the range it was on. Two consequences, both deliberate: a function
+changed from the front panel *while the app is loaded* does not survive the exit — the next Capture reselects
+the digitizer, so the app keeps working — and the bench soak in `bench/` bypasses this path entirely, so a
+soak does leave the instrument digitizing.
+
 ## Endurance, measured
 
 **Seven and a half days with no computer attached, 136 247 captures, not one instrument event.** 182.2 h,
@@ -63,10 +71,12 @@ recovered: 241 on the second try, 28 on the third, 1 on the fourth.
 |---|---|---|---|---|
 | the week, 08-29 → 09-05 | 182.2 h | 133 297 judged | 2 462 | **1.85 %** |
 | the night of 09-07 | 17.24 h | 11 739 | 143 | **1.22 %** |
+| the night of 09-08 | 8.28 h | 6 708 | 76 | **1.13 %** |
 
-The second is the only long run on the current build — 7 laps of the 1 677-point matrix on one power cycle.
-**The two rates are not comparable:** the week ran an older build *and* a different matrix, laps of 1 326
-and 1 333 cells with a different vector set, amplitudes and waits. The drop is not a measured improvement.
+The last two are the 1 677-point matrix, 7 laps and 4 laps, each on one power cycle; **pooled they give
+219 BAD in 18 447 cells, 1.19 %, and they agree with each other within 0.6 σ.** The week is **not
+comparable** with either: it ran an older build *and* a different matrix, laps of 1 326 and 1 333 cells with
+a different vector set, amplitudes and waits. The drop from 1.85 % is not a measured improvement.
 
 **A low single-digit rate is the expected shape, because the vectors are deliberately hostile:** impulse
 spikes stacking to 9.3 V on a 3.3 V line, noise and a second signal riding on the logic from generator CH2
@@ -77,23 +87,42 @@ two decades off the one it was built for.
 
 Composition is what stops that being an excuse. Only the seven vectors built to break something may fail —
 `v47`, `v48a/b`, `j20`, `v61/62/63`, class `loud` in `tools/soakplan.py` — and they carry just **32 % of the
-week's failures; the other 68 % are `exact` vectors, where a failure is a defect** and counted as one. **A
+week's failures; the other 68 % are `exact` vectors, where a failure is a defect** and counted as one. On
+the two current-matrix runs the split is **39 % `loud` and 61 % `exact`** (86 and 132 of 218 pooled). **A
 confidently wrong byte fails every class**, `loud` included: refusing is a pass, being wrong while claiming
 to be right never is.
 
-The 17-hour run also **leaked nothing** — heap after collection at the six lap seams read 2678, 2678, 2679,
-2678, 2679, 2678 and 2678 kB, flat to 1 kB over 10 062 cells, and lap time did not rise, which catches a
-leak no failure count can. **`line is idle` did not occur once**, which rules out instrument uptime by
-itself, and **generator failures were 0** against 129 in the run before it — all of those one mis-specified
-skip list rather than the instrument.
+Neither run **leaked anything** — heap after collection at the 17-hour run's six lap seams read 2678, 2678,
+2679, 2678, 2679, 2678 and 2678 kB, flat to 1 kB over 10 062 cells, and the 8-hour run's three seams read
+2687, 2687, 2687 kB, flat to 0 kB. Lap time did not rise in either, which catches a leak no failure count
+can. **`line is idle` did not occur once in either run**, and **generator failures were 0** in both, against
+129 in an earlier run — all of those one mis-specified skip list rather than the instrument.
+
+**`line is idle` is worth naming because it is real and it is not the app.** It is accumulated state in the
+*instrument*, not the generator, and a soak started shortly after the 13-minute smoke gate can hit it hard —
+one such attempt went 33 idle in its first 49 cells, with the generator reading back correct throughout. A
+power cycle of the DMM clears it, and 8.3 hours of running afterwards did not bring it back. It costs a
+bench run, not a wrong answer: an idle cell is a refusal. See *Instrument hazards* in
+[BENCH.md](docs/BENCH.md).
 
 **Confidently wrong bytes, in any of it: none.** Every failure is the app reporting a rate its own framing
 contradicts, or declining. Separately, over **1 066 400 offline decodes: 95.9 % of failures are the rate
 being wrong and 0.026 % get a byte wrong with the rate right** — see **Rate detection and decode, counted
-separately** in [REFERENCE.md](docs/REFERENCE.md). The offline twin is deliberately pessimistic and checked
-against these runs rather than trusted: over **167 700 cells in 100 laps** it fails on 1.785 % where the
-bench fails on 1.210 %, **over-predicting by 1.48×** — and which way that error points is the property worth
-having ([BENCH.md](docs/BENCH.md)).
+separately** in [REFERENCE.md](docs/REFERENCE.md).
+
+**The offline twin is checked against these runs rather than trusted, and the comparison only means
+anything at a matched stimulus.** Its default soak deliberately drives half its cells outside the
+generator's envelope, which a current bench lap never does, so the two must be set side by side on the same
+plan. Matched, over **444 405 cells in 265 laps** it fails on **1.135 %** against **1.187 %** pooled over
+11 bench laps — **0.96×, which is 0.67 σ from parity**. Earlier readings of "over-predicting by 1.48×"
+compared a stressed harness against an unstressed bench and are withdrawn.
+
+**The aggregate matching is partly two errors cancelling**, and the per-vector table in
+[BENCH.md](docs/BENCH.md) is what says so: the twin runs four vectors about 1.3× hot and invents ~1.5
+failures a lap on random payloads the bench never fails, while scoring zero on the two drift vectors —
+where it is in fact the *harsher* side, declining 100 % of those cells at the acquisition gate against the
+bench's 92–98 %. **So it is no longer safely pessimistic**, which is the property this project wants of it,
+and that is worth knowing before using it as a gate on its own.
 
 ## Which instruments
 
@@ -103,7 +132,7 @@ API** (`display.create` and friends), and **Lua 5.0.2**. Every digitizer below r
 
 | | |
 |---|---|
-| **DMM6500** | **Tested**, firmware 1.7.17a — a 7.6-day run of 136 247 captures with no computer attached and zero instrument events, a 17.24-hour run on the current build, and the namespace resolver verified here. 16-bit digitizer, *"maximum resolution 16 bits"*, specifications, April 2018 |
+| **DMM6500** | **Tested**, firmware 1.7.17a — a 7.6-day run of 136 247 captures with no computer attached and zero instrument events, then 17.24-hour and 8.28-hour runs on the current matrix, and the namespace resolver verified here. 16-bit digitizer, *"maximum resolution 16 bits"*, specifications, April 2018 |
 | **DAQ6510** | Should run unmodified, on the strongest grounds of any untested model: it **shares the UI board and the acquisition board** with the DMM6500, only the channel-board plugin differing. Untested |
 | **DMM7510** | Should run unmodified: 18-bit digitizer, better acquisition boards. Untested |
 | **SMU2461** | **Will install and try; may or may not work.** Dual 18-bit digitizers, reached as `smu.digitize` by a namespace the app resolves at load. That mechanism is verified on the DMM6500; no SMU has ever run it. Three unknowns below |
@@ -160,9 +189,20 @@ Three gates, each about ten times the cost of the one before it. Run them in ord
 ```sh
 python3 tools/release_sweep.py --offline   #  ~1 min, no instruments
 python3 tools/bench_smoke.py               #  13 min, both instruments
-python3 tools/soak.py --hours 17 --suites formats,plan --skip-vectors v95,v96
+                                           #  then POWER CYCLE THE DMM -- see below
+python3 tools/soak.py --hours 17 --suites formats,plan --skip-vectors v95,v96,v97
 python3 tools/release_sweep.py             #  the whole thing, instruments included
 ```
+
+**Name all three skipped vectors, or the run is not the run you think it is.** `soak.py`'s
+`--skip-vectors` defaults to empty and the skip is applied *before* the shuffle, so it sets the lap size
+and keys every amplitude, offset and wait: `v95,v96,v97` gives a **1 677**-cell lap, and naming only
+`v95,v96` gives **1 720** and lets `v97` back in, where it reads as a generator wedge — that is where an
+earlier run's 129 "generator failures" came from. `run_bench.py` is the opposite: it already defaults to
+all three, so do not pass the flag to it at all.
+
+**Power cycle the DMM between the smoke gate and the soak.** A soak started shortly after a smoke can hit
+the accumulated-state failure described under *Endurance* above; it costs the run, not correctness.
 
 **The smoke gate covers the whole rate range in 13 minutes.** Four waveforms — the fox and a random
 payload, each in 8N1 and 7E1 — paired crosswise, so one pair takes the 22 standard baud rates and the other
@@ -171,8 +211,9 @@ presses, seven logic swings from 5 V down to 0.25 V, and eight wrong-locked-rate
 in 9.7 min, 45 presses in 1.9, 7 levels in 0.7, 8 rate cases in 0.9.
 
 **No version is tagged without at least 8 hours of soak.** A soak reports a **failure rate per test
-point**, where a sweep reports one pass or one failure. A lap is 1 683 cells and about 2.9 hours, so 8
-hours is the least that separates "fails every lap" from "failed once", and 17 gives six laps.
+point**, where a sweep reports one pass or one failure. A lap is 1 677 cells and about 2.1–2.5 hours, so 8
+hours is the least that separates "fails every lap" from "failed once"; 17 hours gave seven laps and 8.3
+gave four.
 
 **Code changes do not get pushed without passing the smoke gate.** On a pass, `bench_smoke.py` writes a
 receipt holding a hash of `tsp/` and `tools/`; a `pre-push` hook recomputes it and refuses if either tree
