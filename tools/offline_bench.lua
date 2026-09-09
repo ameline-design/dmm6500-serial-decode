@@ -8,13 +8,29 @@
 -- they mean the only thing left untested before instrument time is the instrument itself.
 --
 -- WHAT IT VALIDATES IS THE ENGINE AND THE FILE FORMAT: a plan in, a judgeable record out. The stimulus
--- models are OPT-IN and each one is printed on the record, because a run whose conditions are not stated
--- cannot be compared with anything later: --interp (linear between arb samples), --truefs (the digitiser's
--- real 66e6/ceil rate) and --frontend (the DMM's 440 kHz pole and 1 us aperture). All three default OFF,
--- so a bare run is the generator's samples decimated with no instrument in the path -- and there is still
--- no noise and no 16-bit quantisation in any mode. tools/sweep_plan.lua models the front end by default
--- and is where signal fidelity has been argued about; it reached 110 bad WITH it, against this engine's
--- 1.48x over-prediction without.
+-- models are each printed on the record, because a run whose conditions are not stated cannot be compared
+-- with anything later. FIVE of them, and THREE ARE NOW ON BY DEFAULT -- a bare run is the instrument model
+-- that ground truth supports, not the raw generator:
+--
+--   ON   --aperture     the digitiser INTEGRATES over a 0.85 us window rather than point-sampling.
+--                        Measured against real DMM samples: 1.07 % of swing against 5.62 % for a point
+--                        read. Paired A/B: BAD 2.147 % -> 1.509 %, toward hardware's 1.210 %.
+--   ON   --truefs        the digitiser's real rate, 66e6/ceil(66e6/requested). Null on the fail count
+--                        three times over; on for COVERAGE, because the requested rate manufactures
+--                        ROUND samples-per-bit the bench never gives and round fs hid issue #29.
+--   ON   --fracorigin    delivered sample 1 lands at a sub-sample offset, because two independent clocks
+--                        never align. Rate-neutral. Costs no PRNG draw, so the phase sequence is
+--                        unchanged either way and older records stay comparable.
+--   off  --interp        linear between arb samples. REFUTED -- it under-predicts, and the wire shows the
+--                        generator HOLDS. Refused with --aperture, which supersedes it.
+--   off  --frontend      a 440 kHz pole plus an INTEGER-rounded aperture applied before decimation.
+--                        Refused with --aperture; it double-counts, and alone it under-predicts.
+--
+-- Every one has a --no- form, and BOTH forms are always passed by soak_offline_bench.py so neither arm of
+-- an A/B is ever unlabelled. --no-aperture --no-truefs --no-fracorigin reproduces the older behaviour.
+-- There is still no noise and no quantisation in any mode.
+-- tools/sweep_plan.lua models the front end by default and is where signal fidelity has been argued
+-- about; it reached 110 bad WITH it.
 --
 --   python3 tools/soakplan.py --emit-csv --iteration 1 --spec 'v77:std,r06:std,v78:nonstd,r00:nonstd' \
 --       > out/bench/PLAN.CSV
@@ -37,7 +53,7 @@ for _, m in ipairs({'bench/arb_names.tsp', 'bench/sdg_net.tsp', 'bench/bench_rec
 end
 
 local A = {plan = nil, out = nil, iterations = 1, phaseseed = nil, clamp = nil, interp = nil,
-           truefs = nil, frontend = nil}
+           truefs = nil, frontend = nil, aperture = nil, fracorigin = nil}
 local ai = 1
 while arg ~= nil and arg[ai] ~= nil do
   local k, v = arg[ai], arg[ai + 1]
@@ -64,6 +80,17 @@ while arg ~= nil and arg[ai] ~= nil do
   -- instrument, and a perfect staircase carries content the DMM cannot see.
   elseif k == '--frontend' then A.frontend = true; ai = ai + 1
   elseif k == '--no-frontend' then A.frontend = false; ai = ai + 1
+  -- THE DIGITISER'S APERTURE AS AN INTEGRAL, at the measured 0.85 us. This is the instrument model the
+  -- ground-truth captures support: mean residual 1.07 % of swing against linear's 2.18 % and the held
+  -- default's 5.62 %. Same paired-flag reasoning as --interp. Do NOT combine with --frontend, which
+  -- rounds the aperture to whole arb samples and applies it before decimation, so the two double-count.
+  elseif k == '--aperture' then A.aperture = true; ai = ai + 1
+  elseif k == '--no-aperture' then A.aperture = false; ai = ai + 1
+  -- A SUB-SAMPLE CAPTURE ORIGIN. SRC.phase is an integer index, so delivered sample 1 has always landed
+  -- exactly on an arb sample, which two independent clocks never do. Same paired-flag reasoning as
+  -- --interp. It costs no PRNG draw, so the phase sequence is unchanged either way.
+  elseif k == '--fracorigin' then A.fracorigin = true; ai = ai + 1
+  elseif k == '--no-fracorigin' then A.fracorigin = false; ai = ai + 1
   else print('unknown argument: ' .. tostring(k)); os.exit(2) end
 end
 if A.plan == nil or A.out == nil then
@@ -89,12 +116,37 @@ if A.clamp ~= nil then GEN_CLAMP(A.clamp) end
 if A.interp ~= nil then SRC_INTERP(A.interp) end
 if A.truefs ~= nil then SRC_TRUEFS(A.truefs) end
 if A.frontend ~= nil then SRC_FRONTEND(A.frontend) end
-print(string.format('stimulus: capture phase %s, envelope %s at %.3f V, reconstruction %s, rate %s, front end %s',
+if A.aperture ~= nil then SRC_APERTURE(A.aperture) end
+if A.fracorigin ~= nil then SRC_FRACORIGIN(A.fracorigin) end
+-- TWO COMBINATIONS ARE REFUSED, AND BOTH FOR THE SAME REASON: the run would record a condition it did
+-- not actually apply, and a record whose conditions are wrong is worse than no record -- it will be
+-- compared against something later by someone who trusts the header.
+if SRC.aperture and SRC.frontend then
+  print('REFUSING: --aperture and --frontend both model the DMM aperture, so together they apply it')
+  print('  twice. GEN_FRONTEND rounds it to whole arb samples before decimation; --aperture applies a')
+  print('  fractional window at the delivered instants. THE APERTURE IS NOW ON BY DEFAULT, so --frontend')
+  print('  on its own lands here: add --no-aperture to get the old front-end model back.')
+  os.exit(2)
+end
+if SRC.aperture and SRC.interp then
+  print('REFUSING: --aperture SUPERSEDES --interp, so asking for both would log a reconstruction that')
+  print('  never ran -- SRC_val returns from the aperture branch before reaching the interpolating one,')
+  print('  measured as interp_n staying at 0. That is the correct behaviour and not a bug: the aperture')
+  print('  integral already assumes the generator HOLDS, which is what the wire measures, and linear')
+  print('  reconstruction is a cheap approximation to the same average rather than something to add to')
+  print('  it. THE APERTURE IS NOW ON BY DEFAULT, so --interp on its own lands here: add --no-aperture')
+  print('  to get the interpolating source model back.')
+  os.exit(2)
+end
+print(string.format('stimulus: capture phase %s, envelope %s at %.3f V, reconstruction %s, rate %s, front end %s, aperture %s, origin %s',
                     SRC.phaserand and ('random, seed ' .. tostring(SRC.phaseseed)) or 'fixed at sample 1',
                     tostring(GENLIM.clamp_mode), GENLIM.clamp_v,
                     SRC.interp and 'linear between arb samples' or 'zero-order hold',
                     SRC.truefs and '66e6/ceil(66e6/requested)' or 'as requested',
-                    SRC.frontend and '440 kHz pole + 1 us aperture' or 'none'))
+                    SRC.frontend and '440 kHz pole + 1 us aperture' or 'none',
+                    SRC.aperture and string.format('integral, %.2f us window', AP_WIDTH_S * 1e6)
+                                  or 'point sample',
+                    SRC.fracorigin and 'sub-sample' or 'on an arb sample'))
 
 -- COPY THE HOST'S PLAN INTO THE MOCK FILESYSTEM, because the engine reads it through the instrument's
 -- file API and must not be handed a host path -- that difference is exactly what the mock is for.

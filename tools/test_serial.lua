@@ -3185,6 +3185,80 @@ check('stop() twice is harmless', pcall(function() sdec.stop() end))
 check('cleanup() with nothing built is harmless', pcall(function() sdec.cleanup() end))
 
 -- ---------------------------------------------------------------------------
+-- THE ENTRY MEASUREMENT MODE, saved at start and put back at exit.
+--
+-- hw_config() selects the digitize function before every capture, and on this
+-- firmware that DESELECTS the basic measure function -- so without this the app
+-- hands the instrument back in Digitize Voltage whatever it found. The mock does
+-- not enforce the firmware's mutual exclusion, so each state is set up explicitly
+-- and the assertions are about what mode_save() recorded and what mode_restore()
+-- wrote, not about the mock switching itself.
+-- ---------------------------------------------------------------------------
+do
+  local saved_dig, saved_meas = dmm.digitize.func, dmm.measure.func
+
+  -- A BASIC FUNCTION ACTIVE: digitize.func reads FUNC_NONE, so the measure side is
+  -- what has to come back -- and its range must be left alone, because assigning a
+  -- range is what turns autorange off.
+  sdec.entrymode = nil
+  dmm.digitize.func, dmm.measure.func, dmm.measure.range = dmm.FUNC_NONE, dmm.FUNC_AC_VOLTAGE, 750
+  check('mode_save reads a basic function', sdec.mode_save() == true)
+  check('mode_save records the measure side', sdec.entrymode ~= nil
+        and sdec.entrymode.side == 'measure'
+        and sdec.entrymode.func == dmm.FUNC_AC_VOLTAGE,
+        tostring(sdec.entrymode and sdec.entrymode.side))
+  check('mode_save does NOT record a measure range -- writing one kills autorange',
+        sdec.entrymode.range == nil)
+  -- A SECOND SAVE MUST NOT OVERWRITE THE FIRST. acquire() reaches hw_config() four
+  -- times a press, and a per-configuration save would store the app's own mode.
+  dmm.digitize.func = dmm.FUNC_DIGITIZE_VOLTAGE
+  check('mode_save is one-shot', sdec.mode_save() == true
+        and sdec.entrymode.func == dmm.FUNC_AC_VOLTAGE, tostring(sdec.entrymode.func))
+  dmm.measure.func, dmm.measure.range = dmm.FUNC_DC_VOLTAGE, 10
+  check('mode_restore puts the basic function back', sdec.mode_restore() == true
+        and dmm.measure.func == dmm.FUNC_AC_VOLTAGE, tostring(dmm.measure.func))
+  check('mode_restore leaves the measure range untouched', dmm.measure.range == 10,
+        tostring(dmm.measure.range))
+  check('mode_restore clears the latch', sdec.entrymode == nil)
+  check('mode_restore with nothing saved is a no-op that succeeds',
+        sdec.mode_restore() == true)
+
+  -- ALREADY DIGITIZING, which is an ordinary way to find this instrument: now all
+  -- four fields hw_config() writes are the ones at risk.
+  sdec.entrymode = nil
+  dmm.digitize.func, dmm.digitize.range = dmm.FUNC_DIGITIZE_VOLTAGE, 100
+  dmm.digitize.samplerate, dmm.digitize.aperture = 50000, 2e-6
+  check('mode_save reads an active digitize function', sdec.mode_save() == true
+        and sdec.entrymode.side == 'digitize', tostring(sdec.entrymode.side))
+  dmm.digitize.range, dmm.digitize.samplerate, dmm.digitize.aperture = 10, 1000000, 1e-6
+  check('mode_restore puts all four digitize fields back', sdec.mode_restore() == true
+        and dmm.digitize.func == dmm.FUNC_DIGITIZE_VOLTAGE and dmm.digitize.range == 100
+        and dmm.digitize.samplerate == 50000 and dmm.digitize.aperture == 2e-6,
+        string.format('%s %s %s %s', tostring(dmm.digitize.func), tostring(dmm.digitize.range),
+                      tostring(dmm.digitize.samplerate), tostring(dmm.digitize.aperture)))
+
+  -- A REFUSED WRITE MUST NOT LEAVE THE LATCH SET. This runs inside teardown, so a
+  -- restore that raises has to be reported and dropped, never retried in a loop.
+  sdec.entrymode = {side = 'measure', func = dmm.FUNC_DC_VOLTAGE}
+  local realmeas = sdec.meas
+  sdec.meas = nil
+  check('a restore that raises reports false', sdec.mode_restore() == false)
+  check('a restore that raises still clears the latch', sdec.entrymode == nil)
+  sdec.meas = realmeas
+
+  -- AND IT MUST DEGRADE, not raise, on an instrument that exposes no measure table.
+  sdec.entrymode, sdec.meas = nil, nil
+  dmm.digitize.func = dmm.FUNC_NONE
+  check('mode_save returns false rather than raising with no measure table',
+        sdec.mode_save() == false and sdec.entrymode == nil)
+  sdec.meas = realmeas
+
+  sdec.entrymode = nil
+  dmm.digitize.func, dmm.measure.func = saved_dig, saved_meas
+  dmm.digitize.range, dmm.digitize.samplerate, dmm.digitize.aperture = nil, nil, nil
+end
+
+-- ---------------------------------------------------------------------------
 -- The one-build-per-power-cycle guard.
 --
 -- A second ui_build() crashes the firmware, and there is NO remote way to bring
@@ -7965,6 +8039,20 @@ print('\nthe same signal decodes the same way twice, and after any other signal 
 -- print() on the line before and this parenthesis as one expression -- print(...)(function() ...
 -- end)() -- and calls print's return value.
 ;(function()
+-- THE STIMULUS MODELS ARE PINNED OFF HERE, and this block is where that distinction matters most.
+-- What it tests is STATE LEAKAGE: the same waveform must give the same answer twice, and waveform B must
+-- not depend on whether A preceded it. That method needs two captures of one waveform to be IDENTICAL --
+-- and SRC.fracorigin makes them legitimately differ, because it draws a fresh sub-sample capture origin
+-- every time, which is what the instrument's own unsynchronised clock does. The aperture then turns that
+-- sub-sample shift into different VALUES rather than the same values re-indexed.
+--
+-- Measured: with both left at their defaults the bytes still match exactly and only bittime and fitq move,
+-- in the 4th decimal -- so this is the comparison being tight enough to see the stimulus, not the app
+-- leaking state. Pinning them keeps the leak detector exact instead of loosening its tolerance, which
+-- would cost real sensitivity to the defect it exists for.
+local sv_ap, sv_fo = SRC.aperture, SRC.fracorigin
+SRC_APERTURE(false)
+SRC_FRACORIGIN(false)
 local CASES = {
   {id = 'fox 9600',   baud = 9600,  text = 'The quick brown fox jumps over the lazy dog. '},
   {id = 'fox 19200',  baud = 19200, text = 'The quick brown fox jumps over the lazy dog. '},
@@ -8107,6 +8195,14 @@ check('detect_reset derives the requested rate from the lock, not from the last 
       sdec.fs == sdec.fs_for_baud(9600),
       string.format('fs %s, expected %s', tostring(sdec.fs), tostring(sdec.fs_for_baud(9600))))
 sdec.unlock_all()
+-- RESTORE WHAT shot() SET, because everything after this block inherits it otherwise. shot() assigns
+-- SRC.native_fs and SRC.loop and nothing put them back, so every later section ran with the mock
+-- honouring a 1 MSa/s source on a looping render -- invisible while the source model was a plain index
+-- read, and NOT invisible once the digitiser's aperture is modelled: native_fs is what gives the
+-- aperture a width, so leaking it silently switched the instrument model on for 32 later assertions.
+SRC.native_fs, SRC.loop = nil, false
+SRC_APERTURE(sv_ap)
+SRC_FRACORIGIN(sv_fo)
 end)()
 
 -- ============================================================================

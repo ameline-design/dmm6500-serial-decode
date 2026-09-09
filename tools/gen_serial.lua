@@ -879,6 +879,39 @@ SRC.phaseseed = 20260907
 -- deterministic for a given seed, but every draw depends on how many captures preceded it, so inserting
 -- or reordering a capture shifts every phase after it.
 SRC.phase = 1
+
+-- ---------- A FRACTIONAL CAPTURE ORIGIN ----------
+-- SRC.phase IS AN INTEGER INDEX, so delivered sample 1 has always landed EXACTLY on an arb sample --
+-- which no asynchronous pair of clocks ever does. The DMM's sampling clock and the generator's are
+-- independent, so the first sample falls at a uniformly random point WITHIN an arb interval.
+--
+-- WHY IT MATTERS MOST WHERE IT LOOKS LIKE IT MATTERS LEAST. With a non-integral step the later samples
+-- already visit several sub-sample offsets, so the origin only relabels which ones. With an INTEGRAL step
+-- the origin is the ONLY source of sub-sample offset at all: every delivered sample sits at the same
+-- point in an arb interval, and with an integer origin that point is exactly 0. Those cells are therefore
+-- the STARKEST blind spot rather than the smallest -- the fraction of them is small, but within them the
+-- coverage is not merely reduced, it is a single degenerate phase.
+--
+-- IT CANNOT BE A SECOND PRNG DRAW. The phase stream's position is not restorable and every draw depends
+-- on how many captures preceded it, so consuming one more value here would shift every phase after it and
+-- make every recorded result incomparable with every earlier one. So the sub-sample part is taken from the
+-- REMAINDER of the draw that already picks the integer index: u*nsmp is uniform over [0, nsmp), and its
+-- fractional part is uniform over [0, 1) at no cost to the sequence.
+--
+-- CARRIED IN `pos`, NOT IN `from`. `from` is a table index -- SRC.rd[j] -- so a fractional origin folded
+-- into it yields nil and ends the capture at sample 1 rather than shifting it.
+-- ON BY DEFAULT. Two independent clocks never align on a sample, so an exact origin is the special case
+-- and a sub-sample one is the ordinary state of the world. Rate-neutral in a paired A/B (494 BAD against
+-- 506, 0.4 sigma) -- it is on because it is TRUE, not because it improved a number. `--no-fracorigin`
+-- restores the old behaviour for a paired comparison.
+SRC.fracorigin = true
+SRC.phasefrac = 0
+-- Delivered sample 1 reads with a nonzero sub-sample offset. Must be 0 with the flag off and equal to the
+-- number of captures with it on, or the flag is not reaching the read.
+SRC.fracorigin_n = 0
+
+function SRC_FRACORIGIN(on) SRC.fracorigin = (on == true) end
+
 local phst = 20260907
 
 -- Enable per-capture phase with a reproducible stream. SRC_PHASE(nil) turns it off again.
@@ -905,6 +938,9 @@ end
 -- The next start sample, uniform over the loop. Returns 1 unchanged when phase is off or the source is
 -- not looping -- a non-looping render has nowhere to wrap to, so a phase would just truncate the capture.
 function SRC_NEXTPHASE()
+  -- CLEARED ON EVERY CALL, including the early returns. A stale fraction would apply a previous capture's
+  -- sub-sample offset to a capture that is supposed to start exactly on a sample.
+  SRC.phasefrac = 0
   if not SRC.phaserand or not SRC.loop then return 1 end
   if SRC.nsmp == nil or SRC.nsmp < 2 then return 1 end
   phst = math.mod(phst * 16807, 2147483647)
@@ -913,14 +949,25 @@ function SRC_NEXTPHASE()
   if phst <= 0 then phst = 1 end
   -- Not exactly uniform: the modulus does not partition evenly into nsmp. The bias is of order nsmp/2^31,
   -- which against a payload of a few hundred thousand samples is far below one sample.
-  return 1 + math.floor((phst / 2147483647) * SRC.nsmp)
+  local x = (phst / 2147483647) * SRC.nsmp
+  local base = math.floor(x)
+  -- THE SAME DRAW, ITS REMAINDER. See SRC.fracorigin: a second draw would move the whole sequence.
+  if SRC.fracorigin then SRC.phasefrac = x - base end
+  return 1 + base
 end
 
+-- THE MOCK DOES NOT ENFORCE THE MUTUAL EXCLUSION the real firmware does -- selecting one engine there
+-- sets the other's func to FUNC_NONE, and reproducing that needs a metatable on a table 1200
+-- assertions already read. So the two funcs are plain fields, seeded in the state the instrument boots
+-- in (a basic function active, digitize deselected), and the mode tests drive mode_save/mode_restore
+-- across both states explicitly rather than relying on a write to switch them.
 dmm = {
   FUNC_DIGITIZE_VOLTAGE = 'digv',
+  FUNC_DC_VOLTAGE = 'dcv', FUNC_AC_VOLTAGE = 'acv', FUNC_NONE = 'none',
   MODE_EDGE = 'edge', MODE_WINDOW = 'window', MODE_OFF = 'off',
   SLOPE_RISING = 'rise', SLOPE_FALLING = 'fall',
-  digitize = {analogtrigger = {edge = {}}},
+  digitize = {func = 'none', analogtrigger = {edge = {}}},
+  measure = {func = 'dcv', range = 10},
 }
 
 -- ---------- THE DMM'S FRONT END, WHICH IS THE OTHER HALF OF THE SIGNAL CHAIN ----------
@@ -1019,7 +1066,10 @@ end
 -- difference before the default moves. Unlike the reconstruction model, the physics here is not in doubt --
 -- it is a measured property of this digitiser and the app already scales every bit time by the MEASURED
 -- acq_fs rather than by the request.
-SRC.truefs = false
+-- ON BY DEFAULT, and null on the fail count three separate times. It is on for COVERAGE: resampling at
+-- the rate the app REQUESTED manufactures round samples-per-bit the instrument never delivers, and round
+-- fs is what hid issue #29 from 884 assertions. `--no-truefs` restores the requested rate.
+SRC.truefs = true
 function SRC_TRUEFS(on) SRC.truefs = (on == true) end
 
 -- Source samples per delivered sample, and the delivered sample interval. 1 and nil mean "hand
@@ -1104,10 +1154,118 @@ SRC.held_n = 0
 
 function SRC_INTERP(on) SRC.interp = (on == true) end
 
+-- ---------- THE DMM'S APERTURE ----------
+-- THE SMOOTHING BELONGS TO THE INSTRUMENT, NOT THE SOURCE, and this is the model that says so. The
+-- generator HOLDS -- measured directly off the wire, not inferred from a rise time: at 50-100 ns/div a
+-- v94 edge resolves as two ~34 ns slews with a FLAT shelf between them, and the shelf is exactly one arb
+-- sample period. 399.6 ns against 400.0 commanded at 2.5 MSa/s; 867.8 against 868.1 at 1.152 MSa/s;
+-- 867.7 on the FALLING edge. Linear reconstruction has no shelf at all. The shelf is a CODEWORD, not
+-- settling: it sits at 47.15 % of swing on a rise and 53.42 % on a fall, against 46.67 % and 53.33 %
+-- from v94.bin's own intermediate values, so it tracks the file rather than the electronics.
+--
+-- So the sub-sample information that tsp/serial_core.tsp's fractional edge list exists to recover comes
+-- from the DIGITISER: sdec.dig.aperture integrates, it does not point-sample. Each delivered sample is
+-- the MEAN of the held staircase over one aperture window, with a FRACTIONAL width.
+--
+-- MEASURED AGAINST REAL SAMPLES, all three models through one aligner, on the captures that can identify
+-- a width at all (see below) -- mean residual as a fraction of swing, floor ~0.14 %:
+--
+--     zero-order hold, today's default        5.62 %      range 4.36 - 6.71
+--     linear interpolation, SRC.interp        2.18 %      range 0.92 - 4.06   <- degrades with arb rate
+--     this aperture average                  1.07 %      range 0.89 - 1.41
+--
+-- Linear is a two-point approximation to the same average, which is why it tracks at low arb rates and
+-- falls apart as more arb samples fit inside one aperture. This model does not have that failure mode.
+--
+-- WIDTH 0.85 us, MEASURED, NOT THE NOMINAL 1 us. Fitting it per rate gives 0.864, 0.844 and 0.830 us at
+-- arb 1.8, 2.2 and 3.2 MSa/s -- agreeing to 4 % -- and a low 0.752 at 1.4 MSa/s where the window spans
+-- barely one arb sample and is weakly constrained. The residual basin is shallow: +-0.05 us costs under
+-- 0.06 points, so this is not a knife-edge fit. The nominal 1.00 us costs +0.27 points and is still far
+-- better than either model above, so a reader who prefers the datasheet number can set it and lose little.
+-- Caveat kept deliberately: it is fitted from ONE vector, v94, at four rates. The aperture is an
+-- instrument property so that is legitimate, but a second vector would make it a calibration.
+--
+-- WHY A WIDTH IS NOT MEASURABLE AT EVERY RATE, which is what made this look irreproducible for a week:
+-- the width is only visible through windows that straddle a staircase edge at DIFFERING sub-arb-sample
+-- offsets, and the number of distinct offsets is the denominator of arb/dmm in lowest terms. At
+-- STEP 5 or 10 there is ONE offset and no information. At STEP 2.5 there are TWO, and that is not merely
+-- weak but DEGENERATE: a capture generated at width 2.815 arb is reproduced by width 1.5797 to 2 uV.
+-- The old headline "1.126 us at 0.21 % of swing" came from exactly that capture, so neither number meant
+-- anything. STEP 7/5, 9/5, 11/5 and 16/5 give five offsets and recover a planted width to 0.1 %.
+--
+-- NOT COMBINED WITH SRC.frontend, which double-counts: GEN_FRONTEND rounds the aperture to an INTEGER
+-- number of arb samples (3 where 2.1 is right at 2.5 MSa/s) and applies it in the arb time base before
+-- decimation, so the resample then reads already-smoothed values. This applies a fractional window at
+-- the delivered instants only, which is where the integration physically happens.
+--
+-- THE GENERATOR'S OWN 34 ns SLEW IS DELIBERATELY NOT MODELLED. It is real, symmetric and rate-
+-- independent, and it is negligible here: composed with a ~1 us aperture it moves the effective kernel
+-- width by sqrt(1 + 0.034^2), i.e. 0.06 %, against a 0.14 % noise floor. Measured rather than argued --
+-- adding it changes the residual of all seven ground-truth captures by +0.0000 to -0.0002 points.
+AP_WIDTH_S = 0.85e-6
+
+-- ON BY DEFAULT, and this one IS carried by a measurement: residual against real DMM samples falls from
+-- 5.62 % of swing to 1.07 %, and a paired 20-lap A/B moves BAD from 2.147 % to 1.509 % -- toward hardware
+-- and still on the over-predicting side, which is the safe direction for a harness. KNOWN COST, recorded
+-- rather than hidden: it adds 2 no-decodes on v94, an `exact` vector (cells 1393 and 1419, one lap of
+-- twenty each), and that is not yet explained. `--no-aperture` restores point sampling.
+SRC.aperture = true
+-- Delivered samples that came from the aperture branch, and those whose window had to be CLAMPED
+-- because a non-looping render has nothing outside it to average. ap_n must be 0 with the flag off and
+-- equal to rd_n with it on, or the suite is passing without the branch under test ever running.
+SRC.ap_n = 0
+SRC.ap_clamp_n = 0
+
+function SRC_APERTURE(on) SRC.aperture = (on == true) end
+
+-- cum[i] = rd[1] + ... + rd[i], with cum[0] = 0. Rebuilt when the source array changes; mock_bench
+-- assigns a NEW array per cell, so comparing identity is the correct staleness test -- comparing only
+-- nsmp would silently reuse the previous cell's integral whenever two cells share a length.
+local ap_cum, ap_rd, ap_nsmp = nil, nil, nil
+
+local function ap_cumsum()
+  if ap_rd == SRC.rd and ap_nsmp == SRC.nsmp then return ap_cum end
+  local rd, n, c, acc, i = SRC.rd, SRC.nsmp, nil, 0, nil
+  if rd == nil or n == nil or n < 2 then
+    ap_cum, ap_rd, ap_nsmp = nil, rd, n
+    return nil
+  end
+  c = {}
+  c[0] = 0
+  for i = 1, n do
+    -- REFUSE A SHORT ARRAY RATHER THAN RAISING ON IT. SRC.nsmp is set by the caller and callers are
+    -- allowed to assign SRC.rd on its own, so nsmp can outrun the array. `acc + nil` there would raise
+    -- from inside a read and surface as an unrelated decode returning nil, which is a long way from the
+    -- cause. Returning nil makes the aperture fall through to the plain index read instead.
+    if rd[i] == nil then
+      ap_cum, ap_rd, ap_nsmp = nil, rd, n
+      return nil
+    end
+    acc = acc + rd[i]
+    c[i] = acc
+  end
+  ap_cum, ap_rd, ap_nsmp = c, rd, n
+  return c
+end
+
+-- Integral of the held staircase from index 1 to x, in the SAME 1-based units SRC_val works in: rd[k]
+-- covers [k, k+1). Cyclic, and x below 1 is one lap back rather than an error -- the window of the first
+-- delivered sample legitimately reaches behind the start, and on a looping arb that is the tail.
+local function ap_I1(x, n, cum, rd)
+  local k = math.floor(x)
+  local q = math.floor((k - 1) / n)
+  local kk = k - q * n
+  return q * cum[n] + cum[kk - 1] + (x - k) * rd[kk]
+end
+
 -- The voltage at delivered sample i counting from `from`, and the base source index. Returns nil once
 -- the render runs out, which is the caller's end-of-capture test.
 function SRC_val(from, i, step)
-  local pos = (i - 1) * step
+  -- THE SUB-SAMPLE ORIGIN GOES HERE, not into `from`, which is a table index. It is added to the POSITION
+  -- so that math.floor still yields an integer cell and only the remainder moves. Zero unless
+  -- SRC.fracorigin is on, in which case delivered sample 1 no longer lands exactly on an arb sample.
+  local pos = (i - 1) * step + SRC.phasefrac
+  if i == 1 and SRC.phasefrac ~= 0 then SRC.fracorigin_n = SRC.fracorigin_n + 1 end
   -- COMPUTED, NOT ACCUMULATED. sweep_plan's capture() advances x = x + step per sample; over a
   -- 200 000-sample capture that accumulates rounding. Recomputing from i keeps every position exact.
   local k = math.floor(pos)
@@ -1119,6 +1277,39 @@ function SRC_val(from, i, step)
   SRC.rd_n = SRC.rd_n + 1
   local frac = pos - k
   if frac ~= 0 then SRC.frac_n = SRC.frac_n + 1 end
+  -- THE APERTURE COMES FIRST AND IGNORES frac, because the window spans several arb cells wherever the
+  -- instant falls -- an integral position is not a special case for an integral, only for a point read.
+  if SRC.aperture then
+    -- THE WIDTH IS TESTED BEFORE THE INTEGRAL IS BUILT, and the order is load-bearing. Without a
+    -- native_fs there is no width, so the aperture must be COMPLETELY inert -- and building the
+    -- cumulative sum first is not inert: callers are allowed to assign SRC.rd without SRC.nsmp, so a
+    -- stale nsmp longer than the new array makes the sum walk off the end and raise on `acc + nil`.
+    -- That surfaced as 32 unrelated decode assertions returning nil, in sections that had no aperture
+    -- in the signal path at all.
+    local w = AP_WIDTH_S * (SRC.native_fs or 0)
+    local cum = nil
+    if w > 0 then cum = ap_cumsum() end
+    if cum ~= nil then
+      local x, h = from + pos, 0.5 * w
+      if nw then
+        SRC.ap_n = SRC.ap_n + 1
+        return (ap_I1(x + h, SRC.nsmp, cum, SRC.rd)
+                - ap_I1(x - h, SRC.nsmp, cum, SRC.rd)) / w, j
+      end
+      -- NOT LOOPING: nothing exists outside [1, nsmp+1) to average, so shorten the window to what does
+      -- and count it. Wrapping here would splice the render's tail onto its head, which is precisely the
+      -- seam artifact SRC.loop = false exists to avoid.
+      local lo, hi = x - h, x + h
+      if lo < 1 then lo = 1 end
+      if hi > SRC.nsmp + 1 then hi = SRC.nsmp + 1 end
+      if hi > lo then
+        SRC.ap_n = SRC.ap_n + 1
+        if hi - lo < w then SRC.ap_clamp_n = SRC.ap_clamp_n + 1 end
+        return (ap_I1(hi, SRC.nsmp, cum, SRC.rd)
+                - ap_I1(lo, SRC.nsmp, cum, SRC.rd)) / (hi - lo), j
+      end
+    end
+  end
   -- AN INTEGRAL POSITION IS BIT-EXACT, not approximately equal: no arithmetic runs at all. Every
   -- caller that leaves SRC.native_fs nil gets step exactly 1 from SRC_step() and lands here, so the
   -- flag-off and integral-step paths return the identical value the plain index read returned.

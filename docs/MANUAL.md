@@ -47,6 +47,20 @@ logic swing. A 60 mV swing is refused outright.
 fraction of your swing, around 40 %, so 50 mV of noise is nothing on a 3.3 V line and a tenth of the
 budget on a 0.5 V one.
 
+**The app takes over the measurement function, and gives it back when you end it.** Capturing means
+digitizing, so every press of Capture selects **Digitize Voltage** on the 10 V range — whatever the
+meter was measuring before. The mode you were in is read once when the app starts and put back when
+you press **End App**, so ending the app leaves the meter measuring what it was measuring when you
+launched it, on the range it was on.
+
+Two things follow from that, both deliberate:
+
+* **Changing the function from the front panel while the app is loaded does not stick.** The next
+  Capture selects Digitize Voltage again — so the app keeps working, which is the point — and End App
+  restores the mode from when you *launched*, not the one you switched to.
+* **If you were already in Digitize Voltage when you launched**, the app puts your range, sample rate
+  and aperture back too, since those are the settings it changes.
+
 ---
 
 ## Quick start

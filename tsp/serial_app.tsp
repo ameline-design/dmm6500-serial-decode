@@ -2957,6 +2957,13 @@ function sdec.stop()
   sdec.ei, sdec.es, sdec.ne = nil, nil, 0
   sdec.w, sdec.nw = nil, 0
   sdec.ui_rowc = nil
+  -- LAST, AND AFTER THE SAMPLES ARE GONE. Selecting a basic measure function takes the digitizer out
+  -- of the signal path, so it happens once nothing is left to read out -- and after the abort and the
+  -- buffer delete above, because those are the steps that must not find the mode changed under them.
+  -- Before ulog.close(), so a refusal still has somewhere to be reported.
+  if not sdec.mode_restore() then
+    ulog.line('entry mode could not be restored -- the digitize function is still selected')
+  end
   ulog.close()
   return true
 end
@@ -3025,6 +3032,18 @@ function sdec.start()
     -- just opens. See THE DIRECTORY in usb_log.tsp for why there is no cheaper way to ask.
     ulog.ensuredir()
     ulog.open(sdec.logpath)
+
+    -- BEFORE ANYTHING TOUCHES THE DIGITIZER, and after the rebuild guard above rather than before
+    -- it: on a rebuild that guard runs cleanup(), which restores the entry mode and clears the
+    -- latch, so reading here reads the operator's mode and not the one this app just left behind.
+    -- Logged either way -- a meter that cannot report its own mode is worth knowing about, and the
+    -- USB log is the only place a start-time note can be read.
+    if sdec.mode_save() then
+      ulog.line('entry mode: ' .. tostring(sdec.entrymode.side) .. ' '
+                .. tostring(sdec.entrymode.func) .. ' -- restored on exit')
+    else
+      ulog.line('entry mode could not be read -- exiting will leave the digitize function selected')
+    end
 
     -- THE CANCEL KEY, WIRED ONCE. Every long job polls the latch this arms; without it they fall
     -- back to their own bounds, so it is set up before the first capture and never re-armed

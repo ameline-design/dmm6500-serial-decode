@@ -2022,10 +2022,16 @@ do
   -- block captures through a drawn phase, which is why that is survivable rather than fine.
   local sv = {rd = SRC.rd, ts = SRC.ts, nsmp = SRC.nsmp, native_fs = SRC.native_fs, loop = SRC.loop,
               interp = SRC.interp, trigat = SRC.trigat, phon = SRC.phaserand, phseed = SRC.phaseseed,
+              ap = SRC.aperture, fo = SRC.fracorigin,
               rate = dmm.digitize.samplerate, count = dmm.digitize.count, loaded = TRIG.loaded}
   -- A FIXED START PHASE, because every assertion below names an exact sample and the per-capture draw
   -- would move all of them.
   SRC_PHASE(nil)
+  -- AND THE INSTRUMENT MODELS PINNED OFF, because this block is about the SOURCE model. The aperture
+  -- supersedes interpolation in SRC_val, so leaving it on would make every assertion below describe the
+  -- aperture while claiming to describe interpolation -- a test that passes for the wrong reason.
+  SRC_APERTURE(false)
+  SRC_FRACORIGIN(false)
 
   local function setsrc(vals, native, loop)
     SRC.rd, SRC.nsmp, SRC.native_fs, SRC.loop = vals, table.getn(vals), native, loop
@@ -2124,7 +2130,242 @@ do
   TRIG.loaded = sv.loaded
   SRC.rd, SRC.ts, SRC.nsmp, SRC.native_fs = sv.rd, sv.ts, sv.nsmp, sv.native_fs
   SRC.loop, SRC.interp, SRC.trigat = sv.loop, sv.interp, sv.trigat
+  SRC_APERTURE(sv.ap)
+  SRC_FRACORIGIN(sv.fo)
   dmm.digitize.samplerate, dmm.digitize.count = sv.rate, sv.count
+  if sv.phon then SRC_PHASE(sv.phseed) else SRC_PHASE(nil) end
+end
+
+print('-- the digitiser INTEGRATES over its aperture, it does not point-sample --')
+do
+  local sv = {rd = SRC.rd, ts = SRC.ts, nsmp = SRC.nsmp, native_fs = SRC.native_fs, loop = SRC.loop,
+              interp = SRC.interp, ap = SRC.aperture, trigat = SRC.trigat,
+              rate = dmm.digitize.samplerate, count = dmm.digitize.count, loaded = TRIG.loaded}
+  SRC_PHASE(nil)
+
+  local function setsrc(vals, native, loop)
+    SRC.rd, SRC.nsmp, SRC.native_fs, SRC.loop = vals, table.getn(vals), native, loop
+    local ts, i = {}, nil
+    for i = 1, SRC.nsmp do ts[i] = (i - 1) / native end
+    SRC.ts = ts
+  end
+
+  -- THE WIDTH IS A MEASURED CONSTANT, so a silent edit must fail here rather than quietly move every
+  -- offline stimulus. 0.85 us is fitted from ground truth at three well-conditioned arb rates; the
+  -- NOMINAL aperture is 1 us and costs +0.27 points of residual, so the difference is deliberate.
+  ck(AP_WIDTH_S == 0.85e-6, 'the aperture width is the measured 0.85 us, not the nominal 1 us',
+     tostring(AP_WIDTH_S))
+
+  -- AN INDEPENDENT IMPLEMENTATION, walking the window cell by cell. The shipped path uses a cumulative
+  -- sum plus cyclic index arithmetic; if that is wrong at a wrap, this disagrees and nothing else would.
+  local function refmean(lo, hi, rd, n)
+    local acc, x, k, nxt, q, kk = 0, lo, nil, nil, nil, nil
+    while x < hi do
+      k = math.floor(x)
+      nxt = k + 1
+      if nxt > hi then nxt = hi end
+      if nxt <= x then break end
+      q = math.floor((k - 1) / n)
+      kk = k - q * n
+      acc = acc + rd[kk] * (nxt - x)
+      x = nxt
+    end
+    return acc / (hi - lo)
+  end
+
+  -- native 4 MSa/s makes the window 3.4 arb samples, so it spans several cells and wraps.
+  setsrc({0, 10, 3, 3, 0, 0, 7, 7}, 4e6, true)
+  SRC_INTERP(false)
+  SRC_APERTURE(true)
+  local w = AP_WIDTH_S * 4e6
+  local worst, n0, i, from, step = 0, SRC.ap_n, nil, nil, nil
+  for from = 1, 8 do
+    for i = 1, 9 do
+      for step = 1, 3 do
+        local st = step * 0.5 + 0.25
+        local x = from + (i - 1) * st
+        local got = SRC_val(from, i, st)
+        local want = refmean(x - 0.5 * w, x + 0.5 * w, SRC.rd, SRC.nsmp)
+        local d = got - want
+        if d < 0 then d = -d end
+        if d > worst then worst = d end
+      end
+    end
+  end
+  ck(worst < 1e-12, 'every windowed read equals an independent cell-by-cell mean, wraps included',
+     string.format('worst disagreement %.3g V over %d reads', worst, 8 * 9 * 3))
+  ck(SRC.ap_n == n0 + 8 * 9 * 3, 'and all of them went through the aperture branch',
+     'ap_n moved by ' .. tostring(SRC.ap_n - n0))
+
+  -- DC GAIN EXACTLY 1. A window that averages a constant must return that constant at ANY width and
+  -- position, or the model injects gain error into every held level in the capture.
+  setsrc({2.5, 2.5, 2.5, 2.5}, 4e6, true)
+  local flat = true
+  for i = 1, 7 do
+    if SRC_val(1, i, 0.7) ~= 2.5 then flat = false end
+  end
+  ck(flat, 'a constant source comes back as that constant, so DC gain is exactly 1', tostring(flat))
+
+  -- IT MUST ACTUALLY SMOOTH. A point read of a step returns a rail; an integral straddling one cannot.
+  setsrc({0, 0, 0, 0, 10, 10, 10, 10}, 4e6, true)
+  local mid = SRC_val(4, 2, 1.0)                 -- window centred at index 5, the step
+  ck(mid > 0.01 and mid < 9.99,
+     'a window straddling a step returns neither rail, which is the whole point', tostring(mid))
+
+  -- THE FLAG OFF IS THE OLD ARITHMETIC EXACTLY, and ap_n proves the branch stayed out of it.
+  setsrc({0, 1, 2, 3}, 4e6, true)
+  SRC_APERTURE(false)
+  local a0, same = SRC.ap_n, true
+  for i = 1, 12 do
+    if SRC_val(1, i, 0.7) ~= SRC.rd[SRC_at(1, i, 0.7)] then same = false end
+  end
+  ck(same and SRC.ap_n == a0,
+     'with the flag off every read is the plain index read and the aperture never runs',
+     'ap_n moved by ' .. tostring(SRC.ap_n - a0))
+
+  -- THE APERTURE SUPERSEDES INTERPOLATION, and this pins it because the behaviour is invisible from the
+  -- outside: SRC_val returns from the aperture branch before reaching the interpolating one, so a caller
+  -- that asks for both gets only the aperture. That is correct -- the integral already assumes the
+  -- generator HOLDS, and linear reconstruction is a cheap approximation to the same average rather than
+  -- something to compose with it -- but it means offline_bench must REFUSE the pair instead of logging a
+  -- reconstruction that never ran. interp_n is what tells the two apart.
+  setsrc({0, 0, 12, 12}, 4e6, true)
+  SRC_INTERP(true)
+  SRC_APERTURE(true)
+  local i0, ai0 = SRC.interp_n, SRC.ap_n
+  for i = 1, 10 do SRC_val(1, i, 2.5) end
+  ck(SRC.interp_n == i0 and SRC.ap_n == ai0 + 10,
+     'with both flags on the aperture runs and interpolation does not, so the pair must be refused',
+     string.format('interp_n +%d, ap_n +%d', SRC.interp_n - i0, SRC.ap_n - ai0))
+  SRC_APERTURE(false)
+  local i1 = SRC.interp_n
+  for i = 1, 10 do SRC_val(1, i, 2.5) end
+  ck(SRC.interp_n > i1, 'and interpolation does run once the aperture is off, so the flag is live',
+     'interp_n +' .. tostring(SRC.interp_n - i1))
+  SRC_INTERP(false)
+
+  -- A NON-LOOPING RENDER HAS NOTHING OUTSIDE IT TO AVERAGE, so the window shortens rather than wrapping.
+  -- Wrapping would splice the tail onto the head, the exact seam artifact SRC.loop = false avoids.
+  setsrc({0, 0, 0, 0, 0, 0, 0, 12}, 4e6, false)
+  SRC_APERTURE(true)
+  local c0 = SRC.ap_clamp_n
+  local last = SRC_val(8, 1, 1.0)                -- centred on index 8, half the window past the end
+  ck(SRC.ap_clamp_n == c0 + 1 and last > 0,
+     'a non-looping render clamps the window to the samples that exist',
+     string.format('%.4f, clamp_n +%d', last, SRC.ap_clamp_n - c0))
+
+  -- AND THROUGH THE READS THEMSELVES, both call sites. The assertions above all pass while either read
+  -- loop still indexes SRC.rd directly, so they show the helper works, not that a capture integrates.
+  setsrc({0, 0, 12, 12}, 4e6, true)
+  dmm.digitize.samplerate, dmm.digitize.count = 1.6e6, 4      -- step 2.5, a fractional window
+  local b = buffer.make(1000)
+
+  SRC_APERTURE(false)
+  dmm.digitize.read(b)
+  local hold2, hold3 = b.readings[2], b.readings[3]
+
+  SRC_APERTURE(true)
+  local r0 = SRC.ap_n
+  dmm.digitize.read(b)
+  ck(b.n == 4 and SRC.ap_n == r0 + 4,
+     'the free-running read goes through the aperture for every delivered sample',
+     'ap_n moved by ' .. tostring(SRC.ap_n - r0))
+  ck(b.readings[2] ~= hold2 or b.readings[3] ~= hold3,
+     'and the values it delivers differ from the held ones',
+     string.format('held %s %s vs aperture %s %s', tostring(hold2), tostring(hold3),
+                   tostring(b.readings[2]), tostring(b.readings[3])))
+
+  SRC.trigat = 2
+  trigger.model.load('LoopUntilEvent', trigger.EVENT_ANALOGTRIGGER, 50, trigger.CLEAR_ENTER, nil, b)
+  SRC_APERTURE(false)
+  trigger.model.initiate()
+  local armhold = b.readings[2]
+  SRC_APERTURE(true)
+  local q0 = SRC.ap_n
+  trigger.model.initiate()
+  ck(SRC.ap_n > q0 and b.readings[2] ~= armhold,
+     'and so does the armed read, which has its own loop and its own origin arithmetic',
+     string.format('held %s vs aperture %s', tostring(armhold), tostring(b.readings[2])))
+
+  buffer.delete(b)
+  TRIG.loaded = sv.loaded
+  SRC.rd, SRC.ts, SRC.nsmp, SRC.native_fs = sv.rd, sv.ts, sv.nsmp, sv.native_fs
+  SRC.loop, SRC.interp, SRC.trigat = sv.loop, sv.interp, sv.trigat
+  SRC_APERTURE(sv.ap)
+  dmm.digitize.samplerate, dmm.digitize.count = sv.rate, sv.count
+  SRC_PHASE(nil)
+end
+
+print('-- a FRACTIONAL capture origin, because two independent clocks never align on a sample --')
+do
+  local sv = {rd = SRC.rd, ts = SRC.ts, nsmp = SRC.nsmp, native_fs = SRC.native_fs, loop = SRC.loop,
+              interp = SRC.interp, ap = SRC.aperture, fo = SRC.fracorigin,
+              phon = SRC.phaserand, phseed = SRC.phaseseed}
+  SRC.rd, SRC.nsmp, SRC.native_fs, SRC.loop = {0, 3, 6, 9, 12, 15, 18, 21}, 8, 1e6, true
+  SRC_INTERP(false); SRC_APERTURE(false)
+
+  -- THE DRAW SEQUENCE MUST NOT MOVE. This is the assertion that protects every result already recorded:
+  -- the sub-sample part is the REMAINDER of the draw that picks the integer index, not a second draw, so
+  -- the integer sequence has to be bit-identical with the flag on and off. If it ever needs an extra
+  -- value from the stream, every phase after the first shifts and no earlier soak is comparable again.
+  local function seq(n)
+    SRC_PHASE(20260907)
+    local out, i = {}, nil
+    for i = 1, n do out[i] = SRC_NEXTPHASE() end
+    return out
+  end
+  SRC_FRACORIGIN(false)
+  local a = seq(40)
+  SRC_FRACORIGIN(true)
+  local b = seq(40)
+  local same, i = true, nil
+  for i = 1, 40 do if a[i] ~= b[i] then same = false end end
+  ck(same, 'the integer phase sequence is identical with the fractional origin on and off',
+     'first mismatch at ' .. tostring(same and 'none' or i))
+
+  -- AND THE FRACTION IS ACTUALLY THERE, in range, and varies between captures.
+  SRC_FRACORIGIN(true)
+  SRC_PHASE(20260907)
+  local nz, inrange, seen, j = 0, true, {}, nil
+  for i = 1, 40 do
+    SRC_NEXTPHASE()
+    if SRC.phasefrac ~= 0 then nz = nz + 1 end
+    if SRC.phasefrac < 0 or SRC.phasefrac >= 1 then inrange = false end
+    seen[i] = SRC.phasefrac
+  end
+  ck(nz >= 38 and inrange, 'every capture draws a sub-sample offset in [0, 1)',
+     string.format('%d of 40 nonzero, in range %s', nz, tostring(inrange)))
+  ck(seen[1] ~= seen[2] and seen[2] ~= seen[3], 'and it differs between captures',
+     string.format('%.6f %.6f %.6f', seen[1], seen[2], seen[3]))
+
+  -- WITH THE FLAG OFF THE ORIGIN IS EXACT, which is the behaviour every existing result was produced by.
+  SRC_FRACORIGIN(false)
+  SRC_PHASE(20260907)
+  local ph = SRC_NEXTPHASE()
+  local n0 = SRC.fracorigin_n
+  local v = SRC_val(ph, 1, 1)
+  ck(SRC.phasefrac == 0 and v == SRC.rd[ph] and SRC.fracorigin_n == n0,
+     'with the flag off delivered sample 1 lands exactly on an arb sample',
+     string.format('%s vs rd[%d]=%s', tostring(v), ph, tostring(SRC.rd[ph])))
+
+  -- AN INTEGRAL STEP IS THE STARKEST CASE: with step 1 the origin is the ONLY source of sub-sample
+  -- offset, so with the flag off EVERY delivered sample sits at offset exactly 0 and the whole capture
+  -- explores one degenerate phase. Interpolation makes that visible as a value between two arb samples.
+  SRC_INTERP(true)
+  SRC_FRACORIGIN(true)
+  SRC_PHASE(20260907)
+  ph = SRC_NEXTPHASE()
+  n0 = SRC.fracorigin_n
+  v = SRC_val(ph, 1, 1)
+  local lo, hi = SRC.rd[ph], SRC.rd[math.mod(ph, 8) + 1]
+  ck(SRC.fracorigin_n == n0 + 1 and v ~= lo,
+     'with it on, and an INTEGRAL step, sample 1 falls between two arb samples',
+     string.format('%.4f between %s and %s, frac %.4f', v, tostring(lo), tostring(hi), SRC.phasefrac))
+
+  SRC_INTERP(false); SRC_FRACORIGIN(false)
+  SRC.rd, SRC.ts, SRC.nsmp, SRC.native_fs = sv.rd, sv.ts, sv.nsmp, sv.native_fs
+  SRC.loop, SRC.interp = sv.loop, sv.interp
+  SRC_APERTURE(sv.ap); SRC_FRACORIGIN(sv.fo)
   if sv.phon then SRC_PHASE(sv.phseed) else SRC_PHASE(nil) end
 end
 

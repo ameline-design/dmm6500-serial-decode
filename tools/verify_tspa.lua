@@ -161,9 +161,13 @@ function buffer.delete() nbuf = nbuf - 1 end
 
 -- A DEAD front end: the digitizer returns nothing at all. This is what probing an
 -- unpowered board looks like, and it is the likeliest thing on a fresh launch.
+-- measure/FUNC_NONE are here so start() can save an entry mode and stop() restore it: without them
+-- mode_save() returns false and this file would verify a launch that reports it cannot read the mode.
 dmm = {FUNC_DIGITIZE_VOLTAGE = 'digv', MODE_EDGE = 'edge', MODE_WINDOW = 'window',
        MODE_OFF = 'off', SLOPE_RISING = 'rise', SLOPE_FALLING = 'fall',
-       digitize = {analogtrigger = {edge = {}}}}
+       FUNC_DC_VOLTAGE = 'dcv', FUNC_NONE = 'none',
+       digitize = {func = 'none', analogtrigger = {edge = {}}},
+       measure = {func = 'dcv', range = 10}}
 function dmm.digitize.read(b) b.n = 0 end
 trigger = {EVENT_ANALOGTRIGGER = 'atrig', CLEAR_ENTER = 'enter',
            CLEAR_NEVER = 'never', model = {}}

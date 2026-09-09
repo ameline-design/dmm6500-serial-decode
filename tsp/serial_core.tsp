@@ -77,12 +77,18 @@ elseif smu ~= nil and smu.digitize ~= nil then ns, nskey = smu, 'smu_' end
 -- namespaces, which is correct: an audit should see those.
 sdec.ns_key = nskey
 sdec.dig    = nil       -- the digitize table itself
+sdec.meas   = nil       -- the BASIC measure table, used only to save and restore the entry mode
 sdec.atrig  = nil       -- .analogtrigger, or nil where the instrument has no comparator
 sdec.atedge = nil       -- .analogtrigger.edge
 sdec.k      = {}        -- the constants, copied by value
 
 if ns ~= nil then
   sdec.dig = ns.digitize
+  -- NOT USED BY ANY CAPTURE PATH. The digitizer and the basic measure engine are alternatives on this
+  -- instrument, so the app configures only the former; this handle exists so mode_save/mode_restore
+  -- can put back a BASIC function the operator was left in. Guarded because it is not a capability
+  -- this app requires: an instrument with a digitizer and no dmm.measure table still decodes.
+  sdec.meas = ns.measure
   -- Cached two and three deep because acq_triggered indexes analogtrigger.edge three times in
   -- succession. Guarded: a digitizer with no analog comparator is a SUPPORTED configuration --
   -- acq_triggered already degrades to the free-running path and says so.
@@ -99,6 +105,16 @@ if ns ~= nil then
   sdec.k.MODE_OFF      = ns.MODE_OFF
   sdec.k.SLOPE_RISING  = ns.SLOPE_RISING
   sdec.k.SLOPE_FALLING = ns.SLOPE_FALLING
+  -- THE SENTINEL THAT SAYS WHICH ENGINE IS ACTIVE, and the only way to ask. Exactly one of
+  -- ns.digitize.func and ns.measure.func reads this at any time; the manual states it in both
+  -- directions -- dmm.digitize.func "if a basic (non-digitize) measurement function is selected,
+  -- this returns dmm.FUNC_NONE", dmm.measure.func "if a digitize measurement function is active,
+  -- calling this command returns dmm.FUNC_NONE". mode_save() needs the answer and there is no
+  -- separate "which mode" attribute to read.
+  --
+  -- IT IS READ-ONLY AS A VALUE: FUNC_NONE is selected as a side effect of choosing the other
+  -- engine, never assigned, so mode_restore() writes a real function or nothing.
+  sdec.k.FUNC_NONE     = ns.FUNC_NONE
 end
 
 -- Per-namespace preparation before a capture, resolved to ONE function so the path carries no test.
@@ -1640,6 +1656,85 @@ end
 
 function sdec.unmute_events()
   return pcall(function() localnode.showevents = eventlog.SEV_ERROR end)
+end
+
+-- Remember the measurement mode the instrument was left in, so leaving the app can put it back.
+--
+-- WHY THIS IS NEEDED: hw_config() assigns sdec.dig.func before every capture, and on this firmware
+-- choosing a digitize function DESELECTS the basic one. So an app that never saves this hands the
+-- instrument back in Digitize Voltage however the operator found it, and the front panel offers no
+-- clue that the app is what changed it.
+--
+-- WHICH ENGINE WAS ACTIVE IS READ, NOT ASSUMED, because both answers are ordinary: an operator who
+-- reaches for a serial decoder may well have been digitizing already. sdec.k.FUNC_NONE is the test
+-- the manual gives, and what gets saved is a PAIR -- which table, and which function in it.
+--
+-- RANGE IS SAVED ONLY ON THE DIGITIZE SIDE, and the asymmetry is deliberate rather than an omission.
+-- The firmware stores every dmm.measure.* attribute per measure function, and this app never writes
+-- one, so restoring the FUNCTION alone brings its range back exactly as it was. Writing
+-- dmm.measure.range would be actively worse than leaving it: "when you set a value for the
+-- measurement range, the measurement autorange setting is automatically disabled", so putting back a
+-- range read from an autoranging meter would silently pin a meter that had been free to move.
+--
+-- ONE-SHOT. acquire() calls hw_config() up to four times per press -- the three-step probe ladder,
+-- the real capture, then an octave retry -- so a save that ran per configuration would overwrite the
+-- operator's mode with the app's own on the second pass and restore Digitize Voltage as though that
+-- were what it found. The latch is the thing that makes the saved value the ENTRY value.
+--
+-- ACCEPTED LIMITATION: a mode changed from the front panel WHILE the app is loaded is lost on exit,
+-- because what goes back is the mode at start. The alternative would be a re-read on a path that
+-- cannot tell an operator's change from the app's own. It costs nothing that works: hw_config()
+-- selects the digitizer on EVERY press, so an operator who reaches the FUNCTION key and picks AC
+-- Volts mid-session still gets a working capture on the next press -- their AC Volts is simply not
+-- the mode that comes back at exit.
+function sdec.mode_save()
+  if sdec.entrymode ~= nil then return true end
+  if sdec.dig == nil then return false end
+  local m = nil
+  -- ONE pcall AROUND ALL THE READS, so a partially-read mode can never be stored: the restore
+  -- assigns from these fields, and a nil among them would raise inside teardown.
+  local ok = pcall(function()
+    local df = sdec.dig.func
+    if sdec.k.FUNC_NONE ~= nil and df == sdec.k.FUNC_NONE then
+      m = {side = 'measure', func = sdec.meas.func}
+    else
+      -- ALREADY DIGITIZING, so the four fields hw_config() writes are the ones at risk. Reached
+      -- also on an instrument whose namespace has no FUNC_NONE -- an SMU, untested -- where the
+      -- modes cannot be told apart; putting the digitize settings back is then the most that is
+      -- known to be true, and it is still better than putting back nothing.
+      m = {side = 'digitize', func = df, range = sdec.dig.range,
+           samplerate = sdec.dig.samplerate, aperture = sdec.dig.aperture}
+    end
+  end)
+  if not ok or m == nil or m.func == nil then return false end
+  sdec.entrymode = m
+  return true
+end
+
+-- Put back what mode_save() found. Safe to call with nothing saved, and safe to call twice.
+function sdec.mode_restore()
+  local m = sdec.entrymode
+  if m == nil then return true end
+  -- CLEARED BEFORE THE WRITE, not after. This runs inside teardown, where a raise must not be
+  -- retried on the next call and must not be able to turn one refused assignment into a loop; the
+  -- operator's mode is a courtesy, not app state that anything later depends on.
+  sdec.entrymode = nil
+  local ok = pcall(function()
+    if m.side == 'measure' then
+      -- ONE ASSIGNMENT DOES THE WHOLE JOB: selecting a basic function is exactly what deselects the
+      -- digitize one, so there is no digitize field to clear afterwards.
+      sdec.meas.func = m.func
+    else
+      sdec.dig.func = m.func
+      -- EACH GUARDED SEPARATELY. An attribute this firmware does not expose reads nil, and assigning
+      -- nil back raises -- which would abandon the fields after it in a function whose whole purpose
+      -- is to finish restoring.
+      if m.range      ~= nil then sdec.dig.range      = m.range      end
+      if m.samplerate ~= nil then sdec.dig.samplerate = m.samplerate end
+      if m.aperture   ~= nil then sdec.dig.aperture   = m.aperture   end
+    end
+  end)
+  return ok
 end
 
 -- Apply the range, sample rate and trigger settings to the digitizer before a capture.

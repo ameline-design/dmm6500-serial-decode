@@ -344,12 +344,14 @@ elseif smu ~= nil and smu.digitize ~= nil then ns, nskey = smu, 'smu_' end
 
 sdec.ns_key = nskey
 sdec.dig    = nil       -- the digitize table itself
+sdec.meas   = nil       -- the BASIC measure table, used only to save and restore the entry mode
 sdec.atrig  = nil       -- .analogtrigger, or nil where the instrument has no comparator
 sdec.atedge = nil       -- .analogtrigger.edge
 sdec.k      = {}        -- the constants, copied by value
 
 if ns ~= nil then
   sdec.dig = ns.digitize
+  sdec.meas = ns.measure
   if ns.digitize.analogtrigger ~= nil then
     sdec.atrig = ns.digitize.analogtrigger
     if ns.digitize.analogtrigger.edge ~= nil then
@@ -361,6 +363,7 @@ if ns ~= nil then
   sdec.k.MODE_OFF      = ns.MODE_OFF
   sdec.k.SLOPE_RISING  = ns.SLOPE_RISING
   sdec.k.SLOPE_FALLING = ns.SLOPE_FALLING
+  sdec.k.FUNC_NONE     = ns.FUNC_NONE
 end
 
 local PREP = {
@@ -1191,6 +1194,47 @@ end
 
 function sdec.unmute_events()
   return pcall(function() localnode.showevents = eventlog.SEV_ERROR end)
+end
+
+-- Remember the measurement mode the instrument was left in, so leaving the app can put it back.
+--   [...]
+-- selects the digitizer on EVERY press, so an operator who reaches the FUNCTION key and picks AC
+-- Volts mid-session still gets a working capture on the next press -- their AC Volts is simply not
+-- the mode that comes back at exit.
+function sdec.mode_save()
+  if sdec.entrymode ~= nil then return true end
+  if sdec.dig == nil then return false end
+  local m = nil
+  local ok = pcall(function()
+    local df = sdec.dig.func
+    if sdec.k.FUNC_NONE ~= nil and df == sdec.k.FUNC_NONE then
+      m = {side = 'measure', func = sdec.meas.func}
+    else
+      m = {side = 'digitize', func = df, range = sdec.dig.range,
+           samplerate = sdec.dig.samplerate, aperture = sdec.dig.aperture}
+    end
+  end)
+  if not ok or m == nil or m.func == nil then return false end
+  sdec.entrymode = m
+  return true
+end
+
+-- Put back what mode_save() found. Safe to call with nothing saved, and safe to call twice.
+function sdec.mode_restore()
+  local m = sdec.entrymode
+  if m == nil then return true end
+  sdec.entrymode = nil
+  local ok = pcall(function()
+    if m.side == 'measure' then
+      sdec.meas.func = m.func
+    else
+      sdec.dig.func = m.func
+      if m.range      ~= nil then sdec.dig.range      = m.range      end
+      if m.samplerate ~= nil then sdec.dig.samplerate = m.samplerate end
+      if m.aperture   ~= nil then sdec.dig.aperture   = m.aperture   end
+    end
+  end)
+  return ok
 end
 
 -- Apply the range, sample rate and trigger settings to the digitizer before a capture.
@@ -6675,6 +6719,9 @@ function sdec.stop()
   sdec.ei, sdec.es, sdec.ne = nil, nil, 0
   sdec.w, sdec.nw = nil, 0
   sdec.ui_rowc = nil
+  if not sdec.mode_restore() then
+    ulog.line('entry mode could not be restored -- the digitize function is still selected')
+  end
   ulog.close()
   return true
 end
@@ -6711,6 +6758,13 @@ function sdec.start()
     ulog.tag = 'SDEC'
     ulog.ensuredir()
     ulog.open(sdec.logpath)
+
+    if sdec.mode_save() then
+      ulog.line('entry mode: ' .. tostring(sdec.entrymode.side) .. ' '
+                .. tostring(sdec.entrymode.func) .. ' -- restored on exit')
+    else
+      ulog.line('entry mode could not be read -- exiting will leave the digitize function selected')
+    end
 
     sdec.cancel_setup()
     sdec.ui_build()

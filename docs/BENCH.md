@@ -390,13 +390,35 @@ analog output bandwidth, ~40 ns for a 3.3 V step, which is the signature of a **
 the output amplifier slews between held values. This is the discriminating experiment: the absolute number
 is an instrument property, but its **invariance across rate** is decidable and it decides for the hold.
 
-**An earlier `RISE = FALL = 8.02 µs` reading at 125 kSa/s was documented here as proving LINEAR, and it
-cannot be reproduced.** The reasoning attached to it was also wrong twice over: "a zero-order hold would
-step in nanoseconds" is true only for a pure step, and these vectors are not pure steps — `GEN_RENDER`'s
-default `rise` is 1.5 samples, so a shipped edge carries one intermediate codeword between the rails, 814
-of 814 transitions in `v77.bin`. Reinterpreting 8.02 µs as matching a hold's one-sample-period prediction
-happened to reach the right conclusion, but the reading itself is unexplained and nothing should be built
-on it.
+**An earlier `RISE = FALL = 8.02 µs` reading at 125 kSa/s was documented here as proving LINEAR.** The
+reasoning attached to it was wrong twice over: "a zero-order hold would step in nanoseconds" is true only
+for a pure step, and these vectors are not pure steps — `GEN_RENDER`'s default `rise` is 1.5 samples, so a
+shipped edge carries one intermediate codeword between the rails, 814 of 814 transitions in `v77.bin`.
+
+**THE STAIRCASE IS DIRECTLY RESOLVABLE, AND IT ACCOUNTS FOR THAT READING.** One `v94` edge captured at
+1 GSa/s, 50 ns/div, 16-way average, arb at 2.5 MSa/s. The screen shows two fast rises with a flat shelf
+between them, and the shelf is the intermediate codeword being held:
+
+| quantity | measured | |
+|---|---|---|
+| low rail | −0.004 V | |
+| **intermediate plateau, dead flat** | **0.7527 V** | **46.49 % of swing** |
+| high rail | 1.6231 V | swing 1.627 V |
+| shelf length, 50 % to 50 % of the two sub-rises | **399.8 ns** | commanded `T` is 400.0 ns, −0.04 % |
+| each sub-rise, 10–90 % | **35.3 and 34.3 ns** | the amplifier slew |
+
+`v94.bin` holds exactly four codewords, `0, 10092, 11534, 21626`, and **all 2816 of its intermediate runs
+are one sample long**, at 46.67 % and 53.33 % of the rail-to-rail span. The plateau is codeword 10092, at
+46.49 % against 46.67 % predicted, and it is held for one arb period to 0.04 %. So the DAC holds and the
+amplifier slews between held values — measured on the waveform, not inferred from a summary statistic.
+
+Which number `PAVA? RISE` returns depends on where its histogram puts `BASE`. On this capture it returned
+`BASE = 0.7563 V` — **the plateau**, not the low rail, whose `MIN` was −0.013 V — so its `RISE = 35.13 ns`
+timed only the second sub-rise. With the true rails as `TOP`/`BASE`, 10–90 % instead spans the whole
+staircase: **420.7 ns, which is `T` + 20.9 ns**, and that 20.9 ns slew term is fixed in time rather than a
+fraction of `T`. At 125 kSa/s it therefore predicts **8.021 µs**, against the **8.020 µs** recorded. The
+40 ns readings and the 8.02 µs reading are one model measured two ways, and the rate-invariance above
+remains the argument that decides it.
 
 `v47`'s spikes do not discriminate either way and should not be cited as if they do: they are **two
 codewords wide and flat-topped** (`10813, 10813, 20643, 20643, 10813, 10813`), not the one-sample impulse
@@ -877,10 +899,11 @@ reports the applied pair, so no scope is needed:
 "at 20 Vpp the only legal offset is 0". `GEN_ENVELOPE` in `tools/gen_serial.lua` reproduces all four to
 1e-6. `C1:OUTP?` reads `LOAD,HZ`, so commanded amplitudes reach the wire as commanded.
 
-**Reconstruction is NOT known to be linear.** `sweep_plan` interpolates linearly because that fits the
-bench better than a hold, and the one scope measurement taken of it — `RISE = FALL = 8.02 µs` at
-125 kSa/s — actually matches a **hold**, once the vectors' own encoded edge ramp is accounted for. See
-*The offline twin* above; this entry previously asserted the opposite as measured fact.
+**Reconstruction is NOT linear; `sweep_plan` interpolates linearly only because that fits the bench
+better than a hold.** The generator is measured to hold: one edge captured at 1 GSa/s resolves a flat
+intermediate plateau held for one arb period to 0.04 %, with ~35 ns amplifier slews either side of it, and
+`RISE = FALL = 8.02 µs` at 125 kSa/s is the 10–90 % time across that whole staircase. See *The offline
+twin* above; this entry previously asserted linear as measured fact.
 
 **`v47`'s refusals are an edge-timing failure, not a level failure.** `SER_Hello_8N1_Spike_x100` carries
 spikes in **both** directions, symmetric about the data: with the data at 1.88 V / 3.84 V, they reach
