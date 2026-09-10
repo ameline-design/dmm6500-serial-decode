@@ -1,6 +1,6 @@
 # Serial Decode for the Keithley DMM6500 — notes for beta testers
 
-**version 1.23** · `Serial_Decode.tspa` · a TSP app that turns a DMM6500 into a UART/LIN decoder
+**version 1.25** · `Serial_Decode.tspa` · a TSP app that turns a DMM6500 into a UART/LIN decoder
 
 It digitizes a serial line, finds the bit rate and framing itself, and shows the decoded bytes on the
 front panel. No host computer is needed once it is loaded.

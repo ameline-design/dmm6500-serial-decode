@@ -151,7 +151,7 @@ MANIFEST = [
     # the very next release inverts: '1.4' is followed by '1.10', and '1.10' < '1.4' as strings, so the
     # newer build reads as older. Two digits also make the width fixed, which is what leaves the compare
     # on the digits rather than on where the string ran out.
-    ('Version', '1.23'),
+    ('Version', '1.25'),
     # Stated minimum firmware, kept deliberately low: if the installer compares this
     # field as a STRING then "1.7.3c" sorts above "1.7.17a" and the app refuses to
     # install on the very unit it is developed on. "1.7.0" satisfies either compare.
