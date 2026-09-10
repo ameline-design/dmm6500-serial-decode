@@ -592,7 +592,8 @@ end
 -- whether what has gone wrong is worth walking over to fix. display.create takes a FONT and a COLOUR, so
 -- a screen built here gets ~58 characters a line at FONT_MEDIUM instead of 20 and 32.
 --
--- THIRTEEN OBJECTS, CREATED ONCE: a screen, seven text rows and brun.msgn log lines. Display object ids
+-- FOURTEEN OBJECTS, CREATED ONCE: a screen and thirteen text rows -- the headline, its spinner, five
+-- body rows, the error count, and brun.msgn log lines. Display object ids
 -- are never reclaimed on this firmware -- display.create
 -- returns nil when the pool is exhausted, posts event 1701 the first time only, and is silent after
 -- that -- so a text object per cell would walk the instrument into that state inside one lap. These are
@@ -625,7 +626,7 @@ brun.ui = nil
 --
 -- ONLY STATE CHANGES ARE PUSHED, not one line per cell. A log that repeats 'generator missed 1 cell' for
 -- four hundred cells has thrown away the one thing a log is for -- knowing WHEN something started.
-brun.msgn = brun.msgn or 4
+brun.msgn = brun.msgn or 5
 brun.msgs = nil          -- oldest first; the newest is at the bottom of the screen
 brun.lastmsg = nil       -- so an unchanged state is not pushed again
 brun.lastshape = nil     -- the same state with a different count in it, ditto
@@ -778,26 +779,34 @@ function brun.ui_build()
     -- 788 mirrors the 12 px left inset of every other line. One character, redrawn six times a cell, so it
     -- gets its own object rather than making each tick rewrite the whole 58-character headline.
     u.spin = add(create(u.scr, display.OBJ_TEXT, 788, 20, '|', brun.c_good, small, display.JUST_RIGHT))
+    -- THE FIVE BODY LINES ALTERNATE WHITE, GREY, WHITE, GREY, WHITE -- 34 px apart at a font that advances
+    -- 13.4, so a 58-character line crosses two thirds of the glass with three lines of it above and below.
+    -- Brightness is what lets the eye hold ONE of them while it reads across, and the alternation is keyed
+    -- on the ROW rather than on what the row says: every draw of these five, here and in brun.ui_end, uses
+    -- the colour its position takes. c_val white is the bright rung and c_lab grey the dim one; the three
+    -- lines outside the block -- the headline and the error count -- carry a STATUS colour instead, and
+    -- those must not be pulled into the pattern.
     u.prog = add(create(u.scr, display.OBJ_TEXT, 12, 58, '--', brun.c_val, small, left))
     u.time = add(create(u.scr, display.OBJ_TEXT, 12, 92, '--', brun.c_lab, small, left))
     u.stim = add(create(u.scr, display.OBJ_TEXT, 12, 126, '--', brun.c_val, small, left))
     u.fail = add(create(u.scr, display.OBJ_TEXT, 12, 160, '--', brun.c_lab, small, left))
-    u.vfail = add(create(u.scr, display.OBJ_TEXT, 12, 194, '--', brun.c_lab, small, left))
-    -- THE PROMPT, WHICH NEVER CHANGES WHILE THE RUN LASTS. It is the only instruction on the screen and
-    -- an alarm must not be able to take its place.
-    u.note = add(create(u.scr, display.OBJ_TEXT, 12, 228, 'starting', brun.c_ok, small, left))
-    -- AND THE LOG BENEATH IT. Five lines at a 34 px pitch ends at y=398, inside the 420 the firmware
-    -- allows and the 431 px content area -- checked, because display.create returns nil rather than
-    -- raising for a y it will not take, and a nil parent makes every later object nil in silence.
-    -- ERRS ON ITS OWN ROW, in the y-slot the fifth log line used to occupy: brun.msgn went 5 -> 4 so this
-    -- costs no display object, and object ids are never reclaimed on this instrument. A soak that is going
-    -- well writes almost nothing to the log, so a line spent on the count that matters is a better trade.
-    u.errs = add(create(u.scr, display.OBJ_TEXT, 12, 262 + brun.msgn * 34, 'Errors: 0',
+    u.vfail = add(create(u.scr, display.OBJ_TEXT, 12, 194, '--', brun.c_val, small, left))
+    -- THE LOG, STARTING AT THE ROW UNDER THE BODY. brun.msgn lines at a 34 px pitch and then the error
+    -- count: 228 + 5 * 34 = 398, inside the 420 the firmware allows and the 431 px content area --
+    -- checked, because display.create returns nil rather than raising for a y it will not take, and a nil
+    -- parent makes every later object nil in silence.
+    --
+    -- NO SEPARATE PROMPT ROW. The stop instruction is in the screen TITLE, which never scrolls and never
+    -- changes; the run's state word is on the headline; and the one instruction that has to interrupt --
+    -- abort this run now -- is appended to the error count, where a red line already draws the eye. That
+    -- frees the 228 row for a fifth log line, which is the row that pays for itself on a soak nobody is
+    -- standing at: the log is what says WHEN something started.
+    u.errs = add(create(u.scr, display.OBJ_TEXT, 12, 228 + brun.msgn * 34, 'Errors: 0',
                         brun.c_good, small, left))
     u.msg = {}
     local mk
     for mk = 1, brun.msgn do
-      u.msg[mk] = add(create(u.scr, display.OBJ_TEXT, 12, 262 + (mk - 1) * 34, '',
+      u.msg[mk] = add(create(u.scr, display.OBJ_TEXT, 12, 228 + (mk - 1) * 34, '',
                              brun.c_lab, small, left))
     end
   end)
@@ -833,35 +842,38 @@ function brun.hshort(sec)
   return string.format('%.1fh', sec / 3600.0)
 end
 
--- THE ONE INSTRUCTION, ON ITS OWN LINE, FOR THE WHOLE RUN. Not a status: a control the operator cannot
--- guess at, since it is the physical TRIGGER key and not anything on the glass.
-function brun.prompt()
-  if brun.stopwhy ~= nil then return 'ended -- ' .. brun.fit(tostring(brun.stopwhy), 40) end
-  -- THE TITLE CARRIES 'PRESS TRIGGER TO STOP', so this no longer repeats it -- but the title is static and
-  -- brun.keyarmed is the result of stopkey_setup(), which can fail. When it does, the title is WRONG and
-  -- this line is the only thing that can say so: a panel instructing an operator to press a key that will
-  -- not be read is worse than one that says nothing.
-  -- AN EXPLICIT CALL TO ACTION WHEN THE RUN IS RED. brun.ui_status() is the traffic light: it goes red only
-  -- for things a person has to act on -- the run parked, the generator silent for several cells in a row
-  -- (its waveform is not on the wire, so every later cell measures nothing), the record no longer being
-  -- written, or the no-decode rate past brun.badrate over enough cells to mean it. In every one of those the
-  -- right move is to stop and look, and a soak left running is hours of instrument time spent on nothing.
-  --
-  -- THE HOST CANNOT PUT THIS THERE. brun.soak owns the interpreter for the whole run, so nothing from the
-  -- host reaches the panel until it ends -- the run has to notice its own condition and say so.
-  -- PCALLED AND GATED ON THERE BEING A RUN. brun.ui_status reads the run's tallies and raises if they are
-  -- still nil, which is the state before brun.soak initialises them -- and a raise anywhere in the UI path
-  -- puts a modal box on the panel of an instrument nobody is standing at. A prompt is decoration; it must
-  -- never be the thing that stops a soak.
+-- THE ONE INSTRUCTION THAT HAS TO INTERRUPT, as a suffix for the error count. -> string, '' for nothing
+--
+-- Not a status: a control the operator cannot guess at, since it is the physical TRIGGER key and not
+-- anything on the glass. The title carries 'TRIGGER TO STOP' for the whole run, so the normal case says
+-- nothing here -- a line that always shouts cannot shout.
+--
+-- CAPITALS, AND ON THE ERROR LINE. brun.ui_status() is the traffic light: it goes red only for things a
+-- person has to act on -- the run parked, the generator silent for several cells in a row (its waveform is
+-- not on the wire, so every later cell measures nothing), the record no longer being written, or the
+-- no-decode rate past brun.badrate over enough cells to mean it. In every one of those the right move is to
+-- stop and look, and a soak left running is hours of instrument time spent on nothing.
+--
+-- THE UNARMED WARNING OUTRANKS IT, because brun.keyarmed is the result of stopkey_setup(), which can fail.
+-- When it has, the title is WRONG and this is the only thing that can say so -- and telling an operator to
+-- press a key nothing will read is worse than saying nothing at all.
+--
+-- THE HOST CANNOT PUT THIS THERE. brun.soak owns the interpreter for the whole run, so nothing from the
+-- host reaches the panel until it ends -- the run has to notice its own condition and say so.
+-- PCALLED AND GATED ON THERE BEING A RUN. brun.ui_status reads the run's tallies and raises if they are
+-- still nil, which is the state before brun.soak initialises them -- and a raise anywhere in the UI path
+-- puts a modal box on the panel of an instrument nobody is standing at. A nag is decoration; it must
+-- never be the thing that stops a soak.
+function brun.stopnag()
+  -- A RUN THAT HAS ENDED HAS NOTHING TO ABORT, and its ending is already on the headline as a state word.
+  if brun.stopwhy ~= nil then return '' end
+  if not brun.keyarmed then return ' - TRIGGER NOT ARMED: CUT POWER TO STOP' end
   if (brun.ncell or 0) > 0 then
     local red = false
     pcall(function() red = (brun.ui_status() == brun.c_bad) end)
-    if red then
-      return 'PRESS TRIGGER TO STOP NOW -- this run is not measuring anything'
-    end
+    if red then return ' - ABORT NOW WITH TRIGGER BUTTON' end
   end
-  if brun.keyarmed then return 'Running' end
-  return 'Running -- TRIGGER NOT ARMED: stop by cutting power'
+  return ''
 end
 
 -- THE TRAFFIC LIGHT. It answers one question -- is this worth walking over for -- so every red is
@@ -949,43 +961,35 @@ function brun.ui_end()
   -- every other line it touches goes GREY. The first question from across the room is whether the thing has
   -- finished, and the answer was written only to the home screen's TEXT1, which the app's own screen covers.
   --
-  -- GREEN FOR A CLEAN END, RED FOR A STOP. brun.stopbad is set where a run gives up -- a generator that
-  -- went away, a record that could not be written -- so the two endings must not look alike: 'FINISHED' on
-  -- a run that actually died would be the worst line on the panel.
+  -- THE STATE WORD AND ITS COLOUR COME FROM brun.stateword, which is where the headline gets them too:
+  -- 'FINISHED' on a run that died would be the worst line on the panel, and two lines naming the
+  -- same ending differently would be the second worst.
+  local wend, wcol = brun.stateword()
   brun.ui_set(u.prog,
-              string.format('%s  %s lap(s)  %s cell(s)  ran %s',
-                            brun.stopbad and 'STOPPED' or 'FINISHED',
+              string.format('%s  %s lap(s)  %s cell(s)  ran %s', wend,
                             brun.int(brun.iter), brun.int(brun.ncell), brun.hours(el)),
-              brun.stopbad and brun.c_bad or brun.c_good)
+              wcol)
   brun.ui_set(u.time, 'ran ' .. brun.hours(el) .. '    ended    '
                       .. brun.int(brun.ncell) .. ' cell(s) done', brun.c_lab)
   -- THE SAME TWO COUNTS AS brun.ui_show, for the reason given there.
-  brun.ui_set(u.fail, string.format('allowed refusals %s    UNEXPECTED %s    of %s cells',
+  brun.ui_set(u.fail, string.format('Refusals: Allowed %s Unexpected %s of %s cells',
                                     brun.int(brun.nexp), brun.int(brun.nunexp),
                                     brun.int(brun.ncell)), brun.c_lab)
+  -- THE SAME ROW, THE SAME BRIGHTNESS AS DURING THE RUN. The body lines alternate white and grey down the
+  -- glass so the eye can hold a line while it reads across it, and the pattern is keyed on the ROW, not on
+  -- what the row happens to be saying -- an ending that recolours one line breaks the pattern for the one
+  -- screen that stays up longest.
   brun.ui_set(u.vfail, string.format('nostim %s  idle %s  lvl %s  swing %s  other %s',
                                      brun.int(brun.nsdgtot), brun.int(brun.nidle),
                                      brun.int(brun.nlevels), brun.int(brun.nswing),
-                                     brun.int(brun.nwhyother)), brun.c_lab)
-  local hl, hcol = brun.healthline()
-  -- A RUN THAT GAVE UP SAYS SO ON THE HEADLINE, IN RED. brun.stopbad is set where the run parked -- the
-  -- generator gone, the record unwritable -- as opposed to finishing the laps it was asked for. The green
-  -- FINISHED on the progress line already covers the good ending; this covers the one an operator has to do
-  -- something about, on the line they read first. Only when it was stopped: appending nothing on a clean
-  -- finish keeps the headline meaning exactly what it means during the run.
-  local sfx, scol = brun.statesuffix()
-  hl = hl .. sfx
-  hcol = scol
-  brun.ui_set(u.health, brun.fit(hl, brun.panelw), hcol)
+                                     brun.int(brun.nwhyother)), brun.c_val)
+  -- HOW IT ENDED, IN ITS OWN COLOUR, ON THE LINE READ FIRST. brun.stopbad is set where the run parked --
+  -- the generator gone, the record unwritable -- as opposed to finishing the laps it was asked for, so
+  -- ABORTED goes out red and FINISHED cyan.
+  local hl, hcol = brun.headline(true)
+  brun.ui_set(u.health, hl, hcol)
   local el_, ecol_ = brun.errsline()
   brun.ui_set(u.errs, el_, ecol_)
-  -- RED WHEN IT IS CARRYING THE STOP INSTRUCTION, so the one line telling the operator to act is not drawn
-  -- in the same colour as 'Running'.
-  local ncol_ = brun.c_ok
-  if brun.stopwhy == nil and (brun.ncell or 0) > 0 then
-    pcall(function() if brun.ui_status() == brun.c_bad then ncol_ = brun.c_bad end end)
-  end
-  brun.ui_set(u.note, brun.fit(brun.prompt() .. brun.diagflags(), brun.panelw), ncol_)
   brun.ui_note()
 end
 
@@ -1020,6 +1024,22 @@ end
 -- about nine points too low.
 brun.healthwarn = brun.healthwarn or 99
 brun.healthbad = brun.healthbad or 60
+
+-- AND THE TWO HEAP BANDS, IN kB, APPLIED TO THE LIVE SET AND NOT TO THE FIGURE ON THE GLASS. See
+-- brun.heapsetk: the displayed count is a sawtooth between the live set and twice it, so a band on the
+-- count fires on the tooth. The live set is what a leak moves.
+--
+-- THE NUMBERS ARE THE RECORDED SERIES', BECAUSE THAT SERIES IS THE LIVE SET: the lap-seam figures in the
+-- record are sampled straight after a collectgarbage(), which is exactly threshold/2. They run 2543-2701 kB
+-- on a healthy run, with 3087, 3121 and one 3620 on file -- so 3000 is just above the working band and
+-- 3500 is a figure only a growing live set has reached.
+--
+-- WHY IT IS ON THE HEADLINE AT ALL: a run that cannot allocate keeps passing cells and writing rows right
+-- up to the moment it dies, so this is the one failure no other field on the screen can show coming. What
+-- gcinfo() cannot say is how much the allocator will still hand out: the threshold tracks the live set
+-- rather than any ceiling, so these bands say 'bigger than a healthy run's', never 'nearly out'.
+brun.heapwarnk = brun.heapwarnk or 3000
+brun.heapbadk = brun.heapbadk or 3500
 
 -- THE DIAGNOSTIC FLAGS IN FORCE, as a short suffix. A run configured wrongly is silently worthless and
 -- nothing on the panel said which flags were on. bsdg.arwvevery is included for a specific reason: Lua
@@ -1078,7 +1098,6 @@ end
 -- A settext is about 1.5 ms, so six a cell is ~9 ms against 5800.
 brun.spinchars = {'|', '/', '-', '\\'}
 brun.spini = 0
-brun.hlcol = nil
 
 function brun.spin()
   brun.spini = math.mod(brun.spini + 1, 4)
@@ -1125,9 +1144,10 @@ function brun.spin_tick()
     if brun.spint ~= nil and t >= brun.spint and t - brun.spint < brun.spinmin then return end
     brun.spint = t
   end
-  -- THE HEADLINE'S COLOUR, so an alarm turns the spinner too and the two cannot disagree about whether
-  -- anything is wrong.
-  brun.ui_set(brun.ui.spin, brun.spin(), brun.hlcol or brun.c_good)
+  -- GREEN, WHATEVER THE HEADLINE SAYS. This glyph answers one question and it is not the run's health: is
+  -- the script still executing. A spinner that turns red with the headline says the same thing twice and
+  -- loses the only thing it can say -- a run that has WEDGED shows a healthy headline and a still spinner.
+  brun.ui_set(brun.ui.spin, brun.spin(), brun.c_good)
   -- COUNTED AFTER THE RATE LIMIT, so this is redraws and not calls: a call the ceiling suppressed did not
   -- reach the glass and must not be claimed as if it had.
   brun.nspin = (brun.nspin or 0) + 1
@@ -1146,22 +1166,59 @@ end
 -- room without doing arithmetic.
 function brun.errsline()
   local n = brun.nbad or 0
+  -- THE THRESHOLD IS THE ALLOWED-REFUSAL COUNT, NOT A NUMBER. brun.nbad is raised on exactly the two paths
+  -- that also raise one of brun.nexp/brun.nunexp -- a cell whose stimulus never played, and a cell that
+  -- produced no decode -- so nbad == nexp + nunexp identically, and 'as many errors as the plan allows'
+  -- means nunexp == 0: every failure so far was a vector barb.loud excuses. One more than that is a cell
+  -- that came back empty when it should not have, which is the only thing on this screen worth a red.
+  --
+  -- AN ABSOLUTE COUNT CANNOT DO THIS JOB. Refusing is the documented right answer on seven of the plan's
+  -- vectors -- about a third of a lap produces no result, 539 of 1677 measured on the offline twin -- so a
+  -- fixed ceiling of a handful goes red in the first minutes of a healthy soak, and a light that is red on
+  -- a healthy run is a light nobody reads by the second day.
+  local nx = brun.nexp or 0
   local col = brun.c_good
-  if n > 5 then
+  if n > nx then
     col = brun.c_bad
   elseif n > 0 then
     col = brun.c_warn
   end
-  return 'Errors: ' .. brun.int(n), col
+  -- AND THE ONE INSTRUCTION THAT HAS TO INTERRUPT GOES HERE, IN RED. There is no prompt row any more --
+  -- the stop control is in the screen title, which never scrolls -- so the line that already turns red
+  -- when something is wrong is the line the call to action belongs on. Nothing to act on, nothing
+  -- appended: a screen that keeps shouting has no way left to shout.
+  local nag = brun.stopnag()
+  if nag ~= '' then col = brun.c_bad end
+  return 'Errors: ' .. brun.int(n) .. nag, col
 end
 
-function brun.statesuffix()
-  if brun.stopwhy == nil then return ' - RUNNING', brun.c_good end
-  if brun.stopbad then return ' - STOPPED', brun.c_bad end
-  if string.find(tostring(brun.stopwhy), 'TRIGGER', 1, true) ~= nil then
-    return ' - STOPPED', brun.c_warn
+function brun.stateword()
+  if brun.stopwhy == nil then
+    -- STARTING UNTIL A CELL HAS FINISHED. Selecting the first waveform and playing it takes tens of
+    -- seconds, and 'RUNNING' beside a screen of dashes is the state a reader would question first.
+    if (brun.ncell or 0) < 1 then return 'STARTING', brun.c_ok end
+    return 'RUNNING', brun.c_good
   end
-  return ' - FINISHED', brun.c_good
+  -- A STOPPED RUN IS AMBER, NOT RED, HOWEVER IT STOPPED. Red is a request for somebody to come and act
+  -- now, and there is nothing to act on: the instrument is idle and the record is closed. The reason it
+  -- gave up is in the log, in red, and the error line keeps its own colour -- so nothing is lost by
+  -- leaving the headline the same amber an operator stop shows.
+  if brun.stopbad then return 'ABORTED', brun.c_warn end
+  -- THE OPERATOR'S OWN TRIGGER PRESS IS NOT A FAULT. It is how every soak ends, so it is ABORTED in AMBER
+  -- rather than red: red is a request for somebody to come and fix something, and a run that was ended
+  -- deliberately needs nobody. A red headline on the normal ending is a headline nobody believes.
+  if string.find(tostring(brun.stopwhy), 'TRIGGER', 1, true) ~= nil then
+    return 'ABORTED', brun.c_warn
+  end
+  return 'FINISHED', brun.c_ok
+end
+
+-- THE SAME WORD AS A HEADLINE SUFFIX. Two lines carry the state -- the headline while the run lives, and
+-- the progress line once it has ended -- and they must not be able to disagree: a screen reading
+-- 'ABORTED' above 'FINISHED' makes a reader distrust both. One function, two callers.
+function brun.statesuffix()
+  local w, col = brun.stateword()
+  return ' - ' .. w, col
 end
 
 function brun.healthline()
@@ -1180,7 +1237,10 @@ function brun.healthline()
   if brun.ncell == nil or brun.ncell < brun.raten then
     local col0 = brun.c_ok
     if ncol == brun.c_bad then col0 = brun.c_bad end
-    return string.format('SOAK HEALTH -- %s of %s cells so far',
+    -- NO ' so far', AND NO DASHES. The state word, the heap and the flags all follow this text on the
+    -- headline: the early form with all three is 48 characters of the 58 the glass holds, and a '--'
+    -- standing in for a figure two fields away from a ' - ' separator reads as a missing value.
+    return string.format('Health: %s of %s cells',
                          brun.int(brun.ncell), brun.int(brun.raten)), col0
   end
 
@@ -1189,7 +1249,10 @@ function brun.healthline()
   if h <= brun.healthwarn then col = brun.c_warn end
   if h < brun.healthbad then col = brun.c_bad end
   if ncol == brun.c_bad then col = brun.c_bad end
-  return string.format('SOAK HEALTH %.1f %%', h), col
+  -- TWO DECIMALS, because one cell of a 1677-cell lap is 0.06 points: at %.1f the figure sits on 100.0 %
+  -- for the first sixteen unexpected refusals of a lap, which is the range where knowing it moved matters
+  -- most. The headline has the room -- 'Health: 100.00% - RUNNING - Heap: 2861.0K' is 41 of 58.
+  return string.format('Health: %.2f%%', h), col
 end
 
 -- THERE IS NO SOUND GUESS AT THE LAP SIZE, so this no longer makes one. It returns 0 -- 'not known yet' --
@@ -1229,7 +1292,13 @@ function brun.ui_show(c, arb)
   -- n/m RATHER THAN 'n of m', ON BOTH LINES. Four times shows what it buys: at FONT_MEDIUM the glass holds
   -- 58 characters, MEDIUM is the largest font the firmware has, and the layout with ' of ' spelled out
   -- needs 64 -- so the field at the end, which is the countdown, is the one the firmware would clip away.
-  local lap = 'lap ' .. brun.int(c.iter)
+  --
+  -- ONE SPACE BETWEEN FIELDS, BECAUSE EVERY FIELD IS LABELLED. Two spaces were the only thing separating
+  -- 'lap' from 'cell' from the times; a capitalised label with a colon does that work, and doing both does
+  -- not fit -- 'Lap: 210/210' with two-space gaps and two-figure lap hours measures 60 against the 58 the
+  -- glass holds, which clips the Left countdown off the end. Widest now 57: 'Lap: 210/210 Cell 1000/1000
+  -- (100%) Ran: 19.4h Left: 19.4h', which is the case test_bench_engine drives.
+  local lap = 'Lap: ' .. brun.int(c.iter)
   if brun.iterwant ~= nil and brun.iterwant > 0 then
     lap = lap .. '/' .. brun.int(brun.iterwant)
   end
@@ -1293,10 +1362,10 @@ function brun.ui_show(c, arb)
   -- The cell number itself is always true, so it is always shown; only the denominator and the percentage
   -- are withheld, on the same principle as brun.perlap_guess -- do not print a figure that cannot be
   -- stood behind. A percentage over 100 makes the operator distrust every other number on the glass.
-  local cell = 'cell ' .. brun.int(pos)
+  local cell = 'Cell ' .. brun.int(pos)
   if nlap > 0 and pos <= nlap then
     cell = cell .. '/' .. brun.int(nlap)
-                .. string.format('  (%.0f%%)', 100.0 * pos / nlap)
+                .. string.format(' (%.0f%%)', 100.0 * pos / nlap)
   end
   -- THE PLAN'S OWN CELL LABEL, shown only when it differs from the position -- which is exactly when the
   -- plan numbers cumulatively. The record writes rows as L<iter>C<label>, so an operator reading a failure
@@ -1307,9 +1376,9 @@ function brun.ui_show(c, arb)
   -- both scopes carry an elapsed and a remaining and two of them a space apart would be four numbers with
   -- nothing saying which lap or run each belongs to.
   if nlap > 0 then
-    cell = cell .. '  ran ' .. brun.hshort(lapel) .. ' left ' .. lapleft
+    cell = cell .. ' Ran: ' .. brun.hshort(lapel) .. ' Left: ' .. lapleft
   end
-  brun.ui_set(u.prog, lap .. '  ' .. cell, brun.c_val)
+  brun.ui_set(u.prog, lap .. ' ' .. cell, brun.c_val)
   -- ELAPSED OF PROJECTED TOTAL, not a second countdown. 'left 853.8h' answers how long remains and says
   -- nothing about how long the whole thing was ever going to be, which is the figure that places a run in
   -- its plan -- and the two together are the same information twice.
@@ -1366,33 +1435,29 @@ function brun.ui_show(c, arb)
   --
   -- 58 CHARACTERS IS THE BUDGET AT FONT_MEDIUM, and both lines are written against their own widest
   -- values -- four-digit counts -- rather than the ones a screenshot happens to show.
-  brun.ui_set(u.fail, string.format('allowed refusals %s    UNEXPECTED %s    of %s cells',
+  brun.ui_set(u.fail, string.format('Refusals: Allowed %s Unexpected %s of %s cells',
                                     brun.int(brun.nexp), brun.int(brun.nunexp),
                                     brun.int(brun.ncell)), brun.c_lab)
-  -- AND THE RUN'S FAILURES BY REASON, on the same line. 'refused' is one number that hides two unrelated
-  -- causes: a dead line and a signal the decoder legitimately would not guess at. Naming them here is what
-  -- lets an operator tell 'the generator stopped driving' from 'these vectors always refuse' without
+  -- AND THE RUN'S FAILURES BY REASON, on the same line. One 'bad' count hides three unrelated causes: a
+  -- dead line, a signal with no logic levels to find, and a swing too small to call. Naming them here is
+  -- what lets an operator tell 'the generator stopped driving' from 'these vectors always refuse' without
   -- fetching the record -- a distinction that took hours to make afterwards.
-  brun.ui_set(u.vfail, string.format('cur vec %s: %d of %d refused   idle %s lvl %s sw %s',
+  --
+  -- I, L, S ARE idle, levels, swing -- initials rather than words because this line is the widest on the
+  -- screen: spelled out with six-figure run totals it measures 70 characters against the 58 the glass
+  -- holds, and the field the firmware then clips is the last of the three. Abbreviated it is 58 at those
+  -- same values and 39 at a lap's worth.
+  brun.ui_set(u.vfail, string.format('Vec: %s  %d of %d bad   I%s L%s S%s',
                                      vid, vb, vn, brun.int(brun.nidle), brun.int(brun.nlevels),
-                                     brun.int(brun.nswing)), brun.c_lab)
-  local hl, hcol = brun.healthline()
-  local sfx, scol = brun.statesuffix()
-  hl = hl .. sfx
-  if hcol == brun.c_ok then hcol = scol end
-  -- KEPT SO THE SPINNER CAN REDRAW IT without recomputing the health figure six times a cell. Fitted to
-  -- one character short of the budget, so appending the glyph cannot push the line over the glass.
-  brun.hlcol = hcol
-  brun.ui_set(u.health, brun.fit(hl, brun.panelw), hcol)
+                                     brun.int(brun.nswing)), brun.c_val)
+  -- THE HEADLINE IS THE WHOLE ANSWER TO 'HOW IS IT': the health figure, the run's state in a word, and the
+  -- heap -- or the diagnostic flags in the heap's place, since a diag run carries a heap of its own and the
+  -- line has room for one. Red if it gave up or the heap is past brun.heapbadk, green while it is running
+  -- and healthy, amber when either figure is borderline, cyan before there is a figure at all.
+  local hl, hcol = brun.headline(false)
+  brun.ui_set(u.health, hl, hcol)
   local el_, ecol_ = brun.errsline()
   brun.ui_set(u.errs, el_, ecol_)
-  -- RED WHEN IT IS CARRYING THE STOP INSTRUCTION, so the one line telling the operator to act is not drawn
-  -- in the same colour as 'Running'.
-  local ncol_ = brun.c_ok
-  if brun.stopwhy == nil and (brun.ncell or 0) > 0 then
-    pcall(function() if brun.ui_status() == brun.c_bad then ncol_ = brun.c_bad end end)
-  end
-  brun.ui_set(u.note, brun.fit(brun.prompt() .. brun.diagflags(), brun.panelw), ncol_)
 end
 
 -- ANYTHING WORTH SAYING GOES TO THE LOG, ONCE. The prompt above keeps saying how to stop the run, which
@@ -1442,6 +1507,105 @@ function brun.heapk()
   pcall(function() k = gcinfo() end)
   if k == nil then pcall(function() k = collectgarbage('count') end) end
   return k
+end
+
+-- AND THE LIVE SET, WHICH IS THE FIGURE THAT MEANS SOMETHING. -> number or nil, in kB
+--
+-- gcinfo() returns TWO values -- the count and the collector's threshold -- and on this interpreter the
+-- threshold is twice the count at the last collection. MEASURED on the box at 1.7.17a, nothing loaded:
+-- 855/1704, then after an explicit collectgarbage() 482/965. Both are 2.00x.
+--
+-- WHAT THAT MEANS FOR THE PANEL. The count is a SAWTOOTH: it climbs from the live set to twice the live
+-- set, an automatic collection drops it back, and it climbs again. So a band on the count fires on the
+-- tooth rather than on growth -- a healthy soak whose live set is 2600 kB peaks at 5200 and would trip
+-- any threshold set from a single screen. The live set is what a leak moves, and threshold/2 recovers it
+-- from the same call that gives the count, with no second reading to disagree with the first.
+--
+-- nil OFFLINE, which is correct rather than unfortunate: 5.5 has no gcinfo(), collectgarbage('count')
+-- has no threshold to report, and a made-up figure would colour the field by something imaginary.
+function brun.heapsetk()
+  local thr = nil
+  pcall(function() local _; _, thr = gcinfo() end)
+  if thr == nil or thr <= 0 then return nil end
+  return thr / 2
+end
+
+-- THE SAME FIGURE AS THE HEADLINE'S LAST FIELD, or '' when there is nothing to put there. -> string
+--
+-- LIVE, AND NOT THE SAME NUMBER AS `mem`. This is the heap as it stands when the screen is drawn, which is
+-- the top of a cell, so it includes everything the cell before it left uncollected -- a recording's window
+-- tables are hundreds of kB on their own -- and it therefore moves with the PLAN as much as with anything
+-- being wrong. The comparable series is the post-collection figure diagflags() carries and brec writes at
+-- every lap seam, sampled straight after a collectgarbage(): those are the two numbers worth subtracting.
+-- So a rise HERE is not evidence of a leak, and a rise THERE is.
+--
+-- LEFT OFF A DIAGNOSTIC RUN ENTIRELY, because that run already shows a heap and the headline has no room
+-- for two. MEASURED: the headline plus this field is 41 characters of the 58 the glass holds, and a
+-- --timing run's flags are 31 more -- so the pair clips the flag string, and a clipped flag string is the
+-- defect diagflags' own comment records, where 'diag:RIST' went out as 'diag:RIS' and claimed timing was
+-- off while it was on. The flag NAMES lead the string and its two numbers trail it, so what a narrow line
+-- spends is a heap digit rather than the name of a flag that changes what the run measures.
+--
+-- NOTHING AT ALL WHEN heapk() CANNOT ANSWER, rather than 'Heap: --K'. A unit with no number in front of
+-- it reads as a fault in the run, and this field is not worth one second of that doubt.
+--
+-- THE COLOUR COMES BACK WITH THE TEXT, from the SAME reading. Asking twice would put a number on the glass
+-- and colour it by a different one -- and this figure moves with every allocation between the two calls.
+-- nil means 'no opinion': the headline then keeps whatever the health figure and the run state gave it.
+function brun.heapfield()
+  if brun.diagflags() ~= '' then return '', nil end
+  local k = brun.heapk()
+  if k == nil then return '', nil end
+  -- COLOURED BY THE LIVE SET, NOT BY THE NUMBER BEING PRINTED. nil set -- offline, where there is no
+  -- threshold to read -- means no opinion, and the headline keeps the colour health and state gave it.
+  --
+  -- TWO READS, MICROSECONDS APART, AND THAT IS SAFE: gcinfo() only reads two fields, so neither call can
+  -- collect or allocate. A collection landing between them pairs a pre-collection count with the threshold
+  -- the collection just set -- and that threshold is the newer, truer answer for the colour, because the
+  -- live set is BY DEFINITION what the last collection left behind.
+  local col = nil
+  local set = brun.heapsetk()
+  if set ~= nil then
+    if set > brun.heapbadk then
+      col = brun.c_bad
+    elseif set > brun.heapwarnk then
+      col = brun.c_warn
+    end
+  end
+  -- THE TENTH IS ALWAYS 0 ON THE INSTRUMENT: 5.0.2's gcinfo() counts whole kBytes. Offline,
+  -- collectgarbage('count') carries a real fraction, so the two interpreters cannot print this field
+  -- alike and no test may compare them character for character.
+  return string.format(' - Heap: %.1fK', k), col
+end
+
+-- THE WHOLE FIRST LINE, TEXT AND COLOUR, IN ONE PLACE. -> string, colour
+--
+-- It is the line read from across the room and it answers three questions in one: how the run is doing, what
+-- state it is in, and whether the heap is where it should be. Built here rather than at the two draws so a
+-- change to the layout cannot land on the live screen and miss the ending -- ui_end's version of this line
+-- is the one that stays up for days.
+--
+-- WORST COLOUR WINS, AND THE HEAP CAN ONLY MAKE IT WORSE. A red heap on a run whose cells are all passing is
+-- still the thing to act on, so it outranks the health figure and the state word; an amber heap cannot pull
+-- a red headline back to amber.
+--
+-- atend: the state word's colour REPLACES the health figure's rather than yielding to it. After six days
+-- away the first question is which of the two endings happened, and the health figure is still on the line
+-- in full for anybody who wants it.
+function brun.headline(atend)
+  local hl, hcol = brun.healthline()
+  local sfx, scol = brun.statesuffix()
+  local hf, hfcol = brun.heapfield()
+  hl = hl .. sfx .. hf .. brun.diagflags()
+  -- THE STATE COLOUR ONLY WHERE THE HEALTH FIGURE HAS NO VERDICT: healthline returns c_ok exactly while
+  -- there are too few cells to divide by, and a state word must not paint over a health alarm.
+  if atend or hcol == brun.c_ok then hcol = scol end
+  if hfcol == brun.c_bad then
+    hcol = brun.c_bad
+  elseif hfcol == brun.c_warn and hcol ~= brun.c_bad then
+    hcol = brun.c_warn
+  end
+  return brun.fit(hl, brun.panelw), hcol
 end
 
 -- ---------------------------------------------------------------------------

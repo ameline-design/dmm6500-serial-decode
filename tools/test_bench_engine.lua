@@ -645,8 +645,8 @@ do
      'so the panel cannot print a share over 100 %', pres)
   ck(string.find(pres, 'r251', 1, true) ~= nil,
      'and the plan label is still shown, because the record keys its rows on it', pres)
-  ck(string.find(pres, 'left', 1, true) ~= nil
-     and string.find(pres, 'left --', 1, true) == nil,
+  ck(string.find(pres, 'Left:', 1, true) ~= nil
+     and string.find(pres, 'Left: --', 1, true) == nil,
      'and the lap countdown is a number rather than --, which is the point of the fix', pres)
   -- AND THE ORDINARY CASE IS UNCHANGED: no pos on the row means the label IS the position, and no
   -- redundant label is appended.
@@ -945,9 +945,9 @@ do
   bsdg.timeout = 5
   MOCKB.sdg.wedged = false
   -- EXACTLY 'TRIGGER Pressed', because that is the whole message and the panel prints it after
-  -- 'STOPPED: '. Two things ride on the literal: brun.statesuffix() picks the amber STOPPED state by
+  -- 'STOPPED: '. Two things ride on the literal: brun.stateword() picks the amber ABORTED state by
   -- searching the reason for bare uppercase 'TRIGGER', so a reword that drops it turns an operator stop
-  -- into ' - FINISHED' in green -- the one thing that line must never say about a cut-short run; and
+  -- into FINISHED in cyan -- the one thing those lines must never say about a cut-short run; and
   -- brec.finish() only supplies the lap and cell when the reason does not already carry them, so a
   -- reason that grows an 'L1C2:' prefix back would put two disagreeing cell numbers on one line.
   ck(okk == true and tostring(whyk) == 'TRIGGER Pressed',
@@ -1413,10 +1413,13 @@ do
   ck(string.find(tostring(MD.text(brun.ui.prog)), 'FINISHED', 1, true) ~= nil,
      'the progress line becomes FINISHED when the run ends',
      tostring(MD.text(brun.ui.prog)))
-  ck(MD.obj(brun.ui.prog) ~= nil and MD.obj(brun.ui.prog).color == brun.c_good,
-     'and it is green, which STOPPED (red) must not be confused with',
-     string.format('%s vs c_good %s', tostring((MD.obj(brun.ui.prog) or {}).color),
-                   tostring(brun.c_good)))
+  -- CYAN, THE SAME COLOUR AND THE SAME WORD AS THE HEADLINE. Both lines take brun.stateword, so a clean
+  -- end cannot read FINISHED on one and ABORTED on the other -- and neither can wear the red that means
+  -- somebody has to come and fix something.
+  ck(MD.obj(brun.ui.prog) ~= nil and MD.obj(brun.ui.prog).color == brun.c_ok,
+     'and it is cyan, which ABORTED (red) must not be confused with',
+     string.format('%s vs c_ok %s', tostring((MD.obj(brun.ui.prog) or {}).color),
+                   tostring(brun.c_ok)))
   ck(string.find(tostring(MD.usertext(display.TEXT1)), 'DONE', 1, true) ~= nil
      and string.find(tostring(MD.usertext(display.TEXT2)), 'iteration', 1, true) ~= nil,
      'and the finished run says so, with its reason',
@@ -1551,8 +1554,10 @@ do
   brun.screen({iter = 3, cell = 412, vid = 'v48b', baud = 153600}, 'SER_Hello_8N1_Drift10_x10')
   local prog, tim = MD.text(brun.ui.prog), MD.text(brun.ui.time)
   local stim, fail = MD.text(brun.ui.stim), MD.text(brun.ui.fail)
-  ck(string.find(prog, 'lap 3/210', 1, true) ~= nil
-     and string.find(prog, 'cell 412/1677', 1, true) ~= nil
+  -- LABELLED AND CAPITALISED, EVERY FIELD. 'Lap:' anchors the start of the line, and the four labels are
+  -- what let the eye find a field on a line read across the glass rather than counting numbers along it.
+  ck(string.find(prog, 'Lap: 3/210', 1, true) == 1
+     and string.find(prog, 'Cell 412/1677', 1, true) ~= nil
      and string.find(prog, '(25%)', 1, true) ~= nil,
      'the progress line is lap n of m, cell n of the LAP, and the share of the lap', prog)
   -- AND THE WHOLE RUN, on the time line: 210 x 1677 = 352 170 cells, of which 412 is 0.1 %.
@@ -1584,7 +1589,7 @@ do
   brun.t0, brun.tlap = os.time() - 3600, os.time() - 1800
   brun.screen({iter = 3, cell = 412, vid = 'v48b', baud = 153600}, 'SER_Hello_8N1_Drift10_x10')
   local prog2, tim2 = MD.text(brun.ui.prog), MD.text(brun.ui.time)
-  ck(string.find(prog2, 'ran 0.5h left 3.1h', 1, true) ~= nil,
+  ck(string.find(prog2, 'Ran: 0.5h Left: 3.1h', 1, true) ~= nil,
      'the lap line says how long THIS lap has run and has left', prog2)
   ck(string.find(tim2, 'Total: 1.0h of 854.8h', 1, true) ~= nil,
      'while the total line is the run: elapsed of what the whole run will take', tim2)
@@ -1617,12 +1622,61 @@ do
   -- LABELLED. A bare percentage on a status screen is a number whose meaning has to be guessed, and the
   -- guess that matters -- bytes wrong -- is not what it measures.
   local vfail = MD.text(brun.ui.vfail)
-  ck(string.find(fail, 'allowed refusals', 1, true) ~= nil
-     and string.find(fail, 'UNEXPECTED', 1, true) ~= nil
-     and string.find(vfail, 'v48b', 1, true) ~= nil
-     and string.find(vfail, 'refused', 1, true) ~= nil,
+  ck(string.find(fail, 'Refusals: Allowed', 1, true) == 1
+     and string.find(fail, 'Unexpected', 1, true) ~= nil
+     and string.find(vfail, 'Vec: v48b', 1, true) == 1
+     and string.find(vfail, ' bad ', 1, true) ~= nil,
      'the counts are split into refusals that are allowed and refusals that are not', fail .. ' / '
      .. vfail)
+  -- BRIGHT, DIM, BRIGHT, DIM, BRIGHT, DOWN THE GLASS. Five 58-character lines at a 34 px pitch is a block
+  -- the eye loses its place in on the way across, and alternating white and grey gives each line something
+  -- to be held by. ASSERTED AS A PATTERN, not one line at a time, because the defect is two ADJACENT rows
+  -- taking the same colour -- which is what a single-line assertion cannot see.
+  local rows = {{brun.ui.prog, brun.c_val}, {brun.ui.time, brun.c_lab}, {brun.ui.stim, brun.c_val},
+                {brun.ui.fail, brun.c_lab}, {brun.ui.vfail, brun.c_val}}
+  local rk, rbad, rgot = nil, nil, nil
+  for rk = 1, table.getn(rows) do
+    local o, cgot = MD.obj(rows[rk][1]), nil
+    if o ~= nil then cgot = o.color end
+    if cgot ~= rows[rk][2] then rbad, rgot = rk, cgot end
+  end
+  ck(rbad == nil, 'and the five body lines alternate bright and dim down the glass',
+     rbad == nil and 'white grey white grey white'
+     or string.format('row %d is %s, wanted %s', rbad, tostring(rgot), tostring(rows[rbad][2])))
+  -- AND THE ERROR LIGHT IS RED ONLY WHEN A REFUSAL WAS NOT ALLOWED. brun.nbad is raised on the same two
+  -- paths that raise one of nexp/nunexp, so nbad == nexp means every failure so far was a vector barb.loud
+  -- excuses, and nbad > nexp means at least one cell came back empty when it should not have. An absolute
+  -- ceiling cannot say that: refusing is the right answer on seven of the plan's vectors, so a fixed
+  -- handful goes red in the first minutes of a healthy soak.
+  local sv_b, sv_x = brun.nbad, brun.nexp
+  brun.nbad, brun.nexp = 0, 0
+  local e0, c0 = brun.errsline()
+  brun.nbad, brun.nexp = 40, 40
+  local e1, c1 = brun.errsline()
+  brun.nbad, brun.nexp = 41, 40
+  local e2, c2 = brun.errsline()
+  ck(c0 == brun.c_good and c1 == brun.c_warn and c2 == brun.c_bad
+     and string.find(e1, 'Errors: 40', 1, true) == 1,
+     'the error count is green at none, amber while every one was allowed, red past that',
+     string.format('%s/%s  %s/%s  %s/%s', e0, tostring(c0), e1, tostring(c1), e2, tostring(c2)))
+  brun.nbad, brun.nexp = sv_b, sv_x
+  -- AND THE VECTOR LINE FITS THE GLASS AT COUNTS NO RUN CAN EXCEED, which is the whole reason its three
+  -- reason fields are initials. It is the widest line on the screen and it is NOT passed through brun.fit,
+  -- so going over does not truncate tidily -- the firmware drops whatever crosses 798 px, and the field at
+  -- the end is the one that goes. Driven at every cell of the biggest plan failing on one vector: five
+  -- figures either side of 'of' and six in each reason count, which no plan can reach but bounds them all.
+  local sv_i, sv_l, sv_sw = brun.nidle, brun.nlevels, brun.nswing
+  local sv_vc, sv_vb = brun.vcell, brun.vbad
+  brun.nidle, brun.nlevels, brun.nswing = 352170, 352170, 352170
+  brun.vcell, brun.vbad = {v48b = 99999}, {v48b = 99999}
+  brun.screen({iter = 210, cell = 1677, pos = 1677, vid = 'v48b', baud = 153600},
+              'SER_Hello_8N1_Drift10_x10')
+  local vwide = tostring(MD.text(brun.ui.vfail))
+  ck(string.len(vwide) <= brun.panelw,
+     'and the vector line fits at counts no run can exceed -- why the reasons are initials',
+     string.format('%d of %d: %s', string.len(vwide), brun.panelw, vwide))
+  brun.nidle, brun.nlevels, brun.nswing = sv_i, sv_l, sv_sw
+  brun.vcell, brun.vbad = sv_vc, sv_vb
   -- THE HEADLINE, WHICH IS THE ONLY PERCENTAGE ON THE SCREEN. 100 % means nothing unexpected has
   -- happened; every point below it is a cell that came back empty when it should not have.
   --
@@ -1647,11 +1701,11 @@ do
   -- health -- so THREE unexpected cells in 400 is what 'working' looks like and it has to be green.
   brun.ncell, brun.nunexp, brun.nexp = 400, 3, 78
   local hl, hcol = brun.healthline()
-  ck(hl == 'SOAK HEALTH 99.2 %' and hcol == brun.c_good,
+  ck(hl == 'Health: 99.25%' and hcol == brun.c_good,
      'the headline is one health figure, and the rate a working lap runs at is green', hl)
   brun.nunexp = 0
   hl, hcol = brun.healthline()
-  ck(hl == 'SOAK HEALTH 100.0 %' and hcol == brun.c_good,
+  ck(hl == 'Health: 100.00%' and hcol == brun.c_good,
      'and 100 % with 78 ALLOWED refusals is green', hl)
   -- THE TRIP ITSELF, ASSERTED AT THE BOUNDARY. Four in 400 is exactly brun.healthwarn, and the comparison
   -- is <=, so the threshold value is amber rather than green. Worth pinning: a band tested only well
@@ -1659,7 +1713,7 @@ do
   -- only value an operator will ever argue about.
   brun.nunexp = 4
   hl, hcol = brun.healthline()
-  ck(hl == 'SOAK HEALTH 99.0 %' and hcol == brun.c_warn,
+  ck(hl == 'Health: 99.00%' and hcol == brun.c_warn,
      'exactly at the threshold is amber, not green', hl)
   -- AND THE FIGURE THAT USED TO BE THE STANDARD IS NOW AMBER, which is the whole point of moving it: 92 %
   -- was measured on laps that were starving the decoder of payload, so treating it as healthy would be
@@ -1768,11 +1822,107 @@ do
   brun.nbadsdg, brun.nevtot, brun.nsdgtot = 0, 0, 0
   brun.ncell, brun.nbad, brun.nunexp = 100, 0, 0
   brun.keyarmed = true
-  ck(brun.prompt() == 'Running',
-     'and the prompt line it shows all week is the one that says how to stop it', brun.prompt())
-  -- THE ALARM MUST NOT BE ABLE TO TAKE THE PROMPT'S PLACE. It did: 'generator missed 1 cell and
-  -- recovered' replaced the only instruction on the screen, so the moment something went wrong the
-  -- operator was left with a warning and no way to act on it.
+  -- THE HEADLINE IS THE WHOLE ANSWER TO 'HOW IS IT', so all three fields are asserted together: a health
+  -- figure to two decimals, the run's state in a word, and the heap.
+  brun.screen({iter = 1, cell = 200, vid = 'v77', baud = 9600}, 'SER_Fox_8N1_x10')
+  local hl1 = tostring(MD.text(brun.ui.health))
+  ck(string.find(hl1, 'Health: 100.00%', 1, true) == 1
+     and string.find(hl1, ' - RUNNING', 1, true) ~= nil,
+     'the headline is the health figure to two decimals and the run state in a word', hl1)
+  -- THE HEAP, CHECKED AS A SHAPE AND NEVER AS A VALUE: 5.0.2's gcinfo() counts whole kBytes and 5.5's
+  -- collectgarbage('count') carries a fraction, so the two interpreters cannot print this field alike, and
+  -- the figure moves with every allocation the draw itself makes.
+  ck(string.find(hl1, ' %- Heap: %d+%.%dK') ~= nil and string.len(hl1) <= brun.panelw,
+     'with the heap after it, to one decimal, on the line read first',
+     string.format('%d of %d: %s', string.len(hl1), brun.panelw, hl1))
+  -- AND THE HEAP STANDS ASIDE ON A DIAGNOSTIC RUN, which carries a heap of its own as `mem`. The headline
+  -- plus the heap is 41 characters of the 58 the glass holds and a --timing run's flags are 31 more, so
+  -- showing both clips the flag string -- the failure diagflags exists to have fixed.
+  local sv_t, sv_m, sv_s = brun.timing, brun.memk, brun.nspinlast
+  brun.timing, brun.memk, brun.nspinlast = true, 2861, 10
+  brun.screen({iter = 1, cell = 200, vid = 'v77', baud = 9600}, 'SER_Fox_8N1_x10')
+  local hl2 = tostring(MD.text(brun.ui.health))
+  ck(string.find(hl2, 'Heap:', 1, true) == nil
+     and string.find(hl2, 'diag: timing', 1, true) ~= nil
+     and string.find(hl2, 'mem2861k', 1, true) ~= nil
+     and string.len(hl2) <= brun.panelw,
+     'and stands aside on a diagnostic run, whose own flags already carry one',
+     string.format('%d of %d: %s', string.len(hl2), brun.panelw, hl2))
+  brun.timing, brun.memk, brun.nspinlast = sv_t, sv_m, sv_s
+  -- THE HEAP BANDS, THROUGH THE ONE SEAM THAT EXISTS OFFLINE. gcinfo() is absent under 5.5, so
+  -- brun.heapsetk returns nil on the host and the field has no opinion -- correct, and it would leave the
+  -- bands untested on BOTH interpreters, the instrument's included, since nothing offline can produce a
+  -- threshold. Stubbing that one function is the honest way in: its contract is 'the live set in kB, or nil
+  -- when this interpreter cannot say', and the four answers it can give are the whole of the colour rule.
+  --
+  -- THE BAND IS ON THE SET, NOT ON THE PRINTED COUNT, which is the point being pinned: the count is a
+  -- sawtooth between the set and twice the set, so a band on it fires on the tooth.
+  local realset = brun.heapsetk
+  brun.heapsetk = function() return 2600 end
+  local _, hc0 = brun.heapfield()
+  brun.heapsetk = function() return 3001 end
+  local _, hc1 = brun.heapfield()
+  brun.heapsetk = function() return 3501 end
+  local _, hc2 = brun.heapfield()
+  brun.heapsetk = function() return nil end
+  local ht3, hc3 = brun.heapfield()
+  ck(hc0 == nil and hc1 == brun.c_warn and hc2 == brun.c_bad and hc3 == nil
+     and string.find(ht3, 'Heap:', 1, true) ~= nil,
+     'the heap colours on the live set -- clear under 3000, amber over it, red over 3500',
+     string.format('%s %s %s %s / %s', tostring(hc0), tostring(hc1), tostring(hc2), tostring(hc3),
+                   ht3))
+  -- AND A RED HEAP OUTRANKS A GREEN HEALTH FIGURE. A run whose every cell is passing is exactly the case
+  -- this field exists for: nothing else on the screen can see the allocator coming.
+  brun.heapsetk = function() return 3600 end
+  local hlh, hlc = brun.headline(false)
+  brun.heapsetk = realset
+  ck(hlc == brun.c_bad,
+     'and a red heap makes the headline red on a run whose cells are all passing', hlh)
+  -- THE FOUR STATE WORDS AND THEIR FOUR COLOURS, which is what the headline is read for from across the
+  -- room: cyan while there is nothing to judge yet, green while it runs and the figure is good, red for a
+  -- run that gave up, cyan again for one that finished the laps it was asked for. The operator's own
+  -- TRIGGER press is AMBER -- it is how every soak ends, and red is a request for somebody to come and fix
+  -- something, so the normal ending must not wear it.
+  local sv_c, sv_w, sv_bad = brun.ncell, brun.stopwhy, brun.stopbad
+  brun.stopwhy, brun.stopbad, brun.ncell = nil, false, 0
+  local w1, k1 = brun.statesuffix()
+  brun.ncell = 200
+  local w2, k2 = brun.statesuffix()
+  brun.stopwhy, brun.stopbad = 'no reply to C1:ARWV? within 5 s', true
+  local w3, k3 = brun.statesuffix()
+  brun.stopwhy, brun.stopbad = 'TRIGGER Pressed', false
+  local w4, k4 = brun.statesuffix()
+  brun.stopwhy = '4 iteration(s) complete'
+  local w5, k5 = brun.statesuffix()
+  ck(w1 == ' - STARTING' and k1 == brun.c_ok and w2 == ' - RUNNING' and k2 == brun.c_good
+     and w3 == ' - ABORTED' and k3 == brun.c_warn and w4 == ' - ABORTED' and k4 == brun.c_warn
+     and w5 == ' - FINISHED' and k5 == brun.c_ok,
+     'the headline state is STARTING, RUNNING, ABORTED or FINISHED, in four colours',
+     w1 .. w2 .. w3 .. w4 .. w5)
+  -- AND THE CALL TO ACTION RIDES THE ERROR COUNT, IN CAPITALS. There is no prompt row -- the stop control
+  -- is in the screen title, which never scrolls -- so the one instruction that has to interrupt is
+  -- appended to the line that has already gone red. NOTHING while the run is healthy, and nothing once it
+  -- has ended: a run that is over has nothing to abort.
+  brun.stopwhy, brun.stopbad, brun.keyarmed = nil, false, true
+  brun.ncell, brun.nbad, brun.nexp, brun.nunexp = 200, 0, 0, 0
+  local q1 = brun.stopnag()
+  brun.nevtot = 1                              -- an event posted: the traffic light goes red
+  local e3, c3 = brun.errsline()
+  -- THE UNARMED WARNING OUTRANKS THE ABORT, because telling an operator to press a key nothing will read
+  -- is worse than saying nothing: brun.keyarmed is the result of stopkey_setup(), which can fail.
+  brun.keyarmed = false
+  local e4, c4 = brun.errsline()
+  ck(q1 == '' and string.find(e3, 'ABORT NOW WITH TRIGGER BUTTON', 1, true) ~= nil
+     and c3 == brun.c_bad
+     and string.find(e4, 'CUT POWER TO STOP', 1, true) ~= nil and c4 == brun.c_bad
+     and string.len(e3) <= brun.panelw and string.len(e4) <= brun.panelw,
+     'a red run says ABORT NOW on the error line, and an unarmed stop key says cut power',
+     e3 .. ' / ' .. e4)
+  brun.keyarmed, brun.nevtot = true, 0
+  brun.ncell, brun.stopwhy, brun.stopbad = sv_c, sv_w, sv_bad
+  -- THE ALARM MUST NOT BE ABLE TO TAKE THE ERROR LINE'S PLACE. The line that says what to do about a red
+  -- run is the error count, and the alarm text goes to the log beneath it -- so an alarm arriving must not
+  -- cost the operator the one instruction they can act on.
   brun.msgs, brun.lastmsg = nil, nil
   brun.nsdgtot, brun.ncell = 1, 200
   -- brun.screen does NOT set brun.iter/brun.cell -- brun.soak does, before it calls screen -- and the log
@@ -1781,8 +1931,10 @@ do
   brun.iter, brun.cell = 1, 200
   brun.screen({iter = 1, cell = 200, vid = 'v77', baud = 9600}, 'SER_Fox_8N1_x10')
   brun.ui_note()
-  ck(MD.text(brun.ui.note) == 'Running',
-     'an alarm leaves the prompt alone', tostring(MD.text(brun.ui.note)))
+  local nt = tostring(MD.text(brun.ui.errs))
+  ck(string.find(nt, 'Errors: ', 1, true) == 1
+     and string.len(nt) <= brun.panelw,
+     'an alarm leaves the error line alone', nt)
   local m5 = MD.text(brun.ui.msg[1])
   ck(m5 ~= nil and string.find(m5, 'generator missed', 1, true) ~= nil
      and string.find(m5, 'L1C200', 1, true) ~= nil,

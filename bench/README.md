@@ -62,8 +62,8 @@ there — an open on a missing name posts an event, and an event is a box on the
   first. A Manage Apps install is for an operator using the app by hand, not for a soak.
 * **Only one client may be connected to the DMM,** and a previous run killed mid-command leaves the reply
   stream out of step. The preflight refuses rather than guess.
-* **Display object ids are never reclaimed on this firmware.** The status screen builds thirteen objects
-  — a screen, seven text rows and five log lines — and `display.create` returns nil once the pool is out,
+* **Display object ids are never reclaimed on this firmware.** The status screen builds fourteen objects
+  — a screen, eight text rows and five log lines — and `display.create` returns nil once the pool is out,
   silently after the first time. That bounds how many times the app can be reloaded onto a running
   instrument to roughly four; power cycle rather than push past it. The app's own `sdec.start()` will not
   build its UI twice in one power cycle either.
@@ -276,10 +276,43 @@ python3 tools/soak_listen.py          # a window, never a dependency
 If nothing is listening the connect fails inside a `pcall` and the soak carries on. Start it, stop it,
 restart it mid-run; the instrument neither knows nor cares.
 
-The front panel is the other window, and needs no host at all: a **SOAK HEALTH** headline, lap and
-cell with both elapsed and remaining, what is playing, the refusal counts, and a five-line log of
-state changes. Green is better than a good lap; amber is worse than one; **red means someone should
-walk over.**
+The front panel is the other window, and needs no host at all:
+
+```
+Health: 100.00% - RUNNING - Heap: 2544.2K                        |
+Lap: 3/4 Cell 412/1677 (25%) Ran: 0.5h Left: 1.9h
+Total: 1.5h of 9.8h - 1024/6708 c (15.3%) 5.27s/c
+v48b  153600 Bd  8N1  SER_Hello_8N1_Drift10_x10
+Refusals: Allowed 331 Unexpected 46 of 1024 cells
+Vec: v48b  12 of 40 bad   I0 L3 S0
+23:19 L0C0 started -- Siglent Technologies,SDG2122X,SDG2XCA
+23:19 L3C400 generator missed 1 cell and recovered
+                                                        (five log lines)
+Errors: 377 - ABORT NOW WITH TRIGGER BUTTON
+```
+
+The headline answers the whole question: health to two decimals, the run's state — `STARTING`,
+`RUNNING`, `ABORTED`, `FINISHED` — and the live heap. Green is better than a good lap, amber is
+worse than one, cyan is a run that has not started or has finished, and **red means someone should
+walk over** — so a run that has ENDED is never red, however it ended: the instrument is idle and
+there is nothing to walk over for. The five body lines alternate white and grey so the eye can hold
+one while reading across it. The spinner at the right of the headline stays green: it says the script
+is still executing, which is a different fact from the run being healthy.
+
+**The heap figure and the heap colour are two different numbers.** `gcinfo()` returns a count and a
+threshold, and on this interpreter the threshold is twice the count at the last collection —
+measured on the box at 1.7.17a, `855/1704` bare and `482/965` after a forced collect. So the figure
+shown is a **sawtooth**: it climbs from the live set to twice the live set, a collection drops it
+back, and it climbs again. A band on that fires on the tooth, not on growth, which is why the colour
+is banded on `threshold / 2` — the live set, which is what a leak moves and what the
+`heap NNNN kB` series in the record samples at every lap seam. `brun.heapwarnk` and `brun.heapbadk`
+are in those terms. What no reading can tell you is how much the allocator will still hand out: the
+threshold tracks the live set, not any ceiling, so amber means "bigger than a healthy run's" and
+never "nearly out".
+
+The last line is the error count, coloured against the refusals the plan **allows** — green at none,
+amber while every failure was an allowed one, red past that — and it carries the only instruction
+that interrupts. The stop control is in the screen title, which never scrolls.
 
 **Stopping.** Press the front-panel **TRIGGER** key. A touch button cannot do this — presses are not
 dispatched while Lua runs — but the key is latched by firmware and read once per cell. The run ends
