@@ -92,14 +92,33 @@ sdec.ck_maxbytes = 32768
 function sdec.ck_reader_table(rd, ntotal)
   return function(dst, from, count, step)
     if step == nil then step = 1 end
-    local m, i = 0, 0
-    for i = 1, count do
-      local a = from + (i - 1) * step
-      if a > ntotal then break end
+    local m = 0
+    if step == 1 then
+      -- Contiguous: the bound is applied once, the source index is the loop variable, and the
+      -- body is one read and one store. Same samples, same stop on the first nil.
+      local last = from + count - 1
+      if last > ntotal then last = ntotal end
+      local a
+      for a = from, last do
+        local v = rd[a]
+        if v == nil then break end
+        m = m + 1
+        dst[m] = v
+      end
+      return m
+    end
+    -- DECIMATED, IN THE SAME FORM AND FOR THE SAME REASON as the contiguous branch above: the bound folds
+    -- into the loop limit once, the source index is the loop variable rather than from + (i - 1) * step
+    -- recomputed per sample, and the store index is a counter. The samples visited are identical -- every
+    -- position from `from` in steps of `step` that is within ntotal, stopping at the first nil.
+    local last = from + (count - 1) * step
+    if last > ntotal then last = ntotal end
+    local a
+    for a = from, last, step do
       local v = rd[a]
       if v == nil then break end
-      dst[i] = v
-      m = i
+      m = m + 1
+      dst[m] = v
     end
     return m
   end
@@ -108,18 +127,38 @@ end
 -- Over a reading buffer. buf.readings is a firmware proxy, not a table, so each index
 -- is an IPC round trip -- which is exactly why this happens once per sample per
 -- capture here and not once per sample per decode pass.
+--
+-- THE CONTIGUOUS CASE IS THE HOT LOOP OF A RECORDING: every decode window reads W samples through it,
+-- and the proxy read is 21.73 us a sample (ck_win_us) against a Lua loop body that costs a fraction of
+-- that. The loop still pays for what surrounds the read, so the contiguous form keeps only what the
+-- read needs: the bound is folded into the loop limit once, the source index is the loop variable
+-- rather than from + (i - 1) * step recomputed per sample, and the store index is a counter. The
+-- decimated form (step > 1, the level pass) is unchanged.
 function sdec.ck_reader_buffer(buf, ntotal)
   local rdp = buf.readings
   return function(dst, from, count, step)
     if step == nil then step = 1 end
-    local m, i = 0, 0
-    for i = 1, count do
-      local a = from + (i - 1) * step
-      if a > ntotal then break end
+    local m = 0
+    if step == 1 then
+      local last = from + count - 1
+      if last > ntotal then last = ntotal end
+      local a
+      for a = from, last do
+        local v = rdp[a]
+        if v == nil then break end
+        m = m + 1
+        dst[m] = v
+      end
+      return m
+    end
+    local last = from + (count - 1) * step
+    if last > ntotal then last = ntotal end
+    local a
+    for a = from, last, step do
       local v = rdp[a]
       if v == nil then break end
-      dst[i] = v
-      m = i
+      m = m + 1
+      dst[m] = v
     end
     return m
   end
@@ -358,7 +397,12 @@ function sdec.ck_prime_step(pr)
     if pr.ntotal ~= nil and pr.ntotal < W then W = pr.ntotal end
     local cnt = pr.reader(pr.win, 1, W, 1)
     if cnt == nil or cnt < 2 then return true, nil, 'nothing captured' end
-    pr.cnt, pr.phase, pr.label = cnt, 'edge', 'edges'
+    -- W IS RECORDED BESIDE cnt so the decode does not read this same window again. Priming fills
+    -- pr.win[1..cnt] from position 1, and ck_decode's first window is the same table, the same reader
+    -- and the same position -- 20 000 proxy reads at 21.73 us returning values already in the table,
+    -- 0.435 s of every recording. The width is what makes the reuse checkable rather than assumed:
+    -- ck_decode takes the count only if its own geometry asks for exactly this many samples.
+    pr.cnt, pr.W, pr.phase, pr.label = cnt, W, 'edge', 'edges'
     return false, nil, nil
   end
 
@@ -601,8 +645,27 @@ function sdec.ck_decode(reader, ntotal, fmt, sink, opts)
   local slice = sdec.ck_slice_win(opts.budget_s, W, sdec.ck_win_us)
   local spent = 0
 
+  -- THE WINDOW PRIMING ALREADY READ. ck_prime_step's 'read' phase filled win[1..cnt] from position 1 and
+  -- nothing between it and here writes into the table, so the first window is present and re-reading it
+  -- costs W proxy round trips for values in hand -- 0.435 s at W = 20 000.
+  --
+  -- CONSUMED ONCE, AND CLEARED BEFORE THE LOOP RATHER THAN INSIDE IT. A resumed slice arrives with its own
+  -- off and must read; clearing here means a later slice cannot inherit a count belonging to window one.
+  --
+  -- THE THREE CONDITIONS ARE ALL LOAD-BEARING. off == 0 says this is window one; opts.resume == nil says
+  -- the table was not left by some other slice; primed.W == W says the geometry wants exactly the samples
+  -- priming took -- ck_win_n changing between the two calls is the one way the reads could differ.
+  local primed = opts.primed
+  opts.primed = nil
+  local reuse = (primed ~= nil and off == 0 and opts.resume == nil and primed.W == W)
+
   while true do
-    local cnt = reader(win, off + 1, W)
+    local cnt
+    if reuse then
+      cnt, reuse = primed.cnt, false
+    else
+      cnt = reader(win, off + 1, W)
+    end
     if cnt == nil or cnt < 2 then break end
 
     -- Edges are per window and levels are not: sig_edges reads sdec.thr and sdec.hyst,
@@ -1052,6 +1115,13 @@ function sdec.ck_job_step(job)
     if not pok then pdone, fmt, perr = true, nil, tostring(praise) end
     job.phase = job.prime.label
     if not pdone then return false, nil, nil end
+    -- THE PRIMED WINDOW, HANDED TO THE DECODE BEFORE THE PRIMING STATE IS DROPPED. ck_job_new gave both
+    -- the same win table, so its samples are the decode's first window already; passing the count lets
+    -- ck_decode skip re-reading them. Only set when priming came through the 'read' phase -- a probe path
+    -- that never reached it leaves pr.W nil, and then the decode reads normally.
+    if job.prime.W ~= nil then
+      job.opts.primed = {cnt = job.prime.cnt, W = job.prime.W}
+    end
     job.prime = nil
     if fmt == nil then
       job.done, job.tot = true, nil

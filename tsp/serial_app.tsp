@@ -3056,6 +3056,18 @@ function sdec.start()
       ulog.line('entry mode could not be read -- exiting will leave the digitize function selected')
     end
 
+    -- EVERY DETECTION SETTING BACK TO AUTOMATIC, BEFORE THE OPTIONS SCREEN IS BUILT FROM THEM. `sdec`
+    -- outlives an app run on this firmware, so without this a launch inherits whatever the last session
+    -- pinned -- a typed baud rate, a forced format, a rear-BNC trigger -- with the padlock showing it and
+    -- nobody expecting it. build_options() seeds its controls from these fields, so the reset has to come
+    -- first or the screen would show the old values while the decoder used the new ones.
+    --
+    -- LOGGED, because this is the app overriding something the operator set, and the USB log is where a
+    -- surprise gets explained after the fact.
+    sdec.reset_options()
+    ulog.line('options reset: proto uart, FRAME mode, text view, baud auto, bits auto 7/8, '
+              .. 'parity auto, polarity auto, trigger Start bit, rear BNC off')
+
     -- THE CANCEL KEY, WIRED ONCE. Every long job polls the latch this arms; without it they fall
     -- back to their own bounds, so it is set up before the first capture and never re-armed
     -- per run. Inside the build guard because a failure here must not cost the screen -- it

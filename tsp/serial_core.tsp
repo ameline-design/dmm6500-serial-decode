@@ -1759,6 +1759,55 @@ function sdec.mode_restore()
   return ok
 end
 
+-- EVERY DETECTION SETTING BACK TO AUTOMATIC, and every rear-BNC option off. Called from sdec.start().
+--
+-- WHY THIS EXISTS AT ALL: none of these reset themselves. The initialisers above are all "preserve if
+-- already set" -- `sdec.trigmode or 'edge'`, `if sdec.trigext == nil then ... end` -- and `sdec` OUTLIVES
+-- an app run on this firmware: ending the app and launching it again re-executes the modules into the
+-- same globals, and only a power cycle nils them. So a rate typed in on Tuesday was still pinned on
+-- Wednesday, with the padlock showing it but nobody expecting it. A launch is the one moment an operator
+-- has no way to know what the previous session left behind, so it is where the state has to be defined.
+--
+-- THE LOCK IS DROPPED THROUGH unlock_all() RATHER THAN FIELD BY FIELD, because clearing force_baud alone
+-- leaves the FORMAT pinned -- autolock_try sets nbits, par and nstop together with the rate -- which is
+-- the "unlocked run that was neither" that cost bench time before. That function is the single place that
+-- knows all five, and force_invert among them is why polarity comes back automatic too.
+--
+-- widths_any IS SET false, NOT LEFT ALONE: false is the 7/8 auto that the manual argues for as the
+-- default, while true widens the search to any width and is a deliberate choice for one difficult line.
+-- Carrying that choice into a later session silently changes what the decoder will accept.
+--
+-- THE TRIGGER SOURCE GOES BACK TO 'edge', which the panel calls **Start bit** -- the transition away from
+-- idle. It is the module default and the only source that needs nothing of the operator: 'free' starts
+-- immediately and can open mid-byte, and 'front' waits on a key press, so a launch that inherited either
+-- would either be worse at the first capture or appear to hang waiting for a finger.
+--
+-- THE PROTOCOL GOES BACK TO 'uart' as well. It is the only decoder shipped in version 1 -- midi and lin
+-- are built and tested but not packaged -- so a relaunch landing anywhere else would put the app on a
+-- decoder the operator cannot have chosen deliberately. proto_why goes with it: it explains a FAILURE of
+-- the protocol just cleared, so leaving it would caption the new protocol with the old one's complaint.
+function sdec.reset_options()
+  sdec.unlock_all()
+  sdec.proto = 'uart'
+  sdec.proto_why = nil
+  -- THE CAPTURE MODE, and this is the one that most deserves resetting. capmode carries 'frame', '8k' or
+  -- '32k' and its own initialiser calls itself operator state; a session left in 32 kB makes the FIRST
+  -- press of a fresh launch a minutes-long recording instead of a ~2 s screenful, with a file written and
+  -- no way to stop it. FRAME is the mode every other default here assumes.
+  sdec.capmode = 'frame'
+  -- AND THE VIEW, so bytes are shown as text rather than in whatever pane the last session was reading.
+  sdec.ui_mode = 'text'
+  sdec.widths_any = false
+  sdec.trigmode = 'edge'
+  -- BOTH REAR-BNC DIRECTIONS. trigext/trigext_only are a capture waiting on line 3 as an input;
+  -- fc_out drives the same connector as an output. Off means the connector is not in the signal path at
+  -- all, which is what an operator who has just launched the app is entitled to assume.
+  sdec.trigext = false
+  sdec.trigext_only = false
+  sdec.fc_out = false
+  return true
+end
+
 -- Apply the range, sample rate and trigger settings to the digitizer before a capture.
 function sdec.hw_config()
   sdec.quiet_events()

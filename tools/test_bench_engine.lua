@@ -596,7 +596,25 @@ do
   brun.t0, brun.tlap = os.time() - 2650, os.time() - 2650
   brun.screen({iter = 9, cell = 500, vid = 'v77', baud = 9600}, ARB.v77)
   local tres = tostring(MD.text(brun.ui.time))
-  ck(string.find(tres, '11164 of 279930', 1, true) ~= nil
+  -- THE RATE FIELD ITSELF, three significant digits over the range a soak really spans: a 250 kBd cell at
+  -- 8 kB is a fraction of a second and a 300 Bd cell behind a long wait is minutes, so the format has to
+  -- hold both without a fixed decimal count making one of them useless. The clamp is the load-bearing part:
+  -- %.3g turns 1050 into '1.05e+03', which is 8 characters on a line measured to the character, so anything
+  -- that wide is reported as '>999' instead.
+  ck(brun.sig3(6.5873) == '6.59', 'sig3 gives three significant digits', tostring(brun.sig3(6.5873)))
+  ck(brun.sig3(0.23412) == '0.234', '...on a sub-second cell', tostring(brun.sig3(0.23412)))
+  ck(brun.sig3(12.34) == '12.3' and brun.sig3(105.4) == '105',
+     '...and on a slow one', tostring(brun.sig3(12.34)) .. ' / ' .. tostring(brun.sig3(105.4)))
+  ck(brun.sig3(1050) == '>999' and brun.sig3(999.6) == '>999',
+     'sig3 clamps rather than emitting an exponent that would overrun the line',
+     tostring(brun.sig3(1050)))
+  ck(brun.sig3(nil) == '--' and brun.sig3(-1) == '--',
+     'sig3 answers -- for no rate and for a negative one', tostring(brun.sig3(nil)))
+  ck(string.len(brun.sig3(6.5873)) <= 5 and string.len(brun.sig3(1050)) <= 5,
+     'sig3 is never wider than 5 characters, which is what the line was measured against',
+     tostring(string.len(brun.sig3(6.5873))))
+
+  ck(string.find(tres, '11164/279930', 1, true) ~= nil
      and string.find(tres, '(4.0%)', 1, true) ~= nil,
      'a resumed run counts the cells it skipped as done', tres)
   -- AND THE RATE STILL COMES FROM THIS SESSION ONLY. 2650 s over 500 cells is 5.3 s a cell, so the
@@ -637,6 +655,37 @@ do
   local qres = tostring(MD.text(brun.ui.prog))
   ck(string.find(qres, '100/197', 1, true) ~= nil and string.find(qres, 'r100', 1, true) == nil,
      'a plan that restarts its numbering reads exactly as before', qres)
+
+  -- A WRAPPED PLAN IS THE MIRROR CASE, and it is the one an operator met on the glass. A one-lap plan run
+  -- for 15 iterations reaches the end of the file and starts it again, so the COUNTED position runs on --
+  -- 110 = 44 + 44 + 22 on a 44-cell lap -- while the plan's own label restarts with the plan. Withholding
+  -- the denominator then left 'cell 110' with no share and 'left --' on a run that knew both, and the bare
+  -- label suffix beside it meant nothing to the reader.
+  --
+  -- THE LABEL IS BUILT RATHER THAN WRITTEN OUT, here and below, because tools/lint_vecrefs.py reads r<NN>
+  -- as a vector id and a two-digit one that is not in vector_names.MAP fails the gate. The existing case
+  -- above gets away with 'r251' only because three digits do not match.
+  brun.percell, brun.iterwant = 44, 15
+  brun.ncell, brun.nskipped = 110, 0
+  brun.t0, brun.tlap = os.time() - 600, os.time() - 120
+  brun.screen({iter = 1, cell = 22, pos = 110, vid = 'v77', baud = 2400}, ARB.v77)
+  local wres = tostring(MD.text(brun.ui.prog))
+  ck(string.find(wres, '22/44', 1, true) ~= nil,
+     'a wrapped plan shows the label, which is the position within the lap', wres)
+  ck(string.find(wres, 'cell 110', 1, true) == nil,
+     'and not the counted position, which has run past the lap', wres)
+  ck(string.find(wres, ' r' .. 22, 1, true) == nil,
+     'and appends no label, because the label is what it is already showing', wres)
+  ck(string.find(wres, 'left --', 1, true) == nil,
+     'and the lap countdown becomes a number, since the position in the lap is known', wres)
+  -- AND A LABEL ALSO PAST THE LAP IS STILL REFUSED. Neither number is inside the lap then, so there is
+  -- nothing to stand behind: this is the case pos % nlap would have answered confidently and wrongly.
+  brun.screen({iter = 1, cell = 251, pos = 110, vid = 'v77', baud = 2400}, ARB.v77)
+  local xres = tostring(MD.text(brun.ui.prog))
+  ck(string.find(xres, '/44', 1, true) == nil,
+     'a label past the lap prints no denominator at all', xres)
+  ck(string.find(xres, 'r251', 1, true) ~= nil,
+     'and falls back to showing the label separately, as before', xres)
   brun.nskipped = 0
   brun.ui_destroy()
 
@@ -1507,11 +1556,17 @@ do
      and string.find(prog, '(25%)', 1, true) ~= nil,
      'the progress line is lap n of m, cell n of the LAP, and the share of the lap', prog)
   -- AND THE WHOLE RUN, on the time line: 210 x 1677 = 352 170 cells, of which 412 is 0.1 %.
-  ck(string.find(tim, '412 of 352170 cells', 1, true) ~= nil
+  ck(string.find(tim, '412/352170 c', 1, true) ~= nil
      and string.find(tim, '(0.1%)', 1, true) ~= nil,
      'and the time line carries cells done out of the whole run, with its share', tim)
-  ck(string.find(tim, 'Total: ', 1, true) == 1 and string.find(tim, ' of ', 1, true) ~= nil,
-     'the time line is labelled Total and reads elapsed of projected total', tim)
+  -- AND IT WITHHOLDS THE PROJECTED TOTAL IT CANNOT COMPUTE. This scenario has no rate yet, so there is no
+  -- ' of <total>' field and no 's/c' field either. Asserting the ABSENCE matters here: the old form of this
+  -- check looked for ' of ' and was satisfied by the ' of ' inside '412 of 352170 cells', so it passed
+  -- without ever testing the elapsed-of-total field. Shortening that count to '412/352170 c' removed the
+  -- accidental match and exposed it.
+  ck(string.find(tim, 'Total: ', 1, true) == 1 and string.find(tim, ' of ', 1, true) == nil
+     and string.find(tim, 's/c', 1, true) == nil,
+     'the time line withholds a projected total and a rate until a rate exists', tim)
 
   -- HOW LONG THIS LAP HAS TO RUN, which is the field the operator acts on rather than reads: a run ends
   -- with the TRIGGER key, and stopping nine tenths of the way through a lap discards that lap as far as

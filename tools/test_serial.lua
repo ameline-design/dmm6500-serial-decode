@@ -3259,6 +3259,58 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+-- A RELAUNCH MUST BE A KNOWN-GOOD START.
+--
+-- `sdec` outlives an app run on this firmware -- only a power cycle nils it --
+-- and every one of these fields is initialised with a "preserve if already set"
+-- pattern, so without reset_options() a launch inherits whatever the previous
+-- session pinned. The operator's remedy for an app behaving oddly is End App
+-- and relaunch, and that only works if the relaunch is defined rather than
+-- inherited. So the test pollutes every field first: asserting the defaults on
+-- a fresh interpreter would pass without the code under test existing.
+-- ---------------------------------------------------------------------------
+do
+  sdec.force_baud, sdec.force_nbits = 38400, 7
+  sdec.force_par, sdec.force_nstop, sdec.force_invert = 'even', 2, true
+  sdec.autolock_set = {baud = true}
+  sdec.widths_any = true
+  sdec.capmode, sdec.ui_mode = '32k', 'hex'
+  sdec.trigmode = 'front'
+  sdec.trigext, sdec.trigext_only, sdec.fc_out = true, true, true
+
+  check('reset_options answers true', sdec.reset_options() == true)
+  check('...baud rate back to auto', sdec.force_baud == nil, tostring(sdec.force_baud))
+  check('...data bits back to auto 7/8', sdec.force_nbits == nil and sdec.widths_any == false,
+        tostring(sdec.force_nbits) .. ' any=' .. tostring(sdec.widths_any))
+  check('...parity back to auto', sdec.force_par == nil, tostring(sdec.force_par))
+  check('...polarity back to auto', sdec.force_invert == nil, tostring(sdec.force_invert))
+  check('...stop bits back to auto', sdec.force_nstop == nil, tostring(sdec.force_nstop))
+  -- THE PROVENANCE GOES WITH THE LOCK. Left behind it would claim the app had
+  -- chosen fields that are no longer set.
+  check('...and the autolock provenance goes with it', sdec.autolock_set == nil)
+  check('...trigger back to Start bit', sdec.trigmode == 'edge', tostring(sdec.trigmode))
+  -- BOTH DIRECTIONS of the rear connector: trigext/trigext_only are an input,
+  -- fc_out drives the same line as an output.
+  check('...and both rear-BNC options off',
+        sdec.trigext == false and sdec.trigext_only == false and sdec.fc_out == false,
+        tostring(sdec.trigext) .. '/' .. tostring(sdec.trigext_only)
+        .. '/' .. tostring(sdec.fc_out))
+  -- AND THE PROTOCOL, back to the only decoder version 1 ships. proto_why goes
+  -- with it: it explains a failure of the protocol just cleared, so left behind
+  -- it would caption the new protocol with the old one's complaint.
+  sdec.proto, sdec.proto_why = 'lin', 'lin decode failed'
+  sdec.reset_options()
+  check('...and the protocol back to uart', sdec.proto == 'uart', tostring(sdec.proto))
+  check('...with the stale protocol complaint dropped', sdec.proto_why == nil,
+        tostring(sdec.proto_why))
+  -- THE CAPTURE MODE IS THE ONE THAT COSTS MOST IF IT PERSISTS: a session left in
+  -- 32 kB makes the first press of a fresh launch a minutes-long recording that
+  -- writes a file and cannot be stopped, rather than a ~2 s screenful.
+  check('...the capture mode back to FRAME', sdec.capmode == 'frame', tostring(sdec.capmode))
+  check('...and the view back to text', sdec.ui_mode == 'text', tostring(sdec.ui_mode))
+end
+
+-- ---------------------------------------------------------------------------
 -- TEARDOWN MUST NOT TOUCH THE COMPARATOR WITH A BASIC FUNCTION SELECTED.
 --
 -- Everything under dmm.digitize belongs to the digitize function, so writing
@@ -5124,6 +5176,35 @@ local function test_chunked()
           has(body, '|Lorem ipsum dolo|'), string.sub(body, 1, 60))
     check('ck_run frees the frame-mode capture rather than holding it alongside',
           sdec.smp == nil)
+
+    -- THE PRIMED FIRST WINDOW IS READ ONCE, NOT TWICE. ck_prime_step's 'read' phase fills win[1..cnt]
+    -- from position 1, and ck_decode's first window is the same table, the same reader and the same
+    -- position -- so reading it again returns values already in hand. On a 32 kB recording that is
+    -- 20 000 proxy round trips at 21.73 us, 0.435 s, and it is 13 % of a one-window recording.
+    --
+    -- COUNTED BY (position 1, width W) RATHER THAN BY TOTAL READS, which is what makes this test survive
+    -- things that are not the invariant: the level pass reads ck_level_n samples and its step is derived
+    -- from ntotal, and the window count moves with the payload. Both would drift a total; neither can
+    -- turn two reads of window one into one.
+    MD.usb(true)
+    MD.forget_files()
+    local inner = sdec.ck_reader_table(rd, nsmp)
+    local nfirst, ncalls = 0, 0
+    local counting = function(dst, from, count, step)
+      ncalls = ncalls + 1
+      if from == 1 and count == 2000 and (step == nil or step == 1) then nfirst = nfirst + 1 end
+      return inner(dst, from, count, step)
+    end
+    sdec.ck_win_n = 2000
+    local ctot = sdec.ck_run(counting, nsmp, '/usb1/stream02.txt', {})
+    sdec.ck_win_n = old
+    check('the primed first window is read once rather than twice',
+          nfirst == 1, string.format('%d read(s) of window one, over %d reader call(s)',
+                                     nfirst, ncalls))
+    -- AND THE BYTES DID NOT MOVE, which is the whole claim: the same 248 bytes the run above produced
+    -- while reading that window twice. A saving that changed the output would not be a saving.
+    check('and the decode produces the same bytes as reading it twice did',
+          ctot ~= nil and ctot.nf == 248, tostring(ctot and ctot.nf))
 
     -- A key pulled mid-stream must stop the run and SAY the file is incomplete: a
     -- truncated log that reports success is worse than no log.

@@ -286,38 +286,82 @@ end
 -- Returns value, err -- nil on success, else 'start', 'parity', 'framing' or
 -- 'truncated'. A parity or framing failure still returns the value: a byte with a
 -- bad stop bit is usually the right byte at the wrong baud rate.
+--
+-- THE BIT SAMPLING IS INLINE, AND IT IS THE SAME SAMPLING AS sdec.ua_bit. A frame is 10 to 12 bit
+-- reads, every byte of a recording goes through here, and in this Lua a function call with its
+-- global look-ups (sdec.thr, math.floor) costs about as much as the sampling it wraps -- so the
+-- frame walks its slots in one loop, slot 0 the start bit, 1..nbits the data, then the parity slot
+-- if there is one, then the stop bits, with the tap arithmetic of ua_bit written out once per slot.
+-- The centre tap defines the bit and its absence defines a truncated frame, the outer taps join
+-- the vote only at T >= 6 and only where they fall inside the capture, and a tie goes to the centre:
+-- ua_bit, expression for expression, including the order of the floating-point operations, because
+-- floor(x + 0.5) at a cell boundary is decided by the last bit of x. ua_bit itself stays as the
+-- single-position sampler for anything that wants one bit rather than a frame.
 function sdec.ua_frame(rd, n, t0, T, nbits, par, nstop, invert)
-  local bit = sdec.ua_bit
+  local thr = sdec.thr
+  local floor = math.floor
+  local three, off = false, 0
+  if T ~= nil and T >= 6 then
+    three = true
+    off = 0.2 * T
+  end
 
-  local sb = bit(rd, n, t0 + 0.5 * T, invert, T)
-  if sb == nil then return nil, 'truncated' end
-  if sb ~= 0 then return nil, 'start' end
+  local pslot = -1
+  if par ~= sdec.PAR_NONE then pslot = nbits + 1 end
+  local last = nbits + nstop
+  if pslot > 0 then last = last + 1 end
 
   local val, bv = 0, 1
-  local k
-  for k = 1, nbits do
-    local s = bit(rd, n, t0 + (k + 0.5) * T, invert, T)
-    if s == nil then return nil, 'truncated' end
-    if s == 1 then val = val + bv end
-    bv = bv * 2
-  end
+  local slot
+  for slot = 0, last do
+    -- Bit cell `slot` is centred at t0 + (slot + 0.5) * T.
+    local x = t0 + (slot + 0.5) * T
+    local ic = floor(x + 0.5)
+    if ic < 1 or ic > n then return nil, 'truncated' end
+    local vc = rd[ic]
+    if vc == nil then return nil, 'truncated' end
 
-  local slot = nbits + 1
-  if par ~= sdec.PAR_NONE then
-    local pb = bit(rd, n, t0 + (slot + 0.5) * T, invert, T)
-    if pb == nil then return nil, 'truncated' end
-    local pe = math.mod(sdec.ua_popcount(val), 2)
-    local want
-    if par == sdec.PAR_EVEN then want = pe else want = 1 - pe end
-    if pb ~= want then return val, 'parity' end
-    slot = slot + 1
-  end
+    local b
+    if three then
+      local ones, votes = 0, 1
+      if vc >= thr then ones = 1 end
+      local i = floor(x - off + 0.5)
+      if i >= 1 and i <= n then
+        local v = rd[i]
+        if v ~= nil then
+          votes = votes + 1
+          if v >= thr then ones = ones + 1 end
+        end
+      end
+      i = floor(x + off + 0.5)
+      if i >= 1 and i <= n then
+        local v = rd[i]
+        if v ~= nil then
+          votes = votes + 1
+          if v >= thr then ones = ones + 1 end
+        end
+      end
+      if ones * 2 > votes then b = 1
+      elseif ones * 2 < votes then b = 0
+      elseif vc >= thr then b = 1
+      else b = 0 end
+    elseif vc >= thr then b = 1
+    else b = 0 end
+    if invert then b = 1 - b end
 
-  local j
-  for j = 1, nstop do
-    local st = bit(rd, n, t0 + (slot + j - 1 + 0.5) * T, invert, T)
-    if st == nil then return nil, 'truncated' end
-    if st ~= 1 then return val, 'framing' end
+    if slot == 0 then
+      if b ~= 0 then return nil, 'start' end
+    elseif slot <= nbits then
+      if b == 1 then val = val + bv end
+      bv = bv * 2
+    elseif slot == pslot then
+      local pe = math.mod(sdec.ua_popcount(val), 2)
+      local want
+      if par == sdec.PAR_EVEN then want = pe else want = 1 - pe end
+      if b ~= want then return val, 'parity' end
+    else
+      if b ~= 1 then return val, 'framing' end
+    end
   end
 
   return val, nil

@@ -543,6 +543,25 @@ end
 -- %.0f AND NOT %d, because the offline twin runs on a modern Lua where string.format('%d', 12.5) is an
 -- error rather than a truncation. This is the mirror image of the math.mod trap: a construct the
 -- instrument accepts and the host refuses.
+-- THREE SIGNIFICANT DIGITS, and %g rather than a chain of %.Nf tests, because the range this has to
+-- cover is wide: a 250 kBd cell at 8 kB is a fraction of a second and a 300 Bd cell with a long wait is
+-- minutes, so a fixed number of decimals is either noise at one end or a single digit at the other.
+--
+-- CLAMPED TO A WIDTH OF 5, which is what makes it safe to put on a line already measured against the
+-- glass. %.3g gives '6.59', '0.234', '12.3', '105' and '1.05e+03' -- the exponent form is the one that
+-- would overrun, so anything needing it is reported as '>999', a figure no soak should ever show and
+-- which says "something is very wrong" more usefully than an exponent nobody reads at a glance.
+--
+-- nil UNTIL THE FIRST CELL COMPLETES. brun.ui_show computes the rate as el/ncell, so before any cell has
+-- finished there is no rate to print and '0.00' would be a lie rather than a placeholder.
+function brun.sig3(x)
+  if x == nil then return '--' end
+  local v = x + 0.0
+  if v < 0 then return '--' end
+  if v >= 999.5 then return '>999' end
+  return string.format('%.3g', v)
+end
+
 function brun.pct(nbad, ncell)
   local n = ncell or 0
   if n < 1 then return '0%' end
@@ -1248,6 +1267,18 @@ function brun.ui_show(c, arb)
   -- leaked-nfail bugs. `pos` absent means "the label IS the position", which is true of every plan this
   -- repo generates.
   local pos = c.pos or c.cell or 0
+  -- A WRAPPED PLAN, which is what a one-lap plan run for many iterations does: the engine reaches the end
+  -- of the file and starts it again, so the counted position runs on -- 110 on a 44-cell lap -- while the
+  -- plan's own label restarts with the plan. The label IS the position within the lap; the counter is not.
+  --
+  -- THE LABEL RATHER THAN pos % nlap, because the modulo also produces a confident answer on the one plan
+  -- shape that would make it wrong: a plan numbering cells cumulatively across the whole file has a label
+  -- ABOVE nlap, and the test here rejects that instead of printing a fraction of a denominator it does not
+  -- belong to. On every plan this repo generates the label restarts per lap, so it is the honest position.
+  if nlap > 0 and pos > nlap then
+    local lbl = c.cell or 0
+    if lbl >= 1 and lbl <= nlap then pos = lbl end
+  end
   local cellsleft = nil
   if nlap > 0 and pos <= nlap then cellsleft = nlap - pos end
   if rate ~= nil and cellsleft ~= nil then lapleft = brun.hshort(rate * cellsleft) end
@@ -1287,13 +1318,25 @@ function brun.ui_show(c, arb)
   -- share above. '%s cell(s) done' alone could not answer 'how far through the fortnight is it'.
   local tot = '--'
   if rate ~= nil and ntot > 0 then tot = brun.hshort(rate * ntot) end
+  -- '/' AND ' c' RATHER THAN ' of ' AND ' cells', which buys the seven characters the rate below needs.
+  -- This line is measured against brun.panelw at its widest -- a 210-lap plan puts six digits in both
+  -- counts -- and it was already within one character of the limit, so the rate could not simply be
+  -- appended. The two counts either side of a slash read as a fraction without the word.
   local done = brun.int(ndone)
   if ntot > 0 then
-    done = done .. ' of ' .. brun.int(ntot) .. ' cells'
+    done = done .. '/' .. brun.int(ntot) .. ' c'
                 .. string.format(' (%.1f%%)', 100.0 * ndone / ntot)
   else
-    done = done .. ' cell(s) done'
+    done = done .. ' c done'
   end
+  -- SECONDS A CELL, THE RATE EVERY OTHER PROJECTION ON THIS SCREEN IS DERIVED FROM. 'left' and the lap
+  -- countdown are both rate * a cell count, so showing the rate makes those two auditable from the glass
+  -- instead of having to be trusted -- and it is the number that says a run has slowed down before any
+  -- countdown has moved enough to notice.
+  -- OMITTED ENTIRELY UNTIL THERE IS A RATE, on the same principle the 'of <total>' field above follows:
+  -- '--s/c' is a unit attached to nothing, and this line already carries a '--' that means something else.
+  local percell = nil
+  if rate ~= nil then percell = brun.sig3(rate) .. 's/c' end
   -- 'of --' IS LEFT OUT RATHER THAN PRINTED. Until the first cell finishes there is no rate, so the
   -- projection is unknown -- and 'Total: 0.0h of -- - 1 of 352170 cells' puts two dashes meaning different
   -- things three characters apart on the line a reader meets first.
@@ -1307,6 +1350,7 @@ function brun.ui_show(c, arb)
   if rate ~= nil then elshown = rate * ndone end
   local ran = 'Total: ' .. brun.hshort(elshown)
   if tot ~= '--' then ran = ran .. ' of ' .. tot end
+  if percell ~= nil then done = done .. ' ' .. percell end
   brun.ui_set(u.time, ran .. ' - ' .. done, brun.c_lab)
 
   brun.ui_set(u.stim, vid .. '  ' .. brun.int(c.baud) .. ' Bd  ' .. brun.fmtof(arb)
