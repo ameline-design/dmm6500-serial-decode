@@ -979,10 +979,15 @@ function brun.ui_end()
   -- glass so the eye can hold a line while it reads across it, and the pattern is keyed on the ROW, not on
   -- what the row happens to be saying -- an ending that recolours one line breaks the pattern for the one
   -- screen that stays up longest.
-  brun.ui_set(u.vfail, string.format('nostim %s  idle %s  lvl %s  swing %s  other %s',
+  -- SPELLED OUT BUT SINGLE-SPACED, AND FITTED. These are RUN totals, so on the 200-lap plan every one of
+  -- them can reach six figures: two-space separators put this line at 66 characters against the 58 the
+  -- glass holds, and the field the firmware drops is `other` at the end. Single spaces and `sw` bring the
+  -- six-figure case to 56, and brun.fit makes anything past that clip where it can be seen rather than
+  -- wherever the pixel budget runs out.
+  brun.ui_set(u.vfail, brun.fit(string.format('nostim %s idle %s lvl %s sw %s other %s',
                                      brun.int(brun.nsdgtot), brun.int(brun.nidle),
                                      brun.int(brun.nlevels), brun.int(brun.nswing),
-                                     brun.int(brun.nwhyother)), brun.c_val)
+                                     brun.int(brun.nwhyother)), brun.panelw), brun.c_val)
   -- HOW IT ENDED, IN ITS OWN COLOUR, ON THE LINE READ FIRST. brun.stopbad is set where the run parked --
   -- the generator gone, the record unwritable -- as opposed to finishing the laps it was asked for, so
   -- ABORTED goes out red and FINISHED cyan.

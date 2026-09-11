@@ -62,11 +62,15 @@ there — an open on a missing name posts an event, and an event is a box on the
   first. A Manage Apps install is for an operator using the app by hand, not for a soak.
 * **Only one client may be connected to the DMM,** and a previous run killed mid-command leaves the reply
   stream out of step. The preflight refuses rather than guess.
-* **Display object ids are never reclaimed on this firmware.** The status screen builds fourteen objects
-  — a screen, eight text rows and five log lines — and `display.create` returns nil once the pool is out,
-  silently after the first time. That bounds how many times the app can be reloaded onto a running
-  instrument to roughly four; power cycle rather than push past it. The app's own `sdec.start()` will not
-  build its UI twice in one power cycle either.
+* **There are 463 display objects per power cycle, and `display.create` returns nil once they are gone —
+  silently, after one 1701 in the log.** The status screen builds fourteen of them: a screen, eight text
+  rows and five log lines. `display.delete` **does** return objects to the pool, and a screen frees its
+  children, so reloading is unbounded as long as the previous build is torn down first — which every
+  loader here now does before dropping `sdec`. Measured: six consecutive load-and-build cycles with 300
+  objects still free. What is *not* recoverable by any documented call is an object whose handle was lost;
+  `collectgarbage` frees none of them, since a handle is a plain number. See
+  [../docs/vendor/01-display-object-pool.md](../docs/vendor/01-display-object-pool.md) for the numbers and
+  the rescue procedure.
 * **A power cycle leaves `sdec` and `brun` nil**, so `--no-load` after one finds nothing loaded. Load
   first, or check `type(sdec)` before trusting `--no-load`.
 * **Take the scope out of Bode mode before an unattended run.** The scope also drives the SDG over USB

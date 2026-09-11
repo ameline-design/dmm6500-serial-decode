@@ -1672,9 +1672,27 @@ do
   brun.screen({iter = 210, cell = 1677, pos = 1677, vid = 'v48b', baud = 153600},
               'SER_Hello_8N1_Drift10_x10')
   local vwide = tostring(MD.text(brun.ui.vfail))
-  ck(string.len(vwide) <= brun.panelw,
-     'and the vector line fits at counts no run can exceed -- why the reasons are initials',
+  -- THE FIGURES MUST BE ON THE LINE, not merely the line short enough. A length test alone passes if the
+  -- three reason fields are dropped or come back as stale zeroes -- shorter is not better here, and a
+  -- test that cannot fail that way is worse than no test.
+  ck(string.len(vwide) <= brun.panelw
+     and string.find(vwide, 'I352170', 1, true) ~= nil
+     and string.find(vwide, 'L352170', 1, true) ~= nil
+     and string.find(vwide, 'S352170', 1, true) ~= nil
+     and string.find(vwide, '99999 of 99999', 1, true) ~= nil,
+     'and the vector line carries all six figures and still fits -- why the reasons are initials',
      string.format('%d of %d: %s', string.len(vwide), brun.panelw, vwide))
+  -- AND THE END-OF-RUN VERSION OF THAT ROW, which carries five run totals rather than three and spells
+  -- them out. Same widest case, same glass.
+  brun.stopwhy, brun.stopbad = '4 iteration(s) complete', false
+  brun.nwhyother = 352170
+  brun.ui_end()
+  local ewide = tostring(MD.text(brun.ui.vfail))
+  brun.stopwhy, brun.nwhyother = nil, 0
+  ck(string.len(ewide) <= brun.panelw
+     and string.find(ewide, 'other 352170', 1, true) ~= nil,
+     'and the ending diagnostic row keeps its last field at six-figure totals',
+     string.format('%d of %d: %s', string.len(ewide), brun.panelw, ewide))
   brun.nidle, brun.nlevels, brun.nswing = sv_i, sv_l, sv_sw
   brun.vcell, brun.vbad = sv_vc, sv_vb
   -- THE HEADLINE, WHICH IS THE ONLY PERCENTAGE ON THE SCREEN. 100 % means nothing unexpected has
