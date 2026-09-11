@@ -23,7 +23,7 @@ unattended instrument the first such event blocks the panel indefinitely and hid
 | 1130 *Parameter id, expected value from 0 to 511* (display) | 1, error | **no** |
 | 2205 *File not found* (file) | 1, error | **no** |
 | 4915 *Attempting to store past the capacity of reading buffer* | 1, error | **yes** |
-| 2874 *Analog trigger condition may no longer be valid* | 2, warning | **yes** |
+| 2874 *Analog trigger condition may no longer be valid* | 2, warning | **yes**, and only when the trigger condition is incoherent with the active function |
 
 Two error-severity events are suppressed and a third is not; a *warning* raises a dialog while ten
 *errors* queued behind it raise nothing. So this is not "the panel shows error severity whatever
@@ -56,13 +56,26 @@ One armed capture per row, 20 000-sample buffer, 5 % pre-trigger, `dmm.digitize.
 | `FILL_ONCE` | 500 kS/s | 20 000 | **10** |
 | `FILL_ONCE` | 1 MS/s | 20 000 | **10** |
 | **`FILL_CONTINUOUS`** | **1 MS/s** | **20 000** | **0** |
+| `FILL_CONTINUOUS`, analog trigger configured as the source | 1 MS/s | 20 000 | **0** |
 
-Three things follow:
+The last row matters because the rest of the table waits on `trigger.EVENT_DISPLAY`, where no analog
+trigger is configured at all. Configuring the comparator as the source -- edge mode, level and slope set,
+which is what an app doing edge-triggered acquisition actually does -- gives **two events for the whole
+armed capture and no dialog**: `2731` *path initiated* and one path-idled entry. **2874 does not fire when
+the trigger condition is coherent with the active function**, so the warning dialog above belongs to a
+misconfigured comparator rather than to arming as such.
+
+Four things follow:
 
 1. **Always exactly ten**, at every rate that produces any. Not proportional to the wait or the rate.
 2. **The threshold is between 10 and 50 kS/s.** Below it, none — and note the depth comes back one short.
 3. **`FILL_CONTINUOUS` avoids it entirely at the top rate with the full depth returned.** That is the
-   workaround, and it is the answer to a question this report previously left open.
+   workaround. Note that the CONSTANT `buffer.FILL_CONTINUOUS` does not exist on this firmware and
+   assigning it raises; the attribute takes the numeric value, and `fillmode = 1` reads back as 1.
+   `defbuffer1` ships in that mode.
+4. **What remains after the workaround is two log entries per armed capture**, `2731` and a path-idled
+   entry, neither of which raises a dialog. For an app that must keep the event log clean -- because an
+   accumulating log raises "Multiple errors have occurred" by itself -- two per capture is still two.
 
 The full event set for one armed capture at 1 MS/s is 12 entries: `2731` *path initiated* (severity 4),
 `4915` × 10 (severity 1), `2728` (severity 2).
@@ -121,5 +134,6 @@ collapse into one "Multiple errors have occurred" line, so the log is the only p
    `position` from 5 to 66.
 2. **Why exactly ten.** The count does not vary with rate or wait, which suggests a fixed number of
    discard notifications rather than one per overwrite.
-3. **Which other subsystems ignore `showevents`.** Four events are classified above; the display and file
-   subsystems honour it, the trigger subsystem does not. A full map would need one event per subsystem.
+3. **Which other subsystems ignore `showevents`.** The display and file subsystems honour it; the trigger
+   subsystem does not, and neither does the script subsystem -- a successful `script.delete()` posts a
+   spurious -104 that appears as a dialog (see report 3). A full map would need one event per subsystem.
