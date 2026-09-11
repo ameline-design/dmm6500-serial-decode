@@ -903,14 +903,18 @@ check('the analog trigger path was actually used', READS.triggered == t0trig + 1
 check('the trigger armed on a FALLING edge for an idle-high line',
       dmm.digitize.analogtrigger.edge.slope == dmm.SLOPE_FALLING,
       tostring(dmm.digitize.analogtrigger.edge.slope))
--- The position is DERIVED from a reserve measured in TIME, not the fixed sdec.pretrig percentage:
--- 5 % of the buffer is 1.05 ms at 1 MS/s, shorter than the wait for a falling edge on a slow line,
--- and the reserve then wraps and posts 4915 per overwrite. See sdec.acq_position.
+-- THE POSITION IS THE FIXED sdec.pretrig PERCENTAGE, which is what this asserts. It is NOT derived
+-- from a reserve measured in time: 5 % of the buffer is 1.05 ms at 1 MS/s, shorter than the wait for a
+-- falling edge on a slow line, so the reserve wraps -- and lengthening it costs depth, since the
+-- firmware makes post = count - count x position/100. See sdec.acq_reserve for that arithmetic and
+-- sdec.acq_fillmode for what actually stops the event a wrap would post.
 check('the pre-trigger percentage was passed through', TRIG.position == sdec.pretrig,
       tostring(TRIG.position))
--- The reserve's duration is what decides whether it WRAPS while waiting for the first edge, and a
--- wrap posts 4915 per discarded reading. It cannot be lengthened without cost -- see acq_reserve --
--- so it is measured here rather than fixed, and the event is muted for the capture instead.
+-- The reserve's duration is what decides whether it WRAPS while waiting for the first edge, and on a
+-- FILL_ONCE buffer a wrap posts 4915 per discarded reading. It cannot be lengthened without cost --
+-- see acq_reserve -- so what stops the event is the FILL MODE: sdec.acq_fillmode sets fillmode = 1
+-- and an armed capture in that mode posts no 4915 at all. The mute does not help; measured on the
+-- instrument, showevents = 0 leaves a modal 4915 dialog on the panel.
 check('the reserve is a known number of readings, so its duration is calculable',
       sdec.acq_reserve(sdec.n) > 0 and
       sdec.acq_reserve(sdec.n) < sdec.acq_cap(sdec.n),

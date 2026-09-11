@@ -1538,8 +1538,13 @@ end
 -- NOT fixed by raising `position`: the firmware makes post = count - count x position/100, so a
 -- reserve big enough in time at 1 MS/s (66 %) would cost two thirds of the depth. Nor by a bigger
 -- buffer alone -- 5 % of enough readings to cover 40 ms at 1 MS/s is an 800 000-reading buffer per
--- capture. So the reserve stays at 5 % and the EVENT is muted for the capture instead
--- (sdec.mute_events); the data is unaffected, verified byte-exact throughout.
+-- capture. So the reserve stays at 5 % and the FILL MODE is what stops the event: see
+-- sdec.acq_fillmode. The data is unaffected either way, verified byte-exact throughout.
+--
+-- WHAT DOES NOT STOP IT IS THE MUTE. localnode.showevents = 0 does not keep 4915 off the panel: an
+-- armed FILL_ONCE capture puts a modal Error 4915 box over whatever is displayed with the mute in
+-- force. Measured, with the panel photographed -- docs/vendor/02-event-4915-unmutable.md. The same
+-- mute DOES suppress 1130 and 2205, so this is a subsystem difference and not a severity rule.
 function sdec.acq_reserve(n)
   if n == nil then n = sdec.n end
   local pt = sdec.pretrig or 0
@@ -1640,12 +1645,21 @@ function sdec.quiet_events()
   end)
 end
 
--- Mute the panel's event popups for a capture. The pre-trigger reserve is a CIRCULAR sub-region, so
--- it overwrites its oldest reading while waiting -- and a FILL_ONCE buffer treats an overwrite as a
--- discard, posting 4915. Fires whenever the first edge is further off than the reserve: 12.7 ms at
--- 9600 baud, 0.42 s at 300 (measured: ten per capture at 300-1200 baud, none at 9600 and up).
--- buffer.FILL_CONTINUOUS does not exist on firmware 1.7.17a -- assigning it raises. Data is
--- unaffected, so only the modal box is the harm.
+-- Mute the panel's event popups where the firmware honours the mute -- which for 4915 it does NOT.
+--
+-- The pre-trigger reserve is a CIRCULAR sub-region, so it overwrites its oldest reading while waiting,
+-- and a FILL_ONCE buffer treats an overwrite as a discard, posting 4915. Fires whenever the first edge
+-- is further off than the reserve: 12.7 ms at 9600 baud, 0.42 s at 300 (measured: ten per capture at
+-- 300-1200 baud, none at 9600 and up). buffer.FILL_CONTINUOUS the CONSTANT does not exist on firmware
+-- 1.7.17a and assigning it raises -- but the ATTRIBUTE takes the numeric value, which is what
+-- sdec.acq_fillmode sets, and an armed capture in that mode posts NO 4915 at all: measured at 1 MS/s
+-- on an idle line, two events for the whole capture and neither of them 4915.
+--
+-- SO THIS FUNCTION IS NOT THE 4915 DEFENCE, and never was: with showevents = 0 in force, an armed
+-- FILL_ONCE capture still puts a modal Error 4915 dialog on the panel. The same setting does suppress
+-- 1130 and 2205, so the trigger subsystem simply ignores it. Measured and photographed in
+-- docs/vendor/02-event-4915-unmutable.md. What this function is still worth is the events the
+-- firmware DOES honour -- 2205 from the byte-log name probe among them.
 --
 -- THE LOG IS LEFT INTACT. Draining it is worse: eventlog.next CONSUMES and eventlog.post cannot put
 -- an event back, so real events come out as generic "1005 User" entries, multiplied per poll, and
