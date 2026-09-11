@@ -1,104 +1,97 @@
-# 3. `-363 input buffer overrun` on the execute path, at a size `loadscript` handles 800× faster
+# 3. The execute path accepts exactly 1024 bytes per line, undocumented, and `script.delete` posts a spurious error dialog
 
 **DMM6500, firmware 1.7.17a.** LAN raw socket, port 5025. No signal or second instrument needed; the USB
 key is used only as somewhere to write to.
 
 ## Summary
 
-Sending executed statements of roughly **2 kB** raises **-363 "input buffer overrun"** on the panel —
-**even when the host waits for a printed acknowledgement from each statement before sending the next**,
-so the host can never be more than one statement ahead of the interpreter.
+**The execute path accepts exactly 1024 bytes on a line, terminator included.** One more raises **-363
+"Input buffer overrun"**, which the panel renders as *"Too many characters were sent on one line."*
+Bisected on the instrument:
 
-That last clause is what makes this a report rather than a rate-limit question. If a strict
-request/response handshake still overruns, the input buffer is smaller than a single statement of that
-size, or it is not drained before the next write is accepted.
+```
+963 characters of payload -> 1024 bytes sent -> executes, event log empty
+964 characters of payload -> 1025 bytes sent -> -363, no reply at all
+```
 
-Meanwhile `loadscript` accepts **805 285 bytes / 14 686 lines in 1.0 s** with **no flow control at all**
-and an empty event log.
+The number is not in the reference manual, so an app moving bulk data over the LAN has to discover it by
+overrunning -- and the overrun lands on the panel as an error.
 
-## What was measured
+**It is a per-line limit, not a rate or a queue-depth limit.** 2000 statements of exactly 1024 bytes
+through one socket, each one acknowledged before the next was sent, moved **2 048 000 bytes in 3.4 s at
+585 statements/s with an empty event log**. Nothing accumulates.
 
-Transferring a 19 MB data file to the USB key by writing it in batches, each batch one statement of the
-form `do file.write(_pw, "<rows>") _pn = _pn + N print("PW=" .. tostring(_pn)) end`, with the host
-reading the `PW=` reply before sending the next:
+**A long statement cannot be split across lines.** Every line is parsed as a complete chunk, so an opening
+`do` on its own line fails immediately with **-285 "TSP Syntax error at line 1: `end' expected near
+`<eof>'"**. There is no continuation mechanism on the execute path, which leaves 1024 bytes as a hard
+ceiling on one statement.
 
-| rows per statement | statement size | result |
-|---|---|---|
-| 20 | ~1960 chars | **-363 input buffer overrun** on the panel, within seconds |
-| 5 | ~640 chars | **279 934 rows / 18 815 142 bytes clean**, 571 rows/s, 55 987 statements |
+**And the one transport that does take bulk data cannot be used repeatedly in silence.** `loadscript`
+accepts **805 285 bytes / 14 686 lines in 1.0 s** with no flow control and an empty log, but reloading a
+name requires dropping it first, and `script.delete()` -- **which succeeds, returning true with no
+error** -- logs a spurious **-104 "Data type error"** that appears as a modal dialog on the front panel
+with `localnode.showevents = 0` in force:
 
-Only the statement size changed between those two runs — same code, same handshake, same socket, same
-file. And for contrast, on the same instrument in the same session:
+![the -104 dialog from a successful script.delete](img/104-script-delete-dialog.png)
 
-| transport | payload | flow control | time | events |
-|---|---|---|---|---|
-| `loadscript` … `endscript` | 805 285 B / 14 686 lines | **none** | **1.0 s** | 0 |
-| executed statements | 18 815 142 B / 55 987 statements | one ack per statement | 488 s | 0 |
-
-So the working execute path is roughly **800× lower effective throughput** than the store path, and the
-failing execute path fails at a size the store path does not notice.
+So a chunked transfer over `loadscript` puts a dialog in front of the operator once per chunk.
 
 ## Reproduction
 
-`repro-03-buffer-overrun.py` — find the statement length at which -363 appears. Each statement is
-self-acknowledging and the host waits for the reply, so nothing is ever queued.
+`repro-03-buffer-overrun.py` bisects the limit and then holds at it. Every statement prints its own
+acknowledgement and the host reads that reply before sending anything else, so the host is never more than
+one statement ahead of the interpreter -- a buffer overrun under those conditions cannot be a rate problem.
+A fresh socket is used for each bisect attempt, because a statement that overruns leaves the parser holding
+a fragment and the next attempt would measure the fragment.
 
-```python
-import socket, time
-s = socket.create_connection(('<dmm-ip>', 5025), timeout=30)
-def ask(stmt):
-    s.sendall(stmt.encode() + b'\n')
-    buf = b''
-    while b'\n' not in buf:
-        buf += s.recv(4096)
-    return buf.decode().strip()
-
-s.sendall(b'eventlog.clear()\n')
-for n in (200, 400, 600, 800, 1000, 1200, 1600, 2000, 3000, 4000):
-    pad = 'x' * n
-    r = ask('do local s = "%s" print("LEN=" .. tostring(string.len(s))) end' % pad)
-    ev = ask('print("EV=" .. tostring(eventlog.getcount()))')
-    print('%5d chars -> %-14s %s' % (n, r, ev))
-    if not r.startswith('LEN=') or not ev.endswith('EV=0'):
-        print('  ^ first failure at ~%d characters' % n)
-        break
 ```
+python3 repro-03-buffer-overrun.py --ip <dmm-ip>              # bisect
+python3 repro-03-buffer-overrun.py --ip <dmm-ip> --soak 2000  # and hold at the limit
+```
+
+```
+    600 pad,   661 bytes sent -> LEN=600      EV=0
+   2000 pad,  2061 bytes sent -> None         EV=1   -363 Input buffer overrun
+    ...
+    962 pad,  1023 bytes sent -> LEN=962      EV=0
+    963 pad,  1024 bytes sent -> LEN=963      EV=0
+    964 pad,  1025 bytes sent -> None         EV=1   -363 Input buffer overrun
+LARGEST WORKING pad 963 (1024 bytes sent), SMALLEST FAILING pad 964 (1025 bytes sent)
+```
+
+The statement under test is `do local s = "<pad>" print("LEN=" .. tostring(string.len(s))) end`, so the
+1024 counts everything on the wire including the newline.
 
 ## Expected
 
-Either a documented maximum statement length for the execute path, or a supported way to flow-control
-it. A handshake that waits for each statement's own output ought to be sufficient by construction.
+1. **The limit documented.** 1024 bytes on a line is a designed number, not an accident, and an app that
+   moves data over the LAN has to know it. Nothing in the reference states it.
+2. **A failure the program can see.** -363 arrives as an event and as a panel dialog; the statement simply
+   produces no reply. A host that is not watching the event log cannot tell an overrun from a hang.
+3. **`script.delete()` not logging an error when it succeeds.** It returns true and frees the name; the
+   -104 is spurious, and it reaches the panel.
 
 ## Actual
 
--363 on the panel at ~2 kB per statement despite the handshake, with no documented limit to design
-against.
+1025 bytes on a line raises -363 with no reply. `script.delete()` succeeds and logs -104, which appears as
+a modal dialog. Neither figure nor behaviour is documented.
 
 ## Impact
 
 Moving bulk data to the instrument's USB key over the LAN is the only option when the key must not be
-handled by hand. The workaround — 5 rows per statement — costs **55 987 round trips and 8.1 minutes**
-for 19 MB, where the store path moves comparable volume in about a second.
+handled by hand, and the execute path is the only way to write a file. At 1024 bytes a line and 585 lines a
+second the ceiling is about 600 kB/s, so a 19 MB plan file takes minutes -- against 805 kB in 1.0 s for
+`loadscript`, which is the same instrument, the same socket and no flow control at all.
 
-It also makes the failure mode unpleasant: -363 lands on the panel as an error, so a transfer that is
-merely too ambitious puts a message in front of the operator.
+The failure modes both reach the operator: -363 for a line that is one byte too long, and -104 for every
+`script.delete` in a chunked transfer over the fast path.
 
-## Questions
+## Still open
 
-1. **What is the input buffer's size, and what is the maximum statement length the execute path
-   accepts?** Neither appears in the reference manual.
-2. **Is there a supported flow-control mechanism for the execute path** beyond waiting for output?
-3. **Is `loadscript` the sanctioned transport for bulk data?** If so it deserves saying, and we will
-   build on it. The one drawback we have found is that reloading a script name calls `script.delete`
-   first, which logs `-104 Data type error` every time even though the name really is freed — so a
-   chunked transfer either accumulates that event once per chunk or leaks a script name per chunk.
-
-## Not yet characterised
-
-1. **The exact failing length.** The loop above bisects it; the two known points are 640 (works) and
-   1960 (fails).
-2. **Whether it depends on statement length or on total bytes in flight.** Repeat at a safe length for
-   many thousands of statements — the 279 934-statement run says length, but that is one data point at
-   one length.
-3. **Whether the `-104` from `script.delete` reaches the panel** or is log-only. Roughly a dozen reloads
-   in one session produced no panel dialog, which suggests log-only, but that is absence of evidence.
+1. **Is `loadscript` the sanctioned transport for bulk data?** If so it deserves saying in the reference,
+   and the -104 needs fixing, because those two together are what make the fast path unusable for
+   repeated transfers.
+2. **What is the ceiling on a single `loadscript` chunk?** 805 285 bytes is the largest measured, not a
+   measured limit.
+3. **Why exactly 1024**, and is the same limit in force on the USB/GPIB paths? Only LAN raw socket 5025
+   has been measured here.

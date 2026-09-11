@@ -10,7 +10,7 @@ is reproducible with the standard library alone; none needs the app or any bench
 |---|---|---|
 | 1 | [Display object pool](01-display-object-pool.md) | there are **463** objects, `display.create` returns **nil** past that, and nothing can query the limit or free an object whose handle is lost |
 | 2 | [Event 4915 cannot be muted](02-event-4915-unmutable.md) | arming a trigger model puts a **modal dialog over the app** that `localnode.showevents = 0` does not prevent, while the same setting does suppress other error-severity events |
-| 3 | [-363 on the execute path](03-input-buffer-overrun.md) | ~2 kB statements overrun the input buffer even with a strict handshake, while `loadscript` takes 805 kB with none |
+| 3 | [-363 on the execute path](03-input-buffer-overrun.md) | a line over **1024 bytes** overruns the input buffer even with a strict handshake, the figure is undocumented, and a successful `script.delete` posts an error dialog |
 
 ## The instrument
 
@@ -33,6 +33,6 @@ Report 2 is **characterised**: the panel behaviour is captured in a screenshot u
 count is measured against sample rate, and `FILL_CONTINUOUS` is identified as a workaround that costs
 nothing in depth. What remains open is named at the end of it.
 
-Report 3 ends with a **Not yet characterised** section naming the measurement that would turn it from
-"this happens" into "this happens at exactly N". That needs instrument time and is left open rather than
-guessed at: the numbers quoted are the ones measured, and where a bound is unknown it says so.
+Report 3 is **characterised**: the limit is bisected to the byte, the per-line nature is separated from
+any cumulative effect, and the `script.delete` dialog is captured under `img/`. What remains open is named
+at the end of it.
