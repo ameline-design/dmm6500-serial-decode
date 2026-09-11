@@ -8,7 +8,7 @@ is reproducible with the standard library alone; none needs the app or any bench
 
 | | report | one line |
 |---|---|---|
-| 1 | [Display object pool](01-display-object-pool.md) | `display.delete` does not return objects to the pool, and `display.create` then returns **nil silently** |
+| 1 | [Display object pool](01-display-object-pool.md) | there are **463** objects, `display.create` returns **nil** past that, and nothing can query the limit or free an object whose handle is lost |
 | 2 | [Event 4915 cannot be muted](02-event-4915-unmutable.md) | arming a trigger model puts a **modal dialog over the app**, and `localnode.showevents` cannot prevent it |
 | 3 | [-363 on the execute path](03-input-buffer-overrun.md) | ~2 kB statements overrun the input buffer even with a strict handshake, while `loadscript` takes 805 kB with none |
 
@@ -26,7 +26,11 @@ Nothing below depends on a signal being connected, on the USB key, or on any sec
 
 ## Status of these reports
 
-Each report ends with a **Not yet characterised** section naming the measurement that would turn it from
-"this happens" into "this happens at exactly N". Those need instrument time and are deliberately left
-open rather than guessed at — the numbers quoted are the ones actually measured, and where a bound is
-unknown it says so.
+Report 1 is **characterised**: every figure in it was measured on the instrument on 2026-09-11, and its
+earlier headline claim -- that `display.delete` does not free objects -- was **disproved** by those
+measurements and withdrawn. What replaced it is narrower and stronger.
+
+Reports 2 and 3 still end with a **Not yet characterised** section naming the measurement that would turn
+them from "this happens" into "this happens at exactly N". Those need instrument time and are left open
+rather than guessed at -- the numbers quoted are the ones actually measured, and where a bound is unknown
+it says so.

@@ -41,6 +41,16 @@ PRELUDE = '''
 if sdec ~= nil then
   pcall(function() if sdec.buf ~= nil then buffer.delete(sdec.buf) end end)
   pcall(function() trigger.model.abort() end)
+  -- THE DISPLAY OBJECTS GO BACK BEFORE THE HANDLES ARE DROPPED, and this is the whole reason a panel
+  -- app used to need a power cycle every few loads. `sdec = nil` below is the ONLY reference to those
+  -- objects: the firmware keeps them alive, nothing can reach them afterwards, and the next build
+  -- allocates on top. MEASURED on a DMM6500 at 1.7.17a: the pool is 463 objects, this app builds 134,
+  -- so the fourth load in a power cycle got nil from display.create -- silently, since event 1701 is
+  -- logged once. display.delete itself is sound (2000 create/delete cycles, 0 failures) and a screen
+  -- takes its children with it, so calling the app's own teardown here is all that was ever needed.
+  -- collectgarbage() cannot do this: a handle is a plain number with no finalizer.
+  pcall(function() sdec.destroy_options() end)
+  pcall(function() sdec.ui_destroy() end)
 end
 sdec = nil
 ulog = nil
