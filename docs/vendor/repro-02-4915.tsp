@@ -10,7 +10,7 @@ localnode.showevents = 0        -- documented as suppressing events; governs the
 eventlog.clear()
 
 local buf = buffer.make(20000, buffer.STYLE_STANDARD)
-buf.fillmode = buffer.FILL_ONCE
+buf.fillmode = buffer.FILL_ONCE     -- buffer.FILL_CONTINUOUS here gives 0 events
 
 dmm.digitize.func = dmm.FUNC_DIGITIZE_VOLTAGE
 dmm.digitize.range = 10
@@ -23,7 +23,13 @@ local k
 for k = 1, table.getn(rates) do
   eventlog.clear()
   dmm.digitize.samplerate = rates[k]
-  trigger.model.load('LoopUntilEvent', trigger.EVENT_ANALOGTRIGGER, 5, buf)
+  -- SIX PARAMETERS: name, event, pre-trigger per cent, clear, delay, buffer. Four gives 2747 "parameter 4
+-- must be type clear" and nothing arms at all.
+--
+-- THE EVENT IS THE FRONT-PANEL TRIGGER KEY, which nobody presses, so the model waits and its pre-trigger
+-- reserve wraps -- which is what posts 4915. No analog trigger is configured, so warning 2874 cannot fire
+-- and every dialog that appears belongs to 4915.
+trigger.model.load('LoopUntilEvent', trigger.EVENT_DISPLAY, 5, trigger.CLEAR_ENTER, 0, buf)
   trigger.model.initiate()
   delay(3)
   trigger.model.abort()

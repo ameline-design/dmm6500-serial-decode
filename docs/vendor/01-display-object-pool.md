@@ -13,7 +13,7 @@ success, and the panel comes up blank. That is the defect: **a resource limit th
 query, cannot recover through any documented call, and learns about only by checking every single
 `display.create` result for nil.**
 
-`display.delete` is sound and is **not** part of this report — see *What is not wrong* below.
+`display.delete` is sound and is **not** part of this report.
 
 ## Measured
 
@@ -41,8 +41,18 @@ first screen handle: 49   type number
 first text handle:   50   type number
 ```
 
-Handles are small sequential integers; 1..48 belong to the firmware's own home screen on a freshly
-booted DMM6500. Because a handle is a **number**, it carries no finalizer — so when a program loses its
+Handles are small sequential integers; 0..48 belong to the firmware's own home screen on a freshly
+booted DMM6500. **The space is 512 slots, and the firmware states it**: `display.delete(9999)` answers
+
+```
+1130   Parameter id, expected value from 0 to 511
+```
+
+512 slots less the 49 the firmware holds is **463**, which is the figure the exhaustion run measures
+independently. In-range handles that were never issued answer 1703 instead, so the two failures are
+distinguishable: 1130 means no such slot exists, 1703 means the slot is empty.
+
+Because a handle is a **number**, it carries no finalizer — so when a program loses its
 handles, nothing anywhere can free those objects. There is no `display.deleteall()`, no way to enumerate
 live objects, and no way to ask how many remain.
 
@@ -64,7 +74,7 @@ the Lua heap are separate allocators.
 ```lua
 -- Exhausted pool, then:
 local h
-for h = 49, 511 do pcall(function() display.delete(h) end) end
+for h = 49, 511 do pcall(function() display.delete(h) end) end   -- 511 is the top of the space
 ```
 
 ```
@@ -81,31 +91,19 @@ should do:**
 * `display.delete` on a handle that was never issued does not raise. It logs **1703 "The object ID was
   never created or has been destroyed"** — one entry per call, 383 from a single sweep, and each one is a
   dialog on the front panel. The panel flickers throughout.
-* Handles 1..48 are the firmware's. A sweep that starts lower than 49 vandalises the home screen.
+* Handles 0..48 are the firmware's. A sweep that starts lower than 49 vandalises the home screen.
 
-## What is not wrong
+## `display.delete` is not the problem
 
-An earlier version of this report claimed `display.delete` does not free objects. **That was wrong**, and
-the `both` and `screen` runs above disprove it: 2000 create/delete cycles, no failure. The
-"few reloads then a power cycle" behaviour that prompted that claim was **our own defect** — three host
-loader scripts did
-
-```lua
-if sdec ~= nil then ... buffer.delete(sdec.buf) ... end
-sdec = nil                 -- the only reference to 134 live display objects, dropped
-```
-
-which handed the reading buffer back and stranded every display object. Calling the app's own teardown
-before dropping the table fixed it: **six consecutive load-and-build cycles now run with no power cycle
-and 300 objects still free**, where the fourth used to fail. It is recorded here because anyone reading
-this report is likely to have the same bug.
+Deleting frees correctly, including children when only their screen is deleted -- the `both` and `screen`
+runs above are 2000 cycles each with no failure. An app that deletes what it creates never meets any of
+this. The report is about the limit being invisible and unrecoverable once a handle is gone.
 
 ## Also observed
 
 **Deleting the screen that is currently displayed leaves the panel black**, with no way back from the
-front panel — no fallback to the home screen. `display.changescreen` away from it first. Seen twice:
-after a run that deleted 2000 screens, and again at the moment a create/delete loop deleted the screen it
-had just switched to.
+front panel: there is no fallback to the home screen. `display.changescreen` away from it first. Creating
+a screen also switches to it, so a create/delete loop leaves the panel black for as long as it runs.
 
 ## What would fix it, in order of value
 
