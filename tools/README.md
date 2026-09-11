@@ -19,7 +19,7 @@ The stimulus set is 41 waveforms built from the same arrays the offline suite de
 result is comparable with an offline one byte for byte.
 
 ```sh
-lua tools/make_vectors.lua                    # -> out/vectors/*.bin + manifest.tsv
+lua tools/make_vectors.lua                     # -> out/vectors/*.bin + manifest.tsv
 python3 tools/upload_vectors.py --dry-run      # what would go. Opens no socket
 python3 tools/upload_vectors.py                # the 36 under the size ceiling
 python3 tools/gen_arb_names.py --check         # is bench/arb_names.tsp current?
@@ -30,20 +30,11 @@ independent decoder, and decodes both the quantised and unquantised forms. A row
 disagree must not be trusted as an oracle. `out/` is generated and gitignored, so this is required on a
 fresh clone.
 
-**Everything goes over the LAN — no USB key is used to get data into either instrument.** All 41 land in
-the generator's internal flash under their `SER_` names, which is what lets a run select one with a bare
-`ARWV NAME`.
-
-**Uploading is a setup step, done once and then not again.** A lap selects from flash 1 677 times and a
-fortnight's soak about 230 000 times, without a single upload — so the hazards below are paid once, which
-is why the tool is deliberately slow and verifies everything. Re-upload only when a vector's bytes change.
-
-**Five vectors exceed `SDG_UPLOAD_SAFE_BYTES` (65 536) and `upload_vectors.py` refuses them:** `v94`,
-`v71`, `v93`, `v95`, `v96`. The hazard is **the number of large writes, not their size** — the third
-over-ceiling upload wedged firmware 39R7 after only 533 kB, while 1.63 MB then 6.51 MB on one power cycle
-was fine. The rule is **fewer than three over-ceiling writes between power cycles**; raise the ceiling,
-name the files with `--only`, rest the generator, read each stored length back, then power cycle. The
-full procedure is in [../bench/README.md](../bench/README.md#the-five-above-the-ceiling).
+Uploading is a setup step, done once — all 41 land in the generator's internal flash over the LAN under
+their `SER_` names, and a run then selects one with a bare `ARWV NAME`. **Five vectors exceed
+`SDG_UPLOAD_SAFE_BYTES` (65 536) and the tool refuses them**, because three large writes between power
+cycles can wedge the generator's LAN service. Getting those five up takes a specific procedure:
+[../bench/README.md](../bench/README.md#the-five-above-the-ceiling).
 
 `vector_names.py` is the single source for id → name. `lint_vecrefs.py` proves every id named anywhere in
 `tools/` exists in it or is explicitly retired.
@@ -77,12 +68,13 @@ sh tools/get_lua502.sh                    # build Lua 5.0.2 first -- see below
 `out/lua502/bin`, and `lint_tsp.py` picks them up there. The host has Lua 5.5; the DMM6500 has **5.0.2**,
 and a construct the host accepts can die on the box — `string.match` and `math.fmod` both exist on the
 host and not on the instrument, so a module using either passes every offline suite and then fails at the
-first line that runs. `lint_tsp.py` refuses both names.
+first line that runs. `lint_tsp.py` refuses both names, `check502.py` runs one statement under 5.0.2 before
+it is sent, and `offline502.py` runs a whole suite there.
 
 **A code change does not get pushed without the smoke gate.** `bench_smoke.py` writes a receipt hashing
 `tsp/` and `tools/`; the `pre-push` hook recomputes it and refuses if either tree moved. Documentation-only
 pushes are exempt automatically. When the bench is unavailable, `SMOKE_OVERRIDE="reason" git push` proceeds
-and prints the reason, which puts it on the record.
+and prints the reason, which puts it on the record. See [hooks/README.md](hooks/README.md).
 
 ```sh
 ln -sf ../../tools/hooks/pre-push .git/hooks/pre-push
@@ -114,7 +106,7 @@ ln -sf ../../tools/hooks/pre-push .git/hooks/pre-push
 | `check_version.py` | one release version, stated the same way in every place that states it |
 | `release_sweep.py` | **the gate before the app goes to anyone else.** Every check, one run, recorded |
 | `smoke_receipt.py` | record that the smoke gate passed against an exact tree, and refuse a push that outran it |
-| `hooks/pre-push` | enforces that receipt |
+| `hooks/` | the `pre-push` hook that enforces that receipt — [hooks/README.md](hooks/README.md) |
 | `mkpdf.sh` | render the shipped docs to PDF via pandoc + headless Chrome |
 | `pdf.css` | the stylesheet those PDFs use |
 | `doc_shots.py` | regrab every front-panel PNG the manual ships, in one pass over one app build |
@@ -173,6 +165,19 @@ ln -sf ../../tools/hooks/pre-push .git/hooks/pre-push
 | `mock_bench.lua` | the instrument-side APIs `bench/` needs, so the whole soak runs on the Mac |
 | `mock_display.lua` | a deliberately **hostile** mock of the display and file APIs |
 
+### Diagnostic laps: plan it, run it on the box, then judge it
+
+Each `mkplan_*` writes a plan `bench_run.tsp` can stream, with its predictions fixed **before** the lap
+runs; the matching judge only scores them.
+
+| | |
+|---|---|
+| `mkplan_abc.py`, `judge_abc.py` | the ground-straddle experiment: does a commanded amplitude/offset pair the SDG cannot produce explain the byte failures that concentrate 9.55x on those cells? |
+| `mkplan_stim.py`, `judge_stim.py` | stimulus loss: why a quarter of a diagnostic lap produced no usable capture, and where a cell's time actually goes |
+| `mkplan_band.py` | drive the snap/judge asymmetry band on purpose — same 2 %, opposite denominators — instead of waiting for the draw to find it |
+| `mkplan_rescale.py` | what makes `ua_best` rescale over `sig_bittime`'s correct fit, and why the drift vectors refuse |
+| `judge_ratediag.py` | decompose a `--rate-diag` record: what the rate finder proposed *before* `sig_snap` moved it |
+
 ### Long-running offline
 
 | | |
@@ -180,6 +185,7 @@ ln -sf ../../tools/hooks/pre-push .git/hooks/pre-push
 | `soak.py` | run the bench suites for hours and count what fails, per point — the tool for intermittents |
 | `soak_offline.py` | run the offline suites in a loop for a duration, on two trees at once |
 | `soak_offline_long.py` | replay soak plan iterations offline, one lap per iteration, to a deadline |
+| `soak_offline_bench.py` | soak the **bench** path offline under Lua 5.0.2, with a fresh capture phase per lap |
 | `plan_sweep.py` | run the offline twin of the soak's plan suite, sharded and ratcheted |
 | `sweep_plan.lua` | that twin: the same cells as the bench, on the Mac |
 | `sweep_all.py` | run every shard of `sweep_startphase.lua` in parallel and total it |
@@ -222,6 +228,8 @@ ln -sf ../../tools/hooks/pre-push .git/hooks/pre-push
 | `debug_serial.lua` | diagnostic dump of the decoder's decision making |
 | `diag_format.py` | why does a hardware capture disagree with the offline decode of the same file? |
 | `diag_yield.py` | why does the same line give 70 bytes on one capture and 240 on the next? |
+| `probe_acqcost.py` | where a cell's fixed cost actually goes, phase by phase, on the instrument |
+| `probe_sdg_cost.py` | what each message of a cell's generator conversation costs, and whether the last blocking query can go |
 | `repro_v44.lua` | reproduce the intermittent 8O1/8N2 format misreads offline |
 | `repro_startoff.lua` | the start-offset recipe, with the best-progress path instrumented |
 | `seam_capture.lua` | reproduce a capture at every start offset across one arb period |
@@ -229,10 +237,12 @@ ln -sf ../../tools/hooks/pre-push .git/hooks/pre-push
 | `bringup_4b11.py` | which sample rates off the 1/2/5 ladder actually exist |
 | `bringup_4b16.py` | can a running Lua script see a front-panel press? |
 
-### Rendering and misc
+### The 5.0.2 interpreter, rendering, misc
 
 | | |
 |---|---|
+| `get_lua502.sh` | build the Lua 5.0.2 interpreter the instrument runs |
+| `check502.py` | run one statement under 5.0.2 *before* sending it to the DMM |
+| `offline502.py` | run an offline suite under 5.0.2 rather than the host's 5.5 |
 | `mockup.lua` | record what the real `serial_ui.tsp` builds, for rendering |
 | `render_png.py` | render panel artwork to PNG at exact panel pixels |
-| `get_lua502.sh` | build the Lua 5.0.2 interpreter the instrument runs |

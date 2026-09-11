@@ -33,8 +33,8 @@ DMM_IP=10.0.1.151 SDG_IP=10.0.1.79 python3 tools/run_bench.py --smoke
 ```
 
 **`bsdg.ip` is not one of them.** Nothing pushes it from the host — the DMM connects to the generator
-on its own, so the literal in `sdg_net.tsp` is what an unattended run uses. Change the generator's
-address and you must edit that line too, or the soak loads and then reports `SDG UNREACHABLE`.
+on its own, so the literal in `sdg_net.tsp` is what an unattended run uses. Move the generator and that
+line has to be edited too, or the soak loads and then reports `SDG UNREACHABLE`.
 
 The port is **5025** and must stay 5025. Probing 5024 is a suspect in two LAN deaths on this
 generator; see `SDG_SHUTDOWN_SUSPECTED_HAZARD` in `tools/instruments.py`.
@@ -49,9 +49,9 @@ Everything the soak reads and writes lives on it, under `/usb1/SERDEC/`:
 | `SOAK.CSV` | the record, appended cell by cell as the run goes |
 
 With no key, `file.open` returns nil, the run has nowhere to record, and the panel goes red with
-`NOT RECORDING`. The directory name is 8.3 (`SERDEC`) because only an 8.3 name can be found by
-searching the FAT table, which is how the run checks the key without opening a file that is not
-there — an open on a missing name posts an event, and an event is a box on the panel.
+`NOT RECORDING`. The directory name is 8.3 (`SERDEC`) because only an 8.3 name can be found by searching the
+FAT table, which is how the run checks the key without opening a file that is not there — an open on a
+missing name posts an event, and an event is a box on the panel.
 
 **Nothing is ever copied to the key by hand.** All communication with the DMM is over the LAN.
 
@@ -63,19 +63,17 @@ there — an open on a missing name posts an event, and an event is a box on the
 * **Only one client may be connected to the DMM,** and a previous run killed mid-command leaves the reply
   stream out of step. The preflight refuses rather than guess.
 * **There are 463 display objects per power cycle, and `display.create` returns nil once they are gone —
-  silently, after one 1701 in the log.** The status screen builds fourteen of them: a screen, eight text
-  rows and five log lines. `display.delete` **does** return objects to the pool, and a screen frees its
-  children, so reloading is unbounded as long as the previous build is torn down first — which every
-  loader here now does before dropping `sdec`. Measured: six consecutive load-and-build cycles with 300
-  objects still free. What is *not* recoverable by any documented call is an object whose handle was lost;
-  `collectgarbage` frees none of them, since a handle is a plain number. See
-  [../docs/vendor/01-display-object-pool.md](../docs/vendor/01-display-object-pool.md) for the numbers and
-  the rescue procedure.
+  silently, after one 1701 in the log.** The status screen builds fourteen. `display.delete` **does** return
+  objects to the pool and a screen frees its children, so reloading is unbounded as long as the previous
+  build is torn down first, which every loader here does before dropping `sdec`: six consecutive
+  load-and-build cycles measured with 300 objects still free. What no documented call recovers is an object
+  whose handle was *lost*, `collectgarbage` included, a handle being a plain number. Numbers and the rescue
+  procedure: [../docs/vendor/01-display-object-pool.md](../docs/vendor/01-display-object-pool.md).
 * **A power cycle leaves `sdec` and `brun` nil**, so `--no-load` after one finds nothing loaded. Load
   first, or check `type(sdec)` before trusting `--no-load`.
 * **Take the scope out of Bode mode before an unattended run.** The scope also drives the SDG over USB
-  for its Bode-plot function, and left in that mode it will reprogram the generator underneath a run.
-  The symptom is a stimulus that silently stops matching the manifest — see `SCOPE_BODE_HAZARD` in
+  for its Bode-plot function, and left in that mode it will reprogram the generator underneath a run. The
+  symptom is a stimulus that silently stops matching the manifest — see `SCOPE_BODE_HAZARD` in
   `tools/instruments.py`. This is the one way the *optional* scope can invalidate a soak.
 
 ### Wiring
@@ -94,55 +92,57 @@ holds the authoritative version of this diagram.
                            +--coax-- SDS1204X-E CH4
 ```
 
-Each output is split at its own connector into two matched 5 ft RG316 runs, so all three can be read in
-one timing context. **SDS CH2 is deliberately not connected**, so CH1 sits alone in the CH1+CH2 ADC pair
-and the signal channel is never halved by watching a trigger. All three instruments are on one gigabit
-switch at 100 Mbit.
+Each output is split at its own connector into two matched 5 ft RG316 runs, so all three can be read in one
+timing context. **SDS CH2 is deliberately not connected**, so CH1 sits alone in the CH1+CH2 ADC pair and the
+signal channel is never halved by watching a trigger. All three instruments are on one gigabit switch at
+100 Mbit.
 
-The DMM must have its **front** terminals selected, since that is where CH1 lands. The generator drives
-into **high impedance**: the vectors are built for a 20 Vpp part into high-Z (`bsdg.maxvpp`), the run sets
-`C1:OUTP ON,LOAD,HZ` itself, and it verifies C1 is in **TrueArb** before every capture — a silent fall
-back to DDS resamples the stored points and corrupts the sub-sample edge timing this bench exists to
-measure.
+The DMM must have its **front** terminals selected, since that is where CH1 lands. The generator drives into
+**high impedance**: the vectors are built for a 20 Vpp part into high-Z (`bsdg.maxvpp`), the run sets
+`C1:OUTP ON,LOAD,HZ` itself, and it verifies C1 is in **TrueArb** before every capture — a silent fall back
+to DDS resamples the stored points and corrupts the sub-sample edge timing this bench exists to measure.
 
 ---
 
 ## 1. Build the vectors
 
 ```sh
-lua tools/make_vectors.lua            # -> out/vectors/, plus manifest.tsv
+lua tools/make_vectors.lua            # -> out/vectors/, plus manifest.tsv and README.txt
 ```
 
 For each vector this writes the `.bin`, reads it back with an independent decoder, and decodes both
 the quantised and unquantised forms to check that 16-bit quantisation has not damaged the decode. Any
 row whose two decodes disagree must not be trusted as a bench oracle. `out/` is generated and
-gitignored, so this step is required on a fresh clone.
+gitignored, so this step is required on a fresh clone — including for the per-file sizes, checksums and
+exact commands that land in `out/vectors/manifest.tsv`.
 
 ## 2. Upload the vectors to the SDG — over the LAN
 
-**Everything goes over the LAN. No USB key is used to get data into either instrument.** All 41
-waveforms end up in the generator's **internal flash** under their `SER_` names, which is what lets the
-soak select one with a bare `ARWV NAME` and no transfer.
+**Everything goes over the LAN. No USB key is used to get data into either instrument.** All 41 waveforms
+end up in the generator's **internal flash** under their `SER_` names, which is what lets the soak select
+one with a bare `ARWV NAME` and no transfer.
 
-**This is a rare step — ideally done once.** The waveforms then sit in flash and get reused indefinitely:
-a single lap selects from them 1 677 times and a fortnight's run about 230 000 times, all of it `ARWV`
-and no upload at all. So the upload hazards below are a one-off cost paid at setup, not something a run
-goes near — which is also why it is worth being slow and careful here rather than convenient. Re-upload
-only when a vector's bytes actually change.
+**This is a rare step, ideally done once.** A lap selects from flash 1 677 times and a fortnight's run
+about 230 000 times, all of it `ARWV` and no upload at all, so the hazards below are a one-off setup cost
+rather than something a run goes near. Re-upload only when a vector's bytes change, and never while a run
+is going.
 
 ```sh
 python3 tools/upload_vectors.py --dry-run     # what would go. Opens no socket at all
 python3 tools/upload_vectors.py               # the 36 under the ceiling
 ```
 
-Names come from `tools/vector_names.py`, the single source — the tool refuses a malformed or duplicated
-name rather than uploading one, and verifies each landed by reading its stored length back. That
-read-back matters: on earlier firmware it has been **reported on EEVblog** that a stored **zero-length**
-waveform crashes the SDG at startup — logo, flashing LEDs, then a blank screen. Recovery reportedly needs
-a USB key built from a disk image **Siglent does not publish** — you have to ask them for it — so this is
-not a fault to walk into casually. The length is therefore checked and anything too small deleted while
-the box is still answering. Uploads go smallest first, so if the generator does stop answering the most
-work is already banked.
+Names come from `tools/vector_names.py`, the single source; the tool refuses a malformed or duplicated name
+rather than uploading one. **It verifies each upload itself**, calling `siglent.stored_wave_length()` — a
+`WVDT?` `LENGTH` query with a 180 s allowance — immediately after each write and **deleting** anything whose
+length does not match. A stored **zero-length** waveform has been reported on EEVblog to crash the SDG at
+startup on earlier firmware, recoverable only from a disk image **Siglent does not publish**, so treat that
+as effectively unrecoverable when planning. The deletion has to happen while the box is still answering:
+resolve any length the tool could not confirm before anything power-cycles. Uploads go smallest first, so if
+the generator stops answering the most work is already banked.
+
+**Nothing on the instrument side can upload.** `bsdg.cmd()` refuses any string containing `WVDT`
+outright, so a soak cannot do it even if a caller asks.
 
 ### The five above the ceiling
 
@@ -164,8 +164,8 @@ it answering and playing correctly. A wedge leaves the generator playing the loa
 accepting TCP on both 5024 and 5025 and answering nothing, `*IDN?` included. Only a power cycle recovers
 it, and it has no smart plug, so it costs a human.
 
-**The rule is therefore: fewer than three over-ceiling writes between power cycles.** So these five go
-over the LAN in batches of at most two, naming each one explicitly:
+**The rule is therefore fewer than three over-ceiling writes between power cycles**, so these five go over
+the LAN in batches of at most two, each named explicitly:
 
 ```sh
 # 1. raise SDG_UPLOAD_SAFE_BYTES in tools/instruments.py far enough to admit the ones you want
@@ -179,29 +179,10 @@ python3 tools/upload_vectors.py --only SER_Blocks512B_8N1_x10,SER_Lorem1kB_8N1_x
 mapped file below the new ceiling — including the large ones already uploaded — which is how a
 "careful" second pass performs three over-ceiling writes in one power cycle and wedges the box.
 
-**The tool verifies each upload itself**, so there is nothing to check by hand: it calls
-`siglent.stored_wave_length()` — a `WVDT?` `LENGTH` query with a 180 s allowance — immediately after each
-write, and **deletes** anything whose length does not match. That is the point of the check: a stored
-zero-length waveform has been reported (EEVblog, earlier firmware) to crash the SDG at startup. Recovery
-reportedly needs a recovery-key image Siglent does not publish and you have to request, so treat it as
-effectively unrecoverable when planning. The deletion has to happen *while the box is still answering* —
-after a power cycle there is nothing left to accept it. If the tool reports a length it could not
-confirm, resolve that before anything power-cycles.
-
-**"Fewer than three" is an operational rule, not a guarantee.** `tools/instruments.py` is explicit that
-the count is *not* established as the cause: the three writes that wedged it were sent back to back, while
-the clean pair were each followed by a length read and a ~2 s settle — so **pacing is a live candidate for
-the real variable**. Pace them, verify each, and do not read the number as a safe budget in either
-direction.
-
-Do none of this while a run is going.
-
-`lua tools/make_vectors.lua` writes `out/vectors/manifest.tsv` and `out/vectors/README.txt` with the
-per-file sizes, checksums and the exact commands; both are generated, so a fresh clone has neither until
-step 1 has run.
-
-**Nothing on the instrument side can upload.** `bsdg.cmd()` refuses any string containing `WVDT`
-outright, so a soak cannot do it even if a caller asks.
+**"Fewer than three" is an operational rule, not a guarantee.** `tools/instruments.py` is explicit that the
+count is *not* established as the cause: the three writes that wedged it went back to back, while the clean
+pair were each followed by a length read and a ~2 s settle, so **pacing is a live candidate for the real
+variable**. Pace them, verify each, and do not read the number as a safe budget in either direction.
 
 ## 3. Check the names table is current
 
@@ -233,21 +214,20 @@ python3 tools/run_bench.py --iterations 0 --push-plan --start
 ```
 
 **`--skip-vectors v95,v96` is the default and should stay.** `v96` wedges the SDG partway through a
-lap, every time; two nights of bench time have been lost to omitting it. Note that the skip is applied
-**before** the plan is shuffled, and the shuffled position keys each cell's amplitude, offset and wait
-— so a lap run with a different skip is *different stimulus under the same lap number*. The plan
-records both the skip and `--random-per-lap` in its header for that reason.
+lap, every time; two nights of bench time have been lost to omitting it. The skip is applied **before**
+the plan is shuffled and the shuffled position keys each cell's amplitude, offset and wait — so a lap run
+with a different skip is *different stimulus under the same lap number*. The plan records both the skip and
+`--random-per-lap` in its header for that reason.
 
 With `v95,v96` skipped a lap is **1 677 cells**; `--random-per-lap 4` plays four of the twelve
 random-payload vectors and makes it **1 333 cells** — every vector is still played, just across laps
 rather than within one.
 
-**Budget from measured cell rates, not from the tool's estimates.** At ~6.3 s a cell — the rate the
-86-cell smoke actually runs at — 1 677 cells is about **2.9 h**, which is what `docs/BENCH.md` and
-`README.md` both quote. A 210-lap run at `--random-per-lap 4` measures **1.96 h** for its 1 333 cells.
-`run_bench.py --help` offers 2.07 h and 1.64 h for the same two laps; those are estimates that omit the
-per-cell plan wait and the generator's latency, and they run about 20 % short. Cell counts, unlike times,
-are exact, and the plan declares its own:
+**Budget from measured cell rates, not from the tool's estimates.** At the ~6.3 s a cell the 86-cell smoke
+runs at, 1 677 cells is about **2.9 h**, and a 210-lap run at `--random-per-lap 4` measured **1.96 h** for
+its 1 333 cells. `run_bench.py --help` offers 2.07 h and 1.64 h for those two laps: its estimates omit the
+per-cell plan wait and the generator's latency and run about 20 % short. Cell counts, unlike times, are
+exact, and the plan declares its own:
 
 ```sh
 # grep, not head: soakplan.py writes the whole plan and does not handle a closed pipe,
@@ -295,28 +275,23 @@ Vec: v48b  12 of 40 bad   I0 L3 S0
 Errors: 377 - ABORT NOW WITH TRIGGER BUTTON
 ```
 
-The headline answers the whole question: health to two decimals, the run's state — `STARTING`,
-`RUNNING`, `ABORTED`, `FINISHED` — and the live heap. Green is better than a good lap, amber is
-worse than one, cyan is a run that has not started or has finished, and **red means someone should
-walk over** — so a run that has ENDED is never red, however it ended: the instrument is idle and
-there is nothing to walk over for. The five body lines alternate white and grey so the eye can hold
-one while reading across it. The spinner at the right of the headline stays green: it says the script
-is still executing, which is a different fact from the run being healthy.
+The headline answers the whole question: health to two decimals, the run's state — `STARTING`, `RUNNING`,
+`ABORTED`, `FINISHED` — and the live heap. Green is better than a good lap, amber worse than one, cyan a run
+that has not started or has finished, and **red means someone should walk over**, so a run that has ENDED is
+never red however it ended: the instrument is idle and there is nothing to walk over for. The five body
+lines alternate white and grey so the eye can hold one while reading across it. The spinner stays green; it
+says the script is still executing, which is a different fact from the run being healthy. The last line is
+the error count, coloured against the refusals the plan **allows** — green at none, amber while every failure
+was an allowed one, red past that — and it carries the only instruction that interrupts.
 
-**The heap figure and the heap colour are two different numbers.** `gcinfo()` returns a count and a
-threshold, and on this interpreter the threshold is twice the count at the last collection —
-measured on the box at 1.7.17a, `855/1704` bare and `482/965` after a forced collect. So the figure
-shown is a **sawtooth**: it climbs from the live set to twice the live set, a collection drops it
-back, and it climbs again. A band on that fires on the tooth, not on growth, which is why the colour
-is banded on `threshold / 2` — the live set, which is what a leak moves and what the
-`heap NNNN kB` series in the record samples at every lap seam. `brun.heapwarnk` and `brun.heapbadk`
-are in those terms. What no reading can tell you is how much the allocator will still hand out: the
-threshold tracks the live set, not any ceiling, so amber means "bigger than a healthy run's" and
-never "nearly out".
-
-The last line is the error count, coloured against the refusals the plan **allows** — green at none,
-amber while every failure was an allowed one, red past that — and it carries the only instruction
-that interrupts. The stop control is in the screen title, which never scrolls.
+**The heap figure and the heap colour are two different numbers.** On this interpreter `gcinfo()`'s
+threshold is twice the count at the last collection — `855/1704` bare and `482/965` after a forced collect,
+measured on the box at 1.7.17a — so the figure shown is a **sawtooth** between the live set and twice it. A
+band on that would fire on the tooth, so the colour is banded on `threshold / 2`: the live set, which is
+what a leak moves and what the record's `heap NNNN kB` lap-seam series samples. `brun.heapwarnk` and
+`brun.heapbadk` are in those terms. Neither number says how much the allocator will still hand out — the
+threshold tracks the live set, not a ceiling — so amber means "bigger than a healthy run's", never "nearly
+out".
 
 **Stopping.** Press the front-panel **TRIGGER** key. A touch button cannot do this — presses are not
 dispatched while Lua runs — but the key is latched by firmware and read once per cell. The run ends
@@ -334,10 +309,9 @@ python3 tools/judge_bench.py out/bench/SOAK.csv
 `nil` means reading *past* the end, and that posts a popup at the end of a fetch where it looks like the
 run failed.
 
-The instrument does not judge bytes, deliberately: the verdict rules are the accumulated argument of
-this project, and a second implementation of them in Lua 5.0.2 would be a second judge — on the night
-the two disagree, both look right. The instrument records what it read, including the `??` it writes
-for a frame it flagged, and the host decides.
+The instrument does not judge bytes, deliberately: a second implementation of the verdict rules in Lua 5.0.2
+would be a second judge, and on the night the two disagree both look right. The instrument records what it
+read, including the `??` it writes for a frame it flagged, and the host decides.
 
 Read three numbers, in this order:
 
