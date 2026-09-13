@@ -54,3 +54,8 @@ notes/
 **/.DS_Store
 __pycache__/
 *.pyc
+
+# SlickEdit workspace and tag files: per-developer, and rebuilt whenever the project is opened
+CMakeLists.vpw
+CMakeLists.vpwhist*
+CMakeLists.vtg

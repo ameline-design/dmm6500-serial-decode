@@ -586,6 +586,10 @@ do
   for k = start, n do if string.sub(L[k], 1, 2) == 'R,' then ndata = ndata + 1 end end
   ck(ndata == 4, 'measuring only the cells that were left', string.format('%d cell(s)', ndata))
 
+  -- THE TAG REACHES THE PANEL, not only the record header. brun.soak leaves it on brun before ui_build
+  -- reads it, so a smoke cannot paint a screen that says SOAK.
+  ck(brun.tag == 'part2', 'the run tag is left on brun for the screen to read', tostring(brun.tag))
+
   -- AND THE SCREEN COUNTS THE WHOLE RUN, NOT JUST THIS SESSION. brun.ncell is what this session measured,
   -- which is what the RATE has to be divided by; the run's POSITION is that plus whatever the resume
   -- skipped. With one counter a soak resumed at lap 9 would read '500 of 279930 (0.2 %)' and put eight
@@ -2730,6 +2734,37 @@ do
   local res2 = {nf = 2, ngood = 2, nbad = 0, vals = {0x00, 0xFF}, errs = {}}
   ck(brun.hex(res2) == '00FF', 'and clean frames are plain hex', brun.hex(res2))
   ck(brun.hex(nil) == '' and brun.hex({nf = 0}) == '', 'no frames is an empty field, not a crash')
+end
+
+-- ---------------------------------------------------------------------------
+-- The screen names the run, so a smoke is not read as a soak
+-- ---------------------------------------------------------------------------
+-- BOTH RUN THROUGH brun.soak AND DRAW THE SAME SCREEN. The cell count is the only other thing separating
+-- them, and an operator glancing at the glass reaches for the TRIGGER key -- which stops whichever run is
+-- really there. The title is checked against the firmware's 31-character ceiling as well as its spelling:
+-- over that the firmware truncates and posts 1707, and mock_display raises rather than let it pass.
+do
+  brun.tag = nil
+  ck(brun.tagword() == 'SOAK', 'tagword defaults to SOAK when nothing has set a tag', brun.tagword())
+  brun.tag = ''
+  ck(brun.tagword() == 'SOAK', 'and an empty tag reads as SOAK rather than as nothing')
+
+  local tags = {'soak', 'smoke', 'resumed'}
+  local want = {'SD SOAK - TRIGGER TO STOP', 'SD SMOKE - TRIGGER TO STOP',
+                'SD RESUMED - TRIGGER TO STOP'}
+  local k
+  for k = 1, 3 do
+    brun.tag = tags[k]
+    ck(brun.ui_build() == true and brun.ui ~= nil, 'the screen builds for tag ' .. tags[k])
+    local ti = tostring(MD.obj(brun.ui.scr).title)
+    ck(ti == want[k], 'and the title names the run', ti)
+    ck(string.len(ti) <= 31, 'inside the 31-character title ceiling',
+       string.format('%d char(s)', string.len(ti)))
+    ck(MD.text(brun.ui.health) == string.upper(tags[k]) .. ' HEALTH --',
+       'and the headline placeholder names it too', tostring(MD.text(brun.ui.health)))
+  end
+  brun.ui_destroy()
+  brun.tag = 'soak'
 end
 
 print('')

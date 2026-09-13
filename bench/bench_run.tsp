@@ -36,6 +36,7 @@ brun.ncell    = 0        -- cells attempted this run
 brun.nbadsdg  = 0        -- consecutive generator failures
 brun.stopwhy  = nil
 brun.stopbad  = false   -- did it park because something is wrong, or finish what it was asked?
+brun.tag      = brun.tag or 'soak'   -- what this run is: the panel title and the record header both say it
 
 -- HOW MANY GENERATOR FAILURES IN A ROW BEFORE THE RUN HOLDS. A wedged generator leaves every remaining
 -- cell stimulus-free, and thousands of rows recording "no bytes" against a dead wire read exactly like a
@@ -748,6 +749,18 @@ function brun.ui_destroy()
   brun.ui = nil
 end
 
+-- THE RUN'S OWN NAME, UPPER CASE. -> 'SOAK', 'SMOKE', 'RESUMED', or whatever brun.soak was passed
+--
+-- A SMOKE AND A SOAK DRAW THE SAME SCREEN, because both run through brun.soak, and the cell count
+-- halfway down the panel is the only other thing separating them. That is too little for an operator
+-- glancing at the glass: a smoke read as a stray soak is a TRIGGER press, and the key stops whichever run
+-- is really there.
+function brun.tagword()
+  local t = brun.tag
+  if t == nil or t == '' then t = 'soak' end
+  return string.upper(t)
+end
+
 function brun.ui_build()
   brun.ui_destroy()
   if display == nil or display.create == nil then return false end
@@ -767,15 +780,18 @@ function brun.ui_build()
       u.all[u.n] = h
       return h
     end
-    -- THE STOP INSTRUCTION LIVES IN THE TITLE, which is the one piece of the screen that never changes and
-    -- never scrolls. It used to occupy 31 of the note line's 58 characters on every draw of an eight-day
-    -- run to say something that is true the whole time. 'SD' rather than 'SERIAL DECODE' to make room, and
-    -- 'TRIGGER TO STOP' rather than 'PRESS TRIGGER TO STOP' -- the verb is the only word a title can drop.
-    u.scr  = add(create(display.ROOT, display.OBJ_SCREEN, 'SD SOAK - TRIGGER TO STOP'))
+    -- THE STOP INSTRUCTION AND THE RUN'S NAME LIVE IN THE TITLE, the one piece of the screen that never
+    -- scrolls and never redraws. The note line's 58 characters are all needed for what changes, and a
+    -- stop control that is true for the whole run does not belong in them. 'SD' rather than 'SERIAL
+    -- DECODE' to make room, and 'TRIGGER TO STOP' rather than 'PRESS TRIGGER TO STOP' -- the verb is the
+    -- only word a title can drop.
+    u.scr  = add(create(display.ROOT, display.OBJ_SCREEN,
+                        'SD ' .. brun.tagword() .. ' - TRIGGER TO STOP'))
     -- THE HEADLINE FIRST, because it is the one line that answers the question from across the room.
     -- FONT_MEDIUM is the largest this firmware has -- the reference lists FONT_SMALL and FONT_MEDIUM and
     -- nothing else -- so it is emphasised by position and colour rather than by size.
-    u.health = add(create(u.scr, display.OBJ_TEXT, 12, 20, 'SOAK HEALTH --', brun.c_ok, small, left))
+    u.health = add(create(u.scr, display.OBJ_TEXT, 12, 20, brun.tagword() .. ' HEALTH --',
+                          brun.c_ok, small, left))
     -- 788 mirrors the 12 px left inset of every other line. One character, redrawn six times a cell, so it
     -- gets its own object rather than making each tick rewrite the whole 58-character headline.
     u.spin = add(create(u.scr, display.OBJ_TEXT, 788, 20, '|', brun.c_good, small, display.JUST_RIGHT))
@@ -1979,6 +1995,9 @@ function brun.soak(iterations, tag)
     return false, 'the app is not loaded, so there is nothing to soak'
   end
   local forever = (iterations == nil or iterations == 0)
+  -- SET BEFORE ui_build, which reads it for the title and the headline. The record header takes the same
+  -- value, so the glass and the file cannot disagree about which run this is.
+  brun.tag = tag or 'soak'
   brun.ncell, brun.nwrap, brun.nbadsdg, brun.stopwhy = 0, 0, 0, nil
   brun.stopbad = false
   brun.nevtot, brun.nevstreak, brun.nevpanel = 0, 0, 0
@@ -2020,7 +2039,7 @@ function brun.soak(iterations, tag)
   -- briefly unreadable. brec.stopped is retried by rechold, and a closed plan handle makes nextrow answer
   -- nil, which puts the loop into planwait.
   brun.startfault = nil
-  if not brec.begin(tag or 'soak', forever and 0 or iterations, brun.planpath) then
+  if not brec.begin(brun.tag, forever and 0 or iterations, brun.planpath) then
     brun.startfault = 'cannot record: ' .. tostring(brec.why)
   end
   if not brun.planopen() then

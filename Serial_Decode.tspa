@@ -1119,9 +1119,9 @@ end
 
 -- Readings the pre-trigger reserve holds, and how long that is in TIME -- which is what decides
 --   [...]
--- buffer alone -- 5 % of enough readings to cover 40 ms at 1 MS/s is an 800 000-reading buffer per
--- capture. So the reserve stays at 5 % and the EVENT is muted for the capture instead
--- (sdec.mute_events); the data is unaffected, verified byte-exact throughout.
+-- armed FILL_ONCE capture puts a modal Error 4915 box over whatever is displayed with the mute in
+-- force. Measured, with the panel photographed -- docs/vendor/02-event-4915-unmutable.md. The same
+-- mute DOES suppress 1130 and 2205, so this is a subsystem difference and not a severity rule.
 function sdec.acq_reserve(n)
   if n == nil then n = sdec.n end
   local pt = sdec.pretrig or 0
@@ -1183,7 +1183,7 @@ function sdec.quiet_events()
   end)
 end
 
--- Mute the panel's event popups for a capture. The pre-trigger reserve is a CIRCULAR sub-region, so
+-- Mute the panel's event popups where the firmware honours the mute -- which for 4915 it does NOT.
 --   [...]
 -- THE LOG IS LEFT INTACT. Draining it is worse: eventlog.next CONSUMES and eventlog.post cannot put
 -- an event back, so real events come out as generic "1005 User" entries, multiplied per poll, and
