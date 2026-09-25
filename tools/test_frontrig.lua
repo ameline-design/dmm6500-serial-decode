@@ -199,6 +199,10 @@ check('it still returns a capture rather than nothing', pres == true,
 check('and names the KEY as the source that failed, not the analog trigger',
       has(sdec.lasterr, 'front') and has(sdec.lasterr, 'captured free-running'),
       tostring(sdec.lasterr))
+-- A REFUSAL APPENDS NOTHING. The suffix is only ever the bounded wait's own text; firmware-controlled
+-- text must not enter a sentence two bench tools parse.
+check('a refusal appends no detail, so firmware text stays out of the parsed sentence',
+      not has(sdec.lasterr, 'no trigger in'), tostring(sdec.lasterr))
 check('the operator trigger setting survives the failure untouched',
       sdec.trigmode == 'front', tostring(sdec.trigmode))
 check('the trigger model is not left armed', TRIG.aborts >= 1 and
@@ -206,6 +210,46 @@ check('the trigger model is not left armed', TRIG.aborts >= 1 and
       string.format('aborts=%d state=%s', TRIG.aborts, tostring(trigger.model.state())))
 check('and popups are restored on the failure path too',
       localnode.showevents == eventlog.SEV_ERROR, tostring(localnode.showevents))
+
+-- serial_app.tsp's header says acq_triggered degrades to free-running on a digitizer with no analog
+-- trigger. The failure exit's sdec.atrig.mode write sits OUTSIDE the function's pcall, so with atrig
+-- nil it raised there instead of degrading -- making the header's claim false on exactly the hardware
+-- it describes.
+sdec.trigmode = 'front'
+use_busy()
+arm_reset()
+local realatrig = sdec.atrig
+sdec.atrig = nil
+local realinit2 = trigger.model.initiate
+trigger.model.initiate = function() error('no such event source', 0) end
+local nok, nres, nwhy = pcall(sdec.acquire)
+trigger.model.initiate = realinit2
+sdec.atrig = realatrig
+check('a digitizer with NO analog trigger degrades rather than raising',
+      nok and nres == true, string.format('%s / %s / %s', tostring(nok), tostring(nres),
+                                          tostring(nwhy)))
+
+-- AN EXPIRED ARM, AND THE DISCRIMINATOR bench_trigin.py AND bench_trigkey.py DEPEND ON. Those tools
+-- read 'trigger unavailable' as "the arm expired" and a lasterr naming an IDLE line as "the trigger
+-- FIRED", so the prefix must survive and the suffix must never contain either idle phrase -- otherwise
+-- a TRIGGER key that was never pressed reports as a pass.
+sdec.trigmode = 'front'
+use_busy()
+arm_reset()
+local realdone = sdec.trig_done
+sdec.trig_done = function() return false end
+local eok, eres = pcall(sdec.acquire)
+sdec.trig_done = realdone
+check('an expired arm degrades rather than raising, keeping the contract prefix',
+      eok and eres == true and has(sdec.lasterr, 'trigger unavailable')
+      and has(sdec.lasterr, 'captured free-running'),
+      string.format('%s / %s', tostring(eres), tostring(sdec.lasterr)))
+check('...and appends the wait reason, which reached only the USB log before',
+      has(sdec.lasterr, 'no trigger in') and has(sdec.lasterr, 'try Free run'),
+      tostring(sdec.lasterr))
+check('...and never the words the bench reads as "the trigger FIRED"',
+      not has(sdec.lasterr, 'idle') and not has(sdec.lasterr, 'no transitions'),
+      tostring(sdec.lasterr))
 
 -- A firmware without trigger.EVENT_DISPLAY would otherwise pass NIL to model.load() and
 -- to the blender stimulus, where the key vanishes silently.

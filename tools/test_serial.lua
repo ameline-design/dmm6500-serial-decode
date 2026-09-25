@@ -1577,6 +1577,115 @@ do
 end
 
 -- ============================================================================
+-- CANCEL RESTORES THE DISPLAYED RATE, AND A DROPPED RESULT KEEPS ITS EVIDENCE
+--
+-- ITS OWN BLOCK ON PURPOSE: drop_stale_result() removes the live detection, and the Options block
+-- above goes on to press Lock Detected, which refuses without one. Run inside that block these left
+-- a failure 35 checks further down, nowhere near the cause.
+-- ============================================================================
+do
+  clearforce()
+  -- options_lock() publishes baud/snapped/snapfirm beside the force_* fields, so a Cancel restoring
+  -- only force_* left the rounded rate and a firm marker behind: '38400?' read as plain '38400'.
+  run({bytes = GEN_BYTES('Hello, World!'), baud = 37703, fs = 400000})
+  local sb, ss, sf = sdec.baud, sdec.snapped, sdec.snapfirm
+  -- Asserted, so the Cancel check cannot pass vacuously on an already-firm snap: 37703 is 1.8 % from
+  -- 38400, inside snaptol and outside snaptol_firm.
+  check('a 37703 Bd line soft-snaps to 38400 (precondition)',
+        sb == 38400 and ss == true and sf == false,
+        string.format('baud=%s snapped=%s firm=%s', tostring(sb), tostring(ss), tostring(sf)))
+  sdec.options()
+  sdec.options_lock()
+  check('Lock Detected makes the snap firm', sdec.snapfirm == true, tostring(sdec.snapfirm))
+  sdec.options_cancel()
+  check('Cancel restores the displayed rate and its soft-snap marker',
+        sdec.baud == sb and sdec.snapped == ss and sdec.snapfirm == sf,
+        string.format('baud=%s->%s snapped=%s->%s firm=%s->%s', tostring(sb), tostring(sdec.baud),
+                      tostring(ss), tostring(sdec.snapped), tostring(sf), tostring(sdec.snapfirm)))
+
+  -- A snapshot built without the display fields must leave the live ones alone rather than nil them,
+  -- which is what dhas is for.
+  clearforce()
+  run({bytes = GEN_BYTES('Hello, World!'), baud = 9600, fs = 100000})
+  local lb = sdec.baud
+  sdec.opt_snap = {baud = nil, trig = sdec.trigmode, view = sdec.ui_mode}
+  sdec.options_restore()
+  check('a snapshot with no display fields leaves the displayed rate alone',
+        sdec.baud == lb, string.format('%s -> %s', tostring(lb), tostring(sdec.baud)))
+
+  -- drop_stale_result() drops the result and the rate claim from it, and keeps the evidence for why
+  -- the pass that invalidated it failed.
+  clearforce()
+  run({bytes = GEN_BYTES('Hello, World!'), baud = 9600, fs = 100000})
+  check('a result to drop (precondition)', sdec.res ~= nil and sdec.baud ~= nil)
+  sdec.probe_note, sdec.lasterr = 'PN', 'LE'
+  sdec.drop_stale_result()
+  check('drop_stale_result clears res, baud and the fit',
+        sdec.res == nil and sdec.baud == nil and sdec.bittime == nil and sdec.fitq == 0,
+        string.format('res=%s baud=%s fitq=%s', tostring(sdec.res), tostring(sdec.baud),
+                      tostring(sdec.fitq)))
+  check('...and keeps probe_note and lasterr, which describe the pass that failed',
+        sdec.probe_note == 'PN' and sdec.lasterr == 'LE',
+        string.format('%s / %s', tostring(sdec.probe_note), tostring(sdec.lasterr)))
+  sdec.probe_note, sdec.lasterr = nil, nil
+  clearforce()
+
+  -- AND IT IS WIRED INTO autoset(), not merely defined. The check above calls drop_stale_result()
+  -- directly, so it passes whether or not autoset uses it. Here the probe pass is allowed to succeed
+  -- and the second pass fails at acquire, which is the real defect: that exit returns before any
+  -- decode, so without the drop the probe's 9600 stays on the panel beside the second pass's rate.
+  clearforce()
+  run({bytes = GEN_BYTES('Hello, World!'), baud = 9600, fs = 100000})
+  local realacq, ncall = sdec.acquire, 0
+  sdec.acquire = function()
+    ncall = ncall + 1
+    if ncall == 1 then return realacq() end
+    return false, 'mocked second-pass acquire failure'
+  end
+  local aok, awhy = sdec.autoset()
+  sdec.acquire = realacq
+  check('autoset second pass really did run and fail (precondition)',
+        aok == false and ncall >= 2, string.format('ok=%s calls=%d why=%s', tostring(aok), ncall,
+                                                   tostring(awhy)))
+  check('a failed second pass leaves NO rate claim from the probe behind',
+        sdec.baud == nil and sdec.res == nil,
+        string.format('baud=%s res=%s', tostring(sdec.baud), tostring(sdec.res)))
+  clearforce()
+
+  -- AND ON A RAISE, NOT ONLY A false RETURN. A bare acquire() that raises unwinds past the drop to
+  -- capture()'s catch, which is the same defect by another route.
+  run({bytes = GEN_BYTES('Hello, World!'), baud = 9600, fs = 100000})
+  local racq, rn = sdec.acquire, 0
+  sdec.acquire = function()
+    rn = rn + 1
+    if rn == 1 then return racq() end
+    error('raised second-pass acquire', 0)
+  end
+  local rok, rwhy = sdec.autoset()
+  sdec.acquire = racq
+  check('a RAISING second pass is caught and reported, not propagated',
+        rok == false and rn >= 2, string.format('ok=%s calls=%d why=%s', tostring(rok), rn,
+                                                tostring(rwhy)))
+  check('...and it leaves no rate claim behind either',
+        sdec.baud == nil and sdec.res == nil,
+        string.format('baud=%s res=%s', tostring(sdec.baud), tostring(sdec.res)))
+  clearforce()
+
+  -- baud_probe IS PER CALL. uart_decode clears it inside decode_from(), which an acquisition failure
+  -- never reaches, so a retracted rate could outlive its press and drive a capture in the next one.
+  sdec.baud_probe = 300
+  local facq, fn2 = sdec.acquire, 0
+  sdec.acquire = function() fn2 = fn2 + 1 return false, 'mock acquire failure' end
+  local sok = sdec.autoset()
+  sdec.acquire = facq
+  check('a stale baud_probe cannot drive a capture in a later press',
+        sok == false and fn2 <= 3 and sdec.baud_probe == nil,
+        string.format('ok=%s acquires=%d (ladder is 3) probe=%s', tostring(sok), fn2,
+                      tostring(sdec.baud_probe)))
+  clearforce()
+end
+
+-- ============================================================================
 -- EVERY OPTIONS FORMAT FIELD MUST WORK ON ITS OWN
 -- ============================================================================
 -- The forced-format shortcut in decode_from() runs only when the WIDTH is forced, so parity,

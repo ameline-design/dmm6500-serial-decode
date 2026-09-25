@@ -96,6 +96,38 @@ sdec.strm_fallback_s = sdec.strm_fallback_s or 20
 -- sdec.stickyerr -- a fault that must outlive a capture (see install_cleanup)
 
 -- Drop every trace of the previous capture, and return true.
+-- Drop a decode result a later pass has invalidated, and nothing else.
+--
+-- autoset() runs up to three captures per press, and a pass failing at acquire() returns before any
+-- decode -- so the previous pass's res, baud and fitq survive while the failed capture has rewritten
+-- acq_fs and the levels. Measured: a probe fitting 9600 Bd at 1 MS/s then a failed 80 kS/s pass leaves
+-- BAUD 9600 and SA/BIT 104.2 beside RATE 80 kS/s, and 80000/104.2 is 768.
+--
+-- NOT clear_result(), which also drops probe_note and lasterr -- on this path the only record of why
+-- the re-capture happened and what failed. The measurements stay: they belong to the capture that ran.
+-- Run one autoset step, turning a RAISE into a refusal so the cleanup below cannot be skipped.
+--
+-- A bare sdec.acquire() that raises unwinds straight past drop_stale_result() to capture()'s own
+-- catch, which is the stale-result defect again by another route. Measured: a raising second-pass
+-- acquire left BAUD 9600 and a live res on the panel under 'no decode'.
+function sdec.try_step(fn)
+  local ok, why
+  local pok, perr = pcall(function() ok, why = fn() end)
+  if not pok then return false, tostring(perr) end
+  return ok, why
+end
+
+function sdec.drop_stale_result()
+  sdec.res, sdec.midi, sdec.lin = nil, nil, nil
+  sdec.baud, sdec.baud_raw, sdec.bittime = nil, nil, nil
+  -- clear_result()'s own 'no result' values, so the two cannot disagree: false/0/true, not nil,
+  -- because ui_field_colour reads fitq numerically.
+  sdec.snapped, sdec.fitq, sdec.snapfirm = false, 0, true
+  -- These describe the dropped result; probe_note and lasterr describe this pass.
+  sdec.fmt_note, sdec.baud_note, sdec.rate_note = nil, nil, nil
+  return true
+end
+
 function sdec.clear_result()
   -- CALLED AT THE TOP OF capture(), before anything can fail: acquisition can fail before
   -- decode_from() ever runs, so clearing must not depend on the decode reaching it.
@@ -195,6 +227,11 @@ end
 function sdec.autoset()
   local target = sdec.force_baud
   local captured = false
+  -- PER CALL. uart_decode's own comment says baud_probe is "set only by giveup(), and only for THIS
+  -- call", and that only held when a decode ran: an acquisition failure never reaches decode_from(),
+  -- so a retracted rate outlived its press. Measured -- a stale 300 turned three failed probe looks
+  -- into a fourth capture at 300 Bd.
+  sdec.baud_probe = nil
 
   -- TWO PASSES, because sample rate trades resolution against DURATION and only one of the two
   -- is knowable in advance: 1 MS/s oversamples anything up to ~125 kBd but fills the
@@ -270,7 +307,9 @@ function sdec.autoset()
       -- The retracted rate is used ONLY to choose the second pass's sample rate. That pass
       -- re-decodes from scratch and must still succeed on its own, so a bad guess here costs one
       -- capture and cannot put a wrong rate on the panel.
-      if sdec.baud_probe == nil then return false, why end
+      -- A no-op on a fresh press, where detect_reset() has already cleared. It matters on capture()'s
+      -- back-off, which calls autoset() again without one: the unlocked decode's result is still live.
+      if sdec.baud_probe == nil then sdec.drop_stale_result() return false, why end
       target = sdec.baud_probe
       sdec.probe_note = string.format(
         'too slow to frame at 1 MS/s -- re-captured at the rate the probe measured (%.0f Bd)',
@@ -296,10 +335,13 @@ function sdec.autoset()
   -- unlocked capture is 19 bytes long. See sdec.fs_select.
   sdec.fs = want
   sdec.fs_want = want
-  local ok, why = sdec.acquire()
-  if not ok then return false, why end
-  local dok, dwhy = sdec.decode()
-  if not dok then return false, dwhy end
+  -- try_step, not a bare call: a raise here must reach the drop rather than unwind past it.
+  local ok, why = sdec.try_step(sdec.acquire)
+  -- Before any decode, so without the drop the probe's baud and fit stay beside the failed capture's
+  -- rate. See sdec.drop_stale_result.
+  if not ok then sdec.drop_stale_result() return false, why end
+  local dok, dwhy = sdec.try_step(sdec.decode)
+  if not dok then sdec.drop_stale_result() return false, dwhy end
 
   -- THE PROBE CAN BE AN OCTAVE OUT, AND IT COSTS HALF THE WINDOW WHEN IT IS.
   --
@@ -322,9 +364,13 @@ function sdec.autoset()
         'probe fitted %.0f Bd, wire is %.0f -- re-captured at %g kS/s for the full window',
         target or 0, sdec.baud, w2 / 1000)
       sdec.fs, sdec.fs_want = w2, w2
-      local ok2, why2 = sdec.acquire()
-      if not ok2 then return false, why2 end
-      return sdec.decode()
+      local ok2, why2 = sdec.try_step(sdec.acquire)
+      -- Same reason as the second pass above: this returns before the re-decode, so the result being
+      -- replaced must not outlive the capture that was meant to replace it.
+      if not ok2 then sdec.drop_stale_result() return false, why2 end
+      local d2ok, d2why = sdec.try_step(sdec.decode)
+      if not d2ok then sdec.drop_stale_result() return false, d2why end
+      return d2ok, d2why
     end
   end
   return true
@@ -2640,12 +2686,20 @@ function sdec.options_save()
   -- THE PROVENANCE IS PART OF THE STATE, not separate from it: autolock_set says which of the forced
   -- fields the app chose for itself, so restoring the fields without it leaves a lock whose owner is
   -- forgotten -- and a later back-off then declines to clear a width autolock picked.
+  --
+  -- THE DISPLAYED RATE IS PART OF IT TOO. options_lock() publishes baud/snapped/snapfirm as well as
+  -- the force_* fields, so a snapshot of force_* alone cannot undo it: Cancel put force_baud back to
+  -- nil and left the rounded baud and snapfirm = true, turning a soft-snapped '38400?' into an
+  -- unmarked '38400' and losing the 37703 the fit produced. dhas marks these as recorded, since nil
+  -- is a legitimate value for them and a snapshot built without them must not be read as 'all nil'.
   sdec.opt_snap = {baud = sdec.force_baud, nbits = sdec.force_nbits,
                    par = sdec.force_par, nstop = sdec.force_nstop,
                    invert = sdec.force_invert, proto = sdec.proto,
                    any = sdec.widths_any, trig = sdec.trigmode,
                    ext = sdec.trigext, fc = sdec.fc_out, view = sdec.ui_mode,
-                   aset = sdec.autolock_set}
+                   aset = sdec.autolock_set,
+                   dhas = true, dbaud = sdec.baud,
+                   dsnap = sdec.snapped, dfirm = sdec.snapfirm}
   return true
 end
 
@@ -2659,6 +2713,11 @@ function sdec.options_restore()
   sdec.trigmode, sdec.trigext, sdec.fc_out = s.trig, s.ext, s.fc
   sdec.ui_mode = s.view
   sdec.autolock_set = s.aset
+  -- Guarded on dhas, not on the values: nil is legitimate for all three, and a snapshot taken without
+  -- them must leave the live ones alone rather than clear them.
+  if s.dhas then
+    sdec.baud, sdec.snapped, sdec.snapfirm = s.dbaud, s.dsnap, s.dfirm
+  end
   return true
 end
 

@@ -1496,7 +1496,8 @@ function sdec.acq_triggered(n, slope)
   end
   sdec.trigblended = blended
 
-  local ok = pcall(function()
+  local expired = false
+  local ok, perr = pcall(function()
     if useanalog then
       sdec.atrig.mode        = sdec.k.MODE_EDGE
       sdec.atedge.level      = sdec.thr
@@ -1521,6 +1522,7 @@ function sdec.acq_triggered(n, slope)
     end
     local full = (buf.n or 0) >= n and sdec.pretrig <= 0
     if not sdec.trig_done(buf) and not full then
+      expired = true
       error('no trigger in ' .. tostring(wait) .. ' s (' ..
             tostring(sdec.trigmode) .. ') -- try Free run', 0)
     end
@@ -1532,7 +1534,10 @@ function sdec.acq_triggered(n, slope)
   if not ok then
     sdec.lasterr = tostring(sdec.trigmode) ..
                    ' trigger unavailable; captured free-running'
-    sdec.atrig.mode = sdec.k.MODE_OFF
+    if expired and perr ~= nil then
+      sdec.lasterr = sdec.lasterr .. ' (' .. tostring(perr) .. ')'
+    end
+    pcall(function() sdec.atrig.mode = sdec.k.MODE_OFF end)
     return sdec.acq_free(n)
   end
 
@@ -5251,6 +5256,25 @@ if sdec.strm_press == nil then sdec.strm_press = false end
 sdec.strm_maxsec = sdec.strm_maxsec or 1200
 sdec.strm_fallback_s = sdec.strm_fallback_s or 20
 -- Drop every trace of the previous capture, and return true.
+--   [...]
+-- A bare sdec.acquire() that raises unwinds straight past drop_stale_result() to capture()'s own
+-- catch, which is the stale-result defect again by another route. Measured: a raising second-pass
+-- acquire left BAUD 9600 and a live res on the panel under 'no decode'.
+function sdec.try_step(fn)
+  local ok, why
+  local pok, perr = pcall(function() ok, why = fn() end)
+  if not pok then return false, tostring(perr) end
+  return ok, why
+end
+
+function sdec.drop_stale_result()
+  sdec.res, sdec.midi, sdec.lin = nil, nil, nil
+  sdec.baud, sdec.baud_raw, sdec.bittime = nil, nil, nil
+  sdec.snapped, sdec.fitq, sdec.snapfirm = false, 0, true
+  sdec.fmt_note, sdec.baud_note, sdec.rate_note = nil, nil, nil
+  return true
+end
+
 function sdec.clear_result()
   sdec.res, sdec.midi, sdec.lin = nil, nil, nil
   sdec.baud, sdec.baud_raw, sdec.bittime = nil, nil, nil
@@ -5300,6 +5324,7 @@ end
 function sdec.autoset()
   local target = sdec.force_baud
   local captured = false
+  sdec.baud_probe = nil
 
   if target == nil then
     sdec.fs = sdec.rates[table.getn(sdec.rates)]      -- top rate: 1 MS/s
@@ -5326,7 +5351,7 @@ function sdec.autoset()
         'probe took %d looks to catch traffic (down to %g kS/s)', tries, ladder[tries] / 1000)
     end
     if not ok then
-      if sdec.baud_probe == nil then return false, why end
+      if sdec.baud_probe == nil then sdec.drop_stale_result() return false, why end
       target = sdec.baud_probe
       sdec.probe_note = string.format(
         'too slow to frame at 1 MS/s -- re-captured at the rate the probe measured (%.0f Bd)',
@@ -5343,10 +5368,10 @@ function sdec.autoset()
 
   sdec.fs = want
   sdec.fs_want = want
-  local ok, why = sdec.acquire()
-  if not ok then return false, why end
-  local dok, dwhy = sdec.decode()
-  if not dok then return false, dwhy end
+  local ok, why = sdec.try_step(sdec.acquire)
+  if not ok then sdec.drop_stale_result() return false, why end
+  local dok, dwhy = sdec.try_step(sdec.decode)
+  if not dok then sdec.drop_stale_result() return false, dwhy end
 
   if sdec.baud ~= nil and sdec.baud > 0 then
     local w2 = sdec.pick_fs(sdec.baud, 8)
@@ -5355,9 +5380,11 @@ function sdec.autoset()
         'probe fitted %.0f Bd, wire is %.0f -- re-captured at %g kS/s for the full window',
         target or 0, sdec.baud, w2 / 1000)
       sdec.fs, sdec.fs_want = w2, w2
-      local ok2, why2 = sdec.acquire()
-      if not ok2 then return false, why2 end
-      return sdec.decode()
+      local ok2, why2 = sdec.try_step(sdec.acquire)
+      if not ok2 then sdec.drop_stale_result() return false, why2 end
+      local d2ok, d2why = sdec.try_step(sdec.decode)
+      if not d2ok then sdec.drop_stale_result() return false, d2why end
+      return d2ok, d2why
     end
   end
   return true
@@ -6637,7 +6664,9 @@ function sdec.options_save()
                    invert = sdec.force_invert, proto = sdec.proto,
                    any = sdec.widths_any, trig = sdec.trigmode,
                    ext = sdec.trigext, fc = sdec.fc_out, view = sdec.ui_mode,
-                   aset = sdec.autolock_set}
+                   aset = sdec.autolock_set,
+                   dhas = true, dbaud = sdec.baud,
+                   dsnap = sdec.snapped, dfirm = sdec.snapfirm}
   return true
 end
 
@@ -6651,6 +6680,9 @@ function sdec.options_restore()
   sdec.trigmode, sdec.trigext, sdec.fc_out = s.trig, s.ext, s.fc
   sdec.ui_mode = s.view
   sdec.autolock_set = s.aset
+  if s.dhas then
+    sdec.baud, sdec.snapped, sdec.snapfirm = s.dbaud, s.dsnap, s.dfirm
+  end
   return true
 end
 

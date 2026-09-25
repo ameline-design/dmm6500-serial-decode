@@ -2262,7 +2262,11 @@ function sdec.acq_triggered(n, slope)
   end
   sdec.trigblended = blended
 
-  local ok = pcall(function()
+  -- The raised reason is carried out, and `expired` says which fault it was: an expired wait means the
+  -- line stayed quiet, anything else means the source could not be armed. An upvalue rather than a
+  -- return value, so the exit need not match on firmware text it does not control.
+  local expired = false
+  local ok, perr = pcall(function()
     -- The analog trigger is configured ONLY when it is a source. Setting a level and slope
     -- for an external event would be harmless but misleading to read.
     if useanalog then
@@ -2351,6 +2355,7 @@ function sdec.acq_triggered(n, slope)
     -- there is no pre-trigger phase to wrap and a full buffer really does mean finished.
     local full = (buf.n or 0) >= n and sdec.pretrig <= 0
     if not sdec.trig_done(buf) and not full then
+      expired = true
       error('no trigger in ' .. tostring(wait) .. ' s (' ..
             tostring(sdec.trigmode) .. ') -- try Free run', 0)
     end
@@ -2367,9 +2372,23 @@ function sdec.acq_triggered(n, slope)
     -- Names the SOURCE that failed, not "analog trigger" -- there are four now, and telling
     -- someone their analog trigger is unavailable when they selected the rear BNC sends them
     -- to the wrong place.
+    --
+    -- THIS PREFIX IS A CONTRACT. bench_trigin.py reads 'trigger unavailable' as a timeout, and
+    -- bench_trigkey.py discriminates on it: a lasterr naming an IDLE line means the trigger fired,
+    -- this text means the arm expired. Reporting the probe's idle reason here -- the obvious way to
+    -- make it honest -- would make an unpressed TRIGGER key read as 'the key FIRED'. Append, never
+    -- replace.
     sdec.lasterr = tostring(sdec.trigmode) ..
                    ' trigger unavailable; captured free-running'
-    sdec.atrig.mode = sdec.k.MODE_OFF
+    -- The wait's own reason, which reached only the USB log before. Expired path only: that text is
+    -- ours, a firmware refusal's is not and must not enter a sentence two bench tools parse.
+    if expired and perr ~= nil then
+      sdec.lasterr = sdec.lasterr .. ' (' .. tostring(perr) .. ')'
+    end
+    -- PROTECTED, because sdec.atrig need not exist. serial_app.tsp's header claims this function
+    -- degrades to free-running without an analog trigger; this bare write is what made that false --
+    -- with atrig nil it raises out here, outside the pcall, so acquire() dies instead of degrading.
+    pcall(function() sdec.atrig.mode = sdec.k.MODE_OFF end)
     return sdec.acq_free(n)
   end
 
