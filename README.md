@@ -61,16 +61,34 @@ in `bench/` bypasses this path, so a soak does leave the instrument digitizing.
 
 ## Endurance, measured
 
-Three unattended runs on real hardware, all three the instrument driving itself: it reads its plan from
+Five unattended runs on real hardware, all five the instrument driving itself: it reads its plan from
 its own USB key, commands the generator over the LAN, decodes, judges and writes every cell back to the
 key. **No computer is attached to any of it.** Per-run detail is in [docs/BENCH.md](docs/BENCH.md) under
 *Soak results*.
 
 | run | when | duration | cells judged | BAD | rate |
 |---|---|---|---|---|---|
-| **the week** | 08-29 → 09-05 | **182.2 h** | 133 297 | 2 462 | **1.85 %** |
+| **the fortnight** | 09-12 → 09-24 | **282.2 h** | 202 281 | 1 917 | **0.95 %** |
+| **the week** | 08-29 → 09-05 | 182.2 h | 133 297 | 2 462 | **1.85 %** |
+| **the 31-hour** | 09-11 → 09-12 | 31.7 h | 22 636 | 232 | **1.03 %** |
 | **the 17-hour** | 09-07 | 17.24 h | 11 739 | 143 | **1.22 %** |
 | **the 8-hour** | 09-08 | 8.28 h | 6 708 | 76 | **1.13 %** |
+
+**The fortnight is the reference figure: 121 laps and 11.76 days, 0.948 % [0.906 – 0.991] 95 % CI, and
+nothing drifted across it** — slope −0.0005 points per lap (t = −0.34), first 60 laps 0.950 % against last
+60 laps 0.947 %, lap time spread 1.9 %. Stopped by the front-panel TRIGGER at L135C427, **0 events
+instigated, 0 cells unrecorded in 0 gaps**, heap flat at 2 724 kB. Unlike the 31-hour run, which needed a
+220-cell intermittent-contact window excluded from its raw 1.58 %, it has no window: 0.948 % is raw.
+
+**Those two are the only pair here that can be compared, and the fortnight shows no regression.** Their
+decoders are functionally identical — the trees differ in comments, READMEs and the soak panel's
+run-naming and nothing else — so **z = −1.13 against the 31-hour run's 1.03 % means unchanged, not
+improved**, and no vector regresses (largest z +1.78 against a +3.02 Bonferroni bar over 39 tests). The
+17-hour and 8-hour runs predate the decode fast paths and the week predates more than that; neither is
+comparable. Two things the total hides: 163 BAD, 8.5 %, are the reciprocal-ratio gap between
+`sdec.snaptol` and the judge's 2 % rate test rather than a defect — all from five random rate draws, which
+also explains the only four laps that look like outliers — and the largest genuine mode is the documented
+**125000 → 250000 doubling** at 6.07 % of its cells, against 6.65 % before.
 
 **The week: 136 247 captures, twelve segments, not one instrument event.** An event on this firmware is a
 modal box nothing in the app can suppress, so it is the thing that ends an unattended run; every segment
