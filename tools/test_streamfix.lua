@@ -267,6 +267,21 @@ do
   check('the ready row offers the panel, not a file, when there is no key',
         has(sdec.ck_status(), 'panel only') and not has(sdec.ck_status(), 'to a file'),
         string.format('%q', sdec.ck_status()))
+  -- AND IT NAMES THE NUMBER THAT ACTUALLY ARRIVES. 8 kB mode keeps its whole recording, so one
+  -- figure is right there; 32 kB decodes 32768 and keeps 8192, and a row reading '32768 bytes, panel
+  -- only' promises four times what the panel will hold. Asserting only 'panel only' could not catch
+  -- that, because 8 kB is the mode where that wording is correct.
+  sdec.capmode = 'med'
+  local medrow = sdec.ck_status()
+  check('the 32 kB ready row names the cap AND what the panel keeps',
+        has(medrow, tostring(sdec.ui_modes[3].cap)) and has(medrow, tostring(sdec.ck_keep))
+        and not has(medrow, 'to a file'), string.format('%q', medrow))
+  check('...and it still fits the row', sdec.ui_textw(medrow) <= 456,
+        string.format('%d px: %q', sdec.ui_textw(medrow), medrow))
+  sdec.capmode = 'sml'
+  check('8 kB, where cap equals the tail, states one number rather than two',
+        has(sdec.ck_status(), 'panel only'), string.format('%q', sdec.ck_status()))
+
   MD.usb(true)
   MD.forget_files()
   check('...and offers the file again once a key is back',

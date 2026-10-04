@@ -396,6 +396,14 @@ function sdec.flog_alloc()
   -- A DIFFERENT KEY NEEDS A DIFFERENT NAME. ulog.keygen bumps when a key is inserted after one was
   -- gone; the name chosen on that key may already be in use on this one, and MODE_APPEND would
   -- silently extend a stranger's file.
+  --
+  -- THE ASK COMES FIRST, or the guard cannot fire on its own. keygen only advances when something
+  -- calls ulog.keyok(), and the only such thing inside this function is ulog.next_free() -- below,
+  -- and skipped entirely on the one path the guard exists for, where flog_path is already set. So
+  -- the compare was between two equal values, and the guard worked only because capture_run()'s
+  -- ulog.resume() and the panel tick both happen to ask first. Called from anywhere else -- or if
+  -- either of those moves -- a swapped key appended into a stranger's file and reported success.
+  pcall(function() ulog.keyok() end)
   if sdec.flog_keygen ~= (ulog.keygen or 0) then
     sdec.flog_path, sdec.flog_n, sdec.flog_why = nil, nil, nil
     sdec.flog_keygen = ulog.keygen or 0
@@ -2058,6 +2066,11 @@ function sdec.save()
     sdec.lasterr = nil
     ulog.line('saved ' .. tostring(path))
   else
+    -- NAME THE REASON next_free GAVE, when it is the one that failed. A nil path reaches write_file
+    -- as 'no filename available', which describes this function's own variable rather than anything
+    -- the operator can act on -- and ulog.idx_why holds the real sentence: no key, a directory that
+    -- could not be confirmed, or every name taken. The note row is all they get.
+    if path == nil and ulog.idx_why ~= nil then why = ulog.idx_why end
     sdec.lasterr = 'save failed: ' .. tostring(why)
   end
   pcall(function() sdec.ui_refresh() end)

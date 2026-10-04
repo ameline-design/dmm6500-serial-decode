@@ -1152,10 +1152,16 @@ check('a reload does not resurrect a deliberately disabled logger',
 ulog.enabled = true
 ulog.close()
 
--- The per-session cap stops a runaway loop filling the key.
+-- The cap stops a runaway loop filling the key.
+--
+-- nwritten IS RESET WITH maxlines, and has to be: the cap is measured against the lines written this
+-- POWER CYCLE, not the lines in the current file, because ulog.open() restarts the per-file count and
+-- a key pulled and replaced would otherwise hand back the whole allowance. Everything logged earlier
+-- in this suite is already on that meter, so a test that set only maxlines would stop on line one.
 MD.usb(true)
 ulog.open('/usb1/t.txt', true)
 ulog.maxlines = 5
+ulog.nwritten = 0
 local i
 for i = 1, 20 do ulog.line('spam ' .. i) end
 check('the line cap is enforced', ulog.nlines == 5, tostring(ulog.nlines))
@@ -1164,6 +1170,7 @@ check('dropped lines are counted, not silently discarded', ulog.dropped == 16,
       tostring(ulog.dropped))
 check('the status admits the drops', has(ulog.status(), 'dropped'), ulog.status())
 ulog.maxlines = 20000
+ulog.nwritten = 0
 ulog.close()
 
 -- ============================================================================

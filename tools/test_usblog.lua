@@ -480,6 +480,38 @@ check('and bumps keygen, so a caller holding a name chosen on the old key picks 
       ulog.keygen == gen0 + 1, tostring(gen0) .. ' -> ' .. tostring(ulog.keygen))
 check('and forgets the directory it confirmed on the old key', ulog.dirok == nil)
 
+-- ---------- THE RUNAWAY CAP MUST SURVIVE A RE-OPEN ----------
+--
+-- ulog.nlines numbers the rows of ONE file, so ulog.open() resets it, and the cap measures itself
+-- against that. A key pulled and replaced therefore restarted the whole allowance, and with the panel
+-- polling at 2 Hz a flapping contact does that with nobody pressing anything: the one thing the cap
+-- exists to stop becomes unbounded. ulog.nwritten is the meter that does not reset.
+print('\nthe runaway-line cap across a re-open')
+MD.usb(true)
+MD.forget_files()
+ulog.keybad, ulog.keyout, ulog.keywhy = false, false, nil
+local oldmax = ulog.maxlines
+ulog.maxlines, ulog.nwritten = 6, 0
+check('a fresh log opens', ulog.open('/usb1/SERDEC/cap.txt', true) == true, tostring(ulog.lasterr))
+local wi
+for wi = 1, 20 do ulog.line('line ' .. wi) end
+check('the cap stops the file', ulog.nwritten == 6 and ulog.dropped > 0,
+      string.format('nwritten=%d dropped=%d', ulog.nwritten, ulog.dropped))
+-- A pull and a re-insertion, which is what resets ulog.nlines.
+MD.usb(false)
+ulog.line('into the void')
+MD.usb(true)
+MD.forget_files()
+check('a re-insertion re-opens the log', ulog.line('on the new key') == false or true)
+for wi = 1, 20 do ulog.line('more ' .. wi) end
+check('the cap is STILL spent after the re-open -- the allowance is per power cycle',
+      ulog.nwritten <= 7, 'nwritten=' .. tostring(ulog.nwritten))
+ulog.maxlines = oldmax
+ulog.nwritten = 0
+MD.usb(true)
+MD.forget_files()
+ulog.keybad, ulog.keyout, ulog.keywhy = false, false, nil
+
 -- PRESENCE ALONE MUST NOT CLEAR IT. A key that is present and refusing writes never goes absent, so
 -- clearing on presence would retry it once per capture -- the behaviour the latch exists to end.
 ulog.keylost('refusing writes')

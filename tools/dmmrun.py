@@ -112,6 +112,11 @@ class DMM:
         self.ip = ip
         self.port = port
         self._timeout = timeout
+        # Lines that arrived where a sentinel was expected -- see exec(). Kept rather than dropped
+        # silently, because the only thing worse than an unsolicited event line is one nobody knows
+        # about; the last few are worth printing when a harness reports something impossible.
+        self.stray = 0
+        self.strays = []
         self._open()
         if recover and not self.alive():
             # Stale socket from a previous run: clear it and reconnect.
@@ -173,12 +178,30 @@ class DMM:
     def exec(self, cmd, timeout=30):
         """Run a statement that produces no output, then confirm liveness.
 
-        Appends a sentinel print so there is always exactly one line to read.
+        Appends a sentinel print and READS UNTIL IT ARRIVES, discarding anything ahead of it.
+
+        NOT "exactly one line to read", which is what this assumed. An app under test sets
+        localnode.showevents, and on this instrument that makes the DMM print event lines on the
+        control socket UNSOLICITED -- so a single read can return an event line instead of the
+        sentinel, leaving __OK__ in the buffer and every later reply one behind. It is silent and it
+        cascades: the next load_script arrives mangled ("Script contained 'endscript' without
+        starting with 'loadscript'", every error at line 1), and the next q() for a number returns
+        the string "__OK__". Measured twice, as two bench_smoke panel stages that died in 0.0 min.
+
+        Stray lines are counted rather than dropped quietly, so a caller can tell this happened.
         """
         self.drain()
         self.send(cmd + ' print("__OK__")')
-        r = self.line(timeout)
-        return r == '__OK__'
+        # Bounded, so a genuinely chatty command cannot spin here.
+        for _ in range(256):
+            r = self.line(timeout)
+            if r is None:
+                return False
+            if r == '__OK__':
+                return True
+            self.stray += 1
+            self.strays.append(r)
+        return False
 
     def load_script(self, name, body, run=True, timeout=300, sentinel='===DONE==='):
         """Load a named script via loadscript/endscript, optionally run and stream output.

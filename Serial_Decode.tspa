@@ -44,7 +44,8 @@ if ulog.path == '/usb1/dmm6500_log.txt' then ulog.path = ulog.usbdir .. '/dmm650
 ulog.on        = ulog.on or false      -- true once a file is genuinely open
 ulog.nlines    = ulog.nlines or 0
 ulog.dropped   = ulog.dropped or 0     -- lines refused after the cap
-ulog.maxlines  = ulog.maxlines or 20000  -- per-session cap, so a runaway loop cannot fill the key
+ulog.maxlines  = ulog.maxlines or 20000  -- cap, so a runaway loop cannot fill the key
+ulog.nwritten  = ulog.nwritten or 0
 ulog.tag       = ulog.tag or '?'       -- short app name, prefixed to every line
 if ulog.enabled == nil then ulog.enabled = true end
 if ulog.autoflush == nil then ulog.autoflush = true end
@@ -225,11 +226,12 @@ function ulog.line(s)
     if not ulog.resume() then return false end
   end
   if not ulog.keyok() then return false end
-  if ulog.nlines >= ulog.maxlines then
+  if ulog.nlines >= ulog.maxlines or ulog.nwritten >= ulog.maxlines then
     ulog.dropped = ulog.dropped + 1
     return false
   end
   ulog.nlines = ulog.nlines + 1
+  ulog.nwritten = (ulog.nwritten or 0) + 1
   local txt = string.format('%05d %s %s\r\n', ulog.nlines, tostring(ulog.tag),
                             tostring(s))
   local ok, err = pcall(function()
@@ -5564,6 +5566,7 @@ end
 -- can read. A waveform dump belongs behind its own control and its own filename, not in these.
 -- Allocate the byte log's filename. Returns the path, or nil with sdec.flog_why set.
 function sdec.flog_alloc()
+  pcall(function() ulog.keyok() end)
   if sdec.flog_keygen ~= (ulog.keygen or 0) then
     sdec.flog_path, sdec.flog_n, sdec.flog_why = nil, nil, nil
     sdec.flog_keygen = ulog.keygen or 0
@@ -6461,6 +6464,7 @@ function sdec.save()
     sdec.lasterr = nil
     ulog.line('saved ' .. tostring(path))
   else
+    if path == nil and ulog.idx_why ~= nil then why = ulog.idx_why end
     sdec.lasterr = 'save failed: ' .. tostring(why)
   end
   pcall(function() sdec.ui_refresh() end)

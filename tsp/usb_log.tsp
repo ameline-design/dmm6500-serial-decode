@@ -47,7 +47,12 @@ if ulog.path == '/usb1/dmm6500_log.txt' then ulog.path = ulog.usbdir .. '/dmm650
 ulog.on        = ulog.on or false      -- true once a file is genuinely open
 ulog.nlines    = ulog.nlines or 0
 ulog.dropped   = ulog.dropped or 0     -- lines refused after the cap
-ulog.maxlines  = ulog.maxlines or 20000  -- per-session cap, so a runaway loop cannot fill the key
+ulog.maxlines  = ulog.maxlines or 20000  -- cap, so a runaway loop cannot fill the key
+-- LINES WRITTEN THIS POWER CYCLE, ACROSS EVERY RE-OPEN, and the meter the cap above is really about.
+-- ulog.nlines restarts at every ulog.open() because it numbers the rows of ONE file -- so a key that
+-- is pulled and replaced restarts the allowance with it, and at 2 Hz a flapping contact does that
+-- without anybody pressing anything. This one does not reset.
+ulog.nwritten  = ulog.nwritten or 0
 ulog.tag       = ulog.tag or '?'       -- short app name, prefixed to every line
 -- Booleans need an explicit nil test: `or true` would resurrect a deliberate false.
 if ulog.enabled == nil then ulog.enabled = true end
@@ -417,11 +422,14 @@ function ulog.line(s)
   -- see ulog.keylost(). 111 us against a line that already flushes, and it means the first line
   -- after a pull is refused rather than popped at the operator.
   if not ulog.keyok() then return false end
-  if ulog.nlines >= ulog.maxlines then
+  -- BOTH METERS. nlines bounds this file; nwritten bounds the power cycle, and only the second
+  -- survives a re-open -- see its declaration.
+  if ulog.nlines >= ulog.maxlines or ulog.nwritten >= ulog.maxlines then
     ulog.dropped = ulog.dropped + 1
     return false
   end
   ulog.nlines = ulog.nlines + 1
+  ulog.nwritten = (ulog.nwritten or 0) + 1
   local txt = string.format('%05d %s %s\r\n', ulog.nlines, tostring(ulog.tag),
                             tostring(s))
   local ok, err = pcall(function()
