@@ -226,17 +226,49 @@ class DMM:
         # is healthy, so it is cleared here. Only a re-load reaches this branch, so a
         # first load after a power cycle shows a clean log either way and it is every
         # reload afterwards that would carry exactly one -104.
-        self.q('if %s ~= nil then '
-               '  pcall(function() script.delete(%s) end) '
-               '  %s = nil '
-               '  eventlog.clear() '
-               'end print("__CLEARED__")' % (name, name, name), timeout=30)
-        self.drain()
-        self.send('loadscript ' + name)
-        for ln in body.splitlines():
-            self.send(ln)
-        self.send('endscript')
-        time.sleep(0.3)
+        # LOADED WITH VERIFY-AND-RETRY, because the instrument intermittently loses the opening
+        # `loadscript` line and there is nothing on this end that prevents it. Measured on 1.7.17a
+        # against bench_panel's 58-line body, 2659 bytes:
+        #
+        #     one burst, no delay      3 of 6 loads clean; the rest reported
+        #                              "Script contained 'endscript' keyword without starting with
+        #                              'loadscript'" and a page of syntax errors
+        #     0.05 s every 512 bytes   2 of 5 clean
+        #     0.03 s every line        0 of 6 -- WORSE, and the errors change shape: every line
+        #                              parses as its own chunk, which is what leaving loadscript
+        #                              accumulation mode looks like. Pacing is not the fix; the
+        #                              accumulation ends on an idle gap. Do not add a sleep.
+        #
+        # A failed load used to be silent on this side and lethal later: the press helper was simply
+        # never defined, so bench_panel's every press timed out at 300 s and the stage read as an app
+        # fault. It cost three bench_smoke runs. `type(name) ~= nil` is the honest check -- loadscript
+        # defines the name only if it saw the opening line -- and a reload needs the clear step again.
+        loaded = False
+        for attempt in range(4):
+            # exec(), NOT q(). The clear step calls script.delete(), which logs -104 -- and with the
+            # app under test holding localnode.showevents at SEV_ERROR the instrument PRINTS that
+            # event on the control socket. A one-line read then returns the event instead of the
+            # acknowledgement, leaving it buffered and every later reply one behind.
+            self.exec('if %s ~= nil then '
+                      '  pcall(function() script.delete(%s) end) '
+                      '  %s = nil '
+                      '  eventlog.clear() '
+                      'end' % (name, name, name), timeout=30)
+            # script.delete() logs asynchronously, so the event can still be in flight after exec's
+            # sentinel has come back; it would otherwise land part-way through the body below.
+            time.sleep(0.3)
+            self.drain()
+            self.send('loadscript ' + name)
+            for ln in body.splitlines():
+                self.send(ln)
+            self.send('endscript')
+            time.sleep(0.3)
+            if self.q('print(type(%s))' % name, timeout=30) != 'nil':
+                loaded = True
+                self.loads = attempt + 1
+                break
+        if not loaded:
+            return ['<LOAD FAILED: %s never defined after 4 attempts>' % name]
         if not run:
             return []
         self.send(name + '()')
