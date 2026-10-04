@@ -591,6 +591,88 @@ function sdec.mode_cur()
   return sdec.ui_modes[1]
 end
 
+-- HOW OFTEN THE PANEL LOOKS FOR A KEY, in seconds. 2 Hz: a key pulled or inserted shows on the panel
+-- within half a second, which is below the threshold at which an operator wonders whether it worked.
+--
+-- THE COST IS ONE usbdriveexists PER TICK, measured at 111 us, so 2 Hz is 0.022 % of the instrument
+-- and everything beyond that read is behind a change test. Fractional intervals are honoured by
+-- display.OBJ_TIMER (measured; the firmware's own clock sample happens to use 1).
+sdec.ui_tick_s = sdec.ui_tick_s or 0.5
+
+-- Stop and start the tick around work that will hold the interpreter. -> true if it acted.
+--
+-- WHY NOT JUST THE BUSY TEST IN ui_tick(). A tick is dispatched like a press, so a run that holds
+-- the interpreter does not suppress ticks -- it defers them. Measured: a 10 s busy hold releases 2,
+-- so the backlog is shallow rather than one per second. The busy test already makes each one cheap;
+-- this is what stops them arriving at all while a capture owns the panel.
+--
+-- CLEARING THE HANDLER IS THE OFF SWITCH, and nothing else is. Measured on 1.7.17a against a 1 s
+-- timer, counting handler calls over 4 s of idle:
+--
+--     enabled                        4
+--     display.STATE_INVISIBLE        4     <- an invisible timer STILL FIRES
+--     handler set to ''              0
+--     handler restored               4
+--     another screen in front        0     <- a timer only runs while its screen is the active one
+--
+-- So the state call every other control on this panel uses does not work here, and the last line is
+-- free: navigating to Options or HOME stops the tick without this being called at all.
+--
+-- IDEMPOTENT AND GUARDED. Both are reached from teardown paths that can run twice and from inside
+-- pcall'd handlers, and a build whose timer create failed leaves ui_tick_obj nil.
+function sdec.ui_tick_off()
+  if sdec.ui_tick_obj == nil then return false end
+  return pcall(function()
+    display.setevent(sdec.ui_tick_obj, display.EVENT_PRESS, '')
+  end)
+end
+
+function sdec.ui_tick_on()
+  if sdec.ui_tick_obj == nil then return false end
+  return pcall(function()
+    display.setevent(sdec.ui_tick_obj, display.EVENT_PRESS, 'sdec.ui_tick()')
+  end)
+end
+
+-- One tick of sdec.ui_tick_obj: notice a key that has come or gone, with no press.
+--
+-- EVERYTHING EXPENSIVE IS BEHIND A CHANGE TEST. The repaint below runs only when the answer
+-- differs from the last one, so a steady state costs the presence read and nothing else.
+--
+-- IT MUST NOT ACT WHILE THE APP IS BUSY. A tick is dispatched exactly like a press, so it queues
+-- behind a capture and arrives in a burst afterwards -- and a repaint from inside one would fight
+-- the capture for the same objects. The busy test makes a queued tick a no-op; the next tick, one
+-- half-second later, does the work.
+--
+-- GUARDED: a raise escaping here reaches the firmware, which then posts it twice a second.
+function sdec.ui_tick()
+  if sdec.ui_scr == nil then return false end
+  if sdec.busy or sdec.ck_running or sdec.strm_recording then return false end
+  local ok = pcall(function()
+    -- ONE PRESENCE READ, AND THE DECISION BELONGS TO ONE OWNER. ui_usb_btns() asks log_live() and
+    -- caches the answer in ui_savevis; a second cache here would go stale the moment a repaint from
+    -- anywhere else moved that flag, and the tick would then sit on its own opinion for ever.
+    -- Nothing happens unless the answer CHANGED, so a steady state is one usbdriveexists.
+    if not sdec.ui_usb_btns() then return end
+    -- The log cell names the key too, so it moves with the buttons.
+    sdec.ui_set(sdec.ui_log_t, sdec.flog_status())
+  end)
+  return ok
+end
+
+-- Will anything the app writes reach the key? -> true or false.
+--
+-- Asked BEFORE a capture, so it cannot read sdec.flog_why -- that is set by the attempt. keyok()
+-- names no path and posts no event, which is what makes it askable here; unknown counts as yes, so
+-- a build or firmware without the call keeps the key-present wording.
+function sdec.log_live()
+  local live = true
+  if ulog ~= nil and ulog.keyok ~= nil then
+    pcall(function() live = ulog.keyok() end)
+  end
+  return live
+end
+
 -- Whether mode `m` suits the current rate. Always true: the TWO recording sizes differ only in
 -- byte ceiling, so any rate one can run the other can, and it suits
 -- every rate it can run at. A rate too fast to stream is refused by mode_why(), which carries a
@@ -1391,18 +1473,37 @@ function sdec.ui_notes()
   -- ~192. Without this line that reads as a bug. It is the same problem the frame-mode
   -- capture-FULL note solves: a partial view is honest only if it says it is partial.
   if sdec.ck_tot ~= nil and sdec.res ~= nil and sdec.ck_tot.nf > sdec.res.nf then
-    local base = string.gsub(tostring(sdec.ck_tot.path or 'the USB file'), '^.*/', '')
     -- WHICH BYTES, NOT JUST HOW MANY. A finished recording leaves its retained TAIL on screen, so
     -- 'the first 8192' named the wrong end of the stream while the index column read 24576 -- the
     -- panel contradicting itself. res.first is the 1-based absolute index ck_tail_result() records
     -- for exactly this, and capture() says so where it assigns the tail.
     local first, tot = sdec.res.first, sdec.res.ntotal or sdec.ck_tot.nf
-    if first ~= nil and first > 1 then
-      add(string.format('panel shows bytes %d-%d of %d; all are in %s',
-                        first, first + sdec.res.nf - 1, tot, base))
+    -- WITH NO FILE THE REST IS GONE. A nil path is a recording made with no key (stream_decode
+    -- passes one), and 'all are in the USB file' was then the opposite of true about the only bytes
+    -- the operator cannot get back.
+    if sdec.ck_tot.path == nil then
+      -- WHY THERE IS NO FILE IS NOT ALWAYS 'no USB key'. stream_decode passes a nil path whenever
+      -- flog_alloc() refuses, and it refuses for three reasons -- no key, a directory it cannot
+      -- confirm, and all 1000 names taken. Hard-coding the first put 'no USB key' on the panel with a
+      -- key in the slot. flog_why already holds the reason, and the row below it states it in full.
+      local why = 'NOT RECORDED'
+      if sdec.flog_why == nil then why = 'NOT RECORDED -- no USB key' end
+      if first ~= nil and first > 1 then
+        add(string.format('panel shows bytes %d-%d of %d -- the rest was DISCARDED, %s',
+                          first, first + sdec.res.nf - 1, tot, why))
+      else
+        add(string.format('panel shows the first %d of %d bytes -- the rest was DISCARDED, %s',
+                          sdec.res.nf, tot, why))
+      end
     else
-      add(string.format('panel shows the first %d bytes of the stream; all %d are in %s',
-                        sdec.res.nf, tot, base))
+      local base = string.gsub(tostring(sdec.ck_tot.path), '^.*/', '')
+      if first ~= nil and first > 1 then
+        add(string.format('panel shows bytes %d-%d of %d; all are in %s',
+                          first, first + sdec.res.nf - 1, tot, base))
+      else
+        add(string.format('panel shows the first %d bytes of the stream; all %d are in %s',
+                          sdec.res.nf, tot, base))
+      end
     end
   end
 
@@ -1471,13 +1572,21 @@ function sdec.ui_notes()
         add(string.format('began mid-byte -- the first %d bytes are misaligned.', hs))
       end
     else
-      -- 'in the file' is the fact that distinguishes this branch and cannot be dropped: the bytes it
-      -- names are not the ones on the panel.
+      -- WHERE THOSE BYTES ARE is the fact that distinguishes this branch and cannot be dropped: the
+      -- ones it names are not the ones on the panel.
+      --
+      -- AND THERE IS NOT ALWAYS A FILE. A recording made with no key keeps its tail and discards the
+      -- rest, so 'in the file' named something that does not exist -- about the one part of the run
+      -- the operator cannot go and look at. Seen on the instrument: 22382 bytes decoded, 8192 kept,
+      -- and a note citing a file for the other 14190.
+      local where = ', in the file.'
+      if sdec.ck_tot ~= nil and sdec.ck_tot.path == nil then
+        where = ', and were NOT recorded.'
+      end
       if hs == 1 then
-        add('the run began mid-byte -- its first byte is misaligned, in the file.')
+        add('the run began mid-byte -- its first byte is misaligned' .. where)
       else
-        add(string.format('the run began mid-byte -- its first %d bytes are misaligned, in the file.',
-                          hs))
+        add(string.format('the run began mid-byte -- its first %d bytes are misaligned%s', hs, where))
       end
     end
   end
@@ -1824,6 +1933,11 @@ function sdec.ui_destroy()
   sdec.del_obj(sdec.ui_trig_t)
   sdec.del_obj(sdec.ui_trighit)
   sdec.ui_lockbody, sdec.ui_lockc, sdec.ui_lockhit = nil, nil, nil
+  -- The tick, deleted like every other child and BEFORE the screen. Deleting it is what makes the
+  -- handle safe to drop; what stops it FIRING in the meantime is sdec.stop() calling ui_tick_off()
+  -- first, and the measured rule that a timer only runs while its own screen is the active one.
+  sdec.del_obj(sdec.ui_tick_obj)
+  sdec.ui_tick_obj = nil
   sdec.del_obj(sdec.ui_page_t)
   sdec.del_obj(sdec.ui_log_t)
   -- The page counter's four pieces, from the dense list ui_build appends them to, so a build where
@@ -2088,6 +2202,34 @@ function sdec.ui_build()
   -- which is the bug that put a grey frame on the glass in FRAME mode.
   sdec.ui_progbar_set(nil)
 
+  -- A TICK, SO THE KEY IS NOTICED WITHOUT A PRESS. Interval and cost are at sdec.ui_tick_s.
+  --
+  -- display.OBJ_TIMER is a display OBJECT with an interval and a repeat count, and it reports
+  -- through EVENT_PRESS like a button -- which is why no EVENT_TIMER constant exists and why
+  -- probing for one finds nothing. Taken from the instrument's own clockIV3 sample, which drives an
+  -- analog second hand this way.
+  --
+  -- TIMER_FOREVER IS 0 ON THIS FIRMWARE, measured; it is the repeat count, not a flag.
+  --
+  -- THIS IS THE ONLY WAY TO GET PERIODIC WORK HERE. A Lua loop cannot do it: the firmware dispatches
+  -- a handler only while the interpreter is idle, so a polling loop never returns and every button
+  -- on the panel goes dead -- and display.waitevent() waits on a display.prompt() dialog, not on
+  -- these objects, and wedges the instrument (see ui_latency_s).
+  --
+  -- A TICK CANNOT INTERRUPT A CAPTURE: it is dispatched like a press, so it waits for the handler to
+  -- return. sdec.capture() turns it off for the duration anyway, and ui_tick() is a cheap no-op
+  -- while the app is busy -- a deferred tick must not repaint objects a run is still using.
+  sdec.ui_tick_obj = nil
+  pcall(function()
+    sdec.ui_tick_obj = display.create(sdec.ui_scr, display.OBJ_TIMER, sdec.ui_tick_s,
+                                      display.TIMER_FOREVER)
+  end)
+  if sdec.ui_tick_obj ~= nil then
+    pcall(function()
+      display.setevent(sdec.ui_tick_obj, display.EVENT_PRESS, 'sdec.ui_tick()')
+    end)
+  end
+
   sdec.ui_page_t = create(sdec.ui_scr, display.OBJ_TEXT, x, sdec.ui_stat_y, '',
                           sdec.ui_c_dim, small, left)
   sdec.ui_log_t = create(sdec.ui_scr, display.OBJ_TEXT, sdec.ui_stat_div + 6,
@@ -2257,7 +2399,54 @@ end
 --
 -- Cached, because this runs on every refresh and a setstate per button per refresh is display
 -- traffic for a state that changes only when the page count does.
+-- Save and NewLog, shown only when something the app writes could reach the key. -> true if
+-- the visibility changed.
+--
+-- ITS OWN FUNCTION BECAUSE TWO CALLERS NEED IT AND ONE GUARD MUST NOT GATE BOTH. ui_page_btns()
+-- returns at its second line when sdec.ui_pgbtn is nil -- a build whose Page buttons failed to
+-- create -- and this block sat after that return, so those two buttons could never hide on such a
+-- build. ui_tick() needs it per tick and has nothing to do with paging.
+--
+-- ONE CACHE WITH ONE OWNER. ui_savevis is written here and nowhere else, so the tick cannot hold a
+-- second opinion that a repaint elsewhere has already made stale.
+function sdec.ui_usb_btns()
+-- SAVE AND NewLog ARE HIDDEN WITH NO KEY IN THE SLOT. Both exist only to put a file on the key -- Save
+-- writes the report, NewLog starts the next byte log -- so with no key neither has a press that can
+-- succeed, and a button that can only report a failure is worse than no button. Same reasoning as Lock
+-- Rate above: do not offer a press that cannot do its job.
+--
+-- STATE_INVISIBLE, not STATE_DISABLE: the display reference is explicit that DISABLE applies to
+-- display.OBJ_EDIT_* only, so a disabled button is not available on this firmware.
+--
+-- sdec.log_live() IS THE TEST, and it names no path -- so asking on every refresh costs 111 us and
+-- posts nothing. It is also what lets both buttons come back by themselves when a key is inserted.
+-- keyok() rather than haskey() so the latch is honoured, and so a refresh is one of the places a
+-- key pulled mid-run is NOTICED: the operator sees both buttons go.
+--
+-- ONE CACHED FLAG FOR BOTH, because they are a function of the same single fact: there is no state in
+-- which one should be showing and the other hidden.
+if sdec.ui_savebtn ~= nil or sdec.ui_newlogbtn ~= nil then
+  local sw = sdec.log_live()
+  if sw ~= sdec.ui_savevis then
+    local sst = display.STATE_INVISIBLE
+    if sw then sst = display.STATE_ENABLE end
+    if sdec.ui_savebtn ~= nil then
+      pcall(function() display.setstate(sdec.ui_savebtn, sst) end)
+    end
+    if sdec.ui_newlogbtn ~= nil then
+      pcall(function() display.setstate(sdec.ui_newlogbtn, sst) end)
+    end
+    sdec.ui_savevis = sw
+    return true
+  end
+end
+  return false
+end
+
 function sdec.ui_page_btns()
+  -- FIRST, AND BEFORE THE GUARD BELOW. Save and NewLog are not page buttons, and gating them on
+  -- sdec.ui_pgbtn meant a build whose Page buttons failed to create could never hide them.
+  sdec.ui_usb_btns()
   local t = sdec.ui_pgbtn
   if t == nil then return false end
   local npg = sdec.ui_npages()
@@ -2320,34 +2509,6 @@ function sdec.ui_page_btns()
     end
   end
 
-  -- SAVE AND NewLog ARE HIDDEN WITH NO KEY IN THE SLOT. Both exist only to put a file on the key -- Save
-  -- writes the report, NewLog starts the next byte log -- so with no key neither has a press that can
-  -- succeed, and a button that can only report a failure is worse than no button. Same reasoning as Lock
-  -- Rate above: do not offer a press that cannot do its job.
-  --
-  -- STATE_INVISIBLE, not STATE_DISABLE: the display reference is explicit that DISABLE applies to
-  -- display.OBJ_EDIT_* only, so a disabled button is not available on this firmware.
-  --
-  -- ulog.haskey() IS THE TEST, and it names no path -- so asking on every refresh costs nothing and posts
-  -- nothing. It is also what lets both buttons come back by themselves when a key is inserted.
-  --
-  -- ONE CACHED FLAG FOR BOTH, because they are a function of the same single fact: there is no state in
-  -- which one should be showing and the other hidden.
-  if sdec.ui_savebtn ~= nil or sdec.ui_newlogbtn ~= nil then
-    local sw = true
-    if ulog ~= nil and ulog.haskey ~= nil then sw = ulog.haskey() end
-    if sw ~= sdec.ui_savevis then
-      local sst = display.STATE_INVISIBLE
-      if sw then sst = display.STATE_ENABLE end
-      if sdec.ui_savebtn ~= nil then
-        pcall(function() display.setstate(sdec.ui_savebtn, sst) end)
-      end
-      if sdec.ui_newlogbtn ~= nil then
-        pcall(function() display.setstate(sdec.ui_newlogbtn, sst) end)
-      end
-      sdec.ui_savevis = sw
-    end
-  end
   return true
 end
 
@@ -2696,6 +2857,16 @@ end
 -- carries the reason across the full table width, where all three reasons fit whole.
 function sdec.flog_status()
   if sdec.flog_why ~= nil then return 'log: NOT LOGGING' end
+  -- NO KEY OUTRANKS BOTH THE FILENAME AND THE PROMISE, and it has to be asked before either.
+  --
+  -- A path allocated while a key was in the slot stays set after it leaves, and flog_why is nil
+  -- because nothing has failed -- nothing has been ATTEMPTED. So the cell went on reading
+  -- 'log: bytes248  2721 B' with the key in a pocket: the bytes are real and on that key, and the
+  -- row still reads as logging in progress. Seen on the instrument.
+  --
+  -- It also covers the empty case, where 'on first capture' is a promise the app cannot keep:
+  -- mode_exit() clears flog_why after every recording, so the branch above cannot carry that one.
+  if not sdec.log_live() then return 'log: no USB key' end
   if sdec.flog_path == nil then return 'log: on first capture' end
   local base = string.gsub(tostring(sdec.flog_path), '^.*/', '')
   base = string.gsub(base, '%.txt$', '')
@@ -2796,12 +2967,31 @@ function sdec.ck_status()
       -- times more, so any single number here would mislead; the byte ceiling is exact and the bar
       -- shows progress once it starts. Measured at 438 px for the widest form, inside the 456 a
       -- not-running string has before the divider.
+
+      -- AND WHETHER IT IS GOING ANYWHERE. With no key the recording still runs and still fills the
+      -- panel, but only the last sdec.ck_keep bytes survive it -- so promising 'to a file' is the one
+      -- thing this row must not do.
+      --
+      -- IT NAMES BOTH NUMBERS, because the cap alone is the wrong promise: 'ready -- 32768 bytes,
+      -- panel only' reads as 32768 bytes arriving on screen, and 8192 do. Where the two are equal --
+      -- 8 kB mode, cap == ck_keep -- saying it twice would invite the reader to look for a
+      -- difference, so that case states the one number. 46 characters at the widest, against the 51
+      -- of the string below, so the 456 px this row has before the divider still holds.
+      if not sdec.log_live() then
+        local keep = sdec.ck_keep
+        if keep ~= nil and keep < md.cap then
+          return string.format('ready -- %d bytes, panel keeps the last %d', md.cap, keep)
+        end
+        return string.format('ready -- %d bytes, panel only (no USB key)', md.cap)
+      end
       return string.format('ready -- %d bytes to a file, no stop once started', md.cap)
     end
     return 'ready -- no cap'
   end
-  local where = t.path or 'USB'
-  local base = string.gsub(tostring(where), '^.*/', '')
+  -- A nil path is a recording that had nowhere to go, not a name nobody filled in: 'USB' reported it
+  -- as written to the key, which is the one thing the operator needs to know it was not.
+  local base = 'NOT recorded'
+  if t.path ~= nil then base = string.gsub(tostring(t.path), '^.*/', '') end
   -- A MULTI-WINDOW RUN REPORTS THE TRANSMISSION, NOT ITS LAST WINDOW. ck_tot describes one window,
   -- so after a flow-controlled run of eleven windows it names the eleventh -- and '2048 bytes' under
   -- a 300 kB transmission is not a small inaccuracy, it is the wrong subject. fc_bytes is the total

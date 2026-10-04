@@ -4,7 +4,7 @@ A UART decoder that runs **on** a Keithley bench instrument. It digitizes the li
 instrument's own digitizer, recovers the baud rate, frame format and idle polarity from the signal,
 and shows the bytes on the front panel as text or hex. No host, no logic analyser, one probe.
 
-Ian Ameline · **version 1.25** · MIT licence (see [LICENSE](LICENSE))
+Ian Ameline · **version 1.31** · MIT licence (see [LICENSE](LICENSE))
 
 ![The main screen in hex view: a 240-byte frame capture, 239 bytes decoded, no errors, S/N 74 dB](docs/img/panel-hex.png)
 
@@ -38,6 +38,13 @@ from 300 to 250 000 baud. All three are characterised in the [manual](docs/MANUA
 **Flow control is verified electrically but never closed as a loop.** One credit pulse per armed capture,
 measured on a scope, with nothing waiting for it at the other end. The width is not settable on this
 firmware, so a receiver needs an edge-triggered input rather than a polling loop.
+
+**No USB key is needed, in any mode, and the key can come and go while the app runs.** Capture and
+decode never touch it; the recordings put their bytes on the panel and report `NOT recorded` instead of
+naming a file. The slot is polled twice a second while the panel is idle — the instrument posts no event
+for a key arriving or leaving, so a poll is the only way, and it costs 111 µs — and the buttons, the log
+cell and the filename follow it within half a second. A key that comes back is treated as a new one and
+gets a new filename.
 
 **Nothing stops a long job early.** A touch press is not delivered while a script runs, and the
 front-panel TRIGGER key does **not** deliver `trigger.EVENT_DISPLAY` during a panel-initiated run, so a

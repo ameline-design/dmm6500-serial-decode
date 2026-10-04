@@ -393,12 +393,27 @@ end
 --
 -- Allocate the byte log's filename. Returns the path, or nil with sdec.flog_why set.
 function sdec.flog_alloc()
+  -- A DIFFERENT KEY NEEDS A DIFFERENT NAME. ulog.keygen bumps when a key is inserted after one was
+  -- gone; the name chosen on that key may already be in use on this one, and MODE_APPEND would
+  -- silently extend a stranger's file.
+  if sdec.flog_keygen ~= (ulog.keygen or 0) then
+    sdec.flog_path, sdec.flog_n, sdec.flog_why = nil, nil, nil
+    sdec.flog_keygen = ulog.keygen or 0
+  end
   if sdec.flog_path ~= nil then return sdec.flog_path end
   -- LAZY: the scan is 1000 file.open calls, and allocating at power-on would burn a filename
   -- per session whether or not anything was ever captured. next_free makes the directory first.
   sdec.flog_path = ulog.next_free(sdec.flogpfx, '.txt', 1000)
   if sdec.flog_path == nil then
-    sdec.flog_why = 'no free ' .. sdec.flogpfx .. 'NNN.txt name -- NOT LOGGING'
+    -- NAME THE REASON next_free GAVE. It refuses for three different reasons and only one of them is
+    -- the names running out -- with no key it does not probe at all -- so a flat 'no free name' put
+    -- the wrong sentence on the note row for the commonest case of the three.
+    --
+    -- NO ' -- NOT LOGGING' SUFFIX. ui_notes already prefixes 'NOT LOGGING: ', so appending it made the
+    -- row say it at both ends and pushed the longest reason past what the cell can show. The leaf
+    -- name alone for the same reason: the directory never varies.
+    sdec.flog_why = tostring(ulog.idx_why or
+                             ('no free ' .. string.gsub(sdec.flogpfx, '^.*/', '') .. 'NNN.txt name'))
     return nil
   end
   sdec.flog_n, sdec.flog_bytes = 0, 0
@@ -443,6 +458,10 @@ function sdec.frame_log()
     file.flush(fh)
   end)
   pcall(function() file.close(fh) end)
+  -- A WRITE THAT POSTED 2200 RETURNS NORMALLY (see ulog.keylost), so `wrote` cannot see a key pulled
+  -- between the open above and here -- and this capture's bytes would be counted as logged. One
+  -- presence check can, costs 111 us, and latches logging off on the way past.
+  if wrote and not ulog.keyok() then wrote = false end
   if not wrote then
     sdec.flog_why = 'write failed part-way through ' ..
                     string.gsub(tostring(sdec.flog_path), '^.*/', '')
@@ -824,8 +843,17 @@ function sdec.stream_decode(got)
   -- One window at a time, appended to the byte log FRAME also appends to -- not a per-run
   -- streamNN.txt. sdec.smp is released by ck_run, so the high-water mark is one window
   -- whatever the capture length.
+
+  -- THE FILE IS OPTIONAL; THE DECODE IS NOT. flog_alloc() returns nil with no key in the slot, with
+  -- an unwritable one, or with all 1000 names taken -- and refusing here made both recording modes
+  -- acquire a buffer and then decode NOTHING, while frame mode went on showing bytes from the same
+  -- wire. docs/MANUAL.md promises the opposite: "the app works perfectly well without a key; you
+  -- simply get no log and no report."
+  --
+  -- A nil path skips the file sink (ck_job_sinks builds one only when path ~= nil) and leaves the
+  -- tail ring, so the panel still gets the last sdec.ck_keep bytes -- the whole of an 8 kB recording.
+  -- flog_why carries the reason to the note row either way.
   local path = sdec.flog_alloc()
-  if path == nil then return false, tostring(sdec.flog_why) end
   -- nocap MUST BE SET EXPLICITLY, because Lua cannot tell "key absent" from "key = nil" and
   -- ck_decode reads `if maxbytes == nil and not opts.nocap then maxbytes = sdec.ck_maxbytes end`.
   -- md.cap = nil means UNLIMITED, so without nocap such a mode silently inherits the 32768
@@ -1374,9 +1402,18 @@ function sdec.rate_decline()
   return true, why
 end
 
--- The Capture button handler: start a capture, or stop or step one already in progress. Fully
+-- The body of the Capture press: start a capture, or stop or step one already in progress. Fully
 -- guarded, and returns a verdict rather than raising.
-function sdec.capture()
+--
+-- NOT THE HANDLER. sdec.capture() below wraps this to hold the panel tick off for the duration
+-- of the press; the button is wired to that, and so is every caller.
+function sdec.capture_run()
+  -- A KEY INSERTED SINCE THE LAST PRESS RESUMES NORMAL LOGGING, HERE, so the promise is "the first
+  -- button press" and not "the first press that happens to log something". Covers both orders: an
+  -- app started with no key, and one whose key was pulled and put back. One integer compare and a
+  -- 111 us presence read when there is nothing to do; see ulog.resume(). The tick notices it sooner,
+  -- but only while the panel is idle -- this is what makes a press enough on its own.
+  pcall(function() ulog.resume() end)
   -- EVERY FAILURE BELOW COMES BACK AS A MESSAGE ON THE PANEL, which is what the pcalls are for:
   -- a touch handler that raises leaves a dead button and no explanation.
   --
@@ -1539,7 +1576,8 @@ function sdec.capture()
       sdec.ui_status = 'done'
       pcall(function() ulog.line(sdec.ck_summary(sdec.ck_tot)) end)
       -- EVERY RECORDING LEAVES THE BYTES IT KEPT ON SCREEN, paged with the same two buttons as a
-      -- frame capture, and the file on the key holds everything the tail does not. The mode does not
+      -- frame capture. WITH a key the file holds everything the tail does not; with none, the tail is
+      -- all there is and the status row says NOT recorded. The mode does not
       -- change -- mode_exit() is a flush -- so the next Capture records another window; press_absorbed()
       -- is what stops a queued press doing that by accident.
       if sdec.ck_tot ~= nil and sdec.ck_tot.tail ~= nil then
@@ -1671,6 +1709,35 @@ function sdec.capture()
 
   pcall(function() sdec.ui_refresh() end)
   return ok
+end
+
+-- THE HALF-SECOND TICK IS OFF FOR THE WHOLE PRESS. A tick is dispatched exactly like a press, so work that
+-- holds the interpreter does not suppress ticks -- it defers them, and the firmware releases what it
+-- kept once the handler returns. MEASURED: a 10 s busy hold releases 2 ticks, not 10, so the backlog
+-- is shallow and this is about not collecting one at all rather than about a flood.
+--
+-- A WRAPPER RATHER THAN AN EDIT INTO THE BODY, because capture_run() has a dozen return statements
+-- and a missed one would leave the panel with no tick for the rest of the session.
+--
+-- THE BODY IS pcall'd so a raise cannot skip the re-enable, AND THE RAISE IS RE-THROWN. Swallowing it
+-- would make sdec.capture() non-raising, and `pcall(sdec.capture)` is how two callers ask whether the
+-- press faulted -- tools/bench_break.py's K line and the lock toggle's own guard. Both would read
+-- every fault as a clean press. capture_run() documents itself as returning ok, reason rather than
+-- raising; this preserves that contract rather than quietly widening it.
+--
+-- AND sdec.busy IS CLEARED, because a raise is exactly the path that leaves it set. capture_run sets
+-- it around the work and clears it on its own returns; an escape skips that, and sdec.ui_tick()
+-- treats busy as "a run owns the panel" -- so one faulting press stops the panel noticing the key for
+-- the rest of the session, with Save and NewLog left showing over an empty slot. The same argument
+-- capture_run makes about ck_running: a latch that only a fault can set must not be the thing that
+-- refuses the fix.
+function sdec.capture()
+  pcall(function() sdec.ui_tick_off() end)
+  local ok, a, b = pcall(function() return sdec.capture_run() end)
+  if not ok then sdec.busy = false end
+  pcall(function() sdec.ui_tick_on() end)
+  if not ok then error(a, 0) end
+  return a, b
 end
 
 -- ============================================================================
@@ -2245,8 +2312,8 @@ function sdec.strm_exit_why(endwhy, ok, err)
   -- The three ck_endwhy values all mean "the run is over", but they say different things about
   -- the LINE, and that difference is what is worth carrying onto the note row: quiet means the
   -- device stopped talking, stopped means you stopped it, full means neither -- there is very
-  -- likely more where that came from, and the file is the record while the panel shows only its
-  -- last page.
+  -- likely more where that came from. With a key the file is the record and the panel shows only its
+  -- last page; with none, the last page is the record.
   -- AND IT OUTRANKS EVERY REASON BELOW. ck_endwhy describes the ACQUISITION, so a TRIGGER press during
   -- the DECODE leaves it 'full' -- and the branch below would then report 'buffer full -- the stream
   -- may continue' under a run the operator deliberately stopped, which is both wrong and the opposite
@@ -2966,6 +3033,11 @@ end
 
 -- Tear the app down: release the job, stop the hardware, delete objects, close the log.
 function sdec.stop()
+  -- THE TICK GOES FIRST, before any object it touches. It is dispatched like a press, so one can be
+  -- queued already -- and a tick arriving part-way through this would repaint buttons that have been
+  -- deleted. ui_destroy() deletes the object itself and nils the handle; this stops it firing in the
+  -- meantime, and covers End App, which reaches here through sdec.cleanup().
+  pcall(function() sdec.ui_tick_off() end)
   -- ORDER MATTERS: release the decode job and stop the hardware BEFORE the buffer goes.
   --
   -- A live ck_job owns an open file handle on the byte log that only its finish() closes, and a

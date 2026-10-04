@@ -1,6 +1,6 @@
 # Serial Decode for the Keithley DMM6500 — notes for beta testers
 
-**version 1.25** · `Serial_Decode.tspa` · a TSP app that turns a DMM6500 into a UART/LIN decoder
+**version 1.31** · `Serial_Decode.tspa` · a TSP app that turns a DMM6500 into a UART/LIN decoder
 
 It digitizes a serial line, finds the bit rate and framing itself, and shows the decoded bytes on the
 front panel. No host computer is needed once it is loaded.
@@ -39,8 +39,12 @@ when the fit lands slightly high. Known, characterised, unfixed on purpose.
 
 ## Logging
 
-The app writes logs to `/usb1/`. With no key inserted, or a full one, logging silently does nothing —
-if you expected a file and got none, check the key first.
+The app writes logs to `/usb1/SERDEC`. With no key inserted, or a full one, logging silently does
+nothing — if you expected a file and got none, check the key first. Capture and decode still work in
+every mode without a key; the recordings put their bytes on the panel and say `NOT recorded`.
+
+The key can be pulled and replaced while the app runs. The slot is polled twice a second while idle,
+so the buttons and the log cell follow it within half a second, and a replacement key gets a new name.
 
 ## Screenshots are better than photographs
 

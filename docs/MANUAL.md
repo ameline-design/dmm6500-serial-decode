@@ -1,6 +1,6 @@
 # Serial Decode — user manual
 
-**Ian Ameline** · version 1.25 · MIT licence
+**Ian Ameline** · version 1.31 · MIT licence
 
 This app turns a Keithley bench instrument into a serial decoder. Clip onto a UART line, press
 **Capture**, and read the bytes on the front panel. You do not have to tell it the baud rate, the frame
@@ -607,33 +607,47 @@ Two different files, and they are not the same thing:
 nothing to set up, and nothing lands in the root of your key. The panel still shows the bare filename
 rather than the path, because the directory never changes and the row is narrow.
 
-### Put the key in before you start the app, and take it out after you end it
+### You can take the key out and put it back while the app runs
 
-**The USB key must be in the slot before the app is launched, and must stay there until you press
-End App.** The app checks for the key and makes its directory once, at startup.
+**Pull the key whenever you like.** Within half a second the `Save` and `NewLog` buttons disappear, the
+log cell reads `log: no USB key`, and the app stops writing. Put a key back and the buttons return, a
+fresh `bytesNNN.txt` is started on it, and logging carries on. Nothing needs ending and restarting.
 
-Removing the key while the app is running — or inserting one part way through — **is not supported**, and
-the instrument may show its own error pop-ups if you do: `2205, File not found` or `2208, Cannot create
-directory`. Those come from the instrument's firmware, not from the app, and the app cannot suppress
-them. Nothing is damaged and the app carries on, but the capture that was writing will say it could not,
-and later captures will keep failing until the app is ended and started again.
+The app checks the slot twice a second while it is sitting idle, which is the only way to notice: the
+instrument posts no event when a key arrives or leaves, so there is nothing to listen to. The check
+costs 111 microseconds. It stops while a capture or a decode is running, and resumes when that
+finishes — so a key pulled *during* a long recording is noticed by the write that follows it rather
+than by the clock.
 
-So: **End App first, then swap the key.**
+**Every write is checked first, so a pull does not produce a pile of pop-ups.** The instrument's
+`file.write` does not report a failed write to the program at all — it posts `2200, File write error`
+on the panel instead, once per call — so the app asks whether the key is there before each one. Pull
+the key mid-recording and the run stops writing and reports the file as incomplete; before that check
+existed, a 32 kB recording could put a modal dialog on the panel for every one of its 2048 rows.
+Anything still in flight at the instant the key leaves may post a single one.
 
-**With no key in the slot, the `Save` and `NewLog` buttons are hidden.** Both exist only to put a file on
-the key — Save writes the report, NewLog starts the next byte log — so with nowhere to write, neither has
-a press that could succeed. They reappear by themselves once a key is inserted. Capture and decode work
-perfectly well without a key; you simply get no log and no report.
+**The key that comes back is treated as a different key.** The app forgets the filename it chose on the
+old one and allocates a new one, because the old name may already be in use on the new key and appending
+to a stranger's file is worse than starting another.
+
+**With no key in the slot, `Save` and `NewLog` are hidden.** Both exist only to put a file on the key —
+Save writes the report, NewLog starts the next byte log — so with nowhere to write, neither has a press
+that could succeed. Capture and decode work perfectly well without a key, in **every mode**; you simply
+get no log and no report. A 240-byte capture behaves exactly as usual, and the 8 kB and 32 kB recordings
+still acquire and still decode — the bytes go to the panel instead of to a file, and the status row says
+`NOT recorded` rather than naming one. The panel keeps the last 8192 bytes, so an 8 kB recording is kept
+whole and a 32 kB one shows its last quarter; the note row says which bytes you are looking at.
 
 **You may also see `2205, File not found` during normal use, with a key inserted.** Choosing the next
 `bytesNNN.txt` means asking the instrument about names until it finds one that is free, and the
 instrument reports each name that is not there. It is a question, not a fault.
 
-A recording decodes into the log file, so the file holds the whole run while the panel shows only the
-tail of it. The note row says so when they differ.
+**With a key in, a recording decodes into the log file,** so the file holds the whole run while the
+panel shows only the tail of it. The note row says so when they differ. Without a key the tail is all
+there is, and the note row says that instead.
 
-**Recording needs a USB key** — the file is the point of it. Normal FRAME captures work without one;
-they just cannot log or Save.
+**A recording does not need a key** — it is better with one, because the file is the only place the
+whole run exists. Every mode captures and decodes without one; what you lose is the log and Save.
 
 ---
 

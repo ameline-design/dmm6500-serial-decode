@@ -864,8 +864,21 @@ function sdec.ck_sink_file(path, ncol)
   -- row of the file keeps its ASCII gutter in the same column as every other row.
   local function emit(nrow)
     local line = sdec.ua_hexrow(cv, ce, nrow, 1, ncol, cbase)
-    local w = pcall(function() file.write(fh, line .. '\r\n') end)
-    if not w then dead = true end
+    -- BEFORE THE WRITE, AND PER ROW. A key pulled mid-recording does not fail a write in Lua -- it
+    -- posts 2200 and returns (see ulog.keylost) -- so without this a 32 kB recording wrote 2048 rows
+    -- into nothing and put 2048 modal boxes on the panel, in the one mode whose own status row says
+    -- 'no stop once started'. Checking in finish() alone catches the verdict and none of the boxes.
+    --
+    -- PER ROW RATHER THAN PER WINDOW: 111 us against 16 bytes of a decode already costing ~48 us a
+    -- sample, so under 0.3 % of the run, and the alternative still leaves a window's worth of boxes.
+    --
+    -- IT SKIPS THE WRITE AND NOTHING ELSE. The carry shift below still runs, exactly as it does for a
+    -- write that raised, so cn and cbase stay consistent with what the sink has accepted.
+    if not dead and ulog ~= nil and ulog.keyok ~= nil and not ulog.keyok() then dead = true end
+    if not dead then
+      local w = pcall(function() file.write(fh, line .. '\r\n') end)
+      if not w then dead = true end
+    end
     local i
     for i = nrow + 1, cn do
       cv[i - nrow] = cv[i]
@@ -915,6 +928,10 @@ function sdec.ck_sink_file(path, ncol)
     pcall(function() file.close(fh) end)      -- its OWN pcall, so a flush raise cannot skip it
     fh = nil
     if not fok then dead = true end
+    -- A KEY PULLED MID-STREAM DOES NOT FAIL A WRITE IN LUA -- it posts 2200 and returns, so `dead`
+    -- never saw it and the run reported a complete file. One presence check does; it also latches
+    -- logging off. See ulog.keylost().
+    if not dead and ulog ~= nil and ulog.keyok ~= nil and not ulog.keyok() then dead = true end
     return not dead
   end
 
@@ -1244,7 +1261,13 @@ function sdec.ck_summary(tot)
   elseif tot.stopped == 'short read' then
     extra = ' -- the sample source ended early; part of the capture was never scanned'
   elseif tot.stopped == 'stopped' then
-    extra = ' -- STOPPED by the operator; the file holds what was decoded so far'
+    -- WHERE THE BYTES WENT DEPENDS ON WHETHER THERE WAS A FILE. A run with no path keeps only its
+    -- tail, so citing a file names something that does not exist.
+    if tot.path == nil then
+      extra = ' -- STOPPED by the operator; nothing was recorded, the panel holds the tail'
+    else
+      extra = ' -- STOPPED by the operator; the file holds what was decoded so far'
+    end
   elseif tot.stopped == 'sink' or tot.stopped == 'write failed' then
     extra = ' -- WRITE FAILED part-way through'
   end

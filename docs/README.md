@@ -15,7 +15,7 @@ Also here:
 | | |
 |---|---|
 | [VECTORS.md](VECTORS.md) | the stimulus set's naming scheme, and the coverage it still lacks |
-| [vendor/](vendor/) | three firmware reports written for Keithley, each reproducible with the standard library alone |
+| [vendor/](vendor/) | four firmware reports written for Keithley, each reproducible with the standard library alone |
 | [img/](img/) | the ten front-panel figures the manual embeds |
 | `pixel-drawing.html`, `pixel-drawing.pdf` | a standalone article on drawing pixels from TSP. Hand-written HTML, not generated from any markdown here |
 

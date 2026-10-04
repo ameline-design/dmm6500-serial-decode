@@ -213,6 +213,250 @@ do
   sdec.capmode = 'frame'
 end
 
+-- ============================================================================
+print('\nD  a recording with NO USB KEY still decodes to the panel')
+-- ============================================================================
+-- Reported from the bench: with no key in the slot the 8 kB and 32 kB modes loaded the buffer and
+-- decoded NOTHING, while 240-byte FRAME mode went on showing bytes from the same wire. stream_decode()
+-- refused the moment flog_alloc() returned nil, so the whole decode was gated on a file -- against
+-- docs/MANUAL.md, which promises "the app works perfectly well without a key; you simply get no log
+-- and no report". The file is now optional: a nil path skips the sink and the tail ring feeds the panel.
+do
+  clearforce()
+  MD.usb(false)
+  MD.forget_fevents()
+  ulog.keybad, ulog.keyout, ulog.keywhy = false, false, nil
+  ulog.on, ulog.dirok = false, nil
+  sdec.force_baud = 9600
+  sdec.acq_fs = 100000
+  sdec.capmode = 'sml'
+  sdec.ck_job, sdec.strm_recording = nil, nil
+  sdec.res, sdec.ck_tot, sdec.ck_nbytes = nil, nil, nil
+  sdec.flog_path, sdec.flog_n, sdec.flog_why = nil, nil, nil
+
+  local cok, cwhy = sdec.capture()
+  check('a recording with no key SUCCEEDS rather than refusing', cok == true, tostring(cwhy))
+  check('and it leaves decoded bytes on the panel, which is the whole defect',
+        sdec.res ~= nil and sdec.res.nf > 0, tostring(sdec.res and sdec.res.nf))
+  check('the totals are real, not a stub', sdec.ck_tot ~= nil and sdec.ck_tot.nf > 0,
+        tostring(sdec.ck_tot and sdec.ck_tot.nf))
+  -- NO FILE WAS OPENED AND NO EVENT WAS POSTED. A run that tried the key anyway would pop 2224 at
+  -- the operator, which is the other half of what 'works perfectly well without a key' means.
+  check('no file was written', sdec.ck_tot.path == nil, tostring(sdec.ck_tot.path))
+  check('and nothing was posted at the operator', MD.fevent_count() == 0,
+        'events=' .. MD.fevent_count())
+
+  -- THE PANEL MUST NOT CLAIM A FILE. These three strings all named one before the fix: 'USB' in the
+  -- status row, 'all are in the USB file' on the note row, and 'to a file' in the ready row.
+  local st = sdec.ck_status()
+  check('the status row says the bytes were NOT recorded, rather than naming the key',
+        has(st, 'NOT recorded') and not has(st, '-> USB'), string.format('%q', st))
+  -- mode_exit() clears flog_why after every recording, so the cell cannot report the attempt. It
+  -- must still not promise to log the NEXT one: 'on first capture' is a promise, and there is no key.
+  check('the log cell names the key rather than promising the next capture',
+        has(sdec.flog_status(), 'no USB key'), sdec.flog_status())
+
+  -- 8 kB mode keeps its WHOLE recording: cap 8192 == sdec.ck_keep, so nothing is discarded and the
+  -- note row must not say anything was. 32 kB mode is the case that loses its head.
+  check('8 kB mode keeps everything it decoded -- cap equals the retained tail',
+        sdec.ui_modes[2].cap == sdec.ck_keep,
+        string.format('%s vs %s', tostring(sdec.ui_modes[2].cap), tostring(sdec.ck_keep)))
+
+  -- And the ready row, BEFORE a press, must not promise a file either.
+  sdec.ck_tot, sdec.res = nil, nil
+  check('the ready row offers the panel, not a file, when there is no key',
+        has(sdec.ck_status(), 'panel only') and not has(sdec.ck_status(), 'to a file'),
+        string.format('%q', sdec.ck_status()))
+  MD.usb(true)
+  MD.forget_files()
+  check('...and offers the file again once a key is back',
+        has(sdec.ck_status(), 'to a file'), string.format('%q', sdec.ck_status()))
+
+  sdec.ck_running, sdec.strm_recording, sdec.ck_job = false, nil, nil
+  sdec.capmode = 'frame'
+  sdec.flog_path, sdec.flog_n, sdec.flog_why = nil, nil, nil
+end
+
+-- ============================================================================
+print('\nE  the one-second tick notices a key with no press')
+-- ============================================================================
+-- The firmware posts NO event for a key arriving or leaving -- measured: usbdriveexists goes 0 -> 1
+-- and eventlog.getcount() stays 0 -- and a Lua poll loop cannot fill the gap, because a handler is
+-- dispatched only while the interpreter is idle, so a loop that never returns leaves every button
+-- dead. display.OBJ_TIMER is the instrument's own answer (see its clockIV3 sample).
+do
+  sdec.capmode = 'frame'
+  sdec.busy, sdec.ck_running, sdec.strm_recording = false, false, nil
+  MD.usb(true)
+  MD.forget_files()
+  ulog.keybad, ulog.keyout, ulog.keywhy = false, false, nil
+  sdec.flog_path, sdec.flog_n, sdec.flog_why = nil, nil, nil
+
+  check('the tick object exists and is a timer', sdec.ui_tick_obj ~= nil
+        and MD.live('timer') == 1, 'timers=' .. MD.live('timer'))
+  -- TIMER_FOREVER is a repeat COUNT and is 0 on this firmware, not -1. 0.5 s is honoured as a
+  -- FRACTION rather than rounded to a whole second -- measured at 8 ticks in 4 s.
+  check('it repeats forever at 2 Hz',
+        sdec.ui_tick_s == 0.5 and display.TIMER_FOREVER == 0,
+        string.format('%s / %s', tostring(sdec.ui_tick_s), tostring(display.TIMER_FOREVER)))
+
+  -- WITH A KEY: the buttons are up and the cell promises the next capture.
+  sdec.ui_tick()
+  check('with a key in the slot the tick leaves Save and NewLog showing',
+        sdec.ui_savevis == true, tostring(sdec.ui_savevis))
+
+  -- PULL IT, AND TICK -- no press anywhere in between.
+  MD.usb(false)
+  check('the tick notices the key has gone', sdec.ui_tick() == true
+        and sdec.ui_savevis == false, tostring(sdec.ui_savevis))
+  check('and repaints the log cell to name the key',
+        has(MD.text(sdec.ui_log_t), 'no USB key'), tostring(MD.text(sdec.ui_log_t)))
+  -- A FILENAME ALLOCATED BEFORE THE PULL MUST NOT OUTRANK IT. flog_path stays set and flog_why stays
+  -- nil -- nothing has failed, because nothing has been attempted -- so the cell read
+  -- 'log: bytes248  2721 B' with the key in a pocket. Seen on the instrument, with a path set; the
+  -- check above passes with flog_path nil and could not catch it.
+  sdec.flog_path, sdec.flog_n, sdec.flog_bytes, sdec.flog_why = '/usb1/SERDEC/bytes248.txt', 3, 2721, nil
+  check('a filename allocated before the pull does not outrank the missing key',
+        has(sdec.flog_status(), 'no USB key') and not has(sdec.flog_status(), 'bytes248'),
+        sdec.flog_status())
+  sdec.flog_path, sdec.flog_n, sdec.flog_bytes, sdec.flog_why = nil, nil, nil, nil
+
+  -- PUT IT BACK, AND TICK.
+  MD.usb(true)
+  MD.forget_files()
+  check('the tick notices it come back', sdec.ui_tick() == true and sdec.ui_savevis == true,
+        tostring(sdec.ui_savevis))
+
+  -- A TICK DISPATCHED INTO A RUNNING CAPTURE MUST DO NOTHING. Ticks queue behind a capture exactly
+  -- as presses do, so they arrive in a burst afterwards -- and a repaint from inside one would
+  -- fight the capture for the same objects.
+  MD.usb(false)
+  sdec.busy = true
+  check('a tick during a capture is a no-op, not a repaint',
+        sdec.ui_tick() == false and sdec.ui_savevis == true, tostring(sdec.ui_savevis))
+  sdec.busy = false
+  sdec.ck_running = true
+  check('and so is one during a decode', sdec.ui_tick() == false and sdec.ui_savevis == true)
+  sdec.ck_running = false
+  check('once the run is over the next tick catches up',
+        sdec.ui_tick() == true and sdec.ui_savevis == false)
+
+  -- IDEMPOTENT, because that burst may be thirty ticks long.
+  local before = sdec.ui_savevis
+  local i
+  for i = 1, 30 do sdec.ui_tick() end
+  check('thirty queued ticks settle to the same answer as one', sdec.ui_savevis == before,
+        tostring(sdec.ui_savevis))
+
+  -- The handler the mock recorded for the tick object, or nil.
+  local function TICKEV()
+    local e = MD.events(sdec.ui_tick_obj)
+    if e == nil then return nil end
+    return e[display.EVENT_PRESS]
+  end
+  -- THE OFF SWITCH IS THE HANDLER STRING, not STATE_INVISIBLE -- measured: an invisible timer still
+  -- fires 4 times in 4 s, a cleared handler fires 0. So the test is what the handler is SET TO.
+  check('turning the tick off clears its handler', sdec.ui_tick_off() == true
+        and TICKEV() == '',
+        string.format('%q', tostring(TICKEV())))
+  check('and turning it on puts the handler back', sdec.ui_tick_on() == true
+        and TICKEV() == 'sdec.ui_tick()',
+        string.format('%q', tostring(TICKEV())))
+  -- A press turns it off for the whole capture and back on afterwards, however the capture ended.
+  MD.usb(true)
+  MD.forget_files()
+  sdec.capture()
+  check('a capture leaves the tick ON when it returns',
+        TICKEV() == 'sdec.ui_tick()',
+        string.format('%q', tostring(TICKEV())))
+  -- INCLUDING A CAPTURE THAT RAISED, which is why the wrapper pcalls the body: a raise that skipped
+  -- the re-enable leaves the panel blind to the key for the rest of the session.
+  --
+  -- sdec.mode_cur, NOT sdec.autoset. capture_run's OWN pcall absorbs an autoset raise, so it
+  -- returns false normally and the wrapper's pcall is never entered -- the test passed with the
+  -- wrapper's pcall deleted outright, which makes it a test of nothing. mode_cur is called unguarded
+  -- near the top of capture_run, so stubbing it is a genuine escape, and the signature is the
+  -- difference between `false, nil` and a reason.
+  local raised, rwhy = nil, nil
+  do
+    local saved = sdec.mode_cur
+    sdec.mode_cur = function() error('escaping', 0) end
+    raised, rwhy = pcall(function() return sdec.capture() end)
+    sdec.mode_cur = saved
+  end
+  check('a raise out of the body still reaches the caller, rather than being swallowed',
+        raised == false and has(tostring(rwhy), 'escaping'),
+        string.format('%s / %s', tostring(raised), tostring(rwhy)))
+  check('and the tick is back ON after it', TICKEV() == 'sdec.ui_tick()',
+        string.format('%q', tostring(TICKEV())))
+  -- AND sdec.busy IS NOT LEFT SET. ui_tick treats busy as "a run owns the panel", so one faulting
+  -- press would stop the panel noticing the key for the rest of the session.
+  check('...and sdec.busy is cleared, so the tick is not silently dead',
+        not sdec.busy, tostring(sdec.busy))
+  MD.usb(false)
+  check('proved by a tick that still acts', sdec.ui_tick() == true and sdec.ui_savevis == false,
+        tostring(sdec.ui_savevis))
+  MD.usb(true)
+  MD.forget_files()
+  sdec.ui_tick()
+  -- Teardown deletes the object and nils the handle, so nothing can fire into a dead screen.
+  check('teardown deletes the tick and nils the handle', (function()
+          sdec.stop()
+          return sdec.ui_tick_obj == nil and MD.live('timer') == 0
+        end)(), 'timers=' .. MD.live('timer'))
+  sdec.start()
+  check('a restart builds exactly one again', sdec.ui_tick_obj ~= nil and MD.live('timer') == 1,
+        'timers=' .. MD.live('timer'))
+
+  -- And it survives having no screen, which is what a tick arriving during teardown looks like.
+  local scr = sdec.ui_scr
+  sdec.ui_scr = nil
+  check('a tick with no screen is refused rather than raising', sdec.ui_tick() == false)
+  sdec.ui_scr = scr
+
+  MD.usb(true)
+  MD.forget_files()
+  sdec.ui_tick()
+  sdec.flog_path, sdec.flog_n, sdec.flog_why = nil, nil, nil
+end
+
+-- ============================================================================
+print('\nF  a key pulled DURING a recording stops the rows, not just the verdict')
+-- ============================================================================
+-- ck_sink_file writes ONE ROW AT A TIME, and a pulled key does not fail a write in Lua -- it posts
+-- 2200 and returns. So a 32 kB recording wrote 2048 rows into nothing and put 2048 modal boxes on
+-- the panel, in the one mode whose status row says 'no stop once started'. A check in finish() alone
+-- catches the verdict and none of the boxes, which is what this exists to prove.
+do
+  MD.usb(true)
+  MD.forget_files()
+  ulog.keybad, ulog.keyout, ulog.keywhy = false, false, nil
+  check('ensuredir on a good key, so the open below is not what fails',
+        ulog.ensuredir() == true)
+  local sink, finish, serr = sdec.ck_sink_file('/usb1/SERDEC/rows.txt', 16)
+  check('ck_sink_file opens on a good key', sink ~= nil, tostring(serr))
+  if sink ~= nil then
+    local v, e, i2 = {}, {}, nil
+    for i2 = 1, 16 do v[i2], e[i2] = 65 + math.mod(i2, 26), nil end
+    check('a row written with the key present succeeds', sink(v, e, 16, 0) ~= false)
+    MD.usb(false)
+    MD.forget_fevents()
+    -- Eight more windows of 16 bytes. Before the gate in emit() these wrote eight rows into nothing,
+    -- posted eight events, and every sink call returned true.
+    local j, ok8 = nil, true
+    for j = 1, 8 do
+      if sink(v, e, 16, j * 16) == false then ok8 = false end
+    end
+    check('the sink REFUSES once the key has gone, rather than writing into nothing', ok8 == false)
+    check('and eight rows post at most ONE event, not eight',
+          MD.fevent_count(2200) <= 1, '2200 x ' .. MD.fevent_count(2200))
+    check('finish() reports the run as incomplete', finish() == false)
+  end
+  MD.usb(true)
+  MD.forget_files()
+  ulog.keybad, ulog.keyout, ulog.keywhy = false, false, nil
+end
+
 print()
 print(string.format('%d passed, %d failed', pass, fail))
 os.exit(fail == 0 and 0 or 1)

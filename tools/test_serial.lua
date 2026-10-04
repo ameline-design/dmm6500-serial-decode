@@ -1792,8 +1792,12 @@ local live1, bufs1 = MD.live(), LIVEBUFS()
 check('start() created objects', live1 > 0, 'live=' .. live1)
 check('exactly two screens are live', MD.live('screen') == 2,
       'screens=' .. MD.live('screen'))
-check('there is no frame timer -- a single-shot app needs none',
-      MD.live('timer') == 0, 'timers=' .. MD.live('timer'))
+-- ONE TIMER, AND ONLY ONE. The app is still single-shot -- nothing is redrawn on a tick that a
+-- press would not redraw -- but it cannot see a USB key arrive or leave without one: the firmware
+-- posts no event for either (measured), and a Lua poll loop would never return, leaving every
+-- button dead. display.OBJ_TIMER is how the instrument's own clockIV3 sample does it.
+check('there is exactly one tick timer -- the only way to notice a USB key with no press',
+      MD.live('timer') == 1, 'timers=' .. MD.live('timer'))
 check('the first capture ran and decoded', sdec.res ~= nil and sdec.res.nf == ulgn,
       string.format('%s of %d bytes', sdec.res and tostring(sdec.res.nf) or 'nil', ulgn))
 -- The header is a strip of fixed fields, each its own object at its own x, so
@@ -4651,6 +4655,18 @@ do
       j = table.concat(sdec.ui_notes(), ' | ')
       check('a tail that does NOT contain the misaligned head says it is in the file',
             has(j, 'the run began mid-byte') and has(j, 'misaligned, in the file'), j)
+      -- AND THERE IS NOT ALWAYS A FILE. A recording made with no key passes a nil path, keeps its
+      -- tail and discards the rest -- so 'in the file' cited something that does not exist, about the
+      -- one part of the run the operator cannot go and look at. Seen on the instrument at 22382
+      -- bytes decoded with 8192 kept, which is why the path is nil'd here rather than left set.
+      local keptpath = sdec.ck_tot.path
+      sdec.ck_tot.path = nil
+      j = table.concat(sdec.ui_notes(), ' | ')
+      check('...and with NO key it says those bytes were not recorded, naming no file',
+            has(j, 'the run began mid-byte') and has(j, 'NOT recorded')
+            and not has(j, 'in the file'), j)
+      sdec.ck_tot.path = keptpath
+      j = table.concat(sdec.ui_notes(), ' | ')
       -- 'the first N' vs 'its first N' is the whole distinction, so match the on-screen form exactly:
       -- a tail claiming it would be pointing at bytes 24577 on.
       check('...and does not claim the bytes on screen are the first ones',

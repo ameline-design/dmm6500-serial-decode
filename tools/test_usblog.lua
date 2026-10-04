@@ -428,6 +428,180 @@ check('and so is a lower-case one',
          return ok == false and has(tostring(why), '8 upper-case')
        end)())
 
+-- ---------- THE KEY PULLED FROM UNDER A RUNNING APP ----------
+--
+-- The defect this exists for: a write to a handle held across a key pull does NOT fail in Lua. It
+-- returns normally with pcall ok = true and posts 2200 'File write error', once per write -- measured
+-- on firmware 1.7.17a, and now what tools/mock_display.lua models. So ulog.line's failure branch was
+-- unreachable, every logged line popped a modal box at the operator, and one Mode press was enough.
+--
+-- THE EVENT COUNT IS THE ASSERTION, not ulog.on. An implementation that stops logging but still
+-- attempts the write passes every state check and keeps the popups.
+print('\na key pulled from under a running app')
+MD.usb(true)
+MD.forget_files()
+ulog.keybad, ulog.keyout, ulog.keywhy = false, false, nil
+ulog.enabled = true
+check('with a key in the slot the log opens', ulog.open('/usb1/SERDEC/pull.txt', true) == true,
+      tostring(ulog.lasterr))
+check('and a line reaches it', ulog.line('before the pull') == true)
+MD.forget_fevents()
+MD.usb(false)                       -- the key leaves; the handle stays open
+local pulled = ulog.line('after the pull')
+check('the first line after a pull is REFUSED rather than written', pulled == false)
+check('and it posts NO event -- the gate runs before the write that would post 2200',
+      MD.fevent_count() == 0, 'events=' .. MD.fevent_count())
+local i
+for i = 1, 20 do ulog.line('line ' .. i) end
+check('and twenty more lines post nothing either, which is the whole bug',
+      MD.fevent_count() == 0, 'events=' .. MD.fevent_count())
+check('logging is off and the handle is closed, not merely unused',
+      ulog.on == false and ulog.fh == nil)
+check('the latch is set, and says the key was removed rather than never there',
+      ulog.keybad == true and has(tostring(ulog.keywhy), 'removed while running'),
+      tostring(ulog.keywhy))
+-- ulog.status() is the LOGGER's own summary, not a panel row -- nothing in tsp/ renders it; the
+-- panel's log cell is sdec.flog_status(). So this pins the reason being retrievable, not displayed.
+check('the logger reports the reason to a caller', has(ulog.status(), 'removed while running'),
+      ulog.status())
+-- open_write is the byte log's and Save's gate, so the latch has to stop them as well, and silently.
+local lw, lwhy = ulog.open_write('/usb1/SERDEC/after.txt', file.MODE_APPEND)
+check('a write opened after the pull is refused, silently',
+      lw == nil and MD.fevent_count() == 0, tostring(lwhy) .. ' events=' .. MD.fevent_count())
+
+-- A KEY COMING BACK IS NEW EVIDENCE, not a retry of the key that failed: the slot was seen empty, so
+-- this is a different -- or at least re-seated -- key and nothing is known about it.
+local gen0 = ulog.keygen
+MD.usb(true)
+MD.forget_files()
+check('a key inserted after one was lost clears the latch', ulog.keyok() == true
+      and ulog.keybad == false, tostring(ulog.keybad))
+check('and bumps keygen, so a caller holding a name chosen on the old key picks another',
+      ulog.keygen == gen0 + 1, tostring(gen0) .. ' -> ' .. tostring(ulog.keygen))
+check('and forgets the directory it confirmed on the old key', ulog.dirok == nil)
+
+-- PRESENCE ALONE MUST NOT CLEAR IT. A key that is present and refusing writes never goes absent, so
+-- clearing on presence would retry it once per capture -- the behaviour the latch exists to end.
+ulog.keylost('refusing writes')
+check('a latch set while the key is still in the slot does NOT clear on presence',
+      ulog.keyok() == false and ulog.keybad == true)
+MD.usb(false)
+ulog.keyok()                        -- the slot is seen empty
+MD.usb(true)
+check('...and does clear once the slot has been seen empty and full again',
+      ulog.keyok() == true and ulog.keybad == false)
+
+-- An app launched with NO key has lost nothing, so it must not latch, and must keep the plain
+-- wording every caller builds on.
+ulog.keybad, ulog.keyout, ulog.keywhy = false, false, nil
+ulog.on, ulog.dirok = false, nil
+MD.usb(false)
+check('an app started with no key does not latch -- there was nothing to lose',
+      ulog.keyok() == false and ulog.keybad == false)
+-- Two locals, not select(): Lua 5.0.2 has no select, and a test that cannot run on the instrument's
+-- interpreter is not a test of the instrument's code.
+local nkh, nkwhy = ulog.open_write('/usb1/SERDEC/x.txt', file.MODE_APPEND)
+check('and says plainly that there is no key',
+      nkh == nil and has(tostring(nkwhy), 'no USB key'), tostring(nkwhy))
+
+-- ---------- A KEY THAT ARRIVES MID-SESSION RESUMES NORMAL LOGGING ----------
+--
+-- Both orders of events reach the same place, and neither recovers by itself: the debug log is held
+-- OPEN across captures, so with nothing to re-open it the whole session runs unlogged even with the
+-- key back in the slot and the byte log writing again.
+print('\na key inserted mid-session')
+
+-- ORDER ONE: started with no key.
+ulog.keybad, ulog.keyout, ulog.keywhy = false, false, nil
+ulog.on, ulog.dirok, ulog.fh = false, nil, nil
+ulog.keygen, ulog.keyopen = 0, 0
+MD.usb(false)
+MD.forget_files()
+ulog.path = '/usb1/SERDEC/arrive.txt'
+check('an app started with no key opens no log', ulog.open(ulog.path, true) == false)
+check('and a logged line is simply refused', ulog.line('nothing doing') == false)
+MD.usb(true)
+MD.forget_fevents()
+check('the press after a key is inserted re-opens the log',
+      ulog.resume() == true and ulog.on == true, tostring(ulog.lasterr))
+check('and the line that triggered it reaches the key', ulog.line('on the new key') == true)
+check('silently -- nothing was posted at the operator', MD.fevent_count() == 0,
+      'events=' .. MD.fevent_count())
+
+-- ORDER TWO: started WITH a key, pulled, re-inserted. The latch is involved in this one.
+MD.usb(true)
+MD.forget_files()
+ulog.keybad, ulog.keyout, ulog.keywhy = false, false, nil
+check('a session that starts with a key logs', ulog.open('/usb1/SERDEC/round.txt', true) == true,
+      tostring(ulog.lasterr))
+MD.usb(false)
+check('pulling it stops the log', ulog.line('into the void') == false and ulog.on == false)
+check('and latches', ulog.keybad == true)
+MD.usb(true)
+MD.forget_files()
+MD.forget_fevents()
+-- THE LINE ITSELF RECOVERS, with no resume() call in front of it: that is what makes every logging
+-- path in the app recover rather than only the ones a button handler happens to reach.
+check('putting the key back makes the very next logged line work again',
+      ulog.line('back again') == true and ulog.on == true, tostring(ulog.lasterr))
+check('the latch is clear', ulog.keybad == false and ulog.keywhy == nil)
+check('and it cost no event', MD.fevent_count() == 0, 'events=' .. MD.fevent_count())
+-- ONE RE-OPEN PER INSERTION, not one per call: the generation is what bounds it, so twenty more
+-- lines must not reopen the file twenty times.
+local gen2, nl2 = ulog.keygen, ulog.nlines
+for i = 1, 20 do ulog.line('line ' .. i) end
+check('and twenty more lines neither re-open nor advance the generation',
+      ulog.keygen == gen2 and ulog.nlines == nl2 + 20,
+      string.format('gen %s nlines %d -> %d', tostring(ulog.keygen), nl2, ulog.nlines))
+
+-- ---------- THE KEY PULLED WITH A FILE ALREADY OPEN, ON EVERY WRITING PATH ----------
+--
+-- The three paths that hold a handle open across many writes are the debug log (covered above), the
+-- SAVE report (ulog.write_file) and a streaming recording's row sink (chunk_decode's ck_sink_file).
+-- Each one takes a RAISE as its only failure signal, and a pulled key does not raise -- so each
+-- reported SUCCESS over a file that got no bytes, and posted one 2200 per write on the way.
+--
+-- THE EVENT COUNT IS THE ASSERTION. Nothing in the suite reached a no-key file.write before these,
+-- so the mock's `if not USB then post(2200)` branch had no caller and both defects were invisible.
+print('\nevery writing path, with the key pulled mid-write')
+
+MD.usb(true)
+MD.forget_files()
+ulog.keybad, ulog.keyout, ulog.keywhy = false, false, nil
+ulog.enabled = true
+-- SAVE: open the report with a key, lose the key, then write it.
+local rep = {}
+local ri
+for ri = 1, 24 do rep[ri] = string.format('row %d of the report', ri) end
+check('ensuredir on a good key, so the open below is not what fails',
+      ulog.ensuredir() == true)
+MD.forget_fevents()
+-- The pull lands between the open and the writes, which is the case a return value cannot see.
+local realopen = ulog.open_write
+ulog.open_write = function(p, m)
+  local h = realopen(p, m)
+  MD.usb(false)                       -- the key leaves the instant the file is open
+  return h
+end
+local sok, swhy = ulog.write_file('/usb1/SERDEC/serial_000.txt', rep, 24)
+ulog.open_write = realopen
+check('a Save whose key vanished mid-write reports FAILURE, not success',
+      sok == false, tostring(sok) .. ' ' .. tostring(swhy))
+check('and says the key went away rather than blaming the format',
+      has(tostring(swhy), 'USB key'), tostring(swhy))
+check('and the report it claimed is NOT on the key',
+      (MD.content('/usb1/SERDEC/serial_000.txt') or '') == '',
+      string.format('%q', tostring(MD.content('/usb1/SERDEC/serial_000.txt'))))
+-- 24 writes posted 24 boxes before this check existed. One per write, and the operator gets them all.
+check('it posts at most ONE event, not one per row',
+      MD.fevent_count(2200) <= 1, '2200 x ' .. MD.fevent_count(2200))
+check('and it latches, so the NEXT Save does not repeat the whole thing',
+      ulog.keybad == true, tostring(ulog.keybad))
+
+MD.usb(true)
+MD.forget_files()
+ulog.keybad, ulog.keyout, ulog.keywhy = false, false, nil
+
 print()
 print(string.format('%d passed, %d failed', pass, fail))
 os.exit(fail == 0 and 0 or 1)

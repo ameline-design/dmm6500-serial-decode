@@ -45,7 +45,9 @@ display = {
   -- runs, and there is no value between 25 and 50.
   STATE_LCD_100 = 'lcd100', STATE_LCD_75 = 'lcd75', STATE_LCD_50 = 'lcd50',
   STATE_LCD_25 = 'lcd25', STATE_LCD_OFF = 'lcdoff', STATE_BLACKOUT = 'blackout',
-  NFORMAT_PREFIX = 1, TIMER_FOREVER = -1,
+  -- 0, measured on the instrument. It is a repeat COUNT, not a flag, and -1 here would have let a
+  -- timer be created offline with a value the firmware reads as 'once, minus one times'.
+  NFORMAT_PREFIX = 1, TIMER_FOREVER = 0,
   -- setfill's optional third argument. PRESENT HERE ONLY BECAUSE THE REFERENCE LISTS IT: the app
   -- reads display.FILL_RIGHT rather than assuming it, since buffer.FILL_CONTINUOUS is documented
   -- and does NOT exist on firmware 1.7.17a. Defining it here is what exercises that branch offline;
@@ -448,10 +450,14 @@ local function fat_table(dir)
 end
 
 function file.open(path, mode)
-  -- NO KEY POSTS 2205 TOO. Measured: with the key out even /usb1 is 'File not found', so a mock that
-  -- returned a quiet nil here hid every open the app performs without a key -- which is exactly the class
-  -- of leak the event counter exists to catch.
-  if not USB then post(2205); return nil end
+  -- NO KEY POSTS AN EVENT TOO, so a mock that returned a quiet nil here hid every open the app
+  -- performs without a key -- exactly the class of leak the event counter exists to catch. WHICH
+  -- event depends on the path, measured on 1.7.17a with the key out: a file is 2224 'USB flash
+  -- device not present', and /usb1 itself is 2205 'File not found'.
+  if not USB then
+    if abs(path) == '/usb1' then post(2205) else post(2224) end
+    return nil
+  end
   -- A missing parent fails EVERY mode, including READ. A filesystem cannot hold /usb1/SERDEC/x
   -- while /usb1/SERDEC is absent, so letting a seeded file stay readable through a deleted
   -- directory would model something the instrument cannot do -- and it would do it in the app's favour,
@@ -568,6 +574,12 @@ function file.write(h, s)
   if FAILAT ~= nil and table.getn(LOG) >= FAILAT then
     error('USB write failed (key removed)', 0)
   end
+  -- A HANDLE HELD ACROSS A KEY PULL DOES NOT FAIL IN LUA, and that is the whole of the popup-storm
+  -- bug: measured on 1.7.17a, file.write to such a handle returns normally with pcall ok = true and
+  -- posts 2200 'File write error' PER WRITE. Modelling it as a raise -- which is what FAILAT above
+  -- does, and is the right model for a key that FILLS UP -- is why 884 offline assertions passed
+  -- over an app that popped a box at the operator on every capture. Nothing is written.
+  if not USB then post(2200); return end
   LOG[table.getn(LOG) + 1] = s
   -- Into the file as well, so a later MODE_READ sees it. The firmware hands out one write handle
   -- number, so this follows the most recent open -- which is the file being written.

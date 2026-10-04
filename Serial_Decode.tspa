@@ -3,7 +3,7 @@ loadscript Serial_Decode
 -- $Product: DMM6500, DAQ6510, DMM7510, SMU2461
 -- $Tag: Serial, UART, Decode, Digitize
 -- $Description: Decodes an asynchronous serial line with the instrument's own digitizer: recovers baud rate, frame format and bytes, shows them as text or hex, and saves bytes to USB key. Everything auto-detects; everything can be locked.
--- $Version: 1.25
+-- $Version: 1.31
 -- $Requires: 1.7.0
 -- $Author: Ian Ameline
 -- $License: MIT
@@ -48,6 +48,10 @@ ulog.maxlines  = ulog.maxlines or 20000  -- per-session cap, so a runaway loop c
 ulog.tag       = ulog.tag or '?'       -- short app name, prefixed to every line
 if ulog.enabled == nil then ulog.enabled = true end
 if ulog.autoflush == nil then ulog.autoflush = true end
+if ulog.keybad == nil then ulog.keybad = false end
+if ulog.keyout == nil then ulog.keyout = false end
+ulog.keygen    = ulog.keygen or 0
+ulog.keyopen   = ulog.keyopen or 0
 
 -- Is a key in the slot? -> true, or false when the firmware says there is none.
 --   [...]
@@ -58,6 +62,59 @@ function ulog.haskey()
   local ok, present = pcall(function() return file.usbdriveexists() end)
   if ok and present == 0 then return false end
   return true
+end
+
+-- STOP TOUCHING THE KEY, until one is inserted. -> true.
+--   [...]
+-- never ran, and every logged line posted a 2200 modal box at the operator. One Mode press does it.
+-- The handle is closed here. That costs no event, and it is not optional: a firmware descriptor is
+-- not reclaimed until a power cycle, and with ulog.on false nothing else would ever close it.
+function ulog.keylost(why)
+  ulog.keybad = true
+  ulog.keywhy = tostring(why or 'the USB key stopped accepting writes')
+  ulog.lasterr = ulog.keywhy
+  ulog.dirok = nil
+  ulog.keyout = false
+  local h = ulog.fh
+  ulog.fh, ulog.on = nil, false
+  if h ~= nil then pcall(function() file.close(h) end) end
+  return true
+end
+
+-- Is the key there AND still being written to? -> true or false. THE GATE EVERY WRITER USES.
+--   [...]
+-- the rule is written for a latch set with the slot full: clearing on presence would retry such a key
+-- once per capture. Nothing sets it that way today -- see above -- so this is the guarantee, not a
+-- path with a caller.
+function ulog.keyok()
+  if not ulog.haskey() then
+    if not ulog.keybad and (ulog.on or ulog.dirok ~= nil) then
+      ulog.keylost('no USB key -- removed while running')
+    end
+    ulog.keyout = true          -- after keylost, which clears it
+    return false
+  end
+  if ulog.keyout then
+    ulog.keybad, ulog.keywhy, ulog.keyout = false, nil, false
+    ulog.dirok = nil
+    ulog.keygen = (ulog.keygen or 0) + 1
+  elseif ulog.keybad then
+    return false
+  end
+  return true
+end
+
+-- Re-open the log on a key that has just been inserted. -> true if logging is live again.
+--   [...]
+-- sees 'log: NOT LOGGING' with a good key in. The byte log does not share that: flog_alloc retries
+-- per capture. Accepted deliberately, because the alternative is an open attempt per log line, and a
+-- failed open is the one thing here that posts an event.
+function ulog.resume()
+  if not ulog.enabled then return false end
+  if not ulog.keyok() then return false end
+  if ulog.keyopen == ulog.keygen then return ulog.on end
+  ulog.keyopen = ulog.keygen
+  return ulog.open(nil, false)
 end
 
 -- Is `name` listed in the USB root? -> true, false, or nil when the question could not be asked.
@@ -85,7 +142,7 @@ end
 function ulog.ensuredir(dir)
   if dir == nil then dir = ulog.usbdir end
   if dir == nil or dir == '' then return false, 'no directory configured' end
-  if not ulog.haskey() then return false, 'no USB key' end
+  if not ulog.keyok() then return false, tostring(ulog.keywhy or 'no USB key') end
   if ulog.dirok == dir then return true end
   if string.sub(dir, 1, 1) ~= '/' then return false, 'directory must be absolute: ' .. dir end
   local leafchk = string.gsub(dir, '^.*/', '')
@@ -111,13 +168,15 @@ end
 
 -- Open a file for writing. -> handle, or nil and why.
 --   [...]
--- failed open is REPORTED, not worked around. Retrying would mean re-reading the root, and the failed open
--- that triggered it has already posted 2205 -- so the retry could not have kept the panel quiet anyway,
--- only made the app appear to cope with something it does not support.
+-- THAT IS NOT THE SAME AS NO RECOVERY. A key INSERTED while the app runs is recovered from, by
+-- ulog.resume(), because usbdriveexists() reports it silently and a new key is new evidence rather
+-- than a retry of the one that failed. Nothing is re-attempted on the key that went away.
 function ulog.open_write(path, mode)
   if path == nil then return nil, 'no filename available' end
   if mode == nil then mode = file.MODE_APPEND end
-  if not ulog.haskey() then return nil, 'no USB key -- ' .. tostring(path) end
+  if not ulog.keyok() then
+    return nil, tostring(ulog.keywhy or 'no USB key') .. ' -- ' .. tostring(path)
+  end
   local ready, rwhy = ulog.ensuredir()
   if not ready then return nil, tostring(rwhy) .. ' -- cannot open ' .. tostring(path) end
   local fh = nil
@@ -142,6 +201,7 @@ function ulog.open(path, truncate)
   if truncate then mode = file.MODE_WRITE end
   local why = nil
   ulog.fh, why = ulog.open_write(ulog.path, mode)
+  ulog.keyopen = ulog.keygen
   if ulog.fh == nil then
     ulog.on = false
     ulog.lasterr = tostring(why)
@@ -160,7 +220,11 @@ end
 -- Write one line. Never raises: a logging call site should read as a statement,
 -- not as something to check.
 function ulog.line(s)
-  if not ulog.on or not ulog.enabled then return false end
+  if not ulog.enabled then return false end
+  if not ulog.on then
+    if not ulog.resume() then return false end
+  end
+  if not ulog.keyok() then return false end
   if ulog.nlines >= ulog.maxlines then
     ulog.dropped = ulog.dropped + 1
     return false
@@ -188,7 +252,7 @@ end
 -- string.format ignores surplus arguments, and this behaves identically on 5.0.2
 -- and 5.4. Guarded so a format mismatch cannot raise from inside a log call.
 function ulog.fmt(f, a, b, c, d, e)
-  if not ulog.on or not ulog.enabled then return false end
+  if not ulog.enabled then return false end
   local s
   local ok = pcall(function() s = string.format(f, a, b, c, d, e) end)
   if not ok then s = tostring(f) .. ' <ulog: bad format args>' end
@@ -293,6 +357,8 @@ function ulog.next_free(prefix, ext, limit)
       return path
     end
   end
+  local leaf = string.gsub(tostring(prefix), '^.*/', '')
+  ulog.idx_why = string.format('all %d %sNNN%s names are taken', limit, leaf, tostring(ext))
   return nil
 end
 
@@ -308,13 +374,18 @@ function ulog.write_file(path, lines, n)
   if fh == nil then return false, tostring(why) end
 
   local wrote = true
+  local gone = false
   local i
   for i = 1, n do
+    if not ulog.keyok() then gone = true; wrote = false; break end
     local w = pcall(function() file.write(fh, tostring(lines[i]) .. '\r\n') end)
     if not w then wrote = false; break end
   end
   local flushed = pcall(function() file.flush(fh) end)
   pcall(function() file.close(fh) end)      -- its OWN pcall, so a flush raise cannot skip it
+  if gone or (wrote and flushed and not ulog.keyok()) then
+    return false, 'the USB key went away -- the file is empty or truncated'
+  end
   if not wrote then return false, 'write failed part-way through' end
   if not flushed then return false, 'flush failed -- the file may be truncated' end
   return true
@@ -3287,8 +3358,11 @@ function sdec.ck_sink_file(path, ncol)
   -- row of the file keeps its ASCII gutter in the same column as every other row.
   local function emit(nrow)
     local line = sdec.ua_hexrow(cv, ce, nrow, 1, ncol, cbase)
-    local w = pcall(function() file.write(fh, line .. '\r\n') end)
-    if not w then dead = true end
+    if not dead and ulog ~= nil and ulog.keyok ~= nil and not ulog.keyok() then dead = true end
+    if not dead then
+      local w = pcall(function() file.write(fh, line .. '\r\n') end)
+      if not w then dead = true end
+    end
     local i
     for i = nrow + 1, cn do
       cv[i - nrow] = cv[i]
@@ -3324,6 +3398,7 @@ function sdec.ck_sink_file(path, ncol)
     pcall(function() file.close(fh) end)      -- its OWN pcall, so a flush raise cannot skip it
     fh = nil
     if not fok then dead = true end
+    if not dead and ulog ~= nil and ulog.keyok ~= nil and not ulog.keyok() then dead = true end
     return not dead
   end
 
@@ -3560,7 +3635,11 @@ function sdec.ck_summary(tot)
   elseif tot.stopped == 'short read' then
     extra = ' -- the sample source ended early; part of the capture was never scanned'
   elseif tot.stopped == 'stopped' then
-    extra = ' -- STOPPED by the operator; the file holds what was decoded so far'
+    if tot.path == nil then
+      extra = ' -- STOPPED by the operator; nothing was recorded, the panel holds the tail'
+    else
+      extra = ' -- STOPPED by the operator; the file holds what was decoded so far'
+    end
   elseif tot.stopped == 'sink' or tot.stopped == 'write failed' then
     extra = ' -- WRITE FAILED part-way through'
   end
@@ -3717,6 +3796,54 @@ function sdec.mode_cur()
     if sdec.ui_modes[i].id == sdec.capmode then return sdec.ui_modes[i] end
   end
   return sdec.ui_modes[1]
+end
+
+sdec.ui_tick_s = sdec.ui_tick_s or 0.5
+
+-- Stop and start the tick around work that will hold the interpreter. -> true if it acted.
+--   [...]
+-- free: navigating to Options or HOME stops the tick without this being called at all.
+-- IDEMPOTENT AND GUARDED. Both are reached from teardown paths that can run twice and from inside
+-- pcall'd handlers, and a build whose timer create failed leaves ui_tick_obj nil.
+function sdec.ui_tick_off()
+  if sdec.ui_tick_obj == nil then return false end
+  return pcall(function()
+    display.setevent(sdec.ui_tick_obj, display.EVENT_PRESS, '')
+  end)
+end
+
+function sdec.ui_tick_on()
+  if sdec.ui_tick_obj == nil then return false end
+  return pcall(function()
+    display.setevent(sdec.ui_tick_obj, display.EVENT_PRESS, 'sdec.ui_tick()')
+  end)
+end
+
+-- One tick of sdec.ui_tick_obj: notice a key that has come or gone, with no press.
+--   [...]
+-- the capture for the same objects. The busy test makes a queued tick a no-op; the next tick, one
+-- half-second later, does the work.
+-- GUARDED: a raise escaping here reaches the firmware, which then posts it twice a second.
+function sdec.ui_tick()
+  if sdec.ui_scr == nil then return false end
+  if sdec.busy or sdec.ck_running or sdec.strm_recording then return false end
+  local ok = pcall(function()
+    if not sdec.ui_usb_btns() then return end
+    sdec.ui_set(sdec.ui_log_t, sdec.flog_status())
+  end)
+  return ok
+end
+
+-- Will anything the app writes reach the key? -> true or false.
+-- Asked BEFORE a capture, so it cannot read sdec.flog_why -- that is set by the attempt. keyok()
+-- names no path and posts no event, which is what makes it askable here; unknown counts as yes, so
+-- a build or firmware without the call keeps the key-present wording.
+function sdec.log_live()
+  local live = true
+  if ulog ~= nil and ulog.keyok ~= nil then
+    pcall(function() live = ulog.keyok() end)
+  end
+  return live
 end
 
 -- Whether mode `m` suits the current rate. Always true: the TWO recording sizes differ only in
@@ -4210,14 +4337,26 @@ function sdec.ui_notes()
   end
 
   if sdec.ck_tot ~= nil and sdec.res ~= nil and sdec.ck_tot.nf > sdec.res.nf then
-    local base = string.gsub(tostring(sdec.ck_tot.path or 'the USB file'), '^.*/', '')
     local first, tot = sdec.res.first, sdec.res.ntotal or sdec.ck_tot.nf
-    if first ~= nil and first > 1 then
-      add(string.format('panel shows bytes %d-%d of %d; all are in %s',
-                        first, first + sdec.res.nf - 1, tot, base))
+    if sdec.ck_tot.path == nil then
+      local why = 'NOT RECORDED'
+      if sdec.flog_why == nil then why = 'NOT RECORDED -- no USB key' end
+      if first ~= nil and first > 1 then
+        add(string.format('panel shows bytes %d-%d of %d -- the rest was DISCARDED, %s',
+                          first, first + sdec.res.nf - 1, tot, why))
+      else
+        add(string.format('panel shows the first %d of %d bytes -- the rest was DISCARDED, %s',
+                          sdec.res.nf, tot, why))
+      end
     else
-      add(string.format('panel shows the first %d bytes of the stream; all %d are in %s',
-                        sdec.res.nf, tot, base))
+      local base = string.gsub(tostring(sdec.ck_tot.path), '^.*/', '')
+      if first ~= nil and first > 1 then
+        add(string.format('panel shows bytes %d-%d of %d; all are in %s',
+                          first, first + sdec.res.nf - 1, tot, base))
+      else
+        add(string.format('panel shows the first %d bytes of the stream; all %d are in %s',
+                          sdec.res.nf, tot, base))
+      end
     end
   end
 
@@ -4250,11 +4389,14 @@ function sdec.ui_notes()
         add(string.format('began mid-byte -- the first %d bytes are misaligned.', hs))
       end
     else
+      local where = ', in the file.'
+      if sdec.ck_tot ~= nil and sdec.ck_tot.path == nil then
+        where = ', and were NOT recorded.'
+      end
       if hs == 1 then
-        add('the run began mid-byte -- its first byte is misaligned, in the file.')
+        add('the run began mid-byte -- its first byte is misaligned' .. where)
       else
-        add(string.format('the run began mid-byte -- its first %d bytes are misaligned, in the file.',
-                          hs))
+        add(string.format('the run began mid-byte -- its first %d bytes are misaligned%s', hs, where))
       end
     end
   end
@@ -4468,6 +4610,8 @@ function sdec.ui_destroy()
   sdec.del_obj(sdec.ui_trig_t)
   sdec.del_obj(sdec.ui_trighit)
   sdec.ui_lockbody, sdec.ui_lockc, sdec.ui_lockhit = nil, nil, nil
+  sdec.del_obj(sdec.ui_tick_obj)
+  sdec.ui_tick_obj = nil
   sdec.del_obj(sdec.ui_page_t)
   sdec.del_obj(sdec.ui_log_t)
   if sdec.ui_pgind ~= nil then
@@ -4621,6 +4765,17 @@ function sdec.ui_build()
   pcall(function() display.setthickness(sdec.ui_progline, sdec.ui_prog_lw) end)
   sdec.ui_progbar_set(nil)
 
+  sdec.ui_tick_obj = nil
+  pcall(function()
+    sdec.ui_tick_obj = display.create(sdec.ui_scr, display.OBJ_TIMER, sdec.ui_tick_s,
+                                      display.TIMER_FOREVER)
+  end)
+  if sdec.ui_tick_obj ~= nil then
+    pcall(function()
+      display.setevent(sdec.ui_tick_obj, display.EVENT_PRESS, 'sdec.ui_tick()')
+    end)
+  end
+
   sdec.ui_page_t = create(sdec.ui_scr, display.OBJ_TEXT, x, sdec.ui_stat_y, '',
                           sdec.ui_c_dim, small, left)
   sdec.ui_log_t = create(sdec.ui_scr, display.OBJ_TEXT, sdec.ui_stat_div + 6,
@@ -4707,10 +4862,30 @@ end
 
 -- Show or hide the right-margin buttons: the page buttons when there is somewhere to page to, Lock
 --   [...]
--- display.OBJ_EDIT_* only, so a disabled button is not available on this firmware.
--- Cached, because this runs on every refresh and a setstate per button per refresh is display
--- traffic for a state that changes only when the page count does.
+-- build. ui_tick() needs it per tick and has nothing to do with paging.
+-- ONE CACHE WITH ONE OWNER. ui_savevis is written here and nowhere else, so the tick cannot hold a
+-- second opinion that a repaint elsewhere has already made stale.
+function sdec.ui_usb_btns()
+if sdec.ui_savebtn ~= nil or sdec.ui_newlogbtn ~= nil then
+  local sw = sdec.log_live()
+  if sw ~= sdec.ui_savevis then
+    local sst = display.STATE_INVISIBLE
+    if sw then sst = display.STATE_ENABLE end
+    if sdec.ui_savebtn ~= nil then
+      pcall(function() display.setstate(sdec.ui_savebtn, sst) end)
+    end
+    if sdec.ui_newlogbtn ~= nil then
+      pcall(function() display.setstate(sdec.ui_newlogbtn, sst) end)
+    end
+    sdec.ui_savevis = sw
+    return true
+  end
+end
+  return false
+end
+
 function sdec.ui_page_btns()
+  sdec.ui_usb_btns()
   local t = sdec.ui_pgbtn
   if t == nil then return false end
   local npg = sdec.ui_npages()
@@ -4752,21 +4927,6 @@ function sdec.ui_page_btns()
     end
   end
 
-  if sdec.ui_savebtn ~= nil or sdec.ui_newlogbtn ~= nil then
-    local sw = true
-    if ulog ~= nil and ulog.haskey ~= nil then sw = ulog.haskey() end
-    if sw ~= sdec.ui_savevis then
-      local sst = display.STATE_INVISIBLE
-      if sw then sst = display.STATE_ENABLE end
-      if sdec.ui_savebtn ~= nil then
-        pcall(function() display.setstate(sdec.ui_savebtn, sst) end)
-      end
-      if sdec.ui_newlogbtn ~= nil then
-        pcall(function() display.setstate(sdec.ui_newlogbtn, sst) end)
-      end
-      sdec.ui_savevis = sw
-    end
-  end
   return true
 end
 
@@ -4943,6 +5103,7 @@ end
 -- carries the reason across the full table width, where all three reasons fit whole.
 function sdec.flog_status()
   if sdec.flog_why ~= nil then return 'log: NOT LOGGING' end
+  if not sdec.log_live() then return 'log: no USB key' end
   if sdec.flog_path == nil then return 'log: on first capture' end
   local base = string.gsub(tostring(sdec.flog_path), '^.*/', '')
   base = string.gsub(base, '%.txt$', '')
@@ -4991,12 +5152,19 @@ function sdec.ck_status()
   if t == nil then
     if sdec.mode_why(md) ~= nil then return 'not armed -- see the note' end
     if md.cap ~= nil then
+      if not sdec.log_live() then
+        local keep = sdec.ck_keep
+        if keep ~= nil and keep < md.cap then
+          return string.format('ready -- %d bytes, panel keeps the last %d', md.cap, keep)
+        end
+        return string.format('ready -- %d bytes, panel only (no USB key)', md.cap)
+      end
       return string.format('ready -- %d bytes to a file, no stop once started', md.cap)
     end
     return 'ready -- no cap'
   end
-  local where = t.path or 'USB'
-  local base = string.gsub(tostring(where), '^.*/', '')
+  local base = 'NOT recorded'
+  if t.path ~= nil then base = string.gsub(tostring(t.path), '^.*/', '') end
   if (sdec.fc_win or 0) > 1 then
     return string.format('%d bytes in %d windows -> %s  [%s]',
                          sdec.fc_bytes or 0, sdec.fc_win, base,
@@ -5396,10 +5564,15 @@ end
 -- can read. A waveform dump belongs behind its own control and its own filename, not in these.
 -- Allocate the byte log's filename. Returns the path, or nil with sdec.flog_why set.
 function sdec.flog_alloc()
+  if sdec.flog_keygen ~= (ulog.keygen or 0) then
+    sdec.flog_path, sdec.flog_n, sdec.flog_why = nil, nil, nil
+    sdec.flog_keygen = ulog.keygen or 0
+  end
   if sdec.flog_path ~= nil then return sdec.flog_path end
   sdec.flog_path = ulog.next_free(sdec.flogpfx, '.txt', 1000)
   if sdec.flog_path == nil then
-    sdec.flog_why = 'no free ' .. sdec.flogpfx .. 'NNN.txt name -- NOT LOGGING'
+    sdec.flog_why = tostring(ulog.idx_why or
+                             ('no free ' .. string.gsub(sdec.flogpfx, '^.*/', '') .. 'NNN.txt name'))
     return nil
   end
   sdec.flog_n, sdec.flog_bytes = 0, 0
@@ -5435,6 +5608,7 @@ function sdec.frame_log()
     file.flush(fh)
   end)
   pcall(function() file.close(fh) end)
+  if wrote and not ulog.keyok() then wrote = false end
   if not wrote then
     sdec.flog_why = 'write failed part-way through ' ..
                     string.gsub(tostring(sdec.flog_path), '^.*/', '')
@@ -5612,7 +5786,6 @@ end
 function sdec.stream_decode(got)
   local md = sdec.mode_cur()
   local path = sdec.flog_alloc()
-  if path == nil then return false, tostring(sdec.flog_why) end
   local opts = {maxbytes = md.cap, nocap = (md.cap == nil),
                 progress = sdec.ck_progress}
   if sdec.strm_press then
@@ -5955,9 +6128,12 @@ function sdec.rate_decline()
   return true, why
 end
 
--- The Capture button handler: start a capture, or stop or step one already in progress. Fully
+-- The body of the Capture press: start a capture, or stop or step one already in progress. Fully
 -- guarded, and returns a verdict rather than raising.
-function sdec.capture()
+-- NOT THE HANDLER. sdec.capture() below wraps this to hold the panel tick off for the duration
+-- of the press; the button is wired to that, and so is every caller.
+function sdec.capture_run()
+  pcall(function() ulog.resume() end)
   if sdec.ck_running and not sdec.strm_recording and sdec.ck_job == nil then
     if sdec.ck_stop then
       sdec.ck_running, sdec.ck_stop = false, false
@@ -6109,6 +6285,20 @@ function sdec.capture()
 
   pcall(function() sdec.ui_refresh() end)
   return ok
+end
+
+-- THE HALF-SECOND TICK IS OFF FOR THE WHOLE PRESS. A tick is dispatched exactly like a press, so work that
+--   [...]
+-- the rest of the session, with Save and NewLog left showing over an empty slot. The same argument
+-- capture_run makes about ck_running: a latch that only a fault can set must not be the thing that
+-- refuses the fix.
+function sdec.capture()
+  pcall(function() sdec.ui_tick_off() end)
+  local ok, a, b = pcall(function() return sdec.capture_run() end)
+  if not ok then sdec.busy = false end
+  pcall(function() sdec.ui_tick_on() end)
+  if not ok then error(a, 0) end
+  return a, b
 end
 
 sdec.autolock_min  = 8      -- frames required before a detection may be locked
@@ -6827,6 +7017,7 @@ end
 
 -- Tear the app down: release the job, stop the hardware, delete objects, close the log.
 function sdec.stop()
+  pcall(function() sdec.ui_tick_off() end)
   if sdec.ck_job ~= nil then pcall(function() sdec.decode_abandon() end) end
   if sdec.strm_recording then
     sdec.strm_recording = nil
