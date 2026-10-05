@@ -1,8 +1,8 @@
 # Serial Decode — Keithley DMM6500, DAQ6510, DMM7510, SMU2461
 
-A UART decoder that runs **on** a Keithley bench instrument. It digitizes the line with the
-instrument's own digitizer, recovers the baud rate, frame format and idle polarity from the signal,
-and shows the bytes on the front panel as text or hex. No host, no logic analyser, one probe.
+A UART decoder that runs on a Keithley bench instrument. It digitizes the line with the
+instrument's own digitizer, automatically recovers the baud rate, frame format and idle polarity from the signal,
+and shows the bytes on the front panel as text or hex. No host, no logic analyser, no setting baud rates, stop bits, data bits, parity, etc - just one probe, and one button press.
 
 Ian Ameline · **version 1.32** · MIT licence (see [LICENSE](LICENSE))
 
@@ -46,15 +46,6 @@ line that is already carrying traffic decodes immediately — and if nothing is 
 and the `Save` button writes a report; with no key it captures and decodes exactly the same in every
 mode, says `log: no USB key`, and reports a recording as `NOT recorded` rather than naming a file. The
 key may be removed and replaced while the app runs.
-
-### Without installing anything
-
-For development, the modules load straight over the LAN, which is the same code the archive carries:
-
-    python3 tools/run_app.py              # loads tsp/*.tsp over the socket and calls sdec.start()
-
-One caveat the tool states itself: the front panel can be built **once per power cycle**, so a second
-load needs a clean exit first or the instrument has to be power-cycled.
 
 ### Hooking up the probe
 
