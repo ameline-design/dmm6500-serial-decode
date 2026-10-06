@@ -562,7 +562,7 @@ committing.
 with the rate locked, and about **4 seconds** with nothing locked, because an auto-detecting capture
 costs a whole extra acquisition to find the rate plus a format search. The screen returns to the main
 panel immediately and the status row reads `capturing` for the rest of it. If Apply feels slow, lock
-the rate — that is the same three-to-one difference every capture pays. Nothing else on this screen
+the rate — it is the same saving every capture makes, a bit over two to one here. Nothing else on this screen
 takes a measurable amount of time: moving between the fields runs no app code at all.
 
 There is no stop-bit setting. A second stop bit looks exactly like a bit of idle line, which the
@@ -622,16 +622,14 @@ fresh `bytesNNN.txt` is started on it, and logging carries on. Nothing needs end
 
 The app checks the slot twice a second while it is sitting idle, which is the only way to notice: the
 instrument posts no event when a key arrives or leaves, so there is nothing to listen to. The check
-costs about 580 microseconds, or 0.12 % of the instrument. It stops while a capture or a decode is
+costs about 340 microseconds, or 0.07 % of the instrument. It stops while a capture or a decode is
 running, and resumes when that finishes — so a key pulled *during* a long recording is noticed by the
 write that follows it rather than by the clock.
 
 **`Capture`, `View` and `Mode` also check the slot themselves, before doing anything else**, so a
 press never waits on the clock. This is belt and braces rather than a fix for something you would
 have seen: a capture already re-opened the log and brought the buttons back before it started work.
-What it changes is that each press asks, instead of getting the right answer as a side effect — and
-it covers the case the clock cannot, since a timer only runs while its own screen is in front, so
-nothing is polling while you are in `Options`.
+What it changes is that each press asks, instead of getting the right answer as a side effect.
 
 **Every write is checked first, so a pull does not produce a pile of pop-ups.** The instrument's
 `file.write` does not report a failed write to the program at all — it posts `2200, File write error`

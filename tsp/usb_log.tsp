@@ -144,7 +144,7 @@ end
 -- Is the key there AND still being written to? -> true or false. THE GATE EVERY WRITER USES.
 --
 -- haskey() asks about the hardware; this asks the question a caller has, which is whether a write
--- should be attempted at all. Same cost -- one usbdriveexists, measured at 111 us, no path named and
+-- should be attempted at all. Same cost -- one usbdriveexists, measured at 237 us with a key in, no path named and
 -- no event -- so it is askable per line, per capture, per row and per panel refresh.
 --
 -- WHAT IT DOES NOT COVER: a key that is PRESENT AND REFUSING. keylost() is called from the no-key
@@ -419,7 +419,7 @@ function ulog.line(s)
     if not ulog.resume() then return false end
   end
   -- BEFORE THE WRITE, because the write is what posts 2200 and it cannot report having done so --
-  -- see ulog.keylost(). 111 us against a line that already flushes, and it means the first line
+  -- see ulog.keylost(). 237 us against a line that already flushes, and it means the first line
   -- after a pull is refused rather than popped at the operator.
   if not ulog.keyok() then return false end
   -- BOTH METERS. nlines bounds this file; nwritten bounds the power cycle, and only the second
@@ -680,7 +680,7 @@ function ulog.write_file(path, lines, n)
     -- BEFORE EACH WRITE, because a write to a key that has gone does not fail in Lua -- it posts 2200
     -- and returns (see ulog.keylost). Checking only after the loop catches the VERDICT and none of
     -- the boxes: a 24-row report put 24 modal dialogs on the panel, and a 32 kB one would put 2048.
-    -- 111 us a row against a Save the operator is already waiting on.
+    -- 237 us a row against a Save the operator is already waiting on.
     if not ulog.keyok() then gone = true; wrote = false; break end
     local w = pcall(function() file.write(fh, tostring(lines[i]) .. '\r\n') end)
     if not w then wrote = false; break end

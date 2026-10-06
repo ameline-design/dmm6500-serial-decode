@@ -594,14 +594,26 @@ end
 -- HOW OFTEN THE PANEL LOOKS FOR A KEY, in seconds. 2 Hz: a key pulled or inserted shows on the panel
 -- within half a second, which is below the threshold at which an operator wonders whether it worked.
 --
--- THE COST IS TWO PRESENCE READS PER TICK and nothing else unless the answer changed. Measured on
--- 1.7.17a over 200 calls with a key in the slot: file.usbdriveexists() 237 us, ui_usb_btns() 294 us,
--- ulog.resume() 280 us -- so a tick is about 580 us, and 2 Hz is 0.12 % of the instrument.
--- Everything beyond those two reads is behind a change test. Fractional intervals are honoured by
--- display.OBJ_TIMER (measured; the firmware's own clock sample happens to use 1).
+-- THE COST IS ONE PRESENCE READ PER TICK and nothing else unless the answer changed. Measured on
+-- 1.7.17a over 200 calls each, with a key in the slot:
 --
--- 237 us IS WITH A KEY PRESENT. The same call with an empty slot is 111 us: it answers from the
--- absence rather than asking the device, so the cheap figure is the one that does not matter.
+--     file.usbdriveexists()   237 us
+--     ui_usb_btns()           297 us      the read, plus the change test
+--     ui_tick()               340 us      measured whole, NOT summed from the parts above
+--
+-- So 2 Hz is 0.07 % of the instrument. Fractional intervals are honoured by display.OBJ_TIMER
+-- (measured; the firmware's own clock sample happens to use 1).
+--
+-- MEASURE ui_tick ITSELF, NOT ITS PARTS, and know which tree answered. A tick that also calls
+-- ulog.resume() costs 629 us against the 340 here, which is the whole reason it does not. And a
+-- load that fails silently leaves the PREVIOUS app running while answering every query cheerfully,
+-- so a figure can belong to a tree that is not on disk -- check a function you have just added
+-- before trusting a number. See tools/dmmrun.py's load_script.
+--
+-- 237 us IS WITH A KEY PRESENT, which is the case every per-line and per-row gate in this app
+-- pays. The 111 us quoted for this call elsewhere was taken with the slot EMPTY -- a different
+-- measurement, not a disagreement with this one. Why the empty slot is cheaper is a guess and is
+-- not worth one: the expensive case is the only one that runs.
 sdec.ui_tick_s = sdec.ui_tick_s or 0.5
 
 -- Stop and start the tick around work that will hold the interpreter. -> true if it acted.
@@ -646,25 +658,27 @@ end
 -- first act, so the key state a press acts on is the key state at the press, asked for rather than
 -- inherited from whenever the last tick happened to land.
 --
--- WHAT IT IS AND IS NOT WORTH. It is NOT a fix for a visible defect -- measured on the tree before
--- it, with a key re-inserted and the acquisition stubbed, a Capture press already reached the work
--- with the log re-opened and both buttons back, because capture_run() opens with ulog.resume() and
--- every path refreshes before its long work. What this buys is that the property stops being
--- INCIDENTAL: it holds because each handler asks, not because of where resume() happens to sit in a
--- function none of them can see. flog_alloc() asks ulog.keyok() for itself for exactly that reason,
--- and its docblock records what it cost to learn. View and Mode additionally gain the window
--- between the press and their own trailing ui_refresh().
+-- WHAT IT IS AND IS NOT WORTH. It is NOT a fix for a visible defect -- checked OFFLINE against the
+-- mocked instrument on the tree before it, with a key re-inserted and the acquisition stubbed, a
+-- Capture press already reached the work with the log re-opened and both buttons back, because
+-- capture_run() opens with ulog.resume() and every path refreshes before its long work. What this
+-- buys is that the property stops being INCIDENTAL: it holds because each handler asks, not because
+-- of where resume() happens to sit in a function none of them can see. flog_alloc() asks
+-- ulog.keyok() for itself for exactly that reason, and its docblock records what it cost to learn.
+-- View and Mode additionally gain the window between the press and their own trailing ui_refresh().
+--
+-- IT DOES NOT RE-OPEN THE LOG, AND MUST NOT. ulog.resume() allows ONE open attempt per insertion and
+-- a failed one is not retried until another key arrives (its docblock says so, and names a slot that
+-- reports a key before its filesystem is usable as the case). Calling it from here spends that single
+-- allowance within half a second of insertion -- the moment it is LEAST likely to succeed -- where a
+-- press arrives seconds later, at human speed. Trading a sooner re-open for a chance of
+-- 'log: NOT LOGGING' standing for the rest of the session with a good key in the slot is the wrong
+-- side of that bargain. capture_run() resumes, and ulog.line() resumes by itself, so every path that
+-- writes to the key already recovers; this one only has to make the PANEL agree.
 --
 -- EVERYTHING EXPENSIVE IS BEHIND A CHANGE TEST. The repaint runs only when the answer differs from
--- the last one, so a steady state costs the presence reads and nothing else.
---
--- TWO PRESENCE READS, NOT ONE, and the second is ulog.resume()'s. Measured over 200 calls with a
--- key in the slot: ui_usb_btns() 294 us, ulog.resume() 280 us, so a tick is about 580 us and 2 Hz
--- is 0.12 % of the instrument -- cheap enough that sharing one honest body beats threading a flag
--- through to save a read. The resume is what re-opens the log file: keyok() clears the latch but
--- opens nothing, and it is a no-op until a key actually arrives (one integer compare, see
--- ulog.resume()). Its effect is small and worth stating plainly -- the next ulog.line() would
--- re-open anyway, so what this changes is WHEN, not whether.
+-- the last one, so a steady state is one presence read and nothing else: measured over 200 calls
+-- with a key in the slot, ui_usb_btns() 297 us and a whole tick 340 us, i.e. 0.07 % at 2 Hz.
 --
 -- GUARDED: a raise escaping here reaches the firmware, which then posts it twice a second.
 function sdec.ui_keypoll()
@@ -680,17 +694,19 @@ function sdec.ui_keypoll()
     if not sdec.ui_usb_btns() then return end
     moved = true
     -- THE LOG CELL IS ONLY OURS WHEN NO RUN OWNS IT. While a recording or a chunked decode is live
-    -- that cell carries the only statement of how to STOP, and this is reached from a press -- which
-    -- the tick is not, being refused outright while busy. Overwriting it with the log status would
-    -- take the stop instruction off an uninterruptable run at exactly the moment it is needed: the
-    -- key being pulled mid-recording is what makes ui_usb_btns() return true here.
+    -- that cell carries the only statement of how to STOP, and writing the log status over it is
+    -- wrong whoever does it: one display object, one writer.
     --
-    -- ui_refresh() restores the cell when the run ends, so nothing is lost by leaving it alone.
+    -- THE WINDOW IS SHORT, AND SAYING SO IS THE HONEST VERSION. The tick cannot get here mid-run --
+    -- ui_tick() refuses outright on busy/ck_running/strm_recording -- and every press that CAN
+    -- (capture_run's stop branch, mode_cycle's running branch, view_toggle) ends in ui_refresh(),
+    -- which puts the hint back. So without this test the stop instruction is lost only for the
+    -- duration of the handler that is already stopping or stepping the run, not indefinitely. It is
+    -- still the wrong thing to write, and ui_log_owned() is one compare.
     if sdec.ui_log_owned() then return end
     -- The log cell names the key too, so it moves with the buttons.
     sdec.ui_set(sdec.ui_log_t, sdec.flog_status())
   end)
-  pcall(function() ulog.resume() end)
   return moved
 end
 
@@ -699,15 +715,20 @@ end
 -- MUST TRACK ui_refresh()'s BRANCH FOR THAT CELL: the tests below are that branch's outer condition
 -- followed by its three hint cases. They are stated here rather than only there because
 -- ui_keypoll() writes the same object from a press and has to know whose it is.
--- tools/test_streamfix.lua walks eight states and asserts the two agree in each, rather than
+-- tools/test_streamfix.lua walks eleven states and asserts the two agree in each, rather than
 -- leaving them to be kept in step by hand: two opinions about one display object is a defect this
 -- panel is prone to, which is why ui_usb_btns() keeps the ui_savevis cache under one owner.
 --
--- GUARDED AGAINST A nil MODE, which is what a build whose mode table is absent would give.
+-- GUARDED AGAINST A nil MODE, which is what an EMPTY sdec.ui_modes gives -- an absent one raises
+-- inside mode_cur() instead, and ui_refresh has no guard either, so that state is nobody's contract.
 function sdec.ui_log_owned()
   local md = sdec.mode_cur()
   if md == nil then return false end
-  -- ui_refresh's outer test. Without it, strm_inflight alone does not reach a hint.
+  -- THE NEGATION OF ui_refresh's TEST FOR THE LOG CELL, which is the one guarding the four-way
+  -- block that writes sdec.ui_log_t -- NOT the similarly-shaped test further up that chooses the
+  -- status row's LEFT cell. Both read this same md, and both spell this condition, so the one to
+  -- follow is the one whose branch sets ui_log_t. Without this line, strm_inflight on its own would
+  -- claim a hint that ui_refresh never writes.
   if md.view and sdec.ck_tot == nil and not sdec.ck_running then return false end
   if sdec.strm_recording then return true end
   if sdec.ck_job ~= nil then return true end
@@ -2486,7 +2507,7 @@ function sdec.ui_usb_btns()
 -- STATE_INVISIBLE, not STATE_DISABLE: the display reference is explicit that DISABLE applies to
 -- display.OBJ_EDIT_* only, so a disabled button is not available on this firmware.
 --
--- sdec.log_live() IS THE TEST, and it names no path -- so asking on every refresh costs 111 us and
+-- sdec.log_live() IS THE TEST, and it names no path -- so asking on every refresh costs 237 us and
 -- posts nothing. It is also what lets both buttons come back by themselves when a key is inserted.
 -- keyok() rather than haskey() so the latch is honoured, and so a refresh is one of the places a
 -- key pulled mid-run is NOTICED: the operator sees both buttons go.

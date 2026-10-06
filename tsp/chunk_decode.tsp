@@ -869,7 +869,7 @@ function sdec.ck_sink_file(path, ncol)
     -- into nothing and put 2048 modal boxes on the panel, in the one mode whose own status row says
     -- 'no stop once started'. Checking in finish() alone catches the verdict and none of the boxes.
     --
-    -- PER ROW RATHER THAN PER WINDOW: 111 us against 16 bytes of a decode already costing ~48 us a
+    -- PER ROW RATHER THAN PER WINDOW: 237 us against 16 bytes of a decode already costing ~48 us a
     -- sample, so under 0.3 % of the run, and the alternative still leaves a window's worth of boxes.
     --
     -- IT SKIPS THE WRITE AND NOTHING ELSE. The carry shift below still runs, exactly as it does for a

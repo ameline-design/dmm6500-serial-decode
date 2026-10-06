@@ -528,10 +528,13 @@ do
   end
   pcall(function() sdec.capture() end)
   sdec.capture_run = realrun
-  check('Capture has the log open again before capture_run() starts', at_on == true,
-        tostring(at_on) .. ' ' .. tostring(ulog.lasterr))
-  check('and Save is back on the glass before the run, not after it', at_vis == true,
+  check('Save is back on the glass before the run starts, not after it', at_vis == true,
         tostring(at_vis))
+  -- THE POLL MUST NOT RE-OPEN THE LOG, and that is a decision rather than an oversight: resume()
+  -- allows one open attempt per insertion, so spending it from a 2 Hz tick within half a second of
+  -- insertion risks 'NOT LOGGING' standing all session. capture_run() resumes -- stubbed out here,
+  -- which is exactly why this reads false.
+  check('and the poll itself did NOT re-open the log file', at_on == false, tostring(at_on))
 
   -- VIEW. ui_nviews() is the first call in view_toggle()'s body.
   settle_nokey()
@@ -543,10 +546,11 @@ do
   end
   pcall(function() sdec.view_toggle() end)
   sdec.ui_nviews = realn
-  check('View has the log open again before it changes the view', at_on == true,
-        tostring(at_on) .. ' ' .. tostring(ulog.lasterr))
-  check('and the buttons are back before it, not only in the refresh after it', at_vis == true,
-        tostring(at_vis))
+  check('View has the buttons back before it changes the view, not only in the refresh after it',
+        at_vis == true, tostring(at_vis))
+  -- View writes nothing to the key, so nothing in it resumes -- and the next logged line will.
+  check('and the very next logged line re-opens the log by itself',
+        ulog.line('after a View press') == true and ulog.on == true, tostring(ulog.lasterr))
 
   -- MODE. mode_next() is reached before the ulog.line() further down, and that line resumes the log
   -- by itself -- so recording the state here is what pins the order rather than the outcome.
@@ -559,9 +563,9 @@ do
   end
   pcall(function() sdec.mode_cycle() end)
   sdec.mode_next = realnext
-  check('Mode has the log open before it logs the mode change', at_on == true,
-        tostring(at_on) .. ' ' .. tostring(ulog.lasterr))
-  check('and before it picks the next mode', at_vis == true, tostring(at_vis))
+  check('Mode has the buttons back before it picks the next mode', at_vis == true, tostring(at_vis))
+  -- mode_cycle() logs the new mode, and that line is what re-opens the log on this path.
+  check('and its own log line left the log open', ulog.on == true, tostring(ulog.lasterr))
 
   -- NO EVENT FOR ANY OF IT. A press that re-opens the log must not pop a box at the operator.
   check('none of the three presses posted anything at the operator',
@@ -635,14 +639,26 @@ do
                                                 sdec.ck_running = true end},
     {n = 'strm_inflight',        f = function() sdec.capmode = 'med'
                                                 sdec.strm_inflight = true end},
-    -- FRAME IS view = true, so ui_refresh's outer test is only reached through ck_tot or
-    -- ck_running. Both FRAME branches are enumerated rather than reasoned about: the outer test is
-    -- the half of ui_log_owned() most likely to be got wrong, being a De Morgan of ui_refresh's.
+    -- FRAME IS view = true, so ui_refresh's outer test is only SATISFIED through ck_tot or
+    -- ck_running. These two reach the hint block with FRAME selected.
     {n = 'FRAME + ck_running',   f = function() sdec.capmode = 'frame'
                                                 sdec.ck_running = true end},
     {n = 'FRAME + a summary',    f = function() sdec.capmode = 'frame'
                                                 sdec.ck_tot = {nf = 0, nwin = 1, nbad = 0,
                                                                stopped = 'done'} end},
+    -- THESE THREE ARE THE ONLY STATES THAT TEST THE OUTER CONDITION AT ALL, and without them this
+    -- section was vacuous about it: deleting ui_log_owned's `md.view and ck_tot == nil and not
+    -- ck_running` early return left all of the above passing. The two FRAME states above MAKE the
+    -- outer condition true, so they never reach that line. Here a run flag is set while FRAME is
+    -- selected and ck_tot is nil -- the shape a stale ck_running or strm_inflight latch leaves
+    -- behind after a fault -- so the outer condition is FALSE, ui_refresh writes the log status,
+    -- and anything claiming the cell is a run's would be wrong.
+    {n = 'FRAME + strm_recording', f = function() sdec.capmode = 'frame'
+                                                  sdec.strm_recording = true end},
+    {n = 'FRAME + a chunked job',  f = function() sdec.capmode = 'frame'
+                                                  sdec.ck_job = {} end},
+    {n = 'FRAME + strm_inflight',  f = function() sdec.capmode = 'frame'
+                                                  sdec.strm_inflight = true end},
   }
   local k
   for k = 1, table.getn(states) do
@@ -673,11 +689,20 @@ do
         MD.obj(sdec.ui_savebtn).state == display.STATE_INVISIBLE,
         tostring(sdec.ui_savevis))
 
+  -- LEAVE THE LOGGER ALIVE, for the same reason G does: the key-out keypoll above leaves ulog.on
+  -- false with keyopen == keygen, so clearing the latch alone would let every later ulog.line()
+  -- resume to false and be dropped in silence. Nothing follows H today; the next section added
+  -- would inherit a dead log and no assertion here would notice.
   clearrun()
   sdec.capmode = 'frame'
   MD.usb(true)
   MD.forget_files()
   ulog.keybad, ulog.keyout, ulog.keywhy = false, false, nil
+  ulog.keygen, ulog.keyopen = 0, 0
+  ulog.on, ulog.dirok, ulog.fh = false, nil, nil
+  ulog.path = '/usb1/SERDEC/dmm6500_log.txt'
+  ulog.open(ulog.path, true)
+  check('H leaves the logger open too', ulog.on == true, tostring(ulog.lasterr))
 end
 
 print()

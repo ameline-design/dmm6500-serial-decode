@@ -11,21 +11,25 @@ was reverted as buying nothing -- not as being slower.
 n=12 and n=6 per arm, six alternating laps, one session. The 4 % edge to
 read-first is inside the session drift and is not a reason to prefer it.
 
-AND THE REASON THE FIRST RUN OF THIS SAID OTHERWISE, which is the lesson worth
-keeping: an earlier design reported read-first at 2.345 ms against 0.896 ms,
-apparently damning. Those means were carried entirely by two single calls of
-19.003 and 32.796 ms in LAP 0 of the read-first arm -- the first two
-options_seed() calls of that session, cold. The steady-state values in that same
-run were 0.81-0.87 read-first against 0.82-1.05 unconditional, i.e. identical.
-Whichever arm is measured first absorbs the session's warm-up and loses.
-So: alternate the arms, discard nothing, and look at the SPREAD, not the mean.
+AND THE REASON AN EARLIER RUN SAID OTHERWISE, which is the lesson worth keeping.
+It reported read-first at 2.345 ms (no change, n=12) against 0.896 ms, and
+6.340 ms (one change, n=6) against 0.844 -- apparently damning. ONE cold call
+carries each of those means, both in lap 0 of the read-first arm:
+
+    no change    19.003 ms among 12    mean 2.345; the other 11 average 0.831
+    one change   32.796 ms among 6     mean 6.340; the other 5 average 1.048
+
+Every other value in that run was 0.81-0.87 read-first against 0.82-1.05
+unconditional, i.e. identical. So: discard nothing, look at the SPREAD rather
+than the mean, and ALTERNATE WHICH ARM GOES FIRST -- whichever one opens a lap
+absorbs its warm-up, and this probe got that wrong too before it alternated.
 
 What the change was defended by was an ISOLATED microbenchmark of
 display.setvalue at 1.100-2.512 ms, and that premise is what is actually false:
 options_seed() does SEVEN of them for 0.86 ms, i.e. 0.12 ms each. An unchanged
 setvalue is already cheap in this firmware. See tools/probe_panellag.py
-finding 5 -- a single-shot display timing on this instrument charges the
-previous operation's drain to whoever asks next.
+finding 5: a single-shot display timing on this instrument runs 10 to 50 times
+its steady-state figure, for reasons that observation does not settle.
 
 HOW IT MEASURES. One cold sdec.options_seed() per data point, both arms
 alternating in ONE session: the per-call cost of a display write drifts over a
@@ -79,9 +83,15 @@ def one_seed(d, changed):
 
 
 def main():
+    # Set before the socket is touched: the finally below reads it, and a NameError there would
+    # mask whatever actually went wrong.
+    par0 = None
     d = DMM()
     try:
         alive = d.q('print(tostring(sdec ~= nil), tostring(sdec.optscr ~= nil))')
+        # SNAPSHOTTED, because one_seed(changed=True) moves Parity to force a stale field and
+        # nil'ing it afterwards would be this probe deciding the app's setting for it.
+        par0 = d.q('print(tostring(sdec.force_par))')
         print('app loaded (sdec / optscr):', alive)
         if alive is None or 'true\ttrue' not in str(alive):
             raise SystemExit('REFUSING: load the app first (tools/run_app.py)')
@@ -90,7 +100,13 @@ def main():
 
         rows = []
         for lap in range(6):
-            for tag, arm in (('readfirst', WRAP), ('uncond', RESTORE)):
+            # THE ORDER ALTERNATES, because the arm that opens a lap pays its warm-up. Fixing
+            # read-first in front for every lap is what produced the outliers described above --
+            # all of them in that arm, none in the other.
+            arms = (('readfirst', WRAP), ('uncond', RESTORE))
+            if lap % 2 == 1:
+                arms = (('uncond', RESTORE), ('readfirst', WRAP))
+            for tag, arm in arms:
                 d.exec(arm)
                 # NOTHING CHANGED: the common case -- re-opening the form, or
                 # Cancel re-seeding it. read-first writes 0 fields, uncond 7.
@@ -118,7 +134,7 @@ def main():
         # silently, because it still works -- just differently.
         try:
             d.exec(RESTORE)
-            d.exec('sdec.force_par = nil')
+            d.exec('sdec.force_par = %s' % (par0 if par0 not in (None, '') else 'nil'))
             d.exec('sdec.options_seed()')
             d.exec('display.changescreen(sdec.ui_scr)')
             d.exec('sdec.strm_stopped_by_press = nil')

@@ -6,7 +6,15 @@ seem slow to respond, sometimes" -- and kept because three of its five
 measurements REFUTE a plausible cause, which is the expensive kind of thing to
 have to re-derive.
 
-WHAT IT ESTABLISHED on firmware 1.7.17a (figures in the stage headers below):
+WHAT IT ESTABLISHED on firmware 1.7.17a.
+
+READ THIS FIRST ABOUT THE FIGURES IN 1-5: they were collected in a run whose
+load silently failed, so they describe the app from the run BEFORE it, not the
+tree on disk (that is finding 6, which is how it was caught). The conclusions
+survive, and here is why each one does: the key tick exists in both trees; the
+display-call and buffer timings are firmware, not app; options_apply's capture
+and ulog.line's flush are untouched by what differed. Re-measure before quoting
+any of them as a figure FOR a particular version.
 
   1. The 2 Hz USB-key tick does NOT run while another screen is in front. 6
      ticks in 3 s on the main screen, 0 with the Options form up, 0 on
@@ -17,21 +25,27 @@ WHAT IT ESTABLISHED on firmware 1.7.17a (figures in the stage headers below):
      sdec.buf from a streaming capture until sdec.stop(), and that is not a
      responsiveness cost.
 
-  3. NO APP CODE RUNS ON A FIELD TOUCH AT ALL. The seven OBJ_EDIT_* fields are
-     created without display.setevent -- only the four buttons have handlers --
-     so the responsiveness of a setting itself is the firmware's, and nothing
-     measured here can change it.
+  3. NO APP CODE RUNS ON A FIELD TOUCH AT ALL. This one is READ, not measured:
+     sdec.build_options() in tsp/serial_ui.tsp creates the seven OBJ_EDIT_*
+     fields with no display.setevent on any of them, and only the four buttons
+     in its `odef` loop get one. So the responsiveness of a setting itself is
+     the firmware's and nothing here can change it. (A stage that claimed to
+     test this was deleted: it printed whether a display API function existed,
+     which is not the same question.)
 
   4. The one multi-second press on that screen is Apply, because Apply ends in
      a capture by design: 4.0 s with nothing locked against 1.9 s locked. That
      ratio is the reported "sometimes slow, sometimes very responsive".
 
-  5. Display work is not all paid by the call that starts it. A single-shot
-     timing of a display call runs 10 to 50 times its steady-state figure
-     (options() 68 ms single-shot against 2.7 ms over ten), which is a drain
-     being charged to whoever asks next. So an isolated display microbenchmark
-     on this instrument does NOT predict the cost of the same call in context,
-     and the two figures below are the warning not to trust one:
+  5. A single-shot timing of a display call runs 10 to 50 times its
+     steady-state figure -- options() 68 ms single-shot against 2.7 ms averaged
+     over ten. That pair comes from a separate throwaway probe, not from here:
+     the CALLS table below runs options() at n=5 and cannot reproduce it. THE OBSERVATION IS SOLID; the mechanism is not. "A drain being
+     charged to whoever asks next" is a guess, and tools/probe_seedv.py found
+     the better description without needing it: whichever arm is measured first
+     absorbs the session's warm-up. What matters either way is that an isolated
+     display microbenchmark on this instrument does NOT predict the cost of the
+     same call in context, and the two figures below are the warning:
 
          display.setvalue, measured alone        1.100 - 2.512 ms
          options_seed(), which does SEVEN            0.84 ms total
@@ -127,11 +141,16 @@ def round_of(d, tag):
 
 
 def main():
+    # Set before the socket is touched: the finally reads it, and a NameError there would mask
+    # whatever actually went wrong.
+    snap = None
     d = DMM()
     try:
-        # A tool killed mid-press leaves "A command from another interface is
-        # running", which ABORT clears and DST does not. Two loads cost 301 s
-        # each to learn that.
+        # ABORT is for the OTHER thing that gives the same message: a tool killed
+        # mid-press, where something really is hung. It does NOT clear the refusal
+        # this probe cares about -- see dmmrun.load_script, where the remedy is to
+        # send the panel HOME, because nothing is hung and there is nothing to abort.
+        # Sent anyway, cheaply, in case a previous run was killed.
         d.send('ABORT')
         time.sleep(0.5)
         print(d.q('print(localnode.model, localnode.version)'))
@@ -143,16 +162,6 @@ def main():
         print('  main screen,    3 s:', ticks_over(d, 3.0, 'sdec.ui_scr'))
         print('  OPTIONS screen, 3 s:', ticks_over(d, 3.0, 'sdec.optscr'))
         print('  SCREEN_HOME,    3 s:', ticks_over(d, 3.0, 'display.SCREEN_HOME'))
-
-        # 3. The fields carry no handlers, so a touch dispatches nothing.
-        print('\n== 2. what is wired to the option fields ==')
-        for nm in ('opt_proto', 'opt_baud', 'opt_bits', 'opt_par', 'opt_pol',
-                   'opt_trig', 'opt_ext'):
-            print('  %-10s events: %s' % (nm, d.q(
-                'local h = sdec.%s '
-                'if h == nil then print("no field") else '
-                'print(tostring(display.geteventmessage ~= nil)) end' % nm)))
-            break   # one is enough: they are created by the same loop-free block
 
         a = round_of(d, '3. per-call cost, no streaming buffer')
 
@@ -178,7 +187,16 @@ def main():
             print('  %-26s %10s %10s %10s' % (lbl, f(a[lbl]), f(b[lbl]), f(c[lbl])))
 
         # 4. Apply, which ends in a capture by design.
+        #
+        # SNAPSHOTTED FIRST. This stage locks the rate and never unlocks it, so without this the
+        # probe hands the next tool an app pinned to whatever that capture found -- and forcing
+        # autolock back ON regardless would be a second silent change. Same rule as capmode/fc_*.
         print('\n== 6. Apply, unlocked against locked ==')
+        snap = d.q('print(string.format("%s|%s|%s|%s|%s",'
+                   ' tostring(sdec.force_baud), tostring(sdec.force_nbits),'
+                   ' tostring(sdec.force_par), tostring(sdec.force_invert),'
+                   ' tostring(sdec.autolock)))')
+        print('  saved force_baud|nbits|par|invert|autolock:', snap)
         d.exec('sdec.force_baud = nil sdec.snapped = false sdec.autolock = false')
         d.exec('display.changescreen(sdec.optscr) sdec.options_seed()')
         t0 = time.time()
@@ -198,9 +216,39 @@ def main():
         d.exec('ulog.autoflush = true')
 
         print('\n  events:', d.q('print(tostring(eventlog.getcount()))'))
-        d.exec('sdec.autolock = true sdec.strm_stopped_by_press = nil')
-        d.exec('display.changescreen(sdec.ui_scr)')
     finally:
+        # RESTORED WHATEVER HAPPENED, because a probe that dies mid-stage otherwise hands the next
+        # tool an app with no key polling, no log flushing, and a lock it did not set. Each is
+        # pcall'd on the instrument and guarded here, so a dead socket cannot turn a stage failure
+        # into a traceback that hides it.
+        #
+        # THE FORCED RATE GOES BACK FROM THE SNAPSHOT, not from an assumption about the app's
+        # defaults -- and from HERE rather than from the end of the happy path, because stage 6's
+        # two options_apply() calls are the likeliest thing in this probe to time out, and the
+        # state it would leave behind is a locked rate the next tool did not set.
+        try:
+            if snap is not None and '|' in str(snap):
+                fld = str(snap).split('|')
+                d.exec('sdec.force_baud, sdec.force_nbits, sdec.force_par, sdec.force_invert = '
+                       '%s, %s, %s, %s sdec.autolock = %s'
+                       % (fld[0], fld[1], fld[2], fld[3], fld[4]))
+                print('  forced settings restored:',
+                      d.q('print(string.format("%s|%s|%s|%s|%s",'
+                          ' tostring(sdec.force_baud), tostring(sdec.force_nbits),'
+                          ' tostring(sdec.force_par), tostring(sdec.force_invert),'
+                          ' tostring(sdec.autolock)))'))
+        except Exception as e:                                   # noqa: BLE001
+            print('  FORCED-SETTING RESTORE FAILED (%s) -- reload the app' % e)
+        try:
+            d.exec("if sdec ~= nil and sdec.ui_tick_on ~= nil then "
+                   "  pcall(function() sdec.ui_tick_on() end) end "
+                   "if ulog ~= nil then ulog.autoflush = true end "
+                   "if sdec ~= nil then sdec.strm_stopped_by_press = nil end")
+            d.exec('if sdec ~= nil and sdec.ui_scr ~= nil then '
+                   'display.changescreen(sdec.ui_scr) end')
+            print('  tick, autoflush and screen restored')
+        except Exception as e:                                   # noqa: BLE001
+            print('  RESTORE FAILED (%s) -- reload the app before the next tool' % e)
         d.close()
 
 

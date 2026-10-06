@@ -468,7 +468,7 @@ function sdec.frame_log()
   pcall(function() file.close(fh) end)
   -- A WRITE THAT POSTED 2200 RETURNS NORMALLY (see ulog.keylost), so `wrote` cannot see a key pulled
   -- between the open above and here -- and this capture's bytes would be counted as logged. One
-  -- presence check can, costs 111 us, and latches logging off on the way past.
+  -- presence check can, costs 237 us with a key in the slot, and latches logging off on the way past.
   if wrote and not ulog.keyok() then wrote = false end
   if not wrote then
     sdec.flog_why = 'write failed part-way through ' ..
@@ -1419,7 +1419,7 @@ function sdec.capture_run()
   -- A KEY INSERTED SINCE THE LAST PRESS RESUMES NORMAL LOGGING, HERE, so the promise is "the first
   -- button press" and not "the first press that happens to log something". Covers both orders: an
   -- app started with no key, and one whose key was pulled and put back. One integer compare and a
-  -- 111 us presence read when there is nothing to do; see ulog.resume().
+  -- 237 us presence read when there is nothing to do; see ulog.resume().
   --
   -- KEPT EVEN THOUGH THE PANEL ROUTE ASKS FIRST. sdec.capture() calls ui_keypoll() before this, and
   -- the tick asks while the panel is idle, but neither is in the path of a host-driven capture_run()
@@ -1747,11 +1747,12 @@ end
 -- this function anyway.
 --
 -- IT CLOSES NO VISIBLE GAP, AND THAT IS WORTH WRITING DOWN so nobody defends it with a defect it
--- did not fix. Measured without it, key re-inserted and the acquisition stubbed to report the state
--- it starts in: FRAME and both recording modes already reached the work with the log open and Save
--- and NewLog back, because capture_run() opens with ulog.resume() and each path refreshes before
--- its long work. What this changes is that Capture ASKS, instead of inheriting the answer from where
--- resume() sits inside a function the press cannot see.
+-- did not fix. Checked OFFLINE against tools/mock_display.lua without it, key re-inserted and the
+-- acquisition stubbed to report the state it starts in: FRAME and both recording modes already
+-- reached the work with the log open and Save and NewLog back, because capture_run() opens with
+-- ulog.resume() and each path refreshes before its long work. What this changes is that Capture
+-- ASKS, instead of inheriting the answer from where resume() sits inside a function the press
+-- cannot see.
 function sdec.capture()
   pcall(function() sdec.ui_keypoll() end)
   pcall(function() sdec.ui_tick_off() end)

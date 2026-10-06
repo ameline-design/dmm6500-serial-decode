@@ -3823,8 +3823,8 @@ end
 
 -- Look for a key that has come or gone, and make the panel agree. -> true if anything moved.
 --   [...]
--- ulog.resume()). Its effect is small and worth stating plainly -- the next ulog.line() would
--- re-open anyway, so what this changes is WHEN, not whether.
+-- the last one, so a steady state is one presence read and nothing else: measured over 200 calls
+-- with a key in the slot, ui_usb_btns() 297 us and a whole tick 340 us, i.e. 0.07 % at 2 Hz.
 -- GUARDED: a raise escaping here reaches the firmware, which then posts it twice a second.
 function sdec.ui_keypoll()
   if sdec.ui_scr == nil then return false end
@@ -3835,15 +3835,14 @@ function sdec.ui_keypoll()
     if sdec.ui_log_owned() then return end
     sdec.ui_set(sdec.ui_log_t, sdec.flog_status())
   end)
-  pcall(function() ulog.resume() end)
   return moved
 end
 
 -- Is the status row's right-hand cell currently a run's, rather than the log's? -> true or false.
 --   [...]
--- leaving them to be kept in step by hand: two opinions about one display object is a defect this
 -- panel is prone to, which is why ui_usb_btns() keeps the ui_savevis cache under one owner.
--- GUARDED AGAINST A nil MODE, which is what a build whose mode table is absent would give.
+-- GUARDED AGAINST A nil MODE, which is what an EMPTY sdec.ui_modes gives -- an absent one raises
+-- inside mode_cur() instead, and ui_refresh has no guard either, so that state is nobody's contract.
 function sdec.ui_log_owned()
   local md = sdec.mode_cur()
   if md == nil then return false end
@@ -6321,9 +6320,9 @@ end
 
 -- THE HALF-SECOND TICK IS OFF FOR THE WHOLE PRESS. A tick is dispatched exactly like a press, so work that
 --   [...]
--- and NewLog back, because capture_run() opens with ulog.resume() and each path refreshes before
--- its long work. What this changes is that Capture ASKS, instead of inheriting the answer from where
--- resume() sits inside a function the press cannot see.
+-- ulog.resume() and each path refreshes before its long work. What this changes is that Capture
+-- ASKS, instead of inheriting the answer from where resume() sits inside a function the press
+-- cannot see.
 function sdec.capture()
   pcall(function() sdec.ui_keypoll() end)
   pcall(function() sdec.ui_tick_off() end)

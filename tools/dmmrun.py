@@ -70,10 +70,32 @@ def _release_lock():
 
 IP = '10.0.1.151'
 PORT = 5025
-# The instrument's answer when the FRONT PANEL is mid-handler -- a live TSP app's 2 Hz timer is
-# enough to produce it. The statement does NOT run, so re-sending it is safe; see DMM.exec.
-REFUSED = 'another interface is running'
+# The instrument's answer when something else holds the interpreter. Measured every time for a
+# chunk RUN with the app's own screen in front; for a plain statement it is a collision at a rate,
+# and WHAT it collides with is not established -- see DMM.exec, which does not name the tick either.
+# The statement does NOT run, so re-sending it is safe.
+# THE REFUSAL, EXACTLY AS THE INSTRUMENT SENDS IT, and the match has to be exact. Re-sending a
+# statement is safe only if it did NOT run, and the whole inference rests on this line being the
+# instrument's ONLY answer -- it refused, so there is no reply coming and no sentinel either.
+#
+# A SUBSTRING TEST IS NOT SAFE, which is the trap here. This instrument volunteers event lines on
+# the control socket when the app sets localnode.showevents, and one quoting this phrase would also
+# arrive first, ahead of a perfectly good reply -- so re-sending on a substring hit means two
+# captures and the real reply left in the buffer, putting every later read one behind.
+#
+# WAITING FOR THE SENTINEL INSTEAD DOES NOT WORK, which is why this is a format test. The __OK__ of
+# a statement that really is running arrives when the statement FINISHES: sdec.capture() is 1.9-4 s
+# measured, options_apply about 4 s, a 32 kB press tens of seconds. Any fixed settle short enough to
+# be worth having is shorter than those, so it would expire and conclude "refused" on precisely the
+# expensive statements where a double run costs most.
+#
+# SO IT FAILS TOWARD SAFETY: a line that is not exactly this is treated as an ordinary stray and the
+# read goes on waiting for the sentinel, which is the correct behaviour for a statement that ran. A
+# re-worded refusal in some later firmware therefore costs one timeout, not a double execution.
+REFUSAL_LINE = 'FAILURE: A command from another interface is running, use ABORT to stop it'
 REFUSE_RETRIES = 4
+# Longer than one 0.5 s tick period, so a retry does not land in the same slot that refused it.
+REFUSE_WAIT = 0.6
 DST_PORT = 5030   # Dead Socket Termination: closing a connection here drops all stale sockets
 
 
@@ -177,10 +199,29 @@ class DMM:
         q() on a statement with no print() blocks for the whole timeout and
         returns None, which looks exactly like a failure. Use exec() for
         statements that produce no output.
+
+        A REFUSED STATEMENT IS RE-SENT, and this is the dangerous half of the two.
+        "FAILURE: A command from another interface is running" arrives on the socket
+        looking exactly like a reply, so without this q() HANDS THE REFUSAL BACK AS
+        DATA: a caller asking for a number gets that sentence, and whatever it does
+        with it -- float() raising, a comparison against a string, a field written
+        into a results table -- is a harness fault with no bad instrument behind it.
+        MEASURED RATE, app screen in front and the key tick live, 18 queries interleaved
+        with tight loops of sdec.ui_tick(): 3 refusals caught and re-sent, 0 replies
+        handed back as a refusal. Without the retry that is three bogus values.
+
+        Only an EXACT match on the refusal line is re-sent -- see REFUSAL_LINE. A reply
+        that merely quotes the phrase is handed back as the reply it is.
         """
-        self.drain()
-        self.send(cmd)
-        return self.line(timeout)
+        for _try in range(REFUSE_RETRIES):
+            self.drain()
+            self.send(cmd)
+            r = self.line(timeout)
+            if r is None or r.strip() != REFUSAL_LINE:
+                return r
+            self.refusals += 1
+            time.sleep(REFUSE_WAIT)
+        return None
 
     def exec(self, cmd, timeout=30):
         """Run a statement that produces no output, then confirm liveness.
@@ -198,28 +239,39 @@ class DMM:
         Stray lines are counted rather than dropped quietly, so a caller can tell this happened.
 
         A REFUSED STATEMENT IS RE-SENT, because a refusal means it never ran. "FAILURE: A command
-        from another interface is running" is a real answer from this instrument: MEASURED for a
-        chunk run, where the app's own screen being in front is enough on its own (see
-        load_script). It is not the sentinel, so without this the read waits for an __OK__ that
-        cannot come and the caller can only report a timeout.
+        from another interface is running" is a real answer from this instrument, measured on
+        1.7.17a for a chunk RUN, where the app's own screen being in front is enough on its own to
+        get it every time (see load_script). It is not the sentinel, so without this the read waits
+        for an __OK__ that cannot come and the caller can only report a timeout.
 
-        What refuses a PLAIN statement is not established. The app's screen being in front does not
-        do it -- 40 execs in that state all passed -- so the candidate is a front-panel handler
-        actually executing, the 2 Hz key tick being the only thing that runs unprompted. Untested,
-        because it could not be provoked.
+        PLAIN STATEMENTS GET IT TOO, at a rate: 3 of 18 queries came back as the refusal in one
+        sequence. 40 execs with the app's screen in front and nothing else going on all passed, so
+        the screen alone is not enough -- it is a collision with something holding the interpreter.
 
-        NOT PROVEN TO BE THE CAUSE OF ANYTHING YET. A bench_smoke panel stage died on exactly that
-        timeout at bench_sync's clear-result step, and the stage then passed standing alone with 45
-        presses and 0 events -- so the refusal is the mechanism that fits, not one that was caught in
-        the act. 40 preflight-style execs with the app's screen up and its tick live produced 0
-        refusals, so it is rare. self.refusals says whether it ever actually fires.
+        WHAT IT COLLIDES WITH IS NOT ESTABLISHED, and the obvious suspect is not safe to name. The
+        app's 2 Hz key tick is the only thing on this panel that runs unprompted, but in the
+        sequence that provoked those 3 the queries were interleaved with HOST-SIDE loops of 200
+        sdec.ui_tick() calls -- so the other interface may equally have been this socket's own
+        previous statement still finishing. Distinguishing them needs a provocation with no
+        instrument-side work of its own, which has not been done.
+
+        ONLY AN EXACT MATCH ON THE FIRST LINE COUNTS, and that is what makes the "nothing ran"
+        inference safe rather than merely likely. A genuine refusal is the instrument's only answer,
+        so it arrives first and alone; a volunteered event line quoting the same phrase is first too
+        but has the real reply behind it. The discriminator is the FORMAT, not the timing -- see
+        REFUSAL_LINE for why no amount of waiting for the sentinel can do this job.
+
+        NOT PROVEN TO BE THE CAUSE OF THE ONE STAGE FAILURE IT WAS WRITTEN FOR. A bench_smoke panel
+        stage died on exactly this timeout at bench_sync's clear-result step and then passed standing
+        alone with 45 presses and 0 events, so the refusal is the mechanism that fits rather than one
+        caught in the act there. self.refusals says whether it ever actually fires.
         """
         for _try in range(REFUSE_RETRIES):
             self.drain()
             self.send(cmd + ' print("__OK__")')
             refused = False
             # Bounded, so a genuinely chatty command cannot spin here.
-            for _ in range(256):
+            for nread in range(256):
                 r = self.line(timeout)
                 if r is None:
                     break
@@ -227,17 +279,21 @@ class DMM:
                     return True
                 self.stray += 1
                 self.strays.append(r)
-                if REFUSED in r:
-                    # NOTHING EXECUTED, so re-sending cannot double an effect -- which is what
-                    # makes this safe for sdec.capture() and every other non-idempotent statement
-                    # exec() carries. Counted, so a run that needed it is not silent about it.
+                # FIRST LINE ONLY. See the docblock: a refusal is the reply, so it arrives first
+                # and nothing executed -- which is what makes re-sending safe for sdec.capture()
+                # and every other non-idempotent statement exec() carries. The same phrase arriving
+                # later is a volunteered event line, and re-sending on that would run the statement
+                # twice. Counted, so a run that needed it is not silent about it.
+                # EXACT, AND FIRST LINE ONLY. See REFUSAL_LINE: anything else carrying the phrase
+                # is an ordinary stray, and falling through to keep reading for the sentinel is
+                # what stops a second sdec.capture() and the one-behind desync.
+                if nread == 0 and r.strip() == REFUSAL_LINE:
                     self.refusals += 1
                     refused = True
                     break
             if not refused:
                 return False
-            # Long enough to outlast two ticks, whatever was holding the panel.
-            time.sleep(0.35)
+            time.sleep(REFUSE_WAIT)
         return False
 
     def restore_panel(self):
@@ -250,6 +306,14 @@ class DMM:
 
         Returning to the app's screen also restarts its 2 Hz key tick, because a timer
         runs only while its own screen is active. Nothing has to re-arm it.
+
+        THE `ui_scr ~= nil` TEST IS LOAD-BEARING, not belt and braces. sdec.stop() does not clear
+        sdec.built -- only start()'s own failure path does -- but ui_destroy() nils ui_scr, so after
+        a teardown `built` is still true and this test is the only thing standing between
+        restore_panel and a changescreen onto a deleted screen handle.
+
+        It always returns to sdec.ui_scr, never to the options screen. Every caller today loads
+        before its own sequence, so nothing is affected.
 
         Runs on the way out of a load that may itself have failed, so it never raises.
         """
@@ -286,7 +350,8 @@ class DMM:
         # app IS the other interface. Measured on 1.7.17a against the 752 kB app body:
         #
         #     app's screen in front    301.3 s, the run REFUSED, and the PREVIOUS app left loaded
-        #     display.SCREEN_HOME        1.4 s, clean, no retry -- 2 of 2
+        #     display.SCREEN_HOME        1.4 s, clean, no retry -- 2 of 2 by hand, then
+        #                                2 of 2 again through this function (1.4, 1.2 s)
         #
         # IT IS THE RUN, NOT THE TRANSFER. loadscript itself goes through either way: three loads
         # with run=False and the app's screen up took 0.7-1.9 s and defined the name. So the failure
@@ -297,9 +362,11 @@ class DMM:
         # and it also stops the app's 2 Hz key tick for free, a timer running only while its own
         # screen is active. restore_panel() puts the app's screen back afterwards.
         self.exec('pcall(function() display.changescreen(display.SCREEN_HOME) end)', timeout=30)
-        # LOADED WITH VERIFY-AND-RETRY, because a load can still be lost -- the timer above was the
-        # measured cause, not a proof that nothing else can do it. Measured on 1.7.17a against
-        # bench_panel's 58-line body, 2659 bytes, with the app live and its screen in front:
+        # LOADED WITH VERIFY-AND-RETRY, because the opening `loadscript` line can still be lost in
+        # TRANSFER. That is a different failure from the refused run above and it is not fixed by
+        # going HOME: it shows up as "Script contained 'endscript' keyword without starting with
+        # 'loadscript'", and the transfer itself went through 3 of 3 with the app's screen up. Its
+        # measured variable is pacing. On 1.7.17a against bench_panel's 58-line body, 2659 bytes:
         #
         #     one burst, no delay      3 of 6 loads clean; the rest reported
         #                              "Script contained 'endscript' keyword without starting with
@@ -338,8 +405,10 @@ class DMM:
                 loaded = True
                 self.loads = attempt + 1
                 break
-        # RESTORED ON EVERY WAY OUT, including the failures: a tool that gives up on a load must
-        # not also leave the instrument sitting on HOME with the app invisible.
+        # RESTORED ON EVERY RETURN, including the failures: a tool that gives up on a load must not
+        # also leave the instrument sitting on HOME with the app invisible. Not on a RAISE -- there
+        # is no try/finally here -- so a socket error from send() or line() does leave it on HOME.
+        # Harmless, because the next load goes HOME first anyway.
         if not loaded:
             self.restore_panel()
             return ['<LOAD FAILED: %s never defined after 4 attempts>' % name]
@@ -348,11 +417,22 @@ class DMM:
             return []
         self.send(name + '()')
         out = []
+        first = True
         while True:
             ln = self.line(timeout)
             if ln is None:
                 out.append('<TIMEOUT waiting for output>')
                 break
+            # A REFUSED RUN SAYS SO IMMEDIATELY, AND NO SENTINEL IS COMING. Without this the read
+            # sat out the whole timeout afterwards -- the measured 301.3 s above is exactly that,
+            # 1.3 s of refusal and 300 s of waiting. Named rather than left as a timeout, because
+            # the two have different remedies: this one wants the panel sent HOME.
+            if first and ln.strip() == REFUSAL_LINE:
+                self.refusals += 1
+                out.append(ln)
+                out.append('<RUN REFUSED: the panel was not released; see load_script>')
+                break
+            first = False
             if ln == sentinel:
                 break
             out.append(ln)
