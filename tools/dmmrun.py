@@ -70,6 +70,10 @@ def _release_lock():
 
 IP = '10.0.1.151'
 PORT = 5025
+# The instrument's answer when the FRONT PANEL is mid-handler -- a live TSP app's 2 Hz timer is
+# enough to produce it. The statement does NOT run, so re-sending it is safe; see DMM.exec.
+REFUSED = 'another interface is running'
+REFUSE_RETRIES = 4
 DST_PORT = 5030   # Dead Socket Termination: closing a connection here drops all stale sockets
 
 
@@ -117,6 +121,9 @@ class DMM:
         # about; the last few are worth printing when a harness reports something impossible.
         self.stray = 0
         self.strays = []
+        # How many statements had to be re-sent because the panel was mid-handler. Nonzero is
+        # normal with a live app; a large number means something is holding the panel.
+        self.refusals = 0
         self._open()
         if recover and not self.alive():
             # Stale socket from a previous run: clear it and reconnect.
@@ -189,19 +196,66 @@ class DMM:
         the string "__OK__". Measured twice, as two bench_smoke panel stages that died in 0.0 min.
 
         Stray lines are counted rather than dropped quietly, so a caller can tell this happened.
+
+        A REFUSED STATEMENT IS RE-SENT, because a refusal means it never ran. "FAILURE: A command
+        from another interface is running" is a real answer from this instrument: MEASURED for a
+        chunk run, where the app's own screen being in front is enough on its own (see
+        load_script). It is not the sentinel, so without this the read waits for an __OK__ that
+        cannot come and the caller can only report a timeout.
+
+        What refuses a PLAIN statement is not established. The app's screen being in front does not
+        do it -- 40 execs in that state all passed -- so the candidate is a front-panel handler
+        actually executing, the 2 Hz key tick being the only thing that runs unprompted. Untested,
+        because it could not be provoked.
+
+        NOT PROVEN TO BE THE CAUSE OF ANYTHING YET. A bench_smoke panel stage died on exactly that
+        timeout at bench_sync's clear-result step, and the stage then passed standing alone with 45
+        presses and 0 events -- so the refusal is the mechanism that fits, not one that was caught in
+        the act. 40 preflight-style execs with the app's screen up and its tick live produced 0
+        refusals, so it is rare. self.refusals says whether it ever actually fires.
         """
-        self.drain()
-        self.send(cmd + ' print("__OK__")')
-        # Bounded, so a genuinely chatty command cannot spin here.
-        for _ in range(256):
-            r = self.line(timeout)
-            if r is None:
+        for _try in range(REFUSE_RETRIES):
+            self.drain()
+            self.send(cmd + ' print("__OK__")')
+            refused = False
+            # Bounded, so a genuinely chatty command cannot spin here.
+            for _ in range(256):
+                r = self.line(timeout)
+                if r is None:
+                    break
+                if r == '__OK__':
+                    return True
+                self.stray += 1
+                self.strays.append(r)
+                if REFUSED in r:
+                    # NOTHING EXECUTED, so re-sending cannot double an effect -- which is what
+                    # makes this safe for sdec.capture() and every other non-idempotent statement
+                    # exec() carries. Counted, so a run that needed it is not silent about it.
+                    self.refusals += 1
+                    refused = True
+                    break
+            if not refused:
                 return False
-            if r == '__OK__':
-                return True
-            self.stray += 1
-            self.strays.append(r)
+            # Long enough to outlast two ticks, whatever was holding the panel.
+            time.sleep(0.35)
         return False
+
+    def restore_panel(self):
+        """Put the app's own screen back in front after a load sent the panel HOME.
+
+        Only when a UI actually exists: before the first start() sdec.built is nil and
+        start() does this itself, so restoring here would fight it. With the app built --
+        a helper script loaded mid-session, which is what bench_panel does -- this is
+        what keeps the pixel grabs looking at the app rather than at HOME.
+
+        Returning to the app's screen also restarts its 2 Hz key tick, because a timer
+        runs only while its own screen is active. Nothing has to re-arm it.
+
+        Runs on the way out of a load that may itself have failed, so it never raises.
+        """
+        self.exec('if sdec ~= nil and sdec.built and sdec.ui_scr ~= nil then '
+                  '  pcall(function() display.changescreen(sdec.ui_scr) end) '
+                  'end', timeout=30)
 
     def load_script(self, name, body, run=True, timeout=300, sentinel='===DONE==='):
         """Load a named script via loadscript/endscript, optionally run and stream output.
@@ -226,9 +280,26 @@ class DMM:
         # is healthy, so it is cleared here. Only a re-load reaches this branch, so a
         # first load after a power cycle shows a clean log either way and it is every
         # reload afterwards that would carry exactly one -104.
-        # LOADED WITH VERIFY-AND-RETRY, because the instrument intermittently loses the opening
-        # `loadscript` line and there is nothing on this end that prevents it. Measured on 1.7.17a
-        # against bench_panel's 58-line body, 2659 bytes:
+        # THE PANEL GOES HOME FIRST, and that is what makes a load reliable. With the app's OWN
+        # screen in front, RUNNING the loaded chunk is refused -- "FAILURE: A command from another
+        # interface is running, use ABORT to stop it" -- because the front panel showing a live TSP
+        # app IS the other interface. Measured on 1.7.17a against the 752 kB app body:
+        #
+        #     app's screen in front    301.3 s, the run REFUSED, and the PREVIOUS app left loaded
+        #     display.SCREEN_HOME        1.4 s, clean, no retry -- 2 of 2
+        #
+        # IT IS THE RUN, NOT THE TRANSFER. loadscript itself goes through either way: three loads
+        # with run=False and the app's screen up took 0.7-1.9 s and defined the name. So the failure
+        # mode is a chunk that is stored and never executed, which looks exactly like a load that
+        # did not happen -- `type(name) ~= nil` passes, and the functions are not there.
+        #
+        # ABORT does not clear it; there is nothing hung to abort. Going HOME releases the panel,
+        # and it also stops the app's 2 Hz key tick for free, a timer running only while its own
+        # screen is active. restore_panel() puts the app's screen back afterwards.
+        self.exec('pcall(function() display.changescreen(display.SCREEN_HOME) end)', timeout=30)
+        # LOADED WITH VERIFY-AND-RETRY, because a load can still be lost -- the timer above was the
+        # measured cause, not a proof that nothing else can do it. Measured on 1.7.17a against
+        # bench_panel's 58-line body, 2659 bytes, with the app live and its screen in front:
         #
         #     one burst, no delay      3 of 6 loads clean; the rest reported
         #                              "Script contained 'endscript' keyword without starting with
@@ -267,9 +338,13 @@ class DMM:
                 loaded = True
                 self.loads = attempt + 1
                 break
+        # RESTORED ON EVERY WAY OUT, including the failures: a tool that gives up on a load must
+        # not also leave the instrument sitting on HOME with the app invisible.
         if not loaded:
+            self.restore_panel()
             return ['<LOAD FAILED: %s never defined after 4 attempts>' % name]
         if not run:
+            self.restore_panel()
             return []
         self.send(name + '()')
         out = []
@@ -281,6 +356,7 @@ class DMM:
             if ln == sentinel:
                 break
             out.append(ln)
+        self.restore_panel()
         return out
 
     def errors(self):

@@ -594,9 +594,14 @@ end
 -- HOW OFTEN THE PANEL LOOKS FOR A KEY, in seconds. 2 Hz: a key pulled or inserted shows on the panel
 -- within half a second, which is below the threshold at which an operator wonders whether it worked.
 --
--- THE COST IS ONE usbdriveexists PER TICK, measured at 111 us, so 2 Hz is 0.022 % of the instrument
--- and everything beyond that read is behind a change test. Fractional intervals are honoured by
+-- THE COST IS TWO PRESENCE READS PER TICK and nothing else unless the answer changed. Measured on
+-- 1.7.17a over 200 calls with a key in the slot: file.usbdriveexists() 237 us, ui_usb_btns() 294 us,
+-- ulog.resume() 280 us -- so a tick is about 580 us, and 2 Hz is 0.12 % of the instrument.
+-- Everything beyond those two reads is behind a change test. Fractional intervals are honoured by
 -- display.OBJ_TIMER (measured; the firmware's own clock sample happens to use 1).
+--
+-- 237 us IS WITH A KEY PRESENT. The same call with an empty slot is 111 us: it answers from the
+-- absence rather than asking the device, so the cheap figure is the one that does not matter.
 sdec.ui_tick_s = sdec.ui_tick_s or 0.5
 
 -- Stop and start the tick around work that will hold the interpreter. -> true if it acted.
@@ -634,30 +639,93 @@ function sdec.ui_tick_on()
   end)
 end
 
--- One tick of sdec.ui_tick_obj: notice a key that has come or gone, with no press.
+-- Look for a key that has come or gone, and make the panel agree. -> true if anything moved.
 --
--- EVERYTHING EXPENSIVE IS BEHIND A CHANGE TEST. The repaint below runs only when the answer
--- differs from the last one, so a steady state costs the presence read and nothing else.
+-- THE SHARED BODY OF THE TICK AND OF THE THREE PRESSES THAT WANT AN ANSWER NOW. The tick is the
+-- unattended route and this is the deliberate one: Capture, View and Mode each call it as their
+-- first act, so the key state a press acts on is the key state at the press, asked for rather than
+-- inherited from whenever the last tick happened to land.
+--
+-- WHAT IT IS AND IS NOT WORTH. It is NOT a fix for a visible defect -- measured on the tree before
+-- it, with a key re-inserted and the acquisition stubbed, a Capture press already reached the work
+-- with the log re-opened and both buttons back, because capture_run() opens with ulog.resume() and
+-- every path refreshes before its long work. What this buys is that the property stops being
+-- INCIDENTAL: it holds because each handler asks, not because of where resume() happens to sit in a
+-- function none of them can see. flog_alloc() asks ulog.keyok() for itself for exactly that reason,
+-- and its docblock records what it cost to learn. View and Mode additionally gain the window
+-- between the press and their own trailing ui_refresh().
+--
+-- EVERYTHING EXPENSIVE IS BEHIND A CHANGE TEST. The repaint runs only when the answer differs from
+-- the last one, so a steady state costs the presence reads and nothing else.
+--
+-- TWO PRESENCE READS, NOT ONE, and the second is ulog.resume()'s. Measured over 200 calls with a
+-- key in the slot: ui_usb_btns() 294 us, ulog.resume() 280 us, so a tick is about 580 us and 2 Hz
+-- is 0.12 % of the instrument -- cheap enough that sharing one honest body beats threading a flag
+-- through to save a read. The resume is what re-opens the log file: keyok() clears the latch but
+-- opens nothing, and it is a no-op until a key actually arrives (one integer compare, see
+-- ulog.resume()). Its effect is small and worth stating plainly -- the next ulog.line() would
+-- re-open anyway, so what this changes is WHEN, not whether.
+--
+-- GUARDED: a raise escaping here reaches the firmware, which then posts it twice a second.
+function sdec.ui_keypoll()
+  if sdec.ui_scr == nil then return false end
+  local moved = false
+  pcall(function()
+    -- ONE PRESENCE DECISION, AND IT BELONGS TO ONE OWNER. ui_usb_btns() asks log_live() and caches
+    -- the answer in ui_savevis; a second cache here would go stale the moment a repaint from
+    -- anywhere else moved that flag, and this would then sit on its own opinion for ever.
+    --
+    -- THE BUTTONS MOVE IN EVERY STATE, including during a run: Save and NewLog cannot work without a
+    -- key whatever else is happening, and ui_refresh() hides them mid-run for the same reason.
+    if not sdec.ui_usb_btns() then return end
+    moved = true
+    -- THE LOG CELL IS ONLY OURS WHEN NO RUN OWNS IT. While a recording or a chunked decode is live
+    -- that cell carries the only statement of how to STOP, and this is reached from a press -- which
+    -- the tick is not, being refused outright while busy. Overwriting it with the log status would
+    -- take the stop instruction off an uninterruptable run at exactly the moment it is needed: the
+    -- key being pulled mid-recording is what makes ui_usb_btns() return true here.
+    --
+    -- ui_refresh() restores the cell when the run ends, so nothing is lost by leaving it alone.
+    if sdec.ui_log_owned() then return end
+    -- The log cell names the key too, so it moves with the buttons.
+    sdec.ui_set(sdec.ui_log_t, sdec.flog_status())
+  end)
+  pcall(function() ulog.resume() end)
+  return moved
+end
+
+-- Is the status row's right-hand cell currently a run's, rather than the log's? -> true or false.
+--
+-- MUST TRACK ui_refresh()'s BRANCH FOR THAT CELL: the tests below are that branch's outer condition
+-- followed by its three hint cases. They are stated here rather than only there because
+-- ui_keypoll() writes the same object from a press and has to know whose it is.
+-- tools/test_streamfix.lua walks eight states and asserts the two agree in each, rather than
+-- leaving them to be kept in step by hand: two opinions about one display object is a defect this
+-- panel is prone to, which is why ui_usb_btns() keeps the ui_savevis cache under one owner.
+--
+-- GUARDED AGAINST A nil MODE, which is what a build whose mode table is absent would give.
+function sdec.ui_log_owned()
+  local md = sdec.mode_cur()
+  if md == nil then return false end
+  -- ui_refresh's outer test. Without it, strm_inflight alone does not reach a hint.
+  if md.view and sdec.ck_tot == nil and not sdec.ck_running then return false end
+  if sdec.strm_recording then return true end
+  if sdec.ck_job ~= nil then return true end
+  if sdec.ck_running or sdec.strm_inflight then return true end
+  return false
+end
+
+-- One tick of sdec.ui_tick_obj: the unattended half of ui_keypoll().
 --
 -- IT MUST NOT ACT WHILE THE APP IS BUSY. A tick is dispatched exactly like a press, so it queues
 -- behind a capture and arrives in a burst afterwards -- and a repaint from inside one would fight
 -- the capture for the same objects. The busy test makes a queued tick a no-op; the next tick, one
--- half-second later, does the work.
---
--- GUARDED: a raise escaping here reaches the firmware, which then posts it twice a second.
+-- half-second later, does the work. The PRESS route has no such test and needs none: a handler
+-- executing at all proves no run is.
 function sdec.ui_tick()
   if sdec.ui_scr == nil then return false end
   if sdec.busy or sdec.ck_running or sdec.strm_recording then return false end
-  local ok = pcall(function()
-    -- ONE PRESENCE READ, AND THE DECISION BELONGS TO ONE OWNER. ui_usb_btns() asks log_live() and
-    -- caches the answer in ui_savevis; a second cache here would go stale the moment a repaint from
-    -- anywhere else moved that flag, and the tick would then sit on its own opinion for ever.
-    -- Nothing happens unless the answer CHANGED, so a steady state is one usbdriveexists.
-    if not sdec.ui_usb_btns() then return end
-    -- The log cell names the key too, so it moves with the buttons.
-    sdec.ui_set(sdec.ui_log_t, sdec.flog_status())
-  end)
-  return ok
+  return pcall(function() sdec.ui_keypoll() end)
 end
 
 -- Will anything the app writes reach the key? -> true or false.

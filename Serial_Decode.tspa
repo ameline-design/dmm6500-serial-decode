@@ -3,7 +3,7 @@ loadscript Serial_Decode
 -- $Product: DMM6500, DAQ6510, DMM7510, SMU2461
 -- $Tag: Serial, UART, Decode, Digitize
 -- $Description: Decodes an asynchronous serial line with the instrument's own digitizer: recovers baud rate, frame format and bytes, shows them as text or hex, and saves bytes to USB key. Everything auto-detects; everything can be locked.
--- $Version: 1.32
+-- $Version: 1.36
 -- $Requires: 1.7.0
 -- $Author: Ian Ameline
 -- $License: MIT
@@ -3821,19 +3821,48 @@ function sdec.ui_tick_on()
   end)
 end
 
--- One tick of sdec.ui_tick_obj: notice a key that has come or gone, with no press.
+-- Look for a key that has come or gone, and make the panel agree. -> true if anything moved.
+--   [...]
+-- ulog.resume()). Its effect is small and worth stating plainly -- the next ulog.line() would
+-- re-open anyway, so what this changes is WHEN, not whether.
+-- GUARDED: a raise escaping here reaches the firmware, which then posts it twice a second.
+function sdec.ui_keypoll()
+  if sdec.ui_scr == nil then return false end
+  local moved = false
+  pcall(function()
+    if not sdec.ui_usb_btns() then return end
+    moved = true
+    if sdec.ui_log_owned() then return end
+    sdec.ui_set(sdec.ui_log_t, sdec.flog_status())
+  end)
+  pcall(function() ulog.resume() end)
+  return moved
+end
+
+-- Is the status row's right-hand cell currently a run's, rather than the log's? -> true or false.
+--   [...]
+-- leaving them to be kept in step by hand: two opinions about one display object is a defect this
+-- panel is prone to, which is why ui_usb_btns() keeps the ui_savevis cache under one owner.
+-- GUARDED AGAINST A nil MODE, which is what a build whose mode table is absent would give.
+function sdec.ui_log_owned()
+  local md = sdec.mode_cur()
+  if md == nil then return false end
+  if md.view and sdec.ck_tot == nil and not sdec.ck_running then return false end
+  if sdec.strm_recording then return true end
+  if sdec.ck_job ~= nil then return true end
+  if sdec.ck_running or sdec.strm_inflight then return true end
+  return false
+end
+
+-- One tick of sdec.ui_tick_obj: the unattended half of ui_keypoll().
 --   [...]
 -- the capture for the same objects. The busy test makes a queued tick a no-op; the next tick, one
--- half-second later, does the work.
--- GUARDED: a raise escaping here reaches the firmware, which then posts it twice a second.
+-- half-second later, does the work. The PRESS route has no such test and needs none: a handler
+-- executing at all proves no run is.
 function sdec.ui_tick()
   if sdec.ui_scr == nil then return false end
   if sdec.busy or sdec.ck_running or sdec.strm_recording then return false end
-  local ok = pcall(function()
-    if not sdec.ui_usb_btns() then return end
-    sdec.ui_set(sdec.ui_log_t, sdec.flog_status())
-  end)
-  return ok
+  return pcall(function() sdec.ui_keypoll() end)
 end
 
 -- Will anything the app writes reach the key? -> true or false.
@@ -6292,10 +6321,11 @@ end
 
 -- THE HALF-SECOND TICK IS OFF FOR THE WHOLE PRESS. A tick is dispatched exactly like a press, so work that
 --   [...]
--- the rest of the session, with Save and NewLog left showing over an empty slot. The same argument
--- capture_run makes about ck_running: a latch that only a fault can set must not be the thing that
--- refuses the fix.
+-- and NewLog back, because capture_run() opens with ulog.resume() and each path refreshes before
+-- its long work. What this changes is that Capture ASKS, instead of inheriting the answer from where
+-- resume() sits inside a function the press cannot see.
 function sdec.capture()
+  pcall(function() sdec.ui_keypoll() end)
   pcall(function() sdec.ui_tick_off() end)
   local ok, a, b = pcall(function() return sdec.capture_run() end)
   if not ok then sdec.busy = false end
@@ -6476,6 +6506,7 @@ end
 -- without midi_decode.tsp and lin_decode.tsp, so ui_view_avail() hides the MIDI and LIN entries
 -- rather than landing the button on a list that could only ever be empty.
 function sdec.view_toggle()
+  pcall(function() sdec.ui_keypoll() end)
   local n = sdec.ui_nviews()
   if n < 1 then return false end
   local at, i, k = 0, nil, 0
@@ -6761,6 +6792,7 @@ end
 -- effect. Getting to FRAME from a recording mode is therefore up to two more presses of this button,
 -- which is the trade for the mode never changing itself.
 function sdec.mode_cycle()
+  pcall(function() sdec.ui_keypoll() end)
   sdec.rate_offer, sdec.rate_offer_from, sdec.rate_refused = nil, nil, nil
   if sdec.ck_running then
     sdec.mode_exit('Mode pressed')

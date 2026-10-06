@@ -1419,8 +1419,11 @@ function sdec.capture_run()
   -- A KEY INSERTED SINCE THE LAST PRESS RESUMES NORMAL LOGGING, HERE, so the promise is "the first
   -- button press" and not "the first press that happens to log something". Covers both orders: an
   -- app started with no key, and one whose key was pulled and put back. One integer compare and a
-  -- 111 us presence read when there is nothing to do; see ulog.resume(). The tick notices it sooner,
-  -- but only while the panel is idle -- this is what makes a press enough on its own.
+  -- 111 us presence read when there is nothing to do; see ulog.resume().
+  --
+  -- KEPT EVEN THOUGH THE PANEL ROUTE ASKS FIRST. sdec.capture() calls ui_keypoll() before this, and
+  -- the tick asks while the panel is idle, but neither is in the path of a host-driven capture_run()
+  -- -- the harnesses call this directly. The promise belongs to the function that needs it.
   pcall(function() ulog.resume() end)
   -- EVERY FAILURE BELOW COMES BACK AS A MESSAGE ON THE PANEL, which is what the pcalls are for:
   -- a touch handler that raises leaves a dead button and no explanation.
@@ -1739,7 +1742,18 @@ end
 -- the rest of the session, with Save and NewLog left showing over an empty slot. The same argument
 -- capture_run makes about ck_running: a latch that only a fault can set must not be the thing that
 -- refuses the fix.
+--
+-- THE KEY IS CHECKED BY THE PRESS, FIRST, and not left to the tick -- which is off for the whole of
+-- this function anyway.
+--
+-- IT CLOSES NO VISIBLE GAP, AND THAT IS WORTH WRITING DOWN so nobody defends it with a defect it
+-- did not fix. Measured without it, key re-inserted and the acquisition stubbed to report the state
+-- it starts in: FRAME and both recording modes already reached the work with the log open and Save
+-- and NewLog back, because capture_run() opens with ulog.resume() and each path refreshes before
+-- its long work. What this changes is that Capture ASKS, instead of inheriting the answer from where
+-- resume() sits inside a function the press cannot see.
 function sdec.capture()
+  pcall(function() sdec.ui_keypoll() end)
   pcall(function() sdec.ui_tick_off() end)
   local ok, a, b = pcall(function() return sdec.capture_run() end)
   if not ok then sdec.busy = false end
@@ -2084,6 +2098,11 @@ end
 -- without midi_decode.tsp and lin_decode.tsp, so ui_view_avail() hides the MIDI and LIN entries
 -- rather than landing the button on a list that could only ever be empty.
 function sdec.view_toggle()
+  -- THE KEY IS CHECKED BY THE PRESS, FIRST. View is the one press that writes nothing to the key, so
+  -- its only other route to a correct panel is the ui_refresh() at the end of this function, which
+  -- lands after the whole view has been rebuilt. The gain is that window, which is small; the reason
+  -- to have it is that all three presses answer the question the same way.
+  pcall(function() sdec.ui_keypoll() end)
   -- EVERY PROTOCOL VIEW IS OFFERED whatever the protocol setting says, because "is this stream
   -- MIDI at all?" -- or LIN -- is worth being able to ask of any capture, and each parser reports
   -- what it found, including nothing.
@@ -2615,6 +2634,11 @@ end
 -- effect. Getting to FRAME from a recording mode is therefore up to two more presses of this button,
 -- which is the trade for the mode never changing itself.
 function sdec.mode_cycle()
+  -- THE KEY IS CHECKED BY THE PRESS, FIRST. Mode is the press the no-key reports name -- it is what
+  -- the operator saw the buttons vanish on -- so it asks before it does anything, rather than
+  -- leaving the panel right only as a side effect of the ulog.line() and ui_refresh() below. Both of
+  -- those already recover by themselves: this moves the recovery to the top of the handler.
+  pcall(function() sdec.ui_keypoll() end)
   -- A RATE OFFER DIES WITH THE CAPTURE THAT RAISED IT. Both branches below discard the result, so an
   -- offer surviving a Mode press would let rate_accept() drop the operator's lock on the strength of a
   -- capture that is gone -- and in a streaming mode, which needs a lock, it would refuse straight after.

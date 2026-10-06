@@ -472,6 +472,214 @@ do
   ulog.keybad, ulog.keyout, ulog.keywhy = false, false, nil
 end
 
+-- ============================================================================
+print('\nG  Capture, View and Mode check the key BEFORE they do their work')
+-- ============================================================================
+-- The three presses now call sdec.ui_keypoll() as their first act, so a key inserted or pulled in
+-- the half-second before a press is honoured by THAT press.
+--
+-- EACH CHECK IS ON THE ORDER, NOT ON THE OUTCOME, and that is the only way these can fail. All
+-- three handlers end in sdec.ui_refresh(), which moves the buttons anyway, and capture_run() opens
+-- with ulog.resume() -- so asserting that anything is right AFTERWARDS passes without the change as
+-- well. These pin the ORDER: each stubs the first function the handler's own body calls and records
+-- the state at that instant.
+--
+-- SO THESE DO NOT GUARD A VISIBLE DEFECT, and should not be read as doing so -- a Capture press
+-- reached its work with the log open and the buttons back before any of this. What they guard is
+-- that the property is OWNED by the three handlers rather than inherited from where resume() sits
+-- in a function they cannot see.
+do
+  local function settle_nokey()
+    MD.usb(true)
+    MD.forget_files()
+    ulog.keybad, ulog.keyout, ulog.keywhy = false, false, nil
+    ulog.keygen, ulog.keyopen = 0, 0
+    ulog.on, ulog.dirok, ulog.fh = false, nil, nil
+    ulog.path = '/usb1/SERDEC/press.txt'
+    ulog.enabled = true
+    ulog.open(ulog.path, true)
+    sdec.ui_savevis = nil
+    sdec.ui_tick()                 -- the panel settles into the key-present state
+    MD.usb(false)
+    ulog.line('into the void')     -- latches keybad, closes the handle
+    sdec.ui_tick()                 -- and the panel settles into the no-key state
+    MD.usb(true)                   -- the key is back, and NOTHING has noticed yet
+    MD.forget_files()
+    MD.forget_fevents()
+  end
+
+  local function invisible(h)
+    return h ~= nil and MD.obj(h) ~= nil and MD.obj(h).state == display.STATE_INVISIBLE
+  end
+
+  settle_nokey()
+  check('the no-key state really does hide Save, so these tests start where they claim',
+        invisible(sdec.ui_savebtn) and sdec.ui_savevis == false,
+        tostring(sdec.ui_savevis))
+  check('and the log really is closed', ulog.on == false)
+
+  -- CAPTURE. capture_run() is the body, and it is stubbed rather than run: a real capture here
+  -- would measure the mocked digitizer, not the order of two calls.
+  local realrun = sdec.capture_run
+  local at_on, at_vis
+  sdec.capture_run = function()
+    at_on, at_vis = ulog.on, sdec.ui_savevis
+    return true, nil
+  end
+  pcall(function() sdec.capture() end)
+  sdec.capture_run = realrun
+  check('Capture has the log open again before capture_run() starts', at_on == true,
+        tostring(at_on) .. ' ' .. tostring(ulog.lasterr))
+  check('and Save is back on the glass before the run, not after it', at_vis == true,
+        tostring(at_vis))
+
+  -- VIEW. ui_nviews() is the first call in view_toggle()'s body.
+  settle_nokey()
+  local realn = sdec.ui_nviews
+  at_on, at_vis = nil, nil
+  sdec.ui_nviews = function()
+    at_on, at_vis = ulog.on, sdec.ui_savevis
+    return realn()
+  end
+  pcall(function() sdec.view_toggle() end)
+  sdec.ui_nviews = realn
+  check('View has the log open again before it changes the view', at_on == true,
+        tostring(at_on) .. ' ' .. tostring(ulog.lasterr))
+  check('and the buttons are back before it, not only in the refresh after it', at_vis == true,
+        tostring(at_vis))
+
+  -- MODE. mode_next() is reached before the ulog.line() further down, and that line resumes the log
+  -- by itself -- so recording the state here is what pins the order rather than the outcome.
+  settle_nokey()
+  local realnext = sdec.mode_next
+  at_on, at_vis = nil, nil
+  sdec.mode_next = function()
+    at_on, at_vis = ulog.on, sdec.ui_savevis
+    return realnext()
+  end
+  pcall(function() sdec.mode_cycle() end)
+  sdec.mode_next = realnext
+  check('Mode has the log open before it logs the mode change', at_on == true,
+        tostring(at_on) .. ' ' .. tostring(ulog.lasterr))
+  check('and before it picks the next mode', at_vis == true, tostring(at_vis))
+
+  -- NO EVENT FOR ANY OF IT. A press that re-opens the log must not pop a box at the operator.
+  check('none of the three presses posted anything at the operator',
+        MD.fevent_count() == 0, 'events=' .. MD.fevent_count())
+
+  -- A PRESS WITH NO KEY MUST STILL BE SILENT, which is the case the whole latch exists for.
+  MD.usb(false)
+  MD.forget_fevents()
+  pcall(function() sdec.view_toggle() end)
+  pcall(function() sdec.mode_cycle() end)
+  check('and with the key OUT, two more presses post nothing either',
+        MD.fevent_count() == 0, 'events=' .. MD.fevent_count())
+  check('with Save hidden', invisible(sdec.ui_savebtn), tostring(sdec.ui_savevis))
+
+  -- ui_keypoll() IS CALLED THROUGH pcall FROM A TOUCH HANDLER, so it must not raise on a torn-down
+  -- panel either -- that is the state a queued press arrives in during teardown.
+  --
+  -- THE KEY GOES BACK IN AND ui_savevis IS FORCED STALE FIRST, or this assertion cannot fail.
+  -- Reached with the key out and Save already hidden, ui_usb_btns() reports no change and keypoll
+  -- answers false whether the ui_scr guard exists or not -- proved by deleting the guard and
+  -- watching it still pass. Set up like this, deleting the guard returns true and it fails.
+  MD.usb(true)
+  sdec.ui_savevis = false
+  local scr = sdec.ui_scr
+  sdec.ui_scr = nil
+  check('ui_keypoll() on a torn-down panel answers false rather than raising',
+        sdec.ui_keypoll() == false)
+  sdec.ui_scr = scr
+
+  -- PUT THE LOG AND THE MODE BACK, or everything after this runs with a dead logger and in a
+  -- recording mode. settle_nokey() leaves ulog.path at its own file with ulog.on false and
+  -- keyopen == keygen, so every later ulog.line() would resume() to false and be dropped in
+  -- silence -- which no assertion here would notice and a later one would be baffled by.
+  MD.usb(true)
+  MD.forget_files()
+  ulog.keybad, ulog.keyout, ulog.keywhy = false, false, nil
+  ulog.path = '/usb1/SERDEC/dmm6500_log.txt'
+  ulog.keygen, ulog.keyopen = 0, 0
+  ulog.on, ulog.dirok, ulog.fh = false, nil, nil
+  ulog.open(ulog.path, true)
+  check('the log is left open for whatever runs next', ulog.on == true, tostring(ulog.lasterr))
+  sdec.capmode = 'frame'          -- two Mode presses above moved it
+end
+
+-- ============================================================================
+print('\nH  ui_log_owned() agrees with ui_refresh about who owns the log cell')
+-- ============================================================================
+-- The status row's right-hand cell is the LOG's when nothing is running and a RUN's while one is --
+-- it carries the only statement of how to stop an uninterruptable recording. ui_refresh() decides
+-- that with a four-way branch; ui_keypoll() has to know the same answer, because it writes the same
+-- object from a press. Two opinions about one object is a defect this app has paid for before.
+--
+-- THE ASSERTION IS THE AGREEMENT, state by state, rather than either function's own output: it
+-- fails if ui_refresh grows a case that ui_log_owned() does not know about.
+do
+  MD.usb(true)
+  local function clearrun()
+    sdec.strm_recording, sdec.ck_job, sdec.ck_running = nil, nil, false
+    sdec.strm_inflight, sdec.ck_tot, sdec.ck_nbytes = nil, nil, nil
+  end
+  local states = {
+    {n = 'idle, FRAME',          f = function() sdec.capmode = 'frame' end},
+    -- 8 kB and 32 kB are view = false, so ui_refresh's OUTER test is true for them with
+    -- nothing running -- which is the case that must still come out as the log's, not a run's.
+    {n = 'idle, 8 kB',           f = function() sdec.capmode = 'med' end},
+    {n = 'press-driven record',  f = function() sdec.capmode = 'med'
+                                                sdec.strm_recording = true end},
+    {n = 'a chunked job open',   f = function() sdec.capmode = 'med'
+                                                sdec.ck_job = {} end},
+    {n = 'ck_running',           f = function() sdec.capmode = 'med'
+                                                sdec.ck_running = true end},
+    {n = 'strm_inflight',        f = function() sdec.capmode = 'med'
+                                                sdec.strm_inflight = true end},
+    -- FRAME IS view = true, so ui_refresh's outer test is only reached through ck_tot or
+    -- ck_running. Both FRAME branches are enumerated rather than reasoned about: the outer test is
+    -- the half of ui_log_owned() most likely to be got wrong, being a De Morgan of ui_refresh's.
+    {n = 'FRAME + ck_running',   f = function() sdec.capmode = 'frame'
+                                                sdec.ck_running = true end},
+    {n = 'FRAME + a summary',    f = function() sdec.capmode = 'frame'
+                                                sdec.ck_tot = {nf = 0, nwin = 1, nbad = 0,
+                                                               stopped = 'done'} end},
+  }
+  local k
+  for k = 1, table.getn(states) do
+    clearrun()
+    states[k].f()
+    sdec.ui_refresh()
+    local shown = MD.text(sdec.ui_log_t)
+    local islog = (shown == sdec.flog_status())
+    check('  ' .. states[k].n .. ': ui_log_owned() matches what ui_refresh wrote',
+          sdec.ui_log_owned() == (not islog),
+          string.format('owned=%s cell=%q', tostring(sdec.ui_log_owned()), tostring(shown)))
+  end
+
+  -- AND THE BEHAVIOUR THAT MATTERS: a key pulled during a press-driven recording must not cost the
+  -- stop instruction. This is the press that stops the run, so keypoll runs in that state.
+  clearrun()
+  sdec.capmode = 'med'
+  sdec.strm_recording = true
+  sdec.ui_refresh()
+  local hint = MD.text(sdec.ui_log_t)
+  check('a live recording shows how to stop', has(tostring(hint), 'Stop'), tostring(hint))
+  sdec.ui_savevis = nil                 -- so ui_usb_btns() reports a change
+  MD.usb(false)
+  sdec.ui_keypoll()
+  check('and a key pulled mid-recording leaves that instruction alone',
+        MD.text(sdec.ui_log_t) == hint, tostring(MD.text(sdec.ui_log_t)))
+  check('while still hiding Save, which cannot work without a key',
+        MD.obj(sdec.ui_savebtn).state == display.STATE_INVISIBLE,
+        tostring(sdec.ui_savevis))
+
+  clearrun()
+  sdec.capmode = 'frame'
+  MD.usb(true)
+  MD.forget_files()
+  ulog.keybad, ulog.keyout, ulog.keywhy = false, false, nil
+end
+
 print()
 print(string.format('%d passed, %d failed', pass, fail))
 os.exit(fail == 0 and 0 or 1)

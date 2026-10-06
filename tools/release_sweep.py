@@ -142,7 +142,8 @@ def stages(outdir, shots):
                    'refuse, not loop forever and hang the panel'),
         Stage('unit-stream', ['lua', 'tools/test_streamfix.lua'],
               note='the streaming arm: both 4915 defences, one press per slice not per window, '
-                   'and a press-driven recording that states the control that works'),
+                   'a press-driven recording that states the control that works, and Capture, '
+                   'View and Mode each checking the USB key before they act rather than after'),
         Stage('unit-cancel', ['lua', 'tools/test_cancel.lua'],
               note='the TRIGGER-key cancel latch, one press for a whole transmission, the two '
                    'window sizes, and flow control looping with no interaction at all'),
