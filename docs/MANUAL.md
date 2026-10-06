@@ -632,6 +632,12 @@ delay is only on the way in. Pressing a button during those two seconds does not
 every part of the app, the buttons and the clock alike, has to ask the same question of the
 firmware, and until the firmware says a key is there the answer is the same whoever asks.
 
+**Tidying the key does not help, so do not bother on this account.** Measured over seven
+pull-and-replace cycles with the key's root cut from 30 entries to 16 — 400 files deleted and
+both firmware `.upg` images removed — the delay was unchanged. Across those cycles the
+instrument reported the key *absent* about four times as long as *present*, on a rhythm that
+was close to even by hand: it is the mount, not the amount of data to be scanned.
+
 **`Capture`, `View` and `Mode` also check the slot themselves, before doing anything else**, so a
 press never waits on the clock. This is belt and braces rather than a fix for something you would
 have seen: a capture already re-opened the log and brought the buttons back before it started work.
