@@ -604,6 +604,15 @@ end
 -- So 2 Hz is 0.07 % of the instrument. Fractional intervals are honoured by display.OBJ_TIMER
 -- (measured; the firmware's own clock sample happens to use 1).
 --
+-- DO NOT RAISE THIS RATE TO MAKE A KEY APPEAR SOONER. It will not work, and the reason is the
+-- firmware rather than the clock. Observed on the panel: pulling the key hides the buttons AT ONCE,
+-- every time, while an insertion takes about 2 s to bring them back -- and the 2 s is there whether
+-- or not a button is pressed in the meantime. Both directions run this same code, so a difference
+-- between them cannot be ours: it is file.usbdriveexists() answering 0 until the key is mounted.
+-- 2 Hz already samples far faster than that signal moves, and a press asks the same question
+-- sooner still. tools/probe_keylatency.py holds the measurements, and the two ways of taking them
+-- that cost a sluggish panel and an instrument power cycle.
+--
 -- MEASURE ui_tick ITSELF, NOT ITS PARTS, and know which tree answered. A tick that also calls
 -- ulog.resume() costs 629 us against the 340 here, which is the whole reason it does not. And a
 -- load that fails silently leaves the PREVIOUS app running while answering every query cheerfully,

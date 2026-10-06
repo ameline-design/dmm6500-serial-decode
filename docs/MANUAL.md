@@ -626,6 +626,12 @@ costs about 340 microseconds, or 0.07 % of the instrument. It stops while a capt
 running, and resumes when that finishes — so a key pulled *during* a long recording is noticed by the
 write that follows it rather than by the clock.
 
+**Expect about two seconds before the buttons come back after you push a key in.** That is the
+instrument mounting the key, not the app waiting — pulling the key is noticed at once, and the
+delay is only on the way in. Pressing a button during those two seconds does not shorten it:
+every part of the app, the buttons and the clock alike, has to ask the same question of the
+firmware, and until the firmware says a key is there the answer is the same whoever asks.
+
 **`Capture`, `View` and `Mode` also check the slot themselves, before doing anything else**, so a
 press never waits on the clock. This is belt and braces rather than a fix for something you would
 have seen: a capture already re-opened the log and brought the buttons back before it started work.
