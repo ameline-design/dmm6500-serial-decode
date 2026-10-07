@@ -846,9 +846,17 @@ function sdec.ck_sink_file(path, ncol)
   -- That is the one thing the header exists to prevent. It also makes the sink's construction the honest
   -- place to fail: the handle is closed and the caller reports it, rather than a run that "worked" and
   -- left a file nobody can read back.
-  file.write(fh, string.format('---- stream  %s %s\r\n',
-             sdec.baud_text and sdec.baud_text() or '?',
-             sdec.fmt_text and sdec.fmt_text() or '?'))
+  -- THE HEADER IS THE SINK'S FIRST WRITE, so its failure is the sink's failure: rows that could be
+  -- written after one that could not would append an UNLABELLED stream into the shared byte log.
+  -- The line is built OUTSIDE the guard, so only the firmware call is protected, and the handle is
+  -- closed before the refusal -- a stranded one needs a power cycle.
+  local hdr = string.format('---- stream  %s %s\r\n',
+                            sdec.baud_text and sdec.baud_text() or '?',
+                            sdec.fmt_text and sdec.fmt_text() or '?')
+  if not pcall(file.write, fh, hdr) then
+    file.close(fh)
+    return nil, nil, 'cannot write the stream header to ' .. tostring(path)
+  end
 
   local cv, ce, cn = {}, {}, 0     -- carry: bytes not yet a full row
   local cbase = 0                  -- stream offset of cv[1]
@@ -905,7 +913,12 @@ function sdec.ck_sink_file(path, ncol)
   local finish = function()
     if finished then return not dead end
     finished = true
-    if not dead and cn > 0 then emit(cn) end
+    -- THE FINAL ROW IS GUARDED SO THE CLOSE IS REACHED. It formats through ua_hexrow, which is not
+    -- a file call and can raise on a value the formatter does not expect; a handle stranded by that
+    -- needs a power cycle, and the row not reaching the file is what `dead` is for.
+    if not dead and cn > 0 then
+      if not pcall(emit, cn) then dead = true end
+    end
     file.flush(fh)
     file.close(fh)
     fh = nil

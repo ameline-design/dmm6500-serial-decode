@@ -103,9 +103,13 @@ ulog.keyopen   = ulog.keyopen or 0
 -- naming a path, and naming a path that is not there posts 2205 -- so every open and every write goes
 -- behind this, and answers 'no key' silently rather than filing an event about it.
 --
--- UNKNOWN COUNTS AS PRESENT: a firmware without usbdriveexists answers nil, not 0, and refusing to
--- log for a question we could not ask would be a regression.
+-- TYPE-TESTED, NOT GUARDED, and the distinction matters: a usbdriveexists that is ABSENT raises
+-- "attempt to call a nil value" when called, which is not the same as one that answers nil.
+-- ulog.open's note below says it may be missing on another firmware, so this has to hold.
+--
+-- UNKNOWN COUNTS AS PRESENT: refusing to log over a question we could not ask is a regression.
 function ulog.haskey()
+  if file.usbdriveexists == nil then return true end
   if file.usbdriveexists() == 0 then return false end
   return true
 end
@@ -252,9 +256,12 @@ function ulog.rootlists(name)
   if name == nil or name == '' then return nil end
   local fh = file.open('/usb1', file.MODE_READ)
   if fh == nil then return nil end
-  local raw = file.read(fh, file.READ_ALL)
+  -- THE READ IS GUARDED SO THE CLOSE CANNOT BE SKIPPED. file.read is the one call here whose
+  -- behaviour on a key pulled mid-operation is NOT in the measured table above, and a firmware
+  -- handle is not reclaimed until a power cycle.
+  local rok, raw = pcall(file.read, fh, file.READ_ALL)
   file.close(fh)
-  if raw == nil then return nil end
+  if not rok or raw == nil then return nil end
   -- `1` for a plain find, no patterns. Nothing else is searched: the tilde alias would match any long name
   -- beginning the same way, and a partial UTF-16 run would match a different directory entirely.
   if string.find(raw, string.upper(name), 1, 1) ~= nil then return true end
@@ -368,8 +375,8 @@ end
 -- sessions, since comparing this run against the last is usually the point.
 -- Returns true if logging is live.
 --
--- Wrapped throughout: a missing key returns nil, but a firmware without the file
--- API would raise on indexing `file`, and that must not take the app down.
+-- A missing key returns nil from every call here; only the os.time probe below is wrapped, because
+-- os is the one table in this module that may genuinely be absent.
 function ulog.open(path, truncate)
   ulog.close()
   ulog.nlines, ulog.dropped, ulog.lasterr = 0, 0, nil
@@ -406,8 +413,11 @@ function ulog.open(path, truncate)
   return true
 end
 
--- Write one line. Never raises: a logging call site should read as a statement,
--- not as something to check.
+-- Write one line. -> true if it went.
+--
+-- NON-RAISING FOR EVERY MEASURED FAILURE, which is what lets a logging call site read as a
+-- statement: no key, a pulled key and a missing directory are all gates that return false. A key
+-- that is PRESENT AND REFUSING is the unmeasured case and can raise out of file.write.
 function ulog.line(s)
   if not ulog.enabled then return false end
   -- OFF IS RECOVERABLE. An app started with no key, or one whose key was pulled, has no open handle
@@ -617,10 +627,11 @@ function ulog.next_free(prefix, ext, limit)
       wh = ulog.open_write(idxpath, file.MODE_WRITE)
       local wrote = false
       if wh ~= nil then
-        file.write(wh, tostring(i) .. '\n')
+        -- Guarded so the close is reached either way; the handle would otherwise be stranded until
+        -- a power cycle, and this path's whole job is to leave the key tidy.
+        wrote = pcall(file.write, wh, tostring(i) .. '\n')
         file.flush(wh)
         file.close(wh)
-        wrote = true
       end
       if wrote then ulog.idx_why = nil
       else ulog.idx_why = 'log index not saved -- numbering restarts after a power cycle' end
@@ -657,14 +668,17 @@ function ulog.write_file(path, lines, n)
   local fh, why = ulog.open_write(path, file.MODE_WRITE)
   if fh == nil then return false, tostring(why) end
 
-  local gone = false
+  local gone, wfail = false, false
   local i
   for i = 1, n do
     -- BEFORE EACH WRITE: a write to a departed key posts 2200 and returns, so checking only after
     -- the loop catches the verdict and none of the boxes -- 24 modal dialogs for a report, 2048 for
     -- a 32 kB one. 237 us a row against a Save the operator is already waiting on.
     if not ulog.keyok() then gone = true; break end
-    file.write(fh, tostring(lines[i]) .. '\r\n')
+    -- GUARDED SO THE CLOSE BELOW CANNOT BE SKIPPED. A key that is PRESENT AND REFUSING -- full, or
+    -- write-protected -- is the unmeasured case, and the mock models it as a raise; a firmware
+    -- handle stranded by it needs a power cycle. One site covers the whole loop.
+    if not pcall(file.write, fh, tostring(lines[i]) .. '\r\n') then wfail = true; break end
   end
   file.flush(fh)
   file.close(fh)
@@ -673,6 +687,7 @@ function ulog.write_file(path, lines, n)
   if gone or not ulog.keyok() then
     return false, 'the USB key went away -- the file is empty or truncated'
   end
+  if wfail then return false, 'write failed part-way through -- the file is truncated' end
   return true
 end
 

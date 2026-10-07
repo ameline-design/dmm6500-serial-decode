@@ -56,10 +56,11 @@ ulog.keyopen   = ulog.keyopen or 0
 
 -- Is a key in the slot? -> true, or false when the firmware says there is none.
 --   [...]
--- behind this, and answers 'no key' silently rather than filing an event about it.
--- UNKNOWN COUNTS AS PRESENT: a firmware without usbdriveexists answers nil, not 0, and refusing to
--- log for a question we could not ask would be a regression.
+-- "attempt to call a nil value" when called, which is not the same as one that answers nil.
+-- ulog.open's note below says it may be missing on another firmware, so this has to hold.
+-- UNKNOWN COUNTS AS PRESENT: refusing to log over a question we could not ask is a regression.
 function ulog.haskey()
+  if file.usbdriveexists == nil then return true end
   if file.usbdriveexists() == 0 then return false end
   return true
 end
@@ -126,9 +127,9 @@ function ulog.rootlists(name)
   if name == nil or name == '' then return nil end
   local fh = file.open('/usb1', file.MODE_READ)
   if fh == nil then return nil end
-  local raw = file.read(fh, file.READ_ALL)
+  local rok, raw = pcall(file.read, fh, file.READ_ALL)
   file.close(fh)
-  if raw == nil then return nil end
+  if not rok or raw == nil then return nil end
   if string.find(raw, string.upper(name), 1, 1) ~= nil then return true end
   return false
 end
@@ -186,8 +187,8 @@ end
 -- Open the log. `truncate` starts a fresh file; the default appends across
 -- sessions, since comparing this run against the last is usually the point.
 -- Returns true if logging is live.
--- Wrapped throughout: a missing key returns nil, but a firmware without the file
--- API would raise on indexing `file`, and that must not take the app down.
+-- A missing key returns nil from every call here; only the os.time probe below is wrapped, because
+-- os is the one table in this module that may genuinely be absent.
 function ulog.open(path, truncate)
   ulog.close()
   ulog.nlines, ulog.dropped, ulog.lasterr = 0, 0, nil
@@ -214,8 +215,10 @@ function ulog.open(path, truncate)
   return true
 end
 
--- Write one line. Never raises: a logging call site should read as a statement,
--- not as something to check.
+-- Write one line. -> true if it went.
+-- NON-RAISING FOR EVERY MEASURED FAILURE, which is what lets a logging call site read as a
+-- statement: no key, a pulled key and a missing directory are all gates that return false. A key
+-- that is PRESENT AND REFUSING is the unmeasured case and can raise out of file.write.
 function ulog.line(s)
   if not ulog.enabled then return false end
   if not ulog.on then
@@ -337,10 +340,9 @@ function ulog.next_free(prefix, ext, limit)
       wh = ulog.open_write(idxpath, file.MODE_WRITE)
       local wrote = false
       if wh ~= nil then
-        file.write(wh, tostring(i) .. '\n')
+        wrote = pcall(file.write, wh, tostring(i) .. '\n')
         file.flush(wh)
         file.close(wh)
-        wrote = true
       end
       if wrote then ulog.idx_why = nil
       else ulog.idx_why = 'log index not saved -- numbering restarts after a power cycle' end
@@ -363,17 +365,18 @@ function ulog.write_file(path, lines, n)
   local fh, why = ulog.open_write(path, file.MODE_WRITE)
   if fh == nil then return false, tostring(why) end
 
-  local gone = false
+  local gone, wfail = false, false
   local i
   for i = 1, n do
     if not ulog.keyok() then gone = true; break end
-    file.write(fh, tostring(lines[i]) .. '\r\n')
+    if not pcall(file.write, fh, tostring(lines[i]) .. '\r\n') then wfail = true; break end
   end
   file.flush(fh)
   file.close(fh)
   if gone or not ulog.keyok() then
     return false, 'the USB key went away -- the file is empty or truncated'
   end
+  if wfail then return false, 'write failed part-way through -- the file is truncated' end
   return true
 end
 
@@ -3374,9 +3377,13 @@ function sdec.ck_sink_file(path, ncol)
   if ncol == nil then ncol = 16 end
   local fh, owhy = ulog.open_write(path, file.MODE_APPEND)
   if fh == nil then return nil, nil, 'cannot append to ' .. tostring(path) end
-  file.write(fh, string.format('---- stream  %s %s\r\n',
-             sdec.baud_text and sdec.baud_text() or '?',
-             sdec.fmt_text and sdec.fmt_text() or '?'))
+  local hdr = string.format('---- stream  %s %s\r\n',
+                            sdec.baud_text and sdec.baud_text() or '?',
+                            sdec.fmt_text and sdec.fmt_text() or '?')
+  if not pcall(file.write, fh, hdr) then
+    file.close(fh)
+    return nil, nil, 'cannot write the stream header to ' .. tostring(path)
+  end
 
   local cv, ce, cn = {}, {}, 0     -- carry: bytes not yet a full row
   local cbase = 0                  -- stream offset of cv[1]
@@ -3415,7 +3422,9 @@ function sdec.ck_sink_file(path, ncol)
   local finish = function()
     if finished then return not dead end
     finished = true
-    if not dead and cn > 0 then emit(cn) end
+    if not dead and cn > 0 then
+      if not pcall(emit, cn) then dead = true end
+    end
     file.flush(fh)
     file.close(fh)
     fh = nil
@@ -5647,6 +5656,7 @@ function sdec.frame_log()
     sdec.flog_why = 'cannot append to ' .. tostring(sdec.flog_path)
     return false
   end
+  sdec.fh_unwind = fh
   local nfr = 0
   if sdec.res ~= nil then nfr = sdec.res.nf end
   local msgno = (sdec.flog_n or 0) + 1
@@ -5665,6 +5675,7 @@ function sdec.frame_log()
   end
   file.flush(fh)
   file.close(fh)
+  sdec.fh_unwind = nil
   if not ulog.keyok() then
     sdec.flog_why = 'write failed part-way through ' ..
                     string.gsub(tostring(sdec.flog_path), '^.*/', '')
@@ -6363,7 +6374,9 @@ end
 function sdec.capture()
   sdec.ui_keypoll()
   sdec.ui_tick_off()
+  sdec.drop_pending = true
   local a, b = sdec.capture_run()
+  sdec.drop_pending = nil
   sdec.ui_tick_on()
   return a, b
 end
@@ -6467,25 +6480,37 @@ end
 
 -- The inbound firmware boundary
 --   [...]
--- the session. The tick goes back on for the same reason, and the stale result goes because a
--- retracted rate left on the glass reads as a measurement. All assignments or display calls, none
--- of which raise, so the failure path cannot itself escape.
-function sdec.guard(f)
-  local ok, err = pcall(f)
-  if ok then return true end
+-- RAISE-FREE BY CONSTRUCTION: assignments, ui_tick_on and ui_refresh which each guard themselves,
+-- and a nil test on every function called by name -- a partial load must not turn the boundary into
+-- the popup source it exists to prevent.
+function sdec.unwind(why)
   sdec.busy = false
   sdec.ck_running = false
   if sdec.trig_restore ~= nil then
     sdec.trigmode = sdec.trig_restore
     sdec.trig_restore = nil
   end
-  sdec.drop_stale_result()
-  sdec.ui_tick_on()
+  if sdec.drop_pending then
+    sdec.drop_pending = nil
+    if sdec.drop_stale_result ~= nil then sdec.drop_stale_result() end
+  end
+  if sdec.fh_unwind ~= nil then
+    local h = sdec.fh_unwind
+    sdec.fh_unwind = nil
+    pcall(file.close, h)
+  end
+  if sdec.ui_tick_on ~= nil then sdec.ui_tick_on() end
   sdec.errcount = (sdec.errcount or 0) + 1
-  sdec.lasterr = tostring(err)
+  sdec.lasterr = tostring(why)
   sdec.ui_status = 'error'
-  sdec.ui_refresh()
+  if sdec.ui_refresh ~= nil then sdec.ui_refresh() end
   return false
+end
+
+function sdec.guard(f)
+  local ok, err = pcall(f)
+  if ok then return true end
+  return sdec.unwind(err)
 end
 
 -- Save the decoded stream to the USB key
@@ -6666,7 +6691,7 @@ function sdec.lock_toggle()
 
   local pok, cres = pcall(sdec.capture)
   local cok = pok and cres
-  if not pok then sdec.lasterr = 'capture raised: ' .. tostring(cres) end
+  if not pok then sdec.unwind('capture raised: ' .. tostring(cres)) end
   if note ~= nil and not (pok and cok) then
     sdec.lognote = note .. ' -- but the re-capture failed, so the figures above are the previous one'
     note = nil
@@ -6792,7 +6817,7 @@ end
 
 -- Flush the current capture mode's files and say why. `why` goes on the note row. Returns the mode that
 --   [...]
--- NEVER RAISES, so the four callers call it bare. It touches no firmware directly: decode_abandon()
+-- directly: decode_abandon()
 -- and stream_settle() guard their own, ulog is non-raising by contract, mode_cur() is documented
 -- never to return nil, and the one string.format here takes tostring() of both arguments.
 function sdec.mode_exit(why, bad)
@@ -7162,7 +7187,9 @@ function sdec.cleanup()
 end
 
 -- Entry point: open the log, build the UI, and hook End App. Takes NO capture -- the app comes up
--- idle and the first acquisition is the operator's press. Everything is under pcall. Returns false
+-- idle and the first acquisition is the operator's press. THE BUILD is under pcall; cleanup(),
+-- del_orphans() and stop() on the failure path are NOT, and there is no guard above launch.
+-- Returns false
 -- and a reason if a rebuild is refused or the build fails.
 function sdec.start()
   if sdec.built then

@@ -1137,15 +1137,12 @@ do
     if nw == 1 then error('header write failed', 0) end
     return realwrite(fh, s)
   end
-  -- IT RAISES RATHER THAN RETURNING A REASON. The sink does not guard its own file calls, so a
-  -- header that cannot be written leaves ck_sink_file by raising -- which still prevents the
-  -- unlabelled stream, and reaches the operator through sdec.guard. Note the firmware does not fail
-  -- one write selectively the way this stub does: a real key failure fails the rows too, and
-  -- emit()'s keyok check is what catches that.
-  local hok, herr = pcall(function() return sdec.ck_sink_file('/usb1/hdr_000.txt', 16) end)
+  local sink, finish, serr = sdec.ck_sink_file('/usb1/hdr_000.txt', 16)
   file.write = realwrite
-  check('a stream header that cannot be written refuses the sink', hok == false, tostring(herr))
-  check('...and the reason propagates, so sdec.guard can show it', herr ~= nil, tostring(herr))
+  check('a stream header that cannot be written refuses the sink',
+        sink == nil and finish == nil and serr ~= nil, tostring(serr))
+  check('...and names the file, so the reason is actionable',
+        has(tostring(serr), 'hdr_000.txt'), tostring(serr))
 
   -- (b) THE FINAL PARTIAL ROW. finish() flushes and closes the last 1-15 bytes through a formatter that
   -- is NOT one of the guarded file calls, so it can raise -- and with its verdict discarded finish()
@@ -1157,11 +1154,10 @@ do
     sink2({65, 66, 67}, {0, 0, 0}, 3, 0)          -- 3 bytes: a partial row, held as carry
     local realrow = sdec.ua_hexrow
     sdec.ua_hexrow = function(...) error('row format failed', 0) end
-    local fok, ferr = pcall(function() return finish2() end)
+    local fin = finish2()
     sdec.ua_hexrow = realrow
-    -- Reported by raising, not by returning false: finish() guards nothing of its own either.
     check('a final partial row that cannot be formatted makes finish() report FAILURE',
-          fok == false, tostring(ferr))
+          fin == false, tostring(fin))
   end
   MD.forget_files()
 end

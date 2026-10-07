@@ -384,7 +384,7 @@ do
   check('a capture leaves the tick ON when it returns',
         TICKEV() == 'sdec.guard(sdec.ui_tick)',
         string.format('%q', tostring(TICKEV())))
-  -- INCLUDING A CAPTURE THAT RAISED, which is why the wrapper pcalls the body: a raise that skipped
+  -- INCLUDING A CAPTURE THAT RAISED, which is why the boundary, not capture(), is what catches it: a raise that skipped
   -- the re-enable leaves the panel blind to the key for the rest of the session.
   --
   -- sdec.mode_cur, NOT sdec.autoset. capture_run's OWN pcall absorbs an autoset raise, so it

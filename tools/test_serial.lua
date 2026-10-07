@@ -1228,17 +1228,13 @@ check('write_file writes every line', ulog.write_file('/usb1/w.txt', {'l1', 'l2'
       and MD.loglines() == 3, MD.loglines() .. ' lines')
 check('write_file terminates lines CRLF for a PC', has(MD.logtext(), 'l1\r\n'),
       string.format('%q', MD.logtext()))
--- The key filling up part-way through is the realistic failure, and it must NOT be reported as a
--- save. A full key is the one file failure this app cannot detect from a return value: file.write
--- yields nothing, keyok() still sees the key in the slot, and there is no free-space call. So it
--- surfaces as a RAISE out of write_file rather than as `false, 'part-way'` -- which still satisfies
--- "a truncated file must not claim success", and is caught where the firmware calls into us.
+-- The key filling up part-way through is the realistic failure, and it must be reported: a
+-- truncated capture file that claims success is worse than no file. The write is guarded so the
+-- handle is closed either way -- a stranded one needs a power cycle.
 MD.failwrite(2)
-check('a write that fails part-way does not come back claiming a save',
-      (function()
-         local ok, a = pcall(function() return ulog.write_file('/usb1/p.txt', {'a','b','c','d'}, 4) end)
-         return ok == false or a == false
-       end)())
+check('a write that fails part-way is reported, not claimed as saved',
+      (function() local ok, why = ulog.write_file('/usb1/p.txt', {'a', 'b', 'c', 'd'}, 4)
+         return ok == false and has(why, 'part-way') end)())
 MD.failwrite(nil)
 
 -- ---- sdec.save ----
@@ -1276,12 +1272,10 @@ check('a second save picks a new name', sdec.save() == true
       and sdec.savedas == '/usb1/cap_001.txt', tostring(sdec.savedas))
 -- A failing save must say so and must NOT leave a filename the operator would go
 -- looking for on the key.
--- THROUGH sdec.guard, which is how the firmware calls it. A full key is the one file failure the
--- app cannot see in a return value, so it arrives as a raise and the boundary is what turns it into
--- a refusal the operator can read. All three claims the block exists to make still hold.
 MD.failwrite(3)
-check('a save that fails mid-write does not report success', sdec.guard(sdec.save) == false)
-check('a failed save reports a reason', sdec.lasterr ~= nil, tostring(sdec.lasterr))
+check('a save that fails mid-write returns false', sdec.save() == false)
+check('a failed save reports the reason', has(sdec.lasterr, 'save failed'),
+      tostring(sdec.lasterr))
 check('a failed save claims no filename', sdec.savedas == nil, tostring(sdec.savedas))
 MD.failwrite(nil)
 MD.usb(false)

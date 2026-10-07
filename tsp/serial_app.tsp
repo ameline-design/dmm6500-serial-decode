@@ -432,10 +432,12 @@ function sdec.frame_log()
     sdec.flog_why = 'cannot append to ' .. tostring(sdec.flog_path)
     return false
   end
-  -- COUNTED AFTER THE WRITE, never before. Incrementing inside the pcall lets a write that
-  -- raises part-way bump flog_n and flog_bytes anyway, so the panel's "bytes in the log" counts
-  -- bytes that never reached the file. The whole promise of that number is that it says what is
-  -- safely on the key.
+  -- REGISTERED FOR THE UNWIND. Nothing here is guarded, so a raise in a formatter or a write would
+  -- otherwise strand this handle until a power cycle; sdec.unwind closes whatever is parked here.
+  sdec.fh_unwind = fh
+  -- COUNTED AFTER THE WRITE, never before: a raise part-way through would otherwise bump flog_n and
+  -- flog_bytes anyway, so the panel's "bytes in the log" would count bytes that never reached the
+  -- file. The whole promise of that number is that it says what is safely on the key.
   local nfr = 0
   if sdec.res ~= nil then nfr = sdec.res.nf end
   -- The message NUMBER is needed for the header line before the write, but flog_n itself is
@@ -456,6 +458,7 @@ function sdec.frame_log()
   end
   file.flush(fh)
   file.close(fh)
+  sdec.fh_unwind = nil
   -- THE PRESENCE CHECK IS THE WHOLE TEST. A write that posted 2200 returns normally (see
   -- ulog.keylost), so nothing the writes themselves report can see a key pulled since the open --
   -- this capture's bytes would be counted as logged. 237 us with a key in the slot, and it latches
@@ -1680,8 +1683,9 @@ function sdec.capture_run()
   sdec.ui_status = 'capturing'
   sdec.ui_refresh()
 
-  -- NOT pcall'd: sdec.capture() holds the only pcall on this path and reports a raise there,
-  -- because the nesting these wrappers added is what the firmware cannot take. See start().
+  -- NOT pcall'd: nothing on this path is, because the nesting these wrappers added is what the
+  -- firmware cannot take. A raise travels out to whoever catches it -- sdec.guard, or the lock
+  -- toggle -- and sdec.unwind puts back what it skipped. See start().
   local ok, why = sdec.autoset()
 
   -- ONE FRESH CAPTURE AFTER A BACK-OFF. decode() sets rate_backoff when a locked rate fit nothing and
@@ -1753,9 +1757,9 @@ function sdec.capture_run()
         i = i + per
       end
     end
-    -- FRAME+LOG: also append this message to its own file. A BARE CALL -- frame_log() guards every
-    -- file call it makes and returns false instead of raising, which is what keeps a full USB key
-    -- from retracting a capture that worked.
+    -- FRAME+LOG: also append this message to its own file. A BARE CALL. frame_log() guards no file
+    -- call of its own and CAN raise on a key that is present and refusing -- the unmeasured case --
+    -- so it registers its handle for sdec.unwind rather than closing it on the way out.
     if md.log then sdec.frame_log() end
   end
 
@@ -1771,18 +1775,11 @@ end
 -- A WRAPPER RATHER THAN AN EDIT INTO THE BODY, because capture_run() has a dozen return statements
 -- and a missed one would leave the panel with no tick for the rest of the session.
 --
--- THE BODY IS pcall'd so a raise cannot skip the re-enable, AND THE RAISE IS RE-THROWN. Swallowing it
--- would make sdec.capture() non-raising, and `pcall(sdec.capture)` is how two callers ask whether the
--- press faulted -- tools/bench_break.py's K line and the lock toggle's own guard. Both would read
--- every fault as a clean press. capture_run() documents itself as returning ok, reason rather than
--- raising; this preserves that contract rather than quietly widening it.
---
--- AND sdec.busy IS CLEARED, because a raise is exactly the path that leaves it set. capture_run sets
--- it around the work and clears it on its own returns; an escape skips that, and sdec.ui_tick()
--- treats busy as "a run owns the panel" -- so one faulting press stops the panel noticing the key for
--- the rest of the session, with Save and NewLog left showing over an empty slot. The same argument
--- capture_run makes about ck_running: a latch that only a fault can set must not be the thing that
--- refuses the fix.
+-- THE BODY IS NOT GUARDED, AND A RAISE REACHES THE CALLER. `pcall(sdec.capture)` is how two callers
+-- ask whether the press faulted -- tools/bench_break.py's K line and the lock toggle -- so this must
+-- stay raising. What a raise would skip, the busy latch and the tick among it, is restored by
+-- sdec.unwind: whoever catches the raise calls it, which is sdec.guard at the boundary or the lock
+-- toggle when it catches one to word its own note.
 --
 -- THE KEY IS CHECKED BY THE PRESS, FIRST, and not left to the tick -- which is off for the whole of
 -- this function anyway.
@@ -1800,7 +1797,11 @@ function sdec.capture()
   -- NOTHING ON THIS PATH IS GUARDED, and the cleanup a raise would skip belongs to sdec.guard: the
   -- busy latch, the panel tick and the stale-result drop are all restored there. A raise still
   -- reaches the caller, which `pcall(sdec.capture)` in bench_break and the lock toggle rely on.
+  -- REGISTERED, so sdec.unwind drops the stale result only when a CAPTURE unwound past it. A Save
+  -- or a View that raised has invalidated no measurement.
+  sdec.drop_pending = true
   local a, b = sdec.capture_run()
+  sdec.drop_pending = nil
   sdec.ui_tick_on()
   return a, b
 end
@@ -2067,31 +2068,60 @@ end
 -- THE FAILURE PATH RAISES NOTHING ITSELF. It assigns fields and refreshes; it does not log, because
 -- ulog.line reaches file.write, and a key that has filled up is exactly the condition that brought
 -- us here. ui_refresh only touches display calls, which post events rather than raising.
--- THE CLEANUP A RAISE SKIPPED HAPPENS HERE, because this is the only frame left that can do it.
+-- Put back whatever a raise unwound past, and report it. -> false, so a catcher can end with
+-- `return sdec.unwind(err)`.
+--
+-- SEPARATE FROM sdec.guard BECAUSE NOT EVERY RAISE REACHES THE BOUNDARY. A frame that catches one
+-- to make a decision of its own -- lock_toggle, which must choose between naming the new sample
+-- rate and saying the re-capture failed -- has to do this too, or the cleanup simply does not
+-- happen. Measured: one Lock Rate press whose re-capture raised left trigmode on 'free', busy
+-- latched, the tick off and the panel reading 'capturing', with the press reporting success.
+--
 -- sdec.busy and ck_running are latches only a fault can leave set, and ui_tick reads busy as "a run
--- owns the panel" -- so one faulting press would stop the panel noticing the key for the rest of
--- the session. The tick goes back on for the same reason, and the stale result goes because a
--- retracted rate left on the glass reads as a measurement. All assignments or display calls, none
--- of which raise, so the failure path cannot itself escape.
-function sdec.guard(f)
-  local ok, err = pcall(f)
-  if ok then return true end
+-- owns the panel", so one faulting press would otherwise stop the panel noticing the key for the
+-- rest of the session.
+--
+-- RAISE-FREE BY CONSTRUCTION: assignments, ui_tick_on and ui_refresh which each guard themselves,
+-- and a nil test on every function called by name -- a partial load must not turn the boundary into
+-- the popup source it exists to prevent.
+function sdec.unwind(why)
   sdec.busy = false
   sdec.ck_running = false
-  -- THE UNWIND REGISTER. A frame that mutates a module field for the duration of a call parks the
+  -- THE UNWIND REGISTERS. A frame that mutates a module field for the duration of a call parks the
   -- old value here, because a local is invisible from this frame. trigmode left on 'free' makes
   -- every later capture free-run while the panel still says Edge.
   if sdec.trig_restore ~= nil then
     sdec.trigmode = sdec.trig_restore
     sdec.trig_restore = nil
   end
-  sdec.drop_stale_result()
-  sdec.ui_tick_on()
+  -- THE DROP BELONGS TO THE CAPTURE PATH, NOT TO EVERY HANDLER. A capture that raised part-way has
+  -- half-rewritten the measurements, so the rate on the glass is no longer one. A Save or a View
+  -- that failed has invalidated nothing, and dropping there loses the capture the operator was
+  -- trying to keep.
+  if sdec.drop_pending then
+    sdec.drop_pending = nil
+    if sdec.drop_stale_result ~= nil then sdec.drop_stale_result() end
+  end
+  -- AN OPEN HANDLE IS NOT RECLAIMED UNTIL A POWER CYCLE, so a frame that holds one parks it here
+  -- and clears it on its own close. One pcall covers every registered handle, and it is a firmware
+  -- call in the direct form -- a close that raises must not stop the rest of this unwind.
+  if sdec.fh_unwind ~= nil then
+    local h = sdec.fh_unwind
+    sdec.fh_unwind = nil
+    pcall(file.close, h)
+  end
+  if sdec.ui_tick_on ~= nil then sdec.ui_tick_on() end
   sdec.errcount = (sdec.errcount or 0) + 1
-  sdec.lasterr = tostring(err)
+  sdec.lasterr = tostring(why)
   sdec.ui_status = 'error'
-  sdec.ui_refresh()
+  if sdec.ui_refresh ~= nil then sdec.ui_refresh() end
   return false
+end
+
+function sdec.guard(f)
+  local ok, err = pcall(f)
+  if ok then return true end
+  return sdec.unwind(err)
 end
 
 -- ============================================================================
@@ -2362,8 +2392,8 @@ function sdec.lock_toggle()
   end
 
   -- Re-capture at the rate the new lock state implies, so RATE, SA/BIT, BYTES and the window
-  -- note all describe the same thing. Guarded: this is a touch handler, and capture() is
-  -- already fully guarded internally, but the call itself must not be able to raise here.
+  -- note all describe the same thing. Guarded for the VERDICT, not for safety: capture() guards
+  -- nothing of its own, so a raise arrives here and this frame owes the unwind.
   -- THE VERDICT IS KEPT, because the sentence below claims the recapture worked. Both the pcall's
   -- result and capture()'s own boolean were discarded, so a recapture that raised or refused still
   -- produced 'locked 9600 baud -- now sampling at 80 kS/s' -- a confident report of a capture that did
@@ -2374,7 +2404,9 @@ function sdec.lock_toggle()
   -- be read as a verdict -- and whoever catches a raise reports it, since capture() no longer does.
   local pok, cres = pcall(sdec.capture)
   local cok = pok and cres
-  if not pok then sdec.lasterr = 'capture raised: ' .. tostring(cres) end
+  -- CATCHING IT MEANS OWNING THE CLEANUP. sdec.guard never sees this raise, and guard is the only
+  -- other frame that restores trigmode, the busy latch and the tick -- so unwind is called here.
+  if not pok then sdec.unwind('capture raised: ' .. tostring(cres)) end
   -- AFTER the capture, because clear_result() evicts the note cell. Names the new sample rate,
   -- since that is the thing the operator did not ask for and did get.
   if note ~= nil and not (pok and cok) then
@@ -2615,7 +2647,9 @@ end
 -- given the same ok flag -- and matching on words like 'failed' is how a protected failure gets
 -- narrowed to a boolean nobody checks, which is this app's dominant defect class.
 --
--- NEVER RAISES, so the four callers call it bare. It touches no firmware directly: decode_abandon()
+-- NEVER RAISES FOR ANY MEASURED FAILURE, so the four callers call it bare -- but see ulog.line: a
+-- key that is present and refusing is unmeasured and can raise through it. It touches no firmware
+-- directly: decode_abandon()
 -- and stream_settle() guard their own, ulog is non-raising by contract, mode_cur() is documented
 -- never to return nil, and the one string.format here takes tostring() of both arguments.
 function sdec.mode_exit(why, bad)
@@ -3170,7 +3204,9 @@ end
 
 -- Tear the app down: release the job, stop the hardware, delete objects, close the log.
 --
--- NEVER RAISES, so every caller calls it bare. Each firmware touch below carries its own guard --
+-- NEVER RAISES FOR ANY MEASURED FAILURE, so every caller calls it bare; ulog.line and ulog.close
+-- can raise on a key that is present and refusing, which is unmeasured. Each firmware touch below
+-- carries its own guard --
 -- the model abort, the comparator write, the blender reset, buffer.delete -- and the sdec.* calls
 -- it makes are non-raising for the same reason. It is also the End App event string installed by
 -- install_cleanup(), through sdec.cleanup(): a raise there reaches the FIRMWARE, which posts it at
@@ -3265,7 +3301,9 @@ function sdec.cleanup()
 end
 
 -- Entry point: open the log, build the UI, and hook End App. Takes NO capture -- the app comes up
--- idle and the first acquisition is the operator's press. Everything is under pcall. Returns false
+-- idle and the first acquisition is the operator's press. THE BUILD is under pcall; cleanup(),
+-- del_orphans() and stop() on the failure path are NOT, and there is no guard above launch.
+-- Returns false
 -- and a reason if a rebuild is refused or the build fails.
 function sdec.start()
   -- ONE BUILD PER POWER CYCLE UNLESS THE TEARDOWN WAS CLEAN, and this is where a second one is
