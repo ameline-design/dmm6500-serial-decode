@@ -3,7 +3,7 @@ loadscript Serial_Decode
 -- $Product: DMM6500, DAQ6510, DMM7510, SMU2461
 -- $Tag: Serial, UART, Decode, Digitize
 -- $Description: Decodes an asynchronous serial line with the instrument's own digitizer: recovers baud rate, frame format and bytes, shows them as text or hex, and saves bytes to USB key. Everything auto-detects; everything can be locked.
--- $Version: 1.38
+-- $Version: 1.39
 -- $Requires: 1.7.0
 -- $Author: Ian Ameline
 -- $License: MIT
@@ -510,14 +510,16 @@ function sdec.sig_pair(rd, n, v0, v1)
   if v0 == nil or v1 == nil or v1 <= v0 then return nil end
   local scale = (nb - 1) / (v1 - v0)
   local hist = {}
+  local bsum = {}
   local i
-  for i = 1, nb do hist[i] = 0 end
+  for i = 1, nb do hist[i] = 0; bsum[i] = 0 end
   local cnt = 0
   for i = 1, n do
     local v = rd[i]
     if v ~= nil and v >= v0 and v <= v1 then
       local b = floor((v - v0) * scale) + 1
       hist[b] = hist[b] + 1
+      bsum[b] = bsum[b] + v
       cnt = cnt + 1
     end
   end
@@ -557,18 +559,13 @@ function sdec.sig_pair(rd, n, v0, v1)
   end
 
   local sa, na, sb, nbb = 0, 0, 0, 0
-  for i = 1, n do
-    local v = rd[i]
-    if v ~= nil and v >= v0 and v <= v1 then
-      local b = floor((v - v0) * scale) + 1
-      if b >= a1 and b <= b1 then
-        sa = sa + v
-        na = na + 1
-      elseif b >= a2 and b <= b2 then
-        sb = sb + v
-        nbb = nbb + 1
-      end
-    end
+  for i = a1, b1 do
+    sa = sa + bsum[i]
+    na = na + hist[i]
+  end
+  for i = a2, b2 do
+    sb = sb + bsum[i]
+    nbb = nbb + hist[i]
   end
   if na < 1 or nbb < sdec.minhump then return nil end
   local v1m, v2m = sa / na, sb / nbb
@@ -888,18 +885,21 @@ end
 -- fit weights long gaps accordingly.
 -- Returns bittime, quality, nfit -- or nil when nothing fits.
 function sdec.sig_fit(w, nw, seed)
-  local floor, abs = math.floor, math.abs
+  local floor = math.floor
   local maxm = sdec.maxmult
   local T = seed
   local it, k
 
   for it = 1, 6 do
     local sn, snn = 0, 0
+    local tol = 0.35 * T
     for k = 1, nw do
       local wk = w[k]
       local m = floor(wk / T + 0.5)
       if m >= 1 and m <= maxm then
-        if abs(wk - m * T) < 0.35 * T then
+        local d = wk - m * T
+        if d < 0 then d = -d end
+        if d < tol then
           sn  = sn + wk * m
           snn = snn + m * m
         end
@@ -907,20 +907,24 @@ function sdec.sig_fit(w, nw, seed)
     end
     if snn <= 0 then return nil, 0, 0 end
     local newT = sn / snn
-    local moved = abs(newT - T)
+    local moved = newT - T
+    if moved < 0 then moved = -moved end
     T = newT
     if moved < 1e-9 * T then break end
   end
 
   local serr, nfit, nsmall = 0, 0, 0
+  local tol = 0.35 * T
+  local maxw = (maxm + 0.5) * T
   for k = 1, nw do
     local wk = w[k]
-    if wk <= (maxm + 0.5) * T then
+    if wk <= maxw then
       nsmall = nsmall + 1
       local m = floor(wk / T + 0.5)
       if m < 1 then m = 1 end
-      local e = abs(wk - m * T)
-      if e < 0.35 * T then
+      local e = wk - m * T
+      if e < 0 then e = -e end
+      if e < tol then
         nfit = nfit + 1
         serr = serr + e
       end
@@ -1778,14 +1782,40 @@ function sdec.ua_bit(rd, n, x, invert, T)
   return b
 end
 
--- Number of set bits in v. No bitwise operators in 5.0.2, so this is the
--- repeated-halving form.
+sdec.ua_pc = nil
+-- Number of set bits in v. No bitwise operators in 5.0.2.
+--   [...]
+-- THE LOOP IS KEPT for anything outside the table -- a wider value, a non-integer, a negative --
+-- and fused to one C call per iteration: v * 0.5 has a fractional part exactly when v is odd,
+-- which is the same test as mod(v, 2) == 1 for one floor instead of a floor and a mod.
 function sdec.ua_popcount(v)
-  local ones, t = 0, v
-  local mod, floor = math.mod, math.floor
-  while t > 0 do
-    if mod(t, 2) == 1 then ones = ones + 1 end
-    t = floor(t / 2)
+  local t = sdec.ua_pc
+  if t == nil then
+    t = {}
+    local floor = math.floor
+    local i = 0
+    while i < 512 do
+      local ones, x = 0, i
+      while x > 0 do
+        local h = x * 0.5
+        local f = floor(h)
+        if h ~= f then ones = ones + 1 end
+        x = f
+      end
+      t[i] = ones
+      i = i + 1
+    end
+    sdec.ua_pc = t
+  end
+  local c = t[v]
+  if c ~= nil then return c end
+  local ones, x = 0, v
+  local floor = math.floor
+  while x > 0 do
+    local h = x * 0.5
+    local f = floor(h)
+    if h ~= f then ones = ones + 1 end
+    x = f
   end
   return ones
 end
@@ -1811,6 +1841,10 @@ function sdec.ua_frame(rd, n, t0, T, nbits, par, nstop, invert)
 
   local val, bv = 0, 1
   local slot
+
+  local hib, lob = 1, 0
+  if invert then hib, lob = 0, 1 end
+
   for slot = 0, last do
     local x = t0 + (slot + 0.5) * T
     local ic = floor(x + 0.5)
@@ -1820,31 +1854,37 @@ function sdec.ua_frame(rd, n, t0, T, nbits, par, nstop, invert)
 
     local b
     if three then
-      local ones, votes = 0, 1
-      if vc >= thr then ones = 1 end
+      local cb = 0
+      if vc >= thr then cb = 1 end
+      local ones, votes = cb, 1
+      local settled = false
       local i = floor(x - off + 0.5)
       if i >= 1 and i <= n then
         local v = rd[i]
         if v ~= nil then
-          votes = votes + 1
-          if v >= thr then ones = ones + 1 end
+          votes = 2
+          if v >= thr then
+            ones = ones + 1
+            if cb == 1 then settled = true end
+          elseif cb == 0 then settled = true end
         end
       end
-      i = floor(x + off + 0.5)
-      if i >= 1 and i <= n then
-        local v = rd[i]
-        if v ~= nil then
-          votes = votes + 1
-          if v >= thr then ones = ones + 1 end
+      if not settled then
+        i = floor(x + off + 0.5)
+        if i >= 1 and i <= n then
+          local v = rd[i]
+          if v ~= nil then
+            votes = votes + 1
+            if v >= thr then ones = ones + 1 end
+          end
         end
       end
-      if ones * 2 > votes then b = 1
-      elseif ones * 2 < votes then b = 0
-      elseif vc >= thr then b = 1
-      else b = 0 end
-    elseif vc >= thr then b = 1
-    else b = 0 end
-    if invert then b = 1 - b end
+      if ones * 2 > votes then b = hib
+      elseif ones * 2 < votes then b = lob
+      elseif vc >= thr then b = hib
+      else b = lob end
+    elseif vc >= thr then b = hib
+    else b = lob end
 
     if slot == 0 then
       if b ~= 0 then return nil, 'start' end
@@ -1884,7 +1924,6 @@ function sdec.ua_run(rd, n, T, nbits, par, nstop, invert, tmin0)
   if invert then want = 1 end
 
   local anchor = nil
-  local k
   if tmin0 == nil then
     for k = 1, ne do
       if es[k] == want and ei[k] <= n then
@@ -1905,9 +1944,8 @@ function sdec.ua_run(rd, n, T, nbits, par, nstop, invert, tmin0)
 
   local tmin = -1
   if tmin0 ~= nil then tmin = tmin0 end
-  k = anchor
   local prev = nil          -- t0 of the previous emitted frame, for the idle test below
-  while k <= ne do
+  for k = anchor, ne do
     if es[k] == want and ei[k] >= tmin then
       local t0 = ei[k]
       local val, err = sdec.ua_frame(rd, n, t0, T, nbits, par, nstop, invert)
@@ -1932,7 +1970,6 @@ function sdec.ua_run(rd, n, T, nbits, par, nstop, invert, tmin0)
 
       end
     end
-    k = k + 1
   end
 
   if r.idle1 ~= nil and r.idle1 > 1 then
