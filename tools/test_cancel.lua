@@ -1667,5 +1667,29 @@ do
   sdec.flog_path, sdec.flog_n, sdec.flog_bytes = nil, nil, nil
 end
 
-print(string.format('\n%d passed, %d failed', pass, fail))
 if fail > 0 then os.exit(1) end
+
+-- ============================================================================
+-- A STRANDED FILE HANDLE. Firmware handles are not reclaimed until a power cycle, and this was
+-- unobservable until the mock counted them: file.open hands out the constant 42 for writes, so a
+-- second open after a leak looks identical to a clean one. A flush that fails on a GOOD handle was
+-- likewise not expressible, which is how an unguarded flush skipping its close reached a commit.
+-- ============================================================================
+do
+  idle()
+  MD.usb(true); MD.forget_files()
+  MD.forget_handles()
+  local s, f = sdec.ck_sink_file('/usb1/leak_000.txt', 16)
+  check('a sink opens exactly one handle', MD.handles() == 1, tostring(MD.handles()))
+  if s ~= nil then
+    s({65, 66, 67}, {0, 0, 0}, 3, 0)
+    MD.failflush(0)                 -- the next flush raises, on a good handle
+    f()
+    MD.failflush(nil)
+  end
+  check('a flush that fails still closes the handle -- a stranded one needs a power cycle',
+        MD.handles() == 0, tostring(MD.handles()) .. ' live')
+  MD.forget_handles()
+end
+
+print(string.format('\n%d passed, %d failed', pass, fail))

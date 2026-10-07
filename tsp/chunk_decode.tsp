@@ -854,7 +854,7 @@ function sdec.ck_sink_file(path, ncol)
                             sdec.baud_text and sdec.baud_text() or '?',
                             sdec.fmt_text and sdec.fmt_text() or '?')
   if not pcall(file.write, fh, hdr) then
-    file.close(fh)
+    pcall(file.close, fh)
     return nil, nil, 'cannot write the stream header to ' .. tostring(path)
   end
 
@@ -924,8 +924,12 @@ function sdec.ck_sink_file(path, ncol)
     if not dead and cn > 0 then
       if not pcall(emit, cn) then dead = true end
     end
-    file.flush(fh)
-    file.close(fh)
+    -- THE FLUSH GETS ITS OWN GUARD SO IT CANNOT SKIP THE CLOSE, which is the one thing this
+    -- sequence must guarantee: `finished` is already latched above, so no later finish() retries a
+    -- close that never happened, and the handle would be stranded until a power cycle. A flush that
+    -- fails is also a verdict -- the rows it was flushing did not reach the key.
+    if not pcall(file.flush, fh) then dead = true end
+    pcall(file.close, fh)
     fh = nil
     -- A KEY PULLED MID-STREAM DOES NOT FAIL A WRITE IN LUA -- it posts 2200 and returns, so `dead`
     -- never saw it and the run reported a complete file. One presence check does; it also latches

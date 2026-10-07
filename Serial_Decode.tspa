@@ -3381,7 +3381,7 @@ function sdec.ck_sink_file(path, ncol)
                             sdec.baud_text and sdec.baud_text() or '?',
                             sdec.fmt_text and sdec.fmt_text() or '?')
   if not pcall(file.write, fh, hdr) then
-    file.close(fh)
+    pcall(file.close, fh)
     return nil, nil, 'cannot write the stream header to ' .. tostring(path)
   end
 
@@ -3427,8 +3427,8 @@ function sdec.ck_sink_file(path, ncol)
     if not dead and cn > 0 then
       if not pcall(emit, cn) then dead = true end
     end
-    file.flush(fh)
-    file.close(fh)
+    if not pcall(file.flush, fh) then dead = true end
+    pcall(file.close, fh)
     fh = nil
     if not dead and ulog ~= nil and ulog.keyok ~= nil and not ulog.keyok() then dead = true end
     return not dead

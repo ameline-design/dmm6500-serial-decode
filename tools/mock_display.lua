@@ -328,6 +328,7 @@ function MD.events(id) return display.events[id] end
 -- ---------- file API, so ulog can be exercised both ways ----------
 local USB, LOG, FAILAT, WFAIL, RFAIL = true, {}, nil, nil, nil
 local PULLAT = nil
+local FFAIL, NLIVE = nil, 0
 file = {MODE_APPEND = 'a', MODE_WRITE = 'w', MODE_READ = 'r',
         READ_LINE = 'line', READ_ALL = 'all'}
 -- Files that have been written, so MODE_READ can answer "does this exist?".
@@ -469,6 +470,7 @@ function file.open(path, mode)
     if DIRS[path] then
       nextfh = nextfh + 1
       RPOS[nextfh] = {path = path, pos = 1, listing = fat_table(path)}
+      NLIVE = NLIVE + 1
       return nextfh
     end
     if FILES[path] == nil then post(2205); return nil end
@@ -480,6 +482,7 @@ function file.open(path, mode)
   CONTENT[path] = CONTENT[path] or ''       -- MODE_APPEND keeps what is already there
   WPATH = path
   FILES[path] = true
+  NLIVE = NLIVE + 1
   return 42
 end
 function MD.files() return FILES end
@@ -594,14 +597,27 @@ function file.write(h, s)
   -- number, so this follows the most recent open -- which is the file being written.
   if WPATH ~= nil then CONTENT[WPATH] = CONTENT[WPATH] .. s end
 end
-function file.flush(h) if h ~= 42 and h < 42 then error('flush on a bad handle', 0) end end
+-- A FLUSH THAT FAILS ON A GOOD HANDLE was not expressible here, and that is exactly how an
+-- unguarded flush skipping its close reached a commit: the only raise was on a BAD handle, so no
+-- suite could arm the real failure. MD.failflush(n) models a key that is present and refusing.
+function file.flush(h)
+  if h ~= 42 and h < 42 then error('flush on a bad handle', 0) end
+  if FFAIL ~= nil then FFAIL = FFAIL - 1; if FFAIL < 0 then error('USB flush failed', 0) end end
+end
 function file.close(h)
   if h == nil then error('close on a nil handle', 0) end
+  NLIVE = NLIVE - 1
   RPOS[h] = nil          -- a closed read handle dangles, like a deleted display object
   if h == 42 then WPATH = nil end
 end
 -- Make the Nth write raise, to model the key filling up mid-save.
 function MD.failwrite(n) WFAIL = n end
+-- Make the Nth flush raise on a GOOD handle -- the present-and-refusing key.
+function MD.failflush(n) FFAIL = n end
+-- Live handles: opens minus closes. A STRANDED HANDLE IS UNOBSERVABLE WITHOUT THIS, because
+-- file.open hands out the constant 42 for writes, so a second open after a leak looks identical.
+function MD.handles() return NLIVE end
+function MD.forget_handles() NLIVE = 0 end
 -- Let n writes through, then the key is GONE -- no raise. See file.write.
 function MD.pullafter(n) PULLAT = n end
 -- Let n reads succeed and raise on the next, to model the key pulled between open and read.
