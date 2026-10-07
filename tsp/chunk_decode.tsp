@@ -213,7 +213,7 @@ function sdec.ck_geometry(T, framebits)
   if W < need then
     return nil, nil, nil,
            string.format('%.0f samples/frame needs a window of %d, not %d -- ' ..
-                         'sample slower', framebits * T, need, W)
+                         'sample slower', framebits * T, need or 0, W or 0)
   end
   local stride = W - ov
   return W, ov, stride, nil
@@ -1255,7 +1255,7 @@ function sdec.ck_summary(tot)
   local extra = ''
   if tot.stopped == 'cap' then
     extra = string.format(' -- stopped at the %d byte cap; the stream may continue',
-                          tot.nf)
+                          tot.nf or 0)
   elseif tot.stopped == 'exhausted' then
     extra = ' -- the CAPTURE BUFFER ran out before the cap; sample slower for more bytes'
   elseif tot.stopped == 'short read' then
@@ -1271,6 +1271,10 @@ function sdec.ck_summary(tot)
   elseif tot.stopped == 'sink' or tot.stopped == 'write failed' then
     extra = ' -- WRITE FAILED part-way through'
   end
+  -- EVERY COUNTER DEFAULTED, because a SUMMARY must not be able to raise. Callers do not wrap
+  -- this in a pcall -- a guard belongs at a firmware boundary, not around our own formatting --
+  -- and %d on a nil raises, which costs the whole line rather than one field. tot.nsmp is
+  -- genuinely absent on the cancelled path, where a run ends before any window is counted.
   return string.format('%d bytes  %d err  %d win  %d samples%s',
-                       tot.nf, tot.nbad, tot.nwin, tot.nsmp, extra)
+                       tot.nf or 0, tot.nbad or 0, tot.nwin or 0, tot.nsmp or 0, tostring(extra))
 end

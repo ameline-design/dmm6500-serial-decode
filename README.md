@@ -32,15 +32,31 @@ read and diffed like any other source file.
 **1. Copy the archive to a USB key.** Put [`Serial_Decode.tspa`](Serial_Decode.tspa) in the **root** of
 a FAT-formatted key. Leave the name as it is.
 
+> **Check the copy before you install it.** A truncated or corrupted archive does not fail politely —
+> it **bluescreens the instrument**, repeatably, and the crash says nothing about why. Observed on a
+> key whose filesystem had become inconsistent; recopying the identical file fixed it outright. One
+> command rules it out:
+>
+>     cmp Serial_Decode.tspa /Volumes/<key>/Serial_Decode.tspa && echo OK
+>
+> If the key itself is suspect, `diskutil verifyVolume /Volumes/<key>` on a Mac, and reformat if it
+> reports anything.
+>
+> **An installed app can also bluescreen with its source text byte-perfect** — reinstalling does not
+> reliably cure that, and a clean `tools/cmp_installed.py` result proves the text and nothing more.
+> The instance this app hit is fixed (it no longer captures at launch); see **Troubleshooting** in
+> the manual, which also records why making the app smaller is not the answer.
+
 **2. Put the key in the front-panel USB port.**
 
 **3. Install it from the front panel**, through **MENU ▸ Manage Apps**, which copies the app into the
 instrument's internal memory. The exact wording of that screen varies between models and firmware
 revisions; it is the one that lists the apps on the key.
 
-**4. Run it** from the instrument's **Apps** menu. The app takes its first capture as it starts, so a
-line that is already carrying traffic decodes immediately — and if nothing is connected yet it says
-`line is idle (no transitions)` and waits.
+**4. Run it** from the instrument's **Apps** menu. It comes up idle, showing `ready -- press Capture`,
+and measures nothing until you ask it to — so launching never waits on an acquisition. Press
+**Capture** and a line already carrying traffic decodes immediately; a pin with nothing on it reports
+`line is idle (no transitions)`.
 
 **5. Leave the key in, or take it out.** With a key in the slot the app appends decoded bytes to a log
 and the `Save` button writes a report; with no key it captures and decodes exactly the same in every

@@ -194,7 +194,7 @@ function sdec.li_parse()
 
   local function hex(v)
     if v == nil then return '--' end
-    return string.format('%02X', math.mod(v, 256))
+    return string.format('%02X', math.mod(v, 256) or 0)
   end
 
   local st = 'pre'                 -- 'pre', 'sync', 'pid', 'resp'
@@ -222,7 +222,7 @@ function sdec.li_parse()
       local piderr = (r.errs[d0 - 1] ~= nil)
       local pidtxt = ''
       if pidbad then
-        pidtxt = string.format('  PID %s parity BAD', hex(pid))
+        pidtxt = string.format('  PID %s parity BAD', tostring(hex(pid)))
       end
       if piderr then
         pidtxt = pidtxt .. '  PID byte damaged -- the ID may be wrong'
@@ -293,19 +293,19 @@ function sdec.li_parse()
 
         local tail
         if csok then
-          tail = string.format('csum %s ok %s', hex(cs), style)
+          tail = string.format('csum %s ok %s', tostring(hex(cs)), tostring(style))
         else
-          tail = string.format('csum %s BAD (enh %s cls %s)', hex(cs), hex(we), hex(wc))
+          tail = string.format('csum %s BAD (enh %s cls %s)', tostring(hex(cs)), tostring(hex(we)), tostring(hex(wc)))
         end
         if nerr > 0 then
-          tail = tail .. string.format('  %d damaged byte(s)', nerr)
+          tail = tail .. string.format('  %d damaged byte(s)', nerr or 0)
           -- A checksum that agrees does NOT clear a flagged byte: see li_csum's blind spot
           -- above. Arithmetic, not caution.
           if csok then tail = tail .. ' -- the checksum match is not proof' end
         end
         if nmiss > 0 then
           tail = tail .. string.format('  %d byte(s) missing -- checksum unverifiable',
-                                       nmiss)
+                                       nmiss or 0)
         end
         -- A checksum that only validates as enhanced on a diagnostic ID is a real
         -- specification violation and worth naming, because it is the sort of thing a
@@ -319,17 +319,17 @@ function sdec.li_parse()
         -- 1..8 data bytes is the whole legal range. More than 8 usually means a break
         -- was missed and two frames ran together, which is worth saying outright
         -- because the checksum failure it causes otherwise looks like bus corruption.
-        local lentxt = string.format('%d data', ndata)
+        local lentxt = string.format('%d data', ndata or 0)
         if ndata < 1 then
           lentxt = '0 data (a LIN frame carries 1 to 8)'
           k = 'err'
         elseif ndata > 8 then
           lentxt = string.format('%d data (over the 8-byte maximum -- a missed break?)',
-                                 ndata)
+                                 ndata or 0)
           k = 'err'
         end
 
-        emit(k, string.format('%s  %s  %s  %s%s', head, lentxt, dtxt, tail, pidtxt))
+        emit(k, string.format('%s  %s  %s  %s%s', tostring(head), tostring(lentxt), tostring(dtxt), tostring(tail), tostring(pidtxt)))
         L.nframes = L.nframes + 1
         -- The style census EXCLUDES diagnostic frames. They are classic by
         -- specification whatever version the bus is, so counting them made every
@@ -359,7 +359,7 @@ function sdec.li_parse()
       if npre > 0 and not presaid then
         presaid = true
         emit('note', string.format('-- %d byte(s) before the first break (capture started mid-frame)',
-                                   npre))
+                                   npre or 0))
       end
       L.nbreak = L.nbreak + 1
       st, pid, id, d0, nd = 'sync', nil, nil, nil, 0
@@ -373,7 +373,7 @@ function sdec.li_parse()
         -- not LIN or the bit rate is wrong -- and 0x55 read at the wrong bit rate is
         -- exactly how a wrong bit rate shows itself here.
         emit('err', string.format('-- sync field is %s, not 55 (wrong bit rate, or not LIN)',
-                                  hex(v)))
+                                  tostring(hex(v))))
         st = 'pre'
       end
     elseif st == 'pid' then
@@ -389,7 +389,7 @@ function sdec.li_parse()
   finish()
 
   if npre > 0 and not presaid then
-    emit('note', string.format('-- %d byte(s) and no break field: no LIN frame here', npre))
+    emit('note', string.format('-- %d byte(s) and no break field: no LIN frame here', npre or 0))
   end
   if L.n == 0 then return false, 'no LIN frames found' end
   return true
@@ -421,10 +421,10 @@ function sdec.li_summary()
   elseif L.ncls > 0 and L.nenh == 0 then style = '  classic csum'
   elseif L.nenh > 0 and L.ncls > 0 then style = '  mixed csum' end
   local diag = ''
-  if L.ndiag > 0 then diag = string.format('  %d diag', L.ndiag) end
+  if L.ndiag > 0 then diag = string.format('  %d diag', L.ndiag or 0) end
   local bad = ''
-  if L.bad > 0 then bad = string.format('  %d bad', L.bad) end
-  return string.format('%d frames  %d ID(s)%s%s%s', L.nframes, L.nids, style, diag, bad)
+  if L.bad > 0 then bad = string.format('  %d bad', L.bad or 0) end
+  return string.format('%d frames  %d ID(s)%s%s%s', L.nframes or 0, L.nids or 0, tostring(style), tostring(diag), tostring(bad))
 end
 
 -- ============================================================================
@@ -438,10 +438,10 @@ function sdec.li_breaknote()
   if L.nbreak < 1 or r.nbad < 1 then return nil end
   if L.nbreak >= r.nbad then
     return string.format('all %d framing error(s) are LIN break fields, which is normal',
-                         r.nbad)
+                         r.nbad or 0)
   end
   return string.format('%d of the %d framing errors are LIN break fields (normal); %d are not',
-                       L.nbreak, r.nbad, r.nbad - L.nbreak)
+                       L.nbreak or 0, r.nbad or 0, r.nbad - L.nbreak)
 end
 
 -- The divider check. A LIN bus idles at Vbat, so an undivided 12 V one puts 12 V into a
@@ -462,7 +462,7 @@ function sdec.li_levelnote()
   if hi == nil then return nil end
   if hi > 9.5 then
     return string.format('recessive is %.1f V, at the 10 V range limit -- divide the bus 2:1 (more for 24 V)',
-                         hi)
+                         hi or 0)
   end
   return nil
 end

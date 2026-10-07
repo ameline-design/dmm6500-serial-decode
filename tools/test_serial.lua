@@ -1659,8 +1659,12 @@ do
         string.format('baud=%s res=%s', tostring(sdec.baud), tostring(sdec.res)))
   clearforce()
 
-  -- AND ON A RAISE, NOT ONLY A false RETURN. A bare acquire() that raises unwinds past the drop to
-  -- capture()'s catch, which is the same defect by another route.
+  -- AND ON A RAISE, NOT ONLY A false RETURN. autoset() calls each step BARE, because pcall nesting
+  -- on this path bluescreens this firmware and the margin is one level. So a raise unwinds past
+  -- autoset's own drops to sdec.capture()'s single catch, which does the drop instead -- and this
+  -- checks the invariant WHERE IT HOLDS, through the press entry point rather than inside autoset.
+  -- Going through capture() is the point: checking autoset alone passes on a build with no drop
+  -- anywhere.
   run({bytes = GEN_BYTES('Hello, World!'), baud = 9600, fs = 100000})
   local racq, rn = sdec.acquire, 0
   sdec.acquire = function()
@@ -1668,14 +1672,19 @@ do
     if rn == 1 then return racq() end
     error('raised second-pass acquire', 0)
   end
-  local rok, rwhy = sdec.autoset()
+  local rok, rwhy = pcall(function() return sdec.capture() end)
   sdec.acquire = racq
-  check('a RAISING second pass is caught and reported, not propagated',
-        rok == false and rn >= 2, string.format('ok=%s calls=%d why=%s', tostring(rok), rn,
-                                                tostring(rwhy)))
+  -- RE-RAISED, by contract: test_streamfix pins the same property from the other side.
+  check('a RAISING second pass still reaches the caller', rok == false and rn >= 2,
+        string.format('ok=%s calls=%d why=%s', tostring(rok), rn, tostring(rwhy)))
   check('...and it leaves no rate claim behind either',
         sdec.baud == nil and sdec.res == nil,
         string.format('baud=%s res=%s', tostring(sdec.baud), tostring(sdec.res)))
+  -- The reporting moved up with the catch, so it is checked up here too: a raise that unwinds
+  -- silently leaves the panel reading 'capturing' for the rest of the session.
+  check('...and the panel says so, from the one place that can still see it',
+        sdec.ui_status == 'error' and has(tostring(sdec.lasterr), 'capture raised'),
+        string.format('status=%s lasterr=%s', tostring(sdec.ui_status), tostring(sdec.lasterr)))
   clearforce()
 
   -- baud_probe IS PER CALL. uart_decode clears it inside decode_from(), which an acquisition failure
@@ -1805,7 +1814,17 @@ check('exactly two screens are live', MD.live('screen') == 2,
 -- button dead. display.OBJ_TIMER is how the instrument's own clockIV3 sample does it.
 check('there is exactly one tick timer -- the only way to notice a USB key with no press',
       MD.live('timer') == 1, 'timers=' .. MD.live('timer'))
-check('the first capture ran and decoded', sdec.res ~= nil and sdec.res.nf == ulgn,
+-- START() MEASURES NOTHING, and that is asserted BEFORE the capture below rather than after:
+-- once a capture has run, a start() that had quietly taken one of its own is indistinguishable
+-- from one that had not. res nil is the whole claim -- no acquisition, no decode.
+check('start() takes no capture -- the app comes up idle', sdec.res == nil,
+      'res=' .. tostring(sdec.res))
+check('and the status row says whose turn it is',
+      sdec.ui_status == 'ready -- press Capture', tostring(sdec.ui_status))
+-- EXPLICIT from here on, because start() does not provide one: every check to the end of this
+-- section reads a decode off the panel, and the press is what produces one.
+sdec.capture()
+check('a capture ran and decoded', sdec.res ~= nil and sdec.res.nf == ulgn,
       string.format('%s of %d bytes', sdec.res and tostring(sdec.res.nf) or 'nil', ulgn))
 -- The header is a strip of fixed fields, each its own object at its own x, so
 -- columns line up in a proportional font. Check the values landed in the right
@@ -3563,6 +3582,11 @@ check('End App from the options screen frees every buffer', LIVEBUFS() == base_b
 -- If the handle declarations reset the fields, the previous launch's objects become
 -- unreachable and survive until a power cycle.
 sdec.start()
+-- AND A CAPTURE, because the buffer is what this invariant is mostly about and start()
+-- does not allocate one: sdec.buf comes from acq_make_buffer() inside sdec.acquire().
+-- Without a press there is no buffer handle for a reload to strand, so the check below
+-- would pass by having nothing to lose.
+sdec.capture()
 local live2, bufs2 = MD.live(), LIVEBUFS()
 -- SETTINGS, not just handles. Checking only display objects and buffers lets an
 -- unconditional file-scope assignment to `range` or `trigmode` through: an App relaunch
@@ -3602,6 +3626,13 @@ sdec.ui_mode, sdec.alt_minframes = 'text', 8
 ulog.maxlines, ulog.path = 20000, '/usb1/t.txt'
 clearforce()
 sdec.start()
+-- A RELAUNCH FREES THE BUFFER AND THE NEXT PRESS ALLOCATES IT AGAIN, so both halves are
+-- checked rather than only the total: cleanup() has to get the count back to the baseline,
+-- and the capture after it has to bring it back to exactly ONE. Two is what a leak looks
+-- like, and checking only after the press would miss a cleanup that freed nothing.
+check('relaunching frees the capture buffer, so the press starts from the baseline',
+      LIVEBUFS() == base_bufs, 'buffers=' .. LIVEBUFS() .. ' vs ' .. base_bufs)
+sdec.capture()
 check('relaunching leaks NO display objects', MD.live() == live2,
       'live=' .. MD.live() .. ' vs ' .. live2)
 check('relaunching leaks NO buffers', LIVEBUFS() == bufs2,
@@ -4170,6 +4201,7 @@ local lrd, lts, lnc, lnsmp, lbytes, lnby =
 SRC.rd, SRC.ts, SRC.trigat = lrd, lts, nil
 sdec.fs, sdec.trigmode = 200000, 'free'
 sdec.start()
+sdec.capture()
 
 check('the wire layer recovers every byte of the LIN capture, breaks included',
       sdec.res ~= nil and sdec.res.nf == lnby,

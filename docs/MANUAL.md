@@ -626,6 +626,37 @@ costs about 340 microseconds, or 0.07 % of the instrument. It stops while a capt
 running, and resumes when that finishes — so a key pulled *during* a long recording is noticed by the
 write that follows it rather than by the clock.
 
+**A bad install bluescreens the instrument rather than refusing.** Two versions of this have been
+seen on firmware 1.7.17a, and the second matters more because it looks innocent:
+
+* **A corrupted archive on the key.** Recopy `Serial_Decode.tspa` and verify it with `cmp` before
+  installing again — see the note in the README's install steps.
+* **A capture taken while the app starts up, run from internal memory.** This one is fixed in the
+  app, and it is worth knowing about because the fix is a single missing call rather than anything
+  you can configure. Versions up to 1.37 took a capture at the end of their own launch. Installed
+  in internal memory, that bluescreened the instrument at the end of that capture — three times out
+  of three — while the *same archive* run from the USB key was faultless, and a capture from your
+  own press of **Capture** was faultless too. The app no longer captures at launch, which removes
+  it: the identical build with only that call taken out ran clean.
+
+  Two things about it are worth recording, because both cost a day to establish and both are
+  counter-intuitive:
+
+  * **The installed copy was not corrupt.** Its stored source was byte-identical to the working
+    one — 271345 bytes, 7164 lines, the same CRLF endings, not one differing byte.
+  * **It is not a size limit, so making the app smaller does not help.** A purpose-built app with a
+    *larger* compiled image and *more* stored source runs cleanly, and stripping 58 kB of comments
+    out of this app changed nothing while the launch-time capture was still there.
+
+  Reinstalling from the key is **not** a reliable cure for this — one reinstall looked like one and
+  the crash came back, so never conclude it is fixed because a capture or two survived.
+
+**So `tools/cmp_installed.py` proves the TEXT, not the INSTALL.** It reads the installed app's own
+source back out of the script catalog and diffs it against any commit's archive down to the byte,
+which settles exactly which build is on the instrument. It cannot see whatever else the firmware
+keeps beside that text, and that is what a bad install damages. **Reinstall from the key before
+suspecting the code** — it costs a minute, and it is the remedy that has worked both times.
+
 **Expect about two seconds before the buttons come back after you push a key in.** That is the
 instrument mounting the key, not the app waiting — pulling the key is noticed at once, and the
 delay is only on the way in. Pressing a button during those two seconds does not shorten it:

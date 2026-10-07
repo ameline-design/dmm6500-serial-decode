@@ -220,6 +220,10 @@ sdec.fs, sdec.n, sdec.trigmode = 100000, 20000, 'free'
 
 local ok, err = sdec.start()
 if not ok then print('start() failed: ' .. tostring(err)) end
+-- A PRESS IS WHAT PRODUCES A DECODE. start() builds the panel and measures nothing, so without
+-- this every mockup below renders the idle screen -- empty dump rows and '--' in every field --
+-- which is not what these images are for.
+sdec.capture()
 print(string.format('decoded %d bytes, %d framing errors, %s, %s',
       sdec.res and sdec.res.nf or 0, sdec.res and sdec.res.nbad or -1,
       sdec.baud_text(), sdec.fmt_text()))

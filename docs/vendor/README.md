@@ -1,13 +1,16 @@
 # Firmware reports for Keithley TSP
 
-Four findings from building a TSP app that runs on the instrument's own front panel — a UART decoder
+Five findings from building a TSP app that runs on the instrument's own front panel — a UART decoder
 that digitizes a serial line, recovers the baud rate and format, and shows the bytes on the panel. Each
-is reproducible with the standard library alone; none needs the app or any bench equipment. Report 4
-needs a USB key and one physical action; the rest need nothing connected at all.
+of 1-4 is reproducible with the standard library alone and needs neither the app nor any bench
+equipment. Report 4 needs a USB key and one physical action, and report 5 needs a USB key to install an
+app; nothing here needs a signal or a second instrument.
 
-**They are ordered by what they cost an app developer**, not by severity as an instrument fault. All four
-are **characterised**: every figure in them is a measurement on the instrument, and what remains unknown is
-named at the end of each. What is open is listed there, not here.
+**They are ordered by what they cost an app developer**, not by severity as an instrument fault. Reports
+1-4 are **characterised**: every figure in them is a measurement on the instrument, and what remains
+unknown is named at the end of each. **Report 5 is not characterised** -- its trigger is pinned and its
+fix is known, but its mechanism is not and its standalone repro is unconfirmed. What is open is listed in
+each report, not here.
 
 | | report | one line | repro |
 |---|---|---|---|
@@ -15,6 +18,7 @@ named at the end of each. What is open is listed there, not here.
 | 2 | [Event 4915 cannot be muted](02-event-4915-unmutable.md) | arming a trigger model puts a **modal dialog over the app** that `localnode.showevents = 0` does not prevent, while the same setting does suppress other error-severity events | `repro-02-4915.tsp` |
 | 3 | [-363 on the execute path](03-input-buffer-overrun.md) | a line over **1024 bytes** overruns the input buffer even with a strict handshake, the figure is undocumented, and a successful `script.delete` posts an error dialog | `repro-03-buffer-overrun.py`, which bisects the limit |
 | 4 | [`file.write` fails silently](04-file-write-silent-failure.md) | pulling the USB key makes `file.write` return **normally** while writing nothing and posting **2200** per call, so the failure reaches only the operator — and no event marks the key arriving or leaving | `repro-04-file-write.tsp` |
+| 5 | [Capture at app launch](05-capture-at-app-launch.md) | a digitize capture reached from an app's **entry point** bluescreens the instrument when the app runs from **internal memory** after a restart, while the **same archive on USB is immune** and a capture from a button press is immune; no size threshold explains it | `repro-05-capture-at-launch.tsp`, **candidate, unconfirmed** |
 
 [img/](img/) holds the panel screenshots the reports rely on — a dialog caught in a picture is the form of
 that claim a reader cannot argue with. `eevblog-display-pool.md` is a short write-up of report 1 for a
@@ -30,4 +34,5 @@ public forum, drafted and not posted.
 | embedded Lua | **5.0.2** (`math.mod`, no `string.match`, no `#`) |
 | storage | USB key in the front port, FAT, 8.3 names |
 
-Nothing here depends on a signal being connected, on the USB key, or on any second instrument.
+Nothing here depends on a signal being connected or on any second instrument. Reports 4 and 5 need the
+USB key: report 4 because pulling it is the provocation, report 5 only to install an app.

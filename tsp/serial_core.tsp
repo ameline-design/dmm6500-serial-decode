@@ -1211,10 +1211,10 @@ function sdec.sig_quality()
     local fs = sdec.acq_fs or sdec.fs
     if fs ~= nil and fs > 0 and fs / T > sdec.maxbaud * (1 - sdec.plaustol) then
       return T, string.format('only %.1f samples/bit -- at or past the %d kBd ceiling',
-                              T, sdec.maxbaud / 1000)
+                              T or 0, sdec.maxbaud / 1000)
     end
     return T, string.format('only %.1f samples/bit at %.0f kSa/s -- no margin left in the capture rate',
-                            T, (fs or 0) / 1000)
+                            T or 0, (fs or 0) / 1000)
   end
   return T
 end
@@ -1240,10 +1240,21 @@ end
 -- Derive the true sample rate from the buffer's own timestamps. The readback
 -- LIES for any rate the hardware cannot synthesise, so this is the only
 -- trustworthy source; every bit time in this module is scaled by it.
+--
+-- GUARDED HERE, AT THE PROXY READ, which is the firmware boundary and the only thing in this
+-- function that can raise: buf.relativetimestamps is an IPC proxy, and indexing one whose buffer
+-- the firmware has already dropped RAISES rather than returning nil. nil is the answer every
+-- caller already reads as "no measured rate" and substitutes the requested one for, so the guard
+-- belongs on the two reads rather than around the call -- a guard there would be a guard around
+-- our own arithmetic, and acq_fs_or_requested() is reached from the capture path.
 function sdec.acq_measure_fs(buf, n)
-  local ts = buf.relativetimestamps
-  if ts == nil or n == nil or n < 2 then return nil end
-  local t1, tn = ts[1], ts[n]
+  if buf == nil or n == nil or n < 2 then return nil end
+  local t1, tn = nil, nil
+  local ok = pcall(function()
+    local ts = buf.relativetimestamps
+    if ts ~= nil then t1, tn = ts[1], ts[n] end
+  end)
+  if not ok then return nil end
   if t1 == nil or tn == nil then return nil end
   local span = tn - t1
   if span <= 0 then return nil end
@@ -1266,7 +1277,7 @@ end
 -- so whenever this flag is set.
 function sdec.acq_fs_or_requested(buf, n)
   local m = nil
-  pcall(function() m = sdec.acq_measure_fs(buf, n) end)
+  m = sdec.acq_measure_fs(buf, n)
   if m ~= nil then
     sdec.acq_fs_est = nil
     return m
@@ -1869,7 +1880,7 @@ function sdec.acq_make_buffer(n)
   --
   -- Cheap when there is nothing to settle: trig_settle() polls the model state and returns at once
   -- when it is already idle.
-  pcall(function() sdec.trig_settle() end)
+  sdec.trig_settle()
   if sdec.buf ~= nil then
     local b = sdec.buf
     -- A REFUSED DELETION MUST NOT BE FOLLOWED BY A NEW ALLOCATION, and the handle must not be
@@ -1885,7 +1896,14 @@ function sdec.acq_make_buffer(n)
     sdec.buf = nil
   end
   if n < 10 then n = 10 end     -- buffer.make() minimum
-  sdec.buf = buffer.make(n, buffer.STYLE_STANDARD)
+  -- GUARDED AT THE ALLOCATION, which is the firmware boundary and the only thing left in this
+  -- function that can raise -- trig_settle() and buffer.delete() above carry their own. make()
+  -- refuses when defbuffer2 already holds the readings this needs, and nil is the answer the
+  -- caller tests for anyway, so the guard belongs here rather than around the call: this runs on
+  -- the capture path, where pcall depth is what bluescreens the instrument.
+  local nb = nil
+  if not pcall(function() nb = buffer.make(n, buffer.STYLE_STANDARD) end) then return nil end
+  sdec.buf = nb
   -- Continuous, so an overwrite is an overwrite rather than a discard -- see acq_fillmode.
   sdec.acq_fillmode(sdec.buf)
   return sdec.buf
@@ -2024,6 +2042,8 @@ end
 -- Stop the trigger model AND WAIT FOR IT TO STOP. abort() is asynchronous; see the
 -- note in acq_triggered for what happens when the next capture does not wait.
 -- Bounded, because a model that will not idle must not hang the panel.
+-- NEVER RAISES, so every caller calls it bare: the abort, the state polls and the sleep each carry
+-- their own guard, and nothing else here touches the instrument.
 function sdec.trig_settle()
   pcall(function() trigger.model.abort() end)
   local i
@@ -2058,7 +2078,10 @@ function sdec.trig_settle()
       -- hardware to confirm; the honest comment is cheaper and comes first.
       if unread >= 10 then return false end
     end
-    delay(0.01)
+    -- THE SLEEP IS A FIRMWARE CALL AND CARRIES ITS OWN GUARD, which is what lets every caller call
+    -- this bare. A raise out of delay() here would escape into sdec.stop()'s teardown and leave the
+    -- buffer undeleted -- the one thing this function exists to make safe.
+    pcall(function() delay(0.01) end)
   end
   return false
 end

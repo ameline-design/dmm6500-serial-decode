@@ -430,7 +430,7 @@ function ulog.line(s)
   end
   ulog.nlines = ulog.nlines + 1
   ulog.nwritten = (ulog.nwritten or 0) + 1
-  local txt = string.format('%05d %s %s\r\n', ulog.nlines, tostring(ulog.tag),
+  local txt = string.format('%05d %s %s\r\n', ulog.nlines or 0, tostring(ulog.tag),
                             tostring(s))
   local ok, err = pcall(function()
     file.write(ulog.fh, txt)
@@ -616,7 +616,7 @@ function ulog.next_free(prefix, ext, limit)
   for k = 0, limit - 1 do
     i = start + k
     if i >= limit then i = i - limit end      -- both are < limit, so one subtraction wraps it
-    local path = string.format('%s%03d%s', prefix, i, ext)
+    local path = string.format('%s%03d%s', tostring(prefix), i or 0, tostring(ext))
     if not ulog.exists(path) then
       -- CACHE THE INDEX FOUND, NOT THE ONE AFTER IT -- so this stays a pure QUERY.
       --
@@ -654,7 +654,7 @@ function ulog.next_free(prefix, ext, limit)
   -- prefix measured 704 px against the 658 the note row can show. The directory never varies, and
   -- nothing on that row needs it.
   local leaf = string.gsub(tostring(prefix), '^.*/', '')
-  ulog.idx_why = string.format('all %d %sNNN%s names are taken', limit, leaf, tostring(ext))
+  ulog.idx_why = string.format('all %d %sNNN%s names are taken', limit or 0, tostring(leaf), tostring(ext))
   return nil
 end
 
@@ -716,9 +716,9 @@ function ulog.status()
     return 'log: ' .. why
   end
   local extra = ''
-  if ulog.dropped > 0 then extra = string.format(' (+%d dropped)', ulog.dropped) end
+  if ulog.dropped > 0 then extra = string.format(' (+%d dropped)', ulog.dropped or 0) end
   -- File NAME only: the status row has ~45 proportional characters before the
   -- panel edge, and the directory is always /usb1/.
   local base = string.gsub(tostring(ulog.path), '^.*/', '')
-  return string.format('log: %d ln %s%s', ulog.nlines, base, extra)
+  return string.format('log: %d ln %s%s', ulog.nlines or 0, tostring(base), tostring(extra))
 end

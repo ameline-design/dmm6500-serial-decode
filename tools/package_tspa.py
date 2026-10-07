@@ -24,6 +24,14 @@ import os
 STRIP_COMMENTS = True
 # Comment lines kept above each definition in the archive: at least one, never more than this.
 KEEP_COMMENT_LINES = 5
+# Keep those per-definition doc lines at all. False drops every comment from the body, which is
+# what --no-docs is for: a DIAGNOSTIC build, not a shippable one.
+#
+# WHY THAT IS WORTH A FLAG. Comments do not reach a compiled chunk, so a build with the same code
+# and tens of kB less TEXT separates two otherwise identical explanations of an instrument fault:
+# one where the stored SOURCE is too large, and one where the COMPILED IMAGE is. Only the first is
+# affected by this flag, so the two make opposite predictions about the resulting archive.
+KEEP_DOCS = True
 import re
 import struct
 import sys
@@ -84,6 +92,8 @@ def doc_for(block):
     tail too retains the closing summary where a block has one, and `[...]` marks the elision rather
     than letting two distant fragments read as continuous prose.
     """
+    if not KEEP_DOCS:
+        return []
     body = [c for c in block if not SEPARATOR.match(c.strip())]
     if len(body) <= KEEP_COMMENT_LINES:
         return body
@@ -198,10 +208,11 @@ LICENSE = '''
 # verify_tspa.lua catches it as "unexpected symbol near '#'" at the bundle's line number.
 ENTRY = '''
 -- ==================== TTI App entry point ====================
--- sdec.start() opens the USB log, builds both screens, hooks End App
--- (EVENT_ENDAPP -> sdec.cleanup) as soon as the main screen exists, then takes a first
--- capture -- all under pcall, so a failure part-way through tears its own display
--- objects back down instead of stranding them until the next power cycle.
+-- sdec.start() opens the USB log, builds both screens and hooks End App
+-- (EVENT_ENDAPP -> sdec.cleanup) as soon as the main screen exists -- all under pcall,
+-- so a failure part-way through tears its own display objects back down instead of
+-- stranding them until the next power cycle. It takes NO capture: the app comes up idle
+-- and the first acquisition is the operator's press of Capture.
 sdec.start()
 '''
 
@@ -330,7 +341,17 @@ def main():
                     help='also write the icon on its own, for review')
     ap.add_argument('--check', action='store_true',
                     help='write nothing: exit 1 if the package on disk is not what these sources build')
+    ap.add_argument('--no-docs', action='store_true',
+                    help='drop every comment from the body -- a DIAGNOSTIC build; use with --out')
     args = ap.parse_args()
+    if args.no_docs:
+        # NOT SHIPPABLE, AND IT REFUSES TO PRETEND OTHERWISE: an archive with no comments in it must
+        # not land on the default path, where the next --check would read it as the current build and
+        # every tool that reads the archive would see a body nothing in tsp/ produces.
+        if os.path.abspath(args.out) == os.path.abspath(os.path.join(ROOT, NAME + '.tspa')):
+            raise SystemExit('--no-docs builds a diagnostic archive; give it its own --out path')
+        global KEEP_DOCS
+        KEEP_DOCS = False
 
     out = []
     out.append('loadscript ' + NAME)

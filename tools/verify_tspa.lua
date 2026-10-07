@@ -219,8 +219,17 @@ check('the screen title is the app title, under the 31-char limit',
       and string.sub(scrtitle, 1, string.len(apptitle)) == apptitle
       and string.len(scrtitle) <= 31,
       tostring(scrtitle) .. '  vs $Title -> ' .. apptitle)
+-- THE ENTRY POINT MEASURES NOTHING, so the dead front end above cannot have been noticed
+-- yet: a launch that reported a fault here would be reporting one it has not had. Checked
+-- before the press, because afterwards the two cases look alike.
+check('the launch comes up idle, with no fault it has not had',
+      sdec.ui_status == 'ready -- press Capture', 'status=' .. tostring(sdec.ui_status))
+-- NOW ask for a measurement, which is what reaches the dead front end. This is the press the
+-- operator makes, and everything below is about surviving a front end that returns no samples.
+sdec.capture()
 check('the app is alive and reports the failure rather than dying',
-      sdec.ui_status ~= nil and sdec.ui_status ~= 'ready',
+      sdec.ui_status ~= nil and sdec.ui_status ~= 'ready'
+      and sdec.ui_status ~= 'ready -- press Capture',
       'status=' .. tostring(sdec.ui_status))
 check('the note line explains what went wrong',
       MD.text(sdec.ui_note) ~= nil and string.len(MD.text(sdec.ui_note)) > 0,

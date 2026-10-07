@@ -944,22 +944,22 @@ function sdec.ua_implausible_why(T)
   -- second the floor swallows every case that reaches here, and the ceiling sentence -- the true one,
   -- since ua_plausible refuses on b > maxbaud * (1 + plaustol) there -- can never print.
   if b > sdec.maxbaud * (1 + sdec.plaustol) then
-    return string.format('%.0f baud is past the %d kBd ceiling', b, sdec.maxbaud / 1000)
+    return string.format('%.0f baud is past the %d kBd ceiling', b or 0, sdec.maxbaud / 1000)
   end
   -- TOO FEW SAMPLES PER BIT IS NOT THE INSTRUMENT'S CEILING once the check above has ruled that out,
   -- and saying so would be false rather than vague: 3.5 samples/bit at 20 kSa/s is 5714 baud, nowhere
   -- near 250 kBd. What is wrong is the capture rate under it, so that is what the sentence names.
   if T < sdec.minsabit * (1 - sdec.plaustol) then
     return string.format('%.1f samples/bit -- %.0f baud needs a faster capture than %.0f kSa/s',
-                         T, b, fs / 1000)
+                         T or 0, b or 0, fs / 1000)
   end
   -- THE FLOOR NEEDS ITS OWN SENTENCE, or a rate below it falls through to 'no frame fits' -- which is
   -- not merely vague but false: forcing that same rate frames every byte. A refusal has to name the
   -- limit it applied.
   if b < sdec.minbaud * (1 - sdec.plaustol) then
-    return string.format('%.0f baud is below the %d baud floor', b, sdec.minbaud)
+    return string.format('%.0f baud is below the %d baud floor', b or 0, sdec.minbaud or 0)
   end
-  return string.format('no frame fits a %.1f sample bit time', T)
+  return string.format('no frame fits a %.1f sample bit time', T or 0)
 end
 
 -- Bit times worth scoring: the fit rescaled by sdec.ratios, plus MEDIAN-DERIVED
@@ -1240,14 +1240,14 @@ function sdec.ua_best_end(st)
       if failing and altsc >= (sdec.ua_alt_margin or 3) * sc1 then
         sdec.baud_note = string.format(
           '%s baud fits far better than %s (score %d vs %d, %d framing error(s))',
-          tostring(ab), tostring((sdec.sig_snap(fs / Tfit))), altsc, sc1, bad1)
+          tostring(ab), tostring((sdec.sig_snap(fs / Tfit))), altsc or 0, sc1 or 0, bad1 or 0)
         return altT, altr
       end
       -- "score", not "frames": these come from ua_score = ngood - 3*nbad, so a
       -- decode with errors scores below its frame count and the two can be
       -- misordered relative to the frames actually found.
       sdec.baud_note = string.format('%s baud also fits this waveform (score %d vs %d)',
-                                     tostring(ab), altsc, sc1)
+                                     tostring(ab), altsc or 0, sc1 or 0)
     end
     return Tfit, 1
   end
@@ -1382,7 +1382,7 @@ function sdec.ua_refine_width(r, rd, n, T)
     end
     if allone then
       blocked = string.format('bit %d was 1 in every frame -- this may be %dN%d; set Data Bits to "Auto (any width)"',
-                              want - 1, want - 1, r.nstop)
+                              want - 1, want - 1, r.nstop or 0)
     end
   end
 
@@ -1404,8 +1404,8 @@ function sdec.ua_refine_width(r, rd, n, T)
   r2.invert = r.invert
   r2.alts, r2.nalts = r.alts, r.nalts
   sdec.fmt_note = string.format('%s also fits; chose %s (the top %d data bit(s) were 1 in every frame)',
-                                sdec.ua_fmt_name(r.nbits, r.par, r.nstop),
-                                sdec.ua_fmt_name(want, r.par, r.nstop), dropped)
+                                tostring(sdec.ua_fmt_name(r.nbits, r.par, r.nstop)),
+                                tostring(sdec.ua_fmt_name(want, r.par, r.nstop)), dropped or 0)
   if blocked ~= nil then sdec.fmt_note = sdec.fmt_note .. '; ' .. blocked end
   return r2
 end
@@ -1533,7 +1533,7 @@ function sdec.ua_refine_parity(r, rd, n, T)
   local strict = (nagree == nvote)
   local note = string.format(
       '8N1 also fits; chose 7%s1 (bit 7 tracked %s parity in %d of %d frames)',
-      string.upper(string.sub(pname, 1, 1)), pname, nagree, nvote)
+      tostring(string.upper(string.sub(pname, 1, 1))), tostring(pname), nagree or 0, nvote or 0)
 
   if not strict then
     -- rd/n/T are absent only when a caller hands in a synthetic result table. Refuse rather than
@@ -1688,15 +1688,20 @@ function sdec.decode_from(rd, n)
     -- byte log; on the frame path the panel draws the measured BAUD in the locked GREEN whose
     -- entire justification is that a forced value must not look measured.
     --
-    -- So the advisory call is fenced: snapshot, call, restore unconditionally. Restoring after the
-    -- pcall rather than inside it covers the raise path too.
+    -- So the advisory call is fenced: snapshot, call, restore unconditionally.
+    --
+    -- A LOCAL FUNCTION RATHER THAN AN INLINE BLOCK, and not a pcall: the body has two early
+    -- returns -- "no measurement" and "an integer rescaling, stated" -- and inlining them would
+    -- return out of ua_decode() and skip the restore below, which is the one thing the fence is
+    -- for. Nothing in it reaches the instrument; sig_bittime() is called bare in the unforced
+    -- branch of this same function, so a guard here would be a guard around our own arithmetic.
     local keepT, keepR, keepQ = sdec.bittime, sdec.fitratio, sdec.fitq
     -- snapfirm IS PART OF THE FENCE. sig_bittime publishes it alongside baud and snapped, so leaving it
     -- out of the snapshot lets an ADVISORY measurement add or remove a forced rate's '?' -- the same
     -- overwrite this fence exists to prevent for the other three.
     local keepB, keepRaw, keepSnap = sdec.baud, sdec.baud_raw, sdec.snapped
     local keepFirm = sdec.snapfirm
-    pcall(function()
+    local function ratenote()
       local Tm = sdec.sig_bittime()
       if Tm == nil or Tm <= 0 then return end
       -- Only compare like with like. sig_bittime fits the greatest common period, so a fit that
@@ -1739,7 +1744,8 @@ function sdec.decode_from(rd, n)
           'WARNING: bytes may be WRONG -- wire is %.0f baud, not the %g you set (%+.0f %%)',
           meas, sdec.force_baud, err * 100)
       end
-    end)
+    end
+    ratenote()
     sdec.bittime, sdec.fitratio, sdec.fitq = keepT, keepR, keepQ
     sdec.baud, sdec.baud_raw, sdec.snapped = keepB, keepRaw, keepSnap
     sdec.snapfirm = keepFirm
@@ -1925,7 +1931,7 @@ function sdec.decode()
       -- the format search again on the next capture. The back-off branch below is where nothing
       -- worked, and that is where the format is dropped.
       sdec.relocked = string.format('%g baud fit nothing -- now locked to %.0f, which this capture reads',
-                                    was, adopt)
+                                    was or 0, adopt or 0)
       return ok2, why2
     end
     -- REFUSE, AND GIVE THE OPERATOR THEIR RATE BACK. This path reports a disagreement; it does not
@@ -1938,8 +1944,8 @@ function sdec.decode()
     sdec.rate_offer, sdec.rate_offer_from = found, was
     sdec.rate_refused = string.format(
         '%g baud fits nothing -- this capture reads %.0f. Options > Baud 0 restores detection.',
-        was, found)
-    return false, string.format('%g baud fits nothing; this capture reads %.0f', was, found)
+        was or 0, found or 0)
+    return false, string.format('%g baud fits nothing; this capture reads %.0f', was or 0, found or 0)
   end
   -- NO RATE FIT THESE SAMPLES, so there is nothing to adopt -- but the locked one failed too, and
   -- putting it back left the operator pressing Capture at an all-red panel with no way out but
@@ -1947,7 +1953,7 @@ function sdec.decode()
   -- taken through a window sized for the failed rate, so re-deciding on them is not a new
   -- measurement. Only what autolock chose is dropped; a typed width or parity is a decision.
   sdec.relocked = string.format('%g baud fits nothing, and no other rate fit either -- ' ..
-                                'back to auto-detect', was)
+                                'back to auto-detect', was or 0)
   sdec.rate_backoff = true
   sdec.force_baud = nil
   if sdec.autolock_set ~= nil then
@@ -1970,7 +1976,7 @@ function sdec.ua_fmt_name(nbits, par, nstop)
   local p = 'N'
   if par == sdec.PAR_EVEN then p = 'E' end
   if par == sdec.PAR_ODD  then p = 'O' end
-  return string.format('%d%s%d', nbits, p, nstop)
+  return string.format('%d%s%d', nbits or 0, tostring(p), nstop or 0)
 end
 
 -- FALLS BACK TO THE FORCED FORMAT, so a streaming capture names the format it is decoding with.
@@ -1997,7 +2003,7 @@ function sdec.baud_text()
   -- %.0f because a locked rate came from a MEASUREMENT and is fractional -- see the note in
   -- serial_ui.tsp's mode_why. Identical characters on 5.0.2, so the offline suites cover it.
   if sdec.baud == nil and sdec.force_baud ~= nil then
-    return string.format('%.0f baud', sdec.force_baud)
+    return string.format('%.0f baud', sdec.force_baud or 0)
   end
   if sdec.baud == nil then return '--' end
   -- %.0f here too: `snapped` is true for any FORCED rate (see decode_from), not only for one
@@ -2007,8 +2013,8 @@ function sdec.baud_text()
   -- standard rates -- but when the measurement sat further from it than the fit's own accuracy, the
   -- number is a choice rather than a reading, and dropping the marker is what made a 2.6 % error look
   -- exact. See sdec.snaptol_firm for where that boundary is and how it was calibrated.
-  if sdec.snapped and sdec.snapfirm ~= false then return string.format('%.0f baud', sdec.baud) end
-  return string.format('%.0f baud?', sdec.baud)
+  if sdec.snapped and sdec.snapfirm ~= false then return string.format('%.0f baud', sdec.baud or 0) end
+  return string.format('%.0f baud?', sdec.baud or 0)
 end
 
 -- One printable character per byte; '.' for control and high-bit values so the
@@ -2029,24 +2035,27 @@ function sdec.summary(i)
     if r == nil then return sdec.baud_text() end
     local idle = 'HIGH'
     if r.invert then idle = 'LOW' end
-    return string.format('%s  %s  idle %s', sdec.baud_text(), sdec.fmt_text(), idle)
+    return string.format('%s  %s  idle %s', tostring(sdec.baud_text()), tostring(sdec.fmt_text()), tostring(idle))
   end
 
   if i == 2 then
     if sdec.lo == nil then return 'no signal' end
     local spb = ''
     if sdec.bittime ~= nil then
-      spb = string.format('  %.1f sa/bit', sdec.bittime)
+      spb = string.format('  %.1f sa/bit', sdec.bittime or 0)
     end
     return string.format('%s  %.2f/%.2f V  thr %.2f V%s',
-                         sdec.family, sdec.lo, sdec.hi, sdec.thr, spb)
+                         tostring(sdec.family), sdec.lo or 0, sdec.hi or 0, sdec.thr or 0, tostring(spb))
   end
 
   if i == 3 then
     if r == nil then return '0 bytes' end
     local fs = sdec.acq_fs or sdec.fs
+    -- fs DEFENDED INSIDE THE DIVISION, not by `or 0` on the argument: the divide happens first, so
+    -- `fs / 1000 or 0` still raises when both acq_fs and fs are nil. capture_run() logs this line
+    -- bare on its success tail, where a raise would cost the two lines beside it and the repaint.
     return string.format('%d bytes  %d err  fit %.2f  %.0f kS/s',
-                         r.nf, r.nbad, sdec.fitq, fs / 1000)
+                         r.nf or 0, r.nbad or 0, sdec.fitq or 0, (fs or 0) / 1000)
   end
 
   return ''
@@ -2143,12 +2152,12 @@ function sdec.ua_hexrow(vals, errs, nf, i0, ncol, base)
       as[m] = ' '
     else
       local v = vals[i]
-      if v == nil then hx[m] = ' --' else hx[m] = string.format(' %02X', v) end
+      if v == nil then hx[m] = ' --' else hx[m] = string.format(' %02X', v or 0) end
       as[m] = sdec.ua_char(v, errs[i])
     end
   end
-  return string.format('%04d %s  |%s|', base + i0 - 1, sdec.ua_hexjoin(hx, m, ''),
-                       table.concat(as))
+  return string.format('%04d %s  |%s|', base + i0 - 1, tostring(sdec.ua_hexjoin(hx, m, '')),
+                       tostring(table.concat(as)))
 end
 
 -- THE SAME ROW, AS THREE PIECES, for the on-screen dump's three fixed-x text fields.
@@ -2174,7 +2183,7 @@ function sdec.ua_hexparts(vals, errs, nf, i0, ncol, base)
       as[m] = ' '
     else
       local v = vals[i]
-      if v == nil then hx[m] = '--' else hx[m] = string.format('%02X', v) end
+      if v == nil then hx[m] = '--' else hx[m] = string.format('%02X', v or 0) end
       as[m] = sdec.ua_char(v, errs[i])
     end
   end

@@ -80,34 +80,34 @@ function sdec.mi_rtname(st)
   if st == 0xFC then return 'Stop' end
   if st == 0xFE then return 'Active Sensing' end
   if st == 0xFF then return 'Reset' end
-  return string.format('Undefined %02X', st)
+  return string.format('Undefined %02X', st or 0)
 end
 
 -- Render one channel or system-common message.
 function sdec.mi_format(st, d)
   local hi = math.floor(st / 16)
   local ch = math.mod(st, 16) + 1                  -- channels are 1-16 to a musician
-  local chs = string.format('ch%-2d ', ch)
+  local chs = string.format('ch%-2d ', ch or 0)
 
   if hi == 0x8 then
-    return chs .. string.format('Note Off   %-4s vel %d', sdec.mi_note_name(d[1]), d[2] or 0)
+    return chs .. string.format('Note Off   %-4s vel %d', tostring(sdec.mi_note_name(d[1])), d[2] or 0)
   end
   if hi == 0x9 then
     -- Note On with velocity 0 is the conventional Note Off, and saying so avoids
     -- a reader wondering why nothing ever stops.
     if (d[2] or 0) == 0 then
       return chs .. string.format('Note On    %-4s vel 0  (= Note Off)',
-                                  sdec.mi_note_name(d[1]))
+                                  tostring(sdec.mi_note_name(d[1])))
     end
-    return chs .. string.format('Note On    %-4s vel %d', sdec.mi_note_name(d[1]), d[2])
+    return chs .. string.format('Note On    %-4s vel %d', tostring(sdec.mi_note_name(d[1])), d[2] or 0)
   end
   if hi == 0xA then
-    return chs .. string.format('Aftertouch %-4s %d', sdec.mi_note_name(d[1]), d[2] or 0)
+    return chs .. string.format('Aftertouch %-4s %d', tostring(sdec.mi_note_name(d[1])), d[2] or 0)
   end
   if hi == 0xB then
     local name = sdec.mi_ctl[d[1] or -1]
     if name == nil then name = string.format('CC %d', d[1] or 0) end
-    return chs .. string.format('%-14s = %d', name, d[2] or 0)
+    return chs .. string.format('%-14s = %d', tostring(name), d[2] or 0)
   end
   if hi == 0xC then
     return chs .. string.format('Program    %d', (d[1] or 0) + 1)
@@ -127,7 +127,7 @@ function sdec.mi_format(st, d)
   end
   if st == 0xF3 then return '     Song Select ' .. tostring(d[1] or 0) end
   if st == 0xF6 then return '     Tune Request' end
-  return string.format('     Status %02X', st)
+  return string.format('     Status %02X', st or 0)
 end
 
 -- Well-known SysEx manufacturer / universal IDs, enough to make a dump readable.
@@ -141,7 +141,7 @@ function sdec.mi_sysex_who(b, n)
   if id == 0x42 then return 'Korg' end
   if id == 0x47 then return 'Akai' end
   if id == 0x00 then return 'extended ID' end
-  return string.format('mfr %02X', id)
+  return string.format('mfr %02X', id or 0)
 end
 
 -- ============================================================================
@@ -175,7 +175,7 @@ function sdec.mi_parse()
   -- (a byte lost on the wire) -- and the second is the common one.
   local function trunc(s, g, nd)
     emit('err', string.format('     -- status %02X truncated (%d of %d data bytes)',
-                              s, g, nd))
+                              s or 0, g or 0, nd or 0))
   end
 
   local running = nil       -- status byte still in force for running status
@@ -189,7 +189,7 @@ function sdec.mi_parse()
   for i = 1, r.nf do
     local v = r.vals[i]
     if v == nil or r.errs[i] ~= nil then
-      emit('err', string.format('     -- framing error at byte %d', i))
+      emit('err', string.format('     -- framing error at byte %d', i or 0))
     elseif v >= 0xF8 then
       -- Real-time. Interleaves anywhere, including mid-message and mid-SysEx, and
       -- must not disturb running status, the pending data, or the SysEx block.
@@ -198,7 +198,7 @@ function sdec.mi_parse()
       if insysex and v ~= 0xF7 then
         -- A status byte other than F7 aborts an unterminated SysEx; the device
         -- either reset or bytes were lost.
-        emit('err', string.format('     -- SysEx truncated after %d bytes', sxn))
+        emit('err', string.format('     -- SysEx truncated after %d bytes', sxn or 0))
         insysex = false
       end
       -- Abandon any half-collected channel message BEFORE the new status replaces it.
@@ -215,9 +215,9 @@ function sdec.mi_parse()
           local j
           local lim = sxn
           if lim > 8 then lim = 8 end
-          for j = 1, lim do t[j] = string.format('%02X', sx[j]) end
+          for j = 1, lim do t[j] = string.format('%02X', sx[j] or 0) end
           local tail = ''
-          if sxn > 8 then tail = string.format(' ... (%d bytes)', sxn) end
+          if sxn > 8 then tail = string.format(' ... (%d bytes)', sxn or 0) end
           emit('sysex', '     SysEx ' .. sdec.mi_sysex_who(sx, sxn) .. '  '
                         .. table.concat(t, ' ') .. tail)
           insysex = false
@@ -248,7 +248,7 @@ function sdec.mi_parse()
             need = sdec.mi_datacount(running)
             got, d = 0, {}
           else
-            emit('err', string.format('     -- orphan data byte %02X', v))
+            emit('err', string.format('     -- orphan data byte %02X', v or 0))
           end
         end
         if st ~= nil then
@@ -268,7 +268,7 @@ function sdec.mi_parse()
   end
 
   if insysex then
-    emit('err', string.format('     -- SysEx unterminated after %d bytes', sxn))
+    emit('err', string.format('     -- SysEx unterminated after %d bytes', sxn or 0))
   elseif st ~= nil and got < need then
     trunc(st, got, need)         -- the capture simply ended mid-message
   end
@@ -296,8 +296,8 @@ function sdec.mi_summary()
   local m = sdec.midi
   if m == nil or m.n == 0 then return 'no MIDI messages' end
   local extra = ''
-  if m.bad > 0 then extra = string.format('  %d bad', m.bad) end
+  if m.bad > 0 then extra = string.format('  %d bad', m.bad or 0) end
   local rt = ''
-  if m.nrt > 0 then rt = string.format('  %d real-time', m.nrt) end
-  return string.format('%d messages%s%s', m.n, rt, extra)
+  if m.nrt > 0 then rt = string.format('  %d real-time', m.nrt or 0) end
+  return string.format('%d messages%s%s', m.n or 0, tostring(rt), tostring(extra))
 end

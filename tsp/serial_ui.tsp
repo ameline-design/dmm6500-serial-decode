@@ -755,7 +755,7 @@ end
 function sdec.ui_tick()
   if sdec.ui_scr == nil then return false end
   if sdec.busy or sdec.ck_running or sdec.strm_recording then return false end
-  return pcall(function() sdec.ui_keypoll() end)
+  return sdec.ui_keypoll()
 end
 
 -- Will anything the app writes reach the key? -> true or false.
@@ -766,7 +766,7 @@ end
 function sdec.log_live()
   local live = true
   if ulog ~= nil and ulog.keyok ~= nil then
-    pcall(function() live = ulog.keyok() end)
+    live = ulog.keyok()
   end
   return live
 end
@@ -814,10 +814,10 @@ function sdec.mode_why(m)
     -- hazard is that no offline test can enter this branch, which is how it stayed uncovered.
     if dl ~= nil and dl > 0 then
       return string.format('%.0f Bd: a recording gets %.1f samples/bit, under the %d floor -- '
-                           .. 'use FRAME', sdec.force_baud, dl / sdec.force_baud, sdec.minsabit)
+                           .. 'use FRAME', sdec.force_baud or 0, dl / sdec.force_baud, sdec.minsabit or 0)
     end
     return string.format('%.0f Bd is too fast to stream -- no sample rate delivers %d ' ..
-                         'samples/bit; use FRAME', sdec.force_baud, sdec.minsabit)
+                         'samples/bit; use FRAME', sdec.force_baud or 0, sdec.minsabit or 0)
   end
   return nil
 end
@@ -1354,13 +1354,13 @@ function sdec.ui_field_values()
   -- every capture, so on 5.5 a %d here raises the whole refresh and on 5.0.2 it silently truncates
   -- -- leaving the BAUD cell disagreeing with baud_text() beside it.
   if sdec.baud == nil and sdec.force_baud ~= nil then
-    v[1] = string.format('%.0f', sdec.force_baud)
+    v[1] = string.format('%.0f', sdec.force_baud or 0)
   elseif sdec.baud == nil then v[1] = '--'
   -- THE SAME CONDITION baud_text() USES, or the two disagree about the same capture: the cell would read
   -- 38400 while the text row read '38400 baud?'. A panel that contradicts itself is worse than either
   -- answer alone, because the operator cannot tell which one to believe.
-  elseif sdec.snapped and sdec.snapfirm ~= false then v[1] = string.format('%.0f', sdec.baud)
-  else v[1] = string.format('%.0f?', sdec.baud) end
+  elseif sdec.snapped and sdec.snapfirm ~= false then v[1] = string.format('%.0f', sdec.baud or 0)
+  else v[1] = string.format('%.0f?', sdec.baud or 0) end
 
   v[2] = sdec.fmt_text()
 
@@ -1375,11 +1375,11 @@ function sdec.ui_field_values()
   if sdec.lo == nil then
     v[5] = '--'
   else
-    v[5] = string.format('%.2f V', sdec.thr)
+    v[5] = string.format('%.2f V', sdec.thr or 0)
   end
 
   if sdec.bittime == nil then v[6] = '--'
-  else v[6] = string.format('%.1f', sdec.bittime) end
+  else v[6] = string.format('%.1f', sdec.bittime or 0) end
 
   local fs = sdec.acq_fs or sdec.fs
   if fs == nil then v[7] = '--'
@@ -1424,7 +1424,7 @@ function sdec.ui_field_values()
   if sdec.fitq == nil then
     v[10] = '--'
   else
-    v[10] = string.format('%.2f', sdec.fitq)
+    v[10] = string.format('%.2f', sdec.fitq or 0)
   end
   -- '--' RATHER THAN A NUMBER when sig_levels refused or has not run: a noise figure with no
   -- measured swing behind it is not a small number, it is no number.
@@ -1436,7 +1436,7 @@ function sdec.ui_field_values()
     -- where there is only a limit.
     v[11] = '>99 dB'
   else
-    v[11] = string.format('%.0f dB', sdec.snr_db)
+    v[11] = string.format('%.0f dB', sdec.snr_db or 0)
   end
   return v
 end
@@ -1588,19 +1588,19 @@ function sdec.ui_notes()
       if sdec.flog_why == nil then why = 'NOT RECORDED -- no USB key' end
       if first ~= nil and first > 1 then
         add(string.format('panel shows bytes %d-%d of %d -- the rest was DISCARDED, %s',
-                          first, first + sdec.res.nf - 1, tot, why))
+                          first or 0, first + (sdec.res.nf or 0) - 1, tot or 0, tostring(why)))
       else
         add(string.format('panel shows the first %d of %d bytes -- the rest was DISCARDED, %s',
-                          sdec.res.nf, tot, why))
+                          sdec.res.nf or 0, tot or 0, tostring(why)))
       end
     else
       local base = string.gsub(tostring(sdec.ck_tot.path), '^.*/', '')
       if first ~= nil and first > 1 then
         add(string.format('panel shows bytes %d-%d of %d; all are in %s',
-                          first, first + sdec.res.nf - 1, tot, base))
+                          first or 0, first + (sdec.res.nf or 0) - 1, tot or 0, tostring(base)))
       else
         add(string.format('panel shows the first %d bytes of the stream; all %d are in %s',
-                          sdec.res.nf, tot, base))
+                          sdec.res.nf or 0, tot or 0, tostring(base)))
       end
     end
   end
@@ -1667,7 +1667,7 @@ function sdec.ui_notes()
       if hs == 1 then
         add('began mid-byte -- the first byte is misaligned.')
       else
-        add(string.format('began mid-byte -- the first %d bytes are misaligned.', hs))
+        add(string.format('began mid-byte -- the first %d bytes are misaligned.', hs or 0))
       end
     else
       -- WHERE THOSE BYTES ARE is the fact that distinguishes this branch and cannot be dropped: the
@@ -1684,7 +1684,7 @@ function sdec.ui_notes()
       if hs == 1 then
         add('the run began mid-byte -- its first byte is misaligned' .. where)
       else
-        add(string.format('the run began mid-byte -- its first %d bytes are misaligned%s', hs, where))
+        add(string.format('the run began mid-byte -- its first %d bytes are misaligned%s', hs or 0, tostring(where)))
       end
     end
   end
@@ -1694,7 +1694,7 @@ function sdec.ui_notes()
   -- corruption", so say otherwise when the capture shows impulse noise.
   if sdec.res ~= nil and sdec.res.nfalse ~= nil and sdec.res.nfalse > 0 then
     add(string.format('%d false start(s) rejected -- impulse noise; "err" counts framing only',
-                      sdec.res.nfalse))
+                      sdec.res.nfalse or 0))
   end
 
   -- A PROTOCOL LAYER THAT FAILED, said where an empty message list would otherwise speak for it. Ranked
@@ -1758,9 +1758,9 @@ function sdec.ui_notes()
     if cap ~= nil and cap > 0 and sdec.res.nf >= cap then
       if sdec.force_baud == nil then
         add(string.format('capture FULL at %d bytes -- the message may continue; ' ..
-                          'lock the baud rate for a longer window', cap))
+                          'lock the baud rate for a longer window', cap or 0))
       else
-        add(string.format('capture FULL at %d bytes -- the message may continue', cap))
+        add(string.format('capture FULL at %d bytes -- the message may continue', cap or 0))
       end
     end
   end
@@ -1872,7 +1872,7 @@ function sdec.ui_pgind_text()
   if not sdec.ui_paged then return '' end
   local npg = sdec.ui_npages()
   if npg <= 1 then return '' end
-  return string.format('page %d of %d', sdec.ui_page + 1, npg)
+  return string.format('page %d of %d', sdec.ui_page + 1, npg or 0)
 end
 
 -- WHERE THE COUNTER'S FOUR PIECES GO, right to left from ui_pgind_x. Returns
@@ -2482,7 +2482,7 @@ function sdec.ui_build()
   -- to press. The buttons are built last precisely so this covers everything before them.
   if nb < table.getn(bdef) then
     error(string.format('only %d of %d buttons could be created -- display object pool exhausted. '
-                        .. 'Power cycle the instrument.', nb, table.getn(bdef)), 0)
+                        .. 'Power cycle the instrument.', nb or 0, table.getn(bdef) or 0), 0)
   end
 
   return sdec.ui_scr
@@ -2612,8 +2612,11 @@ end
 
 -- Repaint from the current decode result. settext only: nothing is created,
 -- deleted or repositioned, which is what keeps a refresh cheap.
-function sdec.ui_refresh()
-  pcall(function() sdec.ui_page_btns() end)
+function sdec.ui_refresh_do()
+  -- A BARE CALL: every display write inside ui_page_btns() and the ui_usb_btns() it calls is
+  -- already guarded one line at a time, so it returns false rather than raising and a button that
+  -- could not be repainted cannot abandon the field repaint below it.
+  sdec.ui_page_btns()
   if sdec.ui_scr == nil then return false end
   local set = sdec.ui_set
 
@@ -2829,7 +2832,7 @@ function sdec.ui_refresh()
       capn = sdec.window_bytes(sdec.baud, sdec.res.nbits, sdec.res.par, sdec.res.nstop)
     end
     local wintxt = ''
-    if capn ~= nil and capn > 0 then wintxt = string.format(' win %d', capn) end
+    if capn ~= nil and capn > 0 then wintxt = string.format(' win %d', capn or 0) end
     -- COMPACT, because this string has to fit its cell at every baud rate and in every view. A
     -- verbose form -- 'FRAME  TEXT  page 1/1  bytes 1-1200 of 1200  win 240  [done]' -- runs to
     -- 60-odd characters, and at the measured 7.80 px/char that is past the divider and straight
@@ -2837,10 +2840,10 @@ function sdec.ui_refresh()
     -- numbers. The unit name stays, because 'bytes' versus 'msg' is what says whether the counts
     -- are bytes or parsed messages.
     set(sdec.ui_page_t, string.format('%s %s pg %d/%d %s %d-%d/%d%s [%s]%s',
-        md.name, mname, sdec.ui_page + 1, npg, sdec.ui_unit(),
-        math.min(base + 1, nit), math.min(base + per, nit), nit, wintxt, st, warn))
+        tostring(md.name), tostring(mname), sdec.ui_page + 1, npg or 0, tostring(sdec.ui_unit()),
+        math.min(base + 1, nit), math.min(base + per, nit), nit or 0, tostring(wintxt), tostring(st), tostring(warn)))
   else
-    set(sdec.ui_page_t, string.format('%s  %s%s', md.name, sdec.ck_status(), warn))
+    set(sdec.ui_page_t, string.format('%s  %s%s', tostring(md.name), tostring(sdec.ck_status()), tostring(warn)))
   end
   -- THE BAR FOLLOWS THE SAME STATE THE ROW ABOVE DOES, and this is the call that TAKES IT AWAY: a
   -- run that ends leaves ck_running false, so ck_pct returns nil and both rects go. Without it the
@@ -2928,6 +2931,24 @@ function sdec.ui_refresh()
   return true
 end
 
+-- Refresh the panel, and NEVER raise doing it. -> true, or false if the body gave up part way.
+--
+-- ONE GUARD HERE, NOT ONE AT EACH CALL SITE. Sixteen callers wrapped this in a pcall of their
+-- own, which is a guard around OUR code rather than around a firmware boundary: display writes
+-- already go through ui_set, which pcalls each one. What the callers were really protecting
+-- against is this body formatting a number that is nil -- %d on a nil raises -- so the guard
+-- belongs with the body that can raise, once, where it cannot be forgotten at a new call site.
+--
+-- A REFRESH IS COSMETIC AND MUST NOT COST ITS CALLER. A capture that decoded correctly must not
+-- be reported as failed because one panel field could not be formatted, which is exactly what
+-- an unguarded raise reaching sdec.capture() would do.
+--
+-- The parenthesis TRUNCATES pcall to its first result: the body returns nothing and no caller
+-- reads a value, so this is a plain boolean rather than pcall's true-plus-results.
+function sdec.ui_refresh()
+  return (pcall(sdec.ui_refresh_do))
+end
+
 -- THE BYTE LOG, for the status row: which file is being appended to, and how many BYTES are in it
 -- so far. Both, always, in every mode -- the app's promise is that no decoded byte is lost, and a
 -- promise the operator cannot see is one they have to take on trust.
@@ -2969,7 +2990,7 @@ function sdec.flog_status()
   local base = string.gsub(tostring(sdec.flog_path), '^.*/', '')
   base = string.gsub(base, '%.txt$', '')
   local n = sdec.flog_bytes or 0
-  local s = string.format('log: %s  %d B', base, n)
+  local s = string.format('log: %s  %d B', tostring(base), n or 0)
   -- BOUNDED BY THE NAME LENGTH, so a cell too narrow for even a 4-character name returns the overlong
   -- string rather than looping: a faded tail is bad, a hung refresh is worse.
   --
@@ -2982,7 +3003,7 @@ function sdec.flog_status()
   while sdec.ui_textw(s) > sdec.ui_log_px and string.len(base) > 4 do
     if first then base = string.sub(base, 5) else base = string.sub(base, 2) end
     first = false
-    s = string.format('log: ~%s  %d B', base, n)
+    s = string.format('log: ~%s  %d B', tostring(base), n or 0)
   end
   return s
 end
@@ -3028,7 +3049,7 @@ function sdec.ck_status()
       local have, want = sdec.ck_acq_have or 0, sdec.ck_acq_want or 0
       local pct = 0
       if want > 0 then pct = math.floor(100 * have / want) end
-      if wtxt ~= '' then return string.format('recording...%s %d %%', wtxt, pct) end
+      if wtxt ~= '' then return string.format('recording...%s %d %%', tostring(wtxt), pct or 0) end
       return string.format('recording... %d %% of the buffer', pct)
     end
     -- THE STOP CONTROL IS NOT SAID HERE. This string shares its line with the log status and has
@@ -3038,12 +3059,12 @@ function sdec.ck_status()
     local cap = md.cap
     if cap ~= nil then
       if wtxt ~= '' then
-        return string.format('decoding...%s %d/%d', wtxt, sdec.ck_nbytes, cap)
+        return string.format('decoding...%s %d/%d', tostring(wtxt), sdec.ck_nbytes or 0, cap or 0)
       end
-      return string.format('decoding... %d/%d bytes', sdec.ck_nbytes, cap)
+      return string.format('decoding... %d/%d bytes', sdec.ck_nbytes or 0, cap or 0)
     end
-    if wtxt ~= '' then return string.format('decoding...%s %d', wtxt, sdec.ck_nbytes) end
-    return string.format('decoding... %d bytes', sdec.ck_nbytes)
+    if wtxt ~= '' then return string.format('decoding...%s %d', tostring(wtxt), sdec.ck_nbytes or 0) end
+    return string.format('decoding... %d bytes', sdec.ck_nbytes or 0)
   end
   -- SHORT, always. This row shares its line with the log status, so the left string has ~454 px
   -- before ui_stat_div; the reason a mode cannot run is a full sentence and lives on the note line
@@ -3078,11 +3099,11 @@ function sdec.ck_status()
       if not sdec.log_live() then
         local keep = sdec.ck_keep
         if keep ~= nil and keep < md.cap then
-          return string.format('ready -- %d bytes, panel keeps the last %d', md.cap, keep)
+          return string.format('ready -- %d bytes, panel keeps the last %d', md.cap or 0, keep or 0)
         end
-        return string.format('ready -- %d bytes, panel only (no USB key)', md.cap)
+        return string.format('ready -- %d bytes, panel only (no USB key)', md.cap or 0)
       end
-      return string.format('ready -- %d bytes to a file, no stop once started', md.cap)
+      return string.format('ready -- %d bytes to a file, no stop once started', md.cap or 0)
     end
     return 'ready -- no cap'
   end
@@ -3096,13 +3117,13 @@ function sdec.ck_status()
   -- record_run() accumulated across every window it credited.
   if (sdec.fc_win or 0) > 1 then
     return string.format('%d bytes in %d windows -> %s  [%s]',
-                         sdec.fc_bytes or 0, sdec.fc_win, base,
+                         sdec.fc_bytes or 0, sdec.fc_win or 0, tostring(base),
                          sdec.fc_end or t.stopped or 'done')
   end
   -- ck_err_n, NOT t.nbad: this string sits on the same screen as the ERR field, and reading the raw
   -- failure count here put '1 err' under an 'ERR 7' on a run whose misaligned head reached byte 7.
   return string.format('%d bytes  %d err  %d win  -> %s  [%s]',
-                       t.nf, sdec.ck_err_n(t), t.nwin, base, t.stopped or 'done')
+                       t.nf or 0, sdec.ck_err_n(t) or 0, t.nwin or 0, tostring(base), t.stopped or 'done')
 end
 
 -- The fraction the progress bar shows, 0..100, or nil when no honest one exists.
@@ -3131,17 +3152,31 @@ end
 -- The streaming status row: its text and its bar, written together so the two cannot disagree about
 -- which phase the run is in. sdec.progress and sdec.progress_samples are the callers -- one per
 -- phase -- and this is the only place that knows they paint the same row.
+-- NEVER RAISES, and the ONE guard that promises it lives here, not at the three call sites.
+-- ck_status() is a 130-line text builder over a dozen result fields, so "this cannot raise" is a
+-- proof that has to be redone at every edit of it; a guard here cannot be forgotten at a new
+-- caller. A guard at the caller would be a guard around OUR code, and this row is painted from
+-- inside the capture loop, which is the one path that cannot afford pcall depth.
+--
+-- The parenthesis TRUNCATES pcall to its first result: no caller reads a value, so this is a
+-- plain boolean rather than pcall's true-plus-results.
 function sdec.progress_row()
+  return (pcall(sdec.progress_row_do))
+end
+
+-- The row itself: one settext and one setfill. -> ui_progbar_set's verdict.
+function sdec.progress_row_do()
   local md = sdec.mode_cur()
-  sdec.ui_set(sdec.ui_page_t, string.format('%s  %s', md.name, sdec.ck_status()))
+  sdec.ui_set(sdec.ui_page_t, string.format('%s  %s', tostring(md.name), tostring(sdec.ck_status())))
   return sdec.ui_progbar_set(sdec.ck_pct())
 end
 
--- One settext and one setfill, called at ~1 Hz from the capture loop. Guarded, because a
--- progress update must never be able to cost the capture it is reporting on.
+-- One settext and one setfill, called at ~1 Hz from the capture loop. A BARE CALL: progress_row()
+-- carries the guard, so a progress update cannot cost the capture it is reporting on without
+-- adding a pcall layer to the capture path.
 function sdec.progress(nbytes)
   sdec.ck_nbytes = nbytes
-  return pcall(function() sdec.progress_row() end)
+  return sdec.progress_row()
 end
 
 -- Light the segments covering the current page.
@@ -3468,7 +3503,7 @@ function sdec.build_options()
   -- ui_build uses, which names the cause and the remedy.
   if nob < table.getn(odef) then
     error(string.format('only %d of %d options buttons could be created -- display object pool '
-                        .. 'exhausted. Power cycle the instrument.', nob, table.getn(odef)), 0)
+                        .. 'exhausted. Power cycle the instrument.', nob or 0, table.getn(odef) or 0), 0)
   end
 
   -- Hook End App on THIS screen too: if the firmware delivers EVENT_ENDAPP only to
