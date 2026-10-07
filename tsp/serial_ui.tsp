@@ -1072,7 +1072,7 @@ function sdec.ui_set(h, txt)
   -- the queue is bounded and overrunnable -- "1706 Message dropped from display queue" precedes
   -- the firmware panics. Rewriting unchanged rows is pure queue pressure.
   if sdec.ui_last[h] == txt then return false end
-  local ok = pcall(function() display.settext(h, txt) end)
+  local ok = pcall(display.settext, h, txt)
   if ok then sdec.ui_last[h] = txt end
   return ok
 end
@@ -1083,13 +1083,13 @@ function sdec.ui_color(h, c)
   -- Guarded: setcolor is known to fail on Image objects (error 1717) and has not
   -- been confirmed on text. If it does not apply, rows stay white and the summary's
   -- error counts still report the damage.
-  return pcall(function() display.setcolor(h, c) end)
+  return (pcall(display.setcolor, h, c))
 end
 
 -- Delete object `h`, counting a refusal rather than assuming it worked. Returns whether it went.
 function sdec.del_obj(h)
   if h == nil then return true end
-  local ok = pcall(function() display.delete(h) end)
+  local ok = pcall(display.delete, h)
   if not ok then
     -- KEEP A HANDLE THAT WOULD NOT DELETE. Every teardown nils its variables afterwards, so
     -- dropping a refused handle loses the ONLY reference to a live firmware object -- stranded
@@ -1109,7 +1109,7 @@ function sdec.del_orphans()
   if o == nil then return 0 end
   local keep, nk, i = {}, 0, nil
   for i = 1, table.getn(o) do
-    local ok = pcall(function() display.delete(o[i]) end)
+    local ok = pcall(display.delete, o[i])
     if not ok then nk = nk + 1; keep[nk] = o[i] end
   end
   if nk < 1 then sdec.orphans = nil else sdec.orphans = keep end
@@ -1140,7 +1140,7 @@ end
 -- IT ALSO MEANS A RECT CANNOT BE HIDDEN BY COLOUR beyond 1 px -- see sdec.ui_setstate.
 function sdec.ui_fill(h, c)
   if h == nil then return false end
-  local ok = pcall(function() display.setcolor(h, c) end)
+  local ok = pcall(display.setcolor, h, c)
   if not ok then sdec.fillfails = (sdec.fillfails or 0) + 1 end
   return ok
 end
@@ -1149,7 +1149,7 @@ end
 -- position bar is the one object that varies its fill afterwards, and it calls setfill itself.
 function sdec.ui_fill_solid(h)
   if h == nil then return false end
-  local ok = pcall(function() display.setfill(h, 100) end)
+  local ok = pcall(display.setfill, h, 100)
   if not ok then sdec.fillfails = (sdec.fillfails or 0) + 1 end
   return ok
 end
@@ -1163,7 +1163,7 @@ end
 -- on the instrument. Counted in fillfails on refusal like every other display write.
 function sdec.ui_setstate(h, st)
   if h == nil then return false end
-  local ok = pcall(function() display.setstate(h, st) end)
+  local ok = pcall(display.setstate, h, st)
   if not ok then sdec.fillfails = (sdec.fillfails or 0) + 1 end
   return ok
 end
@@ -1968,7 +1968,7 @@ function sdec.ui_destroy()
   -- Switch away BEFORE deleting a visible screen; delete children before the
   -- screen that owns them.
   if sdec.ui_scr ~= nil then
-    pcall(function() display.changescreen(display.SCREEN_HOME) end)
+    pcall(display.changescreen, display.SCREEN_HOME)
   end
   local i
   if sdec.ui_row ~= nil then
@@ -2290,11 +2290,11 @@ function sdec.ui_build()
   sdec.ui_progbox = create(sdec.ui_scr, display.OBJ_RECT, sdec.ui_prog_x, sdec.ui_prog_y,
                            sdec.ui_prog_w, sdec.ui_prog_h)
   sdec.ui_fill(sdec.ui_progbox, sdec.ui_c_prog_box)
-  pcall(function() display.setthickness(sdec.ui_progbox, 1) end)
+  pcall(display.setthickness, sdec.ui_progbox, 1)
   sdec.ui_progline = create(sdec.ui_scr, display.OBJ_LINE, sdec.ui_prog_x + 1, sdec.ui_prog_ly,
                             sdec.ui_prog_x + 1, sdec.ui_prog_ly)
   sdec.ui_fill(sdec.ui_progline, sdec.ui_c_prog)
-  pcall(function() display.setthickness(sdec.ui_progline, sdec.ui_prog_lw) end)
+  pcall(display.setthickness, sdec.ui_progline, sdec.ui_prog_lw)
   -- Hidden until a run needs it. The caches are nil (ui_invalidate ran at the top of this function),
   -- so this genuinely writes STATE_INVISIBLE to both rather than believing they are already away --
   -- which is the bug that put a grey frame on the glass in FRAME mode.
@@ -2529,10 +2529,10 @@ if sdec.ui_savebtn ~= nil or sdec.ui_newlogbtn ~= nil then
     local sst = display.STATE_INVISIBLE
     if sw then sst = display.STATE_ENABLE end
     if sdec.ui_savebtn ~= nil then
-      pcall(function() display.setstate(sdec.ui_savebtn, sst) end)
+      pcall(display.setstate, sdec.ui_savebtn, sst)
     end
     if sdec.ui_newlogbtn ~= nil then
-      pcall(function() display.setstate(sdec.ui_newlogbtn, sst) end)
+      pcall(display.setstate, sdec.ui_newlogbtn, sst)
     end
     sdec.ui_savevis = sw
     return true
@@ -2578,7 +2578,7 @@ function sdec.ui_page_btns()
     if want then st = display.STATE_ENABLE end
     local i
     for i = 1, table.getn(t) do
-      pcall(function() display.setstate(t[i], st) end)
+      pcall(display.setstate, t[i], st)
     end
     sdec.ui_pgvis = want
   end
@@ -2602,7 +2602,7 @@ function sdec.ui_page_btns()
     if lw ~= sdec.ui_lockvis then
       local lst = display.STATE_INVISIBLE
       if lw then lst = display.STATE_ENABLE end
-      pcall(function() display.setstate(sdec.ui_lockbtn, lst) end)
+      pcall(display.setstate, sdec.ui_lockbtn, lst)
       sdec.ui_lockvis = lw
     end
   end

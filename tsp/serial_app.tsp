@@ -2935,7 +2935,7 @@ function sdec.options()
     ulog.line('options: ' .. sdec.lasterr)
     return sdec.ui_refresh()
   end
-  return pcall(function() display.changescreen(sdec.optscr) end)
+  return (pcall(display.changescreen, sdec.optscr))
 end
 
 -- Copy what the last capture DETECTED into the forced fields and re-seed the form. Does NOT
@@ -3049,7 +3049,7 @@ function sdec.options_apply()
     sdec.lasterr = 'Options could not be read in full -- nothing was changed (' ..
                    tostring(readerr) .. ')'
     ulog.line(sdec.lasterr)
-    pcall(function() display.changescreen(sdec.ui_scr) end)
+    pcall(display.changescreen, sdec.ui_scr)
     sdec.ui_refresh()
     return false
   end
@@ -3114,7 +3114,7 @@ function sdec.options_apply()
             tostring(sdec.force_par), tostring(sdec.force_invert),
             tostring(sdec.trigmode)))
 
-  pcall(function() display.changescreen(sdec.ui_scr) end)
+  pcall(display.changescreen, sdec.ui_scr)
   -- Apply means "use these now": capture rather than requiring a second press.
   return sdec.capture()
 end
@@ -3128,7 +3128,7 @@ function sdec.options_cancel()
   sdec.options_restore()
   sdec.options_seed()
   sdec.ui_refresh()
-  return pcall(function() display.changescreen(sdec.ui_scr) end)
+  return (pcall(display.changescreen, sdec.ui_scr))
 end
 
 -- ============================================================================
