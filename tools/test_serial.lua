@@ -1682,10 +1682,10 @@ do
   local rok, rwhy = pcall(function() return sdec.capture() end)
   check('a RAISING second pass still reaches the caller', rok == false and rn >= 2,
         string.format('ok=%s calls=%d why=%s', tostring(rok), rn, tostring(rwhy)))
-  -- THEN THROUGH THE BOUNDARY, where the cleanup a raise skips now happens. capture() guards
-  -- nothing of its own, so the drop and the status come from sdec.guard. The bare raise above left
-  -- sdec.busy set -- which is itself the thing guard clears -- so clear it here or this capture
-  -- refuses early and never reaches the stub.
+  -- THEN THROUGH THE BOUNDARY, where the cleanup a raise skips now happens: capture() guards nothing
+  -- of its own, so the drop and the status come from sdec.unwind. busy is cleared first only to
+  -- start this call from a known state -- capture_run records and clears it rather than refusing on
+  -- it, so the stub is reached either way.
   sdec.busy = false
   local gok = sdec.guard(sdec.capture)
   sdec.acquire = racq

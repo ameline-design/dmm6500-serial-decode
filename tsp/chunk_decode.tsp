@@ -877,7 +877,12 @@ function sdec.ck_sink_file(path, ncol)
     -- IT SKIPS THE WRITE AND NOTHING ELSE. The carry shift below still runs, so cn and cbase stay
     -- consistent with what the sink has accepted.
     if not dead and ulog ~= nil and ulog.keyok ~= nil and not ulog.keyok() then dead = true end
-    if not dead then file.write(fh, line .. '\r\n') end
+    -- GUARDED SO dead IS SET AND THE CARRY SHIFT BELOW STILL RUNS. A raise escaping here would skip
+    -- it, leaving cn and cbase describing rows the file never got -- and flog_bytes is counted on
+    -- ACCEPTANCE, so those bytes are already in the log's charge.
+    if not dead then
+      if not pcall(file.write, fh, line .. '\r\n') then dead = true end
+    end
     local i
     for i = nrow + 1, cn do
       cv[i - nrow] = cv[i]

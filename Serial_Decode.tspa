@@ -3394,7 +3394,9 @@ function sdec.ck_sink_file(path, ncol)
   local function emit(nrow)
     local line = sdec.ua_hexrow(cv, ce, nrow, 1, ncol, cbase)
     if not dead and ulog ~= nil and ulog.keyok ~= nil and not ulog.keyok() then dead = true end
-    if not dead then file.write(fh, line .. '\r\n') end
+    if not dead then
+      if not pcall(file.write, fh, line .. '\r\n') then dead = true end
+    end
     local i
     for i = nrow + 1, cn do
       cv[i - nrow] = cv[i]

@@ -165,13 +165,16 @@ check('an EMPTY index file -- a key pulled mid-write -- falls back to 0',
       p == '/usb1/s_000.txt', tostring(p))
 
 seed_key('/usb1/s_', 1, 0, '5\n')
+-- ASSERTED DIRECTLY, NOT THROUGH capped(), whose own pcall returns nil on a raise -- so `p == nil`
+-- was satisfied BY the propagation this check claims to rule out, and passed either way.
+--
+-- A read that fails is a key that went away mid-question: rootlists guards the read so the handle is
+-- closed, answers nil, and next_free falls back rather than propagating.
 MD.failread(0)
-p, n = capped('/usb1/s_', '.txt', 1000, 2500)
+local rok, rres = pcall(ulog.next_free, '/usb1/s_', '.txt', 1000)
 MD.failread(nil)
--- A READ THAT RAISES is a key that went away mid-question, so the directory cannot be confirmed and
--- next_free refuses instead of guessing. What matters is that nothing propagates out.
-check('a read that RAISES (key pulled between open and read) refuses without propagating',
-      p == nil, tostring(p))
+check('a read that FAILS (key pulled between open and read) refuses without propagating',
+      rok == true, string.format('ok=%s res=%s', tostring(rok), tostring(rres)))
 
 seed_key('/usb1/s_', 1, 0, '5\n')
 p = capped('/usb1/s_', '.txt', 1000, 2500)
