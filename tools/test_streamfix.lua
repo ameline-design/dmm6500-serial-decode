@@ -392,16 +392,22 @@ do
   -- wrapper's pcall deleted outright, which makes it a test of nothing. mode_cur is called unguarded
   -- near the top of capture_run, so stubbing it is a genuine escape, and the signature is the
   -- difference between `false, nil` and a reason.
-  local raised, rwhy = nil, nil
+  local raised, rwhy, gverdict = nil, nil, nil
   do
     local saved = sdec.mode_cur
     sdec.mode_cur = function() error('escaping', 0) end
     raised, rwhy = pcall(function() return sdec.capture() end)
+    -- AND AGAIN THROUGH THE BOUNDARY, which is how the firmware calls it. capture() guards nothing
+    -- of its own, so the cleanup a raise skips -- the tick, the busy latch, the stale result -- is
+    -- sdec.guard's, and both contracts are checked off the one stub.
+    gverdict = sdec.guard(sdec.capture)
     sdec.mode_cur = saved
   end
   check('a raise out of the body still reaches the caller, rather than being swallowed',
         raised == false and has(tostring(rwhy), 'escaping'),
         string.format('%s / %s', tostring(raised), tostring(rwhy)))
+  check('...and the boundary turns that raise into a refusal rather than a popup',
+        gverdict == false, tostring(gverdict))
   check('and the tick is back ON after it', TICKEV() == 'sdec.guard(sdec.ui_tick)',
         string.format('%q', tostring(TICKEV())))
   -- AND sdec.busy IS NOT LEFT SET. ui_tick treats busy as "a run owns the panel", so one faulting

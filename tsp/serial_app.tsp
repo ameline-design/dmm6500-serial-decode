@@ -266,19 +266,21 @@ function sdec.autoset()
     -- faster one found nothing, which is itself evidence that the line is slow or bursty.
     local ladder = sdec.probe_fs or {1000000, 100000, 10000}
     local nlad = table.getn(ladder)
-    local pok, praise = pcall(function()
-      while tries < nlad do
-        tries = tries + 1
-        sdec.fs, sdec.fs_want = ladder[tries], ladder[tries]
-        ok, why = sdec.acquire()
-        if ok then
-          ok, why = sdec.decode()
-          if ok or sdec.baud_probe ~= nil then break end
-        end
+    -- REGISTERED FOR THE BOUNDARY rather than guarded here. A raise out of acquire() would leave
+    -- trigmode on 'free' for the session, so sdec.guard restores whatever is parked here -- which
+    -- is a field it can see, where savetrig is a local it cannot.
+    sdec.trig_restore = savetrig
+    while tries < nlad do
+      tries = tries + 1
+      sdec.fs, sdec.fs_want = ladder[tries], ladder[tries]
+      ok, why = sdec.acquire()
+      if ok then
+        ok, why = sdec.decode()
+        if ok or sdec.baud_probe ~= nil then break end
       end
-    end)
+    end
     sdec.trigmode = savetrig
-    if not pok then ok, why = false, tostring(praise) end
+    sdec.trig_restore = nil
     if tries > 1 then
       sdec.probe_note = string.format(
         'probe took %d looks to catch traffic (down to %g kS/s)', tries or 0, ladder[tries] / 1000)
@@ -542,7 +544,7 @@ function sdec.stream_begin()
   if pmax < 200 then pmax = 200 end
   if pn > pmax then pn = pmax end
   -- nofc: a probe must not spend a flow-control credit (see sdec.acq_free).
-  local pok = pcall(function() sdec.acq_free(pn, nil, true) end)
+  local pok = pcall(sdec.acq_free, pn, nil, true)
   if pok and sdec.nread ~= nil and sdec.nread > 1 then
     local lok = sdec.sig_levels(sdec.smp, sdec.nread)
     -- ONLY ARM THE WATCHDOG IF THE LEVELS ARE REAL. An unknown threshold must never be allowed
@@ -593,7 +595,8 @@ function sdec.stream()
   local ok, why = sdec.stream_begin()
   if not ok then return false, why end
   local got = 0
-  local aok, aerr = pcall(function() got = sdec.stream_acquire(sdec.strm_nsmp) end)
+  local aok, ares = pcall(sdec.stream_acquire, sdec.strm_nsmp)
+  if aok then got = ares or 0 end
   sdec.ck_running = false
   -- FLAGGED, NOT JUST REPORTED. record_run() treats "the credited device sent nothing" as the END of
   -- a flow-controlled transmission rather than a failure, and it must not treat a write failure or a
@@ -608,7 +611,7 @@ function sdec.stream()
   -- confident wrong diagnosis this whole path exists to avoid, and the error message was discarded on
   -- top. A raise gets its own sentence and never sets the flag.
   if not aok then
-    return false, 'recording failed: ' .. tostring(aerr or 'unknown')
+    return false, 'recording failed: ' .. tostring(ares or 'unknown')
   end
   if got < 2 then
     sdec.strm_empty = true
@@ -827,7 +830,11 @@ function sdec.stream_stop()
   -- buffer read and reports that failure as its second return, which is the gerr branch; this catches
   -- what no guard inside it can, a raise from the function itself. tools/test_cancel.lua installs a
   -- raising stream_settle at this seam to pin the readfail verdict against both.
-  local sok, serr = pcall(function() got, gerr = sdec.stream_settle() end)
+  -- pcall(sdec.stream_settle) RATHER THAN A CLOSURE: its two returns arrive as the second and third
+  -- results, and on a RAISE the second is the message instead -- so they are copied out only when
+  -- the call actually returned.
+  local sok, s1, s2 = pcall(sdec.stream_settle)
+  if sok then got, gerr = s1, s2 end
   sdec.ck_running = false
   -- A SETTLE THAT FAILED IS NOT AN EMPTY RECORDING, and it must not be stamped 'stopped'. The abort or
   -- the buffer read failed, which is a fault; discarding the reason and publishing the normal
@@ -839,7 +846,7 @@ function sdec.stream_stop()
   end
   if not sok then
     sdec.ck_endwhy = 'readfail'
-    return false, 'recording failed: ' .. tostring(serr or 'unknown')
+    return false, 'recording failed: ' .. tostring(s1 or 'unknown')
   end
   sdec.ck_endwhy = 'stopped'
   if got < 2 then return false, 'recording collected nothing' end
@@ -952,9 +959,12 @@ function sdec.decode_step()
   local job = sdec.ck_job
   if job == nil then return false end
   local done, tot, err = true, nil, nil
-  local pok, perr = pcall(function() done, tot, err = sdec.ck_job_step(job) end)
-  if not pok then
-    done, err = true, tostring(perr)
+  -- Three returns, so three results after the verdict; on a raise the first of them is the message.
+  local pok, p1, p2, p3 = pcall(sdec.ck_job_step, job)
+  if pok then
+    done, tot, err = p1, p2, p3
+  else
+    done, err = true, tostring(p1)
   end
 
   if not done then
@@ -1538,11 +1548,15 @@ function sdec.capture_run()
   local md = sdec.mode_cur()
   if not md.view and sdec.strm_recording then
     local sok, swhy = false, nil
-    local pok, perr = pcall(function() sok, swhy = sdec.stream_stop() end)
+    -- Direct form: the call's two returns follow the verdict, and on a RAISE the first of
+    -- them is the message -- so swhy carries the reason either way.
+    local pok, r1, r2 = pcall(sdec.stream_stop)
+    sok, swhy = (pok and r1), r2
+    if not pok then swhy = r1 end
     sdec.busy = false
     if not pok or not sok then
       sdec.errcount = sdec.errcount + 1
-      sdec.lasterr = tostring(perr or swhy or 'recording failed')
+      sdec.lasterr = tostring(swhy or 'recording failed')
       sdec.ui_status = 'error'
       ulog.line(sdec.lasterr)
       sdec.mode_exit('recording failed', true)
@@ -1562,11 +1576,15 @@ function sdec.capture_run()
     -- offline suite, which have no panel to protect.
     sdec.detect_reset()
     local sok, swhy = false, nil
-    local pok, perr = pcall(function() sok, swhy = sdec.stream_start() end)
+    -- Direct form: the call's two returns follow the verdict, and on a RAISE the first of
+    -- them is the message -- so swhy carries the reason either way.
+    local pok, r1, r2 = pcall(sdec.stream_start)
+    sok, swhy = (pok and r1), r2
+    if not pok then swhy = r1 end
     sdec.busy = false
     if not pok or not sok then
       sdec.errcount = sdec.errcount + 1
-      sdec.lasterr = tostring(perr or swhy or 'could not start recording')
+      sdec.lasterr = tostring(swhy or 'could not start recording')
       sdec.ui_status = 'refused'
       ulog.line(sdec.lasterr)
       sdec.mode_exit(sdec.lasterr, true)
@@ -1594,12 +1612,16 @@ function sdec.capture_run()
     -- the device stops. It holds the panel for as long as that takes, AND NOTHING CAN CUT IT SHORT:
     -- the TRIGGER key emits no blender event while this runs, so it is no defence. The bounds in
     -- record_run() (fc_maxwin, fc_maxsec) are the only exits, not a backstop to a cancel.
-    local pok, perr = pcall(function() sok, swhy = sdec.record_run() end)
+    -- Direct form: the call's two returns follow the verdict, and on a RAISE the first of
+    -- them is the message -- so swhy carries the reason either way.
+    local pok, r1, r2 = pcall(sdec.record_run)
+    sok, swhy = (pok and r1), r2
+    if not pok then swhy = r1 end
     sdec.strm_inflight = nil
     sdec.busy, sdec.ck_running = false, false
     if not pok then
       sdec.errcount = sdec.errcount + 1
-      sdec.lasterr = 'stream raised: ' .. tostring(perr)
+      sdec.lasterr = 'stream raised: ' .. tostring(swhy)
       sdec.ui_status = 'error'
       ulog.line(sdec.lasterr)
     elseif not sok then
@@ -1775,32 +1797,11 @@ end
 function sdec.capture()
   sdec.ui_keypoll()
   sdec.ui_tick_off()
-  -- THE ONLY pcall ON THE CAPTURE PATH, and every step below it is a bare call. autoset(),
-  -- acquire() and decode() were each wrapped once, which put four of these between the entry
-  -- point and the acquisition; that nesting is what bluescreens this firmware, and the margin was
-  -- one level. See the depth note in sdec.start(). Do not re-wrap a step to improve its reporting.
-  local ok, a, b = pcall(function() return sdec.capture_run() end)
+  -- NOTHING ON THIS PATH IS GUARDED, and the cleanup a raise would skip belongs to sdec.guard: the
+  -- busy latch, the panel tick and the stale-result drop are all restored there. A raise still
+  -- reaches the caller, which `pcall(sdec.capture)` in bench_break and the lock toggle rely on.
+  local a, b = sdec.capture_run()
   sdec.ui_tick_on()
-  -- REPORTED HERE AND THEN RE-RAISED, both. A raise reaching this point has skipped every status
-  -- line below it, so the status row, the error count and the USB log are set from here -- and the
-  -- raise still goes on to the caller, because that is a tested contract: test_streamfix pins it by
-  -- stubbing sdec.mode_cur, which capture_run calls unguarded, rather than a step this function
-  -- guards. Swallowing a raise here makes that test vacuous.
-  --
-  -- AND THE DROP GOES WITH IT. autoset() calls drop_stale_result() when a step RETURNS false; a
-  -- step that RAISES unwinds past that, so the drop has to happen here or not at all. Measured
-  -- before this line existed: a raising second-pass acquire left BAUD 9600 and a live res on the
-  -- panel under 'no decode' -- a retracted rate reading as a measurement. See drop_stale_result.
-  if not ok then
-    sdec.busy = false
-    sdec.drop_stale_result()
-    sdec.errcount = sdec.errcount + 1
-    sdec.lasterr = 'capture raised: ' .. tostring(a)
-    sdec.ui_status = 'error'
-    ulog.line(sdec.lasterr)
-    sdec.ui_refresh()
-    error(a, 0)
-  end
   return a, b
 end
 
@@ -2066,10 +2067,26 @@ end
 -- THE FAILURE PATH RAISES NOTHING ITSELF. It assigns fields and refreshes; it does not log, because
 -- ulog.line reaches file.write, and a key that has filled up is exactly the condition that brought
 -- us here. ui_refresh only touches display calls, which post events rather than raising.
+-- THE CLEANUP A RAISE SKIPPED HAPPENS HERE, because this is the only frame left that can do it.
+-- sdec.busy and ck_running are latches only a fault can leave set, and ui_tick reads busy as "a run
+-- owns the panel" -- so one faulting press would stop the panel noticing the key for the rest of
+-- the session. The tick goes back on for the same reason, and the stale result goes because a
+-- retracted rate left on the glass reads as a measurement. All assignments or display calls, none
+-- of which raise, so the failure path cannot itself escape.
 function sdec.guard(f)
   local ok, err = pcall(f)
   if ok then return true end
   sdec.busy = false
+  sdec.ck_running = false
+  -- THE UNWIND REGISTER. A frame that mutates a module field for the duration of a call parks the
+  -- old value here, because a local is invisible from this frame. trigmode left on 'free' makes
+  -- every later capture free-run while the panel still says Edge.
+  if sdec.trig_restore ~= nil then
+    sdec.trigmode = sdec.trig_restore
+    sdec.trig_restore = nil
+  end
+  sdec.drop_stale_result()
+  sdec.ui_tick_on()
   sdec.errcount = (sdec.errcount or 0) + 1
   sdec.lasterr = tostring(err)
   sdec.ui_status = 'error'
@@ -2352,8 +2369,12 @@ function sdec.lock_toggle()
   -- produced 'locked 9600 baud -- now sampling at 80 kS/s' -- a confident report of a capture that did
   -- not happen, over whatever the previous one left on screen. The lock IS still applied either way,
   -- which is why the wording has to change rather than the action.
-  local cok, cerr = false, nil
-  local pok = pcall(function() cok = sdec.capture() end)
+  -- pcall(sdec.capture) RATHER THAN A CLOSURE: no OP_CLOSURE, no allocation, and the second result
+  -- is capture()'s own boolean. On a RAISE that second result is the message instead, so it must not
+  -- be read as a verdict -- and whoever catches a raise reports it, since capture() no longer does.
+  local pok, cres = pcall(sdec.capture)
+  local cok = pok and cres
+  if not pok then sdec.lasterr = 'capture raised: ' .. tostring(cres) end
   -- AFTER the capture, because clear_result() evicts the note cell. Names the new sample rate,
   -- since that is the thing the operator did not ask for and did get.
   if note ~= nil and not (pok and cok) then
@@ -2910,7 +2931,7 @@ function sdec.options()
   -- exhausted. An uncaught raise here is an ERROR-severity event, which is a modal dialog over the
   -- app -- so the refusal is turned into a note instead, like every other refusal on this panel.
   if sdec.optscr == nil then
-    local bok, berr = pcall(function() sdec.build_options() end)
+    local bok, berr = pcall(sdec.build_options)
     if not bok or sdec.optscr == nil then
       sdec.lasterr = tostring(berr or 'the options screen could not be built')
       ulog.line('options: ' .. sdec.lasterr)

@@ -1403,7 +1403,7 @@ function sdec.acq_copy(buf, n)
     if j > n then j = n end
     local k
     for k = i, j do t[k] = rd[k] end
-    if sdec.tick ~= nil then pcall(sdec.tick) end
+    if sdec.tick ~= nil then sdec.tick() end
     i = j + 1
   end
   sdec.smp = t
@@ -1668,9 +1668,9 @@ function sdec.acquire()
 
   ok, why = sdec.sig_levels(sdec.smp, sdec.nread)
   if not ok then return false, why end
-  if sdec.tick ~= nil then pcall(sdec.tick) end
+  if sdec.tick ~= nil then sdec.tick() end
   sdec.sig_edges(sdec.smp, sdec.nread)
-  if sdec.tick ~= nil then pcall(sdec.tick) end
+  if sdec.tick ~= nil then sdec.tick() end
   sdec.sig_idle(sdec.smp, sdec.nread)
   return true
 end
@@ -2359,7 +2359,7 @@ end
 function sdec.ua_best(rd, n, Tfit)
   local st = sdec.ua_best_begin(rd, n, Tfit)
   while sdec.ua_best_probe(st) do
-    if sdec.tick ~= nil then pcall(sdec.tick) end
+    if sdec.tick ~= nil then sdec.tick() end
   end
   return sdec.ua_best_end(st)
 end
@@ -5560,19 +5560,18 @@ function sdec.autoset()
     local ok, why, tries = false, nil, 0
     local ladder = sdec.probe_fs or {1000000, 100000, 10000}
     local nlad = table.getn(ladder)
-    local pok, praise = pcall(function()
-      while tries < nlad do
-        tries = tries + 1
-        sdec.fs, sdec.fs_want = ladder[tries], ladder[tries]
-        ok, why = sdec.acquire()
-        if ok then
-          ok, why = sdec.decode()
-          if ok or sdec.baud_probe ~= nil then break end
-        end
+    sdec.trig_restore = savetrig
+    while tries < nlad do
+      tries = tries + 1
+      sdec.fs, sdec.fs_want = ladder[tries], ladder[tries]
+      ok, why = sdec.acquire()
+      if ok then
+        ok, why = sdec.decode()
+        if ok or sdec.baud_probe ~= nil then break end
       end
-    end)
+    end
     sdec.trigmode = savetrig
-    if not pok then ok, why = false, tostring(praise) end
+    sdec.trig_restore = nil
     if tries > 1 then
       sdec.probe_note = string.format(
         'probe took %d looks to catch traffic (down to %g kS/s)', tries or 0, ladder[tries] / 1000)
@@ -5708,7 +5707,7 @@ function sdec.stream_begin()
   local pmax = math.floor((sdec.fs or 1000) * budget)
   if pmax < 200 then pmax = 200 end
   if pn > pmax then pn = pmax end
-  local pok = pcall(function() sdec.acq_free(pn, nil, true) end)
+  local pok = pcall(sdec.acq_free, pn, nil, true)
   if pok and sdec.nread ~= nil and sdec.nread > 1 then
     local lok = sdec.sig_levels(sdec.smp, sdec.nread)
     if lok and sdec.thr ~= nil and (sdec.swing or 0) >= sdec.minswing then
@@ -5739,11 +5738,12 @@ function sdec.stream()
   local ok, why = sdec.stream_begin()
   if not ok then return false, why end
   local got = 0
-  local aok, aerr = pcall(function() got = sdec.stream_acquire(sdec.strm_nsmp) end)
+  local aok, ares = pcall(sdec.stream_acquire, sdec.strm_nsmp)
+  if aok then got = ares or 0 end
   sdec.ck_running = false
   sdec.strm_empty = nil
   if not aok then
-    return false, 'recording failed: ' .. tostring(aerr or 'unknown')
+    return false, 'recording failed: ' .. tostring(ares or 'unknown')
   end
   if got < 2 then
     sdec.strm_empty = true
@@ -5828,7 +5828,8 @@ end
 function sdec.stream_stop()
   sdec.strm_recording = nil
   local got, gerr = 0, nil
-  local sok, serr = pcall(function() got, gerr = sdec.stream_settle() end)
+  local sok, s1, s2 = pcall(sdec.stream_settle)
+  if sok then got, gerr = s1, s2 end
   sdec.ck_running = false
   if sok and gerr ~= nil then
     sdec.ck_endwhy = 'readfail'
@@ -5836,7 +5837,7 @@ function sdec.stream_stop()
   end
   if not sok then
     sdec.ck_endwhy = 'readfail'
-    return false, 'recording failed: ' .. tostring(serr or 'unknown')
+    return false, 'recording failed: ' .. tostring(s1 or 'unknown')
   end
   sdec.ck_endwhy = 'stopped'
   if got < 2 then return false, 'recording collected nothing' end
@@ -5888,9 +5889,11 @@ function sdec.decode_step()
   local job = sdec.ck_job
   if job == nil then return false end
   local done, tot, err = true, nil, nil
-  local pok, perr = pcall(function() done, tot, err = sdec.ck_job_step(job) end)
-  if not pok then
-    done, err = true, tostring(perr)
+  local pok, p1, p2, p3 = pcall(sdec.ck_job_step, job)
+  if pok then
+    done, tot, err = p1, p2, p3
+  else
+    done, err = true, tostring(p1)
   end
 
   if not done then
@@ -6228,11 +6231,13 @@ function sdec.capture_run()
   local md = sdec.mode_cur()
   if not md.view and sdec.strm_recording then
     local sok, swhy = false, nil
-    local pok, perr = pcall(function() sok, swhy = sdec.stream_stop() end)
+    local pok, r1, r2 = pcall(sdec.stream_stop)
+    sok, swhy = (pok and r1), r2
+    if not pok then swhy = r1 end
     sdec.busy = false
     if not pok or not sok then
       sdec.errcount = sdec.errcount + 1
-      sdec.lasterr = tostring(perr or swhy or 'recording failed')
+      sdec.lasterr = tostring(swhy or 'recording failed')
       sdec.ui_status = 'error'
       ulog.line(sdec.lasterr)
       sdec.mode_exit('recording failed', true)
@@ -6249,11 +6254,13 @@ function sdec.capture_run()
   if not md.view and sdec.strm_press then
     sdec.detect_reset()
     local sok, swhy = false, nil
-    local pok, perr = pcall(function() sok, swhy = sdec.stream_start() end)
+    local pok, r1, r2 = pcall(sdec.stream_start)
+    sok, swhy = (pok and r1), r2
+    if not pok then swhy = r1 end
     sdec.busy = false
     if not pok or not sok then
       sdec.errcount = sdec.errcount + 1
-      sdec.lasterr = tostring(perr or swhy or 'could not start recording')
+      sdec.lasterr = tostring(swhy or 'could not start recording')
       sdec.ui_status = 'refused'
       ulog.line(sdec.lasterr)
       sdec.mode_exit(sdec.lasterr, true)
@@ -6269,12 +6276,14 @@ function sdec.capture_run()
     sdec.ui_status = 'capturing'
     sdec.strm_inflight = true
     local sok, swhy = false, nil
-    local pok, perr = pcall(function() sok, swhy = sdec.record_run() end)
+    local pok, r1, r2 = pcall(sdec.record_run)
+    sok, swhy = (pok and r1), r2
+    if not pok then swhy = r1 end
     sdec.strm_inflight = nil
     sdec.busy, sdec.ck_running = false, false
     if not pok then
       sdec.errcount = sdec.errcount + 1
-      sdec.lasterr = 'stream raised: ' .. tostring(perr)
+      sdec.lasterr = 'stream raised: ' .. tostring(swhy)
       sdec.ui_status = 'error'
       ulog.line(sdec.lasterr)
     elseif not sok then
@@ -6354,18 +6363,8 @@ end
 function sdec.capture()
   sdec.ui_keypoll()
   sdec.ui_tick_off()
-  local ok, a, b = pcall(function() return sdec.capture_run() end)
+  local a, b = sdec.capture_run()
   sdec.ui_tick_on()
-  if not ok then
-    sdec.busy = false
-    sdec.drop_stale_result()
-    sdec.errcount = sdec.errcount + 1
-    sdec.lasterr = 'capture raised: ' .. tostring(a)
-    sdec.ui_status = 'error'
-    ulog.line(sdec.lasterr)
-    sdec.ui_refresh()
-    error(a, 0)
-  end
   return a, b
 end
 
@@ -6468,13 +6467,20 @@ end
 
 -- The inbound firmware boundary
 --   [...]
--- THE FAILURE PATH RAISES NOTHING ITSELF. It assigns fields and refreshes; it does not log, because
--- ulog.line reaches file.write, and a key that has filled up is exactly the condition that brought
--- us here. ui_refresh only touches display calls, which post events rather than raising.
+-- the session. The tick goes back on for the same reason, and the stale result goes because a
+-- retracted rate left on the glass reads as a measurement. All assignments or display calls, none
+-- of which raise, so the failure path cannot itself escape.
 function sdec.guard(f)
   local ok, err = pcall(f)
   if ok then return true end
   sdec.busy = false
+  sdec.ck_running = false
+  if sdec.trig_restore ~= nil then
+    sdec.trigmode = sdec.trig_restore
+    sdec.trig_restore = nil
+  end
+  sdec.drop_stale_result()
+  sdec.ui_tick_on()
   sdec.errcount = (sdec.errcount or 0) + 1
   sdec.lasterr = tostring(err)
   sdec.ui_status = 'error'
@@ -6658,8 +6664,9 @@ function sdec.lock_toggle()
     return sdec.ui_refresh()
   end
 
-  local cok, cerr = false, nil
-  local pok = pcall(function() cok = sdec.capture() end)
+  local pok, cres = pcall(sdec.capture)
+  local cok = pok and cres
+  if not pok then sdec.lasterr = 'capture raised: ' .. tostring(cres) end
   if note ~= nil and not (pok and cok) then
     sdec.lognote = note .. ' -- but the re-capture failed, so the figures above are the previous one'
     note = nil
@@ -6967,7 +6974,7 @@ end
 -- Show the options screen, building it first if it does not exist yet.
 function sdec.options()
   if sdec.optscr == nil then
-    local bok, berr = pcall(function() sdec.build_options() end)
+    local bok, berr = pcall(sdec.build_options)
     if not bok or sdec.optscr == nil then
       sdec.lasterr = tostring(berr or 'the options screen could not be built')
       ulog.line('options: ' .. sdec.lasterr)

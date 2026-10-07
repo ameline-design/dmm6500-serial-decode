@@ -1355,7 +1355,7 @@ function sdec.ua_best(rd, n, Tfit)
   -- the granularity a liveness indicator needs. sdec.tick is nil in the shipped app, so the cost is
   -- one nil compare per candidate.
   while sdec.ua_best_probe(st) do
-    if sdec.tick ~= nil then pcall(sdec.tick) end
+    if sdec.tick ~= nil then sdec.tick() end
   end
   return sdec.ua_best_end(st)
 end

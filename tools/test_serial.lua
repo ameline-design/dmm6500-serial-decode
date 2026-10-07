@@ -1684,18 +1684,24 @@ do
     if rn == 1 then return racq() end
     error('raised second-pass acquire', 0)
   end
+  -- BARE FIRST, for the propagation contract bench_break.py's K line and the lock toggle rely on.
   local rok, rwhy = pcall(function() return sdec.capture() end)
-  sdec.acquire = racq
-  -- RE-RAISED, by contract: test_streamfix pins the same property from the other side.
   check('a RAISING second pass still reaches the caller', rok == false and rn >= 2,
         string.format('ok=%s calls=%d why=%s', tostring(rok), rn, tostring(rwhy)))
+  -- THEN THROUGH THE BOUNDARY, where the cleanup a raise skips now happens. capture() guards
+  -- nothing of its own, so the drop and the status come from sdec.guard. The bare raise above left
+  -- sdec.busy set -- which is itself the thing guard clears -- so clear it here or this capture
+  -- refuses early and never reaches the stub.
+  sdec.busy = false
+  local gok = sdec.guard(sdec.capture)
+  sdec.acquire = racq
+  check('...and the boundary refuses it rather than letting it reach the firmware',
+        gok == false, tostring(gok))
   check('...and it leaves no rate claim behind either',
         sdec.baud == nil and sdec.res == nil,
         string.format('baud=%s res=%s', tostring(sdec.baud), tostring(sdec.res)))
-  -- The reporting moved up with the catch, so it is checked up here too: a raise that unwinds
-  -- silently leaves the panel reading 'capturing' for the rest of the session.
   check('...and the panel says so, from the one place that can still see it',
-        sdec.ui_status == 'error' and has(tostring(sdec.lasterr), 'capture raised'),
+        sdec.ui_status == 'error' and has(tostring(sdec.lasterr), 'second-pass acquire'),
         string.format('status=%s lasterr=%s', tostring(sdec.ui_status), tostring(sdec.lasterr)))
   clearforce()
 
@@ -3289,7 +3295,9 @@ check('a quiet line is counted as an error, not hidden', sdec.errcount > 0,
 SRC.rd, SRC.ts = urd, uts
 local realread = dmm.digitize.read
 dmm.digitize.read = function() error('digitizer gone', 0) end
-sdec.capture()
+-- CONTAINED AT THE BOUNDARY, which is where containment lives now: neither capture() nor autoset()
+-- guards its own calls, so the raise travels out to sdec.guard and is reported from there.
+sdec.guard(sdec.capture)
 dmm.digitize.read = realread
 check('a raising capture is caught and reported', has(sdec.lasterr, 'digitizer gone')
       or sdec.lasterr ~= nil, tostring(sdec.lasterr))

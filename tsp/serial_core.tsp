@@ -1995,7 +1995,7 @@ function sdec.acq_copy(buf, n)
     if j > n then j = n end
     local k
     for k = i, j do t[k] = rd[k] end
-    if sdec.tick ~= nil then pcall(sdec.tick) end
+    if sdec.tick ~= nil then sdec.tick() end
     i = j + 1
   end
   sdec.smp = t
@@ -2538,9 +2538,9 @@ function sdec.acquire()
   -- the real capture they are the coarsest remaining steps; a tick between them costs one nil compare
   -- and cannot affect what they compute, because each reads sdec.smp afresh and none carries state
   -- into the next through anything a tick can reach.
-  if sdec.tick ~= nil then pcall(sdec.tick) end
+  if sdec.tick ~= nil then sdec.tick() end
   sdec.sig_edges(sdec.smp, sdec.nread)
-  if sdec.tick ~= nil then pcall(sdec.tick) end
+  if sdec.tick ~= nil then sdec.tick() end
   sdec.sig_idle(sdec.smp, sdec.nread)
   return true
 end
