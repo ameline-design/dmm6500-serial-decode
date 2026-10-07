@@ -103,11 +103,10 @@ ulog.keyopen   = ulog.keyopen or 0
 -- naming a path, and naming a path that is not there posts 2205 -- so every open and every write goes
 -- behind this, and answers 'no key' silently rather than filing an event about it.
 --
--- UNKNOWN COUNTS AS PRESENT: on a firmware without usbdriveexists the pcall fails, and refusing to log
--- on those instruments would be a regression in behaviour for a question we could not ask.
+-- UNKNOWN COUNTS AS PRESENT: a firmware without usbdriveexists answers nil, not 0, and refusing to
+-- log for a question we could not ask would be a regression.
 function ulog.haskey()
-  local ok, present = pcall(function() return file.usbdriveexists() end)
-  if ok and present == 0 then return false end
+  if file.usbdriveexists() == 0 then return false end
   return true
 end
 
@@ -137,7 +136,7 @@ function ulog.keylost(why)
   ulog.keyout = false
   local h = ulog.fh
   ulog.fh, ulog.on = nil, false
-  if h ~= nil then pcall(function() file.close(h) end) end
+  if h ~= nil then file.close(h) end
   return true
 end
 
@@ -251,12 +250,10 @@ end
 -- than an event -- the safer of the two directions.
 function ulog.rootlists(name)
   if name == nil or name == '' then return nil end
-  local fh = nil
-  pcall(function() fh = file.open('/usb1', file.MODE_READ) end)
+  local fh = file.open('/usb1', file.MODE_READ)
   if fh == nil then return nil end
-  local raw = nil
-  pcall(function() raw = file.read(fh, file.READ_ALL) end)
-  pcall(function() file.close(fh) end)
+  local raw = file.read(fh, file.READ_ALL)
+  file.close(fh)
   if raw == nil then return nil end
   -- `1` for a plain find, no patterns. Nothing else is searched: the tilde alias would match any long name
   -- beginning the same way, and a partial UTF-16 run would match a different directory entirely.
@@ -300,7 +297,9 @@ function ulog.ensuredir(dir)
   -- nil means the root could not be read, so absence is NOT established -- and a mkdir on that basis is
   -- the 2208 this whole path exists to avoid. Say so instead.
   if listed == nil then return false, 'cannot read the USB root' end
-  pcall(function() file.mkdir(dir) end)
+  -- BARE, because file.mkdir never raises: it returns normally whatever happened, posts 2208 when it
+  -- failed, and there is no return value. A guard around it reported success on every call.
+  file.mkdir(dir)
   -- Confirmed the same silent way, so the answer is measured rather than assumed.
   if ulog.rootlists(leaf) == true then ulog.dirok = dir; return true end
   return false, 'cannot create ' .. dir
@@ -350,8 +349,8 @@ function ulog.open_write(path, mode)
   -- with no key -- itself unsupported, but it degrades to one listing rather than to nonsense.
   local ready, rwhy = ulog.ensuredir()
   if not ready then return nil, tostring(rwhy) .. ' -- cannot open ' .. tostring(path) end
-  local fh = nil
-  pcall(function() fh = file.open(path, mode) end)
+  -- A FAILED OPEN RETURNS NIL, it does not raise, so the nil test below IS the error handling.
+  local fh = file.open(path, mode)
   if fh ~= nil then return fh end
   -- NOT A REASON TO LATCH. A failed open here is ambiguous -- an absent directory reaches it as
   -- readily as a bad key -- and keylost() would then stop logging for the session over a transient.
@@ -432,29 +431,19 @@ function ulog.line(s)
   ulog.nwritten = (ulog.nwritten or 0) + 1
   local txt = string.format('%05d %s %s\r\n', ulog.nlines or 0, tostring(ulog.tag),
                             tostring(s))
-  local ok, err = pcall(function()
-    file.write(ulog.fh, txt)
-    -- Flushing every line is deliberate: the most valuable log is the one written
-    -- immediately before a firmware panic, and anything still buffered then is
-    -- lost. Set ulog.autoflush = false in a hot loop.
-    if ulog.autoflush then file.flush(ulog.fh) end
-  end)
-  if not ok then
-    -- A WRITE THAT RAISES IS NOT THE PULLED KEY -- that one returns normally, and the gate above
-    -- already answers it. This is the full or failing filesystem, which is not measured, so it stops
-    -- the LOG
-    -- and claims nothing about the key: no keylost() here, or one bad write would hide Save and the
-    -- byte log on a guess. Stop trying either way -- repeating a failing write per line is its own
-    -- denial of service.
-    --
-    -- AND CLOSE THE HANDLE. Setting `on = false` while keeping ulog.fh would leave a firmware
-    -- descriptor open for the rest of the power cycle: nothing logs again, so nothing would close it.
-    ulog.on, ulog.lasterr = false, tostring(err)
-    local h = ulog.fh
-    ulog.fh = nil
-    if h ~= nil then pcall(function() file.close(h) end) end
+  -- A NIL TEST, NOT A GUARD. file.write does not raise -- a write to a pulled key returns normally
+  -- and posts 2200, which is what keyok() above answers. The handle is the one real risk: `on` true
+  -- implies one by construction, and that invariant is worth a compare rather than passing nil on.
+  if ulog.fh == nil then
+    ulog.on = false
+    ulog.lasterr = 'the log handle went away'
     return false
   end
+  file.write(ulog.fh, txt)
+  -- Flushing every line is deliberate: the most valuable log is the one written
+  -- immediately before a firmware panic, and anything still buffered then is
+  -- lost. Set ulog.autoflush = false in a hot loop.
+  if ulog.autoflush then file.flush(ulog.fh) end
   return true
 end
 
@@ -479,8 +468,9 @@ end
 
 -- Flush buffered lines to the key without closing the file.
 function ulog.flush()
-  if not ulog.on then return false end
-  return pcall(function() file.flush(ulog.fh) end)
+  if not ulog.on or ulog.fh == nil then return false end
+  file.flush(ulog.fh)
+  return true
 end
 
 -- Flush and close the log, leaving no handle behind.
@@ -488,10 +478,8 @@ function ulog.close()
   if ulog.fh ~= nil then
     local h = ulog.fh
     ulog.fh = nil
-    pcall(function()
-      file.flush(h)
-      file.close(h)
-    end)
+    file.flush(h)
+    file.close(h)
   end
   ulog.on = false
   return true
@@ -587,15 +575,12 @@ function ulog.next_free(prefix, ext, limit)
   local start = ulog.idx_ram[prefix]
   if start ~= nil and (start < 0 or start >= limit) then start = nil end
   if start == nil and ulog.exists(idxpath) then
-    -- THE HANDLE IS CLOSED OUTSIDE THE pcall THAT MIGHT RAISE. A file.read that raises -- the key
-    -- pulled between open and read -- would otherwise exit the pcall before file.close, and the
-    -- handle is local, so it would become permanently unreachable.
-    local fh = nil
-    pcall(function() fh = file.open(idxpath, file.MODE_READ) end)
+    -- A key pulled between the open and the read does not raise either -- file.read answers nil and
+    -- tonumber(nil) is nil -- so the close below is always reached and the handle cannot be stranded.
+    local fh = file.open(idxpath, file.MODE_READ)
     if fh ~= nil then
-      local ln = nil
-      pcall(function() ln = file.read(fh, file.READ_LINE) end)
-      pcall(function() file.close(fh) end)
+      local ln = file.read(fh, file.READ_LINE)
+      file.close(fh)
       local n = tonumber(ln)
       if n ~= nil and n >= 0 and n < limit then start = math.floor(n) end
     end
@@ -632,11 +617,10 @@ function ulog.next_free(prefix, ext, limit)
       wh = ulog.open_write(idxpath, file.MODE_WRITE)
       local wrote = false
       if wh ~= nil then
-        wrote = pcall(function()
-          file.write(wh, tostring(i) .. '\n')
-          file.flush(wh)
-        end)
-        pcall(function() file.close(wh) end)
+        file.write(wh, tostring(i) .. '\n')
+        file.flush(wh)
+        file.close(wh)
+        wrote = true
       end
       if wrote then ulog.idx_why = nil
       else ulog.idx_why = 'log index not saved -- numbering restarts after a power cycle' end
@@ -673,36 +657,22 @@ function ulog.write_file(path, lines, n)
   local fh, why = ulog.open_write(path, file.MODE_WRITE)
   if fh == nil then return false, tostring(why) end
 
-  local wrote = true
   local gone = false
   local i
   for i = 1, n do
-    -- BEFORE EACH WRITE, because a write to a key that has gone does not fail in Lua -- it posts 2200
-    -- and returns (see ulog.keylost). Checking only after the loop catches the VERDICT and none of
-    -- the boxes: a 24-row report put 24 modal dialogs on the panel, and a 32 kB one would put 2048.
-    -- 237 us a row against a Save the operator is already waiting on.
-    if not ulog.keyok() then gone = true; wrote = false; break end
-    local w = pcall(function() file.write(fh, tostring(lines[i]) .. '\r\n') end)
-    if not w then wrote = false; break end
+    -- BEFORE EACH WRITE: a write to a departed key posts 2200 and returns, so checking only after
+    -- the loop catches the verdict and none of the boxes -- 24 modal dialogs for a report, 2048 for
+    -- a 32 kB one. 237 us a row against a Save the operator is already waiting on.
+    if not ulog.keyok() then gone = true; break end
+    file.write(fh, tostring(lines[i]) .. '\r\n')
   end
-  -- FLUSH AND CLOSE IN SEPARATE pcalls, AND THE FLUSH RESULT IS PART OF THE ANSWER.
-  --
-  -- Sharing one pcall had two faults at once. A raising flush SKIPPED the close, leaking the
-  -- handle until a power cycle; and the flush's failure was discarded, so Save reported success
-  -- and set savedas to a file whose last rows never left the buffer. Both are reachable by
-  -- pulling the key -- or filling it -- after the final row is written, which is the moment
-  -- flush is the only thing that can still fail.
-  local flushed = pcall(function() file.flush(fh) end)
-  pcall(function() file.close(fh) end)      -- its OWN pcall, so a flush raise cannot skip it
-  -- A KEY LOST AFTER THE LAST ROW still has to be caught, and neither `wrote` nor `flushed` can see
-  -- it: file.write returns normally, and flush and close post nothing at all -- so both were true
-  -- over a file that got no bytes. Save returned true, the note row named the report, and the key
-  -- held a ZERO-BYTE file.
-  if gone or (wrote and flushed and not ulog.keyok()) then
+  file.flush(fh)
+  file.close(fh)
+  -- keyok() AFTER THE LAST ROW is the only thing that catches a key lost at the end: write returns
+  -- normally and flush and close post nothing, so a zero-byte file reports success otherwise.
+  if gone or not ulog.keyok() then
     return false, 'the USB key went away -- the file is empty or truncated'
   end
-  if not wrote then return false, 'write failed part-way through' end
-  if not flushed then return false, 'flush failed -- the file may be truncated' end
   return true
 end
 

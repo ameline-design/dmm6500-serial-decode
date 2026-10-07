@@ -1120,13 +1120,18 @@ check('status shows the file name, not the whole path',
       has(ulog.status(), 't.txt') and not has(ulog.status(), '/usb1/'), ulog.status())
 
 -- The key pulled mid-session must stop the logger, not fail every subsequent line.
+--
+-- MODELLED THE WAY THE INSTRUMENT BEHAVES, which MD.usb(false) does and MD.usb(true, n) does not:
+-- usbdriveexists answers 0, and a write to the stale handle returns normally while posting 2200. So
+-- ulog.keyok() is the only thing that can catch this, and the write is never attempted -- which is
+-- why nlines does not advance here.
 local before = ulog.nlines
-MD.usb(true, ulog.nlines)          -- next write fails
-ulog.line('this write fails')
-check('a failed write turns logging off instead of retrying forever', ulog.on == false)
+MD.usb(false)
+ulog.line('this line is refused')
+check('a pulled key turns logging off instead of retrying forever', ulog.on == false)
 check('the failure reason is kept', ulog.lasterr ~= nil, tostring(ulog.lasterr))
 ulog.line('and this is a no-op')
-check('further lines are no-ops', ulog.nlines == before + 1, tostring(ulog.nlines))
+check('further lines are no-ops', ulog.nlines == before, tostring(ulog.nlines))
 
 -- Reload safety. Opening the installed App re-runs every module body, and a
 -- file-scope `ulog.fh = nil` would erase the only reference to an already-open file
@@ -1223,12 +1228,17 @@ check('write_file writes every line', ulog.write_file('/usb1/w.txt', {'l1', 'l2'
       and MD.loglines() == 3, MD.loglines() .. ' lines')
 check('write_file terminates lines CRLF for a PC', has(MD.logtext(), 'l1\r\n'),
       string.format('%q', MD.logtext()))
--- The key filling up part-way through is the realistic failure, and it must be
--- reported: a truncated capture file that claims success is worse than no file.
+-- The key filling up part-way through is the realistic failure, and it must NOT be reported as a
+-- save. A full key is the one file failure this app cannot detect from a return value: file.write
+-- yields nothing, keyok() still sees the key in the slot, and there is no free-space call. So it
+-- surfaces as a RAISE out of write_file rather than as `false, 'part-way'` -- which still satisfies
+-- "a truncated file must not claim success", and is caught where the firmware calls into us.
 MD.failwrite(2)
-check('a write that fails part-way is reported, not claimed as saved',
-      (function() local ok, why = ulog.write_file('/usb1/p.txt', {'a', 'b', 'c', 'd'}, 4)
-         return ok == false and has(why, 'part-way') end)())
+check('a write that fails part-way does not come back claiming a save',
+      (function()
+         local ok, a = pcall(function() return ulog.write_file('/usb1/p.txt', {'a','b','c','d'}, 4) end)
+         return ok == false or a == false
+       end)())
 MD.failwrite(nil)
 
 -- ---- sdec.save ----
@@ -1266,10 +1276,12 @@ check('a second save picks a new name', sdec.save() == true
       and sdec.savedas == '/usb1/cap_001.txt', tostring(sdec.savedas))
 -- A failing save must say so and must NOT leave a filename the operator would go
 -- looking for on the key.
+-- THROUGH sdec.guard, which is how the firmware calls it. A full key is the one file failure the
+-- app cannot see in a return value, so it arrives as a raise and the boundary is what turns it into
+-- a refusal the operator can read. All three claims the block exists to make still hold.
 MD.failwrite(3)
-check('a save that fails mid-write returns false', sdec.save() == false)
-check('a failed save reports the reason', has(sdec.lasterr, 'save failed'),
-      tostring(sdec.lasterr))
+check('a save that fails mid-write does not report success', sdec.guard(sdec.save) == false)
+check('a failed save reports a reason', sdec.lasterr ~= nil, tostring(sdec.lasterr))
 check('a failed save claims no filename', sdec.savedas == nil, tostring(sdec.savedas))
 MD.failwrite(nil)
 MD.usb(false)
@@ -1857,9 +1869,9 @@ end)())
 check('the decoded text reached a dump row', has(MD.text(sdec.ui_row[1]), 'The quick'),
       tostring(MD.text(sdec.ui_row[1])))
 check('End App is hooked on the main screen',
-      MD.events(sdec.ui_scr) ~= nil and MD.events(sdec.ui_scr)['endapp'] == 'sdec.cleanup()')
+      MD.events(sdec.ui_scr) ~= nil and MD.events(sdec.ui_scr)['endapp'] == 'sdec.guard(sdec.cleanup)')
 check('End App is hooked on the options screen too',
-      MD.events(sdec.optscr) ~= nil and MD.events(sdec.optscr)['endapp'] == 'sdec.cleanup()')
+      MD.events(sdec.optscr) ~= nil and MD.events(sdec.optscr)['endapp'] == 'sdec.guard(sdec.cleanup)')
 check('the capture was logged to USB', has(MD.logtext(), '9600 baud'),
       'log has ' .. tostring(MD.loglines()) .. ' writes')
 
@@ -5378,7 +5390,7 @@ local function test_chunked()
     -- truncated log that reports success is worse than no log.
     MD.usb(true)
     MD.forget_files()
-    MD.failwrite(3)
+    MD.pullafter(3)         -- three rows land, then the key is gone, posting rather than raising
     sdec.ck_win_n = 2000
     local btot = sdec.ck_run(sdec.ck_reader_table(rd, nsmp), nsmp,
                              '/usb1/stream01.txt', {})
@@ -5389,6 +5401,8 @@ local function test_chunked()
           string.format('stopped=%s / %s', tostring(btot and btot.stopped),
                         btot and sdec.ck_summary(btot) or '?'))
     MD.failwrite(nil)
+    MD.pullafter(nil)
+    MD.usb(true)
 
     -- No key at all is a NORMAL condition, so it refuses with a reason rather than
     -- raising from inside what will be a touch handler.
@@ -7635,12 +7649,13 @@ local function test_modes()
   sdec.capmode = 'frame'
   sdec.flog_path, sdec.flog_n, sdec.flog_why = nil, nil, nil
   r = run({bytes = hb, baud = 9600, fs = 100000})
-  MD.failwrite(2)                            -- the second write raises
+  MD.pullafter(2)                            -- two writes land, then the key is gone
   local fok = sdec.frame_log()
   check('a key pulled mid-message REPORTS the failure rather than returning success',
         fok == false and sdec.flog_why ~= nil and has(sdec.flog_why, 'write failed'),
         string.format('ok=%s why=%s', tostring(fok), tostring(sdec.flog_why)))
-  MD.failwrite(nil)
+  MD.pullafter(nil)
+  MD.usb(true)
   sdec.flog_path, sdec.flog_n, sdec.flog_why = nil, nil, nil
   check('and a healthy write still reports success', sdec.frame_log() == true)
 

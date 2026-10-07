@@ -327,6 +327,7 @@ function MD.events(id) return display.events[id] end
 
 -- ---------- file API, so ulog can be exercised both ways ----------
 local USB, LOG, FAILAT, WFAIL, RFAIL = true, {}, nil, nil, nil
+local PULLAT = nil
 file = {MODE_APPEND = 'a', MODE_WRITE = 'w', MODE_READ = 'r',
         READ_LINE = 'line', READ_ALL = 'all'}
 -- Files that have been written, so MODE_READ can answer "does this exist?".
@@ -571,6 +572,14 @@ end
 function file.write(h, s)
   if h ~= 42 then error('write to a bad file handle', 0) end
   if WFAIL ~= nil then WFAIL = WFAIL - 1; if WFAIL < 0 then error('USB full', 0) end end
+  -- A KEY PULLED AFTER n WRITES, WITHOUT RAISING -- which is what the instrument does and what
+  -- neither FAILAT nor WFAIL models. The key simply stops being there: usbdriveexists answers 0 and
+  -- every further write posts 2200 and returns, so only ulog.keyok() can see it.
+  if PULLAT ~= nil then
+    -- ONE-SHOT: it disarms as it fires, so the key goes away once. Left armed it would re-clear USB
+    -- after every MD.usb(true) and silently poison the rest of the suite.
+    if PULLAT <= 0 then USB = false; PULLAT = nil else PULLAT = PULLAT - 1 end
+  end
   if FAILAT ~= nil and table.getn(LOG) >= FAILAT then
     error('USB write failed (key removed)', 0)
   end
@@ -593,6 +602,8 @@ function file.close(h)
 end
 -- Make the Nth write raise, to model the key filling up mid-save.
 function MD.failwrite(n) WFAIL = n end
+-- Let n writes through, then the key is GONE -- no raise. See file.write.
+function MD.pullafter(n) PULLAT = n end
 -- Let n reads succeed and raise on the next, to model the key pulled between open and read.
 function MD.failread(n) RFAIL = n end
 

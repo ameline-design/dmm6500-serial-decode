@@ -439,28 +439,26 @@ function sdec.frame_log()
   -- The message NUMBER is needed for the header line before the write, but flog_n itself is
   -- not advanced until the write succeeds -- so a failed message does not consume a number.
   local msgno = (sdec.flog_n or 0) + 1
-  local wrote = pcall(function()
-    file.write(fh, string.format('---- msg %d  %s %s  %d bytes %d err\r\n',
-                                 msgno or 0, tostring(sdec.baud_text()), tostring(sdec.fmt_text()),
-                                 sdec.res.nf or 0, sdec.res.nbad or 0))
-    local i = 1
-    while i <= sdec.res.nf do
-      file.write(fh, sdec.ua_text_line(i, 64) .. '\r\n')
-      i = i + 64
-    end
-    i = 1
-    while i <= sdec.res.nf do
-      file.write(fh, sdec.ua_hex_line(i, 16) .. '\r\n')
-      i = i + 16
-    end
-    file.flush(fh)
-  end)
-  pcall(function() file.close(fh) end)
-  -- A WRITE THAT POSTED 2200 RETURNS NORMALLY (see ulog.keylost), so `wrote` cannot see a key pulled
-  -- between the open above and here -- and this capture's bytes would be counted as logged. One
-  -- presence check can, costs 237 us with a key in the slot, and latches logging off on the way past.
-  if wrote and not ulog.keyok() then wrote = false end
-  if not wrote then
+  file.write(fh, string.format('---- msg %d  %s %s  %d bytes %d err\r\n',
+                               msgno or 0, tostring(sdec.baud_text()), tostring(sdec.fmt_text()),
+                               sdec.res.nf or 0, sdec.res.nbad or 0))
+  local i = 1
+  while i <= sdec.res.nf do
+    file.write(fh, sdec.ua_text_line(i, 64) .. '\r\n')
+    i = i + 64
+  end
+  i = 1
+  while i <= sdec.res.nf do
+    file.write(fh, sdec.ua_hex_line(i, 16) .. '\r\n')
+    i = i + 16
+  end
+  file.flush(fh)
+  file.close(fh)
+  -- THE PRESENCE CHECK IS THE WHOLE TEST. A write that posted 2200 returns normally (see
+  -- ulog.keylost), so nothing the writes themselves report can see a key pulled since the open --
+  -- this capture's bytes would be counted as logged. 237 us with a key in the slot, and it latches
+  -- logging off on the way past.
+  if not ulog.keyok() then
     sdec.flog_why = 'write failed part-way through ' ..
                     string.gsub(tostring(sdec.flog_path), '^.*/', '')
     return false
@@ -2055,6 +2053,31 @@ function sdec.proto_parse(which)
 end
 
 -- ============================================================================
+-- The inbound firmware boundary
+-- ============================================================================
+-- Run a panel handler so a raise cannot reach the firmware. -> true if it returned.
+--
+-- THE ONE PLACE A pcall MAY WRAP OUR OWN CODE, and it is a firmware boundary like any other: the
+-- instrument calls these by name out of a display event string, and a raise that escapes becomes an
+-- ERROR-severity event, which is a modal dialog over the app. One helper, so the whole boundary is
+-- ONE pcall site instead of one per button -- and it covers the WHOLE handler, where a guard around
+-- a single call inside one covered only that call.
+--
+-- THE FAILURE PATH RAISES NOTHING ITSELF. It assigns fields and refreshes; it does not log, because
+-- ulog.line reaches file.write, and a key that has filled up is exactly the condition that brought
+-- us here. ui_refresh only touches display calls, which post events rather than raising.
+function sdec.guard(f)
+  local ok, err = pcall(f)
+  if ok then return true end
+  sdec.busy = false
+  sdec.errcount = (sdec.errcount or 0) + 1
+  sdec.lasterr = tostring(err)
+  sdec.ui_status = 'error'
+  sdec.ui_refresh()
+  return false
+end
+
+-- ============================================================================
 -- Save the decoded stream to the USB key
 -- ============================================================================
 -- Write a self-describing file to the USB key: the wire parameters, then the whole capture as a
@@ -3114,7 +3137,7 @@ end
 -- Hook End App on screen scr, so leaving the app tears it down. Returns whether the hook took.
 function sdec.install_cleanup(scr)
   local ok = pcall(function()
-    display.setevent(scr, display.EVENT_ENDAPP, 'sdec.cleanup()')
+    display.setevent(scr, display.EVENT_ENDAPP, 'sdec.guard(sdec.cleanup)')
   end)
   if not ok then
     -- STICKY, not lasterr: a later capture would clear lasterr, and this fault must outlive it.

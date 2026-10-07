@@ -656,7 +656,7 @@ end
 function sdec.ui_tick_on()
   if sdec.ui_tick_obj == nil then return false end
   return pcall(function()
-    display.setevent(sdec.ui_tick_obj, display.EVENT_PRESS, 'sdec.ui_tick()')
+    display.setevent(sdec.ui_tick_obj, display.EVENT_PRESS, 'sdec.guard(sdec.ui_tick)')
   end)
 end
 
@@ -2324,7 +2324,7 @@ function sdec.ui_build()
   end)
   if sdec.ui_tick_obj ~= nil then
     pcall(function()
-      display.setevent(sdec.ui_tick_obj, display.EVENT_PRESS, 'sdec.ui_tick()')
+      display.setevent(sdec.ui_tick_obj, display.EVENT_PRESS, 'sdec.guard(sdec.ui_tick)')
     end)
   end
 
@@ -2365,15 +2365,15 @@ function sdec.ui_build()
   -- different things: the auto-log is one message per capture as text and hex, while Save writes
   -- the full report -- every view, the notes, the summary.
   local bdef = {
-    {x = 8,   w = 120, t = 'Capture',    e = 'sdec.capture()'},
-    {x = 152, w = 90,  t = 'View',       e = 'sdec.view_toggle()'},
-    {x = 266, w = 100, t = 'Mode',       e = 'sdec.mode_cycle()'},
-    {x = 390, w = 112, t = 'NewLog',     e = 'sdec.log_new()', hide = 'ui_newlogbtn'},
+    {x = 8,   w = 120, t = 'Capture',    e = 'sdec.capture'},
+    {x = 152, w = 90,  t = 'View',       e = 'sdec.view_toggle'},
+    {x = 266, w = 100, t = 'Mode',       e = 'sdec.mode_cycle'},
+    {x = 390, w = 112, t = 'NewLog',     e = 'sdec.log_new', hide = 'ui_newlogbtn'},
     -- `hide` marks a button whose handle is kept by NAME as well as by index, because ui_page_btns has
     -- to reach it every refresh. ui_btn is positional and can have a hole, so an index is the wrong
     -- handle to remember: reordering this table would hide the wrong control.
-    {x = 526, w = 112, t = 'Save',       e = 'sdec.save()', hide = 'ui_savebtn'},
-    {x = 662, w = 112, t = 'Options',    e = 'sdec.options()'},
+    {x = 526, w = 112, t = 'Save',       e = 'sdec.save', hide = 'ui_savebtn'},
+    {x = 662, w = 112, t = 'Options',    e = 'sdec.options'},
   }
   -- UP, LOCK RATE, DN, down the dump area's right margin in that vertical order: up is up and down
   -- is down, so neither page button needs reading -- which is why the labels can be two characters.
@@ -2402,9 +2402,9 @@ function sdec.ui_build()
   -- 639) until Lock Rate itself moves. tools/render_png.py measures every row against that edge.
   local pbw, lbw = 56, 140
   local pdef = {
-    {x = 785 - pbw, y = 58,  w = pbw, t = 'Up',        e = 'sdec.page_prev()',  pg = true},
-    {x = 785 - lbw, y = 160, w = lbw, t = 'Lock Rate', e = 'sdec.lock_toggle()'},
-    {x = 785 - pbw, y = 262, w = pbw, t = 'Dn',        e = 'sdec.page_next()',  pg = true},
+    {x = 785 - pbw, y = 58,  w = pbw, t = 'Up',        e = 'sdec.page_prev',  pg = true},
+    {x = 785 - lbw, y = 160, w = lbw, t = 'Lock Rate', e = 'sdec.lock_toggle'},
+    {x = 785 - pbw, y = 262, w = pbw, t = 'Dn',        e = 'sdec.page_next',  pg = true},
   }
   local pk, npg = nil, 0
   sdec.ui_pgbtn = {}
@@ -2412,7 +2412,7 @@ function sdec.ui_build()
     local pd = pdef[pk]
     local pb = create(sdec.ui_scr, display.OBJ_BUTTON, pd.x, pd.y, pd.t, pd.w)
     if pb ~= nil then
-      display.setevent(pb, display.EVENT_PRESS, pd.e)
+      display.setevent(pb, display.EVENT_PRESS, 'sdec.guard(' .. pd.e .. ')')
       sdec.ui_btn[table.getn(bdef) + pk] = pb
       sdec.ui_allbtn[table.getn(sdec.ui_allbtn) + 1] = pb
       if pd.pg then
@@ -2469,7 +2469,7 @@ function sdec.ui_build()
     local bd = bdef[k]
     b = create(sdec.ui_scr, display.OBJ_BUTTON, bd.x, by, bd.t, bd.w)
     if b ~= nil then
-      display.setevent(b, display.EVENT_PRESS, bd.e)
+      display.setevent(b, display.EVENT_PRESS, 'sdec.guard(' .. bd.e .. ')')
       sdec.ui_btn[k] = b
       if bd.hide ~= nil then sdec[bd.hide] = b end
       sdec.ui_allbtn[table.getn(sdec.ui_allbtn) + 1] = b
@@ -3483,17 +3483,17 @@ function sdec.build_options()
   -- sizes it by 30 px or more: 'Lock Detected' wants 190 and has 220, 'Auto Detect' 162 in 200,
   -- 'Apply' 78 in 150, 'Cancel' 92 in 150.
   local odef = {
-    {i = 4, x = 22,  w = 200, t = 'Auto Detect',   e = 'sdec.options_auto()'},
-    {i = 1, x = 234, w = 220, t = 'Lock Detected', e = 'sdec.options_lock()'},
-    {i = 2, x = 466, w = 150, t = 'Apply',         e = 'sdec.options_apply()'},
-    {i = 3, x = 628, w = 150, t = 'Cancel',        e = 'sdec.options_cancel()'},
+    {i = 4, x = 22,  w = 200, t = 'Auto Detect',   e = 'sdec.options_auto'},
+    {i = 1, x = 234, w = 220, t = 'Lock Detected', e = 'sdec.options_lock'},
+    {i = 2, x = 466, w = 150, t = 'Apply',         e = 'sdec.options_apply'},
+    {i = 3, x = 628, w = 150, t = 'Cancel',        e = 'sdec.options_cancel'},
   }
   local ok, nob = nil, 0
   for ok = 1, table.getn(odef) do
     local od = odef[ok]
     local ob = create(sdec.optscr, display.OBJ_BUTTON, od.x, sdec.ui_opt_btn_y, od.t, od.w)
     if ob ~= nil then
-      display.setevent(ob, display.EVENT_PRESS, od.e)
+      display.setevent(ob, display.EVENT_PRESS, 'sdec.guard(' .. od.e .. ')')
       sdec.opt_btn[od.i] = ob
       nob = nob + 1
     end
@@ -3510,7 +3510,7 @@ function sdec.build_options()
   -- the visible screen, exiting from the form would strand both screens and the
   -- buffer until a power cycle.
   pcall(function()
-    display.setevent(sdec.optscr, display.EVENT_ENDAPP, 'sdec.cleanup()')
+    display.setevent(sdec.optscr, display.EVENT_ENDAPP, 'sdec.guard(sdec.cleanup)')
   end)
   return sdec.optscr
 end

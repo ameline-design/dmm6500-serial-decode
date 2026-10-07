@@ -375,14 +375,14 @@ do
         and TICKEV() == '',
         string.format('%q', tostring(TICKEV())))
   check('and turning it on puts the handler back', sdec.ui_tick_on() == true
-        and TICKEV() == 'sdec.ui_tick()',
+        and TICKEV() == 'sdec.guard(sdec.ui_tick)',
         string.format('%q', tostring(TICKEV())))
   -- A press turns it off for the whole capture and back on afterwards, however the capture ended.
   MD.usb(true)
   MD.forget_files()
   sdec.capture()
   check('a capture leaves the tick ON when it returns',
-        TICKEV() == 'sdec.ui_tick()',
+        TICKEV() == 'sdec.guard(sdec.ui_tick)',
         string.format('%q', tostring(TICKEV())))
   -- INCLUDING A CAPTURE THAT RAISED, which is why the wrapper pcalls the body: a raise that skipped
   -- the re-enable leaves the panel blind to the key for the rest of the session.
@@ -402,7 +402,7 @@ do
   check('a raise out of the body still reaches the caller, rather than being swallowed',
         raised == false and has(tostring(rwhy), 'escaping'),
         string.format('%s / %s', tostring(raised), tostring(rwhy)))
-  check('and the tick is back ON after it', TICKEV() == 'sdec.ui_tick()',
+  check('and the tick is back ON after it', TICKEV() == 'sdec.guard(sdec.ui_tick)',
         string.format('%q', tostring(TICKEV())))
   -- AND sdec.busy IS NOT LEFT SET. ui_tick treats busy as "a run owns the panel", so one faulting
   -- press would stop the panel noticing the key for the rest of the session.

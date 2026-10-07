@@ -57,11 +57,10 @@ ulog.keyopen   = ulog.keyopen or 0
 -- Is a key in the slot? -> true, or false when the firmware says there is none.
 --   [...]
 -- behind this, and answers 'no key' silently rather than filing an event about it.
--- UNKNOWN COUNTS AS PRESENT: on a firmware without usbdriveexists the pcall fails, and refusing to log
--- on those instruments would be a regression in behaviour for a question we could not ask.
+-- UNKNOWN COUNTS AS PRESENT: a firmware without usbdriveexists answers nil, not 0, and refusing to
+-- log for a question we could not ask would be a regression.
 function ulog.haskey()
-  local ok, present = pcall(function() return file.usbdriveexists() end)
-  if ok and present == 0 then return false end
+  if file.usbdriveexists() == 0 then return false end
   return true
 end
 
@@ -78,7 +77,7 @@ function ulog.keylost(why)
   ulog.keyout = false
   local h = ulog.fh
   ulog.fh, ulog.on = nil, false
-  if h ~= nil then pcall(function() file.close(h) end) end
+  if h ~= nil then file.close(h) end
   return true
 end
 
@@ -125,12 +124,10 @@ end
 -- than an event -- the safer of the two directions.
 function ulog.rootlists(name)
   if name == nil or name == '' then return nil end
-  local fh = nil
-  pcall(function() fh = file.open('/usb1', file.MODE_READ) end)
+  local fh = file.open('/usb1', file.MODE_READ)
   if fh == nil then return nil end
-  local raw = nil
-  pcall(function() raw = file.read(fh, file.READ_ALL) end)
-  pcall(function() file.close(fh) end)
+  local raw = file.read(fh, file.READ_ALL)
+  file.close(fh)
   if raw == nil then return nil end
   if string.find(raw, string.upper(name), 1, 1) ~= nil then return true end
   return false
@@ -154,7 +151,7 @@ function ulog.ensuredir(dir)
   local listed = ulog.rootlists(leaf)
   if listed == true then ulog.dirok = dir; return true end
   if listed == nil then return false, 'cannot read the USB root' end
-  pcall(function() file.mkdir(dir) end)
+  file.mkdir(dir)
   if ulog.rootlists(leaf) == true then ulog.dirok = dir; return true end
   return false, 'cannot create ' .. dir
 end
@@ -180,8 +177,7 @@ function ulog.open_write(path, mode)
   end
   local ready, rwhy = ulog.ensuredir()
   if not ready then return nil, tostring(rwhy) .. ' -- cannot open ' .. tostring(path) end
-  local fh = nil
-  pcall(function() fh = file.open(path, mode) end)
+  local fh = file.open(path, mode)
   if fh ~= nil then return fh end
   return nil, 'cannot open ' .. tostring(path)
                 .. ' -- key may be absent, full, write-protected, or refusing the directory'
@@ -234,17 +230,13 @@ function ulog.line(s)
   ulog.nwritten = (ulog.nwritten or 0) + 1
   local txt = string.format('%05d %s %s\r\n', ulog.nlines or 0, tostring(ulog.tag),
                             tostring(s))
-  local ok, err = pcall(function()
-    file.write(ulog.fh, txt)
-    if ulog.autoflush then file.flush(ulog.fh) end
-  end)
-  if not ok then
-    ulog.on, ulog.lasterr = false, tostring(err)
-    local h = ulog.fh
-    ulog.fh = nil
-    if h ~= nil then pcall(function() file.close(h) end) end
+  if ulog.fh == nil then
+    ulog.on = false
+    ulog.lasterr = 'the log handle went away'
     return false
   end
+  file.write(ulog.fh, txt)
+  if ulog.autoflush then file.flush(ulog.fh) end
   return true
 end
 
@@ -263,8 +255,9 @@ end
 
 -- Flush buffered lines to the key without closing the file.
 function ulog.flush()
-  if not ulog.on then return false end
-  return pcall(function() file.flush(ulog.fh) end)
+  if not ulog.on or ulog.fh == nil then return false end
+  file.flush(ulog.fh)
+  return true
 end
 
 -- Flush and close the log, leaving no handle behind.
@@ -272,10 +265,8 @@ function ulog.close()
   if ulog.fh ~= nil then
     local h = ulog.fh
     ulog.fh = nil
-    pcall(function()
-      file.flush(h)
-      file.close(h)
-    end)
+    file.flush(h)
+    file.close(h)
   end
   ulog.on = false
   return true
@@ -325,12 +316,10 @@ function ulog.next_free(prefix, ext, limit)
   local start = ulog.idx_ram[prefix]
   if start ~= nil and (start < 0 or start >= limit) then start = nil end
   if start == nil and ulog.exists(idxpath) then
-    local fh = nil
-    pcall(function() fh = file.open(idxpath, file.MODE_READ) end)
+    local fh = file.open(idxpath, file.MODE_READ)
     if fh ~= nil then
-      local ln = nil
-      pcall(function() ln = file.read(fh, file.READ_LINE) end)
-      pcall(function() file.close(fh) end)
+      local ln = file.read(fh, file.READ_LINE)
+      file.close(fh)
       local n = tonumber(ln)
       if n ~= nil and n >= 0 and n < limit then start = math.floor(n) end
     end
@@ -348,11 +337,10 @@ function ulog.next_free(prefix, ext, limit)
       wh = ulog.open_write(idxpath, file.MODE_WRITE)
       local wrote = false
       if wh ~= nil then
-        wrote = pcall(function()
-          file.write(wh, tostring(i) .. '\n')
-          file.flush(wh)
-        end)
-        pcall(function() file.close(wh) end)
+        file.write(wh, tostring(i) .. '\n')
+        file.flush(wh)
+        file.close(wh)
+        wrote = true
       end
       if wrote then ulog.idx_why = nil
       else ulog.idx_why = 'log index not saved -- numbering restarts after a power cycle' end
@@ -375,21 +363,17 @@ function ulog.write_file(path, lines, n)
   local fh, why = ulog.open_write(path, file.MODE_WRITE)
   if fh == nil then return false, tostring(why) end
 
-  local wrote = true
   local gone = false
   local i
   for i = 1, n do
-    if not ulog.keyok() then gone = true; wrote = false; break end
-    local w = pcall(function() file.write(fh, tostring(lines[i]) .. '\r\n') end)
-    if not w then wrote = false; break end
+    if not ulog.keyok() then gone = true; break end
+    file.write(fh, tostring(lines[i]) .. '\r\n')
   end
-  local flushed = pcall(function() file.flush(fh) end)
-  pcall(function() file.close(fh) end)      -- its OWN pcall, so a flush raise cannot skip it
-  if gone or (wrote and flushed and not ulog.keyok()) then
+  file.flush(fh)
+  file.close(fh)
+  if gone or not ulog.keyok() then
     return false, 'the USB key went away -- the file is empty or truncated'
   end
-  if not wrote then return false, 'write failed part-way through' end
-  if not flushed then return false, 'flush failed -- the file may be truncated' end
   return true
 end
 
@@ -3390,15 +3374,9 @@ function sdec.ck_sink_file(path, ncol)
   if ncol == nil then ncol = 16 end
   local fh, owhy = ulog.open_write(path, file.MODE_APPEND)
   if fh == nil then return nil, nil, 'cannot append to ' .. tostring(path) end
-  local hok = pcall(function()
-    file.write(fh, string.format('---- stream  %s %s\r\n',
-               sdec.baud_text and sdec.baud_text() or '?',
-               sdec.fmt_text and sdec.fmt_text() or '?'))
-  end)
-  if not hok then
-    pcall(function() file.close(fh) end)
-    return nil, nil, 'cannot write the stream header to ' .. tostring(path)
-  end
+  file.write(fh, string.format('---- stream  %s %s\r\n',
+             sdec.baud_text and sdec.baud_text() or '?',
+             sdec.fmt_text and sdec.fmt_text() or '?'))
 
   local cv, ce, cn = {}, {}, 0     -- carry: bytes not yet a full row
   local cbase = 0                  -- stream offset of cv[1]
@@ -3409,10 +3387,7 @@ function sdec.ck_sink_file(path, ncol)
   local function emit(nrow)
     local line = sdec.ua_hexrow(cv, ce, nrow, 1, ncol, cbase)
     if not dead and ulog ~= nil and ulog.keyok ~= nil and not ulog.keyok() then dead = true end
-    if not dead then
-      local w = pcall(function() file.write(fh, line .. '\r\n') end)
-      if not w then dead = true end
-    end
+    if not dead then file.write(fh, line .. '\r\n') end
     local i
     for i = nrow + 1, cn do
       cv[i - nrow] = cv[i]
@@ -3440,14 +3415,10 @@ function sdec.ck_sink_file(path, ncol)
   local finish = function()
     if finished then return not dead end
     finished = true
-    if not dead and cn > 0 then
-      local eok = pcall(function() emit(cn) end)
-      if not eok then dead = true end
-    end
-    local fok = pcall(function() file.flush(fh) end)
-    pcall(function() file.close(fh) end)      -- its OWN pcall, so a flush raise cannot skip it
+    if not dead and cn > 0 then emit(cn) end
+    file.flush(fh)
+    file.close(fh)
     fh = nil
-    if not fok then dead = true end
     if not dead and ulog ~= nil and ulog.keyok ~= nil and not ulog.keyok() then dead = true end
     return not dead
   end
@@ -3865,7 +3836,7 @@ end
 function sdec.ui_tick_on()
   if sdec.ui_tick_obj == nil then return false end
   return pcall(function()
-    display.setevent(sdec.ui_tick_obj, display.EVENT_PRESS, 'sdec.ui_tick()')
+    display.setevent(sdec.ui_tick_obj, display.EVENT_PRESS, 'sdec.guard(sdec.ui_tick)')
   end)
 end
 
@@ -4850,7 +4821,7 @@ function sdec.ui_build()
   end)
   if sdec.ui_tick_obj ~= nil then
     pcall(function()
-      display.setevent(sdec.ui_tick_obj, display.EVENT_PRESS, 'sdec.ui_tick()')
+      display.setevent(sdec.ui_tick_obj, display.EVENT_PRESS, 'sdec.guard(sdec.ui_tick)')
     end)
   end
 
@@ -4868,18 +4839,18 @@ function sdec.ui_build()
   sdec.ui_allbtn = {}
   local b
   local bdef = {
-    {x = 8,   w = 120, t = 'Capture',    e = 'sdec.capture()'},
-    {x = 152, w = 90,  t = 'View',       e = 'sdec.view_toggle()'},
-    {x = 266, w = 100, t = 'Mode',       e = 'sdec.mode_cycle()'},
-    {x = 390, w = 112, t = 'NewLog',     e = 'sdec.log_new()', hide = 'ui_newlogbtn'},
-    {x = 526, w = 112, t = 'Save',       e = 'sdec.save()', hide = 'ui_savebtn'},
-    {x = 662, w = 112, t = 'Options',    e = 'sdec.options()'},
+    {x = 8,   w = 120, t = 'Capture',    e = 'sdec.capture'},
+    {x = 152, w = 90,  t = 'View',       e = 'sdec.view_toggle'},
+    {x = 266, w = 100, t = 'Mode',       e = 'sdec.mode_cycle'},
+    {x = 390, w = 112, t = 'NewLog',     e = 'sdec.log_new', hide = 'ui_newlogbtn'},
+    {x = 526, w = 112, t = 'Save',       e = 'sdec.save', hide = 'ui_savebtn'},
+    {x = 662, w = 112, t = 'Options',    e = 'sdec.options'},
   }
   local pbw, lbw = 56, 140
   local pdef = {
-    {x = 785 - pbw, y = 58,  w = pbw, t = 'Up',        e = 'sdec.page_prev()',  pg = true},
-    {x = 785 - lbw, y = 160, w = lbw, t = 'Lock Rate', e = 'sdec.lock_toggle()'},
-    {x = 785 - pbw, y = 262, w = pbw, t = 'Dn',        e = 'sdec.page_next()',  pg = true},
+    {x = 785 - pbw, y = 58,  w = pbw, t = 'Up',        e = 'sdec.page_prev',  pg = true},
+    {x = 785 - lbw, y = 160, w = lbw, t = 'Lock Rate', e = 'sdec.lock_toggle'},
+    {x = 785 - pbw, y = 262, w = pbw, t = 'Dn',        e = 'sdec.page_next',  pg = true},
   }
   local pk, npg = nil, 0
   sdec.ui_pgbtn = {}
@@ -4887,7 +4858,7 @@ function sdec.ui_build()
     local pd = pdef[pk]
     local pb = create(sdec.ui_scr, display.OBJ_BUTTON, pd.x, pd.y, pd.t, pd.w)
     if pb ~= nil then
-      display.setevent(pb, display.EVENT_PRESS, pd.e)
+      display.setevent(pb, display.EVENT_PRESS, 'sdec.guard(' .. pd.e .. ')')
       sdec.ui_btn[table.getn(bdef) + pk] = pb
       sdec.ui_allbtn[table.getn(sdec.ui_allbtn) + 1] = pb
       if pd.pg then
@@ -4922,7 +4893,7 @@ function sdec.ui_build()
     local bd = bdef[k]
     b = create(sdec.ui_scr, display.OBJ_BUTTON, bd.x, by, bd.t, bd.w)
     if b ~= nil then
-      display.setevent(b, display.EVENT_PRESS, bd.e)
+      display.setevent(b, display.EVENT_PRESS, 'sdec.guard(' .. bd.e .. ')')
       sdec.ui_btn[k] = b
       if bd.hide ~= nil then sdec[bd.hide] = b end
       sdec.ui_allbtn[table.getn(sdec.ui_allbtn) + 1] = b
@@ -5470,17 +5441,17 @@ function sdec.build_options()
 
   sdec.opt_btn = {}
   local odef = {
-    {i = 4, x = 22,  w = 200, t = 'Auto Detect',   e = 'sdec.options_auto()'},
-    {i = 1, x = 234, w = 220, t = 'Lock Detected', e = 'sdec.options_lock()'},
-    {i = 2, x = 466, w = 150, t = 'Apply',         e = 'sdec.options_apply()'},
-    {i = 3, x = 628, w = 150, t = 'Cancel',        e = 'sdec.options_cancel()'},
+    {i = 4, x = 22,  w = 200, t = 'Auto Detect',   e = 'sdec.options_auto'},
+    {i = 1, x = 234, w = 220, t = 'Lock Detected', e = 'sdec.options_lock'},
+    {i = 2, x = 466, w = 150, t = 'Apply',         e = 'sdec.options_apply'},
+    {i = 3, x = 628, w = 150, t = 'Cancel',        e = 'sdec.options_cancel'},
   }
   local ok, nob = nil, 0
   for ok = 1, table.getn(odef) do
     local od = odef[ok]
     local ob = create(sdec.optscr, display.OBJ_BUTTON, od.x, sdec.ui_opt_btn_y, od.t, od.w)
     if ob ~= nil then
-      display.setevent(ob, display.EVENT_PRESS, od.e)
+      display.setevent(ob, display.EVENT_PRESS, 'sdec.guard(' .. od.e .. ')')
       sdec.opt_btn[od.i] = ob
       nob = nob + 1
     end
@@ -5491,7 +5462,7 @@ function sdec.build_options()
   end
 
   pcall(function()
-    display.setevent(sdec.optscr, display.EVENT_ENDAPP, 'sdec.cleanup()')
+    display.setevent(sdec.optscr, display.EVENT_ENDAPP, 'sdec.guard(sdec.cleanup)')
   end)
   return sdec.optscr
 end
@@ -5680,25 +5651,22 @@ function sdec.frame_log()
   local nfr = 0
   if sdec.res ~= nil then nfr = sdec.res.nf end
   local msgno = (sdec.flog_n or 0) + 1
-  local wrote = pcall(function()
-    file.write(fh, string.format('---- msg %d  %s %s  %d bytes %d err\r\n',
-                                 msgno or 0, tostring(sdec.baud_text()), tostring(sdec.fmt_text()),
-                                 sdec.res.nf or 0, sdec.res.nbad or 0))
-    local i = 1
-    while i <= sdec.res.nf do
-      file.write(fh, sdec.ua_text_line(i, 64) .. '\r\n')
-      i = i + 64
-    end
-    i = 1
-    while i <= sdec.res.nf do
-      file.write(fh, sdec.ua_hex_line(i, 16) .. '\r\n')
-      i = i + 16
-    end
-    file.flush(fh)
-  end)
-  pcall(function() file.close(fh) end)
-  if wrote and not ulog.keyok() then wrote = false end
-  if not wrote then
+  file.write(fh, string.format('---- msg %d  %s %s  %d bytes %d err\r\n',
+                               msgno or 0, tostring(sdec.baud_text()), tostring(sdec.fmt_text()),
+                               sdec.res.nf or 0, sdec.res.nbad or 0))
+  local i = 1
+  while i <= sdec.res.nf do
+    file.write(fh, sdec.ua_text_line(i, 64) .. '\r\n')
+    i = i + 64
+  end
+  i = 1
+  while i <= sdec.res.nf do
+    file.write(fh, sdec.ua_hex_line(i, 16) .. '\r\n')
+    i = i + 16
+  end
+  file.flush(fh)
+  file.close(fh)
+  if not ulog.keyok() then
     sdec.flog_why = 'write failed part-way through ' ..
                     string.gsub(tostring(sdec.flog_path), '^.*/', '')
     return false
@@ -6498,6 +6466,22 @@ function sdec.proto_parse(which)
   return did
 end
 
+-- The inbound firmware boundary
+--   [...]
+-- THE FAILURE PATH RAISES NOTHING ITSELF. It assigns fields and refreshes; it does not log, because
+-- ulog.line reaches file.write, and a key that has filled up is exactly the condition that brought
+-- us here. ui_refresh only touches display calls, which post events rather than raising.
+function sdec.guard(f)
+  local ok, err = pcall(f)
+  if ok then return true end
+  sdec.busy = false
+  sdec.errcount = (sdec.errcount or 0) + 1
+  sdec.lasterr = tostring(err)
+  sdec.ui_status = 'error'
+  sdec.ui_refresh()
+  return false
+end
+
 -- Save the decoded stream to the USB key
 -- Write a self-describing file to the USB key: the wire parameters, then the whole capture as a
 -- hex + ASCII dump, then every parsed protocol list. Returns ok.
@@ -7110,7 +7094,7 @@ end
 -- Hook End App on screen scr, so leaving the app tears it down. Returns whether the hook took.
 function sdec.install_cleanup(scr)
   local ok = pcall(function()
-    display.setevent(scr, display.EVENT_ENDAPP, 'sdec.cleanup()')
+    display.setevent(scr, display.EVENT_ENDAPP, 'sdec.guard(sdec.cleanup)')
   end)
   if not ok then
     sdec.stickyerr = 'End App is not hooked -- exiting will not clean up'

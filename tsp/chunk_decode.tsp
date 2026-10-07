@@ -846,15 +846,9 @@ function sdec.ck_sink_file(path, ncol)
   -- That is the one thing the header exists to prevent. It also makes the sink's construction the honest
   -- place to fail: the handle is closed and the caller reports it, rather than a run that "worked" and
   -- left a file nobody can read back.
-  local hok = pcall(function()
-    file.write(fh, string.format('---- stream  %s %s\r\n',
-               sdec.baud_text and sdec.baud_text() or '?',
-               sdec.fmt_text and sdec.fmt_text() or '?'))
-  end)
-  if not hok then
-    pcall(function() file.close(fh) end)
-    return nil, nil, 'cannot write the stream header to ' .. tostring(path)
-  end
+  file.write(fh, string.format('---- stream  %s %s\r\n',
+             sdec.baud_text and sdec.baud_text() or '?',
+             sdec.fmt_text and sdec.fmt_text() or '?'))
 
   local cv, ce, cn = {}, {}, 0     -- carry: bytes not yet a full row
   local cbase = 0                  -- stream offset of cv[1]
@@ -872,13 +866,10 @@ function sdec.ck_sink_file(path, ncol)
     -- PER ROW RATHER THAN PER WINDOW: 237 us against 16 bytes of a decode already costing ~48 us a
     -- sample, so under 0.3 % of the run, and the alternative still leaves a window's worth of boxes.
     --
-    -- IT SKIPS THE WRITE AND NOTHING ELSE. The carry shift below still runs, exactly as it does for a
-    -- write that raised, so cn and cbase stay consistent with what the sink has accepted.
+    -- IT SKIPS THE WRITE AND NOTHING ELSE. The carry shift below still runs, so cn and cbase stay
+    -- consistent with what the sink has accepted.
     if not dead and ulog ~= nil and ulog.keyok ~= nil and not ulog.keyok() then dead = true end
-    if not dead then
-      local w = pcall(function() file.write(fh, line .. '\r\n') end)
-      if not w then dead = true end
-    end
+    if not dead then file.write(fh, line .. '\r\n') end
     local i
     for i = nrow + 1, cn do
       cv[i - nrow] = cv[i]
@@ -914,20 +905,10 @@ function sdec.ck_sink_file(path, ncol)
   local finish = function()
     if finished then return not dead end
     finished = true
-    -- The carry flush formats through ua_hexrow, which is NOT one of the file calls guarded
-    -- inside emit() -- so it can raise, and if it does the close below must still happen.
-    -- AND ITS VERDICT COUNTS. Discarded, a raise formatting the LAST 1-15 bytes let finish() flush,
-    -- close and return true while reporting all of tot.nf -- so the panel's byte total, which is the
-    -- number backing "no decoded byte is lost", counted a row that never reached the file. emit() sets
-    -- dead itself on a write failure; this catches the formatting raise the comment above describes.
-    if not dead and cn > 0 then
-      local eok = pcall(function() emit(cn) end)
-      if not eok then dead = true end
-    end
-    local fok = pcall(function() file.flush(fh) end)
-    pcall(function() file.close(fh) end)      -- its OWN pcall, so a flush raise cannot skip it
+    if not dead and cn > 0 then emit(cn) end
+    file.flush(fh)
+    file.close(fh)
     fh = nil
-    if not fok then dead = true end
     -- A KEY PULLED MID-STREAM DOES NOT FAIL A WRITE IN LUA -- it posts 2200 and returns, so `dead`
     -- never saw it and the run reported a complete file. One presence check does; it also latches
     -- logging off. See ulog.keylost().

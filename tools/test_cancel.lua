@@ -1137,12 +1137,15 @@ do
     if nw == 1 then error('header write failed', 0) end
     return realwrite(fh, s)
   end
-  local sink, finish, serr = sdec.ck_sink_file('/usb1/hdr_000.txt', 16)
+  -- IT RAISES RATHER THAN RETURNING A REASON. The sink does not guard its own file calls, so a
+  -- header that cannot be written leaves ck_sink_file by raising -- which still prevents the
+  -- unlabelled stream, and reaches the operator through sdec.guard. Note the firmware does not fail
+  -- one write selectively the way this stub does: a real key failure fails the rows too, and
+  -- emit()'s keyok check is what catches that.
+  local hok, herr = pcall(function() return sdec.ck_sink_file('/usb1/hdr_000.txt', 16) end)
   file.write = realwrite
-  check('a stream header that cannot be written refuses the sink',
-        sink == nil and finish == nil and serr ~= nil, tostring(serr))
-  check('...and names the file, so the reason is actionable',
-        has(tostring(serr), 'hdr_000.txt'), tostring(serr))
+  check('a stream header that cannot be written refuses the sink', hok == false, tostring(herr))
+  check('...and the reason propagates, so sdec.guard can show it', herr ~= nil, tostring(herr))
 
   -- (b) THE FINAL PARTIAL ROW. finish() flushes and closes the last 1-15 bytes through a formatter that
   -- is NOT one of the guarded file calls, so it can raise -- and with its verdict discarded finish()
@@ -1154,10 +1157,11 @@ do
     sink2({65, 66, 67}, {0, 0, 0}, 3, 0)          -- 3 bytes: a partial row, held as carry
     local realrow = sdec.ua_hexrow
     sdec.ua_hexrow = function(...) error('row format failed', 0) end
-    local fin = finish2()
+    local fok, ferr = pcall(function() return finish2() end)
     sdec.ua_hexrow = realrow
+    -- Reported by raising, not by returning false: finish() guards nothing of its own either.
     check('a final partial row that cannot be formatted makes finish() report FAILURE',
-          fin == false, tostring(fin))
+          fok == false, tostring(ferr))
   end
   MD.forget_files()
 end
@@ -1632,14 +1636,14 @@ do
   idle()
   sdec.force_baud, sdec.capmode, sdec.busy = 9600, 'sml', false
   sdec.flog_path, sdec.flog_n, sdec.flog_bytes = nil, nil, nil
-  local realwrite, nw = file.write, 0
-  file.write = function(fh, s)
-    nw = nw + 1
-    if nw > 3 then error('key removed', 0) end
-    return realwrite(fh, s)
-  end
+  -- MD.pullafter, NOT A RAISING STUB: three rows land and then the key is simply gone, which is what
+  -- the instrument does -- the write posts 2200 and returns, so emit()'s keyok check is the only
+  -- thing that can see it. That is the path which sets tot.stopped = 'write failed', and so the one
+  -- that produces the sentence the last assertion here is about.
+  MD.pullafter(3)
   local wok = sdec.capture()
-  file.write = realwrite
+  MD.pullafter(nil)
+  MD.usb(true)
   check('a recording whose file write failed part-way is a FAILURE', wok == false,
         tostring(wok))
   check('...even though the acquisition itself still ended full',
