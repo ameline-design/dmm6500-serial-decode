@@ -459,15 +459,26 @@ function sdec.sig_pair(rd, n, v0, v1)
   -- fixes a quieter inconsistency: the voltage test was inclusive at both ends while
   -- the histogram assigns by floor(), i.e. half-open, so a sample sitting exactly on
   -- the boundary between the two humps could be averaged into the wrong one.
+  --
+  -- THE floor IS GONE FROM THIS PASS BY AN EXACT IDENTITY, and NOT by the voltage round trip
+  -- the paragraph above forbids. For an INTEGER k, floor(s) >= k is exactly s >= k, and
+  -- floor(s) <= k is exactly s < k + 1. So with s = (v - v0) * scale -- the identical
+  -- multiplication the histogram pass performs -- membership `a1 <= floor(s) + 1 <= b1` is
+  -- exactly `a1 - 1 <= s < b1`, and all four bounds are bin indices, hence integers by
+  -- construction. Nothing is re-derived in volts and nothing is divided, so there is no round
+  -- trip to lose: it is the same comparison with one math.floor per sample taken out of the
+  -- second-hottest loop in the app.
   local sa, na, sb, nbb = 0, 0, 0, 0
+  local lo1, hi1 = a1 - 1, b1
+  local lo2, hi2 = a2 - 1, b2
   for i = 1, n do
     local v = rd[i]
     if v ~= nil and v >= v0 and v <= v1 then
-      local b = floor((v - v0) * scale) + 1
-      if b >= a1 and b <= b1 then
+      local s = (v - v0) * scale
+      if s >= lo1 and s < hi1 then
         sa = sa + v
         na = na + 1
-      elseif b >= a2 and b <= b2 then
+      elseif s >= lo2 and s < hi2 then
         sb = sb + v
         nbb = nbb + 1
       end
@@ -956,20 +967,31 @@ end
 --
 -- Returns bittime, quality, nfit -- or nil when nothing fits.
 function sdec.sig_fit(w, nw, seed)
-  local floor, abs = math.floor, math.abs
+  local floor = math.floor
   local maxm = sdec.maxmult
   local T = seed
   local it, k
 
   for it = 1, 6 do
     local sn, snn = 0, 0
+    -- THE TOLERANCE IS HOISTED AND math.abs IS INLINED, both for the same reason: this is the
+    -- hottest counted loop in the app, and math.abs alone was 14.2 % of every C call the app
+    -- makes -- measured over 300 bench cells. A C call in 5.0.2 is an OP_CALL carrying a
+    -- CallInfo and two luaL_checknumber conversions; `if d < 0 then d = -d end` is three VM ops.
+    --
+    -- BIT-IDENTICAL TO fabs here. The only value the two forms disagree on is -0.0, which the
+    -- inline form leaves negative -- and -0.0 compares the same against a positive tolerance
+    -- and sums the same into serr below, since serr starts at +0.0.
+    local tol = 0.35 * T
     for k = 1, nw do
       local wk = w[k]
       local m = floor(wk / T + 0.5)
       -- Multiples beyond maxmult are inter-byte idle, not a run of bits, so they
       -- carry no timing information and must not drag the fit.
       if m >= 1 and m <= maxm then
-        if abs(wk - m * T) < 0.35 * T then
+        local d = wk - m * T
+        if d < 0 then d = -d end
+        if d < tol then
           sn  = sn + wk * m
           snn = snn + m * m
         end
@@ -977,7 +999,8 @@ function sdec.sig_fit(w, nw, seed)
     end
     if snn <= 0 then return nil, 0, 0 end
     local newT = sn / snn
-    local moved = abs(newT - T)
+    local moved = newT - T
+    if moved < 0 then moved = -moved end
     T = newT
     if moved < 1e-9 * T then break end
   end
@@ -987,14 +1010,18 @@ function sdec.sig_fit(w, nw, seed)
   -- one-bit pulses stay inside maxmult*T so they count as eligible, but land half
   -- a period from any multiple and fail the gate.
   local serr, nfit, nsmall = 0, 0, 0
+  -- Hoisted and inlined on the same argument as the fit loop above; T is fixed from here.
+  local tol = 0.35 * T
+  local maxw = (maxm + 0.5) * T
   for k = 1, nw do
     local wk = w[k]
-    if wk <= (maxm + 0.5) * T then
+    if wk <= maxw then
       nsmall = nsmall + 1
       local m = floor(wk / T + 0.5)
       if m < 1 then m = 1 end
-      local e = abs(wk - m * T)
-      if e < 0.35 * T then
+      local e = wk - m * T
+      if e < 0 then e = -e end
+      if e < tol then
         nfit = nfit + 1
         serr = serr + e
       end
