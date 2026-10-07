@@ -348,6 +348,13 @@ function sdec.ua_frame(rd, n, t0, T, nbits, par, nstop, invert)
 
   local val, bv = 0, 1
   local slot
+
+  -- INVERSION IS FOLDED INTO THE TWO BIT VALUES rather than applied per slot. `invert` is a
+  -- parameter, so it is fixed before the loop begins, and testing it on every bit of every
+  -- candidate frame spends a branch answering a question that cannot change.
+  local hib, lob = 1, 0
+  if invert then hib, lob = 0, 1 end
+
   for slot = 0, last do
     -- Bit cell `slot` is centred at t0 + (slot + 0.5) * T.
     local x = t0 + (slot + 0.5) * T
@@ -390,13 +397,12 @@ function sdec.ua_frame(rd, n, t0, T, nbits, par, nstop, invert)
           end
         end
       end
-      if ones * 2 > votes then b = 1
-      elseif ones * 2 < votes then b = 0
-      elseif vc >= thr then b = 1
-      else b = 0 end
-    elseif vc >= thr then b = 1
-    else b = 0 end
-    if invert then b = 1 - b end
+      if ones * 2 > votes then b = hib
+      elseif ones * 2 < votes then b = lob
+      elseif vc >= thr then b = hib
+      else b = lob end
+    elseif vc >= thr then b = hib
+    else b = lob end
 
     if slot == 0 then
       if b ~= 0 then return nil, 'start' end
@@ -489,7 +495,6 @@ function sdec.ua_run(rd, n, T, nbits, par, nstop, invert, tmin0)
   -- if that one is out of the window then so is every other -- bounding it would trade nf = 0 for
   -- nf = 0.
   local anchor = nil
-  local k
   if tmin0 == nil then
     for k = 1, ne do
       if es[k] == want and ei[k] <= n then
@@ -524,9 +529,11 @@ function sdec.ua_run(rd, n, T, nbits, par, nstop, invert, tmin0)
   -- the margin is half a bit, not a full one: widen the jitter allowance with care.
   local tmin = -1
   if tmin0 ~= nil then tmin = tmin0 end
-  k = anchor
   local prev = nil          -- t0 of the previous emitted frame, for the idle test below
-  while k <= ne do
+  -- A NUMERIC for, NOT a while: the VM folds the increment and the bound into one FORLOOP
+  -- opcode, where the hand-rolled form spends an LT, a JMP and an ADD on every edge in the
+  -- capture. The walk never alters its own index, so the two are the same traversal.
+  for k = anchor, ne do
     if es[k] == want and ei[k] >= tmin then
       local t0 = ei[k]
       local val, err = sdec.ua_frame(rd, n, t0, T, nbits, par, nstop, invert)
@@ -565,7 +572,6 @@ function sdec.ua_run(rd, n, T, nbits, par, nstop, invert, tmin0)
 
       end
     end
-    k = k + 1
   end
 
   -- A CAPTURE THAT BEGAN MID-BYTE corrupts the frames before the first idle and nothing after it.

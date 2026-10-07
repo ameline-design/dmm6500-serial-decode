@@ -383,14 +383,19 @@ function sdec.sig_pair(rd, n, v0, v1)
   if v0 == nil or v1 == nil or v1 <= v0 then return nil end
   local scale = (nb - 1) / (v1 - v0)
   local hist = {}
+  -- THE SUM OF THE SAMPLES IN EACH BIN, carried alongside the count. The level means below are
+  -- then a walk over BINS rather than a second walk over the capture -- 512 iterations against
+  -- 32768 at the largest capture size. Three ops per sample here buy a whole pass.
+  local bsum = {}
   local i
-  for i = 1, nb do hist[i] = 0 end
+  for i = 1, nb do hist[i] = 0; bsum[i] = 0 end
   local cnt = 0
   for i = 1, n do
     local v = rd[i]
     if v ~= nil and v >= v0 and v <= v1 then
       local b = floor((v - v0) * scale) + 1
       hist[b] = hist[b] + 1
+      bsum[b] = bsum[b] + v
       cnt = cnt + 1
     end
   end
@@ -460,29 +465,30 @@ function sdec.sig_pair(rd, n, v0, v1)
   -- the histogram assigns by floor(), i.e. half-open, so a sample sitting exactly on
   -- the boundary between the two humps could be averaged into the wrong one.
   --
-  -- THE floor IS GONE FROM THIS PASS BY AN EXACT IDENTITY, and NOT by the voltage round trip
-  -- the paragraph above forbids. For an INTEGER k, floor(s) >= k is exactly s >= k, and
-  -- floor(s) <= k is exactly s < k + 1. So with s = (v - v0) * scale -- the identical
-  -- multiplication the histogram pass performs -- membership `a1 <= floor(s) + 1 <= b1` is
-  -- exactly `a1 - 1 <= s < b1`, and all four bounds are bin indices, hence integers by
-  -- construction. Nothing is re-derived in volts and nothing is divided, so there is no round
-  -- trip to lose: it is the same comparison with one math.floor per sample taken out of the
-  -- second-hottest loop in the app.
+  -- MEMBERSHIP IS LITERALLY THE BIN INDEX NOW, which is what the paragraph above asks for: the
+  -- histogram pass already added each sample into its own bin's total, so the hump's sum is the
+  -- sum of its bins' totals and its count is the sum of its bins' counts. No sample is
+  -- re-examined, no voltage is re-derived, and no value is divided -- there is no round trip
+  -- left to lose.
+  --
+  -- THE TWO HUMPS ARE DISJOINT BY CONSTRUCTION, so the ranges are summed independently rather
+  -- than through the first-hump-wins test a per-sample pass needs: m2 is chosen outside
+  -- [a1, b1] and each expansion above stops before re-entering it, so [a2, b2] can neither
+  -- overlap that span nor straddle it.
+  --
+  -- SUMMATION ORDER CHANGES, and that is the one thing here that is not bit-identical: a
+  -- per-bin subtotal added into a running total rounds differently from 32768 samples added in
+  -- capture order. It is the more accurate of the two -- 512 partial sums is a flatter
+  -- reduction tree than one long chain -- but it is not the same arithmetic, so the levels can
+  -- move in their last bits and sdec.thr with them.
   local sa, na, sb, nbb = 0, 0, 0, 0
-  local lo1, hi1 = a1 - 1, b1
-  local lo2, hi2 = a2 - 1, b2
-  for i = 1, n do
-    local v = rd[i]
-    if v ~= nil and v >= v0 and v <= v1 then
-      local s = (v - v0) * scale
-      if s >= lo1 and s < hi1 then
-        sa = sa + v
-        na = na + 1
-      elseif s >= lo2 and s < hi2 then
-        sb = sb + v
-        nbb = nbb + 1
-      end
-    end
+  for i = a1, b1 do
+    sa = sa + bsum[i]
+    na = na + hist[i]
+  end
+  for i = a2, b2 do
+    sb = sb + bsum[i]
+    nbb = nbb + hist[i]
   end
   -- A HUMP OF ONE SAMPLE IS NOT A LEVEL. That is the whole job of this gate, and the
   -- number is deliberately the MINIMUM that does it rather than something larger.
