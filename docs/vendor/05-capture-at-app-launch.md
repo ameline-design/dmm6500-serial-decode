@@ -106,10 +106,17 @@ launch capture:
 
 One layer in the later build fails where two in the earlier one succeed. So what matters is the
 **peak** stack depth reached anywhere during a launch-initiated capture, not the chain on the way
-in -- and most of this application's peak is in its decode and panel refresh. The application ships
-227 `pcall` calls, 31 of them inside the function that captures.
+in -- and most of this application's peak is in its decode and panel refresh. The build measured
+here ships 227 `pcall` sites, 31 of them inside the function that captures.
 
-The only configuration that is safe is **not capturing from the entry point at all.**
+In that build, the only safe configuration is **not capturing from the entry point at all.**
+
+**THAT VERDICT IS A PROPERTY OF A 227-SITE BUILD, AND THE SHIPPED ONE NOW CARRIES 95.** The
+entry-point capture has not been retried at the lower count, so nothing here says whether it is
+still unsafe -- only that it was unsafe at 227. Retrying costs one install and one power cycle, and
+the crash is immediate, so it is a cheap experiment. Note that 191 sites also bluescreened and 132
+ran, which brackets the threshold well above 95; `tools/lint_tsp.py` fails the build above 132 so
+the count cannot drift back toward the cliff without the gate saying so.
 
 **A MATCHING PC IS STRONG EVIDENCE; A DIFFERING ONE IS WEAK.** `001CF3C8` appearing both for the
 application and for a build one pcall layer away from a working one is what pins the mechanism,

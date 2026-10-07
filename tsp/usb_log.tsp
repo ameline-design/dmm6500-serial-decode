@@ -403,12 +403,17 @@ function ulog.open(path, truncate)
   end
 
   ulog.on = true
-  -- A separator distinguishes sessions in an appended file. os.time may not exist
-  -- on this firmware, so it is probed once here rather than risked on every line.
+  -- A separator distinguishes sessions in an appended file, stamped once here rather than per line.
+  --
+  -- os ITSELF IS TESTED, NOT CAUGHT, and tested rather than assumed because unlike file and fs this
+  -- table is NOT hardware-verified anywhere in this repo -- ulog.open's note said so, and deleting
+  -- the note would not have answered it. pcall cannot cover the index either: a nil os raises before
+  -- pcall is entered. A nil os.time IS safe, since pcall(nil) simply returns false.
   local stamp = ''
-  pcall(function()
-    if os ~= nil and os.time ~= nil then stamp = ' t=' .. tostring(os.time()) end
-  end)
+  if os ~= nil then
+    local tok, tv = pcall(os.time)
+    if tok and tv ~= nil then stamp = ' t=' .. tostring(tv) end
+  end
   ulog.line('==== session start ' .. tostring(ulog.tag) .. stamp .. ' ====')
   return true
 end
@@ -470,8 +475,8 @@ function ulog.fmt(f, a, b, c, d, e)
   -- the autolock note, the one in-tree caller, is what an operator lost. The cost of being wrong is
   -- one string.format; line() makes the real decision.
   if not ulog.enabled then return false end
-  local s
-  local ok = pcall(function() s = string.format(f, a, b, c, d, e) end)
+  -- ON A RAISE THE SECOND RESULT IS THE MESSAGE; the line below overwrites it, which is the point.
+  local ok, s = pcall(string.format, f, a, b, c, d, e)
   if not ok then s = tostring(f) .. ' <ulog: bad format args>' end
   return ulog.line(s)
 end
@@ -511,10 +516,8 @@ end
 -- failure surfacing at the write where it belongs.
 function ulog.exists(path)
   if path == nil then return false end
-  local got = nil
-  local ok = pcall(function()
-    if fs ~= nil and fs.is_file ~= nil then got = fs.is_file(path) end
-  end)
+  local ok, got = pcall(fs.is_file, path)
+  if not ok then got = nil end
   if not ok or got == nil then
     -- No fs.is_file. Fall back to the open probe, which is what this replaced -- one 2205 is
     -- better than either truncating a file or refusing to save.

@@ -208,9 +208,10 @@ function ulog.open(path, truncate)
 
   ulog.on = true
   local stamp = ''
-  pcall(function()
-    if os ~= nil and os.time ~= nil then stamp = ' t=' .. tostring(os.time()) end
-  end)
+  if os ~= nil then
+    local tok, tv = pcall(os.time)
+    if tok and tv ~= nil then stamp = ' t=' .. tostring(tv) end
+  end
   ulog.line('==== session start ' .. tostring(ulog.tag) .. stamp .. ' ====')
   return true
 end
@@ -250,8 +251,7 @@ end
 -- and 5.4. Guarded so a format mismatch cannot raise from inside a log call.
 function ulog.fmt(f, a, b, c, d, e)
   if not ulog.enabled then return false end
-  local s
-  local ok = pcall(function() s = string.format(f, a, b, c, d, e) end)
+  local ok, s = pcall(string.format, f, a, b, c, d, e)
   if not ok then s = tostring(f) .. ' <ulog: bad format args>' end
   return ulog.line(s)
 end
@@ -282,10 +282,8 @@ end
 -- failure surfacing at the write where it belongs.
 function ulog.exists(path)
   if path == nil then return false end
-  local got = nil
-  local ok = pcall(function()
-    if fs ~= nil and fs.is_file ~= nil then got = fs.is_file(path) end
-  end)
+  local ok, got = pcall(fs.is_file, path)
+  if not ok then got = nil end
   if not ok or got == nil then
     local taken = false
     local pok = pcall(function()
@@ -1231,15 +1229,11 @@ end
 -- because an idle-low line does not look like a permanently-granted credit if the DMM is off.
 function sdec.fc_config()
   if not sdec.fc_out then return false end
-  local ok = pcall(function()
-    trigger.extout.logic = trigger.LOGIC_POSITIVE
-  end)
-  pcall(function()
-    if trigger.extout.pulsewidth ~= nil then
-      trigger.extout.pulsewidth = sdec.fc_pulse
-    end
-  end)
-  return ok
+  trigger.extout.logic = trigger.LOGIC_POSITIVE
+  if trigger.extout.pulsewidth ~= nil then
+    pcall(function() trigger.extout.pulsewidth = sdec.fc_pulse end)
+  end
+  return true
 end
 
 -- STOP THE FIRMWARE POPPING DIALOGS OVER THE APP.
@@ -1248,9 +1242,8 @@ end
 -- Applied from hw_config so it is re-asserted per capture: it is instrument state, and an App
 -- relaunch or another app may have changed it.
 function sdec.quiet_events()
-  return pcall(function()
-    localnode.showevents = eventlog.SEV_ERROR
-  end)
+  localnode.showevents = eventlog.SEV_ERROR
+  return true
 end
 
 -- Mute the panel's event popups where the firmware honours the mute -- which for 4915 it does NOT.
@@ -1259,11 +1252,13 @@ end
 -- an event back, so real events come out as generic "1005 User" entries, multiplied per poll, and
 -- trip 1707. Do not try it.
 function sdec.mute_events()
-  return pcall(function() localnode.showevents = 0 end)
+  localnode.showevents = 0
+  return true
 end
 
 function sdec.unmute_events()
-  return pcall(function() localnode.showevents = eventlog.SEV_ERROR end)
+  localnode.showevents = eventlog.SEV_ERROR
+  return true
 end
 
 -- Remember the measurement mode the instrument was left in, so leaving the app can put it back.
@@ -1354,6 +1349,7 @@ end
 -- Clamp a request to what the buffer can hold, reserve included. A store past capacity posts 4915
 -- and truncates the capture.
 function sdec.acq_fit(n, buf)
+  if buf == nil then return n end
   local cap = nil
   pcall(function() cap = buf.capacity end)
   if cap == nil or cap < 10 then return n end
@@ -1373,7 +1369,7 @@ function sdec.acq_make_buffer(n)
   sdec.trig_settle()
   if sdec.buf ~= nil then
     local b = sdec.buf
-    local delok = pcall(function() buffer.delete(b) end)
+    local delok = pcall(buffer.delete, b)
     if not delok then
       sdec.delfails = (sdec.delfails or 0) + 1
       sdec.stickyerr = 'the capture buffer could not be freed -- power cycle the instrument'
@@ -1382,8 +1378,8 @@ function sdec.acq_make_buffer(n)
     sdec.buf = nil
   end
   if n < 10 then n = 10 end     -- buffer.make() minimum
-  local nb = nil
-  if not pcall(function() nb = buffer.make(n, buffer.STYLE_STANDARD) end) then return nil end
+  local mok, nb = pcall(buffer.make, n, buffer.STYLE_STANDARD)
+  if not mok then return nil end
   sdec.buf = nb
   sdec.acq_fillmode(sdec.buf)
   return sdec.buf
@@ -1442,8 +1438,8 @@ end
 -- "not finished" (the caller then falls back on its timeout) rather than raise from
 -- inside a poll loop.
 function sdec.trig_done(buf)
-  local st = nil
-  pcall(function() st = trigger.model.state() end)
+  local sok, st = pcall(trigger.model.state)
+  if not sok then st = nil end
   if st == nil then return false end
   return st == trigger.STATE_IDLE and (buf.n or 0) > 0
 end
@@ -1451,15 +1447,15 @@ end
 -- Stop the trigger model AND WAIT FOR IT TO STOP. abort() is asynchronous; see the
 -- note in acq_triggered for what happens when the next capture does not wait.
 -- Bounded, because a model that will not idle must not hang the panel.
--- NEVER RAISES, so every caller calls it bare: the abort, the state polls and the sleep each carry
+-- RAISES ONLY IF trigger.model IS ABSENT, which this firmware never is, so every caller is bare: the abort, the state polls and the sleep each carry
 -- their own guard, and nothing else here touches the instrument.
 function sdec.trig_settle()
-  pcall(function() trigger.model.abort() end)
+  pcall(trigger.model.abort)
   local i
   local unread = 0
   for i = 1, 50 do
-    local st = nil
-    local sok = pcall(function() st = trigger.model.state() end)
+    local sok, st = pcall(trigger.model.state)
+    if not sok then st = nil end
     if sok then
       if st == nil or st == trigger.STATE_IDLE or st == trigger.STATE_ABORTED then
         return true
@@ -1469,7 +1465,7 @@ function sdec.trig_settle()
       unread = unread + 1
       if unread >= 10 then return false end
     end
-    pcall(function() delay(0.01) end)
+    pcall(delay, 0.01)
   end
   return false
 end
@@ -1479,7 +1475,7 @@ sdec.cancel_poll_s = 0.001
 
 -- Send one flow-control credit out of the rear EXT TRIG OUT. Returns whether the pulse went.
 function sdec.fc_credit()
-  local ok = pcall(function() trigger.extout.assert() end)
+  local ok = pcall(trigger.extout.assert)
   if not ok then
     sdec.stickyerr = 'the flow-control credit pulse was refused -- the device was never told to send'
   end
@@ -1505,7 +1501,7 @@ end
 -- run would otherwise stop this one too.
 function sdec.cancel_clear()
   if not sdec.cancel_ok then return false end
-  return pcall(function() trigger.blender[sdec.cancel_blender].clear() end)
+  return (pcall(trigger.blender[sdec.cancel_blender].clear))
 end
 
 -- Has TRIGGER been pressed since the last cancel_clear() or cancel_pressed()? The detector
@@ -1513,10 +1509,7 @@ end
 -- record the answer rather than polling twice and expecting the same reply.
 function sdec.cancel_pressed()
   if not sdec.cancel_ok then return false end
-  local got = false
-  local ok = pcall(function()
-    got = trigger.blender[sdec.cancel_blender].wait(sdec.cancel_poll_s or 0.001)
-  end)
+  local ok, got = pcall(trigger.blender[sdec.cancel_blender].wait, sdec.cancel_poll_s or 0.001)
   if not ok then return false end
   return got == true
 end
@@ -1547,12 +1540,12 @@ function sdec.acq_triggered(n, slope)
 
   local blended = false
   if not sdec.trigext then
-    pcall(function() trigger.blender[1].reset() end)
+    pcall(trigger.blender[1].reset)
   end
   if sdec.trigext and sdec.trigext_only and sdec.trigmode ~= 'free' then
     ev = trigger.EVENT_EXTERNAL
     useanalog = false
-    pcall(function() trigger.blender[1].reset() end)
+    pcall(trigger.blender[1].reset)
   elseif sdec.trigext and sdec.trigmode ~= 'free' then
     local bok = pcall(function()
       trigger.blender[1].reset()
@@ -1584,7 +1577,7 @@ function sdec.acq_triggered(n, slope)
     trigger.model.initiate()
 
     if sdec.fc_out then
-      pcall(function() trigger.extout.assert() end)
+      pcall(trigger.extout.assert)
     end
 
     local waited, step = 0, 0.05
@@ -1611,7 +1604,7 @@ function sdec.acq_triggered(n, slope)
     if expired and perr ~= nil then
       sdec.lasterr = sdec.lasterr .. ' (' .. tostring(perr) .. ')'
     end
-    pcall(function() sdec.atrig.mode = sdec.k.MODE_OFF end)
+    if sdec.atrig ~= nil then sdec.atrig.mode = sdec.k.MODE_OFF end
     return sdec.acq_free(n)
   end
 
@@ -1772,9 +1765,9 @@ end
 sdec.ua_pc = nil
 -- Number of set bits in v. No bitwise operators in 5.0.2.
 --   [...]
--- THE LOOP IS KEPT for anything outside the table -- a wider value, a non-integer, a negative --
--- and fused to one C call per iteration: v * 0.5 has a fractional part exactly when v is odd,
--- which is the same test as mod(v, 2) == 1 for one floor instead of a floor and a mod.
+-- v * 0.5 has a fractional part exactly when v is odd, the same test as mod(v, 2) == 1 for one
+-- floor instead of a floor and a mod. Not a general fallback -- a negative returns 0 and a
+-- non-integer counts fractional halvings -- but in-tree callers only ever pass 0..511.
 function sdec.ua_popcount(v)
   local t = sdec.ua_pc
   if t == nil then
@@ -2860,6 +2853,10 @@ function sdec.ua_hexwidth(ncol)
 end
 
 -- One hex+ASCII row as a single string, for a file or the debug log.
+--   [...]
+-- and the claim above would be false on the interpreter the tests run on. The range test below is
+-- what makes it true on both. It also keeps the row FIXED WIDTH: 256 or 65536 formats without
+-- raising and widens the row, which no test would have caught either.
 function sdec.ua_hexrow(vals, errs, nf, i0, ncol, base)
   if base == nil then base = 0 end
   local hx, as = {}, {}
@@ -2871,8 +2868,17 @@ function sdec.ua_hexrow(vals, errs, nf, i0, ncol, base)
       as[m] = ' '
     else
       local v = vals[i]
-      if v == nil then hx[m] = ' --' else hx[m] = string.format(' %02X', v or 0) end
-      as[m] = sdec.ua_char(v, errs[i])
+      local bad = type(v) ~= 'number'
+      if not bad then
+        bad = v ~= v or v < 0 or v > 255 or math.floor(v) ~= v
+      end
+      if bad then
+        hx[m] = ' --'
+        as[m] = sdec.ua_char(nil, errs[i])
+      else
+        hx[m] = string.format(' %02X', v)
+        as[m] = sdec.ua_char(v, errs[i])
+      end
     end
   end
   return string.format('%04d %s  |%s|', base + i0 - 1, tostring(sdec.ua_hexjoin(hx, m, '')),
@@ -3555,11 +3561,13 @@ function sdec.ck_job_step(job)
   if job.done then return true, job.tot, nil end
 
   if job.prime ~= nil then
+    local pok, pa, pb, pc = pcall(sdec.ck_prime_step, job.prime)
     local pdone, fmt, perr = true, nil, nil
-    local pok, praise = pcall(function()
-      pdone, fmt, perr = sdec.ck_prime_step(job.prime)
-    end)
-    if not pok then pdone, fmt, perr = true, nil, tostring(praise) end
+    if pok then
+      pdone, fmt, perr = pa, pb, pc
+    else
+      perr = tostring(pa)
+    end
     job.phase = job.prime.label
     if not pdone then return false, nil, nil end
     if job.prime.W ~= nil then
@@ -3582,9 +3590,9 @@ function sdec.ck_job_step(job)
 
   job.opts.resume = job.state
   local tot, terr, praise = nil, nil, nil
-  local pok, perr = pcall(function()
-    tot, terr = sdec.ck_decode(job.reader, job.ntotal, job.fmt, job.sink, job.opts)
-  end)
+  local pok, pa, pb = pcall(sdec.ck_decode, job.reader, job.ntotal, job.fmt, job.sink, job.opts)
+  local perr = nil
+  if pok then tot, terr = pa, pb else perr = pa end
   job.opts.resume = nil               -- unconditionally: a raise must not leave it set
   if tot ~= nil then
     if job.headsusp == nil then job.headsusp = tot.headsusp end
@@ -3598,7 +3606,7 @@ function sdec.ck_job_step(job)
   end
 
   if tot == nil then
-    if job.finish ~= nil then pcall(function() job.finish() end) end
+    if job.finish ~= nil then pcall(job.finish) end
     job.done, job.tot, job.state = true, nil, nil
     return true, nil, tostring(praise or terr or 'chunked decode failed')
   end
@@ -3612,8 +3620,8 @@ function sdec.ck_job_step(job)
   job.done, job.tot, job.state = true, tot, nil
   tot.suspended = nil                 -- and drop the self-referential checkpoint
   if job.finish ~= nil then
-    local fok = false
-    local fpok = pcall(function() fok = job.finish() end)
+    local fpok, fv = pcall(job.finish)
+    local fok = fpok and fv
     if not fpok or not fok then tot.stopped = 'write failed' end
   end
   tot.fmt = job.fmt
@@ -3626,7 +3634,7 @@ end
 -- file so the rows already decoded survive, and returns the tail so they can still be shown.
 function sdec.ck_job_abandon(job)
   if job == nil then return nil end
-  if job.finish ~= nil and not job.done then pcall(function() job.finish() end) end
+  if job.finish ~= nil and not job.done then pcall(job.finish) end
   job.done, job.state, job.prime = true, nil, nil
   local tot = job.tot
   if tot ~= nil then
@@ -3839,16 +3847,12 @@ sdec.ui_tick_s = sdec.ui_tick_s or 0.5
 -- pcall'd handlers, and a build whose timer create failed leaves ui_tick_obj nil.
 function sdec.ui_tick_off()
   if sdec.ui_tick_obj == nil then return false end
-  return pcall(function()
-    display.setevent(sdec.ui_tick_obj, display.EVENT_PRESS, '')
-  end)
+  return pcall(display.setevent, sdec.ui_tick_obj, display.EVENT_PRESS, '')
 end
 
 function sdec.ui_tick_on()
   if sdec.ui_tick_obj == nil then return false end
-  return pcall(function()
-    display.setevent(sdec.ui_tick_obj, display.EVENT_PRESS, 'sdec.guard(sdec.ui_tick)')
-  end)
+  return pcall(display.setevent, sdec.ui_tick_obj, display.EVENT_PRESS, 'sdec.guard(sdec.ui_tick)')
 end
 
 -- Look for a key that has come or gone, and make the panel agree. -> true if anything moved.
@@ -4174,9 +4178,7 @@ function sdec.ui_progbar_set(pct)
       local w = math.floor(pct * sdec.ui_prog_wmax / 100 + 0.5)
       if w < 1 then w = 1 end
       local x0 = sdec.ui_prog_x + 1
-      pcall(function()
-        display.setposition(sdec.ui_progline, x0, sdec.ui_prog_ly, x0 + w - 1, sdec.ui_prog_ly)
-      end)
+      pcall(display.setposition, sdec.ui_progline, x0, sdec.ui_prog_ly, x0 + w - 1, sdec.ui_prog_ly)
     end
     sdec.ui_progpct = pct
   end
@@ -4825,15 +4827,12 @@ function sdec.ui_build()
   pcall(display.setthickness, sdec.ui_progline, sdec.ui_prog_lw)
   sdec.ui_progbar_set(nil)
 
+  local tok, tobj = pcall(display.create, sdec.ui_scr, display.OBJ_TIMER, sdec.ui_tick_s,
+                          display.TIMER_FOREVER)
   sdec.ui_tick_obj = nil
-  pcall(function()
-    sdec.ui_tick_obj = display.create(sdec.ui_scr, display.OBJ_TIMER, sdec.ui_tick_s,
-                                      display.TIMER_FOREVER)
-  end)
+  if tok then sdec.ui_tick_obj = tobj end
   if sdec.ui_tick_obj ~= nil then
-    pcall(function()
-      display.setevent(sdec.ui_tick_obj, display.EVENT_PRESS, 'sdec.guard(sdec.ui_tick)')
-    end)
+    pcall(display.setevent, sdec.ui_tick_obj, display.EVENT_PRESS, 'sdec.guard(sdec.ui_tick)')
   end
 
   sdec.ui_page_t = create(sdec.ui_scr, display.OBJ_TEXT, x, sdec.ui_stat_y, '',
@@ -5025,7 +5024,7 @@ function sdec.ui_refresh_do()
   end
   local ttl = sdec.ui_title_text()
   if sdec.ui_titletxt ~= ttl then
-    if pcall(function() display.settext(sdec.ui_scr, ttl) end) then sdec.ui_titletxt = ttl end
+    if pcall(display.settext, sdec.ui_scr, ttl) then sdec.ui_titletxt = ttl end
   end
   set(sdec.ui_note, sdec.ui_note_text())
 
@@ -5472,9 +5471,7 @@ function sdec.build_options()
                         .. 'exhausted. Power cycle the instrument.', nob or 0, table.getn(odef) or 0), 0)
   end
 
-  pcall(function()
-    display.setevent(sdec.optscr, display.EVENT_ENDAPP, 'sdec.guard(sdec.cleanup)')
-  end)
+  pcall(display.setevent, sdec.optscr, display.EVENT_ENDAPP, 'sdec.guard(sdec.cleanup)')
   return sdec.optscr
 end
 
@@ -5529,7 +5526,7 @@ function sdec.clear_result()
   sdec.mode_exitbad = false
   sdec.strm_releveled, sdec.proto_why = nil, nil
   sdec.probe_note = nil                 -- set by autoset() when it had to re-capture slower
-  pcall(function() collectgarbage() end)
+  pcall(collectgarbage)
   return true
 end
 
@@ -5776,7 +5773,7 @@ function sdec.record_run()
   sdec.ck_cancel, sdec.fc_end, sdec.strm_empty = nil, nil, nil
   sdec.fc_win, sdec.fc_bytes, sdec.fc_secs = 0, 0, 0
   sdec.strm_stopped_by_press = nil
-  sdec.fc_clock = pcall(function() timer.cleartime() end)
+  timer.cleartime()
   sdec.ui_refresh()
   local keep = nil                 -- the last window that actually decoded something
   local ok, why = false, nil
@@ -5805,11 +5802,8 @@ function sdec.record_run()
     if sdec.ck_endwhy == 'quiet' then sdec.fc_end = 'quiet'; break end
     if sdec.fc_win >= (sdec.fc_maxwin or 32) then sdec.fc_end = 'bound'; break end
     local el = sdec.fc_secs
-    if sdec.fc_clock then
-      local t = nil
-      pcall(function() t = timer.gettime() end)
-      if t ~= nil and t > el then el = t end
-    end
+    local t = timer.gettime()
+    if t ~= nil and t > el then el = t end
     if sdec.fc_maxsec ~= nil and sdec.fc_maxsec > 0 and el >= sdec.fc_maxsec then
       sdec.fc_secs = el
       sdec.fc_end = 'timebound'
@@ -5977,6 +5971,7 @@ function sdec.stream_arm(nsmp)
   if buf == nil then return false end
   if not pcall(function() buf.clear() end) then return false end
   sdec.acq_fillmode(buf)
+  if sdec.dig == nil then return false end
   if not pcall(function() sdec.dig.count = 1 end) then return false end
   local ok = pcall(function()
     trigger.model.load('SimpleLoop', nsmp, 0, buf)
@@ -5994,13 +5989,12 @@ end
 -- reason travel together, and mode_exit()/trig_restore(), which only want the hardware stopped,
 -- can call this bare.
 function sdec.stream_settle()
-  pcall(function() trigger.model.abort() end)
+  pcall(trigger.model.abort)
   local buf = sdec.buf
   sdec.nread = 0
   if buf ~= nil then
-    local n, ok = nil, nil
-    local perr
-    ok, perr = pcall(function() n = buf.n end)
+    local n = nil
+    local ok, perr = pcall(function() n = buf.n end)
     if not ok then return 0, tostring(perr or 'the buffer could not be read') end
     sdec.nread = n or 0
     sdec.acq_fs = sdec.acq_fs_or_requested(buf, sdec.nread)
@@ -6449,7 +6443,7 @@ function sdec.proto_parse1(mode)
   if v == nil or v.parse == nil then return false end
   local fn = sdec[v.parse]
   if fn == nil then return false end
-  local ok, perr = pcall(function() fn() end)
+  local ok, perr = pcall(fn)
   if not ok then
     sdec[v.res] = nil
     sdec.proto_why = string.format('%s decode failed (%s) -- the bytes below are still the '
@@ -6482,9 +6476,9 @@ end
 
 -- The inbound firmware boundary
 --   [...]
--- RAISE-FREE BY CONSTRUCTION: assignments, ui_tick_on and ui_refresh which each guard themselves,
 -- and a nil test on every function called by name -- a partial load must not turn the boundary into
--- the popup source it exists to prevent.
+-- the popup source it exists to prevent. It also does not log: ulog.line reaches file.write, and a
+-- key that has filled up is exactly the condition that brought us here.
 function sdec.unwind(why)
   sdec.busy = false
   sdec.ck_running = false
@@ -6509,6 +6503,11 @@ function sdec.unwind(why)
   return false
 end
 
+-- Run a panel handler so a raise cannot reach the firmware. -> true if it returned.
+--   [...]
+-- ERROR-severity event, which is a modal dialog over the app. One helper, so the whole boundary is
+-- ONE pcall site instead of one per button -- and it covers the WHOLE handler, where a guard around
+-- a single call inside one covered only that call.
 function sdec.guard(f)
   local ok, err = pcall(f)
   if ok then return true end
@@ -6777,15 +6776,14 @@ sdec.strm_absorb_s = sdec.strm_absorb_s or 1.0
 function sdec.strm_absorb_arm()
   sdec.strm_stopped_by_press = nil
   sdec.strm_nabsorbed = 0
-  local ok = pcall(function() timer.cleartime() end)
-  if ok then sdec.strm_stopped_by_press = true end
+  timer.cleartime()
+  sdec.strm_stopped_by_press = true
 end
 
 -- True if we are still inside the window in which a press must have been queued.
 function sdec.strm_absorb_due()
   if not sdec.strm_stopped_by_press then return false end
-  local el = nil
-  pcall(function() el = timer.gettime() end)
+  local el = timer.gettime()
   if el == nil then return false end
   return el <= sdec.strm_absorb_s
 end
@@ -7127,9 +7125,7 @@ end
 -- Lifecycle
 -- Hook End App on screen scr, so leaving the app tears it down. Returns whether the hook took.
 function sdec.install_cleanup(scr)
-  local ok = pcall(function()
-    display.setevent(scr, display.EVENT_ENDAPP, 'sdec.guard(sdec.cleanup)')
-  end)
+  local ok = pcall(display.setevent, scr, display.EVENT_ENDAPP, 'sdec.guard(sdec.cleanup)')
   if not ok then
     sdec.stickyerr = 'End App is not hooked -- exiting will not clean up'
     ulog.line(sdec.stickyerr)
@@ -7150,18 +7146,21 @@ function sdec.stop()
     sdec.stream_settle()
   end
   sdec.ck_running, sdec.ck_stop = false, false
-  pcall(function() trigger.model.abort() end)
-  if sdec.digitizing() then
-    pcall(function() sdec.atrig.mode = sdec.k.MODE_OFF end)
+  pcall(trigger.model.abort)
+  if sdec.digitizing() and sdec.atrig ~= nil then
+    sdec.atrig.mode = sdec.k.MODE_OFF
   end
   sdec.cancel_ok = false
-  pcall(function() trigger.blender[sdec.cancel_blender].reset() end)
+  local bl = trigger.blender
+  if bl ~= nil and bl[sdec.cancel_blender] ~= nil then
+    pcall(bl[sdec.cancel_blender].reset)
+  end
   sdec.destroy_options()
   sdec.ui_destroy()
   if sdec.buf ~= nil then
     sdec.trig_settle()
     local b = sdec.buf
-    local delok = pcall(function() buffer.delete(b) end)
+    local delok = pcall(buffer.delete, b)
     if delok then
       sdec.buf = nil
     else
@@ -7184,7 +7183,7 @@ end
 -- End App handler: stop the app and hand the screen back to the instrument.
 function sdec.cleanup()
   local r = sdec.stop()
-  pcall(function() collectgarbage() end)
+  pcall(collectgarbage)
   return r
 end
 

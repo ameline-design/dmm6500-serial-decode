@@ -273,9 +273,10 @@ end
 -- BUILT ON FIRST USE, not at load, so an app that never decodes a parity format never pays for
 -- it. 512 entries is ~8 kB against the ~500 kB a 32 k-sample capture already holds.
 --
--- THE LOOP IS KEPT for anything outside the table -- a wider value, a non-integer, a negative --
--- and fused to one C call per iteration: v * 0.5 has a fractional part exactly when v is odd,
--- which is the same test as mod(v, 2) == 1 for one floor instead of a floor and a mod.
+-- THE LOOP IS KEPT for an integer wider than the table, and fused to one C call per iteration:
+-- v * 0.5 has a fractional part exactly when v is odd, the same test as mod(v, 2) == 1 for one
+-- floor instead of a floor and a mod. Not a general fallback -- a negative returns 0 and a
+-- non-integer counts fractional halvings -- but in-tree callers only ever pass 0..511.
 sdec.ua_pc = nil
 function sdec.ua_popcount(v)
   local t = sdec.ua_pc
@@ -2196,6 +2197,19 @@ function sdec.ua_hexwidth(ncol)
 end
 
 -- One hex+ASCII row as a single string, for a file or the debug log.
+--
+-- TOTAL FOR ANY vals CONTENT, which is load-bearing rather than defensive: ck_sink_file's emit()
+-- formats a row and THEN shifts its carry, so a raise out of here leaves cn and cbase describing a
+-- row the file never got, while flog_bytes has already counted those bytes on acceptance. Making
+-- this total is what lets both call sites run it bare -- the alternative was a pcall around our own
+-- formatter at each of them.
+--
+-- A TYPE TEST ALONE IS NOT ENOUGH, and the gap is interpreter-dependent, which is the worst kind.
+-- '%02X' on a number with no integer representation RAISES under the host's 5.1+ Lua (1.5, nan, inf,
+-- 1e300) and merely CASTS under the 5.0.2 that ships -- so a type test passes every offline suite
+-- and the claim above would be false on the interpreter the tests run on. The range test below is
+-- what makes it true on both. It also keeps the row FIXED WIDTH: 256 or 65536 formats without
+-- raising and widens the row, which no test would have caught either.
 function sdec.ua_hexrow(vals, errs, nf, i0, ncol, base)
   if base == nil then base = 0 end
   local hx, as = {}, {}
@@ -2207,8 +2221,22 @@ function sdec.ua_hexrow(vals, errs, nf, i0, ncol, base)
       as[m] = ' '
     else
       local v = vals[i]
-      if v == nil then hx[m] = ' --' else hx[m] = string.format(' %02X', v or 0) end
-      as[m] = sdec.ua_char(v, errs[i])
+      -- TYPE *AND* RANGE. Measured on the host: a string, a boolean and a table each RAISE -- the
+      -- first two words through string.format('%02X'), a numeric string through ua_char's `v >= 32`
+      -- -- and so does any number without an integer representation. `v ~= v` is the nan test;
+      -- floor(inf) == inf, so inf is caught by the bound rather than by it. A nil already rendered
+      -- as ' --', so every rejected value joins a branch that already existed.
+      local bad = type(v) ~= 'number'
+      if not bad then
+        bad = v ~= v or v < 0 or v > 255 or math.floor(v) ~= v
+      end
+      if bad then
+        hx[m] = ' --'
+        as[m] = sdec.ua_char(nil, errs[i])
+      else
+        hx[m] = string.format(' %02X', v)
+        as[m] = sdec.ua_char(v, errs[i])
+      end
     end
   end
   return string.format('%04d %s  |%s|', base + i0 - 1, tostring(sdec.ua_hexjoin(hx, m, '')),

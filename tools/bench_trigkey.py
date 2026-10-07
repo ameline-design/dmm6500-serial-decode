@@ -62,7 +62,7 @@ function tk_point()
   eventlog.clear()
   sdec.lasterr = nil
   timer.cleartime()
-  local ok = pcall(function() return sdec.capture() end)
+  local ok, err = pcall(function() return sdec.capture() end)
   local t = timer.gettime()
   local r = sdec.res
   local ec, emsg = eventlog.getcount(), ''
@@ -73,6 +73,13 @@ function tk_point()
   end
   print(string.format('T %s|%.3f|%s|%s|%s|%s', tostring(ok), t,
         tostring(r and r.nf), tostring(sdec.lasterr), tostring(sdec.trigmode), emsg))
+  -- THE CATCH OWNS THE CLEANUP, AND IT RUNS LAST. sdec.guard never sees a raise caught here, so
+  -- without this the drop register stays armed for the rest of the session and the next handler
+  -- failure of any kind discards a capture that was valid. It runs AFTER the row is printed, not
+  -- before: sdec.unwind consumes the drop register, which nils sdec.res -- so unwinding first made
+  -- every faulting point report nil bytes, no hex rows, and the unwind's own ui_status and lasterr
+  -- instead of the fault's. That silently changed what a fault-path row MEANS.
+  if not ok and sdec.unwind ~= nil then sdec.unwind(err) end
 end
 print('===DONE===')
 '''

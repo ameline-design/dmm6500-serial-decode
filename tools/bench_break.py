@@ -93,6 +93,14 @@ function bk_point(tag)
       i0 = i1 + 1
     end
   end
+  -- THE CATCH OWNS THE CLEANUP, AND IT RUNS LAST. sdec.guard never sees a raise caught here, so
+  -- without this the drop register stays armed for the rest of the session and the next handler
+  -- failure of any kind discards a capture that was valid. It runs AFTER the row is printed, not
+  -- before: sdec.unwind consumes the drop register, which nils sdec.res -- so unwinding first made
+  -- every faulting point report nil bytes, no hex rows, and the unwind's own ui_status and lasterr
+  -- instead of the fault's. That silently changed what a fault-path row MEANS.
+  -- All three branches need it: rate_accept and rate_decline tail-call capture() too.
+  if not ok and sdec.unwind ~= nil then sdec.unwind(err) end
   print('K end')
 end
 print('===DONE===')

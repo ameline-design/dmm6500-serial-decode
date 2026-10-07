@@ -95,8 +95,12 @@ def main():
     print('mode %s at %d Bd: target %s readings at %s S/s -> %.1f s of signal'
           % (mode, a.baud, nsmp, fsq, float(nsmp) / float(fsq)))
 
+    # sdec.guard RATHER THAN A BARE pcall, here and at the two presses below. These discard the
+    # verdict, so all a pcall bought was swallowing the raise -- and swallowing it left the drop
+    # register armed for the rest of the session, so the next handler failure of any kind would
+    # discard a capture that was valid. guard is pcall plus the unwind that the catch owes.
     print('\n--- start press, then watch the buffer WITHOUT pressing stop ---')
-    d.exec('pcall(function() sdec.capture() end)', timeout=60)
+    d.exec('sdec.guard(sdec.capture)', timeout=60)
     t0 = time.time()
     last, plateau_at, samples = -1, None, []
     while time.time() - t0 < a.cap:
@@ -121,11 +125,11 @@ def main():
     print('  app state while the hardware sits full: strm_recording|ui_status|endwhy = %s' % stat)
 
     print('\n--- stop press, then step the decode ---')
-    d.exec('pcall(function() sdec.capture() end)', timeout=300)
+    d.exec('sdec.guard(sdec.capture)', timeout=300)
     steps = 0
     while (d.q('print(tostring(sdec.ck_job ~= nil))') or '').strip() == 'true' \
             and steps < a.max_steps:
-        d.exec('pcall(function() sdec.capture() end)', timeout=180)
+        d.exec('sdec.guard(sdec.capture)', timeout=180)
         steps += 1
     tot = (d.q('print(tostring(sdec.ck_tot and sdec.ck_tot.nf) .. "|" .. '
                'tostring(sdec.ck_tot and sdec.ck_tot.nbad) .. "|" .. '

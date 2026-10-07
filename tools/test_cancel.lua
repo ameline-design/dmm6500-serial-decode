@@ -50,6 +50,11 @@ end
 -- Reset everything a run leaves behind, so each block starts from the resting state rather than
 -- from its predecessor's ending.
 local function idle()
+  -- DISARM THE QUEUED-PRESS ABSORB. The instrument always has a timer, so a run that ends ARMS the
+  -- absorb, and the next Capture is swallowed as that run's Stop. A deliberate press in a test is not
+  -- a queued one, so every reset must disarm -- which is exactly what bench_sync does before any
+  -- hardware harness, and what the suites got for free only while the mock had no clock.
+  sdec.strm_stopped_by_press, sdec.strm_absorbed, sdec.strm_nabsorbed = nil, nil, nil
   sdec.ck_job, sdec.ck_job_md, sdec.strm_recording = nil, nil, nil
   sdec.ck_running, sdec.ck_stop, sdec.ck_cancel = false, false, nil
   sdec.ck_tot, sdec.ck_nbytes, sdec.ck_endwhy = nil, nil, nil
@@ -90,7 +95,12 @@ local i
 -- fills the 80 000-sample source below. A capture whose bytes all land in the first decode window
 -- cannot show that a cancel stopped anything -- 'stopped early' and 'finished' produce the same
 -- byte count.
-for i = 1, 760 do bytes[i] = 32 + math.fmod(i * 7, 90) end
+-- math.mod, NOT math.fmod, even though this is a test and not a shipped module: 5.0.2 has only
+-- math.mod, and gen_serial.lua shims math.mod onto the host's fmod -- so this form runs under BOTH
+-- interpreters. fmod here was the only thing stopping offline502.py --run from exercising this
+-- suite on the Lua the instrument actually ships, which is the gate that catches a '%02X' that
+-- raises on one interpreter and casts on the other.
+for i = 1, 760 do bytes[i] = 32 + math.mod(i * 7, 90) end
 -- LONG ENOUGH TO HAVE SEAMS. A cancel has to land BETWEEN windows, so a source of one window
 -- cannot test one: 80 000 samples at 100 kS/s is four 20 000-sample decode windows, and ~760 bytes
 -- at 9600 baud. The byte pattern repeats, which is fine here -- the assertions are about where the
@@ -486,12 +496,13 @@ do
   check('and it still allows several full windows in one press',
         sdec.fc_maxsec / acq1 >= 4,
         string.format('%.0f windows of acquisition alone', sdec.fc_maxsec / acq1))
-  -- THE CLOCK IS PREFERRED WHERE IT EXISTS AND THE COUNTER IS THE FLOOR. Offline there is no timer
-  -- object, so fc_clock is false and the counter is the whole answer -- which is what keeps the three
-  -- checks above deterministic. On the instrument the clock sees the decode too, and max() means a
-  -- timer clobbered by anything else degrades the bound to the acquisition sum rather than removing it.
-  check('offline, the bound runs on the counter because there is no clock',
-        sdec.fc_clock == false, tostring(sdec.fc_clock))
+  -- THE CLOCK AND THE COUNTER, WITH max() DECIDING. The clock is the only one that sees the DECODE,
+  -- which is the larger half of a window; the counter is the floor for a CLOBBERED clock, since
+  -- anything resetting the global timer mid-run makes gettime() come back small. What keeps the three
+  -- checks above deterministic is that the mock's clock does not advance on its own -- it stays where
+  -- a test puts it -- NOT that the clock is missing. The instrument always has one.
+  check('the clock is present as on the instrument, and parked, so the bound is deterministic',
+        timer ~= nil and timer.gettime() == 0, tostring(timer and timer.gettime()))
 
   -- A BOUND THAT FIRES ON WINDOW ONE STILL NAMES ITSELF. Found on the instrument, not here: with the
   -- ceiling at 25 s a 'sml' run ended at ONE window in 26.9 s, and because the bound wording sat behind
@@ -1069,11 +1080,14 @@ do
   MD.usb(true)
   MD.forget_files()
   MD.seed_file('/usb1/probe_000.txt', 'a real capture')
-  local realopen, realfs = file.open, fs
-  fs = nil                              -- force the open-probe fallback
+  -- fs.is_file IS STUBBED TO RAISE, not deleted. fs is documented at ref 14-264 and is always
+  -- present on the instrument, so removing it tested a configuration that does not exist -- and the
+  -- property under test is what happens when a probe RAISES, which a stub expresses directly.
+  local realopen, realis = file.open, fs.is_file
+  fs.is_file = function(p) error('filesystem refused', 0) end
   file.open = function(p, m) error('filesystem refused', 0) end
   local ex = ulog.exists('/usb1/probe_000.txt')
-  file.open, fs = realopen, realfs
+  file.open, fs.is_file = realopen, realis
   check('a probe that raises reports the name as TAKEN, not free', ex == true, tostring(ex))
   -- AND THE NO-KEY CASE IS UNCHANGED, which is why this survived so long: with no key file.open RETURNS
   -- NIL rather than raising, so "free" is still right there and the failure surfaces at the write.
@@ -1167,11 +1181,13 @@ end
 -- absorb each one STARTS ANOTHER uninterruptable recording. Its three failure modes are covered
 -- below one by one, because a suite can be entirely green with all three open.
 --
--- OFFLINE THERE IS NO `timer`, so the arm's pcall fails and the absorb never engages: that is the
--- degrade-to-honouring-the-press path, tested last. The window itself needs a fake clock.
+-- THE WINDOW NEEDS A CLOCK A TEST CAN MOVE, so this block installs one and puts the mock's own back
+-- afterwards. It must be put back: leaving `timer` nil here is what used to make every later block
+-- run against an instrument configuration that does not exist.
 -- ============================================================================
 do
   idle()
+  local SAVED = timer
   local CLK = {t = 0}
   timer = {cleartime = function() CLK.t = 0 end, gettime = function() return CLK.t end}
 
@@ -1257,14 +1273,7 @@ do
   check('Page Dn still works inside the absorb window', sdec.ui_page == 1,
         tostring(sdec.ui_page))
 
-  -- (6) NO TIMER AT ALL: the arm cannot stamp the moment, so nothing is ever absorbed and every
-  -- press is honoured. Failing toward the operator's press rather than eating it.
-  timer = nil
-  sdec.strm_stopped_by_press, sdec.strm_absorbed = nil, nil
-  sdec.strm_absorb_arm()
-  check('with no timer the absorb never arms', sdec.strm_stopped_by_press == nil,
-        tostring(sdec.strm_stopped_by_press))
-  check('and so no press is ever absorbed', sdec.press_absorbed('Capture') == false)
+  timer = SAVED
   idle()
   sdec.strm_stopped_by_press, sdec.strm_absorbed, sdec.strm_nabsorbed = nil, nil, nil
   sdec.res, sdec.ui_page = nil, 0
@@ -1293,6 +1302,7 @@ do
   clearforce()
   -- The fake clock the block above uses, plus a record of what the absorb flag was AT THE MOMENT the
   -- timer was taken -- which is the only way to see the order rather than just the end state.
+  local SAVED2 = timer
   local CLK = {t = 0, clears = 0, armed_at_clear = {}}
   timer = {cleartime = function()
              CLK.clears = CLK.clears + 1
@@ -1386,11 +1396,11 @@ do
   check('a FRAME capture leaves the absorb disarmed', sdec.strm_stopped_by_press == nil,
         tostring(sdec.strm_stopped_by_press))
 
-  timer = nil
+  timer = SAVED2
   idle()
   clearforce()
   sdec.strm_stopped_by_press, sdec.strm_absorbed, sdec.strm_nabsorbed = nil, nil, nil
-  sdec.busy, sdec.fc_clock = false, nil
+  sdec.busy = false
 end
 
 -- ============================================================================
@@ -1577,7 +1587,7 @@ do
         string.format('%s readings at %s S/s', tostring(need), tostring(sdec.fs)))
   local fbytes, k = {}, nil
   for k = 1, math.ceil(need * 9600 / (10 * sdec.fs)) + 200 do
-    fbytes[k] = 32 + math.fmod(k * 7, 90)
+    fbytes[k] = 32 + math.mod(k * 7, 90)
   end
   local frd, fts, fnc, fn = GEN({bytes = fbytes, baud = 9600, fs = sdec.fs, lead = 4, gap = 0,
                                  tail = 4, n = need + 4000})
@@ -1689,6 +1699,64 @@ do
   end
   check('a flush that fails still closes the handle -- a stranded one needs a power cycle',
         MD.handles() == 0, tostring(MD.handles()) .. ' live')
+  MD.forget_handles()
+end
+
+-- ============================================================================
+-- THE FORMATTER'S TOTALITY, which ck_sink_file's carry invariant rests on. emit() formats a row and
+-- THEN shifts the carry, so a raise out of ua_hexrow leaves cn and cbase describing a row the file
+-- never got, while flog_bytes has already counted those bytes on acceptance. Both call sites now run
+-- emit bare, so the totality has to hold in ua_hexrow rather than be guarded at each of them.
+-- ============================================================================
+do
+  -- THE FLOATS AND THE OUT-OF-RANGE INTEGERS ARE THE POINT. A type test alone passes every string,
+  -- boolean and table case and still RAISES on 1.5 under the host's Lua, where '%02X' rejects a
+  -- number with no integer representation -- and merely casts under the 5.0.2 that ships. Without a
+  -- float here the suite cannot tell the two interpreters apart. 256 and 65536 raise on neither and
+  -- widen the row instead, so width is asserted as well as the absence of a raise.
+  local junk = {{}, 'zz', true, 'not a number', 1.5, 0.5, 65.5, 256, 65536, -1, 1e300}
+  local ref = string.len(sdec.ua_hexrow({65, nil, 67}, {}, 3, 1, 16, 0))
+  local nraise, nwide = 0, 0
+  local i
+  for i = 1, table.getn(junk) do
+    local ok, row = pcall(sdec.ua_hexrow, {65, junk[i], 67}, {}, 3, 1, 16, 0)
+    if not ok then nraise = nraise + 1
+    elseif string.len(row) ~= ref then nwide = nwide + 1 end
+  end
+  check('ua_hexrow does not raise on junk in vals -- including a float, which a type test misses',
+        nraise == 0, tostring(nraise) .. ' of ' .. tostring(table.getn(junk)) .. ' raised')
+  check('...and every rejected value keeps the row at its fixed width',
+        nwide == 0, tostring(nwide) .. ' row(s) not ' .. tostring(ref) .. ' chars')
+  local row = sdec.ua_hexrow({65, 'zz', 67}, {}, 3, 1, 16, 0)
+  local nilrow = sdec.ua_hexrow({65, nil, 67}, {}, 3, 1, 16, 0)
+  check('...and renders junk exactly where a nil renders, so no reachable input changed',
+        row == nilrow, tostring(row))
+
+  -- AND THE INVARIANT END TO END, with the junk byte inside the FIRST row so emit runs from sink's
+  -- while loop -- the call site that was bare before this, and the one a raise escaped from.
+  idle()
+  MD.usb(true); MD.forget_files()
+  MD.forget_handles()
+  local s, f = sdec.ck_sink_file('/usb1/junk_000.txt', 4)
+  local sok = nil
+  if s ~= nil then
+    sok = s({65, 'zz', 67, 68, 69, 70}, {}, 6, 0)
+    f()
+  end
+  check('a junk byte mid-stream does not fault the sink', sok == true, tostring(sok))
+  check('...and the handle still closes', MD.handles() == 0, tostring(MD.handles()) .. ' live')
+  -- TWO ROWS: the one sink emitted at the 4-byte boundary and the 2-byte carry finish() flushed. A
+  -- raise out of the first would have cost both -- the row, and the carry describing it.
+  local body = MD.content('/usb1/junk_000.txt') or ''
+  local nrow, at = 0, 1
+  while true do
+    local a = string.find(body, '|', at, true)
+    if a == nil then break end
+    nrow = nrow + 1
+    at = a + 1
+  end
+  check('...and both rows reach the file: the emitted one and the carried one',
+        nrow == 4, tostring(nrow / 2) .. ' rows in ' .. tostring(string.len(body)) .. ' bytes')
   MD.forget_handles()
 end
 

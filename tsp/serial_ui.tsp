@@ -648,16 +648,12 @@ sdec.ui_tick_s = sdec.ui_tick_s or 0.5
 -- pcall'd handlers, and a build whose timer create failed leaves ui_tick_obj nil.
 function sdec.ui_tick_off()
   if sdec.ui_tick_obj == nil then return false end
-  return pcall(function()
-    display.setevent(sdec.ui_tick_obj, display.EVENT_PRESS, '')
-  end)
+  return pcall(display.setevent, sdec.ui_tick_obj, display.EVENT_PRESS, '')
 end
 
 function sdec.ui_tick_on()
   if sdec.ui_tick_obj == nil then return false end
-  return pcall(function()
-    display.setevent(sdec.ui_tick_obj, display.EVENT_PRESS, 'sdec.guard(sdec.ui_tick)')
-  end)
+  return pcall(display.setevent, sdec.ui_tick_obj, display.EVENT_PRESS, 'sdec.guard(sdec.ui_tick)')
 end
 
 -- Look for a key that has come or gone, and make the panel agree. -> true if anything moved.
@@ -1220,9 +1216,7 @@ function sdec.ui_progbar_set(pct)
       local w = math.floor(pct * sdec.ui_prog_wmax / 100 + 0.5)
       if w < 1 then w = 1 end
       local x0 = sdec.ui_prog_x + 1
-      pcall(function()
-        display.setposition(sdec.ui_progline, x0, sdec.ui_prog_ly, x0 + w - 1, sdec.ui_prog_ly)
-      end)
+      pcall(display.setposition, sdec.ui_progline, x0, sdec.ui_prog_ly, x0 + w - 1, sdec.ui_prog_ly)
     end
     sdec.ui_progpct = pct
   end
@@ -2317,15 +2311,12 @@ function sdec.ui_build()
   -- A TICK CANNOT INTERRUPT A CAPTURE: it is dispatched like a press, so it waits for the handler to
   -- return. sdec.capture() turns it off for the duration anyway, and ui_tick() is a cheap no-op
   -- while the app is busy -- a deferred tick must not repaint objects a run is still using.
+  local tok, tobj = pcall(display.create, sdec.ui_scr, display.OBJ_TIMER, sdec.ui_tick_s,
+                          display.TIMER_FOREVER)
   sdec.ui_tick_obj = nil
-  pcall(function()
-    sdec.ui_tick_obj = display.create(sdec.ui_scr, display.OBJ_TIMER, sdec.ui_tick_s,
-                                      display.TIMER_FOREVER)
-  end)
+  if tok then sdec.ui_tick_obj = tobj end
   if sdec.ui_tick_obj ~= nil then
-    pcall(function()
-      display.setevent(sdec.ui_tick_obj, display.EVENT_PRESS, 'sdec.guard(sdec.ui_tick)')
-    end)
+    pcall(display.setevent, sdec.ui_tick_obj, display.EVENT_PRESS, 'sdec.guard(sdec.ui_tick)')
   end
 
   sdec.ui_page_t = create(sdec.ui_scr, display.OBJ_TEXT, x, sdec.ui_stat_y, '',
@@ -2664,7 +2655,7 @@ function sdec.ui_refresh_do()
   -- guarded anyway, because a refusal must cost the title bar and not the refresh.
   local ttl = sdec.ui_title_text()
   if sdec.ui_titletxt ~= ttl then
-    if pcall(function() display.settext(sdec.ui_scr, ttl) end) then sdec.ui_titletxt = ttl end
+    if pcall(display.settext, sdec.ui_scr, ttl) then sdec.ui_titletxt = ttl end
   end
   set(sdec.ui_note, sdec.ui_note_text())
 
@@ -3509,8 +3500,6 @@ function sdec.build_options()
   -- Hook End App on THIS screen too: if the firmware delivers EVENT_ENDAPP only to
   -- the visible screen, exiting from the form would strand both screens and the
   -- buffer until a power cycle.
-  pcall(function()
-    display.setevent(sdec.optscr, display.EVENT_ENDAPP, 'sdec.guard(sdec.cleanup)')
-  end)
+  pcall(display.setevent, sdec.optscr, display.EVENT_ENDAPP, 'sdec.guard(sdec.cleanup)')
   return sdec.optscr
 end

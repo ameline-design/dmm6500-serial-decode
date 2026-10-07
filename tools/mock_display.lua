@@ -381,6 +381,24 @@ function file.mkdir(path)
   DIRS[p] = true
 end
 function file.usbdriveexists() if USB then return 1 end return 0 end
+
+-- fs, DOCUMENTED AT REF 14-264 AND ALWAYS PRESENT ON THIS INSTRUMENT. Absent here,
+-- `pcall(fs.is_file, p)` indexes a nil table and raises OUTSIDE the guard -- which was the only
+-- reason ulog.exists probed for the table at all before using it. Backed by the same registry the
+-- file.* mock writes to, so a name this mock has written answers true.
+--
+-- A MISSING KEY IS NOT A MISSING FILE, and the two answers differ: with no key there is nothing to
+-- read, so every path is absent. That is what the open probe could never distinguish, and the whole
+-- reason the real call is preferred over it.
+fs = fs or {}
+function fs.is_file(p)
+  if p == nil or not USB then return false end
+  return CONTENT[abs(p)] ~= nil
+end
+function fs.is_dir(p)
+  if p == nil or not USB then return false end
+  return DIRS[abs(p)] == true
+end
 -- What the app actually created, so a test can assert the directory rather than infer it.
 function MD.dirs() return DIRS end
 function MD.rmdir(path) DIRS[abs(path)] = nil end
@@ -636,6 +654,34 @@ end
 function MD.logtext() return table.concat(LOG) end
 function MD.loglines() return table.getn(LOG) end
 
+
+-- THE ONE STOPWATCH. THE INSTRUMENT ALWAYS HAS IT, so the mock must too -- and the app no longer
+-- guards it, which is what makes a clock here load-bearing rather than cosmetic.
+--
+-- CAUSE AND EFFECT, STATED THE RIGHT WAY ROUND: the old closure-form guards caught a nil `timer`
+-- perfectly well -- that is exactly why sdec.fc_clock existed and why a test could assert it was
+-- false. REMOVING those guards is what made a mock without a clock a configuration the instrument
+-- cannot be in. The app does not get to be slower on hardware to accommodate a gap that only ever
+-- existed offline.
+--
+-- A CONTROLLED CLOCK, NOT os.clock(). Wall time would make every time-bounded run host-speed
+-- dependent: sdec.fc_maxsec would trip on a loaded machine and end a recording early, so a suite
+-- would fail for the machine it ran on. gettime() returns what a test set, and nothing else moves
+-- it -- so the clock is PRESENT, as on the instrument, and still deterministic.
+--
+-- cleartime() ZEROES IT, which is the instrument's semantics and is what makes the queued-press
+-- absorb arm offline. A suite that takes a deliberate action after a recording must disarm first,
+-- exactly as every hardware harness does -- see bench_sync's "MANDATORY BEFORE ANY HARNESS THAT
+-- CALLS timer.cleartime()". Relying on the absorb never arming was relying on a mock gap.
+if timer == nil then
+  timer = {}
+  local T = 0
+  function timer.cleartime() T = 0 end
+  function timer.gettime() return T end
+  function MD.clock(t) T = t or 0 end
+  function MD.clockadv(dt) T = T + (dt or 0) end
+  function MD.clockat() return T end
+end
 
 -- localnode.showevents and the eventlog severity constants, so sdec.quiet_events() is
 -- EXERCISED offline rather than silently swallowed by its own pcall. MD.showevents() is what

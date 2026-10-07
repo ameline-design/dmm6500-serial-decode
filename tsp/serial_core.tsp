@@ -1282,6 +1282,9 @@ end
 -- our own arithmetic, and acq_fs_or_requested() is reached from the capture path.
 function sdec.acq_measure_fs(buf, n)
   if buf == nil or n == nil or n < 2 then return nil end
+  -- GUARDED, AND A nil TEST CANNOT REPLACE IT. The attribute always EXISTS on a non-nil buffer, but
+  -- that is not the failure: the header above records that indexing the PROXY of a buffer the
+  -- firmware has already dropped RAISES. Existence and a successful proxy read are different claims.
   local t1, tn = nil, nil
   local ok = pcall(function()
     local ts = buf.relativetimestamps
@@ -1655,17 +1658,19 @@ end
 -- because an idle-low line does not look like a permanently-granted credit if the DMM is off.
 function sdec.fc_config()
   if not sdec.fc_out then return false end
-  local ok = pcall(function()
-    trigger.extout.logic = trigger.LOGIC_POSITIVE
-  end)
-  -- Width under its OWN pcall: the manual states the width is settable but not the legal range for
-  -- this model, so a refusal here must not also lose the logic setting above.
-  pcall(function()
-    if trigger.extout.pulsewidth ~= nil then
-      trigger.extout.pulsewidth = sdec.fc_pulse
-    end
-  end)
-  return ok
+  -- trigger.extout.logic is documented at ref 14-349 and trigger.extout always exists, so the write
+  -- is bare -- there was nothing for a guard to catch.
+  trigger.extout.logic = trigger.LOGIC_POSITIVE
+  -- THE WIDTH IS A DIFFERENT CASE, AND THE ONLY ATTRIBUTE HERE THAT MAY NOT EXIST. The DMM6500
+  -- reference documents trigger.extout.assert(), .logic and .stimulus and NOT .pulsewidth, so the
+  -- nil test is expected to be FALSE on this model and sdec.fc_pulse never reaches the instrument.
+  -- The nil test is what decides that; the pcall covers only the assignment, whose behaviour on an
+  -- attribute the manual does not describe is unmeasured. Keep them separate: a refusal of the width
+  -- must not lose the logic setting above.
+  if trigger.extout.pulsewidth ~= nil then
+    pcall(function() trigger.extout.pulsewidth = sdec.fc_pulse end)
+  end
+  return true
 end
 
 -- STOP THE FIRMWARE POPPING DIALOGS OVER THE APP.
@@ -1684,9 +1689,10 @@ end
 -- Applied from hw_config so it is re-asserted per capture: it is instrument state, and an App
 -- relaunch or another app may have changed it.
 function sdec.quiet_events()
-  return pcall(function()
-    localnode.showevents = eventlog.SEV_ERROR
-  end)
+  -- BARE. localnode is always present and eventlog.SEV_ERROR is a documented constant, so there is
+  -- nothing here for a pcall to catch -- and no caller reads the verdict anyway.
+  localnode.showevents = eventlog.SEV_ERROR
+  return true
 end
 
 -- Mute the panel's event popups where the firmware honours the mute -- which for 4915 it does NOT.
@@ -1709,11 +1715,13 @@ end
 -- an event back, so real events come out as generic "1005 User" entries, multiplied per poll, and
 -- trip 1707. Do not try it.
 function sdec.mute_events()
-  return pcall(function() localnode.showevents = 0 end)
+  localnode.showevents = 0
+  return true
 end
 
 function sdec.unmute_events()
-  return pcall(function() localnode.showevents = eventlog.SEV_ERROR end)
+  localnode.showevents = eventlog.SEV_ERROR
+  return true
 end
 
 -- Remember the measurement mode the instrument was left in, so leaving the app can put it back.
@@ -1786,6 +1794,9 @@ end
 function sdec.digitizing()
   if sdec.dig == nil then return false end
   if sdec.k.FUNC_NONE == nil then return true end
+  -- GUARDED: .func is an IPC read of the second processor's state, not a table lookup, so its
+  -- existence on sdec.dig does not make it safe. UNREADABLE COUNTS AS DIGITIZING, because the
+  -- caller's alternative is leaving a comparator armed for whatever uses it next.
   local f = nil
   if not pcall(function() f = sdec.dig.func end) then return true end
   return f ~= sdec.k.FUNC_NONE
@@ -1881,6 +1892,10 @@ end
 -- Clamp a request to what the buffer can hold, reserve included. A store past capacity posts 4915
 -- and truncates the capture.
 function sdec.acq_fit(n, buf)
+  -- NO BUFFER IS CHEAP TO TEST; A DROPPED ONE IS NOT. .capacity always exists on a non-nil buffer,
+  -- and reading it is still an IPC proxy read that raises once the firmware has dropped the buffer
+  -- behind it -- see acq_measure_fs. The nil test saves the guard a call, it does not replace it.
+  if buf == nil then return n end
   local cap = nil
   pcall(function() cap = buf.capacity end)
   if cap == nil or cap < 10 then return n end
@@ -1920,7 +1935,7 @@ function sdec.acq_make_buffer(n)
     -- dropped. Nil'ing first and swallowing the error would strand the buffer inside the firmware
     -- and allocate another on top -- one more on every retry, until a power cycle. Reachable
     -- whenever trig_settle() times out and the model still owns the buffer.
-    local delok = pcall(function() buffer.delete(b) end)
+    local delok = pcall(buffer.delete, b)
     if not delok then
       sdec.delfails = (sdec.delfails or 0) + 1
       sdec.stickyerr = 'the capture buffer could not be freed -- power cycle the instrument'
@@ -1934,8 +1949,8 @@ function sdec.acq_make_buffer(n)
   -- refuses when defbuffer2 already holds the readings this needs, and nil is the answer the
   -- caller tests for anyway, so the guard belongs here rather than around the call: this runs on
   -- the capture path, where pcall depth is what bluescreens the instrument.
-  local nb = nil
-  if not pcall(function() nb = buffer.make(n, buffer.STYLE_STANDARD) end) then return nil end
+  local mok, nb = pcall(buffer.make, n, buffer.STYLE_STANDARD)
+  if not mok then return nil end
   sdec.buf = nb
   -- Continuous, so an overwrite is an overwrite rather than a discard -- see acq_fillmode.
   sdec.acq_fillmode(sdec.buf)
@@ -2066,8 +2081,10 @@ end
 -- "not finished" (the caller then falls back on its timeout) rather than raise from
 -- inside a poll loop.
 function sdec.trig_done(buf)
-  local st = nil
-  pcall(function() st = trigger.model.state() end)
+  -- ON A RAISE THE SECOND RESULT IS THE MESSAGE, not a state, and a string here would sail past the
+  -- nil test below as a readable state. Nil it on the failure path.
+  local sok, st = pcall(trigger.model.state)
+  if not sok then st = nil end
   if st == nil then return false end
   return st == trigger.STATE_IDLE and (buf.n or 0) > 0
 end
@@ -2075,15 +2092,15 @@ end
 -- Stop the trigger model AND WAIT FOR IT TO STOP. abort() is asynchronous; see the
 -- note in acq_triggered for what happens when the next capture does not wait.
 -- Bounded, because a model that will not idle must not hang the panel.
--- NEVER RAISES, so every caller calls it bare: the abort, the state polls and the sleep each carry
+-- RAISES ONLY IF trigger.model IS ABSENT, which this firmware never is, so every caller is bare: the abort, the state polls and the sleep each carry
 -- their own guard, and nothing else here touches the instrument.
 function sdec.trig_settle()
-  pcall(function() trigger.model.abort() end)
+  pcall(trigger.model.abort)
   local i
   local unread = 0
   for i = 1, 50 do
-    local st = nil
-    local sok = pcall(function() st = trigger.model.state() end)
+    local sok, st = pcall(trigger.model.state)
+    if not sok then st = nil end
     -- A STATE WE COULD NOT READ IS NOT A MODEL WE KNOW IS IDLE. Treating `st == nil` as settled would
     -- conflate two opposite things: a firmware with no trigger model at all (nothing to settle, so true
     -- is right) and a state() call that RAISED while a model was running. The callers act on this by
@@ -2114,7 +2131,7 @@ function sdec.trig_settle()
     -- THE SLEEP IS A FIRMWARE CALL AND CARRIES ITS OWN GUARD, which is what lets every caller call
     -- this bare. A raise out of delay() here would escape into sdec.stop()'s teardown and leave the
     -- buffer undeleted -- the one thing this function exists to make safe.
-    pcall(function() delay(0.01) end)
+    pcall(delay, 0.01)
   end
   return false
 end
@@ -2144,7 +2161,7 @@ sdec.cancel_poll_s = 0.001
 
 -- Send one flow-control credit out of the rear EXT TRIG OUT. Returns whether the pulse went.
 function sdec.fc_credit()
-  local ok = pcall(function() trigger.extout.assert() end)
+  local ok = pcall(trigger.extout.assert)
   -- A REFUSED CREDIT IS NOT A QUIET LINE, and without this it looks exactly like one: a device that
   -- is waiting for permission it never got sends nothing, the window comes back empty, and the run
   -- reports "the device stopped sending" -- a confident, wrong diagnosis of the operator's device.
@@ -2188,7 +2205,12 @@ end
 -- run would otherwise stop this one too.
 function sdec.cancel_clear()
   if not sdec.cancel_ok then return false end
-  return pcall(function() trigger.blender[sdec.cancel_blender].clear() end)
+  -- THE INDEX IS OUTSIDE THE GUARD, and cancel_ok above is what makes that safe -- but not because
+  -- it tracks an assignment: sdec.cancel_blender is a load-time CONSTANT. cancel_ok is true only if
+  -- cancel_setup's own guarded wiring COMPLETED, which is proof that trigger.blender[N].clear
+  -- exists. Parenthesised so this returns ONE value as it always has -- the direct form would
+  -- otherwise forward clear()'s returns too.
+  return (pcall(trigger.blender[sdec.cancel_blender].clear))
 end
 
 -- Has TRIGGER been pressed since the last cancel_clear() or cancel_pressed()? The detector
@@ -2196,10 +2218,7 @@ end
 -- record the answer rather than polling twice and expecting the same reply.
 function sdec.cancel_pressed()
   if not sdec.cancel_ok then return false end
-  local got = false
-  local ok = pcall(function()
-    got = trigger.blender[sdec.cancel_blender].wait(sdec.cancel_poll_s or 0.001)
-  end)
+  local ok, got = pcall(trigger.blender[sdec.cancel_blender].wait, sdec.cancel_poll_s or 0.001)
   if not ok then return false end
   return got == true
 end
@@ -2285,7 +2304,7 @@ function sdec.acq_triggered(n, slope)
   -- that configures a subsystem should un-configure it, or the next thing to use a blender
   -- inherits our stimuli and our overrun flag. Costs one guarded call per capture.
   if not sdec.trigext then
-    pcall(function() trigger.blender[1].reset() end)
+    pcall(trigger.blender[1].reset)
   end
   if sdec.trigext and sdec.trigext_only and sdec.trigmode ~= 'free' then
     -- THE REAR BNC ALONE. No blender, and the comparator turned OFF below by clearing useanalog --
@@ -2298,7 +2317,7 @@ function sdec.acq_triggered(n, slope)
     -- answer on a busy line, because otherwise the start bit answers first every time.
     ev = trigger.EVENT_EXTERNAL
     useanalog = false
-    pcall(function() trigger.blender[1].reset() end)
+    pcall(trigger.blender[1].reset)
   elseif sdec.trigext and sdec.trigmode ~= 'free' then
     local bok = pcall(function()
       trigger.blender[1].reset()
@@ -2361,7 +2380,7 @@ function sdec.acq_triggered(n, slope)
     -- behaves as it always did -- it waits for traffic that may not come, and times out with a
     -- reason, which is the existing no-trigger path.
     if sdec.fc_out then
-      pcall(function() trigger.extout.assert() end)
+      pcall(trigger.extout.assert)
     end
 
     -- BOUNDED WAIT. A bare waitcomplete() here is a hang: LoopUntilEvent makes
@@ -2441,10 +2460,11 @@ function sdec.acq_triggered(n, slope)
     if expired and perr ~= nil then
       sdec.lasterr = sdec.lasterr .. ' (' .. tostring(perr) .. ')'
     end
-    -- PROTECTED, because sdec.atrig need not exist. serial_app.tsp's header claims this function
-    -- degrades to free-running without an analog trigger; this bare write is what made that false --
-    -- with atrig nil it raises out here, outside the pcall, so acquire() dies instead of degrading.
-    pcall(function() sdec.atrig.mode = sdec.k.MODE_OFF end)
+    -- TESTED, because sdec.atrig need not exist -- a digitizer with no analog comparator is a
+    -- supported configuration. serial_app.tsp's header claims this function degrades to free-running
+    -- without one, and a bare write is what made that false: with atrig nil it raised and acquire()
+    -- died instead of degrading. The nil test is the whole fix; a catch only hid it.
+    if sdec.atrig ~= nil then sdec.atrig.mode = sdec.k.MODE_OFF end
     return sdec.acq_free(n)
   end
 

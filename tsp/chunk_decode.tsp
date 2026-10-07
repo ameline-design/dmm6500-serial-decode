@@ -834,6 +834,7 @@ function sdec.ck_sink_file(path, ncol)
   -- MODE_APPEND, not MODE_WRITE. This sink writes to the SHARED byte log that FRAME mode also
   -- appends to, so opening for write TRUNCATES every frame capture taken before this stream --
   -- silently, and visible only as a byte count that went backwards.
+  --
   -- open_write, for its no-key gate and its reason string. A key swapped since the name was allocated is
   -- REPORTED, not recovered from: see ulog.open_write.
   local fh, owhy = ulog.open_write(path, file.MODE_APPEND)
@@ -846,8 +847,7 @@ function sdec.ck_sink_file(path, ncol)
   -- That is the one thing the header exists to prevent. It also makes the sink's construction the honest
   -- place to fail: the handle is closed and the caller reports it, rather than a run that "worked" and
   -- left a file nobody can read back.
-  -- THE HEADER IS THE SINK'S FIRST WRITE, so its failure is the sink's failure: rows that could be
-  -- written after one that could not would append an UNLABELLED stream into the shared byte log.
+  --
   -- The line is built OUTSIDE the guard, so only the firmware call is protected, and the handle is
   -- closed before the refusal -- a stranded one needs a power cycle.
   local hdr = string.format('---- stream  %s %s\r\n',
@@ -880,6 +880,11 @@ function sdec.ck_sink_file(path, ncol)
     -- GUARDED SO dead IS SET AND THE CARRY SHIFT BELOW STILL RUNS. A raise escaping here would skip
     -- it, leaving cn and cbase describing rows the file never got -- and flog_bytes is counted on
     -- ACCEPTANCE, so those bytes are already in the log's charge.
+    --
+    -- AND THE FORMATTER ABOVE CANNOT FAIL EITHER: ua_hexrow is total for any vals content. That is
+    -- what lets sink's while loop run emit BARE -- a guard there would have stopped the raise
+    -- escaping but not the stranding, because a pcall around emit skips the carry shift just as the
+    -- raise does. The invariant needs the formatter not to fail, not the caller to catch it.
     if not dead then
       if not pcall(file.write, fh, line .. '\r\n') then dead = true end
     end
@@ -918,9 +923,13 @@ function sdec.ck_sink_file(path, ncol)
   local finish = function()
     if finished then return not dead end
     finished = true
-    -- THE FINAL ROW IS GUARDED SO THE CLOSE IS REACHED. It formats through ua_hexrow, which is not
-    -- a file call and can raise on a value the formatter does not expect; a handle stranded by that
-    -- needs a power cycle, and the row not reaching the file is what `dead` is for.
+    -- THE FINAL ROW IS GUARDED SO THE CLOSE IS REACHED, and this is the exception to "no pcall on our
+    -- own code": what it protects is an IRREVERSIBLE resource, since a handle stranded by a raise
+    -- needs a power cycle, and the row not reaching the file is what `dead` is for. ua_hexrow is now
+    -- total for any vals content, so the guard is a last resort rather than the mechanism -- but
+    -- totality is an argument about today's inputs and a stranded handle is not recoverable, so the
+    -- cheaper side of that trade is to keep it. It is also what makes finish() report FAILURE rather
+    -- than a byte total including a row the file never got.
     if not dead and cn > 0 then
       if not pcall(emit, cn) then dead = true end
     end
@@ -1128,11 +1137,15 @@ function sdec.ck_job_step(job)
   -- here needs none of the cleanup the decode path below does -- but it must still mark the job
   -- done, or the caller's loop would step a job with no format forever.
   if job.prime ~= nil then
+    -- THE CALLEE'S THREE RETURNS ARRIVE AFTER THE VERDICT, and on a RAISE the first of them is the
+    -- MESSAGE rather than a value -- so they are copied out only when pok is true.
+    local pok, pa, pb, pc = pcall(sdec.ck_prime_step, job.prime)
     local pdone, fmt, perr = true, nil, nil
-    local pok, praise = pcall(function()
-      pdone, fmt, perr = sdec.ck_prime_step(job.prime)
-    end)
-    if not pok then pdone, fmt, perr = true, nil, tostring(praise) end
+    if pok then
+      pdone, fmt, perr = pa, pb, pc
+    else
+      perr = tostring(pa)
+    end
     job.phase = job.prime.label
     if not pdone then return false, nil, nil end
     -- THE PRIMED WINDOW, HANDED TO THE DECODE BEFORE THE PRIMING STATE IS DROPPED. ck_job_new gave both
@@ -1164,9 +1177,11 @@ function sdec.ck_job_step(job)
   -- checkpoint nobody will consume.
   job.opts.resume = job.state
   local tot, terr, praise = nil, nil, nil
-  local pok, perr = pcall(function()
-    tot, terr = sdec.ck_decode(job.reader, job.ntotal, job.fmt, job.sink, job.opts)
-  end)
+  -- SAME SHAPE AS THE PRIMING STEP ABOVE: the two returns follow the verdict, and the first is the
+  -- message on a raise, so nothing is copied out unless pok.
+  local pok, pa, pb = pcall(sdec.ck_decode, job.reader, job.ntotal, job.fmt, job.sink, job.opts)
+  local perr = nil
+  if pok then tot, terr = pa, pb else perr = pa end
   job.opts.resume = nil               -- unconditionally: a raise must not leave it set
   -- A MID-BYTE START BELONGS TO THE RUN, AND tot DOES NOT SURVIVE A STEP. ck_decode is called afresh
   -- per step with its own tot, so the headsusp it takes from the first window it emits was overwritten
@@ -1186,7 +1201,7 @@ function sdec.ck_job_step(job)
   if tot == nil then
     -- A raise or refusal mid-run still has to close the file, or the handle leaks to the next
     -- power cycle and the rows already written are never flushed.
-    if job.finish ~= nil then pcall(function() job.finish() end) end
+    if job.finish ~= nil then pcall(job.finish) end
     job.done, job.tot, job.state = true, nil, nil
     return true, nil, tostring(praise or terr or 'chunked decode failed')
   end
@@ -1204,8 +1219,8 @@ function sdec.ck_job_step(job)
   job.done, job.tot, job.state = true, tot, nil
   tot.suspended = nil                 -- and drop the self-referential checkpoint
   if job.finish ~= nil then
-    local fok = false
-    local fpok = pcall(function() fok = job.finish() end)
+    local fpok, fv = pcall(job.finish)
+    local fok = fpok and fv
     if not fpok or not fok then tot.stopped = 'write failed' end
   end
   tot.fmt = job.fmt
@@ -1218,7 +1233,7 @@ end
 -- file so the rows already decoded survive, and returns the tail so they can still be shown.
 function sdec.ck_job_abandon(job)
   if job == nil then return nil end
-  if job.finish ~= nil and not job.done then pcall(function() job.finish() end) end
+  if job.finish ~= nil and not job.done then pcall(job.finish) end
   -- prime goes too: a job abandoned mid-priming must not be resumable. It does not free the window
   -- table -- job.opts.win holds it as well -- so only dropping the job itself releases either.
   job.done, job.state, job.prime = true, nil, nil

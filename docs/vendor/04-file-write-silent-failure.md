@@ -66,6 +66,10 @@ pattern is to poll `usbdriveexists` *before* every write and treat its answer as
 
 * Whether a **full** or **write-protected** key fails the same way. Only the pulled key was measured;
   the app that found this treats a raising write as a separate, unmeasured case and does not assume.
+  **The two differ in the one way that matters to an application: `usbdriveexists` answers 0 for a
+  pulled key and 1 for a full one**, so the quiet gate that stops every write on the measured case
+  passes on the unmeasured one. `repro-04b-full-key.tsp` runs the same four rows against a key
+  filled from the host; it also measures `file.read`, which this report never exercised in any state.
 * Whether 2200 is posted for reasons other than absent media.
 * Whether anything is buffered and later flushed to a key reinserted before `close` — not tested, and
   the reinsertion case is treated as a new key regardless.

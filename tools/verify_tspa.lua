@@ -174,6 +174,17 @@ trigger = {EVENT_ANALOGTRIGGER = 'atrig', CLEAR_ENTER = 'enter',
 function trigger.model.load() end
 function trigger.model.initiate() end
 function trigger.model.abort() end
+-- BLENDERS, BECAUSE THE INSTRUMENT HAS THEM. Absent here, `pcall(trigger.blender[1].reset)` indexes
+-- a nil field OUTSIDE the guard, which is the only thing that ever justified wrapping these calls in
+-- a closure. Two is all the app uses: 1 for the OR path, 2 for the TRIGGER-key cancel detector.
+trigger.blender = {}
+local bi
+for bi = 1, 2 do
+  trigger.blender[bi] = {stimulus = {}, orenable = false}
+  trigger.blender[bi].reset = function() end
+  trigger.blender[bi].clear = function() end
+  trigger.blender[bi].wait = function() return false end
+end
 function waitcomplete() end
 function delay() end
 
@@ -244,20 +255,47 @@ check('and on the options screen too',
 
 -- Every button's event string must be a callable that exists, or the panel gets a
 -- button that does nothing and says nothing.
+
+-- RESOLVED, NOT EVALUATED. Stripping a trailing '()' and loadstring'ing the rest worked only while
+-- every handler was the bare `sdec.name()` form. The handlers are now `sdec.guard(sdec.name)`, which
+-- has no trailing '()' to strip -- so the old form evaluated the string as an expression and
+-- PRESSED THE BUTTON, all thirteen of them, then reported each one bad because guard returns a
+-- boolean rather than a function. Walking the name costs nothing and cannot have a side effect.
+local function resolve(name)
+  local t, rest = _G, name
+  while true do
+    local a, b, seg = string.find(rest, '^([%a_][%w_]*)')
+    if a == nil or type(t) ~= 'table' then return nil end
+    t = t[seg]
+    rest = string.sub(rest, b + 1)
+    if string.sub(rest, 1, 1) ~= '.' then break end
+    rest = string.sub(rest, 2)
+  end
+  if rest ~= '' then return nil end
+  return t
+end
+
+-- Two accepted shapes: `fn()` and the firmware boundary's `sdec.guard(fn)`. The second has to check
+-- BOTH names -- a typo in the inner one is the whole failure this check exists to catch, and guard
+-- would swallow it into a panel error rather than a dead button.
+local function handler_bad(cmd)
+  if cmd == nil then return 'no handler' end
+  local _, _, callee, arg = string.find(cmd, '^([%a_][%w_.]*)%s*%((.*)%)$')
+  if callee == nil then return cmd .. ' (not a call)' end
+  if type(resolve(callee)) ~= 'function' then return cmd .. ' (' .. callee .. ' missing)' end
+  if arg ~= '' and type(resolve(arg)) ~= 'function' then
+    return cmd .. ' (' .. arg .. ' missing)'
+  end
+  return nil
+end
+
 local nbtn, bad = 0, {}
 for i = 1, table.getn(sdec.ui_btn) do
   local ev = MD.events(sdec.ui_btn[i])
   local cmd = ev and ev['press']
-  if cmd == nil then
-    bad[table.getn(bad) + 1] = 'button ' .. i .. ' has no handler'
-  else
-    nbtn = nbtn + 1
-    local f = (loadstring or load)('return ' .. string.gsub(cmd, '%(%)$', ''))
-    local okf, fn = pcall(f)
-    if not okf or type(fn) ~= 'function' then
-      bad[table.getn(bad) + 1] = cmd
-    end
-  end
+  if cmd ~= nil then nbtn = nbtn + 1 end
+  local why = handler_bad(cmd)
+  if why ~= nil then bad[table.getn(bad) + 1] = 'button ' .. i .. ': ' .. why end
 end
 -- The COUNT is pinned as well as the handlers, deliberately: the bar spans x = 8..774 of a
 -- 798 px limit, so an eighth button does not fit and adding one must fail here rather than be
@@ -281,12 +319,8 @@ local obad = {}
 for i = 1, table.getn(sdec.opt_btn) do
   local ev = MD.events(sdec.opt_btn[i])
   local cmd = ev and ev['press']
-  local f = cmd and (loadstring or load)('return ' .. string.gsub(cmd, '%(%)$', ''))
-  local okf, fn = false, nil
-  if f ~= nil then okf, fn = pcall(f) end
-  if not okf or type(fn) ~= 'function' then
-    obad[table.getn(obad) + 1] = tostring(cmd)
-  end
+  local why = handler_bad(cmd)
+  if why ~= nil then obad[table.getn(obad) + 1] = why end
 end
 -- Four now: Auto Detect, Lock Detected, Apply, Cancel. Auto Detect went into the empty left
 -- half of the row, opposite its inverse.

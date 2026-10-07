@@ -75,6 +75,12 @@ function st_point(tag)
         tostring(sdec.strm_recording), tostring(sdec.ck_job ~= nil),
         tostring(sdec.ck_nbytes), tostring(sdec.ck_endwhy), tostring(bn),
         tostring(sdec.flog_bytes), tostring(sdec.lasterr), emsg))
+  -- THE CATCH OWNS THE CLEANUP, AND IT RUNS LAST. sdec.guard never sees a raise caught here, so
+  -- without this the drop register stays armed for the rest of the session and the next handler
+  -- failure of any kind discards a capture that was valid. AFTER the row, not before: sdec.unwind
+  -- consumes the drop register and overwrites ui_status and lasterr, so unwinding first changed what
+  -- a fault-path row means.
+  if not pok and sdec.unwind ~= nil then sdec.unwind(err) end
 end
 print('===DONE===')
 '''

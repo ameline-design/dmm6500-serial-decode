@@ -12,6 +12,8 @@ hand edit and expensive to find on hardware:
     ('#' length operator, integer division, goto, bitwise ops, '::' labels)
   * accidental globals -- assignments at file scope that are neither `local` nor
     fields of the single app table (e.g. `sdec`)
+  * the pcall budget -- the packaged .tspa's count of pcall SITES, which this
+    firmware bluescreens above; nothing else in the repo enforced it
 
 Comments and string literals are blanked out first so keywords inside them do not
 count. Usage: lint_tsp.py <file> [...]   (exit 1 if any file fails)
@@ -207,6 +209,32 @@ def check_dupes(code, name):
     return errs
 
 
+# THE pcall BUDGET IS A SHIPPING CONSTRAINT, NOT A STYLE PREFERENCE. Above some number of pcall
+# SITES in the loaded script the firmware bluescreens on load. Measured ladder: 227 sites crash, 191
+# crash, 132 run -- so the boundary is somewhere in (132, 191] and 132 is the largest count observed
+# to work. The ceiling is set there rather than at today's count, so ordinary work has room and only
+# a walk back toward the cliff trips the gate.
+#
+# COUNTED ON THE ARTEFACT, because that is what the instrument loads. Per-module counts are not the
+# constraint and six modules each under a share of the budget can still sum past it.
+#
+# A LITERAL COUNT OF `pcall(`, which is why it runs on the STRIPPED body: a pcall named in a comment
+# is not a site, and this file's own comments would otherwise inflate the app's figure.
+PCALL_CEILING = 132
+
+
+def check_pcall_budget(code, name):
+    if not name.endswith('.tspa'):
+        return []
+    n = len(re.findall(r'\bpcall\s*\(', code))
+    if n <= PCALL_CEILING:
+        return []
+    return [f'{name}: {n} pcall sites, over the {PCALL_CEILING} ceiling -- 191 sites bluescreened '
+            f'this firmware on load and 132 is the largest count measured to run. Remove guards '
+            f'rather than raising the ceiling; a guard on our own code is the first to go, and '
+            f'`pcall(f, x)` beats `pcall(function() f(x) end)` on allocation but counts the same']
+
+
 # A REAL LUA 5.0.2 PARSER, WHICH THE DOCSTRING ABOVE USED TO SAY DID NOT EXIST. It does: 5.0.2 is a
 # 150 kB tarball that builds in seconds, and tools/get_lua502.sh puts luac in out/lua502/bin. Everything
 # in INCOMPAT above is a hand-written approximation of what that parser does exactly, and the parser also
@@ -278,7 +306,7 @@ def main(paths):
             body = '\n'.join(lines[a + 1:b])
         code = strip(body)
         errs = (check_blocks(code, p) + check_compat(code, p) + check_globals(code, p)
-                + check_dupes(code, p))
+                + check_dupes(code, p) + check_pcall_budget(code, p))
         # THE PARSER RUNS ON THE UNSTRIPPED BODY, because a string or a comment that opens a long
         # bracket and never closes it is a syntax error the blanking pass would have hidden.
         if luac is not None:

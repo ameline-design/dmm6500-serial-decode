@@ -157,7 +157,7 @@ function sdec.clear_result()
   -- here costs 8.3 ms measured, against a 1.6 s capture, and Lua memory pressure is on the
   -- suspect list for this firmware's panics. It does NOT help the DISPLAY object pool -- those
   -- are firmware objects, which del_obj deletes explicitly.
-  pcall(function() collectgarbage() end)
+  pcall(collectgarbage)
   return true
 end
 
@@ -682,8 +682,9 @@ function sdec.record_run()
   -- returned. Nothing reads the timer between two windows, so the run may have it. See chunk_decode's
   -- WHY WINDOWS AND NOT SECONDS for the one place it is NOT free -- inside the decode loop.
   --
-  -- fc_clock RECORDS WHETHER WE GOT IT. Offline there is no timer object at all and the pcall fails, so
-  -- the counter is the whole answer -- which is what keeps the suites deterministic.
+  -- THE TIMER IS ALWAYS PRESENT ON THIS INSTRUMENT, so taking it needs no guard and no "did we get
+  -- it" flag. The counter below is not a fallback for an absent clock; it is the floor for a
+  -- CLOBBERED one, which is a different failure and still real.
   --
   -- AND TAKING THE TIMER MEANS DISARMING THE ABSORB, because the absorb's age is stored NOWHERE ELSE.
   -- strm_stopped_by_press is only a boolean meaning "armed"; strm_absorb_arm() records WHEN by clearing
@@ -695,7 +696,7 @@ function sdec.record_run()
   -- Safe to clear here: capture() tests the absorb at its top, so by the time this function runs the press
   -- that started it has already been offered to the absorb and declined.
   sdec.strm_stopped_by_press = nil
-  sdec.fc_clock = pcall(function() timer.cleartime() end)
+  timer.cleartime()
   -- PAINTED AFTER THE CLEAR ABOVE AND BEFORE THE FIRST WINDOW. It is the last full refresh until the
   -- run ends -- sdec.progress() repaints only the counter -- so the control cell it writes stands for
   -- the whole run, which is why it must be painted at all. That cell reads 'no stop until it ends' and
@@ -775,13 +776,10 @@ function sdec.record_run()
     -- against 34 s of acquisition at 9600 baud, so a bound counting acquisition alone overshot by 4x.
     -- The counter is the only one that cannot be clobbered: if anything ever reads or resets the timer
     -- mid-run the reading comes back SMALL, and max() then degrades this to the acquisition sum rather
-    -- than to no bound at all. Offline the clock is absent and the counter is the whole answer.
+    -- than to no bound at all.
     local el = sdec.fc_secs
-    if sdec.fc_clock then
-      local t = nil
-      pcall(function() t = timer.gettime() end)
-      if t ~= nil and t > el then el = t end
-    end
+    local t = timer.gettime()
+    if t ~= nil and t > el then el = t end
     if sdec.fc_maxsec ~= nil and sdec.fc_maxsec > 0 and el >= sdec.fc_maxsec then
       sdec.fc_secs = el
       sdec.fc_end = 'timebound'
@@ -1056,6 +1054,8 @@ function sdec.stream_arm(nsmp)
   -- NO BUFFER IS A REFUSED ARM, not a raise: the caller's answer to a refusal is a free-running
   -- read, and it can only choose that if it is told rather than unwound.
   if buf == nil then return false end
+  -- THE CLOSURE FORM IS REQUIRED HERE, not a style choice: pcall(buf.clear) fetches .clear off the
+  -- proxy BEFORE pcall is entered, and that fetch is itself the IPC boundary the header names.
   if not pcall(function() buf.clear() end) then return false end
   -- fillmode = 1 PER CAPTURE, after clear(), exactly as acq_triggered() does it: fillmode reads
   -- back 0 on a buffer that has been cleared and reused, and one FILL_ONCE capture is one burst
@@ -1068,6 +1068,9 @@ function sdec.stream_arm(nsmp)
   -- change unwinding another way, never reaches, leaving the panel muted for every later
   -- firmware error.
   sdec.acq_fillmode(buf)
+  -- NO DIGITIZER IS A REFUSED ARM, like no buffer above -- and the write is still guarded, because
+  -- the header above names sdec.dig.count as an IPC write to the second processor.
+  if sdec.dig == nil then return false end
   if not pcall(function() sdec.dig.count = 1 end) then return false end
   local ok = pcall(function()
     trigger.model.load('SimpleLoop', nsmp, 0, buf)
@@ -1098,13 +1101,15 @@ end
 -- reason travel together, and mode_exit()/trig_restore(), which only want the hardware stopped,
 -- can call this bare.
 function sdec.stream_settle()
-  pcall(function() trigger.model.abort() end)
+  pcall(trigger.model.abort)
   local buf = sdec.buf
   sdec.nread = 0
   if buf ~= nil then
-    local n, ok = nil, nil
-    local perr
-    ok, perr = pcall(function() n = buf.n end)
+    -- GUARDED AT THE PROXY READ, which is what the header above promises a second return for. .n
+    -- exists on every non-nil buffer; reading it on one the firmware has dropped raises, and a nil
+    -- test cannot see that coming.
+    local n = nil
+    local ok, perr = pcall(function() n = buf.n end)
     if not ok then return 0, tostring(perr or 'the buffer could not be read') end
     sdec.nread = n or 0
     sdec.acq_fs = sdec.acq_fs_or_requested(buf, sdec.nread)
@@ -1794,9 +1799,6 @@ end
 function sdec.capture()
   sdec.ui_keypoll()
   sdec.ui_tick_off()
-  -- NOTHING ON THIS PATH IS GUARDED, and the cleanup a raise would skip belongs to sdec.guard: the
-  -- busy latch, the panel tick and the stale-result drop are all restored there. A raise still
-  -- reaches the caller, which `pcall(sdec.capture)` in bench_break and the lock toggle rely on.
   -- REGISTERED, so sdec.unwind drops the stale result only when a CAPTURE unwound past it. A Save
   -- or a View that raised has invalidated no measurement.
   sdec.drop_pending = true
@@ -2009,7 +2011,7 @@ function sdec.proto_parse1(mode)
   -- views rather than raise from inside a touch handler. sdec.ui_views is the single description
   -- of which modes have a parser at all.
   if fn == nil then return false end
-  local ok, perr = pcall(function() fn() end)
+  local ok, perr = pcall(fn)
   -- A PARSER THAT RAISED MUST NOT LEAVE AN EMPTY PROTOCOL VIEW LOOKING LIKE AN ANSWER. The capture
   -- stays 'done' -- correctly, the UART decode underneath it worked -- so a MIDI or LIN view that came
   -- back blank reads as "your device emitted no protocol messages", which is a statement about the
@@ -2057,17 +2059,6 @@ end
 -- ============================================================================
 -- The inbound firmware boundary
 -- ============================================================================
--- Run a panel handler so a raise cannot reach the firmware. -> true if it returned.
---
--- THE ONE PLACE A pcall MAY WRAP OUR OWN CODE, and it is a firmware boundary like any other: the
--- instrument calls these by name out of a display event string, and a raise that escapes becomes an
--- ERROR-severity event, which is a modal dialog over the app. One helper, so the whole boundary is
--- ONE pcall site instead of one per button -- and it covers the WHOLE handler, where a guard around
--- a single call inside one covered only that call.
---
--- THE FAILURE PATH RAISES NOTHING ITSELF. It assigns fields and refreshes; it does not log, because
--- ulog.line reaches file.write, and a key that has filled up is exactly the condition that brought
--- us here. ui_refresh only touches display calls, which post events rather than raising.
 -- Put back whatever a raise unwound past, and report it. -> false, so a catcher can end with
 -- `return sdec.unwind(err)`.
 --
@@ -2083,7 +2074,8 @@ end
 --
 -- RAISE-FREE BY CONSTRUCTION: assignments, ui_tick_on and ui_refresh which each guard themselves,
 -- and a nil test on every function called by name -- a partial load must not turn the boundary into
--- the popup source it exists to prevent.
+-- the popup source it exists to prevent. It also does not log: ulog.line reaches file.write, and a
+-- key that has filled up is exactly the condition that brought us here.
 function sdec.unwind(why)
   sdec.busy = false
   sdec.ck_running = false
@@ -2118,6 +2110,13 @@ function sdec.unwind(why)
   return false
 end
 
+-- Run a panel handler so a raise cannot reach the firmware. -> true if it returned.
+--
+-- THE ONE PLACE A pcall MAY WRAP OUR OWN CODE, and it is a firmware boundary like any other: the
+-- instrument calls these by name out of a display event string, and a raise that escapes becomes an
+-- ERROR-severity event, which is a modal dialog over the app. One helper, so the whole boundary is
+-- ONE pcall site instead of one per button -- and it covers the WHOLE handler, where a guard around
+-- a single call inside one covered only that call.
 function sdec.guard(f)
   local ok, err = pcall(f)
   if ok then return true end
@@ -2573,18 +2572,16 @@ function sdec.strm_absorb_arm()
   sdec.strm_stopped_by_press = nil
   sdec.strm_nabsorbed = 0
   -- timer.cleartime() stamps the moment the run ended. Nothing else runs between here and the
-  -- dispatch of a queued press, so nothing else can reset the timer in between -- and if the
-  -- firmware has no timer at all, the flag is simply never armed, which fails toward honouring
-  -- the press rather than eating it.
-  local ok = pcall(function() timer.cleartime() end)
-  if ok then sdec.strm_stopped_by_press = true end
+  -- dispatch of a queued press, so nothing else can reset the timer in between. The timer is always
+  -- present, so the arm is unconditional -- a guard here would only have described the mock.
+  timer.cleartime()
+  sdec.strm_stopped_by_press = true
 end
 
 -- True if we are still inside the window in which a press must have been queued.
 function sdec.strm_absorb_due()
   if not sdec.strm_stopped_by_press then return false end
-  local el = nil
-  pcall(function() el = timer.gettime() end)
+  local el = timer.gettime()
   if el == nil then return false end
   return el <= sdec.strm_absorb_s
 end
@@ -3191,9 +3188,7 @@ end
 -- ============================================================================
 -- Hook End App on screen scr, so leaving the app tears it down. Returns whether the hook took.
 function sdec.install_cleanup(scr)
-  local ok = pcall(function()
-    display.setevent(scr, display.EVENT_ENDAPP, 'sdec.guard(sdec.cleanup)')
-  end)
+  local ok = pcall(display.setevent, scr, display.EVENT_ENDAPP, 'sdec.guard(sdec.cleanup)')
   if not ok then
     -- STICKY, not lasterr: a later capture would clear lasterr, and this fault must outlive it.
     sdec.stickyerr = 'End App is not hooked -- exiting will not clean up'
@@ -3229,9 +3224,9 @@ function sdec.stop()
     sdec.stream_settle()
   end
   sdec.ck_running, sdec.ck_stop = false, false
-  pcall(function() trigger.model.abort() end)
-  -- ONLY WHILE THE DIGITIZER IS THE SELECTED FUNCTION -- see sdec.digitizing(), which explains why the
-  -- pcall here is not enough on its own. Turning the comparator off is un-configuring a subsystem this app
+  pcall(trigger.model.abort)
+  -- ONLY WHILE THE DIGITIZER IS THE SELECTED FUNCTION -- see sdec.digitizing(), which explains why
+  -- asking at all is not enough on its own. Turning the comparator off is un-configuring a subsystem this app
   -- configured, which is right, but the attribute does not exist while a BASIC function is selected and
   -- writing it then posts 2800 as a modal box.
   --
@@ -3239,15 +3234,23 @@ function sdec.stop()
   -- one when mode_restore() started leaving a basic function selected: the next launch then begins with the
   -- digitizer deselected, and a launch closed without pressing Capture never selects it. hw_config() is what
   -- selects it, and it runs per capture, not at startup.
-  if sdec.digitizing() then
-    pcall(function() sdec.atrig.mode = sdec.k.MODE_OFF end)
+  if sdec.digitizing() and sdec.atrig ~= nil then
+    sdec.atrig.mode = sdec.k.MODE_OFF
   end
   -- RELEASE THE CANCEL LATCH, for the reason acq_triggered() gives for releasing blender 1: an app
   -- that configures a subsystem should un-configure it, or the next user of blender 2 inherits our
   -- stimuli. sdec.cancel_ok goes with it, so a poll after teardown answers false rather than reading
   -- a blender this app has released.
   sdec.cancel_ok = false
-  pcall(function() trigger.blender[sdec.cancel_blender].reset() end)
+  -- THE RIGHT VARIABLE. sdec.cancel_blender is a load-time CONSTANT (serial_core.tsp), so testing it
+  -- is vacuous; what cancel_setup's own header calls a supported configuration is a firmware with no
+  -- blenders at all. Measured: with trigger.blender nil, indexing it here aborted teardown and left
+  -- 133 display objects live -- destroy_options, ui_destroy, trig_settle and the buffer delete are
+  -- all downstream, and sdec.guard stops the dialog but not the leak.
+  local bl = trigger.blender
+  if bl ~= nil and bl[sdec.cancel_blender] ~= nil then
+    pcall(bl[sdec.cancel_blender].reset)
+  end
   sdec.destroy_options()
   sdec.ui_destroy()
   -- SETTLE BEFORE DELETING, AND KEEP THE HANDLE IF THE DELETE IS REFUSED -- the same discipline
@@ -3267,7 +3270,7 @@ function sdec.stop()
   if sdec.buf ~= nil then
     sdec.trig_settle()
     local b = sdec.buf
-    local delok = pcall(function() buffer.delete(b) end)
+    local delok = pcall(buffer.delete, b)
     if delok then
       sdec.buf = nil
     else
@@ -3296,7 +3299,7 @@ function sdec.cleanup()
   local r = sdec.stop()
   -- Teardown has just dropped every object handle and the capture buffer. Collecting costs
   -- 8.3 ms, measured.
-  pcall(function() collectgarbage() end)
+  pcall(collectgarbage)
   return r
 end
 

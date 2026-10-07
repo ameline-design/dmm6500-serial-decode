@@ -394,6 +394,11 @@ do
   -- difference between `false, nil` and a reason.
   local raised, rwhy, gverdict = nil, nil, nil
   do
+    -- DISARMED FIRST, or the stub is never reached. The capture above ended a run and armed the
+    -- queued-press absorb; capture() tests that at its top and returns without acting, so the press
+    -- below would report NO raise and this would be a test of nothing. The mock's clock does not
+    -- advance on its own, so the window never expires here -- bench_sync disarms for the same reason.
+    sdec.strm_stopped_by_press, sdec.strm_absorbed = nil, nil
     local saved = sdec.mode_cur
     sdec.mode_cur = function() error('escaping', 0) end
     raised, rwhy = pcall(function() return sdec.capture() end)

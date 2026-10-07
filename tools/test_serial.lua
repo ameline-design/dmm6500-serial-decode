@@ -57,9 +57,17 @@ local function analyse(rd, nsmp, fs)
   return ok, why
 end
 
+-- clearforce ALSO DISARMS THE QUEUED-PRESS ABSORB, which is not a side issue bolted on: the
+-- instrument always has a timer, so a recording that ends arms the absorb and the NEXT Capture is
+-- swallowed as that run's Stop. A deliberate press in a test is not a queued one, and the mock's
+-- clock does not advance on its own, so the window never expires here. Every reset must disarm,
+-- exactly as bench_sync does before any hardware harness -- the suites got this for free only while
+-- the mock had no clock at all. Inlined rather than given its own helper: this file is already at
+-- Lua's 200-local ceiling for a main chunk.
 local function clearforce()
   sdec.force_baud, sdec.force_nbits = nil, nil
   sdec.force_par, sdec.force_nstop, sdec.force_invert = nil, nil, nil
+  sdec.strm_stopped_by_press, sdec.strm_absorbed, sdec.strm_nabsorbed = nil, nil, nil
 end
 
 -- Generate, analyse and decode. Returns the result table, samples and count.
