@@ -432,8 +432,9 @@ function sdec.frame_log()
     sdec.flog_why = 'cannot append to ' .. tostring(sdec.flog_path)
     return false
   end
-  -- REGISTERED FOR THE UNWIND. Nothing here is guarded, so a raise in a formatter or a write would
-  -- otherwise strand this handle until a power cycle; sdec.unwind closes whatever is parked here.
+  -- REGISTERED FOR THE UNWIND. A FORMATTER is what can raise on this path -- a file call cannot,
+  -- measured -- and a raise out of one would otherwise strand this handle until a power cycle;
+  -- sdec.unwind closes whatever is parked here.
   sdec.fh_unwind = fh
   -- COUNTED AFTER THE WRITE, never before: a raise part-way through would otherwise bump flog_n and
   -- flog_bytes anyway, so the panel's "bytes in the log" would count bytes that never reached the
@@ -2095,13 +2096,13 @@ function sdec.unwind(why)
     sdec.drop_pending = nil
     if sdec.drop_stale_result ~= nil then sdec.drop_stale_result() end
   end
-  -- AN OPEN HANDLE IS NOT RECLAIMED UNTIL A POWER CYCLE, so a frame that holds one parks it here
-  -- and clears it on its own close. One pcall covers every registered handle, and it is a firmware
-  -- call in the direct form -- a close that raises must not stop the rest of this unwind.
+  -- AN OPEN HANDLE IS NOT RECLAIMED UNTIL A POWER CYCLE, so a frame that holds one parks it here and
+  -- clears it on its own close. Bare: file.close cannot transfer control -- measured, closing an
+  -- already-closed handle posts 2202 and returns -- so it cannot stop the rest of this unwind.
   if sdec.fh_unwind ~= nil then
     local h = sdec.fh_unwind
     sdec.fh_unwind = nil
-    pcall(file.close, h)
+    file.close(h)
   end
   if sdec.ui_tick_on ~= nil then sdec.ui_tick_on() end
   sdec.errcount = (sdec.errcount or 0) + 1

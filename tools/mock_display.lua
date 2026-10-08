@@ -560,12 +560,19 @@ function file.read(h, act)
   if act ~= file.READ_LINE and act ~= file.READ_ALL then
     error('this mock models READ_LINE and READ_ALL only, got ' .. tostring(act), 0)
   end
-  -- A key pulled between open and read RAISES. That is the case usb_log.tsp wraps in a pcall and
-  -- closes the handle outside of, so it has to be reachable from here.
-  if not USB then error('USB read failed (key removed)', 0) end
+  -- A FAILED READ RETURNS nil AND POSTS 2201. Measured on 1.7.17a: file.read on a closed handle and
+  -- on a handle opened for WRITE both answer nil and post 2201 -- neither raises. This used to raise
+  -- here, which is why usb_log wrapped it in a pcall; the guard was inert on hardware and the mock
+  -- was the only thing that made it look necessary.
+  -- post(), NOT MD.evpost(). post() files into EVENTS, which MD.fevent_count() censuses and whose
+  -- whole purpose is "their ABSENCE is the requirement"; MD.evpost files into EVQ, which is what the
+  -- APP reads through eventlog.getcount(). Posting there would both hide this event from the
+  -- harness's own popup census and pollute app-visible state -- and usb_log's exists() header rests
+  -- on eventlog.getcount() staying 0.
+  if not USB then post(2201); return nil end
   if RFAIL ~= nil then
     RFAIL = RFAIL - 1
-    if RFAIL < 0 then error('USB read failed (key removed)', 0) end
+    if RFAIL < 0 then post(2201); return nil end
   end
   -- A directory handle reads back its listing, not file content: that is how the app asks whether a
   -- directory exists without risking an event.

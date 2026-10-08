@@ -168,8 +168,10 @@ seed_key('/usb1/s_', 1, 0, '5\n')
 -- ASSERTED DIRECTLY, NOT THROUGH capped(), whose own pcall returns nil on a raise -- so `p == nil`
 -- was satisfied BY the propagation this check claims to rule out, and passed either way.
 --
--- A read that fails is a key that went away mid-question: rootlists guards the read so the handle is
--- closed, answers nil, and next_free falls back rather than propagating.
+-- A read that fails is a key that went away mid-question: file.read answers NIL and posts 2201 --
+-- measured, it does not raise -- so rootlists closes the handle, returns nil, and next_free falls
+-- back. MD.failread models that by returning nil now, not by raising, so what this pins is the
+-- FALLBACK rather than a guard: without it next_free would hand back a name it never verified.
 MD.failread(0)
 local rok, rres = pcall(ulog.next_free, '/usb1/s_', '.txt', 1000)
 MD.failread(nil)

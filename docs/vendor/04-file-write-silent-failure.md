@@ -62,6 +62,20 @@ pattern is to poll `usbdriveexists` *before* every write and treat its answer as
 3. Failing both, document that `file.write` cannot report failure, and that `usbdriveexists` must gate
    every write.
 
+## No file call raises, which makes a `pcall` round one useless
+
+**Measured on the same firmware, key PRESENT: no `file.*` or `fs.*` call raises at all.** `file.write` to a
+closed handle posts 2200 and returns; `file.flush` posts 2211; `file.close` on an already-closed
+handle posts 2202; `file.read` on a closed handle *and* on a handle opened for WRITE both return nil
+and post 2201; `file.open` on a bad path returns nil and posts 2216; `fs.is_file` answers false for a
+bad path and for garbage and posts nothing. And **`file.write(fh, {})` — a table where a string is
+required — posts 1138 *"parameter 2, expected type string but found table"* and returns.**
+
+That last one is decisive: even a **Lua argument-type error** is converted into a posted event. There
+is no input, valid or invalid, by which a file call transfers control. So a `pcall` around one always
+returns true, and any verdict derived from it is a constant — a failure detector that cannot fire.
+An application can only observe presence, via `file.usbdriveexists`.
+
 ## What remains unknown
 
 * Whether a **full** or **write-protected** key fails the same way. Only the pulled key was measured;

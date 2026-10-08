@@ -127,9 +127,9 @@ function ulog.rootlists(name)
   if name == nil or name == '' then return nil end
   local fh = file.open('/usb1', file.MODE_READ)
   if fh == nil then return nil end
-  local rok, raw = pcall(file.read, fh, file.READ_ALL)
+  local raw = file.read(fh, file.READ_ALL)
   file.close(fh)
-  if not rok or raw == nil then return nil end
+  if raw == nil then return nil end
   if string.find(raw, string.upper(name), 1, 1) ~= nil then return true end
   return false
 end
@@ -219,7 +219,8 @@ end
 -- Write one line. -> true if it went.
 -- NON-RAISING FOR EVERY MEASURED FAILURE, which is what lets a logging call site read as a
 -- statement: no key, a pulled key and a missing directory are all gates that return false. A key
--- that is PRESENT AND REFUSING is the unmeasured case and can raise out of file.write.
+-- that is PRESENT AND REFUSING remains unmeasured -- see the table above -- but nothing measured
+-- raises, so nothing here catches.
 function ulog.line(s)
   if not ulog.enabled then return false end
   if not ulog.on then
@@ -277,23 +278,16 @@ end
 
 -- DOES THIS FILE EXIST, WITHOUT LOGGING AN ERROR IF IT DOES NOT?
 --   [...]
--- truncating a real file. A nil is NOT taken -- fs.is_file returning nil falls through to the open
--- probe, and file.open returning nil (no key, or no such file) is the normal FREE answer, with the
--- failure surfacing at the write where it belongs.
+-- from fs.is_file falls through to the open probe -- unreachable on hardware, where it answers a
+-- boolean -- and file.open returning nil (no key, or no such file) is the normal FREE answer, with
+-- the failure surfacing at the write where it belongs.
 function ulog.exists(path)
   if path == nil then return false end
-  local ok, got = pcall(fs.is_file, path)
-  if not ok then got = nil end
-  if not ok or got == nil then
-    local taken = false
-    local pok = pcall(function()
-      local fh = file.open(path, file.MODE_READ)
-      if fh ~= nil then
-        taken = true
-        file.close(fh)
-      end
-    end)
-    if not pok then return true end
+  local got = fs.is_file(path)
+  if got == nil then
+    local fh = file.open(path, file.MODE_READ)
+    local taken = fh ~= nil
+    if fh ~= nil then file.close(fh) end
     return taken
   end
   return got == true
@@ -338,9 +332,10 @@ function ulog.next_free(prefix, ext, limit)
       wh = ulog.open_write(idxpath, file.MODE_WRITE)
       local wrote = false
       if wh ~= nil then
-        wrote = pcall(file.write, wh, tostring(i) .. '\n')
+        file.write(wh, tostring(i) .. '\n')
         file.flush(wh)
         file.close(wh)
+        wrote = ulog.keyok()
       end
       if wrote then ulog.idx_why = nil
       else ulog.idx_why = 'log index not saved -- numbering restarts after a power cycle' end
@@ -363,18 +358,17 @@ function ulog.write_file(path, lines, n)
   local fh, why = ulog.open_write(path, file.MODE_WRITE)
   if fh == nil then return false, tostring(why) end
 
-  local gone, wfail = false, false
+  local gone = false
   local i
   for i = 1, n do
     if not ulog.keyok() then gone = true; break end
-    if not pcall(file.write, fh, tostring(lines[i]) .. '\r\n') then wfail = true; break end
+    file.write(fh, tostring(lines[i]) .. '\r\n')
   end
   file.flush(fh)
   file.close(fh)
   if gone or not ulog.keyok() then
     return false, 'the USB key went away -- the file is empty or truncated'
   end
-  if wfail then return false, 'write failed part-way through -- the file is truncated' end
   return true
 end
 
@@ -3386,8 +3380,9 @@ function sdec.ck_sink_file(path, ncol)
   local hdr = string.format('---- stream  %s %s\r\n',
                             sdec.baud_text and sdec.baud_text() or '?',
                             sdec.fmt_text and sdec.fmt_text() or '?')
-  if not pcall(file.write, fh, hdr) then
-    pcall(file.close, fh)
+  file.write(fh, hdr)
+  if ulog ~= nil and ulog.keyok ~= nil and not ulog.keyok() then
+    file.close(fh)
     return nil, nil, 'cannot write the stream header to ' .. tostring(path)
   end
 
@@ -3400,9 +3395,7 @@ function sdec.ck_sink_file(path, ncol)
   local function emit(nrow)
     local line = sdec.ua_hexrow(cv, ce, nrow, 1, ncol, cbase)
     if not dead and ulog ~= nil and ulog.keyok ~= nil and not ulog.keyok() then dead = true end
-    if not dead then
-      if not pcall(file.write, fh, line .. '\r\n') then dead = true end
-    end
+    if not dead then file.write(fh, line .. '\r\n') end
     local i
     for i = nrow + 1, cn do
       cv[i - nrow] = cv[i]
@@ -3433,8 +3426,8 @@ function sdec.ck_sink_file(path, ncol)
     if not dead and cn > 0 then
       if not pcall(emit, cn) then dead = true end
     end
-    if not pcall(file.flush, fh) then dead = true end
-    pcall(file.close, fh)
+    file.flush(fh)
+    file.close(fh)
     fh = nil
     if not dead and ulog ~= nil and ulog.keyok ~= nil and not ulog.keyok() then dead = true end
     return not dead
@@ -6490,7 +6483,7 @@ function sdec.unwind(why)
   if sdec.fh_unwind ~= nil then
     local h = sdec.fh_unwind
     sdec.fh_unwind = nil
-    pcall(file.close, h)
+    file.close(h)
   end
   if sdec.ui_tick_on ~= nil then sdec.ui_tick_on() end
   sdec.errcount = (sdec.errcount or 0) + 1

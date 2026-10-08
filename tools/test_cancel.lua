@@ -1080,15 +1080,17 @@ do
   MD.usb(true)
   MD.forget_files()
   MD.seed_file('/usb1/probe_000.txt', 'a real capture')
-  -- fs.is_file IS STUBBED TO RAISE, not deleted. fs is documented at ref 14-264 and is always
-  -- present on the instrument, so removing it tested a configuration that does not exist -- and the
-  -- property under test is what happens when a probe RAISES, which a stub expresses directly.
-  local realopen, realis = file.open, fs.is_file
-  fs.is_file = function(p) error('filesystem refused', 0) end
-  file.open = function(p, m) error('filesystem refused', 0) end
+  -- fs.is_file ANSWERING nil IS THE CASE, not a raise. Measured on 1.7.17a: no file or fs call
+  -- transfers control -- fs.is_file answers false for a bad path and for garbage, and a write of the
+  -- WRONG TYPE posts 1138 and returns. So a nil answer is the only way the fs question goes
+  -- unanswered, and the open probe is what has to settle it: the seeded file opens, so the name is
+  -- TAKEN and sdec.save() will pick another rather than truncating a real capture.
+  local realis = fs.is_file
+  fs.is_file = function(p) return nil end
   local ex = ulog.exists('/usb1/probe_000.txt')
-  file.open, fs.is_file = realopen, realis
-  check('a probe that raises reports the name as TAKEN, not free', ex == true, tostring(ex))
+  fs.is_file = realis
+  check('an unanswered fs probe falls back to the open probe and reports TAKEN',
+        ex == true, tostring(ex))
   -- AND THE NO-KEY CASE IS UNCHANGED, which is why this survived so long: with no key file.open RETURNS
   -- NIL rather than raising, so "free" is still right there and the failure surfaces at the write.
   MD.usb(false)
@@ -1145,15 +1147,16 @@ do
   -- header that could not be written was followed by rows that could -- appending an UNLABELLED stream
   -- into the shared byte log, indistinguishable from the frame captures around it. That is the one thing
   -- the header exists to prevent.
-  local realwrite, nw = file.write, 0
-  file.write = function(fh, s)
-    nw = nw + 1
-    if nw == 1 then error('header write failed', 0) end
-    return realwrite(fh, s)
-  end
+  --
+  -- THE KEY GOES AWAY ON THAT FIRST WRITE, which is how the refusal is reachable at all. A write
+  -- cannot report its own failure on this firmware -- measured, it posts and returns -- so stubbing
+  -- file.write to RAISE tested a configuration the instrument cannot be in. MD.pullafter(0) clears
+  -- the key as the header write happens, and the keyok() after it is what refuses the sink.
+  MD.pullafter(0)
   local sink, finish, serr = sdec.ck_sink_file('/usb1/hdr_000.txt', 16)
-  file.write = realwrite
-  check('a stream header that cannot be written refuses the sink',
+  MD.pullafter(nil)
+  MD.usb(true)
+  check('a stream header the key did not take refuses the sink',
         sink == nil and finish == nil and serr ~= nil, tostring(serr))
   check('...and names the file, so the reason is actionable',
         has(tostring(serr), 'hdr_000.txt'), tostring(serr))
@@ -1693,11 +1696,13 @@ do
   check('a sink opens exactly one handle', MD.handles() == 1, tostring(MD.handles()))
   if s ~= nil then
     s({65, 66, 67}, {0, 0, 0}, 3, 0)
-    MD.failflush(0)                 -- the next flush raises, on a good handle
     f()
-    MD.failflush(nil)
   end
-  check('a flush that fails still closes the handle -- a stranded one needs a power cycle',
+  -- NO ARMED FAILURE, AND THAT IS THE POINT NOW. finish() flushes and closes BARE, because neither
+  -- call can transfer control on this firmware -- so the close cannot be skipped and the handle
+  -- cannot be stranded. The census still has to show it, or a future edit that drops the close
+  -- outright would pass unnoticed.
+  check('a sink that finishes leaves no handle open -- a stranded one needs a power cycle',
         MD.handles() == 0, tostring(MD.handles()) .. ' live')
   MD.forget_handles()
 end

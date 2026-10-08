@@ -848,13 +848,19 @@ function sdec.ck_sink_file(path, ncol)
   -- place to fail: the handle is closed and the caller reports it, rather than a run that "worked" and
   -- left a file nobody can read back.
   --
-  -- The line is built OUTSIDE the guard, so only the firmware call is protected, and the handle is
-  -- closed before the refusal -- a stranded one needs a power cycle.
+  -- The handle is closed before the refusal -- a stranded one needs a power cycle. Nothing here is
+  -- guarded: the write cannot fail in a way Lua can see, so the gate after it is what refuses.
   local hdr = string.format('---- stream  %s %s\r\n',
                             sdec.baud_text and sdec.baud_text() or '?',
                             sdec.fmt_text and sdec.fmt_text() or '?')
-  if not pcall(file.write, fh, hdr) then
-    pcall(file.close, fh)
+  -- BARE, AND THE REFUSAL MOVES TO THE GATE. Measured on 1.7.17a: no file call transfers control --
+  -- a write to a dead handle posts 2200 and returns, a bad path posts 2216, and even a wrong
+  -- ARGUMENT TYPE posts 1138 and returns. So a pcall here always returned true and the refusal below
+  -- could never be reached. Presence is the only file failure an application can observe, so that is
+  -- what decides it, and the handle still closes before the refusal.
+  file.write(fh, hdr)
+  if ulog ~= nil and ulog.keyok ~= nil and not ulog.keyok() then
+    file.close(fh)
     return nil, nil, 'cannot write the stream header to ' .. tostring(path)
   end
 
@@ -877,17 +883,16 @@ function sdec.ck_sink_file(path, ncol)
     -- IT SKIPS THE WRITE AND NOTHING ELSE. The carry shift below still runs, so cn and cbase stay
     -- consistent with what the sink has accepted.
     if not dead and ulog ~= nil and ulog.keyok ~= nil and not ulog.keyok() then dead = true end
-    -- GUARDED SO dead IS SET AND THE CARRY SHIFT BELOW STILL RUNS. A raise escaping here would skip
-    -- it, leaving cn and cbase describing rows the file never got -- and flog_bytes is counted on
-    -- ACCEPTANCE, so those bytes are already in the log's charge.
+    -- BARE, AND NOTHING HERE CAN SET dead. The write cannot report its own failure or transfer
+    -- control, so the keyok() above is the whole detector; a guard here set `dead` from a verdict
+    -- that was always true. The carry shift below therefore always runs, which is the invariant that
+    -- matters: cn and cbase must never describe rows the file never got, and flog_bytes is counted
+    -- on ACCEPTANCE, so those bytes are already in the log's charge.
     --
-    -- AND THE FORMATTER ABOVE CANNOT FAIL EITHER: ua_hexrow is total for any vals content. That is
-    -- what lets sink's while loop run emit BARE -- a guard there would have stopped the raise
-    -- escaping but not the stranding, because a pcall around emit skips the carry shift just as the
-    -- raise does. The invariant needs the formatter not to fail, not the caller to catch it.
-    if not dead then
-      if not pcall(file.write, fh, line .. '\r\n') then dead = true end
-    end
+    -- THE FORMATTER ABOVE CANNOT FAIL EITHER: ua_hexrow is total for any vals content. That is what
+    -- lets sink's while loop run emit BARE -- a guard there would have stopped a raise escaping but
+    -- not the stranding, because a pcall around emit skips the carry shift just as a raise does.
+    if not dead then file.write(fh, line .. '\r\n') end
     local i
     for i = nrow + 1, cn do
       cv[i - nrow] = cv[i]
@@ -933,12 +938,11 @@ function sdec.ck_sink_file(path, ncol)
     if not dead and cn > 0 then
       if not pcall(emit, cn) then dead = true end
     end
-    -- THE FLUSH GETS ITS OWN GUARD SO IT CANNOT SKIP THE CLOSE, which is the one thing this
-    -- sequence must guarantee: `finished` is already latched above, so no later finish() retries a
-    -- close that never happened, and the handle would be stranded until a power cycle. A flush that
-    -- fails is also a verdict -- the rows it was flushing did not reach the key.
-    if not pcall(file.flush, fh) then dead = true end
-    pcall(file.close, fh)
+    -- BOTH BARE. Neither can transfer control -- measured, a flush on a dead handle posts 2211 and a
+    -- close on an already-closed one posts 2202, both returning -- so nothing here can skip the close
+    -- and nothing can set `dead`. The keyok() below is what actually catches a key lost mid-stream.
+    file.flush(fh)
+    file.close(fh)
     fh = nil
     -- A KEY PULLED MID-STREAM DOES NOT FAIL A WRITE IN LUA -- it posts 2200 and returns, so `dead`
     -- never saw it and the run reported a complete file. One presence check does; it also latches

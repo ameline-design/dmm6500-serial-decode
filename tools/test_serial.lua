@@ -1236,14 +1236,17 @@ check('write_file writes every line', ulog.write_file('/usb1/w.txt', {'l1', 'l2'
       and MD.loglines() == 3, MD.loglines() .. ' lines')
 check('write_file terminates lines CRLF for a PC', has(MD.logtext(), 'l1\r\n'),
       string.format('%q', MD.logtext()))
--- The key filling up part-way through is the realistic failure, and it must be reported: a
--- truncated capture file that claims success is worse than no file. The write is guarded so the
--- handle is closed either way -- a stranded one needs a power cycle.
-MD.failwrite(2)
-check('a write that fails part-way is reported, not claimed as saved',
+-- A KEY THAT GOES AWAY PART-WAY must be reported: a truncated capture file that claims success is
+-- worse than no file. MD.pullafter, not MD.failwrite -- the measured firmware does NOT raise on a
+-- write (a dead handle posts 2200, a bad path 2216, even a wrong argument type 1138, all returning),
+-- so a raise models a configuration the instrument cannot be in. write_file's per-row keyok() is the
+-- detector, which is what makes this reachable at all.
+MD.pullafter(2)
+check('a key that goes away part-way is reported, not claimed as saved',
       (function() local ok, why = ulog.write_file('/usb1/p.txt', {'a', 'b', 'c', 'd'}, 4)
-         return ok == false and has(why, 'part-way') end)())
-MD.failwrite(nil)
+         return ok == false and has(why, 'went away') end)())
+MD.pullafter(nil)
+MD.usb(true)
 
 -- ---- sdec.save ----
 sdec.res = nil
@@ -1280,12 +1283,13 @@ check('a second save picks a new name', sdec.save() == true
       and sdec.savedas == '/usb1/cap_001.txt', tostring(sdec.savedas))
 -- A failing save must say so and must NOT leave a filename the operator would go
 -- looking for on the key.
-MD.failwrite(3)
-check('a save that fails mid-write returns false', sdec.save() == false)
+-- Again the presence model rather than a raise: see the write_file case above.
+MD.pullafter(3)
+check('a save that loses the key mid-write returns false', sdec.save() == false)
 check('a failed save reports the reason', has(sdec.lasterr, 'save failed'),
       tostring(sdec.lasterr))
 check('a failed save claims no filename', sdec.savedas == nil, tostring(sdec.savedas))
-MD.failwrite(nil)
+MD.pullafter(nil)
 MD.usb(false)
 check('a save with no USB key fails cleanly rather than raising',
       sdec.save() == false and sdec.lasterr ~= nil, tostring(sdec.lasterr))

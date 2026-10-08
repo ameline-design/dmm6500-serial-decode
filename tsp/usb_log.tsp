@@ -124,6 +124,29 @@ end
 --     file.open(path, ...)   returns NIL                  posts 2224 'USB flash device not present'
 --     file.usbdriveexists()  returns 0                    posts nothing
 --
+-- AND NO FILE CALL RAISES AT ALL, measured separately on the same firmware with the key PRESENT --
+-- which is why nothing in this module guards one any more:
+--
+--     file.write to a CLOSED handle       returns, posts 2200
+--     file.flush  on a closed handle      returns, posts 2211
+--     file.close  on a closed handle      returns, posts 2202
+--     file.read   on a closed handle      returns NIL, posts 2201
+--     file.read   on a WRITE handle       returns NIL, posts 2201
+--     file.open   on a bad path           returns NIL, posts 2216
+--     fs.is_file  bad path or garbage     returns false, posts nothing
+--     file.write(fh, {})  -- a TABLE      returns, posts 1138 'parameter 2, expected type string'
+--
+-- THE TABLE ROW IS THE STRONGEST OF THEM: even a Lua ARGUMENT-TYPE error becomes a posted event
+-- rather than a raise. Across every shape measured -- a dead handle, a wrong mode, a bad path, a
+-- wrong argument type -- a pcall round a file call returned TRUE, so any verdict taken from one is a
+-- CONSTANT, and presence is the only file failure this application can observe. That is what keyok()
+-- is for.
+--
+-- NOT PROVED UNIVERSAL, AND THE DIFFERENCE MATTERS. These are argument shapes on a HEALTHY key; a
+-- key that is PRESENT AND REFUSING -- full, or write-protected -- has still never been exercised.
+-- docs/vendor/04 keeps that open deliberately and docs/vendor/repro-04b-full-key.tsp would settle
+-- it. Treat "no file call raises" as the measured rule it is, not a theorem.
+--
 -- Line one is the bug: ulog.line's failure branch is reached only by a pcall returning false, so it
 -- never ran, and every logged line posted a 2200 modal box at the operator. One Mode press does it.
 --
@@ -256,12 +279,12 @@ function ulog.rootlists(name)
   if name == nil or name == '' then return nil end
   local fh = file.open('/usb1', file.MODE_READ)
   if fh == nil then return nil end
-  -- THE READ IS GUARDED SO THE CLOSE CANNOT BE SKIPPED. file.read is the one call here whose
-  -- behaviour on a key pulled mid-operation is NOT in the measured table above, and a firmware
-  -- handle is not reclaimed until a power cycle.
-  local rok, raw = pcall(file.read, fh, file.READ_ALL)
+  -- file.read IS NOW MEASURED, and it behaves like the rest: on a closed handle, and on a handle
+  -- opened for WRITE, it returns nil and posts 2201 rather than raising. So nil is the whole verdict
+  -- and the close was never at risk.
+  local raw = file.read(fh, file.READ_ALL)
   file.close(fh)
-  if not rok or raw == nil then return nil end
+  if raw == nil then return nil end
   -- `1` for a plain find, no patterns. Nothing else is searched: the tilde alias would match any long name
   -- beginning the same way, and a partial UTF-16 run would match a different directory entirely.
   if string.find(raw, string.upper(name), 1, 1) ~= nil then return true end
@@ -422,7 +445,8 @@ end
 --
 -- NON-RAISING FOR EVERY MEASURED FAILURE, which is what lets a logging call site read as a
 -- statement: no key, a pulled key and a missing directory are all gates that return false. A key
--- that is PRESENT AND REFUSING is the unmeasured case and can raise out of file.write.
+-- that is PRESENT AND REFUSING remains unmeasured -- see the table above -- but nothing measured
+-- raises, so nothing here catches.
 function ulog.line(s)
   if not ulog.enabled then return false end
   -- OFF IS RECOVERABLE. An app started with no key, or one whose key was pulled, has no open handle
@@ -510,35 +534,27 @@ end
 -- fs.is_file() answers the same question silently. Verified on firmware 1.7.17a: eventlog.getcount()
 -- stays 0 across both an existing and a missing path.
 --
--- Returns true or false, never nil. A PROBE THAT RAISES answers TAKEN: losing a name beats
--- truncating a real file. A nil is NOT taken -- fs.is_file returning nil falls through to the open
--- probe, and file.open returning nil (no key, or no such file) is the normal FREE answer, with the
--- failure surfacing at the write where it belongs.
+-- Returns true or false, never nil. There is no raising case to defend against: no file or fs call
+-- transfers control (see the table above), so the only answers are the ones the calls give. A nil
+-- from fs.is_file falls through to the open probe -- unreachable on hardware, where it answers a
+-- boolean -- and file.open returning nil (no key, or no such file) is the normal FREE answer, with
+-- the failure surfacing at the write where it belongs.
 function ulog.exists(path)
   if path == nil then return false end
-  local ok, got = pcall(fs.is_file, path)
-  if not ok then got = nil end
-  if not ok or got == nil then
-    -- No fs.is_file. Fall back to the open probe, which is what this replaced -- one 2205 is
-    -- better than either truncating a file or refusing to save.
-    local taken = false
-    local pok = pcall(function()
-      local fh = file.open(path, file.MODE_READ)
-      if fh ~= nil then
-        taken = true
-        file.close(fh)
-      end
-    end)
-    -- A PROBE THAT RAISED KNOWS NOTHING, AND MUST SAY TAKEN. This block contradicted the promise made
-    -- at the top of this very function -- "a nil is treated as TAKEN, losing a name is better than
-    -- truncating a real file" -- because `taken` was initialised false and the pcall's verdict was
-    -- discarded. So a file.open that RAISED reported the candidate as FREE, and sdec.save() opens the
-    -- name it is given with MODE_WRITE: the operator's existing capture, truncated to nothing.
-    --
-    -- Not the no-key case, which is why this survived: with no key file.open RETURNS NIL rather than
-    -- raising, so "free" is still the answer there and the failure surfaces later at the write, where it
-    -- belongs. This is the case where the filesystem itself refuses the question.
-    if not pok then return true end
+  -- BARE. Measured: fs.is_file answers false for a bad path and for garbage, and posts nothing --
+  -- it does not raise, so there is no verdict to catch. A nil answer is what still routes to the
+  -- probe below.
+  local got = fs.is_file(path)
+  if got == nil then
+    -- Fall back to the open probe, which is what this replaced -- one 2205 is better than either
+    -- truncating a file or refusing to save.
+    local fh = file.open(path, file.MODE_READ)
+    local taken = fh ~= nil
+    if fh ~= nil then file.close(fh) end
+    -- NO-KEY AND NO-SUCH-FILE ARE THE SAME ANSWER HERE, and that is correct: file.open returns nil
+    -- for both, so "free" is the answer, and the failure surfaces later at the write where it
+    -- belongs. There is no third case to defend against -- file.open cannot raise, measured, so the
+    -- probe's answer is exactly whether it handed back a handle.
     return taken
   end
   return got == true
@@ -630,11 +646,13 @@ function ulog.next_free(prefix, ext, limit)
       wh = ulog.open_write(idxpath, file.MODE_WRITE)
       local wrote = false
       if wh ~= nil then
-        -- Guarded so the close is reached either way; the handle would otherwise be stranded until
-        -- a power cycle, and this path's whole job is to leave the key tidy.
-        wrote = pcall(file.write, wh, tostring(i) .. '\n')
+        -- THE VERDICT COMES FROM THE GATE, NOT FROM THE WRITE. pcall round this write returned true
+        -- however the write went, so `wrote` was a constant and the 'log index not saved' note below
+        -- could never appear. keyok() after the close can fire, which is the point of saying it.
+        file.write(wh, tostring(i) .. '\n')
         file.flush(wh)
         file.close(wh)
+        wrote = ulog.keyok()
       end
       if wrote then ulog.idx_why = nil
       else ulog.idx_why = 'log index not saved -- numbering restarts after a power cycle' end
@@ -671,26 +689,28 @@ function ulog.write_file(path, lines, n)
   local fh, why = ulog.open_write(path, file.MODE_WRITE)
   if fh == nil then return false, tostring(why) end
 
-  local gone, wfail = false, false
+  local gone = false
   local i
   for i = 1, n do
     -- BEFORE EACH WRITE: a write to a departed key posts 2200 and returns, so checking only after
     -- the loop catches the verdict and none of the boxes -- 24 modal dialogs for a report, 2048 for
     -- a 32 kB one. 237 us a row against a Save the operator is already waiting on.
     if not ulog.keyok() then gone = true; break end
-    -- GUARDED SO THE CLOSE BELOW CANNOT BE SKIPPED. A key that is PRESENT AND REFUSING -- full, or
-    -- write-protected -- is the unmeasured case, and the mock models it as a raise; a firmware
-    -- handle stranded by it needs a power cycle. One site covers the whole loop.
-    if not pcall(file.write, fh, tostring(lines[i]) .. '\r\n') then wfail = true; break end
+    -- BARE. A write cannot report its own failure on this firmware and cannot transfer control, so
+    -- there was no verdict to take: the keyok() above is the detector, per row, and the one below
+    -- catches a key lost after the last row.
+    file.write(fh, tostring(lines[i]) .. '\r\n')
   end
   file.flush(fh)
   file.close(fh)
-  -- keyok() AFTER THE LAST ROW is the only thing that catches a key lost at the end: write returns
-  -- normally and flush and close post nothing, so a zero-byte file reports success otherwise.
+  -- THE TRAILING keyok() IS THE VERDICT, and it catches a key lost at ANY point in the loop, not
+  -- just at the end -- `gone` only short-circuits the remaining writes. The per-row check above is
+  -- an event-storm suppressor, not the detector: without it a 32 kB report posts 2048 modal boxes
+  -- instead of one. Measured: dropping the trailing check fails six assertions, dropping the per-row
+  -- check fails exactly one -- 'it posts at most ONE event, not one per row'.
   if gone or not ulog.keyok() then
     return false, 'the USB key went away -- the file is empty or truncated'
   end
-  if wfail then return false, 'write failed part-way through -- the file is truncated' end
   return true
 end
 
