@@ -2,7 +2,7 @@
 
 A UART decoder that runs on a Keithley bench instrument. It digitizes the line with the
 instrument's own digitizer, automatically recovers the baud rate, frame format and idle polarity from the signal,
-and shows the bytes on the front panel as text or hex. No host, no logic analyser, no setting baud rates, stop bits, data bits, parity, etc - just one probe, and one button press. The signal must swing by at least 0.5V, lie between -10V and +10V, have no more than 15% noise, and under 10% clock jitter. Any baud rate will work - even non standard ones. Any DC offset is fine so long as these conditions are met. 
+and shows the bytes on the front panel as text or hex. No host computer, terminal, or logic analyzer needed, no setting baud rates, stop bits, data bits, parity, etc - just one probe, and one button press. The signal must swing by at least 0.5V, lie between -10V and +10V, have no more than 15% noise, and under 10% clock jitter. Any baud rate will work from 110 to 150,000 inclusive - even non standard ones. Any DC offset is fine so long as these conditions are met. 
 
 Ian Ameline · **version 1.39** · MIT licence (see [LICENSE](LICENSE))
 
@@ -19,8 +19,7 @@ re-detected each capture.*
 | [docs/BENCH.md](docs/BENCH.md) | the harness: the seeded sweep, the release gate stage by stage, reproducing a failure |
 
 Ships as `Serial_Decode.tspa`, installed from a USB key through the instrument's own **Manage Apps**
-screen. Written in TSP — Lua **5.0.2** embedded in the firmware, so the sources avoid `#`, `%`,
-`string.gmatch` and bitwise operators throughout.
+screen. Written in TSP — Lua **5.0.2** embedded in the firmware.
 
 ## Installing it
 
@@ -34,18 +33,7 @@ a FAT-formatted key. Leave the name as it is.
 
 > **Check the copy before you install it.** A truncated or corrupted archive does not fail politely —
 > it **bluescreens the instrument**, repeatably, and the crash says nothing about why. Observed on a
-> key whose filesystem had become inconsistent; recopying the identical file fixed it outright. One
-> command rules it out:
->
->     cmp Serial_Decode.tspa /Volumes/<key>/Serial_Decode.tspa && echo OK
->
-> If the key itself is suspect, `diskutil verifyVolume /Volumes/<key>` on a Mac, and reformat if it
-> reports anything.
->
-> **An installed app can also bluescreen with its source text byte-perfect** — reinstalling does not
-> reliably cure that, and a clean `tools/cmp_installed.py` result proves the text and nothing more.
-> The instance this app hit is fixed (it no longer captures at launch); see **Troubleshooting** in
-> the manual, which also records why making the app smaller is not the answer.
+> key whose filesystem had become inconsistent; recopying the identical file fixed it outright. 
 
 **2. Put the key in the front-panel USB port.**
 
