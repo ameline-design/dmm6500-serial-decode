@@ -133,9 +133,9 @@ three-bit runs, and best-fits three bit times. Framing settles that, further dow
 
 ## Baud rate
 
-The rate is `fs / T`, with `fs` measured rather than requested. `sig_snap` moves it to the nearest of
-25 standard rates when within 2 %, because real devices run at standard rates and that prior is
-worth keeping. Inside 1.25 % the snap is reported as firm; outside it the panel marks the rate
+The rate is `fs / T`, with `fs` measured. `sig_snap` moves it to the nearest of
+25 standard rates when within 2 %, because real devices run at standard rates. Inside 1.25 % 
+the snap is reported as firm; outside it the panel marks the rate
 approximate, since the measurement and the label then disagree by more than the fit's own accuracy. A
 rate close to no standard rate is reported as measured.
 
@@ -390,7 +390,7 @@ one the app takes. Measured on the instrument: that pass flipped to inverted, th
 every capture afterwards was confidently wrong at 227 frames and zero errors. It is the only one of
 the five fields the contest gets wrong.
 
-## When a given rate is wrong
+## When a forced rate is wrong
 
 A forced rate the device is not using is this decoder's one dangerous failure, and it is asymmetric.
 The stop bit is sampled 9.5 bit times after the start edge, so accumulated error must stay inside
@@ -439,7 +439,7 @@ absorbs slow drift better than any one window can, since N full drift cycles are
 true levels and a quarter of one is not. Chunked mode therefore measures the line *better* than frame
 mode, whose capture is one window.
 
-Decimation has one blind spot, and it is covered rather than accepted. A short message in a long
+Decimation has one blind spot. A short message in a long
 recording — exactly the traffic these modes exist for — can reduce to a handful of samples at the
 space level once the step is 140, or to none, so a decimated view aliases past the burst and reports
 a measurable line as idle. When it finds nothing the app falls back to eight contiguous probe
@@ -477,7 +477,7 @@ whose fit measured 100.05 samples and computed to 49.975 baud. The swing floor c
 
 ## What the app will not guess
 
-The app honours three settings when given and searches for none of them.
+The app honours three settings when given - it won't search for them.
 
 A **second stop bit** is indistinguishable from a bit time of idle, which the framer already
 tolerates, so searching for it could only tie. A 2-stop line decodes correctly and is reported as
@@ -486,9 +486,7 @@ tolerates, so searching for it could only tie. A 2-stop line decodes correctly a
 **Nine data bits** is not searched because biasing against a wide frame does not work: the bias
 scales the proportional term of the margin, which is zero exactly when the honest reading is damaged
 — and that is exactly when a laundering width can win. Measured on an 8N1 line with stop-bit damage,
-9N1 returned `nbad = 0` with 9 of 12 bytes wrong, every one 256 too large. The cost is real and is
-paid knowingly: a genuine nine-bit stream reads 8N1 with five errors until the operator forces the
-width.
+9N1 returned `nbad = 0` with 9 of 12 bytes wrong, every one 256 too large. 
 
 **Polarity** is always decided, never refused. Where the capture holds no idle the decision comes
 from the signalling standard rather than from the capture, and the app marks that prior weak and
