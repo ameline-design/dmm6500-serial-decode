@@ -273,9 +273,17 @@ def draw_panel(rows, screen, title, out, scale, mono_rows, fonts):
             label = parts[0] if parts else ''
             desc = parts[1] if len(parts) > 1 else ''
             val = parts[2] if len(parts) > 2 else ''
-            d.text((20 * S, y + 2 * S), label, font=fonts.b(15), fill=(232, 240, 255))
-            d.text((20 * S, y + 20 * S), desc, font=fonts.r(12), fill=(138, 153, 168))
-            d.rounded_rectangle([x, y, x + 480 * S, y + 38 * S], radius=4 * S,
+            # THE LABEL IS RIGHT-ALIGNED, ENDING AT THE BOX, and the box is 150 px -- both measured
+            # off docs/img/options.png. Drawn at a fixed left margin instead, a second COLUMN of
+            # fields renders both columns' labels on top of each other and its boxes off the right
+            # edge, so the mockup reported a two-column form as impossible when the panel does it.
+            # The 480 px box was the same lie in the other direction: see the OBJ_RECT note above,
+            # which already recorded that the instrument renders these at 150.
+            lw = d.textlength(label, font=fonts.b(15))
+            dw = d.textlength(desc, font=fonts.r(12))
+            d.text((x - lw - 8 * S, y + 2 * S), label, font=fonts.b(15), fill=(232, 240, 255))
+            d.text((x - dw - 8 * S, y + 20 * S), desc, font=fonts.r(12), fill=(138, 153, 168))
+            d.rounded_rectangle([x, y, x + 150 * S, y + 38 * S], radius=4 * S,
                                 fill=(14, 22, 32), outline=(74, 96, 118),
                                 width=max(1, S))
             d.text((x + 12 * S, y + 9 * S), val, font=fonts.r(16), fill=(0, 220, 255))

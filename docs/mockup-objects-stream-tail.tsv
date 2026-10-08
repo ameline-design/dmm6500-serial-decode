@@ -112,6 +112,7 @@ SERIAL DECODE - 240B FRAME	text	8	323	0	0	1	8421504	-1	0	1	enable	24800
 SERIAL DECODE - 240B FRAME	text	72	323	0	0	1	16777215	-1	0	1	enable	57 5E 65 6C 73 7A 22 29
 SERIAL DECODE - 240B FRAME	text	268	323	0	0	1	16777215	-1	0	1	enable	30 37 3E 45 4C 53 5A 61
 SERIAL DECODE - 240B FRAME	text	488	323	0	0	1	16777215	-1	0	1	enable	W^elsz")07>ELSZa
+SERIAL DECODE - 240B FRAME	timer	0	0	0	0	1	16777215	-1	0	1	enable	
 SERIAL DECODE - 240B FRAME	text	8	344	0	0	1	11579568	-1	0	1	enable	FRAME  32768 bytes  3 err  143 win  -> stream00.txt  [cap]
 SERIAL DECODE - 240B FRAME	text	478	344	0	0	1	11579568	-1	0	1	enable	log: NOT LOGGING
 SERIAL DECODE - 240B FRAME	text	675	344	0	0	1	11579568	-1	0	1	enable	
@@ -127,13 +128,13 @@ SERIAL DECODE - 240B FRAME	button	266	362	100	0	1	16777215	-1	0	1	enable	Mode
 SERIAL DECODE - 240B FRAME	button	390	362	112	0	1	16777215	-1	0	1	enable	NewLog
 SERIAL DECODE - 240B FRAME	button	526	362	112	0	1	16777215	-1	0	1	enable	Save
 SERIAL DECODE - 240B FRAME	button	662	362	112	0	1	16777215	-1	0	1	enable	Options
-SERIAL DECODE OPTIONS	editopt	270	6	0	0	1	16777215	-1	0	1	enable	Protocol	sets the wire parameters	UART
-SERIAL DECODE OPTIONS	editnum	270	56	0	0	1	16777215	-1	0	1	enable	Baud Rate	0 = auto-detect	0 Bd
-SERIAL DECODE OPTIONS	editopt	270	106	0	0	1	16777215	-1	0	1	enable	Data Bits	auto, or fix it	Auto (7/8)
-SERIAL DECODE OPTIONS	editopt	270	156	0	0	1	16777215	-1	0	1	enable	Parity	auto or fixed	Auto
-SERIAL DECODE OPTIONS	editopt	270	206	0	0	1	16777215	-1	0	1	enable	Polarity	idle level	Auto
-SERIAL DECODE OPTIONS	editopt	270	256	0	0	1	16777215	-1	0	1	enable	Trigger	capture start	Free run
-SERIAL DECODE OPTIONS	editopt	270	306	0	0	1	16777215	-1	0	1	enable	Rear BNC	trig in / flow-control out	Off
+SERIAL DECODE OPTIONS	editopt	185	8	0	0	1	16777215	-1	0	1	enable	Protocol	wire parameters	UART
+SERIAL DECODE OPTIONS	editnum	185	107	0	0	1	16777215	-1	0	1	enable	Baud Rate	0 = auto-detect	0 Bd
+SERIAL DECODE OPTIONS	editopt	185	206	0	0	1	16777215	-1	0	1	enable	Data Bits	auto, or fix it	Auto (7/8)
+SERIAL DECODE OPTIONS	editopt	185	305	0	0	1	16777215	-1	0	1	enable	Parity	auto or fixed	Auto
+SERIAL DECODE OPTIONS	editopt	552	8	0	0	1	16777215	-1	0	1	enable	Polarity	idle level	Auto
+SERIAL DECODE OPTIONS	editopt	552	107	0	0	1	16777215	-1	0	1	enable	Trigger	capture start	Free run
+SERIAL DECODE OPTIONS	editopt	552	206	0	0	1	16777215	-1	0	1	enable	Rear BNC	trig in / FC out	Off
 SERIAL DECODE OPTIONS	button	22	360	200	0	1	16777215	-1	0	1	enable	Auto Detect
 SERIAL DECODE OPTIONS	button	234	360	220	0	1	16777215	-1	0	1	enable	Lock Detected
 SERIAL DECODE OPTIONS	button	466	360	150	0	1	16777215	-1	0	1	enable	Apply

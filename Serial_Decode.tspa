@@ -3,7 +3,7 @@ loadscript Serial_Decode
 -- $Product: DMM6500, DAQ6510, DMM7510, SMU2461
 -- $Tag: Serial, UART, Decode, Digitize
 -- $Description: Decodes an asynchronous serial line with the instrument's own digitizer: recovers baud rate, frame format and bytes, shows them as text or hex, and saves bytes to USB key. Everything auto-detects; everything can be locked.
--- $Version: 1.39
+-- $Version: 1.40
 -- $Requires: 1.7.0
 -- $Author: Ian Ameline
 -- $License: MIT
@@ -3835,7 +3835,7 @@ sdec.ui_tick_s = sdec.ui_tick_s or 0.5
 
 -- Stop and start the tick around work that will hold the interpreter. -> true if it acted.
 --   [...]
--- free: navigating to Options or HOME stops the tick without this being called at all.
+-- no-op, and if it does not, they are the fix. Do not remove them on the strength of the row above.
 -- IDEMPOTENT AND GUARDED. Both are reached from teardown paths that can run twice and from inside
 -- pcall'd handlers, and a build whose timer create failed leaves ui_tick_obj nil.
 function sdec.ui_tick_off()
@@ -4050,11 +4050,14 @@ sdec.ui_page = sdec.ui_page or 0          -- 0-based page index
 sdec.ui_paged = sdec.ui_paged or false
 sdec.ui_status = sdec.ui_status or 'ready'
 sdec.ui_opt_y0 = 8
-sdec.ui_opt_dy = 54
+sdec.ui_opt_dy = 100
 sdec.ui_opt_edit_h  = 50
 sdec.ui_opt_edit_dy = 4
 sdec.ui_opt_btn_y   = 360
-sdec.ui_opt_x  = 270   -- >= 270 so edit labels stay on screen
+sdec.ui_opt_x  = 185   -- the label is RIGHT-ALIGNED and ends here, so this is its width
+sdec.ui_opt_y_adj = -20
+sdec.ui_opt_cols = 2
+sdec.ui_opt_x_c2 = 552
 sdec.ui_opt_px = 96
 
 sdec.ui_log_px = sdec.ui_trig_div - (sdec.ui_stat_div + 6)
@@ -5361,6 +5364,7 @@ function sdec.destroy_options()
     local scr = sdec.ui_scr
     if scr == nil then scr = display.SCREEN_HOME end
     pcall(display.changescreen, scr)
+    if sdec.ui_scr ~= nil then sdec.ui_tick_on() end
   end
   sdec.del_obj(sdec.opt_proto)
   sdec.del_obj(sdec.opt_baud)
@@ -5390,19 +5394,31 @@ function sdec.build_options()
   local nf = 6
   if pl.n >= 2 then nf = 7 end
   local eh, edy = sdec.ui_opt_edit_h, sdec.ui_opt_edit_dy
-  local maxdy = math.floor((sdec.ui_opt_btn_y - y0 - edy - eh) / (nf - 1))
+  local ncols = sdec.ui_opt_cols or 1
+  if ncols < 1 then ncols = 1 end
+  local nrows = math.ceil(nf / ncols)
+  local maxdy = math.floor((sdec.ui_opt_btn_y - y0 - edy - eh) / (nrows - 1))
   if dy > maxdy then dy = maxdy end
+  local used = (nrows - 1) * dy + eh + edy
+  local spare = sdec.ui_opt_btn_y - used - y0
+  if spare > 0 then y0 = y0 + math.floor(spare / 2) end
+  local adj = sdec.ui_opt_y_adj or 0
+  if y0 + adj >= 0 then y0 = y0 + adj end
   if dy < eh then
     dy = eh
-    y0 = sdec.ui_opt_btn_y - edy - eh - (nf - 1) * dy
+    y0 = sdec.ui_opt_btn_y - edy - eh - (nrows - 1) * dy
     if y0 < 0 then y0 = 0 end
   end
   sdec.ui_opt_dy_used, sdec.ui_opt_nf_used, sdec.ui_opt_y0_used = dy, nf, y0
   local row = 0
-  local function nexty()
-    local y = y0 + row * dy
+  local function nextpos()
+    local c = math.floor(row / nrows)
+    if c > ncols - 1 then c = ncols - 1 end
+    local fx = x
+    if c > 0 then fx = sdec.ui_opt_x_c2 end
+    local fy = y0 + (row - c * nrows) * dy
     row = row + 1
-    return y
+    return fx, fy
   end
 
   sdec.optscr = create(display.ROOT, display.OBJ_SCREEN, 'SERIAL DECODE OPTIONS')
@@ -5413,32 +5429,40 @@ function sdec.build_options()
   end
 
   if pl.n >= 3 then
-    sdec.opt_proto = create(sdec.optscr, display.OBJ_EDIT_OPTION, x, nexty(),
-                            'Protocol', 'sets the wire parameters',
+    local fx1, fy1 = nextpos()
+    sdec.opt_proto = create(sdec.optscr, display.OBJ_EDIT_OPTION, fx1, fy1,
+                            'Protocol', 'wire parameters',
                             pl[1], pl[2], pl[3])
   elseif pl.n == 2 then
-    sdec.opt_proto = create(sdec.optscr, display.OBJ_EDIT_OPTION, x, nexty(),
+    local fx2, fy2 = nextpos()
+    sdec.opt_proto = create(sdec.optscr, display.OBJ_EDIT_OPTION, fx2, fy2,
                             'Protocol', 'sets the wire parameters', pl[1], pl[2])
   end
-  sdec.opt_baud = create(sdec.optscr, display.OBJ_EDIT_NUMBER, x, nexty(),
+  local fx3, fy3 = nextpos()
+  sdec.opt_baud = create(sdec.optscr, display.OBJ_EDIT_NUMBER, fx3, fy3,
                          'Baud Rate', '0 = auto-detect',
                          display.NFORMAT_PREFIX, 0, 0, 1000000, 'Bd')
-  sdec.opt_bits = create(sdec.optscr, display.OBJ_EDIT_OPTION, x, nexty(),
+  local fx4, fy4 = nextpos()
+  sdec.opt_bits = create(sdec.optscr, display.OBJ_EDIT_OPTION, fx4, fy4,
                          'Data Bits', 'auto, or fix it',
                          'Auto (7/8)', 'Auto (any)', '5', '6', '7', '8', '9')
-  sdec.opt_par = create(sdec.optscr, display.OBJ_EDIT_OPTION, x, nexty(),
+  local fx5, fy5 = nextpos()
+  sdec.opt_par = create(sdec.optscr, display.OBJ_EDIT_OPTION, fx5, fy5,
                         'Parity', 'auto or fixed',
                         'Auto', 'None', 'Even', 'Odd')
-  sdec.opt_pol = create(sdec.optscr, display.OBJ_EDIT_OPTION, x, nexty(),
+  local fx6, fy6 = nextpos()
+  sdec.opt_pol = create(sdec.optscr, display.OBJ_EDIT_OPTION, fx6, fy6,
                         'Polarity', 'idle level',
                         'Auto', 'Idle high', 'Idle low')
-  sdec.opt_trig = create(sdec.optscr, display.OBJ_EDIT_OPTION, x, nexty(),
+  local fx7, fy7 = nextpos()
+  sdec.opt_trig = create(sdec.optscr, display.OBJ_EDIT_OPTION, fx7, fy7,
                          'Trigger', 'capture start',
                          sdec.ui_trigsrc[sdec.opt_trig_v[1]].name,
                          sdec.ui_trigsrc[sdec.opt_trig_v[2]].name,
                          sdec.ui_trigsrc[sdec.opt_trig_v[3]].name)
-  sdec.opt_ext = create(sdec.optscr, display.OBJ_EDIT_OPTION, x, nexty(),
-                        'Rear BNC', 'trig in / flow-control out',
+  local fx8, fy8 = nextpos()
+  sdec.opt_ext = create(sdec.optscr, display.OBJ_EDIT_OPTION, fx8, fy8,
+                        'Rear BNC', 'trig in / FC out',
                         'Off', 'Trig In', 'FC Out', 'In + FC Out')
 
   sdec.opt_btn = {}
@@ -7004,7 +7028,10 @@ function sdec.options()
     ulog.line('options: ' .. sdec.lasterr)
     return sdec.ui_refresh()
   end
-  return (pcall(display.changescreen, sdec.optscr))
+  sdec.ui_tick_off()
+  local ok = pcall(display.changescreen, sdec.optscr)
+  if not ok then sdec.ui_tick_on() end
+  return ok
 end
 
 -- Copy what the last capture DETECTED into the forced fields and re-seed the form. Does NOT
@@ -7061,6 +7088,7 @@ function sdec.options_apply()
                    tostring(readerr) .. ')'
     ulog.line(sdec.lasterr)
     pcall(display.changescreen, sdec.ui_scr)
+    sdec.ui_tick_on()
     sdec.ui_refresh()
     return false
   end
@@ -7101,6 +7129,7 @@ function sdec.options_apply()
             tostring(sdec.trigmode)))
 
   pcall(display.changescreen, sdec.ui_scr)
+  sdec.ui_tick_on()
   return sdec.capture()
 end
 
@@ -7109,7 +7138,9 @@ function sdec.options_cancel()
   sdec.options_restore()
   sdec.options_seed()
   sdec.ui_refresh()
-  return (pcall(display.changescreen, sdec.ui_scr))
+  local ok = pcall(display.changescreen, sdec.ui_scr)
+  sdec.ui_tick_on()
+  return ok
 end
 
 -- Lifecycle

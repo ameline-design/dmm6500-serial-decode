@@ -2989,7 +2989,26 @@ function sdec.options()
     ulog.line('options: ' .. sdec.lasterr)
     return sdec.ui_refresh()
   end
-  return (pcall(display.changescreen, sdec.optscr))
+  -- NOTHING PERIODIC MAY RUN WHILE THIS FORM IS UP, and the edit fields are the reason.
+  --
+  -- A field is an OBJ_EDIT_*, so a press on one has to open and hold a firmware MODAL EDITOR,
+  -- where a press on a button runs its handler and returns. The tick is dispatched LIKE A PRESS
+  -- (see ui_tick_off) and polls the USB key through log_live() -> keyok(), which is a filesystem
+  -- call whose latency is neither bounded nor ours. So twice a second the form competes with a
+  -- key read for the panel, and a field press that lands in one is dropped -- reported from the
+  -- bench as fields needing several presses over 5-10 s, intermittently, while the four buttons
+  -- stayed responsive.
+  --
+  -- NOTHING ON THIS FORM READS KEY PRESENCE. Save and NewLog are main-screen buttons and the log
+  -- cell is a main-screen object, so the poll cannot change anything that is on the glass here --
+  -- it is pure cost. ui_keypoll() runs again on the way out, and Capture asks for itself.
+  --
+  -- OFF BEFORE THE SWITCH, restored if the switch refuses, so no path leaves the tick off while
+  -- the main screen is in front. Both calls are idempotent and guarded.
+  sdec.ui_tick_off()
+  local ok = pcall(display.changescreen, sdec.optscr)
+  if not ok then sdec.ui_tick_on() end
+  return ok
 end
 
 -- Copy what the last capture DETECTED into the forced fields and re-seed the form. Does NOT
@@ -3104,6 +3123,10 @@ function sdec.options_apply()
                    tostring(readerr) .. ')'
     ulog.line(sdec.lasterr)
     pcall(display.changescreen, sdec.ui_scr)
+    -- The form suspended the tick on the way in, so every way out re-arms it. This refusal path
+    -- returns to the main screen like the others, and leaving it off would strand the key poll for
+    -- the rest of the session -- Save and NewLog would then never come back by themselves.
+    sdec.ui_tick_on()
     sdec.ui_refresh()
     return false
   end
@@ -3169,6 +3192,11 @@ function sdec.options_apply()
             tostring(sdec.trigmode)))
 
   pcall(display.changescreen, sdec.ui_scr)
+  -- Re-armed HERE rather than left to sdec.capture(), which turns the tick off and on around its
+  -- own work and would happen to leave it on. That is a side effect of another function, not a
+  -- statement that this screen is done with it: a capture that returns early, or one whose
+  -- off/on pairing changes, would take the key poll down with it for the session.
+  sdec.ui_tick_on()
   -- Apply means "use these now": capture rather than requiring a second press.
   return sdec.capture()
 end
@@ -3182,7 +3210,13 @@ function sdec.options_cancel()
   sdec.options_restore()
   sdec.options_seed()
   sdec.ui_refresh()
-  return (pcall(display.changescreen, sdec.ui_scr))
+  local ok = pcall(display.changescreen, sdec.ui_scr)
+  -- AFTER the switch, and unconditionally: the tick belongs to the main screen, so re-arming it
+  -- while this form is still in front would put the poll back under the fields it was suspended
+  -- for. Unconditional because a refused switch leaves the operator on a form whose Cancel has
+  -- already restored the settings -- the next Apply or Cancel is the way out, and both re-arm.
+  sdec.ui_tick_on()
+  return ok
 end
 
 -- ============================================================================

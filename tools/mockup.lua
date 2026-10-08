@@ -140,6 +140,53 @@ function file.write(h, s) LOGLINES = LOGLINES + 1 end
 function file.flush(h) end
 function file.close(h) end
 
+-- ---------- the event log, which hw_config asserts on every capture ----------
+-- WITHOUT THIS THE WHOLE GALLERY STOPS BUILDING, and it did. sdec.quiet_events() sets
+-- localnode.showevents = eventlog.SEV_ERROR BARE -- correctly, because both are always present on
+-- the instrument and no caller reads a verdict -- so a mock without the table raises
+-- 'attempt to index a nil value (global eventlog)' out of hw_config, through acquire, autoset and
+-- capture, and mockup.lua exits before it dumps a single screen. The .tsv files then keep whatever
+-- layout the last successful run produced, which is the worst failure available here: a gallery that
+-- looks current and describes the previous form.
+--
+-- SEV_ERROR IS THE ONLY FIELD THAT MATTERS, and the rest are here so that a path which counts or
+-- clears events does not become the next thing to raise. This is the same missing-table class as
+-- timer, fs and trigger.blender -- see mock-raises-where-firmware-posts -- except that here the mock
+-- did not raise where the firmware posts, it raised where the firmware simply works.
+--
+-- GUARDED, so that if gen_serial.lua ever supplies a richer one it wins rather than being replaced.
+eventlog = eventlog or {}
+eventlog.SEV_ERROR = eventlog.SEV_ERROR or 1
+eventlog.SEV_WARN  = eventlog.SEV_WARN  or 2
+eventlog.SEV_INFO  = eventlog.SEV_INFO  or 4
+eventlog.SEV_ALL   = eventlog.SEV_ALL   or 7
+if eventlog.getcount == nil then function eventlog.getcount() return 0 end end
+if eventlog.clear    == nil then function eventlog.clear() end end
+if eventlog.next     == nil then function eventlog.next() return nil end end
+
+-- localnode IS THE OTHER HALF OF THAT ONE LINE, and it was missing for the same reason. showevents is
+-- the attribute quiet_events writes; model and version are what the title row and the saved report
+-- quote, so a nil here would surface as a mockup captioned 'nil nil' rather than as a raise.
+localnode = localnode or {}
+localnode.showevents = localnode.showevents or 1
+localnode.model   = localnode.model   or 'DMM6500'
+localnode.version = localnode.version or '1.7.17a'
+
+-- THE TIMER, for the same reason and from the same change. strm_absorb_arm() calls
+-- timer.cleartime() unconditionally and says so in its own comment -- 'the timer is always present,
+-- so the arm is unconditional; a guard here would only have described the mock' -- which is right
+-- about the instrument and leaves this mock to supply one.
+--
+-- A CONTROLLED CLOCK, NOT os.clock(). The same decision tools/mock_display.lua made: cleartime sets
+-- the origin and gettime reads from it, so a mockup is not at the mercy of how loaded the host is.
+-- Here the value is never advanced, so gettime() reads 0 and the queued-press absorb window reads as
+-- just-ended -- which is the state a freshly finished recording is in, and is what the stream
+-- mockups want to show.
+timer = timer or {}
+local TCLOCK = 0
+if timer.cleartime == nil then function timer.cleartime() TCLOCK = 0 end end
+if timer.gettime   == nil then function timer.gettime() return TCLOCK end end
+
 -- ---------- waveform + instrument mocks, and the real modules ----------
 dofile('tools/gen_serial.lua')
 for _, m in ipairs({'tsp/usb_log.tsp', 'tsp/serial_ui.tsp', 'tsp/serial_app.tsp'}) do

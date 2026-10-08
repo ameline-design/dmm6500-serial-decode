@@ -1,6 +1,6 @@
 # Serial Decode — principles of operation
 
-**Ian Ameline** · version 1.39 · MIT licence
+**Ian Ameline** · version 1.40 · MIT licence
 
 How the app turns samples into bytes, and how it recovers the bit rate and the frame format from a
 line that declares neither. [MANUAL.md](MANUAL.md) covers using it. [REFERENCE.md](REFERENCE.md)

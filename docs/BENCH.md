@@ -1,6 +1,6 @@
 # The bench harness
 
-**Ian Ameline** · version 1.39 · MIT licence
+**Ian Ameline** · version 1.40 · MIT licence
 
 Three gates, each roughly ten times the cost of the one before it. Run them in order; a cheap failure
 stops an expensive one.

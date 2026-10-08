@@ -639,10 +639,21 @@ sdec.ui_tick_s = sdec.ui_tick_s or 0.5
 --     display.STATE_INVISIBLE        4     <- an invisible timer STILL FIRES
 --     handler set to ''              0
 --     handler restored               4
---     another screen in front        0     <- a timer only runs while its screen is the active one
+--     another screen in front        0     <- the firmware's own HOME screen, which is what was tested
 --
--- So the state call every other control on this panel uses does not work here, and the last line is
--- free: navigating to Options or HOME stops the tick without this being called at all.
+-- So the state call every other control on this panel uses does not work here: clearing the handler
+-- is the only off switch.
+--
+-- THE LAST ROW DOES NOT COVER THE OPTIONS FORM, and reading it as though it did cost bench time. It
+-- was taken with the firmware's HOME screen in front -- the app BACKGROUNDED -- and sdec.optscr is a
+-- sibling screen of our own with the app still foreground, which is a different case and was never
+-- measured. Observed on the panel with the form up: the edit fields need several presses over 5-10 s
+-- to open, intermittently, while the four buttons stay responsive -- which is what a 2 Hz poll
+-- competing with a modal editor looks like, and is not what a stopped timer looks like.
+--
+-- So sdec.options() now calls ui_tick_off() explicitly and every exit re-arms. That is correct
+-- whichever way the firmware behaves: if a sibling screen does stop the timer, these calls are a
+-- no-op, and if it does not, they are the fix. Do not remove them on the strength of the row above.
 --
 -- IDEMPOTENT AND GUARDED. Both are reached from teardown paths that can run twice and from inside
 -- pcall'd handlers, and a build whose timer create failed leaves ui_tick_obj nil.
@@ -1020,7 +1031,34 @@ sdec.ui_status = sdec.ui_status or 'ready'
 -- The remedy if a seventh field ever returns is to fold its control into another field as an extra
 -- option entry, which costs no vertical space at all -- the firmware allows ten options per field.
 sdec.ui_opt_y0 = 8
-sdec.ui_opt_dy = 54
+-- THE PITCH ASKS FOR EVERY PIXEL AVAILABLE, and the clamp in build_options() decides what that is.
+--
+-- WHY A GAP IS A TOUCH TARGET AND NOT DECORATION. An edit box is ui_opt_edit_h = 50 px tall and the
+-- pitch is the distance between consecutive boxes, so the gap is dy - 50. At the shipped 54 that was
+-- FOUR pixels, and a 7-field build clamps to 50 and gets NONE -- the boxes then share an edge, where
+-- which object receives a touch is the firmware's hit-test order rather than the operator's aim.
+--
+-- Reported from the bench: the fields need several presses over 5-10 s to open, intermittently,
+-- while the four buttons -- a row with nothing above or below them -- stay responsive, and the LAST
+-- field, the only one with no neighbour beneath it, is responsive too. That is the signature of an
+-- ambiguous boundary, not of a busy interpreter.
+--
+-- 100 IS A REQUEST, NOT A LAYOUT, and the clamp in build_options() decides what it gets. The second
+-- column is what makes a number this large affordable: six fields are THREE rows, so the span is cut
+-- by two gaps rather than five.
+--
+--     6 fields, 2 cols -> 3 rows, pitch 100, gap 50 px
+--     7 fields, 2 cols -> 4 rows, clamped to 99, gap 49 px
+--
+-- against the 4 px a single column of six had and the 0 px a single column of seven had. A 50 px gap
+-- between 50 px boxes means half the form is dead space, which is the point: a touch has to be able
+-- to miss by 20 px and still land in the field the operator aimed at.
+--
+-- THE CEILING IS THE BUTTON ROW, so raising this further buys nothing -- the clamp already hands
+-- over every pixel between y0 and the buttons. Moving the BUTTONS down is what it would cost, and
+-- that comes out of the bottom margin: a button is 60 px tall against a 431 px content area, so 366
+-- already leaves 5 px and reads as clipped. See ui_opt_btn_y.
+sdec.ui_opt_dy = 100
 -- MEASURED, and the offset of the box inside the object. Both are what test_serial checks the last
 -- field against; the mock carries the same height so an overflow fails offline.
 sdec.ui_opt_edit_h  = 50
@@ -1031,7 +1069,22 @@ sdec.ui_opt_edit_dy = 4
 -- as clipped. 360 gives 11 px, matching the main screen's row, and still leaves 29 px under the last
 -- field. build_options() takes the row's y FROM HERE rather than repeating the number.
 sdec.ui_opt_btn_y   = 360
-sdec.ui_opt_x  = 270   -- >= 270 so edit labels stay on screen
+sdec.ui_opt_x  = 185   -- the label is RIGHT-ALIGNED and ends here, so this is its width
+-- TWO COLUMNS. Six fields become three and three, which is what buys the vertical gap: three rows
+-- in the space six used to share, so the pitch clears the 50 px box with room to spare instead of
+-- the 4 px it had.
+--
+-- THE SECOND COLUMN'S x IS THE ONE NUMBER TO CHECK ON THE GLASS. display.create takes NO width for
+-- an OBJ_EDIT_* -- confirmed against the display reference, where the signature is
+-- (parent, kind, x, y, label, help) -- so the firmware sizes the widget itself and we place only
+-- the origin. The reference's own example puts an OBJ_EDIT_NUMBER at x = 400 and an OBJ_EDIT_CHECK
+-- at x = 200 on the same row, so the widget is narrower than half the screen and two columns are
+-- possible; what it is NOT is measured here. 670 mirrors column one's 270 about the midpoint
+-- (270 + 400), keeping both label runs the same width.
+-- HOW FAR THE CENTRED BLOCK IS NUDGED, negative being up. See the application site.
+sdec.ui_opt_y_adj = -20
+sdec.ui_opt_cols = 2
+sdec.ui_opt_x_c2 = 552
 -- HOW WIDE AN OPTION-FIELD ENTRY MAY BE, in px. Past this the firmware FADES the tail out
 -- rather than clipping, so an over-long entry is unreadable AND can be mistaken for a shorter
 -- entry in the same field ('Trig In+FC Out' draws as 'Trig In+FC', beside a real 'Trig In').
@@ -3283,6 +3336,11 @@ function sdec.destroy_options()
     local scr = sdec.ui_scr
     if scr == nil then scr = display.SCREEN_HOME end
     pcall(display.changescreen, scr)
+    -- sdec.options() suspends the tick while the form is up, so tearing the form down is one of
+    -- the ways out and has to re-arm it. Only when a main screen is what we switched BACK to: on
+    -- the SCREEN_HOME path ui_scr is nil, there is no timer left to arm, and ui_tick_on() would be
+    -- a no-op anyway -- but saying so here keeps the pairing readable.
+    if sdec.ui_scr ~= nil then sdec.ui_tick_on() end
   end
   sdec.del_obj(sdec.opt_proto)
   sdec.del_obj(sdec.opt_baud)
@@ -3325,8 +3383,30 @@ function sdec.build_options()
   -- which butts the boxes together; the remedy is still to fold a control into another field as an
   -- extra option entry, which costs no vertical space at all.
   local eh, edy = sdec.ui_opt_edit_h, sdec.ui_opt_edit_dy
-  local maxdy = math.floor((sdec.ui_opt_btn_y - y0 - edy - eh) / (nf - 1))
+  -- ROWS, NOT FIELDS, is what the pitch has to clear now. Six fields in two columns is three rows,
+  -- so the available span is divided by two gaps instead of five -- which is the whole point of the
+  -- second column. A seven-field build is four and three.
+  local ncols = sdec.ui_opt_cols or 1
+  if ncols < 1 then ncols = 1 end
+  local nrows = math.ceil(nf / ncols)
+  local maxdy = math.floor((sdec.ui_opt_btn_y - y0 - edy - eh) / (nrows - 1))
   if dy > maxdy then dy = maxdy end
+  -- CENTRED, because three rows at a sane pitch no longer fill the form and a block pinned to the
+  -- top leaves all its air in one band under the last field. Only ever moves the block DOWN from
+  -- y0, and only by what is genuinely spare.
+  local used = (nrows - 1) * dy + eh + edy
+  local spare = sdec.ui_opt_btn_y - used - y0
+  if spare > 0 then y0 = y0 + math.floor(spare / 2) end
+  -- THEN NUDGED, and this is a SEPARATE number from y0 on purpose. Adjusting ui_opt_y0 instead does
+  -- not do what it reads as: the centring above divides the leftover space, so it gives back half of
+  -- whatever is taken away and a 10 px move has to be asked for as 20. Chosen on the glass -- the
+  -- centred block sits slightly low against the title bar, because the buttons below it are visually
+  -- heavier than the chrome above.
+  --
+  -- NOT APPLIED WHEN IT WOULD PUSH THE BLOCK OFF THE TOP, which is the seven-field case: four rows
+  -- at the clamped pitch already fill the form, spare is 1 px, and the offset would ask for y0 = -12.
+  local adj = sdec.ui_opt_y_adj or 0
+  if y0 + adj >= 0 then y0 = y0 + adj end
   -- A PITCH UNDER THE BOX HEIGHT OVERLAPS THE BOXES, which is worse than either thing it was
   -- avoiding. Seven fields at y0 = 8 need a pitch of 49 to clear the button row and the box is 50, so
   -- the clamp above alone would have drawn them 1 px on top of each other. When that happens the
@@ -3334,7 +3414,7 @@ function sdec.build_options()
   -- box just above the buttons -- 6 for seven fields, which is 2 px of the 8 given back.
   if dy < eh then
     dy = eh
-    y0 = sdec.ui_opt_btn_y - edy - eh - (nf - 1) * dy
+    y0 = sdec.ui_opt_btn_y - edy - eh - (nrows - 1) * dy
     if y0 < 0 then y0 = 0 end
   end
   -- PUBLISHED, because ui_opt_dy is only the preference and a check that reads IT is checking the
@@ -3345,11 +3425,17 @@ function sdec.build_options()
   -- only UART present there is nothing to choose between, and display.OBJ_EDIT_OPTION
   -- REFUSES fewer than two options ("OBJ_EDIT_OPTION needs at least two options"), so a
   -- one-entry field does not merely look odd, it FAILS THE BUILD.
+  -- TWO COLUMNS, FILLED COLUMN-MAJOR, so a six-field build reads as three and three rather than as
+  -- alternating sides. The allocator hands out (x, y) and the fields take it in creation order.
   local row = 0
-  local function nexty()
-    local y = y0 + row * dy
+  local function nextpos()
+    local c = math.floor(row / nrows)
+    if c > ncols - 1 then c = ncols - 1 end
+    local fx = x
+    if c > 0 then fx = sdec.ui_opt_x_c2 end
+    local fy = y0 + (row - c * nrows) * dy
     row = row + 1
-    return y
+    return fx, fy
   end
 
   sdec.optscr = create(display.ROOT, display.OBJ_SCREEN, 'SERIAL DECODE OPTIONS')
@@ -3378,11 +3464,13 @@ function sdec.build_options()
   --
   -- pl is computed at the top of this function, because the field COUNT sets the pitch.
   if pl.n >= 3 then
-    sdec.opt_proto = create(sdec.optscr, display.OBJ_EDIT_OPTION, x, nexty(),
-                            'Protocol', 'sets the wire parameters',
+    local fx1, fy1 = nextpos()
+    sdec.opt_proto = create(sdec.optscr, display.OBJ_EDIT_OPTION, fx1, fy1,
+                            'Protocol', 'wire parameters',
                             pl[1], pl[2], pl[3])
   elseif pl.n == 2 then
-    sdec.opt_proto = create(sdec.optscr, display.OBJ_EDIT_OPTION, x, nexty(),
+    local fx2, fy2 = nextpos()
+    sdec.opt_proto = create(sdec.optscr, display.OBJ_EDIT_OPTION, fx2, fy2,
                             'Protocol', 'sets the wire parameters', pl[1], pl[2])
   end
   -- pl.n == 1 creates NOTHING, and sdec.opt_proto stays nil. Every reader of it already has
@@ -3390,7 +3478,8 @@ function sdec.build_options()
   -- normal -- so no caller changes. options_seed() and options_apply() are guarded below.
   -- Baud 0 means auto, hence a minimum of 0 rather than 110: a spinner that cannot
   -- express "work it out yourself" would force a guess on every capture.
-  sdec.opt_baud = create(sdec.optscr, display.OBJ_EDIT_NUMBER, x, nexty(),
+  local fx3, fy3 = nextpos()
+  sdec.opt_baud = create(sdec.optscr, display.OBJ_EDIT_NUMBER, fx3, fy3,
                          'Baud Rate', '0 = auto-detect',
                          display.NFORMAT_PREFIX, 0, 0, 1000000, 'Bd')
   -- 'Auto (7/8)' is the default and deliberately the first entry. 5, 6 and 9 data bits are
@@ -3398,10 +3487,12 @@ function sdec.build_options()
   -- candidate format is another chance for a damaged capture to be won by the wrong one --
   -- and the rare widths lose silently, absorbing a stop bit into the data. Forcing a
   -- specific width bypasses the search entirely, so 5, 6 and 9 remain directly selectable.
-  sdec.opt_bits = create(sdec.optscr, display.OBJ_EDIT_OPTION, x, nexty(),
+  local fx4, fy4 = nextpos()
+  sdec.opt_bits = create(sdec.optscr, display.OBJ_EDIT_OPTION, fx4, fy4,
                          'Data Bits', 'auto, or fix it',
                          'Auto (7/8)', 'Auto (any)', '5', '6', '7', '8', '9')
-  sdec.opt_par = create(sdec.optscr, display.OBJ_EDIT_OPTION, x, nexty(),
+  local fx5, fy5 = nextpos()
+  sdec.opt_par = create(sdec.optscr, display.OBJ_EDIT_OPTION, fx5, fy5,
                         'Parity', 'auto or fixed',
                         'Auto', 'None', 'Even', 'Odd')
   -- ELEVEN CHARACTERS IS THE FIELD'S LIMIT. An OBJ_EDIT_OPTION value longer than that is not
@@ -3412,7 +3503,8 @@ function sdec.build_options()
   --
   -- These strings are DISPLAY ONLY. Every field maps its selection by INDEX (sdec.opt_pick and
   -- the li/ti/ri tests in options_apply), so shortening a label cannot change what it means.
-  sdec.opt_pol = create(sdec.optscr, display.OBJ_EDIT_OPTION, x, nexty(),
+  local fx6, fy6 = nextpos()
+  sdec.opt_pol = create(sdec.optscr, display.OBJ_EDIT_OPTION, fx6, fy6,
                         'Polarity', 'idle level',
                         'Auto', 'Idle high', 'Idle low')
   -- NO RANGE SELECTOR. The 10 V range is the only one offered and sdec.range is fixed
@@ -3429,7 +3521,8 @@ function sdec.build_options()
   -- ENTRIES COME FROM sdec.ui_trigsrc, not from literals, because the note row's left cell shows this
   -- field's value and the two must be the same words. Spelled out per index rather than unpack()'d:
   -- Lua 5.0.2 has a global unpack() and the offline harness's modern Lua does not.
-  sdec.opt_trig = create(sdec.optscr, display.OBJ_EDIT_OPTION, x, nexty(),
+  local fx7, fy7 = nextpos()
+  sdec.opt_trig = create(sdec.optscr, display.OBJ_EDIT_OPTION, fx7, fy7,
                          'Trigger', 'capture start',
                          sdec.ui_trigsrc[sdec.opt_trig_v[1]].name,
                          sdec.ui_trigsrc[sdec.opt_trig_v[2]].name,
@@ -3448,8 +3541,9 @@ function sdec.build_options()
   -- decoder and it must work with one probe on one line and nothing else attached. A default of
   -- anything else would make an unconnected rear connector part of the critical path -- and for
   -- FC Out it would also mean pulsing a BNC that may be wired to other bench equipment.
-  sdec.opt_ext = create(sdec.optscr, display.OBJ_EDIT_OPTION, x, nexty(),
-                        'Rear BNC', 'trig in / flow-control out',
+  local fx8, fy8 = nextpos()
+  sdec.opt_ext = create(sdec.optscr, display.OBJ_EDIT_OPTION, fx8, fy8,
+                        'Rear BNC', 'trig in / FC out',
                         'Off', 'Trig In', 'FC Out', 'In + FC Out')
 
   -- Stored, not left in locals: destroy_options() has to be able to delete them.
