@@ -1,11 +1,12 @@
 # docs/ — what to read, and what is not ours to publish
 
-Four documents ship with the app, each with a tracked PDF beside it. The repository's
+Five documents ship with the app, each with a tracked PDF beside it. The repository's
 [README](../README.md) is the front page; these are the detail.
 
 | | |
 |---|---|
 | [MANUAL.md](MANUAL.md) · [PDF](MANUAL.pdf) | using it: hooking up, the screen, the buttons, what it copes with, where it fails |
+| [PRINCIPLES.md](PRINCIPLES.md) · [PDF](PRINCIPLES.pdf) | how it works: the signal chain, and how the bit rate, format and polarity are recovered from a line that declares none of them |
 | [REFERENCE.md](REFERENCE.md) · [PDF](REFERENCE.pdf) | every measured number, and the firmware limit behind it |
 | [BENCH.md](BENCH.md) · [PDF](BENCH.pdf) | the harness: the seeded sweep, the release gate stage by stage, the soak results |
 | [BETA.md](BETA.md) · [PDF](BETA.pdf) | hand this to anyone testing on their own bench — the four behaviours that **look** like defects and are not |
