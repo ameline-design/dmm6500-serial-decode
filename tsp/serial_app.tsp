@@ -1072,10 +1072,11 @@ function sdec.stream_arm(nsmp)
   -- the header above names sdec.dig.count as an IPC write to the second processor.
   if sdec.dig == nil then return false end
   if not pcall(function() sdec.dig.count = 1 end) then return false end
-  local ok = pcall(function()
-    trigger.model.load('SimpleLoop', nsmp, 0, buf)
-    trigger.model.initiate()
-  end)
+  -- TWO SITES RATHER THAN ONE CLOSURE, and the ordering is preserved by the `and`: a load that
+  -- raised must not be followed by an initiate, exactly as the closure's fall-through guaranteed.
+  -- Costs one site against the 132 ceiling and saves OP_CLOSURE's allocation on every capture.
+  local ok = pcall(trigger.model.load, 'SimpleLoop', nsmp, 0, buf)
+  if ok then ok = pcall(trigger.model.initiate) end
   -- The pulse goes AFTER the model is armed, never before: a SimpleLoop starts filling
   -- immediately rather than waiting for an edge, so a credit sent before initiate() would have
   -- the device transmitting into a buffer that does not exist yet. One credit covers the whole

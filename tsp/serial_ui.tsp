@@ -3276,10 +3276,13 @@ end
 function sdec.destroy_options()
   if sdec.optscr ~= nil then
     -- Switch away before deleting, or the firmware is left showing a deleted screen.
-    pcall(function()
-      if sdec.ui_scr ~= nil then display.changescreen(sdec.ui_scr)
-      else display.changescreen(display.SCREEN_HOME) end
-    end)
+    --
+    -- THE BRANCH IS PURE VALUE SELECTION, so it belongs OUTSIDE the guard: it picks which screen and
+    -- touches no firmware, which leaves one call for the direct form to take. A closure here was
+    -- paying OP_CLOSURE's allocation to wrap an `if`.
+    local scr = sdec.ui_scr
+    if scr == nil then scr = display.SCREEN_HOME end
+    pcall(display.changescreen, scr)
   end
   sdec.del_obj(sdec.opt_proto)
   sdec.del_obj(sdec.opt_baud)

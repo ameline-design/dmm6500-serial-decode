@@ -5365,10 +5365,9 @@ end
 -- Delete every options-screen object and nil its handle.
 function sdec.destroy_options()
   if sdec.optscr ~= nil then
-    pcall(function()
-      if sdec.ui_scr ~= nil then display.changescreen(sdec.ui_scr)
-      else display.changescreen(display.SCREEN_HOME) end
-    end)
+    local scr = sdec.ui_scr
+    if scr == nil then scr = display.SCREEN_HOME end
+    pcall(display.changescreen, scr)
   end
   sdec.del_obj(sdec.opt_proto)
   sdec.del_obj(sdec.opt_baud)
@@ -5973,10 +5972,8 @@ function sdec.stream_arm(nsmp)
   sdec.acq_fillmode(buf)
   if sdec.dig == nil then return false end
   if not pcall(function() sdec.dig.count = 1 end) then return false end
-  local ok = pcall(function()
-    trigger.model.load('SimpleLoop', nsmp, 0, buf)
-    trigger.model.initiate()
-  end)
+  local ok = pcall(trigger.model.load, 'SimpleLoop', nsmp, 0, buf)
+  if ok then ok = pcall(trigger.model.initiate) end
   if ok and sdec.fc_out then
     sdec.fc_credit()
   end
