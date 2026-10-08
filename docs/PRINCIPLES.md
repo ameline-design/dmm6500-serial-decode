@@ -5,8 +5,6 @@
 How the app turns samples into bytes, and how it recovers the bit rate and the frame format from a
 line that declares neither. [MANUAL.md](MANUAL.md) covers using it. [REFERENCE.md](REFERENCE.md)
 holds the bench measurements — the tolerance envelope, the verified rates, the endurance figures.
-Several constants quoted here are measured only in the source comment that declares them, and that
-comment is the citation.
 
 ## The problem
 
@@ -20,17 +18,16 @@ search that the data itself arbitrates.
 
 ## The pipeline
 
-    samples -> levels -> threshold -> edges -> pulse widths -> bit time -> frames -> bytes
+  1 samples -> 2 levels -> 3 threshold -> 4 edges -> 5 pulse widths -> 6 bit time -> 7 frames -> 8 bytes
 
 Each stage reduces the data sharply. A 20 000-sample capture becomes a few hundred edges. The framer
 then reads ten to twenty computed positions per byte and never scans the samples again, so decode
-cost follows the byte count rather than the capture length. That is what pays for a brute-force
+cost follows the byte count rather than the capture length. That enables a brute-force
 format search.
 
 Stages one to five are protocol-independent and live in `tsp/serial_core.tsp`. Framing and the
 format search live in `tsp/uart_decode.tsp`. Recordings longer than memory are windowed by
-`tsp/chunk_decode.tsp`. Version 1 decodes UART only: the MIDI and LIN parsers are left out of the
-build, so those two views find no module and hide themselves.
+`tsp/chunk_decode.tsp`. 
 
 ## Acquisition
 
@@ -50,7 +47,7 @@ so identical looks at a slow line can all land in its idle stretch. The probe ne
 so where it starts does not matter; the real capture keeps the operator's trigger setting.
 
 The ladder is built from rates that divide 66 MHz exactly, because the sample clock is 66 MHz with an
-integer divider rounded up. Three exceptions are listed anyway — 160, 320 and 640 kS/s — because they
+integer divider rounded up. Three exceptions — 160, 320 and 640 kS/s — because they
 are what 19200, 38400 and 76800 need, and without them those three commonest bit-banged rates snap up
 a whole step and return 192, 192 and 153 bytes per capture instead of 240 each. They cost 8.32, 8.30
 and 8.26 delivered samples per bit, all above the 8 the selector asked for. The true rate is
@@ -60,11 +57,7 @@ rate the hardware cannot synthesise.
 ## Two logic levels, found by density
 
 The two logic levels are the two densest amplitudes in the capture. Working outward from density
-beats working inward from the extremes, and the difference is not academic. A percentile trim must
-guess the outlier count: eight 2-sample 25 V spikes on a 3.3 V line are 1.1 % of the samples against
-a 0.5 % budget, so the trimmed bound lands inside the spikes, the high mean is dragged to ~12 V, the
-threshold follows it, and the decoder fits the spike pairs and reports 47427 baud with six
-confident-looking bytes.
+beats working inward from the extremes. 
 
 Density needs no budget. A logic level holds hundreds of samples in one or two bins, while spikes of
 differing amplitude scatter one or two samples per bin. The minority logic level wins on count
@@ -134,7 +127,7 @@ Coverage is what rejects a seed at twice the true bit time. The real one-bit pul
 `maxmult * T` so they count as eligible, but they land half a period from any multiple and fail the
 tolerance.
 
-The result is a proposal, not an answer. Pulse statistics cannot always find the bit time, because
+The result is a proposal as opposed to an answer. Pulse statistics cannot always find the bit time, because
 the widths can share a common factor: all 0x00 at 8N1 with a two-bit gap holds only nine-bit and
 three-bit runs, and best-fits three bit times. Framing settles that, further down.
 
@@ -163,8 +156,8 @@ carry error: the run is measured on a jittered edge, and one bit time is estimat
 percentile of the pulse widths rather than their minimum, so that a single narrow glitch cannot
 halve it.
 
-The margin is earned. Measured at the bench on real 9600-baud ASCII, `run0` was 63 samples and `run1`
-42, so longest-run said the line idled low when it idles high. Both runs were data: 63 samples at
+The margin is supported by evidence - Measured at the bench on real 9600-baud ASCII, `run0` was 63 samples 
+and `run1` 42, so longest-run said the line idled low when it idles high. Both runs were data: 63 samples at
 10.42 samples per bit is the start bit of a space, 0x20, running together with five zero data bits.
 The window held no idle at all.
 
@@ -176,7 +169,7 @@ the inverted reading of ASCII frames just as cleanly as the correct one — ASCI
 always 0, which puts a rising edge exactly nine bit times after every start bit, a perfectly periodic
 fake start edge. Three consecutive captures of one 9600-baud line: the first decoded correctly, the
 second returned 18 frames at the wrong polarity with zero errors, and the third inherited it.
-Self-consistent, confident, every byte wrong. That failure is the one this decoder is built around.
+Self-consistent, confident, and every byte wrong. That failure is the one this decoder is built around.
 
 ## One frame
 
@@ -207,7 +200,7 @@ mark — a mark run that long cannot occur inside a frame. Failing that, on a ga
 capture that begins mid-byte, the framer takes the first candidate edge and accepts that the first
 frame may be misaligned.
 
-Three details keep that walk honest:
+Three details keep that walk functioning:
 
 * **A failed start bit is a false trigger, not a corrupt byte.** The edge was not a frame boundary —
   usually an impulse on an idle line, back at mark by mid-bit. Counting it as an errored byte would
@@ -475,9 +468,7 @@ and buys a window count known before the run starts.
 
 The ceiling is declared rather than emergent, and the gap between the two measurements is the reason.
 A clean *synthetic* waveform decodes well past it — the harness recovers 13 of 13 bytes at 2.5
-samples per bit — while a real line at the bench degrades around 250 kBd. That is exactly why the
-limit is written down: nothing real is as clean as the synthetic case, and a decode that works only
-on a noiseless line is a trap rather than a capability.
+samples per bit — while a real line at the bench degrades around 250 kBd. 
 
 The samples-per-bit floor and both baud limits carry 2 % slack. A genuine 250 kBd line measures
 3.99998 samples per bit, and refusing it for being two hundred-thousandths under its own floor would
@@ -503,7 +494,6 @@ width.
 from the signalling standard rather than from the capture, and the app marks that prior weak and
 raises the bar a rival must clear. Options → Invert overrides it.
 
-What unites the three is the design rule the whole decoder is built on, and it is not caution for its
-own sake: a refusal names the limit it applied and an assumption is stated on the panel, because the
-failure this code spends most of its length avoiding is not a refusal — it is a wrong answer that
-looks right.
+What unites the three is the design rule the decoder is built on: a refusal names the limit it 
+applied and an assumption is stated on the panel - the failure this code spends most of its 
+effort avoiding is not a refusal — it's a wrong answer that looks right.
