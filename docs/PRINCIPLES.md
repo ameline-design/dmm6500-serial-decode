@@ -307,14 +307,14 @@ alternating pattern is self-consistent. Six gates hold that off, in the order th
   odd divisors the odd-multiple test structurally cannot, since an odd divisor leaves every
   multiple's parity as it was. A ten-bit frame opens with a one-bit start bit, so the 5th-percentile
   width is 1.00 bit times at the truth and 5.00 at the 1/5 candidate that displaced it.
-* **A rescaling that frames nothing may not displace an admissible snapped fit.** A score at or below
-  zero means the errors outnumber the good frames threefold, so ranking two such candidates against
-  each other is ranking noise. Measured on a LIN bus with no break delimiter, where the merged break
-  and start bit destroy the framing: the true 19200 scores −20 and its own half scores −15, so the
-  half wins on −15 > −20 and is reported as a confidently snapped 38400.
-* **A fit that snapped to a standard rate and framed something is kept.** A rescaling displaces it
+* **A fit that snapped to a standard rate and scored above zero is kept.** A rescaling displaces it
   only when the fit is itself failing — at least a tenth of its frames bad — and then only by a
   factor of three. A clean fit is never displaced.
+* **Failing that, a rescaling that frames nothing may still not displace an admissible snapped fit.**
+  A score at or below zero means the errors outnumber the good frames threefold, so ranking two such
+  candidates against each other is ranking noise. Measured on a LIN bus with no break delimiter,
+  where the merged break and start bit destroy the framing: the true 19200 scores −20 and its own
+  half scores −15, so the half wins on −15 > −20 and is reported as a confidently snapped 38400.
 
 The two sub-multiple gates apply only to candidates, never to the fit, and only when the fit snapped.
 When it did not snap it is not a good fit, and a rescaling is the only route to the truth: repeated
