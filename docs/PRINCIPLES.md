@@ -190,7 +190,7 @@ wrong baud rate.
 
 ## Sequential framing
 
-Framing is sequential, not per-edge, and that is the crux. Inside a byte a 1-to-0 data transition is
+Framing is sequential, not per-edge. Inside a byte a 1-to-0 data transition is
 indistinguishable from a start bit; only knowing where the current frame ends separates them. So the
 framer consumes a frame, jumps past it, and then looks for the next start edge. Treating every
 falling edge as a start bit produces plausible garbage.
@@ -267,10 +267,7 @@ at 0.95 samples against a true 10.42 — a ratio of 11, which no ladder will eve
 median cannot be moved that way because spikes are a minority of the widths however many there are.
 
 Each candidate is probed with 3 widths × 3 parities × 2 polarities, over at most 4000 samples from
-the first edge. The cap is the search's cost knob and it is measured, not chosen: ranking is settled
-long before the last byte, and sweeping the cap against a 148-case hostile suite leaves
-discrimination intact to 1500 samples, costing one case at 1000 and producing a wrong answer at 500.
-The final decode still runs over everything; only the ranking is truncated.
+the first edge. The final decode still runs over everything; only the ranking is truncated.
 
 Rescaling is gated rather than unconditional, because halving a bit time roughly doubles the frames
 found, so every frame-counting score is biased toward a shorter period. On a repeated 0x55 the true
