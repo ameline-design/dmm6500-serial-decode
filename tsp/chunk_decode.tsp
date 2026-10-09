@@ -136,6 +136,18 @@ end
 -- decimated form (step > 1, the level pass) is unchanged.
 function sdec.ck_reader_buffer(buf, ntotal)
   local rdp = buf.readings
+  -- THE RING'S LOGICAL START, ONCE PER READER, so `from` means the same thing here as it does to the
+  -- caller: the n-th reading in TIME. A FILL_CONTINUOUS buffer that has wrapped holds its oldest
+  -- reading part-way up the array -- see sdec.acq_first, and the armed recording that comes back
+  -- rotated by however far its pre-trigger phase had got. Taken once rather than per index: it is a
+  -- proxy read, and a reader is created per poll on the streaming path.
+  --
+  -- A WRAP WHILE THE READER IS ALIVE WOULD MISALIGN IT, and that is bounded rather than handled: the
+  -- recording buffer is sized so the post-trigger burst fills it exactly once, so the ring moves only
+  -- during the WAIT -- where the poll loop's activity verdict is suppressed anyway, because a line
+  -- that has not started is quiet by design.
+  local off = 0
+  if sdec.acq_first ~= nil then off = sdec.acq_first(buf, ntotal) - 1 end
   return function(dst, from, count, step)
     if step == nil then step = 1 end
     local m = 0
@@ -144,7 +156,9 @@ function sdec.ck_reader_buffer(buf, ntotal)
       if last > ntotal then last = ntotal end
       local a
       for a = from, last do
-        local v = rdp[a]
+        local p = a + off
+        if p > ntotal then p = p - ntotal end
+        local v = rdp[p]
         if v == nil then break end
         m = m + 1
         dst[m] = v
@@ -155,7 +169,9 @@ function sdec.ck_reader_buffer(buf, ntotal)
     if last > ntotal then last = ntotal end
     local a
     for a = from, last, step do
-      local v = rdp[a]
+      local p = a + off
+      if p > ntotal then p = p - ntotal end
+      local v = rdp[p]
       if v == nil then break end
       m = m + 1
       dst[m] = v

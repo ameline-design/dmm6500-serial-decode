@@ -1001,11 +1001,48 @@ sdec.ui_paged = sdec.ui_paged or false
 sdec.ui_status = sdec.ui_status or 'ready'
 -- sdec.ui_last   -- last text written per handle, to skip redundant settext
 
+-- SAY THE PANEL IS WAITING ON PURPOSE, called by acq_triggered() immediately before it blocks on an
+-- arm-from-silence. Installed HERE rather than in the core because it is the only place that knows
+-- the panel exists: the offline harnesses install no armnote and so behave exactly as before.
+--
+-- WHY IT IS WORTH A HOOK AT ALL. The wait can be 120 s and nothing can interrupt it -- a touch press
+-- only queues -- so without this the operator sees a dead panel for two minutes and no reason for
+-- it, which is indistinguishable from the fault V1.40 was released to fix. One settext before the
+-- block is the whole remedy, and it is correct for the entire wait because nothing below repaints.
+--
+-- THE TRIGGER KEY IS NAMED because it genuinely works here, unlike the cancel latch: the key is a
+-- stimulus of the trigger MODEL, which runs in firmware, so it fires while Lua spins. That is the
+-- same mechanism 'front' mode has always used.
+function sdec.armnote(wait, level)
+  -- ui_log_t, THE RIGHT-HAND CELL, because that is already where this panel puts what the operator
+  -- can DO about a long operation -- it carries 'Capture or Mode = Stop' and 'no stop until it ends'
+  -- for exactly the same reason. The left cell is a composite of mode, page and byte range built by
+  -- ui_refresh_do(), and overwriting it here would drop all of that to say one thing.
+  --
+  -- sdec.ui_status IS DELIBERATELY NOT TOUCHED. It is a mode WORD -- 'ready', 'decoding...' -- read
+  -- into the left cell and asserted against elsewhere; borrowing it for a sentence would leak into
+  -- the next refresh and into the panel's own self-consistency checks.
+  --
+  -- ONE CELL, NOT ui_refresh(). A full refresh rebuilds every cell from state that is mid-capture
+  -- here, with clear_result() having already zeroed the decode, so it would paint blanks over the
+  -- previous result. One cell has news; one cell is written.
+  --
+  -- THROUGH ui_set, WHICH IS WHAT MAKES THE NOTE TEMPORARY. ui_set keeps the last text written per
+  -- handle and skips a rewrite that would not change anything; a bare settext leaves that cache
+  -- holding whatever the previous refresh put there. So the next refresh after a failed arm saw its
+  -- own stale entry, decided the cell already said the right thing, and the wait note STUCK on the
+  -- panel for the rest of the session -- the exact inverse of a note that exists to say "right now".
+  if sdec.ui_log_t == nil then return false end
+  return sdec.ui_set(sdec.ui_log_t,
+                     string.format('waiting %.0fs for %.2fV -- TRIGGER=go', wait or 0, level or 0))
+end
+
 -- ---------- options form handles ----------
 -- sdec.optscr, sdec.opt_proto, sdec.opt_baud, sdec.opt_bits, sdec.opt_par,
--- sdec.opt_pol, sdec.opt_trig, sdec.opt_ext -- declared, not assigned
+-- sdec.opt_pol, sdec.opt_trig, sdec.opt_ext, sdec.opt_armv, sdec.opt_armw
+-- -- declared, not assigned
 --
--- SEVEN FIELDS, AND THIS IS THE RISKIEST GEOMETRY IN THE APP.
+-- EIGHT FIELDS, NINE WITH A PROTOCOL MODULE, AND THIS IS THE RISKIEST GEOMETRY IN THE APP.
 --
 -- THE EDIT-OBJECT HEIGHT IS MEASURED, not guessed. Off docs/img/options.png: a field created at y
 -- draws its box from y + 4 to y + 53, so it is 50 px tall -- and the options button row starts at 367
@@ -3349,6 +3386,8 @@ function sdec.destroy_options()
   sdec.del_obj(sdec.opt_pol)
   sdec.del_obj(sdec.opt_trig)
   sdec.del_obj(sdec.opt_ext)
+  sdec.del_obj(sdec.opt_armv)
+  sdec.del_obj(sdec.opt_armw)
   if sdec.opt_btn ~= nil then
     local i
     for i = 1, table.getn(sdec.opt_btn) do sdec.del_obj(sdec.opt_btn[i]) end
@@ -3358,6 +3397,7 @@ function sdec.destroy_options()
   sdec.optscr, sdec.opt_proto, sdec.opt_baud = nil, nil, nil
   sdec.opt_bits, sdec.opt_par, sdec.opt_pol = nil, nil, nil
   sdec.opt_trig, sdec.opt_ext = nil, nil
+  sdec.opt_armv, sdec.opt_armw = nil, nil
   return true
 end
 
@@ -3368,20 +3408,29 @@ function sdec.build_options()
   local y0, dy, x = sdec.ui_opt_y0, sdec.ui_opt_dy, sdec.ui_opt_x
   -- HOW MANY FIELDS THERE WILL BE, decided BEFORE the pitch, because the pitch depends on it. The
   -- Protocol field exists only when a protocol module is loaded (OBJ_EDIT_OPTION refuses fewer than
-  -- two options, so a UART-only build must not create it at all), so a full build has seven fields
-  -- and V1 has six.
+  -- two options, so a UART-only build must not create it at all), so a full build has NINE fields
+  -- and a UART-only one has EIGHT.
   local pv, pl = sdec.opt_proto_list()
-  local nf = 6
-  if pl.n >= 2 then nf = 7 end
+  local nf = 8
+  if pl.n >= 2 then nf = 9 end
   -- THE PITCH IS CLAMPED TO WHAT ACTUALLY FITS. ui_opt_dy is a PREFERENCE -- how much air the boxes
   -- get -- and this is the ceiling: the last box must end above the button row.
   --
-  -- WITHOUT THIS, A SEVENTH FIELD OVERLAPS THE BUTTONS AND NOTHING SAYS SO. At the shipped pitch six
-  -- fields end at 331 and seven at 385, against a button row at 366 -- and arithmetic built on a 38 px
-  -- edit height, 12 px under the measured 50, reports 8 px of clearance over an overlap. Seven fields
-  -- fit only at 50,
-  -- which butts the boxes together; the remedy is still to fold a control into another field as an
-  -- extra option entry, which costs no vertical space at all.
+  -- WITHOUT THIS, A FIELD OVERLAPS THE BUTTONS AND NOTHING SAYS SO. In ONE column at the old pitch
+  -- six fields ended at 331 and seven at 385 against a button row at 366 -- and arithmetic built on a
+  -- 38 px edit height, 12 px under the measured 50, reported 8 px of clearance over an overlap.
+  --
+  -- THE SECOND COLUMN IS WHAT PAYS FOR THE EXTRA FIELDS, and the counts below are measured against
+  -- the clamp as written rather than asserted:
+  --
+  --     6 fields -> 3 rows, pitch 100, gap 50 px, 73 px clear of the buttons
+  --     8 fields -> 4 rows, pitch  99, gap 49 px,  5 px clear      (UART-only build)
+  --     9 fields -> 5 rows, pitch  74, gap 24 px,  5 px clear      (a protocol module loaded)
+  --
+  -- An EIGHTH field is free: seven already needs four rows and leaves the second column's last slot
+  -- empty, so it costs no vertical space at all. The ninth is what forces a fifth row, and 24 px is
+  -- still six times the 4 px gap that made the fields unresponsive in the first place. A TENTH field
+  -- also fits in five rows; an ELEVENTH would force six and is where this stops working.
   local eh, edy = sdec.ui_opt_edit_h, sdec.ui_opt_edit_dy
   -- ROWS, NOT FIELDS, is what the pitch has to clear now. Six fields in two columns is three rows,
   -- so the available span is divided by two gaps instead of five -- which is the whole point of the
@@ -3545,6 +3594,33 @@ function sdec.build_options()
   sdec.opt_ext = create(sdec.optscr, display.OBJ_EDIT_OPTION, fx8, fy8,
                         'Rear BNC', 'trig in / FC out',
                         'Off', 'Trig In', 'FC Out', 'In + FC Out')
+
+  -- THE TWO ARMED-FROM-SILENCE FIELDS. They govern one case and one only: Capture pressed on a line
+  -- that is not transmitting yet, where the probe finds no transitions and the capture arms on the
+  -- device's first start bit instead of recording the silence. See the block at sdec.armlevel in
+  -- serial_core.tsp for why that case needs its own level and its own wait.
+  --
+  -- THEY DO NOTHING ON A LINE THAT IS ALREADY TALKING, which is worth knowing before reading them as
+  -- a general trigger level: where the probe found two levels the threshold is their midpoint, which
+  -- beats any fixed voltage.
+  --
+  -- RANGES COME FROM THE CORE, not typed here, so the field and the comparator cannot disagree about
+  -- what is acceptable -- the same reason opt_rear_v is one table read from both ends. The core
+  -- clamps as well, because a programmatic set never passes through this field at all.
+  local fx9, fy9 = nextpos()
+  sdec.opt_armv = create(sdec.optscr, display.OBJ_EDIT_NUMBER, fx9, fy9,
+                         'Arm At', 'wake-up level',
+                         display.NFORMAT_PREFIX, sdec.arm_level_v(),
+                         sdec.armlevel_min, sdec.armlevel_max, 'V')
+  -- SECONDS, AND THE PANEL IS FROZEN FOR EVERY ONE OF THEM. The help text says 'max' rather than
+  -- 'timeout' because that is the operator-visible consequence: nothing can interrupt the wait, so
+  -- the number typed here is how long the panel may stop responding. The core's ceiling is the only
+  -- guard against a mistyped entry.
+  local fx10, fy10 = nextpos()
+  sdec.opt_armw = create(sdec.optscr, display.OBJ_EDIT_NUMBER, fx10, fy10,
+                         'Arm Wait', 'max wait, frozen',
+                         display.NFORMAT_PREFIX, sdec.arm_wait_s(),
+                         sdec.armwait_min, sdec.armwait_max, 's')
 
   -- Stored, not left in locals: destroy_options() has to be able to delete them.
   --

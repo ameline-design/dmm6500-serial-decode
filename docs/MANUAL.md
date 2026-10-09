@@ -1,6 +1,6 @@
 # Serial Decode — user manual
 
-**Ian Ameline** · version 1.40 · MIT licence
+**Ian Ameline** · version 1.41 · MIT licence
 
 This app turns a Keithley bench instrument into a serial decoder. Clip onto a UART line, press
 **Capture**, and read the bytes on the front panel. You do not have to tell it the baud rate, the frame
@@ -570,7 +570,7 @@ decoder already copes with, so a 2-stop device decodes correctly and is reported
 
 ### Advanced
 
-Two settings you can ignore unless you need them:
+Four settings you can ignore unless you need them:
 
 - **Trigger** — what starts the acquisition. `Start bit` (the default) waits for the line to move.
   `Free run` grabs immediately. `Trigger key` waits for the front-panel TRIGGER key, as described
@@ -581,6 +581,51 @@ Two settings you can ignore unless you need them:
 - **Rear BNC** — lets an external trigger in on the rear connector, and `FC Out` sends the
   flow-control credit pulse out of EXT TRIG OUT. `FC Out` is what turns a recording into an unlimited
   one; see **More than one window: flow control** above.
+- **Arm At** — how far from the idle level the capture waits for the line to move, in volts, from
+  0.33 V to 6 V. Default 1 V. Only used on a line that is **not transmitting yet**; see
+  **Waiting for a device that has not started** below.
+- **Arm Wait** — how long such a capture may wait, from 2 s to 120 s. Default 10 s.
+
+### Waiting for a device that has not started
+
+**Press Capture before the device powers up and the capture waits for it** instead of recording the
+silence. It is the ordinary case on a bench: a board that talks when you switch it on, or when some
+event happens to it, and nothing on the line until then.
+
+What the app does with it:
+
+- The level probe finds no transitions, which is how it knows. On a line that is already transmitting
+  nothing here applies — the threshold is measured from the two levels, which beats any fixed voltage.
+- The comparator is armed **Arm At** volts from the idle level, on the side the start bit travels: one
+  volt above a line sitting at ground, one volt below an idle-high TTL line, one volt above an RS-232
+  line idling at −6 V. On a line idling away from ground the level is clamped at the midpoint, because
+  the far level is unknown until the device speaks.
+- The window opens a little **before** the first start bit, not on it, so the first byte is whole.
+- The panel says it is waiting: the right-hand cell reads `waiting 10s for 2.30V -- TRIGGER=go` for
+  the length of the wait. **The panel is frozen while it waits** — a touch press only queues — so that
+  line is the only thing that distinguishes a live arm from a hung instrument.
+- **The front-panel TRIGGER key cuts the wait short**, in every setting this screen can produce. It
+  is the one escape that works: the key is a stimulus of the instrument's trigger model, serviced in
+  firmware, so it fires while the app is blocked. Pressing it captures whatever is on the line at
+  that moment.
+- If **Arm Wait** runs out, the note row says `nothing crossed 2.30 V in 10 s -- raise Arm Wait or
+  lower Arm At`, naming the level the comparator was actually watching.
+
+**The rate is a guess on this path, and the panel says so.** Nothing can measure the bit rate of a
+line that has not started, so the capture runs at 200 kS/s — 20 samples a bit at 9600, and enough for
+anything up to 38 400 — and the note row reads `armed at 200 kS/s on a line that has not started --
+lock the baud rate for a longer window`. That advice is the useful one: **lock the rate in Options and
+the capture uses the right one for it**, with a full window and no guessing. If the bit rate cannot be
+measured from what arrives, the app tries 9600, 19200 and a few standard rates above them against the
+samples it already has, and publishes one only when exactly one of them frames the bytes cleanly —
+`decoded at an ASSUMED 9600 Bd; lock the rate to be sure`. Where two rates fit equally it says so and
+decodes neither, because a capture that fits 19200 and 9600 alike cannot be told apart from inside the
+instrument.
+
+**Recordings wait too.** An 8 kB or 32 kB recording started on a silent line arms the same way and
+records from the device's first byte. While it waits, the recording's own limits are suspended — the
+idle watchdog cannot end a run before the device has started — and an arm that expires ends the run
+with the same two settings named.
 
 An external pulse on the rear connector really does start a capture — verified on this hardware, and
 verified by the negative as well: take the pulse away and the capture refuses rather than quietly
@@ -593,11 +638,13 @@ finger. And under `Free run` the rear input is ignored altogether, because free 
 for anything — the app says so rather than leaving you to notice: the note row reads `Rear BNC = Trig
 In is set but IGNORED`, and the status cell marks it by appending a `?` to `TRIG IN`.
 
-**Trigger** applies to FRAME captures. **A recording ignores it** and starts as soon as you press
-Capture — for a recording, the thing that decides when the device talks is the flow-control credit,
-not a trigger. `FC Out` is not confined that way — it pulses once per armed capture whichever mode you
-are in, a FRAME capture included. What a recording adds is the repetition: credit, record, decode,
-credit again.
+**Trigger** applies to FRAME captures, and to a recording in one case: a line that is **not
+transmitting when you press Capture**, where the recording waits for the device exactly as a frame
+capture does. A recording of a line that is already talking ignores it and starts immediately — there
+is nothing to wait for, and for a flow-controlled recording the thing that decides when the device
+talks is the credit pulse, not a trigger. `FC Out` is not confined that way — it pulses once per armed
+capture whichever mode you are in, a FRAME capture included. What a recording adds is the repetition:
+credit, record, decode, credit again.
 
 ---
 

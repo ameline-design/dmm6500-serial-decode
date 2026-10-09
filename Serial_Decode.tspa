@@ -3,7 +3,7 @@ loadscript Serial_Decode
 -- $Product: DMM6500, DAQ6510, DMM7510, SMU2461
 -- $Tag: Serial, UART, Decode, Digitize
 -- $Description: Decodes an asynchronous serial line with the instrument's own digitizer: recovers baud rate, frame format and bytes, shows them as text or hex, and saves bytes to USB key. Everything auto-detects; everything can be locked.
--- $Version: 1.40
+-- $Version: 1.41
 -- $Requires: 1.7.0
 -- $Author: Ian Ameline
 -- $License: MIT
@@ -470,7 +470,61 @@ sdec.nbins     = 512
 sdec.binocc    = 16    -- target samples per BIN
 sdec.minhump   = 2
 sdec.flatfloor = 1.0    -- below this an idle level counts as sitting at ground
-sdec.flatoffs  = 0.5    -- and the guessed threshold goes this far above it
+
+sdec.armlevel     = sdec.armlevel or 1.0
+sdec.armlevel_min = 0.33
+sdec.armlevel_max = 6.0
+
+sdec.armwait     = sdec.armwait or 10.0
+sdec.armwait_min = 2.0
+sdec.armwait_max = 120.0
+
+if sdec.armkey == nil then sdec.armkey = true end
+
+-- BOTH READ THROUGH ONE FUNCTION EACH, by the capture AND by the form, so a typed value cannot mean
+-- one thing to the field and another to the comparator. Clamped rather than refused: a form that
+-- silently declines an entry is worse than one that takes the nearest usable value.
+function sdec.arm_level_v()
+  local v = tonumber(sdec.armlevel)
+  if v == nil or v < sdec.armlevel_min then return sdec.armlevel_min end
+  if v > sdec.armlevel_max then return sdec.armlevel_max end
+  return v
+end
+
+-- CLAMPED TO THE SAME [min, max] THE FIELD OFFERS, so the form and the comparator cannot disagree
+--   [...]
+-- AND THE FLOOR IS WHY NOTHING EXISTING MOVES: armwait_min is 2 against an 'edge' wait of 3, and the
+-- caller takes this value only when it EXCEEDS that -- so a form wound all the way down is a no-op
+-- rather than a way to make captures fail faster than they used to.
+function sdec.arm_wait_s()
+  local w = tonumber(sdec.armwait)
+  if w == nil or w < sdec.armwait_min then return sdec.armwait_min end
+  if w > sdec.armwait_max then return sdec.armwait_max end
+  return w
+end
+
+sdec.arm_baud  = 38400
+sdec.arm_sabit = 5
+
+-- ONE SAMPLE OVER sdec.minsabit, deliberately not the sdec.fs_sabit target of 8: this is the rate
+-- the window is being traded AGAINST, so the floor is what belongs here. The test suite asserts the
+-- relation rather than the number, so raising minsabit cannot quietly leave this below it.
+function sdec.arm_fs()
+  return sdec.pick_fs(sdec.arm_baud, sdec.arm_sabit)
+end
+
+sdec.arm_try = {9600, 19200, 28800, 31250, 38400}
+
+-- IS THIS CAPTURE WAITING FOR A DEVICE THAT HAS NOT STARTED? One predicate, read by everything that
+--   [...]
+-- acq_triggered() sends after initiate(), so stretching their wait to armwait, blending a key into
+-- them and telling the operator the panel is waiting for a device are three answers to a question
+-- nobody asked.
+function sdec.arm_silent()
+  if sdec.probe_idle == nil then return false end
+  if sdec.fc_out then return false end
+  return true
+end
 sdec.idlemult  = 10.5
 sdec.minmodal  = 0.15
 sdec.warnmodal = 0.50
@@ -1064,10 +1118,13 @@ end
 -- our own arithmetic, and acq_fs_or_requested() is reached from the capture path.
 function sdec.acq_measure_fs(buf, n)
   if buf == nil or n == nil or n < 2 then return nil end
+  local first = sdec.acq_first(buf, n)
+  local last = first + n - 1
+  if last > n then last = last - n end
   local t1, tn = nil, nil
   local ok = pcall(function()
     local ts = buf.relativetimestamps
-    if ts ~= nil then t1, tn = ts[1], ts[n] end
+    if ts ~= nil then t1, tn = ts[first], ts[last] end
   end)
   if not ok then return nil end
   if t1 == nil or tn == nil then return nil end
@@ -1193,16 +1250,17 @@ end
 
 -- HOW MANY SAMPLES A CAPTURE ACTUALLY DELIVERS, which is not sdec.n on the armed path.
 --   [...]
--- window_bytes() used sdec.n, so it reported a capacity 5 % larger than any armed capture could
--- return -- the panel said 240 while the dump held 227, and "was this message seen WHOLE?" is the
--- one question that number exists to answer.
+-- sized exactly n -- capacity 20 000 -- the post count was 19 000 and the dump held 227 bytes under a
+-- panel claiming 240, which is where this function came from. With the reserve asked for on top --
+-- capacity 21 100 -- it is 20 045, and the instrument returned 20 066. One rule, two capacities.
 function sdec.n_deliv(n)
   if n == nil then n = sdec.n end
   if n == nil then return nil end
   if sdec.trigmode == 'free' then return n end
   local pt = sdec.pretrig or 0
   if pt <= 0 then return n end
-  return n - math.floor(n * pt / 100)
+  local cap = sdec.acq_cap(n) or n
+  return math.floor(cap * (100 - pt) / 100)
 end
 
 -- How many bytes one capture window can hold at this rate and format.
@@ -1382,20 +1440,52 @@ end
 sdec.tick = nil
 sdec.tickevery = sdec.tickevery or 2000    -- samples between hook calls; the bench caps the
 -- CHUNKED SO THE HOOK COSTS NOTHING PER SAMPLE. The obvious form -- `if sdec.tick ~= nil and
--- math.mod(i, every) == 0` inside the loop -- puts a modulo on all 20 000 iterations of the hottest loop in
--- the acquisition path, which is 0.455 s at 21.8 us a proxy read and does not need help getting slower.
--- Slicing the range instead leaves the inner loop byte for byte what it was.
+--   [...]
+-- NOT ROTATED IS THE NORMAL CASE and costs the same one read: a capture that never filled the buffer,
+-- a free-run read, and an armed capture of a busy line all come back with startindex 1, because the
+-- trigger fires within about fifteen samples of initiate() on a line that is already transmitting.
+function sdec.acq_first(buf, n)
+  if buf == nil or n == nil or n < 1 then return 1 end
+  local cap = nil
+  if not pcall(function() cap = buf.capacity end) then return 1 end
+  if cap ~= nil and n < cap then return 1 end
+  local s = nil
+  local ok = pcall(function() s = buf.startindex end)
+  if not ok or s == nil then return 1 end
+  s = math.floor(s)
+  if s < 1 or s > n then return 1 end
+  return s
+end
+
+-- WHERE THE NEXT READING WILL GO, as an index into buf.readings, or nil when it cannot be read.
+--   [...]
+-- whose pre-trigger phase waited longer than the buffer holds is in exactly that state before the
+-- device has sent a byte: 0.75 s of wait at 1 MS/s fills an 8 kB recording's buffer. endindex keeps
+-- moving, because it is a position in the ring rather than a count of what the ring holds.
+function sdec.acq_end(buf)
+  if buf == nil then return nil end
+  local e = nil
+  if not pcall(function() e = buf.endindex end) then return nil end
+  if e == nil then return nil end
+  return math.floor(e)
+end
+
 function sdec.acq_copy(buf, n)
   local rd = buf.readings
   local t = {}
   local step = sdec.tickevery
   if step == nil or step < 1 then step = n end
+  local off = sdec.acq_first(buf, n) - 1
   local i = 1
   while i <= n do
     local j = i + step - 1
     if j > n then j = n end
     local k
-    for k = i, j do t[k] = rd[k] end
+    for k = i, j do
+      local p = k + off
+      if p > n then p = p - n end
+      t[k] = rd[p]
+    end
     if sdec.tick ~= nil then sdec.tick() end
     i = j + 1
   end
@@ -1436,6 +1526,20 @@ function sdec.trig_done(buf)
   if not sok then st = nil end
   if st == nil then return false end
   return st == trigger.STATE_IDLE and (buf.n or 0) > 0
+end
+
+sdec.arm_settle_s = 0.25
+
+-- IS THE MODEL SITTING IN A WAIT BLOCK? -> true, false, or NIL when it cannot be told.
+--   [...]
+-- nil MEANS DEGRADE, not retry: a firmware without trigger.STATE_WAITING, or a state read that
+-- raised, leaves the caller with no way to bound an arm -- and the honest answer there is to behave
+-- exactly as a recording did before the feature existed rather than to guess.
+function sdec.trig_waiting()
+  if trigger.STATE_WAITING == nil then return nil end
+  local sok, st = pcall(trigger.model.state)
+  if not sok or st == nil then return nil end
+  return st == trigger.STATE_WAITING
 end
 
 -- Stop the trigger model AND WAIT FOR IT TO STOP. abort() is asynchronous; see the
@@ -1507,30 +1611,16 @@ function sdec.cancel_pressed()
   if not ok then return false end
   return got == true
 end
-
--- Capture armed on a signal edge, on the front-panel TRIGGER key or on the rear BNC,
--- degrading to a free-running read if the source is refused.
-function sdec.acq_triggered(n, slope)
-  local buf = sdec.buf
-  if sdec.trigmode == 'front' and trigger.EVENT_DISPLAY == nil then
-    sdec.lasterr = 'no front-panel TRIGGER event on this firmware; captured free-running'
-    return sdec.acq_free(n)
-  end
-  buf.clear()
-  sdec.acq_fillmode(buf)
-  n = sdec.acq_fit(n, buf)
-  sdec.dig.count = n
-  sdec.mute_events()
-
+-- WHICH EVENT ARMS A CAPTURE, and what that costs in shared instrument state. -> ev, useanalog,
+--   [...]
+-- IT WRITES INSTRUMENT STATE -- trigger.blender[1], sdec.armkeyed and sdec.trigblended -- which is why
+-- it is a function and not a lookup: the blender has to be configured or RELEASED on every capture,
+-- and which of those happens depends on the same three settings that pick the event.
+function sdec.arm_source()
+  if sdec.trigmode == 'front' and trigger.EVENT_DISPLAY == nil then return nil, false, false end
   local ev = trigger.EVENT_ANALOGTRIGGER
   if sdec.trigmode == 'front' then ev = trigger.EVENT_DISPLAY end
   local useanalog = (ev == trigger.EVENT_ANALOGTRIGGER)
-  local wait = sdec.trigwait or 3.0
-  if sdec.trigmode == 'front' or sdec.trigext then wait = sdec.trigwait_ext or 30.0 end
-
-  local dur = nil
-  if sdec.fs ~= nil and sdec.fs > 0 then dur = n / sdec.fs end
-  if dur ~= nil and wait < dur * 1.5 + 1.0 then wait = dur * 1.5 + 1.0 end
 
   local blended = false
   if not sdec.trigext then
@@ -1555,23 +1645,136 @@ function sdec.acq_triggered(n, slope)
       sdec.lasterr = 'no trigger blender; using the rear BNC alone'
     end
   end
-  sdec.trigblended = blended
 
-  local expired = false
-  local ok, perr = pcall(function()
+  if sdec.arm_silent() and sdec.armkey and sdec.trigmode ~= 'front' and
+     not (sdec.trigext and sdec.trigext_only) and trigger.EVENT_DISPLAY ~= nil then
+    local kok = pcall(function()
+      if not blended then
+        trigger.blender[1].reset()
+        trigger.blender[1].orenable = true
+        trigger.blender[1].stimulus[1] = ev
+      end
+      trigger.blender[1].stimulus[3] = trigger.EVENT_DISPLAY
+    end)
+    if kok then
+      ev = trigger.EVENT_BLENDER1
+      blended = true
+      sdec.armkeyed = true
+    else
+      sdec.armkeyed = nil
+      local knote = 'the TRIGGER key will not cut the arm short'
+      if sdec.lasterr == nil then
+        sdec.lasterr = 'no trigger blender; ' .. knote
+      else
+        sdec.lasterr = sdec.lasterr .. '; ' .. knote
+      end
+    end
+  else
+    sdec.armkeyed = nil
+  end
+  sdec.trigblended = blended
+  return ev, useanalog, blended
+end
+
+-- WHERE TO ARM ON A LINE THE PROBE FOUND SILENT, in volts, written to sdec.thr with the matching
+--   [...]
+-- SHARED BY THE FRAME AND RECORDING PATHS, like the three functions below it. The streaming path had
+-- no threshold of its own at all: clear_result() leaves sdec.thr at ZERO, so an armed recording would
+-- have pointed the comparator at 0 V and fired on the first ADC noise sample.
+function sdec.arm_threshold()
+  if sdec.vmax == nil then return false end
+  local idlev = sdec.vmax
+  if math.abs(sdec.vmin) > math.abs(sdec.vmax) then idlev = sdec.vmin end
+  sdec.hyst = 0
+  if math.abs(idlev) < sdec.flatfloor then
+    sdec.thr, sdec.idle = idlev + sdec.arm_level_v(), 0
+    return true
+  end
+  local off = sdec.arm_level_v()
+  local half = 0.5 * math.abs(idlev)
+  if off > half then off = half end
+  if idlev < 0 then
+    sdec.thr, sdec.idle = idlev + off, 0
+  else
+    sdec.thr, sdec.idle = idlev - off, 1
+  end
+  return true
+end
+
+-- THE SLOPE THE START BIT TAKES, or nil where the comparator is not the source and a slope would be
+-- dead state on the board. Shared for the same reason arm_source() is: the frame path and the armed
+-- recording have to arm on the same edge of the same line.
+function sdec.arm_slope()
+  if sdec.trigmode ~= 'edge' then return nil end
+  if sdec.idle == 0 then return sdec.k.SLOPE_RISING end
+  return sdec.k.SLOPE_FALLING
+end
+
+-- POINT THE COMPARATOR AT sdec.thr, or turn it OFF where it is not a source. -> whether the writes
+-- went through. A digitizer with no analog comparator is a supported configuration, so this is
+-- guarded rather than assumed: a bare write with atrig nil RAISED, and acq_triggered() died instead
+-- of degrading to free run, which its own header promised.
+function sdec.arm_comparator(useanalog, slope)
+  if sdec.atrig == nil then return false end
+  return pcall(function()
     if useanalog then
-      sdec.atrig.mode        = sdec.k.MODE_EDGE
-      sdec.atedge.level      = sdec.thr
-      sdec.atedge.slope      = slope
+      sdec.atrig.mode   = sdec.k.MODE_EDGE
+      sdec.atedge.level = sdec.thr
+      sdec.atedge.slope = slope
     else
       sdec.atrig.mode = sdec.k.MODE_OFF
     end
+  end)
+end
+
+
+
+-- Capture armed on a signal edge, on the front-panel TRIGGER key or on the rear BNC,
+-- degrading to a free-running read if the source is refused.
+function sdec.acq_triggered(n, slope)
+  local buf = sdec.buf
+  if sdec.trigmode == 'front' and trigger.EVENT_DISPLAY == nil then
+    sdec.lasterr = 'no front-panel TRIGGER event on this firmware; captured free-running'
+    return sdec.acq_free(n)
+  end
+  buf.clear()
+  sdec.acq_fillmode(buf)
+  n = sdec.acq_fit(n, buf)
+  sdec.dig.count = n
+  sdec.mute_events()
+
+  local wait = sdec.trigwait or 3.0
+  if sdec.trigmode == 'front' or sdec.trigext then wait = sdec.trigwait_ext or 30.0 end
+
+  if sdec.arm_silent() then
+    local armw = sdec.arm_wait_s()
+    if armw > wait then wait = armw end
+  end
+
+  local dur = nil
+  if sdec.fs ~= nil and sdec.fs > 0 then dur = n / sdec.fs end
+  if dur ~= nil and wait < dur * 1.5 + 1.0 then wait = dur * 1.5 + 1.0 end
+
+  local ev, useanalog = sdec.arm_source()
+  if ev == nil then
+    sdec.unmute_events()
+    sdec.lasterr = 'no front-panel TRIGGER event on this firmware; captured free-running'
+    return sdec.acq_free(n)
+  end
+
+  local expired = false
+  local ok, perr = pcall(function()
+    sdec.arm_comparator(useanalog, slope)
     trigger.model.load('LoopUntilEvent', ev,
                        sdec.pretrig, trigger.CLEAR_ENTER, 0, buf)
     trigger.model.initiate()
 
     if sdec.fc_out then
       pcall(trigger.extout.assert)
+    end
+
+    if sdec.arm_silent() and sdec.armnote ~= nil then
+      pcall(sdec.armnote, wait, sdec.thr or sdec.arm_level_v())
     end
 
     local waited, step = 0, 0.05
@@ -1584,8 +1787,15 @@ function sdec.acq_triggered(n, slope)
     local full = (buf.n or 0) >= n and sdec.pretrig <= 0
     if not sdec.trig_done(buf) and not full then
       expired = true
-      error('no trigger in ' .. tostring(wait) .. ' s (' ..
-            tostring(sdec.trigmode) .. ') -- try Free run', 0)
+      local why = 'no trigger in ' .. tostring(wait) .. ' s (' .. tostring(sdec.trigmode) .. ')'
+      if sdec.arm_silent() and useanalog then
+        why = why .. ' -- nothing crossed ' ..
+              string.format('%.2f', sdec.thr or sdec.arm_level_v()) ..
+              ' V; raise Arm Wait or lower Arm At'
+      else
+        why = why .. ' -- try Free run'
+      end
+      error(why, 0)
     end
   end)
 
@@ -1628,28 +1838,13 @@ function sdec.acquire()
     sdec.sig_edges(sdec.smp, sdec.nread)
     sdec.sig_idle(sdec.smp, sdec.nread)
   else
-    if sdec.vmax == nil then return false, why end
-    local idlev = sdec.vmax
-    if math.abs(sdec.vmin) > math.abs(sdec.vmax) then idlev = sdec.vmin end
-    sdec.hyst = 0
-    if math.abs(idlev) < sdec.flatfloor then
-      sdec.thr  = idlev + sdec.flatoffs
-      sdec.idle = 0
-    else
-      sdec.thr = 0.5 * idlev
-      if idlev < 0 then sdec.idle = 0 else sdec.idle = 1 end
-    end
+    if not sdec.arm_threshold() then return false, why end
     sdec.probe_idle = why
     if sdec.trigmode == 'free' then return false, why end
   end
 
   if sdec.trigmode == 'edge' or sdec.trigmode == 'front' then
-    local slope = nil
-    if sdec.trigmode == 'edge' then
-      slope = sdec.k.SLOPE_FALLING
-      if sdec.idle == 0 then slope = sdec.k.SLOPE_RISING end
-    end
-    if sdec.acq_triggered(sdec.n, slope) < 2 then
+    if sdec.acq_triggered(sdec.n, sdec.arm_slope()) < 2 then
       return false, 'triggered capture returned nothing'
     end
   else
@@ -2984,6 +3179,8 @@ end
 -- decimated form (step > 1, the level pass) is unchanged.
 function sdec.ck_reader_buffer(buf, ntotal)
   local rdp = buf.readings
+  local off = 0
+  if sdec.acq_first ~= nil then off = sdec.acq_first(buf, ntotal) - 1 end
   return function(dst, from, count, step)
     if step == nil then step = 1 end
     local m = 0
@@ -2992,7 +3189,9 @@ function sdec.ck_reader_buffer(buf, ntotal)
       if last > ntotal then last = ntotal end
       local a
       for a = from, last do
-        local v = rdp[a]
+        local p = a + off
+        if p > ntotal then p = p - ntotal end
+        local v = rdp[p]
         if v == nil then break end
         m = m + 1
         dst[m] = v
@@ -3003,7 +3202,9 @@ function sdec.ck_reader_buffer(buf, ntotal)
     if last > ntotal then last = ntotal end
     local a
     for a = from, last, step do
-      local v = rdp[a]
+      local p = a + off
+      if p > ntotal then p = p - ntotal end
+      local v = rdp[p]
       if v == nil then break end
       m = m + 1
       dst[m] = v
@@ -4049,6 +4250,17 @@ sdec.ui_mode = sdec.ui_mode or 'text'    -- 'text', 'hex' or 'midi'
 sdec.ui_page = sdec.ui_page or 0          -- 0-based page index
 sdec.ui_paged = sdec.ui_paged or false
 sdec.ui_status = sdec.ui_status or 'ready'
+-- SAY THE PANEL IS WAITING ON PURPOSE, called by acq_triggered() immediately before it blocks on an
+--   [...]
+-- THE TRIGGER KEY IS NAMED because it genuinely works here, unlike the cancel latch: the key is a
+-- stimulus of the trigger MODEL, which runs in firmware, so it fires while Lua spins. That is the
+-- same mechanism 'front' mode has always used.
+function sdec.armnote(wait, level)
+  if sdec.ui_log_t == nil then return false end
+  return sdec.ui_set(sdec.ui_log_t,
+                     string.format('waiting %.0fs for %.2fV -- TRIGGER=go', wait or 0, level or 0))
+end
+
 sdec.ui_opt_y0 = 8
 sdec.ui_opt_dy = 100
 sdec.ui_opt_edit_h  = 50
@@ -5373,6 +5585,8 @@ function sdec.destroy_options()
   sdec.del_obj(sdec.opt_pol)
   sdec.del_obj(sdec.opt_trig)
   sdec.del_obj(sdec.opt_ext)
+  sdec.del_obj(sdec.opt_armv)
+  sdec.del_obj(sdec.opt_armw)
   if sdec.opt_btn ~= nil then
     local i
     for i = 1, table.getn(sdec.opt_btn) do sdec.del_obj(sdec.opt_btn[i]) end
@@ -5382,6 +5596,7 @@ function sdec.destroy_options()
   sdec.optscr, sdec.opt_proto, sdec.opt_baud = nil, nil, nil
   sdec.opt_bits, sdec.opt_par, sdec.opt_pol = nil, nil, nil
   sdec.opt_trig, sdec.opt_ext = nil, nil
+  sdec.opt_armv, sdec.opt_armw = nil, nil
   return true
 end
 
@@ -5391,8 +5606,8 @@ function sdec.build_options()
   local create = display.create
   local y0, dy, x = sdec.ui_opt_y0, sdec.ui_opt_dy, sdec.ui_opt_x
   local pv, pl = sdec.opt_proto_list()
-  local nf = 6
-  if pl.n >= 2 then nf = 7 end
+  local nf = 8
+  if pl.n >= 2 then nf = 9 end
   local eh, edy = sdec.ui_opt_edit_h, sdec.ui_opt_edit_dy
   local ncols = sdec.ui_opt_cols or 1
   if ncols < 1 then ncols = 1 end
@@ -5464,6 +5679,17 @@ function sdec.build_options()
   sdec.opt_ext = create(sdec.optscr, display.OBJ_EDIT_OPTION, fx8, fy8,
                         'Rear BNC', 'trig in / FC out',
                         'Off', 'Trig In', 'FC Out', 'In + FC Out')
+
+  local fx9, fy9 = nextpos()
+  sdec.opt_armv = create(sdec.optscr, display.OBJ_EDIT_NUMBER, fx9, fy9,
+                         'Arm At', 'wake-up level',
+                         display.NFORMAT_PREFIX, sdec.arm_level_v(),
+                         sdec.armlevel_min, sdec.armlevel_max, 'V')
+  local fx10, fy10 = nextpos()
+  sdec.opt_armw = create(sdec.optscr, display.OBJ_EDIT_NUMBER, fx10, fy10,
+                         'Arm Wait', 'max wait, frozen',
+                         display.NFORMAT_PREFIX, sdec.arm_wait_s(),
+                         sdec.armwait_min, sdec.armwait_max, 's')
 
   sdec.opt_btn = {}
   local odef = {
@@ -5571,6 +5797,93 @@ function sdec.detect_reset()
 end
 
 -- Capture orchestration
+--   [...]
+-- what makes the start recoverable at all.
+-- THE RATE IS BLIND BY CONSTRUCTION. sdec.arm_fs() trades window against coverage; the note below
+-- tells the operator the one thing that beats it, which is locking the rate they already know.
+function sdec.arm_capture()
+  local fs = sdec.arm_fs()
+  sdec.fs, sdec.fs_want = fs, fs
+  sdec.probe_note = string.format(
+    'armed at %g kS/s on a line that has not started -- lock the baud rate for a longer window',
+    fs / 1000)
+  local ok, why = sdec.acquire()
+  if not ok then sdec.drop_stale_result() return false, why end
+  local dok, dwhy = sdec.decode()
+  if dok then return true end
+  if sdec.arm_fit_prior() then return true end
+  sdec.drop_stale_result()
+  return false, dwhy
+end
+
+-- IS THIS CANDIDATE BIT TIME COMPATIBLE WITH THE PULSES ACTUALLY ON THE WIRE? The filter the prior
+--   [...]
+-- sig_bittime() has run would have every candidate waved through by the absence of data. MEASURED
+-- exactly that way: the first version of this filter was tested with sig_bittime stubbed out, which
+-- is also what computes the widths, and it rejected nothing at any truth while appearing to work.
+function sdec.arm_try_ok(T, n)
+  if T == nil or T <= 0 then return false end
+  if sdec.wmed == nil or sdec.wmed <= 0 then return false end
+  if (sdec.nw or 0) < sdec.submult_minpulses then return false end
+  if not sdec.ua_plausible(T, n) then return false end
+  if sdec.ua_submultiple(T) then return false end
+  if sdec.ua_minrun_absurd(T) then return false end
+  return true
+end
+
+sdec.arm_badfrac = 0.02
+
+-- IS THIS DECODE CLEAN ENOUGH TO PUBLISH AN INVENTED RATE ON? Enough frames to be evidence at all,
+-- and almost none of them broken.
+-- WHY A GATE IS NOT OPTIONAL HERE. A wrong bit time will still frame bytes; what it cannot do is
+-- frame most of them cleanly. The frame floor is relock_minframes, which is the same question in both
+-- places -- how many frames before a fraction means anything -- unlike the fraction itself.
+function sdec.arm_fit_ok()
+  local r = sdec.res
+  if r == nil then return false end
+  if (r.nf or 0) < sdec.relock_minframes then return false end
+  local bf = sdec.ua_badfrac(r)
+  if bf == nil then return false end
+  return bf < sdec.arm_badfrac
+end
+
+-- FIT THE OPERATOR'S PRIOR TO SAMPLES ALREADY IN HAND. Called by arm_capture() when a blind armed
+--   [...]
+-- THE OPERATOR'S OWN LOCK IS RESTORED WHICHEVER WAY THIS ENDS, and on this path it is nil by
+-- construction: autoset() only reaches an armed capture when nothing was forced. Restored anyway,
+-- because a function that borrows a field the panel displays has to put it back.
+function sdec.arm_fit_prior()
+  local rd, n = sdec.smp, sdec.nread
+  if rd == nil or n == nil or n < 2 then return false end
+  local fs = sdec.acq_fs or sdec.fs
+  if fs == nil or fs <= 0 then return false end
+  sdec.sig_bittime()
+  local was, won, alt, i = sdec.force_baud, nil, nil, 0
+  for i = 1, table.getn(sdec.arm_try) do
+    local b = sdec.arm_try[i]
+    if sdec.arm_try_ok(fs / b, n) then
+      sdec.force_baud = b
+      if sdec.decode_from(rd, n) and sdec.arm_fit_ok() then
+        if won == nil then won = b else alt = b end
+      end
+    end
+  end
+  sdec.force_baud = was
+  if won == nil then return false end
+  if alt ~= nil then
+    sdec.probe_note = string.format(
+      'this capture fits %d Bd AND %d Bd equally -- lock the rate in Options to decide', won, alt)
+    return false
+  end
+  sdec.force_baud = won
+  local ok = sdec.decode_from(rd, n)
+  sdec.force_baud = was
+  if not ok then return false end
+  sdec.probe_note = string.format(
+    'no bit time could be measured -- decoded at an ASSUMED %d Bd; lock the rate to be sure', won)
+  return true
+end
+
 -- Pick the sample rate, capture, and decode. Returns ok, reason.
 function sdec.autoset()
   local target = sdec.force_baud
@@ -5601,7 +5914,10 @@ function sdec.autoset()
         'probe took %d looks to catch traffic (down to %g kS/s)', tries or 0, ladder[tries] / 1000)
     end
     if not ok then
-      if sdec.baud_probe == nil then sdec.drop_stale_result() return false, why end
+      if sdec.baud_probe == nil then
+        if sdec.arm_silent() and savetrig ~= 'free' then return sdec.arm_capture() end
+        sdec.drop_stale_result() return false, why
+      end
       target = sdec.baud_probe
       sdec.probe_note = string.format(
         'too slow to frame at 1 MS/s -- re-captured at the rate the probe measured (%.0f Bd)',
@@ -5721,6 +6037,13 @@ function sdec.stream_begin()
   if nsmp == nil then return false, 'cannot size the capture for this rate' end
 
   local cap = nsmp + 100
+  if sdec.trigmode ~= 'free' and (sdec.pretrig or 0) > 0 then
+    cap = math.ceil(nsmp * 100 / (100 - sdec.pretrig)) + 100
+    if sdec.ck_bufmax ~= nil and cap > sdec.ck_bufmax then
+      cap = sdec.ck_bufmax
+      nsmp = math.floor(cap * (100 - sdec.pretrig) / 100)
+    end
+  end
   sdec.acq_make_buffer(cap)
   if sdec.buf == nil then
     return false, string.format('cannot allocate %d readings -- shrink defbuffer2', cap or 0)
@@ -5733,11 +6056,14 @@ function sdec.stream_begin()
   local pmax = math.floor((sdec.fs or 1000) * budget)
   if pmax < 200 then pmax = 200 end
   if pn > pmax then pn = pmax end
+  sdec.probe_idle = nil
   local pok = pcall(sdec.acq_free, pn, nil, true)
   if pok and sdec.nread ~= nil and sdec.nread > 1 then
-    local lok = sdec.sig_levels(sdec.smp, sdec.nread)
+    local lok, lwhy = sdec.sig_levels(sdec.smp, sdec.nread)
     if lok and sdec.thr ~= nil and (sdec.swing or 0) >= sdec.minswing then
       sdec.ck_watch = true
+    else
+      sdec.probe_idle = lwhy or 'line is idle (no transitions)'
     end
   end
   if not sdec.ck_watch and sdec.lvl_thr ~= nil and
@@ -5748,10 +6074,12 @@ function sdec.stream_begin()
   else
     sdec.strm_lvlreuse = nil
   end
+  if sdec.probe_idle ~= nil and not sdec.strm_lvlreuse then sdec.arm_threshold() end
   sdec.smp, sdec.nread = nil, 0        -- the probe's Lua copy is not needed past this point
 
   sdec.ck_running, sdec.ck_stop, sdec.ck_nbytes, sdec.ck_tot = true, false, 0, nil
   sdec.ck_endwhy = nil
+  sdec.arm_expired_at = nil
   sdec.ck_cancel = nil
   sdec.progress(0)
 
@@ -5988,9 +6316,33 @@ function sdec.stream_arm(nsmp)
   if not pcall(function() buf.clear() end) then return false end
   sdec.acq_fillmode(buf)
   if sdec.dig == nil then return false end
-  if not pcall(function() sdec.dig.count = 1 end) then return false end
-  local ok = pcall(trigger.model.load, 'SimpleLoop', nsmp, 0, buf)
+  local dcount = 1
+  if sdec.arm_silent() and sdec.trigmode ~= 'free' then dcount = nsmp end
+  if not pcall(function() sdec.dig.count = dcount end) then return false end
+  local armed = (sdec.arm_silent() and sdec.trigmode ~= 'free')
+  local ok = false
+  if armed then
+    local ev, useanalog = sdec.arm_source()
+    if ev == nil then
+      armed = false
+    else
+      sdec.arm_comparator(useanalog, sdec.arm_slope())
+      ok = pcall(trigger.model.load, 'LoopUntilEvent', ev, sdec.pretrig,
+                 trigger.CLEAR_ENTER, 0, buf)
+      if not ok then armed = false end
+    end
+  end
+  sdec.strm_armed = armed
+  if not armed then ok = pcall(trigger.model.load, 'SimpleLoop', nsmp, 0, buf) end
   if ok then ok = pcall(trigger.model.initiate) end
+  if ok and armed then
+    local spun = 0
+    while spun < (sdec.arm_settle_s or 0.25) do
+      if sdec.trig_waiting() == true then break end
+      delay(0.01)
+      spun = spun + 0.01
+    end
+  end
   if ok and sdec.fc_out then
     sdec.fc_credit()
   end
@@ -6079,21 +6431,48 @@ function sdec.stream_acquire(nsmp)
   end
 
   local quiet, seen, step = 0, 0, sdec.ck_poll_s
+  local seenend = -1
   local iw = sdec.idle_window(sdec.fs)
   local waited = 0
+  local armdone = true
+  if sdec.strm_armed then
+    armdone = false
+    if sdec.armnote ~= nil then
+      pcall(sdec.armnote, sdec.arm_wait_s(), sdec.thr or sdec.arm_level_v())
+    end
+  end
   local rfail, rlast = 0, nil
   sdec.strm_readfail = nil
   local limit = sdec.stream_maxwait(nsmp, sdec.fs)
   if sdec.strm_maxsec ~= nil and sdec.strm_maxsec > 0 and limit > sdec.strm_maxsec then
     limit = sdec.strm_maxsec
   end
+  if sdec.strm_armed then limit = limit + sdec.arm_wait_s() end
   while true do
     local have = buf.n or 0
-    if have >= nsmp then sdec.ck_endwhy = 'full'; break end
+    if not armdone and sdec.trig_waiting() ~= true then
+      armdone = true
+      quiet = 0
+      seen, seenend = 0, -1
+    end
+    if sdec.strm_armed then
+      if armdone and sdec.trig_done(buf) then sdec.ck_endwhy = 'full'; break end
+    elseif have >= nsmp then
+      sdec.ck_endwhy = 'full'
+      break
+    end
     if sdec.cancel_asked() then sdec.ck_endwhy = 'stopped'; break end
+    if not armdone and waited >= sdec.arm_wait_s() then
+      sdec.arm_expired_at = sdec.thr
+      sdec.ck_endwhy = 'noarm'
+      break
+    end
     if waited >= limit then sdec.ck_endwhy = 'full'; break end
 
-    if have > seen then
+    local eidx = sdec.acq_end(buf)
+    local fresh = (have > seen)
+    if eidx ~= nil then fresh = (eidx ~= seenend) end
+    if fresh then
       local from = have - iw + 1
       if from < 1 then from = 1 end
       local win, m = {}, 0
@@ -6116,11 +6495,12 @@ function sdec.stream_acquire(nsmp)
         rfail = 0
       end
       seen = have
+      seenend = eidx
     else
       quiet = quiet + step
     end
 
-    if sdec.ck_watch and sdec.idle_exit_s ~= nil and sdec.idle_exit_s > 0 and
+    if armdone and sdec.ck_watch and sdec.idle_exit_s ~= nil and sdec.idle_exit_s > 0 and
        quiet >= sdec.idle_exit_s then
       local adopted, unmeasurable = sdec.strm_relevel(buf, have, iw)
       if adopted then
@@ -6135,7 +6515,7 @@ function sdec.stream_acquire(nsmp)
       end
     end
 
-    sdec.progress_samples(have, nsmp)
+    if armdone then sdec.progress_samples(have, nsmp) end
     delay(step)
     waited = waited + step
     sdec.strm_waited = waited
@@ -6769,6 +7149,10 @@ function sdec.strm_exit_why(endwhy, ok, err)
   if endwhy == 'readfail' then
     return 'recording failed: ' .. tostring(sdec.strm_readfail or 'the capture buffer could not be read')
   end
+  if endwhy == 'noarm' then
+    return string.format('nothing crossed %.2f V in %g s -- raise Arm Wait or lower Arm At',
+                         sdec.arm_expired_at or sdec.thr or sdec.arm_level_v(), sdec.arm_wait_s())
+  end
   if endwhy == 'quiet' then
     return string.format('%g s with no line activity', sdec.idle_exit_s or 0)
   elseif endwhy == 'stopped' then
@@ -6978,6 +7362,8 @@ function sdec.options_seed()
     end
     display.setvalue(sdec.opt_ext, xi)
     display.setvalue(sdec.opt_trig, ti)
+    display.setvalue(sdec.opt_armv, sdec.arm_level_v())
+    display.setvalue(sdec.opt_armw, sdec.arm_wait_s())
   end)
 end
 
@@ -6989,6 +7375,7 @@ function sdec.options_save()
                    any = sdec.widths_any, trig = sdec.trigmode,
                    ext = sdec.trigext, fc = sdec.fc_out, view = sdec.ui_mode,
                    aset = sdec.autolock_set,
+                   armv = sdec.armlevel, armw = sdec.armwait,
                    dhas = true, dbaud = sdec.baud,
                    dsnap = sdec.snapped, dfirm = sdec.snapfirm}
   return true
@@ -7004,6 +7391,8 @@ function sdec.options_restore()
   sdec.trigmode, sdec.trigext, sdec.fc_out = s.trig, s.ext, s.fc
   sdec.ui_mode = s.view
   sdec.autolock_set = s.aset
+  if type(s.armv) == 'number' then sdec.armlevel = s.armv end
+  if type(s.armw) == 'number' then sdec.armwait = s.armw end
   if s.dhas then
     sdec.baud, sdec.snapped, sdec.snapfirm = s.dbaud, s.dsnap, s.dfirm
   end
@@ -7081,6 +7470,11 @@ function sdec.options_apply()
     sdec.trigmode = sdec.opt_pick(sdec.opt_trig_v, ti) or 'edge'
     local ri = sdec.opt_rear_v[display.getvalue(sdec.opt_ext)] or sdec.opt_rear_v[1]
     sdec.trigext, sdec.fc_out = ri[1], ri[2]
+
+    local av = display.getvalue(sdec.opt_armv)
+    if type(av) == 'number' then sdec.armlevel = av end
+    local aw = display.getvalue(sdec.opt_armw)
+    if type(aw) == 'number' then sdec.armwait = aw end
   end)
   if not readok then
     sdec.options_restore()

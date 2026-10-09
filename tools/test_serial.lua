@@ -29,6 +29,16 @@ for _, m in ipairs({'tsp/usb_log.tsp', 'tsp/serial_ui.tsp', 'tsp/serial_app.tsp'
   chunk()
 end
 
+-- THE AS-LOADED DEFAULTS, CAPTURED BEFORE ANY TEST RUNS. A shipped default is only observable here:
+-- the options round-trip tests later in this file drive options_apply(), which assigns whatever the
+-- mock field hands back, so by the time the arm-from-silence block runs sdec.armlevel is the FIELD's
+-- value and not the module's. Asserting the default down there read 0.33 against an expected 1.0 --
+-- a true statement about the suite's state and a useless one about the app.
+-- A GLOBAL, not a local: the main chunk is at Lua 5.0.2's 200-local ceiling and three more locals
+-- took it over ("too many local variables in main function"). SRC, GEN and TRIG are globals here for
+-- the same structural reason.
+ARM_DEFAULTS = {armlevel = sdec.armlevel, armwait = sdec.armwait, armkey = sdec.armkey}
+
 -- ---------- test harness ----------
 local pass, fail = 0, 0
 local function check(name, cond, detail)
@@ -7412,6 +7422,448 @@ local function test_modes()
         trigger.blender[1].stimulus[2] == nil,
         string.format('or=%s s2=%s', tostring(trigger.blender[1].orenable),
                       tostring(trigger.blender[1].stimulus[2])))
+
+  -- ======================================================================
+  -- ARMING FROM SILENCE: the device has not started talking yet.
+  --
+  -- THE CASE THESE COVER is Capture pressed before a DUT powers on, where the probe finds no
+  -- transitions at all. Everything here is gated on sdec.probe_idle being non-nil, which is what
+  -- keeps it off a line that is already transmitting -- so the tests set and clear it explicitly
+  -- rather than relying on whatever the previous block left behind.
+  -- ======================================================================
+  -- GLOBALS, for the 200-local ceiling reason given at ARM_DEFAULTS.
+  ARM_KEEP = {lvl = sdec.armlevel, wait = sdec.armwait, key = sdec.armkey,
+              pidle = sdec.probe_idle}
+
+  -- THE DEFAULTS COME FROM THE SNAPSHOT TAKEN AT LOAD, not from the live fields -- see DEFAULTS at
+  -- the top of this file for why reading them here measures the suite rather than the app.
+  check('the arm level defaults to 1 V, inside the 0.33..6 V the field offers',
+        ARM_DEFAULTS.armlevel == 1.0 and sdec.armlevel_min == 0.33 and sdec.armlevel_max == 6.0,
+        string.format('%s in [%s,%s]', tostring(ARM_DEFAULTS.armlevel),
+                      tostring(sdec.armlevel_min), tostring(sdec.armlevel_max)))
+  check('the arm wait defaults to 10 s, inside the 2..120 s the field offers',
+        ARM_DEFAULTS.armwait == 10.0 and sdec.armwait_min == 2.0 and sdec.armwait_max == 120.0,
+        string.format('%s in [%s,%s]', tostring(ARM_DEFAULTS.armwait),
+                      tostring(sdec.armwait_min), tostring(sdec.armwait_max)))
+  check('and the TRIGGER-key break-in is ON by default -- it is the only escape from the wait',
+        ARM_DEFAULTS.armkey == true, tostring(ARM_DEFAULTS.armkey))
+  -- THE FLOOR IS LOAD-BEARING, not cosmetic: the caller only lengthens a wait, so a form wound to
+  -- its minimum must not be able to make an 'edge' capture give up sooner than it used to.
+  check('the minimum arm wait is BELOW the edge wait, so winding it down changes nothing',
+        sdec.armwait_min < sdec.trigwait,
+        string.format('%s vs %s', tostring(sdec.armwait_min), tostring(sdec.trigwait)))
+
+  -- CLAMPED AT THE POINT OF USE, both ends, and for a non-number too -- options_apply stores what
+  -- was typed and these functions decide what it MEANS, so a value out of range must not reach the
+  -- comparator as a voltage or the wait as a duration.
+  sdec.armlevel = 0.01
+  check('an arm level under the floor clamps up rather than firing on noise',
+        sdec.arm_level_v() == sdec.armlevel_min, tostring(sdec.arm_level_v()))
+  sdec.armlevel = 99
+  check('and one over the ceiling clamps down',
+        sdec.arm_level_v() == sdec.armlevel_max, tostring(sdec.arm_level_v()))
+  sdec.armlevel = nil
+  check('a non-number arm level does not reach the comparator as nil',
+        sdec.arm_level_v() == sdec.armlevel_min, tostring(sdec.arm_level_v()))
+  sdec.armlevel = 2.5
+  check('an in-range arm level is passed through untouched',
+        sdec.arm_level_v() == 2.5, tostring(sdec.arm_level_v()))
+  sdec.armwait = 0.5
+  check('an arm wait under the floor clamps up -- the field and the capture agree on the minimum',
+        sdec.arm_wait_s() == sdec.armwait_min, tostring(sdec.arm_wait_s()))
+  sdec.armwait = 9999
+  check('and one over the ceiling clamps down, so a typo cannot freeze the panel for an hour',
+        sdec.arm_wait_s() == sdec.armwait_max, tostring(sdec.arm_wait_s()))
+  sdec.armwait = nil
+  check('a non-number arm wait does not reach the wait as nil',
+        sdec.arm_wait_s() == sdec.armwait_min, tostring(sdec.arm_wait_s()))
+
+  -- THE THRESHOLD GUESS ON A GROUND-IDLE LINE is what makes the whole feature work: the probe found
+  -- nothing, idle sits at ground, so the comparator goes arm_level_v() ABOVE it and fires on the
+  -- rise. Driven through the real branch in sdec.acquire() rather than asserted on the arithmetic.
+  sdec.armlevel = 1.0
+  sdec.probe_idle = nil
+  sdec.trigmode = 'edge'
+  -- A LINE SITTING AT GROUND WITH NOTHING ON IT. hi/lo are the generator's two levels, so a swing of
+  -- 0.02 V is BELOW sdec.minswing (0.1) and sig_levels refuses it -- which is the real condition, a
+  -- powered-down driver and a little ADC noise, rather than a line that is merely between bytes.
+  -- An earlier draft passed a `flat` option the generator does not have and silently got a normal
+  -- 6.6 V idle, which read as the at-ground branch never firing.
+  SRC.rd, SRC.ts, SRC.nsmp = GEN({bytes = {0x55}, baud = 9600, fs = 100000,
+                                  hi = 0.02, lo = 0.0})
+  sdec.fs = 100000
+  sdec.acquire()
+  check('a silent ground-idle line is NOT a failed capture in an armed mode -- it is the point',
+        sdec.probe_idle ~= nil, tostring(sdec.probe_idle))
+  -- ASSERTED ON THE COMPARATOR, NOT ON sdec.thr. acquire() RE-MEASURES the levels on the real
+  -- capture once the arm has fired, so by the time it returns sdec.thr is the second measurement and
+  -- not the voltage anything was armed at -- reading it there reported 0.01 V, the midpoint of this
+  -- stimulus, and looked like the at-ground branch never running. dmm.digitize.analogtrigger.edge is
+  -- what actually reached the hardware.
+  check('and the comparator is armed one arm level ABOVE ground, on the RISING edge',
+        dmm.digitize.analogtrigger.mode == dmm.MODE_EDGE and
+        dmm.digitize.analogtrigger.edge.slope == dmm.SLOPE_RISING and
+        math.abs((dmm.digitize.analogtrigger.edge.level or 0) - sdec.arm_level_v()) < 0.1,
+        string.format('mode=%s slope=%s level=%s vs armlevel=%s',
+                      tostring(dmm.digitize.analogtrigger.mode),
+                      tostring(dmm.digitize.analogtrigger.edge.slope),
+                      tostring(dmm.digitize.analogtrigger.edge.level),
+                      tostring(sdec.arm_level_v())))
+
+  -- ======================================================================
+  -- AND ON A LINE IDLING AWAY FROM GROUND, which is every normal idle-high TTL UART and all of
+  -- RS-232. Arm At applied only to the at-ground branch at first, so on those lines the setting was
+  -- inert while three operator-facing strings still named its voltage. Same route as above: driven
+  -- through sdec.acquire() and read off the comparator, never off the arithmetic.
+  -- ======================================================================
+  -- A 3.3 V LINE WITH NOTHING ON IT. hi - lo is 0.02 V, under sdec.minswing, so sig_levels refuses
+  -- it and vmax is the idle level -- a powered driver holding mark, which is what a quiet TTL UART
+  -- looks like.
+  sdec.armlevel = 1.0
+  sdec.probe_idle = nil
+  SRC.rd, SRC.ts, SRC.nsmp = GEN({bytes = {0x55}, baud = 9600, fs = 100000,
+                                  hi = 3.30, lo = 3.28})
+  sdec.fs = 100000
+  sdec.acquire()
+  check('a quiet idle-HIGH line is a silent line too, not a failed capture',
+        sdec.probe_idle ~= nil, tostring(sdec.probe_idle))
+  check('and the comparator arms one arm level BELOW idle, on the FALLING edge the start bit takes',
+        dmm.digitize.analogtrigger.edge.slope == dmm.SLOPE_FALLING and
+        math.abs((dmm.digitize.analogtrigger.edge.level or 0) - (3.30 - 1.0)) < 0.1,
+        string.format('level=%s slope=%s, idle 3.30 less armlevel 1.0 = 2.30',
+                      tostring(dmm.digitize.analogtrigger.edge.level),
+                      tostring(dmm.digitize.analogtrigger.edge.slope)))
+  -- THE CLAMP IS THE OLD BEHAVIOUR, which is what makes the setting safe to honour here: the active
+  -- level is unknown on a line that has not spoken, so half the idle level is the deepest arm
+  -- certainly still inside the swing. Wound to 6 V on a 3.3 V line the comparator lands on 1.65 --
+  -- exactly the fixed midpoint this branch used before the setting existed.
+  sdec.armlevel = 6.0
+  sdec.probe_idle = nil
+  sdec.acquire()
+  check('...and a level wound past the midpoint clamps there rather than outside the swing',
+        math.abs((dmm.digitize.analogtrigger.edge.level or 0) - 1.65) < 0.1,
+        string.format('level=%s at Arm At 6 V on a 3.30 V line, midpoint 1.65',
+                      tostring(dmm.digitize.analogtrigger.edge.level)))
+  -- BIPOLAR RS-232, where idle is the NEGATIVE level and the start bit travels upward. Both levels
+  -- are on the same side of ground: a stimulus straddling it is read as RS-232 and inverted, which
+  -- would be testing the inverter rather than the arm.
+  sdec.armlevel = 1.0
+  sdec.probe_idle = nil
+  SRC.rd, SRC.ts, SRC.nsmp = GEN({bytes = {0x55}, baud = 9600, fs = 100000,
+                                  hi = -5.98, lo = -6.00})
+  sdec.acquire()
+  check('an RS-232 line idling at -6 V arms one level ABOVE idle, on the RISING edge',
+        dmm.digitize.analogtrigger.edge.slope == dmm.SLOPE_RISING and
+        math.abs((dmm.digitize.analogtrigger.edge.level or 0) + 5.0) < 0.1,
+        string.format('level=%s slope=%s, idle -6.00 plus armlevel 1.0 = -5.00',
+                      tostring(dmm.digitize.analogtrigger.edge.level),
+                      tostring(dmm.digitize.analogtrigger.edge.slope)))
+  -- AND THE SAME CLAMP ON THE NEGATIVE SIDE: half of -6 is -3, so 6 V of Arm At cannot reach past it.
+  sdec.armlevel = 6.0
+  sdec.probe_idle = nil
+  sdec.acquire()
+  check('...clamped at half the idle level there too, which is -3 V and not -0 V',
+        math.abs((dmm.digitize.analogtrigger.edge.level or 0) + 3.0) < 0.1,
+        string.format('level=%s at Arm At 6 V on a -6.00 V line',
+                      tostring(dmm.digitize.analogtrigger.edge.level)))
+  sdec.armlevel = 1.0
+  -- BACK TO THE GROUND-IDLE STIMULUS, so every case below runs on the line the block opened with
+  -- rather than on whichever of these ran last.
+  SRC.rd, SRC.ts, SRC.nsmp = GEN({bytes = {0x55}, baud = 9600, fs = 100000,
+                                  hi = 0.02, lo = 0.0})
+
+  -- THE WAIT ONLY EVER GETS LONGER. Checked by raising armwait well past the edge wait and
+  -- confirming the mock saw the longer bound, then by winding it to the floor and confirming the
+  -- shipped wait is untouched -- the second direction is the one that protects every existing path.
+  sdec.probe_idle = 'no transitions'
+  sdec.armwait = 45
+  sdec.trigext = false
+  check('an arm from silence waits the operator\'s armwait, not the 3 s an edge capture waits',
+        sdec.arm_wait_s() == 45 and sdec.arm_wait_s() > sdec.trigwait,
+        string.format('%s vs %s', tostring(sdec.arm_wait_s()), tostring(sdec.trigwait)))
+
+  -- THE TRIGGER KEY AS A BREAK-IN. This is the ONLY escape from the wait that can work: a key
+  -- cannot reach the cancel latch while Lua spins, but as a stimulus of the trigger MODEL it is
+  -- serviced by firmware, which is how 'front' mode has always blocked on it.
+  sdec.armkey = true
+  sdec.probe_idle = 'no transitions'
+  check('arming from silence blends the TRIGGER key in, so a finger can always cut the wait short',
+        armed_with('edge') == trigger.EVENT_BLENDER1 and
+        trigger.blender[1].stimulus[1] == trigger.EVENT_ANALOGTRIGGER and
+        trigger.blender[1].stimulus[3] == trigger.EVENT_DISPLAY and
+        sdec.armkeyed == true,
+        string.format('ev=%s s1=%s s3=%s keyed=%s', tostring(TRIG.ev),
+                      tostring(trigger.blender[1].stimulus[1]),
+                      tostring(trigger.blender[1].stimulus[3]),
+                      tostring(sdec.armkeyed)))
+  -- SLOT 3, so it COMPOSES with the rear BNC rather than displacing it: an operator may reasonably
+  -- want the start bit, OR the DUT's GPIO, OR their finger.
+  sdec.trigext = true
+  sdec.probe_idle = 'no transitions'
+  check('and it composes with the rear BNC instead of displacing it -- all three sources at once',
+        armed_with('edge') == trigger.EVENT_BLENDER1 and
+        trigger.blender[1].stimulus[1] == trigger.EVENT_ANALOGTRIGGER and
+        trigger.blender[1].stimulus[2] == trigger.EVENT_EXTERNAL and
+        trigger.blender[1].stimulus[3] == trigger.EVENT_DISPLAY,
+        string.format('s1=%s s2=%s s3=%s',
+                      tostring(trigger.blender[1].stimulus[1]),
+                      tostring(trigger.blender[1].stimulus[2]),
+                      tostring(trigger.blender[1].stimulus[3])))
+  sdec.trigext = false
+
+  -- NOT ON A BUSY LINE, which is the whole containment argument for this feature: everything above
+  -- is gated on probe_idle, so a line that was transmitting arms exactly as it did before.
+  sdec.probe_idle = nil
+  check('a line that was already talking does NOT get the key blended in',
+        armed_with('edge') == trigger.EVENT_ANALOGTRIGGER and sdec.armkeyed == nil,
+        string.format('ev=%s keyed=%s', tostring(TRIG.ev), tostring(sdec.armkeyed)))
+  -- AND NOT IN 'front' MODE, where the key already IS the source and OR-ing it with itself spends a
+  -- blender slot to no effect.
+  sdec.probe_idle = 'no transitions'
+  check('nor does front mode, where the key is already the source',
+        armed_with('front') == trigger.EVENT_DISPLAY and sdec.armkeyed == nil,
+        string.format('ev=%s keyed=%s', tostring(TRIG.ev), tostring(sdec.armkeyed)))
+  -- CLEARABLE, because the flag exists to be tested against rather than because a sane bench would
+  -- clear it: with no key blended the arm still works, it simply has no manual escape.
+  sdec.armkey = false
+  sdec.probe_idle = 'no transitions'
+  check('and armkey = false leaves the arm working with no manual escape, not broken',
+        armed_with('edge') == trigger.EVENT_ANALOGTRIGGER and sdec.armkeyed == nil,
+        string.format('ev=%s keyed=%s', tostring(TRIG.ev), tostring(sdec.armkeyed)))
+
+  -- THE NOTE IS A HOOK, so the core carries no opinion about the panel and the offline harnesses --
+  -- which install none -- behave exactly as before. Asserted both ways round.
+  check('the core calls no armnote unless the UI installed one',
+        sdec.armnote == nil or type(sdec.armnote) == 'function', tostring(sdec.armnote))
+  ARM_NOTED = nil
+  sdec.armnote = function(w, l) ARM_NOTED = {w = w, l = l} end
+  sdec.armlevel, sdec.armwait = 1.0, 20
+  sdec.probe_idle = 'no transitions'
+  -- armed_with() parks sdec.thr at 1.65 against an Arm At of 1.0, so the armed level and the setting
+  -- behind it are already two different numbers here -- which is what makes the pair of assertions
+  -- below discriminating rather than a restatement of one value.
+  armed_with('edge')
+  check('an installed armnote is told the wait AND the level, so the panel can say both',
+        ARM_NOTED ~= nil and ARM_NOTED.w >= 20 and ARM_NOTED.l == sdec.thr,
+        ARM_NOTED == nil and 'never called'
+          or string.format('w=%s l=%s thr=%s', tostring(ARM_NOTED.w), tostring(ARM_NOTED.l),
+                           tostring(sdec.thr)))
+  -- AND IT IS THE ARMED LEVEL, NOT THE SETTING. Quoting Arm At would name a voltage the comparator
+  -- was never watching -- on an idle-high line, one on the wrong side of the signal.
+  check('...and the level it is told is the comparator\'s, not the Arm At setting',
+        ARM_NOTED ~= nil and ARM_NOTED.l ~= sdec.arm_level_v(),
+        string.format('told %s, setting %s', tostring(ARM_NOTED and ARM_NOTED.l),
+                      tostring(sdec.arm_level_v())))
+  ARM_NOTED = nil
+  sdec.probe_idle = nil
+  armed_with('edge')
+  check('and is NOT called on a line that was already talking',
+        ARM_NOTED == nil, ARM_NOTED == nil and 'not called' or 'called')
+  -- NO HOOK IS A SUPPORTED CONFIGURATION, and this asserts the BEHAVIOUR rather than the type: the
+  -- core must arm exactly the same with armnote absent, because every offline harness installs none.
+  -- The assertion this replaces -- `armnote == nil or type(armnote) == 'function'` -- is true of a
+  -- field that was never written and of one holding the wrong function, so it tested nothing.
+  sdec.armnote = nil
+  -- armkey back ON, because the case above deliberately cleared it: what is being asserted here is
+  -- that removing the HOOK changes nothing, so every other input has to match the with-hook arm.
+  sdec.armkey = true
+  sdec.probe_idle = 'no transitions'
+  check('the core arms identically with no armnote installed -- the hook is optional',
+        armed_with('edge') == trigger.EVENT_BLENDER1 and TRIG.loaded == true and
+        sdec.armkeyed == true,
+        string.format('ev=%s loaded=%s keyed=%s', tostring(TRIG.ev), tostring(TRIG.loaded),
+                      tostring(sdec.armkeyed)))
+
+  -- ======================================================================
+  -- THE WAIT ITSELF, MEASURED. The clamp assertion above proves arm_wait_s() returns 45; it says
+  -- nothing about the bound acq_triggered actually spun on, and a caller that ignored the setting
+  -- left it green. Offline delay() is a no-op, so the only way to see the bound is to count what the
+  -- loop asked for: sum delay(), and refuse to complete, and the sum IS the wait that was chosen.
+  -- ======================================================================
+  ARM_DELAYED = 0
+  local function waited_with(mode)
+    local realdelay, realdone = delay, sdec.trig_done
+    ARM_DELAYED = 0
+    delay = function(s) ARM_DELAYED = ARM_DELAYED + (s or 0) end
+    sdec.trig_done = function() return false end
+    pcall(armed_with, mode)
+    delay, sdec.trig_done = realdelay, realdone
+    return ARM_DELAYED
+  end
+  sdec.armwait, sdec.trigext = 45, false
+  sdec.probe_idle = 'no transitions'
+  local w45 = waited_with('edge')
+  check('an arm from silence really waits the operator\'s armwait, not the 3 s an edge waits',
+        w45 >= 45 - 0.1 and w45 <= 45 + 0.5,
+        string.format('%.2f s of delay asked for, armwait 45, edge wait %s', w45,
+                      tostring(sdec.trigwait)))
+  -- THE OTHER DIRECTION, which is the one that protects every pre-existing path: wound to its floor
+  -- the setting must not SHORTEN an edge capture. 2 s against a 3 s edge wait, and the capture has to
+  -- still spin for 3.
+  sdec.armwait = sdec.armwait_min
+  sdec.probe_idle = 'no transitions'
+  local wmin = waited_with('edge')
+  check('...and wound to its floor it leaves the edge wait alone rather than cutting it short',
+        wmin >= sdec.trigwait - 0.1,
+        string.format('%.2f s at armwait %s, edge wait %s', wmin, tostring(sdec.armwait_min),
+                      tostring(sdec.trigwait)))
+  -- AND NOT AT ALL ON A BUSY LINE. probe_idle nil is the containment condition for the whole
+  -- feature, so a transmitting line must spin on the mode's own wait however high armwait is.
+  sdec.armwait = 90
+  sdec.probe_idle = nil
+  local wbusy = waited_with('edge')
+  check('a line that was already talking waits the edge wait, whatever Arm Wait says',
+        wbusy >= sdec.trigwait - 0.1 and wbusy < 45,
+        string.format('%.2f s at armwait 90, edge wait %s', wbusy, tostring(sdec.trigwait)))
+  -- A FLOW-CONTROLLED CAPTURE IS NOT A SILENT DEVICE. Its line is quiet because no credit has been
+  -- spent, and the credit goes out microseconds after the arm -- so it must keep its own wait and
+  -- its own advice. This is the case probe_idle alone could not distinguish.
+  sdec.probe_idle, sdec.fc_out = 'no transitions', true
+  local wfc = waited_with('edge')
+  check('and so does a flow-controlled one, whose line is quiet only for want of a credit',
+        wfc >= sdec.trigwait - 0.1 and wfc < 45,
+        string.format('%.2f s at armwait 90 with fc_out set', wfc))
+  sdec.fc_out = false
+
+  -- ======================================================================
+  -- arm_silent(): one predicate, four states. Everything above reads it, so its truth table is
+  -- worth asserting directly as well as through behaviour.
+  -- ======================================================================
+  sdec.probe_idle, sdec.fc_out = nil, false
+  check('arm_silent is false on a line that was transmitting', sdec.arm_silent() == false,
+        tostring(sdec.arm_silent()))
+  sdec.probe_idle = 'line is idle (no transitions)'
+  check('...true when the probe found no transitions at all', sdec.arm_silent() == true,
+        tostring(sdec.arm_silent()))
+  sdec.fc_out = true
+  check('...and false again with flow control on, credit not yet spent',
+        sdec.arm_silent() == false, tostring(sdec.arm_silent()))
+  sdec.probe_idle, sdec.fc_out = nil, true
+  check('...and false for both reasons at once', sdec.arm_silent() == false,
+        tostring(sdec.arm_silent()))
+  sdec.fc_out = false
+
+  -- ======================================================================
+  -- THE ANCHORED CAPTURE IS NOT A PLACE FOR A FINGER. 'Rear BNC alone' means the marker, and
+  -- nothing else, decides where the window opens -- which is why that branch turns the comparator
+  -- off. A blended TRIGGER key let a finger place the window instead, corrupting exactly the
+  -- configuration whose whole value is that nothing else can.
+  -- ======================================================================
+  sdec.armkey = true
+  sdec.trigext, sdec.trigext_only = true, true
+  sdec.probe_idle = 'no transitions'
+  check('an anchored rear-BNC capture gets no key blended in, even arming from silence',
+        armed_with('edge') == trigger.EVENT_EXTERNAL and sdec.armkeyed == nil and
+        trigger.blender[1].stimulus[3] == nil,
+        string.format('ev=%s keyed=%s s3=%s', tostring(TRIG.ev), tostring(sdec.armkeyed),
+                      tostring(trigger.blender[1].stimulus[3])))
+  sdec.trigext_only = false
+
+  -- ======================================================================
+  -- A FIRMWARE WITHOUT A BLENDER HAS TWO CONSEQUENCES, AND BOTH ARE WORTH SAYING. The rear-BNC
+  -- fallback and the key blend both report the same missing subsystem; assigning the second message
+  -- over the first told an operator their key would not work and never that their rear BNC had
+  -- become the sole source.
+  -- ======================================================================
+  do
+    local realreset = trigger.blender[1].reset
+    trigger.blender[1].reset = function() error('no blender on this firmware', 0) end
+    sdec.trigext, sdec.probe_idle, sdec.armkey = true, 'no transitions', true
+    armed_with('edge')
+    trigger.blender[1].reset = realreset
+    local le = tostring(sdec.lasterr)
+    check('with no blender, BOTH the rear-BNC reduction and the dead key reach the operator',
+          has(le, 'using the rear BNC alone') and has(le, 'TRIGGER key will not cut'), le)
+  end
+  sdec.trigext = false
+
+  -- ======================================================================
+  -- WHOSE FAULT THE EXPIRY WAS DECIDES THE ADVICE. Arm At and Arm Wait govern the COMPARATOR, so
+  -- naming them is right only when the comparator was the source that failed to fire. The front key
+  -- and an anchored BNC reach the same line on a quiet line and had no part in it.
+  -- ======================================================================
+  local function expired_with(mode)
+    local realdone = sdec.trig_done
+    sdec.trig_done = function() return false end
+    sdec.lasterr = nil
+    pcall(armed_with, mode)
+    sdec.trig_done = realdone
+    return tostring(sdec.lasterr)
+  end
+  sdec.armlevel, sdec.armwait = 1.0, 4
+  sdec.probe_idle = 'no transitions'
+  do
+    local le = expired_with('edge')
+    check('an expired comparator arm names the two settings that govern it, and the armed LEVEL',
+          has(le, 'raise Arm Wait or lower Arm At') and has(le, string.format('%.2f', sdec.thr)),
+          le)
+    -- THE CONTRACT THE BENCH TOOLS PARSE: bench_trigkey.py reads a lasterr naming an IDLE line as
+    -- 'the trigger FIRED' and this prefix as 'the arm expired', so the expiry text must carry the
+    -- prefix and must not carry the word for a quiet line.
+    check('...behind the prefix two bench tools parse, and without the word for an idle line',
+          has(le, 'trigger unavailable; captured free-running') and not has(le, 'idle'), le)
+  end
+  do
+    sdec.probe_idle = 'no transitions'
+    local le = expired_with('front')
+    check('an unpressed TRIGGER key is NOT sent to the comparator settings',
+          not has(le, 'Arm At') and has(le, 'try Free run'), le)
+  end
+  do
+    sdec.trigext, sdec.trigext_only, sdec.probe_idle = true, true, 'no transitions'
+    local le = expired_with('edge')
+    check('nor is an anchored rear-BNC capture, whose marker never arrived',
+          not has(le, 'Arm At') and has(le, 'try Free run'), le)
+    sdec.trigext, sdec.trigext_only = false, false
+  end
+  do
+    sdec.probe_idle, sdec.fc_out = 'no transitions', true
+    local le = expired_with('edge')
+    check('and neither is a flow-controlled capture, which was waiting on its own credit',
+          not has(le, 'Arm At') and has(le, 'try Free run'), le)
+    sdec.fc_out = false
+  end
+
+  -- ======================================================================
+  -- THE BLIND RATE. An arm from silence cannot measure the line first, so the rate is a decision
+  -- taken in advance -- and what makes it defensible is a property, not a number. Asserted as
+  -- properties for that reason: a future edit to sdec.rates or to minsabit must not be able to leave
+  -- this covering a range it claims to cover.
+  -- ======================================================================
+  ARM_FS = sdec.arm_fs()
+  do
+    local inrates, i = false, nil
+    for i = 1, table.getn(sdec.rates) do
+      if sdec.rates[i] == ARM_FS then inrates = true end
+    end
+    check('the armed rate is a rate the instrument can actually synthesise',
+          inrates, string.format('%s in sdec.rates', tostring(ARM_FS)))
+  end
+  check('and it delivers the samples per bit it promises at the fastest line it covers',
+        ARM_FS / sdec.arm_baud >= sdec.arm_sabit,
+        string.format('%.2f sa/bit at %d Bd, needs %s', ARM_FS / sdec.arm_baud, sdec.arm_baud,
+                      tostring(sdec.arm_sabit)))
+  -- THE RELATION, NOT THE NUMBER: arm_sabit sits one over the decoder's declared floor, so raising
+  -- minsabit cannot quietly leave the armed rate below what the decoder will accept.
+  check('...with the promise itself above the decoder\'s floor, not at it',
+        sdec.arm_sabit > sdec.minsabit,
+        string.format('arm_sabit %s vs minsabit %s', tostring(sdec.arm_sabit),
+                      tostring(sdec.minsabit)))
+  check('and it is the LOWEST such rate, so nothing is spent on window it did not have to be',
+        sdec.pick_fs(sdec.arm_baud, sdec.arm_sabit) == ARM_FS, tostring(ARM_FS))
+  -- THE WINDOW IS THE OTHER HALF OF THE TRADE, and 9600 8N1 is what it is being traded for. The
+  -- gate arm_fit_ok() applies needs relock_minframes frames before it will believe anything, so a
+  -- window that cannot hold them would make the whole fallback vacuous.
+  do
+    local bytes9600 = math.floor(sdec.n_deliv(sdec.n) * 9600 / (ARM_FS * 10))
+    check('and the window it leaves holds a 9600 Bd banner, by more than the fit gate needs',
+          bytes9600 >= sdec.relock_minframes * 4,
+          string.format('%d bytes at 9600 Bd, gate needs %s frames', bytes9600,
+                        tostring(sdec.relock_minframes)))
+  end
+
+  sdec.armlevel, sdec.armwait, sdec.armkey = ARM_KEEP.lvl, ARM_KEEP.wait, ARM_KEEP.key
+  sdec.probe_idle = ARM_KEEP.pidle
   -- ONE FIELD, TWO BOOLEANS. The rear-BNC control was a check object carrying trigext alone;
   -- flow control needed fc_out too and the options form has no room for an eighth field, so the
   -- two booleans became four entries of one OBJ_EDIT_OPTION. Round-tripped in BOTH directions for
@@ -8868,9 +9320,23 @@ do
   sdec.trigmode, sdec.pretrig = 'startbit', 5
   -- THE RESERVE COMES OUT OF WHAT AN ARMED CAPTURE CAN RETURN, which is the whole reason this
   -- function exists: the panel said 240 bytes while the dump held 227.
-  check('an armed capture with a 5 % pre-trigger reserve delivers less than the depth',
-        sdec.n_deliv(20000) == 20000 - math.floor(20000 * 5 / 100),
-        string.format('%s of 20000', tostring(sdec.n_deliv(20000))))
+  --
+  -- ASSERTED AGAINST THE MEASURED NUMBER, not against the formula the function uses -- an assertion
+  -- built from acq_cap() would pass whichever rule were coded. The instrument delivered 20 066
+  -- readings at sdec.n = 20 000 with a capacity of 21 100, and 20 045 is the post-trigger count the
+  -- template programs for that capacity: (100 - 5)% of 21 100. The 21 extra are pre-trigger samples.
+  check('an armed capture delivers the post-trigger count the template programs, 95 % of CAPACITY',
+        sdec.n_deliv(20000) == 20045,
+        string.format('%s, want 20045 at capacity %s', tostring(sdec.n_deliv(20000)),
+                      tostring(sdec.acq_cap(20000))))
+  -- BOTH SIDES OF THE MEASUREMENT, because the two candidate rules differ by 5 % of the window and
+  -- only one of them is bounded by what the hardware returned. The retired rule gives 19 000, which
+  -- is 1066 readings under what the capture actually held; anything above 20 066 would claim window
+  -- the capture did not have.
+  check('...which is MORE than the retired n - n x position/100 rule, and still under what was read',
+        sdec.n_deliv(20000) > 19000 and sdec.n_deliv(20000) <= 20066,
+        string.format('%s, retired rule 19000, measured delivery 20066',
+                      tostring(sdec.n_deliv(20000))))
   sdec.n, sdec.trigmode, sdec.pretrig = keepn, keeptm, keeppt
 
   -- ua_implausible_why's FOUR SENTENCES, one case each. Coverage is what surfaced this: the ceiling
@@ -8987,6 +9453,390 @@ do
         string.format('%d px of travel in a %d px frame, %.2f %% per px', sdec.ui_prog_wmax,
                       sdec.ui_prog_w, 100.0 / sdec.ui_prog_wmax))
 end
+
+-- ============================================================================
+print('\narming from silence: the capture autoset() reaches, and the rates it falls back on')
+-- ============================================================================
+--
+-- WHAT THIS BLOCK IS FOR. The arming block earlier in this file drives sdec.acq_triggered() and
+-- sdec.acquire(); it proves the mechanism and proves nothing about whether a PRESS reaches it. On the
+-- instrument it did not: autoset() runs its probe ladder with trigmode forced to 'free', the ladder
+-- finds no baud rate on a silent line, and the `baud_probe == nil` refusal returned before the real
+-- capture -- so 22 passing assertions sat on top of a feature whose default configuration was
+-- unreachable. Measured: 3.55 s and 'line is idle' with the rate automatic, against 12.26 s and a
+-- live arm with the rate locked.
+--
+-- So every case here goes through sdec.autoset() or sdec.capture(), never acq_triggered.
+--
+-- A (function() ... end)() AND NOT A do BLOCK, which is the idiom the rest of this file uses for the
+-- same reason: the main chunk is at Lua 5.0.2's 200-local ceiling, and a do block's locals are still
+-- the main function's registers -- so this block as a do raised "too many local variables (limit is
+-- 200) in main function" before a single assertion ran.
+--
+-- AND THE LEADING SEMICOLON IS LOAD-BEARING. Without it the preceding print() and this parenthesis
+-- parse as print(...)(function() ... end)(), which fails with "attempt to call a nil value" in the
+-- main chunk and nowhere near the mistake -- the same trap the do-block note further up records.
+;(function()
+  local keep = {fs = sdec.fs, n = sdec.n, tm = sdec.trigmode, fb = sdec.force_baud,
+                pi = sdec.probe_idle, fc = sdec.fc_out, ext = sdec.trigext,
+                lvl = sdec.armlevel, wait = sdec.armwait, key = sdec.armkey,
+                bt = sdec.sig_bittime, af = sdec.acq_fs, pr = sdec.proto,
+                nb = sdec.force_nbits, pa = sdec.force_par, ns = sdec.force_nstop,
+                iv = sdec.force_invert, wa = sdec.widths_any}
+  sdec.trigext, sdec.trigext_only, sdec.fc_out = false, false, false
+  -- THE FORMAT FORCINGS TOO, and not out of tidiness: an earlier block in this file leaves one set,
+  -- and with a width or a stop count pinned to the wrong value every decode below fails for that
+  -- reason instead of the one under test. Measured -- the confusion matrix came back 0 of 6 answered
+  -- against 3 of 6 in a standalone harness, and the only difference was these five fields.
+  sdec.force_nbits, sdec.force_par, sdec.force_nstop = nil, nil, nil
+  sdec.force_invert, sdec.widths_any, sdec.proto = nil, false, 'uart'
+  sdec.armlevel, sdec.armwait, sdec.armkey = 1.0, 2.0, true
+  sdec.force_baud = nil
+  sdec.n = 20000
+
+  -- A LINE AT GROUND WITH NOTHING ON IT: the swing is under sdec.minswing, so sig_levels refuses it
+  -- and every rung of the probe ladder comes back 'line is idle'. This is the stimulus the whole
+  -- feature exists for -- a DUT that has not been powered on yet.
+  local function quiet_line()
+    SRC.rd, SRC.ts, SRC.nsmp, SRC.trigat = GEN({bytes = {0x55}, baud = 9600, fs = 200000,
+                                                hi = 0.02, lo = 0.0})
+    SRC.trigat = nil
+  end
+  local function arm_reset()
+    TRIG.loaded, TRIG.template, TRIG.ev, TRIG.position = false, nil, nil, nil
+    TRIG.inits, TRIG.aborts = 0, 0
+    READS.n, READS.triggered = 0, 0
+    sdec.lasterr, sdec.probe_note = nil, nil
+    sdec.detect_reset()
+  end
+
+  -- ---- THE REGRESSION ITSELF, through autoset() with nothing locked ----
+  quiet_line()
+  arm_reset()
+  sdec.trigmode = 'edge'
+  local aok, awhy = sdec.autoset()
+  check('a silent line in an armed mode REACHES the armed capture, rate automatic',
+        TRIG.loaded == true and TRIG.template == 'LoopUntilEvent' and READS.triggered == 1,
+        string.format('loaded=%s template=%s triggered=%d why=%s', tostring(TRIG.loaded),
+                      tostring(TRIG.template), READS.triggered, tostring(awhy)))
+  check('...and it arms on the comparator, at the blind rate rather than the top of the ladder',
+        TRIG.ev == trigger.EVENT_BLENDER1 and sdec.fs == sdec.arm_fs(),
+        string.format('ev=%s fs=%s arm_fs=%s', tostring(TRIG.ev), tostring(sdec.fs),
+                      tostring(sdec.arm_fs())))
+  check('...and says on the panel what it did and what would beat it',
+        sdec.probe_note ~= nil and has(sdec.probe_note, 'lock the baud rate'),
+        tostring(sdec.probe_note))
+  -- THE PROBE LADDER STILL RAN FIRST, which is what keeps this off a line that was transmitting: the
+  -- fall-through is reached only after three free-running looks found nothing.
+  check('...after the free-run ladder had its three looks, not instead of them',
+        READS.n >= table.getn(sdec.probe_fs),
+        string.format('%d free-run reads, ladder has %d rungs', READS.n,
+                      table.getn(sdec.probe_fs)))
+
+  -- ---- AND THE THREE CASES THAT MUST STILL REFUSE ----
+  quiet_line()
+  arm_reset()
+  sdec.trigmode = 'free'
+  local fok, fwhy = sdec.autoset()
+  check('free run on a silent line still refuses -- there is nothing to wait for',
+        fok == false and TRIG.loaded == false and READS.triggered == 0,
+        string.format('ok=%s loaded=%s why=%s', tostring(fok), tostring(TRIG.loaded),
+                      tostring(fwhy)))
+  quiet_line()
+  arm_reset()
+  sdec.trigmode, sdec.fc_out = 'edge', true
+  local cok, cwhy = sdec.autoset()
+  check('a flow-controlled capture refuses too -- its line is quiet for want of a credit',
+        cok == false and READS.triggered == 0,
+        string.format('ok=%s triggered=%d why=%s', tostring(cok), READS.triggered,
+                      tostring(cwhy)))
+  sdec.fc_out = false
+  -- A LOCKED RATE NEVER TAKES THIS PATH AT ALL: the ladder is skipped, so the armed capture happens
+  -- at the operator's own rate and the fall-through is not involved.
+  quiet_line()
+  arm_reset()
+  sdec.trigmode, sdec.force_baud = 'edge', 9600
+  sdec.autoset()
+  check('and a locked rate arms at ITS rate, not the blind one -- the ladder never ran',
+        READS.triggered == 1 and sdec.fs == sdec.fs_for_baud(9600) and sdec.fs ~= sdec.arm_fs(),
+        string.format('fs=%s locked-fs=%s arm_fs=%s reads=%d', tostring(sdec.fs),
+                      tostring(sdec.fs_for_baud(9600)), tostring(sdec.arm_fs()), READS.n))
+  sdec.force_baud = nil
+
+  -- ---- THE WHOLE WORKFLOW, THROUGH sdec.capture(): press, then the device starts ----
+  --
+  -- The mock fills the armed buffer inside trigger.model.initiate(), so swapping the stimulus there
+  -- is exactly "the line was silent when Capture was pressed and the device began transmitting while
+  -- the arm was live". SRC.trigat makes the mock keep the pre-trigger reserve ahead of the first
+  -- edge, which is what the hardware does and what makes the start recoverable.
+  local HI = 'Hello, World!'
+  local hib, hin = GEN_BYTES(HI)
+  quiet_line()
+  arm_reset()
+  sdec.trigmode = 'edge'
+  do
+    local realinit = trigger.model.initiate
+    trigger.model.initiate = function()
+      SRC.rd, SRC.ts, SRC.nsmp = GEN({bytes = hib, baud = 9600, fs = 200000, lead = 200,
+                                      n = 40000})
+      SRC.trigat = math.floor(200 * 200000 / 9600)
+      return realinit()
+    end
+    local pok = sdec.capture()
+    trigger.model.initiate = realinit
+    check('Capture pressed on a silent line decodes the device\'s FIRST bytes when it starts',
+          pok and sdec.res ~= nil and sdec.res.nbad == 0 and has(txt(sdec.res), HI),
+          sdec.res and string.format('%q err=%s baud=%s', txt(sdec.res), tostring(sdec.res.nbad),
+                                     tostring(sdec.baud)) or tostring(sdec.lasterr))
+    -- THE START IS THE POINT. The pre-trigger reserve means the window opens BEFORE the first start
+    -- bit, so the greeting is whole -- a capture that opened on the edge would lose its first byte.
+    check('...from the beginning of the message, not from the middle of it',
+          sdec.res ~= nil and string.sub(txt(sdec.res), 1, 5) == 'Hello',
+          sdec.res and string.format('%q', string.sub(txt(sdec.res), 1, 12)) or 'nil')
+  end
+
+  -- 1800 bytes of text, built once and used by the rotation case below and the rate fallback after
+  -- it: both need a payload that FILLS the capture window rather than sitting inside it.
+  local long = ''
+  for i = 1, 40 do long = long .. 'The quick brown fox jumps over the lazy dog. ' end
+  local tb, tn = GEN_BYTES(long)
+
+  -- ======================================================================
+  -- A ROTATED RECORD MUST COME BACK IN TIME ORDER. The capture buffer is FILL_CONTINUOUS, and an arm
+  -- that waits seconds laps it -- so the firmware's record begins wherever the pre-trigger phase had
+  -- got to, with buf.startindex saying where. MEASURED on the instrument: startindex 13 288 of
+  -- 21 100 after a 2.6 s wait, the pre-trigger silence sitting there instead of at index 1, and the
+  -- dump opening on 'World!Hello, World!' -- every byte present, in the wrong order, with one framing
+  -- error where the seam fell.
+  -- ======================================================================
+  do
+    local keepring = SRC.ringoff
+    quiet_line()
+    arm_reset()
+    sdec.trigmode = 'edge'
+    -- 0.63 of capacity: a ring position that is neither end, so a rotation that was ignored shows up
+    -- as a message starting in the middle rather than as an off-by-one.
+    SRC.ringoff = 0.63
+    -- A PAYLOAD THAT FILLS THE WINDOW, which is what makes this discriminating. A short message
+    -- surrounded by idle decodes to the same first bytes whichever way round the ring is read -- the
+    -- idle in front of it carries no bytes -- so the first version of this test passed with the
+    -- correction mutated out. 1800 bytes of text fills the 96-byte window, so a record read in ring
+    -- order starts mid-sentence.
+    local realinit = trigger.model.initiate
+    trigger.model.initiate = function()
+      SRC.rd, SRC.ts, SRC.nsmp = GEN({bytes = tb, baud = 9600, fs = 200000, lead = 200})
+      SRC.trigat = math.floor(200 * 200000 / 9600)
+      return realinit()
+    end
+    local pok = sdec.capture()
+    trigger.model.initiate = realinit
+    SRC.ringoff = keepring
+    check('a capture whose buffer WRAPPED comes back in time order, not in ring order',
+          pok and sdec.res ~= nil and string.sub(txt(sdec.res), 1, 9) == 'The quick',
+          sdec.res and string.format('%q from a ring starting at 0.63 of capacity',
+                                     string.sub(txt(sdec.res), 1, 18)) or tostring(sdec.lasterr))
+    -- AND THE RATE IS STILL MEASURED FROM THE TIMESTAMPS. Read at the ring's physical ends a rotated
+    -- record spans minus one sample period, so acq_measure_fs returned nil and every bit time
+    -- silently fell back to the REQUESTED rate -- the one number it exists not to trust.
+    check('...with the sample rate still measured rather than assumed',
+          sdec.acq_fs ~= nil and math.abs(sdec.acq_fs - 200000) < 200,
+          string.format('acq_fs=%s', tostring(sdec.acq_fs)))
+  end
+
+  -- ---- THE RATE FALLBACK: a capture in hand that no measurement can read ----
+  --
+  -- STUB sig_fit, NOT sig_bittime, AND THE DIFFERENCE IS THE WHOLE TEST. sdec.w, nw, wmed and wshort
+  -- are computed INSIDE sig_bittime, and they are what arm_try_ok() judges a candidate by -- so
+  -- stubbing sig_bittime removes the evidence as well as the answer, every physics test silently
+  -- becomes a no-op, and all five candidates survive. Measured: with sig_bittime stubbed the filter
+  -- rejected nothing at any truth. Stubbing sig_fit one layer down leaves the widths real and makes
+  -- no candidate bit time fit, which is one of sig_bittime's own two late failures.
+  --
+  -- A LONG PAYLOAD, because the frame floor must not be what does the rejecting: 1800 bytes gives
+  -- every candidate hundreds of frames, so what decides is the bytes and not the arithmetic.
+  -- -> chosen rate or nil, with the widths taken from this capture first.
+  local function prior_at(baud, fs)
+    local realfit = sdec.sig_fit
+    SRC.rd, SRC.ts, SRC.nsmp, SRC.trigat = GEN({bytes = tb, baud = baud, fs = fs})
+    sdec.trigmode, sdec.force_baud = 'free', nil
+    sdec.fs, sdec.acq_fs = fs, fs
+    sdec.acquire()
+    sdec.sig_fit = function() return nil, 0, 0 end
+    local got = sdec.arm_fit_prior()
+    sdec.sig_fit = realfit
+    if not got then return nil end
+    return sdec.baud
+  end
+
+  check('the prior fits 9600 8N1 to samples already in hand -- no second capture, nothing lost',
+        prior_at(9600, 200000) == 9600,
+        string.format('chose %s, bad=%s', tostring(sdec.baud),
+                      sdec.res and tostring(sdec.res.nbad) or 'nil'))
+  check('...and the panel is told the rate was ASSUMED, not measured',
+        sdec.probe_note ~= nil and has(sdec.probe_note, 'ASSUMED'), tostring(sdec.probe_note))
+  check('...with the operator\'s own lock left exactly as it was', sdec.force_baud == nil,
+        tostring(sdec.force_baud))
+
+  -- ======================================================================
+  -- THE CONFUSION MATRIX, WHICH IS THE ONLY ASSERTION THAT MATTERS HERE. For each true rate the
+  -- fallback must answer with THAT rate or with nothing. Never another rate.
+  --
+  -- WHY THIS IS NOT PARANOIA. Measured with a first-match ladder and the relock gate -- the obvious
+  -- implementation -- five of these six truths came back as a DIFFERENT standard rate, with clean
+  -- frames: 19200 read as 9600 with six errors in 77 frames, and 31250 read as 28800 with none in
+  -- 258. Half the true rate reads two real frames as one and puts its stop bit exactly where a real
+  -- stop bit is, so the one check that would notice agrees with it. Uniqueness plus arm_badfrac is
+  -- what turns that into three right answers and three refusals.
+  -- ======================================================================
+  do
+    local truths = {9600, 19200, 28800, 31250, 38400, 57600}
+    local wrong, got, nacc, i = 0, {}, 0, nil
+    for i = 1, table.getn(truths) do
+      local b = truths[i]
+      local chose = prior_at(b, 200000)
+      got[i] = tostring(chose)
+      if chose ~= nil then
+        nacc = nacc + 1
+        if chose ~= b then wrong = wrong + 1 end
+      end
+    end
+    check('the rate fallback never answers with a rate the line is not running',
+          wrong == 0,
+          string.format('truths 9600/19200/28800/31250/38400/57600 -> %s',
+                        table.concat(got, '/')))
+    -- AND IT IS NOT VACUOUS. A function that always refused would satisfy the line above; what makes
+    -- it worth having is that it answers at all, and it answers for the two rates a bench most often
+    -- has on it.
+    check('...and it does answer, for the rates a bench most often has on it',
+          nacc >= 2 and prior_at(9600, 200000) == 9600 and prior_at(19200, 200000) == 19200,
+          string.format('%d of 6 truths answered', nacc))
+  end
+
+  -- THE WIDTHS BELONG TO THE CAPTURE, NOT TO WHOEVER RAN LAST, and that is why arm_fit_prior measures
+  -- them itself. Poisoned with a faster capture's median pulse the filter rejects the true rate of
+  -- this one -- which is not hypothetical: it is what the first version of this fixture did, and the
+  -- confusion matrix came back 0 of 6 answered with every individual test passing.
+  do
+    sdec.wmed, sdec.wshort, sdec.nw = 6.93, 3.0, 2853   -- a 57600 Bd capture's widths
+    check('a previous capture\'s pulse widths cannot reject this one\'s true rate',
+          prior_at(9600, 200000) == 9600,
+          string.format('chose %s with a 57600 Bd capture\'s widths parked in wmed',
+                        tostring(sdec.baud)))
+  end
+
+  -- AMBIGUITY IS REPORTED, NOT RESOLVED. 38400 at this rate fits three candidates equally well, and
+  -- the note has to name two of them rather than pick one -- that is the operator's call and it
+  -- needs the one fact the instrument does not have.
+  do
+    local chose = prior_at(38400, 200000)
+    check('a capture that fits two rates equally says so, and publishes neither',
+          chose == nil and sdec.probe_note ~= nil and has(sdec.probe_note, 'fits') and
+          has(sdec.probe_note, 'lock the rate'),
+          string.format('chose=%s note=%s', tostring(chose), tostring(sdec.probe_note)))
+  end
+
+  -- NOTHING ON THE LINE AT ALL, AND THAT HAS TO BE AN HONEST ANSWER.
+  do
+    local realfit = sdec.sig_fit
+    quiet_line()
+    sdec.fs, sdec.acq_fs = 200000, 200000
+    sdec.trigmode, sdec.force_baud = 'free', nil
+    sdec.acquire()
+    sdec.sig_fit = function() return nil, 0, 0 end
+    local pr = sdec.arm_fit_prior()
+    sdec.sig_fit = realfit
+    check('a line with nothing on it fits none of the prior, rather than the first of it',
+          pr == false, string.format('fitted=%s baud=%s', tostring(pr), tostring(sdec.baud)))
+    check('...and the lock is still where the operator left it', sdec.force_baud == nil,
+          tostring(sdec.force_baud))
+  end
+
+  -- THE PHYSICS FILTER, DIRECTLY. arm_try_ok() is what spends or saves each decode, and its two
+  -- directions have different mechanisms -- so each is asserted on a capture whose widths it was
+  -- measured against rather than inferred from the ladder's final answer.
+  do
+    local realfit = sdec.sig_fit
+    SRC.rd, SRC.ts, SRC.nsmp, SRC.trigat = GEN({bytes = tb, baud = 9600, fs = 200000})
+    sdec.trigmode, sdec.force_baud = 'free', nil
+    sdec.fs, sdec.acq_fs = 200000, 200000
+    sdec.acquire()
+    sdec.sig_bittime()             -- the widths every test below judges by, from this capture
+    check('on a 9600 line the filter admits 9600 and refuses every faster candidate',
+          sdec.arm_try_ok(200000 / 9600, sdec.nread) == true and
+          sdec.arm_try_ok(200000 / 19200, sdec.nread) == false and
+          sdec.arm_try_ok(200000 / 38400, sdec.nread) == false,
+          string.format('9600=%s 19200=%s 38400=%s',
+                        tostring(sdec.arm_try_ok(200000 / 9600, sdec.nread)),
+                        tostring(sdec.arm_try_ok(200000 / 19200, sdec.nread)),
+                        tostring(sdec.arm_try_ok(200000 / 38400, sdec.nread))))
+    -- AND A CANDIDATE THE CAPTURE CANNOT RESOLVE AT ALL is refused on the sample rate alone, which
+    -- is ua_plausible's floor rather than anything to do with the pulses.
+    check('...and refuses any candidate below the decoder\'s samples-per-bit floor',
+          sdec.arm_try_ok(sdec.minsabit - 1, sdec.nread) == false,
+          string.format('T=%s against minsabit %s', tostring(sdec.minsabit - 1),
+                        tostring(sdec.minsabit)))
+    -- FAIL CLOSED WITH NO EVIDENCE. The widths come from sig_bittime, so a caller that reaches here
+    -- before it has run has nothing to judge by -- and every one of the three tests answers "no
+    -- objection" to a missing array. Measured: with the widths absent the filter admitted all five
+    -- candidates at every truth.
+    local kw, kn = sdec.wmed, sdec.nw
+    sdec.wmed, sdec.nw = nil, 0
+    check('with no pulse widths measured yet the filter refuses rather than waving candidates through',
+          sdec.arm_try_ok(200000 / 19200, sdec.nread) == false,
+          string.format('admitted=%s with wmed nil',
+                        tostring(sdec.arm_try_ok(200000 / 19200, sdec.nread))))
+    sdec.wmed, sdec.nw = kw, kn
+    sdec.sig_fit = realfit
+  end
+  check('and the ladder has no entry below 9600, where a false fit is all it could add',
+        sdec.arm_try[1] >= 9600, tostring(sdec.arm_try[1]))
+
+  -- arm_fit_ok(), THE GATE ITSELF, at both of its two thresholds. Driven on a hand-built result so
+  -- each threshold is crossed on its own rather than inferred from a decode that crossed both.
+  do
+    local keepres = sdec.res
+    sdec.res = {nf = sdec.relock_minframes - 1, nbad = 0, bad = {}, vals = {}}
+    check('the fit gate refuses a result with too few frames to judge',
+          sdec.arm_fit_ok() == false,
+          string.format('%d frames, needs %s', sdec.res.nf, tostring(sdec.relock_minframes)))
+    sdec.res = nil
+    check('...and refuses no result at all rather than indexing it',
+          sdec.arm_fit_ok() == false, 'res=nil')
+    sdec.res = keepres
+  end
+
+  -- ---- Cancel's snapshot must not be able to clear these two settings ----
+  --
+  -- options_restore() copied both fields unguarded, so any snapshot built without them -- which is
+  -- what two fixtures in this file do -- put nil into both. The clamps then answered with their
+  -- floors, so the suite ran the whole feature at 0.33 V and 2 s and no assertion noticed: a defect
+  -- that hid by looking exactly like a configuration.
+  do
+    sdec.armlevel, sdec.armwait = 2.5, 30
+    sdec.opt_snap = {trig = 'edge', ext = false, fc = false}
+    sdec.options_restore()
+    check('a partial Cancel snapshot leaves the arm settings alone instead of nilling them',
+          sdec.armlevel == 2.5 and sdec.armwait == 30,
+          string.format('level=%s wait=%s', tostring(sdec.armlevel), tostring(sdec.armwait)))
+    -- AND A FULL SNAPSHOT STILL PUTS BACK WHAT IT TOOK, which is the other direction and the one
+    -- that makes Cancel mean anything.
+    sdec.armlevel, sdec.armwait = 1.0, 10
+    sdec.options_save()
+    sdec.armlevel, sdec.armwait = 4.0, 99
+    sdec.options_restore()
+    check('...and a full one undoes an edit, which is what Cancel promises',
+          sdec.armlevel == 1.0 and sdec.armwait == 10,
+          string.format('level=%s wait=%s', tostring(sdec.armlevel), tostring(sdec.armwait)))
+    sdec.opt_snap = nil
+  end
+
+  sdec.fs, sdec.n, sdec.trigmode = keep.fs, keep.n, keep.tm
+  sdec.force_baud, sdec.probe_idle, sdec.fc_out = keep.fb, keep.pi, keep.fc
+  sdec.trigext, sdec.sig_bittime, sdec.acq_fs = keep.ext, keep.bt, keep.af
+  sdec.armlevel, sdec.armwait, sdec.armkey = keep.lvl, keep.wait, keep.key
+  sdec.force_nbits, sdec.force_par, sdec.force_nstop = keep.nb, keep.pa, keep.ns
+  sdec.force_invert, sdec.widths_any, sdec.proto = keep.iv, keep.wa, keep.pr
+end)()
 
 print()
 print(string.format('%d passed, %d failed', pass, fail))

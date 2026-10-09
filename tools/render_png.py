@@ -414,7 +414,7 @@ def cmd_panel(args):
                  '<img src="mockup-main-midi.png">'
                  '<h2>Main screen &mdash; LIN frame view</h2>'
                  '<img src="mockup-main-lin.png">'
-                 '<h2>Options form &mdash; seven fields</h2>'
+                 '<h2>Options form &mdash; nine fields, the most the screen holds</h2>'
                  '<img src="mockup-options.png">'
                  '<h2>Options form &mdash; <code>Ext Trig In</code> ticked</h2>'
                  '<p>Orthogonal to the <code>Trigger</code> field above it: ticked, the rear '

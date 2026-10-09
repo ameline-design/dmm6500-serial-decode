@@ -319,7 +319,171 @@ sdec.binocc    = 16    -- target samples per BIN
 -- 2 and why a larger value buys nothing.
 sdec.minhump   = 2
 sdec.flatfloor = 1.0    -- below this an idle level counts as sitting at ground
-sdec.flatoffs  = 0.5    -- and the guessed threshold goes this far above it
+
+-- ============================================================================
+-- ARMING FROM SILENCE: waiting for a device that has not started talking yet.
+--
+-- THE CASE. A DUT transmits when it is powered on, or when some external event happens, and until
+-- then it holds the line at whatever its idle level is. Press Capture before that and the probe in
+-- sdec.acquire() finds no transitions at all -- so the silent branch there arms the comparator
+-- arm_level_v() volts from the idle level, on the side the start bit travels, and the window then
+-- opens on the device's first start bit instead of on a buffer full of silence. These two settings
+-- are that branch's only tunables, and Options carries them as 'Arm At' and 'Arm Wait'.
+--
+-- NOT USED ON A LINE THAT WAS ALREADY TALKING. Where the probe DID find two levels the threshold is
+-- their midpoint, which beats any fixed voltage -- so these apply to the silent case alone, which is
+-- the case they were asked for.
+--
+-- HOW FAR FROM THE IDLE LEVEL THE COMPARATOR ARMS, in volts. 1.0 clears ADC noise and the slow edge
+-- of a lightly-driven line, and still sits inside the swing of every family this app decodes -- a
+-- 3.3 V part crosses it at under a third of its swing, from either direction.
+--
+-- THE FLOOR IS 0.33 V because below that the comparator starts firing on noise on a floating input,
+-- which arms the capture on nothing and returns a window of silence that looks like a decode
+-- failure. The ceiling is 6 V, because a level has to sit inside a logic swing to be crossed at all
+-- and a 6 V arm already needs a 12 V part to reach it.
+--
+-- ON A LINE IDLING AWAY FROM GROUND THE LEVEL IS CLAMPED AT THE MIDPOINT, by the branch that uses
+-- it. There the active level is unknown by construction, so half the idle level is the deepest arm
+-- that is certainly still inside the swing; a setting wound past it reads as "as deep as is safe"
+-- rather than as a comparator armed where the signal may never reach.
+--
+-- NOTE THIS EQUALS sdec.flatfloor BY COINCIDENCE, NOT BY CONSTRUCTION. flatfloor decides whether an
+-- idle level counts as sitting at ground; this decides how far above such a line to arm. They answer
+-- different questions, they are read in different comparisons, and a future edit that "unifies the
+-- two 1.0s" would couple the operator's trigger level to the ground test.
+sdec.armlevel     = sdec.armlevel or 1.0
+sdec.armlevel_min = 0.33
+sdec.armlevel_max = 6.0
+
+-- HOW LONG SUCH AN ARM MAY WAIT, in seconds. 10 by default, not the 3 an 'edge' capture waits
+-- otherwise: the wait has to outlast an operator reaching for a power switch, and 3 s does not.
+--
+-- THE PANEL IS FROZEN FOR THE WHOLE WAIT, AND THAT IS THE COST OF THE RANGE. This loop runs inside a
+-- touch handler and NOTHING can interrupt it: measured, and recorded beside ui_log_t in
+-- serial_ui.tsp, the front TRIGGER key's event never reaches the cancel latch while a
+-- panel-initiated run executes, and a touch press only queues. So the operator's one exit is
+-- expiry. At the 120 s ceiling that is two minutes of dead panel, which is a deliberate choice and
+-- not an oversight -- armnote below is what stops it reading as the wedge this app was released to
+-- fix. Raise the ceiling no further without making the wait yield.
+--
+-- THE 2 s FLOOR IS ALSO WHY NOTHING EXISTING CHANGES. The caller takes this value only when it
+-- EXCEEDS the mode's own wait, and the smallest it can be is 2 against an 'edge' default of 3 -- so
+-- a form set to its minimum leaves every pre-existing timing exactly as it was.
+sdec.armwait     = sdec.armwait or 10.0
+sdec.armwait_min = 2.0
+sdec.armwait_max = 120.0
+
+-- MAY THE FRONT TRIGGER KEY CUT AN ARM SHORT? ON, because it is the only escape from the wait that
+-- works at all -- see the blend in acq_triggered() for why a key reaches the trigger model when it
+-- cannot reach the cancel latch. Off costs the operator their one way out of a 120 s freeze, so the
+-- flag exists to be TESTED against, not because a sane bench would clear it.
+--
+-- NOT ON THE FORM. The options screen is at eight fields, nine with a protocol module, and this is a
+-- safety valve with no operational downside: an accidental press captures silence and costs one
+-- retry, against a wait nothing else can end.
+if sdec.armkey == nil then sdec.armkey = true end
+
+-- BOTH READ THROUGH ONE FUNCTION EACH, by the capture AND by the form, so a typed value cannot mean
+-- one thing to the field and another to the comparator. Clamped rather than refused: a form that
+-- silently declines an entry is worse than one that takes the nearest usable value.
+function sdec.arm_level_v()
+  local v = tonumber(sdec.armlevel)
+  if v == nil or v < sdec.armlevel_min then return sdec.armlevel_min end
+  if v > sdec.armlevel_max then return sdec.armlevel_max end
+  return v
+end
+
+-- CLAMPED TO THE SAME [min, max] THE FIELD OFFERS, so the form and the comparator cannot disagree
+-- about what is acceptable -- an earlier draft let a programmatic 0.5 through while the field refused
+-- anything under 2, which is two different answers to one question.
+--
+-- AND THE FLOOR IS WHY NOTHING EXISTING MOVES: armwait_min is 2 against an 'edge' wait of 3, and the
+-- caller takes this value only when it EXCEEDS that -- so a form wound all the way down is a no-op
+-- rather than a way to make captures fail faster than they used to.
+function sdec.arm_wait_s()
+  local w = tonumber(sdec.armwait)
+  if w == nil or w < sdec.armwait_min then return sdec.armwait_min end
+  if w > sdec.armwait_max then return sdec.armwait_max end
+  return w
+end
+
+-- THE RATE AN ARM FROM SILENCE CAPTURES AT, stated as the FASTEST LINE it commits to decoding and
+-- the samples per bit it must still have there.
+--
+-- WHY A BLIND CHOICE IS UNAVOIDABLE HERE. autoset()'s two-pass design measures the bit time first
+-- and picks the sample rate from it. A line that has not started transmitting cannot be measured --
+-- there is nothing on it -- so an arm from silence has to choose a rate before it has any evidence.
+--
+-- AND IT GETS ONE ATTEMPT. The window that catches a device's opening bytes is the only window those
+-- bytes are ever in. A second pass at a better rate, which is what every other path in autoset()
+-- does, would re-capture whatever the device happened to be saying a moment later -- so this path
+-- keeps what it gets and no re-capture runs after it.
+--
+-- SO THE CHOICE IS A WINDOW LENGTH, NOT A CEILING, and the trade is visible in one table. The arm
+-- fires on the first edge whatever the rate, so every row below catches the START; what changes is
+-- how much of the opening message comes with it (8N1, at sdec.n):
+--
+--     fs        window    9600        19200       38400        57600
+--     160 kS/s  125 ms    16.7 / 120  8.3 / 240   4.2 / 480    2.8 -- refused
+--     200 kS/s  100 ms    20.8 /  96  10.4 / 192  5.2 / 384    3.5 -- refused
+--     320 kS/s   63 ms    33.3 /  60  16.7 / 120  8.3 / 240    5.6 / 360
+--     500 kS/s   40 ms    52.1 /  38  26.0 /  77  13.0 / 154   8.7 / 230
+--                         samples per bit / bytes of window
+--
+-- 38400 AT ONE SAMPLE OVER THE FLOOR IS THE COMMITMENT, which is 200 kS/s. Everything else is spent
+-- on window, because the rates a bench actually meets are overwhelmingly 9600 and 19200 8N1 -- a
+-- prior worth about 90 %, and nothing below 9600 at all. A hundred milliseconds holds 96 bytes of a
+-- 9600 Bd power-on banner, against 38 at 500 kS/s.
+--
+-- A FASTER LINE IS NOT ABANDONED, it loses only its opening bytes: it decodes undersampled or not at
+-- all here, capture()'s back-off then re-runs autoset(), and by then the device is transmitting -- so
+-- the ordinary probe measures it properly. See sdec.arm_try for the rates tried over these same
+-- samples before it comes to that.
+--
+-- AN OPERATOR WHO KNOWS THE RATE SHOULD LOCK IT, and the panel note says so. A locked baud rate skips
+-- the ladder entirely and the armed capture runs at that rate's own fs for a full window -- longer AND
+-- better sampled than anything a blind constant can be.
+sdec.arm_baud  = 38400
+-- ONE SAMPLE OVER sdec.minsabit, deliberately not the sdec.fs_sabit target of 8: this is the rate
+-- the window is being traded AGAINST, so the floor is what belongs here. The test suite asserts the
+-- relation rather than the number, so raising minsabit cannot quietly leave this below it.
+sdec.arm_sabit = 5
+
+function sdec.arm_fs()
+  return sdec.pick_fs(sdec.arm_baud, sdec.arm_sabit)
+end
+
+-- THE RATES A BLIND ARMED CAPTURE FALLS BACK ON, in the order they are worth trying, and the whole
+-- point is that trying them COSTS NOTHING AND LOSES NOTHING: they are fitted to the samples already
+-- in hand, so no byte of the start is traded for the attempt.
+--
+-- A PRIOR, NOT A MEASUREMENT, and it is only ever consulted where there is no measurement to be had.
+-- 9600 and 19200 8N1 first because that is what a bench UART almost always is; then upward through
+-- the standard rates that this capture can still resolve. Nothing below 9600 is here: a slow line
+-- gives the detector hundreds of samples a bit and never reaches this fallback, so the only thing a
+-- slow candidate could add is a false fit over a short window.
+--
+-- BOUNDED BY THE CAPTURE, not just by the list. arm_fit_prior() drops any entry needing more than
+-- the window's own samples per bit, so the ladder shrinks automatically when the rate does.
+sdec.arm_try = {9600, 19200, 28800, 31250, 38400}
+
+-- IS THIS CAPTURE WAITING FOR A DEVICE THAT HAS NOT STARTED? One predicate, read by everything that
+-- behaves differently in that case: the wait length, the TRIGGER-key blend, the panel note, the
+-- expiry advice and autoset()'s fall-through to an armed capture.
+--
+-- sdec.probe_idle ALONE IS NOT THE CONDITION, which is the whole reason this is a function rather
+-- than a field test. probe_idle means "the probe saw no transitions", and that is equally true of
+-- every FLOW-CONTROLLED capture: the probe runs nofc, so the device has had no credit yet and the
+-- line is necessarily quiet. Those captures begin within microseconds of the credit pulse
+-- acq_triggered() sends after initiate(), so stretching their wait to armwait, blending a key into
+-- them and telling the operator the panel is waiting for a device are three answers to a question
+-- nobody asked.
+function sdec.arm_silent()
+  if sdec.probe_idle == nil then return false end
+  if sdec.fc_out then return false end
+  return true
+end
 -- HOW LONG A RUN MUST BE BEFORE sig_idle WILL BELIEVE IT IS IDLE, in estimated bit times.
 --
 -- At 8N1 the longest run DATA can make is nine bit times -- a start bit plus eight zero data bits, or
@@ -1285,10 +1449,17 @@ function sdec.acq_measure_fs(buf, n)
   -- GUARDED, AND A nil TEST CANNOT REPLACE IT. The attribute always EXISTS on a non-nil buffer, but
   -- that is not the failure: the header above records that indexing the PROXY of a buffer the
   -- firmware has already dropped RAISES. Existence and a successful proxy read are different claims.
+  -- THE TWO ENDS IN TIME ORDER, which on a WRAPPED buffer are not index 1 and index n: see
+  -- sdec.acq_first. Taken from the ring's physical ends, a rotated record gives a span of minus one
+  -- sample period -- so this returned nil and every bit time silently fell back to the REQUESTED
+  -- rate, which is the one number this function exists not to trust.
+  local first = sdec.acq_first(buf, n)
+  local last = first + n - 1
+  if last > n then last = last - n end
   local t1, tn = nil, nil
   local ok = pcall(function()
     local ts = buf.relativetimestamps
-    if ts ~= nil then t1, tn = ts[1], ts[n] end
+    if ts ~= nil then t1, tn = ts[first], ts[last] end
   end)
   if not ok then return nil end
   if t1 == nil or tn == nil then return nil end
@@ -1582,8 +1753,9 @@ end
 --     fs = 1 MS/s   reserve 1.05 ms   got 21100 (the whole buffer)   4915 x10
 --     fs = 10 kS/s  reserve 105 ms    got 20085 (the depth asked)    4915 x0
 --
--- NOT fixed by raising `position`: the firmware makes post = count - count x position/100, so a
--- reserve big enough in time at 1 MS/s (66 %) would cost two thirds of the depth. Nor by a bigger
+-- NOT fixed by raising `position`: the template's post-trigger count is (100 - position)% of
+-- capacity, so a reserve big enough in time at 1 MS/s (66 %) would cost two thirds of the depth --
+-- see sdec.n_deliv for the measurement that establishes the rule. Nor by a bigger
 -- buffer alone -- 5 % of enough readings to cover 40 ms at 1 MS/s is an 800 000-reading buffer per
 -- capture. So the reserve stays at 5 % and the FILL MODE is what stops the event: see
 -- sdec.acq_fillmode. The data is unaffected either way, verified byte-exact throughout.
@@ -1601,22 +1773,44 @@ end
 
 -- HOW MANY SAMPLES A CAPTURE ACTUALLY DELIVERS, which is not sdec.n on the armed path.
 --
--- LoopUntilEvent reserves `pretrig` per cent of the buffer for pre-trigger readings and makes only
--- the remainder as post-trigger ones; on a busy line the trigger fires within ~15 samples so the
--- reserve is never spent. Measured 19011 of 20000. Free-run (dmm.digitize.read) has no reserve and
--- delivers the lot.
+-- LoopUntilEvent reserves `pretrig` per cent for pre-trigger readings and makes the remainder as
+-- post-trigger ones; on a busy line the trigger fires within ~15 samples, so the reserve is never
+-- spent and what comes back is the post-trigger count plus that handful. Free-run
+-- (dmm.digitize.read) has no reserve and delivers the lot.
 --
--- window_bytes() used sdec.n, so it reported a capacity 5 % larger than any armed capture could
--- return -- the panel said 240 while the dump held 227, and "was this message seen WHOLE?" is the
--- one question that number exists to answer.
+-- THE PER CENT IS OF CAPACITY, NOT OF `count`, AND THE DIFFERENCE IS THE WHOLE FUNCTION. The
+-- template programs (100 - position)% of the BUFFER'S capacity as its post-trigger count, and
+-- dmm.digitize.count has no part in it: measured over 15 combinations of capacity and position, each
+-- matching that rule exactly, with digitize.count set to 77 against 1000 changing nothing. The
+-- shorter rule this function used to carry -- n minus n x position/100 -- is the one the vendor
+-- manual implies, and it under-reports by 5 % of the window on every armed capture: 19 000 against a
+-- measured 20 066 at sdec.n = 20 000. acq_cap()'s own recorded figure, 20 066 delivered at capacity
+-- 21 100, fits only the capacity model.
+--
+-- A FLOOR, NEVER A CEILING, which is what makes it safe to answer "was this message seen WHOLE?".
+-- The pre-trigger samples accumulated before the trigger arrive ON TOP of this number and are
+-- unknowable in advance -- a handful on a busy line, up to the full reserve on one that was silent.
+--
+-- AND IT COMES OUT ABOVE sdec.n, which looks wrong and is not: acq_cap() asks for the reserve ON TOP
+-- of the depth, so 95 % of 21 100 is more than 20 000. The 100 readings of headroom in that capacity
+-- are the only part not reported, since they exist to absorb the model's overshoot.
+--
+-- BOTH HISTORICAL MEASUREMENTS FIT, and they are from different eras of acq_cap(). With a buffer
+-- sized exactly n -- capacity 20 000 -- the post count was 19 000 and the dump held 227 bytes under a
+-- panel claiming 240, which is where this function came from. With the reserve asked for on top --
+-- capacity 21 100 -- it is 20 045, and the instrument returned 20 066. One rule, two capacities.
 function sdec.n_deliv(n)
   if n == nil then n = sdec.n end
   if n == nil then return nil end
   -- Only the armed paths reserve. 'free' means dmm.digitize.read(), which fills the buffer.
   if sdec.trigmode == 'free' then return n end
   local pt = sdec.pretrig or 0
+  -- AT pretrig = 0 THE RULE STILL HOLDS, and gives the whole capacity -- which is n plus acq_cap()'s
+  -- headroom. Reported as n deliberately: that headroom exists to absorb the model's overshoot past
+  -- `count`, and it is not window anybody asked for.
   if pt <= 0 then return n end
-  return n - math.floor(n * pt / 100)
+  local cap = sdec.acq_cap(n) or n
+  return math.floor(cap * (100 - pt) / 100)
 end
 
 -- How many bytes one capture window can hold at this rate and format.
@@ -1999,17 +2193,83 @@ sdec.tickevery = sdec.tickevery or 2000    -- samples between hook calls; the be
 -- math.mod(i, every) == 0` inside the loop -- puts a modulo on all 20 000 iterations of the hottest loop in
 -- the acquisition path, which is 0.455 s at 21.8 us a proxy read and does not need help getting slower.
 -- Slicing the range instead leaves the inner loop byte for byte what it was.
+-- WHERE THE OLDEST READING IS, as an index into buf.readings. 1 unless the buffer has WRAPPED.
+--
+-- WHY A RECORD CAN COME BACK ROTATED AT ALL. The capture buffer is FILL_CONTINUOUS -- which is what
+-- keeps 4915 off the panel, see acq_fillmode -- and LoopUntilEvent's pre-trigger block writes into it
+-- for the whole wait. An arm that waits SECONDS therefore laps the buffer: 2.6 s at 200 kS/s is 24
+-- laps of 21 100 readings. readings[1] is then the ring's PHYSICAL slot 1 rather than its logical
+-- oldest, so the record holds every sample it should, in ring order, beginning wherever the pre-roll
+-- had got to when the trigger fired.
+--
+-- MEASURED on 1.7.17a, an armed capture of a line that started talking 3.1 s after Capture:
+-- buf.startindex 13 288, buf.endindex 13 287, and the 1 055-reading pre-trigger silence sitting at
+-- 13 288 instead of at 1. The dump opened on 'World!Hello, World!...' -- mid-message, with one framing
+-- error where the ring seam fell. Every byte was present and the order was wrong.
+--
+-- THE FIRMWARE ANSWERS IT DIRECTLY, in one proxy read: bufferVar.startindex is documented as the
+-- index of the first reading held. A timestamp binary search would also find the seam -- the
+-- timestamps are monotonic in logical order, so a rotated ring is two ascending runs -- but that
+-- costs fifteen reads to answer a question the instrument will answer in one.
+--
+-- NOT ROTATED IS THE NORMAL CASE and costs the same one read: a capture that never filled the buffer,
+-- a free-run read, and an armed capture of a busy line all come back with startindex 1, because the
+-- trigger fires within about fifteen samples of initiate() on a line that is already transmitting.
+function sdec.acq_first(buf, n)
+  if buf == nil or n == nil or n < 1 then return 1 end
+  -- ONLY A FULL BUFFER CAN HAVE WRAPPED, and testing that first is what makes the rest safe to
+  -- trust: a record shorter than its own capacity is in order whatever startindex says. It also
+  -- disarms a startindex left behind by an EARLIER wrapped capture, which matters because nothing
+  -- here can prove buf.clear() resets the attribute -- the 2 000-sample level probe runs into the
+  -- same buffer a 21 100-sample armed capture has just wrapped.
+  local cap = nil
+  if not pcall(function() cap = buf.capacity end) then return 1 end
+  if cap ~= nil and n < cap then return 1 end
+  local s = nil
+  -- GUARDED AT THE PROXY READ, like every other attribute on this object: startindex is documented
+  -- for the DMM6500, and on a firmware without it the read must come back as "not rotated" rather
+  -- than unwinding a capture that is otherwise complete.
+  local ok = pcall(function() s = buf.startindex end)
+  if not ok or s == nil then return 1 end
+  s = math.floor(s)
+  if s < 1 or s > n then return 1 end
+  return s
+end
+
+-- WHERE THE NEXT READING WILL GO, as an index into buf.readings, or nil when it cannot be read.
+--
+-- THE ONLY PROGRESS COUNTER THAT SURVIVES A WRAP. buf.n stops at capacity, so on a FILL_CONTINUOUS
+-- buffer it says "full" and then nothing for the rest of the acquisition -- and an armed recording
+-- whose pre-trigger phase waited longer than the buffer holds is in exactly that state before the
+-- device has sent a byte: 0.75 s of wait at 1 MS/s fills an 8 kB recording's buffer. endindex keeps
+-- moving, because it is a position in the ring rather than a count of what the ring holds.
+function sdec.acq_end(buf)
+  if buf == nil then return nil end
+  local e = nil
+  if not pcall(function() e = buf.endindex end) then return nil end
+  if e == nil then return nil end
+  return math.floor(e)
+end
+
 function sdec.acq_copy(buf, n)
   local rd = buf.readings
   local t = {}
   local step = sdec.tickevery
   if step == nil or step < 1 then step = n end
+  -- THE COPY IS IN TIME ORDER, NOT RING ORDER -- see sdec.acq_first for why those differ and what it
+  -- cost. An offset of zero is the normal case and leaves the inner loop one add and one compare
+  -- heavier than a bare copy, which is the whole price of the correction.
+  local off = sdec.acq_first(buf, n) - 1
   local i = 1
   while i <= n do
     local j = i + step - 1
     if j > n then j = n end
     local k
-    for k = i, j do t[k] = rd[k] end
+    for k = i, j do
+      local p = k + off
+      if p > n then p = p - n end
+      t[k] = rd[p]
+    end
     if sdec.tick ~= nil then sdec.tick() end
     i = j + 1
   end
@@ -2087,6 +2347,35 @@ function sdec.trig_done(buf)
   if not sok then st = nil end
   if st == nil then return false end
   return st == trigger.STATE_IDLE and (buf.n or 0) > 0
+end
+
+-- HOW LONG TO WAIT FOR AN ARMED MODEL TO REACH ITS WAIT BLOCK, in seconds. Three blocks of setup
+-- stand in front of it -- a buffer clear, a zero delay and the start of an infinite digitize -- so
+-- the measured arrival is about a millisecond and this ceiling is forty times that. It exists because
+-- the alternative to a bound is a spin, not because the number is interesting.
+sdec.arm_settle_s = 0.25
+
+-- IS THE MODEL SITTING IN A WAIT BLOCK? -> true, false, or NIL when it cannot be told.
+--
+-- THE THREE-WAY ANSWER IS THE POINT. An armed recording's poll loop has to distinguish "the device
+-- has not started yet" from "it started and the burst is running", and it cannot do that from the
+-- buffer: the pre-trigger phase accumulates readings while it waits, so buf.n climbing is not
+-- evidence of a trigger. MEASURED -- an 8 kB recording armed on a silent line plateaued a few
+-- readings ABOVE its reserve within milliseconds of initiate(), which a buffer-level test read as
+-- "fired", and the idle watchdog then ended the run as 'quiet' one second later with zero bytes,
+-- three seconds before the device started transmitting.
+--
+-- nil MEANS DEGRADE, not retry: a firmware without trigger.STATE_WAITING, or a state read that
+-- raised, leaves the caller with no way to bound an arm -- and the honest answer there is to behave
+-- exactly as a recording did before the feature existed rather than to guess.
+function sdec.trig_waiting()
+  if trigger.STATE_WAITING == nil then return nil end
+  -- ON A RAISE THE SECOND RESULT IS THE MESSAGE rather than a state, and a string would compare
+  -- unequal to the constant and read as "not waiting" -- which is the wrong degrade. Same guard, and
+  -- the same reason, as sdec.trig_done above.
+  local sok, st = pcall(trigger.model.state)
+  if not sok or st == nil then return nil end
+  return st == trigger.STATE_WAITING
 end
 
 -- Stop the trigger model AND WAIT FOR IT TO STOP. abort() is asynchronous; see the
@@ -2222,31 +2511,21 @@ function sdec.cancel_pressed()
   if not ok then return false end
   return got == true
 end
-
--- Capture armed on a signal edge, on the front-panel TRIGGER key or on the rear BNC,
--- degrading to a free-running read if the source is refused.
-function sdec.acq_triggered(n, slope)
-  local buf = sdec.buf
-  -- NIL IS NOT A TRIGGER SOURCE, and it is checked here, before any instrument state is
-  -- touched, so the refusal has nothing to undo. trigger.EVENT_DISPLAY is documented for the
-  -- DMM6500, but on a firmware without it the constant reaches trigger.model.load() and the
-  -- blender stimulus below AS NIL -- where the front key vanishes silently and a ticked rear BNC
-  -- looks like a deliberate sole choice. acq_free() sets up its own capture.
-  if sdec.trigmode == 'front' and trigger.EVENT_DISPLAY == nil then
-    sdec.lasterr = 'no front-panel TRIGGER event on this firmware; captured free-running'
-    return sdec.acq_free(n)
-  end
-  buf.clear()
-  -- PER CAPTURE, not only at creation. Observed reading back 0 on a capture that reused an existing
-  -- buffer, and one FILL_ONCE capture is one burst of 4915. Setting it also clears the buffer, which
-  -- is why it goes here rather than after clear().
-  sdec.acq_fillmode(buf)
-  n = sdec.acq_fit(n, buf)
-  sdec.dig.count = n
-  -- The pre-trigger reserve posts 4915 while it waits -- see sdec.mute_events. Muted for the
-  -- capture and restored below whichever way it ends.
-  sdec.mute_events()
-
+-- WHICH EVENT ARMS A CAPTURE, and what that costs in shared instrument state. -> ev, useanalog,
+-- blended. Called by both armed paths -- the frame capture in acq_triggered() and the armed
+-- recording in stream_arm() -- so the operator's trigger settings cannot mean one thing to a 20 000
+-- sample window and another to a 32 kB one.
+--
+-- ev COMES BACK nil WHEN THE SELECTED SOURCE DOES NOT EXIST ON THIS FIRMWARE, which is a refusal the
+-- caller must act on rather than a value it can pass along: trigger.EVENT_DISPLAY is documented for
+-- the DMM6500, but where it is absent the constant reaches trigger.model.load() AS NIL -- and there
+-- the front key vanishes silently and a ticked rear BNC looks like a deliberate sole choice.
+--
+-- IT WRITES INSTRUMENT STATE -- trigger.blender[1], sdec.armkeyed and sdec.trigblended -- which is why
+-- it is a function and not a lookup: the blender has to be configured or RELEASED on every capture,
+-- and which of those happens depends on the same three settings that pick the event.
+function sdec.arm_source()
+  if sdec.trigmode == 'front' and trigger.EVENT_DISPLAY == nil then return nil, false, false end
   -- WHICH EVENT ARMS THE CAPTURE. The analog trigger watches the SIGNAL ITSELF on the front
   -- INPUT HI/LO and fires on a start-bit edge -- which catches "a byte arrived" but cannot
   -- distinguish WHICH byte, because every byte looks like the start of a message.
@@ -2265,23 +2544,6 @@ function sdec.acq_triggered(n, slope)
   -- and the analog stimulus wired INTO the blender could never fire. Ticking the rear BNC
   -- silently reduced an edge trigger to the BNC alone.
   local useanalog = (ev == trigger.EVENT_ANALOGTRIGGER)
-  -- Defaulted AT THE POINT OF USE as well as at module load, so that no future
-  -- ordering of module loads can put a nil into the comparison below again.
-  local wait = sdec.trigwait or 3.0
-  -- A HUMAN OR A DUT EVENT IS NOT A 3-SECOND AFFAIR. The analog trigger fires within a byte
-  -- time or not at all, but someone reaching for the TRIGGER key, or a device that emits its
-  -- message once a minute, needs a longer bounded wait. Still bounded -- an unbounded wait
-  -- inside a touch handler is an unresponsive panel.
-  if sdec.trigmode == 'front' or sdec.trigext then wait = sdec.trigwait_ext or 30.0 end
-
-  -- THE WAIT MUST OUTLAST THE CAPTURE ITSELF, or the armed path can never complete at a low sample
-  -- rate. Completion is the model going idle, which needs all n post-trigger readings: 20 000 at
-  -- 2500 S/s is 8 s, against a 3 s wait. A fixed wait therefore times out on every capture below
-  -- ~7 kS/s and degrades to free-run with 'edge trigger unavailable' -- a working analog trigger
-  -- reported as absent. Measured at 300 baud.
-  local dur = nil
-  if sdec.fs ~= nil and sdec.fs > 0 then dur = n / sdec.fs end
-  if dur ~= nil and wait < dur * 1.5 + 1.0 then wait = dur * 1.5 + 1.0 end
 
   -- THE REAR BNC IS OR'd IN, not selected instead. That is what the checkbox buys over a
   -- fifth entry in the Trigger field: "start on a start bit, OR when the DUT asserts its
@@ -2335,25 +2597,219 @@ function sdec.acq_triggered(n, slope)
       sdec.lasterr = 'no trigger blender; using the rear BNC alone'
     end
   end
+
+  -- THE TRIGGER KEY AS A MANUAL BREAK-IN, OR'd into whatever source is already selected.
+  --
+  -- WHY THIS IS THE ONE ESCAPE THAT ACTUALLY WORKS. The wait below cannot be interrupted from Lua:
+  -- measured, and recorded beside ui_log_t in serial_ui.tsp, the key's event never reaches the
+  -- cancel latch while a panel-initiated run executes, and a touch press only queues. But that is a
+  -- fact about POLLING FROM LUA, not about the key. As a stimulus of the trigger MODEL the key is
+  -- serviced by firmware, which is why 'front' mode has always been able to block on
+  -- EVENT_DISPLAY for trigwait_ext seconds and have a finger end it -- bench_trigkey.py tests
+  -- exactly that. So blending it in here turns a 120 s unbreakable wait into one the operator can
+  -- always cut short, without the panel having to be alive.
+  --
+  -- ONLY ON AN ARM FROM SILENCE, and only when the key is not already the source. On a line that is
+  -- transmitting, the start bit answers within a byte time and a blended key could only ever steal
+  -- the trigger from the signal; in 'front' mode the key IS ev, and OR-ing it with itself is a
+  -- blender slot spent to no effect.
+  --
+  -- AND NEVER ON AN ANCHORED CAPTURE. The rear BNC ALONE means the marker, and nothing else, decides
+  -- where the window opens -- that is the whole point of the branch above, and the one configuration
+  -- in which "no trigger arrived" is a real answer. OR-ing a key into it would let a finger place
+  -- the window instead of the marker, which is the same corruption that branch turns the comparator
+  -- off to avoid.
+  --
+  -- STIMULUS 3, so it composes with the rear BNC rather than displacing it: the two features are
+  -- orthogonal and an operator may reasonably want "the start bit, OR the DUT's GPIO, OR my finger".
+  -- A FAILED BLEND IS NOT FATAL -- the arm still works, it simply has no manual escape, and the note
+  -- says so rather than implying the key will work.
+  if sdec.arm_silent() and sdec.armkey and sdec.trigmode ~= 'front' and
+     not (sdec.trigext and sdec.trigext_only) and trigger.EVENT_DISPLAY ~= nil then
+    local kok = pcall(function()
+      if not blended then
+        trigger.blender[1].reset()
+        trigger.blender[1].orenable = true
+        trigger.blender[1].stimulus[1] = ev
+      end
+      trigger.blender[1].stimulus[3] = trigger.EVENT_DISPLAY
+    end)
+    if kok then
+      ev = trigger.EVENT_BLENDER1
+      blended = true
+      sdec.armkeyed = true
+    else
+      sdec.armkeyed = nil
+      -- APPENDED, NOT ASSIGNED. The rear-BNC fallback above sets lasterr for the same missing
+      -- blender, and a bare assignment here replaced it -- so an operator who had asked for the rear
+      -- BNC was told only that their TRIGGER key would not work, and never that their BNC had been
+      -- reduced to the sole source. One firmware shortfall, two consequences, both worth saying.
+      local knote = 'the TRIGGER key will not cut the arm short'
+      if sdec.lasterr == nil then
+        sdec.lasterr = 'no trigger blender; ' .. knote
+      else
+        sdec.lasterr = sdec.lasterr .. '; ' .. knote
+      end
+    end
+  else
+    sdec.armkeyed = nil
+  end
   sdec.trigblended = blended
+  return ev, useanalog, blended
+end
+
+-- WHERE TO ARM ON A LINE THE PROBE FOUND SILENT, in volts, written to sdec.thr with the matching
+-- sdec.idle and a zeroed hysteresis. -> false when there is not even a level to work from, which is
+-- the caller's cue that the capture really is hopeless.
+--
+-- AT THE OPERATOR'S OWN DISTANCE FROM IDLE, on the side the start bit travels. The level is a guess
+-- either way -- the active level is unknown, because nothing has been active -- and sdec.armlevel is
+-- the one piece of knowledge the operator can contribute about a line that has not spoken yet.
+--
+-- SHARED BY THE FRAME AND RECORDING PATHS, like the three functions below it. The streaming path had
+-- no threshold of its own at all: clear_result() leaves sdec.thr at ZERO, so an armed recording would
+-- have pointed the comparator at 0 V and fired on the first ADC noise sample.
+function sdec.arm_threshold()
+  if sdec.vmax == nil then return false end
+  local idlev = sdec.vmax
+  if math.abs(sdec.vmin) > math.abs(sdec.vmax) then idlev = sdec.vmin end
+  sdec.hyst = 0
+  if math.abs(idlev) < sdec.flatfloor then
+    -- Idle sits AT GROUND, so the start bit can only go UP: this is an inverted TTL line or the TTL
+    -- side of an idle-low current loop (MIDI). There is no midpoint to clamp against, since the far
+    -- level is not bounded by anything -- a ground-idle line is as tall as its part.
+    sdec.thr, sdec.idle = idlev + sdec.arm_level_v(), 0
+    return true
+  end
+  -- IDLE IS AWAY FROM GROUND -- a normal idle-high TTL line, or a bipolar RS-232 one -- and on both
+  -- of those the start bit moves TOWARDS ground. So the arm goes on that side of idle.
+  --
+  -- CLAMPED AT HALF THE IDLE LEVEL, which is also exactly what this branch did before the setting
+  -- existed. Half is the deepest arm certainly still inside the swing, so the clamp makes the old
+  -- fixed midpoint the extreme of the new range rather than a case it can miss: a 3.3 V line armed
+  -- at 1 V fires at 2.3 V, and the same line with Arm At wound to 6 V fires at 1.65 V, unchanged.
+  local off = sdec.arm_level_v()
+  local half = 0.5 * math.abs(idlev)
+  if off > half then off = half end
+  if idlev < 0 then
+    sdec.thr, sdec.idle = idlev + off, 0
+  else
+    sdec.thr, sdec.idle = idlev - off, 1
+  end
+  return true
+end
+
+-- THE SLOPE THE START BIT TAKES, or nil where the comparator is not the source and a slope would be
+-- dead state on the board. Shared for the same reason arm_source() is: the frame path and the armed
+-- recording have to arm on the same edge of the same line.
+function sdec.arm_slope()
+  if sdec.trigmode ~= 'edge' then return nil end
+  if sdec.idle == 0 then return sdec.k.SLOPE_RISING end
+  return sdec.k.SLOPE_FALLING
+end
+
+-- POINT THE COMPARATOR AT sdec.thr, or turn it OFF where it is not a source. -> whether the writes
+-- went through. A digitizer with no analog comparator is a supported configuration, so this is
+-- guarded rather than assumed: a bare write with atrig nil RAISED, and acq_triggered() died instead
+-- of degrading to free run, which its own header promised.
+function sdec.arm_comparator(useanalog, slope)
+  if sdec.atrig == nil then return false end
+  return pcall(function()
+    if useanalog then
+      sdec.atrig.mode   = sdec.k.MODE_EDGE
+      sdec.atedge.level = sdec.thr
+      sdec.atedge.slope = slope
+    else
+      -- A MODE_EDGE comparator left behind by a previous 'edge' capture is instrument state the
+      -- operator did not ask for, which is the same objection the blender release makes.
+      sdec.atrig.mode = sdec.k.MODE_OFF
+    end
+  end)
+end
+
+
+
+-- Capture armed on a signal edge, on the front-panel TRIGGER key or on the rear BNC,
+-- degrading to a free-running read if the source is refused.
+function sdec.acq_triggered(n, slope)
+  local buf = sdec.buf
+  -- NIL IS NOT A TRIGGER SOURCE, and it is checked here, before any instrument state is
+  -- touched, so the refusal has nothing to undo. trigger.EVENT_DISPLAY is documented for the
+  -- DMM6500, but on a firmware without it the constant reaches trigger.model.load() and the
+  -- blender stimulus below AS NIL -- where the front key vanishes silently and a ticked rear BNC
+  -- looks like a deliberate sole choice. acq_free() sets up its own capture.
+  if sdec.trigmode == 'front' and trigger.EVENT_DISPLAY == nil then
+    sdec.lasterr = 'no front-panel TRIGGER event on this firmware; captured free-running'
+    return sdec.acq_free(n)
+  end
+  buf.clear()
+  -- PER CAPTURE, not only at creation. Observed reading back 0 on a capture that reused an existing
+  -- buffer, and one FILL_ONCE capture is one burst of 4915. Setting it also clears the buffer, which
+  -- is why it goes here rather than after clear().
+  sdec.acq_fillmode(buf)
+  n = sdec.acq_fit(n, buf)
+  sdec.dig.count = n
+  -- The pre-trigger reserve posts 4915 while it waits -- see sdec.mute_events. Muted for the
+  -- capture and restored below whichever way it ends.
+  sdec.mute_events()
+
+  -- Defaulted AT THE POINT OF USE as well as at module load, so that no future
+  -- ordering of module loads can put a nil into the comparison below again.
+  local wait = sdec.trigwait or 3.0
+  -- A HUMAN OR A DUT EVENT IS NOT A 3-SECOND AFFAIR. The analog trigger fires within a byte
+  -- time or not at all, but someone reaching for the TRIGGER key, or a device that emits its
+  -- message once a minute, needs a longer bounded wait. Still bounded -- an unbounded wait
+  -- inside a touch handler is an unresponsive panel.
+  if sdec.trigmode == 'front' or sdec.trigext then wait = sdec.trigwait_ext or 30.0 end
+
+  -- AN ARM FROM SILENCE GETS THE OPERATOR'S OWN WAIT. sdec.arm_silent() is true exactly when the
+  -- probe that ran immediately before this call found no transitions and the capture is not
+  -- flow-controlled -- the "the device has not started yet" case these two settings exist for.
+  --
+  -- IT CAN ONLY EVER LENGTHEN THE WAIT, which is why this is a comparison and not an assignment.
+  -- Every path that already had a longer wait keeps it: 'front' and the rear BNC stay at
+  -- trigwait_ext, so a setting meant to help the silent case cannot shorten a source that was
+  -- waiting for a person. And arm_wait_s() returning 0 leaves the mode's own wait untouched.
+  if sdec.arm_silent() then
+    local armw = sdec.arm_wait_s()
+    if armw > wait then wait = armw end
+  end
+
+  -- THE WAIT MUST OUTLAST THE CAPTURE ITSELF, or the armed path can never complete at a low sample
+  -- rate. Completion is the model going idle, which needs all n post-trigger readings: 20 000 at
+  -- 2500 S/s is 8 s, against a 3 s wait. A fixed wait therefore times out on every capture below
+  -- ~7 kS/s and degrades to free-run with 'edge trigger unavailable' -- a working analog trigger
+  -- reported as absent. Measured at 300 baud.
+  local dur = nil
+  if sdec.fs ~= nil and sdec.fs > 0 then dur = n / sdec.fs end
+  if dur ~= nil and wait < dur * 1.5 + 1.0 then wait = dur * 1.5 + 1.0 end
+
+  -- THE SOURCE, THE BLENDER AND THE KEY, chosen by sdec.arm_source() so that this path and the armed
+  -- recording cannot disagree about what the operator selected. Called AFTER the wait above, which
+  -- reads none of its results -- the two were interleaved only because they grew in that order.
+  --
+  -- nil MEANS THE SOURCE IS NOT ON THIS FIRMWARE, and free run is the honest degrade: the same answer
+  -- the guard at the top of this function gives, repeated here because arm_source() is now the only
+  -- place that knows. The mute is lifted first -- the guard above runs before mute_events() and this
+  -- does not, and a muted panel that stayed muted would swallow every later firmware error.
+  local ev, useanalog = sdec.arm_source()
+  if ev == nil then
+    sdec.unmute_events()
+    sdec.lasterr = 'no front-panel TRIGGER event on this firmware; captured free-running'
+    return sdec.acq_free(n)
+  end
 
   -- The raised reason is carried out, and `expired` says which fault it was: an expired wait means the
   -- line stayed quiet, anything else means the source could not be armed. An upvalue rather than a
   -- return value, so the exit need not match on firmware text it does not control.
   local expired = false
   local ok, perr = pcall(function()
-    -- The analog trigger is configured ONLY when it is a source. Setting a level and slope
-    -- for an external event would be harmless but misleading to read.
-    if useanalog then
-      sdec.atrig.mode        = sdec.k.MODE_EDGE
-      sdec.atedge.level      = sdec.thr
-      sdec.atedge.slope      = slope
-    else
-      -- And OFF when it is not: a MODE_EDGE comparator left behind by a previous 'edge'
-      -- capture is instrument state the operator did not ask for, which is the same
-      -- objection the blender release above makes.
-      sdec.atrig.mode = sdec.k.MODE_OFF
-    end
+    -- The analog trigger is configured ONLY when it is a source, and the write goes through
+    -- arm_comparator() so the armed recording points the same comparator at the same threshold.
+    -- Its verdict is discarded HERE and only here: on this path a refused comparator write means the
+    -- model below cannot fire, which the bounded wait already reports as an expiry with a reason --
+    -- whereas stream_arm() has no wait of its own and so acts on the false.
+    sdec.arm_comparator(useanalog, slope)
     -- position is the PRE-trigger percentage: at 5 % of a 20 000-sample buffer
     -- the trigger model keeps 1000 samples before the edge and 19 000 after.
     trigger.model.load('LoopUntilEvent', ev,
@@ -2411,6 +2867,25 @@ function sdec.acq_triggered(n, slope)
     -- line the model keeps making pre-trigger readings and wraps the buffer, so
     -- buf.n reaches capacity with no trigger ever having occurred -- accepting that
     -- would report a triggered capture of a dead line.
+    -- SAY SO BEFORE BLOCKING. A wait of up to 120 s behind a static panel is indistinguishable from
+    -- the unresponsive-panel fault this app was released to fix, and the operator has no way to tell
+    -- a live arm from a wedge without being told. Painted ONCE, here, and correct for the whole
+    -- wait -- nothing below repaints, and nothing can, because a touch press only queues while this
+    -- loop runs.
+    --
+    -- THROUGH A HOOK, so the core keeps no opinion about the panel and the offline harnesses, which
+    -- install none, behave exactly as before. pcall'd for the same reason the flow-control credit
+    -- is: a refused repaint must not retract an arm that is already live in firmware.
+    --
+    -- GATED ON probe_idle, not on the wait length, because that is the feature's own condition --
+    -- this is the capture that is waiting for a device to start, and no other.
+    -- sdec.thr, THE ARMED LEVEL, not the setting behind it: the note tells the operator what the
+    -- line has to do for the panel to come back, and on a line idling away from ground that voltage
+    -- is idle MINUS the setting. arm_level_v() is the fallback only so the hook cannot be handed nil.
+    if sdec.arm_silent() and sdec.armnote ~= nil then
+      pcall(sdec.armnote, wait, sdec.thr or sdec.arm_level_v())
+    end
+
     local waited, step = 0, 0.05
     while waited < wait do
       if sdec.trig_done(buf) then break end
@@ -2431,8 +2906,35 @@ function sdec.acq_triggered(n, slope)
     local full = (buf.n or 0) >= n and sdec.pretrig <= 0
     if not sdec.trig_done(buf) and not full then
       expired = true
-      error('no trigger in ' .. tostring(wait) .. ' s (' ..
-            tostring(sdec.trigmode) .. ') -- try Free run', 0)
+      -- THE ADVICE DEPENDS ON WHICH FAULT THIS WAS, and 'try Free run' is actively wrong for the
+      -- silent case: free-running a device that has not started yet captures the silence instead of
+      -- waiting for the data, which is the opposite of what the operator asked for. Name the two
+      -- settings that govern it instead.
+      --
+      -- THE WORD FOR A QUIET LINE IS DELIBERATELY ABSENT HERE. test_frontrig.lua and
+      -- bench_trigkey.py discriminate a trigger that FIRED from an arm that EXPIRED by whether
+      -- lasterr names an idle line, so putting that word in the expiry text would make an expired
+      -- arm read as a trigger that fired. The prefix at the degrade path below is the other half of
+      -- that contract; this is only what gets appended in parentheses.
+      local why = 'no trigger in ' .. tostring(wait) .. ' s (' .. tostring(sdec.trigmode) .. ')'
+      -- AND useanalog, NOT THE SILENT TEST ALONE. The two settings named here govern the COMPARATOR,
+      -- so they are the right advice only when the comparator was the source that failed to fire.
+      -- The front TRIGGER key and an anchored rear-BNC capture both reach this line on a quiet line
+      -- too, and sending their operator to Arm At and Arm Wait points at two settings that had no
+      -- part in the failure -- their arm is waiting for a person or a marker, not for a voltage.
+      if sdec.arm_silent() and useanalog then
+        -- THE LEVEL THE COMPARATOR WAS ACTUALLY ARMED AT, not the setting it came from. On a
+        -- ground-idle line the two are the same number; on a line idling away from ground the arm
+        -- sits arm_level_v() volts BELOW idle, so quoting the setting would name a voltage the
+        -- comparator was never watching -- and on an idle-high line it would name one on the wrong
+        -- side of the signal entirely.
+        why = why .. ' -- nothing crossed ' ..
+              string.format('%.2f', sdec.thr or sdec.arm_level_v()) ..
+              ' V; raise Arm Wait or lower Arm At'
+      else
+        why = why .. ' -- try Free run'
+      end
+      error(why, 0)
     end
   end)
 
@@ -2505,26 +3007,7 @@ function sdec.acquire()
     -- longer than a 2000-sample probe, and for the triggered path idle is the
     -- normal starting condition -- the point is to arm and wait.
     --
-    -- Guess the threshold at half the idle level. That lands inside the swing for
-    -- a ground-referenced logic line (3.3 V idle -> 1.65 V) and for a bipolar
-    -- RS-232 one (-6 V idle -> -3 V, off centre but between the levels). The real
-    -- capture re-measures properly below.
-    if sdec.vmax == nil then return false, why end
-    local idlev = sdec.vmax
-    if math.abs(sdec.vmin) > math.abs(sdec.vmax) then idlev = sdec.vmin end
-    sdec.hyst = 0
-    if math.abs(idlev) < sdec.flatfloor then
-      -- Idle sits AT GROUND, so half of it is not between the levels -- it is the
-      -- idle level itself, and arming there fires on ADC noise immediately. This is
-      -- an inverted TTL line or the TTL side of an idle-low current loop (MIDI).
-      -- The active level must be away from ground, and for logic it is essentially
-      -- always positive, so put the threshold above idle and arm on a rising edge.
-      sdec.thr  = idlev + sdec.flatoffs
-      sdec.idle = 0
-    else
-      sdec.thr = 0.5 * idlev
-      if idlev < 0 then sdec.idle = 0 else sdec.idle = 1 end
-    end
+    if not sdec.arm_threshold() then return false, why end
     sdec.probe_idle = why
     -- Without a trigger there is nothing to wait for, so a quiet line in free-run mode
     -- really is the end of the road. IT IS NOT THE END FOR THE FRONT TRIGGER KEY: a quiet
@@ -2537,14 +3020,10 @@ function sdec.acquire()
   -- THE ARMED PATH IS EVERY SOURCE THAT WAITS, which is all of them except 'free'. Routing
   -- only 'edge' here left 'front' free-running while the status row read EXT TRIG KEY.
   if sdec.trigmode == 'edge' or sdec.trigmode == 'front' then
-    -- Arm on the transition AWAY from idle, which is the start bit. Nil for the front key:
-    -- the comparator is not a source there, so a slope would be dead state on the board.
-    local slope = nil
-    if sdec.trigmode == 'edge' then
-      slope = sdec.k.SLOPE_FALLING
-      if sdec.idle == 0 then slope = sdec.k.SLOPE_RISING end
-    end
-    if sdec.acq_triggered(sdec.n, slope) < 2 then
+    -- Arm on the transition AWAY from idle, which is the start bit -- and through arm_slope(), so
+    -- the armed recording in stream_arm() arms on the same edge of the same line rather than on a
+    -- second copy of this rule.
+    if sdec.acq_triggered(sdec.n, sdec.arm_slope()) < 2 then
       return false, 'triggered capture returned nothing'
     end
   else

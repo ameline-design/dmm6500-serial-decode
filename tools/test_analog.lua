@@ -495,11 +495,14 @@ local function startphase_case(rd, ns, fs, s0, want)
   return ok, why, sdec.res
 end
 
--- The armed path's real yield, from the app's own function rather than a literal: LoopUntilEvent
--- keeps pretrig per cent of the buffer, so a completed capture is ~19000 of 20000 samples.
-local WANT = sdec.n_deliv(sdec.n) or 19000
-check('n_deliv is the armed yield, not the buffer depth',
-      WANT < sdec.n, string.format('%d of %d', WANT, sdec.n))
+-- The armed path's real yield, from the app's own function rather than a literal: LoopUntilEvent's
+-- post-trigger count is (100 - pretrig) per cent of the buffer's CAPACITY, and acq_cap() asks for
+-- the reserve on top of sdec.n -- so a completed capture lands a little ABOVE sdec.n and the extra
+-- is not window the caller asked for. Measured 20 066 at capacity 21 100.
+local WANT = sdec.n_deliv(sdec.n) or 20045
+check('n_deliv is the armed yield -- the post-trigger count, not the buffer depth',
+      WANT > sdec.n and WANT < sdec.acq_cap(sdec.n),
+      string.format('%d, depth %d, capacity %d', WANT, sdec.n, sdec.acq_cap(sdec.n)))
 
 -- WRAPPED, RATHER THAN INFERRED FROM sdec.res, and the difference decides whether this test can
 -- fail at all. When the format is missing, ua_note_fmt raises INSIDE decode_from -- before

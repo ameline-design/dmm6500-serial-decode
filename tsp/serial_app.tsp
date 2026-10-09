@@ -211,6 +211,184 @@ end
 -- ============================================================================
 -- Capture orchestration
 -- ============================================================================
+-- THE ONE ARMED CAPTURE A SILENT LINE GETS. Reached from autoset() when the probe ladder found no
+-- transitions and the operator's trigger mode is one that waits. Returns ok, reason.
+--
+-- NO SECOND PASS AND NO OCTAVE RETRY, which is the whole difference between this and the tail of
+-- autoset(). Every other path re-captures once it knows the bit time, because a second window at a
+-- better rate is strictly more data. Here it is strictly LESS: the device's opening bytes exist only
+-- in the window that caught them, and a re-capture would show whatever it said a moment later while
+-- claiming to be the start. So this keeps what it gets, including the pre-trigger samples ahead of
+-- the first start bit -- see sdec.pretrig, and docs/TRIGGER.md section 7 for why that reserve is
+-- what makes the start recoverable at all.
+--
+-- THE RATE IS BLIND BY CONSTRUCTION. sdec.arm_fs() trades window against coverage; the note below
+-- tells the operator the one thing that beats it, which is locking the rate they already know.
+function sdec.arm_capture()
+  local fs = sdec.arm_fs()
+  -- fs_want as well as fs, for the reason fs_select() documents: acquire() -> hw_config() ->
+  -- fs_select(), which resets the rate to fs_default when nothing is locked -- and nothing is locked
+  -- here, so without the one-shot this capture would run at 1 MS/s and hold a fifth of the window.
+  sdec.fs, sdec.fs_want = fs, fs
+  sdec.probe_note = string.format(
+    'armed at %g kS/s on a line that has not started -- lock the baud rate for a longer window',
+    fs / 1000)
+  local ok, why = sdec.acquire()
+  -- Before any decode, so a failed arm cannot leave the probe's fit beside this capture's rate. Same
+  -- drop, and the same reason, as the two in autoset() below.
+  if not ok then sdec.drop_stale_result() return false, why end
+  local dok, dwhy = sdec.decode()
+  if dok then return true end
+  -- NOTHING FITTED, SO TRY WHAT THE WIRE PROBABLY IS -- over these samples, not a new capture.
+  if sdec.arm_fit_prior() then return true end
+  sdec.drop_stale_result()
+  return false, dwhy
+end
+
+-- IS THIS CANDIDATE BIT TIME COMPATIBLE WITH THE PULSES ACTUALLY ON THE WIRE? The filter the prior
+-- ladder applies BEFORE spending a decode, and it is the detector's own battery -- three tests
+-- measured over 368 640 paired decodes -- rather than anything invented for this path.
+--
+-- WITHOUT IT THE LADDER IS UNSAFE, and the frame gate cannot rescue it. Measured here, 1800 bytes of
+-- text at each rate, every candidate forced against every truth: a 19200 line read at 9600 frames 77
+-- bytes with SIX errors -- a bad fraction of 0.082, comfortably inside the gate -- and the bytes are
+-- garbage. A 31250 line read at 9600 gives 80 frames and ZERO errors. The reason is structural: half
+-- the true rate reads two real frames as one, and the real stop bit lands exactly where the
+-- hypothesis looks for its own, so the one check that would notice agrees.
+--
+-- WHICH TEST CATCHES WHICH DIRECTION. ua_plausible refuses a bit time longer than 1.15x the median
+-- pulse, which is what a HALVED baud rate claims -- that most pulses are shorter than one bit.
+-- ua_submultiple and ua_minrun_absurd cover the other direction, a candidate that is a sub-multiple
+-- of the truth. Unconditionally here, unlike in ua_best_probe: every entry in sdec.arm_try is a
+-- standard rate by construction, so there is no unsnapped fit whose halving they could suppress.
+-- AND IT FAILS CLOSED WITH NO EVIDENCE, which is not a formality. All three tests answer "no
+-- objection" to a missing width array -- ua_plausible skips its median test when wmed is nil, and
+-- both sub-multiple tests return false below submult_minpulses -- so a caller reaching here before
+-- sig_bittime() has run would have every candidate waved through by the absence of data. MEASURED
+-- exactly that way: the first version of this filter was tested with sig_bittime stubbed out, which
+-- is also what computes the widths, and it rejected nothing at any truth while appearing to work.
+function sdec.arm_try_ok(T, n)
+  if T == nil or T <= 0 then return false end
+  if sdec.wmed == nil or sdec.wmed <= 0 then return false end
+  if (sdec.nw or 0) < sdec.submult_minpulses then return false end
+  if not sdec.ua_plausible(T, n) then return false end
+  if sdec.ua_submultiple(T) then return false end
+  if sdec.ua_minrun_absurd(T) then return false end
+  return true
+end
+
+-- HOW CLEAN A GUESSED RATE HAS TO DECODE, as a fraction of interior frames in error.
+--
+-- FAR TIGHTER THAN relock_badfrac, AND NOT INTERCHANGEABLE WITH IT. That threshold answers "has the
+-- operator's typed rate been discredited?", where a false alarm throws away a deliberate setting, so
+-- 0.25 is slack on purpose. This one answers "may the app invent a rate nobody asked for?", where a
+-- false pass is a panel full of confident rubbish. The two numbers are opposite in spirit and sharing
+-- one was a measured mistake: at 0.25 a 57 600 Bd line -- which this sample rate cannot resolve well
+-- enough to decode at all -- was published as 38 400, on a bad fraction of 0.245.
+--
+-- MEASURED over every (truth, candidate) pair in the ladder, 1800 bytes of text each: a CORRECT rate
+-- gives a bad fraction of exactly 0.000 in every case. The wrong rates that survive a slack gate come
+-- in at 0.082, 0.209, 0.220, 0.245 and 0.247, so the two populations are cleanly separated and the
+-- threshold belongs down with the truth.
+--
+-- 0.02 RATHER THAN ZERO, because a real wire is not the generator: window edges and jitter leave a
+-- few framing errors, and demanding literally none would refuse correct answers on marginal captures.
+-- Two per cent of a 350-frame window is seven frames.
+sdec.arm_badfrac = 0.02
+
+-- IS THIS DECODE CLEAN ENOUGH TO PUBLISH AN INVENTED RATE ON? Enough frames to be evidence at all,
+-- and almost none of them broken.
+--
+-- WHY A GATE IS NOT OPTIONAL HERE. A wrong bit time will still frame bytes; what it cannot do is
+-- frame most of them cleanly. The frame floor is relock_minframes, which is the same question in both
+-- places -- how many frames before a fraction means anything -- unlike the fraction itself.
+function sdec.arm_fit_ok()
+  local r = sdec.res
+  if r == nil then return false end
+  if (r.nf or 0) < sdec.relock_minframes then return false end
+  local bf = sdec.ua_badfrac(r)
+  if bf == nil then return false end
+  return bf < sdec.arm_badfrac
+end
+
+-- FIT THE OPERATOR'S PRIOR TO SAMPLES ALREADY IN HAND. Called by arm_capture() when a blind armed
+-- capture caught the device's first bytes and no bit time could be measured from them. Returns
+-- whether EXACTLY ONE of sdec.arm_try frames those samples cleanly -- which is the only condition
+-- under which a guessed rate may be published.
+--
+-- THE FIRST CANDIDATE THAT FITS IS NOT THE ANSWER, AND THE MEASUREMENT IS BRUTAL. 1800 bytes of text
+-- at each ladder rate, every candidate forced against every truth, with the pulse-width filter in
+-- force: taking the first fit gave the WRONG rate for five of the six truths. A 19200 line read at
+-- 9600 frames 77 bytes with six errors -- a bad fraction of 0.082, well inside any sane gate -- and
+-- a 31250 line read at 28800 frames 258 bytes with ZERO. Clean frames at a wrong rate are not an
+-- edge case here; they are the normal outcome, because half the true rate reads two real frames as
+-- one and lands its stop bit exactly where a real stop bit is.
+--
+-- SO THE TEST IS UNIQUENESS, and it is what makes the path safe rather than merely gated. Every
+-- surviving candidate is decoded, and a rate is published only when it is the ONLY one that fits.
+-- Against the same matrix that gives one correct answer -- 9600, which is also the rate a bench is
+-- most likely to be running -- and five correct refusals, with no wrong answer anywhere. A refusal
+-- costs the operator a note; a wrong rate costs them a panel full of confident rubbish.
+--
+-- ALL CANDIDATES ARE DECODED, deliberately, instead of stopping at the first fit: the second fit is
+-- the whole verdict. Five decodes of one capture is CPU and nothing else -- no instrument time, no
+-- re-capture, and no byte of the start traded for the attempt.
+--
+-- decode_from(), NOT decode(). decode() exists to second-guess a forced rate: with force_baud set
+-- and a bad fraction over the threshold it unlocks, re-decodes and keeps whichever won -- which is
+-- exactly the wrong machinery here, because the "lock" is this function's own hypothesis and the
+-- measurement it would fall back on is the one that already failed.
+--
+-- THE OPERATOR'S OWN LOCK IS RESTORED WHICHEVER WAY THIS ENDS, and on this path it is nil by
+-- construction: autoset() only reaches an armed capture when nothing was forced. Restored anyway,
+-- because a function that borrows a field the panel displays has to put it back.
+function sdec.arm_fit_prior()
+  local rd, n = sdec.smp, sdec.nread
+  if rd == nil or n == nil or n < 2 then return false end
+  local fs = sdec.acq_fs or sdec.fs
+  if fs == nil or fs <= 0 then return false end
+  -- THE WIDTHS ARE THIS FUNCTION'S EVIDENCE, SO IT MEASURES THEM ITSELF. sdec.w, nw, wmed and wshort
+  -- are computed inside sig_bittime() and belong to one capture; arm_try_ok() judges every candidate
+  -- by them. Inheriting whatever ran last is not a hypothetical -- a harness that called this after
+  -- acquire() but before any decode had the PREVIOUS capture's median pulse reject the true rate of
+  -- this one. Its return value is deliberately ignored: this is reached precisely because no bit time
+  -- fits, and the pulse widths are set on the way to that answer.
+  sdec.sig_bittime()
+  local was, won, alt, i = sdec.force_baud, nil, nil, 0
+  for i = 1, table.getn(sdec.arm_try) do
+    local b = sdec.arm_try[i]
+    if sdec.arm_try_ok(fs / b, n) then
+      sdec.force_baud = b
+      if sdec.decode_from(rd, n) and sdec.arm_fit_ok() then
+        if won == nil then won = b else alt = b end
+      end
+    end
+  end
+  sdec.force_baud = was
+  if won == nil then return false end
+  if alt ~= nil then
+    -- AMBIGUITY IS AN ANSWER, AND A USEFUL ONE. It names the two rates the capture cannot tell apart,
+    -- which is exactly what the operator needs to resolve it from the one piece of knowledge the
+    -- instrument does not have. 'no frame format fits' would have been both less true and less help.
+    sdec.probe_note = string.format(
+      'this capture fits %d Bd AND %d Bd equally -- lock the rate in Options to decide', won, alt)
+    return false
+  end
+  -- RE-DECODED AT THE WINNER, because the loop left sdec.res holding whichever candidate it tried
+  -- last. Publishing without this put the final candidate's bytes on the panel under the winner's
+  -- rate -- the two agree only when the winner happens to be last.
+  sdec.force_baud = won
+  local ok = sdec.decode_from(rd, n)
+  sdec.force_baud = was
+  if not ok then return false end
+  -- THE PANEL MUST NOT PRESENT AN ASSUMPTION AS A MEASUREMENT. Every other route to a baud rate on
+  -- this display either measured it or had it typed in; this one guessed, uniquely and cleanly, and
+  -- the operator is still the only one who can confirm it.
+  sdec.probe_note = string.format(
+    'no bit time could be measured -- decoded at an ASSUMED %d Bd; lock the rate to be sure', won)
+  return true
+end
+
 -- Pick the sample rate, capture, and decode. Returns ok, reason.
 function sdec.autoset()
   local target = sdec.force_baud
@@ -242,8 +420,9 @@ function sdec.autoset()
     -- interface only, and the panel shows error-severity events regardless, as a modal box over
     -- the app. So the event has to not happen.
     --
-    -- Raising `position` does not help either: the firmware makes post = count - count x
-    -- position/100, so a reserve long enough at 1 MS/s costs two thirds of the depth.
+    -- Raising `position` does not help either: the template's post-trigger count is
+    -- (100 - position)% of the buffer's CAPACITY -- see sdec.n_deliv -- so a reserve long enough at
+    -- 1 MS/s costs two thirds of the depth.
     --
     -- Free-run has no model and no reserve, so nothing can be discarded. The cost is that a
     -- 20 ms window at 1 MS/s can land entirely inside a slow line's idle gap -- one third of
@@ -299,7 +478,27 @@ function sdec.autoset()
       -- capture and cannot put a wrong rate on the panel.
       -- A no-op on a fresh press, where detect_reset() has already cleared. It matters on capture()'s
       -- back-off, which calls autoset() again without one: the unlocked decode's result is still live.
-      if sdec.baud_probe == nil then sdec.drop_stale_result() return false, why end
+      if sdec.baud_probe == nil then
+        -- A LINE THAT HAS NOT STARTED IS NOT A PROBE FAILURE -- IT IS THE ARMED CASE.
+        --
+        -- The ladder above ran free-running, by design, on a line with no transitions on it. That is
+        -- precisely the starting condition arming from silence exists for: the device transmits when
+        -- it is powered on, or when something happens to it, and until then there is nothing any
+        -- probe can measure. So a probe that found nothing is EVIDENCE FOR an armed capture rather
+        -- than grounds for refusing one.
+        --
+        -- MEASURED ON THE INSTRUMENT, which is why this is a branch and not a comment. With the rate
+        -- left automatic a press on a silent line returned in 3.55 s saying 'line is idle'; with the
+        -- rate LOCKED the identical press armed and waited the full 10 s, and with the generator
+        -- switched on mid-wait it fired early and read 21 100 samples. The mechanism worked
+        -- throughout and its default configuration never reached it.
+        --
+        -- STILL REFUSED WHERE THERE IS NOTHING TO WAIT FOR: free run does not wait, and a
+        -- flow-controlled capture's line is quiet because no credit has been spent yet, not because
+        -- the device has not started -- see sdec.arm_silent.
+        if sdec.arm_silent() and savetrig ~= 'free' then return sdec.arm_capture() end
+        sdec.drop_stale_result() return false, why
+      end
       target = sdec.baud_probe
       sdec.probe_note = string.format(
         'too slow to frame at 1 MS/s -- re-captured at the rate the probe measured (%.0f Bd)',
@@ -521,6 +720,26 @@ function sdec.stream_begin()
   -- The capacity is the only thing that grows. SimpleLoop still asks for exactly nsmp (see
   -- stream_arm), so `have >= nsmp` remains the full-buffer ending and 100 % still means 100 %.
   local cap = nsmp + 100
+  -- AN ARMED RECORDING NEEDS THE PRE-TRIGGER RESERVE ON TOP OF THAT, for the reason acq_cap()
+  -- records for the frame path: LoopUntilEvent takes its reserve out of CAPACITY and programs
+  -- (100 - position)% of capacity as the post-trigger count -- so a buffer sized at nsmp records
+  -- 5 % less than was asked for. Sized this way the post count is nsmp or a little over, and
+  -- `have >= nsmp` still means what it says.
+  --
+  -- ASKED FOR ON TRIGGER MODE ALONE, not on sdec.arm_silent(), and that is forced by the ordering:
+  -- the probe that decides whether the line is silent reads INTO this buffer, so it cannot be
+  -- consulted before the buffer exists. The cost of asking when the arm then does not engage is 5 %
+  -- of readings left unused in a buffer that is deleted at the end of the run.
+  if sdec.trigmode ~= 'free' and (sdec.pretrig or 0) > 0 then
+    cap = math.ceil(nsmp * 100 / (100 - sdec.pretrig)) + 100
+    -- AND THE RESERVE COMES OUT OF THE RECORDING WHERE THE INSTRUMENT HAS NO ROOM FOR IT. ck_bufmax
+    -- is what the reading memory holds; overrunning it would turn the largest recording modes into
+    -- an allocation refusal, which is a worse answer than a recording 5 % shorter.
+    if sdec.ck_bufmax ~= nil and cap > sdec.ck_bufmax then
+      cap = sdec.ck_bufmax
+      nsmp = math.floor(cap * (100 - sdec.pretrig) / 100)
+    end
+  end
   -- THE 6 000 000 READING CEILING IS FOR ALL BUFFERS TOGETHER, so buffer.make() at these sizes
   -- can need defbuffer2 shrunk first, which is what the refusal below says.
   -- A BARE CALL: acq_make_buffer() guards buffer.make() itself and leaves sdec.buf nil when the
@@ -548,14 +767,27 @@ function sdec.stream_begin()
   if pmax < 200 then pmax = 200 end
   if pn > pmax then pn = pmax end
   -- nofc: a probe must not spend a flow-control credit (see sdec.acq_free).
+  --
+  -- CLEARED FIRST, because sdec.arm_silent() reads it and the previous capture's answer is not this
+  -- recording's: a frame capture of a silent line followed by Capture on a busy one would otherwise
+  -- arm this recording on an inherited verdict.
+  sdec.probe_idle = nil
   local pok = pcall(sdec.acq_free, pn, nil, true)
   if pok and sdec.nread ~= nil and sdec.nread > 1 then
-    local lok = sdec.sig_levels(sdec.smp, sdec.nread)
+    local lok, lwhy = sdec.sig_levels(sdec.smp, sdec.nread)
     -- ONLY ARM THE WATCHDOG IF THE LEVELS ARE REAL. An unknown threshold must never be allowed
     -- to end a recording: a capture that runs to the end of the buffer is recoverable, one
     -- truncated to five seconds of a four-minute session is not.
     if lok and sdec.thr ~= nil and (sdec.swing or 0) >= sdec.minswing then
       sdec.ck_watch = true
+    else
+      -- A PROBE THAT SAW NO TRANSITIONS IS THE ARM-FROM-SILENCE CASE, and recording it here is what
+      -- lets a recording wait for a device that has not started -- sdec.arm_silent() is the one
+      -- predicate both paths read, and nothing on this path used to set the field behind it.
+      --
+      -- ONLY FOR A PROBE THAT RAN. A capture that raised or came back empty is a FAULT, not a quiet
+      -- line, and treating it as one would arm a 120 s wait on a broken digitizer.
+      sdec.probe_idle = lwhy or 'line is idle (no transitions)'
     end
   end
   -- THE PROBE FOUND NOTHING, WHICH IS THE NORMAL CASE FOR THE TWO RUNS THAT NEED THE WATCHDOG MOST:
@@ -575,6 +807,12 @@ function sdec.stream_begin()
   else
     sdec.strm_lvlreuse = nil
   end
+  -- AND IF NOTHING COULD VOUCH FOR A THRESHOLD, TAKE THE ARM-FROM-SILENCE ONE. The comparator needs
+  -- a voltage before it can be armed and clear_result() left sdec.thr at ZERO, where it fires on the
+  -- first noise sample -- so a recording that waits has to choose a level the same way the frame path
+  -- does. Measured levels win where they exist: the reuse above is this wire minutes ago, which beats
+  -- any offset from an idle reading.
+  if sdec.probe_idle ~= nil and not sdec.strm_lvlreuse then sdec.arm_threshold() end
   sdec.smp, sdec.nread = nil, 0        -- the probe's Lua copy is not needed past this point
 
   -- ck_stop = false HERE, on entry, is the authoritative clear -- mode_exit() can leave it set
@@ -582,6 +820,9 @@ function sdec.stream_begin()
   -- Without this line the next run aborts before its first window with 'stopped'.
   sdec.ck_running, sdec.ck_stop, sdec.ck_nbytes, sdec.ck_tot = true, false, 0, nil
   sdec.ck_endwhy = nil
+  -- PER RUN, beside ck_endwhy, which is the field it qualifies: a level left behind by a previous
+  -- expired arm would be quoted at the next one, which is the whole defect it exists to fix.
+  sdec.arm_expired_at = nil
   -- ck_cancel IS CLEARED HERE, not in record_run(), because EVERY run of either shape comes through this
   -- function. ck_progress() sets it on the press-driven path as well, and record_run() is not on that
   -- path -- so clearing it there would leave a cancelled run's flag set for the next press-driven
@@ -1072,12 +1313,84 @@ function sdec.stream_arm(nsmp)
   -- NO DIGITIZER IS A REFUSED ARM, like no buffer above -- and the write is still guarded, because
   -- the header above names sdec.dig.count as an IPC write to the second processor.
   if sdec.dig == nil then return false end
-  if not pcall(function() sdec.dig.count = 1 end) then return false end
+  -- 1 IS SimpleLoop's PER-ITERATION COUNT, and it is wrong for the armed shape even though the
+  -- firmware ignores it there: LoopUntilEvent takes its post-trigger count from the buffer's
+  -- CAPACITY and dmm.digitize.count has no part in it, measured over 15 combinations. Set to the
+  -- recording's own depth anyway, so a reader of the instrument's state is not told that an armed
+  -- recording is a sequence of single readings -- which is what acq_triggered() does for the frame
+  -- path, and the two should not describe the same hardware differently.
+  local dcount = 1
+  if sdec.arm_silent() and sdec.trigmode ~= 'free' then dcount = nsmp end
+  if not pcall(function() sdec.dig.count = dcount end) then return false end
+  -- ===== A RECORDING CAN WAIT FOR THE DEVICE TOO =====
+  --
+  -- SimpleLoop ACQUIRES THE INSTANT IT IS INITIATED -- it is a counted loop with no wait block in it
+  -- at all -- so a recording built on it cannot be armed, and pressing Capture on a device that has
+  -- not powered up yet records the silence instead of the message. The same case the frame path
+  -- arms for, at 8 kB and 32 kB instead of 20 000 samples.
+  --
+  -- LoopUntilEvent IS THE CANNED FOUR-BLOCK SHAPE: buffer clear, an INFINITE digitize, the wait, then
+  -- a counted burst. The infinite pre-roll is not a nicety here, it is what makes an analog trigger
+  -- work at all -- the comparator is derived from the digitizer's sample stream, so with nothing
+  -- acquiring it never evaluates. A wait followed by a counted digitize builds cleanly, passes every
+  -- static check, sits on the firmware's low-latency fast path, and never fires. See docs/TRIGGER.md
+  -- sections 7, 8 and 12.
+  --
+  -- AND IT KEEPS WHAT PRECEDED THE TRIGGER, which is the other half of why this shape and not a
+  -- shorter one: the pre-trigger reserve holds the samples from before the first start bit, so the
+  -- recording opens on quiet line rather than halfway through the first byte.
+  --
+  -- ONLY ON A SILENT LINE, exactly as the frame path decides it -- sdec.arm_silent(). On a line that
+  -- is already transmitting SimpleLoop is strictly better: no wait to bound, no reserve to size, and
+  -- a trigger that would fire within a byte time anyway.
+  local armed = (sdec.arm_silent() and sdec.trigmode ~= 'free')
+  local ok = false
+  if armed then
+    -- The source, the blender and the TRIGGER-key break-in, from the one function that decides them
+    -- for both paths. nil means the operator's source is not on this firmware, and the answer is the
+    -- same as everywhere else: record free-running rather than silently substitute another source.
+    local ev, useanalog = sdec.arm_source()
+    if ev == nil then
+      armed = false
+    else
+      sdec.arm_comparator(useanalog, sdec.arm_slope())
+      ok = pcall(trigger.model.load, 'LoopUntilEvent', ev, sdec.pretrig,
+                 trigger.CLEAR_ENTER, 0, buf)
+      -- A REFUSED LOAD IS NOT AN ARMED RECORDING, so it must not be reported as one: the poll loop
+      -- would then wait out the arm for a model that is not running.
+      if not ok then armed = false end
+    end
+  end
+  -- PUBLISHED FOR THE POLL LOOP, which has to bound the wait and tell an expired arm from a finished
+  -- recording. Written on BOTH paths, because a stale true would have the next unarmed recording
+  -- waiting for a trigger nothing was armed on.
+  sdec.strm_armed = armed
   -- TWO SITES RATHER THAN ONE CLOSURE, and the ordering is preserved by the `and`: a load that
   -- raised must not be followed by an initiate, exactly as the closure's fall-through guaranteed.
   -- Costs one site against the 132 ceiling and saves OP_CLOSURE's allocation on every capture.
-  local ok = pcall(trigger.model.load, 'SimpleLoop', nsmp, 0, buf)
+  if not armed then ok = pcall(trigger.model.load, 'SimpleLoop', nsmp, 0, buf) end
   if ok then ok = pcall(trigger.model.initiate) end
+  -- AN ARM IS NOT LIVE UNTIL THE MODEL IS IN ITS WAIT BLOCK, and that is a promise this function has
+  -- to keep rather than leave to the poll loop. MEASURED on 1.7.17a: immediately after initiate() the
+  -- model reports STATE_RUNNING with nine readings taken -- it is executing the buffer clear, the
+  -- zero delay and the start of the infinite digitize -- and only then does it reach the wait and
+  -- report STATE_WAITING. The loop reads "no longer waiting" as "the trigger has fired", so without
+  -- this it latched that on its very first poll, the idle watchdog started while the line was quiet
+  -- by design, and an 8 kB recording of a device that had not spoken yet ended as 'quiet' with
+  -- nothing in it.
+  --
+  -- BOUNDED AND CHEAP: three blocks of setup, so WAITING arrives in about a millisecond, and the
+  -- spin costs one state read per 10 ms against a 0.25 s ceiling. A model that never gets there is
+  -- left to the loop, which will time the wait out and say so -- the one thing not done here is
+  -- guessing.
+  if ok and armed then
+    local spun = 0
+    while spun < (sdec.arm_settle_s or 0.25) do
+      if sdec.trig_waiting() == true then break end
+      delay(0.01)
+      spun = spun + 0.01
+    end
+  end
   -- The pulse goes AFTER the model is armed, never before: a SimpleLoop starts filling
   -- immediately rather than waiting for an edge, so a credit sent before initiate() would have
   -- the device transmitting into a buffer that does not exist yet. One credit covers the whole
@@ -1234,8 +1547,35 @@ function sdec.stream_acquire(nsmp)
   end
 
   local quiet, seen, step = 0, 0, sdec.ck_poll_s
+  -- THE RING POSITION LAST LOOKED AT, beside the count. -1 rather than nil so the first pass is
+  -- always fresh: index 0 is a legitimate endindex on a buffer with nothing in it.
+  local seenend = -1
   local iw = sdec.idle_window(sdec.fs)
   local waited = 0
+  -- ===== THE ARM, WHICH THIS LOOP HAS TO BOUND AND HAS TO BE ABLE TO SEE FAIL =====
+  --
+  -- THE MODEL'S OWN STATE IS THE OBSERVABLE, NOT THE BUFFER, and that is a measurement rather than a
+  -- preference. The pre-trigger phase accumulates readings while it waits, so buf.n climbing says
+  -- nothing about a trigger: measured on an 8 kB recording armed on a silent line, buf.n settled a
+  -- few readings ABOVE its 5 % reserve within milliseconds of initiate(), a buffer-level test read
+  -- that as "fired", and the idle watchdog ended the run as 'quiet' with zero bytes one second
+  -- later -- three seconds before the device started transmitting. sdec.trig_waiting() asks the
+  -- model instead, and answers nil where it cannot be told.
+  --
+  -- WITHOUT A BOUND OF ITS OWN THE WAIT IS NOT WAITED AT ALL. stream_maxwait is 2 x nsmp/fs floored
+  -- at 10 s -- 10 s for an 8 kB recording at 100 kS/s -- so an arm for a device that starts after
+  -- fifteen seconds would be cut off at ten and the plateau reported as 'full': a complete recording
+  -- of silence. The operator's Arm Wait is added for exactly the span the frame path gives it.
+  local armdone = true
+  if sdec.strm_armed then
+    armdone = false
+    -- SAY SO BEFORE BLOCKING, through the same hook acq_triggered() uses: a recording that waits two
+    -- minutes behind a static panel is indistinguishable from the unresponsive-panel fault this app
+    -- was released to fix. pcall'd and hook-optional for the reasons given there.
+    if sdec.armnote ~= nil then
+      pcall(sdec.armnote, sdec.arm_wait_s(), sdec.thr or sdec.arm_level_v())
+    end
+  end
   -- CONSECUTIVE FAILED WINDOW READS, and the reason the last one gave. Kept because a read failure must
   -- not be able to masquerade as a quiet line -- see the poll loop below.
   local rfail, rlast = 0, nil
@@ -1256,23 +1596,91 @@ function sdec.stream_acquire(nsmp)
   if sdec.strm_maxsec ~= nil and sdec.strm_maxsec > 0 and limit > sdec.strm_maxsec then
     limit = sdec.strm_maxsec
   end
+  -- AND THE ARM'S OWN WAIT ON TOP, AFTER the run-wide ceiling rather than before it: strm_maxsec
+  -- bounds the RECORDING, and clamping the sum to it would spend the operator's Arm Wait out of the
+  -- recording's time instead of in addition to it -- a 120 s arm would leave a 120 s run with
+  -- nothing to record into.
+  if sdec.strm_armed then limit = limit + sdec.arm_wait_s() end
   -- THREE WAYS OUT, each recorded in sdec.ck_endwhy so the panel can say which:
   --   full     the buffer reached nsmp -- the cap, or as much as the instrument has
   --   quiet    no threshold crossing for sdec.idle_exit_s. The device stopped talking.
   --   stopped  the operator pressed Capture (Stop) or Mode (abort)
   while true do
     local have = buf.n or 0
-    if have >= nsmp then sdec.ck_endwhy = 'full'; break end
+    -- THE TRIGGER HAS FIRED ONCE THE MODEL LEAVES ITS WAIT BLOCK, and the model really does report
+    -- it. MEASURED on 1.7.17a, one chunk that initiates, delays four seconds INSIDE the instrument
+    -- and then reports: STATE_RUNNING with 9 readings at initiate, STATE_WAITING with the buffer FULL
+    -- four seconds later, one event (2731, initiated) and no abort. The state is the cheapest and the
+    -- most direct observable there is -- one proxy read against four thousand for a window of
+    -- samples -- and unlike the data it cannot miss a burst that fell between two polls.
+    --
+    -- THAT MEASUREMENT TOOK A CONTROL TO GET. Watched from the HOST the same model reports RUNNING
+    -- and then ABORTED within half a second, every time, at a variable reading count -- because a
+    -- command arriving on the remote interface aborts an initiated trigger model (event 2728). This
+    -- loop runs INSIDE the instrument, like the frame path's wait, so nothing arrives while it polls.
+    --
+    -- Only a definite "waiting" keeps the latch closed: nil means the state could not be told, and
+    -- the degrade there is to behave as a recording did before this feature rather than to bound a
+    -- wait on a guess.
+    --
+    -- AND THE QUIET TIMER RESTARTS WITH THE ARM, because everything it counted up to this point was
+    -- a line that had not started yet -- carrying that forward ends the run as 'the device stopped
+    -- sending' within one poll of the device beginning to send.
+    if not armdone and sdec.trig_waiting() ~= true then
+      armdone = true
+      quiet = 0
+      seen, seenend = 0, -1
+    end
+    -- WHAT COUNTS AS FINISHED DEPENDS ON WHETHER THIS RECORDING WAITED.
+    --
+    -- AN ARMED ONE IS FINISHED WHEN THE MODEL IS, and that is not a preference either: a pre-trigger
+    -- phase that waited longer than the buffer holds has already filled it, so buf.n is pinned at
+    -- capacity BEFORE the device has sent a byte -- 0.75 s of wait at 1 MS/s does it for an 8 kB
+    -- recording of a 115 200 Bd line. Testing `have >= nsmp` there ends the run on the same poll the
+    -- trigger fires, and records the silence it was waiting through.
+    --
+    -- AN UNARMED ONE KEEPS THE FILL TEST, where the buffer starts empty, nothing has wrapped, and
+    -- nsmp means exactly what it says.
+    if sdec.strm_armed then
+      if armdone and sdec.trig_done(buf) then sdec.ck_endwhy = 'full'; break end
+    elseif have >= nsmp then
+      sdec.ck_endwhy = 'full'
+      break
+    end
     -- THE CANCEL LATCH IS READ HERE, twice a second against a poll costing 1.06 ms, so a blended
     -- stimulus can end the wait. A FINGER CANNOT: no blender event reaches this loop from the panel,
     -- so the bounds below remain the guarantee.
+    --
+    -- BEFORE THE ARM EXPIRY, AND THAT ORDER IS LOAD-BEARING: the TRIGGER key is blended INTO the arm,
+    -- so a press both fires the trigger and sets this latch. Tested the other way round, a press that
+    -- ended the wait early could be reported as an arm that never fired.
     if sdec.cancel_asked() then sdec.ck_endwhy = 'stopped'; break end
+    -- THE ARM EXPIRED: Arm Wait elapsed with the device still silent. Reported as its own ending
+    -- rather than as 'full' or 'quiet', because both of those describe a recording that happened.
+    if not armdone and waited >= sdec.arm_wait_s() then
+      -- THE LEVEL IS STASHED HERE, AT THE EXPIRY, because sdec.thr does not survive to the note. The
+      -- reason is printed at the END of the run, by which time record_run() has opened the next
+      -- window and its stream_begin() has cleared the measurements -- so the note read 'nothing
+      -- crossed -0.00 V', naming a threshold nothing was ever armed at. MEASURED on the instrument.
+      sdec.arm_expired_at = sdec.thr
+      sdec.ck_endwhy = 'noarm'
+      break
+    end
     if waited >= limit then sdec.ck_endwhy = 'full'; break end
 
     -- Look at the NEWEST samples only, and only once new ones exist: re-testing the same
     -- window would report the same answer and make a busy line look quiet the moment
     -- acquisition stalled for any other reason.
-    if have > seen then
+    --
+    -- "NEW" IS THE RING POSITION, NOT THE COUNT, for the reason the completion test above gives: on a
+    -- buffer that has wrapped, buf.n is pinned at capacity and every window after that looks like the
+    -- same window -- so the quiet timer would run on a device that was transmitting happily and end
+    -- the run as 'the device stopped sending'. sdec.acq_end() is where the next reading goes, which
+    -- keeps moving. nil falls back to the count, which is right for every buffer that never wrapped.
+    local eidx = sdec.acq_end(buf)
+    local fresh = (have > seen)
+    if eidx ~= nil then fresh = (eidx ~= seenend) end
+    if fresh then
       local from = have - iw + 1
       if from < 1 then from = 1 end
       local win, m = {}, 0
@@ -1304,11 +1712,18 @@ function sdec.stream_acquire(nsmp)
         rfail = 0
       end
       seen = have
+      seenend = eidx
     else
       quiet = quiet + step
     end
 
-    if sdec.ck_watch and sdec.idle_exit_s ~= nil and sdec.idle_exit_s > 0 and
+    -- THE IDLE WATCHDOG IS OFF UNTIL THE ARM FIRES, and `armdone` is what holds it off. A waiting arm
+    -- is a line with nothing on it BY DESIGN, so every condition the watchdog tests for is satisfied
+    -- -- no new samples, no crossings -- and it would end the run as 'the device stopped sending'
+    -- before the device had started. Normally moot, because a silent probe leaves ck_watch false;
+    -- NOT moot where the levels were reused from a previous capture, which is precisely the
+    -- flow-controlled and multi-window case that reuse exists for.
+    if armdone and sdec.ck_watch and sdec.idle_exit_s ~= nil and sdec.idle_exit_s > 0 and
        quiet >= sdec.idle_exit_s then
       -- A QUIET LINE JUDGED WITH REUSED LEVELS IS CHECKED BEFORE IT IS BELIEVED. The threshold may be
       -- from a capture taken at a different probe point or before a divider went in, and a threshold
@@ -1334,7 +1749,11 @@ function sdec.stream_acquire(nsmp)
     -- YIELDS AT ck_poll_s rather than busy-waiting, because delay() is what lets the display
     -- update at all. Nothing in the loop may be long: one settext plus at most 4000 proxy reads
     -- per pass is a few tens of milliseconds against a 500 ms sleep.
-    sdec.progress_samples(have, nsmp)
+    -- NOT WHILE AN ARM IS WAITING. The bar is a fraction of the buffer, and a pre-roll that has
+    -- wrapped has filled it -- so the bar would read 100 % through a wait in which nothing has been
+    -- recorded at all. ACCEPTED, once the arm has fired: the buffer really is full then, and what the
+    -- count cannot say is how much of the burst has been written.
+    if armdone then sdec.progress_samples(have, nsmp) end
     delay(step)
     waited = waited + step
     sdec.strm_waited = waited
@@ -2531,6 +2950,13 @@ function sdec.strm_exit_why(endwhy, ok, err)
   if endwhy == 'readfail' then
     return 'recording failed: ' .. tostring(sdec.strm_readfail or 'the capture buffer could not be read')
   end
+  -- THE ARM EXPIRED, WHICH IS NOT A RECORDING THAT HAPPENED. Named separately from 'quiet' and
+  -- 'full' because both of those describe a run with samples in it: this one waited for a device
+  -- that never started, so the two settings that govern the wait are the useful thing to say.
+  if endwhy == 'noarm' then
+    return string.format('nothing crossed %.2f V in %g s -- raise Arm Wait or lower Arm At',
+                         sdec.arm_expired_at or sdec.thr or sdec.arm_level_v(), sdec.arm_wait_s())
+  end
   if endwhy == 'quiet' then
     return string.format('%g s with no line activity', sdec.idle_exit_s or 0)
   elseif endwhy == 'stopped' then
@@ -2910,6 +3336,10 @@ function sdec.options_seed()
     end
     display.setvalue(sdec.opt_ext, xi)
     display.setvalue(sdec.opt_trig, ti)
+    -- SEEDED THROUGH THE CLAMPS, not from the raw fields, so a value set programmatically outside the
+    -- form's range is shown as what the capture will actually use rather than as what was asked for.
+    display.setvalue(sdec.opt_armv, sdec.arm_level_v())
+    display.setvalue(sdec.opt_armw, sdec.arm_wait_s())
   end)
 end
 
@@ -2935,6 +3365,7 @@ function sdec.options_save()
                    any = sdec.widths_any, trig = sdec.trigmode,
                    ext = sdec.trigext, fc = sdec.fc_out, view = sdec.ui_mode,
                    aset = sdec.autolock_set,
+                   armv = sdec.armlevel, armw = sdec.armwait,
                    dhas = true, dbaud = sdec.baud,
                    dsnap = sdec.snapped, dfirm = sdec.snapfirm}
   return true
@@ -2950,6 +3381,19 @@ function sdec.options_restore()
   sdec.trigmode, sdec.trigext, sdec.fc_out = s.trig, s.ext, s.fc
   sdec.ui_mode = s.view
   sdec.autolock_set = s.aset
+  -- GUARDED ON THE VALUES THEMSELVES, which is a different test from the dhas below and not
+  -- interchangeable with it. nil is a legitimate value for the three display fields, so a snapshot
+  -- that lacks them must leave the live ones alone. nil is NOT legitimate for these two -- serial_core
+  -- defaults them at load and options_apply only ever assigns a number -- so a nil here means a
+  -- snapshot built without them, and copying it in hands the capture a nil where a voltage and a
+  -- duration get compared.
+  --
+  -- WHICH IS NOT HYPOTHETICAL: two offline fixtures assemble an opt_snap by hand, and this line put
+  -- nil into both fields on every restore they drove. The clamps then answered with their floors, so
+  -- the suite ran the whole feature at 0.33 V and 2 s without one assertion noticing -- a defect that
+  -- hid itself by looking exactly like a configuration.
+  if type(s.armv) == 'number' then sdec.armlevel = s.armv end
+  if type(s.armw) == 'number' then sdec.armwait = s.armw end
   -- Guarded on dhas, not on the values: nil is legitimate for all three, and a snapshot taken without
   -- them must leave the live ones alone rather than clear them.
   if s.dhas then
@@ -3112,6 +3556,19 @@ function sdec.options_apply()
     -- nobody asked it to pulse.
     local ri = sdec.opt_rear_v[display.getvalue(sdec.opt_ext)] or sdec.opt_rear_v[1]
     sdec.trigext, sdec.fc_out = ri[1], ri[2]
+
+    -- THE TWO ARM FIELDS, TAKEN ONLY WHEN THEY READ AS NUMBERS. A getvalue that hands back anything
+    -- else must leave the previous setting alone rather than put nil into a comparison the capture
+    -- makes against a voltage -- and unlike Baud Rate there is no "0 means auto" reading available
+    -- here, because 0 V is a level and 0 s is a wait.
+    --
+    -- NOT CLAMPED HERE. arm_level_v() and arm_wait_s() clamp at the point of use, so the stored value
+    -- stays what the operator typed and the form shows it back unaltered; clamping on the way in as
+    -- well would silently rewrite a field the moment it was applied.
+    local av = display.getvalue(sdec.opt_armv)
+    if type(av) == 'number' then sdec.armlevel = av end
+    local aw = display.getvalue(sdec.opt_armw)
+    if type(aw) == 'number' then sdec.armwait = aw end
   end)
   if not readok then
     -- AND THIS IS WHAT MAKES THAT MESSAGE TRUE. The reads above assign as they go, so a getvalue

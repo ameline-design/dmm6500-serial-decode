@@ -2,9 +2,9 @@
 
 A UART decoder that runs on a Keithley bench instrument. It digitizes the line with the
 instrument's own digitizer, automatically recovers the baud rate, frame format and idle polarity from the signal,
-and shows the bytes on the front panel as text or hex. No host computer, terminal, or logic analyzer needed, no setting baud rates, stop bits, data bits, parity, etc - just one probe, and one button press. The signal must swing by at least 0.33V, lie between -10V and +10V, have no more than 30% noise, and under 15% clock jitter. Any baud rate will work from 110 to 250,000 inclusive - even non standard ones. Any DC offset is fine so long as these conditions are met. 
+and shows the bytes on the front panel as text or hex. No host computer, terminal, or logic analyzer needed, no setting baud rates, stop bits, data bits, parity, etc - just one probe, and one button press. Press **Capture** before the device under test has started talking and the capture **waits for it** — up to two minutes — so a board that only speaks when you power it on is caught from its first byte rather than recorded as silence. The signal must swing by at least 0.33V, lie between -10V and +10V, have no more than 30% noise, and under 15% clock jitter. Any baud rate will work from 110 to 250,000 inclusive - even non standard ones. Any DC offset is fine so long as these conditions are met. 
 
-Ian Ameline · **version 1.40** · MIT licence (see [LICENSE](LICENSE))
+Ian Ameline · **version 1.41** · MIT licence (see [LICENSE](LICENSE))
 
 ![The main screen in hex view: a 240-byte frame capture, 239 bytes decoded, no errors, S/N 74 dB](docs/img/panel-hex.png)
 

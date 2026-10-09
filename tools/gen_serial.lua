@@ -783,11 +783,17 @@ local BUFS = {}
 local function newbuf(cap)
   -- fillmode starts at 0 (FILL_ONCE), as the reference says a user-defined buffer does. The app
   -- sets 1 so an overwrite is an overwrite rather than a discard -- see sdec.acq_fillmode.
+  --
+  -- startindex AND endindex ARE REAL ATTRIBUTES, and they are here because a WRAPPED buffer is the
+  -- only thing that tells the app its record is rotated. Measured on 1.7.17a after an armed capture
+  -- whose arm waited three seconds: startindex 13 288, endindex 13 287 on a 21 100-deep buffer. They
+  -- are 1 and n until something wraps the ring; SRC.ringoff below is what does that here.
   local b = {alive = true, capacity = cap, n = 0, readings = {},
-             relativetimestamps = {}, fillmode = 0}
+             relativetimestamps = {}, fillmode = 0, startindex = 1, endindex = 0}
   function b.clear()
     b.n = 0
     b.readings, b.relativetimestamps = {}, {}
+    b.startindex, b.endindex = 1, 0
   end
   BUFS[table.getn(BUFS) + 1] = b
   return b
@@ -842,6 +848,16 @@ end
 --   * SRC.loop = true wraps at SRC.nsmp, which is what the generator does with an arb on repeat.
 --     Without it a slower rate runs off the end of the render and the capture comes back short.
 SRC   = {rd = nil, ts = nil, nsmp = 0, trigat = nil, native_fs = nil, loop = false}
+-- HOW FAR ROUND THE RING THE PRE-TRIGGER PHASE HAD GOT when the trigger fired, as a fraction of
+-- capacity. 0 models a trigger that fired BEFORE the buffer wrapped, which is what a line that is
+-- already transmitting does -- the trigger arrives within about fifteen samples of initiate() -- and
+-- is therefore the right default for every existing test.
+--
+-- ANY OTHER VALUE MODELS AN ARM THAT WAITED. The capture buffer is FILL_CONTINUOUS, so a wait of
+-- seconds laps it many times and the record comes back rotated: measured 13 288 of 21 100 after a
+-- 2.6 s wait. A mock that cannot do that cannot see the defect it caused -- the dump opened on
+-- 'World!Hello, World!' instead of on the device's first byte -- so the arm tests set it.
+SRC.ringoff = 0
 READS = {n = 0, triggered = 0}
 TRIG  = {}
 
@@ -1367,9 +1383,12 @@ trigger = {
   -- DIGIO events, which is this shape with different sources.
   EVENT_BLENDER1 = 'blend1',
   LOGIC_POSITIVE = 'pos', LOGIC_NEGATIVE = 'neg',
-  -- Trigger-model states. Only IDLE and RUNNING are distinguished here, which is all
-  -- sdec.trig_done() and sdec.trig_settle() ask about.
+  -- Trigger-model states. WAITING is here because sdec.trig_waiting() asks for it by name: an armed
+  -- recording's poll loop distinguishes "the device has not started" from "the burst is running" by
+  -- the model's state and not by the buffer, so a mock without the constant would make that test
+  -- answer nil for ever and the arm bounding unreachable offline.
   STATE_IDLE = 'idle', STATE_RUNNING = 'running', STATE_ABORTED = 'aborted',
+  STATE_WAITING = 'waiting',
   model = {},
 }
 TRIG.state = 'idle'
@@ -1490,23 +1509,28 @@ function trigger.model.initiate()
   -- before the trigger edge, the rest from after. SRC.trigat is the sample index
   -- of the edge the analog comparator would have fired on.
   --
-  -- A COMPLETED CAPTURE IS SHORTER THAN `count`, and the mock reproduces that.
-  -- Measured on hardware: count = 20000 with position = 5 completes at 19011
-  -- samples, twice, differing only in the last two digits. The rule is
-  --     post = count - floor(count x position/100)      -- always made
-  --     pre  = min(samples available before the trigger, that same budget)
-  -- and on a continuously transmitting line pre is a dozen, not the 1000 the 5 %
-  -- budget allows -- because the pre-trigger phase ENDS when the trigger fires, and
-  -- on a busy line that is immediately.
+  -- A COMPLETED CAPTURE IS SHORTER THAN THE BUFFER, and the mock reproduces that. The rule is
+  --     post = floor(CAPACITY x (100 - position)/100)   -- always made
+  --     pre  = min(samples available before the trigger, capacity - post)
+  -- and on a continuously transmitting line pre is a dozen, not the whole reserve the position
+  -- nominally allows -- because the pre-trigger phase ENDS when the trigger fires, and on a busy
+  -- line that is immediately.
+  --
+  -- THE PER CENT IS OF CAPACITY, NOT OF dmm.digitize.count, which has no part in it at all:
+  -- measured over 15 combinations of capacity and position, each matching this rule exactly, with
+  -- digitize.count set to 77 against a capacity of 1000 changing nothing. Hardware delivered 20 066
+  -- at capacity 21 100 and position 5, which is this post count of 20 045 plus 21 pre-trigger
+  -- samples; the shorter rule this mock carried before -- count minus count x position/100 -- gives
+  -- 19 000 and is the one the vendor manual implies. See sdec.n_deliv.
   --
   -- Filling to `count` here is why the app shipped a wait loop that could never be
   -- satisfied: offline, buf.n reached n on the first look, so `buf.n >= n` passed
   -- every test and timed out on every real capture. The mock has to be able to
   -- disappoint the code, or it only tests the code's own assumptions.
   local b = TRIG.buf
-  local count = dmm.digitize.count or 1000
-  local budget = math.floor(count * TRIG.position / 100)
-  local post = count - budget
+  local count = b.capacity or dmm.digitize.count or 1000
+  local post = math.floor(count * (100 - TRIG.position) / 100)
+  local budget = count - post
   local avail = (SRC.trigat or 1) - 1
   local pre = avail
   if pre > budget then pre = budget end
@@ -1527,13 +1551,29 @@ function trigger.model.initiate()
     if start < 1 then start = 1 end
   end
   b.clear()
+  -- WRITTEN INTO THE RING AT SRC.ringoff, and the timestamps travel with the SAMPLES rather than with
+  -- the slots: readings[p] and relativetimestamps[p] are the same reading, so a rotated record has
+  -- non-monotonic timestamps in slot order, exactly as the instrument's does.
+  local roff = 0
+  if SRC.ringoff ~= nil and SRC.ringoff > 0 and total >= (b.capacity or total) then
+    roff = math.floor((b.capacity or total) * SRC.ringoff)
+    if roff >= total then roff = 0 end
+  end
   local i
   for i = 1, total do
     local v = SRC_val(start, i, step)
     if v == nil then break end
+    local p = i + roff
+    if p > total then p = p - total end
     b.n = i
-    b.readings[i] = v
-    b.relativetimestamps[i] = (i - 1) * dt
+    b.readings[p] = v
+    b.relativetimestamps[p] = (i - 1) * dt
+  end
+  if roff > 0 then
+    b.startindex = roff + 1
+    b.endindex = roff
+  else
+    b.startindex, b.endindex = 1, b.n
   end
   READS.triggered = READS.triggered + 1
 end

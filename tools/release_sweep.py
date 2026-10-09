@@ -321,6 +321,16 @@ def stages(outdir, shots):
               hardware=True,
               note='degenerate signals and contradictory settings -- a refusal with a reason '
                    'passes, confident garbage does not'),
+        # THE ONE CASE NO OFFLINE TEST CAN REACH: the comparator. Arming from silence claims the
+        # window opens on the device's FIRST start bit, and what makes that true is the instrument's
+        # analog trigger with its pre-trigger phase already running. The mock reproduces the shape of
+        # that program; it cannot reproduce the comparator. --no-load because hw-matrix above has
+        # already spent this power cycle's one UI build.
+        Stage('hw-arm',
+              ['python3', 'tools/bench_arm.py', '--no-load'],
+              hardware=True,
+              note='arming from silence: the default configuration on a quiet line, a device that '
+                   'starts mid-wait, an idle-HIGH line, an expired arm, and an armed 8 kB recording'),
         # TWO WAVEFORMS, NOT 41. The seeded sweep is the soak's suite and a full lap is about 2.5 h,
         # which is an overnight job rather than a gate. Two vectors at all 43 rates is under ten
         # minutes and proves the parts a release cares about: that the plan is reproducible from its

@@ -1,6 +1,6 @@
 # The bench harness
 
-**Ian Ameline** · version 1.40 · MIT licence
+**Ian Ameline** · version 1.41 · MIT licence
 
 Three gates, each roughly ten times the cost of the one before it. Run them in order; a cheap failure
 stops an expensive one.
@@ -339,6 +339,7 @@ the scope only ever reads.
 | `soakrand-dmm` | the third leg: the instrument's **own** Lua 5.0.2 must produce the same words, floats, rejected draws and permutation |
 | `hw-plan` | the seeded sweep on the bench: every waveform across all 43 rates in a seeded order, with a seeded wait, amplitude and DC offset drawn per cell. `--plan-vectors` cuts it to a subset for a lap that must finish in minutes. The vertical draw asks for a **target swing in volts, 0.45 V to 8 V**, and places the offset wherever keeps both levels inside ±9.5 V *and* does not put a single-supply band across ground. Every row records the swing it drove and the `S/N` the app reported |
 | `hw-break` | degenerate signals and contradictory settings — no signal, DC only, all-`0x00`/`0xFF`/`0x55`, a break, 60 mV of swing, 19 Vpp, rates past the ceiling, six wrong forced settings. A refusal with a reason passes; confident garbage does not |
+| `hw-arm` | **arming from silence**, which is the one case no offline test can reach — what makes it work is the comparator, and the mock reproduces the program shape around it rather than the comparator itself. Seven cases on a line held quiet by switching the generator's output off: the default configuration (rate automatic) must *wait* rather than record the silence, a device that starts three seconds into the wait must be caught **from its first byte** with the pre-trigger reserve ahead of it, a line idling **high** at 3.3 V must arm one `Arm At` below idle and on the falling edge, an expired arm must name both settings and the level it was watching, and an 8 kB **recording** must arm the waiting template instead of the one that fires immediately |
 
 This table must list every stage `release_sweep.py` defines, or the published inventory of what a
 release passed is incomplete. **The `stagedoc` stage runs this check**, and it is printed here so the

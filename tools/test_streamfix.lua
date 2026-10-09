@@ -76,9 +76,21 @@ do
   check('SimpleLoop is what got armed', TRIG.template == 'SimpleLoop', tostring(TRIG.template))
   check('fillmode is CONTINUOUS at trigger.model.load, not FILL_ONCE after the clear',
         atload.fillmode == 1, string.format('fillmode=%s', tostring(atload.fillmode)))
-  check('and the buffer has 100 readings of headroom past the count asked for',
-        atload.capacity - atload.count == 100,
-        string.format('capacity=%s count=%s', tostring(atload.capacity), tostring(atload.count)))
+  -- THE HEADROOM IS PAST THE PRE-TRIGGER RESERVE AS WELL AS PAST THE COUNT, and the reserve is asked
+  -- for whenever the operator's trigger mode is one that waits -- which is the default. It has to be
+  -- in CAPACITY because that is where LoopUntilEvent takes it from: a buffer sized at the count
+  -- records 5 % less than was asked for. This recording armed a SimpleLoop, because the line is
+  -- transmitting, and then the reserve is 5 % of readings left unused rather than a shortfall.
+  do
+    local want = atload.count + 100
+    if sdec.trigmode ~= 'free' then
+      want = math.ceil(atload.count * 100 / (100 - sdec.pretrig)) + 100
+    end
+    check('and the buffer has 100 readings of headroom past the count and the reserve',
+          atload.capacity == want,
+          string.format('capacity=%s count=%s want=%s at trigmode %s', tostring(atload.capacity),
+                        tostring(atload.count), tostring(want), tostring(sdec.trigmode)))
+  end
   -- The headroom must be CAPACITY only. Moving it into `count` would make the recording overrun
   -- the sample bound the progress figure and the full-buffer exit are both stated against.
   check('the count itself is still exactly the sample bound the caller asked for',
@@ -715,6 +727,278 @@ do
   ulog.open(ulog.path, true)
   check('H leaves the logger open too', ulog.on == true, tostring(ulog.lasterr))
 end
+
+-- ============================================================================
+print('\nI  an 8 kB or 32 kB recording can wait for a device that has not started')
+-- ============================================================================
+-- SimpleLoop ACQUIRES THE INSTANT IT IS INITIATED, so a recording built on it records the silence
+-- when Capture is pressed before the DUT powers up -- the case the frame path arms for, at 8 kB and
+-- 32 kB. LoopUntilEvent is the canned four-block shape that waits, and its infinite pre-roll is what
+-- makes the analog comparator evaluate at all: a wait followed by a counted digitize builds cleanly,
+-- passes every static check, and never fires.
+;(function()
+  local keep = {tm = sdec.trigmode, cm = sdec.capmode, pi = sdec.probe_idle,
+                fc = sdec.fc_out, lvl = sdec.armlevel, wait = sdec.armwait,
+                key = sdec.armkey, ext = sdec.trigext}
+  sdec.trigext, sdec.trigext_only, sdec.fc_out = false, false, false
+  sdec.armlevel, sdec.armwait, sdec.armkey = 1.0, 4.0, true
+
+  -- A LINE AT GROUND WITH NOTHING ON IT: the swing is under sdec.minswing, so the level probe in
+  -- stream_begin() refuses it and arm_silent() is true -- the real precondition, not a flag set by
+  -- hand.
+  local function quiet_line()
+    SRC.rd, SRC.ts, SRC.nsmp, SRC.trigat =
+      GEN({bytes = {0x55}, baud = 9600, fs = 100000, hi = 0.02, lo = 0.0})
+    SRC.trigat = nil
+  end
+  local function busy_line()
+    SRC.rd, SRC.ts, SRC.nsmp, SRC.trigat =
+      GEN({bytes = {72, 101, 108, 108, 111}, baud = 9600, fs = 100000, lead = 20, n = 12000})
+    SRC.trigat = nil
+  end
+  local function begin(mode, tm, line)
+    clearforce()
+    sdec.force_baud, sdec.capmode, sdec.trigmode = 9600, mode, tm
+    sdec.strm_recording, sdec.ck_job, sdec.ck_running = nil, nil, false
+    sdec.strm_armed = nil
+    line()
+    TRIG.template, TRIG.ev, TRIG.position, TRIG.clear = nil, nil, nil, nil
+    local ok, why = sdec.stream_begin()
+    return ok, why
+  end
+
+  -- THE MODEL DOES NOT REACH ITS WAIT BLOCK INSTANTLY, and the mock says so because the instrument
+  -- does: measured, STATE_RUNNING with nine readings at initiate and STATE_WAITING a moment later.
+  -- stream_arm() spins for that transition, so a mock that reported WAITING from initiate would
+  -- leave the spin untested -- and it was the absence of the spin that ended an armed 8 kB recording
+  -- as 'quiet' with nothing in it.
+  -- ONE READ OF STATE_RUNNING AFTER EVERY initiate(), because that is what the instrument gives:
+  -- measured, STATE_RUNNING with nine readings taken immediately after initiate -- the model is
+  -- executing the buffer clear, the zero delay and the start of the infinite digitize -- and
+  -- STATE_WAITING only once it reaches the wait. stream_arm() spins for that transition, and a mock
+  -- that reported the final state from the first read would leave the spin untested.
+  ARMSTATES = 0
+  local realstate0 = trigger.model.state
+  trigger.model.state = function()
+    ARMSTATES = ARMSTATES + 1
+    if ARMSTATES == 1 then return trigger.STATE_RUNNING, 'ok', 0 end
+    return realstate0()
+  end
+  local realinit0 = trigger.model.initiate
+  trigger.model.initiate = function()
+    ARMSTATES = 0
+    return realinit0()
+  end
+
+  local bok, bwhy = begin('med', 'edge', quiet_line)
+  check('an 8 kB recording sets up on a silent line', bok == true, tostring(bwhy))
+  check('...and the probe reports the line as silent, which is what decides the arm',
+        sdec.arm_silent() == true, tostring(sdec.probe_idle))
+  sdec.stream_arm(sdec.strm_nsmp)
+  check('so the recording arms the WAITING template, not the one that fires immediately',
+        TRIG.template == 'LoopUntilEvent' and sdec.strm_armed == true,
+        string.format('template=%s armed=%s', tostring(TRIG.template), tostring(sdec.strm_armed)))
+  check('...on the comparator, at the level the silent branch chose, with a pre-trigger reserve',
+        TRIG.ev == trigger.EVENT_BLENDER1 and TRIG.position == sdec.pretrig and
+        dmm.digitize.analogtrigger.mode == dmm.MODE_EDGE,
+        string.format('ev=%s position=%s cmp=%s level=%s', tostring(TRIG.ev),
+                      tostring(TRIG.position), tostring(dmm.digitize.analogtrigger.mode),
+                      tostring(dmm.digitize.analogtrigger.edge.level)))
+  check('...and the TRIGGER key is blended in here too, so the wait is always escapable',
+        sdec.armkeyed == true and trigger.blender[1].stimulus[3] == trigger.EVENT_DISPLAY,
+        string.format('keyed=%s s3=%s', tostring(sdec.armkeyed),
+                      tostring(trigger.blender[1].stimulus[3])))
+  -- THE RESERVE HAS TO BE IN CAPACITY OR THE RECORDING IS 5 % SHORT, because that is where
+  -- LoopUntilEvent takes it from -- see sdec.n_deliv for the measurement.
+  check('...with the reserve taken out of CAPACITY, so the recording is still the length asked for',
+        math.floor((sdec.buf.capacity or 0) * (100 - sdec.pretrig) / 100) >= sdec.strm_nsmp,
+        string.format('post %d of capacity %s for nsmp %d',
+                      math.floor((sdec.buf.capacity or 0) * (100 - sdec.pretrig) / 100),
+                      tostring(sdec.buf.capacity), sdec.strm_nsmp))
+
+  -- AND NOT ON A LINE THAT IS ALREADY TALKING, which is the containment argument: SimpleLoop is
+  -- strictly better there -- no wait to bound, and a trigger that would fire within a byte time.
+  begin('med', 'edge', busy_line)
+  sdec.stream_arm(sdec.strm_nsmp)
+  check('a recording of a line that is already transmitting still arms SimpleLoop',
+        TRIG.template == 'SimpleLoop' and not sdec.strm_armed,
+        string.format('template=%s armed=%s', tostring(TRIG.template), tostring(sdec.strm_armed)))
+  -- NOR IN FREE RUN, where the operator has said DO NOT WAIT.
+  begin('med', 'free', quiet_line)
+  sdec.stream_arm(sdec.strm_nsmp)
+  check('nor does free run, where the operator asked not to wait',
+        TRIG.template == 'SimpleLoop' and not sdec.strm_armed,
+        string.format('template=%s armed=%s', tostring(TRIG.template), tostring(sdec.strm_armed)))
+
+  -- ---- THE WAIT, BOUNDED, AND AN ARM THAT EXPIRES ----
+  --
+  -- The mock fills the armed buffer inside initiate(), so a live arm has to be modelled: wrap
+  -- stream_arm and leave the buffer holding only its pre-trigger reserve, which is exactly what the
+  -- instrument shows while the model sits in its wait block. delay() is a no-op offline, so the poll
+  -- loop runs the whole bound in milliseconds.
+  do
+    begin('med', 'edge', quiet_line)
+    local realarm = sdec.stream_arm
+    sdec.stream_arm = function(nn)
+      local ok = realarm(nn)
+      -- WHAT A LIVE ARM LOOKS LIKE, in the two things the poll loop can see. The mock fills the
+      -- armed buffer inside initiate(), so both have to be put back by hand: the model sits in its
+      -- WAIT block, and the buffer holds the readings its pre-trigger phase has accumulated.
+      --
+      -- THE STATE IS THE LOAD-BEARING HALF. Measured on the instrument, buf.n settles a few readings
+      -- ABOVE the reserve while waiting, so a buffer-level test reads a live arm as a fired one --
+      -- which is why this fixture pins the state and the count a little above the reserve rather
+      -- than at it.
+      local b = sdec.buf
+      b.n = math.floor((b.capacity or nn) * (sdec.pretrig or 0) / 100) + 2
+      TRIG.state = trigger.STATE_WAITING
+      return ok
+    end
+    local got = sdec.stream_acquire(sdec.strm_nsmp)
+    sdec.stream_arm = realarm
+    TRIG.state = trigger.STATE_IDLE
+    check('an arm that never fires ends the recording as an EXPIRED ARM, not as a full buffer',
+          sdec.ck_endwhy == 'noarm',
+          string.format('endwhy=%s got=%s', tostring(sdec.ck_endwhy), tostring(got)))
+    -- 'full' would have claimed a complete recording of silence, and 'quiet' would have blamed the
+    -- device for stopping. Both describe a recording that happened.
+    -- THE LEVEL IS READ FROM THE STASH, NOT FROM sdec.thr, and the fixture proves it by clearing thr
+    -- before asking -- which is what record_run() does by opening the next window. On the instrument
+    -- the note read 'nothing crossed -0.00 V' for an arm that had been watching 0.99 V.
+    local keepthr = sdec.thr
+    sdec.thr = 0
+    local why = sdec.strm_exit_why(sdec.ck_endwhy, true, nil)
+    sdec.thr = keepthr
+    check('...and the note names the two settings that govern the wait, and the armed level',
+          has(why, 'raise Arm Wait or lower Arm At') and has(why, 'crossed') and
+          not has(why, 'crossed 0.00 V') and not has(why, 'crossed -0.00 V'), why)
+    check('...and it waited the operator\'s Arm Wait rather than the recording\'s fill time',
+          (sdec.strm_waited or 0) >= sdec.arm_wait_s() - sdec.ck_poll_s,
+          string.format('%.2f s waited, Arm Wait %s', sdec.strm_waited or 0,
+                        tostring(sdec.arm_wait_s())))
+  end
+
+  -- THE BUFFER ALONE CANNOT SEE A TRIGGER, which is what the case above would still pass if the
+  -- detection went back to a buffer-level test -- its buf.n sits two readings over the reserve, which
+  -- is exactly what the instrument does. This is the other direction: the model reports WAITING and
+  -- the buffer is nearly FULL, which no buffer test can tell from a finished recording.
+  do
+    begin('med', 'edge', quiet_line)
+    local realarm = sdec.stream_arm
+    sdec.stream_arm = function(nn)
+      local ok = realarm(nn)
+      sdec.buf.n = nn - 1                  -- one reading short of the whole recording
+      TRIG.state = trigger.STATE_WAITING
+      return ok
+    end
+    sdec.stream_acquire(sdec.strm_nsmp)
+    sdec.stream_arm = realarm
+    TRIG.state = trigger.STATE_IDLE
+    check('a model still in its WAIT block is not a finished recording, however full the buffer',
+          sdec.ck_endwhy == 'noarm', string.format('endwhy=%s', tostring(sdec.ck_endwhy)))
+  end
+
+  -- A PRE-ROLL THAT WRAPPED THE BUFFER BEFORE THE DEVICE SPOKE is the case that broke two of the
+  -- three things this loop reads off buf.n. The buffer is FULL and the model is still WAITING: 0.75 s
+  -- of wait at 1 MS/s puts an 8 kB recording of a 115 200 Bd line in that state, so it is the common
+  -- case at speed rather than a corner.
+  do
+    begin('med', 'edge', quiet_line)
+    local realarm = sdec.stream_arm
+    sdec.stream_arm = function(nn)
+      local ok = realarm(nn)
+      local b = sdec.buf
+      b.n = b.capacity                   -- the ring is full, and none of it is the recording
+      b.endindex = 12345                 -- parked, because nothing is being written while it waits
+      TRIG.state = trigger.STATE_WAITING
+      return ok
+    end
+    local got = sdec.stream_acquire(sdec.strm_nsmp)
+    sdec.stream_arm = realarm
+    TRIG.state = trigger.STATE_IDLE
+    -- 'full' would have claimed a complete recording of the silence it was waiting through, and
+    -- 'quiet' would have blamed the device for stopping before it started.
+    check('a FULL buffer with the model still waiting is an expired arm, not a finished recording',
+          sdec.ck_endwhy == 'noarm',
+          string.format('endwhy=%s got=%s', tostring(sdec.ck_endwhy), tostring(got)))
+  end
+
+  -- AND A FIRMWARE THAT CANNOT REPORT THE STATE DEGRADES TO THE OLD BEHAVIOUR rather than bounding
+  -- every recording on a guess: with trigger.STATE_WAITING absent, trig_waiting() answers nil and
+  -- the arm is treated as fired.
+  do
+    local keepw = trigger.STATE_WAITING
+    check('with no STATE_WAITING constant the arm cannot be told, which reads as nil not false',
+          sdec.trig_waiting() ~= nil, tostring(sdec.trig_waiting()))
+    trigger.STATE_WAITING = nil
+    check('...and then an armed recording is NOT bounded as an arm -- the pre-feature behaviour',
+          sdec.trig_waiting() == nil, tostring(sdec.trig_waiting()))
+    trigger.STATE_WAITING = keepw
+  end
+
+  -- ---- AND THE WORKFLOW: silent at the press, transmitting a moment later ----
+  do
+    begin('med', 'edge', quiet_line)
+    local realinit = trigger.model.initiate
+    trigger.model.initiate = function()
+      -- THE DEVICE STARTS HERE, with the arm already live: the mock fills the armed buffer inside
+      -- initiate(), so this is the point that models "and then it began transmitting".
+      --
+      -- LONGER THAN THE PRE-TRIGGER RESERVE, deliberately: the reserve of an 8 kB recording's buffer
+      -- is ~72 000 readings, and the poll loop reads "the buffer has passed its reserve" as "the
+      -- trigger fired". A render shorter than that models a capture the instrument cannot produce --
+      -- the post-trigger count is 95 % of capacity -- and it reported the fired arm as expired.
+      -- A PAYLOAD THAT IS STILL TRANSMITTING AT THE END OF THE RECORD, which is what the arm's own
+      -- test needs: "the device has started" is read from the NEWEST window, so a six-byte banner
+      -- followed by 1.4 seconds of idle leaves every later window quiet and the arm reads as never
+      -- fired. 1500 bytes at 9600 Bd fills 150 000 samples at 100 kS/s, which is a device that keeps
+      -- talking -- the case the 8 kB and 32 kB modes exist for.
+      local many, q = {}, nil
+      for q = 1, 1500 do many[q] = 32 + math.mod(q * 7, 90) end
+      SRC.rd, SRC.ts, SRC.nsmp =
+        GEN({bytes = many, baud = 9600, fs = 100000, lead = 200, n = 150000})
+      SRC.trigat = math.floor(200 * 100000 / 9600)
+      return realinit()
+    end
+    local got = sdec.stream_acquire(sdec.strm_nsmp)
+    trigger.model.initiate = realinit
+    check('a recording armed on silence collects the message once the device starts',
+          got ~= nil and got > 1000 and sdec.ck_endwhy ~= 'noarm',
+          string.format('%s readings, endwhy=%s', tostring(got), tostring(sdec.ck_endwhy)))
+    -- THE START IS THE POINT: the pre-trigger reserve means the record opens on QUIET LINE, so the
+    -- first start bit is not the first sample.
+    --
+    -- ASSERTED ON THE BUFFER, NOT ON sdec.smp, which is nil here by design -- stream_begin() drops the
+    -- probe's Lua copy and the chunked decoder reads the firmware buffer a window at a time, so there
+    -- is no Lua array to look at. The readings proxy is what the recording actually holds.
+    do
+      local rd, lead, i = sdec.buf.readings, 0, nil
+      for i = 1, 400 do
+        if rd[i] == nil then break end
+        if sdec.idle == 1 then
+          if rd[i] <= sdec.thr then break end
+        else
+          if rd[i] >= sdec.thr then break end
+        end
+        lead = lead + 1
+      end
+      check('...beginning in the idle line, so no byte of the start is lost',
+            lead >= 100, string.format('%d leading idle samples at thr %.2f V, idle=%s', lead,
+                                       sdec.thr or 0, tostring(sdec.idle)))
+    end
+  end
+
+  trigger.model.initiate = realinit0
+  trigger.model.state = realstate0
+  TRIG.state = trigger.STATE_IDLE
+  sdec.stream_armed = nil
+  sdec.trigmode, sdec.capmode, sdec.probe_idle = keep.tm, keep.cm, keep.pi
+  sdec.fc_out, sdec.trigext = keep.fc, keep.ext
+  sdec.armlevel, sdec.armwait, sdec.armkey = keep.lvl, keep.wait, keep.key
+  sdec.strm_armed, sdec.strm_recording, sdec.ck_job = nil, nil, nil
+  sdec.ck_running, sdec.ck_endwhy = false, nil
+  clearforce()
+end)()
 
 print()
 print(string.format('%d passed, %d failed', pass, fail))

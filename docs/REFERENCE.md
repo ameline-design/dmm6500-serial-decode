@@ -1,6 +1,6 @@
 # Serial Decode — measured reference
 
-**Ian Ameline** · version 1.40 · MIT licence
+**Ian Ameline** · version 1.41 · MIT licence
 
 The detail behind [MANUAL.md](MANUAL.md). Everything here was measured on a DMM6500 (firmware
 1.7.17a) against an SDG2122X generator, verified where noted with an SDS1204X-E scope. The manual is
@@ -870,6 +870,189 @@ the next test, and it needs a one-shot on the credit line rather than any change
 So the README's standing claim is unchanged and still correct: flow control is **verified electrically
 but never closed as a loop against a device that waits for it.** What is new is that the reason is now
 located in the generator's trigger input rather than unknown.
+
+---
+
+## Arming from silence: a blind rate, and a fallback that refuses
+
+Pressing **Capture** before the device has started transmitting arms the analog comparator and waits,
+rather than recording silence. Two fields on the options screen, both clamped in `serial_core.tsp` as
+well as on the form, so a programmatic set and a typed one cannot disagree about what is acceptable:
+
+| | |
+|---|---|
+| `Options ▸ Arm At` | **0.33 – 6 V**, default **1 V** (`sdec.armlevel`) — how far from the idle level the comparator arms |
+| `Options ▸ Arm Wait` | **2 – 120 s**, default **10 s** (`sdec.armwait`) — and the panel is frozen for every second of it |
+
+**The 2 s floor is why no pre-existing timing moves.** `acq_triggered()` takes this value only where it
+*exceeds* the mode's own wait, which is `sdec.trigwait` = 3 s for an `edge` capture, so a form wound all
+the way down is a no-op rather than a way to make captures fail faster than they used to.
+
+### The rate is picked blind, and what it buys is window
+
+A line that has not started cannot be measured, so this is the one path that chooses a sample rate
+before it has any evidence: `sdec.arm_baud` = 38 400 at `sdec.arm_sabit` = 5, which `pick_fs` resolves
+to **200 kS/s**. The arm fires on the first edge whatever the rate, so **every row below catches the
+START equally** — what differs is how much of the opening message comes with it. 8N1, at `sdec.n` =
+20 000 samples, bytes from `window_bytes()` itself:
+
+| `fs` | window | 9600 | 19200 | 38400 | 57600 |
+|---|---|---|---|---|---|
+| 160 kS/s | 125 ms | 16.7 / 120 | 8.3 / 240 | 4.2 / 480 | 2.8 — refused |
+| **200 kS/s** | **100 ms** | **20.8 / 96** | 10.4 / 192 | 5.2 / 384 | 3.5 — refused |
+| 320 kS/s | 62.5 ms | 33.3 / 60 | 16.7 / 120 | 8.3 / 240 | 5.6 / 360 |
+| 500 kS/s | 40 ms | 52.1 / 38 | 26.0 / 76 | 13.0 / 153 | 8.7 / 230 |
+
+Samples per bit / bytes of window. The two refusals sit below `sdec.minsabit` = 4 and decode at no
+rate at all.
+
+So the trade is a window length and not a rate ceiling. A hundred milliseconds holds **96 bytes** of a
+9600 Bd power-on banner against **38** at 500 kS/s, and what is given up for them is one sample per bit
+of margin at the fastest rate the row still commits to. A faster line is not abandoned, it loses only
+its opening bytes: `capture()`'s back-off runs `autoset()` a second time, and by then the device is
+transmitting, so the ordinary two-pass probe measures it properly. An operator who knows the rate
+should lock it — a locked rate skips this entirely and captures a full window at that rate's own `fs`.
+
+### When no bit time can be measured, uniqueness is what makes a guess safe
+
+If the captured samples yield no bit time, `arm_fit_prior()` re-fits the standard rates in
+`sdec.arm_try` = {9600, 19200, 28800, 31250, 38400} to the samples **already in hand** — no second
+capture, so no byte of the opening message is traded for the attempt. Measured offline against the real
+modules, 1800 bytes of text at 200 kS/s, every candidate forced against every truth, with the
+pulse-width filter in force. The four rules the measurement separates, over the same 30 pairs:
+
+| rule | right | refused | wrong |
+|---|---|---|---|
+| first candidate that fits, gate 0.25 | 1 | 0 | **5** |
+| first candidate that fits, gate 0.02 | 3 | 1 | **2** |
+| uniqueness, gate 0.25 | 1 | 4 | **1** |
+| **uniqueness, gate 0.02** — `sdec.arm_badfrac`, shipped | **3** | **3** | **0** |
+
+Per truth, for the two rules that bracket the result:
+
+| true rate | first fit at the slack 0.25 gate | uniqueness at 0.02 |
+|---|---|---|
+| 9600 | 9600 | **9600** |
+| 19200 | 9600 — wrong | **19200** |
+| 28800 | 19200 — wrong | **28800** |
+| 31250 | 28800 — wrong | refused, 2 candidates fit |
+| 38400 | 19200 — wrong | refused, 3 candidates fit |
+| 57600 | 38400 — wrong | refused, nothing fits |
+
+**Taking the first candidate that framed clean bytes, under the slack gate, was wrong for five of the
+six truths**, and the two worked examples show why that is the normal outcome rather than an edge case.
+A 19200 Bd line read at 9600 frames **77 bytes with six errors** — a bad fraction of **0.082**,
+comfortably inside that gate — and the bytes are garbage. The mechanism is structural: half the true rate reads two real frames
+as one, and the real stop bit lands exactly where the hypothesis looks for its own, so the one check
+that would notice agrees. A 31250 Bd line read at 28800 frames **258 bytes with zero errors**.
+
+**A bad-fraction gate cannot separate the two populations, and that is the finding that forced
+uniqueness.** The true rate gives a bad fraction of exactly **0.000** for all five rates in the ladder.
+But so do three wrong fits:
+
+| wrong candidate that survives the slack 0.25 gate | frames | bad | bad fraction |
+|---|---|---|---|
+| 19200 Bd read at 9600 | 77 | 6 | 0.082 |
+| 38400 Bd read at 19200 | 162 | 36 | 0.209 |
+| 57600 Bd read at 38400 | 351 | 85 | 0.239 |
+| 28800 Bd read at 19200 | 174 | 43 | 0.247 |
+| 31250 Bd read at 28800 | 258 | 0 | **0.000** |
+| 38400 Bd read at 28800 | 318 | 0 | **0.000** |
+| 38400 Bd read at 31250 | 318 | 0 | **0.000** |
+
+The last three are indistinguishable from the truth by this measure at any threshold — at 5.2 samples
+per bit three adjacent rates frame 318 of 318 frames with no error each, and only the bytes differ. So
+**the threshold is what buys the correct answers and uniqueness is what prevents the wrong ones**, and
+neither substitutes for the other: tightening 0.25 to 0.02 turns two refusals into two right answers,
+and uniqueness at the slack gate still published 38 400 for a 57 600 Bd line. `sdec.arm_badfrac` = 0.02
+against the 0.25 of `relock_badfrac` is the same number answering an opposite question — one asks
+whether an operator's typed rate has been discredited, where a false alarm discards a deliberate
+setting; this one asks whether the app may invent a rate nobody asked for, where a false pass is a
+panel full of confident rubbish.
+
+Before any decode is spent, the detector's own pulse-width battery (`ua_plausible`, `ua_submultiple`,
+`ua_minrun_absurd`) rejects **10 of the 30 pairs** outright, including 9600 against every truth from
+28 800 up.
+
+A refusal is not silence. The two ambiguous cases name the pair, which is what lets the operator
+resolve it from the one thing the instrument does not know:
+
+| | `sdec.probe_note` |
+|---|---|
+| published | `no bit time could be measured -- decoded at an ASSUMED 19200 Bd; lock the rate to be sure` |
+| 2 or more fit | `this capture fits 28800 Bd AND 31250 Bd equally -- lock the rate in Options to decide` |
+| nothing fits | no note of its own — the capture fails with the decoder's own `no bit time fits the pulse widths` |
+
+### The pre-trigger count is a percentage of capacity, and `dmm.digitize.count` has no part in it
+
+The template's post-trigger count is **(100 − `position`)% of the buffer's CAPACITY**. Measured over 15
+combinations of capacity and position, each matching that rule exactly, with `dmm.digitize.count` set
+to 77 against a capacity of 1000 changing nothing — the table is in
+[TRIGGER.md](TRIGGER.md) §8 and is not repeated here. At `sdec.n` = 20 000 and `sdec.pretrig` = 5:
+
+| | readings |
+|---|---|
+| the window asked for, `sdec.n` | 20 000 |
+| capacity requested, `acq_cap()` — the reserve on top of the depth | **21 100** |
+| post-trigger count the template programs, 95 % of capacity | **20 045** |
+| **delivered by the instrument** | **20 066** — the 20 045 plus 21 pre-trigger samples |
+| the rule the vendor manual implies, `count − count × position/100` | 19 000 — short by **5.3 %** of the window |
+
+`sdec.n_deliv()` is a **floor, never a ceiling**, which is what makes it safe to answer "was this
+message seen whole?": the pre-trigger samples land on top of it and are unknowable in advance — a
+handful on a busy line, up to the full reserve on one that was silent. Free run reserves nothing and
+delivers `sdec.n` unchanged.
+
+### The program shape, and why a shorter one would be worse
+
+| | |
+|---|---|
+| `SimpleLoop` | a counted loop with **no wait block at all**, so a recording built on it cannot be armed |
+| `LoopUntilEvent` | buffer clear, an **infinite** digitize, the wait, then the counted burst — what an 8 kB or 32 kB recording loads instead when `sdec.arm_silent()` holds |
+| an `EVENT_ANALOGTRIGGER` wait as **block 1** | `STATE_WAITING` with **zero readings** at 3 s, on a live 1 kHz square wave with the comparator armed dead centre of its 0–3 V swing — against the same signal firing in **under 0.01 s** with a `COUNT_INFINITE` block ahead of the wait |
+
+The comparator is derived from the digitizer's sample stream, so with nothing acquiring it never
+evaluates, and there is no diagnostic — the model simply sits. **The trap is that the broken program
+looks better:** two blocks instead of four, and on the firmware's low-latency fast path, which it is on
+because it never does anything. Both results are in [TRIGGER.md](TRIGGER.md) §7 and §12, with the
+templates disassembled in §8.
+
+### A wait of seconds laps the buffer, and the record comes back rotated
+
+The pre-trigger block writes into the capture buffer for the whole wait, and that buffer is
+`fillmode = 1` — FILL_CONTINUOUS, which is what keeps event 4915 off the panel. So an arm that waits
+**laps the ring**, and `readings[1]` is then the ring's physical slot 1 rather than its logical oldest.
+Measured on an armed capture whose line started 3.1 s after **Capture**, at 200 kS/s:
+
+| | |
+|---|---|
+| `buf.n` / `buf.capacity` | 21 100 / 21 100 — the record is the whole buffer |
+| `buf.startindex` / `buf.endindex` | **13 288** / 13 287 |
+| the 1 055-reading pre-trigger silence | at index **13 288**, not at index 1 |
+| what the panel showed | `World!Hello, World!…` — **mid-message**, with one framing error where the ring seam fell |
+| 2.6 s of pre-roll at 200 kS/s | 520 000 readings, or 24 whole laps of the ring plus 13 600 |
+
+Every byte was present and the order was wrong. The arithmetic is the confirmation: 13 600 predicted
+against 13 288 measured, which is the same number to within the wait's own jitter.
+
+**`buf.startindex` answers it in one proxy read**, which is what `sdec.acq_first()` does, and the
+correction is applied in the three places that read the buffer — the frame copy, the chunked
+recording reader, and the rate measurement. The last of those mattered as much as the ordering: taken
+from the ring's physical ends a rotated record spans **minus one sample period**, so
+`acq_measure_fs()` returned nil and every bit time fell back to the REQUESTED rate — the one number it
+exists not to trust. Mutating the correction out gives `acq_fs` = 40 000 against a true 200 000.
+
+**Only a full buffer can have wrapped**, so the correction is gated on `buf.n` having reached capacity:
+an armed capture of a busy line fires within about fifteen samples of `initiate()` and comes back
+`startindex = 1`, and the 2 000-sample level probe that runs into the same buffer afterwards is shorter
+than its capacity whatever the attribute says.
+
+**`buf.n` is not a progress counter on a wrapped buffer**, which cost two more defects in the recording
+poll loop before this was understood: it is pinned at capacity, so "the recording is complete" fired on
+the same poll the trigger did, and "new samples have arrived" was false for ever after, which ran the
+idle watchdog on a device that was transmitting. `buf.endindex` keeps moving and is what the loop reads
+now. At 1 MS/s an 8 kB recording of a 115 200 Bd line fills its buffer in **0.75 s** of wait, so this
+is the ordinary case at speed rather than a corner.
 
 ---
 

@@ -54,7 +54,7 @@ local baud = opts.baud or 9600
 local spb = fs / baud
 local gap = opts.gap or 0
 local sbyte = (10 + gap) * spb                 -- samples per 8N1 byte, plus any inter-frame idle
-local NCAP = sdec.n_deliv(sdec.n) or 19000     -- what an armed capture really returns
+local NCAP = sdec.n_deliv(sdec.n) or 20045     -- what an armed capture really returns
 
 print(string.format('# %s payload=%d B baud=%d fs=%d sa/bit=%.5f arb=%d samples cap=%d stride=%d',
                     WANTID, nb, baud, fs, spb, nsmp, NCAP, STRIDE))

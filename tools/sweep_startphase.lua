@@ -188,7 +188,7 @@ local nhs, nhsover, hsoversum, worsthsover, worsthsoverwhat = 0, 0, 0, 0, ''
 local nhsunder, bleedsum = 0, 0
 local nredecode = 0                 -- times refine_parity's non-strict branch ran, for coverage
 local nskip, skipped = 0, {}
-local WANT = sdec.n_deliv(sdec.n) or 19000
+local WANT = sdec.n_deliv(sdec.n) or 20045
 
 -- Wrapped so the branch is counted wherever it fires, over every vector rather than one family.
 local real_refine = sdec.ua_refine_parity
