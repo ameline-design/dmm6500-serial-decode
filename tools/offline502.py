@@ -47,6 +47,7 @@ staging layer that rewrites the harness is a second dialect nobody reads. If thi
 transform beyond hex literals, fix the source.
 """
 
+import fcntl
 import os
 import re
 import shutil
@@ -57,6 +58,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LUA502 = os.path.join(ROOT, 'out', 'lua502', 'bin', 'lua')
 LUAC502 = os.path.join(ROOT, 'out', 'lua502', 'bin', 'luac')
 STAGE = os.path.join(ROOT, 'out', 'lua502src')
+# BESIDE THE TREE, NEVER INSIDE IT, because stage() deletes the tree -- a lock file inside would be
+# removed by the operation it exists to guard, and the next writer would see no holder.
+STAGE_LOCK = STAGE + '.lock'
 
 # THE WHOLE CHAIN, in the order the harnesses load it. tsp/serial_core.tsp and the four protocol modules
 # are pulled in by gen_serial.lua rather than by the harness, which is why a list that stops at
@@ -229,8 +233,76 @@ def shadow():
             os.symlink(os.path.join(ROOT, rel), os.path.join(STAGE, rel))
 
 
+def stage_lock(mode):
+    """Take the staged-tree lock non-blocking. `mode` is fcntl.LOCK_SH or LOCK_EX. Handle, or None.
+
+    READERS TAKE LOCK_SH AND THE WRITER TAKES LOCK_EX, so any number of soak pools share the tree while
+    a rebuild is locked out for as long as one of them is running. Keep the returned handle alive: the
+    lock is released when it is closed or the process exits, so a crashed holder blocks nothing.
+
+    THE PID WRITTEN HERE IS A HINT, NOT THE HOLDER. Several readers can hold LOCK_SH at once and each
+    overwrites this file, so it names whichever took the lock LAST -- which may not be the pool still
+    running. Use it to go looking, not to decide. The lock itself is the authority.
+    """
+    fh = open(STAGE_LOCK, 'a+')
+    try:
+        fcntl.flock(fh, mode | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        return None
+    try:
+        fh.seek(0)
+        fh.truncate()
+        fh.write('%d\n' % os.getpid())
+        fh.flush()
+    except OSError:
+        pass
+    return fh
+
+
 def stage(verbose=True):
     """Rebuild out/lua502src as a mirror of the chain, transformed as documented above."""
+    # THIS IS THE WRITER, AND IT MUST NOT RUN UNDER A READER. stage() calls unstage() first, which
+    # unlinks the whole tree INCLUDING the out/vectors symlink -- so a soak pool reading the tree loses
+    # its waveforms mid-lap. The damage is invisible where it lands: a missing waveform is recorded as
+    # an `SDG:` row, judge_bench excludes every `SDG:` row as "the generator, not the app", and the
+    # no-decode alarm skips them too, so a lap that tested a fraction of its cells reports `ok` with a
+    # proportionally smaller fail count that looks entirely normal.
+    #
+    # MEASURED COST OF NOT HAVING THIS LOCK. On 2026-09-08 an external `offline502.py --stage` at 21:39
+    # corrupted laps 1377-1390 of a 1529-lap soak -- 14 consecutive laps at mean 10.0 failures against a
+    # run mean of 23.29, which is -7.0 sd and 7.8e-25 under independence. A month later that archive was
+    # used as the paired prior for a release comparison and read +0.17 fail/lap at p=0.047, i.e. as a
+    # regression. Excluding the 14 laps: p=0.535. One stray rebuild nearly cost a release.
+    #
+    # --run AND --bench CALL stage() TOO, not just --stage, so an offline test suite launched during a
+    # soak is the same hazard and is refused the same way.
+    lk = stage_lock(fcntl.LOCK_EX)
+    if lk is None:
+        holder = ''
+        try:
+            holder = ' (held by pid %s)' % open(STAGE_LOCK).read().strip()
+        except OSError:
+            pass
+        if os.environ.get('OFFLINE502_FORCE_STAGE') != '1':
+            print('REFUSING: a soak is reading %s%s.' % (os.path.relpath(STAGE, ROOT), holder))
+            print('  Rebuilding it now would delete the tree under that run and the damaged laps would')
+            print('  log `ok`. Wait for it, or run the other pool with --no-stage to share this tree.')
+            print('  To rebuild anyway: OFFLINE502_FORCE_STAGE=1')
+            return None
+        # THE OVERRIDE SAYS SO ON STDOUT, because the next reader of a corrupted soak log needs to find
+        # out why from the run's own output rather than by dating a file.
+        print('OFFLINE502_FORCE_STAGE=1: rebuilding %s while a soak%s is reading it. Any lap in flight '
+              'is now untrustworthy and will log `ok` regardless.'
+              % (os.path.relpath(STAGE, ROOT), holder))
+    try:
+        return _stage_locked(verbose)
+    finally:
+        if lk is not None:
+            lk.close()
+
+
+def _stage_locked(verbose):
     unstage()
     os.makedirs(STAGE, exist_ok=True)
     shadow()

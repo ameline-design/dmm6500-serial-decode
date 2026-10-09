@@ -27,10 +27,16 @@ vectors into conditions where refusing is the documented right answer. The alarm
     envelope        the generator envelope altered a stimulus. Expected to be ZERO on a soakplan plan,
                     since soakplan refuses out-of-envelope pairs; non-zero means the conditions moved.
     crash           the worker exited non-zero, or wrote no record at all.
+    tree changed    the staged 5.0.2 tree moved mid-run, so the lap read a tree that is no longer
+                    there. Void, not a result -- and silent before this alarm existed, because the
+                    damage shows up only as a LOWER fail count on a lap that still logs `ok`.
 
-Read the summary's per-lap FAIL RATE against the baseline it prints, not against zero.
+Read the summary's per-lap FAIL RATE against the baseline it prints, not against zero, and read the
+INCONC_BASE and NODECODE_BASELINE blocks below before calling anything in the log a regression.
 """
 
+import fcntl
+import hashlib
 import os
 import subprocess
 import sys
@@ -45,9 +51,56 @@ def opt(argv, name, default):
     return argv[argv.index(name) + 1] if name in argv else default
 
 
+def tree_fingerprint():
+    """A signature of the staged tree, so a rebuild underneath a running soak cannot pass as a result.
+
+    THE LOCK IN offline502.stage() IS THE PREVENTION AND THIS IS THE DETECTION, because only one of
+    those two survives a hand-rolled `rm -rf` or an override. Every entry contributes its path, kind,
+    size and mtime_ns; symlinks contribute their target and whether it still resolves, since the
+    failure that cost 14 laps was the out/vectors SYMLINK going away rather than any real file changing.
+
+    Cheap enough to run every lap: 16 real files, 133 symlinks and 4 directories, against a lap that
+    takes about a minute.
+    """
+    h = hashlib.sha256()
+    if not os.path.isdir(STAGE):
+        return 'MISSING'
+    for root, dirs, files in os.walk(STAGE, followlinks=False):
+        # EXCLUDED FOR THE SAME REASON shadow() EXCLUDES IT. A worker that popens python from cwd=STAGE
+        # -- which the bench engine is documented to do for soakplan.py -- writes bytecode beside the
+        # symlinked source, inside the tree. That is the harness's own footprint, not a rebuild, and
+        # alarming on it would be this gate inventing a failure.
+        dirs[:] = sorted(d for d in dirs if d != '__pycache__')
+        for name in dirs + sorted(f for f in files if not f.endswith('.pyc')):
+            p = os.path.join(root, name)
+            rel = os.path.relpath(p, STAGE)
+            try:
+                st = os.lstat(p)
+            except OSError:
+                h.update(('%s|GONE\n' % rel).encode())
+                continue
+            if os.path.islink(p):
+                h.update(('%s|link|%s|%d\n'
+                          % (rel, os.readlink(p), os.path.exists(p))).encode())
+            elif os.path.isdir(p):
+                h.update(('%s|dir\n' % rel).encode())
+            else:
+                h.update(('%s|file|%d|%d\n' % (rel, st.st_size, st.st_mtime_ns)).encode())
+    return h.hexdigest()[:16]
+
+
 # Set once from --stress-envelope, read by harvest() to know which way to check the envelope count.
 STRESS = False
 # Measured on this plan with the phase draw OFF, so they are the harness's own floor and not a target.
+#
+# THIS GATE HAS A KNOWN, QUANTIFIED FALSE-ALARM RATE: DO NOT CHASE IT. Over 4931 laps it fired five
+# times, at 3, 3, 3, 3 and 4 inconclusive. Fitting a Poisson to that exceedance gives
+# lambda = 0.1915 inconclusive/lap, hence P(X > 2) = 1.014e-3 and 4931 x 1.014e-3 = 5.00 expected
+# against five observed. The same lambda, fitted only to the exceedance, then predicts three things it
+# was not fitted to: the 4-to-1 split of threes to fours, the phase-off arm's single observation of 1,
+# and an earlier run's 3 breaches in 1529 laps. Those laps were otherwise unremarkable -- mean FAIL
+# 23.20 against the run's 23.461 -- and uniform in time. Raising the threshold to silence them would
+# cost the gate its sensitivity to a real step; five lines in a 4931-lap log is the designed price.
 INCONC_BASE = 2
 
 # ---------------- the no-decode alarm ----------------
@@ -71,9 +124,32 @@ INCONC_BASE = 2
 # than the one being judged, and the evidence goes in the comment beside it.
 NODECODE_BASELINE = frozenset((
     # 20 of 20 laps with --aperture, 20 of 20 with --no-aperture, and 28 of 28 in a third run at other
-    # seeds. Hardware has this no-decode as well; it is the one --interp wrongly deletes.
+    # seeds, and 4931 of 4931 at 100.0 % in the long run. Hardware has this no-decode as well; it is the
+    # one --interp wrongly deletes. Its `why` is `dec: no frame fits a 7.7-7.8 sample bit time`, which is
+    # a DIFFERENT mechanism from the v90/v94 band below -- that distinction is the whole reason this set
+    # has one member and not forty.
     'v92/1177',
 ))
+# THE v90/v94 BAND IS ONE MECHANISM, AND IT IS MEASURED. Every band row's `why` reads
+# `acq: swing only 0.000 V`: v90 is SER_Blocks256B_8N1_x10 and v94 is SER_Blocks512B_8N1_x10, both carry
+# inter-block dead regions, and a capture window landing inside one sees a flat line, so acquisition
+# refuses. Per-cell probability is the margin between window length and dead-region length under the
+# phase draw. That margin does NOT reduce to a plan column -- Spearman(rate, bit-times in window) is
+# +0.166 (p=0.28) on v90 and +0.010 (p=0.95) on v94, and baud, kind and amplitude all fail too.
+#
+# SO DO NOT ADD BAND MEMBERS HERE, ONE AT A TIME OR AT ALL. Membership is a function of LAP COUNT, not
+# of health: 14 identities were known at 251 laps and 38 at 4931, and summing (1-(1-p_i)^L) over the
+# measured rates predicts 13.50 +/- 1.64 visible at L=251 (14 seen) and 23.11 +/- 2.40 at L=1529 (24
+# seen). A cell at 0.02 %/lap is invisible below ~2000 laps. Both vectors have 43 cells and 19 of each
+# are members, so the extent is the whole vector: v90 603-645, v94 1377-1419 (v94's extent has never
+# widened). `v94/1384` was seen only in the 1529-lap run, so the union over both is 39 cells. The
+# frequency spectrum is a smooth 240x continuum from 4.8 % to 0.02 % with no gap, which is what one
+# mechanism with a per-cell margin looks like and not what 38 faults look like.
+#
+# IF A GATE IS EVER WANTED ON THIS, GATE THE AGGREGATE RATE: 1237 events over 424 066 v90+v94 cell-laps
+# = 0.2917 %. Envelope stress multiplies it 1.608x (z=+8.25) while hitting only even-numbered cell
+# indices, so 23 of the 38 members are unstressed -- the stress modulates the mechanism rather than
+# causing it, and stressed and unstressed runs are not interchangeable on this band.
 # A mass event, in IDENTITIES not rows: many already-known cells failing together is the failure identity
 # cannot see, so it needs its own trigger. Set above the 6 distinct cells a healthy long run shows.
 NODECODE_CEIL = 8
@@ -182,6 +258,21 @@ def main(argv):
             print(r.stdout + r.stderr)
             print('REFUSING: the 5.0.2 tree would not stage.')
             return 2
+
+    # HOLD THE TREE SHARED FOR THE WHOLE RUN, so offline502.stage() refuses to rebuild it underneath
+    # us. Shared and not exclusive, because several pools legitimately share one tree with --no-stage;
+    # the lock only has to exclude the WRITER. Keep `tree_lock` referenced until the run ends -- the
+    # lock dies with the handle, so letting it fall out of scope silently unlocks the tree.
+    sys.path.insert(0, os.path.join(ROOT, 'tools'))
+    import offline502
+    tree_lock = offline502.stage_lock(fcntl.LOCK_SH)
+    if tree_lock is None:
+        print('REFUSING: %s is locked exclusively -- a stage is running right now.'
+              % os.path.relpath(STAGE, ROOT))
+        return 2
+    fp0 = tree_fingerprint()
+    print('staged tree held, fingerprint %s' % fp0)
+
     if plan is None:
         plan = os.path.join(outdir, 'PLAN.CSV')
         # THE SKIP LIST IS READ OUT OF soakplan.HW_SKIP, never typed. soakplan.py --emit-csv does NOT skip
@@ -284,6 +375,13 @@ def main(argv):
         out = open(os.path.join(os.path.dirname(job['rec']),
                                 'w%d.out' % (job['n'] % (2 * workers))), errors='replace').read()
         bad = []
+        # CHECKED FIRST AND ALWAYS REPORTED, before the early return below can swallow it. If the tree
+        # moved, every other verdict in this lap is about a tree that is no longer there -- and the
+        # historical failure logged `ok` with a merely LOWER fail count, so there is no symptom to
+        # notice later. The one in 2026-09 cost 14 laps and a month later read as a p=0.047 regression.
+        tree_ok = tree_fingerprint() == fp0
+        if not tree_ok:
+            bad.append('STAGED TREE CHANGED MID-RUN: this lap is void, not a result')
         if job['p'].returncode != 0:
             bad.append('crash rc=%s' % job['p'].returncode)
         if not os.path.exists(job['rec']) or os.path.getsize(job['rec']) == 0:
@@ -329,17 +427,40 @@ def main(argv):
                             stats[label] = int(w)
                             break
                     break
-        # THRESHOLDS FROM A MEASURED BASELINE, NOT FROM ZERO. A paired A/B on this plan -- the same lap with
-        # the phase draw off and on -- gives:
+        # THRESHOLDS FROM A MEASURED BASELINE, NOT FROM ZERO.
         #
-        #     phase off   pass 1651  FAIL 25  inconclusive 0  no decode 1
-        #     phase on    pass 1645  FAIL 30  inconclusive 1  no decode 1
+        # THE PHASE-ON ARM, from 4931 laps on this plan (2026-10-08, 8 269 287 cells, stress at the
+        # 0.508 default). Quote THIS, not a single lap:
         #
-        # So `no decode 1` is a property of the harness and this plan, present with the phase draw OFF, and
+        #     FAIL per lap   mean 23.4608  95% CI [23.3844, 23.5371]   sd 2.7365
+        #                    median 23  IQR 22-25  central 95% 18-29  full range 12-33
+        #     as a cell rate 1.3990 %  [1.3944, 1.4035]
+        #     no decode      1 identity in every lap (v92/1177), plus the v90/v94 band below
+        #
+        # THE PHASE-OFF ARM IS STILL ONE LAP AND IS NOT ESTABLISHED. It measured `pass 1651 FAIL 25
+        # inconclusive 0 no decode 1`, and no phase-off run exists on disk to replace it -- every soak
+        # directory reports `capture phase random`. Note 25 sits ABOVE the phase-on MEAN of 23.46, so the
+        # "the phase draw adds 5 FAILs" reading that the original pair invited is not supported by
+        # anything measured; the two single draws are ordered the wrong way round for it.
+        #
+        # THE OLD PHASE-ON FIGURE OF `FAIL 30` WAS A SINGLE DRAW FROM THE UPPER TAIL -- the 99.3rd
+        # percentile, +2.39 sd, P(X >= 30) = 1.68 %. It is kept here only as a warning: any eyeball
+        # comparison against it reads a perfectly healthy run as an improvement.
+        #
+        # `no decode 1` is a property of the harness and this plan, present with the phase draw OFF, and
         # alarming on it fired on every lap of the first smoke -- a harness inventing a failure, which is
-        # the thing this project guards hardest against. The extra FAILs and the occasional inconclusive
-        # with phase on are physically right rather than pessimistic: a capture beginning mid-payload is
-        # what hardware does, and mid-byte starts are on record at roughly 1 in 8.
+        # the thing this project guards hardest against. The occasional inconclusive with phase on is
+        # physically right rather than pessimistic: a capture beginning mid-payload is what hardware
+        # does, and mid-byte starts are on record at roughly 1 in 8.
+        #
+        # DO NOT TEST THE FAIL COUNT WITH A BINOMIAL. It is UNDER-dispersed 3.09x in variance -- observed
+        # sd 2.7365 against the binomial's 4.8096 at n=1677, p=0.0140, dispersion chi2 1595.9 on df=4930
+        # -- because most of a lap's failures are the `loud` vectors refusing deterministically and the
+        # 1677 cells are not exchangeable. A binomial test is therefore 1.76x too lenient in the standard
+        # error. In the other direction, finely-binned homogeneity tests OVER-reject, because `seed0 + n`
+        # feeds consecutive integers to Park-Miller and adjacent laps share near-identical opening draws
+        # (Ljung-Box Q=24.58 on df=8, p=0.0018; variance inflation 1.39-1.76). Use the empirical variance,
+        # and for a trend regress block means against their own scatter.
         #
         # `raised` STAYS AT ZERO, because that is a Lua error reaching the harness and is always a defect.
         for k, base in (('raised', 0), ('inconclusive', INCONC_BASE)):
@@ -363,9 +484,10 @@ def main(argv):
             bad.append('nodecode accounting disagrees: %d row(s) here vs judge %s'
                        % (ndrows, stats.get('nodecode')))
         # NOTHING IS LEARNED FROM A LAP WE CANNOT ACCOUNT FOR. If the two counts disagree, or the judge
-        # was unusable, or the record was not a whole lap, then these identities are not trustworthy --
-        # so they must not be tallied and above all must not silence a later alarm.
-        if agree and totrows == ncell:
+        # was unusable, or the record was not a whole lap, or the staged tree moved under the worker,
+        # then these identities are not trustworthy -- so they must not be tallied and above all must
+        # not silence a later alarm by latching an identity out of a lap that did not really run it.
+        if tree_ok and agree and totrows == ncell:
             for c in cells:
                 ND['seen'][c] = ND['seen'].get(c, 0) + 1
             # ONE ALARM PER IDENTITY PER RUN. Reporting the same cell as NEW on every lap thereafter is
