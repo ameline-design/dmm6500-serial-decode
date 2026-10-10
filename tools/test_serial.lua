@@ -10060,6 +10060,124 @@ end)()
   sdec.force_baud, sdec.force_invert = keep.fb, keep.fi
 end)()
 
+-- ---------------------------------------------------------------------------
+-- AND WITH THE RESERVE EXCLUDED, THE 4x MARGIN IS WHAT HOLDS THE ANSWER
+-- ---------------------------------------------------------------------------
+-- The block above stops the reserve from setting the prior. What then decides is sig_idle's LEVEL
+-- branch -- the prior taken from the signalling standard rather than from this window -- and that
+-- branch sets sdec.idle_weak, which is the flag sdec.polmargin keys on: in ua_autoformat the rival
+-- polarity must clear 4x the ordinary margin before it can overturn a prior that came from physics.
+--
+-- NOTHING ELSE OFFLINE REACHES THAT MULTIPLIER. Every other inverted-line fixture in this file
+-- contains idle, so idle_weak is false and the multiplier does not apply to it at all -- and on the
+-- 8 samples/bit window the block above uses, ua_autoformat's contest overturns a wrong prior on its
+-- own. The multiplier only decides where the evidence is thin in both senses: no idle in the window,
+-- and few enough frames that the inverted reading of ASCII can out-score the truth.
+--
+-- MEASURED ON THE INSTRUMENT, which is the case this fixture reproduces: three consecutive captures
+-- of the same 9600-baud line at 1 MS/s -- 104 samples a bit, so a 19 000-sample window holds about
+-- 18 frames -- where the second flipped to inverted and returned 18 frames with ZERO errors. The
+-- wrong answer is the CLEANER one, which is why a frame-count contest cannot be left to settle it.
+--
+-- THE FIXTURE IS THE ARMED CASE, not a contrivance: ten cells of dead wire at the space level, then
+-- gapless 8N1 ASCII with no mark cell anywhere between frames. The reserve runs straight into the
+-- first start bit -- also a space -- so the first frame has no mark to open against and comes back
+-- damaged; that is what the instrument produces and it is what makes the truth score 11 good frames
+-- against the rival's 12.
+--
+-- BOTH DIRECTIONS, IN THE TEST ITSELF. The second decode re-runs the same window with idle_weak
+-- cleared by hand, which is the state a capture containing idle would have arrived in: the ordinary
+-- margin then lets the rival through and every byte comes back wrong. So the multiplier is shown to
+-- be the thing that decides, without needing tsp/ edited to prove it.
+;(function()
+  local keep = {fs = sdec.fs, af = sdec.acq_fs, pt = sdec.acq_pretrig, fb = sdec.force_baud,
+                fn = sdec.force_nbits, fi = sdec.force_invert}
+  -- THE CONTEST HAS TO BE REACHABLE. decode_from takes its forced-format branch whenever
+  -- force_nbits is set, and that branch reads inv = (sdec.idle == 0) without searching the other
+  -- polarity at all -- so a lock left over from an earlier block would make every assertion here
+  -- vacuous.
+  sdec.force_baud, sdec.force_nbits = nil, nil
+  sdec.force_par, sdec.force_nstop, sdec.force_invert = nil, nil, nil
+  local fsv, baud = 1000000, 9600
+  local cells, nc, i, k = {}, 0, nil, nil
+  for i = 1, 10 do nc = nc + 1; cells[nc] = 0 end
+  local msg = GEN_BYTES('MEAS? 1.234E-3')
+  for i = 1, 14 do
+    local v = msg[i]
+    nc = nc + 1; cells[nc] = 0
+    local t = v
+    for k = 1, 8 do nc = nc + 1; cells[nc] = math.mod(t, 2); t = math.floor(t / 2) end
+    nc = nc + 1; cells[nc] = 1
+  end
+  local rd, ts, ncell, ns = GEN_RENDER(cells, nc, {baud = baud, fs = fsv, lo = 0.0, hi = 3.3})
+  sdec.fs, sdec.acq_fs = fsv, fsv
+  sdec.acq_pretrig = true
+  sdec.sig_levels(rd, ns); sdec.sig_edges(rd, ns); sdec.sig_idle(rd, ns)
+
+  local longest = sdec.run0
+  if sdec.run1 ~= nil and (longest == nil or sdec.run1 > longest) then longest = sdec.run1 end
+  check('the window opens in a reserve and holds no recurring idle anywhere inside it',
+        sdec.leadrun ~= nil and sdec.leadrun > 1000 and sdec.idlerec == 0,
+        string.format('leadrun=%s idlerec=%s against 10 space cells at %s samples a bit',
+                      tostring(sdec.leadrun), tostring(sdec.idlerec), tostring(sdec.onebit)))
+  check('...so the prior comes from the LEVELS, and says so',
+        sdec.idle == 1 and sdec.idle_weak == true and longest ~= nil and
+        longest < sdec.idlemult * sdec.onebit,
+        string.format('idle=%s weak=%s longest run %s against an idle threshold of %s',
+                      tostring(sdec.idle), tostring(sdec.idle_weak), tostring(longest),
+                      tostring(sdec.idlemult * sdec.onebit)))
+
+  -- THE PREMISE OF THE WHOLE BLOCK, in the code's own terms: the rival has to be a winner the
+  -- ordinary margin would admit and the 4x margin would not. Asserted rather than assumed, because a
+  -- fixture that drifts out of that band stops testing the multiplier and nothing else would say so.
+  local T = fsv / baud
+  local ra = sdec.ua_search_pol(rd, ns, T, false)
+  local rb = sdec.ua_search_pol(rd, ns, T, true)
+  local m = (ra ~= nil) and sdec.ua_margin(ra.score) or 0
+  check('the inverted reading is the cleaner one, and wins by more than the ordinary margin',
+        ra ~= nil and rb ~= nil and rb.nbad < ra.nbad and rb.score > ra.score + m,
+        string.format('truth %s (%s good / %s bad), rival %s (%s good / %s bad), margin %s',
+                      tostring(ra and ra.score), tostring(ra and ra.ngood), tostring(ra and ra.nbad),
+                      tostring(rb and rb.score), tostring(rb and rb.ngood), tostring(rb and rb.nbad),
+                      tostring(m)))
+  check('...and by less than the 4x margin a physical prior is worth',
+        ra ~= nil and rb ~= nil and rb.score <= ra.score + m * sdec.polmargin,
+        string.format('rival beats truth by %s, against %s x %s = %s',
+                      tostring(rb and (rb.score - ra.score)), tostring(m),
+                      tostring(sdec.polmargin), tostring(m * sdec.polmargin)))
+
+  local wok = sdec.decode_from(rd, ns)
+  local wtext = (wok and sdec.res ~= nil) and sdec.ua_text_line(1, 30) or '-'
+  local winv = (sdec.res ~= nil) and sdec.res.invert or nil
+  local wbad = (sdec.res ~= nil) and sdec.res.nbad or -1
+  -- THE BYTES CARRY THIS, NOT THE FLAG. An upright reading leaves sdec.res.invert nil as often as
+  -- false -- the refine stages re-decode and carry forward whatever the winning search set -- so the
+  -- assertion is that the payload came back, and that the result is not the inverted one.
+  check('a wrong polarity cannot win on frame count when the prior came from physics',
+        wok and winv ~= true and has(wtext, '1.234E-3'),
+        string.format('invert=%s nf=%s nbad=%s baud=%s text=%q', tostring(winv),
+                      tostring(sdec.res and sdec.res.nf), tostring(wbad), tostring(sdec.baud),
+                      wtext))
+
+  -- THE SAME WINDOW WITH THE PRIOR TREATED AS RUN-LENGTH EVIDENCE. One flag, nothing else touched.
+  sdec.idle_weak = false
+  local fok = sdec.decode_from(rd, ns)
+  local ftext = (fok and sdec.res ~= nil) and sdec.ua_text_line(1, 30) or '-'
+  local finv = (sdec.res ~= nil) and sdec.res.invert or nil
+  local fbad = (sdec.res ~= nil) and sdec.res.nbad or -1
+  check('...and on the ordinary margin alone it does, with FEWER errors than the truth',
+        fok and finv == true and not has(ftext, '1.234E-3') and fbad < wbad,
+        string.format('invert=%s nf=%s nbad=%s against the right answer at %s, text=%q',
+                      tostring(finv), tostring(sdec.res and sdec.res.nf), tostring(fbad),
+                      tostring(wbad), ftext))
+
+  -- THE HAND-CLEARED idle_weak IS WHY THIS SWEEPS UP AFTER ITSELF rather than only restoring what it
+  -- saved: a false left in that field reads to anything downstream as a capture that contained idle.
+  sdec.clear_measured()
+  sdec.fs, sdec.acq_fs, sdec.acq_pretrig = keep.fs, keep.af, keep.pt
+  sdec.force_baud, sdec.force_nbits, sdec.force_invert = keep.fb, keep.fn, keep.fi
+end)()
+
 print()
 print(string.format('%d passed, %d failed', pass, fail))
 os.exit(fail == 0 and 0 or 1)
