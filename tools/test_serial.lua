@@ -8072,6 +8072,28 @@ local function test_modes()
   check('and names the SOURCE that failed, not a generic one',
         sdec.lasterr ~= nil and has(sdec.lasterr, 'edge') and
         has(sdec.lasterr, 'captured free-running'), tostring(sdec.lasterr))
+
+  -- AND AT pretrig = 0 THE FLAG MUST STAY DOWN, which is the other half of the condition the write
+  -- carries. At 0 the record opens ON the trigger edge and its first run IS the line, so refusing it
+  -- as evidence would discard the only idle a capture of a late-starting device holds. Without this
+  -- the `> 0` on the write is a constant: nothing else in the suite captures at 0.
+  --
+  -- A CLOSURE, because the main chunk is at Lua's 200-local ceiling and this needs one local to put
+  -- sdec.pretrig back. The leading semicolon keeps the preceding check() call from swallowing it.
+  ;(function()
+    local keeppt = sdec.pretrig
+    sdec.pretrig = 0
+    SRC.rd, SRC.ts, SRC.nsmp = GEN({bytes = hb, baud = 9600, fs = 100000})
+    sdec.fs = 100000
+    sdec.acq_make_buffer(sdec.n)
+    sdec.thr, sdec.hyst = 1.65, 0.5
+    local zn = sdec.acq_triggered(sdec.n, dmm.SLOPE_FALLING)
+    check('a capture that reserved nothing says its record opens ON the edge',
+          zn ~= nil and zn > 1 and sdec.acq_pretrig == false,
+          string.format('acq_pretrig=%s at pretrig=%s, %s readings',
+                        tostring(sdec.acq_pretrig), tostring(sdec.pretrig), tostring(zn)))
+    sdec.pretrig = keeppt
+  end)()
   sdec.trigext, sdec.trigmode = false, 'free'
 
   -- ---- THREE QUIET FAILURES ----
@@ -8984,14 +9006,22 @@ check('planted leftovers -- rate, wmed, polarity, runs -- change nothing', nleft
 
 -- clear_measured() must leave NOTHING of its own behind, which is the invariant the list depends on:
 -- a field added to the signal chain and not added here is exactly how this class of defect returns.
+--
+-- THE THREE ARM FIELDS ARE PLANTED FIRST, because a field this function forgets is nil here anyway
+-- most of the time and an assertion that it is nil would pass either way. acq_pretrig says the
+-- record opens in a pre-trigger reserve, and a true surviving into a FREE-RUNNING capture makes
+-- sig_idle throw away the one piece of idle evidence that capture really has.
+sdec.acq_pretrig, sdec.leadrun, sdec.idlerec = true, 1234, 7
 sdec.clear_measured()
 check('clear_measured leaves no measured field set',
       sdec.acq_fs == nil and sdec.acq_fs_est == nil and sdec.w == nil and sdec.nw == 0
       and sdec.wmed == nil and sdec.idle == nil and sdec.idle_weak == nil
-      and sdec.modal == nil and sdec.run0 == nil and sdec.run1 == nil and sdec.st0 == 1,
-      string.format('acq_fs %s wmed %s idle %s modal %s st0 %s',
+      and sdec.modal == nil and sdec.run0 == nil and sdec.run1 == nil and sdec.st0 == 1
+      and sdec.acq_pretrig == nil and sdec.leadrun == nil and sdec.idlerec == nil,
+      string.format('acq_fs %s wmed %s idle %s modal %s st0 %s pretrig %s lead %s rec %s',
                     tostring(sdec.acq_fs), tostring(sdec.wmed), tostring(sdec.idle),
-                    tostring(sdec.modal), tostring(sdec.st0)))
+                    tostring(sdec.modal), tostring(sdec.st0), tostring(sdec.acq_pretrig),
+                    tostring(sdec.leadrun), tostring(sdec.idlerec)))
 
 -- unlock_all() must drop all five, not the one with a control of its own.
 sdec.force_baud, sdec.force_nbits = 9600, 8
