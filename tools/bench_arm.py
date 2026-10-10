@@ -11,7 +11,7 @@ nothing on them, which is exactly what a DUT that has not been powered up looks 
 under sdec.minswing, so the level probe refuses it and the capture arms instead of recording it.
 Switching the output on, from a thread, is the device starting to transmit.
 
-FIFTEEN CASES IN TWO HALVES. A-G are the feature's own claims, and the first of those is the one
+SIXTEEN CASES IN TWO HALVES. A-G are the feature's own claims, and the first of those is the one
 that was BROKEN at V1.40. H-O are the hostile half: both settings at their limits, a sign reversal, a
 leak between captures, a promise that has to be backed by instrument state, a rate the blind window
 cannot resolve, and the largest recording the app offers -- which is the one whose buffer made the
@@ -683,6 +683,80 @@ def main():
             d.exec('sdec.capmode = "frame" sdec.force_baud = nil')
             clear_absorb(d)
             g.output(False, ch=1)
+
+        # ---- P: THE RESERVE IS NOT THE LINE'S IDLE. Four lock states, armed on silence. ----
+        if want('P'):
+            print('\n=== P: armed on silence, the polarity prior must not come from the reserve ===')
+            # AN ARMED CAPTURE OPENS IN ITS PRE-TRIGGER RESERVE, which is the wire before the device
+            # started -- ground, and on a single-supply line ground is the SPACE level. sig_idle's
+            # longest-run rule read that as the idle level and set the prior to 'idles LOW', so the
+            # decode came back inverted: self-consistent, plausible error count, every byte wrong.
+            #
+            # THE AUTOLOCK ROW IS THE ONE THAT MATTERS. sdec.autolock is true by default and
+            # autolock_try() sets nbits/par/nstop while deliberately leaving force_invert nil. In
+            # that state decode_from takes the forced-format branch, which reads
+            # `inv = (sdec.idle == 0)` with NO second polarity searched and no margin -- so a wrong
+            # prior has nothing to overturn it. The other three rows have ua_autoformat's contest as
+            # a backstop; this one does not, which is why a pass here is the real assertion.
+            #
+            # MEASURED BEFORE THE FIX: 0/6 readable at a locked rate, 158 bytes with 62 bad.
+            #
+            # AND MEASURED WITH THE GUARD DISABLED ON THE INSTRUMENT, which is what decides the
+            # shape of these assertions: the `run0 == leadrun` check fails in ALL THREE rows, while
+            # the BYTE check fails only in the autolock one -- the other two were rescued by
+            # ua_autoformat's contest on that run. So the mechanism assertion is the reliable
+            # detector and the byte assertion is the one that says the defect reached the operator.
+            # Both are kept, and the autolock row is why the byte assertion is worth having.
+            locks = [
+                ('nothing locked', 'sdec.force_baud = nil sdec.force_nbits = nil '
+                                   'sdec.force_par = nil sdec.force_nstop = nil '
+                                   'sdec.force_invert = nil sdec.autolock_set = nil'),
+                ('rate locked', 'sdec.force_baud = %d sdec.force_nbits = nil '
+                                'sdec.force_par = nil sdec.force_nstop = nil '
+                                'sdec.force_invert = nil sdec.autolock_set = nil' % a.baud),
+                ('autolock', 'sdec.force_baud = %d sdec.force_nbits = 8 '
+                             'sdec.force_par = sdec.PAR_NONE sdec.force_nstop = 1 '
+                             'sdec.force_invert = nil sdec.autolock_set = '
+                             '{baud = true, nbits = true, par = true, nstop = true}' % a.baud),
+            ]
+            for li, (lname, setup) in enumerate(locks):
+                g.output(False, ch=1)
+                d.exec('sdec.capmode = "frame" sdec.trigmode = "edge" sdec.armlevel = 1.0 '
+                       'sdec.armwait = %g' % ARMWAIT)
+                d.exec(setup)
+                clear_absorb(d)
+                hit = {}
+                t0 = time.time()
+                th = start_later(g, 3.0, hit, arb_on)
+                el, res = press(d, 'P%d' % li)
+                th.join(timeout=1)
+                idle = tq(d, 'Pi%d' % li, 'sdec.idle')
+                lead = tq(d, 'Pl%d' % li, 'sdec.leadrun')
+                r0 = tq(d, 'Pr%d' % li, 'sdec.run0')
+                ptf = tq(d, 'Pp%d' % li, 'tostring(sdec.acq_pretrig)')
+                inv = tq(d, 'Pv%d' % li, 'sdec.res ~= nil and tostring(sdec.res.invert) or "?"')
+                nf = tq(d, 'Pf%d' % li, 'sdec.res ~= nil and sdec.res.nf or -1')
+                nbad = tq(d, 'Px%d' % li, 'sdec.res ~= nil and sdec.res.nbad or -1')
+                txt = tq(d, 'Pt%d' % li, 'sdec.res ~= nil and sdec.ua_text_line(1, 30) or "-"')
+                print('  %-15s %5.2f s  pretrig=%-5s lead=%-8s run0=%-8s idle=%-4s inv=%-5s '
+                      'bytes=%-4s bad=%-4s' % (lname, el, ptf, lead[:7], r0[:7], idle, inv,
+                                               nf, nbad))
+                # THE PREMISE FIRST: an assertion about the reserve is vacuous if there was no
+                # reserve. A fired arm must report one, and the leading run must be most of it.
+                check('P %s: the record opens in a pre-trigger reserve' % lname,
+                      ptf == 'true' and num(lead, 0) > 500,
+                      'acq_pretrig=%s leadrun=%s' % (ptf, lead))
+                check('P %s: ...and the reserve is NOT counted as the longest low run' % lname,
+                      num(r0, 0) < num(lead, 1) / 2,
+                      'run0=%s against a %s-sample reserve' % (r0, lead))
+                check('P %s: ...so the prior is the line, not the switched-off wire' % lname,
+                      num(idle, -1) == 1, 'idle=%s (0 means it read the reserve as idle)' % idle)
+                check('P %s: ...and the bytes are the right way up' % lname,
+                      inv == 'false' and num(nbad, 99) == 0 and 'Hello' in txt,
+                      'invert=%s nbad=%s text=%r' % (inv, nbad, txt[:34]))
+                g.output(False, ch=1)
+            d.exec('sdec.force_baud = nil sdec.force_nbits = nil sdec.force_par = nil '
+                   'sdec.force_nstop = nil sdec.force_invert = nil sdec.autolock_set = nil')
 
     finally:
         print('\n=== restore ===')
