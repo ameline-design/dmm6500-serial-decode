@@ -6,9 +6,11 @@ A fact earns a place here only if an example demonstrates or depends on it **and
 
 The instrument is the arbiter, and on the trigger model it has to be. Keithley's own application code never reads a `trigger.` setting back — `GAS/MS01_SetupAndRun.tsp` performs about twenty writes under `trigger.` and `tsplink.` and checks none of them, no `getblocklist()`, no attribute read, no event-log drain. A refused write under `trigger.` files an event rather than failing, so an example shows what Keithley intended, not what the firmware took. That is why every probe below reads a value back.
 
-Every claim carries one status. **Each of the 33 has been to the instrument**, so nothing here is left
-standing as a hypothesis: 29 measured, 6 refuted, and 2 out of reach on this bench for a stated
-physical reason rather than for want of trying.
+Every claim carries one status. **Each of the 34 has been to the instrument**, so nothing here is left
+standing as a hypothesis: 28 measured, 5 refuted, and 1 out of reach on this bench for a stated physical
+reason rather than for want of trying. Two of the 28 are measured in part and say so in their own
+sentence. Re-derive these four numbers from the status tokens after any edit — they were one claim and
+two statuses adrift once already.
 
 | Status | Meaning |
 |---|---|
