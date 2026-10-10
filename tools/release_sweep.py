@@ -180,6 +180,27 @@ def stages(outdir, shots):
               note='the rate misfit reproduced offline: the edge fixed in TIME and fractional samples '
                    'per bit, with the window as the discriminator and two payloads that must stay '
                    'clean'),
+        # THE OCTAVE, WHICH IS THE WORST FAILURE SHAPE THE DECODER HAS: not a refusal but a
+        # CONFIDENT wrong answer. 9600 read as 19200 and then narrowed to 7N1, every byte shifted,
+        # nothing flagged. The suite carries two declared expected failures (#40, the same collapse
+        # reached through a FORCED rate) and exits 0 with them, so a plain failure here is a
+        # regression -- and an expected failure that starts passing fails too, which is what stops
+        # the declaration outliving the defect.
+        Stage('unit-octave', ['lua', 'tools/test_octave.lua'],
+              note='the octave misread: 9600 reported as 19200 7N1 with the bytes silently wrong. '
+                   'Asserts a FRACTION of a swept space rather than one capture, because the defect '
+                   'needs the real rate-selection path and only some capture start points reach it '
+                   '-- plus the sub-multiple gate stubbed out, so the reproduction cannot go gentle '
+                   'and pass vacuously'),
+        # A NULL, AND IT GATES FOR THAT REASON. It refutes jitter as the cause of a rate relabelled
+        # to the standard ladder, so if a change ever does make plain jitter bias the fit, the
+        # numbers move and this fails -- a boundary that puts every rate near the ladder at risk,
+        # rather than the handful of drawn ones the real reproduction covers.
+        Stage('unit-snapbias', ['lua', 'tools/test_snapbias.lua'],
+              note='jitter alone must NOT bias the width fit into a neighbouring standard rate: the '
+                   'fit error at 10 and 25 per cent jitter against the margin sig_snap needs, the '
+                   'firm band strictly inside snaptol, and the BAUD cell agreeing with the text row '
+                   'about the approximate marker'),
         Stage('stress', ['lua', 'tools/stress_serial.lua'],
               note='hostile signals -- must never be silently WRONG and never RAISE'),
         # THE GAP EVERY STAGE ABOVE SHARED: they all name a round sample rate by hand and all start
@@ -360,7 +381,10 @@ def summarise(name, out, rc):
             if pred(l):
                 return l.strip()
         return ''
-    if name in ('unit', 'stress', 'archive', 'unit-analog'):
+    # SEARCHED FOR RATHER THAN TAKEN FROM THE END, because these suites print after their own
+    # tally: unit-octave follows it with a line explaining its declared expected failures, so
+    # lines[-1] would report the explanation and the counts would never reach the table.
+    if name in ('unit', 'stress', 'archive', 'unit-analog', 'unit-octave', 'unit-snapbias'):
         s = find(lambda l: 'passed' in l and 'failed' in l)
         return s or (lines[-1] if lines else '')
     if name == 'lint':

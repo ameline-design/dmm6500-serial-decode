@@ -51,8 +51,49 @@ for _, m in ipairs({'tsp/usb_log.tsp', 'tsp/serial_ui.tsp', 'tsp/serial_app.tsp'
   chunk()
 end
 
-local pass, fail = 0, 0
+-- ---------------------------------------------------------------------------
+-- THE EXPECTED-FAILURE REGISTER, which is what lets this suite gate at all.
+--
+-- One case here asserts a defect that is open on purpose (#40, below), so the suite cannot
+-- exit 0 while stating it as a plain assertion -- and a suite that always exits 1 cannot be a
+-- release stage, which is why this file sat outside the gate while its other 22 assertions
+-- could rot. A comment saying "expected to fail" does not help: nothing runs a comment, so it
+-- stays true in the file long after it has stopped being true of the app.
+--
+-- So the label is EXECUTED, and it is checked in BOTH directions plus one more:
+--
+--   defect present, label present   XFAIL -- recorded, does not fail the suite
+--   defect GONE,    label present   XPASS -- FAILS. The app improved and the label is a lie;
+--                                            delete the register entry and let the case pass.
+--   defect present, no label        FAIL  -- an ordinary regression, which is the point
+--   label never reached             FAILS at the tally. An assertion renamed out from under
+--                                            its own label would otherwise silently disarm it.
+--
+-- The register is keyed on the exact check name, so a reworded assertion breaks the pairing
+-- loudly rather than quietly carrying the exemption to a different claim.
+-- ---------------------------------------------------------------------------
+local pass, fail, nxfail = 0, 0, 0
+local XFAIL, XSEEN = {}, {}
+local function expect_fail(name, why) XFAIL[name] = why end
+
 local function check(name, cond, detail)
+  local why = XFAIL[name]
+  if why ~= nil then
+    XSEEN[name] = true
+    if cond then
+      -- The app no longer has the defect this case is excused for. That is good news and it
+      -- still fails, because the next reader must not be told a fixed defect is open.
+      fail = fail + 1
+      print('  XPASS ' .. name .. (detail and ('   ' .. detail) or ''))
+      print('        ^ this is EXCUSED as a known failure and it PASSED. Remove the '
+            .. 'expect_fail() for it.')
+    else
+      nxfail = nxfail + 1
+      print('  XFAIL ' .. name .. (detail and ('   ' .. detail) or ''))
+      print('        ^ expected: ' .. why)
+    end
+    return
+  end
   if cond then
     pass = pass + 1
     print('  PASS  ' .. name .. (detail and ('   ' .. detail) or ''))
@@ -368,24 +409,33 @@ for ci = 1, table.getn(CASES) do
 end
 
 -- ============================================================================
--- EXPECTED TO FAIL, 2 of 2: a forced rate still collapses the width. Blocks A-D pass, so a reader
--- seeing "22 passed, 2 failed" is looking at this and not at a regression.
-print('\nE  half a bit time may not manufacture its own evidence')
+print('\nE  a forced half bit time: what the panel owes the operator')
 -- ============================================================================
--- LINK 3, WHICH ua_med_wrong DOES NOT ADDRESS -- it stops the auto path REACHING a halved
+-- LINK 3, WHICH ua_submultiple DOES NOT ADDRESS -- it stops the auto path REACHING a halved
 -- bit time; it does not make the halved reading honest once something else gets there. A
 -- forced rate does, and it is reachable from the panel (Options > Baud Rate) and from a
 -- stale auto-lock.
 --
--- decode_from's cross-check DOES warn on the rate itself ('bytes may be WRONG if the device
--- runs at 9600 baud, 2x the 19200 you set'), which is the right behaviour and is asserted
--- here so this case cannot be read as claiming otherwise. What is NOT warned about is the
--- WIDTH: at half the bit time an 8N1 frame samples data bit 7 at t0 + 8.25 T and its stop
--- bit at t0 + 9.5 T, both inside the same real cell, so "the top data bit is 1 in every
--- error-free frame" is a tautology -- a frame is only error-free when that cell reads 1.
--- ua_refine_width takes the tautology as evidence and narrows the format on it, turning a
--- flagged 8N1 into a 7N1 whose values are also shifted. The guard it lacks is a test that
--- the always-one bit is observed INDEPENDENTLY of the stop bit that follows it.
+-- WHY FRAMING FIDELITY IS NOT ASSERTED IN THIS BLOCK, and this is a statement about the
+-- stimulus rather than about the app. The rate is forced to twice the truth, so the premise
+-- every framing claim rests on is already gone: a third of the frames are bad (35 and 41 of
+-- 151) and decode_from has published 'bytes may be WRONG'. Demanding a correct width from a
+-- decode the app has itself flagged as wrong asks it to be right about the shape of frames it
+-- has just disclaimed the contents of. Blocks A-D are where framing fidelity is assertable,
+-- because there the app picked the rate and stands behind it.
+--
+-- So what this block asserts is the DISCLOSURE, which is the promise docs/PRINCIPLES.md
+-- actually makes. Under "Two refinements the search cannot make" it says the collapse walks
+-- the width down while every error-free frame has its top bit set, that it "stands aside when
+-- the operator has forced the WIDTH" -- the width, not the rate -- and that mark parity can
+-- genuinely put a constant 1 there, "which is why the collapse is reported rather than
+-- silent". sdec.ua_refine_width matches that text: it returns early on sdec.force_nbits and
+-- has no test of sdec.force_baud at all. A forced rate is therefore inside the documented
+-- behaviour, and the contract it has to keep is that it SAYS SO.
+--
+-- Two assertions, both real: the rate is flagged, and the narrowing is attributed and offers
+-- the wider reading back. Between them the operator has every fact needed to distrust the
+-- 7N1 -- which is the difference between a wrong answer and a silently wrong answer.
 for ci = 1, table.getn(CASES) do
   local c = CASES[ci]
   local v, na = arb(c.opt)
@@ -395,15 +445,58 @@ for ci = 1, table.getn(CASES) do
   local ok = sdec.decode_from(rd, n)
   local r, note, rnote = sdec.res, sdec.fmt_note, sdec.rate_note
   sdec.force_baud = nil
+  local shown = string.format('%s %s, %d B, %d bad, run %d; note %q', ok and 'ok' or 'refused',
+                              fmtname(r), (r and r.nf) or 0, (r and r.nbad) or 0,
+                              longest_clean(r), tostring(note))
   check(string.format('%s: a forced 2x rate is still flagged as a rate error', c.id),
         has(rnote, 'may be WRONG'), string.format('rate_note %q', tostring(rnote)))
-  check(string.format('%s: and no width collapse on a top bit the stop bit already proved',
+  -- THE COLLAPSE MUST NOT BE SILENT. Not that it reports a reason -- that it reports THIS
+  -- reason and hands back the format it narrowed away from, so the wider reading is on the
+  -- panel next to the narrower one and the operator can take it.
+  check(string.format('%s: the narrowing is attributed, and the wider reading offered back',
                       c.id),
-        not has(note, 'were 1 in every frame'),
-        string.format('%s %s, %d B, %d bad, run %d; note %q', ok and 'ok' or 'refused',
-                      fmtname(r), (r and r.nf) or 0, (r and r.nbad) or 0, longest_clean(r),
-                      tostring(note)))
+        has(note, 'were 1 in every frame') and has(note, '8N1 also fits'), shown)
+
+  -- #40, named in docs/VECTORS.md on the SER_Fox_8N1_Skew2pc row: a width collapse on a
+  -- forced wrong rate. At half the bit time an 8N1 frame samples data bit 7 at t0 + 8.25 T
+  -- and its stop bit at t0 + 9.5 T, BOTH INSIDE THE SAME REAL CELL, so "the top data bit is
+  -- 1 in every error-free frame" is a tautology: a frame is only error-free when that cell
+  -- reads 1, and bit 7 reads that same cell. ua_refine_width takes the tautology as evidence.
+  --
+  -- The guard it lacks is a test that the always-one bit is observed INDEPENDENTLY of the
+  -- stop bit that follows it. Left open deliberately -- an app change here re-qualifies
+  -- against a week-long soak, and the reported note already carries the operator past it.
+  -- This stays as a live, failing assertion so that a fix is detected rather than assumed.
+  local collapse = string.format(
+    '%s: and no width collapse on a top bit the stop bit already proved', c.id)
+  expect_fail(collapse, '#40, open on purpose: at a forced 2x rate bit 7 and the stop bit '
+              .. 'share one cell, so the always-one test cannot see past the stop bit')
+  check(collapse, not has(note, 'were 1 in every frame'), shown)
 end
 
-print(string.format('\n%d passed, %d failed', pass, fail))
+-- EVERY LABEL MUST HAVE BEEN REACHED. The register is keyed on the check name, so renaming or
+-- deleting an assertion leaves its exemption behind with nothing to exempt -- and an exemption
+-- with nothing behind it is worse than the failure, because it reads as a defect still under
+-- test. An orphan here is a suite error, not a decoder one, and it is tallied as a failure.
+local orphan, name = {}, nil
+for name in pairs(XFAIL) do
+  if XSEEN[name] == nil then
+    orphan[table.getn(orphan) + 1] = name
+    fail = fail + 1
+  end
+end
+if table.getn(orphan) > 0 then
+  print('')
+  local oi
+  for oi = 1, table.getn(orphan) do
+    print('  FAIL  expected-failure label matched no assertion: ' .. orphan[oi])
+  end
+  print('        ^ the case was renamed or removed; update the expect_fail() beside it.')
+end
+
+print(string.format('\n%d passed, %d failed, %d expected failure(s)', pass, fail, nxfail))
+if nxfail > 0 then
+  print('Expected failures are open defects asserted on purpose, listed above with a reason. '
+        .. 'They do not fail the suite; an expected failure that PASSES does.')
+end
 os.exit(fail == 0 and 0 or 1)
