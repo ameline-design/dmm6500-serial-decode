@@ -127,6 +127,79 @@ does it:
 `select_arb` writes `C1:ARWV` and `C1:BSWV AMP,…,OFST,…` and transfers nothing, so none of the WVDT
 upload budget is spent.
 
+## The full-scale family, `f00`–`f16`
+
+**These are the vectors that reach ±FS**, and they exist because the section above shows nothing else
+does. An `f` vector renders `lo = −fsv` and `hi = +fsv`, so its codewords span **−32767…+32767**,
+`K` is −0.5 and +0.5 on the two rails, and on the wire
+
+    low  = OFST − AMP/2
+    high = OFST + AMP/2
+
+exactly. AMP 10 / OFST 0 is a true −5.000…+5.000 V line and AMP 20 / OFST 0 reaches ±10.000 V, the
+generator's ceiling — **4.03× the clean family's ±2.4812 V symmetric cap**. The same file still gives
+an ordinary logic line: AMP 3.3 / OFST 1.65 is 0.000…3.300 V. `min_v`/`max_v` in
+`out/vectors/manifest.tsv` record −5.000/+5.000 for all fifteen.
+
+| ids (normal / inverted) | payload | formats | npts | bytes |
+|---|---|---|---|---|
+| `f00` / `f10` | `Hello, World!`, 13 B | 8N1 | 1 942 | 3 884 |
+| `f01`–`f03` / `f11`–`f13` | `ASCII94`, 133 B | 8N1, 7E1, 7O1 | 13 500 | 27 000 |
+| `f04`–`f06` / `f14`–`f16` | 256 random, seed 20261010 | 8N1, 7E1, 7O1 | 25 800 | 51 600 |
+| `f07` | 1024 random, same seed | 8N1 | 102 600 | 205 200 — **over the upload ceiling** |
+
+`f1x` is the inverted counterpart of `f0x` and there is deliberately no `f17`. Geometry is copied from
+the vector each row pairs with — `f00`/`f10` from `v41`, the fox rows from `v77`/`v78`, the 256-byte
+rows from `r00` — so a new row differs from its pair in the CODEWORD SPAN and nothing else. Because
+the span is symmetric each `f1x` file is the **exact codeword-for-codeword negation** of its `f0x`
+pair, which `v41`/`v45` cannot be: theirs is `c_inv = 21626 − c`, a reflection about a non-zero
+midpoint. `f04`'s 256 bytes are the exact prefix of `f07`'s 1024, and `f05`/`f06` are `f04` masked to
+7 bits.
+
+### `f1x` IS AN RS-232 LINE AND `f0x` IS NOT — the same trap as `v41` vs `v45`
+
+At AMP 10 / OFST 0 **both** families straddle ground, so `sig_levels` reads RS-232 and marks at the
+NEGATIVE level for both. Which codeword that is decides everything, exactly as above:
+
+* **`f1x` idles at codeword −32767.** Mark IS the negative rail, so the prior is right. Measured over
+  48 window phases: correct in **34 of 34** (fox) and **41 of 41** (random) windows holding no idle.
+* **`f0x` idles at codeword +32767.** Mark is the POSITIVE rail, so the prior is upside-down —
+  correct in **0 of 34** and **0 of 41**. `ua_autoformat` overturns it wherever a parity bit or a
+  random bit 7 stops the inverted reading framing cleanly, and `f02`–`f06` do decode the same at every
+  band. **8N1 ASCII cannot**: `f01` goes from 5 of 34 payload-exact on a single-rail band to **0 of
+  34** across ground, because ASCII's always-clear bit 7 puts a rising edge exactly nine bit times
+  after every start bit.
+
+**So for a bipolar line use `f1x`.** `f0x` at a symmetric band is the `v41`-at-a-negative-offset
+stimulus with more swing, and AMP 3.3 / OFST 1.65 is what it is for. Three ways to get one, cheapest
+first:
+
+| want | use | cost |
+|---|---|---|
+| ±2.481 V | `v45`, AMP 15.038 OFST −2.481 | already stored, no upload |
+| ±5.000 V | `f10` / `f11` / `f14`, AMP 10 OFST 0 | one 3.9–51.6 kB upload |
+| ±10.000 V | the same, AMP 20 OFST 0 | the same upload |
+
+### Two rules this family added
+
+**A name's content-plus-variant part has 16 characters.** `brun.cellline` puts `id baud fmt wave` on
+TEXT2, where `brun.wave` is the stored name less `SER_`, `_x10` and the format token.
+`display.settext` caps TEXT2 at 32 and the firmware warns and shortens anything longer — for a soak, a
+panel event per cell. At the widest baud the bench drives (250000, six digits) and a four-character id
+(`v44a`–`v44e`) the fixed part is 16, so **abbreviate the CONTENT token, not the variant**: the variant
+is what tells two rows apart. Hence `Full` over `FullScale` and `Rnd256B` over `Random256B`, with the
+size keeping its unit either way. `tools/test_bench_engine.lua` asserts this over every name in `MAP`;
+the widest is now 31 of 32, and the old names all fit but `v48a`/`v48b` have only 3 characters spare.
+
+**They are declared out of every draw.** `vector_names.BENCH_ONLY` lists all fifteen and
+`soakplan.soak_vectors()` is the one place that applies it. `bench/arb_names.tsp` carries
+`barb.benchonly` so `sweep_startphase.lua` — which enumerates `VEC_LIST`, a **second population
+independent of `MAP`** — reads the same judgement rather than restating it. `--spec`, `--plan-spec`
+and `--skip-vectors` still accept them by name: the exclusion governs the DRAW, which is the thing
+nobody asks for explicitly. Drawing them would do two unwanted things at once — drive the full-scale
+ones across ground at the plan's own offsets, manufacturing the artefact above at scale, and change
+the population every per-cell ratchet is calibrated on.
+
 ## Payload width rules
 
 A frame carries `<nbits>` data bits, so a payload has to fit the width. Measured ranges:

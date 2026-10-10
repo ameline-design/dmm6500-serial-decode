@@ -12,6 +12,21 @@ barb = barb or {}
 
 barb.name = barb.name or {}
 
+barb.name['f00'] = 'SER_Hello_8N1_Full_x10'
+barb.name['f01'] = 'SER_Fox_8N1_Full_x10'
+barb.name['f02'] = 'SER_Fox_7E1_Full_x10'
+barb.name['f03'] = 'SER_Fox_7O1_Full_x10'
+barb.name['f04'] = 'SER_Rnd256B_8N1_Full_x10'
+barb.name['f05'] = 'SER_Rnd256B_7E1_Full_x10'
+barb.name['f06'] = 'SER_Rnd256B_7O1_Full_x10'
+barb.name['f07'] = 'SER_Rnd1kB_8N1_Full_x10'
+barb.name['f10'] = 'SER_Hello_8N1_Inv_Full_x10'
+barb.name['f11'] = 'SER_Fox_8N1_Inv_Full_x10'
+barb.name['f12'] = 'SER_Fox_7E1_Inv_Full_x10'
+barb.name['f13'] = 'SER_Fox_7O1_Inv_Full_x10'
+barb.name['f14'] = 'SER_Rnd256B_8N1_Inv_Full_x10'
+barb.name['f15'] = 'SER_Rnd256B_7E1_Inv_Full_x10'
+barb.name['f16'] = 'SER_Rnd256B_7O1_Inv_Full_x10'
 barb.name['j02'] = 'SER_Jitter02pct_x100'
 barb.name['j10'] = 'SER_Jitter10pct_x100'
 barb.name['j20'] = 'SER_Jitter20pct_x100'
@@ -78,8 +93,35 @@ function barb.loud(vid)
   return barb.expect[vid] == 'loud'
 end
 
+-- WHICH VECTORS ARE NOT DRAWN BY A SWEEP OR A SOAK. Generated from tools/vector_names.py's
+-- BENCH_ONLY, whose comment gives the reasons; the short form is that these are ARM-feature
+-- instruments driven at CHOSEN levels, and a harness that picks its own amplitude would drive the
+-- full-scale ones across ground -- where sig_levels reads RS-232 and marks NEGATIVE, which is
+-- upside-down for a vector that idles positive.
+--
+-- EMITTED HERE FOR THE SAME REASON barb.expect IS: tools/sweep_startphase.lua takes its vector set
+-- from make_vectors.lua's VEC_LIST, which is a SECOND enumeration independent of MAP, so a Lua-side
+-- copy of the exclusion would be a second declaration of one judgement. tools/test_bench_engine.lua
+-- asserts this file is current, so the two cannot drift without a gate saying so.
+barb.benchonly = barb.benchonly or {}
+barb.benchonly['f00'] = true
+barb.benchonly['f01'] = true
+barb.benchonly['f02'] = true
+barb.benchonly['f03'] = true
+barb.benchonly['f04'] = true
+barb.benchonly['f05'] = true
+barb.benchonly['f06'] = true
+barb.benchonly['f07'] = true
+barb.benchonly['f10'] = true
+barb.benchonly['f11'] = true
+barb.benchonly['f12'] = true
+barb.benchonly['f13'] = true
+barb.benchonly['f14'] = true
+barb.benchonly['f15'] = true
+barb.benchonly['f16'] = true
+
 -- The count, so a truncated file is detectable rather than merely short.
-barb.n = 42
+barb.n = 57
 
 -- Returns the generator's name for a vector id, or nil. Never guesses: a fallback to the id itself is
 -- exactly the silent failure this table exists to prevent.

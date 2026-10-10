@@ -48,6 +48,33 @@ dofile('tools/make_vectors.lua')
 local V = VEC_LIST
 if V == nil then print('make_vectors.lua did not publish VEC_LIST'); os.exit(1) end
 
+-- BENCH-ONLY VECTORS ARE NOT SWEPT, and the exclusion is READ rather than restated: bench/arb_names.tsp
+-- carries barb.benchonly, generated from tools/vector_names.py's BENCH_ONLY, which is the one place the
+-- judgement lives. VEC_LIST is a SECOND enumeration of the vector set, independent of vector_names.MAP,
+-- so excluding a vector from the soak's draw does not exclude it from here -- measured: adding fifteen
+-- ARM vectors moved this sweep's `exact` from 2335 to 3474 and `fmtdiff` from 523 to 548 while the soak
+-- plan was already correct.
+--
+-- WHY THEY MUST NOT BE SWEPT, and it is the same reason the soak does not draw them: the full-scale ones
+-- straddle ground at any symmetric band, and sdec.sig_levels reads a ground-straddling band as RS-232 --
+-- marking at its NEGATIVE level, which is upside-down for a vector that idles positive. This project has
+-- that on record as a HARNESS artefact and not a defect: 17.3 % of offline cells driven across ground
+-- produced 86.8 % of a whole class of failure, with the app right every time. Sweeping them would
+-- manufacture it here, and an offline sweep is exactly where it is hardest to recognise.
+--
+-- THE COUNTS ARE WHAT THE RATCHETS BOUND. Conditions come from the fixed COND table with the generator
+-- reseeded per vector, so adding a vector does not perturb an existing one's cases -- the counters move
+-- purely by addition. That makes a population change indistinguishable from a regression in the totals
+-- tools/sweep_all.py gates on, which is why the population is declared rather than incidental.
+dofile('bench/arb_names.tsp')
+if barb ~= nil and barb.benchonly ~= nil then
+  local keep, nk, i = {}, 0, nil
+  for i = 1, table.getn(V) do
+    if not barb.benchonly[V[i].id] then nk = nk + 1; keep[nk] = V[i] end
+  end
+  V = keep
+end
+
 -- ---------- arguments ----------
 -- maxpts HIGH ENOUGH TO SKIP NOTHING, which is a measurement and not a guess. The bound must sit
 -- ABOVE the largest vector: below it, v96 -- the 32 kB random vector, 3 413 625 points -- is dropped

@@ -61,6 +61,19 @@ function barb.loud(vid)
   return barb.expect[vid] == 'loud'
 end
 
+-- WHICH VECTORS ARE NOT DRAWN BY A SWEEP OR A SOAK. Generated from tools/vector_names.py's
+-- BENCH_ONLY, whose comment gives the reasons; the short form is that these are ARM-feature
+-- instruments driven at CHOSEN levels, and a harness that picks its own amplitude would drive the
+-- full-scale ones across ground -- where sig_levels reads RS-232 and marks NEGATIVE, which is
+-- upside-down for a vector that idles positive.
+--
+-- EMITTED HERE FOR THE SAME REASON barb.expect IS: tools/sweep_startphase.lua takes its vector set
+-- from make_vectors.lua's VEC_LIST, which is a SECOND enumeration independent of MAP, so a Lua-side
+-- copy of the exclusion would be a second declaration of one judgement. tools/test_bench_engine.lua
+-- asserts this file is current, so the two cannot drift without a gate saying so.
+barb.benchonly = barb.benchonly or {}
+%s
+
 -- The count, so a truncated file is detectable rather than merely short.
 barb.n = %d
 
@@ -79,7 +92,8 @@ def render():
         out.append("barb.name['%s'] = '%s'" % (vid, VN.MAP[vid]))
     loud = ['\n'.join("barb.expect['%s'] = 'loud'" % v
                       for v in sorted(VN.MAP) if SP.expect_for(v) == 'loud')]
-    out.append(TAIL % (loud[0], len(VN.MAP)))
+    bonly = '\n'.join("barb.benchonly['%s'] = true" % v for v in sorted(VN.BENCH_ONLY))
+    out.append(TAIL % (loud[0], bonly, len(VN.MAP)))
     return '\n'.join(out)
 
 

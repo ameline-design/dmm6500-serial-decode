@@ -841,6 +841,174 @@ for ji = 1, table.getn(JIT) do
       end}
 end
 
+-- ---------------------------------------------------------------------------
+-- FULL-SCALE RENDERS, WHERE EVERY VECTOR ABOVE USES 66 % OF POSITIVE SCALE
+-- ---------------------------------------------------------------------------
+-- Every vector above renders a single-supply logic line, lo = 0 and hi = 3.3, against fsv = 5.0, so
+-- its codewords run 0 .. 21626 -- 0.66000 of positive full scale, and never negative. The file
+-- therefore does not span the range the instrument scales: the band on the wire is
+-- OFST .. OFST + 0.3300*AMP rather than OFST +/- AMP/2.
+--
+-- WHAT THAT PUTS OUT OF REACH. A symmetric swing needs |OFST| + AMP/2 <= 10 V (GENLIM.clamp_v,
+-- measured on this generator), and at frac 0.66 the widest symmetric band such a file can make is
+-- +/-2.49 V. A true RS-232 line is +/-5 V, so it cannot be produced at all.
+--
+-- These render lo = -fsv and hi = +fsv, so the codewords are -32767 .. +32767 and the band is
+-- exactly OFST - AMP/2 .. OFST + AMP/2. ONE file then reaches every level class from AMP and OFST
+-- alone: AMP 10 OFST 0 is -5 .. +5 V, AMP 3.3 OFST 1.65 is a 0 .. 3.3 V logic line, AMP 6 OFST 3 is
+-- 0 .. 6 V.
+--
+-- FS_LO AND FS_HI ARE TIED TO FS_FSV, and the tie IS the property. GEN_CODE divides by the fsv
+-- GEN_WRITE is handed, so a vector whose lo/hi do not equal -/+ its own fsv is not full scale
+-- whatever it is called.
+--
+-- GEOMETRY IS COPIED FROM THE VECTOR EACH ROW PAIRS WITH -- f00 from v41 (lead 20, gap 2, tail 20,
+-- no loop), the rest from v77/v78 (gap 0, lead 10, tail 10, loop) -- so a new row differs from its
+-- pair in the CODEWORD SPAN and in nothing else: same payload, same baud, same samples per bit, same
+-- point count, same byte count.
+--
+-- IDLE IS DECIDED BY RUN LENGTH HERE AND BY LEVELS AT THE BENCH, and only the first is safe. The
+-- whole render carries its lead and tail, so the longest run is 111.94 samples against
+-- sdec.idlemult * onebit = 105 and sig_idle takes its run-length branch: idle 1, idle_weak false,
+-- the right bytes. A WINDOWED capture holds no idle, so the levels branch decides instead, and a band
+-- straddling ground is RS-232, which marks at its NEGATIVE level -- upside down for a vector that
+-- idles positive. AMP 3.3 OFST 1.65 gives a band that does not straddle; invert = true gives a
+-- render the RS-232 prior is right about.
+local FS_FSV = 5.0
+local FS_LO, FS_HI = -FS_FSV, FS_FSV
+
+vec{id = 'f00', desc = "'Hello, World!' 9600 8N1, full scale", fs = sr(9600), fsv = FS_FSV,
+    build = function()
+      return hello{baud = 9600, fs = sr(9600), lo = FS_LO, hi = FS_HI}
+    end}
+
+-- ASCII94 at full scale, in the three formats the payload fits. Every byte is <= 0x7E, so a seven-bit
+-- frame carries the whole 133 bytes untruncated and the 8N1 / 7E1 / 7O1 rows are directly comparable.
+local function fox_fs(nbits, par, inv)
+  local by, nb = GEN_BYTES(ASCII94)
+  return {bytes = by, baud = 9600, fs = sr(9600), nbits = nbits, par = par, invert = inv,
+          lo = FS_LO, hi = FS_HI, gap = 0, lead = 10, tail = 10, loop = true},
+         by, nb, nil, ASCII94
+end
+vec{id = 'f01', desc = 'all 94 visible glyphs, 9600 8N1, full scale', fs = sr(9600), fsv = FS_FSV,
+    build = function() return fox_fs() end}
+vec{id = 'f02', desc = 'all 94 visible glyphs, 9600 7E1, full scale', fs = sr(9600), fsv = FS_FSV,
+    build = function() return fox_fs(7, 1) end}
+vec{id = 'f03', desc = 'all 94 visible glyphs, 9600 7O1, full scale', fs = sr(9600), fsv = FS_FSV,
+    build = function() return fox_fs(7, 2) end}
+
+-- UNIFORM RANDOM BYTES at full scale, one payload across the three formats.
+--
+-- THE 7-BIT ROWS ARE THE SAME PAYLOAD WITH BIT 7 DROPPED, which is docs/VECTORS.md's rule for a
+-- Random vector at a narrower width: v & (2^w - 1), so the byte ORDER, the seed and the length are
+-- shared and only the top bit moves between f04 and f05/f06. Masked with math.mod because Lua 5.0.2
+-- has no bitwise operators -- for a byte, math.mod(b, 128) is b & 0x7F.
+--
+-- 256 BYTES, AND THE LENGTH IS ABOUT THE LOOP SEAM. The arb plays on repeat and the capture opens at
+-- an uncontrolled phase, so the 20 bit times of idle at the seam land INSIDE a capture with
+-- probability (window + 20 bit times) / period. At 25800 points that is 2120/25800 = 8.2 % at the
+-- app's default sdec.fs = 1 MSa/s, where its 20000 samples consume only 1920 arb samples. Under the
+-- 65536-byte upload ceiling at 51600 B, and the same size as r00-r11, so these are directly
+-- comparable with the twelve random soak vectors.
+--
+-- AT A MATCHED sdec.fs THE WINDOW IS 20000 ARB SAMPLES AND 256 BYTES IS NOT ENOUGH: 20200/25800 =
+-- 78 % of captures would hold the seam, and no payload that fits the ceiling fixes it -- 32768 points
+-- is the largest, still 62 %. That is what f07 is for.
+local FS_RSEED = 20261010
+local FS_RN = 256
+local function rand_fs(n, nbits, par, mask, inv)
+  local by, nb = rand_bytes(n, FS_RSEED)
+  if mask ~= nil then
+    local i
+    for i = 1, nb do by[i] = math.mod(by[i], mask) end
+  end
+  return {bytes = by, baud = 9600, fs = sr(9600), nbits = nbits, par = par, invert = inv,
+          lo = FS_LO, hi = FS_HI, gap = 0, lead = 10, tail = 10, loop = true},
+         by, nb, nil, bytes_to_str(by, nb)
+end
+vec{id = 'f04', desc = string.format('%d uniform random bytes 0-255, 9600 8N1, full scale', FS_RN),
+    fs = sr(9600), fsv = FS_FSV, long = true,
+    build = function() return rand_fs(FS_RN) end}
+vec{id = 'f05', desc = string.format('%d random bytes masked to 7 bits, 9600 7E1, full scale', FS_RN),
+    fs = sr(9600), fsv = FS_FSV, long = true,
+    build = function() return rand_fs(FS_RN, 7, 1, 128) end}
+vec{id = 'f06', desc = string.format('%d random bytes masked to 7 bits, 9600 7O1, full scale', FS_RN),
+    fs = sr(9600), fsv = FS_FSV, long = true,
+    build = function() return rand_fs(FS_RN, 7, 2, 128) end}
+
+-- THE LONG ONE, AND LENGTH BUYS EXACTLY ONE THING: it defeats the loop seam at a MATCHED sdec.fs,
+-- where the capture is 20000 arb samples rather than 1920. 102600 points puts the seam inside
+-- 20200/102600 = 19.7 % of captures against 78 % at 256 bytes, and no size under the upload ceiling
+-- can reach that -- 20 % needs 101000 points, which is 202 kB.
+--
+-- 8N1 ONLY, AND THAT IS NOT AN OMISSION. Seam-defeating length serves the soak and streaming role,
+-- which is 8N1 throughout the existing set -- v93, v95 and v96 are all 8N1 and there is no long 7E1
+-- or 7O1 random vector anywhere. The 7-bit rows exist to put uniform data through the PARITY path,
+-- which works at any length, and r06-r11 settle that question at 256 bytes. Building f05/f06 long too
+-- would turn ONE over-ceiling upload into THREE, which is the documented wedge count
+-- (tools/instruments.py: a third over-ceiling write killed the SCPI service, and the run that
+-- survived three differed only in pacing) -- for a property those two rows do not need.
+--
+-- 205200 B, the same size as v71/v93/v97, so it is a known quantity on this instrument rather than a
+-- new one, and it is 1 of the under-three over-ceiling writes the operational rule allows.
+--
+-- THE 256-BYTE PAYLOAD IS ITS EXACT PREFIX, by construction: rand_bytes reseeds per call, so
+-- (seed, n) alone fixes the bytes and f04's 256 are the head of f07's 1024. That makes a disagreement
+-- between f04 and the head of f07 evidence about the TRANSPORT and not about the payload.
+local FS_RN_LONG = 1024
+vec{id = 'f07', desc = string.format('%d uniform random bytes 0-255, 9600 8N1, full scale '
+                                     .. '(over the upload ceiling)', FS_RN_LONG),
+    fs = sr(9600), fsv = FS_FSV, long = true,
+    build = function() return rand_fs(FS_RN_LONG) end}
+
+-- ---------------------------------------------------------------------------
+-- THE INVERTED FULL-SCALE RENDERS -- A REAL RS-232 LINE, WITH NO OFFSET ARITHMETIC
+-- ---------------------------------------------------------------------------
+-- f1x is the inverted counterpart of f0x: f10 of f00, f11 of f01, and so on. There is deliberately
+-- no f17 -- an inverted f07 is not wanted, and the gap says so.
+--
+-- WHY THESE AND NOT JUST A NEGATIVE OFFSET ON f0x. RS-232 MARKS NEGATIVE, so idle must be the LOW
+-- codeword. Every f0x render idles at +32767, and no AMP/OFST pair can turn that into an idle-low
+-- line -- amplitude and offset scale and shift the band, they cannot flip it. The flip is a property
+-- of the FILE. v45 is the existing vector that has it, idling at codeword 0 against v41's 21626, and
+-- it is the only one that can drive a real RS-232 line at all. At full scale an inverted render idles
+-- at -32767, so AMP 10 OFST 0 IS a -5 V / +5 V RS-232 line with nothing to compute.
+--
+-- AND THIS IS THE PAIR THAT MAKES THE POLARITY PRIOR RIGHT RATHER THAN WRONG. sig_idle reads a band
+-- straddling ground as RS-232 marking at its negative level. For f0x at AMP 10 OFST 0 that prior is
+-- upside-down and ua_autoformat has to overturn it -- which it fails to do on 8N1 ASCII, where the
+-- inverted reading frames just as cleanly. For f1x the same prior is CORRECT, in both of sig_idle's
+-- branches: the run-length branch finds the longest run at the low level, and the levels branch finds
+-- a straddling band. So f1x against f0x is one stimulus pair that isolates the polarity decision from
+-- everything else -- same payload, same format, same point count, same codeword span, opposite sense.
+--
+-- THE FIRST SAMPLE IS THE IDENTIFYING NUMBER. The lead is mark, and mark is now the low codeword, so
+-- sample 1 of an inverted full-scale render is -32767 where an f0x render has +32767. One codeword
+-- distinguishes the two families whatever else is in the file.
+vec{id = 'f10', desc = "'Hello, World!' 9600 8N1 inverted (RS-232 sense), full scale",
+    fs = sr(9600), fsv = FS_FSV,
+    build = function()
+      return hello{baud = 9600, fs = sr(9600), lo = FS_LO, hi = FS_HI, invert = true}
+    end}
+vec{id = 'f11', desc = 'all 94 visible glyphs, 9600 8N1 inverted (RS-232 sense), full scale',
+    fs = sr(9600), fsv = FS_FSV, build = function() return fox_fs(nil, nil, true) end}
+vec{id = 'f12', desc = 'all 94 visible glyphs, 9600 7E1 inverted (RS-232 sense), full scale',
+    fs = sr(9600), fsv = FS_FSV, build = function() return fox_fs(7, 1, true) end}
+vec{id = 'f13', desc = 'all 94 visible glyphs, 9600 7O1 inverted (RS-232 sense), full scale',
+    fs = sr(9600), fsv = FS_FSV, build = function() return fox_fs(7, 2, true) end}
+vec{id = 'f14', desc = string.format('%d uniform random bytes 0-255, 9600 8N1 inverted '
+                                     .. '(RS-232 sense), full scale', FS_RN),
+    fs = sr(9600), fsv = FS_FSV, long = true,
+    build = function() return rand_fs(FS_RN, nil, nil, nil, true) end}
+vec{id = 'f15', desc = string.format('%d random bytes masked to 7 bits, 9600 7E1 inverted '
+                                     .. '(RS-232 sense), full scale', FS_RN),
+    fs = sr(9600), fsv = FS_FSV, long = true,
+    build = function() return rand_fs(FS_RN, 7, 1, 128, true) end}
+vec{id = 'f16', desc = string.format('%d random bytes masked to 7 bits, 9600 7O1 inverted '
+                                     .. '(RS-232 sense), full scale', FS_RN),
+    fs = sr(9600), fsv = FS_FSV, long = true,
+    build = function() return rand_fs(FS_RN, 7, 2, 128, true) end}
+
 -- Everything above is DEFINITION; everything below writes files. sweep_startphase.lua stops here.
 VEC_LIST = V
 if VEC_DEFINE_ONLY then return end
