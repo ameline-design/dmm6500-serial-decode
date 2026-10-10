@@ -8046,6 +8046,14 @@ local function test_modes()
   local gotn = sdec.acq_triggered(sdec.n, dmm.SLOPE_FALLING)
   check('an external source still returns samples rather than nothing',
         gotn ~= nil and gotn > 1, tostring(gotn))
+  -- THE WRITER, NOT JUST THE READER. sig_idle's use of sdec.acq_pretrig is tested where it is read,
+  -- but nothing asserted that a triggered capture SETS it -- so deleting that one line reverted the
+  -- whole fix on hardware while every suite stayed green at its unmutated count. The flag says the
+  -- record opens in a pre-trigger reserve, which is true of this capture and false of a free one.
+  check('a triggered capture records that its record opens in a reserve',
+        sdec.acq_pretrig == true,
+        string.format('acq_pretrig=%s at pretrig=%s', tostring(sdec.acq_pretrig),
+                      tostring(sdec.pretrig)))
   -- Break the trigger model outright -- an unwired rear BNC on a firmware that refuses the
   -- event, which is the pessimistic version of "selected but not connected". The capture must
   -- still come back, with a stated reason, rather than leaving the operator with nothing.
@@ -8056,6 +8064,11 @@ local function test_modes()
   trigger.model.initiate = realinit
   check('a trigger source the instrument refuses DEGRADES to a free capture',
         fb ~= nil and fb > 1, tostring(fb))
+  -- AND THE CLEAR. This exit leaves through acq_free, so the record really is free-running and its
+  -- leading run really is the line. A stale true here would throw away good evidence on every
+  -- capture after a triggered one -- the opposite failure to the one the flag was added for.
+  check('...and the degrade to free run leaves no stale pre-trigger flag',
+        sdec.acq_pretrig == nil, tostring(sdec.acq_pretrig))
   check('and names the SOURCE that failed, not a generic one',
         sdec.lasterr ~= nil and has(sdec.lasterr, 'edge') and
         has(sdec.lasterr, 'captured free-running'), tostring(sdec.lasterr))

@@ -726,7 +726,7 @@ function sdec.clear_measured()
   -- Whether the record in sdec.smp opens in a pre-trigger reserve, and the leading run sig_idle
   -- measured. acq_triggered sets the first on its successful exit and acq_free clears it, so the
   -- probe read inside one acquire() cannot leave the real capture looking armed, or the reverse.
-  sdec.acq_pretrig, sdec.leadrun = nil, nil
+  sdec.acq_pretrig, sdec.leadrun, sdec.idlerec = nil, nil, nil
   -- Level and run statistics: the fraction of samples near the two levels, and the longest run of
   -- each. sig_idle() reads st0, so it goes back to its declared default rather than to nil.
   sdec.modal, sdec.run0, sdec.run1 = nil, nil, nil
@@ -1034,25 +1034,22 @@ function sdec.sig_idle(rd, n)
   -- idlemult * onebit easily, so the LEVEL branch below never runs and idle_weak stays false --
   -- which is exactly the flag sdec.polmargin keys on. The capture that most needs the 4x margin
   -- against an inverted ASCII reading is the one certain not to get it.
-  local lead = ei[1] - 1
-  -- PUBLISHED FOR THE RECORD, like sdec.onebit: a bench lap that cannot see the leading run cannot
-  -- tell this branch from a genuinely inverted line.
-  sdec.leadrun = lead
-  if not sdec.acq_pretrig then
-    if sdec.st0 == 1 then
-      if lead > best1 then best1 = lead end
-    else
-      if lead > best0 then best0 = lead end
-    end
-  end
+  -- onebit IS COMPUTED FIRST, because the recurrence test below needs the idle threshold while it
+  -- walks the interior runs. It reads only the edge list, so moving it up changes nothing it sees.
+  local onebit = sdec.sig_onebit(ei, ne)
+  local idlelen = nil
+  if onebit ~= nil then idlelen = sdec.idlemult * onebit end
 
   local k
+  local nlong1, nlong0 = 0, 0
   for k = 1, ne - 1 do
     local len = ei[k+1] - ei[k]
     if es[k] == 1 then
       if len > best1 then best1 = len end
+      if idlelen ~= nil and len >= idlelen then nlong1 = nlong1 + 1 end
     else
       if len > best0 then best0 = len end
+      if idlelen ~= nil and len >= idlelen then nlong0 = nlong0 + 1 end
     end
   end
 
@@ -1061,6 +1058,55 @@ function sdec.sig_idle(rd, n)
     if tail > best1 then best1 = tail end
   else
     if tail > best0 then best0 = tail end
+  end
+
+  -- ON AN ARMED CAPTURE THE LEADING RUN IS NEVER EVIDENCE, AND THE INTERIOR MUST RECUR.
+  --
+  -- The leading run of an armed record is the pre-trigger reserve: the wire BEFORE THE DEVICE
+  -- STARTED. On a single-supply line that is ground, and ground is the SPACE level, so it arrives as
+  -- a run of lows no data could produce. Measured, an armed frame capture of a 0.00..3.30 V line
+  -- with the generator switched on at +3 s: leadrun 1053, run0 1053, run1 500, idle 0, every byte
+  -- inverted, 0 of 6 captures readable. Dropping it takes run0 to 50 and the prior comes out right.
+  --
+  -- BUT DROPPING IT IS NOT ENOUGH ON ITS OWN, because what is left may be no better.
+  --
+  -- IDLE RECURS; AN ARTEFACT DOES NOT. A line's idle level appears in every gap between messages, so
+  -- a window holding real idle holds SEVERAL interior runs past the idle threshold at one level. A
+  -- BREAK appears once -- and by length alone a break cannot be told from idle, since both are
+  -- longer than any run data can make. Measured, an RS-232 session of GAPLESS frames ending in a
+  -- break: lead 20 830 samples at MARK against a 2 083-sample break at SPACE, and with the lead
+  -- dropped the break became the longest run and flipped the prior. The break is INTERIOR, so
+  -- excluding the tail instead would not have helped. Two interior runs are the bar; one is an
+  -- excursion.
+  --
+  -- SO WITHOUT RECURRING INTERIOR IDLE, DECIDE FROM THE LEVELS. That is a fact about signalling
+  -- rather than a guess about this window, and it is right in both cases the runs cannot settle:
+  -- gapless frames on a single-supply line mark HIGH, and the gapless-plus-break RS-232 session
+  -- straddles ground and marks at its NEGATIVE level. It also sets idle_weak, which is the flag
+  -- sdec.polmargin keys on -- so the 4x margin against an inverted ASCII reading applies exactly
+  -- where the evidence is thin, instead of being disarmed by a long reserve.
+  --
+  -- THE RUN BRANCH STILL DECIDES WHEREVER IT CAN. A window with recurring interior idle takes it, so
+  -- an INVERTED single-supply line -- idle on the bottom rail, which the levels would get wrong --
+  -- keeps decoding as long as its gaps are in the window. Measured on such a line, armed, at three
+  -- bands and two lock states: 36 of 36 captures correct, idle 0, invert true.
+  local lead = ei[1] - 1
+  -- PUBLISHED FOR THE RECORD, like sdec.onebit: a bench lap that cannot see the leading run, or the
+  -- recurrence count that decided whether to use it, cannot tell this branch from a genuinely
+  -- inverted line.
+  sdec.leadrun = lead
+  local nrec = nlong1
+  if nlong0 > nrec then nrec = nlong0 end
+  sdec.idlerec = nrec
+  local thin = false
+  if sdec.acq_pretrig then
+    thin = nrec < 2
+  else
+    if sdec.st0 == 1 then
+      if lead > best1 then best1 = lead end
+    else
+      if lead > best0 then best0 = lead end
+    end
   end
 
   sdec.run1, sdec.run0 = best1, best0
@@ -1091,7 +1137,6 @@ function sdec.sig_idle(rd, n)
   -- sdec.idlemult CARRIES THE MARGIN THAT ARGUMENT NEEDS -- see its comment for the
   -- measurement. Nine-against-ten leaves nothing for jitter on the run or scatter on
   -- the percentile, and the two crossing is what lets a data run be read as idle.
-  local onebit = sdec.sig_onebit(ei, ne)
   -- PUBLISHED FOR THE RECORD, and read by nothing that decides anything. run0, run1 and idle_weak are
   -- already on sdec; this is the fourth input to the comparison below and the only one that was a local,
   -- so a bench record could show three quarters of the decision and not the quarter that matters. The
@@ -1101,7 +1146,10 @@ function sdec.sig_idle(rd, n)
   sdec.onebit = onebit
   local longest = best1
   if best0 > longest then longest = best0 end
-  if onebit ~= nil and longest < sdec.idlemult * onebit then
+  -- `thin` FORCES THIS BRANCH on an armed capture whose interior idle does not recur -- see the
+  -- block above. Without it the branch is unreachable exactly when it is needed, because a single
+  -- long excursion clears the threshold and then decides unopposed.
+  if thin or (onebit ~= nil and longest < sdec.idlemult * onebit) then
     -- The runs carry no information about idle. Decide from the LEVELS instead,
     -- which is a fact about signalling rather than a guess about this capture: a
     -- single-supply logic line marks HIGH, and one that straddles ground is RS-232
