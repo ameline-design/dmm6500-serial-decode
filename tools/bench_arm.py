@@ -11,7 +11,10 @@ nothing on them, which is exactly what a DUT that has not been powered up looks 
 under sdec.minswing, so the level probe refuses it and the capture arms instead of recording it.
 Switching the output on, from a thread, is the device starting to transmit.
 
-SEVEN CASES, and the first is the one that was BROKEN at V1.40:
+FOURTEEN CASES IN TWO HALVES. A-G are the feature's own claims, and the first of those is the one
+that was BROKEN at V1.40. H-N are the hostile half: both settings at their limits, a sign reversal, a
+leak between captures, a promise that has to be backed by instrument state, and a rate the blind
+window cannot resolve.
 
   A  Baud Rate 0 (the DEFAULT), silent line     -- must ARM and wait, not return in 3.5 s
   B  Baud Rate 0, generator on mid-wait         -- must fire early and decode from the first byte
@@ -20,6 +23,14 @@ SEVEN CASES, and the first is the one that was BROKEN at V1.40:
   E  the arm EXPIRES                            -- names the two settings, and the armed level
   F  an 8 kB RECORDING armed on silence         -- the canned waiting template, not SimpleLoop
   G  a recording whose arm expires              -- its own ending, not 'full' and not 'quiet'
+
+  H  Arm At at its 0.33 V FLOOR                 -- must not fire on the digitizer's own noise
+  I  Arm At at its 6 V CEILING                  -- the firmware must ADOPT the level, not refuse it
+  J  Arm Wait at its 2 s FLOOR, device late     -- expires on its own clock, does not catch it
+  K  the TRIGGER key's promise                  -- blender slot 3 must really hold the event
+  L  an arm, then a BUSY line                   -- the guessed level must not outlive its capture
+  M  a line idling at -5 V                      -- the other sign, where the start bit goes UP
+  N  a 57 600 Bd device caught blind            -- must REFUSE, not publish 38 400
 
 A IS THE REGRESSION TEST. Measured at V1.40: with the rate automatic a press on a silent line
 returned in 3.55 s saying 'line is idle (no transitions)' and never armed, while the identical press
@@ -107,6 +118,17 @@ def arb_on(g):
     g.output(True, ch=1)
 
 
+def clear_absorb(d):
+    """Disarm the queued-press absorb, so the NEXT press is not taken as this run's Stop.
+
+    A Capture press within sdec.strm_absorb_s of a recording ending is absorbed BY DESIGN, and the
+    absorb's age lives only in the shared timer -- so a recording case leaves the next case's press
+    liable to vanish and return in 0.01 s, which reads as a broken arm. Two cases waited out the
+    window with a host-side sleep instead; this clears the state, which is both faster and honest
+    about what it is doing."""
+    d.exec('sdec.strm_stopped_by_press = nil sdec.strm_nabsorbed = 0 sdec.strm_absorbed = nil')
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--no-load', action='store_true', help='the app is already loaded and built')
@@ -144,6 +166,12 @@ def main():
     print('arm : fs=%s Hz  arm_baud=%s  try=%s' %
           (tq(d, 'AF', 'sdec.arm_fs()'), tq(d, 'AB', 'sdec.arm_baud'),
            tq(d, 'AT', 'table.concat(sdec.arm_try, ",")')))
+    # THE OPERATOR'S OWN SETTINGS, READ RATHER THAN ASSUMED, because the restore block used to write
+    # the defaults back as literals -- so a run on an instrument configured at 2.5 V and 30 s handed
+    # it back at 1 V and 10 s and called that a restore.
+    entry_lvl = tq(d, 'E1', 'sdec.armlevel')
+    entry_wait = tq(d, 'E2', 'sdec.armwait')
+    print('ent : armlevel=%s armwait=%s   (restored on the way out)' % (entry_lvl, entry_wait))
 
     try:
         d.exec('sdec.trigmode = "edge" sdec.trigext = false sdec.trigext_only = false '
@@ -351,6 +379,237 @@ def main():
                   endwhy == 'noarm', 'endwhy=%s' % endwhy)
             check('G ...and the note names the two settings that govern the wait',
                   'raise Arm Wait or lower Arm At' in why, why[:110])
+            d.exec('sdec.capmode = "frame" sdec.armwait = %g' % ARMWAIT)
+            clear_absorb(d)
+
+        # ---- H: Arm At at its FLOOR, on a line with nothing on it at all. ----
+        if want('H'):
+            print('\n=== H: Arm At at its 0.33 V floor, on an open grounded line ===')
+            # THE FLOOR IS WHAT AN OPERATOR WINDS TO FOR A SMALL-SWING DEVICE, and the question it
+            # raises is whether the comparator then fires on the digitizer's OWN noise rather than on
+            # a start bit. A false fire is worse than an expiry: the window closes on silence and the
+            # panel reports 'line is idle', which is the exact outcome arming exists to prevent, so
+            # the operator would be told the feature does not work by the feature working wrongly.
+            g.output(False, ch=1)
+            d.exec('sdec.force_baud = nil sdec.autolock_set = nil '
+                   'sdec.armlevel = 0.33 sdec.armwait = 4.0')
+            el, res = press(d, 'H')
+            thr = tq(d, 'Hthr', 'dmm.digitize.analogtrigger.edge.level')
+            err = tq(d, 'He', 'sdec.lasterr')
+            print('  elapsed %.2f s  comparator level=%s' % (el, thr))
+            print('  lasterr: %s' % err)
+            check('H the floor arms 0.33 V above a grounded line, not at some midpoint',
+                  num(thr) is not None and abs(num(thr, 0) - 0.33) < 0.08,
+                  'level=%s, want 0.33' % thr)
+            check('H ...and the digitizer\'s own noise does not fire a 0.33 V comparator early',
+                  el >= 4.0 * 0.7, '%.2f s against an Arm Wait of 4' % el)
+
+        # ---- I: Arm At at its CEILING, in the one branch that does not clamp. ----
+        if want('I'):
+            print('\n=== I: Arm At at its 6 V ceiling, on a grounded line ===')
+            # THE GROUND-IDLE BRANCH OF arm_threshold() DELIBERATELY DOES NOT CLAMP -- a line idling at
+            # ground is as tall as its part, so 6 V is a legitimate arm for a 24 V industrial line --
+            # which makes this the one configuration that asks the digitizer for a trigger level near
+            # the top of its 10 V range. AND A REFUSED ATTRIBUTE WRITE IS OUT OF BAND on this
+            # instrument: it returns success and merely files an event, so arm_comparator()'s pcall
+            # cannot see it. If the firmware declined a 6 V level the operator would wait out Arm Wait
+            # at a level the comparator never adopted, while the note quoted the level that was asked
+            # for. THE READBACK IS THE ONLY THING THAT CAN TELL THOSE TWO APART.
+            g.output(False, ch=1)
+            d.exec('sdec.force_baud = nil sdec.autolock_set = nil '
+                   'sdec.armlevel = 6.0 sdec.armwait = 4.0')
+            el, res = press(d, 'I')
+            thr = tq(d, 'Ithr', 'dmm.digitize.analogtrigger.edge.level')
+            rng = tq(d, 'Irg', 'dmm.digitize.range')
+            err = tq(d, 'Ie', 'sdec.lasterr')
+            print('  elapsed %.2f s  comparator level=%s  digitize range=%s' % (el, thr, rng))
+            print('  lasterr: %s' % err)
+            check('I the firmware ADOPTS a 6 V trigger level rather than refusing it out of band',
+                  num(thr) is not None and abs(num(thr, 0) - 6.0) < 0.1,
+                  'readback=%s against 6.00 asked, on a %s V range' % (thr, rng))
+            check('I ...and a part that cannot reach 6 V expires instead of firing',
+                  el >= 4.0 * 0.7, '%.2f s against an Arm Wait of 4' % el)
+            # NOT A LITERAL. The arm sits Arm At above the MEASURED idle, and a grounded line measures
+            # a few millivolts rather than zero -- so the honest number is 6.01 V, and the thing worth
+            # asserting is that the note quotes the level the comparator actually holds. Tying the two
+            # together is also the only form of this check that cannot pass while they disagree.
+            check('I ...and the expiry quotes the level the comparator is actually holding',
+                  num(thr) is not None and ('%.2f V' % num(thr, 0)) in err,
+                  'note vs readback %.2f: %s' % (num(thr, 0), err[-60:]))
+
+        # ---- J: Arm Wait at its FLOOR, against a device that starts too late. ----
+        if want('J'):
+            print('\n=== J: Arm Wait at its 2 s floor, device starts at +4 s ===')
+            # THE FLOOR IS A NO-OP BY DESIGN, AND THAT IS WHAT THIS CASE PINS. Arm Wait is taken only
+            # where it EXCEEDS the mode's own wait, and 'edge' already waits sdec.trigwait = 3 s -- so
+            # a form wound all the way down to 2 cannot make any pre-existing capture fail faster than
+            # it used to, which is the whole reason the floor is 2 and not 0. The operator-visible
+            # consequence is that a 2 s setting reports "no trigger in 3 s", and the note is right:
+            # 3 s is what the capture actually waited. Asserting the 3 here is what stops a future
+            # reader filing the disagreement as a defect. MANUAL.md says the same thing in prose.
+            #
+            # The device starts AFTER the wait is over, so the capture must come back on its own clock
+            # -- and the proof is the expiry REASON, not the elapsed time, because the free-running
+            # fallback and the probe ladder put a second or two on either side of the wait.
+            g.output(False, ch=1)
+            d.exec('sdec.force_baud = nil sdec.autolock_set = nil '
+                   'sdec.armlevel = 1.0 sdec.armwait = 2.0')
+            hit = {}
+            t0 = time.time()
+            th = start_later(g, 4.0, hit, arb_on)
+            el, res = press(d, 'J')
+            th.join(timeout=20)
+            err = tq(d, 'Je', 'sdec.lasterr')
+            print('  generator on at +%.2f s' % (hit.get('on', t0) - t0))
+            print('  elapsed %.2f s   lasterr: %s' % (el, err))
+            check('J the 2 s floor returns on its own clock rather than the 10 s default',
+                  1.0 <= el <= 7.0, '%.2f s at an Arm Wait of 2' % el)
+            check('J ...and reports the expiry, which is what proves it did not catch the device',
+                  'crossed' in err, err[:110])
+            check('J ...and the floor is the no-op it was designed to be, not a shorter wait',
+                  'in 3 s' in err, 'Arm Wait 2 against the edge mode\'s own 3 s: %s' % err[:70])
+            g.output(False, ch=1)
+
+        # ---- K: the TRIGGER key's promise, and whether instrument state backs it. ----
+        if want('K'):
+            print('\n=== K: is the TRIGGER key actually wired into the arm? ===')
+            # THE PANEL PROMISES THE OPERATOR AN ESCAPE from a wait of up to two minutes, and the only
+            # thing behind that promise is blender slot 3. A blender write the firmware refuses is OUT
+            # OF BAND -- the pcall returns true and an event is filed -- so sdec.armkeyed can be true
+            # with nothing wired: a promise with nothing behind it, which is this app's dominant shape
+            # of defect and the one armkeyed itself shipped in.
+            #
+            # NO FINGER IS NEEDED TO CHECK THE WIRING. bench_trigkey.py already establishes that
+            # nothing this harness can send synthesises EVENT_DISPLAY, so pressing the key is not
+            # testable -- but whether the slot HOLDS the event is, and that is the half that can be
+            # wrong silently. arm_source() is called DIRECTLY rather than through a capture because the
+            # app releases the blender when a capture ends, so a post-capture readback would show the
+            # released state and pass for the wrong reason.
+            d.exec('sdec.probe_idle = 0 sdec.fc_out = false sdec.armkey = true '
+                   'sdec.trigmode = "edge" sdec.trigext = false sdec.trigext_only = false')
+            src = tq(d, 'Ksrc', '(function() local ev, ua, bl = sdec.arm_source() return '
+                                'tostring(ev) .. "/" .. tostring(ua) .. "/" .. tostring(bl) end)()')
+            keyed = tq(d, 'Kk', 'tostring(sdec.armkeyed)')
+            slot1 = tq(d, 'Ks1', 'tostring(trigger.blender[1].stimulus[1])')
+            slot3 = tq(d, 'Ks3', 'tostring(trigger.blender[1].stimulus[3])')
+            evdisp = tq(d, 'Ked', 'tostring(trigger.EVENT_DISPLAY)')
+            evan = tq(d, 'Kea', 'tostring(trigger.EVENT_ANALOGTRIGGER)')
+            oren = tq(d, 'Ko', 'tostring(trigger.blender[1].orenable)')
+            print('  arm_source -> ev/useanalog/blended = %s' % src)
+            print('  armkeyed=%s  orenable=%s' % (keyed, oren))
+            print('  stimulus[1]=%s (ANALOGTRIGGER=%s)   stimulus[3]=%s (DISPLAY=%s)'
+                  % (slot1, evan, slot3, evdisp))
+            check('K the arm claims the TRIGGER key is blended in', keyed == 'true',
+                  'armkeyed=%s' % keyed)
+            check('K ...and slot 3 really holds the display event, so the promise is backed',
+                  slot3 == evdisp and evdisp != 'nil',
+                  'stimulus[3]=%s against EVENT_DISPLAY=%s' % (slot3, evdisp))
+            check('K ...and the SIGNAL survived the blend rather than being displaced by the key',
+                  slot1 == evan and evan != 'nil',
+                  'stimulus[1]=%s against EVENT_ANALOGTRIGGER=%s' % (slot1, evan))
+            check('K ...and the blender ORs, so either source alone is enough', oren == 'true',
+                  'orenable=%s' % oren)
+            d.exec('sdec.probe_idle = nil pcall(function() trigger.blender[1].reset() end)')
+
+        # ---- L: an arm must not leave its guessed level behind for the next capture. ----
+        if want('L'):
+            print('\n=== L: the arm level must not outlive its own capture ===')
+            # arm_thr IS idle PLUS Arm At, which is a GUESS, while a normal capture's threshold is a
+            # MEASURED midpoint. The recording path reuses a measured threshold between windows -- the
+            # right economy, since that is this wire minutes ago -- and that reuse is exactly what let
+            # a previous capture's midpoint arm the comparator at 1.63 V on a 0-3.29 V line. THIS IS
+            # THE INVERSE LEAK: an arm's guessed level surviving into a capture of a line that IS
+            # transmitting, where the measured midpoint is the only right answer. An inverted line
+            # caught it offline the moment the fields were cleared per acquisition.
+            g.output(False, ch=1)
+            d.exec('sdec.force_baud = nil sdec.autolock_set = nil sdec.capmode = "frame" '
+                   'sdec.armlevel = 1.0 sdec.armwait = 2.0')
+            el0, _ = press(d, 'L0')                       # an arm that expires, leaving a level set
+            g.output(True, ch=1)
+            time.sleep(0.5)
+            el1, res = press(d, 'L1')                     # ...and now a line that is talking
+            athr = tq(d, 'Lat', 'tostring(sdec.arm_thr)')
+            thr = tq(d, 'Lt', 'sdec.thr')
+            nf = tq(d, 'Lf', 'sdec.res ~= nil and sdec.res.nf or -1')
+            baud = tq(d, 'Lb', 'tostring(sdec.baud)')
+            print('  arm expired in %.2f s, then a busy-line press returned in %.2f s' % (el0, el1))
+            print('  arm_thr=%s  thr=%s  baud=%s  bytes=%s' % (athr, thr, baud, nf))
+            check('L a busy-line capture clears the arm level instead of inheriting it',
+                  athr == 'nil', 'arm_thr=%s' % athr)
+            check('L ...and decodes the line at its measured midpoint',
+                  num(nf, 0) > 20 and num(baud, 0) > 0,
+                  '%s bytes at %s Bd, thr=%s' % (nf, baud, thr))
+            g.output(False, ch=1)
+
+        # ---- M: a line idling NEGATIVE, which is what RS-232 looks like. ----
+        if want('M'):
+            print('\n=== M: a line idling at -5 V, so the start bit travels UP ===')
+            # THE SIGN IS A SEPARATE BRANCH of arm_threshold(), and getting it wrong cannot fire at
+            # all: arming the far side of a level the line is already sitting on means the comparator
+            # never sees a crossing, which looks exactly like a device that never started. An RS-232
+            # line idles at its MARK level, which is negative, and the start bit is the only thing
+            # that takes it positive. -5 V with Arm At at 1 V is inside the half-idle clamp (2.5 V),
+            # so the expected level is -4.00 V and the expected slope is RISING.
+            g.output(False, ch=1)
+            g.write('C1:BSWV WVTP,DC,OFST,-5')
+            g.output(True, ch=1)
+            time.sleep(0.5)
+            d.exec('sdec.force_baud = nil sdec.autolock_set = nil '
+                   'sdec.armlevel = 1.0 sdec.armwait = 4.0')
+            el, res = press(d, 'M')
+            thr = tq(d, 'Mthr', 'dmm.digitize.analogtrigger.edge.level')
+            slope = tq(d, 'Msl', 'tostring(dmm.digitize.analogtrigger.edge.slope)')
+            err = tq(d, 'Me', 'sdec.lasterr')
+            print('  elapsed %.2f s  comparator level=%s slope=%s' % (el, thr, slope))
+            print('  lasterr: %s' % err)
+            check('M the comparator arms one Arm At ABOVE a negative idle',
+                  num(thr) is not None and abs(num(thr, 0) + 4.0) < 0.45,
+                  'level=%s, want -4.00' % thr)
+            check('M ...and on the RISING edge a start bit takes out of a mark',
+                  'ris' in slope.lower(), 'slope=%s' % slope)
+            g.output(False, ch=1)
+            g.select_arb(VN.arb('v41'), 10.0, a.baud * SPB)
+
+        # ---- N: a rate the blind window cannot resolve must REFUSE, not invent one. ----
+        if want('N'):
+            print('\n=== N: a 57 600 Bd device caught blind -- refuse, do not publish 38 400 ===')
+            # 200 kS/s is 3.47 samples per bit at 57 600, which cannot be decoded at all, and the
+            # measured failure is specific rather than hypothetical: at a slack bad-fraction gate this
+            # line was published as 38 400 Bd on a bad fraction of 0.239, and UNIQUENESS ALONE DID NOT
+            # STOP IT, because 38 400 was the only candidate that framed cleanly. So the assertion here
+            # is a NEGATIVE -- that no ladder rate is published -- which is the only form that
+            # distinguishes a working gate from a lucky one.
+            g.output(False, ch=1)
+            d.exec('sdec.ck_job, sdec.ck_running, sdec.strm_recording = nil, false, nil')
+            d.exec('sdec.capmode = "frame" sdec.force_baud = nil sdec.autolock_set = nil '
+                   'sdec.armlevel = 1.0 sdec.armwait = %g' % ARMWAIT)
+            hit = {}
+            t0 = time.time()
+
+            def to_fast(gg):
+                gg.select_arb(VN.arb('v41'), 10.0, 57600 * SPB)
+                gg.output(True, ch=1)
+
+            th = start_later(g, 3.0, hit, to_fast)
+            el, res = press(d, 'N')
+            th.join(timeout=25)
+            baud = tq(d, 'Nb', 'tostring(sdec.baud)')
+            fb = tq(d, 'Nfb', 'tostring(sdec.force_baud)')
+            note = tq(d, 'Nn', 'tostring(sdec.probe_note)')
+            err = tq(d, 'Ne', 'tostring(sdec.lasterr)')
+            print('  generator on at 57600 Bd at +%.2f s' % (hit.get('on', t0) - t0))
+            print('  elapsed %.2f s   baud=%s  force_baud=%s' % (el, baud, fb))
+            print('  note: %s' % note)
+            print('  lasterr: %s' % err)
+            check('N a rate the window cannot resolve is not published as one that nearly fits',
+                  num(baud, 0) not in (9600, 19200, 28800, 31250, 38400),
+                  'baud=%s -- 38400 here is the measured false positive' % baud)
+            check('N ...and the operator\'s Auto is not left converted into a lock at a guess',
+                  fb == 'nil', 'force_baud=%s' % fb)
+            check('N ...and the panel still says what the operator can do about it',
+                  'lock the baud rate' in note or 'lock the rate' in note, note[:110])
+            g.output(False, ch=1)
+            g.select_arb(VN.arb('v41'), 10.0, a.baud * SPB)
 
     finally:
         print('\n=== restore ===')
@@ -362,7 +621,16 @@ def main():
         except Exception as e:                        # noqa: BLE001
             print('  SDG restore failed: %s' % e)
         d.exec('sdec.capmode = "frame" sdec.force_baud = nil sdec.autolock_set = nil')
-        d.exec('sdec.armwait = 10.0 sdec.armlevel = 1.0 sdec.armkey = true')
+        d.exec('sdec.armwait = %s sdec.armlevel = %s sdec.armkey = true'
+               % (num(entry_wait, 10.0), num(entry_lvl, 1.0)))
+        # THE QUEUED-PRESS ABSORB IS APP STATE TOO, and it is the one that makes the NEXT tool look
+        # broken rather than this one: a press it swallows returns in 0.01 s with the previous run's
+        # verdict attached. Left armed by every recording case here.
+        clear_absorb(d)
+        # probe_idle is what arm_silent() answers from, and case K writes it by hand to reach
+        # arm_source() without a capture. Left set, it tells the next tool the line is silent.
+        d.exec('sdec.probe_idle = nil sdec.arm_thr = nil sdec.arm_idle = nil')
+        d.exec('pcall(function() trigger.blender[1].reset() end)')
         d.exec('pcall(trigger.model.abort)')
         d.exec('localnode.showevents = eventlog.SEV_ERROR')
         print('  capmode=%s force_baud=%s armwait=%s errcount=%s' %

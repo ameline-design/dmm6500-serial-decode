@@ -9825,6 +9825,32 @@ print('\narming from silence: the capture autoset() reaches, and the rates it fa
           string.format('ok=%s lasterr=%s', tostring(ok), tostring(sdec.lasterr)))
   end
 
+  -- AND A SOURCE THIS FIRMWARE DOES NOT HAVE MUST DEGRADE RATHER THAN WAIT ON NIL. acq_triggered has
+  -- two guards for that, and the second one -- the one reading arm_source()'s nil -- cannot be reached
+  -- through the shipped condition, because the guard at the top of the function returns on exactly the
+  -- same test (`trigmode == 'front' and trigger.EVENT_DISPLAY == nil`). It is kept rather than deleted
+  -- because it is the only thing between a FUTURE nil source and trigger.model.load() being handed a
+  -- nil event, which the firmware takes out of band: the model loads, never fires, and the panel
+  -- freezes for the whole of Arm Wait with no diagnostic. Stubbing the source is the only way in.
+  do
+    local realsrc = sdec.arm_source
+    quiet_line()
+    arm_reset()
+    sdec.trigmode, sdec.armwait = 'edge', 120
+    sdec.mute_events()
+    sdec.arm_source = function() return nil, false, false end
+    local sok = pcall(sdec.acq_triggered, sdec.n, dmm.SLOPE_FALLING)
+    sdec.arm_source = realsrc
+    sdec.armwait = 2.0
+    check('a trigger source the firmware lacks degrades to free run instead of arming on a nil event',
+          sok and sdec.lasterr ~= nil and has(sdec.lasterr, 'free-running'),
+          string.format('pcall=%s lasterr=%s', tostring(sok), tostring(sdec.lasterr)))
+    check('...and lifts the event mute on the way out, so later firmware errors are not swallowed',
+          localnode.showevents == eventlog.SEV_ERROR,
+          string.format('showevents=%s, want %s', tostring(localnode.showevents),
+                        tostring(eventlog.SEV_ERROR)))
+  end
+
   -- AND A RAISE OUT OF A CANDIDATE DECODE MUST NOT STRAND THE OPERATOR'S LOCK. decode_from raises
   -- from ua_note_fmt on a result with no surviving format, and both restores sat after the call --
   -- so Auto became a hard lock at a guessed rate, shown on the panel as the operator's own setting.

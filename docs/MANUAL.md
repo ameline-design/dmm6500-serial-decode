@@ -584,7 +584,9 @@ Four settings you can ignore unless you need them:
 - **Arm At** — how far from the idle level the capture waits for the line to move, in volts, from
   0.33 V to 6 V. Default 1 V. Only used on a line that is **not transmitting yet**; see
   **Waiting for a device that has not started** below.
-- **Arm Wait** — how long such a capture may wait, from 2 s to 120 s. Default 10 s.
+- **Arm Wait** — how long such a capture may wait, from 2 s to 120 s. Default 10 s. The setting
+  lengthens the wait and never shortens it, so an edge capture always waits at least its own 3 s:
+  2 s and 3 s do the same thing, and the note after an expiry reports the 3 s it really waited.
 
 ### Waiting for a device that has not started
 

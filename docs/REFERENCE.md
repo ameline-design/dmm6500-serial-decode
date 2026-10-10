@@ -939,6 +939,14 @@ Per truth, for the two rules that bracket the result:
 | 38400 | 19200 — wrong | refused, 3 candidates fit |
 | 57600 | 38400 — wrong | refused, nothing fits |
 
+`arm_fit_prior()` sets no note when it refuses, and taken alone that reads as a silent failure. It is
+not one, because the note the arm already wrote is still standing. Measured on the instrument, a real
+57 600 Bd device switched on three seconds into the wait leaves the operator with both halves of the
+answer: the note row reads `armed at 200 kS/s on a line that has not started -- lock the baud rate for
+a longer window`, and the error row reads `3.5 samples/bit -- 57611 baud needs a faster capture than
+200 kSa/s`. The rate is named to within 11 Bd, no rate is published, and `force_baud` is still `nil` —
+`hw-arm` case N.
+
 **Taking the first candidate that framed clean bytes, under the slack gate, was wrong for five of the
 six truths**, and the two worked examples show why that is the normal outcome rather than an edge case.
 A 19200 Bd line read at 9600 frames **77 bytes with six errors** — a bad fraction of **0.082**,
@@ -1022,7 +1030,10 @@ templates disassembled in §8.
 The pre-trigger block writes into the capture buffer for the whole wait, and that buffer is
 `fillmode = 1` — FILL_CONTINUOUS, which is what keeps event 4915 off the panel. So an arm that waits
 **laps the ring**, and `readings[1]` is then the ring's physical slot 1 rather than its logical oldest.
-Measured on an armed capture whose line started 3.1 s after **Capture**, at 200 kS/s:
+Measured on an armed capture whose line started 3.1 s after **Capture**, at 200 kS/s. The pre-roll
+below is shorter than that wait because the digitizer does not start at the key: `autoset()` runs its
+probe ladder first and arms only once the ladder finds no baud rate, so 2.6 s is measured from the
+**arm** and 3.1 s from the **press**.
 
 | | |
 |---|---|
