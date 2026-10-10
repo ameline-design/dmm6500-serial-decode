@@ -6,11 +6,13 @@ A fact earns a place here only if an example demonstrates or depends on it **and
 
 The instrument is the arbiter, and on the trigger model it has to be. Keithley's own application code never reads a `trigger.` setting back — `GAS/MS01_SetupAndRun.tsp` performs about twenty writes under `trigger.` and `tsplink.` and checks none of them, no `getblocklist()`, no attribute read, no event-log drain. A refused write under `trigger.` files an event rather than failing, so an example shows what Keithley intended, not what the firmware took. That is why every probe below reads a value back.
 
-Every claim carries one status. **Each of the 34 has been to the instrument**, so nothing here is left
-standing as a hypothesis: 28 measured, 5 refuted, and 1 out of reach on this bench for a stated physical
-reason rather than for want of trying. Two of the 28 are measured in part and say so in their own
-sentence. Re-derive these four numbers from the status tokens after any edit — they were one claim and
-two statuses adrift once already.
+**Every claim here has been to the instrument**, so nothing is left standing as a hypothesis. What is
+not measured is refuted, or out of reach on this bench for a stated physical reason rather than for
+want of trying. A few claims are measured in part and say so in their own sentence.
+
+**There is deliberately no tally in this paragraph.** Two writers re-derived one by hand within an hour
+and it went adrift twice, once by a claim and once by two statuses. Count the status tokens if you want
+the figures; a number nobody can recompute from the file is worse than no number.
 
 | Status | Meaning |
 |---|---|
@@ -160,11 +162,9 @@ What it suppresses is the **dialog, not the entry**. The vendor repro at `vendor
   - `probe: send loadscript ktst3 / print("a") / endscript TWICE with no delete between, then drain the log with eventlog.next(eventlog.SEV_ALL); clean up with do if ktst3~=nil then pcall(function() script.delete(ktst3) end) ktst3=nil end end and drain the -104 that leaves behind. print("HOST|prompts="..tostring(localnode.prompts).."|showevents="..tostring(localnode.showevents))` settles the acknowledgement.
   - `no probe: TCP_NODELAY and the 100 ms sleep are host socket settings with no instrument readback. The per-line 1024-byte ceiling is assumed throughout this file rather than tested: every probe here is kept under it because past it the instrument answers -363 with no sentinel.`
 
-### waitcomplete() inside a script stalls the host
+### Two Keithley scripts tell you to replace waitcomplete() with SRQ or *OPC when a host is driving
 
-**MEASURED** for the idle case, **UNTESTABLE HERE** for the stall — the stall needs a live overlapped
-operation, and the only one this bench can make is a trigger-model initiate, which a host command
-aborts before it can be waited on. Two examples warn in a comment and offer SRQ or `*OPC` instead: `Battery_DCIR.tspa:536` and `Application_Specific/Rds(On)_of_SiC_MOSFET/Rdson_digitize_with_timing_marks.tsp:286`. The manual says only that the call "suspends the execution of commands", and nothing about the remote interface. With nothing overlapped `waitcomplete()` returns in **15 µs** and `waitcomplete(0)` in **9 µs**, so the call is free when there is nothing to wait for and every stall belongs to a real overlapped operation.
+**UNTESTABLE HERE** — the stall needs a live overlapped operation, and the only one this bench can make is a trigger-model initiate, which a host command aborts before it can be waited on. **This is vendor practice, not a measurement:** `Application_Specific/Battery_Test/DC-IR/Battery_DCIR.tspa:536` reads "or wait SRQ or *OPC if in python" and `Application_Specific/Rds(On)_of_SiC_MOSFET/Rdson_digitize_with_timing_marks.tsp:286` says "comment this out and wait SRQ if calling from Python" — an imperative. Neither says it stalls anything, and both are SMU-paired application scripts. The manual says only that the call "suspends the execution of commands", and nothing about the remote interface. The idle cost is settled and small: with nothing overlapped `waitcomplete()` returns in **15 µs** and `waitcomplete(0)` in **9 µs**, so the call is free when there is nothing to wait for and any stall belongs to a real overlapped operation rather than to the call.
 
   - `probe: do local t0=os.clock() waitcomplete() local t1=os.clock() local t2=os.clock() waitcomplete(0) local t3=os.clock() print("WC|idle="..tostring(t1-t0).."|grp0="..tostring(t3-t2)) end`
   - `no probe: the stall itself needs a live overlapped operation on another interface. A trigger-model initiate of our own cannot stand in — a host command aborts an initiated model, measured below, so the overlap ends before it can be waited on.`
@@ -173,15 +173,17 @@ aborts before it can be waited on. Two examples warn in a comment and offer SRQ 
 
 ## The trigger model
 
-### An armed model on a large buffer is slow to reach STATE_WAITING
+### trigger.model.state() reports a lag, not a readiness — and it has nothing to do with the buffer
 
-**MEASURED.** A `LoopUntilEvent` model armed against a buffer of about 860,000 readings takes longer than 0.25 s to report `trigger.STATE_WAITING`; against 21,100 readings it takes about 1 ms. The curve between those points is being measured separately. No vendor example loads `LoopUntilEvent`, and nothing in the tree or the manual states a block latency.
+**REFUTED,** and this entry used to say the opposite. The time for an armed `LoopUntilEvent` model to report `trigger.STATE_WAITING` is **flat at about 0.19 s from 21,100 to 2,800,000 readings** — least-squares slope +1.6e-9 ± 5.7e-9 s per reading, t = 0.28, which is 4.5 ms across a 132× range. `digitize.count`, `samplerate` over a 1000× range, template `position`, a host `buf.clear()` and the poll cadence are all nulls. The earlier "about 1 ms at 21,100 readings" was never measured: thirteen arms at that size give **0.1668 to 0.2154 s**. What does move it is the **prior acquisition** — 0.228 s after aborting a model that was itself waiting, 0.191 s after `load("Empty")`, 0.177 s after a `SimpleLoop` run to idle, 0.164 s after a completed `digitize.read()`.
 
-  - `probe: initiate a LoopUntilEvent model, poll trigger.model.state() from inside the instrument, and time the transition to STATE_WAITING at two buffer sizes`
+**The wait block is live about 2 ms after `initiate()`; the state call just does not admit it for another 190.** Two independent derivations agree: `pre-roll start = fire_s − N5/fs − n_pre/fs` gives 1.6–2.6 ms over six captures, and the block trajectory has `BUFFER_CLEAR` done at 0.0003 s and the zero `DELAY_CONSTANT` at 0.0012 s. Across twelve latency captures `STATE_WAITING` was **never once observed**, because the signal fired inside one ramp period of the wait going live. So the state call is a lagging indicator and arming is not what costs the 190 ms. No vendor example loads `LoopUntilEvent`, and nothing in the tree or the manual states a block latency; `docs/TRIGGER.md:96` records that loading it destroys blocks 7–8, which bounds what "armed against a buffer" can mean.
+
+  - `probe: initiate a LoopUntilEvent model, poll trigger.model.state() from inside the instrument, and time the transition at two buffer sizes — but give the loop a delay. A spin that never yields starves the trigger engine: 56,102 state calls over 3 s and the model never left block 2, while 10, 1 and 0.2 ms cadences are indistinguishable. Full working in `/tmp/latency.md` and `/tmp/settle.md`.`
 
 ### A measuring model does NOT survive commands on the remote interface, and nor does a waiting one
 
-**REFUTED.** Three host scripts query a meter over the socket, in a loop, for the whole length of an initiated model, and each depends on the model continuing — `get_data()` blocks inside the instrument until the buffer grows, so an abort on the first query would deadlock the host. `SE00/Stream_DMM6500.py:74,86` streams chunks; `SE01/KEIDMM6500_Stream_Measured_Dual_Meter.py:335,351` runs for 11 hours; `DAQ6510_Long_Term_Scan_with_Plotting_TSP.py:264,276` prints `defbuffer1.n` in a `while True`. Every one ends with an explicit `trigger.model.abort()`. In all three the model is executing a measure or digitize block, never parked in a wait, so the waiting case looked like it might be the exception. **It is not.** One `print(defbuffer1.n)` from the host aborts both:
+**REFUTED.** Three host scripts query a meter in a loop for the whole length of an initiated model, and each depends on the model continuing — `get_data()` blocks inside the instrument until the buffer grows, so an abort on the first query would deadlock the host. `Streaming_Examples/00_Single_Channel/Stream_DMM6500.py:74,86` streams chunks; `01_Dual_Meter/KEIDMM6500_Stream_Measured_Dual_Meter.py:335,351` runs for 11 hours; `DAQ6510_Long_Term_Scan_with_Plotting_TSP.py:264,276` prints `defbuffer1.n` in a `while True`. **One of the three** ends with an explicit `trigger.model.abort()`; the other two let the host exit and leave the model running. **Only two are on a raw socket** (`Stream_DMM6500.py:105-106` and `DAQ6510_Long_Term…py:233`, both port 5025) and only one of those is a DMM6500 — the dual-meter script opens `USB0::0x05E6::0x6510::…::INSTR` under PyVISA, so it is USBTMC and one of its two boxes is a DAQ6510. One `print(defbuffer1.n)` from a socket aborts both shapes:
 
 | model | first query | second query, 1 s later | log |
 |---|---|---|---|
@@ -243,12 +245,6 @@ So our own fact is not bounded by the waiting case — it covers it. The first q
 
 ## The digitizer and reading buffers
 
-### Digitize has no autorange; fix the range yourself
-
-**MEASURED.** `dmm.digitize.autorange` is **nil**; `dmm.measure.autorange` is `dmm.ON` and of type userdata. So there is no digitize autorange to turn on or off, and a range left unset is whatever the last writer chose. `DMM7510/DigitizeV_PowerUp/DigitizeV_PowerUp.tsp:31` states it — "Voltage range must be fixed when using Digitizing Voltage" — and `DMM7510/Buck Converter/inductor_curr_linearity.tsp:23` repeats it for current. `dmm.digitize.autorange` occurs zero times in the manual, and the `dmm.digitize.range` entry never says the range is fixed.
-
-  - `probe: print("AUTORANGE|digi="..tostring(dmm.digitize.autorange).."|digitype="..type(dmm.digitize.autorange).."|meas="..tostring(dmm.measure.autorange).."|drange="..tostring(dmm.digitize.range))` — read, never write: assigning to an absent field would create it and leave the next reader believing it exists.
-
 ### The analog trigger level reads back changed, and it tracks the measured idle
 
 **MEASURED.** On a 10 V digitize range, `dmm.digitize.analogtrigger.edge.level` written as 6.00 V reads back 5.99 V. Two runs apart the readback moved 20 mV, following the measured idle level. The level is adopted, not refused, at the top of the range. `dmm.digitize.range` on this app is 10, and the level range follows the active measurement range as documented. No example in the tree reads an `analogtrigger` attribute back, and the manual is silent on readback fidelity.
@@ -285,12 +281,6 @@ So our own fact is not bounded by the waiting case — it covers it. The first q
 **MEASURED.** The second `buffer.make` on the same global goes through silently: capacity 20 then capacity **30**, nothing filed. After one `buffer.delete` a fresh 20 can be made again, and the pool reads back unchanged afterwards — 100,000 on each default buffer and 1,437,294 on this app's — so the overwritten buffer is not stranded. The manual documents the same-name case as "the existing buffer is overwritten by the new buffer", and TSP-side setup in the tree re-runs `buffer.make()` on the same global without deleting. The tree holds one `buffer.delete()` in total, at teardown of the 5,000,000-reading buffer in `KEIDMM6500_Stream_Measured_Dual_Meter.py:359`.
 
   - `probe: do eventlog.clear() KTHA=buffer.make(20,buffer.STYLE_STANDARD) local c1=KTHA.capacity KTHA=buffer.make(30,buffer.STYLE_STANDARD) print("SAMENAME|cap1="..tostring(c1).."|cap2="..tostring(KTHA.capacity).."|ev="..tostring(eventlog.getcount())) end` — a distinctive global, because `buffer.make` might have refused a name already bound. Whether the first 20 came back is the 4919 readback above, taken before and after.
-
-### buffer.save() accepts the SAVE_* constants its own parameter table omits
-
-**MEASURED.** `buffer.save(defbuffer1, "/usb1/KTSV1.CSV", buffer.SAVE_TIMESTAMP_TIME)` filed **nothing** and wrote a real file, whose first line reads `Style,Standard`. All four `SAVE_*` constants are non-nil — `SAVE_TIMESTAMP_TIME` 2139561982, `SAVE_RELATIVE_TIME` 2139574270, `SAVE_RAW_TIME` 2139566078, `SAVE_FORMAT_TIME` 2139570174, beside `COL_ALL` 2139607038 — so the `what` slot takes both families and the parameter table is simply short. `file.usbdriveexists()` returns 1. `TTI_Apps/Resistance_Tolerance_Meter.tspa:83` calls `buffer.save(resistance_result, "/usb1/"..file_name..".csv", buffer.SAVE_TIMESTAMP_TIME)`. The `what` table for `buffer.save()` lists only `buffer.COL_*`; the four `SAVE_*` constants appear under `buffer.saveappend()`.
-
-  - `probe: a clean log is NOT enough on its own — no file call raises and none of them returns a verdict, so re-open the file and read a line back: do local h=file.open("/usb1/KTSV1.CSV",file.MODE_READ) local l=nil if h~=nil then l=file.read(h,file.READ_LINE) pcall(file.close,h) end print("SAVEFILE|h="..tostring(h).."|line="..tostring(l)) end`, then `os.remove` it.
 
 ### Indexing a buffer object returns the reading, writable styles included
 
