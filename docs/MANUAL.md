@@ -541,7 +541,7 @@ number is kept.
 
 ## Options
 
-![Options screen](img/options.png)
+![The Options form as it opens, with nothing locked: Baud Rate 0.00000 Bd, Trigger Start bit, Arm At 1.00000 V and Arm Wait 10.0000 s](img/options.png)
 
 | Setting | What it does |
 |---|---|
@@ -575,24 +575,29 @@ Four settings you can ignore unless you need them:
 - **Trigger** — what starts the acquisition. `Start bit` (the default) waits for the line to move.
   `Free run` grabs immediately. `Trigger key` waits for the front-panel TRIGGER key, as described
   under **The TRIGGER key** above. **If the thing you asked for never happens, the capture goes ahead
-  anyway** after a few seconds and the note row names
-  the one that did not arrive — `edge trigger unavailable; captured free-running`, or `front` for the
-  TRIGGER key. Those bytes are real but they are not lined up with the event you wanted.
+  anyway** — after a few seconds, or after **Arm Wait** on a line that has not started — and the note
+  row names the one that did not arrive: `edge trigger unavailable; captured free-running`, or `front`
+  for the TRIGGER key. Those bytes are real but they are not lined up with the event you wanted.
 - **Rear BNC** — lets an external trigger in on the rear connector, and `FC Out` sends the
   flow-control credit pulse out of EXT TRIG OUT. `FC Out` is what turns a recording into an unlimited
   one; see **More than one window: flow control** above.
 - **Arm At** — how far from the idle level the capture waits for the line to move, in volts, from
   0.33 V to 6 V. Default 1 V. Only used on a line that is **not transmitting yet**; see
   **Waiting for a device that has not started** below.
-- **Arm Wait** — how long such a capture may wait, from 2 s to 120 s. Default 10 s. The setting
-  lengthens the wait and never shortens it, so an edge capture always waits at least its own 3 s:
-  2 s and 3 s do the same thing, and the note after an expiry reports the 3 s it really waited.
+- **Arm Wait** — how long such a capture may wait, from 2 s to 120 s. Default 10 s. **The panel is
+  frozen for the whole of it**, which is what the field's help text means by *max wait, frozen*: at
+  the 120 s ceiling that is a two-minute dead panel. It lengthens the wait and never shortens it, so
+  an edge capture always waits at least its own 3 s — 2 s and 3 s do the same thing, and the note
+  after an expiry reports the 3 s it really waited. It governs `Start bit`; `Trigger key` ignores it
+  and waits its own 30 s for a finger.
 
 ### Waiting for a device that has not started
 
 **Press Capture before the device powers up and the capture waits for it** instead of recording the
 silence. It is the ordinary case on a bench: a board that talks when you switch it on, or when some
-event happens to it, and nothing on the line until then.
+event happens to it, and nothing on the line until then. It needs **Trigger** on `Start bit`, which is
+the default: `Free run` grabs immediately by definition, and `Trigger key` waits for your finger
+instead of for the device.
 
 What the app does with it:
 
@@ -602,7 +607,10 @@ What the app does with it:
   volt above a line sitting at ground, one volt below an idle-high TTL line, one volt above an RS-232
   line idling at −6 V. On a line idling away from ground the level is clamped at the midpoint, because
   the far level is unknown until the device speaks.
-- The window opens a little **before** the first start bit, not on it, so the first byte is whole.
+- The window opens **before** the first start bit, not on it, so the first byte is whole. The trigger
+  model keeps 5 % of the buffer back as a pre-trigger reserve — on a busy line almost none of it is
+  spent, and on a silent one all of it is: **1055 samples** of quiet line ahead of the device's first
+  edge.
 - The panel says it is waiting: the right-hand cell reads `waiting 10s for 2.30V -- TRIGGER=go` for
   the length of the wait. **The panel is frozen while it waits** — a touch press only queues — so that
   line is the only thing that distinguishes a live arm from a hung instrument.
@@ -610,24 +618,33 @@ What the app does with it:
   is the one escape that works: the key is a stimulus of the instrument's trigger model, serviced in
   firmware, so it fires while the app is blocked. Pressing it captures whatever is on the line at
   that moment.
-- If **Arm Wait** runs out, the note row says `nothing crossed 2.30 V in 10 s -- raise Arm Wait or
-  lower Arm At`, naming the level the comparator was actually watching.
+- **Where in the wait the device starts does not matter.** Against a 10 s wait the arm fires at
+  +0.3 s and still fires at **+9.7 s**; at +11 s it expires.
+- If **Arm Wait** runs out **the capture still happens, free-running**, and the note row says the
+  whole of it: `edge trigger unavailable; captured free-running (no trigger in 10 s (edge) -- nothing
+  crossed 0.99 V; raise Arm Wait or lower Arm At)`. That names both settings and the level the
+  comparator was really holding, which is the pair you can do something about.
 
 **The rate is a guess on this path, and the panel says so.** Nothing can measure the bit rate of a
 line that has not started, so the capture runs at 200 kS/s — 20 samples a bit at 9600, and enough for
 anything up to 38 400 — and the note row reads `armed at 200 kS/s on a line that has not started --
 lock the baud rate for a longer window`. That advice is the useful one: **lock the rate in Options and
-the capture uses the right one for it**, with a full window and no guessing. If the bit rate cannot be
-measured from what arrives, the app tries 9600, 19200 and a few standard rates above them against the
-samples it already has, and publishes one only when exactly one of them frames the bytes cleanly —
-`decoded at an ASSUMED 9600 Bd; lock the rate to be sure`. Where two rates fit equally it says so and
-decodes neither, because a capture that fits 19200 and 9600 alike cannot be told apart from inside the
-instrument.
+the capture uses the right one for it**, with a full window and no guessing. Locked, it is reliable
+right across the range — **0 bad frames** at 1200, 9600, 38400 and 115 200 baud.
 
-**Recordings wait too.** An 8 kB or 32 kB recording started on a silent line arms the same way and
-records from the device's first byte. While it waits, the recording's own limits are suspended — the
-idle watchdog cannot end a run before the device has started — and an arm that expires ends the run
-with the same two settings named.
+If the bit rate cannot be measured from what arrives, the app tries 9600, 19200, 28800, 31250 and
+38400 against the samples it already has, and publishes one only when exactly one of them frames the
+bytes cleanly — `decoded at an ASSUMED 9600 Bd; lock the rate to be sure`. Where two rates fit equally
+it says so and decodes neither, because a capture that fits 19200 and 9600 alike cannot be told apart
+from inside the instrument. **Past the top of that ladder it refuses rather than guess**: a 115 200 Bd
+device gives `1.7 samples/bit -- 115004 baud needs a faster capture than 200 kSa/s` — the second
+reason to lock a rate you already know.
+
+**Recordings wait too.** An 8 kB or 32 kB recording started on a silent line arms the same way,
+records from the device's first byte and decodes it cleanly. While it waits, the recording's own
+limits are suspended — the idle watchdog cannot end a run before the device has started — and an arm
+that expires ends the run naming the same two settings: `nothing crossed 2.30 V in 10 s -- raise Arm
+Wait or lower Arm At`.
 
 An external pulse on the rear connector really does start a capture — verified on this hardware, and
 verified by the negative as well: take the pulse away and the capture refuses rather than quietly
