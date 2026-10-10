@@ -164,9 +164,31 @@ with `delay()` between looks. That is not a style preference; it is the only way
 
 **AND THE STATE AT `initiate()` IS NOT THE STATE OF THE WAIT.** `STATE_RUNNING` with nine readings
 already taken is the model executing the blocks AHEAD of its wait — a buffer clear, a zero delay and
-the start of an infinite digitize. `STATE_WAITING` arrives about a millisecond later. Code that reads
-"not waiting" as "the event has arrived" is therefore wrong on its first look, and right from the
-second.
+the start of an infinite digitize. On the 21 100-reading frame buffer `STATE_WAITING` arrives about a
+millisecond later. Code that reads "not waiting" as "the event has arrived" is therefore wrong on its
+first look, and right from the second — but **that millisecond is a property of the buffer, not of
+the firmware**, and on a recording it is hundreds of times longer. §8 has the scaling and what it
+cost.
+
+**AND KEITHLEY'S OWN HOST CODE RELIES ON THE OPPOSITE, WHICH IS NOT YET RECONCILED.**
+`Instrument_Examples/DMM6500/Streaming_Examples/00_Stream_Data_from_DMM6500/Stream_DMM6500.py`
+queries an initiated model over a **raw socket on port 5025**, in a loop, for the whole length of a
+run, and depends on the model continuing: its `get_data()` blocks inside the instrument until the
+buffer grows, so an abort on the first query would deadlock the host. It never calls
+`trigger.model.abort()` at all.
+
+**The obvious explanation — that a measuring model survives where a waiting one does not — is refuted
+by the table above.** Readings were still accumulating when each abort landed, 4 500 to 14 159 of
+them, so those models were digitizing too. Whatever separates the two cases, it is not the block
+type. Two differences remain open: that script writes into `defbuffer1` with `FILL_CONTINUOUS` rather
+than into a made buffer, and its reads are `printbuffer` calls rather than state polls. **Unresolved.**
+Until it is settled, the rule above stands as measured, because it was measured on this instrument
+and the counter-example was not.
+
+One caution on that counter-example, since it is easy to over-read: of the three vendor scripts that
+look like evidence here, one (`KEIDMM6500_Stream_Measured_Dual_Meter.py`) talks **USBTMC** through
+PyVISA, not a socket, and pairs a DMM6500 with a DAQ6510 — so it says nothing about this interface.
+`Stream_DMM6500.py` is the only raw-socket DMM6500 case of the three.
 
 ## 6. `BLOCK_WAIT`: three events, and a latch
 
@@ -279,6 +301,34 @@ continuously active line that is a handful of samples, not the 5 % the position 
 a completed capture lands a little over 95 % of capacity and never at 100 %. Testing for a full buffer
 as the completion condition therefore fails on every capture that worked; `trig_done()` is the test
 that holds.
+
+**BLOCK 1 RUNS OVER THE WHOLE BUFFER, SO THE TIME TO REACH THE WAIT SCALES WITH THE RECORDING.** The
+three blocks ahead of the wait are not free, and the first of them clears every slot. Buffer work at
+this size is linear in readings: `buffer.make()` measures **0.0019 s at 21 100** readings and
+**0.7789 s at 2 800 000**, which is **0.28 µs each**. So the interval between `initiate()` and
+`STATE_WAITING` is a function of capacity, not a constant:
+
+| the capture | capacity | setup, at 0.28 µs a reading |
+|---|---|---|
+| a frame capture | 21 100 | ~0.006 s — measured arrival about **1 ms** |
+| an 8 kB recording | ~862 000 | ~**0.24 s** |
+| a 32 kB recording | 2 800 000 (the `ck_bufmax` ceiling) | ~**0.78 s** |
+
+**A FIXED BOUND MEASURED ON THE FRAME BUFFER IS THEREFORE WRONG FOR A RECORDING, AND WRONG AS A COIN
+TOSS RATHER THAN CLEANLY.** `sdec.arm_settle_s` bounded that spin at 0.25 s — forty times the frame
+path's millisecond — against an 8 kB recording's 0.24 s of setup. MEASURED, `hw-arm` case F: 0.25 s
+fails, including on a completely fresh load, while 0.6 s, 1.0 s and 3.0 s each arm and collect about
+5 484 bytes. The same case passed once and failed the next three runs at 0.25.
+
+The consequence inverts the feature instead of degrading it. A spin that never sees `STATE_WAITING`
+has to report an arm that did not go live, because the poll loop cannot tell that from a trigger that
+fired — so the recording runs free and captures exactly the silence that arming exists to avoid.
+
+**AND A TIGHT POLL LOOP APPEARS TO STARVE THE TRANSITION.** A probe reading
+`pcall(trigger.model.state)` as fast as Lua can issue it — 200 000 reads in 10 s, **0.014 ms** each —
+reported `STATE_RUNNING` for the full bound at **every** capacity including 21 100, while the app sees
+`STATE_WAITING` within milliseconds polling every 10 ms. `buf.n` reached capacity throughout, so the
+model was acquiring. Treat a state poll as something to do at the app's cadence, not flat out.
 
 **`SimpleLoop(count, delay, buffer)`** — a counted loop with **no wait at all** (MEASURED, E1b):
 
