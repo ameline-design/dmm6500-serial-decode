@@ -2356,10 +2356,41 @@ function sdec.trig_done(buf)
 end
 
 -- HOW LONG TO WAIT FOR AN ARMED MODEL TO REACH ITS WAIT BLOCK, in seconds. Three blocks of setup
--- stand in front of it -- a buffer clear, a zero delay and the start of an infinite digitize -- so
--- the measured arrival is about a millisecond and this ceiling is forty times that. It exists because
--- the alternative to a bound is a spin, not because the number is interesting.
-sdec.arm_settle_s = 0.25
+-- stand in front of it -- a buffer clear, a zero delay and the start of an infinite digitize -- and
+-- the first of those is over the WHOLE buffer, so the arrival scales with the recording and not with
+-- the app.
+--
+-- READ ONLY BY stream_arm(), so this is a recording-path number. acq_triggered() has no spin: a frame
+-- capture loads its model and waits, and nothing here can lengthen a frame press.
+--
+-- 0.25 s WAS MEASURED ON THE WRONG BUFFER. A frame capture's 21 100 readings reach the wait in about
+-- a millisecond, and 0.25 s was forty times that -- but an 8 kB recording asks for about 862 000 and
+-- a 32 kB one for the ck_bufmax ceiling, so the frame path's margin does not carry over. MEASURED on
+-- 1.7.17a, case F of hw-arm, which is an 8 kB recording armed on a silent line:
+--
+--     0.25 s   FAILS, including on a completely fresh load
+--     0.6 s    arms, 5 484 bytes
+--     1.0 s    arms, 5 483 bytes
+--     3.0 s    arms, 5 485 bytes
+--
+-- IT FAILED AS A COIN TOSS, WHICH IS WHY THE NUMBER IS NOW GENEROUS RATHER THAN TIGHT. The same case
+-- armed once and failed the next three runs at 0.25, because `not saw` is carried out as an arm that
+-- never went live -- correctly, since the poll loop cannot tell that from a trigger that fired. So a
+-- budget the instrument can miss does not degrade the capture, it inverts it: the operator gets a
+-- recording of the silence they pressed Capture to avoid.
+--
+-- AND THE ARITHMETIC SAYS WHY IT WAS A COIN TOSS RATHER THAN A CLEAN FAILURE. Buffer work at this
+-- size is linear in readings and measurable: buffer.make() takes 0.0019 s at 21 100 readings and
+-- 0.7789 s at 2 800 000, which is 0.28 microseconds a reading. An 8 kB recording's 862 000 readings
+-- are therefore about 0.24 s of setup -- against a 0.25 s budget. The 32 kB mode asks for the
+-- ck_bufmax ceiling, 2 800 000, so its own setup is about 0.78 s and ten seconds leaves it twelve
+-- times over.
+--
+-- AND A LARGE BOUND COSTS NOTHING ON A SUCCESSFUL ARM, because the spin breaks on the first WAITING
+-- it sees. It is spent only when the model never reaches its wait at all -- a firmware fault, after
+-- which the recording runs free and still returns a result. Ten seconds of a degraded path buys
+-- sixteen times the margin on the measured threshold, and the trade is not close.
+sdec.arm_settle_s = 10.0
 
 -- IS THE MODEL SITTING IN A WAIT BLOCK? -> true, false, or NIL when it cannot be told.
 --

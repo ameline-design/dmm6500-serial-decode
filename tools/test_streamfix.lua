@@ -856,6 +856,54 @@ print('\nI  an 8 kB or 32 kB recording can wait for a device that has not starte
     sdec.lvl_thr, sdec.lvl_hyst, sdec.lvl_swing = nil, nil, nil
   end
 
+  -- AND WAITING CAN ARRIVE LATE, WHICH THE BUDGET HAS TO COVER. The spin advances in 10 ms steps, so
+  -- the budget is really a poll count: 0.25 s was twenty-five looks. MEASURED on the instrument -- a
+  -- 21 100-reading frame buffer reaches STATE_WAITING in about a millisecond, and the buffer behind an
+  -- 8 kB recording does not, because the template's first block is BUFFER_CLEAR and the setup ahead of
+  -- the wait scales with the buffer. The frame path's margin does not carry over.
+  --
+  -- THE CONSEQUENCE WAS A COIN TOSS, which is why this is worth a fixture rather than a constant. The
+  -- same hardware case armed and collected 5 485 bytes on one run and ended as 'quiet' with nothing in
+  -- it on the next three, because `not saw` is carried out as an arm that never went live -- correctly,
+  -- since the poll loop cannot tell that from a trigger that fired. A budget that the instrument can
+  -- miss therefore does not degrade, it inverts.
+  do
+    -- THE LEVELS AND THE ARM FLAG GO BACK, for the reason the block below gives: this one runs two
+    -- probes of a ground-idle line, and a later fixture reads sdec.idle to decide which side of the
+    -- threshold idle sits on -- left at 0 it looks for a leading LOW run in an idle-high record and
+    -- finds none.
+    local kthr, kidle, kat, kai = sdec.thr, sdec.idle, sdec.arm_thr, sdec.arm_idle
+    local karmed = sdec.strm_armed
+    local keepstate = trigger.model.state
+    -- SIXTY LOOKS, which is 0.6 s of spin -- past the 25 that 0.25 s bought and inside the budget the
+    -- measurement set. A fixture that passed at any budget would be asserting nothing.
+    local LATE, looks = 60, 0
+    trigger.model.state = function()
+      looks = looks + 1
+      if looks < LATE then return trigger.STATE_RUNNING, 'ok', 0 end
+      return trigger.STATE_WAITING, 'ok', 0
+    end
+    begin('med', 'edge', quiet_line)
+    looks = 0
+    sdec.stream_arm(sdec.strm_nsmp)
+    check('an arm whose model takes 0.6 s to reach its wait block is still an arm',
+          sdec.strm_armed == true and TRIG.template == 'LoopUntilEvent',
+          string.format('armed=%s template=%s after %d looks, budget %s s',
+                        tostring(sdec.strm_armed), tostring(TRIG.template), looks,
+                        tostring(sdec.arm_settle_s)))
+    -- AND THE BUDGET IS STILL A BOUND, not patience without end. A model that never reaches its wait
+    -- has to be reported as an arm that did not go live -- the whole point of carrying the verdict out
+    -- -- so the generous budget must not have turned the refusal into a hang.
+    trigger.model.state = function() return trigger.STATE_RUNNING, 'ok', 0 end
+    begin('med', 'edge', quiet_line)
+    sdec.stream_arm(sdec.strm_nsmp)
+    check('...and a model that never reaches its wait is still reported as not armed',
+          sdec.strm_armed == false, string.format('armed=%s', tostring(sdec.strm_armed)))
+    trigger.model.state = keepstate
+    sdec.thr, sdec.idle, sdec.arm_thr, sdec.arm_idle = kthr, kidle, kat, kai
+    sdec.strm_armed = karmed
+  end
+
   -- THE NOTE MUST NOT PROMISE AN ESCAPE THAT IS NOT WIRED IN. sdec.armkeyed was write-only -- three
   -- writers in arm_source(), no reader in tsp/ -- while the note said `TRIGGER=go` unconditionally.
   -- So with Arm key off, on a firmware whose blender refuses, or on an anchored rear-BNC capture, the
