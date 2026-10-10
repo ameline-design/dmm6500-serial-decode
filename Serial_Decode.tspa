@@ -1529,7 +1529,7 @@ function sdec.trig_done(buf)
   return st == trigger.STATE_IDLE and (buf.n or 0) > 0
 end
 
-sdec.arm_settle_s = 0.25
+sdec.arm_settle_s = 10.0
 
 -- IS THE MODEL SITTING IN A WAIT BLOCK? -> true, false, or NIL when it cannot be told.
 --   [...]
@@ -3318,15 +3318,23 @@ function sdec.ck_levels(reader, ntotal, win)
   return false, why
 end
 
--- Format, on a CONTIGUOUS lead-in window, with the levels already established.
+-- HOW MANY WINDOWS THE FORMAT SEARCH MAY SPEND, from the silence the record may OPEN with.
 --   [...]
---   fmt   the format search
--- pr.label names the current phase for the status row, so the operator sees priming
--- advancing rather than a dead panel.
-function sdec.ck_prime_new(reader, ntotal, win)
+-- W = 20 000 -- and on a window FULL of frames that do not fit it is the whole 1.67 s. That second
+-- case is a locked rate the device is not using, where no later window can help either, so the worst
+-- case is 5 tries at 32 kB: 8.4 s to refuse a recording that takes 1.67 s to refuse on one try.
+function sdec.ck_prime_tries(leadmax)
+  local W = sdec.ck_win_n
+  if W == nil or W < 1 then return 1 end
+  if leadmax == nil or leadmax < 0 then leadmax = 0 end
+  return math.floor(leadmax / W) + 2
+end
+
+function sdec.ck_prime_new(reader, ntotal, win, leadmax)
   if reader == nil then return nil, 'no sample source' end
   return {reader = reader, ntotal = ntotal, win = win, phase = 'lvd', probe = 0,
-          cnt = 0, why = nil, label = 'levels'}, nil
+          cnt = 0, at = 1, try = 1, tries = sdec.ck_prime_tries(leadmax),
+          why = nil, label = 'levels'}, nil
 end
 
 -- One priming sub-operation. Returns done, fmt, err; fmt is set only on the last call.
@@ -3361,9 +3369,12 @@ function sdec.ck_prime_step(pr)
 
   if pr.phase == 'read' then
     local W = sdec.ck_win_n
-    if pr.ntotal ~= nil and pr.ntotal < W then W = pr.ntotal end
-    local cnt = pr.reader(pr.win, 1, W, 1)
-    if cnt == nil or cnt < 2 then return true, nil, 'nothing captured' end
+    local left = nil
+    if pr.ntotal ~= nil then left = pr.ntotal - pr.at + 1 end
+    if left ~= nil and left < W then W = left end
+    local cnt = nil
+    if W >= 2 then cnt = pr.reader(pr.win, pr.at, W, 1) end
+    if cnt == nil or cnt < 2 then return true, nil, pr.fmtwhy or 'nothing captured' end
     pr.cnt, pr.W, pr.phase, pr.label = cnt, W, 'edge', 'edges'
     return false, nil, nil
   end
@@ -3376,9 +3387,18 @@ function sdec.ck_prime_step(pr)
   end
 
   local ok, why = sdec.decode_from(pr.win, pr.cnt)
-  if not ok then return true, nil, why end
   local r = sdec.res
-  if r == nil or sdec.bittime == nil then return true, nil, 'no format' end
+  if ok and (r == nil or sdec.bittime == nil) then ok, why = false, 'no format' end
+  if not ok then
+    local nxt = pr.at + pr.W
+    if pr.try < (pr.tries or 1) and pr.ntotal ~= nil and nxt < pr.ntotal then
+      pr.try, pr.at, pr.fmtwhy = pr.try + 1, nxt, why
+      pr.phase = 'read'
+      pr.label = string.format('format %d/%d', pr.try, pr.tries)
+      return false, nil, nil
+    end
+    return true, nil, why
+  end
   local parbits = 0
   if r.par ~= sdec.PAR_NONE then parbits = 1 end
   pr.phase, pr.label = 'done', nil
@@ -3387,16 +3407,19 @@ function sdec.ck_prime_step(pr)
 end
 
 -- The one-shot form: prime to completion in one call. Returns fmt, reason.
--- The guard is a backstop on the phase machine, not on the signal: every phase either
--- advances or terminates, so exceeding it means a coding fault rather than bad data.
-function sdec.ck_prime(reader, ntotal, win)
-  local pr, perr = sdec.ck_prime_new(reader, ntotal, win)
+--   [...]
+-- decimated level pass, up to ck_probes contiguous probes, and read/edge/fmt per try. A constant
+-- generous enough for the widest record (9 tries at ck_bufmax) would be no backstop at a narrowed
+-- window, where the panel path can ask for 75.
+function sdec.ck_prime(reader, ntotal, win, leadmax)
+  local pr, perr = sdec.ck_prime_new(reader, ntotal, win, leadmax)
   if pr == nil then return nil, perr end
   local done, fmt, err, guard = false, nil, nil, 0
+  local gmax = 4 + (sdec.ck_probes or 1) + 3 * (pr.tries or 1)
   while not done do
     done, fmt, err = sdec.ck_prime_step(pr)
     guard = guard + 1
-    if guard > 64 then return nil, 'priming did not converge' end
+    if guard > gmax then return nil, 'priming did not converge' end
   end
   if fmt == nil then return nil, err end
   return fmt, nil
@@ -3475,7 +3498,8 @@ function sdec.ck_decode(reader, ntotal, fmt, sink, opts)
 
   local primed = opts.primed
   opts.primed = nil
-  local reuse = (primed ~= nil and off == 0 and opts.resume == nil and primed.W == W)
+  local reuse = (primed ~= nil and off == 0 and opts.resume == nil and primed.W == W and
+                 primed.at == 1)
 
   while true do
     local cnt
@@ -3710,7 +3734,7 @@ function sdec.ck_job_new(reader, ntotal, path, opts)
   sdec.smp, sdec.nread = nil, 0
 
   local win = {}
-  local pr, perr = sdec.ck_prime_new(reader, ntotal, win)
+  local pr, perr = sdec.ck_prime_new(reader, ntotal, win, opts.leadmax)
   if pr == nil then return nil, perr end
   opts.win = win
 
@@ -3774,7 +3798,7 @@ function sdec.ck_job_step(job)
     job.phase = job.prime.label
     if not pdone then return false, nil, nil end
     if job.prime.W ~= nil then
-      job.opts.primed = {cnt = job.prime.cnt, W = job.prime.W}
+      job.opts.primed = {cnt = job.prime.cnt, W = job.prime.W, at = job.prime.at}
     end
     job.prime = nil
     if fmt == nil then
@@ -4277,8 +4301,9 @@ sdec.ui_opt_dy = 100
 sdec.ui_opt_edit_h  = 50
 sdec.ui_opt_edit_dy = 4
 sdec.ui_opt_btn_y   = 360
+sdec.ui_opt_btn_gap = 24
 sdec.ui_opt_x  = 185   -- the label is RIGHT-ALIGNED and ends here, so this is its width
-sdec.ui_opt_y_adj = -20
+sdec.ui_opt_y_adj = -8
 sdec.ui_opt_cols = 2
 sdec.ui_opt_x_c2 = 552
 sdec.ui_opt_px = 96
@@ -5623,7 +5648,8 @@ function sdec.build_options()
   local ncols = sdec.ui_opt_cols or 1
   if ncols < 1 then ncols = 1 end
   local nrows = math.ceil(nf / ncols)
-  local maxdy = math.floor((sdec.ui_opt_btn_y - y0 - edy - eh) / (nrows - 1))
+  local maxdy = math.floor((sdec.ui_opt_btn_y - (sdec.ui_opt_btn_gap or 0) - y0 - edy - eh) /
+                           (nrows - 1))
   if dy > maxdy then dy = maxdy end
   local used = (nrows - 1) * dy + eh + edy
   local spare = sdec.ui_opt_btn_y - used - y0
@@ -6222,6 +6248,12 @@ function sdec.stream_decode(got)
   local path = sdec.flog_alloc()
   local opts = {maxbytes = md.cap, nocap = (md.cap == nil),
                 progress = sdec.ck_progress}
+  if sdec.strm_armed and sdec.buf ~= nil and (sdec.pretrig or 0) > 0 then
+    local cap = nil
+    if pcall(function() cap = sdec.buf.capacity end) and cap ~= nil then
+      opts.leadmax = cap - math.floor(cap * (100 - sdec.pretrig) / 100)
+    end
+  end
   if sdec.strm_press then
     opts.budget_s = sdec.ck_press_budget_s or sdec.ui_latency_s
     local W = sdec.ck_win_for(sdec.ui_latency_s)

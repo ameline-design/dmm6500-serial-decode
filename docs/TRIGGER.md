@@ -164,11 +164,12 @@ with `delay()` between looks. That is not a style preference; it is the only way
 
 **AND THE STATE AT `initiate()` IS NOT THE STATE OF THE WAIT.** `STATE_RUNNING` with nine readings
 already taken is the model executing the blocks AHEAD of its wait — a buffer clear, a zero delay and
-the start of an infinite digitize. On the 21 100-reading frame buffer `STATE_WAITING` arrives about a
-millisecond later. Code that reads "not waiting" as "the event has arrived" is therefore wrong on its
-first look, and right from the second — but **that millisecond is a property of the buffer, not of
-the firmware**, and on a recording it is hundreds of times longer. §8 has the scaling and what it
-cost.
+the start of an infinite digitize. Code that reads "not waiting" as "the event has arrived" is
+therefore wrong on its first look.
+
+**IT IS NOT "A MILLISECOND LATER".** That figure was inferred from the nine readings and never
+measured. `STATE_WAITING` arrives about **0.19 s** after `initiate()`, and §8 has the distribution,
+what drives it, and the defect it caused.
 
 **AND KEITHLEY'S OWN HOST CODE RELIES ON THE OPPOSITE, WHICH IS NOT YET RECONCILED.**
 `Instrument_Examples/DMM6500/Streaming_Examples/00_Stream_Data_from_DMM6500/Stream_DMM6500.py`
@@ -323,6 +324,17 @@ What does move it is **what the instrument was doing before the arm**:
 | a `SimpleLoop` that ran to `IDLE` on its own | 0.177 s |
 | a completed `dmm.digitize.read()` | 0.164 s |
 | `load("Empty")`, nothing acquiring | 0.191 s |
+
+**AND THE APP ALWAYS PAYS THE WORST ROW.** `sdec.trig_settle()` aborts before every capture, so the
+prior state is always "aborted while waiting" — 0.228 s. The spin took its last look at about
+**0.232 s** (25 iterations at a measured 9.67 ms each), which is **4 ms of margin**. That is the
+whole of the coin toss, and it was there at every buffer size including the frame default.
+
+**THE `delay()` IN THE SPIN IS LOAD-BEARING.** Cadence between 10 ms, 1 ms and 0.2 ms is a null, but
+**zero** delay is fatal: a tight loop issued **56 102** `pcall(trigger.model.state)` calls over 3 s
+and the model sat at block 2 — the zero `DELAY_CONSTANT` — the whole time, never arming. The state
+read is IPC to the second processor, and a spin that never yields starves the trigger engine. Deleting
+the `delay()` as a micro-optimisation would break every armed recording.
 
 **SO A BOUND ANYWHERE NEAR 0.2 s IS A COIN TOSS.** `sdec.arm_settle_s` bounded the app's spin at
 0.25 s, about ten per cent above the slowest arm the instrument produces, and `hw-arm` case F duly
@@ -488,6 +500,37 @@ disqualifiers, not a size heuristic** (MEASURED, verify_latency).
 | two blocks waiting on the **same** event | **any** — see below |
 | a configuration-list block (`CONFIG_RECALL`/`NEXT`/`PREV`) | **any**, even one |
 | a branch to a block that **does not exist** | **any** |
+
+**AND BEING OFF IT COSTS NOTHING MEASURABLE.** The flag is an oracle with no units attached, so the
+penalty was measured directly, against the comparator latency, on three program shapes:
+
+| shape | blocks | low-latency warning | latency at 1 MS/s |
+|---|---|---|---|
+| **A** the canned `LoopUntilEvent` | 6 | **present** | 8.23 ± 1.26 µs (n=20) |
+| **B** hand-built 3-block equivalent | 3 | absent | 8.05 ± 0.98 µs (n=20) |
+| **C** A with ONLY the `BUFFER_CLEAR` removed | 5 | absent | 8.00 ± 1.00 µs (n=18) |
+
+**B − A = −0.34 ± 0.32 µs and C − A = −0.49 ± 0.34 µs**, inverse-variance weighted over the two rates
+that resolve microseconds. Both are 1.1–1.4 σ, and the 95 % upper bound on the benefit is **1.2 µs**
+against a total comparator latency of about 8 µs. Fast-path status was read from the firmware's own
+warning string, not inferred from the table above.
+
+**C is a result in its own right: `BUFFER_CLEAR` is the SOLE disqualifier in the canned template.**
+Removing it alone clears the warning, so the zero `DELAY_CONSTANT` and the `NOTIFY` cost nothing.
+
+**Throughput is a null too, and no sample is dropped at the trigger.** The fitted per-sample step of a
+ramp is the dropped-sample detector: **0.002498 V against 0.002500 programmed** for all three shapes
+at both rates, and all three deliver the full programmed 20 045 post-trigger readings at 1 MS/s. So
+the handover from the infinite pre-trigger digitize to the counted post-trigger one loses nothing —
+acquisition is continuous across the trigger, which is what makes the pre-trigger reserve possible.
+
+One difference that could not be removed, and it is inert rather than fixed: A's wait reports
+`LOGIC: OR` while both hand-built waits report `AND`, because `setblock` cannot take a logic argument
+without a second event. With one event the two mean the same thing.
+
+**So there is no latency and no throughput case for restructuring the app's armed capture**, and §8's
+control agrees from the other side — moving the clear out of the model does not shorten the arm
+either, 0.1763 s against 0.1788 s.
 
 **What is free:** `NOP`, `NOTIFY`, `WAIT` (including a 3-event `WAIT_OR`), `BRANCH_COUNTER`,
 `BRANCH_ALWAYS` **to a target that exists**, `COUNT_INFINITE`, a second measure block writing to a

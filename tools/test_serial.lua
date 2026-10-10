@@ -9839,12 +9839,19 @@ print('\narming from silence: the capture autoset() reaches, and the rates it fa
   end
 
   -- AND A SOURCE THIS FIRMWARE DOES NOT HAVE MUST DEGRADE RATHER THAN WAIT ON NIL. acq_triggered has
-  -- two guards for that, and the second one -- the one reading arm_source()'s nil -- cannot be reached
-  -- through the shipped condition, because the guard at the top of the function returns on exactly the
-  -- same test (`trigmode == 'front' and trigger.EVENT_DISPLAY == nil`). It is kept rather than deleted
-  -- because it is the only thing between a FUTURE nil source and trigger.model.load() being handed a
-  -- nil event, which the firmware takes out of band: the model loads, never fires, and the panel
-  -- freezes for the whole of Arm Wait with no diagnostic. Stubbing the source is the only way in.
+  -- two guards for that, and only ONE THING about the second is unreachable: arm_source()'s explicit
+  -- `return nil` at its top, whose condition -- `trigmode == 'front' and trigger.EVENT_DISPLAY == nil`
+  -- -- is character-for-character the guard at the top of acq_triggered, which returns first and which
+  -- nothing in between can perturb.
+  --
+  -- THE BRANCH ITSELF IS LIVE, and that is why it stays. arm_source()'s ordinary
+  -- `return ev, useanalog, blended` hands back nil whenever the constant assigned into `ev` is itself
+  -- nil -- trigger.EVENT_ANALOGTRIGGER on a digitizer with no analog comparator, which this app calls
+  -- a SUPPORTED configuration, or trigger.EVENT_EXTERNAL on a firmware without it. Neither constant is
+  -- nil-tested anywhere else in tsp/, so in plain 'edge' mode on such a box this branch is the only
+  -- thing between a nil and trigger.model.load(), which takes it OUT OF BAND: the model loads, waits on
+  -- nothing, and the panel freezes for the whole of Arm Wait against working hardware. Stubbing the
+  -- source is the only way to reach it from here.
   do
     local realsrc = sdec.arm_source
     quiet_line()
