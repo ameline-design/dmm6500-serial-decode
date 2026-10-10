@@ -1013,7 +1013,7 @@ sdec.ui_status = sdec.ui_status or 'ready'
 -- THE TRIGGER KEY IS NAMED because it genuinely works here, unlike the cancel latch: the key is a
 -- stimulus of the trigger MODEL, which runs in firmware, so it fires while Lua spins. That is the
 -- same mechanism 'front' mode has always used.
-function sdec.armnote(wait, level)
+function sdec.armnote(wait, level, keyed)
   -- ui_log_t, THE RIGHT-HAND CELL, because that is already where this panel puts what the operator
   -- can DO about a long operation -- it carries 'Capture or Mode = Stop' and 'no stop until it ends'
   -- for exactly the same reason. The left cell is a composite of mode, page and byte range built by
@@ -1032,9 +1032,16 @@ function sdec.armnote(wait, level)
   -- holding whatever the previous refresh put there. So the next refresh after a failed arm saw its
   -- own stale entry, decided the cell already said the right thing, and the wait note STUCK on the
   -- panel for the rest of the session -- the exact inverse of a note that exists to say "right now".
+  -- AND IT ONLY PROMISES THE KEY WHEN THE KEY IS ACTUALLY WIRED IN. `keyed` is sdec.armkeyed, which
+  -- arm_source() sets only where the TRIGGER key really was blended into the arm -- and there are
+  -- three live cases where it was not: Arm key off, a firmware whose blender refuses, and an anchored
+  -- rear-BNC capture. Printed unconditionally, this cell told the operator their one escape worked at
+  -- the exact moment it did not, for up to two minutes. Nothing in tsp/ read armkeyed before this.
   if sdec.ui_log_t == nil then return false end
+  local tail = ''
+  if keyed then tail = ' -- TRIGGER=go' end
   return sdec.ui_set(sdec.ui_log_t,
-                     string.format('waiting %.0fs for %.2fV -- TRIGGER=go', wait or 0, level or 0))
+                     string.format('waiting %.0fs for %.2fV%s', wait or 0, level or 0, tail))
 end
 
 -- ---------- options form handles ----------

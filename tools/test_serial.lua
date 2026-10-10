@@ -7642,14 +7642,16 @@ local function test_modes()
   -- below discriminating rather than a restatement of one value.
   armed_with('edge')
   check('an installed armnote is told the wait AND the level, so the panel can say both',
-        ARM_NOTED ~= nil and ARM_NOTED.w >= 20 and ARM_NOTED.l == sdec.thr,
+        ARM_NOTED ~= nil and ARM_NOTED.w >= 20 and
+        ARM_NOTED.l == (sdec.arm_thr or sdec.thr),
         ARM_NOTED == nil and 'never called'
           or string.format('w=%s l=%s thr=%s', tostring(ARM_NOTED.w), tostring(ARM_NOTED.l),
                            tostring(sdec.thr)))
   -- AND IT IS THE ARMED LEVEL, NOT THE SETTING. Quoting Arm At would name a voltage the comparator
   -- was never watching -- on an idle-high line, one on the wrong side of the signal.
   check('...and the level it is told is the comparator\'s, not the Arm At setting',
-        ARM_NOTED ~= nil and ARM_NOTED.l ~= sdec.arm_level_v(),
+        ARM_NOTED ~= nil and ARM_NOTED.l ~= sdec.arm_level_v() and
+        ARM_NOTED.l == (sdec.arm_thr or sdec.thr),
         string.format('told %s, setting %s', tostring(ARM_NOTED and ARM_NOTED.l),
                       tostring(sdec.arm_level_v())))
   ARM_NOTED = nil

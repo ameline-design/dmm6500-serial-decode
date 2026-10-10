@@ -1436,13 +1436,20 @@ function sdec.stream_arm(nsmp)
   -- left to the loop, which will time the wait out and say so -- the one thing not done here is
   -- guessing.
   if ok and armed then
-    local spun = 0
+    local spun, saw = 0, false
     while spun < (sdec.arm_settle_s or 0.25) do
-      if sdec.trig_waiting() == true then break end
+      if sdec.trig_waiting() == true then saw = true break end
       delay(0.01)
       spun = spun + 0.01
     end
+    -- AND THE VERDICT IS CARRIED OUT, because the fallback this comment used to claim did not exist:
+    -- the poll loop reads `trig_waiting() ~= true` as "the trigger has fired", so a model that never
+    -- reached its wait block was latched as FIRED rather than timed out -- which is the exact
+    -- consequence the spin was added to remove. The loop cannot tell "never got there" from "left
+    -- it"; this flag can, so an arm that never went live is reported as one.
+    if not saw then armed = false end
   end
+  sdec.strm_armed = armed
   -- The pulse goes AFTER the model is armed, never before: a SimpleLoop starts filling
   -- immediately rather than waiting for an edge, so a credit sent before initiate() would have
   -- the device transmitting into a buffer that does not exist yet. One credit covers the whole
@@ -1625,7 +1632,8 @@ function sdec.stream_acquire(nsmp)
     -- minutes behind a static panel is indistinguishable from the unresponsive-panel fault this app
     -- was released to fix. pcall'd and hook-optional for the reasons given there.
     if sdec.armnote ~= nil then
-      pcall(sdec.armnote, sdec.arm_wait_s(), sdec.thr or sdec.arm_level_v())
+      pcall(sdec.armnote, sdec.arm_wait_s(), sdec.arm_thr or sdec.thr or sdec.arm_level_v(),
+            sdec.armkeyed)
     end
   end
   -- CONSECUTIVE FAILED WINDOW READS, and the reason the last one gave. Kept because a read failure must

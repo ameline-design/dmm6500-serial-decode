@@ -781,7 +781,14 @@ print('\nI  an 8 kB or 32 kB recording can wait for a device that has not starte
   local realstate0 = trigger.model.state
   trigger.model.state = function()
     ARMSTATES = ARMSTATES + 1
+    -- RUNNING, THEN WAITING, THEN WHATEVER THE FIXTURE SAYS -- which is the instrument's own sequence
+    -- for an armed model (measured: RUNNING with nine readings at initiate, WAITING about a
+    -- millisecond later, and then whatever the line does). The mock fills the armed buffer
+    -- synchronously inside initiate(), so without these two reads the model would appear to have
+    -- finished before stream_arm()'s settle spin ever looked, and the spin -- which refuses to call
+    -- an arm live until it has seen WAITING -- would refuse every offline arm.
     if ARMSTATES == 1 then return trigger.STATE_RUNNING, 'ok', 0 end
+    if ARMSTATES == 2 then return trigger.STATE_WAITING, 'ok', 0 end
     return realstate0()
   end
   local realinit0 = trigger.model.initiate
@@ -847,6 +854,35 @@ print('\nI  an 8 kB or 32 kB recording can wait for a device that has not starte
           TRIG.template == 'SimpleLoop' and not sdec.strm_armed,
           string.format('template=%s armed=%s', tostring(TRIG.template), tostring(sdec.strm_armed)))
     sdec.lvl_thr, sdec.lvl_hyst, sdec.lvl_swing = nil, nil, nil
+  end
+
+  -- THE NOTE MUST NOT PROMISE AN ESCAPE THAT IS NOT WIRED IN. sdec.armkeyed was write-only -- three
+  -- writers in arm_source(), no reader in tsp/ -- while the note said `TRIGGER=go` unconditionally.
+  -- So with Arm key off, on a firmware whose blender refuses, or on an anchored rear-BNC capture, the
+  -- panel promised the operator's only escape for up to two minutes while the key was not blended in.
+  do
+    -- THE LEVELS GO BACK, because this block runs two probes of a ground-idle line and the fixture
+    -- below reads sdec.idle to decide which side of the threshold "idle" is on -- left at 0 it looked
+    -- for a leading LOW run in an idle-high record and found none.
+    local kthr, kidle, kat, kai = sdec.thr, sdec.idle, sdec.arm_thr, sdec.arm_idle
+    local realnote = sdec.armnote
+    local got = {}
+    sdec.armnote = function(w, l, k) got = {w = w, l = l, k = k} end
+    begin('med', 'edge', quiet_line)
+    sdec.armkey = true
+    sdec.stream_arm(sdec.strm_nsmp)
+    sdec.stream_acquire(sdec.strm_nsmp)
+    check('with the key blended in, the wait note is told so',
+          got.k == true, string.format('keyed=%s', tostring(got.k)))
+    begin('med', 'edge', quiet_line)
+    sdec.armkey = false
+    sdec.stream_arm(sdec.strm_nsmp)
+    sdec.stream_acquire(sdec.strm_nsmp)
+    check('...and with Arm key off it is not, so the panel cannot promise the escape',
+          not got.k, string.format('keyed=%s', tostring(got.k)))
+    sdec.armkey = true
+    sdec.armnote = realnote
+    sdec.thr, sdec.idle, sdec.arm_thr, sdec.arm_idle = kthr, kidle, kat, kai
   end
 
   -- AND NOT ON A LINE THAT IS ALREADY TALKING, which is the containment argument: SimpleLoop is

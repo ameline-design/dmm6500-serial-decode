@@ -1783,7 +1783,7 @@ function sdec.acq_triggered(n, slope)
     end
 
     if sdec.arm_silent() and sdec.armnote ~= nil then
-      pcall(sdec.armnote, wait, sdec.thr or sdec.arm_level_v())
+      pcall(sdec.armnote, wait, sdec.arm_thr or sdec.thr or sdec.arm_level_v(), sdec.armkeyed)
     end
 
     local waited, step = 0, 0.05
@@ -4264,10 +4264,12 @@ sdec.ui_status = sdec.ui_status or 'ready'
 -- THE TRIGGER KEY IS NAMED because it genuinely works here, unlike the cancel latch: the key is a
 -- stimulus of the trigger MODEL, which runs in firmware, so it fires while Lua spins. That is the
 -- same mechanism 'front' mode has always used.
-function sdec.armnote(wait, level)
+function sdec.armnote(wait, level, keyed)
   if sdec.ui_log_t == nil then return false end
+  local tail = ''
+  if keyed then tail = ' -- TRIGGER=go' end
   return sdec.ui_set(sdec.ui_log_t,
-                     string.format('waiting %.0fs for %.2fV -- TRIGGER=go', wait or 0, level or 0))
+                     string.format('waiting %.0fs for %.2fV%s', wait or 0, level or 0, tail))
 end
 
 sdec.ui_opt_y0 = 8
@@ -6361,13 +6363,15 @@ function sdec.stream_arm(nsmp)
   if not armed then ok = pcall(trigger.model.load, 'SimpleLoop', nsmp, 0, buf) end
   if ok then ok = pcall(trigger.model.initiate) end
   if ok and armed then
-    local spun = 0
+    local spun, saw = 0, false
     while spun < (sdec.arm_settle_s or 0.25) do
-      if sdec.trig_waiting() == true then break end
+      if sdec.trig_waiting() == true then saw = true break end
       delay(0.01)
       spun = spun + 0.01
     end
+    if not saw then armed = false end
   end
+  sdec.strm_armed = armed
   if ok and sdec.fc_out then
     sdec.fc_credit()
   end
@@ -6463,7 +6467,8 @@ function sdec.stream_acquire(nsmp)
   if sdec.strm_armed then
     armdone = false
     if sdec.armnote ~= nil then
-      pcall(sdec.armnote, sdec.arm_wait_s(), sdec.thr or sdec.arm_level_v())
+      pcall(sdec.armnote, sdec.arm_wait_s(), sdec.arm_thr or sdec.thr or sdec.arm_level_v(),
+            sdec.armkeyed)
     end
   end
   local rfail, rlast = 0, nil

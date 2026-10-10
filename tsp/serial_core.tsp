@@ -2922,7 +2922,7 @@ function sdec.acq_triggered(n, slope)
     -- line has to do for the panel to come back, and on a line idling away from ground that voltage
     -- is idle MINUS the setting. arm_level_v() is the fallback only so the hook cannot be handed nil.
     if sdec.arm_silent() and sdec.armnote ~= nil then
-      pcall(sdec.armnote, wait, sdec.thr or sdec.arm_level_v())
+      pcall(sdec.armnote, wait, sdec.arm_thr or sdec.thr or sdec.arm_level_v(), sdec.armkeyed)
     end
 
     local waited, step = 0, 0.05
