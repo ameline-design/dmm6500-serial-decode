@@ -29,6 +29,7 @@ import argparse
 import csv
 import os
 import sys
+import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -981,7 +982,13 @@ def suite_plan(d, g, a, rows):
     detail, where it belongs.
     """
     it = a.iteration
-    vecs = sorted(VN.MAP.keys())
+    # SP.soak_vectors(), NOT sorted(VN.MAP.keys()), and for the same reason the offline plan uses it:
+    # this is the hardware twin of that draw, so a vector the soak excludes but this enumerates would
+    # make the two laps different populations -- and vi keys the amplitude, the offset and the wait, so
+    # every surviving vector's conditions would shift too. BENCH_ONLY in tools/vector_names.py says why
+    # those vectors are out. --plan-spec below still validates against the whole of VN.MAP, because
+    # naming one of them deliberately is exactly what they exist for.
+    vecs = SP.soak_vectors()
     skip = SP.parse_skip(a.skip_vectors)
     rates = SP.rates_for(it)
     kindmap = None
@@ -1289,9 +1296,945 @@ def suite_plan(d, g, a, rows):
                 'the measured head for each one.' % (vid, nbadcell, ncell, expect, it))
 
 
+# ---------------------------------------------------------------------------- arming from silence
+#
+# THE OPERATOR PRESSES CAPTURE WHILE THE LINE IS QUIET. The app arms the digitizer's analog
+# comparator and waits; when the device under test starts transmitting the window opens, and it opens
+# BEFORE the first start bit because the trigger model holds a pre-trigger reserve of sdec.pretrig per
+# cent of capacity. On this bench "the device starts" is the generator's output switch, thrown from a
+# host thread while the press is still blocked inside the instrument.
+#
+# WHY A SUITE HERE AND NOT ONLY tools/bench_arm.py. bench_arm is the GATE -- sixteen cases, run once a
+# release from release_sweep's hw-arm stage. Three defects in this path were all of the shape a single
+# green run licenses: one was 0 of 6 captures readable at a locked 9600, and the other two returned
+# the RIGHT BYTE COUNT with the bytes inverted. The honest measurement of that class is a RATE, and a
+# rate needs laps. The on-instrument soak cannot supply them: bench/bench_run.tsp sets
+# sdec.trigmode = 'free' deliberately, so nothing it runs ever arms. A host-driven soak lap is the
+# only lap that does.
+#
+# A BYTE COUNT IS NOT AN ASSERTION HERE, because that is exactly what the second defect passed: 2110
+# of 5484 bytes bad with the count correct. Every cell checks the polarity the capture CHOSE
+# (sdec.res.invert, sdec.idle), the evidence it chose it FROM (sdec.leadrun against sdec.run0) and the
+# vector's own text among the bytes.
+#
+# IT IS ITS OWN SUITE AND IT TOUCHES NOTHING IN suite_plan. The plan's lap is 1677 cells, docs/BENCH.md
+# derives that number and every ratchet in tools/plan_sweep.py is calibrated on it, so a cell added
+# there invalidates all of it. This is additive and costs the plan nothing.
+
+ARM_BAUD = 9600
+# 9600 IS NOT AN ARBITRARY BENCH RATE HERE. At a locked 9600 the app picks the locked rate's own fs,
+# where the pre-trigger reserve is LONGER than the vector's inter-byte idle gap -- so the reserve is
+# the longest run in the record and a polarity prior taken from run length reads the switched-off wire
+# as the line's idle level. That is the regime the first defect lived in: 0 of 6 readable. At the blind
+# rate the app samples faster, the gap wins, and the same defect was only intermittent.
+ARM_LEVEL = 1.0              # Arm At: the shipped default, inside sdec.armlevel_min..max (0.33..6.0)
+ARM_WAIT = 10.0              # Arm Wait for a cell whose device DOES start
+# AND A SHORT ONE FOR THE CELL WHOSE DEVICE NEVER STARTS, because that cell's cost IS its wait. Three
+# seconds is what bench_arm case E uses and it is comfortably above the 2 s floor the panel allows.
+ARM_EXPIRE_WAIT = 3.0
+ARM_START_AT = 3.0           # when the thread throws the output switch, i.e. when the device starts
+# SIXTY COLUMNS OF THE DECODED TEXT, so 'Hello, World!' fits four times over. One occurrence can be a
+# coincidence of a mis-sampled bit; the test below asks for two, which no inverted reading produces.
+ARM_TEXT_COLS = 60
+
+# THE BIPOLAR BAND. A real RS-232 line straddles ground, and that is the OPPOSITE polarity direction of
+# the same defect: its correct answer is invert = TRUE and idle = 0, which is what makes it a control
+# rather than a repeat of the cells above.
+#
+# IT MUST BE v45 AND NOT v41, AND THAT IS A TRAP THIS REPO HAS FALLEN INTO. Both span codewords
+# 0..21626, but v41 idles at 21626 -- its mark is the HIGH level -- while v45 is the inverted rendering
+# and idles at 0. So v45 at a negative offset puts the MARK on the negative level, which is a line a
+# wire can carry; v41 there gives idle positive and space negative, which sig_levels reads as RS-232
+# marking at the SPACE level and decodes inverted. That is this repo's own harness artefact, not a
+# decoder defect -- see the straddling-window arithmetic in soakplan.amp_ofst_for, which exists to keep
+# the plan's draw out of exactly that region. This suite drives INTO it on purpose, on the one vector
+# for which it is physical.
+#
+# AND NOT AT THE CAP. The generator's envelope is |OFST| + AMP/2 <= 10 on the NOMINAL pair and it
+# clamps silently, so a symmetric band of +/-X costs X + amp_for(2X)/2 = 4.0303 X, capping X at
+# 2.4812 V. A pair commanded exactly at the limit turns a float comparison into the experiment, so the
+# band is +/-2.45: 31 mV below the cap, which spends 9.874 V of the 10 V envelope. assert_unclipped
+# checks it before the write rather than after the verdict.
+ARM_BIPOLAR_SWING = 4.90
+ARM_BIPOLAR_OFST = -2.45
+
+# THE FOUR LOCK STATES, as TSP. @BAUD@ is substituted at the call site so one table serves any rate.
+#
+# 'autolock' IS THE HARD ONE AND IT IS THE APP'S DEFAULT AFTER ONE AUTO-LOCK. autolock_try() sets
+# nbits/par/nstop and deliberately leaves force_invert nil, and in that state decode_from takes the
+# forced-format branch, which reads `inv = (sdec.idle == 0)` with no second polarity searched and no
+# margin -- so a wrong prior has nothing to overturn it. The other states have ua_autoformat's contest
+# as a backstop. Measured with the guard disabled on the instrument: the mechanism check fails in all
+# three states, the BYTE check only in this one.
+ARM_LOCKS = {
+    'blind': 'sdec.force_baud = nil sdec.force_nbits = nil sdec.force_par = nil '
+             'sdec.force_nstop = nil sdec.force_invert = nil sdec.autolock_set = nil',
+    'rate': 'sdec.force_baud = @BAUD@ sdec.force_nbits = nil sdec.force_par = nil '
+            'sdec.force_nstop = nil sdec.force_invert = nil sdec.autolock_set = nil',
+    'autolock': 'sdec.force_baud = @BAUD@ sdec.force_nbits = 8 '
+                'sdec.force_par = sdec.PAR_NONE sdec.force_nstop = 1 '
+                'sdec.force_invert = nil sdec.autolock_set = '
+                '{baud = true, nbits = true, par = true, nstop = true}',
+}
+
+# THE CELLS, IN AN ORDER THAT IS PART OF THE TEST. Six of the seven vary exactly one thing against the
+# first; the seventh varies only WHAT RAN BEFORE IT, which is the whole of the third defect.
+#
+#   idle/invert are the CORRECT answers for the band, not hopes: a single-supply line marks HIGH
+#   (idle 1, invert false) and the bipolar line marks at its negative level (idle 0, invert true).
+ARM_CELLS = [
+    # THE CELL THAT WAS 0 OF 6 READABLE. Most sensitive of the set, in every lap: at a locked 9600 the
+    # reserve out-runs the vector's real idle gap, so run length alone points the prior at the
+    # switched-off wire.
+    {'name': 'frame locked', 'vid': 'v41', 'swing': NOMINAL_SWING, 'ofst': 0.0,
+     'mode': 'frame', 'lock': 'rate', 'starts': True, 'wait': ARM_WAIT,
+     'idle': 1, 'invert': False, 'fs': 'locked',
+     'why': 'the locked-rate fs, where the reserve is longer than the idle gap'},
+    # THE OTHER REGIME, AND CHEAP. The blind armed capture samples at sdec.arm_fs(), where the gap wins
+    # and the same defect was only intermittent. A pass here with a failure above is the signature of a
+    # reserve-derived prior rather than of a broken comparator.
+    {'name': 'frame auto', 'vid': 'v41', 'swing': NOMINAL_SWING, 'ofst': 0.0,
+     'mode': 'frame', 'lock': 'blind', 'starts': True, 'wait': ARM_WAIT,
+     'idle': 1, 'invert': False, 'fs': 'blind',
+     'why': "the blind rate's own fs, where the idle gap out-runs the reserve"},
+    # THE STATE THE APP RESTS IN AFTER ONE AUTO-LOCK, which is to say the state most presses are made
+    # in. Hardest cell to pass: no polarity contest at all. See ARM_LOCKS.
+    {'name': 'frame autolock', 'vid': 'v41', 'swing': NOMINAL_SWING, 'ofst': 0.0,
+     'mode': 'frame', 'lock': 'autolock', 'starts': True, 'wait': ARM_WAIT,
+     'idle': 1, 'invert': False, 'fs': 'locked',
+     'why': 'the forced-format branch, where a wrong prior has nothing to overturn it'},
+    # THE HONESTY OF THE FAILURE PATH, and the only cell where ELAPSED TIME is the discriminator: the
+    # device never starts, so a press that never armed cannot hide behind a device that did.
+    {'name': 'expiry', 'vid': 'v41', 'swing': NOMINAL_SWING, 'ofst': 0.0,
+     'mode': 'frame', 'lock': 'blind', 'starts': False, 'wait': ARM_EXPIRE_WAIT,
+     'idle': None, 'invert': None, 'fs': None,
+     'why': 'a device that never starts must say so and must not claim a trigger'},
+    # THE CHUNKED PATH, WHERE THE SECOND DEFECT LIVED: ck_prime_step took its polarity prior from the
+    # reserve and returned 2110 of 5484 bytes bad with the count right. A recording needs a locked rate
+    # -- it sizes its buffer from one -- so this is the armed recording, not the blind rate.
+    #
+    # AND IT IS THE CONTROL FOR THE CELL BELOW. The levels it reuses at the press are the ones a
+    # single-supply frame capture left, i.e. a mid-swing threshold, which strm_relevel is required to
+    # KEEP. The stale cell differs only in what preceded it.
+    {'name': 'rec8k locked', 'vid': 'v41', 'swing': NOMINAL_SWING, 'ofst': 0.0,
+     'mode': 'sml', 'lock': 'rate', 'starts': True, 'wait': ARM_WAIT,
+     'idle': 1, 'invert': False, 'fs': None, 'lvlthr': 'mid',
+     'why': 'ck_prime_step, reusing a mid-swing threshold it must keep'},
+    # THE OPPOSITE POLARITY DIRECTION, on the one vector for which a negative offset is physical. Its
+    # correct answer is invert TRUE, so a decoder that simply always inverts fails here while passing
+    # every cell above. It also leaves lvl_thr near ground, which is the cell below's premise.
+    {'name': 'bipolar', 'vid': 'v45', 'swing': ARM_BIPOLAR_SWING, 'ofst': ARM_BIPOLAR_OFST,
+     'mode': 'frame', 'lock': 'autolock', 'starts': True, 'wait': ARM_WAIT,
+     'idle': 0, 'invert': True, 'fs': 'locked',
+     'why': 'a ground-straddling line, where the right answer is INVERTED'},
+    # THE THIRD DEFECT, WHICH IS A CELL ORDER AND NOT A SETTING. Arming from silence CANNOT measure the
+    # line -- that is the premise -- so stream_begin reuses the last levels it trusted. After the
+    # bipolar cell those are a threshold of about -0.012 V, which on a 0.00..3.30 V line sits six
+    # millivolts from the bottom rail: inside the band, and inside the hysteresis sig_edges needs to
+    # call a crossing, so no sample ever crosses it. Measured before the fix: a transmitting device
+    # read as silent and an 8 kB recording ended 'quiet' with 0 bytes, blaming the frame format.
+    {'name': 'rec8k stale', 'vid': 'v41', 'swing': NOMINAL_SWING, 'ofst': 0.0,
+     'mode': 'sml', 'lock': 'rate', 'starts': True, 'wait': ARM_WAIT,
+     'idle': 1, 'invert': False, 'fs': None, 'lvlthr': 'rail',
+     'why': 'the reused threshold is uncrossable and must be replaced mid-run'},
+]
+
+# fmt_text() CAN RAISE -- it formats fields a refused capture never set -- so it is asked for inside a
+# pcall. Every other expression below is nil-safe by construction: `sdec.res ~= nil and X or default`
+# is the shape the probes use, and it is right for 0 as well, because Lua counts 0 as true.
+ARM_FMT = "(function() local ok, v = pcall(sdec.fmt_text) if ok then return v end return '?' end)()"
+
+# THE EVENT LOG, DRAINED IN ONE EXPRESSION. Drained rather than cleared, because the CODES are what
+# say whether a 4915 or a 2208 stood behind a failure, and drained per cell so a popup the operator
+# would have seen cannot be attributed to the wrong one.
+#
+# 2728/2731/2732 ARE THIS SUITE'S OWN TRAFFIC and are filtered out here as they are in mx_point. An
+# armed capture runs a trigger model and the teardown aborts one, and a socket command against a
+# running model files 2728 by design -- so reporting them would make every clean cell look eventful.
+# The RAW count travels separately as `ec`, so a filtered-empty string beside a non-zero count says
+# the events were all expected rather than that there were none.
+ARM_EVS = ("(function() local s, n = '', eventlog.getcount() "
+           "for i = 1, n do local c = eventlog.next() "
+           "if c ~= 2728 and c ~= 2731 and c ~= 2732 then s = s .. tostring(c) .. ' ' end end "
+           "return s end)()")
+
+# EVERY FIELD AN ARM CELL IS JUDGED ON OR REPORTED BY, read back after the press.
+ARM_FIELDS = [
+    # Did the press raise, and what did sdec.capture() itself return. pcall succeeding is NOT the app
+    # accepting: capture() returns false without raising when it refuses, and on that path the panel
+    # keeps the PREVIOUS capture's bytes -- so every check below could otherwise pass on leftovers.
+    ('pok', 'tostring(armpok)'),
+    ('cret', 'tostring(armwhy)'),
+    # THE RAW EVENT COUNT, READ BEFORE ARM_EVS DRAINS THE LOG and therefore in an earlier reply. A
+    # tagged read that has to be retried would drain the log on its lost attempt and come back empty,
+    # so a count taken only there could report zero events over a press that filed several.
+    ('ec', 'eventlog.getcount()'),
+    # THE PREMISE. An assertion about the reserve is vacuous if there was no reserve: acq_pretrig is
+    # set only on the exit that actually triggered, and leadrun is how much of it reached the record.
+    ('pretrig', 'tostring(sdec.acq_pretrig)'),
+    ('lead', 'sdec.leadrun'),
+    ('run0', 'sdec.run0'),
+    ('run1', 'sdec.run1'),
+    ('st0', 'sdec.st0'),
+    # THE VERDICT ON THE PRIOR, and the flag saying which branch reached it. sig_idle counts RECURRING
+    # interior runs: two or more and the run branch decides, fewer and the level branch does and sets
+    # idle_weak. A cell that flips branch between laps is worth seeing even when it still passes.
+    ('idle', 'sdec.idle'),
+    ('weak', 'tostring(sdec.idle_weak)'),
+    ('fs', 'sdec.fs'),
+    ('nread', 'sdec.nread'),
+    # THE MODE THAT WAS ASKED FOR, NOT THE PATH THAT RAN. An armed capture that never triggers falls
+    # back to acq_free and does NOT clear sdec.trigmode, so this reading 'edge' does not mean the
+    # comparator fired. lasterr is where that shows.
+    ('trigreq', 'tostring(sdec.trigmode)'),
+    ('err', 'tostring(sdec.lasterr)'),
+    ('note', 'tostring(sdec.probe_note)'),
+    ('baud', 'sdec.baud'),
+    ('fmt', ARM_FMT),
+    ('thr', 'sdec.thr'),
+    ('lo', 'sdec.lo'),
+    ('hi', 'sdec.hi'),
+    ('hyst', 'sdec.hyst'),
+    ('fam', 'tostring(sdec.family)'),
+    ('sn', 'sdec.snr_db'),
+    ('nf', 'sdec.res ~= nil and sdec.res.nf or -1'),
+    ('nbad', 'sdec.res ~= nil and sdec.res.nbad or -1'),
+    ('ngood', 'sdec.res ~= nil and sdec.res.ngood or -1'),
+    ('head', 'sdec.res ~= nil and sdec.res.headsusp or -1'),
+    ('inv', 'sdec.res ~= nil and tostring(sdec.res.invert) or "?"'),
+    ('text', 'sdec.res ~= nil and sdec.ua_text_line(1, %d) or "-"' % ARM_TEXT_COLS),
+    # The recording path's own ending, byte count, arm flag and whether it reused a threshold.
+    ('endwhy', 'tostring(sdec.ck_endwhy)'),
+    ('ckn', 'sdec.ck_nbytes'),
+    ('armed', 'tostring(sdec.strm_armed)'),
+    ('reuse', 'tostring(sdec.strm_lvlreuse)'),
+    ('lvlthr', 'sdec.lvl_thr'),
+    ('job', 'tostring(sdec.ck_job ~= nil)'),
+    ('evs', ARM_EVS),
+]
+
+# WHAT THE NEXT CELL'S PREMISE IS READ FROM, BEFORE THE PRESS RATHER THAN AFTER IT. lvl_thr is kept
+# across captures on purpose, so the only moment it says what THIS press will reuse is before it runs.
+ARM_BEFORE = [('lvlthr', 'sdec.lvl_thr'), ('lvlswing', 'sdec.lvl_swing'),
+              ('minswing', 'sdec.minswing')]
+
+# HOW LONG AN ASSEMBLED TAGGED STATEMENT MAY GET. A one-line probe past about 1 kB comes back as -363
+# with no sentinel, which reads as a hung instrument -- so the field list is SPLIT into statements
+# that fit, rather than trusted to fit. 700 leaves a third of the measured limit spare, because the
+# limit is a measurement rather than a documented number.
+ARM_STMT_MAX = 700
+# AND THE BUDGET IS THE LIMIT LESS WHAT bench_sync.tagged ADDS, measured off its own escaping helper
+# rather than guessed: the wrapper, the format string and the nonce are most of a short statement, so
+# a budget that counted only the expressions would be out by a factor of two. Reading BS._ENC here
+# means a rename raises at import rather than letting the two drift.
+ARM_STMT_FIXED = len(BS._ENC) + 60
+# '__bse()' plus the ', ' separator plus the '|%s' the format string grows by, per field.
+ARM_FIELD_FIXED = 12
+
+
+def arm_read(d, pairs, timeout=90):
+    """Several instrument values, in as few tagged replies as the line limit allows. -> dict or None.
+
+    bench_sync.tagged() rather than one d.q() per field: it carries a nonce inside the reply, escapes
+    the delimiters, and checks the FIELD COUNT -- so a stale line or an unsolicited event line is
+    skipped instead of being handed back as data. Eight bare reads once desynced by one and every
+    value still looked plausible, which is the failure this exists to make impossible.
+
+    GROUPED RATHER THAN ONE REPLY, only because of ARM_STMT_MAX. Values inside a group are mutually
+    consistent, which is what matters; across groups nothing moves, because the press has returned
+    and the app is at rest.
+    """
+    budget = ARM_STMT_MAX - ARM_STMT_FIXED
+    out, group, n = {}, [], 0
+    for name, expr in pairs:
+        cost = len(expr) + ARM_FIELD_FIXED
+        if cost > budget:
+            raise SystemExit('REFUSING: the expression for %r is %d characters, which leaves no room '
+                             'for the %d bytes bench_sync.tagged adds inside the %d-byte probe limit'
+                             % (name, len(expr), ARM_STMT_FIXED, ARM_STMT_MAX))
+        if group and n + cost > budget:
+            got = BS.tagged(d, group, timeout=timeout)
+            if got is None:
+                return None
+            out.update(got)
+            group, n = [], 0
+        group.append((name, expr))
+        n += cost
+    if group:
+        got = BS.tagged(d, group, timeout=timeout)
+        if got is None:
+            return None
+        out.update(got)
+    return out
+
+
+def arm_start_later(g, delay_s, hit):
+    """The device starts transmitting after delay_s: the generator's output switch, from a THREAD.
+
+    A THREAD BECAUSE THE PRESS BLOCKS. sdec.capture() does not return until the arm fires or expires,
+    so the session cannot throw the switch itself. The generator is a second socket, so the two never
+    contend. Daemon, so a lap that abandons a press cannot be held open by it.
+
+    WHETHER IT ACTUALLY THREW IS PART OF THE VERDICT, which is why `hit` comes back: a generator that
+    refused the write leaves a capture that correctly found nothing, and reading that as an arm defect
+    is how a wedged SDG gets filed against the app.
+    """
+    def body():
+        time.sleep(delay_s)
+        try:
+            g.output(True, ch=1)
+            hit['on'] = time.time()
+        except Exception as e:                      # noqa: BLE001 -- reported, not raised
+            hit['err'] = str(e)
+    th = threading.Thread(target=body, daemon=True)
+    th.start()
+    return th
+
+
+def arm_press(d, tag, timeout):
+    """One Capture press through the real app path, timed on the HOST. -> (elapsed, raised_text).
+
+    THE ELAPSED TIME IS A DISCRIMINATOR NOTHING ELSE SUPPLIES, and it needs no instrumentation of the
+    app: an arm that engaged blocks until the device starts or the wait runs out, a press that never
+    armed returns in a second or two, and a press the queued-press absorb swallowed returns in about
+    0.01 s carrying the PREVIOUS run's verdict.
+
+    TIMED ON THE HOST, NOT WITH timer.gettime(). The instrument has ONE global timer and
+    strm_absorb_arm() uses it as the TIMESTAMP for 'a recording just ended, so the next press is its
+    Stop' -- so clearing it in order to time a press makes an arm from minutes ago look current,
+    capture() returns WITHOUT CAPTURING, and the panel's previous result is reported as this press's
+    answer. arm_setup disarms that flag instead and never touches the timer.
+
+    BRACKETED BY A NONCE RATHER THAN READ AS ONE LINE. hw_config re-arms localnode.showevents and this
+    instrument then volunteers event lines on the control socket, so a single read can return an event
+    line instead of the answer -- which is a desync rather than a wrong number, and it cascades into
+    every later read. The result line carries the nonce; anything else is skipped.
+    """
+    want = '%s#%s' % (_slug(tag), BS.nonce('arm'))
+    d.drain()
+    t0 = time.time()
+    d.send("armpok, armwhy = pcall(sdec.capture) print('AR %s ' .. tostring(armpok))" % want)
+    raised = None
+    while True:
+        left = timeout - (time.time() - t0)
+        if left <= 0:
+            return time.time() - t0, None
+        slice_s = min(300.0, left)
+        t1 = time.time()
+        ln = d.line(slice_s)
+        if ln is None:
+            # d.line RETURNS None FOR TWO DIFFERENT THINGS and they need opposite handling: a read
+            # timeout (the instrument is still working -- keep waiting) and a CLOSED socket (nothing
+            # will ever arrive). Telling them apart by how long the read took is crude and exact
+            # enough; without it the closed case spins on a non-blocking read for the whole timeout.
+            if time.time() - t1 < slice_s * 0.5:
+                return time.time() - t0, None
+            continue
+        f = ln.split()
+        if len(f) >= 3 and f[0] == 'AR' and f[1] == want:
+            raised = f[2]
+            break
+    el = time.time() - t0
+    # hw_config re-arms showevents inside the capture, and an unsolicited event line desyncs every
+    # later read. Set back to SEV_ERROR by the suite's teardown, not left at 0.
+    d.exec('localnode.showevents = 0')
+    return el, raised
+
+
+def arm_setup(d, cell, baud):
+    """Put the app in this cell's state, with every leftover from the last cell cleared."""
+    # A CHUNKED JOB LEFT OPEN MAKES THE NEXT PRESS CONTINUE IT rather than start a capture, which is a
+    # three-way dispatch in capture_run() and not something a cell should inherit from its neighbour.
+    d.exec('sdec.ck_job, sdec.ck_running, sdec.strm_recording = nil, false, nil '
+           'sdec.ck_stop, sdec.ck_tot, sdec.ck_nbytes, sdec.ck_endwhy = false, nil, nil, nil')
+    # THE QUEUED-PRESS ABSORB, CLEARED RATHER THAN SLEPT OUT. A Capture press within
+    # sdec.strm_absorb_s of a recording ending is taken as that run's Stop and returns immediately --
+    # by design, because a press aimed at stopping a stream is only dispatched once the run's Lua has
+    # returned. Two of the three defects here are recordings, so without this the cell after each one
+    # returns in 0.01 s carrying its predecessor's verdict, which reads as a broken arm.
+    d.exec('sdec.strm_stopped_by_press = nil sdec.strm_nabsorbed = 0 sdec.strm_absorbed = nil')
+    d.exec('sdec.capmode = %r sdec.trigmode = "edge" sdec.trigext = false '
+           'sdec.trigext_only = false sdec.fc_out = false sdec.armkey = true '
+           'sdec.armlevel = %g sdec.armwait = %g sdec.lasterr = nil '
+           'sdec.probe_note = nil sdec.probe_idle = nil sdec.acq_pretrig = nil '
+           'armpok, armwhy = nil, nil'
+           % (cell['mode'], ARM_LEVEL, cell['wait']))
+    d.exec(ARM_LOCKS[cell['lock']].replace('@BAUD@', str(baud)))
+    d.exec('eventlog.clear() localnode.showevents = 0')
+
+
+def arm_lua_literal(s, default='nil'):
+    """One entry value as a Lua literal, for handing the operator's own setting back.
+
+    THE OPERATOR'S VALUES, NOT THE DEFAULTS WRITTEN BACK AS LITERALS. A run on an instrument
+    configured at 2.5 V and 30 s used to hand it back at 1 V and 10 s and call that a restore.
+    """
+    if s is None or s == 'nil':
+        return default
+    if s in ('true', 'false'):
+        return s
+    try:
+        float(s)
+        return s
+    except ValueError:
+        return repr(s)
+
+
+def arm_claims(cell, r, el, hit, fsmap, before):
+    """Every claim this cell makes about its own result. -> [(text, bool), ...]
+
+    ONE LIST PER CELL RATHER THAN ONE BOOLEAN, so a failing row NAMES the claim that broke. The row's
+    verdict is the conjunction; the detail carries the fields either way.
+    """
+    cl = []
+    nf, nbad = num(r, 'nf', -1), num(r, 'nbad', -1)
+    text = r.get('text') or ''
+    lead, run0 = num(r, 'lead', 0), num(r, 'run0', 0)
+
+    if not cell['starts']:
+        # THE EXPIRY. It must wait the operator's Arm Wait and no longer, name the degrade and the two
+        # settings that govern it, and -- the part a message cannot fake -- NOT claim a trigger.
+        cl.append(('waits the operator Arm Wait and no longer',
+                   2.0 <= el <= cell['wait'] + 9.0))
+        cl.append(('says the arm expired and the capture degraded to free-running',
+                   'trigger unavailable; captured free-running' in (r.get('err') or '')))
+        cl.append(('names the armed level and both settings that govern the wait',
+                   'crossed' in (r.get('err') or '')
+                   and 'raise Arm Wait or lower Arm At' in (r.get('err') or '')))
+        cl.append(('does NOT report a pre-trigger reserve it never had',
+                   r.get('pretrig') != 'true'))
+        cl.append(('publishes no bytes out of the silence', nf <= 0))
+        return cl
+
+    # THE GENERATOR FIRST. A switch that never got thrown leaves a capture that correctly found
+    # nothing, and charging that to the app is how a wedged SDG becomes a decoder defect.
+    cl.append(('the generator threw its output switch',
+               'on' in hit and 'err' not in hit))
+    # NOT ABSORBED, and this is the only time bound a starting cell can carry: a fired arm returns at
+    # about ARM_START_AT, which is indistinguishable BY TIME from the V1.40 press that never armed and
+    # returned in 3.55 s. What separates those two is the reserve, asserted next.
+    cl.append(('the press was not swallowed by the absorb window', el > 1.0))
+    cl.append(('the app accepted the capture', r.get('pok') == 'true' and r.get('cret') != 'false'))
+
+    if cell['mode'] == 'frame':
+        # THE PREMISE, BEFORE ANYTHING ABOUT THE PRIOR. acq_pretrig is set only on the exit that
+        # really triggered, and leadrun is how much of the reserve reached the record. 500 samples is
+        # well under the reserve at either fs and well over anything a UART gap can make.
+        cl.append(('the record opens in a pre-trigger reserve',
+                   r.get('pretrig') == 'true' and lead > 500))
+        cl.append(('the arm fired rather than running out its wait', el < cell['wait'] * 0.95))
+        if cell['idle'] == 1:
+            # THE MECHANISM, and only where the reserve has a level to be confused with. On a
+            # single-supply line the switched-off wire sits at ground, which IS the space level, so a
+            # reserve counted as a run would be the longest run at level 0. On the bipolar cell ground
+            # sits BETWEEN the levels and lands in whichever run millivolts decide, so the same test
+            # there would be a coin toss rather than a check.
+            cl.append(('the reserve is not counted as the longest low run',
+                       lead > 0 and run0 < lead / 2.0))
+    else:
+        # A RECORDING HAS NO acq_pretrig TO READ -- it arms through the streaming path -- so its
+        # premise is strm_armed, and the proof it waited for the device rather than ending on its own
+        # clock is that it outlasted the switch and did not end as 'noarm'.
+        cl.append(('the recording ARMED rather than recording the silence',
+                   r.get('armed') == 'true'))
+        cl.append(('it waited for the device rather than ending on its own clock',
+                   el > ARM_START_AT and r.get('endwhy') != 'noarm'))
+        # THE THIRD DEFECT'S OWN OUTCOME. 'quiet' with 0 bytes on a transmitting device is what a
+        # threshold the signal cannot cross produces, and it blamed the frame format when it happened.
+        cl.append(('the recording ran to its bound rather than reading a live line as quiet',
+                   r.get('endwhy') == 'full'))
+        cl.append(('and left no job open', r.get('job') == 'false'))
+        # AND THE PREMISE OF THE REUSE, taken BEFORE the press because lvl_thr is kept across captures
+        # and this press overwrites it. Without it the cell is a pass whatever ran before it, which is
+        # the whole of what it was supposed to measure.
+        pre = num(before, 'lvlthr')
+        if cell.get('lvlthr') == 'rail':
+            cl.append(('the threshold it inherited really was the bipolar cell\'s, near ground',
+                       pre is not None and abs(pre) < 0.25))
+        elif cell.get('lvlthr') == 'mid':
+            cl.append(('the threshold it inherited really was mid-swing',
+                       pre is not None and 0.5 < pre < 3.0))
+
+    # THE PRIOR, THE POLARITY AND THE BYTES. These three are what the defects reached the operator as.
+    cl.append(('the prior is the line, not the switched-off wire', num(r, 'idle', -1) == cell['idle']))
+    cl.append(('the bytes are the right way up',
+               r.get('inv') == ('true' if cell['invert'] else 'false')))
+    # TWICE, NOT ONCE. One occurrence of a 13-byte payload in 60 columns can survive a mis-sampled
+    # bit; two cannot, and an inverted reading produces none at all.
+    cl.append(("and they are the line's own text, at least twice over",
+               text.count(PAYLOAD) >= 2))
+    if cell['mode'] == 'frame':
+        # ONE BAD FRAME IS THE STIMULUS, NOT THE APP, and the allowance is bounded rather than waived:
+        # the generator's output switch opens wherever the arb happens to be, so the frame it opens in
+        # the middle of is a fragment by construction. A device powering up does not do that -- it
+        # starts at a start bit -- but nothing on this bench can emulate one. Two or more is a decode
+        # fault and still fails.
+        cl.append(('nearly every frame clean', 0 <= nbad <= 1))
+    else:
+        cl.append(('nearly every frame clean', 0 <= nbad <= max(1.0, 0.02 * num(r, 'ckn', 0))))
+    gb = num(r, 'baud')
+    cl.append(('the rate reported is the rate on the wire',
+               gb is not None and abs(gb / float(ARM_BAUD) - 1.0) <= RATE_TOL))
+    if cell['fs'] is not None:
+        # THE REGIME, CHECKED AGAINST THE APP'S OWN ARITHMETIC rather than against 80000 and 200000
+        # written here. A locked rate skips the probe ladder and samples at that rate's own fs; a blind
+        # armed capture samples at sdec.arm_fs(). Reading them off the instrument is what keeps this
+        # cell honest when either constant moves.
+        want_fs = fsmap.get(cell['fs'])
+        got_fs = num(r, 'fs')
+        cl.append(('sampled in the %s-rate regime it was set up for' % cell['fs'],
+                   want_fs is not None and got_fs is not None and abs(got_fs - want_fs) <= 1.0))
+    return cl
+
+
+def arm_detail(cell, r, el, before):
+    """The fields a failure has to be diagnosed from, on every row and not only the failures."""
+    bits = ['%.2f s' % el,
+            'fs %s' % fmt_num(r.get('fs'), '%.0f'),
+            'n %s' % fmt_num(r.get('nread'), '%.0f'),
+            'lead %s' % fmt_num(r.get('lead'), '%.0f'),
+            'run0/1 %s/%s' % (fmt_num(r.get('run0'), '%.0f'), fmt_num(r.get('run1'), '%.0f')),
+            'pretrig %s' % r.get('pretrig', '?'),
+            'idle %s%s' % (r.get('idle', '?'), ' WEAK' if r.get('weak') == 'true' else ''),
+            'inv %s' % r.get('inv', '?'),
+            'thr %s' % fmt_num(r.get('thr'), '%.3f'),
+            'band %s..%s' % (fmt_num(r.get('lo'), '%.2f'), fmt_num(r.get('hi'), '%.2f')),
+            '%s B' % fmt_num(r.get('nf'), '%.0f'),
+            '%s bad' % fmt_num(r.get('nbad'), '%.0f'),
+            '%s' % r.get('fmt', '?'),
+            '%s Bd' % fmt_num(r.get('baud'), '%.0f')]
+    if cell['mode'] != 'frame':
+        bits += ['endwhy %s' % r.get('endwhy', '?'),
+                 'ck %s B' % fmt_num(r.get('ckn'), '%.0f'),
+                 'armed %s' % r.get('armed', '?'),
+                 'reuse %s' % r.get('reuse', '?'),
+                 'lvl_thr %s -> %s' % (fmt_num(before.get('lvlthr'), '%.4f'),
+                                       fmt_num(r.get('lvlthr'), '%.4f'))]
+    bits.append('text %r' % (r.get('text') or '')[:40])
+    return '  '.join(bits)
+
+
+def suite_arm(d, g, a, rows):
+    """Arming from silence: press Capture on a quiet line, switch the device on mid-wait.
+
+    SEVEN CELLS AND THE ORDER IS PART OF THE TEST -- see ARM_CELLS. Six vary one thing against the
+    first; the seventh varies only what ran before it, which is the whole of the third defect.
+    """
+    print('\n=== ARM -- %d cells, Capture pressed on a silent line, the device switched on at +%.1f s '
+          '===' % (len(ARM_CELLS), ARM_START_AT))
+    # THE OPERATOR'S OWN SETTINGS AND THE APP'S OWN ARITHMETIC, READ RATHER THAN ASSUMED. The entry
+    # values are handed back by the teardown; arm_fs and the locked rate's fs are what the regime
+    # claims are checked against, so that a changed constant moves the expectation with it.
+    entry = arm_read(d, [('capmode', 'sdec.capmode'), ('trigmode', 'sdec.trigmode'),
+                         ('armlevel', 'sdec.armlevel'), ('armwait', 'sdec.armwait'),
+                         ('armkey', 'tostring(sdec.armkey)'),
+                         ('trigext', 'tostring(sdec.trigext)'),
+                         ('trigextonly', 'tostring(sdec.trigext_only)'),
+                         ('fcout', 'tostring(sdec.fc_out)'),
+                         ('blind', 'sdec.arm_fs()'),
+                         ('locked', 'sdec.fs_for_baud(%d)' % ARM_BAUD),
+                         ('pretrigpct', 'sdec.pretrig'),
+                         ('absorb', 'sdec.strm_absorb_s')])
+    if entry is None:
+        rows.append(('arm preflight', False,
+                     'the app state would not come back on a tagged read -- no cell was run'))
+        print('  REFUSING the arm suite: the app state would not come back on a tagged read')
+        return
+    fsmap = {'blind': num(entry, 'blind'), 'locked': num(entry, 'locked')}
+    print('    entry: capmode=%s trigmode=%s armlevel=%s armwait=%s   (handed back on the way out)'
+          % (entry.get('capmode'), entry.get('trigmode'), entry.get('armlevel'),
+             entry.get('armwait')))
+    print('    arm:   Arm At %.2f V, Arm Wait %.1f s, reserve %s %% of capacity, absorb %s s; '
+          'fs blind %s / locked %s'
+          % (ARM_LEVEL, ARM_WAIT, entry.get('pretrigpct'), entry.get('absorb'),
+             fmt_num(fsmap['blind'], '%.0f'), fmt_num(fsmap['locked'], '%.0f')))
+    try:
+        for cell in ARM_CELLS:
+            amp = amp_for(cell['swing'])
+            # THE BAND IS CHECKED AGAINST BOTH INSTRUMENTS BEFORE THE WRITE, not after the verdict.
+            # The SDG clamps rather than refusing, so an out-of-envelope pair reaches the wire as a
+            # band nothing recorded -- and the bipolar cell is the one that goes near the envelope.
+            SP.assert_unclipped(cell['vid'], amp, cell['ofst'])
+            g.output(False, ch=1)
+            g.select_arb(VN.arb(cell['vid']), amp, _srate(cell['vid'], ARM_BAUD),
+                         offset_v=cell['ofst'])
+            # OFF AGAIN AFTER THE SELECT, because a device that has not started is what this suite
+            # presses Capture against. select_arb never touches the output relay, so this is belt and
+            # braces against a reordering rather than a redundancy.
+            g.output(False, ch=1)
+            time.sleep(a.settle)
+            arm_setup(d, cell, ARM_BAUD)
+            before = arm_read(d, ARM_BEFORE) or {}
+            hit = {}
+            th = None
+            if cell['starts']:
+                th = arm_start_later(g, ARM_START_AT, hit)
+            # A RECORDING IS THE WHOLE 8 kB WINDOW PLUS ITS DECODE, which is tens of seconds; a frame
+            # is the wait plus a decode. Generous rather than tight: this is a hang detector, not a
+            # latency budget, and a press abandoned early would leave the app mid-capture.
+            el, raised = arm_press(d, 'arm_' + cell['name'],
+                                   600 if cell['mode'] != 'frame' else 120)
+            if th is not None:
+                # JOINED PAST THE THREAD'S OWN SCHEDULE, not for a courtesy second. A press the absorb
+                # window swallowed returns in about 0.01 s, so the thread has not thrown the switch
+                # yet -- and a 1 s join leaves it to fire into the NEXT cell's select_arb, two writers
+                # interleaving SCPI on one generator socket. The thread cannot outlive its sleep plus
+                # one write, so this always finds it finished unless the generator itself is hung.
+                th.join(timeout=max(2.0, ARM_START_AT + 5.0 - el))
+                if th.is_alive():
+                    hit['err'] = ('the output-switch thread is still running %.1f s after the press '
+                                  'returned -- the generator is not answering' % el)
+                    print('      *** %s ***' % hit['err'])
+            r = arm_read(d, ARM_FIELDS)
+            if r is None:
+                rows.append(('arm %s' % cell['name'], False,
+                             'the result fields would not come back on a tagged read after a '
+                             '%.2f s press' % el))
+                print('  %-16s %-5s the result fields would not come back after %.2f s'
+                      % (cell['name'], 'BAD', el))
+                continue
+            cl = arm_claims(cell, r, el, hit, fsmap, before)
+            ok = all(c for _, c in cl)
+            det = arm_detail(cell, r, el, before)
+            print('  %-16s %-5s %s' % (cell['name'], 'ok' if ok else 'BAD', det))
+            print('      %s' % cell['why'])
+            if r.get('err') not in (None, 'nil', ''):
+                print('      lasterr: %s' % r['err'][:110])
+            # THROUGH note_events, so an arm cell's events land in the same run-level tally main()
+            # prints for every other suite rather than in a counter only this suite knows about. 4915
+            # is split out here rather than in ARM_EVS because the log can only be drained once: the
+            # instrument returns every code it had, and the partition is cheaper on this side.
+            codes = [x for x in (r.get('evs') or '').split() if x]
+            n4915 = codes.count('4915')
+            note_events({'e4915': n4915, 'evs': [c for c in codes if c != '4915']})
+            if n4915:
+                print('      *** %d x event 4915 ***' % n4915)
+            elif num(r, 'ec', 0) and not codes:
+                print('      (%s instrument event(s) logged, all of them trigger-model traffic this '
+                      'suite causes itself)' % fmt_num(r.get('ec'), '%.0f'))
+            if not ok:
+                for text, got in cl:
+                    if not got:
+                        print('      BROKEN CLAIM: %s' % text)
+                print('      REPRO %s: %s at %.3f Vpp offset %+0.3f V, %s, %s lock, device %s, '
+                      'Arm At %.2f V Arm Wait %.1f s'
+                      % (cell['name'], cell['vid'], amp, cell['ofst'], cell['mode'], cell['lock'],
+                         ('on at +%.1f s' % ARM_START_AT) if cell['starts'] else 'never starts',
+                         ARM_LEVEL, cell['wait']))
+                print('      raised=%s cret=%s note=%s' % (raised, r.get('cret'), r.get('note')))
+            # THE DRIVEN BAND TRAVELS WITH THE ROW, because the bipolar cell's whole point is its
+            # offset and a row that only named the vector could not be told from a single-supply one.
+            rows.append(('arm %s' % cell['name'], ok,
+                         '%s %.3f Vpp ofst %+0.3f %s/%s  %s'
+                         % (cell['vid'], amp, cell['ofst'], cell['mode'], cell['lock'], det)))
+    finally:
+        # LEFTOVER APP STATE POISONS THE NEXT TOOL, and two of these cost a whole suite: capmode left
+        # at 'sml' makes every later point a 27-second recording, and trigmode left at 'edge' makes
+        # every later point an armed capture. The operator's own entry values go back, not defaults.
+        print('    restore:')
+        d.exec('sdec.capmode = %s sdec.trigmode = %s sdec.armlevel = %s sdec.armwait = %s '
+               'sdec.armkey = %s sdec.trigext = %s sdec.trigext_only = %s sdec.fc_out = %s'
+               % (arm_lua_literal(entry.get('capmode'), "'frame'"),
+                  arm_lua_literal(entry.get('trigmode'), "'edge'"),
+                  arm_lua_literal(entry.get('armlevel'), '1.0'),
+                  arm_lua_literal(entry.get('armwait'), '10.0'),
+                  arm_lua_literal(entry.get('armkey'), 'true'),
+                  arm_lua_literal(entry.get('trigext'), 'false'),
+                  arm_lua_literal(entry.get('trigextonly'), 'false'),
+                  arm_lua_literal(entry.get('fcout'), 'false')))
+        # EVERY FORCE AND autolock_set, because press() in this file clears the force_* fields per
+        # point and does NOT clear autolock_set -- so an autolock left latched would make every later
+        # point a measurement of this suite's lock state.
+        d.exec(ARM_LOCKS['blind'])
+        d.exec('sdec.ck_job, sdec.ck_running, sdec.strm_recording = nil, false, nil '
+               'sdec.ck_stop, sdec.ck_tot, sdec.ck_nbytes, sdec.ck_endwhy = false, nil, nil, nil')
+        # THE QUEUED-PRESS ABSORB IS APP STATE TOO, and it is the one that makes the NEXT tool look
+        # broken rather than this one: a press it swallows returns in 0.01 s with the previous run's
+        # verdict attached. Armed by every recording cell above.
+        d.exec('sdec.strm_stopped_by_press = nil sdec.strm_nabsorbed = 0 sdec.strm_absorbed = nil')
+        # probe_idle is what arm_silent() answers from; left set it tells the next tool the line is
+        # silent. arm_thr/arm_idle are the comparator's own published pair, and armpok/armwhy are this
+        # suite's two globals.
+        d.exec('sdec.probe_idle = nil sdec.arm_thr = nil sdec.arm_idle = nil '
+               'sdec.acq_pretrig = nil armpok, armwhy = nil, nil')
+        d.exec('pcall(function() trigger.blender[1].reset() end) pcall(trigger.model.abort)')
+        d.exec('localnode.showevents = eventlog.SEV_ERROR')
+        # AND THE GENERATOR BACK ON THE NOMINAL STIMULUS, OUTPUT ON. Every other suite selects and
+        # switches on per point, so this is not strictly required -- but leaving the bipolar band
+        # selected with the output off makes this suite's position in a lap visible in the next
+        # suite's first row, and an order-dependent result is the hardest kind to read.
+        try:
+            g.select_arb(VN.arb('v41'), amp_for(NOMINAL_SWING), _srate('v41', ARM_BAUD))
+            g.output(True, ch=1)
+        except Exception as e:                      # noqa: BLE001
+            print('      SDG restore failed: %s' % e)
+        back = arm_read(d, [('capmode', 'sdec.capmode'), ('trigmode', 'sdec.trigmode'),
+                            ('armwait', 'sdec.armwait'), ('armlevel', 'sdec.armlevel'),
+                            ('force', 'tostring(sdec.force_baud)'),
+                            ('autolock', 'tostring(sdec.autolock_set ~= nil)'),
+                            ('absorbed', 'tostring(sdec.strm_stopped_by_press)'),
+                            ('ev', 'eventlog.getcount(eventlog.SEV_ALL)')]) or {}
+        print('      capmode=%s trigmode=%s armwait=%s armlevel=%s force_baud=%s autolock=%s '
+              'absorb-armed=%s events=%s'
+              % (back.get('capmode'), back.get('trigmode'), back.get('armwait'),
+                 back.get('armlevel'), back.get('force'), back.get('autolock'),
+                 back.get('absorbed'), back.get('ev')))
+
+
 SUITES = {'formats': suite_formats, 'rates': suite_rates, 'lorem': suite_lorem,
           'levels': suite_levels, 'offsets': suite_offsets, 'hard': suite_hard,
-          'payloads': suite_payloads, 'plan': suite_plan}
+          'payloads': suite_payloads, 'plan': suite_plan, 'arm': suite_arm}
+
+
+# ---------------------------------------------------------------------------- the offline self-check
+#
+# WHAT IT IS FOR, AND IT IS NOT COVERAGE FOR ITS OWN SAKE. The arm suite's judging is the part that
+# cannot be checked by running it: a cell that passes proves the app works OR that the claim is
+# unsatisfiable in the other direction, and on hardware those two are indistinguishable. So each of
+# the three defects is replayed here as the field dict it actually produced, and each must FAIL -- the
+# second one twice over, because it returned the right byte COUNT and a count-only assertion passes it.
+#
+# NO INSTRUMENT AND NO SUBPROCESS, which is the whole point: it is runnable while a soak has the bench.
+#
+#     python3 tools/bench_matrix.py --selftest
+
+def _arm_before(cell):
+    """What lvl_thr held at the press, for the cell order the suite relies on."""
+    if cell.get('lvlthr') == 'rail':
+        # What the bipolar cell leaves: the midpoint of a +/-2.45 V line. Measured -0.0123 V.
+        return {'lvlthr': '-0.0123', 'lvlswing': '4.900', 'minswing': '0.1'}
+    return {'lvlthr': '1.6500', 'lvlswing': '3.300', 'minswing': '0.1'}
+
+
+def _arm_clean(cell, fsmap):
+    """A field dict describing a CORRECT result for this cell -- the pass side of every claim."""
+    if not cell['starts']:
+        return {'pok': 'true', 'cret': 'false', 'ec': '0', 'evs': '',
+                'pretrig': 'false', 'lead': 'nil', 'run0': 'nil', 'run1': 'nil', 'st0': 'nil',
+                'idle': 'nil', 'weak': 'nil', 'fs': '200000', 'nread': '20000',
+                'trigreq': 'edge', 'note': 'nil',
+                'err': 'edge trigger unavailable; captured free-running (no trigger in 3 s (edge) '
+                       '-- nothing crossed 1.00 V; raise Arm Wait or lower Arm At)',
+                'baud': 'nil', 'fmt': '?', 'thr': 'nil', 'lo': 'nil', 'hi': 'nil', 'hyst': 'nil',
+                'fam': 'nil', 'sn': 'nil', 'nf': '-1', 'nbad': '-1', 'ngood': '-1', 'head': '-1',
+                'inv': '?', 'text': '-', 'endwhy': 'nil', 'ckn': 'nil', 'armed': 'nil',
+                'reuse': 'nil', 'lvlthr': '1.6500', 'job': 'false'}
+    nb = 5484 if cell['mode'] != 'frame' else 334
+    r = {'pok': 'true', 'cret': 'true', 'ec': '0', 'evs': '',
+         'pretrig': 'true', 'lead': '1057', 'run0': '42', 'run1': '480', 'st0': '0',
+         'idle': str(cell['idle']), 'weak': 'false',
+         'fs': '%.0f' % (fsmap.get(cell['fs']) or fsmap['locked']),
+         'nread': '21053', 'trigreq': 'edge', 'err': 'nil', 'note': 'nil',
+         'baud': '9600', 'fmt': '8N1', 'thr': '1.650', 'lo': '0.00', 'hi': '3.30',
+         'hyst': '0.495', 'fam': '3V3 CMOS', 'sn': '46',
+         'nf': str(nb), 'nbad': '0', 'ngood': str(nb), 'head': '0',
+         'inv': 'true' if cell['invert'] else 'false',
+         'text': (PAYLOAD * 6)[:ARM_TEXT_COLS],
+         'endwhy': 'full' if cell['mode'] != 'frame' else 'nil',
+         'ckn': str(nb) if cell['mode'] != 'frame' else 'nil',
+         'armed': 'true' if cell['mode'] != 'frame' else 'nil',
+         'reuse': 'true' if cell['mode'] != 'frame' else 'nil',
+         'lvlthr': '1.650', 'job': 'false'}
+    if cell['idle'] == 0:
+        # THE BIPOLAR FIXTURE PUTS run0 ABOVE HALF THE RESERVE ON PURPOSE. Ground sits between the
+        # levels there, so which run the reserve lands in is decided by millivolts and the
+        # longest-low-run check must not be applied -- this is what proves it is skipped rather than
+        # passing by luck.
+        r.update({'run0': '900', 'run1': '42', 'thr': '-0.012', 'lo': '-2.45', 'hi': '2.45',
+                  'fam': '4.9Vpp', 'lvlthr': '-0.012'})
+    return r
+
+
+def arm_selftest():
+    """Replay the three defects and the cell table through the suite's own judging. -> 0 or 1."""
+    bad, tot = [], [0]
+
+    def ck(cond, what):
+        tot[0] += 1
+        print('  %-4s %s' % ('ok' if cond else 'BAD', what))
+        if not cond:
+            bad.append(what)
+
+    fsmap = {'blind': 200000.0, 'locked': 80000.0}
+    cells = {c['name']: c for c in ARM_CELLS}
+    names = [c['name'] for c in ARM_CELLS]
+
+    print('--- the cell table')
+    ck(len(set(names)) == len(names), '%d cells, every name distinct' % len(names))
+    ck(all(c['lock'] in ARM_LOCKS for c in ARM_CELLS), "every cell's lock state is in ARM_LOCKS")
+    ck(all(c['fs'] in (None, 'blind', 'locked') for c in ARM_CELLS),
+       "every cell's fs regime is one this suite can look up")
+    # THE ORDER IS THE THIRD DEFECT'S TEST. 'rec8k stale' measures what the bipolar cell left behind,
+    # so a reordering silently turns it into a duplicate of 'rec8k locked' -- passing, and testing
+    # nothing. Its control must come BEFORE the bipolar cell for the same reason.
+    ck(names.index('rec8k locked') < names.index('bipolar') < names.index('rec8k stale'),
+       "the order is rec8k locked -> bipolar -> rec8k stale, which is what makes the stale cell a test")
+    ck(cells['rec8k stale']['lvlthr'] == 'rail' and cells['rec8k locked']['lvlthr'] == 'mid',
+       'the two recordings assert OPPOSITE inherited thresholds, so neither is vacuous')
+    # THE VECTOR TRAP, ASSERTED. v41 idles at the HIGH level, so v41 at a negative offset is a
+    # stimulus no wire can carry and sig_levels reads it as marking at the SPACE level.
+    ck(all(c['ofst'] >= 0.0 for c in ARM_CELLS if c['vid'] != 'v45'),
+       'only v45 is ever driven at a negative offset')
+    ck(all(c['vid'] == 'v45' for c in ARM_CELLS if c['ofst'] < 0.0)
+       and any(c['ofst'] < 0.0 for c in ARM_CELLS),
+       'and the bipolar cell really is at a negative offset')
+    ck(all(c['invert'] is (c['idle'] == 0) for c in ARM_CELLS if c['idle'] is not None),
+       'invert and idle agree in every cell: a line marking LOW decodes inverted')
+
+    print('--- the bands, against both instruments')
+    amp = amp_for(ARM_BIPOLAR_SWING)
+    env = abs(ARM_BIPOLAR_OFST) + amp / 2.0
+    cap = 10.0 / (1.0 + 10.0 / NOMINAL_SWING)
+    ck(abs(cap - 2.4812) < 5e-4, 'a symmetric band caps at %.4f V on the generator envelope' % cap)
+    ck(ARM_BIPOLAR_OFST < 0 and abs(ARM_BIPOLAR_OFST) < cap - 0.02,
+       'the commanded %+0.2f V is %.3f V inside that cap, so no float comparison decides the test'
+       % (ARM_BIPOLAR_OFST, cap - abs(ARM_BIPOLAR_OFST)))
+    ck(env <= SP.SDG_ENV_V, '|OFST| + AMP/2 = %.4f V of the %.1f V envelope' % (env, SP.SDG_ENV_V))
+    vmin, vmax = SP.assert_unclipped('v45', amp, ARM_BIPOLAR_OFST)
+    ck(abs(vmin + 2.45) < 0.01 and abs(vmax - 2.45) < 0.01,
+       'the band on the wire is %.4f .. %.4f V, symmetric about ground' % (vmin, vmax))
+    for c in ARM_CELLS:
+        SP.assert_unclipped(c['vid'], amp_for(c['swing']), c['ofst'])
+    ck(True, 'every cell passes assert_unclipped, so none can reach the wire clamped')
+
+    print('--- the tagged reads fit the probe limit')
+    worst = 0
+    for pairs in (ARM_FIELDS, ARM_BEFORE):
+        n, g = 0, 0
+        for _, expr in pairs:
+            cost = len(expr) + ARM_FIELD_FIXED
+            if g and n + cost > ARM_STMT_MAX - ARM_STMT_FIXED:
+                g, n = 0, 0
+            g, n = g + 1, n + cost
+            worst = max(worst, n + ARM_STMT_FIXED)
+    ck(worst <= ARM_STMT_MAX, 'the widest assembled statement is %d bytes, inside the %d budget'
+       % (worst, ARM_STMT_MAX))
+    ck(max(len(e) for _, e in ARM_FIELDS) + ARM_FIELD_FIXED <= ARM_STMT_MAX - ARM_STMT_FIXED,
+       'and no single expression is too wide to send on a statement of its own')
+
+    print('--- every cell passes on a correct result')
+    for c in ARM_CELLS:
+        el = 3.2 if c['mode'] == 'frame' else 27.0
+        if not c['starts']:
+            el = 3.4
+        cl = arm_claims(c, _arm_clean(c, fsmap), el, {'on': 1.0}, fsmap, _arm_before(c))
+        ck(all(v for _, v in cl) and len(cl) >= 5,
+           '%-14s %d claims, all satisfied by a correct result' % (c['name'], len(cl)))
+
+    print('--- and each defect FAILS, as the field dict it actually produced')
+
+    def broken(cell, mutate, el=3.2, hit=None, before=None, what=''):
+        r = _arm_clean(cell, fsmap)
+        r.update(mutate)
+        cl = arm_claims(cell, r, el, hit if hit is not None else {'on': 1.0}, fsmap,
+                        before if before is not None else _arm_before(cell))
+        failed = [t for t, v in cl if not v]
+        ck(bool(failed), '%s -> %s' % (what, '; '.join(failed)[:96] or 'NOTHING FAILED'))
+        return failed
+
+    # DEFECT 1, as measured at a locked 9600: 158 bytes of which 62 bad, every byte inverted, the
+    # prior taken from the pre-trigger reserve. Self-consistent, plausible error count, 0 of 6 readable.
+    broken(cells['frame locked'],
+           {'idle': '0', 'inv': 'true', 'nf': '158', 'nbad': '62', 'ngood': '96',
+            'run0': '1050', 'text': '\x00' * 20 + '?' * 40},
+           what='defect 1, the armed frame prior taken from the reserve (158 B, 62 bad, inverted)')
+    # DEFECT 2, in the chunked path: 2110 of 5484 bytes bad with the COUNT CORRECT. The count is left
+    # right on purpose -- a suite that asserted only bytes-collected passed this.
+    f2 = broken(cells['rec8k locked'],
+                {'idle': '0', 'inv': 'true', 'nbad': '2110', 'ngood': '3374',
+                 'text': '?' * ARM_TEXT_COLS},
+                el=27.0,
+                what='defect 2, ck_prime_step inverted (2110 of 5484 bad, count correct)')
+    ck(not any('ARMED' in t or 'collected' in t for t in f2),
+       '...and it is NOT the byte count that catches it: the count was right')
+    # DEFECT 3: a reused threshold six millivolts from the rail is uncrossable, so a transmitting
+    # device reads as silent. 'quiet', 0 bytes, 9.7 s, and a lasterr naming the frame format.
+    broken(cells['rec8k stale'],
+           {'endwhy': 'quiet', 'nf': '-1', 'nbad': '-1', 'ckn': '0', 'inv': '?', 'idle': 'nil',
+            'text': '-', 'err': 'no frame format fits the capture'},
+           el=9.7, what='defect 3, the uncrossable reused threshold (quiet, 0 bytes)')
+    # AND ITS PREMISE, WHICH IS THE CELL ORDER. If the bipolar cell did not run, the stale cell
+    # inherits a mid-swing threshold and measures nothing -- that must not read as a pass.
+    broken(cells['rec8k stale'], {}, el=27.0, before=_arm_before(cells['rec8k locked']),
+           what='the stale cell reached with a mid-swing threshold, i.e. out of order')
+
+    print('--- and the ways a cell can lie about itself')
+    # THE V1.40 REGRESSION: the press never armed and returned in 3.55 s. The bytes are fine, because
+    # the device had been transmitting for half a second -- so only the reserve catches it.
+    broken(cells['frame auto'], {'pretrig': 'false', 'lead': 'nil', 'run0': 'nil'}, el=3.55,
+           what='a press that never armed but decoded anyway (V1.40, 3.55 s, no reserve)')
+    # THE ABSORB, which returns in ~0.01 s carrying the previous run's verdict -- every field right.
+    broken(cells['frame locked'], {}, el=0.01,
+           what='a press swallowed by the queued-press absorb, reporting the last run')
+    # A WEDGED GENERATOR. Nothing reached the wire, so the capture correctly found nothing; charging
+    # that to the app is how an instrument fault becomes a decoder defect.
+    f = broken(cells['frame locked'],
+               {'pretrig': 'false', 'nf': '-1', 'nbad': '-1', 'text': '-', 'idle': 'nil',
+                'inv': '?'},
+               el=10.1, hit={'err': 'C1:OUTP ON refused'},
+               what='a generator that never threw its output switch')
+    ck(any('output switch' in t for t in f),
+       '...and the generator is named first, not the decode')
+    # A REFUSED CAPTURE. capture() returns false without raising, and the panel then keeps the
+    # PREVIOUS capture's bytes -- so every byte check below it can pass on leftovers.
+    broken(cells['rec8k locked'], {'cret': 'false'}, el=27.0,
+           what='a capture the app refused (ok=false) while the panel still showed good bytes')
+    # AN EXPIRY THAT CLAIMS A TRIGGER, and one whose message has lost the two settings.
+    broken(cells['expiry'], {'pretrig': 'true'}, el=3.4,
+           what='an expiry reporting a pre-trigger reserve it never had')
+    broken(cells['expiry'], {'err': 'line is idle (no transitions)'}, el=3.4,
+           what='an expiry whose message names neither the degrade nor the two settings')
+    broken(cells['expiry'], {'nf': '240', 'nbad': '0'}, el=3.4,
+           what='an expiry that published bytes out of the silence')
+    broken(cells['expiry'], {}, el=0.02,
+           what='an expiry that returned at once instead of waiting its Arm Wait')
+    # THE BIPOLAR CONTROL IN BOTH DIRECTIONS: a decoder that always inverts, and one that never does.
+    broken(cells['bipolar'], {'idle': '1', 'inv': 'false'}, what='the bipolar line read as idle-HIGH')
+    broken(cells['frame autolock'], {'idle': '0', 'inv': 'true'},
+           what='a single-supply line read as idle-LOW')
+    # THE REGIME. A locked cell that sampled at the blind rate's fs has not tested the locked path.
+    broken(cells['frame locked'], {'fs': '200000'},
+           what='a locked-rate cell that sampled at the blind arm_fs instead')
+    broken(cells['frame auto'], {'fs': '80000'},
+           what="a blind cell that sampled at the locked rate's fs instead")
+    # AND THE TEXT, which is the only check that sees bytes that are neither flagged nor the payload.
+    broken(cells['frame locked'], {'text': 'Hello, World!' + 'x' * 47},
+           what='one copy of the payload and then noise, with nothing flagged')
+
+    print('--- the row shape soak.py has to parse')
+    import soak as SK
+    ok_rows = 0
+    for c in ARM_CELLS:
+        name = 'arm %s' % c['name']
+        for tok in ('ok', 'BAD'):
+            ln = '%-28s %-4s %s' % (name, tok, 'v41 10.000 Vpp ofst +0.000 frame/rate  3.20 s')
+            m = SK.ROW.match(ln)
+            if m and m.group(1).strip() == name and m.group(2) == tok:
+                ok_rows += 1
+    ck(ok_rows == 2 * len(ARM_CELLS),
+       "all %d point names survive soak.py's ROW regex intact, both verdicts" % len(ARM_CELLS))
+    # THE FAILURE TOKEN IS THE ONE soak.py COUNTS, not one invented here. judge_lap tallies a
+    # failure on the exact string 'BAD', and main() below is what emits it.
+    ck('BAD' in SK.ROW.pattern and 'ok' in SK.ROW.pattern,
+       "and the verdict tokens are soak.py's own ok/BAD, so a failure is counted and named")
+    ck(not any(SK.ROW.match('  ' + ln) for ln in ['arm bipolar ok something']),
+       'and an indented BODY line is not mistaken for a point')
+
+    print('--- handing the operator back their own settings')
+    ck(arm_lua_literal('2.5') == '2.5' and arm_lua_literal('30') == '30',
+       'a number goes back as a number')
+    ck(arm_lua_literal('frame') == "'frame'" and arm_lua_literal('sml') == "'sml'",
+       'a mode goes back quoted')
+    ck(arm_lua_literal('true') == 'true' and arm_lua_literal('false') == 'false',
+       'a boolean goes back unquoted, not as the string "false"')
+    ck(arm_lua_literal('nil', "'frame'") == "'frame'" and arm_lua_literal(None) == 'nil',
+       'and only a MISSING value takes the default')
+
+    print('SELFTEST %s' % ('OK -- all %d checks hold' % tot[0] if not bad
+                           else 'FAILED: %d of %d checks' % (len(bad), tot[0])))
+    for b in bad:
+        print('   FAILED: %s' % b)
+    return 1 if bad else 0
 
 
 def main():
@@ -1356,7 +2299,17 @@ def main():
     # RG316 differ in a way no field of the result mentions. This puts it in the log's own header.
     ap.add_argument('--note', default='',
                     help='free text describing the physical setup, printed in the header')
+    # THE ONE MODE THAT NEEDS NO BENCH. The arm suite's judging is what cannot be checked by running
+    # it -- a cell that passes proves either that the app works or that the claim is unsatisfiable the
+    # other way -- so the three defects are replayed through it here. Safe while a soak holds the bench.
+    ap.add_argument('--selftest', action='store_true',
+                    help="replay the arm suite's judging against the three defects it exists to "
+                         'catch, and exit. Touches no instrument and opens no socket')
     a = ap.parse_args()
+
+    # BEFORE ANYTHING ELSE, and before require_sdg probes the generator: this mode is for a busy bench.
+    if a.selftest:
+        return arm_selftest()
 
     if a.note:
         print('SETUP: %s' % a.note)
