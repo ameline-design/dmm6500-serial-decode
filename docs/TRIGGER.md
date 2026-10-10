@@ -178,18 +178,24 @@ run, and depends on the model continuing: its `get_data()` blocks inside the ins
 buffer grows, so an abort on the first query would deadlock the host. It never calls
 `trigger.model.abort()` at all.
 
-**The obvious explanation — that a measuring model survives where a waiting one does not — is refuted
-by the table above.** Readings were still accumulating when each abort landed, 4 500 to 14 159 of
-them, so those models were digitizing too. Whatever separates the two cases, it is not the block
-type. Two differences remain open: that script writes into `defbuffer1` with `FILL_CONTINUOUS` rather
-than into a made buffer, and its reads are `printbuffer` calls rather than state polls. **Unresolved.**
-Until it is settled, the rule above stands as measured, because it was measured on this instrument
-and the counter-example was not.
+**IT DOES NOT WORK HERE, AND THE RULE IS WIDER THAN THE TABLE ABOVE SUGGESTS.** A single
+`print(defbuffer1.n)` from the host aborts a model **in a measure block** — `RUNNING` at n = 2 going
+to `ABORTED` at n = 140 — and one **parked in a `BLOCK_WAIT` on `EVENT_ANALOGTRIGGER` that cannot
+fire**, with the comparator at 9.9 V against a measured ±10 mV idle so the wait was genuine:
+`RUNNING` at n = 12 going to `ABORTED` at n = 200. Both logs hold `2731` then `2728`. So the block
+type is not the variable, there is no surviving case, and Keithley's three streaming examples cannot
+work as written on this instrument.
 
-One caution on that counter-example, since it is easy to over-read: of the three vendor scripts that
-look like evidence here, one (`KEIDMM6500_Stream_Measured_Dual_Meter.py`) talks **USBTMC** through
-PyVISA, not a socket, and pairs a DMM6500 with a DAQ6510 — so it says nothing about this interface.
-`Stream_DMM6500.py` is the only raw-socket DMM6500 case of the three.
+**AND THE FIRST QUERY IS STILL ANSWERED TRUTHFULLY**, which is what makes this so expensive to
+diagnose. The abort lands *behind* the reply and the model runs on for about 140 ms, so a host-side
+probe gets a plausible number back and only the next read shows the damage. A first attempt to measure
+the front-panel key this way returned three arms that all looked like a disabled key; each had been
+killed by its own readback.
+
+One caution on reading those vendor scripts as evidence at all: of the three, one
+(`KEIDMM6500_Stream_Measured_Dual_Meter.py`) talks **USBTMC** through PyVISA rather than a socket, and
+pairs a DMM6500 with a DAQ6510 — so it says nothing about this interface. `Stream_DMM6500.py` is the
+only raw-socket DMM6500 case, and it is the one the measurement above refutes.
 
 ## 6. `BLOCK_WAIT`: three events, and a latch
 

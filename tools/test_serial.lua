@@ -1998,7 +1998,7 @@ do
   local function noteN()
     local ns = sdec.ui_notes()
     local t = (type(ns) == 'table') and table.concat(ns, ' ') or tostring(ns)
-    local n = string.match(t, 'the first (%d+) bytes are misaligned')
+    local _, _, n = string.find(t, 'the first (%d+) bytes are misaligned')
     if n == nil and string.find(t, 'the first byte is misaligned', 1, true) ~= nil then n = '1' end
     return tonumber(n), t
   end
@@ -2181,7 +2181,7 @@ do
   clearforce()
   local pay, npay = {}, 60
   local i
-  for i = 1, npay do pay[i] = 32 + math.fmod(i * 7, 90) end   -- 7-bit safe, so 7E1 can carry it
+  for i = 1, npay do pay[i] = 32 + math.mod(i * 7, 90) end   -- 7-bit safe, so 7E1 can carry it
 
   local idx, nidx = GEN_PERR_EVERY(npay, 10)
   check('GEN_PERR_EVERY starts past the excluded head frames',
@@ -3216,7 +3216,7 @@ check('250 kBd at 1 MS/s decodes exactly -- the ceiling is usable, not just surv
       r and string.format('%d bytes, %d err, %q', r.nf, r.nbad, txt(r)) or 'nil')
 check('and 4.0 samples/bit is reported as marginal',
       (function() local _, w = sdec.sig_quality(); return w ~= nil end)(),
-      tostring(select(2, sdec.sig_quality())))
+      (function() local _, w = sdec.sig_quality(); return tostring(w) end)())
 local okc, whyc
 r, _, _, okc, whyc = run({bytes = hb, baud = 921600, fs = 1000000})
 check('921600 at 1 MS/s is refused, not decoded into something plausible',
@@ -3249,7 +3249,7 @@ check('but it is reported as an unstable baseline',
 local nrd = {}
 local nseed = 12345
 for i = 1, 4000 do
-  nseed = math.fmod(nseed * 16807, 2147483647)
+  nseed = math.mod(nseed * 16807, 2147483647)
   nrd[i] = 5 * (nseed / 2147483647)
 end
 local nok, nwhy = analyse(nrd, 4000, 100000)
@@ -3350,8 +3350,8 @@ check('stop() deletes every display object', MD.live() == 0, 'live=' .. MD.live(
 -- deleting a screen cascades. Three objects (Apply, Cancel and the NOTE label) once
 -- relied on that and 226 tests could not see it, so assert it directly.
 check('NOTHING relied on the parent cascade to be freed',
-      (select(1, MD.cascaded())) == 0,
-      select(1, MD.cascaded()) .. ' cascaded: ' .. select(2, MD.cascaded()))
+      (MD.cascaded()) == 0,
+      (function() local nc, wc = MD.cascaded(); return nc .. ' cascaded: ' .. wc end)())
 check('stop() frees every buffer it made', LIVEBUFS() == base_bufs,
       'buffers=' .. LIVEBUFS() .. ' vs baseline ' .. base_bufs)
 check('stop() nils every handle',
@@ -4592,7 +4592,7 @@ do
   for i = 1, 6 do
     put(0, 2)                                   -- start
     local t = want5[i]
-    for b = 1, 5 do put(math.fmod(t, 2), 2); t = math.floor(t / 2) end
+    for b = 1, 5 do put(math.mod(t, 2), 2); t = math.floor(t / 2) end
     put(1, 3)                                   -- 1.5 stop bits
     if i < 6 then put(1, 4) end
   end
@@ -4991,15 +4991,26 @@ end
 print()
 print('-- SDG arb export --')
 do    -- scoped: the 200-active-locals ceiling applies to the main chunk
-local TMP = os.getenv('TMPDIR') or '/tmp'
+local TMP = '/tmp'
 -- UNIQUE PER PROCESS, and that is not tidiness. This was one fixed name, and running the suite
 -- 16-ways parallel then made 3 runs of 16 fail: every process wrote and read the SAME file, so the
 -- odd-length and negative-codeword round trips read back another run's bytes. Two of the three did
 -- not even reach the summary line. A harness that reports a decoder defect when the only fault is
 -- its own scratch file is worse than a slow harness, and tools/soak_offline.py runs twelve at once.
--- os.tmpname() for the unique part because the OS guarantees it; TMP for the directory so the file
--- still lands where the rest of the suite's scratch goes.
-local uniq = string.gsub(os.tmpname(), '^.*[/\\]', '')
+-- THE UNIQUE PART IS A PROBE AND NOT A GUARANTEE, which is weaker than it looks: picking the first
+-- free name is not atomic, so two processes that probe the same name in the same second still
+-- collide. It is what the instrument's interpreter leaves available. Stock Lua 5.0.2 compiles
+-- os.tmpname() out and raises "`tmpname' not supported" when it is called, and os.getenv is refused
+-- outright by tools/offline502.py because the instrument has no environment -- so TMP is a literal
+-- and the suffix is first-free-k, which at least separates processes that a bare os.time() would not.
+local uniq, pk = nil, 0
+repeat
+  pk = pk + 1
+  uniq = os.time() .. '_' .. pk
+  local probe = io.open(TMP .. '/sdec_test_wave_' .. uniq .. '.bin', 'rb')
+  if probe == nil then break end
+  probe:close()
+until pk >= 999
 local path = TMP .. '/sdec_test_wave_' .. uniq .. '.bin'
 
 -- Guide section 5.1.3: codewords 0x1000,0x2000..0x7000,0x7FFF are written as
@@ -5366,7 +5377,12 @@ local function test_chunked()
     local body = MD.logtext()
     local nl, nshort = 0, 0
     local line
-    for line in string.gmatch(body, '[^\r\n]+') do
+    local lpos = 1
+    while true do
+      local la, lb = string.find(body, '[^\r\n]+', lpos)
+      if la == nil then break end
+      line = string.sub(body, la, lb)
+      lpos = lb + 1
       if string.sub(line, 1, 4) ~= '----' then
         nl = nl + 1
         local off = tonumber(string.sub(line, 1, 4))
@@ -8084,7 +8100,7 @@ local function test_modes()
   -- The case the gate exists for must still be refused.
   local nrd, nseed = {}, 12345
   for i = 1, 4000 do
-    nseed = math.fmod(nseed * 16807, 2147483647)
+    nseed = math.mod(nseed * 16807, 2147483647)
     nrd[i] = 5 * (nseed / 2147483647)
   end
   check('and structureless noise is still refused at the level stage',
@@ -8868,7 +8884,7 @@ local function build(c)
   elseif c.pair then
     local i
     for i = 1, 400 do
-      if math.fmod(i, 2) == 1 then bytes[i] = 0xAA else bytes[i] = 0x55 end
+      if math.mod(i, 2) == 1 then bytes[i] = 0xAA else bytes[i] = 0x55 end
     end
   else
     local i
