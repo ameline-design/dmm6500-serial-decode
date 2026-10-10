@@ -294,6 +294,74 @@ directions from the two settings.
 An explicit count on the block **overrides `dmm.digitize.count`** (MEASURED, E3e: count 7 set, block
 count 250, 250 readings taken). Counts of 8192, 32768 and 1 000 000 are all accepted (MEASURED, E3f).
 
+### The reserve is the wire BEFORE the device started, and reading it as the line inverts every byte
+
+A window that holds everything from `initiate()` onward is also a hazard, and it cost this app a defect
+of its own. On an arm from silence the reserve is not a quiet stretch of the signal: it is a
+measurement of a switched-off wire, taken before the device under test was transmitting at all. `sdec.sig_idle` set the polarity prior from the
+longest run in the window, the reserve became that run, and the decode came back inverted —
+self-consistent bytes, a plausible error count, every one of them wrong. ASCII's always-zero top data
+bit puts a rising edge exactly nine bit times after every start bit, so the inverted reading frames as
+cleanly as the truth and nothing downstream objects.
+
+**THE RESERVE'S LENGTH MADE IT WORSE, NOT BETTER.** A run of a thousand samples clears
+`sdec.idlemult * onebit` several times over, so `sig_idle`'s LEVEL branch — the one that takes
+polarity from the signalling standard rather than from this window — never runs and `sdec.idle_weak`
+stays false. `idle_weak` is the flag `sdec.polmargin` keys on. The capture that most needs the 4×
+margin against an inverted ASCII reading is the one certain not to get it.
+
+**IT IS A SAMPLE-RATE BOUNDARY, NOT A COIN TOSS.** The reserve is a fixed SAMPLE count — 5 % of
+capacity, 1055 at 21 100 — while the line's idle gap is a fixed TIME, so the gap out-runs the reserve
+only above about 171 kS/s on `v41`. MEASURED, `v41` at 0.00…3.30 V on the wire, armed on silence with
+the generator switched on at +3 s, six captures a condition:
+
+| condition | `run0` | `run1` | `idle` | result |
+|---|---|---|---|---|
+| busy line, no arm | 50 | 344 | 1 | 162 bytes, 0 bad, 6/6 readable |
+| armed, blind, fs 200 kS/s | 1052 | 1210 | 1 | 62 bytes, 0 bad, 2/6 readable |
+| armed, locked, fs 80 kS/s | 1053 | 500 | 0 | 158 bytes, 62 bad, **0/6 readable** |
+
+`run1` is the same gap in both armed rows — 1210 samples at 200 kS/s and 500 at 80 kS/s are 6.05 and
+6.25 ms — while `run0` is the reserve at its fixed 1055 either way. A locked 9600 picks 80 kS/s and
+fails every time; the blind rate picks 200 kS/s and is marginal, which is the 2/6.
+
+**THE AUTOLOCK STATE IS THE SEVERE ROW, AND IT IS THE DEFAULT.** `sdec.autolock` is true, and
+`sdec.autolock_try` sets `force_nbits`, `force_par` and `force_nstop` while deliberately leaving
+`force_invert` nil. In that state `sdec.decode_from` takes its forced-format branch, which reads
+`inv = (sdec.idle == 0)`: no second polarity is searched, no scores are compared, and no margin
+applies, so a wrong prior has nothing to overturn it. The other two rows keep `sdec.ua_autoformat`'s
+contest as a backstop. **That is a standing weakness of the branch and not of the reserve** — *any*
+wrong `sdec.idle` reaches the bytes there, whatever set it. It is not fixed; it has been deprived of
+its trigger.
+
+**BOTH POLARITIES WERE AFFECTED, IN OPPOSITE DIRECTIONS.** On a single-supply line the dead wire sits
+at ground, which IS the space level, so the prior became "idles LOW". On a ground-straddling line
+`sdec.thr` is about 0 V and the dead wire sits essentially on it, so which bucket the reserve fell
+into was decided by millivolts: MEASURED on `v45` at AMP 15.038 / OFST −2.481, `thr = −0.011 V` and
+the dead line landed on the HIGH side by 11 mV.
+
+**THE FIX TELLS THE DECODER THAT THE RECORD OPENS BEFORE ITS OWN TRIGGER.** `sdec.acq_pretrig` is set
+on `sdec.acq_triggered`'s successful exit, and only where `sdec.pretrig` is above 0, since at 0 the
+record opens ON the edge and its first run really is the line. `sdec.acq_free` clears it, which covers
+both the degrade-to-free-run exit and the level-learning probe inside `sdec.acquire`, and so does
+`sdec.clear_measured`. `sig_idle` then refuses to let the leading run set `run0`/`run1`, and publishes
+it as `sdec.leadrun` instead. With the reserve out of the vote the real runs decide; where the window
+holds no genuine idle either, the longest run falls below `idlemult * onebit`, the LEVEL branch fires,
+`idle_weak` comes back true, and the 4× margin protects the answer.
+
+AFTER, the same six conditions: armed blind 2/6 → 6/6, armed locked 0/6 → 6/6, all four busy-line
+conditions unchanged at 6/6. On `v45` driven bipolar — three bands × two lock states × six captures —
+36/36 readable with `invert` true throughout, which is the correct answer for a line that genuinely
+idles low.
+
+**THE GUARD IS `bench_arm.py` CASE P**, which runs the workflow in three lock states and asserts the
+premise before the outcome: a fired arm must report `acq_pretrig` true and a leading run over 500
+samples, because an assertion about the reserve is vacuous if there was no reserve. MEASURED with the
+guard disabled on the instrument, the `run0 == leadrun` mechanism check fails in all three rows while
+the BYTE check fails only in the autolock one — the contest rescued the other two on that run. So the
+mechanism check is the reliable detector and the byte check is what says the defect reached the
+operator. Both are kept.
+
 ## 8. The canned templates, disassembled
 
 **`LoopUntilEvent(event, position, clear, delay, buffer)`** — the shape above (MEASURED, E1a):
@@ -645,6 +713,9 @@ of the signal cannot be missed. `LoopUntilEvent` is the canned equivalent and co
 **To arm a long acquisition on the analog trigger**, use §7's four-block shape. **Do NOT reduce it to
 a wait followed by a counted `MEASURE_DIGITIZE`** — that program builds cleanly, passes every static
 check, sits on the fast path, and never fires. See the warning below.
+
+**To read what comes back**, do not treat the record's leading run as a measurement of the line. It is
+the reserve, and on an arm from silence it is the wire before the device started — see §7.
 
 **To clear the buffer**, call `buf.clear()` from Lua before `initiate()` rather than using a
 `BLOCK_BUFFER_CLEAR`. The block is a fast-path disqualifier and the Lua call is not.
