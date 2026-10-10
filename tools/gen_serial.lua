@@ -1933,22 +1933,32 @@ function TRIG.press(n)
 end
 local bi
 for bi = 1, 2 do
-  trigger.blender[bi] = {stimulus = {}, orenable = false}
-  trigger.blender[bi].reset = function()
-    trigger.blender[bi].stimulus = {}
-    trigger.blender[bi].orenable = false
-    TRIG.latch[bi] = 0
+  -- `b`, NOT `bi`, IN THE THREE CLOSURES BELOW, and that is the whole reason this line exists.
+  -- Lua 5.0.2 -- the interpreter the instrument runs -- keeps a for loop's control variable in ONE
+  -- slot for the whole loop and never closes it per iteration, so a closure made in the body sees
+  -- the value the loop ENDED on. Over `bi` directly, all six closures belong to blender 2:
+  -- blender[1].reset() resets blender 2, and blender[1].clear/wait read TRIG.latch[2]. That makes the
+  -- mock an instrument with ONE blender under two indices, which is the collision sdec.cancel_blender
+  -- = 2 exists to avoid -- acq_triggered() owns blender 1, so its release would discard a pending
+  -- cancel press. 5.5 gives each iteration its own variable and shows none of it. A local declared
+  -- INSIDE the body is closed per iteration under both, which is what makes this the portable form.
+  local b = bi
+  trigger.blender[b] = {stimulus = {}, orenable = false}
+  trigger.blender[b].reset = function()
+    trigger.blender[b].stimulus = {}
+    trigger.blender[b].orenable = false
+    TRIG.latch[b] = 0
   end
-  trigger.blender[bi].clear = function() TRIG.latch[bi] = 0 end
-  trigger.blender[bi].wait = function(t)
+  trigger.blender[b].clear = function() TRIG.latch[b] = 0 end
+  trigger.blender[b].wait = function(t)
     -- A ZERO TIMEOUT IS A BUG AT THE CALL SITE, not something to be tolerant of: it is how
     -- display.waitevent() wedges this instrument, so the mock refuses it rather than letting an
     -- accidental wait(0) pass the offline suite and hang the hardware.
     if t == nil or t <= 0 then error('blender wait needs a nonzero timeout', 0) end
     TRIG.waits = TRIG.waits + 1
-    local n = TRIG.latch[bi] or 0
+    local n = TRIG.latch[b] or 0
     if n < 1 then return false end
-    TRIG.latch[bi] = 0                  -- one read clears every pending event, as documented
+    TRIG.latch[b] = 0                   -- one read clears every pending event, as documented
     return true
   end
 end
