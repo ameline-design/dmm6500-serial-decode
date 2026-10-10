@@ -11,10 +11,11 @@ nothing on them, which is exactly what a DUT that has not been powered up looks 
 under sdec.minswing, so the level probe refuses it and the capture arms instead of recording it.
 Switching the output on, from a thread, is the device starting to transmit.
 
-FOURTEEN CASES IN TWO HALVES. A-G are the feature's own claims, and the first of those is the one
-that was BROKEN at V1.40. H-N are the hostile half: both settings at their limits, a sign reversal, a
-leak between captures, a promise that has to be backed by instrument state, and a rate the blind
-window cannot resolve.
+FIFTEEN CASES IN TWO HALVES. A-G are the feature's own claims, and the first of those is the one
+that was BROKEN at V1.40. H-O are the hostile half: both settings at their limits, a sign reversal, a
+leak between captures, a promise that has to be backed by instrument state, a rate the blind window
+cannot resolve, and the largest recording the app offers -- which is the one whose buffer made the
+arm a coin toss at the settle budget this feature shipped with.
 
   A  Baud Rate 0 (the DEFAULT), silent line     -- must ARM and wait, not return in 3.5 s
   B  Baud Rate 0, generator on mid-wait         -- must fire early and decode from the first byte
@@ -31,6 +32,7 @@ window cannot resolve.
   L  an arm, then a BUSY line                   -- the guessed level must not outlive its capture
   M  a line idling at -5 V                      -- the other sign, where the start bit goes UP
   N  a 57 600 Bd device caught blind            -- must REFUSE, not publish 38 400
+  O  the 32 kB recording, armed                 -- the largest buffer the settle budget must cover
 
 A IS THE REGRESSION TEST. Measured at V1.40: with the rate automatic a press on a silent line
 returned in 3.55 s saying 'line is idle (no transitions)' and never armed, while the identical press
@@ -610,6 +612,49 @@ def main():
                   'lock the baud rate' in note or 'lock the rate' in note, note[:110])
             g.output(False, ch=1)
             g.select_arb(VN.arb('v41'), 10.0, a.baud * SPB)
+
+        # ---- O: the LARGEST recording, armed. The buffer the settle budget has to cover. ----
+        if want('O'):
+            print('\n=== O: a 32 kB recording armed on silence, device starts at +3 s ===')
+            # THE 32 kB MODE IS WHERE THE ARM IS MOST LIKELY TO FAIL, and until now nothing covered it.
+            # Case F's 8 kB recording asks for about 862 000 readings; this one asks for the ck_bufmax
+            # ceiling, 2 800 000. The template's first block is BUFFER_CLEAR over the whole buffer and
+            # that work is linear in readings -- buffer.make() measures 0.0019 s at 21 100 and 0.7789 s
+            # at 2 800 000, about 0.28 microseconds each -- so the time to reach the wait block scales
+            # with the recording. At the old 0.25 s settle budget an 8 kB arm was a coin toss at roughly
+            # 0.24 s of setup, and this mode is three times that again.
+            #
+            # IT IS THE SLOW CASE: about 30 s of capture and two minutes of decoding, which is why the
+            # press gets its own timeout rather than the default.
+            g.output(False, ch=1)
+            d.exec('sdec.ck_job, sdec.ck_running, sdec.strm_recording = nil, false, nil')
+            clear_absorb(d)
+            d.exec('sdec.capmode = "med" sdec.force_baud = %d sdec.armwait = %g' % (a.baud, ARMWAIT))
+            hit = {}
+            t0 = time.time()
+            th = start_later(g, 3.0, hit, arb_on)
+            el, res = press(d, 'O', timeout=900)
+            th.join(timeout=1)
+            armed = tq(d, 'Oa', 'tostring(sdec.strm_armed)')
+            endwhy = tq(d, 'Ow', 'tostring(sdec.ck_endwhy)')
+            nb = tq(d, 'Ob', 'tostring(sdec.ck_nbytes)')
+            cap = tq(d, 'Oc', 'tostring(sdec.buf ~= nil and sdec.buf.capacity or nil)')
+            nsmp = tq(d, 'On', 'tostring(sdec.strm_nsmp)')
+            fsx = tq(d, 'Of', 'tostring(sdec.fs)')
+            err = tq(d, 'Oe', 'tostring(sdec.lasterr)')
+            print('  generator on at +%.2f s' % (hit.get('on', t0) - t0))
+            print('  elapsed %.2f s   capture=%s' % (el, res))
+            print('  armed=%s endwhy=%s bytes=%s' % (armed, endwhy, nb))
+            print('  nsmp=%s buffer capacity=%s  fs=%s' % (nsmp, cap, fsx))
+            print('  lasterr: %s' % err)
+            check('O the largest recording arms rather than recording the silence', armed == 'true',
+                  'strm_armed=%s at capacity %s' % (armed, cap))
+            check('O ...and the arm survives a buffer three times case F\'s',
+                  num(cap, 0) > 1500000, 'capacity=%s, want the ck_bufmax ceiling' % cap)
+            check('O ...and it collected bytes from the line', num(nb, 0) > 20, '%s bytes' % nb)
+            d.exec('sdec.capmode = "frame" sdec.force_baud = nil')
+            clear_absorb(d)
+            g.output(False, ch=1)
 
     finally:
         print('\n=== restore ===')

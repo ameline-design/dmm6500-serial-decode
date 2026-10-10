@@ -366,16 +366,56 @@ end
 -- Phases, in order, each one window's work or less:
 --   lvd   the decimated level pass
 --   lvp   one contiguous level probe (repeats, at most ck_probes times)
---   read  the contiguous lead-in window
+--   read  the contiguous lead-in window, from pr.at
 --   edge  sig_edges and sig_idle over it
 --   fmt   the format search
 --
+-- read, edge and fmt TOGETHER repeat on the window after one that found no format, at most
+-- ck_prime_tries times -- see there for why that is the pre-trigger reserve and what it costs.
+--
 -- pr.label names the current phase for the status row, so the operator sees priming
 -- advancing rather than a dead panel.
-function sdec.ck_prime_new(reader, ntotal, win)
+
+-- HOW MANY WINDOWS THE FORMAT SEARCH MAY SPEND, from the silence the record may OPEN with.
+--
+-- AN ARMED RECORD OPENS ON SILENCE, BY CONSTRUCTION. LoopUntilEvent keeps a pre-trigger reserve
+-- ahead of the trigger, and on a device that had not started talking when Capture was pressed every
+-- reading of that reserve is the line the arm was waiting on: 71 865 readings of a 32 kB recording's
+-- 1 437 294, which is 3.6 windows of 20 000. So the first window can be ENTIRELY the wait, and a
+-- search that looks there and nowhere else refuses a recording whose bytes are all present --
+-- MEASURED at 9600 Bd locked, a device starting at +3.0 s gave 0 bytes and 'no frame format fits the
+-- capture' where the same recording of one starting at +0.3 s gave 21 933.
+--
+-- leadmax IS THE CALLER'S FIGURE AND CANNOT BE DERIVED FROM ntotal. The reserve comes out of the
+-- buffer's CAPACITY, so a record cut short -- a device that says its piece and stops, which is what
+-- this feature is for -- carries the whole reserve at the head of a record a fraction of the buffer's
+-- length. Scaling the reserve from the delivered count would then bound it below its own value.
+-- stream_decode knows the buffer and says; nil means "no reserve", which is every unarmed recording
+-- and every decode of an array already in memory.
+--
+-- PLUS TWO, NOT PLUS ONE, AND SO NEVER FEWER THAN TWO, and the 8 kB mode is why: its reserve is
+-- 2 035 readings SHORT of a window, so its first window is 90 % the wait and the size works by luck
+-- rather than by design. The window that STRADDLES the end of the reserve holds a sliver of signal
+-- which need not frame, so the try after the reserve is the first that is certainly on the device's
+-- own traffic. 5 tries for the 32 kB mode's reserve, 2 for the 8 kB mode's.
+--
+-- AND IT IS A BOUND BECAUSE EVERY TRY COSTS A WINDOW. Over the reserve a try is a read, an edge pass
+-- and a format search with nothing in it to search -- 0.63 s of the phase timings above at
+-- W = 20 000 -- and on a window FULL of frames that do not fit it is the whole 1.67 s. That second
+-- case is a locked rate the device is not using, where no later window can help either, so the worst
+-- case is 5 tries at 32 kB: 8.4 s to refuse a recording that takes 1.67 s to refuse on one try.
+function sdec.ck_prime_tries(leadmax)
+  local W = sdec.ck_win_n
+  if W == nil or W < 1 then return 1 end
+  if leadmax == nil or leadmax < 0 then leadmax = 0 end
+  return math.floor(leadmax / W) + 2
+end
+
+function sdec.ck_prime_new(reader, ntotal, win, leadmax)
   if reader == nil then return nil, 'no sample source' end
   return {reader = reader, ntotal = ntotal, win = win, phase = 'lvd', probe = 0,
-          cnt = 0, why = nil, label = 'levels'}, nil
+          cnt = 0, at = 1, try = 1, tries = sdec.ck_prime_tries(leadmax),
+          why = nil, label = 'levels'}, nil
 end
 
 -- One priming sub-operation. Returns done, fmt, err; fmt is set only on the last call.
@@ -409,15 +449,27 @@ function sdec.ck_prime_step(pr)
   end
 
   if pr.phase == 'read' then
+    -- FROM pr.at, WHICH IS NOT ALWAYS 1. A try that found no format advances by the whole width of
+    -- the window it read, so the reserve is crossed in disjoint windows: overlapping them would buy
+    -- the straddling frame nothing here, because the only question asked of this window is which
+    -- FORMAT fits -- ck_decode reads the record again from its start, with its own overlap, and is
+    -- what has to lose no frame to a seam.
     local W = sdec.ck_win_n
-    if pr.ntotal ~= nil and pr.ntotal < W then W = pr.ntotal end
-    local cnt = pr.reader(pr.win, 1, W, 1)
-    if cnt == nil or cnt < 2 then return true, nil, 'nothing captured' end
+    local left = nil
+    if pr.ntotal ~= nil then left = pr.ntotal - pr.at + 1 end
+    if left ~= nil and left < W then W = left end
+    local cnt = nil
+    if W >= 2 then cnt = pr.reader(pr.win, pr.at, W, 1) end
+    -- THE FORMAT REASON OUTRANKS 'nothing captured' once a try has been made: a read that comes back
+    -- short here is the END of a record whose earlier windows were looked at and did not frame, and
+    -- reporting an empty capture would name the wrong fault.
+    if cnt == nil or cnt < 2 then return true, nil, pr.fmtwhy or 'nothing captured' end
     -- W IS RECORDED BESIDE cnt so the decode does not read this same window again. Priming fills
-    -- pr.win[1..cnt] from position 1, and ck_decode's first window is the same table, the same reader
+    -- pr.win[1..cnt] from pr.at, and ck_decode's first window is the same table, the same reader
     -- and the same position -- 20 000 proxy reads at 21.73 us returning values already in the table,
-    -- 0.435 s of every recording. The width is what makes the reuse checkable rather than assumed:
-    -- ck_decode takes the count only if its own geometry asks for exactly this many samples.
+    -- 0.435 s of every recording. The width and the POSITION are what make the reuse checkable
+    -- rather than assumed: ck_decode takes the count only if its own geometry asks for exactly this
+    -- many samples AND the window it is about to read starts where this one did.
     pr.cnt, pr.W, pr.phase, pr.label = cnt, W, 'edge', 'edges'
     return false, nil, nil
   end
@@ -435,9 +487,26 @@ function sdec.ck_prime_step(pr)
   end
 
   local ok, why = sdec.decode_from(pr.win, pr.cnt)
-  if not ok then return true, nil, why end
   local r = sdec.res
-  if r == nil or sdec.bittime == nil then return true, nil, 'no format' end
+  if ok and (r == nil or sdec.bittime == nil) then ok, why = false, 'no format' end
+  if not ok then
+    -- NO FORMAT IN THIS WINDOW IS NOT YET A VERDICT ON THE RECORDING, because the window may be
+    -- the pre-trigger reserve -- the silence the arm was waiting through, which carries no frames to
+    -- find. Advance a whole window and look again, at most ck_prime_tries times.
+    --
+    -- THE LEVELS ARE NOT RE-MEASURED BY A RETRY and must not be: ck_levels took them from a
+    -- DECIMATED view of the whole record, which is the population a monolithic decode would have
+    -- seen, and re-measuring on a window that is mostly idle is the exact error the note above
+    -- 'THE LEVELS MUST NOT BE RE-MEASURED PER WINDOW' is about.
+    local nxt = pr.at + pr.W
+    if pr.try < (pr.tries or 1) and pr.ntotal ~= nil and nxt < pr.ntotal then
+      pr.try, pr.at, pr.fmtwhy = pr.try + 1, nxt, why
+      pr.phase = 'read'
+      pr.label = string.format('format %d/%d', pr.try, pr.tries)
+      return false, nil, nil
+    end
+    return true, nil, why
+  end
   local parbits = 0
   if r.par ~= sdec.PAR_NONE then parbits = 1 end
   pr.phase, pr.label = 'done', nil
@@ -448,14 +517,20 @@ end
 -- The one-shot form: prime to completion in one call. Returns fmt, reason.
 -- The guard is a backstop on the phase machine, not on the signal: every phase either
 -- advances or terminates, so exceeding it means a coding fault rather than bad data.
-function sdec.ck_prime(reader, ntotal, win)
-  local pr, perr = sdec.ck_prime_new(reader, ntotal, win)
+--
+-- DERIVED AND NOT A CONSTANT, because the number of legitimate phases is now data-dependent: the
+-- decimated level pass, up to ck_probes contiguous probes, and read/edge/fmt per try. A constant
+-- generous enough for the widest record (9 tries at ck_bufmax) would be no backstop at a narrowed
+-- window, where the panel path can ask for 75.
+function sdec.ck_prime(reader, ntotal, win, leadmax)
+  local pr, perr = sdec.ck_prime_new(reader, ntotal, win, leadmax)
   if pr == nil then return nil, perr end
   local done, fmt, err, guard = false, nil, nil, 0
+  local gmax = 4 + (sdec.ck_probes or 1) + 3 * (pr.tries or 1)
   while not done do
     done, fmt, err = sdec.ck_prime_step(pr)
     guard = guard + 1
-    if guard > 64 then return nil, 'priming did not converge' end
+    if guard > gmax then return nil, 'priming did not converge' end
   end
   if fmt == nil then return nil, err end
   return fmt, nil
@@ -668,12 +743,21 @@ function sdec.ck_decode(reader, ntotal, fmt, sink, opts)
   -- CONSUMED ONCE, AND CLEARED BEFORE THE LOOP RATHER THAN INSIDE IT. A resumed slice arrives with its own
   -- off and must read; clearing here means a later slice cannot inherit a count belonging to window one.
   --
-  -- THE THREE CONDITIONS ARE ALL LOAD-BEARING. off == 0 says this is window one; opts.resume == nil says
+  -- THE FOUR CONDITIONS ARE ALL LOAD-BEARING. off == 0 says this is window one; opts.resume == nil says
   -- the table was not left by some other slice; primed.W == W says the geometry wants exactly the samples
-  -- priming took -- ck_win_n changing between the two calls is the one way the reads could differ.
+  -- priming took -- ck_win_n changing between the two calls is the one way the reads could differ -- and
+  -- primed.at == 1 says the primed window IS the start of the record.
+  --
+  -- THE POSITION IS A CONDITION BECAUSE PRIMING CAN MOVE. A format search that found nothing in the
+  -- reserve advances a window at a time (see ck_prime_tries), so the table can hold samples from the
+  -- middle of the record -- and taken as window one those would decode at offsets they do not have,
+  -- putting every byte of the file somewhere it never was. A primed window at an offset is simply not
+  -- reused: the saving is 0.435 s on a recording that is about to spend tens of seconds decoding, and
+  -- it is only forgone on the records that needed more than one try.
   local primed = opts.primed
   opts.primed = nil
-  local reuse = (primed ~= nil and off == 0 and opts.resume == nil and primed.W == W)
+  local reuse = (primed ~= nil and off == 0 and opts.resume == nil and primed.W == W and
+                 primed.at == 1)
 
   while true do
     local cnt
@@ -1096,7 +1180,9 @@ function sdec.ck_job_new(reader, ntotal, path, opts)
   sdec.smp, sdec.nread = nil, 0
 
   local win = {}
-  local pr, perr = sdec.ck_prime_new(reader, ntotal, win)
+  -- opts.leadmax IS THE ACQUISITION'S STATEMENT, not this module's guess: the pre-trigger reserve a
+  -- record may open on. See ck_prime_tries.
+  local pr, perr = sdec.ck_prime_new(reader, ntotal, win, opts.leadmax)
   if pr == nil then return nil, perr end
   opts.win = win
 
@@ -1172,8 +1258,12 @@ function sdec.ck_job_step(job)
     -- the same win table, so its samples are the decode's first window already; passing the count lets
     -- ck_decode skip re-reading them. Only set when priming came through the 'read' phase -- a probe path
     -- that never reached it leaves pr.W nil, and then the decode reads normally.
+    --
+    -- WHERE IT WAS READ TRAVELS WITH IT, because priming is allowed to advance past a window that
+    -- held no format and the samples are then not the record's first: ck_decode checks the position
+    -- as well as the width before it believes the count.
     if job.prime.W ~= nil then
-      job.opts.primed = {cnt = job.prime.cnt, W = job.prime.W}
+      job.opts.primed = {cnt = job.prime.cnt, W = job.prime.W, at = job.prime.at}
     end
     job.prime = nil
     if fmt == nil then

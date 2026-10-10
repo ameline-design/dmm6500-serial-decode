@@ -1105,6 +1105,98 @@ print('\nI  an 8 kB or 32 kB recording can wait for a device that has not starte
     end
   end
 
+  -- ---- AND A DEVICE THAT STARTS LATER THAN ONE WINDOW OF RESERVE ----
+  --
+  -- THE RECORD OPENS ON THE PRE-TRIGGER RESERVE, WHICH IS SILENCE BY CONSTRUCTION, and the format
+  -- search read the first window only. LoopUntilEvent keeps sdec.pretrig per cent of the buffer's
+  -- CAPACITY ahead of the trigger, so a 32 kB recording opens on 71 865 readings of the line the arm
+  -- was waiting through -- 3.6 windows of 20 000 -- while an 8 kB one opens on 17 965, which is
+  -- 2 035 readings short of the window and the whole reason that size works.
+  --
+  -- MEASURED on the instrument at 9600 Bd locked, capmode 'med', the generator switched on from a
+  -- thread: a device starting at +3.0 s gave armed=true, endwhy=full, ZERO bytes and 'no frame format
+  -- fits the capture'. The same recording of a device starting at +0.3 s gave 21 933 bytes, and a busy
+  -- line with no arm at all gave 22 385 -- so the rate and the mode are not what break, the WAIT is.
+  do
+    local kthr, kidle, kat, kai = sdec.thr, sdec.idle, sdec.arm_thr, sdec.arm_idle
+    local karmed = sdec.strm_armed
+    -- THE BUDGET IS THE RESERVE IN WINDOWS, which is the arithmetic the fix turns on and the one
+    -- thing in it that cannot be read off the outcome below. The two reserves are the shipped modes'.
+    check('the format search gets a try per window of reserve, and two where there is none',
+          sdec.ck_prime_tries(71865) == 5 and sdec.ck_prime_tries(17965) == 2 and
+          sdec.ck_prime_tries(nil) == 2,
+          string.format('32 kB %d, 8 kB %d, none %d, at window %d',
+                        sdec.ck_prime_tries(71865), sdec.ck_prime_tries(17965),
+                        sdec.ck_prime_tries(nil), sdec.ck_win_n or 0))
+    begin('med', 'edge', quiet_line)
+    local realinit = trigger.model.initiate
+    trigger.model.initiate = function()
+      -- 6900 BIT TIMES OF IDLE AHEAD OF THE FIRST START BIT, which is more than the reserve: the mock
+      -- clamps the pre-trigger half to the buffer's own budget, so the record opens on the WHOLE
+      -- reserve -- 71 865 readings, 3.6 windows of 20 000, the figure measured on the instrument.
+      -- More than two windows of it, deliberately: a bound of 'one try past the first window' would
+      -- still refuse this, so the outcome below is asserting the reserve-derived budget and not just
+      -- the existence of a retry.
+      --
+      -- The payload runs past the end of the render for the reason the block above gives -- the arm's
+      -- activity test reads the NEWEST window, so a device that falls silent reads as one that
+      -- never started.
+      local many, q = {}, nil
+      for q = 1, 1200 do many[q] = 32 + math.mod(q * 11, 90) end
+      local g_rd, g_ts, g_nc, g_n =
+        GEN({bytes = many, baud = 9600, fs = 100000, lead = 6900, n = 200000})
+      SRC.rd, SRC.ts, SRC.nsmp = g_rd, g_ts, g_n
+      SRC.trigat = math.floor(6900 * 100000 / 9600)
+      return realinit()
+    end
+    local got = sdec.stream_acquire(sdec.strm_nsmp)
+    trigger.model.initiate = realinit
+    -- CLEARED BEFORE THE DECODE, not read as found: stream_decode() writes ck_nbytes and ck_tot only
+    -- on the paths that produced bytes, so an earlier block's figures would answer for this one.
+    sdec.ck_tot, sdec.ck_nbytes = nil, nil
+    local dok, dwhy = sdec.stream_decode(got)
+    -- THE PREMISE, ON THE RECORD ITSELF, because the outcome below is only interesting if the record
+    -- really does open on more than one window of untouched line. Counted against the FIRST READING
+    -- rather than against sdec.thr, which the decode rewrites: the question is whether the head of the
+    -- record is unbroken, and that needs no threshold.
+    local rd, lead, i = sdec.buf.readings, 0, nil
+    for i = 1, (got or 0) do
+      if rd[i] == nil or math.abs(rd[i] - rd[1]) > 0.5 then break end
+      lead = lead + 1
+    end
+    check('a device that starts late leaves more than two whole windows of silence at the head',
+          lead > 2 * sdec.ck_win_n,
+          string.format('%d flat readings of %s, window %d', lead, tostring(got),
+                        sdec.ck_win_n or 0))
+    check('...and the recording still decodes what the device sent after it',
+          dok == true and (sdec.ck_nbytes or 0) > 100,
+          string.format('ok=%s %s bytes, endwhy=%s, %s', tostring(dok), tostring(sdec.ck_nbytes),
+                        tostring(sdec.ck_endwhy), tostring(dwhy)))
+    -- AND AT THE RIGHT OFFSETS, which is the half a retry can get wrong rather than fail: the primed
+    -- window is handed to ck_decode as its first window, so a window primed at an OFFSET would decode
+    -- as if it were the start of the record and move every byte. The generator's payload is a known
+    -- sequence, so byte k has exactly one right value.
+    do
+      local tl = sdec.ck_tot ~= nil and sdec.ck_tot.tail or nil
+      local wrong, first, k = 0, nil, nil
+      if tl ~= nil then
+        for k = 1, tl.nf do
+          if tl.vals[k] ~= 32 + math.mod(k * 11, 90) then
+            wrong = wrong + 1
+            if first == nil then first = k end
+          end
+        end
+      end
+      check('...and every byte is the one the device sent at that position',
+            tl ~= nil and tl.first == 1 and tl.nf > 100 and wrong == 0,
+            string.format('%s bytes from offset %s, %d wrong, first at %s',
+                          tostring(tl and tl.nf), tostring(tl and tl.first), wrong,
+                          tostring(first)))
+    end
+    sdec.thr, sdec.idle, sdec.arm_thr, sdec.arm_idle = kthr, kidle, kat, kai
+    sdec.strm_armed = karmed
+  end
+
   trigger.model.initiate = realinit0
   trigger.model.state = realstate0
   TRIG.state = trigger.STATE_IDLE

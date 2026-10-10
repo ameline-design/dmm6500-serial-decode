@@ -1157,6 +1157,27 @@ function sdec.stream_decode(got)
   -- cap afterwards, discarding bytes already in the buffer.
   local opts = {maxbytes = md.cap, nocap = (md.cap == nil),
                 progress = sdec.ck_progress}
+  -- HOW MUCH SILENCE THIS RECORD MAY OPEN WITH, which only this path knows and the decoder cannot
+  -- derive. An armed recording's record is [pre-trigger reserve][post-trigger burst], the reserve is
+  -- the line the arm was waiting on, and the reserve comes out of the buffer's CAPACITY -- so on a
+  -- device that started late it is 71 865 readings of silence at the head of a 32 kB recording,
+  -- 3.6 windows of 20 000, whatever fraction of the buffer the burst went on to fill. Without this
+  -- the format search read one window of the wait and refused the whole recording: MEASURED, 0 bytes
+  -- and 'no frame format fits the capture' for a device starting at +3.0 s. See ck_prime_tries.
+  --
+  -- ONLY WHERE THERE IS A RESERVE. An unarmed recording starts at the trigger, so its record opens on
+  -- the traffic that fired it and an allowance would buy nothing but tries.
+  --
+  -- GUARDED AT THE PROXY READ, like every other attribute read on this object, and the degrade is to
+  -- say nothing -- which is the pre-feature bound of two tries rather than a wrong number of them.
+  if sdec.strm_armed and sdec.buf ~= nil and (sdec.pretrig or 0) > 0 then
+    local cap = nil
+    if pcall(function() cap = sdec.buf.capacity end) and cap ~= nil then
+      -- THE INSTRUMENT'S OWN RULE, not a percentage of it: the post-trigger count is made in full and
+      -- the reserve is what is left over -- see the measurement in sdec.n_deliv.
+      opts.leadmax = cap - math.floor(cap * (100 - sdec.pretrig) / 100)
+    end
+  end
   -- SLICED when a panel is waiting on us, whole when nothing is. budget_s is what makes each
   -- ck_job_step return inside the latency budget; the one-shot callers leave it nil and get a
   -- single call, which is what keeps the offline suite meaningful.

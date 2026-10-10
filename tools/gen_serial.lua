@@ -1429,55 +1429,76 @@ TRIG.clock   = 0
 TRIG.delays  = 0
 TRIG.delayed = 0
 
--- ---------- WHAT REACHING THE WAIT BLOCK COSTS, IN VIRTUAL SECONDS ----------
--- THE MEASUREMENT IS ONE NUMBER, AND SO IS THE MODEL: initiate() to STATE_WAITING, timed from inside
--- the instrument. MEASURED on 1.7.17a, 30 arms at each of two capacities, polling with delay(0.001):
+-- ---------- READINESS AND CANDOUR ARE TWO DIFFERENT TIMES ----------
+-- THE WAIT BLOCK GOES LIVE ABOUT 2 ms AFTER initiate(); THE STATE CALL DOES NOT ADMIT IT FOR ANOTHER
+-- 190. MEASURED on 1.7.17a two independent ways that agree (docs/TRIGGER.md section 8): from the
+-- recorded data, pre-roll start = fire_s - N5/fs - n_pre/fs over six captures gives 1.6 to 2.6 ms;
+-- and from the block trajectory, BUFFER_CLEAR completes at 0.0003 s and the zero DELAY_CONSTANT at
+-- 0.0012 s. CLEAR_ENTER discards a crossing latched before the block was entered, so the crossing
+-- that fired is genuinely after entry.
 --
---     capacity      min      median      p95      max
---     21 100      0.1668    0.1917    0.1932   0.2032
---     860 000     0.0210    0.1928    0.1952   0.1973
+-- SO THE 0.19 s IS A REPORTING LAG AND NOT AN ARMING DELAY, and a mock that models it as the arrival
+-- gets the consequence backwards: in twelve latency captures STATE_WAITING was NEVER ONCE OBSERVED,
+-- because the signal fired within one ramp period of the wait going live. A capture that fails a
+-- short spin was armed the whole time and is declared unarmed on a stale state read.
 --
--- IT DOES NOT SCALE WITH THE BUFFER, and this file said that it did. A per-reading charge on
--- BUFFER_CLEAR -- taken from buffer.make()'s cost on the argument that buffer work is linear in
--- readings -- predicted the 860 000 case about seventy times too high. The sweep refutes it: seven
--- capacities from 21 100 to 2 800 000, a 133-fold range, flat at 0.171 to 0.180 s, with five separate
--- nulls (dmm.digitize.count, a host buf.clear() before initiate(), samplerate, template position, and
--- the poll cadence). buffer.make() itself is 2.5 to 3.7 ms at 860 000 readings and runs in
--- acq_make_buffer() BEFORE the arm, so no part of allocation is inside this cost at all. See
--- docs/TRIGGER.md section 8 and the comment above sdec.arm_settle_s.
---
--- THE SPLIT ACROSS THE THREE BLOCKS AHEAD OF THE WAIT IS NOT CLAIMED, because the measurement cannot
--- see it: it times initiate() to STATE_WAITING and nothing finer. So `arrive` is the whole of it, and
--- whatever `delay` and `digitize` cost is taken OUT of it rather than added on -- the sum is the
--- figure that was measured and the apportionment is not asserted anywhere.
+-- NEITHER TIME SCALES WITH THE BUFFER, and an earlier version of this file said the arrival did. A
+-- per-reading charge on BUFFER_CLEAR -- taken from buffer.make()'s cost on the argument that buffer
+-- work is linear in readings -- predicted an 860 000-reading arm about seventy times too high. The
+-- sweep refutes it: seven capacities from 21 100 to 2 800 000, a 133-fold range, flat at 0.171 to
+-- 0.180 s, with five separate nulls (dmm.digitize.count, a host buf.clear() before initiate(),
+-- samplerate, template position, and the poll cadence). buffer.make() itself is 2.5 to 3.7 ms at
+-- 860 000 readings and runs in acq_make_buffer() BEFORE the arm, so no part of allocation is inside
+-- either number.
 TRIG.cost = {
-  -- nil TAKES THE ARRIVAL FROM THE PRIOR STATE, which is the faithful model -- see TRIG.arrive_after.
-  -- A NUMBER PINS IT, for a test that wants a particular arrival without arranging a prior state to
-  -- get one.
-  arrive   = nil,
-  delay    = 0.0,            -- added to the DELAY_CONSTANT block's own argument
-  digitize = 0.0006,         -- reaching the first reading of a MEASURE_DIGITIZE block
-  notify   = 0.0,
+  -- THE BLOCK TRAJECTORY, MEASURED: the clear completes at 0.0003 s, the zero delay at 0.0012 s, and
+  -- the pre-roll is running by 1.6 to 2.6 ms. These three sum to 0.002.
+  buffer_clear = 0.0003,
+  delay        = 0.0009,     -- added to the DELAY_CONSTANT block's own argument
+  digitize     = 0.0008,     -- reaching the first reading of a MEASURE_DIGITIZE block
+  notify       = 0.0,
+  -- HOW LONG trigger.model.state() TAKES TO ADMIT THE WAIT. nil takes it from the prior state, which
+  -- is the faithful model -- see TRIG.lag_after. A number pins it, for a test that wants a particular
+  -- candour without arranging a prior state to get one.
+  report_lag   = nil,
+  -- THE COMPARATOR'S OWN LATENCY, FIXED IN TIME AND NOT IN SAMPLES. MEASURED against a slow ramp so
+  -- the crossing could be interpolated rather than quantised: 7.16 us at 200 kS/s and 7.36 us at
+  -- 1 MS/s, a 1.03x change across a 5.0x change of rate, against a 3.44x change measured in samples.
+  -- Jitter is comparable to the latency (6.2 to 9.3 us at 1 MS/s), so the firing point is not
+  -- deterministic to the sample and this models the central value only.
+  cmp_latency  = 7.3e-6,
 }
--- THE ONE REAL DEPENDENCY: WHAT THE INSTRUMENT WAS DOING BEFORE THE ARM. MEASURED, and it is the
+-- WHAT THE INSTRUMENT WAS DOING BEFORE THE ARM IS WHAT MOVES THE CANDOUR. MEASURED, and it is the
 -- reason a bound anywhere near 0.2 s is a coin toss rather than a clean pass or a clean failure.
 --
---     the previous model                              time to STATE_WAITING
+--     the previous model                              initiate() to STATE_WAITING observed
 --     aborted while sitting in STATE_WAITING          0.228 s -- the worst case
 --     a SimpleLoop that ran to IDLE on its own        0.177 s
 --     a completed dmm.digitize.read()                 0.164 s
 --     load("Empty"), nothing acquiring                0.191 s
 --
+-- THESE ARE OBSERVED TIMES FROM initiate(), so the lag proper is each of them LESS the ~2 ms the
+-- block really takes -- which is how TRIG.lag() uses them.
+--
 -- TRIG.prior is recorded where each of those ENDS -- in abort() and in dmm.digitize.read() -- rather
 -- than being set by a fixture, so a suite that probes the line and then arms gets the 'read' row
 -- because that is what it actually did.
-TRIG.arrive_after = {waiting = 0.228, loop = 0.177, read = 0.164, empty = 0.191}
+TRIG.lag_after = {waiting = 0.228, loop = 0.177, read = 0.164, empty = 0.191}
 TRIG.prior = nil
 
--- The arrival this arm will take, in seconds.
-function TRIG.arrival()
-  if TRIG.cost.arrive ~= nil then return TRIG.cost.arrive end
-  return TRIG.arrive_after[TRIG.prior or 'empty'] or TRIG.arrive_after.empty
+-- When STATE_WAITING will first be observable, as seconds after initiate().
+function TRIG.observed_at()
+  if TRIG.cost.report_lag ~= nil then return TRIG.cost.report_lag end
+  return TRIG.lag_after[TRIG.prior or 'empty'] or TRIG.lag_after.empty
+end
+
+-- The candour lag itself: how long after the wait goes LIVE the state call admits it. Floored at
+-- zero, so a test that pins an observation time shorter than the block trajectory gets a state call
+-- that is merely prompt rather than one that answers before the event.
+function TRIG.lag()
+  local l = TRIG.observed_at() - (TRIG.cost.buffer_clear + TRIG.cost.delay + TRIG.cost.digitize)
+  if l < 0 then l = 0 end
+  return l
 end
 
 -- Arrange a prior state by hand. Named rather than numeric, so a test says which ROW of the table it
@@ -1523,21 +1544,51 @@ function TRIG.at()
   return at
 end
 
--- THE CLOCK-DERIVED STATE. Four phases, in the order the instrument goes through them: the blocks
--- AHEAD of the wait (RUNNING), the wait itself (WAITING), the counted burst after it (RUNNING), and
--- the end of the program (IDLE).
+-- WHAT THE MODEL IS REALLY DOING at clock time `c`, ignoring candour. Four phases in the order the
+-- instrument goes through them: the blocks AHEAD of the wait (RUNNING), the wait itself (WAITING),
+-- the counted burst after it (RUNNING), and the end of the program (IDLE). Not what state() answers
+-- -- see TRIG.reported() -- but what a test asserting the MODEL rather than the API wants.
 --
 -- THE LITERALS, NOT trigger.STATE_*, and that is deliberate: tools/test_streamfix.lua sets
 -- trigger.STATE_WAITING to nil to test sdec.trig_waiting()'s degrade, and a machine that read the
 -- constant would then answer nil -- making the app's "I cannot tell" branch a test of the mock. The
 -- strings here are the constants' values, so the degrade is exercised against a model that really is
 -- waiting.
-function TRIG.walkstate()
+function TRIG.walkstate(c)
+  if c == nil then c = TRIG.clock end
   if TRIG.t0 == nil then return 'idle' end
-  if TRIG.t_wait ~= nil and TRIG.clock < TRIG.t_wait then return 'running' end
-  if TRIG.armable and (TRIG.t_fire == nil or TRIG.clock < TRIG.t_fire) then return 'waiting' end
-  if TRIG.t_done ~= nil and TRIG.clock < TRIG.t_done then return 'running' end
+  if TRIG.t_wait ~= nil and c < TRIG.t_wait then return 'running' end
+  if TRIG.armable and (TRIG.t_fire == nil or c < TRIG.t_fire) then return 'waiting' end
+  if TRIG.t_done ~= nil and c < TRIG.t_done then return 'running' end
   return 'idle'
+end
+
+-- WHAT trigger.model.state() ADMITS at clock time `c`, which is not the same question.
+--
+-- ONLY THE WAITING REPORT IS LAGGED, and that is the measurement rather than a simplification:
+-- STATE_RUNNING is observed IMMEDIATELY after initiate() with nine readings already taken, so the
+-- firmware is prompt about running and late about waiting. The wait goes live at ~2 ms and the state
+-- call admits it 0.164 to 0.228 s after initiate() depending on what ran before.
+--
+-- THE CONSEQUENCE IS THE DEFECT CLASS. An arm whose event arrives inside the lag is never reported as
+-- waiting AT ALL -- the window in which the admission would be true has already closed by the time it
+-- opens -- and a spin that insists on seeing WAITING therefore declares an arm that worked as one
+-- that never went live. MEASURED: twelve latency captures, STATE_WAITING never once observed.
+--
+-- THE UPPER CLAMP AT t_done IS A CHOICE, NOT A MEASUREMENT. Nothing establishes whether a lagged
+-- WAITING report can outlive the program; clamping it means this file never answers WAITING for a
+-- model that has finished, which is a state the instrument has not been seen in.
+function TRIG.reported(c)
+  if c == nil then c = TRIG.clock end
+  if TRIG.t0 == nil then return 'idle' end
+  if TRIG.armable and TRIG.t_wait ~= nil and c >= TRIG.t_wait + TRIG.lag() then
+    local upto = nil
+    if TRIG.t_fire ~= nil then upto = TRIG.t_fire + TRIG.lag() end
+    if upto ~= nil and TRIG.t_done ~= nil and TRIG.t_done < upto then upto = TRIG.t_done end
+    if upto == nil or c < upto then return 'waiting' end
+  end
+  if TRIG.t_done ~= nil and c >= TRIG.t_done then return 'idle' end
+  return 'running'
 end
 
 -- Lay the loaded program out on the virtual clock, starting now. `post` is the counted burst's length
@@ -1551,24 +1602,15 @@ end
 function TRIG_TIMELINE(post, dt, fire)
   TRIG.t0, TRIG.btime = TRIG.clock, {}
   TRIG.t_wait, TRIG.t_fire, TRIG.t_done = nil, nil, nil
-  -- THE ARRIVAL, LESS WHAT THE BLOCKS BEHIND IT ARE CHARGED. BUFFER_CLEAR carries the remainder
-  -- rather than a cost of its own, so moving `delay` or `digitize` redistributes the measured total
-  -- instead of inflating it -- the figure that was measured is the SUM. Floored at zero, so a test
-  -- that charges more to the later blocks than the whole arrival gets a BUFFER_CLEAR of nothing
-  -- rather than a model that goes backwards in time.
-  -- THE TEMPLATE'S OWN DELAY ARGUMENT IS NOT SUBTRACTED, and that is the one place the apportionment
-  -- has a physical consequence: the measurement was taken with DELAY_CONSTANT 0, and a programmed
-  -- delay really does push the wait out by its own length rather than coming out of the setup. So a
-  -- two-second delay block makes the arrival two seconds later, as it must.
-  TRIG.arrive = TRIG.arrival()
-  local clr = TRIG.arrive - TRIG.cost.delay - TRIG.cost.digitize
-  if clr < 0 then clr = 0 end
+  -- EACH BLOCK IS CHARGED ITS OWN MEASURED COST, and the template's DELAY_CONSTANT argument is ADDED
+  -- to the delay block rather than taken out of the setup: the trajectory was measured with a zero
+  -- delay, and a programmed delay really does push the wait out by its own length.
   local t, i, stalled = TRIG.clock, 1, false
   while i <= TRIG.nblocks do
     TRIG.btime[i] = t
     local b, d = TRIG.blocks[i], 0
     if b.op == 'BUFFER_CLEAR' then
-      d = clr
+      d = TRIG.cost.buffer_clear
     elseif b.op == 'DELAY_CONSTANT' then
       d = TRIG.cost.delay + (b.arg or 0)
     elseif b.op == 'NOTIFY' then
@@ -1777,10 +1819,14 @@ end
 
 -- The real call returns three values (state, status, block); only the first is read.
 function trigger.model.state()
+  -- TRIG.reported, NOT TRIG.walkstate: this is the firmware's CANDOUR and not its readiness, and the
+  -- difference between the two is the whole of the late-WAITING defect. A test that wants to know
+  -- what the model is really doing calls TRIG.walkstate() directly.
+  --
   -- MIRRORED INTO TRIG.state so one field always says what the model last reported, whichever way
   -- it was decided. Only written while the machine is on; with it off the field is the authority and
   -- the suites that assign it keep it.
-  if TRIG.walk then TRIG.state = TRIG.walkstate() end
+  if TRIG.walk then TRIG.state = TRIG.reported(TRIG.clock) end
   return TRIG.state, 'ok', 0
 end
 -- THE REAR EXT TRIG OUT LINE, for credit-based flow control. Deliberately hostile in one specific
@@ -2000,10 +2046,25 @@ function trigger.model.initiate()
   -- unchanged. With it on the comparator's own level and slope choose the sample, and nil means
   -- NOTHING CROSSED -- the case below.
   local tat, tsrc, twhy = TRIG_TRIGAT()
-  SRC.trigsrc, SRC.trigfired, SRC.trigwhy = tsrc, tat, twhy
   -- THE SOURCE'S OWN SAMPLE INTERVAL, which is what the pre-roll runs at: `dt` above is the
   -- DELIVERED interval and the two differ whenever SRC.native_fs is set.
   local srcdt = SRC.ts[2] - SRC.ts[1]
+  -- THE COMPARATOR'S LATENCY IS APPLIED TO THE TRIGGER POINT, IN WHOLE SAMPLES, and only where the
+  -- comparator is what fired: 7.3 us is 0.3 samples at 40 kS/s and 7 samples at 1 MS/s, so a model
+  -- that charged it in samples instead of in time would be wrong by 3.4x across that range. The
+  -- record's trigger point is the first post-trigger SAMPLE, so a sub-sample latency rounds away --
+  -- which is also why the figure is only recoverable from a slow ramp.
+  --
+  -- THE OVERRIDES ARE NOT SHIFTED. SRC.trigat says where the trigger IS, not where a crossing was, so
+  -- adding a comparator's latency to a fixture's own answer would move it for no reason.
+  if tat ~= nil and tsrc == 'comparator' and srcdt ~= nil and srcdt > 0 then
+    local shift = math.floor(TRIG.cost.cmp_latency / srcdt)
+    -- NEVER PAST THE END OF THE RENDER: a crossing on the last sample plus a latency would name a
+    -- trigger point that has no sample, and the fill would come back empty.
+    while shift > 0 and SRC.rd[tat + shift] == nil do shift = shift - 1 end
+    tat = tat + shift
+  end
+  SRC.trigsrc, SRC.trigfired, SRC.trigwhy = tsrc, tat, twhy
   if tat == nil then
     -- NOTHING CROSSED, SO THE WAIT NEVER ENDS -- and the instrument's behaviour here is NOT "no
     -- data". The infinite pre-roll keeps digitizing into a FILL_CONTINUOUS ring for the whole wait
@@ -2043,10 +2104,11 @@ function trigger.model.initiate()
     start = tat - math.floor(pre * step)
     if start < 1 then start = 1 end
   end
-  -- THE WAIT LASTED AS LONG AS THE PRE-ROLL DID. The model reaches its WAIT block a millisecond
-  -- after initiate() and the event arrives when the signal crosses, which is (tat - 1) source
-  -- samples later -- so an arm on a line that stays quiet for three seconds is a three-second wait
-  -- and the state machine reports STATE_WAITING for all of it.
+  -- THE WAIT LASTED AS LONG AS THE PRE-ROLL DID. The model reaches its WAIT block about 2 ms after
+  -- initiate() and the event arrives when the signal crosses, which is (tat - 1) source samples
+  -- later. An arm on a line that stays quiet for three seconds is therefore a three-second wait --
+  -- but whether the state CALL ever admits it is a separate question, and for a wait shorter than the
+  -- candour lag the answer is no. See TRIG.reported().
   TRIG_TIMELINE(post, dt, (tat - 1) * srcdt)
   b.clear()
   -- WRITTEN INTO THE RING AT SRC.ringoff, and the timestamps travel with the SAMPLES rather than with
