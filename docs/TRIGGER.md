@@ -302,33 +302,42 @@ a completed capture lands a little over 95 % of capacity and never at 100 %. Tes
 as the completion condition therefore fails on every capture that worked; `trig_done()` is the test
 that holds.
 
-**BLOCK 1 RUNS OVER THE WHOLE BUFFER, SO THE TIME TO REACH THE WAIT SCALES WITH THE RECORDING.** The
-three blocks ahead of the wait are not free, and the first of them clears every slot. Buffer work at
-this size is linear in readings: `buffer.make()` measures **0.0019 s at 21 100** readings and
-**0.7789 s at 2 800 000**, which is **0.28 µs each**. So the interval between `initiate()` and
-`STATE_WAITING` is a function of capacity, not a constant:
+**REACHING THE WAIT BLOCK TAKES ABOUT 0.19 s, AND IT DOES NOT DEPEND ON THE BUFFER.** MEASURED from
+inside the instrument, 30 arms at each of two capacities, polling with `delay(0.001)`:
 
-| the capture | capacity | setup, at 0.28 µs a reading |
-|---|---|---|
-| a frame capture | 21 100 | ~0.006 s — measured arrival about **1 ms** |
-| an 8 kB recording | ~862 000 | ~**0.24 s** |
-| a 32 kB recording | 2 800 000 (the `ck_bufmax` ceiling) | ~**0.78 s** |
+| capacity | min | median | p95 | max |
+|---|---|---|---|---|
+| 21 100 | 0.1668 | **0.1917** | 0.1932 | 0.2032 |
+| 860 000 | 0.0210 | **0.1928** | 0.1952 | 0.1973 |
 
-**A FIXED BOUND MEASURED ON THE FRAME BUFFER IS THEREFORE WRONG FOR A RECORDING, AND WRONG AS A COIN
-TOSS RATHER THAN CLEANLY.** `sdec.arm_settle_s` bounded that spin at 0.25 s — forty times the frame
-path's millisecond — against an 8 kB recording's 0.24 s of setup. MEASURED, `hw-arm` case F: 0.25 s
-fails, including on a completely fresh load, while 0.6 s, 1.0 s and 3.0 s each arm and collect about
-5 484 bytes. The same case passed once and failed the next three runs at 0.25.
+A sweep of seven capacities from 21 100 to **2 800 000** — a 133-fold range — is flat at 0.171 to
+0.180 s. **Five controls are nulls**: `dmm.digitize.count` (1 against 817 000), a host `buf.clear()`
+before `initiate()`, `samplerate` (40 kS/s against 1 MS/s), template `position` (1 against 50), and
+the poll cadence itself (10 ms, 1 ms and 0.2 ms alike).
+
+What does move it is **what the instrument was doing before the arm**:
+
+| the previous model | time to `STATE_WAITING` |
+|---|---|
+| aborted while sitting in `STATE_WAITING` | **0.228 s** — the worst case |
+| a `SimpleLoop` that ran to `IDLE` on its own | 0.177 s |
+| a completed `dmm.digitize.read()` | 0.164 s |
+| `load("Empty")`, nothing acquiring | 0.191 s |
+
+**SO A BOUND ANYWHERE NEAR 0.2 s IS A COIN TOSS.** `sdec.arm_settle_s` bounded the app's spin at
+0.25 s, about ten per cent above the slowest arm the instrument produces, and `hw-arm` case F duly
+armed once and failed the next three runs — 0.6 s, 1.0 s and 3.0 s each arm and collect about 5 484
+bytes. The shipped value is now 10 s, which is forty-four times the slowest arm.
 
 The consequence inverts the feature instead of degrading it. A spin that never sees `STATE_WAITING`
 has to report an arm that did not go live, because the poll loop cannot tell that from a trigger that
 fired — so the recording runs free and captures exactly the silence that arming exists to avoid.
 
-**AND A TIGHT POLL LOOP APPEARS TO STARVE THE TRANSITION.** A probe reading
-`pcall(trigger.model.state)` as fast as Lua can issue it — 200 000 reads in 10 s, **0.014 ms** each —
-reported `STATE_RUNNING` for the full bound at **every** capacity including 21 100, while the app sees
-`STATE_WAITING` within milliseconds polling every 10 ms. `buf.n` reached capacity throughout, so the
-model was acquiring. Treat a state poll as something to do at the app's cadence, not flat out.
+**`buffer.make()` IS CHEAP AND IS NOT IN THAT INTERVAL.** It measures 2.5 to 3.7 ms at 860 000
+readings over 21 observations, and it runs before the model is loaded, so no part of allocation is
+spent between `initiate()` and the wait. Two readings of 0.78 s appear in one sweep and are outliers:
+the other nineteen observations at the same capacities refute a per-reading cost, and a linear model
+built on them over-predicts the 860 000 case by a factor of seventy.
 
 **`SimpleLoop(count, delay, buffer)`** — a counted loop with **no wait at all** (MEASURED, E1b):
 

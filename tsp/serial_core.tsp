@@ -2355,41 +2355,41 @@ function sdec.trig_done(buf)
   return st == trigger.STATE_IDLE and (buf.n or 0) > 0
 end
 
--- HOW LONG TO WAIT FOR AN ARMED MODEL TO REACH ITS WAIT BLOCK, in seconds. Three blocks of setup
--- stand in front of it -- a buffer clear, a zero delay and the start of an infinite digitize -- and
--- the first of those is over the WHOLE buffer, so the arrival scales with the recording and not with
--- the app.
+-- HOW LONG TO WAIT FOR AN ARMED MODEL TO REACH ITS WAIT BLOCK, in seconds.
 --
 -- READ ONLY BY stream_arm(), so this is a recording-path number. acq_triggered() has no spin: a frame
 -- capture loads its model and waits, and nothing here can lengthen a frame press.
 --
--- 0.25 s WAS MEASURED ON THE WRONG BUFFER. A frame capture's 21 100 readings reach the wait in about
--- a millisecond, and 0.25 s was forty times that -- but an 8 kB recording asks for about 862 000 and
--- a 32 kB one for the ck_bufmax ceiling, so the frame path's margin does not carry over. MEASURED on
--- 1.7.17a, case F of hw-arm, which is an 8 kB recording armed on a silent line:
+-- 0.25 s WAS SIMPLY TOO CLOSE TO THE DISTRIBUTION. MEASURED on 1.7.17a from inside the instrument,
+-- 30 arms at each of two capacities, polling with delay(0.001):
 --
---     0.25 s   FAILS, including on a completely fresh load
---     0.6 s    arms, 5 484 bytes
---     1.0 s    arms, 5 483 bytes
---     3.0 s    arms, 5 485 bytes
+--     capacity      min      median      p95      max
+--     21 100      0.1668    0.1917    0.1932   0.2032
+--     860 000     0.0210    0.1928    0.1952   0.1973
 --
--- IT FAILED AS A COIN TOSS, WHICH IS WHY THE NUMBER IS NOW GENEROUS RATHER THAN TIGHT. The same case
--- armed once and failed the next three runs at 0.25, because `not saw` is carried out as an arm that
--- never went live -- correctly, since the poll loop cannot tell that from a trigger that fired. So a
--- budget the instrument can miss does not degrade the capture, it inverts it: the operator gets a
--- recording of the silence they pressed Capture to avoid.
+-- and the worst case of all, 0.228 s, comes from arming right after ABORTING a model that was itself
+-- sitting in STATE_WAITING. So the old budget stood about ten per cent above the slowest arm the
+-- instrument produces, which is why the same hw-arm case F armed once and failed the next three runs.
 --
--- AND THE ARITHMETIC SAYS WHY IT WAS A COIN TOSS RATHER THAN A CLEAN FAILURE. Buffer work at this
--- size is linear in readings and measurable: buffer.make() takes 0.0019 s at 21 100 readings and
--- 0.7789 s at 2 800 000, which is 0.28 microseconds a reading. An 8 kB recording's 862 000 readings
--- are therefore about 0.24 s of setup -- against a 0.25 s budget. The 32 kB mode asks for the
--- ck_bufmax ceiling, 2 800 000, so its own setup is about 0.78 s and ten seconds leaves it twelve
--- times over.
+-- IT DOES NOT SCALE WITH CAPACITY. The arrival is flat from 21 100 to 2 800 000 readings -- a 133-fold
+-- range -- and five separate controls are nulls: dmm.digitize.count (1 against 817 000), a host
+-- buf.clear() before initiate(), samplerate (40 kS/s against 1 MS/s), template position (1 against
+-- 50), and the poll cadence itself (10 ms, 1 ms and 0.2 ms all alike). What moves it is what the
+-- instrument was doing BEFORE the arm, not the size of the buffer it is arming over.
 --
--- AND A LARGE BOUND COSTS NOTHING ON A SUCCESSFUL ARM, because the spin breaks on the first WAITING
--- it sees. It is spent only when the model never reaches its wait at all -- a firmware fault, after
--- which the recording runs free and still returns a result. Ten seconds of a degraded path buys
--- sixteen times the margin on the measured threshold, and the trade is not close.
+-- buffer.make() IS NOT IN THIS BUDGET, and it is cheap anyway: 2.5 to 3.7 ms at 860 000 readings over
+-- 21 observations. It runs in acq_make_buffer(), before stream_arm() is ever called, so no part of
+-- buffer allocation can be spent inside this bound however long it takes.
+--
+-- A LARGE BOUND COSTS NOTHING ON A SUCCESSFUL ARM, because the spin breaks on the first WAITING it
+-- sees -- about nineteen looks. It is spent only when the model never reaches its wait at all, a
+-- firmware fault after which the recording runs free and still returns a result. Ten seconds is
+-- forty-four times the slowest arm measured, and buys that margin on a path that is already degraded.
+--
+-- THE FAILURE INVERTS THE FEATURE RATHER THAN DEGRADING IT, which is what makes a missable budget
+-- worse than a generous one: `not saw` is carried out as an arm that never went live -- correctly,
+-- since the poll loop cannot tell that from a trigger that fired -- so the recording runs free and
+-- the operator gets exactly the buffer of silence that pressing Capture on a quiet line avoids.
 sdec.arm_settle_s = 10.0
 
 -- IS THE MODEL SITTING IN A WAIT BLOCK? -> true, false, or NIL when it cannot be told.
