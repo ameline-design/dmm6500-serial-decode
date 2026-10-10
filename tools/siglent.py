@@ -164,6 +164,15 @@ class SDG:
         flat 0.1 s is plenty for a 40-byte BSWV and nowhere near enough for 200 kB,
         so the wait scales ~1 s per 100 kB above the base settle.
 
+        WHAT IT IS DIGESTING, as the operator states the mechanism: after a WVDT
+        write the generator READS THE WAVEFORM BACK to render its front-panel
+        preview, and a SCPI command arriving during that render is what wedges the
+        LAN service. That is why the wait has to scale with the point count instead
+        of being flat, and it means the first command after a write is the one at
+        risk rather than the write itself. Consistent with, but not proven by, the
+        selection cost measured in select_arb -- a 3 413 625-point arb answers
+        ARWV? at 10 s and not at 6.
+
         THE HAZARD IS THE NUMBER OF LARGE WRITES, NOT THEIR SIZE, and that is measured
         both ways (instruments.py carries the session log). The THIRD over-ceiling
         upload wedged 39R7 after only 533 kB in total, while a single 1.63 MB and then
@@ -323,7 +332,17 @@ class SDG:
                    f'OFST,{offset_v},DUTY,{duty}')
 
     def output(self, on=True, ch=1, load='HZ'):
-        """Enable/disable a channel output. load='HZ' suits the DMM's 10 MOhm input."""
+        """Enable/disable a channel output. load='HZ' suits the DMM's 10 MOhm input.
+
+        NO PLRT FIELD HERE, and the callers that write one leave a question open.
+        bench_break.py's arb(..., invert=True) sends C1:OUTP ON,LOAD,HZ,PLRT,INVT to
+        get an RS-232 signalling sense without a new waveform file. UNTESTED: nothing
+        in this repo records whether PLRT inverts about OFST or about ground. About
+        OFST it mirrors the band in place and the stimulus is a real idle-negative
+        line; about ground it gives a wholly-negative band instead, which is a
+        different experiment. One DCV read settles it, so an inverted output is not a
+        known stimulus until someone takes it.
+        """
         self.write(f'C{ch}:OUTP {"ON" if on else "OFF"},LOAD,{load}')
 
     def state(self, ch=1):
@@ -499,6 +518,14 @@ class SDG:
         self._check_vpp(amp_vpp)
         payload = struct.pack('<%dh' % n, *codewords)
         self.write_raw(f'C{ch}:WVDT WVNM,{name},WAVEDATA,', payload)
+        # FOUR COMMANDS GO OUT BACK TO BACK IMMEDIATELY AFTER THE WRITE, and that is exactly the
+        # pattern the preview render punishes (see write_raw): ARWV, BSWV, then truearb's SRATE MODE
+        # and SRATE VALUE. write_raw's payload-proportional sleep is the only wait anywhere in the
+        # sequence, so a render that outlasts it meets the ARWV. The ARWV is also a selection, which
+        # may start the same read-back, so the second command is at risk as well.
+        #
+        # A SETTLE BELONGS HERE, between the write and the next command, rather than at the call site:
+        # by the time upload_arb returns the hazardous commands have already been sent.
         self.write(f'C{ch}:ARWV NAME,{name}')
         self.write(f'C{ch}:BSWV AMP,{amp_vpp},OFST,{offset_v}')
         self.truearb(srate_sa_s, ch=ch)       # last, then verified -- see load_arb_file
