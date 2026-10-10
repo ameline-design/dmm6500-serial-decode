@@ -7001,9 +7001,15 @@ local function test_modes()
   -- serial_ui claim 8 px of clearance where there would have been a 6 px overlap.
   do
     local worst, wname = -1, nil
+    -- EVERY FIELD, AND THE LIST IS WHY THIS CHECK MISSED A REAL OVERLAP. It named seven while the form
+    -- built nine, and the two it omitted -- Arm At and Arm Wait -- are the ones that forced a fifth
+    -- row. So the assertion measured the clearance of a field that was no longer the lowest, and the
+    -- bottom of each column sat 1 to 5 px off the button row on the glass with nothing failing here.
+    -- Adding a field to the form means adding it here; there is no way to enumerate them from the
+    -- app, because build_options() creates them and holds each in its own named handle.
     local fields = {{'proto', sdec.opt_proto}, {'baud', sdec.opt_baud}, {'bits', sdec.opt_bits},
                     {'par', sdec.opt_par}, {'pol', sdec.opt_pol}, {'trig', sdec.opt_trig},
-                    {'ext', sdec.opt_ext}}
+                    {'ext', sdec.opt_ext}, {'armv', sdec.opt_armv}, {'armw', sdec.opt_armw}}
     local fi
     for fi = 1, table.getn(fields) do
       local o = MD.obj(fields[fi][2])
@@ -7016,6 +7022,13 @@ local function test_modes()
           worst < sdec.ui_opt_btn_y,
           string.format('%s ends at %d, buttons at %d', tostring(wname), worst,
                         sdec.ui_opt_btn_y))
+    -- NOT OVERLAPPING IS NOT THE SAME AS NOT TOUCHING, and the check above only ever asked the first
+    -- question. It passed at 5 px and at 1 px, which on the glass reads as the bottom field sitting on
+    -- the button row -- reported from the bench, with nothing red to point at. 12 px is half the gap
+    -- the clamp now reserves, so it has room to be met and still fails the configuration that shipped.
+    check('...and clears it by enough to read as separate, not merely by not overlapping',
+          sdec.ui_opt_btn_y - worst >= 12,
+          string.format('%d px of clearance, want 12 or more', sdec.ui_opt_btn_y - worst))
     -- AND THE PITCH THAT WAS ACTUALLY USED, not the preference. sdec.ui_opt_dy is what the layout
     -- ASKS for; build_options clamps it to what the field count allows, and reading the preference
     -- here reported 'pitch 54, gap 4' about a form laid out at 50 with the boxes touching.

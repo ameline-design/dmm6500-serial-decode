@@ -1113,6 +1113,16 @@ sdec.ui_opt_edit_dy = 4
 -- as clipped. 360 gives 11 px, matching the main screen's row, and still leaves 29 px under the last
 -- field. build_options() takes the row's y FROM HERE rather than repeating the number.
 sdec.ui_opt_btn_y   = 360
+-- AND THE CLAMP KEEPS THIS MUCH OF IT BACK, because handing over every pixel between y0 and the
+-- buttons is what put the bottom field 1 px off the row. The clamp's job is to stop a field
+-- OVERLAPPING the buttons; it is not a reason to leave them touching. Reported from the glass: the
+-- bottom field of each column reads as sitting on the button row.
+--
+-- WHAT IT COSTS IS AIR BETWEEN THE BOXES, and that is the right trade only because there is plenty.
+-- A 9-field build goes from a 24 px gap with 5 px of clearance to an 18 px gap with 20, and 18 px is
+-- still four times the 4 px that made the fields unresponsive to touch. A build that cannot afford it
+-- is caught by the dy < eh branch below, which moves the whole column up instead.
+sdec.ui_opt_btn_gap = 24
 sdec.ui_opt_x  = 185   -- the label is RIGHT-ALIGNED and ends here, so this is its width
 -- TWO COLUMNS. Six fields become three and three, which is what buys the vertical gap: three rows
 -- in the space six used to share, so the pitch clears the 50 px box with room to spare instead of
@@ -1126,7 +1136,7 @@ sdec.ui_opt_x  = 185   -- the label is RIGHT-ALIGNED and ends here, so this is i
 -- possible; what it is NOT is measured here. 670 mirrors column one's 270 about the midpoint
 -- (270 + 400), keeping both label runs the same width.
 -- HOW FAR THE CENTRED BLOCK IS NUDGED, negative being up. See the application site.
-sdec.ui_opt_y_adj = -20
+sdec.ui_opt_y_adj = -8
 sdec.ui_opt_cols = 2
 sdec.ui_opt_x_c2 = 552
 -- HOW WIDE AN OPTION-FIELD ENTRY MAY BE, in px. Past this the firmware FADES the tail out
@@ -3445,7 +3455,8 @@ function sdec.build_options()
   local ncols = sdec.ui_opt_cols or 1
   if ncols < 1 then ncols = 1 end
   local nrows = math.ceil(nf / ncols)
-  local maxdy = math.floor((sdec.ui_opt_btn_y - y0 - edy - eh) / (nrows - 1))
+  local maxdy = math.floor((sdec.ui_opt_btn_y - (sdec.ui_opt_btn_gap or 0) - y0 - edy - eh) /
+                           (nrows - 1))
   if dy > maxdy then dy = maxdy end
   -- CENTRED, because three rows at a sane pitch no longer fill the form and a block pinned to the
   -- top leaves all its air in one band under the last field. Only ever moves the block DOWN from
