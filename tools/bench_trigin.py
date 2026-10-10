@@ -36,7 +36,18 @@ local keep = {tm = sdec.trigmode, tx = sdec.trigext, xo = sdec.trigext_only, thr
 sdec.trigmode = 'edge'
 sdec.trigext = true
 sdec.trigext_only = ONLY
-sdec.thr = 0.0            -- mid-swing for a +/-5 V line, so the start bit CAN fire in OR mode
+-- MID-SWING FOR A 0.00..3.30 V LINE, so the start bit CAN fire in OR mode. 1.65 and not 0.0: the
+-- vectors occupy codewords 0..21626 against a 5 V full scale, so AMP 10 / OFST 0 puts 0.000..3.300 V
+-- on the wire and not the +/-5 V an earlier reading of this bench assumed. THIS NUMBER IS THE
+-- COMPARATOR LEVEL -- arm_comparator() writes `arm_thr or thr` and nothing here sets armlevel -- so
+-- at 0.0 the analog trigger was armed on the signal's own floor, where it fires only on offset error
+-- and noise. The or_fast verdict below depends on a falling edge crossing it, so it was passing
+-- marginally rather than for the reason it names.
+--
+-- UNRUN SINCE THE CHANGE: the bench is occupied by a long soak, so this is arithmetic that has not
+-- yet been back to the instrument. If or_fast now fails, that is the case finally being asked the
+-- question it was written for, not a regression.
+sdec.thr = 1.65
 sdec.trigwait_ext = WAITS
 sdec.fs = 100000
 sdec.n = 2000
