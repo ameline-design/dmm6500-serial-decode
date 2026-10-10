@@ -866,6 +866,36 @@ do
   check('...and the threshold was not disturbed', sdec.thr == mid,
         string.format('%s vs %s', tostring(sdec.thr), tostring(mid)))
 
+  -- BUT A THRESHOLD ON A RAIL IS NOT 'INSIDE THE SWING' IN ANY USEFUL SENSE. It is between the two
+  -- levels arithmetically and uncrossable in fact, so sig_edges registers no trip and a transmitting
+  -- device reads as silent. MEASURED ON THE INSTRUMENT: a recording of a +/-2.45 V line left lvl_thr
+  -- at -0.0123 V; the next recording armed from silence on a 0.00..3.30 V line reused it, and
+  -- -0.0123 sits inside -0.0185..3.2832 by six millivolts. The run ended 'quiet' with 0 bytes and a
+  -- lasterr naming the frame format, and the following press recorded 5484 bytes. The margin is the
+  -- HYSTERESIS, which is what already decides whether a trip counts at all.
+  idle()
+  sdec.force_baud = 9600
+  sdec.capmode = 'med'
+  sdec.stream_begin()
+  sdec.strm_lvlreuse = true
+  sdec.strm_releveled = nil
+  -- Just above the low rail, which is where a threshold measured on a bipolar line lands when the
+  -- next line is single-supply. hyst is set small deliberately: the guard must take its margin from
+  -- the levels it just measured, not from the reused pair, or this case still slips through.
+  sdec.thr, sdec.hyst = 0.01, 0.001
+  have = sdec.buf and (sdec.buf.n or 0) or 0
+  check('a threshold sitting ON a rail is uncrossable, so it is replaced too',
+        sdec.strm_relevel(sdec.buf, have, iw) == true,
+        string.format('thr was 0.01 against lo/hi %s/%s', tostring(sdec.lo), tostring(sdec.hi)))
+  check('...and the replacement is a threshold the signal can actually cross',
+        sdec.thr ~= nil and sdec.lo ~= nil and sdec.hi ~= nil and
+        sdec.thr > sdec.lo + (sdec.hyst or 0) and sdec.thr < sdec.hi - (sdec.hyst or 0),
+        string.format('thr=%s lo=%s hi=%s hyst=%s', tostring(sdec.thr), tostring(sdec.lo),
+                      tostring(sdec.hi), tostring(sdec.hyst)))
+  check('...and it says the levels moved, rather than blaming the frame format',
+        sdec.strm_releveled ~= nil and has(sdec.strm_releveled, 're-measured'),
+        tostring(sdec.strm_releveled))
+
   -- AND NEVER WHEN THE LEVELS WERE MEASURED BY THIS CAPTURE'S OWN PROBE.
   idle()
   sdec.strm_lvlreuse = nil

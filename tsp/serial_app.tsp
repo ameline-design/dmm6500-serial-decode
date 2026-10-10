@@ -1563,12 +1563,32 @@ function sdec.strm_relevel(buf, have, iw)
     unmeasure()
     return false
   end
-  -- WRONG MEANS OUTSIDE THE SWING, not merely different. A threshold that still sits between the two
-  -- levels is doing its job -- the line really has gone quiet -- and adopting a marginally different
-  -- one would restart the watchdog for ever on a device that had finished. Only a threshold the
-  -- current signal cannot cross explains "no activity" on a line that is transmitting.
+  -- WRONG MEANS THE SIGNAL CANNOT CROSS IT, not merely different. A threshold that still sits
+  -- between the two levels WITH ROOM TO SPARE is doing its job -- the line really has gone quiet --
+  -- and adopting a marginally different one would restart the watchdog for ever on a device that had
+  -- finished. Only a threshold the current signal cannot cross explains "no activity" on a line that
+  -- is transmitting.
+  --
+  -- AND 'BETWEEN THE LEVELS' IS NOT THE SAME TEST AS 'CROSSABLE'. A bare lo < oldthr < hi admits a
+  -- threshold sitting ON a rail, where no sample ever crosses it and the line reads as permanently
+  -- high. Measured on the instrument: a recording of a +/-2.45 V line left lvl_thr at -0.0123 V, the
+  -- next recording armed from silence on a 0.00..3.30 V line and reused it, and -0.0123 is inside
+  -- -0.0185..3.2832 by SIX MILLIVOLTS -- so this guard kept it, the watchdog saw no crossings, and
+  -- an 8 kB recording of a transmitting device ended as 'quiet' with 0 bytes and a lasterr naming
+  -- the frame format. The next press re-learned the levels and recorded 5484 bytes.
+  --
+  -- THE MARGIN IS THE HYSTERESIS, which is the quantity that already decides what counts as a
+  -- crossing -- sig_edges will not call a trip at all unless it clears thr +/- hyst, so a threshold
+  -- within hyst of either level is one sig_edges can never register. Taken from the levels just
+  -- measured rather than from the reused pair, because it is the CURRENT signal that has to cross
+  -- it. A fraction of the swing is the fallback where no hysteresis came back, so a nil cannot
+  -- silently restore the old bare comparison.
+  local band = sdec.hyst
+  if band == nil or band <= 0 then
+    band = 0.1 * ((sdec.hi or 0) - (sdec.lo or 0))
+  end
   if oldthr ~= nil and sdec.lo ~= nil and sdec.hi ~= nil and
-     oldthr > sdec.lo and oldthr < sdec.hi then
+     oldthr > sdec.lo + band and oldthr < sdec.hi - band then
     unmeasure()
     return false
   end
