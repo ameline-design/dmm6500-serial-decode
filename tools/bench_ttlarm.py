@@ -48,29 +48,79 @@ SPB = 10
 ARMWAIT = 10.0
 START_AT = 3.0
 
-# EIGHT LEVEL CLASSES, FOUR SWINGS x TWO POLARITIES. The pairs are matched in swing so polarity is
-# the only difference within a pair, which is what makes 'ground is the space level' testable: a
-# bipolar line puts ground BETWEEN mark and space, a unipolar one puts it ON the space level, and the
-# output switch parks the line at ground either way.
+# EIGHT LEVEL CLASSES, FOUR SWINGS x TWO POLARITIES, DERIVED RATHER THAN DECLARED.
+#
+# THE p-p FIGURE SENT TO THE GENERATOR IS NOT THE SWING. The vectors occupy codewords 0..21626 of
+# a 16-bit signed range against a 5 V full scale -- GEN_RENDER defaults lo = 0, hi = 3.3 and
+# GEN_CODE maps volts by (v - ofst)/fsv * 32767 -- so on the wire
+#
+#     low = OFST        high = OFST + K * AMP        K = 21626/65534 = 0.33000 exactly
+#
+# AMP 10 / OFST 0 is a 0.00..3.30 V line, not the +/-5 V an earlier reading of this bench claimed.
+# Measured across eight settings: K = 0.3309 +/- 0.0002, 0.27 % high, inside the generator's
+# amplitude accuracy. So a band is asked for as (low, high) and AMP and OFST follow from it.
+#
+# WHICH VECTOR, AND IT DECIDES THE POLARITY. v41 idles at codeword 21626, so its mark is the HIGH
+# level -- a TTL line. v45 is the same waveform rendered inverted and idles at codeword 0, so with
+# OFST negative its mark sits on the NEGATIVE level, which is a real RS-232 line. Using v41 at a
+# negative offset instead gives idle positive and space negative: sig_levels reads RS-232 and marks
+# at the negative level, which is the SPACE, so the decode inverts against a stimulus no wire could
+# carry. That is this repo's own harness bug and not a decoder defect, so the pairing below is not
+# a convenience -- it is what makes each class physical.
+#
+# AND TWO OF THE EIGHT CANNOT BE MADE. The generator's envelope is |OFST| + AMP/2 <= 10 on the
+# NOMINAL pair, and it clamps SILENTLY -- neither siglent.select_arb nor bench/sdg_net.tsp checks
+# it. A symmetric band needs OFST = -S and AMP = 2S/K, so S + S/K <= 10 and S <= 10K/(1+K) =
+# 2.4812 V. +/-5 V and +/-3.3 V are therefore out of reach with this vector family; they are listed
+# so the refusal is explicit rather than silently absent, and pm245 stands in for the largest that
+# fits. pm245 is +/-2.45 and not the +/-2.4812 cap DELIBERATELY: a pair commanded exactly at the
+# limit turns a float comparison into the experiment, and the clamp is silent, so the margin is
+# cheaper than the ambiguity.
 #
 # THE ARM LEVEL IS NOT SCALED WITH THE SWING, deliberately. sdec.armlevel is an operator setting in
 # volts and the point of arming from silence is that the app has not seen the signal yet, so it
-# CANNOT know the swing when it chooses the comparator level. The default 1.0 V therefore sits above
-# the whole of the 0..1 V class and at the very top of the +/-1 V one -- if those fail to arm, that
-# is the honest behaviour of the feature and the question becomes whether it says so. Sweep
-# --armlevel to separate 'cannot arm at this setting' from 'armed and decoded wrong'.
-LEVELS = {
-    # name: (amp_vpp, offset_v, low_v, high_v, mid_v)
-    'pm5': (10.0, 0.0, -5.0, 5.0, 0.0),
-    'u5': (5.0, 2.5, 0.0, 5.0, 2.5),
-    'pm33': (6.6, 0.0, -3.3, 3.3, 0.0),
-    'u33': (3.3, 1.65, 0.0, 3.3, 1.65),
-    'pm18': (3.6, 0.0, -1.8, 1.8, 0.0),
-    'u18': (1.8, 0.9, 0.0, 1.8, 0.9),
-    'pm1': (2.0, 0.0, -1.0, 1.0, 0.0),
-    'u1': (1.0, 0.5, 0.0, 1.0, 0.5),
+# cannot know the swing when it chooses the comparator level. The default 1.0 V therefore sits above
+# the whole of the 0..1 V class -- if that fails to arm, that is the feature's honest behaviour and
+# the question becomes whether it says so. Sweep --armlevel to separate 'cannot arm at this setting'
+# from 'armed and decoded wrong'.
+K = 21626.0 / 65534.0
+SDG_ENV_V = 10.0                  # |OFST| + AMP/2, Hi-Z, SDG2122X
+SDG_MAX_AMP = 20.0
+
+# name: (vector, low_v, high_v)
+WANT = {
+    'pm5':   ('v45', -5.0, 5.0),
+    'u5':    ('v41', 0.0, 5.0),
+    'pm33':  ('v45', -3.3, 3.3),
+    'u33':   ('v41', 0.0, 3.3),
+    'pm245': ('v45', -2.45, 2.45),
+    'pm18':  ('v45', -1.8, 1.8),
+    'u18':   ('v41', 0.0, 1.8),
+    'pm1':   ('v45', -1.0, 1.0),
+    'u1':    ('v41', 0.0, 1.0),
 }
-ORDER = ['pm5', 'u5', 'pm33', 'u33', 'pm18', 'u18', 'pm1', 'u1']
+ORDER = ['pm5', 'u5', 'pm33', 'u33', 'pm245', 'pm18', 'u18', 'pm1', 'u1']
+
+
+def band_settings(name):
+    """-> (vector, amp, ofst, low, high, mid, why_refused or None)"""
+    vid, lo, hi = WANT[name]
+    amp = (hi - lo) / K
+    ofst = lo
+    why = None
+    if amp > SDG_MAX_AMP:
+        why = ('needs AMP %.3f Vpp, over the generator\'s %.1f Vpp ceiling' % (amp, SDG_MAX_AMP))
+    elif abs(ofst) + amp / 2.0 > SDG_ENV_V + 1e-9:
+        why = ('|OFST| + AMP/2 = %.3f, over the %.1f V envelope -- it would be clamped silently'
+               % (abs(ofst) + amp / 2.0, SDG_ENV_V))
+    return vid, amp, ofst, lo, hi, (lo + hi) / 2.0, why
+
+
+# Kept so the rest of the file can index a class the way it always has.
+LEVELS = {}
+for _k in ORDER:
+    _v, _a, _o, _lo, _hi, _mid, _w = band_settings(_k)
+    LEVELS[_k] = (_a, _o, _lo, _hi, _mid)
 
 
 def tq(d, tag, expr, timeout=60):
@@ -107,17 +157,22 @@ def start_later(g, delay_s, hit):
 
 
 def set_levels(g, lv, baud):
-    """Park the generator on one level class, output off. HOISTED OUT OF THE CAPTURE LOOP: select_arb
-    reads the name back with a long timeout and re-asserts TrueArb, which is seconds of work that
-    says nothing new when the class has not changed."""
-    amp, ofst = LEVELS[lv][0], LEVELS[lv][1]
+    """Park the generator on one level class, output off. -> True if the class can be driven.
+
+    HOISTED OUT OF THE CAPTURE LOOP: select_arb reads the name back with a long timeout and
+    re-asserts TrueArb, which is seconds of work that says nothing new when the class has not
+    changed. Refuses rather than clamping, because the generator clamps silently and an armed
+    result on a stimulus that never reached the wire is worse than a missing row."""
+    vid, amp, ofst, lo, hi, mid, why = band_settings(lv)
+    if why is not None:
+        print('   arb : %-6s REFUSED -- %s' % (lv, why))
+        return False
     g.output(False, ch=1)
-    g.select_arb(VN.arb('v41'), amp, baud * SPB, offset_v=ofst)
+    g.select_arb(VN.arb(vid), amp, baud * SPB, offset_v=ofst)
     g.output(False, ch=1)
-    st = g.state(ch=1)
-    print('   arb : %s  AMP %g OFST %g -> %g..%g V   %s'
-          % (lv, amp, ofst, LEVELS[lv][2], LEVELS[lv][3],
-             str(st.get('bswv', ''))[:70] if isinstance(st, dict) else ''))
+    print('   arb : %-6s %s AMP %.3f OFST %+.3f -> want %+.3f .. %+.3f V (%s)'
+          % (lv, vid, amp, ofst, lo, hi, 'idles LOW, RS-232' if lo < -0.5 else 'idles HIGH, TTL'))
+    return True
 
 
 def one(d, g, lv, locked, baud, tag, armlevel=1.0):
@@ -264,7 +319,8 @@ def main():
                 locked = rate == 'locked'
                 print('\n=== %s levels, %s rate: output off, press, device on at +%.0f s (x%d) ==='
                       % (lv, rate, START_AT, a.n))
-                set_levels(g, lv, a.baud)
+                if not set_levels(g, lv, a.baud):
+                    continue
                 got = []
                 for i in range(a.n):
                     r = one(d, g, lv, locked, a.baud, 'T%s%s%d' % (lv, rate[0], i),
