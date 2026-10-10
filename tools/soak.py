@@ -516,9 +516,13 @@ def main():
     lap_timeout = 1200
     if 'plan' in a.suites.split(','):
         import soakplan as SP
-        from vector_names import MAP as VMAP
+        # SP.soak_vectors(), NOT len(VN.MAP), and the difference is not cosmetic. suite_plan draws
+        # from soak_vectors() -- MAP less vector_names.BENCH_ONLY -- so counting MAP here printed 54
+        # vectors in the run header for a lap that drives 39. A soak header that misstates what is on
+        # the wire is read back days later as the record of what ran, and the over-estimate also
+        # loosens the hang deadline it exists to set.
         nskip = len([x for x in (a.skip_vectors or '').split(',') if x.strip()])
-        nvec = a.plan_vectors or (len(VMAP) - nskip)
+        nvec = a.plan_vectors or (len(SP.soak_vectors()) - nskip)
         est = SP.estimate_secs(SP.rates_for(1), nvec)
         lap_timeout = int(max(1200, LAP_DEADLINE_MARGIN * est))
         print('plan suite: %d vectors x %d rates, estimated %.0f min a lap, deadline %.0f min'
