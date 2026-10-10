@@ -333,6 +333,50 @@ The consequence inverts the feature instead of degrading it. A spin that never s
 has to report an arm that did not go live, because the poll loop cannot tell that from a trigger that
 fired — so the recording runs free and captures exactly the silence that arming exists to avoid.
 
+**AND THE 0.19 s IS A REPORTING LAG, NOT AN ARMING DELAY.** The wait block goes live about **2 ms**
+after `initiate()`; the state call simply does not admit it for another 190. Measured two independent
+ways that agree. From the recorded data, `pre-roll start = fire_s - N5/fs - n_pre/fs` over six
+captures at the two rates where the post-trigger block dominates the elapsed time: **1.6 to 2.6 ms**.
+And from the block trajectory, `BUFFER_CLEAR` completes at 0.0003 s and the zero `DELAY_CONSTANT` at
+0.0012 s. `CLEAR_ENTER` discards any crossing latched before the block was entered, so the crossing
+that fired is genuinely after entry — which means the wait was entered by then.
+
+In twelve latency captures `STATE_WAITING` was **never once observed**, because the signal fired
+within one ramp period of the wait going live, long before the state reported it.
+
+**So a capture that fails a short spin was armed the whole time.** It is declared unarmed on the
+strength of a stale state read, and no data was ever lost to a late comparator. A generous bound is
+still the right fix — the app has no other way to ask — but the number bounds the firmware's candour,
+not its readiness.
+
+### The comparator fires about 7.3 µs after the crossing, and that is fixed in time
+
+MEASURED against a slow ramp, so the crossing can be located by interpolation rather than quantised
+to a sample. The latency is the distance between the interpolated crossing and the trigger point the
+pre-trigger reserve puts in the record:
+
+| `samplerate` | slew | latency, samples | latency, µs | µs less one sample |
+|---|---|---|---|---|
+| 2 500 | 6.25 V/s | 1.308 | 523.34 | 123.33 |
+| 40 000 | 100 V/s | 1.380 | 34.49 | **9.49** |
+| 200 000 | 500 V/s | 2.432 | 12.16 | **7.16** |
+| 1 000 000 | 2 500 V/s | 8.361 | 8.36 | **7.36** |
+
+**Fixed in TIME, not in samples.** Between 200 kS/s and 1 MS/s the rate changes 5.0×, the latency in
+samples changes 3.44×, and the latency in microseconds changes **1.03×**.
+
+Two honest caveats. The trigger instant is attributed to the first post-trigger sample; attribute it
+to the last pre-trigger sample instead and every figure drops by exactly one sample period, which is
+the right-hand column — a definition, not something the data can settle. And the **2 500 S/s row
+cannot resolve this at all**: one sample is 400 µs there, so the ±0.5-sample ambiguity is ±200 µs,
+thirty times the quantity being measured. **Jitter is comparable to the latency** — 6.2 to 9.3 µs at
+1 MS/s, 3.6 to 9.9 µs at 200 kS/s — so the firing point is not deterministic to the sample.
+
+**`buf.n` IS NOT A CLOCK ABOVE 100 kS/s, BUT THE SAMPLE RATE IS REAL.** The ramp slope measures the
+true sample interval directly and recovers **1 000 673 to 1 000 996 S/s** when 1 MS/s is asked, and
+200 127 to 200 193 when 200 kS/s is asked. What lags behind the acquisition is `buf.n`, which is what
+the `2872`/`2873` "Begin/End reading backlog processing" pair reports.
+
 **`buffer.make()` IS CHEAP AND IS NOT IN THAT INTERVAL.** It measures 2.5 to 3.7 ms at 860 000
 readings over 21 observations, and it runs before the model is loaded, so no part of allocation is
 spent between `initiate()` and the wait. Two readings of 0.78 s appear in one sweep and are outliers:
