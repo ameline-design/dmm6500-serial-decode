@@ -49,7 +49,16 @@ KEYS = ['cases', 'ok', 'exact', 'refused', 'fmtdiff', 'ratediff', 'shortrun', 'h
 #
 # ONLY AT THE GATE'S OWN SETTINGS. A different seed or offset count draws different windows, so the
 # baselines do not describe it and the ratchet is skipped rather than applied wrongly.
-RATCHET_SEED, RATCHET_OFFSETS = 1, 24
+#
+# AND THE WINDOW LENGTH IS ONE OF THOSE SETTINGS, which cost a day to learn. It is the third input that
+# draws this sweep -- seed and offset count place the window, WANT is how long it is -- and it is the one
+# that moved, silently, because sweep_startphase.lua takes it from sdec.n_deliv() rather than naming a
+# number. The ratchet was measured at 19 000 and went on asserting at 20 045. fmtdiff is not a function
+# of the defect alone: with the decoder held fixed and WANT pinned it reads 520 at 19 000, 527 at 19 500,
+# 523 from 20 000 to 20 100, 525 at 20 500 and 528 at 21 000, so 520 was the bottom of a band as wide as
+# the +3 that fired the gate. A ratchet skipped at a non-baseline seed but applied at a non-baseline
+# WINDOW is asserting against a number it was never measured at.
+RATCHET_SEED, RATCHET_OFFSETS, RATCHET_WANT = 1, 24, 20045
 # LOWERED 2026-08-24 by ua_minrun_absurd, which rejects the ODD sub-multiples ua_submultiple cannot
 # see: ratediff 148 -> 130, and fmtdiff 533 -> 515 as a consequence, since a decode at the wrong rate
 # also reads the wrong format. HARD stayed 0 and headbleed 96; shortrun rose 966 -> 977, which is the
@@ -80,9 +89,34 @@ RATCHET_SEED, RATCHET_OFFSETS = 1, 24
 # identical tree -- test_serial 1205/0, cancel 228/0, patterns 75/0, ratefit 22/0, analog 43/0,
 # forcerate 31/0, streamfix 22/0, frontrig 31/0, usblog 67/0, stress 127 ok/21 degraded/0 WRONG, seam 6/0,
 # and the offline twin at 110 bad -- all identical on both sides.
+# RAISED by sdec.n_deliv, and the mover is the STIMULUS rather than the decoder. WANT in
+# sweep_startphase.lua is sdec.n_deliv(sdec.n), so correcting that function -- n - floor(n*pt/100) became
+# floor(acq_cap(n)*(100-pt)/100), which is 19 000 to 20 045 at n = 20 000, pretrig 5 % and capacity
+# 21 100 -- lengthened every window in the sweep by 1045 samples, 5.5 %. A TWO-WAY CROSSOVER PINNING WANT
+# PROVES THAT IS ALL OF IT: the tree before the change reads 2335/95/523/127/952 at 20 045, and the tree
+# after it reads 2314/94/520/130/976 at 19 000. Both land on the digit from the other side, so nothing
+# else in a 675-line serial_core change reaches decode_from and the decoder is behaviourally unchanged.
+# WHAT MOVED, CELL BY CELL. All 4032 cells keep their key -- 27 of the 42 vectors loop, so span = ns
+# carries no window term, and the other 15 are short enough that wlen = floor(0.6*ns) clamps below both
+# lengths -- so this is a true cell-by-cell comparison rather than a difference of totals, and 39 cells
+# change class: 24 shortrun -> exact, 5 fmtdiff -> exact, 8 EXACT -> fmtdiff, 1 ratediff -> fmtdiff, and
+# 1 fmtdiff -> refused. fmtdiff +8 +1 -5 -1 = +3, exact +24 +5 -8 = +21, shortrun -24, refused +1. HARD
+# stays 0 on both sides: no byte the decoder presents as trustworthy is wrong anywhere.
+# THE EIGHT ARE NOT FREE, and this entry does not pretend they are. They are correct decodes that became
+# ambiguous: v90 cond 1 and cond 3 at start 13021, v92 cond 1 and cond 3 at 6129, v94 cond 1 and cond 3
+# at 19375 and again at 45159. Every one is gapless 8N1 -- v90 and v94 are 64 and 128 each of
+# 0x00/0xFF/0x55/0xAA at gap 0, v92 is walking-one and walking-zero bytes -- read as 7E1 or 7O1 at the
+# RIGHT baud. That is issue #49 itself, on the payload alphabet the issue is about, and not a new defect:
+# a gapless stream of those bytes genuinely admits both framings. They are not recoverable at this window
+# length, so the ceiling is raised over them rather than against them.
+# AND THE FLOOR PASSED WHILE THOSE EIGHT GOT WORSE. That is the hole the floor below was built to close,
+# and it is worth recording that it still has a residual: it bounds the NET. -8 into fmtdiff, +5 back out
+# and +24 out of shortrun on the jitter vectors nets +21, and +21 is the only number the floor sees, so it
+# reported IMPROVED. A regression smaller than a simultaneous unrelated gain is invisible to it, and only
+# a per-cell baseline -- not another total -- would close that.
 RATCHET = {
-    'ratediff': (130, 'periodic-payload rate misfit, issue #46'),
-    'fmtdiff': (520, '7E1/8N1 ambiguity, issue #49'),
+    'ratediff': (127, 'periodic-payload rate misfit, issue #46'),
+    'fmtdiff': (523, '7E1/8N1 ambiguity, issue #49'),
 }
 # AND A FLOOR, because the ratchet above is one-directional and that is a hole this very change walked
 # through. A rise in fmtdiff is indistinguishable from a fall in byte-exact when only fmtdiff is
@@ -90,9 +124,15 @@ RATCHET = {
 # nothing, move the same counter the same way. Bounding byte-exact from below tells them apart -- the
 # first drops it, the second does not.
 RATCHET_FLOOR = {
-    'exact': (2314, 'decodes whose bytes match the payload at zero shift'),
+    'exact': (2335, 'decodes whose bytes match the payload at zero shift'),
 }
+# refused, shortrun and headbleed carry NO bound, and the 39 cells above move two of them: shortrun
+# 976 -> 952 and refused 94 -> 95. Nothing to update, which is itself the gap -- the shortrun fall is
+# exactly what paid for the eight, and a bound on it from above would have made that visible without a
+# per-cell baseline. Left unbounded here rather than invented at one measurement.
 LINE = re.compile(r'^SHARD (\d+)/(\d+) seed (\d+): (.*)$')
+# The window length the sweep will cut, as its own source states it.
+WANTLINE = re.compile(r'^local WANT = (.*?)\s*(?:--.*)?$')
 
 # The BLEED line scores the two ways ua_head_bad could be wrong against the truth the sweep already
 # knows. Every name here is a distinct word, so a plain 'name N' search cannot cross-match -- the
@@ -148,6 +188,39 @@ def parse(line):
     mw = re.search(r'worst (\d+)', body)
     out['worst'] = int(mw.group(1)) if mw else 0
     return int(m.group(1)), int(m.group(2)), int(m.group(3)), out
+
+
+def sweep_window():
+    """How long a window the sweep cuts, read back from sweep_startphase.lua. -> (n, None) | (None, why)
+
+    THE EXPRESSION IS LIFTED FROM THE SWEEP, NOT RECOMPUTED HERE, and that is the whole point of doing
+    it this way. The window comes from sdec.n_deliv(), which has already moved once -- 19 000 to
+    20 045 -- and redrew every case under baselines measured at the old length. A second copy of that
+    rule in Python would be right today and drift the next time the first one moves; evaluating the
+    sweep's own line cannot drift from it.
+    """
+    src = os.path.join(ROOT, 'tools', 'sweep_startphase.lua')
+    expr = None
+    with open(src) as f:
+        for line in f:
+            m = WANTLINE.match(line.rstrip('\n'))
+            if m:
+                expr = m.group(1)
+                break
+    if expr is None:
+        return None, 'no `local WANT = ...` line in tools/sweep_startphase.lua'
+    # The sweep's own prologue trimmed to what defines n_deliv: gen_serial.lua loads tsp/serial_core.tsp.
+    # MD.usb(false) stops the display mock opening a log. A SENTINEL is printed rather than reading the
+    # last line, because a module that prints on load would otherwise be read as the answer.
+    prog = ("dofile('tools/mock_display.lua') dofile('tools/gen_serial.lua') MD.usb(false) "
+            "print('WINDOW ' .. tostring(%s))" % expr)
+    p = subprocess.run(['lua', '-e', prog], cwd=ROOT, stdout=subprocess.PIPE,
+                       stderr=subprocess.STDOUT)
+    out = p.stdout.decode('utf-8', 'replace')
+    m = re.search(r'^WINDOW (\d+)$', out, re.M)
+    if m is None:
+        return None, 'could not evaluate %s -- %s' % (expr, ' '.join(out.split())[:160])
+    return int(m.group(1)), None
 
 
 def run_shard(k, n, seed, offsets, maxpts):
@@ -267,9 +340,18 @@ def main():
     if nsummary != n:
         failed.append('%d shards ran but only %d printed a summary' % (n, nsummary))
 
-    # THE RATCHET. Applied only at the settings the baselines were measured at.
-    if a.seed == RATCHET_SEED and a.offsets == RATCHET_OFFSETS:
-        print('\n-- open-issue ratchets (seed %d, %d offsets) --' % (a.seed, a.offsets))
+    # THE RATCHET. Applied only at the settings the baselines were measured at, and the window length
+    # is one of them.
+    win, winwhy = sweep_window()
+    if winwhy is not None:
+        # A WINDOW THAT CANNOT BE READ IS NOT A DIFFERENT CONFIGURATION, IT IS A BROKEN ONE, so this
+        # fails rather than skipping. Skipping prints as a pass, and a stage that goes green by failing
+        # to look is worse than one that stays red.
+        failed.append('cannot tell what window the sweep cut, so the ratchet can be neither applied '
+                      'nor honestly skipped -- %s' % winwhy)
+    elif a.seed == RATCHET_SEED and a.offsets == RATCHET_OFFSETS and win == RATCHET_WANT:
+        print('\n-- open-issue ratchets (seed %d, %d offsets, %d-sample window) --'
+              % (a.seed, a.offsets, win))
         for key in sorted(RATCHET):
             base, why = RATCHET[key]
             got = tot[key]
@@ -307,9 +389,9 @@ def main():
             else:
                 print('  %-10s %4d  unchanged        %s' % (key, got, why))
     else:
-        print('\n-- open-issue ratchets SKIPPED: seed %d / %d offsets is not the measured '
-              'configuration (%d / %d), so the baselines do not describe this run --'
-              % (a.seed, a.offsets, RATCHET_SEED, RATCHET_OFFSETS))
+        print('\n-- open-issue ratchets SKIPPED: seed %d / %d offsets / %d-sample window is not the '
+              'measured configuration (%d / %d / %d), so the baselines do not describe this run --'
+              % (a.seed, a.offsets, win, RATCHET_SEED, RATCHET_OFFSETS, RATCHET_WANT))
 
     if failed:
         print()
