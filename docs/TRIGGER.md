@@ -21,7 +21,8 @@ ESTABLISHED has neither a measurement nor a citation and should be read as an op
 | sequences | concurrent, each `START`…`END`; the event log calls them **paths** |
 | control flow | 8 branch types — always, once, once-excluded, on-event, counter, delta, limit-constant, limit-dynamic — plus `RESET_BRANCH_COUNT`, which resets a counter and does not branch |
 | signals | 8 notify blocks, 2 blenders, 4 timers, 6 digital I/O lines, 8 LAN objects, 3 TSP-Link lines |
-| state | `trigger.model.state()` → `EMPTY`, `BUILDING`, `RUNNING`, `WAITING`, `IDLE`, `ABORTED`, `FAILED` observed; `ABORTING` and `PAUSED` documented but never seen |
+| state | `trigger.model.state()` → `EMPTY`, `BUILDING`, `RUNNING`, `WAITING`, `IDLE`, `ABORTED`, `FAILED`, `PAUSED` observed; `ABORTING` never seen in **200 samples taken with nothing between them and `abort()`**, so the transition is atomic at this granularity (MEASURED, `tools/bench_trigclaims.py`) |
+| state's return | **the first value is `userdata`, not a string** — it prints as `trigger.STATE_WAITING` and concatenates like one, then raises `-286 string expected, got userdata` the moment anything treats it as one. Compare with `==` against `trigger.STATE_*`. The arity is not fixed: an `EMPTY` model returned exactly three, `(state, state, 3)`, and a `FAILED` one printed five, `FAILED FAILED 1 FAILED 0` (MEASURED, same) |
 
 A program counter, conditional branches, per-block loop counters, and inter-sequence signalling. No
 general storage and no arithmetic, so it is not a computer — but a rendezvous protocol between two
@@ -113,9 +114,14 @@ buffer while the model runs works — MEASURED, §7.
 prohibited while trigger model is running"**. Writing the value it already held posted 2727 too, so
 the refusal is on the write, not on the value.
 
-**NOT ESTABLISHED:** that switching between local and remote control aborts a running model. It has no
-measurement here, it is not scriptable from the socket, and the local/remote text at 15-2 says only
-that the front panel is disabled and that you are prompted to switch control.
+**NOT ESTABLISHED:** that switching between local and remote control aborts a running model. It is not
+scriptable from the socket, and the local/remote text at 15-2 says only that the front panel is
+disabled and that you are prompted to switch control. The experiment is written and takes one press —
+`tools/bench_trigpanel.py --case b` parks a model on `EVENT_EXTERNAL` with no marker and polls from
+inside for 40 s, so a press that aborts the model is visible as the second the state leaves `RUNNING`
+and a press that does not is visible as a model still parked at 40.000 s. **What it cannot do is tell a
+model that ignored the press from a window in which nobody pressed**, so it reports only what it saw
+and this claim stays open until a press is confirmed.
 
 ## 5. Neither `setblock` nor `initiate` reports failure
 
@@ -129,6 +135,7 @@ This is the most important thing here, and it is the opposite of what a Lua prog
 | `dmm.digitize.func = …` while the model runs | **true** | discarded — event **2727**, "Command prohibited while trigger model is running" (MEASURED, P2f) |
 
 | `trigger.model.pause()` on a model that is not running | **true** | refused — event **2767**, "Trigger model cannot be paused unless it is already running" (MEASURED, P4) |
+| `trigger.model.pause()` on a model that **is** running | **true** | honoured, and this is the one call here that did what it said: the state became `trigger.STATE_PAUSED` and `resume()` put it back to `RUNNING` (MEASURED, `tools/bench_trigclaims.py`) |
 
 **THE WHOLE TRIGGER SUBSYSTEM REPORTS REFUSALS OUT OF BAND**, not just these two calls: a block
 write, an ordinary attribute write and a plain function call each return success and file the reason
@@ -198,7 +205,17 @@ throughout, so "no traffic" means none from the measuring socket. It also refram
 original finding leaned on — 4 500 to 14 159 readings was read as "it dies when the next command
 arrives", and a model that dies on its own clock would look the same. **The operational rule is
 unchanged either way**: poll a wait from inside the instrument, because every host-side attempt to
-watch one has failed. What is not established is *why*.
+watch one *with the app loaded* has failed.
+
+**THE CONFOUND IS REMOVABLE AFTER ALL, AND IT EXONERATES THE READBACK** (MEASURED,
+`tools/bench_trigclaims.py`, on an instrument minutes out of a power cycle with `sdec` and `brun` both
+nil and one socket open). A model parked on `EVENT_EXTERNAL` with no marker arriving answered **2440
+consecutive host state queries over 4.001 s** and was still in `STATE_WAITING` at the last of them —
+an order of magnitude past the 427–441 ms the three deaths were measured at, and ~2 400 more queries
+than the one it would take if asking were enough. **So a host query does not kill a parked wait. What
+killed those three arrived with the app**, which leaves the 2 Hz panel tick as the only named suspect
+still standing rather than one of two. Poll from inside because of what else is running, not because
+of the question.
 
 **AND THE FIRST QUERY IS STILL ANSWERED TRUTHFULLY**, which is what makes this so expensive to
 diagnose. The abort lands *behind* the reply and the model runs on for about 140 ms, so a host-side
@@ -270,10 +287,25 @@ This is a trap worth stating plainly because the broken program looks *better* t
 it is two blocks instead of four and it is on the fast path (§10). It is on the fast path because it
 never does anything.
 
-**NOT ESTABLISHED:** whether a wait on `EVENT_DISPLAY` or `EVENT_EXTERNAL` as the first block works.
-Neither depends on the sample stream, so both may be fine; the restriction established here is
-specific to the analog trigger. Also not established is whether a *finished* counted pre-roll suffices
-or whether the acquisition must be concurrently active.
+**`EVENT_EXTERNAL` AS THE FIRST BLOCK WORKS, SO THE RESTRICTION REALLY IS THE COMPARATOR'S**
+(MEASURED, `tools/bench_trigclaims.py`, rear TRIGGER IN driven by a 100 Hz pulse). A two-block program
+— `WAIT EVENT_EXTERNAL` then a counted digitize — completed inside the first second with its full 100
+readings. The control is the same program with the marker switched off: it sat the whole four-second
+window at **zero readings**, so nothing but the marker ended it.
+
+**A FINISHED COUNTED PRE-ROLL DOES SATISFY THE COMPARATOR WAIT — BECAUSE OF THE LATCH, NOT THE
+COMPARATOR** (MEASURED, same). 100 samples at 40 kS/s, finished, then `WAIT EVENT_ANALOGTRIGGER`:
+`IDLE` with 200 readings, apparently answering the question with a yes. **It is the wrong yes.** Those
+100 samples span 2.5 ms of a 1 kHz square, so an edge crossed the level *while the block ran*, and the
+default `CLEAR_NEVER` let the wait consume what that edge latched. The same program with
+`trigger.CLEAR_ENTER` on the wait sat the full window at exactly **100 readings** — the pre-roll's own
+samples and not one more. So the comparator does **not** evaluate once the measure block has stopped,
+and what a finished pre-roll leaves behind is a pending event rather than a live comparator. Both
+readings of "it fired" are true and only one of them is a fact about the comparator.
+
+**NOT ESTABLISHED:** whether a wait on `EVENT_DISPLAY` as the first block works. It needs the
+front-panel TRIGGER key, which is the one stimulus here with no programmatic source — the LXI virtual
+panel can press it over HTTP, and that path is closed by policy rather than by the instrument.
 
 **THE WAIT ALSO KEEPS THE PRE-ROLL RUNNING, not merely awaits the trigger** (MEASURED, P2f). An infinite digitize as the *only* block idles after about a dozen samples whatever
 `dmm.digitize.count` says, because the sequence ends and that stops the block. With the wait
@@ -700,7 +732,15 @@ measurement refuted it, and the example is gone.
   report refusals as event-log entries while returning success, and no example checks for it.
 * **A constant that does not exist.** The SCPI mapping table at ref line 13860 gives the paused state
   as `trigger.STATE_PAUSE`. That constant is **nil** on the instrument; the real one is
-  `trigger.STATE_PAUSED`, as ref line 49484 has it.
+  `trigger.STATE_PAUSED`, as ref line 49484 has it. And that state is reachable: `pause()` on a model
+  that **is** running returns true and the state becomes `trigger.STATE_PAUSED`, with `resume()`
+  putting it back to `RUNNING` (MEASURED, `tools/bench_trigclaims.py`).
+* **A second nil constant, and it fails as a trigger-model error.** `buffer.STYLE_COMPACT` is **nil**
+  on 1.7.17a, so `buffer.make(n, buffer.STYLE_COMPACT)` hands nil to the style parameter and posts
+  **1138**, "Parameter 2, expected type 'rbuffer_style', but found type 'nil'". The cost is not one
+  event: every `setblock` built on the nil result posts **2703**, the program reaches `STATE_FAILED`,
+  and `pcall` returned true throughout — so the symptom presents as a broken trigger model and the
+  cause is a buffer constant four events earlier in the log. `buffer.STYLE_STANDARD` resolves.
 * **Four undocumented block types.** `START`, `END` and `CHANNEL_ACTION` exist as TSP constants and
   appear in no `setblock` usage list. `WRITE_USB` appears in the manual not at all.
 
