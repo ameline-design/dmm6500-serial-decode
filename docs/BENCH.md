@@ -9,7 +9,7 @@ stops an expensive one.
 |---|---|---|---|
 | `tools/release_sweep.py --offline` | ~1 min | nothing | can this code possibly work |
 | `tools/bench_smoke.py` | 12.8 min | both instruments | is the bench and the harness sound |
-| `tools/soak.py --suites formats,plan` | ~3.0 h a lap | both instruments | does it hold up over hours |
+| `tools/soak.py --suites formats,plan,arm --skip-vectors v95,v96,v97` | ~2.7 h a lap | both instruments | does it hold up over hours, and does the arm still fire |
 
 Measured, not estimated: **6.5 s per cell**. A lap of 39 waveforms at 43 rates each is 1677 cells, so
 **about 3.0 hours**; all 41 waveforms is 3.2 h. An offline lap of the same cells is **about 4 seconds** at
@@ -331,6 +331,7 @@ the scope only ever reads.
 | `unit-phasesweep` | every vector × capture start × phase/jitter/noise, sharded across the cores — no raise, no result without a format, no wrong byte among trustworthy calls |
 | `unit-seam` | a capture whose arb loop seam lands late must still be judged, and the narrower trim still required |
 | `unit-sdgguard` | every route by which an out-of-spec waveform could reach the generator refuses it |
+| `unit-armsuite` | **the arm suite's own judging, offline.** `hw-arm`'s seven cells run on hardware once a lap; this is the half that can run without instruments, and it arrived with 48 checks and nothing to run them. Each of the three reserve-polarity defects is replayed as the field dict the instrument actually produced and must be *caught*: the frame capture that read its pre-trigger reserve as the line's idle, the recording that inherited an inverted format from priming, and the threshold six millivolts from a rail that made a transmitting device read as silent. The negative controls run in both directions, which is what stops the cells passing vacuously — an expiry that returned at once instead of waiting its Arm Wait, a bipolar line read as idle-HIGH, a locked cell that sampled at the blind arm's rate. And it pins the ROW SHAPE against `soak.py`'s own regex and its `ok`/`BAD` vocabulary, because the seven point names contain spaces: a failing arm cell that the soak's parser drops is a defect reported as a clean lap |
 | `unit-soakplan` | the plan draw: pure in the iteration, the skip keys the shuffle, and every cell inside both the rails and the generator's `\|OFST\| + AMP/2 <= 10 V` envelope |
 | `unit-sdgreply` | the SDG reply parser against known replies, including a DDS mode and an absent key — the probe that reads them touches the instrument, this does not |
 | `unit-loremgate` | the harness's own long-payload verdict: every clean run validated, flag count bounded |

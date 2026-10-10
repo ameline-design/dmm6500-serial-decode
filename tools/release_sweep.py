@@ -235,6 +235,17 @@ def stages(outdir, shots):
         Stage('unit-sdgguard', ['python3', 'tools/test_sdg_guard.py'],
               note='every route to an out-of-spec waveform refuses it -- all three bypasses, plus '
                    'the legitimate uploads still working'),
+        # THE ARM SUITE'S OWN JUDGING, WHICH ARRIVED WITH 48 CHECKS AND NOTHING TO RUN THEM. The only
+        # grep hit for bench_matrix --selftest was its own docstring, which is the same class as the
+        # 149 assertions this gate once did not run. It judges offline: each of the three arm defects
+        # is replayed as the field dict the instrument actually produced and must be caught, with the
+        # negative controls in both directions -- an expiry that returned at once, a bipolar line read
+        # as idle-high, a locked cell that sampled at the blind rate. It also pins the row shape
+        # against soak.py's own ROW regex and its ok/BAD vocabulary, so a failing arm cell is counted
+        # and named rather than dropped by a parser that never saw a point name with spaces in it.
+        Stage('unit-armsuite', ['python3', 'tools/bench_matrix.py', '--selftest'],
+              note='the arm suite judged offline -- the three reserve-polarity defects replayed as '
+                   'field dicts, their negative controls, and the row shape soak.py has to parse'),
         # THE DRAW ITSELF, WHICH NO STAGE USED TO RUN. soakplan --selftest has always existed and
         # asserts the properties every hardware lap depends on: that the plan is a pure function of the
         # iteration, that the skip changes the shuffle, that the emitted plan and the Lua table agree,
