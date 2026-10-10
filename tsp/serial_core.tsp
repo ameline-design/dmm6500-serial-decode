@@ -723,6 +723,10 @@ function sdec.clear_measured()
   sdec.snr_db, sdec.noise_v = nil, nil
   -- Polarity, and the flag saying the evidence for it was thin.
   sdec.idle, sdec.idle_weak = nil, nil
+  -- Whether the record in sdec.smp opens in a pre-trigger reserve, and the leading run sig_idle
+  -- measured. acq_triggered sets the first on its successful exit and acq_free clears it, so the
+  -- probe read inside one acquire() cannot leave the real capture looking armed, or the reverse.
+  sdec.acq_pretrig, sdec.leadrun = nil, nil
   -- Level and run statistics: the fraction of samples near the two levels, and the longest run of
   -- each. sig_idle() reads st0, so it goes back to its declared default rather than to nil.
   sdec.modal, sdec.run0, sdec.run1 = nil, nil, nil
@@ -1008,11 +1012,38 @@ function sdec.sig_idle(rd, n)
   end
 
   local best1, best0 = 0, 0
+  -- THE LEADING RUN IS NOT EVIDENCE OF IDLE ON AN ARMED CAPTURE, because it is not the line: it is
+  -- the pre-trigger reserve, which is the wire BEFORE THE DEVICE STARTED. Counting it inverts the
+  -- decode, and it does so most reliably when the reserve is longest.
+  --
+  -- MEASURED, v41 (a 0.00..3.30 V line) armed on silence with the generator switched on at +3 s,
+  -- six captures a condition. The reserve is 5 % of capacity -- 1055 samples at 21 100 -- and it
+  -- sits at GROUND, which on a single-supply line is the SPACE level, so it arrives as a run of
+  -- lows no data could produce:
+  --
+  --     busy line, no arm        run0     50   run1   344   idle 1   162 bytes, 0 bad
+  --     armed, fs 200 kS/s       run0   1052   run1  1210   idle 1    62 bytes, 0 bad
+  --     armed, fs  80 kS/s       run0   1053   run1   500   idle 0   158 bytes, 62 BAD
+  --
+  -- The third row is the defect and the second shows why it is not always reached: the reserve is a
+  -- fixed SAMPLE count while the line's real idle gap is a fixed TIME, so the gap only out-runs the
+  -- reserve above about 171 kS/s on this vector. Below that the reserve is the longest run in the
+  -- window, the prior becomes 'idles LOW', and ua_autoformat searches inverted first.
+  --
+  -- AND THE LENGTH IS WHAT DISARMS THE PROTECTION BUILT FOR THIS. A run that long clears
+  -- idlemult * onebit easily, so the LEVEL branch below never runs and idle_weak stays false --
+  -- which is exactly the flag sdec.polmargin keys on. The capture that most needs the 4x margin
+  -- against an inverted ASCII reading is the one certain not to get it.
   local lead = ei[1] - 1
-  if sdec.st0 == 1 then
-    if lead > best1 then best1 = lead end
-  else
-    if lead > best0 then best0 = lead end
+  -- PUBLISHED FOR THE RECORD, like sdec.onebit: a bench lap that cannot see the leading run cannot
+  -- tell this branch from a genuinely inverted line.
+  sdec.leadrun = lead
+  if not sdec.acq_pretrig then
+    if sdec.st0 == 1 then
+      if lead > best1 then best1 = lead end
+    else
+      if lead > best0 then best0 = lead end
+    end
   end
 
   local k
@@ -2325,6 +2356,11 @@ function sdec.acq_free(n, ncopy, nofc)
   local ncp = sdec.nread
   if ncopy ~= nil and ncopy < ncp then ncp = ncopy end
   sdec.acq_copy(buf, ncp)
+  -- A FREE-RUNNING RECORD HAS NO RESERVE, so its leading run is the line and sig_idle may use it.
+  -- Cleared rather than left alone because this function is also acq_triggered's failure exit and
+  -- the level-learning probe inside acquire(): either one running after a triggered capture would
+  -- otherwise inherit a true from it and throw away real evidence.
+  sdec.acq_pretrig = nil
   return sdec.nread
 end
 
@@ -3043,6 +3079,11 @@ function sdec.acq_triggered(n, slope)
   sdec.nread = buf.n or 0
   sdec.acq_fs = sdec.acq_fs_or_requested(buf, sdec.nread)
   sdec.acq_copy(buf, sdec.nread)
+  -- THIS RECORD OPENS BEFORE THE EDGE THAT STARTED IT. Set only on the exit that actually triggered
+  -- -- the failure path above leaves through acq_free, which clears it -- and only where a reserve
+  -- was asked for, since at pretrig 0 the record opens ON the edge and its first run is the line.
+  -- sig_idle reads it and declines to treat the leading run as idle; see the table in its comment.
+  sdec.acq_pretrig = (sdec.pretrig or 0) > 0
   return sdec.nread
 end
 

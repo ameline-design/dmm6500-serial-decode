@@ -9941,6 +9941,112 @@ print('\narming from silence: the capture autoset() reaches, and the rates it fa
   sdec.force_invert, sdec.widths_any, sdec.proto = keep.iv, keep.wa, keep.pr
 end)()
 
+-- ---------------------------------------------------------------------------
+-- THE PRE-TRIGGER RESERVE IS NOT THE LINE'S IDLE
+-- ---------------------------------------------------------------------------
+-- An armed capture opens in its pre-trigger reserve, which holds the wire BEFORE THE DEVICE
+-- STARTED -- on a single-supply line that is ground, and ground is the SPACE level. sig_idle's
+-- longest-run rule read that run as idle and set the prior to 'idles LOW', so ua_autoformat
+-- searched inverted first; ASCII's always-zero top bit makes the inverted reading frame just as
+-- cleanly, and the decode came back self-consistent and every byte wrong.
+--
+-- MEASURED ON THE INSTRUMENT, v41 armed on silence with the generator switched on at +3 s, six
+-- captures a condition: at 80 kS/s run0 1053 against run1 500, idle 0, 158 bytes with 62 bad, 0/6
+-- readable. At 200 kS/s the same reserve lost to a 1210-sample idle gap and the decode was clean.
+-- The reserve is a fixed SAMPLE count and the line's idle gap a fixed TIME, so the defect is a
+-- sample-rate boundary, not a coin toss.
+--
+-- BOTH DIRECTIONS ARE ASSERTED, which is what makes this test discriminating rather than merely
+-- green: with sdec.acq_pretrig set the prior must be idle = 1 and the bytes must come back; with it
+-- nil -- a free-running record, where the leading run really is the line -- the same waveform must
+-- still yield the old longest-run answer.
+--
+-- WHAT THE MUTATION ACTUALLY PROVES, measured by disabling the guard: three of the four armed
+-- assertions fail -- the prior, the run it came from, and the armed/free disagreement. The BYTE
+-- assertion still passes mutated, because at 8 samples a bit and thirteen bytes ua_autoformat's
+-- contest overturns the wrong prior on its own. So this fixture guards the MECHANISM and the
+-- hardware bench guards the OUTCOME: inversion only wins once the window is long enough for the
+-- fake start edges to out-score the truth, which on the instrument is 158 bytes at 80 kS/s.
+--
+-- A FUNCTION SCOPE RATHER THAN A do BLOCK: the main chunk is at Lua's 200-local ceiling, and a
+-- do block's locals are active ON TOP of every main-chunk local still in scope, so they do not
+-- fit. A closure gets its own budget, which is the idiom the restore block at the end of this
+-- file already uses. The leading semicolon is load-bearing: the statement before this one also ends
+-- in `end)()`, and without it Lua reads `(function() ... end)()` as a call applied to THAT call's
+-- result -- 'attempt to call a nil value' on the opening parenthesis.
+;(function()
+  local keep = {fs = sdec.fs, af = sdec.acq_fs, pt = sdec.acq_pretrig,
+                fb = sdec.force_baud, fi = sdec.force_invert}
+  sdec.force_baud, sdec.force_invert = nil, nil
+  local fsv, baud = 80000, 9600
+  -- CELLS BUILT BY HAND: GEN's own `lead` emits MARK cells, and the whole point here is a leading
+  -- run of SPACE. 130 space cells at 8 samples a cell is 1040 samples, against a longest genuine
+  -- idle of 20 tail cells -- the same ordering the instrument produced at 80 kS/s.
+  --
+  -- AND THEN TWELVE MARK CELLS, because a device that has just been switched on idles before it
+  -- transmits. Without them the reserve runs straight into the first START bit -- also a space --
+  -- and the first frame has no mark to open against, which costs the 'H' and makes the assertion
+  -- about byte count a statement about the fixture rather than about the decoder. Twelve is one
+  -- frame time, and short enough that the 20-cell tail still bounds run1 well below the reserve,
+  -- which is the ordering the instrument produced.
+  local cells, nc, i, k = {}, 0, nil, nil
+  for i = 1, 130 do nc = nc + 1; cells[nc] = 0 end
+  for i = 1, 12 do nc = nc + 1; cells[nc] = 1 end
+  local msg = {72, 101, 108, 108, 111, 44, 32, 87, 111, 114, 108, 100, 33}
+  for i = 1, 13 do
+    local v = msg[i]
+    nc = nc + 1; cells[nc] = 0
+    local t = v
+    for k = 1, 8 do nc = nc + 1; cells[nc] = math.mod(t, 2); t = math.floor(t / 2) end
+    nc = nc + 1; cells[nc] = 1
+    if i < 13 then for k = 1, 2 do nc = nc + 1; cells[nc] = 1 end end
+  end
+  for i = 1, 20 do nc = nc + 1; cells[nc] = 1 end
+  local rd, ts, ncell, ns = GEN_RENDER(cells, nc, {baud = baud, fs = fsv, lo = 0.0, hi = 3.3})
+  sdec.fs, sdec.acq_fs = fsv, fsv
+
+  -- ARMED: the reserve must not vote.
+  sdec.acq_pretrig = true
+  sdec.sig_levels(rd, ns); sdec.sig_edges(rd, ns); sdec.sig_idle(rd, ns)
+  local armidle, armlead, armweak = sdec.idle, sdec.leadrun, sdec.idle_weak
+  local armr0, armr1 = sdec.run0, sdec.run1
+  local aok = sdec.decode_from(rd, ns)
+  local atext = (aok and sdec.res ~= nil) and sdec.ua_text_line(1, 20) or '-'
+  local anf = (sdec.res ~= nil) and sdec.res.nf or -1
+  local anbad = (sdec.res ~= nil) and sdec.res.nbad or -1
+  local ainv = (sdec.res ~= nil) and sdec.res.invert or nil
+
+  check('the leading run is measured and published, armed or not',
+        armlead ~= nil and armlead > 900,
+        string.format('leadrun=%s against 130 space cells at 8 sa/cell', tostring(armlead)))
+  check('an armed capture does not take its polarity prior from the reserve',
+        armidle == 1,
+        string.format('idle=%s run0=%s run1=%s (the reserve is %s samples of SPACE)',
+                      tostring(armidle), tostring(armr0), tostring(armr1), tostring(armlead)))
+  check('...so the reserve cannot become the longest low run',
+        armr0 ~= nil and armlead ~= nil and armr0 < armlead,
+        string.format('run0=%s vs leadrun=%s', tostring(armr0), tostring(armlead)))
+  check('...and the bytes come back the right way up, all thirteen of them',
+        aok and anbad == 0 and anf == 13 and has(atext, 'Hello, World!'),
+        string.format('nf=%s nbad=%s invert=%s text=%q',
+                      tostring(anf), tostring(anbad), tostring(ainv), atext))
+
+  -- FREE-RUNNING: the same waveform, where the leading run IS the line. The old answer must stand,
+  -- which is what proves the flag is doing the work and the fix is not simply unconditional.
+  sdec.acq_pretrig = nil
+  sdec.sig_levels(rd, ns); sdec.sig_edges(rd, ns); sdec.sig_idle(rd, ns)
+  check('a free-running record still reads its leading run as evidence',
+        sdec.idle == 0 and sdec.run0 ~= nil and sdec.run0 > 900,
+        string.format('idle=%s run0=%s run1=%s', tostring(sdec.idle),
+                      tostring(sdec.run0), tostring(sdec.run1)))
+  check('...and that is the reading the instrument produced before the reserve was excluded',
+        sdec.idle ~= armidle,
+        string.format('free idle=%s, armed idle=%s', tostring(sdec.idle), tostring(armidle)))
+
+  sdec.fs, sdec.acq_fs, sdec.acq_pretrig = keep.fs, keep.af, keep.pt
+  sdec.force_baud, sdec.force_invert = keep.fb, keep.fi
+end)()
+
 print()
 print(string.format('%d passed, %d failed', pass, fail))
 os.exit(fail == 0 and 0 or 1)
