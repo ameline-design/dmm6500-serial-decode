@@ -6,14 +6,16 @@
 
 Arming a `LoopUntilEvent` trigger model over a digitize buffer in `FILL_ONCE` posts event **4915**
 *"Attempting to store past the capacity of reading buffer"* **ten times per capture** at every sample rate
-from 50 kS/s upward. With `localnode.showevents = 0` in force, 4915 puts a **modal dialog on the front
+from 50 kS/s upward. With `localnode.showevents = 0` in force, 4915 can put a **modal dialog on the front
 panel over whatever is displayed**:
 
 ![the 4915 dialog, with showevents = 0](img/4915-dialog.png)
 
-The dialog stays until somebody presses a button. Every event that arrives behind it is absorbed into the
-single line *"Multiple errors have occurred. Refer to the Event Log for more details."* — so on an
-unattended instrument the first such event blocks the panel indefinitely and hides everything after it.
+The dialog stays until somebody presses a button, or until a `display.changescreen()` lands on it. Every
+event that arrives behind it is absorbed into the single line *"Multiple errors have occurred. Refer to the
+Event Log for more details."* — so on an unattended instrument the first such event blocks the panel
+indefinitely and hides everything after it. **The ten log entries reproduce every time; the dialog does
+not, and what decides it is unidentified** — see "The dialog is narrower than the event" below.
 
 **`localnode.showevents` is not the answer, and severity is not the rule.** With the identical
 `localnode.showevents = 0`:
@@ -78,7 +80,28 @@ Four things follow:
    accumulating log raises "Multiple errors have occurred" by itself -- two per capture is still two.
 
 The full event set for one armed capture at 1 MS/s is 12 entries: `2731` *path initiated* (severity 4),
-`4915` × 10 (severity 1), `2728` (severity 2).
+`4915` × 10 (severity 1), `2728` (severity 2). The same capture filling `defbuffer1` to its 100,000
+capacity filed a thirteenth, **4918**, between the last 4915 and `2728`; its text was not captured, so the
+number is all we have.
+
+## The dialog is narrower than the event
+
+The grab above is this firmware with the capture running inside a **named script** — `t4915c` in the top
+bar — and the panel in **WAIT**. Re-run as anonymous socket chunks, **seven captures filed the ten entries
+every time and left the panel clean**: the script below verbatim at 1 MS/s on a scratch buffer and on
+`defbuffer1`, in both cases with the model read from inside the chunk as `trigger.STATE_WAITING` at block 4,
+so the reserve was wrapping; a plain `BLOCK_MEASURE_DIGITIZE` overrunning its buffer at 40 kS/s and at
+1 MS/s; and a host-side `buffer.write.reading` past a capacity-10 buffer. The host write and the 40 kS/s
+store were each run at `localnode.showevents` 0 and at 1 with no difference, and the set spans both the
+native screen and a running TSP app over it. A bare
+`eventlog.suppress()` raises its own **-109** box in the same screen-grab path, so the capture does see
+dialogs.
+
+**Refuted as the discriminator:** the provocation path, the sample rate, the fill mode, the buffer
+(`defbuffer1` behaves exactly like a scratch buffer), the active screen, and `localnode.showevents`. The
+box also carries *"Multiple errors have occurred"* below its buttons, so it may be a collapse box over a
+queue rather than a first-error box. **Either way the ten error-severity entries per capture reproduce
+every time**, and they are the half an unattended app cannot live with.
 
 ## Reproduction
 
@@ -101,8 +124,12 @@ trigger.model.initiate()
 delay(3)
 trigger.model.abort()
 print('events after ONE armed capture = ' .. tostring(eventlog.getcount()))
-print('LOOK AT THE PANEL: a modal Error 4915 dialog is over whatever screen was showing.')
+print('LOOK AT THE PANEL. Sent as a socket chunk this leaves it clean; the ten entries are always there.')
 ```
+
+Sent from a socket the entries are reliable and the panel is not. `repro-02-4915.tsp` prints that each 4915
+is "shown on the panel as a modal dialog despite showevents = 0", which holds for the captured case and
+not for a chunk.
 
 ## Expected
 
@@ -116,8 +143,8 @@ One of:
 
 ## Actual
 
-Ten error-severity events per capture from 50 kS/s upward, the first of them a modal dialog over the app,
-no setting that prevents it, and no Suppress button on it.
+Ten error-severity events per capture from 50 kS/s upward, no setting that prevents them, and — in the
+captured case — the first of them a modal dialog over the app with no Suppress button on it.
 
 ## Impact
 
@@ -125,6 +152,8 @@ A modal dialog that cannot be suppressed is disqualifying for any TSP app intend
 logger, a monitor, a production fixture — because it blocks the panel until someone dismisses it and there
 is nobody there. It also hides everything behind it: the ten 4915s and any unrelated event that follows
 collapse into one "Multiple errors have occurred" line, so the log is the only place the truth survives.
+The entries are disqualifying on their own terms too, dialog or no dialog: they reproduce every time, and
+an accumulating log raises that same collapse line by itself.
 
 ## Not yet characterised
 
@@ -137,3 +166,7 @@ collapse into one "Multiple errors have occurred" line, so the log is the only p
 3. **Which other subsystems ignore `showevents`.** The display and file subsystems honour it; the trigger
    subsystem does not, and neither does the script subsystem -- a successful `script.delete()` posts a
    spurious -104 that appears as a dialog (see report 3). A full map would need one event per subsystem.
+4. **What raises the dialog**, given that seven socket captures file the entries and raise nothing. The
+   difference left between them and the grab is that the grab's capture ran inside a named script with the
+   panel in `WAIT`. If a dialog belongs to the script subsystem rather than to the event, say so: an app
+   needs to know whether running its acquisition from a loaded script is what puts the box up.
