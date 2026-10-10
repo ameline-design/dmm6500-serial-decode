@@ -617,6 +617,7 @@ function sdec.clear_measured()
   sdec.w, sdec.nw, sdec.wmed, sdec.wshort = nil, 0, nil, nil
   sdec.snr_db, sdec.noise_v = nil, nil
   sdec.idle, sdec.idle_weak = nil, nil
+  sdec.acq_pretrig, sdec.leadrun, sdec.idlerec = nil, nil, nil
   sdec.modal, sdec.run0, sdec.run1 = nil, nil, nil
   sdec.st0 = 1
   return true
@@ -842,20 +843,20 @@ function sdec.sig_idle(rd, n)
   end
 
   local best1, best0 = 0, 0
-  local lead = ei[1] - 1
-  if sdec.st0 == 1 then
-    if lead > best1 then best1 = lead end
-  else
-    if lead > best0 then best0 = lead end
-  end
+  local onebit = sdec.sig_onebit(ei, ne)
+  local idlelen = nil
+  if onebit ~= nil then idlelen = sdec.idlemult * onebit end
 
   local k
+  local nlong1, nlong0 = 0, 0
   for k = 1, ne - 1 do
     local len = ei[k+1] - ei[k]
     if es[k] == 1 then
       if len > best1 then best1 = len end
+      if idlelen ~= nil and len >= idlelen then nlong1 = nlong1 + 1 end
     else
       if len > best0 then best0 = len end
+      if idlelen ~= nil and len >= idlelen then nlong0 = nlong0 + 1 end
     end
   end
 
@@ -866,13 +867,28 @@ function sdec.sig_idle(rd, n)
     if tail > best0 then best0 = tail end
   end
 
+  local lead = ei[1] - 1
+  sdec.leadrun = lead
+  local nrec = nlong1
+  if nlong0 > nrec then nrec = nlong0 end
+  sdec.idlerec = nrec
+  local thin = false
+  if sdec.acq_pretrig then
+    thin = nrec < 2
+  else
+    if sdec.st0 == 1 then
+      if lead > best1 then best1 = lead end
+    else
+      if lead > best0 then best0 = lead end
+    end
+  end
+
   sdec.run1, sdec.run0 = best1, best0
 
-  local onebit = sdec.sig_onebit(ei, ne)
   sdec.onebit = onebit
   local longest = best1
   if best0 > longest then longest = best0 end
-  if onebit ~= nil and longest < sdec.idlemult * onebit then
+  if thin or (onebit ~= nil and longest < sdec.idlemult * onebit) then
     sdec.idle_weak = true
     if sdec.lo ~= nil and sdec.hi ~= nil and
        sdec.lo < -sdec.flatfloor and sdec.hi > sdec.flatfloor then
@@ -1514,6 +1530,7 @@ function sdec.acq_free(n, ncopy, nofc)
   local ncp = sdec.nread
   if ncopy ~= nil and ncopy < ncp then ncp = ncopy end
   sdec.acq_copy(buf, ncp)
+  sdec.acq_pretrig = nil
   return sdec.nread
 end
 
@@ -1824,6 +1841,7 @@ function sdec.acq_triggered(n, slope)
   sdec.nread = buf.n or 0
   sdec.acq_fs = sdec.acq_fs_or_requested(buf, sdec.nread)
   sdec.acq_copy(buf, sdec.nread)
+  sdec.acq_pretrig = (sdec.pretrig or 0) > 0
   return sdec.nread
 end
 
@@ -3334,6 +3352,7 @@ function sdec.ck_prime_new(reader, ntotal, win, leadmax)
   if reader == nil then return nil, 'no sample source' end
   return {reader = reader, ntotal = ntotal, win = win, phase = 'lvd', probe = 0,
           cnt = 0, at = 1, try = 1, tries = sdec.ck_prime_tries(leadmax),
+          leadmax = leadmax,
           why = nil, label = 'levels'}, nil
 end
 
@@ -3381,6 +3400,7 @@ function sdec.ck_prime_step(pr)
 
   if pr.phase == 'edge' then
     sdec.sig_edges(pr.win, pr.cnt)
+    sdec.acq_pretrig = (pr.leadmax ~= nil and pr.leadmax > 0)
     sdec.sig_idle(pr.win, pr.cnt)
     pr.phase, pr.label = 'fmt', 'format'
     return false, nil, nil
@@ -6456,8 +6476,12 @@ function sdec.strm_relevel(buf, have, iw)
     unmeasure()
     return false
   end
+  local band = sdec.hyst
+  if band == nil or band <= 0 then
+    band = 0.1 * ((sdec.hi or 0) - (sdec.lo or 0))
+  end
   if oldthr ~= nil and sdec.lo ~= nil and sdec.hi ~= nil and
-     oldthr > sdec.lo and oldthr < sdec.hi then
+     oldthr > sdec.lo + band and oldthr < sdec.hi - band then
     unmeasure()
     return false
   end
