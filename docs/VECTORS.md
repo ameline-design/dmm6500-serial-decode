@@ -42,6 +42,91 @@ imply five waveforms where there is one — and there really is one: `v80`–`v8
 byte-identical file, and `v71`/`v72`/`v73` are three more. Nine of the 33 names now on the instrument
 are duplicate or redundant renderings.
 
+## What a vector puts on the wire
+
+**The file carries shape only.** `GEN_WRITE` encodes 16-bit signed codewords against a full scale of
+`fsv` volts, which is `AMP/2` — so `fsv = 5.0` means AMP 10 Vpp — and `GEN_RENDER` takes its logic
+levels from `opts.lo or 0` and `opts.hi or 3.3`. Every clean vector takes those defaults, so on the
+wire
+
+    low  = OFST
+    high = OFST + K * AMP,     K = 21626 / 65534 = 0.33000
+
+where 21626 is `GEN_CODE(3.3, 5.0, 0)` and 65534 is two codeword full scales, one per half of AMP.
+**AMP 10 Vpp at OFST 0 is therefore a 0.00…3.30 V line and not a ±5 V one.** The generator reads about
+0.27 % high: `K` fits to 0.3309 ± 0.0002 across eight AMP/OFST settings measured on the instrument, and
+`docs/BENCH.md`'s ground-truth capture gives 6.6186 V at 20 Vpp, a ratio of 0.33093.
+`out/vectors/manifest.tsv` records each vector's band in volts, and `bench_matrix.amp_for` inverts the
+formula as `amp = 10 * swing / 3.3`, which is the route every tool that asks for a swing in volts takes.
+
+`_x10` and `_x100` in a name are **samples per bit**, not amplitude: `SRATE = baud * mult`.
+
+### Codeword range per family
+
+Read from `out/vectors/*.bin` as int16 little-endian. Volts are at each family's reference AMP.
+
+| family | ids | cw lo | cw hi | ref AMP | band at ref | K lo | K hi | peak % of FS |
+|---|---|---|---|---|---|---|---|---|
+| clean | `v41` `v44a`–`v44e` `v45` `v46` `v51` `v71` `v76`–`v78` `v90`–`v97` `r00`–`r11` `j02` `j10` `j20` | 0 | 21626 | 10.0 | 0.000…3.300 | 0.00000 | **0.33000** | 66.0 % |
+| LIN | `v61`–`v63` | 0 | 26214 | 15.0 | 0.000…6.000 | 0.00000 | **0.40001** | 80.0 % |
+| spike | `v47` | −9830 | 20643 | 20.0 | −3.000…6.300 | −0.15000 | 0.31500 | 63.0 % |
+| drift 0.6 | `v48a` | −3932 | 25558 | 10.0 | −0.600…3.900 | −0.06000 | 0.39000 | 78.0 % |
+| drift 1.0 | `v48b` | −6553 | 28180 | 10.0 | −1.000…4.300 | −0.09999 | 0.43001 | **86.0 %** |
+
+**The three vectors that go negative are not bipolar in the useful sense.** In all three the negative
+excursion is the impairment riding on an unchanged logic pair: `v47`'s logic levels are codewords 0 and
+10813, and `v48a`/`v48b` keep `v41`'s 0 and 21626 exactly. So `K` for a LOGIC level is 0.16500 on `v47`
+and 0.33000 on both drift vectors, whatever the extremes in the table say.
+
+**None of these reaches the DAC's full scale, and nothing enforces that.** It follows from each `vec{}`
+entry's `fsv` and from `GEN_RENDER`'s `lo`/`hi` defaults, so an entry that passes its own `lo`/`hi` is
+not bound by it. The largest peak in the set is `v48b` at 86.0 % of +FS, and that is a drift excursion
+rather than a logic level.
+
+### The generator envelope, and what a symmetric bipolar band costs
+
+`|OFST| + AMP/2 ≤ 10` is the SDG's own limit. `soakplan.assert_unclipped` raises on it and
+`bench_matrix.offset_limit` keeps the draw inside it, and it is checked **nowhere else**:
+`siglent.select_arb`, `siglent.load_arb_file` and `bsdg.select` in `bench/sdg_net.tsp` all bound AMP
+alone. An out-of-envelope pair is therefore clamped silently, the band arrives recentred, and nothing
+records what reached the wire — so read `C1:BSWV?` back after any hand-written offset.
+
+For a symmetric ±S band from a vector whose low level is codeword 0, `OFST = −S` and `AMP = 2S/K`, so
+`S + S/K ≤ 10` and **S ≤ 10K/(1+K)**:
+
+| family | K | symmetric cap | AMP | OFST |
+|---|---|---|---|---|
+| clean | 0.33000 | **±2.4812 V** | 15.0376 | −2.4812 |
+| LIN | 0.40001 | **±2.8572 V** | 14.2857 | −2.8572 |
+
+The LIN family buys 15 % more symmetric swing and costs LIN framing and a different baud. `v47` is
+worse rather than better: a logic `K` of 0.16500 caps its symmetric swing at ±1.4163 V.
+
+### `v41` AT A NEGATIVE OFFSET IS THE HARNESS BUG, NOT A BIPOLAR LINE
+
+`v41` and `v45` both span codewords 0…21626 and both render 0.000…3.300 V at their reference AMP. The
+difference is which codeword is the IDLE, and it decides whether a negative offset produces a real
+RS-232 line or a stimulus no wire could carry.
+
+* **`v45` idles at codeword 0.** It is rendered inverted — `GEN_RENDER` flips the logical cell before
+  mapping it to `lo`/`hi`, so the inversion happens inside 0…3.3 V — and it is on the generator as
+  `SER_Hello_8N1_Inv_x10`. A negative offset puts the MARK at the negative level, which is RS-232, and
+  `sdec.sig_levels` reads it correctly.
+* **`v41` idles at codeword 21626.** The same negative offset puts idle POSITIVE and space NEGATIVE.
+  Both levels still clear `sdec.flatfloor`, so `sig_levels` still reads RS-232 and still marks at the
+  negative level — which is the SPACE. The decode comes back inverted: right rate, right format,
+  self-consistent bytes matching nothing. That is this repo's own harness bug and not a decoder defect.
+  `soakplan.py` records what it cost — 17.3 % of cells driven straddling ground, accounting for 86.8 %
+  of every offline failure.
+
+**A bipolar line therefore needs no new vector and no upload.** `v45` is already stored, so one call
+does it:
+
+    g.select_arb(VN.arb('v45'), 15.038, 96000, offset_v=-2.481)   # -2.481 .. +2.481 V, idling LOW
+
+`select_arb` writes `C1:ARWV` and `C1:BSWV AMP,…,OFST,…` and transfers nothing, so none of the WVDT
+upload budget is spent.
+
 ## Payload width rules
 
 A frame carries `<nbits>` data bits, so a payload has to fit the width. Measured ranges:

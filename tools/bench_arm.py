@@ -220,9 +220,19 @@ def main():
             fs = tq(d, 'Bfs', 'sdec.fs')
             # HOW MUCH QUIET LINE CAME BACK AHEAD OF THE SIGNAL, which is what the pre-trigger
             # reserve is FOR: the window has to open before the first start bit or the first byte is
-            # a fragment. Counted on the instrument over the Lua copy, |v| < 1 V being quiet for a
-            # 10 Vpp stimulus. The reserve is 5 % of capacity -- about 1055 samples at 21 100 -- and
-            # it has been filling since initiate(), so a fired arm should come back with most of it.
+            # a fragment. Counted on the instrument over the Lua copy, with |v| < 1 V as the test for
+            # quiet.
+            #
+            # 1 V IS THE RIGHT TEST BECAUSE OF WHERE THE BAND SITS, not because the stimulus straddles
+            # ground -- it does not. v41 occupies codewords 0..21626 of a 16-bit full scale, so on the
+            # wire low = OFST and high = OFST + 0.330 * AMP, which makes AMP 10 Vpp at OFST 0 a
+            # 0.00..3.30 V line idling POSITIVE. Its low level IS 0 V, so the switched-off line and the
+            # space level coincide and the first sample above 1 V is the rise into the 3.30 V idle. On a
+            # band lifted off ground -- a 1.8 V logic line at OFST 0.9, say -- this would count
+            # something else. docs/VECTORS.md carries the mapping.
+            #
+            # The reserve is 5 % of capacity -- about 1055 samples at 21 100 -- and it has been filling
+            # since initiate(), so a fired arm should come back with most of it.
             lead = tq(d, 'Bl', '(function() local n, i = sdec.nread, 1 '
                                'while i <= n and math.abs(sdec.smp[i]) < 1.0 do i = i + 1 end '
                                'return i - 1 end)()')

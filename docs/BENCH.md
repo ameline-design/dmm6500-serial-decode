@@ -41,7 +41,11 @@ bottoms out at 1.65 V p-p on the 3.3 V vectors, which left the bottom of the cla
 construction; asking for a span in volts covers 0.45 V to 8 V on every vector that can reach it, and
 reports the achieved figure per row so a generator ceiling shows up as a ceiling rather than as
 coverage. A 3.3 V-span vector needs 24.2 Vpp for an 8 V swing and the SDG stops at 20, so its achieved
-span caps at 5.28 V — stated, not silently absorbed.
+span caps at **6.600 V** — stated, not silently absorbed. The cap is the vector's own codeword range
+against the amplitude ceiling, so it is per family: at the top of the draw `soakplan.amp_ofst_for`
+returns AMP 20.000 / OFST 0.000 for `v41`, and `assert_unclipped` gives the band 0.000…6.600 V, where
+the LIN vectors reach the full 8.000 V and `v47`, `v48a` and `v48b` reach 8 V by spending part of it
+below ground. `docs/VECTORS.md` carries the codeword range of every family and the arithmetic.
 
 **The offset draw skips the window that would put a single-supply band across ground, and that
 exclusion is not cosmetic.** `sig_levels` decides idle polarity from the levels when no run in the
