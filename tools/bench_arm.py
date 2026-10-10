@@ -44,6 +44,7 @@ forced to 'free', found no baud rate, and returned before the real capture.
     python3 tools/bench_arm.py --only A,B       # one case at a time
 """
 import argparse
+import math
 import os
 import sys
 import threading
@@ -60,6 +61,7 @@ BAUD = 9600
 SPB = 10                     # arb samples per bit, so SRATE is baud * SPB
 ARMWAIT = 10.0
 RESULTS = []
+CAPS = {}                    # buffer sizes one case measures and another case's claim is about
 
 
 def tq(d, tag, expr, timeout=40):
@@ -347,9 +349,14 @@ def main():
             nb = tq(d, 'Fb', 'sdec.ck_nbytes')
             nread = tq(d, 'Fn', 'sdec.nread')
             err = tq(d, 'Fe', 'sdec.lasterr')
+            # STASHED FOR CASE O, which claims to record several times this much. A claim about two
+            # cases has to be settled against both of their measurements, not against a literal.
+            CAPS['F'] = num(tq(d, 'Fc', 'sdec.buf ~= nil and sdec.buf.capacity or nil'))
+            CAPS['Fn'] = num(tq(d, 'Fs', 'sdec.strm_nsmp'))
             print('  generator on at +%.2f s' % (hit.get('on', t0) - t0))
             print('  elapsed %.2f s   capture=%s' % (el, res))
             print('  endwhy=%s armed=%s bytes=%s nread=%s' % (endwhy, armed, nb, nread))
+            print('  nsmp=%s buffer capacity=%s' % (CAPS['Fn'], CAPS['F']))
             print('  lasterr: %s' % err)
             check('F the press was not swallowed by the absorb window', el > 1.0,
                   'returned in %.2f s' % el)
@@ -616,13 +623,20 @@ def main():
         # ---- O: the LARGEST recording, armed. The buffer the settle budget has to cover. ----
         if want('O'):
             print('\n=== O: a 32 kB recording armed on silence, device starts at +3 s ===')
-            # THE 32 kB MODE IS WHERE THE ARM IS MOST LIKELY TO FAIL, and until now nothing covered it.
-            # Case F's 8 kB recording asks for about 862 000 readings; this one asks for the ck_bufmax
-            # ceiling, 2 800 000. The template's first block is BUFFER_CLEAR over the whole buffer and
-            # that work is linear in readings -- buffer.make() measures 0.0019 s at 21 100 and 0.7789 s
-            # at 2 800 000, about 0.28 microseconds each -- so the time to reach the wait block scales
-            # with the recording. At the old 0.25 s settle budget an 8 kB arm was a coin toss at roughly
-            # 0.24 s of setup, and this mode is three times that again.
+            # THE 32 kB MODE IS THE WIDEST RECORDING THE APP OFFERS, and until now nothing covered it.
+            # Its size follows from the FORMAT, not from sdec.ck_bufmax: stream_samples() asks for
+            # md.cap bytes x framebits x (fs/baud), so 32 768 x 10 x (40 000/9600) = 1 365 334
+            # readings, and the armed buffer is that plus the 5 % pre-trigger reserve and 100 readings
+            # of abort headroom -- ceil(nsmp*100/95) + 100 = 1 437 294. ck_bufmax binds only a mode
+            # whose md.cap is nil. Four times case F's buffer, which is what the check below compares
+            # against rather than a literal.
+            #
+            # THE BUFFER IS NOT WHAT THE SETTLE BUDGET IS SPENT ON. Time to STATE_WAITING is flat at
+            # ~0.19 s from 21 100 to 2 800 000 readings -- slope +1.6e-9 +/- 5.7e-9 s/reading, t = 0.28
+            # -- and buffer.make() runs in acq_make_buffer() BEFORE stream_arm() spins, so it cannot be
+            # in that interval at all. What the budget covers is the PRIOR acquisition: aborting a
+            # model that was sitting in STATE_WAITING costs 0.228 s, and sdec.trig_settle() aborts
+            # before every capture, so the app always pays that row. Hence a 10 s budget and not 0.25.
             #
             # IT IS THE SLOW CASE: about 30 s of capture and two minutes of decoding, which is why the
             # press gets its own timeout rather than the default.
@@ -649,8 +663,22 @@ def main():
             print('  lasterr: %s' % err)
             check('O the largest recording arms rather than recording the silence', armed == 'true',
                   'strm_armed=%s at capacity %s' % (armed, cap))
-            check('O ...and the arm survives a buffer three times case F\'s',
-                  num(cap, 0) > 1500000, 'capacity=%s, want the ck_bufmax ceiling' % cap)
+            # DERIVED FROM CASE F'S OWN MEASUREMENT, not from a threshold. Skipped rather than
+            # asserted when F did not run, because --only O would otherwise compare against nothing
+            # and a comparison against nothing passes.
+            if CAPS.get('F'):
+                check('O ...and the arm survives a buffer several times case F\'s',
+                      num(cap, 0) >= 3 * CAPS['F'],
+                      'capacity=%s against case F\'s %s -- %.1fx'
+                      % (cap, CAPS['F'], num(cap, 0) / CAPS['F']))
+            # THE CAPACITY IS AN ARITHMETIC CONSEQUENCE OF nsmp, so assert the relation and the two
+            # numbers check each other. A bare floor cannot tell a correctly sized buffer from a
+            # mode that silently fell back to a smaller one.
+            pre = num(tq(d, 'Op', 'sdec.pretrig'), 0)
+            want_cap = math.ceil(num(nsmp, 0) * 100.0 / (100.0 - pre)) + 100 if pre else None
+            check('O ...and the armed buffer is nsmp plus the reserve and the abort headroom',
+                  want_cap is not None and num(cap, 0) == want_cap,
+                  'capacity=%s, nsmp=%s at pretrig=%g%% wants %s' % (cap, nsmp, pre, want_cap))
             check('O ...and it collected bytes from the line', num(nb, 0) > 20, '%s bytes' % nb)
             d.exec('sdec.capmode = "frame" sdec.force_baud = nil')
             clear_absorb(d)
