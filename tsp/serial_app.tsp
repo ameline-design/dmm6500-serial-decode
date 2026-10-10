@@ -252,9 +252,10 @@ end
 -- WITHOUT IT THE LADDER IS UNSAFE, and the frame gate cannot rescue it. Measured here, 1800 bytes of
 -- text at each rate, every candidate forced against every truth: a 19200 line read at 9600 frames 77
 -- bytes with SIX errors -- a bad fraction of 0.082, comfortably inside the gate -- and the bytes are
--- garbage. A 31250 line read at 9600 gives 80 frames and ZERO errors. The reason is structural: half
--- the true rate reads two real frames as one, and the real stop bit lands exactly where the
--- hypothesis looks for its own, so the one check that would notice agrees.
+-- garbage. A 31250 line read at 28800 gives 258 frames and ZERO. The reason is structural: half the
+-- true rate reads two real frames as one, and the real stop bit lands exactly where the hypothesis
+-- looks for its own, so the one check that would notice agrees. This filter is what rejects 10 of
+-- those 30 pairs before a decode is spent on them, 9600 against every truth from 28 800 up.
 --
 -- WHICH TEST CATCHES WHICH DIRECTION. ua_plausible refuses a bit time longer than 1.15x the median
 -- pulse, which is what a HALVED baud rate claims -- that most pulses are shorter than one bit.
@@ -287,9 +288,12 @@ end
 -- enough to decode at all -- was published as 38 400, on a bad fraction of 0.245.
 --
 -- MEASURED over every (truth, candidate) pair in the ladder, 1800 bytes of text each: a CORRECT rate
--- gives a bad fraction of exactly 0.000 in every case. The wrong rates that survive a slack gate come
--- in at 0.082, 0.209, 0.220, 0.245 and 0.247, so the two populations are cleanly separated and the
--- threshold belongs down with the truth.
+-- gives a bad fraction of exactly 0.000 in every case -- AND SO DO THREE WRONG ONES. 31250 read at
+-- 28800, and 38400 read at either 28800 or 31250, each frame 318 of 318 frames with no error; only
+-- the bytes differ. The wrong rates a slack gate admits otherwise come in at 0.082, 0.209, 0.239 and
+-- 0.247. So the populations are NOT separable by this measure alone: the threshold is what buys the
+-- correct answers and uniqueness is what prevents the wrong ones, and neither substitutes for the
+-- other. Uniqueness at 0.25 still published 38 400 for a 57 600 Bd line.
 --
 -- 0.02 RATHER THAN ZERO, because a real wire is not the generator: window edges and jitter leave a
 -- few framing errors, and demanding literally none would refuse correct answers on marginal captures.
@@ -326,9 +330,12 @@ end
 --
 -- SO THE TEST IS UNIQUENESS, and it is what makes the path safe rather than merely gated. Every
 -- surviving candidate is decoded, and a rate is published only when it is the ONLY one that fits.
--- Against the same matrix that gives one correct answer -- 9600, which is also the rate a bench is
--- most likely to be running -- and five correct refusals, with no wrong answer anywhere. A refusal
--- costs the operator a note; a wrong rate costs them a panel full of confident rubbish.
+-- Against the same matrix that gives three correct answers -- 9600, 19200 and 28800, which covers the
+-- rates a bench is most likely to be running -- and three correct refusals, with no wrong answer
+-- anywhere. Of the four combinations of rule and threshold measured, this is the only one with no
+-- wrong answer: first-fit at the slack gate is wrong five times in six, first-fit at this gate twice,
+-- and uniqueness at the slack gate once. A refusal costs the operator a note; a wrong rate costs them
+-- a panel full of confident rubbish.
 --
 -- ALL CANDIDATES ARE DECODED, deliberately, instead of stopping at the first fit: the second fit is
 -- the whole verdict. Five decodes of one capture is CPU and nothing else -- no instrument time, no
@@ -354,16 +361,24 @@ function sdec.arm_fit_prior()
   -- this one. Its return value is deliberately ignored: this is reached precisely because no bit time
   -- fits, and the pulse widths are set on the way to that answer.
   sdec.sig_bittime()
-  local was, won, alt, i = sdec.force_baud, nil, nil, 0
-  for i = 1, table.getn(sdec.arm_try) do
-    local b = sdec.arm_try[i]
-    if sdec.arm_try_ok(fs / b, n) then
-      sdec.force_baud = b
-      if sdec.decode_from(rd, n) and sdec.arm_fit_ok() then
-        if won == nil then won = b else alt = b end
+  local was, won, alt = sdec.force_baud, nil, nil
+  -- WRAPPED, BECAUSE decode_from CAN RAISE. ua_note_fmt raises from inside it on a result with no
+  -- surviving format, and both restores below sit after the call -- so a raise left the operator's
+  -- Auto silently converted into a hard lock at a guessed rate, displayed on the panel as their own
+  -- setting. Measured by stubbing the raise. The pcall is around the LOOP rather than each candidate:
+  -- a raise means the samples defeated the decoder, and the next hypothesis will not do better.
+  pcall(function()
+    local i
+    for i = 1, table.getn(sdec.arm_try) do
+      local b = sdec.arm_try[i]
+      if sdec.arm_try_ok(fs / b, n) then
+        sdec.force_baud = b
+        if sdec.decode_from(rd, n) and sdec.arm_fit_ok() then
+          if won == nil then won = b else alt = b end
+        end
       end
     end
-  end
+  end)
   sdec.force_baud = was
   if won == nil then return false end
   if alt ~= nil then
@@ -378,7 +393,11 @@ function sdec.arm_fit_prior()
   -- last. Publishing without this put the final candidate's bytes on the panel under the winner's
   -- rate -- the two agree only when the winner happens to be last.
   sdec.force_baud = won
-  local ok = sdec.decode_from(rd, n)
+  -- GUARDED LIKE THE LOOP, AND FOR THE SAME REASON: this call can raise too, and it is the one with
+  -- the operator's field already overwritten -- so a raise here was what actually stranded Auto as a
+  -- hard lock at a guessed rate. Wrapping only the loop fixed half of it, which the test caught.
+  local ok = false
+  pcall(function() ok = sdec.decode_from(rd, n) end)
   sdec.force_baud = was
   if not ok then return false end
   -- THE PANEL MUST NOT PRESENT AN ASSUMPTION AS A MEASUREMENT. Every other route to a baud rate on
@@ -772,6 +791,10 @@ function sdec.stream_begin()
   -- recording's: a frame capture of a silent line followed by Capture on a busy one would otherwise
   -- arm this recording on an inherited verdict.
   sdec.probe_idle = nil
+  -- AND THE ARM PAIR WITH IT, for the reason clear_measured() gives: this path does not go through
+  -- clear_measured(), so a pair from a previous capture would arm this recording at that capture's
+  -- level on that capture's edge.
+  sdec.arm_thr, sdec.arm_idle = nil, nil
   local pok = pcall(sdec.acq_free, pn, nil, true)
   if pok and sdec.nread ~= nil and sdec.nread > 1 then
     local lok, lwhy = sdec.sig_levels(sdec.smp, sdec.nread)
@@ -807,13 +830,27 @@ function sdec.stream_begin()
   else
     sdec.strm_lvlreuse = nil
   end
-  -- AND IF NOTHING COULD VOUCH FOR A THRESHOLD, TAKE THE ARM-FROM-SILENCE ONE. The comparator needs
-  -- a voltage before it can be armed and clear_result() left sdec.thr at ZERO, where it fires on the
-  -- first noise sample -- so a recording that waits has to choose a level the same way the frame path
-  -- does. Measured levels win where they exist: the reuse above is this wire minutes ago, which beats
-  -- any offset from an idle reading.
-  if sdec.probe_idle ~= nil and not sdec.strm_lvlreuse then sdec.arm_threshold() end
-  sdec.smp, sdec.nread = nil, 0        -- the probe's Lua copy is not needed past this point
+  -- THE ARM LEVEL IS COMPUTED WHATEVER THE REUSE DID, and the guard that used to skip it was the
+  -- whole of a measured defect: `not sdec.strm_lvlreuse` meant that on any recording following a
+  -- successful decode -- which is most of them -- arm_threshold() never ran, and the comparator was
+  -- armed at the LAST DECODE'S midpoint. Measured on the instrument: 1.63 V on a 0-3.29 V line, which
+  -- is mid-data, so the arm would fire on a data edge rather than on a start bit; and on a first
+  -- capture it inherits clear_result()'s zero and fires on ADC noise.
+  --
+  -- THE REUSED THRESHOLD IS PUT BACK, because the two numbers answer different questions:
+  -- arm_threshold() publishes sdec.arm_thr for the comparator, and the idle watchdog and the chunked
+  -- decode want the measured midpoint -- this wire, minutes ago -- rather than idle plus Arm At.
+  if sdec.probe_idle ~= nil then
+    local kthr, khyst, kidle = sdec.thr, sdec.hyst, sdec.idle
+    if sdec.arm_threshold() and sdec.strm_lvlreuse then
+      sdec.thr, sdec.hyst, sdec.idle = kthr, khyst, kidle
+    end
+  end
+  -- THE LUA COPY GOES; THE COUNT STAYS. sdec.nread is what a finished run is reported BY --
+  -- run_app.py prints it as a headline field -- and zeroing it here published 0 beside 5 487 decoded
+  -- bytes, because record_run() opens the next window before the operator reads anything. Nothing
+  -- reads it between here and stream_settle(), which overwrites it with the count that matters.
+  sdec.smp = nil
 
   -- ck_stop = false HERE, on entry, is the authoritative clear -- mode_exit() can leave it set
   -- after requesting a stop the loop never got round to seeing, and no unwind path clears it.
@@ -1292,6 +1329,11 @@ end
 -- refused, and had to read pcall's verdict INSTEAD of this function's -- which is how a refused
 -- SimpleLoop came back to stream_start() as a successful arm.
 function sdec.stream_arm(nsmp)
+  -- CLEARED FIRST, ahead of the four early returns below -- a stale true would have the next
+  -- unarmed recording's poll loop waiting for a trigger nothing was armed on. Latent rather than
+  -- live, since every one of those returns is a refusal the caller answers with a free-running read,
+  -- but the field's own comment promises it is written on both paths and this is what makes that so.
+  sdec.strm_armed = nil
   local buf = sdec.buf
   -- NO BUFFER IS A REFUSED ARM, not a raise: the caller's answer to a refusal is a free-running
   -- read, and it can only choose that if it is told rather than unwound.
@@ -1353,9 +1395,19 @@ function sdec.stream_arm(nsmp)
     if ev == nil then
       armed = false
     else
-      sdec.arm_comparator(useanalog, sdec.arm_slope())
-      ok = pcall(trigger.model.load, 'LoopUntilEvent', ev, sdec.pretrig,
-                 trigger.CLEAR_ENTER, 0, buf)
+      -- NO LEVEL AND NO COMPARATOR ARE BOTH REFUSALS, not details. sdec.arm_thr is nil when
+      -- arm_threshold() could not find even an idle level -- sig_levels' 'capture is empty' exit
+      -- leaves vmax nil and thr at zero, which satisfied the silent test and armed the comparator at
+      -- 0 V, where it fires on the first noise sample. Measured, and it is the exact failure
+      -- arm_threshold()'s own comment is written about.
+      if useanalog and (sdec.arm_thr == nil or
+                        not sdec.arm_comparator(useanalog, sdec.arm_slope())) then
+        armed = false
+      end
+      if armed then
+        ok = pcall(trigger.model.load, 'LoopUntilEvent', ev, sdec.pretrig,
+                   trigger.CLEAR_ENTER, 0, buf)
+      end
       -- A REFUSED LOAD IS NOT AN ARMED RECORDING, so it must not be reported as one: the poll loop
       -- would then wait out the arm for a model that is not running.
       if not ok then armed = false end
@@ -1662,7 +1714,7 @@ function sdec.stream_acquire(nsmp)
       -- reason is printed at the END of the run, by which time record_run() has opened the next
       -- window and its stream_begin() has cleared the measurements -- so the note read 'nothing
       -- crossed -0.00 V', naming a threshold nothing was ever armed at. MEASURED on the instrument.
-      sdec.arm_expired_at = sdec.thr
+      sdec.arm_expired_at = sdec.arm_thr or sdec.thr
       sdec.ck_endwhy = 'noarm'
       break
     end

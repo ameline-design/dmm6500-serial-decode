@@ -7633,8 +7633,6 @@ local function test_modes()
 
   -- THE NOTE IS A HOOK, so the core carries no opinion about the panel and the offline harnesses --
   -- which install none -- behave exactly as before. Asserted both ways round.
-  check('the core calls no armnote unless the UI installed one',
-        sdec.armnote == nil or type(sdec.armnote) == 'function', tostring(sdec.armnote))
   ARM_NOTED = nil
   sdec.armnote = function(w, l) ARM_NOTED = {w = w, l = l} end
   sdec.armlevel, sdec.armwait = 1.0, 20
@@ -7661,8 +7659,9 @@ local function test_modes()
         ARM_NOTED == nil, ARM_NOTED == nil and 'not called' or 'called')
   -- NO HOOK IS A SUPPORTED CONFIGURATION, and this asserts the BEHAVIOUR rather than the type: the
   -- core must arm exactly the same with armnote absent, because every offline harness installs none.
-  -- The assertion this replaces -- `armnote == nil or type(armnote) == 'function'` -- is true of a
-  -- field that was never written and of one holding the wrong function, so it tested nothing.
+  -- The assertion this REPLACED -- `armnote == nil or type(armnote) == 'function'`, now deleted --
+  -- was true of a field that was never written and of one holding the wrong function, so it tested
+  -- nothing while counting as a pass.
   sdec.armnote = nil
   -- armkey back ON, because the case above deliberately cleared it: what is being asserted here is
   -- that removing the HOOK changes nothing, so every other input has to match the with-hook arm.
@@ -9803,6 +9802,46 @@ print('\narming from silence: the capture autoset() reaches, and the rates it fa
     check('...and refuses no result at all rather than indexing it',
           sdec.arm_fit_ok() == false, 'res=nil')
     sdec.res = keepres
+  end
+
+  -- A DIGITIZER WITH NO ANALOG COMPARATOR MUST DEGRADE, NOT FREEZE. It is a supported configuration,
+  -- and the write used to raise where acq_triggered's own pcall caught it. Moving it into
+  -- arm_comparator(), which guards internally, swallowed that -- measured on the instrument as
+  -- 120.05 s of frozen panel at the form's ceiling, followed by advice about two settings that
+  -- cannot help at any value.
+  do
+    local keepat = sdec.atrig
+    quiet_line()
+    arm_reset()
+    sdec.trigmode, sdec.armwait = 'edge', 120
+    sdec.atrig = nil
+    local ok, why = sdec.autoset()
+    sdec.atrig = keepat
+    sdec.armwait = 2.0
+    check('a digitizer with no comparator degrades to free run instead of waiting out Arm Wait',
+          sdec.lasterr ~= nil and has(sdec.lasterr, 'trigger unavailable'),
+          string.format('ok=%s lasterr=%s', tostring(ok), tostring(sdec.lasterr)))
+  end
+
+  -- AND A RAISE OUT OF A CANDIDATE DECODE MUST NOT STRAND THE OPERATOR'S LOCK. decode_from raises
+  -- from ua_note_fmt on a result with no surviving format, and both restores sat after the call --
+  -- so Auto became a hard lock at a guessed rate, shown on the panel as the operator's own setting.
+  do
+    local realdf, ncall = sdec.decode_from, 0
+    SRC.rd, SRC.ts, SRC.nsmp, SRC.trigat = GEN({bytes = tb, baud = 9600, fs = 200000})
+    sdec.trigmode, sdec.force_baud = 'free', nil
+    sdec.fs, sdec.acq_fs = 200000, 200000
+    sdec.acquire()
+    sdec.decode_from = function(rd, n)
+      ncall = ncall + 1
+      if ncall >= 2 then error('ua_note_fmt: no frame format', 0) end
+      return realdf(rd, n)
+    end
+    local pok = pcall(sdec.arm_fit_prior)
+    sdec.decode_from = realdf
+    check('a raise out of a candidate decode leaves the operator\'s rate lock where it was',
+          sdec.force_baud == nil,
+          string.format('pcall=%s force_baud=%s', tostring(pok), tostring(sdec.force_baud)))
   end
 
   -- ---- Cancel's snapshot must not be able to clear these two settings ----

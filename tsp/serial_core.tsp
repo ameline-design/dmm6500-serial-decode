@@ -709,6 +709,12 @@ function sdec.clear_measured()
   -- The MEASURED sample rate and the flag saying it was not measured. Every bit time, the baud
   -- rate and therefore every byte is scaled by this one number.
   sdec.acq_fs, sdec.acq_fs_est = nil, nil
+  -- THE ARM'S OWN LEVEL AND IDLE SIDE GO WITH THE REST OF THE MEASUREMENTS, and this line is not
+  -- optional: arm_slope() and arm_comparator() prefer them where they exist, so a pair left over from
+  -- a capture of a SILENT line would arm the next capture of a BUSY one at the wrong level, on the
+  -- wrong edge. Caught offline immediately -- an inverted idle-low line armed FALLING because an
+  -- earlier idle-high arm had left arm_idle at 1.
+  sdec.arm_thr, sdec.arm_idle = nil, nil
   -- The pulse widths, their median and their short end. sdec.wmed GATES candidate rates in
   -- ua_cands() and sdec.wshort gates them in ua_minrun_absurd(), so a stale one rejects the true bit
   -- time of the capture in hand.
@@ -2670,6 +2676,7 @@ end
 -- no threshold of its own at all: clear_result() leaves sdec.thr at ZERO, so an armed recording would
 -- have pointed the comparator at 0 V and fired on the first ADC noise sample.
 function sdec.arm_threshold()
+  sdec.arm_thr, sdec.arm_idle = nil, nil
   if sdec.vmax == nil then return false end
   local idlev = sdec.vmax
   if math.abs(sdec.vmin) > math.abs(sdec.vmax) then idlev = sdec.vmin end
@@ -2679,6 +2686,7 @@ function sdec.arm_threshold()
     -- side of an idle-low current loop (MIDI). There is no midpoint to clamp against, since the far
     -- level is not bounded by anything -- a ground-idle line is as tall as its part.
     sdec.thr, sdec.idle = idlev + sdec.arm_level_v(), 0
+    sdec.arm_thr, sdec.arm_idle = sdec.thr, sdec.idle
     return true
   end
   -- IDLE IS AWAY FROM GROUND -- a normal idle-high TTL line, or a bipolar RS-232 one -- and on both
@@ -2696,6 +2704,14 @@ function sdec.arm_threshold()
   else
     sdec.thr, sdec.idle = idlev - off, 1
   end
+  -- PUBLISHED SEPARATELY, because the comparator's level and the DECODE's threshold are two different
+  -- questions and only one of them is a probe result. A recording reuses the last good capture's
+  -- measured threshold for its idle watchdog -- the right economy, since that is this wire minutes
+  -- ago -- and the arm level is not a measurement at all: it is idle plus Arm At. MEASURED on the
+  -- instrument: with the reuse in force the recording path armed its comparator at 1.63 V, the decode
+  -- midpoint of a 0-3.29 V line, so it would have fired on a data edge rather than on a start bit;
+  -- on a first capture it inherits clear_result()'s ZERO and fires on ADC noise. Neither is Arm At.
+  sdec.arm_thr, sdec.arm_idle = sdec.thr, sdec.idle
   return true
 end
 
@@ -2704,7 +2720,12 @@ end
 -- recording have to arm on the same edge of the same line.
 function sdec.arm_slope()
   if sdec.trigmode ~= 'edge' then return nil end
-  if sdec.idle == 0 then return sdec.k.SLOPE_RISING end
+  -- THE ARM'S OWN IDLE SIDE WHERE THERE IS ONE, for the reason arm_threshold() gives: on a recording
+  -- that reused a measured threshold, sdec.idle is the polarity of the LAST decode, and arming the
+  -- far side of a level the line is sitting on cannot fire at all.
+  local side = sdec.arm_idle
+  if side == nil then side = sdec.idle end
+  if side == 0 then return sdec.k.SLOPE_RISING end
   return sdec.k.SLOPE_FALLING
 end
 
@@ -2717,7 +2738,11 @@ function sdec.arm_comparator(useanalog, slope)
   return pcall(function()
     if useanalog then
       sdec.atrig.mode   = sdec.k.MODE_EDGE
-      sdec.atedge.level = sdec.thr
+      -- arm_thr WHERE THE ARM COMPUTED ONE, sdec.thr otherwise -- see arm_threshold(). On a capture
+      -- of a line that was already transmitting there is no arm level and the measured midpoint is
+      -- the right answer; on one that is waiting for a device there is, and the midpoint is a
+      -- previous capture's.
+      sdec.atedge.level = sdec.arm_thr or sdec.thr
       sdec.atedge.slope = slope
     else
       -- A MODE_EDGE comparator left behind by a previous 'edge' capture is instrument state the
@@ -2770,7 +2795,13 @@ function sdec.acq_triggered(n, slope)
   -- Every path that already had a longer wait keeps it: 'front' and the rear BNC stay at
   -- trigwait_ext, so a setting meant to help the silent case cannot shorten a source that was
   -- waiting for a person. And arm_wait_s() returning 0 leaves the mode's own wait untouched.
-  if sdec.arm_silent() then
+  -- AND ONLY WHERE THE COMPARATOR IS THE SOURCE. Measured: with Arm Wait at the form's 120 s ceiling
+  -- a 'front' press on a quiet line froze the panel for 120.05 s, and the expiry message deliberately
+  -- refuses to name Arm Wait for that source -- so the operator had a two-minute freeze and nothing
+  -- linking it to the field they changed. The comment above was true only while Arm Wait stayed under
+  -- the 30 s those sources already wait.
+  if sdec.arm_silent() and sdec.trigmode == 'edge' and
+     not (sdec.trigext and sdec.trigext_only) then
     local armw = sdec.arm_wait_s()
     if armw > wait then wait = armw end
   end
@@ -2809,7 +2840,15 @@ function sdec.acq_triggered(n, slope)
     -- Its verdict is discarded HERE and only here: on this path a refused comparator write means the
     -- model below cannot fire, which the bounded wait already reports as an expiry with a reason --
     -- whereas stream_arm() has no wait of its own and so acts on the false.
-    sdec.arm_comparator(useanalog, slope)
+    -- ACTED ON, NOT DISCARDED. A digitizer with no analog comparator is a supported configuration,
+    -- and before the write moved into arm_comparator() it raised HERE, inside this pcall, so the
+    -- function degraded to free run immediately. Swallowing the verdict instead loaded the model on
+    -- an event nothing was configured to raise: measured, 120.05 s of frozen panel at the form's
+    -- ceiling, and then advice about two settings that cannot help at any value. The raise is what
+    -- the failure path below is written for.
+    if not sdec.arm_comparator(useanalog, slope) then
+      error('no analog comparator on this digitizer', 0)
+    end
     -- position is the PRE-trigger percentage: at 5 % of a 20 000-sample buffer
     -- the trigger model keeps 1000 samples before the edge and 19 000 after.
     trigger.model.load('LoopUntilEvent', ev,

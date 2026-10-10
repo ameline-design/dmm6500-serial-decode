@@ -613,6 +613,7 @@ end
 --   * sdec.flog_path/flog_n/flog_bytes -- the byte log, which spans captures by design.
 function sdec.clear_measured()
   sdec.acq_fs, sdec.acq_fs_est = nil, nil
+  sdec.arm_thr, sdec.arm_idle = nil, nil
   sdec.w, sdec.nw, sdec.wmed, sdec.wshort = nil, 0, nil, nil
   sdec.snr_db, sdec.noise_v = nil, nil
   sdec.idle, sdec.idle_weak = nil, nil
@@ -1682,12 +1683,14 @@ end
 -- no threshold of its own at all: clear_result() leaves sdec.thr at ZERO, so an armed recording would
 -- have pointed the comparator at 0 V and fired on the first ADC noise sample.
 function sdec.arm_threshold()
+  sdec.arm_thr, sdec.arm_idle = nil, nil
   if sdec.vmax == nil then return false end
   local idlev = sdec.vmax
   if math.abs(sdec.vmin) > math.abs(sdec.vmax) then idlev = sdec.vmin end
   sdec.hyst = 0
   if math.abs(idlev) < sdec.flatfloor then
     sdec.thr, sdec.idle = idlev + sdec.arm_level_v(), 0
+    sdec.arm_thr, sdec.arm_idle = sdec.thr, sdec.idle
     return true
   end
   local off = sdec.arm_level_v()
@@ -1698,6 +1701,7 @@ function sdec.arm_threshold()
   else
     sdec.thr, sdec.idle = idlev - off, 1
   end
+  sdec.arm_thr, sdec.arm_idle = sdec.thr, sdec.idle
   return true
 end
 
@@ -1706,7 +1710,9 @@ end
 -- recording have to arm on the same edge of the same line.
 function sdec.arm_slope()
   if sdec.trigmode ~= 'edge' then return nil end
-  if sdec.idle == 0 then return sdec.k.SLOPE_RISING end
+  local side = sdec.arm_idle
+  if side == nil then side = sdec.idle end
+  if side == 0 then return sdec.k.SLOPE_RISING end
   return sdec.k.SLOPE_FALLING
 end
 
@@ -1719,7 +1725,7 @@ function sdec.arm_comparator(useanalog, slope)
   return pcall(function()
     if useanalog then
       sdec.atrig.mode   = sdec.k.MODE_EDGE
-      sdec.atedge.level = sdec.thr
+      sdec.atedge.level = sdec.arm_thr or sdec.thr
       sdec.atedge.slope = slope
     else
       sdec.atrig.mode = sdec.k.MODE_OFF
@@ -1746,7 +1752,8 @@ function sdec.acq_triggered(n, slope)
   local wait = sdec.trigwait or 3.0
   if sdec.trigmode == 'front' or sdec.trigext then wait = sdec.trigwait_ext or 30.0 end
 
-  if sdec.arm_silent() then
+  if sdec.arm_silent() and sdec.trigmode == 'edge' and
+     not (sdec.trigext and sdec.trigext_only) then
     local armw = sdec.arm_wait_s()
     if armw > wait then wait = armw end
   end
@@ -1764,7 +1771,9 @@ function sdec.acq_triggered(n, slope)
 
   local expired = false
   local ok, perr = pcall(function()
-    sdec.arm_comparator(useanalog, slope)
+    if not sdec.arm_comparator(useanalog, slope) then
+      error('no analog comparator on this digitizer', 0)
+    end
     trigger.model.load('LoopUntilEvent', ev,
                        sdec.pretrig, trigger.CLEAR_ENTER, 0, buf)
     trigger.model.initiate()
@@ -5858,16 +5867,19 @@ function sdec.arm_fit_prior()
   local fs = sdec.acq_fs or sdec.fs
   if fs == nil or fs <= 0 then return false end
   sdec.sig_bittime()
-  local was, won, alt, i = sdec.force_baud, nil, nil, 0
-  for i = 1, table.getn(sdec.arm_try) do
-    local b = sdec.arm_try[i]
-    if sdec.arm_try_ok(fs / b, n) then
-      sdec.force_baud = b
-      if sdec.decode_from(rd, n) and sdec.arm_fit_ok() then
-        if won == nil then won = b else alt = b end
+  local was, won, alt = sdec.force_baud, nil, nil
+  pcall(function()
+    local i
+    for i = 1, table.getn(sdec.arm_try) do
+      local b = sdec.arm_try[i]
+      if sdec.arm_try_ok(fs / b, n) then
+        sdec.force_baud = b
+        if sdec.decode_from(rd, n) and sdec.arm_fit_ok() then
+          if won == nil then won = b else alt = b end
+        end
       end
     end
-  end
+  end)
   sdec.force_baud = was
   if won == nil then return false end
   if alt ~= nil then
@@ -5876,7 +5888,8 @@ function sdec.arm_fit_prior()
     return false
   end
   sdec.force_baud = won
-  local ok = sdec.decode_from(rd, n)
+  local ok = false
+  pcall(function() ok = sdec.decode_from(rd, n) end)
   sdec.force_baud = was
   if not ok then return false end
   sdec.probe_note = string.format(
@@ -6057,6 +6070,7 @@ function sdec.stream_begin()
   if pmax < 200 then pmax = 200 end
   if pn > pmax then pn = pmax end
   sdec.probe_idle = nil
+  sdec.arm_thr, sdec.arm_idle = nil, nil
   local pok = pcall(sdec.acq_free, pn, nil, true)
   if pok and sdec.nread ~= nil and sdec.nread > 1 then
     local lok, lwhy = sdec.sig_levels(sdec.smp, sdec.nread)
@@ -6074,8 +6088,13 @@ function sdec.stream_begin()
   else
     sdec.strm_lvlreuse = nil
   end
-  if sdec.probe_idle ~= nil and not sdec.strm_lvlreuse then sdec.arm_threshold() end
-  sdec.smp, sdec.nread = nil, 0        -- the probe's Lua copy is not needed past this point
+  if sdec.probe_idle ~= nil then
+    local kthr, khyst, kidle = sdec.thr, sdec.hyst, sdec.idle
+    if sdec.arm_threshold() and sdec.strm_lvlreuse then
+      sdec.thr, sdec.hyst, sdec.idle = kthr, khyst, kidle
+    end
+  end
+  sdec.smp = nil
 
   sdec.ck_running, sdec.ck_stop, sdec.ck_nbytes, sdec.ck_tot = true, false, 0, nil
   sdec.ck_endwhy = nil
@@ -6311,6 +6330,7 @@ end
 -- refused, and had to read pcall's verdict INSTEAD of this function's -- which is how a refused
 -- SimpleLoop came back to stream_start() as a successful arm.
 function sdec.stream_arm(nsmp)
+  sdec.strm_armed = nil
   local buf = sdec.buf
   if buf == nil then return false end
   if not pcall(function() buf.clear() end) then return false end
@@ -6326,9 +6346,14 @@ function sdec.stream_arm(nsmp)
     if ev == nil then
       armed = false
     else
-      sdec.arm_comparator(useanalog, sdec.arm_slope())
-      ok = pcall(trigger.model.load, 'LoopUntilEvent', ev, sdec.pretrig,
-                 trigger.CLEAR_ENTER, 0, buf)
+      if useanalog and (sdec.arm_thr == nil or
+                        not sdec.arm_comparator(useanalog, sdec.arm_slope())) then
+        armed = false
+      end
+      if armed then
+        ok = pcall(trigger.model.load, 'LoopUntilEvent', ev, sdec.pretrig,
+                   trigger.CLEAR_ENTER, 0, buf)
+      end
       if not ok then armed = false end
     end
   end
@@ -6463,7 +6488,7 @@ function sdec.stream_acquire(nsmp)
     end
     if sdec.cancel_asked() then sdec.ck_endwhy = 'stopped'; break end
     if not armdone and waited >= sdec.arm_wait_s() then
-      sdec.arm_expired_at = sdec.thr
+      sdec.arm_expired_at = sdec.arm_thr or sdec.thr
       sdec.ck_endwhy = 'noarm'
       break
     end

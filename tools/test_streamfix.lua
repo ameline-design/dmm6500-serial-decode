@@ -816,6 +816,39 @@ print('\nI  an 8 kB or 32 kB recording can wait for a device that has not starte
                       math.floor((sdec.buf.capacity or 0) * (100 - sdec.pretrig) / 100),
                       tostring(sdec.buf.capacity), sdec.strm_nsmp))
 
+  -- THE ARM LEVEL IS NOT THE REUSED DECODE THRESHOLD, and the two have to coexist. A recording
+  -- reuses the last good capture's measured threshold for its idle watchdog -- the right economy --
+  -- and the guard that did so skipped arm_threshold() entirely, so the comparator was armed at that
+  -- midpoint. MEASURED on the instrument: 1.63 V on a 0-3.29 V line, which is mid-data, where the arm
+  -- fires on a data edge rather than on a start bit.
+  do
+    begin('med', 'edge', quiet_line)
+    sdec.lvl_thr, sdec.lvl_hyst, sdec.lvl_swing = 1.63, 0.3, 3.3
+    sdec.strm_lvlreuse = nil
+    begin('med', 'edge', quiet_line)
+    check('a recording reuses the measured threshold for its watchdog',
+          sdec.strm_lvlreuse == true and math.abs((sdec.thr or 0) - 1.63) < 0.01,
+          string.format('reuse=%s thr=%s', tostring(sdec.strm_lvlreuse), tostring(sdec.thr)))
+    -- idle sits at ~0 on this stimulus, so the arm level is 0 + Arm At. Nowhere near 1.63.
+    check('...and still arms the comparator at idle plus Arm At, not at that midpoint',
+          sdec.arm_thr ~= nil and math.abs(sdec.arm_thr - sdec.arm_level_v()) < 0.1,
+          string.format('arm_thr=%s Arm At=%s thr=%s', tostring(sdec.arm_thr),
+                        tostring(sdec.arm_level_v()), tostring(sdec.thr)))
+    sdec.stream_arm(sdec.strm_nsmp)
+    check('...and that is the level that reaches the hardware',
+          math.abs((dmm.digitize.analogtrigger.edge.level or 0) - sdec.arm_thr) < 0.01,
+          string.format('comparator=%s arm_thr=%s',
+                        tostring(dmm.digitize.analogtrigger.edge.level), tostring(sdec.arm_thr)))
+    -- AND WITH NO LEVEL AT ALL IT MUST NOT ARM. sig_levels' empty-capture exit leaves vmax nil and
+    -- thr at zero, which satisfied the silent test and armed the comparator at 0 V.
+    sdec.arm_thr = nil
+    sdec.stream_arm(sdec.strm_nsmp)
+    check('a silent line with no measurable idle level does not arm at 0 V',
+          TRIG.template == 'SimpleLoop' and not sdec.strm_armed,
+          string.format('template=%s armed=%s', tostring(TRIG.template), tostring(sdec.strm_armed)))
+    sdec.lvl_thr, sdec.lvl_hyst, sdec.lvl_swing = nil, nil, nil
+  end
+
   -- AND NOT ON A LINE THAT IS ALREADY TALKING, which is the containment argument: SimpleLoop is
   -- strictly better there -- no wait to bound, and a trigger that would fire within a byte time.
   begin('med', 'edge', busy_line)
