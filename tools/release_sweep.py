@@ -201,6 +201,17 @@ def stages(outdir, shots):
                    'fit error at 10 and 25 per cent jitter against the margin sig_snap needs, the '
                    'firm band strictly inside snaptol, and the BAUD cell agreeing with the text row '
                    'about the approximate marker'),
+        # THE TWO ARMING DEFECTS THAT NEEDED HARDWARE, and they needed it because the mock could not
+        # express either condition: the comparator's level and slope were ignored in favour of a
+        # fixture field, and trigger.model.state() answered a constant. Both are modelled now -- the
+        # trigger point is DERIVED by scanning the render for the comparator's own crossing, and the
+        # template's blocks are walked on a virtual clock that delay() advances -- so a wrong arm
+        # level and a settle budget the instrument cannot meet both fail offline.
+        Stage('unit-trigmodel', ['lua', 'tools/test_trigmodel.lua'],
+              note='the trigger subsystem as a machine: the comparator derives the trigger point from '
+                   'its own level and slope, a level outside the swing never fires, and the template '
+                   'walks its blocks on a clock -- so the 1.63 V arm at a previous capture\'s midpoint '
+                   'and a settle budget shorter than the model needs are both offline failures'),
         Stage('stress', ['lua', 'tools/stress_serial.lua'],
               note='hostile signals -- must never be silently WRONG and never RAISE'),
         # THE GAP EVERY STAGE ABOVE SHARED: they all name a round sample rate by hand and all start

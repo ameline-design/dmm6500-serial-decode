@@ -858,7 +858,11 @@ SRC   = {rd = nil, ts = nil, nsmp = 0, trigat = nil, native_fs = nil, loop = fal
 -- 2.6 s wait. A mock that cannot do that cannot see the defect it caused -- the dump opened on
 -- 'World!Hello, World!' instead of on the device's first byte -- so the arm tests set it.
 SRC.ringoff = 0
-READS = {n = 0, triggered = 0}
+-- noarm COUNTS THE ARMS THAT NEVER FIRED, and it is a separate counter rather than a missing
+-- `triggered` because the two are different events and a test has to be able to tell them apart: an
+-- armed capture whose comparator saw no crossing at all has run its pre-roll and is sitting in its
+-- WAIT block, which is not the same as no capture having happened. See TRIG.fire_at().
+READS = {n = 0, triggered = 0, noarm = 0}
 TRIG  = {}
 
 -- ---------- CAPTURE START PHASE ----------
@@ -1366,6 +1370,10 @@ function dmm.digitize.read(b)
     end
   end
   READS.n = READS.n + 1
+  -- A COMPLETED FREE-RUN READ IS THE CHEAPEST PRIOR STATE AN ARM CAN HAVE, 0.164 s against 0.228 s
+  -- after aborting a model that was waiting. Recorded here rather than by a fixture, so the level
+  -- probe that every recording runs before it arms puts the arm on the row it really earned.
+  TRIG.prior = 'read'
   return b.readings[1]
 end
 
@@ -1392,8 +1400,389 @@ trigger = {
   model = {},
 }
 TRIG.state = 'idle'
+
+-- ============================================================================
+-- THE TRIGGER MODEL AS A MACHINE, NOT A FLAG
+-- ============================================================================
+-- WHAT A STATIC STATE COULD NOT MODEL. trigger.model.state() answered TRIG.state, which no code in
+-- this file ever wrote, so every suite that needed the instrument's own sequence staged it by hand --
+-- replacing the function or assigning the field per case. That hid the one thing the sequence exists
+-- to expose: MEASURED on 1.7.17a, initiate() leaves the model STATE_RUNNING with nine readings
+-- already taken -- it is executing the buffer clear, the zero delay and the start of the infinite
+-- digitize -- and STATE_WAITING arrives about a millisecond afterwards (docs/TRIGGER.md section 5).
+-- Code that reads "not waiting" as "the event has arrived" is therefore wrong on its first look and
+-- right from the second, and a mock answering one fixed state cannot be wrong on either.
+--
+-- A VIRTUAL CLOCK, NOT WALL TIME. delay() advances TRIG.clock and does not sleep, so a suite walks a
+-- model through a 0.6 s arm in microseconds. state() READS the clock and does not advance it: an app
+-- that polls without delaying is spinning, and the mock must let it spin rather than quietly make
+-- progress on its behalf -- which is exactly the bug class here, a budget spent in poll counts
+-- against a model that needs wall time.
+--
+-- OFF BY DEFAULT, AND THAT IS COMPATIBILITY, NOT A VIEW ABOUT FAITHFULNESS. tools/test_streamfix.lua
+-- and tools/test_frontrig.lua write TRIG.state by hand and replace trigger.model.state outright to
+-- stage this sequence; a machine answering over the top of them would make those fixtures assert the
+-- mock instead of the app, which is worse than no machine at all. TRIG_WALK(true) turns it on --
+-- tools/test_trigmodel.lua is the suite that does.
+TRIG.walk    = false
+TRIG.clock   = 0
+TRIG.delays  = 0
+TRIG.delayed = 0
+
+-- ---------- WHAT REACHING THE WAIT BLOCK COSTS, IN VIRTUAL SECONDS ----------
+-- THE MEASUREMENT IS ONE NUMBER, AND SO IS THE MODEL: initiate() to STATE_WAITING, timed from inside
+-- the instrument. MEASURED on 1.7.17a, 30 arms at each of two capacities, polling with delay(0.001):
+--
+--     capacity      min      median      p95      max
+--     21 100      0.1668    0.1917    0.1932   0.2032
+--     860 000     0.0210    0.1928    0.1952   0.1973
+--
+-- IT DOES NOT SCALE WITH THE BUFFER, and this file said that it did. A per-reading charge on
+-- BUFFER_CLEAR -- taken from buffer.make()'s cost on the argument that buffer work is linear in
+-- readings -- predicted the 860 000 case about seventy times too high. The sweep refutes it: seven
+-- capacities from 21 100 to 2 800 000, a 133-fold range, flat at 0.171 to 0.180 s, with five separate
+-- nulls (dmm.digitize.count, a host buf.clear() before initiate(), samplerate, template position, and
+-- the poll cadence). buffer.make() itself is 2.5 to 3.7 ms at 860 000 readings and runs in
+-- acq_make_buffer() BEFORE the arm, so no part of allocation is inside this cost at all. See
+-- docs/TRIGGER.md section 8 and the comment above sdec.arm_settle_s.
+--
+-- THE SPLIT ACROSS THE THREE BLOCKS AHEAD OF THE WAIT IS NOT CLAIMED, because the measurement cannot
+-- see it: it times initiate() to STATE_WAITING and nothing finer. So `arrive` is the whole of it, and
+-- whatever `delay` and `digitize` cost is taken OUT of it rather than added on -- the sum is the
+-- figure that was measured and the apportionment is not asserted anywhere.
+TRIG.cost = {
+  -- nil TAKES THE ARRIVAL FROM THE PRIOR STATE, which is the faithful model -- see TRIG.arrive_after.
+  -- A NUMBER PINS IT, for a test that wants a particular arrival without arranging a prior state to
+  -- get one.
+  arrive   = nil,
+  delay    = 0.0,            -- added to the DELAY_CONSTANT block's own argument
+  digitize = 0.0006,         -- reaching the first reading of a MEASURE_DIGITIZE block
+  notify   = 0.0,
+}
+-- THE ONE REAL DEPENDENCY: WHAT THE INSTRUMENT WAS DOING BEFORE THE ARM. MEASURED, and it is the
+-- reason a bound anywhere near 0.2 s is a coin toss rather than a clean pass or a clean failure.
+--
+--     the previous model                              time to STATE_WAITING
+--     aborted while sitting in STATE_WAITING          0.228 s -- the worst case
+--     a SimpleLoop that ran to IDLE on its own        0.177 s
+--     a completed dmm.digitize.read()                 0.164 s
+--     load("Empty"), nothing acquiring                0.191 s
+--
+-- TRIG.prior is recorded where each of those ENDS -- in abort() and in dmm.digitize.read() -- rather
+-- than being set by a fixture, so a suite that probes the line and then arms gets the 'read' row
+-- because that is what it actually did.
+TRIG.arrive_after = {waiting = 0.228, loop = 0.177, read = 0.164, empty = 0.191}
+TRIG.prior = nil
+
+-- The arrival this arm will take, in seconds.
+function TRIG.arrival()
+  if TRIG.cost.arrive ~= nil then return TRIG.cost.arrive end
+  return TRIG.arrive_after[TRIG.prior or 'empty'] or TRIG.arrive_after.empty
+end
+
+-- Arrange a prior state by hand. Named rather than numeric, so a test says which ROW of the table it
+-- means and a changed figure reaches it.
+function TRIG_PRIOR(p) TRIG.prior = p end
+
+-- THE TIMELINE THE LAST initiate() LAID OUT, in TRIG.clock seconds. t0 nil means no model is running
+-- -- which is what abort() leaves behind, and what the state machine answers STATE_IDLE for.
+-- t_fire nil WITH a wait block in the program is the "nothing crossed" case: the model sits in
+-- STATE_WAITING for ever, which is what the instrument does and is not an error state.
+TRIG.t0, TRIG.t_wait, TRIG.t_fire, TRIG.t_done = nil, nil, nil, nil
+TRIG.btime = nil
+-- THE DISASSEMBLY OF THE LOADED TEMPLATE, so a test can assert the SHAPE rather than the template's
+-- name -- the six and five block programs of docs/TRIGGER.md section 8. TRIG.armable is false for a
+-- program with no WAIT block in it, which is what makes "a SimpleLoop recording cannot be armed" a
+-- fact about the program rather than about its name.
+TRIG.blocks  = nil
+TRIG.nblocks = 0
+TRIG.armable = false
+
+function TRIG_WALK(on)
+  TRIG.walk = (on == true)
+  -- THE STATIC STATE GOES BACK TO IDLE on the way out, because that is what every suite that writes
+  -- it by hand leaves behind and what state() answers with the machine off.
+  if not TRIG.walk then TRIG.state = 'idle' end
+end
+
+-- Set the virtual clock; TRIG_CLOCK() with no argument reads it.
+function TRIG_CLOCK(t)
+  if t ~= nil then TRIG.clock = t end
+  return TRIG.clock
+end
+
+-- WHICH BLOCK THE MODEL IS EXECUTING, by the clock, or nil when nothing is running. The numbers are
+-- the template's own. A model stalled in its WAIT block answers the wait's number for ever, which is
+-- the whole point: that is the state an arm that never fires is really in.
+function TRIG.at()
+  if TRIG.t0 == nil or TRIG.btime == nil then return nil end
+  local i, at = nil, nil
+  for i = 1, TRIG.nblocks do
+    if TRIG.btime[i] ~= nil and TRIG.clock >= TRIG.btime[i] then at = i end
+  end
+  return at
+end
+
+-- THE CLOCK-DERIVED STATE. Four phases, in the order the instrument goes through them: the blocks
+-- AHEAD of the wait (RUNNING), the wait itself (WAITING), the counted burst after it (RUNNING), and
+-- the end of the program (IDLE).
+--
+-- THE LITERALS, NOT trigger.STATE_*, and that is deliberate: tools/test_streamfix.lua sets
+-- trigger.STATE_WAITING to nil to test sdec.trig_waiting()'s degrade, and a machine that read the
+-- constant would then answer nil -- making the app's "I cannot tell" branch a test of the mock. The
+-- strings here are the constants' values, so the degrade is exercised against a model that really is
+-- waiting.
+function TRIG.walkstate()
+  if TRIG.t0 == nil then return 'idle' end
+  if TRIG.t_wait ~= nil and TRIG.clock < TRIG.t_wait then return 'running' end
+  if TRIG.armable and (TRIG.t_fire == nil or TRIG.clock < TRIG.t_fire) then return 'waiting' end
+  if TRIG.t_done ~= nil and TRIG.clock < TRIG.t_done then return 'running' end
+  return 'idle'
+end
+
+-- Lay the loaded program out on the virtual clock, starting now. `post` is the counted burst's length
+-- in readings, `dt` the delivered sample interval, and `fire` how long after the WAIT block is
+-- REACHED that its event arrives -- nil for an event that never comes.
+--
+-- THE BRANCH IS CHARGED AS ONE PASS. SimpleLoop's BRANCH_COUNTER sends it round blocks 2-4 `count`
+-- times; this walks the body once and gives its single MEASURE_DIGITIZE all `count` readings, which
+-- gets the total right and the intermediate block times wrong. Stated rather than hidden, because
+-- TRIG.at() is therefore only meaningful for the armed template.
+function TRIG_TIMELINE(post, dt, fire)
+  TRIG.t0, TRIG.btime = TRIG.clock, {}
+  TRIG.t_wait, TRIG.t_fire, TRIG.t_done = nil, nil, nil
+  -- THE ARRIVAL, LESS WHAT THE BLOCKS BEHIND IT ARE CHARGED. BUFFER_CLEAR carries the remainder
+  -- rather than a cost of its own, so moving `delay` or `digitize` redistributes the measured total
+  -- instead of inflating it -- the figure that was measured is the SUM. Floored at zero, so a test
+  -- that charges more to the later blocks than the whole arrival gets a BUFFER_CLEAR of nothing
+  -- rather than a model that goes backwards in time.
+  -- THE TEMPLATE'S OWN DELAY ARGUMENT IS NOT SUBTRACTED, and that is the one place the apportionment
+  -- has a physical consequence: the measurement was taken with DELAY_CONSTANT 0, and a programmed
+  -- delay really does push the wait out by its own length rather than coming out of the setup. So a
+  -- two-second delay block makes the arrival two seconds later, as it must.
+  TRIG.arrive = TRIG.arrival()
+  local clr = TRIG.arrive - TRIG.cost.delay - TRIG.cost.digitize
+  if clr < 0 then clr = 0 end
+  local t, i, stalled = TRIG.clock, 1, false
+  while i <= TRIG.nblocks do
+    TRIG.btime[i] = t
+    local b, d = TRIG.blocks[i], 0
+    if b.op == 'BUFFER_CLEAR' then
+      d = clr
+    elseif b.op == 'DELAY_CONSTANT' then
+      d = TRIG.cost.delay + (b.arg or 0)
+    elseif b.op == 'NOTIFY' then
+      d = TRIG.cost.notify
+    elseif b.op == 'MEASURE_DIGITIZE' then
+      d = TRIG.cost.digitize
+      -- AN INFINITE BLOCK IS STOPPED BY THE COUNTED ONE DOWNSTREAM OF THE WAIT, so what it costs
+      -- HERE is only the cost of starting it -- it never ends on its own. docs/TRIGGER.md section 7.
+      local cnt = b.arg
+      if cnt == 'infinite' then cnt = nil end
+      if cnt == nil and b.post then cnt = post end
+      if cnt ~= nil and dt ~= nil then d = d + cnt * dt end
+    elseif b.op == 'WAIT' then
+      TRIG.t_wait = t
+      if fire == nil then
+        -- THE EVENT NEVER ARRIVES. The model stops here and every block after it is unreached, which
+        -- is why there is no t_done: a wait that never ends has no end.
+        stalled = true
+      else
+        d = fire
+        TRIG.t_fire = t + fire
+      end
+    end
+    if stalled then i = TRIG.nblocks + 1
+    else
+      t = t + d
+      i = i + 1
+    end
+  end
+  if not stalled then TRIG.t_done = t end
+end
+
+-- ============================================================================
+-- THE ANALOG COMPARATOR, DERIVED RATHER THAN DECLARED
+-- ============================================================================
+-- WHAT WAS WRONG WITH SRC.trigat ALONE. It is a FIXTURE INPUT: the test said where the trigger fired
+-- and this file honoured it whatever dmm.digitize.analogtrigger.edge.level and .slope had been set
+-- to. So a capture armed at a level nowhere near the signal fired anyway, and no assertion could tell
+-- a correct arm from a wrong one. MEASURED on the instrument: the shipped app armed an 8 kB
+-- recording's comparator at 1.63 V -- the PREVIOUS capture's measured midpoint on a 0-3.29 V line,
+-- which is mid-data -- instead of at idle plus the operator's Arm At. Every offline test passed.
+--
+-- SO THE TRIGGER POINT IS NOW DERIVED from the comparator's own settings, by scanning SRC.rd for the
+-- first crossing of .level in the direction .slope names. The three firmware facts this reproduces,
+-- all MEASURED and recorded in docs/TRIGGER.md section 7:
+--   * the level is real -- armed at 8 V on a 0-3 V square wave the model sat in STATE_WAITING
+--     indefinitely and never fired;
+--   * the slope is real, and opposite settings give opposite directions through the trigger index;
+--   * MODE_OFF means the comparator is not a source at all.
+--
+-- hw-arm CASES H, I AND M COVER THE HARDWARE HALF -- what level and slope the comparator actually
+-- holds, including 0.33 V above a grounded line, 5.99 V read back against 6.00 asked, and -4.00 V
+-- RISING on a line idling at -5 V. What a bench case cannot supply is a CONSEQUENCE for a wrong
+-- level: on the instrument an arm that does not fire looks exactly like a device that stayed quiet.
+-- This is the half where the level decides where the record opens.
+--
+-- OFF BY DEFAULT, for the reason TRIG.walk is: with it on, every existing fixture that arms with
+-- SRC.trigat nil would have its trigger point recomputed -- a quiet line would stop firing at sample
+-- 1 and start expiring, which is more faithful AND a different experiment from the one those
+-- assertions were written against. SRC_TRIGDERIVE(true) opts in.
+SRC.trigderive = false
+-- THE OVERRIDE, UNDER THE NAME THAT SAYS SO. SRC.trigat is kept working as the override it has always
+-- been, so the fixtures that set it deliberately still mean what they meant; SRC.trigat_force is the
+-- same thing under a name that cannot be mistaken for a measurement. Neither is preferred silently:
+-- SRC.trigsrc names whichever decided, so a test meaning to exercise the comparator can insist on it.
+SRC.trigat_force = nil
+-- WHICH SOURCE DECIDED THE LAST ARMED CAPTURE'S TRIGGER POINT, and where it fired. 'force' and
+-- 'override' are the two fixture inputs, 'comparator' the derived crossing, 'blender' a pending
+-- TRIG.press(1), 'event' a source this file cannot model (the front key, the rear BNC) which it
+-- concedes fires at once, 'default' the pre-derivation rule, and 'none' no loaded event at all.
+-- trigfired nil means NOTHING FIRED; trigwhy says what the comparator was looking for.
+SRC.trigsrc, SRC.trigfired, SRC.trigwhy = nil, nil, nil
+-- Samples examined by the last scan, so a test can tell "found it immediately" from "walked the whole
+-- render and found nothing".
+SRC.trigscan = 0
+-- A HARD STOP ON THE SCAN, because a looping render is millions of samples and a scan is linear. A
+-- render that does not cross in one pass does not cross at all -- SRC.loop repeats it.
+TRIG.scanmax = 4000000
+-- HOW MANY READINGS THE PRE-ROLL OF AN ARM THAT NEVER FIRES LEAVES IN THE BUFFER. nil means the
+-- buffer's whole capacity, which is where a FILL_CONTINUOUS ring ends up after a wait of any length;
+-- a number models a wait caught earlier, with buf.n sitting just over the reserve -- which is the
+-- state MEASURED a few milliseconds into an 8 kB recording's arm and the one a buffer-level test
+-- misreads as "fired".
+TRIG.prefill = nil
+
+function SRC_TRIGDERIVE(on) SRC.trigderive = (on == true) end
+
+-- Is the analog trigger in the loaded model's event set, directly or through blender 1? arm_source()
+-- rewrites `ev` to EVENT_BLENDER1 when the rear BNC or the TRIGGER key is OR'd in, so testing the
+-- event alone answered NO for exactly the configurations where the comparator is still a stimulus --
+-- the same trap sdec.arm_source() records for `useanalog`.
+function TRIG.has_analog()
+  if TRIG.ev == trigger.EVENT_ANALOGTRIGGER then return true end
+  if TRIG.ev ~= trigger.EVENT_BLENDER1 then return false end
+  local s, i, got = trigger.blender[1].stimulus, nil, false
+  for i = 1, 3 do
+    if s[i] == trigger.EVENT_ANALOGTRIGGER then got = true end
+  end
+  return got
+end
+
+-- THE FIRST CROSSING OF THE COMPARATOR'S OWN LEVEL, in the direction its own slope names, scanning
+-- SRC.rd from `from`. -> index, or nil and the reason.
+--
+-- THE INDEX IS THE FIRST SAMPLE ON THE NEW SIDE, which is what the instrument reports: MEASURED,
+-- reading either side of the trigger index on a 0-3 V square wave gave -0.001 V before and 3.000 V
+-- after for SLOPE_RISING, and the reverse for SLOPE_FALLING.
+--
+-- EVERY REFUSAL IS A REASON, not a nil: "the comparator is off" and "nothing crossed 1.65 V" are
+-- different faults with the same consequence, and a suite that cannot tell them apart will eventually
+-- assert the wrong one.
+function TRIG.fire_at(from)
+  local at = dmm.digitize.analogtrigger
+  if at == nil then return nil, 'no analog comparator on this digitizer' end
+  if at.mode ~= dmm.MODE_EDGE then
+    return nil, 'the comparator is ' .. tostring(at.mode) .. ', not an edge source'
+  end
+  if at.edge == nil then return nil, 'no analog trigger edge table' end
+  local lvl, slp = at.edge.level, at.edge.slope
+  if lvl == nil then return nil, 'the comparator has no level' end
+  if slp ~= dmm.SLOPE_RISING and slp ~= dmm.SLOPE_FALLING then
+    return nil, 'the comparator has no slope (' .. tostring(slp) .. ')'
+  end
+  if SRC.rd == nil or SRC.rd[from] == nil then
+    return nil, 'the render has no sample at the capture start'
+  end
+  local hit, nsc, j, prev, more = nil, 0, from + 1, SRC.rd[from], true
+  while more do
+    local v = SRC.rd[j]
+    if v == nil or nsc >= TRIG.scanmax then more = false
+    else
+      local cross = false
+      if slp == dmm.SLOPE_RISING then cross = (prev < lvl and v >= lvl)
+      else cross = (prev > lvl and v <= lvl) end
+      if cross then
+        hit = j
+        more = false
+      else
+        prev = v
+        j = j + 1
+        nsc = nsc + 1
+      end
+    end
+  end
+  SRC.trigscan = nsc
+  if hit == nil then
+    return nil, string.format('nothing crossed %.4f V %s in %d samples', lvl, tostring(slp), nsc)
+  end
+  return hit, nil
+end
+
+-- WHERE THE TRIGGER FIRED for the capture about to be filled, as a SOURCE SAMPLE INDEX, plus which
+-- source decided it and why it did not fire when it did not. -> idx, src, why.
+--
+-- THE PRE-ROLL BEGINS AT SOURCE SAMPLE 1, which is not a new assumption: initiate()'s existing
+-- reserve rule is `avail = trigat - 1`, i.e. the samples between the start of the render and the
+-- trigger. The scan starts in the same place so the two agree.
+function TRIG_TRIGAT()
+  if SRC.trigat_force ~= nil then return SRC.trigat_force, 'force', nil end
+  if SRC.trigat ~= nil then return SRC.trigat, 'override', nil end
+  if not SRC.trigderive then return 1, 'default', nil end
+  if TRIG.ev == nil then return nil, 'none', 'no event is loaded' end
+  -- A SOURCE THIS FILE CANNOT MODEL IS CONCEDED, not refused: there is no finger on the front key
+  -- and no marker on the rear BNC here, so a model waiting on one of those alone fires at once --
+  -- which is what SRC.trigat nil has always meant. Only an arm that really is on the comparator can
+  -- be got wrong, and only that one is derived.
+  if not TRIG.has_analog() then return 1, 'event', nil end
+  -- A PENDING BLENDER EVENT IS AN OR, and the blender really is one: TRIG.press(1) is a press that
+  -- has already arrived, so it fires the model at the start of its pre-roll. Read once, like the
+  -- firmware's own auto-resetting detector.
+  if TRIG.ev == trigger.EVENT_BLENDER1 and (TRIG.latch[1] or 0) > 0 then
+    TRIG.latch[1] = 0
+    return 1, 'blender', nil
+  end
+  local idx, why = TRIG.fire_at(1)
+  if idx == nil then return nil, 'comparator', why end
+  return idx, 'comparator', nil
+end
+
+-- ---------- WHAT THIS MODEL STILL CANNOT EXPRESS ----------
+-- Stated rather than left to be discovered, because a gap a reader has to find by writing a failing
+-- test is worse than a gap named here. Each of these is a fact in docs/TRIGGER.md that nothing above
+-- reproduces:
+--
+--   * STATE_FAILED AND THE OUT-OF-BAND REFUSALS. A WAIT on EVENT_NONE builds "successfully" and puts
+--     the model in STATE_FAILED with event 2707; dmm.digitize.func written while the model runs is
+--     discarded with 2727; pause() on a model that is not running is refused with 2767. None of
+--     those states or events exist here, and trigger.model.load() RAISES on a bad shape where the
+--     firmware returns true and files an event -- so a pcall verdict means something offline that it
+--     means nothing of on the instrument.
+--   * THE ABORT ON A REMOTE COMMAND, event 2728. Nothing offline arrives over a socket, so the rule
+--     that a watched wait dies has no expression here and cannot be tested against.
+--   * CLEAR_ENTER vs CLEAR_NEVER. TRIG.clear is recorded and disassembled but not ACTED on: a
+--     pending TRIG.press(1) fires the model whatever `clear` says, which is CLEAR_NEVER's behaviour.
+--     So the latch semantics that make a human-triggered capture fire on a press made minutes
+--     earlier are not reproducible.
+--   * THE PRE-ROLL REQUIREMENT. An EVENT_ANALOGTRIGGER wait cannot be the first block, because the
+--     comparator is derived from the digitizer's sample stream -- but both templates put an infinite
+--     digitize ahead of the wait, so no program this file can load is in the broken shape and the
+--     trap is unreachable rather than modelled.
+--   * THE RING ON AN ARM THAT NEVER FIRED. The firing path honours SRC.ringoff, so a rotated record
+--     is reproducible there; the no-fire pre-roll fills from sample 1 and leaves startindex 1, so a
+--     wait long enough to lap the buffer comes back in order when the instrument's would not.
+--   * getblocklist() AND THE LOW-LATENCY FLAG. TRIG.blocks is a disassembly, but there is no string
+--     form and no fast-path verdict, so nothing here can catch a program that loses the fast path.
+
 -- The real call returns three values (state, status, block); only the first is read.
-function trigger.model.state() return TRIG.state, 'ok', 0 end
+function trigger.model.state()
+  -- MIRRORED INTO TRIG.state so one field always says what the model last reported, whichever way
+  -- it was decided. Only written while the machine is on; with it off the field is the authority and
+  -- the suites that assign it keep it.
+  if TRIG.walk then TRIG.state = TRIG.walkstate() end
+  return TRIG.state, 'ok', 0
+end
 -- THE REAR EXT TRIG OUT LINE, for credit-based flow control. Deliberately hostile in one specific
 -- way: asserts are COUNTED and time-stamped against the arm order, because the whole correctness
 -- argument for the feature is that the pulse leaves AFTER the trigger model is armed. A mock that
@@ -1419,7 +1808,9 @@ function trigger.model.load(template, a, b, c, d, e)
     if buf == nil or not buf.alive then error('trigger model on a dead buffer', 0) end
     TRIG.template, TRIG.count, TRIG.buf = 'SimpleLoop', count, buf
     TRIG.ev, TRIG.position, TRIG.clear = nil, nil, nil
+    TRIG.delayarg = b
     TRIG.loaded = true
+    TRIG_PROGRAM()
     return
   end
   if template ~= 'LoopUntilEvent' then
@@ -1432,7 +1823,46 @@ function trigger.model.load(template, a, b, c, d, e)
   if buf == nil or not buf.alive then error('trigger model on a dead buffer', 0) end
   TRIG.template = 'LoopUntilEvent'
   TRIG.ev, TRIG.position, TRIG.buf, TRIG.clear = ev, position, buf, clear
+  TRIG.delayarg = d
   TRIG.loaded = true
+  TRIG_PROGRAM()
+end
+
+-- THE TEMPLATE'S OWN BLOCKS, disassembled the way getblocklist() does (docs/TRIGGER.md section 8).
+-- Built at load() and not at initiate(), because that is when the store is written -- and ANY load()
+-- replaces the store wholesale, which is why this assigns a fresh list rather than patching one.
+--
+-- WHAT IT BUYS OVER TRIG.template. "A recording built on SimpleLoop cannot be armed" is a fact about
+-- the PROGRAM -- it has no WAIT block in it -- and asserting the template's name instead tests that
+-- the app passed a particular string. The shape is what the firmware acts on.
+function TRIG_PROGRAM()
+  local p, n = {}, 0
+  if TRIG.template == 'SimpleLoop' then
+    p[1] = {op = 'BUFFER_CLEAR'}
+    p[2] = {op = 'DELAY_CONSTANT', arg = TRIG.delayarg or 0}
+    -- COUNT 1 PER ITERATION, and the loop runs TRIG.count of them -- so the readings this block
+    -- makes over the whole program is TRIG.count. See TRIG_TIMELINE on how the branch is charged.
+    p[3] = {op = 'MEASURE_DIGITIZE', arg = TRIG.count}
+    p[4] = {op = 'NOTIFY', arg = 2}
+    p[5] = {op = 'BRANCH_COUNTER', arg = TRIG.count, target = 2}
+    n = 5
+  else
+    p[1] = {op = 'BUFFER_CLEAR'}
+    p[2] = {op = 'DELAY_CONSTANT', arg = TRIG.delayarg or 0}
+    p[3] = {op = 'MEASURE_DIGITIZE', arg = 'infinite'}
+    p[4] = {op = 'WAIT', arg = TRIG.ev, clear = TRIG.clear}
+    -- post = TRUE, not a number: the counted burst's length is (100 - position)% of the BUFFER'S
+    -- CAPACITY and dmm.digitize.count has no part in it, so it is not known until initiate() has the
+    -- buffer in hand. MEASURED over 15 combinations of capacity and position.
+    p[5] = {op = 'MEASURE_DIGITIZE', post = true}
+    p[6] = {op = 'NOTIFY', arg = 2}
+    n = 6
+  end
+  TRIG.blocks, TRIG.nblocks, TRIG.armable = p, n, false
+  local i
+  for i = 1, n do
+    if p[i].op == 'WAIT' then TRIG.armable = true end
+  end
 end
 
 TRIG.aborts = 0
@@ -1477,7 +1907,29 @@ for bi = 1, 2 do
   end
 end
 
-function trigger.model.abort() TRIG.aborts = TRIG.aborts + 1 end
+-- ABORT ENDS THE WALK, which is the half that makes sdec.trig_settle() terminate: it aborts and then
+-- polls for STATE_IDLE fifty times, so a model left running would cost the caller half a second of
+-- virtual clock and answer false. Clearing the timeline rather than writing a state keeps one
+-- authority -- TRIG.walkstate() answers IDLE for a model with no t0.
+--
+-- THE STORE IS NOT CLEARED. MEASURED (docs/TRIGGER.md section 4): abort() leaves all eight blocks
+-- untouched, and only load() replaces them -- so TRIG.loaded, TRIG.blocks and TRIG.template survive
+-- deliberately.
+function trigger.model.abort()
+  TRIG.aborts = TRIG.aborts + 1
+  -- WHAT THE INSTRUMENT WAS DOING BEFORE THE NEXT ARM IS RECORDED HERE, where the previous model
+  -- ends, because that is the one thing MEASURED to move the arrival -- see TRIG.arrive_after. A
+  -- fixture setting it by hand would make the dependency a declaration; taken from the state the
+  -- model was really in, a suite that probes the line and then arms gets the row it earned.
+  if TRIG.t0 ~= nil then
+    local st = TRIG.walkstate()
+    if st == 'waiting' then TRIG.prior = 'waiting'
+    elseif TRIG.template == 'SimpleLoop' then TRIG.prior = 'loop'
+    else TRIG.prior = 'empty' end
+  end
+  TRIG.t0, TRIG.t_wait, TRIG.t_fire, TRIG.t_done = nil, nil, nil, nil
+  if TRIG.walk then TRIG.state = 'idle' end
+end
 
 function trigger.model.initiate()
   if not TRIG.loaded then error('initiate without a loaded model', 0) end
@@ -1490,9 +1942,17 @@ function trigger.model.initiate()
   -- passage of time, so the loop sees a full buffer on its first look. What that DOES
   -- exercise -- the geometry, the end reason, the progress calls, the decode -- is
   -- everything except the waiting itself.
+  --
+  -- THE CLOCK WALKS EVEN THOUGH THE FILL DOES NOT, and the asymmetry is worth naming: with
+  -- TRIG.walk on, the state says RUNNING for the loop's modelled duration while the buffer is
+  -- ALREADY full. The instrument does not do that -- its buffer fills as the state runs -- so a test
+  -- must not read the two as one observable. Nothing is at risk from it: an unarmed recording's poll
+  -- loop ends on `have >= nsmp` and never asks the state, and trig_settle() aborts before it polls.
   if TRIG.template == 'SimpleLoop' then
     local b = TRIG.buf
     local dt = SRC.ts[2] - SRC.ts[1]
+    TRIG_TIMELINE(TRIG.count, dt, nil)
+    SRC.trigsrc, SRC.trigfired, SRC.trigwhy = 'simpleloop', 1, nil
     b.clear()
     local i
     for i = 1, TRIG.count do
@@ -1531,25 +1991,63 @@ function trigger.model.initiate()
   local count = b.capacity or dmm.digitize.count or 1000
   local post = math.floor(count * (100 - TRIG.position) / 100)
   local budget = count - post
-  local avail = (SRC.trigat or 1) - 1
-  local pre = avail
-  if pre > budget then pre = budget end
-  local start = (SRC.trigat or 1) - pre
-  if start < 1 then start = 1 end
-  local total = pre + post
   -- SRC.native_fs makes the armed path honour the requested rate too, on the same terms as
   -- dmm.digitize.read(). Both or neither: an app that chose the rate on the free-run probe and
   -- captured on the armed path would otherwise be tested at two different rates in one capture.
   local step, dt = SRC_step()
   if dt == nil then dt = SRC.ts[2] - SRC.ts[1] end
+  -- WHERE THE TRIGGER FIRED, AND WHAT DECIDED IT. With SRC.trigderive off this is `SRC.trigat or 1`,
+  -- unchanged. With it on the comparator's own level and slope choose the sample, and nil means
+  -- NOTHING CROSSED -- the case below.
+  local tat, tsrc, twhy = TRIG_TRIGAT()
+  SRC.trigsrc, SRC.trigfired, SRC.trigwhy = tsrc, tat, twhy
+  -- THE SOURCE'S OWN SAMPLE INTERVAL, which is what the pre-roll runs at: `dt` above is the
+  -- DELIVERED interval and the two differ whenever SRC.native_fs is set.
+  local srcdt = SRC.ts[2] - SRC.ts[1]
+  if tat == nil then
+    -- NOTHING CROSSED, SO THE WAIT NEVER ENDS -- and the instrument's behaviour here is NOT "no
+    -- data". The infinite pre-roll keeps digitizing into a FILL_CONTINUOUS ring for the whole wait
+    -- and laps it, so buf.n climbs to capacity with no trigger having occurred: MEASURED, 1 kHz
+    -- square wave with the comparator armed at 8 V, STATE_WAITING indefinitely and never a fire
+    -- (docs/TRIGGER.md section 7). A mock that delivered an empty buffer here would let a
+    -- buffer-level completion test pass on the very capture that proves it wrong.
+    --
+    -- BOUNDED BY THE RENDER, like the counted fill below: a non-looping render runs out and the fill
+    -- stops there rather than repeating the last sample to capacity.
+    TRIG_TIMELINE(post, dt, nil)
+    b.clear()
+    local plim = TRIG.prefill or count
+    local pi
+    for pi = 1, plim do
+      local v = SRC_val(1, pi, step)
+      if v == nil then break end
+      b.n = pi
+      b.readings[pi] = v
+      b.relativetimestamps[pi] = (pi - 1) * dt
+    end
+    b.startindex, b.endindex = 1, b.n
+    READS.noarm = READS.noarm + 1
+    return
+  end
+  local avail = tat - 1
+  local pre = avail
+  if pre > budget then pre = budget end
+  local start = tat - pre
+  if start < 1 then start = 1 end
+  local total = pre + post
   -- THE PRE-TRIGGER ORIGIN IS IN SOURCE SAMPLES, `pre` IS IN DELIVERED ONES. Every delivered sample
   -- advances `step` source samples, so a reserve of `pre` delivered samples spans pre*step of the
   -- render. Without this the trigger lands pre/step samples into the capture instead of pre: at
   -- native 1 MS/s and a requested 100 kS/s, 100 rather than 1000.
   if step ~= 1 then
-    start = (SRC.trigat or 1) - math.floor(pre * step)
+    start = tat - math.floor(pre * step)
     if start < 1 then start = 1 end
   end
+  -- THE WAIT LASTED AS LONG AS THE PRE-ROLL DID. The model reaches its WAIT block a millisecond
+  -- after initiate() and the event arrives when the signal crosses, which is (tat - 1) source
+  -- samples later -- so an arm on a line that stays quiet for three seconds is a three-second wait
+  -- and the state machine reports STATE_WAITING for all of it.
+  TRIG_TIMELINE(post, dt, (tat - 1) * srcdt)
   b.clear()
   -- WRITTEN INTO THE RING AT SRC.ringoff, and the timestamps travel with the SAMPLES rather than with
   -- the slots: readings[p] and relativetimestamps[p] are the same reading, so a rotated record has
@@ -1579,7 +2077,21 @@ function trigger.model.initiate()
 end
 
 function waitcomplete() end
-function delay(_) end
+-- DELAY IS THE CLOCK, and that is the whole reason it is no longer a no-op. Every poll loop in tsp/
+-- advances time by calling this, so a mock that discarded the argument made the passage of time
+-- unobservable: sdec.arm_settle_s's 0.25 s budget became "twenty-five looks", and a model that takes
+-- 0.6 s of WALL time to reach its wait block was indistinguishable from one that takes 1 ms.
+--
+-- IT DOES NOT SLEEP. The clock is virtual, so a suite walks a two-minute arm in microseconds and the
+-- offline suites stay fast. Counted and totalled as well, because "it waited the operator's Arm
+-- Wait" is a claim about the sum and not about the number of looks.
+function delay(s)
+  local d = tonumber(s)
+  if d == nil or d < 0 then d = 0 end
+  TRIG.delays = TRIG.delays + 1
+  TRIG.delayed = TRIG.delayed + d
+  TRIG.clock = TRIG.clock + d
+end
 
 -- ---------- load the REAL modules ----------
 for _, m in ipairs({'tsp/serial_core.tsp', 'tsp/uart_decode.tsp',
