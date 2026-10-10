@@ -1209,6 +1209,115 @@ print('\nI  an 8 kB or 32 kB recording can wait for a device that has not starte
   clearforce()
 end)()
 
+-- ---------------------------------------------------------------------------
+-- PRIMING AN ARMED RECORDING MUST NOT TAKE ITS POLARITY FROM THE RESERVE
+-- ---------------------------------------------------------------------------
+-- ck_prime_step's 'edge' phase runs sig_idle over the FIRST priming window, and on an armed
+-- recording that window IS the pre-trigger reserve -- the wire before the device started. At ground,
+-- which on a single-supply line is the SPACE level, so it arrives as a run of lows no data could
+-- produce. The prior came out of it, priming's own decode then framed at that polarity, and the
+-- format handed to ck_decode was inverted -- so every byte of the recording was.
+--
+-- MEASURED ON THE INSTRUMENT, an 8 kB recording armed on silence with the generator switched on at
+-- +3 s: leadrun 17 968 against a 17 965-sample reserve, run0 17 968, run1 232, idle 0, invert true,
+-- 2110 of 5484 bytes bad. The byte COUNT was correct throughout, which is why the bench's
+-- count-only assertion passed on it for as long as it did.
+--
+-- WHY THE EXISTING LATE-START FIXTURE ABOVE DOES NOT CATCH THIS. It builds its head with GEN's own
+-- `lead`, which emits MARK cells -- an idle-HIGH head, where the prior is right by accident. The
+-- reserve on hardware is at GROUND, and for a line that idles high that is the opposite level. So
+-- the head here is built from SPACE cells, which is the one thing that makes it the reserve.
+--
+-- leadmax IS THE SIGNAL, not a new flag: stream_decode passes it to ck_prime only for an armed
+-- recording, so ck_prime_new keeping it is the same fact the retry budget is already derived from.
+-- Both directions are asserted -- with leadmax set the prior must be the line, and with it nil the
+-- same window must still yield the old longest-run answer.
+;(function()
+  local keep = {fs = sdec.fs, af = sdec.acq_fs, pt = sdec.acq_pretrig,
+                fb = sdec.force_baud, fi = sdec.force_invert, w = sdec.ck_win_n}
+  sdec.force_baud, sdec.force_invert = nil, nil
+  local fsv, baud = 80000, 9600
+  -- A WINDOW THAT HOLDS BOTH: 1200 space cells of reserve, then 140 frames. At 8.33 samples a cell
+  -- that is 10 000 samples of dead line and 11 700 of traffic, so the window has real frames to
+  -- frame AND a reserve long enough to win the longest-run vote -- the hardware 8 kB shape.
+  local cells, nc, i, k = {}, 0, nil, nil
+  for i = 1, 1200 do nc = nc + 1; cells[nc] = 0 end
+  for i = 1, 12 do nc = nc + 1; cells[nc] = 1 end
+  for i = 1, 140 do
+    local v = 32 + math.mod(i * 11, 90)
+    nc = nc + 1; cells[nc] = 0
+    local t = v
+    for k = 1, 8 do nc = nc + 1; cells[nc] = math.mod(t, 2); t = math.floor(t / 2) end
+    nc = nc + 1; cells[nc] = 1
+    nc = nc + 1; cells[nc] = 1
+  end
+  for i = 1, 40 do nc = nc + 1; cells[nc] = 1 end
+  local rd, ts, ncell, ns = GEN_RENDER(cells, nc, {baud = baud, fs = fsv, lo = 0.0, hi = 3.3})
+  sdec.fs, sdec.acq_fs = fsv, fsv
+
+  -- THE PRIOR IS READ BETWEEN THE PHASES, NOT AFTER THEM. decode_from's last act is
+  -- `if r.invert then sdec.idle = 0 else sdec.idle = 1 end` -- the chosen polarity overrides
+  -- sig_idle's longest-run prior -- so sdec.idle read after priming completes is the CONTEST'S
+  -- answer and says nothing about the prior that was fed to it. The 'edge' phase is the one that
+  -- calls sig_idle, and it leaves pr.phase == 'fmt', so the prior is whatever is on sdec at that
+  -- moment. Captured there, which is the only place it means what the test claims.
+  local function prime(leadmax)
+    sdec.acq_pretrig, sdec.idle, sdec.leadrun = nil, nil, nil
+    sdec.run0, sdec.run1 = nil, nil
+    local reader = sdec.ck_reader_table(rd, ns)
+    local win = {}
+    local pr = sdec.ck_prime_new(reader, ns, win, leadmax)
+    local done, fmt, why, guard, prior = false, nil, nil, 0, nil
+    while not done and guard < 60 do
+      done, fmt, why = sdec.ck_prime_step(pr)
+      guard = guard + 1
+      if prior == nil and pr.phase == 'fmt' then
+        prior = {idle = sdec.idle, weak = sdec.idle_weak, lead = sdec.leadrun,
+                 run0 = sdec.run0, run1 = sdec.run1, pt = sdec.acq_pretrig}
+      end
+    end
+    return fmt, why, pr, prior or {}
+  end
+
+  local fmt, why, pr, prior = prime(10000)
+  check('priming an armed recording reports the reserve to sig_idle',
+        prior.pt == true and pr.leadmax == 10000,
+        string.format('acq_pretrig=%s pr.leadmax=%s', tostring(prior.pt),
+                      tostring(pr.leadmax)))
+  check('...and the leading run is measured but not voted with',
+        prior.lead ~= nil and prior.lead > 9000 and
+        prior.run0 ~= nil and prior.run0 < prior.lead / 2,
+        string.format('leadrun=%s run0=%s run1=%s', tostring(prior.lead),
+                      tostring(prior.run0), tostring(prior.run1)))
+  check('...so the PRIOR is the line and not the switched-off wire',
+        prior.idle == 1, string.format('prior idle=%s', tostring(prior.idle)))
+  check('...and the format it hands ck_decode is the right way up',
+        fmt ~= nil and fmt.invert ~= true and fmt.nbits == 8,
+        string.format('fmt=%s invert=%s nbits=%s why=%s', tostring(fmt ~= nil),
+                      tostring(fmt and fmt.invert), tostring(fmt and fmt.nbits),
+                      tostring(why)))
+
+  -- THE NEGATIVE HALF IS ABOUT THE PRIOR, NOT THE BYTES, and that is not a weaker claim -- it is
+  -- the only one this fixture can support. With the reserve counted the prior inverts, but
+  -- ua_autoformat then overturns it: this payload is framed with two stop cells, so the inverted
+  -- reading does not frame cleanly and the contest wins. The instrument's 8 kB case had no such
+  -- luck, because v41 is gapless inside its message. So the format is NOT asserted to be wrong
+  -- here; the mechanism is, and the outcome is guarded on hardware by bench_arm case P.
+  local fmt2, why2, pr2, prior2 = prime(nil)
+  check('a recording with no reserve still reads its leading run as evidence',
+        prior2.pt == false and prior2.idle == 0 and
+        prior2.run0 ~= nil and prior2.run0 > 9000,
+        string.format('acq_pretrig=%s prior idle=%s run0=%s', tostring(prior2.pt),
+                      tostring(prior2.idle), tostring(prior2.run0)))
+  check('...and that is the opposite prior, which is what the reserve was doing',
+        prior2.idle ~= prior.idle,
+        string.format('no-reserve prior idle=%s against the armed window\'s %s',
+                      tostring(prior2.idle), tostring(prior.idle)))
+
+  sdec.fs, sdec.acq_fs, sdec.acq_pretrig = keep.fs, keep.af, keep.pt
+  sdec.force_baud, sdec.force_invert, sdec.ck_win_n = keep.fb, keep.fi, keep.w
+end)()
+
 print()
 print(string.format('%d passed, %d failed', pass, fail))
 os.exit(fail == 0 and 0 or 1)

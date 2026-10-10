@@ -413,8 +413,13 @@ end
 
 function sdec.ck_prime_new(reader, ntotal, win, leadmax)
   if reader == nil then return nil, 'no sample source' end
+  -- leadmax IS KEPT, not just consumed by ck_prime_tries: the 'edge' phase below needs to know that
+  -- this record has a pre-trigger reserve, and leadmax being non-nil IS that fact -- stream_decode
+  -- passes it only for an armed recording. Deriving it here rather than taking a second flag keeps
+  -- the two from disagreeing about whether the record was armed.
   return {reader = reader, ntotal = ntotal, win = win, phase = 'lvd', probe = 0,
           cnt = 0, at = 1, try = 1, tries = sdec.ck_prime_tries(leadmax),
+          leadmax = leadmax,
           why = nil, label = 'levels'}, nil
 end
 
@@ -481,6 +486,24 @@ function sdec.ck_prime_step(pr)
   -- real line before the long run starts.
   if pr.phase == 'edge' then
     sdec.sig_edges(pr.win, pr.cnt)
+    -- THE PRIMING WINDOW OF AN ARMED RECORDING IS THE RESERVE, so its leading run is the wire
+    -- BEFORE THE DEVICE STARTED and not the line's idle level. Unset, sig_idle took that run as the
+    -- longest in the window and the polarity prior came out of it -- and because priming's own
+    -- decode then FRAMES at that polarity, the format it hands back is inverted and the whole
+    -- recording inherits it.
+    --
+    -- MEASURED, an 8 kB recording armed on silence with the generator switched on at +3 s:
+    -- leadrun 17 968 against a 17 965-sample reserve, run0 17 968, run1 232, idle 0, invert true,
+    -- 2110 of 5484 bytes bad. The byte COUNT is right, which is why a count-only assertion passes
+    -- on it.
+    --
+    -- SET FOR EVERY TRY, NOT ONLY THE FIRST. A retry advances a whole window, and on the widest
+    -- mode the reserve is 3.6 windows, so later windows open inside it too. Past the reserve the
+    -- leading run is a mid-record run truncated by the window boundary, which is weaker evidence
+    -- than the interior runs either way -- and if nothing else in the window is long enough,
+    -- sig_idle falls to its LEVEL branch with idle_weak true, where sdec.polmargin protects the
+    -- answer. So excluding it is conservative at every position.
+    sdec.acq_pretrig = (pr.leadmax ~= nil and pr.leadmax > 0)
     sdec.sig_idle(pr.win, pr.cnt)
     pr.phase, pr.label = 'fmt', 'format'
     return false, nil, nil
