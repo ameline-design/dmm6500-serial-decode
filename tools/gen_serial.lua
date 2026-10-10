@@ -1964,7 +1964,7 @@ end
 function trigger.model.abort()
   TRIG.aborts = TRIG.aborts + 1
   -- WHAT THE INSTRUMENT WAS DOING BEFORE THE NEXT ARM IS RECORDED HERE, where the previous model
-  -- ends, because that is the one thing MEASURED to move the arrival -- see TRIG.arrive_after. A
+  -- ends, because that is the one thing MEASURED to move the candour -- see TRIG.lag_after. A
   -- fixture setting it by hand would make the dependency a declaration; taken from the state the
   -- model was really in, a suite that probes the line and then arms gets the row it earned.
   if TRIG.t0 ~= nil then

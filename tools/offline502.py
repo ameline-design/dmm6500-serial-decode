@@ -88,7 +88,29 @@ BANNED = [
     ('math.fmod(', 'math.mod'),
     ('table.unpack(', 'unpack'),
     ('os.getenv(', 'nothing -- the instrument has no environment'),
+    # 5.1+. A staged run USED TO PASS THIS GATE AND THEN DIE: test_serial.lua calls select() four
+    # times and nothing checked for it, because lint_tsp.py bans it but release_sweep only ever hands
+    # lint_tsp the tsp/ modules. 5.0.2 has no select at all -- probed, nil.
+    ('select(', 'a local capture of the extra return: local _, w = f()'),
+    # THESE TWO EXIST AND RAISE, which is why a name check alone would miss them. Stock 5.0.2 is built
+    # with USE_TMPNAME and USE_POPEN off, so the functions are present and answer
+    # "`tmpname' not supported" / "`popen' not supported" when called -- measured on out/lua502/bin/lua.
+    # A static refusal is the only thing that catches that before a staged run dies mid-suite.
+    ('os.tmpname(', 'os.time() and a probe for a free name -- and say in the comment that it is no '
+                    'longer atomic'),
+    ('io.popen(', 'nothing -- run the helper from the host side instead'),
 ]
+
+# A NAME THAT STARTS WITH A LETTER NEEDS A WORD BOUNDARY IN FRONT OF IT, or `select(` flags every
+# `sdec.fs_select()` in the tree -- six of them, all correct code. Entries that open with punctuation
+# (`:match(`) are their own boundary and are exempt. This also makes the dotted names stricter rather
+# than looser: `mystring.match(` is an index of a local, not the string library, and no longer matches.
+def _bounded(body, a, name):
+    if not name[0].isalpha():
+        return True
+    if a == 0:
+        return True
+    return body[a - 1] not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.:'
 
 
 def spans(body):
@@ -179,6 +201,8 @@ def native502(rel, body):
                 break
             start = a + 1
             if cls[a] != 'c':
+                continue
+            if not _bounded(body, a, name):
                 continue
             out.append((rel, body.count('\n', 0, a) + 1, name, instead))
     for a, ch in enumerate(body):

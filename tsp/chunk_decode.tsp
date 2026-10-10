@@ -520,8 +520,8 @@ end
 --
 -- DERIVED AND NOT A CONSTANT, because the number of legitimate phases is now data-dependent: the
 -- decimated level pass, up to ck_probes contiguous probes, and read/edge/fmt per try. A constant
--- generous enough for the widest record (9 tries at ck_bufmax) would be no backstop at a narrowed
--- window, where the panel path can ask for 75.
+-- generous enough for the widest record (9 tries for ck_bufmax's 140 000-reading reserve) would be
+-- no backstop at a narrowed window, where the same reserve asks for 72 at the ck_win_min floor.
 function sdec.ck_prime(reader, ntotal, win, leadmax)
   local pr, perr = sdec.ck_prime_new(reader, ntotal, win, leadmax)
   if pr == nil then return nil, perr end

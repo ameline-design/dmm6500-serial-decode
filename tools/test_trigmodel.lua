@@ -63,12 +63,13 @@ SRC_TRIGDERIVE(true)
 -- makes "the trigger index is the first sample on the new side" an exact assertion instead of an
 -- approximate one. nhi = 0 leaves a line that only ever RISES, which is what makes a wrong slope
 -- wrong-able.
-local function STEP(nlo, nhi, ntail, lo, hi)
+local function STEP(nlo, nhi, ntail, lo, hi, fs)
   local rd, ts, n, i = {}, {}, 0, nil
+  fs = fs or 100000
   for i = 1, nlo do n = n + 1; rd[n] = lo end
   for i = 1, nhi do n = n + 1; rd[n] = hi end
   for i = 1, ntail do n = n + 1; rd[n] = lo end
-  for i = 1, n do ts[i] = (i - 1) / 100000 end
+  for i = 1, n do ts[i] = (i - 1) / fs end
   SRC.rd, SRC.ts, SRC.nsmp, SRC.trigat = rd, ts, n, nil
   SRC.loop, SRC.native_fs = false, nil
   return n
@@ -140,16 +141,18 @@ end)()
 -- ============================================================================
 print('\nB  the model WALKS its blocks on a virtual clock')
 -- ============================================================================
--- MEASURED on 1.7.17a: initiate() leaves the model STATE_RUNNING with nine readings already taken --
--- it is executing the buffer clear, the zero delay and the start of the infinite digitize -- and
--- STATE_WAITING arrives 0.19 s afterwards (docs/TRIGGER.md section 8, 30 arms at each of two
--- capacities). So code that reads "not waiting" as "the event has arrived" is wrong on its first look
--- and right only a fifth of a second later, and that is only assertable against a model where time
--- passes.
+-- MEASURED on 1.7.17a, and the two halves of it are DIFFERENT TIMES (docs/TRIGGER.md section 8):
+--   * THE WAIT BLOCK GOES LIVE ABOUT 2 ms after initiate(). From the recorded data, pre-roll start =
+--     fire_s - N5/fs - n_pre/fs gives 1.6 to 2.6 ms over six captures; from the block trajectory,
+--     BUFFER_CLEAR completes at 0.0003 s and the zero DELAY_CONSTANT at 0.0012 s.
+--   * THE STATE CALL DOES NOT ADMIT IT for another 190 ms -- 0.164 to 0.228 s from initiate(),
+--     depending on what the instrument was doing before.
+-- So the 0.19 s bounds the firmware's CANDOUR, not its readiness, and a mock that modelled it as an
+-- arming delay would get the consequence backwards. Both are only assertable against a model where
+-- time passes.
 ;(function()
-  -- A LONG PRE-TRIGGER SILENCE, because a wait has to be findable IN PROGRESS: 40 000 samples at
-  -- 100 kS/s is 0.4 s of line with nothing on it, which outlasts the arrival and is the arm the whole
-  -- feature exists for.
+  -- A LONG PRE-TRIGGER SILENCE, because a wait has to outlast the candour lag to be observable at
+  -- all: 40 000 samples at 100 kS/s is 0.4 s of line with nothing on it.
   --
   -- THE PRIOR STATE IS SET BY HAND HERE AND ONLY HERE, to the row that means "nothing was acquiring",
   -- so this section's arithmetic does not depend on what an earlier section left the instrument
@@ -172,19 +175,35 @@ print('\nB  the model WALKS its blocks on a virtual clock')
   CK('...and twenty state reads advance the clock by nothing at all',
      TRIG_CLOCK() == c0, string.format('%s -> %s', tostring(c0), tostring(TRIG_CLOCK())))
 
-  delay(0.01)
-  CK('ten milliseconds of polling does NOT reach the wait block -- the arrival is 0.19 s, not 1 ms',
-     sdec.trig_waiting() == false and TRIG.at() == 1, tostring(trigger.model.state()))
+  -- ==== READINESS: THE WAIT IS LIVE AT 2 ms ====
+  CK('the wait block goes live about 2 ms after initiate, the measured block trajectory',
+     NEAR(TRIG.t_wait - TRIG.t0, 0.002, 1e-9),
+     string.format('%.6f s = clear %s + delay %s + digitize %s', TRIG.t_wait - TRIG.t0,
+                   tostring(TRIG.cost.buffer_clear), tostring(TRIG.cost.delay),
+                   tostring(TRIG.cost.digitize)))
+  delay(0.005)
+  CK('...so at 5 ms the model is REALLY in its wait block',
+     TRIG.walkstate() == 'waiting' and TRIG.at() == 4,
+     string.format('%s, block %s', TRIG.walkstate(), tostring(TRIG.at())))
+  -- ==== CANDOUR: THE STATE CALL STILL SAYS RUNNING ====
+  CK('...and the state call still says RUNNING, because 0.19 s is a REPORTING lag',
+     trigger.model.state() == trigger.STATE_RUNNING and sdec.trig_waiting() == false,
+     string.format('reported %s while really %s', tostring(trigger.model.state()),
+                   TRIG.walkstate()))
   CK('...and delay() advanced the clock by exactly what it was asked for, without sleeping',
-     NEAR(TRIG_CLOCK() - c0, 0.01, 1e-9), string.format('%.6f s', TRIG_CLOCK() - c0))
-  -- THE ARRIVAL IS THE MEASURED FIGURE, not a number this file picked: 0.191 s for a model loaded
+     NEAR(TRIG_CLOCK() - c0, 0.005, 1e-9), string.format('%.6f s', TRIG_CLOCK() - c0))
+  -- THE OBSERVATION TIME IS THE MEASURED FIGURE, not one this file picked: 0.191 s for a model loaded
   -- with nothing acquiring beforehand. Checked against the measured band rather than for equality,
   -- so re-measuring the median does not fail a suite that is asserting the behaviour.
-  delay(TRIG.arrive - TRIG_CLOCK() + c0 + 0.0001)
-  CK('the model reaches its wait at the measured arrival, 0.164 to 0.228 s depending on prior state',
-     sdec.trig_waiting() == true and TRIG.arrive >= 0.164 and TRIG.arrive <= 0.228,
-     string.format('%.4f s, prior=%s', TRIG.arrive, tostring(TRIG.prior)))
-  CK('...and the block it is sitting in is the WAIT', TRIG.at() == 4, tostring(TRIG.at()))
+  delay(TRIG.observed_at() - (TRIG_CLOCK() - c0) + 0.0001)
+  CK('the state admits the wait at the measured 0.164 to 0.228 s, by prior state',
+     sdec.trig_waiting() == true and TRIG.observed_at() >= 0.164 and
+     TRIG.observed_at() <= 0.228,
+     string.format('%.4f s, prior=%s, lag %.4f s', TRIG.observed_at(), tostring(TRIG.prior),
+                   TRIG.lag()))
+  CK('...which is ninety times longer than the model took to get there',
+     TRIG.lag() / (TRIG.t_wait - TRIG.t0) > 50,
+     string.format('%.4f s of lag against %.4f s of work', TRIG.lag(), TRIG.t_wait - TRIG.t0))
 
   -- THE WAIT LASTS AS LONG AS THE SIGNAL TAKES, not as long as the poll loop is willing to look.
   -- The step rises at sample 40 001 of a 100 kS/s render, so the event is 0.4 s away.
@@ -195,10 +214,12 @@ print('\nB  the model WALKS its blocks on a virtual clock')
   -- STEPPED TO THE MODEL'S OWN FIRE TIME rather than to a hand-written number, so the assertion is
   -- about the ORDER of the phases and not about this stimulus's arithmetic.
   delay(TRIG.t_fire - TRIG_CLOCK() + 0.0001)
-  CK('...and past it the model is RUNNING again, taking its counted burst',
-     trigger.model.state() == trigger.STATE_RUNNING and sdec.trig_waiting() == false,
-     tostring(trigger.model.state()))
-  CK('...in the block AFTER the wait', TRIG.at() == 5, tostring(TRIG.at()))
+  CK('...and the model really leaves the wait then', TRIG.walkstate() ~= 'waiting',
+     TRIG.walkstate())
+  CK('...while the state call is still reporting the wait, lagging the fire as it lagged the entry',
+     trigger.model.state() == trigger.STATE_WAITING,
+     string.format('reported %s while really %s', tostring(trigger.model.state()),
+                   TRIG.walkstate()))
   -- The burst is post readings at the delivered rate: 285 of a 300-reading buffer at position 5,
   -- plus the cost of starting the block.
   CK('...for as long as the burst takes',
@@ -208,6 +229,47 @@ print('\nB  the model WALKS its blocks on a virtual clock')
   CK('and then it goes IDLE, which is what trig_done() tests for',
      trigger.model.state() == trigger.STATE_IDLE and sdec.trig_done(b) == true,
      string.format('%s n=%s', tostring(trigger.model.state()), tostring(b.n)))
+
+  -- ==== AN ARM THAT FIRES INSIDE THE LAG IS NEVER REPORTED AS WAITING AT ALL ====
+  -- MEASURED: in twelve latency captures STATE_WAITING was never once observed, because the signal
+  -- fired within one ramp period of the wait going live. 2 ms of pre-trigger silence here against a
+  -- 0.19 s candour lag, polled every 10 ms for a whole second -- which is a hundred looks.
+  --
+  -- THIS IS THE DEFECT, NOT A CURIOSITY: stream_arm() reads "I never saw WAITING" as "the arm never
+  -- went live", so a capture that armed and fired correctly is reported as one that did not.
+  DROP(b)
+  STEP(200, 200, 200, 0.0, 3.3)
+  b = ARM(1.5, dmm.SLOPE_RISING, dmm.MODE_EDGE)
+  local sawwait, k = false, nil
+  for k = 1, 100 do
+    if sdec.trig_waiting() == true then sawwait = true end
+    delay(0.01)
+  end
+  CK('an arm whose event arrives inside the candour lag is NEVER reported as waiting',
+     sawwait == false and TRIG.t_fire ~= nil,
+     string.format('fired at %s, %.4f s after the wait went live, against a %.4f s lag',
+                   tostring(SRC.trigfired), TRIG.t_fire - TRIG.t_wait, TRIG.lag()))
+  CK('...even though the capture is complete and correct',
+     sdec.trig_done(b) == true and (b.n or 0) > 0,
+     string.format('done=%s n=%s', tostring(sdec.trig_done(b)), tostring(b.n)))
+
+  -- ==== THE COMPARATOR'S LATENCY IS FIXED IN TIME, NOT IN SAMPLES ====
+  -- MEASURED against a slow ramp: 7.16 us at 200 kS/s and 7.36 us at 1 MS/s -- a 1.03x change across
+  -- a 5.0x change of rate, against 3.44x measured in samples. So the same crossing lands 0 samples
+  -- late at 40 kS/s and 7 late at 1 MS/s, and a mock charging it in samples would be wrong by 3.4x.
+  DROP(b)
+  STEP(200, 200, 200, 0.0, 3.3, 1000000)
+  b = ARM(1.5, dmm.SLOPE_RISING, dmm.MODE_EDGE)
+  CK('at 1 MS/s the 7.3 us comparator latency puts the trigger seven samples past the crossing',
+     SRC.trigfired == 201 + math.floor(TRIG.cost.cmp_latency * 1000000) and SRC.trigfired == 208,
+     string.format('crossing at 201, trigger at %s', tostring(SRC.trigfired)))
+  DROP(b)
+  STEP(200, 200, 200, 0.0, 3.3, 40000)
+  b = ARM(1.5, dmm.SLOPE_RISING, dmm.MODE_EDGE)
+  CK('...and at 40 kS/s the same latency is 0.29 of a sample and rounds away',
+     SRC.trigfired == 201, string.format('crossing at 201, trigger at %s',
+                                         tostring(SRC.trigfired)))
+  STEP(40000, 200, 200, 0.0, 3.3)
 
   -- ABORT ENDS THE WALK. sdec.trig_settle() aborts and then polls fifty times for IDLE, so a model
   -- that kept running would cost half a second of clock and answer false.
@@ -247,8 +309,8 @@ print('\nB  the model WALKS its blocks on a virtual clock')
      sdec.trig_waiting() == true, tostring(trigger.model.state()))
   trigger.model.abort()
   ARM(1.5, dmm.SLOPE_RISING, dmm.MODE_EDGE, nil, 300)
-  local afterwait = TRIG.arrive
-  CK('...so arming after it costs the measured worst case',
+  local afterwait = TRIG.observed_at()
+  CK('...so the next arm is admitted at the measured worst case',
      TRIG.prior == 'waiting' and NEAR(afterwait, 0.228, 1e-9),
      string.format('%.4f s after prior=%s', afterwait, tostring(TRIG.prior)))
   trigger.model.abort()
@@ -256,31 +318,39 @@ print('\nB  the model WALKS its blocks on a virtual clock')
   dmm.digitize.count = 100
   dmm.digitize.read(rb)
   ARM(1.5, dmm.SLOPE_RISING, dmm.MODE_EDGE, nil, 300)
-  CK('...while arming after a completed free-run read costs the measured least',
-     TRIG.prior == 'read' and NEAR(TRIG.arrive, 0.164, 1e-9) and TRIG.arrive < afterwait,
-     string.format('%.4f s after prior=%s, against %.4f s', TRIG.arrive, tostring(TRIG.prior),
-                   afterwait))
+  CK('...while an arm after a completed free-run read is admitted soonest',
+     TRIG.prior == 'read' and NEAR(TRIG.observed_at(), 0.164, 1e-9) and
+     TRIG.observed_at() < afterwait,
+     string.format('%.4f s after prior=%s, against %.4f s', TRIG.observed_at(),
+                   tostring(TRIG.prior), afterwait))
+  -- AND THE READINESS DOES NOT MOVE WITH IT, which is the whole distinction: the prior state changes
+  -- when the firmware ADMITS the wait, not when the wait goes live.
+  CK('...and the block trajectory is the same either way -- only the candour moved',
+     NEAR(TRIG.t_wait - TRIG.t0, 0.002, 1e-9),
+     string.format('%.6f s to live, %.4f s to admitted', TRIG.t_wait - TRIG.t0,
+                   TRIG.observed_at()))
   DROP(rb)
 
-  -- AND THE ARRIVAL IS STILL SETTABLE, which is the point of it being a field: a suite documenting a
-  -- story about a model that is slow to arm pins it and says so, rather than arranging a prior state
-  -- that happens to be slow. Asserted as a delta, so what is pinned is the law and not a total.
-  local keep = TRIG.cost.arrive
+  -- AND THE LAG IS STILL SETTABLE, which is the point of it being a field: a suite documenting a
+  -- story about a firmware that is slow to admit a wait pins it and says so, rather than arranging a
+  -- prior state that happens to be slow. Asserted as a delta, so what is pinned is the law.
+  local keep = TRIG.cost.report_lag
   TRIG_PRIOR(nil)
   ARM(1.5, dmm.SLOPE_RISING, dmm.MODE_EDGE, nil, 300)
-  local base = TRIG.t_wait - TRIG.t0
-  TRIG.cost.arrive = base + 0.5
+  local base = TRIG.observed_at()
+  TRIG.cost.report_lag = base + 0.1
   ARM(1.5, dmm.SLOPE_RISING, dmm.MODE_EDGE, nil, 300)
-  CK('half a second more arrival puts the wait half a second later, and nothing else moves',
-     NEAR((TRIG.t_wait - TRIG.t0) - base, 0.5, 1e-9) and
-     NEAR(TRIG.t_fire - TRIG.t_wait, 0.4, 1e-9),
-     string.format('%.6f s -> %.6f s', base, TRIG.t_wait - TRIG.t0))
+  CK('a tenth of a second more candour lag puts the ADMISSION later, and nothing else moves',
+     NEAR(TRIG.observed_at() - base, 0.1, 1e-9) and
+     NEAR(TRIG.t_wait - TRIG.t0, 0.002, 1e-9) and NEAR(TRIG.t_fire - TRIG.t_wait, 0.4, 1e-9),
+     string.format('%.4f s -> %.4f s admitted, still %.6f s to live', base, TRIG.observed_at(),
+                   TRIG.t_wait - TRIG.t0))
   delay(base + 0.01)
-  CK('...and the old arrival no longer reaches it', sdec.trig_waiting() == false,
+  CK('...and the old admission time no longer reaches it', sdec.trig_waiting() == false,
      tostring(trigger.model.state()))
-  delay(TRIG.t_wait - TRIG_CLOCK() + 0.0001)
+  delay(TRIG.t_wait + TRIG.lag() - TRIG_CLOCK() + 0.0001)
   CK('...while the new one does', sdec.trig_waiting() == true, tostring(trigger.model.state()))
-  TRIG.cost.arrive = keep
+  TRIG.cost.report_lag = keep
 
   -- SimpleLoop HAS NO WAIT BLOCK, so it can never be found waiting however long anyone looks. This
   -- is the containment half of "a recording built on SimpleLoop cannot be armed".
@@ -554,17 +624,23 @@ print('\nE  TODAY\'S DEFECT: the settle budget has to cover the time the model t
 -- quiet line is meant to avoid. MEASURED, case F of hw-arm: the identical 8 kB case armed and
 -- collected 5 485 bytes on one run and ended as 'quiet' with nothing in it on the next three.
 --
--- NO STUB ANYWHERE IN THIS SECTION, and that is the point of modelling the clock. The arrival is the
--- mock's own measured figure -- flat in the buffer, and taken from the row of TRIG.arrive_after that
--- this recording EARNED by probing the line before it armed -- so the budget is tested against the
--- instrument's behaviour rather than against a poll count a fixture invented.
+-- NO STUB ANYWHERE IN THIS SECTION, and that is the point of modelling the clock. The time the
+-- firmware takes to ADMIT the wait is the mock's own measured figure -- flat in the buffer, and taken
+-- from the row of TRIG.lag_after that this recording EARNED by probing the line before it armed -- so
+-- the budget is tested against the instrument's behaviour rather than against a poll count a fixture
+-- invented.
+--
+-- WHAT THE BUDGET REALLY BOUNDS IS CANDOUR, NOT READINESS. The wait block is live 2 ms after
+-- initiate(); the state call does not admit it for another 190. So every one of these looks is spent
+-- waiting for the firmware to own up to something that is already true, and a spin that runs out has
+-- declared an arm dead that was working the whole time.
 --
 -- AND THE SHIPPED 0.25 s IS NOT THE MUTATION VALUE ANY MORE, which is a consequence of the
--- measurement rather than of this file: the arrival is 0.164 to 0.228 s, so a spin bounded at 0.25 s
--- takes its last look at 0.24 s and DOES see the wait. 0.25 was a coin toss -- about ten per cent
--- above the slowest arm the instrument produces -- and a deterministic model cannot reproduce a coin
--- toss as a failure. The margin is asserted instead, below, and the mutation uses a budget under the
--- measured floor.
+-- measurement rather than of this file: the admission lands at 0.164 to 0.228 s, so a spin bounded at
+-- 0.25 s takes its last look at 0.24 s and DOES see the wait. 0.25 was a coin toss -- about ten per
+-- cent above the slowest admission the instrument produces -- and a deterministic model cannot
+-- reproduce a coin toss as a failure. The margin is asserted instead, below, and the mutation uses a
+-- budget under the measured floor.
 ;(function()
   local keep = {lvl = sdec.armlevel, wait = sdec.armwait, key = sdec.armkey, set = sdec.arm_settle_s}
   sdec.trigext, sdec.trigext_only, sdec.fc_out = false, false, false
@@ -592,12 +668,14 @@ print('\nE  TODAY\'S DEFECT: the settle budget has to cover the time the model t
   local d0 = TRIG.delays
   local ok = sdec.stream_arm(sdec.strm_nsmp)
   local tow = TRIG.t_wait - TRIG.t0
-  -- THE ARRIVAL IS EARNED, NOT DECLARED: stream_begin() probes the line with a free-running read
-  -- before it arms, which is the 'read' row of the measured table -- the cheapest prior state there
-  -- is, and still 0.164 s.
-  CK('...and its model takes 0.164 s to reach its wait, the row the probe before it earned',
-     TRIG.prior == 'read' and NEAR(tow, 0.164, 1e-9),
-     string.format('%.4f s after prior=%s, over a %d-reading buffer', tow, tostring(TRIG.prior), cap))
+  -- THE ADMISSION TIME IS EARNED, NOT DECLARED: stream_begin() probes the line with a free-running
+  -- read before it arms, which is the 'read' row of the measured table -- the promptest prior state
+  -- there is, and still 0.164 s. The wait itself went live 2 ms in, so the whole of the budget is
+  -- spent waiting for the firmware to admit something that was already true.
+  CK('...and its wait is live in 2 ms but not ADMITTED for 0.164 s, the row the probe earned',
+     TRIG.prior == 'read' and NEAR(tow, 0.002, 1e-9) and NEAR(TRIG.observed_at(), 0.164, 1e-9),
+     string.format('%.4f s to live, %.4f s to admitted, prior=%s, %d-reading buffer', tow,
+                   TRIG.observed_at(), tostring(TRIG.prior), cap))
   -- ==== MUTATION PROOF 2 ====
   -- Fails if sdec.arm_settle_s in tsp/serial_core.tsp is set below the arrival -- 0.1 s is under the
   -- measured floor of 0.1668 s. The spin then exhausts its budget before the model reaches its wait,
@@ -609,18 +687,18 @@ print('\nE  TODAY\'S DEFECT: the settle budget has to cover the time the model t
                    tostring(sdec.strm_armed), tostring(TRIG.template), tow,
                    tostring(sdec.arm_settle_s)))
   -- THE BUDGET IS SPENT IN WALL TIME, NOT IN LOOKS, and the two are only the same while delay() is a
-  -- no-op. The spin steps 10 ms at a time, so a 0.164 s arrival is seventeen looks -- and a budget
-  -- expressed in looks would have passed at any arrival at all.
+  -- no-op. The spin steps 10 ms at a time, so a 0.164 s admission is seventeen looks -- and a budget
+  -- expressed in looks would have passed at any admission time at all.
   CK('...and the spin paid for it in clock, one 10 ms delay at a time',
-     NEAR(TRIG.clock, TRIG.t_wait, 0.011) and (TRIG.delays - d0) >= 15,
-     string.format('%d delays, clock %.4f s against a wait at %.4f s', TRIG.delays - d0, TRIG.clock,
-                   TRIG.t_wait))
+     NEAR(TRIG.clock, TRIG.t_wait + TRIG.lag(), 0.011) and (TRIG.delays - d0) >= 15,
+     string.format('%d delays, clock %.4f s against an admission at %.4f s', TRIG.delays - d0,
+                   TRIG.clock, TRIG.t_wait + TRIG.lag()))
   -- ==== WHY 0.25 s WAS A COIN TOSS, AS A NUMBER ====
   -- The spin steps 10 ms, so a bound of B takes its last look at B - 0.01. Against the measured worst
   -- arm -- 0.228 s, after aborting a model that was itself waiting -- the old 0.25 s bound left
   -- 0.012 s, which is ONE look. That is why hw-arm case F armed once and failed the next three, and
   -- it is the thing a budget has to be measured against: not the median arm but the slowest one.
-  local worst = TRIG.arrive_after.waiting
+  local worst = TRIG.lag_after.waiting
   CK('the old 0.25 s bound left ONE look of margin over the slowest arm the instrument makes',
      math.floor((0.25 - 0.01 - worst) / 0.01) <= 1 and worst > 0.2,
      string.format('%.4f s worst arm, %.3f s of margin under a 0.25 s bound, %.0f look(s)', worst,
@@ -633,21 +711,21 @@ print('\nE  TODAY\'S DEFECT: the settle budget has to cover the time the model t
      string.format('%s s against a %.4f s worst arm, %.1fx', tostring(sdec.arm_settle_s), worst,
                    sdec.arm_settle_s / worst))
 
-  -- THE BUDGET IS STILL A BOUND, not patience without end: a model that never reaches its wait has
+  -- THE BUDGET IS STILL A BOUND, not patience without end: a firmware that never admits the wait has
   -- to be reported as an arm that did not go live, or the generous budget has turned a refusal into a
-  -- hang. Twenty seconds of arrival is past any budget this field should ever hold.
-  local kc = TRIG.cost.arrive
-  TRIG.cost.arrive = 20.0
+  -- hang. Twenty seconds of candour lag is past any budget this field should ever hold.
+  local kc = TRIG.cost.report_lag
+  TRIG.cost.report_lag = 20.0
   begin()
   TRIG_CLOCK(0)
   local ok2 = sdec.stream_arm(sdec.strm_nsmp)
-  CK('a model that never reaches its wait is still reported as NOT armed',
+  CK('a wait the firmware never admits is still reported as NOT armed',
      sdec.strm_armed == false, string.format('armed=%s after %.2f s of spin',
                                              tostring(sdec.strm_armed), TRIG.clock))
   CK('...and the spin stopped at the budget rather than waiting the model out',
      NEAR(TRIG.clock, sdec.arm_settle_s, 0.02) and ok2 == true,
      string.format('%.3f s spun against a %s s budget', TRIG.clock, tostring(sdec.arm_settle_s)))
-  TRIG.cost.arrive = kc
+  TRIG.cost.report_lag = kc
 
   -- AND THE FIELD IS A RECORDING-PATH NUMBER, which is what makes a generous value free:
   -- sdec.arm_settle_s is read only by stream_arm(), and acq_triggered() has no spin at all. Tested
