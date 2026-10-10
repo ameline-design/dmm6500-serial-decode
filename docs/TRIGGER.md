@@ -186,6 +186,20 @@ fire**, with the comparator at 9.9 V against a measured ±10 mV idle so the wait
 type is not the variable, there is no surviving case, and Keithley's three streaming examples cannot
 work as written on this instrument.
 
+**BUT THE ARRIVING COMMAND MAY NOT BE THE MECHANISM, AND THAT IS NOW OPEN.** A model initiated in one
+chunk, with no print in the chunk and no traffic from that socket afterwards, died anyway: three
+repeats at **427.6, 436.1 and 441.4 ms** — 17 654, 17 442 and 17 104 readings at 40 kS/s — and two
+earlier runs under different command sequences at 5.4 ms and 246.3 ms. Polled from **inside** one
+chunk the same model reached 39 400 readings. So something periodic ends it, and the app's own 2 Hz
+panel tick is the named suspect.
+
+**The confound cannot be removed from that run**: a second client held a socket to the instrument
+throughout, so "no traffic" means none from the measuring socket. It also reframes the variability the
+original finding leaned on — 4 500 to 14 159 readings was read as "it dies when the next command
+arrives", and a model that dies on its own clock would look the same. **The operational rule is
+unchanged either way**: poll a wait from inside the instrument, because every host-side attempt to
+watch one has failed. What is not established is *why*.
+
 **AND THE FIRST QUERY IS STILL ANSWERED TRUTHFULLY**, which is what makes this so expensive to
 diagnose. The abort lands *behind* the reply and the model runs on for about 140 ms, so a host-side
 probe gets a plausible number back and only the next read shows the damage. A first attempt to measure
