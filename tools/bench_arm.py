@@ -375,6 +375,21 @@ def main():
             check('F ...and it waited for the device rather than ending on its own clock',
                   el > 3.0 and endwhy != 'noarm', 'elapsed %.2f s, endwhy=%s' % (el, endwhy))
             check('F ...and collected bytes from the line', num(nb, 0) > 20, '%s bytes' % nb)
+            # AND THAT THEY ARE THE RIGHT WAY UP, which a count cannot see. An armed recording took
+            # its polarity prior from the pre-trigger reserve and returned 2110 of 5484 bytes bad
+            # with the COUNT correct, so this case passed on it. The reserve is the wire before the
+            # device started; see ck_prime_step.
+            finv = tq(d, 'Fi', 'sdec.res ~= nil and tostring(sdec.res.invert) or "?"')
+            fbad = tq(d, 'Fx', 'sdec.res ~= nil and sdec.res.nbad or -1')
+            ftxt = tq(d, 'Ft', 'sdec.res ~= nil and sdec.ua_text_line(1, 30) or "-"')
+            fidle = tq(d, 'Fd', 'sdec.idle')
+            print('  invert=%s nbad=%s idle=%s text=%r' % (finv, fbad, fidle, ftxt[:34]))
+            check('F ...the right way up, not an inverted reading of the reserve',
+                  finv == 'false' and num(fidle, -1) == 1,
+                  'invert=%s idle=%s' % (finv, fidle))
+            check('F ...and they are the line\'s own bytes, nearly all of them clean',
+                  'Hello' in ftxt and num(fbad, 1e9) <= num(nb, 0) * 0.02,
+                  'nbad=%s of %s text=%r' % (fbad, nb, ftxt[:34]))
 
         # ---- G: a recording whose arm expires. ----
         if want('G'):
@@ -690,6 +705,19 @@ def main():
                   want_cap is not None and num(cap, 0) == want_cap,
                   'capacity=%s, nsmp=%s at pretrig=%g%% wants %s' % (cap, nsmp, pre, want_cap))
             check('O ...and it collected bytes from the line', num(nb, 0) > 20, '%s bytes' % nb)
+            # THE WIDEST RECORDING, THE SAME QUESTION AS CASE F. Its reserve is 3.6 priming windows,
+            # so it is the mode where a reserve-derived prior is hardest to escape.
+            oinv = tq(d, 'Oi', 'sdec.res ~= nil and tostring(sdec.res.invert) or "?"')
+            obad = tq(d, 'Ox', 'sdec.res ~= nil and sdec.res.nbad or -1')
+            otxt = tq(d, 'Ot', 'sdec.res ~= nil and sdec.ua_text_line(1, 30) or "-"')
+            oidle = tq(d, 'Od', 'sdec.idle')
+            print('  invert=%s nbad=%s idle=%s text=%r' % (oinv, obad, oidle, otxt[:34]))
+            check('O ...the right way up, not an inverted reading of the reserve',
+                  oinv == 'false' and num(oidle, -1) == 1,
+                  'invert=%s idle=%s' % (oinv, oidle))
+            check('O ...and they are the line\'s own bytes, nearly all of them clean',
+                  'Hello' in otxt and num(obad, 1e9) <= num(nb, 0) * 0.02,
+                  'nbad=%s of %s text=%r' % (obad, nb, otxt[:34]))
             d.exec('sdec.capmode = "frame" sdec.force_baud = nil')
             clear_absorb(d)
             g.output(False, ch=1)
