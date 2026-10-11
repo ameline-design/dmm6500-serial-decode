@@ -10208,6 +10208,77 @@ end)()
   sdec.force_baud, sdec.force_nbits, sdec.force_invert = keep.fb, keep.fn, keep.fi
 end)()
 
+-- ---------------------------------------------------------------------------
+-- THE LAUNCH IS BUILT OUT OF SIGHT.
+--
+-- The operator could watch this app assemble itself -- the main screen filling in object by object,
+-- then the OPTIONS screen doing the same, then a jump back -- because creating a screen takes the
+-- front, and start() only calls changescreen(ui_scr) after both builds. At ~12 ms a text object and
+-- ~134 objects a launch, that is over a second of visible drawing.
+--
+-- WHAT IS ASSERTED IS THE ACTIVE SCREEN AT CREATION TIME, not the finished screen. Both look
+-- identical once built, so an assertion on the result cannot tell a hidden build from a visible one.
+-- The premise is asserted first and separately: if a mock where creating a screen does NOT take the
+-- front were ever restored, every check below would pass while the defect was back on the instrument.
+-- ---------------------------------------------------------------------------
+;(function()
+  local scr0 = display.create(display.ROOT, display.OBJ_SCREEN, 'premise probe')
+  local took_front = (display.active == scr0)
+  display.delete(scr0)
+  check('PREMISE: creating a screen takes the front, which is what makes a visible build possible',
+        took_front, 'active=' .. tostring(display.active) .. ' scr=' .. tostring(scr0))
+
+  sdec.built, sdec.lasterr = nil, nil
+  sdec.allow_rebuild = true
+  local sok = sdec.start()
+  check('start() succeeds with the loading screen in the path', sok, tostring(sdec.lasterr))
+
+  -- Every child of either real screen, and which screen was in front when it was made.
+  local nchild, nvis_main, nvis_opt, hidden_id, nhidden = 0, 0, 0, nil, 0
+  local i
+  for i = 1, MD.nobj() do
+    local o = MD.obj(i)
+    if o ~= nil and o.kind ~= display.OBJ_SCREEN
+       and (o.parent == sdec.ui_scr or o.parent == sdec.optscr) then
+      nchild = nchild + 1
+      if o.created_while_active == o.parent then
+        if o.parent == sdec.ui_scr then nvis_main = nvis_main + 1 else nvis_opt = nvis_opt + 1 end
+      else
+        if hidden_id == nil then
+          hidden_id, nhidden = o.created_while_active, 1
+        elseif o.created_while_active == hidden_id then
+          nhidden = nhidden + 1
+        end
+      end
+    end
+  end
+
+  check('the launch creates the objects it is supposed to, so the checks below are not vacuous',
+        nchild > 100, nchild .. ' child object(s)')
+  check('NO main-screen object was created while the main screen was in front',
+        nvis_main == 0, nvis_main .. ' of ' .. nchild .. ' drawn in view')
+  check('and none on the options screen either -- the one that looked like a fault at launch',
+        nvis_opt == 0, nvis_opt .. ' drawn in view')
+  check('every one of them was built behind the SAME screen, so the cover is never dropped mid-build',
+        hidden_id ~= nil and nhidden == nchild, tostring(nhidden) .. ' of ' .. nchild
+        .. ' behind id ' .. tostring(hidden_id))
+
+  local cover = hidden_id ~= nil and MD.obj(hidden_id) or nil
+  check('the cover was a screen, not some object that happened to be in front',
+        cover ~= nil and cover.kind == display.OBJ_SCREEN,
+        cover ~= nil and tostring(cover.kind) or 'nil')
+  check('the main screen is in front once start() returns',
+        display.active == sdec.ui_scr,
+        'active=' .. tostring(display.active) .. ' ui_scr=' .. tostring(sdec.ui_scr))
+  -- A dropped handle is a leak the pool never reclaims, so the delete is the assertion, not the nil.
+  check('and the loading screen was DELETED, not merely dropped -- a lost handle sticks until a '
+        .. 'power cycle', cover ~= nil and cover.alive == false,
+        cover ~= nil and tostring(cover.alive) or 'nil')
+  check('its handles are nil, so a rebuild cannot delete them twice',
+        sdec.ui_loadscr == nil and sdec.ui_loadtxt == nil,
+        tostring(sdec.ui_loadscr) .. ',' .. tostring(sdec.ui_loadtxt))
+end)()
+
 print()
 print(string.format('%d passed, %d failed', pass, fail))
 os.exit(fail == 0 and 0 or 1)

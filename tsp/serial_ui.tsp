@@ -2153,6 +2153,13 @@ function sdec.ui_destroy()
   sdec.del_obj(sdec.ui_progline)
   sdec.ui_progbox, sdec.ui_progline = nil, nil
   sdec.del_obj(sdec.ui_scr)
+  -- The loading screen, for the path that matters: a build that failed while it was still in front.
+  -- Without this the operator is left looking at "Loading, please wait..." for ever and the screen
+  -- leaks until a power cycle. Deleted HERE and not through ui_loading_clear(), which would move the
+  -- active screen -- the switch to SCREEN_HOME at the top of this function has already done that.
+  sdec.del_obj(sdec.ui_loadtxt)
+  sdec.del_obj(sdec.ui_loadscr)
+  sdec.ui_loadtxt, sdec.ui_loadscr = nil, nil
   sdec.ui_scr, sdec.ui_note = nil, nil
   sdec.ui_flab, sdec.ui_fval = nil, nil
   sdec.ui_row, sdec.ui_btn = nil, nil
@@ -2164,8 +2171,73 @@ function sdec.ui_destroy()
   return true
 end
 
+-- A SCREEN NOBODY IS LOOKING AT, held in front while the real ones are assembled.
+--
+-- CREATING A SCREEN MAKES IT THE ACTIVE ONE. That is why the operator can watch this app build
+-- itself: ui_build() creates the main screen and fills it, build_options() then creates the options
+-- screen -- bringing THAT to the front -- and fills it too, and only afterwards does start() call
+-- changescreen(ui_scr). Two screens assemble in full view, in the wrong order, ending on a jump.
+--
+-- The cost is not small. A text object takes about 12 ms to create (see OBJECTS PER DUMP ROW above),
+-- and a launch creates ~122 objects for the main screen and 12 more for the options screen, so there
+-- is well over a second of drawing to hide. Keithley's own display-API notes make the stronger claim
+-- that creating objects on a VISIBLE screen is slower than on a hidden one, which would make this a
+-- speed-up as well; that part is not measured here and is not what this is for.
+--
+-- RAISED AFTER EVERY SCREEN CREATE, not once at the start. Since each create steals the front, one
+-- call before ui_build() would be undone by ui_scr's own creation and again by optscr's. Idempotent
+-- so the call sites do not have to care: it creates the screen the first time and only re-asserts it
+-- afterwards.
+--
+-- NEVER FATAL. The pool can be exhausted (display.create returns nil silently), and a missing loading
+-- screen means a visible build -- which is the behaviour this replaces, not a failure. So every call
+-- here is guarded and the return value is advisory.
+function sdec.ui_loading_front()
+  if sdec.ui_loadscr == nil then return false end
+  pcall(display.changescreen, sdec.ui_loadscr)
+  return true
+end
+
+function sdec.ui_loading_raise()
+  if sdec.ui_loadscr == nil then
+    local h = display.create(display.ROOT, display.OBJ_SCREEN, 'SERIAL DECODE')
+    if h == nil then return false end
+    sdec.ui_loadscr = h
+    -- One line of text, because the title bar alone is easy to mistake for a half-drawn screen.
+    -- settext on an OBJ_SCREEN works on this firmware (see ui_title), but a centred object is what
+    -- reads as deliberate. Its handle is kept so it can be deleted before its parent.
+    sdec.ui_loadtxt = display.create(h, display.OBJ_TEXT, 232, 214,
+                                     'Loading, please wait...', 0xFFFFFF, display.FONT_MEDIUM)
+  end
+  pcall(display.changescreen, sdec.ui_loadscr)
+  return true
+end
+
+-- Put the real screen in front and take the loading screen away.
+--
+-- SWITCH FIRST, DELETE SECOND, which is the same rule ui_destroy follows: deleting the screen that is
+-- currently displayed is how a panel ends up showing nothing. The caller passes the screen it wants
+-- in front so this cannot guess wrong.
+--
+-- Child before parent, and only nil a handle whose delete was accepted -- del_obj counts a refused
+-- delete and strands the handle on sdec.orphans, which the rebuild guard reads.
+function sdec.ui_loading_clear(showscr)
+  if showscr ~= nil then pcall(display.changescreen, showscr) end
+  if sdec.ui_loadscr == nil then return false end
+  sdec.del_obj(sdec.ui_loadtxt)
+  sdec.del_obj(sdec.ui_loadscr)
+  sdec.ui_loadtxt, sdec.ui_loadscr = nil, nil
+  return true
+end
+
 -- Build the main screen: status fields, dump rows, rules and buttons.
-function sdec.ui_build()
+--
+-- `hold` KEEPS THE LOADING SCREEN UP FOR THE CALLER. Only start() passes it, because only start()
+-- builds a second screen afterwards and so needs the cover to outlive this function. Everyone else --
+-- the tests, the bench harness, a rebuild by hand -- gets a build that cleans up after itself, which
+-- is what the leak census demands: a cover left standing is two live objects the pool never reclaims
+-- and a panel showing "Loading, please wait..." with nothing coming.
+function sdec.ui_build(hold)
   -- Destroy first, ALWAYS. Creating over a live handle overwrites the only
   -- reference to the object beneath, stranding it inside the firmware until a power
   -- cycle; that accumulation is what walks this firmware toward a PC=002F751C
@@ -2189,6 +2261,11 @@ function sdec.ui_build()
     error('display object pool exhausted -- power cycle the instrument. (The firmware posts '
           .. 'event 1701 only once, then display.create returns nil silently.)', 0)
   end
+
+  -- IMMEDIATELY AFTER THE SCREEN AND BEFORE ITS FIRST CHILD. Creating ui_scr just brought it to the
+  -- front, so everything below would be drawn in full view; this takes the front back. start() is
+  -- what clears it, and ui_destroy() clears it on the failure path.
+  sdec.ui_loading_raise()
 
   -- Table rules first, so the text is created after and cannot be painted over.
   sdec.ui_rule = {}
@@ -2582,6 +2659,11 @@ function sdec.ui_build()
     error(string.format('only %d of %d buttons could be created -- display object pool exhausted. '
                         .. 'Power cycle the instrument.', nb or 0, table.getn(bdef) or 0), 0)
   end
+
+  -- THE COVER COMES DOWN HERE UNLESS THE CALLER ASKED TO KEEP IT. Reaching this line means the build
+  -- succeeded, so the screen underneath is worth showing; the error paths above leave the cover up and
+  -- ui_destroy() takes it away with everything else.
+  if not hold then sdec.ui_loading_clear(sdec.ui_scr) end
 
   return sdec.ui_scr
 end
@@ -3513,6 +3595,13 @@ function sdec.build_options()
     error('display object pool exhausted building the options screen -- power cycle the '
           .. 'instrument.', 0)
   end
+
+  -- AND AGAIN HERE, because the create above took the front for the OPTIONS screen. This is the
+  -- second of the two screens the operator could watch assemble, and it is the one that looks like a
+  -- fault rather than slowness: the app appears to open its settings page at launch and then leave it.
+  -- A no-op when the loading screen has already gone, which is the case when Options is opened by
+  -- hand later.
+  sdec.ui_loading_front()
 
   -- Protocol FIRST, because it overrides the fields below it: MIDI is 31250 baud 8N1 by
   -- specification, so choosing it fills in the wire parameters instead of asking for

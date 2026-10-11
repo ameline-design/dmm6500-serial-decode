@@ -4950,6 +4950,9 @@ function sdec.ui_destroy()
   sdec.del_obj(sdec.ui_progline)
   sdec.ui_progbox, sdec.ui_progline = nil, nil
   sdec.del_obj(sdec.ui_scr)
+  sdec.del_obj(sdec.ui_loadtxt)
+  sdec.del_obj(sdec.ui_loadscr)
+  sdec.ui_loadtxt, sdec.ui_loadscr = nil, nil
   sdec.ui_scr, sdec.ui_note = nil, nil
   sdec.ui_flab, sdec.ui_fval = nil, nil
   sdec.ui_row, sdec.ui_btn = nil, nil
@@ -4961,8 +4964,49 @@ function sdec.ui_destroy()
   return true
 end
 
+-- A SCREEN NOBODY IS LOOKING AT, held in front while the real ones are assembled.
+--   [...]
+-- NEVER FATAL. The pool can be exhausted (display.create returns nil silently), and a missing loading
+-- screen means a visible build -- which is the behaviour this replaces, not a failure. So every call
+-- here is guarded and the return value is advisory.
+function sdec.ui_loading_front()
+  if sdec.ui_loadscr == nil then return false end
+  pcall(display.changescreen, sdec.ui_loadscr)
+  return true
+end
+
+function sdec.ui_loading_raise()
+  if sdec.ui_loadscr == nil then
+    local h = display.create(display.ROOT, display.OBJ_SCREEN, 'SERIAL DECODE')
+    if h == nil then return false end
+    sdec.ui_loadscr = h
+    sdec.ui_loadtxt = display.create(h, display.OBJ_TEXT, 232, 214,
+                                     'Loading, please wait...', 0xFFFFFF, display.FONT_MEDIUM)
+  end
+  pcall(display.changescreen, sdec.ui_loadscr)
+  return true
+end
+
+-- Put the real screen in front and take the loading screen away.
+--   [...]
+-- in front so this cannot guess wrong.
+-- Child before parent, and only nil a handle whose delete was accepted -- del_obj counts a refused
+-- delete and strands the handle on sdec.orphans, which the rebuild guard reads.
+function sdec.ui_loading_clear(showscr)
+  if showscr ~= nil then pcall(display.changescreen, showscr) end
+  if sdec.ui_loadscr == nil then return false end
+  sdec.del_obj(sdec.ui_loadtxt)
+  sdec.del_obj(sdec.ui_loadscr)
+  sdec.ui_loadtxt, sdec.ui_loadscr = nil, nil
+  return true
+end
+
 -- Build the main screen: status fields, dump rows, rules and buttons.
-function sdec.ui_build()
+--   [...]
+-- the tests, the bench harness, a rebuild by hand -- gets a build that cleans up after itself, which
+-- is what the leak census demands: a cover left standing is two live objects the pool never reclaims
+-- and a panel showing "Loading, please wait..." with nothing coming.
+function sdec.ui_build(hold)
   sdec.ui_destroy()
   sdec.ui_invalidate()
 
@@ -4977,6 +5021,8 @@ function sdec.ui_build()
     error('display object pool exhausted -- power cycle the instrument. (The firmware posts '
           .. 'event 1701 only once, then display.create returns nil silently.)', 0)
   end
+
+  sdec.ui_loading_raise()
 
   sdec.ui_rule = {}
   local nr = 0
@@ -5179,6 +5225,8 @@ function sdec.ui_build()
     error(string.format('only %d of %d buttons could be created -- display object pool exhausted. '
                         .. 'Power cycle the instrument.', nb or 0, table.getn(bdef) or 0), 0)
   end
+
+  if not hold then sdec.ui_loading_clear(sdec.ui_scr) end
 
   return sdec.ui_scr
 end
@@ -5699,6 +5747,8 @@ function sdec.build_options()
     error('display object pool exhausted building the options screen -- power cycle the '
           .. 'instrument.', 0)
   end
+
+  sdec.ui_loading_front()
 
   if pl.n >= 3 then
     local fx1, fy1 = nextpos()
@@ -7729,11 +7779,11 @@ function sdec.start()
               .. 'parity auto, polarity auto, trigger Start bit, rear BNC off')
 
     sdec.cancel_setup()
-    sdec.ui_build()
+    sdec.ui_build(true)   -- hold the loading screen: build_options() is still to come
     sdec.install_cleanup(sdec.ui_scr)
     sdec.build_options()
 
-    display.changescreen(sdec.ui_scr)
+    sdec.ui_loading_clear(sdec.ui_scr)
     sdec.ui_status = 'ready -- press Capture'
     sdec.ui_refresh()
   end)

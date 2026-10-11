@@ -43,9 +43,20 @@ function display.create(parent, kind, a, b, c, d, e, f, g, h, i, j, k, l, m, n)
   if kind == display.OBJ_BUTTON and d ~= nil and (d < 1 or d > 799) then return nil end
   nobj = nobj + 1
   local o = {id = nobj, kind = kind, parent = parent, alive = true}
+  -- WHICH SCREEN WAS IN FRONT WHEN THIS OBJECT WAS CREATED, recorded because it is the only way to
+  -- test that a build happened out of sight. The operator can see the screens assembling, so an
+  -- assertion on the finished screen cannot tell a hidden build from a visible one -- only the
+  -- active screen AT CREATION TIME distinguishes them.
+  o.created_while_active = active
   if kind == display.OBJ_SCREEN then
     o.title = a
     SCREENS[table.getn(SCREENS) + 1] = o
+    -- CREATING A SCREEN MAKES IT THE ACTIVE ONE, mirroring the firmware. This mock used to leave
+    -- `active` alone, which made the defect unreproducible offline: the app creates its main screen,
+    -- populates it, then creates the OPTIONS screen and populates that, and the operator sees both
+    -- being drawn -- which can only happen if the create itself brought each one to the front. The
+    -- app's own display.changescreen(ui_scr) runs after both builds, so nothing else could have.
+    active = nobj
   elseif kind == display.OBJ_TEXT then
     o.x, o.y, o.text, o.color, o.font, o.just = a, b, c, d, e, f
   elseif kind == display.OBJ_BUTTON then
@@ -79,6 +90,14 @@ function display.delete(id)
   for k, c in pairs(OBJ) do if c.parent == id then c.alive = false end end
 end
 function display.changescreen(id) active = id end
+
+-- MOCK-ONLY INSPECTION, and the `mock_` prefix is the whole point: these do not exist on the
+-- instrument, so anything in tsp/ that calls one works offline and dies on the box. OBJ and `active`
+-- are locals precisely so the app cannot reach them, but a test must -- the evidence that a screen was
+-- built out of sight is per-object and lives nowhere else.
+function display.mock_active() return active end
+function display.mock_obj(id) return OBJ[id] end
+function display.mock_nobj() return nobj end
 function display.settext(id, s)
   local o = OBJ[id]
   if o == nil or not o.alive then error('settext on a dead object', 0) end

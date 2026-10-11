@@ -140,9 +140,20 @@ function display.create(parent, kind, a, b, c, d, e, f, g, h, i, j, k, l, m, n)
     error('y=' .. tostring(o.y) .. ' outside 0..420', 0)
   end
 
+  -- WHICH SCREEN WAS IN FRONT WHEN THIS OBJECT WAS MADE. Recorded because it is the only evidence
+  -- that distinguishes a screen built out of sight from one built in full view: both are identical
+  -- once finished, so every assertion on the RESULT is blind to the difference.
+  o.created_while_active = display.active
+
   nextid = nextid + 1
   o.id = nextid
   OBJ[nextid] = o
+  -- CREATING A SCREEN MAKES IT THE ACTIVE ONE, mirroring the firmware -- which is why the operator
+  -- could watch this app assemble itself. ui_build() creates the main screen and fills it,
+  -- build_options() creates the options screen (taking the front) and fills that, and start() only
+  -- calls changescreen(ui_scr) afterwards. Confirmed on the instrument: the options screen is visible
+  -- while it is populated, and nothing but the create could have brought it forward.
+  if kind == display.OBJ_SCREEN then display.active = nextid end
   return nextid
 end
 

@@ -3985,12 +3985,16 @@ function sdec.start()
     -- per run. Inside the build guard because a failure here must not cost the screen -- it
     -- cannot fail, being one pcall deep already, but the guard costs nothing to keep.
     sdec.cancel_setup()
-    sdec.ui_build()
+    sdec.ui_build(true)   -- hold the loading screen: build_options() is still to come
     -- Hook End App as soon as a screen exists, before anything that could fail.
     sdec.install_cleanup(sdec.ui_scr)
     sdec.build_options()
 
-    display.changescreen(sdec.ui_scr)
+    -- THE MAIN SCREEN GOES IN FRONT AND THE LOADING SCREEN GOES AWAY, in that order, which is why
+    -- this is one call and not two statements: deleting the screen that is currently displayed
+    -- leaves the panel showing nothing. ui_build() raised the loading screen and build_options()
+    -- re-raised it, so until here the operator has seen neither screen being assembled.
+    sdec.ui_loading_clear(sdec.ui_scr)
     sdec.ui_status = 'ready -- press Capture'
     sdec.ui_refresh()
   end)
