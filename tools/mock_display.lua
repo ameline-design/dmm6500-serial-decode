@@ -171,6 +171,12 @@ function display.delete(h)
   -- deletes left both suites at full marks, because the finished state is identical either way and
   -- only the order differs. The window it opens is a panel displaying a deleted object, which on the
   -- instrument is not recoverable from the front panel. MD.blanked() is the only evidence of it.
+  -- AND PER OBJECT, which is the form that actually catches it. A counter compares against whatever
+  -- happens to be in front at the moment of the delete, and a mutant that deletes the cover AFTER
+  -- something else has taken the front scores zero -- measured: the order mutant survived a counter.
+  -- Recorded on the object, a test can ask the one question that matters for THAT object: was the
+  -- panel showing it when it died?
+  o.active_at_delete = display.active
   if h == display.active then BLANKED = BLANKED + 1 end
   o.alive = false
   o.gone = 'explicit'

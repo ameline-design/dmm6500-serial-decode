@@ -10290,6 +10290,94 @@ end)()
   check('and the loading screen was DELETED, not merely dropped -- a lost handle sticks until a '
         .. 'power cycle', cover ~= nil and cover.alive == false,
         cover ~= nil and tostring(cover.alive) or 'nil')
+  -- SWITCH FIRST, DELETE SECOND, asked of the cover itself. A count of deletes aimed at whatever was
+  -- in front does NOT catch this: by the time a mis-ordered clear deletes the cover, the switch it
+  -- performed too early has already moved the panel elsewhere, so the counter scores zero and the
+  -- mutant survives. The question has to be per object -- was the panel showing THIS object when it
+  -- died -- which is why the mock records it on the object.
+  check('the panel was not showing the cover when the cover was deleted',
+        cover ~= nil and cover.active_at_delete ~= hidden_id,
+        cover ~= nil and ('active_at_delete=' .. tostring(cover.active_at_delete)
+                          .. ' cover=' .. tostring(hidden_id)) or 'nil')
+
+  -- THE OPTIONS BUTTON PATH, which is a different owner of the cover. During a launch start() holds
+  -- one and build_options only takes the front back; pressed by hand on a session whose form was
+  -- destroyed, build_options has to raise its own -- and that path built all 13 objects in full view
+  -- until it did. Reached here by destroying the form and rebuilding it, which is what options() does.
+  sdec.destroy_options()
+  local optbefore = display.active
+  sdec.build_options()
+  local nopt, noptvis = 0, 0
+  for i = 1, MD.nobj() do
+    local o = MD.obj(i)
+    if o ~= nil and o.alive and o.kind ~= display.OBJ_SCREEN and o.parent == sdec.optscr then
+      nopt = nopt + 1
+      if o.created_while_active == sdec.optscr then noptvis = noptvis + 1 end
+    end
+  end
+  check('a form built on demand creates objects, so the next check is not vacuous', nopt > 5,
+        nopt .. ' object(s)')
+  check('and NONE of them was created while the options screen was in front',
+        noptvis == 0, noptvis .. ' of ' .. nopt .. ' drawn in view, active before='
+        .. tostring(optbefore))
+  check('the form is in front afterwards, since that is what a press asked for',
+        display.active == sdec.optscr,
+        'active=' .. tostring(display.active) .. ' optscr=' .. tostring(sdec.optscr))
+  check('and the on-demand cover was cleaned up too',
+        sdec.ui_loadscr == nil and sdec.ui_loadtxt == nil,
+        tostring(sdec.ui_loadscr) .. ',' .. tostring(sdec.ui_loadtxt))
+
+  -- SWITCH FIRST, DELETE SECOND, AND THIS IS THE PATH THAT CAN ACTUALLY BREAK IT. In the launch the
+  -- cover has already been displaced by the time start() clears it, so a mis-ordered clear deletes a
+  -- screen nobody is looking at and no assertion can see the difference. Here the cover IS in front
+  -- when build_options clears it, so the order is observable -- and the order mutant survives every
+  -- other check in this file.
+  local optcover = nil
+  for i = 1, MD.nobj() do
+    local o = MD.obj(i)
+    if o ~= nil and o.kind ~= display.OBJ_SCREEN and o.parent == sdec.optscr
+       and o.created_while_active ~= sdec.optscr then
+      optcover = o.created_while_active
+    end
+  end
+  local oc = optcover ~= nil and MD.obj(optcover) or nil
+  check('the on-demand cover was a screen that got deleted', oc ~= nil and oc.alive == false,
+        tostring(optcover))
+  check('and the panel was NOT showing it when it was deleted -- the switch came first',
+        oc ~= nil and oc.active_at_delete ~= optcover,
+        oc ~= nil and ('active_at_delete=' .. tostring(oc.active_at_delete)
+                       .. ' cover=' .. tostring(optcover)) or 'nil')
+
+  -- CLEARING WITH NO ARGUMENT, which no in-tree caller does and which used to delete the screen in
+  -- front and leave the panel on a dead object. SCREEN_HOME is the fallback because the instrument's
+  -- own screen is always recoverable and a deleted one never is.
+  sdec.ui_destroy()
+  sdec.ui_scr = nil
+  local bare = sdec.ui_loading_raise()
+  local barescr = sdec.ui_loadscr
+  sdec.ui_loading_clear()
+  local bo = barescr ~= nil and MD.obj(barescr) or nil
+  check('ui_loading_clear() with no screen named leaves the panel on SCREEN_HOME, not on a corpse',
+        bare and bo ~= nil and bo.alive == false and display.active == display.SCREEN_HOME
+          and bo.active_at_delete ~= barescr,
+        bo ~= nil and ('alive=' .. tostring(bo.alive) .. ' active=' .. tostring(display.active)
+                       .. ' at_delete=' .. tostring(bo.active_at_delete)) or 'raise failed')
+
+  -- THE ui_destroy GATE, which no normal sequence reaches: a teardown with a live cover and no main
+  -- screen. ui_loading_raise's only caller runs after ui_scr exists, so the state has to be built by
+  -- hand -- and that is the point, because the gate goes live the first time a cover is raised
+  -- anywhere else and nothing would have noticed.
+  sdec.ui_destroy()
+  sdec.ui_scr = nil
+  local lone = sdec.ui_loading_raise()
+  local lonescr = sdec.ui_loadscr
+  sdec.ui_destroy()
+  local lo = lonescr ~= nil and MD.obj(lonescr) or nil
+  check('a cover raised with no main screen still gets left before it is deleted',
+        lone and lo ~= nil and lo.alive == false and lo.active_at_delete ~= lonescr,
+        lo ~= nil and ('alive=' .. tostring(lo.alive) .. ' active_at_delete='
+                       .. tostring(lo.active_at_delete) .. ' cover=' .. tostring(lonescr))
+          or 'raise failed')
   check('its handles are nil, so a rebuild cannot delete them twice',
         sdec.ui_loadscr == nil and sdec.ui_loadtxt == nil,
         tostring(sdec.ui_loadscr) .. ',' .. tostring(sdec.ui_loadtxt))
