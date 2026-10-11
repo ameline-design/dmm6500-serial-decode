@@ -10549,18 +10549,172 @@ end)()
     check('...which is its whole byte cap rather than a pinned share of it',
           n >= math.floor(big.cap * 10 * (fs / 9600)),
           string.format('%d readings = %.1f bytes of %d', n, n / (10 * (fs / 9600)), big.cap))
-    -- A MEASURED BOUND, NOT A DOCUMENTED ONE: with defbuffer1 and defbuffer2 at their 100 000
-    -- defaults, buffer.make(3000000, buffer.STYLE_STANDARD) is granted and reads capacity 3000000
-    -- back, and a further buffer.make(4000000) beside it is refused with event 4919, "Available
-    -- capacity for all reading buffers exceeded, remaining capacity is 3857490 readings". That
-    -- figure is what remains NEXT TO a live 3 000 000-reading buffer, so as a bound on one capture
-    -- buffer it is conservative by everything else allocated -- and a raise past it is a raise past
-    -- the largest allocation anyone has watched the instrument grant.
-    check('ck_bufmax stays inside the measured remaining capacity -- event 4919',
-          sdec.ck_bufmax <= 3857490,
-          string.format('ck_bufmax %d vs 3857490 measured', sdec.ck_bufmax))
+    -- A MEASURED BOUND, NOT A DOCUMENTED ONE. 7 080 255 readings is the operator's measurement of
+    -- the whole reading memory, across all buffers together, and the two default buffers at their
+    -- 100 000 defaults leave 6 880 255 of it -- so that, and not the ceiling itself, is what a
+    -- future raise has to stay under.
+    --
+    -- A CAPACITY PROBE THAT ALLOCATES BEFORE IT ASKS MEASURES ITS OWN FOOTPRINT, which is the trap
+    -- that made this number wrong twice. buffer.make(3000000) is granted and the buffer.make(4000000)
+    -- after it reports event 4919 "remaining capacity is 3879330 readings" -- the total less the
+    -- defbuffers less the undeleted 3 000 000 the probe itself holds, not the total less the
+    -- defbuffers. 3 879 330 + 3 000 000 + 200 000 = 7 079 330 recovers the figure above.
+    check('ck_bufwant stays under the measured total less the two defbuffers',
+          sdec.ck_bufwant <= sdec.ck_bufpool - 200000,
+          string.format('%d vs %d', sdec.ck_bufwant, sdec.ck_bufpool - 200000))
+    -- AND 3 000 000 IS THE ONE SIZE WATCHED TO ALLOCATE, so the app must never derive a ceiling
+    -- that cannot ask for it where the defbuffers are at their defaults. Above 3 000 000 the
+    -- ceiling rests on the pool figure rather than on that observation, which is what the margin
+    -- and the 6 000 000 guard are for.
+    check('...and at the default capacities the ceiling still covers the measured 3 000 000',
+          sdec.bufmax_for() >= 3000000, string.format('%d', sdec.bufmax_for()))
     sdec.force_baud, sdec.force_nbits, sdec.force_par, sdec.force_nstop = kb, knb, kpar, kns
   end
+end)()
+
+-- ---------------------------------------------------------------------------
+-- THE CEILING COMES FROM THE LIVE DEFBUFFERS, because they are the operator's to resize and the
+-- reading memory is one pool. 7 080 255 readings less defbuffer1 less defbuffer2 less a margin is
+-- what a recording can have; a static constant is only right while both are at 100 000.
+--
+-- AND THE APP ADAPTS RATHER THAN RESIZING. Resizing a reading buffer discards its contents, and
+-- defbuffer1 is the default active buffer, so it may hold the operator's own measurements -- so a
+-- large defbuffer1 shortens the recording window and never gets shrunk to make room. Below the
+-- smallest recording mode the launch refuses instead, which is the one failure the operator should
+-- not meet three screens in.
+-- ---------------------------------------------------------------------------
+;(function()
+  local kwant, kbufmax = sdec.ck_bufwant, sdec.ck_bufmax
+  local kb = sdec.force_baud
+  local med, sml
+  local mi
+  for mi = 1, sdec.ui_modes.n do
+    if sdec.ui_modes[mi].id == 'med' then med = sdec.ui_modes[mi] end
+    if sdec.ui_modes[mi].id == 'sml' then sml = sdec.ui_modes[mi] end
+  end
+  sdec.force_baud = 9600
+
+  GEN_DEFBUF(100000, 100000)
+  check('at the shipped capacities the derived ceiling is what the largest mode needs',
+        sdec.bufmax_for() == 3700000 and sdec.ck_bufwant == 3700000,
+        string.format('%d, want %d', sdec.bufmax_for(), sdec.ck_bufwant))
+
+  -- THE FLOOR IS THE SMALLEST MODE'S OWN ARITHMETIC, asserted against the function that sizes it
+  -- rather than against the constant: 8192 bytes x 10 framebits x (100000/9600) = 853 334 readings
+  -- and a capacity of ceil(n x 100/95) + 100 = 898 347. A floor that drifted from what
+  -- stream_samples asks for would refuse launches that would have worked, or admit launches that
+  -- then fail at the first press.
+  do
+    local fs = sdec.fs_for_burst(9600, sml)
+    local n = sdec.stream_samples(sml, fs)
+    check('the launch floor is the 8 kB mode capacity at 9600, derived not declared',
+          sdec.ck_bufmin == math.ceil(n * 100 / 95) + 100,
+          string.format('ck_bufmin %d vs %d for %d readings at %s S/s', sdec.ck_bufmin,
+                        math.ceil(n * 100 / 95) + 100, n, tostring(fs)))
+  end
+
+  -- A DEFBUFFER THE OPERATOR ENLARGED. 7 080 255 - 5 000 000 - 100 000 - 50 000 = 1 930 255, which
+  -- still records: the 32 kB mode simply takes a shorter window at a rate its buffer can hold.
+  GEN_DEFBUF(5000000, 100000)
+  do
+    local n, bigname, bigcap = sdec.bufmax_for()
+    check('defbuffer1 at 5 000 000 derives the pool remainder, not the static ceiling',
+          n == 7080255 - 5000000 - 100000 - 50000 and bigname == 'defbuffer1'
+          and bigcap == 5000000,
+          string.format('%d, %s at %s', n, tostring(bigname), tostring(bigcap)))
+    sdec.ck_bufmax = n
+    local fs = sdec.fs_for_burst(9600, med)
+    local ns = sdec.stream_samples(med, fs)
+    check('...and a 32 kB capture still SIZES against it rather than refusing',
+          fs ~= nil and ns ~= nil and ns > 0 and ns <= n,
+          string.format('%s readings at %s S/s, ceiling %d', tostring(ns), tostring(fs), n))
+    check('...shorter than the mode asked for, which is the adaptation rather than a failure',
+          ns < 3413334, string.format('%s of 3413334', tostring(ns)))
+  end
+
+  -- THE OPERATOR'S 6 000 000 CASE, which is the one that settles the advice in the refusal: at
+  -- 930 255 readings the 8 kB mode's 898 347 still fits, so the app comes up and records.
+  GEN_DEFBUF(6000000, 100000)
+  do
+    local n, bigname, bigcap = sdec.bufmax_for()
+    check('defbuffer1 at 6 000 000 leaves 930 255, above the launch floor',
+          n == 930255 and n >= sdec.ck_bufmin,
+          string.format('%d vs floor %d', n, sdec.ck_bufmin))
+    check('...and the larger buffer is named as defbuffer1, not defbuffer2',
+          bigname == 'defbuffer1' and bigcap == 6000000,
+          string.format('%s at %s', tostring(bigname), tostring(bigcap)))
+    sdec.ck_bufmax = n
+    local fss = sdec.fs_for_burst(9600, sml)
+    local nsml = sdec.stream_samples(sml, fss)
+    check('...the 8 kB mode still sizes its full byte ceiling there',
+          nsml == 853334 and math.ceil(nsml * 100 / 95) + 100 <= n,
+          string.format('%s readings, capacity %d, ceiling %d', tostring(nsml),
+                        math.ceil((nsml or 0) * 100 / 95) + 100, n))
+    local nmed = sdec.stream_samples(med, sdec.fs_for_burst(9600, med))
+    check('...and the 32 kB mode shortens instead of refusing',
+          nmed ~= nil and nmed > 0 and nmed < 3413334,
+          string.format('%s readings of 3413334', tostring(nmed)))
+  end
+
+  -- THE REFUSAL THE SOAK DEPENDS ON: it RETURNS, naming the buffer that is actually large, and
+  -- nothing waits for a press. A dialog that needed dismissing would stop an unattended run and say
+  -- nothing about why, so the refusal goes to the caller and the operator's copy is the USB log
+  -- line, the note row and sdec.lasterr.
+  GEN_DEFBUF(100000, 6500000)
+  do
+    local keepbuilt, keeperr = sdec.built, sdec.lasterr
+    sdec.built, sdec.lasterr = false, nil
+    local ok, why = sdec.start()
+    check('a launch with no room for the smallest recording REFUSES, and returns to do it',
+          ok == false and type(why) == 'string', string.format('%s / %s', tostring(ok),
+                                                               type(why)))
+    check('...naming defbuffer2, its size, and that the app will not resize it',
+          why ~= nil and string.find(why, 'defbuffer2', 1, true) ~= nil
+          and string.find(why, '6500000', 1, true) ~= nil
+          and string.find(why, 'discards its readings', 1, true) ~= nil,
+          tostring(why))
+    check('...with the same text on sdec.lasterr for the note row to show',
+          sdec.lasterr == why, tostring(sdec.lasterr))
+    check('...and it refused BEFORE the build, so sdec.built is untouched',
+          sdec.built == false, tostring(sdec.built))
+    sdec.built, sdec.lasterr = keepbuilt, keeperr
+  end
+
+  -- DEGRADE, DO NOT RAISE: a meter that will not report its own buffer sizes must still record, so
+  -- the fallback is the static ceiling and never anything larger.
+  GEN_DEFBUF(nil)
+  do
+    local n, bigname = sdec.bufmax_for()
+    check('with the capacities unreadable it falls back to the static ceiling and names nothing',
+          n == sdec.ck_bufwant and bigname == nil,
+          string.format('%d, big=%s', n, tostring(bigname)))
+  end
+
+  -- THE 6 000 000 GUARD IS DORMANT BY CONSTRUCTION, because what the largest mode needs is already
+  -- below it. It binds only on a future raise of ck_bufwant, which is the case it exists for, so
+  -- seeing it work means raising that first -- a guard nothing can reach is a guard nobody has run.
+  GEN_DEFBUF(100000, 100000)
+  do
+    sdec.ck_bufwant = 6500000
+    check('a ck_bufwant past 6 000 000 is held at the guard, not at the pool remainder',
+          sdec.bufmax_for() == 6000000,
+          string.format('%d with want %d', sdec.bufmax_for(), sdec.ck_bufwant))
+    -- AND THE THIRD TERM BINDS WHERE THE GUARD CANNOT REACH IT. At the shipped capacities the pool
+    -- leaves 6 830 255, which is above the guard, so the live capacities only win once a default
+    -- buffer is large enough to take the remainder below 6 000 000.
+    GEN_DEFBUF(2000000, 100000)
+    check('...and past the guard the live capacities win, which is the third term of the min',
+          sdec.bufmax_for() == 7080255 - 2100000 - 50000,
+          string.format('%d', sdec.bufmax_for()))
+    sdec.ck_bufwant = kwant
+  end
+
+  sdec.ck_bufwant, sdec.ck_bufmax, sdec.force_baud = kwant, kbufmax, kb
+  GEN_DEFBUF(100000, 100000)
+  check('and the suite leaves the ceiling and the capacities as it found them',
+        sdec.ck_bufmax == kbufmax and sdec.ck_bufwant == kwant
+        and defbuffer1.capacity == 100000 and defbuffer2.capacity == 100000,
+        string.format('%d / %d', sdec.ck_bufmax, sdec.ck_bufwant))
 end)()
 
 print()

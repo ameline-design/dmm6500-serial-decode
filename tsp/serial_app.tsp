@@ -759,14 +759,37 @@ function sdec.stream_begin()
       nsmp = math.floor(cap * (100 - sdec.pretrig) / 100)
     end
   end
-  -- THE READING CEILING IS ONE POOL FOR ALL BUFFERS TOGETHER -- 7 057 490 readings measured, event
-  -- 4919 "Available capacity for all reading buffers exceeded" -- so buffer.make() at these sizes
-  -- can need defbuffer2 shrunk first, which is what the refusal below says.
+  -- THE READING CEILING IS 7 080 255 READINGS FOR ALL BUFFERS TOGETHER, measured, and event 4919
+  -- "Available capacity for all reading buffers exceeded" is what a request past it files -- so
+  -- buffer.make() at these sizes can need a default buffer shrunk first, which is what the refusal
+  -- below asks for.
   -- A BARE CALL: acq_make_buffer() guards buffer.make() itself and leaves sdec.buf nil when the
   -- allocation was refused, which is the condition tested below.
   sdec.acq_make_buffer(cap)
   if sdec.buf == nil then
-    return false, string.format('cannot allocate %d readings -- shrink defbuffer2', cap or 0)
+    -- NAME THE BUFFER THAT IS ACTUALLY LARGE, and re-read it here rather than trusting what launch
+    -- saw: the capacities are the operator's to change mid-session, and this refusal is the one
+    -- place that catches a change made underneath. Sending them at defbuffer2 while defbuffer1
+    -- holds the readings is advice that fails the allocation a second time.
+    --
+    -- AND THE APP WILL NOT SHRINK IT ITSELF. Resizing a reading buffer DISCARDS ITS CONTENTS, and
+    -- defbuffer1 is the default active buffer, so it may hold the operator's own measurements. This
+    -- app saves and restores the measurement mode and the display, which are settings; buffer
+    -- contents are data, and trading them for a recording is not this app's call to make.
+    local _, bigname, bigcap = sdec.bufmax_for()
+    local why
+    if bigname ~= nil then
+      why = string.format('cannot allocate %d readings -- %s holds %d of the 7080255 the '
+                          .. 'instrument has. Shrink it yourself: this app will not, because '
+                          .. 'resizing a buffer discards its readings.',
+                          cap or 0, bigname, bigcap or 0)
+    else
+      why = string.format('cannot allocate %d readings, and the default buffer capacities could '
+                          .. 'not be read -- shrink defbuffer1 or defbuffer2', cap or 0)
+    end
+    sdec.lasterr = why
+    ulog.line('recording refused: ' .. why)
+    return false, why
   end
 
   -- LEARN THE LEVELS BEFORE THE LONG RECORDING: the idle watchdog needs a threshold, and
@@ -1893,23 +1916,83 @@ end
 -- READINGS THE LARGEST RECORDING MAY ASK FOR, AND WHAT IT BUYS IS THE RATE. The 32 kB mode at 9600
 -- records 32768 x 10 x (100000/9600) = 3 413 334 readings at 100 kS/s, and its CAPACITY -- the count
 -- plus the 5 % pre-trigger reserve plus the 100 readings of overshoot headroom, ceil(n x 100/95) + 100
--- -- is 3 593 084. 3 600 000 clears that by 6 916 readings, so fs_for_burst's per-mode bound admits
--- 100 kS/s and the mode keeps all 32 768 bytes; a ceiling under 3 593 084 admits only 80 kS/s, which
--- is 8.33 samples a bit against 10.42 for the same bytes. The 8 kB mode is a quarter of this and was
--- never bounded by it.
+-- -- is 3 593 084. 3 700 000 clears that by 106 916 readings, so fs_for_burst's per-mode bound --
+-- (3 700 000 - 100) x 100/105 = 3 523 714 readings, 10.75 samples a bit over 32 768 ten-bit frames --
+-- admits the 10.417 that 100 kS/s asks for, and the mode keeps all 32 768 bytes. A ceiling under
+-- 3 593 084 admits only 80 kS/s, which is 8.01 delivered samples a bit against 9.91 for the same
+-- bytes. The 8 kB mode is a quarter of this and is not bounded by it at any standard rate.
 --
--- MEASURED, AND THE READING MEMORY IS ONE POOL: with defbuffer1 and defbuffer2 at their 100 000
--- defaults, buffer.make(3000000, buffer.STYLE_STANDARD) is granted and reads capacity 3000000 back,
--- and a further buffer.make(4000000) BESIDE it is refused with event 4919, "Available capacity for
--- all reading buffers exceeded, remaining capacity is 3857490 readings". 3 000 000 + 200 000 +
--- 3 857 490 puts the pool at 7 057 490 readings, which is what 3 600 000 and the two defbuffers ask
--- just over half of. The refusal path below catches the allocation failing anyway, and it names
--- shrinking defbuffer2 because with one pool that is the remedy.
+-- 3 600 000 WOULD ALSO ADMIT 100 kS/s, by 6 916 readings, and that is too thin: the two sizing paths
+-- do not share their reserve arithmetic. The bound above divides by (100 + pretrig) while
+-- stream_begin's clamp multiplies by 100/(100 - pretrig), 8 571 readings apart at this size, so for a
+-- ceiling anywhere in [3 584 101, 3 593 087] the rate is admitted and the capacity is then pinned.
+-- The 107 000 readings here are what puts the constant clear of that window rather than beside it.
+sdec.ck_bufwant = 3700000
+
+-- AND THE LIVE CEILING, which start() recomputes from the capacities the operator actually has set.
+-- Initialised to the static need, because a caller that never ran start() -- the offline suite, a
+-- socket session driving one capture -- still has to have a number. bufmax_for() reads ck_bufwant and
+-- never this field, so a launch under a large defbuffer1 cannot ratchet the ceiling down for the next
+-- one.
+sdec.ck_bufmax = sdec.ck_bufwant
+
+-- THE INSTRUMENT'S WHOLE READING MEMORY, ACROSS ALL BUFFERS TOGETHER. Operator-measured on a freshly
+-- power-cycled meter with nothing loaded; the last three digits are uncertain and the figure is not.
+sdec.ck_bufpool = 7080255
+
+-- AND A PROBE THAT ALLOCATES BEFORE IT ASKS MEASURES ITS OWN FOOTPRINT, which is the trap that cost
+-- two readings of the pool. With the defbuffers at their 100 000 defaults, buffer.make(3000000) is
+-- granted and a further buffer.make(4000000) is then refused with event 4919, "Available capacity for
+-- all reading buffers exceeded, remaining capacity is 3879330 readings" -- and that residual is the
+-- pool less the defbuffers less the 3 000 000 THE PROBE ITSELF HOLDS, which pcall(buffer.delete) had
+-- not yet freed: 3 879 330 + 3 000 000 + 200 000 = 7 079 330, within 925 of the figure above. Read as
+-- the pool it understates it by everything live at the time. 3 000 000 is separately worth knowing as
+-- the largest single allocation the instrument has been watched to grant.
 --
--- RAISING THIS FURTHER COSTS NOTHING UNTIL ~6.8 M, where the pool minus the defbuffers runs out --
--- but it buys nothing either, because 100 kS/s is already the rate cap at 9600 and the modes above it
--- are not buffer-bound. tools/test_serial.lua asserts the 3 857 490 against a future raise.
-sdec.ck_bufmax = 3600000
+-- A CHOSEN MARGIN BELOW THE MEASUREMENT, not a second measurement. 6 000 000 is the hard guard: it is
+-- what the vendor's bufferVar.capacity documents, so a request under it is one the published figure
+-- also allows. ck_bufmargin covers what the pool figure does not pin down -- its uncertain last three
+-- digits, and the ~1 150-reading disagreement between two readings of the same pool, which is the
+-- per-buffer overhead the firmware takes and does not report. 50 000 readings is 0.7 % of the pool and
+-- 1.4 % of the ceiling, so it costs a 32 kB recording nothing and covers both by a wide factor.
+sdec.ck_bufguard = 6000000
+sdec.ck_bufmargin = 50000
+
+-- THE SMALLEST RECORDING THAT IS STILL A RECORDING, which is the floor start() refuses below. The
+-- 8 kB mode at 9600 and 100 kS/s is 8192 x 10 x (100000/9600) = 853 334 readings and a capacity of
+-- ceil(853334 x 100/95) + 100 = 898 347. Below that the smallest byte-capped mode cannot be sized at
+-- the rate it would pick, so every Capture press would end in the allocation refusal -- and the
+-- operator would find that out three screens into the app rather than at launch.
+sdec.ck_bufmin = 898347
+
+-- THE CEILING THE LIVE DEFBUFFERS LEAVE. ck_bufmax is what the largest mode needs; this is what the
+-- instrument can actually spare, and the two differ whenever the operator has resized a default
+-- buffer -- which is theirs to do. defbuffer1 at 6 000 000 leaves about 0.98 M, where the 8 kB mode
+-- still sizes and the 32 kB mode simply records a shorter window.
+--
+-- ONE pcall FOR BOTH READS, and it belongs here: this is an outbound firmware boundary, which is
+-- where a guard is allowed, and the pcall BUDGET is a shipping constraint -- a launch capture
+-- bluescreens somewhere between 132 and 191 pcall sites, so a second guard for the second attribute
+-- would be two sites for one boundary. A meter that will not report its own buffer sizes must still
+-- record, so the fallback is the static ceiling and never a raise.
+--
+-- Returns the ceiling, then the NAME and CAPACITY of the larger default buffer -- which is what the
+-- refusals have to quote, because telling an operator to shrink defbuffer2 while defbuffer1 holds
+-- 6 000 000 sends them at the wrong one and the allocation fails again.
+function sdec.bufmax_for()
+  local ok, d1, d2 = pcall(function() return defbuffer1.capacity, defbuffer2.capacity end)
+  if not ok or type(d1) ~= 'number' or type(d2) ~= 'number' then
+    return sdec.ck_bufwant, nil, nil
+  end
+  local bigname, bigcap = 'defbuffer1', d1
+  if d2 > d1 then bigname, bigcap = 'defbuffer2', d2 end
+  local n = sdec.ck_bufwant
+  if sdec.ck_bufguard < n then n = sdec.ck_bufguard end
+  local avail = sdec.ck_bufpool - d1 - d2 - sdec.ck_bufmargin
+  if avail < n then n = avail end
+  if n < 0 then n = 0 end
+  return n, bigname, bigcap
+end
 -- Samples to record for mode md at sample rate fs. Returns nil when the rate or the locked baud
 -- rate cannot size a capture.
 function sdec.stream_samples(md, fs)
@@ -3923,6 +4006,32 @@ end
 -- Returns false
 -- and a reason if a rebuild is refused or the build fails.
 function sdec.start()
+  -- THE RECORDING CEILING IS DECIDED FIRST, BEFORE THE REBUILD GUARD TEARS ANYTHING DOWN. A launch
+  -- that cannot size the smallest recording has nothing worth building, and refusing from here
+  -- leaves sdec.built and the screen exactly as they were -- refusing after the teardown would
+  -- leave built true over a UI that no longer exists.
+  --
+  -- ONCE PER LAUNCH, because the default buffer capacities are a session property and not a
+  -- per-capture one. A resize made afterwards is caught by stream_begin's refusal, which re-reads
+  -- them and names the buffer that is actually large.
+  --
+  -- AND IT RETURNS TO THE CALLER RATHER THAN PUTTING ANYTHING ON THE GLASS. This app is driven
+  -- headless over the socket by tools/bench_matrix.py, tools/bench_panel.py and the soak engine; a
+  -- refusal that waited for a press would stop an unattended run with nothing to say why. The
+  -- operator's copy of this is the USB log line below, the note row, and sdec.lasterr.
+  sdec.ck_bufmax, sdec.ck_bigbuf, sdec.ck_bigcap = sdec.bufmax_for()
+  if sdec.ck_bufmax < sdec.ck_bufmin then
+    local why = string.format('%d readings left for a recording and the smallest mode needs %d: '
+                              .. '%s holds %d of the %d the instrument has. Shrink it yourself: '
+                              .. 'this app will not, because resizing a buffer discards its '
+                              .. 'readings.',
+                              sdec.ck_bufmax, sdec.ck_bufmin,
+                              sdec.ck_bigbuf or 'a default buffer',
+                              sdec.ck_bigcap or 0, sdec.ck_bufpool)
+    sdec.lasterr = why
+    ulog.line('start refused: ' .. why)
+    return false, why
+  end
   -- ONE BUILD PER POWER CYCLE UNLESS THE TEARDOWN WAS CLEAN, and this is where a second one is
   -- refused. A second ui_build() over live objects crashes the firmware hard enough to need the
   -- front-panel POWER button, which costs a reboot and a reinstall.
@@ -3975,6 +4084,21 @@ function sdec.start()
     -- just opens. See THE DIRECTORY in usb_log.tsp for why there is no cheaper way to ask.
     ulog.ensuredir()
     ulog.open(sdec.logpath)
+
+    -- THE DERIVED CEILING, LOGGED BECAUSE A SHORT RECORDING IS OTHERWISE UNEXPLAINABLE AFTER THE
+    -- FACT. Decided before the build, above, and written here because this is the first point at
+    -- which there is a log to write it to. A recording shorter than the operator expected is a
+    -- consequence of a capacity they set in another screen, possibly in another session, and this
+    -- line is the only record that connects the two.
+    if sdec.ck_bigbuf == nil then
+      ulog.line(string.format('recording ceiling: %d readings -- the default buffer capacities '
+                              .. 'could not be read, so this is the static ceiling',
+                              sdec.ck_bufmax))
+    else
+      ulog.line(string.format('recording ceiling: %d readings of %d, %s at %d, margin %d',
+                              sdec.ck_bufmax, sdec.ck_bufpool, sdec.ck_bigbuf,
+                              sdec.ck_bigcap, sdec.ck_bufmargin))
+    end
 
     -- BEFORE ANYTHING TOUCHES THE DIGITIZER, and after the rebuild guard above rather than before
     -- it: on a rebuild that guard runs cleanup(), which restores the entry mode and clears the

@@ -1191,7 +1191,7 @@ sdec.sabit_max = 12
 
 -- `md` IS OPTIONAL AND BOUNDS THE BOOST BY WHAT THE BUFFER CAN AFFORD. A byte-capped mode holds
 --   [...]
--- bit and the 8 kB mode four times that, which is more than the 100 kS/s rate cap asks for at 9600,
+-- asks for at 9600,
 -- so the bound binds only for a frame format forced wider than ten bits. A caller with no mode in
 -- hand simply gets the unbounded answer.
 function sdec.fs_for_burst(baud, md)
@@ -3370,7 +3370,7 @@ end
 -- ONE contiguous level probe, k = 0..ck_probes-1, spaced evenly across the recording.
 --   [...]
 -- SPACED ACROSS the recording, not just the head: reading only the first window covered
--- 20 000 of 3 600 000 possible burst positions, 0.6 %. The decimated view is still tried
+-- 20 000 of 3 700 000 possible burst positions, 0.5 %. The decimated view is still tried
 -- FIRST, so the drift property that motivated decimation is untouched.
 function sdec.ck_levels_probe(reader, ntotal, win, k)
   if reader == nil then return false end
@@ -6234,7 +6234,20 @@ function sdec.stream_begin()
   end
   sdec.acq_make_buffer(cap)
   if sdec.buf == nil then
-    return false, string.format('cannot allocate %d readings -- shrink defbuffer2', cap or 0)
+    local _, bigname, bigcap = sdec.bufmax_for()
+    local why
+    if bigname ~= nil then
+      why = string.format('cannot allocate %d readings -- %s holds %d of the 7080255 the '
+                          .. 'instrument has. Shrink it yourself: this app will not, because '
+                          .. 'resizing a buffer discards its readings.',
+                          cap or 0, bigname, bigcap or 0)
+    else
+      why = string.format('cannot allocate %d readings, and the default buffer capacities could '
+                          .. 'not be read -- shrink defbuffer1 or defbuffer2', cap or 0)
+    end
+    sdec.lasterr = why
+    ulog.line('recording refused: ' .. why)
+    return false, why
   end
 
   sdec.ck_watch = false
@@ -6755,7 +6768,36 @@ function sdec.progress_samples(have, want)
   return sdec.progress_row()
 end
 
-sdec.ck_bufmax = 3600000
+sdec.ck_bufwant = 3700000
+
+sdec.ck_bufmax = sdec.ck_bufwant
+
+sdec.ck_bufpool = 7080255
+
+sdec.ck_bufguard = 6000000
+sdec.ck_bufmargin = 50000
+
+sdec.ck_bufmin = 898347
+
+-- THE CEILING THE LIVE DEFBUFFERS LEAVE. ck_bufmax is what the largest mode needs; this is what the
+--   [...]
+-- Returns the ceiling, then the NAME and CAPACITY of the larger default buffer -- which is what the
+-- refusals have to quote, because telling an operator to shrink defbuffer2 while defbuffer1 holds
+-- 6 000 000 sends them at the wrong one and the allocation fails again.
+function sdec.bufmax_for()
+  local ok, d1, d2 = pcall(function() return defbuffer1.capacity, defbuffer2.capacity end)
+  if not ok or type(d1) ~= 'number' or type(d2) ~= 'number' then
+    return sdec.ck_bufwant, nil, nil
+  end
+  local bigname, bigcap = 'defbuffer1', d1
+  if d2 > d1 then bigname, bigcap = 'defbuffer2', d2 end
+  local n = sdec.ck_bufwant
+  if sdec.ck_bufguard < n then n = sdec.ck_bufguard end
+  local avail = sdec.ck_bufpool - d1 - d2 - sdec.ck_bufmargin
+  if avail < n then n = avail end
+  if n < 0 then n = 0 end
+  return n, bigname, bigcap
+end
 -- Samples to record for mode md at sample rate fs. Returns nil when the rate or the locked baud
 -- rate cannot size a capture.
 function sdec.stream_samples(md, fs)
@@ -7821,6 +7863,19 @@ end
 -- Returns false
 -- and a reason if a rebuild is refused or the build fails.
 function sdec.start()
+  sdec.ck_bufmax, sdec.ck_bigbuf, sdec.ck_bigcap = sdec.bufmax_for()
+  if sdec.ck_bufmax < sdec.ck_bufmin then
+    local why = string.format('%d readings left for a recording and the smallest mode needs %d: '
+                              .. '%s holds %d of the %d the instrument has. Shrink it yourself: '
+                              .. 'this app will not, because resizing a buffer discards its '
+                              .. 'readings.',
+                              sdec.ck_bufmax, sdec.ck_bufmin,
+                              sdec.ck_bigbuf or 'a default buffer',
+                              sdec.ck_bigcap or 0, sdec.ck_bufpool)
+    sdec.lasterr = why
+    ulog.line('start refused: ' .. why)
+    return false, why
+  end
   if sdec.built then
     sdec.cleanup()
     local left = 0
@@ -7843,6 +7898,16 @@ function sdec.start()
     ulog.tag = 'SDEC'
     ulog.ensuredir()
     ulog.open(sdec.logpath)
+
+    if sdec.ck_bigbuf == nil then
+      ulog.line(string.format('recording ceiling: %d readings -- the default buffer capacities '
+                              .. 'could not be read, so this is the static ceiling',
+                              sdec.ck_bufmax))
+    else
+      ulog.line(string.format('recording ceiling: %d readings of %d, %s at %d, margin %d',
+                              sdec.ck_bufmax, sdec.ck_bufpool, sdec.ck_bigbuf,
+                              sdec.ck_bigcap, sdec.ck_bufmargin))
+    end
 
     if sdec.mode_save() then
       ulog.line('entry mode: ' .. tostring(sdec.entrymode.side) .. ' '

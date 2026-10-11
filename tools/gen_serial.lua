@@ -828,6 +828,23 @@ function buffer.delete(b)
   b.alive = false
 end
 
+-- THE TWO DEFAULT BUFFERS, with a capacity that can be read. sdec.bufmax_for() derives the recording
+-- ceiling from these, so without them the derived path is unreachable offline and only the fallback
+-- would ever run. 100 000 each is what the instrument ships with.
+--
+-- GEN_DEFBUF(d1, d2) sets both capacities. GEN_DEFBUF(nil) removes the objects, which makes reading
+-- either capacity RAISE -- the fallback branch, and the honest shape for it: a meter that does not
+-- present these attributes is the case the pcall is there for.
+defbuffer1 = {capacity = 100000}
+defbuffer2 = {capacity = 100000}
+function GEN_DEFBUF(d1, d2)
+  if d1 == nil then
+    defbuffer1, defbuffer2 = nil, nil
+  else
+    defbuffer1, defbuffer2 = {capacity = d1}, {capacity = d2 or 100000}
+  end
+end
+
 -- The waveform the mocked digitizer hands back. Tests set SRC before calling into
 -- the app so acquisition and decode can be exercised end to end.
 --

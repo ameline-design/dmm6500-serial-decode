@@ -1794,8 +1794,9 @@ sdec.sabit_max = 12
 -- cap x framebits x samples_per_bit readings, so oversampling it past what ck_bufmax allows does not
 -- fail -- stream_begin pins the capacity and SHORTENS the recording instead, which is a loss of
 -- length -- measured at 26.9 kB of a nominal 32 kB where the ceiling bound the capacity. So the
--- ceiling is per mode, not per baud: at ck_bufmax = 3 600 000 the 32 kB mode affords 10.4 samples a
--- bit and the 8 kB mode four times that, which is more than the 100 kS/s rate cap asks for at 9600,
+-- ceiling is per mode, not per baud: at the default ceiling of 3 700 000 the 32 kB mode affords
+-- 10.75 samples a bit and the 8 kB mode four times that, which is more than the 100 kS/s rate cap
+-- asks for at 9600,
 -- so the bound binds only for a frame format forced wider than ten bits. A caller with no mode in
 -- hand simply gets the unbounded answer.
 function sdec.fs_for_burst(baud, md)

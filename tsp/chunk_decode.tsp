@@ -3,8 +3,8 @@
 -- Frame mode holds a whole capture as a plain Lua array (serial_core's acq_copy) and
 -- that is what caps it at 20 000 samples, i.e. 192-500 bytes. This module removes the
 -- cap without removing the array: the READING BUFFER holds the long capture -- up to
--- sdec.ck_bufmax samples, 3 600 000 of the instrument's measured 7 057 490-reading
--- buffer pool, in the firmware, not in Lua -- and the decode walks it in
+-- sdec.ck_bufmax samples, derived at launch from the 7 080 255 readings the instrument
+-- holds across all buffers together, measured -- and the decode walks it in
 -- overlapping windows, appending each window's bytes to a file and reusing the same
 -- one window table for the next. Memory therefore stays at exactly one window
 -- whatever the capture length, and the length is bounded by the buffer instead.
@@ -61,9 +61,10 @@ sdec.ck_probes = 8
 
 -- Medium mode's cap. One number for every baud rate, so the UI has one expectation to
 -- state and the operator has one to remember; 32 kB is still 400-500 lines of
--- 64-column debug text. 32 rather than 64 kB because the worst case then needs 2.78 M
--- samples -- under half the 6 M the instrument has for ALL buffers together -- so
--- defbuffer1/defbuffer2 almost certainly never need shrinking to make room.
+-- 64-column debug text. 32 rather than 64 kB because the worst case then needs 3.41 M
+-- samples -- under half the 7 080 255 the instrument has for ALL buffers together,
+-- measured -- so defbuffer1 and defbuffer2 at their 100 000 defaults leave room for it,
+-- and where they do not sdec.bufmax_for() shortens the window instead of refusing.
 sdec.ck_maxbytes = 32768
 
 -- ============================================================================
@@ -316,7 +317,7 @@ end
 -- recording whose levels are measurable from any window containing the burst as an idle line.
 --
 -- SPACED ACROSS the recording, not just the head: reading only the first window covered
--- 20 000 of 3 600 000 possible burst positions, 0.6 %. The decimated view is still tried
+-- 20 000 of 3 700 000 possible burst positions, 0.5 %. The decimated view is still tried
 -- FIRST, so the drift property that motivated decimation is untouched.
 function sdec.ck_levels_probe(reader, ntotal, win, k)
   if reader == nil then return false end

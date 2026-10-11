@@ -525,10 +525,22 @@ recording at 38400 or above can show the notice briefly and still complete norma
 
 A 32 kB capture at 9600 is the case that sizes the reading ceiling: it asks for 3.41 million readings
 at 100 kS/s and its capacity — the count plus the pre-trigger reserve — comes to 3 593 084 against a
-3 600 000 ceiling, clearing it by 6 916 readings and collecting all 32 768 bytes. A lower ceiling buys
-the bytes back only at 80 kS/s and 8.33 samples a bit. The ceiling is measured rather than documented:
-the instrument's whole buffer pool is about 7.06 million readings, shared with `defbuffer1` and
-`defbuffer2`, so this asks for just over half of it.
+**3 700 000** ceiling, clearing it by 106 916 readings and collecting all 32 768 bytes. A lower ceiling
+buys the bytes back only at 80 kS/s and 8.01 delivered samples a bit.
+
+**The ceiling is not a constant, and it is the default buffers that decide it.** The instrument holds
+**7 080 255 readings across all buffers together** — measured — and `defbuffer1` and `defbuffer2` are
+part of that total, so the app works out what is left at every launch and records inside it. At their
+100 000 defaults that leaves the full 3 700 000. Enlarge `defbuffer1` to 6 000 000 and it leaves
+930 255: the 8 kB mode is unaffected and the 32 kB mode simply records a shorter window. **The app
+never resizes either one**, because resizing a reading buffer discards its contents and `defbuffer1`
+is where your own measurements go — it adapts, and tells you what it did. The figure it settled on is
+in the USB log at every launch, under `recording ceiling`.
+
+Below the smallest recording the app **refuses at launch rather than at the first press**, naming the
+buffer that is actually large and its size. There is no dialog: this app is driven headless over the
+socket, and a box waiting for a finger would stop an unattended run without saying why, so the
+refusal goes to the note row, to the USB log and to the caller.
 
 **FRAME keeps working to the full 250000 baud**, and usefully so: at 192000 baud a frame capture holds
 384 bytes.

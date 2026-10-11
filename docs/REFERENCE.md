@@ -116,8 +116,11 @@ capability: one press records a window, decodes it and files it, so `8 kB` reach
 quarter of the time, while `32 kB` spends less of the run on
 per-window overhead. Both are lossless.
 
-The capture buffer holds **3 600 000 readings** (`ck_bufmax`), out of a measured 7 057 490-reading pool
-shared with `defbuffer1` and `defbuffer2`. A mode asks for whatever its ceiling
+The capture buffer holds **3 700 000 readings** (`ck_bufmax`) with the default buffers at their
+100 000 defaults, out of the **7 080 255 readings** the instrument holds across all buffers together,
+measured. The ceiling is derived at every launch from `defbuffer1.capacity` and `defbuffer2.capacity`,
+so enlarging either one shortens a recording rather than failing it; the app never resizes them,
+because resizing a reading buffer discards its contents. A mode asks for whatever its ceiling
 needs at the locked rate -- `cap x framebits x (fs / baud)` -- capped by the buffer. The table below is
 the 32 kB window; divide the readings and the durations by four for `8 kB`. Divide by `fs_for_burst`
 for the signal duration:
