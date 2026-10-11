@@ -509,10 +509,11 @@ There is no setting for any of this. The right value is not a preference: it is 
 can deliver without losing data, and it differs per baud.
 
 **The rate is chosen per mode, not just per baud**, because a byte-capped mode holds
-`bytes × framebits × samples_per_bit` readings and the reading ceiling is finite. At 9600 the 8 kB
-mode records at 100 kS/s and 9.91 samples a bit, while the 32 kB mode records at 80 kS/s and 8.33 —
-four times the bytes cannot also have the samples. Each takes the most oversampling its own buffer can
-hold, so neither is oversampled into a capture the instrument then has to shorten.
+`bytes × framebits × samples_per_bit` readings and the reading ceiling is finite. Each takes the most
+oversampling its own buffer can hold, so neither is oversampled into a capture the instrument then has
+to shorten. At 9600 both land on 100 kS/s and 9.91 samples a bit — the 32 kB mode's 3.41 million
+readings fit the ceiling — so the bound only separates them for a frame format forced wider than ten
+bits, where 9 data bits with parity and two stop bits is a third more readings for the same bytes.
 
 At 9600 and below the rate is also never above **100 kS/s**, whatever the arithmetic would allow.
 Above that the instrument puts up its own notice over the capture — *"Processing reading backlog… the
@@ -522,10 +523,12 @@ here: 100 kS/s already gives 9.91 samples a bit at 9600 and the decoder reads th
 any case. Faster rates above this band do cross the same threshold and always have, which is why a
 recording at 38400 or above can show the notice briefly and still complete normally.
 
-One consequence worth knowing: a 32 kB capture at 9600 asks for 2.73 million readings and its capacity
-— the count plus the pre-trigger reserve — comes to 2.87 million against a 2.8 million ceiling, so the
-recording is shortened by about 2.6 %, collecting roughly 31 900 bytes of its nominal 32 768. The
-8 kB mode is unaffected. Raising that ceiling is the clean fix and wants a measurement behind it.
+A 32 kB capture at 9600 is the case that sizes the reading ceiling: it asks for 3.41 million readings
+at 100 kS/s and its capacity — the count plus the pre-trigger reserve — comes to 3 593 084 against a
+3 600 000 ceiling, clearing it by 6 916 readings and collecting all 32 768 bytes. A lower ceiling buys
+the bytes back only at 80 kS/s and 8.33 samples a bit. The ceiling is measured rather than documented:
+the instrument's whole buffer pool is about 7.06 million readings, shared with `defbuffer1` and
+`defbuffer2`, so this asks for just over half of it.
 
 **FRAME keeps working to the full 250000 baud**, and usefully so: at 192000 baud a frame capture holds
 384 bytes.

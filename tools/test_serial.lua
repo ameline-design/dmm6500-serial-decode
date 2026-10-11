@@ -10515,6 +10515,52 @@ end)()
   check('the recordable ceiling is unmoved -- the tiers are all below it',
         sdec.fs_for_burst(153600) ~= nil and sdec.fs_for_burst(192000) == nil,
         tostring(sdec.fs_for_burst(153600)) .. ',' .. tostring(sdec.fs_for_burst(192000)))
+
+  -- ---------------------------------------------------------------------------
+  -- AND THE LARGEST RECORDING KEEPS ITS BYTES AT THE RATE THE TIER ASKS FOR, which is what
+  -- ck_bufmax is sized for. stream_begin asks for the count plus the 5 % pre-trigger reserve plus
+  -- 100 readings of overshoot headroom; where that crosses ck_bufmax it pins the capacity and
+  -- SHORTENS the recording instead, so the mode collects its full byte cap exactly when its own
+  -- arithmetic fits. Asserted on the arithmetic rather than on a capture because the shortfall is
+  -- in the capacity request, which is where a ceiling change lands.
+  -- ---------------------------------------------------------------------------
+  do
+    local kb, knb, kpar, kns = sdec.force_baud, sdec.force_nbits, sdec.force_par, sdec.force_nstop
+    sdec.force_baud, sdec.force_nbits = 9600, nil
+    sdec.force_par, sdec.force_nstop = nil, nil
+    local big
+    local mi
+    for mi = 1, sdec.ui_modes.n do
+      if sdec.ui_modes[mi].id == 'med' then big = sdec.ui_modes[mi] end
+    end
+    local fs = sdec.fs_for_burst(9600, big)
+    local n = sdec.stream_samples(big, fs)
+    local cap = n + 100
+    if sdec.trigmode ~= 'free' and (sdec.pretrig or 0) > 0 then
+      cap = math.ceil(n * 100 / (100 - sdec.pretrig)) + 100
+    end
+    check('the 32 kB mode at 9600 takes the full 100 kS/s the rate cap allows',
+          big ~= nil and big.cap == 32768 and fs == 100000,
+          string.format('%s S/s for %s bytes', tostring(fs), tostring(big and big.cap)))
+    check('...and its capacity fits ck_bufmax, so the recording is not shortened',
+          cap <= sdec.ck_bufmax,
+          string.format('%d readings of capacity for %d, ck_bufmax %d, %d spare',
+                        cap, n, sdec.ck_bufmax, sdec.ck_bufmax - cap))
+    check('...which is its whole byte cap rather than a pinned share of it',
+          n >= math.floor(big.cap * 10 * (fs / 9600)),
+          string.format('%d readings = %.1f bytes of %d', n, n / (10 * (fs / 9600)), big.cap))
+    -- A MEASURED BOUND, NOT A DOCUMENTED ONE: with defbuffer1 and defbuffer2 at their 100 000
+    -- defaults, buffer.make(3000000, buffer.STYLE_STANDARD) is granted and reads capacity 3000000
+    -- back, and a further buffer.make(4000000) beside it is refused with event 4919, "Available
+    -- capacity for all reading buffers exceeded, remaining capacity is 3857490 readings". That
+    -- figure is what remains NEXT TO a live 3 000 000-reading buffer, so as a bound on one capture
+    -- buffer it is conservative by everything else allocated -- and a raise past it is a raise past
+    -- the largest allocation anyone has watched the instrument grant.
+    check('ck_bufmax stays inside the measured remaining capacity -- event 4919',
+          sdec.ck_bufmax <= 3857490,
+          string.format('ck_bufmax %d vs 3857490 measured', sdec.ck_bufmax))
+    sdec.force_baud, sdec.force_nbits, sdec.force_par, sdec.force_nstop = kb, knb, kpar, kns
+  end
 end)()
 
 print()

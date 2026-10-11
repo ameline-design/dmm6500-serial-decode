@@ -116,19 +116,20 @@ capability: one press records a window, decodes it and files it, so `8 kB` reach
 quarter of the time, while `32 kB` spends less of the run on
 per-window overhead. Both are lossless.
 
-The capture buffer holds **2 800 000 readings** (`ck_bufmax`). A mode asks for whatever its ceiling
+The capture buffer holds **3 600 000 readings** (`ck_bufmax`), out of a measured 7 057 490-reading pool
+shared with `defbuffer1` and `defbuffer2`. A mode asks for whatever its ceiling
 needs at the locked rate -- `cap x framebits x (fs / baud)` -- capped by the buffer. The table below is
 the 32 kB window; divide the readings and the durations by four for `8 kB`. Divide by `fs_for_burst`
 for the signal duration:
 
 | Locked rate | Readings | Signal | Wall clock to fill |
 |---|---|---|---|
-| 300 Bd | 1 365 334 | 1092 s | 1092 s |
-| 1200 Bd | 1 365 334 | 273 s | 273 s |
-| 2400 Bd | 1 365 334 | 136 s | 136 s |
-| 4800 Bd | 1 365 334 | 68 s | 68 s |
-| 9600 Bd | 1 365 334 | 34.1 s | 34.1 s |
-| 19200 Bd | 1 365 334 | 17.1 s | 17.1 s |
+| 300 Bd | 2 730 667 | 1092 s | 1092 s |
+| 1200 Bd | 2 730 667 | 273 s | 273 s |
+| 2400 Bd | 2 730 667 | 136 s | 136 s |
+| 4800 Bd | 3 413 334 | 68 s | 68 s |
+| 9600 Bd | 3 413 334 | 34.1 s | 34.1 s |
+| 19200 Bd | 1 706 667 | 17.1 s | 17.1 s |
 | 38400 Bd | 1 706 667 | 8.5 s | 17.1 s |
 | 57600 Bd | 1 706 667 | 5.7 s | 17.1 s |
 | 115200 Bd | 1 820 445 | 2.8 s | 18.2 s |

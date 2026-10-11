@@ -759,7 +759,8 @@ function sdec.stream_begin()
       nsmp = math.floor(cap * (100 - sdec.pretrig) / 100)
     end
   end
-  -- THE 6 000 000 READING CEILING IS FOR ALL BUFFERS TOGETHER, so buffer.make() at these sizes
+  -- THE READING CEILING IS ONE POOL FOR ALL BUFFERS TOGETHER -- 7 057 490 readings measured, event
+  -- 4919 "Available capacity for all reading buffers exceeded" -- so buffer.make() at these sizes
   -- can need defbuffer2 shrunk first, which is what the refusal below says.
   -- A BARE CALL: acq_make_buffer() guards buffer.make() itself and leaves sdec.buf nil when the
   -- allocation was refused, which is the condition tested below.
@@ -1889,23 +1890,26 @@ function sdec.progress_samples(have, want)
   return sdec.progress_row()
 end
 
--- READINGS THE LARGEST RECORDING MAY ASK FOR. Still short of what the instrument holds -- 6 000 000
--- samples in firmware, for ALL buffers together -- and still not a measured figure. What moved it off
--- 2 800 000 is arithmetic rather than a measurement: a 32 kB capture at 9600 and eight samples a bit
--- is 2 730 667 readings, and its CAPACITY, the count plus the 5 % pre-trigger reserve plus the 100 of
--- overshoot headroom, comes to 2 874 492. At 2 800 000 that crossed the ceiling, so stream_begin
--- pinned the capacity and shortened the recording by ~2.6 % -- 31 900 bytes of a nominal 32 768 --
--- which is a real loss to pay for a constant nobody had ever tested.
+-- READINGS THE LARGEST RECORDING MAY ASK FOR, AND WHAT IT BUYS IS THE RATE. The 32 kB mode at 9600
+-- records 32768 x 10 x (100000/9600) = 3 413 334 readings at 100 kS/s, and its CAPACITY -- the count
+-- plus the 5 % pre-trigger reserve plus the 100 readings of overshoot headroom, ceil(n x 100/95) + 100
+-- -- is 3 593 084. 3 600 000 clears that by 6 916 readings, so fs_for_burst's per-mode bound admits
+-- 100 kS/s and the mode keeps all 32 768 bytes; a ceiling under 3 593 084 admits only 80 kS/s, which
+-- is 8.33 samples a bit against 10.42 for the same bytes. The 8 kB mode is a quarter of this and was
+-- never bounded by it.
 --
--- 3 000 000 clears it with 125 508 readings to spare and leaves the app asking for half of the
--- documented total, with defbuffer1 and defbuffer2 at their 100 000 defaults alongside. The refusal
--- path below is what catches the case where even this cannot be allocated, and it names shrinking
--- defbuffer2 because that is the remedy.
+-- MEASURED, AND THE READING MEMORY IS ONE POOL: with defbuffer1 and defbuffer2 at their 100 000
+-- defaults, buffer.make(3000000, buffer.STYLE_STANDARD) is granted and reads capacity 3000000 back,
+-- and a further buffer.make(4000000) BESIDE it is refused with event 4919, "Available capacity for
+-- all reading buffers exceeded, remaining capacity is 3857490 readings". 3 000 000 + 200 000 +
+-- 3 857 490 puts the pool at 7 057 490 readings, which is what 3 600 000 and the two defbuffers ask
+-- just over half of. The refusal path below catches the allocation failing anyway, and it names
+-- shrinking defbuffer2 because with one pool that is the remedy.
 --
--- THE REAL CEILING IS STILL UNMEASURED, and finding it is a bench job: make buffers at rising sizes
--- with the defbuffers shrunk and find where buffer.make() refuses. Until then this stays well inside
--- what the firmware documents rather than near it.
-sdec.ck_bufmax = 3000000
+-- RAISING THIS FURTHER COSTS NOTHING UNTIL ~6.8 M, where the pool minus the defbuffers runs out --
+-- but it buys nothing either, because 100 kS/s is already the rate cap at 9600 and the modes above it
+-- are not buffer-bound. tools/test_serial.lua asserts the 3 857 490 against a future raise.
+sdec.ck_bufmax = 3600000
 -- Samples to record for mode md at sample rate fs. Returns nil when the rate or the locked baud
 -- rate cannot size a capture.
 function sdec.stream_samples(md, fs)

@@ -3,7 +3,8 @@
 -- Frame mode holds a whole capture as a plain Lua array (serial_core's acq_copy) and
 -- that is what caps it at 20 000 samples, i.e. 192-500 bytes. This module removes the
 -- cap without removing the array: the READING BUFFER holds the long capture -- up to
--- 6 000 000 samples, in the firmware, not in Lua -- and the decode walks it in
+-- sdec.ck_bufmax samples, 3 600 000 of the instrument's measured 7 057 490-reading
+-- buffer pool, in the firmware, not in Lua -- and the decode walks it in
 -- overlapping windows, appending each window's bytes to a file and reusing the same
 -- one window table for the next. Memory therefore stays at exactly one window
 -- whatever the capture length, and the length is bounded by the buffer instead.
@@ -315,7 +316,7 @@ end
 -- recording whose levels are measurable from any window containing the burst as an idle line.
 --
 -- SPACED ACROSS the recording, not just the head: reading only the first window covered
--- 20 000 of 2 800 000 possible burst positions, 0.7 %. The decimated view is still tried
+-- 20 000 of 3 600 000 possible burst positions, 0.6 %. The decimated view is still tried
 -- FIRST, so the drift property that motivated decimation is untouched.
 function sdec.ck_levels_probe(reader, ntotal, win, k)
   if reader == nil then return false end

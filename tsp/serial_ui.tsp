@@ -572,7 +572,7 @@ sdec.ui_latency_s = sdec.ui_latency_s or 0.5
 -- with it. This is deliberately much larger than the repaint budget, because a press that RETURNS
 -- is a press that has been answered and waiting once beats pressing hundreds of times.
 --
--- 8 s gives 27 windows a press -- a full 2 800 000-reading buffer in 17 presses, a 30 s recording
+-- 8 s gives 27 windows a press -- a full 3 600 000-reading buffer in 22 presses, a 30 s recording
 -- at 4800 Bd in 4 -- and stays inside the 12 s bound bench_panel.py holds capture presses to, with
 -- room for the final window to run past the check that admitted it.
 --

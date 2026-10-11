@@ -335,10 +335,10 @@ do
   clearforce()
   sdec.force_baud = 9600
   -- THE RATE IS PER MODE, so each mode is asked for its own. fs_for_burst boosts a slow line up to
-  -- the rate cap, but only as far as THAT mode's buffer can hold: the 32 kB mode can afford about
-  -- eight samples a bit and the 8 kB mode four times that, so asking once and reusing the answer
-  -- oversamples the large mode into a capture stream_begin then has to shorten. Passing one rate for
-  -- both is what this check used to do, and it is the thing that made the ratio break.
+  -- the rate cap, but only as far as THAT mode's buffer can hold: at ck_bufmax = 3 600 000 the 32 kB
+  -- mode affords 10.4 samples a bit and the 8 kB mode four times that, so a mode whose rate was
+  -- chosen for a smaller buffer is oversampled into a capture stream_begin then has to shorten.
+  -- Asking once and reusing the one answer for both modes is what makes the ratio below break.
   local fss = sdec.fs_for_burst(9600, small)
   local fsb = sdec.fs_for_burst(9600, big)
   local ns = sdec.stream_samples(small, fss)

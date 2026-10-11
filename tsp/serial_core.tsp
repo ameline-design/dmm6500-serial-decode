@@ -1793,9 +1793,11 @@ sdec.sabit_max = 12
 -- `md` IS OPTIONAL AND BOUNDS THE BOOST BY WHAT THE BUFFER CAN AFFORD. A byte-capped mode holds
 -- cap x framebits x samples_per_bit readings, so oversampling it past what ck_bufmax allows does not
 -- fail -- stream_begin pins the capacity and SHORTENS the recording instead, which is a loss of
--- length. Measured: a 32 kB capture at 9600 and 100 kS/s comes back 26.9 kB. So the ceiling is per
--- mode, not per baud -- the 32 kB mode can afford about 8 samples a bit at any baud and the 8 kB mode
--- four times that -- and a caller with no mode in hand simply gets the unbounded answer.
+-- length -- measured at 26.9 kB of a nominal 32 kB where the ceiling bound the capacity. So the
+-- ceiling is per mode, not per baud: at ck_bufmax = 3 600 000 the 32 kB mode affords 10.4 samples a
+-- bit and the 8 kB mode four times that, which is more than the 100 kS/s rate cap asks for at 9600,
+-- so the bound binds only for a frame format forced wider than ten bits. A caller with no mode in
+-- hand simply gets the unbounded answer.
 function sdec.fs_for_burst(baud, md)
   if baud == nil or baud <= 0 then return sdec.fs_default end
   local want = sdec.minsabit

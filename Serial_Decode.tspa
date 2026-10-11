@@ -1191,9 +1191,9 @@ sdec.sabit_max = 12
 
 -- `md` IS OPTIONAL AND BOUNDS THE BOOST BY WHAT THE BUFFER CAN AFFORD. A byte-capped mode holds
 --   [...]
--- length. Measured: a 32 kB capture at 9600 and 100 kS/s comes back 26.9 kB. So the ceiling is per
--- mode, not per baud -- the 32 kB mode can afford about 8 samples a bit at any baud and the 8 kB mode
--- four times that -- and a caller with no mode in hand simply gets the unbounded answer.
+-- bit and the 8 kB mode four times that, which is more than the 100 kS/s rate cap asks for at 9600,
+-- so the bound binds only for a frame format forced wider than ten bits. A caller with no mode in
+-- hand simply gets the unbounded answer.
 function sdec.fs_for_burst(baud, md)
   if baud == nil or baud <= 0 then return sdec.fs_default end
   local want = sdec.minsabit
@@ -3370,7 +3370,7 @@ end
 -- ONE contiguous level probe, k = 0..ck_probes-1, spaced evenly across the recording.
 --   [...]
 -- SPACED ACROSS the recording, not just the head: reading only the first window covered
--- 20 000 of 2 800 000 possible burst positions, 0.7 %. The decimated view is still tried
+-- 20 000 of 3 600 000 possible burst positions, 0.6 %. The decimated view is still tried
 -- FIRST, so the drift property that motivated decimation is untouched.
 function sdec.ck_levels_probe(reader, ntotal, win, k)
   if reader == nil then return false end
@@ -6755,7 +6755,7 @@ function sdec.progress_samples(have, want)
   return sdec.progress_row()
 end
 
-sdec.ck_bufmax = 3000000
+sdec.ck_bufmax = 3600000
 -- Samples to record for mode md at sample rate fs. Returns nil when the rate or the locked baud
 -- rate cannot size a capture.
 function sdec.stream_samples(md, fs)
