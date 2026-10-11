@@ -126,6 +126,49 @@ def mark_smoked():
         return False
 
 
+def force_reload():
+    """Drop the loaded app so stage 1 must load it from the edited sources. -> the type left behind.
+
+    WHY THE RECEIPT NEEDS THIS. bench_matrix --no-start REUSES whatever app is loaded: it probes
+    type(sdec) and loads only when the answer is not 'table'. smoke_receipt, meanwhile, hashes the
+    WORKING TREE. So a gate run after an edit tests the PREVIOUS app and certifies the CURRENT tree,
+    and the receipt -- the whole point of which is to prove the smoke saw this code -- proves nothing.
+
+    MEASURED, AND IT REACHED A PUSH. A gate passed 0 BAD on all four stages and wrote a receipt for a
+    tree whose newest commit the instrument did not have; reading sdec.ck_bufmax back afterwards gave
+    the PREVIOUS commit's literal, and sdec.bufmax_for -- added by that newest commit -- was nil. The
+    commit went to main on that receipt without ever having run on hardware.
+
+    CLEANUP FIRST, THEN NIL, AND THE ORDER IS NOT COSMETIC. sdec holds the only handles to ~134
+    display objects and to the capture buffer. Dropping the table without a teardown strands every one
+    of them inside the firmware with nothing left to retry from, which costs a power cycle -- so this
+    is a teardown that happens to end in a nil, not a nil that happens to free things.
+
+    NEVER FATAL. If the clear cannot be done the smoke still runs; what is lost is the guarantee, and
+    the stage log still shows whether a load happened.
+    """
+    try:
+        from dmmrun import DMM, release_single_instance
+        d = DMM(timeout=60)
+        try:
+            left = str(d.q('if type(sdec) == "table" then pcall(sdec.cleanup) end '
+                           'sdec = nil collectgarbage() '
+                           'print("CLEARED=" .. tostring(type(sdec)))') or '').strip()
+            if 'nil' not in left:
+                print('  NOTE: the loaded app did not clear (%s) -- stage 1 may REUSE it, and the '
+                      'receipt would then certify a tree the instrument never ran.' % left)
+                return left
+            return left
+        finally:
+            d.close()
+            release_single_instance()
+    except Exception as e:
+        print('  NOTE: could not clear the loaded app (%s: %s) -- if one is already loaded, stage 1'
+              % (type(e).__name__, e))
+        print('        will reuse it and the receipt will not prove this tree was tested.')
+        return None
+
+
 def run(name, argv, log):
     print('=== %s ===' % name)
     t0 = time.time()
@@ -165,6 +208,10 @@ def main():
     # BEFORE THE FIRST STAGE, so a smoke that fails or is interrupted still arms the poison guard --
     # running it is what poisons the DMM, not finishing it.
     mark_smoked()
+    # AND THE APP GOES WITH IT, so stage 1 loads the tree this run is about to write a receipt for
+    # rather than whatever was left loaded. See force_reload(): the alternative has already put an
+    # untested commit on main.
+    force_reload()
     print()
     argv = ['python3', '-u', 'tools/bench_matrix.py', '--suites', 'plan',
             '--no-start', '--no-output-off', '--iteration', str(a.iteration),
