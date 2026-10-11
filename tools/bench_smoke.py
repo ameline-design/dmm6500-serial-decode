@@ -103,15 +103,22 @@ def mark_smoked():
 
     NEVER FATAL: if the mark cannot be set the smoke still runs. The cost is an unarmed guard, which is
     where this started.
+
+    AND IT GIVES THE LOCK BACK EXPLICITLY. The single-client lock is held PER PROCESS, so closing the
+    socket is not enough: this function runs inside bench_smoke, which then spawns bench_matrix,
+    bench_panel and bench_break, and every one of them would be refused by its own parent. Measured --
+    all four stages failed in 0.0 min with 0 BAD, which reads like a dead bench and is not one.
+    dmmrun.release_single_instance() exists for exactly this and says so.
     """
     try:
-        from dmmrun import DMM
+        from dmmrun import DMM, release_single_instance
         d = DMM(timeout=30)
         try:
             d.q('SMOKED = 1 print("SMOKED=" .. tostring(SMOKED))')
             return True
         finally:
             d.close()
+            release_single_instance()
     except Exception as e:
         print('  NOTE: could not mark the instrument as smoked (%s: %s) -- a soak started after this'
               % (type(e).__name__, e))
