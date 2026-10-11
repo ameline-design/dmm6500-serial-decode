@@ -22,6 +22,7 @@
 
 MD = {}
 
+BLANKED = 0
 local OBJ, nextid = {}, 0
 local BUTTON_H = 58        -- measured from docs/panel-ref-chrome.png
 -- MEASURED off docs/img/options.png, not guessed: a field created at y draws its box from y + 4 to
@@ -165,6 +166,12 @@ end
 -- died, and let a test assert that nothing depended on the parent.
 function display.delete(h)
   local o = use(h, 'delete')
+  -- DELETING THE SCREEN THE PANEL IS SHOWING, counted. Switch-first-delete-second is shouted about in
+  -- ui_destroy and ui_loading_clear and was asserted NOWHERE: moving the changescreen below the
+  -- deletes left both suites at full marks, because the finished state is identical either way and
+  -- only the order differs. The window it opens is a panel displaying a deleted object, which on the
+  -- instrument is not recoverable from the front panel. MD.blanked() is the only evidence of it.
+  if h == display.active then BLANKED = BLANKED + 1 end
   o.alive = false
   o.gone = 'explicit'
   local id, c
@@ -332,6 +339,10 @@ function MD.live(kind)
   return n
 end
 function MD.nobj() return nextid end
+-- How many times a screen was deleted WHILE THE PANEL WAS SHOWING IT. Zero is the only
+-- acceptable value across a launch; see display.delete for why nothing else catches it.
+function MD.blanked() return BLANKED end
+function MD.forget_blanked() BLANKED = 0 end
 function MD.obj(id) return OBJ[id] end
 function MD.text(id) if OBJ[id] then return OBJ[id].text end end
 function MD.events(id) return display.events[id] end

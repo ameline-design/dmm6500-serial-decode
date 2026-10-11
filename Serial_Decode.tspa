@@ -3,7 +3,7 @@ loadscript Serial_Decode
 -- $Product: DMM6500, DAQ6510, DMM7510, SMU2461
 -- $Tag: Serial, UART, Decode, Digitize
 -- $Description: Decodes an asynchronous serial line with the instrument's own digitizer: recovers baud rate, frame format and bytes, shows them as text or hex, and saves bytes to USB key. Everything auto-detects; everything can be locked.
--- $Version: 1.41
+-- $Version: 1.42
 -- $Requires: 1.7.0
 -- $Author: Ian Ameline
 -- $License: MIT
@@ -4888,7 +4888,7 @@ end
 
 -- Delete every main-screen object and nil its handle.
 function sdec.ui_destroy()
-  if sdec.ui_scr ~= nil then
+  if sdec.ui_scr ~= nil or sdec.ui_loadscr ~= nil then
     pcall(display.changescreen, display.SCREEN_HOME)
   end
   local i
@@ -4980,7 +4980,7 @@ function sdec.ui_loading_raise()
     local h = display.create(display.ROOT, display.OBJ_SCREEN, 'SERIAL DECODE')
     if h == nil then return false end
     sdec.ui_loadscr = h
-    sdec.ui_loadtxt = display.create(h, display.OBJ_TEXT, 232, 214,
+    sdec.ui_loadtxt = display.create(h, display.OBJ_TEXT, 261, 214,
                                      'Loading, please wait...', 0xFFFFFF, display.FONT_MEDIUM)
   end
   pcall(display.changescreen, sdec.ui_loadscr)
@@ -4989,11 +4989,12 @@ end
 
 -- Put the real screen in front and take the loading screen away.
 --   [...]
--- in front so this cannot guess wrong.
--- Child before parent, and only nil a handle whose delete was accepted -- del_obj counts a refused
--- delete and strands the handle on sdec.orphans, which the rebuild guard reads.
+-- is always recoverable and leaving it on a deleted one never is.
+-- Child before parent. The handles are nil'd unconditionally, which loses nothing: del_obj strands a
+-- REFUSED delete on sdec.orphans itself, and that list is what the rebuild guard reads.
 function sdec.ui_loading_clear(showscr)
-  if showscr ~= nil then pcall(display.changescreen, showscr) end
+  if showscr == nil then showscr = display.SCREEN_HOME end
+  pcall(display.changescreen, showscr)
   if sdec.ui_loadscr == nil then return false end
   sdec.del_obj(sdec.ui_loadtxt)
   sdec.del_obj(sdec.ui_loadscr)
@@ -5748,7 +5749,12 @@ function sdec.build_options()
           .. 'instrument.', 0)
   end
 
-  sdec.ui_loading_front()
+  local covermine = false
+  if sdec.ui_loadscr == nil then
+    covermine = sdec.ui_loading_raise()
+  else
+    sdec.ui_loading_front()
+  end
 
   if pl.n >= 3 then
     local fx1, fy1 = nextpos()
@@ -5821,6 +5827,8 @@ function sdec.build_options()
   end
 
   pcall(display.setevent, sdec.optscr, display.EVENT_ENDAPP, 'sdec.guard(sdec.cleanup)')
+
+  if covermine then sdec.ui_loading_clear(sdec.optscr) end
   return sdec.optscr
 end
 

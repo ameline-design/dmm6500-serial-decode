@@ -1,6 +1,6 @@
 # The DMM6500 trigger model — a working manual
 
-**Ian Ameline** · version 1.41 · MIT licence
+**Ian Ameline** · version 1.42 · MIT licence
 
 The trigger model is not a trigger setting. It is a small programmable machine with its own
 instruction store, and the instrument's own scanning feature is written in it. This describes what it

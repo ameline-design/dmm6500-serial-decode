@@ -1898,8 +1898,16 @@ check('the capture was logged to USB', has(MD.logtext(), '9600 baud'),
       'log has ' .. tostring(MD.loglines()) .. ' writes')
 
 -- Rebuilding must not orphan the first build. This is THE invariant.
-sdec.ui_build()
+--
+-- MIRRORS start(), AND THAT IS LOAD-BEARING FOR EVERY CHECK BELOW. An unheld ui_build() clears the
+-- cover and fronts ui_scr; build_options() then creates optscr, which TAKES THE FRONT and nothing
+-- leaves it -- so `display.active == sdec.optscr` would be true from here to the end of the file and
+-- the assertion 1200 lines down that options() switches to the form would pass against an options()
+-- that never switches. Measured: with this bootstrap unheld, stubbing the changescreen out of
+-- sdec.options() still gave 1363/0.
+sdec.ui_build(true)
 sdec.build_options()
+sdec.ui_loading_clear(sdec.ui_scr)
 check('rebuilding the UI leaks NO display objects', MD.live() == live1,
       'live=' .. MD.live() .. ' vs ' .. live1)
 check('still exactly two screens after a rebuild', MD.live('screen') == 2,
@@ -10230,8 +10238,16 @@ end)()
 
   sdec.built, sdec.lasterr = nil, nil
   sdec.allow_rebuild = true
+  MD.forget_blanked()
   local sok = sdec.start()
   check('start() succeeds with the loading screen in the path', sok, tostring(sdec.lasterr))
+
+  -- SWITCH FIRST, DELETE SECOND. Both ui_destroy and ui_loading_clear say so in capitals and neither
+  -- was asserted anywhere: moving the changescreen below the deletes keeps every other check green,
+  -- because the finished state is the same and only the order differs. What it opens is a window with
+  -- the panel displaying a deleted screen, which on the instrument no front-panel action recovers.
+  check('no screen was deleted while the panel was showing it, across a whole launch',
+        MD.blanked() == 0, 'blanked=' .. MD.blanked())
 
   -- Every child of either real screen, and which screen was in front when it was made.
   local nchild, nvis_main, nvis_opt, hidden_id, nhidden = 0, 0, 0, nil, 0

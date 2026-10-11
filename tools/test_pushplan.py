@@ -250,19 +250,18 @@ check('while a plain soak start after one really is a second run -- the check ca
 #
 # A soak started after a smoke fails EVERY cell with "acq: line is idle (no transitions)" until the DMM
 # is power cycled -- three occurrences, the last one 705 of 705 cells. refuse_smoke_poison blocks that
-# combination, and what is tested here is the DECISION TABLE rather than the message: the refusal has to
-# fire on "a smoke ran and nothing was cycled", and has to stay silent on everything else, because a
-# guard that refuses a legitimate soak would be worse than the defect it prevents.
+# combination, and what is tested here is the DECISION TABLE rather than the message.
 #
-# THE PROBE CALL IS COUNTED, NOT JUST THE VERDICT. The instrument is only asked about sdec when the
-# receipt is recent enough to matter; a stale receipt must not open a socket conversation at all. A
-# verdict test alone would pass on an implementation that probed every time and then ignored it.
-import json as _json                                                            # noqa: E402
-import shutil as _shutil                                                        # noqa: E402
-import tempfile as _tmp                                                         # noqa: E402
-import time as _time                                                            # noqa: E402
+# THE GUARD READS A MARK THE SMOKE SETS, not the app's presence. An earlier form probed type(sdec),
+# which answers "has anything loaded the app": it refused a resumed soak on a freshly cycled instrument
+# (run_bench's own --start sets sdec) and allowed a soak after a FAILED smoke, which writes no receipt.
+# Both are in the table below, because both were wrong in the direction that costs a human something.
+#
+# THE PROBE CALL IS COUNTED. --after-cycle must not even ask, and a verdict test alone would pass on an
+# implementation that probed every time and ignored the answer.
+import run_bench as _RB                                                         # noqa: E402
 
-_real_root, _real_qtag = RB.ROOT, RB.qtag
+_real_qtag = _RB.qtag
 _probes = []
 
 
@@ -271,47 +270,49 @@ class _Args(object):
         self.start, self.after_cycle = True, after_cycle
 
 
-def _poison_case(hours_ago, sdec_type, after_cycle=False, receipt=True):
-    """-> ('refused'|'allowed', probe_count). Builds a receipt of a chosen age in a temp ROOT."""
-    root = _tmp.mkdtemp()
+def _poison_case(mark, after_cycle=False):
+    """-> ('refused'|'allowed', probe_count) with the instrument answering `mark`."""
+    del _probes[:]
+
+    def fake_qtag(d, cmd, tag, timeout=60):
+        _probes.append(cmd)
+        return mark
+
+    _RB.qtag = fake_qtag
     try:
-        if receipt:
-            os.makedirs(os.path.join(root, 'out'))
-            stamp = _time.strftime('%Y-%m-%dT%H:%M:%S',
-                                   _time.localtime(_time.time() - hours_ago * 3600.0))
-            with open(os.path.join(root, 'out', 'smoke-receipt.json'), 'w') as fh:
-                _json.dump({'stamp': stamp, 'tree': 'f' * 16}, fh)
-        del _probes[:]
-        RB.ROOT = root
-        RB.qtag = lambda d, cmd, tag, timeout=60: (_probes.append(cmd), sdec_type)[1]
-        try:
-            RB.refuse_smoke_poison(None, _Args(after_cycle=after_cycle))
-            return 'allowed', len(_probes)
-        except SystemExit as e:
-            return ('refused' if 'power cycle' in str(e).lower() else 'refused-wrong-reason',
-                    len(_probes))
+        _RB.refuse_smoke_poison(None, _Args(after_cycle=after_cycle))
+        return 'allowed', len(_probes)
+    except SystemExit as e:
+        return ('refused' if 'power cycle' in str(e).lower() else 'refused-wrong-reason',
+                len(_probes))
     finally:
-        RB.ROOT, RB.qtag = _real_root, _real_qtag
-        _shutil.rmtree(root, ignore_errors=True)
+        _RB.qtag = _real_qtag
 
 
-_v, _n = _poison_case(1.0, 'table')
-check('a soak started 1 h after a smoke with the app still loaded is REFUSED, naming the power cycle',
-      _v == 'refused', '%s, %d probe(s)' % (_v, _n))
-_v, _n = _poison_case(1.0, 'nil')
-check('and the same receipt passes once the DMM has been cycled -- sdec nil is the evidence',
-      _v == 'allowed', '%s, %d probe(s)' % (_v, _n))
-_v, _n = _poison_case(1.0, 'table', after_cycle=True)
-check('--after-cycle overrides it, for a cycle followed by a non-smoke load',
-      _v == 'allowed', '%s, %d probe(s)' % (_v, _n))
-_v, _n = _poison_case(13.0, 'table')
-check('a smoke 13 h old does not block a soak, AND does not even ask the instrument',
+_v, _n = _poison_case('1')
+check('a soak started after a smoke on this power cycle is REFUSED, naming the power cycle',
+      _v == 'refused' and _n == 1, '%s, %d probe(s)' % (_v, _n))
+_v, _n = _poison_case('nil')
+check('and once the DMM has been cycled the mark is gone, so the same soak runs',
+      _v == 'allowed' and _n == 1, '%s, %d probe(s)' % (_v, _n))
+_v, _n = _poison_case('1', after_cycle=True)
+check('--after-cycle overrides it without even asking the instrument',
       _v == 'allowed' and _n == 0, '%s, %d probe(s)' % (_v, _n))
-_v, _n = _poison_case(0, 'table', receipt=False)
-check('no receipt is not evidence of a smoke, so it passes without a probe',
-      _v == 'allowed' and _n == 0, '%s, %d probe(s)' % (_v, _n))
-check('and the guard was restored: ROOT and qtag are the real ones again',
-      RB.ROOT == _real_root and RB.qtag is _real_qtag)
+# THE TWO CASES THE type(sdec) FORM GOT WRONG, kept as tests so neither can come back.
+_v, _n = _poison_case('nil')
+check('a RESUMED soak on a cycled instrument is allowed -- the old form refused it because '
+      'run_bench\'s own --start had set sdec', _v == 'allowed', _v)
+_v, _n = _poison_case('1')
+check('a soak after a FAILED smoke is refused too -- the mark is set before the first stage, and '
+      'no receipt is written on that path', _v == 'refused', _v)
+# FAIL-OPEN, OUT LOUD: qtag returns None on a timeout or a missing tag.
+_v, _n = _poison_case(None)
+check('an unreadable probe fails OPEN rather than blocking a 16 h run',
+      _v == 'allowed' and _n == 1, '%s, %d probe(s)' % (_v, _n))
+_v, _n = _poison_case('  1  ')
+check('and the answer is stripped, so whitespace from the socket does not read as no mark',
+      _v == 'refused', _v)
+check('the guard was restored: qtag is the real one again', _RB.qtag is _real_qtag)
 
 print('')
 if FAIL:

@@ -461,55 +461,48 @@ def refuse_smoke_poison(d, a):
         2026-09-08  4-lap soak stopped at cell 49, 33 of 49 idle, all on one vector
         2026-10-10  brun.soak(6) detached, 705 cells, EVERY ONE idle -- the operator saw it first
 
-    Each time the generator answered SCPI cleanly with the right waveform and amplitude, so the
-    evidence points at the generator and the cause is the DMM. Each time a power cycle fixed it, and
-    hours of further uptime did not bring it back.
+    Each time the generator answered SCPI cleanly on the right waveform, so the evidence points at the
+    generator and the cause is the DMM. Each time a power cycle fixed it, and further uptime did not
+    bring it back.
 
     WHY THIS IS CODE AND NOT A NOTE. It was a note first, and the note was read on the evening of the
-    third occurrence -- for another purpose -- and the soak was started after a smoke anyway. A rule
-    that has been written down three times and violated three times is not a documentation problem.
+    third occurrence -- for another purpose -- and the soak was started after a smoke anyway.
 
-    THE CONDITION IS EXACT, NOT A TIMER. The question is "has a smoke run since the last power cycle",
-    and both halves are observable: the receipt carries the stamp of the last passing gate, and a power
-    cycle leaves the app's globals nil. So this reads `type(sdec)` BEFORE anything is loaded -- after
-    the load every answer is 'table' and the signal is gone. A stale receipt with a cycled instrument
-    passes, which is the common case and must stay silent.
+    THE QUESTION IS "HAS A SMOKE RUN SINCE THE LAST POWER CYCLE", AND ONLY A MARK CAN ANSWER IT.
+    This read `type(sdec)` against a 12 h receipt window, which answers "has anything loaded the app"
+    -- a different question with two wrong answers. It refused a soak that died and was resumed inside
+    12 h of a smoke, on an instrument that HAD been cycled, telling the operator to spend a power cycle
+    they did not need: run_bench's own --start sets sdec, so the second --start always saw a table. And
+    it missed the likeliest sequence entirely, because a FAILED smoke writes no receipt and so armed
+    nothing, while the poison comes from running the smoke rather than passing it.
 
-    --after-cycle is the escape, for the one false positive this can produce: a cycle followed by
-    something that loaded the app without being a smoke.
+    bench_smoke.mark_smoked() now sets a Lua global before its first stage. A power cycle clears it,
+    nothing else sets it, and it is independent of whether the smoke passed or even finished.
+
+    READ BEFORE ANYTHING IS LOADED is no longer required, but it is still read first: a load prints
+    its own noise and the probe wants a quiet socket.
+
+    FAIL-OPEN, DELIBERATELY AND OUT LOUD. qtag() returns None on a timeout or a missing tag, and a
+    guard that refuses a 16 h run because a probe went quiet would be worse than the defect. It says so
+    when that happens rather than passing silently.
     """
     if a.after_cycle:
         return
-    stamp = None
-    try:
-        import json
-        with open(os.path.join(ROOT, 'out', 'smoke-receipt.json')) as fh:
-            stamp = json.load(fh).get('stamp')
-    except (OSError, ValueError):
-        return                      # no receipt is not evidence of a smoke
-    if not stamp:
+    mark = qtag(d, 'print("SMOKED=" .. tostring(SMOKED))', 'SMOKED=', timeout=30)
+    if mark is None:
+        print('  NOTE: the smoke marker could not be read -- the poison guard is NOT armed for this '
+              'run')
         return
-    try:
-        when = time.mktime(time.strptime(stamp, '%Y-%m-%dT%H:%M:%S'))
-    except ValueError:
+    if mark.strip() == 'nil':
         return
-    age_h = (time.time() - when) / 3600.0
-    # 12 h is deliberately loose. The power-cycle probe is what makes this precise, so the window only
-    # has to be wider than a plausible smoke-then-soak gap; the poison has no measured decay and
-    # 8.3 h of uptime did not bring it back after a cycle.
-    if age_h < 0 or age_h > 12.0:
-        return
-    loaded = str(qtag(d, 'print("SDECTYPE=" .. type(sdec))', 'SDECTYPE=', timeout=30) or '')
-    if 'table' not in loaded:
-        return                      # globals gone: the instrument was cycled after the smoke
     raise SystemExit(
-        'REFUSING: a smoke passed %.1f h ago and this DMM has not been power cycled since '
-        '(sdec is still loaded).\n'
+        'REFUSING: a smoke has run on this power cycle (SMOKED=%s) and the DMM has not been cycled '
+        'since.\n'
         '  A soak started after a smoke fails EVERY cell with "acq: line is idle (no '
         'transitions)" --\n'
         '  measured three times, most recently 705 of 705 cells. Only a power cycle clears it.\n'
         '  Power cycle the DMM, then start the soak. If it HAS been cycled since the smoke, pass\n'
-        '  --after-cycle.' % age_h)
+        '  --after-cycle.' % mark.strip())
 
 
 def main():

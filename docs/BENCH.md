@@ -1,6 +1,6 @@
 # The bench harness
 
-**Ian Ameline** · version 1.41 · MIT licence
+**Ian Ameline** · version 1.42 · MIT licence
 
 Three gates, each roughly ten times the cost of the one before it. Run them in order; a cheap failure
 stops an expensive one.
@@ -845,12 +845,18 @@ connection silently steals replies. `sdg_alive` must be passed an already-open h
 wedge that is not there.
 
 **Do not start a soak straight after a smoke — power cycle the DMM in between. `run_bench.py --start`
-now REFUSES to, so this is enforced rather than advised.** The refusal fires when the smoke receipt is
-under 12 h old *and* a pre-load probe finds the app's globals still present, which together mean "a smoke
-ran and nothing was cycled since". A stale receipt, or a cycled instrument, passes silently and does not
-even open the probe. `--after-cycle` overrides it, for the one false positive available: a cycle followed
-by something that loaded the app without being a smoke. `tools/test_pushplan.py` gates the decision table,
-including that a stale receipt asks the instrument nothing.
+now REFUSES to, so this is enforced rather than advised.** `bench_smoke.py` sets a Lua global on the
+instrument before its first stage; `refuse_smoke_poison()` reads it and refuses while it is set. A power
+cycle clears it and nothing else sets it, so the condition is exactly "has a smoke run since the last
+power cycle". `--after-cycle` overrides it without even asking the instrument.
+
+The mark is what makes it right in both directions, and a probe of `type(sdec)` was wrong in both: that
+asks "has anything loaded the app", so it **refused a resumed soak on a freshly cycled instrument** —
+`--start` sets `sdec` itself, so the second one always saw a table — and it **allowed a soak after a
+FAILED smoke**, because the receipt is only written on the pass path while the poison comes from running
+the smoke rather than passing it. The mark is set before the first stage for that reason. An unreadable
+probe fails open and says so. `tools/test_pushplan.py` gates the decision table, including both of those
+cases and the fail-open branch.
 
 It is enforced because it was advised three times and happened three times, the last one costing a whole
 detached run: **705 cells, every one idle.** This note was read on the evening of that occurrence, for

@@ -84,6 +84,41 @@ RATE_CASES = ('force-2x-rate,force-half-rate,force-6pct-fast,'
               'autolock-16099,autolock-4444')
 
 
+def mark_smoked():
+    """Leave a mark on the instrument saying a smoke has run on this power cycle. -> True if set.
+
+    WHY A MARK AND NOT A TIMESTAMP. A soak started after a smoke fails EVERY cell with
+    `acq: line is idle (no transitions)` until the DMM is power cycled -- three occurrences, the last
+    one 705 of 705 cells. run_bench.refuse_smoke_poison() blocks that, and the question it has to
+    answer is "has a smoke run since the last power cycle". A Lua global answers exactly that: a power
+    cycle clears it and nothing else sets it.
+
+    It replaces a probe of `type(sdec)`, which answered a DIFFERENT question -- "has anything loaded
+    the app" -- and so refused a soak that died and was resumed on a freshly cycled instrument,
+    advising a power cycle that was not needed.
+
+    SET BEFORE THE FIRST STAGE, PASS OR FAIL. The poison comes from RUNNING the smoke, not from
+    passing it, and the receipt is only written on the pass path -- so a failed smoke followed by a
+    soak, which is the likeliest sequence of all, armed nothing at all.
+
+    NEVER FATAL: if the mark cannot be set the smoke still runs. The cost is an unarmed guard, which is
+    where this started.
+    """
+    try:
+        from dmmrun import DMM
+        d = DMM(timeout=30)
+        try:
+            d.q('SMOKED = 1 print("SMOKED=" .. tostring(SMOKED))')
+            return True
+        finally:
+            d.close()
+    except Exception as e:
+        print('  NOTE: could not mark the instrument as smoked (%s: %s) -- a soak started after this'
+              % (type(e).__name__, e))
+        print('        will NOT be refused by run_bench\'s poison guard. Power cycle before one.')
+        return False
+
+
 def run(name, argv, log):
     print('=== %s ===' % name)
     t0 = time.time()
@@ -120,6 +155,9 @@ def main():
     print('SMOKE  iteration %d  spec %s%s%s' % (a.iteration, SPEC,
                                                 '' if not a.no_panel else '  (no panel)',
                                                 '  (CH2 merged into CH1)' if a.keep_combine else ''))
+    # BEFORE THE FIRST STAGE, so a smoke that fails or is interrupted still arms the poison guard --
+    # running it is what poisons the DMM, not finishing it.
+    mark_smoked()
     print()
     argv = ['python3', '-u', 'tools/bench_matrix.py', '--suites', 'plan',
             '--no-start', '--no-output-off', '--iteration', str(a.iteration),

@@ -2068,7 +2068,12 @@ end
 function sdec.ui_destroy()
   -- Switch away BEFORE deleting a visible screen; delete children before the
   -- screen that owns them.
-  if sdec.ui_scr ~= nil then
+  -- THE COVER COUNTS AS A SCREEN TO LEAVE. Gating this on ui_scr alone meant a teardown with a live
+  -- cover and no main screen deleted the screen the panel was showing -- measured, `active` still
+  -- pointing at the dead cover. Unreachable from today's only caller of ui_loading_raise, which runs
+  -- after ui_scr exists, which is exactly why it would go unnoticed the first time a cover is raised
+  -- anywhere else.
+  if sdec.ui_scr ~= nil or sdec.ui_loadscr ~= nil then
     pcall(display.changescreen, display.SCREEN_HOME)
   end
   local i
@@ -2206,9 +2211,16 @@ function sdec.ui_loading_raise()
     -- One line of text, because the title bar alone is easy to mistake for a half-drawn screen.
     -- settext on an OBJ_SCREEN works on this firmware (see ui_title), but a centred object is what
     -- reads as deliberate. Its handle is kept so it can be deleted before its parent.
-    sdec.ui_loadtxt = display.create(h, display.OBJ_TEXT, 232, 214,
+    --
+    -- CENTRED ON THE MEDIUM FACE, which is not the face ui_textw() measures. ui_textw gives 165 px
+    -- for this string on the small face and this object is FONT_MEDIUM, about 13.4 px a character
+    -- against small's 8, so the drawn width is ~276 px and the centre is (798 - 276) / 2. Taking
+    -- ui_textw's own number would have put it 29 px left of centre.
+    sdec.ui_loadtxt = display.create(h, display.OBJ_TEXT, 261, 214,
                                      'Loading, please wait...', 0xFFFFFF, display.FONT_MEDIUM)
   end
+  -- The create above already took the front, so this matters only to a caller that raises over a
+  -- cover that already exists. The call sites re-assert with ui_loading_front() instead.
   pcall(display.changescreen, sdec.ui_loadscr)
   return true
 end
@@ -2216,13 +2228,19 @@ end
 -- Put the real screen in front and take the loading screen away.
 --
 -- SWITCH FIRST, DELETE SECOND, which is the same rule ui_destroy follows: deleting the screen that is
--- currently displayed is how a panel ends up showing nothing. The caller passes the screen it wants
--- in front so this cannot guess wrong.
+-- currently displayed is how a panel ends up showing nothing.
 --
--- Child before parent, and only nil a handle whose delete was accepted -- del_obj counts a refused
--- delete and strands the handle on sdec.orphans, which the rebuild guard reads.
+-- AND THE SWITCH IS UNCONDITIONAL. A nil `showscr` used to mean "do not switch", which accepted a
+-- legal call that then deleted the screen in front and left the panel displaying a deleted object --
+-- measured, with `active` still pointing at the dead cover afterwards. destroy_options() already had
+-- the right shape: fall back to SCREEN_HOME, because leaving the panel on the instrument's own screen
+-- is always recoverable and leaving it on a deleted one never is.
+--
+-- Child before parent. The handles are nil'd unconditionally, which loses nothing: del_obj strands a
+-- REFUSED delete on sdec.orphans itself, and that list is what the rebuild guard reads.
 function sdec.ui_loading_clear(showscr)
-  if showscr ~= nil then pcall(display.changescreen, showscr) end
+  if showscr == nil then showscr = display.SCREEN_HOME end
+  pcall(display.changescreen, showscr)
   if sdec.ui_loadscr == nil then return false end
   sdec.del_obj(sdec.ui_loadtxt)
   sdec.del_obj(sdec.ui_loadscr)
@@ -3596,12 +3614,20 @@ function sdec.build_options()
           .. 'instrument.', 0)
   end
 
-  -- AND AGAIN HERE, because the create above took the front for the OPTIONS screen. This is the
+  -- AND A COVER HERE TOO, because the create above took the front for the OPTIONS screen. This is the
   -- second of the two screens the operator could watch assemble, and it is the one that looks like a
   -- fault rather than slowness: the app appears to open its settings page at launch and then leave it.
-  -- A no-op when the loading screen has already gone, which is the case when Options is opened by
-  -- hand later.
-  sdec.ui_loading_front()
+  --
+  -- WHO RAISED IT DECIDES WHO CLEARS IT. During a launch ui_build() raised a cover and start() is
+  -- holding it, so this only takes the front back. Pressed by hand on a session whose form was never
+  -- built -- or was destroyed -- there is no cover, and this raises its own: that path built all 13
+  -- objects in full view when taking the front back was the only thing done here.
+  local covermine = false
+  if sdec.ui_loadscr == nil then
+    covermine = sdec.ui_loading_raise()
+  else
+    sdec.ui_loading_front()
+  end
 
   -- Protocol FIRST, because it overrides the fields below it: MIDI is 31250 baud 8N1 by
   -- specification, so choosing it fills in the wire parameters instead of asking for
@@ -3781,5 +3807,10 @@ function sdec.build_options()
   -- the visible screen, exiting from the form would strand both screens and the
   -- buffer until a power cycle.
   pcall(display.setevent, sdec.optscr, display.EVENT_ENDAPP, 'sdec.guard(sdec.cleanup)')
+
+  -- The cover comes down only if this function raised it; on the launch path start() owns it and
+  -- clears it after this returns. Ownership is "did I create it" rather than a flag, because the two
+  -- paths differ in who called first, not in what they want.
+  if covermine then sdec.ui_loading_clear(sdec.optscr) end
   return sdec.optscr
 end
