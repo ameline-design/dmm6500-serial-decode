@@ -21,7 +21,7 @@ ESTABLISHED has neither a measurement nor a citation and should be read as an op
 | sequences | concurrent, each `START`…`END`; the event log calls them **paths** |
 | control flow | 8 branch types — always, once, once-excluded, on-event, counter, delta, limit-constant, limit-dynamic — plus `RESET_BRANCH_COUNT`, which resets a counter and does not branch |
 | signals | 8 notify blocks, 2 blenders, 4 timers, 6 digital I/O lines, 8 LAN objects, 3 TSP-Link lines |
-| state | `trigger.model.state()` → `EMPTY`, `BUILDING`, `RUNNING`, `WAITING`, `IDLE`, `ABORTED`, `FAILED`, `PAUSED` observed; `ABORTING` never seen in **200 samples taken with nothing between them and `abort()`**, so the transition is atomic at this granularity (MEASURED, `tools/bench_trigclaims.py`) |
+| state | `trigger.model.state()` → `EMPTY`, `BUILDING`, `RUNNING`, `WAITING`, `IDLE`, `ABORTED`, `FAILED`, `PAUSED` observed; `ABORTING` never seen in **200 samples taken with nothing between them and `abort()`**, so the transition is atomic at this granularity (MEASURED, P6) |
 | state's return | **the first value is `userdata`, not a string** — it prints as `trigger.STATE_WAITING` and concatenates like one, then raises `-286 string expected, got userdata` the moment anything treats it as one. Compare with `==` against `trigger.STATE_*`. The arity is not fixed: an `EMPTY` model returned exactly three, `(state, state, 3)`, and a `FAILED` one printed five, `FAILED FAILED 1 FAILED 0` (MEASURED, same) |
 
 A program counter, conditional branches, per-block loop counters, and inter-sequence signalling. No
@@ -117,7 +117,7 @@ the refusal is on the write, not on the value.
 **NOT ESTABLISHED:** that switching between local and remote control aborts a running model. It is not
 scriptable from the socket, and the local/remote text at 15-2 says only that the front panel is
 disabled and that you are prompted to switch control. The experiment is written and takes one press —
-`tools/bench_trigpanel.py --case b` parks a model on `EVENT_EXTERNAL` with no marker and polls from
+P7 parks a model on `EVENT_EXTERNAL` with no marker and polls from
 inside for 40 s, so a press that aborts the model is visible as the second the state leaves `RUNNING`
 and a press that does not is visible as a model still parked at 40.000 s. **What it cannot do is tell a
 model that ignored the press from a window in which nobody pressed**, so it reports only what it saw
@@ -135,7 +135,7 @@ This is the most important thing here, and it is the opposite of what a Lua prog
 | `dmm.digitize.func = …` while the model runs | **true** | discarded — event **2727**, "Command prohibited while trigger model is running" (MEASURED, P2f) |
 
 | `trigger.model.pause()` on a model that is not running | **true** | refused — event **2767**, "Trigger model cannot be paused unless it is already running" (MEASURED, P4) |
-| `trigger.model.pause()` on a model that **is** running | **true** | honoured, and this is the one call here that did what it said: the state became `trigger.STATE_PAUSED` and `resume()` put it back to `RUNNING` (MEASURED, `tools/bench_trigclaims.py`) |
+| `trigger.model.pause()` on a model that **is** running | **true** | honoured, and this is the one call here that did what it said: the state became `trigger.STATE_PAUSED` and `resume()` put it back to `RUNNING` (MEASURED, P6) |
 
 **THE WHOLE TRIGGER SUBSYSTEM REPORTS REFUSALS OUT OF BAND**, not just these two calls: a block
 write, an ordinary attribute write and a plain function call each return success and file the reason
@@ -153,7 +153,7 @@ Nothing in §9 or §15 says this, and no example in the manual checks for it.
 
 A model that is waiting cannot be WATCHED from a host. Every command that arrives on the socket while
 one is initiated aborts it, and the abort is filed as event **2728**, "Trigger model path #1 has been
-aborted" (MEASURED, `tools/probe_waitstate.py`). The control is what makes it conclusive — one chunk that initiates, delays four
+aborted" (MEASURED, P5). The control is what makes it conclusive — one chunk that initiates, delays four
 seconds **inside the instrument**, and reports:
 
 | | state | readings | events |
@@ -197,23 +197,23 @@ work as written on this instrument.
 chunk, with no print in the chunk and no traffic from that socket afterwards, died anyway: three
 repeats at **427.6, 436.1 and 441.4 ms** — 17 654, 17 442 and 17 104 readings at 40 kS/s — and two
 earlier runs under different command sequences at 5.4 ms and 246.3 ms. Polled from **inside** one
-chunk the same model reached 39 400 readings. So something periodic ends it, and the app's own 2 Hz
-panel tick is the named suspect.
+chunk the same model reached 39 400 readings. So something periodic ends it, and a loaded application's
+own panel tick — 2 Hz in the case measured — is the named suspect.
 
 **The confound cannot be removed from that run**: a second client held a socket to the instrument
 throughout, so "no traffic" means none from the measuring socket. It also reframes the variability the
 original finding leaned on — 4 500 to 14 159 readings was read as "it dies when the next command
 arrives", and a model that dies on its own clock would look the same. **The operational rule is
 unchanged either way**: poll a wait from inside the instrument, because every host-side attempt to
-watch one *with the app loaded* has failed.
+watch one *with an application loaded* has failed.
 
 **THE CONFOUND IS REMOVABLE AFTER ALL, AND IT EXONERATES THE READBACK** (MEASURED,
-`tools/bench_trigclaims.py`, on an instrument minutes out of a power cycle with `sdec` and `brun` both
-nil and one socket open). A model parked on `EVENT_EXTERNAL` with no marker arriving answered **2440
+P6, on an instrument minutes out of a power cycle with **no application loaded** — its globals absent —
+and one socket open). A model parked on `EVENT_EXTERNAL` with no marker arriving answered **2440
 consecutive host state queries over 4.001 s** and was still in `STATE_WAITING` at the last of them —
 an order of magnitude past the 427–441 ms the three deaths were measured at, and ~2 400 more queries
 than the one it would take if asking were enough. **So a host query does not kill a parked wait. What
-killed those three arrived with the app**, which leaves the 2 Hz panel tick as the only named suspect
+killed those three arrived with the loaded application**, which leaves its panel tick as the only suspect
 still standing rather than one of two. Poll from inside because of what else is running, not because
 of the question.
 
@@ -288,7 +288,7 @@ it is two blocks instead of four and it is on the fast path (§10). It is on the
 never does anything.
 
 **`EVENT_EXTERNAL` AS THE FIRST BLOCK WORKS, SO THE RESTRICTION REALLY IS THE COMPARATOR'S**
-(MEASURED, `tools/bench_trigclaims.py`, rear TRIGGER IN driven by a 100 Hz pulse). A two-block program
+(MEASURED, P6, rear TRIGGER IN driven by a 100 Hz pulse). A two-block program
 — `WAIT EVENT_EXTERNAL` then a counted digitize — completed inside the first second with its full 100
 readings. The control is the same program with the marker switched off: it sat the whole four-second
 window at **zero readings**, so nothing but the marker ended it.
@@ -326,73 +326,60 @@ directions from the two settings.
 An explicit count on the block **overrides `dmm.digitize.count`** (MEASURED, E3e: count 7 set, block
 count 250, 250 readings taken). Counts of 8192, 32768 and 1 000 000 are all accepted (MEASURED, E3f).
 
-### The reserve is the wire BEFORE the device started, and reading it as the line inverts every byte
+### The reserve is the wire BEFORE the device started, and it out-measures everything real in the record
 
-A window that holds everything from `initiate()` onward is also a hazard, and it cost this app a defect
-of its own. On an arm from silence the reserve is not a quiet stretch of the signal: it is a
-measurement of a switched-off wire, taken before the device under test was transmitting at all. `sdec.sig_idle` set the polarity prior from the
-longest run in the window, the reserve became that run, and the decode came back inverted —
-self-consistent bytes, a plausible error count, every one of them wrong. ASCII's always-zero top data
-bit puts a rising edge exactly nine bit times after every start bit, so the inverted reading frames as
-cleanly as the truth and nothing downstream objects.
+A window that holds everything from `initiate()` onward is also a hazard. On an arm from silence the
+reserve is not a quiet stretch of the signal: it is a measurement of a switched-off wire, taken before
+the device under test transmitted at all. Any reader that infers a property of the signal from the
+record's longest or leading stretch — a polarity, an idle level, a baseline, a noise floor — will take
+it from the reserve and be **self-consistently wrong**: the inference succeeds, reports a plausible
+quality figure, and is wrong in every sample it touches.
 
-**THE RESERVE'S LENGTH MADE IT WORSE, NOT BETTER.** A run of a thousand samples clears
-`sdec.idlemult * onebit` several times over, so `sig_idle`'s LEVEL branch — the one that takes
-polarity from the signalling standard rather than from this window — never runs and `sdec.idle_weak`
-stays false. `idle_weak` is the flag `sdec.polmargin` keys on. The capture that most needs the 4×
-margin against an inverted ASCII reading is the one certain not to get it.
+**ITS LENGTH DISARMS THE USUAL PROTECTION.** The natural guard against a bad inference is a
+plausibility test — *is this stretch long enough to be a real idle?* A reserve of a thousand samples
+clears any such threshold several times over, so the capture that most needs the sanity check is the
+one certain to pass it. A guard of that shape protects every capture except this one.
 
-**IT IS A SAMPLE-RATE BOUNDARY, NOT A COIN TOSS.** The reserve is a fixed SAMPLE count — 5 % of
-capacity, 1055 at 21 100 — while the line's idle gap is a fixed TIME, so the gap out-runs the reserve
-only above about 171 kS/s on `v41`. MEASURED, `v41` at 0.00…3.30 V on the wire, armed on silence with
-the generator switched on at +3 s, six captures a condition:
+**IT IS A SAMPLE-RATE BOUNDARY, NOT A COIN TOSS.** The reserve is a fixed SAMPLE count — a percentage
+of buffer capacity, 1055 samples at 5 % of a 21 100-reading buffer — while a gap in the signal is a
+fixed TIME. So whether anything real out-measures the reserve is decided entirely by the sample rate.
+MEASURED, armed on a silent line with the source switched on at +3 s, six captures a condition:
 
-| condition | `run0` | `run1` | `idle` | result |
-|---|---|---|---|---|
-| busy line, no arm | 50 | 344 | 1 | 162 bytes, 0 bad, 6/6 readable |
-| armed, blind, fs 200 kS/s | 1052 | 1210 | 1 | 62 bytes, 0 bad, 2/6 readable |
-| armed, locked, fs 80 kS/s | 1053 | 500 | 0 | 158 bytes, 62 bad, **0/6 readable** |
+| condition | leading run | next run | the next run in TIME |
+|---|---|---|---|
+| busy line, never armed | 50 | 344 | — |
+| armed, 200 kS/s | 1052 | 1210 | 6.05 ms |
+| armed, 80 kS/s | 1053 | 500 | 6.25 ms |
 
-`run1` is the same gap in both armed rows — 1210 samples at 200 kS/s and 500 at 80 kS/s are 6.05 and
-6.25 ms — while `run0` is the reserve at its fixed 1055 either way. A locked 9600 picks 80 kS/s and
-fails every time; the blind rate picks 200 kS/s and is marginal, which is the 2/6.
+The second run is the **same 6 ms gap** in both armed rows, while the leading run is the reserve at its
+fixed ~1055 either way. So the reserve dominates at the lower rate and is overtaken at the higher one
+with nothing else changed — which is why a defect of this kind reproduces at one sample rate, vanishes
+at another, and looks intermittent until the arithmetic is written down. For a 6 ms gap the crossover
+is about **171 kS/s**.
 
-**THE AUTOLOCK STATE IS THE SEVERE ROW, AND IT IS THE DEFAULT.** `sdec.autolock` is true, and
-`sdec.autolock_try` sets `force_nbits`, `force_par` and `force_nstop` while deliberately leaving
-`force_invert` nil. In that state `sdec.decode_from` takes its forced-format branch, which reads
-`inv = (sdec.idle == 0)`: no second polarity is searched, no scores are compared, and no margin
-applies, so a wrong prior has nothing to overturn it. The other two rows keep `sdec.ua_autoformat`'s
-contest as a backstop. **That is a standing weakness of the branch and not of the reserve** — *any*
-wrong `sdec.idle` reaches the bytes there, whatever set it. It is not fixed; it has been deprived of
-its trigger.
+**BOTH POLARITIES ARE AFFECTED, IN OPPOSITE DIRECTIONS.** On a single-supply line the dead wire sits at
+ground, which is also the signal's low level, so the reserve reads as a long low. On a ground-straddling
+line the threshold sits near 0 V and the dead wire sits essentially *on* it, so which side the reserve
+falls on is decided by millivolts: MEASURED at a −0.011 V threshold, the dead line landed on the HIGH
+side by 11 mV.
 
-**BOTH POLARITIES WERE AFFECTED, IN OPPOSITE DIRECTIONS.** On a single-supply line the dead wire sits
-at ground, which IS the space level, so the prior became "idles LOW". On a ground-straddling line
-`sdec.thr` is about 0 V and the dead wire sits essentially on it, so which bucket the reserve fell
-into was decided by millivolts: MEASURED on `v45` at AMP 15.038 / OFST −2.481, `thr = −0.011 V` and
-the dead line landed on the HIGH side by 11 mV.
+**THE REMEDY IS TO TELL THE READER THAT THE RECORD OPENS BEFORE ITS OWN TRIGGER**, and the flag has to
+be conditional on the reserve existing: at a pre-trigger of **0** the record opens ON the edge and its
+leading stretch really is the signal, so a flag set unconditionally is a constant and protects nothing.
+Exclude the leading run from any inference about the signal, publish it as its own quantity, and let the
+interior of the record decide. Where the window holds nothing but the reserve, the plausibility test
+fires honestly and whatever prior the signalling standard supplies is used instead.
 
-**THE FIX TELLS THE DECODER THAT THE RECORD OPENS BEFORE ITS OWN TRIGGER.** `sdec.acq_pretrig` is set
-on `sdec.acq_triggered`'s successful exit, and only where `sdec.pretrig` is above 0, since at 0 the
-record opens ON the edge and its first run really is the line. `sdec.acq_free` clears it, which covers
-both the degrade-to-free-run exit and the level-learning probe inside `sdec.acquire`, and so does
-`sdec.clear_measured`. `sig_idle` then refuses to let the leading run set `run0`/`run1`, and publishes
-it as `sdec.leadrun` instead. With the reserve out of the vote the real runs decide; where the window
-holds no genuine idle either, the longest run falls below `idlemult * onebit`, the LEVEL branch fires,
-`idle_weak` comes back true, and the 4× margin protects the answer.
+With the leading run excluded, every armed condition above recovered to the same success rate as the
+never-armed control, and on a ground-straddling line 36 of 36 captures across three bands and two
+configurations read the polarity correctly.
 
-AFTER, the same six conditions: armed blind 2/6 → 6/6, armed locked 0/6 → 6/6, all four busy-line
-conditions unchanged at 6/6. On `v45` driven bipolar — three bands × two lock states × six captures —
-36/36 readable with `invert` true throughout, which is the correct answer for a line that genuinely
-idles low.
-
-**THE GUARD IS `bench_arm.py` CASE P**, which runs the workflow in three lock states and asserts the
-premise before the outcome: a fired arm must report `acq_pretrig` true and a leading run over 500
-samples, because an assertion about the reserve is vacuous if there was no reserve. MEASURED with the
-guard disabled on the instrument, the `run0 == leadrun` mechanism check fails in all three rows while
-the BYTE check fails only in the autolock one — the contest rescued the other two on that run. So the
-mechanism check is the reliable detector and the byte check is what says the defect reached the
-operator. Both are kept.
+**AND ASSERT THE PREMISE, NOT ONLY THE OUTCOME.** A test that checks the end result is **vacuous when
+there was no reserve to begin with** — it passes for the wrong reason. The assertion worth writing is
+that the arm fired *and* the leading run exceeded a few hundred samples. MEASURED with the remedy
+disabled: the premise check fails in every configuration while the end-to-end check fails in only one of
+three, because a downstream contest rescued the other two on that run. The premise check is the reliable
+detector; the outcome check is what says the defect reached a user. Keep both.
 
 ## 8. The canned templates, disassembled
 
@@ -445,10 +432,10 @@ What does move it is **what the instrument was doing before the arm**:
 | a completed `dmm.digitize.read()` | 0.164 s |
 | `load("Empty")`, nothing acquiring | 0.191 s |
 
-**AND THE APP ALWAYS PAYS THE WORST ROW.** `sdec.trig_settle()` aborts before every capture, so the
-prior state is always "aborted while waiting" — 0.228 s. The spin took its last look at about
-**0.232 s** (25 iterations at a measured 9.67 ms each), which is **4 ms of margin**. That is the
-whole of the coin toss, and it was there at every buffer size including the frame default.
+**AND A CALLER THAT ABORTS BEFORE EVERY CAPTURE ALWAYS PAYS THE WORST ROW.** Aborting for hygiene makes
+the prior state permanently "aborted while waiting" — 0.228 s, the slowest row in the table — so the
+tidiest caller is the one with the least margin. A spin bounded at 0.25 s took its last look at about
+**0.232 s** (25 iterations at a measured 9.67 ms each): **4 ms of margin**, at every buffer size.
 
 **THE `delay()` IN THE SPIN IS LOAD-BEARING.** Cadence between 10 ms, 1 ms and 0.2 ms is a null, but
 **zero** delay is fatal: a tight loop issued **56 102** `pcall(trigger.model.state)` calls over 3 s
@@ -456,10 +443,11 @@ and the model sat at block 2 — the zero `DELAY_CONSTANT` — the whole time, n
 read is IPC to the second processor, and a spin that never yields starves the trigger engine. Deleting
 the `delay()` as a micro-optimisation would break every armed recording.
 
-**SO A BOUND ANYWHERE NEAR 0.2 s IS A COIN TOSS.** `sdec.arm_settle_s` bounded the app's spin at
-0.25 s, about ten per cent above the slowest arm the instrument produces, and `hw-arm` case F duly
-armed once and failed the next three runs — 0.6 s, 1.0 s and 3.0 s each arm and collect about 5 484
-bytes. The shipped value is now 10 s, which is forty-four times the slowest arm.
+**SO A BOUND ANYWHERE NEAR 0.2 s IS A COIN TOSS.** A spin bounded at 0.25 s sits about ten per cent
+above the slowest arm the instrument produces, and a test of it armed once and then failed three
+consecutive runs. A bound of **10 s** — forty-four times the slowest arm — is not generous: the
+distribution has a hard floor at 0.164 s and the cost of overshooting the bound is total, so there is
+nothing to buy by trimming it.
 
 The consequence inverts the feature instead of degrading it. A spin that never sees `STATE_WAITING`
 has to report an arm that did not go live, because the poll loop cannot tell that from a trigger that
@@ -478,8 +466,8 @@ within one ramp period of the wait going live, long before the state reported it
 
 **So a capture that fails a short spin was armed the whole time.** It is declared unarmed on the
 strength of a stale state read, and no data was ever lost to a late comparator. A generous bound is
-still the right fix — the app has no other way to ask — but the number bounds the firmware's candour,
-not its readiness.
+still the right fix — polling the state is the only way to ask — but the number bounds the firmware's
+candour, not its readiness.
 
 ### The comparator fires about 7.3 µs after the crossing, and that is fixed in time
 
@@ -648,7 +636,7 @@ One difference that could not be removed, and it is inert rather than fixed: A's
 `LOGIC: OR` while both hand-built waits report `AND`, because `setblock` cannot take a logic argument
 without a second event. With one event the two mean the same thing.
 
-**So there is no latency and no throughput case for restructuring the app's armed capture**, and §8's
+**So there is no latency and no throughput case for restructuring a four-block armed capture**, and §8's
 control agrees from the other side — moving the clear out of the model does not shorten the arm
 either, 0.1763 s against 0.1788 s.
 
@@ -734,7 +722,7 @@ measurement refuted it, and the example is gone.
   as `trigger.STATE_PAUSE`. That constant is **nil** on the instrument; the real one is
   `trigger.STATE_PAUSED`, as ref line 49484 has it. And that state is reachable: `pause()` on a model
   that **is** running returns true and the state becomes `trigger.STATE_PAUSED`, with `resume()`
-  putting it back to `RUNNING` (MEASURED, `tools/bench_trigclaims.py`).
+  putting it back to `RUNNING` (MEASURED, P6).
 * **A second nil constant, and it fails as a trigger-model error.** `buffer.STYLE_COMPACT` is **nil**
   on 1.7.17a, so `buffer.make(n, buffer.STYLE_COMPACT)` hands nil to the style parameter and posts
   **1138**, "Parameter 2, expected type 'rbuffer_style', but found type 'nil'". The cost is not one
