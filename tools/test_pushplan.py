@@ -246,6 +246,73 @@ _split = JB.split_runs(['# %s tag=soak' % JB.SCHEMA, 'R,1,1,x', 'R,1,2,x',
 check('while a plain soak start after one really is a second run -- the check can fail',
       len(_split) == 2, '%d run(s)' % len(_split))
 
+# ---------------------------------------------------------------------------- the smoke-poison refusal
+#
+# A soak started after a smoke fails EVERY cell with "acq: line is idle (no transitions)" until the DMM
+# is power cycled -- three occurrences, the last one 705 of 705 cells. refuse_smoke_poison blocks that
+# combination, and what is tested here is the DECISION TABLE rather than the message: the refusal has to
+# fire on "a smoke ran and nothing was cycled", and has to stay silent on everything else, because a
+# guard that refuses a legitimate soak would be worse than the defect it prevents.
+#
+# THE PROBE CALL IS COUNTED, NOT JUST THE VERDICT. The instrument is only asked about sdec when the
+# receipt is recent enough to matter; a stale receipt must not open a socket conversation at all. A
+# verdict test alone would pass on an implementation that probed every time and then ignored it.
+import json as _json                                                            # noqa: E402
+import shutil as _shutil                                                        # noqa: E402
+import tempfile as _tmp                                                         # noqa: E402
+import time as _time                                                            # noqa: E402
+
+_real_root, _real_qtag = RB.ROOT, RB.qtag
+_probes = []
+
+
+class _Args(object):
+    def __init__(self, after_cycle=False):
+        self.start, self.after_cycle = True, after_cycle
+
+
+def _poison_case(hours_ago, sdec_type, after_cycle=False, receipt=True):
+    """-> ('refused'|'allowed', probe_count). Builds a receipt of a chosen age in a temp ROOT."""
+    root = _tmp.mkdtemp()
+    try:
+        if receipt:
+            os.makedirs(os.path.join(root, 'out'))
+            stamp = _time.strftime('%Y-%m-%dT%H:%M:%S',
+                                   _time.localtime(_time.time() - hours_ago * 3600.0))
+            with open(os.path.join(root, 'out', 'smoke-receipt.json'), 'w') as fh:
+                _json.dump({'stamp': stamp, 'tree': 'f' * 16}, fh)
+        del _probes[:]
+        RB.ROOT = root
+        RB.qtag = lambda d, cmd, tag, timeout=60: (_probes.append(cmd), sdec_type)[1]
+        try:
+            RB.refuse_smoke_poison(None, _Args(after_cycle=after_cycle))
+            return 'allowed', len(_probes)
+        except SystemExit as e:
+            return ('refused' if 'power cycle' in str(e).lower() else 'refused-wrong-reason',
+                    len(_probes))
+    finally:
+        RB.ROOT, RB.qtag = _real_root, _real_qtag
+        _shutil.rmtree(root, ignore_errors=True)
+
+
+_v, _n = _poison_case(1.0, 'table')
+check('a soak started 1 h after a smoke with the app still loaded is REFUSED, naming the power cycle',
+      _v == 'refused', '%s, %d probe(s)' % (_v, _n))
+_v, _n = _poison_case(1.0, 'nil')
+check('and the same receipt passes once the DMM has been cycled -- sdec nil is the evidence',
+      _v == 'allowed', '%s, %d probe(s)' % (_v, _n))
+_v, _n = _poison_case(1.0, 'table', after_cycle=True)
+check('--after-cycle overrides it, for a cycle followed by a non-smoke load',
+      _v == 'allowed', '%s, %d probe(s)' % (_v, _n))
+_v, _n = _poison_case(13.0, 'table')
+check('a smoke 13 h old does not block a soak, AND does not even ask the instrument',
+      _v == 'allowed' and _n == 0, '%s, %d probe(s)' % (_v, _n))
+_v, _n = _poison_case(0, 'table', receipt=False)
+check('no receipt is not evidence of a smoke, so it passes without a probe',
+      _v == 'allowed' and _n == 0, '%s, %d probe(s)' % (_v, _n))
+check('and the guard was restored: ROOT and qtag are the real ones again',
+      RB.ROOT == _real_root and RB.qtag is _real_qtag)
+
 print('')
 if FAIL:
     print('%d FAILED: %s' % (len(FAIL), ', '.join(FAIL)))

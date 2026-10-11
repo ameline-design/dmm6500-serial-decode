@@ -844,7 +844,19 @@ laps against a dead bench. Exit 1 means "a cell failed" and a soak should carry 
 connection silently steals replies. `sdg_alive` must be passed an already-open handle or it reports a
 wedge that is not there.
 
-**Do not start a soak straight after a smoke — power cycle the DMM in between.** `acq: line is idle (no
+**Do not start a soak straight after a smoke — power cycle the DMM in between. `run_bench.py --start`
+now REFUSES to, so this is enforced rather than advised.** The refusal fires when the smoke receipt is
+under 12 h old *and* a pre-load probe finds the app's globals still present, which together mean "a smoke
+ran and nothing was cycled since". A stale receipt, or a cycled instrument, passes silently and does not
+even open the probe. `--after-cycle` overrides it, for the one false positive available: a cycle followed
+by something that loaded the app without being a smoke. `tools/test_pushplan.py` gates the decision table,
+including that a stale receipt asks the instrument nothing.
+
+It is enforced because it was advised three times and happened three times, the last one costing a whole
+detached run: **705 cells, every one idle.** This note was read on the evening of that occurrence, for
+another purpose, and the soak was started after a smoke anyway.
+
+`acq: line is idle (no
 transitions)` is accumulated **DMM-side** state, and the controlled pairing is unambiguous: an identical
 88-cell spec gave 63 idle of 88 cells with a stale DMM and a fresh SDG, and **0 of 88** with both fresh,
 the generator untouched between the halves. A soak started 30 minutes after a passing smoke went **33 idle

@@ -451,6 +451,67 @@ def fetch(d, out_dir):
     return local
 
 
+def refuse_smoke_poison(d, a):
+    """Refuse to start a soak that a smoke has poisoned. Three occurrences, all the same shape.
+
+    A SOAK STARTED AFTER A SMOKE FAILS EVERY CELL WITH `acq: line is idle (no transitions)`, and only
+    a DMM power cycle clears it. Measured three times:
+
+        2026-09-07  88-cell lap, 63 idle (71.6 %), two smokes in the hour before it
+        2026-09-08  4-lap soak stopped at cell 49, 33 of 49 idle, all on one vector
+        2026-10-10  brun.soak(6) detached, 705 cells, EVERY ONE idle -- the operator saw it first
+
+    Each time the generator answered SCPI cleanly with the right waveform and amplitude, so the
+    evidence points at the generator and the cause is the DMM. Each time a power cycle fixed it, and
+    hours of further uptime did not bring it back.
+
+    WHY THIS IS CODE AND NOT A NOTE. It was a note first, and the note was read on the evening of the
+    third occurrence -- for another purpose -- and the soak was started after a smoke anyway. A rule
+    that has been written down three times and violated three times is not a documentation problem.
+
+    THE CONDITION IS EXACT, NOT A TIMER. The question is "has a smoke run since the last power cycle",
+    and both halves are observable: the receipt carries the stamp of the last passing gate, and a power
+    cycle leaves the app's globals nil. So this reads `type(sdec)` BEFORE anything is loaded -- after
+    the load every answer is 'table' and the signal is gone. A stale receipt with a cycled instrument
+    passes, which is the common case and must stay silent.
+
+    --after-cycle is the escape, for the one false positive this can produce: a cycle followed by
+    something that loaded the app without being a smoke.
+    """
+    if a.after_cycle:
+        return
+    stamp = None
+    try:
+        import json
+        with open(os.path.join(ROOT, 'out', 'smoke-receipt.json')) as fh:
+            stamp = json.load(fh).get('stamp')
+    except (OSError, ValueError):
+        return                      # no receipt is not evidence of a smoke
+    if not stamp:
+        return
+    try:
+        when = time.mktime(time.strptime(stamp, '%Y-%m-%dT%H:%M:%S'))
+    except ValueError:
+        return
+    age_h = (time.time() - when) / 3600.0
+    # 12 h is deliberately loose. The power-cycle probe is what makes this precise, so the window only
+    # has to be wider than a plausible smoke-then-soak gap; the poison has no measured decay and
+    # 8.3 h of uptime did not bring it back after a cycle.
+    if age_h < 0 or age_h > 12.0:
+        return
+    loaded = str(qtag(d, 'print("SDECTYPE=" .. type(sdec))', 'SDECTYPE=', timeout=30) or '')
+    if 'table' not in loaded:
+        return                      # globals gone: the instrument was cycled after the smoke
+    raise SystemExit(
+        'REFUSING: a smoke passed %.1f h ago and this DMM has not been power cycled since '
+        '(sdec is still loaded).\n'
+        '  A soak started after a smoke fails EVERY cell with "acq: line is idle (no '
+        'transitions)" --\n'
+        '  measured three times, most recently 705 of 705 cells. Only a power cycle clears it.\n'
+        '  Power cycle the DMM, then start the soak. If it HAS been cycled since the smoke, pass\n'
+        '  --after-cycle.' % age_h)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--smoke', action='store_true',
@@ -503,6 +564,10 @@ def main():
                          'takes a lap from 2.07 h to 1.64 h')
     ap.add_argument('--push-plan', action='store_true', help='write the plan onto the key first')
     ap.add_argument('--no-load', action='store_true', help='the app and engine are already loaded')
+    ap.add_argument('--after-cycle', action='store_true',
+                    help='the DMM HAS been power cycled since the last smoke. Skips the refusal in '
+                         'refuse_smoke_poison, which otherwise blocks a soak started after a smoke '
+                         'because that combination has failed every cell three times')
     ap.add_argument('--start', action='store_true', help='start the loop and disconnect')
     ap.add_argument('--detach', action='store_true',
                     help='start and let go of the socket, whatever the iteration count')
@@ -573,6 +638,8 @@ def main():
 
     d = DMM()
     try:
+        if a.start:
+            refuse_smoke_poison(d, a)
         if not a.no_load:
             print('loading the app and the bench engine')
             load_modules(d, APP + ENGINE)
