@@ -6840,14 +6840,14 @@ function sdec.buf_reclaim()
   local what = nil
   if n2 ~= nil then
     sdec.ck_defbufwas.defbuffer2 = d2
-    what = string.format('defbuffer2 from %d', d2)
+    what = string.format('defbuffer2 %d -> %d', d2, dc)
   end
   if n1 ~= nil then
     sdec.ck_defbufwas.defbuffer1 = d1
-    local s = string.format('defbuffer1 from %d', d1)
+    local s = string.format('defbuffer1 %d -> %d', d1, dc)
     if what == nil then what = s else what = what .. ' and ' .. s end
   end
-  return true, what .. string.format(' to %d', dc)
+  return true, what
 end
 
 -- AND BUFFERS THIS APP DID NOT MAKE HOLD THE SAME POOL, so they are swept before the default buffers
@@ -7984,14 +7984,10 @@ end
 -- and a reason if a rebuild is refused or the build fails.
 function sdec.start()
   local swept, sweptwhat = sdec.buf_sweep()
-  if swept > 0 then
-    ulog.line(string.format('swept %d readings of buffers this app did not make: %s',
-                            swept, sweptwhat))
-  end
   local reclaimed, reclaimwhat = sdec.buf_reclaim()
-  if reclaimed then
-    ulog.line('reclaimed ' .. reclaimwhat .. ' -- the resize discards the readings those buffers held')
-  end
+  sdec.ck_swept, sdec.ck_sweptwhat = swept, sweptwhat
+  sdec.ck_reclaimwhat = nil
+  if reclaimed then sdec.ck_reclaimwhat = reclaimwhat end
   sdec.ck_bufmax, sdec.ck_bigbuf, sdec.ck_bigcap = sdec.bufmax_for()
   if sdec.ck_bufmax < sdec.ck_bufmin then
     local why = string.format('%d readings left for a recording and the smallest mode needs %d: '
@@ -8027,6 +8023,15 @@ function sdec.start()
     ulog.tag = 'SDEC'
     ulog.ensuredir()
     ulog.open(sdec.logpath)
+
+    if (sdec.ck_swept or 0) > 0 then
+      ulog.line(string.format('swept %d readings of buffers this app did not make: %s',
+                              sdec.ck_swept, tostring(sdec.ck_sweptwhat)))
+    end
+    if sdec.ck_reclaimwhat ~= nil then
+      ulog.line('reclaimed ' .. sdec.ck_reclaimwhat
+                .. ' -- the resize discarded the readings those buffers held')
+    end
 
     if sdec.ck_bigbuf == nil then
       ulog.line(string.format('recording ceiling: %d readings -- the default buffer capacities '

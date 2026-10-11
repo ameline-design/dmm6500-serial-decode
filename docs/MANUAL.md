@@ -544,11 +544,15 @@ frees the room, in this order:
 3. **`defbuffer1` is resized back to 100 000** only if `defbuffer2` was not enough on its own. It is
    last because it is the instrument's default *active* buffer — the one your own measurements go to.
 
-**A resize discards every reading in the buffer**, so the app says what it took: a line in the USB
-log at every launch, naming each buffer and the capacity it had. It reclaims to the default rather
-than to just-enough because the loss is the same either way — any resize clears the whole buffer —
-so a partial shrink would cost you the same readings and free less. **The capacities are handed back
-at exit**; the readings cannot be.
+**A resize discards every reading in the buffer**, so the app says what it took: a line in
+`serial_decode_log.txt` at every launch, naming each buffer and the capacity it had. It reclaims to
+the default rather than to just-enough because the loss is the same either way — any resize clears the
+whole buffer — so a partial shrink would cost you the same readings and free less. **The capacities
+are handed back at exit**; the readings cannot be.
+
+**If you size the default buffers from an `autoexec` script**, the meter comes up large on every boot,
+so this happens at every launch rather than once — the log line is where to look, and your sizes are
+restored when the app exits. A capacity set by hand does not survive a power cycle on its own.
 
 With the defaults restored that leaves the full **4 076 503** and no recording at any baud is ever
 shortened. If the resizes are refused — a meter that will not take the capacity write — the app

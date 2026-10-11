@@ -2066,16 +2066,20 @@ function sdec.buf_reclaim()
   pcall(collectgarbage)
   if sdec.ck_defbufwas == nil then sdec.ck_defbufwas = {} end
   local what = nil
+  -- PER BUFFER, BOTH ENDPOINTS, because one shared destination at the end of the sentence does not
+  -- read as shared: "defbuffer2 from 3000000 and defbuffer1 from 3000000 to 100000" reaches the
+  -- operator as a statement about defbuffer1 with defbuffer2's new size left unsaid -- on the one
+  -- line that records readings being destroyed.
   if n2 ~= nil then
     sdec.ck_defbufwas.defbuffer2 = d2
-    what = string.format('defbuffer2 from %d', d2)
+    what = string.format('defbuffer2 %d -> %d', d2, dc)
   end
   if n1 ~= nil then
     sdec.ck_defbufwas.defbuffer1 = d1
-    local s = string.format('defbuffer1 from %d', d1)
+    local s = string.format('defbuffer1 %d -> %d', d1, dc)
     if what == nil then what = s else what = what .. ' and ' .. s end
   end
-  return true, what .. string.format(' to %d', dc)
+  return true, what
 end
 
 -- AND BUFFERS THIS APP DID NOT MAKE HOLD THE SAME POOL, so they are swept before the default buffers
@@ -4206,14 +4210,15 @@ function sdec.start()
   -- instrument's default ACTIVE buffer and so the one most likely to hold readings the operator
   -- wanted. Both steps discard readings, so both are logged whether or not anyone is at the glass.
   local swept, sweptwhat = sdec.buf_sweep()
-  if swept > 0 then
-    ulog.line(string.format('swept %d readings of buffers this app did not make: %s',
-                            swept, sweptwhat))
-  end
   local reclaimed, reclaimwhat = sdec.buf_reclaim()
-  if reclaimed then
-    ulog.line('reclaimed ' .. reclaimwhat .. ' -- the resize discards the readings those buffers held')
-  end
+  -- HELD RATHER THAN LOGGED HERE, for the same reason the recording-ceiling line further down is:
+  -- there is no app log open yet. ulog.line() at this point finds ulog.on false and RESUMES, which
+  -- opens ulog.path -- dmm6500_log.txt -- and not sdec.logpath, so the one record that the
+  -- operator's own readings were discarded would land in a file this app never writes again and
+  -- never tells them to read.
+  sdec.ck_swept, sdec.ck_sweptwhat = swept, sweptwhat
+  sdec.ck_reclaimwhat = nil
+  if reclaimed then sdec.ck_reclaimwhat = reclaimwhat end
   sdec.ck_bufmax, sdec.ck_bigbuf, sdec.ck_bigcap = sdec.bufmax_for()
   if sdec.ck_bufmax < sdec.ck_bufmin then
     -- REACHABLE ONLY WHERE THE RECLAIM COULD NOT HELP, which on the measured pool means a meter that
@@ -4283,6 +4288,19 @@ function sdec.start()
     -- just opens. See THE DIRECTORY in usb_log.tsp for why there is no cheaper way to ask.
     ulog.ensuredir()
     ulog.open(sdec.logpath)
+
+    -- WHAT THE LAUNCH TOOK, AND IT GOES FIRST because it happened first and because it is the
+    -- destructive half. A resize discards EVERY reading in the buffer, and a deleted buffer is gone
+    -- outright, so these two lines are the only record the operator has that what went was theirs.
+    -- Held from before the ceiling was derived -- see sdec.ck_swept at the top of this function.
+    if (sdec.ck_swept or 0) > 0 then
+      ulog.line(string.format('swept %d readings of buffers this app did not make: %s',
+                              sdec.ck_swept, tostring(sdec.ck_sweptwhat)))
+    end
+    if sdec.ck_reclaimwhat ~= nil then
+      ulog.line('reclaimed ' .. sdec.ck_reclaimwhat
+                .. ' -- the resize discarded the readings those buffers held')
+    end
 
     -- THE DERIVED CEILING, LOGGED BECAUSE A SHORT RECORDING IS OTHERWISE UNEXPLAINABLE AFTER THE
     -- FACT. Decided before the build, above, and written here because this is the first point at
