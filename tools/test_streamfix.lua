@@ -86,6 +86,21 @@ do
     if sdec.trigmode ~= 'free' then
       want = math.ceil(atload.count * 100 / (100 - sdec.pretrig)) + 100
     end
+    -- UNLESS THE CEILING PINNED IT, which stream_begin does deliberately: where the reserve does not
+    -- fit in ck_bufmax it pins the capacity and shortens the recording, because "overrunning it would
+    -- turn the largest recording modes into an allocation refusal, which is a worse answer than a
+    -- recording 5 % shorter". The +100 is then gone -- and does not need to be there, because what is
+    -- left between the count and the capacity is the whole 5 % reserve, tens of thousands of readings
+    -- of overshoot room, on a buffer whose fillmode WRAPS rather than discarding. Asserting the +100
+    -- unconditionally made this fail the moment a slow line got 8 samples a bit: the 32 kB mode at
+    -- 9600 needs 2.73 M readings at 8 sa/bit against 1.37 M at 4, so it crosses the ceiling.
+    if sdec.ck_bufmax ~= nil and want > sdec.ck_bufmax then
+      want = sdec.ck_bufmax
+      check('...and where the ceiling pinned the capacity, the count is the reserve-adjusted share',
+            atload.count == math.floor(sdec.ck_bufmax * (100 - sdec.pretrig) / 100),
+            string.format('count=%s expected=%d', tostring(atload.count),
+                          math.floor(sdec.ck_bufmax * (100 - sdec.pretrig) / 100)))
+    end
     check('and the buffer has 100 readings of headroom past the count and the reserve',
           atload.capacity == want,
           string.format('capacity=%s count=%s want=%s at trigmode %s', tostring(atload.capacity),

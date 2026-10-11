@@ -1183,22 +1183,91 @@ end
 
 sdec.acq_overhead = 0.510e-6
 
--- The rate that DELIVERS `want` samples per bit, not the rate that would if there were no
+sdec.minsabit_tier = {{9600, 8}, {19200, 5}}
+
+sdec.fs_cap_tier = {{19200, 100000}}
+
+sdec.sabit_max = 12
+
+-- `md` IS OPTIONAL AND BOUNDS THE BOOST BY WHAT THE BUFFER CAN AFFORD. A byte-capped mode holds
 --   [...]
--- At minsabit = 4 that bites above 165563 Bd = 1/(4*(1/1e6 + 5.1e-7)) -- 153600 still gets 1 MS/s
--- and 4.31 delivered samples/bit, 172800 gets nothing. 250 kBd needs 2.04 MS/s
--- requested to deliver 1 MS/s, which does not exist, so streaming genuinely cannot reach it.
-function sdec.fs_for_burst(baud)
+-- length. Measured: a 32 kB capture at 9600 and 100 kS/s comes back 26.9 kB. So the ceiling is per
+-- mode, not per baud -- the 32 kB mode can afford about 8 samples a bit at any baud and the 8 kB mode
+-- four times that -- and a caller with no mode in hand simply gets the unbounded answer.
+function sdec.fs_for_burst(baud, md)
   if baud == nil or baud <= 0 then return sdec.fs_default end
   local want = sdec.minsabit
+  if sdec.minsabit_tier ~= nil then
+    local ti
+    for ti = 1, table.getn(sdec.minsabit_tier) do
+      local tier = sdec.minsabit_tier[ti]
+      if baud <= tier[1] then
+        if tier[2] > want then want = tier[2] end
+        break
+      end
+    end
+  end
   local ideal = 1 / (baud * want)
   if ideal <= sdec.acq_overhead then return nil end   -- unreachable at any rate
   local need = 1 / (ideal - sdec.acq_overhead)
   local i
+  local lowest = nil
   for i = 1, table.getn(sdec.rates) do
-    if sdec.rates[i] >= need then return sdec.rates[i] end
+    if sdec.rates[i] >= need then
+      lowest = sdec.rates[i]
+      break
+    end
   end
-  return nil                                          -- past the top listed rate
+  if lowest == nil then return nil end                -- past the top listed rate
+
+  local cap = nil
+  if sdec.fs_cap_tier ~= nil then
+    local ci
+    for ci = 1, table.getn(sdec.fs_cap_tier) do
+      if baud <= sdec.fs_cap_tier[ci][1] then
+        cap = sdec.fs_cap_tier[ci][2]
+        break
+      end
+    end
+  end
+  local sabcap = nil
+  if md ~= nil and md.cap ~= nil and sdec.ck_bufmax ~= nil then
+    local nbits = sdec.force_nbits or 8
+    local parbits = 0
+    if sdec.force_par ~= nil and sdec.force_par ~= sdec.PAR_NONE then parbits = 1 end
+    local framebits = 1 + nbits + parbits + (sdec.force_nstop or 1)
+    local nmax = sdec.ck_bufmax - 100
+    if sdec.trigmode ~= 'free' then
+      nmax = math.floor((sdec.ck_bufmax - 100) * 100 / (100 + (sdec.pretrig or 0)))
+    end
+    sabcap = nmax / (md.cap * framebits)
+  end
+
+  if cap ~= nil and lowest > cap then
+    local fallback = nil
+    for i = 1, table.getn(sdec.rates) do
+      local r = sdec.rates[i]
+      if r > cap then break end
+      if sdec.fs_delivered(r) / baud >= sdec.minsabit then fallback = r end
+    end
+    if fallback ~= nil then return fallback end
+    return lowest
+  end
+  if cap ~= nil then
+    local best = lowest
+    for i = 1, table.getn(sdec.rates) do
+      local r = sdec.rates[i]
+      if r > cap then break end
+      if r >= lowest then
+        local t = sdec.fs_delivered(r) / baud
+        local ok = (sdec.sabit_max == nil or t <= sdec.sabit_max)
+        if ok and sabcap ~= nil and (r / baud) > sabcap then ok = false end
+        if ok then best = r end
+      end
+    end
+    return best
+  end
+  return lowest
 end
 
 -- What a requested rate ACTUALLY delivers, and the samples/bit that follows. Used by the panel so
@@ -1221,7 +1290,7 @@ function sdec.fs_select()
     local md = nil
     if sdec.mode_cur ~= nil then md = sdec.mode_cur() end
     if md ~= nil and md.needbaud then
-      sdec.fs = sdec.fs_for_burst(sdec.force_baud) or
+      sdec.fs = sdec.fs_for_burst(sdec.force_baud, md) or
                 sdec.rates[table.getn(sdec.rates)]
     else
       sdec.fs = sdec.fs_for_baud(sdec.force_baud)
@@ -6686,7 +6755,7 @@ function sdec.progress_samples(have, want)
   return sdec.progress_row()
 end
 
-sdec.ck_bufmax = 2800000     -- readings; raise once the real ceiling is measured
+sdec.ck_bufmax = 3000000
 -- Samples to record for mode md at sample rate fs. Returns nil when the rate or the locked baud
 -- rate cannot size a capture.
 function sdec.stream_samples(md, fs)

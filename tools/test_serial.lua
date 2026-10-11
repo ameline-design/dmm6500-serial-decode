@@ -10383,6 +10383,140 @@ end)()
         tostring(sdec.ui_loadscr) .. ',' .. tostring(sdec.ui_loadtxt))
 end)()
 
+-- ---------------------------------------------------------------------------
+-- A SLOW LINE GETS 8 SAMPLES A BIT IN THE STREAMING MODES TOO.
+--
+-- minsabit = 4 exists because decode cost is per SAMPLE, so at high baud the wire outruns the
+-- decoder and fewer samples a byte means less lost data. At the bottom of the range that argument
+-- inverts: the decode ceiling depends on samples/bit and not on baud (~1500 B/s at 8 sa/bit) while
+-- the wire produces baud/10, so at 9600 the decoder outruns the line either way and the oversampling
+-- is free. 4 samples a bit has no room for a rate error -- half a sample is spent after 1/(8*err)
+-- bits, one byte at 1 % -- and 9600 8N1 is what nearly every hardware debug port runs.
+--
+-- THE FRAME PATH MUST NOT MOVE. It already targets fs_sabit = 8 and is a different function; a floor
+-- that leaked into it would change every frame capture in the app.
+-- ---------------------------------------------------------------------------
+;(function()
+  local keep = sdec.minsabit_tier
+  local function sab(fs, baud) return sdec.fs_delivered(fs) / baud end
+
+  check('the floors are a baud TABLE, because what the ladder charges differs per baud',
+        sdec.minsabit_tier ~= nil and table.getn(sdec.minsabit_tier) == 2
+        and sdec.minsabit_tier[1][1] == 9600 and sdec.minsabit_tier[1][2] == 8
+        and sdec.minsabit_tier[2][1] == 19200 and sdec.minsabit_tier[2][2] == 5,
+        'tiers=' .. tostring(sdec.minsabit_tier ~= nil
+                             and table.getn(sdec.minsabit_tier) or 'nil'))
+
+  -- THE VOTE THRESHOLD IS THE POINT OF ALL OF THIS. ua_bit majority-votes three taps only at T >= 6;
+  -- below that one sample decides the bit and a single noise excursion flips it. So the assertion is
+  -- on the DELIVERED figure, which is what the decoder is handed, not on the rate that was requested.
+  check('the rate cap and the oversample ceiling are declared too',
+        sdec.fs_cap_tier ~= nil
+        and sdec.fs_cap_tier[1][1] == 19200 and sdec.fs_cap_tier[1][2] == 100000
+        and sdec.sabit_max == 12,
+        'cap=' .. tostring(sdec.fs_cap_tier ~= nil and sdec.fs_cap_tier[1][2] or 'nil')
+        .. ' sabit_max=' .. tostring(sdec.sabit_max))
+
+  -- THE WHOLE TABLE, asserted as a table: every slow rate lands inside [8, 12] samples a bit and
+  -- none is asked to sample faster than 100 kS/s, above which the instrument puts its own abort
+  -- dialog over the capture.
+  local want = {{300, 2500}, {600, 5000}, {1200, 10000}, {2400, 20000},
+                {4800, 50000}, {9600, 100000}}
+  local wi
+  for wi = 1, table.getn(want) do
+    local baud, fs = want[wi][1], want[wi][2]
+    local got = sdec.fs_for_burst(baud)
+    local t = got ~= nil and sab(got, baud) or -1
+    check(string.format('%d records at %d S/s -- %.2f samples a bit, in [8,12] and under the cap',
+                        baud, fs, t),
+          got == fs and t >= 8.0 and t <= 12.0 and got <= 100000,
+          string.format('got %s -> %.2f', tostring(got), t))
+  end
+
+  local cases = {{1200, 8}, {9600, 8}}
+  local ci
+  for ci = 1, table.getn(cases) do
+    local baud, floor = cases[ci][1], cases[ci][2]
+    local fs = sdec.fs_for_burst(baud)
+    check(string.format('a %d recording delivers at least %d samples a bit', baud, floor),
+          fs ~= nil and sab(fs, baud) >= floor,
+          fs ~= nil and string.format('%d -> %.2f sa/bit', fs, sab(fs, baud)) or 'nil')
+  end
+  check('9600 takes 100 kS/s and 9.91, the most the cap allows',
+        sdec.fs_for_burst(9600) == 100000 and sab(100000, 9600) > 9.8
+        and sab(100000, 9600) < 10.0,
+        string.format('%s -> %.2f', tostring(sdec.fs_for_burst(9600)), sab(100000, 9600)))
+  check('and NOTHING asks for more than sabit_max, which the decoder would not read anyway',
+        sab(sdec.fs_for_burst(300), 300) <= 12.0
+        and sab(sdec.fs_for_burst(4800), 4800) <= 12.0,
+        string.format('%.2f at 300, %.2f at 4800', sab(sdec.fs_for_burst(300), 300),
+                      sab(sdec.fs_for_burst(4800), 4800)))
+  -- Degrade: with the cap gone the floor alone decides, which is the shortest capture clearing 8.
+  do
+    local keepcap = sdec.fs_cap_tier
+    sdec.fs_cap_tier = nil
+    check('without the cap the floor alone picks the LOWEST clearing rate, 80 kS/s at 9600',
+          sdec.fs_for_burst(9600) == 80000, tostring(sdec.fs_for_burst(9600)))
+    sdec.fs_cap_tier = keepcap
+  end
+  -- 19200 TAKES THE CAP OVER THE FLOOR, which is the one place a floor gives way. 120 kS/s would
+  -- deliver 5.89 and cross the meter's drain rate, raising "Processing reading backlog" to buy 0.93
+  -- samples a bit that do not reach the vote threshold either -- a notice for nothing. 4.96 is still
+  -- 24 % more than the 4.00 this used to get.
+  check('19200 is capped at 100 kS/s and 4.96, not 120 kS/s and 5.89',
+        sdec.fs_for_burst(19200) == 100000
+        and sab(100000, 19200) > 4.9 and sab(100000, 19200) < 5.0,
+        string.format('%s -> %.2f', tostring(sdec.fs_for_burst(19200)), sab(100000, 19200)))
+  check('...and it never gives way past minsabit, because a recording that cannot decode is no trade',
+        sab(sdec.fs_for_burst(19200), 19200) >= sdec.minsabit,
+        string.format('%.2f vs minsabit %d', sab(sdec.fs_for_burst(19200), 19200), sdec.minsabit))
+  check('38400 and up are NOT capped -- there the faster rate is what holds four samples a bit',
+        sdec.fs_for_burst(38400) == 200000 and sdec.fs_for_burst(153600) == 1000000,
+        tostring(sdec.fs_for_burst(38400)) .. ',' .. tostring(sdec.fs_for_burst(153600)))
+  -- THE NO-LOSS RATE IS THE REASON, so assert it rather than the rate it happens to produce: the
+  -- decoder keeps up exactly while the DELIVERED rate stays under 1/tread, which is ~120 kS/s and
+  -- carries no baud term at all.
+  check('every capped rate also sits under the no-loss rate, so none of them can drop data',
+        sdec.fs_delivered(100000) < 120500,
+        string.format('%.0f S/s against ~120200', sdec.fs_delivered(100000)))
+
+
+  -- ABOVE THE TIERS NOTHING MOVES, because there the wire outruns the decoder and that is the whole
+  -- reason the streaming path picks a low rate.
+  check('38400 and above keep the flat minsabit floor',
+        sdec.fs_for_burst(38400) == 200000 and sdec.fs_for_burst(115200) == 640000,
+        tostring(sdec.fs_for_burst(38400)) .. ',' .. tostring(sdec.fs_for_burst(115200)))
+  check('and the vote is UNREACHABLE above 110375 Bd, whatever any floor asks',
+        sab(sdec.fs_for_burst(115200), 115200) < 6.0,
+        string.format('%.2f sa/bit at 115200', sab(sdec.fs_for_burst(115200), 115200)))
+
+  -- Degrade, do not raise.
+  -- DEGRADE, DO NOT RAISE, and the two tables are independent: the floor decides the minimum and the
+  -- cap decides how far above it to go, so clearing one must not disturb the other.
+  sdec.minsabit_tier = nil
+  check('with the floor table gone the cap still fills up to it -- 100 kS/s, not an error',
+        sdec.fs_for_burst(9600) == 100000, tostring(sdec.fs_for_burst(9600)))
+  do
+    local keepcap = sdec.fs_cap_tier
+    sdec.fs_cap_tier = nil
+    check('with BOTH gone it falls all the way back to the flat minsabit floor',
+          sdec.fs_for_burst(9600) == 40000, tostring(sdec.fs_for_burst(9600)))
+    sdec.fs_cap_tier = keepcap
+  end
+  sdec.minsabit_tier = keep
+
+  -- AND THE FRAME PATH IS UNTOUCHED.
+  check('a frame capture at 9600 still takes its rate from fs_sabit, unchanged',
+        sdec.fs_for_baud(9600) == 80000 and sdec.fs_sabit == 8,
+        tostring(sdec.fs_for_baud(9600)))
+  check('the two paths still differ at 115200, where the whole trade lives',
+        sdec.fs_for_burst(115200) ~= sdec.fs_for_baud(115200),
+        tostring(sdec.fs_for_burst(115200)) .. ' vs ' .. tostring(sdec.fs_for_baud(115200)))
+  check('the recordable ceiling is unmoved -- the tiers are all below it',
+        sdec.fs_for_burst(153600) ~= nil and sdec.fs_for_burst(192000) == nil,
+        tostring(sdec.fs_for_burst(153600)) .. ',' .. tostring(sdec.fs_for_burst(192000)))
+end)()
+
 print()
 print(string.format('%d passed, %d failed', pass, fail))
 os.exit(fail == 0 and 0 or 1)

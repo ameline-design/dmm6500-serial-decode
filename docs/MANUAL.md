@@ -479,6 +479,54 @@ That figure is deliberately the recording's, not the header's. The `SA/BIT` cell
 192000 baud, which is true of the frame capture it was measured from — the two are different
 acquisitions, and the note says which one it means.
 
+**At the other end of the range a recording oversamples, where it used to run at the floor.** At 9600
+baud and below — which is what nearly every hardware debug port runs — a recording now samples at
+8.0 to 8.3 samples per bit instead of about 4.1. At 19200 it gets 5.89 instead of exactly 4.00.
+
+None of it costs a byte. Decode cost is per sample, so the decoder's ceiling and the wire's output
+compare like this: ceiling is `1/(framebits × samples_per_bit × tread)` bytes a second and the wire
+produces `baud/framebits` — and setting one against the other cancels both the format and the baud,
+leaving a single condition:
+
+    a recording loses nothing while its DELIVERED sample rate stays under about 120 kS/s
+
+That is why 9600 can afford eight samples a bit and 19200 can afford 5.89: both sample under that
+rate. Above 19200 nothing is free — 38400 already has to sample at 200 kS/s just to hold four samples
+a bit — so there the floor stays at four and bounds the loss instead of preventing it.
+
+What the oversampling buys is a different bit decision. Below six samples a bit the decoder reads
+**one sample** per bit, so a single noise excursion at that instant flips it; at six or more it
+majority-votes three taps spanning the middle 40 % of the cell, and two have to be wrong together.
+Every rate from 300 to 9600 now sits on the right side of that line and used to sit on the wrong one.
+
+**19200 takes the margin rather than the vote, and that is deliberate.** Six samples a bit there means
+sampling at 160 kS/s, which is past the no-loss rate — a line transmitting more than about 85 % of the
+time would start dropping data, and a boot-log dump is exactly that line. 5.89 is 47 % more samples a
+bit than before at no cost whatever, and the decoder reads only three samples per bit in any case, so
+what is given up is placement precision rather than information.
+
+There is no setting for any of this. The right value is not a preference: it is what the instrument
+can deliver without losing data, and it differs per baud.
+
+**The rate is chosen per mode, not just per baud**, because a byte-capped mode holds
+`bytes × framebits × samples_per_bit` readings and the reading ceiling is finite. At 9600 the 8 kB
+mode records at 100 kS/s and 9.91 samples a bit, while the 32 kB mode records at 80 kS/s and 8.33 —
+four times the bytes cannot also have the samples. Each takes the most oversampling its own buffer can
+hold, so neither is oversampled into a capture the instrument then has to shorten.
+
+At 9600 and below the rate is also never above **100 kS/s**, whatever the arithmetic would allow.
+Above that the instrument puts up its own notice over the capture — *"Processing reading backlog… the
+digitizer is producing readings faster than the meter is moving them out of the buffer"* — which
+clears by itself and does not disturb the recording. Avoiding it is therefore cosmetic, and it is free
+here: 100 kS/s already gives 9.91 samples a bit at 9600 and the decoder reads three samples a bit in
+any case. Faster rates above this band do cross the same threshold and always have, which is why a
+recording at 38400 or above can show the notice briefly and still complete normally.
+
+One consequence worth knowing: a 32 kB capture at 9600 asks for 2.73 million readings and its capacity
+— the count plus the pre-trigger reserve — comes to 2.87 million against a 2.8 million ceiling, so the
+recording is shortened by about 2.6 %, collecting roughly 31 900 bytes of its nominal 32 768. The
+8 kB mode is unaffected. Raising that ceiling is the clean fix and wants a measurement behind it.
+
 **FRAME keeps working to the full 250000 baud**, and usefully so: at 192000 baud a frame capture holds
 384 bytes.
 

@@ -1693,17 +1693,200 @@ sdec.acq_overhead = 0.510e-6
 -- At minsabit = 4 that bites above 165563 Bd = 1/(4*(1/1e6 + 5.1e-7)) -- 153600 still gets 1 MS/s
 -- and 4.31 delivered samples/bit, 172800 gets nothing. 250 kBd needs 2.04 MS/s
 -- requested to deliver 1 MS/s, which does not exist, so streaming genuinely cannot reach it.
-function sdec.fs_for_burst(baud)
+-- A HIGHER FLOOR FOR SLOW LINES, BECAUSE THERE IT COSTS NOTHING.
+--
+-- minsabit = 4 is right where the wire can outrun the decoder, and that is the whole reason the
+-- streaming path exists. It is NOT right at the bottom of the range, where the arithmetic above
+-- inverts: the decode ceiling depends on samples/bit and not on baud -- about 1500 B/s at 8 sa/bit --
+-- while the wire produces baud/10. So:
+--
+--     baud    floor  fs       delivered  ceiling    wire     tolerates
+--     9600    4      40 k     4.08       3061 B/s   960 B/s  no loss
+--     9600    8      80 k     8.01       1561 B/s   960 B/s  NO LOSS -- free
+--     19200   4      80 k     4.00       3122 B/s   1920 B/s no loss, and ZERO margin
+--     19200   6      160 k    7.70       1623 B/s   1920 B/s 85 % duty
+--     19200   8      200 k    9.45       1322 B/s   1920 B/s 69 % duty
+--
+-- At 9600 and below the decoder still outruns the line with 8 samples a bit, so the oversampling is
+-- bought for nothing. That matters because 4 samples a bit has no room for a rate error: the bit
+-- centre drifts by err x bit_index, so half a sample -- an eighth of a bit -- is spent after 1/(8*err)
+-- bits, which at a 1 % rate error is one byte. Half the delivered rate, twice the margin.
+--
+-- 19200 IS THE ONE TO DECIDE DELIBERATELY, and the table says why: today it delivers EXACTLY 4.00,
+-- the thinnest margin in the range, on one of the two rates nearly every hardware debug port uses.
+-- Asking for 6 there lands on 160 kS/s and delivers 7.70 -- nearly the same oversampling as asking
+-- for 8, at 85 % duty tolerated instead of 69 % -- because the ladder snaps and the per-sample
+-- overhead eats the difference. Set minsabit_lo_baud to 19200 to take that trade; it is left at 9600
+-- because only the free tier is free, and a sustained boot-log dump is exactly the case that would
+-- lose data at 69 %.
+-- ONE FLOOR PER BAUD BAND, ascending, first match wins. Not a configurable option: the form has no
+-- room for one and the right value is not a preference -- it is what the ladder can deliver WITHOUT
+-- LOSING DATA, which differs per baud.
+--
+-- THE NO-LOSS CONDITION IS ONE CONSTANT, AND BAUD IS NOT IN IT. Decode cost is per sample, so the
+-- ceiling is 1/(framebits x T x tread) bytes a second while the wire produces baud/framebits. Setting
+-- ceiling >= wire cancels framebits AND baud and leaves
+--
+--     delivered sample rate <= 1 / tread   ~= 120 kS/s at the measured 8.3 us a sample
+--
+-- so 120 kS/s is the fastest a recording can sample at ANY baud and still have the decoder keep up.
+-- That is where both tiers come from rather than from taste:
+--
+--     9600   floor 8 -> 80 kS/s  -> 8.01 delivered, and the three-tap vote in ua_bit() switches on
+--     19200  floor 5 -> 120 kS/s -> 5.89 delivered, the most 19200 can have for nothing
+--
+-- 19200 TAKES THE MARGIN AND NOT THE VOTE, deliberately. Asking 6 there lands on 160 kS/s and 7.70,
+-- which crosses ua_bit's T >= 6 gate but delivers 147929 S/s -- past the no-loss rate, so a line
+-- transmitting more than ~85 % of the time starts losing data, and a boot-log dump is exactly that.
+-- 5.89 is 47 % more samples a bit than today's 4.00 at no cost at all. Worth knowing for later: the
+-- taps at 5.89 land +/-1 sample out, 17 % of the cell, where 7.70 rounds to +/-2 and lands at 26 % --
+-- so the gate excludes a placement BETTER than the first one it admits, and relaxing it to 5.5 would
+-- give 19200 the vote for nothing. That is a decoder-wide change and wants hardware behind it.
+--
+-- NOTHING ABOVE 19200. 38400 would have to sample at 200 kS/s to hold 4 samples a bit, which is
+-- already past the no-loss rate -- the loss there is unavoidable and minsabit is what bounds it.
+sdec.minsabit_tier = {{9600, 8}, {19200, 5}}
+
+-- AND A RATE CEILING, WHICH IS NOT ABOUT SAMPLES AT ALL. At or below 9600 the instrument is not asked
+-- to sample faster than 100 kS/s, because above that it puts up its own dialog over the capture:
+--
+--     "Processing reading backlog"
+--     "the digitizer is producing readings faster than the meter is moving them out of the buffer"
+--
+-- COSMETIC, NOT A FAILURE: operator-reported, it clears by itself and the recording carries on
+-- normally. So this cap buys an uninterrupted display and nothing else -- it is not protecting data,
+-- and anyone trading it away is giving up appearance rather than correctness.
+--
+-- THE RULE IS: AVOID IT WHERE WE CAN, AND WHERE IT MUST APPEAR MAKE IT BUY SOMETHING. It is a rate
+-- condition -- production against the meter's drain rate -- so every rate above ~100 kS/s crosses it,
+-- and each one has to justify itself:
+--
+--   at and below 19200   AVOIDED. 100 kS/s delivers 9.91 samples a bit at 9600 and 4.96 at 19200,
+--                        and nothing faster buys anything the decoder reads. 19200 used to take
+--                        120 kS/s for 5.89, which crossed the threshold to gain 0.93 samples a bit
+--                        and did NOT reach the vote either way -- a dialog for nothing.
+--   38400 and above      UNAVOIDED, and earns it: 200 kS/s to 1 MS/s is what holds four samples a
+--                        bit at all, and capping it would make every line above ~23786 Bd
+--                        unrecordable. The notice is the price of recording those lines.
+--
+-- So the cap is a HARD maximum and may override the floor, which is the one place a floor gives way:
+-- below the cap at 19200 only 4.96 samples a bit is available, under the tier's 5, and taking it is
+-- still 24 % more than the 4.00 this used to deliver. It never gives way past minsabit, because a
+-- recording that cannot decode is not a trade.
+--
+-- WHAT WOULD REFINE THIS, and it is one observation rather than a redesign. A backlog is excess rate
+-- TIMES duration, so a short capture can outrun the threshold without reaching it: the 8 kB mode at
+-- 19200 runs 8192 x 10 / 19200 = 4.3 s, which at 120 kS/s accumulates only ~55 000 readings of excess
+-- against the 32 kB mode's 17 s and four times that. If the notice does NOT appear for the 8 kB mode
+-- at 120 kS/s then the cap should be duration-aware and that mode can have 5.89 samples a bit for
+-- nothing. The rate is already chosen per mode, so that is a condition rather than a rewrite -- but
+-- it rests on where the threshold actually is, which nothing here has measured.
+sdec.fs_cap_tier = {{19200, 100000}}
+
+-- NOR MORE OVERSAMPLING THAN THE DECODER CAN USE. ua_bit() reads three samples a bit whatever is
+-- available -- the centre and +/-0.2 T -- so past the vote threshold extra samples are never consulted
+-- and buy only bit-centre placement, +/-0.5/T of a bit, while costing readings and a decode that is
+-- priced per sample. Twelve is already generous: at 8 the placement error is 6 % of a bit and at 12 it
+-- is 4 %, against a frame that tolerates far more.
+sdec.sabit_max = 12
+
+-- `md` IS OPTIONAL AND BOUNDS THE BOOST BY WHAT THE BUFFER CAN AFFORD. A byte-capped mode holds
+-- cap x framebits x samples_per_bit readings, so oversampling it past what ck_bufmax allows does not
+-- fail -- stream_begin pins the capacity and SHORTENS the recording instead, which is a loss of
+-- length. Measured: a 32 kB capture at 9600 and 100 kS/s comes back 26.9 kB. So the ceiling is per
+-- mode, not per baud -- the 32 kB mode can afford about 8 samples a bit at any baud and the 8 kB mode
+-- four times that -- and a caller with no mode in hand simply gets the unbounded answer.
+function sdec.fs_for_burst(baud, md)
   if baud == nil or baud <= 0 then return sdec.fs_default end
   local want = sdec.minsabit
+  -- Nil-guarded: a probe that cleared the table must degrade to the flat floor rather than raise out of
+  -- a rate calculation every capture depends on.
+  if sdec.minsabit_tier ~= nil then
+    local ti
+    for ti = 1, table.getn(sdec.minsabit_tier) do
+      local tier = sdec.minsabit_tier[ti]
+      if baud <= tier[1] then
+        if tier[2] > want then want = tier[2] end
+        break
+      end
+    end
+  end
   local ideal = 1 / (baud * want)
   if ideal <= sdec.acq_overhead then return nil end   -- unreachable at any rate
   local need = 1 / (ideal - sdec.acq_overhead)
   local i
+  local lowest = nil
   for i = 1, table.getn(sdec.rates) do
-    if sdec.rates[i] >= need then return sdec.rates[i] end
+    if sdec.rates[i] >= need then
+      lowest = sdec.rates[i]
+      break
+    end
   end
-  return nil                                          -- past the top listed rate
+  if lowest == nil then return nil end                -- past the top listed rate
+
+  -- THEN TAKE THE MOST OVERSAMPLING THE CEILINGS ALLOW, which is why `lowest` is only a starting
+  -- point. A floor on its own picks the shortest capture that clears it; where a rate cap applies the
+  -- samples above that floor are free, so not taking them is leaving margin on the table. Bounded
+  -- twice: by the cap, which exists to stay under the instrument's abort dialog, and by sabit_max,
+  -- past which the decoder does not read the samples anyway.
+  local cap = nil
+  if sdec.fs_cap_tier ~= nil then
+    local ci
+    for ci = 1, table.getn(sdec.fs_cap_tier) do
+      if baud <= sdec.fs_cap_tier[ci][1] then
+        cap = sdec.fs_cap_tier[ci][2]
+        break
+      end
+    end
+  end
+  -- What this mode's own buffer can hold, in samples per bit. nil for a mode that is not byte-capped:
+  -- its count is the ceiling itself, so oversampling costs window LENGTH rather than bytes and the
+  -- no-loss rate already bounds it.
+  local sabcap = nil
+  if md ~= nil and md.cap ~= nil and sdec.ck_bufmax ~= nil then
+    local nbits = sdec.force_nbits or 8
+    local parbits = 0
+    if sdec.force_par ~= nil and sdec.force_par ~= sdec.PAR_NONE then parbits = 1 end
+    local framebits = 1 + nbits + parbits + (sdec.force_nstop or 1)
+    -- The count that leaves room for the reserve AND the 100 readings of overshoot headroom, which is
+    -- the condition stream_begin's own clamp is trying to satisfy.
+    local nmax = sdec.ck_bufmax - 100
+    if sdec.trigmode ~= 'free' then
+      nmax = math.floor((sdec.ck_bufmax - 100) * 100 / (100 + (sdec.pretrig or 0)))
+    end
+    sabcap = nmax / (md.cap * framebits)
+  end
+
+  if cap ~= nil and lowest > cap then
+    -- THE CAP WINS OVER THE FLOOR HERE, and only here: the floor's rate would cross the drain rate
+    -- for a gain the decoder cannot use. Take the fastest rate under the cap that still clears
+    -- minsabit -- below that there is nothing to decode and the notice would be the lesser problem.
+    local fallback = nil
+    for i = 1, table.getn(sdec.rates) do
+      local r = sdec.rates[i]
+      if r > cap then break end
+      if sdec.fs_delivered(r) / baud >= sdec.minsabit then fallback = r end
+    end
+    if fallback ~= nil then return fallback end
+    return lowest
+  end
+  if cap ~= nil then
+    local best = lowest
+    for i = 1, table.getn(sdec.rates) do
+      local r = sdec.rates[i]
+      if r > cap then break end
+      if r >= lowest then
+        local t = sdec.fs_delivered(r) / baud
+        local ok = (sdec.sabit_max == nil or t <= sdec.sabit_max)
+        -- The REQUESTED ratio is what sizes the capture, not the delivered one: stream_samples
+        -- multiplies by fs/baud, so that is the figure the buffer has to hold.
+        if ok and sabcap ~= nil and (r / baud) > sabcap then ok = false end
+        if ok then best = r end
+      end
+    end
+    return best
+  end
+  return lowest
 end
 
 -- What a requested rate ACTUALLY delivers, and the samples/bit that follows. Used by the panel so
@@ -1748,7 +1931,8 @@ function sdec.fs_select()
       -- nil means no listed rate DELIVERS minsabit at this baud. Fall back to the top rate so a
       -- capture still happens and still decodes as well as it can; mode_why() is what refuses,
       -- because a refusal belongs where it can carry a reason to the panel.
-      sdec.fs = sdec.fs_for_burst(sdec.force_baud) or
+      -- md IS PASSED so the boost cannot oversample a byte-capped mode into a shorter recording.
+      sdec.fs = sdec.fs_for_burst(sdec.force_baud, md) or
                 sdec.rates[table.getn(sdec.rates)]
     else
       sdec.fs = sdec.fs_for_baud(sdec.force_baud)

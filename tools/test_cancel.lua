@@ -334,15 +334,33 @@ do
   -- the choice would be decoration.
   clearforce()
   sdec.force_baud = 9600
-  local ns = sdec.stream_samples(small, sdec.fs_for_burst(9600))
-  local nb = sdec.stream_samples(big, sdec.fs_for_burst(9600))
+  -- THE RATE IS PER MODE, so each mode is asked for its own. fs_for_burst boosts a slow line up to
+  -- the rate cap, but only as far as THAT mode's buffer can hold: the 32 kB mode can afford about
+  -- eight samples a bit and the 8 kB mode four times that, so asking once and reusing the answer
+  -- oversamples the large mode into a capture stream_begin then has to shorten. Passing one rate for
+  -- both is what this check used to do, and it is the thing that made the ratio break.
+  local fss = sdec.fs_for_burst(9600, small)
+  local fsb = sdec.fs_for_burst(9600, big)
+  local ns = sdec.stream_samples(small, fss)
+  local nb = sdec.stream_samples(big, fsb)
   check('the small window really does record fewer samples', ns < nb,
-        string.format('%d vs %d readings', ns, nb))
-  -- WITHIN ROUNDING, not exactly: stream_samples() takes a math.ceil, so four small windows come to
-  -- two readings more than one large one. Asserting equality would fail on arithmetic rather than
-  -- on behaviour.
-  check('...by the ratio of the two ceilings', math.abs(nb - 4 * ns) <= 4,
-        string.format('%d vs 4 x %d', nb, ns))
+        string.format('%d vs %d readings at %s and %s S/s', ns, nb, tostring(fss), tostring(fsb)))
+  -- NEITHER MODE IS OVERSAMPLED PAST ITS OWN BUFFER, which is what keeps a 32 kB capture 32 kB.
+  check('...and the large mode is not asked for more readings than the buffer holds',
+        nb <= sdec.ck_bufmax, string.format('%d vs ck_bufmax %d', nb, sdec.ck_bufmax))
+  check('...so the large mode still records its full byte ceiling',
+        nb >= math.floor(big.cap * 10 * (fsb / 9600)) - 4,
+        string.format('%d readings for %d bytes at %.2f samples a bit', nb, big.cap,
+                      fsb / 9600))
+  -- The RATIO still holds where both modes landed on the same rate; where the buffer bounded the
+  -- large one it cannot, and asserting it then would be asserting the defect.
+  if fss == fsb then
+    check('...by the ratio of the two ceilings', math.abs(nb - 4 * ns) <= 4,
+          string.format('%d vs 4 x %d', nb, ns))
+  else
+    check('...and the two modes took DIFFERENT rates, which is the buffer bound working',
+          fss > fsb, string.format('small %s vs large %s S/s', tostring(fss), tostring(fsb)))
+  end
 end
 
 -- ============================================================================

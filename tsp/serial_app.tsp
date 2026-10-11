@@ -1889,7 +1889,23 @@ function sdec.progress_samples(have, want)
   return sdec.progress_row()
 end
 
-sdec.ck_bufmax = 2800000     -- readings; raise once the real ceiling is measured
+-- READINGS THE LARGEST RECORDING MAY ASK FOR. Still short of what the instrument holds -- 6 000 000
+-- samples in firmware, for ALL buffers together -- and still not a measured figure. What moved it off
+-- 2 800 000 is arithmetic rather than a measurement: a 32 kB capture at 9600 and eight samples a bit
+-- is 2 730 667 readings, and its CAPACITY, the count plus the 5 % pre-trigger reserve plus the 100 of
+-- overshoot headroom, comes to 2 874 492. At 2 800 000 that crossed the ceiling, so stream_begin
+-- pinned the capacity and shortened the recording by ~2.6 % -- 31 900 bytes of a nominal 32 768 --
+-- which is a real loss to pay for a constant nobody had ever tested.
+--
+-- 3 000 000 clears it with 125 508 readings to spare and leaves the app asking for half of the
+-- documented total, with defbuffer1 and defbuffer2 at their 100 000 defaults alongside. The refusal
+-- path below is what catches the case where even this cannot be allocated, and it names shrinking
+-- defbuffer2 because that is the remedy.
+--
+-- THE REAL CEILING IS STILL UNMEASURED, and finding it is a bench job: make buffers at rising sizes
+-- with the defbuffers shrunk and find where buffer.make() refuses. Until then this stays well inside
+-- what the firmware documents rather than near it.
+sdec.ck_bufmax = 3000000
 -- Samples to record for mode md at sample rate fs. Returns nil when the rate or the locked baud
 -- rate cannot size a capture.
 function sdec.stream_samples(md, fs)
