@@ -766,26 +766,40 @@ function sdec.stream_begin()
   -- A BARE CALL: acq_make_buffer() guards buffer.make() itself and leaves sdec.buf nil when the
   -- allocation was refused, which is the condition tested below.
   sdec.acq_make_buffer(cap)
+  -- RECLAIM AND RETRY ONCE, because the capacities are the operator's to change MID-SESSION and this
+  -- is the one place that catches a change made after the launch did its sweep. A refusal here used
+  -- to tell the operator to go and shrink a buffer themselves; the app takes the room instead, in the
+  -- same order launch does -- foreign buffers, then defbuffer2, then defbuffer1.
+  --
+  -- ONCE, not in a loop: a second failure after the room was freed is not a room problem, and
+  -- retrying would turn it into a hang in the middle of a press.
+  if sdec.buf == nil then
+    local rswept, rsweptwhat = sdec.buf_sweep()
+    if rswept > 0 then
+      ulog.line(string.format('swept %d readings to make room mid-session: %s', rswept, rsweptwhat))
+    end
+    local rdid, rwhat = sdec.buf_reclaim()
+    if rdid then
+      ulog.line('reclaimed ' .. rwhat .. ' to make room mid-session -- its readings are discarded')
+    end
+    if rswept > 0 or rdid then
+      sdec.ck_bufmax, sdec.ck_bigbuf, sdec.ck_bigcap = sdec.bufmax_for()
+      sdec.acq_make_buffer(cap)
+    end
+  end
   if sdec.buf == nil then
     -- NAME THE BUFFER THAT IS ACTUALLY LARGE, and re-read it here rather than trusting what launch
-    -- saw: the capacities are the operator's to change mid-session, and this refusal is the one
-    -- place that catches a change made underneath. Sending them at defbuffer2 while defbuffer1
-    -- holds the readings is advice that fails the allocation a second time.
-    --
-    -- AND THE APP WILL NOT SHRINK IT ITSELF. Resizing a reading buffer DISCARDS ITS CONTENTS, and
-    -- defbuffer1 is the default active buffer, so it may hold the operator's own measurements. This
-    -- app saves and restores the measurement mode and the display, which are settings; buffer
-    -- contents are data, and trading them for a recording is not this app's call to make.
+    -- saw. Sending the operator at defbuffer2 while defbuffer1 holds the readings is advice that
+    -- fails the allocation a second time.
     local _, bigname, bigcap = sdec.bufmax_for()
     local why
     if bigname ~= nil then
-      why = string.format('cannot allocate %d readings -- %s holds %d of the 7080255 the '
-                          .. 'instrument has. Shrink it yourself: this app will not, because '
-                          .. 'resizing a buffer discards its readings.',
-                          cap or 0, bigname, bigcap or 0)
+      why = string.format('cannot allocate %d readings -- %s still holds %d of the %d the '
+                          .. 'instrument has, and resizing the default buffers down did not '
+                          .. 'free enough.', cap or 0, bigname, bigcap or 0, sdec.ck_bufpool)
     else
       why = string.format('cannot allocate %d readings, and the default buffer capacities could '
-                          .. 'not be read -- shrink defbuffer1 or defbuffer2', cap or 0)
+                          .. 'not be read, so there is nothing to resize', cap or 0)
     end
     sdec.lasterr = why
     ulog.line('recording refused: ' .. why)
@@ -1916,18 +1930,27 @@ end
 -- READINGS THE LARGEST RECORDING MAY ASK FOR, AND WHAT IT BUYS IS THE RATE. The 32 kB mode at 9600
 -- records 32768 x 10 x (100000/9600) = 3 413 334 readings at 100 kS/s, and its CAPACITY -- the count
 -- plus the 5 % pre-trigger reserve plus the 100 readings of overshoot headroom, ceil(n x 100/95) + 100
--- -- is 3 593 084. 3 700 000 clears that by 106 916 readings, so fs_for_burst's per-mode bound --
--- (3 700 000 - 100) x 100/105 = 3 523 714 readings, 10.75 samples a bit over 32 768 ten-bit frames --
--- admits the 10.417 that 100 kS/s asks for, and the mode keeps all 32 768 bytes. A ceiling under
--- 3 593 084 admits only 80 kS/s, which is 8.01 delivered samples a bit against 9.91 for the same
--- bytes. The 8 kB mode is a quarter of this and is not bounded by it at any standard rate.
+-- -- is 3 593 084. Any ceiling above that keeps all 32 768 bytes of an 8N1 recording at 9600; what the
+-- figure below buys over such a ceiling is every OTHER reachable combination.
 --
--- 3 600 000 WOULD ALSO ADMIT 100 kS/s, by 6 916 readings, and that is too thin: the two sizing paths
--- do not share their reserve arithmetic. The bound above divides by (100 + pretrig) while
--- stream_begin's clamp multiplies by 100/(100 - pretrig), 8 571 readings apart at this size, so for a
--- ceiling anywhere in [3 584 101, 3 593 087] the rate is admitted and the capacity is then pinned.
--- The 107 000 readings here are what puts the constant clear of that window rather than beside it.
-sdec.ck_bufwant = 3700000
+-- IT IS THE SMALLEST CEILING AT WHICH NOTHING IS SHORTENED, AND IT WAS BISECTED RATHER THAN CHOSEN.
+-- Enumerating every combination that returns a rate -- 18 standard bauds x {8 kB, 32 kB} x {edge,
+-- free, front} x forced data width, parity and stop bits, 8 208 of them -- and counting those whose
+-- capacity the clamp pins:
+--
+--     3 000 000 -> 878      3 736 803 ->  26
+--     3 600 000 ->  58      3 762 933 ->   6
+--     3 700 000 ->  58      4 076 502 ->   4
+--                           4 076 503 ->   0
+--
+-- So 3 600 000 and 3 700 000 are not a near miss and a safe margin, they are the SAME ANSWER: 58
+-- combinations shortened by either. All 58 are the 32 kB mode, 26 of them at 110 Bd and the other 32
+-- being 9 data bits with parity and two stop bits -- 13 framebits, a third more readings for the same
+-- bytes -- at every baud from 300 to 9600. The last four to go are 110 Bd at that same width, and
+-- 4 076 503 is where they do; the step from 4 076 502 proves nothing below it will.
+--
+-- The 8 kB mode is a quarter of this and is pinned at no ceiling in the range, at any width.
+sdec.ck_bufwant = 4076503
 
 -- AND THE LIVE CEILING, which start() recomputes from the capacities the operator actually has set.
 -- Initialised to the static need, because a caller that never ran start() -- the offline suite, a
@@ -1965,10 +1988,10 @@ sdec.ck_bufmargin = 50000
 -- operator would find that out three screens into the app rather than at launch.
 sdec.ck_bufmin = 898347
 
--- THE CEILING THE LIVE DEFBUFFERS LEAVE. ck_bufmax is what the largest mode needs; this is what the
--- instrument can actually spare, and the two differ whenever the operator has resized a default
--- buffer -- which is theirs to do. defbuffer1 at 6 000 000 leaves about 0.98 M, where the 8 kB mode
--- still sizes and the 32 kB mode simply records a shorter window.
+-- THE CEILING THE LIVE DEFBUFFERS LEAVE, which is a QUERY and not the policy. It reports what the
+-- instrument can spare as the capacities stand; buf_reclaim() below is what changes them. Called
+-- after a reclaim it reports the room the reclaim freed, and called without one -- the offline
+-- suite, a socket session -- it reports what a launch would have had to reclaim from.
 --
 -- ONE pcall FOR BOTH READS, and it belongs here: this is an outbound firmware boundary, which is
 -- where a guard is allowed, and the pcall BUDGET is a shipping constraint -- a launch capture
@@ -1993,6 +2016,158 @@ function sdec.bufmax_for()
   if n < 0 then n = 0 end
   return n, bigname, bigcap
 end
+
+-- WHAT THE INSTRUMENT SHIPS WITH in each default buffer, and the size a reclaim returns them to.
+sdec.ck_defbufcap = 100000
+
+-- RESIZE THE DEFAULT BUFFERS DOWN WHEN THE RECORDING NEEDS THE ROOM, because the reading memory is
+-- ONE pool across every buffer and that is what the other apps on this instrument do. An operator who
+-- has grown defbuffer1 to 6 000 000 has taken 85 % of the pool, and an app that only ever adapted to
+-- that recorded a window a quarter of the length with nothing on the glass to say why.
+--
+-- DEFBUFFER2 FIRST, THEN DEFBUFFER1, and the order is the point rather than an implementation detail:
+-- defbuffer1 is the instrument's DEFAULT ACTIVE buffer, so it is the one likely to hold the
+-- operator's own readings. Shrinking defbuffer2 alone frees enough in every case the pool allows, so
+-- defbuffer1 is reached only on a meter whose defbuffer2 was already at the default and whose
+-- defbuffer1 is nonetheless too large -- and then there is no other room to take.
+--
+-- BACK TO THE DEFAULT AND NOT TO JUST-ENOUGH, which costs the operator nothing extra: a resize
+-- DISCARDS EVERY READING in the buffer whatever the new capacity is, so a partial shrink loses
+-- exactly the same data and frees less. Given the loss is already paid, take the whole reclaim.
+--
+-- AND IT IS RECORDED, NEVER SILENT. ck_defbufwas keeps what each was, which is what stop() hands back
+-- and what the log line quotes. The readings are gone either way; the CONFIGURATION is not ours to
+-- keep.
+--
+-- ONE pcall FOR BOTH WRITES, decided before anything is written: the pcall BUDGET is a shipping
+-- constraint -- a launch capture bluescreens somewhere between 132 and 191 pcall sites -- so the two
+-- capacities are one guarded boundary and not two. A meter that refuses the write keeps its sizes and
+-- the caller sees false, which leaves the adapt path exactly as it was.
+--
+-- -> did_reclaim, text naming what was resized and from what. false means nothing needed doing.
+function sdec.buf_reclaim()
+  local ok, d1, d2 = pcall(function() return defbuffer1.capacity, defbuffer2.capacity end)
+  if not ok or type(d1) ~= 'number' or type(d2) ~= 'number' then return false, nil end
+  local want = sdec.ck_bufwant
+  if sdec.ck_bufguard < want then want = sdec.ck_bufguard end
+  local dc = sdec.ck_defbufcap
+  local n1, n2 = nil, nil
+  local a1, a2 = d1, d2
+  if sdec.ck_bufpool - a1 - a2 - sdec.ck_bufmargin < want and a2 > dc then n2, a2 = dc, dc end
+  if sdec.ck_bufpool - a1 - a2 - sdec.ck_bufmargin < want and a1 > dc then n1, a1 = dc, dc end
+  if n1 == nil and n2 == nil then return false, nil end
+  local sok = pcall(function()
+    if n2 ~= nil then defbuffer2.capacity = n2 end
+    if n1 ~= nil then defbuffer1.capacity = n1 end
+  end)
+  if not sok then return false, nil end
+  -- AND COLLECT, SAME REASON AS THE SWEEP: the resize is what releases the readings, so the memory is
+  -- only actually back once the collector has run over it. The whole point of the resize is the room.
+  pcall(collectgarbage)
+  if sdec.ck_defbufwas == nil then sdec.ck_defbufwas = {} end
+  local what = nil
+  if n2 ~= nil then
+    sdec.ck_defbufwas.defbuffer2 = d2
+    what = string.format('defbuffer2 from %d', d2)
+  end
+  if n1 ~= nil then
+    sdec.ck_defbufwas.defbuffer1 = d1
+    local s = string.format('defbuffer1 from %d', d1)
+    if what == nil then what = s else what = what .. ' and ' .. s end
+  end
+  return true, what .. string.format(' to %d', dc)
+end
+
+-- AND BUFFERS THIS APP DID NOT MAKE HOLD THE SAME POOL, so they are swept before the default buffers
+-- are touched. An app that was swapped out leaves its buffer allocated -- the readings stay until
+-- something deletes them, and the operator has no way to see that they are there. Taking those first
+-- means the operator's own defbuffer1 is the LAST thing resized rather than the first.
+--
+-- FOUND BY WALKING THE GLOBALS, because the instrument publishes no way to enumerate reading buffers.
+-- buffer.make() hands an object back and the caller names it, so a global holding something with a
+-- numeric capacity is the only handle that exists anywhere. Skipped: defbuffer1 and defbuffer2, which
+-- cannot be deleted and which buf_reclaim owns, and this app's own sdec.buf.
+--
+-- COLLECT, THEN DELETE, IN THAT ORDER AND NEVER INTERLEAVED. Two reasons, both load-bearing: writing
+-- to the global table while next() is walking it is undefined, and a delete has to be followed by
+-- clearing the global that named it -- dropping the handle first STRANDS the buffer inside the
+-- firmware with nothing left to retry from.
+--
+-- UNMEASURED ON HARDWARE: whether reading `.capacity` off an arbitrary global answers nil or RAISES
+-- is not established here, and the firmware's habit is to post rather than raise. The collection is
+-- guarded as though it raises, so the cost of being wrong is the rest of one sweep and not the launch.
+--
+-- -> freed_readings, text naming what went. 0 and nil when there was nothing to sweep.
+function sdec.buf_sweep()
+  local names, nn = {}, 0
+  pcall(function()
+    local bt = type(defbuffer1)
+    local k, v = next(_G, nil)
+    while k ~= nil do
+      if type(k) == 'string' and k ~= 'defbuffer1' and k ~= 'defbuffer2'
+         and type(v) == bt and v ~= sdec.buf then
+        local c = v.capacity
+        if type(c) == 'number' and c > sdec.ck_defbufcap then
+          nn = nn + 1
+          names[nn] = k
+          names[k] = c
+        end
+      end
+      k, v = next(_G, k)
+    end
+  end)
+  if nn == 0 then return 0, nil end
+  local freed, gone = 0, nil
+  local i
+  for i = 1, nn do
+    local nm = names[i]
+    -- ONE SITE, N EXECUTIONS, which is what the pcall budget counts -- and per-buffer rather than
+    -- one guard round the loop, so a buffer whose delete is refused does not cost the ones after it.
+    local dok = pcall(function()
+      buffer.delete(_G[nm])
+      _G[nm] = nil
+    end)
+    if dok then
+      freed = freed + names[nm]
+      local s = string.format('%s (%d)', nm, names[nm])
+      if gone == nil then gone = s else gone = gone .. ', ' .. s end
+    end
+  end
+  -- COLLECT ONCE THE HANDLES ARE GONE, for the reason cleanup() gives: buffer.delete() plus the
+  -- global going nil drops the last reference, and the point of the sweep is the memory. 8.3 ms
+  -- measured, once per launch, against readings that are the whole reason for sweeping.
+  if freed > 0 then pcall(collectgarbage) end
+  return freed, gone
+end
+
+-- HAND THE CAPACITIES BACK, because the sizes are the operator's setting and only the READINGS were
+-- unavoidably lost. Runs in stop() after the capture buffer is freed -- before that the room to grow
+-- them does not exist, and a refused grow would strand the app's own buffer as the reason.
+--
+-- NOT FATAL AND NOT RETRIED. A meter that will not take the capacity back is one the operator can see
+-- for themselves, and the alternative -- failing the teardown over it -- costs a reinstall to recover
+-- from. ck_defbufwas is cleared either way, so a second stop() does not try again on stale numbers.
+--
+-- -> text naming what was handed back, or nil when there was nothing to hand back.
+function sdec.buf_restore()
+  local was = sdec.ck_defbufwas
+  if was == nil then return nil end
+  sdec.ck_defbufwas = nil
+  local w1, w2 = was.defbuffer1, was.defbuffer2
+  local ok = pcall(function()
+    if w1 ~= nil then defbuffer1.capacity = w1 end
+    if w2 ~= nil then defbuffer2.capacity = w2 end
+  end)
+  local what = nil
+  if w1 ~= nil then what = string.format('defbuffer1 to %d', w1) end
+  if w2 ~= nil then
+    local s = string.format('defbuffer2 to %d', w2)
+    if what == nil then what = s else what = what .. ' and ' .. s end
+  end
+  if not ok then return 'could not restore ' .. what end
+  return what
+end
+
 -- Samples to record for mode md at sample rate fs. Returns nil when the rate or the locked baud
 -- rate cannot size a capture.
 function sdec.stream_samples(md, fs)
@@ -3975,6 +4150,12 @@ function sdec.stop()
       sdec.stickyerr = 'the capture buffer could not be freed -- power cycle the instrument'
     end
   end
+  -- THE DEFAULT BUFFER CAPACITIES GO BACK, AFTER THE CAPTURE BUFFER IS FREED AND NOT BEFORE: until
+  -- that delete above the room to grow them does not exist, and a refused grow would have this app's
+  -- own buffer as the reason. Only the sizes can be handed back -- the readings the resize discarded
+  -- are gone -- but the sizes are the operator's setting and not ours to keep.
+  local restored = sdec.buf_restore()
+  if restored ~= nil then ulog.line('default buffer capacities: ' .. restored) end
   sdec.smp, sdec.nread = nil, 0
   sdec.res, sdec.midi, sdec.lin = nil, nil, nil
   sdec.ei, sdec.es, sdec.ne = nil, nil, 0
@@ -4019,15 +4200,33 @@ function sdec.start()
   -- headless over the socket by tools/bench_matrix.py, tools/bench_panel.py and the soak engine; a
   -- refusal that waited for a press would stop an unattended run with nothing to say why. The
   -- operator's copy of this is the USB log line below, the note row, and sdec.lasterr.
+  --
+  -- THE ROOM IS TAKEN IN ORDER OF WHOSE IT IS. Foreign buffers first -- an app that was swapped out
+  -- left them and nobody is coming back for them -- then defbuffer2, then defbuffer1, which is the
+  -- instrument's default ACTIVE buffer and so the one most likely to hold readings the operator
+  -- wanted. Both steps discard readings, so both are logged whether or not anyone is at the glass.
+  local swept, sweptwhat = sdec.buf_sweep()
+  if swept > 0 then
+    ulog.line(string.format('swept %d readings of buffers this app did not make: %s',
+                            swept, sweptwhat))
+  end
+  local reclaimed, reclaimwhat = sdec.buf_reclaim()
+  if reclaimed then
+    ulog.line('reclaimed ' .. reclaimwhat .. ' -- the resize discards the readings those buffers held')
+  end
   sdec.ck_bufmax, sdec.ck_bigbuf, sdec.ck_bigcap = sdec.bufmax_for()
   if sdec.ck_bufmax < sdec.ck_bufmin then
+    -- REACHABLE ONLY WHERE THE RECLAIM COULD NOT HELP, which on the measured pool means a meter that
+    -- refused the capacity writes or will not report its buffer sizes -- both defaults restored leave
+    -- 6 830 255 readings against a floor of 898 347. So the message does not ask for a shrink the app
+    -- has just attempted: it names what it tried.
     local why = string.format('%d readings left for a recording and the smallest mode needs %d: '
-                              .. '%s holds %d of the %d the instrument has. Shrink it yourself: '
-                              .. 'this app will not, because resizing a buffer discards its '
-                              .. 'readings.',
+                              .. '%s holds %d of the %d the instrument has, and resizing the '
+                              .. 'default buffers back to %d %s.',
                               sdec.ck_bufmax, sdec.ck_bufmin,
                               sdec.ck_bigbuf or 'a default buffer',
-                              sdec.ck_bigcap or 0, sdec.ck_bufpool)
+                              sdec.ck_bigcap or 0, sdec.ck_bufpool, sdec.ck_defbufcap,
+                              reclaimed and 'did not free enough' or 'was refused')
     sdec.lasterr = why
     ulog.line('start refused: ' .. why)
     return false, why

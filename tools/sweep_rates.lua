@@ -51,7 +51,9 @@ local CAND = {900, 1250, 2500, 5000, 15000, 30000, 40000, 60000, 80000, 120000, 
 local BAUDS = sdec.stdbaud
 local NAMED = {[31250] = 'MIDI', [250000] = 'DMX512'}
 
-local STREAM_N = 2800000     -- the deep-capture buffer BRINGUP 4b.2 will size for real
+-- FROM THE APP'S OWN CEILING, not a copy of it: a literal here was two ceiling moves stale and the
+-- sweep went on reporting fill times for a buffer the app had stopped asking for.
+local STREAM_N = sdec.ck_bufwant
 
 local function lowest_at_or_above(rates, need)
   local best = nil

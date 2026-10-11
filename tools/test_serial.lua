@@ -10526,8 +10526,13 @@ end)()
   -- ---------------------------------------------------------------------------
   do
     local kb, knb, kpar, kns = sdec.force_baud, sdec.force_nbits, sdec.force_par, sdec.force_nstop
+    -- TRIGMODE IS SAVED TOO, AND IT IS NOT DECORATION: the capacity arithmetic below BRANCHES on it,
+    -- so a suite that reached here with a different trigger mode would assert the other formula and
+    -- the check would still pass. Pinning it makes the assertion mean one thing.
+    local ktm = sdec.trigmode
     sdec.force_baud, sdec.force_nbits = 9600, nil
     sdec.force_par, sdec.force_nstop = nil, nil
+    sdec.trigmode = 'edge'
     local big
     local mi
     for mi = 1, sdec.ui_modes.n do
@@ -10568,7 +10573,40 @@ end)()
     -- and the 6 000 000 guard are for.
     check('...and at the default capacities the ceiling still covers the measured 3 000 000',
           sdec.bufmax_for() >= 3000000, string.format('%d', sdec.bufmax_for()))
+
+    -- THE PER-MODE BOUND ITSELF, WHICH NOTHING ABOVE REACHES. At plain 8N1 and 9600 the rate CAP
+    -- picks 100 kS/s and the bound merely agrees, so deleting the bound outright leaves every
+    -- assertion above green -- measured, as a surviving mutant. What the bound alone decides is a
+    -- frame forced WIDER than ten bits: 9 data bits, parity and two stop bits is 13 framebits, a
+    -- third more readings for the same 32 768 bytes, and at 100 kS/s that is 4 437 334 readings
+    -- against a 4 076 503 ceiling. So the bound must drop the mode a rung, to 80 kS/s, while the
+    -- 8 kB mode at the same format stays at 100 kS/s -- and the two answers differing is what no
+    -- single-mode assertion can see.
+    sdec.force_nbits, sdec.force_par, sdec.force_nstop = 9, sdec.PAR_EVEN, 2
+    do
+      local sml13
+      local mj
+      for mj = 1, sdec.ui_modes.n do
+        if sdec.ui_modes[mj].id == 'sml' then sml13 = sdec.ui_modes[mj] end
+      end
+      local fsbig, fssml = sdec.fs_for_burst(9600, big), sdec.fs_for_burst(9600, sml13)
+      local nbig = sdec.stream_samples(big, 100000)
+      check('a 13-bit frame at 9600 would not fit the 32 kB mode at 100 kS/s',
+            math.ceil(nbig * 100 / (100 - sdec.pretrig)) + 100 > sdec.ck_bufmax,
+            string.format('%d of capacity for %d readings, ceiling %d',
+                          math.ceil(nbig * 100 / (100 - sdec.pretrig)) + 100, nbig,
+                          sdec.ck_bufmax))
+      check('...so the per-mode bound drops IT to 80 kS/s while the 8 kB mode keeps 100 kS/s',
+            fsbig == 80000 and fssml == 100000,
+            string.format('32 kB %s S/s, 8 kB %s S/s', tostring(fsbig), tostring(fssml)))
+      local capbig = math.ceil(sdec.stream_samples(big, fsbig) * 100 / (100 - sdec.pretrig)) + 100
+      check('...and at the rate it was dropped to, the 32 kB mode keeps all its bytes',
+            capbig <= sdec.ck_bufmax
+            and sdec.stream_samples(big, fsbig) >= math.floor(big.cap * 13 * (fsbig / 9600)),
+            string.format('%d of capacity, %d spare', capbig, sdec.ck_bufmax - capbig))
+    end
     sdec.force_baud, sdec.force_nbits, sdec.force_par, sdec.force_nstop = kb, knb, kpar, kns
+    sdec.trigmode = ktm
   end
 end)()
 
@@ -10596,8 +10634,18 @@ end)()
 
   GEN_DEFBUF(100000, 100000)
   check('at the shipped capacities the derived ceiling is what the largest mode needs',
-        sdec.bufmax_for() == 3700000 and sdec.ck_bufwant == 3700000,
+        sdec.bufmax_for() == 4076503 and sdec.ck_bufwant == 4076503,
         string.format('%d, want %d', sdec.bufmax_for(), sdec.ck_bufwant))
+  -- AND THERE IS NOTHING TO RECLAIM AT THE DEFAULTS, which is the case that must not touch the
+  -- operator's buffers: an unconditional reclaim would discard defbuffer1's readings at every launch
+  -- on a meter that had room all along.
+  do
+    local did, what = sdec.buf_reclaim()
+    check('a launch with room to spare resizes nothing at all',
+          did == false and what == nil and defbuffer1.capacity == 100000
+          and defbuffer2.capacity == 100000,
+          string.format('%s / %s', tostring(did), tostring(what)))
+  end
 
   -- THE FLOOR IS THE SMALLEST MODE'S OWN ARITHMETIC, asserted against the function that sizes it
   -- rather than against the constant: 8192 bytes x 10 framebits x (100000/9600) = 853 334 readings
@@ -10656,28 +10704,144 @@ end)()
           string.format('%s readings of 3413334', tostring(nmed)))
   end
 
-  -- THE REFUSAL THE SOAK DEPENDS ON: it RETURNS, naming the buffer that is actually large, and
-  -- nothing waits for a press. A dialog that needed dismissing would stop an unattended run and say
-  -- nothing about why, so the refusal goes to the caller and the operator's copy is the USB log
-  -- line, the note row and sdec.lasterr.
+  -- ---------------------------------------------------------------------------
+  -- THE RECLAIM, AND THE ORDER IS THE WHOLE POINT. The reading memory is one pool, so a default
+  -- buffer the operator enlarged is a recording this app cannot make -- and every other app on the
+  -- instrument resizes the default buffers to suit itself rather than refusing. defbuffer2 goes
+  -- first and defbuffer1 only if that was not enough, because defbuffer1 is the default ACTIVE
+  -- buffer and so the one likely to hold the operator's own readings.
+  -- ---------------------------------------------------------------------------
+
+  -- ONE OVERSIZE BUFFER, AND IT IS THE RIGHT ONE. 7 080 255 - 100 000 - 6 500 000 - 50 000 = 430 255,
+  -- below the 898 347 floor, so without a reclaim this launch could not record at all.
   GEN_DEFBUF(100000, 6500000)
+  do
+    check('without a reclaim a 6 500 000 defbuffer2 leaves less than the smallest recording',
+          sdec.bufmax_for() < sdec.ck_bufmin,
+          string.format('%d vs floor %d', sdec.bufmax_for(), sdec.ck_bufmin))
+    local did, what = sdec.buf_reclaim()
+    check('so launch resizes defbuffer2 back to the 100 000 default',
+          did == true and defbuffer2.capacity == 100000,
+          string.format('%s, defbuffer2 now %d', tostring(did), defbuffer2.capacity))
+    check('...and says what it took and from where, because the resize discarded those readings',
+          what ~= nil and string.find(what, 'defbuffer2', 1, true) ~= nil
+          and string.find(what, '6500000', 1, true) ~= nil, tostring(what))
+    check('...which gives the full ceiling back, so nothing is shortened after all',
+          sdec.bufmax_for() == sdec.ck_bufwant, string.format('%d', sdec.bufmax_for()))
+    -- THE CAPACITY IS THE OPERATOR'S SETTING AND GOES BACK AT EXIT. The readings cannot, which is
+    -- exactly why the resize is logged rather than silent.
+    local back = sdec.buf_restore()
+    check('and the teardown hands the capacity back, naming it',
+          defbuffer2.capacity == 6500000 and back ~= nil
+          and string.find(back, '6500000', 1, true) ~= nil,
+          string.format('%d / %s', defbuffer2.capacity, tostring(back)))
+    check('...once only -- a second teardown has nothing left to restore',
+          sdec.buf_restore() == nil and sdec.ck_defbufwas == nil)
+  end
+
+  -- BOTH ENLARGED, AND THIS IS THE ORDER ASSERTION. Shrinking defbuffer2 alone leaves
+  -- 7 080 255 - 2 000 000 - 100 000 - 50 000 = 4 930 255, which already clears the ceiling -- so
+  -- defbuffer1 must be left ALONE. Reversing the two would shrink defbuffer1 and strand defbuffer2.
+  GEN_DEFBUF(2000000, 2000000)
+  do
+    local did, what = sdec.buf_reclaim()
+    check('with both enlarged, defbuffer2 is taken first',
+          did == true and defbuffer2.capacity == 100000,
+          string.format('%s, defbuffer2 %d', tostring(did), defbuffer2.capacity))
+    check('...and defbuffer1 is left untouched, because defbuffer2 alone was enough',
+          defbuffer1.capacity == 2000000 and string.find(what, 'defbuffer1', 1, true) == nil,
+          string.format('defbuffer1 %d, took %s', defbuffer1.capacity, tostring(what)))
+    sdec.ck_defbufwas = nil
+  end
+
+  -- AND DEFBUFFER1 IS REACHED WHEN DEFBUFFER2 CANNOT DO IT ALONE: with defbuffer2 at its default
+  -- already, 7 080 255 - 6 000 000 - 100 000 - 50 000 = 930 255 is still short of the ceiling.
+  GEN_DEFBUF(6000000, 100000)
+  do
+    local did, what = sdec.buf_reclaim()
+    check('a 6 000 000 defbuffer1 IS resized when nothing else will do',
+          did == true and defbuffer1.capacity == 100000,
+          string.format('%s, defbuffer1 %d', tostring(did), defbuffer1.capacity))
+    check('...naming defbuffer1 and its old size, since those readings are gone',
+          what ~= nil and string.find(what, 'defbuffer1', 1, true) ~= nil
+          and string.find(what, '6000000', 1, true) ~= nil, tostring(what))
+    check('...and the ceiling is the full one again',
+          sdec.bufmax_for() == sdec.ck_bufwant, string.format('%d', sdec.bufmax_for()))
+    sdec.ck_defbufwas = nil
+  end
+
+  -- THE LAUNCH REFUSAL IS STILL REACHABLE, and this is the only way to reach it: a meter that reports
+  -- its capacities but refuses the write. It RETURNS rather than putting a box on the glass -- a
+  -- dialog needing a finger would stop an unattended soak without saying why -- and the message must
+  -- not advise a shrink the app has just attempted.
+  GEN_DEFBUF(100000, 6500000, true)
   do
     local keepbuilt, keeperr = sdec.built, sdec.lasterr
     sdec.built, sdec.lasterr = false, nil
+    local did = sdec.buf_reclaim()
+    check('a meter that refuses the capacity write reclaims nothing, and says so',
+          did == false and defbuffer2.capacity == 6500000,
+          string.format('%s, defbuffer2 still %d', tostring(did), defbuffer2.capacity))
     local ok, why = sdec.start()
-    check('a launch with no room for the smallest recording REFUSES, and returns to do it',
-          ok == false and type(why) == 'string', string.format('%s / %s', tostring(ok),
-                                                               type(why)))
-    check('...naming defbuffer2, its size, and that the app will not resize it',
+    check('...so the launch REFUSES, and returns to do it',
+          ok == false and type(why) == 'string',
+          string.format('%s / %s', tostring(ok), type(why)))
+    check('...naming defbuffer2, its size, and that the resize was REFUSED rather than declined',
           why ~= nil and string.find(why, 'defbuffer2', 1, true) ~= nil
           and string.find(why, '6500000', 1, true) ~= nil
-          and string.find(why, 'discards its readings', 1, true) ~= nil,
-          tostring(why))
+          and string.find(why, 'was refused', 1, true) ~= nil, tostring(why))
+    check('...and it no longer tells the operator to go and shrink it themselves',
+          why ~= nil and string.find(why, 'Shrink it yourself', 1, true) == nil, tostring(why))
     check('...with the same text on sdec.lasterr for the note row to show',
           sdec.lasterr == why, tostring(sdec.lasterr))
     check('...and it refused BEFORE the build, so sdec.built is untouched',
           sdec.built == false, tostring(sdec.built))
     sdec.built, sdec.lasterr = keepbuilt, keeperr
+    sdec.ck_defbufwas = nil
+  end
+
+  -- ---------------------------------------------------------------------------
+  -- AND BUFFERS THIS APP DID NOT MAKE, which hold the same pool and which nothing on the instrument
+  -- shows the operator. They are swept BEFORE either default buffer is resized: an abandoned buffer
+  -- is nobody's data, and defbuffer1 might be.
+  -- ---------------------------------------------------------------------------
+  GEN_DEFBUF(100000, 100000)
+  do
+    FOREIGN_BIG = buffer.make(3000000, buffer.STYLE_STANDARD)
+    FOREIGN_SMALL = buffer.make(50000, buffer.STYLE_STANDARD)
+    local keepbuf = sdec.buf
+    sdec.buf = buffer.make(2000000, buffer.STYLE_STANDARD)
+    OURS_BY_ANOTHER_NAME = sdec.buf
+    local freed, gone = sdec.buf_sweep()
+    check('a buffer this app did not make is deleted, and its readings counted',
+          freed == 3000000 and gone ~= nil
+          and string.find(gone, 'FOREIGN_BIG', 1, true) ~= nil,
+          string.format('%d freed, %s', freed, tostring(gone)))
+    check('...and the global that named it is cleared, because dropping the handle strands it',
+          FOREIGN_BIG == nil)
+    check('...while one no larger than a default buffer is left where it is',
+          FOREIGN_SMALL ~= nil and FOREIGN_SMALL.alive == true)
+    -- THE ONE THAT WOULD COST A CAPTURE. sdec.buf is reachable from a global here, which is the
+    -- shape a sweep that matched on capacity alone would delete out from under a live recording.
+    check('...and THIS APP\'S OWN capture buffer survives, however it is named',
+          OURS_BY_ANOTHER_NAME ~= nil and sdec.buf ~= nil and sdec.buf.alive == true,
+          tostring(sdec.buf ~= nil and sdec.buf.alive))
+    check('...and so do the two default buffers, which cannot be deleted at all',
+          defbuffer1 ~= nil and defbuffer2 ~= nil and defbuffer1.capacity == 100000)
+    -- A REFUSED DELETE MUST NOT BE COUNTED AS FREED, or the ceiling is derived from room that was
+    -- never released and the allocation fails with nothing to explain it.
+    FOREIGN_BIG = buffer.make(2500000, buffer.STYLE_STANDARD)
+    GEN_BUFDEL_FAIL(1)
+    local f2, g2 = sdec.buf_sweep()
+    check('a delete the instrument refuses frees nothing and claims nothing',
+          f2 == 0 and g2 == nil and FOREIGN_BIG ~= nil,
+          string.format('%d freed, %s', f2, tostring(g2)))
+    GEN_BUFDEL_FAIL(0)
+    sdec.buf_sweep()
+    pcall(buffer.delete, FOREIGN_SMALL)
+    FOREIGN_SMALL, OURS_BY_ANOTHER_NAME = nil, nil
+    pcall(buffer.delete, sdec.buf)
+    sdec.buf = keepbuf
   end
 
   -- DEGRADE, DO NOT RAISE: a meter that will not report its own buffer sizes must still record, so

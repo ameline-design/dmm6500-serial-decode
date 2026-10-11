@@ -835,11 +835,24 @@ end
 -- GEN_DEFBUF(d1, d2) sets both capacities. GEN_DEFBUF(nil) removes the objects, which makes reading
 -- either capacity RAISE -- the fallback branch, and the honest shape for it: a meter that does not
 -- present these attributes is the case the pcall is there for.
+--
+-- GEN_DEFBUF(d1, d2, true) REPORTS the capacities and REFUSES THE WRITE, which is the only way to
+-- reach sdec.start()'s launch refusal now that the app resizes the default buffers to make room: with
+-- a writable capacity the reclaim always succeeds and the refusal is unreachable. The capacity lives
+-- behind __index so that __newindex fires -- assigning an EXISTING key never consults a metatable,
+-- so a plain table with a metatable would silently accept the write and the test would pass on a
+-- premise that was never true.
 defbuffer1 = {capacity = 100000}
 defbuffer2 = {capacity = 100000}
-function GEN_DEFBUF(d1, d2)
+function GEN_DEFBUF(d1, d2, readonly)
   if d1 == nil then
     defbuffer1, defbuffer2 = nil, nil
+  elseif readonly then
+    local function ro()
+      error('capacity is not writable on this instrument', 0)
+    end
+    defbuffer1 = setmetatable({}, {__index = {capacity = d1}, __newindex = ro})
+    defbuffer2 = setmetatable({}, {__index = {capacity = d2 or 100000}, __newindex = ro})
   else
     defbuffer1, defbuffer2 = {capacity = d1}, {capacity = d2 or 100000}
   end

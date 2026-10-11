@@ -1794,11 +1794,26 @@ sdec.sabit_max = 12
 -- cap x framebits x samples_per_bit readings, so oversampling it past what ck_bufmax allows does not
 -- fail -- stream_begin pins the capacity and SHORTENS the recording instead, which is a loss of
 -- length -- measured at 26.9 kB of a nominal 32 kB where the ceiling bound the capacity. So the
--- ceiling is per mode, not per baud: at the default ceiling of 3 700 000 the 32 kB mode affords
--- 10.75 samples a bit and the 8 kB mode four times that, which is more than the 100 kS/s rate cap
--- asks for at 9600,
--- so the bound binds only for a frame format forced wider than ten bits. A caller with no mode in
--- hand simply gets the unbounded answer.
+-- ceiling is per mode, not per baud: at the default ceiling of 4 076 503 the 32 kB mode affords
+-- 11.82 samples a bit and the 8 kB mode four times that, which is more than the 100 kS/s rate cap
+-- asks for at 9600 -- so at 9600 the two modes agree, on 100 kS/s and 9.91 delivered.
+--
+-- WHAT THE BOUND IS WORTH DEPENDS ON THE CEILING, AND THE CEILING IS DERIVED. Enumerating every
+-- combination that returns a rate -- 18 standard bauds x {8 kB, 32 kB} x {edge, free, front} x forced
+-- width, parity and stop bits, 8 208 of them -- and counting those where asking WITH the mode differs
+-- from asking without it:
+--
+--     4 076 503 (shipped, defbuffers at their defaults)    306 of 8208, every one the 32 kB mode
+--                                                          with a frame forced wider than ten bits
+--     3 700 000                                            562, and at 110 Bd it binds at 8N1 too
+--       930 255 (a 6 000 000 defbuffer1 left in place)     1858, including the 8 kB mode
+--
+-- So at the shipped ceiling the bound reaches only forced-wide frames, and it is NOT therefore dead
+-- weight: the figure start() derives falls as the operator's own buffers grow, and the lower it falls
+-- the more ordinary the combinations it is holding down -- plain 8N1 at the bottom row. It is
+-- insurance against the ceiling the instrument actually leaves, not against the one shipped here.
+--
+-- A caller with no mode in hand simply gets the unbounded answer.
 function sdec.fs_for_burst(baud, md)
   if baud == nil or baud <= 0 then return sdec.fs_default end
   local want = sdec.minsabit
@@ -1852,10 +1867,16 @@ function sdec.fs_for_burst(baud, md)
     if sdec.force_par ~= nil and sdec.force_par ~= sdec.PAR_NONE then parbits = 1 end
     local framebits = 1 + nbits + parbits + (sdec.force_nstop or 1)
     -- The count that leaves room for the reserve AND the 100 readings of overshoot headroom, which is
-    -- the condition stream_begin's own clamp is trying to satisfy.
+    -- the condition stream_begin's own clamp is trying to satisfy -- AND IT IS THAT CLAMP'S OWN
+    -- ARITHMETIC INVERTED, not a second approximation of it. stream_begin sizes the capacity as
+    -- ceil(n x 100 / (100 - pretrig)) + 100, so the largest count that fits the ceiling is
+    -- (ck_bufmax - 100) x (100 - pretrig) / 100. Dividing by (100 + pretrig) instead is close but
+    -- LARGER -- 0.95238 of the ceiling against 0.95 -- so this bound admitted counts that clamp then
+    -- pinned, and for any ceiling in a ~9 000-reading window the two disagreed about whether a rate
+    -- fitted at all. One expression at both ends means no such window exists at any ceiling.
     local nmax = sdec.ck_bufmax - 100
     if sdec.trigmode ~= 'free' then
-      nmax = math.floor((sdec.ck_bufmax - 100) * 100 / (100 + (sdec.pretrig or 0)))
+      nmax = math.floor((sdec.ck_bufmax - 100) * (100 - (sdec.pretrig or 0)) / 100)
     end
     sabcap = nmax / (md.cap * framebits)
   end

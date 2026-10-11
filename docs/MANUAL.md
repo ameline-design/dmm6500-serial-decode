@@ -512,8 +512,10 @@ can deliver without losing data, and it differs per baud.
 `bytes × framebits × samples_per_bit` readings and the reading ceiling is finite. Each takes the most
 oversampling its own buffer can hold, so neither is oversampled into a capture the instrument then has
 to shorten. At 9600 both land on 100 kS/s and 9.91 samples a bit — the 32 kB mode's 3.41 million
-readings fit the ceiling — so the bound only separates them for a frame format forced wider than ten
-bits, where 9 data bits with parity and two stop bits is a third more readings for the same bytes.
+readings fit the ceiling — so at the shipped ceiling the bound only separates them for a frame format
+forced wider than ten bits, where 9 data bits with parity and two stop bits is a third more readings
+for the same bytes. It reaches further down as the ceiling falls: where a default buffer could not be
+resized it separates them at plain 8N1 as well.
 
 At 9600 and below the rate is also never above **100 kS/s**, whatever the arithmetic would allow.
 Above that the instrument puts up its own notice over the capture — *"Processing reading backlog… the
@@ -523,24 +525,38 @@ here: 100 kS/s already gives 9.91 samples a bit at 9600 and the decoder reads th
 any case. Faster rates above this band do cross the same threshold and always have, which is why a
 recording at 38400 or above can show the notice briefly and still complete normally.
 
-A 32 kB capture at 9600 is the case that sizes the reading ceiling: it asks for 3.41 million readings
-at 100 kS/s and its capacity — the count plus the pre-trigger reserve — comes to 3 593 084 against a
-**3 700 000** ceiling, clearing it by 106 916 readings and collecting all 32 768 bytes. A lower ceiling
-buys the bytes back only at 80 kS/s and 8.01 delivered samples a bit.
+A 32 kB capture at 9600 asks for 3.41 million readings at 100 kS/s, and its capacity — the count plus
+the pre-trigger reserve — comes to 3 593 084. The ceiling is **4 076 503**, which is not that case but
+the worst one: 110 baud, a 32 kB window and a frame forced to nine data bits with parity and two stop
+bits. Enumerating every baud, mode and frame format the app will accept, that is the largest capacity
+any of them can ask for, so at the defaults **no recording is ever shortened**. The step below it,
+4 076 502, shortens four.
 
-**The ceiling is not a constant, and it is the default buffers that decide it.** The instrument holds
+**The reading memory is one pool, and the app takes what it needs out of it.** The instrument holds
 **7 080 255 readings across all buffers together** — measured — and `defbuffer1` and `defbuffer2` are
-part of that total, so the app works out what is left at every launch and records inside it. At their
-100 000 defaults that leaves the full 3 700 000. Enlarge `defbuffer1` to 6 000 000 and it leaves
-930 255: the 8 kB mode is unaffected and the 32 kB mode simply records a shorter window. **The app
-never resizes either one**, because resizing a reading buffer discards its contents and `defbuffer1`
-is where your own measurements go — it adapts, and tells you what it did. The figure it settled on is
-in the USB log at every launch, under `recording ceiling`.
+part of that total, so a large default buffer is a recording the app cannot make. At every launch it
+frees the room, in this order:
 
-Below the smallest recording the app **refuses at launch rather than at the first press**, naming the
-buffer that is actually large and its size. There is no dialog: this app is driven headless over the
-socket, and a box waiting for a finger would stop an unattended run without saying why, so the
-refusal goes to the note row, to the USB log and to the caller.
+1. **Buffers no other app cleaned up are deleted.** A buffer left behind by an app that was swapped
+   out holds its readings until something removes it, and nothing on the instrument shows you it is
+   there.
+2. **`defbuffer2` is resized back to 100 000** if that is still not enough.
+3. **`defbuffer1` is resized back to 100 000** only if `defbuffer2` was not enough on its own. It is
+   last because it is the instrument's default *active* buffer — the one your own measurements go to.
+
+**A resize discards every reading in the buffer**, so the app says what it took: a line in the USB
+log at every launch, naming each buffer and the capacity it had. It reclaims to the default rather
+than to just-enough because the loss is the same either way — any resize clears the whole buffer —
+so a partial shrink would cost you the same readings and free less. **The capacities are handed back
+at exit**; the readings cannot be.
+
+With the defaults restored that leaves the full **4 076 503** and no recording at any baud is ever
+shortened. If the resizes are refused — a meter that will not take the capacity write — the app
+records inside whatever is left and shortens the window rather than failing the press, and below the
+smallest recording it **refuses at launch rather than at the first press**, naming the buffer that is
+still large. There is no dialog: this app is driven headless over the socket, and a box waiting for a
+finger would stop an unattended run without saying why, so the refusal goes to the note row, to the
+USB log and to the caller.
 
 **FRAME keeps working to the full 250000 baud**, and usefully so: at 192000 baud a frame capture holds
 384 bytes.
