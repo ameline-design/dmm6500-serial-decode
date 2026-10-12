@@ -1109,7 +1109,7 @@ end
 -- failure mode of too small a value is not a crash, it is a QUIETLY WORSE ANSWER -- a degraded
 -- case rather than a wrong one until 500 -- and only the suite makes that visible.
 --
--- THE CAP DOES NOT DECIDE WHETHER A BLOCK PAYLOAD DECODES, and it used to look as though it did.
+-- THE CAP DOES NOT DECIDE WHETHER A BLOCK PAYLOAD DECODES, and it can look as though it does.
 -- v90 and v94 -- 64 and 128 bytes each of 0x00, 0xFF, 0x55, 0xAA -- lost 106 of 13416 soak-plan
 -- points to 'no frame fits', and the count fell monotonically as the cap rose, to zero only with no
 -- cap at all. That was the frame anchor being chosen outside the window the probe scores, not the
@@ -1521,7 +1521,7 @@ function sdec.ua_refine_parity(r, rd, n, T)
   -- at 348 and 630 Bd, headsusp claims 130 of 136 and 120 of 122 frames while ngood is 135 and 121 --
   -- one frame in error. Excluding all of that leaves nvote 5 and 1, which then fails par_minvote_all
   -- and ndist, so the promotion never runs and a 7E1 waveform is reported as 8N1 with every byte
-  -- carrying a spurious bit 7. That is the whole of issue #49.
+  -- carrying a spurious bit 7.
   --
   -- A gapless stream has ONE alignment for the whole run, so if the frames decode without error the
   -- alignment is self-consistent and the only open question is 8N1 versus 7E1 -- which is exactly what
@@ -1748,7 +1748,7 @@ function sdec.decode_from(rd, n)
     --
     -- A LOCAL FUNCTION RATHER THAN AN INLINE BLOCK, and not a pcall: the body has two early
     -- returns -- "no measurement" and "an integer rescaling, stated" -- and inlining them would
-    -- return out of ua_decode() and skip the restore below, which is the one thing the fence is
+    -- return out of decode_from() and skip the restore below, which is the one thing the fence is
     -- for. Nothing in it reaches the instrument; sig_bittime() is called bare in the unforced
     -- branch of this same function, so a guard here would be a guard around our own arithmetic.
     local keepT, keepR, keepQ = sdec.bittime, sdec.fitratio, sdec.fitq

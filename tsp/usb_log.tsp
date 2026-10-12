@@ -381,9 +381,9 @@ function ulog.open_write(path, mode)
   -- It does not need to: keyok() above already answers the pulled key, which is the case the latch
   -- exists for, because usbdriveexists() returns 0 the moment the key leaves the slot.
   --
-  -- LISTED, NOT DIAGNOSED. Claiming the key is present would be an assertion of the same kind as the
-  -- 'no USB key' this replaced: a key can be pulled between haskey()'s call and this open, so what
-  -- that call established a moment ago is not what this failure proves.
+  -- LISTED, NOT DIAGNOSED. Claiming the key is present would be an assertion of the same kind as a
+  -- bare 'no USB key': a key can be pulled between haskey()'s call and this open, so what that call
+  -- established a moment ago is not what this failure proves.
   return nil, 'cannot open ' .. tostring(path)
                 .. ' -- key may be absent, full, write-protected, or refusing the directory'
 end
@@ -400,9 +400,9 @@ function ulog.open(path, truncate)
   if not ulog.enabled then return false end
   if path ~= nil then ulog.path = path end
 
-  -- open_write OWNS THE WHOLE STORY: the no-key gate, the directory, the one retry, and the reason. This
-  -- used to assemble its own 'no USB key' message, which was an assertion -- a key that is present but
-  -- full or write-protected reached the same line and was told to check the one thing that was fine.
+  -- open_write OWNS THE WHOLE STORY: the no-key gate, the directory, the one retry, and the reason. A
+  -- 'no USB key' message assembled HERE would be an assertion -- a key that is present but full or
+  -- write-protected reaches the same line and is told to check the one thing that is fine.
   local mode = file.MODE_APPEND
   if truncate then mode = file.MODE_WRITE end
   local why = nil
@@ -540,8 +540,8 @@ function ulog.exists(path)
   -- probe below.
   local got = fs.is_file(path)
   if got == nil then
-    -- Fall back to the open probe, which is what this replaced -- one 2205 is better than either
-    -- truncating a file or refusing to save.
+    -- Fall back to the open probe: one 2205 is better than either truncating a file or refusing
+    -- to save.
     local fh = file.open(path, file.MODE_READ)
     local taken = fh ~= nil
     if fh ~= nil then file.close(fh) end

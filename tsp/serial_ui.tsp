@@ -572,7 +572,7 @@ sdec.ui_latency_s = sdec.ui_latency_s or 0.5
 -- with it. This is deliberately much larger than the repaint budget, because a press that RETURNS
 -- is a press that has been answered and waiting once beats pressing hundreds of times.
 --
--- 8 s gives 27 windows a press -- a full 3 700 000-reading buffer in 23 presses, a 30 s recording
+-- 8 s gives 27 windows a press -- a full 4 076 503-reading buffer in 25 presses, a 30 s recording
 -- at 4800 Bd in 4 -- and stays inside the 12 s bound bench_panel.py holds capture presses to, with
 -- room for the final window to run past the check that admitted it.
 --
@@ -769,7 +769,7 @@ end
 --
 -- Asked BEFORE a capture, so it cannot read sdec.flog_why -- that is set by the attempt. keyok()
 -- names no path and posts no event, which is what makes it askable here; unknown counts as yes, so
--- a build or firmware without the call keeps the key-present wording.
+-- a build with usb_log.tsp not loaded keeps the key-present wording.
 function sdec.log_live()
   local live = true
   if ulog ~= nil and ulog.keyok ~= nil then
@@ -2230,11 +2230,11 @@ end
 -- SWITCH FIRST, DELETE SECOND, which is the same rule ui_destroy follows: deleting the screen that is
 -- currently displayed is how a panel ends up showing nothing.
 --
--- AND THE SWITCH IS UNCONDITIONAL. A nil `showscr` used to mean "do not switch", which accepted a
--- legal call that then deleted the screen in front and left the panel displaying a deleted object --
--- measured, with `active` still pointing at the dead cover afterwards. destroy_options() already had
--- the right shape: fall back to SCREEN_HOME, because leaving the panel on the instrument's own screen
--- is always recoverable and leaving it on a deleted one never is.
+-- AND THE SWITCH IS UNCONDITIONAL. Reading a nil `showscr` as "do not switch" accepts a legal call
+-- that then deletes the screen in front and leaves the panel displaying a deleted object -- measured,
+-- with `active` still pointing at the dead cover afterwards. destroy_options() has the right shape:
+-- fall back to SCREEN_HOME, because leaving the panel on the instrument's own screen is always
+-- recoverable and leaving it on a deleted one never is.
 --
 -- Child before parent. The handles are nil'd unconditionally, which loses nothing: del_obj strands a
 -- REFUSED delete on sdec.orphans itself, and that list is what the rebuild guard reads.
@@ -3151,24 +3151,23 @@ end
 -- so far. Both, always, in every mode -- the app's promise is that no decoded byte is lost, and a
 -- promise the operator cannot see is one they have to take on trust.
 --
--- IT HAS 188 px, AND THE OBVIOUS FORM DOES NOT FIT. Measured with ui_textw against the real
--- geometry: the cell runs from ui_stat_div + 6 = 468 to ui_trig_div = 656, and
--- 'log: bytes007.txt  12345 B' is 195 px -- inside it by 5 px, which held only while byte counts
--- stayed at five digits. A SIX-digit count is 204 px and a megabyte 213 px, and the firmware fades an
--- overlong string's tail rather than clipping it, so the number goes unreadable exactly as it gets
--- interesting. One press now files up to 32 kB, so four of them cross 100 000 bytes.
+-- IT HAS 188 px, AND THE OBVIOUS FORM DOES NOT FIT. ui_log_px is ui_trig_div - (ui_stat_div + 6) =
+-- 666 - 478, and 'log: bytes007.txt  12345 B' measures 195 px with ui_textw -- 7 px over already at
+-- five digits, 204 px at six and 213 px at a megabyte. The firmware fades an overlong string's tail
+-- rather than clipping it, so the number goes unreadable exactly as it gets interesting. One press
+-- files up to 32 kB, so four of them cross 100 000 bytes.
 --
--- Dropping the '.txt' buys the room: every byte-log name carries it, so four characters of constant
--- is the cheapest thing on the row to lose, and that leaves even 99 999 999 B fitting with 2 px spare.
+-- Dropping the '.txt' buys 24 px: every byte-log name carries it, so four characters of constant is
+-- the cheapest thing on the row to lose, and that brings five digits to 171 px and six to 180.
 --
--- THE COUNT IS NEVER WHAT GIVES WAY. If a name still does not fit -- flogpfx is settable, and a longer
--- prefix would push it out -- the NAME is trimmed from the left with a '~'. Rounding the total to kB
--- instead fails twice over: it does not fit either, since a long name overflows whatever the count says,
--- and it rounds away the one number that audits "no decoded byte is lost".
+-- THE COUNT IS NEVER WHAT GIVES WAY. A seven-digit count is 189 px even so, and flogpfx is settable
+-- so a longer prefix pushes it further out -- the NAME is trimmed from the left with a '~'. Rounding
+-- the total to kB instead fails twice over: it does not fit either, since a long name overflows
+-- whatever the count says, and it rounds away the one number that audits "no decoded byte is lost".
 --
 -- THE FAILURE CASE IS A FLAG HERE AND A SENTENCE ON THE NOTE ROW, which is the only split that fits.
--- flog_why runs to 'no free /usb1/bytesNNN.txt name' and 'cannot append to /usb1/bytes000.txt' -- 432
--- px and 302 px against this cell's 200 -- and rendering it here at all put the words that say the app
+-- flog_why runs to 'no free bytesNNN.txt name' and 'cannot append to /usb1/bytes000.txt' -- 208 px
+-- and 271 px against this cell's 188 -- and rendering it here at all put the words that say the app
 -- is DISCARDING the operator's bytes into the faded tail, which is the one thing on the row that must
 -- survive. 'log: NOT LOGGING' measures 156 px, so it always fits and never needs the clip; ui_notes
 -- carries the reason across the full table width, where all three reasons fit whole.
@@ -3192,10 +3191,10 @@ function sdec.flog_status()
   -- BOUNDED BY THE NAME LENGTH, so a cell too narrow for even a 4-character name returns the overlong
   -- string rather than looping: a faded tail is bad, a hung refresh is worse.
   --
-  -- THE FIRST STEP DROPS FOUR CHARACTERS, NOT ONE, because '~' costs 11 px and the character it
+  -- THE FIRST STEP DROPS FOUR CHARACTERS, NOT ONE, because '~' costs 10 px and the character it
   -- replaces may cost 3 -- so a one-character first step can make the string WIDER, measured at 163 px
   -- going to 170 on a name of 'i's. The loop converged anyway, but a name one pixel over could be
-  -- pushed eight further over before it began coming back. Four narrow characters are 12 px, which
+  -- pushed seven further over before it began coming back. Four narrow characters are 12 px, which
   -- covers the '~' outright; every later step already has it and always narrows.
   local first = true
   while sdec.ui_textw(s) > sdec.ui_log_px and string.len(base) > 4 do

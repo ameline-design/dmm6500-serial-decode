@@ -1302,7 +1302,7 @@ end
 -- Capacity a capture of n samples needs. LoopUntilEvent takes its pre-trigger reserve out of
 -- CAPACITY, not out of `count`, so a buffer sized exactly n delivers n minus the reserve: measured
 -- 19 011 at capacity 20 000, 20 066 at 21 100. FRAME only -- SimpleLoop has no reserve, and its
--- buffers run to 2.8 M readings against a 6 M ceiling for all buffers together.
+-- buffers run to 4.1 M readings against a 6 M ceiling for all buffers together.
 function sdec.acq_cap(n)
   if n == nil then n = sdec.n end
   if n == nil then return nil end
@@ -1334,9 +1334,9 @@ end
 
 -- HOW MANY SAMPLES A CAPTURE ACTUALLY DELIVERS, which is not sdec.n on the armed path.
 --   [...]
--- sized exactly n -- capacity 20 000 -- the post count was 19 000 and the dump held 227 bytes under a
--- panel claiming 240, which is where this function came from. With the reserve asked for on top --
--- capacity 21 100 -- it is 20 045, and the instrument returned 20 066. One rule, two capacities.
+-- one point. With a buffer sized exactly n -- capacity 20 000 -- the post count is 19 000, and a dump
+-- held 227 bytes under a panel claiming 240. With the reserve asked for on top -- capacity 21 100 --
+-- it is 20 045, and the instrument returned 20 066. One rule, two capacities.
 function sdec.n_deliv(n)
   if n == nil then n = sdec.n end
   if n == nil then return nil end
@@ -1603,7 +1603,7 @@ end
 
 -- Capture armed on a start-bit edge, keeping sdec.pretrig percent of the buffer
 --   [...]
--- the buffer check. pcall'd because a firmware without the constant must degrade to
+-- the buffer check. pcall'd because a state read that RAISES must degrade to
 -- "not finished" (the caller then falls back on its timeout) rather than raise from
 -- inside a poll loop.
 function sdec.trig_done(buf)
@@ -3362,7 +3362,7 @@ end
 -- ONE contiguous level probe, k = 0..ck_probes-1, spaced evenly across the recording.
 --   [...]
 -- SPACED ACROSS the recording, not just the head: reading only the first window covered
--- 20 000 of 3 700 000 possible burst positions, 0.5 %. The decimated view is still tried
+-- 20 000 of the 3 413 334 a full 32 kB recording holds, 0.6 %. The decimated view is still tried
 -- FIRST, so the drift property that motivated decimation is untouched.
 function sdec.ck_levels_probe(reader, ntotal, win, k)
   if reader == nil then return false end
@@ -4209,7 +4209,7 @@ end
 -- Will anything the app writes reach the key? -> true or false.
 -- Asked BEFORE a capture, so it cannot read sdec.flog_why -- that is set by the attempt. keyok()
 -- names no path and posts no event, which is what makes it askable here; unknown counts as yes, so
--- a build or firmware without the call keeps the key-present wording.
+-- a build with usb_log.tsp not loaded keeps the key-present wording.
 function sdec.log_live()
   local live = true
   if ulog ~= nil and ulog.keyok ~= nil then
@@ -5050,7 +5050,7 @@ end
 
 -- Put the real screen in front and take the loading screen away.
 --   [...]
--- is always recoverable and leaving it on a deleted one never is.
+-- recoverable and leaving it on a deleted one never is.
 -- Child before parent. The handles are nil'd unconditionally, which loses nothing: del_obj strands a
 -- REFUSED delete on sdec.orphans itself, and that list is what the rebuild guard reads.
 function sdec.ui_loading_clear(showscr)
@@ -6138,7 +6138,7 @@ end
 
 -- The byte log
 --   [...]
--- ~28 MB against 32 kB of bytes -- a thousandfold, onto a USB key, for data nothing downstream
+-- ~34 MB against 32 kB of bytes -- a thousandfold, onto a USB key, for data nothing downstream
 -- can read. A waveform dump belongs behind its own control and its own filename, not in these.
 -- Allocate the byte log's filename. Returns the path, or nil with sdec.flog_why set.
 function sdec.flog_alloc()
@@ -6808,9 +6808,9 @@ sdec.ck_defbufcap = 100000
 
 -- ONE DEFAULT BUFFER'S CAPACITY, WRITTEN AND ANSWERED FOR. -> true if the instrument took it.
 --   [...]
--- NAMED EXACTLY, with no else-falls-through-to-defbuffer2: a caller that passed anything else would
--- silently resize the wrong buffer and discard the wrong readings. Only two call sites pass literals,
--- so this is unreachable today -- and it is one character of typo away from not being.
+-- resize defbuffer2 for ANY unexpected argument and discard the wrong buffer's readings. All four
+-- call sites pass literals, so the guard is unreachable today -- and it is one character of typo away
+-- from not being.
 function sdec.defbuf_set(name, cap)
   if name ~= 'defbuffer1' and name ~= 'defbuffer2' then return false end
   local ok = pcall(function()

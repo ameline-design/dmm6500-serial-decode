@@ -56,7 +56,7 @@ sdec.ck_ovframes = 3
 sdec.ck_level_n = 20000
 
 -- How many CONTIGUOUS windows the level fallback tries, spaced across the recording. See
--- ck_levels(): one window covered 0.7 % of the burst positions in a 2.8 M capture.
+-- ck_levels(): one window covered 0.6 % of the burst positions in a 3 413 334-sample capture.
 sdec.ck_probes = 8
 
 -- Medium mode's cap. One number for every baud rate, so the UI has one expectation to
@@ -317,7 +317,7 @@ end
 -- recording whose levels are measurable from any window containing the burst as an idle line.
 --
 -- SPACED ACROSS the recording, not just the head: reading only the first window covered
--- 20 000 of 3 700 000 possible burst positions, 0.5 %. The decimated view is still tried
+-- 20 000 of the 3 413 334 a full 32 kB recording holds, 0.6 %. The decimated view is still tried
 -- FIRST, so the drift property that motivated decimation is untouched.
 function sdec.ck_levels_probe(reader, ntotal, win, k)
   if reader == nil then return false end

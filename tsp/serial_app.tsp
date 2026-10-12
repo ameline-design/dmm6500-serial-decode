@@ -72,8 +72,8 @@ sdec.proto     = sdec.proto or 'uart'
 -- acquisition twice a second, the decode once a window -- but a press on TRIGGER emits no blender event
 -- while a panel-initiated run executes, so record_run()'s fc_maxwin/fc_maxsec bounds are the exits.
 --
--- The stepped path is driven by test_cancel.lua and test_serial.lua, and is the fallback for a firmware
--- whose blender cannot latch EVENT_DISPLAY.
+-- The stepped path is driven by test_cancel.lua and test_serial.lua. Nothing in the app sets
+-- strm_press, so the panel never takes it.
 --
 -- A NIL TEST RATHER THAN `or`, because false is meaningful here and `false or true` is true. Set it
 -- before this file loads and the setting survives.
@@ -596,8 +596,8 @@ end
 --
 -- DECODED BYTES ONLY -- NEVER SAMPLES. That holds for every file this app writes: frame_log()
 -- below, ck_sink_file()'s hex rows, and save()'s report, which records the sample RATE as
--- metadata and no sample values. A 32 kB stream is 2.8 M samples, so a text dump of them is
--- ~28 MB against 32 kB of bytes -- a thousandfold, onto a USB key, for data nothing downstream
+-- metadata and no sample values. A 32 kB stream is 3.4 M samples, so a text dump of them is
+-- ~34 MB against 32 kB of bytes -- a thousandfold, onto a USB key, for data nothing downstream
 -- can read. A waveform dump belongs behind its own control and its own filename, not in these.
 -- ============================================================================
 --
@@ -868,9 +868,9 @@ function sdec.stream_begin()
   else
     sdec.strm_lvlreuse = nil
   end
-  -- THE ARM LEVEL IS COMPUTED WHATEVER THE REUSE DID, and the guard that used to skip it was the
-  -- whole of a measured defect: `not sdec.strm_lvlreuse` meant that on any recording following a
-  -- successful decode -- which is most of them -- arm_threshold() never ran, and the comparator was
+  -- THE ARM LEVEL IS COMPUTED WHATEVER THE REUSE DID, and a guard skipping it is the whole of a
+  -- measured defect: gating on `not sdec.strm_lvlreuse` means that on any recording following a
+  -- successful decode -- which is most of them -- arm_threshold() never runs, and the comparator is
   -- armed at the LAST DECODE'S midpoint. Measured on the instrument: 1.63 V on a 0-3.29 V line, which
   -- is mid-data, so the arm would fire on a data edge rather than on a start bit; and on a first
   -- capture it inherits clear_result()'s zero and fires on ADC noise.
@@ -972,8 +972,8 @@ end
 -- the alternative is an hour-plus hold on a panel whose operator has no idea how long is left.
 --
 -- THESE BOUNDS ARE THE EXIT. A press on TRIGGER emits no blender event while a panel-initiated run
--- executes, and on a firmware with no blender or no EVENT_DISPLAY cancel_pressed() answers false for
--- ever, so nothing else ends the loop. When either bound fires the note row says which.
+-- executes, and with no blender to latch it cancel_pressed() answers false for ever, so nothing
+-- else ends the loop. When either bound fires the note row says which.
 sdec.fc_maxwin = sdec.fc_maxwin or 32
 sdec.fc_maxsec = sdec.fc_maxsec or 1200
 
@@ -1085,8 +1085,8 @@ function sdec.record_run()
     if sdec.fc_win >= (sdec.fc_maxwin or 32) then sdec.fc_end = 'bound'; break end
     -- THE BOUND THAT HOLDS. The window count is 1 MB of bytes but seventy-six minutes at 9600 baud and
     -- ten and a half HOURS at 300, so the count alone left the panel gone for most of a working day on
-    -- a device that never stops -- and on a firmware without the cancel key it and this are the only
-    -- exits there are.
+    -- a device that never stops -- and where the cancel key cannot be delivered it and this are the
+    -- only exits there are.
     --
     -- THE LARGER OF THE CLOCK AND THE COUNTER, which is not belt-and-braces for its own sake. The clock
     -- is the only one that sees the DECODE, and the decode is the larger half of a window -- 109 s
@@ -1222,8 +1222,8 @@ function sdec.stream_decode(got)
   if sdec.strm_press then
     -- WORK PER PRESS AND WINDOW WIDTH ARE TWO DIFFERENT BUDGETS. The width must come from
     -- ui_latency_s because every priming phase scales with it; the work per press need not.
-    -- Conflating the two costs 455 presses for a full-buffer decode; ck_press_budget_s, sized at
-    -- its declaration in serial_ui.tsp, brings that to 17.
+    -- Conflating the two costs 662 presses for a full-buffer decode; ck_press_budget_s, sized at
+    -- its declaration in serial_ui.tsp, brings that to 25.
     --
     -- WARNING: do not try to spend those presses inside display.waitevent(0). It reads like the
     -- answer and the instrument's own display example uses exactly that loop shape, but on
@@ -1448,8 +1448,9 @@ function sdec.stream_arm(nsmp)
   local ok = false
   if armed then
     -- The source, the blender and the TRIGGER-key break-in, from the one function that decides them
-    -- for both paths. nil means the operator's source is not on this firmware, and the answer is the
-    -- same as everywhere else: record free-running rather than silently substitute another source.
+    -- for both paths. arm_source() never answers nil on a DMM6500, so the degrade below cannot fire;
+    -- it records free-running rather than silently substituting another source if one ever stops
+    -- resolving.
     local ev, useanalog = sdec.arm_source()
     if ev == nil then
       armed = false
@@ -1490,10 +1491,10 @@ function sdec.stream_arm(nsmp)
   -- by design, and an 8 kB recording of a device that had not spoken yet ended as 'quiet' with
   -- nothing in it.
   --
-  -- BOUNDED AND CHEAP: three blocks of setup, so WAITING arrives in about a millisecond, and the
-  -- spin costs one state read per 10 ms against a 0.25 s ceiling. A model that never gets there is
-  -- left to the loop, which will time the wait out and say so -- the one thing not done here is
-  -- guessing.
+  -- BOUNDED AND CHEAP: the spin costs one state read per 10 ms and breaks on the first WAITING,
+  -- about nineteen looks in -- the measured median arm is 0.19 s, and sdec.arm_settle_s is the
+  -- ceiling. A model that never gets there is left to the loop, which will time the wait out and
+  -- say so -- the one thing not done here is guessing.
   if ok and armed then
     local spun, saw = 0, false
     while spun < (sdec.arm_settle_s or 0.25) do
@@ -1501,11 +1502,11 @@ function sdec.stream_arm(nsmp)
       delay(0.01)
       spun = spun + 0.01
     end
-    -- AND THE VERDICT IS CARRIED OUT, because the fallback this comment used to claim did not exist:
-    -- the poll loop reads `trig_waiting() ~= true` as "the trigger has fired", so a model that never
-    -- reached its wait block was latched as FIRED rather than timed out -- which is the exact
-    -- consequence the spin was added to remove. The loop cannot tell "never got there" from "left
-    -- it"; this flag can, so an arm that never went live is reported as one.
+    -- AND THE VERDICT IS CARRIED OUT, because nothing downstream would catch it: the poll loop reads
+    -- `trig_waiting() ~= true` as "the trigger has fired", so a model that never reached its wait
+    -- block is latched as FIRED rather than timed out -- the exact consequence the spin removes. The
+    -- loop cannot tell "never got there" from "left it"; this flag can, so an arm that never went
+    -- live is reported as one.
     if not saw then armed = false end
   end
   sdec.strm_armed = armed
@@ -1975,9 +1976,9 @@ sdec.ck_bufpool = 7080255
 -- A CHOSEN MARGIN BELOW THE MEASUREMENT, not a second measurement. 6 000 000 is the hard guard: it is
 -- what the vendor's bufferVar.capacity documents, so a request under it is one the published figure
 -- also allows. ck_bufmargin covers what the pool figure does not pin down -- its uncertain last three
--- digits, and the ~1 150-reading disagreement between two readings of the same pool, which is the
--- per-buffer overhead the firmware takes and does not report. 50 000 readings is 0.7 % of the pool and
--- 1.4 % of the ceiling, so it costs a 32 kB recording nothing and covers both by a wide factor.
+-- digits, and the 925-reading disagreement between the two readings of the same pool above, which is
+-- the per-buffer overhead the firmware takes and does not report. 50 000 readings is 0.7 % of the pool
+-- and 1.2 % of the ceiling, so it costs a 32 kB recording nothing and covers both by a wide factor.
 sdec.ck_bufguard = 6000000
 sdec.ck_bufmargin = 50000
 
@@ -2031,9 +2032,16 @@ sdec.ck_defbufcap = 100000
 -- second raises -- so defbuffer2's readings were discarded while buf_reclaim reported false, recorded
 -- nothing in ck_defbufwas and wrote no log line. Measured, and silent in every channel the operator
 -- has.
--- NAMED EXACTLY, with no else-falls-through-to-defbuffer2: a caller that passed anything else would
--- silently resize the wrong buffer and discard the wrong readings. Only two call sites pass literals,
--- so this is unreachable today -- and it is one character of typo away from not being.
+--
+-- A WHITELIST, AND NOT THE SWEEP'S TEST WITH THE SIGN FLIPPED. buf_sweep asks the opposite question
+-- of the same two names -- NOT being a default buffer is what makes something a candidate for
+-- DELETION there. Here the names are all this function can write, so anything else has nothing to
+-- do and answers false. The two tests look alike and mean opposite things.
+--
+-- NAMED EXACTLY, with no else-falls-through-to-defbuffer2: without this test the else below would
+-- resize defbuffer2 for ANY unexpected argument and discard the wrong buffer's readings. All four
+-- call sites pass literals, so the guard is unreachable today -- and it is one character of typo away
+-- from not being.
 function sdec.defbuf_set(name, cap)
   if name ~= 'defbuffer1' and name ~= 'defbuffer2' then return false end
   local ok = pcall(function()
@@ -2144,7 +2152,7 @@ function sdec.buf_sweep()
         -- SO THE DISCRIMINATOR CARRIES THE WHOLE WEIGHT, and capacity alone is not enough for that.
         -- A reading buffer has a numeric `.capacity` AND a numeric `.n` -- the readings in it -- and
         -- requiring both is what keeps this from deleting some other app's table that happens to
-        -- carry a capacity field. The size floor used to stand in for this test; it no longer can.
+        -- carry a capacity field.
         local c, nread = v.capacity, v.n
         if type(c) == 'number' and type(nread) == 'number' then
           nn = nn + 1

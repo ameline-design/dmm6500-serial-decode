@@ -1712,13 +1712,11 @@ sdec.acq_overhead = 0.510e-6
 -- centre drifts by err x bit_index, so half a sample -- an eighth of a bit -- is spent after 1/(8*err)
 -- bits, which at a 1 % rate error is one byte. Half the delivered rate, twice the margin.
 --
--- 19200 IS THE ONE TO DECIDE DELIBERATELY, and the table says why: today it delivers EXACTLY 4.00,
--- the thinnest margin in the range, on one of the two rates nearly every hardware debug port uses.
--- Asking for 6 there lands on 160 kS/s and delivers 7.70 -- nearly the same oversampling as asking
--- for 8, at 85 % duty tolerated instead of 69 % -- because the ladder snaps and the per-sample
--- overhead eats the difference. Set minsabit_lo_baud to 19200 to take that trade; it is left at 9600
--- because only the free tier is free, and a sustained boot-log dump is exactly the case that would
--- lose data at 69 %.
+-- 19200 IS THE ONE TO DECIDE DELIBERATELY, and the table says why: at the bare floor of 4 it delivers
+-- EXACTLY 4.00, the thinnest margin in the range, on one of the two rates nearly every hardware debug
+-- port uses. Its minsabit_tier entry lifts the floor to 5 and fs_cap_tier holds the rate at 100 kS/s,
+-- so what it actually gets is 4.96. Asking 8 instead tolerates only 69 % duty, and a sustained
+-- boot-log dump is exactly the case that loses data there.
 -- ONE FLOOR PER BAUD BAND, ascending, first match wins. Not a configurable option: the form has no
 -- room for one and the right value is not a preference -- it is what the ladder can deliver WITHOUT
 -- LOSING DATA, which differs per baud.
@@ -1738,7 +1736,7 @@ sdec.acq_overhead = 0.510e-6
 -- 19200 TAKES THE MARGIN AND NOT THE VOTE, deliberately. Asking 6 there lands on 160 kS/s and 7.70,
 -- which crosses ua_bit's T >= 6 gate but delivers 147929 S/s -- past the no-loss rate, so a line
 -- transmitting more than ~85 % of the time starts losing data, and a boot-log dump is exactly that.
--- 5.89 is 47 % more samples a bit than today's 4.00 at no cost at all. Worth knowing for later: the
+-- 5.89 is 47 % more samples a bit than the bare floor's 4.00 at no cost at all. Worth knowing: the
 -- taps at 5.89 land +/-1 sample out, 17 % of the cell, where 7.70 rounds to +/-2 and lands at 26 % --
 -- so the gate excludes a placement BETTER than the first one it admits, and relaxing it to 5.5 would
 -- give 19200 the vote for nothing. That is a decoder-wide change and wants hardware behind it.
@@ -1747,8 +1745,8 @@ sdec.acq_overhead = 0.510e-6
 -- already past the no-loss rate -- the loss there is unavoidable and minsabit is what bounds it.
 sdec.minsabit_tier = {{9600, 8}, {19200, 5}}
 
--- AND A RATE CEILING, WHICH IS NOT ABOUT SAMPLES AT ALL. At or below 9600 the instrument is not asked
--- to sample faster than 100 kS/s, because above that it puts up its own dialog over the capture:
+-- AND A RATE CEILING, WHICH IS NOT ABOUT SAMPLES AT ALL. At and below 19200 the instrument is not
+-- asked to sample faster than 100 kS/s, because above that it puts up its own dialog over the capture:
 --
 --     "Processing reading backlog"
 --     "the digitizer is producing readings faster than the meter is moving them out of the buffer"
@@ -1762,16 +1760,16 @@ sdec.minsabit_tier = {{9600, 8}, {19200, 5}}
 -- and each one has to justify itself:
 --
 --   at and below 19200   AVOIDED. 100 kS/s delivers 9.91 samples a bit at 9600 and 4.96 at 19200,
---                        and nothing faster buys anything the decoder reads. 19200 used to take
---                        120 kS/s for 5.89, which crossed the threshold to gain 0.93 samples a bit
---                        and did NOT reach the vote either way -- a dialog for nothing.
+--                        and nothing faster buys anything the decoder reads. 120 kS/s for 5.89 at
+--                        19200 would cross the threshold to gain 0.93 samples a bit and still not
+--                        reach the vote either way -- a dialog for nothing.
 --   38400 and above      UNAVOIDED, and earns it: 200 kS/s to 1 MS/s is what holds four samples a
 --                        bit at all, and capping it would make every line above ~23786 Bd
 --                        unrecordable. The notice is the price of recording those lines.
 --
 -- So the cap is a HARD maximum and may override the floor, which is the one place a floor gives way:
 -- below the cap at 19200 only 4.96 samples a bit is available, under the tier's 5, and taking it is
--- still 24 % more than the 4.00 this used to deliver. It never gives way past minsabit, because a
+-- still 24 % more than the bare floor's 4.00. It never gives way past minsabit, because a
 -- recording that cannot decode is not a trade.
 --
 -- WHAT WOULD REFINE THIS, and it is one observation rather than a redesign. A backlog is excess rate
@@ -1995,8 +1993,8 @@ end
 --
 -- n * baud / (fs * framebits) is algebraically identical with a single rounding step, and it
 -- is EXACT whenever fs is an exact integer rate, which is the entire reason sdec.rates exists.
--- Both products stay far inside double precision: the largest case is a 2.8 M-sample buffer at
--- 250 kBd, 7e11, against 2^53.
+-- Both products stay far inside double precision: the largest case is a 4.1 M-sample buffer at
+-- 250 kBd, 1e12, against 2^53.
 --
 -- Worth a fix rather than a shrug because the whole point of the number is "was this message
 -- seen WHOLE?", and every case where the division comes out exact -- i.e. every case where the
@@ -2006,7 +2004,7 @@ end
 -- Capacity a capture of n samples needs. LoopUntilEvent takes its pre-trigger reserve out of
 -- CAPACITY, not out of `count`, so a buffer sized exactly n delivers n minus the reserve: measured
 -- 19 011 at capacity 20 000, 20 066 at 21 100. FRAME only -- SimpleLoop has no reserve, and its
--- buffers run to 2.8 M readings against a 6 M ceiling for all buffers together.
+-- buffers run to 4.1 M readings against a 6 M ceiling for all buffers together.
 function sdec.acq_cap(n)
   if n == nil then n = sdec.n end
   if n == nil then return nil end
@@ -2088,10 +2086,10 @@ end
 -- of the depth, so 95 % of 21 100 is more than 20 000. The 100 readings of headroom in that capacity
 -- are the only part not reported, since they exist to absorb the model's overshoot.
 --
--- BOTH HISTORICAL MEASUREMENTS FIT, and they are from different eras of acq_cap(). With a buffer
--- sized exactly n -- capacity 20 000 -- the post count was 19 000 and the dump held 227 bytes under a
--- panel claiming 240, which is where this function came from. With the reserve asked for on top --
--- capacity 21 100 -- it is 20 045, and the instrument returned 20 066. One rule, two capacities.
+-- TWO MEASUREMENTS AT TWO CAPACITIES BOTH FIT, which is what makes this a rule rather than a fit to
+-- one point. With a buffer sized exactly n -- capacity 20 000 -- the post count is 19 000, and a dump
+-- held 227 bytes under a panel claiming 240. With the reserve asked for on top -- capacity 21 100 --
+-- it is 20 045, and the instrument returned 20 066. One rule, two capacities.
 function sdec.n_deliv(n)
   if n == nil then n = sdec.n end
   if n == nil then return nil end
@@ -2137,8 +2135,8 @@ end
 --
 -- Called from hw_config() so it is re-applied before every capture rather than once at start-up:
 -- trigger.extout.logic is documented as reset by "Instrument reset / Power cycle / External I/O
--- trigger reset", and acq_triggered() calls trigger.ext.reset() on some paths. A one-time setup
--- would be silently undone by the app's own reset.
+-- trigger reset" -- none of which this app issues, but any of which a socket session or the front
+-- panel can, and a one-time setup would then be silently undone. One write a capture is the price.
 --
 -- LOGIC_POSITIVE: a TTL-high pulse from an idle-low line, so the device watches for a RISING edge.
 -- Chosen because a rising-edge "go" is the convention a micro's pin-change interrupt expects, and
@@ -2635,7 +2633,7 @@ end
 --
 -- trigger.model.state() returns three values; only the first is the state. IDLE is
 -- also the state BEFORE initiate(), so idleness alone cannot mean "done" -- hence
--- the buffer check. pcall'd because a firmware without the constant must degrade to
+-- the buffer check. pcall'd because a state read that RAISES must degrade to
 -- "not finished" (the caller then falls back on its timeout) rather than raise from
 -- inside a poll loop.
 function sdec.trig_done(buf)
@@ -2844,10 +2842,10 @@ end
 -- recording in stream_arm() -- so the operator's trigger settings cannot mean one thing to a 20 000
 -- sample window and another to a 32 kB one.
 --
--- ev COMES BACK nil WHEN THE SELECTED SOURCE DOES NOT EXIST ON THIS FIRMWARE, which is a refusal the
--- caller must act on rather than a value it can pass along: trigger.EVENT_DISPLAY is documented for
--- the DMM6500, but where it is absent the constant reaches trigger.model.load() AS NIL -- and there
--- the front key vanishes silently and a ticked rear BNC looks like a deliberate sole choice.
+-- ev IS ALWAYS ONE OF THE THREE EVENT CONSTANTS AND NEVER nil, because all three are present on the
+-- DMM6500, so the selected source always resolves. It matters that it does: a nil would reach
+-- trigger.model.load() AS NIL, where the front key vanishes silently and a ticked rear BNC looks
+-- like a deliberate sole choice -- which is why acq_triggered() still degrades rather than trusting.
 --
 -- IT WRITES INSTRUMENT STATE -- trigger.blender[1], sdec.armkeyed and sdec.trigblended -- which is why
 -- it is a function and not a lookup: the blender has to be configured or RELEASED on every capture,
@@ -3131,10 +3129,10 @@ function sdec.acq_triggered(n, slope)
   -- recording cannot disagree about what the operator selected. Called AFTER the wait above, which
   -- reads none of its results -- the two were interleaved only because they grew in that order.
   --
-  -- nil MEANS THE SOURCE IS NOT ON THIS FIRMWARE, and free run is the honest degrade: the same answer
-  -- the guard at the top of this function gives, repeated here because arm_source() is now the only
-  -- place that knows. The mute is lifted first -- the guard above runs before mute_events() and this
-  -- does not, and a muted panel that stayed muted would swallow every later firmware error.
+  -- nil WOULD MEAN NO EVENT CONSTANT FOR THE SELECTED SOURCE, and free run is the honest degrade.
+  -- arm_source() returns one of three constants and never nil, so this cannot fire on a DMM6500 --
+  -- it is a degrade held against a source that stops resolving. The mute is lifted first because
+  -- mute_events() has already run, and a panel left muted would swallow every later firmware error.
   local ev, useanalog = sdec.arm_source()
   if ev == nil then
     sdec.unmute_events()

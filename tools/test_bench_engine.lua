@@ -1879,23 +1879,31 @@ do
   --
   -- THE BAND IS ON THE SET, NOT ON THE PRINTED COUNT, which is the point being pinned: the count is a
   -- sawtooth between the set and twice the set, so a band on it fires on the tooth.
+  -- PROBED RELATIVE TO THE BANDS, NOT AT LITERALS. Pinned to 3000/3500 this broke the moment the
+  -- working band moved, which is the one thing the thresholds are expected to do: the app's measured
+  -- steady state went 2993 -> 3030 kB over three releases and tripped a band set 7 kB above it. What
+  -- the rule says is 'clear at the warn band, amber above it, red above the bad band', and asserting
+  -- it against the bands themselves tests the rule rather than two numbers.
   local realset = brun.heapsetk
-  brun.heapsetk = function() return 2600 end
+  brun.heapsetk = function() return brun.heapwarnk - 1 end
   local _, hc0 = brun.heapfield()
-  brun.heapsetk = function() return 3001 end
+  brun.heapsetk = function() return brun.heapwarnk + 1 end
   local _, hc1 = brun.heapfield()
-  brun.heapsetk = function() return 3501 end
+  brun.heapsetk = function() return brun.heapbadk + 1 end
   local _, hc2 = brun.heapfield()
   brun.heapsetk = function() return nil end
   local ht3, hc3 = brun.heapfield()
   ck(hc0 == nil and hc1 == brun.c_warn and hc2 == brun.c_bad and hc3 == nil
      and string.find(ht3, 'Heap:', 1, true) ~= nil,
-     'the heap colours on the live set -- clear under 3000, amber over it, red over 3500',
-     string.format('%s %s %s %s / %s', tostring(hc0), tostring(hc1), tostring(hc2), tostring(hc3),
-                   ht3))
+     'the heap colours on the live set -- clear at the warn band, amber above it, red above the bad one',
+     string.format('%s %s %s %s / %s  (bands %d/%d)', tostring(hc0), tostring(hc1), tostring(hc2),
+                   tostring(hc3), ht3, brun.heapwarnk, brun.heapbadk))
+  -- AND THE BANDS MUST BE ORDERED, or the elseif above makes the red one unreachable.
+  ck(brun.heapwarnk < brun.heapbadk, 'the amber band sits below the red one',
+     string.format('%d < %d', brun.heapwarnk, brun.heapbadk))
   -- AND A RED HEAP OUTRANKS A GREEN HEALTH FIGURE. A run whose every cell is passing is exactly the case
   -- this field exists for: nothing else on the screen can see the allocator coming.
-  brun.heapsetk = function() return 3600 end
+  brun.heapsetk = function() return brun.heapbadk + 1 end
   local hlh, hlc = brun.headline(false)
   brun.heapsetk = realset
   ck(hlc == brun.c_bad,
