@@ -1101,9 +1101,15 @@ end
 -- recording is pageable over its last 9 % and the rest reachable only by unplugging the key.
 --
 -- MEASURED on the live app, since the argument above rests on RAM: a Lua array of numbers
--- costs exactly 16 B per element (8192 -> 128 KiB, 16384 -> 256 KiB); the app sits at ~1470 kB of heap
--- against gcinfo()'s 2861 kB threshold; and a 256 kB array allocated and freed with the event log
--- clean. Cost here is 128 KiB for the ring plus 128 KiB for ck_tail_result()'s copy.
+-- costs exactly 16 B per element (8192 -> 128 KiB, 16384 -> 256 KiB); the app sits at 1887 kB of heap
+-- against gcinfo()'s 3775 kB threshold, sampled straight after a collectgarbage() because the count
+-- is a sawtooth between the live set and the threshold; and a 256 kB array allocated and freed with
+-- the event log clean. Cost here is 128 KiB for the ring plus 128 KiB for ck_tail_result()'s copy.
+--
+-- THE THRESHOLD IS NOT AN INDEPENDENT FIGURE: 5.0.2 sets it to exactly twice the live count after a
+-- collect, measured at 1876/3752 loaded and 1887/3775 started. So it moves with the app and crossing
+-- it triggers a collection rather than a failure -- which is why the argument above rests on the
+-- 16 B per element and the 128 KiB, not on the headroom between these two.
 --
 -- NOT 32768: that is 512 KiB twice over, never demonstrated allocatable. The file still holds all of it.
 sdec.ck_keep = 8192

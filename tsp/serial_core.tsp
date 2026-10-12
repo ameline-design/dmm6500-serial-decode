@@ -2842,10 +2842,13 @@ end
 -- recording in stream_arm() -- so the operator's trigger settings cannot mean one thing to a 20 000
 -- sample window and another to a 32 kB one.
 --
--- ev IS ALWAYS ONE OF THE THREE EVENT CONSTANTS AND NEVER nil, because all three are present on the
--- DMM6500, so the selected source always resolves. It matters that it does: a nil would reach
--- trigger.model.load() AS NIL, where the front key vanishes silently and a ticked rear BNC looks
--- like a deliberate sole choice -- which is why acq_triggered() still degrades rather than trusting.
+-- ev COMES BACK nil WHEN THE CONSTANT FOR THE SELECTED SOURCE IS ABSENT, and that is a refusal both
+-- callers must act on. The single return hands back whatever was assigned into ev, so the question is
+-- whether the CONSTANT exists: EVENT_ANALOGTRIGGER does not on a digitizer with no analog comparator,
+-- which this app treats as a supported configuration, and EVENT_EXTERNAL need not on every model.
+-- Neither is nil-tested anywhere else in tsp/. A nil reaching trigger.model.load() takes it OUT OF
+-- BAND -- the model loads, waits on nothing, and the panel freezes for the whole of Arm Wait against
+-- working hardware -- which is why acq_triggered() and stream_arm() both degrade rather than trust.
 --
 -- IT WRITES INSTRUMENT STATE -- trigger.blender[1], sdec.armkeyed and sdec.trigblended -- which is why
 -- it is a function and not a lookup: the blender has to be configured or RELEASED on every capture,
@@ -3129,10 +3132,15 @@ function sdec.acq_triggered(n, slope)
   -- recording cannot disagree about what the operator selected. Called AFTER the wait above, which
   -- reads none of its results -- the two were interleaved only because they grew in that order.
   --
-  -- nil WOULD MEAN NO EVENT CONSTANT FOR THE SELECTED SOURCE, and free run is the honest degrade.
-  -- arm_source() returns one of three constants and never nil, so this cannot fire on a DMM6500 --
-  -- it is a degrade held against a source that stops resolving. The mute is lifted first because
-  -- mute_events() has already run, and a panel left muted would swallow every later firmware error.
+  -- nil MEANS NO EVENT CONSTANT FOR THE SELECTED SOURCE, and free run is the honest degrade. THE
+  -- BRANCH IS LIVE: arm_source() has a single return, but what it hands back is nil whenever the
+  -- CONSTANT it assigned is itself absent -- trigger.EVENT_ANALOGTRIGGER on a digitizer with no
+  -- analog comparator, which this app treats as a supported configuration, or trigger.EVENT_EXTERNAL
+  -- on a model without it. Neither constant is nil-tested anywhere else in tsp/, so in plain 'edge'
+  -- mode on such a box this is the only thing between a nil and trigger.model.load(), which takes it
+  -- OUT OF BAND: the model loads, waits on nothing, and the panel freezes for the whole of Arm Wait
+  -- against working hardware. The mute is lifted first because mute_events() has already run, and a
+  -- panel left muted would swallow every later firmware error.
   local ev, useanalog = sdec.arm_source()
   if ev == nil then
     sdec.unmute_events()

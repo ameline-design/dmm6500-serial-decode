@@ -1448,9 +1448,10 @@ function sdec.stream_arm(nsmp)
   local ok = false
   if armed then
     -- The source, the blender and the TRIGGER-key break-in, from the one function that decides them
-    -- for both paths. arm_source() never answers nil on a DMM6500, so the degrade below cannot fire;
-    -- it records free-running rather than silently substituting another source if one ever stops
-    -- resolving.
+    -- for both paths. THE nil BRANCH BELOW IS LIVE: arm_source() hands back nil whenever the trigger
+    -- CONSTANT it assigned is itself absent -- EVENT_ANALOGTRIGGER on a digitizer with no analog
+    -- comparator, a configuration this app supports -- and arming on a nil loads a model that waits
+    -- on nothing. Dropping to unarmed is the honest answer; see acq_triggered for the same branch.
     local ev, useanalog = sdec.arm_source()
     if ev == nil then
       armed = false
