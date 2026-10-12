@@ -2143,8 +2143,11 @@ end
 -- because an idle-low line does not look like a permanently-granted credit if the DMM is off.
 function sdec.fc_config()
   if not sdec.fc_out then return false end
-  -- trigger.extout.logic is documented at ref 14-349 and trigger.extout always exists, so the write
-  -- is bare -- there was nothing for a guard to catch.
+  -- trigger.extout DOES NOT EXIST ON EVERY SUPPORTED MODEL, so the write cannot be bare: the 2461
+  -- documents none at all, carrying a digital I/O port instead of the rear EXT TRIG lines. false is
+  -- the same answer this gives when the feature is off, which is what no rear output amounts to.
+  -- trigger.LOGIC_POSITIVE is not the missing name -- the table it is written into is.
+  if trigger.extout == nil then return false end
   trigger.extout.logic = trigger.LOGIC_POSITIVE
   -- THE WIDTH IS A DIFFERENT CASE, AND THE ONLY ATTRIBUTE HERE THAT MAY NOT EXIST. The DMM6500
   -- reference documents trigger.extout.assert(), .logic and .stimulus and NOT .pulsewidth, so the
@@ -2362,6 +2365,58 @@ function sdec.reset_options()
   return true
 end
 
+-- Relative compare for a readback: a float attribute can come back a bit-wobble away from what went
+-- in, and that is not a snap. Non-numbers compare by identity, which the func constant needs.
+function sdec.hw_same(want, got)
+  if type(want) ~= 'number' or type(got) ~= 'number' then return want == got end
+  local d = want - got
+  if d < 0 then d = -d end
+  local s = want
+  if s < 0 then s = -s end
+  if s < 1 then s = 1 end
+  return d / s < 1e-9
+end
+
+-- WHAT THE DIGITIZER ACTUALLY TOOK. -> true if everything matched.
+--
+-- hw_config() writes four attributes and read back none, so an instrument that cannot honour a value
+-- snapped to a neighbour and said nothing. The 2461 defaults its digitize voltage range to 7 V where
+-- both DMMs default to the 10 V sdec.range pins, so that is the model this catches.
+--
+-- THREE ATTRIBUTES, NOT FOUR: acq_measure_fs() re-derives the true rate from the buffer's own
+-- relativetimestamps, a stronger check than a readback and already shipped.
+--
+-- ONCE A LAUNCH, NOT ONCE A CAPTURE. Nothing inside a load changes these three, and they are proxy
+-- reads in the phase that already dominates cell time. One pcall for all three, at one boundary.
+--
+-- A MISMATCH IS NOT AN ERROR -- the capture is valid, just coarser than asked for -- so it goes to the
+-- log and to sdec.hw_snap, never to stickyerr.
+sdec.hw_checked = nil
+
+function sdec.hw_verify()
+  if sdec.hw_checked then return true end
+  sdec.hw_checked = true
+  local ok, f, r, a = pcall(function()
+    return sdec.dig.func, sdec.dig.range, sdec.dig.aperture
+  end)
+  -- A METER THAT WILL NOT REPORT ITS OWN SETTINGS IS NOT A SNAP, so say nothing rather than accuse
+  -- the instrument of one. Same direction bufmax_for() takes when the capacities will not read.
+  if not ok then return true end
+  sdec.hw_snap = {func = f, range = r, aperture = a}
+  local w = {sdec.k.FUNC_VOLT, sdec.range, 1e-6}
+  local g = {f, r, a}
+  local nm = {'func', 'range', 'aperture'}
+  local allok, i = true, nil
+  for i = 1, 3 do
+    if not sdec.hw_same(w[i], g[i]) then
+      allok = false
+      ulog.line(string.format('digitizer %s: asked %s, took %s -- the instrument snapped it',
+                              nm[i], tostring(w[i]), tostring(g[i])))
+    end
+  end
+  return allok
+end
+
 -- Apply the range, sample rate and trigger settings to the digitizer before a capture.
 function sdec.hw_config()
   sdec.quiet_events()
@@ -2372,6 +2427,8 @@ function sdec.hw_config()
   sdec.dig.range      = sdec.range
   sdec.dig.samplerate = sdec.fs
   sdec.dig.aperture   = 1e-6
+  -- AFTER THE WRITES, and the readback is the whole point of the call.
+  sdec.hw_verify()
 end
 
 -- Clamp a request to what the buffer can hold, reserve included. A store past capacity posts 4915
@@ -2776,7 +2833,10 @@ sdec.cancel_poll_s = 0.001
 
 -- Send one flow-control credit out of the rear EXT TRIG OUT. Returns whether the pulse went.
 function sdec.fc_credit()
-  local ok = pcall(trigger.extout.assert)
+  -- pcall(trigger.extout.assert) DOES NOT GUARD THE INDEX, which is why this read as handled and was
+  -- not: the index is an ARGUMENT EXPRESSION, evaluated before pcall is entered, so a model with no
+  -- trigger.extout raised here and the stickyerr below was unreachable. Same site, same budget.
+  local ok = pcall(function() trigger.extout.assert() end)
   -- A REFUSED CREDIT IS NOT A QUIET LINE, and without this it looks exactly like one: a device that
   -- is waiting for permission it never got sends nothing, the window comes back empty, and the run
   -- reports "the device stopped sending" -- a confident, wrong diagnosis of the operator's device.
@@ -3193,7 +3253,9 @@ function sdec.acq_triggered(n, slope)
     -- behaves as it always did -- it waits for traffic that may not come, and times out with a
     -- reason, which is the existing no-trigger path.
     if sdec.fc_out then
-      pcall(trigger.extout.assert)
+      -- Wrapped for the same reason as fc_credit(): the index would be evaluated outside the
+      -- protection. The verdict is discarded here by design; raising is not the same as ignoring.
+      pcall(function() trigger.extout.assert() end)
     end
 
     -- BOUNDED WAIT. A bare waitcomplete() here is a hang: LoopUntilEvent makes

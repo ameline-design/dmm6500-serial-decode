@@ -8040,6 +8040,31 @@ local function test_modes()
   sdec.fc_config()
   check('and sets a positive-going pulse when enabled -- rising edge for the device',
         trigger.extout.logic == trigger.LOGIC_POSITIVE, tostring(trigger.extout.logic))
+
+  -- A MODEL WITH NO REAR EXT TRIG LINES AT ALL. The 2461 reference documents no trigger.extout --
+  -- no .assert(), no .logic, no .stimulus -- because that instrument carries a digital I/O port
+  -- instead of the DMM's rear BNCs. Both paths below RAISED before the guards went in, and the
+  -- second is the instructive one: pcall(trigger.extout.assert) evaluated the index as an ARGUMENT
+  -- EXPRESSION, before pcall was entered, so it was never inside the protection it appeared to have.
+  local saveout = trigger.extout
+  trigger.extout = nil
+  sdec.fc_out = true
+  local cok, cres = pcall(sdec.fc_config)
+  check('fc_config does not raise on a model with no trigger.extout',
+        cok, tostring(cok) .. ' / ' .. tostring(cres))
+  check('...and refuses the way a switched-off feature does, with false',
+        cok and cres == false, tostring(cres))
+  sdec.stickyerr = nil
+  local kok, kres = pcall(sdec.fc_credit)
+  check('fc_credit does not raise on a model with no trigger.extout',
+        kok, tostring(kok) .. ' / ' .. tostring(kres))
+  check('...and answers false, so its refused-credit diagnosis is REACHABLE',
+        kok and kres == false, tostring(kres))
+  check('...and records that where it outlives the capture',
+        type(sdec.stickyerr) == 'string', tostring(sdec.stickyerr))
+  trigger.extout = saveout
+  sdec.stickyerr = nil
+
   sdec.fc_out = false
   clearforce()
 
@@ -10913,6 +10938,59 @@ end)()
           string.format('d1=%d / %s', defbuffer1.capacity, tostring(r2)))
   end
 
+  -- WHAT THE DIGITIZER TOOK, rather than what it was asked for. hw_config() writes func, range and
+  -- aperture and read back NONE of them, and an instrument that cannot honour a value snaps to a
+  -- neighbouring one and says nothing -- so the app believed it had what it asked for. The 2461
+  -- defaults its digitize voltage range to 7 V where both DMMs default to the 10 V sdec.range pins,
+  -- which is the model that would actually snap.
+  do
+    local lines, nl = {}, 0
+    local saveline = ulog.line
+    ulog.line = function(s) nl = nl + 1 lines[nl] = s return true end
+
+    -- THE MATCHING CASE FIRST, because a check that only fires on a mismatch cannot tell a working
+    -- readback from one that never runs. The mock stores what it is given, so this must be silent.
+    sdec.hw_checked = nil
+    sdec.hw_config()
+    check('a digitizer that took every value reports nothing',
+          nl == 0, string.format('%d line(s): %s', nl, tostring(lines[1])))
+
+    -- THE SNAP: move the range out from under it, the way firmware with no 10 V range would.
+    sdec.hw_checked = nil
+    sdec.dig.range = 20
+    local v = sdec.hw_verify()
+    check('a snapped range is detected rather than assumed away', v == false, tostring(v))
+    check('...and the line names the attribute, the request and what actually landed',
+          nl == 1 and lines[1] ~= nil
+          and string.find(lines[1], 'range', 1, true) ~= nil
+          and string.find(lines[1], '10', 1, true) ~= nil
+          and string.find(lines[1], '20', 1, true) ~= nil, tostring(lines[1]))
+    check('...and the pair is kept, so a caller need not repeat the proxy reads',
+          sdec.hw_snap ~= nil and sdec.hw_snap.range == 20,
+          tostring(sdec.hw_snap and sdec.hw_snap.range))
+
+    -- ONCE A LAUNCH, NOT ONCE A CAPTURE: these are proxy reads in the phase that already dominates
+    -- cell time, and a snap on the first capture happens on every one of them.
+    local before = nl
+    local again = sdec.hw_verify()
+    check('and it reports once a launch, not once a capture',
+          nl == before and again == true, string.format('%d -> %d', before, nl))
+
+    -- REPRESENTATION NOISE IS NOT A SNAP. A float attribute may come back a bit-wobble away from
+    -- what went in, and reporting that would make the check cry wolf on every model.
+    check('a readback a rounding error away from the request is not called a snap',
+          sdec.hw_same(1e-6, 1e-6 * (1 + 1e-12)) == true, 'within tolerance')
+    check('...while a genuinely different value still is',
+          sdec.hw_same(10, 20) == false, 'out of tolerance')
+    check('...and the func CONSTANT compares by identity, not by magnitude',
+          sdec.hw_same('digv', 'digv') == true and sdec.hw_same('digv', 'none') == false,
+          'identity')
+
+    ulog.line = saveline
+    sdec.hw_checked = nil
+    sdec.dig.range = sdec.range
+  end
+
   -- 0. THE HARNESS'S OWN PREMISE, asserted rather than assumed. GEN_POOL is held independently of
   -- sdec.ck_bufpool so that a wrong app constant is visible; that only works if something compares
   -- them. And the REFUSAL SHAPE has to match the instrument: a refused buffer.make returns nil while
@@ -10922,6 +11000,48 @@ end)()
     check('the harness pool figure and the app\'s agree, so neither can drift unnoticed',
           GEN_POOL == sdec.ck_bufpool,
           string.format('GEN_POOL %d vs ck_bufpool %d', GEN_POOL, sdec.ck_bufpool))
+
+    -- THE POOL IS PER MODEL, and one figure was wrong on two of the three instruments the manifest
+    -- claims. STANDARD-style ceilings, which is the style acq_make_buffer allocates: the compact
+    -- ceiling is 20 000 000 on the DMM7510 and 27 500 000 on the 2461, and reading that half of the
+    -- sentence instead is what overstates the pool by millions.
+    --
+    -- The two tables are written INDEPENDENTLY -- GEN_POOL_MODEL transcribed from the references,
+    -- sdec.ck_bufpool_model from them as well but separately -- so this compares them rather than
+    -- comparing either against itself.
+    local mdl = {'DMM6500', 'DMM7510', '2461', 'DAQ6510'}
+    local pool = {7080255, 7500000, 6875000, 7080255}
+    local mi
+    for mi = 1, 4 do
+      GEN_MODEL(mdl[mi])
+      check(string.format('%s resolves its own documented standard-style pool', mdl[mi]),
+            sdec.ck_bufpool == pool[mi],
+            string.format('%d, wanted %d', sdec.ck_bufpool, pool[mi]))
+      check(string.format('...and the harness agrees for %s, so neither table can drift', mdl[mi]),
+            GEN_POOL == sdec.ck_bufpool,
+            string.format('GEN_POOL %d vs ck_bufpool %d', GEN_POOL, sdec.ck_bufpool))
+    end
+    check('an unlisted model keeps the shipped DMM6500 figure rather than refusing the instrument',
+          pool[4] == pool[1], string.format('%d vs %d', pool[4], pool[1]))
+
+    -- THE DEFECT ITSELF, AS A WINDOW. With defbuffer1 at 3 000 000 and defbuffer2 at its 100 000
+    -- default a DMM7510 has 4 350 000 spare -- MORE than ck_bufwant -- so nothing should be taken
+    -- from the operator. The single DMM6500 figure computed 3 930 255 and reclaimed anyway,
+    -- discarding a 3 000 000-reading buffer on a meter that had the room. Against the old tree both
+    -- lines below return the same short ceiling; that equality is what this breaks.
+    GEN_DEFBUF(3000000, 100000)
+    GEN_MODEL('DMM6500')
+    local c6 = sdec.bufmax_for()
+    GEN_MODEL('DMM7510')
+    local c7 = sdec.bufmax_for()
+    check('a DMM7510 holding 3 000 000 in defbuffer1 still clears ck_bufwant, so nothing is taken',
+          c7 >= sdec.ck_bufwant, string.format('%d vs want %d', c7, sdec.ck_bufwant))
+    check('...while the DMM6500 the figure was measured on genuinely does fall short',
+          c6 < sdec.ck_bufwant, string.format('%d vs want %d', c6, sdec.ck_bufwant))
+    check('...so the two models no longer answer the same ceiling',
+          c6 ~= c7, string.format('6500=%d 7510=%d', c6, c7))
+    GEN_DEFBUF(100000, 100000)
+    GEN_MODEL('DMM6500')
     GEN_BUFMAKE_FAIL(1)
     local mok, nb = pcall(buffer.make, 1000, buffer.STYLE_STANDARD)
     check('a refused allocation RETURNS NIL and does not raise, as the firmware does',

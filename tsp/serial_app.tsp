@@ -1961,9 +1961,49 @@ sdec.ck_bufwant = 4076503
 -- one.
 sdec.ck_bufmax = sdec.ck_bufwant
 
--- THE INSTRUMENT'S WHOLE READING MEMORY, ACROSS ALL BUFFERS TOGETHER. Operator-measured on a freshly
--- power-cycled meter with nothing loaded; the last three digits are uncertain and the figure is not.
-sdec.ck_bufpool = 7080255
+-- THE INSTRUMENT'S WHOLE READING MEMORY, ACROSS ALL BUFFERS TOGETHER. Standard style only, which is
+-- what acq_make_buffer() allocates; the compact ceiling is 2.7 to 4 times larger on every model that
+-- documents both, so reading that figure instead overstates the pool by millions.
+--
+--   DMM6500   7 080 255   measured here, freshly power-cycled with nothing loaded
+--   DMM7510   7 500 000   reference manual
+--   2461      6 875 000   reference manual
+--
+-- Only the DMM6500 figure is measured; ck_bufmargin covers its uncertain last three digits.
+--
+-- A LOOKUP AND NOT A CAPABILITY TEST, unlike the namespace resolver: nothing can answer a pool SIZE
+-- at runtime without failing an allocation, which posts 4919 and may put a dialog over the app. It
+-- refuses nothing -- an unlisted model keeps the DMM6500 figure -- and a wrong figure costs either a
+-- reclaim the instrument did not need or a refusal acq_make_buffer() already handles.
+--
+-- THE DEFAULT IS A SEPARATE FIELD because a resolver that only assigns on a match leaves the last
+-- match in place: the DAQ6510 inherited the 2461's ceiling until these were split.
+sdec.ck_bufpool_default = 7080255
+sdec.ck_bufpool = sdec.ck_bufpool_default
+sdec.ck_bufpool_model = {{'7510', 7500000}, {'2461', 6875000}}
+
+-- Resolve the pool from the model number. -> the figure now in force.
+--
+-- Assigns unconditionally from a local, so the answer depends on the model and not on call order.
+-- Bare read: localnode is documented on every supported model, as quiet_events() already assumes.
+-- Substring, because localnode.model answers 'DMM7510' and '2461' and neither key can collide.
+function sdec.buf_pool_resolve()
+  local p = sdec.ck_bufpool_default
+  local m = localnode.model
+  if type(m) == 'string' then
+    local i
+    for i = 1, table.getn(sdec.ck_bufpool_model) do
+      local e = sdec.ck_bufpool_model[i]
+      if string.find(m, e[1], 1, true) ~= nil then
+        p = e[2]
+        break
+      end
+    end
+  end
+  sdec.ck_bufpool = p
+  return p
+end
+sdec.buf_pool_resolve()
 
 -- AND A PROBE THAT ALLOCATES BEFORE IT ASKS MEASURES ITS OWN FOOTPRINT, which is the trap that cost
 -- two readings of the pool. With the defbuffers at their 100 000 defaults, buffer.make(3000000) is

@@ -3,7 +3,7 @@ loadscript Serial_Decode
 -- $Product: DMM6500, DAQ6510, DMM7510, SMU2461
 -- $Tag: Serial, UART, Decode, Digitize
 -- $Description: Decodes an asynchronous serial line with the instrument's own digitizer: recovers baud rate, frame format and bytes, shows them as text or hex, and saves bytes to USB key. Everything auto-detects; everything can be locked.
--- $Version: 1.45
+-- $Version: 1.46
 -- $Requires: 1.7.0
 -- $Author: Ian Ameline
 -- $License: MIT
@@ -1365,6 +1365,7 @@ end
 -- because an idle-low line does not look like a permanently-granted credit if the DMM is off.
 function sdec.fc_config()
   if not sdec.fc_out then return false end
+  if trigger.extout == nil then return false end
   trigger.extout.logic = trigger.LOGIC_POSITIVE
   if trigger.extout.pulsewidth ~= nil then
     pcall(function() trigger.extout.pulsewidth = sdec.fc_pulse end)
@@ -1470,6 +1471,47 @@ function sdec.reset_options()
   return true
 end
 
+-- Relative compare for a readback: a float attribute can come back a bit-wobble away from what went
+-- in, and that is not a snap. Non-numbers compare by identity, which the func constant needs.
+function sdec.hw_same(want, got)
+  if type(want) ~= 'number' or type(got) ~= 'number' then return want == got end
+  local d = want - got
+  if d < 0 then d = -d end
+  local s = want
+  if s < 0 then s = -s end
+  if s < 1 then s = 1 end
+  return d / s < 1e-9
+end
+
+sdec.hw_checked = nil
+
+-- WHAT THE DIGITIZER ACTUALLY TOOK. -> true if everything matched.
+--   [...]
+-- reads in the phase that already dominates cell time. One pcall for all three, at one boundary.
+-- A MISMATCH IS NOT AN ERROR -- the capture is valid, just coarser than asked for -- so it goes to the
+-- log and to sdec.hw_snap, never to stickyerr.
+function sdec.hw_verify()
+  if sdec.hw_checked then return true end
+  sdec.hw_checked = true
+  local ok, f, r, a = pcall(function()
+    return sdec.dig.func, sdec.dig.range, sdec.dig.aperture
+  end)
+  if not ok then return true end
+  sdec.hw_snap = {func = f, range = r, aperture = a}
+  local w = {sdec.k.FUNC_VOLT, sdec.range, 1e-6}
+  local g = {f, r, a}
+  local nm = {'func', 'range', 'aperture'}
+  local allok, i = true, nil
+  for i = 1, 3 do
+    if not sdec.hw_same(w[i], g[i]) then
+      allok = false
+      ulog.line(string.format('digitizer %s: asked %s, took %s -- the instrument snapped it',
+                              nm[i], tostring(w[i]), tostring(g[i])))
+    end
+  end
+  return allok
+end
+
 -- Apply the range, sample rate and trigger settings to the digitizer before a capture.
 function sdec.hw_config()
   sdec.quiet_events()
@@ -1480,6 +1522,7 @@ function sdec.hw_config()
   sdec.dig.range      = sdec.range
   sdec.dig.samplerate = sdec.fs
   sdec.dig.aperture   = 1e-6
+  sdec.hw_verify()
 end
 
 -- Clamp a request to what the buffer can hold, reserve included. A store past capacity posts 4915
@@ -1657,7 +1700,7 @@ sdec.cancel_poll_s = 0.001
 
 -- Send one flow-control credit out of the rear EXT TRIG OUT. Returns whether the pulse went.
 function sdec.fc_credit()
-  local ok = pcall(trigger.extout.assert)
+  local ok = pcall(function() trigger.extout.assert() end)
   if not ok then
     sdec.stickyerr = 'the flow-control credit pulse was refused -- the device was never told to send'
   end
@@ -1857,7 +1900,7 @@ function sdec.acq_triggered(n, slope)
     trigger.model.initiate()
 
     if sdec.fc_out then
-      pcall(trigger.extout.assert)
+      pcall(function() trigger.extout.assert() end)
     end
 
     if sdec.arm_silent() and sdec.armnote ~= nil then
@@ -6777,7 +6820,31 @@ sdec.ck_bufwant = 4076503
 
 sdec.ck_bufmax = sdec.ck_bufwant
 
-sdec.ck_bufpool = 7080255
+sdec.ck_bufpool_default = 7080255
+sdec.ck_bufpool = sdec.ck_bufpool_default
+sdec.ck_bufpool_model = {{'7510', 7500000}, {'2461', 6875000}}
+
+-- Resolve the pool from the model number. -> the figure now in force.
+-- Assigns unconditionally from a local, so the answer depends on the model and not on call order.
+-- Bare read: localnode is documented on every supported model, as quiet_events() already assumes.
+-- Substring, because localnode.model answers 'DMM7510' and '2461' and neither key can collide.
+function sdec.buf_pool_resolve()
+  local p = sdec.ck_bufpool_default
+  local m = localnode.model
+  if type(m) == 'string' then
+    local i
+    for i = 1, table.getn(sdec.ck_bufpool_model) do
+      local e = sdec.ck_bufpool_model[i]
+      if string.find(m, e[1], 1, true) ~= nil then
+        p = e[2]
+        break
+      end
+    end
+  end
+  sdec.ck_bufpool = p
+  return p
+end
+sdec.buf_pool_resolve()
 
 sdec.ck_bufguard = 6000000
 sdec.ck_bufmargin = 50000

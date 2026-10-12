@@ -814,6 +814,26 @@ buffer = {STYLE_STANDARD = 'std', STYLE_WRITABLE_FULL = 'wf', UNIT_VOLT = 'V'}
 -- instead of hiding.
 GEN_POOL = 7080255
 
+-- THE MODEL NUMBER, because serial_app resolves its pool figure from it at load. Here rather than in
+-- mock_display because this is where the dmm and buffer mocks live, and because it must exist before
+-- tsp/serial_app.tsp loads. bench/*.tsp need no mock: they run on the instrument.
+localnode = localnode or {}
+if localnode.model == nil then localnode.model = 'DMM6500' end
+
+-- THE POOL PER MODEL, written independently of sdec.ck_bufpool_model for the same reason GEN_POOL is
+-- held independently of sdec.ck_bufpool: a harness that borrows the app's table cannot notice that
+-- table being wrong. test_serial asserts the two agree for every model listed.
+GEN_POOL_MODEL = {DMM6500 = 7080255, DMM7510 = 7500000, ['2461'] = 6875000}
+
+-- Switch the modelled instrument. Moves the mock's own pool with it -- buffer.make reads GEN_POOL at
+-- call time -- and re-runs the app's resolver, so a test need not know it runs at load.
+function GEN_MODEL(m)
+  localnode.model = m
+  GEN_POOL = GEN_POOL_MODEL[m] or 7080255
+  if sdec ~= nil and sdec.buf_pool_resolve ~= nil then sdec.buf_pool_resolve() end
+  return GEN_POOL
+end
+
 -- A REFUSABLE MAKE, AND IT REFUSES THE WAY THE INSTRUMENT DOES -- BY RETURNING NIL. Measured, and
 -- recorded in docs/UNDOCUMENTED.md: "a refused buffer.make returns nil while pcall reports success".
 -- The old stub RAISED instead, and the mismatch mattered. acq_make_buffer's
