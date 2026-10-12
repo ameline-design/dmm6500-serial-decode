@@ -844,18 +844,28 @@ end
 -- premise that was never true.
 defbuffer1 = {capacity = 100000}
 defbuffer2 = {capacity = 100000}
+-- `readonly` IS PER BUFFER, NOT JUST ALL-OR-NOTHING: true refuses both, 'defbuffer1' or 'defbuffer2'
+-- refuses one and lets the other through. That asymmetric case is the realistic one and the only way
+-- to reach a HALF-COMPLETED reclaim -- defbuffer1 is the default ACTIVE buffer, so it is the one a
+-- running measurement can have pinned while defbuffer2 is free. A mock that could only refuse both
+-- made a partial write untestable, and a partial write was silently destroying a buffer.
 function GEN_DEFBUF(d1, d2, readonly)
   if d1 == nil then
     defbuffer1, defbuffer2 = nil, nil
-  elseif readonly then
-    local function ro()
-      error('capacity is not writable on this instrument', 0)
-    end
-    defbuffer1 = setmetatable({}, {__index = {capacity = d1}, __newindex = ro})
-    defbuffer2 = setmetatable({}, {__index = {capacity = d2 or 100000}, __newindex = ro})
-  else
-    defbuffer1, defbuffer2 = {capacity = d1}, {capacity = d2 or 100000}
+    return
   end
+  local function mk(cap, refuse)
+    if not refuse then return {capacity = cap} end
+    -- The capacity lives behind __index so __newindex fires at all: assigning an EXISTING key never
+    -- consults a metatable, so a plain table with one would accept the write silently.
+    return setmetatable({}, {__index = {capacity = cap},
+                             __newindex = function()
+                               error('capacity is not writable on this instrument', 0)
+                             end})
+  end
+  local ro1 = (readonly == true) or (readonly == 'defbuffer1')
+  local ro2 = (readonly == true) or (readonly == 'defbuffer2')
+  defbuffer1, defbuffer2 = mk(d1, ro1), mk(d2 or 100000, ro2)
 end
 
 -- The waveform the mocked digitizer hands back. Tests set SRC before calling into

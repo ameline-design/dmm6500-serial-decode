@@ -10844,6 +10844,79 @@ end)()
     sdec.buf = keepbuf
   end
 
+  -- ---------------------------------------------------------------------------
+  -- THE THREE FAILURE SHAPES, each of which destroyed an operator's buffer silently and each of
+  -- which the suite passed clean over. All three are about what happens when a capacity write does
+  -- not land, or lands at the wrong moment -- never about the arithmetic, which was right throughout.
+  -- ---------------------------------------------------------------------------
+
+  -- 1. A HALF-COMPLETED RECLAIM. defbuffer1 is the default ACTIVE buffer, so a running measurement
+  -- can have it pinned while defbuffer2 is free: one write lands, the other is refused. Under a
+  -- single guard spanning both, buf_reclaim reported FALSE -- "nothing was reclaimed" -- recorded
+  -- nothing and logged nothing, while defbuffer2's readings were already discarded.
+  GEN_DEFBUF(3000000, 3000000, 'defbuffer1')
+  do
+    local did, what = sdec.buf_reclaim()
+    check('a reclaim whose other write is refused still reports what DID land',
+          did == true and what ~= nil
+          and string.find(what, 'defbuffer2', 1, true) ~= nil
+          and string.find(what, 'defbuffer1', 1, true) == nil,
+          string.format('%s / %s', tostring(did), tostring(what)))
+    check('...and records that capacity, so it can still be handed back',
+          sdec.ck_defbufwas ~= nil and sdec.ck_defbufwas.defbuffer2 == 3000000
+          and sdec.ck_defbufwas.defbuffer1 == nil,
+          string.format('was d2=%s d1=%s',
+                        tostring(sdec.ck_defbufwas and sdec.ck_defbufwas.defbuffer2),
+                        tostring(sdec.ck_defbufwas and sdec.ck_defbufwas.defbuffer1)))
+    check('...and the one it could not resize is untouched',
+          defbuffer1.capacity == 3000000, string.format('%d', defbuffer1.capacity))
+    sdec.ck_defbufwas = nil
+  end
+
+  -- 2. A REFUSED RESTORE MUST NOT THROW THE RECORD AWAY. The case that needs a retry is stop()
+  -- running with the capture buffer still live because its delete was refused -- so there is no room
+  -- to grow into -- and clearing ck_defbufwas before the write made exactly that case permanent.
+  -- These capacities are not derivable from anywhere else once they are gone.
+  GEN_DEFBUF(3000000, 100000)
+  do
+    sdec.buf_reclaim()
+    GEN_DEFBUF(100000, 100000, 'defbuffer1')      -- the pool has no room to grow back into
+    local r = sdec.buf_restore()
+    check('a restore the instrument refuses KEEPS the record instead of discarding it',
+          sdec.ck_defbufwas ~= nil and sdec.ck_defbufwas.defbuffer1 == 3000000,
+          string.format('was=%s', tostring(sdec.ck_defbufwas
+                                           and sdec.ck_defbufwas.defbuffer1)))
+    check('...and says so rather than reporting a restore that did not happen',
+          r ~= nil and string.find(r, 'kept for the next teardown', 1, true) ~= nil, tostring(r))
+    GEN_DEFBUF(100000, 100000)                     -- the room comes back
+    local r2 = sdec.buf_restore()
+    check('...so the next teardown can still put it back',
+          defbuffer1.capacity == 3000000 and r2 ~= nil and sdec.ck_defbufwas == nil,
+          string.format('d1=%d / %s', defbuffer1.capacity, tostring(r2)))
+  end
+
+  -- 3. A RELAUNCH IS NOT AN EXIT. start() derives the ceiling from the RECLAIMED capacities, then
+  -- reaches its rebuild teardown -- cleanup() -> stop() -> buf_restore() -- which grew them back
+  -- underneath that figure: ck_bufmax 4 076 503 against 930 255 really available, and the next press
+  -- asking 3.9x the room the instrument had. Asserted on the mechanism rather than by calling
+  -- start() twice here, which would rebuild the UI and reset the detection defaults under the ~1200
+  -- checks that follow; the end-to-end case is covered on hardware.
+  GEN_DEFBUF(3000000, 100000)
+  do
+    sdec.buf_reclaim()
+    sdec.ck_relaunching = true
+    local r = sdec.buf_restore()
+    check('the rebuild teardown leaves the reclaim in place -- a relaunch is not an exit',
+          r == nil and defbuffer1.capacity == 100000
+          and sdec.ck_defbufwas ~= nil and sdec.ck_defbufwas.defbuffer1 == 3000000,
+          string.format('%s, d1=%d', tostring(r), defbuffer1.capacity))
+    sdec.ck_relaunching = nil
+    local r2 = sdec.buf_restore()
+    check('...while a real teardown still hands the capacity back',
+          defbuffer1.capacity == 3000000 and r2 ~= nil,
+          string.format('d1=%d / %s', defbuffer1.capacity, tostring(r2)))
+  end
+
   -- DEGRADE, DO NOT RAISE: a meter that will not report its own buffer sizes must still record, so
   -- the fallback is the static ceiling and never anything larger.
   GEN_DEFBUF(nil)

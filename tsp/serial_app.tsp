@@ -2020,6 +2020,28 @@ end
 -- WHAT THE INSTRUMENT SHIPS WITH in each default buffer, and the size a reclaim returns them to.
 sdec.ck_defbufcap = 100000
 
+-- ONE DEFAULT BUFFER'S CAPACITY, WRITTEN AND ANSWERED FOR. -> true if the instrument took it.
+--
+-- ONE GUARDED SITE FOR EVERY CAPACITY WRITE THIS APP MAKES, which is what lets the reclaim and the
+-- restore work per buffer without paying for it: the pcall budget counts SITES, not executions, so
+-- routing both through here costs one site where doing it inline cost two.
+--
+-- AND PER BUFFER IS NOT A STYLE CHOICE. One pcall spanning both writes is not atomic: with
+-- defbuffer1 pinned by a running measurement and defbuffer2 free, the first assignment lands and the
+-- second raises -- so defbuffer2's readings were discarded while buf_reclaim reported false, recorded
+-- nothing in ck_defbufwas and wrote no log line. Measured, and silent in every channel the operator
+-- has.
+function sdec.defbuf_set(name, cap)
+  local ok = pcall(function()
+    if name == 'defbuffer1' then
+      defbuffer1.capacity = cap
+    else
+      defbuffer2.capacity = cap
+    end
+  end)
+  return ok
+end
+
 -- RESIZE THE DEFAULT BUFFERS DOWN WHEN THE RECORDING NEEDS THE ROOM, because the reading memory is
 -- ONE pool across every buffer and that is what the other apps on this instrument do. An operator who
 -- has grown defbuffer1 to 6 000 000 has taken 85 % of the pool, and an app that only ever adapted to
@@ -2056,29 +2078,30 @@ function sdec.buf_reclaim()
   if sdec.ck_bufpool - a1 - a2 - sdec.ck_bufmargin < want and a2 > dc then n2, a2 = dc, dc end
   if sdec.ck_bufpool - a1 - a2 - sdec.ck_bufmargin < want and a1 > dc then n1, a1 = dc, dc end
   if n1 == nil and n2 == nil then return false, nil end
-  local sok = pcall(function()
-    if n2 ~= nil then defbuffer2.capacity = n2 end
-    if n1 ~= nil then defbuffer1.capacity = n1 end
-  end)
-  if not sok then return false, nil end
-  -- AND COLLECT, SAME REASON AS THE SWEEP: the resize is what releases the readings, so the memory is
-  -- only actually back once the collector has run over it. The whole point of the resize is the room.
-  pcall(collectgarbage)
-  if sdec.ck_defbufwas == nil then sdec.ck_defbufwas = {} end
   local what = nil
+  -- EACH WRITE RECORDED AS IT LANDS, so a buffer that WAS resized is always one this app can name and
+  -- put back. See defbuf_set for what one guard spanning both writes cost: a half-completed reclaim
+  -- was indistinguishable from one that never happened, in every channel the operator has.
+  --
   -- PER BUFFER, BOTH ENDPOINTS, because one shared destination at the end of the sentence does not
   -- read as shared: "defbuffer2 from 3000000 and defbuffer1 from 3000000 to 100000" reaches the
   -- operator as a statement about defbuffer1 with defbuffer2's new size left unsaid -- on the one
   -- line that records readings being destroyed.
-  if n2 ~= nil then
+  if n2 ~= nil and sdec.defbuf_set('defbuffer2', n2) then
+    if sdec.ck_defbufwas == nil then sdec.ck_defbufwas = {} end
     sdec.ck_defbufwas.defbuffer2 = d2
-    what = string.format('defbuffer2 %d -> %d', d2, dc)
+    what = string.format('defbuffer2 %d -> %d', d2, n2)
   end
-  if n1 ~= nil then
+  if n1 ~= nil and sdec.defbuf_set('defbuffer1', n1) then
+    if sdec.ck_defbufwas == nil then sdec.ck_defbufwas = {} end
     sdec.ck_defbufwas.defbuffer1 = d1
-    local s = string.format('defbuffer1 %d -> %d', d1, dc)
+    local s = string.format('defbuffer1 %d -> %d', d1, n1)
     if what == nil then what = s else what = what .. ' and ' .. s end
   end
+  if what == nil then return false, nil end
+  -- AND COLLECT, SAME REASON AS THE SWEEP: the resize is what releases the readings, so the memory is
+  -- only actually back once the collector has run over it. The whole point of the resize is the room.
+  pcall(collectgarbage)
   return true, what
 end
 
@@ -2154,22 +2177,48 @@ end
 --
 -- -> text naming what was handed back, or nil when there was nothing to hand back.
 function sdec.buf_restore()
+  -- A RELAUNCH IS NOT AN EXIT. start() sets this across its rebuild teardown, because the ceiling is
+  -- derived from the RECLAIMED capacities and handing them back there grows the buffers underneath
+  -- that figure: measured at a 3 146 248-reading gap after one relaunch under a 6 000 000
+  -- defbuffer1, with the next press asking 3.9x the room the instrument had.
+  if sdec.ck_relaunching then return nil end
   local was = sdec.ck_defbufwas
   if was == nil then return nil end
-  sdec.ck_defbufwas = nil
-  local w1, w2 = was.defbuffer1, was.defbuffer2
-  local ok = pcall(function()
-    if w1 ~= nil then defbuffer1.capacity = w1 end
-    if w2 ~= nil then defbuffer2.capacity = w2 end
-  end)
-  local what = nil
-  if w1 ~= nil then what = string.format('defbuffer1 to %d', w1) end
-  if w2 ~= nil then
-    local s = string.format('defbuffer2 to %d', w2)
-    if what == nil then what = s else what = what .. ' and ' .. s end
+  -- THE RECORD IS KEPT UNTIL EACH WRITE LANDS. Clearing it first made a failed restore PERMANENT:
+  -- the capacities this app destroyed are not derivable from anywhere else, and the one case that
+  -- needs a retry -- stop() running with the capture buffer still live because its delete was
+  -- refused, so there is no room to grow into -- is exactly the case that threw them away.
+  -- mode_restore() clears first for a reason that does NOT transfer: a measurement function is a
+  -- courtesy the operator can re-select, and a buffer's readings are not.
+  --
+  -- AND AN ENTRY IS DROPPED ONLY ON SUCCESS, so a retry never re-writes a capacity that already
+  -- landed -- assigning a capacity CLEARS the buffer, so re-writing a restored one would discard
+  -- whatever has accumulated since.
+  local what, left = nil, nil
+  if was.defbuffer2 ~= nil then
+    if sdec.defbuf_set('defbuffer2', was.defbuffer2) then
+      what = string.format('defbuffer2 to %d', was.defbuffer2)
+      was.defbuffer2 = nil
+    else
+      left = 'defbuffer2'
+    end
   end
-  if not ok then return 'could not restore ' .. what end
-  return what
+  if was.defbuffer1 ~= nil then
+    if sdec.defbuf_set('defbuffer1', was.defbuffer1) then
+      local s = string.format('defbuffer1 to %d', was.defbuffer1)
+      if what == nil then what = s else what = what .. ' and ' .. s end
+      was.defbuffer1 = nil
+    else
+      if left == nil then left = 'defbuffer1' else left = left .. ' and defbuffer1' end
+    end
+  end
+  if left == nil then
+    sdec.ck_defbufwas = nil
+    return what
+  end
+  local why = 'could not restore ' .. left .. ' -- kept for the next teardown'
+  if what ~= nil then why = what .. '; ' .. why end
+  return why
 end
 
 -- Samples to record for mode md at sample rate fs. Returns nil when the rate or the locked baud
@@ -4209,6 +4258,10 @@ function sdec.start()
   -- left them and nobody is coming back for them -- then defbuffer2, then defbuffer1, which is the
   -- instrument's default ACTIVE buffer and so the one most likely to hold readings the operator
   -- wanted. Both steps discard readings, so both are logged whether or not anyone is at the glass.
+  -- CLEARED HERE, NOT ONLY WHERE IT IS SET. A raise inside the rebuild teardown below would leave
+  -- the flag standing, and a later real exit would then silently skip handing the operator's
+  -- capacities back. One assignment makes the failure mode self-correcting at the next launch.
+  sdec.ck_relaunching = nil
   local swept, sweptwhat = sdec.buf_sweep()
   local reclaimed, reclaimwhat = sdec.buf_reclaim()
   -- HELD RATHER THAN LOGGED HERE, for the same reason the recording-ceiling line further down is:
@@ -4260,7 +4313,16 @@ function sdec.start()
   -- what refuses. sdec.allow_rebuild = true overrides it, so how many start()/cleanup() cycles
   -- the firmware tolerates can be measured deliberately; opt-in, never the default.
   if sdec.built then
+    -- AND THE DEFAULT BUFFERS STAY RECLAIMED ACROSS IT, because a relaunch is not an exit. cleanup()
+    -- reaches stop() -> buf_restore(), which hands their capacities back -- right when the app is
+    -- finishing, wrong here: the ceiling was derived above from the reclaimed sizes, so growing them
+    -- back underneath that figure leaves every rate and capacity decision this launch makes against
+    -- memory the instrument does not have. Measured at a 3 146 248-reading gap after one relaunch
+    -- under a 6 000 000 defbuffer1, the next press asking 3.9x the available room. Restoring and
+    -- re-reclaiming instead would be two more capacity writes, and each one CLEARS its buffer.
+    sdec.ck_relaunching = true
     sdec.cleanup()
+    sdec.ck_relaunching = nil
     -- Retry anything a previous teardown could not delete BEFORE counting failures: a handle kept
     -- by del_obj is reclaimable, and reclaiming it is what keeps the object pool from filling.
     local left = 0

@@ -3,7 +3,7 @@ loadscript Serial_Decode
 -- $Product: DMM6500, DAQ6510, DMM7510, SMU2461
 -- $Tag: Serial, UART, Decode, Digitize
 -- $Description: Decodes an asynchronous serial line with the instrument's own digitizer: recovers baud rate, frame format and bytes, shows them as text or hex, and saves bytes to USB key. Everything auto-detects; everything can be locked.
--- $Version: 1.43
+-- $Version: 1.44
 -- $Requires: 1.7.0
 -- $Author: Ian Ameline
 -- $License: MIT
@@ -6814,6 +6814,22 @@ end
 
 sdec.ck_defbufcap = 100000
 
+-- ONE DEFAULT BUFFER'S CAPACITY, WRITTEN AND ANSWERED FOR. -> true if the instrument took it.
+--   [...]
+-- second raises -- so defbuffer2's readings were discarded while buf_reclaim reported false, recorded
+-- nothing in ck_defbufwas and wrote no log line. Measured, and silent in every channel the operator
+-- has.
+function sdec.defbuf_set(name, cap)
+  local ok = pcall(function()
+    if name == 'defbuffer1' then
+      defbuffer1.capacity = cap
+    else
+      defbuffer2.capacity = cap
+    end
+  end)
+  return ok
+end
+
 -- RESIZE THE DEFAULT BUFFERS DOWN WHEN THE RECORDING NEEDS THE ROOM, because the reading memory is
 --   [...]
 -- capacities are one guarded boundary and not two. A meter that refuses the write keeps its sizes and
@@ -6830,23 +6846,20 @@ function sdec.buf_reclaim()
   if sdec.ck_bufpool - a1 - a2 - sdec.ck_bufmargin < want and a2 > dc then n2, a2 = dc, dc end
   if sdec.ck_bufpool - a1 - a2 - sdec.ck_bufmargin < want and a1 > dc then n1, a1 = dc, dc end
   if n1 == nil and n2 == nil then return false, nil end
-  local sok = pcall(function()
-    if n2 ~= nil then defbuffer2.capacity = n2 end
-    if n1 ~= nil then defbuffer1.capacity = n1 end
-  end)
-  if not sok then return false, nil end
-  pcall(collectgarbage)
-  if sdec.ck_defbufwas == nil then sdec.ck_defbufwas = {} end
   local what = nil
-  if n2 ~= nil then
+  if n2 ~= nil and sdec.defbuf_set('defbuffer2', n2) then
+    if sdec.ck_defbufwas == nil then sdec.ck_defbufwas = {} end
     sdec.ck_defbufwas.defbuffer2 = d2
-    what = string.format('defbuffer2 %d -> %d', d2, dc)
+    what = string.format('defbuffer2 %d -> %d', d2, n2)
   end
-  if n1 ~= nil then
+  if n1 ~= nil and sdec.defbuf_set('defbuffer1', n1) then
+    if sdec.ck_defbufwas == nil then sdec.ck_defbufwas = {} end
     sdec.ck_defbufwas.defbuffer1 = d1
-    local s = string.format('defbuffer1 %d -> %d', d1, dc)
+    local s = string.format('defbuffer1 %d -> %d', d1, n1)
     if what == nil then what = s else what = what .. ' and ' .. s end
   end
+  if what == nil then return false, nil end
+  pcall(collectgarbage)
   return true, what
 end
 
@@ -6898,22 +6911,34 @@ end
 -- from. ck_defbufwas is cleared either way, so a second stop() does not try again on stale numbers.
 -- -> text naming what was handed back, or nil when there was nothing to hand back.
 function sdec.buf_restore()
+  if sdec.ck_relaunching then return nil end
   local was = sdec.ck_defbufwas
   if was == nil then return nil end
-  sdec.ck_defbufwas = nil
-  local w1, w2 = was.defbuffer1, was.defbuffer2
-  local ok = pcall(function()
-    if w1 ~= nil then defbuffer1.capacity = w1 end
-    if w2 ~= nil then defbuffer2.capacity = w2 end
-  end)
-  local what = nil
-  if w1 ~= nil then what = string.format('defbuffer1 to %d', w1) end
-  if w2 ~= nil then
-    local s = string.format('defbuffer2 to %d', w2)
-    if what == nil then what = s else what = what .. ' and ' .. s end
+  local what, left = nil, nil
+  if was.defbuffer2 ~= nil then
+    if sdec.defbuf_set('defbuffer2', was.defbuffer2) then
+      what = string.format('defbuffer2 to %d', was.defbuffer2)
+      was.defbuffer2 = nil
+    else
+      left = 'defbuffer2'
+    end
   end
-  if not ok then return 'could not restore ' .. what end
-  return what
+  if was.defbuffer1 ~= nil then
+    if sdec.defbuf_set('defbuffer1', was.defbuffer1) then
+      local s = string.format('defbuffer1 to %d', was.defbuffer1)
+      if what == nil then what = s else what = what .. ' and ' .. s end
+      was.defbuffer1 = nil
+    else
+      if left == nil then left = 'defbuffer1' else left = left .. ' and defbuffer1' end
+    end
+  end
+  if left == nil then
+    sdec.ck_defbufwas = nil
+    return what
+  end
+  local why = 'could not restore ' .. left .. ' -- kept for the next teardown'
+  if what ~= nil then why = what .. '; ' .. why end
+  return why
 end
 
 -- Samples to record for mode md at sample rate fs. Returns nil when the rate or the locked baud
@@ -7983,6 +8008,7 @@ end
 -- Returns false
 -- and a reason if a rebuild is refused or the build fails.
 function sdec.start()
+  sdec.ck_relaunching = nil
   local swept, sweptwhat = sdec.buf_sweep()
   local reclaimed, reclaimwhat = sdec.buf_reclaim()
   sdec.ck_swept, sdec.ck_sweptwhat = swept, sweptwhat
@@ -8002,7 +8028,9 @@ function sdec.start()
     return false, why
   end
   if sdec.built then
+    sdec.ck_relaunching = true
     sdec.cleanup()
+    sdec.ck_relaunching = nil
     local left = 0
     left = sdec.del_orphans()
     if left < 1 then sdec.delfails = 0 end
