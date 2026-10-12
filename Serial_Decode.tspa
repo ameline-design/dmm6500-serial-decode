@@ -3,7 +3,7 @@ loadscript Serial_Decode
 -- $Product: DMM6500, DAQ6510, DMM7510, SMU2461
 -- $Tag: Serial, UART, Decode, Digitize
 -- $Description: Decodes an asynchronous serial line with the instrument's own digitizer: recovers baud rate, frame format and bytes, shows them as text or hex, and saves bytes to USB key. Everything auto-detects; everything can be locked.
--- $Version: 1.46
+-- $Version: 1.47
 -- $Requires: 1.7.0
 -- $Author: Ian Ameline
 -- $License: MIT
@@ -1700,7 +1700,8 @@ sdec.cancel_poll_s = 0.001
 
 -- Send one flow-control credit out of the rear EXT TRIG OUT. Returns whether the pulse went.
 function sdec.fc_credit()
-  local ok = pcall(function() trigger.extout.assert() end)
+  local ok = false
+  if trigger.extout ~= nil then ok = pcall(trigger.extout.assert) end
   if not ok then
     sdec.stickyerr = 'the flow-control credit pulse was refused -- the device was never told to send'
   end
@@ -1900,7 +1901,7 @@ function sdec.acq_triggered(n, slope)
     trigger.model.initiate()
 
     if sdec.fc_out then
-      pcall(function() trigger.extout.assert() end)
+      if trigger.extout ~= nil then pcall(trigger.extout.assert) end
     end
 
     if sdec.arm_silent() and sdec.armnote ~= nil then

@@ -2833,10 +2833,15 @@ sdec.cancel_poll_s = 0.001
 
 -- Send one flow-control credit out of the rear EXT TRIG OUT. Returns whether the pulse went.
 function sdec.fc_credit()
-  -- pcall(trigger.extout.assert) DOES NOT GUARD THE INDEX, which is why this read as handled and was
-  -- not: the index is an ARGUMENT EXPRESSION, evaluated before pcall is entered, so a model with no
-  -- trigger.extout raised here and the stickyerr below was unreachable. Same site, same budget.
-  local ok = pcall(function() trigger.extout.assert() end)
+  -- GUARD THE INDEX, NOT THE CALL. pcall's first argument is an ordinary expression, evaluated before
+  -- pcall is entered, so `pcall(trigger.extout.assert)` raised on a model with no trigger.extout --
+  -- the 2461 documents none -- and the stickyerr below was unreachable.
+  --
+  -- A nil test on the TABLE is the whole fix, and no closure is needed: pcall(nil) answers false
+  -- rather than raising (measured under 5.0.2), so a trigger.extout that exists without .assert needs
+  -- no second test either.
+  local ok = false
+  if trigger.extout ~= nil then ok = pcall(trigger.extout.assert) end
   -- A REFUSED CREDIT IS NOT A QUIET LINE, and without this it looks exactly like one: a device that
   -- is waiting for permission it never got sends nothing, the window comes back empty, and the run
   -- reports "the device stopped sending" -- a confident, wrong diagnosis of the operator's device.
@@ -3253,9 +3258,9 @@ function sdec.acq_triggered(n, slope)
     -- behaves as it always did -- it waits for traffic that may not come, and times out with a
     -- reason, which is the existing no-trigger path.
     if sdec.fc_out then
-      -- Wrapped for the same reason as fc_credit(): the index would be evaluated outside the
-      -- protection. The verdict is discarded here by design; raising is not the same as ignoring.
-      pcall(function() trigger.extout.assert() end)
+      -- Table tested for the same reason as fc_credit(): the index is evaluated before pcall is
+      -- entered. The verdict is discarded here by design; raising is not the same as ignoring.
+      if trigger.extout ~= nil then pcall(trigger.extout.assert) end
     end
 
     -- BOUNDED WAIT. A bare waitcomplete() here is a hang: LoopUntilEvent makes
