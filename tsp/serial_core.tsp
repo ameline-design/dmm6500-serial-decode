@@ -2491,6 +2491,13 @@ function sdec.acq_make_buffer(n)
   -- refuses when defbuffer2 already holds the readings this needs, and nil is the answer the
   -- caller tests for anyway, so the guard belongs here rather than around the call: this runs on
   -- the capture path, where pcall depth is what bluescreens the instrument.
+  --
+  -- STANDARD AND NOT COMPACT, AND NOT BY CHOICE. buffer.STYLE_COMPACT is nil on this firmware --
+  -- STANDARD, FULL, WRITABLE and WRITABLE_FULL all resolve -- and the style constants are opaque
+  -- userdata, not values, so it cannot be passed by value either: buffer.make refuses the string form
+  -- even for a style that DOES exist, which is the control that proves the route closed rather than
+  -- compact rejected. It would buy capacity (20 000 000 readings against 7 500 000 on a DMM7510) and
+  -- measurably no decode speed, since the read cost above is payload-independent.
   local mok, nb = pcall(buffer.make, n, buffer.STYLE_STANDARD)
   if not mok then return nil end
   sdec.buf = nb
@@ -2508,21 +2515,24 @@ end
 -- tried), so any per-access penalty is paid five-plus times over. Paying it once,
 -- on one linear pass, makes the rest free.
 --
---   NOT MEASURED            the cost of a buf.readings[i] READ. Assuming it equals
---                           the write cost is an inference, not a result.
+--   22.82 us                one buf.readings[i] read, timed over 20 000 of them on
+--                           firmware 1.7.17a. The ~0.455 s a capture recorded below
+--                           is the same number from the other end: 0.455 / 20 000 is
+--                           22.75 us, within 0.3 %.
 --
--- That unmeasured number decides whether long captures can be STREAMED to a file
--- rather than decoded one window at a time. At 9600 baud with 10 samples/bit,
--- keeping up in real time means extracting 96 000 samples per second, so the
--- break-even read cost is ~10 us with NOTHING left for decoding, or ~5 us to leave
--- half the budget. At 1.4 us it just about fits at 9600 and does not at 19200; at
--- 80 us it is eight times too slow and no amount of double buffering helps, since
--- the deficit is throughput rather than a gap between captures.
+-- INDEPENDENT OF BUFFER STYLE, so the cost is the per-index round trip and not the
+-- payload: STYLE_FULL stores more per reading and reads within 0.07 % of
+-- STYLE_STANDARD (22.836 us against 22.820, three interleaved runs each). ACQUISITION
+-- is the opposite -- 20 000 samples take 208 ms into standard and 222 ms into full,
+-- +6.6 % at 8 sd -- so payload size costs time where it is written, not where it is
+-- read. buffer.make (1.8 ms) and buf.clear() (0.17 ms) are style-independent too.
 --
--- Five lines to settle it, and worth doing early:
---   timer.cleartime(); local rd = buf.readings; local s = 0
---   for i = 1, 20000 do s = s + rd[i] end
---   print(timer.gettime() / 20000)        -- seconds per proxy read
+-- SO LONG CAPTURES CANNOT BE STREAMED by extracting in real time, and that is settled
+-- rather than open. At 9600 baud with 10 samples/bit it needs 96 000 samples a second:
+-- ~10 us a read with NOTHING left for decoding, ~5 us to leave half the budget. 22.82
+-- is 2.3x and 4.6x over those. No amount of double buffering helps, since the deficit
+-- is throughput rather than a gap between captures -- which is why this app decodes
+-- one window at a time.
 -- AN OPTIONAL LIVENESS HOOK, nil in the shipped app and set by nothing inside it.
 --
 -- WHY IT IS HERE. The bench's panel spinner can only be advanced from code that is RUNNING, and the longest
