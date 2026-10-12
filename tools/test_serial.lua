@@ -10809,25 +10809,43 @@ end)()
   do
     FOREIGN_BIG = buffer.make(3000000, buffer.STYLE_STANDARD)
     FOREIGN_SMALL = buffer.make(50000, buffer.STYLE_STANDARD)
+    -- NOT A BUFFER, and the sweep must not touch it. With the size floor gone the `.n` test is the
+    -- only thing standing between this and a delete, so it needs asserting rather than assuming:
+    -- another app's table carrying a capacity field is exactly what a capacity-only match would eat.
+    NOT_A_BUFFER = {capacity = 4000000, alive = true}
     local keepbuf = sdec.buf
     sdec.buf = buffer.make(2000000, buffer.STYLE_STANDARD)
     OURS_BY_ANOTHER_NAME = sdec.buf
     local freed, gone = sdec.buf_sweep()
-    check('a buffer this app did not make is deleted, and its readings counted',
-          freed == 3000000 and gone ~= nil
-          and string.find(gone, 'FOREIGN_BIG', 1, true) ~= nil,
-          string.format('%d freed, %s', freed, tostring(gone)))
-    check('...and the global that named it is cleared, because dropping the handle strands it',
-          FOREIGN_BIG == nil)
-    check('...while one no larger than a default buffer is left where it is',
-          FOREIGN_SMALL ~= nil and FOREIGN_SMALL.alive == true)
+    check('every stranded buffer is deleted whatever its size, and the readings counted',
+          freed == 3050000 and gone ~= nil
+          and string.find(gone, 'FOREIGN_BIG', 1, true) ~= nil
+          and string.find(gone, 'FOREIGN_SMALL', 1, true) ~= nil,
+          string.format('%d freed of 3050000, %s', freed, tostring(gone)))
+    check('...and the globals that named them are cleared, because dropping a handle strands it',
+          FOREIGN_BIG == nil and FOREIGN_SMALL == nil)
+    check('...while a table that merely has a capacity field is NOT a buffer and is left alone',
+          NOT_A_BUFFER ~= nil and NOT_A_BUFFER.capacity == 4000000,
+          tostring(NOT_A_BUFFER))
     -- THE ONE THAT WOULD COST A CAPTURE. sdec.buf is reachable from a global here, which is the
     -- shape a sweep that matched on capacity alone would delete out from under a live recording.
     check('...and THIS APP\'S OWN capture buffer survives, however it is named',
           OURS_BY_ANOTHER_NAME ~= nil and sdec.buf ~= nil and sdec.buf.alive == true,
           tostring(sdec.buf ~= nil and sdec.buf.alive))
-    check('...and so do the two default buffers, which cannot be deleted at all',
-          defbuffer1 ~= nil and defbuffer2 ~= nil and defbuffer1.capacity == 100000)
+    -- THE DEFAULT BUFFERS ARE NEVER DELETED, ONLY EVER RESIZED, and the name test is now the ONLY
+    -- thing that holds: both carry a numeric capacity and a numeric n, so they match the sweep's
+    -- discriminator exactly as a stranded buffer does. Asserted with them OVERSIZED, because at
+    -- their 100 000 default the old size floor would have excluded them anyway and the check would
+    -- pass without the name test doing anything.
+    GEN_DEFBUF(3000000, 2000000)
+    local fdef = sdec.buf_sweep()
+    check('the default buffers are never deleted, however large, and the sweep frees nothing',
+          fdef == 0 and defbuffer1 ~= nil and defbuffer2 ~= nil
+          and defbuffer1.capacity == 3000000 and defbuffer2.capacity == 2000000,
+          string.format('%d freed, d1=%s d2=%s', fdef,
+                        tostring(defbuffer1 and defbuffer1.capacity),
+                        tostring(defbuffer2 and defbuffer2.capacity)))
+    GEN_DEFBUF(100000, 100000)
     -- A REFUSED DELETE MUST NOT BE COUNTED AS FREED, or the ceiling is derived from room that was
     -- never released and the allocation fails with nothing to explain it.
     FOREIGN_BIG = buffer.make(2500000, buffer.STYLE_STANDARD)
@@ -10893,6 +10911,36 @@ end)()
     check('...so the next teardown can still put it back',
           defbuffer1.capacity == 3000000 and r2 ~= nil and sdec.ck_defbufwas == nil,
           string.format('d1=%d / %s', defbuffer1.capacity, tostring(r2)))
+  end
+
+  -- 0. THE HARNESS'S OWN PREMISE, asserted rather than assumed. GEN_POOL is held independently of
+  -- sdec.ck_bufpool so that a wrong app constant is visible; that only works if something compares
+  -- them. And the REFUSAL SHAPE has to match the instrument: a refused buffer.make returns nil while
+  -- pcall reports success (docs/UNDOCUMENTED.md), so a mock that raised would exercise
+  -- acq_make_buffer's `if not mok` branch while hardware takes the `nb == nil` one.
+  do
+    check('the harness pool figure and the app\'s agree, so neither can drift unnoticed',
+          GEN_POOL == sdec.ck_bufpool,
+          string.format('GEN_POOL %d vs ck_bufpool %d', GEN_POOL, sdec.ck_bufpool))
+    GEN_BUFMAKE_FAIL(1)
+    local mok, nb = pcall(buffer.make, 1000, buffer.STYLE_STANDARD)
+    check('a refused allocation RETURNS NIL and does not raise, as the firmware does',
+          mok == true and nb == nil, string.format('pcall=%s, got=%s', tostring(mok), tostring(nb)))
+    GEN_BUFMAKE_FAIL(0)
+    -- AND THE POOL IS WHAT REFUSES, not just the override: asking for more than the whole reading
+    -- memory is the real condition, and it must answer the same way.
+    local mok2, nb2 = pcall(buffer.make, GEN_POOL + 1, buffer.STYLE_STANDARD)
+    check('...and so does a request larger than the whole reading memory',
+          mok2 == true and nb2 == nil, string.format('%s / %s', tostring(mok2), tostring(nb2)))
+    -- acq_make_buffer must hand that refusal on as nil rather than a half-built buffer.
+    GEN_BUFMAKE_FAIL(1)
+    local keepbuf = sdec.buf
+    sdec.buf = nil
+    local got = sdec.acq_make_buffer(20000)
+    check('...and acq_make_buffer passes a refusal on as nil, leaving sdec.buf nil',
+          got == nil and sdec.buf == nil, string.format('%s / %s', tostring(got), tostring(sdec.buf)))
+    GEN_BUFMAKE_FAIL(0)
+    sdec.buf = keepbuf
   end
 
   -- 3. A RELAUNCH IS NOT AN EXIT. start() derives the ceiling from the RECLAIMED capacities, then

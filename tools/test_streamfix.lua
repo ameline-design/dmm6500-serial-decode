@@ -1055,17 +1055,17 @@ print('\nI  an 8 kB or 32 kB recording can wait for a device that has not starte
           string.format('endwhy=%s got=%s', tostring(sdec.ck_endwhy), tostring(got)))
   end
 
-  -- AND A FIRMWARE THAT CANNOT REPORT THE STATE DEGRADES TO THE OLD BEHAVIOUR rather than bounding
-  -- every recording on a guess: with trigger.STATE_WAITING absent, trig_waiting() answers nil and
-  -- the arm is treated as fired.
+  -- AND A STATE READ THAT RAISES DEGRADES TO THE OLD BEHAVIOUR rather than bounding every recording
+  -- on a guess: trig_waiting() answers nil, and the arm is treated as fired. nil and false are
+  -- different answers here -- false would read as "not waiting", which is the wrong degrade.
   do
-    local keepw = trigger.STATE_WAITING
-    check('with no STATE_WAITING constant the arm cannot be told, which reads as nil not false',
+    check('a readable state answers true or false, never nil',
           sdec.trig_waiting() ~= nil, tostring(sdec.trig_waiting()))
-    trigger.STATE_WAITING = nil
-    check('...and then an armed recording is NOT bounded as an arm -- the pre-feature behaviour',
+    local realstate = trigger.model.state
+    trigger.model.state = function() error('state is unavailable', 0) end
+    check('...while a state read that RAISES answers nil, not false',
           sdec.trig_waiting() == nil, tostring(sdec.trig_waiting()))
-    trigger.STATE_WAITING = keepw
+    trigger.model.state = realstate
   end
 
   -- ---- AND THE WORKFLOW: silent at the press, transmitting a moment later ----
@@ -1331,6 +1331,66 @@ end)()
 
   sdec.fs, sdec.acq_fs, sdec.acq_pretrig = keep.fs, keep.af, keep.pt
   sdec.force_baud, sdec.force_invert, sdec.ck_win_n = keep.fb, keep.fi, keep.w
+end)()
+
+-- ============================================================================
+-- THE ALLOCATION REFUSAL, AND THE RECLAIM BEHIND IT. Nothing reached either before: the harness
+-- could not fail a buffer.make, so deleting stream_begin's whole sweep-reclaim-retry block left
+-- test_serial, test_cancel and this suite all green -- measured, as a surviving mutant. The
+-- capacities are the operator's to change MID-SESSION, so this is the one place that catches a
+-- change made after the launch did its sweep, and it has to take the room rather than advise.
+-- ============================================================================
+;(function()
+  local keep = {fb = sdec.force_baud, cm = sdec.capmode, tm = sdec.trigmode,
+                job = sdec.ck_job, rec = sdec.strm_recording, was = sdec.ck_defbufwas}
+
+  -- THE OPERATOR GREW A DEFAULT BUFFER AFTER THE LAUNCH. 7 080 255 - 6 500 000 - 100 000 leaves
+  -- 480 255, far under what a 32 kB recording at 9600 needs, so buffer.make is refused -- and the
+  -- retry must free the room and get the recording anyway.
+  clearforce()
+  sdec.force_baud, sdec.capmode, sdec.trigmode = 9600, 'med', 'edge'
+  sdec.ck_job, sdec.strm_recording, sdec.ck_defbufwas = nil, nil, nil
+  GEN_DEFBUF(100000, 6500000)
+  do
+    local ok, why = sdec.stream_begin()
+    check('a recording whose allocation is refused reclaims the room and retries',
+          ok == true, tostring(why))
+    check('...having resized the buffer that was in the way, not the other one',
+          defbuffer2.capacity == 100000 and defbuffer1.capacity == 100000,
+          string.format('d1=%d d2=%d', defbuffer1.capacity, defbuffer2.capacity))
+    check('...and recorded it, so the teardown can hand the capacity back',
+          sdec.ck_defbufwas ~= nil and sdec.ck_defbufwas.defbuffer2 == 6500000,
+          string.format('was d2=%s', tostring(sdec.ck_defbufwas
+                                              and sdec.ck_defbufwas.defbuffer2)))
+    check('...and the capture buffer really exists afterwards',
+          sdec.buf ~= nil and sdec.buf.alive == true,
+          tostring(sdec.buf ~= nil and sdec.buf.alive))
+  end
+
+  -- AND WHERE THE RECLAIM CANNOT HELP, IT REFUSES AND SAYS WHY. A meter that reports its capacities
+  -- and refuses the write is the only way left to reach this: with a writable capacity the retry
+  -- always succeeds. The refusal must RETURN rather than wait for a finger -- an unattended soak
+  -- would otherwise stop with nothing on the glass to say why.
+  do
+    if sdec.buf ~= nil then pcall(buffer.delete, sdec.buf) sdec.buf = nil end
+    sdec.ck_job, sdec.strm_recording, sdec.ck_defbufwas = nil, nil, nil
+    GEN_DEFBUF(100000, 6500000, 'defbuffer2')
+    local ok, why = sdec.stream_begin()
+    check('a recording the instrument will not make room for is refused, not hung',
+          ok == false and type(why) == 'string',
+          string.format('%s / %s', tostring(ok), type(why)))
+    check('...naming the buffer that is actually large and how many readings were wanted',
+          why ~= nil and string.find(why, 'defbuffer2', 1, true) ~= nil
+          and string.find(why, '6500000', 1, true) ~= nil
+          and string.find(why, 'cannot allocate', 1, true) ~= nil, tostring(why))
+    check('...and it reaches sdec.lasterr, which is what the note row shows',
+          sdec.lasterr == why, tostring(sdec.lasterr))
+  end
+
+  GEN_DEFBUF(100000, 100000)
+  if sdec.buf ~= nil then pcall(buffer.delete, sdec.buf) sdec.buf = nil end
+  sdec.force_baud, sdec.capmode, sdec.trigmode = keep.fb, keep.cm, keep.tm
+  sdec.ck_job, sdec.strm_recording, sdec.ck_defbufwas = keep.job, keep.rec, keep.was
 end)()
 
 print()

@@ -2031,7 +2031,11 @@ sdec.ck_defbufcap = 100000
 -- second raises -- so defbuffer2's readings were discarded while buf_reclaim reported false, recorded
 -- nothing in ck_defbufwas and wrote no log line. Measured, and silent in every channel the operator
 -- has.
+-- NAMED EXACTLY, with no else-falls-through-to-defbuffer2: a caller that passed anything else would
+-- silently resize the wrong buffer and discard the wrong readings. Only two call sites pass literals,
+-- so this is unreachable today -- and it is one character of typo away from not being.
 function sdec.defbuf_set(name, cap)
+  if name ~= 'defbuffer1' and name ~= 'defbuffer2' then return false end
   local ok = pcall(function()
     if name == 'defbuffer1' then
       defbuffer1.capacity = cap
@@ -2133,8 +2137,16 @@ function sdec.buf_sweep()
     while k ~= nil do
       if type(k) == 'string' and k ~= 'defbuffer1' and k ~= 'defbuffer2'
          and type(v) == bt and v ~= sdec.buf then
-        local c = v.capacity
-        if type(c) == 'number' and c > sdec.ck_defbufcap then
+        -- EVERY STRANDED BUFFER GOES, WHATEVER ITS SIZE. A small one is still abandoned reading
+        -- memory that nothing on the instrument shows the operator, and they accumulate: one per
+        -- relaunch of whatever left it behind.
+        --
+        -- SO THE DISCRIMINATOR CARRIES THE WHOLE WEIGHT, and capacity alone is not enough for that.
+        -- A reading buffer has a numeric `.capacity` AND a numeric `.n` -- the readings in it -- and
+        -- requiring both is what keeps this from deleting some other app's table that happens to
+        -- carry a capacity field. The size floor used to stand in for this test; it no longer can.
+        local c, nread = v.capacity, v.n
+        if type(c) == 'number' and type(nread) == 'number' then
           nn = nn + 1
           names[nn] = k
           names[k] = c
@@ -2181,7 +2193,15 @@ function sdec.buf_restore()
   -- derived from the RECLAIMED capacities and handing them back there grows the buffers underneath
   -- that figure: measured at a 3 146 248-reading gap after one relaunch under a 6 000 000
   -- defbuffer1, with the next press asking 3.9x the room the instrument had.
-  if sdec.ck_relaunching then return nil end
+  --
+  -- ONE-SHOT, AND CONSUMED HERE RATHER THAN ONLY CLEARED BY ITS SETTER. start() clears it on entry
+  -- and clears it after the teardown, but a raise inside cleanup() escapes both: the flag would then
+  -- stand until the next launch, and a real End App in between would skip the restore altogether.
+  -- Consuming it means a stranded flag costs exactly ONE skipped restore instead of every one.
+  if sdec.ck_relaunching then
+    sdec.ck_relaunching = nil
+    return nil
+  end
   local was = sdec.ck_defbufwas
   if was == nil then return nil end
   -- THE RECORD IS KEPT UNTIL EACH WRITE LANDS. Clearing it first made a failed restore PERMANENT:
@@ -4258,6 +4278,7 @@ function sdec.start()
   -- left them and nobody is coming back for them -- then defbuffer2, then defbuffer1, which is the
   -- instrument's default ACTIVE buffer and so the one most likely to hold readings the operator
   -- wanted. Both steps discard readings, so both are logged whether or not anyone is at the glass.
+  --
   -- CLEARED HERE, NOT ONLY WHERE IT IS SET. A raise inside the rebuild teardown below would leave
   -- the flag standing, and a later real exit would then silently skip handing the operator's
   -- capacities back. One assignment makes the failure mode self-correcting at the next launch.
@@ -4285,6 +4306,16 @@ function sdec.start()
                               sdec.ck_bigbuf or 'a default buffer',
                               sdec.ck_bigcap or 0, sdec.ck_bufpool, sdec.ck_defbufcap,
                               reclaimed and 'did not free enough' or 'was refused')
+    -- AND GIVE BACK WHAT THE RECLAIM TOOK, because this launch is not happening. stop() is the only
+    -- other caller of buf_restore and it never runs on this path, so without this a refused launch
+    -- shrank a default buffer, discarded its readings and left the capacity down for good -- the
+    -- record held, with nothing that would ever act on it. Measured: defbuffer2 400 000 -> 100 000
+    -- behind a refusal, reachable whenever one capacity write lands and the other is refused.
+    --
+    -- THE SWEPT BUFFERS DO NOT COME BACK, and cannot: a deleted buffer is gone. That is the intended
+    -- trade for a buffer nothing was coming back for, and the log line above has already said so.
+    local back = sdec.buf_restore()
+    if back ~= nil then ulog.line('launch refused, so capacities handed back: ' .. back) end
     sdec.lasterr = why
     ulog.line('start refused: ' .. why)
     return false, why

@@ -2694,11 +2694,10 @@ sdec.arm_settle_s = 10.0
 -- "fired", and the idle watchdog then ended the run as 'quiet' one second later with zero bytes,
 -- three seconds before the device started transmitting.
 --
--- nil MEANS DEGRADE, not retry: a firmware without trigger.STATE_WAITING, or a state read that
--- raised, leaves the caller with no way to bound an arm -- and the honest answer there is to behave
--- exactly as a recording did before the feature existed rather than to guess.
+-- nil MEANS DEGRADE, not retry: a state read that raised leaves the caller with no way to bound an
+-- arm, and the honest answer there is to behave exactly as a recording did before the feature
+-- existed rather than to guess.
 function sdec.trig_waiting()
-  if trigger.STATE_WAITING == nil then return nil end
   -- ON A RAISE THE SECOND RESULT IS THE MESSAGE rather than a state, and a string would compare
   -- unequal to the constant and read as "not waiting" -- which is the wrong degrade. Same guard, and
   -- the same reason, as sdec.trig_done above.
@@ -2854,7 +2853,6 @@ end
 -- it is a function and not a lookup: the blender has to be configured or RELEASED on every capture,
 -- and which of those happens depends on the same three settings that pick the event.
 function sdec.arm_source()
-  if sdec.trigmode == 'front' and trigger.EVENT_DISPLAY == nil then return nil, false, false end
   -- WHICH EVENT ARMS THE CAPTURE. The analog trigger watches the SIGNAL ITSELF on the front
   -- INPUT HI/LO and fires on a start-bit edge -- which catches "a byte arrived" but cannot
   -- distinguish WHICH byte, because every byte looks like the start of a message.
@@ -2954,7 +2952,7 @@ function sdec.arm_source()
   -- A FAILED BLEND IS NOT FATAL -- the arm still works, it simply has no manual escape, and the note
   -- says so rather than implying the key will work.
   if sdec.arm_silent() and sdec.armkey and sdec.trigmode ~= 'front' and
-     not (sdec.trigext and sdec.trigext_only) and trigger.EVENT_DISPLAY ~= nil then
+     not (sdec.trigext and sdec.trigext_only) then
     local kok = pcall(function()
       if not blended then
         trigger.blender[1].reset()
@@ -3081,15 +3079,6 @@ end
 -- degrading to a free-running read if the source is refused.
 function sdec.acq_triggered(n, slope)
   local buf = sdec.buf
-  -- NIL IS NOT A TRIGGER SOURCE, and it is checked here, before any instrument state is
-  -- touched, so the refusal has nothing to undo. trigger.EVENT_DISPLAY is documented for the
-  -- DMM6500, but on a firmware without it the constant reaches trigger.model.load() and the
-  -- blender stimulus below AS NIL -- where the front key vanishes silently and a ticked rear BNC
-  -- looks like a deliberate sole choice. acq_free() sets up its own capture.
-  if sdec.trigmode == 'front' and trigger.EVENT_DISPLAY == nil then
-    sdec.lasterr = 'no front-panel TRIGGER event on this firmware; captured free-running'
-    return sdec.acq_free(n)
-  end
   buf.clear()
   -- PER CAPTURE, not only at creation. Observed reading back 0 on a capture that reused an existing
   -- buffer, and one FILL_ONCE capture is one burst of 4915. Setting it also clears the buffer, which

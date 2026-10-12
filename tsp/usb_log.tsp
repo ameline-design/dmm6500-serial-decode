@@ -103,13 +103,7 @@ ulog.keyopen   = ulog.keyopen or 0
 -- naming a path, and naming a path that is not there posts 2205 -- so every open and every write goes
 -- behind this, and answers 'no key' silently rather than filing an event about it.
 --
--- TYPE-TESTED, NOT GUARDED, and the distinction matters: a usbdriveexists that is ABSENT raises
--- "attempt to call a nil value" when called, which is not the same as one that answers nil.
--- ulog.open's note below says it may be missing on another firmware, so this has to hold.
---
--- UNKNOWN COUNTS AS PRESENT: refusing to log over a question we could not ask is a regression.
 function ulog.haskey()
-  if file.usbdriveexists == nil then return true end
   if file.usbdriveexists() == 0 then return false end
   return true
 end
@@ -388,8 +382,8 @@ function ulog.open_write(path, mode)
   -- exists for, because usbdriveexists() returns 0 the moment the key leaves the slot.
   --
   -- LISTED, NOT DIAGNOSED. Claiming the key is present would be an assertion of the same kind as the
-  -- 'no USB key' this replaced: usbdriveexists may be missing on another firmware, and a key can be
-  -- pulled between that call and this open.
+  -- 'no USB key' this replaced: a key can be pulled between haskey()'s call and this open, so what
+  -- that call established a moment ago is not what this failure proves.
   return nil, 'cannot open ' .. tostring(path)
                 .. ' -- key may be absent, full, write-protected, or refusing the directory'
 end

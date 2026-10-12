@@ -3,7 +3,7 @@ loadscript Serial_Decode
 -- $Product: DMM6500, DAQ6510, DMM7510, SMU2461
 -- $Tag: Serial, UART, Decode, Digitize
 -- $Description: Decodes an asynchronous serial line with the instrument's own digitizer: recovers baud rate, frame format and bytes, shows them as text or hex, and saves bytes to USB key. Everything auto-detects; everything can be locked.
--- $Version: 1.44
+-- $Version: 1.45
 -- $Requires: 1.7.0
 -- $Author: Ian Ameline
 -- $License: MIT
@@ -55,12 +55,10 @@ ulog.keygen    = ulog.keygen or 0
 ulog.keyopen   = ulog.keyopen or 0
 
 -- Is a key in the slot? -> true, or false when the firmware says there is none.
---   [...]
--- "attempt to call a nil value" when called, which is not the same as one that answers nil.
--- ulog.open's note below says it may be missing on another firmware, so this has to hold.
--- UNKNOWN COUNTS AS PRESENT: refusing to log over a question we could not ask is a regression.
+-- THE GATE IN FRONT OF EVERYTHING. It is the only question about the key that can be asked without
+-- naming a path, and naming a path that is not there posts 2205 -- so every open and every write goes
+-- behind this, and answers 'no key' silently rather than filing an event about it.
 function ulog.haskey()
-  if file.usbdriveexists == nil then return true end
   if file.usbdriveexists() == 0 then return false end
   return true
 end
@@ -1619,11 +1617,10 @@ sdec.arm_settle_s = 10.0
 
 -- IS THE MODEL SITTING IN A WAIT BLOCK? -> true, false, or NIL when it cannot be told.
 --   [...]
--- nil MEANS DEGRADE, not retry: a firmware without trigger.STATE_WAITING, or a state read that
--- raised, leaves the caller with no way to bound an arm -- and the honest answer there is to behave
--- exactly as a recording did before the feature existed rather than to guess.
+-- nil MEANS DEGRADE, not retry: a state read that raised leaves the caller with no way to bound an
+-- arm, and the honest answer there is to behave exactly as a recording did before the feature
+-- existed rather than to guess.
 function sdec.trig_waiting()
-  if trigger.STATE_WAITING == nil then return nil end
   local sok, st = pcall(trigger.model.state)
   if not sok or st == nil then return nil end
   return st == trigger.STATE_WAITING
@@ -1704,7 +1701,6 @@ end
 -- it is a function and not a lookup: the blender has to be configured or RELEASED on every capture,
 -- and which of those happens depends on the same three settings that pick the event.
 function sdec.arm_source()
-  if sdec.trigmode == 'front' and trigger.EVENT_DISPLAY == nil then return nil, false, false end
   local ev = trigger.EVENT_ANALOGTRIGGER
   if sdec.trigmode == 'front' then ev = trigger.EVENT_DISPLAY end
   local useanalog = (ev == trigger.EVENT_ANALOGTRIGGER)
@@ -1734,7 +1730,7 @@ function sdec.arm_source()
   end
 
   if sdec.arm_silent() and sdec.armkey and sdec.trigmode ~= 'front' and
-     not (sdec.trigext and sdec.trigext_only) and trigger.EVENT_DISPLAY ~= nil then
+     not (sdec.trigext and sdec.trigext_only) then
     local kok = pcall(function()
       if not blended then
         trigger.blender[1].reset()
@@ -1825,10 +1821,6 @@ end
 -- degrading to a free-running read if the source is refused.
 function sdec.acq_triggered(n, slope)
   local buf = sdec.buf
-  if sdec.trigmode == 'front' and trigger.EVENT_DISPLAY == nil then
-    sdec.lasterr = 'no front-panel TRIGGER event on this firmware; captured free-running'
-    return sdec.acq_free(n)
-  end
   buf.clear()
   sdec.acq_fillmode(buf)
   n = sdec.acq_fit(n, buf)
@@ -6816,10 +6808,11 @@ sdec.ck_defbufcap = 100000
 
 -- ONE DEFAULT BUFFER'S CAPACITY, WRITTEN AND ANSWERED FOR. -> true if the instrument took it.
 --   [...]
--- second raises -- so defbuffer2's readings were discarded while buf_reclaim reported false, recorded
--- nothing in ck_defbufwas and wrote no log line. Measured, and silent in every channel the operator
--- has.
+-- NAMED EXACTLY, with no else-falls-through-to-defbuffer2: a caller that passed anything else would
+-- silently resize the wrong buffer and discard the wrong readings. Only two call sites pass literals,
+-- so this is unreachable today -- and it is one character of typo away from not being.
 function sdec.defbuf_set(name, cap)
+  if name ~= 'defbuffer1' and name ~= 'defbuffer2' then return false end
   local ok = pcall(function()
     if name == 'defbuffer1' then
       defbuffer1.capacity = cap
@@ -6876,8 +6869,8 @@ function sdec.buf_sweep()
     while k ~= nil do
       if type(k) == 'string' and k ~= 'defbuffer1' and k ~= 'defbuffer2'
          and type(v) == bt and v ~= sdec.buf then
-        local c = v.capacity
-        if type(c) == 'number' and c > sdec.ck_defbufcap then
+        local c, nread = v.capacity, v.n
+        if type(c) == 'number' and type(nread) == 'number' then
           nn = nn + 1
           names[nn] = k
           names[k] = c
@@ -6911,7 +6904,10 @@ end
 -- from. ck_defbufwas is cleared either way, so a second stop() does not try again on stale numbers.
 -- -> text naming what was handed back, or nil when there was nothing to hand back.
 function sdec.buf_restore()
-  if sdec.ck_relaunching then return nil end
+  if sdec.ck_relaunching then
+    sdec.ck_relaunching = nil
+    return nil
+  end
   local was = sdec.ck_defbufwas
   if was == nil then return nil end
   local what, left = nil, nil
@@ -8023,6 +8019,8 @@ function sdec.start()
                               sdec.ck_bigbuf or 'a default buffer',
                               sdec.ck_bigcap or 0, sdec.ck_bufpool, sdec.ck_defbufcap,
                               reclaimed and 'did not free enough' or 'was refused')
+    local back = sdec.buf_restore()
+    if back ~= nil then ulog.line('launch refused, so capacities handed back: ' .. back) end
     sdec.lasterr = why
     ulog.line('start refused: ' .. why)
     return false, why

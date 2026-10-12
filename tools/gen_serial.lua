@@ -808,9 +808,56 @@ end
 buffer = {STYLE_STANDARD = 'std', STYLE_WRITABLE_FULL = 'wf', UNIT_VOLT = 'V'}
 -- fillmode: a real attribute here, so acq_fillmode() is exercised rather than pcall'd into a no-op.
 -- A user-defined buffer starts FILL_ONCE (0), as the reference states; the app sets 1.
+-- THE WHOLE READING MEMORY, ACROSS ALL BUFFERS TOGETHER. Operator-measured. Held INDEPENDENTLY of
+-- sdec.ck_bufpool rather than read from it: a harness that borrows the app's own figure cannot
+-- notice the app's figure being wrong. test_serial asserts the two agree, so drift fails a check
+-- instead of hiding.
+GEN_POOL = 7080255
+
+-- A REFUSABLE MAKE, AND IT REFUSES THE WAY THE INSTRUMENT DOES -- BY RETURNING NIL. Measured, and
+-- recorded in docs/UNDOCUMENTED.md: "a refused buffer.make returns nil while pcall reports success".
+-- The old stub RAISED instead, and the mismatch mattered. acq_make_buffer's
+-- `if not mok then return nil end` was the only branch a test could reach, while the branch the
+-- firmware really takes -- mok true, nb nil -- was never exercised offline at all. That path happens
+-- to be safe, but only because acq_fillmode() nil-guards its first line.
+--
+-- THE POOL IS MODELLED, because the refusal that matters is "no room", not "bad argument". Every
+-- buffer handed out and not yet deleted counts, and so do BOTH default buffers: the reading memory is
+-- one pool across all of them. Measured over test_serial before this existed: peak live 5 270 000 of
+-- 7 080 255, 74.4 %, with the peak falling while the defbuffers were at their defaults -- so
+-- modelling the pool refuses nothing the suite legitimately asks for.
+--
+-- WITHOUT IT THERE WAS NO WAY TO FAIL AN ALLOCATION, so stream_begin's refusal and the
+-- sweep-and-reclaim retry behind it were both unreachable: deleting that entire block left every
+-- suite green, measured as a surviving mutant.
+local BUFMAKE_FAIL = 0
+-- GEN_BUFMAKE_FAIL(n) refuses the next n outright, so a test can reach the refusal without first
+-- filling seven million readings. Mirrors GEN_BUFDEL_FAIL above.
+function GEN_BUFMAKE_FAIL(n) BUFMAKE_FAIL = n or 0 end
+local BUFLIVE = {}
 function buffer.make(cap, style)
-  if cap ~= nil and cap < 10 then error('buffer.make below the 10 minimum', 0) end
-  return newbuf(cap)
+  if BUFMAKE_FAIL > 0 then
+    BUFMAKE_FAIL = BUFMAKE_FAIL - 1
+    return nil
+  end
+  -- THE PARAMETER RANGE, which the firmware answers with event 4920 and a nil -- not a raise.
+  if cap == nil or cap < 10 or cap > GEN_POOL then return nil end
+  local sum = cap
+  local b, c
+  for b, c in pairs(BUFLIVE) do
+    -- Dropped lazily: buffer.delete marks `alive` false, and a dead buffer holds no readings.
+    if b.alive then sum = sum + c else BUFLIVE[b] = nil end
+  end
+  if defbuffer1 ~= nil and type(defbuffer1.capacity) == 'number' then
+    sum = sum + defbuffer1.capacity
+  end
+  if defbuffer2 ~= nil and type(defbuffer2.capacity) == 'number' then
+    sum = sum + defbuffer2.capacity
+  end
+  if sum > GEN_POOL then return nil end
+  local nb = newbuf(cap)
+  BUFLIVE[nb] = cap
+  return nb
 end
 -- A REFUSABLE DELETE, because the firmware can refuse one and the app has a branch for it that no
 -- test could reach: acq_make_buffer sets delfails and the 'power cycle the instrument' stickyerr, then

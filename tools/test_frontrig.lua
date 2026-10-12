@@ -251,22 +251,6 @@ check('...and never the words the bench reads as "the trigger FIRED"',
       not has(sdec.lasterr, 'idle') and not has(sdec.lasterr, 'no transitions'),
       tostring(sdec.lasterr))
 
--- A firmware without trigger.EVENT_DISPLAY would otherwise pass NIL to model.load() and
--- to the blender stimulus, where the key vanishes silently.
-sdec.trigmode = 'front'
-use_busy()
-arm_reset()
-local realev = trigger.EVENT_DISPLAY
-trigger.EVENT_DISPLAY = nil
-pok, pres, pwhy = pcall(sdec.acquire)
-trigger.EVENT_DISPLAY = realev
-check('a missing front-key event constant degrades instead of raising',
-      pok and pres == true, string.format('%s / %s', tostring(pok), tostring(pres)))
-check('with the missing thing named', has(sdec.lasterr, 'front-panel'),
-      tostring(sdec.lasterr))
-check('and no model is ever loaded on a nil event', TRIG.loaded == false,
-      string.format('loaded=%s ev=%s', tostring(TRIG.loaded), tostring(TRIG.ev)))
-
 -- Flow control on the key path. The credit pulse is permission to transmit one window's
 -- worth, and it is only correct AFTER the model is armed -- a pulse issued first loses the
 -- head of the frame. Never exercised for 'front' before, since nothing arrived armed.
