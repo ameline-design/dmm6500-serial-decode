@@ -1886,6 +1886,9 @@ function sdec.log_new()
   ulog.flush()
   sdec.flog_path, sdec.flog_n, sdec.flog_why = nil, nil, nil
   sdec.flog_bytes = nil        -- or the next file reports the previous file's byte total
+  -- And the closed-file stash goes too, the opposite of what mode_exit() does with it: the operator
+  -- asked for a new file, so the cell must stop naming the old one.
+  sdec.flog_shut, sdec.flog_shutbytes = nil, nil
   if was ~= nil then
     local base = string.gsub(tostring(was), '^.*/', '')
     sdec.lognote = string.format('closed %s -- the next capture starts a new file', tostring(base))
@@ -2139,6 +2142,12 @@ function sdec.mode_exit(why, bad)
     sdec.ck_running, sdec.ck_stop = false, false
   end
   ulog.flush()
+  -- Remember what this closed before forgetting it. Dropping the path is the mechanism that gives the
+  -- next run a new numbered file, but flog_status() reads a nil path as nothing-logged-yet and so
+  -- promised a log 'on first capture' after an 8 kB record that had just written one.
+  if sdec.flog_path ~= nil then
+    sdec.flog_shut, sdec.flog_shutbytes = sdec.flog_path, sdec.flog_bytes
+  end
   sdec.flog_path, sdec.flog_n, sdec.flog_why = nil, nil, nil
   sdec.flog_bytes = nil        -- or the next file reports the previous file's byte total
   -- The mode is not changed here, and this function is only a flush: capmode = 'frame'

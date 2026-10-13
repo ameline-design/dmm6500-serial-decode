@@ -1419,6 +1419,43 @@ end)()
   sdec.ck_job, sdec.strm_recording, sdec.ck_defbufwas = keep.job, keep.rec, keep.was
 end)()
 
+-- ============================================================================
+print('\nK  a finished record still names the log file it wrote')
+-- ============================================================================
+-- REPORTED FROM THE BENCH. After an 8 kB or 32 kB run the control cell went from 'no stop until it
+-- ends' to 'log: on first capture' -- on a run that had just written one, and with the key holding
+-- the file to prove it. A FRAME capture reported its file correctly, which is the asymmetry that
+-- names the cause: frame does not call mode_exit(), and mode_exit() drops the byte log's path. That
+-- is deliberate -- it is what gives the next run a new numbered file -- so the fix remembers what
+-- was closed rather than keeping it open. Not arm-dependent: the operator saw it both ways.
+do
+  local keepw, keepp, keepb = sdec.flog_why, sdec.flog_path, sdec.flog_bytes
+  local keeps, keepsb = sdec.flog_shut, sdec.flog_shutbytes
+  sdec.flog_why, sdec.flog_path, sdec.flog_bytes = nil, nil, nil
+  sdec.flog_shut, sdec.flog_shutbytes = nil, nil
+  -- The premise: with no key the cell says so first and none of this is reachable.
+  check('the key is present in this harness, or the rest is vacuous', sdec.log_live() == true,
+        tostring(sdec.flog_status()))
+  check('with nothing ever logged the cell promises the first capture',
+        has(sdec.flog_status(), 'on first capture'), tostring(sdec.flog_status()))
+  sdec.flog_path, sdec.flog_bytes = '/usb1/SERDEC/bytes003.txt', 12345
+  check('...and names the file and its byte count while one is open',
+        has(sdec.flog_status(), 'bytes003') and has(sdec.flog_status(), '12345 B'),
+        tostring(sdec.flog_status()))
+  sdec.mode_exit('run ended')
+  check('...and STILL names it once the run ends, because that was not the first capture',
+        has(sdec.flog_status(), 'bytes003') and has(sdec.flog_status(), '12345 B')
+        and not has(sdec.flog_status(), 'first capture'),
+        tostring(sdec.flog_status()))
+  check('...with the live path genuinely dropped, so the next run opens a new numbered file',
+        sdec.flog_path == nil, tostring(sdec.flog_path))
+  sdec.log_new()
+  check('...while Log New does clear it, the operator having asked for a new file',
+        has(sdec.flog_status(), 'on first capture'), tostring(sdec.flog_status()))
+  sdec.flog_why, sdec.flog_path, sdec.flog_bytes = keepw, keepp, keepb
+  sdec.flog_shut, sdec.flog_shutbytes = keeps, keepsb
+end
+
 print()
 print(string.format('%d passed, %d failed', pass, fail))
 os.exit(fail == 0 and 0 or 1)

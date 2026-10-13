@@ -3,7 +3,7 @@ loadscript Serial_Decode
 -- $Product: DMM6500, DAQ6510, DMM7510, SMU2461
 -- $Tag: Serial, UART, Decode, Digitize
 -- $Description: Decodes an asynchronous serial line with the instrument's own digitizer: recovers baud rate, frame format and bytes, shows them as text or hex, and saves bytes to USB key. Everything auto-detects; everything can be locked.
--- $Version: 1.49
+-- $Version: 1.50
 -- $Requires: 1.7.0
 -- $Author: Ian Ameline
 -- $License: MIT
@@ -5329,11 +5329,14 @@ end
 function sdec.flog_status()
   if sdec.flog_why ~= nil then return 'log: NOT LOGGING' end
   if not sdec.log_live() then return 'log: no USB key' end
-  if sdec.flog_path == nil then return 'log: on first capture' end
-  local base = string.gsub(tostring(sdec.flog_path), '^.*/', '')
+  local path, n = sdec.flog_path, sdec.flog_bytes or 0
+  if path == nil then
+    if sdec.flog_shut == nil then return 'log: on first capture' end
+    path, n = sdec.flog_shut, sdec.flog_shutbytes or 0
+  end
+  local base = string.gsub(tostring(path), '^.*/', '')
   base = string.gsub(base, '%.txt$', '')
-  local n = sdec.flog_bytes or 0
-  local s = string.format('log: %s  %d B', tostring(base), n or 0)
+  local s = string.format('log: %s  %d B', tostring(base), n)
   local first = true
   while sdec.ui_textw(s) > sdec.ui_log_px and string.len(base) > 4 do
     if first then base = string.sub(base, 5) else base = string.sub(base, 2) end
@@ -7201,6 +7204,7 @@ function sdec.log_new()
   ulog.flush()
   sdec.flog_path, sdec.flog_n, sdec.flog_why = nil, nil, nil
   sdec.flog_bytes = nil        -- or the next file reports the previous file's byte total
+  sdec.flog_shut, sdec.flog_shutbytes = nil, nil
   if was ~= nil then
     local base = string.gsub(tostring(was), '^.*/', '')
     sdec.lognote = string.format('closed %s -- the next capture starts a new file', tostring(base))
@@ -7405,6 +7409,9 @@ function sdec.mode_exit(why, bad)
     sdec.ck_running, sdec.ck_stop = false, false
   end
   ulog.flush()
+  if sdec.flog_path ~= nil then
+    sdec.flog_shut, sdec.flog_shutbytes = sdec.flog_path, sdec.flog_bytes
+  end
   sdec.flog_path, sdec.flog_n, sdec.flog_why = nil, nil, nil
   sdec.flog_bytes = nil        -- or the next file reports the previous file's byte total
   if running then

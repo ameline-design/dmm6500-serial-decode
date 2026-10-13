@@ -1858,11 +1858,17 @@ function sdec.flog_status()
   -- No key outranks both the filename and the promise, and has to be asked first: a path outlives
   -- the key -- docs/MEASUREMENTS.md, 'Why flog_status asks about the key before the filename'.
   if not sdec.log_live() then return 'log: no USB key' end
-  if sdec.flog_path == nil then return 'log: on first capture' end
-  local base = string.gsub(tostring(sdec.flog_path), '^.*/', '')
+  -- A finished 8 kB or 32 kB run drops the path on purpose, so the next opens a new numbered file:
+  -- mode_exit() stashes what it closed and this names that, 'on first capture' being false once one
+  -- exists. Only a run that never opened one, or Log New, which clears the stash, has nothing to name.
+  local path, n = sdec.flog_path, sdec.flog_bytes or 0
+  if path == nil then
+    if sdec.flog_shut == nil then return 'log: on first capture' end
+    path, n = sdec.flog_shut, sdec.flog_shutbytes or 0
+  end
+  local base = string.gsub(tostring(path), '^.*/', '')
   base = string.gsub(base, '%.txt$', '')
-  local n = sdec.flog_bytes or 0
-  local s = string.format('log: %s  %d B', tostring(base), n or 0)
+  local s = string.format('log: %s  %d B', tostring(base), n)
   -- Bounded by the name length, so a cell too narrow for a 4-character name returns the overlong
   -- string rather than looping. The first step drops four characters: one can make it wider.
   local first = true
