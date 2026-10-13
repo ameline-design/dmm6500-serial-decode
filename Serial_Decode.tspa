@@ -3,7 +3,7 @@ loadscript Serial_Decode
 -- $Product: DMM6500, DAQ6510, DMM7510, SMU2461
 -- $Tag: Serial, UART, Decode, Digitize
 -- $Description: Decodes an asynchronous serial line with the instrument's own digitizer: recovers baud rate, frame format and bytes, shows them as text or hex, and saves bytes to USB key. Everything auto-detects; everything can be locked.
--- $Version: 1.47
+-- $Version: 1.48
 -- $Requires: 1.7.0
 -- $Author: Ian Ameline
 -- $License: MIT
@@ -6629,9 +6629,22 @@ function sdec.buf_reclaim()
   return true, what
 end
 
+sdec.buf_skip = {}
+do
+  local nm = {'defbuffer1', 'defbuffer2',
+              '_G', '_LOADED', 'beeper', 'bit', 'buffer', 'cal', 'channel', 'coroutine', 'dataqueue',
+              'debug', 'define', 'diagnostics', 'digio', 'display', 'dmm', 'enum', 'errorqueue',
+              'eventlog', 'fan', 'file', 'format', 'gpib', 'io', 'ki', 'lan', 'localnode', 'math',
+              'memory', 'node', 'os', 'scan', 'scpi', 'script', 'serial', 'slot', 'smu', 'status',
+              'string', 'table', 'timer', 'trigger', 'tsplink', 'tspnet', 'uncertainty', 'upgrade',
+              'userstring'}
+  local i
+  for i = 1, table.getn(nm) do sdec.buf_skip[nm[i]] = true end
+end
+
 -- Buffers this app did not make hold the same pool, so they are swept before the default buffers are
 --   [...]
--- defbuffer2 and sdec.buf are skipped.
+-- every name in sdec.buf_skip are skipped.
 -- Collect, then delete, never interleaved: writing to the global table while next() walks it is
 -- undefined, and dropping the handle first strands the buffer. -> freed_readings, and text.
 function sdec.buf_sweep()
@@ -6640,10 +6653,10 @@ function sdec.buf_sweep()
     local bt = type(defbuffer1)
     local k, v = next(_G, nil)
     while k ~= nil do
-      if type(k) == 'string' and k ~= 'defbuffer1' and k ~= 'defbuffer2'
+      if type(k) == 'string' and not sdec.buf_skip[k]
          and type(v) == bt and v ~= sdec.buf then
-        local c, nread = v.capacity, v.n
-        if type(c) == 'number' and type(nread) == 'number' then
+        local c = v.capacity
+        if type(c) == 'number' and type(v.n) == 'number' then
           nn = nn + 1
           names[nn] = k
           names[k] = c

@@ -10887,6 +10887,38 @@ end)()
     sdec.buf = keepbuf
   end
 
+  -- The namespace of an accessory card that is not fitted is a NON-NIL TABLE that answers every field
+  -- read with nil and posts 1151 as it does -- posts, not raises, so the sweep's pcall returns success
+  -- and nothing at the call site can tell a read from a refusal. Eight reached the log at one launch,
+  -- two per namespace, so the name table is the only defence there is and dropping it is silent.
+  -- docs/UNDOCUMENTED.md, 'Indexing the namespace of an absent accessory card posts 1151 and raises nothing'.
+  do
+    local names = {'serial', 'digio', 'gpib', 'tsplink', 'channel', 'scan', 'slot', 'trigger'}
+    local nn, probed = table.getn(names), 0
+    -- A counting __index stands in for the firmware: the real one is silent to the script, so a spy
+    -- that merely returned nil would assert nothing.
+    local mt = {__index = function(t, k) probed = probed + 1 return nil end}
+    local saved, i = {}, nil
+    for i = 1, nn do
+      saved[i] = _G[names[i]]
+      _G[names[i]] = setmetatable({}, mt)
+    end
+    local freed = sdec.buf_sweep()
+    check('a card namespace is never indexed, because reading one posts 1151 and raises nothing',
+          probed == 0 and freed == 0,
+          string.format('%d field read(s) of %d namespace(s), %d freed', probed, nn, freed))
+    -- The control, or the assertion above passes on a spy that cannot fire. One name out of the table
+    -- and the same walk reads it -- once, not twice: `.n` is only reached once capacity looks numeric.
+    sdec.buf_skip.digio = nil
+    probed = 0
+    local fctl = sdec.buf_sweep()
+    sdec.buf_skip.digio = true
+    for i = 1, nn do _G[names[i]] = saved[i] end
+    check('...and the control fires: a name out of the table is read, and only its capacity',
+          probed == 1 and fctl == 0,
+          string.format('%d field read(s), %d freed', probed, fctl))
+  end
+
   -- ---------------------------------------------------------------------------
   -- THE THREE FAILURE SHAPES, each of which destroyed an operator's buffer silently and each of
   -- which the suite passed clean over. All three are about what happens when a capacity write does

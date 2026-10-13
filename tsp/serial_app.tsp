@@ -1194,10 +1194,34 @@ function sdec.buf_reclaim()
   return true, what
 end
 
+-- Globals the sweep must not index. type(defbuffer1) is 'table' here, so the walk below is offered
+-- every firmware namespace, and indexing one whose accessory card is absent posts 1151 -- posts, not
+-- raises, so the pcall returns success and the entry reaches the log regardless. serial, digio, gpib
+-- and tsplink file eight between them at each launch of a meter carrying only a scan card; channel,
+-- scan and slot are quiet only while that card is fitted; trigger is model-dependent, the SMU having
+-- no rear-panel trigger connections. So the list is every namespace the firmware publishes and not
+-- only the ones measured posting: a stranded reading buffer is never named after one, so a name here
+-- costs nothing, while a name missing from here costs an entry the operator has to read past.
+-- docs/UNDOCUMENTED.md, 'Indexing the namespace of an absent accessory card posts 1151 and raises nothing'.
+sdec.buf_skip = {}
+do
+  -- The two default buffers are in the list for the other reason: they are real buffers, and they are
+  -- resized and never deleted.
+  local nm = {'defbuffer1', 'defbuffer2',
+              '_G', '_LOADED', 'beeper', 'bit', 'buffer', 'cal', 'channel', 'coroutine', 'dataqueue',
+              'debug', 'define', 'diagnostics', 'digio', 'display', 'dmm', 'enum', 'errorqueue',
+              'eventlog', 'fan', 'file', 'format', 'gpib', 'io', 'ki', 'lan', 'localnode', 'math',
+              'memory', 'node', 'os', 'scan', 'scpi', 'script', 'serial', 'slot', 'smu', 'status',
+              'string', 'table', 'timer', 'trigger', 'tsplink', 'tspnet', 'uncertainty', 'upgrade',
+              'userstring'}
+  local i
+  for i = 1, table.getn(nm) do sdec.buf_skip[nm[i]] = true end
+end
+
 -- Buffers this app did not make hold the same pool, so they are swept before the default buffers are
 -- touched. Found by walking the globals, because the instrument publishes no way to enumerate reading
--- buffers: a global with a numeric capacity and a numeric n is the only handle there is. defbuffer1,
--- defbuffer2 and sdec.buf are skipped.
+-- buffers: a global with a numeric capacity and a numeric n is the only handle there is. sdec.buf and
+-- every name in sdec.buf_skip are skipped.
 --
 -- Collect, then delete, never interleaved: writing to the global table while next() walks it is
 -- undefined, and dropping the handle first strands the buffer. -> freed_readings, and text.
@@ -1207,12 +1231,13 @@ function sdec.buf_sweep()
     local bt = type(defbuffer1)
     local k, v = next(_G, nil)
     while k ~= nil do
-      if type(k) == 'string' and k ~= 'defbuffer1' and k ~= 'defbuffer2'
+      if type(k) == 'string' and not sdec.buf_skip[k]
          and type(v) == bt and v ~= sdec.buf then
         -- Every stranded buffer goes, whatever its size: they accumulate one per relaunch. So the
-        -- discriminator carries the weight -- a numeric `.capacity` and a numeric `.n` are both required.
-        local c, nread = v.capacity, v.n
-        if type(c) == 'number' and type(nread) == 'number' then
+        -- discriminator carries the weight -- a numeric `.capacity` and a numeric `.n` are both
+        -- required, capacity first so `.n` is only reached once capacity has answered like a buffer.
+        local c = v.capacity
+        if type(c) == 'number' and type(v.n) == 'number' then
           nn = nn + 1
           names[nn] = k
           names[k] = c
