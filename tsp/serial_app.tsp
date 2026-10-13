@@ -305,7 +305,7 @@ function sdec.flog_alloc()
     sdec.flog_keygen = ulog.keygen or 0
   end
   if sdec.flog_path ~= nil then return sdec.flog_path end
-  -- Lazy: the scan is 1000 file.open calls, and a filename would be burnt per session either way.
+  -- Lazy: the scan is 1000 fs.is_file probes, and a filename would be burnt per session either way.
   sdec.flog_path = ulog.next_free(sdec.flogpfx, '.txt', 1000)
   if sdec.flog_path == nil then
     -- Name the reason next_free gave; ui_notes already prefixes 'NOT LOGGING: '.
@@ -386,9 +386,11 @@ function sdec.stream_begin()
   local nsmp = sdec.stream_samples(md, fs)
   if nsmp == nil then return false, 'cannot size the capture for this rate' end
 
-  -- Headroom, the same +100 acq_cap() adds: a store past capacity is 4915, 20-30 a capture.
+  -- Headroom, as acq_cap() adds in a triggered mode and this path adds always: a store past capacity
+  -- is 4915, 20-30 a capture.
   local cap = nsmp + 100
-  -- On trigger mode alone, and the reserve goes on top of the count rather than out of it. See acq_cap().
+  -- Triggered modes only, and the reserve comes out of capacity here -- nsmp * 100/(100 - pretrig) --
+  -- where acq_cap() puts it on top of the count. Out of capacity is what the firmware does.
   if sdec.trigmode ~= 'free' and (sdec.pretrig or 0) > 0 then
     cap = math.ceil(nsmp * 100 / (100 - sdec.pretrig)) + 100
     -- Overrunning ck_bufmax would turn the largest modes into an allocation refusal, a worse answer.
@@ -397,8 +399,8 @@ function sdec.stream_begin()
       nsmp = math.floor(cap * (100 - sdec.pretrig) / 100)
     end
   end
-  -- The ceiling covers all buffers together, so this can need a default buffer shrunk first:
-  -- docs/UNDOCUMENTED.md, 'The real ceiling is 7,080,255 readings'. Bare -- acq_make_buffer() guards it.
+  -- This can need a default buffer shrunk first: docs/UNDOCUMENTED.md, 'The real ceiling is
+  -- 7,080,255 readings, across all buffers together'. Bare -- acq_make_buffer() guards it.
   sdec.acq_make_buffer(cap)
   -- Reclaim and retry once, because the capacities are the operator's to change mid-session. Once only.
   if sdec.buf == nil then
@@ -808,7 +810,8 @@ function sdec.stream_arm(nsmp)
   if not armed then ok = pcall(trigger.model.load, 'SimpleLoop', nsmp, 0, buf) end
   if ok then ok = pcall(trigger.model.initiate) end
   -- An arm is not live until the model is in its wait block, and the poll loop reads "no longer waiting"
-  -- as "fired". docs/UNDOCUMENTED.md, 'trigger.model.state() reports a lag, not a readiness'.
+  -- as "fired". docs/UNDOCUMENTED.md, 'trigger.model.state() reports a lag, not a readiness -- and
+  -- it has nothing to do with the buffer'.
   if ok and armed then
     local spun, saw = 0, false
     while spun < (sdec.arm_settle_s or 0.25) do
@@ -1585,8 +1588,8 @@ function sdec.autolock_try()
   if sdec.force_baud ~= nil then return false end       -- already locked, nothing to do
   local r = sdec.res
   if r == nil or sdec.baud == nil then return false end
-  -- Gate 1, a credible rate: matched within snaptol, or rounded to a 10 Bd boundary inside 1 %. Lock the
-  -- measurement, not an overstated snap. docs/MEASUREMENTS.md, 'Auto-lock pays for itself'.
+  -- Gate 1, a credible rate: matched within snaptol, or rounded inside 1 % -- 100 Bd over 10 kBd, 10
+  -- below. Lock the measurement, not the snap. docs/MEASUREMENTS.md, 'Auto-lock pays for itself'.
   local lockfrom = sdec.baud
   if sdec.snapped and sdec.snapfirm == false and sdec.baud_raw ~= nil then lockfrom = sdec.baud_raw end
   local lockb, lockok = sdec.baud_round(lockfrom)
@@ -2377,7 +2380,8 @@ function sdec.options_apply()
 
     local bi = display.getvalue(sdec.opt_bits)
     sdec.force_nbits = sdec.opt_pick(sdec.opt_bits_v, bi)
-    -- Entry 2 widens the automatic search to 5, 6 and 9 data bits; a forced width skips the search.
+    -- Entry 2 widens the automatic search to 6 and 5 data bits. 9 stays forced-only, and a forced
+    -- width skips the search. docs/MEASUREMENTS.md, 'Why 9 data bits is never searched, even biased'.
     sdec.widths_any = (type(bi) == 'number' and math.floor(bi + 0.5) == 2)
     -- Parity is applied on its own: the search narrows to it, where pinning the width would force 8E1.
     sdec.force_par   = sdec.opt_pick(sdec.opt_par_v, display.getvalue(sdec.opt_par))

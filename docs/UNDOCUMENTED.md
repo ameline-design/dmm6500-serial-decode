@@ -137,7 +137,7 @@ It suppresses the **dialog and not the entry** — suppressing 4919 and 4920 lea
 
   - `probe: do pcall(eventlog.suppress) delay(1) print("RAISE|ev="..tostring(eventlog.getcount())) end` then `do local ok=pcall(display.changescreen,sdec.ui_scr) delay(0.5) print("CLEARDLG|ok="..tostring(ok)) end`, with a screen grab after each
 
-### The instrument runs Lua 5.0.2, but its lexer takes | and 0b — two of these three idioms are fine
+### The instrument runs Lua 5.0.2, but its lexer takes | and 0b -- two of these three idioms are fine
 
 **REFUTED in part.** `_VERSION` reads `Lua 5.0.2`. Of the three idioms this entry called broken, only two are.
 
@@ -178,7 +178,7 @@ only reference to anything the firmware will not take back.
 
   - `probe: do local a=file.open("/usb1/KTFD.TXT",file.MODE_WRITE) a=nil collectgarbage() local b=file.open("/usb1/KTFD.TXT",file.MODE_WRITE) print("REOPEN|b="..tostring(b)) end` — `b` is nil, and the event log is empty. There is no probe for the recovery because the recovery is a power cycle.
 
-### There is no 8.3 limit on /usb1 — a computed long name is written whole
+### There is no 8.3 limit on /usb1 -- a computed long name is written whole
 
 **REFUTED.** By hand the vendor writes to the limit — `"/usb1/TestData.csv"`, `"/usb1/DuraQAAA.csv"`, `"/usb1/KI_setup.set"`. By program it writes past it: `Instrument_Examples/DMM6500/Save_Measurement.tsp:16-17` builds `file.open("/usb1/"..description..".csv", ...)` out of `display.input.string`, and `GAS/MS02_ExportData.tsp:22` uses `os.date("/usb1/data_%Y-%m-%d_%H-%M-%S.csv")`. The manual states no name limit **and there is none to state**: `file.open("/usb1/KTLONGNAME.CSV", file.MODE_WRITE)` returns a handle with zero events, and the file re-opens for read under **that full name** while the truncated `KTLONGNAM.CSV` does not exist. So the vendor's computed paths are safe and the hand-written 8.3 names are a habit, not a requirement.
 
@@ -222,7 +222,7 @@ only reference to anything the firmware will not take back.
 
 ## The trigger model
 
-### trigger.model.state() reports a lag, not a readiness — and it has nothing to do with the buffer
+### trigger.model.state() reports a lag, not a readiness -- and it has nothing to do with the buffer
 
 **REFUTED,** and this entry used to say the opposite. The time for an armed `LoopUntilEvent` model to report `trigger.STATE_WAITING` is **flat at about 0.19 s from 21,100 to 2,800,000 readings** — least-squares slope +1.6e-9 ± 5.7e-9 s per reading, t = 0.28, which is 4.5 ms across a 132× range. `digitize.count`, `samplerate` over a 1000× range, template `position`, a host `buf.clear()` and the poll cadence are all nulls. The earlier "about 1 ms at 21,100 readings" was never measured: thirteen arms at that size give **0.1668 to 0.2154 s**. What does move it is the **prior acquisition** — 0.228 s after aborting a model that was itself waiting, 0.191 s after `load("Empty")`, 0.177 s after a `SimpleLoop` run to idle, 0.164 s after a completed `digitize.read()`.
 
