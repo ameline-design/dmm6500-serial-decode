@@ -585,7 +585,7 @@ function sdec.ua_implausible_why(T)
   if fs == nil or fs <= 0 then return 'no sample rate' end
   local b = fs / T
   -- Ceiling before the samples-per-bit floor, and in baud, because the two coincide at one sample
-  -- rate. Checked second, the floor swallows every case and this sentence can never print.
+  -- rate. Were it checked second the floor would swallow every case and this message never print.
   if b > sdec.maxbaud * (1 + sdec.plaustol) then
     return string.format('%.0f baud is past the %d kBd ceiling', b or 0, sdec.maxbaud / 1000)
   end

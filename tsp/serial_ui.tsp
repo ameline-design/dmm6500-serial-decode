@@ -1835,7 +1835,7 @@ end
 
 -- Refresh the panel, and never raise doing it. -> true, or false if the body gave up part way.
 -- One guard here, not one at each call site: sixteen callers wrapped this in a pcall of their own,
--- which guards our code rather than a firmware boundary, where what they feared was this body
+-- which guards app code rather than a firmware boundary, where what they feared was this body
 -- formatting a nil. A refresh is cosmetic and must not cost its caller a correct capture.
 function sdec.ui_refresh()
   return (pcall(sdec.ui_refresh_do))

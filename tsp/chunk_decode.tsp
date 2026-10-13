@@ -633,7 +633,7 @@ function sdec.ck_sink_file(path, ncol)
   local finish = function()
     if finished then return not dead end
     finished = true
-    -- The final row is guarded so the close is reached -- the exception to "no pcall on our own code",
+    -- The final row is guarded so the close is reached -- the exception to "no pcall on app code",
     -- because a stranded handle needs a power cycle, while a lost row is what `dead` reports.
     if not dead and cn > 0 then
       if not pcall(emit, cn) then dead = true end

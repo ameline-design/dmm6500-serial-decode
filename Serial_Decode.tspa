@@ -1277,8 +1277,10 @@ function sdec.fc_config()
   return true
 end
 
--- Stop the firmware popping dialogs over the app: normal operation posts 2731 and 2732 per armed capture and 2205
--- per byte-log probe. showevents selects what is displayed, not what is logged.
+-- Stop the firmware popping a modal box over the app when unread event-log entries accumulate, which normal
+-- operation produces -- 2731 and 2732 per armed capture, 2205 per byte-log probe. docs/UNDOCUMENTED.md, 'A modal
+-- event dialog is cleared by display.changescreen()'. showevents selects which severities are displayed, not
+-- which are logged, so sdec.errcount still sees them all. From hw_config, because another app may have set it.
 function sdec.quiet_events()
   localnode.showevents = eventlog.SEV_ERROR
   return true
@@ -5296,7 +5298,7 @@ end
 
 -- Refresh the panel, and never raise doing it. -> true, or false if the body gave up part way.
 -- One guard here, not one at each call site: sixteen callers wrapped this in a pcall of their own,
--- which guards our code rather than a firmware boundary, where what they feared was this body
+-- which guards app code rather than a firmware boundary, where what they feared was this body
 -- formatting a nil. A refresh is cosmetic and must not cost its caller a correct capture.
 function sdec.ui_refresh()
   return (pcall(sdec.ui_refresh_do))

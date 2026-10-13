@@ -1132,8 +1132,10 @@ function sdec.fc_config()
   return true
 end
 
--- Stop the firmware popping dialogs over the app: normal operation posts 2731 and 2732 per armed capture and 2205
--- per byte-log probe. showevents selects what is displayed, not what is logged.
+-- Stop the firmware popping a modal box over the app when unread event-log entries accumulate, which normal
+-- operation produces -- 2731 and 2732 per armed capture, 2205 per byte-log probe. docs/UNDOCUMENTED.md, 'A modal
+-- event dialog is cleared by display.changescreen()'. showevents selects which severities are displayed, not
+-- which are logged, so sdec.errcount still sees them all. From hw_config, because another app may have set it.
 function sdec.quiet_events()
   -- Bare: eventlog.SEV_ERROR is a documented constant, so there is nothing for a pcall to catch.
   localnode.showevents = eventlog.SEV_ERROR
@@ -1453,7 +1455,7 @@ function sdec.trig_settle()
   for i = 1, 50 do
     local sok, st = pcall(trigger.model.state)
     if not sok then st = nil end
-    -- A state we could not read is not a model we know is idle, and the callers act on this by deleting the
+    -- An unreadable state is not a state known to be idle, and the callers act on this by deleting the
     -- buffer. Distinguished by the pcall's verdict rather than by the value.
     if sok then
       if st == nil or st == trigger.STATE_IDLE or st == trigger.STATE_ABORTED then
@@ -1546,7 +1548,7 @@ function sdec.arm_source()
   -- is not expressible as a single choice. Skipped for free run, which means do not wait.
   local blended = false
   -- Release the blender when not using it. Not a correctness bug -- the model waits on `ev` -- but the next thing
-  -- to use a blender would inherit our stimuli and our overrun flag.
+  -- to use a blender would inherit this app's stimuli and its overrun flag.
   if not sdec.trigext then
     pcall(trigger.blender[1].reset)
   end

@@ -2401,7 +2401,8 @@ function sdec.options_apply()
     if type(aw) == 'number' then sdec.armwait = aw end
   end)
   if not readok then
-    -- And this is what makes that message true: the reads above assign as they go. Cancel's unwind.
+    -- The restore is what makes the message below true: the reads above assign as they go, so a
+    -- partial read leaves fields already changed. options_restore() is Cancel's unwind path.
     sdec.options_restore()
     sdec.lasterr = 'Options could not be read in full -- nothing was changed (' ..
                    tostring(readerr) .. ')'

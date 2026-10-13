@@ -147,7 +147,13 @@ fallback takes the first candidate edge, which inside a byte is a data transitio
 window after it decodes misaligned. Carried phase cannot do that.
 
 **De-duplication.** Frames in the overlap were already emitted by the previous window and their
-positions are at or before `tmin0`, so the same test that excludes an in-frame edge excludes them.
+positions are before `tmin0`, so the same test that excludes an in-frame edge excludes them. The test is
+`ei[k] >= tmin`, which **admits an edge exactly at `tmin0` and excludes everything earlier** —
+half-open, not closed. That is deliberate: the carried value is `t0 + (framebits - 0.5) * T`, and the
+half-bit exists so ordinary jitter cannot make a legitimate next start bit look as though it arrived
+inside the previous frame. Excluding an edge at `tmin0` would put the slop off by one boundary and
+risk the first frame of every window. Stated as a closed interval this is the boundary a reader would
+correct the code to match, and the code is right.
 There is no separate dedup pass to get wrong, and no comparison of byte **values** -- which would have
 been the obvious approach and is unsound, because a stream of repeated bytes is common and two
 identical bytes at different positions are two bytes.
