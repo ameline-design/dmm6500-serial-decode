@@ -54,15 +54,16 @@ if ulog.keyout == nil then ulog.keyout = false end
 ulog.keygen    = ulog.keygen or 0
 ulog.keyopen   = ulog.keyopen or 0
 
+
 -- Is a key in the slot? The only question answerable without naming a path.
 function ulog.haskey()
   if file.usbdriveexists() == 0 then return false end
   return true
 end
 
--- Stop touching the key until one is inserted. A latch, not a reason per attempt, because presence is
--- the only file failure the app can observe -- a write to a pulled key returns normally and posts
--- 2200. docs/MEASUREMENTS.md, 'A key pulled from under a running app'.
+-- Stop touching the key until one is inserted. A latch rather than a reason per attempt, because
+-- presence is the only file failure the app can observe -- docs/MEASUREMENTS.md, 'A key pulled from
+-- under a running app'.
 function ulog.keylost(why)
   ulog.keybad = true
   ulog.keywhy = tostring(why or 'the USB key stopped accepting writes')
@@ -76,8 +77,8 @@ function ulog.keylost(why)
 end
 
 -- Is the key there and still accepting writes? One usbdriveexists, 237 us and silent, so it is
--- askable per line, per capture and per panel refresh. keylost() is called only from the no-key
--- branch, so keybad is set only with the slot empty; a refusing key is reported by its writer.
+-- askable per line, per capture and per panel refresh. keylost() runs only from the no-key branch,
+-- so keybad is set only with the slot empty; a refusing key is reported by its writer.
 function ulog.keyok()
   if not ulog.haskey() then
     if not ulog.keybad and (ulog.on or ulog.dirok ~= nil) then
@@ -96,11 +97,11 @@ function ulog.keyok()
   return true
 end
 
--- Re-open the log on a key just inserted. ensuredir and flog_alloc re-establish themselves at the
--- next write, but the debug log is held open across captures, so nothing else would re-open it.
--- Keyed on keygen, so one insertion causes one re-open however many callers ask, and one attempt per
--- insertion is the whole allowance -- the alternative is an open attempt per line, and a failed open
--- posts an event. An open that fails on a present key waits for another, showing 'log: NOT LOGGING'.
+-- Re-open the log on a key just inserted, which nothing else does: the debug log is held open
+-- across captures where ensuredir and flog_alloc re-establish themselves at the next write. Keyed
+-- on keygen, so one insertion causes one re-open however many callers ask, and that one attempt is
+-- the whole allowance -- an open per line would post an event per line. An open that fails on a
+-- present key waits for another, showing 'log: NOT LOGGING'.
 function ulog.resume()
   if not ulog.enabled then return false end
   if not ulog.keyok() then return false end
@@ -109,11 +110,10 @@ function ulog.resume()
   return ulog.open(nil, false)
 end
 
--- Is `name` listed in the USB root? true, false, or nil when the root could not be read. nil taken
--- as absence orders a mkdir on no evidence and posts 2208, so the two must not be merged.
--- Only an 8.3-clean name is contiguous in the FAT table, which is why the directory is 'SERDEC':
--- docs/MEASUREMENTS.md, 'Why the directory is called SERDEC'. Not a FAT parser -- a file of this
--- name, or a deleted entry whose bytes remain, both err towards 'present' and cost a failed open.
+-- Is `name` listed in the USB root? true, false, or nil when the root could not be read; nil taken
+-- as absence orders a mkdir on no evidence and posts 2208, so the two must not be merged. Only an
+-- 8.3-clean name is contiguous in the FAT table, hence 'SERDEC' -- docs/MEASUREMENTS.md, 'Why the
+-- directory is called SERDEC'. Not a FAT parser: a stale entry errs towards 'present'.
 function ulog.rootlists(name)
   if name == nil or name == '' then return nil end
   local fh = file.open('/usb1', file.MODE_READ)
@@ -125,8 +125,8 @@ function ulog.rootlists(name)
   return false
 end
 
--- Make sure ulog.usbdir exists. true, or false and why not. Silent in every ordinary case, and mkdir
--- is never speculative, because there is no free one.
+-- Make sure ulog.usbdir exists. true, or false and why not. Silent in every ordinary case, and
+-- mkdir is never speculative, because there is no free one.
 function ulog.ensuredir(dir)
   if dir == nil then dir = ulog.usbdir end
   if dir == nil or dir == '' then return false, 'no directory configured' end
@@ -146,16 +146,14 @@ function ulog.ensuredir(dir)
   return false, 'cannot create ' .. dir
 end
 
--- Forget that the directory was confirmed. For the harness and the no-key gate; swapping a key under
--- a running app is unsupported.
+-- Forget that the directory was confirmed, for the harness and the no-key gate.
 function ulog.dirlost()
   ulog.dirok = nil
 end
 
 -- Open a file for writing. Handle, or nil and why. sdec.start() calls ensuredir(), so the 64 kB
--- listing is paid once per launch and the call below is a cached no-op. A failed open is reported,
--- not retried: it has already posted its event, so a retry cannot keep the panel quiet. An inserted
--- key is still recovered from, by resume().
+-- listing is paid once per launch and the call below is a cached no-op. A failed open is reported
+-- and not retried, having already posted its event; an inserted key is recovered from by resume().
 function ulog.open_write(path, mode)
   if path == nil then return nil, 'no filename available' end
   if mode == nil then mode = file.MODE_APPEND end
@@ -170,8 +168,8 @@ function ulog.open_write(path, mode)
                 .. ' -- key may be absent, full, write-protected, or refusing the directory'
 end
 
--- Open the log. `truncate` starts a fresh file; the default appends, since comparing this run against
--- the last is usually the point. open_write owns the no-key gate, the directory and the reason.
+-- Open the log. `truncate` starts a fresh file and the default appends, since comparing this run
+-- against the last is usually the point. open_write owns the no-key gate and the reason.
 function ulog.open(path, truncate)
   ulog.close()
   ulog.nlines, ulog.dropped, ulog.lasterr = 0, 0, nil
@@ -224,9 +222,8 @@ function ulog.line(s)
   return true
 end
 
--- string.format wrapper with explicit parameters. The 5.0.2 idiom string.format(f, unpack(arg))
--- relies on an implicit `arg` table that host Lua removed, so it cannot be exercised offline. Five
--- slots cover every call site, and string.format ignores surplus arguments.
+-- string.format wrapper with explicit parameters: the 5.0.2 idiom string.format(f, unpack(arg))
+-- relies on an implicit `arg` table host Lua removed. Five slots cover every call site.
 function ulog.fmt(f, a, b, c, d, e)
   if not ulog.enabled then return false end
   local ok, s = pcall(string.format, f, a, b, c, d, e)
@@ -254,8 +251,8 @@ function ulog.close()
 end
 
 -- Does this file exist, without logging an error if it does not? true or false, never nil. The open
--- probe would post 2205 at the one severity showevents still raises a box for, so finding a free name
--- would produce one on every Save. docs/MEASUREMENTS.md, 'fs.is_file against the open probe'.
+-- probe posts 2205, the one severity showevents still raises a box for -- docs/MEASUREMENTS.md,
+-- 'fs.is_file against the open probe'.
 function ulog.exists(path)
   if path == nil then return false end
   local got = fs.is_file(path)
@@ -268,8 +265,7 @@ function ulog.exists(path)
   return got == true
 end
 
--- First unused '<prefix>NNN<ext>' on the key. A path, or nil if every NNN is taken. 1000 names, three
--- digits; a bench session pressing New Log per device reaches 100.
+-- First unused '<prefix>NNN<ext>' on the key. A path, or nil if every NNN is taken; 1000 names.
 function ulog.next_free(prefix, ext, limit)
   if limit == nil then limit = 1000 end
   local dok, dwhy = ulog.ensuredir()
@@ -320,8 +316,7 @@ function ulog.next_free(prefix, ext, limit)
 end
 
 
--- Write an array of lines to its own file and close it. ok, reason. Not routed through the rolling
--- log: a saved capture wants its own file, and the handle never outlives the call.
+-- Write an array of lines to its own file and close it. ok, reason. The handle never outlives it.
 function ulog.write_file(path, lines, n)
   if path == nil then return false, 'no filename available' end
   local fh, why = ulog.open_write(path, file.MODE_WRITE)
@@ -341,8 +336,7 @@ function ulog.write_file(path, lines, n)
   return true
 end
 
--- One-line state summary for the panel, so logging can be seen rather than assumed. Name only: the
--- status row shows ~45 proportional characters, and the directory never varies.
+-- One-line state summary for the panel. Name only: the status row shows ~45 proportional characters.
 function ulog.status()
   if not ulog.enabled then return 'log off' end
   if not ulog.on then
@@ -450,7 +444,7 @@ sdec.armwait_max = 120.0
 
 if sdec.armkey == nil then sdec.armkey = true end
 
--- Both read through one function each, by the capture AND by the form, so a typed value cannot mean one thing
+-- Both read through one function each, by the capture and by the form, so a typed value cannot mean one thing
 -- to the field and another to the comparator. Clamped rather than refused.
 function sdec.arm_level_v()
   local v = tonumber(sdec.armlevel)
@@ -471,19 +465,15 @@ sdec.arm_baud  = 38400
 sdec.arm_sabit = 5
 
 -- One sample over sdec.minsabit, deliberately not the sdec.fs_sabit target of 8: this is the rate the window is
--- traded AGAINST, so the floor belongs here. The suite asserts the relation, not the number, so raising minsabit
--- cannot quietly leave this below it.
+-- traded against. The suite asserts the relation, so raising minsabit cannot leave this below it.
 function sdec.arm_fs()
   return sdec.pick_fs(sdec.arm_baud, sdec.arm_sabit)
 end
 
 sdec.arm_try = {9600, 19200, 28800, 31250, 38400}
 
--- Is this capture waiting for a device that has not started? One predicate, read by the wait length, the
--- TRIGGER-key blend, the panel note, the expiry advice and autoset()'s fall-through to an armed capture.
--- sdec.probe_idle alone is not the condition, which is why this is a function: probe_idle means "the probe saw no
--- transitions", equally true of every flow-controlled capture, where the probe runs nofc so the device has had no
--- credit yet and the window opens microseconds after it.
+-- Is this capture waiting for a device that has not started? sdec.probe_idle alone is not the condition, which is
+-- why this is a function: it is equally true of every flow-controlled capture, where the probe runs nofc.
 function sdec.arm_silent()
   if sdec.probe_idle == nil then return false end
   if sdec.fc_out then return false end
@@ -495,9 +485,8 @@ sdec.warnmodal = 0.50
 
 sdec.humpfrac = 0.2
 
--- The two densest amplitudes within [v0, v1]. Returns lo, hi, modal -- the share of in-range samples belonging to
--- either hump -- or nil when no pair is separable. Each level is the TRUE MEAN of the samples in its hump, not the
--- histogram's own moment and not a bin centre.
+-- The two densest amplitudes within [v0, v1]. Returns lo, hi and the share of in-range samples belonging to
+-- either hump, or nil when no pair is separable. Each level is the true mean of the samples in its hump.
 function sdec.sig_pair(rd, n, v0, v1)
   local floor = math.floor
   local nb = floor(n / sdec.binocc)
@@ -569,11 +558,8 @@ function sdec.sig_pair(rd, n, v0, v1)
   return v1m, v2m, (na + nbb) / cnt
 end
 
--- Every field the signal chain MEASURES, back to its power-on value. Called from sdec.acquire(), so it runs before
---   [...]
--- lists what is kept across captures and why. These are not on clear_result()'s list, which drops the RESULT --
--- bytes, notes, levels, edges -- where these are the intermediate measurements the search runs on. Each has a
--- writer that only reaches it on the good path, so clearing them can only remove a wrong answer.
+-- Every field the signal chain measures, back to its power-on value. Called from sdec.acquire() and
+-- sdec.clear_result(). docs/MEASUREMENTS.md, 'A measurement must not cross a capture boundary'.
 function sdec.clear_measured()
   sdec.acq_fs, sdec.acq_fs_est = nil, nil
   sdec.arm_thr, sdec.arm_idle = nil, nil
@@ -657,8 +643,7 @@ end
 sdec.noise_nsamp = 1000
 
 -- Signal-to-noise on the two logic levels, in dB. Sets sdec.snr_db and sdec.noise_v, and is positive by
--- construction: a capture whose noise exceeds its swing has no logic levels and sig_levels has refused it.
--- docs/MEASUREMENTS.md, 'Noise is excluded by position, not by amplitude'.
+-- construction. docs/MEASUREMENTS.md, 'Noise is excluded by position, not by amplitude'.
 function sdec.sig_noise(rd, n)
   local floor, sqrt, log = math.floor, math.sqrt, math.log
   sdec.snr_db, sdec.noise_v = nil, nil
@@ -714,9 +699,7 @@ end
 
 -- Edge extraction
 -- Fractional position of the threshold crossing at or before sample i. Hysteresis makes this necessary: the trip
--- is detected once the signal has passed thr +- hyst, so thr itself is crossed one or more samples before that,
--- several on a slow RS-232 edge. Walking back to the straddling pair keeps edge positions independent of the
--- hysteresis setting, and the bit-time fit reads them as timing.
+-- is at thr +- hyst, so thr itself is crossed earlier, and the bit-time fit reads these positions as timing.
 function sdec.sig_cross(rd, i, thr)
   local j   = i
   local lim = i - sdec.maxback
@@ -788,10 +771,8 @@ function sdec.sig_edges(rd, n)
   return ne
 end
 
--- Which physical level is idle (the UART mark level): the level holding the longest single run. Correct whenever
--- the capture has any inter-byte gap, and it separates TTL (idle high) from RS-232 (idle low) without being told.
--- A gapless stream of 0x00 defeats it, so this is only a prior and sdec.ua_autoformat scores both polarities and
--- lets frame errors decide.
+-- Which physical level is idle (the UART mark level): the level holding the longest single run. A gapless stream
+-- of 0x00 defeats it, so it is only a prior and ua_autoformat scores both.
 function sdec.sig_idle(rd, n)
   local ne, ei, es = sdec.ne, sdec.ei, sdec.es
   if ne == 0 then
@@ -862,11 +843,8 @@ function sdec.sig_idle(rd, n)
   return sdec.idle
 end
 
--- One bit time in samples, from the edge list, before any bit-time fit has run. From ei and not from sdec.w:
---   [...]
--- the 10th percentile lands on a one-bit pulse, where the minimum lands on the narrowest glitch and one bad sample
--- would halve the estimate and make every run look like idle. Interior gaps only -- the runs before the first edge
--- and after the last are cut short by the capture boundary.
+-- One bit time in samples, from the edge list and not from sdec.w, which is always nil here. A low percentile, not
+-- the minimum, so one narrow glitch cannot halve the estimate; interior gaps only.
 function sdec.sig_onebit(ei, ne)
   if ei == nil or ne == nil or ne < 5 then return nil end
   local t, nt = {}, 0
@@ -889,9 +867,7 @@ end
 
 -- Bit-time recovery
 -- Least-squares refinement from a seed bit time. Returns bittime, quality, nfit, or nil when nothing fits. Every
--- pulse width in an asynchronous line code is an integer multiple of the bit time, so this is a fit through the
--- origin: sum(w*m)/sum(m*m) over widths w[k] and multiples m[k]. Using every pulse beats using the shortest, a
--- single short pulse carrying the full quantisation error where a 10-bit gap carries a tenth of it.
+-- pulse width is an integer multiple of the bit time, so this is a fit through the origin: sum(w*m)/sum(m*m).
 function sdec.sig_fit(w, nw, seed)
   local floor = math.floor
   local maxm = sdec.maxmult
@@ -996,9 +972,8 @@ end
 
 sdec.snaptol_firm = sdec.snaptol_firm or 0.0125
 
--- Snap a measured rate to a standard one when it is within tolerance. Returns rate, snapped, firm. The third
--- return is separate from the second on purpose: `snapped` is evidence ua_best acts on, while `firm` is read only
--- where confidence is claimed.
+-- Snap a measured rate to a standard one when it is within tolerance. Returns rate, snapped, firm -- the third
+-- separate on purpose: `snapped` is evidence ua_best acts on, `firm` is read only where confidence is claimed.
 function sdec.sig_snap(b)
   if b == nil then return nil, false, false end
   local best, bestd = nil, nil
@@ -1021,11 +996,8 @@ sdec.baud_round_hi   = 100      -- step above it
 sdec.baud_round_at   = 10000    -- crossover
 sdec.baud_round_fine = 1        -- the fallback: always inside the cap above sdec.minbaud
 sdec.baud_round_tol  = 0.01     -- largest shift any step may make
--- Round a MEASURED rate to a credible setting: the coarsest step that moves it less than 1 %. Nearest 100 Bd over
--- 10 kBd, else nearest 10, else nearest whole baud. Returns rate, credible. For a rate that is not on the standard
--- ladder, which sig_snap leaves exactly as measured -- 16099 from a device set to 16100, those last digits being
--- the fit's noise rather than the device's setting. The 1 % cap decides each step, so a coarse step is taken only
--- where it is nearly free. docs/MEASUREMENTS.md, 'baud_round cascades through three steps'.
+-- Round a measured rate to a credible setting: the coarsest step that moves it less than 1 %. Returns rate,
+-- credible. docs/MEASUREMENTS.md, 'baud_round cascades through three steps'.
 function sdec.baud_round(b)
   if b == nil or b <= 0 then return b, false end
   local i
@@ -1069,9 +1041,8 @@ function sdec.sig_quality()
 end
 
 -- Acquisition
--- Pick the lowest LISTED sample rate that still gives at least `want` samples per bit; three listed rates are
--- deliberately inexact (see sdec.rates). A lower rate covers more TIME in the same buffer, which is what decides
--- how many bytes a capture holds -- at 9600 baud, 20 000 samples is 190 bytes at 100 kS/s but only 19 at 1 MS/s.
+-- Pick the lowest listed sample rate giving at least `want` samples per bit. A lower rate covers more time in
+-- the same buffer, which is what decides how many bytes a capture holds.
 function sdec.pick_fs(baud, want)
   if want == nil then want = 8 end
   local need = baud * want
@@ -1083,11 +1054,8 @@ function sdec.pick_fs(baud, want)
   return sdec.rates[nr]
 end
 
--- Derive the true sample rate from the buffer's own timestamps. The readback lies for any rate the hardware cannot
--- synthesise, so this is the only trustworthy source and every bit time in this module is scaled by it. Guarded at
--- the proxy read, which is the firmware boundary and the only thing here that can raise: indexing the proxy of a
--- buffer the firmware has already dropped raises rather than returning nil, and nil is the answer every caller
--- reads as "no measured rate".
+-- Derive the true sample rate from the buffer's own timestamps, the only trustworthy source. Guarded at the proxy
+-- read: a buffer the firmware has dropped raises rather than returning nil.
 function sdec.acq_measure_fs(buf, n)
   if buf == nil or n == nil or n < 2 then return nil end
   local first = sdec.acq_first(buf, n)
@@ -1105,11 +1073,8 @@ function sdec.acq_measure_fs(buf, n)
   return (n - 1) / span
 end
 
--- The measured rate, or the REQUESTED one with a flag saying so. Every acquisition path uses this. Not a bare `or
---   [...]
--- than failing the capture, since refusing would kill a working decoder the moment relativetimestamps is
--- unavailable in some configuration -- a fault never seen here, where 80 000 requested measures 79 999.995.
--- ui_notes() says so when the flag is set.
+-- The measured rate, or the requested one with a flag saying so: every byte is scaled by acq_fs, so a silent
+-- substitution would report confident bytes from an untrustworthy number.
 function sdec.acq_fs_or_requested(buf, n)
   local m = nil
   m = sdec.acq_measure_fs(buf, n)
@@ -1144,10 +1109,8 @@ sdec.fs_cap_tier = {{19200, 100000}}
 
 sdec.sabit_max = 12
 
--- `md` is optional and bounds the boost by what the buffer can afford: oversampling a byte-capped mode past
--- ck_bufmax does not fail, it makes stream_begin pin the capacity and shorten the recording. The ceiling is
--- therefore per mode, not per baud, and a caller with no mode in hand gets the unbounded answer.
--- docs/MEASUREMENTS.md, 'What the ck_bufmax bound on oversampling is worth'.
+-- `md` is optional and bounds the boost by what the buffer can afford, so the ceiling is per mode rather than per
+-- baud. docs/MEASUREMENTS.md, 'What the ck_bufmax bound on oversampling is worth'.
 function sdec.fs_for_burst(baud, md)
   if baud == nil or baud <= 0 then return sdec.fs_default end
   local want = sdec.minsabit
@@ -1224,15 +1187,14 @@ function sdec.fs_for_burst(baud, md)
   return lowest
 end
 
--- What a requested rate actually delivers. Used by the panel so the operator sees the delivered figure rather than
--- the asked-for one: the header's SA/BIT is computed from acq_fs after a capture, and before one there is nothing
--- measured to show.
+-- What a requested rate actually delivers. Used by the panel so the operator sees the delivered figure: SA/BIT
+-- comes from acq_fs after a capture, and before one there is nothing measured to show.
 function sdec.fs_delivered(fs)
   if fs == nil or fs <= 0 then return nil end
   return 1 / (1 / fs + sdec.acq_overhead)
 end
 
--- Call before every capture. Stateless by construction: it derives fs from the current forced rate AND the current
+-- Call before every capture. Stateless by construction: it derives fs from the current forced rate and the current
 -- mode each time rather than remembering anything.
 function sdec.fs_select()
   if sdec.fs_want ~= nil then
@@ -1255,9 +1217,8 @@ function sdec.fs_select()
   return sdec.fs
 end
 
--- Capacity a capture of n samples needs. FRAME only -- SimpleLoop has no reserve, and its buffers run to 4.1 M
--- readings against a 6 M ceiling for all buffers together. docs/MEASUREMENTS.md, 'The pre-trigger reserve comes
--- out of capacity, not out of count'.
+-- Capacity a capture of n samples needs. Frame only -- SimpleLoop has no reserve.
+-- docs/MEASUREMENTS.md, 'The pre-trigger reserve comes out of capacity, not out of count'.
 function sdec.acq_cap(n)
   if n == nil then n = sdec.n end
   if n == nil then return nil end
@@ -1265,18 +1226,15 @@ function sdec.acq_cap(n)
   return n + math.ceil(n * (sdec.pretrig or 0) / 100) + 100
 end
 
--- Fill continuously, so nothing is ever stored past the end of the buffer. This is the root cause of 4915
--- "attempting to store past the capacity of reading buffer", and the numeric assignment is the only route to it --
--- the constant does not exist on 1.7.17a. docs/MEASUREMENTS.md, 'A reserve in a FILL_ONCE buffer posts 4915 per
--- discard'.
+-- Fill continuously, so nothing is ever stored past the end of the buffer, and the numeric assignment is the only
+-- route to it. docs/MEASUREMENTS.md, 'A reserve in a FILL_ONCE buffer posts 4915 per discard'.
 function sdec.acq_fillmode(buf)
   if buf == nil then return false end
   return pcall(function() buf.fillmode = 1 end)
 end
 
--- Readings the pre-trigger reserve holds, and how long that is in TIME -- which is what decides whether it wraps
--- while waiting for the first edge. The reserve stays at 5 % and the fill mode is what stops the event; the mute
--- does not. docs/MEASUREMENTS.md, 'A reserve in a FILL_ONCE buffer posts 4915 per discard'.
+-- Readings the pre-trigger reserve holds, and how long that is in time, which decides whether it wraps.
+-- docs/MEASUREMENTS.md, 'A reserve in a FILL_ONCE buffer posts 4915 per discard'.
 function sdec.acq_reserve(n)
   if n == nil then n = sdec.n end
   local pt = sdec.pretrig or 0
@@ -1284,11 +1242,8 @@ function sdec.acq_reserve(n)
   return math.ceil((sdec.acq_cap(n) or n) * pt / 100)
 end
 
--- How many samples a capture actually delivers, which is not sdec.n on the armed path: LoopUntilEvent reserves
--- `pretrig` per cent of CAPACITY and makes the remainder as post-trigger readings, and on a busy line the trigger
--- fires within ~15 samples so the reserve is never spent. A floor, never a ceiling, which is what makes it safe to
--- answer "was this message seen whole?". docs/MEASUREMENTS.md, 'The pre-trigger reserve comes out of capacity, not
--- out of count'.
+-- How many samples a capture actually delivers, which is not sdec.n on the armed path, and a floor never a
+-- ceiling. docs/MEASUREMENTS.md, 'The pre-trigger reserve comes out of capacity, not out of count'.
 function sdec.n_deliv(n)
   if n == nil then n = sdec.n end
   if n == nil then return nil end
@@ -1310,11 +1265,8 @@ function sdec.window_bytes(baud, nbits, par, nstop)
   return math.floor((sdec.n * baud) / (fs * framebits))
 end
 
--- Configure the rear EXT TRIG OUT line for flow control, or leave it entirely alone. Called from hw_config() so it
---   [...]
--- the front panel can. LOGIC_POSITIVE is a TTL-high pulse from an idle-low line, so the device watches for a
--- rising edge: that is the convention a micro's pin-change interrupt expects, and an idle-low line does not look
--- like a permanently-granted credit if the DMM is off.
+-- Configure the rear EXT TRIG OUT line for flow control, or leave it alone. Re-applied per capture,
+-- trigger.extout.logic being reset by an I/O trigger reset. LOGIC_POSITIVE, so a rising edge.
 function sdec.fc_config()
   if not sdec.fc_out then return false end
   if trigger.extout == nil then return false end
@@ -1325,21 +1277,15 @@ function sdec.fc_config()
   return true
 end
 
--- Stop the firmware popping dialogs over the app. The panel raises a modal "Multiple errors have occurred" box
---   [...]
--- posts 2205. localnode.showevents selects which severities are DISPLAYED, not which are LOGGED, so the log stays
--- complete for sdec.errcount and real errors still show. Applied from hw_config, since it is instrument state
--- another app may have changed.
+-- Stop the firmware popping dialogs over the app: normal operation posts 2731 and 2732 per armed capture and 2205
+-- per byte-log probe. showevents selects what is displayed, not what is logged.
 function sdec.quiet_events()
   localnode.showevents = eventlog.SEV_ERROR
   return true
 end
 
--- Mute the panel's event popups where the firmware honours the mute, which for 4915 it does not --
---   [...]
--- buffer posts 4915 per discard'. The log is left intact: draining it is worse, eventlog.next CONSUMING where
--- eventlog.post cannot put an event back, so real events come out as generic "1005 User" entries, multiplied per
--- poll, and trip 1707.
+-- Mute the panel's event popups where the firmware honours the mute, which for 4915 it does not.
+-- docs/MEASUREMENTS.md, 'A reserve in a FILL_ONCE buffer posts 4915 per discard'.
 function sdec.mute_events()
   localnode.showevents = 0
   return true
@@ -1350,11 +1296,8 @@ function sdec.unmute_events()
   return true
 end
 
--- Remember the measurement mode the instrument was left in, so leaving the app can put it back: choosing a
---   [...]
--- function and writing dmm.measure.range back would disable the autorange of a meter free to move. One-shot,
--- because acquire() calls hw_config() up to four times per press: a save that ran per configuration would
--- overwrite the operator's mode with the app's own, so a mode changed mid-session is lost on exit.
+-- Remember the measurement mode the instrument was left in, choosing a digitize function deselecting the basic
+-- one. A pair is saved, and only on the digitize side. One-shot: the entry value.
 function sdec.mode_save()
   if sdec.entrymode ~= nil then return true end
   if sdec.dig == nil then return false end
@@ -1373,10 +1316,8 @@ function sdec.mode_save()
   return true
 end
 
--- Is a digitize function selected right now? Writing any sdec.dig or sdec.atrig attribute while a BASIC function
--- is selected posts 2800, which is an event -- a modal box -- and not a Lua error, so a pcall round the write does
--- not suppress it. Read rather than tracked, since the instrument already knows. True when it cannot tell, the
--- safe direction for teardown: skipping the un-configure leaves a comparator armed for whatever uses it next.
+-- Is a digitize function selected right now? Writing sdec.dig or sdec.atrig under a basic function posts 2800, an
+-- event rather than a Lua error. True when it cannot tell, the safe direction.
 function sdec.digitizing()
   if sdec.dig == nil then return false end
   if sdec.k.FUNC_NONE == nil then return true end
@@ -1403,11 +1344,8 @@ function sdec.mode_restore()
   return ok
 end
 
--- Every detection setting back to automatic, and every rear-BNC option off. Called from sdec.start(). None of
---   [...]
--- in on Tuesday was still pinned on Wednesday. The lock is dropped through unlock_all() rather than field by
--- field, because clearing force_baud alone leaves the FORMAT pinned, and that function is the single place that
--- knows all five. proto_why goes with the protocol: it explains a failure of the protocol just cleared.
+-- Every detection setting back to automatic, and every rear-BNC option off: none reset themselves, and only a
+-- power cycle nils `sdec`. The lock goes through unlock_all(), which knows all five.
 function sdec.reset_options()
   sdec.unlock_all()
   sdec.proto = 'uart'
@@ -1528,9 +1466,8 @@ function sdec.acq_first(buf, n)
   return s
 end
 
--- Where the next reading will go, as an index into buf.readings, or nil when it cannot be read. The only progress
--- counter that survives a wrap, because it is a position in the ring rather than a count of what the ring holds.
--- docs/MEASUREMENTS.md, 'A record can come back rotated'.
+-- Where the next reading will go, or nil when it cannot be read: the only progress counter that survives a wrap,
+-- being a position in the ring. docs/MEASUREMENTS.md, 'A record can come back rotated'.
 function sdec.acq_end(buf)
   if buf == nil then return nil end
   local e = nil
@@ -1562,11 +1499,8 @@ function sdec.acq_copy(buf, n)
   return t
 end
 
--- Untriggered capture of n samples. Used for the level-learning probe and for 'free' mode, where the line is
---   [...]
--- there is 2.8-6 million, so an uncapped fallback would defeat the one-window memory design and could exhaust Lua
--- memory on an instrument whose failure mode for that is a firmware panic. The samples stay in the reading buffer
--- either way; only the Lua-side view is bounded.
+-- Untriggered capture of n samples, for the level-learning probe and for 'free' mode. ncopy caps the Lua copy: the
+-- streaming fallback arrives with nsmp at 2.8-6 million.
 function sdec.acq_free(n, ncopy, nofc)
   local buf = sdec.buf
   sdec.trig_settle()
@@ -1586,10 +1520,8 @@ function sdec.acq_free(n, ncopy, nofc)
   return sdec.nread
 end
 
--- Is the trigger model finished, as opposed to not started yet? trigger.model.state() returns three values and
--- only the first is the state; IDLE is also the state BEFORE initiate(), so idleness alone cannot mean "done" --
--- hence the buffer check. pcall'd because a state read that raises must degrade to "not finished" rather than
--- raise from inside a poll loop.
+-- Is the trigger model finished, as opposed to not started yet? idle is also the state before initiate(), hence
+-- the buffer check. pcall'd because a state read that raises must degrade to "not finished".
 function sdec.trig_done(buf)
   local sok, st = pcall(trigger.model.state)
   if not sok then st = nil end
@@ -1599,21 +1531,16 @@ end
 
 sdec.arm_settle_s = 10.0
 
--- Is the model sitting in a wait block? -> true, false, or nil when it cannot be told. The three-way answer is the
--- point: an armed recording's poll loop has to distinguish "the device has not started yet" from "it started and
--- the burst is running", and the buffer cannot tell it. nil means degrade rather than retry -- a state read that
--- raised leaves the caller with no way to bound an arm. docs/MEASUREMENTS.md, 'buf.n is not evidence of a
--- trigger'.
+-- Is the model sitting in a wait block? -> true, false, or nil when it cannot be told; nil means degrade rather
+-- than retry. docs/MEASUREMENTS.md, 'buf.n is not evidence of a trigger'.
 function sdec.trig_waiting()
   local sok, st = pcall(trigger.model.state)
   if not sok or st == nil then return nil end
   return st == trigger.STATE_WAITING
 end
 
--- Stop the trigger model AND WAIT FOR IT TO STOP. abort() is asynchronous; see the note in acq_triggered for what
--- happens when the next capture does not wait. Bounded, because a model that will not idle must not hang the
--- panel. Raises only if trigger.model is absent, which this firmware never is, so every caller is bare: the abort,
--- the state polls and the sleep each carry their own guard, and nothing else here touches the instrument.
+-- Stop the trigger model and wait for it to stop, abort() being asynchronous. Bounded, because a model that will
+-- not idle must not hang the panel. Every caller is bare: each firmware call here carries its own guard.
 function sdec.trig_settle()
   pcall(trigger.model.abort)
   local i
@@ -1662,7 +1589,7 @@ function sdec.cancel_setup()
   return ok
 end
 
--- Discard any latched press, because the operator who pressed TRIGGER to stop the LAST run must not stop this
+-- Discard any latched press, because the operator who pressed TRIGGER to stop the last run must not stop this
 -- one too.
 function sdec.cancel_clear()
   if not sdec.cancel_ok then return false end
@@ -1670,8 +1597,7 @@ function sdec.cancel_clear()
 end
 
 -- Has TRIGGER been pressed since the last cancel_clear() or cancel_pressed()? The detector auto-resets on read
--- (ref 14-334), so one press answers true exactly once, which is why callers record the answer rather than polling
--- twice and expecting the same reply.
+-- (ref 14-334), so one press answers true exactly once and callers record the answer.
 function sdec.cancel_pressed()
   if not sdec.cancel_ok then return false end
   local ok, got = pcall(trigger.blender[sdec.cancel_blender].wait, sdec.cancel_poll_s or 0.001)
@@ -1679,10 +1605,7 @@ function sdec.cancel_pressed()
   return got == true
 end
 -- Which event arms a capture, and what that costs in shared instrument state. -> ev, useanalog, blended. Called by
---   [...]
--- docs/MEASUREMENTS.md, 'Arm Wait applies only where the comparator is the source'. It writes instrument state --
--- trigger.blender[1], sdec.armkeyed and sdec.trigblended -- which is why it is a function and not a lookup: the
--- blender is configured or RELEASED on every capture by the same three settings that pick the event.
+-- both armed paths; ev is nil when the event constant is absent.
 function sdec.arm_source()
   local ev = trigger.EVENT_ANALOGTRIGGER
   if sdec.trigmode == 'front' then ev = trigger.EVENT_DISPLAY end
@@ -1742,11 +1665,8 @@ function sdec.arm_source()
   return ev, useanalog, blended
 end
 
--- Where to arm on a line the probe found silent, in volts, written to sdec.thr with the matching sdec.idle and a
---   [...]
--- either way, the active level being unknown because nothing has been active. Shared by the frame and recording
--- paths, like the three functions below it -- the streaming path had no threshold of its own, and clear_result()
--- leaves sdec.thr at zero, so an armed recording pointed the comparator at 0 V and fired on ADC noise.
+-- Where to arm on a line the probe found silent, in volts, written to sdec.thr with the matching sdec.idle. ->
+-- false when there is not even a level to work from. Shared by both armed paths.
 function sdec.arm_threshold()
   sdec.arm_thr, sdec.arm_idle = nil, nil
   if sdec.vmax == nil then return false end
@@ -1770,9 +1690,8 @@ function sdec.arm_threshold()
   return true
 end
 
--- The slope the start bit takes, or nil where the comparator is not the source and a slope would be dead state on
--- the board. Shared for the same reason arm_source() is: the frame path and the armed recording have to arm on the
--- same edge of the same line.
+-- The slope the start bit takes, or nil where the comparator is not the source and a slope would be dead state
+-- on the board. Shared, so the frame path and the armed recording arm on the same edge of the same line.
 function sdec.arm_slope()
   if sdec.trigmode ~= 'edge' then return nil end
   local side = sdec.arm_idle
@@ -1782,8 +1701,7 @@ function sdec.arm_slope()
 end
 
 -- Point the comparator at sdec.thr, or turn it off where it is not a source. -> whether the writes went through.
--- Guarded rather than assumed, a digitizer with no analog comparator being supported: a bare write with atrig nil
--- raised, and acq_triggered() died instead of degrading to free run.
+-- Guarded, a digitizer with no comparator being supported: a bare write with atrig nil raised.
 function sdec.arm_comparator(useanalog, slope)
   if sdec.atrig == nil then return false end
   return pcall(function()
@@ -1889,8 +1807,7 @@ function sdec.acq_triggered(n, slope)
 end
 
 -- Full acquisition: learn the levels, then capture for real. Returns ok, reason. Two stages because the analog
--- trigger level is a voltage and the logic levels are unknown until the line has been looked at: a short
--- untriggered probe measures them, and the real capture arms at the midpoint.
+-- trigger level is a voltage and the logic levels are unknown until a short probe has measured them.
 function sdec.acquire()
   sdec.lasterr = nil
   sdec.clear_measured()
@@ -2344,7 +2261,7 @@ end
 
 sdec.plaustol = 0.02
 
--- Is this bit time inside the samples-per-bit range the instrument can actually carry?
+-- Is this bit time inside the samples-per-bit range the instrument can carry?
 function sdec.ua_plausible(T, n)
   if T == nil then return false end
   if T < sdec.minsabit * (1 - sdec.plaustol) then return false end
@@ -3408,7 +3325,8 @@ end
 
 -- The one-shot form: prime to completion in one call. Returns fmt, reason. The guard is a backstop on
 -- the phase machine, not on the signal, so exceeding it is a coding fault. Derived rather than
--- constant: one generous enough for ck_bufmax's reserve (9 tries) is no backstop at ck_win_min (72).
+-- constant: one sized for ck_bufmax's reserve is no backstop at the ck_win_min floor, where the same
+-- reserve asks for an order of magnitude more tries. bufmax_for() can lower the cap at runtime.
 function sdec.ck_prime(reader, ntotal, win, leadmax)
   local pr, perr = sdec.ck_prime_new(reader, ntotal, win, leadmax)
   if pr == nil then return nil, perr end
@@ -3921,8 +3839,8 @@ sdec.ui_fields = {
 }
 
 -- The ink band of one value cell, [top, bottom] inclusive, as one function so the panel and
--- test_serial cannot disagree. It must account for the font and fd.dy: a check written against the
--- small band leaves the tallest cells unguarded.
+-- test_serial cannot disagree. It must account for the font and fd.dy, or the tallest cells go
+-- unguarded.
 function sdec.ui_field_band(j)
   local fd = sdec.ui_fields[j]
   local y = sdec.ui_val_y + (fd.dy or 0)
@@ -4062,10 +3980,10 @@ function sdec.ui_tick_on()
 end
 
 -- Look for a key that has come or gone, and make the panel agree. -> true if anything moved.
---   [...]
--- so spending it here, half a second after insertion, is spending it when it is least likely to
--- succeed. capture_run() and ulog.line() both resume, so every path that writes already recovers.
--- Guarded: a raise escaping here reaches the firmware, which then posts it twice a second.
+-- The shared body of the tick and of the three presses that want an answer now, so Capture, View
+-- and Mode each act on the key state at the press. It does not re-open the log, and must not:
+-- ulog.resume() allows one open attempt per insertion, and spending it half a second after
+-- insertion spends it when it is least likely to succeed. Guarded -- a raise here reaches firmware.
 function sdec.ui_keypoll()
   if sdec.ui_scr == nil then return false end
   local moved = false
@@ -4079,9 +3997,8 @@ function sdec.ui_keypoll()
 end
 
 -- Is the status row's right-hand cell currently a run's, rather than the log's? -> true or false.
--- Must track ui_refresh()'s branch for that cell -- the tests below are that branch's outer
--- condition and its three hint cases -- because ui_keypoll() writes the same object from a press.
--- Tools/test_streamfix.lua walks eleven states and asserts the two agree in each.
+-- It must track ui_refresh()'s branch for that cell, because ui_keypoll() writes the same object
+-- from a press; tools/test_streamfix.lua walks eleven states and asserts the two agree in each.
 function sdec.ui_log_owned()
   local md = sdec.mode_cur()
   if md == nil then return false end
@@ -4092,19 +4009,17 @@ function sdec.ui_log_owned()
   return false
 end
 
--- One tick of sdec.ui_tick_obj: the unattended half of ui_keypoll().
--- It must not act while the app is busy. A tick is dispatched exactly like a press, so it queues
--- behind a capture and arrives in a burst afterwards. The press route needs no such test: a handler
--- executing at all proves no run is.
+-- One tick of sdec.ui_tick_obj: the unattended half of ui_keypoll(). It must not act while the app
+-- is busy, a tick being dispatched like a press and so arriving in a burst after a capture. The
+-- press route needs no such test: a handler executing at all proves no run is.
 function sdec.ui_tick()
   if sdec.ui_scr == nil then return false end
   if sdec.busy or sdec.ck_running or sdec.strm_recording then return false end
   return sdec.ui_keypoll()
 end
 
--- Will anything the app writes reach the key? -> true or false.
--- Asked before a capture, so it cannot read sdec.flog_why -- that is set by the attempt. Unknown
--- counts as yes, so a build without usb_log.tsp keeps the key-present wording.
+-- Will anything the app writes reach the key? -> true or false. Asked before a capture, so it
+-- cannot read sdec.flog_why; unknown counts as yes, so a build without usb_log.tsp still reads right.
 function sdec.log_live()
   local live = true
   if ulog ~= nil and ulog.keyok ~= nil then
@@ -4141,7 +4056,7 @@ function sdec.mode_why(m)
   return nil
 end
 
--- Three states, and the padlock's colour is the whole point of having them:
+-- Three states, distinguished by the padlock's colour:
 --   'locked'   green  -- at least one wire parameter is forced
 --   'auto'     amber  -- nothing forced, and there is a decode, so there is something to lock
 --   'unknown'  red    -- nothing forced and nothing decoded: nothing to lock yet
@@ -4154,8 +4069,7 @@ function sdec.lock_state()
 end
 
 -- The title bar's text: the app's name and the capture mode, in the largest type on the screen.
--- Bounded at 31 characters, the firmware's limit, over which it raises 1707 and truncates without a
--- word. The longest form today is 27, so the clamp is here because `title` is data.
+-- Bounded at 31 characters, the firmware's limit, over which it raises 1707 and truncates silently.
 function sdec.ui_title_text()
   local md = sdec.mode_cur()
   local s = sdec.ui_title
@@ -4164,7 +4078,6 @@ function sdec.ui_title_text()
   return s
 end
 
--- Padlock colour for the current lock state.
 function sdec.lock_colour()
   local st = sdec.lock_state()
   if st == 'locked' then return sdec.ui_c_locked end
@@ -4200,7 +4113,7 @@ function sdec.ui_nviews()
   return n
 end
 
--- The nth byte view this build actually offers.
+-- The nth byte view this build offers.
 function sdec.ui_view_nth(k)
   local n, i = 0, nil
   for i = 1, table.getn(sdec.ui_views) do
@@ -4249,9 +4162,9 @@ sdec.ui_mode = sdec.ui_mode or 'text'    -- 'text', 'hex' or 'midi'
 sdec.ui_page = sdec.ui_page or 0          -- 0-based page index
 sdec.ui_paged = sdec.ui_paged or false
 sdec.ui_status = sdec.ui_status or 'ready'
--- Say the panel is waiting on purpose, called by acq_triggered() immediately before it blocks on an
--- arm-from-silence: the wait can be 120 s and nothing can interrupt it. Installed here because this
--- is the only place that knows the panel exists; the offline harnesses install no armnote.
+-- Say the panel is waiting on purpose, called by acq_triggered() before it blocks on an
+-- arm-from-silence: the wait can be 120 s and nothing can interrupt it. The offline harnesses
+-- install no armnote.
 function sdec.armnote(wait, level, keyed)
   if sdec.ui_log_t == nil then return false end
   local tail = ''
@@ -4283,7 +4196,7 @@ function sdec.ui_optw(s)
 end
 
 -- Small helpers
--- settext `txt` on `h`, but only when the text actually changed. Returns true if it wrote.
+-- settext `txt` on `h`, but only when the text changed. Returns true if it wrote.
 function sdec.ui_set(h, txt)
   if h == nil then return false end
   if sdec.ui_last == nil then sdec.ui_last = {} end
@@ -4325,9 +4238,8 @@ function sdec.del_orphans()
 end
 
 -- Recolour rect `h` to `c`, counting a refusal in sdec.fillfails, which the status row surfaces.
--- Colour A rect with setcolor, not setfill: setfill's percent is 0..100, so a 24-bit colour is
--- refused with 1130, and enough refusals per refresh raise a modal dialog over the panel. A rect is
--- nothing but its border and setfill does nothing to it, which makes ui_fill_solid inert.
+-- Colour a rect with setcolor, not setfill: a 24-bit colour is refused with 1130, and enough
+-- refusals per refresh raise a modal dialog over the panel. setfill does nothing to a rect at all.
 function sdec.ui_fill(h, c)
   if h == nil then return false end
   local ok = pcall(display.setcolor, h, c)
@@ -4335,7 +4247,7 @@ function sdec.ui_fill(h, c)
   return ok
 end
 
--- Make a rect actually paint: 100 % foreground, once per rect at build time.
+-- Make a rect paint: 100 % foreground, once per rect at build time.
 function sdec.ui_fill_solid(h)
   if h == nil then return false end
   local ok = pcall(display.setfill, h, 100)
@@ -4343,7 +4255,7 @@ function sdec.ui_fill_solid(h)
   return ok
 end
 
--- Show or hide object `h`. The only way to take A rect or A line off the glass: recolouring one to
+-- Show or hide object `h`. The only way to take a rect or a line off the glass: recolouring one to
 -- ui_c_hide does not hide it, and that works for the dump rules only because they are 1 px wide.
 function sdec.ui_setstate(h, st)
   if h == nil then return false end
@@ -4352,11 +4264,11 @@ function sdec.ui_setstate(h, st)
   return ok
 end
 
--- Paint the acquire/decode bar at `pct` (0..100), or hide it when pct is nil -- which is what every
+-- Paint the acquire/decode bar at `pct` (0..100), or hide it when pct is nil -- every state with no
 --   [...]
--- The bar is a thick OBJ_LINE and the frame an OBJ_RECT because of what this firmware draws --
--- docs/MEASUREMENTS.md, 'The progress bar extents'. Cached on the percentage and on the visible
--- state, this running at ~1 Hz from inside a capture where every display call is an IPC round trip.
+--   0     the grey frame alone: a run has started and has nothing to show yet.
+--   > 0   the frame plus a cyan bar out to pct.
+-- A thick OBJ_LINE in an OBJ_RECT frame, cached -- docs/MEASUREMENTS.md, 'The progress bar extents'.
 function sdec.ui_progbar_set(pct)
   if sdec.ui_progbox == nil or sdec.ui_progline == nil then return false end
   if pct ~= nil then
@@ -4419,9 +4331,8 @@ function sdec.ui_unit()
   return sdec.ui_cur().unit or 'bytes'
 end
 
--- The ERR field'S number, in one place: the value and its colour were computed apart and by
--- different rules, so a run damaged only in its head showed a non-zero ERR in green. Takes the
--- table rather than reading ck_tot, so the status row cannot read '1 err' under an 'ERR 7'.
+-- The ERR field's number, in one place: the value and its colour were computed apart and by
+-- different rules, so a head-damaged run showed a non-zero ERR in green. Takes the table, not ck_tot.
 function sdec.ck_err_n(t)
   if t == nil then return 0 end
   local n = t.nbad or 0
@@ -4566,7 +4477,7 @@ end
 
 -- The note / warning line
 -- Every note that applies, most important first. Returns the list and its count.
--- A list, not A fall-through chain: seventeen sources feed one cell, and a chain shows one of them
+-- A list, not a fall-through chain: seventeen sources feed one cell, and a chain shows one of them
 -- with nothing to say the others exist. The cell shows the one that fits and says how many more
 -- there are; ulog and the saved file get all of them. Ordered by how badly an absence would mislead.
 function sdec.ui_notes()
@@ -4749,9 +4660,9 @@ end
 
 sdec.ui_note_px = sdec.ui_rule_x1 - sdec.ui_note_val_x
 
--- 'page N of M' for the note row, or '' when there is nothing worth saying: one page, or the operator
--- has not paged yet. 1-based, 'page 0 of 35' naming a page no button can reach. Computed, not
--- cached: a second copy would let ui_note_text reserve room for a string that has left the screen.
+-- 'page N of M' for the note row, or '' when there is nothing worth saying. 1-based, since 'page 0
+-- of 35' names a page no button can reach, and computed rather than cached: ui_note_text reserves
+-- room from this, and a second copy could describe a string that has left the screen.
 function sdec.ui_pgind_text()
   if not sdec.ui_paged then return '' end
   local npg = sdec.ui_npages()
@@ -4759,7 +4670,7 @@ function sdec.ui_pgind_text()
   return string.format('page %d of %d', sdec.ui_page + 1, npg or 0)
 end
 
--- Where the counter'S four pieces go, right to left from ui_pgind_x. Returns x_page, x_n, x_of, x_m,
+-- Where the counter's four pieces go, right to left from ui_pgind_x. Returns x_page, x_n, x_of, x_m,
 -- the two number x's being right edges (JUST_RIGHT) and the two word x's left edges.
 function sdec.ui_pgind_layout()
   local g = sdec.ui_pgind_gap
@@ -4778,10 +4689,9 @@ function sdec.ui_pgind_px()
   return (sdec.ui_pgind_x - xpage) + sdec.ui_note_gap
 end
 
--- The one note the cell has room for, plus how many others there are.
--- Both parts are fitted and the marker wins when they compete, or a long note would push '(+N more)'
--- off the panel and leave no sign a second note exists. The page counter's width comes off the cell
--- too -- the firmware fades neither, it just overlaps them.
+-- The one note the cell has room for, plus how many others there are. Both parts are fitted and the
+-- marker wins when they compete, or a long note pushes '(+N more)' off the panel and nothing says a
+-- second note exists. The page counter's width comes off the cell too; the firmware overlaps them.
 function sdec.ui_note_text()
   local t, m = sdec.ui_notes()
   if m < 1 then return '' end
@@ -4887,10 +4797,10 @@ function sdec.ui_destroy()
 end
 
 -- A screen nobody is looking at, held in front while the real ones are assembled.
--- Creating A screen makes it the active one, which is why the operator can otherwise watch this app
+-- Creating a screen makes it the active one, which is why the operator can otherwise watch this app
 -- build itself, in the wrong order, ending on a jump. Raised after every screen create, not once at
 -- the start, and idempotent so the call sites do not have to care. Never fatal: the pool can be
--- exhausted, and a missing cover means a visible build, which is what this replaces.
+-- exhausted, and a missing cover costs only a visible build.
 function sdec.ui_loading_front()
   if sdec.ui_loadscr == nil then return false end
   pcall(display.changescreen, sdec.ui_loadscr)
@@ -4909,10 +4819,9 @@ function sdec.ui_loading_raise()
   return true
 end
 
--- Put the real screen in front and take the loading screen away.
--- Switch first, delete second, the rule ui_destroy follows: deleting the screen currently displayed
--- is how a panel ends up showing nothing. And the switch is unconditional -- a nil `showscr` read as
--- "do not switch" left the panel displaying a deleted object -- so it falls back to SCREEN_HOME.
+-- Put the real screen in front and take the loading screen away. Switch first, delete second, the
+-- rule ui_destroy follows. The switch is unconditional: a nil `showscr` read as "do not switch"
+-- left the panel displaying a deleted object, so it falls back to SCREEN_HOME.
 function sdec.ui_loading_clear(showscr)
   if showscr == nil then showscr = display.SCREEN_HOME end
   pcall(display.changescreen, showscr)
@@ -4923,9 +4832,8 @@ function sdec.ui_loading_clear(showscr)
   return true
 end
 
--- Build the main screen: status fields, dump rows, rules and buttons.
--- `hold` keeps the loading screen up for the caller. Only start() passes it, because only start()
--- builds a second screen afterwards; everyone else gets a build that cleans up after itself.
+-- Build the main screen: status fields, dump rows, rules and buttons. `hold` keeps the loading
+-- screen up for the caller, which only start() needs, it alone building a second screen afterwards.
 function sdec.ui_build(hold)
   sdec.ui_destroy()
   sdec.ui_invalidate()
@@ -5153,10 +5061,9 @@ function sdec.ui_build(hold)
 end
 
 -- Save and NewLog, shown only when something the app writes could reach the key. -> true if the
--- visibility changed.
--- Its own function because two callers need it and one guard must not gate both: ui_page_btns()
--- returns early on a build whose Page buttons failed to create, and this block sat after that
--- return. One cache, one owner: ui_savevis is written here and nowhere else.
+-- visibility changed. Its own function because two callers need it and one guard must not gate
+-- both: ui_page_btns() returns early on a build whose Page buttons failed to create, and this block
+-- sat after that return. ui_savevis is written here and nowhere else.
 function sdec.ui_usb_btns()
 if sdec.ui_savebtn ~= nil or sdec.ui_newlogbtn ~= nil then
   local sw = sdec.log_live()
@@ -5222,7 +5129,7 @@ function sdec.ui_page_btns()
   return true
 end
 
--- Repaint from the current decode result. settext only, which is what keeps a refresh cheap.
+-- Repaint from the current decode result. settext only, which keeps a refresh cheap.
 function sdec.ui_refresh_do()
   sdec.ui_page_btns()
   if sdec.ui_scr == nil then return false end
@@ -5388,18 +5295,17 @@ function sdec.ui_refresh_do()
 end
 
 -- Refresh the panel, and never raise doing it. -> true, or false if the body gave up part way.
---   [...]
--- What they were protecting against is this body formatting a nil, so the guard belongs with the
--- body, once, where a new call site cannot forget it. A refresh is cosmetic and must not cost its
--- caller: a capture that decoded correctly must not be reported as failed over one panel field.
+-- One guard here, not one at each call site: sixteen callers wrapped this in a pcall of their own,
+-- which guards our code rather than a firmware boundary, where what they feared was this body
+-- formatting a nil. A refresh is cosmetic and must not cost its caller a correct capture.
 function sdec.ui_refresh()
   return (pcall(sdec.ui_refresh_do))
 end
 
--- The byte log, for the status row: which file is being appended to, and how many BYTES are in it so
---   [...]
--- trimmed from the left with a '~'; the count never does, being what audits the promise. The failure
--- case is a flag here and a sentence on the note row.
+-- The byte log, for the status row: which file is being appended to, and how many BYTES are in it
+-- so far. Both, always, in every mode, the app's promise being that no decoded byte is lost.
+-- It has 188 px and the obvious form does not fit, so the '.txt' goes and the name gives way,
+-- trimmed from the left with a '~'; the count never does, being what audits the promise --
 -- docs/MEASUREMENTS.md, 'The three status row cells'.
 function sdec.flog_status()
   if sdec.flog_why ~= nil then return 'log: NOT LOGGING' end
@@ -5418,10 +5324,9 @@ function sdec.flog_status()
   return s
 end
 
--- The streaming modes' status text: progress while running, then the outcome.
--- Separate from ui_refresh so sdec.progress() can write the same object once a second without
--- touching the other ~20: every display call is an IPC round trip, and a full refresh during a
--- four-minute capture would spend more of the instrument on saying so than on the work.
+-- The streaming modes' status text: progress while running, then the outcome. Separate from
+-- ui_refresh so sdec.progress() can write the same object once a second without touching the other
+-- ~20, every display call being an IPC round trip.
 function sdec.ck_status()
   local t = sdec.ck_tot
   local md = sdec.mode_cur()
@@ -5473,10 +5378,9 @@ function sdec.ck_status()
                        t.nf or 0, sdec.ck_err_n(t) or 0, t.nwin or 0, tostring(base), t.stopped or 'done')
 end
 
--- The fraction the progress bar shows, 0..100, or nil when no honest one exists.
--- The two phases have different denominators, as ck_status's text does: per cent of the buffer while
--- the digitizer fills it, then bytes against the mode's cap once the decode starts. nil for A
--- press-driven recording, the case that would lie -- a bar there would hold 0 for the whole run.
+-- The fraction the progress bar shows, 0..100, or nil when no honest one exists. The two phases
+-- have different denominators, as ck_status's text does: per cent of the buffer, then bytes against
+-- the cap. nil for a press-driven recording, where a bar would hold 0 for the whole run.
 function sdec.ck_pct()
   if not sdec.ck_running then return nil end
   if sdec.strm_recording then return nil end
@@ -5766,9 +5670,9 @@ sdec.strm_maxsec = sdec.strm_maxsec or 1200
 sdec.strm_fallback_s = sdec.strm_fallback_s or 20
 -- Drop a decode result a later pass has invalidated, and nothing else. Returns true.
 -- autoset() runs up to three captures per press, and a pass failing at acquire() returns before any
--- decode -- so the previous pass's res, baud and fitq survive beside the failed capture's acq_fs and
--- levels. docs/MEASUREMENTS.md, 'A failed re-capture leaves a stale fit'. Not clear_result(), which
--- also drops probe_note and lasterr: here they are the only record of what failed.
+-- decode, so the previous pass's res, baud and fitq survive beside the failed capture's acq_fs and
+-- levels. docs/MEASUREMENTS.md, 'A failed re-capture leaves a stale fit'. Not clear_result(), whose
+-- probe_note and lasterr are the only record of what failed here.
 function sdec.drop_stale_result()
   sdec.res, sdec.midi, sdec.lin = nil, nil, nil
   sdec.baud, sdec.baud_raw, sdec.bittime = nil, nil, nil
@@ -5797,10 +5701,9 @@ function sdec.clear_result()
   return true
 end
 
--- Drop the whole lock -- every forced setting, not just the rate. Returns true.
--- All five or none. Clearing force_baud ALONE leaves the format pinned, because autolock_try() sets
--- nbits, par and nstop with the rate: the app then still decides the format from the previous
--- capture's answer while appearing unlocked.
+-- Drop the whole lock -- every forced setting, not just the rate. Returns true. All five or none:
+-- clearing force_baud alone leaves the format pinned, because autolock_try() sets nbits, par and nstop
+-- with the rate, and the app then decides the format from the previous capture's answer.
 function sdec.unlock_all()
   sdec.force_baud, sdec.force_nbits = nil, nil
   sdec.force_par, sdec.force_nstop, sdec.force_invert = nil, nil, nil
@@ -5810,9 +5713,9 @@ end
 
 -- Everything the app and the decoder learned, back to a known value, before any attempt to determine
 --   [...]
--- whatever the current lock and mode imply, and computing that twice is how the two drift apart.
--- It does NOT unlock: a forced rate is a decision the operator can see on the padlock. A harness
--- that wants a virgin app calls sdec.unlock_all() first.
+-- reset would cap every unlocked capture at ~19 bytes. fs_select() rather than an assignment, since
+-- the deterministic value is whatever the lock and mode imply. It does NOT unlock -- a forced rate is
+-- a decision the operator can see on the padlock, and a harness calls sdec.unlock_all() first.
 function sdec.detect_reset()
   sdec.clear_result()
   sdec.fs_want = nil
@@ -5822,9 +5725,9 @@ end
 
 -- Capture orchestration
 --   [...]
--- everywhere else, and here it is strictly less, because the device's opening bytes exist only in the
--- window that caught them. docs/TRIGGER.md section 7 for why the pre-trigger reserve makes the start
--- recoverable. The rate is blind by construction -- arm_fs() trades window against coverage.
+-- No second pass and no octave retry, unlike the tail of autoset(): a re-capture is more data
+-- everywhere else and strictly less here, because the device's opening bytes exist only in the window
+-- that caught them. docs/TRIGGER.md section 7 for what the pre-trigger reserve buys.
 function sdec.arm_capture()
   local fs = sdec.arm_fs()
   sdec.fs, sdec.fs_want = fs, fs
@@ -5841,10 +5744,9 @@ function sdec.arm_capture()
 end
 
 -- Is this candidate bit time compatible with the pulses actually on the wire? The filter the prior
--- ladder applies BEFORE spending a decode, and it is the detector's own battery of three tests.
--- Without it the ladder is unsafe and the frame gate cannot rescue it: docs/MEASUREMENTS.md, 'The
--- prior ladder needs the pulse-width filter'. It fails closed with no evidence -- all three answer
--- 'no objection' to a missing width array, so sig_bittime() must have run first.
+-- ladder applies BEFORE spending a decode, and the detector's own three tests: docs/MEASUREMENTS.md,
+-- 'The prior ladder needs the pulse-width filter'. It fails closed with no evidence, all three waving
+-- a missing width array through, so sig_bittime() must run first.
 function sdec.arm_try_ok(T, n)
   if T == nil or T <= 0 then return false end
   if sdec.wmed == nil or sdec.wmed <= 0 then return false end
@@ -5870,9 +5772,9 @@ end
 
 -- Fit the operator's prior to samples already in hand. Called by arm_capture() when a blind armed
 --   [...]
--- not first fit, for a guessed rate'.
--- decode_from(), not decode(): decode() second-guesses a forced rate, and here the lock is this
--- function's own hypothesis and the fallback measurement has already failed.
+-- true rate reads two real frames as one and lands its stop bit where a real one is. Every surviving
+-- candidate is decoded, which is CPU and nothing else. docs/MEASUREMENTS.md, 'Uniqueness, not first
+-- fit, for a guessed rate'. decode_from(), not decode(), whose fallback measurement already failed.
 function sdec.arm_fit_prior()
   local rd, n = sdec.smp, sdec.nread
   if rd == nil or n == nil or n < 2 then return false end
@@ -5983,8 +5885,8 @@ end
 
 -- The byte log
 --   [...]
--- Decoded bytes only, never samples -- here, in frame_log(), in ck_sink_file() and in save(). A 32 kB
--- stream is 3.4 M samples, ~34 MB of text against 32 kB of bytes, for data nothing downstream reads.
+-- once per session, so successive captures append to one file. Decoded bytes only, never samples --
+-- a 32 kB stream is 3.4 M samples, ~34 MB of text against 32 kB of bytes.
 -- Allocate the byte log's filename. Returns the path, or nil with sdec.flog_why set.
 function sdec.flog_alloc()
   ulog.keyok()
@@ -6045,9 +5947,9 @@ end
 
 -- Streaming capture
 --   [...]
--- they are all reached from a touch handler.
+-- nothing of ours runs -- so the panel stays live, but the quiet-line watchdog only advances while
+-- sdec.stream() is polling. Every entry point here is guarded end to end and returns ok, reason.
 -- Size a streaming capture, allocate its buffer, learn the levels and arm the idle watchdog.
--- Returns ok, reason, and leaves the sample count in sdec.strm_nsmp.
 function sdec.stream_begin()
   local md = sdec.mode_cur()
   local why = sdec.mode_why(md)
@@ -6167,8 +6069,8 @@ end
 sdec.fc_maxwin = sdec.fc_maxwin or 32
 sdec.fc_maxsec = sdec.fc_maxsec or 1200
 
--- ONE PRESS, ONE WHOLE TRANSMISSION: record, decode and save, and under flow control keep issuing
--- credits until the device stops. Returns the run's verdict and, on a failure, its reason.
+-- One press, one whole transmission: record, decode and save, and under flow control keep issuing credits
+-- until the device stops. Returns the run's verdict and, on a failure, its reason.
 function sdec.record_run()
   sdec.cancel_clear()
   sdec.ck_cancel, sdec.fc_end, sdec.strm_empty = nil, nil, nil
@@ -6255,6 +6157,7 @@ end
 -- Decode a completed recording, shared by both paths. got is the reading count it collected.
 function sdec.stream_decode(got)
   local md = sdec.mode_cur()
+
   local path = sdec.flog_alloc()
   local opts = {maxbytes = md.cap, nocap = (md.cap == nil),
                 progress = sdec.ck_progress}
@@ -6295,9 +6198,9 @@ function sdec.stream_decode(got)
   return true
 end
 
--- Decode ONE SLICE, put the progress on the status row, and hand the panel back. Returns the decode's
--- VERDICT, not its progress: true both for a slice still pending and for a clean finish, false when the
--- step raised, produced no totals or failed its write. Whether work REMAINS is sdec.ck_job ~= nil.
+-- Decode one slice, put the progress on the status row, and hand the panel back. Returns the decode's
+-- VERDICT, not its progress: true for a pending slice and for a clean finish, false when the step raised,
+-- produced no totals or failed its write. Whether work remains is sdec.ck_job ~= nil.
 function sdec.decode_step()
   local job = sdec.ck_job
   if job == nil then return false end
@@ -6368,9 +6271,9 @@ function sdec.decode_abandon()
 end
 
 -- Arm the trigger model and RETURN; the buffer fills in hardware from here. nsmp is the reading count
--- SimpleLoop is asked for. Returns whether the model took the configuration -- a false is the caller's
--- cue to fall back to a free-running read. Guarded at its own firmware boundaries, so no caller needs a
--- pcall: wrapped from outside, a refused SimpleLoop came back as a successful arm.
+-- SimpleLoop is asked for. Returns whether the model took the configuration -- false is the caller's cue to
+-- fall back to a free-running read. Guarded at its own firmware boundaries, so no caller needs a pcall:
+-- wrapped from outside, a refused SimpleLoop came back as a successful arm.
 function sdec.stream_arm(nsmp)
   sdec.strm_armed = nil
   local buf = sdec.buf
@@ -6419,9 +6322,9 @@ function sdec.stream_arm(nsmp)
 end
 
 -- Stop the hardware and publish what it collected. -> the reading count, and a SECOND return naming the
--- failure when the buffer could not be read at all. That second return is what keeps a fault from
--- reading as an empty recording: buf.n raises on a buffer the firmware has dropped, and unguarded it
--- would come back as 0, which stream_stop() reports as 'recording collected nothing'.
+-- failure when the buffer could not be read at all. That second return keeps a fault from reading as an
+-- empty recording: buf.n raises on a buffer the firmware has dropped, and unguarded it comes back as 0,
+-- which stream_stop() reports as 'recording collected nothing'.
 function sdec.stream_settle()
   pcall(trigger.model.abort)
   local buf = sdec.buf
@@ -6436,9 +6339,9 @@ function sdec.stream_settle()
   return sdec.nread
 end
 
--- Re-measure the levels from the newest samples in buf when the watchdog is about to end a run on
--- REUSED levels. buf holds `have` readings; iw is the window to look at. Returns true if the reused
--- threshold is wrong and a better one is now in force, so the caller should keep going.
+-- Re-measure the levels from the newest samples in buf when the watchdog is about to end a run on REUSED
+-- levels. buf holds `have` readings; iw is the window. Returns true if the reused threshold is wrong and a
+-- better one is in force, so the caller should keep going.
 function sdec.strm_relevel(buf, have, iw)
   if not sdec.strm_lvlreuse then return false end
   if buf == nil or have == nil or have < 3 then return false end
@@ -6599,8 +6502,7 @@ end
 
 sdec.ck_poll_s = 0.5
 
--- A hard ceiling on the wait for nsmp samples at fs, seconds: twice the theoretical fill time,
--- floored at 10 s and capped at 1200.
+-- A hard ceiling on the wait for nsmp samples at fs: twice the fill time, floored at 10 s, capped at 1200.
 function sdec.stream_maxwait(nsmp, fs)
   if fs == nil or fs <= 0 then return 600 end
   local t = 2 * nsmp / fs
@@ -6623,9 +6525,9 @@ sdec.ck_bufpool_default = 7080255
 sdec.ck_bufpool = sdec.ck_bufpool_default
 sdec.ck_bufpool_model = {{'7510', 7500000}, {'2461', 6875000}}
 
--- Resolve the pool from the model number. -> the figure now in force.
--- Assigns unconditionally from a local, so the answer depends on the model and not on call order. Bare
--- read: localnode is documented on every supported model. Substring, since neither key can collide.
+-- Resolve the pool from the model number. -> the figure now in force. Assigns unconditionally from a local,
+-- so the answer depends on the model and not on call order. Bare read: localnode is documented on every
+-- supported model. Substring, since neither key can collide.
 function sdec.buf_pool_resolve()
   local p = sdec.ck_bufpool_default
   local m = localnode.model
@@ -6649,11 +6551,11 @@ sdec.ck_bufmargin = 50000
 
 sdec.ck_bufmin = 898347
 
--- The ceiling the live defbuffers leave, which is a QUERY and not the policy: it reports what the
---   [...]
--- (see start()) makes a second guard for the second attribute two sites for one boundary. The fallback
--- is the static ceiling and never a raise. Returns the ceiling, then the NAME and CAPACITY of the larger
--- default buffer, which the refusals have to quote or they send the operator at the wrong one.
+-- The ceiling the live defbuffers leave, which is a query and not the policy: it reports what the
+-- instrument can spare as the capacities stand, and buf_reclaim() is what changes them.
+-- One pcall for both reads, and it belongs here: an outbound firmware boundary, where the pcall budget
+-- (see start()) makes a second guard two sites for one boundary. Returns the ceiling, then the name and
+-- capacity of the larger default buffer, which the refusals must quote or they send the operator wrong.
 function sdec.bufmax_for()
   local ok, d1, d2 = pcall(function() return defbuffer1.capacity, defbuffer2.capacity end)
   if not ok or type(d1) ~= 'number' or type(d2) ~= 'number' then
@@ -6671,11 +6573,11 @@ end
 
 sdec.ck_defbufcap = 100000
 
--- One default buffer's capacity, written and answered for. -> true if the instrument took it.
+-- One default buffer's capacity, written and answered for. -> true if the instrument took it. One guarded
 --   [...]
--- were discarded while buf_reclaim reported false and logged nothing. A whitelist, and not the sweep's
--- test with the sign flipped -- buf_sweep asks the opposite question of the same two names. Named
--- exactly: without the test the else would resize defbuffer2 for any unexpected argument.
+-- by a running measurement the first assignment lands and the second raises, so defbuffer2's readings were
+-- discarded while buf_reclaim reported false and logged nothing. A whitelist, not the sweep's test with
+-- the sign flipped, and named exactly: without the test the else would resize defbuffer2 for anything.
 function sdec.defbuf_set(name, cap)
   if name ~= 'defbuffer1' and name ~= 'defbuffer2' then return false end
   local ok = pcall(function()
@@ -6690,8 +6592,8 @@ end
 
 -- Resize the default buffers down when the recording needs the room, because the reading memory is ONE
 --   [...]
--- just-enough, because a resize DISCARDS EVERY READING whatever the new capacity is. And it is recorded:
--- ck_defbufwas is what stop() hands back and what the log line quotes.
+-- to hold the operator's readings. Back to the default and not to just-enough, because a resize discards
+-- EVERY READING whatever the new capacity is. And it is recorded: ck_defbufwas is what stop() hands back.
 -- -> did_reclaim, text naming what was resized and from what. false means nothing needed doing.
 function sdec.buf_reclaim()
   local ok, d1, d2 = pcall(function() return defbuffer1.capacity, defbuffer2.capacity end)
@@ -6721,10 +6623,10 @@ function sdec.buf_reclaim()
   return true, what
 end
 
--- And buffers this app did not make hold the same pool, so they are swept before the default buffers are
+-- Buffers this app did not make hold the same pool, so they are swept before the default buffers are
 --   [...]
--- Unmeasured on hardware -- whether `.capacity` on an arbitrary global answers nil or raises is not
--- established -- so the collection is guarded as though it raises.
+-- undefined, and dropping the handle before the delete strands the buffer. Whether `.capacity` on an
+-- arbitrary global answers nil or raises is unmeasured, so the collection is guarded as if it raises.
 -- -> freed_readings, text naming what went. 0 and nil when there was nothing to sweep.
 function sdec.buf_sweep()
   local names, nn = {}, 0
@@ -6763,10 +6665,10 @@ function sdec.buf_sweep()
   return freed, gone
 end
 
--- Hand the capacities back -- the sizes are the operator's setting and only the READINGS were lost. Runs
--- in stop() after the capture buffer is freed, because until then the room to grow them does not exist.
--- Not fatal and not retried: failing the teardown over it costs a reinstall, and ck_defbufwas is cleared
--- either way. -> text naming what was handed back, or nil when there was nothing.
+-- Hand the capacities back -- the sizes are the operator's setting and only the readings were lost. Runs in
+-- stop() after the capture buffer is freed, because until then the room to grow them does not exist. Not
+-- fatal and not retried: failing the teardown over it costs a reinstall, and ck_defbufwas is cleared either
+-- way. -> text naming what was handed back, or nil when there was nothing.
 function sdec.buf_restore()
   if sdec.ck_relaunching then
     sdec.ck_relaunching = nil
@@ -6828,9 +6730,9 @@ function sdec.ck_progress(nbytes, nwin, nwin_est)
   return true
 end
 
--- Poll the TRIGGER key and record it as a stop request. True once a cancel is in force, INCLUDING one
--- seen by a previous poll -- the blender's latch auto-resets on read, so a caller that polls twice and
--- expects the same answer loses the press.
+-- Poll the TRIGGER key and record it as a stop request. True once a cancel is in force, including one seen by
+-- a previous poll -- the blender's latch auto-resets on read, so a caller that polls twice and expects the
+-- same answer loses the press.
 function sdec.cancel_asked()
   if sdec.ck_stop then return true end
   if not sdec.cancel_pressed() then return false end
@@ -6858,8 +6760,7 @@ function sdec.rate_decline()
 end
 
 -- The body of the Capture press: start a capture, or stop or step one already in progress. Fully guarded,
--- and returns a verdict rather than raising. Not the handler -- sdec.capture() below wraps this to hold
--- the panel tick off for the duration of the press.
+-- and returns a verdict rather than raising. Not the handler -- sdec.capture() wraps this to hold the tick.
 function sdec.capture_run()
   ulog.resume()
   if sdec.ck_running and not sdec.strm_recording and sdec.ck_job == nil then
@@ -7013,9 +6914,9 @@ end
 
 -- The half-second tick is off for the whole press. A tick is dispatched exactly like a press, so work that
 --   [...]
--- whether the press faulted. What a raise would skip, sdec.unwind restores. The key is checked by the
--- press, first -- it closes no gap, but Capture ASKS instead of inheriting the answer from inside a
--- function the press cannot see.
+-- The body is not guarded, and a raise reaches the caller: `pcall(sdec.capture)` is how two callers ask
+-- whether the press faulted, and what a raise would skip, sdec.unwind restores. The key is checked by the
+-- press, first -- it closes no gap, but Capture asks rather than inheriting the answer from elsewhere.
 function sdec.capture()
   sdec.ui_keypoll()
   sdec.ui_tick_off()
@@ -7108,9 +7009,8 @@ function sdec.proto_parse1(mode)
   return ok
 end
 
--- Parse the layers the panel is about to need: the one SELECTED on the options form, and the one
--- being VIEWED when that is a different one. `which` parses that layer alone. Returns whether
--- any parser ran.
+-- Parse the layers the panel is about to need: the one selected on the options form, and the one being
+-- viewed when that is a different one. `which` parses that layer alone. Returns whether any parser ran.
 function sdec.proto_parse(which)
   if which ~= nil then return sdec.proto_parse1(which) end
   local did = false
@@ -7125,9 +7025,9 @@ end
 
 -- The inbound firmware boundary
 --   [...]
--- called by name, since a partial load must not turn the boundary into the popup source it prevents. It
--- does not log either -- ulog.line reaches file.write, and a full key is what brought us here.
--- filled up is exactly the condition that brought us here.
+-- make a decision of its own, like lock_toggle, has to do this too or the cleanup does not happen.
+-- Raise-free by construction, and it does not log -- ulog.line reaches file.write, and a full key is
+-- the condition that brought us here.
 function sdec.unwind(why)
   sdec.busy = false
   sdec.ck_running = false
@@ -7152,10 +7052,10 @@ function sdec.unwind(why)
   return false
 end
 
--- Run a panel handler so a raise cannot reach the firmware. -> true if it returned.
--- The one place a pcall may wrap our own code, and it is a firmware boundary like any other: the
--- instrument calls these by name out of a display event string, and an escaping raise becomes a modal
--- dialog over the app. One helper, so the boundary is ONE pcall site and it covers the whole handler.
+-- Run a panel handler so a raise cannot reach the firmware. -> true if it returned. The one place a pcall may
+-- wrap our own code, and it is a firmware boundary like any other: the instrument calls these by name out of a
+-- display event string, and an escaping raise becomes a modal dialog over the app. One helper, so the boundary
+-- is ONE pcall site and it covers the whole handler.
 function sdec.guard(f)
   local ok, err = pcall(f)
   if ok then return true end
@@ -7256,9 +7156,9 @@ function sdec.view_toggle()
   return sdec.ui_refresh()
 end
 
--- Show the next page of bytes. Bound to the 'Dn' button down the dump area's right margin, with
--- page_prev() as 'Up' above it; the host drives both over the socket. ui_paged is set even when the page
--- does not move: it is what puts 'page N of M' on the note row, and the last page is when that matters.
+-- Show the next page of bytes. Bound to the 'Dn' button down the dump area's right margin, with page_prev() as
+-- 'Up' above it; the host drives both over the socket. ui_paged is set even when the page does not move,
+-- because it is what puts 'page N of M' on the note row and the last page is when that matters.
 function sdec.page_next()
   sdec.ui_paged = true
   if sdec.ui_page + 1 < sdec.ui_npages() then sdec.ui_page = sdec.ui_page + 1 end
@@ -7302,8 +7202,8 @@ function sdec.options_auto()
   return sdec.options_apply()
 end
 
--- THE PADLOCK'S ACTION: amber (auto) locks the detected settings and goes green, green (locked)
--- unlocks back to auto, red (nothing decoded) refuses with a reason. Either way it re-captures.
+-- The padlock's action: amber (auto) locks the detected settings and goes green, green (locked) unlocks back
+-- to auto, red (nothing decoded) refuses with a reason. Either way it re-captures.
 function sdec.lock_toggle()
   if sdec.busy then return false end
   local st = sdec.lock_state()
@@ -7417,9 +7317,9 @@ end
 
 sdec.strm_absorb_s = sdec.strm_absorb_s or 1.0
 
--- Arm the queued-press absorb after a run that held the interpreter.
--- On every ending, including 'stopped'. Returning early because a press was SEEN assumes nothing is
--- queued behind it: true of one press, false of an operator who presses Capture, TRIGGER, Capture.
+-- Arm the queued-press absorb after a run that held the interpreter. On every ending, including 'stopped':
+-- returning early because a press was SEEN assumes nothing is queued behind it, which is true of one press and
+-- false of an operator who presses Capture, TRIGGER, Capture.
 function sdec.strm_absorb_arm()
   sdec.strm_stopped_by_press = nil
   sdec.strm_nabsorbed = 0
@@ -7435,11 +7335,11 @@ function sdec.strm_absorb_due()
   return el <= sdec.strm_absorb_s
 end
 
--- The one gate every handler that matters consults: was this press queued behind a run that has already
+-- The one gate every handler that matters consults: was this press queued behind a run that has
 --   [...]
--- Capture only, narrowed by measurement: wired to Mode as well, bench_panel's Mode/rec-exit failed,
--- because Mode is the way OUT of a mode and a dead escape hatch is worse than an unwanted mode change.
--- The test that survives is the harm -- only Capture starts an uninterruptible run and wipes the result.
+-- Capture only, and the scope was narrowed by measurement: Mode is the way out of a mode, and a dead
+-- escape hatch is worse than an unwanted mode change. Only Capture starts an uninterruptible run and
+-- wipes the result on screen.
 function sdec.press_absorbed(what)
   if not sdec.strm_absorb_due() then
     sdec.strm_stopped_by_press = nil
@@ -7462,9 +7362,9 @@ function sdec.press_absorbed(what)
   return true
 end
 
--- Flush the current capture mode's files and say why. `why` goes on the note row. Returns the mode that
+-- Flush the current capture mode's files and say why. `why` goes on the note row. Returns the mode that was
 --   [...]
--- gets narrowed to a boolean nobody checks, which is this app's dominant defect class.
+-- boolean nobody checks, which is this app's dominant defect class.
 -- Never raises for any measured failure, so the four callers call it bare; see ulog.line for the one
 -- unmeasured case. It touches no firmware directly.
 function sdec.mode_exit(why, bad)
@@ -7499,10 +7399,10 @@ function sdec.mode_exit(why, bad)
 end
 
 -- Which mode an idle Mode press advances to -- the ENTRY, not the id.
---   [...]
--- defect, so the label and the action read the SAME function. Skips any mode that cannot be right at the
--- locked rate (mode_suits), bounded by n steps, because a table where nothing suits must not spin inside
--- a touch handler. math.mod, not '%': 5.0.2.
+-- Factored out so the panel can name it: the status row said 'Mode=Exit to FRAME' in every recording mode, and
+-- from 8 kB the button goes to 32 kB. A label that names the wrong destination is this app's recurring defect,
+-- so the label and the action read the SAME function. Skips any mode that cannot be right at the locked rate
+-- (mode_suits), bounded by n steps, because a table where nothing suits must not spin inside a touch handler.
 function sdec.mode_next()
   local n = sdec.ui_modes.n
   local at, i = 0, nil
@@ -7518,8 +7418,8 @@ function sdec.mode_next()
 end
 
 -- The Mode button. Two behaviours, and which applies turns on whether a run is in progress:
---   RUNNING  -> abort. Stop the stream and flush, in one press, STAYING in the mode.
---   IDLE     -> advance to the next mode, flushing the one being left on the way out.
+--   running  -> abort. Stop the stream and flush, in one press, staying in the mode.
+--   idle     -> advance to the next mode, flushing the one being left on the way out.
 -- The running branch does not land in FRAME: mode_exit() is a flush, so an abort leaves the setting.
 function sdec.mode_cycle()
   sdec.ui_keypoll()
@@ -7671,7 +7571,7 @@ function sdec.options()
   return ok
 end
 
--- Copy what the last capture DETECTED into the forced fields and re-seed the form. Does NOT
+-- Copy what the last capture detected into the forced fields and re-seed the form. Does NOT
 -- re-capture: the values are there to be reviewed, then applied with Apply.
 function sdec.options_lock()
   if sdec.res == nil or sdec.baud == nil then
@@ -7796,10 +7696,10 @@ function sdec.install_cleanup(scr)
   return ok
 end
 
--- Tear the app down: release the job, stop the hardware, delete objects, close the log.
--- Never raises for any measured failure, so every caller calls it bare; ulog.line and ulog.close can raise
--- on a key that is present and refusing, which is unmeasured. Each firmware touch below carries its own
--- guard. It is also the End App event string, through sdec.cleanup(), where a raise reaches the FIRMWARE.
+-- Tear the app down: release the job, stop the hardware, delete objects, close the log. Never raises for any
+-- measured failure, so every caller calls it bare; ulog.line and ulog.close can raise on a key that is present
+-- and refusing, which is unmeasured. Each firmware touch below carries its own guard. It is also the End App
+-- event string, through sdec.cleanup(), where a raise reaches the FIRMWARE.
 function sdec.stop()
   sdec.ui_tick_off()
   if sdec.ck_job ~= nil then sdec.decode_abandon() end
@@ -7851,9 +7751,9 @@ function sdec.cleanup()
   return r
 end
 
--- Entry point: open the log, build the UI, and hook End App. Takes NO capture -- the app comes up idle.
--- THE BUILD is under pcall; cleanup(), del_orphans() and stop() on the failure path are not, and there is
--- no guard above launch. Returns false and a reason if a rebuild is refused or the build fails.
+-- Entry point: open the log, build the UI, and hook End App. Takes NO capture -- the app comes up idle. THE
+-- BUILD is under pcall; cleanup(), del_orphans() and stop() on the failure path are not, and there is no guard
+-- above launch. Returns false and a reason if a rebuild is refused or the build fails.
 function sdec.start()
   sdec.ck_relaunching = nil
   local swept, sweptwhat = sdec.buf_sweep()

@@ -513,7 +513,7 @@ end
 -- at all' and 'plaustol = 0.02, on both ends'.
 sdec.plaustol = 0.02
 
--- Is this bit time inside the samples-per-bit range the instrument can actually carry?
+-- Is this bit time inside the samples-per-bit range the instrument can carry?
 function sdec.ua_plausible(T, n)
   if T == nil then return false end
   if T < sdec.minsabit * (1 - sdec.plaustol) then return false end
@@ -1121,7 +1121,7 @@ function sdec.decode_from(rd, n)
     local ratio, badwhy
     T, ratio, badwhy = sdec.ua_best(rd, n, Tfit)
     if T == nil then return giveup(badwhy or 'no usable bit time') end
-    -- Re-measure the fit quality at the bit time actually chosen: sig_bittime left sdec.fitq
+    -- Re-measure the fit quality at the chosen bit time: sig_bittime left sdec.fitq
     -- describing its own proposal, so the FIT column reported a rejected candidate's quality.
     local _, q = sdec.sig_fit(sdec.w, sdec.nw, T)
     sdec.fitq = q or 0
@@ -1165,8 +1165,8 @@ function sdec.decode_from(rd, n)
   return true
 end
 
--- When a locked rate is obviously wrong, say so rather than defend it: before this the operator had
--- to type 0 into Options to get detection back. docs/MEASUREMENTS.md, 'relock_badfrac = 0.25'.
+-- A locked rate the frames contradict is doubted, not defended; the alternative is the operator
+-- typing 0 into Options to get detection back. docs/MEASUREMENTS.md, 'relock_badfrac = 0.25'.
 sdec.relock_badfrac   = 0.25     -- interior frames in error before the lock is doubted
 sdec.relock_minframes = 8        -- fewer frames than this and a bad fraction is not evidence
 

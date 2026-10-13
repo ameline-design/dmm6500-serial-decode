@@ -50,6 +50,20 @@ Under each claim is its bench probe, indented and in backticks. Four rules hold 
 
   - `probe: do KTF={} KTS=display.create(display.ROOT,display.OBJ_SCREEN,"ktfonts") local x,y for i=1,10 do if i<=5 then x=15 y=15+(i-1)*90 else x=410 y=15+(i-6)*90 end KTF[i]=display.create(KTS,display.OBJ_TEXT,x,y,i.."Wg",0xFFFFFF,display["FONT_"..i]) end print("FONTS|scr="..tostring(KTS).."|f1="..tostring(KTF[1])) end` then `pcall(display.changescreen,KTS)` and grab the screen. A 90 px pitch runs 7 into 8 and 9 into 10; re-render those five at 165 px to measure them. Tear down every id and the screen; all are in named globals, so none can be lost.
 
+### display.settext works on an OBJ_SCREEN, and setcolor on one is refused with 1717
+
+**MEASURED on 1.7.17a.** The display doc gives `display.settext` for text objects and says nothing
+about screens, but a screen takes it: the string lands in the title bar. Its sibling does not —
+`display.setcolor` on the same id files **1717** and changes nothing, so a screen's text can be set
+and its colour cannot.
+
+The app relies on both halves. `sdec.ui_title` is written to the screen, and the colour that would
+have gone with it is carried by a separate mode cell instead. An edit that "simplifies" the two into
+one coloured screen title fails silently: `setcolor` posts rather than raising, so the call returns,
+the colour does not change, and nothing in the app notices.
+
+  - `probe: do local s=display.create(display.ROOT,display.OBJ_SCREEN,"ktscr") print("SETTEXT|"..tostring(pcall(display.settext,s,"HELLO"))) print("SETCOLOR|"..tostring(pcall(display.setcolor,s,0xFF0000))) end` then read the event log. Both `pcall`s return true; only the second files an event. Tear the screen down afterwards — the id is in a named global, so it cannot be lost.
+
 ### display.setkeyenable turns off a front-panel key, including TRIGGER
 
 **MEASURED.** `TTI_Apps/Pong.tspa:206-209` disables `display.KEY_FUNCTION`, `display.KEY_HELP`, `display.KEY_TRIGGER` and `display.KEY_QUICKSET_APPS`. No reference manual or display document mentions `setkeyenable` or any `display.KEY_` constant. **The TRIGGER key is an escape route only while nothing has disabled it**, and `display.OFF` really does stop it posting `trigger.EVENT_DISPLAY`.
@@ -147,6 +161,22 @@ It suppresses the **dialog and not the entry** — suppressing 4919 and 4920 lea
 **MEASURED.** `io` is a table with `open`, `close`, `read` and `write`, and a read-open of an absent file returns **nil plus `"/usb1/KTNOSUCH.XYZ: No such file or directory"`** — a named reason, where `file.open` gives no signal at all and files nothing. `io` handles are objects — `f:read()`, `f:write()`, `f:flush()` — not the integer descriptors `file.*` returns. `EC_Framework.tsp:389` reads `local f = io.open('/usb1/'..filename, 'r')` then `f:read()`; `:442` and `:481` open `'w+'` and test `if f == nil then`; `Application_Specific/Ford EMC-CS-2009.1 specification/AWGforEMC.tsp:409` takes both returns as `file, err = io.open(filepath, "r")`. `io` appears in the reference manual only as a reserved word, and its 13 apparent `io.write` hits are all inside `digio.writeport`.
 
   - `probe: do local f,e=io.open("/usb1/KTNOSUCH.XYZ","r") print("IOOPEN|f="..tostring(f).."|type="..type(f).."|err="..tostring(e)) if f then pcall(io.close,f) end end` — a read-open of an absent file creates nothing; the close is in a `pcall` because a record left open needs a power cycle.
+
+### A file descriptor is never reclaimed, so a handle lost by a reload is lost until a power cycle
+
+**MEASURED.** `file.close` is the only thing that frees a descriptor. Drop the handle instead —
+reassign the variable, or re-run the file that holds it — and the descriptor stays open for the rest
+of the session: no garbage collector reclaims it, and `file.open` on the same path afterwards returns
+**nil for ever** with nothing filed. Only a power cycle clears it. The manual describes `file.close`
+as good practice; it is the sole route.
+
+This is why `usb_log.tsp` declares its handle rather than assigning it, and why every default is
+written `ulog.fh = ulog.fh or nil` rather than `= nil`. Re-running a module during development is
+routine, and a plain assignment there would strand the open log on the key and make the app unable to
+re-open it until the meter was cycled. The same reasoning covers `sdec`: a reload must not erase the
+only reference to anything the firmware will not take back.
+
+  - `probe: do local a=file.open("/usb1/KTFD.TXT",file.MODE_WRITE) a=nil collectgarbage() local b=file.open("/usb1/KTFD.TXT",file.MODE_WRITE) print("REOPEN|b="..tostring(b)) end` — `b` is nil, and the event log is empty. There is no probe for the recovery because the recovery is a power cycle.
 
 ### There is no 8.3 limit on /usb1 — a computed long name is written whole
 

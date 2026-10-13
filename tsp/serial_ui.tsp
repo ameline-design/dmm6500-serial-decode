@@ -1,4 +1,4 @@
--- serial_ui.tsp -- front-panel screens for the Keithley TSP serial decoder (TSP / Lua 5.0.2). No
+-- Serial_ui.tsp -- front-panel screens for the Keithley TSP serial decoder (TSP / Lua 5.0.2). No
 -- '#', no bitwise operators, math.mod for modulo.
 --
 -- Panel constraints, measured. Coordinates are X 1..798, Y 0..420, and y is relative to the screen
@@ -13,15 +13,15 @@
 sdec = sdec or {}
 
 -- ---------- main screen geometry (object coordinates) ----------
--- display.settext works on an OBJ_SCREEN (undocumented, verified on 1.7.17a) and setcolor is
--- refused with 1717, so words go in the bar and the mode cell carries the colour. mockup.lua and
--- render_png.py identify the main screen by this prefix.
+-- The words go in the bar and the colour in the mode cell. mockup.lua and render_png.py identify
+-- the main screen by this prefix.
+-- docs/UNDOCUMENTED.md, 'display.settext works on an OBJ_SCREEN, and setcolor on one is refused with 1717'.
 sdec.ui_title    = 'SERIAL DECODE'
 
 -- ---------- header field strip ----------
--- Dim labels over bright values, each field at its own fixed x, because separate objects are the
--- only way to align columns in a proportional font. No horizontal rule lands inside a glyph band,
--- which test_serial asserts -- docs/MEASUREMENTS.md, 'Where the header table rules go'.
+-- Dim labels over bright values, each at its own fixed x, because separate objects are the only way
+-- to align columns in a proportional font. No rule lands inside a glyph band, which test_serial
+-- asserts -- docs/MEASUREMENTS.md, 'Where the header table rules go'.
 sdec.ui_ink = 12
 sdec.ui_ink_med = 17
 sdec.ui_lab_y = 14
@@ -45,8 +45,8 @@ sdec.ui_fields = {
 }
 
 -- The ink band of one value cell, [top, bottom] inclusive, as one function so the panel and
--- test_serial cannot disagree. It must account for the font and fd.dy: a check written against the
--- small band leaves the tallest cells unguarded.
+-- test_serial cannot disagree. It must account for the font and fd.dy, or the tallest cells go
+-- unguarded.
 function sdec.ui_field_band(j)
   local fd = sdec.ui_fields[j]
   local y = sdec.ui_val_y + (fd.dy or 0)
@@ -65,8 +65,7 @@ sdec.ui_adv_mixed = 8        -- digits and mixed-case, measured 7.80 worst case
 sdec.ui_c_lab  = 0xA8A8A8                    -- the label row
 -- ---------- lock state ----------
 -- Which header fields the operator can assert rather than measure. A forced value looks exactly
--- like a measured one -- lock 9600, probe a 19200 line, and no other cell contradicts it -- hence
--- the colour channel below.
+-- like a measured one -- lock 9600, probe a 19200 line -- hence the colour channel below.
 sdec.ui_lockfields = {baud = 1, fmt = 2, idle = 3}
 sdec.ui_c_locked  = 0x40FF40   -- green:  the operator pinned this
 sdec.ui_c_auto    = 0xFFC000   -- amber:  the app worked it out
@@ -100,9 +99,8 @@ sdec.ui_rule_bot = 56                        -- one clear row under the descende
 sdec.ui_rule_x0  = 1
 sdec.ui_rule_x1  = 797
 sdec.ui_note_lab_x = 8
--- The trigger source, in the note row's left cell, the capture mode having the title bar. Labels
--- are the option field's own, letter for letter -- build_options() creates that field from this
--- table, so the cell cannot paraphrase the control that sets it. Keys are sdec.trigmode's values.
+-- The trigger source, in the note row's left cell. Labels are the option field's own, letter for
+-- letter, build_options() creating that field from this table; the keys are sdec.trigmode's values.
 sdec.ui_trigsrc = {
   edge  = {name = 'Start bit',   c = 0x40FF40},
   free  = {name = 'Free run',    c = 0xFFFF00},
@@ -130,9 +128,9 @@ sdec.ui_stat_bot = 349   -- below it, one clear row under the descender tip at 3
 -- A divider before the right-hand cell. ui_vr2_x derives from it, so the two stay one column.
 sdec.ui_stat_div = 472
 -- ---------- the acquire / decode progress bar ----------
--- A fixed slot in the left status cell, right of the progress text: following the text would step
--- the bar sideways at 10 % and again at 100 %, movement the eye reads as the thing itself changing.
--- X is measured, and test_serial recomputes it -- docs/MEASUREMENTS.md, 'The progress bar extents'.
+-- A fixed slot in the left status cell: following the progress text would step the bar sideways at
+-- 10 % and again at 100 %, movement the eye reads as the thing itself changing. x is measured --
+-- docs/MEASUREMENTS.md, 'The progress bar extents'.
 sdec.ui_prog_x = 339
 -- Every extent below is derived from the three rules that bound the status cell, so moving any of
 -- them moves the bar. A literal goes stale silently: the bar is invisible in frame mode.
@@ -156,9 +154,8 @@ sdec.ui_btn_h    = 58                        -- for layout arithmetic, not passe
 sdec.ui_x        = 8
 
 -- ---------- dump column geometry ----------
--- one unmeasured number, and everything else derives from it. ui_ch_w estimates the dump rows'
--- character advance, so every column is computed rather than written: at 8 px/char the hex block is
--- 376 px wide and at 11 it is 517, so a literal ASCII column would sit 141 px inside the hex.
+-- One unmeasured number, and every column derives from it: at 8 px/char the hex block is 376 px
+-- wide and at 11 it is 517, so a literal ASCII column would sit 141 px inside the hex.
 sdec.ui_ch_w     = 8                         -- character advance, ESTIMATE
 sdec.ui_col_gap  = 8                         -- clear space each side of a vertical rule
 -- Five, not four. '%04d' is a minimum width, not a maximum: a 32 kB recording's last row is offset
@@ -176,7 +173,7 @@ sdec.ui_vr1_x    = sdec.ui_col_ix + sdec.ui_ixn * sdec.ui_ch_w + sdec.ui_ix_gap
 sdec.ui_col_hx   = sdec.ui_vr1_x + sdec.ui_ix_gap
 -- The second group of eight at a fixed x: positioned by string content it would drift row to row.
 sdec.ui_col_hx2  = sdec.ui_col_hx + sdec.ui_hxn * sdec.ui_ch_w + sdec.ui_col_gap2
--- Aligned with the status band'S divider, because the two are stacked in one column and 10 px of
+-- Aligned with the status band's divider, because the two are stacked in one column and 10 px of
 -- disagreement reads as a mistake. Taken from ui_stat_div, this being checkable only by eye.
 sdec.ui_vr2_x    = sdec.ui_stat_div
 -- Wider than ui_col_gap, and rule 2 does not move with it: this only pushes the text off the line.
@@ -188,9 +185,9 @@ sdec.ui_vr_y0    = sdec.ui_rule_bot + 1
 sdec.ui_vr_y1    = sdec.ui_stat_top
 
 -- ---------- position bar ----------
--- A proportional indicator, not a draggable scrollbar: gestures do not reach custom display objects
--- here. Segments recoloured in place, because setposition is unverified on rectangles where a
--- colour change cannot fail. Off by default: a FRAME capture is one page, and 15 segments cost 15.
+-- A proportional indicator, not a draggable scrollbar, gestures not reaching custom objects here.
+-- Segments are recoloured in place because setposition is unverified on rectangles. Off by default:
+-- a FRAME capture is one page, and 15 segments cost 15 objects.
 if sdec.ui_sb_show == nil then sdec.ui_sb_show = false end
 sdec.ui_sb_x   = 778
 sdec.ui_sb_w   = 12
@@ -204,7 +201,7 @@ sdec.ui_sb_h   = 17                          -- segment height, 3 px of gap at 2
 -- start buttons wins. The button is a static `Mode`; the mode shows in the mode cell's colour, the
 -- status row's words and the title bar, all on objects that already exist. FRAME always appends to
 -- the log rather than offering a 'frame + log' mode, ulog degrading to a no-op with no key.
---   Cap        byte ceiling, or nil for "as much as the buffer holds"
+--   cap        byte ceiling, or nil for "as much as the buffer holds"
 --   log        append the decode to a file on the USB key
 --   view       the panel shows bytes (frame mode) or progress (streaming modes)
 --   needbaud   refuses unless the baud rate is locked -- see sdec.mode_why()
@@ -226,19 +223,17 @@ sdec.ui_modes = {
 }
 sdec.capmode = sdec.capmode or 'frame'    -- operator state, hence `or`
 
--- How long A quiet line ends A stream. Without it a 1200 baud run waits nine minutes for the buffer
--- to fill after the device stops talking. 1 s is ~40 frame times at the slowest rate this mode
--- allows, so it cannot fire inside a message. Settable from the host, not from the panel.
+-- How long a quiet line ends a stream. Without it a 1200 baud run waits nine minutes for the buffer
+-- to fill after the device stops talking, and 1 s is ~40 frame times at the slowest rate allowed.
 sdec.idle_exit_s = sdec.idle_exit_s or 1
 
--- How long any one piece of work may hold the panel. A budget, not a poll interval: nothing in
--- running Lua can observe a press, and only a handler returning lets one through, so every long job
--- is cut into pieces this size -- docs/MEASUREMENTS.md, 'ui_latency_s = 0.5 and ck_press_budget_s = 8'.
+-- How long any one piece of work may hold the panel: a budget, not a poll interval, since only a
+-- handler returning lets a press through -- docs/MEASUREMENTS.md, 'ui_latency_s = 0.5 and
+-- ck_press_budget_s = 8'.
 sdec.ui_latency_s = sdec.ui_latency_s or 0.5
 
--- How much work one press of A stepped decode does, which is not how wide a decode window should be
--- -- ui_latency_s sizes the window. Deliberately much larger: a press that returns has been
--- answered, and waiting once beats pressing hundreds of times. A press inside the 8 s is queued.
+-- How much work one press of a stepped decode does, which is not how wide a window should be --
+-- ui_latency_s sizes that. A press that returns has been answered; one inside the 8 s is queued.
 sdec.ck_press_budget_s = sdec.ck_press_budget_s or 8.0
 
 -- The mode in force, never nil: an unrecognised id falls back to frame.
@@ -250,9 +245,8 @@ function sdec.mode_cur()
   return sdec.ui_modes[1]
 end
 
--- How often the panel looks for A key, in seconds. Do not raise this RATE to make A key appear
--- sooner: file.usbdriveexists() answers 0 for about 2 s after an insertion, so the delay is the
--- firmware's -- docs/MEASUREMENTS.md, 'The key-presence poll costs 340 us a tick'.
+-- How often the panel looks for a key. Do not raise this rate to make a key appear sooner --
+-- docs/MEASUREMENTS.md, 'The key-presence poll costs 340 us a tick'.
 sdec.ui_tick_s = sdec.ui_tick_s or 0.5
 
 -- Stop and start the tick around work that will hold the interpreter. -> true if it acted.
@@ -271,12 +265,10 @@ function sdec.ui_tick_on()
 end
 
 -- Look for a key that has come or gone, and make the panel agree. -> true if anything moved.
--- The shared body of the tick and of the three presses that want an answer now, so capture, View
--- and Mode each act on the key state at the press.
--- It does not re-open the log, and must not. ulog.resume() allows one open attempt per insertion,
--- so spending it here, half a second after insertion, is spending it when it is least likely to
--- succeed. capture_run() and ulog.line() both resume, so every path that writes already recovers.
--- Guarded: a raise escaping here reaches the firmware, which then posts it twice a second.
+-- The shared body of the tick and of the three presses that want an answer now, so Capture, View
+-- and Mode each act on the key state at the press. It does not re-open the log, and must not:
+-- ulog.resume() allows one open attempt per insertion, and spending it half a second after
+-- insertion spends it when it is least likely to succeed. Guarded -- a raise here reaches firmware.
 function sdec.ui_keypoll()
   if sdec.ui_scr == nil then return false end
   local moved = false
@@ -294,9 +286,8 @@ function sdec.ui_keypoll()
 end
 
 -- Is the status row's right-hand cell currently a run's, rather than the log's? -> true or false.
--- Must track ui_refresh()'s branch for that cell -- the tests below are that branch's outer
--- condition and its three hint cases -- because ui_keypoll() writes the same object from a press.
--- Tools/test_streamfix.lua walks eleven states and asserts the two agree in each.
+-- It must track ui_refresh()'s branch for that cell, because ui_keypoll() writes the same object
+-- from a press; tools/test_streamfix.lua walks eleven states and asserts the two agree in each.
 function sdec.ui_log_owned()
   local md = sdec.mode_cur()
   if md == nil then return false end
@@ -309,19 +300,17 @@ function sdec.ui_log_owned()
   return false
 end
 
--- One tick of sdec.ui_tick_obj: the unattended half of ui_keypoll().
--- It must not act while the app is busy. A tick is dispatched exactly like a press, so it queues
--- behind a capture and arrives in a burst afterwards. The press route needs no such test: a handler
--- executing at all proves no run is.
+-- One tick of sdec.ui_tick_obj: the unattended half of ui_keypoll(). It must not act while the app
+-- is busy, a tick being dispatched like a press and so arriving in a burst after a capture. The
+-- press route needs no such test: a handler executing at all proves no run is.
 function sdec.ui_tick()
   if sdec.ui_scr == nil then return false end
   if sdec.busy or sdec.ck_running or sdec.strm_recording then return false end
   return sdec.ui_keypoll()
 end
 
--- Will anything the app writes reach the key? -> true or false.
--- Asked before a capture, so it cannot read sdec.flog_why -- that is set by the attempt. Unknown
--- counts as yes, so a build without usb_log.tsp keeps the key-present wording.
+-- Will anything the app writes reach the key? -> true or false. Asked before a capture, so it
+-- cannot read sdec.flog_why; unknown counts as yes, so a build without usb_log.tsp still reads right.
 function sdec.log_live()
   local live = true
   if ulog ~= nil and ulog.keyok ~= nil then
@@ -344,12 +333,11 @@ function sdec.mode_why(m)
     -- Kept short: with the 'WARNING: ' prefix this has to fit the note cell, on modelled metrics.
     return 'lock the baud rate in Options -- streaming picks the sample rate from it'
   end
-  -- No RATE can deliver the floor at this BAUD: the burst path loses acq_overhead per sample, so
-  -- above 165563 Bd no listed rate closes the gap -- see fs_for_burst(). Refused with the number
-  -- rather than run at 2.6 samples/bit while claiming 4.
+  -- No rate can deliver the floor at this baud: the burst path loses acq_overhead per sample, so
+  -- above 165563 Bd nothing listed closes the gap -- see fs_for_burst(). Refused with the number.
   if m.needbaud and sdec.force_baud ~= nil and sdec.force_baud > 0 and
      sdec.fs_for_burst ~= nil and sdec.fs_for_burst(sdec.force_baud) == nil then
-    -- Name the recording'S own figure, or this contradicts the header beside it: SA/BIT is measured
+    -- Name the recording's own figure, or this contradicts the header beside it: SA/BIT is measured
     -- from a FRAME capture, which nearly gets its 1 MS/s, where a recording gets 662 kS/s.
     local dl = nil
     if sdec.rates ~= nil and sdec.fs_delivered ~= nil then
@@ -367,7 +355,7 @@ function sdec.mode_why(m)
   return nil
 end
 
--- Three states, and the padlock's colour is the whole point of having them:
+-- Three states, distinguished by the padlock's colour:
 --   'locked'   green  -- at least one wire parameter is forced
 --   'auto'     amber  -- nothing forced, and there is a decode, so there is something to lock
 --   'unknown'  red    -- nothing forced and nothing decoded: nothing to lock yet
@@ -380,8 +368,7 @@ function sdec.lock_state()
 end
 
 -- The title bar's text: the app's name and the capture mode, in the largest type on the screen.
--- Bounded at 31 characters, the firmware's limit, over which it raises 1707 and truncates without a
--- word. The longest form today is 27, so the clamp is here because `title` is data.
+-- Bounded at 31 characters, the firmware's limit, over which it raises 1707 and truncates silently.
 function sdec.ui_title_text()
   local md = sdec.mode_cur()
   local s = sdec.ui_title
@@ -390,7 +377,6 @@ function sdec.ui_title_text()
   return s
 end
 
--- Padlock colour for the current lock state.
 function sdec.lock_colour()
   local st = sdec.lock_state()
   if st == 'locked' then return sdec.ui_c_locked end
@@ -433,7 +419,7 @@ function sdec.ui_nviews()
   return n
 end
 
--- The nth byte view this build actually offers.
+-- The nth byte view this build offers.
 function sdec.ui_view_nth(k)
   local n, i = 0, nil
   for i = 1, table.getn(sdec.ui_views) do
@@ -484,9 +470,9 @@ sdec.ui_c_extout = 0xFFC000   -- amber: an output, pulsing a credit per capture
 sdec.ui_c_extio  = 0x00FFFF   -- cyan:  both directions live
 
 -- ---------- handles ----------
--- Declared, not assigned: see the note in serial_core.tsp. Opening the installed App re-runs this
--- file, and nil-ing a live handle here strands its object. ui_scr, ui_note, ui_page_t, ui_log_t,
--- ui_flab, ui_fval, ui_rule, ui_row, ui_btn (kept only so teardown can see them), ui_sb and ui_sbc.
+-- Declared, not assigned: opening the installed App re-runs this file, and nil-ing a live handle
+-- strands its object. ui_scr, ui_note, ui_page_t, ui_log_t, ui_flab, ui_fval, ui_rule, ui_row,
+-- ui_btn (kept so teardown can see them), ui_sb and ui_sbc. See the note in serial_core.tsp.
 
 -- ---------- view state ----------
 sdec.ui_mode = sdec.ui_mode or 'text'    -- 'text', 'hex' or 'midi'
@@ -495,15 +481,15 @@ sdec.ui_page = sdec.ui_page or 0          -- 0-based page index
 -- being worth less than a note. Latched, and `or false` so re-running this file keeps it.
 sdec.ui_paged = sdec.ui_paged or false
 sdec.ui_status = sdec.ui_status or 'ready'
--- sdec.ui_last   -- last text written per handle, to skip redundant settext
+-- Sdec.ui_last   -- last text written per handle, to skip redundant settext
 
--- Say the panel is waiting on purpose, called by acq_triggered() immediately before it blocks on an
--- arm-from-silence: the wait can be 120 s and nothing can interrupt it. Installed here because this
--- is the only place that knows the panel exists; the offline harnesses install no armnote.
+-- Say the panel is waiting on purpose, called by acq_triggered() before it blocks on an
+-- arm-from-silence: the wait can be 120 s and nothing can interrupt it. The offline harnesses
+-- install no armnote.
 function sdec.armnote(wait, level, keyed)
-  -- ui_log_t, the right-hand cell, written through ui_set or the note is not temporary: a bare
-  -- settext leaves ui_set's cache stale and the note sticks for the session. `keyed` is what stops
-  -- it promising the trigger key. docs/MEASUREMENTS.md, 'The armnote cell goes through ui_set'.
+  -- ui_log_t, the right-hand cell, written through ui_set or the note is not temporary, and `keyed`
+  -- is what stops it promising the trigger key. docs/MEASUREMENTS.md, 'The armnote cell goes
+  -- through ui_set'.
   if sdec.ui_log_t == nil then return false end
   local tail = ''
   if keyed then tail = ' -- TRIGGER=go' end
@@ -514,13 +500,12 @@ end
 -- ---------- options form handles ----------
 -- sdec.optscr, sdec.opt_proto, sdec.opt_baud, sdec.opt_bits, sdec.opt_par, sdec.opt_pol,
 -- sdec.opt_trig, sdec.opt_ext, sdec.opt_armv, sdec.opt_armw -- declared, not assigned.
--- Eight fields, nine with A protocol module, and this is the riskiest geometry in the app --
+-- Eight fields, nine with a protocol module, and this is the riskiest geometry in the app --
 -- docs/MEASUREMENTS.md, 'The options form vertical geometry'. test_serial checks the last box
 -- against the button row. A field added now folds into another as an extra option entry, free.
 sdec.ui_opt_y0 = 8
--- The pitch asks for every pixel available, and the clamp in build_options() decides what it gets:
--- a gap is a touch target, not decoration.
--- docs/MEASUREMENTS.md, 'The options form vertical geometry'.
+-- The pitch asks for every pixel available and the clamp in build_options() decides what it gets: a
+-- gap is a touch target -- docs/MEASUREMENTS.md, 'The options form vertical geometry'.
 sdec.ui_opt_dy = 100
 -- Measured, with the offset of the box inside the object; the mock carries the same height.
 sdec.ui_opt_edit_h  = 50
@@ -531,16 +516,14 @@ sdec.ui_opt_btn_y   = 360
 -- row. It costs air between the boxes, and the dy < eh branch catches a build that cannot afford it.
 sdec.ui_opt_btn_gap = 24
 sdec.ui_opt_x  = 185   -- the label is RIGHT-ALIGNED and ends here, so this is its width
--- Two columns, which is what buys the vertical gap: six fields become three rows. display.create
--- takes no width for an OBJ_EDIT_*, so the firmware sizes the widget and the second column's x is
--- the one number to check on the glass.
+-- Two columns buy the vertical gap: six fields become three rows. display.create
+-- takes no width for an OBJ_EDIT_*, so the second column's x is the one number to check on the glass.
 -- How far the centred block is nudged, negative being up. See the application site.
 sdec.ui_opt_y_adj = -8
 sdec.ui_opt_cols = 2
 sdec.ui_opt_x_c2 = 552
--- How wide an option-field entry may be, in px. Past this the firmware fades the tail rather than
--- clipping, so an over-long entry is unreadable and mistakable for a shorter one in the same field
--- -- docs/MEASUREMENTS.md, 'The options form field and button widths'.
+-- How wide an option-field entry may be, in px: past this the firmware fades the tail rather than
+-- clipping -- docs/MEASUREMENTS.md, 'The options form field and button widths'.
 sdec.ui_opt_px = 96
 
 -- Width available to the log cell, derived so that moving a divider moves the fit budget with it. A
@@ -558,7 +541,7 @@ end
 -- ============================================================================
 -- Small helpers
 -- ============================================================================
--- settext `txt` on `h`, but only when the text actually changed. Returns true if it wrote.
+-- settext `txt` on `h`, but only when the text changed. Returns true if it wrote.
 function sdec.ui_set(h, txt)
   if h == nil then return false end
   if sdec.ui_last == nil then sdec.ui_last = {} end
@@ -582,7 +565,7 @@ function sdec.del_obj(h)
   if h == nil then return true end
   local ok = pcall(display.delete, h)
   if not ok then
-    -- Keep A handle that would not delete: every teardown nils its variables, so dropping a refused
+    -- Keep a handle that would not delete: every teardown nils its variables, so dropping a refused
     -- handle strands a live object until a power cycle, and that accumulation raises event 1701.
     sdec.delfails = (sdec.delfails or 0) + 1
     sdec.orphans = sdec.orphans or {}
@@ -605,9 +588,8 @@ function sdec.del_orphans()
 end
 
 -- Recolour rect `h` to `c`, counting a refusal in sdec.fillfails, which the status row surfaces.
--- Colour A rect with setcolor, not setfill: setfill's percent is 0..100, so a 24-bit colour is
--- refused with 1130, and enough refusals per refresh raise a modal dialog over the panel. A rect is
--- nothing but its border and setfill does nothing to it, which makes ui_fill_solid inert.
+-- Colour a rect with setcolor, not setfill: a 24-bit colour is refused with 1130, and enough
+-- refusals per refresh raise a modal dialog over the panel. setfill does nothing to a rect at all.
 function sdec.ui_fill(h, c)
   if h == nil then return false end
   local ok = pcall(display.setcolor, h, c)
@@ -615,7 +597,7 @@ function sdec.ui_fill(h, c)
   return ok
 end
 
--- Make a rect actually paint: 100 % foreground, once per rect at build time.
+-- Make a rect paint: 100 % foreground, once per rect at build time.
 function sdec.ui_fill_solid(h)
   if h == nil then return false end
   local ok = pcall(display.setfill, h, 100)
@@ -623,7 +605,7 @@ function sdec.ui_fill_solid(h)
   return ok
 end
 
--- Show or hide object `h`. The only way to take A rect or A line off the glass: recolouring one to
+-- Show or hide object `h`. The only way to take a rect or a line off the glass: recolouring one to
 -- ui_c_hide does not hide it, and that works for the dump rules only because they are 1 px wide.
 function sdec.ui_setstate(h, st)
   if h == nil then return false end
@@ -632,14 +614,12 @@ function sdec.ui_setstate(h, st)
   return ok
 end
 
--- Paint the acquire/decode bar at `pct` (0..100), or hide it when pct is nil -- which is what every
--- state with no honest fraction passes. See sdec.ck_pct for which those are.
+-- Paint the acquire/decode bar at `pct` (0..100), or hide it when pct is nil -- every state with no
+-- honest fraction passes nil, and sdec.ck_pct says which those are.
 --   nil   gone. Frame and bar both STATE_INVISIBLE.
 --   0     the grey frame alone: a run has started and has nothing to show yet.
 --   > 0   the frame plus a cyan bar out to pct.
--- The bar is a thick OBJ_LINE and the frame an OBJ_RECT because of what this firmware draws --
--- docs/MEASUREMENTS.md, 'The progress bar extents'. Cached on the percentage and on the visible
--- state, this running at ~1 Hz from inside a capture where every display call is an IPC round trip.
+-- A thick OBJ_LINE in an OBJ_RECT frame, cached -- docs/MEASUREMENTS.md, 'The progress bar extents'.
 function sdec.ui_progbar_set(pct)
   if sdec.ui_progbox == nil or sdec.ui_progline == nil then return false end
   if pct ~= nil then
@@ -703,9 +683,8 @@ function sdec.ui_unit()
   return sdec.ui_cur().unit or 'bytes'
 end
 
--- The ERR field'S number, in one place: the value and its colour were computed apart and by
--- different rules, so a run damaged only in its head showed a non-zero ERR in green. Takes the
--- table rather than reading ck_tot, so the status row cannot read '1 err' under an 'ERR 7'.
+-- The ERR field's number, in one place: the value and its colour were computed apart and by
+-- different rules, so a head-damaged run showed a non-zero ERR in green. Takes the table, not ck_tot.
 function sdec.ck_err_n(t)
   if t == nil then return 0 end
   local n = t.nbad or 0
@@ -770,9 +749,9 @@ function sdec.ui_field_values()
   local r = sdec.res
   local v = {}
 
-  -- BAUD, FORMAT and IDLE fall back to the forced values when nothing has been decoded; the measured
-  -- cells stay '--'. %.0f on both, never %d, a locked rate being a measurement --
-  -- docs/MEASUREMENTS.md, 'Why BAUD, FORMAT and IDLE fall back to forced values'.
+  -- BAUD, FORMAT and IDLE fall back to the forced values when nothing is decoded; the measured cells
+  -- stay '--'. %.0f, never %d -- docs/MEASUREMENTS.md, 'Why BAUD, FORMAT and IDLE fall back to
+  -- forced values'.
   if sdec.baud == nil and sdec.force_baud ~= nil then
     v[1] = string.format('%.0f', sdec.force_baud or 0)
   elseif sdec.baud == nil then v[1] = '--'
@@ -804,9 +783,8 @@ function sdec.ui_field_values()
   elseif fs >= 1000000 then v[7] = string.format('%.0f MS/s', fs / 1000000)
   else v[7] = string.format('%.0f kS/s', fs / 1000) end
 
-  -- BYTES and ERR come from the stream in the streaming modes, sdec.res holding only the primed
-  -- lead-in window there. Gated on ck_tot, not on the current mode: a quiet line ends a stream
-  -- through mode_exit(), which lands in FRAME, so mode_cur() would describe the mode just moved to.
+  -- BYTES and ERR come from the stream in the streaming modes, sdec.res holding only the lead-in
+  -- window there. Gated on ck_tot and not on the mode, a quiet line ending a stream in FRAME.
   local ct = sdec.ck_tot
   if (ct ~= nil or sdec.ck_running) then
     if sdec.ck_running then
@@ -831,11 +809,11 @@ function sdec.ui_field_values()
   else
     v[10] = string.format('%.2f', sdec.fitq or 0)
   end
-  -- '--' rather than A number: a noise figure with no measured swing behind it is no number.
+  -- '--' rather than a number: a noise figure with no measured swing behind it is no number.
   if sdec.snr_db == nil then
     v[11] = '--'
   elseif sdec.snr_db >= 99 then
-    -- Clamped with A '>': a synthetic capture reaches 130 dB and the ADC floors near 97.
+    -- Clamped with a '>': a synthetic capture reaches 130 dB and the ADC floors near 97.
     v[11] = '>99 dB'
   else
     v[11] = string.format('%.0f dB', sdec.snr_db or 0)
@@ -858,9 +836,8 @@ function sdec.ui_head_extent()
   end
   if hs == nil then return nil, true end
   local onscreen = (sdec.res == nil or sdec.res.first == nil or sdec.res.first <= 1)
-  -- How far the damage actually reaches, not how far the suspicion does: headsusp is a conservative
-  -- region, not a count of bad bytes, so the number is the last flagged byte inside it and is only
-  -- countable when the head is on screen. docs/MEASUREMENTS.md, 'How far a misaligned head reaches'.
+  -- How far the damage reaches, not how far the suspicion does, and only countable when the
+  -- head is on screen -- docs/MEASUREMENTS.md, 'How far a misaligned head reaches'.
   if onscreen and sdec.res ~= nil and sdec.res.errs ~= nil then
     -- Through ua_head_bad, not a loop of its own: ERR counts this same region and must agree.
     local last = sdec.ua_head_bad(sdec.res, hs)
@@ -877,7 +854,7 @@ end
 -- The note / warning line
 -- ============================================================================
 -- Every note that applies, most important first. Returns the list and its count.
--- A list, not A fall-through chain: seventeen sources feed one cell, and a chain shows one of them
+-- A list, not a fall-through chain: seventeen sources feed one cell, and a chain shows one of them
 -- with nothing to say the others exist. The cell shows the one that fits and says how many more
 -- there are; ulog and the saved file get all of them. Ordered by how badly an absence would mislead.
 function sdec.ui_notes()
@@ -895,23 +872,21 @@ function sdec.ui_notes()
     add('Rear BNC = Trig In is set but IGNORED -- Free run means do not wait for anything')
   end
 
-  -- No recording forecast on this row: ui_notes cannot tell whether the run it forecasts has already
-  -- happened, and cap/bps is the line's time where the decode costs an order of magnitude more.
-  -- ck_status's 'ready' string carries it instead, where it cannot outlive its subject.
+  -- No recording forecast on this row: ui_notes cannot tell whether the run has already happened,
+  -- and cap/bps is the line's time where the decode costs an order of magnitude more.
 
   -- A mode that changed itself has to say so. Only when it ended badly: else the summary says it.
   if sdec.mode_exited ~= nil and sdec.mode_exitbad then add(tostring(sdec.mode_exited)) end
   if sdec.lognote ~= nil then add(tostring(sdec.lognote)) end
   -- A recording that relevelled mid-run says so: the two halves are judged against different levels.
   if sdec.strm_releveled ~= nil then add(tostring(sdec.strm_releveled)) end
-  -- The app threw away A setting the operator made, and nothing else explains the BAUD cell moving.
+  -- The app threw away a setting the operator made, and nothing else explains the BAUD cell moving.
   if sdec.relocked ~= nil then add(tostring(sdec.relocked)) end
-  -- The app refused A setting the operator made, and unlike relocked there are no bytes on screen to
-  -- explain themselves -- an empty dump with a locked rate looks like a dead wire. Options > Baud 0
-  -- is named because it exists: the panel must not cite rate_accept(), a control it lacks.
+  -- The app refused a setting the operator made, and unlike relocked there are no bytes on screen to
+  -- explain themselves. Options > Baud 0 is named because it exists, where rate_accept() does not.
   if sdec.rate_refused ~= nil then add(tostring(sdec.rate_refused)) end
 
-  -- A streaming mode that cannot run says so before capture is pressed, and here rather than in the
+  -- A streaming mode that cannot run says so before Capture is pressed, and here rather than in the
   -- status row: the remedy is a sentence, and the full one measures 802 px against a 798 px panel.
   local md = sdec.mode_cur()
   if not md.view then
@@ -922,9 +897,8 @@ function sdec.ui_notes()
   -- The dump area shows one window and the file holds the stream, so BYTES says 32768 while the panel
   -- shows ~192. Without this line that reads as a bug: a partial view is honest only if it says so.
   if sdec.ck_tot ~= nil and sdec.res ~= nil and sdec.ck_tot.nf > sdec.res.nf then
-    -- Which BYTES, not just how many: a finished recording leaves its retained tail on screen, so
-    -- 'the first 8192' named the wrong end while the index column read 24576. res.first is the index
-    -- ck_tail_result() records for exactly this.
+    -- Which bytes, not just how many: a finished recording leaves its retained tail on screen, so
+    -- 'the first 8192' would name the wrong end. res.first is the index ck_tail_result() records.
     local first, tot = sdec.res.first, sdec.res.ntotal or sdec.ck_tot.nf
     -- With no file the rest is gone: 'all are in the USB file' is then the opposite of true.
     if sdec.ck_tot.path == nil then
@@ -956,9 +930,8 @@ function sdec.ui_notes()
     if warn ~= nil then add('WARNING: ' .. warn) end
   end
 
-  -- An unstable baseline is decoded rather than refused, so it has to be said. Auto-lock must
-  -- announce itself too, stopping the app auto-detecting -- but below the signal-quality warnings: a
-  -- shaky baseline is exactly when a confident-looking lock is least deserved.
+  -- An unstable baseline is decoded rather than refused, so it has to be said, and auto-lock must
+  -- announce itself. Below the signal-quality warnings: a shaky baseline deserves a lock least.
   local lw = sdec.sig_levelwarn()
   if lw ~= nil then add('WARNING: ' .. lw) end
 
@@ -978,13 +951,12 @@ function sdec.ui_notes()
   end
 
   -- A capture that began mid-byte: the framer can anchor inside a byte and stay wrong until the
-  -- first idle, and the bytes are there, looking like data. The extent comes from ui_head_extent,
-  -- which the hex rows read too. docs/MEASUREMENTS.md, 'How far a misaligned head reaches'.
+  -- first idle, and the bytes look like data -- docs/MEASUREMENTS.md, 'How far a misaligned head
+  -- reaches'.
   local hs, onscreen = sdec.ui_head_extent()
   if hs ~= nil then
-    -- It states the extent and stops: the note has 556 px beside the page counter, and the long form
-    -- measured 757 and rendered as '...everythi...'. Singular and plural are spelled out, a
-    -- parenthesised plural reading as a placeholder nobody filled in.
+    -- It states the extent and stops, the note having 556 px beside the page counter. Singular and
+    -- plural are spelled out, a parenthesised plural reading as a placeholder nobody filled in.
     if onscreen then
       if hs == 1 then
         add('began mid-byte -- the first byte is misaligned.')
@@ -993,7 +965,7 @@ function sdec.ui_notes()
       end
     else
       -- Where those BYTES are distinguishes this branch: the ones it names are not the ones on the
-      -- panel. And there is not always A file -- the panel cited one for 14190 discarded bytes.
+      -- panel. And there is not always a file -- the panel cited one for 14190 discarded bytes.
       local where = ', in the file.'
       if sdec.ck_tot ~= nil and sdec.ck_tot.path == nil then
         where = ', and were NOT recorded.'
@@ -1015,17 +987,15 @@ function sdec.ui_notes()
   -- A protocol layer that failed, said where an empty message list would otherwise speak for it.
   if sdec.proto_why ~= nil then add('WARNING: ' .. tostring(sdec.proto_why)) end
 
-  -- The RATE on screen was not measured. acq_fs is normally re-derived from the buffer's timestamps,
-  -- the sample-rate readback lying for any rate the hardware cannot synthesise, and every bit time
-  -- and byte is scaled by it. The substituted requested rate has to be visible.
+  -- The rate on screen was not measured. acq_fs is normally re-derived from the buffer's timestamps,
+  -- the readback lying for any rate the hardware cannot synthesise, so a substitution must show.
   if sdec.acq_fs_est then
     add(string.format('sample rate NOT measured from this capture -- showing the requested %g S/s; '
                       .. 'every timing figure derives from it', sdec.fs or 0))
   end
 
   -- Why the byte log is off, in full, the status cell having room only for the flag. Deliberately
-  -- low: a log fault persists, so above the wire warnings it would be the one note shown for the
-  -- rest of the session -- measured, it masked the 12 V divider hint.
+  -- low: a log fault persists, and above the wire warnings it masked the 12 V divider hint.
   if sdec.flog_why ~= nil then add('NOT LOGGING: ' .. tostring(sdec.flog_why)) end
 
   -- Order matters here. The forced-rate disagreement goes first: it is the only note that says the
@@ -1034,9 +1004,8 @@ function sdec.ui_notes()
   add(sdec.baud_note)
   add(sdec.fmt_note)
 
-  -- The capture was FULL, so the message probably continues past what is shown. Not for A
-  -- recording'S retained tail, which r.first marks -- docs/MEASUREMENTS.md, 'Why the capture-FULL
-  -- note excludes a retained tail'.
+  -- The capture was FULL, so the message probably continues past what is shown. Not for a retained
+  -- tail -- docs/MEASUREMENTS.md, 'Why the capture-FULL note excludes a retained tail'.
   local istail = (sdec.res ~= nil and sdec.res.first ~= nil)
   if sdec.res ~= nil and sdec.res.nf > 0 and not istail then
     local cap = sdec.window_bytes(sdec.baud, sdec.res.nbits, sdec.res.par,
@@ -1051,9 +1020,8 @@ function sdec.ui_notes()
     end
   end
 
-  -- "Auto" parity with a forced width is not auto: the forced path takes `sdec.force_par or
-  -- PAR_NONE`, so 8 bits with Parity = Auto decodes as 8N1 without trying 8E1 --
-  -- docs/MEASUREMENTS.md, 'Why a forced width assumes no parity'.
+  -- "Auto" parity with a forced width is not auto, the forced path taking `sdec.force_par or
+  -- PAR_NONE` -- docs/MEASUREMENTS.md, 'Why a forced width assumes no parity'.
   if sdec.force_nbits ~= nil and sdec.force_par == nil then
     add('parity was ASSUMED none, not detected -- a forced width skips the search')
   end
@@ -1065,9 +1033,8 @@ function sdec.ui_notes()
   return t, m
 end
 
--- Character widths for the panel'S small proportional face, bytes 32..126, as px + 48 so the table
--- is a printable literal: there is no text-measurement call here, and a character count cannot serve
--- a face running 3 px to 17 -- docs/MEASUREMENTS.md, 'ui_cw, and the 1.159 render-to-panel factor'.
+-- Character widths for the panel's small proportional face, bytes 32..126, as px + 48 so the table
+-- is a printable literal -- docs/MEASUREMENTS.md, 'ui_cw, and the 1.159 render-to-panel factor'.
 sdec.ui_cw = '55699?<3667:5655999999999955:::9'
           .. 'A<<==<:>=59<9?=><>=<:=<@<<:55589'
           .. '6999995993393?999969599=999656:'
@@ -1117,9 +1084,9 @@ end
 -- The note cell, derived: as the literal 700 it drew through its own left rule when that moved.
 sdec.ui_note_px = sdec.ui_rule_x1 - sdec.ui_note_val_x
 
--- 'page N of M' for the note row, or '' when there is nothing worth saying: one page, or the operator
--- has not paged yet. 1-based, 'page 0 of 35' naming a page no button can reach. Computed, not
--- cached: a second copy would let ui_note_text reserve room for a string that has left the screen.
+-- 'page N of M' for the note row, or '' when there is nothing worth saying. 1-based, since 'page 0
+-- of 35' names a page no button can reach, and computed rather than cached: ui_note_text reserves
+-- room from this, and a second copy could describe a string that has left the screen.
 function sdec.ui_pgind_text()
   if not sdec.ui_paged then return '' end
   local npg = sdec.ui_npages()
@@ -1127,7 +1094,7 @@ function sdec.ui_pgind_text()
   return string.format('page %d of %d', sdec.ui_page + 1, npg or 0)
 end
 
--- Where the counter'S four pieces go, right to left from ui_pgind_x. Returns x_page, x_n, x_of, x_m,
+-- Where the counter's four pieces go, right to left from ui_pgind_x. Returns x_page, x_n, x_of, x_m,
 -- the two number x's being right edges (JUST_RIGHT) and the two word x's left edges.
 function sdec.ui_pgind_layout()
   local g = sdec.ui_pgind_gap
@@ -1146,10 +1113,9 @@ function sdec.ui_pgind_px()
   return (sdec.ui_pgind_x - xpage) + sdec.ui_note_gap
 end
 
--- The one note the cell has room for, plus how many others there are.
--- Both parts are fitted and the marker wins when they compete, or a long note would push '(+N more)'
--- off the panel and leave no sign a second note exists. The page counter's width comes off the cell
--- too -- the firmware fades neither, it just overlaps them.
+-- The one note the cell has room for, plus how many others there are. Both parts are fitted and the
+-- marker wins when they compete, or a long note pushes '(+N more)' off the panel and nothing says a
+-- second note exists. The page counter's width comes off the cell too; the firmware overlaps them.
 function sdec.ui_note_text()
   local t, m = sdec.ui_notes()
   if m < 1 then return '' end
@@ -1169,7 +1135,7 @@ end
 -- what makes the list maintainable, and ui_page is not one: it is view state.
 function sdec.ui_invalidate()
   sdec.ui_last, sdec.ui_rowc = nil, nil
-  -- ui_vrc shadows a whole array with one value, which is what makes a fifth cache acceptable.
+  -- ui_vrc shadows a whole array with one value, so a fifth cache costs little.
   sdec.ui_vrc = nil
   sdec.ui_sbc = nil
   -- Omitting any one of these three defeats the colour channel it shadows: a locked wire shows its
@@ -1187,7 +1153,7 @@ end
 -- Delete every main-screen object and nil its handle.
 function sdec.ui_destroy()
   -- Switch away before deleting a visible screen, and delete children before their screen. The cover
-  -- counts as A screen to leave: gating on ui_scr alone deleted the screen the panel was showing.
+  -- counts as a screen to leave: gating on ui_scr alone deleted the screen the panel was showing.
   if sdec.ui_scr ~= nil or sdec.ui_loadscr ~= nil then
     pcall(display.changescreen, display.SCREEN_HOME)
   end
@@ -1214,15 +1180,14 @@ function sdec.ui_destroy()
   if sdec.ui_fval ~= nil then
     for i = 1, table.getn(sdec.ui_fval) do sdec.del_obj(sdec.ui_fval[i]) end
   end
-  -- Every button, via A dense list, because ui_btn is positional and table.getn stops at a hole.
-  -- Delete from ui_allbtn instead of from ui_btn, not as well -- docs/MEASUREMENTS.md, 'Deleting
-  -- buttons from a dense list'.
+  -- Every button, via a dense list, because ui_btn is positional and table.getn stops at a hole --
+  -- docs/MEASUREMENTS.md, 'Deleting buttons from a dense list'.
   if sdec.ui_allbtn ~= nil then
     local ai
     for ai = 1, table.getn(sdec.ui_allbtn) do sdec.del_obj(sdec.ui_allbtn[ai]) end
     sdec.ui_allbtn = nil
   end
-  -- nil'd because ui_build only assigns these on success: a rebuild would inherit a dead handle.
+  -- Nil'd because ui_build only assigns these on success: a rebuild would inherit a dead handle.
   sdec.ui_pgbtn = nil
   sdec.ui_lockbtn = nil
   if sdec.ui_sb ~= nil then
@@ -1257,8 +1222,7 @@ function sdec.ui_destroy()
   sdec.ui_progbox, sdec.ui_progline = nil, nil
   sdec.del_obj(sdec.ui_scr)
   -- The loading screen, for the path that matters: a build that failed while it was still in front,
-  -- which leaves "Loading, please wait..." up for ever. Not through ui_loading_clear(), which would
-  -- move the active screen the switch above already moved.
+  -- which otherwise leaves "Loading, please wait..." up for ever. Not through ui_loading_clear().
   sdec.del_obj(sdec.ui_loadtxt)
   sdec.del_obj(sdec.ui_loadscr)
   sdec.ui_loadtxt, sdec.ui_loadscr = nil, nil
@@ -1274,10 +1238,10 @@ function sdec.ui_destroy()
 end
 
 -- A screen nobody is looking at, held in front while the real ones are assembled.
--- Creating A screen makes it the active one, which is why the operator can otherwise watch this app
+-- Creating a screen makes it the active one, which is why the operator can otherwise watch this app
 -- build itself, in the wrong order, ending on a jump. Raised after every screen create, not once at
 -- the start, and idempotent so the call sites do not have to care. Never fatal: the pool can be
--- exhausted, and a missing cover means a visible build, which is what this replaces.
+-- exhausted, and a missing cover costs only a visible build.
 function sdec.ui_loading_front()
   if sdec.ui_loadscr == nil then return false end
   pcall(display.changescreen, sdec.ui_loadscr)
@@ -1299,10 +1263,9 @@ function sdec.ui_loading_raise()
   return true
 end
 
--- Put the real screen in front and take the loading screen away.
--- Switch first, delete second, the rule ui_destroy follows: deleting the screen currently displayed
--- is how a panel ends up showing nothing. And the switch is unconditional -- a nil `showscr` read as
--- "do not switch" left the panel displaying a deleted object -- so it falls back to SCREEN_HOME.
+-- Put the real screen in front and take the loading screen away. Switch first, delete second, the
+-- rule ui_destroy follows. The switch is unconditional: a nil `showscr` read as "do not switch"
+-- left the panel displaying a deleted object, so it falls back to SCREEN_HOME.
 function sdec.ui_loading_clear(showscr)
   if showscr == nil then showscr = display.SCREEN_HOME end
   pcall(display.changescreen, showscr)
@@ -1313,9 +1276,8 @@ function sdec.ui_loading_clear(showscr)
   return true
 end
 
--- Build the main screen: status fields, dump rows, rules and buttons.
--- `hold` keeps the loading screen up for the caller. Only start() passes it, because only start()
--- builds a second screen afterwards; everyone else gets a build that cleans up after itself.
+-- Build the main screen: status fields, dump rows, rules and buttons. `hold` keeps the loading
+-- screen up for the caller, which only start() needs, it alone building a second screen afterwards.
 function sdec.ui_build(hold)
   -- Destroy first, always. Creating over a live handle overwrites the only reference to the object
   -- beneath, stranding it until a power cycle; that accumulation walks the firmware into a panic.
@@ -1329,8 +1291,8 @@ function sdec.ui_build(hold)
 
   sdec.ui_scr = create(display.ROOT, display.OBJ_SCREEN, sdec.ui_title_text())
 
-  -- display.create returns nil when the pool is exhausted, posts nothing, and does not raise, so
-  -- without this every child is created against a nil parent and start()'s pcall sees success --
+  -- Display.create returns nil when the pool is exhausted, posts nothing and does not raise, so
+  -- without this every child is built against a nil parent and start()'s pcall sees success --
   -- docs/MEASUREMENTS.md, 'The display object pool fails silently'.
   if sdec.ui_scr == nil then
     error('display object pool exhausted -- power cycle the instrument. (The firmware posts '
@@ -1370,9 +1332,8 @@ function sdec.ui_build(hold)
   rule(sdec.ui_fields[2].x - 9, sdec.ui_rule_mid, 1,
        sdec.ui_rule_bot - sdec.ui_rule_mid)
 
-  -- The dump'S two vertical rules: offset | hex | ascii. No rule closes the ASCII column, its width
-  -- not being knowable in advance, and these two live outside ui_rule because they are recoloured
-  -- per refresh. docs/MEASUREMENTS.md, 'Rects, the padlock and the progress bar as objects'.
+  -- The dump's two vertical rules: offset | hex | ascii. Nothing closes the ASCII column, its width
+  -- not being knowable, and these live outside ui_rule because they are recoloured per refresh.
   sdec.ui_vr = {}
   local vi, vx
   for vi, vx in ipairs({sdec.ui_vr1_x, sdec.ui_vr2_x}) do
@@ -1386,9 +1347,9 @@ function sdec.ui_build(hold)
   end
 
   sdec.ui_flab, sdec.ui_fval = {}, {}
-  -- No hit rect over BAUD + FORMAT, and no setevent, for two firmware reasons: EVENT_PRESS does not
-  -- reach an OBJ_RECT (1717) at severity 2, which raises an error dialog over the panel; and a rect
-  -- draws an outline whether filled or not, so a hit box paints a border brighter than any rule.
+  -- No hit rect over BAUD + FORMAT and no setevent: EVENT_PRESS does not reach an OBJ_RECT (1717) at
+  -- severity 2, which raises a dialog over the panel, and a rect draws an outline whether filled or
+  -- not, brighter than any rule.
   sdec.ui_lockhit = nil
 
   local nf = table.getn(sdec.ui_fields)
@@ -1399,21 +1360,20 @@ function sdec.ui_build(hold)
   end
   for j = 1, nf do
     local fd = sdec.ui_fields[j]
-    -- fd.labdx nudges the label only: a label as wide as its column butts against the divider.
+    -- Fd.labdx nudges the label only: a label as wide as its column butts against the divider.
     sdec.ui_flab[j] = create(sdec.ui_scr, display.OBJ_TEXT, fd.x + (fd.labdx or 0), sdec.ui_lab_y,
                              fd.lab, sdec.ui_c_lab, small, left)
     -- Small, not medium, for every cell but the two flagged `med`: every field x is sized on the 8 px
-    -- FONT_SMALL advance, which also governs the dump columns, the rules and render_png.py's check.
-    -- A medium 8-character LOGIC value takes 107 px and touches THRESH, so emphasis is colour.
+    -- FONT_SMALL advance, and a medium LOGIC value takes 107 px and touches THRESH.
     local fnt = small
     if fd.med then fnt = med end
-    -- fd.dy is per-cell, so ui_val_y stays the one baseline, and ui_field_band() reads the same sum.
+    -- Fd.dy is per-cell, so ui_val_y stays the one baseline, and ui_field_band() reads the same sum.
     sdec.ui_fval[j] = create(sdec.ui_scr, display.OBJ_TEXT, fd.x, sdec.ui_val_y + (fd.dy or 0),
                              '--', fd.c, fnt, left)
   end
   -- The padlock, four rects because the panel font has no padlock glyph, and worth counting: object
-  -- creation is what destabilises this firmware. It sits after the widest value BAUD can hold.
-  -- docs/MEASUREMENTS.md, 'Rects, the padlock and the progress bar as objects'.
+  -- creation is what destabilises this firmware -- docs/MEASUREMENTS.md, 'Rects, the padlock and
+  -- the progress bar as objects'.
   local lx = 95
   sdec.ui_lock = {}
   local function lockpart(rx, ry, rw, rh)
@@ -1432,9 +1392,8 @@ function sdec.ui_build(hold)
   lockpart(lx + 6, lock_y + 1, 1, 4)     -- shackle: right post
   sdec.ui_lockbody = lockpart(lx, lock_y + 5, 9, 7)   -- body
 
-  -- The trigger-source cell, top-left inside the header table's grid, in a per-source colour: one
-  -- text object, retexted and recoloured per refresh. Stored in ui_flab so ui_destroy deletes it
-  -- explicitly rather than relying on the firmware's parent cascade.
+  -- The trigger-source cell, top-left in the header grid, in a per-source colour: one text object,
+  -- retexted and recoloured per refresh. In ui_flab so ui_destroy deletes it explicitly.
   sdec.ui_trigsrc_t = create(sdec.ui_scr, display.OBJ_TEXT, sdec.ui_note_lab_x,
                              sdec.ui_note_y, sdec.ui_trigsrc.edge.name, sdec.ui_c_dim, small, left)
   sdec.ui_flab[nf + 1] = sdec.ui_trigsrc_t
@@ -1467,9 +1426,8 @@ function sdec.ui_build(hold)
   end
   sdec.ui_sbc = {}
 
-  -- The progress bar, two rects, built before ui_page_t on purpose, creation order being z-order
-  -- here and the resting status strings being the longer ones. ui_progbox is the extent, ui_progline
-  -- the 10 px line -- docs/MEASUREMENTS.md, 'The progress bar extents'.
+  -- The progress bar, two rects, built before ui_page_t because creation order is z-order here and
+  -- the resting strings are the longer ones -- docs/MEASUREMENTS.md, 'The progress bar extents'.
   sdec.ui_progbox = create(sdec.ui_scr, display.OBJ_RECT, sdec.ui_prog_x, sdec.ui_prog_y,
                            sdec.ui_prog_w, sdec.ui_prog_h)
   sdec.ui_fill(sdec.ui_progbox, sdec.ui_c_prog_box)
@@ -1482,9 +1440,8 @@ function sdec.ui_build(hold)
   -- rather than believing they are already away -- the bug that put a grey frame on the glass.
   sdec.ui_progbar_set(nil)
 
-  -- A tick, so the key is noticed without A press; interval and cost are at sdec.ui_tick_s. An
-  -- OBJ_TIMER reports through EVENT_PRESS, and TIMER_FOREVER is 0, the repeat count and not a flag
-  -- -- docs/MEASUREMENTS.md, 'display.OBJ_TIMER is the only periodic work'.
+  -- A tick, so the key is noticed without a press; interval and cost are at sdec.ui_tick_s --
+  -- docs/MEASUREMENTS.md, 'display.OBJ_TIMER is the only periodic work'.
   local tok, tobj = pcall(display.create, sdec.ui_scr, display.OBJ_TIMER, sdec.ui_tick_s,
                           display.TIMER_FOREVER)
   sdec.ui_tick_obj = nil
@@ -1509,21 +1466,19 @@ function sdec.ui_build(hold)
   sdec.ui_allbtn = {}
   local b
   -- Six buttons across 8..774. `View` and `Mode` are static labels, the state they cycle to being
-  -- named in the status row and the mode cell -- docs/MEASUREMENTS.md, 'The six bottom buttons and
-  -- the three in the margin'.
+  -- named elsewhere -- docs/MEASUREMENTS.md, 'The six bottom buttons and the three in the margin'.
   local bdef = {
     {x = 8,   w = 120, t = 'Capture',    e = 'sdec.capture'},
     {x = 152, w = 90,  t = 'View',       e = 'sdec.view_toggle'},
     {x = 266, w = 100, t = 'Mode',       e = 'sdec.mode_cycle'},
     {x = 390, w = 112, t = 'NewLog',     e = 'sdec.log_new', hide = 'ui_newlogbtn'},
-    -- `hide` marks a button whose handle is kept by name as well as by index, because ui_page_btns
-    -- reaches it every refresh: ui_btn is positional, so reordering this table would hide the wrong
-    -- control.
+    -- `hide` keeps a button's handle by name as well as by index, because ui_page_btns reaches it
+    -- every refresh and ui_btn is positional: reordering this table would hide the wrong control.
     {x = 526, w = 112, t = 'Save',       e = 'sdec.save', hide = 'ui_savebtn'},
     {x = 662, w = 112, t = 'Options',    e = 'sdec.options'},
   }
-  -- Up, lock RATE, dn, in that vertical order, each hiding itself when it has nothing to do. A
-  -- paging control is not optional: a 32 kB capture is 137 pages. WARNING: narrowing these does not
+  -- Up, Lock Rate, Dn, in that vertical order, each hiding itself when it has nothing to do. A
+  -- paging control is not optional, a 32 kB capture being 137 pages, and narrowing these does not
   -- widen the text view -- docs/MEASUREMENTS.md, 'The six bottom buttons and the three in the margin'.
   local pbw, lbw = 56, 140
   local pdef = {
@@ -1549,8 +1504,8 @@ function sdec.ui_build(hold)
     end
   end
   -- Which page of how many, on the note row, in four objects because a text object carries one
-  -- colour and this line carries two. They are never recoloured, so there is no cache to miss --
-  -- docs/MEASUREMENTS.md, 'The page counter is four objects on the note row'.
+  -- colour and this line carries two -- docs/MEASUREMENTS.md, 'The page counter is four objects on
+  -- the note row'.
   local xpage, xn, xof, xm = sdec.ui_pgind_layout()
   local ny = sdec.ui_note_y
   sdec.ui_pgind = {}
@@ -1564,9 +1519,8 @@ function sdec.ui_build(hold)
   sdec.ui_pgind_w2 = pgpiece(xof,   sdec.ui_c_pgword, left)
   sdec.ui_pgind_m  = pgpiece(xm,    sdec.ui_c_pgnum,  display.JUST_RIGHT)
   sdec.ui_pgindtxt = nil
-  -- Visibility shadow caches, where nil means "unknown, so write it on the next refresh". WARNING:
-  -- sdec.ui_lockbtn is not a cache -- it is the button's handle, and clearing it here makes the
-  -- block in ui_page_btns() dead. docs/MEASUREMENTS.md, 'The visibility shadow caches'.
+  -- Visibility shadow caches, where nil means "unknown, so write it on the next refresh".
+  -- Sdec.ui_lockbtn is not one -- docs/MEASUREMENTS.md, 'The visibility shadow caches'.
   sdec.ui_pgvis = nil
   sdec.ui_lockvis = nil
   sdec.ui_savevis = nil
@@ -1586,7 +1540,7 @@ function sdec.ui_build(hold)
     end
   end
 
-  -- A screen with no buttons is not A usable app, and this catches a pool that ran out part way
+  -- A screen with no buttons is not a usable app, and this catches a pool that ran out part way
   -- through: the screen exists, so the guard above passed, and there is nothing to press.
   if nb < table.getn(bdef) then
     error(string.format('only %d of %d buttons could be created -- display object pool exhausted. '
@@ -1600,15 +1554,14 @@ function sdec.ui_build(hold)
 end
 
 -- Save and NewLog, shown only when something the app writes could reach the key. -> true if the
--- visibility changed.
--- Its own function because two callers need it and one guard must not gate both: ui_page_btns()
--- returns early on a build whose Page buttons failed to create, and this block sat after that
--- return. One cache, one owner: ui_savevis is written here and nowhere else.
+-- visibility changed. Its own function because two callers need it and one guard must not gate
+-- both: ui_page_btns() returns early on a build whose Page buttons failed to create, and this block
+-- sat after that return. ui_savevis is written here and nowhere else.
 function sdec.ui_usb_btns()
--- Both are hidden with no key in the slot: both exist only to put a file on the key, so neither has
--- a press that can succeed, and a button that can only report a failure is worse than no button.
--- STATE_INVISIBLE, not STATE_DISABLE, the reference being explicit that disable is edit-objects
--- only. log_live() names no path, and it is also what brings both buttons back by themselves.
+-- Both are hidden with no key in the slot, neither having a press that can succeed, and a button
+-- that can only report a failure is worse than no button. STATE_INVISIBLE, not STATE_DISABLE, the
+-- reference being explicit that disable is edit-objects only; log_live() names no path, and it is
+-- what brings both back by themselves.
 if sdec.ui_savebtn ~= nil or sdec.ui_newlogbtn ~= nil then
   local sw = sdec.log_live()
   if sw ~= sdec.ui_savevis then
@@ -1635,9 +1588,8 @@ function sdec.ui_page_btns()
   local npg = sdec.ui_npages()
   local want = false
   if npg > 1 then want = true end
-  -- The counter is not gated the same way the buttons are: they appear whenever a page 2 exists, and
-  -- it waits until the operator has paged, the note it shares the row with being worth more. One
-  -- cache for four objects, keyed on the whole line, all four being a function of two numbers.
+  -- The counter is not gated the way the buttons are: they appear whenever a page 2 exists, where it
+  -- waits until the operator has paged. One cache for four objects, keyed on the whole line.
   if sdec.ui_pgind_n ~= nil then
     local ptxt = sdec.ui_pgind_text()
     if ptxt ~= sdec.ui_pgindtxt then
@@ -1663,9 +1615,9 @@ function sdec.ui_page_btns()
     sdec.ui_pgvis = want
   end
 
-  -- Lock RATE is shown only in the 'auto' state: a button labelled 'Lock Rate' must not unlock, and
-  -- with nothing decoded there is no rate to pin. Unlocking is Options > Auto Detect.
-  -- docs/MEASUREMENTS.md, 'The six bottom buttons and the three in the margin'.
+  -- Lock Rate is shown only in the 'auto' state: a button labelled 'Lock Rate' must not unlock, and
+  -- unlocking is Options > Auto Detect -- docs/MEASUREMENTS.md, 'The six bottom buttons and the
+  -- three in the margin'.
   if sdec.ui_lockbtn ~= nil then
     local lw = false
     if sdec.lock_state ~= nil and sdec.lock_state() == 'auto' then lw = true end
@@ -1680,7 +1632,7 @@ function sdec.ui_page_btns()
   return true
 end
 
--- Repaint from the current decode result. settext only, which is what keeps a refresh cheap.
+-- Repaint from the current decode result. settext only, which keeps a refresh cheap.
 function sdec.ui_refresh_do()
   -- A bare call: every display write inside ui_page_btns() is already guarded one line at a time.
   sdec.ui_page_btns()
@@ -1754,16 +1706,14 @@ function sdec.ui_refresh_do()
       else txt = sdec.ua_text_line(i0, cols) end
       -- Colour the whole row when a frame failed its stop or parity bit: per-row finds the damage.
       bad = false
-      -- Or when it lies inside A misaligned head, whether or not those frames failed a check: there
-      -- the bit boundaries are wrong, so a frame can pass by luck and hand back a plausible wrong
-      -- byte. Reaching only part of a row still reddens it -- the row is the unit of colour.
+      -- Or when it lies inside a misaligned head, whether or not those frames failed a check: the
+      -- bit boundaries are wrong there, so a frame can pass by luck and hand back a wrong byte.
       if hext ~= nil and i0 <= hext then bad = true end
       if r ~= nil then
         local j
         for j = i0, i0 + cols - 1 do
           -- Any flagged byte reddens its row, edges included: excluding the first ua_edge_frames drew
-          -- '???OWN FOX JUMPS' in normal white. The bytes are already '??' in hex, so the colour
-          -- claims nothing new. ERR excludes those same edges, so a red row with ERR 0 is deliberate.
+          -- '???OWN FOX JUMPS' in white. ERR excludes those edges, so a red row with ERR 0 is meant.
           if j <= r.nf and r.errs[j] ~= nil then bad = true end
         end
       end
@@ -1796,9 +1746,8 @@ function sdec.ui_refresh_do()
     end
   end
 
-  -- The vertical rules belong to the hex view, and the view decides, not the mode. Hidden by
-  -- painting them ui_c_hide and not 0, a fill of 0 being read as "unset" -- docs/MEASUREMENTS.md,
-  -- 'Why the vertical rules follow the view alone'.
+  -- The vertical rules belong to the hex view, and the view decides, not the mode --
+  -- docs/MEASUREMENTS.md, 'Why the vertical rules follow the view alone'.
   local vwant = sdec.ui_c_hide
   if mode == 'hex' then
     vwant = sdec.ui_c_rule
@@ -1820,7 +1769,7 @@ function sdec.ui_refresh_do()
   if sdec.proto ~= nil and sdec.proto ~= 'uart' then
     st = string.upper(sdec.proto) .. ' ' .. st
   end
-  -- Delfails/fillfails are display-API refusals, and this row is the only place that reports them.
+  -- delfails/fillfails are display-API refusals, and this row is the only place that reports them.
   local warn = ''
   if (sdec.delfails or 0) > 0 or (sdec.fillfails or 0) > 0 then
     warn = string.format('  del?%d fill?%d', sdec.delfails or 0, sdec.fillfails or 0)
@@ -1831,7 +1780,7 @@ function sdec.ui_refresh_do()
   -- A finished stream keeps the row until the mode is cycled, or its own summary would be replaced.
   if md.view and sdec.ck_tot == nil and not sdec.ck_running then
     -- The window capacity, not just the byte count: '97 of 97' does not say the capture could have
-    -- held 192, which is what answers "was the message seen whole?". It moves with the sample rate.
+    -- held 192, answering "was the message seen whole?". It moves with the sample rate.
     local capn = nil
     if sdec.res ~= nil then
       capn = sdec.window_bytes(sdec.baud, sdec.res.nbits, sdec.res.par, sdec.res.nstop)
@@ -1848,9 +1797,8 @@ function sdec.ui_refresh_do()
   end
   -- The bar follows the row above, and this is the call that takes it away when a run ends.
   sdec.ui_progbar_set(sdec.ck_pct())
-  -- The rear BNC, and which way it is pointing -- empty when off, TRIG IN green, TRIG OUT amber,
-  -- TRIG I/O cyan, and '?' for an input Free run will not wait for. docs/MEASUREMENTS.md, 'The rear
-  -- BNC cell states and the uncertainty mark'.
+  -- The rear BNC, and which way it is pointing: empty when off, TRIG IN green, TRIG OUT amber,
+  -- TRIG I/O cyan -- docs/MEASUREMENTS.md, 'The rear BNC cell states and the uncertainty mark'.
   local trigtxt, trigcol = '', sdec.ui_c_dim
   local tin, tout = (sdec.trigext == true), (sdec.fc_out == true)
   -- 'TRIG', not 'ext TRIG': the cell is 122 px and 'EXT TRIG OUT' is 123.
@@ -1866,9 +1814,8 @@ function sdec.ui_refresh_do()
   end
 
   if not md.view or sdec.ck_tot ~= nil or sdec.ck_running then
-    -- While streaming, this cell carries the controls, and for A one-press run the true answer is
-    -- none: measured, the trigger key does not reach the blender while a panel-initiated run runs.
-    -- docs/MEASUREMENTS.md, 'The trigger key does not cancel a panel-initiated run'.
+    -- While streaming this cell carries the controls, and for a one-press run the true answer is
+    -- none -- docs/MEASUREMENTS.md, 'The trigger key does not cancel a panel-initiated run'.
     if sdec.strm_recording then
       set(sdec.ui_log_t, 'Capture or Mode = Stop')
     elseif sdec.ck_job ~= nil then
@@ -1876,9 +1823,8 @@ function sdec.ui_refresh_do()
     elseif sdec.ck_running or sdec.strm_inflight then
       set(sdec.ui_log_t, 'no stop until it ends')
     else
-      -- No 'Mode=...' here at all. Mode cycles, so 'Mode=Exit to FRAME' is wrong in two of the three
-      -- states that show this cell, and naming the destination correctly still reads as the mode you
-      -- are in, under a mode cell that means exactly that. The log status is never such a claim.
+      -- No 'Mode=...' here at all: Mode cycles, so naming a destination is wrong in two of the three
+      -- states that show this cell, and a mode name here reads as the mode you are in.
       set(sdec.ui_log_t, sdec.flog_status())
     end
   else
@@ -1888,36 +1834,30 @@ function sdec.ui_refresh_do()
 end
 
 -- Refresh the panel, and never raise doing it. -> true, or false if the body gave up part way.
--- One guard here, not one at each call site. Sixteen callers wrapped this in a pcall of their own,
--- which guards our code rather than a firmware boundary -- display writes already go through ui_set.
--- What they were protecting against is this body formatting a nil, so the guard belongs with the
--- body, once, where a new call site cannot forget it. A refresh is cosmetic and must not cost its
--- caller: a capture that decoded correctly must not be reported as failed over one panel field.
+-- One guard here, not one at each call site: sixteen callers wrapped this in a pcall of their own,
+-- which guards our code rather than a firmware boundary, where what they feared was this body
+-- formatting a nil. A refresh is cosmetic and must not cost its caller a correct capture.
 function sdec.ui_refresh()
   return (pcall(sdec.ui_refresh_do))
 end
 
--- The byte log, for the status row: which file is being appended to, and how many BYTES are in it so
--- far. Both, always, in every mode -- the app's promise is that no decoded byte is lost, and a
--- promise the operator cannot see is one they have to take on trust.
--- It has 188 px and the obvious form does not FIT, so the '.txt' goes and the name gives way,
--- trimmed from the left with a '~'; the count never does, being what audits the promise. The failure
--- case is a flag here and a sentence on the note row.
+-- The byte log, for the status row: which file is being appended to, and how many BYTES are in it
+-- so far. Both, always, in every mode, the app's promise being that no decoded byte is lost.
+-- It has 188 px and the obvious form does not fit, so the '.txt' goes and the name gives way,
+-- trimmed from the left with a '~'; the count never does, being what audits the promise --
 -- docs/MEASUREMENTS.md, 'The three status row cells'.
 function sdec.flog_status()
   if sdec.flog_why ~= nil then return 'log: NOT LOGGING' end
-  -- No key outranks both the filename and the promise, and has to be asked before either: a path
-  -- outlives the key it was allocated on, and flog_why is nil because nothing has been attempted.
-  -- docs/MEASUREMENTS.md, 'Why flog_status asks about the key before the filename'.
+  -- No key outranks both the filename and the promise, and has to be asked first: a path outlives
+  -- the key -- docs/MEASUREMENTS.md, 'Why flog_status asks about the key before the filename'.
   if not sdec.log_live() then return 'log: no USB key' end
   if sdec.flog_path == nil then return 'log: on first capture' end
   local base = string.gsub(tostring(sdec.flog_path), '^.*/', '')
   base = string.gsub(base, '%.txt$', '')
   local n = sdec.flog_bytes or 0
   local s = string.format('log: %s  %d B', tostring(base), n or 0)
-  -- Bounded by the name length, so a cell too narrow for even a 4-character name returns the overlong
-  -- string rather than looping: a faded tail is bad, a hung refresh is worse. The first step drops
-  -- four characters, not one, because a one-character step can make the string wider.
+  -- Bounded by the name length, so a cell too narrow for a 4-character name returns the overlong
+  -- string rather than looping. The first step drops four characters: one can make it wider.
   local first = true
   while sdec.ui_textw(s) > sdec.ui_log_px and string.len(base) > 4 do
     if first then base = string.sub(base, 5) else base = string.sub(base, 2) end
@@ -1927,10 +1867,9 @@ function sdec.flog_status()
   return s
 end
 
--- The streaming modes' status text: progress while running, then the outcome.
--- Separate from ui_refresh so sdec.progress() can write the same object once a second without
--- touching the other ~20: every display call is an IPC round trip, and a full refresh during a
--- four-minute capture would spend more of the instrument on saying so than on the work.
+-- The streaming modes' status text: progress while running, then the outcome. Separate from
+-- ui_refresh so sdec.progress() can write the same object once a second without touching the other
+-- ~20, every display call being an IPC round trip.
 function sdec.ck_status()
   local t = sdec.ck_tot
   local md = sdec.mode_cur()
@@ -1938,16 +1877,14 @@ function sdec.ck_status()
     -- A press-driven recording states its control and nothing else: no Lua of ours runs between the
     -- start press and the stop press, so any figure here stays at 0 % for the whole recording.
     if sdec.strm_recording then return 'recording -- press Capture to stop' end
-    -- Which window, when there is more than one, and counted from window 1: fc_win increments after
-    -- a window returns, so a `>= 1` guard made 'win 2/32' the first thing the operator saw.
-    -- docs/MEASUREMENTS.md, 'The window counter counts from window 1'.
+    -- Which window, when there is more than one, counted from window 1 -- docs/MEASUREMENTS.md,
+    -- 'The window counter counts from window 1'.
     local wtxt = ''
     if sdec.fc_out then
       wtxt = string.format(' win %d/%d', (sdec.fc_win or 0) + 1, sdec.fc_maxwin or 32)
     end
-    -- Two phases: while the digitizer fills the buffer nothing has been decoded, so a byte count would
-    -- be a fiction and percent of the buffer is the honest number. The trailing words and the window
-    -- counter are alternatives, not both -- together they run through the bar -- and the counter wins.
+    -- Two phases: nothing is decoded while the digitizer fills the buffer, so percent of the buffer
+    -- is the honest number there. The words and the window counter are alternatives, not both.
     if sdec.ck_nbytes == nil or sdec.ck_nbytes < 1 then
       local have, want = sdec.ck_acq_have or 0, sdec.ck_acq_want or 0
       local pct = 0
@@ -1971,13 +1908,11 @@ function sdec.ck_status()
     if sdec.mode_why(md) ~= nil then return 'not armed -- see the note' end
     -- The max for this mode, stated before the capture rather than discovered after it.
     if md.cap ~= nil then
-      -- And that nothing cuts it short, the other half of what the operator needs before pressing:
-      -- neither a button nor the trigger key can, measured. No time figure at all -- cap/bps is the
-      -- device's sending time and the decode costs several times more, where the ceiling is exact.
+      -- And that nothing cuts it short, which is the other half of what the operator needs before
+      -- pressing: neither a button nor the trigger key can, measured. No time figure at all.
 
-      -- And whether it is going anywhere: with no key the recording still runs and still fills the
-      -- panel, but only the last sdec.ck_keep bytes survive it, so 'to a file' is the one thing this
-      -- row must not promise. It names both numbers, the cap alone reading as bytes on screen.
+      -- And whether it is going anywhere: with no key only the last sdec.ck_keep bytes survive, so
+      -- 'to a file' is the one thing this row must not promise. It names both numbers.
       if not sdec.log_live() then
         local keep = sdec.ck_keep
         if keep ~= nil and keep < md.cap then
@@ -2004,10 +1939,9 @@ function sdec.ck_status()
                        t.nf or 0, sdec.ck_err_n(t) or 0, t.nwin or 0, tostring(base), t.stopped or 'done')
 end
 
--- The fraction the progress bar shows, 0..100, or nil when no honest one exists.
--- The two phases have different denominators, as ck_status's text does: per cent of the buffer while
--- the digitizer fills it, then bytes against the mode's cap once the decode starts. nil for A
--- press-driven recording, the case that would lie -- a bar there would hold 0 for the whole run.
+-- The fraction the progress bar shows, 0..100, or nil when no honest one exists. The two phases
+-- have different denominators, as ck_status's text does: per cent of the buffer, then bytes against
+-- the cap. nil for a press-driven recording, where a bar would hold 0 for the whole run.
 function sdec.ck_pct()
   if not sdec.ck_running then return nil end
   if sdec.strm_recording then return nil end
@@ -2071,16 +2005,14 @@ end
 -- ============================================================================
 -- Options form
 -- ============================================================================
--- Index <-> value mappings for the OBJ_EDIT_OPTION fields. getvalue() is 1-based, but each mapping
--- clamps rather than trusting that, and the entry count travels with the table as `n`, table.getn
--- being unreliable on a list with nil holes -- and these have them. Entries 1 and 2 both mean "no
--- forced width"; 2 also turns on the rare widths, folded in here because it is the data-bits field.
+-- Index <-> value mappings for the OBJ_EDIT_OPTION fields: getvalue() is 1-based but each mapping
+-- clamps, and the count travels as `n`, table.getn being unreliable on the nil holes these have.
+-- Entries 1 and 2 of opt_bits_v both mean "no forced width"; 2 also turns on the rare widths.
 sdec.opt_bits_v  = {nil, nil, 5, 6, 7, 8, 9, n = 7}
 sdec.opt_par_v   = {nil, 0, 1, 2, n = 4}             -- entry 1 = Auto
 -- Protocol entries, with the module each one needs. Version 1 ships UART only; the rest stay
--- described so that restoring either is one line in package_tspa.py modules, and a field listing a
--- protocol whose parser is absent would appear to work and change nothing. Bare names, because the
--- value column fades past sdec.ui_opt_px: 'LIN (8N1, auto baud)' would draw as 'LIN (8N1, a'.
+-- described so that restoring either is one line in package_tspa.py MODULES, and a field listing an
+-- absent parser would appear to work. Bare names, the value column fading past sdec.ui_opt_px.
 sdec.opt_proto_all = {
   {v = 'uart', label = 'UART', need = nil},
   {v = 'midi', label = 'MIDI', need = 'mi_parse'},
@@ -2135,7 +2067,7 @@ function sdec.destroy_options()
     local scr = sdec.ui_scr
     if scr == nil then scr = display.SCREEN_HOME end
     pcall(display.changescreen, scr)
-    -- sdec.options() suspends the tick, so tearing the form down is one of the exits that re-arm.
+    -- Sdec.options() suspends the tick, so tearing the form down is one of the exits that re-arm.
     if sdec.ui_scr ~= nil then sdec.ui_tick_on() end
   end
   sdec.del_obj(sdec.opt_proto)
@@ -2170,9 +2102,8 @@ function sdec.build_options()
   local pv, pl = sdec.opt_proto_list()
   local nf = 8
   if pl.n >= 2 then nf = 9 end
-  -- The pitch is clamped to what actually fits: ui_opt_dy is a preference and this is the ceiling,
-  -- the last box having to end above the button row, and without it a field overlaps the buttons and
-  -- nothing says so -- docs/MEASUREMENTS.md, 'The options form vertical geometry'.
+  -- The pitch is clamped to what fits, ui_opt_dy being a preference and the last box having
+  -- to end above the button row -- docs/MEASUREMENTS.md, 'The options form vertical geometry'.
   local eh, edy = sdec.ui_opt_edit_h, sdec.ui_opt_edit_dy
   -- Rows, not fields, is what the pitch has to clear: six fields in two columns is three rows.
   local ncols = sdec.ui_opt_cols or 1
@@ -2181,13 +2112,13 @@ function sdec.build_options()
   local maxdy = math.floor((sdec.ui_opt_btn_y - (sdec.ui_opt_btn_gap or 0) - y0 - edy - eh) /
                            (nrows - 1))
   if dy > maxdy then dy = maxdy end
-  -- Centred, because three rows no longer fill the form. Only ever down, and only by what is spare.
+  -- Centred, because three rows do not fill the form. Only ever down, and only by what is spare.
   local used = (nrows - 1) * dy + eh + edy
   local spare = sdec.ui_opt_btn_y - used - y0
   if spare > 0 then y0 = y0 + math.floor(spare / 2) end
   -- Then nudged, and a separate number from y0 on purpose: the centring above divides the leftover
-  -- space, so adjusting y0 gives back half of whatever is taken away. Not applied when it would push
-  -- the block off the top, which is the seven-field case, where it would ask for y0 = -12.
+  -- space, so a move asked for through y0 gives back half of itself. Not applied when it would
+  -- push the block off the top.
   local adj = sdec.ui_opt_y_adj or 0
   if y0 + adj >= 0 then y0 = y0 + adj end
   -- A pitch under the box height overlaps the boxes, so the column moves up instead.
@@ -2199,9 +2130,8 @@ function sdec.build_options()
   -- Published, because ui_opt_dy is only the preference and a check that reads it checks the wrong
   -- number: test_serial once reported 'pitch 54, box 50, gap 4' about a form laid out at 50.
   sdec.ui_opt_dy_used, sdec.ui_opt_nf_used, sdec.ui_opt_y0_used = dy, nf, y0
-  -- Rows are allocated, not numbered, because Version 1 omits the Protocol field entirely: with only
-  -- UART there is nothing to choose between, and OBJ_EDIT_OPTION refuses fewer than two options, so a
-  -- one-entry field fails the build. Filled column-major, so six fields read as three and three.
+  -- Rows are allocated, not numbered, Version 1 omitting the Protocol field entirely: with only UART
+  -- there is nothing to choose between, and a one-entry OBJ_EDIT_OPTION fails the build.
   local row = 0
   local function nextpos()
     local c = math.floor(row / nrows)
@@ -2221,7 +2151,7 @@ function sdec.build_options()
           .. 'instrument.', 0)
   end
 
-  -- And A cover here too, the create above having taken the front for the options screen. Who raised
+  -- And a cover here too, the create above having taken the front for the options screen. Who raised
   -- it decides who clears it -- docs/MEASUREMENTS.md, 'Who raises and who clears the loading cover'.
   local covermine = false
   if sdec.ui_loadscr == nil then
@@ -2231,8 +2161,7 @@ function sdec.build_options()
   end
 
   -- Protocol first, because it overrides the fields below it, and spelled out rather than unpack()'d
-  -- -- 5.0.2 has a global unpack() where the offline harness's Lua does not. docs/MEASUREMENTS.md,
-  -- 'Why the Protocol field comes first and is spelled out'.
+  -- -- docs/MEASUREMENTS.md, 'Why the Protocol field comes first and is spelled out'.
   if pl.n >= 3 then
     local fx1, fy1 = nextpos()
     sdec.opt_proto = create(sdec.optscr, display.OBJ_EDIT_OPTION, fx1, fy1,
@@ -2243,15 +2172,13 @@ function sdec.build_options()
     sdec.opt_proto = create(sdec.optscr, display.OBJ_EDIT_OPTION, fx2, fy2,
                             'Protocol', 'sets the wire parameters', pl[1], pl[2])
   end
-  -- pl.n == 1 creates nothing and sdec.opt_proto stays nil, which every reader already copes with.
-  -- Baud 0 means auto, hence a minimum of 0 rather than 110: a spinner that cannot say "work it out
-  -- yourself" would force a guess on every capture.
+  -- Pl.n == 1 creates nothing and sdec.opt_proto stays nil, which every reader copes with. Baud 0
+  -- means auto, hence a minimum of 0: a spinner that cannot say "work it out" forces a guess.
   local fx3, fy3 = nextpos()
   sdec.opt_baud = create(sdec.optscr, display.OBJ_EDIT_NUMBER, fx3, fy3,
                          'Baud Rate', '0 = auto-detect',
                          display.NFORMAT_PREFIX, 0, 0, 1000000, 'Bd')
-  -- 'Auto (7/8)' is the default and deliberately first; 5, 6 and 9 are excluded from the automatic
-  -- search unless 'any width' is chosen, and forcing a width bypasses the search entirely --
+  -- 'Auto (7/8)' is the default and deliberately first, and forcing a width bypasses the search --
   -- docs/MEASUREMENTS.md, 'Why only 7 and 8 data bits are searched by default'.
   local fx4, fy4 = nextpos()
   sdec.opt_bits = create(sdec.optscr, display.OBJ_EDIT_OPTION, fx4, fy4,
@@ -2261,33 +2188,30 @@ function sdec.build_options()
   sdec.opt_par = create(sdec.optscr, display.OBJ_EDIT_OPTION, fx5, fy5,
                         'Parity', 'auto or fixed',
                         'Auto', 'None', 'Even', 'Odd')
-  -- Eleven characters is the field'S limit: past it the firmware fades the tail out, so 'Trig In+FC
-  -- Out' reads 'Trig In+FC', indistinguishable from the 'Trig In' entry above it. These strings are
-  -- display only -- every field maps its selection by index, so shortening a label is safe.
+  -- Eleven characters is the field's limit: past it the firmware fades the tail, so 'Trig In+FC Out'
+  -- reads 'Trig In+FC'. Display only -- every field maps its selection by index.
   local fx6, fy6 = nextpos()
   sdec.opt_pol = create(sdec.optscr, display.OBJ_EDIT_OPTION, fx6, fy6,
                         'Polarity', 'idle level',
                         'Auto', 'Idle high', 'Idle low')
-  -- No range selector, 10 V having the bandwidth, and three trigger sources rather than four, the
-  -- rear BNC having its own field below. Entries come from sdec.ui_trigsrc so the note row's cell
-  -- cannot paraphrase them. docs/MEASUREMENTS.md, 'Why the 10 V range is the only one offered'.
+  -- No range selector, 10 V having the bandwidth, and three trigger sources rather than four --
+  -- docs/MEASUREMENTS.md, 'Why the 10 V range is the only one offered'.
   local fx7, fy7 = nextpos()
   sdec.opt_trig = create(sdec.optscr, display.OBJ_EDIT_OPTION, fx7, fy7,
                          'Trigger', 'capture start',
                          sdec.ui_trigsrc[sdec.opt_trig_v[1]].name,
                          sdec.ui_trigsrc[sdec.opt_trig_v[2]].name,
                          sdec.ui_trigsrc[sdec.opt_trig_v[3]].name)
-  -- One field for both rear BNCs, and the reason is height: an option field's entries are free where
-  -- a field is not. Off by default is a requirement, not a courtesy -- docs/MEASUREMENTS.md, 'Why
-  -- one field carries both rear BNCs'.
+  -- One field for both rear BNCs, and the reason is height. Off by default is a requirement, not a
+  -- courtesy -- docs/MEASUREMENTS.md, 'Why one field carries both rear BNCs'.
   local fx8, fy8 = nextpos()
   sdec.opt_ext = create(sdec.optscr, display.OBJ_EDIT_OPTION, fx8, fy8,
                         'Rear BNC', 'trig in / FC out',
                         'Off', 'Trig In', 'FC Out', 'In + FC Out')
 
-  -- The two armed-from-silence fields govern one case only: capture pressed on a line that is not
-  -- transmitting yet. They do nothing on A line that is already talking, and their ranges come from
-  -- the core -- docs/MEASUREMENTS.md, 'armlevel 1.0, floor 0.33, ceiling 6.0'.
+  -- The two armed-from-silence fields govern one case: Capture pressed on a line that is not
+  -- transmitting yet. Their ranges come from the core -- docs/MEASUREMENTS.md, 'armlevel 1.0, floor
+  -- 0.33, ceiling 6.0'.
   local fx9, fy9 = nextpos()
   sdec.opt_armv = create(sdec.optscr, display.OBJ_EDIT_NUMBER, fx9, fy9,
                          'Arm At', 'wake-up level',
@@ -2304,8 +2228,7 @@ function sdec.build_options()
   -- Stored, not left in locals: destroy_options() deletes them. Lock Detected only fills the form.
   sdec.opt_btn = {}
   -- Auto Detect is the inverse of Lock Detected and sits beside it. Guarded, like ui_build's button
-  -- loops: this form is reached with nine buttons already built, which is the pool state where the
-  -- next create fails. docs/MEASUREMENTS.md, 'The options form field and button widths'.
+  -- loops -- docs/MEASUREMENTS.md, 'The options form field and button widths'.
   local odef = {
     {i = 4, x = 22,  w = 200, t = 'Auto Detect',   e = 'sdec.options_auto'},
     {i = 1, x = 234, w = 220, t = 'Lock Detected', e = 'sdec.options_lock'},

@@ -18,15 +18,13 @@ sdec = sdec or {}
 
 sdec.LI_SYNC = 0x55
 
--- Bit times from the break's start edge to the next byte's. A break plus delimiter is at least 12
--- and a byte butted against the next is 10, so 11 separates them. Corroboration, not an independent
--- test: li_break() also requires value 0x00 and a failed stop bit. What survives all three is a 0x00
--- whose stop bit flipped inside a stream with 2+ bit times of space, which splits one frame in two
--- and fails both checksums.
+-- Bit times from the break's start edge to the next byte's: a break plus delimiter spans at least 12
+-- and a butted byte 10, so 11 separates them. Corroboration only -- li_break() also requires 0x00 and
+-- a failed stop bit, and what survives all three splits one frame in two and fails both checksums.
 sdec.li_minbreak = 11
 
 -- The four reserved frame IDs. 0x3C and 0x3D carry diagnostics and require the classic checksum
--- whatever the rest of the bus uses, which is why the style cannot be assumed.
+-- whatever the rest of the bus uses, so the style cannot be assumed.
 sdec.li_name = {}
 sdec.li_name[0x3C] = 'MasterReq'
 sdec.li_name[0x3D] = 'SlaveResp'
@@ -39,7 +37,7 @@ sdec.li_name[0x3F] = 'reserved'
 -- ============================================================================
 -- Protected identifier
 -- ============================================================================
--- Bit k of v. No bitwise operators in 5.0.2, so this is the divide-and-mod form.
+-- Bit k of v, in the divide-and-mod form 5.0.2 forces.
 function sdec.li_bit(v, k)
   return math.mod(math.floor(v / (2 ^ k)), 2)
 end
@@ -67,11 +65,9 @@ end
 -- Checksum
 -- ============================================================================
 -- Inverted eight-bit sum with the carry added back: modulo-255, not 256. Pass pid for the enhanced
--- checksum (LIN 2.x), nil for the classic one. Never checked against a real frame.
---
--- Modulo-255 makes 0xFF congruent to 0x00, so an agreeing checksum is no proof that a flagged byte
--- arrived intact, and li_parse() does not treat it as proof.
--- docs/MEASUREMENTS.md, "The checksum's blind spot" and 'The LIN checksum'.
+-- checksum (LIN 2.x), nil for the classic one. Modulo-255 makes 0xFF congruent to 0x00, so an
+-- agreeing checksum does not prove a flagged byte arrived intact, and li_parse() does not treat it
+-- as proof. docs/MEASUREMENTS.md, "The checksum's blind spot" and 'The LIN checksum'.
 function sdec.li_csum(vals, i0, n, pid)
   local sum = 0
   if pid ~= nil then sum = math.mod(pid, 256) end

@@ -324,7 +324,8 @@ end
 
 -- The one-shot form: prime to completion in one call. Returns fmt, reason. The guard is a backstop on
 -- the phase machine, not on the signal, so exceeding it is a coding fault. Derived rather than
--- constant: one generous enough for ck_bufmax's reserve (9 tries) is no backstop at ck_win_min (72).
+-- constant: one sized for ck_bufmax's reserve is no backstop at the ck_win_min floor, where the same
+-- reserve asks for an order of magnitude more tries. bufmax_for() can lower the cap at runtime.
 function sdec.ck_prime(reader, ntotal, win, leadmax)
   local pr, perr = sdec.ck_prime_new(reader, ntotal, win, leadmax)
   if pr == nil then return nil, perr end
@@ -506,7 +507,7 @@ function sdec.ck_decode(reader, ntotal, fmt, sink, opts)
         tot.stopped = 'sink'
         break
       end
-      -- Only advance the seam over frames actually emitted: carrying the unclipped window's end would
+      -- Only advance the seam over frames emitted: carrying the unclipped window's end would
       -- leave the seam past bytes the file never received, a silent hole in a run that resumes.
       endpos = off + r.tpos[m] + (framebits - 0.5) * T
     end
@@ -600,7 +601,7 @@ function sdec.ck_sink_file(path, ncol)
     if not dead and ulog ~= nil and ulog.keyok ~= nil and not ulog.keyok() then dead = true end
     -- The write is bare and nothing here can set `dead`, so the carry shift below always runs: cn and
     -- cbase must never describe rows the file never got, and flog_bytes is counted on acceptance. Nor
-    -- can ua_hexrow fail, which is what lets sink's loop call emit bare.
+    -- can ua_hexrow fail, so sink's loop calls emit bare.
     if not dead then file.write(fh, line .. '\r\n') end
     local i
     for i = nrow + 1, cn do
