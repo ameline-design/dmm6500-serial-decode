@@ -481,7 +481,7 @@ sdec.ui_page = sdec.ui_page or 0          -- 0-based page index
 -- being worth less than a note. Latched, and `or false` so re-running this file keeps it.
 sdec.ui_paged = sdec.ui_paged or false
 sdec.ui_status = sdec.ui_status or 'ready'
--- Sdec.ui_last   -- last text written per handle, to skip redundant settext
+-- sdec.ui_last   -- last text written per handle, to skip redundant settext
 
 -- Say the panel is waiting on purpose, called by acq_triggered() before it blocks on an
 -- arm-from-silence: the wait can be 120 s and nothing can interrupt it. The offline harnesses
@@ -1291,7 +1291,7 @@ function sdec.ui_build(hold)
 
   sdec.ui_scr = create(display.ROOT, display.OBJ_SCREEN, sdec.ui_title_text())
 
-  -- Display.create returns nil when the pool is exhausted, posts nothing and does not raise, so
+  -- display.create returns nil when the pool is exhausted, posts nothing and does not raise, so
   -- without this every child is built against a nil parent and start()'s pcall sees success --
   -- docs/MEASUREMENTS.md, 'The display object pool fails silently'.
   if sdec.ui_scr == nil then
@@ -1360,14 +1360,14 @@ function sdec.ui_build(hold)
   end
   for j = 1, nf do
     local fd = sdec.ui_fields[j]
-    -- Fd.labdx nudges the label only: a label as wide as its column butts against the divider.
+    -- fd.labdx nudges the label only: a label as wide as its column butts against the divider.
     sdec.ui_flab[j] = create(sdec.ui_scr, display.OBJ_TEXT, fd.x + (fd.labdx or 0), sdec.ui_lab_y,
                              fd.lab, sdec.ui_c_lab, small, left)
     -- Small, not medium, for every cell but the two flagged `med`: every field x is sized on the 8 px
     -- FONT_SMALL advance, and a medium LOGIC value takes 107 px and touches THRESH.
     local fnt = small
     if fd.med then fnt = med end
-    -- Fd.dy is per-cell, so ui_val_y stays the one baseline, and ui_field_band() reads the same sum.
+    -- fd.dy is per-cell, so ui_val_y stays the one baseline, and ui_field_band() reads the same sum.
     sdec.ui_fval[j] = create(sdec.ui_scr, display.OBJ_TEXT, fd.x, sdec.ui_val_y + (fd.dy or 0),
                              '--', fd.c, fnt, left)
   end
@@ -1520,7 +1520,7 @@ function sdec.ui_build(hold)
   sdec.ui_pgind_m  = pgpiece(xm,    sdec.ui_c_pgnum,  display.JUST_RIGHT)
   sdec.ui_pgindtxt = nil
   -- Visibility shadow caches, where nil means "unknown, so write it on the next refresh".
-  -- Sdec.ui_lockbtn is not one -- docs/MEASUREMENTS.md, 'The visibility shadow caches'.
+  -- sdec.ui_lockbtn is not one -- docs/MEASUREMENTS.md, 'The visibility shadow caches'.
   sdec.ui_pgvis = nil
   sdec.ui_lockvis = nil
   sdec.ui_savevis = nil
@@ -2067,7 +2067,7 @@ function sdec.destroy_options()
     local scr = sdec.ui_scr
     if scr == nil then scr = display.SCREEN_HOME end
     pcall(display.changescreen, scr)
-    -- Sdec.options() suspends the tick, so tearing the form down is one of the exits that re-arm.
+    -- sdec.options() suspends the tick, so tearing the form down is one of the exits that re-arm.
     if sdec.ui_scr ~= nil then sdec.ui_tick_on() end
   end
   sdec.del_obj(sdec.opt_proto)
@@ -2172,7 +2172,7 @@ function sdec.build_options()
     sdec.opt_proto = create(sdec.optscr, display.OBJ_EDIT_OPTION, fx2, fy2,
                             'Protocol', 'sets the wire parameters', pl[1], pl[2])
   end
-  -- Pl.n == 1 creates nothing and sdec.opt_proto stays nil, which every reader copes with. Baud 0
+  -- pl.n == 1 creates nothing and sdec.opt_proto stays nil, which every reader copes with. Baud 0
   -- means auto, hence a minimum of 0: a spinner that cannot say "work it out" forces a guess.
   local fx3, fy3 = nextpos()
   sdec.opt_baud = create(sdec.optscr, display.OBJ_EDIT_NUMBER, fx3, fy3,
