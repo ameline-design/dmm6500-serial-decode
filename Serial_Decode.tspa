@@ -1984,11 +1984,10 @@ function sdec.ua_widths()
   return sdec.try_nbits
 end
 
--- A FORCED FIELD CONSTRAINS THE SEARCH; it does not merely sit in a variable.
---   [...]
--- fourth. These make each one independently effective by narrowing the candidate list the search
--- walks, which keeps every scoring and margin rule below unchanged: a one-entry list simply has
--- nothing to lose to.
+-- A forced field constrains the search rather than sitting in a variable. decode_from()'s
+-- forced-format shortcut runs only when the WIDTH is forced, so these narrow the candidate list
+-- instead, which leaves every scoring and margin rule below unchanged -- a one-entry list has nothing
+-- to lose to.
 function sdec.ua_parities()
   if sdec.force_par ~= nil then return {sdec.force_par} end
   return sdec.try_par
@@ -2013,9 +2012,9 @@ sdec.alt_minframes = sdec.alt_minframes or 8
 sdec.fitratio = sdec.fitratio or 1    -- the rescaling ua_best() settled on
 
 -- Bit sampling
---   [...]
--- the cell need two wrong together. Skipped below 6 samples/bit, where the outer
--- taps would sit too close to the cell edges.
+-- Sample the logical bit level at fractional sample position x.
+-- With enough samples per bit, three taps across the middle of the cell are
+-- majority-voted rather than one sampled; docs/MEASUREMENTS.md, 'Three-tap majority sampling'.
 -- Returns 0, 1, or nil when the position falls outside the capture.
 function sdec.ua_bit(rd, n, x, invert, T)
   local thr = sdec.thr
@@ -2055,11 +2054,8 @@ function sdec.ua_bit(rd, n, x, invert, T)
 end
 
 sdec.ua_pc = nil
--- Number of set bits in v. No bitwise operators in 5.0.2.
---   [...]
--- v * 0.5 has a fractional part exactly when v is odd, the same test as mod(v, 2) == 1 for one
--- floor instead of a floor and a mod. Not a general fallback -- a negative returns 0 and a
--- non-integer counts fractional halvings -- but in-tree callers only ever pass 0..511.
+-- Set bits in v, there being no bitwise operators in 5.0.2. Table over the 9-bit domain, built on
+-- first use; the loop is kept for anything wider. docs/MEASUREMENTS.md, 'ua_popcount's lookup table'.
 function sdec.ua_popcount(v)
   local t = sdec.ua_pc
   if t == nil then
@@ -2094,9 +2090,9 @@ end
 
 -- One frame
 --   [...]
--- ua_bit, expression for expression, including the order of the floating-point operations, because
--- floor(x + 0.5) at a cell boundary is decided by the last bit of x. ua_bit itself stays as the
--- single-position sampler for anything that wants one bit rather than a frame.
+-- the wrong baud rate.
+-- The sampling is ua_bit written out inline, expression for expression, because a call costs about as
+-- much as the sampling it wraps. docs/MEASUREMENTS.md, 'Three-tap majority sampling'.
 function sdec.ua_frame(rd, n, t0, T, nbits, par, nstop, invert)
   local thr = sdec.thr
   local floor = math.floor
@@ -2272,11 +2268,9 @@ function sdec.ua_bad_interior(r)
   return nin, nedge
 end
 
--- How far a misaligned head reaches: the last flagged frame inside headsusp, or 0. headsusp itself is
--- the region before the first gap, not a count of damage, so quoting it over-claims. One place, because
--- the note and ERR derived it separately and the panel said four bytes misaligned beside ERR 1.
--- `hs` overrides r.headsusp: a recording's TAIL result carries none (ck_tail_result does not set it),
--- so its caller supplies the run's figure and this still narrows it against the errs on screen.
+-- How far a misaligned head reaches: the last flagged frame inside headsusp, or 0. headsusp is the
+-- region before the first gap, not a count of damage, so quoting it over-claims. `hs` overrides
+-- r.headsusp, because a recording's tail result carries none.
 function sdec.ua_head_bad(r, hs)
   if r == nil or r.errs == nil then return 0 end
   if hs == nil then hs = r.headsusp end
@@ -2289,11 +2283,10 @@ function sdec.ua_head_bad(r, hs)
   return last
 end
 
--- BYTES YOU CANNOT TRUST, not frames that failed a check. In a misaligned head the bit boundaries are
---   [...]
--- exclusion is for a healthy gapless line, and headsusp is evidence this is not one. The final frame
--- stays excluded -- the capture boundary halves it regardless. With no head this is ua_bad_interior,
--- so good captures still read 0. A real misaligned capture reads '????UMPS OVER TH', note 4, ERR 1.
+-- Bytes you cannot trust, not frames that failed a check: in a misaligned head the bit boundaries are
+-- wrong, so a frame can pass parity and stop by luck and hand back a plausible wrong byte. An
+-- identified head counts in full and the resync exclusion is dropped across it, that exclusion being
+-- for a healthy gapless line. The final frame stays excluded. With no head this is ua_bad_interior.
 function sdec.ua_err_count(r, hb)
   if r == nil or r.errs == nil then return 0 end
   if hb == nil then hb = sdec.ua_head_bad(r) end
@@ -2315,11 +2308,8 @@ sdec.rarewidth = 8
 
 sdec.polmargin = 4
 
--- The bias multiplies the PROPORTIONAL term only, never the absolute floor. The floor is
---   [...]
--- back-to-back 5N1 over 8 bytes scores 8 against 8N1's 1, which is decisive evidence, and
--- a floor of 8 rejected it by one point. Scaling only the proportional part means the
--- bias grows with how much evidence the incumbent actually has.
+-- The bias multiplies the proportional term only, never the floor, so it grows with how much
+-- evidence the incumbent has. docs/MEASUREMENTS.md, 'rarewidth = 8'.
 function sdec.ua_margin(sc, nbits)
   local m = 0
   if sc > 0 then m = 0.6 * sc end
@@ -2411,11 +2401,10 @@ end
 sdec.submult_minpulses = sdec.submult_minpulses or 20
 sdec.submult_oddfrac   = sdec.submult_oddfrac   or 0.10
 
--- Is this candidate bit time a SUB-MULTIPLE of the one that generated the pulses?
---   [...]
--- a 42-bit loop-seam gap gives k = 169, whose parity is set by the capture phase, not the format,
--- and one such width was enough to silence the gate and let ratio 0.25 through.
--- Gates CANDIDATES only, never the fit, so a corrupt fit can still be rescaled.
+-- Is this candidate bit time a SUB-MULTIPLE of the one that generated the pulses? The mirror of
+-- ua_plausible's too-long test. A prior on real traffic rather than a structural proof, and it gates
+-- candidates only, never the fit, so a corrupt fit can still be rescaled.
+-- docs/MEASUREMENTS.md, 'ua_submultiple: the odd-multiple test'.
 function sdec.ua_submultiple(T)
   if T == nil or T <= 0 then return false end
   local nw = sdec.nw or 0
@@ -2435,10 +2424,9 @@ end
 
 sdec.submult_maxrunlo = sdec.submult_maxrunlo or 2.5
 
--- Does this candidate claim the SHORTEST pulse on the wire is several bit times long?
---   [...]
--- THE 5TH PERCENTILE, NOT THE MINIMUM: one 2-sample notch would silence this as one loop-seam width
--- silenced the odd test -- and that notch is itself how a fifth-of-the-bit-time fit arises.
+-- Does this candidate claim the shortest pulse on the wire is several bit times long? Covers the odd
+-- divisors ua_submultiple structurally cannot. The 5th percentile, not the minimum, because one
+-- 2-sample notch would silence it. docs/MEASUREMENTS.md, 'ua_minrun_absurd = 2.5'.
 -- Gates CANDIDATES only, never the fit, and only behind snap1 -- see ua_best_probe.
 function sdec.ua_minrun_absurd(T)
   if T == nil or T <= 0 then return false end
@@ -2448,11 +2436,9 @@ function sdec.ua_minrun_absurd(T)
   return lo / T > sdec.submult_maxrunlo
 end
 
--- Whether the fit is consistent with the pulse-width distribution it came from.
---   [...]
--- out of range and rescaling would only manufacture a plausible-looking wrong answer.
--- When it is grossly inconsistent, the fit is the thing that is wrong, and rescaling is
--- exactly the right move.
+-- Whether the fit is consistent with the pulse-width distribution it came from, which separates "the
+-- line is faster than this instrument" from "impulse noise captured the fit".
+-- docs/MEASUREMENTS.md, 'ua_fit_corrupt: med/Tfit separates two faults'.
 function sdec.ua_fit_corrupt(Tfit)
   local med = sdec.wmed
   if med == nil or med <= 0 or Tfit == nil or Tfit <= 0 then return true end
@@ -2460,10 +2446,10 @@ function sdec.ua_fit_corrupt(Tfit)
 end
 
 -- Why no bit time was usable, in the operator's terms. "Too fast for this sample
---   [...]
--- built from a different threshold blames a limit that did not fire: the floor rejects below
--- minsabit * (1 - plaustol), which is 3.92 rather than 4, so a fit at 3.95 that the q gate threw out
--- would be reported as too fast for a ceiling that admitted it.
+-- rate" and "nothing resembling a frame" are different faults with different actions
+-- -- lower the baud rate, versus check the probe.
+-- Every limit named here is the one ua_plausible refused with, constant for constant. A sentence
+-- built from a different threshold blames a limit that did not fire.
 function sdec.ua_implausible_why(T)
   if T == nil or T <= 0 then return 'no bit timing' end
   local fs = sdec.acq_fs or sdec.fs
@@ -2482,11 +2468,9 @@ function sdec.ua_implausible_why(T)
   return string.format('no frame fits a %.1f sample bit time', T or 0)
 end
 
--- Bit times worth scoring: the fit rescaled by sdec.ratios, plus MEDIAN-DERIVED
---   [...]
--- many of them there are. Real widths are 1..maxmult bit times, so med/k for small k
--- brackets the truth from a direction impulse noise cannot corrupt -- and med/1 alone
--- recovers all three spike cases the ladder missed.
+-- Bit times worth scoring: the fit rescaled by sdec.ratios, plus median-derived candidates for the
+-- failure mode the ladder cannot cover. docs/MEASUREMENTS.md, 'Why ua_cands adds median-derived
+-- candidates'.
 function sdec.ua_cands(Tfit)
   local c, m = {}, 0
   local i
@@ -2542,11 +2526,11 @@ function sdec.ua_probe(rd, n, T)
   return sc, scbad, scgood
 end
 
--- Returns bittime, ratio.
+-- Returns bittime, ratio. The rescaling search is gated, not unconditional: the width fit is trusted
 --   [...]
--- The state table `st` holds everything the three share. Kept as one table rather than a dozen
--- returns because the 200-active-locals ceiling is real on this instrument and this function was
--- already among the largest.
+-- ua_best() is begin + probe-every-candidate + end, so every caller is unchanged and the suites judge
+-- the split. The state table `st` holds what the three share, as one table rather than a dozen
+-- returns, because the 200-active-locals ceiling is real here.
 function sdec.ua_best_begin(rd, n, Tfit)
   local fs = sdec.acq_fs or sdec.fs
   sdec.baud_note = nil
