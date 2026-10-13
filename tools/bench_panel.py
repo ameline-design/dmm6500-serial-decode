@@ -837,7 +837,11 @@ def run_sequence(p, g, a):
             _, a3 = p.press('Mode/%d@%d' % (k + 1, baud), 'sdec.mode_cycle',
                             ('mode advances', lambda b2, a4: a4['mode'] != b2['mode']),
                             paints=['title'])
-            modes.append(a3['mode'])
+            # A press that times out answers with no state, and indexing it raised KeyError here --
+            # which aborted the stage and lost the fifteen presses after it, turning one BAD into a
+            # traceback. '?' keeps the sequence readable and still fails the cycle check below,
+            # which is the right verdict for a mode that could not be read.
+            modes.append((a3 or {}).get('mode') or '?')
         print('      modes visited: %s' % ' -> '.join(modes))
         if modes != ['frame', 'sml', 'med', 'frame']:
             p.fail('Mode/cycle@%d' % baud,
