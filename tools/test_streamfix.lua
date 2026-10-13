@@ -658,6 +658,12 @@ print('\nH  ui_log_owned() agrees with ui_refresh about who owns the log cell')
 --
 -- THE ASSERTION IS THE AGREEMENT, state by state, rather than either function's own output: it
 -- fails if ui_refresh grows a case that ui_log_owned() does not know about.
+--
+-- AND IT IS ALSO AN `own` WRITTEN OUT PER STATE, which is not belt-and-braces. ui_refresh now paints
+-- sdec.ui_runnote(), whose first line branches on ui_log_owned(), so the cell is a FUNCTION of the
+-- thing under test and comparing the two is a tautology that passes for any implementation. Measured
+-- by mutation: deleting ui_log_owned's early return failed 3 of these states before that collapse and
+-- 0 after it. The `own` column is the only non-circular half left, so do not derive it.
 do
   MD.usb(true)
   local function clearrun()
@@ -665,37 +671,39 @@ do
     sdec.strm_inflight, sdec.ck_tot, sdec.ck_nbytes = nil, nil, nil
   end
   local states = {
-    {n = 'idle, FRAME',          f = function() sdec.capmode = 'frame' end},
+    {n = 'idle, FRAME',          own = false, f = function() sdec.capmode = 'frame' end},
     -- 8 kB and 32 kB are view = false, so ui_refresh's OUTER test is true for them with
     -- nothing running -- which is the case that must still come out as the log's, not a run's.
-    {n = 'idle, 8 kB',           f = function() sdec.capmode = 'med' end},
-    {n = 'press-driven record',  f = function() sdec.capmode = 'med'
+    {n = 'idle, 8 kB',           own = false, f = function() sdec.capmode = 'med' end},
+    {n = 'press-driven record',  own = true,  f = function() sdec.capmode = 'med'
                                                 sdec.strm_recording = true end},
-    {n = 'a chunked job open',   f = function() sdec.capmode = 'med'
+    {n = 'a chunked job open',   own = true,  f = function() sdec.capmode = 'med'
                                                 sdec.ck_job = {} end},
-    {n = 'ck_running',           f = function() sdec.capmode = 'med'
+    {n = 'ck_running',           own = true,  f = function() sdec.capmode = 'med'
                                                 sdec.ck_running = true end},
-    {n = 'strm_inflight',        f = function() sdec.capmode = 'med'
+    {n = 'strm_inflight',        own = true,  f = function() sdec.capmode = 'med'
                                                 sdec.strm_inflight = true end},
     -- FRAME IS view = true, so ui_refresh's outer test is only SATISFIED through ck_tot or
     -- ck_running. These two reach the hint block with FRAME selected.
-    {n = 'FRAME + ck_running',   f = function() sdec.capmode = 'frame'
+    {n = 'FRAME + ck_running',   own = true,  f = function() sdec.capmode = 'frame'
                                                 sdec.ck_running = true end},
-    {n = 'FRAME + a summary',    f = function() sdec.capmode = 'frame'
+    -- A summary satisfies the outer test but is not a run: owned stays false, which is the one
+    -- state where the outer condition is true and the inner four are all absent.
+    {n = 'FRAME + a summary',    own = false, f = function() sdec.capmode = 'frame'
                                                 sdec.ck_tot = {nf = 0, nwin = 1, nbad = 0,
                                                                stopped = 'done'} end},
-    -- THESE THREE ARE THE ONLY STATES THAT TEST THE OUTER CONDITION AT ALL, and without them this
-    -- section was vacuous about it: deleting ui_log_owned's `md.view and ck_tot == nil and not
-    -- ck_running` early return left all of the above passing. The two FRAME states above MAKE the
-    -- outer condition true, so they never reach that line. Here a run flag is set while FRAME is
-    -- selected and ck_tot is nil -- the shape a stale ck_running or strm_inflight latch leaves
-    -- behind after a fault -- so the outer condition is FALSE, ui_refresh writes the log status,
-    -- and anything claiming the cell is a run's would be wrong.
-    {n = 'FRAME + strm_recording', f = function() sdec.capmode = 'frame'
+    -- THESE THREE ARE THE ONLY STATES THAT TEST THE OUTER CONDITION AT ALL, and they only do so
+    -- through the `own` column above: deleting ui_log_owned's `md.view and ck_tot == nil and not
+    -- ck_running` early return leaves every cell comparison in this section passing. The two FRAME
+    -- states above MAKE the outer condition true, so they never reach that line. Here a run flag is
+    -- set while FRAME is selected and ck_tot is nil -- the shape a stale ck_running or strm_inflight
+    -- latch leaves behind after a fault -- so the outer condition is FALSE, the cell is the log's,
+    -- and anything claiming it is a run's paints a stop instruction over the log status.
+    {n = 'FRAME + strm_recording', own = false, f = function() sdec.capmode = 'frame'
                                                   sdec.strm_recording = true end},
-    {n = 'FRAME + a chunked job',  f = function() sdec.capmode = 'frame'
+    {n = 'FRAME + a chunked job',  own = false, f = function() sdec.capmode = 'frame'
                                                   sdec.ck_job = {} end},
-    {n = 'FRAME + strm_inflight',  f = function() sdec.capmode = 'frame'
+    {n = 'FRAME + strm_inflight',  own = false, f = function() sdec.capmode = 'frame'
                                                   sdec.strm_inflight = true end},
   }
   local k
@@ -705,7 +713,12 @@ do
     sdec.ui_refresh()
     local shown = MD.text(sdec.ui_log_t)
     local islog = (shown == sdec.flog_status())
-    check('  ' .. states[k].n .. ': ui_log_owned() matches what ui_refresh wrote',
+    -- The non-circular half first: an answer written down here, not read back off the cell.
+    check('  ' .. states[k].n .. ': ui_log_owned() is what this state is supposed to answer',
+          sdec.ui_log_owned() == states[k].own,
+          string.format('owned=%s want=%s cell=%q', tostring(sdec.ui_log_owned()),
+                        tostring(states[k].own), tostring(shown)))
+    check('  ' .. states[k].n .. ': ...and ui_refresh wrote the cell that answer implies',
           sdec.ui_log_owned() == (not islog),
           string.format('owned=%s cell=%q', tostring(sdec.ui_log_owned()), tostring(shown)))
   end
@@ -1430,9 +1443,19 @@ print('\nK  a finished record still names the log file it wrote')
 -- was closed rather than keeping it open. Not arm-dependent: the operator saw it both ways.
 do
   local keepw, keepp, keepb = sdec.flog_why, sdec.flog_path, sdec.flog_bytes
-  local keeps, keepsb = sdec.flog_shut, sdec.flog_shutbytes
+  local keeps, keepsb = sdec.flog_last, sdec.flog_lastbytes
+  -- mode_exit() is called repeatedly below and its OTHER effects are not this section's subject, so
+  -- they are saved and pinned rather than inherited: which branches it takes would otherwise depend on
+  -- whatever the section above left in ck_job and strm_recording.
+  local keepx, keepxb = sdec.mode_exited, sdec.mode_exitbad
+  local keepr, keepst, keepcm = sdec.ck_running, sdec.ck_stop, sdec.capmode
   sdec.flog_why, sdec.flog_path, sdec.flog_bytes = nil, nil, nil
-  sdec.flog_shut, sdec.flog_shutbytes = nil, nil
+  sdec.flog_last, sdec.flog_lastbytes = nil, nil
+  sdec.ck_job, sdec.strm_recording, sdec.ck_running = nil, nil, false
+  sdec.capmode = 'med'
+  check('mode_exit takes neither its decode nor its recording branch, so the stash is its only effect',
+        sdec.ck_job == nil and sdec.strm_recording == nil,
+        string.format('job=%s rec=%s', tostring(sdec.ck_job), tostring(sdec.strm_recording)))
   -- The premise: with no key the cell says so first and none of this is reachable.
   check('the key is present in this harness, or the rest is vacuous', sdec.log_live() == true,
         tostring(sdec.flog_status()))
@@ -1452,8 +1475,51 @@ do
   sdec.log_new()
   check('...while Log New does clear it, the operator having asked for a new file',
         has(sdec.flog_status(), 'on first capture'), tostring(sdec.flog_status()))
+
+  -- AND A RUN THAT LOGGED NOTHING MUST NOT INHERIT THE LAST ONE'S FILE. stream() returns early when
+  -- a capture got nothing, so flog_alloc never runs and flog_path stays nil -- and a mode_exit that
+  -- only ever SET the stash left the previous run's name and byte count on the cell. That is the
+  -- armed boot dump that never fired, claiming bytes it never wrote: worse than the promise string it
+  -- replaced, because it names a real file with a real count. Found by review, after the V1.50 tag.
+  sdec.flog_path, sdec.flog_bytes = '/usb1/SERDEC/bytes003.txt', 12345
+  sdec.mode_exit('run 1 ended')
+  check('a logged run leaves its name behind, which is the premise of the next two',
+        has(sdec.flog_status(), 'bytes003'), tostring(sdec.flog_status()))
+  sdec.flog_path, sdec.flog_bytes = nil, nil
+  sdec.mode_exit('run 2 got nothing')
+  check('...but a run that captured nothing clears it rather than inheriting it',
+        has(sdec.flog_status(), 'on first capture'), tostring(sdec.flog_status()))
+  -- A NAME IS NOT A FILE EITHER: next_free() reserves one and the sink can still fail to open, which
+  -- leaves a path with zero bytes behind it. mode_exit nils flog_why, so 'NOT LOGGING' cannot cover it.
+  sdec.flog_path, sdec.flog_bytes = '/usb1/SERDEC/bytes004.txt', 0
+  sdec.mode_exit('name reserved, nothing written')
+  check('...and a reserved name with nothing written is not named as a log',
+        has(sdec.flog_status(), 'on first capture'), tostring(sdec.flog_status()))
+
+  -- A SWAPPED KEY MAKES THE REMEMBERED NAME A STRANGER'S. flog_alloc tracks ulog.keygen for exactly
+  -- this on the live path; the stash needs the same guard or the new key is told it holds the old
+  -- key's bytes.
+  if ulog ~= nil then
+    local keepgen = ulog.keygen
+    ulog.keygen = (keepgen or 0) + 1
+    sdec.flog_keygen = ulog.keygen
+    sdec.flog_path, sdec.flog_bytes = '/usb1/SERDEC/bytes005.txt', 999
+    sdec.mode_exit('run on this key')
+    check('a log closed on THIS key is named',
+          has(sdec.flog_status(), 'bytes005'), tostring(sdec.flog_status()))
+    ulog.keygen = ulog.keygen + 1
+    check('...and is not, once the key under it has been swapped',
+          has(sdec.flog_status(), 'on first capture'), tostring(sdec.flog_status()))
+    ulog.keygen = keepgen
+  end
+
   sdec.flog_why, sdec.flog_path, sdec.flog_bytes = keepw, keepp, keepb
-  sdec.flog_shut, sdec.flog_shutbytes = keeps, keepsb
+  sdec.flog_last, sdec.flog_lastbytes = keeps, keepsb
+  sdec.flog_lastgen = nil
+  -- And mode_exit's own leavings, so a section appended after this one does not inherit them. This
+  -- suite grows by appending, so "benign because it is last" expires the next time it is added to.
+  sdec.mode_exited, sdec.mode_exitbad = keepx, keepxb
+  sdec.ck_running, sdec.ck_stop, sdec.capmode = keepr, keepst, keepcm
 end
 
 print()

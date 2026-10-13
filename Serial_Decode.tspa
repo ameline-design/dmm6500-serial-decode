@@ -3,7 +3,7 @@ loadscript Serial_Decode
 -- $Product: DMM6500, DAQ6510, DMM7510, SMU2461
 -- $Tag: Serial, UART, Decode, Digitize
 -- $Description: Decodes an asynchronous serial line with the instrument's own digitizer: recovers baud rate, frame format and bytes, shows them as text or hex, and saves bytes to USB key. Everything auto-detects; everything can be locked.
--- $Version: 1.50
+-- $Version: 1.51
 -- $Requires: 1.7.0
 -- $Author: Ian Ameline
 -- $License: MIT
@@ -5331,8 +5331,9 @@ function sdec.flog_status()
   if not sdec.log_live() then return 'log: no USB key' end
   local path, n = sdec.flog_path, sdec.flog_bytes or 0
   if path == nil then
-    if sdec.flog_shut == nil then return 'log: on first capture' end
-    path, n = sdec.flog_shut, sdec.flog_shutbytes or 0
+    local gen = (ulog ~= nil and ulog.keygen) or 0
+    if sdec.flog_last == nil or sdec.flog_lastgen ~= gen then return 'log: on first capture' end
+    path, n = sdec.flog_last, sdec.flog_lastbytes or 0
   end
   local base = string.gsub(tostring(path), '^.*/', '')
   base = string.gsub(base, '%.txt$', '')
@@ -6643,12 +6644,12 @@ end
 sdec.buf_skip = {}
 do
   local nm = {'defbuffer1', 'defbuffer2',
-              '_G', '_LOADED', 'beeper', 'bit', 'buffer', 'cal', 'channel', 'coroutine', 'dataqueue',
-              'debug', 'define', 'diagnostics', 'digio', 'display', 'dmm', 'enum', 'errorqueue',
-              'eventlog', 'fan', 'file', 'format', 'gpib', 'io', 'ki', 'lan', 'localnode', 'math',
-              'memory', 'node', 'os', 'scan', 'scpi', 'script', 'serial', 'slot', 'smu', 'status',
-              'string', 'table', 'timer', 'trigger', 'tsplink', 'tspnet', 'uncertainty', 'upgrade',
-              'userstring'}
+              '_G', '_LOADED', 'acal', 'beeper', 'bit', 'buffer', 'cal', 'channel', 'coroutine',
+              'dataqueue', 'debug', 'define', 'diagnostics', 'digio', 'display', 'dmm', 'enum',
+              'errorqueue', 'eventlog', 'fan', 'file', 'format', 'fs', 'gpib', 'io', 'ki', 'lan',
+              'localnode', 'math', 'memory', 'node', 'os', 'scan', 'scpi', 'script', 'serial',
+              'slot', 'smu', 'status', 'string', 'table', 'timer', 'trigger', 'tsplink', 'tspnet',
+              'uncertainty', 'upgrade', 'userstring'}
   local i
   for i = 1, table.getn(nm) do sdec.buf_skip[nm[i]] = true end
 end
@@ -7204,7 +7205,7 @@ function sdec.log_new()
   ulog.flush()
   sdec.flog_path, sdec.flog_n, sdec.flog_why = nil, nil, nil
   sdec.flog_bytes = nil        -- or the next file reports the previous file's byte total
-  sdec.flog_shut, sdec.flog_shutbytes = nil, nil
+  sdec.flog_last, sdec.flog_lastbytes, sdec.flog_lastgen = nil, nil, nil
   if was ~= nil then
     local base = string.gsub(tostring(was), '^.*/', '')
     sdec.lognote = string.format('closed %s -- the next capture starts a new file', tostring(base))
@@ -7409,8 +7410,11 @@ function sdec.mode_exit(why, bad)
     sdec.ck_running, sdec.ck_stop = false, false
   end
   ulog.flush()
-  if sdec.flog_path ~= nil then
-    sdec.flog_shut, sdec.flog_shutbytes = sdec.flog_path, sdec.flog_bytes
+  if sdec.flog_path ~= nil and (sdec.flog_bytes or 0) > 0 then
+    sdec.flog_last, sdec.flog_lastbytes = sdec.flog_path, sdec.flog_bytes
+    sdec.flog_lastgen = sdec.flog_keygen
+  else
+    sdec.flog_last, sdec.flog_lastbytes, sdec.flog_lastgen = nil, nil, nil
   end
   sdec.flog_path, sdec.flog_n, sdec.flog_why = nil, nil, nil
   sdec.flog_bytes = nil        -- or the next file reports the previous file's byte total

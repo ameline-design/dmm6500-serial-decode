@@ -1858,13 +1858,16 @@ function sdec.flog_status()
   -- No key outranks both the filename and the promise, and has to be asked first: a path outlives
   -- the key -- docs/MEASUREMENTS.md, 'Why flog_status asks about the key before the filename'.
   if not sdec.log_live() then return 'log: no USB key' end
-  -- A finished 8 kB or 32 kB run drops the path on purpose, so the next opens a new numbered file:
-  -- mode_exit() stashes what it closed and this names that, 'on first capture' being false once one
-  -- exists. Only a run that never opened one, or Log New, which clears the stash, has nothing to name.
+  -- Any mode_exit drops the path so the next run opens a new numbered file, and remembers the name
+  -- only when that run wrote bytes to this key. So nothing to name means nothing written, Log New, or
+  -- a swapped key -- not merely that no file is open.
   local path, n = sdec.flog_path, sdec.flog_bytes or 0
   if path == nil then
-    if sdec.flog_shut == nil then return 'log: on first capture' end
-    path, n = sdec.flog_shut, sdec.flog_shutbytes or 0
+    -- And a swapped key makes a remembered name a stranger's, so the generation has to match: the
+    -- key, not the path, is what MODE_APPEND would extend. nil-safe for a build without usb_log.tsp.
+    local gen = (ulog ~= nil and ulog.keygen) or 0
+    if sdec.flog_last == nil or sdec.flog_lastgen ~= gen then return 'log: on first capture' end
+    path, n = sdec.flog_last, sdec.flog_lastbytes or 0
   end
   local base = string.gsub(tostring(path), '^.*/', '')
   base = string.gsub(base, '%.txt$', '')

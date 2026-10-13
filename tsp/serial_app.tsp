@@ -1202,21 +1202,21 @@ end
 -- raises, so the pcall returns success and the entry reaches the log regardless. serial, digio, gpib
 -- and tsplink file eight between them at each launch of a meter carrying only a scan card; channel,
 -- scan and slot are quiet only while that card is fitted; trigger is model-dependent, the SMU having
--- no rear-panel trigger connections. So the list is every namespace the firmware publishes and not
--- only the ones measured posting: a stranded reading buffer is never named after one, so a name here
--- costs nothing, while a name missing from here costs an entry the operator has to read past.
+-- no rear-panel trigger connections. So the list is every firmware namespace this app can name and
+-- not only the ones measured posting: a stranded reading buffer is never named after one, so a name
+-- here costs nothing, while a name missing from here costs an entry the operator has to read past.
 -- docs/UNDOCUMENTED.md, 'Indexing the namespace of an absent accessory card posts 1151 and raises nothing'.
 sdec.buf_skip = {}
 do
   -- The two default buffers are in the list for the other reason: they are real buffers, and they are
   -- resized and never deleted.
   local nm = {'defbuffer1', 'defbuffer2',
-              '_G', '_LOADED', 'beeper', 'bit', 'buffer', 'cal', 'channel', 'coroutine', 'dataqueue',
-              'debug', 'define', 'diagnostics', 'digio', 'display', 'dmm', 'enum', 'errorqueue',
-              'eventlog', 'fan', 'file', 'format', 'gpib', 'io', 'ki', 'lan', 'localnode', 'math',
-              'memory', 'node', 'os', 'scan', 'scpi', 'script', 'serial', 'slot', 'smu', 'status',
-              'string', 'table', 'timer', 'trigger', 'tsplink', 'tspnet', 'uncertainty', 'upgrade',
-              'userstring'}
+              '_G', '_LOADED', 'acal', 'beeper', 'bit', 'buffer', 'cal', 'channel', 'coroutine',
+              'dataqueue', 'debug', 'define', 'diagnostics', 'digio', 'display', 'dmm', 'enum',
+              'errorqueue', 'eventlog', 'fan', 'file', 'format', 'fs', 'gpib', 'io', 'ki', 'lan',
+              'localnode', 'math', 'memory', 'node', 'os', 'scan', 'scpi', 'script', 'serial',
+              'slot', 'smu', 'status', 'string', 'table', 'timer', 'trigger', 'tsplink', 'tspnet',
+              'uncertainty', 'upgrade', 'userstring'}
   local i
   for i = 1, table.getn(nm) do sdec.buf_skip[nm[i]] = true end
 end
@@ -1888,7 +1888,7 @@ function sdec.log_new()
   sdec.flog_bytes = nil        -- or the next file reports the previous file's byte total
   -- And the closed-file stash goes too, the opposite of what mode_exit() does with it: the operator
   -- asked for a new file, so the cell must stop naming the old one.
-  sdec.flog_shut, sdec.flog_shutbytes = nil, nil
+  sdec.flog_last, sdec.flog_lastbytes, sdec.flog_lastgen = nil, nil, nil
   if was ~= nil then
     local base = string.gsub(tostring(was), '^.*/', '')
     sdec.lognote = string.format('closed %s -- the next capture starts a new file', tostring(base))
@@ -2142,11 +2142,14 @@ function sdec.mode_exit(why, bad)
     sdec.ck_running, sdec.ck_stop = false, false
   end
   ulog.flush()
-  -- Remember what this closed before forgetting it. Dropping the path is the mechanism that gives the
-  -- next run a new numbered file, but flog_status() reads a nil path as nothing-logged-yet and so
-  -- promised a log 'on first capture' after an 8 kB record that had just written one.
-  if sdec.flog_path ~= nil then
-    sdec.flog_shut, sdec.flog_shutbytes = sdec.flog_path, sdec.flog_bytes
+  -- Remember what this run wrote, or flog_status() reads the dropped path as nothing-logged-yet. The
+  -- bytes and the key, not just a path: stream() returns early when a capture got nothing, so
+  -- flog_alloc never ran, and a set-only guard named the PREVIOUS run's file with its count.
+  if sdec.flog_path ~= nil and (sdec.flog_bytes or 0) > 0 then
+    sdec.flog_last, sdec.flog_lastbytes = sdec.flog_path, sdec.flog_bytes
+    sdec.flog_lastgen = sdec.flog_keygen
+  else
+    sdec.flog_last, sdec.flog_lastbytes, sdec.flog_lastgen = nil, nil, nil
   end
   sdec.flog_path, sdec.flog_n, sdec.flog_why = nil, nil, nil
   sdec.flog_bytes = nil        -- or the next file reports the previous file's byte total
