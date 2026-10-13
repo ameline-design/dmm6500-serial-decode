@@ -642,8 +642,8 @@ end
 
 sdec.noise_nsamp = 1000
 
--- Signal-to-noise on the two logic levels, in dB. Sets sdec.snr_db and sdec.noise_v, and is positive by
--- construction. docs/MEASUREMENTS.md, 'Noise is excluded by position, not by amplitude'.
+-- Signal-to-noise on the two logic levels, in dB. Positive because sig_levels has already refused a capture whose
+-- noise swallowed its swing. docs/MEASUREMENTS.md, 'Noise is excluded by position, not by amplitude'.
 function sdec.sig_noise(rd, n)
   local floor, sqrt, log = math.floor, math.sqrt, math.log
   sdec.snr_db, sdec.noise_v = nil, nil
@@ -771,8 +771,8 @@ function sdec.sig_edges(rd, n)
   return ne
 end
 
--- Which physical level is idle (the UART mark level): the level holding the longest single run. A gapless stream
--- of 0x00 defeats it, so it is only a prior and ua_autoformat scores both.
+-- Which physical level is idle (the UART mark level): the longest single run where the runs can settle it, the
+-- levels where they cannot. A prior either way, so ua_autoformat scores both polarities.
 function sdec.sig_idle(rd, n)
   local ne, ei, es = sdec.ne, sdec.ei, sdec.es
   if ne == 0 then
@@ -1089,7 +1089,7 @@ end
 sdec.fs_default = 1000000
 sdec.fs_sabit   = 8
 
--- Lowest listed sample rate giving at least `sabit` samples per bit at this baud rate.
+-- Lowest listed sample rate giving at least sdec.fs_sabit samples per bit at this baud rate.
 function sdec.fs_for_baud(baud)
   local top = sdec.rates[table.getn(sdec.rates)]
   if baud == nil or baud <= 0 then return sdec.fs_default end
@@ -1109,8 +1109,9 @@ sdec.fs_cap_tier = {{19200, 100000}}
 
 sdec.sabit_max = 12
 
--- `md` is optional and bounds the boost by what the buffer can afford, so the ceiling is per mode rather than per
--- baud. docs/MEASUREMENTS.md, 'What the ck_bufmax bound on oversampling is worth'.
+-- The rate that delivers `want` samples per bit, not the rate that would without overhead, and nil when no listed
+-- rate can. `md` is optional and bounds the boost by what the buffer can afford, so that ceiling is per mode
+-- rather than per baud. docs/MEASUREMENTS.md, 'What the ck_bufmax bound on oversampling is worth'.
 function sdec.fs_for_burst(baud, md)
   if baud == nil or baud <= 0 then return sdec.fs_default end
   local want = sdec.minsabit
@@ -1254,7 +1255,8 @@ function sdec.n_deliv(n)
   return math.floor(cap * (100 - pt) / 100)
 end
 
--- How many bytes one capture window can hold at this rate and format.
+-- How many bytes one capture window can hold, from acq_fs rather than the requested rate: the only way to know
+-- whether a message was seen whole. docs/MEASUREMENTS.md, 'window_bytes: one division, not two'.
 function sdec.window_bytes(baud, nbits, par, nstop)
   local fs = sdec.acq_fs or sdec.fs
   if baud == nil or baud <= 0 or fs == nil or fs <= 0 then return nil end
@@ -1277,10 +1279,11 @@ function sdec.fc_config()
   return true
 end
 
--- Stop the firmware popping a modal box over the app when unread event-log entries accumulate, which normal
--- operation produces -- 2731 and 2732 per armed capture, 2205 per byte-log probe. docs/UNDOCUMENTED.md, 'A modal
--- event dialog is cleared by display.changescreen()'. showevents selects which severities are displayed, not
--- which are logged, so sdec.errcount still sees them all. From hw_config, because another app may have set it.
+-- Keep the panel's event popups down to real faults. Normal operation files entries -- 2731 and 2732 per armed
+-- capture, 2205 per byte-log probe -- and showevents selects which severities are displayed, not which are
+-- logged, so sdec.errcount still sees them all. What raises a dialog for a given event is unresolved:
+-- docs/UNDOCUMENTED.md, 'eventlog.suppress(N) appears in no manual, and what it suppresses is not the log entry'.
+-- From hw_config, because another app may have set it.
 function sdec.quiet_events()
   localnode.showevents = eventlog.SEV_ERROR
   return true
@@ -1298,8 +1301,9 @@ function sdec.unmute_events()
   return true
 end
 
--- Remember the measurement mode the instrument was left in, choosing a digitize function deselecting the basic
--- one. A pair is saved, and only on the digitize side. One-shot: the entry value.
+-- Remember the measurement mode the instrument was left in, because choosing a digitize function deselects the
+-- basic one. Both branches save which table and which function; only the digitize branch saves the range, writing
+-- dmm.measure.range back being what would disable a meter's autorange. One-shot: the entry value.
 function sdec.mode_save()
   if sdec.entrymode ~= nil then return true end
   if sdec.dig == nil then return false end
@@ -1347,7 +1351,7 @@ function sdec.mode_restore()
 end
 
 -- Every detection setting back to automatic, and every rear-BNC option off: none reset themselves, and only a
--- power cycle nils `sdec`. The lock goes through unlock_all(), which knows all five.
+-- power cycle nils `sdec`. The lock goes through unlock_all(), the one place that knows all five force_ fields.
 function sdec.reset_options()
   sdec.unlock_all()
   sdec.proto = 'uart'
@@ -1400,7 +1404,10 @@ function sdec.hw_verify()
   return allok
 end
 
--- Apply the range, sample rate and trigger settings to the digitizer before a capture.
+-- Apply the range, sample rate and trigger settings to the digitizer before a capture. The fixed range and the
+-- 1 us aperture are both non-negotiable: autorange would rescale mid-capture, and APERTURE_AUTO rounds off the
+-- very edges this decoder measures. The rate goes in before the aperture, or an aperture too high for the rate
+-- is adjusted silently.
 function sdec.hw_config()
   sdec.quiet_events()
   sdec.fs_select()
@@ -1413,8 +1420,7 @@ function sdec.hw_config()
   sdec.hw_verify()
 end
 
--- Clamp a request to what the buffer can hold, reserve included. A store past capacity posts 4915 and truncates
--- the capture.
+-- Clamp a request to what the buffer can hold, reserve included. A store past capacity posts 4915.
 function sdec.acq_fit(n, buf)
   if buf == nil then return n end
   local cap = nil
@@ -1478,6 +1484,10 @@ function sdec.acq_end(buf)
   return math.floor(e)
 end
 
+-- Copy the capture out of the reading buffer into a plain Lua array, once: `buf.readings` is a proxy, so every
+-- index is a firmware round trip. docs/MEASUREMENTS.md, 'Reading a sample out of a reading buffer'. Chunked so
+-- the liveness hook costs nothing per sample: a modulo inside the loop would land on all 20 000 iterations of the
+-- hottest loop in the acquisition path, where slicing the range leaves it what it was.
 function sdec.acq_copy(buf, n)
   local rd = buf.readings
   local t = {}
@@ -1577,8 +1587,7 @@ function sdec.fc_credit()
   return ok
 end
 
--- Wire the TRIGGER key to blender 2's latch and discard anything already latched. Returns whether the latch is
--- available.
+-- Wire the TRIGGER key to blender 2's latch and discard anything latched. -> whether the latch is available.
 function sdec.cancel_setup()
   local b = sdec.cancel_blender
   local ok = pcall(function()
@@ -1591,8 +1600,7 @@ function sdec.cancel_setup()
   return ok
 end
 
--- Discard any latched press, because the operator who pressed TRIGGER to stop the last run must not stop this
--- one too.
+-- Discard any latched press: the operator who stopped the last run must not stop this one too.
 function sdec.cancel_clear()
   if not sdec.cancel_ok then return false end
   return (pcall(trigger.blender[sdec.cancel_blender].clear))
@@ -1720,7 +1728,9 @@ end
 
 
 -- Capture armed on a signal edge, on the front-panel TRIGGER key or on the rear BNC, degrading to a free-running
--- read if the source is refused.
+-- read if the source is refused. It keeps sdec.pretrig percent of the buffer from before the trigger, because a
+-- start bit is only a start bit if the line was at mark first, and the comparison runs on the analog board's
+-- Cortex-M4 rather than in Lua, so arming costs nothing per sample.
 function sdec.acq_triggered(n, slope)
   local buf = sdec.buf
   buf.clear()
@@ -3239,7 +3249,7 @@ end
 -- window can be entirely the pre-trigger wait, so a search that looks there and nowhere else refuses a
 -- recording whose bytes are all present. leadmax is the caller's and cannot be derived from ntotal,
 -- the reserve coming out of the buffer's capacity; nil means no reserve. docs/MEASUREMENTS.md, 'An
--- armed record opens on silence' and 'ck_prime_tries'.
+-- armed record opens on silence' and 'ck_prime_tries = floor(leadmax / W) + 2'.
 function sdec.ck_prime_tries(leadmax)
   local W = sdec.ck_win_n
   if W == nil or W < 1 then return 1 end
@@ -5398,7 +5408,7 @@ end
 
 -- The streaming status row: its text and its bar, written together so the two cannot disagree about
 -- which phase the run is in. sdec.progress and sdec.progress_samples are the callers, one per phase.
--- Never raises, and the one guard that promises it lives here, not at the three call sites:
+-- Never raises, and the one guard that promises it lives here, not at either call site:
 -- ck_status() is a 130-line text builder, so "this cannot raise" is a proof that would have to be
 -- redone at every edit, and this row is painted from the capture loop, which cannot afford depth.
 function sdec.progress_row()
@@ -7158,7 +7168,6 @@ function sdec.page_next()
   return sdec.ui_refresh()
 end
 
--- Show the previous page of bytes.
 function sdec.page_prev()
   sdec.ui_paged = true
   if sdec.ui_page > 0 then sdec.ui_page = sdec.ui_page - 1 end
@@ -7358,7 +7367,7 @@ end
 -- Flush the current capture mode's files and say why. `why` goes on the note row. Returns the mode that
 --   [...]
 -- protected failure gets narrowed to a boolean nobody checks, which is this app's dominant defect class.
--- Never raises for any measured failure, so the four callers call it bare; see ulog.line for the one
+-- Never raises for any measured failure, so every caller calls it bare; see ulog.line for the one
 -- unmeasured case.
 function sdec.mode_exit(why, bad)
   local was = sdec.capmode

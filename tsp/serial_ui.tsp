@@ -955,7 +955,7 @@ function sdec.ui_notes()
   -- reaches'.
   local hs, onscreen = sdec.ui_head_extent()
   if hs ~= nil then
-    -- It states the extent and stops, the note having 556 px beside the page counter. Singular and
+    -- The note states the extent and stops, having 556 px beside the page counter. Singular and
     -- plural are spelled out, a parenthesised plural reading as a placeholder nobody filled in.
     if onscreen then
       if hs == 1 then
@@ -964,7 +964,7 @@ function sdec.ui_notes()
         add(string.format('began mid-byte -- the first %d bytes are misaligned.', hs or 0))
       end
     else
-      -- Where those BYTES are distinguishes this branch: the ones it names are not the ones on the
+      -- Where the bytes went distinguishes this branch: the ones this note names are not the ones on the
       -- panel. And there is not always a file -- the panel cited one for 14190 discarded bytes.
       local where = ', in the file.'
       if sdec.ck_tot ~= nil and sdec.ck_tot.path == nil then
@@ -1957,7 +1957,7 @@ end
 
 -- The streaming status row: its text and its bar, written together so the two cannot disagree about
 -- which phase the run is in. sdec.progress and sdec.progress_samples are the callers, one per phase.
--- Never raises, and the one guard that promises it lives here, not at the three call sites:
+-- Never raises, and the one guard that promises it lives here, not at either call site:
 -- ck_status() is a 130-line text builder, so "this cannot raise" is a proof that would have to be
 -- redone at every edit, and this row is painted from the capture loop, which cannot afford depth.
 function sdec.progress_row()

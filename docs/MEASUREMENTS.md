@@ -71,7 +71,7 @@ used.
 
 Samples per press = W x n, and n = floor(budget / (W x ck_win_us)), so raising n by narrowing W
 cannot buy more than budget / ck_win_us samples per press: **9375** at 0.45 s. `ck_win_for()` takes
-the smaller of two bounds (`tsp/chunk_decode.tsp:380-383`), and the one that binds today is the other
+the smaller of two bounds (`sdec.ck_win_for()`), and the one that binds today is the other
 one -- budget / ck_smp_us = 0.45 / 73 us = **6164**, not the ck_win_us bound at all. That 1.52x is the
 whole prize and taking it needs W <= 4687, i.e. n = 2. Three constraints then do not fit
 at 0.5 s -- n = 2, a W that stays a useful width (>= 5000, asserted in `test_serial.lua`), and the
@@ -1988,8 +1988,8 @@ loaded the model on an event nothing was configured to raise, then offered advic
 that cannot help at any value.
 
 Both routes are closed. The comparator verdict now raises rather than loading an unraisable model --
-`error('no analog comparator on this digitizer', 0)` at `tsp/serial_core.tsp:1928` -- and the armed
-wait is polled from inside via `sdec.arm_wait_s()` at `tsp/serial_app.tsp:1051` and `:1083` instead of
+`error('no analog comparator on this digitizer', 0)` in `sdec.acq_triggered()` -- and the armed
+wait is polled from inside via `sdec.arm_wait_s()` in `sdec.stream_acquire()` instead of
 blocking on `trigger.model`, so the panel stays live for the whole wait. Verified in the code; the
 absence of the freeze has not been re-measured on hardware.
 
@@ -2242,8 +2242,8 @@ was refused or merely did not free enough -- because on the measured pool this b
 only where the reclaim could not help, meaning a meter that refused the writes or will not report its
 sizes. Reaching it also hands the capacities back, since that launch is not happening.
 
-**Derived, not measured.** It is the 8 kB mode's own capacity under the rule `acq_cap()` applies at
-`tsp/serial_app.tsp:424`, with `sdec.pretrig` = 5 from `tsp/serial_core.tsp:97`:
+**Derived, not measured.** It is the 8 kB mode's own capacity under the rule `sdec.acq_cap()` states
+and `sdec.stream_begin()` re-applies, with `sdec.pretrig` = 5:
 
     nsmp = ceil(8192 x 10 x 100000 / 9600)       =   853 334
     cap  = ceil(nsmp x 100 / (100 - 5)) + 100    =   898 347

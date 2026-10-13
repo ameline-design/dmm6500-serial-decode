@@ -389,8 +389,8 @@ function sdec.stream_begin()
   -- Headroom, as acq_cap() adds in a triggered mode and this path adds always: a store past capacity
   -- is 4915, 20-30 a capture.
   local cap = nsmp + 100
-  -- Triggered modes only, and the reserve comes out of capacity here -- nsmp * 100/(100 - pretrig) --
-  -- where acq_cap() puts it on top of the count. Out of capacity is what the firmware does.
+  -- Trigger mode alone, not arm_silent(): the silence probe reads into this buffer. The reserve comes
+  -- out of capacity here, nsmp*100/(100-pretrig), where acq_cap() puts it on top of the count.
   if sdec.trigmode ~= 'free' and (sdec.pretrig or 0) > 0 then
     cap = math.ceil(nsmp * 100 / (100 - sdec.pretrig)) + 100
     -- Overrunning ck_bufmax would turn the largest modes into an allocation refusal, a worse answer.
@@ -592,8 +592,8 @@ end
 
 -- Arm and return, for the press-driven path. The buffer fills in hardware from here.
 function sdec.stream_start()
-  -- The flow-control counters belong to a run, and this is the other kind: nothing cleared them here, so
-  -- a press-driven recording reported a bound it never hit. Not in stream_begin(), which runs per window.
+  -- These counters belong to a run and this is the other kind: record_run() clears them at entry and
+  -- nothing did here, so a press-driven recording reported a bound it never hit. Not stream_begin().
   sdec.fc_win, sdec.fc_bytes, sdec.fc_end, sdec.fc_secs = 0, 0, nil, 0
   local ok, why = sdec.stream_begin()
   if not ok then return false, why end
@@ -640,7 +640,8 @@ function sdec.stream_decode(got)
   -- nocap must be explicit: md.cap = nil means unlimited, and Lua cannot tell it from a missing key.
   local opts = {maxbytes = md.cap, nocap = (md.cap == nil),
                 progress = sdec.ck_progress}
-  -- Only this path knows it. docs/MEASUREMENTS.md, 'An armed record opens on silence'.
+  -- How much silence the record may open with, which only this path knows. docs/MEASUREMENTS.md,
+  -- 'An armed record opens on silence'.
   if sdec.strm_armed and sdec.buf ~= nil and (sdec.pretrig or 0) > 0 then
     local cap = nil
     if pcall(function() cap = sdec.buf.capacity end) and cap ~= nil then
@@ -959,7 +960,7 @@ function sdec.stream_acquire(nsmp)
   --   stopped  the operator pressed Capture (Stop) or Mode (abort)
   while true do
     local have = buf.n or 0
-    -- Measured from inside the instrument, because a command from the host aborts an initiated model.
+    -- Leaving the wait block is the trigger firing; measured from inside, a host command aborting it.
     if not armdone and sdec.trig_waiting() ~= true then
       armdone = true
       quiet = 0
@@ -1844,7 +1845,6 @@ function sdec.page_next()
   return sdec.ui_refresh()
 end
 
--- Show the previous page of bytes.
 function sdec.page_prev()
   sdec.ui_paged = true
   if sdec.ui_page > 0 then sdec.ui_page = sdec.ui_page - 1 end
@@ -2089,7 +2089,7 @@ end
 -- message only when it is set. Not sniffed out of `why` -- matching on words like 'failed' is how a
 -- protected failure gets narrowed to a boolean nobody checks, which is this app's dominant defect class.
 --
--- Never raises for any measured failure, so the four callers call it bare; see ulog.line for the one
+-- Never raises for any measured failure, so every caller calls it bare; see ulog.line for the one
 -- unmeasured case.
 function sdec.mode_exit(why, bad)
   -- One function for every way out -- Mode, an idle line, a completed run, End App -- so all flush the

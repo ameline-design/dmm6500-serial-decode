@@ -222,7 +222,7 @@ end
 -- window can be entirely the pre-trigger wait, so a search that looks there and nowhere else refuses a
 -- recording whose bytes are all present. leadmax is the caller's and cannot be derived from ntotal,
 -- the reserve coming out of the buffer's capacity; nil means no reserve. docs/MEASUREMENTS.md, 'An
--- armed record opens on silence' and 'ck_prime_tries'.
+-- armed record opens on silence' and 'ck_prime_tries = floor(leadmax / W) + 2'.
 function sdec.ck_prime_tries(leadmax)
   local W = sdec.ck_win_n
   if W == nil or W < 1 then return 1 end

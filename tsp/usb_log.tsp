@@ -2,7 +2,7 @@
 -- A .tspa from the Apps menu has nowhere to print, and the event log holds only firmware errors and
 -- is cleared by whatever happens next. `ulog` is the one exception to the one-global rule: sdec and
 -- fftsa share it. No key is normal, so every call degrades to a no-op, and no file call raises --
--- docs/MEASUREMENTS.md, 'The USB file API'.
+-- docs/MEASUREMENTS.md, 'No file call raises'.
 
 ulog = ulog or {}
 
@@ -278,7 +278,7 @@ end
 -- First unused '<prefix>NNN<ext>' on the key. A path, or nil if every NNN is taken; 1000 names.
 function ulog.next_free(prefix, ext, limit)
   if limit == nil then limit = 1000 end
-  -- The scan posts 2205 per miss, using the failure as its answer; with no directory it is worthless.
+  -- fs.is_file per candidate, posting nothing; with no directory the scan is worthless, so dir first.
   local dok, dwhy = ulog.ensuredir()
   if not dok then
     ulog.idx_why = tostring(dwhy)
