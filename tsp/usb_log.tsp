@@ -1,217 +1,95 @@
--- usb_log.tsp -- best-effort debug logging to the USB flash drive, for TSP apps
--- on Keithley Touch-Test-Invent instruments (Lua 5.0.2).
---
--- A .tspa launched from the Apps menu has nowhere to print: no host socket is
--- attached, `print()` goes to an interface nobody is reading, and the event log
--- holds only firmware errors and is cleared by whatever happens next. So the two
--- failure modes that matter most -- a fault on a front-panel launch, and a fault
--- just before a firmware panic -- leave no evidence. A file on the USB key
--- survives both.
---
--- NAMESPACE: the one deliberate exception to the one-global rule, since this is
--- shared between the serial decoder (`sdec`) and the FFT analyser (`fftsa`).
--- Everything hangs off `ulog`.
---
--- API (docs/DMM6500-901-01B_Sept_2019_Ref.txt, file.open at 14-255):
---   file.open(path, file.MODE_APPEND) -> file number, or NIL on failure
---   file.write(n, s) / file.flush(n) / file.close(n)
---   MODE_APPEND creates the file if absent; paths are absolute, USB root /usb1/.
---   file.mkdir("path") at 14-255 creates ONE directory, and does NOT create a file's parent. It never
---   raises and returns nothing; a failure posts an EVENT instead. See THE DIRECTORY below -- the manual
---   is wrong about this call in two ways, and every claim there was measured.
---
--- The nil return matters: no USB key is a NORMAL condition, so every call here
--- degrades to a no-op rather than raising. An app must never fail because logging
--- failed.
+-- usb_log.tsp -- debug logging to the USB key, for TSP apps on Keithley TTI instruments (Lua 5.0.2).
+-- A .tspa from the Apps menu has nowhere to print, and the event log holds only firmware errors and
+-- is cleared by whatever happens next. `ulog` is the one exception to the one-global rule: sdec and
+-- fftsa share it. Paths are absolute, USB root /usb1/. No key is normal, so every call degrades to a
+-- no-op. No file call raises; failures post events (docs/vendor/04, docs/UNDOCUMENTED.md).
 
 ulog = ulog or {}
 
--- DECLARED, NOT ASSIGNED, for the same reason as the sdec state: opening the
--- installed App re-runs this whole file, and a file-scope `ulog.fh = nil` would
--- erase the only reference to an already-open file before anything could close it,
--- leaking a firmware file descriptor and losing whatever was still buffered. Every
--- default below therefore uses `or`, and the handle is not assigned at all.
+-- Declared, not assigned: opening the installed App re-runs this file, and a file-scope
+-- `ulog.fh = nil` would erase the only reference to an open file before anything could close it.
+-- Firmware descriptors are not reclaimed until a power cycle, so every default below uses `or`.
 -- ulog.fh      -- file number from file.open, or nil
 -- ulog.lasterr
--- EVERY FILE THE APP WRITES LIVES HERE, and this is the only place the directory is named: the byte
--- log, the Save reports and this event log all build their paths from it, so they cannot disagree about
--- where they are. A bare /usb1/ scatters a dozen files across the root of a key the operator also uses
--- for other instruments.
+-- The directory is named once here; the byte log, the Save reports and this log all build on it.
 ulog.usbdir    = ulog.usbdir or '/usb1/SERDEC'
 ulog.path      = ulog.path or (ulog.usbdir .. '/dmm6500_log.txt')
--- MIGRATED, NOT JUST DEFAULTED. Every assignment here uses `or` so an App reload keeps live state, and
--- that is exactly what strands a path: loading this build over one that wrote to the key's ROOT inherits
--- the root path and quietly goes on writing there, with no power cycle to clear it. Only the exact old
--- default is moved, so a deliberate override survives.
+-- Migrated, not just defaulted: the `or` above would inherit a root path from an older build and go
+-- on writing there. Only the exact old default moves, so an override survives.
 if ulog.path == '/usb1/dmm6500_log.txt' then ulog.path = ulog.usbdir .. '/dmm6500_log.txt' end
 ulog.on        = ulog.on or false      -- true once a file is genuinely open
 ulog.nlines    = ulog.nlines or 0
 ulog.dropped   = ulog.dropped or 0     -- lines refused after the cap
 ulog.maxlines  = ulog.maxlines or 20000  -- cap, so a runaway loop cannot fill the key
--- LINES WRITTEN THIS POWER CYCLE, ACROSS EVERY RE-OPEN, and the meter the cap above is really about.
--- ulog.nlines restarts at every ulog.open() because it numbers the rows of ONE file -- so a key that
--- is pulled and replaced restarts the allowance with it, and at 2 Hz a flapping contact does that
--- without anybody pressing anything. This one does not reset.
+-- nlines numbers the rows of one file and restarts at every open(); nwritten bounds the power cycle.
+-- A key pulled and replaced restarts the allowance, and at 2 Hz a flapping contact does that unasked.
 ulog.nwritten  = ulog.nwritten or 0
 ulog.tag       = ulog.tag or '?'       -- short app name, prefixed to every line
--- Booleans need an explicit nil test: `or true` would resurrect a deliberate false.
+-- Booleans need an explicit nil test: `or true` would resurrect a false.
 if ulog.enabled == nil then ulog.enabled = true end
 if ulog.autoflush == nil then ulog.autoflush = true end
--- THE KEY WENT AWAY WHILE THE APP WAS RUNNING -- see ulog.keylost() for why this is a latch and
--- not a retry. keybad means nothing more will be attempted on the key; keywhy is the sentence for
--- the status row; keyout records that the slot has since been seen EMPTY, which is the only
--- evidence that clears the latch.
+-- keybad stops further attempts, keywhy is the status-row sentence, and keyout records the slot seen
+-- empty, which is the only evidence that clears keybad. keygen counts insertions, so a caller
+-- holding a name chosen on a departed key -- sdec.flog_path -- knows to pick another. keyopen is the
+-- generation the open log belongs to.
 if ulog.keybad == nil then ulog.keybad = false end
 if ulog.keyout == nil then ulog.keyout = false end
 -- ulog.keywhy  -- why writing stopped, or nil
--- Bumped each time a key is INSERTED, so a caller holding a filename it chose on a key that has
--- gone -- sdec.flog_path -- can tell it must choose another. keyopen is the generation the open log
--- belongs to; ulog.resume() re-opens when the two differ.
 ulog.keygen    = ulog.keygen or 0
 ulog.keyopen   = ulog.keyopen or 0
 
--- ============================================================================
--- THE DIRECTORY, AND WHY IT IS FOUND THE WAY IT IS
---
--- REQUIREMENT: the instrument must never pop an error at the operator. Everything below follows from
--- that plus what firmware 1.7.17a actually does -- all of it measured, none of it from the manual, which
--- is wrong about this call in two separate ways.
---
---   * file.mkdir NEVER RAISES. Every call returns normally and pcall reports ok=true, including calls
---     that did nothing. There is no return value and no exception, so pcall tells you nothing.
---   * A FAILED mkdir POSTS EVENT 2208, 'Cannot create directory'. That is not a Lua error, so pcall
---     cannot suppress it: it reaches the event log and pops up on the panel.
---   * A NAME THAT ALREADY EXISTS FAILS THAT WAY. So a speculative mkdir files a 2208 on a healthy
---     instrument, once per call.
---   * A BARE NAME ALWAYS FAILS: file.mkdir('SERDEC') posts 2208, file.mkdir('/usb1/SERDEC')
---     succeeds silently. The reference's Details are right that the path must be absolute; the worked
---     example on the same page, file.mkdir("TestData5"), is wrong and is not imitated.
---   * OPENING A MISSING PATH POSTS 2205, 'File not found' -- so probing the directory to see whether it
---     is there is not free either, and neither guess is safe.
---
--- So the only silent way to tell is to read something that is always present: /usb1 itself opens for
--- read and yields its RAW FAT DIRECTORY TABLE, in which the entry can be found by name. And with no key
--- inserted even /usb1 posts 2205 -- hence usbdriveexists() first, which answers 0 silently.
---
--- Order, therefore: ask whether there is a key, list the root, and create only on a genuine absence.
--- Nothing here posts an event in any of those three cases.
--- ============================================================================
+-- Finding the directory, with no free way to ask whether one exists on firmware 1.7.17a. file.mkdir
+-- returns nothing, never raises, and posts 2208 on failure -- including for a name that already
+-- exists, so a speculative mkdir files one per call. A bare name always fails; '/usb1/SERDEC'
+-- succeeds silently, and the reference's own file.mkdir("TestData5") example is wrong. Opening a
+-- missing path posts 2205. So: usbdriveexists() first, which answers 0 silently; then read /usb1,
+-- which yields its raw FAT directory table; then create only on a genuine absence.
 
--- Is a key in the slot? -> true, or false when the firmware says there is none.
---
--- THE GATE IN FRONT OF EVERYTHING. It is the only question about the key that can be asked without
--- naming a path, and naming a path that is not there posts 2205 -- so every open and every write goes
--- behind this, and answers 'no key' silently rather than filing an event about it.
---
+-- Is a key in the slot? The only question answerable without naming a path.
 function ulog.haskey()
   if file.usbdriveexists() == 0 then return false end
   return true
 end
 
--- STOP TOUCHING THE KEY, until one is inserted. -> true.
---
--- A LATCH, NOT A REASON PER ATTEMPT, because a write to a key pulled from under a running app does
--- not fail in Lua. Measured on 1.7.17a, key out, handle still open:
---
---     file.write(stale, s)   pcall ok = TRUE, err = nil   posts 2200 'File write error'
---     file.flush/close       pcall ok = true              posts nothing
---     file.open(path, ...)   returns NIL                  posts 2224 'USB flash device not present'
---     file.usbdriveexists()  returns 0                    posts nothing
---
--- AND NO FILE CALL RAISES AT ALL, measured separately on the same firmware with the key PRESENT --
--- which is why nothing in this module guards one any more:
---
---     file.write to a CLOSED handle       returns, posts 2200
---     file.flush  on a closed handle      returns, posts 2211
---     file.close  on a closed handle      returns, posts 2202
---     file.read   on a closed handle      returns NIL, posts 2201
---     file.read   on a WRITE handle       returns NIL, posts 2201
---     file.open   on a bad path           returns NIL, posts 2216
---     fs.is_file  bad path or garbage     returns false, posts nothing
---     file.write(fh, {})  -- a TABLE      returns, posts 1138 'parameter 2, expected type string'
---
--- THE TABLE ROW IS THE STRONGEST OF THEM: even a Lua ARGUMENT-TYPE error becomes a posted event
--- rather than a raise. Across every shape measured -- a dead handle, a wrong mode, a bad path, a
--- wrong argument type -- a pcall round a file call returned TRUE, so any verdict taken from one is a
--- CONSTANT, and presence is the only file failure this application can observe. That is what keyok()
--- is for.
---
--- NOT PROVED UNIVERSAL, AND THE DIFFERENCE MATTERS. These are argument shapes on a HEALTHY key; a
--- key that is PRESENT AND REFUSING -- full, or write-protected -- has still never been exercised.
--- docs/vendor/04 keeps that open deliberately and docs/vendor/repro-04b-full-key.tsp would settle
--- it. Treat "no file call raises" as the measured rule it is, not a theorem.
---
--- Line one is the bug: ulog.line's failure branch is reached only by a pcall returning false, so it
--- never ran, and every logged line posted a 2200 modal box at the operator. One Mode press does it.
---
--- The handle is closed here. That costs no event, and it is not optional: a firmware descriptor is
--- not reclaimed until a power cycle, and with ulog.on false nothing else would ever close it.
+-- Stop touching the key until one is inserted. A latch, not a reason per attempt: a write to a key
+-- pulled from under a running app returns normally and posts 2200, file.open then returns nil and
+-- posts 2224, and usbdriveexists returns 0 silently. Presence is the only file failure this app can
+-- observe. A key present and refusing -- full, or write-protected -- is unmeasured;
+-- docs/vendor/repro-04b-full-key.tsp would settle it.
 function ulog.keylost(why)
   ulog.keybad = true
   ulog.keywhy = tostring(why or 'the USB key stopped accepting writes')
   ulog.lasterr = ulog.keywhy
-  -- The confirmed directory belongs to the key that has gone, so nothing is known about the next one.
+  -- The confirmed directory belonged to the departed key.
   ulog.dirok = nil
-  -- Not yet: the latch is cleared by seeing the slot EMPTY and then full again, and this may be
-  -- running on a key that is still physically in it. ulog.keyok() sets this when it sees one go.
+  -- keyok() sets this on seeing the slot empty. This may be running on a key still in it.
   ulog.keyout = false
   local h = ulog.fh
   ulog.fh, ulog.on = nil, false
+  -- Closed here or never: with ulog.on false nothing else would.
   if h ~= nil then file.close(h) end
   return true
 end
 
--- Is the key there AND still being written to? -> true or false. THE GATE EVERY WRITER USES.
---
--- haskey() asks about the hardware; this asks the question a caller has, which is whether a write
--- should be attempted at all. Same cost -- one usbdriveexists, measured at 237 us with a key in, no path named and
--- no event -- so it is askable per line, per capture, per row and per panel refresh.
---
--- WHAT IT DOES NOT COVER: a key that is PRESENT AND REFUSING. keylost() is called from the no-key
--- branch below and from nowhere else, so keybad is only ever set with the slot empty. A full or
--- write-protected key is the unmeasured case -- every figure in keylost's table is the PULLED key --
--- and the writers answer it the older way, by reporting the failure they get. The keyout rule below
--- is therefore insurance against a latch this file does not currently set, not a live path.
---
--- A key that comes back clears the latch, which is not the mid-run recovery open_write refuses:
--- nothing is retried on the key that failed. 'Slot empty, then slot full' is evidence about a
--- different key, so nothing learned from the departed one is kept. PRESENCE ALONE IS NOT ENOUGH, and
--- the rule is written for a latch set with the slot full: clearing on presence would retry such a key
--- once per capture. Nothing sets it that way today -- see above -- so this is the guarantee, not a
--- path with a caller.
+-- Is the key there and still accepting writes? One usbdriveexists, 237 us, no path and no event, so
+-- it is askable per line, per capture and per panel refresh. keylost() is called only from the no-key
+-- branch, so keybad is set only with the slot empty; a refusing key is reported by its writer.
 function ulog.keyok()
   if not ulog.haskey() then
-    -- NOT DEBOUNCED, AND THE COST OF THAT IS KNOWN. One absent read latches, so a key that FLAPS
-    -- pays a full recovery per flap: the handle closes, the confirmed directory goes, a keygen is
-    -- spent, the next write re-lists the 64 kB root and the byte log starts a new bytesNNN.txt. At
-    -- 2 Hz that now happens with no press involved. Requiring two consecutive reads would avoid it,
-    -- and is deliberately not done: no spurious usbdriveexists() zero has ever been observed, and
-    -- debouncing would mean a measured property -- that the FIRST write after a pull is refused and
-    -- logging stops with it -- held only on the second poll.
-    -- A key that was never there is not a key that went away: an app launched without one must stay
-    -- silent and keep 'no USB key' on the status row rather than 'removed while running'. ulog.on and
-    -- ulog.dirok are the marks a working key leaves.
-    --
-    -- IT STILL SETS keyout BELOW, so the first insertion does advance keygen even though nothing was
-    -- lost. That is wanted: the app has learned nothing about this key either way, and flog_alloc's
-    -- reset is a no-op when there is no name yet.
+    -- Not debounced. One absent read latches, so a flapping key pays a full recovery per flap: the
+    -- handle closes, the directory cache goes, keygen advances, the next write re-lists the 64 kB
+    -- root and the byte log starts a new bytesNNN.txt. No spurious zero has been seen, and
+    -- debouncing would delay the measured first-write refusal to the second poll. A key that was
+    -- never there is not a key that went away; ulog.on and dirok are the marks a working key leaves.
     if not ulog.keybad and (ulog.on or ulog.dirok ~= nil) then
-      -- 'no USB key' LEADS, because that is the state, and every caller's wording is built on it.
-      -- What follows is the part the ordinary keyless run does not have: it was working a moment ago.
       ulog.keylost('no USB key -- removed while running')
     end
     ulog.keyout = true          -- after keylost, which clears it
     return false
   end
-  -- A KEY IS IN THE SLOT, AND keyout MEANS ONE WAS INSERTED: the slot has been seen empty since the
-  -- last time this said yes. That is the one transition worth acting on, and it is the same event
-  -- whether the app started without a key or had one pulled -- so both recover by the same path.
-  -- Nothing is known about this key, so the confirmed directory goes and keygen advances, which is
-  -- what tells sdec.flog_alloc() to choose a new name and ulog.resume() to re-open the log.
-  --
-  -- A LATCH SET WITH THE KEY STILL IN THE SLOT DOES NOT CLEAR HERE, because keyout is false. Only
-  -- ulog.keylost() called by hand reaches that state today; the rule exists so that a future caller
-  -- cannot get a retry-per-capture by accident.
+  -- keyout means one was inserted. Nothing is known about it, so the directory cache goes and keygen
+  -- advances, which tells flog_alloc() to pick a new name and resume() to re-open. Clearing on
+  -- presence alone would retry a latched key once per capture.
   if ulog.keyout then
     ulog.keybad, ulog.keywhy, ulog.keyout = false, nil, false
     ulog.dirok = nil
@@ -222,22 +100,11 @@ function ulog.keyok()
   return true
 end
 
--- Re-open the log on a key that has just been inserted. -> true if logging is live again.
---
--- THE RECOVERY POINT FOR BOTH ORDERS OF EVENTS: an app started with no key, and an app whose key was
--- pulled and put back. Everything else about a new key re-establishes itself at the next write --
--- ensuredir re-confirms the directory, flog_alloc picks a new byte-log name -- but the debug log is
--- held OPEN across captures, so nothing would ever re-open it and the session would run unlogged.
---
--- KEYED ON keygen, NOT ON PRESENCE, so a key that is simply absent costs one usbdriveexists and no
--- open attempt, and one insertion causes exactly one re-open however many callers ask.
---
--- ONE ATTEMPT PER INSERTION, AND THAT IS THE WHOLE ALLOWANCE. ulog.open() records the generation on
--- both outcomes, so an open that FAILS on a key that is physically present -- a slot reporting a key
--- before its filesystem is usable, say -- is not retried until another key arrives, and the operator
--- sees 'log: NOT LOGGING' with a good key in. The byte log does not share that: flog_alloc retries
--- per capture. Accepted deliberately, because the alternative is an open attempt per log line, and a
--- failed open is the one thing here that posts an event.
+-- Re-open the log on a key just inserted. ensuredir and flog_alloc re-establish themselves at the
+-- next write, but the debug log is held open across captures, so nothing else would re-open it.
+-- Keyed on keygen, so one insertion causes one re-open however many callers ask, and one attempt per
+-- insertion is the whole allowance -- the alternative is an open attempt per line, and a failed open
+-- posts an event. An open that fails on a present key waits for another, showing 'log: NOT LOGGING'.
 function ulog.resume()
   if not ulog.enabled then return false end
   if not ulog.keyok() then return false end
@@ -246,71 +113,41 @@ function ulog.resume()
   return ulog.open(nil, false)
 end
 
--- Is `name` listed in the USB root? -> true, false, or nil when the question could not be asked.
+-- Is `name` listed in the USB root? true, false, or nil when the root could not be read. nil taken
+-- as absence orders a mkdir on no evidence and posts 2208, so the two must not be merged.
 --
--- nil AND false ARE DIFFERENT and the caller must not merge them: false means the root was read and the
--- name was not in it, nil means the root could not be read at all. Treating nil as absence would order a
--- mkdir on no evidence, which is how a 2208 gets posted.
---
--- ONE EXACT SEARCH, AND THAT IS WHY THE DIRECTORY IS NAMED 'SERDEC'. Measured on firmware 1.7.17a: a name
--- of eight characters or fewer, uppercase, is stored as a single plain ASCII 8.3 entry, contiguous in the
--- table, and 'SERDEC' is found by one string.find. A LONGER name is not:
---
---     SERIALFILES = false     -- no plain entry exists for an 11-character name
---     utf16_full  = false     -- and the UTF-16LE long name is NOT CONTIGUOUS
---     utf16_5     = true      -- only its first FIVE characters are
---     SERIAL~1    = true      -- there is a tilde alias, but its number is not predictable
---
--- FAT splits a long-name record's characters into three fields -- 5, then 6, then 2 -- with record
--- metadata in between, so no search for the whole name can match. An earlier version of this searched the
--- full UTF-16 run, found nothing, and ordered a mkdir on a directory that existed: 2208 on the panel, and
--- no logging for the rest of the run. A five-character probe had 'confirmed' the approach.
---
--- Still not a FAT parser: a FILE of this name would satisfy the search, as could a deleted entry whose
--- bytes remain. Both err towards 'it is there', which costs a failed open and a reported reason rather
--- than an event -- the safer of the two directions.
+-- The directory is 'SERDEC' because on 1.7.17a only a name of eight characters or fewer in upper
+-- case is a single contiguous 8.3 entry. FAT splits a long name across fields of 5, 6 and 2
+-- characters, so no search for the whole name matches. Not a FAT parser: a file of this name, or a
+-- deleted entry whose bytes remain, both err towards 'present' and cost a failed open, not an event.
 function ulog.rootlists(name)
   if name == nil or name == '' then return nil end
   local fh = file.open('/usb1', file.MODE_READ)
   if fh == nil then return nil end
-  -- file.read IS NOW MEASURED, and it behaves like the rest: on a closed handle, and on a handle
-  -- opened for WRITE, it returns nil and posts 2201 rather than raising. So nil is the whole verdict
-  -- and the close was never at risk.
+  -- file.read returns nil and posts 2201 on a closed or write-mode handle, so nil is the whole verdict.
   local raw = file.read(fh, file.READ_ALL)
   file.close(fh)
   if raw == nil then return nil end
-  -- `1` for a plain find, no patterns. Nothing else is searched: the tilde alias would match any long name
-  -- beginning the same way, and a partial UTF-16 run would match a different directory entirely.
+  -- `1` for a plain find, no patterns.
   if string.find(raw, string.upper(name), 1, 1) ~= nil then return true end
   return false
 end
 
--- Make sure ulog.usbdir exists. -> true if it should be writable now, or false and why not.
---
--- SILENT IN EVERY ORDINARY CASE: no key answers from usbdriveexists, a directory that is already there
--- answers from the root listing, and only a genuine absence issues the one mkdir -- which succeeds
--- quietly. mkdir is never called speculatively, because there is no such thing as a free one.
+-- Make sure ulog.usbdir exists. true, or false and why not. Silent in every ordinary case, and mkdir
+-- is never speculative, because there is no free one.
 function ulog.ensuredir(dir)
   if dir == nil then dir = ulog.usbdir end
   if dir == nil or dir == '' then return false, 'no directory configured' end
-  -- FIRST, and without touching a path: with no key a file path posts 2224 and /usb1 itself posts
-  -- 2205. keyok() rather than haskey() so the latch is honoured here as well, rather than the
-  -- directory being re-established once per capture under a key nothing can write.
+  -- First, without touching a path: with no key a file path posts 2224 and /usb1 posts 2205. keyok()
+  -- not haskey(), so the latch is honoured and the directory is not re-established per capture under
+  -- a key nothing can write.
   if not ulog.keyok() then return false, tostring(ulog.keywhy or 'no USB key') end
-  -- CACHED BECAUSE THE LISTING IS 64 kB. Reading the root returns the whole directory table -- measured
-  -- at 65536 bytes -- and doing that per capture would spend more on the question than on the answer.
-  -- Only a CONFIRMED directory is cached, and only for this exact dir; ulog.dirlost() drops it, and the
-  -- writers call that when an open fails, which is the one moment the cache could be wrong. A key swapped
-  -- between captures therefore re-checks, driven by the failure rather than by a guess.
+  -- Cached: the root listing is 65536 bytes, measured. Only a confirmed directory is cached, and
+  -- dirlost() drops it when an open fails -- the one moment the cache could be wrong.
   if ulog.dirok == dir then return true end
   if string.sub(dir, 1, 1) ~= '/' then return false, 'directory must be absolute: ' .. dir end
-  -- THE NAME MUST BE 8.3-CLEAN, and this refuses rather than letting a rename break the search silently.
-  -- rootlists finds a directory by looking for its name in the raw FAT table, and only a name of eight
-  -- characters or fewer in upper case is stored there contiguously -- a longer one becomes a long-name
-  -- record whose characters FAT splits 5/6/2, plus a tilde alias whose number is unpredictable. Renaming
-  -- ulog.usbdir to something longer would therefore make every lookup answer 'absent', order a mkdir on a
-  -- directory that exists, and post 2208 -- which is exactly what an 11-character name did. Refusing here
-  -- turns that into a reported reason instead of a silent event.
+  -- Refused rather than renamed silently: a longer name is not contiguous in the FAT table, so every
+  -- lookup would answer absent, order a mkdir on a directory that exists, and post 2208.
   local leafchk = string.gsub(dir, '^.*/', '')
   if string.len(leafchk) > 8 or leafchk ~= string.upper(leafchk) then
     return false, 'directory name must be 8 upper-case characters or fewer: ' .. leafchk
@@ -318,100 +155,59 @@ function ulog.ensuredir(dir)
   local leaf = string.gsub(dir, '^.*/', '')
   local listed = ulog.rootlists(leaf)
   if listed == true then ulog.dirok = dir; return true end
-  -- nil means the root could not be read, so absence is NOT established -- and a mkdir on that basis is
-  -- the 2208 this whole path exists to avoid. Say so instead.
+  -- Absence is not established, and a mkdir on that basis is the 2208 this path avoids.
   if listed == nil then return false, 'cannot read the USB root' end
-  -- BARE, because file.mkdir never raises: it returns normally whatever happened, posts 2208 when it
-  -- failed, and there is no return value. A guard around it reported success on every call.
+  -- Bare: mkdir has no return value, so a guard reports success every time.
   file.mkdir(dir)
-  -- Confirmed the same silent way, so the answer is measured rather than assumed.
   if ulog.rootlists(leaf) == true then ulog.dirok = dir; return true end
   return false, 'cannot create ' .. dir
 end
 
--- Forget that the directory was confirmed, so the next ensuredir looks again.
---
--- USED BY THE HARNESS AND BY THE no-key GATE, not by a recovery path: there is no retry-after-failure in
--- this module, because swapping a key under a running app is unsupported. It exists so a caller that KNOWS
--- the key changed -- a test modelling a relaunch -- can say so.
+-- Forget that the directory was confirmed. For the harness and the no-key gate; swapping a key under
+-- a running app is unsupported.
 function ulog.dirlost()
   ulog.dirok = nil
 end
 
--- Open a file for writing. -> handle, or nil and why.
---
--- THE DIRECTORY IS MADE ONCE, AT APP START -- sdec.start() calls ulog.ensuredir() -- so the 64 kB root
--- listing is paid for a single time per launch and never per write. Everything here does is gate on the
--- key and open; the ensuredir call below is a cached no-op in the ordinary case, and only does real work
--- when the app started with no key in the slot and one has since been inserted.
---
--- ITS ANSWER IS HONOURED, not discarded: if the directory could not be confirmed or made, opening a file
--- inside it would post 2205 for nothing. Refusing first is what keeps that quiet.
---
--- NO RETRY OF A FAILED OPEN. A failed open is REPORTED, not worked around: retrying would mean
--- re-reading the root, and the open that triggered it has already posted its event -- so the retry
--- could not have kept the panel quiet anyway.
---
--- THAT IS NOT THE SAME AS NO RECOVERY. A key INSERTED while the app runs is recovered from, by
--- ulog.resume(), because usbdriveexists() reports it silently and a new key is new evidence rather
--- than a retry of the one that failed. Nothing is re-attempted on the key that went away.
+-- Open a file for writing. Handle, or nil and why. sdec.start() calls ensuredir(), so the 64 kB
+-- listing is paid once per launch and the call below is a cached no-op. A failed open is reported,
+-- not retried: it has already posted its event, so a retry cannot keep the panel quiet. An inserted
+-- key is still recovered from, by resume().
 function ulog.open_write(path, mode)
   if path == nil then return nil, 'no filename available' end
   if mode == nil then mode = file.MODE_APPEND end
-  -- BEFORE THE OPEN, AND BEFORE THE DIRECTORY. An open against a key that is not there posts 2224, so
-  -- no-key has to be answered without naming a path -- and answered SILENTLY, because running with no key
-  -- at all is normal and not a fault to report.
-  -- The path is IN the reason: 'no USB key' alone leaves Save and the note row unable to say which file
-  -- was not written, and the caller has no other way to know which of several it was.
+  -- Before the open and before the directory, since an open against an absent key posts 2224. The
+  -- path goes in the reason: Save and the note row have no other way to say which file failed, and a
+  -- bare 'no USB key' reads as the ordinary keyless run rather than a key the app watched go.
   if not ulog.keyok() then
-    -- THE LATCHED REASON WHEN THERE IS ONE. 'no USB key' is true of a key that was pulled mid-session
-    -- and still the wrong thing to say: it reads as the ordinary keyless run, and the operator needs
-    -- to know the app watched it happen and gave up.
     return nil, tostring(ulog.keywhy or 'no USB key') .. ' -- ' .. tostring(path)
   end
-  -- Cached after start(), so this is a no-op per write. It does real work only when the app was launched
-  -- with no key -- itself unsupported, but it degrades to one listing rather than to nonsense.
   local ready, rwhy = ulog.ensuredir()
   if not ready then return nil, tostring(rwhy) .. ' -- cannot open ' .. tostring(path) end
-  -- A FAILED OPEN RETURNS NIL, it does not raise, so the nil test below IS the error handling.
+  -- A failed open returns nil, so the nil test is the error handling.
   local fh = file.open(path, mode)
   if fh ~= nil then return fh end
-  -- NOT A REASON TO LATCH. A failed open here is ambiguous -- an absent directory reaches it as
-  -- readily as a bad key -- and keylost() would then stop logging for the session over a transient.
-  -- It does not need to: keyok() above already answers the pulled key, which is the case the latch
-  -- exists for, because usbdriveexists() returns 0 the moment the key leaves the slot.
-  --
-  -- LISTED, NOT DIAGNOSED. Claiming the key is present would be an assertion of the same kind as a
-  -- bare 'no USB key': a key can be pulled between haskey()'s call and this open, so what that call
-  -- established a moment ago is not what this failure proves.
+  -- Not a reason to latch: an absent directory reaches this as readily as a bad key, and keylost()
+  -- would stop logging for the session over a transient. Listed, not diagnosed -- a key can be
+  -- pulled between haskey() and this open.
   return nil, 'cannot open ' .. tostring(path)
                 .. ' -- key may be absent, full, write-protected, or refusing the directory'
 end
 
--- Open the log. `truncate` starts a fresh file; the default appends across
--- sessions, since comparing this run against the last is usually the point.
--- Returns true if logging is live.
---
--- A missing key returns nil from every call here; only the os.time probe below is wrapped, because
--- os is the one table in this module that may genuinely be absent.
+-- Open the log. `truncate` starts a fresh file; the default appends, since comparing this run against
+-- the last is usually the point. open_write owns the no-key gate, the directory and the reason.
 function ulog.open(path, truncate)
   ulog.close()
   ulog.nlines, ulog.dropped, ulog.lasterr = 0, 0, nil
   if not ulog.enabled then return false end
   if path ~= nil then ulog.path = path end
 
-  -- open_write OWNS THE WHOLE STORY: the no-key gate, the directory, the one retry, and the reason. A
-  -- 'no USB key' message assembled HERE would be an assertion -- a key that is present but full or
-  -- write-protected reaches the same line and is told to check the one thing that is fine.
   local mode = file.MODE_APPEND
   if truncate then mode = file.MODE_WRITE end
   local why = nil
   ulog.fh, why = ulog.open_write(ulog.path, mode)
-  -- AFTER THE OPEN, AND ON BOTH OUTCOMES. open_write's keyok() is what notices an insertion and
-  -- advances keygen, so recording the generation BEFORE the call leaves keyopen permanently one
-  -- behind -- and the next time logging goes off, resume() re-opens a log that was already current
-  -- and resets nlines under it. Set here, the log is stamped with the generation it really belongs
-  -- to, and a failed open is not retried until another key arrives.
+  -- After the open, on both outcomes: open_write's keyok() is what advances keygen, so recording the
+  -- generation first leaves keyopen one behind and resume() re-opens a current log, resetting nlines.
   ulog.keyopen = ulog.keygen
   if ulog.fh == nil then
     ulog.on = false
@@ -420,12 +216,9 @@ function ulog.open(path, truncate)
   end
 
   ulog.on = true
-  -- A separator distinguishes sessions in an appended file, stamped once here rather than per line.
-  --
-  -- os ITSELF IS TESTED, NOT CAUGHT, and tested rather than assumed because unlike file and fs this
-  -- table is NOT hardware-verified anywhere in this repo -- ulog.open's note said so, and deleting
-  -- the note would not have answered it. pcall cannot cover the index either: a nil os raises before
-  -- pcall is entered. A nil os.time IS safe, since pcall(nil) simply returns false.
+  -- A separator distinguishes sessions in an appended file. os is tested, not caught: unlike file and
+  -- fs it is not hardware-verified anywhere here, and a nil os raises before pcall is entered. A nil
+  -- os.time is safe, since pcall(nil) returns false.
   local stamp = ''
   if os ~= nil then
     local tok, tv = pcall(os.time)
@@ -435,27 +228,16 @@ function ulog.open(path, truncate)
   return true
 end
 
--- Write one line. -> true if it went.
---
--- NON-RAISING FOR EVERY MEASURED FAILURE, which is what lets a logging call site read as a
--- statement: no key, a pulled key and a missing directory are all gates that return false. A key
--- that is PRESENT AND REFUSING remains unmeasured -- see the table above -- but nothing measured
--- raises, so nothing here catches.
+-- Write one line. No key, a pulled key and a missing directory are all gates that return false.
 function ulog.line(s)
   if not ulog.enabled then return false end
-  -- OFF IS RECOVERABLE. An app started with no key, or one whose key was pulled, has no open handle
-  -- and nothing else would ever re-open it -- so the attempt belongs where the logging happens
-  -- rather than in each of five button handlers. Costs one usbdriveexists while off, and re-opens
-  -- only on the press after an insertion; see ulog.resume().
+  -- Off is recoverable, and the attempt belongs here rather than in five button handlers.
   if not ulog.on then
     if not ulog.resume() then return false end
   end
-  -- BEFORE THE WRITE, because the write is what posts 2200 and it cannot report having done so --
-  -- see ulog.keylost(). 237 us against a line that already flushes, and it means the first line
-  -- after a pull is refused rather than popped at the operator.
+  -- Before the write, since the write posts 2200 and cannot report having done so. 237 us against a
+  -- line that already flushes.
   if not ulog.keyok() then return false end
-  -- BOTH METERS. nlines bounds this file; nwritten bounds the power cycle, and only the second
-  -- survives a re-open -- see its declaration.
   if ulog.nlines >= ulog.maxlines or ulog.nwritten >= ulog.maxlines then
     ulog.dropped = ulog.dropped + 1
     return false
@@ -464,36 +246,27 @@ function ulog.line(s)
   ulog.nwritten = (ulog.nwritten or 0) + 1
   local txt = string.format('%05d %s %s\r\n', ulog.nlines or 0, tostring(ulog.tag),
                             tostring(s))
-  -- A NIL TEST, NOT A GUARD. file.write does not raise -- a write to a pulled key returns normally
-  -- and posts 2200, which is what keyok() above answers. The handle is the one real risk: `on` true
-  -- implies one by construction, and that invariant is worth a compare rather than passing nil on.
+  -- A nil test, not a guard: `on` true implies a handle by construction, and that invariant is worth
+  -- a compare rather than passing nil to file.write.
   if ulog.fh == nil then
     ulog.on = false
     ulog.lasterr = 'the log handle went away'
     return false
   end
   file.write(ulog.fh, txt)
-  -- Flushing every line is deliberate: the most valuable log is the one written
-  -- immediately before a firmware panic, and anything still buffered then is
-  -- lost. Set ulog.autoflush = false in a hot loop.
+  -- Flush every line: the most valuable log is the one written just before a firmware panic, and
+  -- anything buffered is lost. Set ulog.autoflush = false in a hot loop.
   if ulog.autoflush then file.flush(ulog.fh) end
   return true
 end
 
--- string.format wrapper with EXPLICIT parameters rather than varargs.
---
--- The 5.0.2 vararg idiom, string.format(f, unpack(arg)), relies on an implicit
--- `arg` table that host Lua removed -- so it could not be exercised offline at
--- all, which is unacceptable in a logger. Five slots cover every call site,
--- string.format ignores surplus arguments, and this behaves identically on 5.0.2
--- and 5.4. Guarded so a format mismatch cannot raise from inside a log call.
+-- string.format wrapper with explicit parameters. The 5.0.2 idiom string.format(f, unpack(arg))
+-- relies on an implicit `arg` table that host Lua removed, so it cannot be exercised offline. Five
+-- slots cover every call site, and string.format ignores surplus arguments.
 function ulog.fmt(f, a, b, c, d, e)
-  -- enabled ONLY, not `on`. ulog.line below recovers from a key inserted mid-session, and gating on
-  -- `on` here meant the first fmt after an insertion was dropped while the first line was not -- so
-  -- the autolock note, the one in-tree caller, is what an operator lost. The cost of being wrong is
-  -- one string.format; line() makes the real decision.
+  -- enabled, not `on`: line() recovers an inserted key, and gating on `on` would drop the first fmt
+  -- after an insertion while keeping the first line.
   if not ulog.enabled then return false end
-  -- ON A RAISE THE SECOND RESULT IS THE MESSAGE; the line below overwrites it, which is the point.
   local ok, s = pcall(string.format, f, a, b, c, d, e)
   if not ok then s = tostring(f) .. ' <ulog: bad format args>' end
   return ulog.line(s)
@@ -518,63 +291,32 @@ function ulog.close()
   return true
 end
 
--- DOES THIS FILE EXIST, WITHOUT LOGGING AN ERROR IF IT DOES NOT?
---
--- Testing existence with file.open(path, MODE_READ) uses the FAILURE as the answer, and a failed
--- open posts event 2205 at severity ERROR. The app sets localnode.showevents = eventlog.SEV_ERROR
--- to suppress warning and info popups, so 2205 is precisely the severity that still raises a modal
--- box -- which makes the SUCCESSFUL path (finding a free name) produce one on every Save.
---
--- fs.is_file() answers the same question silently. Verified on firmware 1.7.17a: eventlog.getcount()
--- stays 0 across both an existing and a missing path.
---
--- Returns true or false, never nil. There is no raising case to defend against: no file or fs call
--- transfers control (see the table above), so the only answers are the ones the calls give. A nil
--- from fs.is_file falls through to the open probe -- unreachable on hardware, where it answers a
--- boolean -- and file.open returning nil (no key, or no such file) is the normal FREE answer, with
--- the failure surfacing at the write where it belongs.
+-- Does this file exist, without logging an error if it does not? true or false, never nil.
+-- file.open(path, MODE_READ) uses the failure as the answer and posts 2205 at severity ERROR, the one
+-- severity showevents still raises a modal box for -- so finding a free name would produce one on
+-- every Save. fs.is_file() answers silently: eventlog.getcount() stays 0 across an existing and a
+-- missing path on 1.7.17a.
 function ulog.exists(path)
   if path == nil then return false end
-  -- BARE. Measured: fs.is_file answers false for a bad path and for garbage, and posts nothing --
-  -- it does not raise, so there is no verdict to catch. A nil answer is what still routes to the
-  -- probe below.
+  -- Bare: fs.is_file answers false for a bad path and for garbage, and posts nothing.
   local got = fs.is_file(path)
   if got == nil then
-    -- Fall back to the open probe: one 2205 is better than either truncating a file or refusing
-    -- to save.
+    -- One 2205 beats truncating a file or refusing to save. No key and no such file are the same
+    -- answer, correctly: 'free', with the failure surfacing at the write.
     local fh = file.open(path, file.MODE_READ)
     local taken = fh ~= nil
     if fh ~= nil then file.close(fh) end
-    -- NO-KEY AND NO-SUCH-FILE ARE THE SAME ANSWER HERE, and that is correct: file.open returns nil
-    -- for both, so "free" is the answer, and the failure surfaces later at the write where it
-    -- belongs. There is no third case to defend against -- file.open cannot raise, measured, so the
-    -- probe's answer is exactly whether it handed back a handle.
     return taken
   end
   return got == true
 end
 
--- First unused '<prefix>NNN<ext>' on the key, so successive saves do not overwrite each other.
--- Returns a path, or nil if every NNN is taken.
---
--- THE INDEX IS A STARTING POINT, NOT AN ANSWER. prefix..'idx.txt' remembers where to start so the
--- common path costs one open instead of N, but the probe still runs forward from there: a file the
--- index does not know about -- copied onto the key, or written by another prefix -- would otherwise
--- be handed out and TRUNCATED by MODE_WRITE.
---
--- 1000 names, three digits. At 100 the byte log simply stopped logging once prefix000..099 existed,
--- and a bench session that presses NewLog per device reaches 100.
+-- First unused '<prefix>NNN<ext>' on the key. A path, or nil if every NNN is taken. 1000 names, three
+-- digits; a bench session pressing New Log per device reaches 100.
 function ulog.next_free(prefix, ext, limit)
   if limit == nil then limit = 1000 end
-  -- THE SCAN POSTS 2205 PER MISS, and always has: it probes prefix000, prefix001 ... with MODE_READ and
-  -- uses the FAILURE as its answer, so a key with files on it files one event per name stepped over. That
-  -- predates this directory and is not fixed here -- the manual tells the operator the instrument may show
-  -- file-not-found events during normal use.
-  --
-  -- BUT IT MUST NOT RUN AT ALL WITH NOWHERE TO SCAN. With no key, or no directory, every candidate posts
-  -- its own event AND the answer is worthless -- the name handed back could not be opened either. So
-  -- ensuredir's refusal ends this here rather than a thousand events later, and the reason is kept for the
-  -- status row.
+  -- The scan posts 2205 per miss, probing forward and using the failure as its answer. With no key or
+  -- no directory every candidate posts its own event and the answer is worthless anyway.
   local dok, dwhy = ulog.ensuredir()
   if not dok then
     ulog.idx_why = tostring(dwhy)
@@ -582,24 +324,16 @@ function ulog.next_free(prefix, ext, limit)
   end
   local idxpath = prefix .. 'idx.txt'
 
-  -- THE INDEX IS A STARTING POINT, NOT AN ANSWER.
-  --
-  -- The scan itself was the pathology: probing bytes000, bytes001, ... until file.open FAILED
-  -- takes the failure as its "this one is free" signal, and every failure posts "2205 File not
-  -- found". Allocating bytes006 is seven opens, so repeated New Log presses generate errors
-  -- QUADRATICALLY and the panel raises a modal "Multiple errors have occurred" box over the hex
-  -- dump. Measured on the instrument.
-  --
-  -- Remembering where to start fixes that -- one open per allocation instead of N -- but it must
-  --
-  -- So: start where the index says, then probe forward. Never truncates, and costs one failed
-  -- open per allocation rather than one per file already on the key.
+  -- The index is a starting point, not an answer. Probing from zero makes repeated New Log presses
+  -- post 2205s quadratically and raises a modal 'Multiple errors have occurred' box over the hex
+  -- dump. The probe still runs forward from the index, because a file the index does not know about
+  -- would otherwise be handed out and truncated by MODE_WRITE.
   ulog.idx_ram = ulog.idx_ram or {}
   local start = ulog.idx_ram[prefix]
   if start ~= nil and (start < 0 or start >= limit) then start = nil end
   if start == nil and ulog.exists(idxpath) then
-    -- A key pulled between the open and the read does not raise either -- file.read answers nil and
-    -- tonumber(nil) is nil -- so the close below is always reached and the handle cannot be stranded.
+    -- A key pulled between the open and the read gives nil from file.read and nil from tonumber, so
+    -- the close is always reached.
     local fh = file.open(idxpath, file.MODE_READ)
     if fh ~= nil then
       local ln = file.read(fh, file.READ_LINE)
@@ -610,39 +344,25 @@ function ulog.next_free(prefix, ext, limit)
   end
   if start == nil then start = 0 end
 
-  -- EXACTLY `limit` PROBES, WRAPPING PAST THE END. The index may be stale HIGH (files deleted), so
-  -- an exhausted forward scan has to continue at 0 rather than refuse: a key whose bytes000 was
-  -- deleted must not report "no names left".
-  --
-  -- Wrapping, rather than clearing ulog.idx_ram and calling this again: that retry re-read the
-  -- index FILE, which still held the same high number -- it is only rewritten when a free name IS
-  -- found -- so `start` came back identical, the scan exhausted identically, and it went round
-  -- again. 5.0.2 has proper tail calls, so it never overflowed the stack and a caller's pcall could
-  -- not break it; the panel hung until a power cycle, and handing out the 1000th name reaches that
-  -- state on its own. Here the bound is the loop's own count and every candidate is visited once.
+  -- Exactly `limit` probes, wrapping, since the index may be stale high after deletions. Wrapping
+  -- rather than clearing idx_ram and recursing: the retry re-reads the index file, which holds the
+  -- same high number until a free name is found, so the scan repeats for ever. 5.0.2 has proper tail
+  -- calls, so it never overflows the stack and a caller's pcall cannot break it.
   local i, k
   for k = 0, limit - 1 do
     i = start + k
     if i >= limit then i = i - limit end      -- both are < limit, so one subtraction wraps it
     local path = string.format('%s%03d%s', tostring(prefix), i or 0, tostring(ext))
     if not ulog.exists(path) then
-      -- CACHE THE INDEX FOUND, NOT THE ONE AFTER IT -- so this stays a pure QUERY.
-      --
-      -- Storing i+1 made next_free() advance on every call, which meant asking twice gave two
-      --
-      -- Storing i is idempotent: call it again and the probe finds i still free and returns the
-      -- same name. Once the file really exists, the probe finds i taken and moves on, at a cost
-      -- of one extra open. That keeps the cache's whole purpose -- not re-probing every file
-      -- already on the key, which is what posted a 2205 per miss -- without the side effect.
+      -- Cache the index found, not the one after it, so this stays a query: asked twice it returns
+      -- the same name. Once the file exists the probe steps over it, at one extra open.
       ulog.idx_ram[prefix] = i
-      -- Same shape as the read above: open outside, close unconditionally.
       local wh = nil
       wh = ulog.open_write(idxpath, file.MODE_WRITE)
       local wrote = false
       if wh ~= nil then
-        -- THE VERDICT COMES FROM THE GATE, NOT FROM THE WRITE. pcall round this write returned true
-        -- however the write went, so `wrote` was a constant and the 'log index not saved' note below
-        -- could never appear. keyok() after the close can fire, which is the point of saying it.
+        -- The verdict comes from the gate: a pcall round this write returns true however it went, so
+        -- `wrote` would be a constant and the note below could never appear.
         file.write(wh, tostring(i) .. '\n')
         file.flush(wh)
         file.close(wh)
@@ -653,63 +373,45 @@ function ulog.next_free(prefix, ext, limit)
       return path
     end
   end
-  -- Genuinely full. The index file is left alone: it still points into a full range, which costs
-  -- one wasted probe per call and nothing else, and the failure path must not need a working key.
-  --
-  -- SAID, because idx_why is what the caller reports. Left unset it keeps whatever the LAST
-  -- allocation put there -- 'log index not saved', or nil -- so an exhausted key was reported with a
-  -- stale sentence about numbering, or with none at all.
-
-  -- THE LEAF ONLY. ui_notes prefixes 'NOT LOGGING: ', and a reason naming the full /usb1/SERDEC/
-  -- prefix measured 704 px against the 658 the note row can show. The directory never varies, and
-  -- nothing on that row needs it.
+  -- Genuinely full. The index file is left alone: it costs one wasted probe per call, and this path
+  -- must not need a working key. Set here, because left alone idx_why keeps the last allocation's
+  -- sentence. Leaf only -- ui_notes prefixes 'NOT LOGGING: ', and the full prefix measures 704 px
+  -- against the 658 the note row shows.
   local leaf = string.gsub(tostring(prefix), '^.*/', '')
   ulog.idx_why = string.format('all %d %sNNN%s names are taken', limit or 0, tostring(leaf), tostring(ext))
   return nil
 end
 
 
--- Write a whole array of lines to its own file and close it immediately.
---
--- Deliberately NOT routed through the rolling log: a saved capture wants its own
--- file, and interleaving it with debug output would make both harder to read. Uses a
--- separate handle that never outlives the call, so it cannot interact with
--- ulog.fh's lifetime. Returns ok, reason.
+-- Write an array of lines to its own file and close it. ok, reason. Not routed through the rolling
+-- log: a saved capture wants its own file, and the handle never outlives the call.
 function ulog.write_file(path, lines, n)
   if path == nil then return false, 'no filename available' end
-  -- MODE_WRITE creates the file, never its parent, so Save into a directory that is not there fails
-  -- with 'cannot write' and no clue that a directory was the whole of it. The reason is carried into the
-  -- message for that reason -- Save puts this string on the note row, and it is all the operator gets.
+  -- MODE_WRITE creates the file, never its parent, so a Save into an absent directory fails with
+  -- 'cannot write' and no sign the directory was all of it. Save puts this on the note row.
   local fh, why = ulog.open_write(path, file.MODE_WRITE)
   if fh == nil then return false, tostring(why) end
 
   local gone = false
   local i
   for i = 1, n do
-    -- BEFORE EACH WRITE: a write to a departed key posts 2200 and returns, so checking only after
-    -- the loop catches the verdict and none of the boxes -- 24 modal dialogs for a report, 2048 for
-    -- a 32 kB one. 237 us a row against a Save the operator is already waiting on.
+    -- Per row, to suppress the event storm: a write to a departed key posts 2200 and returns, so
+    -- checking only after the loop means 24 modal dialogs for a report and 2048 for a 32 kB one.
     if not ulog.keyok() then gone = true; break end
-    -- BARE. A write cannot report its own failure on this firmware and cannot transfer control, so
-    -- there was no verdict to take: the keyok() above is the detector, per row, and the one below
-    -- catches a key lost after the last row.
     file.write(fh, tostring(lines[i]) .. '\r\n')
   end
   file.flush(fh)
   file.close(fh)
-  -- THE TRAILING keyok() IS THE VERDICT, and it catches a key lost at ANY point in the loop, not
-  -- just at the end -- `gone` only short-circuits the remaining writes. The per-row check above is
-  -- an event-storm suppressor, not the detector: without it a 32 kB report posts 2048 modal boxes
-  -- instead of one. Measured: dropping the trailing check fails six assertions, dropping the per-row
-  -- check fails exactly one -- 'it posts at most ONE event, not one per row'.
+  -- The trailing keyok() is the detector and catches a key lost anywhere in the loop; `gone` only
+  -- short-circuits the remaining writes.
   if gone or not ulog.keyok() then
     return false, 'the USB key went away -- the file is empty or truncated'
   end
   return true
 end
 
--- One-line state summary for the panel, so logging can be seen to be happening
--- rather than assumed.
+-- One-line state summary for the panel, so logging can be seen rather than assumed. Name only: the
+-- status row shows ~45 proportional characters, and the directory never varies.
 function ulog.status()
   if not ulog.enabled then return 'log off' end
   if not ulog.on then
@@ -719,8 +421,6 @@ function ulog.status()
   end
   local extra = ''
   if ulog.dropped > 0 then extra = string.format(' (+%d dropped)', ulog.dropped or 0) end
-  -- File NAME only: the status row has ~45 proportional characters before the
-  -- panel edge, and the directory is always /usb1/.
   local base = string.gsub(tostring(ulog.path), '^.*/', '')
   return string.format('log: %d ln %s%s', ulog.nlines or 0, tostring(base), tostring(extra))
 end

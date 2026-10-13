@@ -2516,9 +2516,9 @@ end
 -- on one linear pass, makes the rest free.
 --
 --   22.82 us                one buf.readings[i] read, timed over 20 000 of them on
---                           firmware 1.7.17a. The ~0.455 s a capture recorded below
---                           is the same number from the other end: 0.455 / 20 000 is
---                           22.75 us, within 0.3 %.
+--                           firmware 1.7.17a. Two independent figures agree: chunk_decode's
+--                           ck_win_us block measured 21.73 us for the read inside a decode
+--                           step, and the ~0.455 s a capture recorded below is 22.75 us.
 --
 -- INDEPENDENT OF BUFFER STYLE, so the cost is the per-index round trip and not the
 -- payload: STYLE_FULL stores more per reading and reads within 0.07 % of

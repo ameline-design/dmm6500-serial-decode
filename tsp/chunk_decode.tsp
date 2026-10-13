@@ -1,36 +1,27 @@
--- chunk_decode.tsp -- decode a capture LONGER THAN LUA MEMORY, one window at a time.
+-- chunk_decode.tsp -- decode a capture longer than Lua memory, one window at a time.
 --
--- Frame mode holds a whole capture as a plain Lua array (serial_core's acq_copy) and
--- that is what caps it at 20 000 samples, i.e. 192-500 bytes. This module removes the
--- cap without removing the array: the READING BUFFER holds the long capture -- up to
--- sdec.ck_bufmax samples, derived at launch from the 7 080 255 readings the instrument
--- holds across all buffers together, measured -- and the decode walks it in
--- overlapping windows, appending each window's bytes to a file and reusing the same
--- one window table for the next. Memory therefore stays at exactly one window
--- whatever the capture length, and the length is bounded by the buffer instead.
+-- Frame mode holds a whole capture as a plain Lua array, which caps it at 20 000 samples, 192-500
+-- bytes. The reading buffer holds the long capture instead -- up to sdec.ck_bufmax samples -- and the
+-- decode walks it in overlapping windows, appending each window's bytes to a file and reusing one
+-- window table. Memory stays at one window whatever the length, and the buffer bounds the length.
 --
--- The design's whole point is that IT HAS NO THROUGHPUT REQUIREMENT. The signal is
--- already captured before any Lua runs, so a window may take as long as it takes; the
--- alternative -- extracting samples in real time as they arrive -- needs a per-sample
--- read cost the instrument may not have, and no amount of double buffering fixes a
--- throughput deficit. Acquire long, then decode at leisure.
+-- No throughput requirement, which is the point: the signal is captured before any Lua runs, so a
+-- window may take as long as it takes. Extracting samples in real time instead needs a per-sample
+-- read cost the instrument does not have, and double buffering cannot fix a throughput deficit.
 --
--- WHAT THIS MODULE DOES NOT DO: acquire -- serial_app owns that. Everything here is pure logic over a
--- sample source, exercised offline against tools/gen_serial.lua; the timings quoted below are measured
--- on the instrument.
+-- Acquisition belongs to serial_app. Everything here is logic over a sample source, exercised offline
+-- against tools/gen_serial.lua; the timings quoted are measured on the instrument.
 --
 -- Lua 5.0.2: no '#', math.mod for modulo, table.getn for length.
 
 sdec = sdec or {}
 
 -- ---------- configuration ----------
--- The window is deliberately sdec.n, the SAME size frame mode already uses. That makes
--- the memory high-water mark of a 32 kB stream identical to the one the app is already
--- known to survive, rather than a new number to find out about on the bench.
+-- sdec.n, the size frame mode already uses, so a 32 kB stream's memory high-water mark is one the
+-- app is known to survive rather than a new number to discover on the bench.
 sdec.ck_win_n = 20000
 
--- Overlap, in frames. Three is one for correctness and two for margin -- see
--- ck_overlap() for why one is the floor.
+-- Overlap in frames: one for correctness, two for margin. ck_overlap() derives the floor.
 sdec.ck_ovframes = 3
 
 -- How many samples the LEVEL measurement decimates the whole recording down to.
@@ -44,50 +35,37 @@ sdec.ck_ovframes = 3
 --     10466    512   0.146   1.645 V  refuse
 --     31397    512   0.145   1.645 V  refuse
 --
--- Two things follow, and they agree. sig_levels' bin count is floor(n/binocc) capped at
--- nbins, so it SATURATES at n = 8192 and every count past that measures the same thing
--- -- which is the only regime where the number is comparable to anything. And below
--- saturation the coarse bins occasionally choose the wrong pair of humps outright, so a
--- small count is not merely less consistent, it is sometimes badly wrong.
---
--- sdec.n, then: past saturation, and the same population size frame mode's final
--- measurement uses -- so chunked mode accepts and refuses a line exactly where frame
--- mode does, by construction rather than by coincidence.
+-- sig_levels' bin count is floor(n/binocc) capped at nbins, so it saturates at n = 8192 and every
+-- count past that measures the same thing. Below saturation the coarse bins sometimes pick the wrong
+-- pair of humps outright, so a small count is not merely noisier. sdec.n is past saturation and is
+-- frame mode's own population, so chunked mode accepts and refuses a line where frame mode does.
 sdec.ck_level_n = 20000
 
 -- How many CONTIGUOUS windows the level fallback tries, spaced across the recording. See
 -- ck_levels(): one window covered 0.6 % of the burst positions in a 3 413 334-sample capture.
 sdec.ck_probes = 8
 
--- Medium mode's cap. One number for every baud rate, so the UI has one expectation to
--- state and the operator has one to remember; 32 kB is still 400-500 lines of
--- 64-column debug text. 32 rather than 64 kB because the worst case then needs 3.41 M
--- samples -- under half the 7 080 255 the instrument has for ALL buffers together,
--- measured -- so defbuffer1 and defbuffer2 at their 100 000 defaults leave room for it,
--- and where they do not sdec.bufmax_for() shortens the window instead of refusing.
+-- Medium mode's cap. One number for every baud rate, so the UI states one expectation; 32 kB is
+-- still 400-500 lines of 64-column debug text. 32 rather than 64 kB because the worst case then needs
+-- 3.41 M samples, under half the reading pool, so the defbuffers at their 100 000 defaults leave room
+-- -- and where they do not, sdec.bufmax_for() shortens the window instead of refusing.
 sdec.ck_maxbytes = 32768
 
 -- ============================================================================
 -- Sample sources
 -- ============================================================================
--- A READER is a function reader(dst, from, count, step) that fills dst[1..m] with the
--- samples at absolute 1-based positions from, from+step, from+2*step ... and returns m,
--- which is short only at the end of the data. step defaults to 1.
+-- A reader is reader(dst, from, count, step) filling dst[1..m] with the samples at absolute 1-based
+-- positions from, from+step, ... and returning m, short only at the end of the data. step defaults
+-- to 1, and exists so the levels can be measured over the whole recording while the edges are
+-- measured window by window -- see ck_levels().
 --
--- The step is not a convenience. It is what lets the LEVELS be measured over the whole
--- recording while the EDGES are measured window by window -- see ck_levels().
+-- The indirection makes this module testable with no instrument: the decode cannot tell a reading
+-- buffer from a Lua array, so the offline suite drives the shipped path.
 --
--- The indirection is what makes this module testable with no instrument: the decode
--- below cannot tell a reading buffer from a Lua array, so the offline suite drives the
--- SHIPPED code path rather than a stand-in for it.
---
--- dst is supplied by the caller and REUSED for every window. Nothing here clears it,
--- so entries past m are stale from the previous window -- which is safe because every
--- consumer in the chain (sig_levels, sig_edges, ua_bit) is bounded by an explicit n
--- and ua_bit returns nil rather than reading past it. Reusing the table is not a
--- micro-optimisation: allocating a fresh 20 000-entry array 143 times is 143 times the
--- garbage, on a Lua whose collector behaviour under an app is one of the things
--- suspected in this firmware's panics.
+-- dst is the caller's and is reused for every window. Nothing clears it, so entries past m are stale
+-- -- safe, because sig_levels, sig_edges and ua_bit are each bounded by an explicit n. Reusing it
+-- avoids allocating a fresh 20 000-entry array 143 times, on a Lua whose collector behaviour under an
+-- app is among the suspects in this firmware's panics.
 
 -- Over a plain Lua array. The test path, and also the way to run a chunked decode over
 -- a frame-mode capture that is already in memory.
@@ -96,8 +74,8 @@ function sdec.ck_reader_table(rd, ntotal)
     if step == nil then step = 1 end
     local m = 0
     if step == 1 then
-      -- Contiguous: the bound is applied once, the source index is the loop variable, and the
-      -- body is one read and one store. Same samples, same stop on the first nil.
+      -- Contiguous: the bound applies once, the source index is the loop variable, and the body is
+      -- one read and one store. Same samples, same stop on the first nil.
       local last = from + count - 1
       if last > ntotal then last = ntotal end
       local a
@@ -109,10 +87,8 @@ function sdec.ck_reader_table(rd, ntotal)
       end
       return m
     end
-    -- DECIMATED, IN THE SAME FORM AND FOR THE SAME REASON as the contiguous branch above: the bound folds
-    -- into the loop limit once, the source index is the loop variable rather than from + (i - 1) * step
-    -- recomputed per sample, and the store index is a counter. The samples visited are identical -- every
-    -- position from `from` in steps of `step` that is within ntotal, stopping at the first nil.
+    -- Decimated, in the same form as the contiguous branch: the bound folds into the loop limit, the
+    -- source index is the loop variable, and the store index is a counter.
     local last = from + (count - 1) * step
     if last > ntotal then last = ntotal end
     local a
@@ -126,28 +102,25 @@ function sdec.ck_reader_table(rd, ntotal)
   end
 end
 
--- Over a reading buffer. buf.readings is a firmware proxy, not a table, so each index
--- is an IPC round trip -- which is exactly why this happens once per sample per
--- capture here and not once per sample per decode pass.
+-- Over a reading buffer. buf.readings is a firmware proxy, so each index is an IPC round trip, which
+-- is why this runs once per sample per capture rather than once per sample per decode pass.
 --
--- THE CONTIGUOUS CASE IS THE HOT LOOP OF A RECORDING: every decode window reads W samples through it,
--- and the proxy read is 21.73 us a sample (ck_win_us) against a Lua loop body that costs a fraction of
--- that. The loop still pays for what surrounds the read, so the contiguous form keeps only what the
--- read needs: the bound is folded into the loop limit once, the source index is the loop variable
--- rather than from + (i - 1) * step recomputed per sample, and the store index is a counter. The
--- decimated form (step > 1, the level pass) is unchanged.
+-- The contiguous case is the hot loop of a recording: every decode window reads W samples through it,
+-- and the proxy read costs 21.73 us a sample against a Lua loop body costing a fraction of that. The
+-- figure is the read alone, not ck_win_us, which is 48 and covers the whole decode step. The loop
+-- still pays for what surrounds the read, so the contiguous form keeps only what the read needs: the
+-- bound folds into the loop limit once, the source index is the loop variable, and the store index is
+-- a counter. The decimated form (step > 1, the level pass) is unchanged.
 function sdec.ck_reader_buffer(buf, ntotal)
   local rdp = buf.readings
-  -- THE RING'S LOGICAL START, ONCE PER READER, so `from` means the same thing here as it does to the
-  -- caller: the n-th reading in TIME. A FILL_CONTINUOUS buffer that has wrapped holds its oldest
-  -- reading part-way up the array -- see sdec.acq_first, and the armed recording that comes back
-  -- rotated by however far its pre-trigger phase had got. Taken once rather than per index: it is a
-  -- proxy read, and a reader is created per poll on the streaming path.
+  -- The ring's logical start, once per reader, so `from` means the n-th reading in time to both
+  -- sides. A FILL_CONTINUOUS buffer that has wrapped holds its oldest reading part-way up the array
+  -- (sdec.acq_first), as does an armed recording rotated by its pre-trigger phase. Once rather than
+  -- per index, because it is a proxy read and a reader is created per poll on the streaming path.
   --
-  -- A WRAP WHILE THE READER IS ALIVE WOULD MISALIGN IT, and that is bounded rather than handled: the
-  -- recording buffer is sized so the post-trigger burst fills it exactly once, so the ring moves only
-  -- during the WAIT -- where the poll loop's activity verdict is suppressed anyway, because a line
-  -- that has not started is quiet by design.
+  -- A wrap while the reader is alive would misalign it. Bounded rather than handled: the buffer is
+  -- sized so the post-trigger burst fills it exactly once, so the ring moves only during the wait,
+  -- where the poll loop's activity verdict is suppressed anyway.
   local off = 0
   if sdec.acq_first ~= nil then off = sdec.acq_first(buf, ntotal) - 1 end
   return function(dst, from, count, step)
@@ -185,32 +158,23 @@ end
 -- ============================================================================
 -- Window geometry
 -- ============================================================================
--- HOW MUCH THE WINDOWS MUST OVERLAP, derived rather than guessed, because getting it
--- wrong loses one byte per seam and a lost byte in the middle of a log file is very
--- hard to notice.
+-- How much the windows must overlap, derived because getting it wrong loses one byte per seam, and a
+-- byte lost mid-file is hard to notice.
 --
--- ua_run stops when a frame runs off the end of its array ('truncated'), so a window
--- ending at W emits its last complete frame and leaves at most one PARTIAL frame
--- behind. Call that frame's start t0. Because a frame starting at t0 did not fit,
--- t0 + framebits*T > W, so t0 > W - framebits*T. The next window must contain the
--- WHOLE of it, so it must begin at or before W - framebits*T:
+-- ua_run stops when a frame runs off the end of its array, so a window ending at W emits its last
+-- complete frame and leaves at most one partial frame. That frame did not fit, so its start t0
+-- satisfies t0 > W - framebits*T, and the next window must begin at or before W - framebits*T:
 --
---     overlap >= framebits * T          -- one frame. This is the floor.
+--     overlap >= framebits * T          -- one frame, the floor.
 --
--- Two more frames of margin, plus maxback, buy two things that are cheap here and
--- awkward otherwise:
+-- Two more frames plus maxback buy two things cheaply. sig_cross walks back up to sdec.maxback
+-- samples to find a crossing, and that walk is truncated at a window's leading edge, so the first
+-- edge or two can be mispositioned; with margin they sit in already-emitted territory and tmin
+-- discards them. The seam also falls mid-overlap rather than at its rim, so de-duplication never
+-- decides a near-tie.
 --
---   * sig_cross walks BACK up to sdec.maxback samples from a hysteresis trip to find
---     the threshold crossing, and at the leading edge of a window that walk is
---     truncated, so the window's first edge or two can be slightly mispositioned.
---     With margin those edges sit inside already-emitted territory and are discarded
---     by tmin before their position matters.
---   * the seam then falls in the middle of the overlap rather than at its rim, so the
---     de-duplication is never deciding a near-tie.
---
--- At 8.68 samples/bit and 10 bit frames that is ceil(260.4) + 64 = 325 samples, 1.6 % of a
--- 20 000-sample window: the redundant work is a rounding error against the cost of
--- getting a seam wrong.
+-- At 8.68 samples/bit and 10-bit frames: ceil(260.4) + 64 = 325 samples, 1.6 % of a 20 000-sample
+-- window.
 function sdec.ck_overlap(T, framebits)
   if T == nil or framebits == nil then return nil end
   return math.ceil(sdec.ck_ovframes * framebits * T) + sdec.maxback
@@ -218,11 +182,10 @@ end
 
 -- Window size, overlap and stride for a bit time, or nil plus a reason.
 --
--- REFUSES rather than clamps when the window cannot hold enough frames. The case is
--- real: force 1200 baud while fs is still 1 MSa/s and T is 833 samples, so one 12-bit
--- frame is 10 000 samples and three of them do not fit in the window at all -- the overlap exceeds
--- the window, so stride goes NEGATIVE and the loop would run backwards. Refusing names the remedy,
--- which is the sample rate, and is the same shape as every other refusal in this app.
+-- Refuses rather than clamps when the window cannot hold enough frames. Force 1200 baud with fs
+-- still at 1 MSa/s and T is 833 samples, so one 12-bit frame is 10 000 and three do not fit: the
+-- overlap exceeds the window, stride goes negative, and the loop would run backwards. The refusal
+-- names the remedy, which is the sample rate.
 function sdec.ck_geometry(T, framebits)
   local W = sdec.ck_win_n
   local ov = sdec.ck_overlap(T, framebits)
@@ -237,11 +200,10 @@ function sdec.ck_geometry(T, framebits)
   return W, ov, stride, nil
 end
 
--- How many windows a capture of ntotal samples takes at this stride. Exact, because
--- the stride is CONSTANT -- the loop below advances by it unconditionally rather than
--- resuming from wherever the last frame happened to end. That costs about 1.6 % in redundant
--- decoding -- the overlap, once per window -- and buys a window count that is known before the run
--- starts, which is what makes the progress indicator honest instead of a guess.
+-- How many windows a capture of ntotal samples takes at this stride. Exact, because the stride is
+-- constant: the loop advances by it unconditionally rather than resuming where the last frame ended.
+-- That costs ~1.6 % in redundant decoding and buys a window count known before the run starts, which
+-- is what makes the progress indicator honest.
 function sdec.ck_nwin(ntotal, W, stride)
   if ntotal == nil or W == nil or stride == nil or stride < 1 then return nil end
   if ntotal <= W then return 1 end

@@ -54,20 +54,17 @@ if ulog.keyout == nil then ulog.keyout = false end
 ulog.keygen    = ulog.keygen or 0
 ulog.keyopen   = ulog.keyopen or 0
 
--- Is a key in the slot? -> true, or false when the firmware says there is none.
--- THE GATE IN FRONT OF EVERYTHING. It is the only question about the key that can be asked without
--- naming a path, and naming a path that is not there posts 2205 -- so every open and every write goes
--- behind this, and answers 'no key' silently rather than filing an event about it.
+-- Is a key in the slot? The only question answerable without naming a path.
 function ulog.haskey()
   if file.usbdriveexists() == 0 then return false end
   return true
 end
 
--- STOP TOUCHING THE KEY, until one is inserted. -> true.
---   [...]
--- never ran, and every logged line posted a 2200 modal box at the operator. One Mode press does it.
--- The handle is closed here. That costs no event, and it is not optional: a firmware descriptor is
--- not reclaimed until a power cycle, and with ulog.on false nothing else would ever close it.
+-- Stop touching the key until one is inserted. A latch, not a reason per attempt: a write to a key
+-- pulled from under a running app returns normally and posts 2200, file.open then returns nil and
+-- posts 2224, and usbdriveexists returns 0 silently. Presence is the only file failure this app can
+-- observe. A key present and refusing -- full, or write-protected -- is unmeasured;
+-- docs/vendor/repro-04b-full-key.tsp would settle it.
 function ulog.keylost(why)
   ulog.keybad = true
   ulog.keywhy = tostring(why or 'the USB key stopped accepting writes')
@@ -80,11 +77,9 @@ function ulog.keylost(why)
   return true
 end
 
--- Is the key there AND still being written to? -> true or false. THE GATE EVERY WRITER USES.
---   [...]
--- the rule is written for a latch set with the slot full: clearing on presence would retry such a key
--- once per capture. Nothing sets it that way today -- see above -- so this is the guarantee, not a
--- path with a caller.
+-- Is the key there and still accepting writes? One usbdriveexists, 237 us, no path and no event, so
+-- it is askable per line, per capture and per panel refresh. keylost() is called only from the no-key
+-- branch, so keybad is set only with the slot empty; a refusing key is reported by its writer.
 function ulog.keyok()
   if not ulog.haskey() then
     if not ulog.keybad and (ulog.on or ulog.dirok ~= nil) then
@@ -103,11 +98,11 @@ function ulog.keyok()
   return true
 end
 
--- Re-open the log on a key that has just been inserted. -> true if logging is live again.
---   [...]
--- sees 'log: NOT LOGGING' with a good key in. The byte log does not share that: flog_alloc retries
--- per capture. Accepted deliberately, because the alternative is an open attempt per log line, and a
--- failed open is the one thing here that posts an event.
+-- Re-open the log on a key just inserted. ensuredir and flog_alloc re-establish themselves at the
+-- next write, but the debug log is held open across captures, so nothing else would re-open it.
+-- Keyed on keygen, so one insertion causes one re-open however many callers ask, and one attempt per
+-- insertion is the whole allowance -- the alternative is an open attempt per line, and a failed open
+-- posts an event. An open that fails on a present key waits for another, showing 'log: NOT LOGGING'.
 function ulog.resume()
   if not ulog.enabled then return false end
   if not ulog.keyok() then return false end
@@ -116,11 +111,11 @@ function ulog.resume()
   return ulog.open(nil, false)
 end
 
--- Is `name` listed in the USB root? -> true, false, or nil when the question could not be asked.
+-- Is `name` listed in the USB root? true, false, or nil when the root could not be read. nil taken
 --   [...]
--- Still not a FAT parser: a FILE of this name would satisfy the search, as could a deleted entry whose
--- bytes remain. Both err towards 'it is there', which costs a failed open and a reported reason rather
--- than an event -- the safer of the two directions.
+-- case is a single contiguous 8.3 entry. FAT splits a long name across fields of 5, 6 and 2
+-- characters, so no search for the whole name matches. Not a FAT parser: a file of this name, or a
+-- deleted entry whose bytes remain, both err towards 'present' and cost a failed open, not an event.
 function ulog.rootlists(name)
   if name == nil or name == '' then return nil end
   local fh = file.open('/usb1', file.MODE_READ)
@@ -132,10 +127,8 @@ function ulog.rootlists(name)
   return false
 end
 
--- Make sure ulog.usbdir exists. -> true if it should be writable now, or false and why not.
--- SILENT IN EVERY ORDINARY CASE: no key answers from usbdriveexists, a directory that is already there
--- answers from the root listing, and only a genuine absence issues the one mkdir -- which succeeds
--- quietly. mkdir is never called speculatively, because there is no such thing as a free one.
+-- Make sure ulog.usbdir exists. true, or false and why not. Silent in every ordinary case, and mkdir
+-- is never speculative, because there is no free one.
 function ulog.ensuredir(dir)
   if dir == nil then dir = ulog.usbdir end
   if dir == nil or dir == '' then return false, 'no directory configured' end
@@ -155,19 +148,16 @@ function ulog.ensuredir(dir)
   return false, 'cannot create ' .. dir
 end
 
--- Forget that the directory was confirmed, so the next ensuredir looks again.
--- USED BY THE HARNESS AND BY THE no-key GATE, not by a recovery path: there is no retry-after-failure in
--- this module, because swapping a key under a running app is unsupported. It exists so a caller that KNOWS
--- the key changed -- a test modelling a relaunch -- can say so.
+-- Forget that the directory was confirmed. For the harness and the no-key gate; swapping a key under
+-- a running app is unsupported.
 function ulog.dirlost()
   ulog.dirok = nil
 end
 
--- Open a file for writing. -> handle, or nil and why.
---   [...]
--- THAT IS NOT THE SAME AS NO RECOVERY. A key INSERTED while the app runs is recovered from, by
--- ulog.resume(), because usbdriveexists() reports it silently and a new key is new evidence rather
--- than a retry of the one that failed. Nothing is re-attempted on the key that went away.
+-- Open a file for writing. Handle, or nil and why. sdec.start() calls ensuredir(), so the 64 kB
+-- listing is paid once per launch and the call below is a cached no-op. A failed open is reported,
+-- not retried: it has already posted its event, so a retry cannot keep the panel quiet. An inserted
+-- key is still recovered from, by resume().
 function ulog.open_write(path, mode)
   if path == nil then return nil, 'no filename available' end
   if mode == nil then mode = file.MODE_APPEND end
@@ -182,11 +172,8 @@ function ulog.open_write(path, mode)
                 .. ' -- key may be absent, full, write-protected, or refusing the directory'
 end
 
--- Open the log. `truncate` starts a fresh file; the default appends across
--- sessions, since comparing this run against the last is usually the point.
--- Returns true if logging is live.
--- A missing key returns nil from every call here; only the os.time probe below is wrapped, because
--- os is the one table in this module that may genuinely be absent.
+-- Open the log. `truncate` starts a fresh file; the default appends, since comparing this run against
+-- the last is usually the point. open_write owns the no-key gate, the directory and the reason.
 function ulog.open(path, truncate)
   ulog.close()
   ulog.nlines, ulog.dropped, ulog.lasterr = 0, 0, nil
@@ -214,11 +201,7 @@ function ulog.open(path, truncate)
   return true
 end
 
--- Write one line. -> true if it went.
--- NON-RAISING FOR EVERY MEASURED FAILURE, which is what lets a logging call site read as a
--- statement: no key, a pulled key and a missing directory are all gates that return false. A key
--- that is PRESENT AND REFUSING remains unmeasured -- see the table above -- but nothing measured
--- raises, so nothing here catches.
+-- Write one line. No key, a pulled key and a missing directory are all gates that return false.
 function ulog.line(s)
   if not ulog.enabled then return false end
   if not ulog.on then
@@ -243,11 +226,9 @@ function ulog.line(s)
   return true
 end
 
--- string.format wrapper with EXPLICIT parameters rather than varargs.
---   [...]
--- all, which is unacceptable in a logger. Five slots cover every call site,
--- string.format ignores surplus arguments, and this behaves identically on 5.0.2
--- and 5.4. Guarded so a format mismatch cannot raise from inside a log call.
+-- string.format wrapper with explicit parameters. The 5.0.2 idiom string.format(f, unpack(arg))
+-- relies on an implicit `arg` table that host Lua removed, so it cannot be exercised offline. Five
+-- slots cover every call site, and string.format ignores surplus arguments.
 function ulog.fmt(f, a, b, c, d, e)
   if not ulog.enabled then return false end
   local ok, s = pcall(string.format, f, a, b, c, d, e)
@@ -274,11 +255,11 @@ function ulog.close()
   return true
 end
 
--- DOES THIS FILE EXIST, WITHOUT LOGGING AN ERROR IF IT DOES NOT?
---   [...]
--- from fs.is_file falls through to the open probe -- unreachable on hardware, where it answers a
--- boolean -- and file.open returning nil (no key, or no such file) is the normal FREE answer, with
--- the failure surfacing at the write where it belongs.
+-- Does this file exist, without logging an error if it does not? true or false, never nil.
+-- file.open(path, MODE_READ) uses the failure as the answer and posts 2205 at severity ERROR, the one
+-- severity showevents still raises a modal box for -- so finding a free name would produce one on
+-- every Save. fs.is_file() answers silently: eventlog.getcount() stays 0 across an existing and a
+-- missing path on 1.7.17a.
 function ulog.exists(path)
   if path == nil then return false end
   local got = fs.is_file(path)
@@ -291,11 +272,8 @@ function ulog.exists(path)
   return got == true
 end
 
--- First unused '<prefix>NNN<ext>' on the key, so successive saves do not overwrite each other.
---   [...]
--- be handed out and TRUNCATED by MODE_WRITE.
--- 1000 names, three digits. At 100 the byte log simply stopped logging once prefix000..099 existed,
--- and a bench session that presses NewLog per device reaches 100.
+-- First unused '<prefix>NNN<ext>' on the key. A path, or nil if every NNN is taken. 1000 names, three
+-- digits; a bench session pressing New Log per device reaches 100.
 function ulog.next_free(prefix, ext, limit)
   if limit == nil then limit = 1000 end
   local dok, dwhy = ulog.ensuredir()
@@ -346,11 +324,8 @@ function ulog.next_free(prefix, ext, limit)
 end
 
 
--- Write a whole array of lines to its own file and close it immediately.
--- Deliberately NOT routed through the rolling log: a saved capture wants its own
--- file, and interleaving it with debug output would make both harder to read. Uses a
--- separate handle that never outlives the call, so it cannot interact with
--- ulog.fh's lifetime. Returns ok, reason.
+-- Write an array of lines to its own file and close it. ok, reason. Not routed through the rolling
+-- log: a saved capture wants its own file, and the handle never outlives the call.
 function ulog.write_file(path, lines, n)
   if path == nil then return false, 'no filename available' end
   local fh, why = ulog.open_write(path, file.MODE_WRITE)
@@ -370,8 +345,8 @@ function ulog.write_file(path, lines, n)
   return true
 end
 
--- One-line state summary for the panel, so logging can be seen to be happening
--- rather than assumed.
+-- One-line state summary for the panel, so logging can be seen rather than assumed. Name only: the
+-- status row shows ~45 proportional characters, and the directory never varies.
 function ulog.status()
   if not ulog.enabled then return 'log off' end
   if not ulog.on then
@@ -3304,11 +3279,11 @@ function sdec.ck_reader_table(rd, ntotal)
   end
 end
 
--- Over a reading buffer. buf.readings is a firmware proxy, not a table, so each index
+-- Over a reading buffer. buf.readings is a firmware proxy, so each index is an IPC round trip, which
 --   [...]
--- read needs: the bound is folded into the loop limit once, the source index is the loop variable
--- rather than from + (i - 1) * step recomputed per sample, and the store index is a counter. The
--- decimated form (step > 1, the level pass) is unchanged.
+-- still pays for what surrounds the read, so the contiguous form keeps only what the read needs: the
+-- bound folds into the loop limit once, the source index is the loop variable, and the store index is
+-- a counter. The decimated form (step > 1, the level pass) is unchanged.
 function sdec.ck_reader_buffer(buf, ntotal)
   local rdp = buf.readings
   local off = 0
@@ -3347,19 +3322,19 @@ end
 
 -- Window geometry
 --   [...]
--- At 8.68 samples/bit and 10 bit frames that is ceil(260.4) + 64 = 325 samples, 1.6 % of a
--- 20 000-sample window: the redundant work is a rounding error against the cost of
--- getting a seam wrong.
+-- decides a near-tie.
+-- At 8.68 samples/bit and 10-bit frames: ceil(260.4) + 64 = 325 samples, 1.6 % of a 20 000-sample
+-- window.
 function sdec.ck_overlap(T, framebits)
   if T == nil or framebits == nil then return nil end
   return math.ceil(sdec.ck_ovframes * framebits * T) + sdec.maxback
 end
 
 -- Window size, overlap and stride for a bit time, or nil plus a reason.
---   [...]
--- frame is 10 000 samples and three of them do not fit in the window at all -- the overlap exceeds
--- the window, so stride goes NEGATIVE and the loop would run backwards. Refusing names the remedy,
--- which is the sample rate, and is the same shape as every other refusal in this app.
+-- Refuses rather than clamps when the window cannot hold enough frames. Force 1200 baud with fs
+-- still at 1 MSa/s and T is 833 samples, so one 12-bit frame is 10 000 and three do not fit: the
+-- overlap exceeds the window, stride goes negative, and the loop would run backwards. The refusal
+-- names the remedy, which is the sample rate.
 function sdec.ck_geometry(T, framebits)
   local W = sdec.ck_win_n
   local ov = sdec.ck_overlap(T, framebits)
@@ -3374,11 +3349,10 @@ function sdec.ck_geometry(T, framebits)
   return W, ov, stride, nil
 end
 
--- How many windows a capture of ntotal samples takes at this stride. Exact, because
--- the stride is CONSTANT -- the loop below advances by it unconditionally rather than
--- resuming from wherever the last frame happened to end. That costs about 1.6 % in redundant
--- decoding -- the overlap, once per window -- and buys a window count that is known before the run
--- starts, which is what makes the progress indicator honest instead of a guess.
+-- How many windows a capture of ntotal samples takes at this stride. Exact, because the stride is
+-- constant: the loop advances by it unconditionally rather than resuming where the last frame ended.
+-- That costs ~1.6 % in redundant decoding and buys a window count known before the run starts, which
+-- is what makes the progress indicator honest.
 function sdec.ck_nwin(ntotal, W, stride)
   if ntotal == nil or W == nil or stride == nil or stride < 1 then return nil end
   if ntotal <= W then return 1 end
