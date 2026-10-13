@@ -742,7 +742,7 @@ Only bit runs may vouch, bounded by `maxmult`: a multiple beyond it is inter-byt
 timing information. A 42-bit loop-seam gap gives **k = 169**, whose parity is set by the capture phase
 rather than the format, and one such width was enough to silence the gate and let ratio 0.25 through.
 
-### ua_minrun_absurd = 2.5
+### submult_maxrunlo = 2.5
 
 Covers the odd divisors `ua_submultiple` structurally cannot. A ten-bit frame opens with a one-bit
 start bit, so hundreds of pulses hold single-bit runs: **1.00 bit times at the truth against 5.00 at

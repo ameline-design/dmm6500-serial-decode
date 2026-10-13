@@ -2300,7 +2300,7 @@ sdec.submult_maxrunlo = sdec.submult_maxrunlo or 2.5
 
 -- Does this candidate claim the shortest pulse on the wire is several bit times long? Covers the odd
 -- divisors ua_submultiple cannot, on the 5th percentile rather than the minimum, and gates candidates
--- only -- never the fit, and only behind snap1. docs/MEASUREMENTS.md, 'ua_minrun_absurd = 2.5'.
+-- only -- never the fit, and only behind snap1. docs/MEASUREMENTS.md, 'submult_maxrunlo = 2.5'.
 function sdec.ua_minrun_absurd(T)
   if T == nil or T <= 0 then return false end
   if (sdec.nw or 0) < sdec.submult_minpulses then return false end
@@ -5669,10 +5669,9 @@ if sdec.strm_press == nil then sdec.strm_press = false end
 sdec.strm_maxsec = sdec.strm_maxsec or 1200
 sdec.strm_fallback_s = sdec.strm_fallback_s or 20
 -- Drop a decode result a later pass has invalidated, and nothing else. Returns true.
--- autoset() runs up to three captures per press, and a pass failing at acquire() returns before any
--- decode, so the previous pass's res, baud and fitq survive beside the failed capture's acq_fs and
--- levels. docs/MEASUREMENTS.md, 'A failed re-capture leaves a stale fit'. Not clear_result(), whose
--- probe_note and lasterr are the only record of what failed here.
+-- A pass failing at acquire() returns before any decode, so the previous pass's result survives beside
+-- the failed capture's rate. docs/MEASUREMENTS.md, 'A failed re-capture leaves a stale fit'. Not
+-- clear_result(), whose probe_note and lasterr are the only record of what failed here.
 function sdec.drop_stale_result()
   sdec.res, sdec.midi, sdec.lin = nil, nil, nil
   sdec.baud, sdec.baud_raw, sdec.bittime = nil, nil, nil
@@ -5712,10 +5711,10 @@ function sdec.unlock_all()
 end
 
 -- Everything the app and the decoder learned, back to a known value, before any attempt to determine
---   [...]
--- reset would cap every unlocked capture at ~19 bytes. fs_select() rather than an assignment, since
--- the deterministic value is whatever the lock and mode imply. It does NOT unlock -- a forced rate is
--- a decision the operator can see on the padlock, and a harness calls sdec.unlock_all() first.
+-- a baud rate or decode. Returns true. Called once per press at the top of capture().
+-- What it adds over clear_result() plus clear_measured() is the requested sample rate, which they must
+-- not touch. docs/MEASUREMENTS.md, 'fs_want: the second pass of autoset'. It does not unlock: a forced
+-- rate is the operator's, and a harness that wants a virgin app calls sdec.unlock_all() first.
 function sdec.detect_reset()
   sdec.clear_result()
   sdec.fs_want = nil
@@ -5724,10 +5723,10 @@ function sdec.detect_reset()
 end
 
 -- Capture orchestration
---   [...]
--- No second pass and no octave retry, unlike the tail of autoset(): a re-capture is more data
--- everywhere else and strictly less here, because the device's opening bytes exist only in the window
--- that caught them. docs/TRIGGER.md section 7 for what the pre-trigger reserve buys.
+-- The one armed capture a silent line gets. Reached from autoset() when the probe ladder found no
+-- transitions and the trigger mode is one that waits. Returns ok, reason.
+-- No second pass and no octave retry, unlike the tail of autoset(): a re-capture is more data everywhere
+-- else and strictly less here, because the opening bytes exist only in the window that caught them.
 function sdec.arm_capture()
   local fs = sdec.arm_fs()
   sdec.fs, sdec.fs_want = fs, fs
@@ -5744,9 +5743,8 @@ function sdec.arm_capture()
 end
 
 -- Is this candidate bit time compatible with the pulses actually on the wire? The filter the prior
--- ladder applies BEFORE spending a decode, and the detector's own three tests: docs/MEASUREMENTS.md,
--- 'The prior ladder needs the pulse-width filter'. It fails closed with no evidence, all three waving
--- a missing width array through, so sig_bittime() must run first.
+-- ladder applies before spending a decode. docs/MEASUREMENTS.md, 'The prior ladder needs the
+-- pulse-width filter'. It fails closed with no evidence, so sig_bittime() must run first.
 function sdec.arm_try_ok(T, n)
   if T == nil or T <= 0 then return false end
   if sdec.wmed == nil or sdec.wmed <= 0 then return false end
@@ -5772,9 +5770,9 @@ end
 
 -- Fit the operator's prior to samples already in hand. Called by arm_capture() when a blind armed
 --   [...]
--- true rate reads two real frames as one and lands its stop bit where a real one is. Every surviving
--- candidate is decoded, which is CPU and nothing else. docs/MEASUREMENTS.md, 'Uniqueness, not first
--- fit, for a guessed rate'. decode_from(), not decode(), whose fallback measurement already failed.
+-- Uniqueness, not the first fit, because clean frames at a wrong rate are the normal outcome:
+-- docs/MEASUREMENTS.md, 'Uniqueness, not first fit, for a guessed rate'. decode_from(), not decode(),
+-- whose fallback measurement already failed.
 function sdec.arm_fit_prior()
   local rd, n = sdec.smp, sdec.nread
   if rd == nil or n == nil or n < 2 then return false end
@@ -5884,9 +5882,9 @@ function sdec.autoset()
 end
 
 -- The byte log
---   [...]
--- once per session, so successive captures append to one file. Decoded bytes only, never samples --
--- a 32 kB stream is 3.4 M samples, ~34 MB of text against 32 kB of bytes.
+-- One file, shared by every mode, and separate from the debug log, which is a trace of notes and
+-- refusals. The name is chosen once per session, so successive captures append to one file. Decoded
+-- bytes only, never samples -- a 32 kB stream is 3.4 M samples, ~34 MB of text against 32 kB.
 -- Allocate the byte log's filename. Returns the path, or nil with sdec.flog_why set.
 function sdec.flog_alloc()
   ulog.keyok()
@@ -6270,10 +6268,9 @@ function sdec.decode_abandon()
   return true
 end
 
--- Arm the trigger model and RETURN; the buffer fills in hardware from here. nsmp is the reading count
--- SimpleLoop is asked for. Returns whether the model took the configuration -- false is the caller's cue to
--- fall back to a free-running read. Guarded at its own firmware boundaries, so no caller needs a pcall:
--- wrapped from outside, a refused SimpleLoop came back as a successful arm.
+-- Arm the trigger model and return; the buffer fills in hardware from here. nsmp is the reading count
+-- SimpleLoop is asked for, and the return says whether the model took the configuration -- false is the
+-- caller's cue to fall back to a free-running read. Guarded at its own firmware boundaries.
 function sdec.stream_arm(nsmp)
   sdec.strm_armed = nil
   local buf = sdec.buf
@@ -6321,10 +6318,9 @@ function sdec.stream_arm(nsmp)
   return ok
 end
 
--- Stop the hardware and publish what it collected. -> the reading count, and a SECOND return naming the
--- failure when the buffer could not be read at all. That second return keeps a fault from reading as an
--- empty recording: buf.n raises on a buffer the firmware has dropped, and unguarded it comes back as 0,
--- which stream_stop() reports as 'recording collected nothing'.
+-- Stop the hardware and publish what it collected. -> the reading count, and a second return naming the
+-- failure when the buffer could not be read at all, which is what keeps a fault from reading as an
+-- empty recording: buf.n raises on a buffer the firmware has dropped, and 0 reads as 'collected nothing'.
 function sdec.stream_settle()
   pcall(trigger.model.abort)
   local buf = sdec.buf
@@ -6511,7 +6507,6 @@ function sdec.stream_maxwait(nsmp, fs)
   return t
 end
 
--- Show acquisition progress on the mode row: have of want samples.
 function sdec.progress_samples(have, want)
   sdec.ck_acq_have, sdec.ck_acq_want = have, want
   return sdec.progress_row()
@@ -6551,11 +6546,10 @@ sdec.ck_bufmargin = 50000
 
 sdec.ck_bufmin = 898347
 
--- The ceiling the live defbuffers leave, which is a query and not the policy: it reports what the
--- instrument can spare as the capacities stand, and buf_reclaim() is what changes them.
--- One pcall for both reads, and it belongs here: an outbound firmware boundary, where the pcall budget
--- (see start()) makes a second guard two sites for one boundary. Returns the ceiling, then the name and
--- capacity of the larger default buffer, which the refusals must quote or they send the operator wrong.
+-- The ceiling the live defbuffers leave, which is a query and not the policy: buf_reclaim() is what
+-- changes them. One pcall for both reads, because this is an outbound firmware boundary and the pcall
+-- budget counts sites. Returns the ceiling, then the name and capacity of the larger default buffer,
+-- which the refusals must quote or they send the operator at the wrong one.
 function sdec.bufmax_for()
   local ok, d1, d2 = pcall(function() return defbuffer1.capacity, defbuffer2.capacity end)
   if not ok or type(d1) ~= 'number' or type(d2) ~= 'number' then
@@ -6573,11 +6567,11 @@ end
 
 sdec.ck_defbufcap = 100000
 
--- One default buffer's capacity, written and answered for. -> true if the instrument took it. One guarded
---   [...]
--- by a running measurement the first assignment lands and the second raises, so defbuffer2's readings were
--- discarded while buf_reclaim reported false and logged nothing. A whitelist, not the sweep's test with
--- the sign flipped, and named exactly: without the test the else would resize defbuffer2 for anything.
+-- One default buffer's capacity, written and answered for. -> true if the instrument took it. One
+-- guarded site for every capacity write this app makes, because the pcall budget counts sites.
+-- Per buffer is not a style choice: one pcall spanning both writes is not atomic, so defbuffer2's
+-- readings were discarded while buf_reclaim reported false. A whitelist, and named exactly, or the else
+-- would resize defbuffer2 for anything.
 function sdec.defbuf_set(name, cap)
   if name ~= 'defbuffer1' and name ~= 'defbuffer2' then return false end
   local ok = pcall(function()
@@ -6590,11 +6584,11 @@ function sdec.defbuf_set(name, cap)
   return ok
 end
 
--- Resize the default buffers down when the recording needs the room, because the reading memory is ONE
+-- Resize the default buffers down when the recording needs the room, because the reading memory is one
 --   [...]
--- to hold the operator's readings. Back to the default and not to just-enough, because a resize discards
--- EVERY READING whatever the new capacity is. And it is recorded: ck_defbufwas is what stop() hands back.
--- -> did_reclaim, text naming what was resized and from what. false means nothing needed doing.
+-- defbuffer2 first, then defbuffer1, which is the default active buffer and so the one likely to hold
+-- the operator's readings. Back to the default, not to just-enough, because a resize discards every
+-- reading whatever the new capacity is. -> did_reclaim, and text naming what was resized.
 function sdec.buf_reclaim()
   local ok, d1, d2 = pcall(function() return defbuffer1.capacity, defbuffer2.capacity end)
   if not ok or type(d1) ~= 'number' or type(d2) ~= 'number' then return false, nil end
@@ -6625,9 +6619,9 @@ end
 
 -- Buffers this app did not make hold the same pool, so they are swept before the default buffers are
 --   [...]
--- undefined, and dropping the handle before the delete strands the buffer. Whether `.capacity` on an
--- arbitrary global answers nil or raises is unmeasured, so the collection is guarded as if it raises.
--- -> freed_readings, text naming what went. 0 and nil when there was nothing to sweep.
+-- defbuffer2 and sdec.buf are skipped.
+-- Collect, then delete, never interleaved: writing to the global table while next() walks it is
+-- undefined, and dropping the handle first strands the buffer. -> freed_readings, and text.
 function sdec.buf_sweep()
   local names, nn = {}, 0
   pcall(function()
@@ -6665,10 +6659,9 @@ function sdec.buf_sweep()
   return freed, gone
 end
 
--- Hand the capacities back -- the sizes are the operator's setting and only the readings were lost. Runs in
--- stop() after the capture buffer is freed, because until then the room to grow them does not exist. Not
--- fatal and not retried: failing the teardown over it costs a reinstall, and ck_defbufwas is cleared either
--- way. -> text naming what was handed back, or nil when there was nothing.
+-- Hand the capacities back -- the sizes are the operator's setting and only the readings were lost. Runs
+-- in stop() after the capture buffer is freed, because until then there is no room to grow them. Not
+-- fatal and not retried: failing the teardown over it costs a reinstall. -> text, or nil for nothing.
 function sdec.buf_restore()
   if sdec.ck_relaunching then
     sdec.ck_relaunching = nil
@@ -6912,11 +6905,11 @@ function sdec.capture_run()
   return ok
 end
 
--- The half-second tick is off for the whole press. A tick is dispatched exactly like a press, so work that
---   [...]
+-- The half-second tick is off for the whole press. A tick is dispatched exactly like a press, so work
+-- that holds the interpreter defers ticks rather than suppressing them. A wrapper rather than an edit
+-- into the body, because capture_run() has a dozen returns and a missed one would leave no tick.
 -- The body is not guarded, and a raise reaches the caller: `pcall(sdec.capture)` is how two callers ask
--- whether the press faulted, and what a raise would skip, sdec.unwind restores. The key is checked by the
--- press, first -- it closes no gap, but Capture asks rather than inheriting the answer from elsewhere.
+-- whether the press faulted, and what a raise would skip, sdec.unwind restores.
 function sdec.capture()
   sdec.ui_keypoll()
   sdec.ui_tick_off()
@@ -6986,8 +6979,7 @@ function sdec.autolock_try()
 end
 
 -- Protocol layer
--- Run ONE protocol layer's parser over the bytes just decoded. mode names the view whose parser
--- to run. Returns whether it ran.
+-- Run one protocol layer's parser over the bytes just decoded. mode names the view. -> whether it ran.
 function sdec.proto_parse1(mode)
   local v = sdec.ui_view(mode)
   if v == nil or v.parse == nil then return false end
@@ -7025,9 +7017,9 @@ end
 
 -- The inbound firmware boundary
 --   [...]
+-- Separate from sdec.guard because not every raise reaches the boundary: a frame that catches one to
 -- make a decision of its own, like lock_toggle, has to do this too or the cleanup does not happen.
--- Raise-free by construction, and it does not log -- ulog.line reaches file.write, and a full key is
--- the condition that brought us here.
+-- Raise-free by construction, and it does not log -- a full key is the condition that brought the app here.
 function sdec.unwind(why)
   sdec.busy = false
   sdec.ck_running = false
@@ -7052,10 +7044,9 @@ function sdec.unwind(why)
   return false
 end
 
--- Run a panel handler so a raise cannot reach the firmware. -> true if it returned. The one place a pcall may
--- wrap our own code, and it is a firmware boundary like any other: the instrument calls these by name out of a
--- display event string, and an escaping raise becomes a modal dialog over the app. One helper, so the boundary
--- is ONE pcall site and it covers the whole handler.
+-- Run a panel handler so a raise cannot reach the firmware. -> true if it returned. The one place a
+-- pcall may wrap this app's own code, and a firmware boundary like any other: the instrument calls these by
+-- name out of a display event string, and an escaping raise becomes a modal dialog over the app.
 function sdec.guard(f)
   local ok, err = pcall(f)
   if ok then return true end
@@ -7063,8 +7054,8 @@ function sdec.guard(f)
 end
 
 -- Save the decoded stream to the USB key
--- Write a self-describing file to the USB key: the wire parameters, then the whole capture as a
--- hex + ASCII dump, then every parsed protocol list. Returns ok.
+-- Write a self-describing file: the wire parameters, the capture as hex + ASCII, then every parsed
+-- protocol list. Returns ok.
 function sdec.save()
   sdec.savedas = nil
   if sdec.res == nil or sdec.res.nf == 0 then
@@ -7134,8 +7125,8 @@ function sdec.save()
 end
 
 -- View handlers
--- Advance through the views THIS BUILD HAS -- text -> hex -> text in version 1, which ships without
--- midi_decode.tsp and lin_decode.tsp, so ui_view_avail() hides the entries that would always be empty.
+-- Advance through the views this build has -- text -> hex -> text in version 1, where ui_view_avail()
+-- hides the MIDI and LIN entries that would always be empty.
 function sdec.view_toggle()
   sdec.ui_keypoll()
   local n = sdec.ui_nviews()
@@ -7327,7 +7318,7 @@ function sdec.strm_absorb_arm()
   sdec.strm_stopped_by_press = true
 end
 
--- True if we are still inside the window in which a press must have been queued.
+-- True while still inside the window in which a press must have been queued.
 function sdec.strm_absorb_due()
   if not sdec.strm_stopped_by_press then return false end
   local el = timer.gettime()
@@ -7337,9 +7328,9 @@ end
 
 -- The one gate every handler that matters consults: was this press queued behind a run that has
 --   [...]
--- Capture only, and the scope was narrowed by measurement: Mode is the way out of a mode, and a dead
--- escape hatch is worse than an unwanted mode change. Only Capture starts an uninterruptible run and
--- wipes the result on screen.
+-- in the instrument's one global timer -- so anything taking the timer disarms first, as record_run()
+-- does. Capture only, and narrowed by measurement: only Capture starts an uninterruptible run and wipes
+-- the result, where a dead Mode button is worse than an unwanted mode change.
 function sdec.press_absorbed(what)
   if not sdec.strm_absorb_due() then
     sdec.strm_stopped_by_press = nil
@@ -7362,11 +7353,11 @@ function sdec.press_absorbed(what)
   return true
 end
 
--- Flush the current capture mode's files and say why. `why` goes on the note row. Returns the mode that was
+-- Flush the current capture mode's files and say why. `why` goes on the note row. Returns the mode that
 --   [...]
--- boolean nobody checks, which is this app's dominant defect class.
+-- protected failure gets narrowed to a boolean nobody checks, which is this app's dominant defect class.
 -- Never raises for any measured failure, so the four callers call it bare; see ulog.line for the one
--- unmeasured case. It touches no firmware directly.
+-- unmeasured case.
 function sdec.mode_exit(why, bad)
   local was = sdec.capmode
   local md = sdec.mode_cur()
@@ -7398,11 +7389,10 @@ function sdec.mode_exit(why, bad)
   return was
 end
 
--- Which mode an idle Mode press advances to -- the ENTRY, not the id.
--- Factored out so the panel can name it: the status row said 'Mode=Exit to FRAME' in every recording mode, and
--- from 8 kB the button goes to 32 kB. A label that names the wrong destination is this app's recurring defect,
--- so the label and the action read the SAME function. Skips any mode that cannot be right at the locked rate
--- (mode_suits), bounded by n steps, because a table where nothing suits must not spin inside a touch handler.
+-- Which mode an idle Mode press advances to -- the entry, not the id.
+-- Factored out so the panel can name it: a label that names the wrong destination is this app's
+-- recurring defect, so the label and the action read the same function. Skips any mode that cannot be
+-- right at the locked rate, bounded by n steps, because a table where nothing suits must not spin.
 function sdec.mode_next()
   local n = sdec.ui_modes.n
   local at, i = 0, nil
@@ -7446,8 +7436,8 @@ function sdec.mode_cycle()
 end
 
 -- The idle watchdog
--- Is there any activity in rd[1..n]? thr is the threshold and hyst its hysteresis, both
--- defaulting to the current capture's. Returns true if the line crossed, false if it sat still.
+-- Is there any activity in rd[1..n]? thr and hyst default to the current capture's. -> true if the line
+-- crossed, false if it sat still.
 function sdec.smp_active(rd, n, thr, hyst)
   if rd == nil or n == nil or n < 2 then return false end
   if thr == nil then thr = sdec.thr end
@@ -7479,8 +7469,8 @@ function sdec.idle_window(fs)
 end
 
 -- Options
--- Seed the form fields from the current force_* settings. Called on every open, and by anything
--- that changes them, so the form always shows what is in effect without rebuilding it.
+-- Seed the form fields from the current force_* settings, on every open and after anything that changes
+-- them, so the form always shows what is in effect without rebuilding it.
 function sdec.options_seed()
   return pcall(function()
     if sdec.opt_proto ~= nil then
@@ -7696,10 +7686,9 @@ function sdec.install_cleanup(scr)
   return ok
 end
 
--- Tear the app down: release the job, stop the hardware, delete objects, close the log. Never raises for any
--- measured failure, so every caller calls it bare; ulog.line and ulog.close can raise on a key that is present
--- and refusing, which is unmeasured. Each firmware touch below carries its own guard. It is also the End App
--- event string, through sdec.cleanup(), where a raise reaches the FIRMWARE.
+-- Tear the app down: release the job, stop the hardware, delete objects, close the log. Never raises for
+-- any measured failure, so every caller calls it bare; each firmware touch below carries its own guard.
+-- It is also the End App event string, through sdec.cleanup(), where a raise reaches the firmware.
 function sdec.stop()
   sdec.ui_tick_off()
   if sdec.ck_job ~= nil then sdec.decode_abandon() end

@@ -556,7 +556,7 @@ end
 
 -- Does this candidate claim the shortest pulse on the wire is several bit times long? Covers the odd
 -- divisors ua_submultiple cannot, on the 5th percentile rather than the minimum, and gates candidates
--- only -- never the fit, and only behind snap1. docs/MEASUREMENTS.md, 'ua_minrun_absurd = 2.5'.
+-- only -- never the fit, and only behind snap1. docs/MEASUREMENTS.md, 'submult_maxrunlo = 2.5'.
 sdec.submult_maxrunlo = sdec.submult_maxrunlo or 2.5
 
 function sdec.ua_minrun_absurd(T)

@@ -131,8 +131,9 @@ sdec.snapped  = sdec.snapped or false
 sdec.snaptol  = 0.02  -- snap when within 2 % of a standard rate
 sdec.maxmult  = 12    -- a gap longer than this many bit times is idle, not data
 
--- Standard rates. 153600, 172800 and 192000 are here because a rate that cannot snap cannot auto-lock and the
--- recording modes are gated on a lock. docs/MEASUREMENTS.md, 'Why 153600, 172800 and 192000 are in stdbaud'.
+-- Standard rates, two worth recognising by name: 31250 is MIDI and 250000 DMX512. 153600, 172800 and 192000 are
+-- here because a rate that cannot snap cannot auto-lock and the recording modes are gated on a lock.
+-- docs/MEASUREMENTS.md, 'Why 153600, 172800 and 192000 are in stdbaud'.
 sdec.stdbaud = {110, 300, 600, 1200, 1800, 2400, 4800, 7200, 9600, 14400,
                 19200, 28800, 31250, 38400, 57600, 76800, 115200, 128000,
                 153600, 172800, 192000, 230400, 250000, 460800, 921600}
@@ -1418,6 +1419,7 @@ end
 
 -- Capture armed on a start-bit edge, keeping sdec.pretrig percent of the buffer from before the trigger, and
 -- falling back to free-run if the model errors. A start bit is only a start bit if the line was at mark first.
+-- The comparison runs on the analog board's Cortex-M4 rather than in Lua, so arming costs nothing per sample.
 
 -- Is the trigger model finished, as opposed to not started yet? idle is also the state before initiate(), hence
 -- the buffer check. pcall'd because a state read that raises must degrade to "not finished".
