@@ -1,8 +1,8 @@
 -- usb_log.tsp -- debug logging to the USB key, for TSP apps on Keithley TTI instruments (Lua 5.0.2).
 -- A .tspa from the Apps menu has nowhere to print, and the event log holds only firmware errors and
 -- is cleared by whatever happens next. `ulog` is the one exception to the one-global rule: sdec and
--- fftsa share it. Paths are absolute, USB root /usb1/. No key is normal, so every call degrades to a
--- no-op. No file call raises; failures post events (docs/vendor/04, docs/UNDOCUMENTED.md).
+-- fftsa share it. No key is normal, so every call degrades to a no-op, and no file call raises.
+-- The file API's measured behaviour is in docs/MEASUREMENTS.md, 'The USB file API'.
 
 ulog = ulog or {}
 
@@ -38,12 +38,10 @@ if ulog.keyout == nil then ulog.keyout = false end
 ulog.keygen    = ulog.keygen or 0
 ulog.keyopen   = ulog.keyopen or 0
 
--- Finding the directory, with no free way to ask whether one exists on firmware 1.7.17a. file.mkdir
--- returns nothing, never raises, and posts 2208 on failure -- including for a name that already
--- exists, so a speculative mkdir files one per call. A bare name always fails; '/usb1/SERDEC'
--- succeeds silently, and the reference's own file.mkdir("TestData5") example is wrong. Opening a
--- missing path posts 2205. So: usbdriveexists() first, which answers 0 silently; then read /usb1,
--- which yields its raw FAT directory table; then create only on a genuine absence.
+-- Finding the directory, with no free way to ask whether one exists: mkdir posts 2208 even for a
+-- name that already exists, and opening a missing path posts 2205. So ask usbdriveexists() first,
+-- which is silent, then read /usb1's raw FAT table, then create only on a genuine absence.
+-- docs/MEASUREMENTS.md, 'file.mkdir'.
 
 -- Is a key in the slot? The only question answerable without naming a path.
 function ulog.haskey()
@@ -51,11 +49,9 @@ function ulog.haskey()
   return true
 end
 
--- Stop touching the key until one is inserted. A latch, not a reason per attempt: a write to a key
--- pulled from under a running app returns normally and posts 2200, file.open then returns nil and
--- posts 2224, and usbdriveexists returns 0 silently. Presence is the only file failure this app can
--- observe. A key present and refusing -- full, or write-protected -- is unmeasured;
--- docs/vendor/repro-04b-full-key.tsp would settle it.
+-- Stop touching the key until one is inserted. A latch, not a reason per attempt, because presence is
+-- the only file failure the app can observe -- a write to a pulled key returns normally and posts
+-- 2200. docs/MEASUREMENTS.md, 'A key pulled from under a running app'.
 function ulog.keylost(why)
   ulog.keybad = true
   ulog.keywhy = tostring(why or 'the USB key stopped accepting writes')
@@ -71,8 +67,8 @@ function ulog.keylost(why)
   return true
 end
 
--- Is the key there and still accepting writes? One usbdriveexists, 237 us, no path and no event, so
--- it is askable per line, per capture and per panel refresh. keylost() is called only from the no-key
+-- Is the key there and still accepting writes? One usbdriveexists, 237 us and silent, so it is
+-- askable per line, per capture and per panel refresh. keylost() is called only from the no-key
 -- branch, so keybad is set only with the slot empty; a refusing key is reported by its writer.
 function ulog.keyok()
   if not ulog.haskey() then
@@ -116,10 +112,9 @@ end
 -- Is `name` listed in the USB root? true, false, or nil when the root could not be read. nil taken
 -- as absence orders a mkdir on no evidence and posts 2208, so the two must not be merged.
 --
--- The directory is 'SERDEC' because on 1.7.17a only a name of eight characters or fewer in upper
--- case is a single contiguous 8.3 entry. FAT splits a long name across fields of 5, 6 and 2
--- characters, so no search for the whole name matches. Not a FAT parser: a file of this name, or a
--- deleted entry whose bytes remain, both err towards 'present' and cost a failed open, not an event.
+-- Only an 8.3-clean name is contiguous in the FAT table, which is why the directory is 'SERDEC':
+-- docs/MEASUREMENTS.md, 'Why the directory is called SERDEC'. Not a FAT parser -- a file of this
+-- name, or a deleted entry whose bytes remain, both err towards 'present' and cost a failed open.
 function ulog.rootlists(name)
   if name == nil or name == '' then return nil end
   local fh = file.open('/usb1', file.MODE_READ)
@@ -142,8 +137,8 @@ function ulog.ensuredir(dir)
   -- not haskey(), so the latch is honoured and the directory is not re-established per capture under
   -- a key nothing can write.
   if not ulog.keyok() then return false, tostring(ulog.keywhy or 'no USB key') end
-  -- Cached: the root listing is 65536 bytes, measured. Only a confirmed directory is cached, and
-  -- dirlost() drops it when an open fails -- the one moment the cache could be wrong.
+  -- Cached, the root listing being 65536 bytes. Only a confirmed directory is cached, and dirlost()
+  -- drops it when an open fails -- the one moment it could be wrong.
   if ulog.dirok == dir then return true end
   if string.sub(dir, 1, 1) ~= '/' then return false, 'directory must be absolute: ' .. dir end
   -- Refused rather than renamed silently: a longer name is not contiguous in the FAT table, so every
@@ -291,11 +286,9 @@ function ulog.close()
   return true
 end
 
--- Does this file exist, without logging an error if it does not? true or false, never nil.
--- file.open(path, MODE_READ) uses the failure as the answer and posts 2205 at severity ERROR, the one
--- severity showevents still raises a modal box for -- so finding a free name would produce one on
--- every Save. fs.is_file() answers silently: eventlog.getcount() stays 0 across an existing and a
--- missing path on 1.7.17a.
+-- Does this file exist, without logging an error if it does not? true or false, never nil. The open
+-- probe would post 2205 at the one severity showevents still raises a box for, so finding a free name
+-- would produce one on every Save. docs/MEASUREMENTS.md, 'fs.is_file against the open probe'.
 function ulog.exists(path)
   if path == nil then return false end
   -- Bare: fs.is_file answers false for a bad path and for garbage, and posts nothing.

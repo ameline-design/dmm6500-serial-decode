@@ -60,11 +60,9 @@ function ulog.haskey()
   return true
 end
 
--- Stop touching the key until one is inserted. A latch, not a reason per attempt: a write to a key
--- pulled from under a running app returns normally and posts 2200, file.open then returns nil and
--- posts 2224, and usbdriveexists returns 0 silently. Presence is the only file failure this app can
--- observe. A key present and refusing -- full, or write-protected -- is unmeasured;
--- docs/vendor/repro-04b-full-key.tsp would settle it.
+-- Stop touching the key until one is inserted. A latch, not a reason per attempt, because presence is
+-- the only file failure the app can observe -- a write to a pulled key returns normally and posts
+-- 2200. docs/MEASUREMENTS.md, 'A key pulled from under a running app'.
 function ulog.keylost(why)
   ulog.keybad = true
   ulog.keywhy = tostring(why or 'the USB key stopped accepting writes')
@@ -77,8 +75,8 @@ function ulog.keylost(why)
   return true
 end
 
--- Is the key there and still accepting writes? One usbdriveexists, 237 us, no path and no event, so
--- it is askable per line, per capture and per panel refresh. keylost() is called only from the no-key
+-- Is the key there and still accepting writes? One usbdriveexists, 237 us and silent, so it is
+-- askable per line, per capture and per panel refresh. keylost() is called only from the no-key
 -- branch, so keybad is set only with the slot empty; a refusing key is reported by its writer.
 function ulog.keyok()
   if not ulog.haskey() then
@@ -112,10 +110,10 @@ function ulog.resume()
 end
 
 -- Is `name` listed in the USB root? true, false, or nil when the root could not be read. nil taken
---   [...]
--- case is a single contiguous 8.3 entry. FAT splits a long name across fields of 5, 6 and 2
--- characters, so no search for the whole name matches. Not a FAT parser: a file of this name, or a
--- deleted entry whose bytes remain, both err towards 'present' and cost a failed open, not an event.
+-- as absence orders a mkdir on no evidence and posts 2208, so the two must not be merged.
+-- Only an 8.3-clean name is contiguous in the FAT table, which is why the directory is 'SERDEC':
+-- docs/MEASUREMENTS.md, 'Why the directory is called SERDEC'. Not a FAT parser -- a file of this
+-- name, or a deleted entry whose bytes remain, both err towards 'present' and cost a failed open.
 function ulog.rootlists(name)
   if name == nil or name == '' then return nil end
   local fh = file.open('/usb1', file.MODE_READ)
@@ -255,11 +253,9 @@ function ulog.close()
   return true
 end
 
--- Does this file exist, without logging an error if it does not? true or false, never nil.
--- file.open(path, MODE_READ) uses the failure as the answer and posts 2205 at severity ERROR, the one
--- severity showevents still raises a modal box for -- so finding a free name would produce one on
--- every Save. fs.is_file() answers silently: eventlog.getcount() stays 0 across an existing and a
--- missing path on 1.7.17a.
+-- Does this file exist, without logging an error if it does not? true or false, never nil. The open
+-- probe would post 2205 at the one severity showevents still raises a box for, so finding a free name
+-- would produce one on every Save. docs/MEASUREMENTS.md, 'fs.is_file against the open probe'.
 function ulog.exists(path)
   if path == nil then return false end
   local got = fs.is_file(path)
@@ -3279,11 +3275,11 @@ function sdec.ck_reader_table(rd, ntotal)
   end
 end
 
--- Over a reading buffer. buf.readings is a firmware proxy, so each index is an IPC round trip, which
---   [...]
--- still pays for what surrounds the read, so the contiguous form keeps only what the read needs: the
--- bound folds into the loop limit once, the source index is the loop variable, and the store index is
--- a counter. The decimated form (step > 1, the level pass) is unchanged.
+-- Over a reading buffer. buf.readings is a firmware proxy, so each index is an IPC round trip at
+-- 21.73 us -- hence once per sample per capture, not once per decode pass.
+-- The contiguous case is the hot loop of a recording, so it keeps only what the read needs: the bound
+-- folds into the loop limit once, the source index is the loop variable, and the store index is a
+-- counter. The decimated form (step > 1, the level pass) is unchanged.
 function sdec.ck_reader_buffer(buf, ntotal)
   local rdp = buf.readings
   local off = 0
@@ -3321,10 +3317,10 @@ function sdec.ck_reader_buffer(buf, ntotal)
 end
 
 -- Window geometry
---   [...]
--- decides a near-tie.
--- At 8.68 samples/bit and 10-bit frames: ceil(260.4) + 64 = 325 samples, 1.6 % of a 20 000-sample
--- window.
+-- How much the windows must overlap. Getting it wrong loses one byte per seam, and a byte lost
+-- mid-file is hard to notice. The floor is one frame, framebits * T; the two extra frames and maxback
+-- cover sig_cross's truncated back-walk and keep the seam mid-overlap. Derivation and the 1.6 % cost
+-- in docs/MEASUREMENTS.md, 'Overlap'.
 function sdec.ck_overlap(T, framebits)
   if T == nil or framebits == nil then return nil end
   return math.ceil(sdec.ck_ovframes * framebits * T) + sdec.maxback
@@ -3349,10 +3345,8 @@ function sdec.ck_geometry(T, framebits)
   return W, ov, stride, nil
 end
 
--- How many windows a capture of ntotal samples takes at this stride. Exact, because the stride is
--- constant: the loop advances by it unconditionally rather than resuming where the last frame ended.
--- That costs ~1.6 % in redundant decoding and buys a window count known before the run starts, which
--- is what makes the progress indicator honest.
+-- How many windows a capture takes at this stride. Exact, because the stride is constant, which buys
+-- a window count known before the run starts. docs/MEASUREMENTS.md, 'Constant stride'.
 function sdec.ck_nwin(ntotal, W, stride)
   if ntotal == nil or W == nil or stride == nil or stride < 1 then return nil end
   if ntotal <= W then return 1 end
@@ -3415,11 +3409,11 @@ function sdec.ck_levels(reader, ntotal, win)
   return false, why
 end
 
--- HOW MANY WINDOWS THE FORMAT SEARCH MAY SPEND, from the silence the record may OPEN with.
+-- How many windows the format search may spend, from the silence an armed record opens with. The
 --   [...]
--- W = 20 000 -- and on a window FULL of frames that do not fit it is the whole 1.67 s. That second
--- case is a locked rate the device is not using, where no later window can help either, so the worst
--- case is 5 tries at 32 kB: 8.4 s to refuse a recording that takes 1.67 s to refuse on one try.
+-- buffer's CAPACITY, so a record cut short carries the whole reserve at the head of a record a
+-- fraction of the buffer's length. stream_decode knows the buffer and says; nil means no reserve,
+-- which is every unarmed recording and every decode of an array in memory.
 function sdec.ck_prime_tries(leadmax)
   local W = sdec.ck_win_n
   if W == nil or W < 1 then return 1 end

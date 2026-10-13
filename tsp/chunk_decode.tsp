@@ -24,31 +24,17 @@ sdec.ck_win_n = 20000
 -- Overlap in frames: one for correctness, two for margin. ck_overlap() derives the floor.
 sdec.ck_ovframes = 3
 
--- How many samples the LEVEL measurement decimates the whole recording down to.
---
---     count   bins   modal   thr      sig_levels
---       982     61   0.585   3.263 V  accept   <- threshold ABOVE the high level
---      1963    122   0.325   1.651 V  accept
---      3925    245   0.176   1.647 V  accept
---      5233    327   0.235   3.295 V  accept   <- wrong again
---      7850    490   0.137   1.648 V  refuse
---     10466    512   0.146   1.645 V  refuse
---     31397    512   0.145   1.645 V  refuse
---
--- sig_levels' bin count is floor(n/binocc) capped at nbins, so it saturates at n = 8192 and every
--- count past that measures the same thing. Below saturation the coarse bins sometimes pick the wrong
--- pair of humps outright, so a small count is not merely noisier. sdec.n is past saturation and is
--- frame mode's own population, so chunked mode accepts and refuses a line where frame mode does.
+-- Samples the level measurement decimates the recording down to. Past sig_levels' bin saturation and
+-- equal to frame mode's own population, so both modes accept and refuse a line alike. The sweep that
+-- fixes it is in docs/MEASUREMENTS.md, 'Why ck_level_n is 20 000'.
 sdec.ck_level_n = 20000
 
--- How many CONTIGUOUS windows the level fallback tries, spaced across the recording. See
--- ck_levels(): one window covered 0.6 % of the burst positions in a 3 413 334-sample capture.
+-- Contiguous windows the level fallback tries, spaced across the recording. docs/MEASUREMENTS.md,
+-- 'Why the contiguous fallback is spaced across the recording'.
 sdec.ck_probes = 8
 
--- Medium mode's cap. One number for every baud rate, so the UI states one expectation; 32 kB is
--- still 400-500 lines of 64-column debug text. 32 rather than 64 kB because the worst case then needs
--- 3.41 M samples, under half the reading pool, so the defbuffers at their 100 000 defaults leave room
--- -- and where they do not, sdec.bufmax_for() shortens the window instead of refusing.
+-- Medium mode's cap: one number for every baud rate, so the UI states one expectation.
+-- docs/MEASUREMENTS.md, 'ck_maxbytes = 32768'.
 sdec.ck_maxbytes = 32768
 
 -- ============================================================================
@@ -102,15 +88,12 @@ function sdec.ck_reader_table(rd, ntotal)
   end
 end
 
--- Over a reading buffer. buf.readings is a firmware proxy, so each index is an IPC round trip, which
--- is why this runs once per sample per capture rather than once per sample per decode pass.
+-- Over a reading buffer. buf.readings is a firmware proxy, so each index is an IPC round trip at
+-- 21.73 us -- hence once per sample per capture, not once per decode pass.
 --
--- The contiguous case is the hot loop of a recording: every decode window reads W samples through it,
--- and the proxy read costs 21.73 us a sample against a Lua loop body costing a fraction of that. The
--- figure is the read alone, not ck_win_us, which is 48 and covers the whole decode step. The loop
--- still pays for what surrounds the read, so the contiguous form keeps only what the read needs: the
--- bound folds into the loop limit once, the source index is the loop variable, and the store index is
--- a counter. The decimated form (step > 1, the level pass) is unchanged.
+-- The contiguous case is the hot loop of a recording, so it keeps only what the read needs: the bound
+-- folds into the loop limit once, the source index is the loop variable, and the store index is a
+-- counter. The decimated form (step > 1, the level pass) is unchanged.
 function sdec.ck_reader_buffer(buf, ntotal)
   local rdp = buf.readings
   -- The ring's logical start, once per reader, so `from` means the n-th reading in time to both
@@ -158,23 +141,10 @@ end
 -- ============================================================================
 -- Window geometry
 -- ============================================================================
--- How much the windows must overlap, derived because getting it wrong loses one byte per seam, and a
--- byte lost mid-file is hard to notice.
---
--- ua_run stops when a frame runs off the end of its array, so a window ending at W emits its last
--- complete frame and leaves at most one partial frame. That frame did not fit, so its start t0
--- satisfies t0 > W - framebits*T, and the next window must begin at or before W - framebits*T:
---
---     overlap >= framebits * T          -- one frame, the floor.
---
--- Two more frames plus maxback buy two things cheaply. sig_cross walks back up to sdec.maxback
--- samples to find a crossing, and that walk is truncated at a window's leading edge, so the first
--- edge or two can be mispositioned; with margin they sit in already-emitted territory and tmin
--- discards them. The seam also falls mid-overlap rather than at its rim, so de-duplication never
--- decides a near-tie.
---
--- At 8.68 samples/bit and 10-bit frames: ceil(260.4) + 64 = 325 samples, 1.6 % of a 20 000-sample
--- window.
+-- How much the windows must overlap. Getting it wrong loses one byte per seam, and a byte lost
+-- mid-file is hard to notice. The floor is one frame, framebits * T; the two extra frames and maxback
+-- cover sig_cross's truncated back-walk and keep the seam mid-overlap. Derivation and the 1.6 % cost
+-- in docs/MEASUREMENTS.md, 'Overlap'.
 function sdec.ck_overlap(T, framebits)
   if T == nil or framebits == nil then return nil end
   return math.ceil(sdec.ck_ovframes * framebits * T) + sdec.maxback
@@ -200,10 +170,8 @@ function sdec.ck_geometry(T, framebits)
   return W, ov, stride, nil
 end
 
--- How many windows a capture of ntotal samples takes at this stride. Exact, because the stride is
--- constant: the loop advances by it unconditionally rather than resuming where the last frame ended.
--- That costs ~1.6 % in redundant decoding and buys a window count known before the run starts, which
--- is what makes the progress indicator honest.
+-- How many windows a capture takes at this stride. Exact, because the stride is constant, which buys
+-- a window count known before the run starts. docs/MEASUREMENTS.md, 'Constant stride'.
 function sdec.ck_nwin(ntotal, W, stride)
   if ntotal == nil or W == nil or stride == nil or stride < 1 then return nil end
   if ntotal <= W then return 1 end
@@ -340,34 +308,15 @@ end
 -- pr.label names the current phase for the status row, so the operator sees priming
 -- advancing rather than a dead panel.
 
--- HOW MANY WINDOWS THE FORMAT SEARCH MAY SPEND, from the silence the record may OPEN with.
+-- How many windows the format search may spend, from the silence an armed record opens with. The
+-- first window can be entirely the pre-trigger wait, so a search that looks there and nowhere else
+-- refuses a recording whose bytes are all present. Measurements, the +2 and the 8.4 s worst case in
+-- docs/MEASUREMENTS.md, 'An armed record opens on silence' and 'ck_prime_tries'.
 --
--- AN ARMED RECORD OPENS ON SILENCE, BY CONSTRUCTION. LoopUntilEvent keeps a pre-trigger reserve
--- ahead of the trigger, and on a device that had not started talking when Capture was pressed every
--- reading of that reserve is the line the arm was waiting on: 71 865 readings of a 32 kB recording's
--- 1 437 294, which is 3.6 windows of 20 000. So the first window can be ENTIRELY the wait, and a
--- search that looks there and nowhere else refuses a recording whose bytes are all present --
--- MEASURED at 9600 Bd locked, a device starting at +3.0 s gave 0 bytes and 'no frame format fits the
--- capture' where the same recording of one starting at +0.3 s gave 21 933.
---
--- leadmax IS THE CALLER'S FIGURE AND CANNOT BE DERIVED FROM ntotal. The reserve comes out of the
--- buffer's CAPACITY, so a record cut short -- a device that says its piece and stops, which is what
--- this feature is for -- carries the whole reserve at the head of a record a fraction of the buffer's
--- length. Scaling the reserve from the delivered count would then bound it below its own value.
--- stream_decode knows the buffer and says; nil means "no reserve", which is every unarmed recording
--- and every decode of an array already in memory.
---
--- PLUS TWO, NOT PLUS ONE, AND SO NEVER FEWER THAN TWO, and the 8 kB mode is why: its reserve is
--- 2 035 readings SHORT of a window, so its first window is 90 % the wait and the size works by luck
--- rather than by design. The window that STRADDLES the end of the reserve holds a sliver of signal
--- which need not frame, so the try after the reserve is the first that is certainly on the device's
--- own traffic. 5 tries for the 32 kB mode's reserve, 2 for the 8 kB mode's.
---
--- AND IT IS A BOUND BECAUSE EVERY TRY COSTS A WINDOW. Over the reserve a try is a read, an edge pass
--- and a format search with nothing in it to search -- 0.63 s of the phase timings above at
--- W = 20 000 -- and on a window FULL of frames that do not fit it is the whole 1.67 s. That second
--- case is a locked rate the device is not using, where no later window can help either, so the worst
--- case is 5 tries at 32 kB: 8.4 s to refuse a recording that takes 1.67 s to refuse on one try.
+-- leadmax is the caller's figure and cannot be derived from ntotal: the reserve comes out of the
+-- buffer's CAPACITY, so a record cut short carries the whole reserve at the head of a record a
+-- fraction of the buffer's length. stream_decode knows the buffer and says; nil means no reserve,
+-- which is every unarmed recording and every decode of an array in memory.
 function sdec.ck_prime_tries(leadmax)
   local W = sdec.ck_win_n
   if W == nil or W < 1 then return 1 end
@@ -450,23 +399,14 @@ function sdec.ck_prime_step(pr)
   -- real line before the long run starts.
   if pr.phase == 'edge' then
     sdec.sig_edges(pr.win, pr.cnt)
-    -- THE PRIMING WINDOW OF AN ARMED RECORDING IS THE RESERVE, so its leading run is the wire
-    -- BEFORE THE DEVICE STARTED and not the line's idle level. Unset, sig_idle took that run as the
-    -- longest in the window and the polarity prior came out of it -- and because priming's own
-    -- decode then FRAMES at that polarity, the format it hands back is inverted and the whole
-    -- recording inherits it.
+    -- The priming window of an armed recording is the reserve, so its leading run is the wire before
+    -- the device started, not the idle level. Unset, the polarity prior comes out of that run and the
+    -- whole recording inherits an inverted format. docs/MEASUREMENTS.md, 'Why sig_idle must exclude
+    -- the leading run on an armed record'.
     --
-    -- MEASURED, an 8 kB recording armed on silence with the generator switched on at +3 s:
-    -- leadrun 17 968 against a 17 965-sample reserve, run0 17 968, run1 232, idle 0, invert true,
-    -- 2110 of 5484 bytes bad. The byte COUNT is right, which is why a count-only assertion passes
-    -- on it.
-    --
-    -- SET FOR EVERY TRY, NOT ONLY THE FIRST. A retry advances a whole window, and on the widest
-    -- mode the reserve is 3.6 windows, so later windows open inside it too. Past the reserve the
-    -- leading run is a mid-record run truncated by the window boundary, which is weaker evidence
-    -- than the interior runs either way -- and if nothing else in the window is long enough,
-    -- sig_idle falls to its LEVEL branch with idle_weak true, where sdec.polmargin protects the
-    -- answer. So excluding it is conservative at every position.
+    -- Set for every try, not only the first: a retry advances a whole window and the widest mode's
+    -- reserve is 3.6 windows, so later windows open inside it too. Past the reserve the leading run is
+    -- weaker evidence than the interior runs either way, so excluding it is conservative everywhere.
     sdec.acq_pretrig = (pr.leadmax ~= nil and pr.leadmax > 0)
     sdec.sig_idle(pr.win, pr.cnt)
     pr.phase, pr.label = 'fmt', 'format'
@@ -586,26 +526,10 @@ end
 -- Second, a window count is DETERMINISTIC, so the offline suite can assert exactly where a slice
 -- ends instead of depending on how fast the machine running the tests happens to be.
 --
--- Recalibrate this from a measurement, not from a guess: it is the one number converting the
--- operator-facing budget (sdec.ui_latency_s) into work.
---
--- THE READ OUT OF THE READING BUFFER IS PART OF THE COST -- 21.73 us a sample, 0.435 s of a
--- 20 000-sample window -- so timing only sig_edges and ua_run over a window already in a Lua
--- table understates the total threefold. Timed per phase (tools/bench_priming.py), 9600 baud,
--- W = 20 000:
---
---     levels    0.958 s     the decimated pass, ck_level_n samples
---     reading   0.530 s     the contiguous lead-in read
---     edges     0.101 s     sig_edges + sig_idle
---     format    1.043 s     the format search -- the most expensive per sample
---     window    0.685 s     one decode slice, x20
---
--- Every phase is proportional to W, so ONE per-sample cost bounds all five -- which is what makes
--- the latency bound real. The format phase scales with FRAMES though, and samples-per-bit varies
--- 2:1: at W = 8653 it took 0.451 s at 9600 baud (8.33 sa/bit) against 0.634 s at 250 kBd (4.0).
--- Two points give 32.5 us/sample + 1.63 ms/frame, i.e. 52 us/sample at 8.33 sa/bit and 73 at 4.0.
--- The WORST is used: one always-safe constant beats two that must be evaluated before the format is
--- known. Costs ~30 % window width at low rates -- throughput, not correctness.
+-- The one number converting the operator-facing budget (sdec.ui_latency_s) into work, so recalibrate
+-- it from a measurement. Every phase is proportional to W, which is what makes the latency bound
+-- real. Phase timings, and why the worst sa/bit figure is the one used, in docs/MEASUREMENTS.md,
+-- 'Decode phase timings' and 'ck_smp_us = 73'.
 sdec.ck_smp_us = 73               -- worst-phase cost per sample, microseconds, MEASURED at 4 sa/bit
 sdec.ck_win_max = 20000           -- and never wider than this, whatever the budget allows
 sdec.ck_win_min = 2000            -- nor narrower: below this the per-window seam overhead dominates
@@ -617,29 +541,13 @@ sdec.ck_win_ref = 20000           -- the width the phase timings above were take
 -- arithmetic inside one -- so this is a small margin.
 sdec.ck_budget_frac = 0.9
 
--- WHAT A DECODE WINDOW COSTS PER SAMPLE, as against ck_smp_us for the worst PRIMING phase. Keeping
--- one constant for both is what pinned a slice at one window: ck_win_for sizes W so that the format
--- search alone fills the budget, so dividing that same budget by W x ck_smp_us cannot come out above
--- 1 however the margin is applied -- one Capture press per window, 101 of them for 30 s at 4800 Bd.
---
--- MEASURED 0.685 s for one 20 000-sample decode step (the `window` phase above) -- 34.25 us a
--- sample, of which 21.73 is the read out of the reading buffer and does not scale with frames.
--- Two ways to the worst case, since only the one operating point was timed: scale the whole figure
--- the way the format phase scales from 8.33 to 4 sa/bit (x 73/52) gives 48, and holding the read
--- fixed while doubling the frame-proportional remainder gives 47. The higher is used.
+-- What a decode window costs per sample, as against ck_smp_us for the worst priming phase. One
+-- constant for both pins a slice at one window, since ck_win_for sizes W so the format search alone
+-- fills the budget. docs/MEASUREMENTS.md, 'ck_win_us = 48'.
 sdec.ck_win_us = 48
--- Decode windows one slice should aim to spend, as a bound on the WIDTH -- because the count follows
--- from the width and nothing else. THIS IS 1, AND THE ARITHMETIC FOR WHY IS WORTH KEEPING:
---
--- samples per press = W x n, and n = floor(budget / (W x ck_win_us)), so raising n by narrowing W
--- cannot buy more than budget / ck_win_us samples per press -- 9375 at 0.45 s, against 6164 today.
--- That 1.52x is the whole prize, and taking it needs W <= 4687, i.e. n = 2. Three constraints then
--- do not fit together at 0.5 s: n = 2, a W that stays a useful width (>= 5000, asserted in
--- test_serial.lua), and the 0.9 margin. Any two hold. n = 2 with W = 5000 spends 0.480 s of the
--- 0.5 s bound -- inside it, but on 4 % margin rather than 10 %.
---
--- So the width stays where the priming phases put it and a press stays one window; flipping this to
--- 2 is the whole change if the margin or the width floor is allowed to give.
+-- Decode windows a slice should spend, as a bound on the WIDTH, since the count follows from it.
+-- Flipping this to 2 is the whole change if the 0.9 margin or the width floor is allowed to give.
+-- docs/MEASUREMENTS.md, 'ck_slice_n = 1'.
 sdec.ck_slice_n = 1
 
 -- The widest window whose every phase fits `budget_s`. nil budget means the fixed maximum: the
@@ -724,24 +632,15 @@ function sdec.ck_decode(reader, ntotal, fmt, sink, opts)
   local slice = sdec.ck_slice_win(opts.budget_s, W, sdec.ck_win_us)
   local spent = 0
 
-  -- THE WINDOW PRIMING ALREADY READ. ck_prime_step's 'read' phase filled win[1..cnt] from position 1 and
-  -- nothing between it and here writes into the table, so the first window is present and re-reading it
-  -- costs W proxy round trips for values in hand -- 0.435 s at W = 20 000.
+  -- Reuse the window priming already read, saving 0.435 s of proxy reads for values in hand
+  -- (docs/MEASUREMENTS.md, 'Window reuse between priming and decode'). Cleared before the loop, not
+  -- inside it, so a resumed slice cannot inherit a count belonging to window one.
   --
-  -- CONSUMED ONCE, AND CLEARED BEFORE THE LOOP RATHER THAN INSIDE IT. A resumed slice arrives with its own
-  -- off and must read; clearing here means a later slice cannot inherit a count belonging to window one.
-  --
-  -- THE FOUR CONDITIONS ARE ALL LOAD-BEARING. off == 0 says this is window one; opts.resume == nil says
-  -- the table was not left by some other slice; primed.W == W says the geometry wants exactly the samples
-  -- priming took -- ck_win_n changing between the two calls is the one way the reads could differ -- and
-  -- primed.at == 1 says the primed window IS the start of the record.
-  --
-  -- THE POSITION IS A CONDITION BECAUSE PRIMING CAN MOVE. A format search that found nothing in the
-  -- reserve advances a window at a time (see ck_prime_tries), so the table can hold samples from the
-  -- middle of the record -- and taken as window one those would decode at offsets they do not have,
-  -- putting every byte of the file somewhere it never was. A primed window at an offset is simply not
-  -- reused: the saving is 0.435 s on a recording that is about to spend tens of seconds decoding, and
-  -- it is only forgone on the records that needed more than one try.
+  -- All four conditions are load-bearing: off == 0 says this is window one, opts.resume == nil says no
+  -- other slice left the table, primed.W == W says the geometry wants exactly the samples priming
+  -- took, and primed.at == 1 says the primed window IS the start of the record. The position matters
+  -- because a format search that found nothing in the reserve advances a window at a time, so the
+  -- table can hold mid-record samples -- taken as window one, every byte lands where it never was.
   local primed = opts.primed
   opts.primed = nil
   local reuse = (primed ~= nil and off == 0 and opts.resume == nil and primed.W == W and
