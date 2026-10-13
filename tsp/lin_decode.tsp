@@ -1,35 +1,16 @@
 -- lin_decode.tsp -- LIN (ISO 17987) frame layer for the Keithley TSP serial decoder (Lua 5.0.2).
 --
--- Not shipped in V1: package_tspa.py MODULES omits it, so Options offers no LIN and View never
--- reaches the frame list. The checksum has never been checked against a real frame, only
--- hand-computed, so shipping this module ships an unverified decode.
+-- Not shipped in V1: package_tspa.py MODULES omits it, and the checksum has never been checked
+-- against a real frame, so shipping it ships an unverified decode.
 --
--- Works on the byte stream uart_decode.tsp produced. LIN is 8N1 underneath, idle recessive, so
--- selecting it forces 8N1 and normal polarity but leaves the baud rate to the auto-detector: LIN
--- specifies none, 1 to 20 kBd, in practice 9600 or 19200. MIDI differs in being 31250 by spec.
+-- Works on the byte stream uart_decode.tsp produced. LIN is 8N1 underneath, idle recessive, and
+-- specifies no baud rate, so the rate is left to the auto-detector. A 12 V bus needs a 2:1 divider:
+-- docs/MEASUREMENTS.md, 'Wiring'.
 --
--- Wiring: a 12 V single-wire bus against a 10 V best digitize range needs a 2:1 divider, 47 k +
--- 47 k. Nothing below 20 k per leg, or a slave-only segment's pull-up reads recessive as dominant.
--- docs/lin-divider-panel.png is the drawing; sdec.li_levelnote() says so on the panel when the
--- levels look undivided.
---
--- The frame:
---   BREAK      >= 13 dominant bits from a master, >= 11 accepted by a slave. 8N1 holds at most 9
---              consecutive dominant bits, so no byte can imitate it.
---   DELIMITER  >= 1 recessive bit.
---   SYNC       0x55. A slave measures the bit rate across it; here it checks the measured one.
---   PID        6-bit frame ID plus two parity bits (sdec.li_pid).
---   DATA       1..8 bytes.
---   CHECKSUM   inverted sum with carry, over the data (classic, LIN 1.x and diagnostic frames) or
---              over the PID and the data (enhanced, LIN 2.x).
---
--- The frame length is not on the wire. A passive analyser counts the bytes between breaks and takes
--- the last as the checksum. LIN 1.3's length convention in ID bits 5:4 was dropped by 2.x, so
--- reporting a disagreement would fire on most of a modern bus; not implemented.
---
--- The break reaches here as a framing error, which is expected: the UART layer reads its first ten
--- cells as 0x00 with the stop bit still dominant. A healthy capture shows one framing error per
--- frame and the ERR field goes red, so sdec.li_breaknote() explains it.
+-- The frame: BREAK (>= 13 dominant bits, against the 9 an 8N1 byte can hold), DELIMITER, SYNC 0x55,
+-- PID, 1..8 DATA bytes, CHECKSUM. The length is not on the wire, so a passive analyser counts bytes
+-- between breaks and takes the last as the checksum. The break arrives as a framing error, the UART
+-- layer reading its first ten cells as 0x00, so li_breaknote() explains the red ERR field.
 --
 -- Lua 5.0.2: no '#', no bitwise operators, math.mod for modulo.
 
@@ -44,7 +25,7 @@ sdec.LI_SYNC = 0x55
 -- and fails both checksums.
 sdec.li_minbreak = 11
 
--- The four reserved frame IDs. 0x3C and 0x3D carry diagnostics and require the CLASSIC checksum
+-- The four reserved frame IDs. 0x3C and 0x3D carry diagnostics and require the classic checksum
 -- whatever the rest of the bus uses, which is why the style cannot be assumed.
 sdec.li_name = {}
 sdec.li_name[0x3C] = 'MasterReq'
@@ -86,16 +67,11 @@ end
 -- Checksum
 -- ============================================================================
 -- Inverted eight-bit sum with the carry added back: modulo-255, not 256. Pass pid for the enhanced
--- checksum (LIN 2.x), nil for the classic one (LIN 1.x and diagnostic frames at any version). Never
--- checked against a real frame.
+-- checksum (LIN 2.x), nil for the classic one. Never checked against a real frame.
 --
--- sum stays <= 255 before every add, so one subtraction restores the invariant, and 255 - sum is the
--- one's complement without a bitwise operator. Summing the data and the received checksum gives 255.
---
--- Blind spot callers must respect: modulo-255 makes 0xFF congruent to 0x00, so swapping one for the
--- other is invisible in every byte position -- 0 of 256 detected across all 64 IDs and 4 positions.
--- With PID 0x11, data 0xFF and 0x00 both give 0xEE. An agreeing checksum is therefore no proof that
--- a byte the UART layer flagged arrived intact, and li_parse() does not treat it as proof.
+-- Modulo-255 makes 0xFF congruent to 0x00, so an agreeing checksum is no proof that a flagged byte
+-- arrived intact, and li_parse() does not treat it as proof.
+-- docs/MEASUREMENTS.md, "The checksum's blind spot" and 'The LIN checksum'.
 function sdec.li_csum(vals, i0, n, pid)
   local sum = 0
   if pid ~= nil then sum = math.mod(pid, 256) end
@@ -218,12 +194,8 @@ function sdec.li_parse()
         local wc = sdec.li_csum(r.vals, d0, ndata, nil)
         local diag = (id == 0x3C or id == 0x3D)
 
-        -- Diagnostic frames are classic by spec, so they are tried that way round; everything else
-        -- tries enhanced first, LIN 2.x being the common case.
-        --
-        -- Both sides of every comparison must exist: `nil == nil` is true in Lua, and both sides can
-        -- legitimately be nil -- r.vals[] for a lost byte, li_csum for a missing one. Without the
-        -- tests a response missing a data byte and its checksum validates out of two absences.
+        -- Diagnostic IDs are classic by spec, so they are tried that way round. Both sides of every
+        -- comparison must exist: `nil == nil` is true, so a missing byte would validate an absence.
         local csok, style = false, nil
         if cs ~= nil then
           if diag then
@@ -289,10 +261,8 @@ function sdec.li_parse()
 
         emit(k, string.format('%s  %s  %s  %s%s', tostring(head), tostring(lentxt), tostring(dtxt), tostring(tail), tostring(pidtxt)))
         L.nframes = L.nframes + 1
-        -- The census excludes diagnostic frames: they are classic by spec at any version, so
-        -- counting them makes an ordinary LIN 2.x bus with a 0x3C frame report 'mixed csum'. Among
-        -- the rest a mixture means a half-migrated stack, or a corrupted enhanced checksum landing
-        -- on the classic value, which happens once in 256 frames. An untrusted frame does not vote.
+        -- Diagnostic frames are excluded, being classic at any version, and an untrusted frame does
+        -- not vote. docs/MEASUREMENTS.md, 'The LIN checksum'.
         if csok and not diag and nerr == 0 and nmiss == 0 and not piderr then
           if style == 'enh' then L.nenh = L.nenh + 1 end
           if style == 'cls' then L.ncls = L.ncls + 1 end

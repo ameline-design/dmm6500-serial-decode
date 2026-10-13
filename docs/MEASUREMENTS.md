@@ -179,6 +179,23 @@ values already in hand -- **0.435 s at W = 20 000**. The reuse is conditional on
 a format search that found nothing in the reserve advances a window at a time and the table can hold
 samples from the middle of the record.
 
+### The four window-reuse conditions
+
+`opts.primed` says a priming read happened; the four tests beside it say its contents still describe
+the window `ck_decode` is about to read. Each rules out one way the table can hold the wrong samples:
+
+| condition | what it rules out |
+|---|---|
+| `off == 0` | decode starting anywhere but sample 1 |
+| `opts.resume == nil` | a resumed slice, whose cursor is mid-record |
+| `primed.W == W` | a window resized between priming and decode |
+| `primed.at == 1` | a format search that advanced the primed read off position 1 |
+
+`opts.primed` is cleared before the loop, so the saving is taken once and a later slice cannot
+inherit a stale table. Dropping any one test substitutes samples from the wrong part of the record
+for the first window's, which decodes as plausible frames at the wrong offsets rather than as an
+error.
+
 ## The USB file API
 
 ### No file call raises
@@ -640,3 +657,110 @@ window being too small. See 'Why the anchor search is bounded by `n`'.
 candidate probe is the loop's atom -- 18 framing passes with no state carried between candidates
 except the best-so-far -- so the checkpoint is four values and a slice boundary cannot land anywhere
 awkward.
+
+## Acquisition
+
+### The sample-rate ladder divides 66 MHz
+
+Measured over 26 rates: the sample clock is 66 MHz with an integer divider, rounded up, so
+`fs_actual = 66e6 / ceil(66e6 / fs_requested)`. The model predicts all 25 accepted rates to within
+**4.3e-7**, so a rate is exact if and only if 66e6 is divisible by it. 66e6 = 2^7 * 3 * 5^6 * 11, so
+120000 is exact and 160000 = 2^8*5^4 is not -- it wants one more factor of two than the clock has.
+
+1000 is the floor; 900 is rejected outright with error 1130.
+
+**Three inexact rates are listed anyway** -- 160000, 320000 and 640000, off by -0.121 %, -0.362 % and
+-0.841 %. They are what 19200, 38400 and 76800 need: without them those three, the commonest rates on
+a bit-banged micro, snap up a whole step and get 192, 192 and 153 bytes per capture instead of 240
+each. Safe because the shortfall is downward and tiny -- 8.32, 8.30 and 8.26 samples/bit, all above
+the 8 the selector asked for -- and every bit time is scaled by `acq_fs` rather than the requested
+rate. 350000 is omitted only because no standard baud rate wants it.
+
+### Why 153600, 172800 and 192000 are in stdbaud
+
+The ladder jumped 128000 -> 230400, so a 153.6 kBd line (8 x 19200, the next doubling anyone sweeping
+upward reaches) could not snap: the nearest listed rate is 20 % away against a 2 % `snaptol`. Nothing
+decoded wrongly, but `autolock_try`'s first gate is `snapped`, so the rate was never pinned, the
+recording modes stayed unarmed, and the only way in was typing the raw figure into Options. Pinned by
+hand, an 8 kB recording at **153 588 baud captured and decoded correctly**.
+
+172800 (9x) and 192000 (10x) were found the same way -- a 192 kBd line reported a raw 191 993 with a
+question mark. Spacing against the 2 % snaptol: 153600 -> 172800 is 12.5 %, 172800 -> 192000 is 10 %,
+192000 -> 230400 is 17 %. No new ambiguity.
+
+307200 is not listed, `maxbaud` being 250000: adding a rate the detector refuses would be listing a
+refusal.
+
+**Which of these can record** follows from `fs_for_burst`: the burst path loses `acq_overhead` per
+sample, so the crossover is 1/(4*(1/1e6 + 5.1e-7)) = **165 563 Bd**. 153600 is the fastest standard
+rate that can record, at 4.31 samples/bit delivered; 172800 and above are frame-only. Frame decodes
+to the full 250000.
+
+### Why the levels are the two densest amplitudes
+
+Working inward from the extremes is what a percentile trim does, and it fails because the trim
+fraction must be guessed against an unknown outlier count. Measured: eight 2-sample 25 V spikes on a
+0/3.3 V line are **16 samples in 1400, 1.1 %, over a 0.5 % budget** -- so the trimmed upper bound
+landed inside the spikes, the high-group mean was dragged to ~12 V, the threshold went with it, and
+the edge list collapsed **from 80 edges to 12**. The decoder then fitted the 2-sample spike pairs and
+reported **47 427 baud with six confident-looking bytes**. Perversely, forty spikes worked, because
+past the trim budget the bound landed outside them again.
+
+Density has no such budget: a logic level holds hundreds of samples in one or two bins, while spikes
+of differing amplitude scatter one or two samples per bin, and even a wide spike train loses to the
+minority logic level on count.
+
+### binocc = 16
+
+A fixed 512 bins over a 2000-sample probe averages four samples a bin, and at that occupancy Poisson
+scatter alone drops the occasional bin below any sensible threshold. One such dip inside the idle hump
+ended the width walk early, left the rest of the same hump looking like a separate level, and put
+**both levels within 0.35 V of each other on a 3.3 V line**. Sixteen samples a bin keeps the scatter
+far below the hump threshold.
+
+### The flow-control pulse is ~10 us, not the 100 us requested
+
+`trigger.extout.pulsewidth` is nil on 1.7.17a, so `fc_config` skips the assignment and the width is
+the firmware default. Measured on an SDS1204X-E at 1 GSa/s, armed SINGLE on the rising edge:
+**9.41 us and 9.82 us** on two trials, 4.92 V peak, -0.96 V baseline.
+
+So a device waiting for a credit needs an edge-triggered input, an interrupt or a latch: 10 us is 2.5
+bit times at 250 kBd, and a firmware polling a GPIO in a loop can miss it entirely. The 100 us
+request is kept because it is the right request -- 25 bit times at 250 kBd, comfortable even on a
+1 MHz part -- and a firmware that does expose `pulsewidth` will get it.
+
+### trigext_only
+
+`trigext` ORs the rear input with the analog start-bit trigger, which is the right default. But on a
+line that is always transmitting the start bit always wins, so an external marker can never decide
+where a capture begins. Measured: with the marker off and the line quiet the capture **refuses in
+6 s**, and with the line live it completes immediately on the start bit whether the marker is there or
+not.
+
+### armlevel 1.0, floor 0.33, ceiling 6.0
+
+1.0 clears ADC noise and the slow edge of a lightly-driven line and still sits inside the swing of
+every family decoded -- a 3.3 V part crosses it at under a third of its swing from either direction.
+Below 0.33 V the comparator starts firing on noise on a floating input, arming the capture on nothing.
+The 6 V ceiling is because a level must sit inside a logic swing to be crossed at all, and a 6 V arm
+already needs a 12 V part.
+
+On a line idling away from ground the level is clamped at the midpoint: the active level is unknown by
+construction, so half the idle level is the deepest arm certainly still inside the swing.
+
+This equals `flatfloor` by coincidence, not construction. `flatfloor` decides whether an idle level
+counts as sitting at ground; this decides how far above such a line to arm. Unifying "the two 1.0s"
+would couple the operator's trigger level to the ground test.
+
+### armwait 10, floor 2, ceiling 120
+
+10 rather than the 3 an 'edge' capture waits, because the wait has to outlast an operator reaching
+for a power switch. **The panel is frozen for the whole wait**: the loop runs inside a touch handler
+and nothing can interrupt it -- the front TRIGGER key's event never reaches the cancel latch while a
+panel-initiated run executes, and a touch press only queues. At the 120 s ceiling that is two minutes
+of dead panel, which is why `armnote` exists. Raise the ceiling no further without making the wait
+yield.
+
+The 2 s floor is why nothing pre-existing changes: the caller takes this value only when it exceeds
+the mode's own wait, and 2 against an 'edge' default of 3 means a form at its minimum leaves every
+pre-existing timing as it was.

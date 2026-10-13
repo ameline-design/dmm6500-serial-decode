@@ -72,11 +72,8 @@ end
 -- branch, so keybad is set only with the slot empty; a refusing key is reported by its writer.
 function ulog.keyok()
   if not ulog.haskey() then
-    -- Not debounced. One absent read latches, so a flapping key pays a full recovery per flap: the
-    -- handle closes, the directory cache goes, keygen advances, the next write re-lists the 64 kB
-    -- root and the byte log starts a new bytesNNN.txt. No spurious zero has been seen, and
-    -- debouncing would delay the measured first-write refusal to the second poll. A key that was
-    -- never there is not a key that went away; ulog.on and dirok are the marks a working key leaves.
+    -- Not debounced, and a key that was never there is not a key that went away.
+    -- docs/MEASUREMENTS.md, 'The key-presence latch is not debounced'.
     if not ulog.keybad and (ulog.on or ulog.dirok ~= nil) then
       ulog.keylost('no USB key -- removed while running')
     end
@@ -317,10 +314,8 @@ function ulog.next_free(prefix, ext, limit)
   end
   local idxpath = prefix .. 'idx.txt'
 
-  -- The index is a starting point, not an answer. Probing from zero makes repeated New Log presses
-  -- post 2205s quadratically and raises a modal 'Multiple errors have occurred' box over the hex
-  -- dump. The probe still runs forward from the index, because a file the index does not know about
-  -- would otherwise be handed out and truncated by MODE_WRITE.
+  -- A starting point, not an answer; the probe still runs forward from it.
+  -- docs/MEASUREMENTS.md, "ulog.next_free's index and the wrapping scan".
   ulog.idx_ram = ulog.idx_ram or {}
   local start = ulog.idx_ram[prefix]
   if start ~= nil and (start < 0 or start >= limit) then start = nil end
@@ -337,10 +332,7 @@ function ulog.next_free(prefix, ext, limit)
   end
   if start == nil then start = 0 end
 
-  -- Exactly `limit` probes, wrapping, since the index may be stale high after deletions. Wrapping
-  -- rather than clearing idx_ram and recursing: the retry re-reads the index file, which holds the
-  -- same high number until a free name is found, so the scan repeats for ever. 5.0.2 has proper tail
-  -- calls, so it never overflows the stack and a caller's pcall cannot break it.
+  -- Exactly `limit` probes, wrapping, since the index may be stale high after deletions.
   local i, k
   for k = 0, limit - 1 do
     i = start + k
@@ -366,10 +358,7 @@ function ulog.next_free(prefix, ext, limit)
       return path
     end
   end
-  -- Genuinely full. The index file is left alone: it costs one wasted probe per call, and this path
-  -- must not need a working key. Set here, because left alone idx_why keeps the last allocation's
-  -- sentence. Leaf only -- ui_notes prefixes 'NOT LOGGING: ', and the full prefix measures 704 px
-  -- against the 658 the note row shows.
+  -- Genuinely full. idx_why is set here, and names the leaf only: the note row shows 658 px.
   local leaf = string.gsub(tostring(prefix), '^.*/', '')
   ulog.idx_why = string.format('all %d %sNNN%s names are taken', limit or 0, tostring(leaf), tostring(ext))
   return nil

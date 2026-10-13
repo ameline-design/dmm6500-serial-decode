@@ -1,29 +1,15 @@
--- midi_decode.tsp -- MIDI 1.0 message layer for the Keithley TSP serial decoder
--- (TSP / Lua 5.0.2).
+-- midi_decode.tsp -- MIDI 1.0 message layer for the Keithley TSP serial decoder (Lua 5.0.2).
 --
--- Works entirely on the BYTE STREAM that uart_decode.tsp already produced. MIDI is
--- 31250 baud 8N1, so the wire layer needs nothing new: forcing sdec.force_baud =
--- 31250, force_nbits = 8 and force_par = PAR_NONE also removes every format
--- ambiguity the auto-detector would otherwise have to report.
+-- Works on the byte stream uart_decode.tsp produced. MIDI is 31250 baud 8N1, so selecting it forces
+-- the rate, 8N1 and one stop, removing every format ambiguity. Either side of the opto-isolator
+-- works: across the DIN current loop current flowing is a logical 0, and sig_idle detects which.
 --
--- WIRED IN via the options form's Protocol field: selecting MIDI sets sdec.proto, forces
--- 31250 / 8N1 / 1 stop, and switches to the message view. sdec.proto_parse() in
--- serial_app.tsp is the only caller, dispatching through the sdec.ui_views entry that names
--- mi_parse; the View button also cycles into the message list for any capture, so "is this
--- MIDI?" can be asked of an arbitrary stream.
---
--- Probing: either side works. On the TTL side of the opto-isolator it is ordinary
--- idle-high UART; across the DIN current loop, current ON is a logical 0, so the
--- polarity is inverted. sdec.sig_idle detects which, so neither needs declaring.
---
--- THREE THINGS MAKE A NAIVE MIDI PARSER WRONG, all handled below:
---   * RUNNING STATUS. A channel message may omit its status byte when it repeats,
---     so a bare pair of data bytes continues the previous message. A parser that
---     requires a status byte drops most of a dense stream.
---   * REAL-TIME BYTES (0xF8-0xFF) may appear ANYWHERE -- between the data bytes of
---     a channel message, or inside a SysEx block. They must be emitted without
---     disturbing either.
---   * System Common (0xF1-0xF7) CLEARS running status; real-time does not.
+-- Three things make a naive parser wrong, all handled below:
+--   * Running status: a channel message may omit its status byte when it repeats, so a bare pair of
+--     data bytes continues the previous message.
+--   * Real-time bytes (0xF8-0xFF) may appear anywhere, including inside a SysEx block, and must be
+--     emitted without disturbing it.
+--   * System Common (0xF1-0xF7) clears running status; real-time does not.
 --
 -- Lua 5.0.2: no '#', no bitwise operators, math.mod for modulo.
 
@@ -166,13 +152,9 @@ function sdec.mi_parse()
     if kind == 'rt' then m.nrt = m.nrt + 1 end
   end
 
-  -- A channel or system-common message that never got all its data bytes.
-  --
-  -- Reported for the same reason SysEx truncation is: the alternative is that a Note
-  -- On which lost its velocity byte simply is not in the list, so the message count
-  -- disagrees with the byte dump and nothing says why. There are TWO ways it happens
-  -- -- the capture ended mid-message, or a fresh status byte arrived and abandoned it
-  -- (a byte lost on the wire) -- and the second is the common one.
+  -- A channel or system-common message that never got all its data bytes. Reported rather than
+  -- dropped, or the message count disagrees with the byte dump and nothing says why.
+  -- docs/MEASUREMENTS.md, 'MIDI truncation is reported, not dropped'.
   local function trunc(s, g, nd)
     emit('err', string.format('     -- status %02X truncated (%d of %d data bytes)',
                               s or 0, g or 0, nd or 0))
@@ -201,7 +183,7 @@ function sdec.mi_parse()
         emit('err', string.format('     -- SysEx truncated after %d bytes', sxn or 0))
         insysex = false
       end
-      -- Abandon any half-collected channel message BEFORE the new status replaces it.
+      -- Abandon any half-collected channel message before the new status replaces it.
       if st ~= nil and got < need then
         trunc(st, got, need)
         st, got = nil, 0
