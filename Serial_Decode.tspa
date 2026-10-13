@@ -1512,7 +1512,7 @@ function sdec.acq_copy(buf, n)
 end
 
 -- Untriggered capture of n samples, for the level-learning probe and for 'free' mode. ncopy caps the Lua copy: the
--- streaming fallback arrives with nsmp at 2.8-6 million.
+-- streaming fallback arrives with nsmp at 2.8 to 4.1 million, bufmax_for() starting at ck_bufwant.
 function sdec.acq_free(n, ncopy, nofc)
   local buf = sdec.buf
   sdec.trig_settle()
