@@ -46,7 +46,11 @@ CEIL = 10.0
 SUSPECT = {37500: 38400, 125000: 128000}
 EXEMPT = ('v47', 'v48a', 'v48b')        # min_v < 0: RS-232-shaped in the file, straddle by design
 
-RATE = re.compile(r'rawbaud=(\S+) bittime=(\S+) fitq=(\S+) snap=(\S+)/(\S+)')
+# `fitratio`, NOT `bittime`: the note's second field was renamed in brun and this pattern was not,
+# so the regex stopped matching and every cell read as carrying no diagnostic -- with the summary
+# asking "was --rate-diag passed?" when it had been, and the 86 fits were sitting in the record.
+# Both spellings are accepted so an older record still decomposes.
+RATE = re.compile(r'rawbaud=(\S+) (?:fitratio|bittime)=(\S+) fitq=(\S+) snap=(\S+)/(\S+)')
 IDLE = re.compile(r'idle=(\S+) weak=(\S+) run0=(\S+) run1=(\S+) onebit=(\S+) ratio=(\S+) '
                   r'lo=(\S+) hi=(\S+)')
 
