@@ -300,6 +300,27 @@ function sdec.ui_log_owned()
   return false
 end
 
+-- What that cell says, decided in one place because three callers write it: ui_refresh paints it, a
+-- press writes it through ui_keypoll, and an armed record takes it for an armnote and has to give it
+-- back. Not owned by a run means the log's own status, which is what both ui_refresh branches said.
+function sdec.ui_runnote()
+  if not sdec.ui_log_owned() then return sdec.flog_status() end
+  if sdec.strm_recording then return 'Capture or Mode = Stop' end
+  if sdec.ck_job ~= nil then return 'Capture=step  Mode=Stop' end
+  -- No 'Mode=...' for a one-press run, where the true answer is none. docs/MEASUREMENTS.md, 'The
+  -- trigger key does not cancel a panel-initiated run'.
+  if sdec.ck_running or sdec.strm_inflight then return 'no stop until it ends' end
+  return sdec.flog_status()
+end
+
+-- Give the control cell back once the trigger has fired. record_run()'s refresh is the last full one
+-- of the run and the arm paints over that cell afterwards, so without this an armed 8 kB or 32 kB
+-- record keeps 'waiting Ns for N.NNV' on screen through the acquisition and the decode as well.
+function sdec.armnote_clear()
+  if sdec.ui_log_t == nil then return false end
+  return sdec.ui_set(sdec.ui_log_t, sdec.ui_runnote())
+end
+
 -- One tick of sdec.ui_tick_obj: the unattended half of ui_keypoll(). It must not act while the app
 -- is busy, a tick being dispatched like a press and so arriving in a burst after a capture. The
 -- press route needs no such test: a handler executing at all proves no run is.
@@ -1813,23 +1834,9 @@ function sdec.ui_refresh_do()
     sdec.ui_trigc = trigcol
   end
 
-  if not md.view or sdec.ck_tot ~= nil or sdec.ck_running then
-    -- While streaming this cell carries the controls, and for a one-press run the true answer is
-    -- none -- docs/MEASUREMENTS.md, 'The trigger key does not cancel a panel-initiated run'.
-    if sdec.strm_recording then
-      set(sdec.ui_log_t, 'Capture or Mode = Stop')
-    elseif sdec.ck_job ~= nil then
-      set(sdec.ui_log_t, 'Capture=step  Mode=Stop')
-    elseif sdec.ck_running or sdec.strm_inflight then
-      set(sdec.ui_log_t, 'no stop until it ends')
-    else
-      -- No 'Mode=...' here at all: Mode cycles, so naming a destination is wrong in two of the three
-      -- states that show this cell, and a mode name here reads as the mode you are in.
-      set(sdec.ui_log_t, sdec.flog_status())
-    end
-  else
-    set(sdec.ui_log_t, sdec.flog_status())
-  end
+  -- ui_runnote() carries this cell's whole decision, ui_log_owned() included, so the branch that used
+  -- to be written out here cannot drift from the one a press or an armnote takes.
+  set(sdec.ui_log_t, sdec.ui_runnote())
   return true
 end
 

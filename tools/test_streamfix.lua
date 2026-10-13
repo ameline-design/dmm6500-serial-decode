@@ -838,6 +838,32 @@ print('\nI  an 8 kB or 32 kB recording can wait for a device that has not starte
                       math.floor((sdec.buf.capacity or 0) * (100 - sdec.pretrig) / 100),
                       tostring(sdec.buf.capacity), sdec.strm_nsmp))
 
+  -- THE ARM'S NOTE HAS TO COME BACK DOWN, and the poll loop is the only thing that can do it:
+  -- record_run()'s refresh is the last full one of the run, so an armed 8 kB or 32 kB record kept
+  -- 'waiting Ns for N.NNV -- TRIGGER=go' on the control cell through the acquisition AND the decode
+  -- that follows it. REPORTED FROM THE BENCH, and the use case is an unattended boot dump, where the
+  -- cell is the only way to tell an arm still waiting from one that fired an hour ago.
+  --
+  -- Driven through stream_acquire() and not by calling armnote_clear() directly, because the call at
+  -- the armdone transition is what regresses: 1614 assertions passed while that cell was wrong, every
+  -- existing one testing what ui_refresh() paints rather than that anything repaints at all.
+  do
+    sdec.ck_running, sdec.strm_inflight = false, true
+    sdec.ui_refresh()
+    pcall(sdec.armnote, 12, 0.99, true)
+    local waiting = MD.text(sdec.ui_log_t)
+    -- The premise, asserted: a harness without an armnote would pass the real check vacuously.
+    check('the arm paints its wait over the control cell',
+          has(waiting, 'waiting') and has(waiting, 'TRIGGER'),
+          string.format('%q', tostring(waiting)))
+    sdec.stream_acquire(sdec.strm_nsmp)
+    local after = MD.text(sdec.ui_log_t)
+    check('...and the trip gives the cell back, so it stops claiming to wait for a trigger',
+          not has(after, 'waiting') and not has(after, 'TRIGGER') and has(after, 'no stop'),
+          string.format('%q', tostring(after)))
+    sdec.strm_inflight = nil
+  end
+
   -- THE ARM LEVEL IS NOT THE REUSED DECODE THRESHOLD, and the two have to coexist. A recording
   -- reuses the last good capture's measured threshold for its idle watchdog -- the right economy --
   -- and the guard that did so skipped arm_threshold() entirely, so the comparator was armed at that

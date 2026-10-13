@@ -965,6 +965,9 @@ function sdec.stream_acquire(nsmp)
       armdone = true
       quiet = 0
       seen, seenend = 0, -1
+      -- And give the cell back, or the arm's note stands for the rest of the run: the refresh in
+      -- record_run() is the last full one, so nothing else repaints this until the run ends.
+      if sdec.armnote_clear ~= nil then pcall(sdec.armnote_clear) end
     end
     -- What counts as finished turns on whether this recording waited: an armed one is finished when the
     -- model is, a long pre-trigger phase having already filled the buffer. Unarmed keeps the fill test.
