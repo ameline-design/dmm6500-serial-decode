@@ -914,9 +914,10 @@ from 40 bytes to 480, all-0x00 scores **3** at its 3x fit, and a correct fit at 
 **39**. A high score is itself the evidence that the fit is not a multiple, and the verdict is flat
 across floors of 15, 20 and 30.
 
-`ua_minrun_absurd` is deliberately NOT extended the same way. It contributes **nothing** measured at
-any configuration -- byte-identical plan output -- and off-plan it breaks three more payload classes,
-all-0x00 at 40 bytes among them, because runs of 9 and 3 put `wshort/T` at 3 against a 2.5 threshold.
+`ua_minrun_absurd` is not extended by that floor, and must not be: the floor arms on a fit that frames
+a lot, and all-0x00 at 40 bytes then loses the ratio-1/3 candidate that is its truth, because runs of
+9 and 3 put `wshort/T` at 3 against a 2.5 threshold. It is armed on a different question instead --
+see *Arming the sub-multiple gates*.
 
 Measured over every repeated-single-byte payload, 256 bytes x 2 gaps x 5 rates x 2 phases = 5120
 points, classified by the run-GCD of the repeating bit pattern:
@@ -930,6 +931,74 @@ points, classified by the run-GCD of the repeating bit pattern:
 
 Total **392 to 268**, with no class worse. The run-GCD 2 and 4 classes are left alone on purpose:
 they are not decidable from the waveform. See *The same waveform at two rates*.
+
+### Arming the sub-multiple gates
+
+A good-frame COUNT is the wrong floor, and a 4-lap hardware soak said so. Of 44 cells whose reported
+rate was wrong, **8 sat on an exact double** and 5 of those reported a doubled STANDARD rate with
+`snapped` and `snapfirm` both true. Two separate reasons the shipped gates let them through:
+
+**The count is not scale-free.** The fit's score is about `ua_probe_n / (framebits x Tfit)`, so a
+floor of 15 is a different test at every sample rate. A *correct* fit at 27.8 samples a bit frames
+**14.4** -- below the floor -- so the gate disarmed itself on a fit that was right. The hardware cases
+run at 8.0 to 8.4 samples a bit on drawn rates, which is the same arithmetic one step further out.
+
+**An odd multiple escapes `ua_submultiple` by construction.** At `Tfit/3` the pulse multiples are 3, 6
+and 9: a third of them odd, so the odd-multiple test correctly abstains. `ua_minrun_absurd` is the one
+that covers odd divisors, and behind `snap1` it was never consulted when the commanded rate was
+non-standard -- which is precisely when an odd multiple snaps and the truth cannot.
+
+So both gates are armed by `sdec.ua_fit_mults`: how many DISTINCT pulse multiples, bounded by
+`maxmult`, the fit explains. A fit accounting for a whole capture with one multiple has not been
+corroborated by its structure -- that is a periodic payload, where the fit may sit on k bit times and
+the truth is only the 1/k rescaling. Measured:
+
+| capture | separate multiples at the fit |
+|---|---|
+| v63 (0x00/0x55/0xDE/0xAD mix), real text | **6**, **5** |
+| **alternating 0x00 and 0xE0** | **3** |
+| all-0xFF, all-0x00, repeated 0x86 | 2 |
+| repeated 0xE0 | 1 |
+
+**`sdec.ua_submult_minmults` is 4, and 4 is the only value that works** -- it is pinned from both
+sides, not chosen off a plateau. Below it, the 0x00/0xE0 mix is lost: its runs of 9, 3 and 6 bit times
+are three multiples of its own 3-bit-time fit, so a floor of 3 arms `ua_minrun_absurd` on a capture
+whose truth is the 1/3 candidate, and `wshort/T` of 3.0 then rejects it -- **9600 and 40 of 40 exact
+becomes 3200 and none.** Above it, the plan sweep's own counters go: `bad` 46 at a floor of 4, **61 at
+5, 82 at 6**, and 84 -- the ungated figure -- by 8. Neither bound is slack, so a change to
+`ua_probe_n`, to `maxmult` or to the vector set can move one and must re-measure both.
+
+**The two gates are armed differently, and that asymmetry is the design.** Only `ua_minrun_absurd` can
+reject a TRUE candidate, so it gets the multiples test alone; `ua_submultiple` cannot make that
+mistake -- where the runs are odd it abstains -- so it keeps the good-frame floor as well. Arming both
+on the floor costs all-0x00 (9600 and 40 of 40 exact becomes 3200 and none); arming both on the
+multiples test alone costs the 1.54 halving gain.
+
+Measured, iteration 1 at 8 capture phases, 13 416 points:
+
+| | before | after |
+|---|---|---|
+| `rate` misreported, issue #46 | 81 | **43** |
+| `bad` / `badcells` / `badall` | 84 / 18 / 8 | **46 / 10 / 4** |
+| the `r46b x2.0xx` doubling family | 38 cells | **0** |
+| the `rstdC x1.02x` and `rfit1 x0.927` families | 41, 2 | 41, 2 |
+| `bleed` | 1050 | 1051 |
+| `loudquiet` (a pass, bounded) | 54 | 56 |
+
+**No cell fails that did not fail before** -- the whole gain is the doubling family -- and both counters
+that rose are one cell each, measured on the same plan with the arming off and on:
+
+| cell, 8 offsets | arming off | arming on |
+|---|---|---|
+| `v44e:3572` | bad 1, `rate` 1, `r46b` 1, **`bleed` 2** | bad 0, `rate` 0, **`bleed` 3** |
+| `v47:3572` | bad 2, `rate` 2, `r46b` 2, **`loudquiet` 1** | bad 0, `rate` 0, **`loudquiet` 3** |
+
+So each rise is the *same* point that stopped reading a doubled rate. `v44e`'s now-complete decode
+carries one more wrong byte past the head, and `v47`'s two recovered points decline on bytes inside
+the bench's own loud allowance, which that counter exists to record as a pass. **`norate` stays 0 on
+both: no rate is lost, and the rate that is reported is the right one.** The repeated-single-byte
+sweep is unchanged at **876 bad of 21 504**, run-GCD breakdown identical, so none of the 1.54 ground
+is given back.
 
 ### Only displace a fit that is failing
 

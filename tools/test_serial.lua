@@ -414,6 +414,114 @@ do
           .. ' letter(s) at twice the bit time')
 end
 
+-- ua_fit_mults: the two sub-multiple gates are armed on separate conditions, and that split is
+-- that only ua_submultiple may be armed by a fit that merely frames a lot. Measured on hardware: a
+-- multi-byte payload at a drawn rate whose double is standard read the double, snapped and firm.
+do
+  clearforce()
+  -- The count itself, on a capture whose runs are 1, 2, 3, 5 and 9 bit times.
+  local v63 = {0x00, 0x55, 0x55, 0x00, 0x55, 0x55, 0xDE, 0xAD, 0x1E}
+  local many = {}
+  local mi, mj, mn = nil, nil, 0
+  for mj = 1, 4 do for mi = 1, 9 do mn = mn + 1 many[mn] = v63[mi] end end
+  rr = run({bytes = many, baud = 3600, fs = 100000})
+  check('a real payload at a non-standard rate whose DOUBLE is standard reads the rate itself',
+        relnear(sdec.baud, 3600, 0.02),
+        string.format('%s baud, ratio %s', tostring(sdec.baud), tostring(sdec.fitratio)))
+  check('...with every byte exact, so the rate is not merely labelled right',
+        rr.nf > 0 and rr.vals[1] == many[1] and rr.vals[rr.nf] == many[math.mod(rr.nf - 1, mn) + 1],
+        string.format('%d frame(s), first 0x%02X', rr.nf, rr.vals[1] or 0))
+  check('...and its fit is corroborated by several distinct pulse multiples',
+        sdec.ua_fit_mults(sdec.bittime) >= sdec.ua_submult_minmults,
+        tostring(sdec.ua_fit_mults(sdec.bittime)) .. ' distinct multiple(s)')
+  -- The other direction, asserted on the odd multiples rather than on this 2x case. At a
+  -- lower ua_submult_minsc the sc1 route alone holds 3600 -- measured, a floor of 12 or 8 reads it
+  -- correctly with the multiples arming switched off entirely -- so a control there passes or fails
+  -- on another tunable's value. armrun has no sc1 route at all, so 64000 and 15625 revert at
+  -- every floor, which is what makes them the honest control.
+  local keepm = sdec.ua_submult_minmults
+  sdec.ua_submult_minmults = 99
+  rr = run({bytes = many, baud = 64000, fs = 1000000})
+  check('a floor no capture can reach restores the 3x misread, which is what arms the gate',
+        not relnear(sdec.baud or 0, 64000, 0.02),
+        string.format('%s baud, 3x of the truth', tostring(sdec.baud)))
+  rr = run({bytes = many, baud = 15625, fs = 320000})
+  check('...and the 5x misread with it',
+        not relnear(sdec.baud or 0, 15625, 0.02),
+        string.format('%s baud, 5x of the truth', tostring(sdec.baud)))
+  sdec.ua_submult_minmults = keepm
+  -- A periodic payload has to stay disarmed, which is why the count is bounded below, not above.
+  -- all-0x00 is runs of 9 and 3 only, so it offers two multiples and reaches the truth exclusively
+  -- through a rescaling ua_minrun_absurd would reject -- wshort/T is 3.0 against a 2.5 bound.
+  rr = run({bytes = rep(0, 40), baud = 9600, fs = 100000})
+  check('all-0x00 still reads 9600, the gate staying disarmed on a two-multiple capture',
+        sdec.baud == 9600 and rr.nf == 40,
+        string.format('%s baud, %d frame(s)', tostring(sdec.baud), rr.nf))
+  check('...and it is disarmed because the capture offers too few distinct multiples',
+        sdec.ua_fit_mults(sdec.bittime) < sdec.ua_submult_minmults,
+        tostring(sdec.ua_fit_mults(sdec.bittime)) .. ' distinct multiple(s)')
+  -- 0xE0 is the capture docs/MEASUREMENTS.md names as the reason the gates are gated at all.
+  rr = run({bytes = rep(0xE0, 40), baud = 9600, fs = 100000})
+  check('0xE0 is untouched by the multiples arming',
+        sdec.baud == 9600 and rr.nf == 40,
+        string.format('%s baud, %d frame(s)', tostring(sdec.baud), rr.nf))
+  -- Bounded by maxmult, so inter-byte idle cannot inflate the count into arming the gate by itself.
+  check('the count is bounded by maxmult rather than counting idle gaps',
+        sdec.ua_fit_mults(sdec.bittime / 100) == 0,
+        tostring(sdec.ua_fit_mults(sdec.bittime / 100)))
+  check('and a nil or zero bit time counts nothing rather than raising',
+        sdec.ua_fit_mults(nil) == 0 and sdec.ua_fit_mults(0) == 0)
+
+  -- The floor is pinned from both sides, and a mix of two bytes pins it from below. 0x00 and
+  -- 0xE0 alternating has runs of 9, 3 and 6 bit times, which is three multiples of its 3-bit-time fit
+  -- -- so a floor of 3 arms ua_minrun_absurd on a capture whose truth is the 1/3 candidate, and
+  -- wshort/T of 3.0 then rejects it. Both bytes are pinned individually above, at 1 and 2 multiples
+  -- each, so neither test could see this. Measured: wrong at 1, 2 and 3, right at 4, and the plan
+  -- sweep's own counters are wrong at 5 (bad 46 to 61), so 4 is the only value that satisfies both.
+  local mixb, mixn = {}, 0
+  for mi = 1, 20 do mixn = mixn + 1 mixb[mixn] = 0x00 mixn = mixn + 1 mixb[mixn] = 0xE0 end
+  rr = run({bytes = mixb, baud = 9600, fs = 100000})
+  check('a 0x00/0xE0 mix still reads 9600, which a floor of 3 would have cost',
+        sdec.baud == 9600 and rr.nf == 40,
+        string.format('%s baud, %d frame(s)', tostring(sdec.baud), rr.nf))
+  check('...and it sits exactly ONE below the floor, which is why the floor is 4 and not 3',
+        sdec.ua_fit_mults(sdec.bittime) == sdec.ua_submult_minmults - 1,
+        string.format('%d multiple(s), floor %d', sdec.ua_fit_mults(sdec.bittime),
+                      sdec.ua_submult_minmults))
+  local keepm2 = sdec.ua_submult_minmults
+  sdec.ua_submult_minmults = 3
+  rr = run({bytes = mixb, baud = 9600, fs = 100000})
+  check('a floor of 3 loses the mix to its own 1/3 candidate',
+        sdec.baud ~= 9600, string.format('%s baud', tostring(sdec.baud)))
+  sdec.ua_submult_minmults = keepm2
+
+  -- ua_minrun_absurd's arming on its own, isolated. ua_submultiple cannot fire on an odd multiple: at
+  -- Tfit/3 the multiples are 3, 6 and 9, a third of them odd -- so these two cases are held by armrun
+  -- alone. Without them, reverting armrun to snap1 leaves the suite green, because armsub is defined
+  -- in terms of armrun and reverting it reverts both gates at once.
+  rr = run({bytes = many, baud = 64000, fs = 1000000})
+  check('an ODD multiple is refused too, which only ua_minrun_absurd can do',
+        relnear(sdec.baud, 64000, 0.02),
+        string.format('%s baud (3x would read 192000)', tostring(sdec.baud)))
+  rr = run({bytes = many, baud = 15625, fs = 320000})
+  check('...and the 5x case likewise, at a rate whose 5th multiple is standard',
+        relnear(sdec.baud, 15625, 0.02),
+        string.format('%s baud (5x would read 78125)', tostring(sdec.baud)))
+
+  -- The multiple is rounded, not truncated. Truncating silently drops every width under one bit time
+  -- and merges 2.5 into 2, which moves the repeated-byte sweep by 12 points while leaving this suite
+  -- green -- so it is asserted on the arithmetic directly.
+  local kw, knw = sdec.w, sdec.nw
+  sdec.w, sdec.nw = {6}, 1
+  check('a width of 0.6 bit times rounds UP to multiple 1 rather than truncating to 0',
+        sdec.ua_fit_mults(10) == 1, tostring(sdec.ua_fit_mults(10)))
+  sdec.w, sdec.nw = {25, 30}, 2
+  check('...and 2.5 rounds to 3, so it merges with 3 instead of reading as 2',
+        sdec.ua_fit_mults(10) == 1, tostring(sdec.ua_fit_mults(10)))
+  sdec.w, sdec.nw = kw, knw
+  clearforce()
+end
+
 -- Non-standard rate: report it, do not force it onto the grid.
 run({bytes = hb, baud = 12345, fs = 500000})
 check('a non-standard rate is reported unsnapped',
@@ -2256,6 +2364,32 @@ do
     sdec.ui_mode, sdec.ui_page = 'hex', 0
     check('the extent is the last flagged byte in the region, not the region',
           sdec.ui_head_extent() == 35, tostring(sdec.ui_head_extent()))
+    -- The verb tracks the number, both directions. A narrowed extent is frames that failed, so the
+    -- note may assert it; an unnarrowed one is the whole suspicion region and must be hedged, or a
+    -- capture losing two bytes tells the operator eight are wrong.
+    do
+      local hx, _, meas = sdec.ui_head_extent()
+      check('...and it reports itself as measured damage', hx == 35 and meas == true,
+            string.format('%s / %s', tostring(hx), tostring(meas)))
+      local nt, nn = sdec.ui_notes()
+      local said, ni = nil, nil
+      for ni = 1, nn do if string.find(nt[ni], 'mid%-byte') ~= nil then said = nt[ni] end end
+      check('...so the note asserts it outright', said ~= nil and string.find(said, 'are misaligned') ~= nil,
+            tostring(said))
+      -- Now a head that framed cleanly: nothing in the region is flagged, so it cannot be narrowed.
+      local k1, k35 = sdec.res.errs[1], sdec.res.errs[35]
+      sdec.res.errs[1], sdec.res.errs[35] = nil, nil
+      local hy, _, meas2 = sdec.ui_head_extent()
+      check('a cleanly-framed head leaves the region unnarrowed and says so',
+            hy == 40 and meas2 == false, string.format('%s / %s', tostring(hy), tostring(meas2)))
+      local mt, mn = sdec.ui_notes()
+      local said2 = nil
+      for ni = 1, mn do if string.find(mt[ni], 'mid%-byte') ~= nil then said2 = mt[ni] end end
+      check('...and the note hedges rather than claiming 40 bad bytes',
+            said2 ~= nil and string.find(said2, 'may be misaligned') ~= nil,
+            tostring(said2))
+      sdec.res.errs[1], sdec.res.errs[35] = k1, k35
+    end
     sdec.ui_refresh()
     local function rowred(n)
       return MD.obj(sdec.ui_row[n]).color == sdec.ui_c_err
@@ -5876,12 +6010,55 @@ local function test_chunked()
       check('and the cap leaves margin over the 1500-sample floor the sweep measured',
             sdec.ua_probe_n >= 1500, tostring(sdec.ua_probe_n))
       -- Anchored to the first edge, not to sample 1 -- the "one byte at the very end" case.
+      --
+      -- Re-establish rd2's own width state first. The all-0x00 block above ran sig_bittime on its own
+      -- capture, so sdec.w, sdec.nw, sdec.wshort and sdec.fs all describe it. Calling ua_best on
+      -- rd2 while they do tests an inconsistent pair, not the cap: the fit scores nothing against
+      -- another capture's widths, so it is ruled inadmissible and the nil that comes back says
+      -- 'no bit time' for a reason that has nothing to do with ua_probe_n.
+      sdec.acq_fs, sdec.fs = 100000, 100000
+      sdec.sig_levels(rd2, ns2)
+      sdec.sig_edges(rd2, ns2)
+      Tfit = sdec.sig_bittime(sdec.w, sdec.nw)
+      check('the fixture is back on its own capture before the cap is narrowed',
+            Tfit ~= nil and near(100000 / Tfit, 9600, 200),
+            string.format('%.0f Bd', 100000 / (Tfit or 1)))
       local oldcap = sdec.ua_probe_n
       sdec.ua_probe_n = 200
       local lateT = sdec.ua_best(rd2, ns2, Tfit)
+      -- The anchor is what this measures, so it is asserted on the probe's own score and not on
+      -- ua_best's return. A bit time comes back either way -- an admissible fit is kept whether or not
+      -- the window framed anything -- so `lateT ~= nil` alone passes with the first-edge anchor
+      -- removed and the window started at sample 1, where 200 samples hold nothing but lead-in.
+      local cst = sdec.ua_best_begin(rd2, ns2, Tfit)
       sdec.ua_probe_n = oldcap
       check('an absurdly small cap still finds a bit time, because the window follows the '
             .. 'traffic rather than starting at sample 1', lateT ~= nil, tostring(lateT))
+      check('...and the capped window actually framed something, which is the anchor itself',
+            cst.sc1 ~= nil and cst.sc1 > 0, tostring(cst.sc1))
+
+      -- The other direction too, or the two reasons sc1 comes back nil collapse again. ua_best_end
+      -- reports 'no bit time' for an inadmissible fit only; a fit that is admissible but went
+      -- unscored, which is what the cap above produces, must keep its bit time. Gating that on
+      -- sc1 == nil instead of on admissibility reads the second case as the first, and nothing else
+      -- in this suite tells the two apart.
+      do
+        local ast = sdec.ua_best_begin(rd2, ns2, Tfit)
+        check('the fixture fit is admissible, which is the premise of the next two checks',
+              ast.adm == true, tostring(ast.adm))
+        -- Admissible, no candidate won, and no score: the bit time still stands.
+        ast.altT, ast.altsc, ast.sc1 = nil, nil, nil
+        local kT, _, kwhy = sdec.ua_best_end(ast)
+        check('an admissible fit that scored nothing keeps its bit time and names no fault',
+              kT ~= nil and kwhy == nil, string.format('%s / %s', tostring(kT), tostring(kwhy)))
+        -- Inadmissible, same shape: nil, with a reason the panel can show.
+        local bst = sdec.ua_best_begin(rd2, ns2, Tfit)
+        bst.altT, bst.altsc, bst.sc1, bst.adm = nil, nil, nil, false
+        local nT, _, nwhy = sdec.ua_best_end(bst)
+        check('an inadmissible fit still reports no bit time, with a reason',
+              nT == nil and nwhy ~= nil and string.len(nwhy) > 0,
+              string.format('%s / %s', tostring(nT), tostring(nwhy)))
+      end
 
       -- AN ANCHOR THE PROBE WINDOW CANNOT REACH. ua_run's frame anchor is chosen from the whole
       -- capture's edge list while the probe scores only ua_probe_n samples of it, so an anchor past

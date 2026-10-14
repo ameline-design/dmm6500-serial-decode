@@ -855,20 +855,25 @@ function sdec.ui_head_extent()
   elseif sdec.ck_tot ~= nil and sdec.ck_tot.headsusp ~= nil and sdec.ck_tot.headsusp > 0 then
     hs = sdec.ck_tot.headsusp
   end
-  if hs == nil then return nil, true end
+  if hs == nil then return nil, true, false end
   local onscreen = (sdec.res == nil or sdec.res.first == nil or sdec.res.first <= 1)
+  -- Which quantity the number is, as the third return: ua_head_bad narrows the region to the frames
+  -- that failed, but a misaligned head can pass parity and stop by luck, leaving it unnarrowed. A
+  -- caller that cannot tell states a region as damage -- measured, two bytes lost reported as eight.
+  local measured = false
   -- How far the damage reaches, not how far the suspicion does, and only countable when the
   -- head is on screen -- docs/MEASUREMENTS.md, 'How far a misaligned head reaches'.
   if onscreen and sdec.res ~= nil and sdec.res.errs ~= nil then
     -- Through ua_head_bad, not a loop of its own: ERR counts this same region and must agree.
     local last = sdec.ua_head_bad(sdec.res, hs)
-    if last > 0 then hs = last end
+    if last > 0 then hs, measured = last, true end
   elseif sdec.ck_tot ~= nil and sdec.ck_tot.headbad ~= nil
          and sdec.ck_tot.headbad > 0 then
     -- From the run, for a tail without its own head: the first window is where those bytes exist.
-    hs = sdec.ck_tot.headbad
+    -- headbad is a damage count, so this branch is measured by construction.
+    hs, measured = sdec.ck_tot.headbad, true
   end
-  return hs, onscreen
+  return hs, onscreen, measured
 end
 
 -- ============================================================================
@@ -974,15 +979,22 @@ function sdec.ui_notes()
   -- A capture that began mid-byte: the framer can anchor inside a byte and stay wrong until the
   -- first idle, and the bytes look like data -- docs/MEASUREMENTS.md, 'How far a misaligned head
   -- reaches'.
-  local hs, onscreen = sdec.ui_head_extent()
+  local hs, onscreen, hmeas = sdec.ui_head_extent()
   if hs ~= nil then
     -- The note states the extent and stops, having 556 px beside the page counter. Singular and
     -- plural are spelled out, a parenthesised plural reading as a placeholder nobody filled in.
+    --
+    -- A narrowed count is frames that failed, so 'are' is a fact; an unnarrowed one is the suspicion
+    -- region, and asserting it overstates the damage several-fold. The region is still the right
+    -- number to print, those bytes being untrustworthy and the operator unable to see it, so the
+    -- hedge goes in the verb rather than into a smaller count.
+    local isv, arev = 'is', 'are'
+    if not hmeas then isv, arev = 'may be', 'may be' end
     if onscreen then
       if hs == 1 then
-        add('began mid-byte -- the first byte is misaligned.')
+        add('began mid-byte -- the first byte ' .. isv .. ' misaligned.')
       else
-        add(string.format('began mid-byte -- the first %d bytes are misaligned.', hs or 0))
+        add(string.format('began mid-byte -- the first %d bytes %s misaligned.', hs or 0, arev))
       end
     else
       -- Where the bytes went distinguishes this branch: the ones this note names are not the ones on the
@@ -992,9 +1004,10 @@ function sdec.ui_notes()
         where = ', and were NOT recorded.'
       end
       if hs == 1 then
-        add('the run began mid-byte -- its first byte is misaligned' .. where)
+        add('the run began mid-byte -- its first byte ' .. isv .. ' misaligned' .. where)
       else
-        add(string.format('the run began mid-byte -- its first %d bytes are misaligned%s', hs or 0, tostring(where)))
+        add(string.format('the run began mid-byte -- its first %d bytes %s misaligned%s',
+                          hs or 0, arev, tostring(where)))
       end
     end
   end

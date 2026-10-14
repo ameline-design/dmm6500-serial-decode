@@ -1406,6 +1406,30 @@ function sdec.capture_run()
   sdec.rate_backoff = nil
   -- The rate offer is per press for the opposite reason -- a fresh capture is itself an answer to it.
   sdec.rate_offer, sdec.rate_offer_from, sdec.rate_refused = nil, nil, nil
+
+  -- The panel is blanked here, before any mode can arm or wait. Every path below eventually calls
+  -- detect_reset(), but the frame path reaches it only after the mode dispatch, and an armed capture
+  -- then sits on the analog trigger for as long as the line stays quiet -- so the previous capture's
+  -- byte count, error count and note stay on the glass for the whole wait and read as this capture's.
+  -- Clearing the result is what blanks BYTES and ERR: ui_field_values() prints '--' for both when
+  -- sdec.res is nil, and ui_note_text() returns an empty string when no note survives.
+  --
+  -- stickyerr is deliberately kept. It carries the faults that must outlive a capture -- a
+  -- buffer that could not be freed asks for a power cycle -- and a capture that blanked it would be
+  -- hiding the one message the operator has to act on.
+  -- Not clear_result(), which is a much bigger hammer: it ends in clear_measured(), dropping the
+  -- levels the probe learned -- sdec.idle, sdec.thr, sdec.lo, sdec.hi. Paths that arm without re-probing read
+  -- those back, so blanking them here costs a recording its idle sense. Only the fields the two
+  -- indicators actually read are cleared.
+  if not sdec.strm_recording and sdec.ck_job == nil then
+    sdec.res, sdec.midi, sdec.lin = nil, nil, nil
+    sdec.ck_tot, sdec.ck_nbytes = nil, nil
+    sdec.lasterr, sdec.savedas = nil, nil
+    sdec.fmt_note, sdec.baud_note, sdec.rate_note = nil, nil, nil
+    sdec.mode_exited, sdec.lognote, sdec.autolocknote = nil, nil, nil
+    sdec.ui_status = 'capturing'
+    sdec.ui_refresh()
+  end
   -- Busy on entry means a previous run died, not that one is in progress, since presses queue until the
   -- handler returns. Refusing would make it permanent, so it is recorded once and cleared.
   if sdec.busy then

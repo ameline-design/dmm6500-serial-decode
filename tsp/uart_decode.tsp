@@ -263,6 +263,15 @@ end
 -- The first frame is anchored on an edge preceded by >= 1.5 bit times at mark; tmin0 resumes
 -- instead, and frames before it are not emitted. docs/MEASUREMENTS.md, 'tmin0 makes ua_run
 -- resumable'.
+-- When the residue vote may override the mark-run rule. Two conditions, and both earn their keep.
+-- The share guards against an inter-byte gap, which smears the residues: measured at 0.38 gapless
+-- and at most 0.19 with a gap. The count guards against a short capture, where a dozen frames put
+-- the share over any threshold by chance -- a 13-byte capture was losing its first byte to a vote
+-- taken over 12 frames. A capture worth voting on has hundreds: 20000 samples at 9600 baud holds
+-- about 190 frames, and the ranking probe's 4000-sample window about 38.
+sdec.ua_resid_frac = sdec.ua_resid_frac or 0.25
+sdec.ua_resid_min  = sdec.ua_resid_min  or 20
+
 function sdec.ua_run(rd, n, T, nbits, par, nstop, invert, tmin0)
   local parbits = 0
   if par ~= sdec.PAR_NONE then parbits = 1 end
@@ -283,16 +292,60 @@ function sdec.ua_run(rd, n, T, nbits, par, nstop, invert, tmin0)
   -- bounded; the fallback takes the first candidate edge and ei ascends, so bounding it changes none.
   local anchor = nil
   if tmin0 == nil then
-    for k = 1, ne do
-      if es[k] == want and ei[k] <= n then
-        local markrun
-        if k == 1 then markrun = ei[1] - 1 else markrun = ei[k] - ei[k-1] end
-        if markrun >= 1.5 * T then anchor = k; break end
+    -- A gapless stream holds no mark run that data could not have produced, so the 1.5-bit test
+    -- below anchors inside a byte and misaligns the head. The phase is still recoverable: a frame
+    -- boundary always carries a stop-to-start transition, so a start bit falls once per frame where
+    -- a data edge at a given bit position appears only when the data demands it. Binning candidates
+    -- by bit index modulo the frame length therefore lets the start bits win outright.
+    --
+    -- The residue test assumes a frame pitch of framebits, which holds only with no inter-byte gap,
+    -- so it abstains unless the vote is decisive: by a share of its own count, since a gap smears the
+    -- residues, and above a floor, since a dozen frames clear any share by chance.
+    --
+    -- How far the lead reaches is a property of the payload, so this fixes some gapless captures and
+    -- abstains on others. Measured at gap 0: a mixed payload of letters, digits and spaces leads by
+    -- 37.9 % and the vote fires at every start offset, recovering the whole head; lowercase prose
+    -- leads by 15.1 % and all-lowercase p-z by 7.4 %, and the vote declines on both, because a
+    -- lowercase byte puts an edge in the same cell as the start bit in most frames. What it reliably
+    -- resolves is a periodic payload, where one residue holds every frame.
+    if T > 0 and ne >= framebits then
+      local h, base = {}, ei[1]
+      for k = 0, framebits - 1 do h[k] = 0 end
+      for k = 1, ne do
+        if es[k] == want then
+          local rsd = math.mod(math.floor((ei[k] - base) / T + 0.5), framebits)
+          h[rsd] = h[rsd] + 1
+        end
+      end
+      local bestr, bestn, second = nil, -1, 0
+      for k = 0, framebits - 1 do
+        if h[k] > bestn then second = bestn; bestr, bestn = k, h[k]
+        elseif h[k] > second then second = h[k] end
+      end
+      if second < 0 then second = 0 end
+      if bestn >= sdec.ua_resid_min and (bestn - second) >= sdec.ua_resid_frac * bestn then
+        -- Earliest edge at the winning residue, so the decode starts as soon as the phase allows.
+        for k = 1, ne do
+          if es[k] == want
+             and math.mod(math.floor((ei[k] - base) / T + 0.5), framebits) == bestr then
+            anchor = k
+            break
+          end
+        end
       end
     end
     if anchor == nil then
-      -- No idle gap anywhere: a gapless stream, or a capture that starts mid-byte. Fall back to the
-      -- first candidate edge and accept that the first frame may be misaligned.
+      for k = 1, ne do
+        if es[k] == want and ei[k] <= n then
+          local markrun
+          if k == 1 then markrun = ei[1] - 1 else markrun = ei[k] - ei[k-1] end
+          if markrun >= 1.5 * T then anchor = k; break end
+        end
+      end
+    end
+    if anchor == nil then
+      -- No idle gap anywhere and no decisive vote: fall back to the first candidate edge and accept
+      -- that the first frame may be misaligned.
       for k = 1, ne do
         if es[k] == want then anchor = k; break end
       end
@@ -580,7 +633,8 @@ sdec.ua_submult_minsc = sdec.ua_submult_minsc or 15
 
 -- Does this candidate claim the shortest pulse on the wire is several bit times long? Covers the odd
 -- divisors ua_submultiple cannot, on the 5th percentile rather than the minimum, and gates candidates
--- only -- never the fit, and only behind snap1. docs/MEASUREMENTS.md, 'submult_maxrunlo = 2.5'.
+-- only, never the fit. Armed by ua_fit_mults below rather than by snap1 alone, which left every odd
+-- multiple admitted on a non-standard commanded rate. docs/MEASUREMENTS.md, 'submult_maxrunlo = 2.5'.
 sdec.submult_maxrunlo = sdec.submult_maxrunlo or 2.5
 
 function sdec.ua_minrun_absurd(T)
@@ -589,6 +643,28 @@ function sdec.ua_minrun_absurd(T)
   local lo = sdec.wshort
   if lo == nil or lo <= 0 then return false end
   return lo / T > sdec.submult_maxrunlo
+end
+
+-- How many separate pulse multiples the fit explains, bounded by maxmult. A fit that accounts for the
+-- whole capture with one or two multiples has not been corroborated by the capture's structure: that
+-- is the signature of a periodic payload, where the fit may sit on k bit times and the truth is
+-- reachable only as a 1/k rescaling. A fit seeing several distinct multiples is doing real work on
+-- real traffic, and there it is the sub-multiple candidate that should be doubted.
+-- docs/MEASUREMENTS.md, 'Arming the sub-multiple gates'.
+sdec.ua_submult_minmults = sdec.ua_submult_minmults or 4
+
+function sdec.ua_fit_mults(T)
+  if T == nil or T <= 0 then return 0 end
+  local seen, n = {}, 0
+  local i
+  for i = 1, (sdec.nw or 0) do
+    local k = math.floor(sdec.w[i] / T + 0.5)
+    if k >= 1 and k <= sdec.maxmult and seen[k] == nil then
+      seen[k] = true
+      n = n + 1
+    end
+  end
+  return n
 end
 
 -- Whether the fit is consistent with the pulse-width distribution it came from, which separates "the
@@ -749,17 +825,34 @@ function sdec.ua_best_begin(rd, n, Tfit)
   -- The fit itself is held to the same gate as its rivals.
   local sc1, q1, bad1, good1 = nil, nil, nil, nil
   local fnb, fpar, finv = nil, nil, nil
+  -- Admissibility is recorded apart from the score, because sc1 comes back nil for two unrelated
+  -- reasons -- the fit was inadmissible, or ua_probe's window framed nothing -- and ua_best_end must
+  -- report "no bit time" for only the first. A capped probe on a late-starting capture hits the
+  -- second, and reading it as inadmissible loses a fit that is perfectly good.
+  local adm = false
   if sdec.ua_plausible(Tfit, n) then
     local _, qq = sdec.sig_fit(sdec.w, sdec.nw, Tfit)
     q1 = qq or 0
     if q1 >= qmin then
+      adm = true
       sc1, bad1, good1, fnb, fpar, finv = sdec.ua_probe(rd, n, Tfit)
     end
   end
 
+  -- Armed once per capture: each costs a pass over the widths, and neither answer can change between
+  -- candidates. The two gates are armed on different questions, because only one of them can reject a
+  -- true candidate. ua_minrun_absurd does that whenever the payload's shortest real pulse is genuinely
+  -- several bit times -- all-0x00 is runs of 9 and 3, which puts wshort/T at 3 against a 2.5
+  -- threshold -- so it is armed only on evidence that the capture holds short pulses to compare
+  -- against, which is what a diverse multiple set is. ua_submultiple cannot make that mistake: where
+  -- the runs are odd it abstains, so it may also be armed by a fit that simply frames a lot.
+  local armrun = snap1 or sdec.ua_fit_mults(Tfit) >= sdec.ua_submult_minmults
+  local armsub = armrun or (sc1 or 0) >= sdec.ua_submult_minsc
+
   return {rd = rd, n = n, Tfit = Tfit, fs = fs, snap1 = snap1,
           mayrescale = mayrescale, cands = cands, nc = nc, qmin = qmin,
-          sc1 = sc1, bad1 = bad1, good1 = good1,
+          sc1 = sc1, bad1 = bad1, good1 = good1, adm = adm,
+          armsub = armsub, armrun = armrun,
           fnb = fnb, fpar = fpar, finv = finv,
           i = 0, altT = nil, altsc = nil, altr = nil}
 end
@@ -773,12 +866,13 @@ function sdec.ua_best_probe(st)
   local T, ratio, q = st.cands[i].T, st.cands[i].r, st.cands[i].q
   if st.mayrescale and ratio ~= 1 and q ~= nil and q >= st.qmin
      and sdec.ua_plausible(T, st.n)
-     -- ua_minrun_absurd stays behind snap1. ua_submultiple also guards a fit that snapped to nothing
-     -- but frames a lot, the standard ladder being full of factor-2 relations so snap1 alone cannot
-     -- see a halving. docs/MEASUREMENTS.md, 'Guarding a fit that snapped to nothing'.
-     and not ((st.snap1 or (st.sc1 or 0) >= sdec.ua_submult_minsc)
-              and sdec.ua_submultiple(T))
-     and not (st.snap1 and sdec.ua_minrun_absurd(T)) then
+     -- Both gates also guard a fit that snapped to nothing: the standard ladder is full of factor-2
+     -- relations, so snap1 alone cannot see a halving, and a non-standard commanded rate leaves snap1
+     -- false on exactly the captures where an odd multiple snaps. ua_best_begin arms them -- on
+     -- different conditions, for the reason given there.
+     -- docs/MEASUREMENTS.md, 'Guarding a fit that snapped to nothing'.
+     and not (st.armsub and sdec.ua_submultiple(T))
+     and not (st.armrun and sdec.ua_minrun_absurd(T)) then
     local _, snapped = sdec.sig_snap(st.fs / T)
     if snapped then
       local sc, _, _, anb, apar, ainv = sdec.ua_probe(st.rd, st.n, T)
@@ -839,7 +933,7 @@ function sdec.ua_best_end(st)
     -- No rescaling frames anything, so the fit is the only evidence there is. Keep it unless sc1 is
     -- nil, which means it failed ua_plausible or the q gate. docs/MEASUREMENTS.md, 'An inadmissible
     -- fit on an undersampled line'.
-    if sc1 == nil then
+    if not st.adm then
       return nil, 1, sdec.ua_implausible_why(Tfit)
     end
     return Tfit, 1

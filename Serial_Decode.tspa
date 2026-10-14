@@ -3,7 +3,7 @@ loadscript Serial_Decode
 -- $Product: DMM6500, DAQ6510, DMM7510, SMU2461
 -- $Tag: Serial, UART, Decode, Digitize
 -- $Description: Decodes an asynchronous serial line with the instrument's own digitizer: recovers baud rate, frame format and bytes, shows them as text or hex, and saves bytes to USB key. Everything auto-detects; everything can be locked.
--- $Version: 1.54
+-- $Version: 1.55
 -- $Requires: 1.7.0
 -- $Author: Ian Ameline
 -- $License: MIT
@@ -2063,11 +2063,14 @@ function sdec.ua_frame(rd, n, t0, T, nbits, par, nstop, invert)
   return val, nil
 end
 
+sdec.ua_resid_frac = sdec.ua_resid_frac or 0.25
+sdec.ua_resid_min  = sdec.ua_resid_min  or 20
+
 -- Sequential decode of a whole capture
 --   [...]
--- The first frame is anchored on an edge preceded by >= 1.5 bit times at mark; tmin0 resumes
--- instead, and frames before it are not emitted. docs/MEASUREMENTS.md, 'tmin0 makes ua_run
--- resumable'.
+-- the share over any threshold by chance -- a 13-byte capture was losing its first byte to a vote
+-- taken over 12 frames. A capture worth voting on has hundreds: 20000 samples at 9600 baud holds
+-- about 190 frames, and the ranking probe's 4000-sample window about 38.
 function sdec.ua_run(rd, n, T, nbits, par, nstop, invert, tmin0)
   local parbits = 0
   if par ~= sdec.PAR_NONE then parbits = 1 end
@@ -2084,11 +2087,38 @@ function sdec.ua_run(rd, n, T, nbits, par, nstop, invert, tmin0)
 
   local anchor = nil
   if tmin0 == nil then
-    for k = 1, ne do
-      if es[k] == want and ei[k] <= n then
-        local markrun
-        if k == 1 then markrun = ei[1] - 1 else markrun = ei[k] - ei[k-1] end
-        if markrun >= 1.5 * T then anchor = k; break end
+    if T > 0 and ne >= framebits then
+      local h, base = {}, ei[1]
+      for k = 0, framebits - 1 do h[k] = 0 end
+      for k = 1, ne do
+        if es[k] == want then
+          local rsd = math.mod(math.floor((ei[k] - base) / T + 0.5), framebits)
+          h[rsd] = h[rsd] + 1
+        end
+      end
+      local bestr, bestn, second = nil, -1, 0
+      for k = 0, framebits - 1 do
+        if h[k] > bestn then second = bestn; bestr, bestn = k, h[k]
+        elseif h[k] > second then second = h[k] end
+      end
+      if second < 0 then second = 0 end
+      if bestn >= sdec.ua_resid_min and (bestn - second) >= sdec.ua_resid_frac * bestn then
+        for k = 1, ne do
+          if es[k] == want
+             and math.mod(math.floor((ei[k] - base) / T + 0.5), framebits) == bestr then
+            anchor = k
+            break
+          end
+        end
+      end
+    end
+    if anchor == nil then
+      for k = 1, ne do
+        if es[k] == want and ei[k] <= n then
+          local markrun
+          if k == 1 then markrun = ei[1] - 1 else markrun = ei[k] - ei[k-1] end
+          if markrun >= 1.5 * T then anchor = k; break end
+        end
       end
     end
     if anchor == nil then
@@ -2332,13 +2362,35 @@ sdec.submult_maxrunlo = sdec.submult_maxrunlo or 2.5
 
 -- Does this candidate claim the shortest pulse on the wire is several bit times long? Covers the odd
 -- divisors ua_submultiple cannot, on the 5th percentile rather than the minimum, and gates candidates
--- only -- never the fit, and only behind snap1. docs/MEASUREMENTS.md, 'submult_maxrunlo = 2.5'.
+-- only, never the fit. Armed by ua_fit_mults below rather than by snap1 alone, which left every odd
+-- multiple admitted on a non-standard commanded rate. docs/MEASUREMENTS.md, 'submult_maxrunlo = 2.5'.
 function sdec.ua_minrun_absurd(T)
   if T == nil or T <= 0 then return false end
   if (sdec.nw or 0) < sdec.submult_minpulses then return false end
   local lo = sdec.wshort
   if lo == nil or lo <= 0 then return false end
   return lo / T > sdec.submult_maxrunlo
+end
+
+sdec.ua_submult_minmults = sdec.ua_submult_minmults or 4
+
+-- How many separate pulse multiples the fit explains, bounded by maxmult. A fit that accounts for the
+--   [...]
+-- reachable only as a 1/k rescaling. A fit seeing several distinct multiples is doing real work on
+-- real traffic, and there it is the sub-multiple candidate that should be doubted.
+-- docs/MEASUREMENTS.md, 'Arming the sub-multiple gates'.
+function sdec.ua_fit_mults(T)
+  if T == nil or T <= 0 then return 0 end
+  local seen, n = {}, 0
+  local i
+  for i = 1, (sdec.nw or 0) do
+    local k = math.floor(sdec.w[i] / T + 0.5)
+    if k >= 1 and k <= sdec.maxmult and seen[k] == nil then
+      seen[k] = true
+      n = n + 1
+    end
+  end
+  return n
 end
 
 -- Whether the fit is consistent with the pulse-width distribution it came from, which separates "the
@@ -2466,17 +2518,23 @@ function sdec.ua_best_begin(rd, n, Tfit)
 
   local sc1, q1, bad1, good1 = nil, nil, nil, nil
   local fnb, fpar, finv = nil, nil, nil
+  local adm = false
   if sdec.ua_plausible(Tfit, n) then
     local _, qq = sdec.sig_fit(sdec.w, sdec.nw, Tfit)
     q1 = qq or 0
     if q1 >= qmin then
+      adm = true
       sc1, bad1, good1, fnb, fpar, finv = sdec.ua_probe(rd, n, Tfit)
     end
   end
 
+  local armrun = snap1 or sdec.ua_fit_mults(Tfit) >= sdec.ua_submult_minmults
+  local armsub = armrun or (sc1 or 0) >= sdec.ua_submult_minsc
+
   return {rd = rd, n = n, Tfit = Tfit, fs = fs, snap1 = snap1,
           mayrescale = mayrescale, cands = cands, nc = nc, qmin = qmin,
-          sc1 = sc1, bad1 = bad1, good1 = good1,
+          sc1 = sc1, bad1 = bad1, good1 = good1, adm = adm,
+          armsub = armsub, armrun = armrun,
           fnb = fnb, fpar = fpar, finv = finv,
           i = 0, altT = nil, altsc = nil, altr = nil}
 end
@@ -2490,9 +2548,8 @@ function sdec.ua_best_probe(st)
   local T, ratio, q = st.cands[i].T, st.cands[i].r, st.cands[i].q
   if st.mayrescale and ratio ~= 1 and q ~= nil and q >= st.qmin
      and sdec.ua_plausible(T, st.n)
-     and not ((st.snap1 or (st.sc1 or 0) >= sdec.ua_submult_minsc)
-              and sdec.ua_submultiple(T))
-     and not (st.snap1 and sdec.ua_minrun_absurd(T)) then
+     and not (st.armsub and sdec.ua_submultiple(T))
+     and not (st.armrun and sdec.ua_minrun_absurd(T)) then
     local _, snapped = sdec.sig_snap(st.fs / T)
     if snapped then
       local sc, _, _, anb, apar, ainv = sdec.ua_probe(st.rd, st.n, T)
@@ -2544,7 +2601,7 @@ function sdec.ua_best_end(st)
   end
 
   if altT == nil then
-    if sc1 == nil then
+    if not st.adm then
       return nil, 1, sdec.ua_implausible_why(Tfit)
     end
     return Tfit, 1
@@ -4548,16 +4605,17 @@ function sdec.ui_head_extent()
   elseif sdec.ck_tot ~= nil and sdec.ck_tot.headsusp ~= nil and sdec.ck_tot.headsusp > 0 then
     hs = sdec.ck_tot.headsusp
   end
-  if hs == nil then return nil, true end
+  if hs == nil then return nil, true, false end
   local onscreen = (sdec.res == nil or sdec.res.first == nil or sdec.res.first <= 1)
+  local measured = false
   if onscreen and sdec.res ~= nil and sdec.res.errs ~= nil then
     local last = sdec.ua_head_bad(sdec.res, hs)
-    if last > 0 then hs = last end
+    if last > 0 then hs, measured = last, true end
   elseif sdec.ck_tot ~= nil and sdec.ck_tot.headbad ~= nil
          and sdec.ck_tot.headbad > 0 then
-    hs = sdec.ck_tot.headbad
+    hs, measured = sdec.ck_tot.headbad, true
   end
-  return hs, onscreen
+  return hs, onscreen, measured
 end
 
 -- The note / warning line
@@ -4635,13 +4693,15 @@ function sdec.ui_notes()
     add(sdec.li_breaknote())
   end
 
-  local hs, onscreen = sdec.ui_head_extent()
+  local hs, onscreen, hmeas = sdec.ui_head_extent()
   if hs ~= nil then
+    local isv, arev = 'is', 'are'
+    if not hmeas then isv, arev = 'may be', 'may be' end
     if onscreen then
       if hs == 1 then
-        add('began mid-byte -- the first byte is misaligned.')
+        add('began mid-byte -- the first byte ' .. isv .. ' misaligned.')
       else
-        add(string.format('began mid-byte -- the first %d bytes are misaligned.', hs or 0))
+        add(string.format('began mid-byte -- the first %d bytes %s misaligned.', hs or 0, arev))
       end
     else
       local where = ', in the file.'
@@ -4649,9 +4709,10 @@ function sdec.ui_notes()
         where = ', and were NOT recorded.'
       end
       if hs == 1 then
-        add('the run began mid-byte -- its first byte is misaligned' .. where)
+        add('the run began mid-byte -- its first byte ' .. isv .. ' misaligned' .. where)
       else
-        add(string.format('the run began mid-byte -- its first %d bytes are misaligned%s', hs or 0, tostring(where)))
+        add(string.format('the run began mid-byte -- its first %d bytes %s misaligned%s',
+                          hs or 0, arev, tostring(where)))
       end
     end
   end
@@ -6863,6 +6924,16 @@ function sdec.capture_run()
   sdec.relocked = nil
   sdec.rate_backoff = nil
   sdec.rate_offer, sdec.rate_offer_from, sdec.rate_refused = nil, nil, nil
+
+  if not sdec.strm_recording and sdec.ck_job == nil then
+    sdec.res, sdec.midi, sdec.lin = nil, nil, nil
+    sdec.ck_tot, sdec.ck_nbytes = nil, nil
+    sdec.lasterr, sdec.savedas = nil, nil
+    sdec.fmt_note, sdec.baud_note, sdec.rate_note = nil, nil, nil
+    sdec.mode_exited, sdec.lognote, sdec.autolocknote = nil, nil, nil
+    sdec.ui_status = 'capturing'
+    sdec.ui_refresh()
+  end
   if sdec.busy then
     sdec.lasterr = 'previous capture did not finish (aborted?) -- starting a new one'
     ulog.line(sdec.lasterr)
