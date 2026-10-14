@@ -902,6 +902,37 @@ to survive the q gate is the truth at 9600 scoring **-5**. And `snap1` matters b
 is the strongest prior there is: when the fit does not snap and a rival does, that is real evidence
 and the rival should win however badly both frame.
 
+### The text tie-break
+
+The guard above defends a fit that snapped to a standard rate. A fit that snapped to nothing gets no
+margin at all: it falls through to a bare `altsc > sc1` and is displaced by **one point**. Measured on
+a 3572 baud capture of 512 bytes, the width fit scores **47** and its own double scores **48**, so
+half the bit time wins by one frame in several hundred and the rate is reported as 7200 -- 3572 x 2 is
+7144, which is 0.78 % from 7200 and inside `snaptol`, so the snap launders the doubled fit into a
+standard rate.
+
+One point over hundreds of frames is a coin toss, and `sdec.ua_tie_margin` is the width of the band
+called a tie. Inside it the decoded bytes decide: prefer the bit time yielding more of A-Z, a-z and
+0-9, counted over good frames only across the whole capture. A tie on text changes nothing.
+
+**It is inert on binary payloads**, both counts being zero, and that is what makes it safe. The case
+it must not disturb is a capture whose pulse widths share a common factor -- all-0x00 at 8N1, where
+the fit sits on a multiple of the bit time and the rescaling is the only thing that recovers the
+truth. Those displacements are won on text **0 against 0** at a one-point margin, so they fall
+through untouched. At a margin of two they do not: there the fit reads **4 letters against the
+rescaling's 0**, which is why the band is one point and not two.
+
+The count must be taken over the whole capture, not over `ua_probe_n`. The probe reads 4000 samples,
+about **47 bytes** at 8 samples a bit, and a payload whose head is padding shows no text at all in
+that window -- the 3572 baud case above reads **0 letters** in the first 47 bytes and **128** across
+the capture. `ua_probe` reports which format it ranked best so the tie-break can re-run that one
+alone, two decodes rather than the 18-way search again, and only at a tie.
+
+Measured over the soak plan, 8 capture phases a cell, 13 416 points: **rate 107 to 100**, failing
+points 110 to 103, cells failing at every phase 10 to 8, and `bleed` unchanged at 1050. Over five
+laps and 67 080 points, **335 to 327** with every other counter identical. The unit suite is unchanged
+at 1481.
+
 ### Collapsing an always-one top data bit
 
 A data bit that never changes carries no information, and in the top position it is

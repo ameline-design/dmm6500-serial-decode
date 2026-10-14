@@ -409,6 +409,22 @@ function sdec.ua_err_count(r, hb)
   return n
 end
 
+-- Bytes a reader would take for text: A-Z, a-z, 0-9. Good frames only, a flagged frame's value
+-- being untrustworthy by definition. Ties are broken on this in ua_best_end.
+function sdec.ua_textn(r)
+  if r == nil or r.vals == nil then return 0 end
+  local c, i = 0, nil
+  for i = 1, r.nf do
+    if r.errs[i] == nil then
+      local v = r.vals[i]
+      if (v >= 48 and v <= 57) or (v >= 65 and v <= 90) or (v >= 97 and v <= 122) then
+        c = c + 1
+      end
+    end
+  end
+  return c
+end
+
 -- Rank a decode: good frames less three times the bad ones.
 function sdec.ua_score(r)
   return r.ngood - 3 * r.nbad
@@ -642,6 +658,11 @@ sdec.ua_probe_n = sdec.ua_probe_n or 4000
 sdec.ua_alt_margin = sdec.ua_alt_margin or 3
 sdec.ua_alt_badfrac = sdec.ua_alt_badfrac or 0.1
 
+-- Score gap inside which two bit times are called equal and the text count decides. One point: at
+-- two, the all-zero family -- where the rescaling is the truth and the fit reads four letters to its
+-- none -- loses the displacement that recovers it.
+sdec.ua_tie_margin = sdec.ua_tie_margin or 1
+
 -- Best score any probe format reaches at one candidate bit time, or nil if none frames.
 function sdec.ua_probe(rd, n, T)
   local cap = sdec.ua_probe_n
@@ -655,6 +676,7 @@ function sdec.ua_probe(rd, n, T)
   local npn = table.getn(sdec.probe_nbits)
   local npa = table.getn(sdec.try_par)
   local sc, scbad, scgood = nil, nil, nil
+  local snb, spar, sinv = nil, nil, nil
   local j, c, k
   for j = 1, npn do
     for c = 1, npa do
@@ -663,12 +685,15 @@ function sdec.ua_probe(rd, n, T)
         if r.ngood >= 1 then
           local s = sdec.ua_score(r)
           -- nbad too: the caller needs to know whether the fit is failing or finding fewer frames.
-          if sc == nil or s > sc then sc, scbad, scgood = s, r.nbad, r.ngood end
+          if sc == nil or s > sc then
+            sc, scbad, scgood = s, r.nbad, r.ngood
+            snb, spar, sinv = sdec.probe_nbits[j], sdec.try_par[c], (k == 1)
+          end
         end
       end
     end
   end
-  return sc, scbad, scgood
+  return sc, scbad, scgood, snb, spar, sinv
 end
 
 -- Returns bittime, ratio. The width fit is trusted whenever it snaps to a standard rate and frames
@@ -709,15 +734,19 @@ function sdec.ua_best_begin(rd, n, Tfit)
 
   -- The fit itself is held to the same gate as its rivals.
   local sc1, q1, bad1, good1 = nil, nil, nil, nil
+  local fnb, fpar, finv = nil, nil, nil
   if sdec.ua_plausible(Tfit, n) then
     local _, qq = sdec.sig_fit(sdec.w, sdec.nw, Tfit)
     q1 = qq or 0
-    if q1 >= qmin then sc1, bad1, good1 = sdec.ua_probe(rd, n, Tfit) end
+    if q1 >= qmin then
+      sc1, bad1, good1, fnb, fpar, finv = sdec.ua_probe(rd, n, Tfit)
+    end
   end
 
   return {rd = rd, n = n, Tfit = Tfit, fs = fs, snap1 = snap1,
           mayrescale = mayrescale, cands = cands, nc = nc, qmin = qmin,
           sc1 = sc1, bad1 = bad1, good1 = good1,
+          fnb = fnb, fpar = fpar, finv = finv,
           i = 0, altT = nil, altsc = nil, altr = nil}
 end
 
@@ -735,11 +764,12 @@ function sdec.ua_best_probe(st)
      and not (st.snap1 and (sdec.ua_submultiple(T) or sdec.ua_minrun_absurd(T))) then
     local _, snapped = sdec.sig_snap(st.fs / T)
     if snapped then
-      local sc = sdec.ua_probe(st.rd, st.n, T)
+      local sc, _, _, anb, apar, ainv = sdec.ua_probe(st.rd, st.n, T)
       -- Candidates are ordered outward from ratio 1 and the comparison is strict, so the closest
       -- one wins ties.
       if sc ~= nil and (st.altsc == nil or sc > st.altsc) then
         st.altT, st.altsc, st.altr = T, sc, ratio
+        st.anb, st.apar, st.ainv = anb, apar, ainv
       end
     end
   end
@@ -750,6 +780,14 @@ end
 function sdec.ua_best_progress(st)
   if st == nil then return 0, 0 end
   return st.i, st.nc
+end
+
+-- Text a bit time yields over the whole capture, for the format ua_probe already ranked best.
+-- ua_probe reads sdec.ua_probe_n samples, which at 8 samples a bit is ~47 bytes -- too few to see
+-- text in a capture whose head is padding. One run, not the 18-way search again.
+function sdec.ua_textat(rd, n, T, nb, par, inv)
+  if T == nil or nb == nil then return 0 end
+  return sdec.ua_textn(sdec.ua_run(rd, n, T, nb, par, 1, inv))
 end
 
 -- Decide between the width fit and the best rescaling, and report an ambiguity if there is one.
@@ -794,6 +832,18 @@ function sdec.ua_best_end(st)
   -- docs/MEASUREMENTS.md, 'A negative-scoring rescaling may not displace a snapped fit'.
   if snap1 and sc1 ~= nil and altsc ~= nil and altsc <= 0 then return Tfit, 1 end
   if sc1 ~= nil and altsc ~= nil and altsc <= sc1 then return Tfit, 1 end
+  -- A one-point win over hundreds of frames is a coin toss, so let the bytes break it: at equal
+  -- framing, prefer the bit time that yields more text. Inert on binary payloads, both counts being
+  -- zero, so it cannot disturb one. docs/MEASUREMENTS.md, 'The text tie-break'.
+  if sc1 ~= nil and altsc ~= nil and (altsc - sc1) <= sdec.ua_tie_margin then
+    local t1 = sdec.ua_textat(rd, n, Tfit, st.fnb, st.fpar, st.finv)
+    local t2 = sdec.ua_textat(rd, n, altT, st.anb, st.apar, st.ainv)
+    if t1 > t2 then
+      sdec.baud_note = string.format('%s baud fits as well and decodes less text (%d vs %d letters)',
+                                     tostring((sdec.sig_snap(fs / altT))), t2, t1)
+      return Tfit, 1
+    end
+  end
   return altT, altr
 end
 

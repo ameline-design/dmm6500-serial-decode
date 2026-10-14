@@ -168,6 +168,11 @@ LINE = re.compile(r'^PLAN (\d+)/(\d+) iteration (\d+): (.*)$')
 # 3-byte head allowance leaves too few for judge() to compare. The app improved and the harness lost
 # the ability to score it, which is exactly what `skip` is bounded to make visible.
 RATCHET = {
+    # THE TWO UNSKIPPED ROWS ARE STALE ON A GROWN VECTOR SET and cannot be met: both now draw 1806
+    # cells against the 1763 and 14103 recorded here, so `judged` reports WORSE on a clean tree and
+    # carries bleed and bytes with it. The vector set is the ratchet's unguarded fourth input. Measured
+    # paired: at both offsets a clean tree and a changed one give byte-identical rows, so re-measuring
+    # these needs a tree-independent decision about which vectors the configuration means.
     (1, 1, (), None): {'bad': 14, 'badcells': 14, 'badall': 14, 'rate': 13, 'flags': 0, 'bytes': 1,
                        'nobytes': 0, 'bleed': 211, 'skip': 0, 'judged': 1763, 'loudquiet': 9,
                        'loudmiss': 131, 'label': 3},
@@ -177,10 +182,10 @@ RATCHET = {
     # THE TWO CONFIGURATIONS A BENCH LAP CAN ACTUALLY BE COMPARED WITH, because every hardware soak
     # skips v95 and v96 -- v96 wedges the generator at vector 33 -- and the skip is drawn on. These are
     # the ones tools/soak_offline.py and the default CLI run.
-    (1, 1, SP.HW_SKIP, None): {'bad': 15, 'badcells': 15, 'badall': 15, 'rate': 13, 'flags': 0,
+    (1, 1, SP.HW_SKIP, None): {'bad': 14, 'badcells': 14, 'badall': 14, 'rate': 12, 'flags': 0,
                                'bytes': 2, 'nobytes': 0, 'bleed': 200, 'skip': 0, 'judged': 1677,
                                'loudquiet': 5, 'loudmiss': 122, 'label': 3},
-    (1, 8, SP.HW_SKIP, None): {'bad': 110, 'badcells': 22, 'badall': 10, 'rate': 107, 'flags': 0,
+    (1, 8, SP.HW_SKIP, None): {'bad': 103, 'badcells': 22, 'badall': 8, 'rate': 100, 'flags': 0,
                                'bytes': 3, 'nobytes': 0, 'bleed': 1050, 'skip': 1, 'judged': 13415,
                                'loudquiet': 54, 'loudmiss': 622, 'label': 24},
     # THE 14-DAY RUN'S OWN CONFIGURATION, four random vectors a lap, which is what the instrument plays.

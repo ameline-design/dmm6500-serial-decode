@@ -255,6 +255,46 @@ check('a capture whose widths share a common factor still finds the real baud',
       sdec.baud == 9600, string.format('%s baud, ratio %.4f', tostring(sdec.baud),
                                        sdec.fitratio or -1))
 
+-- The text tie-break, at the one place a fit that snapped to nothing can be displaced by a single
+-- point. do ... end because this file is at Lua's 200-local ceiling for a main chunk.
+do
+  local r = {nf = 6, vals = {}, errs = {}}
+  r.vals[1], r.vals[2], r.vals[3] = 65, 48, 32         -- 'A', '0', space
+  r.vals[4], r.vals[5], r.vals[6] = 122, 90, 97        -- 'z', 'Z', 'a'
+  r.errs[4] = 'stop'
+  -- 4, not 5: the flagged 'z' does not count, and space is not in the set.
+  check('ua_textn counts A-Z, a-z and 0-9 over good frames only', sdec.ua_textn(r) == 4,
+        tostring(sdec.ua_textn(r)))
+
+  local T = 100000 / 9600
+  local tb = GEN_BYTES(string.rep('Hello, World! ', 20))
+  local _, trd, tn = run({bytes = tb, baud = 9600, fs = 100000})
+  local zb = rep(0, 60)
+  local _, zrd, zn = run({bytes = zb, baud = 9600, fs = 100000})
+  -- A near-tie between the fit and half its bit time, built rather than hunted for: the margin is
+  -- the variable under test and a waveform that happens to tie pins nothing.
+  local function decide(rd, n, d)
+    return sdec.ua_best_end({rd = rd, n = n, Tfit = T, fs = 100000, snap1 = false,
+                             sc1 = 47, altsc = 47 + d, altT = T / 2, altr = 0.5,
+                             fnb = 8, fpar = sdec.PAR_NONE, finv = false,
+                             anb = 8, apar = sdec.PAR_NONE, ainv = false})
+  end
+  check('a one-point win cannot displace a fit that decodes more text',
+        near(decide(trd, tn, 1), T, 0.001), tostring(decide(trd, tn, 1)))
+  check('...and the note says so, naming both counts',
+        has(tostring(sdec.baud_note), 'letters'), tostring(sdec.baud_note))
+  -- Both directions, because a tie-break that always keeps the fit is not a tie-break.
+  check('a two-point win still displaces, the band being one point',
+        near(decide(trd, tn, 2), T / 2, 0.001), tostring(decide(trd, tn, 2)))
+  check('on a payload with no text at either bit time the tie-break is inert',
+        near(decide(zrd, zn, 1), T / 2, 0.001), tostring(decide(zrd, zn, 1)))
+  -- The constant is live, not decorative.
+  sdec.ua_tie_margin = 0
+  check('ua_tie_margin = 0 turns it off',
+        near(decide(trd, tn, 1), T / 2, 0.001), tostring(decide(trd, tn, 1)))
+  sdec.ua_tie_margin = 1
+end
+
 -- Non-standard rate: report it, do not force it onto the grid.
 run({bytes = hb, baud = 12345, fs = 500000})
 check('a non-standard rate is reported unsnapped',
