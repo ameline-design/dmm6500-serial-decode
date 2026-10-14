@@ -293,7 +293,87 @@ do
   check('ua_tie_margin = 0 turns it off',
         near(decide(trd, tn, 1), T / 2, 0.001), tostring(decide(trd, tn, 1)))
   sdec.ua_tie_margin = 1
+
+  -- decide() supplies the format by hand, so on its own it cannot see ua_probe stop reporting one.
+  -- Assert the real prologue stores it, or a revert to three return values passes green.
+  local st0 = sdec.ua_best_begin(trd, tn, T)
+  check('ua_best_begin records the format its own probe ranked best',
+        st0.fnb ~= nil and st0.fpar ~= nil, tostring(st0.fnb) .. '/' .. tostring(st0.fpar))
+
+  -- And the count must span the capture, not ua_probe's 4000-sample window: 60 zero bytes is ~6200
+  -- samples, so a windowed count sees only padding and reads 0.
+  local hb2 = GEN_BYTES(string.rep('Hello, World! ', 12))
+  local mix, nmix = {}, 0
+  for i = 1, 60 do nmix = nmix + 1 mix[nmix] = 0 end
+  for i = 1, table.getn(hb2) do nmix = nmix + 1 mix[nmix] = hb2[i] end
+  local _, mrd, mn = run({bytes = mix, baud = 9600, fs = 100000})
+  local mt = sdec.ua_textat(mrd, mn, T, 8, sdec.PAR_NONE, false)
+  check('ua_textat counts past the probe window, not just the head',
+        mt >= sdec.ua_textmin, tostring(mt) .. ' letter(s), floor ' .. tostring(sdec.ua_textmin))
+
+  -- Both floors are load-bearing: a fabricated handful of letters must not decide anything.
+  local keep1, keep2 = sdec.ua_textmin, sdec.ua_textfrac
+  sdec.ua_textmin = 100000
+  check('ua_textmin blocks the tie-break when the count is below it',
+        near(decide(trd, tn, 1), T / 2, 0.001), tostring(decide(trd, tn, 1)))
+  sdec.ua_textmin = keep1
+  sdec.ua_textfrac = 1.5
+  check('ua_textfrac blocks it when the share of good frames is below it',
+        near(decide(trd, tn, 1), T / 2, 0.001), tostring(decide(trd, tn, 1)))
+  sdec.ua_textfrac = keep2
+  check('and with both restored it fires again',
+        near(decide(trd, tn, 1), T, 0.001), tostring(decide(trd, tn, 1)))
 end
+
+-- Every repeated-single-byte payload, because a rate change that looks clean on the bench plan can
+-- still wreck a degenerate one and nothing else here sweeps them. Two candidate changes to the
+-- sub-multiple gates passed every other assertion in this file and broke payloads in here.
+-- A ratchet, not a target: 24 of the 256 already decode wrong, so the claim is that the 232 that
+-- work keep working. 0.5 s for the sweep.
+do
+  -- THE STIMULUS IS PINNED, and that is what makes the count mean anything. Earlier sections leave
+  -- forced settings behind, and they leave the generator's own seed wherever their last call put it;
+  -- with neither pinned the same payload renders differently here than in a fresh state, and all-0x00
+  -- read 128000 baud at one capture length and 9600 at another.
+  clearforce()
+  GEN_RESEED(20261013)
+  local ngood, firstbad, b = 0, nil, nil
+  for b = 0, 255 do
+    local rd, gts, gnc, gn = GEN({bytes = rep(b, 40), baud = 9600, fs = 100000, n = 5400})
+    -- NO detect_reset() here. It reaches clear_measured(), which nils acq_fs, and then fs_select()
+    -- puts fs back to the 1 MS/s default -- so the capture decodes as if it were 10x faster and the
+    -- count reads 38 of 256 instead of 232. run() does not call it either.
+    sdec.acq_fs = 100000
+    sdec.sig_levels(rd, gn)
+    sdec.sig_edges(rd, gn)
+    sdec.sig_idle(rd, gn)
+    local sok = pcall(function() sdec.decode_from(rd, gn) end)
+    local rr = sdec.res
+    local exact, k = 0, nil
+    if sok and rr ~= nil then
+      for k = 1, rr.nf do if rr.vals[k] == b then exact = exact + 1 end end
+    end
+    if sok and rr ~= nil and rr.nf > 0 and exact == rr.nf then
+      ngood = ngood + 1
+    elseif firstbad == nil then
+      firstbad = b
+    end
+  end
+  check('at least 232 of the 256 single-byte payloads still decode exactly',
+        ngood >= 232, string.format('%d of 256 exact, first inexact 0x%02X', ngood,
+                                    firstbad or 0))
+end
+
+-- 0xE0 by name: all 6-bit runs, so the width fit lands on a multiple and the truth is only
+-- reachable as the ratio-1/6 rescaling. docs/MEASUREMENTS.md, 'Only defend a fit that landed on a
+-- standard rate'. An ungated odd-multiple test reports 4800 snapped and 0x1C bytes.
+rr = run({bytes = rep(0xE0, 40), baud = 9600, fs = 100000})
+check('repeated 0xE0 decodes at 9600, not at a sub-multiple of it',
+      sdec.baud == 9600, string.format('%s baud, ratio %s', tostring(sdec.baud),
+                                       tostring(sdec.fitratio)))
+check('...and every byte of it is 0xE0',
+      txt(rr) ~= nil and rr.nf == 40 and rr.vals[1] == 0xE0 and rr.vals[40] == 0xE0,
+      string.format('%d frame(s), first 0x%02X', rr.nf, rr.vals[1] or 0))
 
 -- Non-standard rate: report it, do not force it onto the grid.
 run({bytes = hb, baud = 12345, fs = 500000})

@@ -930,8 +930,30 @@ alone, two decodes rather than the 18-way search again, and only at a tie.
 
 Measured over the soak plan, 8 capture phases a cell, 13 416 points: **rate 107 to 100**, failing
 points 110 to 103, cells failing at every phase 10 to 8, and `bleed` unchanged at 1050. Over five
-laps and 67 080 points, **335 to 327** with every other counter identical. The unit suite is unchanged
-at 1481.
+laps and 67 080 points, **335 to 327** with every other counter identical. The unit suite goes from
+1481 to **1492**, 0 failed.
+
+### What makes a text count evidence
+
+A bare count decides nothing, and "inert on binary payloads because both counts are zero" is false.
+A wrong bit time re-slices the stream and **fabricates** letters where the truth has none: a 9600
+baud line carrying the byte ramp 0x01..0x1F decodes **0 letters at the truth and 7 at twice the bit
+time**, so a count alone keeps the wrong bit time and prints the truth's own 0 as the loser. All-0x00
+is the one binary payload that is safe by accident, both counts being zero, and it is not
+representative.
+
+Two floors, and a count must clear both. `sdec.ua_textmin` is 16 letters absolute: instrumented over
+the whole plan, every firing reads **52 letters or more** -- 52, 61, 64, 64, 116, 125, 128 -- while
+the fabricated counterexamples read 4 and 7, so any floor between 8 and 52 separates them with no
+measured gain lost. `sdec.ua_textfrac` is 0.25 of the good frames: **62 of 256 byte values are
+alphanumeric, so 24.2 % is the density chance alone reaches**, and the fabricated case is 7 letters
+in 60 frames, 12 %. Real text runs well above half.
+
+Both floors together cost nothing: the plan verdict is **bad 103, rate 100, bleed 1050**, identical
+to the unfloored tie-break, and the 0x01..0x1F ramp keeps the truth.
+
+The tie-break is also the second unbounded step in `ua_best_end`, two full-length decodes, so it
+ticks. `ua_best_probe` gives one tick per candidate for the same reason.
 
 ### Collapsing an always-one top data bit
 

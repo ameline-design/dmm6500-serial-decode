@@ -409,20 +409,22 @@ function sdec.ua_err_count(r, hb)
   return n
 end
 
--- Bytes a reader would take for text: A-Z, a-z, 0-9. Good frames only, a flagged frame's value
--- being untrustworthy by definition. Ties are broken on this in ua_best_end.
+-- Bytes a reader would take for text: A-Z, a-z, 0-9, and how many good frames were looked at. Good
+-- frames only, a flagged frame's value being untrustworthy by definition. Ties break on this in
+-- ua_best_end, which needs the denominator as well as the count.
 function sdec.ua_textn(r)
-  if r == nil or r.vals == nil then return 0 end
-  local c, i = 0, nil
+  if r == nil or r.vals == nil or r.errs == nil then return 0, 0 end
+  local c, g, i = 0, 0, nil
   for i = 1, r.nf do
     if r.errs[i] == nil then
       local v = r.vals[i]
+      g = g + 1
       if (v >= 48 and v <= 57) or (v >= 65 and v <= 90) or (v >= 97 and v <= 122) then
         c = c + 1
       end
     end
   end
-  return c
+  return c, g
 end
 
 -- Rank a decode: good frames less three times the bad ones.
@@ -663,6 +665,12 @@ sdec.ua_alt_badfrac = sdec.ua_alt_badfrac or 0.1
 -- none -- loses the displacement that recovers it.
 sdec.ua_tie_margin = sdec.ua_tie_margin or 1
 
+-- What makes a text count evidence rather than an artefact. A wrong bit time re-slices the stream and
+-- fabricates letters, so a bare count decides nothing: both floors must clear.
+-- docs/MEASUREMENTS.md, 'What makes a text count evidence'.
+sdec.ua_textmin  = sdec.ua_textmin  or 16      -- letters, absolute
+sdec.ua_textfrac = sdec.ua_textfrac or 0.25    -- share of good frames; chance alone reaches 0.242
+
 -- Best score any probe format reaches at one candidate bit time, or nil if none frames.
 function sdec.ua_probe(rd, n, T)
   local cap = sdec.ua_probe_n
@@ -786,7 +794,7 @@ end
 -- ua_probe reads sdec.ua_probe_n samples, which at 8 samples a bit is ~47 bytes -- too few to see
 -- text in a capture whose head is padding. One run, not the 18-way search again.
 function sdec.ua_textat(rd, n, T, nb, par, inv)
-  if T == nil or nb == nil then return 0 end
+  if T == nil or nb == nil then return 0, 0 end
   return sdec.ua_textn(sdec.ua_run(rd, n, T, nb, par, 1, inv))
 end
 
@@ -836,9 +844,12 @@ function sdec.ua_best_end(st)
   -- framing, prefer the bit time that yields more text. Inert on binary payloads, both counts being
   -- zero, so it cannot disturb one. docs/MEASUREMENTS.md, 'The text tie-break'.
   if sc1 ~= nil and altsc ~= nil and (altsc - sc1) <= sdec.ua_tie_margin then
-    local t1 = sdec.ua_textat(rd, n, Tfit, st.fnb, st.fpar, st.finv)
+    -- Two full-length decodes, so the panel gets a tick: ua_best_probe gives one per candidate and
+    -- this is the only other unbounded step in the function.
+    if sdec.tick ~= nil then sdec.tick() end
+    local t1, g1 = sdec.ua_textat(rd, n, Tfit, st.fnb, st.fpar, st.finv)
     local t2 = sdec.ua_textat(rd, n, altT, st.anb, st.apar, st.ainv)
-    if t1 > t2 then
+    if t1 > t2 and t1 >= sdec.ua_textmin and t1 >= sdec.ua_textfrac * g1 then
       sdec.baud_note = string.format('%s baud fits as well and decodes less text (%d vs %d letters)',
                                      tostring((sdec.sig_snap(fs / altT))), t2, t1)
       return Tfit, 1

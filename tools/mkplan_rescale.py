@@ -4,7 +4,8 @@
 BLOCK 1 -- THE RESCALE MAP. ua_best may replace sig_bittime's correct fit with a rescaled candidate from
 sdec.ratios. Measured on hardware: v63, v90 and v94 all reported 250000 for a commanded 125000 with
 fitratio EXACTLY 0.5000 and snapfirm true -- the width fit was right and the rescale halved the bit time.
-uart_decode.tsp:1149 says when that is allowed:
+sdec.ua_best_probe() in uart_decode.tsp says when that is allowed -- cited by function, because a line
+number here went stale and pointed into unrelated code:
 
     if st.mayrescale and ratio ~= 1 and q >= st.qmin and ua_plausible(T)
        and not (st.snap1 and (ua_submultiple(T) or ua_minrun_absurd(T)))
