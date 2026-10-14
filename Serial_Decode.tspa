@@ -3,7 +3,7 @@ loadscript Serial_Decode
 -- $Product: DMM6500, DAQ6510, DMM7510, SMU2461
 -- $Tag: Serial, UART, Decode, Digitize
 -- $Description: Decodes an asynchronous serial line with the instrument's own digitizer: recovers baud rate, frame format and bytes, shows them as text or hex, and saves bytes to USB key. Everything auto-detects; everything can be locked.
--- $Version: 1.53
+-- $Version: 1.54
 -- $Requires: 1.7.0
 -- $Author: Ian Ameline
 -- $License: MIT
@@ -2326,6 +2326,8 @@ function sdec.ua_submultiple(T)
   return odd < sdec.submult_oddfrac * seen
 end
 
+sdec.ua_submult_minsc = sdec.ua_submult_minsc or 15
+
 sdec.submult_maxrunlo = sdec.submult_maxrunlo or 2.5
 
 -- Does this candidate claim the shortest pulse on the wire is several bit times long? Covers the odd
@@ -2488,7 +2490,9 @@ function sdec.ua_best_probe(st)
   local T, ratio, q = st.cands[i].T, st.cands[i].r, st.cands[i].q
   if st.mayrescale and ratio ~= 1 and q ~= nil and q >= st.qmin
      and sdec.ua_plausible(T, st.n)
-     and not (st.snap1 and (sdec.ua_submultiple(T) or sdec.ua_minrun_absurd(T))) then
+     and not ((st.snap1 or (st.sc1 or 0) >= sdec.ua_submult_minsc)
+              and sdec.ua_submultiple(T))
+     and not (st.snap1 and sdec.ua_minrun_absurd(T)) then
     local _, snapped = sdec.sig_snap(st.fs / T)
     if snapped then
       local sc, _, _, anb, apar, ainv = sdec.ua_probe(st.rd, st.n, T)

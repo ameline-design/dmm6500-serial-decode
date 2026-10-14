@@ -633,6 +633,15 @@ def main():
     try:
         if a.start:
             refuse_smoke_poison(d, a)
+            # PRUNED BEFORE THE PLAN IS PUSHED, not after: pushing writes PLAN.csv, which is a file
+            # CREATE, and a create scans and extends the FAT directory. A soak then creates one byte
+            # log per capture, so the cost it pays is the cost it also leaves behind for the next run.
+            # SOAK.csv is never removed -- see tools/prune_key.py. Never fatal.
+            try:
+                from prune_key import prune
+                prune(d)
+            except Exception as pe:
+                print('  NOTE: could not prune the key (%s: %s)' % (type(pe).__name__, pe))
         if not a.no_load:
             print('loading the app and the bench engine')
             load_modules(d, APP + ENGINE)

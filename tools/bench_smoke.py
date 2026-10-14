@@ -115,6 +115,17 @@ def mark_smoked():
         d = DMM(timeout=30)
         try:
             d.q('SMOKED = 1 print("SMOKED=" .. tostring(SMOKED))')
+            # AND PRUNE THE KEY, on the same socket because taking it twice costs a reconnect. A full
+            # FAT directory is paid on every file CREATE, and the panel stage creates two: measured,
+            # `Save/twice` went 0.089 s to 0.809 s -- past its 0.5 s budget and a stage failure -- on
+            # 509 directory entries, of which 506 were artefacts of earlier runs. Never fatal, and it
+            # never touches SOAK.csv. tools/prune_key.py carries the reasoning.
+            try:
+                from prune_key import prune
+                prune(d)
+            except Exception as pe:
+                print('  NOTE: could not prune the key (%s: %s) -- a full directory costs press '
+                      'latency' % (type(pe).__name__, pe))
             return True
         finally:
             d.close()

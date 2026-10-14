@@ -182,10 +182,10 @@ RATCHET = {
     # THE TWO CONFIGURATIONS A BENCH LAP CAN ACTUALLY BE COMPARED WITH, because every hardware soak
     # skips v95 and v96 -- v96 wedges the generator at vector 33 -- and the skip is drawn on. These are
     # the ones tools/soak_offline.py and the default CLI run.
-    (1, 1, SP.HW_SKIP, None): {'bad': 14, 'badcells': 14, 'badall': 14, 'rate': 12, 'flags': 0,
+    (1, 1, SP.HW_SKIP, None): {'bad': 12, 'badcells': 12, 'badall': 12, 'rate': 10, 'flags': 0,
                                'bytes': 2, 'nobytes': 0, 'bleed': 200, 'skip': 0, 'judged': 1677,
                                'loudquiet': 5, 'loudmiss': 122, 'label': 3},
-    (1, 8, SP.HW_SKIP, None): {'bad': 103, 'badcells': 22, 'badall': 8, 'rate': 100, 'flags': 0,
+    (1, 8, SP.HW_SKIP, None): {'bad': 84, 'badcells': 18, 'badall': 8, 'rate': 81, 'flags': 0,
                                'bytes': 3, 'nobytes': 0, 'bleed': 1050, 'skip': 1, 'judged': 13415,
                                'loudquiet': 54, 'loudmiss': 622, 'label': 24},
     # THE 14-DAY RUN'S OWN CONFIGURATION, four random vectors a lap, which is what the instrument plays.

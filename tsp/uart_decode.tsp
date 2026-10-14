@@ -572,6 +572,12 @@ function sdec.ua_submultiple(T)
   return odd < sdec.submult_oddfrac * seen
 end
 
+-- Good frames the width fit must reach before ua_submultiple also guards a fit that snapped to no
+-- standard rate. A fit on an m-multiple of the truth frames only 1/m of the bytes in ua_probe's
+-- window, so a high count is itself evidence the fit is not a multiple.
+-- docs/MEASUREMENTS.md, 'Guarding a fit that snapped to nothing'.
+sdec.ua_submult_minsc = sdec.ua_submult_minsc or 15
+
 -- Does this candidate claim the shortest pulse on the wire is several bit times long? Covers the odd
 -- divisors ua_submultiple cannot, on the 5th percentile rather than the minimum, and gates candidates
 -- only -- never the fit, and only behind snap1. docs/MEASUREMENTS.md, 'submult_maxrunlo = 2.5'.
@@ -767,9 +773,12 @@ function sdec.ua_best_probe(st)
   local T, ratio, q = st.cands[i].T, st.cands[i].r, st.cands[i].q
   if st.mayrescale and ratio ~= 1 and q ~= nil and q >= st.qmin
      and sdec.ua_plausible(T, st.n)
-     -- Both sub-multiple tests, behind snap1: a fit that did not snap needs a rescaling to reach the
-     -- truth. docs/MEASUREMENTS.md, 'Only defend a fit that landed on a standard rate'.
-     and not (st.snap1 and (sdec.ua_submultiple(T) or sdec.ua_minrun_absurd(T))) then
+     -- ua_minrun_absurd stays behind snap1. ua_submultiple also guards a fit that snapped to nothing
+     -- but frames a lot, the standard ladder being full of factor-2 relations so snap1 alone cannot
+     -- see a halving. docs/MEASUREMENTS.md, 'Guarding a fit that snapped to nothing'.
+     and not ((st.snap1 or (st.sc1 or 0) >= sdec.ua_submult_minsc)
+              and sdec.ua_submultiple(T))
+     and not (st.snap1 and sdec.ua_minrun_absurd(T)) then
     local _, snapped = sdec.sig_snap(st.fs / T)
     if snapped then
       local sc, _, _, anb, apar, ainv = sdec.ua_probe(st.rd, st.n, T)

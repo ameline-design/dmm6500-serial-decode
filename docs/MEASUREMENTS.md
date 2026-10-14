@@ -820,6 +820,27 @@ exactly, and read as four 0x08 bytes at 4800 8N1 with zero errors** -- and that 
 because the two encodings are bit-for-bit the same waveform, verified sample by sample. Which device
 is on the wire cannot be recovered from it.
 
+**The class is exactly enumerable, and no rule that reads the waveform can resolve it.** Take every
+repeated single byte at 8N1 and compute the GCD of its cyclic run lengths. When that GCD is even, the
+truth is itself an even multiple of its own bit time, and the wire at rate r is sample-identical to a
+different byte at r/2. Worked witness: 0x29's frame is `0100101001`, and doubling every bit gives
+`0011000011 0011000011`, which is 0x86's frame twice. So **0x86 at 9600 is 0x29 at 4800**, while
+0x29 at 9600 is 0x86 at 19200 -- two captures needing opposite decisions, one "prefer finer" and one
+"prefer coarser". A measured attempt at "the finest clean 8N1 reading wins" scored **840 bad of
+2048** and took the 256-payload ratchet down to 140. Only the absolute rate separates them, which
+means a prior, and a prior over "common" rates costs more than it buys: one measured against a list
+omitting 2400 and 4800 fixed 26 points on a sweep of 9600 and 38400 and took the failure count from
+**392 to 722** once those two rates were put back, with distinct failing payloads going 18 to 131.
+
+**There are 8 such bytes -- 0x80, 0x86, 0x98, 0x9E, 0xE0, 0xE6, 0xF8, 0xFE -- and not one is
+printable ASCII.** That is forced rather than lucky: every run being even requires the start bit to
+pair with d0, so d0 is 0, and the stop bit to pair with the top data bits, so **d7 is 1** and the byte
+is at or above 0x80. The two padding bytes real firmware sends are both safe, 0x00 giving run-GCD 3
+and 0xFF giving 1. The text tie-break cannot help here either, and for 0x98 and 0x9E it points the
+wrong way: the coarser wrong reading yields **20 uniform alphanumerics against the truth's 0**, which
+clears both text floors on density. It is unreachable only because the clean snapped fit is kept
+before the tie-break is consulted.
+
 Both readings are legitimate and the commonality prior even favours the 8N1 one, so the operator is
 told: a rescaling that also snaps and explains materially more of the capture is reported in
 `baud_note`. Perfectly periodic traffic creates this; irregular inter-byte gaps break the
@@ -875,6 +896,40 @@ snapped) and the truth is the ratio-1/6 candidate. Its multiples are all k = 6 -
 odd-multiple test rejected it and handed 4800 to the ratio-1/3 candidate: **20 frames of 0x1C with
 zero errors against 40 exact 0xE0.** Behind the `snap1` gate neither sub-multiple test is consulted
 on that capture and the 1/6 truth stays reachable.
+
+### Guarding a fit that snapped to nothing
+
+`snap1` cannot see a halving, and that is the hole. **The standard ladder is full of factor-2
+relations** -- 1200, 2400, 4800, 9600, 19200 -- so a fit sitting on twice the true bit time lands on a
+standard rate just as readily as the truth does, `snap1` is true, and the gate meant to protect a good
+fit protects a wrong one instead. Measured on repeated 0x86 at 9600 with no idle gap: the fit reads
+**4800, snapped, 20 frames, none of them the commanded byte**, where 9600 frames 40 exact.
+
+So `ua_submultiple` also guards a fit that snapped to nothing, provided the fit frames enough to be
+worth guarding: `sdec.ua_submult_minsc` is 15 good frames. The floor is not a tuned number.
+`ua_probe` reads at most `ua_probe_n` samples, so the fit's score is about
+`ua_probe_n / (framebits x Tfit)` -- **inversely proportional to the multiple it sits on, and
+independent of payload length**. Measured: repeated 0xE0 scores **8** at its 6x fit and stays at 8
+from 40 bytes to 480, all-0x00 scores **3** at its 3x fit, and a correct fit at 8 samples a bit scores
+**39**. A high score is itself the evidence that the fit is not a multiple, and the verdict is flat
+across floors of 15, 20 and 30.
+
+`ua_minrun_absurd` is deliberately NOT extended the same way. It contributes **nothing** measured at
+any configuration -- byte-identical plan output -- and off-plan it breaks three more payload classes,
+all-0x00 at 40 bytes among them, because runs of 9 and 3 put `wshort/T` at 3 against a 2.5 threshold.
+
+Measured over every repeated-single-byte payload, 256 bytes x 2 gaps x 5 rates x 2 phases = 5120
+points, classified by the run-GCD of the repeating bit pattern:
+
+| run-GCD | before | after |
+|---|---|---|
+| 1 (ordinary) | 238 bad, 18 payloads | **124 bad, 12 payloads** |
+| 2 | 122 | 122 |
+| 3 | 10 | **0** |
+| 4 | 20 | 20 |
+
+Total **392 to 268**, with no class worse. The run-GCD 2 and 4 classes are left alone on purpose:
+they are not decidable from the waveform. See *The same waveform at two rates*.
 
 ### Only displace a fit that is failing
 

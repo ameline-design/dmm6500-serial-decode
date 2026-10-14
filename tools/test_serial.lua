@@ -375,6 +375,45 @@ check('...and every byte of it is 0xE0',
       txt(rr) ~= nil and rr.nf == 40 and rr.vals[1] == 0xE0 and rr.vals[40] == 0xE0,
       string.format('%d frame(s), first 0x%02X', rr.nf, rr.vals[1] or 0))
 
+-- ua_submult_minsc: the odd-multiple test also guards a fit that snapped to nothing, but only one
+-- that frames enough to be worth guarding. Both directions, because the floor is the whole design.
+do
+  clearforce()
+  -- A strong fit: 0x1C at gap 2 has runs sharing 3, the fit frames plenty, and the gate must fire.
+  rr = run({bytes = rep(0x1C, 40), baud = 9600, fs = 100000})
+  check('a strong unsnapped fit has its sub-multiple candidates gated',
+        sdec.baud == 9600, string.format('%s baud, ratio %s', tostring(sdec.baud),
+                                         tostring(sdec.fitratio)))
+  -- A weak fit must NOT be gated: all-0x00 scores 3 and 0xE0 scores 8, both under the floor, and
+  -- both reach the truth only through a rescaling the gate would have rejected.
+  local keep = sdec.ua_submult_minsc
+  sdec.ua_submult_minsc = 1
+  rr = run({bytes = rep(0xE0, 40), baud = 9600, fs = 100000})
+  check('a floor of 1 breaks 0xE0, which is what the floor is for',
+        sdec.baud ~= 9600, string.format('%s baud', tostring(sdec.baud)))
+  sdec.ua_submult_minsc = keep
+  rr = run({bytes = rep(0xE0, 40), baud = 9600, fs = 100000})
+  check('...and at the shipped floor it reads 9600 again',
+        sdec.baud == 9600 and rr.nf == 40, string.format('%s baud, %d frame(s)',
+                                                         tostring(sdec.baud), rr.nf))
+  -- The undecidable pair must be left exactly as it was: 0x29 at 4800 is 0x86 at 9600 on the wire,
+  -- so a rule that moves one moves the other, and this one decodes correctly today.
+  rr = run({bytes = rep(0x29, 20), baud = 4800, fs = 100000})
+  check('the undecidable twin 0x29 at 4800 still reads 4800 with every byte exact',
+        sdec.baud == 4800 and rr.nf > 0 and rr.vals[1] == 0x29 and rr.vals[rr.nf] == 0x29,
+        string.format('%s baud, %d frame(s), first 0x%02X', tostring(sdec.baud), rr.nf,
+                      rr.vals[1] or 0))
+  -- 0x98 read a bit time too coarse yields 20 uniform alphanumerics against the truth's 0, so the
+  -- text tie-break is anti-correlated here and must never be what decides it.
+  local rd9, a9, b9, n9 = GEN({bytes = rep(0x98, 40), baud = 9600, fs = 100000, gap = 0})
+  sdec.acq_fs = 100000
+  sdec.sig_levels(rd9, n9) sdec.sig_edges(rd9, n9) sdec.sig_idle(rd9, n9)
+  check('a coarser bit time can fabricate text at full density, so density alone is not evidence',
+        sdec.ua_textat(rd9, n9, 2 * 100000 / 9600, 8, sdec.PAR_NONE, false) >= sdec.ua_textmin,
+        tostring(sdec.ua_textat(rd9, n9, 2 * 100000 / 9600, 8, sdec.PAR_NONE, false))
+          .. ' letter(s) at twice the bit time')
+end
+
 -- Non-standard rate: report it, do not force it onto the grid.
 run({bytes = hb, baud = 12345, fs = 500000})
 check('a non-standard rate is reported unsnapped',
