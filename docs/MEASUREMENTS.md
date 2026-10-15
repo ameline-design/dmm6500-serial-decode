@@ -1395,13 +1395,21 @@ payload -- and that much ships. It does not work on text: lowercase prose holds 
 share with a count a true residue must reach, so nothing is tuned; measuring each residue against its
 own span rather than a shared one corrects an off-by-one that made it abstain on real captures.
 
-**Both were refuted on the instrument, and the offline evidence was badly misleading.** Sliced at every
-sample offset, an offline capture of the same payload went from losing bytes at all 104 offsets to
-**104 of 104 clean** -- a complete cure. The same build on hardware measured **14 damaged heads of 60,
-23 %, worst 11 bytes, 66 lost**: worse than the shipped build on every axis. An offline sweep slices a
-generated waveform with an exact bit time, so its residue lattice is cleaner than any real capture's,
-and an anchor rule scored that way flatters itself. **Judge an anchor change on hardware or not at
-all.**
+**Neither is shipped, and the offline evidence was badly misleading.** Sliced at every sample offset,
+an offline capture of the same payload went from losing bytes at all 104 offsets to **104 of 104
+clean** -- a complete cure. The same build on hardware measured **14 damaged heads of 60, worst 11
+bytes, 66 lost**, against the shipped build's 10, worst 8, 47. An offline sweep slices a generated
+waveform with an exact bit time, so its residue lattice is cleaner than any real capture's, and an
+anchor rule scored that way flatters itself.
+
+**That comparison is not strong enough to call one build worse, and the reason is the metric.**
+`ua_head_bad` can only register damage on a window that holds an idle, because the mark it narrows
+needs a frame boundary to end at. Two consequences, both measured: a window with no loop seam in it is
+never counted as damaged however badly misread, and an anchor placed AFTER the seam drops the head
+entirely and reads clean on a shorter frame count. So the figures above understate the damage in both
+builds and can rank a build that discards bytes above one that decodes them wrongly. **An anchor
+change has to be judged on hardware, and on frames emitted against the frames the span implies, not
+on a head flag alone.**
 
 What no structural rule reaches: a stream whose misread phase is itself a clean fixed point, which is
 p-z letters or digits with no spaces at a gap of 0 or 1. Measured, **0 of 104 offsets right** before
