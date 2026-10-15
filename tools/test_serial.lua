@@ -945,7 +945,8 @@ check('...and decodes the same text through the same tier',
       rr and string.format('%q why=%s', string.sub(txt(rr), 1, 26), tostring(sdec.polwhy)) or 'nil')
 
 -- A locked format must still contest the polarity. This is the path auto-lock leaves behind, and
--- before the contest was added it took the level inference unopposed and was wrong every capture.
+-- with no contest here the level inference decides unopposed, which is wrong on every capture of a
+-- straddling line that holds no idle.
 clearforce()
 sdec.force_nbits, sdec.force_par, sdec.force_nstop = 8, sdec.PAR_NONE, 1
 rr = run({bytes = fbt, baud = straddle.baud, fs = straddle.fs, lo = straddle.lo, hi = straddle.hi,

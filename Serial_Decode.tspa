@@ -14,6 +14,9 @@ loadscript Serial_Decode
 --
 -- Copyright (c) 2026 Ian Ameline
 --
+-- For the latest tspa application, source code, tests and manuals see:
+-- https://github.com/ameline-design/dmm6500-serial-decode
+--
 -- SPDX-License-Identifier: MIT
 --
 -- Permission is hereby granted, free of charge, to any person obtaining a copy

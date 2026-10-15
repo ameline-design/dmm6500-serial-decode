@@ -175,11 +175,18 @@ MANIFEST = [
 # software, and the .tspa is the whole distributable -- it installs off a USB key onto an
 # instrument with no filesystem the recipient reads, so there is nowhere else for a LICENSE file
 # to live. Emitted as Lua line comments, since the archive body is a Lua chunk.
+#
+# The project url rides in this header rather than in the manifest. Manifest fields are browsable on
+# the instrument, where a url is no use to someone standing at the front panel -- and being part of
+# the generated header is what makes every build carry it, which a hand-edit of the .tspa would not.
 LICENSE = '''
 -- ============================================================================
 -- Serial Decode -- a UART decoder for Keithley TSP instruments
 --
 -- Copyright (c) %s %s
+--
+-- For the latest tspa application, source code, tests and manuals see:
+-- https://github.com/ameline-design/dmm6500-serial-decode
 --
 -- SPDX-License-Identifier: MIT
 --

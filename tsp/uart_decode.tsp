@@ -548,7 +548,7 @@ end
 -- margin, then text, then the error count. Returns the winner and the tier that decided.
 --
 -- Text outranks the error count, which is the opposite of what it looks like it should be. The error
--- count is not reliable here: on gapless lowercase lorem the CORRECT polarity carries two interior
+-- count is not reliable here: on gapless lowercase lorem the correct polarity carries two interior
 -- errors, at frames 2 and 5, where the fake framing carries none, so the cleaner decode is the wrong
 -- one in both directions. Text reads 97.8 % against 58.9 % on the same pair and is right both times.
 -- The error count still breaks a tie text cannot see, which is a payload with no alphabet to read.
