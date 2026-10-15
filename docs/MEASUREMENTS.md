@@ -1373,6 +1373,42 @@ without an integer representation. `v ~= v` is the nan test; floor(inf) == inf, 
 the bound rather than by it. A nil already rendered as ' --', so every rejected value joins a branch
 that already existed.
 
+### A mid-byte head resists an anchor rule, and offline sweeps overstate the cure
+
+The 1.5-bit anchor rule takes the first edge in the start-bit direction with at least 1.5 bit times of
+mark before it, and **two adjacent 1 data bits give exactly that**. In 8N1 every lowercase ASCII letter
+has b5 and b6 set and b7 clear, so it carries a falling edge at cell 8 with a two-bit run in front of
+it, and the walk from there lands on cell 8 of the next letter too. A lowercase capture therefore stays
+one byte out of phase until a control character or a two-frame idle. The bench vectors are built
+`gap = 0` with a 20-bit idle only at the loop seam, so once the payload outruns the capture window
+there is no idle to recover on.
+
+**The hardware cost, measured over 60 captures of the 1 kB lorem vector at 9600 Bd:** 10 captures
+carried a damaged head, **17 %**, worst case 8 bytes, 47 bytes lost in total. That is the figure any
+candidate has to beat.
+
+Two anchor rules were built and refused. A **residue vote** bins candidate edges by bit index modulo
+the frame length, on the ground that a start bit falls once per frame while a data edge at a given bit
+position appears only when the data demands it. It works where one residue dominates -- a periodic
+payload -- and that much ships. It does not work on text: lowercase prose holds the winner's lead at
+15 % against a 25 % threshold, measured, and the vote abstains. A **derived threshold** replaces the
+share with a count a true residue must reach, so nothing is tuned; measuring each residue against its
+own span rather than a shared one corrects an off-by-one that made it abstain on real captures.
+
+**Both were refuted on the instrument, and the offline evidence was badly misleading.** Sliced at every
+sample offset, an offline capture of the same payload went from losing bytes at all 104 offsets to
+**104 of 104 clean** -- a complete cure. The same build on hardware measured **14 damaged heads of 60,
+23 %, worst 11 bytes, 66 lost**: worse than the shipped build on every axis. An offline sweep slices a
+generated waveform with an exact bit time, so its residue lattice is cleaner than any real capture's,
+and an anchor rule scored that way flatters itself. **Judge an anchor change on hardware or not at
+all.**
+
+What no structural rule reaches: a stream whose misread phase is itself a clean fixed point, which is
+p-z letters or digits with no spaces at a gap of 0 or 1. Measured, **0 of 104 offsets right** before
+and after, with nothing flagged. Only a prior over plausible text would decide it, and a rate prior
+was already refused here for the same reason. This is the case the mid-byte note is hedged for -- see
+*How far a misaligned head reaches*.
+
 ### tmin0 makes ua_run resumable
 
 `chunk_decode.tsp` passes the position (in this array's coordinates) at which the previous frame
