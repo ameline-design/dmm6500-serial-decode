@@ -1402,7 +1402,22 @@ bytes, 66 lost**, against the shipped build's 10, worst 8, 47. An offline sweep 
 waveform with an exact bit time, so its residue lattice is cleaner than any real capture's, and an
 anchor rule scored that way flatters itself.
 
-**That comparison is not strong enough to call one build worse, and the reason is the metric.**
+**That comparison measures the stimulus, not the rule.** Every damaged window is a seam window: the
+head flag needs an idle to narrow against, and on this payload the only idle is the 20-bit loop seam.
+A 20045-sample window at 9600 Bd holds that seam with probability about 0.23, so a 60-capture count is
+a draw from Binomial(60, 0.23) -- mean 14, standard deviation 3.3. Eight random-phase draws of 60 for
+the SHIPPED build alone give 10, 14, 12, 11, 12, 11, 12, 11, and the candidate on the same phases
+gives the same number in each draw. The 10 and the 14 above are two draws from one distribution, taken
+one build apart. **A head-flag count over 60 captures cannot rank two anchor rules on this payload at
+all**, and the two builds are in fact identical on it when the bit time is exact.
+
+Where they do differ is under a bit-time error, and the head flag hides it: at a 0.03 % error the
+candidate reads **zero** damaged heads while dropping 1511 frames across 10 windows, because the drift
+splits the residue lattice and the surviving half's earliest edge sits mid-capture, so there is no head
+left to flag. Frames emitted against the frames the span implies is the measurement that sees this;
+the head flag is not.
+
+**The metric's own blind spots, for the same reason.**
 `ua_head_bad` can only register damage on a window that holds an idle, because the mark it narrows
 needs a frame boundary to end at. Two consequences, both measured: a window with no loop seam in it is
 never counted as damaged however badly misread, and an anchor placed AFTER the seam drops the head
