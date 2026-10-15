@@ -911,6 +911,107 @@ check('gapless RS-232 falls back to the NEGATIVE level being mark',
 end
 clearforce()
 
+-- The polarity tiebreak, on the case that exposed it: a line straddling ground that is NOT inverted.
+-- The levels read RS-232 and mark low, so the incumbent is wrong, and with no idle in the window the
+-- score cannot overturn it -- both framings of text score within a frame of each other. The tiers in
+-- ua_pick_pol decide instead of the prior winning by default.
+--
+-- Asserted in BOTH directions deliberately. A tiebreak that always prefers upright would pass the
+-- first half and silently break every real RS-232 line, which is the mirror half.
+do
+local FOXT = 'The quick brown fox jumps over the lazy dog. 0123456789. '
+local ftx = ''
+while string.len(ftx) < 240 do ftx = ftx .. FOXT end
+local fbt = GEN_BYTES(string.sub(ftx, 1, 240))
+local straddle = {baud = 9600, fs = 96000, lo = -5, hi = 5, lead = 0, gap = 0, tail = 0}
+
+rr = run({bytes = fbt, baud = straddle.baud, fs = straddle.fs, lo = straddle.lo, hi = straddle.hi,
+          lead = 0, gap = 0, tail = 0})
+check('a straddling line that is not inverted is still read upright',
+      rr ~= nil and rr.invert == false, rr and tostring(rr.invert) or 'nil')
+check('...the prior really was the wrong one, so this is a recovery and not luck',
+      sdec.idle_weak == true and sdec.polwhy == 'text',
+      string.format('weak=%s why=%s', tostring(sdec.idle_weak), tostring(sdec.polwhy)))
+check('...and the text decodes rather than being self-consistently wrong',
+      rr ~= nil and has(txt(rr), 'quick brown fox'),
+      rr and string.format('%q err=%d', string.sub(txt(rr), 1, 26), rr.nbad) or 'nil')
+
+rr = run({bytes = fbt, baud = straddle.baud, fs = straddle.fs, lo = straddle.lo, hi = straddle.hi,
+          lead = 0, gap = 0, tail = 0, invert = true})
+check('the mirror: a straddling line that IS inverted stays inverted',
+      rr ~= nil and rr.invert == true, rr and tostring(rr.invert) or 'nil')
+check('...and decodes the same text through the same tier',
+      rr ~= nil and has(txt(rr), 'quick brown fox') and sdec.polwhy == 'text',
+      rr and string.format('%q why=%s', string.sub(txt(rr), 1, 26), tostring(sdec.polwhy)) or 'nil')
+
+-- A locked format must still contest the polarity. This is the path auto-lock leaves behind, and
+-- before the contest was added it took the level inference unopposed and was wrong every capture.
+clearforce()
+sdec.force_nbits, sdec.force_par, sdec.force_nstop = 8, sdec.PAR_NONE, 1
+rr = run({bytes = fbt, baud = straddle.baud, fs = straddle.fs, lo = straddle.lo, hi = straddle.hi,
+          lead = 0, gap = 0, tail = 0})
+check('a LOCKED format contests the polarity instead of taking the level guess',
+      rr ~= nil and rr.invert == false and has(txt(rr), 'quick brown fox'),
+      rr and string.format('invert=%s why=%s %q', tostring(rr.invert), tostring(sdec.polwhy),
+                           string.sub(txt(rr), 1, 20)) or 'nil')
+sdec.force_invert = true
+rr = run({bytes = fbt, baud = straddle.baud, fs = straddle.fs, lo = straddle.lo, hi = straddle.hi,
+          lead = 0, gap = 0, tail = 0})
+check('a typed polarity is obeyed even where the tiebreak disagrees with it',
+      rr ~= nil and rr.invert == true and sdec.polwhy == nil,
+      rr and string.format('invert=%s why=%s', tostring(rr.invert), tostring(sdec.polwhy)) or 'nil')
+clearforce()
+end
+
+-- ua_printfrac, and the control that keeps text LAST. On a random payload the two readings sit 0.061
+-- apart with the wrong one ahead, so text must not be allowed to decide there; the measured text
+-- separations on real alphabets are 0.389 and 0.576, which is what ua_textmin sits between.
+do
+local rnd, nrd = {}, 0
+math.randomseed(7)
+local i
+for i = 1, 160 do nrd = nrd + 1; rnd[nrd] = math.floor(math.random() * 256) end
+rr = run({bytes = rnd, baud = 9600, fs = 96000, lo = -5, hi = 5, lead = 0, gap = 0, tail = 0})
+check('a random payload on a straddling line recovers on SCORE, not on text',
+      rr ~= nil and rr.invert == false and sdec.polwhy == 'score',
+      rr and string.format('invert=%s why=%s', tostring(rr.invert), tostring(sdec.polwhy)) or 'nil')
+check('ua_printfrac reads a text decode high and a random one low',
+      sdec.ua_printfrac({nf = 4, vals = {65, 66, 67, 68}}) == 1.0
+      and sdec.ua_printfrac({nf = 4, vals = {0, 1, 2, 200}}) == 0.0,
+      string.format('%.2f / %.2f', sdec.ua_printfrac({nf = 4, vals = {65, 66, 67, 68}}),
+                    sdec.ua_printfrac({nf = 4, vals = {0, 1, 2, 200}})))
+check('...counts tab, newline and return as text, and nothing else below 0x20',
+      sdec.ua_printfrac({nf = 4, vals = {9, 10, 13, 7}}) == 0.75,
+      string.format('%.2f', sdec.ua_printfrac({nf = 4, vals = {9, 10, 13, 7}})))
+check('...and an empty decode is 0 rather than a divide by zero',
+      sdec.ua_printfrac({nf = 0, vals = {}}) == 0 and sdec.ua_printfrac(nil) == 0, 'both 0')
+
+-- The tiers, exercised directly, because the fixtures above can only reach one of them at a time.
+local function cand(nf, ngood, nbad, vals)
+  return {nf = nf, ngood = ngood, nbad = nbad, score = ngood - 3 * nbad, vals = vals}
+end
+local TEXTV, BINV = {}, {}
+for i = 1, 100 do TEXTV[i] = 65; BINV[i] = 1 end
+local w, why = sdec.ua_pick_pol(cand(100, 100, 0, BINV), cand(100, 100, 0, TEXTV), true)
+check('ua_pick_pol: text decides a tie on a guessed prior', why == 'text' and w.vals == TEXTV, why)
+w, why = sdec.ua_pick_pol(cand(100, 100, 0, BINV), cand(100, 100, 0, TEXTV), false)
+check('...but an OBSERVED idle is not overturned by an alphabet',
+      why == 'prior' and w.vals == BINV, why)
+w, why = sdec.ua_pick_pol(cand(100, 100, 3, BINV), cand(100, 100, 0, BINV), true)
+check('...with no alphabet to read, the error count breaks the tie',
+      why == 'errors' and w.nbad == 0, why)
+-- The rival here would take BOTH remaining tiers if the gate let it: an alphabet against none, and
+-- no errors against three. It explains 40 of the capture's 100 frames, so it has lost rather than
+-- tied, and both of those numbers are artefacts of framing less. Without the gate this reads 'text'.
+w, why = sdec.ua_pick_pol(cand(100, 97, 3, BINV), cand(40, 40, 0, TEXTV), true)
+check('...a rival that frames far less has lost, not tied, so neither tier runs',
+      why == 'prior' and w.nf == 100, string.format('%s nf=%d', tostring(why), w.nf))
+w, why = sdec.ua_pick_pol(cand(100, 10, 0, BINV), cand(100, 100, 0, BINV), true)
+check('...and a decisive score still wins before any tier is consulted',
+      why == 'score' and w.ngood == 100, why)
+end
+clearforce()
+
 -- Capture truncated mid-frame: the partial byte must be dropped, not invented.
 local trd, tts, tnc, tn = GEN({bytes = hb, baud = 9600, fs = 100000, tail = 0})
 local cut = tn - math.floor(100000 / 9600 * 5)      -- lose the last 5 bit times
@@ -3301,12 +3402,28 @@ do
         sdec.force_baud == 9600 and sdec.force_nbits == 8,
         string.format('baud=%s bits=%s', tostring(sdec.force_baud),
                       tostring(sdec.force_nbits)))
-  check('...but NOT the polarity, which is re-derived every capture',
-        sdec.force_invert == nil, tostring(sdec.force_invert))
+  -- Polarity locks with the rest once something decided it, and autolock_set records it as the
+  -- app's choice so a rate back-off drops it again. Only an undecided contest leaves it on auto:
+  -- see 'an undecided polarity is not locked' below, which asserts the other branch.
+  check('...and the polarity, recorded as the app\'s choice rather than a typed one',
+        sdec.force_invert == false and sdec.autolock_set ~= nil
+        and sdec.autolock_set.invert == true,
+        string.format('invert=%s aset=%s', tostring(sdec.force_invert),
+                      tostring(sdec.autolock_set and sdec.autolock_set.invert)))
   check('...and it says so on the note line, naming the payoff',
         sdec.autolocknote ~= nil and has(sdec.autolocknote, 'auto-locked')
         and has(sdec.autolocknote, 'kS/s') and has(sdec.autolocknote, ' B '),
         tostring(sdec.autolocknote))
+  -- The gate's other direction. Driven by overriding the tier the run reached, because a fixture
+  -- where text and the error count BOTH tie is exactly the fixture that cannot say which polarity
+  -- is right -- so the assertion would have nothing to compare against.
+  fresh({bytes = lb2, baud = 9600, fs = 100000, gap = 2})
+  sdec.idle_weak, sdec.polwhy = true, 'prior'
+  sdec.autolock_try()
+  check('an undecided polarity is NOT locked, where a decided one is',
+        sdec.force_invert == nil and sdec.force_baud == 9600,
+        string.format('invert=%s baud=%s', tostring(sdec.force_invert),
+                      tostring(sdec.force_baud)))
   -- The note is only useful if the panel can DRAW it. The firmware clips at the panel edge
   -- silently, so a note that outgrows the cell loses its tail with nothing to say it did.
   check('...and the note fits the note cell without being clipped',

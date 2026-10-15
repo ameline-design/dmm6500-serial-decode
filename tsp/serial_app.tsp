@@ -1678,9 +1678,16 @@ function sdec.autolock_try()
   if sdec.force_nbits == nil then sdec.force_nbits = r.nbits; sdec.autolock_set.nbits = true end
   if sdec.force_par   == nil then sdec.force_par   = r.par;   sdec.autolock_set.par   = true end
   if sdec.force_nstop == nil then sdec.force_nstop = r.nstop; sdec.autolock_set.nstop = true end
-  -- Polarity is deliberately not locked, the one asymmetry in the set: it costs one test to re-derive
-  -- where a rate costs a capture. docs/MEASUREMENTS.md, 'Polarity is not locked'.
-  sdec.force_invert = nil
+  -- Polarity locks when something decided it: an observed idle run, or a tier of the contest. It
+  -- stays on auto when nothing did -- `prior` means the two polarities were indistinguishable and
+  -- the incumbent won by default, which is a coin flip and not a result to freeze. An armed capture
+  -- of a gapless line reaches the text tier rather than the run branch, so this is the path that
+  -- locks in practice. docs/MEASUREMENTS.md, 'Polarity is not locked'.
+  if sdec.force_invert == nil and r.invert ~= nil and
+     (sdec.idle_weak == false or (sdec.polwhy ~= nil and sdec.polwhy ~= 'prior')) then
+    sdec.force_invert = r.invert
+    sdec.autolock_set.invert = true
+  end
 
   -- Names the payoff, and sized to the note row's budget. docs/MEASUREMENTS.md, 'The note row pixel budget'.
   sdec.baud, sdec.snapped, sdec.snapfirm = sdec.force_baud, true, true

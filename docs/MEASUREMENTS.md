@@ -701,6 +701,47 @@ overturn that on a 60 % margin, so the rival needs ~3.4x. 4 is the smallest valu
 18-frame win while leaving every offline inverted-line test decoding; those captures contain idle, so
 the multiplier does not apply to them.
 
+### The polarity tiebreak
+
+The margin above protects the prior, which is correct when the prior is right and is the whole defect
+when it is not. A line straddling ground that is **not** inverted gets the wrong incumbent from the
+signalling standard, and on text the rival cannot overturn it, because the two readings are not
+merely close -- they tie. Measured on 240 bytes of the fox pangram at 9600, 19200 and 16200 Bd, lo
+-5 V, hi +5 V, no idle in the window:
+
+    upright    132 good  0 bad  score 132      inverted   132 good  0 bad  score 132
+
+Identical at all three rates. No weighting of frames or errors can separate that, so `ua_pick_pol`
+adds two tiers below the score, and the order is the opposite of the obvious one.
+
+**Text outranks the error count.** The error count looks like the natural discriminator and is not
+reliable: on gapless lowercase lorem the **correct** polarity carries two interior errors, at frames
+2 and 5, where the fake framing carries none. Ranking by error count therefore picks the wrong
+reading in both directions, and it broke the two fixtures in this file that assert a gapless
+single-supply line reads upright and a gapless RS-232 line reads inverted. The same pair separates
+cleanly on text, 97.8 % against 58.9 %, and correctly both times.
+
+`ua_textmin = 0.25` sits between the separations text can and cannot see:
+
+    gapless lowercase lorem   0.389        the fox vector            0.576
+    a random payload          0.061        -- where the WRONG reading leads, 40.2 % against 34.1 %
+
+So a random payload never reaches the text tier, which matters because text would mislead there. It
+does not need to: a random payload gives the rival a real margin and the score tier recovers it on
+its own, 132 against -60. The error count survives as the last tier, for a tie with no alphabet in
+it, and the frame counts must agree within `ua_polnftol` before either tier runs -- a polarity that
+frames half as much has lost rather than tied, and both its error count and its text fraction are
+artefacts of framing less.
+
+### A locked format must still contest the polarity
+
+The branch `decode_from()` takes when the frame shape is forced read the polarity straight off
+`sdec.idle` with no contest at all. Auto-lock forces the frame shape on the first clean capture, so
+this was the common path, and on a ground-straddling line holding no idle it produced the wrong
+polarity on **every** capture rather than sometimes -- the level inference is deterministic. It now
+runs the same two-polarity contest with the forced format, which costs one extra `ua_run` on a path
+that previously did one.
+
 ### minsabit, and why the floor exists at all
 
 Below the 4 samples/bit floor a clean synthetic waveform still decodes -- the harness recovers **13 of
@@ -2599,14 +2640,21 @@ bytes, the window being the number the operator cares about -- and is sized to t
 
 ### Polarity is not locked
 
-The one asymmetry in the locked set, and deliberate. Left nil, `decode_from()` falls back to the
-level-based inference from `sig_idle` and skips the polarity contest entirely. Locked, it would freeze
-whatever that contest decided on the shortest, least evidenced capture the app takes -- and 'polmargin
-= 4, and the inverted-ASCII trap' is the measurement of how wrong that contest can be on one short
-window, where the inverted reading of ASCII text returned 18 frames with zero errors.
+Polarity now locks with the rest, but only when something decided it. The argument for leaving it out
+rested on re-derivation being cheap and correct: left nil, `decode_from()` fell back to the
+level-based inference from `sig_idle` and skipped the contest entirely. That is the half that was
+wrong -- see 'A locked format must still contest the polarity'. Re-deriving it was not one test, it
+was the level guess unopposed, and on a ground-straddling line with no idle that is wrong every time.
 
-Rate and frame shape are worth locking because re-deriving them costs a capture. Polarity costs one
-test, so there is nothing to buy and a wrong answer to avoid.
+So the asymmetry is now in the condition rather than in the field. `autolock_try` locks polarity when
+`idle_weak` is false, meaning a run observed the resting level, or when a tier of the contest decided
+it. It leaves polarity on auto when `polwhy` is `prior`: that is the case where the two readings were
+indistinguishable and the incumbent won by default, which is a coin flip, and freezing a coin flip is
+the risk the original caution was about. An armed capture of a gapless line reaches the text tier
+rather than the run branch, so that is the path which locks in practice.
+
+`autolock_set.invert` records that the app chose it, so a rate back-off drops the polarity along with
+the frame shape and a typed polarity survives, as it does for width and parity.
 
 ## The panel
 

@@ -508,6 +508,74 @@ function sdec.ua_margin(sc, nbits)
   return m
 end
 
+-- Fraction of a decode's values that read as text. The last resort when two polarities tie, and it
+-- has to stay last: on a random payload it points the wrong way, 40.2 % for the inverted reading
+-- against 34.1 % for the truth. docs/MEASUREMENTS.md, 'The polarity tiebreak'.
+function sdec.ua_printfrac(r)
+  if r == nil or (r.nf or 0) < 1 then return 0 end
+  local ok, tot = 0, 0
+  local i
+  for i = 1, r.nf do
+    local v = r.vals[i]
+    if v ~= nil then
+      tot = tot + 1
+      if (v >= 32 and v < 127) or v == 9 or v == 10 or v == 13 then ok = ok + 1 end
+    end
+  end
+  if tot == 0 then return 0 end
+  return ok / tot
+end
+
+-- How close two polarities' frame counts must be before their error counts compare fairly. A mirror
+-- framing of one capture covers it to within a frame; one that frames half as much has lost rather
+-- than tied, and its lower error count is an artefact of framing less.
+sdec.ua_polnftol = 0.1
+-- How far ahead on text a winner must be before text is allowed to decide. Measured separations:
+-- 0.389 on gapless lowercase lorem and 0.576 on the fox vector, against 0.061 between the two
+-- readings of a random payload, where text means nothing and must not decide.
+sdec.ua_textmin = 0.25
+
+-- One run at a fixed format, with the fields ua_pick_pol and the caller read filled in.
+function sdec.ua_run_fmt(rd, n, T, nbits, par, nstop, inv)
+  local r = sdec.ua_run(rd, n, T, nbits, par, nstop, inv)
+  r.score = sdec.ua_score(r)
+  r.nbits, r.par, r.nstop, r.invert = nbits, par, nstop, inv
+  return r
+end
+
+-- Choose between the two polarities of one capture, prior first. The prior keeps the decision unless
+-- the rival earns it, and the tiers run in the order the evidence has earned: the score beyond its
+-- margin, then text, then the error count. Returns the winner and the tier that decided.
+--
+-- Text outranks the error count, which is the opposite of what it looks like it should be. The error
+-- count is not reliable here: on gapless lowercase lorem the CORRECT polarity carries two interior
+-- errors, at frames 2 and 5, where the fake framing carries none, so the cleaner decode is the wrong
+-- one in both directions. Text reads 97.8 % against 58.9 % on the same pair and is right both times.
+-- The error count still breaks a tie text cannot see, which is a payload with no alphabet to read.
+-- docs/MEASUREMENTS.md, 'The polarity tiebreak'.
+function sdec.ua_pick_pol(a, b, weak)
+  if a == nil then return b, 'only' end
+  if b == nil then return a, 'only' end
+  local m = sdec.ua_margin(a.score)
+  if weak then m = m * sdec.polmargin end
+  if b.score > a.score + m then return b, 'score' end
+  -- The tiers below run only on a guessed prior. An observed idle run is direct evidence of the
+  -- resting level, and neither an alphabet nor an error count is entitled to overturn it.
+  if not weak then return a, 'prior' end
+  -- Both tiers need the two framings to cover the capture equally. A mirror framing of one capture
+  -- matches the other's frame count to within a frame; one that frames half as much has lost rather
+  -- than tied, and both its error count and its text fraction are artefacts of framing less.
+  local na, nb = a.nf or 0, b.nf or 0
+  local big = na
+  if nb > big then big = nb end
+  if big < 1 or math.abs(na - nb) > sdec.ua_polnftol * big then return a, 'prior' end
+  local fa, fb = sdec.ua_printfrac(a), sdec.ua_printfrac(b)
+  if fb > fa + sdec.ua_textmin then return b, 'text' end
+  if fa > fb + sdec.ua_textmin then return a, 'text' end
+  if (b.nbad or 0) < (a.nbad or 0) then return b, 'errors' end
+  return a, 'prior'
+end
+
 -- Search every format at one polarity, also returning those within the margin, the UI's ambiguity.
 function sdec.ua_search_pol(rd, n, T, inv)
   local widths = sdec.ua_widths()
@@ -553,6 +621,7 @@ end
 -- filled in, or nil.
 function sdec.ua_autoformat(rd, n, T)
   sdec.fmt_note = nil
+  sdec.polwhy = nil
 
   -- The prior polarity goes first and keeps the decision unless the other wins by the frame-shape
   -- margin; a forced polarity ends the contest rather than entering it. docs/MEASUREMENTS.md,
@@ -566,16 +635,11 @@ function sdec.ua_autoformat(rd, n, T)
 
   local ra = sdec.ua_search_pol(rd, n, T, first)
   local rb = sdec.ua_search_pol(rd, n, T, second)
-  local best = ra
-  if ra == nil then
-    best = rb
-  elseif rb ~= nil then
-    -- How hard the prior is to overturn depends on where it came from: with no idle in the capture
-    -- it is the signalling standard, not an observation, so the rival needs ~3.4x instead of 1.6x.
-    local m = sdec.ua_margin(ra.score)
-    if sdec.idle_weak then m = m * sdec.polmargin end
-    if rb.score > ra.score + m then best = rb end
-  end
+  -- How hard the prior is to overturn depends on where it came from: with no idle in the capture it
+  -- is the signalling standard, not an observation, so the rival needs ~3.4x instead of 1.6x. When
+  -- that leaves the two tied, ua_pick_pol's tiers decide instead of the prior winning by default.
+  local best, why = sdec.ua_pick_pol(ra, rb, sdec.idle_weak)
+  sdec.polwhy = why
   return best
 end
 
@@ -1301,14 +1365,20 @@ function sdec.decode_from(rd, n)
   if sdec.force_nbits ~= nil then
     local par = sdec.force_par or sdec.PAR_NONE
     local nstop = sdec.force_nstop or 1
-    local inv = sdec.force_invert
-    if inv == nil then inv = (sdec.idle == 0) end
-    r = sdec.ua_run(rd, n, T, sdec.force_nbits, par, nstop, inv)
-    r.score  = sdec.ua_score(r)
-    r.nbits  = sdec.force_nbits
-    r.par    = par
-    r.nstop  = nstop
-    r.invert = inv
+    if sdec.force_invert ~= nil then
+      r = sdec.ua_run_fmt(rd, n, T, sdec.force_nbits, par, nstop, sdec.force_invert)
+      sdec.polwhy = nil
+    else
+      -- A locked format must still contest the polarity. Taking the level inference unopposed is the
+      -- wrong answer on every capture of a ground-straddling line that holds no idle, and the format
+      -- being locked is the common case because auto-lock locks it.
+      local prior = (sdec.idle == 0)
+      local why
+      r, why = sdec.ua_pick_pol(sdec.ua_run_fmt(rd, n, T, sdec.force_nbits, par, nstop, prior),
+                                sdec.ua_run_fmt(rd, n, T, sdec.force_nbits, par, nstop, not prior),
+                                sdec.idle_weak)
+      sdec.polwhy = why
+    end
     if r.nf == 0 then return giveup('the forced format found no frames') end
   else
     r = sdec.ua_autoformat(rd, n, T)
@@ -1416,9 +1486,10 @@ function sdec.decode()
   sdec.rate_backoff = true
   sdec.force_baud = nil
   if sdec.autolock_set ~= nil then
-    if sdec.autolock_set.nbits then sdec.force_nbits = nil end
-    if sdec.autolock_set.par   then sdec.force_par   = nil end
-    if sdec.autolock_set.nstop then sdec.force_nstop = nil end
+    if sdec.autolock_set.nbits  then sdec.force_nbits  = nil end
+    if sdec.autolock_set.par    then sdec.force_par    = nil end
+    if sdec.autolock_set.nstop  then sdec.force_nstop  = nil end
+    if sdec.autolock_set.invert then sdec.force_invert = nil end
     sdec.autolock_set = nil
   end
   -- The unlocked decode: another pass at the abandoned rate publishes rate_note about no lock.
