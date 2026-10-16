@@ -10199,6 +10199,31 @@ print('\narming from silence: the capture autoset() reaches, and the rates it fa
         string.format('ok=%s reads=%d why=%s', tostring(qok), READS.n - nb4, tostring(qwhy)))
   sdec.n, sdec.force_baud = 20000, nil
 
+  -- AND INSIDE THE PROBE LADDER IT STILL REFUSES, which is the case that matters most and the one
+  -- nothing offline covered: autoset() drops the sample rate a decade a try and reads a FALSE return
+  -- as 'look for longer'. A rung that pushes on instead keeps the rate it has, and at 300 baud the top
+  -- rung's 20 000 samples are six bit times -- enough to find two levels, not enough to fit a rate --
+  -- so decode() sets baud_probe from six bit times, the ladder breaks on it, and the second pass lands
+  -- at pick_fs of a rate that was never measured.
+  --
+  -- MEASURED ON THE BENCH, which is where it was caught rather than here: r06 at 300 baud captured at
+  -- 1000 S/s against a commanded 2500 -- 3.3 samples a bit -- and returned no bytes. test_slow_probe
+  -- below drives decode_from directly, so it cannot see this; the ladder is reached only through
+  -- acquire(). sdec.trig_restore is the ladder's own marker, set around its loop and nil elsewhere.
+  --
+  -- The same stimulus succeeds with the marker clear, asserted above, so this is the pair and not a
+  -- check that would pass on an acquire() that refused everything.
+  paused_line()
+  arm_reset()
+  sdec.trigmode, sdec.force_baud, sdec.n = 'free', 9600, 20000
+  sdec.trig_restore = 'edge'
+  local lok, lwhy = sdec.acquire()
+  sdec.trig_restore = nil
+  check('a free-run acquire inside the probe ladder refuses, which is how the ladder steps the rate down',
+        lok == false and lwhy ~= nil,
+        string.format('ok=%s why=%s', tostring(lok), tostring(lwhy)))
+  sdec.force_baud = nil
+
   quiet_line()
   arm_reset()
   sdec.trigmode, sdec.fc_out = 'edge', true

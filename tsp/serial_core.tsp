@@ -2190,8 +2190,18 @@ function sdec.acquire()
     -- the real record below is the gate that decides. Refusing on the probe alone read a bursty line as a dead
     -- one: an idle run can outlast the probe and still be far shorter than the record, so the probe says idle
     -- where the capture would have found the traffic. docs/MEASUREMENTS.md, 'A level probe is not the oracle'.
-    -- Only where the capture reaches no further than the probe is there nothing left to try.
-    if sdec.trigmode == 'free' and sdec.n <= pn then return false, why end
+    --
+    -- TWO CASES STILL REFUSE HERE. Where the capture reaches no further than the probe there is nothing left to
+    -- try. And inside autoset()'s probe ladder this refusal is the mechanism: the ladder drops the sample rate
+    -- a decade a try and reads a false return as 'look for longer', so a rung that pushes on instead keeps the
+    -- rate it has. At 300 baud the top rung's 20 000 samples are six bit times -- enough to find two levels and
+    -- not to fit a rate -- so decode() sets baud_probe from six bit times, the ladder breaks on it, and the
+    -- re-capture lands at pick_fs of a rate that was never measured. Seen on the bench: r06 at 300 baud
+    -- captured at 1000 S/s for a commanded 2500, 3.3 samples a bit, no bytes. sdec.trig_restore is the
+    -- ladder's own marker -- set around its loop and nil everywhere else -- so no new state is needed.
+    if sdec.trigmode == 'free' and (sdec.n <= pn or sdec.trig_restore ~= nil) then
+      return false, why
+    end
   end
 
   -- The armed path is every source that waits, which is all but 'free'. Routing only 'edge' here left 'front'
