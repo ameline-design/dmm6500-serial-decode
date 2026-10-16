@@ -20,19 +20,26 @@ stops being drawn, which looks exactly like a broken script. A power cycle reset
 
 ## Four behaviours that are correct, or known, and not worth reporting
 
-**A signal whose voltage band straddles ground decodes inverted — deliberately.** If the low level is
-below −1 V and the high level above +1 V, the app reads the line as RS-232 at line levels, which marks at
-its *negative* level. Feed it a single-supply logic waveform that has been DC-shifted across 0 V and every
-byte comes back wrong, self-consistently, with the right bit rate and framing. This cost me weeks and two
-false bug reports. **Keep the whole band on one side of ground** unless you actually mean RS-232.
+**A signal whose voltage band straddles ground is taken to be RS-232 unless the bytes say otherwise.** A
+low level below −1 V with a high level above +1 V reads as RS-232 at line levels, which marks at its
+*negative* level. On a capture holding an idle interval the resting level is observed and the levels get
+no say; on one that never goes quiet, both polarities are decoded and the one the bytes support is kept.
+The case it cannot settle is a line that never idles and carries no text, where the two readings can be
+exactly equal: there the RS-232 reading stands and polarity stays on auto rather than locking a coin
+flip. If a DC-shifted single-supply waveform comes back with the right bit rate, the right framing, no
+errors and every byte wrong, that is this, and `Options ▸ Polarity` overrides it. Say what the two levels
+were and whether the line ever went idle.
 
 **A bit rate printed with a trailing `?`** — e.g. `38400?` — means the app snapped the measurement to a
 standard rate but does not stand behind it. It locks to the rate it *measured*, not the one displayed.
 That is a deliberate hedge, not a rendering fault.
 
-**125000 Bd can be reported as 250000.** A real defect, and I have localised it: the bit-time fit is
-correct and a later rescaling step halves it. Similarly 37500 can read as 38400, and 125000 as 128000,
-when the fit lands slightly high. Known, characterised, unfixed on purpose.
+**37500 Bd can read as 38400, and 125000 as 128000.** The bit-time fit lands slightly high and the
+rounding step then takes it to the standard rate next door. The bytes are unaffected, and it is known
+and unfixed on purpose. **It does not always carry the `?`** — the mark measures the distance from the
+fit to the standard rate, so a fit that lands close to the wrong one prints a bare number. A reading at
+a *multiple* of the true rate is a different mechanism; it survives only on impaired signals, so one on
+a clean line is worth reporting.
 
 **7E1 traffic is read as 8N1.** The parity bit lands in bit 7, so every byte with odd parity comes back
 `+0x80` and roughly half the payload looks corrupt. Known.
@@ -74,7 +81,7 @@ Include, as far as you can:
 1. **A screen grab** — the whole 800×480 frame, per the section above. If the panel changed as you
    watched, one before and one after is worth more than either alone.
 2. **The text that should have been decoded.** Paste the exact bytes or string you were transmitting.
-   This is the single most valuable thing in the report: it turns "the decode looks wrong" into a
+   It turns "the decode looks wrong" into a
    difference I can compute, and it is the one piece I cannot reconstruct from anything else.
 3. **The bit rate you set**, as a number, and whether it is a standard rate or something unusual.
 4. **The framing you sent** — data bits, parity, stop bits, and the idle polarity if you know it (8N1,
@@ -87,8 +94,7 @@ Include, as far as you can:
 A rough report is far better than none — send what you have and I will ask.
 
 **A wrong number that looks plausible is worth more to me than a crash.** Crashes I can find on my own;
-confidently-wrong answers are what this project exists to hunt, and they are exactly what an outside pair
-of eyes is best placed to notice. I have measured this from the inside for months, so the gaps are
+confidently-wrong answers are what this project exists to hunt. I have measured this from the inside for months, so the gaps are
 unlikely to be in the arithmetic — they are much more likely to be in whether any of it makes sense to
 somebody who did not build it. A panel number you cannot interpret, or two that seem to disagree, is a
 real finding, not a naive question.

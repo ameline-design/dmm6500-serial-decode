@@ -102,7 +102,7 @@ For a symmetric ±S band from a vector whose low level is codeword 0, `OFST = �
 The LIN family buys 15 % more symmetric swing and costs LIN framing and a different baud. `v47` is
 worse rather than better: a logic `K` of 0.16500 caps its symmetric swing at ±1.4163 V.
 
-### `v41` AT A NEGATIVE OFFSET IS THE HARNESS BUG, NOT A BIPOLAR LINE
+### `v41` at a negative offset is the harness bug, not a bipolar line
 
 `v41` and `v45` both span codewords 0…21626 and both render 0.000…3.300 V at their reference AMP. The
 difference is which codeword is the IDLE, and it decides whether a negative offset produces a real
@@ -156,7 +156,7 @@ pair, which `v41`/`v45` cannot be: theirs is `c_inv = 21626 − c`, a reflection
 midpoint. `f04`'s 256 bytes are the exact prefix of `f07`'s 1024, and `f05`/`f06` are `f04` masked to
 7 bits.
 
-### `f1x` IS AN RS-232 LINE AND `f0x` IS NOT — the same trap as `v41` vs `v45`
+### `f1x` is an RS-232 line and `f0x` is not — the same trap as `v41` vs `v45`
 
 At AMP 10 / OFST 0 **both** families straddle ground, so `sig_levels` reads RS-232 and marks at the
 NEGATIVE level for both. Which codeword that is decides everything, exactly as above:
@@ -256,7 +256,7 @@ result that cannot distinguish them will otherwise read as a decoder bug.
 | `v74` `v75` | — | `Lorem1k` re-rendered, 8.68 / 8.33 | | retire |
 
 The `Random` index runs 01..12 unbroken across formats, so no two share an index. `v41` vs `v80` is
-unresolved: both are `Hello, World!` 8N1 differing only in render density, and both are load-bearing
+unresolved: both are `Hello, World!` 8N1 differing only in render density, and both are in use
 (`v41` is both the plan's canonical row and `RATE_ARB` in `bench_matrix.py`). `SER_Hello_8N1_Sp10` is a
 placeholder, not a recommendation — and `Sp10` is **samples per bit, not a baud rate**; if that reads as
 a rate to anyone it is the wrong suffix and the two vectors should be resolved by retiring one instead.

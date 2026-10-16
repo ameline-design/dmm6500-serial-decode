@@ -13,8 +13,7 @@ README says what is measured and what is inference.
 
 Three things make it worth reaching for over a scope's decode: the **window is large** — a screenful is
 ~240 bytes and a recording holds 32 768 — every capture is **appended to the USB key automatically** while
-a key is in the slot, and the **serial parameters are detected rather than configured**. Connect, press,
-read.
+a key is in the slot, and the **serial parameters are detected rather than configured**.
 
 > **Every number in this manual was measured on a real DMM6500** against a real signal generator unless
 > the text says otherwise; anything calculated or untested says so where it appears. What that cannot
@@ -53,10 +52,10 @@ meter was measuring before. The mode you were in is read once when the app start
 you press **End App**, so ending the app leaves the meter measuring what it was measuring when you
 launched it, on the range it was on.
 
-Two things follow from that, both deliberate:
+Two things follow from that:
 
 * **Changing the function from the front panel while the app is loaded does not stick.** The next
-  Capture selects Digitize Voltage again — so the app keeps working, which is the point — and End App
+  Capture selects Digitize Voltage again — so the app keeps working — and End App
   restores the mode from when you *launched*, not the one you switched to.
 * **If you were already in Digitize Voltage when you launched**, the app puts your range, sample rate
   and aperture back too, since those are the settings it changes.
@@ -72,7 +71,15 @@ Two things follow from that, both deliberate:
 That is the whole normal workflow. The first capture also locks the baud rate when it is confident,
 so later captures are faster.
 
-Two more things worth knowing before you need them: **Mode** turns Capture into a recording of up to
+**If the device is not talking yet, press Capture first and it waits for it.** The app arms the
+instrument's **analog trigger** a volt off the resting level and holds for up to 10 s — chosen to
+outlast a hand reaching for a power switch — then opens the window just *before* the first start bit,
+so the device's first byte is whole. That is the way to read what a board says as it powers on, which
+is often the part you cannot get any other way. Lock the baud rate first if you know it, because a
+line that has not started cannot be measured. The settings and the rest of the behaviour are under
+**Waiting for a device that has not started**.
+
+Two more things before you need them: **Mode** turns Capture into a recording of up to
 32 768 bytes straight to the USB key, still one press — and once a long job starts, **nothing stops it
 early**, so decide the size before you press — see **The TRIGGER key** below.
 
@@ -119,27 +126,26 @@ the edges, so it reports what is riding on your levels — mains hum picked up b
 a switching supply, a noisy ground. If it reads low, the wiring is worth fixing before anything else:
 every other tolerance in this manual is a fraction of the swing, so noise spends the same budget that
 jitter and slow edges do. The cell stops at `>99 dB` rather than counting higher: above that it would
-be reporting the meter's own digitizer resolution rather than anything about your line, so what it
-shows there is a limit and not a measurement.
+be reporting the meter's own digitizer resolution rather than anything about your line.
 
 **Broken bytes are shown, not hidden.** `ERR` turns red when there are any, and every row containing
-one is drawn red across its whole width — offset, hex and ASCII together — so damage is found by
-looking rather than by counting. Flagged bytes read as `?` in the ASCII gutter:
+one is drawn red across its whole width — offset, hex and ASCII together. Flagged bytes read as
+`?` in the ASCII gutter:
 
 ![A capture that began mid-byte: the note names 1 byte and ERR reads 1](img/panel-errors.png)
 
 That is a real 240B capture that began part way through a byte. **The note row names the cause** —
-`began mid-byte -- the first N bytes are misaligned.` — which is the difference between a puzzle and a
-known condition: the app arms on a busy line, so it lands wherever the traffic happens to be, and the
+`began mid-byte -- the first N bytes are misaligned.` — the app arms on a busy line, so it lands
+wherever the traffic happens to be, and the
 bytes before the first gap between messages cannot be framed. On a busy line roughly one capture in
 eight starts this way.
 
-**The note and `ERR` agree, and that is deliberate.** The note's number is how far the damage reaches —
+**The note and `ERR` agree.** The note's number is how far the damage reaches —
 the last byte in the opening region the decoder could not frame — so "the first N" is literally true,
 nothing past N is being accused, and `ERR` is never less than N. Above, both say 1. `ERR` counts the whole
 region rather than only the frames that failed a check: inside a misaligned head the bit boundaries are in
 the wrong places, so a frame there can satisfy its parity and its stop bit by luck and still hand back an
-ordinary character that is the wrong byte. **`ERR` counts bytes you cannot trust, not checks that failed.**
+ordinary character that is the wrong byte.
 
 Two exclusions keep `ERR` at 0 on good data. Where no misaligned head is identified, the first three
 frames are ignored: a gapless line has no idle for the framer to anchor on, so it routinely resynchronises
@@ -156,7 +162,7 @@ you are (`FRAME HEX pg 1/1 bytes 1-239/239 win 240 [done]`) and names the log fi
 **Which mode you are in is in the title bar** — `SERIAL DECODE - 240B FRAME`, `- 8K CAPTURE` or
 `- 32K CAPTURE`, in the largest type on the screen.
 
-**The cell at the left of the note row is what a capture WAITS for**, colour-coded so a glance is
+**The cell at the left of the note row is what a capture waits for**, colour-coded so a glance is
 enough: green `Start bit` (the normal case — it waits for the line's own start bit), yellow `Free run`
 (it does not wait for anything), cyan `Trigger key` (it waits for the physical key).
 
@@ -204,7 +210,7 @@ away.
 
 Every button responds immediately except the ones that take a capture. **Capture takes about 1.7
 seconds when the rate is locked, and 4 to 9 seconds when it is not** — because to find an unknown
-rate it has to capture two or three times. Slower lines take longer, not less. The exact time varies
+rate it has to capture two or three times. Slower lines take longer. The exact time varies
 from press to press because it depends on where the traffic happens to be when you press.
 
 **A press during a capture is not lost — it is queued** and acted on when the capture finishes. So
@@ -223,7 +229,7 @@ is in the file, which is the thing you cannot otherwise tell from a screenful ta
 
 The offset column agrees with it — the rows start at 25296, not at zero — and the status row carries the
 run's own summary: 32768 bytes, 1 it cannot vouch for, 68 windows, and the file it went to. **That 1 is
-the same figure as `ERR`**, not a second opinion about it.
+the same figure as `ERR`**.
 
 **You page through the tail, not the whole run.** The panel keeps the last **8 192 bytes** of a
 recording however long the run was; the file keeps all of it. That is why this 32 768-byte capture
@@ -245,8 +251,7 @@ the same line, so their `ERR` and filenames differ — the page counts are what 
 The **TRIGGER** key is the physical key on the front panel, to the **right** of the screen — the lowest
 of that column of buttons. It is not part of the app's own row of buttons. It was intended to do two
 things nothing on the glass can do; **one of them works** — timing a capture — and the other, stopping
-a long job, does not. Both are described below, because knowing which is which is the difference
-between waiting confidently and pressing a key that does nothing.
+a long job, does not. Both are described below.
 
 ### 1. It does not stop a long job, and nothing else does either
 
@@ -259,7 +264,7 @@ press. The status row says so before you commit:
 **There is deliberately no time estimate.** Two different durations apply and only one is knowable
 here: the time your *device* takes to send that many bytes, and the meter's decode, which costs several
 times more — 8 kB is a couple of seconds on the wire and around half a minute to decode. A single
-number would be reassuring and wrong, so what you get is the exact byte ceiling and a progress bar.
+number would be wrong, so what you get is the exact byte ceiling and a progress bar.
 
 **What does bound a run,** so it can never hold the panel indefinitely:
 
@@ -343,12 +348,12 @@ of it.
 > within a second of pressing Capture at 1 MS/s on a 115.2 kBd line. Every one of those recordings
 > completed and decoded correctly, including a full 32 kB one.
 >
-> Pressing **Abort** would stop the acquisition the dialog is describing, which is the one thing that
-> actually loses the capture. There is nothing to do but let it run.
+> Pressing **Abort** would stop the acquisition the dialog is describing, which loses the capture.
+> There is nothing to do but let it run.
 >
 > The photograph above is that dialog over a live 32 kB recording of a 76.8 kBd line at 332 kS/s, with
 > the progress bar behind it at 32 % of the buffer and the row beside it reading `no stop until it
-> ends`. It is a photograph rather than a screenshot for a reason worth knowing: **the instrument's web
+> ends`. It is a photograph rather than a screenshot because **the instrument's web
 > interface stops answering while the digitizer runs**, so the remote screen grab cannot capture this
 > dialog at all -- eight attempts timed out. If you need to document or report something that happens
 > during an acquisition, a camera is the only way to see it.
@@ -397,7 +402,7 @@ width is the meter's own default and this firmware does not let the app change i
 Then one press of **Capture** runs the whole conversation: credit, record, decode, file, credit
 again — round and round, with the window number on the status row, until the device stops sending.
 While the app is decoding, nothing is armed, no credit is issued, and a device that waits stays quiet,
-so the gap where bytes could be lost is closed by design. Everything lands in one file, in order.
+so the gap where bytes could be lost is closed. Everything lands in one file, in order.
 
 It ends when your device goes quiet after a credit, or when it reaches one
 of two backstops: **32 windows** or **20 minutes**. There is no key that ends it early. Those exist so a device that never stops talking
@@ -426,13 +431,13 @@ measured on a scope — and the loop that issues them is tested. The full round 
 actually waits for the pulse, has **not** been tested here: the signal generator on this bench stayed
 silent through a credit, and whether that is its trigger input or its burst arming has not been
 separated yet. The leading suspect is the width, since 5.72 µs is the narrowest pulse this bench can
-present and the generator's own minimum is not specified anywhere. So the mechanism is sound by
-construction and you would be the first to close the loop. **Triggering, in both directions** in
+present and the generator's own minimum is not specified anywhere. So you would be the first to
+close the loop. **Triggering, in both directions** in
 [REFERENCE.md](REFERENCE.md) has it gate by gate.
 
 ### How long a recording gets you
 
-Two different times, worth keeping apart: the **signal** that ends up in the file, and the **waiting**
+Two different times: the **signal** that ends up in the file, and the **waiting**
 before the buffer is full. Below about 19200 baud they are the same. Above it they are not, because the
 meter writes about **100 000 readings a second** into its memory however fast the digitizer is told to
 sample. The samples are properly spaced and the record is complete — gathering them just takes longer than
@@ -488,7 +493,7 @@ compare like this: ceiling is `1/(framebits × samples_per_bit × tread)` bytes 
 produces `baud/framebits` — and setting one against the other cancels both the format and the baud,
 leaving a single condition:
 
-    a recording loses nothing while its DELIVERED sample rate stays under about 120 kS/s
+    a recording loses nothing while its delivered sample rate stays under about 120 kS/s
 
 That is why 9600 can afford eight samples a bit and 19200 can afford 5.89: both sample under that
 rate. Above 19200 nothing is free — 38400 already has to sample at 200 kS/s just to hold four samples
@@ -505,7 +510,7 @@ time would start dropping data, and a boot-log dump is exactly that line. 5.89 i
 bit than before at no cost whatever, and the decoder reads only three samples per bit in any case, so
 what is given up is placement precision rather than information.
 
-There is no setting for any of this. The right value is not a preference: it is what the instrument
+There is no setting for any of this. The right value is what the instrument
 can deliver without losing data, and it differs per baud.
 
 **The rate is chosen per mode, not just per baud**, because a byte-capped mode holds
@@ -597,10 +602,16 @@ When it is not confident it leaves the padlock **amber** and offers you the **Lo
 bytes are still shown — they just are not trusted enough to carry forward. Press **Lock Rate** to pin
 it anyway, or capture again.
 
-**Auto-lock never locks polarity.** It is worked out fresh on every capture, on purpose: guessing it
-wrong once and then sticking to it is how you get a confident, completely wrong decode. (**Lock
-Detected** on the Options screen *does* copy the detected polarity into the fields along with
-everything else — but there you can see what it picked before you commit it.)
+**Auto-lock locks the polarity too, but only when something decided it.** If the capture contained an
+idle interval the resting level was observed rather than guessed, and that is enough. If it did not,
+both polarities are decoded and the polarity locks only if the reading that is not the incumbent won on
+something — more frames, more printable text, or fewer errors. An incumbent that merely holds its ground
+has not been confirmed by anything, and is not locked. Where the two are indistinguishable the incumbent wins by default,
+and that is a coin flip, so it is not locked: polarity goes back to auto for the next capture. See
+**Idle high and idle low**.
+
+(**Lock Detected** on the Options screen copies the detected polarity into the fields along with
+everything else, where you can see what it picked before you commit it.)
 
 ### If the line changes rate, the app gives the lock up
 
@@ -631,7 +642,7 @@ number is kept.
 | **Baud Rate** | `0` means auto-detect. Type a number to lock that rate; it is rounded to a whole baud. |
 | **Data Bits** | Leave on `Auto (7/8)`. Only use `Auto (any)` if you know the device sends 9-bit words — it can make a damaged capture look tidier while being wrong. |
 | **Parity** | `Auto`, or pin `None` / `Even` / `Odd`. |
-| **Polarity** | `Auto`, `Idle high` (normal CMOS/TTL) or `Idle low` (inverted). Auto is reliable unless the line is almost never idle. |
+| **Polarity** | `Auto`, `Idle high` (normal CMOS/TTL) or `Idle low` (inverted). Auto decodes both and keeps the one the bytes support; pin it if the line is almost never idle *and* carries no text, which is the one case the two readings can tie. |
 
 Each setting is independent — pinning one leaves the rest on auto.
 
@@ -664,15 +675,18 @@ Four settings you can ignore unless you need them:
 - **Rear BNC** — lets an external trigger in on the rear connector, and `FC Out` sends the
   flow-control credit pulse out of EXT TRIG OUT. `FC Out` is what turns a recording into an unlimited
   one; see **More than one window: flow control** above.
-- **Arm At** — how far from the idle level the capture waits for the line to move, in volts, from
-  0.33 V to 6 V. Default 1 V. Only used on a line that is **not transmitting yet**; see
-  **Waiting for a device that has not started** below.
-- **Arm Wait** — how long such a capture may wait, from 2 s to 120 s. Default 10 s. **The panel is
-  frozen for the whole of it**, which is what the field's help text means by *max wait, frozen*: at
-  the 120 s ceiling that is a two-minute dead panel. It lengthens the wait and never shortens it, so
-  an edge capture always waits at least its own 3 s — 2 s and 3 s do the same thing, and the note
-  after an expiry reports the 3 s it really waited. It governs `Start bit`; `Trigger key` ignores it
-  and waits its own 30 s for a finger.
+- **Arm At** — how far from the idle level the **analog trigger** waits for the line to move, in
+  volts, from 0.33 V to 6 V. Default 1 V. Only used on a line that is **not transmitting yet**; see
+  **Waiting for a device that has not started** below. Below 0.33 V the comparator starts firing on
+  noise on a floating input and arms the capture on nothing; above 6 V the level no longer sits
+  inside an ordinary logic swing, since a 6 V arm already needs a 12 V part.
+- **Arm Wait** — how long such a capture may wait, from 2 s to 120 s. Default 10 s, which is chosen
+  to outlast a hand reaching for a power switch. **The panel is frozen for the whole of it**, which
+  is what the field's help text means by *max wait, frozen*: at the 120 s ceiling that is a
+  two-minute dead panel. It lengthens the wait and never shortens it, so an edge capture always waits
+  at least its own 3 s — 2 s and 3 s do the same thing, and the note after an expiry reports the 3 s
+  it really waited. It governs `Start bit`; `Trigger key` ignores it and waits its own 30 s for a
+  finger.
 
 ### Waiting for a device that has not started
 
@@ -681,6 +695,24 @@ silence. It is the ordinary case on a bench: a board that talks when you switch 
 event happens to it, and nothing on the line until then. It needs **Trigger** on `Start bit`, which is
 the default: `Free run` grabs immediately by definition, and `Trigger key` waits for your finger
 instead of for the device.
+
+**The instrument's analog trigger does the work.** A hardware comparator watches the input and fires
+when the voltage crosses a level, so there is nothing extra to wire and no digital input involved:
+the signal being decoded is the signal being triggered on. From the crossing to the trigger point in
+the record is about **7 µs**, measured, and fixed in time rather than in samples — between 200 kS/s
+and 1 MS/s the sample rate changes 5× while that figure changes 1.03×. The window opens ahead of the
+crossing in any case, so the latency never costs a byte.
+
+**To read what a board says as it powers up**, with the device switched off:
+
+1. Wire it up and leave the device off.
+2. **Lock the baud rate** in `Options ▸ Baud Rate` if you know it. A line that has not started cannot
+   be measured, and this is the one path where that matters — see the note on the rate below.
+3. Leave **Trigger** on `Start bit`. Lower **Arm At** if the line's swing is small or weakly driven,
+   and raise **Arm Wait** to cover however long you need to reach the switch.
+4. Press **Capture**. The panel reads `waiting 10s for 2.30V -- TRIGGER=go` and is frozen until the
+   device speaks or the wait runs out.
+5. Switch the device on.
 
 What the app does with it:
 
@@ -698,7 +730,7 @@ What the app does with it:
   the length of the wait. **The panel is frozen while it waits** — a touch press only queues — so that
   line is the only thing that distinguishes a live arm from a hung instrument.
 - **The front-panel TRIGGER key cuts the wait short**, in every setting this screen can produce. It
-  is the one escape that works: the key is a stimulus of the instrument's trigger model, serviced in
+  is the one escape available: the key is a stimulus of the instrument's trigger model, serviced in
   firmware, so it fires while the app is blocked. Pressing it captures whatever is on the line at
   that moment.
 - **Where in the wait the device starts does not matter.** Against a 10 s wait the arm fires at
@@ -706,12 +738,12 @@ What the app does with it:
 - If **Arm Wait** runs out **the capture still happens, free-running**, and the note row says the
   whole of it: `edge trigger unavailable; captured free-running (no trigger in 10 s (edge) -- nothing
   crossed 0.99 V; raise Arm Wait or lower Arm At)`. That names both settings and the level the
-  comparator was really holding, which is the pair you can do something about.
+  comparator was really holding.
 
 **The rate is a guess on this path, and the panel says so.** Nothing can measure the bit rate of a
 line that has not started, so the capture runs at 200 kS/s — 20 samples a bit at 9600, and enough for
 anything up to 38 400 — and the note row reads `armed at 200 kS/s on a line that has not started --
-lock the baud rate for a longer window`. That advice is the useful one: **lock the rate in Options and
+lock the baud rate for a longer window`. **Lock the rate in Options and
 the capture uses the right one for it**, with a full window and no guessing. Locked, it is reliable
 right across the range — **0 bad frames** at 1200, 9600, 38400 and 115 200 baud.
 
@@ -752,7 +784,7 @@ credit, record, decode, credit again.
 
 ## Files on the USB key
 
-Two different files, and they are not the same thing:
+Two different files:
 
 | File | Written | Holds |
 |---|---|---|
@@ -781,15 +813,13 @@ seen on firmware 1.7.17a, and the second matters more because it looks innocent:
 * **A corrupted archive on the key.** Recopy `Serial_Decode.tspa` and verify it with `cmp` before
   installing again — see the note in the README's install steps.
 * **A capture taken while the app starts up, run from internal memory.** This one is fixed in the
-  app, and it is worth knowing about because the fix is a single missing call rather than anything
-  you can configure. Versions up to 1.37 took a capture at the end of their own launch. Installed
+  app, and the fix is a single missing call rather than anything you can configure. Versions up to 1.37 took a capture at the end of their own launch. Installed
   in internal memory, that bluescreened the instrument at the end of that capture — three times out
   of three — while the *same archive* run from the USB key was faultless, and a capture from your
   own press of **Capture** was faultless too. The app no longer captures at launch, which removes
   it: the identical build with only that call taken out ran clean.
 
-  Two things about it are worth recording, because both cost a day to establish and both are
-  counter-intuitive:
+  Two things about it cost a day to establish:
 
   * **The installed copy was not corrupt.** Its stored source was byte-identical to the working
     one — 271345 bytes, 7164 lines, the same CRLF endings, not one differing byte.
@@ -800,7 +830,7 @@ seen on firmware 1.7.17a, and the second matters more because it looks innocent:
   Reinstalling from the key is **not** a reliable cure for this — one reinstall looked like one and
   the crash came back, so never conclude it is fixed because a capture or two survived.
 
-**So `tools/cmp_installed.py` proves the TEXT, not the INSTALL.** It reads the installed app's own
+**So `tools/cmp_installed.py` proves the text, not the install.** It reads the installed app's own
 source back out of the script catalog and diffs it against any commit's archive down to the byte,
 which settles exactly which build is on the instrument. It cannot see whatever else the firmware
 keeps beside that text, and that is what a bad install damages. **Reinstall from the key before
@@ -863,7 +893,9 @@ whole run exists. Every mode captures and decodes without one; what you lose is 
 | `no clear logic levels` | Too much noise, or the swing is too small. 0.33 V works on the bench, and 0.25 V did too; 60 mV is refused outright. |
 | Wrong rate reported | The traffic may be genuinely ambiguous (below). Lock the rate if you know it. |
 | Bytes wrong but `ERR 0`, with the rate locked | The device is not running at the rate you locked. The note row warns when the line disagrees by more than 4 %. |
+| Bytes wrong but `ERR 0`, rate and format plausible | The polarity may be the wrong way round. Check the `IDLE` cell against the line, and pin it in `Options ▸ Polarity`. It takes a line that is never idle and carries no text to get this far. |
 | A baud rate that is not a round number | It is reporting what it measured, because the measurement was not within 2 % of a standard rate. |
+| A `?` after the baud rate | The app does not stand behind the number: either it measured a rate that is not standard, or it rounded one by more than 1.25 %. The bytes are usually fine. **No `?` is not a promise** — a fit that lands close to the wrong standard rate prints none. |
 
 **Some traffic is genuinely ambiguous, and no decoder can fix it.** Eight `0x00` bytes at 9600 baud
 7N1 make exactly the same waveform as four `0x08` bytes at 4800 baud 8N1. The app tells you a rival
@@ -889,7 +921,7 @@ than quietly getting it wrong, except where noted.
 | Slow edges, long cables, weak pull-ups | filtering up to **0.7 bit times** |
 | Logic swing | **0.33 V to 8 V** — the limit is the swing, not the logic family |
 | DC offset, logic low at or above 0 V | anything that keeps the line inside ±10 V |
-| DC offset, logic low **below** 0 V | works, but see the note below — one band is not reliable |
+| DC offset, logic low **below** 0 V | anything inside ±10 V, including a line sitting either side of ground — see **Idle high and idle low** |
 
 **Rates from 300 to 250000 baud** decode byte-exact on the bench, and so do odd ones — 900, 1500,
 3600, 7200 and arbitrary values like 1379, 8123 and 104857. A 1 kB non-repeating payload is clean at
@@ -911,12 +943,31 @@ only one narrow pulse per frame to measure. `0x00` padding is fine.
 
 **Read this in proportion.** Most serial decoders require you to tell them the baud rate. This one
 measures it, and gets it right on every standard rate and on arbitrary ones like 1379, 8123 and 104857.
-Three cases are known where the measurement goes wrong — **8 points in 860** on a full bench plan for the
-first two, and 3 in a million for the third — and none of them is an ordinary payload at an ordinary rate.
-In all three the remedy is to supply the rate, which is what other tools ask for as a matter of course.
+Across the current offline measurement — the full bench plan taken from 200 different points in each
+waveform, **335 400 captures** — **1 116 reported a rate more than 2 % off, 0.33 %**, and **every one of
+them is on a waveform carrying deliberate edge jitter, slow drift or impulse spikes**. Every ordinary
+payload reported the right rate at all 200 of its capture points, at standard and odd rates alike. Those
+1 116 are four different things, and only two of them are failures of rate detection as such:
 
-**All three are fixed by typing the rate into `Options ▸ Baud Rate`** — verified, every frame decoded with
-zero errors once the rate was given. The numbers are below so you can judge the risk yourself.
+| what went wrong | captures | |
+|---|---|---|
+| rounded up to the standard rate next door, payload intact | 609 | failure 2 below |
+| a drifting baseline took the rate **and** the bytes | 436 | 1.0 V of drift at 5.3 samples a bit, one waveform — past the drift tolerance above, not a detection failure |
+| the measurement itself landed 7 to 12 % low | 46 | impulse spikes and 2 % jitter |
+| the reading was a multiple of the true rate | 25 | failure 1 below |
+
+**Only 6 of the 335 400 misreport a rate that is itself standard**, all of them one impulse-spike cell
+at 19 200 baud doubling to 38 400, at 6 of its 200 capture points. **A standard rate is not immunity,
+though**, and the instrument shows it where the simulation does not: the 256-byte repeating blocks at
+28 800 baud read 31 250 in every one of four laps, and in one of those four the app had no reservation
+about the number.
+
+Three cases are known where the measurement goes wrong, and in all three the remedy is to supply the
+rate — which is what other tools ask for as a matter of course. **All three are fixed by typing the rate
+into `Options ▸ Baud Rate`**, verified, every frame decoded with zero errors once the rate was given.
+The numbers are below so you can judge the risk yourself.
+
+### How it decides, and what defends it
 
 Automatic detection has no clock to refer to. It works in two steps: it measures the gaps between
 transitions and finds the longest bit time that divides them all, then weighs that answer against the
@@ -925,11 +976,9 @@ standard rates, because a real device almost always uses one.
 Gaps of many different lengths pin the measurement down well; gaps of only a few lengths do not. But
 where detection fails it is usually not the measurement that is wrong — it is the second step. A
 different reading at a simple multiple of the measured rate can land on a standard value while the true
-rate does not, and that coincidence is allowed to outweigh a correct measurement.
+rate does not, and left to itself that coincidence outweighs a correct measurement.
 
-**Two checks stand between a correct measurement and its own multiples**, and both apply only once the
-measurement itself lands on a standard rate — where the true rate is non-standard there is nothing to
-defend, which is why the failures below concentrate there.
+**Three checks stand between a correct measurement and its own multiples.**
 
 * **Where the pulses fall.** At the true bit time some pulses span an odd number of bit cells; divide
   that bit time by an even number and every pulse spans an even count. So a halved, quartered or
@@ -938,10 +987,24 @@ defend, which is why the failures below concentrate there.
   it was, so thirds and fifths are invisible to the first check. What gives them away is that they claim
   a longer minimum. Ordinary traffic has single-bit runs — a ten-bit frame opens with a one-bit start
   bit — so a reading whose shortest run is three or five bit times is describing something else, and a
-  reading past about two and a half is refused. **The cost is real and worth knowing:** a payload whose
+  reading past about two and a half is refused. A payload whose
   shortest genuine run *is* three bit times or more, such as `0x00` sent with a two-bit gap between
   bytes, cannot have a third-of-the-rate reading accepted. Such a payload reports a third of its true
   rate either way, so this refuses nothing that was working, but it is the shape to watch for.
+* **How much of the capture the measurement explains.** The two checks above are switched on by how
+  much structure the measurement accounts for — how many distinct pulse lengths it has to explain. A
+  reading that covers a whole capture with pulses of only one or two lengths has been corroborated by
+  nothing, which is what a repeating pattern looks like. The alternative, arming them only when the
+  measurement lands on a standard rate, does not work: the standard ladder is full of factor-of-two
+  relations — 1200, 2400, 4800, 9600, 19200 — so a reading sitting on *twice* the true bit time lands
+  on a standard rate just as readily as the truth does, and the check then protects the wrong one.
+
+**A one-point win does not displace a measurement.** Where two readings come within a single frame of
+each other, the decoded bytes break the tie: the one yielding more letters and digits wins, provided
+they make up at least a quarter of its frames. That floor is needed because a wrong bit time re-slices
+the stream and can fabricate letters where the truth has none — a byte ramp at 9600 baud yields no
+letters at the truth and seven at twice the bit time, but those seven are 12 % of the frames where
+chance alone reaches 24 %, so they are not evidence.
 
 ### 1. A short pattern repeated over and over
 
@@ -952,36 +1015,37 @@ as well as the truth: half the bit time reads the same square wave as twice as m
 error anywhere to give it away. Both readings describe the waveform, so nothing in the signal can rank
 them — and where one of them lands on a standard rate and the true rate does not, the standard one wins.
 
-**The measurement is not the problem.** Traced on a failing case, the bit time was recovered as 8.3990
-samples against a true 8.3987, every one of the smallest gaps sat at the true bit time, and the decode at
-that rate framed every byte without a single error. It was then overruled by its own half, because 3572
-is not a standard rate and 7200 is.
+**The measurement is usually not what is wrong.** On a repeating pattern the bit time comes back good to
+four significant figures — 8.3990 samples against a true 8.3987 in one traced case — with every one of
+the smallest gaps sitting at the true bit time and every frame decoding at it. What goes wrong is the
+second step, which can prefer a reading at a multiple because that one lands on a standard rate while
+the true rate does not.
 
-**What you see.** The reported rate is a small whole-number multiple of the true one — two to five times
-— and always one of the standard rates. Expected 3572 and the panel says 7200, or expected 124000 and it
-says 250000. Usually the byte area also fills with error markers, because a wrong bit time shreds most
-frames; in the measured cases 83 to 119 frames of a few hundred were flagged. Occasionally the frames
-survive and the bytes are simply wrong, which is the case worth knowing about.
+**What you see.** The reported rate is a small whole-number multiple of the true one — two or three
+times — and always one of the standard rates. Expected 19 200 and the panel says 38 400, or expected 630
+and it says 1800. Usually the byte area also fills with error markers, because a wrong bit time shreds
+most frames. Occasionally the frames survive and the bytes are simply wrong.
 
-**There is no warning about the rate itself.** Where two rates fit a waveform the panel normally names the
-runner-up under the reading, but not in this case — verified, the note is empty here. So the error markers
-are the whole of the signal, and where the frames happen to survive there is none. If a repeating test
-pattern reports a standard rate you did not configure, distrust it and lock the rate.
+**This is the one failure that carries no warning.** Where two rates fit a waveform the panel normally
+names the runner-up under the reading, and where it measured a rate rather than recognising one it marks
+the number with a `?` — but a doubled reading that lands squarely on a standard rate gets neither, because
+as far as the app can tell it recognised the rate outright. Verified: the note is empty here. So the error
+markers are the whole of the signal, and where the frames happen to survive there is none. If a repeating
+test pattern reports a standard rate you did not configure, distrust it and lock the rate.
 
 **How rare, and where.** Measured over **1 677 waveform-and-rate cells, each captured from 200 different
 points in the waveform — 335 400 captures.** The capture's opening point matters more than anything else
-here, because it decides how much of the first byte is missing and therefore how damaged the reading looks:
+here, because it decides how much of the first byte is missing and therefore how damaged the reading looks.
 
-| the true rate is | captures | reported wrong | |
-|---|---|---|---|
-| a **standard** baud rate | 171 600 | 882 | **0.51 %** |
-| a **non-standard** rate | 163 800 | 4 554 | 2.78 % |
+**This failure is 25 of those 335 400 captures, 0.0075 %, and all 25 are the impulse-spike waveform** —
+19 reading 2.86 times the true rate at drawn rates, and 6 reading exactly double at a standard one. Only
+the second six are a clean doubling; the rest are a damaged fit that the rounding step then tidied into
+a standard rate.
 
-**Every one of the 882 is an impaired signal, not merely a repeating pattern:** three waveforms carrying
-0.6 V of sinusoidal drift and one carrying heavy edge jitter. **No ordinary payload misreports at a
-standard rate at all** — the fox, the 1 kB text payload, twelve random payloads and the walking-bit
-patterns are clean at every standard rate from 300 to 250 000 baud, across all 200 opening points. That
-is 171 600 captures, and the split above is drawn from the same run.
+**No ordinary payload misreports a rate at all**, at a standard rate or an odd one: the fox, the 1 kB and
+200-byte text payloads, twelve random payloads and the walking-bit patterns all report the right rate at
+every one of their 200 opening points, from 300 to 250 000 baud. Every surviving misreport of any kind
+needs a waveform carrying deliberate jitter, drift or impulse spikes.
 
 A **LIN-style break field** — 13 or more bits held low, which is not valid 8N1 at all — is the hardest
 case the bench carries, and it reads correctly at 600, 19 200, 31 250, 38 400, 57 600 and 76 800 baud from
@@ -989,35 +1053,67 @@ every one of the 200 openings. This decoder does not claim to read LIN, and a br
 UART by construction; if you are probing a bus that begins frames with a long dominant field, the rate is
 worth setting by hand.
 
-**On the instrument the same plan gives 8 wrong rates in 860 capture-and-decode points**, on three
-waveforms: the repeating single-value blocks, a LIN frame, and a heavy-jitter case.
+**On the instrument, the same plan over four laps gives 38 wrong rates in 6 708 capture-and-decode
+points** — 0.57 %, and **none of them a doubled reading**. Of those 38, **34 are at rates deliberately
+drawn off the standard ladder**; the four that are not are one waveform at one rate, the 256-byte
+repeating blocks at 28 800 baud.
 
-One qualification, which is not this failure. Half of a standard rate is often *also* standard — 4800 is
-half of 9600 — and for perfectly regular traffic the two readings are the same waveform, as **Some traffic
-is genuinely ambiguous** above describes. That is not a misdetection and the panel names the rival rate
-when it happens; the failure in this section is the one where it does not.
+**The instrument and the offline harness fail on different waveforms here.** On the instrument the
+largest class is the 256- and 512-byte repeating blocks, 19 of the 38, where the measurement lands 7 to
+11 % high rather than on a multiple: a repeating pattern offers so few distinct gap lengths that a real
+generator and a real front end can pull the fit that far with nothing in the capture to contradict it.
+**Offline those same two waveforms are clean at all 200 of their openings** — the simulation does not
+reproduce the bias. Few distinct gap lengths is what makes a measurement weak either way.
+
+**One shape of this cannot be fixed at all.** Take a single byte sent over and over with no gaps between
+bytes. If every run of like bits in its frame has an even length, the wire carries exactly the same
+voltages as a *different* byte at half the rate — not approximately, sample for sample. `0x86` at 9600
+baud is `0x29` at 4800; `0x29` at 9600 is `0x86` at 19 200. Both readings frame every byte without an
+error, so nothing in the signal can rank them, and two such captures need opposite answers. **There are
+eight such bytes — `0x80`, `0x86`, `0x98`, `0x9E`, `0xE0`, `0xE6`, `0xF8`, `0xFE` — and not one of them
+is printable text.** The two padding bytes real firmware sends are both safe: `0x00` and `0xFF`.
+
+A related case is not a failure at all. Half of a standard rate is often *also* standard — 4800 is half of
+9600 — and for perfectly regular traffic the two readings are the same waveform, as **Some traffic is
+genuinely ambiguous** above describes. The panel names the rival rate when that happens; the failure in
+this section is the one where it cannot.
 
 The bench deliberately spends **half** its points on non-standard rates, which is far more than ordinary
-use, so the figure above overstates the exposure of a typical setup by roughly five times.
+use. A setup on standard rates sees the 0.0035 % row, not the 0.33 % blend — about ninety times better
+than the figure the whole plan produces.
 
 **Besides locking the rate:** capture real traffic rather than a test pattern, or let the bytes have
 irregular gaps — either removes the ambiguity.
 
-### 2. Logic low sitting well below ground
+### 2. A measured rate rounded to the standard rate next door
 
-**What triggers it.** A line whose low level is *negative* with respect to the probe's reference, with
-the whole signal still inside ±10 V.
+**What triggers it.** A device clocked a couple of percent off a standard rate but not on it, on a line
+noisy or jittery enough to carry the measurement the rest of the way. The second step rounds anything
+within 2 % of a standard rate to that rate, because real devices use standard rates, so a device running
+2 % slow is reported at the rate it is near rather than the rate it is. On the 600 captures that make up
+most of this class the measurement is good to **+0.66 to +0.77 %** and only the rounding is wrong.
 
-**What you see.** The rate comes back wrong, in the same multiple-of-the-truth way as above.
+**What you see.** A standard rate, usually with a **`?`** after it — `38400?`. **The payload is not
+affected**: 37 422 baud commanded, 37 687 measured, 38 400 reported, and the bytes come back exact.
 
-**How rare.** Most of the negative range is fine: measured clean at **−0.1, −0.25, −0.5, −1.0 and
-−3.0 V** on a 3.3 V swing. Around **−2 V** some payloads fail. It is not a threshold — **−3 V works
-where −2 V does not** — so it is a band rather than a limit. Across a full seeded sweep with amplitude
-and offset both varied, **12 of 1 763** points were affected (**0.68 %**), and varying the amplitude
-alone over 0.5× to 1.6× caused **no failures at all**. Signals sitting entirely at or above 0 V are
-unaffected at any offset inside ±10 V.
+**Do not rely on the `?` here.** It marks a rounding of more than 1.25 %, and the distance it measures
+is from the fit to the **standard rate**, not to the truth. A fit pushed 3.3 % high by drift can land
+within half a percent of the wrong standard rate and print no mark at all: measured, ten such captures
+moved 0.42 to 1.11 % in the snap and every one of them printed a bare `38400`, `128000` or `153600`.
+On the instrument the eleven cases of this all did carry the `?`.
 
-**Besides locking the rate:** reference the probe to the line's own low level rather than to earth.
+**Auto-lock and the Lock buttons differ**, which matters because the padlock section tells you to press
+one. Auto-lock stores the **measurement** when the rounding was not firm, so it does not carry the error
+forward. **Lock Rate** and **Lock Detected** store the number on the panel — the rounded one.
+
+**How rare, and it is the largest of the three.** **609 of the 335 400 offline captures, 0.18 %** — 600
+on the 10 % edge-jitter waveform and 9 on the 0.6 V drift one, and nothing else anywhere. On the
+instrument it is 11 of the 38 wrong rates over four laps, ten of them that same jitter waveform. A
+device actually on a standard rate cannot reach it, because there is nothing for the rounding step to
+round to.
+
+**Besides locking the rate:** read the `?`. It means the number is approximate, and the note row says
+what was measured.
 
 ### 3. Long runs of one repeated byte, above 115 200 baud
 
@@ -1041,7 +1137,10 @@ bit times at one level and one at the other, over and over. Rate detection has n
 and with six and a half samples per bit that is not enough to settle a bit time.
 
 **What you see.** **No decode at all** — the byte area stays empty and no rate is reported. Unlike cases 1
-and 2 this does not give you a wrong number; it declines, which is at least honest.
+and 2 this does not give you a wrong number; it declines.
+
+**It is not the 0.33 % above.** That figure counts wrong rates; this case reports none, so it is counted
+separately and is far rarer.
 
 **How rare.** Measured over **2.7 million decodes** at eight capture placements each: **3.2 per million**,
 every one between 6.2 and 6.5 samples per bit, and never at 8 or more. Only 2 of the bench's 41 test
@@ -1059,6 +1158,37 @@ a third waveform built the same way, but whose bytes never repeat consecutively,
 
 An idle line is **not** an instance of this. Idle is a continuous level with no framing at all, which the
 app handles separately; this needs a long run of framed bytes that happen to be equal.
+
+---
+
+## Idle high and idle low
+
+A line at rest sits at one level or the other, and which one it is decides where every byte's bits are
+read. Normal CMOS and TTL rest high; RS-232 at line levels rests at its negative level, which is why a
+band straddling ground is taken to be RS-232.
+
+**If the capture contains an idle interval, the resting level is observed and there is nothing to
+decide.** A line that never goes quiet gives nothing to observe, so both polarities are decoded and the
+one the bytes support is kept. On a straddling line the levels alone say RS-232, which is right for real
+RS-232 and wrong for a logic line that has been shifted down, and the decode is what tells the two apart.
+
+**The two readings often tie exactly.** On 240 bytes of text at 9600, 19 200 and 16 200 baud both
+polarities frame 132 bytes with no errors at all, because text has a constant top bit and that
+manufactures a believable false start edge nine bits after every real one. Where they tie on
+framing, the bytes decide: the challenger takes it on more printable text, or failing that on fewer
+errors. If it wins on neither, the incumbent stays and nothing is locked.
+
+Measured on the instrument: **2 105 captures across the rate ladder from 300 to 250 000 baud, on two
+text waveforms — one resting high, one genuinely inverted — with no byte failures.** The bench draws an
+amplitude and an offset per capture, and 465 of the 2 105 were commanded either side of ground, which is
+the band that makes the levels claim RS-232. The inverted one is the control: a tiebreak that merely preferred idle-high
+would pass the first and destroy every real RS-232 line.
+
+**The one case the app cannot settle** is a capture with no idle interval, no text in it, and an exact
+tie on errors. There the levels keep their say and a straddling line reads idle-low. That is a coin
+flip, and a coin flip is not locked — polarity returns to auto and the next capture decides again.
+`Options ▸ Polarity` settles it for good. The symptom to recognise is `ERR 0` with a sensible rate and
+format, one frame fewer than there should be, and bytes that match nothing.
 
 ---
 

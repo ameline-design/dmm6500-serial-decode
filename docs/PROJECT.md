@@ -18,12 +18,14 @@ is and how to install it. Nothing here has changed in the move.
 instrument. See [Which instruments](#which-instruments).
 
 **Automatic rate detection has three known failures, and typing the rate in fixes all three.** A short
-pattern repeated over and over can measure at a small multiple of its true rate; a logic low near **−2 V**
-can misdetect; above 115 200 baud a long run of one repeated byte can refuse. That is **8 points in 860**
-of a full bench plan for the first two and about 3 in a million for the third, and **none reaches an
-ordinary payload at a standard rate**: across 171 600 captures opened from 200 different points in the
-waveform, the fox, the 1 kB text payload, twelve random payloads and the walking-bit patterns are clean
-from 300 to 250 000 baud. All three are characterised in the [manual](MANUAL.md).
+pattern repeated over and over can measure at a small multiple of its true rate; a device clocked within
+2 % of a standard rate is reported at that standard rate with a `?`, which does not affect the bytes; and
+above 115 200 baud a long run of one repeated byte can refuse to decode at all. The rate figure is
+**1 116 wrong rates in 335 400 offline captures, 0.33 %**, **every one of them on a waveform carrying
+deliberate jitter, drift or impulse spikes**, and **6 of them at a standard true rate**; on the
+instrument it is 38 in 6 708. No ordinary payload misreports a rate at any of its 200 capture openings
+from 300 to 250 000 baud. All three are characterised in the [manual](MANUAL.md), which also covers how
+the idle polarity is decided on a line that never goes quiet.
 
 **Flow control is verified electrically but never closed as a loop.** One credit pulse per armed capture,
 measured on a scope, with nothing waiting for it at the other end. The width is not settable on this
@@ -52,7 +54,7 @@ stops sending. Ceilings and arithmetic are in the [manual](MANUAL.md).
 
 **It takes over the measurement function and gives it back.** Capture selects **Digitize Voltage** on the
 10 V range whatever the meter was measuring; the mode is read once at startup and restored by **End App**,
-on the range it was on. Two consequences, both deliberate: a function changed from the front panel while
+on the range it was on. Two consequences: a function changed from the front panel while
 the app is loaded does not survive the exit, because the next Capture reselects the digitizer; and the soak
 in `bench/` bypasses this path, so a soak does leave the instrument digitizing.
 
@@ -113,7 +115,7 @@ control.
 impulse spikes stacking to 9.3 V on a 3.3 V line, summed noise and a second signal riding on the logic,
 6 % and 10 % mid-waveform baud drift, 2/10/20 % jitter, an inverted line, LIN break fields no UART frame
 can legally contain, 512-byte runs of one value, payloads longer than the capture — and **every one is
-swept across all 43 rates**. Composition is what stops that being an excuse. Only the seven vectors built
+swept across all 43 rates**. Only the seven vectors built
 to break something are allowed to fail — `v47`, `v48a/b`, `j20`, `v61/62/63`, class `loud` in
 `tools/soakplan.py` — and they carry **39 % of the failures; the other 61 % are `exact` vectors, where a
 failure is a defect** and is counted as one (86 and 132 of 218 pooled; the week's split was 32/68). **A
@@ -140,7 +142,7 @@ readings of "over-predicting by 1.48×" compared a stressed harness against an u
 withdrawn. That parity is partly two errors cancelling — the twin runs four vectors about 1.3× hot and
 invents ~1.5 failures a lap on random payloads the bench never fails, while scoring zero on the two drift
 vectors, where it is the *harsher* side, declining 100 % of those cells at the acquisition gate against the
-bench's 92–98 %. Worth knowing before leaning on it as a gate by itself; the per-vector table is in
+bench's 92–98 %. Check that before leaning on it as a gate by itself; the per-vector table is in
 [BENCH.md](BENCH.md).
 
 ## Which instruments
@@ -163,7 +165,7 @@ load, with no test on any capture path, and the display layer carries over untou
 because every rate figure in REFERENCE descends from the sample rate and the reading buffer's throughput;
 resolution is the one axis the app is indifferent to, thresholding each sample into a one or a zero. What
 to re-measure is what goes *through the acquisition board* — the tolerance envelope, the level and offset
-limits, the −2 V band. The DAQ6510 shares that board, so a deviation there is a real finding; the
+limits. The DAQ6510 shares that board, so a deviation there is a real finding; the
 DMM7510's differs and those figures may move either way.
 
 **On an SMU2461, three things could stop it.** A 2461 digitizes voltage and current **simultaneously**
@@ -262,7 +264,7 @@ model number is the *analog bandwidth* and the fastest edge here is a 250 kBd bi
 (40 MHz) and an SDS1104X-E (100 MHz) are sufficient**; the units here are an SDG2122X and an SDS1204X-E.
 `SDG_MAX_SRATE` is capped at 40 MSa/s so a plan cannot quietly outgrow the cheapest generator.
 
-**The generator must be 2000X-series or better, and an SDG1000X will NOT do** — worth stating because the
+**The generator must be 2000X-series or better, and an SDG1000X will not do** — the
 scope here is a 1000X-E and the numbers invite the wrong substitution. TrueArb is selected by the `SRATE`
 command, and Siglent's programming guide lists its availability per family:
 

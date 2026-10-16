@@ -86,12 +86,12 @@ Digital I/O, GPIB and TSP-Link need a communications accessory card (KTTI-GPIB, 
     trigger.model.initiate()                      -- returns IMMEDIATELY; the model runs in firmware
     print(trigger.model.getblocklist())           -- disassembles the store
 
-**`setblock` DOES NOT CLEAR THE STORE** (MEASURED, E1d). It overwrites the blocks you name and leaves
+**`setblock` does not clear the store** (MEASURED, E1d). It overwrites the blocks you name and leaves
 the rest in place. Writing a 3-block program over a previous 5-block one leaves blocks 4 and 5 live:
 in E1d a leftover `BRANCH_COUNTER 1000 → 2` turned a straight-line program into a thousand-iteration
 loop over the new `WAIT`. **Always `load("Empty")` first.** The name is case-insensitive.
 
-**ANY `load()` REPLACES THE STORE WHOLESALE, AND TRUNCATES IT** (MEASURED, P4, against eight `NOP`s):
+**Any `load()` replaces the store wholesale, and truncates it** (MEASURED, P4, against eight `NOP`s):
 
     load("SimpleLoop", …)      5-block template   -> 5 blocks, blocks 6-8 GONE
     load("LoopUntilEvent", …)  6-block template   -> 6 blocks, blocks 7-8 GONE
@@ -108,7 +108,7 @@ and clears trigger EVENT detectors, not the program — the name invites exactly
 **`initiate()` is overlapped.** It arms the machine and returns; Lua keeps running, and reading the
 buffer while the model runs works — MEASURED, §7.
 
-**THE MEASURE FUNCTION CANNOT BE CHANGED WHILE THE MODEL RUNS, AND THE REFUSAL IS OUT OF BAND**
+**The measure function cannot be changed while the model runs, and the refusal is out of band**
 (MEASURED, P2f). With a model genuinely held in `STATE_WAITING`, `dmm.digitize.func = …` returned
 `pcall` true, left the function unchanged, left the state `WAITING`, and posted **2727, "Command
 prohibited while trigger model is running"**. Writing the value it already held posted 2727 too, so
@@ -137,7 +137,7 @@ This is the most important thing here, and it is the opposite of what a Lua prog
 | `trigger.model.pause()` on a model that is not running | **true** | refused — event **2767**, "Trigger model cannot be paused unless it is already running" (MEASURED, P4) |
 | `trigger.model.pause()` on a model that **is** running | **true** | honoured, and this is the one call here that did what it said: the state became `trigger.STATE_PAUSED` and `resume()` put it back to `RUNNING` (MEASURED, P6) |
 
-**THE WHOLE TRIGGER SUBSYSTEM REPORTS REFUSALS OUT OF BAND**, not just these two calls: a block
+**The whole trigger subsystem reports refusals out of band**, not just these two calls: a block
 write, an ordinary attribute write and a plain function call each return success and file the reason
 as an event, with its own number. Treat a successful return from anything in `trigger.` as carrying no
 information about whether the work happened.
@@ -166,26 +166,26 @@ The variable count is the tell: the model dies when the next command arrives, no
 own. Four program shapes behave identically — `LoopUntilEvent` at position 5 and at position 0, and
 the hand-built three- and two-block forms — so this is the interface and not the program.
 
-**SO A WAIT HAS TO BE POLLED FROM INSIDE THE INSTRUMENT**, in the same Lua call that initiated it,
+**So a wait has to be polled from inside the instrument**, in the same Lua call that initiated it,
 with `delay()` between looks. That is not a style preference; it is the only way the model survives.
 
-**AND THE STATE AT `initiate()` IS NOT THE STATE OF THE WAIT.** `STATE_RUNNING` with nine readings
+**And the state at `initiate()` is not the state of the wait.** `STATE_RUNNING` with nine readings
 already taken is the model executing the blocks AHEAD of its wait — a buffer clear, a zero delay and
 the start of an infinite digitize. Code that reads "not waiting" as "the event has arrived" is
 therefore wrong on its first look.
 
-**IT IS NOT "A MILLISECOND LATER".** That figure was inferred from the nine readings and never
+**It is not "a millisecond later".** That figure was inferred from the nine readings and never
 measured. `STATE_WAITING` arrives about **0.19 s** after `initiate()`, and §8 has the distribution,
 what drives it, and the defect it caused.
 
-**AND KEITHLEY'S OWN HOST CODE RELIES ON THE OPPOSITE, WHICH IS NOT YET RECONCILED.**
+**And Keithley's own host code relies on the opposite, which is not yet reconciled.**
 `Instrument_Examples/DMM6500/Streaming_Examples/00_Stream_Data_from_DMM6500/Stream_DMM6500.py`
 queries an initiated model over a **raw socket on port 5025**, in a loop, for the whole length of a
 run, and depends on the model continuing: its `get_data()` blocks inside the instrument until the
 buffer grows, so an abort on the first query would deadlock the host. It never calls
 `trigger.model.abort()` at all.
 
-**IT DOES NOT WORK HERE, AND THE RULE IS WIDER THAN THE TABLE ABOVE SUGGESTS.** A single
+**It does not work here, and the rule is wider than the table above suggests.** A single
 `print(defbuffer1.n)` from the host aborts a model **in a measure block** — `RUNNING` at n = 2 going
 to `ABORTED` at n = 140 — and one **parked in a `BLOCK_WAIT` on `EVENT_ANALOGTRIGGER` that cannot
 fire**, with the comparator at 9.9 V against a measured ±10 mV idle so the wait was genuine:
@@ -193,7 +193,7 @@ fire**, with the comparator at 9.9 V against a measured ±10 mV idle so the wait
 type is not the variable, there is no surviving case, and Keithley's three streaming examples cannot
 work as written on this instrument.
 
-**BUT THE ARRIVING COMMAND MAY NOT BE THE MECHANISM, AND THAT IS NOW OPEN.** A model initiated in one
+**But the arriving command may not be the mechanism, and that is now open.** A model initiated in one
 chunk, with no print in the chunk and no traffic from that socket afterwards, died anyway: three
 repeats at **427.6, 436.1 and 441.4 ms** — 17 654, 17 442 and 17 104 readings at 40 kS/s — and two
 earlier runs under different command sequences at 5.4 ms and 246.3 ms. Polled from **inside** one
@@ -207,7 +207,7 @@ arrives", and a model that dies on its own clock would look the same. **The oper
 unchanged either way**: poll a wait from inside the instrument, because every host-side attempt to
 watch one *with an application loaded* has failed.
 
-**THE CONFOUND IS REMOVABLE AFTER ALL, AND IT EXONERATES THE READBACK** (MEASURED,
+**The confound is removable after all, and it exonerates the readback** (MEASURED,
 P6, on an instrument minutes out of a power cycle with **no application loaded** — its globals absent —
 and one socket open). A model parked on `EVENT_EXTERNAL` with no marker arriving answered **2440
 consecutive host state queries over 4.001 s** and was still in `STATE_WAITING` at the last of them —
@@ -217,7 +217,7 @@ killed those three arrived with the loaded application**, which leaves its panel
 still standing rather than one of two. Poll from inside because of what else is running, not because
 of the question.
 
-**AND THE FIRST QUERY IS STILL ANSWERED TRUTHFULLY**, which is what makes this so expensive to
+**And the first query is still answered truthfully**, which is what makes this so expensive to
 diagnose. The abort lands *behind* the reply and the model runs on for about 140 ms, so a host-side
 probe gets a plausible number back and only the next read shows the damage. A first attempt to measure
 the front-panel key this way returned three arms that all looked like a disabled key; each had been
@@ -249,7 +249,7 @@ press made minutes earlier. **Use `CLEAR_ENTER` for anything a human can trigger
 deliberately when you want a semaphore — see §9. The latch also clears at the start block and on
 exiting the wait.
 
-**THE DEFAULT `logic` IS `AND`, NOT `OR`.** A wait built as `(event, clear)` with no logic argument
+**The default `logic` is `AND`, not `OR`.** A wait built as `(event, clear)` with no logic argument
 disassembles as `LOGIC: AND`, while `LoopUntilEvent` emits `LOGIC: OR`. Harmless for one event, and a
 trap the moment a second is added.
 
@@ -267,7 +267,7 @@ stops the infinite one.
 count 500: `buf.n` read 503 at ~0.5 s, 1505 at ~1.5 s, **2501** final — 2001 pre-trigger readings plus
 500 post. The buffer accumulates *across* the wait.
 
-**THE PRE-ROLL IS NOT OPTIONAL: AN ANALOG-TRIGGER WAIT CANNOT BE THE FIRST BLOCK** (MEASURED, P3).
+**The pre-roll is not optional: an analog-trigger wait cannot be the first block** (MEASURED, P3).
 Drop the `COUNT_INFINITE` block and the program becomes
 
     1) WAIT              EVENT_ANALOGTRIGGER, CLEAR_ENTER
@@ -287,7 +287,7 @@ This is a trap worth stating plainly because the broken program looks *better* t
 it is two blocks instead of four and it is on the fast path (§10). It is on the fast path because it
 never does anything.
 
-**`EVENT_EXTERNAL` AS THE FIRST BLOCK WORKS, SO THE RESTRICTION REALLY IS THE COMPARATOR'S**
+**`EVENT_EXTERNAL` as the first block works, so the restriction really is the comparator's**
 (MEASURED, P6, rear TRIGGER IN driven by a 100 Hz pulse). A two-block program
 — `WAIT EVENT_EXTERNAL` then a counted digitize — completed inside the first second with its full 100
 readings. The control is the same program with the marker switched off: it sat the whole four-second
@@ -307,7 +307,7 @@ readings of "it fired" are true and only one of them is a fact about the compara
 front-panel TRIGGER key, which is the one stimulus here with no programmatic source — the LXI virtual
 panel can press it over HTTP, and that path is closed by policy rather than by the instrument.
 
-**THE WAIT ALSO KEEPS THE PRE-ROLL RUNNING, not merely awaits the trigger** (MEASURED, P2f). An infinite digitize as the *only* block idles after about a dozen samples whatever
+**THE WAIT ALSO KEEPS THE PRE-ROLL RUNNING, and does not only await the trigger** (MEASURED, P2f). An infinite digitize as the *only* block idles after about a dozen samples whatever
 `dmm.digitize.count` says, because the sequence ends and that stops the block. With the wait
 downstream the same block filled a 20 000-reading buffer and sat in `WAITING`. The counted block stops
 the infinite one; the wait is what lets it run at all.
@@ -316,7 +316,7 @@ the infinite one; the wait is what lets it run at all.
 cannot miss the start of the signal it waits for. Pre-trigger depth is bounded by buffer capacity, not
 by a percentage.
 
-**THE COMPARATOR'S LEVEL AND SLOPE ARE BOTH HONOURED** (MEASURED, P2, against a 1 kHz 0-3 V square
+**The comparator's level and slope are both honoured** (MEASURED, P2, against a 1 kHz 0-3 V square
 wave). Armed at 8 V — outside the signal's range — the model sat in `STATE_WAITING` indefinitely and
 never fired, so the level is real and not a formality. Armed at mid-swing, reading either side of the
 trigger index: `SLOPE_RISING` gave −0.001 V before and 3.000 V after, `SLOPE_FALLING` gave 3.000 V
@@ -335,12 +335,12 @@ record's longest or leading stretch — a polarity, an idle level, a baseline, a
 it from the reserve and be **self-consistently wrong**: the inference succeeds, reports a plausible
 quality figure, and is wrong in every sample it touches.
 
-**ITS LENGTH DISARMS THE USUAL PROTECTION.** The natural guard against a bad inference is a
+**Its length disarms the usual protection.** The natural guard against a bad inference is a
 plausibility test — *is this stretch long enough to be a real idle?* A reserve of a thousand samples
 clears any such threshold several times over, so the capture that most needs the sanity check is the
 one certain to pass it. A guard of that shape protects every capture except this one.
 
-**IT IS A SAMPLE-RATE BOUNDARY, NOT A COIN TOSS.** The reserve is a fixed SAMPLE count — a percentage
+**It is a sample-rate boundary, not a coin toss.** The reserve is a fixed SAMPLE count — a percentage
 of buffer capacity, 1055 samples at 5 % of a 21 100-reading buffer — while a gap in the signal is a
 fixed TIME. So whether anything real out-measures the reserve is decided entirely by the sample rate.
 MEASURED, armed on a silent line with the source switched on at +3 s, six captures a condition:
@@ -357,13 +357,13 @@ with nothing else changed — which is why a defect of this kind reproduces at o
 at another, and looks intermittent until the arithmetic is written down. For a 6 ms gap the crossover
 is about **171 kS/s**.
 
-**BOTH POLARITIES ARE AFFECTED, IN OPPOSITE DIRECTIONS.** On a single-supply line the dead wire sits at
+**Both polarities are affected, in opposite directions.** On a single-supply line the dead wire sits at
 ground, which is also the signal's low level, so the reserve reads as a long low. On a ground-straddling
-line the threshold sits near 0 V and the dead wire sits essentially *on* it, so which side the reserve
+line the threshold sits near 0 V and the dead wire sits all but *on* it, so which side the reserve
 falls on is decided by millivolts: MEASURED at a −0.011 V threshold, the dead line landed on the HIGH
 side by 11 mV.
 
-**THE REMEDY IS TO TELL THE READER THAT THE RECORD OPENS BEFORE ITS OWN TRIGGER**, and the flag has to
+**The remedy is to tell the reader that the record opens before its own trigger**, and the flag has to
 be conditional on the reserve existing: at a pre-trigger of **0** the record opens ON the edge and its
 leading stretch really is the signal, so a flag set unconditionally is a constant and protects nothing.
 Exclude the leading run from any inference about the signal, publish it as its own quantity, and let the
@@ -374,7 +374,7 @@ With the leading run excluded, every armed condition above recovered to the same
 never-armed control, and on a ground-straddling line 36 of 36 captures across three bands and two
 configurations read the polarity correctly.
 
-**AND ASSERT THE PREMISE, NOT ONLY THE OUTCOME.** A test that checks the end result is **vacuous when
+**And assert the premise, not only the outcome.** A test that checks the end result is **vacuous when
 there was no reserve to begin with** — it passes for the wrong reason. The assertion worth writing is
 that the arm fired *and* the leading run exceeded a few hundred samples. MEASURED with the remedy
 disabled: the premise check fails in every configuration while the end-to-end check fails in only one of
@@ -402,7 +402,7 @@ across 15 combinations, each matching the rule exactly, and `dmm.digitize.count`
 | 20 000 | 20 000 | **19 000** | 16 000 | 10 000 |
 | 50 000 | 50 000 | 47 500 | 40 000 | 25 000 |
 
-**SO AN ARMED CAPTURE NEVER FILLS ITS BUFFER, AND THE SHORTFALL IS NOT A FAULT.** At `position` 5 the
+**So an armed capture never fills its buffer, and the shortfall is not a fault.** At `position` 5 the
 template programs 95 % of capacity as the post-trigger count, and the readings above that come from the
 pre-trigger phase — however many accumulated between `initiate()` and the trigger arriving. On a
 continuously active line that is a handful of samples, not the 5 % the position nominally reserves, so
@@ -410,7 +410,7 @@ a completed capture lands a little over 95 % of capacity and never at 100 %. Tes
 as the completion condition therefore fails on every capture that worked; `trig_done()` is the test
 that holds.
 
-**REACHING THE WAIT BLOCK TAKES ABOUT 0.19 s, AND IT DOES NOT DEPEND ON THE BUFFER.** MEASURED from
+**Reaching the wait block takes about 0.19 s, and it does not depend on the buffer.** MEASURED from
 inside the instrument, 30 arms at each of two capacities, polling with `delay(0.001)`:
 
 | capacity | min | median | p95 | max |
@@ -432,18 +432,18 @@ What does move it is **what the instrument was doing before the arm**:
 | a completed `dmm.digitize.read()` | 0.164 s |
 | `load("Empty")`, nothing acquiring | 0.191 s |
 
-**AND A CALLER THAT ABORTS BEFORE EVERY CAPTURE ALWAYS PAYS THE WORST ROW.** Aborting for hygiene makes
+**And a caller that aborts before every capture always pays the worst row.** Aborting for hygiene makes
 the prior state permanently "aborted while waiting" — 0.228 s, the slowest row in the table — so the
 tidiest caller is the one with the least margin. A spin bounded at 0.25 s took its last look at about
 **0.232 s** (25 iterations at a measured 9.67 ms each): **4 ms of margin**, at every buffer size.
 
-**THE `delay()` IN THE SPIN IS LOAD-BEARING.** Cadence between 10 ms, 1 ms and 0.2 ms is a null, but
+**The `delay()` in the spin is load-bearing.** Cadence between 10 ms, 1 ms and 0.2 ms is a null, but
 **zero** delay is fatal: a tight loop issued **56 102** `pcall(trigger.model.state)` calls over 3 s
 and the model sat at block 2 — the zero `DELAY_CONSTANT` — the whole time, never arming. The state
 read is IPC to the second processor, and a spin that never yields starves the trigger engine. Deleting
 the `delay()` as a micro-optimisation would break every armed recording.
 
-**SO A BOUND ANYWHERE NEAR 0.2 s IS A COIN TOSS.** A spin bounded at 0.25 s sits about ten per cent
+**So a bound anywhere near 0.2 s is a coin toss.** A spin bounded at 0.25 s sits about ten per cent
 above the slowest arm the instrument produces, and a test of it armed once and then failed three
 consecutive runs. A bound of **10 s** — forty-four times the slowest arm — is not generous: the
 distribution has a hard floor at 0.164 s and the cost of overshooting the bound is total, so there is
@@ -453,7 +453,7 @@ The consequence inverts the feature instead of degrading it. A spin that never s
 has to report an arm that did not go live, because the poll loop cannot tell that from a trigger that
 fired — so the recording runs free and captures exactly the silence that arming exists to avoid.
 
-**AND THE 0.19 s IS A REPORTING LAG, NOT AN ARMING DELAY.** The wait block goes live about **2 ms**
+**And the 0.19 s is a reporting lag, not an arming delay.** The wait block goes live about **2 ms**
 after `initiate()`; the state call simply does not admit it for another 190. Measured two independent
 ways that agree. From the recorded data, `pre-roll start = fire_s - N5/fs - n_pre/fs` over six
 captures at the two rates where the post-trigger block dominates the elapsed time: **1.6 to 2.6 ms**.
@@ -492,12 +492,12 @@ cannot resolve this at all**: one sample is 400 µs there, so the ±0.5-sample a
 thirty times the quantity being measured. **Jitter is comparable to the latency** — 6.2 to 9.3 µs at
 1 MS/s, 3.6 to 9.9 µs at 200 kS/s — so the firing point is not deterministic to the sample.
 
-**`buf.n` IS NOT A CLOCK ABOVE 100 kS/s, BUT THE SAMPLE RATE IS REAL.** The ramp slope measures the
+**`buf.n` is not a clock above 100 kS/s, but the sample rate is real.** The ramp slope measures the
 true sample interval directly and recovers **1 000 673 to 1 000 996 S/s** when 1 MS/s is asked, and
 200 127 to 200 193 when 200 kS/s is asked. What lags behind the acquisition is `buf.n`, which is what
 the `2872`/`2873` "Begin/End reading backlog processing" pair reports.
 
-**`buffer.make()` IS CHEAP AND IS NOT IN THAT INTERVAL.** It measures 2.5 to 3.7 ms at 860 000
+**`buffer.make()` is cheap and is not in that interval.** It measures 2.5 to 3.7 ms at 860 000
 readings over 21 observations, and it runs before the model is loaded, so no part of allocation is
 spent between `initiate()` and the wait. Two readings of 0.78 s appear in one sweep and are outliers:
 the other nineteen observations at the same capacities refute a per-reading cost, and a linear model
@@ -609,7 +609,7 @@ disqualifiers, not a size heuristic** (MEASURED, verify_latency).
 | a configuration-list block (`CONFIG_RECALL`/`NEXT`/`PREV`) | **any**, even one |
 | a branch to a block that **does not exist** | **any** |
 
-**AND BEING OFF IT COSTS NOTHING MEASURABLE.** The flag is an oracle with no units attached, so the
+**And being off it costs nothing measurable.** The flag is an oracle with no units attached, so the
 penalty was measured directly, against the comparator latency, on three program shapes:
 
 | shape | blocks | low-latency warning | latency at 1 MS/s |
@@ -645,7 +645,7 @@ either, 0.1763 s against 0.1788 s.
 **different buffer**, and **any number of `DELAY_CONSTANT` blocks** — six were free (MEASURED, P4), so
 the delay disqualifier is duration and not count.
 
-**THE FIRMWARE STATES THE MEASURE-BLOCK LIMIT ITSELF.** Building a third measure block posts
+**The firmware states the measure-block limit itself.** Building a third measure block posts
 
     2753: Trigger model is not optimized for speed due to greater than 2 measure/digitize blocks
 
@@ -662,7 +662,7 @@ It holds at two different block counts, so the cost is the shared event and not 
 This is also why a `WAIT / MEASURE / WAIT / MEASURE` program warns while `WAIT` itself is free — an
 earlier reading of that program wrongly suspected `WAIT`.
 
-**`BRANCH_ALWAYS` COSTS NOTHING; A DANGLING TARGET COSTS EVERYTHING** (MEASURED, P1a). A
+**`BRANCH_ALWAYS` costs nothing; a dangling target costs everything** (MEASURED, P1a). A
 `BRANCH_ALWAYS` to a block that exists is free, backwards or forwards; the same opcode pointing past
 the end of the program warns. So the disqualifier is the unresolvable target, not the jump.
 
@@ -673,7 +673,7 @@ refusal was event **2725**, "Log Event block number 2 Event Number is invalid", 
 log. With `trigger.LOG_INFO1` (2734) the block is accepted and the warning appears. **Confirm a block
 is present in `getblocklist()` before drawing any conclusion from its absence of effect** — see §5.
 
-**THE MANUAL NEVER USES THE WORDS "LOW LATENCY" — zero occurrences in 55 488 lines.** The firmware's
+**The manual never uses the words "low latency" — zero occurrences in 55 488 lines.** The firmware's
 vocabulary for its own fast path is undocumented, and the manual nowhere connects the flag to its
 performance advice. That advice is a list of SEVEN bullets at §9-50, headed "Improving the performance
 of a trigger model". Four of them turn out to be exactly what the flag enforces and three are wrong
@@ -689,7 +689,7 @@ as written:
 | no two blocks waiting on the same event | **agrees** — and it is enforced, not advice |
 | limit configuration-list blocks | **agrees, absolutely** — one block is enough to lose the flag |
 
-**THE PRACTICAL CONSEQUENCE IS THE OPPOSITE OF WHAT IT LOOKS LIKE.** The two armed shapes most worth
+**The practical consequence is the opposite of what it looks like.** The two armed shapes most worth
 building are both on the fast path:
 
     MEASURE_DIGITIZE INFINITE / WAIT / MEASURE_DIGITIZE n     LOW LATENCY   (pre-trigger)

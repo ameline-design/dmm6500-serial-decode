@@ -594,7 +594,7 @@ would sit too close to the cell edges.
 Two taps that agree settle a majority of three, so the third is not read: with the centre and lower
 tap on the same side of the threshold, `ones * 2 > votes` yields the same bit whether the upper tap
 is counted, counted the other way, or out of range -- all six cases check out. On a line clean enough
-to decode the pair agrees on essentially every slot, removing one `math.floor`, one bounds test and
+to decode the pair agrees on nearly every slot, removing one `math.floor`, one bounds test and
 one array read per bit.
 
 `ua_frame` repeats `ua_bit`'s sampling inline, expression for expression including the order of the
@@ -1117,6 +1117,17 @@ in 60 frames, 12 %. Real text runs well above half.
 Both floors together cost nothing: the plan verdict is **bad 103, rate 100, bleed 1050**, identical
 to the unfloored tie-break, and the 0x01..0x1F ramp keeps the truth.
 
+**The absolute floor is currently inert, and the density floor is carrying the whole test.** The
+polarity work assigns `sdec.ua_textmin = 0.25` -- a fraction, for a different comparison -- earlier in
+the file than this one's `sdec.ua_textmin = sdec.ua_textmin or 16`, so the `or` never fires and the
+floor binds at 0.25 of a letter. Two constants, one name. Measured cost over the soak plan at 8 capture
+phases, 13 416 points, with the name collision and with the two separated: **identical on every
+counter** -- bad 44, rate 44, badcells 8, badall 4, label 24, bleed 715 -- because the fabricated
+7-letter case is 12 % of its frames and `ua_textfrac` rejects it anyway. So the defect is latent rather
+than live, but the floor this paragraph measures is not the floor that runs, and
+`tools/test_serial.lua`'s `ua_textmin` assertion compares against 0.25 and proves nothing. The fix is
+a rename, which needs a smoke.
+
 The tie-break is also the second unbounded step in `ua_best_end`, two full-length decodes, so it
 ticks. `ua_best_probe` gives one tick per candidate for the same reason.
 
@@ -1310,7 +1321,7 @@ kept showing all-red: the app had no way back, and the operator had to type 0 in
 re-enable detection. A rate that explains nothing is not worth keeping.
 
 0.25 is measured. 'Every byte is in error' is what the panel looks like -- a row is painted red if any
-of its 16 bytes failed, so a third of frames bad reddens essentially every row -- but the actual
+of its 16 bytes failed, so a third of frames bad reddens nearly every row -- but the actual
 interior-bad fraction for the bench case (38400 on the wire under a 19200 lock at 8.3 samples/bit) is
 **0.37**. A 0.9 gate would never have fired on the very report it was written for. Measured across
 mismatches: **0.34-0.50 for a wrong rate against ~0.004 for a healthy capture**, so a quarter
@@ -3175,7 +3186,7 @@ follows the gutter. The two rules that do exist are kept in their own array rath
 
 **The padlock is drawn from RECTS** because the panel font has no padlock glyph: TSP strings are
 bytes the firmware renders from its own proportional face, and U+1F512 is not in it. Four objects
--- a solid body and a three-piece arch -- which is worth counting, object creation being the
+-- a solid body and a three-piece arch -- object creation being the
 destabilising operation behind the one-build-per-power-cycle rule. Recolouring them afterwards is
 not. The glyph sits after the WIDEST value the BAUD cell can hold rather than the one currently
 shown, and its colour changes through `sdec.ui_fill`, which counts refusals in `fillfails` so that
@@ -3252,7 +3263,7 @@ Four objects, because a text object carries ONE colour and this line carries two
 full white, 'page' and 'of' at 66 %. They are created with their colours and never recoloured, so
 the counter needs no colour shadow cache -- one fewer entry `ui_invalidate` could be missing. The
 numerals are JUST_RIGHT in fixed columns so the digits land in the same place at 7 and at 137, and
-the words are left-anchored: nothing moves as the page changes, which is the point.
+the words are left-anchored: nothing moves as the page changes.
 
 ### The visibility shadow caches
 

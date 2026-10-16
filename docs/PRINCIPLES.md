@@ -127,7 +127,7 @@ Coverage is what rejects a seed at twice the true bit time. The real one-bit pul
 `maxmult * T` so they count as eligible, but they land half a period from any multiple and fail the
 tolerance.
 
-The result is a proposal as opposed to an answer. Pulse statistics cannot always find the bit time, because
+The result is only a proposal. Pulse statistics cannot always find the bit time, because
 the widths can share a common factor: all 0x00 at 8N1 with a two-bit gap holds only nine-bit and
 three-bit runs, and best-fits three bit times. Framing settles that, further down.
 
@@ -156,7 +156,7 @@ carry error: the run is measured on a jittered edge, and one bit time is estimat
 percentile of the pulse widths rather than their minimum, so that a single narrow glitch cannot
 halve it.
 
-The margin is supported by evidence - Measured at the bench on real 9600-baud ASCII, `run0` was 63 samples 
+The margin is supported by evidence. Measured at the bench on real 9600-baud ASCII, `run0` was 63 samples 
 and `run1` 42, so longest-run said the line idled low when it idles high. Both runs were data: 63 samples at
 10.42 samples per bit is the start bit of a space, 0x20, running together with five zero data bits.
 The window held no idle at all.
@@ -474,7 +474,7 @@ whose fit measured 100.05 samples and computed to 49.975 baud. The swing floor c
 
 ## What the app will not guess
 
-The app honours three settings when given - it won't search for them.
+The app honours three settings when given — it does not search for them.
 
 A **second stop bit** is indistinguishable from a bit time of idle, which the framer already
 tolerates, so searching for it could only tie. A 2-stop line decodes correctly and is reported as
@@ -491,4 +491,4 @@ raises the bar a rival must clear. Options → Invert overrides it.
 
 What unites the three is the design rule the decoder is built on: a refusal names the limit it 
 applied and an assumption is stated on the panel - the failure this code spends most of its 
-effort avoiding is not a refusal — it's a wrong answer that looks right.
+effort avoiding is a wrong answer that looks right.

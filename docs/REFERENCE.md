@@ -17,8 +17,14 @@ as measurements of one machine until someone repeats them.
 **The figures split into two classes, and only one of them should transfer.** Anything descending from
 the **sample rate** — the rate ladder, the samples-per-bit table, the recording-length arithmetic — is
 timing, and a model at the same 1 MS/s inherits it unchanged. Anything descending from the **analog front
-end** is not: the **Tolerance envelope** below, **Levels and offsets** and
-the **−2 V logic-low band** are all measurements of one acquisition board.
+end** is not: the **Tolerance envelope** below and **Levels and offsets** are measurements of one
+acquisition board.
+
+**The idle polarity on a line that never goes quiet belongs to neither class.** It is decided by decoding
+both polarities and keeping the one the bytes support, with the two level voltages breaking a tie against
+`flatfloor` = 1.0 V — `lo < −1.0 and hi > +1.0` reads the line as RS-232, which rests at its negative
+level. That is arithmetic and a decode, with no acquisition board in it, so it transfers to every model
+unchanged.
 
 **The repeating-pattern rate misfit belongs to neither class.** It is arbitration between two readings of
 the same pulse lengths, it reproduces with no acquisition board in the path at all, and it therefore
@@ -27,14 +33,14 @@ candidates a reading admits depend on how many samples per bit the capture holds
 
 Those are the ones to re-measure first on another model, and on a DMM7510 they could plausibly move **in
 the app's favour**: its acquisition boards and digitizer are a significant step up, which is exactly the
-axis the −2 V band and the threshold picker's histogram sensitivity live on. Better is still different.
+axis the threshold picker's histogram sensitivity lives on.
 A wider envelope would be welcome; a *shifted* one would quietly invalidate the table.
 
 **On a DAQ6510 there is no such split, and every figure here should hold.** It shares both the UI board
 and the acquisition board with the DMM6500 — only the channel-board plugin differs — so the analog
 numbers are measurements of the same hardware, not of comparable hardware. That makes it the one model
-against which this file is a **falsifiable** document rather than an approximate one: a deviation is a
-finding, not an expected difference. It is therefore the first port to try and the cheapest to interpret.
+against which this file is a **falsifiable** document rather than an approximate one. It is therefore
+the first port to try and the cheapest to interpret.
 
 ---
 
@@ -48,8 +54,7 @@ interrupted.
 The **front-panel TRIGGER key was meant to be the exception** — latched by the trigger hardware rather
 than delivered to the interpreter, so a running handler could see it. Measured 2026-08-18, it is not:
 the press does not reach the latch while a panel-initiated run executes, so **nothing makes a
-minutes-long press interruptible**, and what makes it acceptable is only that the run is bounded and
-says its cost beforehand.
+minutes-long press interruptible**. The run is bounded and says its cost beforehand.
 
 Measured over 50 button presses covering every control in every state:
 
@@ -66,7 +71,7 @@ back-to-back unlocked captures on one unchanged 2400 Bd line measured min 4.891 
 7.253 s — a 2.36 s spread, 33 % of the maximum — and a separate run has been seen at 9.086 s. What
 varies is how many looks the rate probe needs, which depends on where the traffic is when the capture
 starts. `bench_panel.py` therefore bounds capture presses at **12 s**: margin sized to the measured
-spread rather than to a single sample, because a gate that fails at random teaches you to ignore it.
+spread rather than to a single sample.
 
 An unlocked capture costs more the **slower** the line, which is the opposite of the intuition. The
 rate probe starts at 1 MS/s, where 20 000 samples is 20 ms — less than one frame below about 1200 Bd
@@ -78,8 +83,7 @@ sample out of the capture buffer costs 21.7 µs, so the read alone is 0.42 s bef
 happens. Splitting one capture across several presses would shorten the press, but one press for one
 capture is worth more.
 
-**A recording press is minutes, not milliseconds, and that is now the design rather than a
-compromise.** One press records a window, decodes all of it and files it: at 9600 baud that is 34 s of
+**A recording press is minutes, not milliseconds.** One press records a window, decodes all of it and files it: at 9600 baud that is 34 s of
 recording plus ~110 s of decoding for 32 kB, or 8.5 s plus ~30 s for 8 kB. Decoding runs at ~300
 byte/s end to end and does not scale with the baud rate. `bench_panel.py` bounds such a press at
 **300 s**, which is a hang detector rather than a latency budget — the duration is the window size the
@@ -89,7 +93,7 @@ operator chose, and nothing shortens it.
 
 ## Sample rates and samples per bit
 
-FRAME mode and the streaming modes pick their sample rate differently, and it matters:
+FRAME mode and the streaming modes pick their sample rate differently:
 
 - **FRAME** uses `fs_for_baud`, which oversamples from a discrete rate ladder, so the ratio is not
   constant: measured 8.33 samples/bit from 300 Bd to 19200 Bd, 8.68 at 115200 Bd, and 4.00 at
@@ -102,14 +106,14 @@ FRAME mode and the streaming modes pick their sample rate differently, and it ma
 
 Tolerance follows **samples per bit, not baud rate**, and the sample-rate ladder does not give every
 rate the same figure — 8.3 at 9600, 8.6 at 28800, 10.0 at 1500, 4.0 at 250 000. It holds at least ~8
-up to 115200 Bd. Read `SA/BIT` rather than assuming a slow line is the robust one.
+up to 115200 Bd. Read `SA/BIT` rather than assuming a slow line is the safe one.
 
 ---
 
 ## Recording length, and where the limits come from
 
 There are **two recording modes**, capped at **8 192** and **32 768 bytes**. Nothing records without a
-byte ceiling, and beyond the ceiling the answer is flow control rather than a bigger buffer.
+byte ceiling, and beyond the ceiling the answer is flow control.
 
 The two differ only in size, at every rate, and the choice is a responsiveness trade rather than a
 capability: one press records a window, decodes it and files it, so `8 kB` reaches bytes in about a
@@ -187,7 +191,7 @@ square.**
 peak, a −0.96 V baseline and 9.4–9.8 µs — 1.7× the width, with an undershoot that is what a reflection on
 an unmatched path looks like. Re-measure the pulse on the path a receiver will actually see.
 
-The width CANNOT BE SET on this firmware: `trigger.extout.pulsewidth` reads nil on 1.7.17a, confirmed
+The width cannot be set on this firmware: `trigger.extout.pulsewidth` reads nil on 1.7.17a, confirmed
 again here, so `sdec.fc_pulse` (100 µs) is never applied. **A device waiting for a credit therefore
 needs an edge-triggered input, an interrupt or a latch** — 5.7 µs is under 1.5 bit times at 250 kBd, and
 a polling loop can miss it.
@@ -221,7 +225,7 @@ host while a press-driven recording ran:
 | blocking `dmm.digitize.read(buf)`, `count` = 200 000 | 200 000 | 2.186 s | 91 502/s |
 | blocking `dmm.digitize.read(buf)`, `count` = 1 000 000 | 1 000 000 | 10.930 s | 91 487/s |
 
-Two things worth knowing from that table. **`SimpleLoop` takes exactly one reading per iteration and
+Two things from that table. **`SimpleLoop` takes exactly one reading per iteration and
 ignores `dmm.digitize.count`** — `count = 200000` with one iteration returns `n = 1`, so the loop
 count *is* the reading count on that path. And the blocking read, which is what FRAME mode uses and
 which genuinely samples at 1 MS/s, files readings at the same ~91 k/s. So the ceiling is the buffer
@@ -247,7 +251,7 @@ why the panel states the byte ceiling and shows a progress bar rather than an es
 
 Under `FC Out`, one press credits the device, records a window, decodes it, files it and credits
 again, ending when a credited window comes back silent. A device that never stops talking would
-otherwise hold the panel indefinitely, so the loop has **two** backstops, and it is worth knowing why
+otherwise hold the panel indefinitely, so the loop has **two** backstops, and
 one is not enough:
 
 | bound | value | what it limits |
@@ -260,10 +264,10 @@ one is not enough:
 9600 baud, 34 s to fill a 32 kB window and about 109 s to decode it. So 32 windows is **76 minutes**
 there, and at 300 baud, where every window waits out the full 1200 s acquisition ceiling, the count
 alone allowed **ten and a half hours**. A panel that comes back the following afternoon is a power
-cycle in practice.
+cycle.
 
-So the clock is the bound that binds: 20 minutes is roughly **eight** windows at 9600 baud, not 32.
-That is a deliberate reduction in bytes per press, and it costs no DATA — the sender only transmits
+So the clock is the bound that fires first: 20 minutes is roughly **eight** windows at 9600 baud, not 32.
+That is a deliberate reduction in bytes per press, and it costs no data — the sender only transmits
 when credited, so it is still waiting where the run stopped. What it costs is two presses and a file
 boundary, described below.
 
@@ -282,9 +286,6 @@ across two files*, not truncated.
 > means keeping `flog_path` across a `mode_exit()` that ends on a bound — which interacts with
 > `NewLog`'s "closed *file* — the next capture starts a new file" note and with the per-capture
 > eviction rules. That is a design change rather than a fix, so it is recorded here and not made.
-
-These two bounds are the only exits the loop has, so they are what keeps a talkative device from
-holding the panel indefinitely.
 
 #### The idle watchdog and remembered levels
 
@@ -373,7 +374,7 @@ The `S/N` cell reports the noise sitting on the two logic levels, in dB, as
 positive by construction: a line whose noise exceeds its swing has no logic levels, and `sig_levels`
 has already refused it before the figure is computed.
 
-**Edges are excluded by POSITION, not by voltage, and that is the whole measurement.** A sample partway
+**Edges are excluded by position, not by voltage.** A sample partway
 up an edge is indistinguishable from a noisy one by amplitude, so an amplitude window measures **slew**
 and calls it noise. Measured on a **noiseless** capture, a `thr ± hyst` window reports 24.8 dB and a
 within-15 %-of-level window 38.4 dB — both of them pure edge slew — and **neither figure moves** when
@@ -415,7 +416,7 @@ bit-banged UART actually has.
 identical to the millivolt across the two — 5.007, 3.302, 1.599, 1.000, 0.500, 0.330, 0.250 V — so the
 wiring moved the noise and nothing else.
 
-**Deliberately awful wiring costs 2 to 5 dB.** That is the useful number: it is nowhere near the 15 dB
+**Deliberately awful wiring costs 2 to 5 dB.** It is nowhere near the 15 dB
 amber threshold, let alone the 12 dB cliff, so on this bench the figure is dominated by the
 instrument's own front end rather than by the leads. Piling active electronics onto the same lead — a
 powered-on iPhone 14 Pro and two running HP calculators resting on it — moved nothing: 7 of 7 again, and
@@ -558,7 +559,7 @@ swing**.
 six bands the counts differ by more than chance — Pearson χ² = 33.5 on 5 degrees of freedom — so something
 band-dependent is present at the 0.1 percentage-point scale. What the measurement supports is that the
 effect is small, unordered and not a design limit; what it does not support is "the swing does not matter".
-Any apparent dependence is worth checking against the vertical draw in [BENCH.md](BENCH.md) first, since a
+Any apparent dependence should be checked against the vertical draw in [BENCH.md](BENCH.md) first, since a
 band placed across ground is read as RS-232 and fails for a reason that has nothing to do with its size.
 
 ### Rate detection and decode, counted separately
@@ -712,7 +713,7 @@ a rescaling is the only route to the truth and neither test runs.
   5.00 at a fifth. **The bound must sit below 3**, because a 3x misfit lands at exactly 3.00 and that is
   the largest family — measured on the LIN-break vector at 19 200, 57 600 and 76 800 Bd over 60 capture
   openings each, 2.0, 2.5 and 2.9 report the true rate every time while 3.0 and 3.5 give back 42, 60 and
-  60 wrong answers. 2.5 is the middle of that range, so neither edge is load-bearing. **What it costs:** a
+  60 wrong answers. 2.5 is the middle of that range, so the bound sits on neither edge. **What it costs:** a
   payload whose shortest genuine run is three bit times or more — `0x00` with a two-bit gap — cannot have
   a third-of-the-rate reading admitted once the fit snaps; measured, that capture reports a third of its
   true rate with the test and without it alike. The **5th percentile** of the widths is used rather than
@@ -762,7 +763,7 @@ Auto-lock is on by default and conditional. It locks only when **all** of these 
 - `FIT` at 0.9 or better
 - the logic levels were stable — no drifting or noisy baseline
 
-**A non-standard rate locks too, and that is the point.** The first condition asks only whether the
+**A non-standard rate locks too, deliberately.** The first condition asks only whether the
 figure is a rate at all; landing on the standard ladder is not required, so a device on an awkward
 divisor is lockable and its recording modes work without a hand-typed number. The three conditions after
 it are what judge the evidence — snapping would judge only tidiness.
@@ -962,8 +963,7 @@ comfortably inside that gate — and the bytes are garbage. The mechanism is str
 as one, and the real stop bit lands exactly where the hypothesis looks for its own, so the one check
 that would notice agrees. A 31250 Bd line read at 28800 frames **258 bytes with zero errors**.
 
-**A bad-fraction gate cannot separate the two populations, and that is the finding that forced
-uniqueness.** The true rate gives a bad fraction of exactly **0.000** for all five rates in the ladder.
+**A bad-fraction gate cannot separate the two populations.** The true rate gives a bad fraction of exactly **0.000** for all five rates in the ladder.
 But so do three wrong fits:
 
 | wrong candidate that survives the slack 0.25 gate | frames | bad | bad fraction |
@@ -1058,7 +1058,7 @@ against 13 288 measured, which is the same number to within the wait's own jitte
 correction is applied in the three places that read the buffer — the frame copy, the chunked
 recording reader, and the rate measurement. The last of those mattered as much as the ordering: taken
 from the ring's physical ends a rotated record spans **minus one sample period**, so
-`acq_measure_fs()` returned nil and every bit time fell back to the REQUESTED rate — the one number it
+`acq_measure_fs()` returned nil and every bit time fell back to the *requested* rate — the one number it
 exists not to trust. Mutating the correction out gives `acq_fs` = 40 000 against a true 200 000.
 
 **Only a full buffer can have wrapped**, so the correction is gated on `buf.n` having reached capacity:
@@ -1097,9 +1097,8 @@ must instigate none, and 10 671 cells instigated none.
 
 **The two unexpected cells are different things and the record separates them.** One was the generator
 failing to change waveform after three attempts, counted as `SDG failed` rather than as a decode failure.
-One was the app declining to decode, which at 4–6.5 samples a bit is arguably the right answer — see
-**The rate ceiling** in [BENCH.md](BENCH.md). Neither was a wrong byte, which is the distinction the whole
-`loud`/`exact` classification exists to keep.
+One was the app declining to decode, which at 4–6.5 samples a bit is a reasonable answer — see
+**The rate ceiling** in [BENCH.md](BENCH.md). Neither was a wrong byte.
 
 **18 of 19 late switches recovered** is the ARWV retry measured in use rather than inferred from an absence:
 `brun.nselback` counts cells whose waveform needed a second selection. A lap makes ~233 real switches and
@@ -1113,7 +1112,7 @@ power cycle** — 318, 313 and 301 failures, listed in the [README](../README.md
 shape of the **two whose per-cell records are retained**, which agree within **0.2 % on duration and 1.6 %
 on failure count**.
 
-> **READ 318 AND 313 AS UPPER BOUNDS.** A LIN frame opens with a break — a dominant interval longer than
+> **Read 318 and 313 as upper bounds.** A LIN frame opens with a break — a dominant interval longer than
 > any UART character — which the decoder flags, correctly, while the oracle holds the byte the wire
 > carried. A byte-exact LIN capture can therefore fail on flag count alone, and in these two runs
 > **493 of 494 and 363 of 364 flag-budget failures are LIN**, ~120 a lap over v61, v62 and v63. The judge
@@ -1151,7 +1150,7 @@ A third, 7-hour soak covers the **recording** path, which neither long soak exer
 
 ---
 
-## Firmware limits worth knowing
+## Firmware limits
 
 **One app build per power cycle.** `sdec.start()` builds the display objects and the firmware does not
 appear to return the pool fully, so after enough rebuilds in one power cycle the instrument reports

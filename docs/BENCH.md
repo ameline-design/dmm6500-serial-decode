@@ -173,7 +173,7 @@ actually asks of a generator, measured from the plan and the driver rather than 
 | ~41 stored arbitrary waveforms, selected by name | `C1:ARWV NAME,…`, uploaded once by `tools/upload_vectors.py` |
 | Signal bandwidth under ~1 MHz | the fastest stimulus is 250 kBd, so its edges are slow by any generator's standard |
 
-**THE FAMILY FLOOR IS 2000X, AND AN SDG1000X WILL NOT DO.** TrueArb is selected by `SRATE`, and Siglent's
+**The family floor is the 2000X, and an SDG1000X will not do.** TrueArb is selected by `SRATE`, and Siglent's
 programming guide (`docs/SDG_Programming-Guide_PG02-E05C.txt`, the per-command availability table) lists it
 family by family:
 
@@ -403,7 +403,7 @@ the AD9122's interpolation half-bands bypassed — and it was tried: at iteratio
 it agrees with the bench on the same 26 cells as linear and invents fifteen more failures the bench does
 not have. `--hold` runs it. Linear is kept because it fits, and that is the whole of the case for it.
 
-**THE GENERATOR HOLDS, AND THE MEASUREMENT THAT SHOWS IT IS RATE-INDEPENDENT.** `C1:PAVA? RISE` on the
+**The generator holds, and the measurement that shows it is rate-independent.** `C1:PAVA? RISE` on the
 same waveform at two arb rates, twenty times apart, with only `SRATE` changed:
 
 | arb rate | arb period `T` | measured RISE | hold predicts | linear predicts |
@@ -423,7 +423,7 @@ reasoning attached to it was wrong twice over: "a zero-order hold would step in 
 for a pure step, and these vectors are not pure steps — `GEN_RENDER`'s default `rise` is 1.5 samples, so a
 shipped edge carries one intermediate codeword between the rails, 814 of 814 transitions in `v77.bin`.
 
-**THE STAIRCASE IS DIRECTLY RESOLVABLE, AND IT ACCOUNTS FOR THAT READING.** One `v94` edge captured at
+**The staircase is directly resolvable, and it accounts for that reading.** One `v94` edge captured at
 1 GSa/s, 50 ns/div, 16-way average, arb at 2.5 MSa/s. The screen shows two fast rises with a flat shelf
 between them, and the shelf is the intermediate codeword being held:
 
@@ -458,7 +458,7 @@ So `sweep_plan`'s linear default rests on **fit**, the physics says **hold**, an
 is kept there because it is what agrees with the bench and because changing it costs a soak to re-baseline
 — not because the generator interpolates. It does not.
 
-**AND A GROUND-TRUTH CAPTURE NOW EXISTS**, which is the first time the offline stimulus has been compared
+**And a ground-truth capture now exists**, which is the first time the offline stimulus has been compared
 against real samples rather than against a pass/fail verdict. 20 000 samples of `v94` at 250 kBd, arb
 2.5 MSa/s, 20 Vpp, digitised at 1 MS/s with the 1 µs aperture, run through the app's own `sig_levels`
 beside both mock variants:
@@ -594,7 +594,7 @@ on hardware and passes here. In particular the bench digitises at `pick_fs(`the 
 measured`)` and this digitises at `pick_fs(`the baud that was **commanded**`)`; on soak lap 1 those
 disagreed on 26 of 1385 cells, 1.9 %. It also judges more simply: the bytes must be a cyclic substring of
 the payload — save for the `loud` mismatch allowance below, which is `bench_uart`'s own number — where
-`bench_uart.judge_payload_v` additionally weighs coverage floors and head damage.
+`bench_uart.judge_payload_v` also weighs coverage floors and head damage.
 
 **And it is laxer than the bench in two places**, which is the asymmetry that is easy to miss because it
 runs the other way. The bench fails an inconclusive cell on an `exact` vector where this counts it as
@@ -613,7 +613,7 @@ then tries a bounded run of further shifts, counting any shift it actually neede
 absorbing it. A fixed trim cannot work: `ua_head_bad` reads 34 on `v77` at 19200 Bd, so a 12-byte constant
 failed byte-exact decodes at all 43 rates and manufactured 3377 failures across 20 laps.
 
-**What it is worth, measured over a whole run rather than sampled from one.** A 172.3 min offline soak
+**What it is worth, measured over a whole run.** A 172.3 min offline soak
 put 2818 plan runs of 1176 points through the shipping tree — 3 313 968 decodes, **321 a second** — against
 a hardware lap's 1683 cells in 2.9 h, which is 0.16 a second. That is **1989×**: those 2.9 offline hours
 are **238 days** of soak decodes, about 83 days an hour.
@@ -675,7 +675,7 @@ granting the `loud` pass without checking it leaves `raised` at zero while the d
 `loud`: `v47` (spikes stacking to 9.3 V), `v48a` and `v48b` (drift), `j20` (20 % jitter), `v61`–`v63`
 (LIN carries framing violations no UART frame can contain).
 
-`v48a` is the instructive one. Its 0.6 V drift is inside tolerance **at its native rate**; swept two
+`v48a` is the clearest case. Its 0.6 V drift is inside tolerance **at its native rate**; swept two
 decades away the drift-to-window ratio changes, the two logic levels stop being the two densest
 amplitudes, and the app reports `baseline unstable — only 8 % of samples sit at a logic level` and
 declines. Declining is the correct answer to an unreadable signal, so it counts as one.
@@ -761,7 +761,7 @@ detection and byte extraction, all of which work fine at 4–6 sa/bit given a ra
 
 **And the decoder is deliberately NOT being changed for it.** The bit-time estimator currently reads
 2.7 M offline points with zero raises; re-tuning it to chase a 3.2 ppm case, at rates above 115 200, on two
-synthetic vectors, is a large risk for no payoff. The remedy is documented in `docs/MANUAL.md` as the third
+synthetic vectors, would put that at risk. The remedy is documented in `docs/MANUAL.md` as the third
 known failure of automatic rate detection, alongside the two that were already there — and it is the same
 remedy as both of those: supply the rate.
 
@@ -782,7 +782,7 @@ the eight-sample target**, because 115 200 × 8 = 921 600 fits under the ceiling
 So reaching it needs a line **above 115 200** — 153 600, 230 400 and 250 000 being the real ones — *and* a
 payload carrying a long run of one repeated byte, *and* an unlucky window placement.
 
-**The payload half is not exotic, though, and that is the part worth taking seriously.** These two vectors
+**The payload half is not exotic, though.** These two vectors
 are synthetic, but the property that trips them is not: erased flash reads back as a solid run of `FF`,
 padding and protocol fill are runs of `00`, and a memory dump over a serial link is mostly one or the
 other. A `00`-padded frame at 230 400 baud is an ordinary thing and sits squarely in the affected region.
@@ -797,7 +797,7 @@ clean traffic the app should read. Reclassifying them would also suppress any ge
 the rates and the vectors most likely to expose one. Four visible, bounded, explained cells over a
 hundred laps are worth more than a clean column.
 
-**What it predicts for a hardware lap, which is the reason it matters now.** A bench cell takes ONE
+**What it predicts for a hardware lap.** A bench cell takes ONE
 capture, not eight, so the offline rate translates to **0.034 cells a lap — about 4 cells over 111 laps.**
 Those are counted as **UNEXPECTED**. So a long run finishing with an `UNEXPECTED` of three to five on
 `v90`/`v94` near the top of the rate range is **this class, which is understood as far as the paragraph
@@ -940,8 +940,8 @@ runs made that way, because this document's own next-step once spelled out the t
 
 * the lap becomes 40 × 43 = **1720** instead of 39 × 43 = **1677**, contradicting the top of this document
 * the skip is applied *before* the shuffle, so all 39 survivors take another vector's amplitude, offset and
-  wait — the per-cell record stops being comparable with the archive, which is the whole point of a seeded
-  plan. Aggregate rates survive; anything paired or keyed on (vector, rate, amplitude) does not
+  wait — the per-cell record stops being comparable with the archive, which is what a seeded plan is
+  for. Aggregate rates survive; anything paired or keyed on (vector, rate, amplitude) does not
 * **v97 then fails 100 % of its 43 cells, in every lap**, as one contiguous burst reported
   `SDG:ARWV? still names …` against whichever waveform preceded it in the draw — a different one each lap.
   That reads convincingly like a generator wedge, and it is a configuration error
