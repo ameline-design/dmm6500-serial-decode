@@ -2188,14 +2188,19 @@ end
 -- Why elision is not running on a recording that asked for it. -> a sentence, or nil when it is running or was
 -- never asked for.
 --
--- Worth saying on the panel, because the two ways it declines are both invisible and neither is the operator's
+-- Worth saying on the panel, because the ways it declines are all invisible and none is the operator's
 -- mistake. arm_silent() requires the level probe to have found NO line -- so on the bursty line this feature
 -- targets, a probe that lands inside a burst arms nothing and the recording silently falls back to SimpleLoop
 -- with no comparator and no elision. And arm_silent() returns false outright whenever fc_out is set, so elision
 -- and flow control are mutually exclusive, which nothing else would tell them.
 function sdec.gap_why()
-  if sdec.gap_elide() == nil then return nil end
+  -- The option itself, not gap_elide(): a declined window reads nil as well, and a decline is a reason to put on
+  -- the glass rather than a feature the operator left switched off.
+  local w = tonumber(sdec.gapelide)
+  if w == nil or w <= 0 then return nil end
   if sdec.strm_elide ~= nil then return nil end
+  local win, declined = sdec.gap_elide()
+  if win == nil then return declined end
   if sdec.fc_out then return 'gap elision off -- flow control is on' end
   if sdec.trigmode == 'free' then return 'gap elision off -- the trigger is free-running' end
   if not sdec.arm_silent() then

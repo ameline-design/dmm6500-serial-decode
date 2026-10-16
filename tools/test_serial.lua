@@ -10168,6 +10168,37 @@ print('\narming from silence: the capture autoset() reaches, and the rates it fa
         fok == false and TRIG.loaded == false and READS.triggered == 0,
         string.format('ok=%s loaded=%s why=%s', tostring(fok), tostring(TRIG.loaded),
                       tostring(fwhy)))
+  -- ---- a pause is not a dead wire: the probe is a scout, the record is the oracle ----
+  -- The stimulus is the shape the soak's gap vectors have, an idle lead and then traffic. At 8.33 samples a bit
+  -- 400 bit times of lead is 3333 samples, so the 2000-sample level probe sees nothing but idle while the
+  -- 20 000-sample capture sees the lead and the bytes both. docs/MEASUREMENTS.md, 'A level probe is not the
+  -- oracle'.
+  local function paused_line()
+    SRC.rd, SRC.ts, SRC.nsmp, SRC.trigat =
+      GEN({bytes = {0x48, 0x65, 0x6c, 0x6c, 0x6f}, baud = 9600, fs = 80000, lead = 400})
+    SRC.trigat = nil
+  end
+  paused_line()
+  arm_reset()
+  sdec.trigmode, sdec.force_baud, sdec.n = 'free', 9600, 20000
+  local pok, pwhy = sdec.acquire()
+  check('free run on a line that is only pausing acquires it, the probe being a scout and not the oracle',
+        pok == true and sdec.probe_idle ~= nil,
+        string.format('ok=%s probe_idle=%s why=%s', tostring(pok), tostring(sdec.probe_idle),
+                      tostring(pwhy)))
+  -- The premise asserted rather than assumed, and the fast exit with it: held down to the probe's own length
+  -- the capture can see nothing further, so the same stimulus refuses and costs ONE read. Without that the
+  -- check above would pass on a line the probe could see all along, and a deleted fast exit would go unnoticed.
+  paused_line()
+  arm_reset()
+  sdec.n = sdec.probe_n
+  local nb4 = READS.n
+  local qok, qwhy = sdec.acquire()
+  check('...and refuses on the probe alone where the capture reaches no further, at one read not two',
+        qok == false and (READS.n - nb4) == 1,
+        string.format('ok=%s reads=%d why=%s', tostring(qok), READS.n - nb4, tostring(qwhy)))
+  sdec.n, sdec.force_baud = 20000, nil
+
   quiet_line()
   arm_reset()
   sdec.trigmode, sdec.fc_out = 'edge', true
@@ -11695,7 +11726,16 @@ end)()
   check('...and a negative value is off too, not a tiny window', sdec.gap_elide() == nil,
         tostring(sdec.gap_elide()))
   sdec.gapelide = 0.1
-  check('a positive window comes back as itself when no rate is known', sdec.gap_elide() == 0.1,
+  -- No rate means no frame to check the window against, so it declines rather than handing back the typed value
+  -- at the clock floor. The reason is asserted with the refusal: a silent nil is the thing gap_why() exists to
+  -- stop, and a decline that says nothing is indistinguishable from the option being off.
+  local nw, nwhy = sdec.gap_elide()
+  check('a window declines with no locked rate, the floor having nothing to derive from',
+        nw == nil and nwhy ~= nil and string.find(nwhy, 'lock the baud rate') ~= nil,
+        string.format('%s / %s', tostring(nw), tostring(nwhy)))
+  sdec.force_baud = 9600
+  sdec.force_nbits, sdec.force_par, sdec.force_nstop = 8, sdec.PAR_NONE, 1
+  check('...and comes back as itself once a rate puts it above the floor', sdec.gap_elide() == 0.1,
         tostring(sdec.gap_elide()))
   sdec.gapelide = 5.0
   check('...and is held at the ceiling, a window being dead time on every burst',
@@ -11716,6 +11756,30 @@ end)()
         f913 > f8n1 and near(f913, sdec.gapelide_frames * 13 / 9600, 1e-9),
         string.format('%s s at 9600, 13-bit frame', tostring(f913)))
   sdec.force_nbits, sdec.force_par, sdec.force_nstop = 8, sdec.PAR_NONE, 1
+  -- The clock floor applies as well, and past 10 000 Bd it is the binding one: two frames at 250 kBd are 80 us,
+  -- which is shorter than the shortest window this feature offers at all.
+  sdec.gapelide = 0.00001
+  local fastw = sdec.gap_elide(250000)
+  check('a fast rate floors on the clock, its frame floor being shorter than that',
+        near(fastw, sdec.gapelide_min, 1e-12) and
+        sdec.gapelide_frames * 10 / 250000 < sdec.gapelide_min,
+        string.format('%s s at 250 kBd, clock floor %s', tostring(fastw),
+                      tostring(sdec.gapelide_min)))
+
+  -- ---- a decline has to reach the glass, because nil alone cannot be told from 'off' ----
+  -- gap_why() reads the option rather than gap_elide() for exactly this: a declined window is nil too, and
+  -- reported as off it reads as the operator's own setting instead of a refusal they did not ask for.
+  local kfc, kse = sdec.fc_out, sdec.strm_elide
+  sdec.fc_out, sdec.strm_elide = false, nil
+  sdec.gapelide, sdec.force_baud = 0.1, nil
+  local dwhy = sdec.gap_why()
+  check('a window declined for want of a rate is reported, not read back as the feature being off',
+        dwhy ~= nil and string.find(dwhy, 'lock the baud rate') ~= nil, tostring(dwhy))
+  sdec.gapelide = 0
+  check('...and with the option itself off there is nothing to say', sdec.gap_why() == nil,
+        tostring(sdec.gap_why()))
+  sdec.fc_out, sdec.strm_elide = kfc, kse
+  sdec.gapelide, sdec.force_baud = 0.000001, 9600
 
   -- ---- the sample rate, which is the number every bit time is scaled by ----
   -- A record of k bursts with an exact interval and exact gaps. Built rather than captured, so the right
@@ -11845,13 +11909,18 @@ end)()
   -- 13 bit times at 12 Bd is 2.167 s, past the 2 s ceiling. At 8N1 the same rate wants 1.667 and IS
   -- deliverable, so the narrow frame is the control: a blanket refusal below some rate would pass the
   -- assertion above and fail this one.
-  local lo_refused = sdec.gap_elide(12)
+  local lo_refused, lo_rwhy = sdec.gap_elide(12)
   sdec.force_nbits, sdec.force_par, sdec.force_nstop = 8, sdec.PAR_NONE, 1
   local lo_narrow = sdec.gap_elide(12)
   check('a rate whose frame floor exceeds the ceiling is refused, not quietly given a short window',
         lo_ok ~= nil and lo_refused == nil and lo_narrow ~= nil and lo_narrow > 1.6,
         string.format('9600 -> %s, 12 Bd 13-bit -> %s, 12 Bd 8N1 -> %s', tostring(lo_ok),
                       tostring(lo_refused), tostring(lo_narrow)))
+  -- And it names the rate and the ceiling, which is the half the panel needs: this decline is the only one the
+  -- operator can fix by typing a different number, so a bare nil would leave them with no move to make.
+  check('...and says which rate and which ceiling, the one decline the operator can act on',
+        lo_rwhy ~= nil and string.find(lo_rwhy, 'ceiling') ~= nil and
+        string.find(lo_rwhy, '12') ~= nil, tostring(lo_rwhy))
   sdec.gapelide = 0.1
 
   -- ---- what the operator is told ----

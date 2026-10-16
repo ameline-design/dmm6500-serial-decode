@@ -168,14 +168,16 @@ sdec.armwait_max = 120.0
 -- blend in acq_triggered(). Not on the form: an accidental press costs one retry.
 if sdec.armkey == nil then sdec.armkey = true end
 
--- Gap elision: how long the line must be quiet for the recording to stop keeping it, in seconds. Zero is off
--- and is the default, because an elided record means something different -- its time axis is not contiguous and
--- no burst carries a pre-trigger reserve. Options carries it as 'Gap Elide'.
+-- Gap elision: how long the line must be quiet for the recording to stop keeping it, in seconds. A threshold and
+-- not an amount -- once the window has elapsed the recording discards until the line moves again, so what comes
+-- out is unbounded and gapelide_max caps the threshold alone. Zero is off and is the default, because an elided
+-- record means something different: its time axis is not contiguous and no burst carries a pre-trigger reserve.
+-- Options carries it as 'Gap Elide'.
 --
 -- The window is the one cost that scales: it is recorded as idle at the end of every burst, because the detector
 -- cannot know the line stopped until it has elapsed. That is window * fs readings a burst, so 0.1 s at 100 kS/s
 -- is 10 000 of them. Expressed in bit times the same cost is constant, about 20 * sa/bit, which is why
--- gap_elide() floors on the bit time when a rate is known rather than on the clock.
+-- gap_elide() floors on the bit time and requires a locked rate to derive it from.
 -- docs/TRIGGER.md 13, 'Detecting silence'.
 sdec.gapelide     = sdec.gapelide or 0
 sdec.gapelide_min = 0.002
@@ -190,30 +192,36 @@ sdec.gapelide_max = 2.0
 -- proportionate floor rather than a refusal.
 sdec.gapelide_frames = 2
 
--- The enforced window, or nil when elision is off. Read by the capture and by the form through this one
+-- The enforced window, or nil and the reason it declined. Read by the capture and by the form through this one
 -- function, so a typed value cannot mean one thing to the field and another to the trigger model.
 function sdec.gap_elide(baud)
   local w = tonumber(sdec.gapelide)
   if w == nil or w <= 0 then return nil end
-  -- The bit-time floor where a rate is known, the clock floor where it is not. A known rate is the common case
-  -- for a second capture of the same device, and it is where the floor can be small.
-  local lo = sdec.gapelide_min
   if baud == nil then baud = tonumber(sdec.force_baud) end
-  if baud ~= nil and baud > 0 then
-    -- The forced format where there is one, the 8N1 default where there is not. The streaming modes require a
-    -- forced baud rate, so on every path elision can run this floor is derived rather than assumed.
-    local nbits = sdec.force_nbits or 8
-    local parbits = 0
-    if sdec.force_par ~= nil and sdec.force_par ~= sdec.PAR_NONE then parbits = 1 end
-    local framebits = 1 + nbits + parbits + (sdec.force_nstop or 1)
-    local b = (sdec.gapelide_frames * framebits) / baud
-    if b > lo then lo = b end
+  -- No rate means no frame to measure the floor against, and an unchecked window is the mid-byte cut the floor
+  -- exists to prevent. Declined rather than passed through at the clock floor: every path that can elide has a
+  -- locked rate already, stream_samples() being unable to size a recording without one, so the floor is
+  -- derived on all of them and this closes the remaining case instead of guessing at it.
+  if baud == nil or baud <= 0 then
+    return nil, 'gap elision off -- lock the baud rate first'
   end
+  -- The forced format where there is one, the 8N1 default where there is not. All three forced fields widen the
+  -- frame, not the width alone.
+  local nbits = sdec.force_nbits or 8
+  local parbits = 0
+  if sdec.force_par ~= nil and sdec.force_par ~= sdec.PAR_NONE then parbits = 1 end
+  local framebits = 1 + nbits + parbits + (sdec.force_nstop or 1)
+  local lo = (sdec.gapelide_frames * framebits) / baud
+  -- The clock floor as well, and past 10 000 Bd at 8N1 it is the binding one: two frames there are under 2 ms.
+  if lo < sdec.gapelide_min then lo = sdec.gapelide_min end
   -- Refused rather than clamped when the floor the rate derives is past the ceiling: clamping that way lets the
-  -- ceiling win and hands back a window BELOW the floor, which is the mid-frame cut the floor exists to
+  -- ceiling win and hands back a window under the floor, which is the mid-frame cut the floor exists to
   -- prevent. Reachable from the panel rather than only from a script, the Baud Rate field's own minimum being
   -- 0. gap_why() then has a reason to put on the glass instead of the feature quietly misbehaving.
-  if lo > sdec.gapelide_max then return nil end
+  if lo > sdec.gapelide_max then
+    return nil, string.format('gap elision off -- %g Bd needs %.3f s, over the %.1f s ceiling',
+                              baud, lo, sdec.gapelide_max)
+  end
   if w < lo then w = lo end
   if w > sdec.gapelide_max then w = sdec.gapelide_max end
   return w
@@ -2178,9 +2186,12 @@ function sdec.acquire()
     -- and for the triggered path idle is the normal start.
     if not sdec.arm_threshold() then return false, why end
     sdec.probe_idle = why
-    -- Without a trigger there is nothing to wait for, so a quiet line in free-run mode is the end of the road. Not
-    -- for the front TRIGGER key: a quiet line is the exact condition that key exists for.
-    if sdec.trigmode == 'free' then return false, why end
+    -- Free run has nothing to wait for, but it does have a capture many times the probe, and the re-measure on
+    -- the real record below is the gate that decides. Refusing on the probe alone read a bursty line as a dead
+    -- one: an idle run can outlast the probe and still be far shorter than the record, so the probe says idle
+    -- where the capture would have found the traffic. docs/MEASUREMENTS.md, 'A level probe is not the oracle'.
+    -- Only where the capture reaches no further than the probe is there nothing left to try.
+    if sdec.trigmode == 'free' and sdec.n <= pn then return false, why end
   end
 
   -- The armed path is every source that waits, which is all but 'free'. Routing only 'edge' here left 'front'

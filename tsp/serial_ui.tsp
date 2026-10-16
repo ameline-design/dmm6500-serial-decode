@@ -2283,11 +2283,12 @@ function sdec.build_options()
                          sdec.armwait_min, sdec.armwait_max, 's', 4)
   -- Zero is off, so the raw setting is shown rather than gap_elide()'s enforced window: the field has to be able
   -- to say 'off', and the accessor returns nil for that. The floor is applied when a capture arms, not here.
-  -- 'keep text, skip idle' says what it does rather than what it is, the operator having no reason to know the
-  -- record is spliced -- and the cost is the window itself, which is recorded at the end of every burst.
+  -- 'cut after' says which of the two readings the number has: it is the quiet the line must reach before the
+  -- recording stops keeping it, not how much gap comes out, which is unbounded. 16 characters, as wide as the
+  -- Arm/Idle Wait help above it, so check it on the glass after any change to the form's geometry.
   local fx11, fy11 = nextpos()
   sdec.opt_gape = create(sdec.optscr, display.OBJ_EDIT_NUMBER, fx11, fy11,
-                         'Gap Elide', '0 off, keep text',
+                         'Gap Elide', '0 off, cut after',
                          display.NFORMAT_PREFIX, tonumber(sdec.gapelide) or 0,
                          0, sdec.gapelide_max, 's', 4)
 

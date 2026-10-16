@@ -692,11 +692,13 @@ Four settings you can ignore unless you need them:
   at least its own 3 s — 2 s and 3 s do the same thing, and the note after an expiry reports the 3 s
   it really waited. It governs `Start bit`; `Trigger key` ignores it and waits its own 30 s for a
   finger.
-- **Gap Elide** — seconds of quiet line after which a recording stops keeping it. **0 is off and is
-  the default.** On a device that prints a line and then says nothing for two minutes, the buffer
-  otherwise fills with dead air; with this on it keeps the text and throws the silence away, so the
-  same buffer spans minutes of a bursty line instead of seconds. See **Recording a bursty line**
-  below for what it costs and when it is worth having.
+- **Gap Elide** — **how long the line must be quiet before the recording stops keeping it.** It is a
+  threshold, not an amount: once a pause reaches it, nothing further is recorded until the line moves
+  again, so the silence actually dropped is however long the device stays quiet. **0 is off and is the
+  default.** On a device that prints a line and then says nothing for two minutes the buffer otherwise
+  fills with dead air; with this on, the same buffer spans minutes of a bursty line instead of
+  seconds. It needs a locked baud rate. See **Recording a bursty line** below for what it costs and
+  when it is worth having.
 
 ### Recording a bursty line
 
@@ -710,12 +712,12 @@ second is a reasonable start. Then raise **Arm/Idle Wait** past the longest gap 
 through, because that is still what ends the recording when the device has finished — a 2-minute gap
 needs an **Arm/Idle Wait** above 120 s or the recording ends in the middle of it.
 
-**What it needs.** One of the recording modes, `8 kB` or `32 kB`; **Trigger** on `Start bit`; and a
-line that is quiet when you press **Capture**, because the comparator is armed from the level probe
-and a line already transmitting gives it nothing to arm on. It cannot be combined with flow control
-on the rear BNC. When any of those is not met the recording still happens, without elision, and the
-note row says which one — `gap elision off -- flow control is on`, or `-- the line was already
-transmitting when the recording started`.
+**What it needs.** A locked **Baud Rate**; one of the recording modes, `8 kB` or `32 kB`; **Trigger**
+on `Start bit`; and a line that is quiet when you press **Capture**, because the comparator is armed
+from the level probe and a line already transmitting gives it nothing to arm on. It cannot be combined
+with flow control on the rear BNC. When any of those is not met the recording still happens, without
+elision, and the note row says which one — `gap elision off -- lock the baud rate first`,
+`-- flow control is on`, or `-- the line was already transmitting when the recording started`.
 
 **What it costs, and when it is not worth it.** The instrument cannot know the line has gone quiet
 until the time you set has actually elapsed, so **every burst keeps one Gap Elide window of idle at
@@ -732,10 +734,15 @@ which is an ordinary serial waveform, so nothing is lost at the join. There is a
 reserve on each burst, so the first recorded sample of a burst is its own start bit rather than the
 quiet line before it.
 
-The window is held to at least two frame times at the rate you have locked, because a frame can hold
-a run with no level change of its own — `0x00` on an idle-high line is ten bit times at one level —
-and a window shorter than that would cut inside a byte. Typing a smaller number is allowed and costs
-at most one byte at each seam, since the decoder re-synchronises on the next start bit.
+**The window has a floor, and the floor comes from the rate.** It is held to at least two frame times
+at the rate you have locked, because a frame can hold a run with no level change of its own — `0x00`
+on an idle-high line is ten bit times at one level — and a shorter window would cut inside a byte.
+Type a smaller number and it is **raised to the floor**, not honoured: at 300 baud 8N1 the floor is
+67 ms, so 10 ms becomes 67 ms. A 2 ms floor on the clock applies as well, and that is the binding one
+above 10 000 baud, where two frames are shorter than 2 ms. If the rate is **not** locked there is no
+frame to measure a window against, so elision declines rather than guessing, and the note row reads
+`gap elision off -- lock the baud rate first`. At a rate slow enough that two frames exceed the 2 s
+ceiling — below about 10 baud — it declines for that reason instead, and says so.
 
 ### Waiting for a device that has not started
 

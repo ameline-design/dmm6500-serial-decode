@@ -1589,6 +1589,32 @@ ended the width walk early, left the rest of the same hump looking like a separa
 **both levels within 0.35 V of each other on a 3.3 V line**. Sixteen samples a bin keeps the scatter
 far below the hump threshold.
 
+### A level probe is not the oracle
+
+`capture()` learns the levels from a `probe_n` = 2000 sample scout before the real acquisition, and
+in free-run mode a scout that found no transitions used to end the capture. On a bursty line that
+reads a pause as a dead wire. At the bench's ~8 samples a bit the scout spans about **240 bit times**,
+while the real capture is `n` = 20 000 samples, **ten times** as far.
+
+Measured on the `v99a` soak vector, whose idle run is **1010 bit times** -- `lead` 1000 plus `tail`
+10, joined into one run by `loop = true` -- inside an 1810-bit period. Over one lap's 43 rates, from
+300 Bd to 245 109 Bd, **18 cells refused** with `acq: line is idle (no transitions)`. Modelling each
+cell as the chance that a 2000-sample scout lands wholly inside the idle run, at that cell's own
+samples per bit, predicts **17.8**. The per-rate probability runs from 28 % at 245 kBd, where 4
+samples a bit make the scout 490 bit times, to 53 % at 300 Bd, where 33 samples a bit make it 60.
+
+The capture would have succeeded in nearly all of them, and the same lap proves it: on the phases
+where the scout did find the burst, `v99a` decoded **80 frames of 80 with zero bad**, and one cell
+returned **123 frames** because its window spanned the arb seam and caught the payload twice. Above
+600 Bd a 20 000-sample window cannot fit inside a 1010-bit gap at all.
+
+So free run now falls through to the real capture, and the level re-measure on that record is the
+gate -- which it already was for every other path. Expected refusals go from **17.8 to 0.4** a lap.
+The residual is the two slowest rates: the bench floors `fs` at 10 kS/s, so 300 and 379 Bd get 33 and
+26 samples a bit and 20 000 samples reach only 600 and 758 bit times, still short of the gap. Those
+stay at **23 % and 14 %**. The fast exit is kept for the one case where it cannot cost anything,
+`n <= pn`, since a capture no longer than the scout has nothing left to find.
+
 ### The flow-control pulse is ~10 us, not the 100 us requested
 
 `trigger.extout.pulsewidth` is nil on 1.7.17a, so `fc_config` skips the assignment and the width is
