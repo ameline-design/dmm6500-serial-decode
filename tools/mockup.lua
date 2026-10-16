@@ -206,6 +206,14 @@ local TCLOCK = 0
 if timer.cleartime == nil then function timer.cleartime() TCLOCK = 0 end end
 if timer.gettime   == nil then function timer.gettime() return TCLOCK end end
 
+-- THE FILE API, STUBBED HERE rather than borrowed. tools/mock_display.lua provides these, but this
+-- file carries its own RECORDING display mock and loading that one would replace it -- so usb_log's
+-- first call reached a nil `file.usbdriveexists` and killed the render before build_options() ran.
+-- A key PRESENT is the right default: the log cell and the options form both render differently
+-- without one, and these mockups are of the normal case.
+file = file or {}
+if file.usbdriveexists == nil then function file.usbdriveexists() return 1 end end
+
 -- ---------- waveform + instrument mocks, and the real modules ----------
 dofile('tools/gen_serial.lua')
 for _, m in ipairs({'tsp/usb_log.tsp', 'tsp/serial_ui.tsp', 'tsp/serial_app.tsp'}) do

@@ -7,7 +7,7 @@ SERIAL DECODE OPTIONS	editopt	185	285	0	0	1	16777215	-1	0	1	enable	Polarity	idle
 SERIAL DECODE OPTIONS	editopt	552	13	0	0	1	16777215	-1	0	1	enable	Trigger	capture start	Free run
 SERIAL DECODE OPTIONS	editopt	552	81	0	0	1	16777215	-1	0	1	enable	Rear BNC	trig in / FC out	Off
 SERIAL DECODE OPTIONS	editnum	552	149	0	0	1	16777215	-1	0	1	enable	Arm At	wake-up level	1.0 V
-SERIAL DECODE OPTIONS	editnum	552	217	0	0	1	16777215	-1	0	1	enable	Arm Wait	max wait, frozen	10.0 s
+SERIAL DECODE OPTIONS	editnum	552	217	0	0	1	16777215	-1	0	1	enable	Arm/Idle Wait	max wait, frozen	10.0 s
 SERIAL DECODE OPTIONS	button	22	360	200	0	1	16777215	-1	0	1	enable	Auto Detect
 SERIAL DECODE OPTIONS	button	234	360	220	0	1	16777215	-1	0	1	enable	Lock Detected
 SERIAL DECODE OPTIONS	button	466	360	150	0	1	16777215	-1	0	1	enable	Apply
@@ -127,7 +127,7 @@ SERIAL DECODE - 32K CAPTURE	text	268	323	0	0	1	16777215	-1	0	1	enable	74 65 20 6
 SERIAL DECODE - 32K CAPTURE	text	488	323	0	0	1	16777215	-1	0	1	enable	 Duis aute irur 
 SERIAL DECODE - 32K CAPTURE	timer	0	0	0	0	1	16777215	-1	0	1	enable	
 SERIAL DECODE - 32K CAPTURE	text	8	347	0	0	1	11579568	-1	0	1	enable	32 kB  ready -- 32768 bytes to a file, no stop once started
-SERIAL DECODE - 32K CAPTURE	text	478	347	0	0	1	11579568	-1	0	1	enable	log: on first capture
+SERIAL DECODE - 32K CAPTURE	text	478	347	0	0	1	11579568	-1	0	1	enable	log: bytes000  1743 B
 SERIAL DECODE - 32K CAPTURE	text	675	347	0	0	1	11579568	-1	0	1	enable	
 SERIAL DECODE - 32K CAPTURE	text	684	51	0	0	1	11053224	-1	0	1	enable	
 SERIAL DECODE - 32K CAPTURE	text	744	51	0	0	1	16777215	-1	2	1	enable	
