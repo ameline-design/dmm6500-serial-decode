@@ -595,8 +595,9 @@ between messages never shows it at all.
 ## Locking the baud rate, and the amber padlock
 
 The app locks the rate for you after a good capture, which is why later captures are quicker. It only
-does this when it is confident: the rate landed on a standard one, enough clean frames came through,
-`FIT` was 0.9 or better, and the voltage levels were steady.
+does this when it is confident: enough clean frames came through in one unbroken run, `FIT` was 0.9 or
+better, and the voltage levels were steady. **It does not have to be a standard rate** — an awkward
+divisor locks too, so its recording modes work without a hand-typed number.
 
 When it is not confident it leaves the padlock **amber** and offers you the **Lock Rate** button. The
 bytes are still shown — they just are not trusted enough to carry forward. Press **Lock Rate** to pin
@@ -1104,7 +1105,9 @@ On the instrument the eleven cases of this all did carry the `?`.
 
 **Auto-lock and the Lock buttons differ**, which matters because the padlock section tells you to press
 one. Auto-lock stores the **measurement** when the rounding was not firm, so it does not carry the error
-forward. **Lock Rate** and **Lock Detected** store the number on the panel — the rounded one.
+forward. **Lock Rate** and **Lock Detected** store the standard rate shown on the panel instead. Either
+way the figure is then tidied to a whole baud, which is a separate step and never moves it as much as
+1 % — see **Auto-lock conditions** in [REFERENCE.md](REFERENCE.md).
 
 **How rare, and it is the largest of the three.** **609 of the 335 400 offline captures, 0.18 %** — 600
 on the 10 % edge-jitter waveform and 9 on the 0.6 V drift one, and nothing else anywhere. On the

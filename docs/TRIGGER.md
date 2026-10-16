@@ -307,7 +307,7 @@ readings of "it fired" are true and only one of them is a fact about the compara
 front-panel TRIGGER key, which is the one stimulus here with no programmatic source — the LXI virtual
 panel can press it over HTTP, and that path is closed by policy rather than by the instrument.
 
-**THE WAIT ALSO KEEPS THE PRE-ROLL RUNNING, and does not only await the trigger** (MEASURED, P2f). An infinite digitize as the *only* block idles after about a dozen samples whatever
+**The wait also keeps the pre-roll running, and does not only await the trigger** (MEASURED, P2f). An infinite digitize as the *only* block idles after about a dozen samples whatever
 `dmm.digitize.count` says, because the sequence ends and that stops the block. With the wait
 downstream the same block filled a 20 000-reading buffer and sat in `WAITING`. The counted block stops
 the infinite one; the wait is what lets it run at all.
