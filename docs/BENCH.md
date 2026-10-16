@@ -631,11 +631,19 @@ are **238 days** of soak decodes, about 83 days an hour.
 opening 11.7 min came out 548 a second — 71 % high — because the short suites cycle first and the seeded
 sweeps that dominate the wall clock had barely started.
 
-**And it is decode volume, not coverage.** The paths listed above are covered 0× however long it runs.
-Lap 1 of a hardware soak put 15 distinct rate misreports on the board, of which 3 — `37422→38400`,
-`149527→153600`, `187477→192000` — were the `rstdC` shape at 1.024–1.027×, 20 % of the lap. Offline that
-route fired **0 times in 141 040 decodes**. Volume is not coverage, and that contrast is the whole
-argument for running both.
+**And it is decode volume, not coverage.** The paths above are covered 0× however long it runs — the
+two-pass probe, autolock, the panel, waveform selection — and that, not volume, is the argument for
+running both.
+
+**The `rstdC` zero that used to stand here was this harness not looking.** Lap 1 of a hardware soak put
+15 distinct rate misreports on the board, of which 3 — `37422→38400`, `149527→153600`, `187477→192000` —
+were the `rstdC` shape at 1.024–1.027×, against **0 in 141 040 decodes** offline. But `judge()` compared
+bytes and returned ok for a cyclic-exact capture, so `classify()` — the only place a rate is read — was
+never reached, and a cluster-C misreport *with right bytes* was uncountable by construction. With the
+rate checked wherever bytes came back, 130 plan draws give **4767 `rstdC` in 1 788 800 decodes,
+0.267 %**, of which **3398 are the bytes-right class** that scored the zero, 0.190 % — against that
+lap's 0.18 %. Capture phase is not what changed it: the same draws at one offset, the historical
+setting, give **591 and 421 in 223 600** — 0.264 % and 0.188 %.
 
 ---
 

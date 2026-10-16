@@ -227,7 +227,9 @@ WHY = {
     # bittime while the DISPLAYED rate goes through sig_snap, so a capture can be byte-perfect and still
     # name a rate 2.4-2.7 % wrong -- and be marked snapped, which removes the panel's approximate marker.
     # Uncounted, that class scored ZERO in 141040 decodes while one hardware lap found three of it. It is
-    # a SUBSET of `rate` now that a misreport fails the point, as it does on the bench.
+    # a SUBSET of `rate` now that a misreport fails the point, as it does on the bench -- and counting it
+    # is what made it common: 3398 of these in 1788800 decodes over 130 plan draws, 0.190 %, and 0.188 %
+    # at one capture phase, so it is the phase sweep that is incidental here and not the counter.
     'label': 'bytes accepted but the REPORTED RATE is still wrong (cluster C)',
     # THE APP'S OWN UNCERTAINTY, BOUNDED. bench_uart.judge_payload fails a capture that flagged more
     # interior frames than 2 % of the body or two, whichever is kinder; the offline judge had no such
