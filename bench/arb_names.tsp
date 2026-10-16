@@ -69,6 +69,10 @@ barb.name['v94'] = 'SER_Blocks512B_8N1_x10'
 barb.name['v95'] = 'SER_Random8kB_8N1_x10'
 barb.name['v96'] = 'SER_Random32kB_8N1_x10'
 barb.name['v97'] = 'SER_Random1kB7bit_8N1_x10'
+barb.name['v98a'] = 'SER_LoremGapLead_8N1_x10'
+barb.name['v98b'] = 'SER_LoremGapMid_8N1_x10'
+barb.name['v99a'] = 'SER_LoremGapLead_7E1_x10'
+barb.name['v99b'] = 'SER_LoremGapMid_7E1_x10'
 
 -- WHICH VECTORS ARE ALLOWED TO REFUSE. A 'loud' vector is one the plan drives into conditions where
 -- declining to decode is the DOCUMENTED RIGHT ANSWER -- 20 % jitter, a spike, a drifting clock, a LIN
@@ -119,9 +123,14 @@ barb.benchonly['f13'] = true
 barb.benchonly['f14'] = true
 barb.benchonly['f15'] = true
 barb.benchonly['f16'] = true
+barb.benchonly['r03'] = true
+barb.benchonly['r04'] = true
+barb.benchonly['r05'] = true
+barb.benchonly['r10'] = true
+barb.benchonly['r11'] = true
 
 -- The count, so a truncated file is detectable rather than merely short.
-barb.n = 57
+barb.n = 61
 
 -- Returns the generator's name for a vector id, or nil. Never guesses: a fallback to the id itself is
 -- exactly the silent failure this table exists to prevent.

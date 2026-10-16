@@ -48,6 +48,14 @@ MAP = {
     # v93's own bytes with bit 7 cleared. '7bit' is in the name because that is the ONE thing that
     # distinguishes it from v93, and the pair is only worth having if the difference is legible here.
     'v97':  'SER_Random1kB7bit_8N1_x10',
+    # A LINE THAT PAUSES, and the only two in the draw that do. v98's pause opens each pass -- a device
+    # that has not spoken yet -- and v99's sits mid-payload with traffic either side. Both count the
+    # pause in BIT TIMES, so the decoder sees the same run of idle at every rate the soak draws; a
+    # count of arb points would be a different experiment at each one.
+    'v98a': 'SER_LoremGapLead_8N1_x10',
+    'v98b': 'SER_LoremGapMid_8N1_x10',
+    'v99a': 'SER_LoremGapLead_7E1_x10',
+    'v99b': 'SER_LoremGapMid_7E1_x10',
     # ---------------------------------------------------------------------------------------------
     # FULL SCALE: the data band spans -32767..+32767 instead of the 0..21626 every vector above
     # renders, so the band on the wire is OFST +/- AMP/2 exactly and AMP 10 OFST 0 is a true
@@ -145,8 +153,16 @@ BIG = {'v71', 'v93', 'v94', 'v95', 'v96', 'v97', 'f07'}
 #
 # NOT A REFUSAL: --spec and --skip-vectors still accept any id in MAP, so naming one of these
 # deliberately works. This governs the DRAW only, which is the thing nobody asks for explicitly.
+#
+# r04, r05, r10 AND r11 ARE HERE TO PAY FOR THE FOUR GAP VECTORS, not because anything is wrong with
+# them. The draw is what sets lap time, so adding four without taking four out would lengthen every lap
+# and move the figure the soak record is read against. The r-series is twelve interchangeable random
+# payloads -- six 8N1 and six 7E1 -- which always pass, so two of each leaves four and four and costs no
+# coverage the remaining eight do not already give. They stay in MAP, so --spec still names them and
+# every archived oracle and point label keeps working; this governs the DRAW alone.
 BENCH_ONLY = {'f00', 'f01', 'f02', 'f03', 'f04', 'f05', 'f06', 'f07',
-              'f10', 'f11', 'f12', 'f13', 'f14', 'f15', 'f16'}
+              'f10', 'f11', 'f12', 'f13', 'f14', 'f15', 'f16',
+              'r03', 'r04', 'r05', 'r10', 'r11'}
 
 
 def arb(vid):

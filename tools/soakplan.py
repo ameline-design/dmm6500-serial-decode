@@ -197,6 +197,19 @@ EDGE_ODDS = 3
 #
 # A vector earns 'loud' only by being built to break something:
 VECTOR_EXPECT = {
+    # THE FOUR GAP VECTORS, judged harder than anything else here rather than more leniently, because a
+    # declined byte IS the defect they exist to find: the thing a long idle run can do to a decoder is
+    # desynchronise its framer, and that shows up as dropped frames. So the proportional flag budget is
+    # withdrawn and full coverage is demanded.
+    #
+    # The two shapes earn different allowances, and it is a fact about the stimulus. v98a and v99a open
+    # every pass with a 600- or 1000-bit-time mark run, so the framer always has a clean anchor ahead of
+    # the first start bit and has no reason to decline anything inside the judged body -- none allowed.
+    # v98b and v99b carry their pause mid-payload, so traffic is continuous across the cycle boundary, a
+    # capture can begin inside a frame, and one clipped frame there is a property of the capture phase
+    # rather than of the app -- one allowed.
+    'v98a': 'nodrop',  'v99a': 'nodrop',
+    'v98b': 'nodrop1', 'v99b': 'nodrop1',
     # Impulse spikes at the amplitude ceiling: +/-3.0 V stacking to 9.3 V on a 3.3 V line. Whether a
     # given rate's sampling instants land on the spikes is a function of the rate, so which rates
     # survive is not knowable in advance.
@@ -319,10 +332,16 @@ def vector_subset(iteration, vectors, k):
 
 
 def random_vectors():
-    """The twelve random-payload vectors, r00..r11, sorted. Named by pattern rather than listed because
-    vector_names.MAP builds them in a loop and a hand list would go stale silently."""
-    from vector_names import MAP as _M
-    return sorted(v for v in _M if len(v) == 3 and v[0] == 'r' and v[1:].isdigit())
+    """The random-payload vectors THE LAP PLAYS, sorted. Named by pattern rather than listed because
+    vector_names.MAP builds them in a loop and a hand list would go stale silently.
+
+    LESS BENCH_ONLY, and that is the whole of the difference from MAP. Four of the twelve are out of the
+    draw to pay for the four gap vectors -- the lap length is what the soak record is read against, so
+    four in meant four out -- and a function that still answered twelve would make every caller here
+    reason about cells that are never drawn: the per-lap subset would starve vectors that do not play,
+    and the self-check would look for them in a plan that cannot contain them."""
+    from vector_names import MAP as _M, BENCH_ONLY as _B
+    return sorted(v for v in _M if v not in _B and len(v) == 3 and v[0] == 'r' and v[1:].isdigit())
 
 
 def random_drop(iteration, keep):
@@ -913,10 +932,16 @@ def selftest():
     # THE PER-LAP RANDOM SUBSET. Default must change nothing -- all twelve play -- and a subset must play
     # exactly what it says, differently each lap, with none of them starved over a run's worth of laps.
     _rs = set(random_vectors())
-    ck(len(_rs) == 12, 'there are twelve random-payload vectors (%d)' % len(_rs))
+    # DERIVED, NOT A LITERAL: the count is a consequence of the draw, so a hard 12 here turns any
+    # rebalancing of the vector set into a self-check failure that says nothing about the plan. What is
+    # worth asserting is that the function and the draw agree, which is what would actually break.
+    from vector_names import MAP as _VM, BENCH_ONLY as _VB
+    _rdraw = sorted(v for v in _VM if v not in _VB and len(v) == 3 and v[0] == 'r' and v[1:].isdigit())
+    ck(len(_rs) == len(_rdraw) and len(_rs) >= 4,
+       'the random-payload vectors are exactly those in the draw (%d)' % len(_rs))
     _full = emit_csv(1, 1, None, ('v95', 'v96'), None, None)
     _played = set(l.split(',')[2] for l in _full.split('\n') if l and l[0].isdigit())
-    ck(_rs <= _played, 'by default every random vector plays every lap (%d of 12 missing)'
+    ck(_rs <= _played, 'by default every drawn random vector plays every lap (%d missing)'
                        % len(_rs - _played))
     _sub = emit_csv(1, 1, None, ('v95', 'v96'), None, 4)
     _subplayed = set(l.split(',')[2] for l in _sub.split('\n') if l and l[0].isdigit()) & _rs

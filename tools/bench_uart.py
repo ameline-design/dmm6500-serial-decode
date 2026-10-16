@@ -406,7 +406,16 @@ def analyse(got, want):
 JP_MINVAL = 4
 JP_FLAG_FRAC = 0.02      # flag budget, as a fraction of the capture...
 JP_FLAG_FLOOR = 2        # ...or this many, whichever is kinder
-JP_COVER_MIN = 0.90      # how much of the capture must be positively verified byte-exact
+# How much of the capture must be positively verified byte-exact.
+#
+# 0.95 RATHER THAN 0.90, AND IT COSTS NOTHING -- measured, not chosen. Judged over the 3614-cell soak
+# record, 0.90 and 0.95 both give 33 BAD: not one cell in the archive sits between them, so the old
+# figure carried five points of slack no real capture used. 0.97 costs one cell and 1.00 costs
+# seventeen, which is the single frame a capture boundary clips whatever the decoder does -- so 0.95 is
+# where the gate stops being loose and has not yet started measuring the capture phase instead of the
+# app. Re-measure before moving it again: a gate tightened past what the record supports converts
+# passes into failures and moves the figure the soak is read against.
+JP_COVER_MIN = 0.95
 # Boundary frames are NOT judged, because they cannot be. uart_decode.tsp says a gapless stream
 # "RESYNCHRONISES a few frames in", and a real capture opens
 # '?? ?? ?? ?? DD 3B ?? ?? 76 C8' then repeats 'Hello, World!' byte-exact. DD 3B and 76 C8 are
@@ -428,6 +437,14 @@ JP_BODY_FRAC = 0.5
 # to zero: j20 lost 1-5 bytes in 256 at 172800-240959 Bd, j10 at half the jitter lost none. 3 % covers
 # that with headroom and still fails a wrong-rate decode, which misses nearly every byte.
 # Exact vectors get zero -- a clean vector losing one byte is still a defect.
+# What a 'nodrop1' vector may drop, and the difference between the two modes is a fact about the
+# stimulus rather than a preference. A vector whose pause opens every pass gives the framer a long mark
+# run to anchor on before the first start bit, so inside the judged body there is no reason for it to
+# decline anything: 'nodrop' allows none. A vector whose pause sits MID-payload has continuous traffic
+# at the cycle boundary, so a capture can begin inside a frame and one clipped frame at the seam is a
+# property of the capture phase and not of the app: 'nodrop1' allows exactly that one.
+JP_NODROP_FLAGS = 1
+
 JP_LOUD_MISMATCH_FRAC = 0.03
 JP_LOUD_MISMATCH_FLOOR = 2
 
@@ -647,7 +664,10 @@ def judge_payload_v(got, want, expect='exact', synth=None):
     A capture of three bytes cannot be judged either way. Absence of evidence is not a wrong answer,
     so it is INCONCLUSIVE rather than FAIL, and a caller must not fold it into a silent-wrong count.
 
-    `expect` is 'exact' or 'loud' and only widens the mismatch allowance; see JP_LOUD_MISMATCH_FRAC.
+    `expect` is 'exact', 'loud', 'nodrop' or 'nodrop1'. 'loud' widens the mismatch allowance (see
+    JP_LOUD_MISMATCH_FRAC). The two nodrop modes withdraw the proportional flag budget and demand full
+    coverage, for vectors whose own subject is a long idle run: 'nodrop' allows no declined byte at all,
+    'nodrop1' allows one. See JP_NODROP_FLAGS for which stimulus earns which.
 
     `synth` is the set of frame indices lin_repair() FILLED IN from the oracle rather than captured, and it
     exists so that this function's own numbers do not become a lie. A substituted byte is unflagged, sits in
@@ -725,6 +745,24 @@ def judge_payload_v(got, want, expect='exact', synth=None):
         mbudget = max(JP_LOUD_MISMATCH_FLOOR, int(math.ceil(JP_LOUD_MISMATCH_FRAC * body)))
     else:
         mbudget = 0
+    # 'nodrop' IS STRICTER THAN 'exact', and it is the only mode that forbids a DECLINED byte. 'exact'
+    # already allows no silent mismatch, but it does allow a small number of frames the app itself
+    # flagged -- JP_FLAG_FRAC of the body, or JP_FLAG_FLOOR -- and judges only JP_COVER_MIN of what
+    # reached it. On a vector whose whole purpose is a long idle run, a dropped byte is the failure being
+    # looked for: the run is the thing that could desynchronise the framer, and tolerating two frames of
+    # it would pass exactly the defect the vector exists to catch. So the budget and the coverage both go
+    # to their limits for these, and nothing else changes.
+    flag_frac = JP_FLAG_FRAC
+    flag_floor = JP_FLAG_FLOOR
+    cover_min = JP_COVER_MIN
+    if expect == 'nodrop' or expect == 'nodrop1':
+        # The proportional allowance goes in both: a long idle run that desynchronises the framer drops
+        # many frames, not one, so a budget growing with the capture would pass the defect being looked
+        # for. What separates the two is whether the capture can begin mid-frame.
+        flag_frac, cover_min = 0.0, 1.0
+        flag_floor = 0
+        if expect == 'nodrop1':
+            flag_floor = JP_NODROP_FLAGS
     diagruns = [(s, gb) for s, gb in asbytes if len(gb) >= JP_MINVAL]
     ndiag = sum(len(gb) for _, gb in diagruns)
     # A byte is exempt only where the app ITSELF admitted damage, and only AFTER it. Resync debris
@@ -772,7 +810,7 @@ def judge_payload_v(got, want, expect='exact', synth=None):
     # A wrong alignment misses nearly every byte, so the best score must still be recognisably the
     # payload before any budget is applied -- otherwise a 1 % budget would pass pure garbage on a
     # payload short enough to have few alignments.
-    if (verified - vsyn) < JP_COVER_MIN * max(0, ndiag - vsyn):
+    if (verified - vsyn) < cover_min * max(0, ndiag - vsyn):
         return 'FAIL', ('best of %d alignments verifies only %d of %d run B (%.0f %%) -- not the '
                         'payload, silently wrong'
                         % (len(want), verified - vsyn, ndiag - vsyn,
@@ -782,7 +820,7 @@ def judge_payload_v(got, want, expect='exact', synth=None):
                         '%d -- silently wrong'
                         % (_boff(firstbad), mismatched, len(want), mbudget))
 
-    budget = max(JP_FLAG_FLOOR, int(math.ceil(JP_FLAG_FRAC * body)))
+    budget = max(flag_floor, int(math.ceil(flag_frac * body)))
     if len(interior) > budget:
         return 'FAIL', ('%s%d interior flagged, budget %d'
                         % (_boff(min(interior) if interior else None), len(interior), budget))
@@ -791,9 +829,9 @@ def judge_payload_v(got, want, expect='exact', synth=None):
         return 'FAIL', ('%d byte(s) exempted beside flagged frames, budget %d -- more debris than the '
                         'damage explains' % (edgeskip, budget))
     cover = float(verified - vsyn) / max(1, body - nsyn)
-    if cover < JP_COVER_MIN:
+    if cover < cover_min:
         return 'FAIL', ('only %.1f %% positively verified (need %.0f %%)'
-                        % (100 * cover, 100 * JP_COVER_MIN))
+                        % (100 * cover, 100 * cover_min))
     # AND HOW MUCH OF THE CAPTURE REACHED THE JUDGE. cover above is relative to what survived our own
     # exclusions, so a big trim makes it easy to satisfy. head_damage and the JP_MINBODY clamp make that
     # hard to reach, but the loss is STATED regardless -- including in the pass message, because a

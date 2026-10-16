@@ -207,7 +207,13 @@ print('-- the size the fortnight will actually push --')
 # checked rather than remembered.
 n14 = 210 * len([r for r in ROWS if r and r[0].isdigit()]) // 2
 bytes14 = int(210 * sum(len(r) + 1 for r in ROWS if r and r[0].isdigit()) / 2.0)
-check('a 210-lap plan is the size the design says', 279000 < n14 < 281000 and bytes14 < 22 * 1024 * 1024,
+# THE WINDOW MOVED WITH THE DRAW, and it is a documented size rather than a correctness property. Four
+# gap vectors joined the draw and five r-series left it (vector_names.BENCH_ONLY), which holds the
+# hardware lap at its 1677 cells but not this plan: the r-series is thinned per lap by random_drop()
+# while the gap vectors play every lap, so five out does not pay for four in here. 315000-317000 brackets
+# the measured 316050. What matters is the byte budget below it -- 21.0 MB against the key's 22 -- and
+# that is still the binding constraint. Re-measure rather than widen if the draw changes again.
+check('a 210-lap plan is the size the design says', 315000 < n14 < 317000 and bytes14 < 22 * 1024 * 1024,
       '%d rows, %.1f MB, %d batches' % (n14, bytes14 / 1048576.0,
                                         (n14 + RB.PUSH_BATCH_ROWS - 1) // RB.PUSH_BATCH_ROWS))
 check('and it is inside PUSH_MAX_ROWS', n14 < RB.PUSH_MAX_ROWS,

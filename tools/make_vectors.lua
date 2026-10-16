@@ -571,6 +571,71 @@ vec{id = 'v93', desc = '1024 uniform random bytes 0-255, 9600 8N1 (over the uplo
 -- MASKED WITH math.mod, NOT AN AND OPERATOR, because Lua 5.0.2 has no bitwise operators at all and
 -- this file's payloads must be reproducible by the same source the instrument's Lua would accept.
 -- For a byte in 0..255, math.mod(b, 128) is b & 0x7F.
+-- ---------------------------------------------------------------------------
+-- A LINE THAT PAUSES, which no other vector in the soak draw does. The longest constant run in the
+-- rest of the set is a 20-bit-time loop seam -- two frames -- so the decoder's long-idle paths
+-- (sig_idle's recurrence counter, sig_onebit's percentile, sig_fit's maxmult cutoff, the framer's
+-- mark-run anchor) were exercised only by the pre-trigger reserve and never by the wire itself.
+--
+-- THE PAUSE IS COUNTED IN BIT TIMES, AND THAT IS WHAT MAKES IT PORTABLE ACROSS THE RATE LADDER. A gap
+-- expressed in arb POINTS lasts a different time at every rate the soak draws -- 1 s at 1200 Bd is
+-- 8 ms at 250 kBd -- so one file would be a different experiment in every cell. In bit times the
+-- decoder sees the identical run of idle at every rate, which is the invariant it actually cares
+-- about: what can desynchronise a framer is a run measured in frames, not in seconds.
+--
+-- SIZED SO A CAPTURE CANNOT LAND ENTIRELY IN THE PAUSE. At a matched sdec.fs a capture is 20000 arb
+-- samples, 2000 bit times at SPB, so each whole cycle stays under that and every window holds payload
+-- wherever the phase falls. A mostly-idle vector would fail cells on phase alone -- a looping arb's
+-- phase is a coin flip per capture -- and those failures would not be defects.
+--
+-- FOUR, IN TWO SHAPES AND TWO FORMATS. The pause at the START of a pass is a device that has not
+-- spoken yet; MID-payload it is one that paused to think, with traffic either side. 8N1 with a 600-bit
+-- pause and 7E1 with a 1000-bit one, so neither the format nor the run length is held constant across
+-- the pair. They are judged 'nodrop' (tools/soakplan.py VECTOR_EXPECT): a declined byte is the failure
+-- being looked for here, so the proportional flag budget is withdrawn.
+local GAP8 = lorem_text(130, 64)
+local GAP7 = lorem_text(80, 64)
+
+vec{id = 'v98a', desc = '130 bytes of lorem behind a 600-bit-time idle lead, 9600 8N1 -- the pause '
+                        .. 'opens every pass, which is a device that has not started talking',
+    fs = sr(9600), fsv = 5.0,
+    build = function()
+      local by, nb = GEN_BYTES(GAP8)
+      -- loop = true runs the tail into the lead, so each pass opens on 610 bit times of mark.
+      return {bytes = by, baud = 9600, fs = sr(9600), gap = 0, lead = 600, tail = 10,
+              loop = true}, by, nb, nil, GAP8
+    end}
+
+vec{id = 'v98b', desc = '130 bytes of lorem with a 600-bit-time idle pause after byte 65, 9600 8N1 '
+                        .. '-- the pause is MID-payload, with traffic on both sides of it',
+    fs = sr(9600), fsv = 5.0,
+    build = function()
+      local by, nb = GEN_BYTES(GAP8)
+      -- midgap lands after a whole frame, so the pause is an idle line and not a stop-bit violation.
+      -- Idle carries no frames, so the expected bytes are the payload unchanged.
+      return {bytes = by, baud = 9600, fs = sr(9600), gap = 0, lead = 10, tail = 10,
+              midgap = 600, midgap_at = 65, loop = true}, by, nb, nil, GAP8
+    end}
+
+vec{id = 'v99a', desc = '80 bytes of lorem behind a 1000-bit-time idle lead, 9600 7E1 -- a longer '
+                        .. 'pause than v98a, and a parity format rather than 8N1',
+    fs = sr(9600), fsv = 5.0,
+    build = function()
+      local by, nb = GEN_BYTES(GAP7)
+      return {bytes = by, baud = 9600, fs = sr(9600), nbits = 7, par = 1, gap = 0,
+              lead = 1000, tail = 10, loop = true}, by, nb, nil, GAP7
+    end}
+
+vec{id = 'v99b', desc = '80 bytes of lorem with a 1000-bit-time idle pause after byte 40, 9600 7E1 '
+                        .. '-- the mid-payload pause at the longer run length',
+    fs = sr(9600), fsv = 5.0,
+    build = function()
+      local by, nb = GEN_BYTES(GAP7)
+      return {bytes = by, baud = 9600, fs = sr(9600), nbits = 7, par = 1, gap = 0,
+              lead = 10, tail = 10, midgap = 1000, midgap_at = 40, loop = true},
+             by, nb, nil, GAP7
+    end}
+
 vec{id = 'v97', desc = '1024 random bytes masked to 7 bits -- v93 with bit 7 cleared, 9600 8N1 '
                        .. '(over the upload ceiling)',
     fs = sr(9600), fsv = 5.0, long = true,

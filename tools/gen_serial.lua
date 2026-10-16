@@ -105,8 +105,19 @@ function GEN(opts)
   local lead  = opts.lead or 20
   local gap   = opts.gap or 2
   local tail  = opts.tail or 20
+  -- Idle bit times inserted ONCE, after midgap_at bytes, which the per-byte `gap` cannot express: gap puts
+  -- the same silence after every byte and lead/tail only reach the ends, so a single pause in the middle of a
+  -- payload -- a device that prints a line, thinks, then prints another -- had no expression here at all.
+  -- Counted in BIT TIMES like its neighbours, which is what makes it portable across the rate ladder: the
+  -- decoder sees the same run of idle at every baud, where a count of arb POINTS would be a different
+  -- experiment at each one.
+  local midgap = opts.midgap or 0
+  local midgap_at = opts.midgap_at
   local bytes = opts.bytes or {}
   local nb    = table.getn(bytes)
+  -- Defaulted here because nb is not in scope above. The midpoint, so the pause has payload on both
+  -- sides of it whatever the byte count.
+  if midgap_at == nil then midgap_at = math.floor(nb / 2) end
 
   -- INJECTED PARITY ERRORS, as a lookup keyed by frame index.
   --
@@ -160,6 +171,11 @@ function GEN(opts)
     for k = 1, nstop do nc = nc + 1; cells[nc] = 1 end
     if i < nb then
       for k = 1, gap do nc = nc + 1; cells[nc] = 1 end
+    end
+    -- After the frame and its inter-byte gap, so the pause sits on a frame boundary: inside one it would be
+    -- a stop-bit violation rather than an idle line, and the decoder is right to flag that.
+    if midgap > 0 and i == midgap_at and i < nb then
+      for k = 1, midgap do nc = nc + 1; cells[nc] = 1 end
     end
   end
   for i = 1, tail do nc = nc + 1; cells[nc] = 1 end
