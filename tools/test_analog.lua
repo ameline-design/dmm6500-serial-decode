@@ -723,6 +723,136 @@ check('a re-decode with its own head evidence is reached, so the check above can
 sdec.ua_refine_parity = real_refine        -- a wrapper left in place poisons every later case
 
 -- ============================================================================
+print('')
+print('the parity vote: how damaged, and how few frames, before it declines')
+-- THREE THRESHOLDS THAT NOTHING PINNED. A mutation sweep moved par_minfrac 0.95 -> 0.6,
+-- par_minvote_frac 20 -> 4 and par_minvote_all 6 -> 2, and the whole offline suite stayed green on
+-- every one. Each decides whether an 8N1 reading is RE-READ as 7E1, which is a format change on the
+-- panel -- so a threshold set too loose does not decline, it answers confidently and wrongly.
+--
+-- Driven through GEN and decode_from rather than a synthetic result table: ua_refine_parity refuses
+-- the non-strict branch outright when rd/n/T are absent, so a hand-built table cannot reach the half
+-- these thresholds govern. That is why the existing mkpar checks above leave them free.
+--
+-- The boundaries are measured. Damage over 120 frames: 0 % takes the strict strip, 2 % and 5 % the
+-- re-decode, 10 % declines -- par_minfrac is 0.95 and 11 faults in 116 votes is 90.5 %. Frames with
+-- one fault: 6 through 20 decline, 26 and up promote, because under par_minvote_frac votes the
+-- required fraction becomes unanimity and one dissenter breaks it. Frames with nothing wrong: 8 and 9
+-- decline on par_minvote_all, 10 promotes -- nvote is frames less par_skiphead less par_skiptail.
+do
+  local PVFS = 80000
+  local function pvfmt(nb, perr)
+    local by, i = {}, nil
+    for i = 1, nb do by[i] = math.mod(i * 37 + 11, 128) end
+    local rd, ts, nc, ns = GEN({bytes = by, nbits = 7, par = 1, baud = 9600, fs = PVFS,
+                                gap = 0, lead = 20, tail = 20, perr = perr})
+    sdec.acq_fs = PVFS
+    sdec.sig_levels(rd, ns)
+    sdec.sig_edges(rd, ns)
+    sdec.sig_idle(rd, ns)
+    sdec.force_baud, sdec.force_nbits = nil, nil
+    sdec.force_par, sdec.force_nstop, sdec.force_invert = nil, nil, nil
+    nrun = nrun + 1
+    if not pcall(function() return sdec.decode_from(rd, ns) end) then return 'raise' end
+    local r = sdec.res
+    if r == nil then return 'nores' end
+    if r.nbits == 7 and r.par == 1 then return '7E' end
+    if r.nbits == 8 and r.par == sdec.PAR_NONE then return '8N' end
+    return string.format('%s/%s', tostring(r.nbits), tostring(r.par))
+  end
+  -- Faults every kth frame, never in the skipped head or the sliced tail, so the FRACTION is what
+  -- decides and not par_skiphead/par_skiptail.
+  local function every(nb, k)
+    local p, np, i = {}, 0, nil
+    for i = 1, nb do
+      if math.mod(i, k) == 0 and i > 4 and i < nb then np = np + 1; p[np] = i end
+    end
+    if np == 0 then return nil end
+    return p
+  end
+  -- The positive control first: a vote that declined everything would satisfy the limit checks below
+  -- while recognising nothing, so the admissible case has to be asserted in the same breath.
+  local d05 = pvfmt(120, every(120, 20))
+  check('a 7E1 line with 5 % of its parity bits wrong is still recognised as 7E1', d05 == '7E', d05)
+  local d10 = pvfmt(120, every(120, 10))
+  check('but at 10 % wrong it declines to 8N1 rather than claiming a format its frames contradict',
+        d10 == '8N', d10)
+  local f20 = pvfmt(20, {10})
+  check('a 20-frame capture with one wrong parity bit declines, unanimity being required that low',
+        f20 == '8N', f20)
+  local f26 = pvfmt(26, {13})
+  check('and 26 frames with the same single fault promotes, so that is a threshold and not a refusal',
+        f26 == '7E', f26)
+  local c08 = pvfmt(8, nil)
+  check('an 8-frame capture is not promoted even with nothing wrong -- too few frames voted',
+        c08 == '8N', c08)
+  local c10 = pvfmt(10, nil)
+  check('and 10 frames is, so par_minvote_all is a floor rather than a blanket refusal', c10 == '7E',
+        c10)
+
+  -- PAR_MINVOTE_FRAC IS INERT AS SHIPPED, and the right thing to assert is the relationship that
+  -- makes it so rather than a behaviour it cannot change. Measured: moving it from 20 to 4 changes
+  -- the outcome on 0 of 80 (frames, faults) combinations, because par_minfrac already forces
+  -- unanimity below 20 votes -- one dissenter gives (n-1)/n, which reaches 0.95 only at n = 20.
+  -- Two dissenters need n = 40. So the fraction binds first at every size and the explicit
+  -- `if nvote < par_minvote_frac then need = nvote end` never decides anything.
+  --
+  -- That is worth keeping, because it states the intent where the algebra only implies it -- the same
+  -- case as a ceiling that is documented but not binding. What must not happen silently is the two
+  -- drifting apart: lower par_minfrac and par_minvote_frac becomes load-bearing, and the comment
+  -- above it turns into a lie. Pinned as the identity that holds today -- minvote_frac is the
+  -- SMALLEST vote count at which a single dissenter clears minfrac.
+  local nv = sdec.par_minvote_frac
+  check('par_minvote_frac is exactly where one dissenter starts clearing par_minfrac, so it is '
+        .. 'implied by it rather than an independent threshold',
+        (nv - 1) / nv >= sdec.par_minfrac and (nv - 2) / (nv - 1) < sdec.par_minfrac,
+        string.format('minvote_frac %s, minfrac %s: (n-1)/n=%.4f, (n-2)/(n-1)=%.4f',
+                      tostring(nv), tostring(sdec.par_minfrac), (nv - 1) / nv,
+                      (nv - 2) / (nv - 1)))
+
+  -- THE ALTERNATIVES LIST HAD NO TEST AT ALL. ua_alts is what puts "8N1 also fits" on the panel, and
+  -- alt_minframes could be moved to a million -- so the list is empty on every capture and the note
+  -- never appears again -- with the entire offline suite green. It was the one constant of the
+  -- twenty-six swept that nothing pinned in either direction.
+  --
+  -- Both sides of the floor are asserted, because a list that is ALWAYS empty satisfies the
+  -- below-the-floor check on its own. Measured: a 7E1 capture names 8N1 as the format it cannot be
+  -- told apart from, and the boundary sits exactly at alt_minframes -- 4 to 7 good frames name
+  -- nothing, 8 upward name the one alternative. The floor earns its keep because ua_margin has an
+  -- absolute component, so on a handful of frames nearly every format lands inside it.
+  local function altnames(nb)
+    local by, i = {}, nil
+    for i = 1, nb do by[i] = math.mod(i * 37 + 11, 128) end
+    local rd, ts, nc, ns = GEN({bytes = by, nbits = 7, par = 1, baud = 9600, fs = PVFS,
+                                gap = 0, lead = 20, tail = 20})
+    sdec.acq_fs = PVFS
+    sdec.sig_levels(rd, ns)
+    sdec.sig_edges(rd, ns)
+    sdec.sig_idle(rd, ns)
+    sdec.force_baud, sdec.force_nbits = nil, nil
+    sdec.force_par, sdec.force_nstop, sdec.force_invert = nil, nil, nil
+    nrun = nrun + 1
+    if not pcall(function() return sdec.decode_from(rd, ns) end) then return -1, '' end
+    local r = sdec.res
+    if r == nil then return -1, '' end
+    local names, m = sdec.ua_alts(r)
+    local s, k = '', nil
+    for k = 1, m do s = s .. (k > 1 and ',' or '') .. tostring(names[k]) end
+    return m, s
+  end
+  local an, as = altnames(120)
+  check('a 7E1 capture names the format it cannot be told apart from, which is what the panel reports',
+        an >= 1 and string.find(as, '8N1', 1, true) ~= nil,
+        string.format('%d alternative(s): %s', an, as))
+  local a7 = altnames(7)
+  check('and under alt_minframes good frames it names none, the margin saying nothing that small',
+        a7 == 0, string.format('%d alternative(s) on 7 frames', a7))
+  local a8 = altnames(8)
+  check('with the boundary exactly at that floor, so it is a floor and not a list that is never built',
+        a8 >= 1, string.format('%d alternative(s) on 8 frames', a8))
+end
+
+-- ============================================================================
 print(string.format('\n%d passed, %d failed   (%d decodes swept)', pass, fail, nrun))
 if table.getn(wrong) > 0 then
   print('\nevery wrong answer, so a rate can be read off rather than guessed:')
