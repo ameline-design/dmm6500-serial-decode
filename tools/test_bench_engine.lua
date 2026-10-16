@@ -1596,6 +1596,28 @@ do
   ck(string.find(tim, 'Total: ', 1, true) == 1 and string.find(tim, ' of ', 1, true) == nil
      and string.find(tim, 's/c', 1, true) == nil,
      'the time line withholds a projected total and a rate until a rate exists', tim)
+  -- THE NO-RATE SCENARIO IS CONSTRUCTED, NOT INHERITED, and that is a fix rather than tidying. The rate
+  -- is os.time() - brun.t0 (see the 'TIME REMAINING IS EXTRAPOLATED' note in brun.screen), and this
+  -- block never set t0 -- so it ran on whatever an earlier check left behind and passed only because
+  -- the suite reached here fast enough for the elapsed to round to nothing. Under parallel load it does
+  -- not: measured, the check above fired with 'Total: 0.0h of 0.2h - 412/352170 c (0.1%) 0.00243s/c' in
+  -- a five-worker run and passed alone in the same tree. A test whose verdict depends on how busy the
+  -- machine is will eventually fail a release sweep for no reason, and be believed.
+  --
+  -- Asserted in both directions, because t0 = nil satisfies the absence check for the wrong reason: a
+  -- screen that never prints a rate at all would pass it. With an elapsed the fields appear.
+  local keept0 = brun.t0
+  brun.t0 = nil
+  brun.screen({iter = 3, cell = 412, vid = 'v48b', baud = 153600}, 'SER_Hello_8N1_Drift10_x10')
+  local tim0 = MD.text(brun.ui.time)
+  ck(string.find(tim0, ' of ', 1, true) == nil and string.find(tim0, 's/c', 1, true) == nil,
+     'and it does so with no elapsed at all, which is the condition stated rather than assumed', tim0)
+  brun.t0 = os.time() - 600
+  brun.screen({iter = 3, cell = 412, vid = 'v48b', baud = 153600}, 'SER_Hello_8N1_Drift10_x10')
+  local tim1 = MD.text(brun.ui.time)
+  ck(string.find(tim1, ' of ', 1, true) ~= nil and string.find(tim1, 's/c', 1, true) ~= nil,
+     'while a run with ten minutes behind it does carry both, so the absence above is a decision', tim1)
+  brun.t0 = keept0
 
   -- HOW LONG THIS LAP HAS TO RUN, which is the field the operator acts on rather than reads: a run ends
   -- with the TRIGGER key, and stopping nine tenths of the way through a lap discards that lap as far as
