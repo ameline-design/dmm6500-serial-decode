@@ -803,6 +803,246 @@ print('\nF  an arm the signal never satisfies expires, and the mock gets there o
   sdec.armlevel, sdec.armwait, sdec.armkey = keep.lvl, keep.wait, keep.key
 end)()
 
+-- ============================================================================
+-- GAP ELISION: the program, and the non-termination that decides how it ends
+-- ============================================================================
+-- THE PREMISE IS ASSERTED FIRST, and without it the rest of this section proves nothing. Every claim below
+-- depends on the mock accepting a hand-built program at all: before setblock() existed here, load('Empty')
+-- raised, gap_model() caught it in its own pcall and returned false, and a suite could assert "elision did not
+-- engage" for ever while believing it had tested elision.
+;(function()
+  local keep = {ge = sdec.gapelide, fb = sdec.force_baud, el = sdec.strm_elide}
+  trigger.model.load('Empty')
+  CK('the mock empties the store on load(Empty), which hand-building requires',
+     trigger.model.getblocklist() == 'EMPTY', tostring(trigger.model.getblocklist()))
+
+  local rec = buffer.make(50000, buffer.STYLE_STANDARD)
+  local scr = buffer.make(2000, buffer.STYLE_STANDARD)
+  local built = sdec.gap_model(rec, scr, trigger.EVENT_BLENDER1, 0.1)
+  CK('gap_model builds and the store reads back as holding it', built == true, tostring(built))
+  local bl = trigger.model.getblocklist()
+  CK('...seven blocks: clear, the gap digitize, the wait, the burst digitize, delay, branch, loop',
+     TRIG.nblocks == 7 and HAS(bl, 'BUFFER_CLEAR') and HAS(bl, 'WAIT') and
+     HAS(bl, 'DELAY_CONSTANT') and HAS(bl, 'BRANCH_ON_EVENT') and HAS(bl, 'BRANCH_ALWAYS'),
+     string.format('%d blocks', TRIG.nblocks or -1))
+  -- TWO MEASURE BLOCKS EXACTLY. A third posts 2753 on the instrument, so this is the firmware's budget and not
+  -- a style choice -- and it is what forces the burst to be ended by the detector rather than by a count.
+  local nmd = 0
+  for i = 1, TRIG.nblocks do
+    if TRIG.blocks[i] ~= nil and TRIG.blocks[i].op == 'MEASURE_DIGITIZE' then nmd = nmd + 1 end
+  end
+  CK('...exactly two measure blocks, which is the firmware budget', nmd == 2, tostring(nmd))
+  -- THE TWO BUFFERS ARE NOT THE SAME ONE, which is the whole mechanism: the gap goes to the scratch and the
+  -- burst to the record. One buffer in both slots elides nothing and the record fills with silence.
+  CK('...the gap block writes the scratch and the burst block the record, not one buffer twice',
+     TRIG.blocks[2].buf == scr and TRIG.blocks[4].buf == rec,
+     string.format('b2=%s b4=%s', tostring(TRIG.blocks[2].buf == scr),
+                   tostring(TRIG.blocks[4].buf == rec)))
+  -- CLEAR_ENTER, and it is load-bearing: CLEAR_NEVER lets the wait consume a crossing latched during the burst
+  -- it just recorded, so it falls straight through and no gap is ever skipped while every other number looks
+  -- right. The mock cannot ACT on clear (it says so), so the assertion is on what was programmed.
+  CK('...the wait discards a crossing latched during the burst it just recorded',
+     TRIG.blocks[3].clear == trigger.CLEAR_ENTER, tostring(TRIG.blocks[3].clear))
+  -- THE DETECTOR TESTS THE COMPARATOR, NOT THE ARM'S EVENT. With armkey set arm_source() hands back
+  -- EVENT_BLENDER1 so a TRIGGER press can cut the arm short -- and a press through that blender would read as
+  -- "the line is still talking" and hold the burst open for ever.
+  CK('...and block 6 tests the comparator itself, not the blended arm event',
+     TRIG.blocks[6].arg == trigger.EVENT_ANALOGTRIGGER and
+     TRIG.blocks[3].arg == trigger.EVENT_BLENDER1,
+     string.format('b6=%s b3=%s', tostring(TRIG.blocks[6].arg), tostring(TRIG.blocks[3].arg)))
+  CK('...the loop goes back to the gap block, so the record accumulates across bursts',
+     TRIG.blocks[7].op == 'BRANCH_ALWAYS' and TRIG.blocks[7].target == 2,
+     string.format('%s -> %s', tostring(TRIG.blocks[7].op), tostring(TRIG.blocks[7].target)))
+
+  -- THE FINDING THIS SECTION EXISTS FOR. The program cannot reach its end, so it never reaches STATE_IDLE and
+  -- sdec.trig_done() is false for the whole run. The armed branch of stream_acquire's completion test asks
+  -- exactly that question, so an eliding capture has no 'record full' exit unless the sample count is used.
+  CK('a backward BRANCH_ALWAYS makes the program non-terminating, as the instrument has it',
+     TRIG_TERMINATES() == false, tostring(TRIG_TERMINATES()))
+  -- AND THE EXPECTED-FAIL DIRECTION, or the test above is just a property of this one program: the same walk
+  -- must call the canned armed template terminating, or it would report every capture as unfinished.
+  trigger.model.load('LoopUntilEvent', trigger.EVENT_ANALOGTRIGGER, 5, trigger.CLEAR_ENTER, 0, rec)
+  CK('...while the canned armed template still terminates, so the test is not vacuous',
+     TRIG_TERMINATES() == true, tostring(TRIG_TERMINATES()))
+
+  -- THE VERDICT MUST NOT SURVIVE A REFUSED ARM, and stream_arm has four early returns ahead of the point where
+  -- it is decided. The poll loop reads strm_elide to choose its completion test, its wall-clock ceiling and
+  -- where its quiet timer comes from, so a pair left over from a previous capture would run an eliding
+  -- recording's arithmetic over a record that was never elided. Forced here through the earliest return --
+  -- sdec.buf nil -- with the flags deliberately pre-set to a previous capture's values.
+  local kbuf = sdec.buf
+  sdec.strm_elide, sdec.acq_elided = 0.1, true
+  sdec.buf = nil
+  local refused = sdec.stream_arm(1000)
+  sdec.buf = kbuf
+  CK('a refused arm clears the elision verdict rather than leaving the last one standing',
+     refused == false and sdec.strm_elide == nil and sdec.acq_elided == nil,
+     string.format('refused=%s elide=%s elided=%s', tostring(refused),
+                   tostring(sdec.strm_elide), tostring(sdec.acq_elided)))
+
+  pcall(function() buffer.delete(rec) end)
+  pcall(function() buffer.delete(scr) end)
+  trigger.model.load('Empty')
+  sdec.gapelide, sdec.force_baud, sdec.strm_elide = keep.ge, keep.fb, keep.el
+end)()
+
+-- ============================================================================
+-- GAP ELISION: an eliding recording driven through the real poll loop
+-- ============================================================================
+-- THIS IS THE TEST THE BLOCK-SHAPE ASSERTIONS ABOVE CANNOT BE A SUBSTITUTE FOR. The one line this whole
+-- change turns on is stream_acquire's completion test: trig_done() wants STATE_IDLE and the elision program
+-- is a BRANCH_ALWAYS loop that never idles, so an armed capture's only completion test is a constant false and
+-- the sample count has to be used instead. Asserting the program's shape says nothing about that; only running
+-- it does.
+--
+-- A LONG LEAD IS WHAT MAKES THE ARM REACHABLE, and it is the real scenario rather than a trick. Elision needs
+-- arm_silent(), which needs the level probe to have found no line -- so the waveform has to be quiet while the
+-- probe reads it and transmit afterwards, which is exactly a device that starts after Capture is pressed. 600
+-- bit times at 9600/40 kS/s is 2500 samples, past the ~2000 the probe takes.
+;(function()
+  local keep = {ge = sdec.gapelide, fb = sdec.force_baud, cm = sdec.capmode,
+                tm = sdec.trigmode, ms = sdec.strm_maxsec}
+  local tb = GEN_BYTES(string.rep('gap elision ', 40))
+  -- The FOURTH return is the sample count; the third is the cell count. Assigning three puts cells into
+  -- SRC.nsmp and the source then looks four times shorter than it is.
+  local grd, gts, _, gns = GEN({bytes = tb, baud = 9600, fs = 40000, lead = 600})
+  SRC.rd, SRC.ts, SRC.nsmp = grd, gts, gns
+  SRC.trigat, SRC.loop, SRC.native_fs = nil, false, nil
+  sdec.capmode, sdec.force_baud, sdec.trigmode = 'sml', 9600, 'edge'
+  sdec.gapelide, sdec.strm_maxsec = 0.01, 60
+  local bok, bwhy = sdec.stream_begin()
+  CK('an eliding 8 kB recording sets up on a line that has not started', bok == true, tostring(bwhy))
+  TRIG_CLOCK(0)
+  -- A smaller target than the mode's own, because the fill test can only be seen firing if the record can
+  -- actually reach it: the 8 kB mode wants 341 334 readings at this rate against a rendered source of 26 577,
+  -- so measured against sdec.strm_nsmp the run would end on its ceiling whether the fill test existed or not.
+  local want = 20000
+  local got = sdec.stream_acquire(want)
+  CK('...the arm went live and the program loaded is the hand-built one, not a template',
+     sdec.strm_armed == true and TRIG.handbuilt == true and TRIG.nblocks == 7,
+     string.format('armed=%s handbuilt=%s blocks=%s', tostring(sdec.strm_armed),
+                   tostring(TRIG.handbuilt), tostring(TRIG.nblocks)))
+  CK('...and the elision verdict comes from the program that loaded',
+     sdec.strm_elide ~= nil and sdec.acq_elided == true,
+     string.format('elide=%s elided=%s', tostring(sdec.strm_elide), tostring(sdec.acq_elided)))
+  -- THE RUN ENDED ON THE SAMPLE COUNT, AND THE CLOCK IS WHAT PROVES IT. endwhy alone cannot: the ceiling
+  -- reports 'full' as well, so both an honest fill and a timed-out one look the same in it. The virtual clock
+  -- separates them exactly -- the fill test breaks on the first look, the ceiling after its whole 60 s. This is
+  -- the assertion that dies if the fill test goes back under the armed `if`, because trig_done() needs
+  -- STATE_IDLE and this program never reaches it, so nothing else would end the run before the clock ran out.
+  CK('...so the recording ends on a full record at once, not on its wall-clock ceiling',
+     sdec.ck_endwhy == 'full' and got >= want and (sdec.strm_waited or 0) < 5,
+     string.format('endwhy=%s got=%s want=%d waited=%s', tostring(sdec.ck_endwhy), tostring(got),
+                   want, tostring(sdec.strm_waited)))
+  -- THE CEILING IS THE ELIDING ONE, which is the other half of B2: fed the wrong argument it would be
+  -- 2 * nsmp / fs and a real eliding run would be cut short.
+  CK('...and the ceiling it ran under is the eliding one, not twice the contiguous fill time',
+     sdec.stream_limit(want, sdec.fs, sdec.strm_elide) == 60
+     and sdec.stream_limit(want, sdec.fs, nil) < 60,
+     string.format('%s eliding, %s not', tostring(sdec.stream_limit(want, sdec.fs, sdec.strm_elide)),
+                   tostring(sdec.stream_limit(want, sdec.fs, nil))))
+  -- The note row carries the verdict rather than leaving the operator to infer it.
+  local note = sdec.strm_exit_why(sdec.ck_endwhy, true, nil)
+  CK('...and the note says the buffer filled rather than claiming elision did not run',
+     HAS(note, 'buffer full') and not HAS(note, 'gap elision off'), note)
+  -- ---- the decode's own two elision inputs, observed where they land ----
+  -- stream_decode builds the options the format search runs under, and both of its elision clauses are
+  -- invisible from the leaf functions that were already tested. Driving the decode puts them where they can be
+  -- seen: leadmax decides acq_pretrig, and the skip decides how many windows the search may spend.
+  -- The options themselves are captured, because both clauses are invisible from outside: leadmax must be nil
+  -- on a program that has no reserve, or acq_pretrig comes back true downstream and sig_idle reads a genuine
+  -- leading run as the wire before the device started; and the skip must be set, or the format search spends
+  -- two windows on a record whose first burst is followed by a window of idle and refuses the lot.
+  local seen = nil
+  local realjob = sdec.ck_job_new
+  sdec.ck_job_new = function(reader, ntotal, path, opts)
+    seen = opts
+    return realjob(reader, ntotal, path, opts)
+  end
+  local dok = pcall(function() sdec.stream_decode(sdec.buf.n) end)
+  sdec.ck_job_new = realjob
+  CK('...the decode runs on an elided record and its options were built', dok == true and seen ~= nil,
+     string.format('ok=%s opts=%s', tostring(dok), tostring(seen ~= nil)))
+  CK('...with no pre-trigger reserve claimed, which an elided record does not have',
+     seen ~= nil and seen.leadmax == nil, tostring(seen and seen.leadmax))
+  CK('...and with room for the idle tails, two windows of them',
+     seen ~= nil and seen.primeskip ~= nil
+     and seen.primeskip >= 2 * sdec.strm_elide * sdec.fs - 1,
+     string.format('%s readings for a %s s window at %s S/s', tostring(seen and seen.primeskip),
+                   tostring(sdec.strm_elide), tostring(sdec.fs)))
+
+  -- ---- the ceiling has to be OBSERVABLE, so here is a run that ends on it ----
+  -- The fill test above ends the run at once, which is exactly why it cannot check which ceiling was in force:
+  -- the clock never gets near either. A target the record cannot reach ends the run on the ceiling instead, and
+  -- then the time waited IS the ceiling -- 60 s eliding against stream_maxwait's 10 s if the elision argument
+  -- never arrives at the call site.
+  TRIG_CLOCK(0)
+  local unreachable = (sdec.buf.capacity or 0) + 100000
+  sdec.stream_acquire(unreachable)
+  -- 70 s eliding (60 plus the arm's own wait) against about 30 contiguous, so the threshold sits between them
+  -- with room either side rather than on top of one of them.
+  CK('...and a run that cannot fill waits out the ELIDING ceiling, not the contiguous one',
+     (sdec.strm_waited or 0) > 45,
+     string.format('waited %.1f s, eliding ceiling %s, contiguous %s', sdec.strm_waited or -1,
+                   tostring(sdec.stream_limit(unreachable, sdec.fs, sdec.strm_elide)),
+                   tostring(sdec.stream_limit(unreachable, sdec.fs, nil))))
+
+  -- ---- the verdict follows the PROGRAM, not the option ----
+  -- Asked for but undeliverable: `front` makes arm_source() hand back EVENT_DISPLAY with useanalog false, so
+  -- there is no comparator for the detector to test and the arm falls back to the canned template. The option
+  -- is still on, so anything reading the option instead of the program reports an elided record and the rate
+  -- would then be measured by the sampled estimator over a record that was never spliced.
+  sdec.trigmode = 'front'
+  local b2 = sdec.stream_begin()
+  TRIG_CLOCK(0)
+  sdec.stream_acquire(20000)
+  CK('elision asked for but undeliverable leaves the verdict unset, option notwithstanding',
+     b2 == true and sdec.gap_elide(9600) ~= nil and sdec.strm_elide == nil
+     and sdec.acq_elided == nil and TRIG.handbuilt ~= true,
+     string.format('option=%s elide=%s elided=%s handbuilt=%s',
+                   tostring(sdec.gap_elide(9600)), tostring(sdec.strm_elide),
+                   tostring(sdec.acq_elided), tostring(TRIG.handbuilt)))
+  -- THE SENTENCE HAS TO REACH THE COMPOSED NOTE, not merely exist. gap_why() returning the right words proves
+  -- nothing if the wrapper that carries them to the glass is bypassed -- and a recording that quietly did not
+  -- elide looks exactly like one that did.
+  local offnote = sdec.strm_exit_why(sdec.ck_endwhy, true, nil)
+  CK('...and the reason reaches the note row the operator actually reads',
+     HAS(tostring(sdec.gap_why()), 'gap elision off') and HAS(offnote, 'gap elision off'),
+     string.format('why=%s note=%s', tostring(sdec.gap_why()), offnote))
+  sdec.trigmode = 'edge'
+
+  -- ---- the store is read back block by block ----
+  -- A rejected setblock reads as a FREE one on this instrument, so the listing is the only evidence a block
+  -- landed. Forced by handing gap_model a listing with block 4 missing, which is a program whose bursts go
+  -- nowhere: two landmarks would call that built.
+  local rec2 = buffer.make(5000, buffer.STYLE_STANDARD)
+  local scr2 = buffer.make(2000, buffer.STYLE_STANDARD)
+  local realbl = trigger.model.getblocklist
+  trigger.model.getblocklist = function()
+    return '   1) BUFFER_CLEAR\n   3) WAIT  CLEAR: enter\n   5) DELAY_CONSTANT  ARG: 0.1\n'
+        .. '   6) BRANCH_ON_EVENT  BRANCH_BLOCK: 5\n   7) BRANCH_ALWAYS  BRANCH_BLOCK: 2\n'
+  end
+  local refusedbl = sdec.gap_model(rec2, scr2, trigger.EVENT_BLENDER1, 0.1)
+  trigger.model.getblocklist = function()
+    return '   1) BUFFER_CLEAR\n   2) MEASURE_DIGITIZE\n   3) WAIT  CLEAR: enter\n'
+        .. '   5) DELAY_CONSTANT  ARG: 0.1\n   6) BRANCH_ON_EVENT\n   7) BRANCH_ALWAYS\n'
+  end
+  local oneMD = sdec.gap_model(rec2, scr2, trigger.EVENT_BLENDER1, 0.1)
+  trigger.model.getblocklist = realbl
+  local wholebl = sdec.gap_model(rec2, scr2, trigger.EVENT_BLENDER1, 0.1)
+  CK('a listing missing the burst block is refused, and one measure block is not two',
+     refusedbl == false and oneMD == false and wholebl == true,
+     string.format('no-measure=%s one-measure=%s whole=%s', tostring(refusedbl),
+                   tostring(oneMD), tostring(wholebl)))
+  pcall(function() buffer.delete(rec2) end)
+  pcall(function() buffer.delete(scr2) end)
+  trigger.model.load('Empty')
+
+  sdec.gapelide, sdec.force_baud, sdec.capmode = keep.ge, keep.fb, keep.cm
+  sdec.trigmode, sdec.strm_maxsec = keep.tm, keep.ms
+  pcall(sdec.gap_release)
+end)()
+
 -- The machine and the derivation are left OFF, so a suite that dofile's this one inherits the
 -- defaults rather than this file's choices.
 TRIG_WALK(false)

@@ -223,19 +223,27 @@ end
 -- recording whose bytes are all present. leadmax is the caller's and cannot be derived from ntotal,
 -- the reserve coming out of the buffer's capacity; nil means no reserve. docs/MEASUREMENTS.md, 'An
 -- armed record opens on silence' and 'ck_prime_tries = floor(leadmax / W) + 2'.
-function sdec.ck_prime_tries(leadmax)
+-- skip is a SECOND source of silence the search may have to cross, and it is separate from leadmax because the
+-- two answer different questions about the same record. An elided recording has no reserve at all, so leadmax
+-- must be nil there or sig_idle treats a genuine leading run as the wire before the device started -- but it
+-- carries one detector window of idle at the END of every burst, and a short first burst leaves the search
+-- looking at traffic, then idle, then giving up with 'no format' while every byte is present.
+function sdec.ck_prime_tries(leadmax, skip)
   local W = sdec.ck_win_n
   if W == nil or W < 1 then return 1 end
   if leadmax == nil or leadmax < 0 then leadmax = 0 end
-  return math.floor(leadmax / W) + 2
+  if skip == nil or skip < 0 then skip = 0 end
+  local lead = leadmax
+  if skip > lead then lead = skip end
+  return math.floor(lead / W) + 2
 end
 
-function sdec.ck_prime_new(reader, ntotal, win, leadmax)
+function sdec.ck_prime_new(reader, ntotal, win, leadmax, skip)
   if reader == nil then return nil, 'no sample source' end
   -- leadmax is kept, not just consumed: the 'edge' phase needs to know this record has a pre-trigger
   -- reserve, and leadmax being non-nil is that fact. One source, so the two cannot disagree.
   return {reader = reader, ntotal = ntotal, win = win, phase = 'lvd', probe = 0,
-          cnt = 0, at = 1, try = 1, tries = sdec.ck_prime_tries(leadmax),
+          cnt = 0, at = 1, try = 1, tries = sdec.ck_prime_tries(leadmax, skip),
           leadmax = leadmax,
           why = nil, label = 'levels'}, nil
 end
@@ -326,8 +334,8 @@ end
 -- the phase machine, not on the signal, so exceeding it is a coding fault. Derived rather than
 -- constant: one sized for ck_bufmax's reserve is no backstop at the ck_win_min floor, where the same
 -- reserve asks for an order of magnitude more tries. bufmax_for() can lower the cap at runtime.
-function sdec.ck_prime(reader, ntotal, win, leadmax)
-  local pr, perr = sdec.ck_prime_new(reader, ntotal, win, leadmax)
+function sdec.ck_prime(reader, ntotal, win, leadmax, skip)
+  local pr, perr = sdec.ck_prime_new(reader, ntotal, win, leadmax, skip)
   if pr == nil then return nil, perr end
   local done, fmt, err, guard = false, nil, nil, 0
   local gmax = 4 + (sdec.ck_probes or 1) + 3 * (pr.tries or 1)
@@ -726,7 +734,7 @@ function sdec.ck_job_new(reader, ntotal, path, opts)
 
   local win = {}
   -- opts.leadmax is the acquisition's statement of the pre-trigger reserve. See ck_prime_tries.
-  local pr, perr = sdec.ck_prime_new(reader, ntotal, win, opts.leadmax)
+  local pr, perr = sdec.ck_prime_new(reader, ntotal, win, opts.leadmax, opts.primeskip)
   if pr == nil then return nil, perr end
   opts.win = win
 

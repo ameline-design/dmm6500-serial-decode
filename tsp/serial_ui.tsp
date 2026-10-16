@@ -538,7 +538,7 @@ end
 
 -- ---------- options form handles ----------
 -- sdec.optscr, sdec.opt_proto, sdec.opt_baud, sdec.opt_bits, sdec.opt_par, sdec.opt_pol,
--- sdec.opt_trig, sdec.opt_ext, sdec.opt_armv, sdec.opt_armw -- declared, not assigned.
+-- sdec.opt_trig, sdec.opt_ext, sdec.opt_armv, sdec.opt_armw, sdec.opt_gape -- declared, not assigned.
 -- Eight fields, nine with a protocol module, and this is the riskiest geometry in the app --
 -- docs/MEASUREMENTS.md, 'The options form vertical geometry'. test_serial checks the last box
 -- against the button row. A field added now folds into another as an extra option entry, free.
@@ -2126,6 +2126,7 @@ function sdec.destroy_options()
   sdec.del_obj(sdec.opt_ext)
   sdec.del_obj(sdec.opt_armv)
   sdec.del_obj(sdec.opt_armw)
+  sdec.del_obj(sdec.opt_gape)
   if sdec.opt_btn ~= nil then
     local i
     for i = 1, table.getn(sdec.opt_btn) do sdec.del_obj(sdec.opt_btn[i]) end
@@ -2135,7 +2136,7 @@ function sdec.destroy_options()
   sdec.optscr, sdec.opt_proto, sdec.opt_baud = nil, nil, nil
   sdec.opt_bits, sdec.opt_par, sdec.opt_pol = nil, nil, nil
   sdec.opt_trig, sdec.opt_ext = nil, nil
-  sdec.opt_armv, sdec.opt_armw = nil, nil
+  sdec.opt_armv, sdec.opt_armw, sdec.opt_gape = nil, nil, nil
   return true
 end
 
@@ -2147,8 +2148,8 @@ function sdec.build_options()
   -- How many fields there will be, decided before the pitch, because the pitch depends on it. The
   -- Protocol field exists only with a module loaded, OBJ_EDIT_OPTION refusing fewer than two options.
   local pv, pl = sdec.opt_proto_list()
-  local nf = 8
-  if pl.n >= 2 then nf = 9 end
+  local nf = 9
+  if pl.n >= 2 then nf = 10 end
   -- The pitch is clamped to what fits, ui_opt_dy being a preference and the last box having
   -- to end above the button row -- docs/MEASUREMENTS.md, 'The options form vertical geometry'.
   local eh, edy = sdec.ui_opt_edit_h, sdec.ui_opt_edit_dy
@@ -2280,6 +2281,15 @@ function sdec.build_options()
                          'Arm/Idle Wait', 'max wait, frozen',
                          display.NFORMAT_PREFIX, sdec.arm_wait_s(),
                          sdec.armwait_min, sdec.armwait_max, 's', 4)
+  -- Zero is off, so the raw setting is shown rather than gap_elide()'s enforced window: the field has to be able
+  -- to say 'off', and the accessor returns nil for that. The floor is applied when a capture arms, not here.
+  -- 'keep text, skip idle' says what it does rather than what it is, the operator having no reason to know the
+  -- record is spliced -- and the cost is the window itself, which is recorded at the end of every burst.
+  local fx11, fy11 = nextpos()
+  sdec.opt_gape = create(sdec.optscr, display.OBJ_EDIT_NUMBER, fx11, fy11,
+                         'Gap Elide', '0 off, keep text',
+                         display.NFORMAT_PREFIX, tonumber(sdec.gapelide) or 0,
+                         0, sdec.gapelide_max, 's', 4)
 
   -- Stored, not left in locals: destroy_options() deletes them. Lock Detected only fills the form.
   sdec.opt_btn = {}

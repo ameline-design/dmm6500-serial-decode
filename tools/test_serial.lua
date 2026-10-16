@@ -7522,7 +7522,14 @@ local function test_modes()
     -- app, because build_options() creates them and holds each in its own named handle.
     local fields = {{'proto', sdec.opt_proto}, {'baud', sdec.opt_baud}, {'bits', sdec.opt_bits},
                     {'par', sdec.opt_par}, {'pol', sdec.opt_pol}, {'trig', sdec.opt_trig},
-                    {'ext', sdec.opt_ext}, {'armv', sdec.opt_armv}, {'armw', sdec.opt_armw}}
+                    {'ext', sdec.opt_ext}, {'armv', sdec.opt_armv}, {'armw', sdec.opt_armw},
+                    {'gape', sdec.opt_gape}}
+    -- THE COUNT IS ASSERTED, not just the clearances, because the list is hand-written and the failure mode is
+    -- an omission rather than a wrong number: a field left out is simply not measured, and the check passes
+    -- while the form is 1 to 5 px into the button row. ui_opt_nf_used is what build_options laid out to.
+    check('the geometry check measures every field the form actually built',
+          table.getn(fields) == sdec.ui_opt_nf_used,
+          string.format('%d listed, %s built', table.getn(fields), tostring(sdec.ui_opt_nf_used)))
     local fi
     for fi = 1, table.getn(fields) do
       local o = MD.obj(fields[fi][2])
@@ -11665,6 +11672,357 @@ end)()
         sdec.ck_bufmax == kbufmax and sdec.ck_bufwant == kwant
         and defbuffer1.capacity == 100000 and defbuffer2.capacity == 100000,
         string.format('%d / %d', sdec.ck_bufmax, sdec.ck_bufwant))
+end)()
+
+-- ============================================================================
+-- GAP ELISION: the decode-side arithmetic
+-- ============================================================================
+-- WHAT THESE CAN AND CANNOT SHOW. The mock does not send the gap's samples to one buffer and the burst's to
+-- another -- it says so in its own list of gaps -- so nothing here can demonstrate a sample being elided. That
+-- is an instrument question and notes/probe_elideloop.py answered it: 4 bursts of 1001 readings, splices at
+-- 1002/2003/3004, 0.4 s kept against 1.198 s elided. What IS testable offline is every piece of arithmetic that
+-- reads such a record, and those are built here by hand so the gaps are exact and known.
+;(function()
+  local keep = {ge = sdec.gapelide, fb = sdec.force_baud, el = sdec.strm_elide,
+                nb = sdec.force_nbits, pa = sdec.force_par, ns = sdec.force_nstop,
+                ae = sdec.acq_elided, fs = sdec.fs, w = sdec.ck_win_n}
+
+  -- ---- the off switch and the floor ----
+  sdec.gapelide, sdec.force_baud = 0, nil
+  check('gap elision is off by default, 0 meaning off', sdec.gap_elide() == nil,
+        tostring(sdec.gap_elide()))
+  sdec.gapelide = -1
+  check('...and a negative value is off too, not a tiny window', sdec.gap_elide() == nil,
+        tostring(sdec.gap_elide()))
+  sdec.gapelide = 0.1
+  check('a positive window comes back as itself when no rate is known', sdec.gap_elide() == 0.1,
+        tostring(sdec.gap_elide()))
+  sdec.gapelide = 5.0
+  check('...and is held at the ceiling, a window being dead time on every burst',
+        sdec.gap_elide() == sdec.gapelide_max, tostring(sdec.gap_elide()))
+  -- THE FLOOR IS framebits BIT TIMES, NOT TEN. The comparator arms on ONE slope, so with idle high and a
+  -- falling arm the rise out of a space is not a crossing: on back-to-back 0x00 the crossings are one per
+  -- FRAME. A floor written as ten bit times is 30 % short at the widest format.
+  sdec.gapelide, sdec.force_baud = 0.000001, 9600
+  sdec.force_nbits, sdec.force_par, sdec.force_nstop = 8, sdec.PAR_NONE, 1
+  local f8n1 = sdec.gap_elide()
+  check('the window floors on whole frames at a known rate, not on the clock',
+        near(f8n1, sdec.gapelide_frames * 10 / 9600, 1e-9),
+        string.format('%s s at 9600 8N1', tostring(f8n1)))
+  -- AND IT MOVES WITH THE FORMAT, which is the half that a literal 10 could never do.
+  sdec.force_nbits, sdec.force_par, sdec.force_nstop = 9, 1, 2
+  local f913 = sdec.gap_elide()
+  check('...and widens with the frame, so the widest format is not 30 % short',
+        f913 > f8n1 and near(f913, sdec.gapelide_frames * 13 / 9600, 1e-9),
+        string.format('%s s at 9600, 13-bit frame', tostring(f913)))
+  sdec.force_nbits, sdec.force_par, sdec.force_nstop = 8, sdec.PAR_NONE, 1
+
+  -- ---- the sample rate, which is the number every bit time is scaled by ----
+  -- A record of k bursts with an exact interval and exact gaps. Built rather than captured, so the right
+  -- answer is known to the last digit.
+  -- JITTERED, AND THAT IS THE WHOLE POINT OF THE SHAPE. The instrument's deltas vary by 32 ns on a 10.5 us
+  -- interval, which is why the rate has to be AVERAGED and not taken from the shortest delta -- the minimum
+  -- reads 0.25 % high. On exact synthetic deltas the two estimators agree to the last bit, so a suite built on
+  -- those cannot tell the adopted one from the rejected one. A zero-mean sawtooth keeps the mean exact while
+  -- making the minimum wrong, so the assertions below can only be met by averaging.
+  local function gapped(nburst, per, dt, gap, jit)
+    local b = {n = 0, capacity = nburst * per + 10, relativetimestamps = {}}
+    local t, i, j = 0, nil, nil
+    if jit == nil then jit = 0 end
+    for i = 1, nburst do
+      for j = 1, per do
+        b.n = b.n + 1
+        -- The SAMPLE's own time carries the wobble; the accumulated time does not, so the sawtooth cancels
+        -- over any whole number of periods and the span stays exact.
+        local w = 0
+        if jit > 0 then
+          local ph = math.mod(b.n, 4)
+          if ph == 1 then w = jit elseif ph == 3 then w = -jit end
+        end
+        b.relativetimestamps[b.n] = t + w
+        t = t + dt
+      end
+      t = t + gap
+    end
+    return b
+  end
+  local DT, PER, GAP = 1 / 10000, 1000, 0.45
+  local gb = gapped(4, PER, DT, GAP)
+  sdec.strm_elide = 0.1
+  local segfs = sdec.acq_seg_fs(gb, gb.n)
+  check('the rate is measured INSIDE the bursts, so elision does not scale every bit time',
+        near(segfs, 10000, 1), string.format('%s S/s on a 4-burst record', tostring(segfs)))
+  -- THE EXPECTED-FAIL DIRECTION, and without it this proves only that some number came back. The old
+  -- whole-span formula must get the SAME record wrong, or there was nothing to repair.
+  local spanfs = sdec.acq_measure_fs(gb, gb.n)
+  check('...while the whole-span formula gets that same record wrong, which is what was repaired',
+        spanfs ~= nil and spanfs < 4000,
+        string.format('%s S/s from the span against 10000 true', tostring(spanfs)))
+  -- AND THE NO-GAP CASE MUST BE UNCHANGED, which is the regression guard for every existing capture.
+  local cb = gapped(1, 4000, DT, 0)
+  check('...and on a record with no gaps both formulas agree, so nothing else moved',
+        near(sdec.acq_seg_fs(cb, cb.n), sdec.acq_measure_fs(cb, cb.n), 1),
+        string.format('%s vs %s', tostring(sdec.acq_seg_fs(cb, cb.n)),
+                      tostring(sdec.acq_measure_fs(cb, cb.n))))
+  -- WHICH FORMULA RUNS IS A PROPERTY OF THE PROGRAM THAT LOADED, not of the option: an elision that fell back
+  -- to LoopUntilEvent must be read with the span, or its rate is wrong in the one direction nothing flags.
+  sdec.acq_elided, sdec.fs = nil, 10000
+  local pick_plain = sdec.acq_fs_or_requested(gb, gb.n)
+  sdec.acq_elided = true
+  local pick_elided = sdec.acq_fs_or_requested(gb, gb.n)
+  check('acq_fs_or_requested picks the formula from the program, not from the option',
+        near(pick_elided, 10000, 1) and pick_plain ~= nil and pick_plain < 4000,
+        string.format('elided=%s plain=%s', tostring(pick_elided), tostring(pick_plain)))
+  -- DEGENERATE RECORDS MUST COME BACK NIL, NOT NaN: a NaN here would scale every bit time silently.
+  check('a record too short to hold an interval is refused rather than guessed',
+        sdec.acq_seg_fs(gb, 1) == nil and sdec.acq_seg_fs(nil, 10) == nil,
+        'nil for n<4 and for no buffer')
+  local flat = {n = 50, capacity = 100, relativetimestamps = {}}
+  for i = 1, 50 do flat.relativetimestamps[i] = 0 end
+  local fz = sdec.acq_seg_fs(flat, flat.n)
+  check('...and a record whose timestamps never advance is refused, not divided by zero',
+        fz == nil, tostring(fz))
+
+  -- THE ESTIMATOR ITSELF, on a record whose deltas wobble the way the instrument's do. The minimum delta reads
+  -- high and the mean does not, so only averaging can meet this -- which is what makes the two estimators
+  -- distinguishable here at all. On exact deltas they agree to the last bit.
+  local jb = gapped(4, PER, DT, GAP, DT * 0.1)
+  local jfs = sdec.acq_seg_fs(jb, jb.n)
+  check('the rate is averaged, not taken from the shortest delta, on a record that jitters',
+        jfs ~= nil and math.abs(jfs - 10000) < 1.0,
+        string.format('%s S/s against 10000; the shortest-delta estimator gives about %.0f',
+                      tostring(jfs), 1 / (DT * 0.9)))
+  -- AND THE DEGENERATE RECORD COMES BACK NIL rather than measuring the gaps and calling them the interval. A
+  -- record of one-reading bursts has no intra-burst delta at all; the shortest delta is then a gap.
+  local allgap = gapped(400, 1, DT, GAP)
+  local agfs = sdec.acq_seg_fs(allgap, allgap.n)
+  check('a record whose every sampled delta is a gap is refused, not measured at the gap rate',
+        agfs == nil, string.format('%s (the gap rate would be %.4f)', tostring(agfs), 1 / (DT + GAP)))
+
+  -- ---- rotation, which is the NORMAL case here rather than an edge one ----
+  -- An elided record is fillmode = 1 and runs to capacity, so it laps the ring and comes back rotated. Every
+  -- index in the scan goes through acq_first for that reason, and nothing asserted it: the helper above leaves
+  -- startindex unset, so a scan that ignored the rotation passed.
+  -- THE TIMESTAMPS TRAVEL WITH THE SAMPLES, which is what rotation means here: slot p holds reading p's own
+  -- time, so a wrapped record's slot order is NOT time order. Setting startindex over a monotonic array would
+  -- be a different object and would pass whatever the scan did about the wrap.
+  local flat4 = gapped(4, PER, DT, GAP)
+  local function rotate(src, roff)
+    local b = {n = src.n, capacity = src.n, relativetimestamps = {}}
+    local k
+    for k = 1, src.n do
+      local pp = k + roff
+      if pp > src.n then pp = pp - src.n end
+      b.relativetimestamps[pp] = src.relativetimestamps[k]
+    end
+    b.startindex = roff + 1
+    if b.startindex > src.n then b.startindex = b.startindex - src.n end
+    return b
+  end
+  local rbase = sdec.acq_seg_fs(flat4, flat4.n)
+  local rok, rsegok, rfirst = true, true, nil
+  local ri
+  for ri = 1, 6 do
+    local roff = ({0, 1, 500, 1000, 2499, 3998})[ri]
+    local rb = rotate(flat4, roff)
+    local f = sdec.acq_seg_fs(rb, rb.n)
+    local _, _, g = sdec.gap_report(rb, rb.n, 10000)
+    if ri == 1 then rfirst = g end
+    if f == nil or math.abs(f - rbase) > 0.01 then rok = false end
+    if g ~= 4 then rsegok = false end
+  end
+  check('a rotated record measures the same rate and the same burst count at every startindex',
+        rok and rsegok, string.format('rate stable=%s bursts stable=%s', tostring(rok),
+                                      tostring(rsegok)))
+
+  -- ---- the window the panel can ask for is one the feature can deliver ----
+  -- The floor derives from the frame time, so a slow enough rate pushes it past the ceiling -- and clamping
+  -- floor-then-ceiling would let the ceiling win and hand back a window BELOW the floor, which is the
+  -- mid-frame cut the floor exists to prevent. Reachable from the panel: Baud Rate's own minimum is 0.
+  sdec.gapelide = 1.0
+  sdec.force_nbits, sdec.force_par, sdec.force_nstop = 9, 1, 2
+  local lo_ok = sdec.gap_elide(9600)
+  -- 13 bit times at 12 Bd is 2.167 s, past the 2 s ceiling. At 8N1 the same rate wants 1.667 and IS
+  -- deliverable, so the narrow frame is the control: a blanket refusal below some rate would pass the
+  -- assertion above and fail this one.
+  local lo_refused = sdec.gap_elide(12)
+  sdec.force_nbits, sdec.force_par, sdec.force_nstop = 8, sdec.PAR_NONE, 1
+  local lo_narrow = sdec.gap_elide(12)
+  check('a rate whose frame floor exceeds the ceiling is refused, not quietly given a short window',
+        lo_ok ~= nil and lo_refused == nil and lo_narrow ~= nil and lo_narrow > 1.6,
+        string.format('9600 -> %s, 12 Bd 13-bit -> %s, 12 Bd 8N1 -> %s', tostring(lo_ok),
+                      tostring(lo_refused), tostring(lo_narrow)))
+  sdec.gapelide = 0.1
+
+  -- ---- what the operator is told ----
+  local kept, elided, segs = sdec.gap_report(gb, gb.n, 10000)
+  check('the note reports time kept against time spanned, and the burst count with it',
+        near(kept, 0.4, 0.01) and near(elided, 3 * GAP, 0.02) and segs == 4,
+        string.format('kept %.3f s, elided %.3f s, %s bursts', kept or -1, elided or -1,
+                      tostring(segs)))
+
+  -- A SEAM CAN BE MUCH SHORTER THAN A WINDOW, which is why the seam threshold scales with the stride and not
+  -- with the window: the elided time is the next crossing less the last one less the window, so a device that
+  -- resumes just after the detector gave up leaves a seam of milliseconds. A threshold tied to the window would
+  -- miss it and report one burst where there were five.
+  local tiny = gapped(5, PER, DT, 0.004)
+  local _, tel, tsg = sdec.gap_report(tiny, tiny.n, 10000)
+  check('a seam far shorter than the window is still counted as a burst boundary',
+        tsg == 5, string.format('%s bursts, %.3f s elided', tostring(tsg), tel or -1))
+  -- AND THE OTHER DIRECTION, or the threshold is just permissive: a record with NO seam must read one burst,
+  -- not several from timestamp jitter.
+  local none = gapped(1, 5000, DT, 0)
+  local _, nel, nsg = sdec.gap_report(none, none.n, 10000)
+  check('...while a record with no seam at all reads as one burst, not as jitter',
+        nsg == 1 and nel < 1e-6, string.format('%s bursts, %g s elided', tostring(nsg), nel or -1))
+
+  -- A WRONG SAMPLE RATE MUST NOT FAKE A SEAM. The rate handed to gap_report is `acq_fs or sdec.fs`, so when the
+  -- measurement declines it is the COMMANDED rate -- and this instrument misses that by up to 4.9 %. A
+  -- threshold derived from 1/fs would then read a perfectly contiguous record as dozens of bursts, which is the
+  -- opposite of the diagnosis the burst count exists to give.
+  local contig = gapped(1, 4000, DT, 0)
+  local _, cel, csg = sdec.gap_report(contig, contig.n, 10000)
+  local _, wel, wsg = sdec.gap_report(contig, contig.n, 10000 * 0.951)
+  local _, _, wsg10 = sdec.gap_report(contig, contig.n, 10000 * 0.90)
+  check('a contiguous record reads as one burst even when the rate it is given is 4.9 % wrong',
+        csg == 1 and wsg == 1 and wsg10 == 1,
+        string.format('true rate %s, 4.9 %% low %s, 10 %% low %s', tostring(csg), tostring(wsg),
+                      tostring(wsg10)))
+  -- AND THE SEAMS ARE STILL FOUND with the same wrong rate, or the fix would just be a mute button.
+  local _, _, gsg = sdec.gap_report(gb, gb.n, 10000 * 0.951)
+  check('...while the real seams are still counted at that same wrong rate', gsg == 4,
+        string.format('%s bursts', tostring(gsg)))
+
+  -- THE LAST SEAM OF A RECORD CUT MID-BURST. The stride scan stops a whole stride short of the end, and the
+  -- 'full' exit cuts the record at an arbitrary point, so the final partial burst is shorter than a stride more
+  -- often than not -- and its seam is the one most likely to be missed.
+  local cut = gapped(4, 1234, DT, GAP)
+  local ctrue = cut.n
+  local short1 = {n = 3 * 1234 + 1, capacity = cut.capacity, relativetimestamps = cut.relativetimestamps}
+  local short2 = {n = 3 * 1234 + 200, capacity = cut.capacity, relativetimestamps = cut.relativetimestamps}
+  local _, _, s1 = sdec.gap_report(short1, short1.n, 10000)
+  local _, _, s2 = sdec.gap_report(short2, short2.n, 10000)
+  local _, _, sfull = sdec.gap_report(cut, ctrue, 10000)
+  check('a record cut mid-burst still counts its last seam, tail shorter than a stride or not',
+        s1 == 4 and s2 == 4 and sfull == 4,
+        string.format('tail 1 -> %s, tail 200 -> %s, whole -> %s', tostring(s1), tostring(s2),
+                      tostring(sfull)))
+
+  -- ---- the format search must get past the idle tails ----
+  -- leadmax and the skip answer different questions about the same record: an elided record has NO reserve, so
+  -- leadmax must be nil there or sig_idle treats a real leading run as the wire before the device started --
+  -- but it carries a window of idle at the END of every burst, and a short first burst leaves the search
+  -- looking at traffic, then idle, then giving up with 'no format' while every byte is present.
+  sdec.ck_win_n = 20000
+  check('the format search spends its default two windows when there is no silence to cross',
+        sdec.ck_prime_tries(nil, nil) == 2, tostring(sdec.ck_prime_tries(nil, nil)))
+  check('...and more when an elided record puts a window of idle after every burst',
+        sdec.ck_prime_tries(nil, 100000) == 7,
+        tostring(sdec.ck_prime_tries(nil, 100000)))
+  -- THE ALLOWANCE HAS TO REACH ck_prime_tries, and the arithmetic being right at the leaf says nothing about
+  -- the plumbing: dropped on the way through ck_prime_new, a job gives up after two windows on a record whose
+  -- bytes are all present and the whole recording refuses with 'no format'.
+  local prs = sdec.ck_prime_new(function() return 0 end, 50000, 20000, nil, 100000)
+  local prn = sdec.ck_prime_new(function() return 0 end, 50000, 20000, nil, nil)
+  check('the idle-tail allowance reaches the search through ck_prime_new, not just at the leaf',
+        prs ~= nil and prs.tries == 7 and prn ~= nil and prn.tries == 2,
+        string.format('with an allowance %s, without %s', tostring(prs and prs.tries),
+                      tostring(prn and prn.tries)))
+  check('...taking whichever of the reserve and the tails is larger, not their sum',
+        sdec.ck_prime_tries(100000, 40000) == 7 and sdec.ck_prime_tries(40000, 100000) == 7,
+        string.format('%d / %d', sdec.ck_prime_tries(100000, 40000),
+                      sdec.ck_prime_tries(40000, 100000)))
+
+  -- ---- the wall-clock ceiling ----
+  -- An eliding record is filled with traffic only, so the time it needs is the fill time times the inverse duty
+  -- cycle -- and stream_maxwait()'s 2 * nsmp / fs assumes a duty cycle of one. On the 32 kB mode at 9600 that is
+  -- 68 s for 3 413 334 readings, and a line talking a tenth of the time would be cut off at a tenth of the
+  -- record while the note still read 'buffer full'.
+  local kms = sdec.strm_maxsec
+  sdec.strm_maxsec = 1200
+  local big = 3413334
+  local plain = sdec.stream_limit(big, 100000, nil)
+  local elided_lim = sdec.stream_limit(big, 100000, 0.1)
+  check('a non-eliding recording keeps the fill-time ceiling it has always had',
+        near(plain, 2 * big / 100000, 0.001),
+        string.format('%g s for %d readings at 100 kS/s', plain, big))
+  check('...while an eliding one gets the standing ceiling, because it fills with traffic only',
+        elided_lim == 1200 and elided_lim > plain,
+        string.format('%g s eliding against %g s not', elided_lim, plain))
+  -- AND IT IS STILL A BOUND, which is the half that keeps a dead line from running for ever: the ceiling is
+  -- taken from strm_maxsec, so lowering that lowers it.
+  sdec.strm_maxsec = 60
+  check('...and the eliding ceiling follows strm_maxsec rather than being unbounded',
+        sdec.stream_limit(big, 100000, 0.1) == 60,
+        tostring(sdec.stream_limit(big, 100000, 0.1)))
+  sdec.strm_maxsec = kms
+
+  -- ---- the central claim, tested on a real spliced waveform ----
+  -- An elided record's readings are [burst][idle tail][burst][idle tail]..., so a splice joins idle line to the
+  -- next start bit. That is a legal serial waveform, and it is the entire reason this feature leaves the
+  -- decoder untouched. If it were wrong, bytes would be lost at every seam -- so the payloads either side are
+  -- real text and every character of both has to come back.
+  local s1, s2 = 'The quick brown fox ', 'jumps over the lazy dog'
+  local FS, BAUD = 100000, 9600
+  -- lead and tail are BIT TIMES, and 200 of them at 9600 is 20.8 ms: a genuine quiet period, far past the
+  -- two-frame floor the window is held at, so this is a seam and not an inter-byte gap.
+  local r1, _, _, n1 = GEN({bytes = GEN_BYTES(s1), baud = BAUD, fs = FS, lead = 20, tail = 200})
+  local r2, _, _, n2 = GEN({bytes = GEN_BYTES(s2), baud = BAUD, fs = FS, lead = 200, tail = 20})
+  local srd, sn, si = {}, 0, nil
+  for si = 1, n1 do sn = sn + 1 srd[sn] = r1[si] end
+  for si = 1, n2 do sn = sn + 1 srd[sn] = r2[si] end
+  local kfb, kfs2 = sdec.force_baud, sdec.fs
+  sdec.force_baud, sdec.fs, sdec.trigmode = nil, FS, 'free'
+  sdec.acq_pretrig = nil
+  analyse(srd, sn, FS)
+  local sok = sdec.decode_from(srd, sn)
+  local got = txt(sdec.res)
+  check('a record spliced at idle decodes every byte on BOTH sides of the seam',
+        sok and has(got, s1) and has(got, s2),
+        string.format('%q', string.sub(got, 1, 56)))
+  -- AND THE SEAM COSTS NOTHING, which is the sharper half: the byte count must be the sum of the two payloads
+  -- and not one less. A frame decoded from samples either side of a splice would show up here as a short count.
+  check('...and the seam costs no frame: the count is the sum of the two payloads',
+        sdec.res ~= nil and sdec.res.nf >= string.len(s1) + string.len(s2),
+        string.format('%d frames for %d bytes',
+                      sdec.res and sdec.res.nf or -1, string.len(s1) + string.len(s2)))
+  -- THE POLARITY PRIOR MUST SURVIVE IT TOO. The idle tails are long runs at the idle level, so sig_idle's
+  -- recurrence counter should be helped rather than skewed -- an inverted verdict here would invert every byte.
+  check('...and the idle level is still read from the line, not from the levels',
+        sdec.idle == 1 and sdec.idle_weak ~= true,
+        string.format('idle=%s weak=%s', tostring(sdec.idle), tostring(sdec.idle_weak)))
+  sdec.force_baud, sdec.fs = kfb, kfs2
+
+  -- ---- the verdict and the option must not outlive their capture ----
+  -- Which formula reads the next record's rate is per capture, so a verdict left set measures a plain record
+  -- with the sampled estimator -- and the reverse costs the elision ratio in the one direction nothing flags.
+  sdec.acq_elided = true
+  sdec.clear_measured()
+  check('clearing the measurements drops the elision verdict with them',
+        sdec.acq_elided == nil, tostring(sdec.acq_elided))
+  -- Off by default is a hard requirement, and Reset is a way to violate it.
+  sdec.gapelide = 0.5
+  sdec.reset_options()
+  check('Reset turns gap elision off rather than carrying it into the next session',
+        sdec.gapelide == 0 and sdec.gap_elide() == nil,
+        string.format('%s -> %s', tostring(sdec.gapelide), tostring(sdec.gap_elide())))
+  -- The scratch is drawn from the same pool as the record, so a teardown that leaves it held is capacity the
+  -- next capture cannot have -- and buf_restore() runs inside stop() precisely because the pool must be free.
+  sdec.gapelide = 0.1
+  local scr = sdec.gap_scratch(0.1, 10000)
+  check('a scratch is allocated when elision asks for one', scr ~= nil and sdec.gapbuf ~= nil,
+        tostring(sdec.gapbuf ~= nil))
+  sdec.stop()
+  check('...and the teardown hands it back, not only Reset and Options OK',
+        sdec.gapbuf == nil, tostring(sdec.gapbuf))
+  sdec.gapelide = 0
+
+  sdec.gapelide, sdec.force_baud, sdec.strm_elide = keep.ge, keep.fb, keep.el
+  sdec.force_nbits, sdec.force_par, sdec.force_nstop = keep.nb, keep.pa, keep.ns
+  sdec.acq_elided, sdec.fs, sdec.ck_win_n = keep.ae, keep.fs, keep.w
+  check('and the suite leaves the elision settings as it found them',
+        sdec.gapelide == keep.ge and sdec.ck_win_n == keep.w,
+        string.format('%s / %s', tostring(sdec.gapelide), tostring(sdec.ck_win_n)))
 end)()
 
 print()

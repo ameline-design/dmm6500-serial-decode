@@ -1,6 +1,6 @@
 # Serial Decode — user manual
 
-**Ian Ameline** · version 1.56 · MIT licence
+**Ian Ameline** · version 1.57 · MIT licence
 
 This app turns a Keithley bench instrument into a serial decoder. Clip onto a UART line, press
 **Capture**, and read the bytes on the front panel. You do not have to tell it the baud rate, the frame
@@ -636,7 +636,7 @@ number is kept.
 
 ## Options
 
-![The Options form as it opens, with nothing locked: Baud Rate 0.00000 Bd, Trigger Start bit, Arm At 1.000 V and Arm/Idle Wait 10.00 s](img/options.png)
+![The Options form as it opens, with nothing locked: Baud Rate 0.00000 Bd, Trigger Start bit, Arm At 1.000 V, Arm/Idle Wait 10.00 s and Gap Elide 0.000 s, which is off](img/options.png)
 
 | Setting | What it does |
 |---|---|
@@ -684,14 +684,58 @@ Four settings you can ignore unless you need them:
 - **Arm/Idle Wait** — one setting for two waits, which are the same question asked twice: how long
   this device may say nothing. It is how long an armed capture waits for a line that has not started,
   **and** how long a quiet line runs before it ends a recording. From 2 s to 120 s, default 10 s,
-  which is chosen to outlast a hand reaching for a power switch. The old 1 s quiet exit ended a
-  recording inside the first pause of a startup dump, which stops for seconds at a time between
-  blocks. **The panel is frozen for the whole of it**, which
+  which is chosen to outlast a hand reaching for a power switch. A 1 s exit would end a recording
+  inside the first pause of a startup dump, which stops for seconds at a time between blocks.
+  **The panel is frozen for the whole of it**, which
   is what the field's help text means by *max wait, frozen*: at the 120 s ceiling that is a
   two-minute dead panel. It lengthens the wait and never shortens it, so an edge capture always waits
   at least its own 3 s — 2 s and 3 s do the same thing, and the note after an expiry reports the 3 s
   it really waited. It governs `Start bit`; `Trigger key` ignores it and waits its own 30 s for a
   finger.
+- **Gap Elide** — seconds of quiet line after which a recording stops keeping it. **0 is off and is
+  the default.** On a device that prints a line and then says nothing for two minutes, the buffer
+  otherwise fills with dead air; with this on it keeps the text and throws the silence away, so the
+  same buffer spans minutes of a bursty line instead of seconds. See **Recording a bursty line**
+  below for what it costs and when it is worth having.
+
+### Recording a bursty line
+
+A device that prints a startup banner, pauses two seconds, prints another line and then goes quiet
+for two minutes spends almost all of a recording on silence. **Gap Elide** records the bursts and
+discards the gaps between them, which is how an old-fashioned terminal behaves: it shows the
+characters as they arrive and does not care about the dead air.
+
+Set **Gap Elide** to how long the line must be quiet before the burst counts as over. A tenth of a
+second is a reasonable start. Then raise **Arm/Idle Wait** past the longest gap you want to sit
+through, because that is still what ends the recording when the device has finished — a 2-minute gap
+needs an **Arm/Idle Wait** above 120 s or the recording ends in the middle of it.
+
+**What it needs.** One of the recording modes, `8 kB` or `32 kB`; **Trigger** on `Start bit`; and a
+line that is quiet when you press **Capture**, because the comparator is armed from the level probe
+and a line already transmitting gives it nothing to arm on. It cannot be combined with flow control
+on the rear BNC. When any of those is not met the recording still happens, without elision, and the
+note row says which one — `gap elision off -- flow control is on`, or `-- the line was already
+transmitting when the recording started`.
+
+**What it costs, and when it is not worth it.** The instrument cannot know the line has gone quiet
+until the time you set has actually elapsed, so **every burst keeps one Gap Elide window of idle at
+its end**. That is the whole price, and it is why a smaller window is cheaper: elision only pays when
+the bursts are longer than about one and a half windows. A device sending single short lines with a
+0.5 s window records three times more silence than text, which is worse than not eliding at all. The
+note row reports both numbers so this is visible rather than guessed: `buffer full -- 7 bursts,
+elided 94.2 s of 98.1 s` says it worked, and `2 bursts, elided 0.3 s of 4.1 s` says it did not.
+
+**What changes about the record.** The time axis is no longer continuous — the gaps are gone from it,
+so the interval between two bytes either side of a seam is not what the record says. The decoded
+bytes, the rate and the format are all unaffected: a seam joins idle line to the next start bit,
+which is an ordinary serial waveform, so nothing is lost at the join. There is also no pre-trigger
+reserve on each burst, so the first recorded sample of a burst is its own start bit rather than the
+quiet line before it.
+
+The window is held to at least two frame times at the rate you have locked, because a frame can hold
+a run with no level change of its own — `0x00` on an idle-high line is ten bit times at one level —
+and a window shorter than that would cut inside a byte. Typing a smaller number is allowed and costs
+at most one byte at each seam, since the decoder re-synchronises on the next start bit.
 
 ### Waiting for a device that has not started
 

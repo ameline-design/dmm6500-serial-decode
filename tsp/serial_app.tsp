@@ -642,12 +642,23 @@ function sdec.stream_decode(got)
                 progress = sdec.ck_progress}
   -- How much silence the record may open with, which only this path knows. docs/MEASUREMENTS.md,
   -- 'An armed record opens on silence'.
-  if sdec.strm_armed and sdec.buf ~= nil and (sdec.pretrig or 0) > 0 then
+  -- An elided record has no reserve at all, so leadmax must stay nil on that path. The hand-built program takes no
+  -- position argument: every burst opens at its own crossing and the samples before it are in the scratch. Left
+  -- set, pretrig defaulting to 5 would make leadmax a fiction, acq_pretrig would come back true, and sig_idle
+  -- would treat a genuine leading run as the wire before the device started. docs/TRIGGER.md 14.
+  if sdec.strm_armed and sdec.strm_elide == nil and sdec.buf ~= nil and (sdec.pretrig or 0) > 0 then
     local cap = nil
     if pcall(function() cap = sdec.buf.capacity end) and cap ~= nil then
       -- The instrument's own rule, not a percentage of it: see the measurement in sdec.n_deliv.
       opts.leadmax = cap - math.floor(cap * (100 - sdec.pretrig) / 100)
     end
+  end
+  -- Silence the format search may have to cross, which on an elided record is not at the front but at the end of
+  -- every burst: the detector cannot know the line stopped until its window has elapsed, so a window's worth of
+  -- idle follows each one. Two windows, because block 6 only evaluates at multiples of the delay and the last
+  -- crossing fell somewhere in the previous one, so the tail is uniform on [window, 2 * window).
+  if sdec.strm_elide ~= nil and sdec.fs ~= nil and sdec.fs > 0 then
+    opts.primeskip = math.ceil(2 * sdec.strm_elide * sdec.fs)
   end
   -- Sliced when a panel is waiting, whole when nothing is; the one-shot callers leave budget_s nil.
   if sdec.strm_press then
@@ -768,6 +779,11 @@ end
 function sdec.stream_arm(nsmp)
   -- Cleared first, ahead of the four early returns: a stale true would wait for a trigger nothing armed on.
   sdec.strm_armed = nil
+  -- And the elision verdict with it, for the same reason and ahead of the same four returns. These are read by
+  -- the poll loop to choose its completion test, its ceiling and where its quiet timer comes from, and by the
+  -- note row and the rate formula afterwards -- so a pair left over from a previous capture would run an
+  -- eliding recording's arithmetic over a record that was never elided.
+  sdec.strm_elide, sdec.acq_elided = nil, nil
   local buf = sdec.buf
   -- No buffer is a refused arm, not a raise: the caller can only choose the fallback if it is told.
   if buf == nil then return false end
@@ -786,6 +802,10 @@ function sdec.stream_arm(nsmp)
   -- LoopUntilEvent's infinite pre-roll is what makes an analog trigger evaluate. docs/TRIGGER.md 7, 8, 12.
   local armed = (sdec.arm_silent() and sdec.trigmode ~= 'free')
   local ok = false
+  -- The enforced elision window, or nil for every path that is not eliding -- which is all of them unless the
+  -- operator asked. Carried out of the branch below because what was actually loaded decides how the record is
+  -- read back, and the option alone does not.
+  local elide = nil
   if armed then
     -- The source, the blender and the TRIGGER-key break-in, from the one function that decides them. The
     -- nil branch is live: arm_source() returns nil when its trigger constant is itself absent.
@@ -798,14 +818,31 @@ function sdec.stream_arm(nsmp)
                         not sdec.arm_comparator(useanalog, sdec.arm_slope())) then
         armed = false
       end
+      -- Elision needs the comparator and nothing else will do: the detector asks whether a crossing arrived in
+      -- the last window, and a key press or a rear marker does not recur with the line. docs/TRIGGER.md 13.
+      if armed and useanalog then elide = sdec.gap_elide(sdec.force_baud) end
       if armed then
-        ok = pcall(trigger.model.load, 'LoopUntilEvent', ev, sdec.pretrig,
-                   trigger.CLEAR_ENTER, 0, buf)
+        if elide ~= nil then
+          local scr = sdec.gap_scratch(elide, sdec.fs)
+          -- A refused scratch or a refused program refuses the elision, not the arm: the plain armed
+          -- shape still records this line, so it falls back rather than failing the capture.
+          if scr ~= nil then ok = sdec.gap_model(buf, scr, ev, elide) end
+          if not ok then elide = nil end
+        end
+        if elide == nil then
+          ok = pcall(trigger.model.load, 'LoopUntilEvent', ev, sdec.pretrig,
+                     trigger.CLEAR_ENTER, 0, buf)
+        end
       end
       -- A refused load is not an armed recording: the poll loop would wait out an arm that is not there.
       if not ok then armed = false end
     end
   end
+  -- Which formula reads the rate back out. A property of the program that loaded, not of the option: an elision
+  -- that fell back to LoopUntilEvent must be read with the whole-span formula or its rate comes out wrong by the
+  -- elision ratio in the one direction nothing would flag. docs/TRIGGER.md 14.
+  if armed and elide ~= nil then sdec.acq_elided = true else sdec.acq_elided = nil end
+  sdec.strm_elide = elide
   sdec.strm_armed = armed
   -- Two sites rather than one closure, and the `and` keeps the ordering. No OP_CLOSURE per capture.
   if not armed then ok = pcall(trigger.model.load, 'SimpleLoop', nsmp, 0, buf) end
@@ -951,10 +988,7 @@ function sdec.stream_acquire(nsmp)
   sdec.strm_readfail = nil
   -- Bounded by wall clock as well as by samples, and the clock is the only bound that always fires: a
   -- press is not dispatched while Lua runs, so every mode must terminate by construction.
-  local limit = sdec.stream_maxwait(nsmp, sdec.fs)
-  if sdec.strm_maxsec ~= nil and sdec.strm_maxsec > 0 and limit > sdec.strm_maxsec then
-    limit = sdec.strm_maxsec
-  end
+  local limit = sdec.stream_limit(nsmp, sdec.fs, sdec.strm_elide)
   -- The arm's own wait goes on top of the ceiling, not inside it: the wait must not come out of the run.
   if sdec.strm_armed then limit = limit + sdec.arm_wait_s() end
   --   full     the buffer reached nsmp -- the cap, or as much as the instrument has
@@ -973,9 +1007,14 @@ function sdec.stream_acquire(nsmp)
     end
     -- What counts as finished turns on whether this recording waited: an armed one is finished when the
     -- model is, a long pre-trigger phase having already filled the buffer. Unarmed keeps the fill test.
-    if sdec.strm_armed then
+    if sdec.strm_armed and sdec.strm_elide == nil then
       if armdone and sdec.trig_done(buf) then sdec.ck_endwhy = 'full'; break end
     elseif have >= nsmp then
+      -- The sample count is the only completion an eliding model has. trig_done() wants STATE_IDLE and the
+      -- elision program is a BRANCH_ALWAYS loop, so it never idles by itself -- that is the point of it. Left on
+      -- the armed branch the fill test is unreachable, and because the record is fillmode = 1 it would not stop
+      -- but WRAP, overwriting its own earliest bursts until some other exit fired, and then report a full record
+      -- that had quietly lost its oldest traffic. docs/TRIGGER.md 14.
       sdec.ck_endwhy = 'full'
       break
     end
@@ -1024,6 +1063,20 @@ function sdec.stream_acquire(nsmp)
       quiet = quiet + step
     end
 
+    -- On an eliding record the quiet timer has to come from the model rather than the record. Both paths above
+    -- advance it on a gap by construction: the record does not grow so `fresh` is false, and when it is read
+    -- idle_window() caps at 4000 samples -- 40 ms at 100 kS/s -- which sees only the burst's own idle tail. So
+    -- the timer starts running 40 ms into every burst's tail, before the gap has even begun, and no allowance
+    -- against it can be right. The model's state is the gap detector instead: parked in block 3's WAIT during a
+    -- gap, cycling blocks 4 to 7 during a burst. That tells a long gap from a dead line exactly, which no
+    -- threshold on a record that is designed not to grow ever can. docs/TRIGGER.md 13.
+    if sdec.strm_elide ~= nil then
+      if sdec.trig_waiting() == true then
+        quiet = quiet + step
+      else
+        quiet = 0
+      end
+    end
     -- The idle watchdog is off until the arm fires: a waiting arm is a line with nothing on it by design,
     -- so the watchdog would end the run before the device started. Not moot where levels were reused.
     if armdone and sdec.ck_watch and qexit ~= nil and qexit > 0 and quiet >= qexit then
@@ -1063,6 +1116,24 @@ function sdec.stream_maxwait(nsmp, fs)
   if t < 10 then t = 10 end
   if t > 1200 then t = 1200 end
   return t
+end
+
+-- The wall-clock ceiling a recording runs under. elide is sdec.strm_elide: the window, or nil when not eliding.
+--
+-- Separate from stream_maxwait because an eliding record does not fill in real time, and that is the
+-- assumption maxwait is built on. It returns 2 * nsmp / fs, which is twice how long the wire takes to deliver
+-- every sample the record holds -- so the 32 kB mode at 9600 gets 68 s for its 3 413 334 readings. Elision fills
+-- that record with traffic ONLY, so a line talking a tenth of the time needs ten times the clock and would be
+-- cut off having recorded a fraction of what was asked, reported as a full buffer. The standing ceiling is the
+-- right bound there, and it is still a bound: the fill test, the quiet-line exit and the operator all end the
+-- run before it.
+function sdec.stream_limit(nsmp, fs, elide)
+  local limit = sdec.stream_maxwait(nsmp, fs)
+  if elide ~= nil and (sdec.strm_maxsec or 0) > 0 then limit = sdec.strm_maxsec end
+  if sdec.strm_maxsec ~= nil and sdec.strm_maxsec > 0 and limit > sdec.strm_maxsec then
+    limit = sdec.strm_maxsec
+  end
+  return limit
 end
 
 function sdec.progress_samples(have, want)
@@ -2032,7 +2103,18 @@ end
 
 -- The note-row wording for a finished recording. endwhy is sdec.ck_endwhy; ok and err are the
 -- run's verdict and its message.
+--
+-- A wrapper, so the elision verdict reaches the glass without a clause at each of the reasons below: elision
+-- declines silently and for reasons that are not the operator's doing -- see gap_why() -- and a recording that
+-- quietly did not elide looks exactly like one that did.
 function sdec.strm_exit_why(endwhy, ok, err)
+  local why = sdec.strm_exit_why_base(endwhy, ok, err)
+  local off = sdec.gap_why()
+  if off == nil then return why end
+  return tostring(why) .. '; ' .. off
+end
+
+function sdec.strm_exit_why_base(endwhy, ok, err)
   -- A cancel outranks the nothing-collected refusal, because it caused it: an interrupted window reports
   -- 'long capture returned nothing'. A failure with a cause of its own still wins, via strm_empty.
   if ok == false and not (sdec.ck_cancel and sdec.strm_empty) then
@@ -2081,9 +2163,45 @@ function sdec.strm_exit_why(endwhy, ok, err)
     if sdec.ck_cancel then return 'stopped with the TRIGGER key' end
     return 'stopped from the panel'
   elseif endwhy == 'full' then
+    -- What elision bought, where it ran. The segment count is the half that makes this self-diagnosing: elision
+    -- pays only while a burst outlasts its own detector window, and kept-against-spanned alone cannot tell a
+    -- record that saved a minute from one that is mostly window.
+    if sdec.strm_elide ~= nil then
+      -- The RECORD's own count, not sdec.nread, and the difference is not cosmetic: a recording of several
+      -- windows reaches clear_result() again before this note is built, so nread reads 0 while the buffer still
+      -- holds its readings -- and gap_report would then be handed n = 0 and decline. Guarded at the proxy read
+      -- like every other attribute on this object, with nread as the fall-back.
+      local n = nil
+      if not pcall(function() n = sdec.buf.n end) then n = nil end
+      if n == nil or n < 2 then n = sdec.nread end
+      local kept, elided, segs = sdec.gap_report(sdec.buf, n, sdec.acq_fs or sdec.fs)
+      if kept ~= nil and elided > 0 then
+        return string.format('buffer full -- %d bursts, elided %.1f s of %.1f s',
+                             segs, elided, kept + elided)
+      end
+    end
     return 'buffer full -- the stream may continue'
   end
   return 'finished'
+end
+
+-- Why elision is not running on a recording that asked for it. -> a sentence, or nil when it is running or was
+-- never asked for.
+--
+-- Worth saying on the panel, because the two ways it declines are both invisible and neither is the operator's
+-- mistake. arm_silent() requires the level probe to have found NO line -- so on the bursty line this feature
+-- targets, a probe that lands inside a burst arms nothing and the recording silently falls back to SimpleLoop
+-- with no comparator and no elision. And arm_silent() returns false outright whenever fc_out is set, so elision
+-- and flow control are mutually exclusive, which nothing else would tell them.
+function sdec.gap_why()
+  if sdec.gap_elide() == nil then return nil end
+  if sdec.strm_elide ~= nil then return nil end
+  if sdec.fc_out then return 'gap elision off -- flow control is on' end
+  if sdec.trigmode == 'free' then return 'gap elision off -- the trigger is free-running' end
+  if not sdec.arm_silent() then
+    return 'gap elision off -- the line was already transmitting when the recording started'
+  end
+  return 'gap elision off -- no analog comparator was armed'
 end
 
 -- How long a queued press stays absorbable.
@@ -2352,7 +2470,7 @@ function sdec.options_save()
                    any = sdec.widths_any, trig = sdec.trigmode,
                    ext = sdec.trigext, fc = sdec.fc_out, view = sdec.ui_mode,
                    aset = sdec.autolock_set,
-                   armv = sdec.armlevel, armw = sdec.armwait,
+                   armv = sdec.armlevel, armw = sdec.armwait, gape = sdec.gapelide,
                    dhas = true, dbaud = sdec.baud,
                    dsnap = sdec.snapped, dfirm = sdec.snapfirm}
   return true
@@ -2372,6 +2490,7 @@ function sdec.options_restore()
   -- display fields and not for these two, so a nil means a snapshot built without them.
   if type(s.armv) == 'number' then sdec.armlevel = s.armv end
   if type(s.armw) == 'number' then sdec.armwait = s.armw end
+  if type(s.gape) == 'number' then sdec.gapelide = s.gape end
   -- Guarded on dhas, not on the values: nil is legitimate for all three.
   if s.dhas then
     sdec.baud, sdec.snapped, sdec.snapfirm = s.dbaud, s.dsnap, s.dfirm
@@ -2475,6 +2594,14 @@ function sdec.options_apply()
     if type(av) == 'number' then sdec.armlevel = av end
     local aw = display.getvalue(sdec.opt_armw)
     if type(aw) == 'number' then sdec.armwait = aw end
+    -- Not clamped here either: gap_elide() applies the floor at use, so the form keeps showing what was typed
+    -- and 0 keeps meaning off. A scratch buffer is handed back when elision is turned off, the pool being
+    -- shared with the record.
+    local ge = display.getvalue(sdec.opt_gape)
+    if type(ge) == 'number' then
+      sdec.gapelide = ge
+      if ge <= 0 then pcall(sdec.gap_release) end
+    end
   end)
   if not readok then
     -- The restore is what makes the message below true: the reads above assign as they go, so a
@@ -2607,6 +2734,10 @@ function sdec.stop()
       sdec.stickyerr = 'the capture buffer could not be freed -- power cycle the instrument'
     end
   end
+  -- The elision scratch goes with it, and before buf_restore() for the same reason the capture buffer does:
+  -- the capacities cannot grow back into a pool something is still holding. Reset and Options OK release it
+  -- when the operator turns the feature off, but End App is the other way out and was not one of them.
+  pcall(sdec.gap_release)
   -- The capacities go back after the capture buffer is freed: until then there is no room to grow them.
   local restored = sdec.buf_restore()
   if restored ~= nil then ulog.line('default buffer capacities: ' .. restored) end

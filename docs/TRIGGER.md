@@ -1,6 +1,6 @@
 # The DMM6500 trigger model — a working manual
 
-**Ian Ameline** · version 1.56 · MIT licence
+**Ian Ameline** · version 1.57 · MIT licence
 
 The trigger model is not a trigger setting. It is a small programmable machine with its own
 instruction store, and the instrument's own scanning feature is written in it. This describes what it
@@ -880,6 +880,14 @@ against a 0.4 s gap, so it laps twice per gap — and nothing else moved. The re
 as the unwrapped run, and the model still reached `IDLE`. `fillmode = 1` is what buys that, set
 numerically; see §11 on the constant that does not exist. So the scratch may be small whatever the
 gap length, which matters because it is drawn from the same reading pool as the record.
+
+**And the discard costs no events at all, measured through the app** (MEASURED, G8). The open question
+was how many 4915 events a second of gap produces: a wrapping scratch discards continuously for the
+whole gap, the panel shows 4915 as a modal dialog whatever `localnode.showevents` says, and reading
+the log empties it so a flood buries real events. Over several recordings that elided **13.2 s of
+silence at 100 kS/s — about 1.3 million discarded readings — `eventlog.getcount()` read 0**, with no
+error count, no fill failures and no sticky error. A wrap under `fillmode = 1` is not a discard the
+firmware reports.
 
 **The splices are exactly recoverable, which makes it repairable** (MEASURED, G4). Every reading
 keeps its own timestamp, so a gap appears as a discontinuity between consecutive ones. On the same

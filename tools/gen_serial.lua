@@ -1504,6 +1504,14 @@ trigger = {
   -- answer nil for ever and the arm bounding unreachable offline.
   STATE_IDLE = 'idle', STATE_RUNNING = 'running', STATE_ABORTED = 'aborted',
   STATE_WAITING = 'waiting',
+  -- Block opcodes, as the strings getblocklist() disassembles to, so a test asserting a program reads like the
+  -- instrument's own listing. The gap-elision program is the app's first and only user of setblock(): the two
+  -- canned templates covered every earlier shape, which is why none of these existed before it.
+  BLOCK_BUFFER_CLEAR = 'BUFFER_CLEAR', BLOCK_MEASURE_DIGITIZE = 'MEASURE_DIGITIZE',
+  BLOCK_WAIT = 'WAIT', BLOCK_DELAY_CONSTANT = 'DELAY_CONSTANT', BLOCK_NOTIFY = 'NOTIFY',
+  BLOCK_BRANCH_ON_EVENT = 'BRANCH_ON_EVENT', BLOCK_BRANCH_ALWAYS = 'BRANCH_ALWAYS',
+  BLOCK_BRANCH_COUNTER = 'BRANCH_COUNTER',
+  COUNT_INFINITE = 'infinite',
   model = {},
 }
 TRIG.state = 'idle'
@@ -1747,6 +1755,11 @@ function TRIG_TIMELINE(post, dt, fire)
       i = i + 1
     end
   end
+  -- A PROGRAM THAT CANNOT REACH ITS END HAS NO END, exactly as a wait that never fires has none. The walk above
+  -- is linear and charges each block once, so without this a backward BRANCH_ALWAYS would fall through it and
+  -- set t_done -- reporting the gap-elision program as reaching IDLE offline when on the instrument it never
+  -- can. See TRIG_TERMINATES.
+  if not stalled and not TRIG_TERMINATES() then stalled = true end
   if not stalled then TRIG.t_done = t end
 end
 
@@ -1921,8 +1934,15 @@ end
 --   * THE RING ON AN ARM THAT NEVER FIRED. The firing path honours SRC.ringoff, so a rotated record
 --     is reproducible there; the no-fire pre-roll fills from sample 1 and leaves startindex 1, so a
 --     wait long enough to lap the buffer comes back in order when the instrument's would not.
---   * getblocklist() AND THE LOW-LATENCY FLAG. TRIG.blocks is a disassembly, but there is no string
---     form and no fast-path verdict, so nothing here can catch a program that loses the fast path.
+--   * THE LOW-LATENCY FLAG. getblocklist() now has a string form, but no fast-path verdict, so nothing
+--     here can catch a program that loses the fast path.
+--   * GAP ELISION'S ACTUAL ELISION. setblock() records the program and TRIG_TERMINATES models its
+--     non-termination, which is what makes the fill-test defect visible offline. What is NOT modelled is the
+--     two-buffer acquisition itself: nothing here sends the gap's samples to the scratch and the burst's to
+--     the record, so no offline test can show that a recording came back shorter than the wire. That stays an
+--     instrument question and is answered by notes/probe_elideloop.py -- 4 bursts of 1001 readings, splices at
+--     1002/2003/3004, 0.4 s kept against 1.198 s elided. Offline tests must therefore assert the PROGRAM, the
+--     plumbing and the decode-side arithmetic, and must not claim to have seen a sample elided.
 
 -- The real call returns three values (state, status, block); only the first is read.
 function trigger.model.state()
@@ -1955,6 +1975,18 @@ end
 -- 'LoopUntilEvent' takes (event, position, clear, delay, buf), so a call that passed the wrong
 -- shape would be caught on the instrument and not before.
 function trigger.model.load(template, a, b, c, d, e)
+  -- 'Empty' IS A REAL TEMPLATE and the only way to empty the store (MEASURED, P4). It has to be here before
+  -- anything can be hand-built: the app's gap-elision program loads Empty and then writes its own blocks, so a
+  -- mock that raised here sent gap_model() down its pcall and reported "elision refused" in every offline suite
+  -- -- a feature silently absent while every assertion about it still passed.
+  if template == 'Empty' then
+    TRIG.template, TRIG.count, TRIG.buf = 'Empty', nil, nil
+    TRIG.ev, TRIG.position, TRIG.clear, TRIG.delayarg = nil, nil, nil, nil
+    TRIG.loaded = false
+    TRIG.blocks, TRIG.nblocks, TRIG.armable = {}, 0, false
+    TRIG.handbuilt = false
+    return
+  end
   if template == 'SimpleLoop' then
     local count, buf = a, c
     if count == nil or count < 1 then error('SimpleLoop needs a count', 0) end
@@ -2012,10 +2044,113 @@ function TRIG_PROGRAM()
     n = 6
   end
   TRIG.blocks, TRIG.nblocks, TRIG.armable = p, n, false
+  TRIG.handbuilt = false
   local i
   for i = 1, n do
     if p[i].op == 'WAIT' then TRIG.armable = true end
   end
+end
+
+-- ---------- HAND-BUILT PROGRAMS: setblock, the disassembly, and non-termination ----------
+--
+-- WHY THESE ARE SEPARATE FROM TRIG_PROGRAM. The two canned templates are described by their arguments, so
+-- TRIG_PROGRAM can derive their blocks. A hand-built program is described only by the blocks themselves, and
+-- there is one in the app now: gap elision loads 'Empty' and writes eight of them.
+--
+-- setblock() DOES NOT CLEAR THE STORE while any load() replaces it wholesale (MEASURED, P4), so this writes one
+-- slot and leaves the rest -- including a slot a shorter program left behind, which is the trap P4 exists to
+-- record.
+function trigger.model.setblock(i, op, a, b, c)
+  if i == nil or i < 1 then error('setblock needs a block number', 0) end
+  if op == nil then error('setblock needs a block type', 0) end
+  local blk = {op = op}
+  if op == 'BUFFER_CLEAR' then
+    blk.buf = a
+  elseif op == 'MEASURE_DIGITIZE' then
+    -- The buffer is PER BLOCK here, which is the whole point of the two-buffer shape: `MEASURE_DIGITIZE
+    -- [buffer [, count]]`. TRIG.buf stays the record's, set below, because that is what the firing path fills.
+    blk.buf, blk.arg = a, b
+  elseif op == 'WAIT' then
+    blk.arg, blk.clear = a, b
+    -- RECORDED INTO TRIG.ev AND TRIG.clear AS WELL AS INTO THE BLOCK, because the comparator derivation reads
+    -- them: TRIG_TRIGAT() answers 'no event is loaded' on a nil TRIG.ev, so a hand-built program whose wait is
+    -- on the analog trigger would find no crossing however well the level and slope were set, and an eliding
+    -- recording would expire its arm on a line that is plainly transmitting.
+    TRIG.ev, TRIG.clear = a, b
+  elseif op == 'DELAY_CONSTANT' then
+    blk.arg = a
+  elseif op == 'NOTIFY' then
+    blk.arg = a
+  elseif op == 'BRANCH_ALWAYS' then
+    blk.target = a
+  elseif op == 'BRANCH_ON_EVENT' then
+    blk.arg, blk.target = a, b
+  elseif op == 'BRANCH_COUNTER' then
+    blk.arg, blk.target = a, b
+  else
+    error('unknown block type ' .. tostring(op), 0)
+  end
+  if TRIG.blocks == nil then TRIG.blocks, TRIG.nblocks = {}, 0 end
+  TRIG.blocks[i] = blk
+  if i > (TRIG.nblocks or 0) then TRIG.nblocks = i end
+  TRIG.handbuilt = true
+  TRIG.loaded = true
+  TRIG.template = 'handbuilt'
+  -- Armable means the program contains a WAIT, which is a fact about the shape and not about the template name.
+  -- The record is the LAST measure block's buffer: block 2 writes the gap to the scratch and block 4 the burst to
+  -- the record, so taking the first would fill the bin that exists to be thrown away.
+  TRIG.armable = false
+  local k
+  for k = 1, TRIG.nblocks do
+    local bk = TRIG.blocks[k]
+    if bk ~= nil then
+      if bk.op == 'WAIT' then TRIG.armable = true end
+      if bk.op == 'MEASURE_DIGITIZE' and bk.buf ~= nil then TRIG.buf = bk.buf end
+    end
+  end
+end
+
+-- The store as the instrument prints it. One line a block, which is what the app greps to check that a block was
+-- accepted: a rejected block reads as a free one on this firmware, so the listing is the only evidence.
+function trigger.model.getblocklist()
+  if TRIG.blocks == nil or (TRIG.nblocks or 0) < 1 then return 'EMPTY' end
+  local out, k = '', nil
+  for k = 1, TRIG.nblocks do
+    local b = TRIG.blocks[k]
+    if b == nil then
+      out = out .. string.format('%4d) EMPTY\n', k)
+    else
+      local s = string.format('%4d) %-22s', k, b.op)
+      if b.arg ~= nil then s = s .. ' ARG: ' .. tostring(b.arg) end
+      if b.target ~= nil then s = s .. '  BRANCH_BLOCK: ' .. tostring(b.target) end
+      if b.clear ~= nil then s = s .. '  CLEAR: ' .. tostring(b.clear) end
+      out = out .. s .. '\n'
+    end
+  end
+  return out
+end
+
+-- Does this program ever reach its end? -> true when it terminates.
+--
+-- WITHOUT THIS, EVERY OFFLINE TEST OF GAP ELISION IS WORSE THAN ABSENT. The elision program ends on
+-- `BRANCH_ALWAYS 2`, so on the instrument it never reaches STATE_IDLE and sdec.trig_done() -- which requires
+-- exactly that -- is false for the whole run. The walk above is linear and charges each block once, so a branch
+-- opcode it does not recognise costs 0 and falls through: the walk reaches the end of the block list and sets
+-- t_done, reporting the program as finishing. A suite would then prove that an eliding capture ends on
+-- trig_done when on hardware it can never do so, which is the defect the sample-count fill test covers.
+--
+-- A backward branch with no conditional exit ahead of it is the whole test: BRANCH_ALWAYS to a lower block can
+-- never be left, while BRANCH_ON_EVENT and BRANCH_COUNTER both fall through.
+function TRIG_TERMINATES()
+  if TRIG.blocks == nil or (TRIG.nblocks or 0) < 1 then return true end
+  local k
+  for k = 1, TRIG.nblocks do
+    local b = TRIG.blocks[k]
+    if b ~= nil and b.op == 'BRANCH_ALWAYS' and b.target ~= nil and b.target <= k then
+      return false
+    end
+  end
+  return true
 end
 
 TRIG.aborts = 0
@@ -2128,6 +2263,53 @@ function trigger.model.initiate()
     READS.triggered = READS.triggered + 1
     return
   end
+  -- ---------- A HAND-BUILT PROGRAM, which is what gap elision loads ----------
+  --
+  -- Without this branch the elision program falls into the pre-trigger emulation below and dies on a nil
+  -- TRIG.position, because setblock() sets the block store and nothing else -- so TRIG_TIMELINE is never
+  -- reached, the non-termination hook inside it cannot run, and every offline test of an eliding recording
+  -- measures a raise instead of a recording. That is not a cosmetic gap: the one line this whole change turns
+  -- on is the fill test, and it is only reachable through a model that runs.
+  --
+  -- THE COMPARATOR STILL DECIDES, through the same TRIG_TRIGAT() the armed template uses, so an elision
+  -- program is subject to the same level and slope rules as any other arm -- its block 3 is a real WAIT on the
+  -- comparator. Nothing crossing means the wait never ends, exactly as it does above.
+  --
+  -- WHAT IS NOT MODELLED, and the suites must not claim it: the two-buffer split. Nothing here sends the gap's
+  -- samples to the scratch and the burst's to the record, so no offline test can show a record coming back
+  -- shorter than the wire. That is an instrument question, answered by notes/probe_elidelive.py.
+  if TRIG.handbuilt then
+    local b = TRIG.buf
+    if b == nil then error('hand-built program with no measure buffer', 0) end
+    local step, dt = SRC_step()
+    if dt == nil then dt = SRC.ts[2] - SRC.ts[1] end
+    local srcdt = SRC.ts[2] - SRC.ts[1]
+    local tat, tsrc, twhy = TRIG_TRIGAT()
+    SRC.trigsrc, SRC.trigfired, SRC.trigwhy = tsrc, tat, twhy
+    -- nil fire parks the wait, which is what stream_arm's settle check watches for and what makes an arm on a
+    -- quiet line expire rather than record.
+    local fire = nil
+    if tat ~= nil and srcdt ~= nil then fire = (tat - 1) * srcdt end
+    TRIG_TIMELINE(nil, dt, fire)
+    b.clear()
+    if tat ~= nil then
+      -- Filled to capacity rather than to a count, because both measure blocks are COUNT_INFINITE and only the
+      -- host's abort stops them. The record therefore reaches the fill test, which is the point.
+      local lim = b.capacity or 1000
+      local i
+      for i = 1, lim do
+        local v = SRC_val(1, tat + i - 1, step)
+        if v == nil then break end
+        b.n = i
+        b.readings[i] = v
+        b.relativetimestamps[i] = (i - 1) * dt
+      end
+      b.startindex, b.endindex = 1, b.n
+      READS.triggered = READS.triggered + 1
+    end
+    return
+  end
+
   -- Emulate the pre-trigger split: `position` percent of the capture is kept from
   -- before the trigger edge, the rest from after. SRC.trigat is the sample index
   -- of the edge the analog comparator would have fired on.

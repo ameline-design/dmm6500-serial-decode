@@ -1727,6 +1727,38 @@ one buffer and a shorter decode between windows.
 Asking for 5 instead of `minsabit` gains nothing, the ladder being coarse: 115200 x 5 = 576000 snaps
 back to 1 MS/s, the rate this is trying to avoid.
 
+### A consecutive timestamp delta jitters
+
+So the shortest one is not the sample interval, and an estimator that takes it is biased high.
+
+`sdec.acq_measure_fs` takes the rate as `(n-1)/span` over `buf.relativetimestamps`, averaging every
+interval in the record. The cheaper-looking alternative is one consecutive pair, or the shortest of a
+handful on the grounds that a pair cannot be shorter than the interval and anything longer is a gap.
+**It is biased, and by enough to matter.**
+
+Measured on a clean 20 000-reading free-run at a commanded 100 kS/s, 4000 consecutive deltas read at
+full precision:
+
+| statistic | value | against the span |
+|---|---|---|
+| shortest delta | 1.0483999999998105e-05 | — |
+| longest delta | 1.0516000000002079e-05 | — |
+| spread | **32 ns** on a 10.5 µs interval | — |
+| rate from the shortest | 95 383.44 S/s | **1.0025189** |
+| rate from the mean | 95 143.78 S/s | 1.0000000 |
+| rate from the span | 95 143.78 S/s | reference |
+
+So the minimum reads **0.25 % high**, which is the same order as the 0.66–0.77 % misreports the
+manual lists as a known rate-detection failure, and the mean of consecutive deltas reproduces the
+span exactly — as it must, being the same sum. Any estimator that replaces the span has to average.
+
+**The commanded rate was 100 000 S/s and the delivered rate 95 143.78**, off by 4.9 %, which is why
+the rate is measured from the timestamps at all rather than read back from `digitize.samplerate`.
+
+This is what makes `sdec.acq_seg_fs` sample windows of *consecutive* readings and average the
+non-gap deltas within them, rather than taking a minimum: it needs the span's precision on a record
+whose span is not usable. Probe: `notes/probe_tsprec.py`.
+
 ### The no-loss sample rate is 120 kS/s, and baud is not in it
 
 Decode cost is per sample, so the ceiling is 1/(framebits x T x tread) bytes a second while the wire
