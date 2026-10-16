@@ -760,7 +760,7 @@ print('\nF  an arm the signal never satisfies expires, and the mock gets there o
 -- and the buffer level by hand, because the mock filled the armed buffer inside initiate() and had no
 -- way to represent an arm that was still waiting. With the comparator derived and the clock walking,
 -- a quiet line produces it by itself: nothing crosses, the model stays in its wait block, and the
--- operator's Arm Wait is what ends the recording.
+-- operator's Arm/Idle Wait is what ends the recording.
 ;(function()
   local keep = {lvl = sdec.armlevel, wait = sdec.armwait, key = sdec.armkey}
   sdec.trigext, sdec.trigext_only, sdec.fc_out = false, false, false
@@ -788,17 +788,17 @@ print('\nF  an arm the signal never satisfies expires, and the mock gets there o
   CK('...counted as an arm, not as a capture',
      READS.noarm == na0 + 1 and READS.triggered == tr0,
      string.format('noarm %d->%d, triggered %d->%d', na0, READS.noarm, tr0, READS.triggered))
-  CK('...having waited the operator\'s Arm Wait rather than the recording\'s fill time',
+  CK('...having waited the operator\'s Arm/Idle Wait rather than the recording\'s fill time',
      (sdec.strm_waited or 0) >= sdec.arm_wait_s() - sdec.ck_poll_s,
-     string.format('%.2f s waited, Arm Wait %s', sdec.strm_waited or 0, tostring(sdec.arm_wait_s())))
+     string.format('%.2f s waited, Arm/Idle Wait %s', sdec.strm_waited or 0, tostring(sdec.arm_wait_s())))
   -- THE NOTE NAMES THE TWO SETTINGS THAT GOVERN IT, and the level the comparator was really watching
   -- -- which on a line idling away from ground is idle MINUS the setting, not the setting.
   local keepthr = sdec.thr
   sdec.thr = 0
   local why = sdec.strm_exit_why(sdec.ck_endwhy, true, nil)
   sdec.thr = keepthr
-  CK('...and the expiry names Arm Wait, Arm At and the level that was armed',
-     HAS(why, 'raise Arm Wait or lower Arm At') and HAS(why, 'crossed') and
+  CK('...and the expiry names Arm/Idle Wait, Arm At and the level that was armed',
+     HAS(why, 'raise Arm/Idle Wait or lower Arm At') and HAS(why, 'crossed') and
      not HAS(why, 'crossed 0.00 V'), why)
   sdec.armlevel, sdec.armwait, sdec.armkey = keep.lvl, keep.wait, keep.key
 end)()

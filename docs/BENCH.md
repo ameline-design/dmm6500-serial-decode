@@ -604,7 +604,16 @@ the bench checks the reported **format**, which this does not.
 **A misreported rate is not one of them.** A cell whose bytes are right and whose reported baud is outside
 `snaptol` fails here, counted as `label` and classified by route, because `bench_matrix` ends its verdict
 with `good = good and not baudbad` — *after* its `loud` rule, so a waveform's licence to fail on content
-is not a licence to be wrong about the number on the panel. Thirteen of the bench's own iteration-1
+is not a licence to be wrong about the number on the panel.
+
+**"Bytes are right" means inside the `loud` budget, not payload-exact**, so a capture that spends its
+whole budget still counts as `label`. That is where the offline sweep's `label` of 610 and the
+payload-intact figure of 609 in the [manual](MANUAL.md) part company: one `v48a` capture at 149 527 Bd
+lands on 6 mismatches against a budget of 6. `label` is a ratchet baseline in `tools/plan_sweep.py`,
+carried beside `bad` and `rate` in every configuration, so know which definition a number came from
+before correcting either.
+
+Thirteen of the bench's own iteration-1
 failures are BAUD rows on `loud` vectors, so a check conditioned on the payload verdict passing would see
 none of them.
 

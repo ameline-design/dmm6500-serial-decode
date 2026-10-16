@@ -7034,6 +7034,41 @@ local function test_modes()
   check('the idle timeout is configurable and defaults to something usable',
         sdec.idle_exit_s ~= nil and sdec.idle_exit_s > 0 and sdec.idle_exit_s <= 60,
         tostring(sdec.idle_exit_s))
+  -- THE QUIET EXIT IS ARM/IDLE WAIT, because a startup dump pauses for seconds between blocks and a
+  -- fixed 1 s ends the recording inside the first pause. One field for both waits, floored at
+  -- idle_exit_s so a zero there still disables the watchdog.
+  local keepaw = sdec.armwait
+  sdec.armwait = 10.0
+  check('the quiet exit is Arm/Idle Wait itself -- 10 s at the default',
+        sdec.idle_exit() == 10.0, tostring(sdec.idle_exit()))
+  sdec.armwait = 2.0
+  check('at the 2 s minimum it is 2 s, which is already above the 1 s floor',
+        sdec.idle_exit() == 2.0, tostring(sdec.idle_exit()))
+  sdec.armwait = 120.0
+  check('at the 120 s ceiling it is 120 s',
+        sdec.idle_exit() == 120.0, tostring(sdec.idle_exit()))
+  sdec.armwait = 40.0
+  check('and it follows the setting rather than stepping',
+        sdec.idle_exit() == 40.0, tostring(sdec.idle_exit()))
+  -- A value outside the field's range must not reach the watchdog: arm_wait_s clamps, so a nonsense
+  -- armwait cannot produce a nonsense exit. The mutant to kill is idle_exit() reading sdec.armwait raw.
+  sdec.armwait = 100000.0
+  check('an out-of-range wait is clamped before it reaches the exit',
+        sdec.idle_exit() == 120.0, tostring(sdec.idle_exit()))
+  sdec.armwait = nil
+  check('a nil wait falls back to the clamped minimum, not to nil arithmetic',
+        sdec.idle_exit() == 2.0, tostring(sdec.idle_exit()))
+  -- The off switch has to survive the scaling, or a watchdog someone disabled comes back at 5 s.
+  sdec.armwait = 10.0
+  local keepfl = sdec.idle_exit_s
+  sdec.idle_exit_s = 0
+  check('a zero floor still turns the watchdog OFF rather than taking Arm/Idle Wait',
+        sdec.idle_exit() == 0, tostring(sdec.idle_exit()))
+  sdec.idle_exit_s = nil
+  check('and a nil floor stays nil',
+        sdec.idle_exit() == nil, tostring(sdec.idle_exit()))
+  sdec.idle_exit_s = keepfl
+  sdec.armwait = keepaw
   -- stream_maxwait is the belt-and-braces ceiling for the case buf.n never advances.
   check('the acquisition has a hard wait ceiling independent of the watchdog',
         sdec.stream_maxwait(2800000, 100000) == 56 and
@@ -7480,7 +7515,7 @@ local function test_modes()
   do
     local worst, wname = -1, nil
     -- EVERY FIELD, AND THE LIST IS WHY THIS CHECK MISSED A REAL OVERLAP. It named seven while the form
-    -- built nine, and the two it omitted -- Arm At and Arm Wait -- are the ones that forced a fifth
+    -- built nine, and the two it omitted -- Arm At and Arm/Idle Wait -- are the ones that forced a fifth
     -- row. So the assertion measured the clearance of a field that was no longer the lowest, and the
     -- bottom of each column sat 1 to 5 px off the button row on the glass with nothing failing here.
     -- Adding a field to the form means adding it here; there is no way to enumerate them from the
@@ -7507,6 +7542,30 @@ local function test_modes()
     check('...and clears it by enough to read as separate, not merely by not overlapping',
           sdec.ui_opt_btn_y - worst >= 12,
           string.format('%d px of clearance, want 12 or more', sdec.ui_opt_btn_y - worst))
+    -- THE DIGIT COUNT, which is the last argument to display.create and was being dropped by the mock
+    -- until this block needed it. The firmware's default is 6, so '1.00000 V' claims five decimals of
+    -- precision on a comparator level that does not have them; 4 is the firmware's floor and reads as
+    -- 1.000 V. Significant digits, not decimal places, which is why the 0.33 V minimum shows four.
+    local oav, oaw, obd = MD.obj(sdec.opt_armv), MD.obj(sdec.opt_armw), MD.obj(sdec.opt_baud)
+    check('Arm At asks for 4 digits rather than the firmware default of 6',
+          oav ~= nil and oav.digits == 4, tostring(oav and oav.digits))
+    check('...and so does Arm/Idle Wait',
+          oaw ~= nil and oaw.digits == 4, tostring(oaw and oaw.digits))
+    -- The field that must NOT be trimmed, and the reason is a real typed value: 4 significant digits
+    -- renders 104857 Bd as 104.9k, so Baud Rate keeps the default.
+    check('Baud Rate is left at the firmware default, since a typed rate needs the digits',
+          obd ~= nil and obd.digits == nil, tostring(obd and obd.digits))
+    check('the arm wait field names both of its jobs, so the glass explains itself',
+          oaw ~= nil and oaw.label == 'Arm/Idle Wait', tostring(oaw and oaw.label))
+    check('and the units still reach the firmware past the new argument',
+          oav ~= nil and oav.unit == 'V' and oaw ~= nil and oaw.unit == 's',
+          string.format('%s / %s', tostring(oav and oav.unit), tostring(oaw and oaw.unit)))
+    -- The ranges, now visible for the first time: a field whose min/max disagreed with the clamp in
+    -- arm_wait_s() would let the operator type a value the comparator then silently moved.
+    check('the wait field offers exactly the range arm_wait_s clamps to',
+          oaw ~= nil and oaw.vmin == sdec.armwait_min and oaw.vmax == sdec.armwait_max,
+          string.format('%s..%s vs %s..%s', tostring(oaw and oaw.vmin), tostring(oaw and oaw.vmax),
+                        tostring(sdec.armwait_min), tostring(sdec.armwait_max)))
     -- AND THE PITCH THAT WAS ACTUALLY USED, not the preference. sdec.ui_opt_dy is what the layout
     -- ASKS for; build_options clamps it to what the field count allows, and reading the preference
     -- here reported 'pitch 54, gap 4' about a form laid out at 50 with the boxes touching.
@@ -8204,7 +8263,7 @@ local function test_modes()
   sdec.armwait = 90
   sdec.probe_idle = nil
   local wbusy = waited_with('edge')
-  check('a line that was already talking waits the edge wait, whatever Arm Wait says',
+  check('a line that was already talking waits the edge wait, whatever Arm/Idle Wait says',
         wbusy >= sdec.trigwait - 0.1 and wbusy < 45,
         string.format('%.2f s at armwait 90, edge wait %s', wbusy, tostring(sdec.trigwait)))
   -- A FLOW-CONTROLLED CAPTURE IS NOT A SILENT DEVICE. Its line is quiet because no credit has been
@@ -8270,7 +8329,7 @@ local function test_modes()
   sdec.trigext = false
 
   -- ======================================================================
-  -- WHOSE FAULT THE EXPIRY WAS DECIDES THE ADVICE. Arm At and Arm Wait govern the COMPARATOR, so
+  -- WHOSE FAULT THE EXPIRY WAS DECIDES THE ADVICE. Arm At and Arm/Idle Wait govern the COMPARATOR, so
   -- naming them is right only when the comparator was the source that failed to fire. The front key
   -- and an anchored BNC reach the same line on a quiet line and had no part in it.
   -- ======================================================================
@@ -8287,7 +8346,7 @@ local function test_modes()
   do
     local le = expired_with('edge')
     check('an expired comparator arm names the two settings that govern it, and the armed LEVEL',
-          has(le, 'raise Arm Wait or lower Arm At') and has(le, string.format('%.2f', sdec.thr)),
+          has(le, 'raise Arm/Idle Wait or lower Arm At') and has(le, string.format('%.2f', sdec.thr)),
           le)
     -- THE CONTRACT THE BENCH TOOLS PARSE: bench_trigkey.py reads a lasterr naming an IDLE line as
     -- 'the trigger FIRED' and this prefix as 'the arm expired', so the expiry text must carry the
@@ -10379,7 +10438,7 @@ print('\narming from silence: the capture autoset() reaches, and the rates it fa
     local ok, why = sdec.autoset()
     sdec.atrig = keepat
     sdec.armwait = 2.0
-    check('a digitizer with no comparator degrades to free run instead of waiting out Arm Wait',
+    check('a digitizer with no comparator degrades to free run instead of waiting out Arm/Idle Wait',
           sdec.lasterr ~= nil and has(sdec.lasterr, 'trigger unavailable'),
           string.format('ok=%s lasterr=%s', tostring(ok), tostring(sdec.lasterr)))
   end
@@ -10396,7 +10455,7 @@ print('\narming from silence: the capture autoset() reaches, and the rates it fa
   -- a SUPPORTED configuration, or trigger.EVENT_EXTERNAL on a firmware without it. Neither constant is
   -- nil-tested anywhere else in tsp/, so in plain 'edge' mode on such a box this branch is the only
   -- thing between a nil and trigger.model.load(), which takes it OUT OF BAND: the model loads, waits on
-  -- nothing, and the panel freezes for the whole of Arm Wait against working hardware. Stubbing the
+  -- nothing, and the panel freezes for the whole of Arm/Idle Wait against working hardware. Stubbing the
   -- source is the only way to reach it from here.
   do
     local realsrc = sdec.arm_source

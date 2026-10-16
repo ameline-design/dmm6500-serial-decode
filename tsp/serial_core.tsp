@@ -152,7 +152,7 @@ sdec.flatfloor = 1.0    -- below this an idle level counts as sitting at ground
 -- ============================================================================
 -- Arming from silence: waiting for a device that has not started talking yet. The probe finds no transitions, so
 -- the silent branch in sdec.acquire() arms the comparator arm_level_v() volts from the idle level, on the side
--- the start bit travels. Options carries these two settings as 'Arm At' and 'Arm Wait'; armlevel equals
+-- the start bit travels. Options carries these two settings as 'Arm At' and 'Arm/Idle Wait'; armlevel equals
 -- sdec.flatfloor by coincidence. docs/MEASUREMENTS.md, 'armlevel 1.0, floor 0.33, ceiling 6.0'.
 sdec.armlevel     = sdec.armlevel or 1.0
 sdec.armlevel_min = 0.33
@@ -1687,7 +1687,7 @@ function sdec.acq_triggered(n, slope)
 
   -- An arm from silence gets the operator's own wait and can only lengthen it, hence a comparison.
   -- docs/MEASUREMENTS.md, 'armwait 10, floor 2, ceiling 120'.
-  -- docs/MEASUREMENTS.md, 'Arm Wait applies only where the comparator is the source'.
+  -- docs/MEASUREMENTS.md, 'Arm/Idle Wait applies to the comparator and to the quiet-line exit'.
   if sdec.arm_silent() and sdec.trigmode == 'edge' and
      not (sdec.trigext and sdec.trigext_only) then
     local armw = sdec.arm_wait_s()
@@ -1761,7 +1761,7 @@ function sdec.acq_triggered(n, slope)
         -- ground the arm sits arm_level_v() volts below idle.
         why = why .. ' -- nothing crossed ' ..
               string.format('%.2f', sdec.thr or sdec.arm_level_v()) ..
-              ' V; raise Arm Wait or lower Arm At'
+              ' V; raise Arm/Idle Wait or lower Arm At'
       else
         why = why .. ' -- try Free run'
       end

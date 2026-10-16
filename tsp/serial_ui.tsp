@@ -223,9 +223,27 @@ sdec.ui_modes = {
 }
 sdec.capmode = sdec.capmode or 'frame'    -- operator state, hence `or`
 
--- How long a quiet line ends a stream. Without it a 1200 baud run waits nine minutes for the buffer
--- to fill after the device stops talking, and 1 s is ~40 frame times at the slowest rate allowed.
+-- The FLOOR on how long a quiet line ends a stream, not the exit itself -- sdec.idle_exit() takes it
+-- from Arm/Idle Wait. Without any such exit a 1200 baud run waits nine minutes for the buffer to fill
+-- after the device stops talking, and 1 s is ~40 frame times at the slowest rate allowed. Zero or nil
+-- here turns the watchdog off entirely, which is the one thing idle_exit() passes straight through.
 sdec.idle_exit_s = sdec.idle_exit_s or 1
+
+-- Arm/Idle Wait itself, never below the floor above: 10 s at the default, 2 s at the minimum, 120 s at
+-- the ceiling. One field answers both halves of the same question, which is how long this device may go
+-- without saying anything -- before it starts, and between blocks once it has. A device dumping its
+-- startup banner stops for seconds at a time, and a fixed 1 s ends the recording inside the first of
+-- those pauses with the interesting part still to come. One setting the operator can see on the glass
+-- beats two they have to read about.
+function sdec.idle_exit()
+  local floor = sdec.idle_exit_s
+  -- The off switch, passed through unchanged: a watchdog disabled by the floor must not come back from
+  -- Arm/Idle Wait.
+  if floor == nil or floor <= 0 then return floor end
+  local w = sdec.arm_wait_s()
+  if w ~= nil and w > floor then return w end
+  return floor
+end
 
 -- How long any one piece of work may hold the panel: a budget, not a poll interval, since only a
 -- handler returning lets a press through -- docs/MEASUREMENTS.md, 'ui_latency_s = 0.5 and
@@ -2206,6 +2224,8 @@ function sdec.build_options()
   local fx3, fy3 = nextpos()
   sdec.opt_baud = create(sdec.optscr, display.OBJ_EDIT_NUMBER, fx3, fy3,
                          'Baud Rate', '0 = auto-detect',
+                         -- Left at the firmware's 6 digits, unlike the two arm fields: a typed rate can
+                         -- be 104857 Bd, and 4 significant digits would show it as 104.9k.
                          display.NFORMAT_PREFIX, 0, 0, 1000000, 'Bd')
   -- 'Auto (7/8)' is the default and deliberately first, and forcing a width bypasses the search --
   -- docs/MEASUREMENTS.md, 'Why only 7 and 8 data bits are searched by default'.
@@ -2242,17 +2262,24 @@ function sdec.build_options()
   -- transmitting yet. Their ranges come from the core -- docs/MEASUREMENTS.md, 'armlevel 1.0, floor
   -- 0.33, ceiling 6.0'.
   local fx9, fy9 = nextpos()
+  -- 4 digits, not the firmware's default of 6: a comparator level of '1.00000 V' reads as a precision
+  -- the setting does not have, and 1 mV is already finer than any logic swing cares about. The argument
+  -- counts significant digits with a floor of 4, so 1 V shows as 1.000 and the 0.33 V minimum as 0.3300 --
+  -- three decimals where it matters is the closest the firmware offers.
   sdec.opt_armv = create(sdec.optscr, display.OBJ_EDIT_NUMBER, fx9, fy9,
                          'Arm At', 'wake-up level',
                          display.NFORMAT_PREFIX, sdec.arm_level_v(),
-                         sdec.armlevel_min, sdec.armlevel_max, 'V')
+                         sdec.armlevel_min, sdec.armlevel_max, 'V', 4)
   -- Seconds, and the panel is frozen for every one of them. The help says 'max' rather than 'timeout'
   -- because that is the operator-visible consequence: this is how long the panel may stop responding.
+  -- The label carries both uses because one number serves both: the arm's wait for a line that has not
+  -- started, and the quiet-line exit once it has. 13 characters is longer than any other label here, so
+  -- check it on the glass after any change to the form's geometry.
   local fx10, fy10 = nextpos()
   sdec.opt_armw = create(sdec.optscr, display.OBJ_EDIT_NUMBER, fx10, fy10,
-                         'Arm Wait', 'max wait, frozen',
+                         'Arm/Idle Wait', 'max wait, frozen',
                          display.NFORMAT_PREFIX, sdec.arm_wait_s(),
-                         sdec.armwait_min, sdec.armwait_max, 's')
+                         sdec.armwait_min, sdec.armwait_max, 's', 4)
 
   -- Stored, not left in locals: destroy_options() deletes them. Lock Detected only fills the form.
   sdec.opt_btn = {}

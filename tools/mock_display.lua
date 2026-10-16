@@ -107,6 +107,10 @@ function display.create(parent, kind, a, b, c, d, e, f, g, h, i, j, k, l, m, n)
     o.w, o.h = (c or a) - a + 1, (d or b) - b + 1
   elseif kind == display.OBJ_EDIT_NUMBER then
     o.x, o.y, o.label, o.value = a, b, c, f
+    -- The tail arguments, recorded so a test can see them: (label, help, nformat, default, min, max,
+    -- unit, digits). An argument this mock does not record is one no test can assert: the field could
+    -- ask for any digit count or range and the suite would agree.
+    o.desc, o.nformat, o.vmin, o.vmax, o.unit, o.digits = d, e, g, h, i, j
     if b ~= nil and b + EDIT_H > CONTENT_H then
       error('edit object clipped at y=' .. tostring(b), 0)
     end

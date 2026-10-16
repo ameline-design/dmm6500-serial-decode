@@ -269,7 +269,7 @@ number would be wrong, so what you get is the exact byte ceiling and a progress 
 **What does bound a run,** so it can never hold the panel indefinitely:
 
 - the byte ceiling for the mode — 8192 or 32768;
-- a quiet line: one second with no activity ends it;
+- a quiet line: **Arm/Idle Wait** with no activity ends it, 10 s by default;
 - under flow control, 32 windows or 20 minutes of wall clock, whichever comes first. The 20 minutes is
   what matters on slow lines, where a full 32 kB window would take 18 minutes at 300 baud.
 
@@ -636,7 +636,7 @@ number is kept.
 
 ## Options
 
-![The Options form as it opens, with nothing locked: Baud Rate 0.00000 Bd, Trigger Start bit, Arm At 1.00000 V and Arm Wait 10.0000 s](img/options.png)
+![The Options form as it opens, with nothing locked: Baud Rate 0.00000 Bd, Trigger Start bit, Arm At 1.000 V and Arm/Idle Wait 10.00 s](img/options.png)
 
 | Setting | What it does |
 |---|---|
@@ -670,7 +670,7 @@ Four settings you can ignore unless you need them:
 - **Trigger** — what starts the acquisition. `Start bit` (the default) waits for the line to move.
   `Free run` grabs immediately. `Trigger key` waits for the front-panel TRIGGER key, as described
   under **The TRIGGER key** above. **If the thing you asked for never happens, the capture goes ahead
-  anyway** — after a few seconds, or after **Arm Wait** on a line that has not started — and the note
+  anyway** — after a few seconds, or after **Arm/Idle Wait** on a line that has not started — and the note
   row names the one that did not arrive: `edge trigger unavailable; captured free-running`, or `front`
   for the TRIGGER key. Those bytes are real but they are not lined up with the event you wanted.
 - **Rear BNC** — lets an external trigger in on the rear connector, and `FC Out` sends the
@@ -681,8 +681,12 @@ Four settings you can ignore unless you need them:
   **Waiting for a device that has not started** below. Below 0.33 V the comparator starts firing on
   noise on a floating input and arms the capture on nothing; above 6 V the level no longer sits
   inside an ordinary logic swing, since a 6 V arm already needs a 12 V part.
-- **Arm Wait** — how long such a capture may wait, from 2 s to 120 s. Default 10 s, which is chosen
-  to outlast a hand reaching for a power switch. **The panel is frozen for the whole of it**, which
+- **Arm/Idle Wait** — one setting for two waits, which are the same question asked twice: how long
+  this device may say nothing. It is how long an armed capture waits for a line that has not started,
+  **and** how long a quiet line runs before it ends a recording. From 2 s to 120 s, default 10 s,
+  which is chosen to outlast a hand reaching for a power switch. The old 1 s quiet exit ended a
+  recording inside the first pause of a startup dump, which stops for seconds at a time between
+  blocks. **The panel is frozen for the whole of it**, which
   is what the field's help text means by *max wait, frozen*: at the 120 s ceiling that is a
   two-minute dead panel. It lengthens the wait and never shortens it, so an edge capture always waits
   at least its own 3 s — 2 s and 3 s do the same thing, and the note after an expiry reports the 3 s
@@ -710,7 +714,7 @@ crossing in any case, so the latency never costs a byte.
 2. **Lock the baud rate** in `Options ▸ Baud Rate` if you know it. A line that has not started cannot
    be measured, and this is the one path where that matters — see the note on the rate below.
 3. Leave **Trigger** on `Start bit`. Lower **Arm At** if the line's swing is small or weakly driven,
-   and raise **Arm Wait** to cover however long you need to reach the switch.
+   and raise **Arm/Idle Wait** to cover however long you need to reach the switch.
 4. Press **Capture**. The panel reads `waiting 10s for 2.30V -- TRIGGER=go` and is frozen until the
    device speaks or the wait runs out.
 5. Switch the device on.
@@ -736,9 +740,9 @@ What the app does with it:
   that moment.
 - **Where in the wait the device starts does not matter.** Against a 10 s wait the arm fires at
   +0.3 s and still fires at **+9.7 s**; at +11 s it expires.
-- If **Arm Wait** runs out **the capture still happens, free-running**, and the note row says the
+- If **Arm/Idle Wait** runs out **the capture still happens, free-running**, and the note row says the
   whole of it: `edge trigger unavailable; captured free-running (no trigger in 10 s (edge) -- nothing
-  crossed 0.99 V; raise Arm Wait or lower Arm At)`. That names both settings and the level the
+  crossed 0.99 V; raise Arm/Idle Wait or lower Arm At)`. That names both settings and the level the
   comparator was really holding.
 
 **The rate is a guess on this path, and the panel says so.** Nothing can measure the bit rate of a
@@ -953,7 +957,7 @@ payload reported the right rate at all 200 of its capture points, at standard an
 | what went wrong | captures | |
 |---|---|---|
 | rounded up to the standard rate next door, payload intact | 609 | failure 2 below |
-| a drifting baseline took the rate **and** the bytes | 436 | 1.0 V of drift at 5.3 samples a bit, one waveform — past the drift tolerance above, not a detection failure |
+| a drifting baseline took the rate **and** the bytes | 436 | 1.0 V of drift down to 5.3 samples a bit, 435 of them on one waveform — past the drift tolerance above, not a detection failure |
 | the measurement itself landed 7 to 12 % low | 46 | impulse spikes and 2 % jitter |
 | the reading was a multiple of the true rate | 25 | failure 1 below |
 
@@ -1055,8 +1059,9 @@ UART by construction; if you are probing a bus that begins frames with a long do
 worth setting by hand.
 
 **On the instrument, the same plan over four laps gives 38 wrong rates in 6 708 capture-and-decode
-points** — 0.57 %, and **none of them a doubled reading**. Of those 38, **34 are at rates deliberately
-drawn off the standard ladder**; the four that are not are one waveform at one rate, the 256-byte
+points** — 0.57 %, and **none of them a doubled reading**, though one impulse-spike cell reads 3.08
+times its true rate, so this failure does reach the instrument. Of those 38, **34 are at rates
+deliberately drawn off the standard ladder**; the four that are not are one waveform at one rate, the 256-byte
 repeating blocks at 28 800 baud.
 
 **The instrument and the offline harness fail on different waveforms here.** On the instrument the
@@ -1080,8 +1085,8 @@ genuinely ambiguous** above describes. The panel names the rival rate when that 
 this section is the one where it cannot.
 
 The bench deliberately spends **half** its points on non-standard rates, which is far more than ordinary
-use. A setup on standard rates sees the 0.0035 % row, not the 0.33 % blend — about ninety times better
-than the figure the whole plan produces.
+use. A setup on standard rates sees 6 misreports in 171 600 captures, **0.0035 %**, rather than the
+0.33 % the whole plan produces — about ninety times better.
 
 **Besides locking the rate:** capture real traffic rather than a test pattern, or let the bytes have
 irregular gaps — either removes the ambiguity.

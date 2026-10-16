@@ -930,6 +930,8 @@ function sdec.stream_acquire(nsmp)
   end
 
   local quiet, seen, step = 0, 0, sdec.ck_poll_s
+  -- Read once: the exit comes from Arm/Idle Wait, and the operator cannot change it mid-run.
+  local qexit = sdec.idle_exit()
   -- The ring position last looked at, beside the count. -1 rather than nil, since 0 is a real endindex.
   local seenend = -1
   local iw = sdec.idle_window(sdec.fs)
@@ -953,10 +955,10 @@ function sdec.stream_acquire(nsmp)
   if sdec.strm_maxsec ~= nil and sdec.strm_maxsec > 0 and limit > sdec.strm_maxsec then
     limit = sdec.strm_maxsec
   end
-  -- The arm's own wait goes on top of the ceiling, not inside it: Arm Wait must not come out of the run.
+  -- The arm's own wait goes on top of the ceiling, not inside it: the wait must not come out of the run.
   if sdec.strm_armed then limit = limit + sdec.arm_wait_s() end
   --   full     the buffer reached nsmp -- the cap, or as much as the instrument has
-  --   quiet    no threshold crossing for sdec.idle_exit_s. The device stopped talking.
+  --   quiet    no threshold crossing for sdec.idle_exit(). The device stopped talking.
   --   stopped  the operator pressed Capture (Stop) or Mode (abort)
   while true do
     local have = buf.n or 0
@@ -1024,8 +1026,7 @@ function sdec.stream_acquire(nsmp)
 
     -- The idle watchdog is off until the arm fires: a waiting arm is a line with nothing on it by design,
     -- so the watchdog would end the run before the device started. Not moot where levels were reused.
-    if armdone and sdec.ck_watch and sdec.idle_exit_s ~= nil and sdec.idle_exit_s > 0 and
-       quiet >= sdec.idle_exit_s then
+    if armdone and sdec.ck_watch and qexit ~= nil and qexit > 0 and quiet >= qexit then
       -- A quiet verdict on reused levels is checked first: a threshold outside the swing sees no crossings.
       local adopted, unmeasurable = sdec.strm_relevel(buf, have, iw)
       if adopted then
@@ -2070,11 +2071,11 @@ function sdec.strm_exit_why(endwhy, ok, err)
   end
   -- The arm expired, which is not a recording that happened: name the two settings that govern the wait.
   if endwhy == 'noarm' then
-    return string.format('nothing crossed %.2f V in %g s -- raise Arm Wait or lower Arm At',
+    return string.format('nothing crossed %.2f V in %g s -- raise Arm/Idle Wait or lower Arm At',
                          sdec.arm_expired_at or sdec.thr or sdec.arm_level_v(), sdec.arm_wait_s())
   end
   if endwhy == 'quiet' then
-    return string.format('%g s with no line activity', sdec.idle_exit_s or 0)
+    return string.format('%g s with no line activity', sdec.idle_exit() or 0)
   elseif endwhy == 'stopped' then
     -- Who stopped it, distinguished: a TRIGGER press is the operator, Mode is the app on their behalf.
     if sdec.ck_cancel then return 'stopped with the TRIGGER key' end

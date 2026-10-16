@@ -891,7 +891,7 @@ well as on the form, so a programmatic set and a typed one cannot disagree about
 | | |
 |---|---|
 | `Options ▸ Arm At` | **0.33 – 6 V**, default **1 V** (`sdec.armlevel`) — how far from the idle level the comparator arms |
-| `Options ▸ Arm Wait` | **2 – 120 s**, default **10 s** (`sdec.armwait`) — and the panel is frozen for every second of it |
+| `Options ▸ Arm/Idle Wait` | **2 – 120 s**, default **10 s** (`sdec.armwait`) — the armed wait *and* the quiet-line exit, and the panel is frozen for every second of the armed one |
 
 **The 2 s floor is why no pre-existing timing moves.** `acq_triggered()` takes this value only where it
 *exceeds* the mode's own wait, which is `sdec.trigwait` = 3 s for an `edge` capture, so a form wound all

@@ -1041,11 +1041,11 @@ print('\nI  an 8 kB or 32 kB recording can wait for a device that has not starte
     local why = sdec.strm_exit_why(sdec.ck_endwhy, true, nil)
     sdec.thr = keepthr
     check('...and the note names the two settings that govern the wait, and the armed level',
-          has(why, 'raise Arm Wait or lower Arm At') and has(why, 'crossed') and
+          has(why, 'raise Arm/Idle Wait or lower Arm At') and has(why, 'crossed') and
           not has(why, 'crossed 0.00 V') and not has(why, 'crossed -0.00 V'), why)
-    check('...and it waited the operator\'s Arm Wait rather than the recording\'s fill time',
+    check('...and it waited the operator\'s Arm/Idle Wait rather than the recording\'s fill time',
           (sdec.strm_waited or 0) >= sdec.arm_wait_s() - sdec.ck_poll_s,
-          string.format('%.2f s waited, Arm Wait %s', sdec.strm_waited or 0,
+          string.format('%.2f s waited, Arm/Idle Wait %s', sdec.strm_waited or 0,
                         tostring(sdec.arm_wait_s())))
   end
 

@@ -218,6 +218,65 @@ do
 end
 
 -- ============================================================================
+print('\nC2 the quiet-line watchdog waits Arm/Idle Wait, inside the real loop')
+-- ============================================================================
+-- THE ACCESSOR IS TESTED IN test_serial.lua; THIS TESTS THE CALL SITE. Pinning sdec.idle_exit() alone
+-- leaves the loop free to keep reading sdec.idle_exit_s, and a mutant that does exactly that passed
+-- every suite. The observable is the poll count: the loop adds sdec.ck_poll_s to its quiet timer once
+-- per iteration and polls the cancel latch once per iteration, so TRIG.waits counts the steps it
+-- waited. A startup dump that pauses for seconds is the case this protects.
+do
+  idle()
+  clearforce()
+  local keepaw = sdec.armwait
+  local function quietpolls(aw)
+    idle()
+    clearforce()
+    sdec.cancel_setup()
+    sdec.armwait   = aw
+    sdec.force_baud = 9600
+    sdec.capmode   = 'med'
+    local ok = sdec.stream_begin()
+    if ok ~= true then return nil, 'stream_begin refused' end
+    local w0 = TRIG.waits
+    sdec.stream_acquire(sdec.strm_nsmp)
+    return TRIG.waits - w0, sdec.ck_endwhy
+  end
+
+  local p2,  why2  = quietpolls(2.0)      -- exit 2 s  -> about 4 polls at ck_poll_s 0.5
+  local p10, why10 = quietpolls(10.0)     -- exit 10 s -> about 20 polls
+  check('a quiet line ends the run at the 2 s minimum', why2 == 'quiet', tostring(why2))
+  check('and at the 10 s default', why10 == 'quiet', tostring(why10))
+  -- The DIFFERENCE, not the ratio or the absolute counts. The loop spends a fixed poll or two reaching
+  -- its steady state, so that preamble cancels in a subtraction and would defeat a ratio. Derived from
+  -- ck_poll_s rather than written as 16, since a change to the poll interval must move it.
+  local want = (10.0 - 2.0) / sdec.ck_poll_s
+  check('the extra wait is the extra eight seconds, counted in poll steps',
+        p2 ~= nil and p10 ~= nil and p2 > 0 and
+        (p10 - p2) >= want - 1 and (p10 - p2) <= want + 1,
+        string.format('%s polls at 2 s vs %s at 10 s, difference %s, want ~%s',
+                      tostring(p2), tostring(p10), tostring((p10 or 0) - (p2 or 0)), tostring(want)))
+  -- The short end, from the other side: 2 s of quiet is four polls at 0.5 s, so the minimum setting
+  -- must still outlast a single poll by a margin a startup pause could not slip through.
+  check('and the 2 s case waits its full two seconds rather than a poll or two',
+        p2 >= 4, string.format('%s poll(s)', tostring(p2)))
+  -- THE NOTE ROW MUST NAME THE WAIT IT ACTUALLY DID. Reporting the floor while the loop waited five
+  -- times longer tells the operator their device went quiet four seconds before it did, and a mutant
+  -- that printed sdec.idle_exit_s here survived every other assertion in both suites.
+  sdec.armwait = 10.0
+  local n10 = sdec.strm_exit_why('quiet', true, nil)
+  check('the quiet note names ten seconds at the Arm/Idle Wait default',
+        has(n10, '10 s with no line activity'), n10)
+  sdec.armwait = 2.0
+  local n2 = sdec.strm_exit_why('quiet', true, nil)
+  check('...and two at the minimum, so the number tracks the setting',
+        has(n2, '2 s with no line activity'), n2)
+  sdec.armwait = keepaw
+  idle()
+  clearforce()
+end
+
+-- ============================================================================
 print('\nD  a cancel during the DECODE stops it and keeps the bytes')
 -- ============================================================================
 do
