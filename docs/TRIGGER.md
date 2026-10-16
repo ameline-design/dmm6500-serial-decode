@@ -247,7 +247,8 @@ one block (§15-413). Three events in one block means **a blender is unnecessary
 The default is the dangerous one. A capture armed on the TRIGGER key with `CLEAR_NEVER` fires on a
 press made minutes earlier. **Use `CLEAR_ENTER` for anything a human can trigger.** Use `CLEAR_NEVER`
 deliberately when you want a semaphore — see §9. The latch also clears at the start block and on
-exiting the wait.
+exiting the wait, and a `BRANCH_ON_EVENT` consumes it too, which is what makes a silence detector
+possible — see §13.
 
 **The default `logic` is `AND`, not `OR`.** A wait built as `(event, clear)` with no logic argument
 disassembles as `LOGIC: AND`, while `LoopUntilEvent` emits `LOGIC: OR`. Harmless for one event, and a
@@ -731,6 +732,16 @@ measurement refuted it, and the example is gone.
   cause is a buffer constant four events earlier in the log. `buffer.STYLE_STANDARD` resolves.
 * **Four undocumented block types.** `START`, `END` and `CHANNEL_ACTION` exist as TSP constants and
   appear in no `setblock` usage list. `WRITE_USB` appears in the manual not at all.
+* **An exhausted branch counter reads 0, not one past its target.** Ref line 54192 has it that "when
+  the trigger model reaches the set counter value, branching stops and the counter value is one
+  greater than the setting", so a counter set to 20 should read 21 afterwards. It reads **0**
+  (MEASURED, G5). One model, one statement, two counters: the free-running one read 20 while the
+  exhausted one read 0, and the same pair read 11 and 10 mid-run, so both were counting normally
+  until one hit its target. Reset at the end of the run is separately ruled out, because the
+  free-running counter was read after the model reached `IDLE` and still held its count. The firmware
+  self-resets a counter on exhaustion, which is what a nested inner loop needs and what the
+  documented value would break. The consequence for a probe: a counter read back as a program counter
+  must be capped beyond reach, or it reports zero in exactly the case where it ran every lap.
 
 ## 12. Choosing a program
 
@@ -754,5 +765,93 @@ configuring a blender. Fewer blocks, no shared subsystem to release afterwards.
 **For anything a human can trigger**, use `trigger.CLEAR_ENTER`. The default `CLEAR_NEVER` honours a
 press made before the block was reached.
 
+**To record a bursty line and discard the silence between bursts**, use §14's shape: §7's four
+blocks with a counter behind them and two buffers, the gap aimed at a scratch bin. Detect the end of
+each burst with §13's construct rather than a fixed burst length — a fixed length splices inside
+traffic and loses the frame that straddles the seam.
+
 **Read `trigger.model.state()` after every build and `initiate()`**, and drain `eventlog.next()`.
 Neither call reports its own refusal.
+
+## 13. Detecting silence: `BRANCH_ON_EVENT` consumes its event
+
+There is no trigger event for a line going quiet. The comparator fires on a crossing and silence
+raises nothing, so no `WAIT` can be armed on it. The *absence* of a crossing over a window is still
+expressible, because `BRANCH_ON_EVENT` tests an event rather than blocking on it:
+
+    k)   DELAY_CONSTANT      0.1
+    k+1) BRANCH_ON_EVENT     <event>, k      a crossing arrived: go round
+    k+2) ...                                 fell through: quiet for 100 ms
+
+This works only if re-entering block k+1 branches again on an event that arrived *since the last
+entry*, and nothing published settles that. `BLOCK_WAIT` takes a `clear` argument precisely because
+it has a latch-consumption policy; `BRANCH_ON_EVENT` takes none, so the behaviour is not selectable.
+§6 records the latch clearing at the start block and on exiting a wait, and is silent about a branch.
+The reference leans one way without saying it — "after the trigger event occurs, the next time the
+trigger model reaches the branch-on-event block, it goes to the branching block" (14-381) — but "the
+next time" says nothing about the time after that.
+
+**The branch consumes the event, and the detector re-arms once per event** (MEASURED, G1–G3). Three
+stimuli through one construct, with a `BRANCH_COUNTER` capped beyond reach at each landing site as a
+program counter:
+
+| event | stimulus | laps | branches | reading |
+|---|---|---|---|---|
+| `EVENT_NOTIFY1` | one notify block | 2 | **1** | consumed; fell through on re-entry |
+| `EVENT_TIMER1` | 0.5 s period | 100 | **20** | one branch per expiry, not per lap |
+| `EVENT_ANALOGTRIGGER` | 2 Hz square | 100 | **20** | one branch per crossing |
+| `EVENT_ANALOGTRIGGER` | 1 kHz square | 100 | **100** | every window busy; the loop never exits |
+| `EVENT_ANALOGTRIGGER` | DC, no crossing | **1** | 0 | exits one window after silence |
+
+The notify row alone would not have settled it. A detector consumed once and never re-armable
+predicts that same single branch and would be just as useless, so the periodic rows are what show the
+re-arm. Their counts are predictions rather than inequalities: 100 laps of 0.1 s against a 0.5 s
+period is 20 events, and that is what came back on both the timer and the comparator.
+
+**The comparator keeps posting while the loop runs.** §7 establishes that `EVENT_ANALOGTRIGGER` is
+derived from the digitizer's sample stream, so the comparator evaluates only while a measure block
+runs — which raises the question of whether it survives a loop made of delay and branch blocks. It
+does, provided a `COUNT_INFINITE` measure block is still live; the comparator rows above were taken
+with exactly that shape and the DC row is their control. The quiet row exited after **1001 samples at
+10 kS/s, 100.1 ms**: one window and no more.
+
+Two limits worth stating. The construct's resolution is its `DELAY_CONSTANT`, so a 0.1 s window
+cannot tell 0.1 s of quiet from 0.19 s. And the window is a *minimum* observable gap, not a latency —
+a burst is detected as over no sooner than one window after its last edge.
+
+## 14. A re-entered measure block appends, and the timestamps carry the splice
+
+§7's four-block shape records one burst. Putting a counter behind it records many bursts into one
+buffer while the silence between them goes somewhere else:
+
+    1) BUFFER_CLEAR      rec                      once, outside the loop
+    2) MEASURE_DIGITIZE  scr, COUNT_INFINITE      the gap's samples, discarded
+    3) WAIT              EVENT_ANALOGTRIGGER, CLEAR_ENTER
+    4) MEASURE_DIGITIZE  rec, 500                 the burst
+    5) BRANCH_COUNTER    4, 2
+    6) DELAY_CONSTANT    0
+
+**`rec` accumulates across passes** (MEASURED, G4). Four passes of 500 readings gave `rec.n` =
+**2000**, not 500, so block 4 appends rather than restarting its record. E3d had measured
+accumulation across one wait; this is the second pass and later. `startindex` stayed 1, so a record
+that never fills is not rotated. The silence went where it was aimed: `scr.n` = 13 231, which is
+1.3 s discarded against 0.2 s kept.
+
+`trigger.CLEAR_ENTER` on the wait is load-bearing rather than cautious. The default `CLEAR_NEVER`
+lets the wait consume a crossing latched during the burst it has just recorded, so it falls straight
+through, the next pass starts immediately, and no gap is ever skipped. The program still runs and
+still fills its record; the elision simply does nothing.
+
+**The span-derived sample rate is wrong by the elision ratio.** `(n-1)/span` over
+`buf.relativetimestamps` is how `acq_measure_fs` in `tsp/serial_core.tsp` reads the rate back, and it
+is the number every bit time is scaled by. Elision removes the gap's samples and not the gap's time,
+so on the record above the span was 1.5737 s for 2000 readings: **1270 S/s implied against 10 000
+commanded, low by 7.9x**. Any decode driven off the whole-span average is scaled by that factor.
+
+**The splices are exactly recoverable, which makes it repairable** (MEASURED, G4). Every reading
+keeps its own timestamp, so a gap appears as a discontinuity between consecutive ones. On the same
+record: **3 splices, at indices 501, 1001 and 1501** — the four-burst boundaries exactly — with
+deltas of 0.4743, 0.4497 and 0.4500 s against a commanded 0.5 s generator period. All 1996 remaining
+deltas were **100 µs**, giving 10 000 S/s inside the bursts and a ratio of **1.000** against the
+commanded rate. So segment the record at the discontinuities and measure fs within a segment: only
+the whole-span average is corrupt, and the record carries everything needed to avoid it.
