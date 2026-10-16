@@ -1507,24 +1507,44 @@ do
   -- anything under about twenty leaves no room for the anchor the walk starts from.
   local rates = {300, 379, 600, 630, 1200, 1207, 1800, 2400, 4800, 9600, 19200, 38400, 57600,
                  115200, 153600, 250000}
+  -- THROUGH brun.cell_fs, NOT BY RESTATING ITS ARITHMETIC. This check used to recompute the engine's
+  -- rate here, floor included, which made it agree with the loop by construction -- so a floor that
+  -- put the soak at a different rate from the reference bench could not be seen from here at all.
   local worst, wb, k = 1e9, nil, nil
   for k = 1, table.getn(rates) do
     local b = rates[k]
-    local fs = sdec.pick_fs(b, 8)
-    if fs < brun.minfs then fs = brun.minfs end
-    local bits = sdec.ua_probe_n / (fs / b)
+    local bits = sdec.ua_probe_n / (brun.cell_fs(b) / b)
     if bits < worst then worst, wb = bits, b end
   end
   ck(worst >= 20, 'the probe window holds at least twenty bit times at every rate the plan drives',
      string.format('worst %.1f bit(s) at %s baud', worst, tostring(wb)))
-  -- AND THE FLOOR IS A RATE THE APP ITSELF USES. serial_app's probe ladder bottoms at 10 kSa/s because
-  -- 20 000 samples there is 2 s -- sixty frames at 300 baud -- so this is not a new claim about the
-  -- hardware, it is the one the app already relies on.
-  local inladder, j = false, nil
-  for j = 1, table.getn(sdec.probe_fs) do
-    if sdec.probe_fs[j] == brun.minfs then inladder = true end
+  -- AND IT IS THE RATE THE REFERENCE BENCH CAPTURES AT. tools/bench_uart.py asks the instrument for
+  -- fs_for_baud(baud) and adds nothing, so anything added on this side makes a soak result
+  -- incomparable with every bench result on record -- which is what a 10 kSa/s floor did here, 2500
+  -- against 10000 at 300 baud, costing a 78-frame payload all but 59 frames. Asserted across the
+  -- plan's whole range because an adjustment at the bottom is invisible anywhere else.
+  local samefs, firstdiff = true, ''
+  for k = 1, table.getn(rates) do
+    local b = rates[k]
+    if brun.cell_fs(b) ~= sdec.fs_for_baud(b) then
+      samefs = false
+      if firstdiff == '' then
+        firstdiff = string.format('%d Bd: engine %s, reference %s', b,
+                                  tostring(brun.cell_fs(b)), tostring(sdec.fs_for_baud(b)))
+      end
+    end
   end
-  ck(inladder, 'and the rate floor is one the app already captures at', tostring(brun.minfs))
+  ck(samefs, 'and it is the rate the reference bench captures at, at every plan rate', firstdiff)
+  -- The window the capture itself reaches, in bit times, which is the number a vector's idle run has to
+  -- fit inside: a gap longer than this cannot be spanned at that rate however the phase falls.
+  local wworst, wwb = 1e9, nil
+  for k = 1, table.getn(rates) do
+    local b = rates[k]
+    local bits = sdec.n / (brun.cell_fs(b) / b)
+    if bits < wworst then wworst, wwb = bits, b end
+  end
+  ck(wworst >= 1200, 'and the capture window spans at least 1200 bit times at every plan rate',
+     string.format('worst %.0f bit times at %s baud', wworst, tostring(wwb)))
 end
 
 -- ---------------------------------------------------------------------------

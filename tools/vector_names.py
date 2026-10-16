@@ -56,6 +56,8 @@ MAP = {
     'v98b': 'SER_LoremGapMid_8N1_x10',
     'v99a': 'SER_LoremGapLead_7E1_x10',
     'v99b': 'SER_LoremGapMid_7E1_x10',
+    'v98c': 'SER_LoremGapBoth_8N1_x10',
+    'v99c': 'SER_LoremGapBoth_7E1_x10',
     # ---------------------------------------------------------------------------------------------
     # FULL SCALE: the data band spans -32767..+32767 instead of the 0..21626 every vector above
     # renders, so the band on the wire is OFST +/- AMP/2 exactly and AMP 10 OFST 0 is a true

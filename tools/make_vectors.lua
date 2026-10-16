@@ -636,6 +636,38 @@ vec{id = 'v99b', desc = '80 bytes of lorem with a 1000-bit-time idle pause after
              by, nb, nil, GAP7
     end}
 
+-- BOTH SHAPES IN ONE WAVEFORM, which none of the four above has. v98a/v99a pause only before the
+-- payload and v98b/v99b only inside it, so nothing in the set makes a capture cross a lead gap AND a
+-- mid-payload gap in the same window -- the shape a device that waits, prints a header, thinks, then
+-- prints a body actually produces. It is also the only shape that puts TWO separate idle runs inside
+-- one capture, so the framer has to re-anchor twice rather than once.
+--
+-- The gaps are shorter than v98a/v99a's on purpose. An idle run longer than the capture window cannot
+-- be spanned at that rate however the phase falls, and the binding rate is the slowest: at 630 baud
+-- the window is 1260 bit times, the narrowest the plan drives. 400 and 600 leave room for the payload
+-- on both sides of the pause at every rate, which is the point of a vector with two of them.
+-- docs/MEASUREMENTS.md, 'The bench rate floor outlived its cause' has the window per rate.
+vec{id = 'v98c', desc = '130 bytes of lorem behind a 400-bit-time idle lead AND split by a '
+                        .. '400-bit-time pause after byte 65, 9600 8N1 -- a device that waits, '
+                        .. 'prints a header, thinks, then prints the body',
+    fs = sr(9600), fsv = 5.0,
+    build = function()
+      local by, nb = GEN_BYTES(GAP8)
+      return {bytes = by, baud = 9600, fs = sr(9600), gap = 0, lead = 400, tail = 10,
+              midgap = 400, midgap_at = 65, loop = true}, by, nb, nil, GAP8
+    end}
+
+vec{id = 'v99c', desc = '80 bytes of lorem behind a 600-bit-time idle lead AND split by a '
+                        .. '600-bit-time pause after byte 40, 9600 7E1 -- the two-gap shape at the '
+                        .. 'longer run length, with parity',
+    fs = sr(9600), fsv = 5.0,
+    build = function()
+      local by, nb = GEN_BYTES(GAP7)
+      return {bytes = by, baud = 9600, fs = sr(9600), nbits = 7, par = 1, gap = 0,
+              lead = 600, tail = 10, midgap = 600, midgap_at = 40, loop = true},
+             by, nb, nil, GAP7
+    end}
+
 vec{id = 'v97', desc = '1024 random bytes masked to 7 bits -- v93 with bit 7 cleared, 9600 8N1 '
                        .. '(over the upload ceiling)',
     fs = sr(9600), fsv = 5.0, long = true,

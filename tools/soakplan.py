@@ -210,6 +210,10 @@ VECTOR_EXPECT = {
     # rather than of the app -- one allowed.
     'v98a': 'nodrop',  'v99a': 'nodrop',
     'v98b': 'nodrop1', 'v99b': 'nodrop1',
+    # The two-gap shape carries a lead gap AND a mid-payload one, so it has the clean anchor v98a has
+    # and the mid-cycle start v98b has. Given the allowance of the looser of the two until a lap has
+    # measured it: a vector whose acceptance was guessed tight reports the guess as a defect.
+    'v98c': 'nodrop1', 'v99c': 'nodrop1',
     # Impulse spikes at the amplitude ceiling: +/-3.0 V stacking to 9.3 V on a 3.3 V line. Whether a
     # given rate's sampling instants land on the spikes is a function of the rate, so which rates
     # survive is not knowable in advance.

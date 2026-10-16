@@ -134,20 +134,36 @@ brun.maxcell = brun.maxcell or 0
 -- host, after the run, by refusing the whole file.
 brun.nmeascol = 12
 
--- THE SLOWEST SAMPLE RATE A CELL MAY BE CAPTURED AT. sdec.pick_fs(baud, 8) asks for eight samples a bit,
--- which at 300 baud is 2500 Sa/s. But an UNLOCKED capture lands at 1 MS/s whatever it asked for -- see the
--- fs_want note in brun.point -- and that is 3333 samples a bit, so ua_probe's 4000-sample window spans
--- 1.2 BIT TIMES and no format fits it. Every failure below 2400 baud in a 117-cell lap was this.
+-- The rate a cell is captured at is the app's own choice, sdec.pick_fs(c.baud, 8), with nothing added to
+-- it. A 10 kSa/s floor used to sit here and removing it is a fix, not a relaxation.
 --
--- 10 kSa/s IS THE APP'S OWN FLOOR: serial_app.tsp's probe ladder is {1e6, 1e5, 1e4} and stops there
--- because 20 000 samples at 10 kSa/s is 2 s -- sixty frames at 300 baud.
+-- It was a workaround for a cause that was fixed one commit later. An unlocked capture landed at 1 MS/s
+-- whatever it asked for, which at 300 baud is 3333 samples a bit, so ua_probe's 4000-sample window
+-- spanned 1.2 bit times and no format fitted -- every failure below 2400 baud in a 117-cell lap. The
+-- floor raised slow cells until the window held frames again; fs_want then fixed the rate itself, see the
+-- note in brun.point, and the floor stayed. It could not have guarded the 1 MS/s case in any event, being
+-- a clamp that only ever raises.
 --
--- WHAT THIS DOES NOT DO is model the app's two-pass probe -- the ladder sweep, then a second decode at a
--- rate chosen from sdec.baud_probe. brun.point mirrors bench_point in tools/bench_uart.py so soak results
--- stay comparable with every bench result on record, and both take one capture at one rate. Modelling the
--- two passes is the larger fidelity fix, in both places at once; this makes the single capture use a rate
--- that can see the line.
-brun.minfs = brun.minfs or 10000
+-- What it cost, measured on the shapes the plan plays: at 300 baud it gives 33.3 samples a bit, so 20 000
+-- samples reach 600 bit times and a 78-frame payload came back 59 frames at best -- every slow cell
+-- judged on three-quarters of its payload, and any vector whose idle run exceeds 600 bit times
+-- unreachable there at all. At pick_fs's own 2500 the window is 2400 bit times and every start offset
+-- returns the whole payload. It also put this loop at odds with tools/bench_uart.py, the reference it
+-- mirrors, which takes fs_for_baud with no floor: 2500 against 10000 at the same rate. The probe window
+-- the floor was protecting is wider without it, 480 bit times against 120.
+-- docs/MEASUREMENTS.md, 'The bench rate floor outlived its cause'.
+--
+-- What this still does not do is model the app's two-pass probe -- the ladder sweep, then a second decode
+-- at a rate chosen from sdec.baud_probe. brun.point mirrors bench_point in tools/bench_uart.py so soak
+-- results stay comparable with the bench results on record, and both take one capture at one rate.
+--
+-- One function rather than an expression in the loop, because the engine test asserted this rate by
+-- restating the arithmetic and so could not notice the floor diverging from the reference: a number the
+-- loop and its test both need has to come from one place. docs/MEASUREMENTS.md, 'Panel numbers must
+-- agree' is the same rule for the glass.
+function brun.cell_fs(baud)
+  return sdec.pick_fs(baud, 8)
+end
 
 -- THE EVENT WATCHDOG. Inspection is not enough to keep this loop quiet: one wrong argument in
 -- brun.announce -- tspnet.connect's initString, nil where a string is required -- puts an event 1138 on
@@ -2337,8 +2353,7 @@ function brun.soak(iterations, tag)
       -- and a reader can subtract c.wait, which the row already carries.
       if brun.timing then pcall(function() brun.tsel = timer.gettime() end) end
       brun.spin_tick()                  -- 2 of 6: stimulus selected and the plan wait is over
-      local fs = sdec.pick_fs(c.baud, 8)
-      if fs < brun.minfs then fs = brun.minfs end
+      local fs = brun.cell_fs(c.baud)
       local p = brun.point(fs, c.baud, false)
       -- RE-MUTED AFTER EVERY CAPTURE. sdec.acquire calls sdec.quiet_events(), which sets
       -- localnode.showevents = SEV_ERROR -- so the mute taken once at the top of this function is undone

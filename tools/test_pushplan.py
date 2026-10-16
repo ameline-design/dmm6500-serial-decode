@@ -207,13 +207,23 @@ print('-- the size the fortnight will actually push --')
 # checked rather than remembered.
 n14 = 210 * len([r for r in ROWS if r and r[0].isdigit()]) // 2
 bytes14 = int(210 * sum(len(r) + 1 for r in ROWS if r and r[0].isdigit()) / 2.0)
-# THE WINDOW MOVED WITH THE DRAW, and it is a documented size rather than a correctness property. Four
-# gap vectors joined the draw and five r-series left it (vector_names.BENCH_ONLY), which holds the
-# hardware lap at its 1677 cells but not this plan: the r-series is thinned per lap by random_drop()
-# while the gap vectors play every lap, so five out does not pay for four in here. 315000-317000 brackets
-# the measured 316050. What matters is the byte budget below it -- 21.0 MB against the key's 22 -- and
-# that is still the binding constraint. Re-measure rather than widen if the draw changes again.
-check('a 210-lap plan is the size the design says', 315000 < n14 < 317000 and bytes14 < 22 * 1024 * 1024,
+# THE WINDOW MOVED WITH THE DRAW, and it is a documented size rather than a correctness property.
+#
+# Six gap vectors now play every lap -- v98a/b/c and v99a/b/c -- and five r-series have left the draw
+# (vector_names.BENCH_ONLY). Those do not cancel: this projection runs at --random-per-lap 4, so the
+# r-series is thinned to four whatever the pool holds, while every gap vector plays every lap. Removing
+# more r-series therefore cannot shrink this plan at all, which is worth stating because it is the
+# obvious thing to try. 1591 cells a lap, measured, against 1505 before the two two-gap vectors.
+#
+# 333000-335000 brackets the measured 334110. The byte figure is 22.3 MB, above the 22 that stood here
+# when the lap was 1505 cells -- so the bound moves with the re-measurement rather than the vector set
+# being contorted to fit a number whose origin was this line. What it is NOT is the binding constraint:
+# that is PUSH_MAX_ROWS, asserted separately below, where 334110 of 400000 leaves 16 %. And the 210-lap
+# plan is deliberately over-sized -- notes/SOAK-14DAY.md records that a stop at 8 days reaches ~95 laps
+# and the rest never play -- so a longer lap costs laps at the far end that were never going to run.
+# Re-measure rather than widen if the draw changes again, and if PUSH_MAX_ROWS ever gets close, the lap
+# count is the thing to cut, not this.
+check('a 210-lap plan is the size the design says', 333000 < n14 < 335000 and bytes14 < 23 * 1024 * 1024,
       '%d rows, %.1f MB, %d batches' % (n14, bytes14 / 1048576.0,
                                         (n14 + RB.PUSH_BATCH_ROWS - 1) // RB.PUSH_BATCH_ROWS))
 check('and it is inside PUSH_MAX_ROWS', n14 < RB.PUSH_MAX_ROWS,

@@ -420,16 +420,86 @@ check(string.format('31250 at 32 sa/bit: the rate is right wherever the window o
                     NOFF, nmloop), mbad == 0,
       mbad == 0 and '' or string.format('%d of %d wrong; first: %s', mbad, NOFF * nmloop, mworst))
 
--- AND ua_minrun_absurd IS WHAT DOES IT. Without checking the other direction this section passes
--- unchanged on a build where the guard never fires, which is how it read before the guard existed --
--- measured, it reported 0 of 96 wrong either way until the fixture went gapless.
+-- AND TWO SEPARATE THINGS DEFEND IT, which the one-factor control here could not say. Disabling
+-- ua_minrun_absurd on its own used to make this sweep misfit and no longer does: the misfit needs a
+-- mid-byte start, and 03cb33b's residue vote removed those from a gapless capture, which is what this
+-- fixture is. The guard became the second line and the control went vacuous without anyone touching
+-- it -- it read 0 of 96 wrong either way, passing by measuring the anchor instead.
+--
+-- So it is a 2x2, measured over the same 96 cases: vote on with guard on 0 wrong, vote on with guard
+-- off 0, vote off with guard on 0, vote off with guard off 16. Those 16 are the documented failure,
+-- 153600 Bd -- the 5x submultiple snapping to a standard rate. All three states are asserted, so
+-- neither defence can be removed in silence and no assertion rests on a branch nothing reached.
 do
-  local keep = sdec.submult_maxrunlo
+  local kg, kv = sdec.submult_maxrunlo, sdec.ua_resid_min
   sdec.submult_maxrunlo = 1e9
-  local nmis, seen = midi_sweep()
-  sdec.submult_maxrunlo = keep
-  check('and with ua_minrun_absurd disabled the same sweep misfits -- the guard is load-bearing',
-        nmis > 0, string.format('%d of %d wrong without it, first %s', nmis, NOFF * nmloop, seen))
+  local nguardoff = midi_sweep()
+  sdec.submult_maxrunlo = kg
+  check('the anchor alone holds this sweep, so the guard is no longer what decides it',
+        nguardoff == 0,
+        string.format('%d of %d wrong with the guard off', nguardoff, NOFF * nmloop))
+  -- The first line taken out of the way, which is the only state the second can be measured in.
+  sdec.ua_resid_min = 1e9
+  local nvoteoff = midi_sweep()
+  sdec.submult_maxrunlo = 1e9
+  local nboth, seen = midi_sweep()
+  sdec.submult_maxrunlo, sdec.ua_resid_min = kg, kv
+  check('with the anchor defeated the guard still holds it, which is what a second line means',
+        nvoteoff == 0,
+        string.format('%d of %d wrong, anchor off and guard on', nvoteoff, NOFF * nmloop))
+  check('and with both off the sweep misfits, so neither check above is vacuous',
+        nboth > 0, string.format('%d of %d wrong, first %s', nboth, NOFF * nmloop, seen))
+end
+
+-- ============================================================================
+print('a capture holding no idle at all, where the residue vote is the only anchor')
+-- THE ANCHOR'S OWN FIX, WHICH NOTHING IN THIS FILE ASSERTED. 03cb33b replaced the 1.5-bit mark-run
+-- rule with a vote -- start-bit candidates binned by bit index modulo framebits, the winning residue
+-- taken when it clears ua_resid_min votes and leads the runner-up by ua_resid_frac. Setting
+-- ua_resid_min past reach disables the vote outright and left this file green, so the change was
+-- carried by no assertion at all and a revert would have shipped.
+--
+-- THE CONDITION IS A CAPTURE WITH NO IDLE IN IT: gap 0, lead 0, tail 0. Idle anywhere in the window
+-- lets the mark-run rule anchor on its own, so every vector carrying a lead or a tail hides this --
+-- which is why the sweeps above, all built lead 10 tail 10, could not see it. Measured both ways over
+-- 33 offsets of a gapless 440-byte stream: with the vote 28 offsets frame with zero bad frames,
+-- without it NONE do. The threshold is two thirds, which the shipped code clears at 85 % and the
+-- disabled vote misses by the whole margin.
+do
+  local TEXT = 'The quick brown fox jumps over the lazy dog 0123456789 '
+  local by, nb = {}, 0
+  local rep, i
+  for rep = 1, 8 do
+    for i = 1, string.len(TEXT) do nb = nb + 1; by[nb] = string.byte(TEXT, i) end
+  end
+  local NIFS = 80000
+  local rd, ts, nc, ns = GEN({bytes = by, baud = 9600, fs = NIFS,
+                              gap = 0, lead = 0, tail = 0, loop = true})
+  local function clean_at(s0)
+    local w, n = {}, 0
+    local k
+    for k = 0, sdec.n - 1 do n = n + 1; w[n] = rd[math.mod(s0 + k, ns) + 1] end
+    sdec.acq_fs = NIFS
+    sdec.sig_levels(w, n)
+    sdec.sig_edges(w, n)
+    sdec.sig_idle(w, n)
+    sdec.force_baud, sdec.force_nbits = nil, nil
+    sdec.force_par, sdec.force_nstop, sdec.force_invert = nil, nil, nil
+    if not pcall(function() return sdec.decode_from(w, n) end) then return false end
+    local r = sdec.res
+    return r ~= nil and (r.nbad or 0) == 0
+  end
+  local step = math.floor(ns / 32)
+  if step < 1 then step = 1 end
+  local nstart, nclean, s0 = 0, 0, nil
+  for s0 = 0, ns - 1, step do
+    nstart = nstart + 1
+    nrun = nrun + 1
+    if clean_at(s0) then nclean = nclean + 1 end
+  end
+  check('a gapless capture frames cleanly at most start offsets, the residue vote anchoring it',
+        nclean * 3 >= nstart * 2,
+        string.format('%d of %d offsets with no bad frame', nclean, nstart))
 end
 
 -- ============================================================================
