@@ -848,6 +848,39 @@ is the number every bit time is scaled by. Elision removes the gap's samples and
 so on the record above the span was 1.5737 s for 2000 readings: **1270 S/s implied against 10 000
 commanded, low by 7.9x**. Any decode driven off the whole-span average is scaled by that factor.
 
+**The burst block can be infinite too, and the two measure blocks stop each other** (MEASURED, G6).
+A fixed burst count is not usable in practice: it splices inside traffic and loses the frame
+straddling each seam, which is a byte in four at a few frames. So the real program ends each burst
+with §13's detector instead of a count:
+
+    1) BUFFER_CLEAR      rec
+    2) MEASURE_DIGITIZE  scr, COUNT_INFINITE      the gap
+    3) WAIT              EVENT_ANALOGTRIGGER, CLEAR_ENTER
+    4) MEASURE_DIGITIZE  rec, COUNT_INFINITE      the burst
+    5) DELAY_CONSTANT    0.1                      the detector window
+    6) BRANCH_ON_EVENT   EVENT_ANALOGTRIGGER, 5   still talking: go round
+    7) BRANCH_COUNTER    4, 2                     quiet: back for the next burst
+    8) DELAY_CONSTANT    0
+
+Two measure blocks exactly, which is the budget, and entering either one stops the other. Four
+passes over a 2 Hz crossing gave `rec.n` = 4004 as **four bursts of 1001 readings**, splices at 1002,
+2003 and 3004, gaps of 0.3983, 0.4001 and 0.4000 s, and 0.4 s kept against 1.198 s elided — which
+sums to the run. Each burst is 100.1 ms because the detector's window is 0.1 s and the next crossing
+on this stimulus is half a second away, so the half period less the burst closes the arithmetic.
+
+The failure this rules out would have been quiet rather than loud. Had block 4 not been stopped, both
+blocks would have kept writing: `rec` would have grown straight through the gaps, held *more*
+readings rather than fewer, and shown no discontinuity at all. So `rec.n` on its own is not the
+oracle for this program — the splice positions are.
+
+**A scratch that wraps costs nothing** (MEASURED, G7). A real gap of 2 to 120 s at 100 kS/s laps any
+affordable scratch, so the same program was run again with the scratch cut to 2000 readings — 0.2 s
+against a 0.4 s gap, so it laps twice per gap — and nothing else moved. The record was identical at
+4004 readings in the same four bursts at the same indices, the event-log delta was the same 3 entries
+as the unwrapped run, and the model still reached `IDLE`. `fillmode = 1` is what buys that, set
+numerically; see §11 on the constant that does not exist. So the scratch may be small whatever the
+gap length, which matters because it is drawn from the same reading pool as the record.
+
 **The splices are exactly recoverable, which makes it repairable** (MEASURED, G4). Every reading
 keeps its own timestamp, so a gap appears as a discontinuity between consecutive ones. On the same
 record: **3 splices, at indices 501, 1001 and 1501** — the four-burst boundaries exactly — with
