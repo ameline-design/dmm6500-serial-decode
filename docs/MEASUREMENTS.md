@@ -1591,7 +1591,7 @@ far below the hump threshold.
 
 ### A level probe is not the oracle
 
-`capture()` learns the levels from a `probe_n` = 2000 sample scout before the real acquisition, and
+`acquire()` learns the levels from a `probe_n` = 2000 sample scout before the real acquisition, and
 in free-run mode a scout that found no transitions used to end the capture. On a bursty line that
 reads a pause as a dead wire. At the bench's ~8 samples a bit the scout spans about **240 bit times**,
 while the real capture is `n` = 20 000 samples, **ten times** as far.
@@ -1610,10 +1610,76 @@ returned **123 frames** because its window spanned the arb seam and caught the p
 
 So free run now falls through to the real capture, and the level re-measure on that record is the
 gate -- which it already was for every other path. Expected refusals go from **17.8 to 0.4** a lap.
-The residual is the two slowest rates: the bench floors `fs` at 10 kS/s, so 300 and 379 Bd get 33 and
-26 samples a bit and 20 000 samples reach only 600 and 758 bit times, still short of the gap. Those
-stay at **23 % and 14 %**. The fast exit is kept for the one case where it cannot cost anything,
-`n <= pn`, since a capture no longer than the scout has nothing left to find.
+The residual was the two slowest rates, and is now none. Everything above was measured while the bench
+still floored `fs` at 10 kS/s, which gave 300 and 379 Bd only 33 and 26 samples a bit -- so 20 000
+samples reached 600 and 758 bit times, short of the gap, leaving those two at 23 % and 14 %. That floor
+was a workaround for a cause already fixed and has since gone; see 'The bench rate floor outlived its
+cause' below. At the rates the app picks for itself, 2500 and 5000 S/s, the same capture spans 2400 and
+1516 bit times, both wider than the 1010-bit idle run, so no rate the plan drives can swallow one.
+Measured on the 840-cell gap soak that followed: **66 cells at 630 Bd and below, none refused.**
+
+The fast exit is kept for the one case where it cannot cost anything, `n <= pn`, since a capture no
+longer than the scout has nothing left to find. A second case was added after this: inside
+`autoset()`'s probe ladder the refusal is the mechanism that steps the sample rate down, not a verdict
+on the line, so a rung that pushes on keeps a rate that cannot frame -- see 'The probe ladder reads a
+refusal as a request to look longer' below.
+
+### The bench rate floor outlived its cause
+
+`brun.minfs` raised any cell due to be captured below 10 kS/s. It went in at `2ebe654` as a workaround:
+an unlocked capture landed at 1 MS/s whatever it asked for, so 300 baud arrived at 3333 samples a bit,
+`ua_probe`'s 4000-sample window spanned 1.2 bit times and no format fitted -- every failure below 2400
+baud in a 117-cell lap. `fs_want` landed one commit later at `41a1e97` and fixed the rate itself. The
+floor stayed, and it could not have guarded the 1 MS/s case in any event, being a clamp that only ever
+raises.
+
+What it cost, measured on the shape the gap vectors play, 25 arb phases at each setting:
+
+| capture rate | lead | window, bit times | phases decoding | best frame count |
+|---|---|---|---|---|
+| 10 kS/s, the floor | 600 | 600 | 23 of 25 | 59 |
+| 2500, `fs_for_baud` | 600 | 2400 | 25 of 25 | 156 |
+| 10 kS/s, the floor | 1000 | 600 | 18 of 25 | 59 |
+| 2500, `fs_for_baud` | 1000 | 2400 | 25 of 25 | 138 |
+
+The payload is 78 frames, so at the floor **no 300 baud cell ever returned more than 59 of its 78
+frames** -- every slow cell in this project's history was judged on three-quarters of its payload, and
+any vector whose idle run exceeded 600 bit times was unreachable there at all. It also put the soak at
+odds with `tools/bench_uart.py`, the reference `brun.point` mirrors, which takes `fs_for_baud` and adds
+nothing: 2500 against 10000 at the same rate. Even the probe window the floor was protecting is wider
+without it, 480 bit times against 120.
+
+**The capture window per rate, which is what a vector's idle run has to fit inside.** At eight samples
+a bit `sdec.n` = 20 000 spans 2400 bit times, and across the standard rates the narrowest is **2304**
+at 28 800 baud. Drawn rates are worse and that is where the bound comes from: `pick_fs` snaps up
+through a coarse ladder, so a baud just above `fs/8` for a step gets nearly 16 samples a bit -- 630
+baud takes `fs` 10 000 for 15.87, a window of **1260 bit times**. So **~1250 bit times is the binding
+figure**, and every gap vector's idle run is inside it: 410 for `v98c`, 610 for `v98a`/`v98b`/`v99c`,
+1010 for `v99a`/`v99b`.
+
+The engine test used to assert this rate by restating the arithmetic, floor included, so it agreed with
+the loop by construction and could not see the divergence. `brun.cell_fs` is the single source now, and
+the test asserts it equals the reference's choice at every plan rate.
+
+### The probe ladder reads a refusal as a request to look longer
+
+`autoset()` forces `trigmode` free and steps the sample rate down a decade a try -- 20 ms, 200 ms, 2 s
+for the same 20 000 samples -- treating a false return from `acquire()` as *look for longer*. So a rung
+that succeeds instead of refusing keeps the rate it has, and at 300 baud the top rung's 20 000 samples
+are **six bit times**: enough to find two logic levels, not enough to fit a rate. `decode()` then sets
+`baud_probe` from six bit times, the loop breaks on it, and the second pass captures at `pick_fs` of a
+rate that was never measured.
+
+Measured on the bench, in the smoke's plan stage: `r06` at 300 baud captured at **1000 S/s against a
+commanded 2500** -- 3.3 samples a bit -- and returned no bytes, taking the stage to 85 of 86. Nothing
+offline saw it: `test_slow_probe` drives `decode_from` directly, and the ladder is reachable only
+through `acquire()`.
+
+So the free-run fall-through is kept out of the ladder, keyed on `sdec.trig_restore` -- the marker the
+ladder already parks for the firmware boundary, non-nil for the loop and nil everywhere else. The
+restore is wrapped rather than trusted: a host tool that pcalls `sdec.capture()` itself never reaches
+`sdec.unwind()`, and a leaked marker would silently disable the fall-through for every later capture
+and survive an app reload, with a symptom reading as *the fix did not take*.
 
 ### The flow-control pulse is ~10 us, not the 100 us requested
 

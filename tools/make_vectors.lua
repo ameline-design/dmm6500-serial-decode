@@ -583,10 +583,24 @@ vec{id = 'v93', desc = '1024 uniform random bytes 0-255, 9600 8N1 (over the uplo
 -- decoder sees the identical run of idle at every rate, which is the invariant it actually cares
 -- about: what can desynchronise a framer is a run measured in frames, not in seconds.
 --
--- SIZED SO A CAPTURE CANNOT LAND ENTIRELY IN THE PAUSE. At a matched sdec.fs a capture is 20000 arb
--- samples, 2000 bit times at SPB, so each whole cycle stays under that and every window holds payload
--- wherever the phase falls. A mostly-idle vector would fail cells on phase alone -- a looping arb's
--- phase is a coin flip per capture -- and those failures would not be defects.
+-- SIZED SO A CAPTURE CANNOT LAND ENTIRELY IN THE PAUSE. The binding requirement is on the longest IDLE
+-- RUN, not on the cycle: a window wider than the run must overlap payload wherever the phase falls. A
+-- mostly-idle vector would fail cells on phase alone -- a looping arb's phase is a coin flip per
+-- capture -- and those failures would not be defects.
+--
+-- THE WINDOW TO MEASURE AGAINST IS THE NARROWEST ONE THE PLAN DRIVES, which is not the matched case.
+-- sdec.n is 20000 samples, so at the usual 8.33 samples a bit that is 2400 bit times -- but pick_fs
+-- snaps up through a coarse ladder, and a drawn baud just above fs/8 for a step takes nearly 16 samples
+-- a bit: 630 Bd gets fs 10000 for 15.87, a window of 1260. So **~1250 bit times** is the figure, and
+-- every idle run here is inside it -- 410 for v98c, 610 for v98a/v98b/v99c, 1010 for v99a/v99b.
+-- docs/MEASUREMENTS.md, 'The bench rate floor outlived its cause' has the window per rate.
+--
+-- The first four also satisfy a stronger form of this -- the WHOLE CYCLE under 2000 bit times, 1810 to
+-- 1920 -- and the two-gap pair does not, at 2110 and 2010, because carrying two pauses and a payload
+-- costs more than one pause and a payload. That is a weaker guarantee, not a broken one: a cycle longer
+-- than the window only means no single capture spans a whole pass, which the judge already allows for
+-- (its coverage floor is relative to the decoded body, not to the oracle). Confirmed on the instrument
+-- at 129 cells each, zero failures.
 --
 -- FOUR, IN TWO SHAPES AND TWO FORMATS. The pause at the START of a pass is a device that has not
 -- spoken yet; MID-payload it is one that paused to think, with traffic either side. 8N1 with a 600-bit

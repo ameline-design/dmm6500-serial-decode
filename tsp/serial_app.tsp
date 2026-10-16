@@ -222,17 +222,27 @@ function sdec.autoset()
     local nlad = table.getn(ladder)
     -- Registered for the boundary: sdec.guard can see a field, where savetrig is a local it cannot.
     sdec.trig_restore = savetrig
-    while tries < nlad do
-      tries = tries + 1
-      sdec.fs, sdec.fs_want = ladder[tries], ladder[tries]
-      ok, why = sdec.acquire()
-      if ok then
-        ok, why = sdec.decode()
-        if ok or sdec.baud_probe ~= nil then break end
+    -- The restore runs on the raising path too, and sdec.unwind() is not enough cover for it. A host
+    -- tool that pcalls sdec.capture() itself never reaches the firmware boundary, so a raise in this
+    -- loop would leave trig_restore set -- and acquire() now reads that field to keep its free-run
+    -- fall-through out of the ladder, so a leaked marker silently disables gap elision for every later
+    -- capture and survives an app reload. The symptom would read as 'the fix did not take'. Caught and
+    -- re-raised here rather than left to a catcher that may not exist; level 0 so the re-raise does not
+    -- staple a second position onto the message.
+    local lok, lerr = pcall(function()
+      while tries < nlad do
+        tries = tries + 1
+        sdec.fs, sdec.fs_want = ladder[tries], ladder[tries]
+        ok, why = sdec.acquire()
+        if ok then
+          ok, why = sdec.decode()
+          if ok or sdec.baud_probe ~= nil then break end
+        end
       end
-    end
+    end)
     sdec.trigmode = savetrig
     sdec.trig_restore = nil
+    if not lok then error(lerr, 0) end
     if tries > 1 then
       sdec.probe_note = string.format(
         'probe took %d looks to catch traffic (down to %g kS/s)', tries or 0, ladder[tries] / 1000)
@@ -2199,9 +2209,13 @@ function sdec.gap_why()
   local w = tonumber(sdec.gapelide)
   if w == nil or w <= 0 then return nil end
   if sdec.strm_elide ~= nil then return nil end
+  -- FLOW CONTROL BEFORE THE WINDOW IS DERIVED, and the order is the whole point: locking the rate cannot
+  -- help while fc_out is set, because arm_silent() refuses on it outright. Reported the other way round
+  -- the panel answers 'lock the baud rate first', which is an instruction that cannot work -- and the two
+  -- are mutually exclusive, which is the fact the operator needs.
+  if sdec.fc_out then return 'gap elision off -- flow control is on' end
   local win, declined = sdec.gap_elide()
   if win == nil then return declined end
-  if sdec.fc_out then return 'gap elision off -- flow control is on' end
   if sdec.trigmode == 'free' then return 'gap elision off -- the trigger is free-running' end
   if not sdec.arm_silent() then
     return 'gap elision off -- the line was already transmitting when the recording started'

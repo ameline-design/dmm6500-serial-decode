@@ -119,9 +119,15 @@ def main():
     ap.add_argument('files', nargs='*')
     args = ap.parse_args()
 
+    # bench/*.tsp IS IN THE DEFAULT SET, and leaving it out was a blind spot rather than a choice: the
+    # soak engine is 2000 lines of the same kind of comment as tsp/, written under the same rule, and
+    # nothing was checking it. Found when a comment added to bench/bench_run.tsp went unreported while
+    # the same wording in tsp/ would have been caught. It raises the baseline by the lines already
+    # there -- compare counts against a run on the previous tree, never against zero.
     files = args.files or (sorted(glob.glob(os.path.join(ROOT, 'tools', '*.lua')))
                            + sorted(glob.glob(os.path.join(ROOT, 'tools', '*.py')))
-                           + sorted(glob.glob(os.path.join(ROOT, 'tsp', '*.tsp'))))
+                           + sorted(glob.glob(os.path.join(ROOT, 'tsp', '*.tsp')))
+                           + sorted(glob.glob(os.path.join(ROOT, 'bench', '*.tsp'))))
     total = 0
     for f in files:
         rel = os.path.relpath(f, ROOT)

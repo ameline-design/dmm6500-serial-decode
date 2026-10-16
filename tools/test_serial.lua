@@ -10182,10 +10182,23 @@ print('\narming from silence: the capture autoset() reaches, and the rates it fa
   arm_reset()
   sdec.trigmode, sdec.force_baud, sdec.n = 'free', 9600, 20000
   local pok, pwhy = sdec.acquire()
+  -- probe_idle IS NOT THE EVIDENCE HERE. A successful free-run acquire clears it, because a field left
+  -- set has arm_silent() claim a silent line on a capture holding bytes. So the premise -- that the
+  -- probe does find this stimulus idle -- is carried by the paired refusal below, whose reason is the
+  -- probe's own verdict, rather than by a field this path deliberately spends.
   check('free run on a line that is only pausing acquires it, the probe being a scout and not the oracle',
-        pok == true and sdec.probe_idle ~= nil,
+        pok == true,
         string.format('ok=%s probe_idle=%s why=%s', tostring(pok), tostring(sdec.probe_idle),
                       tostring(pwhy)))
+  -- AND THE SCOUT'S VERDICT IS SPENT, which is the other half of the fall-through. In free run a set
+  -- a set probe_idle implies this function refused -- the only path that sets it also refuses -- so
+  -- arm_silent() cannot report a silent line on a capture that found traffic. That is the invariant the
+  -- fall-through has to preserve. arm_silent() is asserted as well, because it is the reader the field
+  -- exists for: a host tool asking 'was the line silent' about a capture holding bytes gets no.
+  check('...and spends the probe verdict, so a capture holding bytes is not reported as a silent line',
+        sdec.probe_idle == nil and sdec.arm_silent() == false,
+        string.format('probe_idle=%s arm_silent=%s', tostring(sdec.probe_idle),
+                      tostring(sdec.arm_silent())))
   -- The premise asserted rather than assumed, and the fast exit with it: held down to the probe's own length
   -- the capture can see nothing further, so the same stimulus refuses and costs ONE read. Without that the
   -- check above would pass on a line the probe could see all along, and a deleted fast exit would go unnoticed.
@@ -10194,8 +10207,12 @@ print('\narming from silence: the capture autoset() reaches, and the rates it fa
   sdec.n = sdec.probe_n
   local nb4 = READS.n
   local qok, qwhy = sdec.acquire()
+  -- THE REASON IS ASSERTED, NOT JUST THE REFUSAL, because this is now where the premise lives: a
+  -- refusal for some other cause would leave the check above passing on a line the probe could see all
+  -- along. 'line is idle' is the probe's own verdict on this stimulus.
   check('...and refuses on the probe alone where the capture reaches no further, at one read not two',
-        qok == false and (READS.n - nb4) == 1,
+        qok == false and (READS.n - nb4) == 1 and qwhy ~= nil and
+        string.find(qwhy, 'idle', 1, true) ~= nil,
         string.format('ok=%s reads=%d why=%s', tostring(qok), READS.n - nb4, tostring(qwhy)))
   sdec.n, sdec.force_baud = 20000, nil
 
@@ -10223,6 +10240,40 @@ print('\narming from silence: the capture autoset() reaches, and the rates it fa
         lok == false and lwhy ~= nil,
         string.format('ok=%s why=%s', tostring(lok), tostring(lwhy)))
   sdec.force_baud = nil
+
+  -- AND THE LADDER MUST ACTUALLY SET THE MARKER, which the check above assumes rather than proves. It
+  -- parks trig_restore by hand, so it asserts what acquire() does GIVEN a marker and says nothing
+  -- about autoset() setting one. Measured: deleting `sdec.trig_restore = savetrig` from the ladder
+  -- left all fourteen Lua suites green -- the consumer covered three ways and the producer not at all,
+  -- which is the same shape of gap that let the original defect reach hardware.
+  --
+  -- acquire() is STUBBED so this observes the ladder and not a capture: the real one succeeds on the
+  -- first rung here, so the loop would end after one look and never show the marker holding across
+  -- rungs. The stub refuses every time, which is also what drives all three rungs.
+  local real_acq = sdec.acquire
+  local seen, nseen = {}, 0
+  sdec.acquire = function()
+    nseen = nseen + 1
+    seen[nseen] = sdec.trig_restore
+    return false, 'stubbed: the ladder is what is under test'
+  end
+  quiet_line()
+  arm_reset()
+  sdec.trigmode, sdec.force_baud = 'edge', nil
+  pcall(function() return sdec.autoset() end)
+  sdec.acquire = real_acq
+  local nlad = table.getn(sdec.probe_fs)
+  local allmarked, k = nseen == nlad, nil
+  local shown = ''
+  for k = 1, nseen do
+    if seen[k] ~= 'edge' then allmarked = false end
+    shown = shown .. (k > 1 and ',' or '') .. tostring(seen[k])
+  end
+  check('the ladder parks the trigger mode as a marker on every rung, which is what acquire() reads',
+        allmarked, string.format('%d of %d rung(s), markers [%s]', nseen, nlad, shown))
+  check('...and clears it afterwards, or every later free-run capture would be suppressed for good',
+        sdec.trig_restore == nil, tostring(sdec.trig_restore))
+  sdec.trigmode = 'free'
 
   quiet_line()
   arm_reset()
@@ -11803,6 +11854,17 @@ end)()
   sdec.gapelide = 0
   check('...and with the option itself off there is nothing to say', sdec.gap_why() == nil,
         tostring(sdec.gap_why()))
+  -- FLOW CONTROL OUTRANKS THE MISSING RATE, and the order is the finding rather than a preference.
+  -- Both preconditions fail at once here: no locked rate AND fc_out set. Reported as 'lock the baud
+  -- rate first' the panel hands over an instruction that cannot work -- arm_silent() refuses on fc_out
+  -- whatever the rate is -- so the operator would lock a rate and get the same decline. The mutually
+  -- exclusive fact is the one to report.
+  sdec.gapelide, sdec.force_baud, sdec.fc_out = 0.1, nil, true
+  local fcwhy = sdec.gap_why()
+  check('with flow control on AND no locked rate, the panel names flow control -- the one it can act on',
+        fcwhy ~= nil and string.find(fcwhy, 'flow control', 1, true) ~= nil,
+        tostring(fcwhy))
+  sdec.fc_out = false
   sdec.fc_out, sdec.strm_elide = kfc, kse
   sdec.gapelide, sdec.force_baud = 0.000001, 9600
 

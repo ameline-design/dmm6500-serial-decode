@@ -426,10 +426,11 @@ check(string.format('31250 at 32 sa/bit: the rate is right wherever the window o
 -- fixture is. The guard became the second line and the control went vacuous without anyone touching
 -- it -- it read 0 of 96 wrong either way, passing by measuring the anchor instead.
 --
--- So it is a 2x2, measured over the same 96 cases: vote on with guard on 0 wrong, vote on with guard
--- off 0, vote off with guard on 0, vote off with guard off 16. Those 16 are the documented failure,
--- 153600 Bd -- the 5x submultiple snapping to a standard rate. All three states are asserted, so
--- neither defence can be removed in silence and no assertion rests on a branch nothing reached.
+-- So it is a 2x2, measured over the same 96 cases through this file's own midi_sweep: vote on with
+-- guard on 0 wrong, vote on with guard off 0, vote off with guard on 0, vote off with guard off
+-- **8**. Those 8 are the documented failure, 153600 Bd -- the 5x submultiple snapping to a standard
+-- rate. All three states are asserted, so neither defence can be removed in silence and no assertion
+-- rests on a branch nothing reached.
 do
   local kg, kv = sdec.submult_maxrunlo, sdec.ua_resid_min
   sdec.submult_maxrunlo = 1e9
@@ -684,11 +685,12 @@ check('the promotion to 7 bits reaches the result the panel reads',
 -- The count is `>= nstart` and not `> 0` on purpose: every start resolves this way, so a bound tied
 -- to the sweep size is the one a stuck counter cannot satisfy. Measured at exactly nstart.
 --
--- What this does NOT cover, measured rather than assumed: setting ua_resid_min past reach, which
--- disables 03cb33b's residue vote and returns the anchor to the 1.5-bit mark-run rule, leaves this
--- check passing. A misaligned head does not by itself make a dissenting voter -- the vote already
--- skips 3 head frames and honours headsusp -- so the anchor's own fix has no cover here. See
--- notes/FINDING-analog-vacuous.md.
+-- This DOES cover the anchor, and it did not when it was written. Setting ua_resid_min past reach --
+-- which disables 03cb33b's residue vote and returns the anchor to the 1.5-bit mark-run rule -- now
+-- makes this very check fail, at 17 re-decodes against the 0 it demands: without the vote the heads
+-- misalign, each misaligned head puts a dissenter in the vote, and the strict path stops being the one
+-- that resolves a clean stream. The no-idle section above covers the same fix from the other side,
+-- on decoded bytes rather than on the format path. See notes/FINDING-analog-vacuous.md.
 check('a clean 7E1 stream is resolved unanimously, by the strict strip and not by a re-decode',
       nredecode == 0 and nstrict7 >= nstart,
       string.format('%d re-decode(s), %d strict, over %d starts', nredecode, nstrict7, nstart))

@@ -159,10 +159,11 @@ brun.nmeascol = 12
 --
 -- One function rather than an expression in the loop, because the engine test asserted this rate by
 -- restating the arithmetic and so could not notice the floor diverging from the reference: a number the
--- loop and its test both need has to come from one place. docs/MEASUREMENTS.md, 'Panel numbers must
--- agree' is the same rule for the glass.
+-- loop and its test both need has to come from one place.
+-- sdec.fs_sabit rather than a literal 8: the reference bench asks the instrument for fs_for_baud, which
+-- is that same constant, so a copy here is a copy to forget when the app's oversampling target moves.
 function brun.cell_fs(baud)
-  return sdec.pick_fs(baud, 8)
+  return sdec.pick_fs(baud, sdec.fs_sabit)
 end
 
 -- THE EVENT WATCHDOG. Inspection is not enough to keep this loop quiet: one wrong argument in

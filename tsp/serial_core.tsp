@@ -2218,6 +2218,13 @@ function sdec.acquire()
   -- Re-measure the levels on the real capture; the probe was only a scout.
   ok, why = sdec.sig_levels(sdec.smp, sdec.nread)
   if not ok then return false, why end
+  -- The scout's verdict is spent once the record has contradicted it. In free run a set probe_idle used
+  -- to imply this function returned false -- the only path that set it also refused -- so arm_silent()
+  -- could never report a silent line on a capture that found traffic. The fall-through broke that: the
+  -- field outlived the probe and arm_silent() then answered yes on a capture holding bytes. Cleared on
+  -- the free path only, because on an armed one the idle probe is the arm's own evidence and the note
+  -- that explains the wait reads it afterwards.
+  if sdec.trigmode == 'free' then sdec.probe_idle = nil end
   -- Stage boundaries, for the liveness hook: each of these three walks all sdec.nread samples. A tick between them
   -- cannot affect what they compute, each reading sdec.smp afresh.
   if sdec.tick ~= nil then sdec.tick() end
