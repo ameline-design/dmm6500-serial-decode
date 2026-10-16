@@ -516,8 +516,13 @@ check('n_deliv is the armed yield -- the post-trigger count, not the buffer dept
 local real_refine = sdec.ua_refine_parity
 local nredecode, nilfmt, firstbad = 0, 0, ''
 local nownhead, nerased, firsterased = 0, 0, ''
+-- The STRICT path counted as well, because it is the other half of the same decision and a clean
+-- stream is supposed to take it: strict strips the top bit in place and returns the SAME table, so
+-- `out == r` with nbits 7 is as exact a discriminator as `out ~= r` is for the re-decode.
+local nstrict7 = 0
 sdec.ua_refine_parity = function(r, rd, n, T)
   local out = real_refine(r, rd, n, T)
+  if out ~= nil and r ~= nil and out == r and out.nbits == 7 then nstrict7 = nstrict7 + 1 end
   if out ~= nil and r ~= nil and out ~= r then
     nredecode = nredecode + 1
     -- THE RE-DECODE'S OWN HEAD EVIDENCE MUST SURVIVE. Same arguments the branch used, so this is the
@@ -562,50 +567,90 @@ end
 local STEP = 250
 local SEEDS = {7106, 7107, 7108, 7109, 7110, 7111}
 local nseed = table.getn(SEEDS)
-local raised, firstraise = 0, ''
-local nstart, npromote = 0, 0
-local si
-for si = 1, nseed do
-  local by, nb = shuffled7(SEEDS[si])
-  -- RENDERED ONCE PER SEED, outside the offset loop: the render is the expensive half and the
-  -- window is a slice of it. r06's own opts, so this is the waveform the SDG plays.
-  local rd, ts, nc, ns = GEN({bytes = by, nbits = 7, par = 1, baud = 9600, fs = 100000,
-                              gap = 0, lead = 10, tail = 10, loop = true})
-  local s0
-  for s0 = 0, ns - 1, STEP do
-    local ok, why, r = startphase_case(rd, ns, 100000, s0, WANT)
-    nrun = nrun + 1
-    nstart = nstart + 1
-    if not ok then
-      raised = raised + 1
-      if firstraise == '' then
-        firstraise = string.format('seed %d start %d: %s', SEEDS[si], s0, tostring(why))
+-- ONE EXPERIMENT WITH ONE VARIABLE, so the clean payload and the parity-faulted one are comparable:
+-- same seeds, same render options, same offsets, and only opts.perr differs. The wrapper's counters
+-- are reset here rather than accumulated, so each call reports what its own stimulus reached.
+local function parity_sweep(perr)
+  nredecode, nilfmt, firstbad = 0, 0, ''
+  nownhead, nerased, firsterased = 0, 0, ''
+  nstrict7 = 0
+  local raised, firstraise = 0, ''
+  local nstart, npromote = 0, 0
+  local si
+  for si = 1, nseed do
+    local by, nb = shuffled7(SEEDS[si])
+    -- RENDERED ONCE PER SEED, outside the offset loop: the render is the expensive half and the
+    -- window is a slice of it. r06's own opts, so this is the waveform the SDG plays.
+    local rd, ts, nc, ns = GEN({bytes = by, nbits = 7, par = 1, baud = 9600, fs = 100000,
+                                gap = 0, lead = 10, tail = 10, loop = true, perr = perr})
+    local s0
+    for s0 = 0, ns - 1, STEP do
+      local ok, why, r = startphase_case(rd, ns, 100000, s0, WANT)
+      nrun = nrun + 1
+      nstart = nstart + 1
+      if not ok then
+        raised = raised + 1
+        if firstraise == '' then
+          firstraise = string.format('seed %d start %d: %s', SEEDS[si], s0, tostring(why))
+        end
+      elseif r ~= nil and r.nbits == 7 then
+        npromote = npromote + 1
       end
-    elseif r ~= nil and r.nbits == 7 then
-      npromote = npromote + 1
     end
   end
+  return nstart, npromote, raised, firstraise
 end
-sdec.ua_refine_parity = real_refine        -- a wrapper left in place poisons every later case
-check(string.format('%d mid-byte starts over %d 7E1 payloads: none raises', nstart, nseed),
+
+-- ---- the bench's own payload, which is clean, and the STRICT path is what resolves it ----
+local nstart, npromote, raised, firstraise = parity_sweep(nil)
+check(string.format('%d starts over %d clean 7E1 payloads: none raises', nstart, nseed),
       raised == 0, raised == 0 and '' or string.format('%d raised; first: %s', raised, firstraise))
+check('the promotion to 7 bits reaches the result the panel reads',
+      npromote > 0, string.format('%d of %d starts read 7 bits', npromote, nstart))
+-- A clean stream must not need the re-decode, and saying so is what makes the faulted sweep below a
+-- controlled comparison instead of a second unrelated case. Every frame's bit 7 tracks the parity of
+-- its low seven, so the vote is unanimous and the in-place strip is sound.
+--
+-- The count is `>= nstart` and not `> 0` on purpose: every start resolves this way, so a bound tied
+-- to the sweep size is the one a stuck counter cannot satisfy. Measured at exactly nstart.
+--
+-- What this does NOT cover, measured rather than assumed: setting ua_resid_min past reach, which
+-- disables 03cb33b's residue vote and returns the anchor to the 1.5-bit mark-run rule, leaves this
+-- check passing. A misaligned head does not by itself make a dissenting voter -- the vote already
+-- skips 3 head frames and honours headsusp -- so the anchor's own fix has no cover here. See
+-- notes/FINDING-analog-vacuous.md.
+check('a clean 7E1 stream is resolved unanimously, by the strict strip and not by a re-decode',
+      nredecode == 0 and nstrict7 >= nstart,
+      string.format('%d re-decode(s), %d strict, over %d starts', nredecode, nstrict7, nstart))
+
+-- ---- and the same payload with a parity bit wrong on the wire, which is what the branch is FOR ----
+-- A DISSENTING VOTER IS THE ENTRY CONDITION, not a mid-byte start. Read off ua_refine_parity rather
+-- than inferred: `strict = (nagree == nvote)`, and under par_minvote_frac frames the required
+-- fraction becomes unanimity -- so the branch needs 20 or more voting frames AND a frame that frames
+-- cleanly while its bit 7 contradicts the parity of its low seven. A garbage frame carries an error
+-- and never votes, which is why no start offset of a clean stream reaches the branch at any window
+-- length: measured 0 of 648 at eight lengths from 5 frames to 190.
+-- One wrong parity bit is the honest way to make a dissenter, and it is the fault a parity bit
+-- exists to detect. Spread through the payload so that whichever frames a window takes, one lands
+-- inside the voting region, which skips 3 frames at the head and 1 at the tail.
+local PERR = {12, 40, 68, 96, 124, 152, 180, 208, 236}
+local fstart, fpromote, fraised, ffirstraise = parity_sweep(PERR)
+check(string.format('%d starts over %d parity-faulted 7E1 payloads: none raises', fstart, nseed),
+      fraised == 0,
+      fraised == 0 and '' or string.format('%d raised; first: %s', fraised, ffirstraise))
 check('every 7E1 re-decode carries the format that produced it (nbits, par, nstop, invert)',
       nilfmt == 0, nilfmt == 0 and '' or string.format('%d of %d incomplete; %s',
                                                        nilfmt, nredecode, firstbad))
--- THE TWO CHECKS ABOVE ARE VACUOUS WITHOUT THESE. A sweep in which no start offset ever reaches the
--- non-strict re-decode passes by not exercising the code at all -- which is exactly how the first
--- regression test written for this bug came to pass with the fix removed.
-check('the non-strict 7E1 re-decode is reached, so the branch under test really ran',
-      nredecode > 0, string.format('%d re-decodes over %d starts', nredecode, nstart))
-check('the promotion to 7 bits reaches the result the panel reads',
-      npromote > 0, string.format('%d of %d starts read 7 bits', npromote, nstart))
 check('the 7E1 re-decode keeps its OWN suspect-head extent, so ERR counts the head it found',
       nerased == 0, nerased == 0 and '' or string.format('%d of %d erased; first: %s',
                                                          nerased, nownhead, firsterased))
--- VACUOUS WITHOUT THIS, and more sharply than the checks above: the erasure is only observable when
--- the re-decode finds a head the 8N1 pass did not, which is 3 of 18 firings on these seeds.
+-- THE TWO CHECKS ABOVE ARE VACUOUS WITHOUT THESE, and that is not hypothetical here: from 03cb33b
+-- until this stimulus existed they were exactly that, passing by not exercising the code at all.
+check('the non-strict 7E1 re-decode is reached, so the branch under test really ran',
+      nredecode > 0, string.format('%d re-decodes over %d starts', nredecode, fstart))
 check('a re-decode with its own head evidence is reached, so the check above can fail',
       nownhead > 0, string.format('%d of %d re-decodes found their own headsusp', nownhead, nredecode))
+sdec.ua_refine_parity = real_refine        -- a wrapper left in place poisons every later case
 
 -- ============================================================================
 print(string.format('\n%d passed, %d failed   (%d decodes swept)', pass, fail, nrun))

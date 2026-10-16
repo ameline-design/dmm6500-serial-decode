@@ -618,11 +618,14 @@ def main():
     elif a.push_plan:
         argv = ['python3', os.path.join(ROOT, 'tools', 'soakplan.py'), '--emit-csv',
                 '--iteration', str(a.iteration)]
+        # THE ITERATION COUNT BELONGS ON BOTH BRANCHES. soakplan honours --iterations with --spec, but
+        # it was only ever passed on the full-plan side -- so a targeted run asked brun.soak(N) for N
+        # laps while the key held rows for one, and every lap after the first had nothing to read.
+        argv += ['--iterations', str(max(a.iteration, a.iteration + max(a.iterations, 1) - 1))]
         if a.spec:
             argv += ['--spec', a.spec]
         else:
-            argv += ['--iterations', str(max(a.iteration, a.iteration + max(a.iterations, 1) - 1)),
-                     '--skip-vectors', a.skip_vectors]
+            argv += ['--skip-vectors', a.skip_vectors]
             if a.random_per_lap is not None:
                 argv += ['--random-per-lap', str(a.random_per_lap)]
         text = subprocess.check_output(argv, cwd=ROOT).decode()
