@@ -1504,6 +1504,19 @@ do
   ck(pe.elide_want ~= nil and pe.elided == true,
      'the premise: this cell really did build the elision program rather than falling back',
      string.format('want=%s elided=%s', tostring(pe.elide_want), tostring(pe.elided)))
+  -- THE RATE A RECORDING WOULD USE, not the bench's own. Elision exists only in the recording modes, so
+  -- a cell captured at any other rate tests a configuration nothing ships -- and it mattered: at 19200
+  -- Bd the bench asked 160 000 S/s where fs_for_burst asks 100 000, 60 % over and past the reading
+  -- storage ceiling, which is why that cell's seams came back at milliseconds against the 0.16-0.21 ms
+  -- the 4800-9600 seams show.
+  ck(pe.elidefsapp ~= nil and pe.elidefsapp == sdec.fs_for_burst(9600),
+     'an elided cell captures at the rate the recording modes would pick',
+     string.format('%s against fs_for_burst %s, bench cell_fs %s', tostring(pe.elidefsapp),
+                   tostring(sdec.fs_for_burst(9600)), tostring(want)))
+  ck(sdec.fs_for_burst(19200) <= 100000 and sdec.pick_fs(19200, 8) > 100000,
+     '...and that rate is the one 19200 Bd was getting wrong, held under the storage ceiling',
+     string.format('app %s, bench %s', tostring(sdec.fs_for_burst(19200)),
+                   tostring(sdec.pick_fs(19200, 8))))
   ck(pe.elidenrd ~= nil and pe.elidecap ~= nil and pe.elidecap > 0,
      'an elided cell records the ring it filled, so a wrap is visible instead of arguable',
      string.format('%s of %s', tostring(pe.elidenrd), tostring(pe.elidecap)))

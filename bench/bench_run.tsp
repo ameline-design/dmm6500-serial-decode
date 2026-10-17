@@ -237,6 +237,31 @@ brun.elide_margin = brun.elide_margin or 2
 -- 33 ms two windows then need.
 brun.elide_minbits = brun.elide_minbits or 40
 
+-- Capture an elided cell at the rate the RECORDING MODES use, not at the bench's own.
+--
+-- brun.cell_fs is sdec.pick_fs(baud, 8), uncapped, which is right for a panel-style capture and wrong
+-- for a recording. The app picks a recording rate with sdec.fs_for_burst, which differs twice over: it
+-- prices in sdec.acq_overhead, so it asks for a HIGHER listed rate to actually deliver its samples a
+-- bit, and fs_cap_tier holds everything at or below 19200 Bd to 100 kS/s -- placed there to keep the
+-- reading-storage backlog off the capture. Elision exists only in the recording modes, so an elided
+-- cell run at any other rate is testing a configuration nothing ships.
+--
+-- It mattered. At 19200 Bd the bench ran 160 000 S/s where the product runs 100 000, 60 % over and past
+-- the storage ceiling, which is why the 19200 seams of 2026-10-17 came back at milliseconds instead of
+-- the 0.16-0.21 ms the 4800-9600 seams show -- tens of bytes destroyed per seam rather than one. Cells
+-- 7, 8, 47, 48, 87 and 88 of that lap measured a rate no recording mode asks for.
+--
+--   baud    bench    app      sa/bit at the app rate
+--   4800    40000    50000    10.42
+--   9600    80000   100000    10.42
+--   19200  160000   100000     5.21
+--   28800  250000   160000     5.56
+--
+-- Non-elided cells keep brun.cell_fs, whose value the engine test pins to the reference bench, so the
+-- archive stays comparable. An elided cell has no archive to be comparable with.
+brun.elide_appfs = brun.elide_appfs
+if brun.elide_appfs == nil then brun.elide_appfs = true end
+
 -- The window this baud gets, which is also what the gate measures a gap against.
 function brun.elide_window(baud)
   local w = brun.elide_win
@@ -551,6 +576,18 @@ function brun.point(fs, baud, lock, elide, vid)
     --
     -- brun.cell_fs is left alone, the engine test pinning it to the reference bench's fs_for_baud so a
     -- non-elided cell stays comparable with the archive.
+    -- The recording rate first, so the ceiling below applies to whatever the product would have used
+    -- rather than to a rate it never asks for. pcall'd and only taken when it answers: fs_for_burst
+    -- returns nil where no listed rate delivers its samples a bit, and a nil there must leave the
+    -- bench's own rate standing rather than zero it.
+    if brun.elide_appfs then
+      local fb = nil
+      pcall(function() fb = sdec.fs_for_burst(baud) end)
+      if fb ~= nil and fb > 0 then
+        sdec.fs, sdec.fs_want = fb, fb
+        r.elidefsapp = fb
+      end
+    end
     if brun.elide_fsmax ~= nil and sdec.fs > brun.elide_fsmax then
       sdec.fs, sdec.fs_want = brun.elide_fsmax, brun.elide_fsmax
       r.elidefscap = brun.elide_fsmax
@@ -3078,6 +3115,7 @@ function brun.soak(iterations, tag)
         -- fscap and wincap are the caps actually applied; segfs and spanfs are the two rate estimates,
         -- written on every elided cell and not only the failures. The passing cells are the control --
         -- without them a disagreement cannot be told from a rate the record simply has.
+        if p.elidefsapp ~= nil then nt = nt .. string.format(' appfs=%.0f', p.elidefsapp) end
         if p.elidefscap ~= nil then nt = nt .. string.format(' fscap=%.0f', p.elidefscap) end
         if p.elidewincap ~= nil then nt = nt .. string.format(' wincap=%.4f', p.elidewincap) end
         if p.elidefs ~= nil then nt = nt .. string.format(' segfs=%.0f', p.elidefs) end
