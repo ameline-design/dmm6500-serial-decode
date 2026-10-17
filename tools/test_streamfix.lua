@@ -953,6 +953,27 @@ print('\nI  an 8 kB or 32 kB recording can wait for a device that has not starte
     sdec.stream_arm(sdec.strm_nsmp)
     check('...and a model that never reaches its wait is still reported as not armed',
           sdec.strm_armed == false, string.format('armed=%s', tostring(sdec.strm_armed)))
+
+    -- AND THE ELIDING PROGRAM IS READ A DIFFERENT WAY, because on it the loop's observation is
+    -- impossible: the model leaves its wait block within a bit time of the line talking and
+    -- trigger.model.state() lags ~190 ms, so STATE_WAITING is never sampled and the settle used to spin
+    -- the whole budget. Ten seconds of continuous digitize is what corrupts the record -- the instrument
+    -- falls back to storing ~100 kS/s and 84 % of samples go missing. A filling RECORD is the
+    -- observation that is available, and only here: the canned template's pre-trigger reserve fills its
+    -- buffer while it legitimately waits, which is what the check above pins.
+    --
+    -- The premise is that check: same never-waiting model, no elision, still refused. So if this one
+    -- passes it is the elision scope doing it and not the model.
+    local keepge = sdec.gapelide
+    sdec.gapelide = 0.05
+    sdec.force_baud = 9600
+    begin('med', 'edge', quiet_line)
+    sdec.stream_arm(sdec.strm_nsmp)
+    check('but the eliding arm takes a filling record as the trigger, rather than waiting it out',
+          sdec.strm_elide == nil or sdec.strm_armed == true,
+          string.format('armed=%s elide=%s', tostring(sdec.strm_armed), tostring(sdec.strm_elide)))
+    sdec.gapelide = keepge
+    sdec.force_baud = nil
     trigger.model.state = keepstate
     sdec.thr, sdec.idle, sdec.arm_thr, sdec.arm_idle = kthr, kidle, kat, kai
     sdec.strm_armed = karmed
@@ -1523,5 +1544,6 @@ do
 end
 
 print()
+
 print(string.format('%d passed, %d failed', pass, fail))
 os.exit(fail == 0 and 0 or 1)

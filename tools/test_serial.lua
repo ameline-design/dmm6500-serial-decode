@@ -8694,6 +8694,47 @@ local function test_modes()
   check('and structureless noise is still refused at the level stage',
         sdec.sig_levels(nrd, 4000) == false)
 
+  -- 2b. AN OVER-RANGE READING IS A NUMBER. The firmware returns 9.9e+37 for a sample off the range, Lua
+  -- compares it like any other, and sig_levels took it as vmax. Nothing announces that: the pair search
+  -- still finds the two real levels, so the decode works and only the fields a LATER caller reads are
+  -- wrong. arm_threshold() is that caller -- it builds the comparator level out of vmax -- and the
+  -- firmware then refuses the write with 1131, out of band. Measured on the bench at 20 Vpp into the
+  -- 10 V range, where the stimulus sits exactly at the rails and individual samples clip.
+  local function clipped(nbad, bad)
+    local t = {}
+    for i = 1, 20000 do t[i] = 3.3 end
+    for i = 5000, 5009 do t[i] = 0 end        -- one real space bit, so there is a pair to find
+    local i
+    for i = 1, nbad do t[100 + i] = bad end
+    return sdec.sig_levels(t, 20000)
+  end
+  -- THE PREMISE FIRST: without a clipped sample this fixture measures 0 to 3.3 V.
+  check('the fixture measures its two levels with nothing clipped',
+        clipped(0, nil) == true and near(sdec.vmax, 3.3, 1e-9) and near(sdec.vmin, 0, 1e-9),
+        string.format('vmin=%s vmax=%s', tostring(sdec.vmin), tostring(sdec.vmax)))
+  check('and a clean capture reports no over-range readings', sdec.nover == 0,
+        tostring(sdec.nover))
+  local cok = clipped(1, 9.9e+37)
+  check('one over-range reading does not become vmax', cok == true and near(sdec.vmax, 3.3, 1e-9),
+        string.format('ok=%s vmax=%s', tostring(cok), tostring(sdec.vmax)))
+  check('and it is COUNTED rather than silently dropped -- the capture still decodes',
+        sdec.nover == 1, tostring(sdec.nover))
+  check('the negative sentinel is rejected on the same test',
+        clipped(1, -9.9e+37) == true and near(sdec.vmin, 0, 1e-9) and sdec.nover == 1,
+        string.format('vmin=%s nover=%s', tostring(sdec.vmin), tostring(sdec.nover)))
+  -- NOT A TIGHTER GATE THAN THE INSTRUMENT'S WIDEST RANGE. 1000 V is a reading the hardware can
+  -- genuinely return, and refusing it here would break a capture that works.
+  check('a 1000 V reading is still a voltage',
+        clipped(1, 1000) == true and near(sdec.vmax, 1000, 1e-9) and sdec.nover == 0,
+        string.format('vmax=%s nover=%s', tostring(sdec.vmax), tostring(sdec.nover)))
+  -- The all-clipped capture has a different remedy from the empty one, so it must not report as empty.
+  local allbad = {}
+  for i = 1, 400 do allbad[i] = 9.9e+37 end
+  local aok, awhy = sdec.sig_levels(allbad, 400)
+  check('a capture that is ENTIRELY over range says so, and not that it is empty',
+        aok == false and has(awhy, 'over range') and sdec.vmax == nil,
+        tostring(awhy))
+
   -- 3. Decimation can ALIAS PAST a sparse burst: 50 low samples in 2.8 M decimate to one
   -- or none at step 140. ck_levels falls back to a contiguous window rather than reporting
   -- a measurable recording as an idle line.
@@ -9685,6 +9726,74 @@ print('\nS/N is measured, not inferred from the edges (real code)')
   check('sdec.snr_db is a dB figure and sdec.noise_v is the volts behind it',
         cap(0.033, 3.3) ~= nil and sdec.noise_v ~= nil and sdec.noise_v > 0 and sdec.noise_v < 1,
         string.format('noise_v=%s', tostring(sdec.noise_v)))
+
+  -- AN OVER-RANGE RUN IS NOT NOISE. sig_levels keeps 9.9e+37 out of the levels, but this function reads
+  -- the record again and the neighbour test needs three in a row on one side -- which a clipped rail
+  -- supplies. Squared that is about 1e75, so one clipped run would stand as the whole record's noise and
+  -- the panel would print a meaningless figure. A real condition on this bench: a 20 Vpp stimulus at 0 V
+  -- offset spans exactly the 10 V range.
+  local clip = {}
+  local m
+  for m = 1, 4000 do
+    if math.mod(math.floor((m - 1) / 40), 2) == 0 then clip[m] = 0.0 else clip[m] = 3.3 end
+  end
+  sdec.lvl_thr, sdec.lvl_hyst, sdec.lvl_swing = nil, nil, nil
+  local cok0 = sdec.sig_levels(clip, 4000)
+  local base = sdec.snr_db
+  check('the square-wave fixture measures a figure with nothing clipped',
+        cok0 == true and base ~= nil, string.format('ok=%s snr=%s', tostring(cok0), tostring(base)))
+  -- A run of them, long enough to satisfy the three-in-a-row test at the high rail.
+  for m = 2001, 2012 do clip[m] = 9.9e+37 end
+  sdec.lvl_thr, sdec.lvl_hyst, sdec.lvl_swing = nil, nil, nil
+  local cok1 = sdec.sig_levels(clip, 4000)
+  check('a clipped run leaves the noise figure a real number, not 1e75',
+        cok1 == true and sdec.noise_v ~= nil and sdec.noise_v < 1.0,
+        string.format('noise_v=%s snr=%s', tostring(sdec.noise_v), tostring(sdec.snr_db)))
+  check('...and the figure is the one the unclipped record gave, the run contributing nothing',
+        base ~= nil and sdec.snr_db ~= nil and math.abs(sdec.snr_db - base) < 3,
+        string.format('%s vs %s dB', tostring(sdec.snr_db), tostring(base)))
+  check('...and the clipped readings are counted where a reader can see them',
+        sdec.nover == 12, tostring(sdec.nover))
+
+  -- EACH HALF OF THE sig_noise GUARD, SEPARATELY. The fixture above is a RUN of twelve clipped samples,
+  -- and either half of the guard suppresses a run on its own -- the sample test rejects the middle
+  -- sample, and nilling the neighbours rejects the ones at each end. So the run proves the pair and says
+  -- nothing about either. Removing one half left the suite green, which is how this was found.
+  --
+  -- The case that needs both is a SINGLE clipped sample with good neighbours on the same side: the
+  -- neighbour nilling cannot see it, because its neighbours are legitimate, so only the sample test
+  -- excludes it. One sample is enough to matter -- (9.9e+37)^2 is about 9.8e+75 against a real sum of a
+  -- few microvolts squared -- and it is also the likeliest shape in practice, a stimulus grazing the
+  -- range rather than sitting past it.
+  local one = {}
+  local q
+  for q = 1, 4000 do
+    if math.mod(math.floor((q - 1) / 40), 2) == 0 then one[q] = 0.0 else one[q] = 3.3 end
+  end
+  sdec.lvl_thr, sdec.lvl_hyst, sdec.lvl_swing = nil, nil, nil
+  local bok = sdec.sig_levels(one, 4000)
+  local bbase = sdec.snr_db
+  check('the single-sample fixture measures a figure with nothing clipped',
+        bok == true and bbase ~= nil, tostring(bbase))
+  -- THE INDEX HAS TO SATISFY THREE THINGS, and an earlier version of this test satisfied one. sig_noise
+  -- SAMPLES the record -- step = floor(n / sdec.noise_nsamp), which is 4 here -- so the sentinel must sit
+  -- on a visited index, i == 2 (mod 4). It must also sit inside a HIGH run, or the `up` branch is never
+  -- taken and the sample is excluded by the threshold rather than by the guard. And both neighbours must
+  -- be legitimate, or the neighbour nilling excludes it and this stops testing the sample test.
+  --
+  -- 2042 is all three: 2042 = 2 (mod 4), floor(2041/40) is 51 and odd so it is in a high run, and 2041
+  -- and 2043 are both 3.3. The first attempt used 2010, which is visited but sits in a LOW run -- so it
+  -- passed with the guard removed, and passed for the wrong reason.
+  one[2042] = 9.9e+37
+  sdec.lvl_thr, sdec.lvl_hyst, sdec.lvl_swing = nil, nil, nil
+  local sok = sdec.sig_levels(one, 4000)
+  check('ONE clipped sample between two good ones leaves the noise figure real',
+        sok == true and sdec.noise_v ~= nil and sdec.noise_v < 1.0,
+        string.format('noise_v=%s snr=%s', tostring(sdec.noise_v), tostring(sdec.snr_db)))
+  check('...and the figure is still the unclipped one, so the sample contributed nothing',
+        bbase ~= nil and sdec.snr_db ~= nil and math.abs(sdec.snr_db - bbase) < 3,
+        string.format('%s vs %s dB', tostring(sdec.snr_db), tostring(bbase)))
+  check('...and it is counted', sdec.nover == 1, tostring(sdec.nover))
 end)()
 
 -- ============================================================================

@@ -78,6 +78,16 @@ sdec.n          = 20000     -- capture depth, samples (see sdec.acq_cap)
 -- Fixed at the 10 V range and not an option, and a constant, so unlike range-as-a-setting it is safe to assign
 -- unconditionally on reload. docs/MEASUREMENTS.md, 'The 10 V range has the widest digitize bandwidth'.
 sdec.range      = 10
+-- Past this a reading was not measured: an over-range sample comes back as the firmware's 9.9e+37, a number as
+-- far as Lua is concerned, which sig_levels used to admit as a logic level. 1e6 clears the 1000 V widest range
+-- the instrument offers. Reachable on this bench whenever the stimulus sits at the rails -- 20 Vpp at 0 V offset
+-- spans the range exactly -- and the poisoned vmax propagates to arm_threshold(), whose comparator write the
+-- firmware then refuses with 1131.
+sdec.vover      = 1e6
+-- And the count of readings that exceeded it on the last capture. Initialised because sig_levels is its only
+-- writer: a caller that reads it before any capture would otherwise get nil, and one that reads it after a
+-- capture too short to reach sig_levels would get the PREVIOUS capture's count under this capture's name.
+sdec.nover      = 0
 sdec.probe_n    = 2000      -- samples in the level-learning probe capture
 -- Sample rates the free-run auto-detect probe tries, in order. Each covers ten times as long for the same sample
 -- count, because a window shorter than one frame cannot see a slow line. Every entry must be in sdec.rates.
@@ -178,7 +188,7 @@ if sdec.armkey == nil then sdec.armkey = true end
 -- cannot know the line stopped until it has elapsed. That is window * fs readings a burst, so 0.1 s at 100 kS/s
 -- is 10 000 of them. Expressed in bit times the same cost is constant, about 20 * sa/bit, which is why
 -- gap_elide() floors on the bit time and requires a locked rate to derive it from.
--- docs/TRIGGER.md 13, 'Detecting silence'.
+-- docs/TRIGGER.md, 'How long the line must stay quiet'.
 sdec.gapelide     = sdec.gapelide or 0
 sdec.gapelide_min = 0.002
 sdec.gapelide_max = 2.0
@@ -188,8 +198,10 @@ sdec.gapelide_max = 2.0
 -- a falling arm the rise out of a space is not a crossing at all. On back-to-back 0x00 the falling crossings are
 -- therefore one per FRAME, so the window has to clear framebits and not the ten bit times a single byte suggests:
 -- at the widest forced format framebits reaches 13, where a rule written as 10 is 30 % short. Exceeding the floor
--- costs ONE frame at the seam and not the record, the framer resynchronising on the next start bit, so this is a
--- proportionate floor rather than a refusal.
+-- costs a few frames at the seam and not the record, the framer resynchronising on the next start bit, so this is a
+-- proportionate floor rather than a refusal. Four or five frames, measured, not the one this used to claim: a
+-- 4800 Bd 7E1 record shows `?? ?? 15 ??` at a burst start, four flagged frames across five payload bytes, so one
+-- byte is lost and a judge that aligns once then counts the remainder wrong. The cost is bounded and real.
 sdec.gapelide_frames = 2
 
 -- The enforced window, or nil and the reason it declined. Read by the capture and by the form through this one
@@ -371,6 +383,11 @@ function sdec.clear_measured()
   -- rejects the true bit time of the capture in hand.
   sdec.w, sdec.nw, sdec.wmed, sdec.wshort = nil, 0, nil, nil
   sdec.snr_db, sdec.noise_v = nil, nil
+  -- Zero rather than nil, matching its declared default: a reader comparing it against 0 must not have to
+  -- test for nil as well. It belongs here because sig_levels is its only writer, so without this a capture
+  -- that never reached sig_levels reported the one before it -- and a bench row then attributed another
+  -- cell's clipping to this one.
+  sdec.nover = 0
   sdec.idle, sdec.idle_weak = nil, nil
   -- acq_triggered sets acq_pretrig on its successful exit and acq_free clears it, so the probe read inside one
   -- acquire() cannot leave the real capture looking armed.
@@ -386,26 +403,39 @@ end
 function sdec.sig_levels(rd, n)
   -- Cleared here, not only in sig_noise: every refusal path below returns before sig_noise runs.
   sdec.snr_db, sdec.noise_v = nil, nil
-  local vmin, vmax, nv = nil, nil, 0
+  local vmin, vmax, nv, nov = nil, nil, 0, 0
   local i
 
+  -- Over-range readings are counted and skipped, not admitted and not fatal. One clipped sample used to become
+  -- vmax; a record holding a few still decodes, every clipped sample being on the correct side of a threshold
+  -- the rest of the swing sets, so this reports the condition rather than refusing a capture that works.
   for i = 1, n do
     local v = rd[i]
     if v ~= nil then
-      nv = nv + 1
-      if vmin == nil then
-        vmin, vmax = v, v
+      if v > -sdec.vover and v < sdec.vover then
+        nv = nv + 1
+        if vmin == nil then
+          vmin, vmax = v, v
+        else
+          if v < vmin then vmin = v end
+          if v > vmax then vmax = v end
+        end
       else
-        if v < vmin then vmin = v end
-        if v > vmax then vmax = v end
+        nov = nov + 1
       end
     end
   end
+  sdec.nover = nov
   if vmin == nil then
     sdec.vmin, sdec.vmax, sdec.swing = nil, nil, 0
     sdec.lo, sdec.hi, sdec.thr, sdec.hyst = nil, nil, 0, 0
     sdec.wlo, sdec.whi = nil, nil
     sdec.family = '?'
+    -- The two reasons for an unusable capture read the same from here and do not have the same remedy: nothing
+    -- arrived, or everything that arrived was off the 10 V range and the stimulus has to come down.
+    if nov > 0 then
+      return false, string.format('all %d reading(s) are over range', nov)
+    end
     return false, 'capture is empty'
   end
   sdec.vmin, sdec.vmax = vmin, vmax
@@ -471,13 +501,29 @@ function sdec.sig_noise(rd, n)
   if step < 1 then step = 1 end
   local nlo, slo, qlo, nhi, shi, qhi = 0, 0, 0, 0, 0, 0
   local i = 2
+  -- Over-range readings are skipped here too, sample and neighbours alike. sig_levels keeps them out of the
+  -- levels but this function reads the record again, and a clipped rail gives runs of them long enough to
+  -- satisfy the neighbour test below -- where v * v is about 1e75 and would stand as the record's noise.
+  local vo = sdec.vover
   while i <= n - 1 do
     local v = rd[i]
-    if v ~= nil then
+    if v ~= nil and v > -vo and v < vo then
       local up = v > thr + hy
       local dn = v < thr - hy
       -- Excluded by position, not by voltage: both neighbours must be on the same side.
       local a, b = rd[i - 1], rd[i + 1]
+      -- The neighbours are checked too, and this half is NOT independently observable -- said here so
+      -- nobody hunts for the test that pins it. Without it, a sample beside a sentinel is admitted; but
+      -- that sample is itself a legitimate reading, so a correct value enters the sum and the figure
+      -- moves by two counts out of hundreds, far inside the 3 dB the suite allows. Measured: removing
+      -- these two lines alone leaves every check green, where removing the sample test above gives
+      -- noise_v = 3.1e+36 and -719 dB.
+      --
+      -- Kept because the rule it states is right -- a reading next to one that did not happen is not
+      -- inside a clean run -- and it costs two comparisons on a sampled subset. Not kept because it
+      -- fixes anything measurable.
+      if a ~= nil and (a <= -vo or a >= vo) then a = nil end
+      if b ~= nil and (b <= -vo or b >= vo) then b = nil end
       if up and a ~= nil and b ~= nil and a > thr + hy and b > thr + hy then
         nhi = nhi + 1; shi = shi + v; qhi = qhi + v * v
       elseif dn and a ~= nil and b ~= nil and a < thr - hy and b < thr - hy then
@@ -954,7 +1000,7 @@ sdec.gapseg_frac = sdec.gapseg_frac or 0.05
 --
 -- The whole-span formula cannot be used on such a record: it divides by a span that still covers the silence
 -- while n counts only traffic, so it reads low by the elision ratio -- measured 1270 S/s against 10 000
--- commanded. docs/TRIGGER.md 14.
+-- commanded. docs/TRIGGER.md, 'A re-entered measure block appends, and the timestamps carry the splice'.
 --
 -- Sampled rather than walked, and averaged rather than minimised, because both cheaper answers are wrong. A
 -- full walk is 3 413 334 proxy reads on the largest mode, 74 s at 21.73 us each. And the shortest consecutive
@@ -1930,7 +1976,7 @@ end
 -- Small and FIXED rather than scaled to the gap, which is the one sizing that looks wrong and is not: 2000
 -- readings behaved identically to 400 000 on the instrument -- same record at the same indices, the same
 -- event-log delta, still reaching IDLE -- because fillmode = 1 laps the ring silently. So a two-minute gap needs
--- no more scratch than a half-second one. docs/TRIGGER.md 14, 'A scratch that wraps costs nothing'.
+-- no more scratch than a half-second one. docs/TRIGGER.md, 'The scratch'.
 function sdec.gap_scratch(win, fs)
   local want = 2000
   if win ~= nil and fs ~= nil and fs > 0 then
@@ -1975,17 +2021,25 @@ end
 --   6) BRANCH_ALWAYS     1                       fell through: quiet for a window, next burst
 --
 -- The record is cleared from Lua before initiate(), not by a leading BUFFER_CLEAR block. A clear block would sit
--- outside this loop and run once per initiate, so the two are equivalent -- and that block is the only fast-path
--- disqualifier the canned templates carry. The fast path itself is worth nothing measurable, 1.2 us of upper
--- bound against about 8 us of comparator latency, but a Lua clear costs nothing either, so there is no reason to
--- spend the disqualifier. docs/TRIGGER.md, 'The canned templates and the fast path'.
+-- outside this loop and run once per initiate, so the two are equivalent, and a Lua clear costs nothing -- which
+-- is the whole reason for it. The fast path is worth nothing measurable anyway, 1.2 us of upper bound against
+-- about 8 us of comparator latency, and this program is off it regardless: it posts 2753 on every run and the
+-- cause that message names is blocks waiting, not block 4's delay. Which disqualifier applies is not isolated
+-- beyond that -- a survey came back warned at every block count from 10 to 18, and one 0.25 s delay warned
+-- where docs/TRIGGER.md records 0.25 s as free -- so tools/bench_fastpath.py is taking the shape apart.
+-- docs/TRIGGER.md, 'The canned templates and the fast path' and 'The low-latency flag'.
 --
--- Two measure blocks exactly, which is the budget -- a third posts 2753 -- and entering either one stops the
--- other, which is what ends a burst without counting it. A fixed count cannot be used: it cuts wherever it lands,
--- the frame straddling the cut decodes from spliced samples, and the loss is one byte in n frames. Ending on
--- measured silence puts the seam between an idle tail and the next start bit, which is a waveform the framer
--- already reads. Built from Empty because load() replaces the store wholesale while setblock does not clear it.
--- docs/TRIGGER.md 13 and 14.
+-- Two measure blocks exactly, and entering either one stops the other, which is what ends a burst without
+-- counting it. 2753 does not mark that budget, though this comment used to say it did: it is the generic
+-- low-latency warning whose message names whichever cause applied, so this program posts it every run --
+-- 131 cells of 132 reading `elideev=2753`, the firmware's sentence being 'Trigger model is not optimized for
+-- speed due to multiple blocks waiting'. A third measure block warns under its own cause and loses the fast
+-- path; whether it lands in the store is unread, tools/bench_fastpath.py's three-measure probe being for that.
+-- A fixed count cannot be used instead: it cuts wherever it lands, the frame straddling the cut decodes from
+-- spliced samples, and the loss is one byte in n frames. Ending on measured silence puts the seam between an
+-- idle tail and the next start bit, which is a waveform the framer already reads. Built from Empty because
+-- load() replaces the store wholesale while setblock does not clear it.
+-- docs/TRIGGER.md, 'The six blocks' and 'Why the burst ends on silence and not on a count'.
 function sdec.gap_model(rec, scr, ev, win)
   if rec == nil or scr == nil or ev == nil or win == nil or win <= 0 then return false end
   -- The detector watches the comparator rather than the arm's event, and the two are often not the same object: with
@@ -2010,7 +2064,8 @@ function sdec.gap_model(rec, scr, ev, win)
   end)
   if not ok then return false end
   -- A rejected block reads as a FREE one on this instrument, so the store is read back rather than trusted: a
-  -- refused branch would leave a program that records one burst and stops. docs/TRIGGER.md 5.
+  -- refused branch would leave a program that records one burst and stops.
+  -- docs/TRIGGER.md, 'Nothing under `trigger.` reports failure'.
   local bl = nil
   if not pcall(function() bl = trigger.model.getblocklist() end) then return false end
   if bl == nil then return false end

@@ -655,7 +655,8 @@ function sdec.stream_decode(got)
   -- An elided record has no reserve at all, so leadmax must stay nil on that path. The hand-built program takes no
   -- position argument: every burst opens at its own crossing and the samples before it are in the scratch. Left
   -- set, pretrig defaulting to 5 would make leadmax a fiction, acq_pretrig would come back true, and sig_idle
-  -- would treat a genuine leading run as the wire before the device started. docs/TRIGGER.md 14.
+  -- would treat a genuine leading run as the wire before the device started. docs/TRIGGER.md,
+  -- 'Reading the record back'.
   if sdec.strm_armed and sdec.strm_elide == nil and sdec.buf ~= nil and (sdec.pretrig or 0) > 0 then
     local cap = nil
     if pcall(function() cap = sdec.buf.capacity end) and cap ~= nil then
@@ -809,7 +810,9 @@ function sdec.stream_arm(nsmp)
   if sdec.arm_silent() and sdec.trigmode ~= 'free' then dcount = nsmp end
   if not pcall(function() sdec.dig.count = dcount end) then return false end
   -- A recording can wait for the device too: SimpleLoop acquires the instant it is initiated, and
-  -- LoopUntilEvent's infinite pre-roll is what makes an analog trigger evaluate. docs/TRIGGER.md 7, 8, 12.
+  -- LoopUntilEvent's infinite pre-roll is what makes an analog trigger evaluate. docs/TRIGGER.md,
+  -- 'Choosing a shape', 'Pre-trigger, and what the comparator needs' and
+  -- 'The canned templates and the fast path'.
   local armed = (sdec.arm_silent() and sdec.trigmode ~= 'free')
   local ok = false
   -- The enforced elision window, or nil for every path that is not eliding -- which is all of them unless the
@@ -829,7 +832,8 @@ function sdec.stream_arm(nsmp)
         armed = false
       end
       -- Elision needs the comparator and nothing else will do: the detector asks whether a crossing arrived in
-      -- the last window, and a key press or a rear marker does not recur with the line. docs/TRIGGER.md 13.
+      -- the last window, and a key press or a rear marker does not recur with the line.
+      -- docs/TRIGGER.md, 'Detecting silence: `BRANCH_ON_EVENT` spends its event'.
       if armed and useanalog then elide = sdec.gap_elide(sdec.force_baud) end
       if armed then
         if elide ~= nil then
@@ -850,7 +854,7 @@ function sdec.stream_arm(nsmp)
   end
   -- Which formula reads the rate back out. A property of the program that loaded, not of the option: an elision
   -- that fell back to LoopUntilEvent must be read with the whole-span formula or its rate comes out wrong by the
-  -- elision ratio in the one direction nothing would flag. docs/TRIGGER.md 14.
+  -- elision ratio in the one direction nothing would flag. docs/TRIGGER.md, 'Reading the record back'.
   if armed and elide ~= nil then sdec.acq_elided = true else sdec.acq_elided = nil end
   sdec.strm_elide = elide
   sdec.strm_armed = armed
@@ -880,6 +884,32 @@ function sdec.stream_arm(nsmp)
     local spun, saw = 0, false
     while spun < (sdec.arm_settle_s or 0.25) do
       if sdec.trig_waiting() == true then saw = true break end
+      -- On the eliding program only, a record that is already filling is the model having left its wait
+      -- block -- which is the thing this loop is trying to observe and cannot, on a line that is already
+      -- transmitting: the model leaves block 2 within a bit time and trigger.model.state() lags about
+      -- 190 ms, so STATE_WAITING is never sampled and the loop spins the whole arm_settle_s.
+      --
+      -- Scoped to that program because the canned LoopUntilEvent cannot be read this way: its single
+      -- buffer IS the record, so the pre-trigger reserve fills it WHILE it waits and buf.n > 0 says
+      -- nothing about the trigger. The six-block program has block 1 measuring into the scratch, so its
+      -- record stays empty until block 3 -- the distinction is the whole reason there are two buffers.
+      -- tools/test_streamfix.lua pins the canned behaviour and caught this when it was written without
+      -- the qualifier.
+      --
+      -- Ten seconds of that is not merely slow, it corrupts the record. The digitize runs throughout,
+      -- and past a few seconds the instrument stores only ~100 000 readings a second whatever the ADC
+      -- is doing -- its own words are 'Processing reading backlog'. Measured in one lap of the gap
+      -- vectors: the cells captured while the generator happened to be starting late ran the digitize
+      -- under half a second and came back at the full 1 MS/s with 0 to 3 bad frames of several hundred,
+      -- byte-exact at 250 000 Bd; the cells after it spun the full ten seconds, came back at 83 333 with
+      -- 84 % of samples missing, and decoded 355 to 685 bad frames each. Same code, same bauds, one lap.
+      --
+      -- The silent-line case this loop was written for is unaffected: there the record stays empty while
+      -- the model waits, so buf.n is 0 and the loop still waits out its full ceiling.
+      if elide ~= nil then
+        local bn = nil
+        if pcall(function() bn = sdec.buf.n end) and (bn or 0) > 0 then saw = true break end
+      end
       delay(0.01)
       spun = spun + 0.01
     end
@@ -1017,9 +1047,13 @@ function sdec.stream_acquire(nsmp)
   local limit = sdec.stream_limit(nsmp, sdec.fs, sdec.strm_elide)
   -- The arm's own wait goes on top of the ceiling, not inside it: the wait must not come out of the run.
   if sdec.strm_armed then limit = limit + sdec.arm_wait_s() end
-  --   full     the buffer reached nsmp -- the cap, or as much as the instrument has
+  --   full     one of three different endings, and the overload matters to a reader of the record: the
+  --            buffer reached nsmp, or the wall clock `limit` expired, or stream_arm was refused and
+  --            the fallback read ran. Only the first is a complete record.
   --   quiet    no threshold crossing for sdec.idle_exit(). The device stopped talking.
   --   stopped  the operator pressed Capture (Stop) or Mode (abort)
+  --   noarm    the arm expired at sdec.arm_wait_s() without the comparator firing
+  --   readfail the buffer could not be read, or could not be re-measured to confirm a quiet line
   while true do
     local have = buf.n or 0
     -- Leaving the wait block is the trigger firing; measured from inside, a host command aborting it.
@@ -1040,7 +1074,7 @@ function sdec.stream_acquire(nsmp)
       -- elision program is a BRANCH_ALWAYS loop, so it never idles by itself -- that is the point of it. Left on
       -- the armed branch the fill test is unreachable, and because the record is fillmode = 1 it would not stop
       -- but WRAP, overwriting its own earliest bursts until some other exit fired, and then report a full record
-      -- that had quietly lost its oldest traffic. docs/TRIGGER.md 14.
+      -- that had quietly lost its oldest traffic. docs/TRIGGER.md, 'How a recording ends'.
       sdec.ck_endwhy = 'full'
       break
     end
@@ -1095,7 +1129,7 @@ function sdec.stream_acquire(nsmp)
     -- the timer starts running 40 ms into every burst's tail, before the gap has even begun, and no allowance
     -- against it can be right. The model's state is the gap detector instead: parked in block 2's WAIT during a
     -- gap, cycling blocks 3 to 6 during a burst. That tells a long gap from a dead line exactly, which no
-    -- threshold on a record that is designed not to grow ever can. docs/TRIGGER.md 13.
+    -- threshold on a record that is designed not to grow ever can. docs/TRIGGER.md, 'How a recording ends'.
     if sdec.strm_elide ~= nil then
       if sdec.trig_waiting() == true then
         quiet = quiet + step
@@ -2146,8 +2180,9 @@ function sdec.strm_exit_why_base(endwhy, ok, err)
   if ok == false and not (sdec.ck_cancel and sdec.strm_empty) then
     return 'run failed: ' .. tostring(err or 'unknown')
   end
-  -- The three ck_endwhy values all mean "the run is over" but say different things about the line. A
-  -- cancel outranks them, because ck_endwhy describes the acquisition and a press in the decode is later.
+  -- The ck_endwhy values all mean "the run is over" but say different things about the line -- five of
+  -- them, not the three this comment used to claim: full, quiet, stopped, noarm and readfail. A cancel
+  -- outranks them, because ck_endwhy describes the acquisition and a press in the decode is later.
   if sdec.ck_cancel then
     if (sdec.fc_win or 0) > 1 then
       return string.format('stopped with the TRIGGER key after %d windows', sdec.fc_win or 0)
