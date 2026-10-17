@@ -1887,8 +1887,30 @@ is already past the no-loss rate. The loss there is unavoidable and `minsabit` i
 
 Above about 100 kS/s the instrument puts its own dialog over the capture: "Processing reading backlog
 -- the digitizer is producing readings faster than the meter is moving them out of the buffer".
-Operator-reported, it clears by itself and the recording carries on normally, so the `fs_cap_tier` cap
-buys an uninterrupted display and nothing else.
+Operator-reported, it clears by itself. **"The recording carries on normally" is what this section used
+to say next, and it is false for a long digitize.** It holds for a recording that re-enters its measure
+block per reading, which is what the panel's `SimpleLoop` does; it does not hold for a
+`COUNT_INFINITE` measure block left running, where the lag is excess rate times duration and **readings
+are dropped once it passes roughly half a second**. The threshold resets at every measure-block entry,
+so what matters is the longest *uninterrupted* run and not the capture's total length.
+
+Measured on 2026-10-17, same program and same vector, differing only in how long one block ran:
+
+| digitize | requested | `segfs` / `spanfs` | samples a bit | bytes |
+|---|---|---|---|---|
+| ~0.85 s | 250 000 | 250 000 / 250 000 | 8.68 | byte-exact |
+| ~10.7 s | 250 000 | 100 000 / 99 997 | 3.47 | byte-exact |
+| ~0.85 s | 640 000 | 634 615 / **100 000** | 8.26 reported | **none correct** |
+
+Two shapes, and the difference decides whether anything notices. From 120 kS/s to 500 kS/s and at
+1 MS/s the loss is **uniform thinning** — every k-th reading kept, at a 10.000 us cadence (12.000 us at
+1 MS/s) — so `acq_seg_fs()` measures the delivered rate honestly and only the samples-a-bit floor is
+left to object. At 640 kS/s it is **block drops**: runs at the ADC period with holes between them, which
+is why `segfs` reads 634 615 while the record's true mean rate is 100 000. 640 000 is the one rate in
+`sdec.rates` whose period is not a whole number of microseconds, 634 615 being 1e6 x 33/52.
+
+So the `fs_cap_tier` cap buys an uninterrupted display **and** a record that is what it claims, and a
+figure like 8.26 samples a bit can be the spacing inside a surviving run rather than the record's.
 
 It is a rate condition, so every rate above ~100 kS/s crosses it and each has to justify itself:
 
@@ -1906,8 +1928,16 @@ more than the bare floor. It never gives way past `minsabit`.
 duration, so a short capture can outrun the threshold without reaching it: the 8 kB mode at 19200 runs
 8192 x 10 / 19200 = 4.3 s, which at 120 kS/s accumulates only ~55 000 readings of excess against the
 32 kB mode's 17 s and four times that. If the notice does not appear for the 8 kB mode at 120 kS/s the
-cap should be duration-aware and that mode can have 5.89 samples a bit for nothing. Where the
-threshold actually sits is unmeasured.
+cap should be duration-aware and that mode can have 5.89 samples a bit for nothing.
+
+**Where the threshold sits, as far as the record settles it: about half a second of accumulated lag**,
+lag being `(1 - 100000/fs) x T` for an uninterrupted run of `T` seconds. At 250 kS/s a 0.85 s run gives
+0.51 and is clean; at 500 kS/s it gives 0.68 and thins; at 640 kS/s, 0.72 and drops blocks. That is
+where the 31250-clean / 57600-broken boundary of the 2026-10-17 lap falls. It is an inference from
+delivered rates and not a direct observation -- no run on this bench has yet recorded its own digitize
+duration, which `timer.gettime()` either side of `trigger.model.initiate` would fix, and the firmware
+filed none of the 2872/2873 "begin/end reading backlog processing" codes that `docs/TRIGGER.md` names,
+so the only evidence is the record's own cadence.
 
 ### sabit_max = 12
 
