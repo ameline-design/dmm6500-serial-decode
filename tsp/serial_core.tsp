@@ -197,11 +197,19 @@ sdec.gapelide_max = 2.0
 -- inter-crossing interval, and the comparator arms on one slope only -- see arm_slope() -- so with idle high and
 -- a falling arm the rise out of a space is not a crossing at all. On back-to-back 0x00 the falling crossings are
 -- therefore one per FRAME, so the window has to clear framebits and not the ten bit times a single byte suggests:
--- at the widest forced format framebits reaches 13, where a rule written as 10 is 30 % short. Exceeding the floor
--- costs a few frames at the seam and not the record, the framer resynchronising on the next start bit, so this is a
--- proportionate floor rather than a refusal. Four or five frames, measured, not the one this used to claim: a
--- 4800 Bd 7E1 record shows `?? ?? 15 ??` at a burst start, four flagged frames across five payload bytes, so one
--- byte is lost and a judge that aligns once then counts the remainder wrong. The cost is bounded and real.
+-- at the widest forced format framebits reaches 13, where a rule written as 10 is 30 % short. A proportionate
+-- floor rather than a refusal, the framer resynchronising on the next start bit after a seam.
+--
+-- What a seam costs is NOT a function of this floor, which earlier versions of this comment implied twice. It is
+-- a fixed resume latency of 156 to 208 us between the crossing that releases the wait block and the first reading
+-- the measure block stores, so it is there at every window and every rate. The record opens 0.5 to 5 bit times
+-- into the first byte of the burst; there is no edge at the true start, so the framer anchors on the splice
+-- instead and every sample is late by that much. Under half a bit they stay inside their cells and the seam is
+-- free, which is every rate at or below 2400 Bd -- 208 us is 0.50 of a bit there, a near miss rather than a
+-- margin. Above it the stop sample lands in the next start bit, the frame fails, and the resync walks three to
+-- eight bytes looking for the 1.5 frame mark run that lowercase text never offers. So 4 to 9 payload bytes die at
+-- every seam, and a judge that aligns once then counts the whole remainder wrong -- 2 to 3 % of the bytes
+-- reported as 33 to 73 %. Measured 2026-10-17 across three vectors and both frame formats.
 sdec.gapelide_frames = 2
 
 -- The enforced window, or nil and the reason it declined. Read by the capture and by the form through this one

@@ -349,6 +349,12 @@ end
 -- The hardware figures are 223/231 at 2400 and 75/220 at 4800. The asymmetry is what this reproduces;
 -- the exact fraction is not, the real record carrying more seams and more debris per seam than five
 -- clean passes do, so a check on the value would fail for the wrong reason.
+--
+-- 2400 Bd IS A NEAR MISS AND NOT A MARGIN, which this test should not be read as claiming. At the top of
+-- the bound 208 us is 0.4992 of a bit there, against a 0.5 sampling margin -- so a 10 % drift in the
+-- latency fails those cells, and on the real record one of the three vectors already lost a whole burst
+-- at that offset. What passes here is v98a; the honest rule is in time, not in baud: a seam is free only
+-- where 0.5 / baud exceeds the largest latency, which is about 2400 Bd at 208 us and nothing above it.
 check('a resume latency inside the bound from the record spares 2400 Bd and breaks 4800 -- the hardware '
       .. 'edge, from one constant-time parameter', asym,
       (asym and asymat) or 'no latency in [156, 208] us produced the split')
