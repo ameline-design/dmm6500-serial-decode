@@ -348,6 +348,30 @@ check('a resume latency inside the bound from the record spares 2400 Bd and brea
       .. 'edge, from one constant-time parameter', asym,
       (asym and asymat) or 'no latency in [104, 156] us produced the split')
 
+-- ---------------------------------------------------------------------------
+-- THE HEX OF ONE KNOWN-LATENCY CELL, for tools/judge_seam.py --hex to check its own interpretation
+-- against. On the instrument the "+1 shift per seam means one payload byte consumed without a frame"
+-- reading is an inference from the deltas; here the loss is a parameter, so feeding this string to
+-- judge_seam proves the reading rather than assuming it.
+--
+--   lua tools/test_elideseam.lua | sed -n 's/^HEX v98a //p' | xargs -I{} python3 tools/judge_seam.py --vid v98a --hex {}
+-- ---------------------------------------------------------------------------
+do
+  local h = cell('v98a', v98a, 4800, 40000, 600, 10, 0.010, NCAP, 156e-6)
+  local s = ''
+  if sdec.res ~= nil and sdec.res.vals ~= nil then
+    local gi
+    for gi = 1, (sdec.res.nf or 0) do
+      if sdec.res.errs[gi] ~= nil then
+        s = s .. '??'
+      else
+        s = s .. string.format('%02X', math.mod(sdec.res.vals[gi] or 0, 256))
+      end
+    end
+  end
+  print(string.format('\nHEX v98a %s', s))
+end
+
 print(string.format('\n%d passed, %d failed', pass, fail))
 if fail > 0 then
   local i

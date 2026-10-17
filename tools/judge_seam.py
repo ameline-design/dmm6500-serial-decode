@@ -126,7 +126,34 @@ def main():
     ap.add_argument('--run', type=int, default=None,
                     help='how many trailing R rows to read; default is the last run header')
     ap.add_argument('--vid', default=None, help='only this vector')
+    # ONE RECORD FROM THE OFFLINE TWIN, where the ground truth is known. The +1 delta is the central
+    # claim -- that a seam consumes one payload byte without emitting a frame -- and on the instrument
+    # it is an inference from the deltas themselves. tools/test_elideseam.lua prints the hex of a cell
+    # it built with a KNOWN resume latency, so feeding it here checks the interpretation against a
+    # record whose loss is a parameter rather than a hypothesis.
+    ap.add_argument('--hex', default=None, metavar='HEX',
+                    help='judge one hex string instead of a record; needs --vid')
     a = ap.parse_args()
+
+    if a.hex:
+        if not a.vid:
+            print('judge_seam: --hex needs --vid')
+            return 2
+        want = payload(a.vid)
+        if not want:
+            print('judge_seam: no payload for %s' % a.vid)
+            return 2
+        v = judge_cell(a.hex.strip(), want)
+        if v is None:
+            print('judge_seam: too few confident bytes to judge')
+            return 1
+        deltas = [v['shifts'][i + 1] - v['shifts'][i] for i in range(len(v['shifts']) - 1)]
+        print('%s  %d confident byte(s)' % (a.vid, v['ncmp']))
+        print('  one shift   %d (%.0f%%)' % (v['one'], 100.0 * v['one'] / v['ncmp']))
+        print('  per segment %d (%.0f%%) across %d segment(s)'
+              % (v['seg'], 100.0 * v['seg'] / v['ncmp'], v['nseg']))
+        print('  shift deltas %s' % ' '.join('%+d' % d for d in deltas))
+        return 0
 
     rows = []
     with open(a.path, 'r', errors='replace') as f:
