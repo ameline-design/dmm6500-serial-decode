@@ -39,6 +39,7 @@ PAYLOAD_PATH = os.path.join(ROOT, 'out', 'vectors', 'v71.txt')
 # the first time bench_uart is fixed and this file is not, and the test then passes a rule nothing
 # ships. Import instead.
 import bench_uart as BU
+import soakplan as SP
 
 judge = BU.judge_payload
 runs_of = BU.runs_of
@@ -240,6 +241,54 @@ def main():
        'a capture too small to spare JP_MINBODY is not trimmed at all')
     ck(BU.head_damage('??' * 40 + '41' * 200, 40) == 40,
        'a 40-frame damaged head in a 240-frame capture trims in full')
+
+    print('\n-- the gap acceptance, which had no test and one mode that could not fire --')
+    # THE PREMISE FIRST. Without a clean capture passing under the strictest mode, every assertion
+    # below would hold just as well for a judge that failed everything handed to it.
+    clean = capture(payload, 421, 239)
+    v, det = BU.judge_payload_v(clean, payload, 'nodrop')
+    ck(v == 'PASS', 'nodrop: a clean 239 B capture passes  [%s]' % det)
+    # One declined frame well inside the body, and the SAME capture under 'exact', which allows
+    # max(2, 2 % of body) = 5 of them. Two verdicts off one input is what makes this a statement about
+    # the acceptance rather than about the capture.
+    one = capture(payload, 421, 239, flag_at=(120,))
+    v, det = BU.judge_payload_v(one, payload, 'nodrop')
+    ck(v == 'FAIL' and 'budget 0' in det,
+       'nodrop: one interior declined frame fails, and on the budget  [%s]' % det)
+    v, det = BU.judge_payload_v(one, payload, 'exact')
+    ck(v == 'PASS', 'exact: that same capture passes, so the mode is what decided  [%s]' % det)
+    # WHY THE DELETED 'nodrop1' WAS NEVER NEEDED, and the reason this case is here rather than in a
+    # note. A capture beginning inside a frame clips the OPENING one, and JP_HEADSKIP excludes the
+    # first 12 frames before any budget is consulted -- so the hazard the one-frame allowance was
+    # written for never reached a budget to spend.
+    v, det = BU.judge_payload_v(capture(payload, 421, 239, flag_at=(0,)), payload, 'nodrop')
+    ck(v == 'PASS', 'nodrop: a frame declined at index 0 is head, not a drop  [%s]' % det)
+    # THE OTHER HALF OF THE MODE, which the flag floor does not reach. A frame declined at the judged
+    # body's first or last position is exempt from the interior count, so the floor passes it -- and
+    # cover_min of 1.0 is what fails it, because an exempt frame is still not a verified byte. Without
+    # a case here, relaxing that 1.0 to 0.5 changes no test, which is how it was found. Index 12 is the
+    # first judged frame (JP_HEADSKIP) and 237 the last (JP_TAILSKIP); both fail at every one of the
+    # payload's 1024 offsets, so neither is an alignment coincidence.
+    for at in (BU.JP_HEADSKIP, 239 - 1 - BU.JP_TAILSKIP):
+        v, det = BU.judge_payload_v(capture(payload, 421, 239, flag_at=(at,)), payload, 'nodrop')
+        ck(v == 'FAIL' and 'positively verified' in det,
+           'nodrop: a frame declined at judged-body edge %d fails on coverage  [%s]' % (at, det))
+        v, det = BU.judge_payload_v(capture(payload, 421, 239, flag_at=(at,)), payload, 'exact')
+        ck(v == 'PASS', 'exact: the same edge drop passes, so cover_min is what decided  [%s]' % det)
+    # AND THE REMOVED MODE MUST RAISE. Falling through lands on the 'exact' budgets, looser on both the
+    # flag count and the coverage floor, so a stale caller would quietly be given a laxer verdict than
+    # the one it asked for -- a deleted acceptance is only safe if using it is an error.
+    try:
+        BU.judge_payload_v(one, payload, 'nodrop1')
+        ck(False, "the removed 'nodrop1' raises rather than judging as exact")
+    except ValueError as e:
+        ck('nodrop1' in str(e), "the removed 'nodrop1' raises  [%s]" % e)
+    # All six gap vectors carry it. This is the half a reader of the table checks, and it is the half
+    # that was wrong: four of them named an allowance that did not exist.
+    gaps = ('v98a', 'v98b', 'v98c', 'v99a', 'v99b', 'v99c')
+    ck(all(SP.expect_for(g) == 'nodrop' for g in gaps),
+       'all six gap vectors are nodrop: %s'
+       % ' '.join('%s=%s' % (g, SP.expect_for(g)) for g in gaps))
 
     print()
     if FAILED:

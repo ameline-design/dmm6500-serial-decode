@@ -197,23 +197,20 @@ EDGE_ODDS = 3
 #
 # A vector earns 'loud' only by being built to break something:
 VECTOR_EXPECT = {
-    # THE FOUR GAP VECTORS, judged harder than anything else here rather than more leniently, because a
+    # THE SIX GAP VECTORS, judged harder than anything else here rather than more leniently, because a
     # declined byte IS the defect they exist to find: the thing a long idle run can do to a decoder is
     # desynchronise its framer, and that shows up as dropped frames. So the proportional flag budget is
     # withdrawn and full coverage is demanded.
     #
-    # The two shapes earn different allowances, and it is a fact about the stimulus. v98a and v99a open
-    # every pass with a 600- or 1000-bit-time mark run, so the framer always has a clean anchor ahead of
-    # the first start bit and has no reason to decline anything inside the judged body -- none allowed.
-    # v98b and v99b carry their pause mid-payload, so traffic is continuous across the cycle boundary, a
-    # capture can begin inside a frame, and one clipped frame there is a property of the capture phase
-    # rather than of the app -- one allowed.
-    'v98a': 'nodrop',  'v99a': 'nodrop',
-    'v98b': 'nodrop1', 'v99b': 'nodrop1',
-    # The two-gap shape carries a lead gap AND a mid-payload one, so it has the clean anchor v98a has
-    # and the mid-cycle start v98b has. Given the allowance of the looser of the two until a lap has
-    # measured it: a vector whose acceptance was guessed tight reports the guess as a defect.
-    'v98c': 'nodrop1', 'v99c': 'nodrop1',
+    # All six get the same acceptance, and the four that used to hold 'nodrop1' were never judged any
+    # differently for it. Their pause sits mid-payload, so traffic is continuous across the cycle
+    # boundary and a capture can begin inside a frame -- but the frame that clips is frame 0, which
+    # judge_payload_v exempts and head_damage trims, so the one-frame allowance had nothing left to
+    # forgive. Measured: 688 such cells over a 2240-cell soak and not one spent it, and the allowance
+    # could not have fired anyway. See bench_uart.JP_EXPECT.
+    'v98a': 'nodrop', 'v99a': 'nodrop',
+    'v98b': 'nodrop', 'v99b': 'nodrop',
+    'v98c': 'nodrop', 'v99c': 'nodrop',
     # Impulse spikes at the amplitude ceiling: +/-3.0 V stacking to 9.3 V on a 3.3 V line. Whether a
     # given rate's sampling instants land on the spikes is a function of the rate, so which rates
     # survive is not knowable in advance.

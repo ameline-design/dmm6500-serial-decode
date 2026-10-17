@@ -437,13 +437,22 @@ JP_BODY_FRAC = 0.5
 # to zero: j20 lost 1-5 bytes in 256 at 172800-240959 Bd, j10 at half the jitter lost none. 3 % covers
 # that with headroom and still fails a wrong-rate decode, which misses nearly every byte.
 # Exact vectors get zero -- a clean vector losing one byte is still a defect.
-# What a 'nodrop1' vector may drop, and the difference between the two modes is a fact about the
-# stimulus rather than a preference. A vector whose pause opens every pass gives the framer a long mark
-# run to anchor on before the first start bit, so inside the judged body there is no reason for it to
-# decline anything: 'nodrop' allows none. A vector whose pause sits MID-payload has continuous traffic
-# at the cycle boundary, so a capture can begin inside a frame and one clipped frame at the seam is a
-# property of the capture phase and not of the app: 'nodrop1' allows exactly that one.
-JP_NODROP_FLAGS = 1
+# The acceptances this function knows, and an unknown one raises rather than falling through to the
+# exact budgets. A mode it does not recognise would otherwise RELAX the verdict silently, which is the
+# standing hazard of deleting one -- and one was deleted.
+#
+# There used to be a second gap mode. 'nodrop1' allowed a vector whose pause sits mid-payload one
+# declined frame, on the reasoning that continuous traffic at the cycle boundary lets a capture begin
+# inside a frame and clip it. The reasoning holds; the allowance was never what implemented it. A frame
+# clipped at a capture start is frame 0, which `interior` exempts and head_damage trims, so the floor
+# only ever applied to an INTERIOR declined frame -- and bought nothing even there. The floor of 1 let
+# such a frame past the flag check, and the coverage ratio two checks later then failed the capture
+# anyway, this mode demanding 100 % and a declined frame never being verified. Both routes end in FAIL,
+# which is why the modes are indistinguishable. Measured over 2097 constructed inputs on the seven
+# of a 2240-cell soak -- every single-flag position in every body, runs of 2, 3, 5 and 20 adjacent
+# flags, flags spread every 2nd, 7th and 50th frame: the two modes disagreed on NONE of them, by
+# verdict. See notes/FINDING-nodrop1-is-inert.md for the injection that shows the two failure routes.
+JP_EXPECT = ('exact', 'loud', 'nodrop')
 
 JP_LOUD_MISMATCH_FRAC = 0.03
 JP_LOUD_MISMATCH_FLOOR = 2
@@ -664,10 +673,10 @@ def judge_payload_v(got, want, expect='exact', synth=None):
     A capture of three bytes cannot be judged either way. Absence of evidence is not a wrong answer,
     so it is INCONCLUSIVE rather than FAIL, and a caller must not fold it into a silent-wrong count.
 
-    `expect` is 'exact', 'loud', 'nodrop' or 'nodrop1'. 'loud' widens the mismatch allowance (see
-    JP_LOUD_MISMATCH_FRAC). The two nodrop modes withdraw the proportional flag budget and demand full
-    coverage, for vectors whose own subject is a long idle run: 'nodrop' allows no declined byte at all,
-    'nodrop1' allows one. See JP_NODROP_FLAGS for which stimulus earns which.
+    `expect` is 'exact', 'loud' or 'nodrop', and anything else raises. 'loud' widens the mismatch
+    allowance (see JP_LOUD_MISMATCH_FRAC). 'nodrop' withdraws the proportional flag budget and demands
+    full coverage, for vectors whose own subject is a long idle run: no declined byte at all inside the
+    judged body, by the flag floor inside it and by the coverage ratio at its edges. See JP_EXPECT.
 
     `synth` is the set of frame indices lin_repair() FILLED IN from the oracle rather than captured, and it
     exists so that this function's own numbers do not become a lie. A substituted byte is unflagged, sits in
@@ -695,6 +704,12 @@ def judge_payload_v(got, want, expect='exact', synth=None):
     occur more than once in 1 kB, so a per-run find() lands on the wrong copy and fakes a
     misalignment. All candidate anchor positions are tried before a capture is called wrong.
     """
+    if expect not in JP_EXPECT:
+        # Raised, not defaulted. Every unknown value lands on the 'exact' budgets below, which are
+        # looser than 'nodrop' on both the flag count and the coverage floor -- so a stale caller, or a
+        # typo, would turn a strict acceptance into a lax one and report a PASS for it.
+        raise ValueError('judge_payload_v: unknown expect %r, not one of %s'
+                         % (expect, ', '.join(JP_EXPECT)))
     if not want:
         return 'FAIL', 'no payload to judge against'
     frames = [got[i:i + 2] for i in range(0, len(got), 2)]
@@ -755,14 +770,15 @@ def judge_payload_v(got, want, expect='exact', synth=None):
     flag_frac = JP_FLAG_FRAC
     flag_floor = JP_FLAG_FLOOR
     cover_min = JP_COVER_MIN
-    if expect == 'nodrop' or expect == 'nodrop1':
-        # The proportional allowance goes in both: a long idle run that desynchronises the framer drops
-        # many frames, not one, so a budget growing with the capture would pass the defect being looked
-        # for. What separates the two is whether the capture can begin mid-frame.
+    if expect == 'nodrop':
+        # Both the proportional allowance and the floor go: a long idle run that desynchronises the
+        # framer drops many frames, not one, so a budget growing with the capture would pass the defect
+        # being looked for. BOTH limits carry weight and they catch different positions: the floor of 0
+        # fails an interior declined frame, and cover_min of 1.0 fails one at the judged body's FIRST or
+        # LAST frame, which `interior` exempts from the count but which is still not a verified byte.
+        # Measured over 3404 constructed captures: 3132 fail on the floor, 32 on coverage alone.
         flag_frac, cover_min = 0.0, 1.0
         flag_floor = 0
-        if expect == 'nodrop1':
-            flag_floor = JP_NODROP_FLAGS
     diagruns = [(s, gb) for s, gb in asbytes if len(gb) >= JP_MINVAL]
     ndiag = sum(len(gb) for _, gb in diagruns)
     # A byte is exempt only where the app ITSELF admitted damage, and only AFTER it. Resync debris
