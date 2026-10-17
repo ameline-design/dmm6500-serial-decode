@@ -211,6 +211,12 @@ sdec.gapelide_max = 2.0
 -- every seam, and a judge that aligns once then counts the whole remainder wrong -- 2 to 3 % of the bytes
 -- reported as 33 to 73 %. Measured 2026-10-17 across three vectors and both frame formats.
 sdec.gapelide_frames = 2
+-- Blend the eliding arm so block 2 and block 5 do not wait on one event object, which is a fast-path
+-- disqualifier in its own right. Off by default: the fast path was measured to cost nothing on the
+-- comparator latency, and whether it moves the RESUME latency -- the quantity that destroys bytes at a
+-- seam -- is unmeasured. See the branch in sdec.arm_source.
+sdec.gap_fastpath = sdec.gap_fastpath or false
+
 
 -- The enforced window, or nil and the reason it declined. Read by the capture and by the form through this one
 -- function, so a typed value cannot mean one thing to the field and another to the trigger model.
@@ -1910,6 +1916,35 @@ function sdec.arm_source()
     end
   else
     sdec.armkeyed = nil
+  end
+
+  -- The fast path, on the eliding program and only when nothing else has blended. getblocklist() reports a model
+  -- off the fast path whenever two blocks wait on the SAME event, and the elision program is exactly that case
+  -- unblended: block 2 waits on this `ev` and block 5 branches on the comparator, which are one object when the
+  -- arm is the comparator alone. Blending with the comparator as the single stimulus makes them two objects for
+  -- the same firing condition -- the shape the rear BNC and the TRIGGER key already use above.
+  --
+  -- Off by default and a knob, because it is unverified. Being off the fast path was measured to cost nothing on
+  -- the COMPARATOR latency, about 8 us across three program shapes, but the quantity that matters here is a
+  -- different handover: the 156-208 us between the crossing that releases block 2 and the first reading block 3
+  -- stores, which is what destroys 4 to 9 payload bytes at every seam above 2400 Bd. Whether the fast path moves
+  -- that is a measurement nobody has taken. docs/TRIGGER.md, 'The low-latency flag'.
+  if sdec.gap_fastpath and not blended and useanalog and sdec.trigmode ~= 'free'
+     and sdec.gapelide ~= nil and tonumber(sdec.gapelide) ~= nil and tonumber(sdec.gapelide) > 0 then
+    local fok = pcall(function()
+      trigger.blender[1].reset()
+      trigger.blender[1].orenable = true
+      trigger.blender[1].stimulus[1] = ev
+    end)
+    if fok then
+      ev = trigger.EVENT_BLENDER1
+      blended = true
+      sdec.gap_fastblend = true
+    else
+      sdec.gap_fastblend = nil
+    end
+  else
+    sdec.gap_fastblend = nil
   end
   sdec.trigblended = blended
   return ev, useanalog, blended

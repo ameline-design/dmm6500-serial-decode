@@ -12290,6 +12290,68 @@ end)()
         string.format('%s / %s', tostring(sdec.gapelide), tostring(sdec.ck_win_n)))
 end)()
 
+-- ---------------------------------------------------------------------------
+print('')
+print('-- the eliding arm and the fast path: two blocks must not wait on one event --')
+-- ---------------------------------------------------------------------------
+-- getblocklist() reports a model off the fast path whenever two blocks wait on the SAME event, and the
+-- elision program is that case unblended: block 2 waits on the arm event and block 5 branches on the
+-- comparator, which are one object when the arm IS the comparator. Blending with the comparator as the
+-- single stimulus makes them two objects for the same firing condition.
+--
+-- Unverified on hardware and therefore off by default, which is the first thing asserted: the fast path
+-- was measured to cost nothing on the COMPARATOR latency, about 8 us, and the quantity that matters at a
+-- seam is a different handover nobody has measured.
+;(function()
+  local keep = {fp = sdec.gap_fastpath, ge = sdec.gapelide, tm = sdec.trigmode,
+                te = sdec.trigext, ak = sdec.armkey, teo = sdec.trigext_only}
+  check('the fast-path blend is OFF until someone asks for it',
+        sdec.gap_fastpath == false, tostring(sdec.gap_fastpath))
+
+  sdec.trigmode, sdec.trigext, sdec.armkey, sdec.trigext_only = 'edge', false, false, false
+  sdec.gapelide = 0.010
+  sdec.gap_fastpath = false
+  local evoff = sdec.arm_source()
+  check('the premise: unblended, the arm event IS the comparator -- block 5 branches on that object',
+        evoff == trigger.EVENT_ANALOGTRIGGER, tostring(evoff))
+
+  sdec.gap_fastpath = true
+  local evon = sdec.arm_source()
+  check('with it on the arm comes through the blender, so the two blocks hold different objects',
+        evon == trigger.EVENT_BLENDER1 and sdec.gap_fastblend == true,
+        string.format('%s, fastblend=%s', tostring(evon), tostring(sdec.gap_fastblend)))
+  -- AND THE BLENDER MUST FIRE ON THE SAME CONDITION. A distinct object waiting for something else would
+  -- clear the warning and break the arm, which is the failure this change could actually cause.
+  local st = nil
+  pcall(function() st = trigger.blender[1].stimulus[1] end)
+  check('...and the blender fires on the comparator, so the arm condition is unchanged',
+        st == trigger.EVENT_ANALOGTRIGGER, tostring(st))
+
+  -- ELIDE PATH ONLY. A plain capture has one waiting block and nothing to disambiguate, so blending it
+  -- would put a blender on every armed capture for no reason -- and blender 1 is shared.
+  sdec.gapelide = 0
+  local evno = sdec.arm_source()
+  check('a capture with no elision does not blend, whatever the knob says',
+        evno == trigger.EVENT_ANALOGTRIGGER and sdec.gap_fastblend == nil, tostring(evno))
+
+  -- And it must not displace a blend someone else asked for: the rear BNC and the TRIGGER key own the
+  -- same blender, and their stimuli have to survive.
+  sdec.gapelide, sdec.trigext = 0.010, true
+  local evext = sdec.arm_source()
+  local s2 = nil
+  pcall(function() s2 = trigger.blender[1].stimulus[2] end)
+  check('and the rear BNC keeps its place in the blender rather than being overwritten',
+        evext == trigger.EVENT_BLENDER1 and s2 == trigger.EVENT_EXTERNAL,
+        string.format('%s, stimulus[2]=%s', tostring(evext), tostring(s2)))
+
+  sdec.gap_fastpath, sdec.gapelide, sdec.trigmode = keep.fp, keep.ge, keep.tm
+  sdec.trigext, sdec.armkey, sdec.trigext_only = keep.te, keep.ak, keep.teo
+  sdec.gap_fastblend = nil
+  check('and the suite leaves the fast-path settings as it found them',
+        sdec.gap_fastpath == keep.fp and sdec.gapelide == keep.ge,
+        string.format('%s / %s', tostring(sdec.gap_fastpath), tostring(sdec.gapelide)))
+end)()
+
 print()
 print(string.format('%d passed, %d failed', pass, fail))
 os.exit(fail == 0 and 0 or 1)
