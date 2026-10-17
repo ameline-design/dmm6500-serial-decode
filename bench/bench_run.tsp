@@ -222,10 +222,30 @@ brun.elide_promise = brun.elide_promise or 0.050
 -- of 125 and not one correct payload byte, cell 37 got 1 of 179 and byte-exact prose.
 brun.elide_margin = brun.elide_margin or 2
 
+-- And a floor in BIT TIMES under the wall-clock tiers, because the vectors carry an idle run the tiers
+-- do not know about. `loop = true` joins each pass's tail to the next pass's lead, which is 10 + 10 bit
+-- times on the four vectors without a lead gap, and the comparator arms on one slope so the preceding
+-- frame's remainder after its last falling edge counts too -- up to 10 more. So 30 bit times of idle
+-- exist in every vector whether or not it declares a gap.
+--
+-- The detector fires when one whole window holds no crossing, so for an idle run G and a window W the
+-- chance of firing is 0 below W, (G - W) / W between W and 2W, and certain above 2W. A window UNDER 30
+-- bit times therefore splices a vector's own loop seam some of the time, inside the payload, where no
+-- gap was declared: 1/100 s is 24 bit times at 2400 Bd, which fires on it about a quarter of the time.
+-- 40 bit times clears 30 with a third to spare and binds only at 300 and 2400 Bd -- 9600 and 19200 keep
+-- the 1/100 s they were given, and nothing is declined, v98c's 171 ms at 2400 Bd being well past the
+-- 33 ms two windows then need.
+brun.elide_minbits = brun.elide_minbits or 40
+
 -- The window this baud gets, which is also what the gate measures a gap against.
 function brun.elide_window(baud)
-  if baud ~= nil and baud > 0 and baud < brun.elide_lowbaud then return brun.elide_win_low end
-  return brun.elide_win
+  local w = brun.elide_win
+  if baud ~= nil and baud > 0 and baud < brun.elide_lowbaud then w = brun.elide_win_low end
+  if baud ~= nil and baud > 0 and brun.elide_minbits ~= nil then
+    local lo = brun.elide_minbits / baud
+    if lo > w then w = lo end
+  end
+  return w
 end
 
 -- The window a cell gets, or nil and the reason it gets none. -> seconds | nil, why

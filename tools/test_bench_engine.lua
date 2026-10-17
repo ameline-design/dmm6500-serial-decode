@@ -3036,12 +3036,28 @@ print('-- the elision window tier, and the gate that refuses a gap it cannot det
   ck(brun.elide_window(9600) == 0.010 and brun.elide_window(19200) == 0.010,
      'the rates that matter get the 10 ms window',
      string.format('%g / %g', brun.elide_window(9600), brun.elide_window(19200)))
-  ck(brun.elide_window(2400) == 0.010 and brun.elide_window(2399) == 0.100,
-     'and the tier switches AT 2400, not near it',
-     string.format('2400 -> %g, 2399 -> %g', brun.elide_window(2400), brun.elide_window(2399)))
-  ck(brun.elide_window(300) == 0.100 and brun.elide_window(1200) == 0.100,
-     'the two surviving sub-2400 rates get 1/10 s, so the low tier is not dead code',
-     string.format('%g / %g', brun.elide_window(300), brun.elide_window(1200)))
+  ck(brun.elide_window(2399) == 0.100 and brun.elide_window(1200) == 0.100,
+     'the low tier gives 1/10 s where the bit-time floor does not ask for more',
+     string.format('2399 -> %g, 1200 -> %g', brun.elide_window(2399), brun.elide_window(1200)))
+
+  -- THE BIT-TIME FLOOR, which is not an alternative to the tiers but a floor under them. Every vector
+  -- carries 30 bit times of idle it does not declare: loop = true joins each pass's tail to the next
+  -- pass's lead, 10 + 10, and the comparator arms on one slope so the preceding frame's remainder after
+  -- its last falling edge counts too. The detector fires when one whole window holds no crossing, so a
+  -- window UNDER that splices the vector's own loop seam inside the payload some of the time -- 1/100 s
+  -- is 24 bit times at 2400 Bd, which fires on it about a quarter of the time.
+  local w24, w300 = brun.elide_window(2400), brun.elide_window(300)
+  ck(w24 * 2400 >= 30 and w300 * 300 >= 30,
+     'the window clears the 30-bit loop seam at every rate the plan draws',
+     string.format('2400 Bd -> %.0f bit(s), 300 Bd -> %.0f bit(s)', w24 * 2400, w300 * 300))
+  ck(w24 > 0.010, '...which means the floor RAISES 2400 Bd above the 1/100 s tier',
+     string.format('%g s, %.0f bits, against the tier 0.01 at 24 bits', w24, w24 * 2400))
+  -- AND IT MUST NOT REACH THE RATES THAT MATTER. 40 bit times is 4.2 ms at 9600 and 2.1 at 19200, both
+  -- under the tier, so the product rates keep exactly the window they were given.
+  ck(brun.elide_window(9600) == brun.elide_win and brun.elide_window(19200) == brun.elide_win,
+     'and does not reach 9600 or 19200, which keep the tier untouched',
+     string.format('%g / %g against the tier %g', brun.elide_window(9600),
+                   brun.elide_window(19200), brun.elide_win))
 
   -- The tier caps the request rather than replacing it, in both directions.
   ck(brun.elide_for('v98a', 9600, 0.1) == 0.010, 'the tier caps a request that is too long',
@@ -3071,11 +3087,11 @@ print('-- the elision window tier, and the gate that refuses a gap it cannot det
   -- under 2400 and both are anchors rather than filler. All six vectors must elide at both.
   local lowok, lowbad = true, nil
   for i = 1, 6 do
-    if brun.elide_for(vids[i], 300, 0.1) ~= 0.100 or brun.elide_for(vids[i], 1200, 0.1) ~= 0.100 then
+    if brun.elide_for(vids[i], 300, 0.1) == nil or brun.elide_for(vids[i], 1200, 0.1) == nil then
       lowok = false lowbad = vids[i]
     end
   end
-  ck(lowok, 'all six gap vectors elide at 300 AND 1200, on the 1/10 s tier',
+  ck(lowok, 'all six gap vectors elide at 300 AND 1200, which the bit-time floor must not break',
      lowbad == nil and 'all six' or (lowbad .. ' declined'))
 
   -- v98c at 1200 is the tightest pass in the low band: 341.7 ms against 200 ms needed, 1.7x. Named for
