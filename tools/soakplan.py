@@ -83,12 +83,18 @@ P_RSUB = 7
 # than a v96-specific guard. v96 wedges the generator; v97 is perfectly playable and is simply not part of
 # the standard lap. It is the paired control for v93 (the same 1024 bytes with bit 7 cleared) and is meant
 # to be driven as a two-vector comparison. Leaving it IN the lap would do two unwanted things at once: the
-# lap becomes 40 x 43 = 1720 cells, contradicting the 1677 that docs/BENCH.md derives and that six
-# comments here quote; and because the skip is applied BEFORE the shuffle, every one of the 39 survivors
+# lap grows by that vector's 43 cells, and because the skip is applied BEFORE the shuffle, every survivor
 # would take another vector's amplitude, offset and wait, making the 100-lap soak's per-cell record
-# incomparable with everything measured afterwards. With v97 skipped the kept list is identical to the
-# 39-vector one, so the plan, the ratchet baselines in tools/plan_sweep.py and the lap size are all
-# unchanged -- verified by emitting a plan before and after and diffing it row for row.
+# incomparable with everything measured afterwards. The second of those is the one that matters.
+#
+# DO NOT QUOTE A CELL COUNT HERE. This comment used to say the lap was 39 x 43 = 1677 and that 1720 was
+# the signature of getting the skip wrong. Both were stale: the suite has gained a waveform, the correct
+# skip gives 40 x 43 = 1720 today, and the two-name form gives 41 x 43 = 1763. Ask the planner --
+# `python3 tools/soakplan.py --iteration 1 --skip-vectors v95,v96,v97` prints it.
+#
+# The claim that the kept list is unchanged was verified by diffing a plan before and after, AT THE TIME.
+# It does not survive a change to the vector set, and the ratchet baselines in tools/plan_sweep.py rest on
+# it, so that diff has to be redone whenever a waveform is added or retired.
 #
 # THE FULL-SCALE FAMILY IS NOT HERE, AND THAT IS DELIBERATE -- it is excluded one layer further out, by
 # vector_names.BENCH_ONLY through soak_vectors(). The argument for excluding it is the one above plus a

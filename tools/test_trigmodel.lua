@@ -97,10 +97,10 @@ end
 -- ============================================================================
 print('\nA  the loaded template is a PROGRAM, and its shape is what the firmware acts on')
 -- ============================================================================
--- docs/TRIGGER.md section 8 disassembles both templates. Asserting the SHAPE rather than the
--- template's name is the difference between testing the firmware's behaviour and testing that the
--- app passed a particular string: "a SimpleLoop recording cannot be armed" is true because the
--- program has no WAIT block in it, not because of what it is called.
+-- docs/TRIGGER.md, 'The canned templates and the fast path', disassembles both templates. Asserting
+-- the SHAPE rather than the template's name is the difference between testing the firmware's
+-- behaviour and testing that the app passed a particular string: "a SimpleLoop recording cannot be
+-- armed" is true because the program has no WAIT block in it, not because of what it is called.
 ;(function()
   STEP(100, 100, 100, 0.0, 3.3)
   local b = buffer.make(300)
@@ -141,7 +141,8 @@ end)()
 -- ============================================================================
 print('\nB  the model WALKS its blocks on a virtual clock')
 -- ============================================================================
--- MEASURED on 1.7.17a, and the two halves of it are DIFFERENT TIMES (docs/TRIGGER.md section 8):
+-- MEASURED on 1.7.17a, and the two halves of it are DIFFERENT TIMES (docs/TRIGGER.md,
+-- 'Arming takes about 2 ms; admitting it takes another 190'):
 --   * THE WAIT BLOCK GOES LIVE ABOUT 2 ms after initiate(). From the recorded data, pre-roll start =
 --     fire_s - N5/fs - n_pre/fs gives 1.6 to 2.6 ms over six captures; from the block trajectory,
 --     BUFFER_CLEAR completes at 0.0003 s and the zero DELAY_CONSTANT at 0.0012 s.
@@ -279,8 +280,8 @@ print('\nB  the model WALKS its blocks on a virtual clock')
   CK('...and an aborted one is executing no block at all',
      trigger.model.state() == trigger.STATE_IDLE and TRIG.at() == nil,
      string.format('%s block=%s', tostring(trigger.model.state()), tostring(TRIG.at())))
-  -- THE STORE SURVIVES THE ABORT -- MEASURED, docs/TRIGGER.md section 4: abort() leaves every block
-  -- in place and only load() replaces them.
+  -- THE STORE SURVIVES THE ABORT -- MEASURED, docs/TRIGGER.md, 'Building and running a program':
+  -- abort() leaves every block in place and only load() replaces them.
   CK('...but the program is still loaded, because abort does not clear the store',
      TRIG.nblocks == 6 and TRIG.loaded == true, tostring(TRIG.nblocks))
 
@@ -374,8 +375,9 @@ end)()
 -- ============================================================================
 print('\nC  the trigger point is DERIVED from the comparator, not declared by the fixture')
 -- ============================================================================
--- Three firmware facts, all MEASURED and recorded in docs/TRIGGER.md section 7, and none of them
--- expressible against a mock that honours SRC.trigat whatever the comparator says:
+-- Three firmware facts, the first two MEASURED and recorded in docs/TRIGGER.md, 'Pre-trigger, and
+-- what the comparator needs', and MODE_OFF in no shipped document. None of them is expressible
+-- against a mock that honours SRC.trigat whatever the comparator says:
 --   * the level is real -- armed at 8 V on a 0-3 V square wave the model sat in STATE_WAITING
 --     indefinitely and never fired;
 --   * the slope is real, and the two settings give opposite directions through the trigger index;
@@ -830,8 +832,10 @@ end)()
   -- the record mid-recording. Asserting the shape without this would let one back in silently.
   CK('...and no BUFFER_CLEAR block, so the record is cleared from Lua instead',
      not HAS(bl, 'BUFFER_CLEAR'), tostring(bl))
-  -- TWO MEASURE BLOCKS EXACTLY. A third posts 2753 on the instrument, so this is the firmware's budget and not
-  -- a style choice -- and it is what forces the burst to be ended by the detector rather than by a count.
+  -- Two measure blocks exactly, which is what forces the burst to be ended by the detector rather than by a
+  -- count. Not asserted here as a firmware budget marked by 2753, which this comment used to claim: that event
+  -- is the generic low-latency warning, its message names whichever cause applied, and this very program posts
+  -- it on every run -- so it cannot mark a two-block limit. notes/FINDING-elide-noarm.md.
   local nmd = 0
   for i = 1, TRIG.nblocks do
     if TRIG.blocks[i] ~= nil and TRIG.blocks[i].op == 'MEASURE_DIGITIZE' then nmd = nmd + 1 end

@@ -619,8 +619,7 @@ with the single-capture path so that the two cannot arm on different edges of th
     5) BRANCH_ON_EVENT   EVENT_ANALOGTRIGGER, 4  a crossing: still talking, go round
     6) BRANCH_ALWAYS     1                       fell through: quiet for a window, next burst
 
-Blocks 1 and 3 are two measure blocks exactly, which is the budget -- a third posts 2753 -- and
-entering either one stops the other. That is what ends a burst without counting it, and it is the
+Blocks 1 and 3 are two measure blocks exactly, and entering either one stops the other. That is what ends a burst without counting it, and it is the
 whole reason the burst block can be infinite.
 
 Block 2 takes `ev`, which may be the blender, and `CLEAR_ENTER`, which is load-bearing rather than
@@ -888,6 +887,16 @@ count.
 The firmware states the measure-block limit itself. Building a third measure block posts
 
     2753: Trigger model is not optimized for speed due to greater than 2 measure/digitize blocks
+
+2753 is a warning and not a refusal, and its message names whichever cause applied rather than always
+naming measure blocks. The application's own recording program has exactly two measure blocks and posts
+2753 on every run, with a different tail:
+
+    2753: Trigger model is not optimized for speed due to multiple blocks waiting
+
+Measured over 131 cells of 132. So the event marks "off the fast path" generally, and the sentence after
+it is the part that says why. Reading the bare code as a measure-block count is what this document and
+three places in the tree used to do.
 
 **Two waits on one event is a real disqualifier**, and the row most easily mistaken for something
 else. Holding the program shape fixed and varying only the events:

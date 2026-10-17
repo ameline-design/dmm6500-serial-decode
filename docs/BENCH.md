@@ -11,9 +11,15 @@ stops an expensive one.
 | `tools/bench_smoke.py` | 12.8 min | both instruments | is the bench and the harness sound |
 | `tools/soak.py --suites formats,plan,arm --skip-vectors v95,v96,v97` | ~2.7 h a lap | both instruments | does it hold up over hours, and does the arm still fire |
 
-Measured, not estimated: **6.5 s per cell**. A lap of 39 waveforms at 43 rates each is 1677 cells, so
-**about 3.0 hours**; all 41 waveforms is 3.2 h. An offline lap of the same cells is **about 4 seconds** at
-one capture offset per cell and **19 seconds** at eight, measured on 12 workers.
+Measured, not estimated: **6.5 s per cell**. Ask the planner for the lap size rather than reciting one —
+`python3 tools/soakplan.py --iteration 1 --skip-vectors v95,v96,v97` prints it, and it moves whenever a
+waveform is added. Today that is **40 waveforms at 43 rates each, 1720 cells**, so about **3.1 hours**;
+all 43 waveforms is 1849 cells and 3.3 h. An offline lap of the same cells is **about 4 seconds** at one
+capture offset per cell and **19 seconds** at eight, measured on 12 workers.
+
+Figures further down this document that divide by a **1677**-cell lap were measured when the suite held
+one waveform fewer. They are left as they were recorded: restating a lap size does not change what those
+runs counted, and rewriting the denominator of an archived result would.
 
 Eight hours is therefore between two and three laps. That is the floor, not a target: the point of the
 soak is a failure rate per point, and two laps can only ever say "twice" or "once" or "never".
@@ -963,7 +969,9 @@ Its default is already `soakplan.HW_SKIP`, which is **`v95,v96,v97`**. Naming on
 that and re-admits v97, and the comment above `HW_SKIP` sets out exactly what that costs. Measured on two
 runs made that way, because this document's own next-step once spelled out the two-name form:
 
-* the lap becomes 40 × 43 = **1720** instead of 39 × 43 = **1677**, contradicting the top of this document
+* the lap grows by one vector's worth of cells, 43 of them. With today's suite the correct skip gives
+  40 × 43 = **1720** and the two-name form gives 41 × 43 = **1763**; this list previously named 1720 as
+  the misconfiguration signature, which it is not — 1720 is what the correct skip produces
 * the skip is applied *before* the shuffle, so all 39 survivors take another vector's amplitude, offset and
   wait — the per-cell record stops being comparable with the archive, which is what a seeded plan is
   for. Aggregate rates survive; anything paired or keyed on (vector, rate, amplitude) does not
@@ -972,12 +980,13 @@ runs made that way, because this document's own next-step once spelled out the t
   That reads convincingly like a generator wedge, and it is a configuration error
 
 **A lap-size disagreement between the offline twin and the instrument is a bug, not a property of the two
-harnesses.** Both should say 1677.
+harnesses.** Both should say whatever the planner says, which is the only authority worth quoting.
 
 Deriving the lap is still better than assuming it: `run_bench.py` waits `60 + 12 × plan_rows` seconds, so
 the "waiting up to N min" line at startup gives the row count for *all* laps. One run cannot separate the
 header lines from the lap; two can. 1 lap gave 1725 rows and 4 gave 6885, so `h + d = 1725` and
-`h + 4d = 6885` give 5 header lines — and a lap of whatever the skip list left in.
+`h + 4d = 6885` give **d = 1720** and 5 header lines — which is the planner's figure, and an independent
+confirmation of it that sat two lines below the claim that a lap was 1677.
 
 **The instrument's clock is hours off the host's** — ~4 h behind as measured. A record's progress rows are
 stamped with the DMM's own `os.time()`, so a difference between two record stamps is sound (that is where
