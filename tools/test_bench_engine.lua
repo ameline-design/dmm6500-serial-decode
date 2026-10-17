@@ -3007,16 +3007,33 @@ print('-- the expected payload is generated, and must match the generator that b
   ck(bm == 120 and bc == 120 and bn == 2,
      '...while per-burst alignment verifies both and says how many bursts it took',
      string.format('%s of %s across %s', tostring(bm), tostring(bc), tostring(bn)))
-  -- AND IT MUST NOT INVENT A SEAM. A contiguous record has one burst, so the two figures agree -- if the
-  -- pitch test fired on ordinary inter-frame spacing it would align every byte separately and report
-  -- 100 % on anything at all, which is the failure mode of a more permissive metric.
+  -- AND IT MUST NOT INVENT A SEAM, which the first version of this test could not check: it spaced every
+  -- frame evenly, so the only thing it ruled out was a threshold of zero. A real contiguous record has
+  -- one wide pitch in it -- the arb's own loop seam, lead 10 plus tail 10 bit times plus the preceding
+  -- frame's remainder, about THREE frame pitches -- and at a threshold of two medians that splits a
+  -- control record and the burst count over-reads. The test now carries that pitch.
   local onev = synth(0, 100)
   onev.tpos = {}
-  for ti = 1, 100 do onev.tpos[ti] = (ti - 1) * 10 end
+  for ti = 1, 100 do
+    -- 10 readings a frame, with one 30-reading pitch at the loop seam.
+    onev.tpos[ti] = (ti - 1) * 10
+    if ti > 50 then onev.tpos[ti] = onev.tpos[ti] + 20 end
+  end
   local sm, sc, sn = bexp.match_bursts(onev, 'v98a')
   ck(sm == 100 and sc == 100 and sn == 1,
-     'a contiguous record is ONE burst, so the pitch test does not fire on inter-frame spacing',
+     'a contiguous record with a loop seam in it is still ONE burst',
      string.format('%s of %s across %s', tostring(sm), tostring(sc), tostring(sn)))
+  -- AND THE WINDOW BEATS THE MEDIAN WHERE THE CALLER KNOWS IT. A seam exists only where the detector
+  -- concluded the line was quiet, so one window of readings is the real threshold; passing it must not
+  -- change a contiguous verdict and must still find a true seam.
+  local wm, wc, wn = bexp.match_bursts(onev, 'v98a', 96 * 10)
+  ck(wm == 100 and wc == 100 and wn == 1,
+     '...and passing the window leaves that verdict alone',
+     string.format('%s of %s across %s', tostring(wm), tostring(wc), tostring(wn)))
+  local tm2, tc2, tn2 = bexp.match_bursts(two, 'v98a', 40 * 10)
+  ck(tm2 == 120 and tc2 == 120 and tn2 == 2,
+     '...while a real seam is still found with the window supplied',
+     string.format('%s of %s across %s', tostring(tm2), tostring(tc2), tostring(tn2)))
   ck(bexp.match_bursts({nf = 3, vals = {65, 66, 67}, errs = {}}, 'v98a') == nil,
      'and a result with no tpos gets no burst verdict rather than one burst by default')
   ck(bexp.match(synth(0, 100), 'v71') == nil, 'and a vector with no entry gets no verdict either')

@@ -927,7 +927,15 @@ function brun.point(fs, baud, lock, elide, vid)
     -- exactly what it was: per-burst alignment is strictly more generous and a number that cannot fail
     -- is not a verdict. The burst count goes out with it, because a record needing many is the finding.
     pcall(function()
-      local m, c, nb = bexp.match_bursts(res, vid)
+      -- The window in readings, where this cell had one: a seam is where the detector concluded the line
+      -- was quiet, which it does only after a whole window of silence, so the window is a far better
+      -- threshold than any multiple of the frame pitch. Without it a vector's own loop seam -- three
+      -- frame pitches -- splits a contiguous control record and the burst count over-reads.
+      local winsamp = nil
+      if sdec.gapelide ~= nil and sdec.gapelide > 0 and sdec.acq_fs ~= nil and sdec.acq_fs > 0 then
+        winsamp = sdec.gapelide * sdec.acq_fs
+      end
+      local m, c, nb = bexp.match_bursts(res, vid, winsamp)
       if m ~= nil and c ~= nil and c > 0 then r.payb, r.paybcmp, r.paybn = m, c, nb end
     end)
   end

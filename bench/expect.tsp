@@ -119,9 +119,18 @@ bexp.mincmp = 12
 -- million. Past the ceiling there is no verdict rather than a slow one.
 bexp.cmpmax = 200000
 
--- How much larger than the median frame pitch a gap has to be to count as a seam. Two: a frame follows
--- its predecessor by one frame time on a gap = 0 payload, so anything near twice that is silence.
-bexp.seammult = 2
+-- How much larger than the median frame pitch a gap has to be to count as a seam, when the window is not
+-- supplied. FIVE, not two: a vector's own loop seam is lead 10 + tail 10 bit times plus the preceding
+-- frame's remainder, about three frame pitches, and two would split a contiguous control record there and
+-- over-count its bursts. A real elision seam keeps between one and two windows of idle, which is ten to
+-- nineteen frames at the 1/100 s the bench uses from 4800 Bd up, so five separates them.
+bexp.seammult = 5
+
+-- Better than any multiple of the median: the window itself, in readings. A seam exists only where the
+-- detector concluded the line was quiet, and it concludes that only after a whole window of silence, so
+-- the kept idle at a seam is at least one window. 0.9 of it allows for the pitch being measured between
+-- frame STARTS while the idle is measured from the last stop bit.
+bexp.seamwinfrac = 0.9
 
 -- Per-BURST comparison. -> nmatch, ncmp, nburst; nil when there is no verdict.
 --
@@ -140,7 +149,7 @@ bexp.seammult = 2
 --
 -- Seams come from res.tpos, each frame's start in samples, so no rate or format arithmetic is needed:
 -- a pitch more than seammult times the median is silence. That is the same shape of test ua_run uses.
-function bexp.match_bursts(res, vid)
+function bexp.match_bursts(res, vid, winsamp)
   local want = bexp.bytes(vid)
   if want == nil or res == nil or (res.nf or 0) < 1 then return nil end
   if res.tpos == nil then return nil end
@@ -168,12 +177,20 @@ function bexp.match_bursts(res, vid)
     med = best
   end
   if med == nil or med <= 0 then return nil end
+  -- The threshold: the window where the caller knows it, a multiple of the median where it does not.
+  -- Never below the median multiple, so a window shorter than the payload's own loop seam cannot make
+  -- this split inside a burst.
+  local thr = bexp.seammult * med
+  if winsamp ~= nil and winsamp > 0 then
+    local wt = bexp.seamwinfrac * winsamp
+    if wt > thr then thr = wt end
+  end
 
   -- Split at the seams, then align each burst on its own with the whole-record machinery.
   local bursts, nb, from = {}, 0, 1
   for k = 2, res.nf do
     local a, b = res.tpos[k - 1], res.tpos[k]
-    if a ~= nil and b ~= nil and (b - a) > bexp.seammult * med then
+    if a ~= nil and b ~= nil and (b - a) > thr then
       nb = nb + 1
       bursts[nb] = {from, k - 1}
       from = k

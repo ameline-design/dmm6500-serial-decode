@@ -157,7 +157,9 @@ def main():
         if v is None:
             print('judge_seam: too few confident bytes to judge')
             return 1
-        deltas = [v['shifts'][i + 1] - v['shifts'][i] for i in range(len(v['shifts']) - 1)]
+        wl = len(want)
+        deltas = [(v['shifts'][i + 1] - v['shifts'][i]) % wl
+                  for i in range(len(v['shifts']) - 1)]
         print('%s  %d confident byte(s)' % (a.vid, v['ncmp']))
         print('  one shift   %d (%.0f%%)' % (v['one'], 100.0 * v['one'] / v['ncmp']))
         print('  per segment %d (%.0f%%) across %d segment(s)'
@@ -193,7 +195,12 @@ def main():
         v = judge_cell(hexs, want[vid])
         if v is None:
             continue
-        deltas = [v['shifts'][i + 1] - v['shifts'][i] for i in range(len(v['shifts']) - 1)]
+        # MOD THE PAYLOAD LENGTH. A shift is a position in a cyclic payload, so a step that passes the
+        # end reads as a large negative: -67 on an 80-byte payload is +13. Taken raw, those looked like
+        # a second mechanism at 14400 Bd and up; taken mod W every delta in the lap is positive.
+        wl = len(want[vid])
+        deltas = [(v['shifts'][i + 1] - v['shifts'][i]) % wl
+                  for i in range(len(v['shifts']) - 1)]
         tot['ncmp'] += v['ncmp']
         tot['one'] += v['one']
         tot['seg'] += v['seg']
