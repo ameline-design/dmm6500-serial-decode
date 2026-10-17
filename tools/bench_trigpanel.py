@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
-"""The two trigger-manual claims that need a finger, and cannot be reached any other way.
+"""The trigger-manual claims that need a finger, and cannot be reached any other way.
 
-docs/TRIGGER.md leaves both NOT ESTABLISHED, and neither is scriptable:
+    A  a WAIT on EVENT_DISPLAY as the FIRST block        SETTLED -- see below
+    B  switching between local and remote control        OPEN: needs the front panel touched
+       aborts a running model                            while the instrument is in remote
 
-    A  a WAIT on EVENT_DISPLAY as the FIRST block        needs the front-panel TRIGGER key
-    B  switching between local and remote control        needs the front panel touched while
-       aborts a running model                            the instrument is in remote
+Case A is settled and this tool is a second opinion on it, not the only route. `docs/UNDOCUMENTED.md`
+carries the four-arm table -- no press, key enabled, key disabled, key enabled again -- and the
+key-enable crossover in it is what makes the press the cause. That press went in through the HTTP
+virtual panel (POST /ajax_proc, function=7/8, button=8), which the owner has since confirmed may stand
+as evidence. Two things about that path are NOT open: an agent does not take it on its own initiative,
+and the disabled arm of that table is not repeatable here, because `display.KEY_TRIGGER` must never be
+turned off -- it is the operator's escape route out of a running model.
 
-The HTTP virtual-panel path (POST /ajax_proc, function=7/8, button=8) exists and would automate both,
-but the permission classifier has denied it twice; it is not an agent's to route around. So this asks
-for two presses and measures what they do, with the timing taken INSIDE the instrument.
+So case B is what this still asks a human for, and it measures the press with the timing taken INSIDE
+the instrument.
 
 WHY INSIDE. A host-side poll of a parked model is the subject of section 7 and cannot be used to
 measure it: the manual's own numbers show a parked model dying at 427-441 ms under host traffic. Here
