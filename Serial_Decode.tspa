@@ -453,22 +453,25 @@ sdec.gapelide_max = 2.0
 
 sdec.gapelide_frames = 2
 
--- The enforced window, or nil when elision is off. Read by the capture and by the form through this one
+-- The enforced window, or nil and the reason it declined. Read by the capture and by the form through this one
 -- function, so a typed value cannot mean one thing to the field and another to the trigger model.
 function sdec.gap_elide(baud)
   local w = tonumber(sdec.gapelide)
   if w == nil or w <= 0 then return nil end
-  local lo = sdec.gapelide_min
   if baud == nil then baud = tonumber(sdec.force_baud) end
-  if baud ~= nil and baud > 0 then
-    local nbits = sdec.force_nbits or 8
-    local parbits = 0
-    if sdec.force_par ~= nil and sdec.force_par ~= sdec.PAR_NONE then parbits = 1 end
-    local framebits = 1 + nbits + parbits + (sdec.force_nstop or 1)
-    local b = (sdec.gapelide_frames * framebits) / baud
-    if b > lo then lo = b end
+  if baud == nil or baud <= 0 then
+    return nil, 'gap elision off -- lock the baud rate first'
   end
-  if lo > sdec.gapelide_max then return nil end
+  local nbits = sdec.force_nbits or 8
+  local parbits = 0
+  if sdec.force_par ~= nil and sdec.force_par ~= sdec.PAR_NONE then parbits = 1 end
+  local framebits = 1 + nbits + parbits + (sdec.force_nstop or 1)
+  local lo = (sdec.gapelide_frames * framebits) / baud
+  if lo < sdec.gapelide_min then lo = sdec.gapelide_min end
+  if lo > sdec.gapelide_max then
+    return nil, string.format('gap elision off -- %g Bd needs %.3f s, over the %.1f s ceiling',
+                              baud, lo, sdec.gapelide_max)
+  end
   if w < lo then w = lo end
   if w > sdec.gapelide_max then w = sdec.gapelide_max end
   return w
@@ -1942,13 +1945,12 @@ function sdec.gap_model(rec, scr, ev, win)
   if cmp == nil then return false end
   local ok = pcall(function()
     trigger.model.load('Empty')
-    trigger.model.setblock(1, trigger.BLOCK_BUFFER_CLEAR, rec)
-    trigger.model.setblock(2, trigger.BLOCK_MEASURE_DIGITIZE, scr, trigger.COUNT_INFINITE)
-    trigger.model.setblock(3, trigger.BLOCK_WAIT, ev, trigger.CLEAR_ENTER)
-    trigger.model.setblock(4, trigger.BLOCK_MEASURE_DIGITIZE, rec, trigger.COUNT_INFINITE)
-    trigger.model.setblock(5, trigger.BLOCK_DELAY_CONSTANT, win)
-    trigger.model.setblock(6, trigger.BLOCK_BRANCH_ON_EVENT, cmp, 5)
-    trigger.model.setblock(7, trigger.BLOCK_BRANCH_ALWAYS, 2)
+    trigger.model.setblock(1, trigger.BLOCK_MEASURE_DIGITIZE, scr, trigger.COUNT_INFINITE)
+    trigger.model.setblock(2, trigger.BLOCK_WAIT, ev, trigger.CLEAR_ENTER)
+    trigger.model.setblock(3, trigger.BLOCK_MEASURE_DIGITIZE, rec, trigger.COUNT_INFINITE)
+    trigger.model.setblock(4, trigger.BLOCK_DELAY_CONSTANT, win)
+    trigger.model.setblock(5, trigger.BLOCK_BRANCH_ON_EVENT, cmp, 4)
+    trigger.model.setblock(6, trigger.BLOCK_BRANCH_ALWAYS, 1)
   end)
   if not ok then return false end
   local bl = nil
@@ -1956,7 +1958,8 @@ function sdec.gap_model(rec, scr, ev, win)
   if bl == nil then return false end
   local _, nmd = string.gsub(bl, 'MEASURE_DIGITIZE', '')
   if nmd ~= 2 then return false end
-  local want = {'BUFFER_CLEAR', 'WAIT', 'DELAY_CONSTANT', 'BRANCH_ON_EVENT', 'BRANCH_ALWAYS'}
+  if string.find(bl, 'BUFFER_CLEAR', 1, true) ~= nil then return false end
+  local want = {'WAIT', 'DELAY_CONSTANT', 'BRANCH_ON_EVENT', 'BRANCH_ALWAYS'}
   local i
   for i = 1, table.getn(want) do
     if string.find(bl, want[i], 1, true) == nil then return false end
@@ -2077,7 +2080,9 @@ function sdec.acquire()
   else
     if not sdec.arm_threshold() then return false, why end
     sdec.probe_idle = why
-    if sdec.trigmode == 'free' then return false, why end
+    if sdec.trigmode == 'free' and (sdec.n <= pn or sdec.trig_restore ~= nil) then
+      return false, why
+    end
   end
 
   if sdec.trigmode == 'edge' or sdec.trigmode == 'front' then
@@ -2090,6 +2095,7 @@ function sdec.acquire()
 
   ok, why = sdec.sig_levels(sdec.smp, sdec.nread)
   if not ok then return false, why end
+  if sdec.trigmode == 'free' then sdec.probe_idle = nil end
   if sdec.tick ~= nil then sdec.tick() end
   sdec.sig_edges(sdec.smp, sdec.nread)
   if sdec.tick ~= nil then sdec.tick() end
@@ -6064,7 +6070,7 @@ function sdec.build_options()
                          sdec.armwait_min, sdec.armwait_max, 's', 4)
   local fx11, fy11 = nextpos()
   sdec.opt_gape = create(sdec.optscr, display.OBJ_EDIT_NUMBER, fx11, fy11,
-                         'Gap Elide', '0 off, keep text',
+                         'Gap Elide', '0 off, cut after',
                          display.NFORMAT_PREFIX, tonumber(sdec.gapelide) or 0,
                          0, sdec.gapelide_max, 's', 4)
 
@@ -6273,17 +6279,20 @@ function sdec.autoset()
     local ladder = sdec.probe_fs or {1000000, 100000, 10000}
     local nlad = table.getn(ladder)
     sdec.trig_restore = savetrig
-    while tries < nlad do
-      tries = tries + 1
-      sdec.fs, sdec.fs_want = ladder[tries], ladder[tries]
-      ok, why = sdec.acquire()
-      if ok then
-        ok, why = sdec.decode()
-        if ok or sdec.baud_probe ~= nil then break end
+    local lok, lerr = pcall(function()
+      while tries < nlad do
+        tries = tries + 1
+        sdec.fs, sdec.fs_want = ladder[tries], ladder[tries]
+        ok, why = sdec.acquire()
+        if ok then
+          ok, why = sdec.decode()
+          if ok or sdec.baud_probe ~= nil then break end
+        end
       end
-    end
+    end)
     sdec.trigmode = savetrig
     sdec.trig_restore = nil
+    if not lok then error(lerr, 0) end
     if tries > 1 then
       sdec.probe_note = string.format(
         'probe took %d looks to catch traffic (down to %g kS/s)', tries or 0, ladder[tries] / 1000)
@@ -6766,6 +6775,13 @@ function sdec.stream_arm(nsmp)
   sdec.strm_elide = elide
   sdec.strm_armed = armed
   if not armed then ok = pcall(trigger.model.load, 'SimpleLoop', nsmp, 0, buf) end
+  if ok then
+    local cok = buf ~= nil and pcall(function() buf.clear() end)
+    if not cok then
+      ok = false
+      sdec.lasterr = 'could not clear the record before arming'
+    end
+  end
   if ok then ok = pcall(trigger.model.initiate) end
   if ok and armed then
     local spun, saw = 0, false
@@ -7843,9 +7859,12 @@ end
 -- with no comparator and no elision. And arm_silent() returns false outright whenever fc_out is set, so elision
 -- and flow control are mutually exclusive, which nothing else would tell them.
 function sdec.gap_why()
-  if sdec.gap_elide() == nil then return nil end
+  local w = tonumber(sdec.gapelide)
+  if w == nil or w <= 0 then return nil end
   if sdec.strm_elide ~= nil then return nil end
   if sdec.fc_out then return 'gap elision off -- flow control is on' end
+  local win, declined = sdec.gap_elide()
+  if win == nil then return declined end
   if sdec.trigmode == 'free' then return 'gap elision off -- the trigger is free-running' end
   if not sdec.arm_silent() then
     return 'gap elision off -- the line was already transmitting when the recording started'
