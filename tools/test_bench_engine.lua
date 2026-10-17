@@ -1491,6 +1491,33 @@ do
   -- A LOCKED capture picks its own rate from the locked baud and must not regress either.
   local p2 = brun.point(want, 9600, true)
   ck(p2.ran == true and p2.fs ~= nil, 'a locked capture still works', tostring(p2.fs))
+
+  -- THE DIAGNOSTICS AN ELIDED CELL HAS TO CARRY. Three laps were spent arguing about quantities the
+  -- record did not hold: how long the digitize ran, and whether the ring wrapped. Both are now fields,
+  -- and a field that silently stops being written is worse than one that was never added -- the next
+  -- lap would read as "it did not wrap" rather than as "nobody looked".
+  --
+  -- The premise comes first, because every assertion below is vacuous on a cell that fell back to the
+  -- canned template: stream_arm does that whenever the comparator, the scratch or the program is
+  -- refused, and such a cell looks exactly like one that elided and worked.
+  local pe = brun.point(want, 9600, true, 0.010, 'v98a')
+  ck(pe.elide_want ~= nil and pe.elided == true,
+     'the premise: this cell really did build the elision program rather than falling back',
+     string.format('want=%s elided=%s', tostring(pe.elide_want), tostring(pe.elided)))
+  ck(pe.elidenrd ~= nil and pe.elidecap ~= nil and pe.elidecap > 0,
+     'an elided cell records the ring it filled, so a wrap is visible instead of arguable',
+     string.format('%s of %s', tostring(pe.elidenrd), tostring(pe.elidecap)))
+  ck(pe.elidesidx ~= nil, 'and where the ring starts, which IS the wrap when it is above 1',
+     tostring(pe.elidesidx))
+  ck(pe.elidetdig ~= nil, 'and how long the digitize ran, the quantity the backlog threshold needs',
+     tostring(pe.elidetdig))
+  -- AND THE HEADROOM, asserted rather than assumed: acq_cap returns n exactly when trigmode is 'free',
+  -- and only the armed branch adds the 100 readings an overshoot needs. An elided cell that got a
+  -- capacity equal to its reading count has no room to overshoot into at all, so the wrap this field
+  -- exists to detect would be guaranteed rather than diagnosed.
+  ck(pe.elidecap ~= nil and pe.elidenrd ~= nil and pe.elidecap >= pe.elidenrd,
+     'the record has at least as much capacity as it has readings',
+     string.format('cap %s, read %s', tostring(pe.elidecap), tostring(pe.elidenrd)))
 end
 
 -- ---------------------------------------------------------------------------
