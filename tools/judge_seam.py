@@ -9,8 +9,18 @@ comes back as a chain of segments each byte-exact at a shift ONE HIGHER than the
 shift fits one segment and scores the rest wrong -- 33-73 % on cells carrying almost no wrong
 bytes.
 
-So this reports both figures side by side. The gap between them is the metric's error, and
-what is left is the real byte cost, which the mechanism predicts to be about one byte per seam.
+So this reports both figures side by side. The gap between them is the metric's error.
+
+WHAT THE +1 DELTA IS NOT. It is the net change in FRAME COUNT across a seam, not the byte loss.
+The record is missing the resume latency of wire at every burst start, so 4-9 payload bytes per
+seam are destroyed -- 3-8 frames of which 2-5 are flagged and 2-4 confidently wrong. On cell 4
+of the 2026-10-17 lap that is 6 unmatched confident bytes plus 7 flagged, 13 across 2 seams.
+
+So the per-segment figure is NOT a pass. A `nodrop` vector exists so that a declined byte inside
+the body is the failure being looked for, and these cells really do drop the first bytes of
+every burst: judge_bench is right to fail them. What it is wrong about is the DESCRIPTION --
+"not the payload, silently wrong, 60 %" is a claim about 2-3 % of the bytes, because a single
+shift cannot express a frame-count change and so charges everything after the first seam.
 
 WHAT IT DOES NOT DO. It does not replace the judge. Per-segment alignment is strictly more
 permissive -- give it enough segments and it will fit noise -- so it is a diagnostic and not a

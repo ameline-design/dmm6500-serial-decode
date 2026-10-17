@@ -295,14 +295,20 @@ print('\n-- the RESUME LATENCY: a constant microsecond cost, which is a bit time
 -- What is actually constant is a wall-clock latency between the comparator crossing that releases the
 -- wait block and the first reading the measure block stores. A fixed number of microseconds is a bit time
 -- that GROWS with baud, and it crosses half a bit -- the framer's sampling margin -- between 2400 and
--- 4800 Bd. Bounded from the 2026-10-17 record at 104 to 156 us.
+-- 3200 Bd. Bounded at 156 to 208 us from the record's seam debris: each seam's debris string depends
+-- only on the resume offset in bit times, so every observed string bounds it and the tight rows
+-- intersect there.
 --
--- Below half a bit the start bit is still sampled on the correct side of the threshold and the seam costs
--- nothing. Above it the framer anchors on the splice instead of on the start bit, emits a few flagged
--- frames while it re-synchronises, and comes out ONE payload byte further on -- so each seam advances the
--- alignment by one and a single global shift can only fit one segment. That is why the bytes inside each
--- segment are right while the cell scores 33-73 %.
-local LAT = {0, 50e-6, 104e-6, 156e-6, 250e-6}
+-- WHY HALF A BIT IS THE NUMBER. ua_frame samples each cell at t0 + (slot + 0.5) * T. A burst resuming s
+-- bit times into its first start bit leaves no edge at the true start, so the framer anchors on the
+-- splice -- a falling edge preceded by at least 1.5 T of mark -- and every sample is late by s. Under
+-- 0.5 they stay inside their cells and the frame is exact. At 0.5 the stop sample lands in the next
+-- start bit, that frame fails, and the resync walks through the next three to eight bytes before it
+-- finds a real start bit, lowercase ASCII never offering the 1.5 T mark run it anchors on. The record
+-- then comes out ONE payload byte further on, so each seam advances the alignment by one and a single
+-- global shift fits only one segment. That is why the bytes inside each segment are right while the
+-- cell scores 33-73 %.
+local LAT = {0, 100e-6, 156e-6, 208e-6, 300e-6}
 print(string.format('  %-7s %-9s %-7s %-9s %-7s %s', 'latency', 'at 2400', 'bits', 'at 4800', 'bits', 'hardware'))
 local l2400, l4800 = nil, nil
 for li = 1, table.getn(LAT) do
@@ -315,7 +321,7 @@ for li = 1, table.getn(LAT) do
   print(string.format('  %-7.0f %-9s %-7.2f %-9s %-7.2f %s', L * 1e6,
                       (fa ~= nil) and string.format('%.0f%%', fa * 100) or 'REFUSED', L * 2400,
                       (fb ~= nil) and string.format('%.0f%%', fb * 100) or 'REFUSED', L * 4800,
-                      (L >= 104e-6 and L <= 156e-6) and '<- fable bounded L here' or ''))
+                      (L >= 156e-6 and L <= 208e-6) and '<- bounded L here' or ''))
 end
 
 check('the premise: with no resume latency both rates are byte-exact, so the sweep varies one thing',
@@ -327,11 +333,10 @@ check('the premise: with no resume latency both rates are byte-exact, so the swe
 -- THE CLAIM, stated as a property over the bounded range rather than at one value. The bound from the
 -- record is 104-156 us; where inside it the break falls depends on the framer's sampling margin, and
 -- pinning a single number here would be asserting the fixture's arithmetic rather than the mechanism.
--- 130 us, for instance, is 0.62 of a bit at 4800 Bd and still decodes -- the break is nearer 0.75.
 local asym, asymat = false, ''
 for li = 1, table.getn(LAT) do
   local L = LAT[li]
-  if L >= 104e-6 and L <= 156e-6 then
+  if L >= 156e-6 and L <= 208e-6 then
     local f24 = frac(cell('v98a', v98a, 2400, 20000, 600, 10, 0.010, NCAP, L))
     local f48 = frac(cell('v98a', v98a, 4800, 40000, 600, 10, 0.010, NCAP, L))
     if f24 ~= nil and f24 > 0.95 and f48 ~= nil and f48 < 0.95 then
@@ -346,7 +351,7 @@ end
 -- clean passes do, so a check on the value would fail for the wrong reason.
 check('a resume latency inside the bound from the record spares 2400 Bd and breaks 4800 -- the hardware '
       .. 'edge, from one constant-time parameter', asym,
-      (asym and asymat) or 'no latency in [104, 156] us produced the split')
+      (asym and asymat) or 'no latency in [156, 208] us produced the split')
 
 -- ---------------------------------------------------------------------------
 -- THE HEX OF ONE KNOWN-LATENCY CELL, for tools/judge_seam.py --hex to check its own interpretation
