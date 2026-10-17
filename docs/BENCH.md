@@ -669,6 +669,18 @@ Three classes, in `soakplan.VECTOR_EXPECT`:
   that count exempts — fails the 100 % coverage demand. A frame clipped at the capture's start is
   neither, being inside the head the judge skips before any budget is consulted.
 
+**The offline twin does not implement `nodrop`, and is therefore more permissive than the bench on
+exactly the six vectors that class exists for.** `sweep_plan.lua`'s `judge()` takes a single `loud`
+boolean, so a gap vector is judged offline as though it were `exact` — a declined frame spends `exact`'s
+`max(2, 2 %` of the body`)` allowance and passes, where the hardware judge fails it. The consequence is
+worth stating plainly: **a clean offline run is not evidence about the gap vectors**, and the defect they
+were built to catch can only be seen on an instrument.
+
+Left as a divergence rather than closed, for one reason: teaching the twin `nodrop` changes its verdicts,
+and `tools/plan_sweep.py`'s baselines already need re-measuring against the grown vector set. Doing both
+in one step would make neither attributable. The two belong in the same decision, and that decision is
+about which vectors the ratcheted configuration means.
+
 **A `loud` vector may also miss a bounded number of bytes, and the bench says how many.** In 8N1 a data
 sample that crosses into the neighbouring cell yields a wrong byte with framing intact and no parity to
 catch it, so nothing is flagged and a jitter vector cannot be held to zero — `bench_uart` measured `j20`
