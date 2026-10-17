@@ -1003,8 +1003,9 @@ resolve it from the one thing the instrument does not know:
 
 The template's post-trigger count is **(100 − `position`)% of the buffer's CAPACITY**. Measured over 15
 combinations of capacity and position, each matching that rule exactly, with `dmm.digitize.count` set
-to 77 against a capacity of 1000 changing nothing — the table is in
-[TRIGGER.md](TRIGGER.md) §8 and is not repeated here. At `sdec.n` = 20 000 and `sdec.pretrig` = 5:
+to 77 against a capacity of 1000 changing nothing — the table is in [TRIGGER.md](TRIGGER.md),
+"The canned templates and the fast path", and is not repeated here. At `sdec.n` = 20 000 and
+`sdec.pretrig` = 5:
 
 | | readings |
 |---|---|
@@ -1030,8 +1031,9 @@ delivers `sdec.n` unchanged.
 The comparator is derived from the digitizer's sample stream, so with nothing acquiring it never
 evaluates, and there is no diagnostic — the model simply sits. **The trap is that the broken program
 looks better:** two blocks instead of four, and on the firmware's low-latency fast path, which it is on
-because it never does anything. Both results are in [TRIGGER.md](TRIGGER.md) §7 and §12, with the
-templates disassembled in §8.
+because it never does anything. Both results are in [TRIGGER.md](TRIGGER.md),
+"Pre-trigger, and what the comparator needs" and "Choosing a shape", with the templates disassembled
+in "The canned templates and the fast path".
 
 ### A wait of seconds laps the buffer, and the record comes back rotated
 

@@ -24,7 +24,7 @@ FOUR PROGRAMS, because the question is which shape reports what:
 
   1  LoopUntilEvent, position 5     the canned template an armed recording loads
   2  LoopUntilEvent, position 0     the same without a pre-trigger reserve
-  3  hand-built INFINITE/WAIT/COUNT the four-block shape, section 7 of docs/TRIGGER.md
+  3  hand-built INFINITE/WAIT/COUNT the four-block shape, docs/TRIGGER.md 'Pre-trigger'
   4  hand-built WAIT/COUNT          the two-block reduction, which is known never to fire
 
     python3 tools/probe_waitstate.py          # the app may be loaded; its tick is suspended

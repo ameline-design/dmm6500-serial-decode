@@ -16,10 +16,11 @@ turned off -- it is the operator's escape route out of a running model.
 So case B is what this still asks a human for, and it measures the press with the timing taken INSIDE
 the instrument.
 
-WHY INSIDE. A host-side poll of a parked model is the subject of section 7 and cannot be used to
-measure it: the manual's own numbers show a parked model dying at 427-441 ms under host traffic. Here
-the whole window is one chunk -- initiate, poll, report -- so the host sends nothing between the arm
-and the verdict and the socket is silent for the operator's entire window.
+WHY INSIDE. A host-side poll of a parked model is the subject of docs/TRIGGER.md, 'Poll from inside
+the instrument', and cannot be used to measure it: its own numbers show a parked model dying at
+427-441 ms under host traffic. Here the whole window is one chunk -- initiate, poll, report -- so
+the host sends nothing between the arm and the verdict and the socket is silent for the operator's
+entire window.
 
     python3 tools/bench_trigpanel.py            # both cases
     python3 tools/bench_trigpanel.py --case a   # just the TRIGGER key

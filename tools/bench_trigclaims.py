@@ -5,14 +5,18 @@ Five of them, four of which the manual names NOT ESTABLISHED outright. Each case
 control, because every one of these questions has an answer that looks the same as "nothing happened":
 a model sitting in WAITING proves nothing unless the same model fires when it should.
 
-    1  EVENT_EXTERNAL as the FIRST block         marker ON must fire, marker OFF must sit   (sec 9)
-    2  a FINISHED counted pre-roll ahead of a    does the comparator evaluate once the      (sec 9)
+    1  EVENT_EXTERNAL as the FIRST block         marker ON must fire, marker OFF must sit
+    2  a FINISHED counted pre-roll ahead of a    does the comparator evaluate once the
        WAIT on EVENT_ANALOGTRIGGER               counted block has stopped?
-    3  STATE_ABORTING observable                 poll in the tightest loop after abort()    (sec 1)
-    4  STATE_PAUSED observable                   pause() a RUNNING model -- the manual      (sec 1)
+    3  STATE_ABORTING observable                 poll in the tightest loop after abort()
+    4  STATE_PAUSED observable                   pause() a RUNNING model -- the manual
                                                  only ever refused one that was not
-    5  WHY a host-side watch kills a parked      clean room: no app loaded, ONE socket      (sec 7)
+    5  WHY a host-side watch kills a parked      clean room: no app loaded, ONE socket
        model
+
+Cases 1 and 2 are docs/TRIGGER.md, 'Pre-trigger, and what the comparator needs'; 3 and 4 are 'The
+machine'; 5 is 'Poll from inside the instrument'. Headings rather than numbers, because a number
+redirects silently when the document is reordered and a name fails visibly.
 
 CASE 5 IS THE ONE WITH A CONFOUND TO REMOVE, so it runs first and wants a freshly started instrument:
 the original measurement had a second client holding a socket throughout, so "no traffic from the
@@ -79,10 +83,11 @@ end
 #
 # A model left RUNNING by the previous case makes this firmware refuse both the store and the
 # digitizer: `load()` has nothing to do with a running program and `dmm.digitize.func = ...` posts
-# 2727, 'Command prohibited while trigger model is running' -- which section 4 of the manual
-# establishes as an OUT OF BAND refusal, pcall true and the write dropped. Building on top of that
-# raises mid-chunk, the chunk dies before its print, and the host then waits out its whole socket
-# timeout on a statement that will never answer. Two runs were lost that way before the abort moved up.
+# 2727, 'Command prohibited while trigger model is running' -- which docs/TRIGGER.md, 'Nothing under
+# `trigger.` reports failure', establishes as an OUT OF BAND refusal, pcall true and the write
+# dropped. Building on top of that raises mid-chunk, the chunk dies before its print, and the host
+# then waits out its whole socket timeout on a statement that will never answer. Two runs were lost
+# that way before the abort moved up.
 SETUP = """
 pcall(function() trigger.model.abort() end)
 delay(0.05)
@@ -117,8 +122,9 @@ pcall(function() TCBUF.clear() end)
 pcall(function() trigger.model.load('Empty') end)
 """
 
-# COUNT_INFINITE ahead of the wait because section 9 establishes that the infinite digitize is what
-# keeps samples flowing and the downstream wait is what lets it run at all.
+# COUNT_INFINITE ahead of the wait because docs/TRIGGER.md, 'Pre-trigger, and what the comparator
+# needs', establishes that the infinite digitize is what keeps samples flowing and the downstream
+# wait is what lets it run at all.
 PARKED_MODEL = SETUP + """
 trigger.model.setblock(1, trigger.BLOCK_BUFFER_CLEAR, TCBUF)
 trigger.model.setblock(2, trigger.BLOCK_MEASURE_DIGITIZE, TCBUF, trigger.COUNT_INFINITE)

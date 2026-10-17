@@ -1540,7 +1540,8 @@ TRIG.state = 'idle'
 -- replacing the function or assigning the field per case. That hid the one thing the sequence exists
 -- to expose: MEASURED on 1.7.17a, initiate() leaves the model STATE_RUNNING with nine readings
 -- already taken -- it is executing the buffer clear, the zero delay and the start of the infinite
--- digitize -- and STATE_WAITING arrives about a millisecond afterwards (docs/TRIGGER.md section 5).
+-- digitize -- and the state call does not admit the wait for another 190 ms
+-- (docs/TRIGGER.md, 'The state at `initiate()` is not the state of the wait').
 -- Code that reads "not waiting" as "the event has arrived" is therefore wrong on its first look and
 -- right from the second, and a mock answering one fixed state cannot be wrong on either.
 --
@@ -1562,7 +1563,8 @@ TRIG.delayed = 0
 
 -- ---------- READINESS AND CANDOUR ARE TWO DIFFERENT TIMES ----------
 -- THE WAIT BLOCK GOES LIVE ABOUT 2 ms AFTER initiate(); THE STATE CALL DOES NOT ADMIT IT FOR ANOTHER
--- 190. MEASURED on 1.7.17a two independent ways that agree (docs/TRIGGER.md section 8): from the
+-- 190. MEASURED on 1.7.17a two independent ways that agree (docs/TRIGGER.md,
+-- 'Arming takes about 2 ms; admitting it takes another 190'): from the
 -- recorded data, pre-roll start = fire_s - N5/fs - n_pre/fs over six captures gives 1.6 to 2.6 ms;
 -- and from the block trajectory, BUFFER_CLEAR completes at 0.0003 s and the zero DELAY_CONSTANT at
 -- 0.0012 s. CLEAR_ENTER discards a crossing latched before the block was entered, so the crossing
@@ -1643,9 +1645,9 @@ function TRIG_PRIOR(p) TRIG.prior = p end
 TRIG.t0, TRIG.t_wait, TRIG.t_fire, TRIG.t_done = nil, nil, nil, nil
 TRIG.btime = nil
 -- THE DISASSEMBLY OF THE LOADED TEMPLATE, so a test can assert the SHAPE rather than the template's
--- name -- the six and five block programs of docs/TRIGGER.md section 8. TRIG.armable is false for a
--- program with no WAIT block in it, which is what makes "a SimpleLoop recording cannot be armed" a
--- fact about the program rather than about its name.
+-- name -- the six and five block programs of docs/TRIGGER.md, 'The canned templates and the fast
+-- path'. TRIG.armable is false for a program with no WAIT block in it, which is what makes "a
+-- SimpleLoop recording cannot be armed" a fact about the program rather than about its name.
 TRIG.blocks  = nil
 TRIG.nblocks = 0
 TRIG.armable = false
@@ -1749,7 +1751,8 @@ function TRIG_TIMELINE(post, dt, fire)
     elseif b.op == 'MEASURE_DIGITIZE' then
       d = TRIG.cost.digitize
       -- AN INFINITE BLOCK IS STOPPED BY THE COUNTED ONE DOWNSTREAM OF THE WAIT, so what it costs
-      -- HERE is only the cost of starting it -- it never ends on its own. docs/TRIGGER.md section 7.
+      -- HERE is only the cost of starting it -- it never ends on its own.
+      -- docs/TRIGGER.md, 'Pre-trigger, and what the comparator needs'.
       local cnt = b.arg
       if cnt == 'infinite' then cnt = nil end
       if cnt == nil and b.post then cnt = post end
@@ -1791,7 +1794,8 @@ end
 --
 -- SO THE TRIGGER POINT IS NOW DERIVED from the comparator's own settings, by scanning SRC.rd for the
 -- first crossing of .level in the direction .slope names. The three firmware facts this reproduces,
--- all MEASURED and recorded in docs/TRIGGER.md section 7:
+-- the first two MEASURED and recorded in docs/TRIGGER.md, 'Pre-trigger, and what the comparator
+-- needs', and MODE_OFF in no shipped document:
 --   * the level is real -- armed at 8 V on a 0-3 V square wave the model sat in STATE_WAITING
 --     indefinitely and never fired;
 --   * the slope is real, and opposite settings give opposite directions through the trigger index;
@@ -2029,7 +2033,8 @@ function trigger.model.load(template, a, b, c, d, e)
   TRIG_PROGRAM()
 end
 
--- THE TEMPLATE'S OWN BLOCKS, disassembled the way getblocklist() does (docs/TRIGGER.md section 8).
+-- THE TEMPLATE'S OWN BLOCKS, disassembled the way getblocklist() does
+-- (docs/TRIGGER.md, 'The canned templates and the fast path').
 -- Built at load() and not at initiate(), because that is when the store is written -- and ANY load()
 -- replaces the store wholesale, which is why this assigns a fresh list rather than patching one.
 --
@@ -2226,9 +2231,9 @@ end
 -- virtual clock and answer false. Clearing the timeline rather than writing a state keeps one
 -- authority -- TRIG.walkstate() answers IDLE for a model with no t0.
 --
--- THE STORE IS NOT CLEARED. MEASURED (docs/TRIGGER.md section 4): abort() leaves all eight blocks
--- untouched, and only load() replaces them -- so TRIG.loaded, TRIG.blocks and TRIG.template survive
--- deliberately.
+-- THE STORE IS NOT CLEARED. MEASURED (docs/TRIGGER.md, 'Building and running a program'): abort()
+-- leaves all eight blocks untouched, and only load() replaces them -- so TRIG.loaded, TRIG.blocks
+-- and TRIG.template survive deliberately.
 function trigger.model.abort()
   TRIG.aborts = TRIG.aborts + 1
   -- WHAT THE INSTRUMENT WAS DOING BEFORE THE NEXT ARM IS RECORDED HERE, where the previous model
@@ -2385,8 +2390,9 @@ function trigger.model.initiate()
     -- data". The infinite pre-roll keeps digitizing into a FILL_CONTINUOUS ring for the whole wait
     -- and laps it, so buf.n climbs to capacity with no trigger having occurred: MEASURED, 1 kHz
     -- square wave with the comparator armed at 8 V, STATE_WAITING indefinitely and never a fire
-    -- (docs/TRIGGER.md section 7). A mock that delivered an empty buffer here would let a
-    -- buffer-level completion test pass on the very capture that proves it wrong.
+    -- (docs/TRIGGER.md, 'Pre-trigger, and what the comparator needs'). A mock that delivered an
+    -- empty buffer here would let a buffer-level completion test pass on the very capture that
+    -- proves it wrong.
     --
     -- BOUNDED BY THE RENDER, like the counted fill below: a non-looping render runs out and the fill
     -- stops there rather than repeating the last sample to capacity.
