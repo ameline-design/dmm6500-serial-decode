@@ -856,6 +856,20 @@ function sdec.stream_arm(nsmp)
   sdec.strm_armed = armed
   -- Two sites rather than one closure, and the `and` keeps the ordering. No OP_CLOSURE per capture.
   if not armed then ok = pcall(trigger.model.load, 'SimpleLoop', nsmp, 0, buf) end
+  -- The record is cleared from here rather than inside the program. gap_model carries no BUFFER_CLEAR block, and
+  -- a clear block there would run once per initiate anyway, so one clear here is the same behaviour. The two
+  -- canned templates clear their own record, so for them this is redundant and costs one call.
+  --
+  -- A failed clear refuses the arm rather than being noted. gap_model has nothing to fall back on, so the
+  -- recording would append to whatever the last one left behind, and every span the rate is read from would be
+  -- long by the stale part -- in the one direction nothing downstream flags.
+  if ok then
+    local cok = buf ~= nil and pcall(function() buf.clear() end)
+    if not cok then
+      ok = false
+      sdec.lasterr = 'could not clear the record before arming'
+    end
+  end
   if ok then ok = pcall(trigger.model.initiate) end
   -- An arm is not live until the model is in its wait block, and the poll loop reads "no longer waiting"
   -- as "fired". docs/UNDOCUMENTED.md, 'trigger.model.state() reports a lag, not a readiness -- and

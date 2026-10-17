@@ -1967,13 +1967,18 @@ end
 
 -- The program that keeps the traffic and discards the gaps. -> true when the store really holds it.
 --
---   1) BUFFER_CLEAR      rec                     once, outside the loop, so rec accumulates
---   2) MEASURE_DIGITIZE  scr, COUNT_INFINITE     the gap
---   3) WAIT              <event>, CLEAR_ENTER    the burst starts
---   4) MEASURE_DIGITIZE  rec, COUNT_INFINITE     the burst
---   5) DELAY_CONSTANT    win                     the detector's window
---   6) BRANCH_ON_EVENT   <event>, 5              a crossing: still talking, go round
---   7) BRANCH_ALWAYS     2                       fell through: quiet for a window, next burst
+--   1) MEASURE_DIGITIZE  scr, COUNT_INFINITE     the gap
+--   2) WAIT              <event>, CLEAR_ENTER    the burst starts
+--   3) MEASURE_DIGITIZE  rec, COUNT_INFINITE     the burst
+--   4) DELAY_CONSTANT    win                     the detector's window
+--   5) BRANCH_ON_EVENT   <event>, 4              a crossing: still talking, go round
+--   6) BRANCH_ALWAYS     1                       fell through: quiet for a window, next burst
+--
+-- The record is cleared from Lua before initiate(), not by a leading BUFFER_CLEAR block. A clear block would sit
+-- outside this loop and run once per initiate, so the two are equivalent -- and that block is the only fast-path
+-- disqualifier the canned templates carry. The fast path itself is worth nothing measurable, 1.2 us of upper
+-- bound against about 8 us of comparator latency, but a Lua clear costs nothing either, so there is no reason to
+-- spend the disqualifier. docs/TRIGGER.md, 'The canned templates and the fast path'.
 --
 -- Two measure blocks exactly, which is the budget -- a third posts 2753 -- and entering either one stops the
 -- other, which is what ends a burst without counting it. A fixed count cannot be used: it cuts wherever it lands,
@@ -1991,18 +1996,17 @@ function sdec.gap_model(rec, scr, ev, win)
   if cmp == nil then return false end
   local ok = pcall(function()
     trigger.model.load('Empty')
-    trigger.model.setblock(1, trigger.BLOCK_BUFFER_CLEAR, rec)
-    trigger.model.setblock(2, trigger.BLOCK_MEASURE_DIGITIZE, scr, trigger.COUNT_INFINITE)
+    trigger.model.setblock(1, trigger.BLOCK_MEASURE_DIGITIZE, scr, trigger.COUNT_INFINITE)
     -- CLEAR_ENTER is load-bearing and not caution. The default CLEAR_NEVER lets this wait consume a crossing
     -- latched during the burst it has just recorded, so it falls straight through, the next pass starts at once,
     -- and no gap is ever skipped -- while the record still fills and every other number still looks right.
-    trigger.model.setblock(3, trigger.BLOCK_WAIT, ev, trigger.CLEAR_ENTER)
-    trigger.model.setblock(4, trigger.BLOCK_MEASURE_DIGITIZE, rec, trigger.COUNT_INFINITE)
-    trigger.model.setblock(5, trigger.BLOCK_DELAY_CONSTANT, win)
+    trigger.model.setblock(2, trigger.BLOCK_WAIT, ev, trigger.CLEAR_ENTER)
+    trigger.model.setblock(3, trigger.BLOCK_MEASURE_DIGITIZE, rec, trigger.COUNT_INFINITE)
+    trigger.model.setblock(4, trigger.BLOCK_DELAY_CONSTANT, win)
     -- A branch SPENDS its event, so this takes only on a crossing arriving since the last pass. That is the whole
     -- detector: falling through means no crossing for one window, and there is no event for silence to wait on.
-    trigger.model.setblock(6, trigger.BLOCK_BRANCH_ON_EVENT, cmp, 5)
-    trigger.model.setblock(7, trigger.BLOCK_BRANCH_ALWAYS, 2)
+    trigger.model.setblock(5, trigger.BLOCK_BRANCH_ON_EVENT, cmp, 4)
+    trigger.model.setblock(6, trigger.BLOCK_BRANCH_ALWAYS, 1)
   end)
   if not ok then return false end
   -- A rejected block reads as a FREE one on this instrument, so the store is read back rather than trusted: a
@@ -2011,12 +2015,15 @@ function sdec.gap_model(rec, scr, ev, win)
   if not pcall(function() bl = trigger.model.getblocklist() end) then return false end
   if bl == nil then return false end
   -- EVERY BLOCK, AND THE MEASURE COUNT, not a couple of landmarks. The reason for reading the store back at all
-  -- is that a rejected setblock reads as a free one, and that applies to all seven: a listing missing block 4
+  -- is that a rejected setblock reads as a free one, and that applies to all six: a listing missing block 3
   -- describes a program whose bursts go nowhere, and two landmarks would call it built. One measure block is
   -- the pre-roll on its own, so the count is as load-bearing as the presence.
   local _, nmd = string.gsub(bl, 'MEASURE_DIGITIZE', '')
   if nmd ~= 2 then return false end
-  local want = {'BUFFER_CLEAR', 'WAIT', 'DELAY_CONSTANT', 'BRANCH_ON_EVENT', 'BRANCH_ALWAYS'}
+  -- BUFFER_CLEAR is checked for not being there. The record is cleared from Lua instead, and a clear block
+  -- anywhere but block 1 would empty the record mid-recording while every other number still looked right.
+  if string.find(bl, 'BUFFER_CLEAR', 1, true) ~= nil then return false end
+  local want = {'WAIT', 'DELAY_CONSTANT', 'BRANCH_ON_EVENT', 'BRANCH_ALWAYS'}
   local i
   for i = 1, table.getn(want) do
     if string.find(bl, want[i], 1, true) == nil then return false end

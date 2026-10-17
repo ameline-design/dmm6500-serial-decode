@@ -821,10 +821,15 @@ end)()
   local built = sdec.gap_model(rec, scr, trigger.EVENT_BLENDER1, 0.1)
   CK('gap_model builds and the store reads back as holding it', built == true, tostring(built))
   local bl = trigger.model.getblocklist()
-  CK('...seven blocks: clear, the gap digitize, the wait, the burst digitize, delay, branch, loop',
-     TRIG.nblocks == 7 and HAS(bl, 'BUFFER_CLEAR') and HAS(bl, 'WAIT') and
+  CK('...six blocks: the gap digitize, the wait, the burst digitize, delay, branch, loop',
+     TRIG.nblocks == 6 and HAS(bl, 'WAIT') and
      HAS(bl, 'DELAY_CONSTANT') and HAS(bl, 'BRANCH_ON_EVENT') and HAS(bl, 'BRANCH_ALWAYS'),
      string.format('%d blocks', TRIG.nblocks or -1))
+  -- No clear block, and its absence is the assertion. The record is cleared from Lua before initiate(); a clear
+  -- block is the only fast-path disqualifier the canned templates carry, and anywhere but block 1 it would empty
+  -- the record mid-recording. Asserting the shape without this would let one back in silently.
+  CK('...and no BUFFER_CLEAR block, so the record is cleared from Lua instead',
+     not HAS(bl, 'BUFFER_CLEAR'), tostring(bl))
   -- TWO MEASURE BLOCKS EXACTLY. A third posts 2753 on the instrument, so this is the firmware's budget and not
   -- a style choice -- and it is what forces the burst to be ended by the detector rather than by a count.
   local nmd = 0
@@ -835,24 +840,27 @@ end)()
   -- THE TWO BUFFERS ARE NOT THE SAME ONE, which is the whole mechanism: the gap goes to the scratch and the
   -- burst to the record. One buffer in both slots elides nothing and the record fills with silence.
   CK('...the gap block writes the scratch and the burst block the record, not one buffer twice',
-     TRIG.blocks[2].buf == scr and TRIG.blocks[4].buf == rec,
-     string.format('b2=%s b4=%s', tostring(TRIG.blocks[2].buf == scr),
-                   tostring(TRIG.blocks[4].buf == rec)))
+     TRIG.blocks[1].buf == scr and TRIG.blocks[3].buf == rec,
+     string.format('b1=%s b3=%s', tostring(TRIG.blocks[1].buf == scr),
+                   tostring(TRIG.blocks[3].buf == rec)))
   -- CLEAR_ENTER, and it is load-bearing: CLEAR_NEVER lets the wait consume a crossing latched during the burst
   -- it just recorded, so it falls straight through and no gap is ever skipped while every other number looks
   -- right. The mock cannot ACT on clear (it says so), so the assertion is on what was programmed.
   CK('...the wait discards a crossing latched during the burst it just recorded',
-     TRIG.blocks[3].clear == trigger.CLEAR_ENTER, tostring(TRIG.blocks[3].clear))
+     TRIG.blocks[2].clear == trigger.CLEAR_ENTER, tostring(TRIG.blocks[2].clear))
   -- THE DETECTOR TESTS THE COMPARATOR, NOT THE ARM'S EVENT. With armkey set arm_source() hands back
   -- EVENT_BLENDER1 so a TRIGGER press can cut the arm short -- and a press through that blender would read as
   -- "the line is still talking" and hold the burst open for ever.
-  CK('...and block 6 tests the comparator itself, not the blended arm event',
-     TRIG.blocks[6].arg == trigger.EVENT_ANALOGTRIGGER and
-     TRIG.blocks[3].arg == trigger.EVENT_BLENDER1,
-     string.format('b6=%s b3=%s', tostring(TRIG.blocks[6].arg), tostring(TRIG.blocks[3].arg)))
+  CK('...and block 5 tests the comparator itself, not the blended arm event',
+     TRIG.blocks[5].arg == trigger.EVENT_ANALOGTRIGGER and
+     TRIG.blocks[2].arg == trigger.EVENT_BLENDER1,
+     string.format('b5=%s b2=%s', tostring(TRIG.blocks[5].arg), tostring(TRIG.blocks[2].arg)))
   CK('...the loop goes back to the gap block, so the record accumulates across bursts',
-     TRIG.blocks[7].op == 'BRANCH_ALWAYS' and TRIG.blocks[7].target == 2,
-     string.format('%s -> %s', tostring(TRIG.blocks[7].op), tostring(TRIG.blocks[7].target)))
+     TRIG.blocks[6].op == 'BRANCH_ALWAYS' and TRIG.blocks[6].target == 1,
+     string.format('%s -> %s', tostring(TRIG.blocks[6].op), tostring(TRIG.blocks[6].target)))
+  -- AND THE DETECTOR BRANCHES BACK TO THE DELAY, not to the burst block: another window, not another measure.
+  CK('...and the crossing branch goes back to the delay, so it re-arms the window',
+     TRIG.blocks[5].target == 4, tostring(TRIG.blocks[5].target))
 
   -- THE FINDING THIS SECTION EXISTS FOR. The program cannot reach its end, so it never reaches STATE_IDLE and
   -- sdec.trig_done() is false for the whole run. The armed branch of stream_acquire's completion test asks
@@ -919,7 +927,7 @@ end)()
   local want = 20000
   local got = sdec.stream_acquire(want)
   CK('...the arm went live and the program loaded is the hand-built one, not a template',
-     sdec.strm_armed == true and TRIG.handbuilt == true and TRIG.nblocks == 7,
+     sdec.strm_armed == true and TRIG.handbuilt == true and TRIG.nblocks == 6,
      string.format('armed=%s handbuilt=%s blocks=%s', tostring(sdec.strm_armed),
                    tostring(TRIG.handbuilt), tostring(TRIG.nblocks)))
   CK('...and the elision verdict comes from the program that loaded',
@@ -1018,22 +1026,33 @@ end)()
   local rec2 = buffer.make(5000, buffer.STYLE_STANDARD)
   local scr2 = buffer.make(2000, buffer.STYLE_STANDARD)
   local realbl = trigger.model.getblocklist
+  -- These fixtures carry no BUFFER_CLEAR. A listing with one is refused outright, so a fixture carrying one
+  -- fails for that rather than for the hole it is meant to have, and these two cases would pass while proving
+  -- nothing about the measure count.
   trigger.model.getblocklist = function()
-    return '   1) BUFFER_CLEAR\n   3) WAIT  CLEAR: enter\n   5) DELAY_CONSTANT  ARG: 0.1\n'
-        .. '   6) BRANCH_ON_EVENT  BRANCH_BLOCK: 5\n   7) BRANCH_ALWAYS  BRANCH_BLOCK: 2\n'
+    return '   2) WAIT  CLEAR: enter\n   4) DELAY_CONSTANT  ARG: 0.1\n'
+        .. '   5) BRANCH_ON_EVENT  BRANCH_BLOCK: 4\n   6) BRANCH_ALWAYS  BRANCH_BLOCK: 1\n'
   end
   local refusedbl = sdec.gap_model(rec2, scr2, trigger.EVENT_BLENDER1, 0.1)
   trigger.model.getblocklist = function()
-    return '   1) BUFFER_CLEAR\n   2) MEASURE_DIGITIZE\n   3) WAIT  CLEAR: enter\n'
-        .. '   5) DELAY_CONSTANT  ARG: 0.1\n   6) BRANCH_ON_EVENT\n   7) BRANCH_ALWAYS\n'
+    return '   1) MEASURE_DIGITIZE\n   2) WAIT  CLEAR: enter\n'
+        .. '   4) DELAY_CONSTANT  ARG: 0.1\n   5) BRANCH_ON_EVENT\n   6) BRANCH_ALWAYS\n'
   end
   local oneMD = sdec.gap_model(rec2, scr2, trigger.EVENT_BLENDER1, 0.1)
+  -- A listing that is complete in every other respect and still carries a clear block. Without this the
+  -- absence check could be deleted and nothing would fail.
+  trigger.model.getblocklist = function()
+    return '   1) BUFFER_CLEAR\n   2) MEASURE_DIGITIZE\n   3) WAIT  CLEAR: enter\n'
+        .. '   4) MEASURE_DIGITIZE\n   5) DELAY_CONSTANT  ARG: 0.1\n   6) BRANCH_ON_EVENT\n'
+        .. '   7) BRANCH_ALWAYS\n'
+  end
+  local hasclear = sdec.gap_model(rec2, scr2, trigger.EVENT_BLENDER1, 0.1)
   trigger.model.getblocklist = realbl
   local wholebl = sdec.gap_model(rec2, scr2, trigger.EVENT_BLENDER1, 0.1)
-  CK('a listing missing the burst block is refused, and one measure block is not two',
-     refusedbl == false and oneMD == false and wholebl == true,
-     string.format('no-measure=%s one-measure=%s whole=%s', tostring(refusedbl),
-                   tostring(oneMD), tostring(wholebl)))
+  CK('a listing missing the burst block is refused, one measure block is not two, and a clear block is refused',
+     refusedbl == false and oneMD == false and hasclear == false and wholebl == true,
+     string.format('no-measure=%s one-measure=%s has-clear=%s whole=%s', tostring(refusedbl),
+                   tostring(oneMD), tostring(hasclear), tostring(wholebl)))
   pcall(function() buffer.delete(rec2) end)
   pcall(function() buffer.delete(scr2) end)
   trigger.model.load('Empty')
