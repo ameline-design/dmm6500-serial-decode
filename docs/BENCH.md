@@ -649,11 +649,19 @@ setting, give **591 and 421 in 223 600** — 0.264 % and 0.188 %.
 
 ## What a waveform is entitled to do
 
-Two classes, in `soakplan.VECTOR_EXPECT`:
+Three classes, in `soakplan.VECTOR_EXPECT`:
 
-* **`exact`** — must decode byte-exact at every rate. Anything else is a defect.
+* **`exact`** — must decode byte-exact at every rate. Anything else is a defect. It does allow a few
+  frames the app itself flagged — `max(2, 2 %` of the body`)` — and judges 95 % of what reached it.
 * **`loud`** — may fail, and **must not be silently wrong**. Declining, or failing with flags raised,
   is a pass. Confident bytes that are not the payload fail for these too.
+* **`nodrop`** — **stricter than `exact`**, and the only class that forbids a *declined* byte. It
+  withdraws both of `exact`'s allowances, because on a waveform whose whole subject is a long idle run
+  a dropped frame is the defect being looked for, and tolerating two of them would pass exactly that.
+  The six gap vectors carry it. Two limits do the work and they catch different positions: a declined
+  frame in the body's interior fails the flag count, and one at the body's first or last frame — which
+  that count exempts — fails the 100 % coverage demand. A frame clipped at the capture's start is
+  neither, being inside the head the judge skips before any budget is consulted.
 
 **A `loud` vector may also miss a bounded number of bytes, and the bench says how many.** In 8N1 a data
 sample that crosses into the neighbouring cell yields a wrong byte with framing intact and no parity to
