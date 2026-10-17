@@ -196,6 +196,84 @@ check('and adopt is what a fresh load defaults to', sdec.force_conflict == 'adop
       tostring(sdec.force_conflict))
 sdec.force_conflict = 'ask'
 
+-- ---------------------------------------------------------------------------
+print('\n-- a forced rate the wire DOES carry, on a capture too slow to hold it --')
+-- ---------------------------------------------------------------------------
+-- A DIFFERENT FAULT FROM EVERY CASE ABOVE, and the one the app could not see. Those force a rate the
+-- wire contradicts, which the fit detects. Here the forced rate is RIGHT and the capture rate is too
+-- low to resolve it -- so there is nothing for the fit to disagree with, and sdec.ua_plausible's
+-- samples-per-bit floor was never consulted on the forced path at all: it is reached from ua_cands,
+-- sig_bittime's candidates and arm_try_ok, none of which a forced decode runs.
+--
+-- WHY IT MATTERS MORE THAN IT LOOKS. Every elided capture is forced, gap_elide() refusing without a
+-- rate, so this is the path the whole bench takes. On 2026-10-17 a 57600 Bd cell captured at 100 kS/s
+-- framed 704 frames at 1.736 samples a bit with snapped = true and read_baud equal to the commanded
+-- rate -- below Nyquist and reported as a confident lock. 222 of those frames were flagged and the
+-- rest were silently wrong, which is the worst verdict the host judge has.
+--
+-- fresh() cannot express this: it forces a rate the 9600 wire does not carry, so the conflict logic
+-- refuses first and the floor is never the reason. This builds its own capture.
+local function slowcap(wirebaud, capfs)
+  local by, nb = {}, 0
+  local s = 'The quick brown fox jumps over the lazy dog. 0123456789. '
+  local i
+  for i = 1, string.len(s) do nb = nb + 1; by[nb] = string.byte(s, i) end
+  local rd, ts, nc, ns = GEN({bytes = by, nbits = 8, par = 0, baud = wirebaud, fs = capfs,
+                              gap = 1, lead = 6, tail = 6, loop = false})
+  sdec.force_nbits, sdec.force_par, sdec.force_nstop, sdec.force_invert = nil, nil, nil, nil
+  sdec.proto, sdec.ui_mode = 'uart', 'text'
+  sdec.relocked, sdec.rate_offer, sdec.rate_offer_from, sdec.rate_refused = nil, nil, nil, nil
+  sdec.force_baud = wirebaud
+  sdec.acq_fs = capfs
+  sdec.smp, sdec.nread = rd, ns
+  sdec.sig_levels(rd, ns)
+  sdec.sig_edges(rd, ns)
+  sdec.sig_idle(rd, ns)
+  return rd, ns
+end
+
+-- THE PREMISE FIRST: the floor is 3.92, and these two numbers sit either side of it. Without this a
+-- change to minsabit or plaustol could put both cases on one side and the pair would still pass.
+check('the premise: 57600 at 100 kS/s is under the 3.92 floor and 19200 at 100 kS/s is over',
+      100000 / 57600 < sdec.minsabit * (1 - sdec.plaustol)
+      and 100000 / 19200 > sdec.minsabit * (1 - sdec.plaustol),
+      string.format('%.2f and %.2f against %.2f', 100000 / 57600, 100000 / 19200,
+                    sdec.minsabit * (1 - sdec.plaustol)))
+
+local srd, sns = slowcap(57600, 100000)
+local sok, swhy = sdec.decode_from(srd, sns)
+check('the capture is REFUSED rather than framed', sok == false, 'ok=' .. tostring(sok))
+check('and the reason is the capture rate, naming the samples per bit',
+      sok == false and swhy ~= nil and string.find(swhy, '1.7', 1, true) ~= nil
+      and string.find(swhy, 'samples/bit', 1, true) ~= nil, tostring(swhy))
+check('no bytes are presented, so nothing silently wrong reaches a caller', sdec.res == nil,
+      'res=' .. tostring(sdec.res))
+-- THE LOCK SURVIVES. A refusal here must decline this window only: unlocking inside a stream would
+-- strand it, which is why the relock machinery is frame-path only.
+check('the forced rate is untouched, so the next window can still try', sdec.force_baud == 57600,
+      tostring(sdec.force_baud))
+check('and the bit time is retracted, not left pointing at a rate that framed nothing',
+      sdec.bittime == nil, tostring(sdec.bittime))
+
+-- THE CONTROL, on the same capture rate: a rate the floor admits must still decode byte-exact.
+srd, sns = slowcap(19200, 100000)
+sok, swhy = sdec.decode_from(srd, sns)
+check('a forced rate ABOVE the floor still decodes at the same capture rate', sok == true,
+      tostring(swhy))
+-- The bytes themselves, assembled from res.vals -- there is no res.text, and a check on nf alone would
+-- pass on a cell that framed the right COUNT of wrong bytes, which is the whole failure mode here.
+local got = ''
+if sdec.res ~= nil and sdec.res.vals ~= nil then
+  local gi
+  for gi = 1, (sdec.res.nf or 0) do
+    if sdec.res.errs[gi] == nil then got = got .. string.char(math.mod(sdec.res.vals[gi] or 0, 256)) end
+  end
+end
+check('...and the bytes are the payload, not merely the right number of them',
+      string.find(got, 'quick brown fox', 1, true) ~= nil, string.sub(got, 1, 48))
+
+sdec.force_baud, sdec.acq_fs = nil, nil
+
 print(string.format('\n%d passed, %d failed', pass, fail))
 if fail > 0 then
   local i

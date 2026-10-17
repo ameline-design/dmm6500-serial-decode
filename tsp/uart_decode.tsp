@@ -1290,6 +1290,24 @@ function sdec.decode_from(rd, n)
   local T
   if sdec.force_baud ~= nil then
     T = fs / sdec.force_baud
+    -- The samples-per-bit floor belongs on this path too, and until now it was never reached on it.
+    -- sdec.ua_plausible is consulted only on the auto-fit path -- ua_cands, sig_bittime's candidates,
+    -- arm_try_ok -- so a forced rate reached framing with no check on the capture rate at all. The
+    -- ratenote below is advisory by design and sets text, nothing more; the relock machinery that could
+    -- doubt a lock is deliberately frame-path only.
+    --
+    -- This is the path the bench takes on every elided cell, because gap_elide() refuses without a rate,
+    -- so every eliding capture is forced: stream_decode -> ck_run -> decode_from. On 2026-10-17 that
+    -- framed 704 frames at 1.736 samples a bit with snapped = true and read_baud equal to the commanded
+    -- rate, so the capture looked locked and was below Nyquist. Confident bytes that are not the payload
+    -- is the worst verdict the judge has, and a refusal says the same thing truthfully.
+    --
+    -- A statement about the CAPTURE RATE rather than about detection, which is why it belongs on both
+    -- paths. Refusing here cannot strand a lock the way relocking inside a stream would: it declines this
+    -- window and leaves sdec.force_baud untouched for the next one.
+    if T < sdec.minsabit * (1 - sdec.plaustol) then
+      return giveup(sdec.ua_implausible_why(T))
+    end
     sdec.bittime, sdec.fitratio, sdec.fitq = T, 1, 1
     -- snapfirm true alongside snapped: what is published here is exactly the rate that is locked, so
     -- a stale false from an earlier soft snap would print 'auto-locked 37700 baud?' about nothing.
