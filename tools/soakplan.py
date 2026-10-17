@@ -255,8 +255,34 @@ def rate_ladder():
     return _tsp_array('rates')
 
 
+# Rates dropped from the draw despite being in sdec.stdbaud. 1800 is the one genuinely non-standard entry
+# below 2400 and 600 the least used of the classic ones; 300 and 1200 stay as the low-end anchors, and
+# they are what keeps a cell on the 100 ms low-baud window tier (brun.elide_win_low) rather than leaving
+# it dead code.
+#
+# DROPPED HERE RATHER THAN BY RAISING BAUD_LO, because the range bounds are asserted against every emitted
+# plan and a reader of a plan needs to see which rates went and why.
+BAUD_DROP = (600, 1800)
+
+# Below this, no interstitial is drawn at all and a gap between standard rates goes uncovered on purpose.
+#
+# A TEST BUDGET, NOT A SUPPORTED-RATE LIST. Nothing here withdraws support: the decoder still locks and
+# decodes an arbitrary rate under 4800 Bd, and sdec.stdbaud is untouched. What changes is where the cells
+# go. The interstitial earns its cell at the top of the ladder, where a rate that cannot snap also cannot
+# auto-lock and the recording modes are gated on a lock; at the bottom a bit-banged implementation hits
+# the standard rate exactly, because a 300 Bd bit time is thousands of instructions wide, so the odd rates
+# down there are the ones least likely to reach a real decoder.
+#
+# A FLOOR ON THE DRAW, NOT A BAND ON THE RESULT. The draw is log-uniform inside (lo, hi) and may also take
+# a ladder edge from inside the same interval, so bounding the output would leave the generator free to
+# propose rates the plan then discarded -- and the discard would move every later draw, the MT19937 stream
+# being keyed per gap index.
+INTERSTITIAL_LO = 4800
+
+
 def standard_rates():
-    return [b for b in _tsp_array('stdbaud') if BAUD_LO <= b <= BAUD_HI]
+    return [b for b in _tsp_array('stdbaud')
+            if BAUD_LO <= b <= BAUD_HI and b not in BAUD_DROP]
 
 
 def pick_fs(baud, ladder, want=8):
@@ -313,6 +339,11 @@ def rates_for(iteration):
     for i in range(len(std) - 1):
         lo, hi = std[i], std[i + 1]
         if hi - lo < 2:
+            continue
+        # Nothing drawn inside a gap that closes at or below INTERSTITIAL_LO. Tested on `hi`, because the
+        # draw is strictly inside the interval, so hi <= the floor is exactly the condition that every
+        # rate the gap could yield is under it.
+        if hi <= INTERSTITIAL_LO:
             continue
         baud, why = interstitial(iteration, i, lo, hi, edges)
         out.append((baud, why))
@@ -705,7 +736,10 @@ def selftest():
             print('  FAIL  %s' % what)
 
     std = standard_rates()
-    ck(len(std) == 22, '22 standard rates in range, got %d' % len(std))
+    ck(len(std) == 20, '20 standard rates in range, got %d' % len(std))
+    ck(600 not in std and 1800 not in std, 'BAUD_DROP took 600 and 1800 out of the standard list')
+    ck(300 in std and 1200 in std and 2400 in std,
+       'and left 300, 1200 and 2400 as the low-end anchors')
     ck(min(std) == 300 and max(std) == 250000, 'range ends are 300 and 250000')
 
     # Pure function of the iteration number: the whole point.
@@ -733,13 +767,22 @@ def selftest():
         bauds = [x[0] for x in rs]
         ck(len(bauds) == len(set(bauds)), 'iter %d: no duplicate rates' % it)
         ck(all(BAUD_LO <= x <= BAUD_HI for x in bauds), 'iter %d: every rate in range' % it)
-        ck(len(rs) == 43, 'iter %d: 22 standard + 21 interstitial = 43, got %d' % (it, len(rs)))
+        ck(len(rs) == 36, 'iter %d: 20 standard + 16 interstitial = 36, got %d' % (it, len(rs)))
         ns = [x for x in rs if x[1] != 'std']
         ck(all(x[0] not in std for x in ns), 'iter %d: no interstitial landed on a standard rate' % it)
+        # One per gap ABOVE the floor and none at or below it. Spelled as two cases rather than one
+        # expression, so a floor that stopped working would break the second and not merely relabel the
+        # first -- the count alone is satisfied by a draw that moved rather than one that went.
         for i in range(len(std) - 1):
             got = [x for x in ns if std[i] < x[0] < std[i + 1]]
-            ck(len(got) == 1, 'iter %d: exactly one interstitial in (%d,%d), got %d'
-               % (it, std[i], std[i + 1], len(got)))
+            want = 0 if std[i + 1] <= INTERSTITIAL_LO else 1
+            ck(len(got) == want, 'iter %d: %d interstitial in (%d,%d), got %d'
+               % (it, want, std[i], std[i + 1], len(got)))
+        # And the whole low end, stated as the set it is meant to be rather than as a count: below the
+        # floor the only rates tested are the standard ones, no edge and no random draw.
+        low = sorted(x[0] for x in rs if x[0] < INTERSTITIAL_LO)
+        ck(low == [300, 1200, 2400], 'iter %d: below %d the ladder is exactly 300/1200/2400, got %s'
+           % (it, INTERSTITIAL_LO, low))
 
     # The edge rule fires sometimes and not always.
     edges = set(ladder_edges(rate_ladder()))
