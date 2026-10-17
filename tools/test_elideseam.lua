@@ -71,20 +71,27 @@ end
 --
 -- The idle level is taken from reading 1 rather than from sdec.idle: the lead is mark by construction, and
 -- reading the app's own verdict here would make the fixture agree with the code under test.
-local function elide(rd, n, winsamp)
+-- `lat` is the RESUME LATENCY in readings: how much of the burst is missing because the recording
+-- restarted after the crossing that released it rather than at it. Zero models a perfect splice, which is
+-- what the first version of this file assumed and why it reproduced nothing.
+local function elide(rd, n, winsamp, lat)
   local idle = rd[1]
   local out, m, i = {}, 0, 1
   local nseam = 0
+  lat = lat or 0
   while i <= n do
     if rd[i] == idle then
       local j = i
       while j <= n and rd[j] == idle do j = j + 1 end
       local runlen = j - i
       local keep = runlen
-      if runlen > winsamp then keep = winsamp nseam = nseam + 1 end
+      local drop = 0
+      if runlen > winsamp then keep = winsamp nseam = nseam + 1 drop = lat end
       local k
       for k = 1, keep do m = m + 1 out[m] = idle end
-      i = j
+      -- The latency eats the head of the NEXT burst, not the tail of the idle: the comparator fires on
+      -- the burst's own first falling edge, so what is lost is the start bit that edge belongs to.
+      i = j + drop
     else
       m = m + 1
       out[m] = rd[i]
@@ -102,9 +109,9 @@ local function analyse(rd, nsmp, fs)
 end
 
 -- One cell, the way brun.point runs one: force the rate, elide, truncate to sdec.n, decode, score.
-local function cell(vid, payload, baud, fs, lead, tail, win, ncap)
+local function cell(vid, payload, baud, fs, lead, tail, win, ncap, latsec)
   local rd, n = passes(payload, baud, fs, lead, tail, 5)
-  local erd, en, nseam = elide(rd, n, win * fs)
+  local erd, en, nseam = elide(rd, n, win * fs, math.floor((latsec or 0) * fs))
   if en > ncap then en = ncap end          -- the record holds sdec.n readings and stops
   local kb, kf, kt = sdec.force_baud, sdec.fs, sdec.trigmode
   sdec.force_baud, sdec.fs, sdec.trigmode = baud, fs, 'free'
@@ -197,11 +204,14 @@ end
 -- being read at all, which costs more than the finding is worth. The contract this file enforces is the
 -- premise above and the rotation property below; this line is the measurement it exists to report.
 if hiok then
-  print('  NOTE  THE EDGE REPRODUCES offline, so the defect is debuggable here:  ' .. hidetail)
+  print('  NOTE  a PERFECT splice reproduces the edge, which would be a surprise:  ' .. hidetail)
 else
-  print('  NOTE  the edge does NOT reproduce offline -- the twin lacks the mechanism, so a green run')
-  print('        here says nothing about the bench above 2400 Bd:  ' .. hidetail)
+  print('  NOTE  a PERFECT splice does not reproduce the edge, and that is the point of this block:')
+  print('        ' .. hidetail)
   print('        Hardware on 2026-10-17: 75/220, 51/210, 90/219, 65/197, 51/146 over the same rates.')
+  print('        So splicing is not the defect. The resume-latency block below reproduces it from one')
+  print('        constant-time parameter, which is what localises the fault to the restart and not')
+  print('        to the decode.')
 end
 
 -- ---------------------------------------------------------------------------
@@ -276,6 +286,67 @@ check('the premise: an unrotated record is still byte-exact, so the sweep measur
 check('a ring wrap can produce the partial match the instrument reported, so it stays a live cause',
       worst ~= nil and worst < 0.80,
       (worst ~= nil) and string.format('worst %.0f%% against the hardware 41%%', worst * 100) or 'nil')
+
+-- ---------------------------------------------------------------------------
+print('\n-- the RESUME LATENCY: a constant microsecond cost, which is a bit time that scales --')
+-- ---------------------------------------------------------------------------
+-- WHY THIS IS THE MECHANISM AND THE fs SPLIT WAS A CONFOUND. On this ladder pick_fs targets 8.33 samples
+-- a bit, so fs = 8.33 * baud and "fs at or above 40000" and "baud at or above 4800" are the SAME cut.
+-- What is actually constant is a wall-clock latency between the comparator crossing that releases the
+-- wait block and the first reading the measure block stores. A fixed number of microseconds is a bit time
+-- that GROWS with baud, and it crosses half a bit -- the framer's sampling margin -- between 2400 and
+-- 4800 Bd. Bounded from the 2026-10-17 record at 104 to 156 us.
+--
+-- Below half a bit the start bit is still sampled on the correct side of the threshold and the seam costs
+-- nothing. Above it the framer anchors on the splice instead of on the start bit, emits a few flagged
+-- frames while it re-synchronises, and comes out ONE payload byte further on -- so each seam advances the
+-- alignment by one and a single global shift can only fit one segment. That is why the bytes inside each
+-- segment are right while the cell scores 33-73 %.
+local LAT = {0, 50e-6, 104e-6, 156e-6, 250e-6}
+print(string.format('  %-7s %-9s %-7s %-9s %-7s %s', 'latency', 'at 2400', 'bits', 'at 4800', 'bits', 'hardware'))
+local l2400, l4800 = nil, nil
+for li = 1, table.getn(LAT) do
+  local L = LAT[li]
+  local a = cell('v98a', v98a, 2400, 20000, 600, 10, 0.010, NCAP, L)
+  local b = cell('v98a', v98a, 4800, 40000, 600, 10, 0.010, NCAP, L)
+  local fa = frac(a)
+  local fb = frac(b)
+  if L == 0 then l2400, l4800 = fa, fb end
+  print(string.format('  %-7.0f %-9s %-7.2f %-9s %-7.2f %s', L * 1e6,
+                      (fa ~= nil) and string.format('%.0f%%', fa * 100) or 'REFUSED', L * 2400,
+                      (fb ~= nil) and string.format('%.0f%%', fb * 100) or 'REFUSED', L * 4800,
+                      (L >= 104e-6 and L <= 156e-6) and '<- fable bounded L here' or ''))
+end
+
+check('the premise: with no resume latency both rates are byte-exact, so the sweep varies one thing',
+      l2400 ~= nil and l2400 > 0.95 and l4800 ~= nil and l4800 > 0.95,
+      string.format('2400:%s 4800:%s',
+                    (l2400 ~= nil) and string.format('%.0f%%', l2400 * 100) or 'nil',
+                    (l4800 ~= nil) and string.format('%.0f%%', l4800 * 100) or 'nil'))
+
+-- THE CLAIM, stated as a property over the bounded range rather than at one value. The bound from the
+-- record is 104-156 us; where inside it the break falls depends on the framer's sampling margin, and
+-- pinning a single number here would be asserting the fixture's arithmetic rather than the mechanism.
+-- 130 us, for instance, is 0.62 of a bit at 4800 Bd and still decodes -- the break is nearer 0.75.
+local asym, asymat = false, ''
+for li = 1, table.getn(LAT) do
+  local L = LAT[li]
+  if L >= 104e-6 and L <= 156e-6 then
+    local f24 = frac(cell('v98a', v98a, 2400, 20000, 600, 10, 0.010, NCAP, L))
+    local f48 = frac(cell('v98a', v98a, 4800, 40000, 600, 10, 0.010, NCAP, L))
+    if f24 ~= nil and f24 > 0.95 and f48 ~= nil and f48 < 0.95 then
+      asym = true
+      asymat = string.format('%.0f us: 2400 at %.0f%% (%.2f bit), 4800 at %.0f%% (%.2f bit)',
+                             L * 1e6, f24 * 100, L * 2400, f48 * 100, L * 4800)
+    end
+  end
+end
+-- The hardware figures are 223/231 at 2400 and 75/220 at 4800. The asymmetry is what this reproduces;
+-- the exact fraction is not, the real record carrying more seams and more debris per seam than five
+-- clean passes do, so a check on the value would fail for the wrong reason.
+check('a resume latency inside the bound from the record spares 2400 Bd and breaks 4800 -- the hardware '
+      .. 'edge, from one constant-time parameter', asym,
+      (asym and asymat) or 'no latency in [104, 156] us produced the split')
 
 print(string.format('\n%d passed, %d failed', pass, fail))
 if fail > 0 then

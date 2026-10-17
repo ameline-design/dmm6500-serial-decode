@@ -778,6 +778,26 @@ function brun.point(fs, baud, lock, elide, vid)
     -- is settled; then one of these two fields can go.
     r.elidefs = sdec.acq_fs
     pcall(function() r.elidespanfs = sdec.acq_measure_fs(sdec.buf, sdec.nread) end)
+    -- The ring's geometry, because a wrap is the one remaining account of the 2026-10-17 lap and the
+    -- record could not show it. acq_cap leaves 100 readings of headroom at pretrig = 0, the record is
+    -- fillmode = 1, and the `have >= nsmp` exit that stops it is tested once per ck_poll_s of 0.5 s -- so
+    -- the overrun per poll is about 0.5 * duty * fs readings, 850 at 300 Bd against 13 600 at 4800.
+    -- Offline, rotating a byte-exact record by 13 600 readings takes it to 39 % matched against the 41 %
+    -- that cell reported, and rotating by 500 leaves it at 100 %: the right magnitude and the right
+    -- scaling with rate. tools/test_elideseam.lua has the sweep.
+    --
+    -- startindex above 1 IS the wrap. acq_first consults it only once the reading count has reached
+    -- capacity, so these four say both whether the ring wrapped and whether the unwinding was handed the
+    -- numbers it needed to undo it -- which a count below capacity on a record that did wrap would not be.
+    pcall(function() r.elidecap = sdec.buf.capacity end)
+    pcall(function() r.elidesidx = sdec.buf.startindex end)
+    pcall(function() r.elideeidx = sdec.buf.endindex end)
+    r.elidenrd = sdec.nread
+    -- And how long the digitize actually ran, which no lap has ever recorded. The damage threshold is
+    -- about half a second of lag, lag being (1 - 100000/fs) * T, so T is the one quantity every argument
+    -- about this has had to infer. sdec.strm_waited is the poll loop's own clock, so it excludes the arm
+    -- settle and is the uninterrupted-run figure rather than the cell's.
+    r.elidetdig = sdec.strm_waited
     -- The event codes and not just the count. An elided cell is expected to post 2731, 2732 and 2753;
     -- anything else is this path's own fault and the count alone cannot name it. Read here, while the
     -- cell still owns the log, because the next cell's entry clears it -- bounded to four so a flood
@@ -3014,6 +3034,15 @@ function brun.soak(iterations, tag)
         if p.elidewincap ~= nil then nt = nt .. string.format(' wincap=%.4f', p.elidewincap) end
         if p.elidefs ~= nil then nt = nt .. string.format(' segfs=%.0f', p.elidefs) end
         if p.elidespanfs ~= nil then nt = nt .. string.format(' spanfs=%.0f', p.elidespanfs) end
+        -- The ring, on every elided cell and not only the failures: a startindex of 1 on a cell that
+        -- passed is the control that says a wrap is what distinguishes the ones that did not.
+        if p.elidenrd ~= nil and p.elidecap ~= nil then
+          nt = nt .. string.format(' ring=%s/%s', brun.int(p.elidenrd), brun.int(p.elidecap))
+        end
+        if p.elidesidx ~= nil and p.elidesidx > 1 then
+          nt = nt .. ' sidx=' .. brun.int(p.elidesidx)
+        end
+        if p.elidetdig ~= nil then nt = nt .. string.format(' tdig=%.2f', p.elidetdig) end
         if p.armnover ~= nil and p.armnover > 0 then nt = nt .. ' nover=' .. brun.int(p.armnover) end
         -- How many probe tries the cell was allowed and how many it used. The budget is per-rate, so
         -- these say whether brun.elide_probe_budget is generous, binding, or irrelevant -- the one
