@@ -551,6 +551,32 @@ blocks would have kept writing: `rec` would have grown straight through the gaps
 rather than fewer, and shown no discontinuity. `rec.n` on its own is not the oracle for such a
 program; the splice positions are.
 
+**But the re-entry is not instantaneous, and nothing above could see that.** Every figure in this
+section was taken at 10 kS/s, where a reading is 100 µs. The application's record puts the resume cost
+at **156 to 208 µs** -- one or two readings here, invisible against burst lengths that came back at a
+flat 1001 -- so "the splices are exactly recoverable" is true of the timestamps and not of the wire.
+What is missing is the leading edge of whatever the generator sent first after the gap.
+
+It is bounded from the seam debris of a decoded record rather than from a timestamp, because the
+timestamps cannot show time that was never sampled. Each seam's debris string depends only on how far
+into the first byte the record opened, so every observed string bounds it and the tight cases intersect
+at 156-208 µs. Scaled against a bit time it decides whether the seam is free:
+
+| baud | bit time | resume, in bits | the first frame after a seam |
+|---|---|---|---|
+| 300 - 2400 | 3.33 ms - 417 µs | 0.05 - 0.50 | exact; samples stay inside their cells |
+| 4800 | 208 µs | 0.75 - 1.00 | fails, and 4 to 9 payload bytes die while the framer resynchronises |
+| 19200 | 52 µs | 3.0 - 4.0 | the same, further in |
+
+Half a bit is the threshold because a UART samples each cell at its centre: a record that opens `s` bit
+times late has no edge at the true start, the framer anchors on the splice instead, and every sample is
+late by `s`. Under 0.5 that is inside the cell. At 0.5 the stop sample lands in the next start bit, the
+frame fails, and the search for the next anchor walks three to eight bytes -- lowercase text offers no
+run of mark long enough to anchor on sooner.
+
+**So elision is byte-exact only where `0.5 / baud` exceeds the resume cost**, which is about 2400 Bd and
+nothing above it. 2400 is a near miss rather than a margin: 208 µs is 0.4992 of a bit there.
+
 **A scratch that wraps costs nothing.** A real gap of 2 to 120 s at 100 kS/s laps any affordable
 scratch, so the same program was run again with the scratch cut to 2000 readings, 0.2 s against a
 0.4 s gap so it laps twice per gap, and nothing else moved: an identical record at 4004 readings in
