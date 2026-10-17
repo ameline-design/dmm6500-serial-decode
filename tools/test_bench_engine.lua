@@ -2980,6 +2980,45 @@ print('-- the expected payload is generated, and must match the generator that b
 
   ck(bexp.match(synth(0, 5), 'v98a') == nil,
      'a decode too short to align on gets no verdict rather than a zero')
+
+  -- PER-BURST ALIGNMENT, which is what an elided record needs. Two bursts whose payload index differs by
+  -- one byte is exactly the shape a seam leaves: each one is internally exact, and a single shift can fit
+  -- only one of them. The tpos gap is what marks the seam, so the fixture supplies tpos as the app does.
+  local two = {nf = 0, vals = {}, errs = {}, tpos = {}}
+  local tt, ti = 0, nil
+  for ti = 1, 60 do
+    two.nf = two.nf + 1
+    two.vals[two.nf] = string.byte(want, math.mod(ti - 1, wl) + 1)
+    two.tpos[two.nf] = tt
+    tt = tt + 10
+  end
+  tt = tt + 500                           -- the seam: fifty frame pitches of silence
+  for ti = 1, 60 do
+    two.nf = two.nf + 1
+    two.vals[two.nf] = string.byte(want, math.mod(60 + ti, wl) + 1)   -- one payload byte further on
+    two.tpos[two.nf] = tt
+    tt = tt + 10
+  end
+  local om, oc = bexp.match(two, 'v98a')
+  ck(om == 60 and oc == 120,
+     'the premise: a single shift fits ONE burst of a two-burst record and charges the other',
+     string.format('%s of %s', tostring(om), tostring(oc)))
+  local bm, bc, bn = bexp.match_bursts(two, 'v98a')
+  ck(bm == 120 and bc == 120 and bn == 2,
+     '...while per-burst alignment verifies both and says how many bursts it took',
+     string.format('%s of %s across %s', tostring(bm), tostring(bc), tostring(bn)))
+  -- AND IT MUST NOT INVENT A SEAM. A contiguous record has one burst, so the two figures agree -- if the
+  -- pitch test fired on ordinary inter-frame spacing it would align every byte separately and report
+  -- 100 % on anything at all, which is the failure mode of a more permissive metric.
+  local onev = synth(0, 100)
+  onev.tpos = {}
+  for ti = 1, 100 do onev.tpos[ti] = (ti - 1) * 10 end
+  local sm, sc, sn = bexp.match_bursts(onev, 'v98a')
+  ck(sm == 100 and sc == 100 and sn == 1,
+     'a contiguous record is ONE burst, so the pitch test does not fire on inter-frame spacing',
+     string.format('%s of %s across %s', tostring(sm), tostring(sc), tostring(sn)))
+  ck(bexp.match_bursts({nf = 3, vals = {65, 66, 67}, errs = {}}, 'v98a') == nil,
+     'and a result with no tpos gets no burst verdict rather than one burst by default')
   ck(bexp.match(synth(0, 100), 'v71') == nil, 'and a vector with no entry gets no verdict either')
 end)()
 

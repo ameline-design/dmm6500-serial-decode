@@ -119,6 +119,87 @@ bexp.mincmp = 12
 -- million. Past the ceiling there is no verdict rather than a slow one.
 bexp.cmpmax = 200000
 
+-- How much larger than the median frame pitch a gap has to be to count as a seam. Two: a frame follows
+-- its predecessor by one frame time on a gap = 0 payload, so anything near twice that is silence.
+bexp.seammult = 2
+
+-- Per-BURST comparison. -> nmatch, ncmp, nburst; nil when there is no verdict.
+--
+-- WHY A SECOND FUNCTION RATHER THAN A BETTER ONE. bexp.match aligns the whole capture on a single shift,
+-- which is right for a contiguous record and wrong for an elided one: each seam destroys 4 to 9 payload
+-- bytes while the framer resynchronises, and the record comes out one FRAME short of where the payload
+-- got to -- so every byte after the first seam is charged wrong and a cell carrying 2 to 3 % bad bytes
+-- reports 33 to 73 %. Worse, which segment the single shift happens to fit depends on where the record
+-- opened, so the figure is not even stable across cells of the same vector.
+--
+-- This is reported ALONGSIDE that figure and feeds no gate. The per-burst number is strictly more
+-- generous -- given enough bursts an alignment can be found for anything -- so it is information for a
+-- reader and not a verdict, and the burst COUNT goes out with it because a record needing many is itself
+-- the finding. brun.paywrong_frac keeps reading bexp.match, so the red rule on the panel is unchanged;
+-- whether it SHOULD read this instead is a question about what the operator is being asked to abort on.
+--
+-- Seams come from res.tpos, each frame's start in samples, so no rate or format arithmetic is needed:
+-- a pitch more than seammult times the median is silence. That is the same shape of test ua_run uses.
+function bexp.match_bursts(res, vid)
+  local want = bexp.bytes(vid)
+  if want == nil or res == nil or (res.nf or 0) < 1 then return nil end
+  if res.tpos == nil then return nil end
+  local wl = string.len(want)
+  local arr = bexp.barr(vid)
+  if wl < 1 or arr == nil then return nil end
+
+  -- Pitches between CONSECUTIVE frames, confident or not: a seam's own debris frames are flagged, and
+  -- skipping them would merge the seam into the burst before it.
+  local k, pitch, np = nil, {}, 0
+  for k = 2, res.nf do
+    local a, b = res.tpos[k - 1], res.tpos[k]
+    if a ~= nil and b ~= nil and b > a then np = np + 1 pitch[np] = b - a end
+  end
+  if np < 2 then return nil end
+  -- Median by selection rather than a sort: np is a few hundred and this runs once a cell.
+  local med, best = nil, nil
+  do
+    local i
+    for i = 1, np do
+      local below, j = 0, nil
+      for j = 1, np do if pitch[j] < pitch[i] then below = below + 1 end end
+      if below <= np / 2 and (best == nil or pitch[i] < best) then best = pitch[i] end
+    end
+    med = best
+  end
+  if med == nil or med <= 0 then return nil end
+
+  -- Split at the seams, then align each burst on its own with the whole-record machinery.
+  local bursts, nb, from = {}, 0, 1
+  for k = 2, res.nf do
+    local a, b = res.tpos[k - 1], res.tpos[k]
+    if a ~= nil and b ~= nil and (b - a) > bexp.seammult * med then
+      nb = nb + 1
+      bursts[nb] = {from, k - 1}
+      from = k
+    end
+  end
+  nb = nb + 1
+  bursts[nb] = {from, res.nf}
+
+  local tm, tc, nused = 0, 0, 0
+  local bi
+  for bi = 1, nb do
+    local lo, hi = bursts[bi][1], bursts[bi][2]
+    -- A view of the burst, renumbered from 1, so match() aligns it as if it were a whole capture.
+    local sub = {nf = hi - lo + 1, vals = {}, errs = {}}
+    local j
+    for j = lo, hi do
+      sub.vals[j - lo + 1] = res.vals[j]
+      sub.errs[j - lo + 1] = res.errs[j]
+    end
+    local m, c = bexp.match(sub, vid)
+    if m ~= nil and c ~= nil then tm = tm + m tc = tc + c nused = nused + 1 end
+  end
+  if tc < bexp.mincmp then return nil end
+  return tm, tc, nb
+end
+
 -- Compare a decode against what the vector sends. -> nmatch, ncmp, shift; nil when there is no verdict.
 --
 -- The arb loops, so a capture starts at an arbitrary byte of the payload and the comparison has to find

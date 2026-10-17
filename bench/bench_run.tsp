@@ -896,6 +896,20 @@ function brun.point(fs, baud, lock, elide, vid)
       local m, c = bexp.match(res, vid)
       if m ~= nil and c ~= nil and c > 0 then r.paymatch, r.paycmp = m, c end
     end)
+    -- AND THE SAME COMPARISON PER BURST, alongside and not instead. An elided record is a chain of
+    -- bursts whose payload index jumps at every seam, because each seam destroys 4 to 9 bytes while the
+    -- framer resynchronises and leaves the record one frame short of where the payload reached. A single
+    -- shift fits one burst and charges the rest, so a cell carrying 2 to 3 % bad bytes reports 33 to
+    -- 73 % -- and which burst it fits depends on where the record opened, so the figure is not stable
+    -- between cells of one vector.
+    --
+    -- Feeds no gate. brun.paywrong_frac still reads paymatch/paycmp, so the red rule on the panel is
+    -- exactly what it was: per-burst alignment is strictly more generous and a number that cannot fail
+    -- is not a verdict. The burst count goes out with it, because a record needing many is the finding.
+    pcall(function()
+      local m, c, nb = bexp.match_bursts(res, vid)
+      if m ~= nil and c ~= nil and c > 0 then r.payb, r.paybcmp, r.paybn = m, c, nb end
+    end)
   end
   return r
 end
@@ -3006,6 +3020,12 @@ function brun.soak(iterations, tag)
       -- apart. Confident frames only; the ones the app flagged are counted by nflag already.
       if p.paycmp ~= nil then
         nt = nt .. string.format(' pay=%s/%s', brun.int(p.paymatch or 0), brun.int(p.paycmp))
+      end
+      -- Only where it DISAGREES with pay=, which is the whole information: equal figures mean one burst
+      -- or seams that cost nothing, and printing them twice would grow every row in a lap for nothing.
+      if p.paybcmp ~= nil and p.payb ~= nil and p.payb ~= (p.paymatch or -1) then
+        nt = nt .. string.format(' payb=%s/%s/%s', brun.int(p.payb), brun.int(p.paybcmp),
+                                 brun.int(p.paybn or 0))
       end
       -- The cells that deliberately declined to elide, carrying the arithmetic that declined them. Needed
       -- because p.elide_want below is nil on those cells, so without this they read as cells elision was
