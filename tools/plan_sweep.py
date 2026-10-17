@@ -168,31 +168,38 @@ LINE = re.compile(r'^PLAN (\d+)/(\d+) iteration (\d+): (.*)$')
 # 3-byte head allowance leaves too few for judge() to compare. The app improved and the harness lost
 # the ability to score it, which is exactly what `skip` is bounded to make visible.
 RATCHET = {
-    # THE TWO UNSKIPPED ROWS ARE STALE ON A GROWN VECTOR SET and cannot be met: both now draw 1806
-    # cells against the 1763 and 14103 recorded here, so `judged` reports WORSE on a clean tree and
-    # carries bleed and bytes with it. The vector set is the ratchet's unguarded fourth input. Measured
-    # paired: at both offsets a clean tree and a changed one give byte-identical rows, so re-measuring
-    # these needs a tree-independent decision about which vectors the configuration means.
+    # EVERY ROW IS STALE ON A GROWN VECTOR SET and none can be met. At iteration 1 the unskipped pair
+    # now draws 1849 cells against the 1763 recorded here, the HW_SKIP pair 1720 against 1677, and the
+    # four-random row 1591 against 1333 -- 41, 39 and 31 vectors at 43 rates then; 43, 40 and 37 now.
+    # These baselines are from 2026-08-28 and the draw has moved repeatedly since, six gap vectors
+    # landing on 2026-10-16 and v97 joining HW_SKIP. So `judged` reports WORSE on a clean tree and
+    # carries bleed, bytes and loudmiss with it.
+    #
+    # The vector set is the ratchet's unguarded fourth input and is not in the key. Measured paired at
+    # both offsets and both skips: a clean tree and a changed one give byte-identical rows, so
+    # re-measuring needs a tree-independent decision about which vectors the configuration means and
+    # cannot be a re-run. `cells` below records the draw each row was measured on, so the mismatch
+    # reports itself instead of reading as a regression.
     (1, 1, (), None): {'bad': 14, 'badcells': 14, 'badall': 14, 'rate': 13, 'flags': 0, 'bytes': 1,
                        'nobytes': 0, 'bleed': 211, 'skip': 0, 'judged': 1763, 'loudquiet': 9,
-                       'loudmiss': 131, 'label': 3},
+                       'loudmiss': 131, 'label': 3, 'cells': 1763},
     (1, 8, (), None): {'bad': 110, 'badcells': 20, 'badall': 11, 'rate': 106, 'flags': 0, 'bytes': 4,
                        'nobytes': 0, 'bleed': 1205, 'skip': 1, 'judged': 14103, 'loudquiet': 53,
-                       'loudmiss': 656, 'label': 24},
+                       'loudmiss': 656, 'label': 24, 'cells': 1763},
     # THE TWO CONFIGURATIONS A BENCH LAP CAN ACTUALLY BE COMPARED WITH, because every hardware soak
-    # skips v95 and v96 -- v96 wedges the generator at vector 33 -- and the skip is drawn on. These are
-    # the ones tools/soak_offline.py and the default CLI run.
+    # skips all of HW_SKIP -- v96 wedges the generator at vector 33 -- and the skip is drawn on. These
+    # are the ones tools/soak_offline.py and the default CLI run.
     (1, 1, SP.HW_SKIP, None): {'bad': 12, 'badcells': 12, 'badall': 12, 'rate': 10, 'flags': 0,
                                'bytes': 2, 'nobytes': 0, 'bleed': 200, 'skip': 0, 'judged': 1677,
-                               'loudquiet': 5, 'loudmiss': 122, 'label': 3},
+                               'loudquiet': 5, 'loudmiss': 122, 'label': 3, 'cells': 1677},
     (1, 8, SP.HW_SKIP, None): {'bad': 84, 'badcells': 18, 'badall': 8, 'rate': 81, 'flags': 0,
                                'bytes': 3, 'nobytes': 0, 'bleed': 1050, 'skip': 1, 'judged': 13415,
-                               'loudquiet': 54, 'loudmiss': 622, 'label': 24},
+                               'loudquiet': 54, 'loudmiss': 622, 'label': 24, 'cells': 1677},
     # THE 14-DAY RUN'S OWN CONFIGURATION, four random vectors a lap, which is what the instrument plays.
     # 1333 cells rather than 1677, so none of the four baselines above describes it.
     (1, 1, SP.HW_SKIP, 4): {'bad': 13, 'badcells': 13, 'badall': 13, 'rate': 12, 'flags': 0,
                             'bytes': 1, 'nobytes': 0, 'bleed': 176, 'skip': 0, 'judged': 1333,
-                            'loudquiet': 5, 'loudmiss': 163, 'label': 3},
+                            'loudquiet': 5, 'loudmiss': 163, 'label': 3, 'cells': 1333},
 }
 WHY = {
     'bad': 'failing points',
@@ -509,7 +516,25 @@ def main():
         tot['judged'] = tot['ok'] + tot['bad']
         print('\n-- ratchets (iteration %d, %d offset(s), skipping %s) --'
               % (key[0], key[1], ', '.join(key[2]) or '(nothing)'))
+        # THE DRAW IS CHECKED BEFORE THE COUNTERS, because it decides whether they mean anything. A
+        # waveform added to the suite gives every counter more cells to find defects in, and the rise
+        # that follows is indistinguishable from a regression once the counters are compared -- at which
+        # point the advice attached to that comparison ('do not raise the baseline') is exactly wrong.
+        # Reported as the configuration mismatch it is, naming both draws, and the counters left
+        # uncompared rather than compared against a draw they do not describe.
+        wantcells = base.get('cells')
+        if wantcells is not None and tot['cells'] != wantcells:
+            allfail.append('this baseline was measured on a %d-cell draw and this run drew %d. The '
+                           'vector set has changed, so no counter here describes this run and none is '
+                           'compared. Re-measuring is a decision about which vectors the configuration '
+                           'means, not a re-run: confirm the new cells are the whole difference, then '
+                           'set RATCHET[%r] from a clean tree.' % (wantcells, tot['cells'], key))
+            print('  the draw changed: %d cell(s) measured, %d drawn -- counters not compared'
+                  % (wantcells, tot['cells']))
+            base = {}
         for k in sorted(base):
+            if k == 'cells':
+                continue
             got, want = tot[k], base[k]
             if got > want:
                 allfail.append('%s rose to %d from a measured %d (%s) -- %d new case(s). Either a '

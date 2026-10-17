@@ -177,6 +177,117 @@ end
 -- it is a convenience -- and the reason is written to the key. A run that goes quiet and says why beats a
 -- run that is right in principle.
 brun.evbudget = brun.evbudget or 3      -- events per cell above which a cell counts as noisy
+-- Gap elision in the soak, off unless the host asks for it: the window in seconds, which
+-- sdec.gap_elide() raises to the cell's own two-frame floor. nil leaves every cell free-running, as
+-- every lap before this did -- which is why sdec.gap_model had no hardware coverage from any soak.
+brun.elide = brun.elide or nil
+-- Which vectors get it, by id, set from the host -- tools/run_bench.py derives them from
+-- soakplan.VECTOR_EXPECT, the six held to 'nodrop'. Only a waveform with an idle run longer than two
+-- frames can elide anything, so switching it on everywhere would spend the armed path's cost on cells
+-- that cannot show the mechanism working or broken.
+brun.elide_vids = brun.elide_vids or nil
+-- The wall clock one elided cell may spend. The panel's 1200 s suits a recording an operator watches,
+-- not the 258 elided cells a default lap draws.
+brun.elide_maxsec = brun.elide_maxsec or 30
+-- The highest rate an elided cell may ask for, nil for no cap. 640 000 is the fastest entry in
+-- sdec.rates measured to be honoured while the elision program runs; 1 000 000, the next one up, came
+-- back as 83 333. The cap in brun.point has the measurement.
+brun.elide_fsmax = brun.elide_fsmax or 640000
+-- The detection window per baud, in seconds, in two tiers. 1/100 s is the working number: it is clear of
+-- gap_elide's two-frame floor at every rate from 2400 Bd up, and clear of the 0.4 * n / fs record cap
+-- below, which bottoms out at 12.5 ms -- so above the boundary the window is a wall-clock constant and
+-- stops scaling with the rate.
+--
+-- 1/10 s below 2400 Bd, because a frame is long there and 10 ms is INSIDE one: a 300 Bd frame is 33.3 ms,
+-- so a 10 ms window would cut mid-byte, which is the cut gapelide_frames exists to prevent. The boundary
+-- is where that floor stops binding -- two frames at 8N1 pass 10 ms at 2000 Bd.
+brun.elide_lowbaud = brun.elide_lowbaud or 2400
+brun.elide_win_low = brun.elide_win_low or 0.100
+brun.elide_win = brun.elide_win or 0.010
+
+-- The shortest idle run the app undertakes to elide, in seconds, and a product statement rather than the
+-- gate below: it is what a caller may rely on at any rate in the ladder, where the gate is what this
+-- window can actually resolve. Declining everything under the promise would throw away good cells --
+-- v98c's gap is 42.7 ms at 9600 Bd, under the promise and four times the window.
+brun.elide_promise = brun.elide_promise or 0.050
+
+-- How many windows of margin a gap needs before a cell arms the elision program. Two: the detector has to
+-- conclude the line went quiet INSIDE the gap, so a gap merely equal to the window cannot do it.
+--
+-- A cell that cannot clear this no longer arms the program at all. It used to arm it regardless, which is
+-- what put 9 garbage cells in the lap of 2026-10-17: the detector never concluded, the program recorded
+-- continuously, and the multi-block model it is built on stores only ~100 kS/s -- 20 000 readings over
+-- 200 ms where the free-running program took the same count in 31 ms, so 84 % were dropped and every
+-- frame straddled a hole. Same baud and the same measured 634 615 on both arms: cell 15 got 52 bad frames
+-- of 125 and not one correct payload byte, cell 37 got 1 of 179 and byte-exact prose.
+brun.elide_margin = brun.elide_margin or 2
+
+-- The window this baud gets, which is also what the gate measures a gap against.
+function brun.elide_window(baud)
+  if baud ~= nil and baud > 0 and baud < brun.elide_lowbaud then return brun.elide_win_low end
+  return brun.elide_win
+end
+
+-- The window a cell gets, or nil and the reason it gets none. -> seconds | nil, why
+--
+-- Out of the cell loop so the rule can be tested without an instrument: it carries two product decisions
+-- and a per-vector table, and all three were guesses until the lap of 2026-10-17 measured them.
+--
+-- The tier CAPS what was asked for, so the operator's --elide is a request and the window actually used
+-- is a property of the rate: --elide 0.1 yields 10 ms from 2400 Bd up and 100 ms below it, which is the
+-- intended setting at both ends without anyone having to run two laps to get it.
+--
+-- A vector with no entry in elide_gapbits gets the window and no gate. That is the honest answer rather
+-- than a refusal: the gate needs the gap, the table holds only the six vectors that declare one, and a
+-- caller eliding something else knows something this file does not.
+function brun.elide_for(vid, baud, want)
+  if want == nil or want <= 0 then return nil end
+  if baud == nil or baud <= 0 then return want end
+  local w = brun.elide_window(baud)
+  if w > want then w = want end
+  local gb = nil
+  if brun.elide_gapbits ~= nil then gb = brun.elide_gapbits[vid] end
+  if gb == nil then return w end
+  local gs, need = gb / baud, brun.elide_margin * w
+  if gs < need then
+    return nil, string.format('gap %.1f ms needs %.0f ms at a %.0f ms window',
+                              gs * 1000, need * 1000, w * 1000)
+  end
+  return w
+end
+-- Idle run per gap vector, in BIT TIMES, which is how the vectors declare it and the only form that ports
+-- across the rate ladder. tools/make_vectors.lua:595 tabulates them; `loop = true` runs each pass's tail
+-- into the next lead, so a vector named for 600 renders 610.
+brun.elide_gapbits = brun.elide_gapbits or
+  {v98a = 610, v98b = 610, v98c = 410, v99a = 1010, v99b = 1010, v99c = 610}
+-- Re-probe count, and the wait between tries. One shot races the generator's arb start: 180 probes of
+-- 396 found a flat line sitting at the cell's own commanded offset. See the retry in brun.point.
+brun.elide_probe_tries = brun.elide_probe_tries or 4
+brun.elide_probe_wait = brun.elide_probe_wait or 0.15
+-- The wall clock the probe and its retries must fit inside, in seconds. The count above is a ceiling and
+-- this is the binding limit: one probe is sdec.n / sdec.fs, so a cell gets as many tries as fit and never
+-- fewer than one. At 1.5 s that is four tries at the capped rate and one at 300 Bd, where a probe is 8 s
+-- and the generator cannot still be starting.
+brun.elide_probe_budget = brun.elide_probe_budget or 1.5
+
+-- The two byte-level failure classes the panel shows beside brun.nbad, and the thresholds that define
+-- them. brun.nbad keeps its own meaning untouched -- cells that produced no decode -- because the error
+-- row's colour gates on it against brun.nexp, and these are additive.
+--
+-- paywrong_frac: below this share of confident bytes matching the payload, the cell decoded something
+-- else. Healthy cells sit at 1.00 and the judge's wrong ones at 0.00 to 0.06, so anything in the middle
+-- of that range separates them; 0.5 is chosen for being nowhere near either.
+brun.paywrong_frac = brun.paywrong_frac or 0.5
+-- frameflag_frac and framemin: the share of frames the app flagged, above which a cell is not a healthy
+-- capture. Measured over a 132-cell lap, passing cells flagged 0 to 2 % and the silently-wrong ones 30
+-- to 55 %, so 0.10 separates them with room on both sides. framemin keeps a short decode out of it: a
+-- handful of frames can exceed any fraction by chance.
+brun.frameflag_frac = brun.frameflag_frac or 0.10
+brun.framemin = brun.framemin or 50
+-- What turns the error row red: this many byte-level failures across this many distinct bauds. See the
+-- rule's own comment in brun.errsline for why it is a count across bauds and not a rate.
+brun.red_cells = brun.red_cells or 3
+brun.red_bauds = brun.red_bauds or 2
 brun.evstreak = brun.evstreak or 5      -- consecutive noisy cells before shedding a subsystem
 brun.nevstreak = 0
 brun.evshed = nil                       -- what was switched off, for the record
@@ -334,7 +445,7 @@ end
 -- ---------------------------------------------------------------------------
 -- MIRRORS bench_point() IN tools/bench_uart.py. Changing one without the other makes this soak
 -- incomparable to every bench result on record; test_bench_engine.lua compares them.
-function brun.point(fs, baud, lock)
+function brun.point(fs, baud, lock, elide, vid)
   local r = {ran = false, why = nil}
   pcall(function() eventlog.clear() end)
   sdec.force_baud, sdec.force_nbits = nil, nil
@@ -363,7 +474,7 @@ function brun.point(fs, baud, lock)
   sdec.fs, sdec.fs_want = fs, fs
   -- FREE-RUN, NOT EDGE-ARMED, and that is a requirement rather than a preference: the analog-trigger path
   -- goes through trigger.model, which posts 2731 'path initiated' and 2732 'path idled' on EVERY capture
-  -- -- two events a cell, 3354 across a lap. showevents hides the POPUP but not the LOG ENTRY, and an
+  -- -- two events a cell, 3440 across a lap. showevents hides the popup but not the log entry, and an
   -- accumulating log raises 'Multiple errors have occurred' on its own -- which this loop's own watchdog
   -- would then count. So they must not be instigated at all. Measured with trigmode 'free': 8 cells,
   -- 0 events.
@@ -372,10 +483,328 @@ function brun.point(fs, baud, lock)
   -- a start-bit edge, so it opens at an arbitrary phase of the arb. The plan's per-cell wait randomises
   -- phase anyway and the offline twin samples eight phases per cell -- but head alignment is not
   -- comparable with an edge-armed bench capture, and a judge must not read it as though it were.
-  sdec.trigmode = 'free'
-
+  -- Elision is armed and everything else stays free-run: the gap detector is the analog comparator and
+  -- only trigger.model can carry one, so an elided cell cannot have the free run above. It costs three
+  -- events a cell -- 2731, 2732 and the 2753 speed warning -- which is brun.evbudget exactly, and the
+  -- watchdog trips only above it. The log is cleared at the next cell's entry, so nothing accumulates
+  -- either. Without this branch no soak touches sdec.gap_model at all --
+  -- brun.point called acquire() directly, and the gap vectors exercise the decoder against a long idle
+  -- run, which is a different test from the recording program.
   local ok, why = false, nil
-  local okc = pcall(function() ok, why = sdec.acquire() end)
+  local okc
+  r.elide_want = elide
+  -- gapelide is saved and restored, like sdec.strm_maxsec below and for the identical reason: it belongs
+  -- to the panel. Every cell wrote it and no cell put it back -- including the ordinary non-elide branch,
+  -- which set it to nil -- so any soak at all left an operator's typed gap-elision window switched OFF,
+  -- and an elision soak left it at the last cell's capped value, 0.0125 s at 115 200 Bd, which is not a
+  -- number anyone would type.
+  --
+  -- trigmode is NOT restored, and the difference is deliberate. Leaving it at 'free' is what brun.point
+  -- did before any of this and what the reader-equivalence check in tools/test_bench_engine.lua depends
+  -- on: it reads sdec.trigmode between the two readers, so restoring an entry value hands the second one
+  -- a different mode and a different capture -- measured, 20 045 samples against 20 000. What was new
+  -- and wrong was the NON-determinism: the elide branch left 'edge', so a lap ended in whichever mode its
+  -- last cell happened to use. Forced to 'free' on both branches below, which is deterministic and is the
+  -- behaviour that was there before.
+  local keepgap = sdec.gapelide
+  if elide ~= nil then
+    sdec.gapelide = elide
+    sdec.trigmode = 'edge'
+    -- The rate is capped here and only here, and this cap treats a symptom -- it is kept only until the
+    -- settle fix below it has been run on hardware, and should then be lifted and re-measured.
+    --
+    -- What it was built on: elided cells asking for 1 MS/s came back at 83 333 while non-elided cells at
+    -- the same baud got 1 000 000, and capping at 640 000 raised samples a bit from 0.33 to 2.5. The
+    -- conclusion drawn from that -- that the instrument does not honour 1 MS/s while this program runs --
+    -- is false. It honours it when the digitize is SHORT. One lap carries both: cells 16 to 88 of its
+    -- third iteration ran at a full 1 000 000 with 0 to 3 bad frames of several hundred and byte-exact
+    -- decodes at 250 000 Bd, because the generator happened to be starting late and the arm settle
+    -- returned at once; cells 104 onward, after it came good, spun the full ten seconds and came back at
+    -- 83 333 with 84 % of samples missing and 355 to 685 bad frames each.
+    --
+    -- So the rate was never the cause. sdec.stream_arm's settle was: ten seconds of continuous digitize
+    -- puts the instrument into storing ~100 kS/s whatever the ADC does. The capture at 640 000 is not
+    -- 4.2 samples a bit of signal either -- segfs reads 634 615 and spanfs 100 000 on the same record,
+    -- which is the ADC period kept in short runs with ~84 % dropped between them, so every frame
+    -- straddles a hole. 8.26 samples a bit at 76 800 Bd was the spacing inside a kept run and not the
+    -- record's.
+    --
+    -- brun.cell_fs is left alone, the engine test pinning it to the reference bench's fs_for_baud so a
+    -- non-elided cell stays comparable with the archive.
+    if brun.elide_fsmax ~= nil and sdec.fs > brun.elide_fsmax then
+      sdec.fs, sdec.fs_want = brun.elide_fsmax, brun.elide_fsmax
+      r.elidefscap = brun.elide_fsmax
+    end
+    -- And the window comes down with the rate, so the cap above does not move a second quantity at the
+    -- same time. stream_decode() sets opts.primeskip = 2 * window * fs, the silence the format search
+    -- must cross at the end of every burst, so raising fs raises the skip in step: 0.1 s at 640 000 S/s
+    -- is 128 000 samples against a 20 000-sample record. Whether that matters is not established, which
+    -- an earlier version of this comment got wrong -- a skip larger than the record already happens at
+    -- 19 200 Bd, 2 * 0.1 * 160 000 = 32 000 against the same 20 000 readings, and all six of those cells
+    -- pass every lap. So this removes an unknown rather than repairing a known break.
+    --
+    -- The fraction is calibrated to what passes: from 9600 Bd up the skip was already 80 % of the record
+    -- or more, and 0.4 * n / fs holds it at exactly 80 % across the ladder, leaving 9600 and below at
+    -- 0.1 s and bringing 115 200 to 12.5 ms. It does not claim elision will trigger there -- v98a's
+    -- 600 bit times is 5.2 ms against that 12.5 ms window, so above roughly 10 000 Bd the program
+    -- records continuously and those cells are not testing elision even when they pass. The subject
+    -- here is only the rate the bit times are scaled by, which the 45 silently wrong cells did not have.
+    if elide > 0 and sdec.fs > 0 then
+      local wmax = 0.4 * sdec.n / sdec.fs
+      if sdec.gapelide > wmax then
+        sdec.gapelide = wmax
+        r.elidewincap = wmax
+      end
+    end
+    -- The setup acquire() does and stream_acquire() does not, the streaming entry point assuming a panel
+    -- session already did all three. Without them the instrument is still on DC Voltage, so the first
+    -- write of dmm.digitize.count posts 2800 -- 'the digitize count attribute is not available for the
+    -- DC Voltage function' -- out of band, and the capture runs on the wrong function.
+    sdec.clear_measured()
+    sdec.hw_config()
+    sdec.acq_make_buffer(sdec.acq_cap(sdec.n))
+    -- The probe comes next: stream_arm refuses elision without sdec.arm_thr, whose levels come from
+    -- sig_levels() over a free capture -- the first half of acquire(). Without it every cell fell back to
+    -- the canned template and captured nothing, 53 of 53, with only the expected 2731/2732 posted, so the
+    -- refusal was silent and the row read as an ordinary failure to decode. Both branches run, as
+    -- acquire() has them, and the failing one must not return early: a flat probe is not an error here,
+    -- and taking only the success branch left the gate below unreachable, 76 of 76.
+    --
+    -- Full depth rather than the panel's sdec.probe_n of 2000. A gap vector is silent for most of each
+    -- pass -- 610 bit times of v98a's 1910, 1010 of v99a's 1810 -- and 2000 samples at about 8.3 a bit
+    -- cover 240 bit times, which fits inside the gap, so the short probe usually saw one level and the arm
+    -- had to be inferred from it. sdec.n's 20 000 is about 2400 bit times, which spans a whole pass of
+    -- either vector; its duration is sdec.n / sdec.fs, from 0.03 s at the capped rate to 8 s at 300 Bd.
+    --
+    -- 610 and 1010, not the 600 and 1000 the vectors are named for: `loop = true` runs each pass's tail
+    -- into the next one's lead, and make_vectors.lua says so at the definition and tabulates the runs as
+    -- 410/610/1010 at its window argument.
+    local pn = sdec.n
+    -- The threshold and the gate come from different things, and coupling them cost the first attempt:
+    -- the threshold wants both logic levels, which only a probe that saw traffic gives, and arm_silent()
+    -- wants probe_idle, which acquire() sets only when the probe saw none. Taking the threshold from
+    -- whichever probe opened the gate armed 6 cells at a level the line never crossed and had 5 more
+    -- refused outright.
+    --
+    -- So the levels are measured and the idle marker is set by this engine, as an assertion about the
+    -- stimulus and not a probe result: a cell named in brun.elide_vids is a waveform built around an idle
+    -- run. The engine may say that; the panel, not knowing what is on the wire, may not. The marker is
+    -- also the only part of the arm allowed to come from the plan. Not because the draw breaks the
+    -- generator's envelope -- soakplan has clamped the nominal pair against it since 530e7e8 -- but
+    -- because the levels are what the mechanism turns on, and both rails can sit on the same side of
+    -- ground while well inside that envelope, which is what defeats an inferred arm. Cell 9's 3.151 V
+    -- total and cell 16's 4.237 V are both legal and both one-sided.
+    --
+    -- Retried until the probe finds transitions, a single shot of it racing the generator. Measured over
+    -- 396 cells: 180 probes found no transitions at all, and on 46 of those the inferred arm sat where the
+    -- line never goes and the cell waited out arm_wait_s. Those 46 measured a 2 mV span on a stimulus of
+    -- 1.4 to 16.6 Vpp, at the cell's own commanded offset to three decimals on nine of the first ten -- so
+    -- the generator was sitting at DC with the arb not yet started.
+    --
+    -- Not a wedged generator, which would have cost an operator a power cycle: 337 of the same 396 cells
+    -- decoded correctly. acquire() never showed the race because its probe ladder retries and its capture
+    -- is long and free-running, so a late start is absorbed. A flat probe is still legitimate on these
+    -- vectors -- the window can land inside a real idle run -- so this cannot refuse, only ask again.
+    -- The tries are bounded by TIME, not by a count, because the probe's own duration is sdec.n / sdec.fs
+    -- and that runs from 0.03 s at the capped rate to 8 s at 300 Bd. A flat count of four charged the slow
+    -- cells four times for a race they cannot lose: 32.45 s on one 300 Bd cell, against the 30 s
+    -- brun.elide_maxsec this path argues for thirty lines below -- and the probe is outside that ceiling,
+    -- since strm_maxsec bounds only stream_acquire. Worst case over a lap's 258 elided cells was 831 s.
+    --
+    -- Bounding by time also puts the retries exactly where the race is. The generator cannot still be at
+    -- DC after an 8 s probe, so a slow cell needs one try; a 0.03 s probe can easily land before the arb
+    -- starts, so a fast cell gets the full count. One expression does both.
+    local ptry, ntry = 0, brun.elide_probe_tries
+    do
+      local psec = nil
+      if sdec.fs ~= nil and sdec.fs > 0 then psec = sdec.n / sdec.fs end
+      if psec ~= nil and psec > 0 then
+        local fits = math.floor(brun.elide_probe_budget / psec)
+        if fits < ntry then ntry = fits end
+      end
+      if ntry < 1 then ntry = 1 end
+      r.armntry = ntry
+    end
+    pcall(function()
+      local lok, lwhy
+      while true do
+        ptry = ptry + 1
+        if sdec.acq_free(pn, nil, true) >= 2 then
+          lok, lwhy = sdec.sig_levels(sdec.smp, sdec.nread)
+        else
+          lok = false
+        end
+        -- Recorded BEFORE the break, and on every attempt, so it describes the try that ended the loop
+        -- rather than the last one that retried. sig_levels' reason is the only thing that tells a flat
+        -- line from an over-range one, and nothing else on this path carried it: `lwhy` was assigned and
+        -- never read, so the 'all N reading(s) are over range' message could not reach the record from
+        -- here. It does reach it on the non-elide branch, through acquire() into r.why.
+        r.armwhy = lwhy
+        if lok or ptry >= ntry then break end
+        -- Long enough to matter against a generator that has not started, short enough that the waits
+        -- are a rounding error beside the probes they sit between.
+        delay(brun.elide_probe_wait)
+      end
+      r.armtry = ptry
+      -- Published out of the closure: which branch of the arm a cell took is the first question a
+      -- failure raises, and the level alone does not say.
+      r.armlok = lok
+      r.armnover = sdec.nover
+      -- The rate the probe actually got, which r.fs cannot give on a cell that failed to capture -- that
+      -- field is written on the success paths only. acq_free measures it from the timestamps and
+      -- digitize.samplerate reads back the request, so this is the only honest source. The comparator's
+      -- own behaviour may depend on it: passing cells came back at 83 kS/s to 635 kS/s against requests
+      -- of up to 1 MS/s, which at 230400 Bd is well under one sample a bit. The ratio is built here
+      -- because this is where the commanded rate is in scope -- r.baud is the decoded one and a cell that
+      -- never captured has none, so the status-note writer would divide by nil on the rows that need it.
+      r.armfs = sdec.acq_fs
+      if sdec.acq_fs ~= nil and baud ~= nil and baud > 0 then
+        r.armsabit = sdec.acq_fs / baud
+      end
+      if lok then
+        sdec.sig_edges(sdec.smp, sdec.nread)
+        sdec.sig_idle(sdec.smp, sdec.nread)
+      end
+      -- Where the arm goes. On a one-level probe arm_threshold() can put it where the line never goes:
+      -- it is written for a line waiting for a device that has not spoken, so it has only the idle rail
+      -- and assumes the start bit moves towards ground. Sound on a serial line, not on this stimulus --
+      -- soakplan draws amplitude and offset at random, so both rails can sit on the same side of ground
+      -- and "towards ground" names the wrong direction. Two cells of a 19-cell sample are that, by
+      -- arithmetic on their own commanded pair:
+      --
+      --   cell 9,  3.016 Vpp at -1.643 V -> rails -3.151 and -0.135 V. A gap at the -0.135 V rail is
+      --            under sdec.flatfloor, so the arm goes at -0.135 + armlevel rising, above the line.
+      --   cell 16, 1.902 Vpp at +3.286 V -> rails +2.335 and +4.237 V. A gap at the +2.335 V rail arms
+      --            at 2.335 - armlevel falling, below it.
+      --
+      -- The rest had a third cause, since named: the probe ran before the arb started and measured the
+      -- generator's DC offset, so the one level it inferred from was no logic level at all. That is what
+      -- the retry above addresses.
+      --
+      -- A probe that saw traffic needs no assumption: sig_levels puts the levels in sdec.lo and sdec.hi
+      -- with their midpoint in sdec.thr, and sig_idle measures which one the line rests in. The midpoint
+      -- is where a detector belongs, furthest from both rails, and cannot lengthen the inter-crossing
+      -- interval sdec.gapelide_frames is sized against -- every start bit crosses the middle too.
+      -- arm_threshold() still serves the one-level probe, which the retry makes rare and not impossible.
+      --
+      -- Range-checked as a backstop, not because a sentinel can still get through. sig_levels keeps
+      -- 9.9e+37 out of vmin/vmax inside its scan loop and assigns them after, so sdec.vmax is an
+      -- in-range extreme on every path that sets a pair, the no-transitions refusal included; the one
+      -- path that does not is all-over-range, where sdec.vmax is nil and arm_threshold() declines on
+      -- its first line. Measured: a flat probe with 1 and with 301 clipped samples both gave vmax 3.3
+      -- and arm_thr 2.3. It was reachable before that guard, the comparator write coming back 1131 out
+      -- of band so the arm looked like it had worked, so the gate stays -- at the 10 V range, which is
+      -- tighter than 1131's own -1000 to 1000 band.
+      do
+        if lok and sdec.thr ~= nil and sdec.swing ~= nil and sdec.swing > 0 then
+          sdec.arm_thr, sdec.arm_idle = sdec.thr, sdec.idle
+        else
+          sdec.arm_threshold()
+        end
+        -- The gate is not conditional on lok, only the threshold's source is, and conflating the two
+        -- cost a lap: requiring lok here shut the gate on 121 of 132 cells where the shape before it had
+        -- opened it on 39 of 44.
+        local t = sdec.arm_thr
+        if t ~= nil and t == t and t > -10 and t < 10 then
+          sdec.probe_idle = 'gap vector: arming on the waveform own idle runs'
+        else
+          -- Recorded rather than dropped: a cell that silently declined to arm would leave that
+          -- unexplained in the record. sdec.nover says how many readings were off the range.
+          r.armthrbad = t
+          sdec.arm_thr = nil
+        end
+      end
+    end)
+    -- The panel's 1200 s ceiling is twenty minutes, right for one recording an operator watches and
+    -- wrong for the 258 a lap draws: one stuck cell would park the run for the rest of the window with
+    -- nothing on the glass to say why. 20 000 samples at 9600 baud is about 0.26 s before the gaps are
+    -- even thrown away, so 30 s is generous. Saved and restored rather than written once -- the field
+    -- belongs to the panel, and a soak leaving it at 30 would shorten every later recording silently.
+    local keepmax = sdec.strm_maxsec
+    sdec.strm_maxsec = brun.elide_maxsec
+    local got = nil
+    -- Cleared so a stale verdict cannot be read as this cell's. Every break in the poll loop assigns it,
+    -- but a raise before the loop would leave the previous cell's reason standing.
+    sdec.ck_endwhy = nil
+    okc = pcall(function() got = sdec.stream_acquire(sdec.n) end)
+    sdec.strm_maxsec = keepmax
+    ok = got ~= nil and got > 0
+    if not ok and why == nil then
+      -- Named rather than generic, because stream_acquire sets no lasterr on an arm that never fired and
+      -- the row then reads the same for three different endings. This is the one the record has to tell
+      -- apart: 27 cells of 132 ended here and all of them said 'stream_acquire returned nothing'.
+      if sdec.ck_endwhy == 'noarm' then
+        why = string.format('the comparator never fired in %.0f s at %s V',
+                            sdec.arm_wait_s(), tostring(sdec.arm_expired_at))
+      else
+        why = tostring(sdec.lasterr or 'stream_acquire returned nothing')
+      end
+    end
+    -- How the recording ended, the field that names a failure this path cannot otherwise explain. A
+    -- capture that returns nothing sets no lasterr, so the row read 'stream_acquire returned nothing' for
+    -- three different endings. 'noarm' is the one that cost three laps: the comparator armed and never
+    -- fired, so the poll loop broke at sdec.arm_wait_s() of 10 s -- which is why those cells took 10 to
+    -- 12 s and not the 30 of brun.elide_maxsec, and why the ceiling looked innocent. arm_expired_at is
+    -- the level it sat at when it gave up, which says whether the level or the slope was wrong.
+    r.elidewhy = sdec.ck_endwhy
+    if sdec.ck_endwhy == 'noarm' then
+      r.armexp = sdec.arm_expired_at
+      -- The pair the arm was built from, which separates the two things a 'noarm' can mean: a comparator
+      -- pointed where the line never goes, or one pointed correctly at a line the hardware could not
+      -- detect a crossing on. Measured, not commanded -- the plan's pair may not be what reached the wire.
+      r.armlo, r.armhi, r.armidle = sdec.lo, sdec.hi, sdec.arm_idle
+      -- Readings delivered is the discriminator. Zero means the model never left its wait block and the
+      -- comparator genuinely did not fire; above zero means it did fire, the record was filling, and the
+      -- host's reading of the model state is what gave up -- a different bug, the elision program being a
+      -- branch loop that re-enters its own wait block on every pass.
+      r.elidegot = got
+    end
+    -- Whether the hand-built program actually ran, which the whole test rests on. stream_arm falls back
+    -- to the canned LoopUntilEvent when the comparator, the scratch or the program is refused, and a cell
+    -- that fell back looks exactly like one that worked while testing nothing about elision. Recorded per
+    -- cell so a run of fallbacks cannot read as a run of passes.
+    r.elided = sdec.acq_elided
+    r.elidewin = sdec.strm_elide
+    -- Both rate estimates on the same record, which is the measurement this path is missing. acq_fs comes
+    -- from acq_seg_fs() on an elided record and acq_measure_fs() on every other, and the two paths
+    -- disagree enormously at the same baud: 83 333 S/s on elided cells against 1 000 000 on non-elided
+    -- ones. Every bit time is scaled by acq_fs, so a wrong rate is exactly the 'not the payload, silently
+    -- wrong' verdict 45 cells of 132 carried.
+    --
+    -- Which of the two is wrong needs both of them. The whole-span formula reads low on an elided record
+    -- by construction, its span covering the discarded silence while n counts only traffic: a capture
+    -- really running at the requested rate must put the span figure below the segment one, and the two
+    -- agreeing means the capture is genuinely slow and the estimator sound. Recorded per cell until that
+    -- is settled; then one of these two fields can go.
+    r.elidefs = sdec.acq_fs
+    pcall(function() r.elidespanfs = sdec.acq_measure_fs(sdec.buf, sdec.nread) end)
+    -- The event codes and not just the count. An elided cell is expected to post 2731, 2732 and 2753;
+    -- anything else is this path's own fault and the count alone cannot name it. Read here, while the
+    -- cell still owns the log, because the next cell's entry clears it -- bounded to four so a flood
+    -- costs a fixed amount rather than growing the row without limit.
+    -- ncode, not a second `got`: the reading count above is still live at this point and a later edit
+    -- moving either of them would have read the wrong one silently.
+    local codes, ncode, firstmsg = '', 0, nil
+    pcall(function()
+      while ncode < 4 do
+        local n, m = eventlog.next(eventlog.SEV_ALL)
+        if n == nil or n == 0 then break end
+        codes = codes .. tostring(n) .. ' '
+        -- The text of the first one, because a bare code sends the reader to a guess: reading 2753 as
+        -- 'too many measure blocks' is what this tree used to do, and the firmware's own sentence is
+        -- what corrected it. docs/TRIGGER.md, 'The low-latency flag'.
+        if firstmsg == nil and m ~= nil then firstmsg = tostring(m) end
+        ncode = ncode + 1
+      end
+    end)
+    if codes ~= '' then r.elideev = codes end
+    if firstmsg ~= nil then r.elideevmsg = string.sub(firstmsg, 1, 70) end
+  else
+    sdec.gapelide = nil
+    sdec.trigmode = 'free'
+    okc = pcall(function() ok, why = sdec.acquire() end)
+  end
+  sdec.gapelide, sdec.trigmode = keepgap, 'free'
   -- READ BEFORE THE EARLY RETURNS, so a cell that failed to acquire still reports what the acquire cost.
   -- Those are the cells worth timing: a quarter of a hot lap ends here and they are not free.
   if brun.timing then pcall(function() brun.tacq = timer.gettime() end) end
@@ -384,7 +813,25 @@ function brun.point(fs, baud, lock)
   if not ok then r.why = 'acq: ' .. tostring(why); return r end
 
   local okd, whyd = false, nil
-  local okc2 = pcall(function() okd, whyd = sdec.decode() end)
+  -- A stream capture needs its own decoder and sdec.decode() is not it. On an elided record
+  -- stream_decode() sets opts.primeskip = 2 * window * fs, the silence the format search must cross at
+  -- the end of every burst -- the detector cannot know the line stopped until its window has elapsed,
+  -- and block 5 re-evaluates only at multiples of block 4's delay, so the tail is uniform on
+  -- [window, 2 * window). It also leaves leadmax unset, an elided record having no pre-trigger reserve:
+  -- every burst opens at its own crossing and the samples before it went to the scratch. Without that
+  -- the framer frames the trailing idle and reports 'no frame format fits the capture' on a record the
+  -- program captured correctly -- measured, 18 of 21 cells that did elide.
+  --
+  -- Every stream capture and not only the elided ones: gating on r.elided was a second way to the same
+  -- error, a cell that fell back still coming from stream_acquire, so its record is the armed shape with
+  -- a pre-trigger reserve and stream_decode sets opts.leadmax from the buffer's capacity on that branch.
+  -- sdec.decode() allows for neither, and refused both cells that fell back.
+  local okc2
+  if elide ~= nil then
+    okc2 = pcall(function() okd, whyd = sdec.stream_decode(sdec.nread) end)
+  else
+    okc2 = pcall(function() okd, whyd = sdec.decode() end)
+  end
   if brun.timing then pcall(function() brun.tdec = timer.gettime() end) end
   brun.spin_tick()                      -- 4 of 6: the decode is done
   if not okc2 then r.why = 'decode raised'; return r end
@@ -415,6 +862,21 @@ function brun.point(fs, baud, lock)
   r.nev     = brun.eventcount()
   r.hex     = brun.hex(res)
   r.nflag   = brun.flagcount(res)
+  -- Were the bytes the PAYLOAD, which no field above answers. nf/ngood/nbad say how many frames the app
+  -- was confident about, and a cell can be confident about every one of them and still have decoded
+  -- something that is not what the generator sent: 58 cells of 131 did exactly that, and the only place
+  -- it showed was tools/judge_bench.py on the host, after the run.
+  --
+  -- bexp.match aligns the decode against the generated payload -- the arb loops, so the capture starts
+  -- at an arbitrary byte -- and counts matches among the confident frames only. nil means no verdict:
+  -- a vector with no entry in bexp.VEC, or a decode too short to align on. nil is not a mismatch and
+  -- must not be counted as one.
+  if vid ~= nil and bexp ~= nil and res ~= nil then
+    pcall(function()
+      local m, c = bexp.match(res, vid)
+      if m ~= nil and c ~= nil and c > 0 then r.paymatch, r.paycmp = m, c end
+    end)
+  end
   return r
 end
 
@@ -1222,10 +1684,32 @@ function brun.errsline()
   -- fixed ceiling of a handful goes red in the first minutes of a healthy soak, and a light that is red on
   -- a healthy run is a light nobody reads by the second day.
   local nx = brun.nexp or 0
+  -- The byte-level classes, which brun.nbad cannot see and which were most of this bench's trouble.
+  -- `w` is cells whose bytes were not the payload, `f` cells the app flagged heavily. Both are counted
+  -- only on cells that ran, so they never double-count a cell already in n.
+  local nw, nfr = brun.nwrong or 0, brun.nframe or 0
+  local act = nw + nfr
   local col = brun.c_good
   if n > nx then
     col = brun.c_bad
   elseif n > 0 then
+    col = brun.c_warn
+  end
+  -- Red means come and stop it, and the threshold is set by when there is enough on the key to diagnose
+  -- from rather than by when something first goes wrong. Three cells, because each failing row carries
+  -- the whole diagnostic set -- endwhy, got, armpair, armexp, lok, armfs, sabit, segfs/spanfs -- and
+  -- three of them is a population; and across two or more BAUDS, because that is what separates a
+  -- systematic fault from one unlucky cell. Below that it is amber: something is off, but stopping the
+  -- run would buy no answer. On the lap this was built from, red would have shown inside twenty cells
+  -- instead of after two hours.
+  local nb = 0
+  if brun.bad_bauds ~= nil then
+    local k
+    for k in pairs(brun.bad_bauds) do nb = nb + 1 end
+  end
+  if act >= brun.red_cells and nb >= brun.red_bauds then
+    col = brun.c_bad
+  elseif act > 0 and col == brun.c_good then
     col = brun.c_warn
   end
   -- AND THE ONE INSTRUCTION THAT HAS TO INTERRUPT GOES HERE, IN RED. There is no prompt row any more --
@@ -1234,7 +1718,32 @@ function brun.errsline()
   -- appended: a screen that keeps shouting has no way left to shout.
   local nag = brun.stopnag()
   if nag ~= '' then col = brun.c_bad end
-  return 'Errors: ' .. brun.int(n) .. nag, col
+  -- Broken out, and a total, because 'Errors: 3' answers neither of the operator's questions: how bad,
+  -- and bad at what. Each class is written only when nonzero, so a clean run reads 'Errors: 0' exactly
+  -- as before and a reader's eye is not trained to ignore a row of zeroes.
+  --
+  -- The payload class carries its denominator. Only the six gap vectors have an entry in bexp.VEC, so
+  -- `w 0/0` says nothing was judgeable and `w 0/132` says 132 cells were judged and all passed -- and
+  -- without that a green zero on a full soak would look like proof when nothing had been checked.
+  --
+  -- Ordered by what must survive truncation, because nothing enforces brun.panelw: the firmware draws
+  -- past the edge and the far end of the line is simply gone. So the total goes next to the count, the
+  -- call to action is never dropped, and the per-class breakout -- the longest part and the least
+  -- urgent -- is what gets left off when the line will not fit. At its widest the breakout is 23
+  -- characters on top of a 17-character head, and stopnag's longest is appended after both.
+  -- The leading number is the total of all three classes, and the words after it say what it is made of.
+  -- It read 'Errors: 10+12 a10 f7 w5/132' first, which needs this comment to decode -- an operator
+  -- deciding whether to walk over should not have to. Each class is named rather than initialled, and
+  -- written only when nonzero, so a clean run still reads 'Errors: 0'.
+  local head = 'Errors: ' .. brun.int(n + act)
+  local ex = ''
+  if (brun.nunexp or 0) > 0 then ex = ex .. '  nodec ' .. brun.int(brun.nunexp) end
+  if nfr > 0 then ex = ex .. '  flag ' .. brun.int(nfr) end
+  if nw > 0 or (brun.npayj or 0) > 0 then
+    ex = ex .. string.format('  wrong %s/%s', brun.int(nw), brun.int(brun.npayj or 0))
+  end
+  if string.len(head .. ex .. nag) > brun.panelw then ex = '' end
+  return head .. ex .. nag, col
 end
 
 function brun.stateword()
@@ -2049,6 +2558,8 @@ function brun.soak(iterations, tag)
   -- part-way through, and every per-lap figure on the screen would be offset for the whole first lap.
   brun.lapcell = 0
   brun.nexp, brun.nunexp = 0, 0
+  brun.nwrong, brun.nframe, brun.npayj = 0, 0, 0
+  brun.bad_bauds = {}
   brun.vcell, brun.vbad = {}, {}
   brun.iterwant = 0
   if not forever then brun.iterwant = iterations end
@@ -2355,7 +2866,15 @@ function brun.soak(iterations, tag)
       if brun.timing then pcall(function() brun.tsel = timer.gettime() end) end
       brun.spin_tick()                  -- 2 of 6: stimulus selected and the plan wait is over
       local fs = brun.cell_fs(c.baud)
-      local p = brun.point(fs, c.baud, false)
+      -- Elision is per vector, and an elided cell is rate-locked where every other cell is not:
+      -- gap_elide() refuses without a rate, so no eliding cell also exercises rate detection. That is
+      -- the trade and it is deliberate -- the subject of an elided cell is the recording program.
+      local el, elskip = nil, nil
+      if brun.elide ~= nil and brun.elide_vids ~= nil and brun.elide_vids[c.vid] then
+        el, elskip = brun.elide_for(c.vid, c.baud, brun.elide)
+      end
+      local p = brun.point(fs, c.baud, el ~= nil, el, c.vid)
+      if elskip ~= nil then p.elideskip = elskip end
       -- RE-MUTED AFTER EVERY CAPTURE. sdec.acquire calls sdec.quiet_events(), which sets
       -- localnode.showevents = SEV_ERROR -- so the mute taken once at the top of this function is undone
       -- by the first cell, and every event after that is a popup again. One assignment per cell is
@@ -2395,6 +2914,35 @@ function brun.soak(iterations, tag)
         else
           brun.nunexp = brun.nunexp + 1
         end
+      else
+        -- A cell that ran can still be wrong, and until now nothing on the instrument said so. brun.nbad
+        -- counts cells that produced no decode; it is deliberately not a byte-level verdict and its own
+        -- comment says 0.0 % on the glass does not mean every byte was correct. Measured, that gap was
+        -- most of the problem: a 396-cell lap showed 59 failures where the host judge found 192, and the
+        -- other 133 had decoded confidently wrong bytes with nothing to see on the panel.
+        --
+        -- Two classes, because they are visible by different means and cover different vectors.
+        --
+        -- `wrong`: the bytes were not the payload. Needs an entry in bexp.VEC, so it covers the six gap vectors and
+        -- reports its own denominator -- a zero here is not a pass on a vector it cannot judge.
+        if p.paycmp ~= nil and p.paycmp > 0 then
+          brun.npayj = brun.npayj + 1
+          if p.paymatch < p.paycmp * brun.paywrong_frac then
+            brun.nwrong = brun.nwrong + 1
+            brun.bad_bauds[c.baud] = true
+          end
+        end
+        -- `frame`: the app itself flagged a large share of the frames. Needs no payload, so it covers
+        -- every vector, and it is the signal that would have shown this lap's trouble by cell 20 --
+        -- healthy cells run 0 to 2 % flagged, the wrong ones 30 to 55 %. Scoped to vectors barb.loud
+        -- does NOT excuse, since jitter and spike vectors flag frames by design.
+        if (p.nf or 0) >= brun.framemin and
+           not (barb ~= nil and barb.loud ~= nil and barb.loud(vk)) then
+          if (p.nflag or 0) > (p.nf or 0) * brun.frameflag_frac then
+            brun.nframe = brun.nframe + 1
+            brun.bad_bauds[c.baud] = true
+          end
+        end
       end
       if not brec.row(string.format(
                              '%d,%d,%s,%d,%s,%.4f,%.4f,%.6f,%.3f,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s',
@@ -2431,6 +2979,72 @@ function brun.soak(iterations, tag)
       -- clean run's status rows stay identical and a reader can find the noisy cell with one grep.
       local nt = p.ran and 'ok' or ('FAIL ' .. tostring(p.why))
       if cellev > 0 then nt = nt .. ' ev=' .. brun.int(cellev) end
+      -- The payload verdict, on every cell that has one and not only the elided ones: the non-elided
+      -- cells are the control, and the whole question is whether elision is what makes the bytes wrong.
+      -- Matched of compared, so the row says HOW wrong rather than only that it was -- a cell at 0 of
+      -- 324 and a cell at 321 of 324 are different faults and the pass/fail alone cannot tell them
+      -- apart. Confident frames only; the ones the app flagged are counted by nflag already.
+      if p.paycmp ~= nil then
+        nt = nt .. string.format(' pay=%s/%s', brun.int(p.paymatch or 0), brun.int(p.paycmp))
+      end
+      -- The cells that deliberately declined to elide, carrying the arithmetic that declined them. Needed
+      -- because p.elide_want below is nil on those cells, so without this they read as cells elision was
+      -- never asked for -- and a lap's elided count would have to be inferred from the vector names.
+      if p.elideskip ~= nil then nt = nt .. ' noelide=[' .. tostring(p.elideskip) .. ']' end
+      -- Elision's own verdict on the row, and only where it was asked for, so a lap without it stays
+      -- byte-identical. 'FELLBACK' is the one that matters: the capture succeeded, the bytes may be
+      -- perfect, and the six-block program never ran -- a pass that proves nothing.
+      if p.elide_want ~= nil then
+        if p.elided == true then
+          nt = nt .. string.format(' elide=%.3f', p.elidewin or p.elide_want)
+        else
+          nt = nt .. ' elide=FELLBACK'
+        end
+        if p.elideev ~= nil then nt = nt .. ' elideev=' .. tostring(p.elideev) end
+        if p.elideevmsg ~= nil then nt = nt .. ' ev1=[' .. tostring(p.elideevmsg) .. ']' end
+        -- Which arm branch the cell took, on passing cells too: whether the degenerate branch is what
+        -- distinguishes the failures cannot be answered without them. Only when false, so a clean row
+        -- does not grow.
+        if p.armlok == false then nt = nt .. ' lok=false' end
+        if p.armwhy ~= nil then nt = nt .. ' armwhy=[' .. string.sub(tostring(p.armwhy), 1, 40) .. ']' end
+        -- fscap and wincap are the caps actually applied; segfs and spanfs are the two rate estimates,
+        -- written on every elided cell and not only the failures. The passing cells are the control --
+        -- without them a disagreement cannot be told from a rate the record simply has.
+        if p.elidefscap ~= nil then nt = nt .. string.format(' fscap=%.0f', p.elidefscap) end
+        if p.elidewincap ~= nil then nt = nt .. string.format(' wincap=%.4f', p.elidewincap) end
+        if p.elidefs ~= nil then nt = nt .. string.format(' segfs=%.0f', p.elidefs) end
+        if p.elidespanfs ~= nil then nt = nt .. string.format(' spanfs=%.0f', p.elidespanfs) end
+        if p.armnover ~= nil and p.armnover > 0 then nt = nt .. ' nover=' .. brun.int(p.armnover) end
+        -- How many probe tries the cell was allowed and how many it used. The budget is per-rate, so
+        -- these say whether brun.elide_probe_budget is generous, binding, or irrelevant -- the one
+        -- question the retry raises and the one its own count cannot answer.
+        if p.armtry ~= nil and (p.armtry > 1 or p.armntry ~= brun.elide_probe_tries) then
+          nt = nt .. string.format(' try=%s/%s', brun.int(p.armtry), brun.int(p.armntry or 0))
+        end
+        -- Written on every failing cell whatever its value, and suppressed only on a passing 'full'.
+        -- 'full' is the ordinary ending but stream_acquire overloads it three ways on this path: the
+        -- record reached its sample count, the wall-clock limit expired, or stream_arm was refused and
+        -- it fell back to a blocking read. Suppressing it on a failure hid the timeout completely --
+        -- a cell that ran out brun.elide_maxsec printed no endwhy at all, which is the one ending this
+        -- field was added to catch.
+        if p.elidewhy ~= nil and (not p.ran or p.elidewhy ~= 'full') then
+          nt = nt .. ' endwhy=' .. tostring(p.elidewhy)
+          if p.armexp ~= nil then nt = nt .. string.format(' armexp=%.3f', p.armexp) end
+          if p.elidegot ~= nil then nt = nt .. ' got=' .. brun.int(p.elidegot) end
+          if p.armlo ~= nil and p.armhi ~= nil then
+            nt = nt .. string.format(' armpair=%.3f/%.3f', p.armlo, p.armhi)
+          end
+          if p.armidle ~= nil then nt = nt .. ' armidle=' .. tostring(p.armidle) end
+          if p.armfs ~= nil then nt = nt .. string.format(' armfs=%.0f', p.armfs) end
+          if p.armsabit ~= nil then nt = nt .. string.format(' sabit=%.3f', p.armsabit) end
+        end
+        if p.armthrbad ~= nil then
+          nt = nt .. ' armthr=OUTOFRANGE:' .. tostring(p.armthrbad)
+          -- The reason it was out of range, in one number. A nonzero count says the stimulus clipped the
+          -- 10 V range, which is the plan's draw and not this path's fault; a zero says look elsewhere.
+          if p.armnover ~= nil then nt = nt .. ' nover=' .. brun.int(p.armnover) end
+        end
+      end
       -- THE IDLE DECISION'S OWN INPUTS, appended only when brun.idlediag is set, so a normal soak's
       -- status rows stay byte-identical and nothing a reader greps for moves. It rides the status note
       -- that already exists rather than adding a second S row, so the record grows by characters rather
@@ -2441,12 +3055,19 @@ function brun.soak(iterations, tag)
       -- straddles ground. run0, run1, onebit and ratio say which branch was taken; lo and hi say what
       -- the branch was looking at.
       --
-      -- lo AND hi ARE THE ONLY WITNESS TO WHAT THE GENERATOR ACTUALLY DID. The record's amp_vpp and
-      -- ofst_v are what the plan COMMANDED, bsdg.select writes BSWV without reading it back, and the
-      -- SDG2122X's envelope is |OFST| + AMP/2 <= 10 V -- which soakplan's draw does not respect, because
-      -- it constrains the data band rather than the nominal pair. So a cell can be recorded at an offset
-      -- of -8.9 V while the wire carried a band centred near ground. These two fields are the difference
-      -- between inferring that and measuring it.
+      -- lo and hi are the only witness to what the generator actually did. The record's amp_vpp and ofst_v
+      -- are what the plan COMMANDED and bsdg.select writes BSWV without reading it back, so the two are
+      -- not the same claim.
+      --
+      -- This comment used to say soakplan's draw ignores the SDG2122X envelope, |OFST| + AMP/2 <= 10 V,
+      -- and that a cell could be recorded at -8.9 V while the wire carried a band centred near ground.
+      -- That is false and has been since 530e7e8 on 2026-09-06: soakplan.amp_ofst_for() clamps the
+      -- nominal pair against SDG_ENV_V of 10.0, shrinks the amplitude rather than clipping when no offset
+      -- fits, and assert_unclipped checks it again. The -8.9 V example was soakplan's own description of
+      -- the behaviour it REMOVED, quoted here as though current.
+      --
+      -- What survives is narrower and still worth these two fields: a plan already on the key may predate
+      -- that commit, and brun reads the plan rather than drawing it.
       if brun.idlediag then
         local lg = sdec.run1 or 0
         if (sdec.run0 or 0) > lg then lg = sdec.run0 end

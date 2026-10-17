@@ -19,7 +19,7 @@ for _, m in ipairs({'tsp/usb_log.tsp', 'tsp/serial_ui.tsp', 'tsp/serial_app.tsp'
   chunk()
 end
 for _, m in ipairs({'bench/arb_names.tsp', 'bench/sdg_net.tsp', 'bench/bench_rec.tsp',
-                    'bench/bench_run.tsp'}) do
+                    'bench/expect.tsp', 'bench/bench_run.tsp'}) do
   local chunk, err = loadfile(m)
   if chunk == nil then print('LOAD FAILED ' .. m .. ': ' .. tostring(err)); os.exit(1) end
   chunk()
@@ -1575,6 +1575,13 @@ do
   -- the whole FILE, so a 210-lap plan read 'cell 114 of 279930 (0 %)' on the instrument and the
   -- hours-remaining figure came out 210x too large.
   brun.percell, brun.iterwant, brun.ncell = 1677, 210, 412
+  -- t0 CLEARED HERE, not only in the two checks below it. The rate line withholds a projected total
+  -- until a rate exists, and this block asserts that -- but it used to run on whatever brun.t0 an
+  -- earlier check had left behind, so under load enough wall time had elapsed for a rate to exist and
+  -- the assertion failed. Measured on an unpatched tree: 3 of 16 parallel workers failed here, with the
+  -- line reading 'Total: 0.0h of 0.2h - 412/352170 c (0.1%) 0.00243s/c'. The two checks that set t0
+  -- deliberately do so AFTER `tim` has already been captured below, so they could not fix this one.
+  brun.t0 = nil
   brun.screen({iter = 3, cell = 412, vid = 'v48b', baud = 153600}, 'SER_Hello_8N1_Drift10_x10')
   local prog, tim = MD.text(brun.ui.prog), MD.text(brun.ui.time)
   local stim, fail = MD.text(brun.ui.stim), MD.text(brun.ui.fail)
@@ -2816,6 +2823,300 @@ do
   brun.ui_destroy()
   brun.tag = 'soak'
 end
+
+-- ---------------------------------------------------------------------------
+print('-- the expected payload is generated, and must match the generator that built the waveform --')
+-- ---------------------------------------------------------------------------
+-- bench/expect.tsp carries a copy of make_vectors.lua's LOREM and lorem_text so the instrument can say
+-- whether the bytes were the payload. A copy drifts, and a drifted copy would put a wrong verdict on the
+-- panel, so the prose string is read out of make_vectors.lua at run time and compared -- the guard
+-- test_judge_v.py puts on the loud budget, for the same reason. Restating the string here instead would
+-- make this a test of two literals typed together, which passes through any mistake common to both.
+;(function()
+  local src = nil
+  local fh = io.open('tools/make_vectors.lua', 'r')
+  if fh ~= nil then src = fh:read('*a'); fh:close() end
+  ck(src ~= nil and string.len(src) > 1000,
+     'tools/make_vectors.lua can be read, so there is a reference to compare against')
+  if src == nil then return end
+
+  local at = string.find(src, 'local LOREM', 1, true)
+  ck(at ~= nil, 'make_vectors.lua still declares LOREM where this test looks for it')
+  if at == nil then return end
+  -- Every quoted piece from the declaration until a line carries none, concatenated as the source does.
+  local ref, pos = '', at
+  while true do
+    local nl = string.find(src, '\n', pos, true)
+    if nl == nil then break end
+    local line = string.sub(src, pos, nl - 1)
+    local a, b, piece = string.find(line, "'([^']*)'")
+    if a == nil and ref ~= '' then break end
+    if piece ~= nil then ref = ref .. piece end
+    pos = nl + 1
+  end
+  ck(ref ~= '' and ref == bexp.LOREM,
+     'the prose string in bench/expect.tsp is the one in make_vectors.lua',
+     string.format('%d chars read from source, %d in bexp', string.len(ref), string.len(bexp.LOREM)))
+
+  -- THE WRAPPER NEEDS AN ORACLE THAT IS NOT ITSELF, and the properties below are not one: a wrapper that
+  -- broke lines at the wrong column would still return the right length and still leave the prose intact
+  -- once the CR LF pairs came out. So the two lengths the gap vectors actually use are pinned to bytes
+  -- read off the INSTRUMENT -- the hex below is what six clean hardware captures of v98a/b/c and v99a/b/c
+  -- decoded to, cross-checked against the generator before being written down. An observation rather than
+  -- a restatement of the algorithm, which is what makes it able to fail.
+  local HW = {
+    [130] = '4C6F72656D20697073756D20646F6C6F722073697420616D65742C20636F6E736563' ..
+            '74657475722061646970697363696E6720656C69742C2073656420646F200D0A65' ..
+            '6975736D6F642074656D706F7220696E6369646964756E74207574206C61626F72' ..
+            '6520657420646F6C6F7265206D61676E6120616C697175612E2055742065',
+    [80]  = '4C6F72656D20697073756D20646F6C6F722073697420616D65742C20636F6E736563' ..
+            '74657475722061646970697363696E6720656C69742C2073656420646F200D0A65' ..
+            '6975736D6F642074656D706F72',
+  }
+  local hn
+  for _, hn in ipairs({130, 80}) do
+    local got = bexp.lorem_text(hn, 64)
+    local hex, j = '', nil
+    for j = 1, string.len(got) do hex = hex .. string.format('%02X', string.byte(got, j)) end
+    ck(hex == HW[hn],
+       string.format('lorem_text(%d, 64) is byte-for-byte what the instrument decoded', hn),
+       hex == HW[hn] and 'matches' or ('got ' .. string.sub(hex, 1, 48) .. '...'))
+  end
+
+  -- And the properties as well, at lengths the hardware reference does not cover.
+  local n
+  for _, n in ipairs({80, 130, 7, 1024}) do
+    local got = bexp.lorem_text(n, 64)
+    ck(string.len(got) == n,
+       string.format('lorem_text(%d, 64) returns exactly %d bytes', n, n), tostring(string.len(got)))
+    local flat, k = '', nil
+    for k = 1, string.len(got) do
+      local c = string.sub(got, k, k)
+      if c ~= '\013' and c ~= '\010' then flat = flat .. c end
+    end
+    local reps = math.ceil((string.len(flat) + 1) / string.len(bexp.LOREM)) + 1
+    local hay = string.rep(bexp.LOREM, reps)
+    ck(string.sub(hay, 1, string.len(flat)) == flat,
+       string.format('...and the CR LF pairs removed leave the prose unchanged (n=%d)', n))
+  end
+
+  -- The matcher. A rotation of the payload must verify in full, because a looping arb starts anywhere.
+  local want = bexp.bytes('v98a')
+  ck(want ~= nil and bexp.bytes('v99a') ~= nil and bexp.bytes('v71') == nil and bexp.bytes(nil) == nil,
+     'every gap vector resolves to a payload, and a vector without an entry resolves to nil')
+  if want == nil then return end
+  local wl = string.len(want)
+  local function synth(shift, nf, bump)
+    local res = {nf = nf, vals = {}, errs = {}}
+    local j
+    for j = 1, nf do
+      local wi = math.mod(shift + j - 1, wl) + 1
+      res.vals[j] = string.byte(want, wi)
+      if bump then res.vals[j] = math.mod(res.vals[j] + 7, 256) end
+    end
+    return res
+  end
+  local m, c = bexp.match(synth(0, 100), 'v98a')
+  ck(m == 100 and c == 100, 'a clean decode at the payload start verifies in full',
+     string.format('%s of %s', tostring(m), tostring(c)))
+  m, c = bexp.match(synth(57, 100), 'v98a')
+  ck(m == 100 and c == 100, '...and so does one that started mid-payload',
+     string.format('%s of %s', tostring(m), tostring(c)))
+  m, c = bexp.match(synth(0, 100, true), 'v98a')
+  -- NOT at zero, and the change is deliberate. Best-of-every-alignment is what judge_bench.py does and it
+  -- inflates by construction, so a wrong payload scores chance rather than nothing. What must hold is
+  -- that chance stays far under brun.paywrong_frac of 0.5; an exact zero was the old behaviour and it was
+  -- a program artefact, a missed string.find reported as if it were a measurement.
+  ck(m ~= nil and c == 100 and m < 25,
+     'bytes that are not the payload verify at chance, well under the wrong threshold',
+     string.format('%s of %s', tostring(m), tostring(c)))
+
+  -- THE FALSE ZERO. One confidently wrong byte inside the first alignn frames defeats string.find, and the
+  -- cell used to report zero for all of it. Cell 11 of the 2026-10-17 lap did exactly this: 0 of 131 on a
+  -- cell the host judge passes.
+  local one = synth(0, 100)
+  one.vals[4] = math.mod(one.vals[4] + 13, 256)
+  m, c = bexp.match(one, 'v98a')
+  ck(m == 99 and c == 100, 'one wrong byte inside the anchor run costs one byte, not the whole verdict',
+     string.format('%s of %s', tostring(m), tostring(c)))
+
+  -- THE SILENT NIL. Too corrupt to supply alignn CONSECUTIVE confident frames, while holding far more than
+  -- mincmp of them in total. Five cells in the same lap were here, all real failures, and nil dropped them
+  -- out of the denominator the panel divides by -- so the worst cells were the ones it could not count.
+  local holed, hj = synth(0, 60), nil
+  for hj = 1, 60 do
+    if math.mod(hj, 3) == 0 then holed.errs[hj] = 'flag' end
+  end
+  m, c = bexp.match(holed, 'v98a')
+  ck(m == 40 and c == 40, 'a decode with no clean run of alignn still gets a verdict from the sweep',
+     string.format('%s of %s', tostring(m), tostring(c)))
+
+  ck(bexp.match(synth(0, 5), 'v98a') == nil,
+     'a decode too short to align on gets no verdict rather than a zero')
+  ck(bexp.match(synth(0, 100), 'v71') == nil, 'and a vector with no entry gets no verdict either')
+end)()
+
+-- ---------------------------------------------------------------------------
+print('-- the elision window tier, and the gate that refuses a gap it cannot detect --')
+-- ---------------------------------------------------------------------------
+-- Three decisions live here and none of them is derivable: the window is 1/100 s from 2400 Bd up and
+-- 1/10 s below, a gap needs two windows of margin, and the six gap vectors declare their pause in bit
+-- times. Before this gate every nodrop cell armed the elision program whatever its gap came to at the
+-- cell's rate, which is what put 9 silently-wrong cells in the lap of 2026-10-17.
+--
+-- The leading semicolon is load-bearing: without it Lua reads the print above and this parenthesis as one
+-- expression, calls print's nil return, and the whole block dies with 'attempt to call a nil value'.
+;(function()
+  ck(brun.elide_window(9600) == 0.010 and brun.elide_window(19200) == 0.010,
+     'the rates that matter get the 10 ms window',
+     string.format('%g / %g', brun.elide_window(9600), brun.elide_window(19200)))
+  ck(brun.elide_window(2400) == 0.010 and brun.elide_window(2399) == 0.100,
+     'and the tier switches AT 2400, not near it',
+     string.format('2400 -> %g, 2399 -> %g', brun.elide_window(2400), brun.elide_window(2399)))
+  ck(brun.elide_window(300) == 0.100 and brun.elide_window(1200) == 0.100,
+     'the two surviving sub-2400 rates get 1/10 s, so the low tier is not dead code',
+     string.format('%g / %g', brun.elide_window(300), brun.elide_window(1200)))
+
+  -- The tier caps the request rather than replacing it, in both directions.
+  ck(brun.elide_for('v98a', 9600, 0.1) == 0.010, 'the tier caps a request that is too long',
+     tostring(brun.elide_for('v98a', 9600, 0.1)))
+  ck(brun.elide_for('v98a', 9600, 0.005) == 0.005, '...and leaves a shorter request alone',
+     tostring(brun.elide_for('v98a', 9600, 0.005)))
+
+  -- Every gap vector must elide at both rates the user cares about, or the lap tests nothing there.
+  local vids = {'v98a', 'v98b', 'v98c', 'v99a', 'v99b', 'v99c'}
+  local i, allok, worst = nil, true, nil
+  for i = 1, 6 do
+    local a = brun.elide_for(vids[i], 9600, 0.1)
+    local b = brun.elide_for(vids[i], 19200, 0.1)
+    if a == nil or b == nil then allok = false worst = vids[i] end
+  end
+  ck(allok, 'all six gap vectors elide at 9600 AND 19200', worst == nil and 'all six'
+     or (worst .. ' declined'))
+
+  -- v98c at 19200 is the binding case: 410 bit times is 21.4 ms against a 20 ms requirement. Asserted by
+  -- name, because it is the one cell a slightly larger window or margin would silently drop.
+  ck(brun.elide_for('v98c', 19200, 0.1) == 0.010,
+     'v98c at 19200 is the tightest pass in the set and still passes',
+     string.format('410/19200 = %.2f ms, needs %.0f ms', 410000 / 19200,
+                   brun.elide_margin * 10))
+
+  -- THE EXPENSIVE BAND, which is also the one that has to be right: 300 and 1200 are the only rates left
+  -- under 2400 and both are anchors rather than filler. All six vectors must elide at both.
+  local lowok, lowbad = true, nil
+  for i = 1, 6 do
+    if brun.elide_for(vids[i], 300, 0.1) ~= 0.100 or brun.elide_for(vids[i], 1200, 0.1) ~= 0.100 then
+      lowok = false lowbad = vids[i]
+    end
+  end
+  ck(lowok, 'all six gap vectors elide at 300 AND 1200, on the 1/10 s tier',
+     lowbad == nil and 'all six' or (lowbad .. ' declined'))
+
+  -- v98c at 1200 is the tightest pass in the low band: 341.7 ms against 200 ms needed, 1.7x. Named for
+  -- the same reason as the 19200 case -- it is the cell a larger window or margin would quietly drop.
+  ck(brun.elide_for('v98c', 1200, 0.1) == 0.100,
+     'v98c at 1200 is the tightest low-band pass and still passes',
+     string.format('410/1200 = %.1f ms, needs %.0f ms', 410000 / 1200,
+                   brun.elide_margin * brun.elide_win_low * 1000))
+
+  -- AND THE TIER IS ABOVE gap_elide's OWN FLOOR AT 300 Bd, which is the point of it. Two frames at 8N1 is
+  -- 66.7 ms there, so a 10 ms window would be clamped up to 66.7 and the window an operator reads would
+  -- not be the window the detector used. 1/10 s clears it by half again.
+  ck(brun.elide_win_low > (2 * 10 / 300), 'the low tier sits above the two-frame floor at 300 Bd',
+     string.format('%g s window against a %.1f ms floor', brun.elide_win_low, 2 * 10 / 300 * 1000))
+
+  -- And it must decline where the gap genuinely cannot be seen.
+  local w, why = brun.elide_for('v98c', 31250, 0.1)
+  ck(w == nil and why ~= nil, 'v98c at 31250 is declined, not armed', tostring(why))
+  w, why = brun.elide_for('v98a', 250000, 0.1)
+  ck(w == nil and why ~= nil, 'and v98a at 250000, where the lap produced garbage', tostring(why))
+  ck(why ~= nil and string.find(why, '2.4', 1, true) ~= nil
+     and string.find(why, '20 ms', 1, true) ~= nil,
+     'the reason carries both numbers, so a row says WHY it declined', tostring(why))
+
+  -- A vector the table does not know gets the window and no gate.
+  w, why = brun.elide_for('v71', 9600, 0.1)
+  ck(w == 0.010 and why == nil, 'a vector with no declared gap gets the window and no gate',
+     string.format('%s / %s', tostring(w), tostring(why)))
+  ck(brun.elide_for('v98a', 9600, 0) == nil and brun.elide_for('v98a', 9600, nil) == nil,
+     'and asking for no window gets none')
+end)()
+
+-- ---------------------------------------------------------------------------
+print('-- the error row: the new byte-level classes, the red rule, and the width it must not exceed --')
+-- ---------------------------------------------------------------------------
+-- brun.nbad counts cells that produced no decode and is deliberately not a byte-level verdict. The two
+-- classes beside it are: `w`, bytes that were not the payload, and `f`, a cell the app itself flagged
+-- heavily. A 396-cell lap showed 59 failures where the host judge found 192, so these are most of what
+-- the panel was missing. Nothing enforces brun.panelw -- the firmware draws past the edge and the far
+-- end is lost -- so the width is checked here at the widest line each field can produce.
+;(function()
+  local keep = {nbad = brun.nbad, nexp = brun.nexp, nunexp = brun.nunexp, nwrong = brun.nwrong,
+                nframe = brun.nframe, npayj = brun.npayj, bb = brun.bad_bauds, ncell = brun.ncell}
+  local function set(nbad, nexp, nunexp, nwrong, nframe, npayj, bauds)
+    brun.nbad, brun.nexp, brun.nunexp = nbad, nexp, nunexp
+    brun.nwrong, brun.nframe, brun.npayj = nwrong, nframe, npayj
+    brun.bad_bauds = {}
+    local i
+    for i = 1, (bauds or 0) do brun.bad_bauds[1000 * i] = true end
+  end
+
+  -- The premise: a clean run reads exactly as it did before any of this, so a reader's eye is not
+  -- trained to skip a row of zeroes.
+  set(0, 0, 0, 0, 0, 0, 0)
+  local e, c = brun.errsline()
+  ck(e == 'Errors: 0' and c == brun.c_good, 'a clean run still reads Errors: 0 and is green', e)
+
+  -- A judged-but-clean payload shows its denominator, so a zero cannot be mistaken for "not checked".
+  set(0, 0, 0, 0, 0, 132, 0)
+  e, c = brun.errsline()
+  ck(string.find(e, 'wrong 0/132', 1, true) ~= nil and c == brun.c_good,
+     'a payload judged and passed shows its denominator and stays green', e)
+
+  -- Two byte-level failures on one baud is amber: something is off, but stopping buys no answer.
+  set(0, 0, 0, 2, 0, 132, 1)
+  e, c = brun.errsline()
+  ck(c == brun.c_warn, 'two wrong cells on one baud is amber, not red', e)
+
+  -- Three across two bauds is red, which is the rule: enough rows to diagnose from, and spread enough
+  -- to tell a systematic fault from one unlucky cell.
+  set(0, 0, 0, 3, 0, 132, 2)
+  e, c = brun.errsline()
+  ck(c == brun.c_bad, 'three wrong cells across two bauds turns it red', e)
+  -- ...and three on a SINGLE baud does not, which is the half of the rule that does the work.
+  set(0, 0, 0, 3, 0, 132, 1)
+  e, c = brun.errsline()
+  ck(c == brun.c_warn, 'but three on one baud stays amber -- the baud spread is load-bearing', e)
+
+  -- The flag class reaches the same rule by itself, since it is the one that needs no payload table.
+  set(0, 0, 0, 0, 4, 0, 3)
+  e, c = brun.errsline()
+  ck(c == brun.c_bad and string.find(e, 'flag 4', 1, true) ~= nil,
+     'the flagged-frame class turns it red on its own', e)
+
+  -- The total is the sum and sits beside the count, where truncation cannot reach it first.
+  set(10, 0, 10, 5, 7, 132, 2)
+  e, c = brun.errsline()
+  ck(string.find(e, 'Errors: 22', 1, true) == 1 and string.find(e, 'nodec 10', 1, true) ~= nil
+     and string.find(e, 'flag 7', 1, true) ~= nil and string.find(e, 'wrong 5/132', 1, true) ~= nil,
+     'the leading number is the total and each class is named, not initialled', e)
+
+  -- WIDTH, at the widest every field can be. A lap is at most 1720 cells, so every counter saturates
+  -- there; stopnag is appended after all of it and must not be the part that falls off the end.
+  local worst = 1720
+  set(worst, 0, worst, worst, worst, worst, 20)
+  e = brun.errsline()
+  ck(string.len(e) <= brun.panelw,
+     'the widest error row fits the screen budget', string.format('%d of %d char(s): %s',
+     string.len(e), brun.panelw, e))
+  -- And when it cannot fit, the breakout is what goes -- never the count or the total.
+  ck(string.find(e, 'Errors: 5160', 1, true) == 1,
+     '...and the total survives whatever is dropped to make it fit', e)
+
+  brun.nbad, brun.nexp, brun.nunexp = keep.nbad, keep.nexp, keep.nunexp
+  brun.nwrong, brun.nframe, brun.npayj = keep.nwrong, keep.nframe, keep.npayj
+  brun.bad_bauds, brun.ncell = keep.bb, keep.ncell
+end)()
 
 print('')
 print(string.format('%d passed, %d failed', pass, fail))

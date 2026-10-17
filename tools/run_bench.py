@@ -35,6 +35,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import instruments as I                                                  # noqa: E402
 import lint_tsp                                                          # noqa: E402
+import soakplan as SP                                                    # noqa: E402
 from dmmrun import DMM                                                   # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -62,7 +63,7 @@ if not os.path.exists(LUAC):
 APP = ['tsp/usb_log.tsp', 'tsp/serial_core.tsp', 'tsp/uart_decode.tsp',
        'tsp/chunk_decode.tsp', 'tsp/serial_ui.tsp', 'tsp/serial_app.tsp']
 ENGINE = ['bench/arb_names.tsp', 'bench/sdg_net.tsp', 'bench/bench_rec.tsp',
-          'bench/bench_run.tsp']
+          'bench/expect.tsp', 'bench/bench_run.tsp']
 
 # The smoke's own subset, from bench_smoke.py rather than repeated here: the two have to be the same 86
 # cells for the instrument-driven run to be comparable with the host-driven one.
@@ -576,6 +577,18 @@ def main():
                          'so this only changes the PERIOD. 0 restores the old behaviour of parking the '
                          'run, which a multi-day soak should never ask for: a wedge on day 2 then costs '
                          'every day after it')
+    ap.add_argument('--elide', type=float, default=0.0, metavar='SECONDS',
+                    help='turn gap elision ON for the nodrop vectors, at this threshold in seconds. '
+                         'Without it no cell builds sdec.gap_model, so no soak covers the elision '
+                         'program at all -- the gap vectors only exercise the decoder')
+    # A WITHIN-LAP CONTROL, which is the only kind worth having here. Elided cells decode wrong bytes at
+    # a rate rising with baud and non-elided ones do not -- but every non-elided comparison available is
+    # from an older app, so it cannot separate elision from everything else that changed. Naming a subset
+    # here leaves the rest of the nodrop vectors free-running in the SAME lap, at the same bauds, through
+    # the same generator and the same build, which is the only arrangement that isolates the feature.
+    ap.add_argument('--elide-vids', default=None, metavar='V,V',
+                    help='elide only these vectors, leaving the other nodrop vectors free-running as a '
+                         'control in the same lap. Default is every nodrop vector')
     ap.add_argument('--listen', default=None, metavar='IP',
                     help='host address for live progress pushes (see tools/soak_listen.py)')
     # A PLAN ALREADY GENERATED, because generating 210 laps takes ~5 minutes of CPU and needs no
@@ -712,6 +725,50 @@ def main():
                           'parked run cannot be restarted by anyone who is not standing there')
             if a.listen:
                 d.exec('do brun.listenip = %s end' % lua_str(a.listen))
+            if a.elide > 0:
+                # THE IDS COME FROM VECTOR_EXPECT, not from a second list here. The gap vectors are
+                # exactly the ones held to 'nodrop' -- a declined byte IS the defect they exist to find --
+                # so a new gap vector gets elision by being judged like one, and no list can drift.
+                vids = sorted(v for v, e in SP.VECTOR_EXPECT.items() if e == 'nodrop')
+                if a.elide_vids:
+                    want = [v.strip() for v in a.elide_vids.split(',') if v.strip()]
+                    bad = [v for v in want if v not in vids]
+                    if bad:
+                        raise SystemExit('REFUSING: --elide-vids names %s, which %s not held to nodrop. '
+                                         'Eliding a vector the judge does not hold to a declined byte '
+                                         'measures nothing.' % (', '.join(bad),
+                                                                'is' if len(bad) == 1 else 'are'))
+                    ctrl = [v for v in vids if v not in want]
+                    vids = want
+                    print('  control, free-running in the same lap: %s' % (' '.join(ctrl) or '(none)'))
+                if not vids:
+                    raise SystemExit('REFUSING --elide: no vector in VECTOR_EXPECT is held to nodrop, so '
+                                     'there is nothing a gap-elision run would turn it on for')
+                d.exec('do brun.elide = %r brun.elide_vids = {%s} end'
+                       % (a.elide, ' '.join('%s = true,' % v for v in vids)))
+                # READ BACK, because a refused assignment on this instrument is silent and the run would
+                # then be an ordinary soak wearing the label of an elision test.
+                # COMPARED AS A NUMBER, NOT AS A PREFIX, because Lua 5.0.2 has one number type and
+                # formats it with %.14g: tostring(2.0) is '2', so a prefix test against str(2.0) == '2.0'
+                # fails for every whole-number window. 2 s is sdec.gapelide_max, the value an operator
+                # sweeping the documented range types first, and the run would abort claiming the
+                # instrument refused an assignment it had in fact taken -- with brun.elide left SET, so
+                # the next tool inherits an armed elision it never asked for. Formatted on the
+                # instrument rather than parsed from %.14g here, so the host reads a fixed shape.
+                got = str(d.q('print(string.format("%.6f", brun.elide or -1) .. "," '
+                              '.. tostring(brun.elide_vids ~= nil))') or '').strip()
+                print('  gap elision ON at %g s for %d vector(s): %s' % (a.elide, len(vids),
+                                                                         ' '.join(vids)))
+                print('    instrument reports brun.elide,has-vids = %s' % got)
+                back, _, hasv = got.partition(',')
+                try:
+                    took = abs(float(back) - a.elide) < 1e-6
+                except ValueError:
+                    took = False
+                if not took or hasv.strip() != 'true':
+                    raise SystemExit('REFUSING: the instrument did not take brun.elide (%r, wanted '
+                                     '%.6f). An elision run that silently did not elide is worse than '
+                                     'no run.' % (got, a.elide))
             # STARTED AND LEFT. The call does not return until the loop ends, so it is sent without
             # waiting for a reply -- and for --iterations 0 there is no reply to wait for at all.
             print('starting brun.soak(%d) on the instrument' % a.iterations)

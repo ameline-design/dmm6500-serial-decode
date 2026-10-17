@@ -69,7 +69,8 @@ SOURCES = [
     'tsp/serial_core.tsp', 'tsp/uart_decode.tsp', 'tsp/chunk_decode.tsp',
     'tsp/midi_decode.tsp', 'tsp/lin_decode.tsp',
     'tsp/usb_log.tsp', 'tsp/serial_ui.tsp', 'tsp/serial_app.tsp',
-    'bench/arb_names.tsp', 'bench/sdg_net.tsp', 'bench/bench_rec.tsp', 'bench/bench_run.tsp',
+    'bench/arb_names.tsp', 'bench/sdg_net.tsp', 'bench/bench_rec.tsp', 'bench/expect.tsp',
+    'bench/bench_run.tsp',
     'tools/mock_display.lua', 'tools/gen_serial.lua', 'tools/mock_bench.lua',
     'tools/offline_bench.lua',
 ]
