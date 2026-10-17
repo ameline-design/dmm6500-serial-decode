@@ -213,8 +213,14 @@ def main():
         # THE SIGNATURE. A fixed loss at each seam advances the alignment by a constant, so the
         # deltas should cluster on one small positive number. Scattered deltas mean something
         # else is moving the alignment and this account is wrong.
-        print('  a shift delta clustered on one small positive value is the per-seam loss;')
-        print('  scattered deltas mean the alignment is moving for another reason')
+        # THE DELTA IS A FRAME COUNT. Clustered on one small positive value it says the seams are
+        # all the same mechanism; it does NOT say how many bytes died, which is the unmatched
+        # confident bytes plus the flagged ones. Scattered deltas mean the alignment is moving for
+        # some other reason and this account does not cover the record.
+        print('  deltas clustered on one small positive value say every seam is the same mechanism;')
+        print('  they do NOT say how many bytes died -- that is the %d unmatched confident byte(s)'
+              % (tot['ncmp'] - tot['seg']))
+        print('  here plus the flagged frames, which nflag counts separately')
     return 0
 
 
