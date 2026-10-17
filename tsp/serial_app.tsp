@@ -665,7 +665,7 @@ function sdec.stream_decode(got)
   end
   -- Silence the format search may have to cross, which on an elided record is not at the front but at the end of
   -- every burst: the detector cannot know the line stopped until its window has elapsed, so a window's worth of
-  -- idle follows each one. Two windows, because block 6 only evaluates at multiples of the delay and the last
+  -- idle follows each one. Two windows, because block 5 only evaluates at multiples of the delay and the last
   -- crossing fell somewhere in the previous one, so the tail is uniform on [window, 2 * window).
   if sdec.strm_elide ~= nil and sdec.fs ~= nil and sdec.fs > 0 then
     opts.primeskip = math.ceil(2 * sdec.strm_elide * sdec.fs)
@@ -856,9 +856,11 @@ function sdec.stream_arm(nsmp)
   sdec.strm_armed = armed
   -- Two sites rather than one closure, and the `and` keeps the ordering. No OP_CLOSURE per capture.
   if not armed then ok = pcall(trigger.model.load, 'SimpleLoop', nsmp, 0, buf) end
-  -- The record is cleared from here rather than inside the program. gap_model carries no BUFFER_CLEAR block, and
-  -- a clear block there would run once per initiate anyway, so one clear here is the same behaviour. The two
-  -- canned templates clear their own record, so for them this is redundant and costs one call.
+  -- The record is cleared from here rather than inside the program, and once per initiate is what a recording
+  -- wants: the record accumulates across every burst. gap_model's loop returns to its first block, so there is
+  -- no position in that program where a clear block would run once -- one anywhere empties the record every
+  -- pass, which is why the block listing is checked for not carrying one. The two canned templates clear their
+  -- own record, so for them this call is redundant.
   --
   -- A failed clear refuses the arm rather than being noted. gap_model has nothing to fall back on, so the
   -- recording would append to whatever the last one left behind, and every span the rate is read from would be
@@ -1091,8 +1093,8 @@ function sdec.stream_acquire(nsmp)
     -- advance it on a gap by construction: the record does not grow so `fresh` is false, and when it is read
     -- idle_window() caps at 4000 samples -- 40 ms at 100 kS/s -- which sees only the burst's own idle tail. So
     -- the timer starts running 40 ms into every burst's tail, before the gap has even begun, and no allowance
-    -- against it can be right. The model's state is the gap detector instead: parked in block 3's WAIT during a
-    -- gap, cycling blocks 4 to 7 during a burst. That tells a long gap from a dead line exactly, which no
+    -- against it can be right. The model's state is the gap detector instead: parked in block 2's WAIT during a
+    -- gap, cycling blocks 3 to 6 during a burst. That tells a long gap from a dead line exactly, which no
     -- threshold on a record that is designed not to grow ever can. docs/TRIGGER.md 13.
     if sdec.strm_elide ~= nil then
       if sdec.trig_waiting() == true then

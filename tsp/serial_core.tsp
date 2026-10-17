@@ -1990,8 +1990,8 @@ function sdec.gap_model(rec, scr, ev, win)
   if rec == nil or scr == nil or ev == nil or win == nil or win <= 0 then return false end
   -- The detector watches the comparator rather than the arm's event, and the two are often not the same object: with
   -- armkey set arm_source() returns EVENT_BLENDER1 so a TRIGGER press can cut the arm short, and a press
-  -- arriving through that blender would read as "the line is still talking" and hold the burst open. Block 3
-  -- keeps the blended event for exactly the reason the blend exists; block 6 must be the crossing alone.
+  -- arriving through that blender would read as "the line is still talking" and hold the burst open. Block 2
+  -- keeps the blended event for exactly the reason the blend exists; block 5 must be the crossing alone.
   local cmp = trigger.EVENT_ANALOGTRIGGER
   if cmp == nil then return false end
   local ok = pcall(function()
@@ -2020,8 +2020,10 @@ function sdec.gap_model(rec, scr, ev, win)
   -- the pre-roll on its own, so the count is as load-bearing as the presence.
   local _, nmd = string.gsub(bl, 'MEASURE_DIGITIZE', '')
   if nmd ~= 2 then return false end
-  -- BUFFER_CLEAR is checked for not being there. The record is cleared from Lua instead, and a clear block
-  -- anywhere but block 1 would empty the record mid-recording while every other number still looked right.
+  -- BUFFER_CLEAR is checked for not being there, and no position is exempt: block 6 branches back to block 1, so
+  -- every block is inside the loop and a clear anywhere empties the record once a burst. What survives is the
+  -- last burst alone, while rec.n, the splice positions and the recovered rate all stay plausible for a recording
+  -- of one. The record is cleared from Lua instead, once, before initiate().
   if string.find(bl, 'BUFFER_CLEAR', 1, true) ~= nil then return false end
   local want = {'WAIT', 'DELAY_CONSTANT', 'BRANCH_ON_EVENT', 'BRANCH_ALWAYS'}
   local i
