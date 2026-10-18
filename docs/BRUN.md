@@ -82,6 +82,49 @@ times on this bench; the last was 705 cells of 705. The host guard that catches 
 **Stopping** is the front-panel **TRIGGER** key. The run ends after the current waveform and closes
 the record, which is what commits it on a FAT key. Cutting the power costs at most the last row.
 
+## The status screen
+
+`Run Soak` tears the form down and `brun.ui_build()` takes over. It is the same screen a host-driven
+lap shows — the title changes with the run's tag, so a smoke reads `SD SMOKE` and a soak `SD SOAK`.
+Nine lines, and every one of them answers a different question.
+
+The title is **`SD <TAG> - TRIGGER TO STOP`**. The stop instruction lives there because the title is
+the one part of the screen that never scrolls and never redraws; the body's 58 characters are all
+needed for what changes.
+
+| line | reads | what it is for |
+|---|---|---|
+| **headline** | `SOAK HEALTH 97% RUNNING 5420k` | the answer from across the room: health, the run's state in a word, and the Lua heap. Red if it gave up or the heap is past `heapbadk`, green while healthy, amber when either is borderline, cyan before there is a figure at all. |
+| **spinner** | `\|` top right | one character, redrawn six times a cell, driven from inside the app's long loops. If it stops moving the instrument is wedged, not merely slow — it keeps turning through `sdec.acquire()`, which is 58 % of a cell and where a hang is most likely. |
+| **lap / cell** | `L1 C86 r86 Ran: 4m Left: 2m` | position in the lap, then the lap's own elapsed and remaining. `r86` is the plan's **own** cell label and appears only when it differs from the position — the record writes rows as `L<iter>C<label>`, so that is the number to search for. |
+| **totals** | `Total: 12m of 1.4h - 86/1512 c 6%` | elapsed of the **projected** total, then cells done out of the whole run. Not a second countdown: "left 853.8h" says nothing about how long the thing was ever going to be. |
+| **stimulus** | `v98d 9600 Bd 8N1 SER_LoremGap100ms_8N1_x10` | the vector, the commanded rate, the expected format and the generator's **own** waveform name. The full name rather than the short form, because that is what `ARWV NAME` was sent and the one thing that can be checked against the generator. |
+| **refusals** | `Refusals: Allowed 12 Unexpected 0 of 86 cells` | cells that refused to decode. `Allowed` is the vectors the plan drives into conditions where refusing is correct; `Unexpected` is the count that matters. |
+| **vector** | `Vec: v98d 4 of 20 bad   I3 L0 S1` | this vector's own failure count beside the run's, because the two answer different questions — whether the soak is healthy, and whether **one** waveform is the reason it is not. `I`, `L`, `S` are idle, levels and swing; initials because spelled out at six-figure totals the line is 70 characters against the 58 the glass holds. |
+| **log** | five scrolling lines | stamped with the lap and cell they happened at. This is what says *when* something started, which is the row that pays for itself on a run nobody is standing at. |
+| **errors** | `Errors: 22  Bad: 640/17160  nodec 10  flag 7  wrong 5/132` | see below. |
+
+### The error line
+
+`Errors:` leads with the total of all three classes. Each class is written only when it is nonzero, so
+a clean run reads `Errors: 0` exactly and a reader's eye is not trained to skip a row of zeroes.
+
+- **`Bad: b/t`** — payload **bytes**, wrong over compared. This is the one to read first: `wrong 5/132`
+  says five cells are bad and nothing about whether that is a byte each or a whole payload each.
+- **`nodec N`** — cells that decoded nothing on a vector that should decode.
+- **`flag N`** — cells where the app itself flagged a large share of its frames. Healthy cells run 0 to
+  2 % flagged and the wrong ones 30 to 55 %, so this is the class that shows trouble earliest.
+- **`wrong N/M`** — cells whose bytes were not the payload, over cells that could be judged at all. The
+  denominator is load-bearing: a zero with no denominator is not a pass, it is a question nobody asked.
+
+`Bad:` and `wrong:` are derived from the same comparison inside one gate, so they always describe the
+same set of cells. When the line will not fit the glass the per-class breakout is dropped and the
+count and the byte figure are kept — a bad run is exactly when this line is widest, so a byte figure
+living in the droppable part would be invisible whenever it mattered.
+
+**The panel is not the oracle.** The error line is a health indicator computed on the instrument; the
+verdict comes from the host judge below.
+
 ## Reading the result
 
 The record is `/usb1/SERDEC/SOAK.csv` on the key and the panel is not the oracle — the error line is
