@@ -913,6 +913,11 @@ function brun.point(fs, baud, lock, elide, vid)
     -- cell so a run of fallbacks cannot read as a run of passes.
     r.elided = sdec.acq_elided
     r.elidewin = sdec.strm_elide
+    -- THE OVER-READ, recorded so the record proves it rather than the launch command being trusted to
+    -- have carried it. It is a stream_acquire quantity, so a cell that did not take that path has none --
+    -- which is the distinction a row has to be able to make. A two-lap soak on 2026-10-18 ran with
+    -- elision off and therefore with no over-read anywhere, and nothing in its 32 284 lines said so.
+    r.overread = sdec.strm_overread
     -- Both rate estimates on the same record, which is the measurement this path is missing. acq_fs comes
     -- from acq_seg_fs() on an elided record and acq_measure_fs() on every other, and the two paths
     -- disagree enormously at the same baud: 83 333 S/s on elided cells against 1 000 000 on non-elided

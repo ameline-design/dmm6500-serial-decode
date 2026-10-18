@@ -580,10 +580,18 @@ def main():
                          'so this only changes the PERIOD. 0 restores the old behaviour of parking the '
                          'run, which a multi-day soak should never ask for: a wedge on day 2 then costs '
                          'every day after it')
-    ap.add_argument('--elide', type=float, default=0.0, metavar='SECONDS',
-                    help='turn gap elision ON for the nodrop vectors, at this threshold in seconds. '
-                         'Without it no cell builds sdec.gap_model, so no soak covers the elision '
-                         'program at all -- the gap vectors only exercise the decoder')
+    # ON BY DEFAULT, AND THE DEFAULT IS THE WHOLE POINT. This was 0.0, and a 3030-cell two-lap soak on
+    # 2026-10-18 ran with elision off for every one of them because the flag was simply not passed --
+    # so it covered neither the elision program nor the over-read, the over-read living on the
+    # stream_acquire path that only an eliding cell takes. A soak that silently tests neither feature
+    # looks exactly like a soak that tests both. The operator's standing requirement is that every soak
+    # carries elision for the vectors with gaps, and a default is the only form of that which cannot be
+    # forgotten. 0.01 s is the window the ladder uses from 2400 Bd up.
+    ap.add_argument('--elide', type=float, default=0.01, metavar='SECONDS',
+                    help='gap elision threshold in seconds for the nodrop vectors, ON by default. '
+                         '0 turns it off, which means no cell builds sdec.gap_model and the soak '
+                         'covers neither the elision program nor the over-read -- pass it only to '
+                         'establish a deliberate control')
     # A WITHIN-LAP CONTROL, which is the only kind worth having here. Elided cells decode wrong bytes at
     # a rate rising with baud and non-elided ones do not -- but every non-elided comparison available is
     # from an older app, so it cannot separate elision from everything else that changed. Naming a subset
@@ -728,6 +736,13 @@ def main():
                           'parked run cannot be restarted by anyone who is not standing there')
             if a.listen:
                 d.exec('do brun.listenip = %s end' % lua_str(a.listen))
+            if a.elide <= 0:
+                # SAID OUT LOUD, because the silent version of this cost a two-lap soak. With elision off
+                # no cell takes stream_acquire, so the run covers neither the elision program nor the
+                # over-read that lives on that path -- and the record it writes looks like any other.
+                print('  gap elision OFF (--elide 0): no cell will build sdec.gap_model, so this run')
+                print('    covers neither the elision program nor the over-read. Deliberate controls')
+                print('    only -- every ordinary soak is expected to carry both.')
             if a.elide > 0:
                 # THE IDS COME FROM VECTOR_EXPECT, not from a second list here. The gap vectors are
                 # exactly the ones held to 'nodrop' -- a declined byte IS the defect they exist to find --
