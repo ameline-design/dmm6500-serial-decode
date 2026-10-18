@@ -193,7 +193,17 @@ brun.elide_maxsec = brun.elide_maxsec or 30
 -- sdec.rates measured to be honoured while the elision program runs; 1 000 000, the next one up, came
 -- back as 83 333. The cap in brun.point has the measurement.
 brun.elide_fsmax = brun.elide_fsmax or 640000
--- The detection window per baud, in seconds, in two tiers. 1/100 s is the working number: it is clear of
+-- The detection window per baud, in seconds, in two tiers.
+--
+-- 25 ms, raised from 1/100 s, and the reason is the scratch budget rather than detection. The detector
+-- fires only when a whole window holds no crossing, so for an idle run G the chance is 0 below W,
+-- (G - W) / W between W and 2W, and certain above 2W -- which makes W the ONLY threshold on what gets
+-- elided, the program having no way to see a gap's size in advance. At 25 ms nothing under 25 ms is ever
+-- elided and everything over 50 ms always is, so the firing threshold and the 50 ms promise become one
+-- number. That matters because a scratch per gap is what recovers the burst heads and there are only 12
+-- of them: a slot spent on a 20 ms gap saves 19 bytes of record where a 50 ms gap saves 48.
+--
+-- The old 1/100 s was clear of
 -- gap_elide's two-frame floor at every rate from 2400 Bd up, and clear of the 0.4 * n / fs record cap
 -- below, which bottoms out at 12.5 ms -- so above the boundary the window is a wall-clock constant and
 -- stops scaling with the rate.
@@ -203,7 +213,7 @@ brun.elide_fsmax = brun.elide_fsmax or 640000
 -- is where that floor stops binding -- two frames at 8N1 pass 10 ms at 2000 Bd.
 brun.elide_lowbaud = brun.elide_lowbaud or 2400
 brun.elide_win_low = brun.elide_win_low or 0.100
-brun.elide_win = brun.elide_win or 0.010
+brun.elide_win = brun.elide_win or 0.025
 
 -- The shortest idle run the app undertakes to elide, in seconds, and a product statement rather than the
 -- gate below: it is what a caller may rely on at any rate in the ladder, where the gate is what this
@@ -304,7 +314,10 @@ end
 -- across the rate ladder. tools/make_vectors.lua:595 tabulates them; `loop = true` runs each pass's tail
 -- into the next lead, so a vector named for 600 renders 610.
 brun.elide_gapbits = brun.elide_gapbits or
-  {v98a = 610, v98b = 610, v98c = 410, v99a = 1010, v99b = 1010, v99c = 610}
+  {v98a = 610, v98b = 610, v98c = 410, v99a = 1010, v99b = 1010, v99c = 610,
+   -- Sized in milliseconds at the nominal 9600 Bd: 960 bit times is 100 ms there and 50 at 19200,
+   -- 4800 is 500 and 250. The only two that clear twice a wall-clock window at both rates.
+   v98d = 960, v99d = 4800}
 -- Re-probe count, and the wait between tries. One shot races the generator's arb start: 180 probes of
 -- 396 found a flat line sitting at the cell's own commanded offset. See the retry in brun.point.
 brun.elide_probe_tries = brun.elide_probe_tries or 4

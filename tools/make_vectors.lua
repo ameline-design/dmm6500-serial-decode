@@ -682,6 +682,50 @@ vec{id = 'v99c', desc = '80 bytes of lorem behind a 600-bit-time idle lead AND s
              by, nb, nil, GAP7
     end}
 
+-- ---------------------------------------------------------------------------
+-- TWO GAPS SIZED IN MILLISECONDS, because the app's threshold is in milliseconds.
+--
+-- The six above are sized in bit times, which is what makes one file serve every rate -- and that is
+-- exactly wrong for testing a detector whose window is a wall clock. A gap of 610 bit times is 63.5 ms
+-- at 9600 Bd and 31.8 at 19200, so a vector that clears a 25 ms window at one rate misses it at the
+-- next, and the cells that matter most are the ones that go stochastic.
+--
+-- So these two are sized so that their duration AT THE RATES THAT MATTER clears twice the window, which
+-- is where the detector fires with certainty rather than with probability (G - W) / W:
+--
+--   vector   bit times   at 9600 Bd   at 19200 Bd   against a 25 ms window
+--   v98d           960      100.0 ms        50.0 ms   fires at both, 2W exactly at 19200
+--   v99d          4800      500.0 ms       250.0 ms   fires at both with 10x and 5x margin
+--
+-- v99d RENDERS AT 5 SAMPLES A BIT, NOT 10, AND THAT IS A SIZE DECISION rather than an impairment. A
+-- 4800-bit-time gap at 10 samples a bit is 61 100 points, 122 kB, which is past
+-- SDG_UPLOAD_SAFE_BYTES of 65 536 -- the ceiling below which a C1:WVDT upload has never wedged the
+-- generator's LAN. At 5 it is 28 050 points and 56 kB. Five divides evenly, so every edge still lands
+-- exactly on an arb sample and a clean rectangular vector carries no edge-placement error at all; the
+-- x10 family exists for placing an edge SUB-bit, which these do not do.
+--
+-- Both are judged 'nodrop' like the six above: a declined byte is the failure being looked for.
+vec{id = 'v98d', desc = '130 bytes of lorem behind a 100 ms idle lead at 9600 Bd (960 bit times), '
+                        .. '8N1 -- a pause sized in TIME, so it clears a wall-clock window at 19200 '
+                        .. 'as well as at 9600',
+    fs = sr(9600), fsv = 5.0,
+    build = function()
+      local by, nb = GEN_BYTES(GAP8)
+      -- 950 + tail 10 = 960 bit times at the join, which is 100.0 ms at 9600 Bd exactly.
+      return {bytes = by, baud = 9600, fs = sr(9600), gap = 0, lead = 950, tail = 10,
+              loop = true}, by, nb, nil, GAP8
+    end}
+
+vec{id = 'v99d', desc = '80 bytes of lorem behind a 500 ms idle lead at 9600 Bd (4800 bit times), '
+                        .. '7E1 at 5 samples/bit -- the long pause, which no bit-time vector can '
+                        .. 'reach without passing the upload ceiling',
+    fs = sr(9600, 5), fsv = 5.0,
+    build = function()
+      local by, nb = GEN_BYTES(GAP7)
+      return {bytes = by, baud = 9600, fs = sr(9600, 5), nbits = 7, par = 1, gap = 0,
+              lead = 4790, tail = 10, loop = true}, by, nb, nil, GAP7
+    end}
+
 vec{id = 'v97', desc = '1024 random bytes masked to 7 bits -- v93 with bit 7 cleared, 9600 8N1 '
                        .. '(over the upload ceiling)',
     fs = sr(9600), fsv = 5.0, long = true,

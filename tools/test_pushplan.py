@@ -215,18 +215,21 @@ bytes14 = int(210 * sum(len(r) + 1 for r in ROWS if r and r[0].isdigit()) / 2.0)
 # more r-series therefore cannot shrink this plan at all, which is worth stating because it is the
 # obvious thing to try. 1591 cells a lap, measured, against 1505 before the two two-gap vectors.
 #
-# 279000-280500 brackets the measured 279720, re-measured after the rate ladder lost seven entries: 600
+# 294000-295500 brackets the measured 294840, re-measured after v98d and v99d joined the draw --
+# two gap vectors sized in milliseconds rather than bit times, so a wall-clock detector window is
+# cleared at 19200 Bd as well as at 9600. Before them the ladder had lost seven entries: 600
 # and 1800 out of sdec.stdbaud's drawn range, and the three interstitials that used to fill (300,1200),
 # (1200,2400) and (2400,4800), which INTERSTITIAL_LO now refuses. 43 rates a lap became 36, so the
-# four-random projection fell from 1591 cells to 1332 and the bytes from 22.3 MB to 18.7.
+# four-random projection fell from 1591 cells to 1332 and the bytes from 22.3 MB to 18.7; the two new
+# vectors then took it to 1404 cells and 19.8 MB.
 #
 # The byte bound follows the measurement down to 20 MB rather than being left slack at 23. What it is NOT
 # is the binding constraint: that is PUSH_MAX_ROWS, asserted separately below, where 279720 of 400000 now
-# leaves 30 %. And the 210-lap plan is deliberately over-sized -- notes/SOAK-14DAY.md records that a stop
+# leaves 26 %. And the 210-lap plan is deliberately over-sized -- notes/SOAK-14DAY.md records that a stop
 # at 8 days reaches ~95 laps and the rest never play -- so a longer lap costs laps at the far end that
 # were never going to run. Re-measure rather than widen if the draw changes again, and if PUSH_MAX_ROWS
 # ever gets close, the lap count is the thing to cut, not this.
-check('a 210-lap plan is the size the design says', 279000 < n14 < 280500 and bytes14 < 20 * 1024 * 1024,
+check('a 210-lap plan is the size the design says', 294000 < n14 < 295500 and bytes14 < 21 * 1024 * 1024,
       '%d rows, %.1f MB, %d batches' % (n14, bytes14 / 1048576.0,
                                         (n14 + RB.PUSH_BATCH_ROWS - 1) // RB.PUSH_BATCH_ROWS))
 check('and it is inside PUSH_MAX_ROWS', n14 < RB.PUSH_MAX_ROWS,

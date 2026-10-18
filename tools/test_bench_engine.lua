@@ -3063,8 +3063,8 @@ print('-- the elision window tier, and the gate that refuses a gap it cannot det
 -- The leading semicolon is load-bearing: without it Lua reads the print above and this parenthesis as one
 -- expression, calls print's nil return, and the whole block dies with 'attempt to call a nil value'.
 ;(function()
-  ck(brun.elide_window(9600) == 0.010 and brun.elide_window(19200) == 0.010,
-     'the rates that matter get the 10 ms window',
+  ck(brun.elide_window(9600) == 0.025 and brun.elide_window(19200) == 0.025,
+     'the rates that matter get the 25 ms window',
      string.format('%g / %g', brun.elide_window(9600), brun.elide_window(19200)))
   ck(brun.elide_window(2399) == 0.100 and brun.elide_window(1200) == 0.100,
      'the low tier gives 1/10 s where the bit-time floor does not ask for more',
@@ -3080,8 +3080,11 @@ print('-- the elision window tier, and the gate that refuses a gap it cannot det
   ck(w24 * 2400 >= 30 and w300 * 300 >= 30,
      'the window clears the 30-bit loop seam at every rate the plan draws',
      string.format('2400 Bd -> %.0f bit(s), 300 Bd -> %.0f bit(s)', w24 * 2400, w300 * 300))
-  ck(w24 > 0.010, '...which means the floor RAISES 2400 Bd above the 1/100 s tier',
-     string.format('%g s, %.0f bits, against the tier 0.01 at 24 bits', w24, w24 * 2400))
+  -- At a 25 ms tier the floor no longer binds at 2400 Bd -- 40 bit times is 16.7 ms there, under the
+  -- tier -- so it is 300 and 1200 that it still raises. Asserted rather than dropped, because the floor
+  -- is what keeps a vector's own loop seam out of the detector and a tier change must not retire it.
+  ck(w300 > brun.elide_win, 'and the bit-time floor still raises 300 Bd above the tier',
+     string.format('%.4f s, %.0f bits, against the tier %g', w300, w300 * 300, brun.elide_win))
   -- AND IT MUST NOT REACH THE RATES THAT MATTER. 40 bit times is 4.2 ms at 9600 and 2.1 at 19200, both
   -- under the tier, so the product rates keep exactly the window they were given.
   ck(brun.elide_window(9600) == brun.elide_win and brun.elide_window(19200) == brun.elide_win,
@@ -3090,52 +3093,60 @@ print('-- the elision window tier, and the gate that refuses a gap it cannot det
                    brun.elide_window(19200), brun.elide_win))
 
   -- The tier caps the request rather than replacing it, in both directions.
-  ck(brun.elide_for('v98a', 9600, 0.1) == 0.010, 'the tier caps a request that is too long',
+  ck(brun.elide_for('v98a', 9600, 0.1) == 0.025, 'the tier caps a request that is too long',
      tostring(brun.elide_for('v98a', 9600, 0.1)))
   ck(brun.elide_for('v98a', 9600, 0.005) == 0.005, '...and leaves a shorter request alone',
      tostring(brun.elide_for('v98a', 9600, 0.005)))
 
   -- Every gap vector must elide at both rates the user cares about, or the lap tests nothing there.
-  local vids = {'v98a', 'v98b', 'v98c', 'v99a', 'v99b', 'v99c'}
+  -- WHICH VECTORS CLEAR THE PROMISE AT BOTH RATES, which is three and not six. The six bit-time
+  -- vectors were sized so one file serves every rate, and that is exactly wrong against a wall-clock
+  -- window: 610 bit times is 63.5 ms at 9600 and 31.8 at 19200, so v98a clears 2W at one rate and not
+  -- the next. v98d and v99d are sized in milliseconds for this reason.
+  local both = {'v99a', 'v98d', 'v99d'}
   local i, allok, worst = nil, true, nil
-  for i = 1, 6 do
-    local a = brun.elide_for(vids[i], 9600, 0.1)
-    local b = brun.elide_for(vids[i], 19200, 0.1)
-    if a == nil or b == nil then allok = false worst = vids[i] end
+  for i = 1, table.getn(both) do
+    if brun.elide_for(both[i], 9600, 0.1) == nil or brun.elide_for(both[i], 19200, 0.1) == nil then
+      allok = false worst = both[i]
+    end
   end
-  ck(allok, 'all six gap vectors elide at 9600 AND 19200', worst == nil and 'all six'
+  ck(allok, 'v99a, v98d and v99d elide at 9600 AND 19200', worst == nil and 'all three'
      or (worst .. ' declined'))
+  -- And the ones that do NOT are declined rather than armed, which is the whole point of raising the
+  -- window: a gap under the promise never spends one of the twelve scratch slots.
+  ck(brun.elide_for('v98a', 19200, 0.1) == nil and brun.elide_for('v98c', 19200, 0.1) == nil,
+     'v98a and v98c are declined at 19200, their gaps being under the 50 ms promise',
+     string.format('v98a %.1f ms, v98c %.1f ms', 610000 / 19200, 410000 / 19200))
 
   -- v98c at 19200 is the binding case: 410 bit times is 21.4 ms against a 20 ms requirement. Asserted by
   -- name, because it is the one cell a slightly larger window or margin would silently drop.
-  ck(brun.elide_for('v98c', 19200, 0.1) == 0.010,
-     'v98c at 19200 is the tightest pass in the set and still passes',
-     string.format('410/19200 = %.2f ms, needs %.0f ms', 410000 / 19200,
-                   brun.elide_margin * 10))
+
 
   -- THE EXPENSIVE BAND, which is also the one that has to be right: 300 and 1200 are the only rates left
   -- under 2400 and both are anchors rather than filler. All six vectors must elide at both.
   local lowok, lowbad = true, nil
-  for i = 1, 6 do
+  local vids = {'v98a', 'v98b', 'v98c', 'v99a', 'v99b', 'v99c', 'v98d', 'v99d'}
+  for i = 1, table.getn(vids) do
     if brun.elide_for(vids[i], 300, 0.1) == nil or brun.elide_for(vids[i], 1200, 0.1) == nil then
       lowok = false lowbad = vids[i]
     end
   end
-  ck(lowok, 'all six gap vectors elide at 300 AND 1200, which the bit-time floor must not break',
+  ck(lowok, 'every gap vector still elides at 300 AND 1200, which the bit-time floor must not break',
      lowbad == nil and 'all six' or (lowbad .. ' declined'))
 
   -- v98c at 1200 is the tightest pass in the low band: 341.7 ms against 200 ms needed, 1.7x. Named for
   -- the same reason as the 19200 case -- it is the cell a larger window or margin would quietly drop.
-  ck(brun.elide_for('v98c', 1200, 0.1) == 0.100,
+  ck(brun.elide_for('v98c', 1200, 0.1) ~= nil,
      'v98c at 1200 is the tightest low-band pass and still passes',
-     string.format('410/1200 = %.1f ms, needs %.0f ms', 410000 / 1200,
-                   brun.elide_margin * brun.elide_win_low * 1000))
+     string.format('410/1200 = %.1f ms against %.1f ms', 410000 / 1200,
+                   brun.elide_margin * brun.elide_window(1200) * 1000))
 
   -- AND THE TIER IS ABOVE gap_elide's OWN FLOOR AT 300 Bd, which is the point of it. Two frames at 8N1 is
   -- 66.7 ms there, so a 10 ms window would be clamped up to 66.7 and the window an operator reads would
   -- not be the window the detector used. 1/10 s clears it by half again.
-  ck(brun.elide_win_low > (2 * 10 / 300), 'the low tier sits above the two-frame floor at 300 Bd',
-     string.format('%g s window against a %.1f ms floor', brun.elide_win_low, 2 * 10 / 300 * 1000))
+  ck(brun.elide_window(300) > (2 * 10 / 300), 'the low tier sits above the two-frame floor at 300 Bd',
+     string.format('%.4f s window against a %.1f ms floor', brun.elide_window(300),
+                   2 * 10 / 300 * 1000))
 
   -- And it must decline where the gap genuinely cannot be seen.
   local w, why = brun.elide_for('v98c', 31250, 0.1)
@@ -3143,12 +3154,13 @@ print('-- the elision window tier, and the gate that refuses a gap it cannot det
   w, why = brun.elide_for('v98a', 250000, 0.1)
   ck(w == nil and why ~= nil, 'and v98a at 250000, where the lap produced garbage', tostring(why))
   ck(why ~= nil and string.find(why, '2.4', 1, true) ~= nil
-     and string.find(why, '20 ms', 1, true) ~= nil,
-     'the reason carries both numbers, so a row says WHY it declined', tostring(why))
+     and string.find(why, '50 ms', 1, true) ~= nil
+     and string.find(why, '25 ms', 1, true) ~= nil,
+     'the reason carries the gap, what it needed and the window it needed it against', tostring(why))
 
   -- A vector the table does not know gets the window and no gate.
   w, why = brun.elide_for('v71', 9600, 0.1)
-  ck(w == 0.010 and why == nil, 'a vector with no declared gap gets the window and no gate',
+  ck(w == 0.025 and why == nil, 'a vector with no declared gap gets the window and no gate',
      string.format('%s / %s', tostring(w), tostring(why)))
   ck(brun.elide_for('v98a', 9600, 0) == nil and brun.elide_for('v98a', 9600, nil) == nil,
      'and asking for no window gets none')

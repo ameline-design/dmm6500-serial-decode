@@ -58,6 +58,11 @@ MAP = {
     'v99b': 'SER_LoremGapMid_7E1_x10',
     'v98c': 'SER_LoremGapBoth_8N1_x10',
     'v99c': 'SER_LoremGapBoth_7E1_x10',
+    # Sized in MILLISECONDS rather than bit times, so the pause clears a wall-clock detector
+    # window at 19200 Bd as well as at 9600. v99d renders at 5 samples a bit to stay inside
+    # SDG_UPLOAD_SAFE_BYTES; at 10 its 4800-bit gap would be 122 kB.
+    'v98d': 'SER_LoremGap100ms_8N1_x10',
+    'v99d': 'SER_LoremGap500ms_7E1_x5',
     # ---------------------------------------------------------------------------------------------
     # FULL SCALE: the data band spans -32767..+32767 instead of the 0..21626 every vector above
     # renders, so the band on the wire is OFST +/- AMP/2 exactly and AMP 10 OFST 0 is a true

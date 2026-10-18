@@ -217,6 +217,7 @@ VECTOR_EXPECT = {
     'v98a': 'nodrop', 'v99a': 'nodrop',
     'v98b': 'nodrop', 'v99b': 'nodrop',
     'v98c': 'nodrop', 'v99c': 'nodrop',
+    'v98d': 'nodrop', 'v99d': 'nodrop',
     # Impulse spikes at the amplitude ceiling: +/-3.0 V stacking to 9.3 V on a 3.3 V line. Whether a
     # given rate's sampling instants land on the spikes is a function of the rate, so which rates
     # survive is not knowable in advance.
@@ -878,11 +879,24 @@ def selftest():
        'the same vector draws a different wait once the list it was shuffled in changes')
     ck(amp_ofst_u(1, po.index('v71'), 6) != amp_ofst_u(1, ofull.index('v71'), 6),
        'the same vector draws a different amplitude and offset once the list changes')
-    a1 = amp_ofst_for(po[0], *amp_ofst_u(1, 0, 0))
-    a2 = amp_ofst_for(po[0], *amp_ofst_u(1, ofull.index(po[0]), 0))
-    ck(a1 != a2 or ofull.index(po[0]) == 0,
-       'the first skipped-plan cell draws a different amplitude/offset than the unskipped plan gave '
-       'that same vector')
+    # ACROSS THE WHOLE PLAN RATHER THAN ON CELL ONE. The earlier form asked this of po[0] alone and
+    # passed by luck for two years: amp_ofst_for quantises to Q_DIGITS and clamps to the envelope, so two
+    # genuinely different draws can land on one pair, and when v98d and v99d joined the draw the first
+    # vector became such a collision. The property is that skipping re-keys the stimulus, which is a
+    # claim about the plan and not about its first row, so every moved vector is offered and one has to
+    # show it.
+    nmoved, nchanged = 0, 0
+    for v in po:
+        i_skip, i_full = po.index(v), ofull.index(v)
+        if i_skip == i_full:
+            continue
+        nmoved += 1
+        if amp_ofst_for(v, *amp_ofst_u(1, i_skip, 0)) != amp_ofst_for(v, *amp_ofst_u(1, i_full, 0)):
+            nchanged += 1
+    ck(nmoved > 0, 'the premise: skipping moved at least one vector, or there is nothing to re-key')
+    ck(nchanged > 0,
+       'a skipped plan draws a different amplitude/offset for a moved vector -- %d of %d moved '
+       'vectors changed' % (nchanged, nmoved))
     ck(plan(1, vecs, None, skip)['skipped'] == sorted(skip),
        'the plan records what it skipped, so a mismatch is visible and not merely numerical')
     # THE WHOLE PLAN, NOT A FOUR-VECTOR PREFIX, for the omission checks. v96 sits at index 32 of the

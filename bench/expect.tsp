@@ -66,6 +66,9 @@ bexp.VEC = {
   v99a = {kind = 'lorem', n = 80, cols = 64},
   v99b = {kind = 'lorem', n = 80, cols = 64},
   v99c = {kind = 'lorem', n = 80, cols = 64},
+  -- The two millisecond-sized gap vectors. Same payloads as v98a and v99a; only the pause differs.
+  v98d = {kind = 'lorem', n = 130, cols = 64},
+  v99d = {kind = 'lorem', n = 80, cols = 64},
 }
 
 -- Cached per id, because a lap plays one vector over 22 rates and regenerating the same bytes 22 times is
