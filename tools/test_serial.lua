@@ -11599,12 +11599,18 @@ end)()
           string.format('%s vs %s', tostring(sdec.acq_bufplan[2].cap), tostring(sdec.acq_bufcap)))
     -- AND THE WHOLE SET FITS THE SMALLEST SUPPORTED POOL. The 2461 holds 6 875 000 against the
     -- DMM6500's 7 080 255, and a set that does not fit it is a set that cannot ship.
+    -- THE FRAME RUNGS COUNT TOO. They are allocated at launch beside the plan and never freed until exit,
+    -- so a total that leaves them out is not the total the pool sees -- and summing only the plan would let
+    -- the ladder grow past the budget while this case went on passing.
     local plantot, pi = sdec.gap_maxscratch * sdec.gap_scratchcap, nil
     for pi = 1, sdec.acq_bufplan.n do plantot = plantot + sdec.acq_bufplan[pi].cap end
-    check('the set plus two minimum default buffers fits the 2461 pool, not just the DMM6500',
+    local rungtot = 0
+    for pi = 1, table.getn(sdec.acq_framerungs) do rungtot = rungtot + sdec.acq_framerungs[pi] end
+    plantot = plantot + rungtot
+    check('the set plus the frame ladder and two minimum default buffers fits the 2461 pool',
           plantot + 2 * sdec.ck_defbufmin < 6875000 and plantot <= sdec.acq_bufbudget,
-          string.format('%d readings, %d of budget %d, 2461 pool 6875000', plantot,
-                        plantot + 2 * sdec.ck_defbufmin, sdec.acq_bufbudget))
+          string.format('%d readings including %d of rungs, %d of budget %d, 2461 pool 6875000',
+                        plantot, rungtot, plantot + 2 * sdec.ck_defbufmin, sdec.acq_bufbudget))
     -- EACH MODE LANDS ON ITS OWN BUFFER, and the two recording modes land on the SAME one.
     local keepmode = sdec.capmode
     sdec.capmode = 'frame'
@@ -11618,11 +11624,30 @@ end)()
           string.format('frame=%s sml=%s med=%s shared=%s',
                         tostring(bf ~= nil and bf.capacity), tostring(bs ~= nil and bs.capacity),
                         tostring(bm ~= nil and bm.capacity), tostring(bs == bm)))
-    check('...at the planned capacities, so the sizing arguments describe what is allocated',
-          bf ~= nil and bf.capacity == sdec.acq_bufplan[1].cap
+    -- THE FRAME ASK LANDS ON THE SMALLEST RUNG THAT HOLDS IT, not on the plan's default, and that is the
+    -- whole point of the ladder: an armed capture stores the entire buffer, so a 21 100-reading ask handed
+    -- the 32 768 default stores 1.4x what it asked for and the shortest captures on the ladder stored 2.6x.
+    -- The recording modes have exactly one buffer and take it whatever they ask.
+    check('...the frame ask lands on a rung that holds it, and the record on its planned size',
+          bf ~= nil and bf.capacity >= sdec.acq_cap(20000)
           and bs ~= nil and bs.capacity == sdec.acq_bufplan[2].cap,
-          string.format('%s / %s', tostring(bf ~= nil and bf.capacity),
-                        tostring(bs ~= nil and bs.capacity)))
+          string.format('%s for an ask of %s / %s', tostring(bf ~= nil and bf.capacity),
+                        tostring(sdec.acq_cap(20000)), tostring(bs ~= nil and bs.capacity)))
+    -- AND THAT THE FIT IS TIGHT, which the check above cannot see: it passes on the largest buffer in the
+    -- set just as well as on the right one. This fails if any smaller allocated frame buffer would also
+    -- have held the ask.
+    check('...and no smaller allocated frame buffer would have held it',
+          (function()
+             if bf == nil then return false end
+             local want, i = sdec.acq_cap(20000), nil
+             for i = 1, table.getn(sdec.acq_framerungs) do
+               local rb, rc = sdec.acq_bufhave(sdec.acq_rungid(sdec.acq_framerungs[i]))
+               if rb ~= nil and rc >= want and rc < bf.capacity then return false end
+             end
+             return true
+           end)(),
+          string.format('%s of the rungs %s', tostring(bf ~= nil and bf.capacity),
+                        table.concat(sdec.acq_framerungs, ',')))
     -- THE POINT OF THE WHOLE CHANGE: a mode change allocates nothing. Same handles, whichever way round
     -- the modes are visited, so the pool is never asked and nothing can be refused.
     local nliveb = LIVEBUFS()
@@ -11737,14 +11762,21 @@ end)()
     sdec.acq_bufinit()
     local beforefree = LIVEBUFS()
     local freedall = sdec.acq_buffree()
-    check('acq_buffree clears the global names too, or the next launch sweeps a dead handle',
-          SDEC_SBUF_FRAME == nil and SDEC_SBUF_REC == nil,
-          string.format('frame=%s rec=%s', tostring(SDEC_SBUF_FRAME), tostring(SDEC_SBUF_REC)))
-    check('acq_buffree releases every static buffer and every scratch, not just the one in force',
+    -- The rungs are published under their own global names and have to be cleared with the rest: a rung
+    -- reachable only through a dead sdec is exactly what buf_sweep cannot spare and cannot free.
+    local rung1 = sdec.acq_rungid(sdec.acq_framerungs[1])
+    check('acq_buffree clears the global names too, including the rungs',
+          SDEC_SBUF_FRAME == nil and SDEC_SBUF_REC == nil
+          and _G['SDEC_SBUF_' .. string.upper(rung1)] == nil,
+          string.format('frame=%s rec=%s %s=%s', tostring(SDEC_SBUF_FRAME), tostring(SDEC_SBUF_REC),
+                        rung1, tostring(_G['SDEC_SBUF_' .. string.upper(rung1)])))
+    local nexp = sdec.acq_bufplan.n + table.getn(sdec.acq_framerungs) + sdec.gap_nscratch
+    check('acq_buffree releases every static buffer, every frame rung and every scratch',
           freedall and sdec.acq_bufs['frame'] == nil and sdec.acq_bufs['rec'] == nil
-          and LIVEBUFS() == beforefree - sdec.acq_bufplan.n - sdec.gap_nscratch,
+          and sdec.acq_bufs[rung1] == nil
+          and LIVEBUFS() == beforefree - nexp,
           string.format('%s, %d -> %d buffers of an expected %d', tostring(freedall), beforefree,
-                        LIVEBUFS(), beforefree - sdec.acq_bufplan.n - sdec.gap_nscratch))
+                        LIVEBUFS(), beforefree - nexp))
     sdec.capmode = keepmode
     check('and the suite puts the capture mode back', sdec.capmode == keepmode, tostring(sdec.capmode))
     sdec.acq_bufinit()

@@ -1472,11 +1472,12 @@ end
 --                         readings at 100 kS/s, which is what filed 4914 on 29 cells at 21 100. That
 --                         overshoot belongs to a recording and reached the frame buffer only because
 --                         brun.point elides with capmode left at 'frame'.
---                         STILL NOT EXACT, and tools/test_frontrig.lua holds the case open: 1.4x is not
---                         1.0x, and only a capacity per capture size gives that. A ladder of pre-sized
---                         frame buffers -- seven rungs, 12 288 to 49 152, about 197 000 readings in all --
---                         is what would, and it is also what the 50 % over-read needs: one capacity cannot
---                         carry both 43 200 readings of capture and a 300 Bd cell that arms.
+--                         AND IT IS ONE RUNG OF A LADDER, not the only frame buffer: acq_framerungs adds
+--                         12 288 / 16 384 / 20 480 / 24 576 / 40 960 / 49 152 beside it, and acq_framefit
+--                         hands each capture the smallest that holds it. Alone this stored 1.4x a 22 000
+--                         ask and 2.6x the shortest capture on the rate ladder; with the rungs a 20 000
+--                         capture stores 1.10x, measured in tools/test_frontrig.lua. This entry stays the
+--                         default and the fallback, so a pool that refuses every rung still records.
 --     rec     6 000 000   both recording modes, 8 kB and 32 kB. One buffer rather than two because they
 --                         are the same path -- stream_begin and stream_acquire -- so sharing costs a clear
 --                         on a mode change and nothing else, and it is what makes the over-read real:
@@ -1500,7 +1501,9 @@ end
 -- rejected: the pre-roll then lands in a scratch, the record opens at the trigger edge instead of before
 -- it, and the first byte of every capture is clipped -- five suite failures with 'Hello, World!' decoding
 -- as 'ello, World!'. The pre-roll has to be IN the record, so the capacity has to fit the capture.
--- 32 768 + 6 000 000 + 24 576 of scratches = 6 057 344 of this, leaving 442 656 unasked for.
+-- 32 768 frame + 163 840 of frame rungs + 6 000 000 record + 24 576 of scratches = 6 221 184 of this,
+-- leaving 278 816 unasked for. Against the 2461's smaller 6 875 000 pool it still fits, with 653 816 spare
+-- beside two minimum default buffers.
 sdec.acq_bufbudget = 6500000
 --
 -- `least` IS WHAT MAKES THIS FIT EVERY MACHINE. The 2461 pool is 6 875 000 against the DMM6500's
@@ -1522,13 +1525,64 @@ sdec.acq_bufplan = {
 sdec.acq_buffor = {frame = 'frame', sml = 'rec', med = 'rec'}
 sdec.acq_bufs = sdec.acq_bufs or {}
 
+-- EXTRA FRAME BUFFERS, so a capture takes one that FITS instead of the only one there is.
+--
+-- An armed capture stores the whole buffer, so handing every frame capture the same 32 768 readings makes
+-- the shortest ones pay the longest one's length: a 230 400 Bd capture needs acq_cap(11 352) = 12 020 and
+-- stored 31 129, 2.6x, and the 22 000-reading case stored the same 31 129 at 1.4x. The cost is real and
+-- measured -- 8.2 s/cell against a 6.5 s history, which is the over-capture applied to the 58 % of a cell
+-- that is acquire.
+--
+-- Together with acq_bufplan's own 32 768 these give 12 288 / 16 384 / 20 480 / 24 576 / 32 768 / 40 960 /
+-- 49 152, spaced about 1.25x, so the worst fit is 1.33x and most are under 1.2x. The span is what frame
+-- mode can actually ask for: acq_cap of 240 bytes x 10 bits x 4.3 samples a bit at the top of the rate
+-- ladder is 12 020, and x 12 at sabit_max with a 50 % over-read is 45 460.
+--
+-- 163 840 readings here plus the plan's 32 768 is 196 608, against 450 848 unasked for in the budget, so
+-- the ladder is affordable twice over. 32 768 is NOT repeated here: acq_framefit treats the plan's own
+-- frame buffer as a rung like any other, which is also what makes it the fallback when the pool refuses
+-- these -- every one is optional, and a refused rung costs a worse fit rather than a failed capture.
+sdec.acq_framerungs = {12288, 16384, 20480, 24576, 40960, 49152}
+
+-- The buffer id a rung is allocated under. One function so acq_bufinit, acq_buffree and acq_framefit
+-- cannot disagree about the name.
+function sdec.acq_rungid(cap)
+  return 'fr' .. tostring(cap)
+end
+
+-- The smallest allocated frame buffer that can hold `want` readings. -> buffer, capacity, or nil.
+--
+-- Smallest-that-fits and not first-that-fits: the rungs are in ascending order here, but a refused one
+-- leaves a gap and the plan's 32 768 sits outside the list entirely, so the comparison is what orders
+-- them rather than the table.
+function sdec.acq_framefit(want)
+  local best, bcap = nil, nil
+  local b, c = sdec.acq_bufhave('frame')
+  if b ~= nil and c ~= nil and c >= want then best, bcap = b, c end
+  local i
+  for i = 1, table.getn(sdec.acq_framerungs) do
+    local rb, rc = sdec.acq_bufhave(sdec.acq_rungid(sdec.acq_framerungs[i]))
+    if rb ~= nil and rc ~= nil and rc >= want and (bcap == nil or rc < bcap) then
+      best, bcap = rb, rc
+    end
+  end
+  return best, bcap
+end
+
 -- The static buffer this mode records into, or nil before acq_bufinit has run. Live-checked, because a
 -- dead handle raises on hardware where the offline mock answers.
-function sdec.acq_bufmode(id)
+function sdec.acq_bufmode(id, want)
   if id == nil then id = sdec.capmode end
   -- Through the map, because 8 kB and 32 kB share one. An unrecognised mode takes the frame buffer, which
   -- is what mode_cur() does with an unrecognised capmode.
   local bid = sdec.acq_buffor[id] or 'frame'
+  -- A frame caller that says how much it needs gets the rung that fits it. Without `want` this is the
+  -- behaviour it always had, which is what keeps every existing caller and every test unchanged -- and the
+  -- recording modes never take this path, their one buffer being larger than anything they ask for.
+  if bid == 'frame' and want ~= nil and want > 0 then
+    local fb, fc = sdec.acq_framefit(want)
+    if fb ~= nil then return fb, fc end
+  end
   local b = sdec.acq_bufs[bid]
   if b == nil then return nil end
   local cap = nil
@@ -1570,6 +1624,11 @@ function sdec.acq_isstatic(v)
   local i
   for i = 1, sdec.acq_bufplan.n do
     if sdec.acq_bufs[sdec.acq_bufplan[i].id] == v then return true end
+  end
+  -- The frame rungs are the set too, and leaving them out would let acq_make_buffer delete one and
+  -- buf_sweep offer another as a stranger -- the two faults the plan's own buffers already had.
+  for i = 1, table.getn(sdec.acq_framerungs) do
+    if sdec.acq_bufs[sdec.acq_rungid(sdec.acq_framerungs[i])] == v then return true end
   end
   if sdec.gapbufs ~= nil then
     for i = 1, table.getn(sdec.gapbufs) do
@@ -1653,6 +1712,35 @@ function sdec.acq_bufinit()
       end
     end
   end
+  -- THE FRAME LADDER, after the plan and before the scratches, and every rung OPTIONAL. A refused rung
+  -- costs a worse-fitting capture, never a failed one -- acq_framefit simply does not offer it and the
+  -- plan's own frame buffer still holds anything frame mode asks for. So nothing here touches `nok` or
+  -- `firstwhy`, and a short ladder is not a short set.
+  --
+  -- Largest first, for acq_bufplan's reason: the pool is one total, so the deepest ask wants the emptiest
+  -- pool. Counted separately and published, because 'the ladder came up short' is a thing a lap should be
+  -- able to read rather than infer from cell times.
+  local nrung, nrungok = table.getn(sdec.acq_framerungs), 0
+  for i = nrung, 1, -1 do
+    local rcap = sdec.acq_framerungs[i]
+    local rid = sdec.acq_rungid(rcap)
+    if sdec.acq_bufhave(rid) ~= nil then
+      nrungok = nrungok + 1
+    else
+      local mok, nb = pcall(buffer.make, rcap, buffer.STYLE_STANDARD)
+      local cap = nil
+      if mok and nb ~= nil then pcall(function() cap = nb.capacity end) end
+      if type(cap) == 'number' and cap >= 10 then
+        sdec.acq_fillmode(nb)
+        sdec.acq_bufs[rid] = nb
+        -- Published for acq_bufinit's reason: a reload builds a fresh sdec and buf_sweep walks _G, so a
+        -- buffer reachable only through the old table strands for the power cycle.
+        _G['SDEC_SBUF_' .. string.upper(rid)] = nb
+        nrungok = nrungok + 1
+      end
+    end
+  end
+  sdec.acq_rungok, sdec.acq_rungwant = nrungok, nrung
   local scr = sdec.gap_scratches(sdec.gap_nscratch, nil, nil)
   sdec.acq_scrgot = 0
   if scr ~= nil then sdec.acq_scrgot = table.getn(scr) end
@@ -1695,6 +1783,23 @@ function sdec.acq_buffree()
       end
     end
   end
+  -- The frame rungs go the same way and under the same discipline: the verdict is read, and a refusal keeps
+  -- the handle so a retry is possible. Counted into the same acq_delfail, because a stranded rung is as
+  -- stranded as a stranded plan buffer.
+  for i = 1, table.getn(sdec.acq_framerungs) do
+    local rid = sdec.acq_rungid(sdec.acq_framerungs[i])
+    local rb = sdec.acq_bufs[rid]
+    if rb ~= nil then
+      local rok = pcall(function() buffer.delete(rb) end)
+      if rok then
+        sdec.acq_bufs[rid] = nil
+        _G['SDEC_SBUF_' .. string.upper(rid)] = nil
+      else
+        sdec.acq_delfail = (sdec.acq_delfail or 0) + 1
+      end
+    end
+  end
+  sdec.acq_rungok, sdec.acq_rungwant = nil, nil
   -- Dropped only if it WAS one of the set and that buffer is now really gone. The old test asked whether the
   -- mode's slot is empty, which after a successful free it always is -- so a per-capture fallback buffer, which
   -- the set never held, had its only handle dropped here and stop()'s own delete was skipped, stranding it for
@@ -2020,7 +2125,9 @@ function sdec.acq_make_buffer(n, perm)
   -- can ask for, so in a healthy session it is always true; where the pool could only grant part of the
   -- set it is the difference between allocating once for the odd mode out and that mode silently recording
   -- a fraction of what it asked for, because acq_fit would clamp it to a capacity nobody checked.
-  local sb, scap = sdec.acq_bufmode()
+  -- `n` is a required CAPACITY here, not a sample count -- acquire() calls this as
+  -- acq_make_buffer(acq_cap(nwant)) -- so it is exactly what picks the frame rung that fits.
+  local sb, scap = sdec.acq_bufmode(nil, n)
   if sb ~= nil and scap ~= nil and scap >= n then
     sdec.trig_settle()
     pcall(function() sb.clear() end)
