@@ -1685,12 +1685,17 @@ function sdec.acq_make_buffer(n, perm)
   local nreq = n
   if perm and sdec.acq_bufcap ~= nil and sdec.acq_bufcap > n then n = sdec.acq_bufcap end
   -- Reuse before anything is freed: the capacity already covers the request, so the clear is the whole cost.
-  -- A sized caller refuses an over-large buffer rather than inheriting one a recording left behind, for the
-  -- reserve's sake; `2 * nreq` is acq_cap's own headroom and reserve with room to spare, not a tuned figure.
+  --
+  -- A sized caller reuses only the buffer it would have made itself, exactly, because its pre-trigger
+  -- reserve is a percentage of whatever capacity it ends up with. An inequality here is not good enough: a
+  -- 32 kB recording asks for 3 593 084, so any band wide enough to be useful also admits the permanent
+  -- 6 000 000, and the reserve loaded against that is 300 000 readings rather than the 189 110 the mode
+  -- sized for. Equality costs a reallocation only when the capture size really changes, which is what every
+  -- build before the permanent record did on every call.
   if sdec.buf ~= nil then
     local cap = nil
     if pcall(function() cap = sdec.buf.capacity end) and type(cap) == 'number' and
-       cap >= n and (perm or cap <= 2 * nreq) then
+       cap >= n and (perm or cap == nreq) then
       sdec.trig_settle()
       pcall(function() sdec.buf.clear() end)
       sdec.acq_fillmode(sdec.buf)

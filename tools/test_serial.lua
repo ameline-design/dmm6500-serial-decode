@@ -11469,10 +11469,30 @@ end)()
           string.format('%s, perm=%s', tostring(b3 ~= nil and b3.capacity),
                         tostring(sdec.acq_bufperm)))
     -- THE POSITION SCALING, WHICH IS WHAT MAKES THAT SPLIT NECESSARY. On a buffer sized to the capture
-    -- it must be a no-op, or every frame capture's reserve moves.
+    -- it must be a no-op, or every frame capture's reserve moves. b3 has to be ALIVE for this: a dead
+    -- buffer raises on the capacity read, acq_pospct degrades to sdec.pretrig, and the check would pass
+    -- without measuring anything.
     check('on a sized buffer the loaded position is sdec.pretrig unchanged',
-          sdec.acq_pospct(20000, b3) == sdec.pretrig,
-          string.format('%s vs %s', tostring(sdec.acq_pospct(20000, b3)), tostring(sdec.pretrig)))
+          b3 ~= nil and b3.alive == true and sdec.acq_pospct(20000, b3) == sdec.pretrig,
+          string.format('%s vs %s, alive=%s', tostring(sdec.acq_pospct(20000, b3)),
+                        tostring(sdec.pretrig), tostring(b3 ~= nil and b3.alive)))
+    -- AND A LARGE SIZED CALLER MUST NOT INHERIT THE PERMANENT ONE, which an inequality cannot express:
+    -- the 32 kB mode at 9600 asks for 3 593 084, so any band wide enough to be useful also admits
+    -- 6 000 000 -- and the reserve loaded against that is 300 000 readings instead of 189 110. The
+    -- capacity coming back as the request is what says the permanent buffer was freed and replaced.
+    drop()
+    sdec.acq_make_buffer(sdec.acq_cap(20000), true)
+    local big = 3593084
+    local b3b = sdec.acq_make_buffer(big)
+    check('a large recording does not inherit the permanent buffer, it takes its own size',
+          b3b ~= nil and b3b.capacity == big and sdec.acq_bufperm == false,
+          string.format('%s, perm=%s', tostring(b3b ~= nil and b3b.capacity),
+                        tostring(sdec.acq_bufperm)))
+    check('...and the reserve that loads against it is the one the mode sized for, not 300 000',
+          b3b ~= nil and b3b.alive == true and sdec.acq_pospct(big, b3b) == sdec.pretrig
+          and sdec.acq_leadmax(b3b) < 200000,
+          string.format('pos=%s leadmax=%s', tostring(sdec.acq_pospct(big, b3b)),
+                        tostring(sdec.acq_leadmax(b3b))))
     -- AND ON THE PERMANENT ONE IT SCALES DOWN, never to zero: 5 % of 20 000 is 1000 readings, which is
     -- 0.017 % of 6 000 000, and a fractional position has never been loaded on this instrument.
     drop()
