@@ -1007,6 +1007,30 @@ end)()
      and seen.primeskip >= 2 * sdec.strm_elide * sdec.fs - 1,
      string.format('%s readings for a %s s window at %s S/s', tostring(seen and seen.primeskip),
                    tostring(sdec.strm_elide), tostring(sdec.fs)))
+  -- ---- and the splice reports WHY, which is the only thing a lap can read ----
+  -- The 166-cell lap of 2026-10-18 found no splice on 87 elided cells and could not say which guard
+  -- stopped it, because a count of zero reads the same for all of them. sdec.spl_why names the exit.
+  --
+  -- 'one burst' IS THE RIGHT ANSWER HERE, and that is what makes this assertable offline at all:
+  -- gen_serial.lua routes nothing into the scratches and applies no resume latency, so the record has no
+  -- timestamp discontinuity and gap_seams finds a single burst. A reason of 'not elided', 'no scratches',
+  -- 'no threshold', 'no rate' or 'no baud' would mean the chain never reached the arithmetic, and 'ok'
+  -- would mean the harness had started modelling the two-buffer acquisition -- which it says it does not.
+  CK('...and the splice says WHY it did not run, not merely that it did not',
+     sdec.spl_why == 'one burst',
+     string.format('%s (nseam=%s nspliced=%s)', tostring(sdec.spl_why),
+                   tostring(sdec.spl_nseam), tostring(sdec.spl_nspliced)))
+  -- THE GUARD CHAIN'S FIRST RUNG, asserted the other way: with elision off the reason must change. Without
+  -- this the check above passes on a build that writes 'one burst' unconditionally.
+  do
+    local keepel = sdec.strm_elide
+    sdec.strm_elide = nil
+    pcall(function() sdec.stream_decode(sdec.buf.n) end)
+    local w = sdec.spl_why
+    sdec.strm_elide = keepel
+    CK('...and a recording that elided nothing says so instead, so the reason is really measured',
+       w == 'not elided', tostring(w))
+  end
 
   -- ---- the ceiling has to be OBSERVABLE, so here is a run that ends on it ----
   -- The fill test above ends the run at once, which is exactly why it cannot check which ceiling was in force:

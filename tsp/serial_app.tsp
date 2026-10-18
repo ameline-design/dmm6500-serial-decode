@@ -719,20 +719,48 @@ function sdec.stream_decode(got)
   -- Cleared before the attempt, so a recording that elides nothing reports no splice rather than the last
   -- elided one's. gap_splice_plan sets them when it runs and a nil here is the honest "not attempted".
   sdec.spl_nseam, sdec.spl_nspliced, sdec.spl_nadded, sdec.spl_norphan = nil, nil, nil, nil
+  -- WHY, AND NOT ONLY WHETHER. The 166-cell lap of 2026-10-18 recorded no splice on 87 elided cells and
+  -- could not say which of five guards stopped it, because a count of zero reads the same for all of
+  -- them. Every exit below names itself, and the name is what the next lap is for.
+  sdec.spl_why = nil
   local rdr, nrd = nil, got
-  if sdec.strm_elide ~= nil and sdec.gapbufs ~= nil and sdec.buf ~= nil then
+  if sdec.strm_elide == nil then
+    sdec.spl_why = 'not elided'
+  elseif sdec.gapbufs == nil or sdec.gapbufs[1] == nil then
+    sdec.spl_why = 'no scratches'
+  elseif sdec.buf == nil then
+    sdec.spl_why = 'no record'
+  else
     local thr = sdec.thr or sdec.lvl_thr
     local fs = sdec.acq_fs or sdec.fs
     local baud = sdec.force_baud
-    if thr ~= nil and fs ~= nil and fs > 0 and baud ~= nil and baud > 0 then
-      local pl = nil
+    if thr == nil then
+      sdec.spl_why = 'no threshold'
+    elseif fs == nil or fs <= 0 then
+      sdec.spl_why = 'no rate'
+    elseif baud == nil or baud <= 0 then
+      sdec.spl_why = 'no baud'
+    else
+      local pl, perr = nil, nil
       -- pcall'd: this reads attributes off twelve buffers, and a scratch the pool refused to make is a dead
       -- handle that raises on the first of them. A refused splice decodes the record as it stands rather than
-      -- failing the capture -- which is gap_model's own fallback discipline.
-      pcall(function()
+      -- failing the capture -- which is gap_model's own fallback discipline. The raise text is KEPT, because
+      -- 'raised' without it is the same dead end the counters were.
+      local pok = pcall(function()
         pl = sdec.gap_splice_plan(sdec.buf, got, sdec.gapbufs, thr, fs / baud, fs)
       end)
-      if pl ~= nil then
+      if not pok then
+        sdec.spl_why = 'raised'
+      elseif pl == nil then
+        -- The plan refuses for two reasons worth telling apart: no seam was found at all, or seams were
+        -- found and every scratch refused its tail. spl_nseam is set either way by gap_splice_plan.
+        if (sdec.spl_nseam or 0) <= 1 then
+          sdec.spl_why = 'one burst'
+        else
+          sdec.spl_why = 'tails refused'
+        end
+      else
+        sdec.spl_why = 'ok'
         rdr, nrd = sdec.ck_reader_spliced(sdec.buf, got, pl), pl.total
       end
     end

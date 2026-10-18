@@ -1030,6 +1030,7 @@ function brun.point(fs, baud, lock, elide, vid)
   -- is a splice that did not run, which reads identically to one that ran and changed nothing.
   r.splseam, r.splran = sdec.spl_nseam, sdec.spl_nspliced
   r.splorph, r.spladd = sdec.spl_norphan, sdec.spl_nadded
+  r.splwhy = sdec.spl_why
   brun.spin_tick()                      -- 4 of 6: the decode is done
   if not okc2 then r.why = 'decode raised'; return r end
   if not okd then
@@ -3271,6 +3272,10 @@ function brun.soak(iterations, tag)
         -- Written on every elided cell, passes included. seam/ran is the pair that matters -- 3 seams with
         -- 0 spliced is a splice that did not run, and it reads identically to one that ran and changed
         -- nothing. orph counts the bursts past the twelfth scratch, which keep the head they came with.
+        -- splwhy first and unconditionally: it is set on every elided cell including the ones where the
+        -- splice never got as far as counting a seam, which are exactly the cells the counters cannot
+        -- describe.
+        if p.splwhy ~= nil then nt = nt .. ' splwhy=' .. tostring(p.splwhy) end
         if p.splseam ~= nil then
           nt = nt .. string.format(' spl=%s/%s', brun.int(p.splran or 0), brun.int(p.splseam))
           if (p.splorph or 0) > 0 then nt = nt .. ' splorph=' .. brun.int(p.splorph) end
