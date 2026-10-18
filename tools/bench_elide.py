@@ -123,7 +123,10 @@ sdec.gapelide = %r
 sdec.trigmode = 'edge'
 sdec.clear_measured()
 sdec.hw_config()
-sdec.acq_make_buffer(sdec.acq_cap(%d))
+-- PERMANENT, as brun.point's elide branch asks for it. Without the second argument this probe
+-- allocates a capture-sized record and reproduces the wrap the permanent buffer exists to stop,
+-- which would make the dedicated elision probe the one tool that cannot see the fix.
+sdec.acq_make_buffer(sdec.acq_cap(%d), true)
 local pn = sdec.probe_n
 if pn > %d then pn = %d end
 local got = sdec.acq_free(pn, nil, true)

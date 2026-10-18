@@ -161,7 +161,7 @@ MANIFEST = [
     # the very next release inverts: '1.4' is followed by '1.10', and '1.10' < '1.4' as strings, so the
     # newer build reads as older. Two digits also make the width fixed, which is what leaves the compare
     # on the digits rather than on where the string ran out.
-    ('Version', '1.57'),
+    ('Version', '1.58'),
     # Stated minimum firmware, kept deliberately low: if the installer compares this
     # field as a STRING then "1.7.3c" sorts above "1.7.17a" and the app refuses to
     # install on the very unit it is developed on. "1.7.0" satisfies either compare.
@@ -342,6 +342,9 @@ def png_icon(W=60, H=60):
 
 
 def main():
+    # DECLARED AT THE TOP because --bench rebinds all four and NAME is read three lines down for the
+    # --out default: Python refuses a `global` that follows a use in the same function.
+    global NAME, MODULES, ENTRY, MANIFEST
     ap = argparse.ArgumentParser()
     ap.add_argument('--out', default=os.path.join(ROOT, NAME + '.tspa'))
     ap.add_argument('--icon-png', default=os.path.join(ROOT, 'docs', 'sdec_icon.png'),
@@ -350,7 +353,33 @@ def main():
                     help='write nothing: exit 1 if the package on disk is not what these sources build')
     ap.add_argument('--no-docs', action='store_true',
                     help='drop every comment from the body -- a DIAGNOSTIC build; use with --out')
+    ap.add_argument('--bench', action='store_true',
+                    help='build Serial_brun.tspa instead: the app PLUS the bench engine, entered at '
+                         'the soak settings screen. Bench scaffolding, not the shipped app')
     args = ap.parse_args()
+    if args.bench:
+        # THE SAME SOURCES, A DIFFERENT DOOR. The engine measures through sdec.acquire(), so the bench
+        # archive carries the whole app -- it is not a smaller build, it is the app with five more
+        # modules and a different entry point. docs/BRUN.md says so on its first screen, because an
+        # operator who installs this expecting a serial analyser gets a soak screen.
+        #
+        # The default --out was derived from NAME before this ran, so it still names the app archive;
+        # the explicit reassignment below is what redirects it.
+        NAME = 'Serial_brun'
+        MODULES = MODULES + ['bench/arb_names.tsp', 'bench/sdg_net.tsp', 'bench/bench_rec.tsp',
+                             'bench/expect.tsp', 'bench/bench_run.tsp', 'bench/bench_panel.tsp']
+        # brun.panel() and NOT sdec.start(): the bench builds its own status screen and never wants the
+        # analyser's two, which would spend display objects out of the pool of 463 that the soak needs.
+        ENTRY = '''
+-- ==================== TTI App entry point ====================
+-- The soak settings screen, and nothing else: no capture is taken and no lap is started until
+-- Run Soak is pressed. sdec.start() is deliberately NOT called -- the bench builds its own status
+-- screen, and the analyser's two would spend display objects the soak needs. docs/BRUN.md.
+brun.panel()
+'''
+        MANIFEST = [(k, 'Serial Brun' if k == 'Title' else v) for k, v in MANIFEST]
+        if os.path.abspath(args.out) == os.path.abspath(os.path.join(ROOT, 'Serial_Decode.tspa')):
+            args.out = os.path.join(ROOT, NAME + '.tspa')
     if args.no_docs:
         # NOT SHIPPABLE, AND IT REFUSES TO PRETEND OTHERWISE: an archive with no comments in it must
         # not land on the default path, where the next --check would read it as the current build and

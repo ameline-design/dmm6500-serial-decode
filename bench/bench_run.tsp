@@ -499,6 +499,75 @@ function brun.nextrow()
 end
 
 -- ---------------------------------------------------------------------------
+-- Narrowing a plan that is already on the key
+-- ---------------------------------------------------------------------------
+-- THE PLAN IS STILL NEVER DRAWN HERE. These are filters over the rows soakplan.py emitted, not a
+-- second draw: the panel can narrow what the key holds and nothing more, which is the honest limit of
+-- starting a soak without a host. Every field is nil by default, so the host-driven path reads exactly
+-- the rows it always did -- a filter that defaulted to anything would silently change what
+-- `run_bench.py --start` means.
+--
+-- A SKIPPED ROW IS STILL A ROW THAT WAS READ. nextrow counts against the '# rows=' header as it goes,
+-- so filtering happens outside it and the declared-count stop keeps working on the whole file.
+brun.filt_baudlo = brun.filt_baudlo          -- Bd, inclusive floor
+brun.filt_baudhi = brun.filt_baudhi          -- Bd, inclusive ceiling
+brun.filt_stdonly = brun.filt_stdonly        -- true: standard rates only
+brun.filt_gaponly = brun.filt_gaponly        -- true: only vectors with a declared gap
+brun.filt_interstit = brun.filt_interstit    -- Bd: no non-standard rate below this
+brun.filt_advonly = brun.filt_advonly        -- true: only vectors known to produce errors
+
+-- Does this row survive the filters? -> true to run it.
+function brun.wanted(c)
+  if c == nil then return false end
+  if brun.filt_baudlo ~= nil and (c.baud or 0) < brun.filt_baudlo then return false end
+  if brun.filt_baudhi ~= nil and (c.baud or 0) > brun.filt_baudhi then return false end
+  -- 'std' is soakplan's own token for a rate off the standard ladder; everything else is drawn
+  -- (random or edge), which is what both the kind filters key on rather than a rate list repeated here.
+  local std = (c.kind == 'std')
+  if brun.filt_stdonly and not std then return false end
+  if brun.filt_interstit ~= nil and not std and (c.baud or 0) < brun.filt_interstit then
+    return false
+  end
+  -- A gap vector is one that declares an idle run, which elide_gapbits is the list of. Keyed off that
+  -- table rather than a vector-name pattern, so a vector added to the one is covered by the other.
+  if brun.filt_gaponly then
+    if brun.elide_gapbits == nil or c.vid == nil or brun.elide_gapbits[c.vid] == nil then
+      return false
+    end
+  end
+  -- ADVERSARIAL: the vectors that actually produce errors, so a lap spends its time where the answers
+  -- are. Two sources, both of them already the authority on their own half -- barb.expect's 'loud'
+  -- entries are the vectors the plan drives into conditions where refusing is correct, and
+  -- elide_gapbits is every vector carrying a gap, whose seams cost bytes until the decoder splice
+  -- lands. A third list naming them again is a third thing to keep current.
+  if brun.filt_advonly then
+    local adv = false
+    if barb ~= nil and barb.loud ~= nil and barb.loud(c.vid) then adv = true end
+    if brun.elide_gapbits ~= nil and c.vid ~= nil and brun.elide_gapbits[c.vid] ~= nil then
+      adv = true
+    end
+    if not adv then return false end
+  end
+  return true
+end
+
+-- The next row the filters accept, or nil at end of plan.
+--
+-- A LOOP, AND NOT BECAUSE RECURSION WOULD OVERFLOW -- it would not, and the first version of this
+-- comment said it would. `return brun.nextrow()` is a tail call and Lua 5.0 implements proper tail
+-- calls, so the recursive form costs no stack either; a mutation that made this function recurse
+-- passed the whole suite including a 4000-reject fixture. The loop is kept for being the plainer
+-- statement of 'scan forward until one survives', which is the only claim it can support.
+function brun.nextcell()
+  while true do
+    local c = brun.nextrow()
+    if c == nil then return nil end
+    if brun.wanted(c) then return c end
+    brun.nfilt = (brun.nfilt or 0) + 1
+  end
+end
+
+-- ---------------------------------------------------------------------------
 -- One measurement
 -- ---------------------------------------------------------------------------
 -- MIRRORS bench_point() IN tools/bench_uart.py. Changing one without the other makes this soak
@@ -909,6 +978,11 @@ function brun.point(fs, baud, lock, elide, vid)
   sdec.gapelide, sdec.trigmode = keepgap, 'free'
   -- READ BEFORE THE EARLY RETURNS, so a cell that failed to acquire still reports what the acquire cost.
   -- Those are the cells worth timing: a quarter of a hot lap ends here and they are not free.
+  -- THE ALLOCATION'S OWN VERDICT, ON BOTH BRANCHES. Recorded here rather than in the elide branch,
+  -- which is where the first version put it: the cells that raised on 2026-10-17 were the DECLINED
+  -- ones, running the free branch, so the field could not appear on exactly the rows that needed it.
+  r.remade = sdec.acq_remade
+  r.bufshort = sdec.acq_bufshort
   if brun.timing then pcall(function() brun.tacq = timer.gettime() end) end
   brun.spin_tick()                      -- 3 of 6: the capture is in
   if not okc then
@@ -2441,7 +2515,7 @@ function brun.resume_to(iter, cell)
   if iter == nil or cell == nil then return false end
   local n = 0
   while true do
-    local c = brun.nextrow()
+    local c = brun.nextcell()
     if c == nil then return false end
     n = n + 1
     if c.iter == iter and c.cell == cell then
@@ -2637,7 +2711,7 @@ function brun.planwait()
   local nfail = 0
   while true do
     if brun.planopen() then
-      local c = brun.nextrow()
+      local c = brun.nextcell()
       if c ~= nil then
         if nfail > 0 then
           brec.note(brun.iter, brun.cell, brun.ncell,
@@ -2788,7 +2862,7 @@ function brun.soak(iterations, tag)
 
   local lastiter = nil
   while true do
-    local c = brun.nextrow()
+    local c = brun.nextcell()
     if c == nil then
       -- END OF PLAN. Wrap unless a finite iteration count says we are done.
       brun.nwrap = brun.nwrap + 1
@@ -3154,6 +3228,10 @@ function brun.soak(iterations, tag)
           nt = nt .. ' elide=FELLBACK'
         end
         if p.elideev ~= nil then nt = nt .. ' elideev=' .. tostring(p.elideev) end
+        if (p.remade or 0) > 0 then nt = nt .. ' remade=' .. brun.int(p.remade) end
+        -- The permanent record was refused and the capture ran on a sized one, which is the original
+        -- defect's own configuration. On the row because nothing else would show it.
+        if p.bufshort ~= nil then nt = nt .. ' BUFSHORT=' .. brun.int(p.bufshort) end
         if p.elideevmsg ~= nil then nt = nt .. ' ev1=[' .. tostring(p.elideevmsg) .. ']' end
         -- Which arm branch the cell took, on passing cells too: whether the degenerate branch is what
         -- distinguishes the failures cannot be answered without them. Only when false, so a clean row

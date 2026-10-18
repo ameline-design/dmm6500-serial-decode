@@ -1765,6 +1765,19 @@ function sdec.acq_make_buffer(n, perm)
       -- Permanent only where the permanent size was actually granted: the fallback request is the capture's
       -- own, and a reserve loaded against that one is the figure it always was.
       sdec.acq_bufperm = (perm == true and cap >= n)
+      -- A permanent request that fell back must say so. Without this the degradation is silent and
+      -- exact: the record goes back to a capture-sized fillmode = 1 buffer, which is the configuration
+      -- that wrapped and ate 84 % of itself, and nothing in the row or the log would differ. Sticky,
+      -- because the next successful allocation is the only thing entitled to clear it.
+      if perm == true and cap < n then
+        sdec.acq_bufshort = cap
+        if ulog ~= nil and ulog.line ~= nil then
+          pcall(ulog.line, string.format('the permanent record was refused: asked %d readings, got '
+                                         .. '%d -- an eliding capture can wrap this', n, cap))
+        end
+      else
+        sdec.acq_bufshort = nil
+      end
       sdec.acq_fillmode(sdec.buf)
       return sdec.buf
     end

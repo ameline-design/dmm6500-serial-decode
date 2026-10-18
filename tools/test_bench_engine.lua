@@ -18,8 +18,11 @@ for _, m in ipairs({'tsp/usb_log.tsp', 'tsp/serial_ui.tsp', 'tsp/serial_app.tsp'
   if chunk == nil then print('LOAD FAILED ' .. m .. ': ' .. tostring(err)); os.exit(1) end
   chunk()
 end
+-- bench_panel.tsp is loaded here too, and it is the only reason a syntax error in it would be caught
+-- before the instrument: nothing else offline reads that file. It defines functions and three tables
+-- at load and touches no display object until a button is pressed, so loading it costs nothing here.
 for _, m in ipairs({'bench/arb_names.tsp', 'bench/sdg_net.tsp', 'bench/bench_rec.tsp',
-                    'bench/expect.tsp', 'bench/bench_run.tsp'}) do
+                    'bench/expect.tsp', 'bench/bench_run.tsp', 'bench/bench_panel.tsp'}) do
   local chunk, err = loadfile(m)
   if chunk == nil then print('LOAD FAILED ' .. m .. ': ' .. tostring(err)); os.exit(1) end
   chunk()
@@ -1332,6 +1335,148 @@ do
      'and stopping at the declared count posts NO event -- nothing reads off the end',
      string.format('rows=%d events=%s', brun.planrows, tostring(eventlog.getcount())))
 end
+
+-- ---------------------------------------------------------------------------
+print('')
+print('-- narrowing a plan the key already holds, which is what the panel can do and the draw cannot --')
+;(function()
+  -- THE PREMISE FIRST, and it is the one that matters most: with no filter set, every row survives.
+  -- The host-driven path never touches these fields, so a default that excluded anything would change
+  -- what `run_bench.py --start` means without a word appearing anywhere.
+  local keep = {lo = brun.filt_baudlo, hi = brun.filt_baudhi, std = brun.filt_stdonly,
+                gap = brun.filt_gaponly, adv = brun.filt_advonly, it = brun.filt_interstit}
+  local function clear()
+    brun.filt_baudlo, brun.filt_baudhi, brun.filt_stdonly = nil, nil, nil
+    brun.filt_gaponly, brun.filt_advonly, brun.filt_interstit = nil, nil, nil
+  end
+  local function row(vid, baud, kind)
+    return {iter = 1, cell = 1, vid = vid, arb = 'X', baud = baud, kind = kind,
+            amp = 5, ofst = 0, srate = baud * 10, wait = 0}
+  end
+
+  clear()
+  ck(brun.wanted(row('v77', 9600, 'std')) and brun.wanted(row('v47', 300, 'rand'))
+     and brun.wanted(row('v98d', 250000, 'edge')),
+     'with no filter set every row survives, which is the host path unchanged')
+  ck(not brun.wanted(nil), 'and nil is not a row')
+
+  -- THE WINDOW, INCLUSIVE AT BOTH ENDS, asserted by rejecting one Bd outside each edge. A test that
+  -- only checked the middle would pass on a half-open range.
+  clear()
+  brun.filt_baudlo, brun.filt_baudhi = 1200, 19200
+  ck(brun.wanted(row('v77', 1200, 'std')) and brun.wanted(row('v77', 19200, 'std')),
+     'the speed window includes both of its own bounds')
+  ck(not brun.wanted(row('v77', 1199, 'std')) and not brun.wanted(row('v77', 19201, 'std')),
+     '...and excludes one Bd outside either end')
+
+  -- STANDARD ONLY, and the drawn kinds are the ones soakplan emits: rand and edge.
+  clear()
+  brun.filt_stdonly = true
+  ck(brun.wanted(row('v77', 9600, 'std')), 'Normal keeps a standard rate')
+  ck(not brun.wanted(row('v77', 9700, 'rand')) and not brun.wanted(row('v77', 9700, 'edge')),
+     '...and drops both drawn kinds')
+
+  -- THE INTERSTITIAL FLOOR IS ON THE DRAWN RATES ALONE. The half that does the work is the second
+  -- assertion: a standard rate BELOW the floor must still play, or this is just a speed filter.
+  clear()
+  brun.filt_interstit = 2400
+  ck(not brun.wanted(row('v77', 1800, 'rand')), 'a drawn rate below the interstitial floor is dropped')
+  ck(brun.wanted(row('v77', 300, 'std')),
+     '...while a standard rate below it still plays, which is the whole point of the floor')
+  ck(brun.wanted(row('v77', 4800, 'rand')), '...and a drawn rate above it plays')
+
+  -- GAP TARGETED, KEYED OFF elide_gapbits AND NOT A NAME PATTERN. Proved by moving the table: a
+  -- hardcoded v98*/v99* test would pass this suite and then ignore the next gap vector added.
+  clear()
+  brun.filt_gaponly = true
+  ck(brun.wanted(row('v98d', 9600, 'std')), 'Gap targeted keeps a vector that declares a gap')
+  ck(not brun.wanted(row('v77', 9600, 'std')), '...and drops one that does not')
+  local hadz = brun.elide_gapbits['zz9']
+  brun.elide_gapbits['zz9'] = 600
+  ck(brun.wanted(row('zz9', 9600, 'std')),
+     '...and a vector added to elide_gapbits is covered without this filter being told')
+  brun.elide_gapbits['zz9'] = hadz
+
+  -- ADVERSARIAL: barb.loud's list OR a gap vector, and neither source is copied here.
+  clear()
+  brun.filt_advonly = true
+  ck(brun.wanted(row('v47', 9600, 'std')), 'Adversarial keeps a loud vector')
+  ck(brun.wanted(row('v98d', 9600, 'std')), '...and keeps a gap vector')
+  ck(not brun.wanted(row('v77', 9600, 'std')), '...and drops a quiet one with no gap')
+
+  -- A LONG REJECT RUN STILL FINDS THE SURVIVOR, AND COUNTS WHAT IT PASSED. This was written as a
+  -- stack-depth test and it is not one: a mutation making nextcell recurse passed it, because
+  -- `return brun.nextcell()` is a tail call and Lua 5.0 implements proper tail calls. What it does
+  -- check is correctness across many rejections in one call -- a filter that returned nil on the
+  -- first reject, or lost count on the way, fails here and nowhere else.
+  clear()
+  brun.filt_baudlo = 19200
+  local nrej = 4000
+  do
+    local fh = file.open(brun.planpath, file.MODE_WRITE)
+    file.write(fh, string.format('# test plan\n# rows=%d\n', nrej + 1))
+    file.write(fh, 'iter,cell,vid,arb,baud,kind,amp_vpp,ofst_v,srate,wait_ms\n')
+    local i
+    for i = 1, nrej do
+      file.write(fh, '1,' .. i .. ',v77,' .. ARB.v77 .. ',9600,std,5.0000,0.0000,96000,0.000\n')
+    end
+    file.write(fh, '1,' .. (nrej + 1) .. ',v77,' .. ARB.v77
+                   .. ',19200,std,5.0000,0.0000,192000,0.000\n')
+    file.close(fh)
+  end
+  brun.planrows, brun.nfilt = 0, 0
+  brun.planopen()
+  local okc, got = pcall(brun.nextcell)
+  brun.planclose()
+  ck(okc and got ~= nil and got.baud == 19200,
+     string.format('one call scans past %d rejects to the row that survives', nrej),
+     okc and tostring(got ~= nil and got.baud) or tostring(got))
+  ck(brun.nfilt == nrej, '...and every skipped row is counted', tostring(brun.nfilt))
+  MD.rmfile(brun.planpath)
+
+  clear()
+  brun.filt_baudlo, brun.filt_baudhi, brun.filt_stdonly = keep.lo, keep.hi, keep.std
+  brun.filt_gaponly, brun.filt_advonly, brun.filt_interstit = keep.gap, keep.adv, keep.it
+end)()
+
+-- ---------------------------------------------------------------------------
+print('')
+print('-- the panel\'s own guards, which the host-side ones do not cover --')
+;(function()
+  -- THE SMOKE POISON GUARD, PORTED, AND THIS IS THE TEST THAT SAYS IT EXISTS. run_bench.py's
+  -- refuse_smoke_poison is host-side, so a soak started from the front panel walks straight past it --
+  -- and the measured cost of that is a whole run: 705 of 705 cells reading 'line is idle', three
+  -- occurrences, cleared only by a power cycle. SMOKED is the global bench_smoke.py sets.
+  local kept = SMOKED
+  SMOKED = nil
+  ck(brun.pn_poisoned() == nil, 'with no smoke on this power cycle the panel will start a soak')
+  SMOKED = 1
+  local why = brun.pn_poisoned()
+  ck(type(why) == 'string' and string.find(why, 'power cycle', 1, true) ~= nil,
+     '...and after a smoke it refuses, naming the power cycle that is the only cure', tostring(why))
+  SMOKED = kept
+
+  -- EVERY LAP TYPE MUST MEAN SOMETHING DIFFERENT. Four entries that mapped to the same filter state
+  -- would read as four choices on the glass and behave as one, which is the shape of defect a label
+  -- test cannot see.
+  local seen, n = {}, table.getn(brun.pn_laptypes)
+  local dup = nil
+  local i
+  for i = 1, n do
+    local e = brun.pn_laptypes[i]
+    local k = tostring(e.std) .. '/' .. tostring(e.gap) .. '/' .. tostring(e.adv)
+    if seen[k] ~= nil then dup = e.t .. ' == ' .. seen[k] end
+    seen[k] = e.t
+  end
+  ck(n >= 4 and dup == nil,
+     string.format('%d lap types, and no two mean the same filter state', n),
+     dup or 'all distinct')
+  -- And the first entry is the unfiltered one, because panel_run falls back to it when the field
+  -- cannot be read: a fallback that narrowed the plan would be the worst of the four to default to.
+  local f = brun.pn_laptypes[1]
+  ck(f.std == nil and f.gap == nil and f.adv == nil,
+     'the first lap type filters nothing, which is what an unreadable field falls back to', f.t)
+end)()
 
 -- ---------------------------------------------------------------------------
 print('')

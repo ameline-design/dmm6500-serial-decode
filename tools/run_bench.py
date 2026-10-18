@@ -62,8 +62,11 @@ if not os.path.exists(LUAC):
 # dependency order, and bench/ reads ulog.next_free out of usb_log.tsp, so it cannot load first.
 APP = ['tsp/usb_log.tsp', 'tsp/serial_core.tsp', 'tsp/uart_decode.tsp',
        'tsp/chunk_decode.tsp', 'tsp/serial_ui.tsp', 'tsp/serial_app.tsp']
+# bench_panel.tsp LAST, because it calls into the rest: it is the front-panel way into brun.soak, and
+# loading it here means every host load also leaves the panel available -- so an operator at the bench
+# can start the next lap with no host at all, against the plan this push already put on the key.
 ENGINE = ['bench/arb_names.tsp', 'bench/sdg_net.tsp', 'bench/bench_rec.tsp',
-          'bench/expect.tsp', 'bench/bench_run.tsp']
+          'bench/expect.tsp', 'bench/bench_run.tsp', 'bench/bench_panel.tsp']
 
 # The smoke's own subset, from bench_smoke.py rather than repeated here: the two have to be the same 86
 # cells for the instrument-driven run to be comparable with the host-driven one.

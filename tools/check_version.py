@@ -34,8 +34,12 @@ TSPA = os.path.join(ROOT, 'Serial_Decode.tspa')
 # EVERY SHIPPED DOCUMENT AND ITS PDF, paired. docs/BENCH.md carries the byline for this reason: a
 # tracked PDF that names no version cannot be checked against anything, and a reader cannot tell which
 # build it describes. The vendor PDFs under docs/ are not ours and are not listed.
+# docs/BRUN.md is listed for docs/BENCH.md's reason: it describes a build, and a manual whose byline
+# drifts from the archive it documents is worse than one with no byline at all. It is bench
+# scaffolding rather than a shipped product, and it is gated anyway -- the gate costs nothing and the
+# alternative is the one document nobody notices going stale.
 DOCS = ['README.md', 'docs/MANUAL.md', 'docs/PRINCIPLES.md', 'docs/TRIGGER.md',
-        'docs/REFERENCE.md', 'docs/BENCH.md', 'docs/BETA.md']
+        'docs/REFERENCE.md', 'docs/BENCH.md', 'docs/BETA.md', 'docs/BRUN.md']
 # The byline sits under the title, so a handful of lines is the whole search. Bounded rather than
 # whole-file: 'version 1.20' occurring in body prose is not the byline and must not satisfy this.
 HEAD_LINES = 12

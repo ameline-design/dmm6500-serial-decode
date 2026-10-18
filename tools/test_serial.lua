@@ -11438,15 +11438,21 @@ end)()
   -- so the frame path cannot have the permanent buffer: 5 % of 6 000 000 is 300 000 readings, and
   -- acq_copy would then build a Lua table of them at 16 B each.
   do
+    -- PARKED, NOT DELETED, and the difference is load-bearing. An earlier version dropped this handle
+    -- here and assigned it back at the end -- restoring a DEAD buffer to sdec.buf for the ~1190 checks
+    -- that follow. Offline nothing noticed, because gen_serial.lua's dead buffers keep .capacity and
+    -- .clear() while hardware raises on the capacity read (serial_core.tsp's acq_fit says so), so
+    -- acq_make_buffer's reuse branch would hand the dead buffer straight back. Keeping it alive costs
+    -- one capture-sized buffer in the modelled pool, against 7 080 255.
     local keepbuf = sdec.buf
-    -- Deleted and only then dropped, every time, because the harness models the pool: a handle nil'd
-    -- over strands its readings in it, and the next request is refused for room this block is holding.
-    -- The same rule acq_make_buffer follows: delete, nil, then create.
+    sdec.buf = nil
+    -- Deleted and only then dropped for everything this block makes itself, because the harness models
+    -- the pool: a handle nil'd over strands its readings in it, and the next request is refused for
+    -- room this block is holding. The same rule acq_make_buffer follows: delete, nil, then create.
     local function drop()
       if sdec.buf ~= nil then pcall(buffer.delete, sdec.buf) end
       sdec.buf = nil
     end
-    drop()
     GEN_DEFBUF(10, 10)
     -- A RECORDING ASKS AND GETS THE PERMANENT CAPACITY.
     local b1 = sdec.acq_make_buffer(sdec.acq_cap(20000), true)
@@ -11524,6 +11530,42 @@ end)()
     check('both requests refused returns nil and claims no capacity',
           b6 == nil and sdec.acq_bufgot == nil and sdec.acq_bufperm == nil,
           string.format('%s / %s', tostring(b6), tostring(sdec.acq_bufgot)))
+    GEN_BUFMAKE_FAIL(0)
+    -- THE RETRY AFTER A DELETE, which is the whole of 74a822f and had no test at all: replacing the
+    -- retry with `if false then` left this suite at 1653 passed. A deleted buffer is not necessarily
+    -- free by the time the next make asks -- docs/UNDOCUMENTED.md says so in those words -- and three
+    -- cells of an 80-cell lap raised because of it, every one at the transition from the permanent
+    -- record back to a sized one.
+    --
+    -- GEN_BUFMAKE_FAIL(1) refuses exactly the next make, which is the first attempt here. The `freed`
+    -- guard is what this exercises: a live sdec.buf means a delete happens, so the refusal is re-asked
+    -- rather than falling through to the capture-sized second request.
+    -- THE POOL BACK TO SHIPPED FIRST, or this tests nothing: the fallback case above left 1 600 000 in
+    -- the default buffers, and 6 000 000 beside that exceeds the 7 080 255 pool -- so both attempts
+    -- would be refused on their own merits and the fall-through to the capture-sized request would
+    -- look exactly like a retry that did not happen. It did look exactly like that, first time.
+    GEN_DEFBUF(10, 10)
+    drop()
+    local pre = sdec.acq_make_buffer(40000)
+    local nre = sdec.acq_remade or 0
+    GEN_BUFMAKE_FAIL(1)
+    local b7 = sdec.acq_make_buffer(sdec.acq_cap(20000), true)
+    check('a make refused right after a delete is re-asked, and the permanent size still lands',
+          pre ~= nil and b7 ~= nil and b7.capacity == sdec.acq_bufcap,
+          string.format('%s, pre=%s', tostring(b7 ~= nil and b7.capacity),
+                        tostring(pre ~= nil and pre.capacity)))
+    check('...and the retry is counted, so a lap can tell this from the fault going away on its own',
+          (sdec.acq_remade or 0) == nre + 1,
+          string.format('%s -> %s', tostring(nre), tostring(sdec.acq_remade)))
+    -- AND WITH NOTHING FREED THERE IS NOTHING TO WAIT FOR: a first allocation asks once and the
+    -- refusal stands, or every ordinary allocation would pay a delay for a case that cannot apply.
+    drop()
+    local nre2 = sdec.acq_remade or 0
+    GEN_BUFMAKE_FAIL(2)
+    local b8 = sdec.acq_make_buffer(sdec.acq_cap(20000), true)
+    check('with no buffer to free, a refusal is not re-asked', b8 == nil
+          and (sdec.acq_remade or 0) == nre2,
+          string.format('%s, remade %s', tostring(b8), tostring(sdec.acq_remade)))
     GEN_BUFMAKE_FAIL(0)
     -- THE SCRATCH SET IS PERMANENT TOO, and sized for the head at the top rate: gap_headsec of 2 ms is
     -- 2000 readings at 1 MS/s, so one size serves every rate and the set never has to be rebuilt.

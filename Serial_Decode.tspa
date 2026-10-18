@@ -3,7 +3,7 @@ loadscript Serial_Decode
 -- $Product: DMM6500, DAQ6510, DMM7510, SMU2461
 -- $Tag: Serial, UART, Decode, Digitize
 -- $Description: Decodes an asynchronous serial line with the instrument's own digitizer: recovers baud rate, frame format and bytes, shows them as text or hex, and saves bytes to USB key. Everything auto-detects; everything can be locked.
--- $Version: 1.57
+-- $Version: 1.58
 -- $Requires: 1.7.0
 -- $Author: Ian Ameline
 -- $License: MIT
@@ -400,6 +400,8 @@ sdec.rates      = {1000, 1250, 2500, 5000, 10000, 15000, 20000, 30000, 40000,
 sdec.fs         = 1000000   -- requested sample rate
 sdec.n          = 20000     -- capture depth, samples (see sdec.acq_cap)
 sdec.range      = 10
+sdec.vover      = 1e6
+sdec.nover      = 0
 sdec.probe_n    = 2000      -- samples in the level-learning probe capture
 sdec.probe_fs = sdec.probe_fs or {1000000, 100000, 10000}
 sdec.pretrig    = 5         -- pre-trigger percentage for the analog-trigger path
@@ -452,6 +454,8 @@ sdec.gapelide_min = 0.002
 sdec.gapelide_max = 2.0
 
 sdec.gapelide_frames = 2
+sdec.gap_fastpath = sdec.gap_fastpath or false
+
 
 -- The enforced window, or nil and the reason it declined. Read by the capture and by the form through this one
 -- function, so a typed value cannot mean one thing to the field and another to the trigger model.
@@ -599,6 +603,7 @@ function sdec.clear_measured()
   sdec.arm_thr, sdec.arm_idle = nil, nil
   sdec.w, sdec.nw, sdec.wmed, sdec.wshort = nil, 0, nil, nil
   sdec.snr_db, sdec.noise_v = nil, nil
+  sdec.nover = 0
   sdec.idle, sdec.idle_weak = nil, nil
   sdec.acq_pretrig, sdec.leadrun, sdec.idlerec = nil, nil, nil
   sdec.modal, sdec.run0, sdec.run1 = nil, nil, nil
@@ -610,26 +615,34 @@ end
 -- lvl_thr/lvl_hyst/lvl_swing that serial_app saves and restores.
 function sdec.sig_levels(rd, n)
   sdec.snr_db, sdec.noise_v = nil, nil
-  local vmin, vmax, nv = nil, nil, 0
+  local vmin, vmax, nv, nov = nil, nil, 0, 0
   local i
 
   for i = 1, n do
     local v = rd[i]
     if v ~= nil then
-      nv = nv + 1
-      if vmin == nil then
-        vmin, vmax = v, v
+      if v > -sdec.vover and v < sdec.vover then
+        nv = nv + 1
+        if vmin == nil then
+          vmin, vmax = v, v
+        else
+          if v < vmin then vmin = v end
+          if v > vmax then vmax = v end
+        end
       else
-        if v < vmin then vmin = v end
-        if v > vmax then vmax = v end
+        nov = nov + 1
       end
     end
   end
+  sdec.nover = nov
   if vmin == nil then
     sdec.vmin, sdec.vmax, sdec.swing = nil, nil, 0
     sdec.lo, sdec.hi, sdec.thr, sdec.hyst = nil, nil, 0, 0
     sdec.wlo, sdec.whi = nil, nil
     sdec.family = '?'
+    if nov > 0 then
+      return false, string.format('all %d reading(s) are over range', nov)
+    end
     return false, 'capture is empty'
   end
   sdec.vmin, sdec.vmax = vmin, vmax
@@ -688,12 +701,15 @@ function sdec.sig_noise(rd, n)
   if step < 1 then step = 1 end
   local nlo, slo, qlo, nhi, shi, qhi = 0, 0, 0, 0, 0, 0
   local i = 2
+  local vo = sdec.vover
   while i <= n - 1 do
     local v = rd[i]
-    if v ~= nil then
+    if v ~= nil and v > -vo and v < vo then
       local up = v > thr + hy
       local dn = v < thr - hy
       local a, b = rd[i - 1], rd[i + 1]
+      if a ~= nil and (a <= -vo or a >= vo) then a = nil end
+      if b ~= nil and (b <= -vo or b >= vo) then b = nil end
       if up and a ~= nil and b ~= nil and a > thr + hy and b > thr + hy then
         nhi = nhi + 1; shi = shi + v; qhi = qhi + v * v
       elseif dn and a ~= nil and b ~= nil and a < thr - hy and b < thr - hy then
@@ -1397,6 +1413,40 @@ function sdec.acq_cap(n)
   return n + math.ceil(n * (sdec.pretrig or 0) / 100) + 100
 end
 
+-- The pre-trigger percentage to load for a capture of n samples into buf. sdec.pretrig is a percentage of the
+--   [...]
+-- 6 000 000 where the capture wants about a thousand. Rounded up and never to zero, because a reserve one
+-- percent too large costs samples and no reserve at all costs the head of the record.
+-- docs/MEASUREMENTS.md, 'The pre-trigger reserve comes out of capacity, not out of count'.
+function sdec.acq_pospct(n, buf)
+  local pt = sdec.pretrig or 0
+  if pt <= 0 then return pt end
+  if buf == nil then return pt end
+  local cap = nil
+  if not pcall(function() cap = buf.capacity end) then return pt end
+  if type(cap) ~= 'number' or cap < 10 then return pt end
+  if n == nil then n = sdec.n end
+  if n == nil or n <= 0 then return pt end
+  local want = math.ceil(n * pt / 100)
+  local pos = math.ceil(want * 100 / cap)
+  if pos < 1 then pos = 1 end
+  if pos > pt then pos = pt end
+  return pos
+end
+
+-- Readings a loaded position reserves in buf, which is the figure leadmax needs: the decoder is told how much
+-- silence the record may open with, and after acq_pospct that is no longer a percentage of the capture.
+function sdec.acq_leadmax(buf)
+  if buf == nil then return nil end
+  local pos = sdec.acq_posloaded
+  if pos == nil then pos = sdec.pretrig or 0 end
+  if pos <= 0 then return nil end
+  local cap = nil
+  if not pcall(function() cap = buf.capacity end) then return nil end
+  if type(cap) ~= 'number' or cap < 10 then return nil end
+  return cap - math.floor(cap * (100 - pos) / 100)
+end
+
 -- Fill continuously, so nothing is ever stored past the end of the buffer, and the numeric assignment is the only
 -- route to it. docs/MEASUREMENTS.md, 'A reserve in a FILL_ONCE buffer posts 4915 per discard'.
 function sdec.acq_fillmode(buf)
@@ -1607,10 +1657,35 @@ function sdec.acq_fit(n, buf)
   return n
 end
 
+sdec.acq_bufcap = 6000000
+sdec.acq_bufgot = nil
+sdec.acq_bufperm = nil
+sdec.acq_freesettle = 0.05
+sdec.acq_remade = 0
+
 -- Free and remake the capture buffer. Follows the project's object-lifetime rule -- delete, nil, then create --
--- because creating over a live handle leaves the buffer beneath allocated and unreachable until a power cycle.
-function sdec.acq_make_buffer(n)
+--   [...]
+-- frame path then copies whole into a Lua table at 16 B a reading. The recording paths read through
+-- ck_reader_buffer in windows and have no such copy, which is why the split is here and not a knob.
+-- docs/MEASUREMENTS.md, 'The pre-trigger reserve comes out of capacity, not out of count'.
+function sdec.acq_make_buffer(n, perm)
+  if n == nil then n = 10 end
+  if n < 10 then n = 10 end     -- buffer.make() minimum, the figure 4920 names itself
+  local nreq = n
+  if perm and sdec.acq_bufcap ~= nil and sdec.acq_bufcap > n then n = sdec.acq_bufcap end
+  if sdec.buf ~= nil then
+    local cap = nil
+    if pcall(function() cap = sdec.buf.capacity end) and type(cap) == 'number' and
+       cap >= n and (perm or cap == nreq) then
+      sdec.trig_settle()
+      pcall(function() sdec.buf.clear() end)
+      sdec.acq_fillmode(sdec.buf)
+      sdec.acq_bufperm = (perm == true)
+      return sdec.buf
+    end
+  end
   sdec.trig_settle()
+  local freed = false
   if sdec.buf ~= nil then
     local b = sdec.buf
     local delok = pcall(buffer.delete, b)
@@ -1620,13 +1695,43 @@ function sdec.acq_make_buffer(n)
       return sdec.buf                    -- KEEP the handle: it is the only way to retry
     end
     sdec.buf = nil
+    freed = true
   end
-  if n < 10 then n = 10 end     -- buffer.make() minimum
-  local mok, nb = pcall(buffer.make, n, buffer.STYLE_STANDARD)
-  if not mok then return nil end
-  sdec.buf = nb
-  sdec.acq_fillmode(sdec.buf)
-  return sdec.buf
+  local tries, ntry = {n}, 1
+  if nreq < n then tries[2], ntry = nreq, 2 end
+  local i
+  for i = 1, ntry do
+    local mok, nb = pcall(buffer.make, tries[i], buffer.STYLE_STANDARD)
+    local cap = nil
+    if mok and nb ~= nil then pcall(function() cap = nb.capacity end) end
+    if (type(cap) ~= 'number' or cap < 10) and freed then
+      pcall(delay, sdec.acq_freesettle)
+      mok, nb = pcall(buffer.make, tries[i], buffer.STYLE_STANDARD)
+      cap = nil
+      if mok and nb ~= nil then pcall(function() cap = nb.capacity end) end
+      if type(cap) == 'number' and cap >= 10 then
+        sdec.acq_remade = (sdec.acq_remade or 0) + 1
+      end
+    end
+    if type(cap) == 'number' and cap >= 10 then
+      sdec.buf = nb
+      sdec.acq_bufgot = cap
+      sdec.acq_bufperm = (perm == true and cap >= n)
+      if perm == true and cap < n then
+        sdec.acq_bufshort = cap
+        if ulog ~= nil and ulog.line ~= nil then
+          pcall(ulog.line, string.format('the permanent record was refused: asked %d readings, got '
+                                         .. '%d -- an eliding capture can wrap this', n, cap))
+        end
+      else
+        sdec.acq_bufshort = nil
+      end
+      sdec.acq_fillmode(sdec.buf)
+      return sdec.buf
+    end
+  end
+  sdec.acq_bufgot, sdec.acq_bufperm = nil, nil
+  return nil
 end
 
 sdec.tick = nil
@@ -1843,6 +1948,24 @@ function sdec.arm_source()
   else
     sdec.armkeyed = nil
   end
+
+  if sdec.gap_fastpath and not blended and useanalog and sdec.trigmode ~= 'free'
+     and sdec.gapelide ~= nil and tonumber(sdec.gapelide) ~= nil and tonumber(sdec.gapelide) > 0 then
+    local fok = pcall(function()
+      trigger.blender[1].reset()
+      trigger.blender[1].orenable = true
+      trigger.blender[1].stimulus[1] = ev
+    end)
+    if fok then
+      ev = trigger.EVENT_BLENDER1
+      blended = true
+      sdec.gap_fastblend = true
+    else
+      sdec.gap_fastblend = nil
+    end
+  else
+    sdec.gap_fastblend = nil
+  end
   sdec.trigblended = blended
   return ev, useanalog, blended
 end
@@ -1901,7 +2024,7 @@ end
 --   [...]
 -- readings behaved identically to 400 000 on the instrument -- same record at the same indices, the same
 -- event-log delta, still reaching IDLE -- because fillmode = 1 laps the ring silently. So a two-minute gap needs
--- no more scratch than a half-second one. docs/TRIGGER.md 14, 'A scratch that wraps costs nothing'.
+-- no more scratch than a half-second one. docs/TRIGGER.md, 'The scratch'.
 function sdec.gap_scratch(win, fs)
   local want = 2000
   if win ~= nil and fs ~= nil and fs > 0 then
@@ -1925,6 +2048,65 @@ function sdec.gap_scratch(win, fs)
   return sdec.gapbuf
 end
 
+sdec.gap_nscratch = sdec.gap_nscratch or 12
+sdec.gap_maxscratch = 12
+sdec.gapbufs = sdec.gapbufs or {}
+
+sdec.gap_scratchcap = 2048
+
+-- A scratch per gap, allocated once per power cycle. -> a list of buffers, or nil when none could be made.
+function sdec.gap_scratches(nwant, win, fs)
+  if nwant == nil or nwant < 1 then nwant = 1 end
+  if nwant > sdec.gap_maxscratch then nwant = sdec.gap_maxscratch end
+  local want = sdec.gap_scratchcap
+  local have, i = sdec.gapbufs, nil
+  if have ~= nil and table.getn(have) >= nwant then
+    local fits = true
+    for i = 1, nwant do
+      local cap = nil
+      if not (pcall(function() cap = have[i].capacity end) and
+              type(cap) == 'number' and cap >= want) then
+        fits = false
+      end
+    end
+    if fits then
+      local out = {}
+      for i = 1, nwant do
+        pcall(function() have[i].clear() end)
+        sdec.acq_fillmode(have[i])
+        out[i] = have[i]
+      end
+      return out
+    end
+  end
+  sdec.gap_release_all()
+  local out = {}
+  for i = 1, nwant do
+    local mok, nb = pcall(buffer.make, want, buffer.STYLE_STANDARD)
+    local cap = nil
+    if mok and nb ~= nil then pcall(function() cap = nb.capacity end) end
+    if type(cap) ~= 'number' or cap < 10 then break end
+    sdec.acq_fillmode(nb)
+    out[i] = nb
+  end
+  if table.getn(out) < 1 then return nil end
+  sdec.gapbufs = out
+  return out
+end
+
+sdec.gap_headsec = 0.002
+
+-- Hand the per-gap set back. Deleted rather than dropped, for gap_release's reason: a nil over the handle
+-- strands the readings in the pool instead of freeing them.
+function sdec.gap_release_all()
+  if sdec.gapbufs == nil then return end
+  local i
+  for i = 1, table.getn(sdec.gapbufs) do
+    pcall(function() buffer.delete(sdec.gapbufs[i]) end)
+  end
+  sdec.gapbufs = {}
+end
+
 -- Hand the scratch back, for an operator who tried elision and turned it off again: the pool is shared with the
 -- record, so a buffer nobody is using is capacity the next capture cannot have.
 function sdec.gap_release()
@@ -1936,28 +2118,37 @@ end
 
 -- The program that keeps the traffic and discards the gaps. -> true when the store really holds it.
 --   [...]
--- measured silence puts the seam between an idle tail and the next start bit, which is a waveform the framer
--- already reads. Built from Empty because load() replaces the store wholesale while setblock does not clear it.
--- docs/TRIGGER.md 13 and 14.
+-- idle tail and the next start bit, which is a waveform the framer already reads. Built from Empty because
+-- load() replaces the store wholesale while setblock does not clear it.
+-- docs/TRIGGER.md, 'The six blocks' and 'Why the burst ends on silence and not on a count'.
 function sdec.gap_model(rec, scr, ev, win)
   if rec == nil or scr == nil or ev == nil or win == nil or win <= 0 then return false end
   local cmp = trigger.EVENT_ANALOGTRIGGER
   if cmp == nil then return false end
+  local scrs = scr
+  if type(scr) ~= 'table' or scr[1] == nil then scrs = {scr} end
+  local ns = table.getn(scrs)
+  if ns < 1 then return false end
+  if ns > sdec.gap_maxscratch then return false end
   local ok = pcall(function()
     trigger.model.load('Empty')
-    trigger.model.setblock(1, trigger.BLOCK_MEASURE_DIGITIZE, scr, trigger.COUNT_INFINITE)
-    trigger.model.setblock(2, trigger.BLOCK_WAIT, ev, trigger.CLEAR_ENTER)
-    trigger.model.setblock(3, trigger.BLOCK_MEASURE_DIGITIZE, rec, trigger.COUNT_INFINITE)
-    trigger.model.setblock(4, trigger.BLOCK_DELAY_CONSTANT, win)
-    trigger.model.setblock(5, trigger.BLOCK_BRANCH_ON_EVENT, cmp, 4)
-    trigger.model.setblock(6, trigger.BLOCK_BRANCH_ALWAYS, 1)
+    local gi
+    for gi = 1, ns do
+      local b = (gi - 1) * 5
+      trigger.model.setblock(b + 1, trigger.BLOCK_MEASURE_DIGITIZE, scrs[gi], trigger.COUNT_INFINITE)
+      trigger.model.setblock(b + 2, trigger.BLOCK_WAIT, ev, trigger.CLEAR_ENTER)
+      trigger.model.setblock(b + 3, trigger.BLOCK_MEASURE_DIGITIZE, rec, trigger.COUNT_INFINITE)
+      trigger.model.setblock(b + 4, trigger.BLOCK_DELAY_CONSTANT, win)
+      trigger.model.setblock(b + 5, trigger.BLOCK_BRANCH_ON_EVENT, cmp, b + 4)
+    end
+    trigger.model.setblock(ns * 5 + 1, trigger.BLOCK_BRANCH_ALWAYS, 1)
   end)
   if not ok then return false end
   local bl = nil
   if not pcall(function() bl = trigger.model.getblocklist() end) then return false end
   if bl == nil then return false end
   local _, nmd = string.gsub(bl, 'MEASURE_DIGITIZE', '')
-  if nmd ~= 2 then return false end
+  if nmd ~= 2 * ns then return false end
   if string.find(bl, 'BUFFER_CLEAR', 1, true) ~= nil then return false end
   local want = {'WAIT', 'DELAY_CONSTANT', 'BRANCH_ON_EVENT', 'BRANCH_ALWAYS'}
   local i
@@ -3135,6 +3326,9 @@ function sdec.decode_from(rd, n)
   local T
   if sdec.force_baud ~= nil then
     T = fs / sdec.force_baud
+    if T < sdec.minsabit * (1 - sdec.plaustol) then
+      return giveup(sdec.ua_implausible_why(T))
+    end
     sdec.bittime, sdec.fitratio, sdec.fitq = T, 1, 1
   sdec.baud, sdec.baud_raw, sdec.snapped, sdec.snapfirm = sdec.force_baud, sdec.force_baud, true, true
 
@@ -6124,6 +6318,7 @@ sdec.proto     = sdec.proto or 'uart'
 if sdec.strm_press == nil then sdec.strm_press = false end
 sdec.strm_maxsec = sdec.strm_maxsec or 1200
 sdec.strm_fallback_s = sdec.strm_fallback_s or 20
+sdec.strm_overread = sdec.strm_overread or 0.10
 -- Drop a decode result a later pass has invalidated, and nothing else. Returns true.
 -- A pass failing at acquire() returns before any decode, so the previous pass's result survives beside
 -- the failed capture's rate. docs/MEASUREMENTS.md, 'A failed re-capture leaves a stale fit'. Not
@@ -6618,11 +6813,8 @@ function sdec.stream_decode(got)
   local path = sdec.flog_alloc()
   local opts = {maxbytes = md.cap, nocap = (md.cap == nil),
                 progress = sdec.ck_progress}
-  if sdec.strm_armed and sdec.strm_elide == nil and sdec.buf ~= nil and (sdec.pretrig or 0) > 0 then
-    local cap = nil
-    if pcall(function() cap = sdec.buf.capacity end) and cap ~= nil then
-      opts.leadmax = cap - math.floor(cap * (100 - sdec.pretrig) / 100)
-    end
+  if sdec.strm_armed and sdec.strm_elide == nil and sdec.buf ~= nil then
+    opts.leadmax = sdec.acq_leadmax(sdec.buf)
   end
   if sdec.strm_elide ~= nil and sdec.fs ~= nil and sdec.fs > 0 then
     opts.primeskip = math.ceil(2 * sdec.strm_elide * sdec.fs)
@@ -6745,6 +6937,7 @@ function sdec.stream_arm(nsmp)
   if sdec.arm_silent() and sdec.trigmode ~= 'free' then dcount = nsmp end
   if not pcall(function() sdec.dig.count = dcount end) then return false end
   local armed = (sdec.arm_silent() and sdec.trigmode ~= 'free')
+  sdec.acq_posloaded = nil
   local ok = false
   local elide = nil
   if armed then
@@ -6759,13 +6952,20 @@ function sdec.stream_arm(nsmp)
       if armed and useanalog then elide = sdec.gap_elide(sdec.force_baud) end
       if armed then
         if elide ~= nil then
-          local scr = sdec.gap_scratch(elide, sdec.fs)
+          local scr = nil
+          if sdec.gap_nscratch ~= nil and sdec.gap_nscratch > 1 then
+            scr = sdec.gap_scratches(sdec.gap_nscratch, elide, sdec.fs)
+          end
+          if scr == nil then scr = sdec.gap_scratch(elide, sdec.fs) end
           if scr ~= nil then ok = sdec.gap_model(buf, scr, ev, elide) end
           if not ok then elide = nil end
         end
         if elide == nil then
-          ok = pcall(trigger.model.load, 'LoopUntilEvent', ev, sdec.pretrig,
+          local pos = sdec.pretrig
+          if sdec.acq_bufperm then pos = sdec.acq_pospct(nsmp, buf) end
+          ok = pcall(trigger.model.load, 'LoopUntilEvent', ev, pos,
                      trigger.CLEAR_ENTER, 0, buf)
+          if ok then sdec.acq_posloaded = pos end
         end
       end
       if not ok then armed = false end
@@ -6787,6 +6987,10 @@ function sdec.stream_arm(nsmp)
     local spun, saw = 0, false
     while spun < (sdec.arm_settle_s or 0.25) do
       if sdec.trig_waiting() == true then saw = true break end
+      if elide ~= nil then
+        local bn = nil
+        if pcall(function() bn = sdec.buf.n end) and (bn or 0) > 0 then saw = true break end
+      end
       delay(0.01)
       spun = spun + 0.01
     end
@@ -6863,6 +7067,12 @@ end
 -- returns the reading count collected.
 function sdec.stream_acquire(nsmp)
   local buf = sdec.buf
+  local wantelide = nil
+  if sdec.gap_elide ~= nil then wantelide = sdec.gap_elide(sdec.force_baud) end
+  if wantelide ~= nil and (sdec.strm_overread or 0) > 0 then
+    nsmp = sdec.acq_fit(math.ceil(nsmp * (1 + sdec.strm_overread)), buf)
+  end
+  sdec.strm_target = nsmp
   sdec.strm_waited = 0
   local ok = sdec.stream_arm(nsmp)
   if not ok then
@@ -7067,6 +7277,8 @@ end
 
 sdec.ck_defbufcap = 100000
 
+sdec.ck_defbufmin = 10
+
 -- One default buffer's capacity, written and answered for. -> true if the instrument took it. One
 -- guarded site for every capacity write this app makes, because the pcall budget counts sites.
 -- Per buffer is not a style choice: one pcall spanning both writes is not atomic, so defbuffer2's
@@ -7084,21 +7296,18 @@ function sdec.defbuf_set(name, cap)
   return ok
 end
 
--- Resize the default buffers down when the recording needs the room, because the reading memory is one
+-- Resize both default buffers to the minimum for the app's whole run, because the reading memory is one pool
 --   [...]
--- defbuffer2 first, then defbuffer1, which is the default active buffer and so the one likely to hold
--- the operator's readings. Back to the default, not to just-enough, because a resize discards every
--- reading whatever the new capacity is. -> did_reclaim, and text naming what was resized.
+-- defbuffer2 first, then defbuffer1, which is the default active buffer and so the one likely to hold the
+-- operator's readings. A resize discards every reading whatever the new capacity is, so the sizes are
+-- recorded here and buf_restore() puts them back at teardown. -> did_reclaim, and text naming what moved.
 function sdec.buf_reclaim()
   local ok, d1, d2 = pcall(function() return defbuffer1.capacity, defbuffer2.capacity end)
   if not ok or type(d1) ~= 'number' or type(d2) ~= 'number' then return false, nil end
-  local want = sdec.ck_bufwant
-  if sdec.ck_bufguard < want then want = sdec.ck_bufguard end
-  local dc = sdec.ck_defbufcap
+  local dc = sdec.ck_defbufmin
   local n1, n2 = nil, nil
-  local a1, a2 = d1, d2
-  if sdec.ck_bufpool - a1 - a2 - sdec.ck_bufmargin < want and a2 > dc then n2, a2 = dc, dc end
-  if sdec.ck_bufpool - a1 - a2 - sdec.ck_bufmargin < want and a1 > dc then n1, a1 = dc, dc end
+  if d2 > dc then n2 = dc end
+  if d1 > dc then n1 = dc end
   if n1 == nil and n2 == nil then return false, nil end
   local what = nil
   if n2 ~= nil and sdec.defbuf_set('defbuffer2', n2) then
@@ -8336,7 +8545,7 @@ function sdec.start()
                               .. 'default buffers back to %d %s.',
                               sdec.ck_bufmax, sdec.ck_bufmin,
                               sdec.ck_bigbuf or 'a default buffer',
-                              sdec.ck_bigcap or 0, sdec.ck_bufpool, sdec.ck_defbufcap,
+                              sdec.ck_bigcap or 0, sdec.ck_bufpool, sdec.ck_defbufmin,
                               reclaimed and 'did not free enough' or 'was refused')
     local back = sdec.buf_restore()
     if back ~= nil then ulog.line('launch refused, so capacities handed back: ' .. back) end
