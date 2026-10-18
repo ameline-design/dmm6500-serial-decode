@@ -1412,11 +1412,17 @@ end)()
   sdec.ck_job, sdec.strm_recording, sdec.ck_defbufwas = nil, nil, nil
   GEN_DEFBUF(100000, 6500000)
   do
+    -- The live buffer goes first, or the refusal is unreachable: acq_make_buffer reuses one whose
+    -- capacity already covers the request, so a buffer an earlier block left behind would be handed
+    -- straight back and nothing would ever be allocated. That reuse is the point of it -- the room is
+    -- only needed when there is no buffer to reuse -- so the scenario has to start without one.
+    if sdec.buf ~= nil then pcall(buffer.delete, sdec.buf) sdec.buf = nil end
     local ok, why = sdec.stream_begin()
     check('a recording whose allocation is refused reclaims the room and retries',
           ok == true, tostring(why))
-    check('...having resized the buffer that was in the way, not the other one',
-          defbuffer2.capacity == 100000 and defbuffer1.capacity == 100000,
+    check('...having taken both default buffers down to the minimum',
+          defbuffer2.capacity == sdec.ck_defbufmin
+          and defbuffer1.capacity == sdec.ck_defbufmin,
           string.format('d1=%d d2=%d', defbuffer1.capacity, defbuffer2.capacity))
     check('...and recorded it, so the teardown can hand the capacity back',
           sdec.ck_defbufwas ~= nil and sdec.ck_defbufwas.defbuffer2 == 6500000,

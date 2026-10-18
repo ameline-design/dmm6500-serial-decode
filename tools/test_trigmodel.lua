@@ -779,9 +779,16 @@ print('\nF  an arm the signal never satisfies expires, and the mock gets there o
   CK('an 8 kB recording sets up on a line at ground', bok == true, tostring(bwhy))
   local tr0, na0 = READS.triggered, READS.noarm
   TRIG_CLOCK(0)
-  local got = sdec.stream_acquire(sdec.strm_nsmp)
+  local nreq = sdec.strm_nsmp
+  local got = sdec.stream_acquire(nreq)
   CK('the arm goes live, because the model reaches its wait inside the budget',
      sdec.strm_armed == true, tostring(sdec.strm_armed))
+  -- AND A RECORDING THAT IS NOT ELIDING TAKES NO OVER-READ. The other half of the elision case below:
+  -- without this the knob could apply everywhere and both assertions would still pass.
+  CK('...and a recording that elides nothing runs to the bare request',
+     sdec.strm_elide == nil and sdec.strm_target == nreq,
+     string.format('elide=%s target=%s of %s', tostring(sdec.strm_elide),
+                   tostring(sdec.strm_target), tostring(nreq)))
   CK('...and nothing crosses the level it is watching',
      SRC.trigfired == nil and HAS(SRC.trigwhy, 'nothing crossed'), tostring(SRC.trigwhy))
   CK('...so the recording ends as an EXPIRED ARM, not as a full buffer or a quiet device',
@@ -930,10 +937,24 @@ end)()
   -- so measured against sdec.strm_nsmp the run would end on its ceiling whether the fill test existed or not.
   local want = 20000
   local got = sdec.stream_acquire(want)
+  -- THE OVER-READ, which only an eliding recording takes. A gap shorter than the detector window is
+  -- recorded in full and its samples come out of the same count the payload does, so the bytes that go
+  -- missing are the ones at the end of the mode's budget. Asserted against strm_overread rather than a
+  -- typed 22 000, or turning the knob off would leave this passing on an over-read that never happened.
+  CK('...and an eliding recording ran to the over-read target, not the bare request',
+     sdec.strm_target == math.ceil(want * (1 + sdec.strm_overread))
+     and sdec.strm_target > want,
+     string.format('target=%s of a %d request at +%.0f %%', tostring(sdec.strm_target), want,
+                   100 * sdec.strm_overread))
+  -- The block count is derived from the scratch count and not typed: gap_model unrolls five blocks a
+  -- scratch plus one branch to close, so a default of 12 is 61 blocks and a default of 1 is the 6 this
+  -- used to assert. A typed 6 would have read as a pass on a program that built one group of the twelve
+  -- it was handed.
+  local wantb = 5 * math.min(sdec.gap_nscratch, sdec.gap_maxscratch) + 1
   CK('...the arm went live and the program loaded is the hand-built one, not a template',
-     sdec.strm_armed == true and TRIG.handbuilt == true and TRIG.nblocks == 6,
-     string.format('armed=%s handbuilt=%s blocks=%s', tostring(sdec.strm_armed),
-                   tostring(TRIG.handbuilt), tostring(TRIG.nblocks)))
+     sdec.strm_armed == true and TRIG.handbuilt == true and TRIG.nblocks == wantb,
+     string.format('armed=%s handbuilt=%s blocks=%s want %d', tostring(sdec.strm_armed),
+                   tostring(TRIG.handbuilt), tostring(TRIG.nblocks), wantb))
   CK('...and the elision verdict comes from the program that loaded',
      sdec.strm_elide ~= nil and sdec.acq_elided == true,
      string.format('elide=%s elided=%s', tostring(sdec.strm_elide), tostring(sdec.acq_elided)))

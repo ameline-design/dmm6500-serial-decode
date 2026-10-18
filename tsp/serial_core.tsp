@@ -1383,6 +1383,43 @@ function sdec.acq_cap(n)
   return n + math.ceil(n * (sdec.pretrig or 0) / 100) + 100
 end
 
+-- The pre-trigger percentage to load for a capture of n samples into buf. sdec.pretrig is a percentage of the
+-- capture and the load argument is a percentage of the capacity, which were the same number while every buffer
+-- was sized to its capture. Against the permanent record they are not: 5 reserves 300 000 readings of
+-- 6 000 000 where the capture wants about a thousand. Rounded up and never to zero, because a reserve one
+-- percent too large costs samples and no reserve at all costs the head of the record.
+-- docs/MEASUREMENTS.md, 'The pre-trigger reserve comes out of capacity, not out of count'.
+function sdec.acq_pospct(n, buf)
+  local pt = sdec.pretrig or 0
+  if pt <= 0 then return pt end
+  if buf == nil then return pt end
+  local cap = nil
+  if not pcall(function() cap = buf.capacity end) then return pt end
+  if type(cap) ~= 'number' or cap < 10 then return pt end
+  if n == nil then n = sdec.n end
+  if n == nil or n <= 0 then return pt end
+  -- The readings the reserve is meant to be: what acq_cap puts behind a buffer sized to this capture.
+  local want = math.ceil(n * pt / 100)
+  local pos = math.ceil(want * 100 / cap)
+  if pos < 1 then pos = 1 end
+  if pos > pt then pos = pt end
+  return pos
+end
+
+-- Readings a loaded position reserves in buf, which is the figure leadmax needs: the decoder is told how much
+-- silence the record may open with, and after acq_pospct that is no longer a percentage of the capture.
+function sdec.acq_leadmax(buf)
+  if buf == nil then return nil end
+  local pos = sdec.acq_posloaded
+  if pos == nil then pos = sdec.pretrig or 0 end
+  if pos <= 0 then return nil end
+  local cap = nil
+  if not pcall(function() cap = buf.capacity end) then return nil end
+  if type(cap) ~= 'number' or cap < 10 then return nil end
+  -- The instrument's own rule, not a percentage of it: see the measurement in sdec.n_deliv.
+  return cap - math.floor(cap * (100 - pos) / 100)
+end
+
 -- Fill continuously, so nothing is ever stored past the end of the buffer, and the numeric assignment is the only
 -- route to it. docs/MEASUREMENTS.md, 'A reserve in a FILL_ONCE buffer posts 4915 per discard'.
 function sdec.acq_fillmode(buf)
@@ -1617,9 +1654,50 @@ function sdec.acq_fit(n, buf)
   return n
 end
 
+-- The record's permanent capacity. One buffer per power cycle, sized for the longest recording the app can ask
+-- for and then never resized, because a resize discards every reading and a reallocation per capture is what
+-- left an eliding record holding 21 100 readings while its digitize ran for 40 s: at 2500 S/s that is 100 000
+-- readings into the ring, so it lapped nearly five times and read back as one byte of 114.
+--
+-- 6 000 000 is the per-buffer figure vendor `bufferVar.capacity` documents, and it fits beside everything else
+-- this app allocates on the smallest pool of the three supported models -- 6 875 000 on the 2461, less 24 576
+-- of scratch and 20 of default buffers. docs/MEASUREMENTS.md, 'The reading pool is per model'.
+sdec.acq_bufcap = 6000000
+-- What the instrument actually granted, which is the only verdict: see the read-back below.
+sdec.acq_bufgot = nil
+-- Whether the live buffer is the permanent one. Read by stream_arm, which must not load a pre-trigger
+-- percentage against it: see acq_make_buffer's second argument.
+sdec.acq_bufperm = nil
+
 -- Free and remake the capture buffer. Follows the project's object-lifetime rule -- delete, nil, then create --
 -- because creating over a live handle leaves the buffer beneath allocated and unreachable until a power cycle.
-function sdec.acq_make_buffer(n)
+--
+-- `perm` asks for the permanent capacity, and only a recording may ask. The pre-trigger reserve is a
+-- percentage of capacity, so `trigger.model.load('LoopUntilEvent', ev, 5, ...)` reserves 1055 readings against
+-- a buffer sized to the capture and 300 000 against this one -- a record fifteen times the depth, which the
+-- frame path then copies whole into a Lua table at 16 B a reading. The recording paths read through
+-- ck_reader_buffer in windows and have no such copy, which is why the split is here and not a knob.
+-- docs/MEASUREMENTS.md, 'The pre-trigger reserve comes out of capacity, not out of count'.
+function sdec.acq_make_buffer(n, perm)
+  if n == nil then n = 10 end
+  if n < 10 then n = 10 end     -- buffer.make() minimum, the figure 4920 names itself
+  -- The capture's own need is kept, because it is the fallback request when the permanent size is refused.
+  local nreq = n
+  if perm and sdec.acq_bufcap ~= nil and sdec.acq_bufcap > n then n = sdec.acq_bufcap end
+  -- Reuse before anything is freed: the capacity already covers the request, so the clear is the whole cost.
+  -- A sized caller refuses an over-large buffer rather than inheriting one a recording left behind, for the
+  -- reserve's sake; `2 * nreq` is acq_cap's own headroom and reserve with room to spare, not a tuned figure.
+  if sdec.buf ~= nil then
+    local cap = nil
+    if pcall(function() cap = sdec.buf.capacity end) and type(cap) == 'number' and
+       cap >= n and (perm or cap <= 2 * nreq) then
+      sdec.trig_settle()
+      pcall(function() sdec.buf.clear() end)
+      sdec.acq_fillmode(sdec.buf)
+      sdec.acq_bufperm = (perm == true)
+      return sdec.buf
+    end
+  end
   -- Never replace a buffer the trigger model may still be writing into, and this is reachable with one armed: it
   -- then stores into a buffer that has been deleted and replaced, which posts 4915.
   sdec.trig_settle()
@@ -1635,14 +1713,33 @@ function sdec.acq_make_buffer(n)
     end
     sdec.buf = nil
   end
-  if n < 10 then n = 10 end     -- buffer.make() minimum
-  -- Guarded at the allocation, the only thing left here that can raise. Standard and not compact, and not by
-  -- choice -- docs/MEASUREMENTS.md, 'buffer.STYLE_COMPACT is nil on this firmware'.
-  local mok, nb = pcall(buffer.make, n, buffer.STYLE_STANDARD)
-  if not mok then return nil end
-  sdec.buf = nb
-  sdec.acq_fillmode(sdec.buf)
-  return sdec.buf
+  -- Two requests in order and never a loop, because every refusal posts 4919 to the event log: the permanent
+  -- capacity, then the one this capture actually needs. The second degrades to the behaviour of every build
+  -- before this one, so a pool that cannot give 6 000 000 still records.
+  local tries, ntry = {n}, 1
+  if nreq < n then tries[2], ntry = nreq, 2 end
+  local i
+  for i = 1, ntry do
+    -- Guarded at the allocation, the only thing here that can raise. Standard and not compact, and not by
+    -- choice -- docs/MEASUREMENTS.md, 'buffer.STYLE_COMPACT is nil on this firmware'.
+    local mok, nb = pcall(buffer.make, tries[i], buffer.STYLE_STANDARD)
+    local cap = nil
+    if mok and nb ~= nil then pcall(function() cap = nb.capacity end) end
+    -- The read-back and not the pcall: a refused buffer.make returns nil while pcall reports success, and
+    -- deleting what it returned posts 1138. docs/UNDOCUMENTED.md, 'The real ceiling is 7,080,255 readings,
+    -- across all buffers together'.
+    if type(cap) == 'number' and cap >= 10 then
+      sdec.buf = nb
+      sdec.acq_bufgot = cap
+      -- Permanent only where the permanent size was actually granted: the fallback request is the capture's
+      -- own, and a reserve loaded against that one is the figure it always was.
+      sdec.acq_bufperm = (perm == true and cap >= n)
+      sdec.acq_fillmode(sdec.buf)
+      return sdec.buf
+    end
+  end
+  sdec.acq_bufgot, sdec.acq_bufperm = nil, nil
+  return nil
 end
 
 -- An optional liveness hook, nil in the shipped app and set by nothing inside it: one call per chunk of samples.
@@ -2059,31 +2156,56 @@ end
 -- assume the groups ran in order, that all of them ran, and that the program did not wrap -- and a wrap is
 -- ordinary: with k scratches and more than k gaps the earliest are overwritten, which the times show as
 -- scratches newer than their neighbours rather than as a silent mispairing of every gap in the record.
-sdec.gap_nscratch = sdec.gap_nscratch or 1
+sdec.gap_nscratch = sdec.gap_nscratch or 12
 -- 5 blocks a group and one branch to close the loop, against the 63 the store holds: measured, so 12 groups is
 -- the ceiling and the arithmetic is not a guess. A record carries 2 to 4 seams in practice.
 sdec.gap_maxscratch = 12
 sdec.gapbufs = sdec.gapbufs or {}
 
--- A scratch per gap. -> a list of buffers, shortest-first, or nil when none could be made.
---
--- Sized like gap_scratch's single buffer but smaller, because these hold a burst head and not a gap: the whole
--- point is the last few hundred microseconds before the handover. Sized in TIME rather than readings, since 64
--- readings is 640 us at 100 kS/s and 64 us at 1 MS/s, and the latency it has to cover does not scale with fs.
+-- One scratch holds one burst head, so its capacity is gap_headsec at the highest rate the app records at:
+-- 2 ms of 1 MS/s is 2000 readings, and 2048 covers every rate with one size. Fixed rather than scaled to fs
+-- because the set is permanent -- a per-capture size would rebuild all twelve whenever the rate changed, and
+-- a resize discards every reading. Twelve cost 24 576 against the record's 6 000 000.
+sdec.gap_scratchcap = 2048
+
+-- A scratch per gap, allocated once per power cycle. -> a list of buffers, or nil when none could be made.
 function sdec.gap_scratches(nwant, win, fs)
   if nwant == nil or nwant < 1 then nwant = 1 end
   if nwant > sdec.gap_maxscratch then nwant = sdec.gap_maxscratch end
-  local want = 256
-  if fs ~= nil and fs > 0 then
-    local w = math.ceil(sdec.gap_headsec * fs)
-    if w > want then want = w end
+  local want = sdec.gap_scratchcap
+  -- Reuse, which is the normal path after the first capture: the set is there and big enough, so clearing it
+  -- is the whole cost. The list returned is the first nwant of them and sdec.gapbufs keeps all of them, so a
+  -- capture that asks for fewer does not strand the rest in a pool the record shares.
+  local have, i = sdec.gapbufs, nil
+  if have ~= nil and table.getn(have) >= nwant then
+    local fits = true
+    for i = 1, nwant do
+      local cap = nil
+      if not (pcall(function() cap = have[i].capacity end) and
+              type(cap) == 'number' and cap >= want) then
+        fits = false
+      end
+    end
+    if fits then
+      local out = {}
+      for i = 1, nwant do
+        pcall(function() have[i].clear() end)
+        sdec.acq_fillmode(have[i])
+        out[i] = have[i]
+      end
+      return out
+    end
   end
-  -- Released first, so a changed count or rate does not leave the old set stranded in a pool the record shares.
+  -- Released first, so a set that did not fit does not sit beside the one replacing it.
   sdec.gap_release_all()
-  local out, i = {}, nil
+  local out = {}
   for i = 1, nwant do
     local mok, nb = pcall(buffer.make, want, buffer.STYLE_STANDARD)
-    if not mok or nb == nil then break end
+    -- The read-back, for acq_make_buffer's reason: a refused buffer.make returns nil with pcall reporting
+    -- success, so a set short of nwant must be reported by its length and not by an error.
+    local cap = nil
+    if mok and nb ~= nil then pcall(function() cap = nb.capacity end) end
+    if type(cap) ~= 'number' or cap < 10 then break end
     sdec.acq_fillmode(nb)
     out[i] = nb
   end

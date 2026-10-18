@@ -2638,6 +2638,15 @@ Bisected against the instrument, not chosen: it is the largest request the meter
 default buffers were reclaimed, so the last digits carry the allocator's own granularity and are not
 meaningful on their own.
 
+**It is not a ceiling, and nothing may treat it as one.** `docs/UNDOCUMENTED.md`, 'The real ceiling is
+7,080,255 readings, across all buffers together', records two separate probes landing at 3 879 330 and
+3 857 490 and says why: a `4919` remaining-capacity figure is remaining *beside whatever is already
+allocated*, so a probe that allocates before it asks measures its own footprint. Both of those "came
+to be mistaken for a total of about four million", and 4 076 503 is the same order and was taken the
+same way. The allocatable per-buffer figure is `ck_bufguard` = **6 000 000**, which is what vendor
+`bufferVar.capacity` documents, and `acq_bufcap` asks for exactly that. The read-back is the verdict
+either way, so a pool that cannot give it refuses and the second request gets the capture's own size.
+
 `ck_bufmax` is the live ceiling `start()` recomputes from the capacities the operator has actually
 set, initialised to `ck_bufwant` so a caller that never ran `start()` still has a number.
 `bufmax_for()` reads `ck_bufwant` and never `ck_bufmax`, so a launch under a large `defbuffer1` cannot
@@ -2678,6 +2687,82 @@ Beneath the pool sit two separate numbers. `ck_bufguard` = 6 000 000 is the hard
 vendor's `bufferVar.capacity` documents. `ck_bufmargin` = 50 000 is a chosen margin, not a second
 measurement: it covers the pool figure's uncertain last digits and the firmware's unreported
 per-buffer overhead, and at **0.7 % of the pool** it costs nothing.
+
+### An eliding record outran the buffer it was sized into, and 4914 said so
+
+**MEASURED, from the 160-cell lap of 2026-10-17.** The record was allocated per capture at
+`acq_cap(sdec.n)` = **21 100 readings**, which is 0.211 s at 100 kS/s. An eliding capture's digitize
+runs until the sample count is reached and that is wall-clock time, not buffer: the same lap recorded
+`tdig` as high as **40 s**, which at 2500 S/s is 100 000 readings into the ring. It lapped nearly five
+times.
+
+| | |
+|---|---|
+| elide cells in the lap | 60 |
+| cells whose record reached capacity exactly | **23**, every one of them `ring=21100/21100` |
+| of those, cells posting `4914` | **23 of 23** |
+| further cells posting it within ~1000 readings of capacity | 6 |
+| cells below that posting it | **0** |
+
+`4914` is *"Index exceeds maximum readings stored in a buffer"*, and it is filed first in each cell's
+log -- ahead of the elision program's own `2753`, `2731` and `2728`, all three of which are expected.
+Note that **none of the ten indexed buffer reads in `tsp/` can produce it on these numbers**: every one
+folds its index once against `n`, and with `n == capacity` the fold is exact. The record's own geometry
+is what the figures show instead -- `sidx=17710` against a capacity of 21 100, so the ring wrapped and
+overwrote **17 709 of its own oldest readings, 84 % of the capture**.
+
+The cost is not the seam. One cell read back `pay=1/114`: one byte of a 114-byte payload. The
+120--160 us resume latency destroys 4 to 9 bytes per gap; this destroys most of the record, and it was
+invisible until `r.elidecap` and `r.elidesidx` started being recorded.
+
+### The permanent record, and why only a recording may have it
+
+`sdec.acq_bufcap` = **6 000 000**, allocated once per power cycle and never resized, because a resize
+discards every reading. At 100 kS/s that is **60 s** of record against 0.211 s, and at 2500 S/s it is
+40 minutes: no cell in any lap can lap it. `acq_make_buffer(n, perm)` raises every request to it,
+so the first call allocates and every later one finds a buffer already large enough and only clears it.
+
+It fits beside everything else the app allocates, on the smallest pool of the three supported models:
+
+| | readings |
+|---|---|
+| 2461 pool, the smallest | 6 875 000 |
+| the record | 6 000 000 |
+| twelve scratches at `gap_scratchcap` 2048 | 24 576 |
+| both default buffers at `ck_defbufmin` | 20 |
+| **left over** | **850 404** |
+
+**Only a program that loads no `position` may take it,** which today is the elision program alone.
+`trigger.model.load('LoopUntilEvent', ev, position, ...)` takes the pre-trigger reserve as a percentage
+of **capacity**, so the shipped 5 reserves 1055 readings against a buffer sized to the capture and
+**300 000** against this one -- a record fifteen times the depth, which the frame path then copies whole
+into a Lua table at 16 B a reading. Both failures were measured offline before the split existed:
+dropping the position to 0 instead cost the head of the record, **three wrong bytes from offset 1** and
+no leading idle for the level probe to measure. So `stream_begin` stays sized, `brun.point`'s elide
+branch asks for the permanent one, and a sized caller refuses to inherit an over-large buffer rather
+than loading a reserve against it.
+
+`acq_pospct()` is the fallback for the one path that can reach `LoopUntilEvent` with the permanent
+record underneath -- elision asked for, its program refused. It scales the reserve back to the readings
+it means and rounds **up**, never to zero: 5 % of 20 000 is 1000 readings, which is 0.017 % of
+6 000 000, so the loaded position is 1 and the reserve is 60 000. A fractional position has never been
+loaded on this instrument. `acq_leadmax()` reports what that really reserves, because the figure the
+decoder is told must come from the position that loaded and not from `sdec.pretrig`.
+
+### Both default buffers go to the minimum for the app's run
+
+`ck_defbufmin` = **10**, which the firmware names itself: `buffer.make(9000000, STYLE_STANDARD)` files
+`4920 "Invalid size: Reading buffer capacity must be between 10 and 7080255 readings"`. Both default
+buffers are taken there at `start()` unconditionally and `buf_restore()` hands the operator's sizes
+back at teardown -- resized, never deleted. That buys 199 980 readings that used to sit in buffers no
+capture reads.
+
+Unconditional, where the previous policy resized only once an allocation had already failed and only
+down to the shipped 100 000. The adaptive form made the room available depend on what the operator had
+done before the launch, and the order it took them in -- defbuffer2 first, then defbuffer1 -- is still
+the order they are written in, because defbuffer1 is the default active buffer and so the one likely to
+hold the operator's own readings. With both at the same target that order is no longer visible in the
+capacities, so the test asserts it on the text.
 
 ### ck_bufmin = 898347
 

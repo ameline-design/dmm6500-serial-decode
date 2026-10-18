@@ -39,6 +39,12 @@ if sdec.strm_press == nil then sdec.strm_press = false end
 sdec.strm_maxsec = sdec.strm_maxsec or 1200
 -- Seconds of signal the blocking fallback may record. Short, because nothing can poll it.
 sdec.strm_fallback_s = sdec.strm_fallback_s or 20
+-- Fraction of extra samples an eliding recording asks for. A gap shorter than the detector window is never
+-- elided and is recorded in full, and those samples come out of the same count the payload does -- so without
+-- this the bytes lost are the ones at the end of the mode's budget. The decoder already skips idle, so the
+-- over-read buys payload and not correctness. Free on a 6 000 000-reading record, where a 21 100-reading one
+-- had nowhere to put it. Elide path only: a free-running capture has no gaps it declined to remove.
+sdec.strm_overread = sdec.strm_overread or 0.10
 -- sdec.savedas  -- the last filename written, for the note line
 -- sdec.stickyerr -- a fault that must outlive a capture (see install_cleanup)
 
@@ -411,6 +417,14 @@ function sdec.stream_begin()
   end
   -- This can need a default buffer shrunk first: docs/UNDOCUMENTED.md, 'The real ceiling is
   -- 7,080,255 readings, across all buffers together'. Bare -- acq_make_buffer() guards it.
+  --
+  -- Sized, and NOT the permanent record, because this path arms with LoopUntilEvent whose pre-trigger
+  -- reserve is a percentage of capacity: against 6 000 000 the smallest reserve it can express is 1 % and
+  -- 60 000 readings, where the capture wants about a thousand. Dropping the reserve instead costs the head
+  -- of the record -- measured offline as three wrong bytes from offset 1 and no leading idle for the level
+  -- probe. Only a program that loads no position may take the permanent capacity, which today is the
+  -- elision program alone. docs/MEASUREMENTS.md, 'The permanent record, and why only a recording may
+  -- have it'.
   sdec.acq_make_buffer(cap)
   -- Reclaim and retry once, because the capacities are the operator's to change mid-session. Once only.
   if sdec.buf == nil then
@@ -657,12 +671,10 @@ function sdec.stream_decode(got)
   -- set, pretrig defaulting to 5 would make leadmax a fiction, acq_pretrig would come back true, and sig_idle
   -- would treat a genuine leading run as the wire before the device started. docs/TRIGGER.md,
   -- 'Reading the record back'.
-  if sdec.strm_armed and sdec.strm_elide == nil and sdec.buf ~= nil and (sdec.pretrig or 0) > 0 then
-    local cap = nil
-    if pcall(function() cap = sdec.buf.capacity end) and cap ~= nil then
-      -- The instrument's own rule, not a percentage of it: see the measurement in sdec.n_deliv.
-      opts.leadmax = cap - math.floor(cap * (100 - sdec.pretrig) / 100)
-    end
+  -- From the position that actually loaded and not from sdec.pretrig, which acq_pospct scales down against
+  -- the permanent record: a leadmax taken from the unscaled figure would be a 300 000-reading fiction.
+  if sdec.strm_armed and sdec.strm_elide == nil and sdec.buf ~= nil then
+    opts.leadmax = sdec.acq_leadmax(sdec.buf)
   end
   -- Silence the format search may have to cross, which on an elided record is not at the front but at the end of
   -- every burst: the detector cannot know the line stopped until its window has elapsed, so a window's worth of
@@ -814,6 +826,9 @@ function sdec.stream_arm(nsmp)
   -- 'Choosing a shape', 'Pre-trigger, and what the comparator needs' and
   -- 'The canned templates and the fast path'.
   local armed = (sdec.arm_silent() and sdec.trigmode ~= 'free')
+  -- Cleared per arm: the elision program loads no position at all, and a stale one would put a reserve in
+  -- leadmax that this recording does not have.
+  sdec.acq_posloaded = nil
   local ok = false
   -- The enforced elision window, or nil for every path that is not eliding -- which is all of them unless the
   -- operator asked. Carried out of the branch below because what was actually loaded decides how the record is
@@ -852,8 +867,18 @@ function sdec.stream_arm(nsmp)
           if not ok then elide = nil end
         end
         if elide == nil then
-          ok = pcall(trigger.model.load, 'LoopUntilEvent', ev, sdec.pretrig,
+          -- Reachable with the permanent record underneath only as a fallback: elision was asked for, its
+          -- program was refused, and the buffer was allocated for it. position is a percentage of capacity,
+          -- so sdec.pretrig's 5 would reserve 300 000 readings of the 6 000 000 -- scaled down to the
+          -- readings the reserve means, and rounded UP, because losing it costs the head of the record and
+          -- a percent too much costs only samples. Whole percent: a fractional position has never been
+          -- loaded on this instrument.
+          local pos = sdec.pretrig
+          if sdec.acq_bufperm then pos = sdec.acq_pospct(nsmp, buf) end
+          ok = pcall(trigger.model.load, 'LoopUntilEvent', ev, pos,
                      trigger.CLEAR_ENTER, 0, buf)
+          -- What actually loaded, because leadmax is derived from it and sdec.pretrig is no longer it.
+          if ok then sdec.acq_posloaded = pos end
         end
       end
       -- A refused load is not an armed recording: the poll loop would wait out an arm that is not there.
@@ -1008,6 +1033,21 @@ function sdec.stream_acquire(nsmp)
   -- Polled, so the run can end early on a quiet line, which a blocking read cannot. The same bounded-wait
   -- shape as acq_triggered(), because a poll loop that cannot exit is a dead panel.
   local buf = sdec.buf
+  -- Over-read, before anything is sized from nsmp: see sdec.strm_overread. Clamped to the buffer, so the
+  -- target stays a count the record can actually reach and `have >= nsmp` remains a reachable exit.
+  --
+  -- gap_elide() and not sdec.strm_elide, which stream_arm publishes further down this function: read here
+  -- it is the PREVIOUS capture's verdict. This is a pure read of the option and the forced format, and it
+  -- answers the question the over-read turns on -- whether this recording intends to elide. An elision the
+  -- arm then refuses has over-read for nothing, which costs samples on a record sized in millions.
+  local wantelide = nil
+  if sdec.gap_elide ~= nil then wantelide = sdec.gap_elide(sdec.force_baud) end
+  if wantelide ~= nil and (sdec.strm_overread or 0) > 0 then
+    nsmp = sdec.acq_fit(math.ceil(nsmp * (1 + sdec.strm_overread)), buf)
+  end
+  -- The count this acquisition actually ran to, beside strm_nsmp's request: the two differ by the
+  -- over-read and a reader of either needs to know which it has.
+  sdec.strm_target = nsmp
   -- What this window spent, for record_run's bound. A counter, because the one timer is spoken for twice.
   sdec.strm_waited = 0
   local ok = sdec.stream_arm(nsmp)
@@ -1279,8 +1319,15 @@ function sdec.bufmax_for()
   return n, bigname, bigcap
 end
 
--- What the instrument ships with in each default buffer, and the size a reclaim returns them to.
+-- What the instrument ships with in each default buffer. Not the reclaim target any more -- see
+-- ck_defbufmin -- but still the figure a refusal quotes, and buf_restore puts back whatever it found.
 sdec.ck_defbufcap = 100000
+
+-- The reclaim target: the smallest capacity a reading buffer may have, which the firmware names itself in
+-- 4920 "Reading buffer capacity must be between 10 and 7080255 readings". Both default buffers go here for
+-- the app's whole run and buf_restore() hands the operator's sizes back at teardown, which buys the record
+-- 199 980 readings it used to leave sitting in buffers no capture reads.
+sdec.ck_defbufmin = 10
 
 -- One default buffer's capacity, written and answered for. -> true if the instrument took it. One
 -- guarded site for every capacity write this app makes, because the pcall budget counts sites.
@@ -1300,23 +1347,22 @@ function sdec.defbuf_set(name, cap)
   return ok
 end
 
--- Resize the default buffers down when the recording needs the room, because the reading memory is one
--- pool across every buffer. An operator who has grown defbuffer1 to 6 000 000 has taken 85 % of it, and
--- an app that only adapted recorded a quarter of the window with nothing on the glass to say why.
+-- Resize both default buffers to the minimum for the app's whole run, because the reading memory is one pool
+-- across every buffer and the record wants all of it: the permanent 6 000 000 leaves 1 080 255 on a DMM6500
+-- and 875 000 on a 2461, so the 200 000 these two hold by default is worth taking. Unconditional rather than
+-- on demand -- an adaptive reclaim ran only once the allocation had already failed, which made the room
+-- available depend on what the operator had done before launch.
 --
--- defbuffer2 first, then defbuffer1, which is the default active buffer and so the one likely to hold
--- the operator's readings. Back to the default, not to just-enough, because a resize discards every
--- reading whatever the new capacity is. -> did_reclaim, and text naming what was resized.
+-- defbuffer2 first, then defbuffer1, which is the default active buffer and so the one likely to hold the
+-- operator's readings. A resize discards every reading whatever the new capacity is, so the sizes are
+-- recorded here and buf_restore() puts them back at teardown. -> did_reclaim, and text naming what moved.
 function sdec.buf_reclaim()
   local ok, d1, d2 = pcall(function() return defbuffer1.capacity, defbuffer2.capacity end)
   if not ok or type(d1) ~= 'number' or type(d2) ~= 'number' then return false, nil end
-  local want = sdec.ck_bufwant
-  if sdec.ck_bufguard < want then want = sdec.ck_bufguard end
-  local dc = sdec.ck_defbufcap
+  local dc = sdec.ck_defbufmin
   local n1, n2 = nil, nil
-  local a1, a2 = d1, d2
-  if sdec.ck_bufpool - a1 - a2 - sdec.ck_bufmargin < want and a2 > dc then n2, a2 = dc, dc end
-  if sdec.ck_bufpool - a1 - a2 - sdec.ck_bufmargin < want and a1 > dc then n1, a1 = dc, dc end
+  if d2 > dc then n2 = dc end
+  if d1 > dc then n1 = dc end
   if n1 == nil and n2 == nil then return false, nil end
   local what = nil
   -- Each write recorded as it lands, so a resized buffer is one this app can name and put back.
@@ -2861,7 +2907,7 @@ function sdec.start()
                               .. 'default buffers back to %d %s.',
                               sdec.ck_bufmax, sdec.ck_bufmin,
                               sdec.ck_bigbuf or 'a default buffer',
-                              sdec.ck_bigcap or 0, sdec.ck_bufpool, sdec.ck_defbufcap,
+                              sdec.ck_bigcap or 0, sdec.ck_bufpool, sdec.ck_defbufmin,
                               reclaimed and 'did not free enough' or 'was refused')
     -- Give back what the reclaim took, because this launch is not happening and stop() never runs here.
     local back = sdec.buf_restore()

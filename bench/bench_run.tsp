@@ -632,7 +632,10 @@ function brun.point(fs, baud, lock, elide, vid)
     -- DC Voltage function' -- out of band, and the capture runs on the wrong function.
     sdec.clear_measured()
     sdec.hw_config()
-    sdec.acq_make_buffer(sdec.acq_cap(sdec.n))
+    -- Permanent, as stream_begin asks for it: this branch is the recording path, and the 21 100 readings a
+    -- capture-sized buffer gave it is 0.211 s at 100 kS/s against a digitize that ran for up to 40 s. Every
+    -- cell that reached capacity posted 4914 and read back rotated, one of them as a single byte of 114.
+    sdec.acq_make_buffer(sdec.acq_cap(sdec.n), true)
     -- The probe comes next: stream_arm refuses elision without sdec.arm_thr, whose levels come from
     -- sig_levels() over a free capture -- the first half of acquire(). Without it every cell fell back to
     -- the canned template and captured nothing, 53 of 53, with only the expected 2731/2732 posted, so the

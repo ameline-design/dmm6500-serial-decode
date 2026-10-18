@@ -11397,15 +11397,147 @@ end)()
   check('at the shipped capacities the derived ceiling is what the largest mode needs',
         sdec.bufmax_for() == 4076503 and sdec.ck_bufwant == 4076503,
         string.format('%d, want %d', sdec.bufmax_for(), sdec.ck_bufwant))
-  -- AND THERE IS NOTHING TO RECLAIM AT THE DEFAULTS, which is the case that must not touch the
-  -- operator's buffers: an unconditional reclaim would discard defbuffer1's readings at every launch
-  -- on a meter that had room all along.
+  -- EVEN AT THE DEFAULTS BOTH GO TO THE MINIMUM, which is the policy change: the record is allocated
+  -- once at 6 000 000 and wants the whole pool, so the 200 000 these two hold by default is taken too.
+  -- The readings are the cost and the capacities are handed back at teardown, which is why both are
+  -- recorded. An adaptive reclaim ran only once an allocation had already failed, so what was available
+  -- depended on what the operator had done before the launch.
   do
     local did, what = sdec.buf_reclaim()
-    check('a launch with room to spare resizes nothing at all',
-          did == false and what == nil and defbuffer1.capacity == 100000
-          and defbuffer2.capacity == 100000,
-          string.format('%s / %s', tostring(did), tostring(what)))
+    check('a launch at the shipped capacities takes both of them down to the minimum',
+          did == true and defbuffer1.capacity == sdec.ck_defbufmin
+          and defbuffer2.capacity == sdec.ck_defbufmin,
+          string.format('%s / d1=%d d2=%d', tostring(did), defbuffer1.capacity,
+                        defbuffer2.capacity))
+    check('...naming both, since both lost their readings',
+          what ~= nil and string.find(what, 'defbuffer2', 1, true) ~= nil
+          and string.find(what, 'defbuffer1', 1, true) ~= nil, tostring(what))
+    -- Recorded for the teardown, and restored here so the blocks below start from the shipped sizes.
+    check('...and both recorded, or the operator never gets the capacity back',
+          sdec.ck_defbufwas ~= nil and sdec.ck_defbufwas.defbuffer1 == 100000
+          and sdec.ck_defbufwas.defbuffer2 == 100000,
+          string.format('was d1=%s d2=%s',
+                        tostring(sdec.ck_defbufwas and sdec.ck_defbufwas.defbuffer1),
+                        tostring(sdec.ck_defbufwas and sdec.ck_defbufwas.defbuffer2)))
+    sdec.buf_restore()
+    check('...and the restore really puts the shipped sizes back',
+          defbuffer1.capacity == 100000 and defbuffer2.capacity == 100000,
+          string.format('d1=%d d2=%d', defbuffer1.capacity, defbuffer2.capacity))
+    sdec.ck_defbufwas = nil
+  end
+
+  -- ---------------------------------------------------------------------------
+  -- THE PERMANENT RECORD, AND WHY ONLY A RECORDING MAY HAVE IT
+  -- ---------------------------------------------------------------------------
+  -- A buffer sized to its capture gave the eliding path 21 100 readings, which is 0.211 s at 100 kS/s
+  -- against a digitize that ran for up to 40 s: it wrapped, overwrote 84 % of itself, posted 4914 on
+  -- every cell that reached capacity, and one of them read back as a single byte of 114. The record is
+  -- allocated once at 6 000 000 instead.
+  --
+  -- The split is the pre-trigger reserve. `trigger.model.load` takes it as a percentage of CAPACITY,
+  -- so the frame path cannot have the permanent buffer: 5 % of 6 000 000 is 300 000 readings, and
+  -- acq_copy would then build a Lua table of them at 16 B each.
+  do
+    local keepbuf = sdec.buf
+    -- Deleted and only then dropped, every time, because the harness models the pool: a handle nil'd
+    -- over strands its readings in it, and the next request is refused for room this block is holding.
+    -- The same rule acq_make_buffer follows: delete, nil, then create.
+    local function drop()
+      if sdec.buf ~= nil then pcall(buffer.delete, sdec.buf) end
+      sdec.buf = nil
+    end
+    drop()
+    GEN_DEFBUF(10, 10)
+    -- A RECORDING ASKS AND GETS THE PERMANENT CAPACITY.
+    local b1 = sdec.acq_make_buffer(sdec.acq_cap(20000), true)
+    check('a recording gets the permanent capacity, not the one its capture needs',
+          b1 ~= nil and b1.capacity == sdec.acq_bufcap and sdec.acq_bufperm == true,
+          string.format('%s, perm=%s', tostring(b1 ~= nil and b1.capacity),
+                        tostring(sdec.acq_bufperm)))
+    check('...and the capacity read back is what is recorded, which is the only verdict there is',
+          sdec.acq_bufgot == sdec.acq_bufcap, tostring(sdec.acq_bufgot))
+    -- AND THE SECOND CALL ALLOCATES NOTHING. Same handle, which is the whole point: a resize discards
+    -- every reading, so the record must be made once and then only cleared.
+    local b2 = sdec.acq_make_buffer(sdec.acq_cap(20000), true)
+    check('a second recording reuses the same buffer rather than remaking it',
+          b2 == b1 and b1.alive == true, tostring(b2 == b1))
+    -- A SIZED CALLER MUST NOT INHERIT IT, and this is the assertion that keeps frame mode's reserve
+    -- honest: without it the next frame capture would load 5 % of 6 000 000.
+    local b3 = sdec.acq_make_buffer(sdec.acq_cap(20000))
+    check('a frame capture refuses the permanent buffer and takes one sized to itself',
+          b3 ~= nil and b3.capacity == sdec.acq_cap(20000) and sdec.acq_bufperm == false,
+          string.format('%s, perm=%s', tostring(b3 ~= nil and b3.capacity),
+                        tostring(sdec.acq_bufperm)))
+    -- THE POSITION SCALING, WHICH IS WHAT MAKES THAT SPLIT NECESSARY. On a buffer sized to the capture
+    -- it must be a no-op, or every frame capture's reserve moves.
+    check('on a sized buffer the loaded position is sdec.pretrig unchanged',
+          sdec.acq_pospct(20000, b3) == sdec.pretrig,
+          string.format('%s vs %s', tostring(sdec.acq_pospct(20000, b3)), tostring(sdec.pretrig)))
+    -- AND ON THE PERMANENT ONE IT SCALES DOWN, never to zero: 5 % of 20 000 is 1000 readings, which is
+    -- 0.017 % of 6 000 000, and a fractional position has never been loaded on this instrument.
+    drop()
+    local b4 = sdec.acq_make_buffer(sdec.acq_cap(20000), true)
+    local pos = sdec.acq_pospct(20000, b4)
+    check('on the permanent record it scales to whole percent and never to zero',
+          pos == 1 and pos < sdec.pretrig, tostring(pos))
+    check('...and the reserve it really buys is what leadmax reports, not a percentage of the capture',
+          (function()
+             local kp = sdec.acq_posloaded
+             sdec.acq_posloaded = pos
+             local lm = sdec.acq_leadmax(b4)
+             sdec.acq_posloaded = kp
+             return lm == 60000
+           end)(), 'want 60000 readings at 1 % of 6 000 000')
+    -- THE FALLBACK REQUEST. Squeeze the pool under the permanent size and the capture's own figure must
+    -- still be granted -- that second request is the behaviour of every build before this one.
+    drop()
+    GEN_DEFBUF(1500000, 100000)
+    local b5 = sdec.acq_make_buffer(sdec.acq_cap(20000), true)
+    check('a pool that cannot give 6 000 000 still records, at the size the capture asked for',
+          b5 ~= nil and b5.capacity == sdec.acq_cap(20000) and sdec.acq_bufperm == false,
+          string.format('%s of a %d pool remainder', tostring(b5 ~= nil and b5.capacity),
+                        GEN_POOL - 1600000))
+    -- AND A REFUSAL IS STILL A REFUSAL: both requests gone means nil, not a buffer.
+    drop()
+    GEN_BUFMAKE_FAIL(2)
+    local b6 = sdec.acq_make_buffer(sdec.acq_cap(20000), true)
+    check('both requests refused returns nil and claims no capacity',
+          b6 == nil and sdec.acq_bufgot == nil and sdec.acq_bufperm == nil,
+          string.format('%s / %s', tostring(b6), tostring(sdec.acq_bufgot)))
+    GEN_BUFMAKE_FAIL(0)
+    -- THE SCRATCH SET IS PERMANENT TOO, and sized for the head at the top rate: gap_headsec of 2 ms is
+    -- 2000 readings at 1 MS/s, so one size serves every rate and the set never has to be rebuilt.
+    drop()
+    GEN_DEFBUF(10, 10)
+    pcall(sdec.gap_release_all)
+    local s1 = sdec.gap_scratches(sdec.gap_nscratch, 0.025, 100000)
+    check('the scratch set is the asked-for count at the permanent size',
+          s1 ~= nil and table.getn(s1) == sdec.gap_nscratch
+          and s1[1].capacity == sdec.gap_scratchcap,
+          string.format('%s buffers of %s', tostring(s1 and table.getn(s1)),
+                        tostring(s1 and s1[1].capacity)))
+    check('...large enough for gap_headsec at the highest rate the app records at',
+          sdec.gap_scratchcap >= math.ceil(sdec.gap_headsec * 1000000),
+          string.format('%d vs %d readings', sdec.gap_scratchcap,
+                        math.ceil(sdec.gap_headsec * 1000000)))
+    -- AND A SECOND ARM REUSES THEM. A rate change used to rebuild all twelve, and a resize discards
+    -- every reading -- including the burst head the splice is going to need.
+    local s2 = sdec.gap_scratches(sdec.gap_nscratch, 0.100, 1000000)
+    check('a second arm at a different rate reuses the same scratch buffers',
+          s2 ~= nil and table.getn(s2) == table.getn(s1) and s2[1] == s1[1]
+          and s2[table.getn(s2)] == s1[table.getn(s1)],
+          string.format('%s, first same=%s', tostring(s2 and table.getn(s2)),
+                        tostring(s2 ~= nil and s2[1] == s1[1])))
+    -- AND THE WHOLE SET FITS BESIDE THE RECORD ON THE SMALLEST POOL OF THE SUPPORTED MODELS.
+    check('record plus scratch plus two minimum default buffers fits the 2461 pool',
+          sdec.acq_bufcap + sdec.gap_maxscratch * sdec.gap_scratchcap
+          + 2 * sdec.ck_defbufmin < 6875000,
+          string.format('%d of 6875000', sdec.acq_bufcap
+                        + sdec.gap_maxscratch * sdec.gap_scratchcap + 2 * sdec.ck_defbufmin))
+    pcall(sdec.gap_release_all)
+    drop()
+    sdec.buf = keepbuf
+    GEN_DEFBUF(100000, 100000)
   end
 
   -- THE FLOOR IS THE SMALLEST MODE'S OWN ARITHMETIC, asserted against the function that sizes it
@@ -11481,8 +11613,8 @@ end)()
           sdec.bufmax_for() < sdec.ck_bufmin,
           string.format('%d vs floor %d', sdec.bufmax_for(), sdec.ck_bufmin))
     local did, what = sdec.buf_reclaim()
-    check('so launch resizes defbuffer2 back to the 100 000 default',
-          did == true and defbuffer2.capacity == 100000,
+    check('so launch takes defbuffer2 down to the minimum',
+          did == true and defbuffer2.capacity == sdec.ck_defbufmin,
           string.format('%s, defbuffer2 now %d', tostring(did), defbuffer2.capacity))
     check('...and says what it took and from where, because the resize discarded those readings',
           what ~= nil and string.find(what, 'defbuffer2', 1, true) ~= nil
@@ -11500,18 +11632,23 @@ end)()
           sdec.buf_restore() == nil and sdec.ck_defbufwas == nil)
   end
 
-  -- BOTH ENLARGED, AND THIS IS THE ORDER ASSERTION. Shrinking defbuffer2 alone leaves
-  -- 7 080 255 - 2 000 000 - 100 000 - 50 000 = 4 930 255, which already clears the ceiling -- so
-  -- defbuffer1 must be left ALONE. Reversing the two would shrink defbuffer1 and strand defbuffer2.
+  -- BOTH ENLARGED, AND THIS IS THE ORDER ASSERTION. Both go to the minimum now, so the order is no
+  -- longer visible in the capacities -- it is visible in the text, and it still matters: defbuffer1 is
+  -- the default ACTIVE buffer and so the one likely to hold the operator's own readings, so a reclaim
+  -- that got part way must have taken defbuffer2's readings and not defbuffer1's.
   GEN_DEFBUF(2000000, 2000000)
   do
     local did, what = sdec.buf_reclaim()
-    check('with both enlarged, defbuffer2 is taken first',
-          did == true and defbuffer2.capacity == 100000,
-          string.format('%s, defbuffer2 %d', tostring(did), defbuffer2.capacity))
-    check('...and defbuffer1 is left untouched, because defbuffer2 alone was enough',
-          defbuffer1.capacity == 2000000 and string.find(what, 'defbuffer1', 1, true) == nil,
-          string.format('defbuffer1 %d, took %s', defbuffer1.capacity, tostring(what)))
+    check('with both enlarged, both are taken',
+          did == true and defbuffer2.capacity == sdec.ck_defbufmin
+          and defbuffer1.capacity == sdec.ck_defbufmin,
+          string.format('%s, d1=%d d2=%d', tostring(did), defbuffer1.capacity,
+                        defbuffer2.capacity))
+    local i2 = string.find(what or '', 'defbuffer2', 1, true)
+    local i1 = string.find(what or '', 'defbuffer1', 1, true)
+    check('...and defbuffer2 is reported first, which is the order they were written in',
+          i2 ~= nil and i1 ~= nil and i2 < i1,
+          string.format('took %s', tostring(what)))
     sdec.ck_defbufwas = nil
   end
 
@@ -11520,8 +11657,8 @@ end)()
   GEN_DEFBUF(6000000, 100000)
   do
     local did, what = sdec.buf_reclaim()
-    check('a 6 000 000 defbuffer1 IS resized when nothing else will do',
-          did == true and defbuffer1.capacity == 100000,
+    check('a 6 000 000 defbuffer1 is taken down to the minimum too',
+          did == true and defbuffer1.capacity == sdec.ck_defbufmin,
           string.format('%s, defbuffer1 %d', tostring(did), defbuffer1.capacity))
     check('...naming defbuffer1 and its old size, since those readings are gone',
           what ~= nil and string.find(what, 'defbuffer1', 1, true) ~= nil
@@ -11843,7 +11980,7 @@ end)()
     sdec.ck_relaunching = true
     local r = sdec.buf_restore()
     check('the rebuild teardown leaves the reclaim in place -- a relaunch is not an exit',
-          r == nil and defbuffer1.capacity == 100000
+          r == nil and defbuffer1.capacity == sdec.ck_defbufmin
           and sdec.ck_defbufwas ~= nil and sdec.ck_defbufwas.defbuffer1 == 3000000,
           string.format('%s, d1=%d', tostring(r), defbuffer1.capacity))
     sdec.ck_relaunching = nil
