@@ -1238,9 +1238,23 @@ for vi = 1, table.getn(V) do
   print(string.format('%-5s %-44s %7d %8d %5.1f %4.0f%% %s', v.id, v.desc, nsmp,
                       nbytes, v.fsv, util, qnote))
 
+  -- DERIVED FROM THE RENDERED RATE, never defaulted, because soakplan reads the manifest's spb and
+  -- nothing else: `srate = baud * spb` is what the generator is commanded with, so an spb that does not
+  -- match the file plays the whole vector at the wrong rate. v99d renders at sr(9600, 5) and declared
+  -- no spb, so it took the default 10 and every one of its cells was commanded at twice the rate the
+  -- file needs -- measured 256 036 Bd against a commanded 128 000, and its twelve cells above
+  -- 125 000 Bd refused outright on the decoder's 250 kBd ceiling. sr() is baud * mult, so the
+  -- multiplier divides back out exactly.
+  local spb = v.fs / b.baud
+  -- A declared spb is now a cross-check rather than the source. Raised at generation time: a vector
+  -- whose two statements of its own rate disagree must not reach the key at all.
+  if v.spb ~= nil and v.spb ~= spb then
+    error(string.format('%s declares spb %s but renders at %s sa/s over %s baud, which is %s',
+                        v.id, tostring(v.spb), tostring(v.fs), tostring(b.baud), tostring(spb)), 0)
+  end
   nrows = nrows + 1
   rows[nrows] = {id = v.id, desc = v.desc, npts = nsmp, nbytes = nbytes,
-                 fsv = v.fsv, amp = info.amp_vpp, fs = v.fs, spb = v.spb or SPB,
+                 fsv = v.fsv, amp = info.amp_vpp, fs = v.fs, spb = spb,
                  minv = info.min_v, maxv = info.max_v, cksum = info.cksum,
                  proto = v.proto or 'uart', baud = b.baud, fmt = b.fmt, nb = b.nb,
                  nbad = b.nbad, want = want, nwant = nwant,
