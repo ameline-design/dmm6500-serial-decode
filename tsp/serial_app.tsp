@@ -707,6 +707,37 @@ function sdec.stream_decode(got)
   if sdec.strm_elide ~= nil and sdec.fs ~= nil and sdec.fs > 0 then
     opts.primeskip = math.ceil(2 * sdec.strm_elide * sdec.fs)
   end
+  -- EACH BURST'S HEAD PUT BACK IN FRONT OF IT, where elision ran. The record resumes 120-160 us after the
+  -- line crosses, so every burst in it opens part way into its own start bit. Few bytes die of that -- 1.2 a
+  -- seam, measured -- but the framer anchors on the first edge it finds and an anchor half a bit out carries
+  -- every later bit centre in the burst with it: 62.8 % of bytes right on one shift against 98.2 % per
+  -- segment. The samples that latency covers are not lost, because entering either measure block stops the
+  -- other, so the scratch stores until the record takes over. Until this call nothing read them.
+  --
+  -- The threshold is the capture's, not one derived from a scratch: a gap is 20 ms of silence against 0.16 ms
+  -- of head, so sig_levels on a scratch finds no separable pair and refuses.
+  -- Cleared before the attempt, so a recording that elides nothing reports no splice rather than the last
+  -- elided one's. gap_splice_plan sets them when it runs and a nil here is the honest "not attempted".
+  sdec.spl_nseam, sdec.spl_nspliced, sdec.spl_nadded, sdec.spl_norphan = nil, nil, nil, nil
+  local rdr, nrd = nil, got
+  if sdec.strm_elide ~= nil and sdec.gapbufs ~= nil and sdec.buf ~= nil then
+    local thr = sdec.thr or sdec.lvl_thr
+    local fs = sdec.acq_fs or sdec.fs
+    local baud = sdec.force_baud
+    if thr ~= nil and fs ~= nil and fs > 0 and baud ~= nil and baud > 0 then
+      local pl = nil
+      -- pcall'd: this reads attributes off twelve buffers, and a scratch the pool refused to make is a dead
+      -- handle that raises on the first of them. A refused splice decodes the record as it stands rather than
+      -- failing the capture -- which is gap_model's own fallback discipline.
+      pcall(function()
+        pl = sdec.gap_splice_plan(sdec.buf, got, sdec.gapbufs, thr, fs / baud, fs)
+      end)
+      if pl ~= nil then
+        rdr, nrd = sdec.ck_reader_spliced(sdec.buf, got, pl), pl.total
+      end
+    end
+  end
+  if rdr == nil then rdr = sdec.ck_reader_buffer(sdec.buf, got) end
   -- Sliced when a panel is waiting, whole when nothing is; the one-shot callers leave budget_s nil.
   if sdec.strm_press then
     -- Work per press and window width are two different budgets: only the width must come from
@@ -715,7 +746,7 @@ function sdec.stream_decode(got)
     local W = sdec.ck_win_for(sdec.ui_latency_s)
     -- Globals this path cannot restore, because the decode_step() calls that follow need the narrowed W.
     sdec.ck_win_n, sdec.ck_level_max = W, W
-    local job, jerr = sdec.ck_job_new(sdec.ck_reader_buffer(sdec.buf, got), got, path, opts)
+    local job, jerr = sdec.ck_job_new(rdr, nrd, path, opts)
     if job == nil then return false, tostring(jerr or 'cannot start the decode') end
     sdec.ck_job, sdec.ck_job_md = job, md
     sdec.ck_running = true
@@ -725,7 +756,7 @@ function sdec.stream_decode(got)
   sdec.ck_win_n, sdec.ck_level_max = 20000, nil
   local tot, terr = nil, nil
   local dok = pcall(function()
-    tot, terr = sdec.ck_run(sdec.ck_reader_buffer(sdec.buf, got), got, path, opts)
+    tot, terr = sdec.ck_run(rdr, nrd, path, opts)
   end)
   if not dok or tot == nil then
     return false, tostring(terr or 'chunked decode failed')

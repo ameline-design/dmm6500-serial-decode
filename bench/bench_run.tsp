@@ -1007,12 +1007,24 @@ function brun.point(fs, baud, lock, elide, vid)
   -- a pre-trigger reserve and stream_decode sets opts.leadmax from the buffer's capacity on that branch.
   -- sdec.decode() allows for neither, and refused both cells that fell back.
   local okc2
+  -- CLEARED PER CELL, because only stream_decode sets them: a cell that takes sdec.decode() would otherwise
+  -- report the last elided cell's splice as its own, and a non-elided cell reading nspliced = 2 is a lie in
+  -- the direction that would make the feature look like it was working everywhere.
+  sdec.spl_nseam, sdec.spl_nspliced, sdec.spl_nadded, sdec.spl_norphan = nil, nil, nil, nil
   if elide ~= nil then
     okc2 = pcall(function() okd, whyd = sdec.stream_decode(sdec.nread) end)
   else
     okc2 = pcall(function() okd, whyd = sdec.decode() end)
   end
   if brun.timing then pcall(function() brun.tdec = timer.gettime() end) end
+  -- WHAT THE SPLICE DID, recorded before the failure exits below so a cell that spliced and then failed to
+  -- decode is distinguishable from one that never spliced. stream_decode sets these as a side effect of
+  -- building its reader, and they are the only account of it: nseam is how many bursts the record held,
+  -- nspliced how many got their head back, norphan how many were past the twelfth scratch and kept the head
+  -- they came with, nadded the readings put back in total. A lap where nspliced is 0 while nseam is 2 to 4
+  -- is a splice that did not run, which reads identically to one that ran and changed nothing.
+  r.splseam, r.splran = sdec.spl_nseam, sdec.spl_nspliced
+  r.splorph, r.spladd = sdec.spl_norphan, sdec.spl_nadded
   brun.spin_tick()                      -- 4 of 6: the decode is done
   if not okc2 then r.why = 'decode raised'; return r end
   if not okd then

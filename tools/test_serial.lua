@@ -12538,6 +12538,189 @@ end)()
 
 -- ---------------------------------------------------------------------------
 print('')
+print('-- putting each burst head back: gap_seams, gap_tail, gap_splice, ck_reader_spliced --')
+-- ---------------------------------------------------------------------------
+-- The record resumes a latency after the line crosses, so every burst in it opens part way into its own
+-- start bit. The bytes lost to that are few -- 1.2 a seam, measured -- but the framer anchors on the first
+-- edge it finds, so an anchor half a bit out carries every later bit centre in the burst with it: 62.8 % of
+-- bytes right on one shift against 98.2 % per segment.
+--
+-- WHAT THIS BLOCK CAN AND CANNOT SHOW. tools/gen_serial.lua does not route a gap's samples to the scratch and
+-- the burst's to the record -- it says so itself -- so the scratches here are built by hand and no assertion
+-- below claims to have seen a sample elided. What is checkable offline is the arithmetic, which is where the
+-- off-by-ones live: the ring read, the pairing, the orphan refusal and the index remap.
+-- The leading semicolon is load-bearing: without it the print above and this call parse as one expression.
+;(function()
+  local keep = {smp = sdec.smp, ns = sdec.spl_nseam, sp = sdec.spl_nspliced,
+                ad = sdec.spl_nadded, or_ = sdec.spl_norphan}
+  local FS, SABIT, THR, HEAD = 10000, 10, 0.0, 14
+  local IDLE, SPACE, DT = 1.0, -1.0, 1 / 10000
+  local keepidle = math.ceil(sdec.gap_idlemargin * SABIT)
+
+  -- A record of nburst bursts: a start bit, three idle bit times of the tail the detector leaves, then the
+  -- elided step. The second burst onward is short of HEAD readings, which is the damage being repaired.
+  local function record(nburst, cut)
+    local b = {readings = {}, relativetimestamps = {}, n = 0, capacity = 6000000}
+    local t, first2, i, j = 0, nil, nil, nil
+    for j = 1, nburst do
+      local nsp = SABIT
+      if j > 1 and cut then nsp = SABIT - HEAD end
+      if j > 1 and first2 == nil then first2 = b.n + 1 end
+      for i = 1, nsp do
+        b.n = b.n + 1 b.readings[b.n] = SPACE b.relativetimestamps[b.n] = t t = t + DT
+      end
+      for i = 1, 3 * SABIT do
+        b.n = b.n + 1 b.readings[b.n] = IDLE b.relativetimestamps[b.n] = t t = t + DT
+      end
+      if j < nburst then t = t + 0.45 end
+    end
+    return b, first2
+  end
+  -- A lapped scratch: idle throughout bar a trailing head, rotated by roff so the ring read is exercised
+  -- rather than assumed.
+  local function scratch(head, roff, cap)
+    if cap == nil then cap = 2048 end
+    local s, lin, i = {readings = {}, n = cap, capacity = cap}, {}, nil
+    for i = 1, cap - head do lin[i] = IDLE end
+    for i = cap - head + 1, cap do lin[i] = SPACE end
+    for i = 1, cap do
+      local p = i + roff
+      if p > cap then p = p - cap end
+      s.readings[p] = lin[i]
+    end
+    s.startindex = roff + 1
+    if s.startindex > cap then s.startindex = s.startindex - cap end
+    return s
+  end
+
+  local rec, seam2 = record(2, true)
+  local sm = sdec.gap_seams(rec, rec.n, FS)
+  check('gap_seams finds one index per burst and opens at 1',
+        table.getn(sm) == 2 and sm[1] == 1 and sm[2] == seam2,
+        string.format('%d seam(s), [2]=%s against %s', table.getn(sm), tostring(sm[2]),
+                      tostring(seam2)))
+  -- THE NULL, without which the line above passes on an implementation that calls every reading a seam.
+  local flat = {readings = {}, relativetimestamps = {}, n = 0, capacity = 6000000}
+  do
+    local t, i = 0, nil
+    for i = 1, 400 do
+      flat.n = flat.n + 1 flat.readings[flat.n] = IDLE
+      flat.relativetimestamps[flat.n] = t t = t + DT
+    end
+  end
+  check('...while a record with no elided step reports one burst, not 400',
+        table.getn(sdec.gap_seams(flat, flat.n, FS)) == 1,
+        tostring(table.getn(sdec.gap_seams(flat, flat.n, FS))))
+
+  -- THE RING, at three offsets including the wrap-at-the-end case. A tail read that ignored startindex
+  -- would pass at offset 0 alone.
+  local allring, shape, roff = true, true, nil
+  for _, roff in ipairs({0, 700, 2047}) do
+    local tt, tn = sdec.gap_tail(scratch(HEAD, roff), THR, SABIT)
+    if tt == nil or tn ~= HEAD + keepidle then allring = false end
+    if tt ~= nil then
+      local i
+      for i = 1, keepidle do if tt[i] ~= IDLE then shape = false end end
+      for i = keepidle + 1, HEAD + keepidle do if tt[i] ~= SPACE then shape = false end end
+    end
+  end
+  check('gap_tail returns head+margin at every ring offset, idle leading and head trailing',
+        allring and shape, string.format('len ok=%s shape ok=%s, want %d',
+                                         tostring(allring), tostring(shape), HEAD + keepidle))
+  -- Idle is read as the scratch's own majority, so polarity costs nothing.
+  local inv = scratch(HEAD, 0)
+  do local i for i = 1, inv.capacity do inv.readings[i] = -inv.readings[i] end end
+  local _, invn = sdec.gap_tail(inv, THR, SABIT)
+  check('...and an inverted line gives the same tail, idle being a majority and not a polarity',
+        invn == HEAD + keepidle, tostring(invn))
+  -- THE THREE REFUSALS, each a different wrong splice if it were admitted.
+  check('a scratch that is idle throughout, never fired, or never quiet is refused',
+        sdec.gap_tail(scratch(0, 0), THR, SABIT) == nil and
+        sdec.gap_tail({readings = {}, n = 0, capacity = 2048}, THR, SABIT) == nil and
+        sdec.gap_tail(scratch(2048, 0), THR, SABIT) == nil,
+        'all three nil')
+
+  -- THE SPLICE, and the head it recovers must span a whole start bit: HEAD is 14 against SABIT 10, so the
+  -- record kept none of it and the recovered readings are the only ones there are.
+  local arr, m = sdec.gap_splice(rec, rec.n, {scratch(HEAD, 0), scratch(HEAD, 123)},
+                                 THR, SABIT, FS)
+  local wantm = rec.n + 2 * (HEAD + keepidle)
+  local b2 = seam2 + 2 * (HEAD + keepidle)
+  local nsp = 0
+  if arr ~= nil then
+    local i
+    for i = b2 - HEAD, b2 - 1 do if arr[i] == SPACE then nsp = nsp + 1 end end
+  end
+  check('gap_splice puts both heads back and the recovered head is a full start bit',
+        arr ~= nil and m == wantm and nsp == HEAD and nsp >= SABIT,
+        string.format('m=%s want %d, %d space reading(s) of %d a bit', tostring(m), wantm, nsp, SABIT))
+  check('...and reports what it did, so a lap can be scored on it',
+        sdec.spl_nseam == 2 and sdec.spl_nspliced == 2 and sdec.spl_norphan == 0 and
+        sdec.spl_nadded == 2 * (HEAD + keepidle),
+        string.format('nseam=%s nspl=%s norphan=%s nadd=%s', tostring(sdec.spl_nseam),
+                      tostring(sdec.spl_nspliced), tostring(sdec.spl_norphan),
+                      tostring(sdec.spl_nadded)))
+  -- PAST ns BURSTS the early scratches have been reused, and splicing one onto an earlier burst would
+  -- prepend a different gap's samples. Refused, counted, and the record keeps the head it came with.
+  local many = record(5, true)
+  local _, mm = sdec.gap_splice(many, many.n, {scratch(HEAD, 0), scratch(HEAD, 9)},
+                                THR, SABIT, FS)
+  check('5 bursts against 2 scratches splices the last 2 only and counts the orphans',
+        sdec.spl_nseam == 5 and sdec.spl_nspliced == 2 and sdec.spl_norphan == 3 and
+        mm == many.n + 2 * (HEAD + keepidle),
+        string.format('nseam=%s nspl=%s norphan=%s', tostring(sdec.spl_nseam),
+                      tostring(sdec.spl_nspliced), tostring(sdec.spl_norphan)))
+  check('nothing to put back comes back nil, so the caller reads the record as it stands',
+        sdec.gap_splice(rec, rec.n, {scratch(0, 0)}, THR, SABIT, FS) == nil, 'not nil')
+
+  -- THE READER AGAINST THE ARRAY, which is what makes the index remap checkable: same stream, two
+  -- independent implementations of the same coordinate change.
+  local s2 = {scratch(HEAD, 0), scratch(HEAD, 123)}
+  local arr2, tot2 = sdec.gap_splice(rec, rec.n, s2, THR, SABIT, FS)
+  local pl = sdec.gap_splice_plan(rec, rec.n, s2, THR, SABIT, FS)
+  local rdr = sdec.ck_reader_spliced(rec, rec.n, pl)
+  local dst, bad, i = {}, nil, nil
+  for i = 1, tot2 do
+    if rdr(dst, i, 1) ~= 1 or dst[1] ~= arr2[i] then bad = i break end
+  end
+  check('the spliced reader matches the spliced array at every position',
+        pl ~= nil and pl.total == tot2 and bad == nil,
+        'total=' .. tostring(pl and pl.total) .. ' first disagreement at ' .. tostring(bad))
+  -- In chunks, and strided: chunk_decode asks both ways and a reader keeping a cursor would be wrong for one.
+  local ch, from = {}, 1
+  bad = nil
+  while from <= tot2 do
+    local got = rdr(ch, from, 7)
+    if got < 1 then bad = from break end
+    local k
+    for k = 1, got do if ch[k] ~= arr2[from + k - 1] then bad = from + k - 1 break end end
+    if bad ~= nil then break end
+    from = from + got
+  end
+  local sd = {}
+  local sm2 = rdr(sd, 1, 40, 13)
+  local sbad = nil
+  for i = 1, sm2 do if sd[i] ~= arr2[1 + (i - 1) * 13] then sbad = i break end end
+  check('...in chunks and strided, and short rather than nil-filled past the end',
+        bad == nil and sbad == nil and sm2 > 0 and rdr(dst, tot2 - 2, 10) == 3,
+        string.format('chunk bad=%s strided bad=%s tail=%s', tostring(bad), tostring(sbad),
+                      tostring(rdr(dst, tot2 - 2, 10))))
+  -- AND THE NULL FOR THAT COMPARISON: the unspliced reader must disagree at position 1, or the three
+  -- checks above would pass against a reader that ignored the plan.
+  local pm = sdec.ck_reader_buffer(rec, rec.n)(dst, 1, 1)
+  check('...while the unspliced reader does NOT, so the comparison discriminates',
+        pm == 1 and dst[1] ~= arr2[1],
+        'unspliced=' .. tostring(dst[1]) .. ' spliced=' .. tostring(arr2[1]))
+
+  sdec.smp = keep.smp
+  sdec.spl_nseam, sdec.spl_nspliced = keep.ns, keep.sp
+  sdec.spl_nadded, sdec.spl_norphan = keep.ad, keep.or_
+  check('and the suite leaves sdec.smp as it found it',
+        sdec.smp == keep.smp, tostring(sdec.smp))
+end)()
+
+-- ---------------------------------------------------------------------------
+print('')
 print('-- the eliding arm and the fast path: two blocks must not wait on one event --')
 -- ---------------------------------------------------------------------------
 -- getblocklist() reports a model off the fast path whenever two blocks wait on the SAME event, and the

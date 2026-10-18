@@ -2283,6 +2283,221 @@ function sdec.gap_release()
   return ok
 end
 
+-- How far above one sample interval a timestamp step has to be before it is a seam rather than jitter. The
+-- quantity being separated is enormous -- the elided part of a gap is the gap less the two windows the record
+-- keeps and less the head the scratch holds, so hundreds of milliseconds against 10 us -- and the jitter to
+-- clear is 32 ns. Anything between 2 and win*fs would do; 4 is chosen to be obviously neither.
+sdec.gap_seamdt = 4
+
+-- How many bit times of unbroken idle mark the end of the silence before a burst, when walking a scratch
+-- backwards. It has to exceed the head the scratch holds and fall well short of the silence ahead of it: the
+-- head is the resume latency, measured at 120-160 us or 1.3-1.6 bit times at 9600 Bd, and the silence is at
+-- least one detector window, 100 bit times at the same rate. Three sits in the middle of two orders of
+-- magnitude, and the reason it cannot simply be "the trailing run away from idle" is that a data bit at the
+-- idle level is indistinguishable from idle -- 0xFF carries eight of them.
+sdec.gap_idlerun = 3
+
+-- And how much idle to carry across with the head. The framer anchors on the first edge it finds, so it needs
+-- idle ahead of the start bit rather than a stream that opens mid-transition.
+sdec.gap_idlemargin = 2
+
+-- Where the record's bursts begin, in time order. -> a table of indices into the time-ordered record, [1] = 1
+-- always, one entry per burst.
+--
+-- The record is not continuous and is not meant to be: block 3's measure runs on through the delay loop, so a
+-- burst keeps the trailing silence of up to two detector windows, and then the record jumps to the next burst.
+-- What that step omits is the gap less that tail and less the head parked in the scratch, which is what makes
+-- this test need no tuning.
+--
+-- Rotation is handled for form rather than need: the record is 6 000 000 readings and runs 13 670 to 56 952, so
+-- acq_first answers 1 and the offset is inert. It is here because a sized fallback record can lap.
+function sdec.gap_seams(buf, n, fs)
+  local out = {1}
+  if buf == nil or n == nil or n < 2 or fs == nil or fs <= 0 then return out end
+  -- Read bare. A guard on our own call is the first thing the pcall budget takes, and the two failures it
+  -- covered are covered elsewhere: an absent attribute reads nil, which is the test below, and a dead handle
+  -- raises into stream_decode's own pcall around the plan build.
+  local rt = buf.relativetimestamps
+  if rt == nil then return out end
+  local lim = sdec.gap_seamdt / fs
+  local off = sdec.acq_first(buf, n) - 1
+  local nout, prev, i = 1, nil, nil
+  for i = 1, n do
+    local p = i + off
+    if p > n then p = p - n end
+    local t = rt[p]
+    if t ~= nil then
+      if prev ~= nil and (t - prev) > lim then
+        nout = nout + 1
+        out[nout] = i
+      end
+      prev = t
+    end
+  end
+  return out
+end
+
+-- The readings of a scratch that belong to the burst the record picked up late: the head, plus a little idle
+-- ahead of it. -> a table in time order and its length, or nil where the group never fired or holds no head.
+--
+-- `thr` is the RECORD's decision threshold and not one derived here. A scratch is 20 ms of silence against
+-- 0.16 ms of head, so sig_levels on it finds no separable pair and refuses -- the level pair has to come from
+-- the capture that has both levels in it.
+--
+-- Idle is read as whichever side of the threshold the scratch mostly sits on. That is the same majority
+-- argument and it means this needs no view on which way round the line idles, so an inverted vector costs it
+-- nothing.
+--
+-- A group that never ran reads n = 0, because gap_scratches clears the whole set on reuse. That is what tells
+-- an unused scratch from a used one without buffer.getstats, which this firmware has but the offline harness
+-- does not.
+function sdec.gap_tail(scr, thr, sabit)
+  if scr == nil or thr == nil then return nil end
+  -- Bare, for gap_seams' reason. n is type-tested rather than nil-tested because a proxy that answers
+  -- something other than a number must refuse rather than compare.
+  local n = scr.n
+  if type(n) ~= 'number' or n < 2 then return nil end
+  local rd = scr.readings
+  if rd == nil then return nil end
+  if sabit == nil or sabit <= 0 then return nil end
+  local off = sdec.acq_first(scr, n) - 1
+  local nhi, i, p = 0, nil, nil
+  for i = 1, n do
+    p = i + off
+    if p > n then p = p - n end
+    local v = rd[p]
+    if v ~= nil and v > thr then nhi = nhi + 1 end
+  end
+  local idlehi = (2 * nhi >= n)
+  -- Backwards to the burst. `run` counts consecutive idle readings and `lastnon` holds the earliest non-idle
+  -- reading seen so far, so when the run reaches idlerun bit times the burst's own first reading is already in
+  -- hand. Taking i + 1 instead would answer the END OF THE SILENCE and carry idlerun bit times of idle that
+  -- the margin then doubles.
+  local need = math.ceil(sdec.gap_idlerun * sabit)
+  if need < 2 then need = 2 end
+  local run, s, lastnon = 0, nil, nil
+  for i = n, 1, -1 do
+    p = i + off
+    if p > n then p = p - n end
+    local v = rd[p]
+    local isidle = (v == nil) or ((v > thr) == idlehi)
+    if isidle then
+      run = run + 1
+      if run >= need and lastnon ~= nil then
+        s = lastnon
+        break
+      end
+    else
+      run = 0
+      lastnon = i
+    end
+  end
+  -- Nil means one of two things and neither is spliceable: the scratch is idle throughout, so the record did
+  -- not pick the burst up late and there is no head to put back; or it never went quiet, so it is not a gap's
+  -- scratch and its oldest reading is an arbitrary cut.
+  if s == nil then return nil end
+  local keep = math.ceil(sdec.gap_idlemargin * sabit)
+  s = s - keep
+  if s < 1 then s = 1 end
+  local out, nk = {}, 0
+  for i = s, n do
+    p = i + off
+    if p > n then p = p - n end
+    nk = nk + 1
+    out[nk] = rd[p]
+  end
+  if nk < 1 then return nil end
+  return out, nk
+end
+
+-- The record with every burst's head put back, in time order. -> the sample array and its length, or nil where
+-- there was nothing to splice and the caller should use acq_copy.
+--
+-- WHAT THIS IS FOR. The record resumes a latency after the line crosses, so every burst in it begins part way
+-- into its own start bit. The bytes lost to that are few -- 1.2 a seam, measured -- but the framer anchors on
+-- the first edge it finds, and an anchor half a bit out puts every later bit centre in the burst half a bit out
+-- with it. That is the damage: 62.8 % of bytes right on one shift against 98.2 % per segment. Restoring the
+-- head restores the anchor.
+--
+-- WHY IT CAN BE COMPLETE. Entering either measure block stops the other, so the scratch stores right up to the
+-- instant the record takes over and the latency is not a hole in the acquisition -- it is in the scratch. What
+-- the spliced stream loses is the DURATION of the elided idle, and the framer reads idle for position rather
+-- than for length, so the result is a waveform it already handles: burst, idle, start bit, burst.
+--
+-- PAIRING. Burst j's head is in scratch ((j-1) mod ns) + 1, by the program's own counter: gap_model unrolls one
+-- group per scratch and each group's measure block names its own buffer. Burst 1 is included -- scratch 1 holds
+-- the arm's own latency, so the record's opening is short for the same reason a seam is.
+--
+-- AND PAST ns BURSTS THE EARLY ONES ARE REFUSED, not approximated. The program's closing BRANCH_ALWAYS returns
+-- to group 1, so scratch i holds only the LAST burst that used it; splicing it onto an earlier burst would
+-- prepend a different gap's samples. Only the final ns bursts can be paired, and the rest keep the head they
+-- came with.
+-- The plan, in SPLICED coordinates: where each recovered head goes and what it holds. -> the plan, or nil when
+-- there is nothing to put back and the caller should read the record as it stands.
+--
+-- Positions are spliced rather than record indices because both consumers want them that way: the reader maps
+-- a spliced position to its source, and the array build emits in spliced order. Keeping record indices here
+-- would make each consumer re-derive the same running offset.
+function sdec.gap_splice_plan(buf, n, scrs, thr, sabit, fs)
+  if buf == nil or n == nil or n < 2 or scrs == nil or thr == nil then return nil end
+  if type(scrs) ~= 'table' or scrs[1] == nil then return nil end
+  local ns = table.getn(scrs)
+  if ns < 1 then return nil end
+  local seams = sdec.gap_seams(buf, n, fs)
+  local nseam = table.getn(seams)
+  local pl = {n = 0, pos = {}, len = {}, tail = {}, total = n}
+  local nadd, run, j = 0, 0, nil
+  for j = 1, nseam do
+    -- Past ns bursts the early scratches have been reused, so they are skipped rather than approximated.
+    if j + ns > nseam then
+      local si = math.mod(j - 1, ns) + 1
+      local tt, tn = sdec.gap_tail(scrs[si], thr, sabit)
+      if tt ~= nil and tn ~= nil and tn > 0 then
+        pl.n = pl.n + 1
+        -- The running insert is what turns a record index into a spliced one.
+        pl.pos[pl.n], pl.len[pl.n], pl.tail[pl.n] = seams[j] + run, tn, tt
+        run = run + tn
+        nadd = nadd + tn
+      end
+    end
+  end
+  sdec.spl_nseam, sdec.spl_nspliced, sdec.spl_nadded = nseam, pl.n, nadd
+  sdec.spl_norphan = nseam - pl.n
+  if pl.n < 1 then return nil end
+  pl.total = n + nadd
+  return pl
+end
+
+function sdec.gap_splice(buf, n, scrs, thr, sabit, fs)
+  local pl = sdec.gap_splice_plan(buf, n, scrs, thr, sabit, fs)
+  if pl == nil then return nil end
+  local rd = buf.readings
+  if rd == nil then return nil end
+  local off = sdec.acq_first(buf, n) - 1
+  local t, m, j = {}, 0, 1
+  local step = sdec.tickevery
+  if step == nil or step < 1 then step = n end
+  local i
+  for i = 1, n do
+    -- Positions ascend and at most one tail opens at any record index, so this needs no search.
+    if j <= pl.n and pl.pos[j] == m + 1 then
+      local tt, k = pl.tail[j], nil
+      for k = 1, pl.len[j] do
+        m = m + 1
+        t[m] = tt[k]
+      end
+      j = j + 1
+    end
+    local p = i + off
+    if p > n then p = p - n end
+    m = m + 1
+    t[m] = rd[p]
+    if sdec.tick ~= nil and math.mod(i, step) == 0 then sdec.tick() end
+  end
+  sdec.smp = t
+  return t, m
+end
+
 -- The program that keeps the traffic and discards the gaps. -> true when the store really holds it.
 --
 --   1) MEASURE_DIGITIZE  scr, COUNT_INFINITE     the gap
