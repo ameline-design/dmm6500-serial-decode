@@ -6271,7 +6271,7 @@ function sdec.build_options()
                          0, sdec.gapelide_max, 's', 4)
   local fx12, fy12 = nextpos()
   sdec.opt_over = create(sdec.optscr, display.OBJ_EDIT_NUMBER, fx12, fy12,
-                         'Over-read', '0 off, elide extra',
+                         'Over-read', '0 off, idle margin',
                          display.NFORMAT_PREFIX, (sdec.strm_overread or 0) * 100,
                          0, (sdec.overread_max or 0.5) * 100, '%', 4)
 
@@ -6624,9 +6624,7 @@ function sdec.stream_begin()
   if nsmp == nil then return false, 'cannot size the capture for this rate' end
 
   local sizefor = nsmp
-  local wantel = nil
-  if sdec.gap_elide ~= nil then wantel = sdec.gap_elide(sdec.force_baud) end
-  if wantel ~= nil and (sdec.strm_overread or 0) > 0 then
+  if (sdec.strm_overread or 0) > 0 then
     sizefor = math.ceil(nsmp * (1 + sdec.strm_overread))
   end
   local cap = sizefor + 100
@@ -6635,7 +6633,7 @@ function sdec.stream_begin()
     if sdec.ck_bufmax ~= nil and cap > sdec.ck_bufmax then
       cap = sdec.ck_bufmax
       nsmp = math.floor(cap * (100 - sdec.pretrig) / 100)
-      if wantel ~= nil and (sdec.strm_overread or 0) > 0 then
+      if (sdec.strm_overread or 0) > 0 then
         nsmp = math.floor(nsmp / (1 + sdec.strm_overread))
       end
     end
@@ -7084,9 +7082,7 @@ end
 -- returns the reading count collected.
 function sdec.stream_acquire(nsmp)
   local buf = sdec.buf
-  local wantelide = nil
-  if sdec.gap_elide ~= nil then wantelide = sdec.gap_elide(sdec.force_baud) end
-  if wantelide ~= nil and (sdec.strm_overread or 0) > 0 then
+  if (sdec.strm_overread or 0) > 0 then
     nsmp = sdec.acq_fit(math.ceil(nsmp * (1 + sdec.strm_overread)), buf)
   end
   sdec.strm_target = nsmp

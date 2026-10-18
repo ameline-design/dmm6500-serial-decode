@@ -727,11 +727,14 @@ the bursts are longer than about one and a half windows. A device sending single
 note row reports both numbers so this is visible rather than guessed: `buffer full -- 7 bursts,
 elided 94.2 s of 98.1 s` says it worked, and `2 bursts, elided 0.3 s of 4.1 s` says it did not.
 
-**Over-read** is the other half of that price. The windows kept at the end of each burst, and any
-pause too short to be dropped at all, are recorded in full and come out of the same sample count the
-payload does — so the recording is sized 10 % larger than the bytes need, and the margin absorbs
-them. Raise it on a line whose pauses sit just under the window, where the most is recorded and the
-least dropped; it costs readings on a buffer that has them.
+**Over-read** pays part of that price, and it is not an elision setting — it applies to every
+recording. The windows kept at the end of each burst, and any pause too short to be dropped at all,
+are recorded in full and come out of the same sample count the payload does, so the recording is
+sized 10 % larger than the bytes need and the margin absorbs them. Note which way round that runs:
+**elision is what removes silence, so a recording with elision off has more idle in it, not less.**
+Raise **Over-read** on a line that pauses often and briefly — where the most is recorded and the
+least dropped — and on any long recording of a bursty line with elision off. It costs readings on a
+buffer that has them.
 
 **What changes about the record.** The time axis is no longer continuous — the gaps are gone from it,
 so the interval between two bytes either side of a seam is not what the record says. The decoded
@@ -778,12 +781,13 @@ crossing in any case, so the latency never costs a byte.
 
 What the app does with it:
 
-- **Over-read** — **extra samples to record so the payload still fits.** Only an eliding recording
-  uses it, and **10 % is the default**. A pause shorter than **Gap Elide** is never dropped — the
-  instrument has no way to know it was a pause until the window has elapsed — so those samples come
-  out of the same budget the bytes do, and without a margin the bytes that go missing are the ones at
-  the end. 0 turns it off. It costs readings and nothing else: the decoder already skips silence, so
-  this buys payload rather than accuracy.
+- **Over-read** — **extra samples to record so the payload still fits.** **10 % is the default**, and
+  it applies to **every recording**, whether or not **Gap Elide** is on. Any pause the line takes is
+  recorded in full unless the trigger model drops it, and those samples come out of the same budget
+  the bytes do — so without a margin the bytes that go missing are the ones at the end of the
+  recording. A capture that elides nothing has the *most* idle to absorb, not the least. 0 turns it
+  off. It costs readings and nothing else: the decoder already skips silence, so this buys payload
+  rather than accuracy.
 - The level probe finds no transitions, which is how it knows. On a line that is already transmitting
   nothing here applies — the threshold is measured from the two levels, which beats any fixed voltage.
 - The comparator is armed **Arm At** volts from the idle level, on the side the start bit travels: one

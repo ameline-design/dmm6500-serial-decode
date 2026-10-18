@@ -82,9 +82,19 @@ do
   -- records 5 % less than was asked for. This recording armed a SimpleLoop, because the line is
   -- transmitting, and then the reserve is 5 % of readings left unused rather than a shortfall.
   do
-    local want = atload.count + 100
+    -- THE OVER-READ IS IN THE CAPACITY, on every recording and not only an eliding one: stream_begin
+    -- sizes for sdec.strm_overread so acq_fit cannot shave the margin back off, and the margin is
+    -- orthogonal to elision -- a capture that elides nothing has the most idle to absorb. Derived from
+    -- the knob and in stream_begin's own order (raise the count, THEN take the reserve off the
+    -- capacity), because the two roundings do not commute: 3 413 334 at 10 % and a 5 % reserve is
+    -- 3 952 383 this way and a different figure the other.
+    local sizefor = atload.count
+    if (sdec.strm_overread or 0) > 0 then
+      sizefor = math.ceil(atload.count * (1 + sdec.strm_overread))
+    end
+    local want = sizefor + 100
     if sdec.trigmode ~= 'free' then
-      want = math.ceil(atload.count * 100 / (100 - sdec.pretrig)) + 100
+      want = math.ceil(sizefor * 100 / (100 - sdec.pretrig)) + 100
     end
     -- UNLESS THE CEILING PINNED IT, which stream_begin does deliberately: where the reserve does not
     -- fit in ck_bufmax it pins the capacity and shortens the recording, because "overrunning it would
@@ -96,10 +106,16 @@ do
     -- 9600 needs 2.73 M readings at 8 sa/bit against 1.37 M at 4, so it crosses the ceiling.
     if sdec.ck_bufmax ~= nil and want > sdec.ck_bufmax then
       want = sdec.ck_bufmax
+      -- And the count comes back off the pinned CAPACITY and then has the over-read taken out of it
+      -- again, which is stream_begin's own order: what the clamp leaves is the whole room, and the
+      -- margin is taken from that room rather than added on top of it.
+      local share = math.floor(sdec.ck_bufmax * (100 - sdec.pretrig) / 100)
+      if (sdec.strm_overread or 0) > 0 then
+        share = math.floor(share / (1 + sdec.strm_overread))
+      end
       check('...and where the ceiling pinned the capacity, the count is the reserve-adjusted share',
-            atload.count == math.floor(sdec.ck_bufmax * (100 - sdec.pretrig) / 100),
-            string.format('count=%s expected=%d', tostring(atload.count),
-                          math.floor(sdec.ck_bufmax * (100 - sdec.pretrig) / 100)))
+            atload.count == share,
+            string.format('count=%s expected=%d', tostring(atload.count), share))
     end
     check('and the buffer has 100 readings of headroom past the count and the reserve',
           atload.capacity == want,
@@ -1428,17 +1444,31 @@ end)()
   check('...while the requested sample count is still the bare one',
         sdec.strm_nsmp == nreq, tostring(sdec.strm_nsmp))
 
-  -- NOT ELIDING: no gaps are declined, so there is nothing to make room for and the capacity must
-  -- not grow. Without this the first check passes on a build that over-sizes every recording.
+  -- NOT ELIDING, AND IT GETS THE MARGIN TOO, which is the whole point of the setting being orthogonal:
+  -- elision is what REMOVES silence, so a recording with it off has MORE idle to absorb, not less.
+  -- This assertion was the opposite way round when the over-read was gated on gap_elide(), and that
+  -- gating withheld the margin from exactly the captures with the most silence in them.
   sdec.gapelide = nil
   if sdec.buf ~= nil then pcall(buffer.delete, sdec.buf) sdec.buf = nil end
   local ok2, why2 = sdec.stream_begin()
   check('a free-running recording sets up too', ok2 == true, tostring(why2))
-  local cap2 = sdec.buf ~= nil and sdec.buf.capacity or 0
+  local nreq2 = sdec.strm_nsmp
+  local want2 = math.ceil(nreq2 * (1 + sdec.strm_overread))
+  check('...and it has room for the over-read as well, elision being orthogonal to it',
+        sdec.acq_fit(want2, sdec.buf) == want2,
+        string.format('fit %s of a %s target, capacity %s',
+                      tostring(sdec.acq_fit(want2, sdec.buf)), tostring(want2),
+                      tostring(sdec.buf ~= nil and sdec.buf.capacity)))
+  -- AND THE MARGIN IS STILL OFF WHEN THE KNOB IS ZERO, which is the premise that keeps the two checks
+  -- above from passing on a build that simply over-sizes everything unconditionally.
+  sdec.strm_overread = 0
+  if sdec.buf ~= nil then pcall(buffer.delete, sdec.buf) sdec.buf = nil end
+  sdec.stream_begin()
+  local cap3 = sdec.buf ~= nil and sdec.buf.capacity or 0
   local bare = math.ceil(sdec.strm_nsmp * 100 / (100 - sdec.pretrig)) + 100
   if sdec.ck_bufmax ~= nil and bare > sdec.ck_bufmax then bare = sdec.ck_bufmax end
-  check('...and it is NOT over-sized, because it declines no gaps',
-        cap2 == bare, string.format('capacity=%s bare=%s', tostring(cap2), tostring(bare)))
+  check('...while a zero over-read sizes to the bare count, so the margin is really the knob',
+        cap3 == bare, string.format('capacity=%s bare=%s', tostring(cap3), tostring(bare)))
 
   sdec.force_baud, sdec.capmode, sdec.trigmode = keep.fb, keep.cm, keep.tm
   sdec.gapelide, sdec.strm_overread = keep.ge, keep.ov

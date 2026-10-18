@@ -783,10 +783,14 @@ print('\nF  an arm the signal never satisfies expires, and the mock gets there o
   local got = sdec.stream_acquire(nreq)
   CK('the arm goes live, because the model reaches its wait inside the budget',
      sdec.strm_armed == true, tostring(sdec.strm_armed))
-  -- AND A RECORDING THAT IS NOT ELIDING TAKES NO OVER-READ. The other half of the elision case below:
-  -- without this the knob could apply everywhere and both assertions would still pass.
-  CK('...and a recording that elides nothing runs to the bare request',
-     sdec.strm_elide == nil and sdec.strm_target == nreq,
+  -- AND A RECORDING THAT IS NOT ELIDING TAKES THE OVER-READ TOO. It is orthogonal to elision: every
+  -- pause is recorded in full unless the trigger model drops it, so the capture that elides nothing
+  -- has the most idle to absorb. Asserted against strm_overread rather than a typed figure, or
+  -- turning the knob off would leave this passing on a margin that never happened.
+  CK('...and a recording that elides nothing still takes the over-read',
+     sdec.strm_elide == nil
+     and sdec.strm_target == sdec.acq_fit(math.ceil(nreq * (1 + sdec.strm_overread)), sdec.buf)
+     and sdec.strm_target > nreq,
      string.format('elide=%s target=%s of %s', tostring(sdec.strm_elide),
                    tostring(sdec.strm_target), tostring(nreq)))
   CK('...and nothing crosses the level it is watching',

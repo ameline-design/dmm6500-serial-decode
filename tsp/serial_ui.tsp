@@ -2294,18 +2294,18 @@ function sdec.build_options()
                          'Gap Elide', '0 off, cut after',
                          display.NFORMAT_PREFIX, tonumber(sdec.gapelide) or 0,
                          0, sdec.gapelide_max, 's', 4)
-  -- Immediately after Gap Elide, because it has meaning only for a recording that elides: a gap
-  -- shorter than the detector window is recorded in full and its samples come out of the same count
-  -- the payload does, so this is the margin that keeps the bytes at the end of the mode's budget.
-  -- Zero is off and it is not the default -- 10 % is -- which is the one field here that ships with a
-  -- non-zero value, because the cost is samples on a record sized for them and the cost of not having
-  -- it is bytes.
+  -- Orthogonal to Gap Elide, and placed after it only because both are about what silence costs. Every
+  -- pause the line takes is recorded in full unless the trigger model elides it, and those samples come
+  -- out of the same count the payload does -- so this margin applies to every recording, and the one
+  -- that elides nothing has the most idle to absorb. Zero is off and it is not the default -- 10 % is --
+  -- which makes it the one field here that ships with a non-zero value, because the cost is readings on
+  -- a record sized for them and the cost of not having it is bytes.
   --
   -- Percent, not the fraction the knob holds: '0.100' beside 'Gap Elide 0.025 s' reads as a second
   -- time rather than a proportion. options_apply divides by 100 and options_seed multiplies.
   local fx12, fy12 = nextpos()
   sdec.opt_over = create(sdec.optscr, display.OBJ_EDIT_NUMBER, fx12, fy12,
-                         'Over-read', '0 off, elide extra',
+                         'Over-read', '0 off, idle margin',
                          display.NFORMAT_PREFIX, (sdec.strm_overread or 0) * 100,
                          0, (sdec.overread_max or 0.5) * 100, '%', 4)
 

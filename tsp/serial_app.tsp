@@ -415,12 +415,10 @@ function sdec.stream_begin()
   -- while strm_nsmp stays the bare request: the two are different numbers and stream_acquire publishes
   -- both (sdec.strm_target is the one it ran to).
   --
-  -- Only where elision is intended, by the same pure read stream_acquire uses -- a free-running
-  -- recording declines no gaps, so it has nothing to make room for.
+  -- Every recording, for stream_acquire's reason: the margin is orthogonal to elision, and the capture
+  -- that elides nothing is the one with the most idle to absorb.
   local sizefor = nsmp
-  local wantel = nil
-  if sdec.gap_elide ~= nil then wantel = sdec.gap_elide(sdec.force_baud) end
-  if wantel ~= nil and (sdec.strm_overread or 0) > 0 then
+  if (sdec.strm_overread or 0) > 0 then
     sizefor = math.ceil(nsmp * (1 + sdec.strm_overread))
   end
   -- Headroom, as acq_cap() adds in a triggered mode and this path adds always: a store past capacity
@@ -436,7 +434,7 @@ function sdec.stream_begin()
     if sdec.ck_bufmax ~= nil and cap > sdec.ck_bufmax then
       cap = sdec.ck_bufmax
       nsmp = math.floor(cap * (100 - sdec.pretrig) / 100)
-      if wantel ~= nil and (sdec.strm_overread or 0) > 0 then
+      if (sdec.strm_overread or 0) > 0 then
         nsmp = math.floor(nsmp / (1 + sdec.strm_overread))
       end
     end
@@ -1062,13 +1060,13 @@ function sdec.stream_acquire(nsmp)
   -- Over-read, before anything is sized from nsmp: see sdec.strm_overread. Clamped to the buffer, so the
   -- target stays a count the record can actually reach and `have >= nsmp` remains a reachable exit.
   --
-  -- gap_elide() and not sdec.strm_elide, which stream_arm publishes further down this function: read here
-  -- it is the PREVIOUS capture's verdict. This is a pure read of the option and the forced format, and it
-  -- answers the question the over-read turns on -- whether this recording intends to elide. An elision the
-  -- arm then refuses has over-read for nothing, which costs samples on a record sized in millions.
-  local wantelide = nil
-  if sdec.gap_elide ~= nil then wantelide = sdec.gap_elide(sdec.force_baud) end
-  if wantelide ~= nil and (sdec.strm_overread or 0) > 0 then
+  -- Unconditional, because the over-read is orthogonal to gap elision. Every pause the line takes is
+  -- recorded in full unless the trigger model elides it, and those samples come out of the same count
+  -- the payload does -- so a recording that elides NOTHING is the one that spends the most of its
+  -- budget on idle, not the least. This was gated on gap_elide() at first, which had it backwards:
+  -- elision is what removes the silence, so making the margin depend on it withheld the margin from
+  -- exactly the captures with the most silence to absorb.
+  if (sdec.strm_overread or 0) > 0 then
     nsmp = sdec.acq_fit(math.ceil(nsmp * (1 + sdec.strm_overread)), buf)
   end
   -- The count this acquisition actually ran to, beside strm_nsmp's request: the two differ by the

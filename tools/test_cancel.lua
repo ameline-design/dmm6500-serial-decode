@@ -1695,12 +1695,18 @@ do
   local need = sdec.stream_samples(sdec.mode_cur(), sdec.fs)
   check('the recording mode can size a capture to fill', need ~= nil and need > 1000,
         string.format('%s readings at %s S/s', tostring(need), tostring(sdec.fs)))
+  -- AND THE OVER-READ COMES OUT OF THE FIXTURE, not out of the ending. stream_acquire runs to
+  -- `need * (1 + strm_overread)` on every recording now -- the margin is orthogonal to elision -- so a
+  -- source sized to the bare count can never reach the target and the run ends 'quiet', which is what
+  -- it did when the margin became unconditional. Derived from the knob, so turning it off or changing
+  -- it resizes the fixture rather than relabelling the run, which is what the note above asks for.
+  local target = math.ceil(need * (1 + (sdec.strm_overread or 0)))
   local fbytes, k = {}, nil
-  for k = 1, math.ceil(need * 9600 / (10 * sdec.fs)) + 200 do
+  for k = 1, math.ceil(target * 9600 / (10 * sdec.fs)) + 200 do
     fbytes[k] = 32 + math.mod(k * 7, 90)
   end
   local frd, fts, fnc, fn = GEN({bytes = fbytes, baud = 9600, fs = sdec.fs, lead = 4, gap = 0,
-                                 tail = 4, n = need + 4000})
+                                 tail = 4, n = target + 4000})
   SRC.rd, SRC.ts, SRC.nsmp = frd, fts, fn
 
   sdec.force_baud, sdec.capmode, sdec.busy = 9600, 'sml', false
