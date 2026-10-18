@@ -1460,10 +1460,23 @@ end
 -- ONE STATIC BUFFER PER CAPTURE MODE, each oversized for the worst case its own mode can ask for. The
 -- totals are chosen to land on the operator's 6 500 000-reading budget exactly:
 --
---     frame     262 144   22 000 of capture and the rest is elision headroom -- an eliding digitize runs
---                         on wall-clock time and the fill test is checked once per ck_poll_s of 0.5 s,
---                         which at 100 kS/s overshoots by 50 000 readings. Five polls of room. The 21 100
---                         this used to be is what filed 4914 on 29 cells.
+--     frame      32 768   and this capacity IS the capture length, not headroom. An armed capture stores
+--                         (100 - position) % of the buffer, position only moving the split, so the figure
+--                         here decides how long every triggered frame capture runs. At 262 144 that was
+--                         250 228 readings for a 22 000 ask -- measured, position 4.5455 % -- so 64 smoke
+--                         cells decoded ~2950 bytes in a 240-byte mode, every cell at fs <= 80 kS/s
+--                         expired against a wait sized from n and fell back to free-running, and the plan
+--                         stage went from 6.5 to 20 s/cell. 32 768 brings it to 31 129, which is 1.4x the
+--                         ask and clears the 300 Bd wait of 14.2 s with 12.5 s of capture.
+--                         It was 262 144 to absorb an eliding digitize's 0.5 s poll overshoot, 50 000
+--                         readings at 100 kS/s, which is what filed 4914 on 29 cells at 21 100. That
+--                         overshoot belongs to a recording and reached the frame buffer only because
+--                         brun.point elides with capmode left at 'frame'.
+--                         STILL NOT EXACT, and tools/test_frontrig.lua holds the case open: 1.4x is not
+--                         1.0x, and only a capacity per capture size gives that. A ladder of pre-sized
+--                         frame buffers -- seven rungs, 12 288 to 49 152, about 197 000 readings in all --
+--                         is what would, and it is also what the 50 % over-read needs: one capacity cannot
+--                         carry both 43 200 readings of capture and a 300 Bd cell that arms.
 --     rec     6 000 000   both recording modes, 8 kB and 32 kB. One buffer rather than two because they
 --                         are the same path -- stream_begin and stream_acquire -- so sharing costs a clear
 --                         on a mode change and nothing else, and it is what makes the over-read real:
@@ -1477,14 +1490,17 @@ end
 --                         nil. test_serial asserts the two agree.
 --     scratch    24 576   twelve at gap_scratchcap.
 --
--- WHY NOT ONE BUFFER FOR EVERYTHING. position is a percentage of CAPACITY, so the reserve's error is the
--- ratio between the buffer and the capture. Sharing the 240-byte frame into the recording buffer would
--- make its 1100-reading reserve 0.018 %, and rounding that to a whole percent gives 62 133 -- three times
--- the entire capture. Keeping frame separate holds every ratio where a whole-percent clamp is survivable:
--- 0.42 % for the frame, 0.79 % for 8 kB, 3.16 % for 32 kB, all within about 1.3x of the reserve asked for
--- except the frame's 2.4x, which is 2621 readings on a 22 000 capture. So no fractional position is
--- required and the one firmware behaviour nobody has measured drops out of the design.
--- 262 144 + 6 000 000 + 24 576 = 6 286 720 of this, leaving 213 280 unasked for.
+-- WHY NOT ONE BUFFER FOR EVERYTHING, which is what the operator asked for and would be simpler. An armed
+-- capture stores the buffer it is handed, so a 240-byte frame capture sharing the 6 000 000-reading record
+-- would store about 5 700 000 readings -- 260 times the ask, and 38 minutes at 2500 S/s against a 13 s
+-- wait. The capacity a frame capture is given IS its length, so the modes cannot share one while the armed
+-- program is a canned template.
+--
+-- An explicit post-trigger count would make capacity irrelevant and let them share. It was built and
+-- rejected: the pre-roll then lands in a scratch, the record opens at the trigger edge instead of before
+-- it, and the first byte of every capture is clipped -- five suite failures with 'Hello, World!' decoding
+-- as 'ello, World!'. The pre-roll has to be IN the record, so the capacity has to fit the capture.
+-- 32 768 + 6 000 000 + 24 576 of scratches = 6 057 344 of this, leaving 442 656 unasked for.
 sdec.acq_bufbudget = 6500000
 --
 -- `least` IS WHAT MAKES THIS FIT EVERY MACHINE. The 2461 pool is 6 875 000 against the DMM6500's
@@ -1493,10 +1509,11 @@ sdec.acq_bufbudget = 6500000
 -- that autoexec can leave a cycled instrument with large default buffers, and a reclaim the operator's
 -- own data refuses would leave no room for the full ask. Falling back to per-capture allocation there
 -- would lose the whole point, so each buffer has a second, smaller figure that still serves its modes:
--- the frame's 32 768 covers 22 000 of capture with its reserve, and the record's 3 952 383 is what the
+-- the frame's 24 576 is acq_cap(22 000) rounded up, so it still holds a 22 000 capture with its reserve
+-- and in fact runs CLOSER to the count than the 32 768 above does, and the record's 3 952 383 is what the
 -- 32 kB mode asks for at 8N1 with the over-read. A smaller static buffer is still static.
 sdec.acq_bufplan = {
-  {id = 'frame', cap = 262144,  least = 32768},
+  {id = 'frame', cap = 32768,   least = 24576},
   {id = 'rec',   cap = 6000000, least = 3952383},
   n = 2,
 }
@@ -1541,9 +1558,15 @@ end
 -- Is this handle one of ours? Identity, not capacity: two buffers can share a size and only the handle
 -- says whose it is. buf_sweep asks before deleting anything it found walking _G, and the scratches are
 -- included because they are allocated the same way and leak the same way.
-function sdec.acq_isours(v)
+-- Is this handle part of the STATIC SET, whose lifetime acq_bufinit() and acq_buffree() own between them?
+-- Identity against the set and the scratches, and nothing else.
+--
+-- Separate from acq_isours, which also claims whatever sdec.buf points at this moment. That is right for
+-- buf_sweep -- the live capture buffer is not a stranger -- and useless to a caller holding sdec.buf itself,
+-- for which it answers true whatever the buffer is. acq_make_buffer asked it that way and so declined to free
+-- any buffer at all, which stranded one per capture.
+function sdec.acq_isstatic(v)
   if v == nil then return false end
-  if v == sdec.buf or v == sdec.gapbuf then return true end
   local i
   for i = 1, sdec.acq_bufplan.n do
     if sdec.acq_bufs[sdec.acq_bufplan[i].id] == v then return true end
@@ -1554,6 +1577,12 @@ function sdec.acq_isours(v)
     end
   end
   return false
+end
+
+function sdec.acq_isours(v)
+  if v == nil then return false end
+  if v == sdec.buf or v == sdec.gapbuf then return true end
+  return sdec.acq_isstatic(v)
 end
 
 -- Allocate the whole set, once. -> true when every mode has one.
@@ -1647,6 +1676,8 @@ function sdec.acq_buffree()
   sdec.gap_release_all()
   sdec.gap_release()
   sdec.trig_settle()
+  -- Was sdec.buf one of the set? Asked BEFORE the loop, which empties the slots any later test would read.
+  local bufwasours = sdec.acq_isstatic(sdec.buf)
   local i
   for i = 1, sdec.acq_bufplan.n do
     local id = sdec.acq_bufplan[i].id
@@ -1664,8 +1695,12 @@ function sdec.acq_buffree()
       end
     end
   end
-  -- sdec.buf is one of the set, so it is already gone or already refused with it.
-  if sdec.acq_bufs[sdec.acq_buffor[sdec.capmode] or 'frame'] == nil then sdec.buf = nil end
+  -- Dropped only if it WAS one of the set and that buffer is now really gone. The old test asked whether the
+  -- mode's slot is empty, which after a successful free it always is -- so a per-capture fallback buffer, which
+  -- the set never held, had its only handle dropped here and stop()'s own delete was skipped, stranding it for
+  -- the rest of the power cycle. Re-asking isstatic is self-checking: a refused delete leaves the handle in
+  -- acq_bufs, so it still answers true and sdec.buf stays put for the retry.
+  if bufwasours and not sdec.acq_isstatic(sdec.buf) then sdec.buf = nil end
   sdec.acq_bufperm, sdec.acq_bufgot, sdec.acq_scrgot = nil, nil, nil
   sdec.acq_bufnok = nil
   return sdec.acq_bufs['frame'] == nil and sdec.acq_bufs['rec'] == nil
@@ -2009,7 +2044,16 @@ function sdec.acq_make_buffer(n, perm)
   sdec.trig_settle()
   -- Whether anything was handed back below, which is what decides if a refused make is worth re-asking.
   local freed = false
-  if sdec.buf ~= nil then
+  -- NEVER THE STATIC SET, and this is reached with sdec.buf pointing straight at it: the branch above fell
+  -- through precisely because the mode's static buffer could not hold the ask. Deleting it left acq_bufs
+  -- holding a dead handle that acq_bufmode went on answering with -- a dead buffer keeps its .capacity here
+  -- and raises on hardware -- so every later capture armed a trigger model on freed memory. Offline that is
+  -- 43 cases of test_serial failing with armraise 'trigger model on a dead buffer', and it stays latent only
+  -- while the buffer is large enough that nothing ever asks for more. The reference is dropped and the buffer
+  -- left alone: acq_buffree owns the set's lifetime, start to exit.
+  if sdec.buf ~= nil and sdec.acq_isstatic(sdec.buf) then
+    sdec.buf = nil
+  elseif sdec.buf ~= nil then
     local b = sdec.buf
     -- A refused deletion must not be followed by a new allocation, and the handle must not be dropped: nil'ing first
     -- and swallowing the error strands the buffer and allocates another on top, one more on every retry.
