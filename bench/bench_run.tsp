@@ -3263,6 +3263,21 @@ function brun.soak(iterations, tag)
         if p.elidewincap ~= nil then nt = nt .. string.format(' wincap=%.4f', p.elidewincap) end
         if p.elidefs ~= nil then nt = nt .. string.format(' segfs=%.0f', p.elidefs) end
         if p.elidespanfs ~= nil then nt = nt .. string.format(' spanfs=%.0f', p.elidespanfs) end
+        -- THE SPLICE, and this line is the whole reason the 166-cell lap of 2026-10-18 could say nothing
+        -- about it: brun.point set r.splseam and the rest, and nothing wrote them out, so 87 elided cells
+        -- produced no account of whether a single burst head was put back. A field recorded into the row
+        -- table and absent from the note is a field that does not exist.
+        --
+        -- Written on every elided cell, passes included. seam/ran is the pair that matters -- 3 seams with
+        -- 0 spliced is a splice that did not run, and it reads identically to one that ran and changed
+        -- nothing. orph counts the bursts past the twelfth scratch, which keep the head they came with.
+        if p.splseam ~= nil then
+          nt = nt .. string.format(' spl=%s/%s', brun.int(p.splran or 0), brun.int(p.splseam))
+          if (p.splorph or 0) > 0 then nt = nt .. ' splorph=' .. brun.int(p.splorph) end
+          if (p.spladd or 0) > 0 then nt = nt .. ' spladd=' .. brun.int(p.spladd) end
+        end
+        -- And the over-read in force, so the record answers "was it on" without trusting the launch.
+        if p.overread ~= nil then nt = nt .. string.format(' over=%.2f', p.overread) end
         -- The ring, on every elided cell and not only the failures: a startindex of 1 on a cell that
         -- passed is the control that says a wrap is what distinguishes the ones that did not.
         if p.elidenrd ~= nil and p.elidecap ~= nil then

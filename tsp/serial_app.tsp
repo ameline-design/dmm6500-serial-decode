@@ -1475,8 +1475,12 @@ function sdec.buf_sweep()
     local bt = type(defbuffer1)
     local k, v = next(_G, nil)
     while k ~= nil do
+      -- EVERY ONE OF OURS, not just the one in force. sdec.buf is whichever of the static set the current
+      -- mode selected, so testing against it alone offered this sweep the app's other two buffers as
+      -- strangers -- and the discriminator below would have deleted the 32 kB mode's 4.8 million readings
+      -- while the app was running on the frame one.
       if type(k) == 'string' and not sdec.buf_skip[k]
-         and type(v) == bt and v ~= sdec.buf then
+         and type(v) == bt and v ~= sdec.buf and not sdec.acq_isours(v) then
         -- Every stranded buffer goes, whatever its size: they accumulate one per relaunch. So the
         -- discriminator carries the weight -- a numeric `.capacity` and a numeric `.n` are both
         -- required, capacity first so `.n` is only reached once capacity has answered like a buffer.
@@ -2916,6 +2920,16 @@ function sdec.stop()
   sdec.ui_destroy()
   -- Settle before deleting, and keep the handle if the delete is refused, as acq_make_buffer() does: the
   -- abort does not wait, and the handle is the only one, so dropping it strands the buffer.
+  -- THE WHOLE STATIC SET, not just sdec.buf. sdec.buf is whichever of the three the mode in force
+  -- selected, so deleting it alone left the other two allocated across End App and the next launch had to
+  -- find room beside them. acq_buffree() takes all three and both scratch forms.
+  if sdec.acq_bufs ~= nil and next(sdec.acq_bufs) ~= nil then
+    sdec.acq_buffree()
+    if sdec.acq_bufs['frame'] ~= nil or sdec.acq_bufs['rec'] ~= nil then
+      sdec.delfails = (sdec.delfails or 0) + 1
+      sdec.stickyerr = 'a capture buffer could not be freed -- power cycle the instrument'
+    end
+  end
   if sdec.buf ~= nil then
     sdec.trig_settle()
     local b = sdec.buf
@@ -2931,6 +2945,11 @@ function sdec.stop()
   -- the capacities cannot grow back into a pool something is still holding. Reset and Options OK release it
   -- when the operator turns the feature off, but End App is the other way out and was not one of them.
   pcall(sdec.gap_release)
+  -- AND THE TWELVE, which this did not release. gap_release() hands back the single sdec.gapbuf; the set
+  -- lives in sdec.gapbufs and only gap_release_all() frees it, so twelve 2048-reading buffers survived
+  -- End App and the next launch had to find room beside them. 24 576 readings is small against the pool
+  -- and not small against a launch that is already refusing for want of room.
+  pcall(sdec.gap_release_all)
   -- The capacities go back after the capture buffer is freed: until then there is no room to grow them.
   local restored = sdec.buf_restore()
   if restored ~= nil then ulog.line('default buffer capacities: ' .. restored) end
@@ -2985,6 +3004,17 @@ function sdec.start()
     ulog.line('start refused: ' .. why)
     return false, why
   end
+  -- THE STATIC BUFFERS, HERE AND NOWHERE ELSE. One record and twelve scratches, allocated once for the
+  -- app's life, so a running session performs no buffer allocation or release at all -- a mode change
+  -- from the 240-byte frame to 8 kB or 32 kB is a clear and nothing else. The reason is stability: every
+  -- allocation that used to happen mid-session was a fault surface the app could not retry its way out
+  -- of, and docs/UNDOCUMENTED.md records that a deleted 6 000 000-reading buffer is not free by the time
+  -- the next call asks. sdec.stop() is the matching release.
+  --
+  -- One buffer per mode, each oversized for the worst case its own mode can ask for, totalling the
+  -- operator's 6 500 000-reading budget with the twelve scratches. Sized per mode rather than shared
+  -- because position is a percentage of CAPACITY: on one big buffer a 240-byte frame's reserve would need
+  -- a fractional position nobody has ever loaded on this instrument. See sdec.acq_bufplan.
   -- One build per power cycle unless the teardown was clean: a second ui_build() over live objects needs
   -- the front-panel POWER button. delfails is the only thing that refuses; allow_rebuild opts out.
   if sdec.built then
@@ -3007,6 +3037,23 @@ function sdec.start()
       return false, why
     end
     ulog.line('rebuilding: previous UI torn down cleanly')
+  end
+  -- AFTER THE REBUILD, AND THAT ORDERING IS THE WHOLE OF IT. Allocated before the `sdec.built` branch
+  -- above, this set was torn straight back down: a relaunch runs sdec.cleanup() in there, cleanup frees
+  -- the static buffers, and start() then returned reporting success with nothing allocated. The app ran
+  -- on per-capture allocation while the log said 'static buffers: 2 of 2'. test_serial caught it as a
+  -- capture that allocated a buffer when the design says none ever should.
+  local binit, bwhy = sdec.acq_bufinit()
+  if not binit then
+    -- Not a refused launch: acq_make_buffer still allocates per capture for whichever mode is missing
+    -- one, so the app runs with the old behaviour rather than not at all. Logged because it is the one
+    -- condition that silently reinstates every allocation this was meant to remove.
+    ulog.line('static buffers unavailable, falling back to per-capture allocation: ' ..
+              tostring(bwhy))
+  else
+    ulog.line(string.format('static buffers: %s of %s, %s scratch(es), %s in force',
+                            tostring(sdec.acq_bufnok), tostring(sdec.acq_bufplan.n),
+                            tostring(sdec.acq_scrgot), tostring(sdec.acq_bufgot)))
   end
   -- Set before ui_build(): a build that fails halfway is the dangerous state, so it counts as an attempt.
   sdec.built = true

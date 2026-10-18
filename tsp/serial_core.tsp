@@ -1389,6 +1389,10 @@ end
 -- 6 000 000 where the capture wants about a thousand. Rounded up and never to zero, because a reserve one
 -- percent too large costs samples and no reserve at all costs the head of the record.
 -- docs/MEASUREMENTS.md, 'The pre-trigger reserve comes out of capacity, not out of count'.
+-- The smallest position worth loading. Not zero: position 0 costs the head of the record, measured
+-- offline as three wrong bytes from offset 1 and no leading idle for the level re-measure.
+sdec.acq_posfloor = 0.001
+
 function sdec.acq_pospct(n, buf)
   local pt = sdec.pretrig or 0
   if pt <= 0 then return pt end
@@ -1400,10 +1404,225 @@ function sdec.acq_pospct(n, buf)
   if n == nil or n <= 0 then return pt end
   -- The readings the reserve is meant to be: what acq_cap puts behind a buffer sized to this capture.
   local want = math.ceil(n * pt / 100)
-  local pos = math.ceil(want * 100 / cap)
-  if pos < 1 then pos = 1 end
+  local pos = want * 100 / cap
+  -- FRACTIONAL, AND THE ROUNDING USED TO BE THE BUG. This rounded UP to a whole percent and floored at 1,
+  -- on the reasoning that a fractional position had never been loaded on this instrument -- which made
+  -- the floor a guess dressed as caution. On the static 6 000 000-reading record 1 % is 60 000 readings
+  -- against the 440 a 240-byte frame asks for, so rounding up there is not conservative, it is two orders
+  -- of magnitude wrong and it is what kept every capture on its own buffer.
+  --
+  -- If the firmware will not take a fraction the cost is bounded and visible rather than fatal: it clamps
+  -- to whatever it does accept, the model fills that reserve before arming, and the record comes back
+  -- longer than asked. r.nread against r.posloaded is what says so, and buf.startindex still locates the
+  -- payload, so a clamped capture is slow rather than wrong.
+  if pos < sdec.acq_posfloor then pos = sdec.acq_posfloor end
   if pos > pt then pos = pt end
   return pos
+end
+
+-- THE STATIC BUFFERS, allocated once and released once. -> true when the record is in hand.
+--
+-- The operator's requirement, and the reason is stability rather than speed: once the app is up there are
+-- no buffer allocations or releases left to fail. Every one that used to happen mid-session was a real
+-- fault surface -- docs/UNDOCUMENTED.md records that a deleted 6 000 000-reading buffer is not free by
+-- the time the next call asks, and that cost three raised cells when the record was allocated per
+-- capture. A mode change from the 240-byte frame to 8 kB or 32 kB is now a clear and nothing else.
+--
+-- Idempotent, because sdec.start() can run more than once per power cycle and a second allocation on top
+-- of the first would strand the first. The scratches come from gap_scratches, which already reuses its
+-- own set, so calling it here is what makes the twelve permanent rather than per-capture.
+-- ONE STATIC BUFFER PER CAPTURE MODE, each oversized for the worst case its own mode can ask for. The
+-- totals are chosen to land on the operator's 6 500 000-reading budget exactly:
+--
+--     frame     262 144   22 000 of capture and the rest is elision headroom -- an eliding digitize runs
+--                         on wall-clock time and the fill test is checked once per ck_poll_s of 0.5 s,
+--                         which at 100 kS/s overshoots by 50 000 readings. Five polls of room. The 21 100
+--                         this used to be is what filed 4914 on 29 cells.
+--     rec     6 000 000   both recording modes, 8 kB and 32 kB. One buffer rather than two because they
+--                         are the same path -- stream_begin and stream_acquire -- so sharing costs a clear
+--                         on a mode change and nothing else, and it is what makes the over-read real:
+--                         split 1 400 000 / 4 813 280 the 32 kB mode afforded only about 22 % and the
+--                         Options form's 50 % ceiling would have silently truncated. Shared it affords
+--                         53 % at 8N1 against a base of 3 932 160, and 27 % at the widest frame format;
+--                         the 8 kB mode gets six times its own worst case.
+--
+--                         The literal and not sdec.acq_bufcap, which holds the same figure: that is
+--                         assigned several hundred lines below this table, so naming it here would read
+--                         nil. test_serial asserts the two agree.
+--     scratch    24 576   twelve at gap_scratchcap.
+--
+-- WHY NOT ONE BUFFER FOR EVERYTHING. position is a percentage of CAPACITY, so the reserve's error is the
+-- ratio between the buffer and the capture. Sharing the 240-byte frame into the recording buffer would
+-- make its 1100-reading reserve 0.018 %, and rounding that to a whole percent gives 62 133 -- three times
+-- the entire capture. Keeping frame separate holds every ratio where a whole-percent clamp is survivable:
+-- 0.42 % for the frame, 0.79 % for 8 kB, 3.16 % for 32 kB, all within about 1.3x of the reserve asked for
+-- except the frame's 2.4x, which is 2621 readings on a 22 000 capture. So no fractional position is
+-- required and the one firmware behaviour nobody has measured drops out of the design.
+-- 262 144 + 6 000 000 + 24 576 = 6 286 720 of this, leaving 213 280 unasked for.
+sdec.acq_bufbudget = 6500000
+--
+-- `least` IS WHAT MAKES THIS FIT EVERY MACHINE. The 2461 pool is 6 875 000 against the DMM6500's
+-- 7 080 255, and the set plus two minimum default buffers is 6 286 740 -- so it fits both, but only
+-- because buf_reclaim shrinks the default buffers before this allocates. docs/MEASUREMENTS.md records
+-- that autoexec can leave a cycled instrument with large default buffers, and a reclaim the operator's
+-- own data refuses would leave no room for the full ask. Falling back to per-capture allocation there
+-- would lose the whole point, so each buffer has a second, smaller figure that still serves its modes:
+-- the frame's 32 768 covers 22 000 of capture with its reserve, and the record's 3 952 383 is what the
+-- 32 kB mode asks for at 8N1 with the over-read. A smaller static buffer is still static.
+sdec.acq_bufplan = {
+  {id = 'frame', cap = 262144,  least = 32768},
+  {id = 'rec',   cap = 6000000, least = 3952383},
+  n = 2,
+}
+-- Which static buffer each capture mode records into. Two modes share one, so this is a map rather than
+-- the plan's own order -- and an id missing here falls back to 'frame', which is mode_cur()'s own rule.
+sdec.acq_buffor = {frame = 'frame', sml = 'rec', med = 'rec'}
+sdec.acq_bufs = sdec.acq_bufs or {}
+
+-- The static buffer this mode records into, or nil before acq_bufinit has run. Live-checked, because a
+-- dead handle raises on hardware where the offline mock answers.
+function sdec.acq_bufmode(id)
+  if id == nil then id = sdec.capmode end
+  -- Through the map, because 8 kB and 32 kB share one. An unrecognised mode takes the frame buffer, which
+  -- is what mode_cur() does with an unrecognised capmode.
+  local bid = sdec.acq_buffor[id] or 'frame'
+  local b = sdec.acq_bufs[bid]
+  if b == nil then return nil end
+  local cap = nil
+  if not pcall(function() cap = b.capacity end) then
+    sdec.acq_bufs[bid] = nil
+    return nil
+  end
+  if type(cap) ~= 'number' or cap < 10 then return nil end
+  return b, cap
+end
+
+-- Is the static buffer with THIS BUFFER ID allocated and alive? Separate from acq_bufmode, which takes a
+-- MODE id and maps it -- 'rec' is not a mode, so asking acq_bufmode for it answered about the frame
+-- buffer instead and acq_bufinit could believe the record was in hand when it was not.
+function sdec.acq_bufhave(bufid)
+  local b = sdec.acq_bufs[bufid]
+  if b == nil then return nil end
+  local cap = nil
+  if not pcall(function() cap = b.capacity end) then
+    sdec.acq_bufs[bufid] = nil
+    return nil
+  end
+  if type(cap) ~= 'number' or cap < 10 then return nil end
+  return b, cap
+end
+
+-- Is this handle one of ours? Identity, not capacity: two buffers can share a size and only the handle
+-- says whose it is. buf_sweep asks before deleting anything it found walking _G, and the scratches are
+-- included because they are allocated the same way and leak the same way.
+function sdec.acq_isours(v)
+  if v == nil then return false end
+  if v == sdec.buf or v == sdec.gapbuf then return true end
+  local i
+  for i = 1, sdec.acq_bufplan.n do
+    if sdec.acq_bufs[sdec.acq_bufplan[i].id] == v then return true end
+  end
+  if sdec.gapbufs ~= nil then
+    for i = 1, table.getn(sdec.gapbufs) do
+      if sdec.gapbufs[i] == v then return true end
+    end
+  end
+  return false
+end
+
+-- Allocate the whole set, once. -> true when every mode has one.
+--
+-- The operator's requirement, and the reason is stability rather than speed: once the app is up there are
+-- no buffer allocations or releases left to fail, so changing mode is a clear and nothing else. Every
+-- allocation that used to happen mid-session was a fault surface the app could not retry its way out of
+-- -- docs/UNDOCUMENTED.md records that a deleted 6 000 000-reading buffer is not free by the time the next
+-- call asks, which cost three raised cells when the record was allocated per capture.
+--
+-- Idempotent: sdec.start() can run more than once per power cycle, and a second allocation on top of the
+-- first would strand the first.
+function sdec.acq_bufinit()
+  sdec.acq_bufsmall = nil
+  -- IDEMPOTENT BY THE LOOP AND NOT BY AN EARLY RETURN. The gate here used to be `acq_bufperm and
+  -- sdec.buf ~= nil`, which is neither necessary nor sufficient: a stale flag beside a live sdec.buf
+  -- that was never part of the set made this answer "already allocated" and allocate nothing at all,
+  -- and the app then ran with no static buffers while reporting success. The loop skips whatever is
+  -- genuinely there, which is the same guarantee without the lie.
+  --
+  -- Largest first. The pool is a single total, so asking for the deepest while it is emptiest is the
+  -- order that gets both; the reverse can fit the small one and refuse the one that needed the room.
+  local order, i = {2, 1}, nil
+  local nok, firstwhy = 0, nil
+  for i = 1, sdec.acq_bufplan.n do
+    local p = sdec.acq_bufplan[order[i]]
+    if sdec.acq_bufhave(p.id) ~= nil then
+      nok = nok + 1
+    else
+      sdec.trig_settle()
+      -- Two asks, the full size then the fallback. A refused buffer.make returns nil while pcall reports
+      -- success, so the capacity readback is the only verdict either time.
+      local tries, ti = {p.cap, p.least}, nil
+      local got = nil
+      for ti = 1, 2 do
+        if tries[ti] ~= nil and got == nil then
+          local mok, nb = pcall(buffer.make, tries[ti], buffer.STYLE_STANDARD)
+          local cap = nil
+          if mok and nb ~= nil then pcall(function() cap = nb.capacity end) end
+          if type(cap) == 'number' and cap >= 10 then got = nb end
+        end
+      end
+      if got ~= nil then
+        sdec.acq_fillmode(got)
+        sdec.acq_bufs[p.id] = got
+        nok = nok + 1
+        -- Recorded, because a set that fell back is not the set the sizing arguments assume: the 32 kB
+        -- mode in a 3 952 383-reading record affords no over-read at all beyond the 10 % it is sized for.
+        local c2 = nil
+        pcall(function() c2 = got.capacity end)
+        if c2 ~= nil and c2 < p.cap then
+          sdec.acq_bufsmall = (sdec.acq_bufsmall or '') .. p.id .. '=' .. tostring(c2) .. ' '
+        end
+      elseif firstwhy == nil then
+        firstwhy = string.format('%s wanted %d or %d readings', p.id, p.cap,
+                                 p.least or p.cap)
+      end
+    end
+  end
+  local scr = sdec.gap_scratches(sdec.gap_nscratch, nil, nil)
+  sdec.acq_scrgot = 0
+  if scr ~= nil then sdec.acq_scrgot = table.getn(scr) end
+  -- Point sdec.buf at the mode in force so the first capture does not have to.
+  local b, cap = sdec.acq_bufmode()
+  if b ~= nil then
+    sdec.buf, sdec.acq_bufgot, sdec.acq_bufperm = b, cap, true
+  end
+  sdec.acq_bufnok = nok
+  if nok < sdec.acq_bufplan.n then
+    -- A short set is not a refused launch: acq_make_buffer still allocates per capture for whichever mode
+    -- is missing one, so the app runs with the old behaviour for that mode rather than not at all.
+    return false, firstwhy or 'not every mode got a static buffer'
+  end
+  return true
+end
+
+-- Hand the whole set back, for the app's exit. Deleted rather than dropped: a nil over the handle strands
+-- the readings in a pool the next launch has to find room in.
+function sdec.acq_buffree()
+  sdec.gap_release_all()
+  sdec.gap_release()
+  sdec.trig_settle()
+  local i
+  for i = 1, sdec.acq_bufplan.n do
+    local id = sdec.acq_bufplan[i].id
+    local b = sdec.acq_bufs[id]
+    if b ~= nil then
+      if pcall(function() buffer.delete(b) end) then sdec.acq_bufs[id] = nil end
+    end
+  end
+  -- sdec.buf is one of the set, so it is already gone or already refused with it.
+  if sdec.acq_bufs[sdec.acq_buffor[sdec.capmode] or 'frame'] == nil then sdec.buf = nil end
+  sdec.acq_bufperm, sdec.acq_bufgot, sdec.acq_scrgot = nil, nil, nil
+  sdec.acq_bufnok = nil
+  return sdec.acq_bufs['frame'] == nil and sdec.acq_bufs['rec'] == nil
 end
 
 -- Readings a loaded position reserves in buf, which is the figure leadmax needs: the decoder is told how much
@@ -1699,6 +1918,35 @@ function sdec.acq_make_buffer(n, perm)
   -- 6 000 000, and the reserve loaded against that is 300 000 readings rather than the 189 110 the mode
   -- sized for. Equality costs a reallocation only when the capture size really changes, which is what every
   -- build before the permanent record did on every call.
+  -- THE STATIC RECORD TAKES EVERY CALLER, sized or not. Once acq_bufinit() has it, a running app performs
+  -- no buffer allocation and no release at all: changing mode from the 240-byte frame to 8 kB or 32 kB is
+  -- a clear and nothing else. That is the point rather than a side effect -- a refused buffer.make in a
+  -- live session is the one fault the app cannot retry its way out of, and docs/UNDOCUMENTED.md records
+  -- that a deleted 6 000 000-reading buffer is not free by the time the next call asks, which cost three
+  -- raised cells the first time this allocator ran per capture.
+  --
+  -- WHAT MADE THIS UNSAFE IS FIXED AT THE OTHER END, not waived here. A sized caller used to need its own
+  -- capacity because LoopUntilEvent's position is a percentage of CAPACITY, so a 32 kB mode inheriting
+  -- 6 000 000 reserved 300 000 readings instead of the 189 110 it sized for. acq_pospct now scales the
+  -- reserve to the readings it is meant to be and acq_triggered loads that figure, so capacity no longer
+  -- carries the reserve's meaning and sharing it costs nothing.
+  -- THE STATIC SET TAKES EVERY CALLER whose mode has one, sized or not. Once acq_bufinit() has them a
+  -- running app performs no buffer allocation and no release at all: changing mode from the 240-byte frame
+  -- to 8 kB or 32 kB selects a different pre-allocated buffer and clears it. Nothing below this point runs
+  -- in a healthy session.
+  --
+  -- `scap >= n` is kept and it is not a hedge. Each buffer is oversized for the worst case its own mode
+  -- can ask for, so in a healthy session it is always true; where the pool could only grant part of the
+  -- set it is the difference between allocating once for the odd mode out and that mode silently recording
+  -- a fraction of what it asked for, because acq_fit would clamp it to a capacity nobody checked.
+  local sb, scap = sdec.acq_bufmode()
+  if sb ~= nil and scap ~= nil and scap >= n then
+    sdec.trig_settle()
+    pcall(function() sb.clear() end)
+    sdec.acq_fillmode(sb)
+    sdec.buf, sdec.acq_bufgot, sdec.acq_bufperm = sb, scap, true
+    return sb
+  end
   if sdec.buf ~= nil then
     local cap = nil
     if pcall(function() cap = sdec.buf.capacity end) and type(cap) == 'number' and
@@ -2646,11 +2894,19 @@ function sdec.acq_triggered(n, slope)
     if not sdec.arm_comparator(useanalog, slope) then
       error('no analog comparator on this digitizer', 0)
     end
-    -- position is the pre-trigger percentage of this buffer's capacity, which acq_cap made n + reserve: at the
-    -- shipped depth that is 1055 readings before the edge and 20 045 after, not 1000 and 19 000.
+    -- position is the pre-trigger percentage of this buffer's CAPACITY, not of the count -- so it cannot be
+    -- sdec.pretrig once the record is static and shared. On the 6 000 000-reading buffer the shipped 5 would
+    -- reserve 300 000 readings and the model fills that before it arms; acq_pospct scales it to the readings
+    -- the reserve is meant to be, which is what lets every mode share one buffer.
     -- docs/MEASUREMENTS.md, 'The pre-trigger reserve comes out of capacity, not out of count'.
+    --
+    -- RECORDED, because it is no longer sdec.pretrig and the completion test below needs the figure that
+    -- actually loaded rather than the option. A clamped fraction shows up as nread far above n beside a
+    -- posloaded the firmware did not honour.
+    local pos = sdec.acq_pospct(n, buf)
+    sdec.acq_posloaded = pos
     trigger.model.load('LoopUntilEvent', ev,
-                       sdec.pretrig, trigger.CLEAR_ENTER, 0, buf)
+                       pos, trigger.CLEAR_ENTER, 0, buf)
     trigger.model.initiate()
 
     -- Flow control: "go" goes here, and only here, and the position of this call is the whole correctness

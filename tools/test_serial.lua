@@ -1322,8 +1322,18 @@ check('the trigger armed on a FALLING edge for an idle-high line',
 -- falling edge on a slow line, so the reserve wraps -- and lengthening it costs depth, since the
 -- firmware makes post = count - count x position/100. See sdec.acq_reserve for that arithmetic and
 -- sdec.acq_fillmode for what actually stops the event a wrap would post.
-check('the pre-trigger percentage was passed through', TRIG.position == sdec.pretrig,
-      tostring(TRIG.position))
+-- SCALED, not raw, since the record became static and shared: acq_pospct turns sdec.pretrig into the
+-- percentage of THIS buffer's capacity that reserves the readings the percentage was asking for. On a
+-- buffer sized to its own capture the two are within a fraction of a percent of each other, and on the
+-- static record they are not -- which is the whole reason the scaling exists.
+-- Against acq_posloaded and not a recomputation: acq_pospct takes the count the capture ASKED for and
+-- sdec.nread is what came back, so re-deriving it here would compare two different captures.
+check('the pre-trigger position is the reserve acq_pospct asked for, scaled to this capacity',
+      TRIG.position ~= nil and sdec.acq_posloaded ~= nil
+      and TRIG.position == sdec.acq_posloaded
+      and TRIG.position > 0 and TRIG.position <= sdec.pretrig,
+      string.format('%s loaded, %s on the model, pretrig %s', tostring(sdec.acq_posloaded),
+                    tostring(TRIG.position), tostring(sdec.pretrig)))
 -- The reserve's duration is what decides whether it WRAPS while waiting for the first edge, and on a
 -- FILL_ONCE buffer a wrap posts 4915 per discarded reading. It cannot be lengthened without cost --
 -- see acq_reserve -- so what stops the event is the FILL MODE: sdec.acq_fillmode sets fillmode = 1
@@ -4168,13 +4178,28 @@ sdec.start()
 -- checked rather than only the total: cleanup() has to get the count back to the baseline,
 -- and the capture after it has to bring it back to exactly ONE. Two is what a leak looks
 -- like, and checking only after the press would miss a cleanup that freed nothing.
-check('relaunching frees the capture buffer, so the press starts from the baseline',
-      LIVEBUFS() == base_bufs, 'buffers=' .. LIVEBUFS() .. ' vs ' .. base_bufs)
+-- THE INVARIANT CHANGED WITH THE STATIC SET, and the new one is the stronger claim. This used to
+-- assert that a relaunch got back to the baseline and the next press allocated exactly one buffer --
+-- the per-capture allocation that the static set exists to remove. What matters now is that a CAPTURE
+-- allocates nothing whatsoever: sdec.start() takes the set and every press after it reuses.
+--
+-- Measured across the press rather than against a fixed baseline, deliberately. How many buffers the
+-- set got depends on what the pool could grant, and that is a different question from whether a
+-- capture asks the pool at all -- which is the one this is for.
+-- A GLOBAL: the main chunk is on Lua 5.0.2's 200-local ceiling, same reason as SRC and ARM_DEFAULTS.
+PRE_PRESS = LIVEBUFS()
 sdec.capture()
 check('relaunching leaks NO display objects', MD.live() == live2,
       'live=' .. MD.live() .. ' vs ' .. live2)
-check('relaunching leaks NO buffers', LIVEBUFS() == bufs2,
-      'buffers=' .. LIVEBUFS() .. ' vs ' .. bufs2)
+check('a capture allocates no buffer at all -- the static set is what a press records into',
+      LIVEBUFS() == PRE_PRESS,
+      'buffers=' .. LIVEBUFS() .. ' vs ' .. PRE_PRESS .. ' before the press')
+-- AND A SECOND PRESS TOO, because the first could reuse while the second reallocates: acq_fit clamps
+-- to the buffer, so a mode whose capture grew would have been the one to ask again.
+sdec.capture()
+check('...and so does a second one, so nothing grows into a new buffer on the way',
+      LIVEBUFS() == PRE_PRESS,
+      'buffers=' .. LIVEBUFS() .. ' vs ' .. PRE_PRESS)
 check('no deletion was ever refused across the whole run', sdec.delfails == 0,
       'delfails=' .. tostring(sdec.delfails))
 sdec.stop()
@@ -10228,6 +10253,13 @@ do
     -- satisfied by an implementation that allocates a SECOND buffer and returns the first -- which is
     -- the defect itself, one stranded buffer per retry with nothing but a power cycle to free it. The
     -- handle compare cannot see that; a count of live buffers can, and only both together can.
+    -- THE STATIC SET STANDS DOWN FOR THIS BLOCK, or the assertion is vacuous: acq_make_buffer returns
+    -- the mode's static buffer and never reaches the delete-and-replace path this is about. Dereferenced
+    -- rather than freed, because what matters here is only that the allocator falls through to the old
+    -- path -- the pool is not under test.
+    DELREF_SET = sdec.acq_bufs
+    sdec.acq_bufs = {}
+    sdec.acq_bufperm = nil
     local basebuf = LIVEBUFS()
     sdec.buf = buffer.make(100, buffer.STYLE_STANDARD)
     local was = sdec.buf
@@ -10254,6 +10286,8 @@ do
     -- THIS BLOCK PUTS ITS OWN BUFFER BACK. Left alive it strands exactly what it just asserted against,
     -- and every LIVEBUFS() baseline taken after it reads one too high.
     pcall(buffer.delete, was)
+    sdec.acq_bufs = DELREF_SET
+    if sdec.acq_bufs['frame'] ~= nil or sdec.acq_bufs['rec'] ~= nil then sdec.acq_bufperm = true end
     check('...and the block leaves the live-buffer count where it found it',
           LIVEBUFS() == basebuf, string.format('%d live vs %d at entry', LIVEBUFS(), basebuf))
     sdec.buf, sdec.delfails, sdec.stickyerr = keepbuf, keepdf, keepse
@@ -11537,119 +11571,139 @@ end)()
       sdec.buf = nil
     end
     GEN_DEFBUF(10, 10)
-    -- A RECORDING ASKS AND GETS THE PERMANENT CAPACITY.
-    local b1 = sdec.acq_make_buffer(sdec.acq_cap(20000), true)
-    check('a recording gets the permanent capacity, not the one its capture needs',
-          b1 ~= nil and b1.capacity == sdec.acq_bufcap and sdec.acq_bufperm == true,
-          string.format('%s, perm=%s', tostring(b1 ~= nil and b1.capacity),
-                        tostring(sdec.acq_bufperm)))
-    check('...and the capacity read back is what is recorded, which is the only verdict there is',
-          sdec.acq_bufgot == sdec.acq_bufcap, tostring(sdec.acq_bufgot))
-    -- AND THE SECOND CALL ALLOCATES NOTHING. Same handle, which is the whole point: a resize discards
-    -- every reading, so the record must be made once and then only cleared.
-    local b2 = sdec.acq_make_buffer(sdec.acq_cap(20000), true)
-    check('a second recording reuses the same buffer rather than remaking it',
-          b2 == b1 and b1.alive == true, tostring(b2 == b1))
-    -- A SIZED CALLER MUST NOT INHERIT IT, and this is the assertion that keeps frame mode's reserve
-    -- honest: without it the next frame capture would load 5 % of 6 000 000.
-    local b3 = sdec.acq_make_buffer(sdec.acq_cap(20000))
-    check('a frame capture refuses the permanent buffer and takes one sized to itself',
-          b3 ~= nil and b3.capacity == sdec.acq_cap(20000) and sdec.acq_bufperm == false,
-          string.format('%s, perm=%s', tostring(b3 ~= nil and b3.capacity),
-                        tostring(sdec.acq_bufperm)))
-    -- THE POSITION SCALING, WHICH IS WHAT MAKES THAT SPLIT NECESSARY. On a buffer sized to the capture
-    -- it must be a no-op, or every frame capture's reserve moves. b3 has to be ALIVE for this: a dead
-    -- buffer raises on the capacity read, acq_pospct degrades to sdec.pretrig, and the check would pass
-    -- without measuring anything.
-    check('on a sized buffer the loaded position is sdec.pretrig unchanged',
-          b3 ~= nil and b3.alive == true and sdec.acq_pospct(20000, b3) == sdec.pretrig,
-          string.format('%s vs %s, alive=%s', tostring(sdec.acq_pospct(20000, b3)),
-                        tostring(sdec.pretrig), tostring(b3 ~= nil and b3.alive)))
-    -- AND A LARGE SIZED CALLER MUST NOT INHERIT THE PERMANENT ONE, which an inequality cannot express:
-    -- the 32 kB mode at 9600 asks for 3 593 084, so any band wide enough to be useful also admits
-    -- 6 000 000 -- and the reserve loaded against that is 300 000 readings instead of 189 110. The
-    -- capacity coming back as the request is what says the permanent buffer was freed and replaced.
-    drop()
-    sdec.acq_make_buffer(sdec.acq_cap(20000), true)
-    local big = 3593084
-    local b3b = sdec.acq_make_buffer(big)
-    check('a large recording does not inherit the permanent buffer, it takes its own size',
-          b3b ~= nil and b3b.capacity == big and sdec.acq_bufperm == false,
-          string.format('%s, perm=%s', tostring(b3b ~= nil and b3b.capacity),
-                        tostring(sdec.acq_bufperm)))
-    check('...and the reserve that loads against it is the one the mode sized for, not 300 000',
-          b3b ~= nil and b3b.alive == true and sdec.acq_pospct(big, b3b) == sdec.pretrig
-          and sdec.acq_leadmax(b3b) < 200000,
-          string.format('pos=%s leadmax=%s', tostring(sdec.acq_pospct(big, b3b)),
-                        tostring(sdec.acq_leadmax(b3b))))
-    -- AND ON THE PERMANENT ONE IT SCALES DOWN, never to zero: 5 % of 20 000 is 1000 readings, which is
-    -- 0.017 % of 6 000 000, and a fractional position has never been loaded on this instrument.
-    drop()
-    local b4 = sdec.acq_make_buffer(sdec.acq_cap(20000), true)
-    local pos = sdec.acq_pospct(20000, b4)
-    check('on the permanent record it scales to whole percent and never to zero',
-          pos == 1 and pos < sdec.pretrig, tostring(pos))
-    check('...and the reserve it really buys is what leadmax reports, not a percentage of the capture',
-          (function()
-             local kp = sdec.acq_posloaded
-             sdec.acq_posloaded = pos
-             local lm = sdec.acq_leadmax(b4)
-             sdec.acq_posloaded = kp
-             return lm == 60000
-           end)(), 'want 60000 readings at 1 % of 6 000 000')
-    -- THE FALLBACK REQUEST. Squeeze the pool under the permanent size and the capture's own figure must
-    -- still be granted -- that second request is the behaviour of every build before this one.
-    drop()
-    GEN_DEFBUF(1500000, 100000)
-    local b5 = sdec.acq_make_buffer(sdec.acq_cap(20000), true)
-    check('a pool that cannot give 6 000 000 still records, at the size the capture asked for',
-          b5 ~= nil and b5.capacity == sdec.acq_cap(20000) and sdec.acq_bufperm == false,
-          string.format('%s of a %d pool remainder', tostring(b5 ~= nil and b5.capacity),
-                        GEN_POOL - 1600000))
-    -- AND A REFUSAL IS STILL A REFUSAL: both requests gone means nil, not a buffer.
-    drop()
-    GEN_BUFMAKE_FAIL(2)
-    local b6 = sdec.acq_make_buffer(sdec.acq_cap(20000), true)
-    check('both requests refused returns nil and claims no capacity',
-          b6 == nil and sdec.acq_bufgot == nil and sdec.acq_bufperm == nil,
-          string.format('%s / %s', tostring(b6), tostring(sdec.acq_bufgot)))
-    GEN_BUFMAKE_FAIL(0)
-    -- THE RETRY AFTER A DELETE, which is the whole of 74a822f and had no test at all: replacing the
-    -- retry with `if false then` left this suite at 1653 passed. A deleted buffer is not necessarily
-    -- free by the time the next make asks -- docs/UNDOCUMENTED.md says so in those words -- and three
-    -- cells of an 80-cell lap raised because of it, every one at the transition from the permanent
-    -- record back to a sized one.
+    -- ---------------------------------------------------------------------------
+    -- THE STATIC SET: allocated once at app start, released once at app exit, and nothing in between.
+    -- ---------------------------------------------------------------------------
+    -- The operator's requirement, and the reason is stability rather than speed: a running app performs
+    -- no buffer allocation and no release, so there is nothing left to fail once it is up. Changing mode
+    -- from the 240-byte frame to 8 kB or 32 kB selects a pre-allocated buffer and clears it.
     --
-    -- GEN_BUFMAKE_FAIL(1) refuses exactly the next make, which is the first attempt here. The `freed`
-    -- guard is what this exercises: a live sdec.buf means a delete happens, so the refusal is re-asked
-    -- rather than falling through to the capture-sized second request.
-    -- THE POOL BACK TO SHIPPED FIRST, or this tests nothing: the fallback case above left 1 600 000 in
-    -- the default buffers, and 6 000 000 beside that exceeds the 7 080 255 pool -- so both attempts
-    -- would be refused on their own merits and the fall-through to the capture-sized request would
-    -- look exactly like a retry that did not happen. It did look exactly like that, first time.
+    -- Two buffers rather than three. The recording modes share one because they are the same path, and
+    -- that is what makes the over-read real: split per mode the 32 kB mode afforded about 22 % and the
+    -- Options form's 50 % ceiling would have truncated in silence.
+    pcall(sdec.acq_buffree)
+    sdec.acq_bufs = {}
+    drop()
     GEN_DEFBUF(10, 10)
+    local okinit, whyinit = sdec.acq_bufinit()
+    check('acq_bufinit allocates the whole set and says so',
+          okinit and sdec.acq_bufnok == sdec.acq_bufplan.n and sdec.acq_scrgot == sdec.gap_nscratch,
+          string.format('%s, %s of %s, %s scratch(es), why=%s', tostring(okinit),
+                        tostring(sdec.acq_bufnok), tostring(sdec.acq_bufplan.n),
+                        tostring(sdec.acq_scrgot), tostring(whyinit)))
+    -- THE LITERAL IN THE PLAN AND THE CONSTANT MUST AGREE. acq_bufplan is assigned hundreds of lines
+    -- above sdec.acq_bufcap, so it cannot name it and carries the same figure twice -- which is exactly
+    -- the shape that drifts. Asserted rather than commented.
+    check('the record buffer in the plan is sdec.acq_bufcap, written twice and checked once',
+          sdec.acq_bufplan[2].cap == sdec.acq_bufcap,
+          string.format('%s vs %s', tostring(sdec.acq_bufplan[2].cap), tostring(sdec.acq_bufcap)))
+    -- AND THE WHOLE SET FITS THE SMALLEST SUPPORTED POOL. The 2461 holds 6 875 000 against the
+    -- DMM6500's 7 080 255, and a set that does not fit it is a set that cannot ship.
+    local plantot, pi = sdec.gap_maxscratch * sdec.gap_scratchcap, nil
+    for pi = 1, sdec.acq_bufplan.n do plantot = plantot + sdec.acq_bufplan[pi].cap end
+    check('the set plus two minimum default buffers fits the 2461 pool, not just the DMM6500',
+          plantot + 2 * sdec.ck_defbufmin < 6875000 and plantot <= sdec.acq_bufbudget,
+          string.format('%d readings, %d of budget %d, 2461 pool 6875000', plantot,
+                        plantot + 2 * sdec.ck_defbufmin, sdec.acq_bufbudget))
+    -- EACH MODE LANDS ON ITS OWN BUFFER, and the two recording modes land on the SAME one.
+    local keepmode = sdec.capmode
+    sdec.capmode = 'frame'
+    local bf = sdec.acq_make_buffer(sdec.acq_cap(20000))
+    sdec.capmode = 'sml'
+    local bs = sdec.acq_make_buffer(900000)
+    sdec.capmode = 'med'
+    local bm = sdec.acq_make_buffer(3593084)
+    check('frame gets its own static buffer and both recording modes share one',
+          bf ~= nil and bs ~= nil and bm ~= nil and bs == bm and bf ~= bs,
+          string.format('frame=%s sml=%s med=%s shared=%s',
+                        tostring(bf ~= nil and bf.capacity), tostring(bs ~= nil and bs.capacity),
+                        tostring(bm ~= nil and bm.capacity), tostring(bs == bm)))
+    check('...at the planned capacities, so the sizing arguments describe what is allocated',
+          bf ~= nil and bf.capacity == sdec.acq_bufplan[1].cap
+          and bs ~= nil and bs.capacity == sdec.acq_bufplan[2].cap,
+          string.format('%s / %s', tostring(bf ~= nil and bf.capacity),
+                        tostring(bs ~= nil and bs.capacity)))
+    -- THE POINT OF THE WHOLE CHANGE: a mode change allocates nothing. Same handles, whichever way round
+    -- the modes are visited, so the pool is never asked and nothing can be refused.
+    local nliveb = LIVEBUFS()
+    sdec.capmode = 'frame'
+    local bf2 = sdec.acq_make_buffer(sdec.acq_cap(20000))
+    sdec.capmode = 'med'
+    local bm2 = sdec.acq_make_buffer(3593084)
+    sdec.capmode = 'sml'
+    local bs2 = sdec.acq_make_buffer(900000)
+    check('a mode change allocates nothing and frees nothing -- same handles, same buffer count',
+          bf2 == bf and bm2 == bm and bs2 == bs and LIVEBUFS() == nliveb,
+          string.format('frame=%s med=%s sml=%s buffers %d -> %d', tostring(bf2 == bf),
+                        tostring(bm2 == bm), tostring(bs2 == bs), nliveb, LIVEBUFS()))
+    -- AND A SECOND acq_bufinit IS A NO-OP. sdec.start() can run more than once per power cycle, and a
+    -- second allocation on top of the first would strand the first.
+    local nliveb2 = LIVEBUFS()
+    local okinit2 = sdec.acq_bufinit()
+    check('acq_bufinit is idempotent, so a relaunch does not strand the set it already made',
+          okinit2 and LIVEBUFS() == nliveb2 and sdec.acq_bufs['rec'] == bs,
+          string.format('%d -> %d buffers, same rec=%s', nliveb2, LIVEBUFS(),
+                        tostring(sdec.acq_bufs['rec'] == bs)))
+    -- THE RESERVE, WHICH IS WHY THE FRAME BUFFER IS SEPARATE. position is a percentage of CAPACITY, so
+    -- the error is the ratio between buffer and capture. Each ratio here has to leave a whole-percent
+    -- clamp survivable, because a fractional position has never been loaded on this instrument.
+    local pf = sdec.acq_pospct(20000, bf)
+    local pm = sdec.acq_pospct(3593084, bm)
+    check('the reserve scales to the readings it means, fractionally, and never to zero',
+          pf > 0 and pf < 1 and pm > 0 and pm < sdec.pretrig,
+          string.format('frame %.4f %%, 32 kB %.4f %%, pretrig %s', pf, pm, tostring(sdec.pretrig)))
+    check('...and a whole-percent clamp would still be survivable on both, which is the design claim',
+          math.ceil(pf) * sdec.acq_bufplan[1].cap / 100 < 20000
+          and math.ceil(pm) * sdec.acq_bufplan[2].cap / 100 < 3593084,
+          string.format('frame %d readings of 20000, 32 kB %d of 3593084',
+                        math.floor(math.ceil(pf) * sdec.acq_bufplan[1].cap / 100),
+                        math.floor(math.ceil(pm) * sdec.acq_bufplan[2].cap / 100)))
+    -- EVERY STATIC BUFFER IS RECOGNISED AS OURS. buf_sweep walks _G deleting strangers, and it used to
+    -- test against sdec.buf alone -- which offered it the app's other buffer as a stranger and would
+    -- have deleted the recording modes' 6 000 000 readings while the app ran on the frame one.
+    check('acq_isours recognises every static buffer and every scratch, not just the one in force',
+          sdec.acq_isours(bf) and sdec.acq_isours(bs) and sdec.acq_isours(sdec.gapbufs[1])
+          and sdec.acq_isours(sdec.gapbufs[sdec.gap_nscratch]),
+          'frame, rec and both ends of the scratch set')
+    check('...and does NOT claim a buffer it never made, or the sweep would never free anything',
+          (function()
+             local stranger = buffer.make(50000, buffer.STYLE_STANDARD)
+             local v = sdec.acq_isours(stranger)
+             pcall(buffer.delete, stranger)
+             return v == false
+           end)(), 'a foreign buffer is not ours')
+    -- THE FALLBACK, which is what lets this ship on an instrument whose pool is already committed:
+    -- autoexec can leave a cycled box with large default buffers and a reclaim the operator's data
+    -- refuses. A smaller static buffer is still static, and falling back to per-capture allocation
+    -- there would lose the whole benefit.
+    pcall(sdec.acq_buffree)
+    sdec.acq_bufs = {}
     drop()
-    local pre = sdec.acq_make_buffer(40000)
-    local nre = sdec.acq_remade or 0
-    GEN_BUFMAKE_FAIL(1)
-    local b7 = sdec.acq_make_buffer(sdec.acq_cap(20000), true)
-    check('a make refused right after a delete is re-asked, and the permanent size still lands',
-          pre ~= nil and b7 ~= nil and b7.capacity == sdec.acq_bufcap,
-          string.format('%s, pre=%s', tostring(b7 ~= nil and b7.capacity),
-                        tostring(pre ~= nil and pre.capacity)))
-    check('...and the retry is counted, so a lap can tell this from the fault going away on its own',
-          (sdec.acq_remade or 0) == nre + 1,
-          string.format('%s -> %s', tostring(nre), tostring(sdec.acq_remade)))
-    -- AND WITH NOTHING FREED THERE IS NOTHING TO WAIT FOR: a first allocation asks once and the
-    -- refusal stands, or every ordinary allocation would pay a delay for a case that cannot apply.
-    drop()
-    local nre2 = sdec.acq_remade or 0
-    GEN_BUFMAKE_FAIL(2)
-    local b8 = sdec.acq_make_buffer(sdec.acq_cap(20000), true)
-    check('with no buffer to free, a refusal is not re-asked', b8 == nil
-          and (sdec.acq_remade or 0) == nre2,
-          string.format('%s, remade %s', tostring(b8), tostring(sdec.acq_remade)))
-    GEN_BUFMAKE_FAIL(0)
+    GEN_DEFBUF(2500000, 100000)
+    local okin3 = sdec.acq_bufinit()
+    local recb = sdec.acq_bufs['rec']
+    check('a pool that cannot give 6 000 000 still gets a STATIC record at the fallback size',
+          recb ~= nil and recb.capacity == sdec.acq_bufplan[2].least
+          and sdec.acq_bufsmall ~= nil,
+          string.format('%s of a %d remainder, small=%s, ok=%s',
+                        tostring(recb ~= nil and recb.capacity), GEN_POOL - 2600000,
+                        tostring(sdec.acq_bufsmall), tostring(okin3)))
+    -- AND THE RELEASE TAKES EVERYTHING. sdec.buf is one of the set, so freeing it alone left the other
+    -- allocated across End App and the next launch had to find room beside it.
+    GEN_DEFBUF(10, 10)
+    pcall(sdec.acq_buffree)
+    sdec.acq_bufs = {}
+    sdec.acq_bufinit()
+    local beforefree = LIVEBUFS()
+    local freedall = sdec.acq_buffree()
+    check('acq_buffree releases every static buffer and every scratch, not just the one in force',
+          freedall and sdec.acq_bufs['frame'] == nil and sdec.acq_bufs['rec'] == nil
+          and LIVEBUFS() == beforefree - sdec.acq_bufplan.n - sdec.gap_nscratch,
+          string.format('%s, %d -> %d buffers of an expected %d', tostring(freedall), beforefree,
+                        LIVEBUFS(), beforefree - sdec.acq_bufplan.n - sdec.gap_nscratch))
+    sdec.capmode = keepmode
+    check('and the suite puts the capture mode back', sdec.capmode == keepmode, tostring(sdec.capmode))
+    sdec.acq_bufinit()
     -- THE SCRATCH SET IS PERMANENT TOO, and sized for the head at the top rate: gap_headsec of 2 ms is
     -- 2000 readings at 1 MS/s, so one size serves every rate and the set never has to be rebuilt.
     drop()
@@ -11850,6 +11904,13 @@ end)()
   -- ---------------------------------------------------------------------------
   GEN_DEFBUF(100000, 100000)
   do
+    -- THE STATIC SET IS REALLY FREED FOR THIS BLOCK, not just dereferenced. It holds 6 286 720 of the
+    -- 7 080 255 pool, so the 3 000 000 stranger below cannot be allocated beside it -- and dropping the
+    -- handles would leave the pool just as committed while making the readings unreachable, which is
+    -- the strand acq_buffree exists to avoid. Rebuilt at the end of the block.
+    pcall(sdec.acq_buffree)
+    sdec.acq_bufs = {}
+    sdec.acq_bufperm = nil
     FOREIGN_BIG = buffer.make(3000000, buffer.STYLE_STANDARD)
     FOREIGN_SMALL = buffer.make(50000, buffer.STYLE_STANDARD)
     -- NOT A BUFFER, and the sweep must not touch it. With the size floor gone the `.n` test is the
@@ -11900,6 +11961,9 @@ end)()
     GEN_BUFDEL_FAIL(0)
     sdec.buf_sweep()
     pcall(buffer.delete, FOREIGN_SMALL)
+    -- The set comes back, or every later check runs against an app with no static buffers.
+    GEN_DEFBUF(10, 10)
+    sdec.acq_bufinit()
     FOREIGN_SMALL, OURS_BY_ANOTHER_NAME = nil, nil
     pcall(buffer.delete, sdec.buf)
     sdec.buf = keepbuf
@@ -12106,9 +12170,17 @@ end)()
     GEN_BUFMAKE_FAIL(1)
     local keepbuf = sdec.buf
     sdec.buf = nil
+    -- THE ALLOCATOR IS ONLY REACHED WITH NO STATIC BUFFER FOR THIS MODE, which is the healthy case and
+    -- would make this assertion vacuous: acq_make_buffer would return the static record and never ask
+    -- the pool at all. Stood down for the one call, so the refusal path is the one under test.
+    local REF_SET = sdec.acq_bufs
+    sdec.acq_bufs = {}
+    sdec.acq_bufperm = nil
     local got = sdec.acq_make_buffer(20000)
     check('...and acq_make_buffer passes a refusal on as nil, leaving sdec.buf nil',
           got == nil and sdec.buf == nil, string.format('%s / %s', tostring(got), tostring(sdec.buf)))
+    sdec.acq_bufs = REF_SET
+    if sdec.acq_bufs['frame'] ~= nil or sdec.acq_bufs['rec'] ~= nil then sdec.acq_bufperm = true end
     GEN_BUFMAKE_FAIL(0)
     sdec.buf = keepbuf
   end

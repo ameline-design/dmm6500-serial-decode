@@ -849,8 +849,14 @@ print('\nI  an 8 kB or 32 kB recording can wait for a device that has not starte
   check('so the recording arms the WAITING template, not the one that fires immediately',
         TRIG.template == 'LoopUntilEvent' and sdec.strm_armed == true,
         string.format('template=%s armed=%s', tostring(TRIG.template), tostring(sdec.strm_armed)))
+  -- THE RESERVE IS SCALED, NOT RAW, and must be: position is a percentage of CAPACITY and the recording
+  -- buffer is a static 6 000 000, so sdec.pretrig's 5 would reserve 300 000 readings. acq_pospct turns it
+  -- into the percentage that reserves the readings the 5 was asking for -- positive, below the option,
+  -- and recorded in acq_posloaded because it is no longer derivable from the option alone.
   check('...on the comparator, at the level the silent branch chose, with a pre-trigger reserve',
-        TRIG.ev == trigger.EVENT_BLENDER1 and TRIG.position == sdec.pretrig and
+        TRIG.ev == trigger.EVENT_BLENDER1 and TRIG.position ~= nil
+        and TRIG.position == sdec.acq_posloaded
+        and TRIG.position > 0 and TRIG.position < sdec.pretrig and
         dmm.digitize.analogtrigger.mode == dmm.MODE_EDGE,
         string.format('ev=%s position=%s cmp=%s level=%s', tostring(TRIG.ev),
                       tostring(TRIG.position), tostring(dmm.digitize.analogtrigger.mode),
@@ -1461,14 +1467,24 @@ end)()
                       tostring(sdec.buf ~= nil and sdec.buf.capacity)))
   -- AND THE MARGIN IS STILL OFF WHEN THE KNOB IS ZERO, which is the premise that keeps the two checks
   -- above from passing on a build that simply over-sizes everything unconditionally.
+  -- THE CAPACITY NO LONGER TRACKS THE KNOB, and that is the static buffer rather than a regression: the
+  -- recording buffer is 6 000 000 whatever the margin is, so sizing for the over-read has nothing left
+  -- to do. What the knob moves is the TARGET stream_acquire asks for, which is where the margin was
+  -- always actually applied -- stream_begin only ever had to make room for it.
+  --
+  -- Both directions still, for the original reason: the raised figure alone would pass on a build that
+  -- over-asks unconditionally, and the bare figure alone on a build with no over-read at all.
   sdec.strm_overread = 0
-  if sdec.buf ~= nil then pcall(buffer.delete, sdec.buf) sdec.buf = nil end
   sdec.stream_begin()
-  local cap3 = sdec.buf ~= nil and sdec.buf.capacity or 0
-  local bare = math.ceil(sdec.strm_nsmp * 100 / (100 - sdec.pretrig)) + 100
-  if sdec.ck_bufmax ~= nil and bare > sdec.ck_bufmax then bare = sdec.ck_bufmax end
-  check('...while a zero over-read sizes to the bare count, so the margin is really the knob',
-        cap3 == bare, string.format('capacity=%s bare=%s', tostring(cap3), tostring(bare)))
+  local tgt0 = sdec.acq_fit(sdec.strm_nsmp, sdec.buf)
+  sdec.strm_overread = keep.ov
+  sdec.stream_begin()
+  local tgt1 = sdec.acq_fit(math.ceil(sdec.strm_nsmp * (1 + sdec.strm_overread)), sdec.buf)
+  check('...while the TARGET is what the knob moves on a static buffer, not the capacity',
+        tgt0 > 0 and tgt1 == math.ceil(tgt0 * (1 + sdec.strm_overread)) and tgt1 > tgt0,
+        string.format('%s at %s%% against %s at 0%%, capacity %s', tostring(tgt1),
+                      tostring((sdec.strm_overread or 0) * 100), tostring(tgt0),
+                      tostring(sdec.buf ~= nil and sdec.buf.capacity)))
 
   sdec.force_baud, sdec.capmode, sdec.trigmode = keep.fb, keep.cm, keep.tm
   sdec.gapelide, sdec.strm_overread = keep.ge, keep.ov
@@ -1494,10 +1510,14 @@ end)()
   sdec.ck_job, sdec.strm_recording, sdec.ck_defbufwas = nil, nil, nil
   GEN_DEFBUF(100000, 6500000)
   do
-    -- The live buffer goes first, or the refusal is unreachable: acq_make_buffer reuses one whose
-    -- capacity already covers the request, so a buffer an earlier block left behind would be handed
-    -- straight back and nothing would ever be allocated. That reuse is the point of it -- the room is
-    -- only needed when there is no buffer to reuse -- so the scenario has to start without one.
+    -- THE STATIC SET HAS TO BE GENUINELY ABSENT, not just sdec.buf. acq_make_buffer hands back the
+    -- mode's static buffer whenever it has one, so stream_begin's reclaim-and-retry is reachable only
+    -- where the set could not be allocated -- which is the condition this block is actually about. The
+    -- buffers are FREED rather than dereferenced, because the pool is the whole subject here and a
+    -- dropped handle leaves it just as committed.
+    pcall(sdec.acq_buffree)
+    sdec.acq_bufs = {}
+    sdec.acq_bufperm = nil
     if sdec.buf ~= nil then pcall(buffer.delete, sdec.buf) sdec.buf = nil end
     local ok, why = sdec.stream_begin()
     check('a recording whose allocation is refused reclaims the room and retries',
@@ -1520,6 +1540,9 @@ end)()
   -- always succeeds. The refusal must RETURN rather than wait for a finger -- an unattended soak
   -- would otherwise stop with nothing on the glass to say why.
   do
+    pcall(sdec.acq_buffree)
+    sdec.acq_bufs = {}
+    sdec.acq_bufperm = nil
     if sdec.buf ~= nil then pcall(buffer.delete, sdec.buf) sdec.buf = nil end
     sdec.ck_job, sdec.strm_recording, sdec.ck_defbufwas = nil, nil, nil
     GEN_DEFBUF(100000, 6500000, 'defbuffer2')
@@ -1535,8 +1558,12 @@ end)()
           sdec.lasterr == why, tostring(sdec.lasterr))
   end
 
-  GEN_DEFBUF(100000, 100000)
+  GEN_DEFBUF(10, 10)
   if sdec.buf ~= nil then pcall(buffer.delete, sdec.buf) sdec.buf = nil end
+  -- The set comes back, or every later section runs against an app with no static buffers.
+  sdec.acq_bufs = {}
+  sdec.acq_bufinit()
+  GEN_DEFBUF(100000, 100000)
   sdec.force_baud, sdec.capmode, sdec.trigmode = keep.fb, keep.cm, keep.tm
   sdec.ck_job, sdec.strm_recording, sdec.ck_defbufwas = keep.job, keep.rec, keep.was
 end)()
