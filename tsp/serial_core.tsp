@@ -1668,6 +1668,13 @@ sdec.acq_bufgot = nil
 -- Whether the live buffer is the permanent one. Read by stream_arm, which must not load a pre-trigger
 -- percentage against it: see acq_make_buffer's second argument.
 sdec.acq_bufperm = nil
+-- Seconds to wait before re-asking for a buffer the pool refused immediately after a delete. Short,
+-- because the delete itself has already returned and this covers the firmware's own release and nothing
+-- longer; a value large enough to matter would be a value worth measuring instead of choosing.
+sdec.acq_freesettle = 0.05
+-- How many allocations needed that second attempt. A counter and not a flag, so a lap can say whether
+-- this is the once-per-transition case it was written for or something that happens on every capture.
+sdec.acq_remade = 0
 
 -- Free and remake the capture buffer. Follows the project's object-lifetime rule -- delete, nil, then create --
 -- because creating over a live handle leaves the buffer beneath allocated and unreachable until a power cycle.
@@ -1706,6 +1713,8 @@ function sdec.acq_make_buffer(n, perm)
   -- Never replace a buffer the trigger model may still be writing into, and this is reachable with one armed: it
   -- then stores into a buffer that has been deleted and replaced, which posts 4915.
   sdec.trig_settle()
+  -- Whether anything was handed back below, which is what decides if a refused make is worth re-asking.
+  local freed = false
   if sdec.buf ~= nil then
     local b = sdec.buf
     -- A refused deletion must not be followed by a new allocation, and the handle must not be dropped: nil'ing first
@@ -1717,10 +1726,19 @@ function sdec.acq_make_buffer(n, perm)
       return sdec.buf                    -- KEEP the handle: it is the only way to retry
     end
     sdec.buf = nil
+    freed = true
   end
-  -- Two requests in order and never a loop, because every refusal posts 4919 to the event log: the permanent
-  -- capacity, then the one this capture actually needs. The second degrades to the behaviour of every build
-  -- before this one, so a pool that cannot give 6 000 000 still records.
+  -- Two requests in order and never an unbounded loop, because every refusal posts 4919 to the event log:
+  -- the permanent capacity, then the one this capture actually needs. The second degrades to the behaviour
+  -- of every build before this one, so a pool that cannot give 6 000 000 still records.
+  --
+  -- A deleted buffer is not necessarily free yet. docs/UNDOCUMENTED.md, 'The real ceiling is 7,080,255
+  -- readings, across all buffers together', records it in those words: `pcall(buffer.delete)` has not
+  -- necessarily freed it by the time the next call asks. Deleting 6 000 000 readings and asking for 20 000
+  -- in the next statement is exactly that case, and it refused -- one cell per vector on the 2026-10-17
+  -- lap, every one of them the first cell where the elide gate declined and the record went from the
+  -- permanent buffer back to a sized one. So each request gets a second attempt behind a short delay, and
+  -- only where a delete preceded it: with nothing freed there is nothing to wait for.
   local tries, ntry = {n}, 1
   if nreq < n then tries[2], ntry = nreq, 2 end
   local i
@@ -1731,8 +1749,16 @@ function sdec.acq_make_buffer(n, perm)
     local cap = nil
     if mok and nb ~= nil then pcall(function() cap = nb.capacity end) end
     -- The read-back and not the pcall: a refused buffer.make returns nil while pcall reports success, and
-    -- deleting what it returned posts 1138. docs/UNDOCUMENTED.md, 'The real ceiling is 7,080,255 readings,
-    -- across all buffers together'.
+    -- deleting what it returned posts 1138.
+    if (type(cap) ~= 'number' or cap < 10) and freed then
+      pcall(delay, sdec.acq_freesettle)
+      mok, nb = pcall(buffer.make, tries[i], buffer.STYLE_STANDARD)
+      cap = nil
+      if mok and nb ~= nil then pcall(function() cap = nb.capacity end) end
+      if type(cap) == 'number' and cap >= 10 then
+        sdec.acq_remade = (sdec.acq_remade or 0) + 1
+      end
+    end
     if type(cap) == 'number' and cap >= 10 then
       sdec.buf = nb
       sdec.acq_bufgot = cap

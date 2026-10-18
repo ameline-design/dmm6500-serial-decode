@@ -799,7 +799,13 @@ function brun.point(fs, baud, lock, elide, vid)
     -- Cleared so a stale verdict cannot be read as this cell's. Every break in the poll loop assigns it,
     -- but a raise before the loop would leave the previous cell's reason standing.
     sdec.ck_endwhy = nil
-    okc = pcall(function() got = sdec.stream_acquire(sdec.n) end)
+    -- THE RAISE TEXT, NOT JUST THE VERDICT. Written as `okc = pcall(...)` this discarded pcall's second
+    -- return, so every raise on this path reached the record as a bare 'acquire raised' and three
+    -- different faults read identically -- which is exactly what happened on the 2026-10-17 lap, where
+    -- three cells raised and the row could not say why.
+    local perr = nil
+    okc, perr = pcall(function() got = sdec.stream_acquire(sdec.n) end)
+    if not okc then r.raisewhy = tostring(perr) end
     sdec.strm_maxsec = keepmax
     ok = got ~= nil and got > 0
     if not ok and why == nil then
@@ -895,14 +901,21 @@ function brun.point(fs, baud, lock, elide, vid)
   else
     sdec.gapelide = nil
     sdec.trigmode = 'free'
-    okc = pcall(function() ok, why = sdec.acquire() end)
+    -- Same reason as the elide branch above: pcall's second return is the only account of a raise.
+    local perr = nil
+    okc, perr = pcall(function() ok, why = sdec.acquire() end)
+    if not okc then r.raisewhy = tostring(perr) end
   end
   sdec.gapelide, sdec.trigmode = keepgap, 'free'
   -- READ BEFORE THE EARLY RETURNS, so a cell that failed to acquire still reports what the acquire cost.
   -- Those are the cells worth timing: a quarter of a hot lap ends here and they are not free.
   if brun.timing then pcall(function() brun.tacq = timer.gettime() end) end
   brun.spin_tick()                      -- 3 of 6: the capture is in
-  if not okc then r.why = 'acquire raised'; return r end
+  if not okc then
+    r.why = 'acquire raised'
+    if r.raisewhy ~= nil then r.why = r.why .. ': ' .. r.raisewhy end
+    return r
+  end
   if not ok then r.why = 'acq: ' .. tostring(why); return r end
 
   local okd, whyd = false, nil
@@ -1850,7 +1863,20 @@ function brun.errsline()
   -- It read 'Errors: 10+12 a10 f7 w5/132' first, which needs this comment to decode -- an operator
   -- deciding whether to walk over should not have to. Each class is named rather than initialled, and
   -- written only when nonzero, so a clean run still reads 'Errors: 0'.
+  -- THE BYTES, IN THE HEAD RATHER THAN THE BREAKOUT, because a bad run is exactly when this line is at
+  -- its widest and the breakout is what gets dropped to fit -- so a byte count living there would be
+  -- invisible on every run that had bytes to report. It answers 'how bad' in the only unit the operator
+  -- cares about: 'wrong 5/132' says five cells are wrong and nothing about whether that is a byte each
+  -- or a whole payload each.
+  --
+  -- Derived from paymatch/paycmp, the SAME pair brun.nwrong keys on and inside the same gate, so the two
+  -- figures on this line cannot disagree about which cells they counted. The per-segment pair
+  -- (payb/paybcmp) is deliberately not used here: it is a different alignment, and a Bad: that counted
+  -- one alignment beside a wrong: that counted another would be a self-contradicting row.
   local head = 'Errors: ' .. brun.int(n + act)
+  if (brun.ncmpb or 0) > 0 then
+    head = head .. string.format('  Bad: %s/%s', brun.int(brun.nbadb or 0), brun.int(brun.ncmpb))
+  end
   local ex = ''
   if (brun.nunexp or 0) > 0 then ex = ex .. '  nodec ' .. brun.int(brun.nunexp) end
   if nfr > 0 then ex = ex .. '  flag ' .. brun.int(nfr) end
@@ -2674,6 +2700,7 @@ function brun.soak(iterations, tag)
   brun.lapcell = 0
   brun.nexp, brun.nunexp = 0, 0
   brun.nwrong, brun.nframe, brun.npayj = 0, 0, 0
+  brun.nbadb, brun.ncmpb = 0, 0
   brun.bad_bauds = {}
   brun.vcell, brun.vbad = {}, {}
   brun.iterwant = 0
@@ -3042,6 +3069,11 @@ function brun.soak(iterations, tag)
         -- reports its own denominator -- a zero here is not a pass on a vector it cannot judge.
         if p.paycmp ~= nil and p.paycmp > 0 then
           brun.npayj = brun.npayj + 1
+          -- The bytes, in the same gate as the cell count so the panel's two figures always describe
+          -- the same set of cells. Accumulated rather than derived at draw time: the per-cell pair is
+          -- gone by the next cell, and the row's own payb= field is a different alignment.
+          brun.ncmpb = (brun.ncmpb or 0) + p.paycmp
+          brun.nbadb = (brun.nbadb or 0) + (p.paycmp - p.paymatch)
           if p.paymatch < p.paycmp * brun.paywrong_frac then
             brun.nwrong = brun.nwrong + 1
             brun.bad_bauds[c.baud] = true

@@ -3176,10 +3176,14 @@ print('-- the error row: the new byte-level classes, the red rule, and the width
 -- end is lost -- so the width is checked here at the widest line each field can produce.
 ;(function()
   local keep = {nbad = brun.nbad, nexp = brun.nexp, nunexp = brun.nunexp, nwrong = brun.nwrong,
-                nframe = brun.nframe, npayj = brun.npayj, bb = brun.bad_bauds, ncell = brun.ncell}
-  local function set(nbad, nexp, nunexp, nwrong, nframe, npayj, bauds)
+                nframe = brun.nframe, npayj = brun.npayj, bb = brun.bad_bauds, ncell = brun.ncell,
+                nbadb = brun.nbadb, ncmpb = brun.ncmpb}
+  -- nbadb/ncmpb default to nil rather than 0 so the clean-run case below exercises the absent branch:
+  -- a run with nothing judged must read 'Errors: 0' exactly, with no Bad: field at all.
+  local function set(nbad, nexp, nunexp, nwrong, nframe, npayj, bauds, nbadb, ncmpb)
     brun.nbad, brun.nexp, brun.nunexp = nbad, nexp, nunexp
     brun.nwrong, brun.nframe, brun.npayj = nwrong, nframe, npayj
+    brun.nbadb, brun.ncmpb = nbadb, ncmpb
     brun.bad_bauds = {}
     local i
     for i = 1, (bauds or 0) do brun.bad_bauds[1000 * i] = true end
@@ -3218,6 +3222,14 @@ print('-- the error row: the new byte-level classes, the red rule, and the width
   ck(c == brun.c_bad and string.find(e, 'flag 4', 1, true) ~= nil,
      'the flagged-frame class turns it red on its own', e)
 
+  -- THE BYTES AND THE CELLS MUST DESCRIBE THE SAME SET, which is why both come from paymatch/paycmp
+  -- inside one gate. 5 wrong cells of 132 judged, 640 bad bytes of 17 160: the row says how many cells
+  -- and how bad each was, which 'wrong 5/132' alone cannot.
+  set(10, 0, 10, 5, 7, 132, 2, 640, 17160)
+  e, c = brun.errsline()
+  ck(string.find(e, 'Bad: 640/17160', 1, true) ~= nil and string.find(e, 'wrong 5/132', 1, true) ~= nil,
+     'the byte count and the cell count appear together and agree on what was judged', e)
+
   -- The total is the sum and sits beside the count, where truncation cannot reach it first.
   set(10, 0, 10, 5, 7, 132, 2)
   e, c = brun.errsline()
@@ -3227,18 +3239,26 @@ print('-- the error row: the new byte-level classes, the red rule, and the width
 
   -- WIDTH, at the widest every field can be. A lap is at most 1720 cells, so every counter saturates
   -- there; stopnag is appended after all of it and must not be the part that falls off the end.
+  -- A lap is at most 1720 cells, so every cell counter saturates there. The BYTE counters saturate at
+  -- the widest payload the draw holds times that cell count -- 1720 x 235 for v98d's lorem, rounded up
+  -- to 500 000 so the field is six digits wide and the budget is tested past anything reachable.
   local worst = 1720
-  set(worst, 0, worst, worst, worst, worst, 20)
+  set(worst, 0, worst, worst, worst, worst, 20, 499999, 500000)
   e = brun.errsline()
   ck(string.len(e) <= brun.panelw,
      'the widest error row fits the screen budget', string.format('%d of %d char(s): %s',
      string.len(e), brun.panelw, e))
-  -- And when it cannot fit, the breakout is what goes -- never the count or the total.
+  -- And when it cannot fit, the breakout is what goes -- never the count, the total, or the bytes.
+  -- The bytes are in the HEAD for exactly this reason: a bad run is when this line is widest, so a
+  -- byte count in the droppable part would be invisible on every run that had bytes to report.
   ck(string.find(e, 'Errors: 5160', 1, true) == 1,
      '...and the total survives whatever is dropped to make it fit', e)
+  ck(string.find(e, 'Bad: 499999/500000', 1, true) ~= nil,
+     '...and so does the byte count, which is the whole point of putting it in the head', e)
 
   brun.nbad, brun.nexp, brun.nunexp = keep.nbad, keep.nexp, keep.nunexp
   brun.nwrong, brun.nframe, brun.npayj = keep.nwrong, keep.nframe, keep.npayj
+  brun.nbadb, brun.ncmpb = keep.nbadb, keep.ncmpb
   brun.bad_bauds, brun.ncell = keep.bb, keep.ncell
 end)()
 
