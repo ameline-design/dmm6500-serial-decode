@@ -74,11 +74,44 @@ end
 -- `lat` is the RESUME LATENCY in readings: how much of the burst is missing because the recording
 -- restarted after the crossing that released it rather than at it. Zero models a perfect splice, which is
 -- what the first version of this file assumed and why it reproduced nothing.
-local function elide(rd, n, winsamp, lat)
+-- A mock scratch buffer over a logical sequence, newest last: a 2048-reading fillmode-1 ring, so a
+-- sequence longer than that keeps only its tail, rotated by roff the way the instrument's does. This is
+-- what sdec.gap_tail has to unwind.
+local function mkscratch(seq, nseq, roff, cap)
+  if cap == nil then cap = 2048 end
+  if roff == nil then roff = 0 end
+  local from = nseq - cap + 1
+  local nlive = cap
+  if from < 1 then from = 1 nlive = nseq end
+  local s, i = {readings = {}, n = nlive, capacity = cap}, nil
+  for i = 1, nlive do
+    local p = i + roff
+    if p > nlive then p = p - nlive end
+    s.readings[p] = seq[from + i - 1]
+  end
+  -- Only a full ring can have rotated, which is acq_first's own gate.
+  if nlive >= cap then
+    s.startindex = roff + 1
+    if s.startindex > nlive then s.startindex = s.startindex - nlive end
+  else
+    s.startindex = 1
+  end
+  return s
+end
+
+-- Returns, beyond the elided record: `ts`, the relativetimestamps the record would carry (so a seam is a
+-- step and not a guess), and `scrs`, one scratch per burst holding what that burst lost -- the idle the
+-- record did not keep, then the head the latency ate. That pairing is the program's: gap_model unrolls one
+-- group per scratch and burst j's head lands in scratch j.
+local function elide(rd, n, winsamp, lat, fs, roff, pad)
   local idle = rd[1]
   local out, m, i = {}, 0, 1
   local nseam = 0
   lat = lat or 0
+  local ts, scrs, nscr = {}, {}, 0
+  local dt = 1 / (fs or 1)
+  local t = 0
+  local pend, npend = nil, 0           -- the sequence the next burst's scratch will hold
   while i <= n do
     if rd[i] == idle then
       local j = i
@@ -88,17 +121,44 @@ local function elide(rd, n, winsamp, lat)
       local drop = 0
       if runlen > winsamp then keep = winsamp nseam = nseam + 1 drop = lat end
       local k
-      for k = 1, keep do m = m + 1 out[m] = idle end
+      for k = 1, keep do
+        m = m + 1 out[m] = idle ts[m] = t t = t + dt
+      end
       -- The latency eats the head of the NEXT burst, not the tail of the idle: the comparator fires on
       -- the burst's own first falling edge, so what is lost is the start bit that edge belongs to.
+      if drop > 0 or runlen > keep then
+        -- Everything the record did not take, in time order, is what block 1 was storing.
+        pend, npend = {}, 0
+        for k = 1, runlen - keep do npend = npend + 1 pend[npend] = idle end
+        for k = 0, drop - 1 do
+          local src = j + k
+          if src <= n then npend = npend + 1 pend[npend] = rd[src] end
+        end
+        -- The elided readings are real time that the record's stamps must step over.
+        t = t + ((runlen - keep) + drop) * dt
+      end
       i = j + drop
     else
+      -- The first reading of a burst: its scratch is whatever block 1 held when block 3 took over.
+      if pend ~= nil then
+        -- `pad` puts extra idle AFTER the head, which is a splice landing late by that many samples.
+        -- It is the null for sample-exactness: the right readings in the wrong place.
+        if pad ~= nil and pad > 0 then
+          local q
+          for q = 1, pad do npend = npend + 1 pend[npend] = idle end
+        end
+        nscr = nscr + 1
+        scrs[nscr] = mkscratch(pend, npend, roff or 0)
+        pend = nil
+      end
       m = m + 1
       out[m] = rd[i]
+      ts[m] = t
+      t = t + dt
       i = i + 1
     end
   end
-  return out, m, nseam
+  return out, m, nseam, ts, scrs
 end
 
 local function analyse(rd, nsmp, fs)
@@ -382,6 +442,85 @@ do
   end
   print(string.format('\nHEX v98a %s', s))
 end
+
+-- ---------------------------------------------------------------------------
+-- THE SPLICE, scored by the function the instrument puts on the panel
+-- ---------------------------------------------------------------------------
+-- Everything above measures the damage. This measures the repair, through sdec.gap_splice on the real
+-- functions rather than a reference implementation of them, and scores it with bexp.match -- one shift,
+-- the same gate as the pay= field in the record and the panel's red rule.
+--
+-- WHAT IT DOES NOT SHOW: that the firmware fills the scratches. tools/gen_serial.lua routes nothing into
+-- them and applies no resume latency, so the scratches here come from elide() -- which knows what it took
+-- away and hands back exactly that. The claim under test is that the splice puts back what was lost and
+-- the decode then reads it, not that the instrument captured it. That is an instrument question and
+-- r.splseam/splran/splorph/spladd on every cell is what will answer it.
+print('')
+print('-- the splice: does putting the head back restore the bytes? --')
+print(string.format('  %-6s %-7s %-7s %-10s %-10s %s',
+                    'baud', 'fs', 'lat us', 'unspliced', 'spliced', 'verdict'))
+
+local function cell_spliced(vid, payload, baud, fs, lead, tail, win, ncap, latsec, roff, pad)
+  local rd, n = passes(payload, baud, fs, lead, tail, 5)
+  local erd, en, nseam, ts, scrs = elide(rd, n, win * fs, math.floor((latsec or 0) * fs), fs, roff, pad)
+  if en > ncap then en = ncap end
+  local kb, kf, kt = sdec.force_baud, sdec.fs, sdec.trigmode
+  sdec.force_baud, sdec.fs, sdec.trigmode = baud, fs, 'free'
+  sdec.force_nbits, sdec.force_par, sdec.force_nstop, sdec.force_invert = nil, nil, nil, nil
+  sdec.acq_pretrig = nil
+  sdec.proto, sdec.ui_mode = 'uart', 'text'
+  -- Levels first: the splice needs the capture's own threshold, and a scratch cannot supply one.
+  analyse(erd, en, fs)
+  local thr = sdec.thr
+  local buf = {readings = erd, relativetimestamps = ts, n = en, capacity = 6000000}
+  local arr, m = sdec.gap_splice(buf, en, scrs, thr, fs / baud, fs)
+  local nm, nc, nsp = nil, nil, sdec.spl_nspliced
+  if arr ~= nil then
+    analyse(arr, m, fs)
+    local ok = sdec.decode_from(arr, m)
+    if ok then nm, nc = bexp.match(sdec.res, vid) end
+  end
+  sdec.force_baud, sdec.fs, sdec.trigmode = kb, kf, kt
+  return {nm = nm, nc = nc, nspliced = nsp, nseam = nseam, spliced = arr ~= nil}
+end
+
+local SPL = {{baud = 4800, fs = 40000, lat = 0.000156}, {baud = 9600, fs = 80000, lat = 0.000140},
+             {baud = 19200, fs = 159806, lat = 0.000208}}
+local allfixed, anybroken, si = true, false, nil
+for si = 1, table.getn(SPL) do
+  local S = SPL[si]
+  -- The ring offset is varied per rate so no row passes on an unrotated scratch alone.
+  local before = cell('v98a', v98a, S.baud, S.fs, 600, 10, 0.010, NCAP, S.lat)
+  local after = cell_spliced('v98a', v98a, S.baud, S.fs, 600, 10, 0.010, NCAP, S.lat, si * 377)
+  local fb, fa = 0, 0
+  if before.nm ~= nil and (before.nc or 0) > 0 then fb = before.nm / before.nc end
+  if after.nm ~= nil and (after.nc or 0) > 0 then fa = after.nm / after.nc end
+  if fb < 0.99 then anybroken = true end
+  if fa < 0.99 then allfixed = false end
+  print(string.format('  %-6d %-7d %-7.0f %-10s %-10s %s', S.baud, S.fs, S.lat * 1e6,
+                      string.format('%s/%s %.0f%%', tostring(before.nm), tostring(before.nc), fb * 100),
+                      string.format('%s/%s %.0f%%', tostring(after.nm), tostring(after.nc), fa * 100),
+                      (fa >= 0.99 and 'RESTORED') or 'still short'))
+end
+-- THE PREMISE, asserted rather than assumed: if the unspliced rows were already byte-exact there would be
+-- nothing to repair and the row above would prove nothing.
+check('the premise: every rate in this block is genuinely damaged without the splice', anybroken,
+      'at least one unspliced row below 99 %')
+check('the splice restores the payload to byte-exact at 4800, 9600 and 19200 Bd', allfixed,
+      'all three spliced rows at 99 % or better on bexp.match, one shift')
+
+-- AND THE NULL. Same splice, same record, scratches holding idle instead of the head: the decode must
+-- stay broken, or the two checks above would pass against a fixture that was never damaged.
+-- AND THE NULL IS A SHIFT, not a missing head: the SAME readings spliced four samples late, which at
+-- 8.33 samples a bit is about half a bit. All-idle scratches would not do -- gap_tail refuses those on
+-- purpose, so that tests a declined path rather than a wrong splice. This one is accepted and wrong.
+local wrong = cell_spliced('v98a', v98a, 9600, 80000, 600, 10, 0.010, NCAP, 0.000140, 0, 4)
+local fw = 0
+if wrong.nm ~= nil and (wrong.nc or 0) > 0 then fw = wrong.nm / wrong.nc end
+check('...while the same head spliced half a bit late does NOT restore it, so the splice is sample-exact',
+      wrong.spliced and fw < 0.99,
+      string.format('%s/%s = %.0f%% four samples late', tostring(wrong.nm), tostring(wrong.nc),
+                    fw * 100))
 
 print(string.format('\n%d passed, %d failed', pass, fail))
 if fail > 0 then
