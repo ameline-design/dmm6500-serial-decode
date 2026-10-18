@@ -1044,6 +1044,9 @@ function brun.point(fs, baud, lock, elide, vid)
   -- its name alone: which side the threshold fell outside, and by how much, is what tells a failed probe
   -- from failed levels. Set only when that guard fires, so nil here is the ordinary case.
   r.splthr, r.spllo, r.splhi = sdec.spl_thr, sdec.spl_lo, sdec.spl_hi
+  -- And the raise text behind splwhy=raised, which the app kept only from this commit: before it, pcall's
+  -- second return was discarded and every raise read as the bare word.
+  r.splraise = sdec.spl_raise
   brun.spin_tick()                      -- 4 of 6: the decode is done
   if not okc2 then r.why = 'decode raised'; return r end
   if not okd then
@@ -3294,6 +3297,7 @@ function brun.soak(iterations, tag)
         if p.splthr ~= nil then
           nt = nt .. string.format(' splthr=%.3f/%.3f/%.3f', p.splthr, p.spllo or 0, p.splhi or 0)
         end
+        if p.splraise ~= nil then nt = nt .. ' splraise=' .. tostring(p.splraise) end
         if p.splseam ~= nil then
           nt = nt .. string.format(' spl=%s/%s', brun.int(p.splran or 0), brun.int(p.splseam))
           if (p.splorph or 0) > 0 then nt = nt .. ' splorph=' .. brun.int(p.splorph) end

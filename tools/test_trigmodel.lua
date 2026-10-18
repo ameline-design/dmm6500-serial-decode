@@ -955,6 +955,19 @@ end)()
   -- used to assert. A typed 6 would have read as a pass on a program that built one group of the twelve
   -- it was handed.
   local wantb = 5 * math.min(sdec.gap_nscratch, sdec.gap_maxscratch) + 1
+  -- AND THE SCRATCH COUNT ITSELF, which nothing asserted. Every check around here scales with
+  -- gap_nscratch, so dropping it from twelve to one kept them all passing while the splice lost eleven
+  -- burst heads -- a silent loss of recovered bytes with no number anywhere naming it. Both halves are
+  -- derived, so this fails if either the store figure or the default moves alone.
+  CK('the scratch ceiling is derived from the block store, not typed beside a comment deriving it',
+     sdec.gap_maxscratch == math.floor((sdec.gap_blockstore - 1) / 5)
+     and 5 * sdec.gap_maxscratch + 1 <= sdec.gap_blockstore
+     and 5 * (sdec.gap_maxscratch + 1) + 1 > sdec.gap_blockstore,
+     string.format('%d groups = %d blocks of a %d store', sdec.gap_maxscratch,
+                   5 * sdec.gap_maxscratch + 1, sdec.gap_blockstore))
+  CK('...and the app asks for the ceiling, so a quiet drop to one scratch is a failure and not a shrug',
+     sdec.gap_nscratch == sdec.gap_maxscratch,
+     string.format('nscratch=%d of a ceiling of %d', sdec.gap_nscratch, sdec.gap_maxscratch))
   CK('...the arm went live and the program loaded is the hand-built one, not a template',
      sdec.strm_armed == true and TRIG.handbuilt == true and TRIG.nblocks == wantb,
      string.format('armed=%s handbuilt=%s blocks=%s want %d', tostring(sdec.strm_armed),

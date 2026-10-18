@@ -759,16 +759,20 @@ function sdec.stream_decode(got)
     elseif baud == nil or baud <= 0 then
       sdec.spl_why = 'no baud'
     else
-      local pl, perr = nil, nil
+      local pl = nil
       -- pcall'd: this reads attributes off twelve buffers, and a scratch the pool refused to make is a dead
       -- handle that raises on the first of them. A refused splice decodes the record as it stands rather than
-      -- failing the capture -- which is gap_model's own fallback discipline. The raise text is KEPT, because
-      -- 'raised' without it is the same dead end the counters were.
-      local pok = pcall(function()
+      -- failing the capture -- which is gap_model's own fallback discipline.
+      local pok, perr = pcall(function()
         pl = sdec.gap_splice_plan(sdec.buf, got, sdec.gapbufs, thr, fs / baud, fs)
       end)
       if not pok then
         sdec.spl_why = 'raised'
+        -- AND THE TEXT, which this comment claimed was kept from the day the exit was written while
+        -- `local pok = pcall(...)` discarded pcall's second return and `perr` sat unassigned. Every raise
+        -- read as a bare 'raised', which is the same dead end the zero counters were. brun.point had already
+        -- fixed exactly this for r.raisewhy.
+        sdec.spl_raise = perr
       elseif pl == nil then
         -- The plan refuses for two reasons worth telling apart: no seam was found at all, or seams were
         -- found and every scratch refused its tail. spl_nseam is set either way by gap_splice_plan.
@@ -912,7 +916,7 @@ function sdec.stream_arm(nsmp)
   -- No buffer is a refused arm, not a raise: the caller can only choose the fallback if it is told.
   if buf == nil then return false end
   -- The closure form is required: pcall(buf.clear) fetches .clear first, and that fetch is the IPC.
-  if not pcall(function() buf.clear() end) then return false end
+  if not sdec.bufclear(buf) then return false end
   -- fillmode = 1 per capture, after clear(), as acq_triggered() does it: it reads back 0 on a reused
   -- buffer. docs/MEASUREMENTS.md, 'A reserve in a FILL_ONCE buffer posts 4915 per discard'.
   sdec.acq_fillmode(buf)
@@ -1004,7 +1008,7 @@ function sdec.stream_arm(nsmp)
   -- recording would append to whatever the last one left behind, and every span the rate is read from would be
   -- long by the stale part -- in the one direction nothing downstream flags.
   if ok then
-    local cok = buf ~= nil and pcall(function() buf.clear() end)
+    local cok = sdec.bufclear(buf)
     if not cok then
       ok = false
       sdec.lasterr = 'could not clear the record before arming'
@@ -2996,7 +3000,7 @@ function sdec.stop()
   if sdec.buf ~= nil then
     sdec.trig_settle()
     local b = sdec.buf
-    local delok = pcall(buffer.delete, b)
+    local delok = sdec.bufdel(b)
     if delok then
       sdec.buf = nil
     else

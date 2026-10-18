@@ -19,7 +19,11 @@ cd "$ROOT"
 # EVERY TRACKED .pdf MUST BE IN THIS DEFAULT LIST. release_sweep.py's `manual` stage runs this script
 # with no arguments, so a shipped PDF left out of the default is never rebuilt by the gate and rots
 # silently against its own source.
-DOCS="${*:-README.md docs/MANUAL.md docs/PRINCIPLES.md docs/TRIGGER.md docs/REFERENCE.md docs/BENCH.md docs/BETA.md docs/UNDOCUMENTED.md docs/MEASUREMENTS.md}"
+# docs/BRUN.md IS IN THIS LIST AND WAS NOT, which made its PDF the one document a version bump could not
+# reach: check_version.py checks docs/BRUN.pdf, so every bump left exactly one of nineteen statements wrong
+# and the fix looked like "rerun mkpdf.sh", which did not build it. A doc whose PDF is checked but not built
+# is the same shape as a suite that is run but not wired into release_sweep.
+DOCS="${*:-README.md docs/MANUAL.md docs/PRINCIPLES.md docs/TRIGGER.md docs/REFERENCE.md docs/BENCH.md docs/BRUN.md docs/BETA.md docs/UNDOCUMENTED.md docs/MEASUREMENTS.md}"
 
 for md in $DOCS; do
   base=$(echo "$md" | sed 's/\.md$//')

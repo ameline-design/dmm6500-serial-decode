@@ -1,6 +1,6 @@
 # Serial Brun — starting a bench soak from the front panel
 
-**Ian Ameline** · version 1.58 · MIT licence
+**Ian Ameline** · version 1.59 · MIT licence
 
 `Serial_brun.tspa` puts the bench engine behind a settings screen on the instrument, so a lap can be
 started with nobody connected. It is the same `brun.soak()` the host drives — a second door into one

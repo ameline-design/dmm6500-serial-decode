@@ -1372,6 +1372,57 @@ function sdec.fs_select()
   return sdec.fs
 end
 
+-- A reading buffer's capacity. -> the number, or nil; second result true when the READ ITSELF raised.
+--
+-- ONE GUARDED SITE FOR EVERY CAPACITY READ THIS APP MAKES, and the count is the reason rather than the
+-- tidiness. Reading `.capacity` raises once the firmware has dropped the buffer, so every reader needs a
+-- guard, and there were fourteen of them -- fourteen pcall sites against a ceiling lint_tsp enforces,
+-- because 191 sites bluescreened this firmware on load and 132 is the largest count measured to run. The
+-- same argument as defbuf_set, which is one site for every capacity WRITE.
+--
+-- The second result is not decoration: acq_bufmode and acq_bufhave clear their slot when the read raises,
+-- which is a dead handle, and must not clear it when the buffer merely answered something odd. Offline a
+-- dead buffer keeps its capacity and on hardware it raises, so this is the one place that difference lives.
+function sdec.bufcap(b)
+  if b == nil then return nil, false end
+  local c = nil
+  if not pcall(function() c = b.capacity end) then return nil, true end
+  if type(c) ~= 'number' then return nil, false end
+  return c, false
+end
+
+-- Make a reading buffer of `cap` readings. -> the buffer and its capacity, or nil.
+--
+-- One site, for sdec.bufcap's reason. THE READ-BACK IS THE VERDICT AND NOT THE pcall: a refused
+-- buffer.make returns nil while pcall reports success, and deleting what a refused call returned posts
+-- 1138 "expected type 'reading buffer', but found type 'unknown'". Standard style and not compact, and not
+-- by choice -- docs/MEASUREMENTS.md, 'buffer.STYLE_COMPACT is nil on this firmware'.
+function sdec.bufmake(cap)
+  local mok, nb = pcall(buffer.make, cap, buffer.STYLE_STANDARD)
+  if not mok then return nil end
+  local c = sdec.bufcap(nb)
+  if c == nil or c < 10 then return nil end
+  return nb, c
+end
+
+-- Delete a reading buffer, answering for it. -> true if the instrument took it.
+--
+-- ONE GUARDED SITE for every delete this app makes, for sdec.bufcap's reason: the site count is a shipping
+-- constraint, not a style preference. And the verdict is RETURNED and never swallowed, because a refused
+-- delete has to leave the handle in place -- dropping it strands the readings for the rest of the power
+-- cycle, which a 6 000 000-reading buffer did, taking the pool to 764 400 free with no way back.
+function sdec.bufdel(b)
+  if b == nil then return false end
+  return (pcall(buffer.delete, b))
+end
+
+-- Clear a reading buffer. -> true if it answered. One site, the same argument. A clear is O(1) on this
+-- firmware -- measured at 0.0001 s at both 20 000 and 262 144 readings -- so this costs nothing to route.
+function sdec.bufclear(b)
+  if b == nil then return false end
+  return (pcall(function() b.clear() end))
+end
+
 -- Capacity a capture of n samples needs. Frame only -- SimpleLoop has no reserve.
 -- docs/MEASUREMENTS.md, 'The pre-trigger reserve comes out of capacity, not out of count'.
 function sdec.acq_cap(n)
@@ -1412,9 +1463,8 @@ function sdec.acq_pospct(n, buf)
   local pt = sdec.pretrig or 0
   if pt <= 0 then return pt end
   if buf == nil then return pt end
-  local cap = nil
-  if not pcall(function() cap = buf.capacity end) then return pt end
-  if type(cap) ~= 'number' or cap < 10 then return pt end
+  local cap = sdec.bufcap(buf)
+  if cap == nil or cap < 10 then return pt end
   -- Published because acq_triggered needs the capacity to work out how many readings the reserve will really
   -- be, and reading it again would cost a second pcall site against the budget lint_tsp counts.
   sdec.acq_poscap = cap
@@ -1585,8 +1635,8 @@ function sdec.acq_bufmode(id, want)
   end
   local b = sdec.acq_bufs[bid]
   if b == nil then return nil end
-  local cap = nil
-  if not pcall(function() cap = b.capacity end) then
+  local cap, dead = sdec.bufcap(b)
+  if dead then
     sdec.acq_bufs[bid] = nil
     return nil
   end
@@ -1600,8 +1650,8 @@ end
 function sdec.acq_bufhave(bufid)
   local b = sdec.acq_bufs[bufid]
   if b == nil then return nil end
-  local cap = nil
-  if not pcall(function() cap = b.capacity end) then
+  local cap, dead = sdec.bufcap(b)
+  if dead then
     sdec.acq_bufs[bufid] = nil
     return nil
   end
@@ -1702,10 +1752,8 @@ function sdec.acq_bufinit()
       local got = nil
       for ti = 1, 2 do
         if tries[ti] ~= nil and got == nil then
-          local mok, nb = pcall(buffer.make, tries[ti], buffer.STYLE_STANDARD)
-          local cap = nil
-          if mok and nb ~= nil then pcall(function() cap = nb.capacity end) end
-          if type(cap) == 'number' and cap >= 10 then got = nb end
+          local nb, cap = sdec.bufmake(tries[ti])
+          if cap ~= nil then got = nb end
         end
       end
       if got ~= nil then
@@ -1725,8 +1773,7 @@ function sdec.acq_bufinit()
         nok = nok + 1
         -- Recorded, because a set that fell back is not the set the sizing arguments assume: the 32 kB
         -- mode in a 3 952 383-reading record affords no over-read at all beyond the 10 % it is sized for.
-        local c2 = nil
-        pcall(function() c2 = got.capacity end)
+        local c2 = sdec.bufcap(got)
         if c2 ~= nil and c2 < p.cap then
           sdec.acq_bufsmall = (sdec.acq_bufsmall or '') .. p.id .. '=' .. tostring(c2) .. ' '
         end
@@ -1751,10 +1798,8 @@ function sdec.acq_bufinit()
     if sdec.acq_bufhave(rid) ~= nil then
       nrungok = nrungok + 1
     else
-      local mok, nb = pcall(buffer.make, rcap, buffer.STYLE_STANDARD)
-      local cap = nil
-      if mok and nb ~= nil then pcall(function() cap = nb.capacity end) end
-      if type(cap) == 'number' and cap >= 10 then
+      local nb, cap = sdec.bufmake(rcap)
+      if cap ~= nil then
         sdec.acq_fillmode(nb)
         sdec.acq_bufs[rid] = nb
         -- Published for acq_bufinit's reason: a reload builds a fresh sdec and buf_sweep walks _G, so a
@@ -1798,7 +1843,7 @@ function sdec.acq_buffree()
       -- The verdict is READ, not discarded. A refused delete must leave the handle in place: dropping it
       -- strands the readings for the rest of the power cycle, and a 6 000 000-reading buffer stranded
       -- that way took the pool to 764 400 free with no way back short of a power cycle. Measured.
-      local delok = pcall(function() buffer.delete(b) end)
+      local delok = sdec.bufdel(b)
       if delok then
         sdec.acq_bufs[id] = nil
         _G['SDEC_SBUF_' .. string.upper(id)] = nil
@@ -1814,7 +1859,7 @@ function sdec.acq_buffree()
     local rid = sdec.acq_rungid(sdec.acq_framerungs[i])
     local rb = sdec.acq_bufs[rid]
     if rb ~= nil then
-      local rok = pcall(function() buffer.delete(rb) end)
+      local rok = sdec.bufdel(rb)
       if rok then
         sdec.acq_bufs[rid] = nil
         _G['SDEC_SBUF_' .. string.upper(rid)] = nil
@@ -1842,9 +1887,8 @@ function sdec.acq_leadmax(buf)
   local pos = sdec.acq_posloaded
   if pos == nil then pos = sdec.pretrig or 0 end
   if pos <= 0 then return nil end
-  local cap = nil
-  if not pcall(function() cap = buf.capacity end) then return nil end
-  if type(cap) ~= 'number' or cap < 10 then return nil end
+  local cap = sdec.bufcap(buf)
+  if cap == nil or cap < 10 then return nil end
   -- The instrument's own rule, not a percentage of it: see the measurement in sdec.n_deliv.
   return cap - math.floor(cap * (100 - pos) / 100)
 end
@@ -2069,8 +2113,7 @@ end
 function sdec.acq_fit(n, buf)
   -- .capacity exists on any non-nil buffer, and reading it still raises once the firmware has dropped it.
   if buf == nil then return n end
-  local cap = nil
-  pcall(function() cap = buf.capacity end)
+  local cap = sdec.bufcap(buf)
   if cap == nil or cap < 10 then return n end
   local room = cap
   if sdec.trigmode ~= 'free' and (sdec.pretrig or 0) > 0 then
@@ -2154,17 +2197,16 @@ function sdec.acq_make_buffer(n, perm)
   local sb, scap = sdec.acq_bufmode(nil, n)
   if sb ~= nil and scap ~= nil and scap >= n then
     sdec.trig_settle()
-    pcall(function() sb.clear() end)
+    sdec.bufclear(sb)
     sdec.acq_fillmode(sb)
     sdec.buf, sdec.acq_bufgot, sdec.acq_bufperm = sb, scap, true
     return sb
   end
   if sdec.buf ~= nil then
-    local cap = nil
-    if pcall(function() cap = sdec.buf.capacity end) and type(cap) == 'number' and
-       cap >= n and (perm or cap == nreq) then
+    local cap = sdec.bufcap(sdec.buf)
+    if cap ~= nil and cap >= n and (perm or cap == nreq) then
       sdec.trig_settle()
-      pcall(function() sdec.buf.clear() end)
+      sdec.bufclear(sdec.buf)
       sdec.acq_fillmode(sdec.buf)
       sdec.acq_bufperm = (perm == true)
       return sdec.buf
@@ -2188,7 +2230,7 @@ function sdec.acq_make_buffer(n, perm)
     local b = sdec.buf
     -- A refused deletion must not be followed by a new allocation, and the handle must not be dropped: nil'ing first
     -- and swallowing the error strands the buffer and allocates another on top, one more on every retry.
-    local delok = pcall(buffer.delete, b)
+    local delok = sdec.bufdel(b)
     if not delok then
       sdec.delfails = (sdec.delfails or 0) + 1
       sdec.stickyerr = 'the capture buffer could not be freed -- power cycle the instrument'
@@ -2214,16 +2256,12 @@ function sdec.acq_make_buffer(n, perm)
   for i = 1, ntry do
     -- Guarded at the allocation, the only thing here that can raise. Standard and not compact, and not by
     -- choice -- docs/MEASUREMENTS.md, 'buffer.STYLE_COMPACT is nil on this firmware'.
-    local mok, nb = pcall(buffer.make, tries[i], buffer.STYLE_STANDARD)
-    local cap = nil
-    if mok and nb ~= nil then pcall(function() cap = nb.capacity end) end
+    local nb, cap = sdec.bufmake(tries[i])
     -- The read-back and not the pcall: a refused buffer.make returns nil while pcall reports success, and
     -- deleting what it returned posts 1138.
     if (type(cap) ~= 'number' or cap < 10) and freed then
       pcall(delay, sdec.acq_freesettle)
-      mok, nb = pcall(buffer.make, tries[i], buffer.STYLE_STANDARD)
-      cap = nil
-      if mok and nb ~= nil then pcall(function() cap = nb.capacity end) end
+      nb, cap = sdec.bufmake(tries[i])
       if type(cap) == 'number' and cap >= 10 then
         sdec.acq_remade = (sdec.acq_remade or 0) + 1
       end
@@ -2267,8 +2305,8 @@ function sdec.acq_first(buf, n)
   if buf == nil or n == nil or n < 1 then return 1 end
   -- Only a full buffer can have wrapped, and testing that first is what makes the rest safe to trust: it disarms a
   -- startindex left by an earlier wrapped capture.
-  local cap = nil
-  if not pcall(function() cap = buf.capacity end) then return 1 end
+  local cap, dead = sdec.bufcap(buf)
+  if dead then return 1 end
   if cap ~= nil and n < cap then return 1 end
   local s = nil
   -- Guarded at the proxy read, like every other attribute on this object: on a firmware without startindex the
@@ -2639,17 +2677,17 @@ function sdec.gap_scratch(win, fs)
   if sdec.gapbuf ~= nil then
     local cok, cap = pcall(function() return sdec.gapbuf.capacity end)
     if cok and cap ~= nil and cap >= want then
-      pcall(function() sdec.gapbuf.clear() end)
+      sdec.bufclear(sdec.gapbuf)
       sdec.acq_fillmode(sdec.gapbuf)
       return sdec.gapbuf
     end
     -- Deleted before being dropped: a nil over the handle strands the readings in the pool instead of freeing
     -- them, and the pool is shared with the record.
-    pcall(function() buffer.delete(sdec.gapbuf) end)
+    sdec.bufdel(sdec.gapbuf)
     sdec.gapbuf = nil
   end
-  local mok, nb = pcall(buffer.make, want, buffer.STYLE_STANDARD)
-  if not mok or nb == nil then return nil end
+  local nb = sdec.bufmake(want)
+  if nb == nil then return nil end
   sdec.gapbuf = nb
   sdec.acq_fillmode(sdec.gapbuf)
   return sdec.gapbuf
@@ -2669,10 +2707,17 @@ end
 -- assume the groups ran in order, that all of them ran, and that the program did not wrap -- and a wrap is
 -- ordinary: with k scratches and more than k gaps the earliest are overwritten, which the times show as
 -- scratches newer than their neighbours rather than as a silent mispairing of every gap in the record.
-sdec.gap_nscratch = sdec.gap_nscratch or 12
--- 5 blocks a group and one branch to close the loop, against the 63 the store holds: measured, so 12 groups is
--- the ceiling and the arithmetic is not a guess. A record carries 2 to 4 seams in practice.
-sdec.gap_maxscratch = 12
+-- Blocks the trigger model's store holds, measured. docs/TRIGGER.md, 'The six blocks'.
+sdec.gap_blockstore = 63
+-- 5 blocks a group and one branch to close the loop, so this is what the store can hold. DERIVED and not
+-- declared: it read 12 beside a comment deriving 12 from 63, which let either move without the other.
+sdec.gap_maxscratch = math.floor((sdec.gap_blockstore - 1) / 5)
+-- As many as the program allows, and the ceiling is the default for a reason: one scratch holds one burst's
+-- head, so k scratches are k heads the splice can put back and the rest keep whatever they were captured
+-- with. A record carries 2 to 4 seams in practice, so the ceiling is headroom rather than a working figure
+-- -- which is exactly why a silent drop to 1 would cost recovered bytes and nothing would report it.
+-- tools/test_trigmodel.lua asserts the default IS the ceiling, since every other check scales with it.
+sdec.gap_nscratch = sdec.gap_nscratch or sdec.gap_maxscratch
 sdec.gapbufs = sdec.gapbufs or {}
 
 -- One scratch holds one burst head, so its capacity is gap_headsec at the highest rate the app records at:
@@ -2693,16 +2738,13 @@ function sdec.gap_scratches(nwant, win, fs)
   if have ~= nil and table.getn(have) >= nwant then
     local fits = true
     for i = 1, nwant do
-      local cap = nil
-      if not (pcall(function() cap = have[i].capacity end) and
-              type(cap) == 'number' and cap >= want) then
-        fits = false
-      end
+      local cap = sdec.bufcap(have[i])
+      if cap == nil or cap < want then fits = false end
     end
     if fits then
       local out = {}
       for i = 1, nwant do
-        pcall(function() have[i].clear() end)
+        sdec.bufclear(have[i])
         sdec.acq_fillmode(have[i])
         out[i] = have[i]
       end
@@ -2713,12 +2755,10 @@ function sdec.gap_scratches(nwant, win, fs)
   sdec.gap_release_all()
   local out = {}
   for i = 1, nwant do
-    local mok, nb = pcall(buffer.make, want, buffer.STYLE_STANDARD)
-    -- The read-back, for acq_make_buffer's reason: a refused buffer.make returns nil with pcall reporting
-    -- success, so a set short of nwant must be reported by its length and not by an error.
-    local cap = nil
-    if mok and nb ~= nil then pcall(function() cap = nb.capacity end) end
-    if type(cap) ~= 'number' or cap < 10 then break end
+    -- bufmake reads the capacity back for acq_make_buffer's reason: a refused buffer.make returns nil with
+    -- pcall reporting success, so a set short of nwant must be reported by its length and not by an error.
+    local nb, cap = sdec.bufmake(want)
+    if cap == nil then break end
     sdec.acq_fillmode(nb)
     out[i] = nb
   end
@@ -2738,7 +2778,7 @@ function sdec.gap_release_all()
   if sdec.gapbufs == nil then return end
   local i
   for i = 1, table.getn(sdec.gapbufs) do
-    pcall(function() buffer.delete(sdec.gapbufs[i]) end)
+    sdec.bufdel(sdec.gapbufs[i])
   end
   sdec.gapbufs = {}
 end
@@ -2747,7 +2787,7 @@ end
 -- record, so a buffer nobody is using is capacity the next capture cannot have.
 function sdec.gap_release()
   if sdec.gapbuf == nil then return false end
-  local ok = pcall(function() buffer.delete(sdec.gapbuf) end)
+  local ok = sdec.bufdel(sdec.gapbuf)
   sdec.gapbuf = nil
   return ok
 end
