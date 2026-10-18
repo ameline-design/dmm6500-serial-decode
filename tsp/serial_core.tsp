@@ -1398,8 +1398,14 @@ sdec.acq_posfloor = 0.001
 -- its capture leaves almost nothing ahead of the edge: the static 262 144-reading frame buffer took the
 -- frame mode's pre-roll from 1100 readings to 92, and 16 of 72 smoke cells then fell back with 'no
 -- trigger in 3 s (edge)' -- about 3 s wasted on each, on top of a decode from a free-running record.
--- docs/MEASUREMENTS.md, 'Analog trigger needs a live acquisition'. 1000 is what the shipped arrangement
--- gave at the shipped depth and is known to arm.
+-- docs/MEASUREMENTS.md, 'Analog trigger needs a live acquisition'.
+--
+-- 1000, AND THE REASONING FOR IT WAS WRONG even though the figure is harmless. It was raised because the
+-- 262 144-reading frame buffer left only 92 readings of pre-roll, on the reading that this was why 16 of 72
+-- smoke cells could not arm. Raising it changed nothing: the next smoke failed 16 of 42, the same rate. So
+-- 92 readings already armed the comparator and those cells were failing on the capture LENGTH instead -- see
+-- acq_bufplan. Lowering it again would make the post-trigger count LARGER, position being what the count is
+-- taken from, so it stays where it is.
 sdec.acq_premin = 1000
 
 function sdec.acq_pospct(n, buf)
@@ -1409,6 +1415,9 @@ function sdec.acq_pospct(n, buf)
   local cap = nil
   if not pcall(function() cap = buf.capacity end) then return pt end
   if type(cap) ~= 'number' or cap < 10 then return pt end
+  -- Published because acq_triggered needs the capacity to work out how many readings the reserve will really
+  -- be, and reading it again would cost a second pcall site against the budget lint_tsp counts.
+  sdec.acq_poscap = cap
   if n == nil then n = sdec.n end
   if n == nil or n <= 0 then return pt end
   -- The readings the reserve is meant to be: what acq_cap puts behind a buffer sized to this capture.
@@ -2959,6 +2968,14 @@ function sdec.acq_triggered(n, slope)
       pcall(sdec.armnote, wait, sdec.arm_thr or sdec.thr or sdec.arm_level_v(), sdec.armkeyed)
     end
 
+    -- NOT BOUNDED HERE, AND IT WAS TRIED. LoopUntilEvent's post-trigger count is (100 - position) % of the
+    -- CAPACITY, so an armed capture stores the buffer and not the count -- measured, 250 228 readings for a
+    -- 22 000 ask against the 262 144-reading frame buffer. Breaking this loop once the record held the reserve
+    -- plus the count would bound it, and the bound has to be gated on the trigger having fired or a quiet line
+    -- satisfies it with nothing captured. There is no such signal: docs/TRIGGER.md, 'The state at `initiate()`
+    -- is not the state of the wait' records that in twelve latency captures STATE_WAITING was NEVER OBSERVED,
+    -- so trig_waiting() cannot report the transition and the gate never opens on hardware. The capacity has to
+    -- fit the capture instead. tools/test_frontrig.lua carries the failing case.
     local waited, step = 0, 0.05
     while waited < wait do
       if sdec.trig_done(buf) then break end
@@ -3005,6 +3022,10 @@ function sdec.acq_triggered(n, slope)
     if expired and perr ~= nil then
       sdec.lasterr = sdec.lasterr .. ' (' .. tostring(perr) .. ')'
     end
+    -- Kept whatever the fault was, in a field rather than in the sentence. A raise that was not the wait
+    -- expiring used to be dropped, so a refused comparator and a quiet line both read as a bare
+    -- 'trigger unavailable' with nothing to tell them apart.
+    sdec.armraise = perr
     -- Tested, because sdec.atrig need not exist. serial_app.tsp's header claims this degrades to free-running
     -- without a comparator, and a bare write made that false: with atrig nil it raised and acquire() died.
     if sdec.atrig ~= nil then sdec.atrig.mode = sdec.k.MODE_OFF end

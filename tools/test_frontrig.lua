@@ -23,8 +23,26 @@ for _, m in ipairs({'tsp/usb_log.tsp', 'tsp/serial_ui.tsp', 'tsp/serial_app.tsp'
 end
 
 -- ---------- test harness (same shape as test_serial.lua) ----------
-local pass, fail = 0, 0
+local pass, fail, nxfail = 0, 0, 0
+-- Known-open defects, excused by name, as tools/test_octave.lua does it. An excused case that PASSES fails
+-- the suite, so a defect that gets fixed cannot go on being reported as open.
+local XFAIL, XSEEN = {}, {}
+local function expect_fail(name, why) XFAIL[name] = why end
 local function check(name, cond, detail)
+  local why = XFAIL[name]
+  if why ~= nil then
+    XSEEN[name] = true
+    if cond then
+      fail = fail + 1
+      print('  XPASS ' .. name .. (detail and ('   ' .. detail) or ''))
+      print('        ^ EXCUSED as a known failure and it PASSED. Remove the expect_fail() for it.')
+    else
+      nxfail = nxfail + 1
+      print('  XFAIL ' .. name .. (detail and ('   ' .. detail) or ''))
+      print('        ^ expected: ' .. why)
+    end
+    return
+  end
   if cond then
     pass = pass + 1
     print('  PASS  ' .. name .. (detail and ('   ' .. detail) or ''))
@@ -87,8 +105,23 @@ check('and it waits on the front-panel key event, not on the analog comparator',
 check('the capture came from the armed path, not from digitize.read()',
       READS.triggered == 1 and TRIG.inits == 1,
       string.format('triggered=%d inits=%d', READS.triggered, TRIG.inits))
+-- IN READINGS, NOT IN PERCENT, and reading the percent is what made this assertion vacuous. position is a
+-- percentage of the buffer's CAPACITY and sdec.pretrig is a percentage of the CAPTURE, so the two are equal
+-- only where the buffer is exactly the capture. This read `== sdec.pretrig` and passed only because
+-- acq_premin's floor happened to force the position there; lowering that floor to what the comparator was
+-- measured to need broke the check without changing the reserve by one reading.
+-- docs/MEASUREMENTS.md, 'The pre-trigger reserve comes out of capacity, not out of count'.
+-- A BAND AND NOT AN EQUALITY, because the over-read sits between sdec.n and the capture: acquire() raises the
+-- count by strm_overread before acq_cap sizes the buffer, so the reserve follows 8800 readings where sdec.n
+-- says 8000, and the capacity reads 9340 rather than 8500. Pinning either end to sdec.n would make this fail
+-- whenever the over-read default moves, which is a setting and not a defect. What the case is for is that a
+-- reserve EXISTS and is of the right order -- acq_pospct's arithmetic is asserted exactly in test_serial.
+local resv = (sdec.acq_poscap or 0) * (TRIG.position or 0) / 100
 check('the pre-trigger reserve is kept, so the start bit is not the first sample',
-      TRIG.position == sdec.pretrig, tostring(TRIG.position))
+      resv >= sdec.n * 0.01 and resv <= sdec.n * 0.2,
+      string.format('%s %% of %s = %.0f readings, want between %.0f and %.0f',
+                    tostring(TRIG.position), tostring(sdec.acq_poscap), resv,
+                    sdec.n * 0.01, sdec.n * 0.2))
 -- The comparator is not a source for this mode, so an arm left over from an 'edge' capture is
 -- instrument state nobody asked for.
 check('the analog comparator is turned OFF when the key is the source',
@@ -277,6 +310,73 @@ check('re-arming the key path leaks no reading buffers', LIVEBUFS() == b1,
 
 sdec.trigmode, sdec.trigext, sdec.fc_out = 'edge', false, false
 
+-- ============================================================================
+print('\nthe capture is bounded by the count, not by the buffer')
+-- ============================================================================
+-- WHY THIS FIXTURE IS LONG, and it is the whole reason this section exists. LoopUntilEvent's post-trigger
+-- count is (100 - position) % of the buffer's CAPACITY, and position only moves the split, so an armed
+-- capture stores the buffer rather than the count it asked for. Against a buffer sized by acq_cap(n) the
+-- two are the same number, which is why no suite ever saw it; against the static 262 144-reading frame
+-- buffer they are not. Measured on the instrument: position 4.5455 % stored 250 228 readings for a 22 000
+-- ask, so 64 smoke cells decoded ~2950 bytes in a 240-byte mode and every cell at fs <= 80 kS/s expired
+-- against a wait sized from n and fell back to free-running.
+--
+-- Every other source in this file renders 12 000 samples, under any bound worth testing, so a short record
+-- cannot tell a bounded capture from an unbounded one. This one renders 90 000.
+-- docs/MEASUREMENTS.md, 'The pre-trigger reserve comes out of capacity, not out of count'.
+local ord, ots, onc, on = GEN({bytes = hb, baud = 9600, fs = 100000, lead = 20, n = 90000})
+SRC.rd, SRC.ts, SRC.nsmp, SRC.trigat = ord, ots, on, nil
+sdec.capmode, sdec.trigmode, sdec.fs = 'frame', 'edge', 100000
+pcall(sdec.acq_buffree)
+sdec.acq_bufs = {}
+local binit = pcall(sdec.acq_bufinit)
+local bigbuf, bigcap = sdec.acq_bufmode('frame')
+arm_reset()
+sdec.thr, sdec.hyst = 1.65, 0.5
+local nr = sdec.acq_triggered(sdec.n, dmm.SLOPE_FALLING)
+
+-- THE TWO PREMISES FIRST. Without them a pass means only that something was small.
+check('the static frame buffer really is far larger than the capture',
+      binit == true and bigcap ~= nil and bigcap >= 8 * sdec.n,
+      string.format('init=%s cap=%s n=%s', tostring(binit), tostring(bigcap), tostring(sdec.n)))
+check('and the source outruns the count, or a bound cannot be seen at all',
+      on > 4 * sdec.n, string.format('%s samples against n=%s', tostring(on), tostring(sdec.n)))
+
+-- OPEN, and this is the case that holds it open. Bounding the capture needs either a capacity that fits it --
+-- which breaks 43 cases in test_serial, cause not yet found -- or a post-trigger count the program states
+-- explicitly, which moves the pre-roll out of the record and clips the first byte of every capture
+-- ('Hello, World!' decoding as 'ello, World!'). A bound in acq_triggered's poll loop cannot work either: it
+-- must be gated on the trigger having fired, and docs/TRIGGER.md records STATE_WAITING as never once observed
+-- in twelve hardware captures, so there is no signal to gate it on.
+expect_fail('the record holds the reserve plus the count, not a share of the capacity',
+            'LoopUntilEvent takes its count off the CAPACITY; see acq_bufplan')
+expect_fail('and not merely because the source ended, which would pass the bound by accident',
+            'same defect: the record runs to the end of the source rather than to the count')
+
+local resv2 = math.ceil((sdec.acq_poscap or 0) * (TRIG.position or 0) / 100)
+local nbound = resv2 + sdec.n
+local unbounded = (sdec.acq_poscap or 0) * (100 - (TRIG.position or 0)) / 100
+check('the record holds the reserve plus the count, not a share of the capacity',
+      nr ~= nil and nr <= nbound * 1.05,
+      string.format('%s readings; bound %s = %s reserve + %s count; the capacity share is %.0f',
+                    tostring(nr), tostring(nbound), tostring(resv2), tostring(sdec.n), unbounded))
+-- Expected-fail the other way: the bound must not be passing because the source ran out.
+check('and not merely because the source ended, which would pass the bound by accident',
+      nr ~= nil and nr < on * 0.9, string.format('%s of %s rendered', tostring(nr), tostring(on)))
+check('the capture still reports as triggered rather than as an expired arm',
+      sdec.lasterr == nil, tostring(sdec.lasterr))
+
 print()
-print(string.format('%d passed, %d failed', pass, fail))
+print(string.format('%d passed, %d failed, %d expected failure(s)', pass, fail, nxfail))
+if nxfail > 0 then
+  print('Expected failures are KNOWN OPEN DEFECTS, named above with the reason. '
+        .. 'They do not fail the suite; an expected failure that PASSES does.')
+end
+-- An excused name that no case reached is a stale excuse, and it would hide a regression silently.
+for k in pairs(XFAIL) do
+  if not XSEEN[k] then
+    fail = fail + 1
+    print('  STALE expect_fail with no matching case: ' .. k)
+  end
+end
 os.exit(fail == 0 and 0 or 1)
