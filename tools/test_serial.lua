@@ -3578,6 +3578,53 @@ check('cancel just returns without applying',
       (function() sdec.options(); sdec.options_cancel()
          return display.active == sdec.ui_scr end)())
 
+-- ---------------------------------------------------------------------------
+-- THE OVER-READ FIELD: PERCENT ON THE GLASS, A FRACTION UNDERNEATH
+-- ---------------------------------------------------------------------------
+-- A gap shorter than the detector window is recorded in full and its samples come out of the same
+-- count the payload does, so this is the margin that keeps the bytes at the end of the mode's budget.
+-- The field reads percent because '0.100' beside 'Gap Elide 0.025 s' reads as a second time.
+;(function()
+  local keep = sdec.strm_overread
+  sdec.options()
+  -- THE DEFAULT IS WHAT THE FORM OPENS ON, and it is the one field here that ships non-zero: the cost
+  -- of the over-read is samples on a record sized for them, and the cost of not having it is bytes.
+  check('the form opens on the shipped 10 %, not on zero',
+        display.getvalue(sdec.opt_over) == 10,
+        tostring(display.getvalue(sdec.opt_over)))
+  display.setvalue(sdec.opt_over, 25)
+  sdec.options_apply()
+  check('apply converts percent to the fraction the knob holds',
+        sdec.strm_overread == 0.25, tostring(sdec.strm_overread))
+  -- AND BACK THE OTHER WAY, or the form would open on a value it cannot have set.
+  sdec.options()
+  check('...and the form seeds from it, so the round trip closes',
+        display.getvalue(sdec.opt_over) == 25,
+        tostring(display.getvalue(sdec.opt_over)))
+  -- ZERO IS OFF and has to survive the round trip, since it is the only way to turn the margin off.
+  display.setvalue(sdec.opt_over, 0)
+  sdec.options_apply()
+  check('zero applies as off rather than as a floor', sdec.strm_overread == 0,
+        tostring(sdec.strm_overread))
+  -- THE CEILING IS APPLIED IN apply AND NOT TRUSTED TO THE FIELD, because the maximum is a field
+  -- ARGUMENT: a form built before overread_max moved would still be offering the old one.
+  sdec.options()
+  display.setvalue(sdec.opt_over, 999)
+  sdec.options_apply()
+  check('a value past the ceiling is clamped to it, not taken',
+        sdec.strm_overread == sdec.overread_max,
+        string.format('%s vs %s', tostring(sdec.strm_overread), tostring(sdec.overread_max)))
+  -- CANCEL MUST UNDO IT. Every other field on this form is provisional until Apply, and one that was
+  -- not would make the Cancel button a lie.
+  sdec.strm_overread = 0.10
+  sdec.options()
+  display.setvalue(sdec.opt_over, 40)
+  sdec.options_cancel()
+  check('cancel puts the over-read back, as it does every other field',
+        sdec.strm_overread == 0.10, tostring(sdec.strm_overread))
+  sdec.strm_overread = keep
+end)()
+
 -- LOCK DETECTED: probe an unknown line once, then pin the answer. The reason this
 -- matters is that a forced baud rate skips the pulse-width fit entirely, and the fit is
 -- the stage impulse noise captures -- so locking is the strongest lever on a spiky line.
@@ -7523,7 +7570,7 @@ local function test_modes()
     local fields = {{'proto', sdec.opt_proto}, {'baud', sdec.opt_baud}, {'bits', sdec.opt_bits},
                     {'par', sdec.opt_par}, {'pol', sdec.opt_pol}, {'trig', sdec.opt_trig},
                     {'ext', sdec.opt_ext}, {'armv', sdec.opt_armv}, {'armw', sdec.opt_armw},
-                    {'gape', sdec.opt_gape}}
+                    {'gape', sdec.opt_gape}, {'over', sdec.opt_over}}
     -- THE COUNT IS ASSERTED, not just the clearances, because the list is hand-written and the failure mode is
     -- an omission rather than a wrong number: a field left out is simply not measured, and the check passes
     -- while the form is 1 to 5 px into the button row. ui_opt_nf_used is what build_options laid out to.

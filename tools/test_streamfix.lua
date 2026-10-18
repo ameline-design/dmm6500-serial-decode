@@ -1394,6 +1394,58 @@ end)()
 end)()
 
 -- ============================================================================
+-- THE OVER-READ NEEDS ROOM, OR THE OPTIONS FIELD DOES NOTHING
+-- ============================================================================
+-- stream_acquire raises its target by sdec.strm_overread and then clamps it with acq_fit(), which
+-- takes the buffer's own room. So against a buffer sized to the bare sample count the extra is
+-- clamped straight back off and the setting is invisible -- which is what it was until stream_begin
+-- started sizing for it. Asserted on the CONSEQUENCE and not by re-deriving the capacity formula,
+-- which the headroom check above already owns: the question is whether the over-read is reachable.
+;(function()
+  local keep = {fb = sdec.force_baud, cm = sdec.capmode, tm = sdec.trigmode,
+                ge = sdec.gapelide, ov = sdec.strm_overread, job = sdec.ck_job,
+                rec = sdec.strm_recording}
+  clearforce()
+  sdec.ck_job, sdec.strm_recording = nil, nil
+  GEN_DEFBUF(100000, 100000)
+  sdec.force_baud, sdec.capmode, sdec.trigmode = 9600, 'sml', 'edge'
+  sdec.strm_overread = 0.10
+
+  -- ELIDING: the buffer must hold the over-read target without acq_fit shaving it.
+  sdec.gapelide = 0.025
+  if sdec.buf ~= nil then pcall(buffer.delete, sdec.buf) sdec.buf = nil end
+  local ok1, why1 = sdec.stream_begin()
+  check('an eliding recording sets up', ok1 == true, tostring(why1))
+  local nreq = sdec.strm_nsmp
+  local want = math.ceil(nreq * (1 + sdec.strm_overread))
+  check('...and the buffer has room for the over-read, so acq_fit does not shave it off',
+        sdec.acq_fit(want, sdec.buf) == want,
+        string.format('fit %s of a %s target, capacity %s, request %s',
+                      tostring(sdec.acq_fit(want, sdec.buf)), tostring(want),
+                      tostring(sdec.buf ~= nil and sdec.buf.capacity), tostring(nreq)))
+  -- AND THE COUNT ITSELF IS UNMOVED. The margin is capacity, not a longer recording: strm_nsmp is
+  -- still the bare request, and stream_acquire is the only thing that raises a target.
+  check('...while the requested sample count is still the bare one',
+        sdec.strm_nsmp == nreq, tostring(sdec.strm_nsmp))
+
+  -- NOT ELIDING: no gaps are declined, so there is nothing to make room for and the capacity must
+  -- not grow. Without this the first check passes on a build that over-sizes every recording.
+  sdec.gapelide = nil
+  if sdec.buf ~= nil then pcall(buffer.delete, sdec.buf) sdec.buf = nil end
+  local ok2, why2 = sdec.stream_begin()
+  check('a free-running recording sets up too', ok2 == true, tostring(why2))
+  local cap2 = sdec.buf ~= nil and sdec.buf.capacity or 0
+  local bare = math.ceil(sdec.strm_nsmp * 100 / (100 - sdec.pretrig)) + 100
+  if sdec.ck_bufmax ~= nil and bare > sdec.ck_bufmax then bare = sdec.ck_bufmax end
+  check('...and it is NOT over-sized, because it declines no gaps',
+        cap2 == bare, string.format('capacity=%s bare=%s', tostring(cap2), tostring(bare)))
+
+  sdec.force_baud, sdec.capmode, sdec.trigmode = keep.fb, keep.cm, keep.tm
+  sdec.gapelide, sdec.strm_overread = keep.ge, keep.ov
+  sdec.ck_job, sdec.strm_recording = keep.job, keep.rec
+end)()
+
+-- ============================================================================
 -- THE ALLOCATION REFUSAL, AND THE RECLAIM BEHIND IT. Nothing reached either before: the harness
 -- could not fail a buffer.make, so deleting stream_begin's whole sweep-reclaim-retry block left
 -- test_serial, test_cancel and this suite all green -- measured, as a surviving mutant. The

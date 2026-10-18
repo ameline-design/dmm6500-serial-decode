@@ -636,7 +636,7 @@ number is kept.
 
 ## Options
 
-![The Options form as it opens, with nothing locked: Baud Rate 0.00000 Bd, Trigger Start bit, Arm At 1.000 V, Arm/Idle Wait 10.00 s and Gap Elide 0.000 s, which is off](img/options.png)
+![The Options form as it opens, with nothing locked: Baud Rate 0.00000 Bd, Trigger Start bit, Arm At 1.000 V, Arm/Idle Wait 10.00 s, Gap Elide 0.000 s which is off, and Over-read 10.00 %](img/options.png)
 
 | Setting | What it does |
 |---|---|
@@ -727,6 +727,12 @@ the bursts are longer than about one and a half windows. A device sending single
 note row reports both numbers so this is visible rather than guessed: `buffer full -- 7 bursts,
 elided 94.2 s of 98.1 s` says it worked, and `2 bursts, elided 0.3 s of 4.1 s` says it did not.
 
+**Over-read** is the other half of that price. The windows kept at the end of each burst, and any
+pause too short to be dropped at all, are recorded in full and come out of the same sample count the
+payload does — so the recording is sized 10 % larger than the bytes need, and the margin absorbs
+them. Raise it on a line whose pauses sit just under the window, where the most is recorded and the
+least dropped; it costs readings on a buffer that has them.
+
 **What changes about the record.** The time axis is no longer continuous — the gaps are gone from it,
 so the interval between two bytes either side of a seam is not what the record says. The decoded
 bytes, the rate and the format are all unaffected: a seam joins idle line to the next start bit,
@@ -772,6 +778,12 @@ crossing in any case, so the latency never costs a byte.
 
 What the app does with it:
 
+- **Over-read** — **extra samples to record so the payload still fits.** Only an eliding recording
+  uses it, and **10 % is the default**. A pause shorter than **Gap Elide** is never dropped — the
+  instrument has no way to know it was a pause until the window has elapsed — so those samples come
+  out of the same budget the bytes do, and without a margin the bytes that go missing are the ones at
+  the end. 0 turns it off. It costs readings and nothing else: the decoder already skips silence, so
+  this buys payload rather than accuracy.
 - The level probe finds no transitions, which is how it knows. On a line that is already transmitting
   nothing here applies — the threshold is measured from the two levels, which beats any fixed voltage.
 - The comparator is armed **Arm At** volts from the idle level, on the side the start bit travels: one

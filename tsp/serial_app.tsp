@@ -45,6 +45,12 @@ sdec.strm_fallback_s = sdec.strm_fallback_s or 20
 -- over-read buys payload and not correctness. Free on a 6 000 000-reading record, where a 21 100-reading one
 -- had nowhere to put it. Elide path only: a free-running capture has no gaps it declined to remove.
 sdec.strm_overread = sdec.strm_overread or 0.10
+-- The most the Options field will offer. A ceiling and not a limit on what is sensible: the over-read
+-- buys payload against the samples a refused gap costs, and a gap vector spends at most a third of a
+-- pass on gaps it declined, so half again is past anything the feature can use. The field needs a
+-- maximum of some kind -- OBJ_EDIT_NUMBER takes one -- and an unbounded one lets a typo ask for a
+-- capture the mode cannot size.
+sdec.overread_max = sdec.overread_max or 0.50
 -- sdec.savedas  -- the last filename written, for the note line
 -- sdec.stickyerr -- a fault that must outlive a capture (see install_cleanup)
 
@@ -402,17 +408,37 @@ function sdec.stream_begin()
   local nsmp = sdec.stream_samples(md, fs)
   if nsmp == nil then return false, 'cannot size the capture for this rate' end
 
+  -- The capacity is sized for the over-read, not for the bare count, or the Over-read field is a
+  -- no-op on this path. stream_acquire raises its target by sdec.strm_overread and then clamps it with
+  -- acq_fit(), which takes the buffer's own room -- so against a buffer sized to nsmp the extra is
+  -- clamped straight back off and the setting does nothing an operator could see. Sized here instead,
+  -- while strm_nsmp stays the bare request: the two are different numbers and stream_acquire publishes
+  -- both (sdec.strm_target is the one it ran to).
+  --
+  -- Only where elision is intended, by the same pure read stream_acquire uses -- a free-running
+  -- recording declines no gaps, so it has nothing to make room for.
+  local sizefor = nsmp
+  local wantel = nil
+  if sdec.gap_elide ~= nil then wantel = sdec.gap_elide(sdec.force_baud) end
+  if wantel ~= nil and (sdec.strm_overread or 0) > 0 then
+    sizefor = math.ceil(nsmp * (1 + sdec.strm_overread))
+  end
   -- Headroom, as acq_cap() adds in a triggered mode and this path adds always: a store past capacity
   -- is 4915, 20-30 a capture.
-  local cap = nsmp + 100
+  local cap = sizefor + 100
   -- Trigger mode alone, not arm_silent(): the silence probe reads into this buffer. The reserve comes
   -- out of capacity here, nsmp*100/(100-pretrig), where acq_cap() puts it on top of the count.
   if sdec.trigmode ~= 'free' and (sdec.pretrig or 0) > 0 then
-    cap = math.ceil(nsmp * 100 / (100 - sdec.pretrig)) + 100
+    cap = math.ceil(sizefor * 100 / (100 - sdec.pretrig)) + 100
     -- Overrunning ck_bufmax would turn the largest modes into an allocation refusal, a worse answer.
+    -- nsmp comes back off the capacity and not off sizefor: what the clamp leaves is the whole room,
+    -- and the over-read is taken out of it again by stream_acquire.
     if sdec.ck_bufmax ~= nil and cap > sdec.ck_bufmax then
       cap = sdec.ck_bufmax
       nsmp = math.floor(cap * (100 - sdec.pretrig) / 100)
+      if wantel ~= nil and (sdec.strm_overread or 0) > 0 then
+        nsmp = math.floor(nsmp / (1 + sdec.strm_overread))
+      end
     end
   end
   -- This can need a default buffer shrunk first: docs/UNDOCUMENTED.md, 'The real ceiling is
@@ -2581,6 +2607,7 @@ function sdec.options_seed()
     -- Seeded through the clamps, so a value set outside the form's range shows as what will be used.
     display.setvalue(sdec.opt_armv, sdec.arm_level_v())
     display.setvalue(sdec.opt_armw, sdec.arm_wait_s())
+    display.setvalue(sdec.opt_over, (sdec.strm_overread or 0) * 100)
   end)
 end
 
@@ -2595,6 +2622,7 @@ function sdec.options_save()
                    ext = sdec.trigext, fc = sdec.fc_out, view = sdec.ui_mode,
                    aset = sdec.autolock_set,
                    armv = sdec.armlevel, armw = sdec.armwait, gape = sdec.gapelide,
+                   over = sdec.strm_overread,
                    dhas = true, dbaud = sdec.baud,
                    dsnap = sdec.snapped, dfirm = sdec.snapfirm}
   return true
@@ -2615,6 +2643,7 @@ function sdec.options_restore()
   if type(s.armv) == 'number' then sdec.armlevel = s.armv end
   if type(s.armw) == 'number' then sdec.armwait = s.armw end
   if type(s.gape) == 'number' then sdec.gapelide = s.gape end
+  if type(s.over) == 'number' then sdec.strm_overread = s.over end
   -- Guarded on dhas, not on the values: nil is legitimate for all three.
   if s.dhas then
     sdec.baud, sdec.snapped, sdec.snapfirm = s.dbaud, s.dsnap, s.dfirm
@@ -2725,6 +2754,17 @@ function sdec.options_apply()
     if type(ge) == 'number' then
       sdec.gapelide = ge
       if ge <= 0 then pcall(sdec.gap_release) end
+    end
+    -- Percent on the glass, a fraction underneath. The field reads 10 where the knob holds 0.10,
+    -- because '0.100' beside 'Gap Elide 0.025 s' reads as a second time and not as a proportion.
+    -- Clamped to the ceiling here rather than trusting the field, since the ceiling is a field
+    -- argument and a form built before overread_max moved would still offer the old one.
+    local ov = display.getvalue(sdec.opt_over)
+    if type(ov) == 'number' then
+      local f = ov / 100
+      if f < 0 then f = 0 end
+      if f > sdec.overread_max then f = sdec.overread_max end
+      sdec.strm_overread = f
     end
   end)
   if not readok then

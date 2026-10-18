@@ -6151,6 +6151,7 @@ function sdec.destroy_options()
   sdec.del_obj(sdec.opt_armv)
   sdec.del_obj(sdec.opt_armw)
   sdec.del_obj(sdec.opt_gape)
+  sdec.del_obj(sdec.opt_over)
   if sdec.opt_btn ~= nil then
     local i
     for i = 1, table.getn(sdec.opt_btn) do sdec.del_obj(sdec.opt_btn[i]) end
@@ -6161,6 +6162,7 @@ function sdec.destroy_options()
   sdec.opt_bits, sdec.opt_par, sdec.opt_pol = nil, nil, nil
   sdec.opt_trig, sdec.opt_ext = nil, nil
   sdec.opt_armv, sdec.opt_armw, sdec.opt_gape = nil, nil, nil
+  sdec.opt_over = nil
   return true
 end
 
@@ -6170,8 +6172,8 @@ function sdec.build_options()
   local create = display.create
   local y0, dy, x = sdec.ui_opt_y0, sdec.ui_opt_dy, sdec.ui_opt_x
   local pv, pl = sdec.opt_proto_list()
-  local nf = 9
-  if pl.n >= 2 then nf = 10 end
+  local nf = 10
+  if pl.n >= 2 then nf = 11 end
   local eh, edy = sdec.ui_opt_edit_h, sdec.ui_opt_edit_dy
   local ncols = sdec.ui_opt_cols or 1
   if ncols < 1 then ncols = 1 end
@@ -6267,6 +6269,11 @@ function sdec.build_options()
                          'Gap Elide', '0 off, cut after',
                          display.NFORMAT_PREFIX, tonumber(sdec.gapelide) or 0,
                          0, sdec.gapelide_max, 's', 4)
+  local fx12, fy12 = nextpos()
+  sdec.opt_over = create(sdec.optscr, display.OBJ_EDIT_NUMBER, fx12, fy12,
+                         'Over-read', '0 off, elide extra',
+                         display.NFORMAT_PREFIX, (sdec.strm_overread or 0) * 100,
+                         0, (sdec.overread_max or 0.5) * 100, '%', 4)
 
   sdec.opt_btn = {}
   local odef = {
@@ -6319,6 +6326,7 @@ if sdec.strm_press == nil then sdec.strm_press = false end
 sdec.strm_maxsec = sdec.strm_maxsec or 1200
 sdec.strm_fallback_s = sdec.strm_fallback_s or 20
 sdec.strm_overread = sdec.strm_overread or 0.10
+sdec.overread_max = sdec.overread_max or 0.50
 -- Drop a decode result a later pass has invalidated, and nothing else. Returns true.
 -- A pass failing at acquire() returns before any decode, so the previous pass's result survives beside
 -- the failed capture's rate. docs/MEASUREMENTS.md, 'A failed re-capture leaves a stale fit'. Not
@@ -6615,12 +6623,21 @@ function sdec.stream_begin()
   local nsmp = sdec.stream_samples(md, fs)
   if nsmp == nil then return false, 'cannot size the capture for this rate' end
 
-  local cap = nsmp + 100
+  local sizefor = nsmp
+  local wantel = nil
+  if sdec.gap_elide ~= nil then wantel = sdec.gap_elide(sdec.force_baud) end
+  if wantel ~= nil and (sdec.strm_overread or 0) > 0 then
+    sizefor = math.ceil(nsmp * (1 + sdec.strm_overread))
+  end
+  local cap = sizefor + 100
   if sdec.trigmode ~= 'free' and (sdec.pretrig or 0) > 0 then
-    cap = math.ceil(nsmp * 100 / (100 - sdec.pretrig)) + 100
+    cap = math.ceil(sizefor * 100 / (100 - sdec.pretrig)) + 100
     if sdec.ck_bufmax ~= nil and cap > sdec.ck_bufmax then
       cap = sdec.ck_bufmax
       nsmp = math.floor(cap * (100 - sdec.pretrig) / 100)
+      if wantel ~= nil and (sdec.strm_overread or 0) > 0 then
+        nsmp = math.floor(nsmp / (1 + sdec.strm_overread))
+      end
     end
   end
   sdec.acq_make_buffer(cap)
@@ -8283,6 +8300,7 @@ function sdec.options_seed()
     display.setvalue(sdec.opt_trig, ti)
     display.setvalue(sdec.opt_armv, sdec.arm_level_v())
     display.setvalue(sdec.opt_armw, sdec.arm_wait_s())
+    display.setvalue(sdec.opt_over, (sdec.strm_overread or 0) * 100)
   end)
 end
 
@@ -8295,6 +8313,7 @@ function sdec.options_save()
                    ext = sdec.trigext, fc = sdec.fc_out, view = sdec.ui_mode,
                    aset = sdec.autolock_set,
                    armv = sdec.armlevel, armw = sdec.armwait, gape = sdec.gapelide,
+                   over = sdec.strm_overread,
                    dhas = true, dbaud = sdec.baud,
                    dsnap = sdec.snapped, dfirm = sdec.snapfirm}
   return true
@@ -8313,6 +8332,7 @@ function sdec.options_restore()
   if type(s.armv) == 'number' then sdec.armlevel = s.armv end
   if type(s.armw) == 'number' then sdec.armwait = s.armw end
   if type(s.gape) == 'number' then sdec.gapelide = s.gape end
+  if type(s.over) == 'number' then sdec.strm_overread = s.over end
   if s.dhas then
     sdec.baud, sdec.snapped, sdec.snapfirm = s.dbaud, s.dsnap, s.dfirm
   end
@@ -8399,6 +8419,13 @@ function sdec.options_apply()
     if type(ge) == 'number' then
       sdec.gapelide = ge
       if ge <= 0 then pcall(sdec.gap_release) end
+    end
+    local ov = display.getvalue(sdec.opt_over)
+    if type(ov) == 'number' then
+      local f = ov / 100
+      if f < 0 then f = 0 end
+      if f > sdec.overread_max then f = sdec.overread_max end
+      sdec.strm_overread = f
     end
   end)
   if not readok then

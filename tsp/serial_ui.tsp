@@ -538,7 +538,8 @@ end
 
 -- ---------- options form handles ----------
 -- sdec.optscr, sdec.opt_proto, sdec.opt_baud, sdec.opt_bits, sdec.opt_par, sdec.opt_pol,
--- sdec.opt_trig, sdec.opt_ext, sdec.opt_armv, sdec.opt_armw, sdec.opt_gape -- declared, not assigned.
+-- sdec.opt_trig, sdec.opt_ext, sdec.opt_armv, sdec.opt_armw, sdec.opt_gape, sdec.opt_over
+-- -- declared, not assigned.
 -- Eight fields, nine with a protocol module, and this is the riskiest geometry in the app --
 -- docs/MEASUREMENTS.md, 'The options form vertical geometry'. test_serial checks the last box
 -- against the button row. A field added now folds into another as an extra option entry, free.
@@ -2127,6 +2128,7 @@ function sdec.destroy_options()
   sdec.del_obj(sdec.opt_armv)
   sdec.del_obj(sdec.opt_armw)
   sdec.del_obj(sdec.opt_gape)
+  sdec.del_obj(sdec.opt_over)
   if sdec.opt_btn ~= nil then
     local i
     for i = 1, table.getn(sdec.opt_btn) do sdec.del_obj(sdec.opt_btn[i]) end
@@ -2137,6 +2139,7 @@ function sdec.destroy_options()
   sdec.opt_bits, sdec.opt_par, sdec.opt_pol = nil, nil, nil
   sdec.opt_trig, sdec.opt_ext = nil, nil
   sdec.opt_armv, sdec.opt_armw, sdec.opt_gape = nil, nil, nil
+  sdec.opt_over = nil
   return true
 end
 
@@ -2148,8 +2151,8 @@ function sdec.build_options()
   -- How many fields there will be, decided before the pitch, because the pitch depends on it. The
   -- Protocol field exists only with a module loaded, OBJ_EDIT_OPTION refusing fewer than two options.
   local pv, pl = sdec.opt_proto_list()
-  local nf = 9
-  if pl.n >= 2 then nf = 10 end
+  local nf = 10
+  if pl.n >= 2 then nf = 11 end
   -- The pitch is clamped to what fits, ui_opt_dy being a preference and the last box having
   -- to end above the button row -- docs/MEASUREMENTS.md, 'The options form vertical geometry'.
   local eh, edy = sdec.ui_opt_edit_h, sdec.ui_opt_edit_dy
@@ -2291,6 +2294,20 @@ function sdec.build_options()
                          'Gap Elide', '0 off, cut after',
                          display.NFORMAT_PREFIX, tonumber(sdec.gapelide) or 0,
                          0, sdec.gapelide_max, 's', 4)
+  -- Immediately after Gap Elide, because it has meaning only for a recording that elides: a gap
+  -- shorter than the detector window is recorded in full and its samples come out of the same count
+  -- the payload does, so this is the margin that keeps the bytes at the end of the mode's budget.
+  -- Zero is off and it is not the default -- 10 % is -- which is the one field here that ships with a
+  -- non-zero value, because the cost is samples on a record sized for them and the cost of not having
+  -- it is bytes.
+  --
+  -- Percent, not the fraction the knob holds: '0.100' beside 'Gap Elide 0.025 s' reads as a second
+  -- time rather than a proportion. options_apply divides by 100 and options_seed multiplies.
+  local fx12, fy12 = nextpos()
+  sdec.opt_over = create(sdec.optscr, display.OBJ_EDIT_NUMBER, fx12, fy12,
+                         'Over-read', '0 off, elide extra',
+                         display.NFORMAT_PREFIX, (sdec.strm_overread or 0) * 100,
+                         0, (sdec.overread_max or 0.5) * 100, '%', 4)
 
   -- Stored, not left in locals: destroy_options() deletes them. Lock Detected only fills the form.
   sdec.opt_btn = {}
