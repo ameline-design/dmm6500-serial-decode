@@ -37,7 +37,8 @@ end
 -- A GLOBAL, not a local: the main chunk is at Lua 5.0.2's 200-local ceiling and three more locals
 -- took it over ("too many local variables in main function"). SRC, GEN and TRIG are globals here for
 -- the same structural reason.
-ARM_DEFAULTS = {armlevel = sdec.armlevel, armwait = sdec.armwait, armkey = sdec.armkey}
+ARM_DEFAULTS = {armlevel = sdec.armlevel, armwait = sdec.armwait, armkey = sdec.armkey,
+                over = sdec.strm_overread, overmax = sdec.overread_max}
 
 -- ---------- test harness ----------
 local pass, fail = 0, 0
@@ -1264,6 +1265,32 @@ check('acquire() measured the true sample rate from timestamps',
 local dok, dwhy = sdec.decode()
 check('decode() after free-run acquire() succeeds', dok, tostring(dwhy))
 check('free-run capture reads the right text', has(txt(sdec.res), HELLO), txt(sdec.res))
+
+-- THE OVER-READ ON A FRAME CAPTURE, both directions. Until 2026-10-18 the margin lived only in
+-- stream_begin and stream_acquire, so the ~240-byte frame mode the panel opens on had none -- and when
+-- it was extended to this path every one of 2607 assertions still passed, which is exactly why this is
+-- here. A 10 % change to every frame capture must not be invisible.
+--
+-- BOTH WAYS IS THE POINT. The raised figure alone would pass on a build that over-sized every capture
+-- for some unrelated reason; the bare figure alone would pass on a build with no over-read at all.
+-- GLOBALS, not locals: the main chunk sits on Lua 5.0.2's 200-local ceiling and three more took it
+-- over -- 'too many local variables (limit is 200) in main function'. Same reason as SRC and ARM_DEFAULTS.
+OVR_KEEP = sdec.strm_overread
+sdec.strm_overread = 0.10
+sdec.acquire()
+OVR_N = sdec.nread
+sdec.strm_overread = 0
+sdec.acquire()
+OVR_PLAIN = sdec.nread
+sdec.strm_overread = OVR_KEEP
+check('a frame capture is raised by the over-read, not only a recording',
+      OVR_N == 8800, string.format('%s readings for n = 8000 at 10 %%', tostring(OVR_N)))
+check('...and is exactly the bare count with it off, so what moved is the margin and not headroom',
+      OVR_PLAIN == 8000, tostring(OVR_PLAIN))
+check('and the suite puts the over-read back', sdec.strm_overread == OVR_KEEP,
+      tostring(sdec.strm_overread))
+-- The source is restored because the two captures above consumed it the same way the first one did.
+SRC.rd, SRC.ts, SRC.nsmp = ard, ats, an
 
 -- A quiet line in free-run mode has nothing to wait for, so it must say so.
 local qrd, qts, qnc, qn = GEN({bytes = {}, baud = 9600, fs = 100000, lead = 12000,
@@ -3586,6 +3613,15 @@ check('cancel just returns without applying',
 -- The field reads percent because '0.100' beside 'Gap Elide 0.025 s' reads as a second time.
 ;(function()
   local keep = sdec.strm_overread
+  -- THE MODULE'S OWN DEFAULT, from the value captured before any test drove the form. The check below
+  -- it reads the FORM, which options_apply has by then written from a mock field -- so on its own it
+  -- would pass on a build whose module default had drifted to anything the form happened to show.
+  -- Asserted because the operator's standing requirement is 10 % by default and a default nobody tests
+  -- is how --elide spent a 3030-cell soak at zero.
+  check('the shipped over-read default is 10 %, read from the module and not from the form',
+        ARM_DEFAULTS.over == 0.10, tostring(ARM_DEFAULTS.over))
+  check('...and the ceiling it is clamped to ships at 50 %',
+        ARM_DEFAULTS.overmax == 0.50, tostring(ARM_DEFAULTS.overmax))
   sdec.options()
   -- THE DEFAULT IS WHAT THE FORM OPENS ON, and it is the one field here that ships non-zero: the cost
   -- of the over-read is samples on a record sized for them, and the cost of not having it is bytes.

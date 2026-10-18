@@ -2735,9 +2735,24 @@ function sdec.acquire()
   -- function, before anything reads it. docs/MEASUREMENTS.md, 'A measurement must not cross a capture boundary'.
   sdec.clear_measured()
   sdec.hw_config()
+  -- THE OVER-READ APPLIES HERE TOO, which it did not until now: the margin lived only in stream_begin and
+  -- stream_acquire, so a frame-mode capture -- the ~240-byte one the panel opens on, and every non-elided
+  -- bench cell -- had none at all. A gap shorter than the detector window is recorded in full and its
+  -- samples come out of the same count the payload does, so without the margin a small gap costs bytes off
+  -- the end of the frame. It is on 100 % of the time by the operator's standing requirement.
+  --
+  -- sdec.n is left alone and the raised figure is local: sdec.n is the operator's setting and the capture
+  -- is derived from it, so a round trip through the Options form cannot ratchet it up by 10 % a visit.
+  local nwant = sdec.n
+  if (sdec.strm_overread or 0) > 0 then
+    nwant = math.ceil(sdec.n * (1 + sdec.strm_overread))
+  end
   -- The pre-trigger reserve comes out of capacity, so ask for it on top -- see sdec.acq_cap.
-  sdec.acq_make_buffer(sdec.acq_cap(sdec.n))
+  sdec.acq_make_buffer(sdec.acq_cap(nwant))
 
+  -- NOT RAISED. The probe is a scout for the two logic levels and nothing reads its byte count, so a
+  -- longer one costs capture time and buys nothing. Bounded by sdec.n rather than nwant for the same
+  -- reason the ladder's refusal below compares against sdec.n.
   local pn = sdec.probe_n
   if pn > sdec.n then pn = sdec.n end
   if sdec.acq_free(pn, nil, true) < 2 then return false, 'probe capture returned nothing' end
@@ -2774,11 +2789,11 @@ function sdec.acquire()
   -- free-running while the status row read 'Trigger key'.
   if sdec.trigmode == 'edge' or sdec.trigmode == 'front' then
     -- Arm on the transition away from idle, and through arm_slope() so stream_arm() arms on the same edge.
-    if sdec.acq_triggered(sdec.n, sdec.arm_slope()) < 2 then
+    if sdec.acq_triggered(nwant, sdec.arm_slope()) < 2 then
       return false, 'triggered capture returned nothing'
     end
   else
-    if sdec.acq_free(sdec.n) < 2 then return false, 'capture returned nothing' end
+    if sdec.acq_free(nwant) < 2 then return false, 'capture returned nothing' end
   end
 
   -- Re-measure the levels on the real capture; the probe was only a scout.
