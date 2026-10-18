@@ -837,7 +837,15 @@ function sdec.stream_arm(nsmp)
       if armed and useanalog then elide = sdec.gap_elide(sdec.force_baud) end
       if armed then
         if elide ~= nil then
-          local scr = sdec.gap_scratch(elide, sdec.fs)
+          -- One scratch per gap where asked for, so every burst's head survives rather than only the
+          -- last: the record resumes a latency after the crossing and that head is missing from it and
+          -- present here. gap_model unrolls one group of five blocks per scratch. A count of one is the
+          -- shipped shape and builds the same six blocks it always did.
+          local scr = nil
+          if sdec.gap_nscratch ~= nil and sdec.gap_nscratch > 1 then
+            scr = sdec.gap_scratches(sdec.gap_nscratch, elide, sdec.fs)
+          end
+          if scr == nil then scr = sdec.gap_scratch(elide, sdec.fs) end
           -- A refused scratch or a refused program refuses the elision, not the arm: the plain armed
           -- shape still records this line, so it falls back rather than failing the capture.
           if scr ~= nil then ok = sdec.gap_model(buf, scr, ev, elide) end

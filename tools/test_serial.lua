@@ -12344,6 +12344,37 @@ print('-- the eliding arm and the fast path: two blocks must not wait on one eve
         evext == trigger.EVENT_BLENDER1 and s2 == trigger.EVENT_EXTERNAL,
         string.format('%s, stimulus[2]=%s', tostring(evext), tostring(s2)))
 
+  -- THE UNROLL. A list of scratches builds one group of five blocks each, so every gap gets a buffer of
+  -- its own and every burst head survives rather than only the last. Measured on the instrument: six
+  -- groups, four used, each holding 12 to 16 readings of space -- the start bit the record is missing.
+  local fake = {}
+  local fi
+  for fi = 1, 3 do fake[fi] = buffer.make(256, buffer.STYLE_STANDARD) end
+  local recb = buffer.make(2000, buffer.STYLE_STANDARD)
+  check('one scratch still builds the six blocks it always did',
+        sdec.gap_model(recb, fake[1], trigger.EVENT_ANALOGTRIGGER, 0.010) == true, 'single')
+  local bl1 = trigger.model.getblocklist()
+  local _, m1 = string.gsub(bl1 or '', 'MEASURE_DIGITIZE', '')
+  check('...with exactly two measure blocks', m1 == 2, tostring(m1))
+  check('a list of three builds three groups',
+        sdec.gap_model(recb, fake, trigger.EVENT_ANALOGTRIGGER, 0.010) == true, 'list of 3')
+  local bl3 = trigger.model.getblocklist()
+  local _, m3 = string.gsub(bl3 or '', 'MEASURE_DIGITIZE', '')
+  check('...with two measure blocks per group, so six', m3 == 6, tostring(m3))
+  -- AND EACH GROUP'S DETECTOR MUST BRANCH TO ITS OWN DELAY. Branching to block 4 from every group would
+  -- hand every burst to the first group's detector, which looks identical in a block count.
+  local b9 = string.find(bl3 or '', 'BRANCH_BLOCK: 9', 1, true)
+  local b14 = string.find(bl3 or '', 'BRANCH_BLOCK: 14', 1, true)
+  check('...and each group branches to its own delay block, not to the first group\'s',
+        b9 ~= nil and b14 ~= nil, string.format('9=%s 14=%s', tostring(b9 ~= nil), tostring(b14 ~= nil)))
+  check('and a count past the block budget is refused rather than truncated',
+        sdec.gap_model(recb, {fake[1], fake[2], fake[3], fake[1], fake[2], fake[3],
+                             fake[1], fake[2], fake[3], fake[1], fake[2], fake[3], fake[1]},
+                       trigger.EVENT_ANALOGTRIGGER, 0.010) == false,
+        '13 groups against a ceiling of ' .. tostring(sdec.gap_maxscratch))
+  for fi = 1, 3 do pcall(function() buffer.delete(fake[fi]) end) end
+  pcall(function() buffer.delete(recb) end)
+
   sdec.gap_fastpath, sdec.gapelide, sdec.trigmode = keep.fp, keep.ge, keep.tm
   sdec.trigext, sdec.armkey, sdec.trigext_only = keep.te, keep.ak, keep.teo
   sdec.gap_fastblend = nil

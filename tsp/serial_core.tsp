@@ -213,7 +213,7 @@ sdec.gapelide_max = 2.0
 sdec.gapelide_frames = 2
 -- Blend the eliding arm so block 2 and block 5 do not wait on one event object, which is a fast-path
 -- disqualifier in its own right. Off by default: the fast path was measured to cost nothing on the
--- comparator latency, and whether it moves the RESUME latency -- the quantity that destroys bytes at a
+-- comparator latency, and whether it moves the resume latency -- the quantity that destroys bytes at a
 -- seam -- is unmeasured. See the branch in sdec.arm_source.
 sdec.gap_fastpath = sdec.gap_fastpath or false
 
@@ -2045,6 +2045,69 @@ function sdec.gap_scratch(win, fs)
   return sdec.gapbuf
 end
 
+-- How many gaps the program keeps a scratch for. One is the shipped behaviour and reuses a single buffer for
+-- every gap, which is why only the last handover survives a capture.
+--
+-- What more than one is worth. The record resumes a latency after the crossing that released the wait, so the head
+-- of every burst -- its start bit and, at 19200 Bd, about two data bits after it -- is missing from the record
+-- and present in the scratch block 1 was still filling. With one scratch the next gap overwrites it. With one
+-- per gap every head survives and the decoder can put them back, which is the only route to a byte-exact seam
+-- above 2400 Bd: no shift can recover samples that were never recorded, and these were.
+--
+-- The pairing is by timestamp and not by index. Each scratch's newest reading carries an absolute time and so does
+-- each seam in the record, so a scratch is matched to the gap it actually holds. Pairing by position would
+-- assume the groups ran in order, that all of them ran, and that the program did not wrap -- and a wrap is
+-- ordinary: with k scratches and more than k gaps the earliest are overwritten, which the times show as
+-- scratches newer than their neighbours rather than as a silent mispairing of every gap in the record.
+sdec.gap_nscratch = sdec.gap_nscratch or 1
+-- 5 blocks a group and one branch to close the loop, against the 63 the store holds: measured, so 12 groups is
+-- the ceiling and the arithmetic is not a guess. A record carries 2 to 4 seams in practice.
+sdec.gap_maxscratch = 12
+sdec.gapbufs = sdec.gapbufs or {}
+
+-- A scratch per gap. -> a list of buffers, shortest-first, or nil when none could be made.
+--
+-- Sized like gap_scratch's single buffer but smaller, because these hold a burst head and not a gap: the whole
+-- point is the last few hundred microseconds before the handover. Sized in TIME rather than readings, since 64
+-- readings is 640 us at 100 kS/s and 64 us at 1 MS/s, and the latency it has to cover does not scale with fs.
+function sdec.gap_scratches(nwant, win, fs)
+  if nwant == nil or nwant < 1 then nwant = 1 end
+  if nwant > sdec.gap_maxscratch then nwant = sdec.gap_maxscratch end
+  local want = 256
+  if fs ~= nil and fs > 0 then
+    local w = math.ceil(sdec.gap_headsec * fs)
+    if w > want then want = w end
+  end
+  -- Released first, so a changed count or rate does not leave the old set stranded in a pool the record shares.
+  sdec.gap_release_all()
+  local out, i = {}, nil
+  for i = 1, nwant do
+    local mok, nb = pcall(buffer.make, want, buffer.STYLE_STANDARD)
+    if not mok or nb == nil then break end
+    sdec.acq_fillmode(nb)
+    out[i] = nb
+  end
+  if table.getn(out) < 1 then return nil end
+  sdec.gapbufs = out
+  return out
+end
+
+-- How much of each burst's head a scratch must be able to hold, in seconds. The resume latency is the quantity
+-- it has to cover and the record brackets it at well under a millisecond; 2 ms is several times that, and at
+-- 100 kS/s it is 200 readings.
+sdec.gap_headsec = 0.002
+
+-- Hand the per-gap set back. Deleted rather than dropped, for gap_release's reason: a nil over the handle
+-- strands the readings in the pool instead of freeing them.
+function sdec.gap_release_all()
+  if sdec.gapbufs == nil then return end
+  local i
+  for i = 1, table.getn(sdec.gapbufs) do
+    pcall(function() buffer.delete(sdec.gapbufs[i]) end)
+  end
+  sdec.gapbufs = {}
+end
+
 -- Hand the scratch back, for an operator who tried elision and turned it off again: the pool is shared with the
 -- record, so a buffer nobody is using is capacity the next capture cannot have.
 function sdec.gap_release()
@@ -2091,19 +2154,34 @@ function sdec.gap_model(rec, scr, ev, win)
   -- keeps the blended event for exactly the reason the blend exists; block 5 must be the crossing alone.
   local cmp = trigger.EVENT_ANALOGTRIGGER
   if cmp == nil then return false end
+  -- `scr` is one buffer or a LIST of them. A list unrolls the loop, one group of five blocks per scratch, so
+  -- each gap is filled by a buffer of its own and every burst head survives the capture instead of only the
+  -- last. One buffer is the shipped shape and builds exactly the six blocks it always did.
+  local scrs = scr
+  if type(scr) ~= 'table' or scr[1] == nil then scrs = {scr} end
+  local ns = table.getn(scrs)
+  if ns < 1 then return false end
+  if ns > sdec.gap_maxscratch then return false end
   local ok = pcall(function()
     trigger.model.load('Empty')
-    trigger.model.setblock(1, trigger.BLOCK_MEASURE_DIGITIZE, scr, trigger.COUNT_INFINITE)
-    -- CLEAR_ENTER is load-bearing and not caution. The default CLEAR_NEVER lets this wait consume a crossing
-    -- latched during the burst it has just recorded, so it falls straight through, the next pass starts at once,
-    -- and no gap is ever skipped -- while the record still fills and every other number still looks right.
-    trigger.model.setblock(2, trigger.BLOCK_WAIT, ev, trigger.CLEAR_ENTER)
-    trigger.model.setblock(3, trigger.BLOCK_MEASURE_DIGITIZE, rec, trigger.COUNT_INFINITE)
-    trigger.model.setblock(4, trigger.BLOCK_DELAY_CONSTANT, win)
-    -- A branch SPENDS its event, so this takes only on a crossing arriving since the last pass. That is the whole
-    -- detector: falling through means no crossing for one window, and there is no event for silence to wait on.
-    trigger.model.setblock(5, trigger.BLOCK_BRANCH_ON_EVENT, cmp, 4)
-    trigger.model.setblock(6, trigger.BLOCK_BRANCH_ALWAYS, 1)
+    local gi
+    for gi = 1, ns do
+      local b = (gi - 1) * 5
+      trigger.model.setblock(b + 1, trigger.BLOCK_MEASURE_DIGITIZE, scrs[gi], trigger.COUNT_INFINITE)
+      -- CLEAR_ENTER is load-bearing and not caution. The default CLEAR_NEVER lets this wait consume a crossing
+      -- latched during the burst it has just recorded, so it falls straight through, the next pass starts at
+      -- once, and no gap is ever skipped -- while the record still fills and every other number still looks
+      -- right.
+      trigger.model.setblock(b + 2, trigger.BLOCK_WAIT, ev, trigger.CLEAR_ENTER)
+      trigger.model.setblock(b + 3, trigger.BLOCK_MEASURE_DIGITIZE, rec, trigger.COUNT_INFINITE)
+      trigger.model.setblock(b + 4, trigger.BLOCK_DELAY_CONSTANT, win)
+      -- A branch SPENDS its event, so this takes only on a crossing arriving since the last pass. That is the
+      -- whole detector: falling through means no crossing for one window, and there is no event for silence to
+      -- wait on. The target is this group's OWN delay block, not block 4, or every group after the first would
+      -- hand its burst to the first group's detector.
+      trigger.model.setblock(b + 5, trigger.BLOCK_BRANCH_ON_EVENT, cmp, b + 4)
+    end
+    trigger.model.setblock(ns * 5 + 1, trigger.BLOCK_BRANCH_ALWAYS, 1)
   end)
   if not ok then return false end
   -- A rejected block reads as a FREE one on this instrument, so the store is read back rather than trusted: a
@@ -2117,7 +2195,7 @@ function sdec.gap_model(rec, scr, ev, win)
   -- describes a program whose bursts go nowhere, and two landmarks would call it built. One measure block is
   -- the pre-roll on its own, so the count is as load-bearing as the presence.
   local _, nmd = string.gsub(bl, 'MEASURE_DIGITIZE', '')
-  if nmd ~= 2 then return false end
+  if nmd ~= 2 * ns then return false end
   -- BUFFER_CLEAR is checked for not being there, and no position is exempt: block 6 branches back to block 1, so
   -- every block is inside the loop and a clear anywhere empties the record once a burst. What survives is the
   -- last burst alone, while rec.n, the splice positions and the recovered rate all stay plausible for a recording
