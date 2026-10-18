@@ -11649,15 +11649,56 @@ end)()
     -- clamp survivable, because a fractional position has never been loaded on this instrument.
     local pf = sdec.acq_pospct(20000, bf)
     local pm = sdec.acq_pospct(3593084, bm)
-    check('the reserve scales to the readings it means, fractionally, and never to zero',
-          pf > 0 and pf < 1 and pm > 0 and pm < sdec.pretrig,
-          string.format('frame %.4f %%, 32 kB %.4f %%, pretrig %s', pf, pm, tostring(sdec.pretrig)))
+    -- TWO THINGS AT ONCE, and the first version of this asserted only the second. The position has to
+    -- reserve little enough of the CAPACITY that a big shared buffer does not swallow the record, and
+    -- enough of the COUNT that the comparator has a pre-roll to evaluate -- the firmware takes it off
+    -- both. Asserting only the scaling gave the frame mode 92 readings of pre-roll and 16 of 72 smoke
+    -- cells fell back with 'no trigger in 3 s'.
+    check('the reserve is at least acq_premin readings of pre-roll, on both buffers',
+          math.floor(20000 * pf / 100) >= sdec.acq_premin
+          and math.floor(3593084 * pm / 100) >= sdec.acq_premin,
+          string.format('frame %d readings, 32 kB %d, floor %d',
+                        math.floor(20000 * pf / 100), math.floor(3593084 * pm / 100),
+                        sdec.acq_premin))
+    check('...while still reserving far less of the capacity than the raw percentage would',
+          pm < sdec.pretrig
+          and math.floor(sdec.acq_bufplan[2].cap * pm / 100) < 250000
+          and pf <= sdec.pretrig,
+          string.format('32 kB %.4f %% = %d readings of 6 000 000, against %s %% = %d', pm,
+                        math.floor(sdec.acq_bufplan[2].cap * pm / 100), tostring(sdec.pretrig),
+                        math.floor(sdec.acq_bufplan[2].cap * sdec.pretrig / 100)))
     check('...and a whole-percent clamp would still be survivable on both, which is the design claim',
           math.ceil(pf) * sdec.acq_bufplan[1].cap / 100 < 20000
           and math.ceil(pm) * sdec.acq_bufplan[2].cap / 100 < 3593084,
           string.format('frame %d readings of 20000, 32 kB %d of 3593084',
                         math.floor(math.ceil(pf) * sdec.acq_bufplan[1].cap / 100),
                         math.floor(math.ceil(pm) * sdec.acq_bufplan[2].cap / 100)))
+    -- PUBLISHED AS GLOBALS, so a reload can free what the previous instance left. buf_sweep walks _G, and
+    -- a buffer reachable only through sdec.acq_bufs is invisible to it -- measured on hardware as a reload
+    -- stranding the recording buffer, the pool down to 764 400 readings free, and acq_bufinit then able to
+    -- get the frame buffer and nothing else.
+    check('each static buffer is published as a global, so a reload can reach it',
+          SDEC_SBUF_FRAME == sdec.acq_bufs['frame'] and SDEC_SBUF_REC == sdec.acq_bufs['rec']
+          and SDEC_SBUF_REC ~= nil,
+          string.format('frame=%s rec=%s', tostring(SDEC_SBUF_FRAME == sdec.acq_bufs['frame']),
+                        tostring(SDEC_SBUF_REC == sdec.acq_bufs['rec'])))
+    -- AND A FRESH sdec.acq_bufs MAKES THEM SWEEPABLE, which is the reload case itself: acq_isours answers
+    -- from that table, so the current instance's buffers are spared and a previous instance's are not.
+    check('...and a reload makes them sweepable rather than ours, which is the whole point',
+          (function()
+             -- sdec.buf goes too, because a reload clears it: acq_isours matches it as well as the set,
+             -- and leaving it pointed at the recording buffer makes this pass for the wrong reason.
+             local held, heldbuf = sdec.acq_bufs, sdec.buf
+             sdec.acq_bufs, sdec.buf = {}, nil
+             local mine = sdec.acq_isours(SDEC_SBUF_REC)
+             sdec.acq_bufs, sdec.buf = held, heldbuf
+             return mine == false and sdec.acq_isours(SDEC_SBUF_REC) == true
+           end)(),
+          'a previous instance is not ours, the current one is')
+    check('...and buf_skip does not shield them, or the sweep could never free one',
+          sdec.buf_skip['SDEC_SBUF_FRAME'] ~= true and sdec.buf_skip['SDEC_SBUF_REC'] ~= true,
+          'neither name is skipped')
+
     -- EVERY STATIC BUFFER IS RECOGNISED AS OURS. buf_sweep walks _G deleting strangers, and it used to
     -- test against sdec.buf alone -- which offered it the app's other buffer as a stranger and would
     -- have deleted the recording modes' 6 000 000 readings while the app ran on the frame one.
@@ -11696,6 +11737,9 @@ end)()
     sdec.acq_bufinit()
     local beforefree = LIVEBUFS()
     local freedall = sdec.acq_buffree()
+    check('acq_buffree clears the global names too, or the next launch sweeps a dead handle',
+          SDEC_SBUF_FRAME == nil and SDEC_SBUF_REC == nil,
+          string.format('frame=%s rec=%s', tostring(SDEC_SBUF_FRAME), tostring(SDEC_SBUF_REC)))
     check('acq_buffree releases every static buffer and every scratch, not just the one in force',
           freedall and sdec.acq_bufs['frame'] == nil and sdec.acq_bufs['rec'] == nil
           and LIVEBUFS() == beforefree - sdec.acq_bufplan.n - sdec.gap_nscratch,

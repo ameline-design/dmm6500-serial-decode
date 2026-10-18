@@ -340,6 +340,31 @@ normal pair and a reader checking that against this table finds no `2732` in it.
 
   - `probe: do KB=buffer.make(100,buffer.STYLE_STANDARD) KB.fillmode=1 eventlog.clear() dmm.digitize.func=dmm.FUNC_DIGITIZE_VOLTAGE dmm.digitize.range=10 dmm.digitize.samplerate=10000 trigger.model.load("Empty") trigger.model.setblock(1,trigger.BLOCK_MEASURE_DIGITIZE,KB,500) trigger.model.initiate() waitcomplete() local s=buffer.getstats(KB) print("GS1|n="..tostring(KB.n).."|si="..tostring(KB.startindex).."|ei="..tostring(KB.endindex).."|gsn="..tostring(s.n)) end` — `fillmode = 1`, numerically: `buffer.FILL_CONTINUOUS` does not exist on this firmware. Delete `KB` in a `pcall` and only nil it if the delete took.
 
+### A deleted 6,000,000-reading buffer can stay held for the rest of the power cycle
+
+**MEASURED 2026-10-18.** The section below records that `pcall(buffer.delete)` "has not necessarily
+freed it by the time the next call asks". It is stronger than that: the readings can stay held
+indefinitely. A probe allocated 6,000,000 (granted, capacity read back 6,000,000), deleted it under
+`pcall`, and the pool then reported **`4919 "Available capacity for all reading buffers exceeded,
+remaining capacity is 764400 readings"`** -- 7,080,255 less the app's own 286,740 less 6,000,000.
+Re-asked three times at three-second intervals from inside one TSP statement, the figure was **764400
+every time**. It did not settle, and with the handle gone with the statement's locals there is nothing
+left to delete: only a power cycle recovers it.
+
+**Whether the delete was refused or the free was never performed is not established**, because the probe
+discarded `pcall`'s verdict -- which is the lesson. `bufferVar` deletes take a reading-buffer parameter
+and the same section records `1138 "Parameter 1, expected type 'reading buffer', but found type
+'unknown'"` from deleting what a refused `buffer.make` returned, so a refusal is plausible and silent.
+Read the verdict, and keep the handle when it says no.
+
+**Consequence for an app that allocates big buffers.** Every allocate/free cycle risks taking several
+million readings out of the pool until the next power cycle, which is the argument for allocating once
+at launch and never again. It also means a buffer reachable only through an app table is a liability:
+reloading the app source builds a fresh table and orphans the old handles, and `buf_sweep` walks `_G`,
+so nothing can find them. Measured in the same session -- a reload left the recording buffer stranded
+and the next launch could allocate the frame buffer and nothing else. Publishing each one under a global
+name is what makes the next launch able to free it.
+
 ### The real ceiling is 7,080,255 readings, across all buffers together
 
 **MEASURED,** and the firmware states it itself. `buffer.make(9000000, buffer.STYLE_STANDARD)` files **`4920 "Invalid size: Reading buffer capacity must be between 10 and 7080255 readings"`** — so neither published figure is right, and the feature list's "seven million" is the closer of the two. The limit is on the **total**: with this app's 1,437,294-reading buffer and both default buffers at 100,000, a 6,000,000-reading request files `4919 "Available capacity for all reading buffers exceeded, remaining capacity is 5419050 readings"`, and 1,437,294 + 200,000 + 5,419,050 comes to 7,056,344. A second allocation reproduces that total from a different starting point, on a freshly power-cycled instrument with nothing loaded and both defbuffers at 100,000: `buffer.make(3000000, buffer.STYLE_STANDARD)` is granted and reads capacity 3000000 back, and a further `buffer.make(4000000)` beside it files the same `4919` with `remaining capacity is 3879330 readings` — 3,879,330 + 3,000,000 + 200,000 = 7,079,330, within 925 readings of **7,080,255**, which is the figure measured directly for the total. **So a `4919` remaining-capacity figure is remaining beside whatever is already allocated — a capacity probe that allocates before it asks measures its own footprint, and `pcall(buffer.delete)` has not necessarily freed it by the time the next call asks.** Read as the pool it understates it by everything live at the time, which is how 3,879,330 and an earlier dirty-state 3,857,490 both came to be mistaken for a total of about four million. **A refused `buffer.make` returns nil while `pcall` reports success** — the only verdict is the readback, and deleting what it returned files `1138 "Parameter 1, expected type 'reading buffer', but found type 'unknown'"`. `bufferVar.capacity` says the overall capacity "can be up to 6,000,000 readings for standard reading buffers"; the feature list says "up to seven million". One example takes the feature list at its word and lands on the right number: `Use_the_DAQ6510_to_Control_a_Temperature_Chamber/F4T_EnvController_DAQ6510.tsp:521` sets `defbuffer1.capacity = 7000000`. `GAS/MS01_SetupAndRun.tsp:121` sidesteps both — asked for 10,000,000 by its own call site at `:212`, it guards on `if buffersize > 7000000` and sets `capacity = 0` to maximise. Capacity, not count, is the limit on a capture: `Amp-Hours.tsp:48` reads "Changing count is optional. The reading buffer capacity is the determining factor", beside `dmm.digitize.count = 1 -- CANNOT be zero; 1 to 55Million`.

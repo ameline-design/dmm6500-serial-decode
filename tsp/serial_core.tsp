@@ -1393,6 +1393,15 @@ end
 -- offline as three wrong bytes from offset 1 and no leading idle for the level re-measure.
 sdec.acq_posfloor = 0.001
 
+-- READINGS of pre-roll the analog comparator needs before it will evaluate at all. The firmware takes
+-- position off the COUNT as well as off the capacity, so a position scaled for a buffer much larger than
+-- its capture leaves almost nothing ahead of the edge: the static 262 144-reading frame buffer took the
+-- frame mode's pre-roll from 1100 readings to 92, and 16 of 72 smoke cells then fell back with 'no
+-- trigger in 3 s (edge)' -- about 3 s wasted on each, on top of a decode from a free-running record.
+-- docs/MEASUREMENTS.md, 'Analog trigger needs a live acquisition'. 1000 is what the shipped arrangement
+-- gave at the shipped depth and is known to arm.
+sdec.acq_premin = 1000
+
 function sdec.acq_pospct(n, buf)
   local pt = sdec.pretrig or 0
   if pt <= 0 then return pt end
@@ -1415,7 +1424,15 @@ function sdec.acq_pospct(n, buf)
   -- to whatever it does accept, the model fills that reserve before arming, and the record comes back
   -- longer than asked. r.nread against r.posloaded is what says so, and buf.startindex still locates the
   -- payload, so a clamped capture is slow rather than wrong.
+  -- THE FLOOR IS IN READINGS, NOT PERCENT, and that is the whole correction. Scaling the reserve to the
+  -- readings it means is right for the CAPACITY it reserves and wrong for the pre-roll it leaves, and
+  -- only the second one decides whether the comparator ever fires. Expressed against n because that is
+  -- what the firmware multiplies.
+  local floorpct = 100 * sdec.acq_premin / n
+  if pos < floorpct then pos = floorpct end
   if pos < sdec.acq_posfloor then pos = sdec.acq_posfloor end
+  -- Never above the option: a capture shorter than acq_premin would otherwise ask for more reserve than
+  -- the operator set, and at that size the whole capture is pre-roll anyway.
   if pos > pt then pos = pt end
   return pos
 end
@@ -1573,6 +1590,17 @@ function sdec.acq_bufinit()
       if got ~= nil then
         sdec.acq_fillmode(got)
         sdec.acq_bufs[p.id] = got
+        -- PUBLISHED AS A GLOBAL TOO, and this is not decoration. Reloading the app source builds a fresh
+        -- sdec, which orphans the previous instance's static buffers -- and buf_sweep walks _G, so a
+        -- buffer reachable only through the old table is invisible to it and strands for the rest of the
+        -- power cycle. Measured on hardware: a reload left the recording buffer unreachable, the pool
+        -- reported 764 400 readings free, and acq_bufinit could then get the frame buffer and nothing
+        -- else (nok=1). A global name is what makes the next launch able to free it.
+        --
+        -- NOT in sdec.buf_skip, deliberately: these must be sweepable. acq_isours answers from
+        -- sdec.acq_bufs, so the CURRENT instance's buffers are spared and a previous instance's -- absent
+        -- from the fresh table -- are swept, which is exactly the behaviour wanted at each end.
+        _G['SDEC_SBUF_' .. string.upper(p.id)] = got
         nok = nok + 1
         -- Recorded, because a set that fell back is not the set the sizing arguments assume: the 32 kB
         -- mode in a 3 952 383-reading record affords no over-read at all beyond the 10 % it is sized for.
@@ -1615,7 +1643,16 @@ function sdec.acq_buffree()
     local id = sdec.acq_bufplan[i].id
     local b = sdec.acq_bufs[id]
     if b ~= nil then
-      if pcall(function() buffer.delete(b) end) then sdec.acq_bufs[id] = nil end
+      -- The verdict is READ, not discarded. A refused delete must leave the handle in place: dropping it
+      -- strands the readings for the rest of the power cycle, and a 6 000 000-reading buffer stranded
+      -- that way took the pool to 764 400 free with no way back short of a power cycle. Measured.
+      local delok = pcall(function() buffer.delete(b) end)
+      if delok then
+        sdec.acq_bufs[id] = nil
+        _G['SDEC_SBUF_' .. string.upper(id)] = nil
+      else
+        sdec.acq_delfail = (sdec.acq_delfail or 0) + 1
+      end
     end
   end
   -- sdec.buf is one of the set, so it is already gone or already refused with it.
