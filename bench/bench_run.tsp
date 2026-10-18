@@ -1031,6 +1031,10 @@ function brun.point(fs, baud, lock, elide, vid)
   r.splseam, r.splran = sdec.spl_nseam, sdec.spl_nspliced
   r.splorph, r.spladd = sdec.spl_norphan, sdec.spl_nadded
   r.splwhy = sdec.spl_why
+  -- And the three numbers behind 'thr outside swing', which is the one reason that cannot be acted on from
+  -- its name alone: which side the threshold fell outside, and by how much, is what tells a failed probe
+  -- from failed levels. Set only when that guard fires, so nil here is the ordinary case.
+  r.splthr, r.spllo, r.splhi = sdec.spl_thr, sdec.spl_lo, sdec.spl_hi
   brun.spin_tick()                      -- 4 of 6: the decode is done
   if not okc2 then r.why = 'decode raised'; return r end
   if not okd then
@@ -3276,6 +3280,11 @@ function brun.soak(iterations, tag)
         -- splice never got as far as counting a seam, which are exactly the cells the counters cannot
         -- describe.
         if p.splwhy ~= nil then nt = nt .. ' splwhy=' .. tostring(p.splwhy) end
+        -- Written where the guard supplied them rather than kept in the row and dropped here, which is how
+        -- splseam went unrecorded for 87 cells: a field absent from the note does not exist.
+        if p.splthr ~= nil then
+          nt = nt .. string.format(' splthr=%.3f/%.3f/%.3f', p.splthr, p.spllo or 0, p.splhi or 0)
+        end
         if p.splseam ~= nil then
           nt = nt .. string.format(' spl=%s/%s', brun.int(p.splran or 0), brun.int(p.splseam))
           if (p.splorph or 0) > 0 then nt = nt .. ' splorph=' .. brun.int(p.splorph) end

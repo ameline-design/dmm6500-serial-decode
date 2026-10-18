@@ -1032,6 +1032,38 @@ end)()
        w == 'not elided', tostring(w))
   end
 
+  -- THE THRESHOLD GUARD, AND IT IS ASSERTED THREE WAYS. It used to read `thr == nil`, which sdec.thr being
+  -- declared `or 0` makes unreachable -- so it excused nothing and named nothing. What defeats the splice is
+  -- a threshold outside the MEASURED levels: gap_tail then reads every sample as idle or every sample as
+  -- busy, refuses every tail, and the run reports 'tails refused' with no hint that the threshold was the
+  -- cause. Both the outside and the inside case are here, because a one-way check passes on a build that
+  -- writes this reason unconditionally -- and so is the degenerate range, which is what broke the first two
+  -- attempts at this guard.
+  do
+    local kt, kl, kh = sdec.thr, sdec.lo, sdec.hi
+    sdec.lo, sdec.hi, sdec.thr = 0.0, 3.3, 4.5          -- above the swing
+    sdec.spl_thr, sdec.spl_lo, sdec.spl_hi = nil, nil, nil
+    pcall(function() sdec.stream_decode(sdec.buf.n) end)
+    local wout = sdec.spl_why
+    local gthr, glo, ghi = sdec.spl_thr, sdec.spl_lo, sdec.spl_hi
+    sdec.lo, sdec.hi, sdec.thr = 0.0, 3.3, 1.65        -- inside it
+    pcall(function() sdec.stream_decode(sdec.buf.n) end)
+    local win = sdec.spl_why
+    sdec.lo, sdec.hi, sdec.thr = 3.3, 3.3, 1.65        -- unmeasured: an idle line's lo == hi
+    pcall(function() sdec.stream_decode(sdec.buf.n) end)
+    local wdeg = sdec.spl_why
+    sdec.thr, sdec.lo, sdec.hi = kt, kl, kh
+    CK('a threshold above the measured swing is NAMED, not left to read as "tails refused"',
+       wout == 'thr outside swing', tostring(wout))
+    CK('...and the three numbers come with it, or the reason cannot be acted on',
+       gthr ~= nil and glo == 0.0 and ghi == 3.3,
+       string.format('thr=%s lo=%s hi=%s', tostring(gthr), tostring(glo), tostring(ghi)))
+    CK('...a threshold INSIDE the swing is not named, so this is not always-true',
+       win ~= 'thr outside swing', tostring(win))
+    CK('...and a zero-width swing reads as unmeasured, not as every threshold being outside',
+       wdeg ~= 'thr outside swing', tostring(wdeg))
+  end
+
   -- ---- the ceiling has to be OBSERVABLE, so here is a run that ends on it ----
   -- The fill test above ends the run at once, which is exactly why it cannot check which ceiling was in force:
   -- the clock never gets near either. A target the record cannot reach ends the run on the ceiling instead, and

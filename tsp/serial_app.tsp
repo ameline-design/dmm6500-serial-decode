@@ -734,8 +734,26 @@ function sdec.stream_decode(got)
     local thr = sdec.thr or sdec.lvl_thr
     local fs = sdec.acq_fs or sdec.fs
     local baud = sdec.force_baud
+    -- A threshold OUTSIDE the measured swing is what actually defeats the splice, and the nil test alone was
+    -- checking nothing: sdec.thr is declared `or 0` and is 0 after clear_measured, so it is never nil. Outside
+    -- the levels, gap_tail reads every sample as idle or every sample as busy and refuses every tail, which
+    -- surfaces as 'tails refused' with nothing to say the threshold was the cause. arm_threshold leaves that
+    -- behind when a probe fails on a one-sided rail.
+    --
+    -- ONLY ON POSITIVE EVIDENCE, and a swing of zero width is not evidence. At this point on an elided record
+    -- sdec.lo and sdec.hi are whatever the last measurement left -- the format search measures the record's
+    -- own levels further in -- and on an idle line that is lo = hi = the idle level, 3.3 and 3.3. Against a
+    -- degenerate range every threshold is outside, so testing it as a range refused the splice on cells that
+    -- were fine: the first version of this guard turned a passing 'one burst' case into a refusal, twice,
+    -- once for nil levels and once for equal ones. `hi > lo` is what makes the range a range.
+    local lo, hi = sdec.lo, sdec.hi
     if thr == nil then
       sdec.spl_why = 'no threshold'
+    elseif lo ~= nil and hi ~= nil and hi > lo and (thr <= lo or thr >= hi) then
+      sdec.spl_why = 'thr outside swing'
+      -- The three numbers, because the reason alone cannot be acted on: which side it fell outside, and by
+      -- how much, is what says whether the probe failed or the levels did.
+      sdec.spl_thr, sdec.spl_lo, sdec.spl_hi = thr, lo, hi
     elseif fs == nil or fs <= 0 then
       sdec.spl_why = 'no rate'
     elseif baud == nil or baud <= 0 then
