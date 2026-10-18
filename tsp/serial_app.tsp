@@ -1414,8 +1414,25 @@ function sdec.bufmax_for()
   if d2 > d1 then bigname, bigcap = 'defbuffer2', d2 end
   local n = sdec.ck_bufwant
   if sdec.ck_bufguard < n then n = sdec.ck_bufguard end
-  local avail = sdec.ck_bufpool - d1 - d2 - sdec.ck_bufmargin
+  -- THE STATIC RECORD IS THE CEILING WHERE THERE IS ONE, and the pool is beside the point. A recording does
+  -- not allocate: it records into the buffer acq_bufinit made at launch, so the largest it can ask for is
+  -- that buffer's capacity and no arithmetic over what the pool has left can raise it. Answering from the
+  -- pool named 4 076 503 while the record held 6 000 000 of a 7 080 255 total and far less than that was
+  -- free -- a number much larger than anything a capture could use, which is how it reached the oversampling
+  -- bound. acq_fit takes the reserve off this afterwards.
+  -- BOTH BOUNDS, AND THE SMALLER WINS. Either alone is wrong.
+  local _, rcap = sdec.acq_bufhave('rec')
+  -- The pool remainder, less whatever the set is holding EXCEPT the record itself: a recording records into
+  -- that buffer, so it is not a cost to the recording, while the frame buffer, the ladder and the scratches
+  -- are allocated and the instrument genuinely does not have them to give. Leaving all of it out described
+  -- a machine with no app running on it.
+  local held = sdec.acq_bufheld()
+  if rcap ~= nil then held = held - rcap end
+  local avail = sdec.ck_bufpool - d1 - d2 - held - sdec.ck_bufmargin
   if avail < n then n = avail end
+  -- And never more than the static record holds, where there is one. A recording does not allocate, so that
+  -- buffer is its ceiling and no arithmetic over the pool can raise it.
+  if rcap ~= nil and rcap < n then n = rcap end
   if n < 0 then n = 0 end
   return n, bigname, bigcap
 end

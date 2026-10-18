@@ -11833,6 +11833,13 @@ end)()
   -- still records: the 32 kB mode simply takes a shorter window at a rate its buffer can hold.
   GEN_DEFBUF(5000000, 100000)
   do
+    -- THE SET IS RELEASED FIRST, or this measures an earlier case's leftovers rather than the pool.
+    -- bufmax_for subtracts whatever of the static set is live -- the frame buffer, the ladder and the
+    -- scratches are allocated and the instrument does not have them to give -- and it is also capped by the
+    -- static record where one exists. Both are right, and both make a pool scenario depend on test order
+    -- unless it starts from a known state.
+    pcall(sdec.acq_buffree)
+    sdec.acq_bufs = {}
     local n, bigname, bigcap = sdec.bufmax_for()
     check('defbuffer1 at 5 000 000 derives the pool remainder, not the static ceiling',
           n == 7080255 - 5000000 - 100000 - 50000 and bigname == 'defbuffer1'
@@ -12219,6 +12226,13 @@ end)()
     -- from the operator. The single DMM6500 figure computed 3 930 255 and reclaimed anyway,
     -- discarding a 3 000 000-reading buffer on a meter that had the room. Against the old tree both
     -- lines below return the same short ceiling; that equality is what this breaks.
+    -- THE SET IS RELEASED FIRST, or this measures an earlier case's leftovers rather than the pool.
+    -- bufmax_for subtracts whatever of the static set is live -- the frame buffer, the ladder and the
+    -- scratches are allocated and the instrument does not have them to give -- and it is also capped by the
+    -- static record where one exists. Both are right, and both make a pool scenario depend on test order
+    -- unless it starts from a known state.
+    pcall(sdec.acq_buffree)
+    sdec.acq_bufs = {}
     GEN_DEFBUF(3000000, 100000)
     GEN_MODEL('DMM6500')
     local c6 = sdec.bufmax_for()
@@ -12298,6 +12312,13 @@ end)()
   -- seeing it work means raising that first -- a guard nothing can reach is a guard nobody has run.
   GEN_DEFBUF(100000, 100000)
   do
+    -- THE SET IS RELEASED FIRST, or this measures an earlier case's leftovers rather than the pool.
+    -- bufmax_for subtracts whatever of the static set is live -- the frame buffer, the ladder and the
+    -- scratches are allocated and the instrument does not have them to give -- and it is also capped by the
+    -- static record where one exists. Both are right, and both make a pool scenario depend on test order
+    -- unless it starts from a known state.
+    pcall(sdec.acq_buffree)
+    sdec.acq_bufs = {}
     sdec.ck_bufwant = 6500000
     check('a ck_bufwant past 6 000 000 is held at the guard, not at the pool remainder',
           sdec.bufmax_for() == 6000000,

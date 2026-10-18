@@ -189,10 +189,19 @@ brun.elide_vids = brun.elide_vids or nil
 -- The wall clock one elided cell may spend. The panel's 1200 s suits a recording an operator watches,
 -- not the 258 elided cells a default lap draws.
 brun.elide_maxsec = brun.elide_maxsec or 30
--- The highest rate an elided cell may ask for, nil for no cap. 640 000 is the fastest entry in
--- sdec.rates measured to be honoured while the elision program runs; 1 000 000, the next one up, came
--- back as 83 333. The cap in brun.point has the measurement.
-brun.elide_fsmax = brun.elide_fsmax or 640000
+-- The highest rate an elided cell may ask for, nil for no cap. Not a ceiling that merely permits: brun.point
+-- CLAMPS to this figure, so whatever it names is the rate an elided cell above it actually runs at.
+--
+-- 500 000, AND IT WAS 640 000, WHICH IS THE ONE ENTRY THIS MUST NOT NAME. That figure was justified as the
+-- fastest rate in sdec.rates measured to be honoured while the elision program runs -- measured by reading
+-- the delivered rate back, which is precisely the quantity docs/MEASUREMENTS.md records as lying there:
+-- "segfs reads 634 615 while the record's true mean rate is 100 000". 640 000 is the only entry whose period
+-- is not a whole number of microseconds, 634 615 being 1e6 x 33/52, and the only one whose loss is block
+-- drops rather than uniform thinning. That distinction decides everything: thinning leaves acq_seg_fs
+-- measuring what was really delivered, while the block-drop row of that table decodes none correct. 75 cells
+-- in the soak archive carry fscap=640000, so this bound binds in practice and not in theory.
+-- docs/MEASUREMENTS.md, 'The reading-backlog dialog above ~100 kS/s'.
+brun.elide_fsmax = brun.elide_fsmax or 500000
 -- The detection window per baud, in seconds, in two tiers.
 --
 -- 25 ms, raised from 1/100 s, and the reason is the scratch budget rather than detection. The detector

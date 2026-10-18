@@ -1644,6 +1644,30 @@ function sdec.acq_isours(v)
   return sdec.acq_isstatic(v)
 end
 
+-- Readings the static set is holding right now, across the plan, the frame ladder and the scratches.
+--
+-- For whatever has to reason about what the pool has LEFT: these are allocated and the instrument does not
+-- have them to give, so any figure derived from the pool without subtracting them describes a machine with
+-- no app running on it. Live-checked through acq_bufhave, so a refused or dropped buffer counts as zero
+-- rather than as its planned size. The scratches are counted at gap_scratchcap rather than read back, which
+-- keeps this free of a pcall site of its own -- lint_tsp counts sites and the file is already over its
+-- ceiling.
+function sdec.acq_bufheld()
+  local tot, i = 0, nil
+  for i = 1, sdec.acq_bufplan.n do
+    local _, c = sdec.acq_bufhave(sdec.acq_bufplan[i].id)
+    if c ~= nil then tot = tot + c end
+  end
+  for i = 1, table.getn(sdec.acq_framerungs) do
+    local _, c = sdec.acq_bufhave(sdec.acq_rungid(sdec.acq_framerungs[i]))
+    if c ~= nil then tot = tot + c end
+  end
+  if sdec.gapbufs ~= nil then
+    tot = tot + table.getn(sdec.gapbufs) * (sdec.gap_scratchcap or 0)
+  end
+  return tot
+end
+
 -- Allocate the whole set, once. -> true when every mode has one.
 --
 -- The operator's requirement, and the reason is stability rather than speed: once the app is up there are
