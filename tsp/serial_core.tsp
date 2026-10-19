@@ -2851,6 +2851,29 @@ sdec.gap_idlerun = 3
 -- And how much idle to carry across with the head. The framer anchors on the first edge it finds, so it needs
 -- idle ahead of the start bit rather than a stream that opens mid-transition.
 sdec.gap_idlemargin = 2
+-- THE RECORD'S RESUME LATENCY, in SECONDS, which is what gap_tail converts the recovered head against to
+-- recover the handover hole. A time and not a reading count: the same latency is 0.58 of a bit at 9600 Bd
+-- and 23 bit times at 115 200, so a figure in bit times would be right at one rung of the ladder and wrong
+-- at the rest.
+--
+-- 156 us is the BOTTOM of the band the 2026-10-17 archive bounds it to, 156 to 208, and it is the end the
+-- model measures directly: test_elideseam asserts the recovered head at a continuous handover is 15
+-- readings at 100 kS/s, which IS 156 us. 208 was tried first, on an argument from the archive's median
+-- recovered head, and it over-padded every seam by 5 to 6 readings -- which cost the byte-exact cells 4 %
+-- of their payload while still repairing the broken ones. An over-pad is not free and that is the measured
+-- price of guessing high.
+--
+-- NOT A TUNING KNOB AND NOT YET CONFIRMED ON HARDWARE. It is one constant standing in for a firmware
+-- property, and the padding it drives repairs holes only to about 0.8 of a bit time -- past that the hole
+-- has swallowed most of a bit of real signal and no insertion recovers it, measured as a cliff between 8
+-- and 10 readings. Set it to nil to disable the padding outright.
+-- OFF BY DEFAULT, and that is a statement about evidence rather than about the repair. The padding is
+-- measured to work offline -- holes of 6 and 8 readings go from 29 % and 28 % to 100 % with no cost to the
+-- byte-exact cases -- but it has never run on the instrument, and two suite checks exist precisely to pin
+-- the UNPADDED mechanism this would hide. So it ships inert and is enabled per run by
+-- run_bench.py --gap-resume, which records the value on the row. Turn it on in the tree only once a lap
+-- has been judged with it.
+sdec.gap_resume = sdec.gap_resume or nil
 
 -- Where the record's bursts begin, in time order. -> a table of indices into the time-ordered record, [1] = 1
 -- always, one entry per burst.
@@ -2902,7 +2925,7 @@ end
 -- A group that never ran reads n = 0, because gap_scratches clears the whole set on reuse. That is what tells
 -- an unused scratch from a used one without buffer.getstats, which this firmware has but the offline harness
 -- does not.
-function sdec.gap_tail(scr, thr, sabit)
+function sdec.gap_tail(scr, thr, sabit, fs)
   if scr == nil or thr == nil then return nil end
   -- Bare, for gap_seams' reason. n is type-tested rather than nil-tested because a proxy that answers
   -- something other than a number must refuse rather than compare.
@@ -2971,6 +2994,45 @@ function sdec.gap_tail(scr, thr, sabit)
     out[nk] = rd[p]
   end
   if nk < 1 then return nil end
+  -- THE HANDOVER HOLE, PUT BACK AS DURATION. Restoring the head is not enough: the samples between the
+  -- scratch's last reading and the record's first reached NEITHER buffer, so butting the two halves
+  -- together compresses time at every seam and the framer carries a wrong bit phase through the rest of
+  -- the burst. That is the lap's `splwhy=ok` beside a third of the payload.
+  --
+  -- DERIVED PER CAPTURE, from one constant. The scratch holds the burst from the crossing up to the
+  -- instant the record opens LESS the hole, so the recovered head is (resume latency - hole) and
+  --
+  --     hole = gap_resume * fs - recovered head
+  --
+  -- with the recovered head measured here, every capture. That is why this is not a hole constant: the
+  -- hole itself ran 1 to 46 readings across one lap and a fixed value would be wrong on most cells,
+  -- while the latency it is derived from is a firmware property.
+  --
+  -- fs IS OPTIONAL and nil disables the padding, which keeps every existing caller -- the suites pass
+  -- three arguments -- on the old behaviour rather than silently changing what they assert.
+  if fs ~= nil and fs > 0 and sdec.gap_resume ~= nil and sdec.gap_resume > 0 then
+    local headrd = nk - keep                       -- the burst part, less the idle margin kept above
+    local want = math.ceil(sdec.gap_resume * fs)
+    local pad = want - headrd
+    -- A NEGATIVE PAD IS AN OVERLAP AND IS LEFT ALONE. Measured: an overlap of the same width costs no
+    -- alignment at all, so there is nothing to repair and trimming would discard real samples.
+    if pad > 0 then
+      -- Bounded, because this inserts samples the record will be decoded over: a runaway pad from a
+      -- misread head would push the splice past the window the plan's total describes. One frame is the
+      -- most a sub-bit hole can need and the measured worst is a fifth of that.
+      local cap = math.ceil(framebits * sabit)
+      if pad > cap then pad = cap end
+      local idlev = thr - 1
+      if idlehi then idlev = thr + 1 end
+      local pi
+      for pi = 1, pad do
+        nk = nk + 1
+        out[nk] = idlev
+      end
+      sdec.spl_padrd = (sdec.spl_padrd or 0) + pad
+      sdec.spl_npad = (sdec.spl_npad or 0) + 1
+    end
+  end
   return out, nk
 end
 
@@ -3009,6 +3071,10 @@ function sdec.gap_splice_plan(buf, n, scrs, thr, sabit, fs)
   if ns < 1 then return nil end
   local seams = sdec.gap_seams(buf, n, fs)
   local nseam = table.getn(seams)
+  -- CLEARED HERE, for the reason this file repeats: gap_tail accumulates into them per seam, so a plan
+  -- that pads nothing would otherwise report the last padded capture's figures as its own. The stale-field
+  -- class has cost this bench four times.
+  sdec.spl_padrd, sdec.spl_npad = 0, 0
   local pl = {n = 0, pos = {}, len = {}, tail = {}, total = n}
   local nadd, run, j = 0, 0, nil
   -- Whether a seam past the first kept the head it came with, which is what decides whether this splice is
@@ -3020,7 +3086,7 @@ function sdec.gap_splice_plan(buf, n, scrs, thr, sabit, fs)
     -- Past ns bursts the early scratches have been reused, so they are skipped rather than approximated.
     if j + ns > nseam then
       local si = math.mod(j - 1, ns) + 1
-      local tt, tn = sdec.gap_tail(scrs[si], thr, sabit)
+      local tt, tn = sdec.gap_tail(scrs[si], thr, sabit, fs)
       if tt ~= nil and tn ~= nil and tn > 0 then
         pl.n = pl.n + 1
         -- The running insert is what turns a record index into a spliced one.
@@ -3040,7 +3106,10 @@ function sdec.gap_splice_plan(buf, n, scrs, thr, sabit, fs)
   -- The head put back less the idle margin every tail carries, summed over the heads restored: what 'ok'
   -- cannot say, a quarter of a head splicing as readily as a whole one. Reported and not judged, because
   -- the genuine head ran 70 us at 50 kS/s and 150 us at 100 kS/s on the 2026-10-18 lap -- no one bound fits.
-  sdec.spl_headrd = nadd - pl.n * math.ceil(sdec.gap_idlemargin * sabit)
+  -- LESS THE PADDING, because nadd sums what gap_tail returned and that now includes inserted idle.
+  -- Without this the field reports the pad as recovered head -- measured, headrd 84 over 4 seams against
+  -- a true 15 -- which turns a diagnostic the suites assert on into a function of the repair.
+  sdec.spl_headrd = nadd - (sdec.spl_padrd or 0) - pl.n * math.ceil(sdec.gap_idlemargin * sabit)
   if pl.n < 1 then return nil end
   pl.total = n + nadd
   return pl

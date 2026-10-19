@@ -27,6 +27,7 @@ import argparse
 import collections
 import os
 import re
+import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -60,12 +61,91 @@ def num(note, key):
     return float(m.group(1)) if m else None
 
 
+def judged_bad(record):
+    """The set of cell numbers the JUDGE calls bad, from judge_bench itself.
+
+    ONE ORACLE. judge_bench compares the decoded bytes against the expected payload with rules this
+    file has no business restating -- alignment, head damage, the three verdicts -- so the verdict is
+    taken from it rather than recomputed. A second implementation here would be a second answer, and
+    the first thing to go wrong would be the two disagreeing quietly.
+    """
+    out = subprocess.run([sys.executable, os.path.join(ROOT, 'tools', 'judge_bench.py'),
+                          record, '--verbose', '--verbose-max', '0'],
+                         capture_output=True, text=True).stdout
+    bad = set(m.group(1) for m in re.finditer(r'^\s+L1C(\d+)\s', out, re.M))
+    if not bad:
+        # A judge that found nothing is far more likely to be a parse mismatch than a perfect lap,
+        # and silently reporting 0 % bad in every bucket is exactly how this analysis went wrong.
+        print('NOTE: judge_bench reported no failing cell. If that is not a clean lap, the verbose')
+        print('      line format has moved and this join is reading nothing.')
+    return bad
+
+
+def pad_report(record, lines, start, rows):
+    """Judged outcome against the padding inserted, bucketed by readings per seam."""
+    bad = judged_bad(record)
+    buckets = [(-1, -1, 'no pad'), (1, 4, '1-4 rd/seam'), (5, 8, '5-8 rd/seam'),
+               (9, 14, '9-14 rd/seam'), (15, 10 ** 9, '15+ rd/seam')]
+    got = collections.defaultdict(lambda: [0, 0])
+    npad = 0
+    for r, note in rows:
+        cell = r[2]
+        m = re.search(r'splpad=(\d+)/(\d+)', note)
+        per = None
+        if m and int(m.group(2)) > 0:
+            per = int(m.group(1)) / float(m.group(2))
+            npad += 1
+        for lo, hi, lab in buckets:
+            if (per is None and lo < 0) or (per is not None and lo >= 0 and lo <= round(per) <= hi):
+                got[lab][0] += 1
+                got[lab][1] += 1 if cell in bad else 0
+                break
+    print('%d elided cell(s), %d padded, judged against %d bad cell(s)'
+          % (len(rows), npad, len(bad)))
+    print()
+    print('%-14s %6s %6s %8s' % ('pad per seam', 'cells', 'bad', 'bad rate'))
+    for _, _, lab in buckets:
+        n, b = got[lab]
+        if n:
+            print('%-14s %6d %6d %7.1f%%' % (lab, n, b, 100.0 * b / n))
+    print()
+    # THE TREND, stated rather than left to the reader, because a monotone one is the whole claim:
+    # more padding means fewer failures, which is what says the mechanism is right and the constant
+    # is too small. Anything else and the constant has gone past the latency.
+    seq = [(lab, got[lab]) for _, _, lab in buckets if got[lab][0] and lab != 'no pad']
+    rates = [100.0 * b / n for _, (n, b) in seq]
+    if len(rates) >= 2:
+        if all(rates[i] >= rates[i + 1] for i in range(len(rates) - 1)):
+            print('MONOTONE DOWN: more padding, fewer failures. The mechanism holds and the')
+            print('constant is still too SMALL -- raise sdec.gap_resume and measure again.')
+        elif all(rates[i] <= rates[i + 1] for i in range(len(rates) - 1)):
+            print('MONOTONE UP: more padding, MORE failures. The constant is past the latency.')
+        else:
+            print('NOT MONOTONE: %s. The peak brackets the latency between its neighbours.'
+                  % ' '.join('%.0f%%' % x for x in rates))
+    # AND THE CONFOUND, named rather than omitted: pad size is not assigned, it is derived from fs
+    # and the recovered head, so cells with large pads differ in rate and baud too. The clean
+    # comparison is the SAME cells across two laps at different gap_resume values.
+    print()
+    print('Pad size is DERIVED, not assigned -- it is gap_resume * fs less the recovered head -- so')
+    print('these buckets differ in rate and baud as well. The assigned comparison is the same spec')
+    print('run at two gap_resume values; this is the within-lap gradient only.')
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument('--record', default=REC)
     ap.add_argument('--from', dest='frm', type=int, default=None,
                     help='line to start at; the default is the last run in the file')
     ap.add_argument('--cells', action='store_true', help='one line per failing cell')
+    # THE DOSE-RESPONSE JOIN, and it is a mode here because doing it by hand got the record's shape
+    # wrong twice in one day: the cell number is field 2 of the R row, NOT an `L1C` prefix on the S
+    # row, and the judge's verdict is not the literal word FAIL in the S note -- a hand-rolled version
+    # of each reported 0 failures for every bucket, which reads as a clean result.
+    ap.add_argument('--pad', action='store_true',
+                    help='judged outcome against the seam padding actually inserted, bucketed. '
+                         'Answers whether more padding means fewer failures')
     a = ap.parse_args(argv)
 
     if not os.path.exists(a.record):
@@ -76,6 +156,9 @@ def main(argv=None):
     if not rows:
         raise SystemExit('REFUSING: no elided cells after line %d, so there is nothing to judge'
                          % start)
+
+    if a.pad:
+        return pad_report(a.record, lines, start, rows)
 
     kinds = collections.Counter()
     bybaud = collections.defaultdict(lambda: [0, 0])

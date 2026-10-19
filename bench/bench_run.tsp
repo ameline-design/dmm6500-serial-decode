@@ -1148,6 +1148,11 @@ function brun.point(fs, baud, lock, elide, vid)
   if sdec.spl_headrd ~= nil and (sdec.spl_nspliced or 0) > 0 then
     r.splhead = sdec.spl_headrd / sdec.spl_nspliced
   end
+  -- THE HOLE PUT BACK, as readings summed over the seams that needed it and how many did. Recorded
+  -- because the padding is DERIVED per capture from sdec.gap_resume less the recovered head, so a lap
+  -- cannot be read without it: splpad=0 on a cell means the head already covered the latency, which is
+  -- a different cell from one the fix repaired.
+  r.splpad, r.splnpad = sdec.spl_padrd, sdec.spl_npad
   -- The decode's reach: nwin windows over nsmp readings, and the exit that ended it, nil being the record
   -- running out. On the lap of 2026-10-18 nf was the first 20 000 readings' frames against records of
   -- 22 000 to 58 000, so every pay= scored one window of a longer record and nothing on the row said why.
@@ -3461,6 +3466,9 @@ function brun.soak(iterations, tag)
           if (p.splorph or 0) > 0 then nt = nt .. ' splorph=' .. brun.int(p.splorph) end
           if (p.spladd or 0) > 0 then nt = nt .. ' spladd=' .. brun.int(p.spladd) end
           if p.splhead ~= nil then nt = nt .. string.format(' splhead=%.1f', p.splhead) end
+          if p.splpad ~= nil and (p.splnpad or 0) > 0 then
+            nt = nt .. string.format(' splpad=%s/%s', brun.int(p.splpad), brun.int(p.splnpad))
+          end
         end
         -- The decode's reach, beside the record's length in ring= below: nsmp short of the ring is a decode
         -- that did not read the record it scored, and ckstop names the exit that stopped it.

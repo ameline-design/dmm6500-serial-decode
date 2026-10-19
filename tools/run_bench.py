@@ -609,6 +609,15 @@ def main():
                     help='override brun.elide_fsmax for this run only; 0 means NO CAP. Absent, the '
                          'shipped default stands, so a lap that does not name it describes the app as '
                          'built. Verified by read-back, like --elide')
+    # THE SEAM-PADDING REPAIR, OFF IN THE TREE AND ENABLED HERE. sdec.gap_resume is the record's resume
+    # latency in seconds; gap_tail pads each spliced seam by that less the head it actually recovered, so
+    # the handover hole goes back as DURATION and the framer stops carrying a wrong bit phase across the
+    # seam. Offline this takes holes of 6 and 8 readings from 29 % and 28 % to 100 % and costs the
+    # byte-exact cases nothing. It has never run on hardware, which is why it is a flag and not a default.
+    ap.add_argument('--gap-resume', type=float, default=None, metavar='SECONDS',
+                    help='enable the seam-padding repair for this run by setting sdec.gap_resume. '
+                         '156e-6 is the value the offline model measures; 0 leaves it off, which is '
+                         'the shipped default. Verified by read-back, like --elide')
     ap.add_argument('--elide-vids', default=None, metavar='V,V',
                     help='elide only these vectors, leaving the other nodrop vectors free-running as a '
                          'control in the same lap. Default is every nodrop vector')
@@ -821,6 +830,26 @@ def main():
             # and the archive shows 128000 and 153600 decoding with nbad 0 at 634615 under the previous
             # 640000. Whether 1 MS/s survives the elision program is UNMEASURED -- no row in the archive
             # carries segfs=1000000 -- which is exactly what this flag is for.
+            if a.gap_resume is not None:
+                # SET BEFORE THE RUN STARTS and READ BACK, for the reason every other knob here is:
+                # brun.soak holds the session for the whole lap, so a value that did not take cannot be
+                # corrected, and a lap that silently ran without the repair looks exactly like one that
+                # ran with it and did not help.
+                d.exec('do sdec.gap_resume = %s end'
+                       % ('nil' if a.gap_resume <= 0 else repr(float(a.gap_resume))))
+                got = str(d.q('print(string.format("%.9f", sdec.gap_resume or -1))') or '').strip()
+                try:
+                    gotf = float(got)
+                except ValueError:
+                    gotf = None
+                want = -1.0 if a.gap_resume <= 0 else float(a.gap_resume)
+                if gotf is None or abs(gotf - want) > 1e-12:
+                    raise SystemExit('REFUSING: the instrument did not take sdec.gap_resume (%r, '
+                                     'wanted %r). A lap that silently ran without the repair is not '
+                                     'distinguishable afterwards from one where it did not help.'
+                                     % (got, want))
+                print('  seam padding: %s -- NOT the shipped default, which is off'
+                      % ('OFF' if a.gap_resume <= 0 else '%g s resume latency' % a.gap_resume))
             if a.elide_fsmax is not None:
                 # 0 means NO CAP, since a CLI number cannot carry nil and brun.elide_fsmax = nil is how
                 # the uncapped case is spelled. Same convention as SDEC_PROBE_N in tools/sweep_plan.lua.
