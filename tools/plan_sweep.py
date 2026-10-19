@@ -63,7 +63,7 @@ PLANDIR = os.path.join(ROOT, 'out', 'plans', 'auto')
 DEFAULT_SKIP = ','.join(SP.HW_SKIP)
 
 # The counters sweep_plan.lua prints on its PLAN line, in the order they appear there.
-KEYS = ['cells', 'badcells', 'badall', 'points', 'ok', 'bad', 'skip', 'nostim',
+KEYS = ['cells', 'badcells', 'badall', 'points', 'ok', 'bad', 'skip', 'nostim', 'acqref',
         'raised', 'nobytes', 'norate', 'rate', 'flags', 'bytes', 'bleed', 'bleedworst',
         'r46b', 'rfit1', 'rstdC', 'rother', 'loudquiet', 'loudmiss', 'loudmissworst',
         # `label` and its lr* split are captures whose bytes were accepted and whose REPORTED rate is
@@ -241,6 +241,15 @@ WHY = {
     # evidence is not an improvement. Bounding `nostim` upward is what makes the pair honest: the gate
     # may excuse the captures it was measured on and not one more.
     'nostim': 'points whose capture window held no traffic at all -- the plan\'s phase, not the app',
+    # THE MECHANISM COUNTER, AND IT CROSSES THE VERDICTS RATHER THAN BEING ONE. sweep_plan.lua now
+    # honours sdec.sig_levels' refusal, as sdec.acquire() does on the real capture, so a capture the app
+    # would decline is declined here too. On a `loud` vector that is the documented pass and lands in
+    # `loudquiet`; on any other class it is a capture that returned nothing and is BAD under `nobytes`.
+    # Neither of those names the mechanism, so this does -- and it is ratcheted UPWARD because the gate
+    # takes points out of the decode path: a change that widened it would make every content counter fall
+    # and leave the lap looking better. See decode() in tools/sweep_plan.lua for the cell-for-cell
+    # measurement against the gap lap, out/bench/SOAK-20261018-gaplap-merged-splice.csv.
+    'acqref': 'captures the app\'s own level gate refused -- not a verdict, a mechanism tally',
     'judged': 'points actually compared against the payload (ok + bad)',
     # A PASS THAT HAS TO STAY VISIBLE. docs/BENCH.md makes declining the correct answer for a `loud`
     # waveform, so these are not failures and must never be counted as any -- v47's spikes stack to
@@ -464,9 +473,10 @@ def main():
     # inside the ratchet block cannot be re-measured, because --no-ratchet is exactly the run you make to
     # re-measure it -- so lquiet, lmiss, flags and label are printed here or the documented workflow
     # does not work.
-    hdr = ('%-5s %-13s %6s %5s %7s %6s %6s %6s %5s %6s %5s %5s %5s %5s %5s %6s %5s %5s'
+    hdr = ('%-5s %-13s %6s %5s %7s %6s %6s %6s %5s %6s %6s %5s %5s %5s %5s %5s %6s %5s %5s'
            % ('lap', 'plan', 'cells', 'bad', 'badcell', 'badall', 'raised', 'nobyte', 'skip',
-              'nostim', 'rate', 'flags', 'bytes', 'label', 'bleed', 'worst', 'lquiet', 'lmiss'))
+              'nostim', 'acqref', 'rate', 'flags', 'bytes', 'label', 'bleed', 'worst', 'lquiet',
+              'lmiss'))
     print(hdr)
     print('-' * len(hdr))
     allfail, rows = [], []
@@ -477,10 +487,11 @@ def main():
         if not a.quiet:
             for d in detail:
                 print(d)
-        print('%-5d %-13s %6d %5d %7d %6d %6d %6d %5d %6d %5d %5d %5d %5d %5d %6d %5d %5d'
+        print('%-5d %-13s %6d %5d %7d %6d %6d %6d %5d %6d %6d %5d %5d %5d %5d %5d %6d %5d %5d'
               % (it, digest, tot['cells'], tot['bad'], tot['badcells'], tot['badall'], tot['raised'],
-                 tot['nobytes'], tot['skip'], tot['nostim'], tot['rate'], tot['flags'], tot['bytes'],
-                 tot['label'], tot['bleed'], tot['bleedworst'], tot['loudquiet'], tot['loudmiss']))
+                 tot['nobytes'], tot['skip'], tot['nostim'], tot['acqref'], tot['rate'],
+                 tot['flags'], tot['bytes'], tot['label'], tot['bleed'], tot['bleedworst'],
+                 tot['loudquiet'], tot['loudmiss']))
         allfail.extend('lap %d: %s' % (it, x) for x in failed)
 
     if len(rows) > 1:

@@ -202,9 +202,24 @@ brun.elide_maxsec = brun.elide_maxsec or 30
 -- property that separates 160 000 / 320 000 / 640 000 is that they do not divide 66 MHz -- see sdec.rates.
 -- Neither fact picks out 640 000 on its own, and the one that does is the measured loss SHAPE: from
 -- 120 kS/s to 500 kS/s and at 1 MS/s the loss is uniform thinning, which acq_seg_fs measures honestly, and
--- at 640 kS/s alone it is block drops, whose row in that table decodes none correct. So 500 000 is inside
--- the band measured safe and 160 000 / 320 000 genuinely need no cap. 75 cells in the soak archive carry
--- fscap=640000, so this bound binds in practice and not in theory.
+-- at 640 kS/s alone it is block drops, whose row in that table decodes none correct.
+--
+-- SO THE INSTRUMENT SHOULD BE AN EXCLUSION OF 640 000 AND NOT A CEILING, and this figure does not follow
+-- from the measurement behind it. That measurement condemns one entry and exonerates two; a ceiling at
+-- 500 000 bans 640 000 and 1 000 000 together, and 1 000 000 is the only listed rate at or above
+-- 230400 x minsabit x (1 - plaustol) = 903 168, so the ladder's top rung and this ceiling cannot both
+-- stand. The level is left where it is because 1 MS/s on THIS path is unmeasured -- no cell in the soak
+-- archive has ever recorded segfs=1000000 with elision on -- and lifting it is a hardware decision.
+-- tools/test_elideseam.lua reproduces which rungs each value closes: 500 000 closes nine from 128 000 Bd
+-- up, 640 000 closes five from 172 800 up, and uncapped closes none.
+--
+-- THE 640 kS/s ROW WAS ALSO MEASURED ON A FREE-RUNNING CAPTURE, which is a second reason the bound does
+-- not transfer. The hazard is accumulated lag, (1 - 100000/fs) x T, and that section records the threshold
+-- resetting at every measure-block entry -- so T is the longest UNINTERRUPTED run, which on this path is
+-- one burst and not the capture. Over the 141 elided cells of 2026-10-18 that recorded a ring, the lag per
+-- burst reaches 0.025 s against the ~0.5 s threshold, while the free-running row the figure comes from had
+-- T = 0.85 s and so 0.72 s. What would settle it is one v99d lap with this set to nil, reading segfs,
+-- spanfs and tdig per cell.
 -- docs/MEASUREMENTS.md, 'The reading-backlog dialog above ~100 kS/s'.
 brun.elide_fsmax = brun.elide_fsmax or 500000
 -- The detection window per baud, in seconds, in two tiers.
@@ -1030,6 +1045,28 @@ function brun.point(fs, baud, lock, elide, vid)
   -- report the last elided cell's splice as its own, and a non-elided cell reading nspliced = 2 is a lie in
   -- the direction that would make the feature look like it was working everywhere.
   sdec.spl_nseam, sdec.spl_nspliced, sdec.spl_nadded, sdec.spl_norphan = nil, nil, nil, nil
+  -- AND ck_stop, WHICH THIS PATH IS THE ONLY CALLER THAT HAS TO CLEAR ITSELF. stream_decode's window loop
+  -- takes sdec.ck_progress, which returns false while ck_stop is set, and chunk_decode's loop then breaks
+  -- with tot.stopped = 'stopped' after window one -- and that break leaves the last good window's verdict
+  -- standing, so the decode returns TRUE over a third of the record. The panel never sees it: stream_begin
+  -- clears ck_stop on entry and sdec.stream() clears it again immediately before calling stream_decode.
+  -- brun.point calls stream_decode directly and reaches neither, so a flag set once stays set and every
+  -- later cell of the run decodes one window. Measured offline through this path: 1 window and 177 frames
+  -- of 520 against 3 windows and 520, reported as success, and the next two cells one window each with
+  -- nothing set. The score comes back 177/177, so nothing in the row looks wrong.
+  --
+  -- NOT sdec.cancel_clear() BESIDE IT, which is the obvious companion and would break the run's own stop
+  -- key: brun.stopkey_hit() reads the same blender latch through sdec.cancel_pressed(), the latch
+  -- auto-resets on read, and a clear here would discard the operator's TRIGGER press before the loop could
+  -- see it. A press is still free to end the cell it arrives in -- cancel_asked() is the other false path
+  -- in ck_progress and it should cut that decode short -- and clearing ck_stop per cell is what stops one
+  -- press from silently shortening every cell after it.
+  --
+  -- ck_cancel GOES WITH IT, for the ordinary stale-field reason rather than for control: nothing reads it
+  -- on this path -- sdec.record_run turns fc_end on it and the bench never calls record_run -- but it is
+  -- on the row now, and it is cleared only by stream_begin and record_run, so one answered press would
+  -- otherwise write 'ckcancel=true' on every remaining cell of the lap and name the wrong one.
+  sdec.ck_stop, sdec.ck_cancel = false, nil
   if elide ~= nil then
     okc2 = pcall(function() okd, whyd = sdec.stream_decode(sdec.nread) end)
   else
@@ -1052,6 +1089,22 @@ function brun.point(fs, baud, lock, elide, vid)
   -- And the raise text behind splwhy=raised, which the app kept only from this commit: before it, pcall's
   -- second return was discarded and every raise read as the bare word.
   r.splraise = sdec.spl_raise
+  -- HOW MANY WINDOWS THE DECODE ACTUALLY RAN, and why it stopped, which no row has ever carried. The
+  -- one-window exit above returns success, so the only evidence of it is the count: a record of n readings
+  -- at window width W should decode about n / W windows, and a 1 beside a record of tens of thousands is
+  -- the fault whatever else the row says.
+  --
+  -- ck_tot.stopped AND NOT sdec.fc_end, which is the trap here -- both fields take the string 'stopped'
+  -- and only one of them is reachable. fc_end is written in sdec.record_run, the panel's entry, which this
+  -- engine never calls, so it is nil on every bench row by construction and could not test anything about
+  -- this path. ck_tot.stopped is set by chunk_decode's own loop and is the one that carries it.
+  --
+  -- Read through a guard: ck_tot is nil on a decode that never built totals, and the two flags are read
+  -- after the decode so they say what the cell LEFT behind rather than what it was handed.
+  if sdec.ck_tot ~= nil then
+    r.decwin, r.decstop = sdec.ck_tot.nwin, sdec.ck_tot.stopped
+  end
+  r.ckstop, r.ckcancel = sdec.ck_stop, sdec.ck_cancel
   brun.spin_tick()                      -- 4 of 6: the decode is done
   if not okc2 then r.why = 'decode raised'; return r end
   if not okd then
@@ -3313,6 +3366,20 @@ function brun.soak(iterations, tag)
           if (p.splorph or 0) > 0 then nt = nt .. ' splorph=' .. brun.int(p.splorph) end
           if (p.spladd or 0) > 0 then nt = nt .. ' spladd=' .. brun.int(p.spladd) end
         end
+        -- THE WINDOW COUNT, UNCONDITIONALLY, including the ordinary case -- which is the whole lesson of
+        -- this field existing. The one-window decode returns success, so every row that carried it looked
+        -- ordinary, and a diagnostic emitted only when it already looks interesting cannot find that: it
+        -- took a 1512-cell lap and an offline reproduction. `decstop` is nil on a decode that ran out of
+        -- record, which is the ordinary ending, and 'stopped' is the exit this field is here for.
+        if p.decwin ~= nil then
+          nt = nt .. ' decwin=' .. brun.int(p.decwin)
+          if p.decstop ~= nil then nt = nt .. ' decstop=' .. tostring(p.decstop) end
+        end
+        -- Both flags as the cell left them, so a latched stop is visible on the row that suffered it and
+        -- on the rows after it. false is written as well as true: the point is to be able to read "this
+        -- cell was not shortened" off an ordinary row.
+        if p.ckstop ~= nil then nt = nt .. ' ckstop=' .. tostring(p.ckstop) end
+        if p.ckcancel ~= nil then nt = nt .. ' ckcancel=' .. tostring(p.ckcancel) end
         -- And the over-read in force, so the record answers "was it on" without trusting the launch.
         if p.overread ~= nil then nt = nt .. string.format(' over=%.2f', p.overread) end
         -- The ring, on every elided cell and not only the failures: a startindex of 1 on a cell that

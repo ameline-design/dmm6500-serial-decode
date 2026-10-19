@@ -1676,6 +1676,81 @@ do
   ck(pe.elidecap ~= nil and pe.elidenrd ~= nil and pe.elidecap >= pe.elidenrd,
      'the record has at least as much capacity as it has readings',
      string.format('cap %s, read %s', tostring(pe.elidecap), tostring(pe.elidenrd)))
+
+  -- ---- THE DECODE MUST COVER THE WHOLE RECORD, NOT ONE WINDOW ----
+  -- sdec.stream_decode's window loop takes sdec.ck_progress, which returns false while sdec.ck_stop is
+  -- set, and chunk_decode's loop then breaks with tot.stopped = 'stopped'. That break leaves the previous
+  -- window's verdict standing, so the decode returns TRUE having read a fraction of the record -- and the
+  -- payload score of that fraction is near-perfect, so nothing in the row looks wrong. The panel is
+  -- protected twice: stream_begin clears ck_stop on entry and sdec.stream() clears it again immediately
+  -- before calling stream_decode. brun.point calls stream_decode directly and reaches neither, so until
+  -- the per-cell clear existed one set flag shortened every remaining cell of the run.
+  --
+  -- NO ELISION IS NEEDED for any of this -- the leak is in the window loop, not in the splice -- but it
+  -- is asserted on the elided cell because that is the path whose published figures it invalidated.
+  ck((pe.decwin or 0) > 1,
+     'the premise: this cell`s record is longer than one decode window, so a 1 would be a fault',
+     string.format('decwin=%s decstop=%s over %s readings', tostring(pe.decwin),
+                   tostring(pe.decstop), tostring(pe.elidenrd)))
+  ck(pe.decstop == nil and pe.ckstop == false,
+     '...and an ordinary cell ends by running out of record, with the flag left clear',
+     string.format('decstop=%s ckstop=%s', tostring(pe.decstop), tostring(pe.ckstop)))
+  -- THE FLAG IS CAPABLE OF CUTTING IT, which is the premise of the row after this one: without this the
+  -- clear could be doing nothing and the test would still pass. Driven through stream_decode directly,
+  -- which is the unprotected caller, on the record brun.point just captured.
+  --
+  -- THE COUNT IS PASSED EXPLICITLY AND THE VERDICT IS READ, both for the same reason. ck_job_new sets
+  -- `sdec.smp, sdec.nread = nil, 0` as it starts, so a second decode handed sdec.nread gets 0, refuses
+  -- with 'nothing captured' before the window loop, and leaves the PREVIOUS decode's sdec.ck_tot
+  -- standing -- which reads as 306 windows and a passing row. That is how this check failed first time.
+  -- Asserting ok == true is what makes a stale read impossible, and it is half the claim anyway: the
+  -- one-window exit reports SUCCESS.
+  do
+    local keeptot = sdec.ck_tot
+    local dok2, cut, cutstop = nil, nil, nil
+    sdec.ck_stop = true
+    pcall(function() dok2 = sdec.stream_decode(pe.elidenrd) end)
+    if sdec.ck_tot ~= nil then cut, cutstop = sdec.ck_tot.nwin, sdec.ck_tot.stopped end
+    sdec.ck_stop, sdec.ck_cancel, sdec.ck_tot = false, nil, keeptot
+    ck(dok2 == true and cut == 1 and cutstop == 'stopped',
+       'the premise: a pre-set ck_stop cuts an unprotected decode to one window AND returns success',
+       string.format('ok=%s nwin=%s stopped=%s against this record`s %s windows', tostring(dok2),
+                     tostring(cut), tostring(cutstop), tostring(pe.decwin)))
+  end
+  -- AND brun.point DEFEATS IT, which is the regression. Set before the call, exactly as a stop request
+  -- answered by an earlier cell would leave it.
+  sdec.ck_stop = true
+  local ps = brun.point(want, 9600, true, 0.010, 'v98a')
+  ck(ps.decwin == pe.decwin and ps.decstop == nil and ps.ckstop == false,
+     'brun.point clears ck_stop per cell, so a latched stop cannot shorten the next cell',
+     string.format('decwin=%s/%s decstop=%s ckstop=%s', tostring(ps.decwin), tostring(pe.decwin),
+                   tostring(ps.decstop), tostring(ps.ckstop)))
+  -- AND THE CLEAR IS ck_stop ALONE, with no sdec.cancel_clear() beside it. The two are not
+  -- interchangeable: brun.stopkey_hit() reads the same blender latch through sdec.cancel_pressed(), the
+  -- latch auto-resets on read, and a clear here would discard the operator's TRIGGER press outright --
+  -- the run's only stop, gone, with nothing recorded. What happens instead is that the cell's own decode
+  -- answers the press: cancel_asked() is ck_progress's other false path, so the press ends THAT cell at
+  -- one window and sets ck_cancel, which the row now carries. One press costs one cell and is visible,
+  -- rather than costing every cell after it and being invisible -- which is the whole repair.
+  do
+    sdec.cancel_setup()
+    sdec.cancel_clear()
+    TRIG.press(sdec.cancel_blender or 2)
+    local pc = brun.point(want, 9600, true, 0.010, 'v98a')
+    ck(pc.decwin == 1 and pc.ckcancel == true,
+       'a TRIGGER press is answered by the cell it lands in, and the row says so',
+       string.format('decwin=%s ckcancel=%s decstop=%s', tostring(pc.decwin),
+                     tostring(pc.ckcancel), tostring(pc.decstop)))
+    -- AND IT STOPS THERE. Without the per-cell clear this is the row that failed: ck_stop stayed set and
+    -- the next cell decoded one window with nothing pressed.
+    local pn = brun.point(want, 9600, true, 0.010, 'v98a')
+    ck(pn.decwin == pe.decwin and pn.ckcancel == nil and pn.ckstop == false,
+       '...and the cell after it is whole again, with no press of its own',
+       string.format('decwin=%s/%s ckcancel=%s ckstop=%s', tostring(pn.decwin), tostring(pe.decwin),
+                     tostring(pn.ckcancel), tostring(pn.ckstop)))
+    sdec.ck_stop, sdec.ck_cancel = false, nil
+    sdec.cancel_clear()
+  end
 end
 
 -- ---------------------------------------------------------------------------

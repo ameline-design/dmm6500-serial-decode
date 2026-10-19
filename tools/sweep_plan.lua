@@ -27,6 +27,10 @@
 -- all eight phases -- 41 fail at one of eight, 20 at two, none past five. Per CAPTURE this harness fails
 -- 1.09 % against the bench's 2.80 %, so it is not harsher; the union is. Compare bad/points, or badall,
 -- and never badcells.
+--   THOSE 65 ARE SOAK LAP 1'S NUMBER AND NOT A STANDING PROPERTY. On the gap lap named below, at one
+--   offset, this harness fails ZERO cells the bench passed -- so the risk here is everything it MISSES
+--   and not what it invents. Both figures are kept: the warning about unioning phases holds whichever
+--   direction the error runs in.
 --
 -- WHAT THIS IS NOT. It is not the app. bench_matrix presses the real Capture button and reads the
 -- real panel; this calls sdec directly, so it never exercises pick_fs's two-pass probe, autolock, or
@@ -36,12 +40,46 @@
 -- a pass here is the narrower claim "these samples decode to the right bytes", which is exactly the
 -- claim needed to acquit or convict the analogue path.
 --
+-- HOW MUCH OF A HARDWARE LAP THIS FILE CAN SEE, measured rather than hoped for. THE GAP LAP, named
+-- once here and referred to by that name throughout: the final lap of
+-- out/bench/SOAK-20261018-gaplap-merged-splice.csv -- iteration 1, skipping v95/v96/v97,
+-- 42 x 36 = 1512 cells, the identical (vector, rate) set on both sides -- joined cell for cell and
+-- judged on both sides by tools/judge_bench.py's own oracle:
+--
+--                   offline BAD   offline not-BAD
+--     hw bad                  1               140
+--     hw not-bad              0              1371
+--
+-- NO FALSE POSITIVES AT ALL, which is the half worth quoting: the one `bad` here (j10 at 124606 Bd) is a
+-- real hardware failure. And 1 of 141, which is the half that matters: 104 of those 140 are the eight
+-- nodrop gap vectors with GAP ELISION having fired, and this file does not elide. See the bullet below.
+--
+-- AND THE 110 IS NOT THE NUMBER TO COMPARE WITH. That lap's own `110 FAILED` is its RUN TOTAL -- rows
+-- with ran=n, i.e. captures the app refused -- and 80 of the 110 are `loud` vectors declining, which
+-- docs/BENCH.md makes a pass and judge_bench scores as one. The judge finds 141 bad on mostly OTHER
+-- cells. Quote the judge; three different failure numbers come off one soak.
+--
 -- WHERE THE TWIN STILL IS NOT THE BENCH, stated because every one of these has hidden a real failure:
+--   * NO GAP ELISION, AND IT IS THE BIGGEST ONE. For a vector soakplan holds to 'nodrop' the bench
+--     engine takes the ARMED, RECORDING path: brun.point builds sdec.gap_model, the idle runs are cut
+--     to one detector window, a fixed resume latency eats each burst's head and the splice puts it back
+--     from the scratch buffers. This file takes ONE contiguous capture of A.n samples at the plan's
+--     wait and none of that happens. On the lap above, restricted to those 288 cells: elision fired on
+--     145 of them and 104 were bad, and of the 143 where it did not fire NOT ONE was bad. The rate band
+--     says the same thing -- 61 of 64 bad between 5000 and 20000 Bd, 2 of 24 below 2500 -- which is
+--     tools/test_elideseam.lua's own edge at 4800 Bd, where the latency first costs half a bit.
+--     THE HARNESS FOR THIS IS tools/offline_bench.lua, not this one: it drives the real engine, and it
+--     now has --elide/--elide-vids. Reproducing brun's elide branch here would be a second copy of it.
 --   * NO TWO-PASS PROBE. fs comes from the COMMANDED baud, which the app never knows. The app probes at
 --     1 MS/s and picks fs from what the probe MEASURED, so where the probe misfits, the real capture
 --     runs at a rate this file will not choose -- r00 at 379 Bd was captured at 1250 S/s for 3.3
 --     samples/bit and decoded nothing, and here it gets 5000 S/s and decodes perfectly. On soak lap 1
---     the two choices disagreed on 26 of 1385 cells, 1.9 %.
+--     the two choices disagreed on 26 of 1385 cells, 1.9 %; on the gap lap it is 203 of 1512,
+--     13.4 %, and the difference is not drift in the probe -- 70 of the 203 are cells the app
+--     refused BEFORE digitising, so it recorded no fs at all, and most of the rest are the elide path
+--     choosing its own rate under brun.elide_fsmax (v98a ran 100000 at 14400, 19200 and 22747 Bd where
+--     pick_fs asks 120000, 159806 and 200000, and fscap=500000 refused nine v99d cells outright).
+--     So quote 1.9 % for the probe alone and 13.4 % for the whole fs disagreement.
 --   * NO NOISE. The instrument contributes ~0.2-0.5 mV rms and nothing here does. Its bandwidth and
 --     aperture ARE modelled -- see frontend() -- but the noise is not, and it is measured to matter:
 --     v71's five failing cells are an INVERTED decode -- every byte is NOT(payload << 1),
@@ -49,10 +87,18 @@
 --     here. The choice hinges on `onebit ~= nil and longest < 10 * onebit` in sdec.sig_idle: with a
 --     clean edge list sig_onebit is accurate, the guard holds, and the levels decide it correctly.
 --     Whatever shortens the bench's sig_onebit to under 0.6 bit times is not modelled, and while it is
---     not, no judge here can see that family.
+--     not, no judge here can see that family. Five cells on soak lap 1 and ELEVEN on the gap lap, all
+--     v71 and all reading 0 or 1 byte verified of ~200 -- a total mismatch rather than a damaged one,
+--     which is the signature. The gap lap also refused v71 outright with
+--     'acq: line is idle (no transitions)' at 19 of its 36 rates, every one of them above 31250 Bd on a
+--     gapless 1 kB waveform that cannot be idle, so that half is instrument state and not samples.
+--     Where noise shows up smallest and is still visible: sdec.sig_levels reports modal at 8 % here
+--     against 9-14 % on the bench for the identical v48a/v48b cells.
 --   * NO FORMAT CHECK. The bench compares the reported format; this does not. It also fails an
 --     INCONCLUSIVE cell on an exact vector where this counts it as unjudgeable rather than bad -- which
---     is why `skip` is ratcheted, so points cannot quietly move out of `bad` into it.
+--     is why `skip` is ratcheted, so points cannot quietly move out of `bad` into it. One cell on the
+--     gap lap, v71 at 57600 Bd: 'dec: no frame format fits the capture' on the bench, decoded and
+--     passed here.
 --
 --   lua tools/sweep_plan.lua --plan out/plans/plan-3.lua
 --   lua tools/sweep_plan.lua --plan out/plans/plan-3.lua --hold      # zero-order hold instead
@@ -319,15 +365,42 @@ local function window_idle(v, off, wlen)
   return GEN_WINDOW_IDLE(c.idle, c.n, off, wlen)
 end
 
+-- -> ran, raise, result, acq refusal reason.
+--
+-- THE ACQUISITION GATE IS HONOURED, NOT DISCARDED, and this was the twin's largest single blind spot.
+-- sdec.acquire() in tsp/serial_core.tsp re-measures the levels on the REAL capture and refuses on them
+-- -- 'Re-measure the levels on the real capture; the probe was only a scout' followed by
+-- `if not ok then return false, why end` -- so a capture sig_levels declines never reaches a decode on
+-- the instrument, and that reason is what the panel and the soak record show. Calling sig_levels for
+-- its side effects alone and decoding regardless makes a whole hardware failure class unreachable here
+-- however faithful the samples are, so the return value is the gate and not a diagnostic.
+--
+-- MEASURED AGAINST THE GAP LAP, 1512 cells joined cell for cell: the instrument refused 70 cells
+-- with 'no clear logic levels (N % of samples near them)', all of them v48a or v48b, and this file's own
+-- sig_levels refuses on exactly those 70 and two more -- v48a at 22747 and at 31250 Bd, which the
+-- instrument decoded and the judge then FAILED at 64 % of the payload. So the gate agrees 70 of 70 with
+-- no misses, and the two extra are cells where declining is the better answer than the instrument's.
+-- v48a/v48b are `loud`, so a decline is the documented pass and no verdict moves; what moves is that the
+-- mechanism is now the same mechanism and `acqref` bounds it.
+--
+-- THE MEASURED FIELDS ARE CLEARED ON THIS PATH. sdec.baud and sdec.baud_raw are written by a decode and
+-- survive one that never ran, so a failure row on a refused capture would quote the PREVIOUS cell's rate
+-- -- the stale-field fault this bench keeps paying for. brun calls sdec.clear_measured() per cell for
+-- the same reason; this clears only what a row here can print, because widening it would change cells
+-- that are not refused and confound the measurement above.
 local function decode(rd, n, fs)
   clearforce()
   sdec.acq_fs, sdec.fs = fs, fs
-  sdec.sig_levels(rd, n)
+  local lok, lwhy = sdec.sig_levels(rd, n)
+  if not lok then
+    sdec.res, sdec.baud, sdec.baud_raw = nil, nil, nil
+    return true, nil, nil, lwhy or 'acquisition refused'
+  end
   sdec.sig_edges(rd, n)
   sdec.sig_idle(rd, n)
   local ok, why = pcall(function() return sdec.decode_from(rd, n) end)
-  if not ok then return false, tostring(why), nil end
-  return true, nil, sdec.res
+  if not ok then return false, tostring(why), nil, nil end
+  return true, nil, sdec.res, nil
 end
 
 local HEX = '0123456789ABCDEF'
@@ -610,6 +683,18 @@ local nloudmiss, worstloudmiss = 0, 0
 -- regression cannot grow them unnoticed. `judged` is ok+bad, so without this the gate would read as
 -- evidence disappearing.
 local nnostim = 0
+-- CAPTURES THE APP'S OWN ACQUISITION GATE REFUSED, counted as a mechanism rather than as a verdict.
+-- decode() above says why it is honoured at all; this is what makes it readable and boundable. It is NOT
+-- a verdict of its own: a refusal on a `loud` vector is the documented pass and lands in `loudquiet`
+-- alongside every other decline, and on any other class it is a capture that returned nothing on a
+-- vector that should decode, which is `nobytes` and is BAD. So the same number cannot be read two ways
+-- depending on which vector produced it.
+--
+-- BOUNDED UPWARD FOR THE REASON `loudquiet` IS. The gate moves points out of the decode path, so a
+-- change that widened the gate would take captures out of the decode path, make every downstream
+-- counter fall and leave the run looking better. `acqref` is what says the gate moved: 106 of 1512 at
+-- iteration 1, and 72 of those are the v48a/v48b family the hardware refuses too.
+local nacqref = 0
 -- CELLS THAT FAILED AT EVERY OFFSET, which is the only cell-level number a ONE-CAPTURE hardware lap can
 -- be set beside. `badcells` is a UNION over A.offsets capture phases, so it rises with the offset count
 -- for a fixed defect: measured against soak lap 1, 65 cells fail here and passed on the bench, and not
@@ -706,7 +791,8 @@ for vi = 1, table.getn(P.vectors) do
         -- Asked of the STIMULUS, before the decode, so the verdict below cannot be reasoned backwards
         -- from what the app did with it.
         local allidle = window_idle(v, off, A.n * arb_fs / fs)
-        local ran, why, r = decode(rd, n, fs)
+        local ran, why, r, acqwhy = decode(rd, n, fs)
+        if acqwhy ~= nil then nacqref = nacqref + 1 end
         local rb = sdec.baud
         local good, det, bleed, lmiss
         if not ran then
@@ -849,7 +935,14 @@ for vi = 1, table.getn(P.vectors) do
           local spoke = r ~= nil and (r.nf or 0) > 0
           if v.class == 'loud' and ran and not silent and not ratebad then
             verdict = 'ok'; nok = nok + 1
-            if not spoke then nloudquiet = nloudquiet + 1 end
+            -- A REFUSED ACQUISITION IS NOT A QUIET DECODER, and keeping the two apart is the whole
+            -- reason `acqref` exists as its own counter. `loudquiet` bounds the DECODER declining to
+            -- produce bytes from a capture it was given; a capture sig_levels never handed it is a
+            -- different event with a different cause, and totalling both under one bound is issue #46's
+            -- own mistake -- one counter over several mechanisms, which can say a number moved and never
+            -- which one moved it. Both are still bounded, one each, so a regression that suppressed
+            -- every byte on every loud vector moves a number whichever route it took.
+            if not spoke and acqwhy == nil then nloudquiet = nloudquiet + 1 end
           else
             verdict = 'BAD'; nbad = nbad + 1; vbad = vbad + 1; cellbad = cellbad + 1
             local c = classify(ran, r, rb, baud, flagbad and bytesok)
@@ -868,6 +961,10 @@ for vi = 1, table.getn(P.vectors) do
                                 rb ~= nil and string.format('%.0f', rb) or 'nil', det)
           end
         end
+        -- THE REFUSAL REASON GOES IN THE ROW, and it is the whole value of honouring the gate: the
+        -- instrument's record carries 'acq: no clear logic levels (9 % of samples near them)' per cell,
+        -- so a twin that prints the same string is comparable by that string and not only by a count.
+        if acqwhy ~= nil then det = string.format('[acq refused: %s] %s', acqwhy, det or '') end
         if not A.quiet or verdict == 'BAD' then
           -- fs IS ROUNDED FOR THE ROW ONLY. Three of the ladder's rates are fractional (66e6/413 is
           -- 159806.295), and %d on a non-integer raises in Lua 5.4 -- which would turn every 19200 cell
@@ -906,14 +1003,19 @@ end
 --   nostim    captures whose window held no traffic. In `points` so the total stays self-checking --
 --             ok + bad + skip + nostim is every capture taken -- and out of `judged`, which is ok+bad,
 --             because nothing was compared against the payload.
+--   acqref    captures the app's own level gate refused. NOT a fifth verdict and deliberately not in the
+--             points total: every one of them already counted as ok (a loud decline) or as bad, so
+--             adding it would break ok + bad + skip + nostim == points. It is a mechanism tally that
+--             CROSSES the verdicts, which is exactly what makes it comparable with a soak record's
+--             'acq:' rows.
 print(string.format('\nPLAN %d/%d iteration %d: cells %d badcells %d badall %d points %d ok %d bad %d '
-                    .. 'skip %d nostim %d '
+                    .. 'skip %d nostim %d acqref %d '
                     .. 'raised %d nobytes %d norate %d rate %d flags %d bytes %d bleed %d bleedworst %d '
                     .. 'r46b %d rfit1 %d rstdC %d rother %d loudquiet %d loudmiss %d loudmissworst %d '
                     .. 'label %d lr46b %d lrfit1 %d lrstdC %d lrother %d',
                     A.shard, A.nshard, P.iteration, ncell, nbadcell, nbadall,
                     nok + nbad + nskip + nnostim,
-                    nok, nbad, nskip, nnostim,
+                    nok, nbad, nskip, nnostim, nacqref,
                     cls.raised, cls.nobytes, cls.norate, cls.rate, cls.flags, cls.bytes,
                     nbleed, worstbleed,
                     cls.r46b, cls.rfit1, cls.rstdC, cls.rother, nloudquiet,
@@ -936,9 +1038,10 @@ end
 print(string.format('%d ok, %d BAD, %d unjudgeable, %d with no traffic in the window, of %d point(s) '
                     .. 'over %d cell(s), %d cell(s) affected at any phase and %d at every phase it '
                     .. 'could be judged at, %d head bleed (worst %d), '
-                    .. '%d byte(s) inside the loud budget (worst %d)',
+                    .. '%d byte(s) inside the loud budget (worst %d), '
+                    .. '%d capture(s) the level gate refused',
                     nok, nbad, nskip, nnostim, nok + nbad + nskip + nnostim, ncell, nbadcell, nbadall,
-                    nbleed, worstbleed, nloudmiss, worstloudmiss))
+                    nbleed, worstbleed, nloudmiss, worstloudmiss, nacqref))
 -- THE COMPARABLE FIGURE, SPELT OUT, because getting this wrong is how 73 harness failures were filed
 -- against the app. A bench lap takes ONE capture per cell; this takes A.offsets of them and unions.
 if nok + nbad > 0 then

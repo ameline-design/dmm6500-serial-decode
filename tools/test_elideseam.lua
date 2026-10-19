@@ -667,6 +667,500 @@ print('-- the ACQUISITION side: the whole chain, with the two-buffer program fil
         string.format('%s / %s', tostring(sdec.gap_nscratch), tostring(TRIG_RESUME())))
 end)()
 
+print('')
+print('-- THE EIGHT GAP VECTORS, REBUILT FROM THEIR DECLARATIONS --')
+-- ---------------------------------------------------------------------------
+-- The seam and elision work is tested on the gap-targeted vectors and not on generic stimulus, so the
+-- first thing to establish is that the rebuild IS those vectors. out/ is gitignored, so reading
+-- out/vectors/v98a.bin would make every row below pass vacuously on a fresh clone -- the trap
+-- tools/test_octave.lua's header sets out -- and the parameters are therefore taken from
+-- tools/make_vectors.lua's own vec{} calls.
+--
+-- THE ORACLE IS THE CYCLIC IDLE RUN, measured off the real .bin files on 2026-10-19, because that is
+-- the quantity elision keys on: the detector fires when a run of mark exceeds the window, so if the
+-- rebuild's runs are the file's runs then the rebuild elides where the file elides.
+--
+-- AND IT IS NOT THE DECLARED GAP. Every run is about one bit time longer, because the last frame's STOP
+-- BIT is a mark at the idle level and merges into the gap -- no measurement can separate them -- and at
+-- 7E1 a parity bit that is also mark adds a second, which is why v99b's 1000-bit-time midgap measures
+-- 1001.9 and v99c's 600 measures 601.9 while 8N1's v98b measures 600.9 on the same declaration. That is
+-- data-dependent, so it is MEASURED here rather than asserted as a rule: the rebuild has to reproduce
+-- the file's number, not a derivation of it. The same relation is asserted in tools/test_bench_engine.lua.
+--
+-- `loop = true` in make_vectors means the tail runs into the next pass's lead, so the join run is the
+-- trailing idle plus the leading idle of one rendered pass. Measured that way here, which needs one
+-- pass rather than two.
+-- ---------------------------------------------------------------------------
+local GAPVEC = {
+  {id = 'v98a', nbits = 8, par = 0, lead = 600,  tail = 10, mid = 0,    at = nil, spb = 10,
+   runs = {610.9}},
+  {id = 'v98b', nbits = 8, par = 0, lead = 10,   tail = 10, mid = 600,  at = 65,  spb = 10,
+   runs = {600.9}},
+  {id = 'v98c', nbits = 8, par = 0, lead = 400,  tail = 10, mid = 400,  at = 65,  spb = 10,
+   runs = {400.9, 410.9}},
+  {id = 'v98d', nbits = 8, par = 0, lead = 950,  tail = 10, mid = 0,    at = nil, spb = 10,
+   runs = {960.9}},
+  {id = 'v99a', nbits = 7, par = 1, lead = 1000, tail = 10, mid = 0,    at = nil, spb = 10,
+   runs = {1010.9}},
+  {id = 'v99b', nbits = 7, par = 1, lead = 10,   tail = 10, mid = 1000, at = 40,  spb = 10,
+   runs = {1001.9}},
+  {id = 'v99c', nbits = 7, par = 1, lead = 600,  tail = 10, mid = 600,  at = 40,  spb = 10,
+   runs = {601.9, 610.9}},
+  {id = 'v99d', nbits = 7, par = 1, lead = 4790, tail = 10, mid = 0,    at = nil, spb = 5,
+   runs = {4800.8}},
+}
+
+-- One pass of a gap vector at its declared shape. -> readings, count, samples a bit.
+local function gaprender(g, baud, fs)
+  if baud == nil then baud = 9600 end
+  if fs == nil then fs = baud * g.spb end
+  -- loop = true, as make_vectors passes it, and it is not cosmetic here: without it GEN renders
+  -- floor(nc * Tb) + 2 samples, and those two samples of trailing pad lengthen the join by 0.2 bit
+  -- times at spb 10 and 0.4 at spb 5 -- which is exactly the discrepancy against the file that this
+  -- block first reported. With it the render is an exact whole number of bit times and the join is the
+  -- file's.
+  local o = {bytes = GEN_BYTES(bexp.bytes(g.id)), nbits = g.nbits, par = g.par, baud = baud,
+             fs = fs, gap = 0, lead = g.lead, tail = g.tail, loop = true}
+  if g.mid > 0 then o.midgap = g.mid o.midgap_at = g.at end
+  local rd, _, _, n = GEN(o)
+  return rd, n, fs / baud
+end
+
+-- The distinct idle runs of a looping arb, in BIT TIMES, ascending. `minbits` drops the intra-frame mark
+-- runs, which are bounded by the frame and are not gaps; it is also what keeps v98b's and v99b's 21-bit
+-- join out, which the file measurement does not list either.
+--
+-- TWO PASSES, AND ONLY THE INTERIOR RUNS COUNTED. The join is the quantity that needed care: measured on
+-- ONE pass as the leading idle plus the trailing idle it comes out two samples long at every rate,
+-- because sample 1 and sample n have no neighbour and so no rendered edge, while the real join has an
+-- edge at each end. Rendering the pass twice puts a genuine frame on both sides of the join and the
+-- number then matches the file. The outermost runs of the two-pass render are dropped for the same
+-- reason they were wrong before.
+local function gapruns(rd1, n1, sabit, minbits)
+  local rd, n, i = {}, 0, nil
+  for i = 1, n1 do n = n + 1 rd[n] = rd1[i] end
+  for i = 1, n1 do n = n + 1 rd[n] = rd1[i] end
+  local idle = rd[1]
+  local lead, tail = 0, 0
+  for i = 1, n do if rd[i] == idle then lead = lead + 1 else break end end
+  for i = n, 1, -1 do if rd[i] == idle then tail = tail + 1 else break end end
+  local raw, nr, run = {}, 0, 0
+  for i = lead + 1, n - tail do
+    if rd[i] == idle then
+      run = run + 1
+    else
+      if run / sabit >= minbits then nr = nr + 1 raw[nr] = run / sabit end
+      run = 0
+    end
+  end
+  table.sort(raw)
+  -- Distinct, because a two-pass render shows each of a two-gap vector's runs twice.
+  local out, no, k = {}, 0, nil
+  for k = 1, nr do
+    if no == 0 or (raw[k] - out[no]) > 0.5 then no = no + 1 out[no] = raw[k] end
+  end
+  return out, no
+end
+
+;(function()
+  local gi
+  for gi = 1, table.getn(GAPVEC) do
+    local g = GAPVEC[gi]
+    local rd, n, sabit = gaprender(g)
+    local got, ngot = gapruns(rd, n, sabit, 50)
+    -- One sample period, in bit times: the rendered edge is a sample or two of neither level, so that is
+    -- the whole budget. 0.1 bit times at spb 10 and 0.2 at v99d's spb 5 -- derived, not chosen.
+    local tol = 1.05 / g.spb
+    local want = g.runs
+    local ok = (ngot == table.getn(want))
+    local txt, k = '', nil
+    for k = 1, ngot do
+      txt = txt .. string.format('%s%.1f', (k > 1) and ', ' or '', got[k])
+      if ok and math.abs(got[k] - want[k]) > tol then ok = false end
+    end
+    local wtxt = ''
+    for k = 1, table.getn(want) do
+      wtxt = wtxt .. string.format('%s%.1f', (k > 1) and ', ' or '', want[k])
+    end
+    check(string.format('%s rebuilds the file`s idle runs: %s bit times', g.id, wtxt),
+          ok, string.format('got [%s] want [%s] tol %.2f', txt, wtxt, tol))
+  end
+  -- AND THE +1 IS THE STOP BIT, asserted rather than left in the comment: the declared gap alone is
+  -- short of every measured run, and by about one bit time, which is what makes the rebuild's agreement
+  -- above a fact about the waveform rather than about the arithmetic.
+  local g = GAPVEC[1]
+  local rd, n, sabit = gaprender(g)
+  local got = gapruns(rd, n, sabit, 50)
+  check('the measured join exceeds the declared lead+tail by about a stop bit, not by zero',
+        got[1] - (g.lead + g.tail) > 0.8 and got[1] - (g.lead + g.tail) < 1.2,
+        string.format('%.2f against declared %d', got[1], g.lead + g.tail))
+end)()
+
+print('')
+print('-- THE RATE LADDER ON THE ELIDE PATH, driven the way brun.point drives it --')
+-- ---------------------------------------------------------------------------
+-- WHY A SECOND ACQUISITION BLOCK. The one above runs ONE rate, 9600 Bd, and reaches the chain through
+-- sdec.stream_begin(). The soak does neither. Its ladder runs to 230400 Bd, and brun.point calls
+-- sdec.stream_acquire() DIRECTLY -- bench/bench_run.tsp says so where it does the setup by hand, 'the
+-- setup acquire() does and stream_acquire() does not'. The difference is not cosmetic: stream_begin
+-- consults sdec.mode_why(), which refuses any recording whose baud makes fs_for_burst() nil, so above
+-- about 165563 Bd stream_begin returns 'a recording gets 3.8 samples/bit, under the 4 floor -- use
+-- FRAME' and never captures. The bench never meets that gate, so the top five rates of the hardware
+-- ladder are reachable there and were not reachable from any offline fixture.
+--
+-- So this block mirrors brun.point's elide branch in its own order -- brun.cell_fs, then
+-- brun.elide_appfs, then brun.elide_fsmax, then the window cap, then the probe, then
+-- stream_acquire -- and sweeps the rate instead of holding it.
+--
+-- sdec.capmode IS PINNED AND brun DOES NOT SET IT. It is left at the 'frame' default on the
+-- instrument, where the block above chooses 'sml'. Measured here: 'frame', 'sml' and 'smx' give the
+-- same record, the same splice and the same bytes at both 76800 and 115200 Bd, because nothing on
+-- this path reads mode_cur() once stream_begin is out of it. Pinned anyway, so the preceding block's
+-- choice cannot leak in and make this one's subject the mode.
+--
+-- THE GEOMETRY IS v99d's, which is the only gap vector the hardware ladder took past 38400 Bd, and
+-- the reason is arithmetic rather than a draw: elision needs an idle run longer than the detector
+-- window, v99d's lead is 4800 bit times, and at 230400 Bd that is 20.8 ms against a 10 ms window
+-- where v98a's 610 bit times is 2.6 ms. The payload is v99d's own, out of bench/expect.tsp, so a
+-- fresh clone builds the whole stimulus -- out/ is gitignored and a suite that read out/vectors/
+-- would pass vacuously there, which tools/test_octave.lua's header sets out at length.
+-- ---------------------------------------------------------------------------
+;(function()
+  local keep = {ge = sdec.gapelide, fb = sdec.force_baud, cm = sdec.capmode, tm = sdec.trigmode,
+                ms = sdec.strm_maxsec, ns = sdec.gap_nscratch, w = TRIG.walk, d = SRC.trigderive,
+                lat = TRIG_RESUME(), rd = SRC.rd, ts = SRC.ts, nsmp = SRC.nsmp,
+                lp = SRC.loop, nf = SRC.native_fs, ta = SRC.trigat, n = sdec.n,
+                fs = sdec.fs, fw = sdec.fs_want, pr = sdec.proto, um = sdec.ui_mode,
+                nb = sdec.force_nbits, pa = sdec.force_par, st = sdec.force_nstop,
+                iv = sdec.force_invert, at = sdec.arm_thr, ai = sdec.arm_idle,
+                pi = sdec.probe_idle}
+  TRIG_WALK(true)
+  SRC_TRIGDERIVE(true)
+
+  local NCAP = 20000                 -- sdec.n, the depth brun gives an elided cell
+
+  -- One cell, as brun.point runs an elided one. `fsmax` is brun.elide_fsmax; nil lifts the cap.
+  -- `fs` overrides the whole rate chain, which is how the two rows below hold the rate still and
+  -- move the baud.
+  local function cell(o)
+    local baud = o.baud
+    sdec.n = NCAP
+    sdec.proto, sdec.ui_mode = 'uart', 'text'
+    sdec.capmode = 'frame'
+    sdec.force_baud, sdec.force_nbits, sdec.force_par = baud, o.nbits, o.par
+    sdec.force_nstop, sdec.force_invert = nil, nil
+    sdec.gap_nscratch = o.nscr or 12
+    sdec.gap_release_all()
+    -- brun.point's own order. cell_fs first and both fields together: hw_config() re-runs
+    -- fs_select(), which consults force_baud and throws a bare sdec.fs away -- fs_want is the
+    -- one-shot that survives it, and bench_run.tsp sets the pair for exactly that reason.
+    local cellfs = sdec.pick_fs(baud, 8)
+    sdec.fs, sdec.fs_want = cellfs, cellfs
+    sdec.gapelide, sdec.trigmode = o.win or 0.01, 'edge'
+    local appfs = nil
+    pcall(function() appfs = sdec.fs_for_burst(baud) end)
+    if appfs ~= nil and appfs > 0 then sdec.fs, sdec.fs_want = appfs, appfs end
+    local capped = nil
+    if o.fsmax ~= nil and sdec.fs > o.fsmax then
+      sdec.fs, sdec.fs_want = o.fsmax, o.fsmax
+      capped = o.fsmax
+    end
+    if o.fs ~= nil then sdec.fs, sdec.fs_want, capped = o.fs, o.fs, nil end
+    if sdec.fs > 0 then
+      local wmax = 0.4 * sdec.n / sdec.fs
+      if sdec.gapelide > wmax then sdec.gapelide = wmax end
+    end
+    sdec.clear_measured()
+    sdec.hw_config()
+    local fs = sdec.fs
+
+    -- Rendered AT the rate the capture runs at, so no rate error is mixed into the subject.
+    local rd, ts, n, i, p = {}, {}, 0, nil, nil
+    for p = 1, (o.np or 4) do
+      local go = {bytes = GEN_BYTES(bexp.bytes(o.vid)), nbits = o.nbits or 8,
+                  par = o.par or 0, baud = baud, fs = fs, gap = 0,
+                  lead = o.lead, tail = o.tail or 10, loop = (o.loop == true)}
+      if (o.mid or 0) > 0 then go.midgap = o.mid go.midgap_at = o.at end
+      local r1, _, _, n1 = GEN(go)
+      for i = 1, n1 do n = n + 1 rd[n] = r1[i] ts[n] = (n - 1) / fs end
+    end
+    SRC.rd, SRC.ts, SRC.nsmp = rd, ts, n
+    SRC.trigat, SRC.loop, SRC.native_fs = nil, false, nil
+    TRIG_RESUME(o.lat)
+
+    sdec.acq_make_buffer(sdec.acq_cap(sdec.n), true)
+    -- The probe, which is what stream_arm needs: without sdec.arm_thr it refuses elision and every
+    -- cell falls back to the canned template, which on the 2026-10-17 lap was silent in 53 of 53.
+    local lok = false
+    pcall(function()
+      if sdec.acq_free(sdec.n, nil, true) >= 2 then lok = sdec.sig_levels(sdec.smp, sdec.nread) end
+      if lok then sdec.sig_edges(sdec.smp, sdec.nread) sdec.sig_idle(sdec.smp, sdec.nread) end
+      if lok and sdec.thr ~= nil and sdec.swing ~= nil and sdec.swing > 0 then
+        sdec.arm_thr, sdec.arm_idle = sdec.thr, sdec.idle
+      else
+        sdec.arm_threshold()
+      end
+      local t = sdec.arm_thr
+      if t ~= nil and t == t and t > -10 and t < 10 then
+        sdec.probe_idle = 'gap vector: arming on the waveform own idle runs'
+      else
+        sdec.arm_thr = nil
+      end
+    end)
+
+    local keepmax = sdec.strm_maxsec
+    sdec.strm_maxsec = 30
+    sdec.ck_endwhy = nil
+    TRIG_CLOCK(0)
+    local got = nil
+    pcall(function() got = sdec.stream_acquire(sdec.n) end)
+    sdec.strm_maxsec = keepmax
+    local dok, dwhy = nil, nil
+    if got ~= nil and got > 0 then
+      pcall(function() dok, dwhy = sdec.stream_decode(sdec.nread) end)
+    end
+    local r = {got = got, why = sdec.spl_why, nseam = sdec.spl_nseam, nspl = sdec.spl_nspliced,
+               norph = sdec.spl_norphan, nadd = sdec.spl_nadded, elided = sdec.acq_elided,
+               fs = fs, cellfs = cellfs, appfs = appfs, capped = capped, sabit = fs / baud,
+               dok = dok, dwhy = dwhy, armed = sdec.strm_armed,
+               -- The head the latency really ate, in readings, and the margin gap_tail adds back.
+               -- Both are the fixture's own arithmetic, so a recovered tail can be compared with
+               -- what a complete one WOULD be instead of only with zero.
+               head = math.floor((o.lat or 0) * fs) + math.ceil(sdec.gap_idlemargin * (fs / baud))}
+    local tl = (sdec.ck_tot ~= nil) and sdec.ck_tot.tail or nil
+    if tl ~= nil then r.nm, r.nc = bexp.match(tl, o.vid) r.nf = tl.nf end
+    if r.nm ~= nil and r.nc ~= nil and r.nc > 0 then r.f = r.nm / r.nc end
+    if r.nadd ~= nil and r.nspl ~= nil and r.nspl > 0 then r.per = r.nadd / r.nspl end
+    return r
+  end
+
+  local function show(r)
+    return string.format('fs=%.0f sab=%.2f %s %s/%s orph=%s add=%s/seam vs head %s pay=%s/%s %s%s',
+                         r.fs, r.sabit, tostring(r.why), tostring(r.nspl), tostring(r.nseam),
+                         tostring(r.norph),
+                         (r.per ~= nil) and string.format('%.0f', r.per) or '-',
+                         tostring(r.head), tostring(r.nm), tostring(r.nc),
+                         (r.f ~= nil) and string.format('%.0f%%', r.f * 100) or '-',
+                         (r.dok == false) and (' REFUSED: ' .. tostring(r.dwhy)) or '')
+  end
+  -- v99d's own geometry, fixed across every row below so the rate is the only thing moving.
+  local function v99d(baud, more)
+    local o = {vid = 'v99d', baud = baud, lead = 4800, nbits = 7, par = 1, np = 4, lat = 156e-6}
+    local k, v
+    if more ~= nil then for k, v in pairs(more) do o[k] = v end end
+    return cell(o)
+  end
+
+  -- ---- THE PREMISE, three ways, because every claim below is a comparison ----
+  -- Without these the block could pass on a capture that never elided, at a rate that cannot carry
+  -- the payload, against a record that was never damaged.
+  local free = v99d(115200, {fs = 500000, win = 0})
+  check('premise: 115200 Bd at 500 kS/s with elision OFF is byte-exact, so the rate carries it',
+        free.why == 'not elided' and free.f ~= nil and free.f > 0.99, show(free))
+  local lossless = v99d(115200, {fs = 500000, lat = 0})
+  check('premise: with a lossless handover the same elided record needs no splice and gets none',
+        lossless.why == 'tails refused' and (lossless.nseam or 0) > 1 and lossless.nspl == 0
+        and lossless.f ~= nil and lossless.f > 0.95, show(lossless))
+  local top = v99d(230400, {fsmax = nil})
+  check('premise: the ladder TOP really elides, so a failure there is the elide path',
+        top.elided == true and (top.nseam or 0) > 1 and top.armed == true, show(top))
+
+  -- ---- THE HEAD IS RECOVERED WHOLE ACROSS THE LADDER, AND WHAT THAT TOOK ----
+  -- gap_tail finds the burst inside the scratch by scanning BACK for a run of idle and taking the
+  -- last non-idle reading before it. The run it is looking for is the elided gap, and it only
+  -- separates the two if nothing inside the HEAD is that long. A head is the resume latency wide,
+  -- fixed in TIME, so in bit times it grows with the baud: 156 us is 1.5 bit times at 9600 Bd, 12.5
+  -- at 80000 and 18.0 at 115200. Past a frame's width the head carries frame boundaries of its own,
+  -- and a mark run across one -- trailing data 1s, the parity bit, the stop bit -- reaches 4 bit
+  -- times on lowercase text.
+  --
+  -- MEASURED HERE BEFORE sdec.gap_tail TOOK framebits AS ITS FLOOR, with the run fixed at
+  -- sdec.gap_idlerun's three bit times: at 115200 Bd and 500 kS/s the scan stopped inside the head
+  -- and handed back 22 readings of an 87-reading head, 26 of 87 at 208 us, and the payload came out
+  -- 88 of 304 bytes -- 29 %. 76800 Bd on the same rate was byte-exact, so it keyed on the baud and
+  -- not the capture rate, and with elision off 115200 Bd was byte-exact too.
+  --
+  -- AND THE PLAN CALLED THAT A SPLICE, which is the part that cost a lap. gap_splice_plan tests the
+  -- tail for being non-nil and non-empty, so a quarter of a head counted: spl_why read 'ok', every
+  -- seam was paired and spl_norphan was 0, beside a payload that had collapsed. That is the shape
+  -- the 2026-10-18 lap reports at the top of the ladder -- splwhy=ok with pay=80/89 -- and it is the
+  -- one verdict a reader cannot act on, because 'ok' sends them to the decoder.
+  --
+  -- SAMPLE-EXACT, not a tolerance: `per` is what the splice put back per seam and `head` is what the
+  -- latency took plus gap_idlemargin, both arithmetic, so equality is the available assertion and
+  -- anything less than the whole head fails.
+  local lo = v99d(76800, {fs = 500000})
+  check('at 76800 Bd the splice recovers the WHOLE head and the payload is byte-exact',
+        lo.why == 'ok' and lo.nspl == lo.nseam and (lo.norph or 1) == 0
+        and lo.per ~= nil and lo.per == lo.head and lo.f ~= nil and lo.f > 0.99, show(lo))
+  -- BOTH ENDS OF THE MEASURED LATENCY BRACKET, not one point in it. 156 to 208 us is what the record
+  -- brackets the resume at (sdec.gapelide_frames), and a head shown whole at one value inside it
+  -- could be a knife edge on the rounding; shown at both it is the band.
+  local hi156 = v99d(115200, {fs = 500000})
+  local hi208 = v99d(115200, {fs = 500000, lat = 208e-6})
+  check('and at 115200 Bd, where the head is 18 bit times, the whole head comes back at 156 us',
+        hi156.why == 'ok' and hi156.nspl == hi156.nseam and (hi156.norph or 1) == 0
+        and hi156.per ~= nil and hi156.per == hi156.head
+        and hi156.f ~= nil and hi156.f > 0.99, show(hi156))
+  check('...and at 208 us as well, so the whole measured latency band is covered',
+        hi208.why == 'ok' and hi208.per ~= nil and hi208.per == hi208.head
+        and hi208.f ~= nil and hi208.f > 0.99, show(hi208))
+  -- AND THE RATE IS NOT THE SUBJECT EITHER, held the other way round: 76800 Bd at 1 MS/s is a
+  -- 156-reading head against the 78 above, on the same baud.
+  local lofast = v99d(76800, {fs = 1000000})
+  check('...and 76800 Bd at 1 MS/s, so the rule holds across the rate as well as the baud',
+        lofast.why == 'ok' and lofast.per ~= nil and lofast.per == lofast.head
+        and lofast.f ~= nil and lofast.f > 0.99, show(lofast))
+
+  -- THE RULE ITSELF, on a scratch built to carry the run that used to defeat it -- because every row
+  -- above would also pass if gap_tail had simply stopped searching. A head of two near-all-mark
+  -- frames holds an interior mark run far longer than three bit times and shorter than a frame, so
+  -- the premise is that the OLD rule would have cut here, asserted from the fixture's own samples
+  -- rather than assumed, and the claim is that the current one does not.
+  ;(function()
+    local baud, fs = 115200, 500000
+    local sabit = fs / baud
+    local hi, lo2, thr = 3.3, 0.0, 1.65
+    local bits = {0, 1, 1, 1, 1, 1, 0, 1, 0, 1, 1, 1, 1, 1, 0, 1, 0, 1}
+    local seq, ns, i, k = {}, 0, nil, nil
+    -- The elided gap first, a detector window of it, then the head.
+    for i = 1, math.floor(0.01 * fs) do ns = ns + 1 seq[ns] = hi end
+    local hstart = ns + 1
+    for i = 1, table.getn(bits) do
+      for k = 1, math.floor(sabit) do
+        ns = ns + 1
+        if bits[i] == 1 then seq[ns] = hi else seq[ns] = lo2 end
+      end
+    end
+    local H = ns - hstart + 1
+    -- The longest mark run strictly inside the head, in readings.
+    local run, best = 0, 0
+    for i = hstart, ns do
+      if seq[i] > thr then run = run + 1 if run > best then best = run end else run = 0 end
+    end
+    local oldneed = math.ceil(sdec.gap_idlerun * sabit)
+    check('premise: the head really does carry a mark run past gap_idlerun`s three bit times',
+          best >= oldneed and best < math.ceil(10 * sabit),
+          string.format('longest interior mark run %d readings, old rule needed %d, a frame is %d',
+                        best, oldneed, math.ceil(10 * sabit)))
+    local scr = mkscratch(seq, ns, 0)
+    local tt, tn = sdec.gap_tail(scr, thr, sabit)
+    local want = H + math.ceil(sdec.gap_idlemargin * sabit)
+    check('...and gap_tail still returns the whole head, so the floor is the frame and not three',
+          tt ~= nil and tn == want,
+          string.format('got %s readings, want %d (head %d + margin %d)', tostring(tn), want, H,
+                        math.ceil(sdec.gap_idlemargin * sabit)))
+  end)()
+
+  -- ---- ALL EIGHT GAP VECTORS AT 28800 Bd: ONE MECHANISM OR EIGHT GEOMETRIES? ----
+  -- The judge puts 94 of the hardware lap's 141 BAD cells on these eight, 9 to 14 each, and an even
+  -- spread across geometries from 400 to 4800 bit times of gap argues for one mechanism in the elide
+  -- path rather than for the gaps. 28800 Bd is where it bites: 8 of the judge's FAILs are there and 4 at
+  -- 31250, and the band is also where pick_fs lands on 159 806 and splorph >= 2 appears.
+  --
+  -- THE ASSERTION IS ON THE BYTES, cyclically through bexp.match, which is the only thing that can see
+  -- the class. 'The splice ran' and 'the splice said ok' both pass on every one of the 44 hardware cells
+  -- where an ok splice returned confident bytes that were not the payload -- 33 of 110 ok cells and 11 of
+  -- 31 partial, and ok against partial does not discriminate. A row here that checked spl_why would be
+  -- blind to exactly the defect it is for.
+  --
+  -- Each vector is driven at ITS OWN declared shape -- format, lead, tail and midgap -- so v98c and v99c
+  -- bring their two separate idle runs and make the framer re-anchor twice in one capture, which no other
+  -- shape in the set does.
+  do
+    local gi, nok, nbad, worst, wid = nil, 0, 0, 1.1, nil
+    local detail = ''
+    for gi = 1, table.getn(GAPVEC) do
+      local g = GAPVEC[gi]
+      local r = cell({vid = g.id, baud = 28800, lead = g.lead, tail = g.tail, mid = g.mid,
+                      at = g.at, nbits = g.nbits, par = g.par, np = 4, lat = 156e-6,
+                      loop = true, fsmax = 500000})
+      -- The premise, per vector: a vector whose gap is shorter than the detector window records
+      -- continuously and tests nothing, so it must not be counted as a pass.
+      local elided = (r.elided == true and (r.nseam or 0) > 1)
+      local f = r.f
+      if elided and f ~= nil and f > 0.99 then nok = nok + 1 else nbad = nbad + 1 end
+      if f ~= nil and f < worst then worst, wid = f, g.id end
+      detail = detail .. string.format(' %s=%s/%s', g.id,
+                                       (f ~= nil) and string.format('%.0f%%', f * 100) or 'nil',
+                                       tostring(r.why))
+    end
+    check('all eight gap vectors elide at 28800 Bd and come back byte-exact on their own geometry',
+          nok == 8 and nbad == 0,
+          string.format('%d of 8 clean, worst %s at %.0f%%:%s', nok, tostring(wid), worst * 100,
+                        detail))
+  end
+
+  -- ---- brun.elide_fsmax: WHICH RUNGS OF THE LADDER IT CLOSES ----
+  -- The decode gate is arithmetic. decode_from() refuses a forced rate when fs / baud is under
+  -- sdec.minsabit * (1 - sdec.plaustol) -- 4 x 0.98 = 3.92 -- and every elided capture is forced,
+  -- gap_elide() refusing without a rate. So a cap of C makes every baud above C / 3.92
+  -- undecodable on this path whatever the signal does, and the splice says so: spl_why is 'ok' on
+  -- all of them.
+  --
+  -- THE SETS BELOW ARE THE HARDWARE'S, cell for cell. SOAK-20261018-gaplap-merged-splice.csv:
+  -- the final lap ran brun.elide_fsmax = 500000 and refused v99d at 128000, 149009, 153600,
+  -- 156354, 172800, 189041, 192000, 210286 and 230400 -- nine of nine, each with splwhy=ok -- and
+  -- an earlier run of the same file carried 640000 and refused 172800, 192000 and 230400 while
+  -- 128000 and 153600 decoded 89 and 80 frames with no bad frame in either. This reproduces both
+  -- boundaries, so a change to the cap, to minsabit or to plaustol moves a count here and is not
+  -- silent.
+  local LAD = {115200, 124606, 128000, 149009, 153600, 156354, 172800, 189041, 192000,
+               210286, 230400}
+  local function sweep(fsmax)
+    local out, nref, b, i = {}, 0, nil, nil
+    for i = 1, table.getn(LAD) do
+      b = LAD[i]
+      local r = v99d(b, {fsmax = fsmax})
+      if r.dok == false then nref = nref + 1 out[nref] = b end
+      -- Whatever the decode did, the splice must still have run: a refusal that also lost the
+      -- splice would make the count below agree for the wrong reason.
+      if r.why ~= 'ok' then out.badwhy = (out.badwhy or '') .. ' ' .. b .. '=' .. tostring(r.why) end
+    end
+    out.n = nref
+    return out
+  end
+  local function lst(s)
+    local t, i = '', nil
+    for i = 1, s.n do t = t .. (i > 1 and ',' or '') .. s[i] end
+    return '[' .. t .. '] badwhy=' .. tostring(s.badwhy)
+  end
+  local c500 = sweep(500000)
+  check('cap 500000 closes nine rungs, 128000 Bd up, exactly the hardware lap`s nine',
+        c500.n == 9 and c500[1] == 128000 and c500[9] == 230400 and c500.badwhy == nil, lst(c500))
+  local c640 = sweep(640000)
+  check('cap 640000 closes five, 172800 Bd up -- so 128000 and 153600 decode, as they did',
+        c640.n == 5 and c640[1] == 172800 and c640[5] == 230400 and c640.badwhy == nil, lst(c640))
+  local cnil = sweep(nil)
+  check('and with no cap the ladder is open to its top: 230400 Bd gets 4.34 samples/bit',
+        cnil.n == 0 and cnil.badwhy == nil, lst(cnil))
+  -- THE CAP IS WHAT CLOSED THEM, not the rate the app would have chosen. 1 MS/s is the only listed
+  -- rate at or above 230400 x 3.92 = 903168, so the cap and the ladder's top cannot both stand.
+  check('the premise of the three rows above: 230400 Bd is inside sdec.maxbaud and needs 1 MS/s',
+        230400 <= sdec.maxbaud and top.fs == 1000000
+        and sdec.pick_fs(230400, sdec.minsabit) == 1000000,
+        string.format('maxbaud=%s topfs=%s pick=%s', tostring(sdec.maxbaud), tostring(top.fs),
+                      tostring(sdec.pick_fs(230400, sdec.minsabit))))
+
+  sdec.gap_nscratch = keep.ns
+  pcall(sdec.gap_release_all)
+  sdec.gapelide, sdec.force_baud, sdec.capmode = keep.ge, keep.fb, keep.cm
+  sdec.trigmode, sdec.strm_maxsec, sdec.n = keep.tm, keep.ms, keep.n
+  sdec.fs, sdec.fs_want, sdec.proto, sdec.ui_mode = keep.fs, keep.fw, keep.pr, keep.um
+  sdec.force_nbits, sdec.force_par, sdec.force_nstop = keep.nb, keep.pa, keep.st
+  sdec.force_invert, sdec.arm_thr, sdec.arm_idle, sdec.probe_idle = keep.iv, keep.at, keep.ai, keep.pi
+  TRIG_RESUME(keep.lat)
+  SRC.rd, SRC.ts, SRC.nsmp = keep.rd, keep.ts, keep.nsmp
+  SRC.loop, SRC.native_fs, SRC.trigat = keep.lp, keep.nf, keep.ta
+  TRIG_WALK(keep.w == true)
+  SRC_TRIGDERIVE(keep.d == true)
+  check('and the ladder block leaves the depth, the rate and the format as it found them',
+        sdec.n == keep.n and sdec.fs == keep.fs and sdec.force_nbits == keep.nb
+        and sdec.capmode == keep.cm,
+        string.format('n=%s fs=%s nbits=%s capmode=%s', tostring(sdec.n), tostring(sdec.fs),
+                      tostring(sdec.force_nbits), tostring(sdec.capmode)))
+end)()
+
 print(string.format('\n%d passed, %d failed', pass, fail))
 if fail > 0 then
   local i

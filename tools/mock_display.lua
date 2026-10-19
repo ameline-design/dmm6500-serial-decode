@@ -373,6 +373,21 @@ local FILES = {}
 local CONTENT = {}
 local RPOS = {}       -- read handle -> {path, pos}, pos being the offset of the next line
 local WPATH = nil     -- the path handle 42 currently points at
+-- THE WRITERS UNDERNEATH IT, outermost first, so a nested open and close restores the one it
+-- interrupted. The instrument hands out a distinct handle per open and a record's handle keeps working
+-- while another file is opened and closed; here every write mode gets the constant 42, so without this
+-- the inner close sets WPATH to nil and every subsequent write on the OUTER handle goes nowhere --
+-- silently, because file.write only appends `if WPATH ~= nil`.
+--
+-- MEASURED COST OF NOT HAVING IT: an offline bench lap with gap elision on writes the app's own USB
+-- byte log (bytesidx.txt once, bytes000.txt fifteen times) in the middle of the run, and bench_rec's
+-- record lost one whole brec.syncrows window -- 50 consecutive cells, absent from the CSV while
+-- brun.soak returned '1 iteration(s) complete' and the judge scored the short file without complaint.
+--
+-- A STACK AND NOT A HANDLE TABLE. Two writers open at once still share 42 and the inner one still wins,
+-- which is the mock's standing limitation and is what MD.handles() exists to make visible. This fixes
+-- the NESTED case, which is the one the app actually performs: open the log, write, close, carry on.
+local WSTACK = {}
 local nextfh = 42
 
 -- DIRECTORIES, because an open into one that does not exist has to FAIL here or the app's mkdir is
@@ -530,6 +545,10 @@ function file.open(path, mode)
   end
   if mode == file.MODE_WRITE then LOG = {}; CONTENT[path] = '' end
   CONTENT[path] = CONTENT[path] or ''       -- MODE_APPEND keeps what is already there
+  -- The writer this one interrupts, remembered so its close hands the stream back. nil is pushed too:
+  -- a push and a pop have to pair whatever the state was, or a close with nothing underneath it would
+  -- pop a path that belongs to an older, already-closed handle.
+  WSTACK[table.getn(WSTACK) + 1] = WPATH or ''
   WPATH = path
   FILES[path] = true
   NLIVE = NLIVE + 1
@@ -557,6 +576,12 @@ function MD.rmfile(path)
   FILES[p] = nil
   CONTENT[p] = nil
   if WPATH == p then WPATH = nil end
+  -- AND OUT OF THE SUSPENDED WRITERS TOO, or a close would hand the stream back to a path that is no
+  -- longer on the key and writes to it would recreate it behind file.open's back.
+  local i
+  for i = 1, table.getn(WSTACK) do
+    if WSTACK[i] == p then WSTACK[i] = '' end
+  end
 end
 
 function MD.forget_files()
@@ -564,6 +589,8 @@ function MD.forget_files()
   CONTENT = {}
   RPOS = {}
   WPATH = nil
+  -- The suspended writers go with them: they name paths on a key that is not in the slot any more.
+  WSTACK = {}
   -- AND THE DIRECTORIES, because "different key" means a key with no SERDEC on it. Keeping DIRS
   -- across the wipe made the swap unmodellable: every path stayed openable, so the one case this
   -- harness exists to reach -- a second key, mid-session, with the app holding an allocated name from
@@ -665,7 +692,18 @@ function file.close(h)
   if h == nil then error('close on a nil handle', 0) end
   NLIVE = NLIVE - 1
   RPOS[h] = nil          -- a closed read handle dangles, like a deleted display object
-  if h == 42 then WPATH = nil end
+  if h == 42 then
+    -- Back to whichever writer this one interrupted, or nil when it was the only one. '' is the pushed
+    -- form of nil -- Lua 5.0 tables cannot hold a nil entry and still have a length -- so it maps back.
+    local n = table.getn(WSTACK)
+    if n > 0 then
+      WPATH = WSTACK[n]
+      if WPATH == '' then WPATH = nil end
+      WSTACK[n] = nil
+    else
+      WPATH = nil
+    end
+  end
 end
 -- Make the Nth write raise, to model the key filling up mid-save.
 function MD.failwrite(n) WFAIL = n end

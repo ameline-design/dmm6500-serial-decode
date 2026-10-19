@@ -2724,11 +2724,16 @@ end
 -- per gap every head survives and the decoder can put them back, which is the only route to a byte-exact seam
 -- above 2400 Bd: no shift can recover samples that were never recorded, and these were.
 --
--- The pairing is by timestamp and not by index. Each scratch's newest reading carries an absolute time and so does
--- each seam in the record, so a scratch is matched to the gap it actually holds. Pairing by position would
--- assume the groups ran in order, that all of them ran, and that the program did not wrap -- and a wrap is
--- ordinary: with k scratches and more than k gaps the earliest are overwritten, which the times show as
--- scratches newer than their neighbours rather than as a silent mispairing of every gap in the record.
+-- THE PAIRING IS BY POSITION, and this paragraph said the opposite until it was grepped: there is no
+-- timestamp pairing anywhere, and no scratch timestamp is read on any path -- gap_splice_plan takes scratch
+-- ((j-1) mod ns) + 1 for seam j, by the program's own counter, and buf.relativetimestamps is read only by
+-- gap_seams, on the RECORD, to find the seams in the first place. A wrap is handled, the orphan rule
+-- refusing the early seams rather than approximating them; what is NOT handled is gap_seams returning a
+-- count that is not the burst count, because then every later seam's index is off and the heads go to the
+-- wrong bursts. The 2026-10-18 lap has that: at 28800 to 38400 Bd, where pick_fs lands on 159 806, splseam
+-- reads 9 to 16 while bexp.match_bursts finds 4 bursts in the same record and scores them 190/190,
+-- 224/232, 197/206 and 207/211 -- the bytes are all there and only the alignment between bursts is lost.
+-- A timestamp pairing would be immune to the count and is the obvious repair; it is not written yet.
 -- Blocks the trigger model's store holds, measured. docs/TRIGGER.md, 'The six blocks'.
 sdec.gap_blockstore = 63
 -- 5 blocks a group and one branch to close the loop, so this is what the store can hold. DERIVED and not
@@ -2831,11 +2836,17 @@ end
 sdec.gap_seamdt = 4
 
 -- How many bit times of unbroken idle mark the end of the silence before a burst, when walking a scratch
--- backwards. It has to exceed the head the scratch holds and fall well short of the silence ahead of it: the
--- head is the resume latency, measured at 120-160 us or 1.3-1.6 bit times at 9600 Bd, and the silence is at
--- least one detector window, 100 bit times at the same rate. Three sits in the middle of two orders of
--- magnitude, and the reason it cannot simply be "the trailing run away from idle" is that a data bit at the
--- idle level is indistinguishable from idle -- 0xFF carries eight of them.
+-- backwards. A FLOOR and not the figure used: gap_tail raises it to the frame's own width, for the reason
+-- below. The silence it has to fall short of is at least one detector window -- 100 bit times at 9600 Bd --
+-- so there are two orders of magnitude to sit inside, and the reason it cannot simply be "the trailing run
+-- away from idle" is that a data bit at the idle level is indistinguishable from idle: 0xFF carries eight.
+--
+-- WHY A FIXED NUMBER OF BIT TIMES CANNOT BE THE WHOLE RULE. It has to exceed the head the scratch holds, and
+-- the head is the resume latency -- fixed in TIME, 156 to 208 us -- so in bit times it grows with the rate:
+-- 1.5 at 9600 Bd and 18 at 115200. Past a frame's width the head carries frame boundaries of its own, and a
+-- mark run across one reaches several bit times, so a three-bit-time rule stops INSIDE the head and anchors
+-- on the next frame's start bit. gap_tail takes the larger of this and framebits, which is what the longest
+-- mark run inside a burst is bounded by. tools/test_elideseam.lua measures both sides of it.
 sdec.gap_idlerun = 3
 
 -- And how much idle to carry across with the head. The framer anchors on the first edge it finds, so it needs
@@ -2914,7 +2925,20 @@ function sdec.gap_tail(scr, thr, sabit)
   -- reading seen so far, so when the run reaches idlerun bit times the burst's own first reading is already in
   -- hand. Taking i + 1 instead would answer the END OF THE SILENCE and carry idlerun bit times of idle that
   -- the margin then doubles.
-  local need = math.ceil(sdec.gap_idlerun * sabit)
+  -- THE RUN HAS TO BE LONGER THAN ANY RUN THE HEAD CAN CONTAIN, or this scan stops inside the head and
+  -- anchors on the next frame's start bit -- which hands back the last fragment of the head while
+  -- gap_splice_plan, testing only that a tail came back, calls it a splice and reports 'ok'. A mark run
+  -- inside a burst is bounded by the frame: trailing data bits, the parity bit and the stop bits may all be
+  -- mark, and the next frame's start bit breaks it. So framebits is the floor, and sdec.gap_idlerun is the
+  -- other one. Raised, never lowered, so a scratch whose elided idle is short still refuses its tail rather
+  -- than anchoring on a run this cannot tell from the gap.
+  local nbits = sdec.force_nbits or 8
+  local parbits = 0
+  if sdec.force_par ~= nil and sdec.force_par ~= sdec.PAR_NONE then parbits = 1 end
+  local framebits = 1 + nbits + parbits + (sdec.force_nstop or 1)
+  local runbits = sdec.gap_idlerun
+  if framebits > runbits then runbits = framebits end
+  local need = math.ceil(runbits * sabit)
   if need < 2 then need = 2 end
   local run, s, lastnon = 0, nil, nil
   for i = n, 1, -1 do
