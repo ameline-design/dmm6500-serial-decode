@@ -94,6 +94,7 @@ from dmmrun import DMM              # noqa: E402
 from siglent import SDG             # noqa: E402
 import run_bench as RB              # noqa: E402
 
+ARB_SPB = 10             # v98a renders at 10 arb samples a bit; tools/make_vectors.lua
 VEC = 'v98a'             # names the elide branch in brun.point; the wire carries the ramp, not this
 SQ_HZ = 1000.0           # default; --hz moves it, and the unambiguous range moves with it
 AMP_VPP = 3.0
@@ -299,24 +300,32 @@ def analyse(lines, baud, half_us=HALF_US):
     carries hundreds. Where the scratch does hold two, its own figure is reported beside the
     record's as a check and is NOT substituted, so the two trials are comparable.
     """
+    # ONE RETURN SHAPE ON EVERY PATH: (hole or None, det). The reason for a refusal lives in
+    # det['why'], so a trial that cannot give a hole still hands back the timestamps and the counts
+    # -- which is the whole point on the arb arm, where no hole is expected and the timestamps are
+    # the measurement.
+    det = {'why': None}
     if tagged(lines, 'ran') != 'true':
-        return None, 'the capture did not run (ran=%s why=%s)' % (tagged(lines, 'ran'),
-                                                                  tagged(lines, 'why'))
+        det['why'] = ('the capture did not run (ran=%s why=%s)'
+                      % (tagged(lines, 'ran'), tagged(lines, 'why')))
+        return None, det
     try:
         vmin, vmax = float(tagged(lines, 'vmin')), float(tagged(lines, 'vmax'))
     except (TypeError, ValueError):
-        return None, 'no levels came back'
+        det['why'] = 'no levels came back'
+        return None, det
     if (vmax - vmin) < SWING_MIN_V:
-        return None, ('the line is dead -- %.3f V of swing, under the %.2f V floor'
+        det['why'] = ('the line is dead -- %.3f V of swing, under the %.2f V floor'
                       % (vmax - vmin, SWING_MIN_V))
+        return None, det
     # The midpoint of the measured rails, not sdec.thr: thr is placed for a serial line, where the
     # mark is the resting level, and on a 50 % duty stimulus the two rails are equally occupied.
     thr = 0.5 * (vmin + vmax)
     gv, rv = samples(lines, 'g'), samples(lines, 'r')
     gc, rc = crossings(gv, thr), crossings(rv, thr)
-    det = {'thr': thr, 'ngv': len(gv), 'nrv': len(rv), 'ngc': len(gc), 'nrc': len(rc),
-           'segfs': tagged(lines, 'segfs'), 'spanfs': tagged(lines, 'spanfs'),
-           'nrd': tagged(lines, 'nrd'), 'scratch': tagged(lines, 'scratch')}
+    det.update({'thr': thr, 'ngv': len(gv), 'nrv': len(rv), 'ngc': len(gc), 'nrc': len(rc),
+                'segfs': tagged(lines, 'segfs'), 'spanfs': tagged(lines, 'spanfs'),
+                'nrd': tagged(lines, 'nrd'), 'scratch': tagged(lines, 'scratch')})
     # THE TWO BUFFERS' OWN TIMESTAMPS. Read because nothing in this repo ever has on a scratch --
     # gap_seams reads relativetimestamps on the record only, and the note at gap_blockstore claiming
     # the pairing was by timestamp was wrong about its own code. If the origins are shared the
@@ -336,10 +345,12 @@ def analyse(lines, baud, half_us=HALF_US):
                 vals.append(None)
         det[key] = vals
     if len(rc) < 2:
-        return None, 'the record holds %d crossing(s); two are needed for the interval' % len(rc)
+        det['why'] = ('the record holds %d crossing(s); two are needed for the interval' % len(rc))
+        return None, det
     if not gc:
-        return None, ('the scratch caught no crossing -- the arm landed inside a rail. This is the '
+        det['why'] = ('the scratch caught no crossing -- the arm landed inside a rail. This is the '
                       'coin flip the retries are for, not a fault')
+        return None, det
     sr, wr = spacing(rc)
     dtr = half_us / sr
     det['dtr'], det['sr'], det['wr'] = dtr, sr, wr
@@ -356,7 +367,8 @@ def analyse(lines, baud, half_us=HALF_US):
             det['k'] = k
             det['bits'] = h * 1e-6 * baud
             return h, det
-    return None, 'no k puts the handover inside half a period'
+    det['why'] = 'no k puts the handover inside half a period'
+    return None, det
 
 
 def slope(xs, ys):
@@ -386,9 +398,11 @@ def main():
                     help="capture rate; absent, the app's own fs_for_burst choice stands")
     ap.add_argument('--win', type=float, default=0.010, help='elision window, seconds')
     ap.add_argument('--no-load', action='store_true', help='app and engine already loaded')
-    ap.add_argument('--wave', default='pulse', choices=('pulse', 'square', 'triangle'),
-                    help='stimulus shape; pulse locates the crossings far better while keeping the '
-                         'rails separable, the others are cross-checks (see the module docstring)')
+    ap.add_argument('--wave', default='pulse', choices=('pulse', 'square', 'triangle', 'arb'),
+                    help="stimulus shape; pulse locates the crossings far better while keeping the "
+                         "rails separable, square and triangle are cross-checks, and `arb` plays the "
+                         "gap vector itself -- the FAITHFUL regime, with real idle windows, where the "
+                         "crossing grid is meaningless and only the timestamps can answer")
     ap.add_argument('--hz', type=float, default=SQ_HZ, metavar='HZ',
                     help='stimulus frequency. The hole is resolved only modulo half a period, so '
                          'this sets the unambiguous range to +-250000/HZ us -- and lowering it '
@@ -415,7 +429,17 @@ def main():
         # whose edges are at the data's mercy; the grid has to be unconditional for the phases to add.
         # BSWV is written directly for the triangle: siglent.py carries sine and square helpers only,
         # and TRIANGLE takes the same parameter set.
-        if a.wave == 'square':
+        if a.wave == 'arb':
+            # THE VECTOR ITSELF, which is the only stimulus that puts the program in the regime the
+            # defect lives in: v98a is silent for 610 bit times of every 1910, so the detector really
+            # does see an idle window and the handover really is a burst's first crossing. The
+            # crossing-grid construction cannot be used here -- serial edges are at the data's mercy
+            # and carry no uniform period -- so this arm reports the TIMESTAMPS and nothing else.
+            srate = a.baud * ARB_SPB
+            g.select_arb(VN.arb(VEC), AMP_VPP, srate, OFST_V, 1)
+            print('stimulus: %s at %d Bd, %d Sa/s, %.1f Vpp @ %.1f V'
+                  % (VEC, a.baud, srate, AMP_VPP, OFST_V))
+        elif a.wave == 'square':
             g.square(a.hz, AMP_VPP, OFST_V)
         elif a.wave == 'triangle':
             g.write('C1:BSWV WVTP,TRIANGLE,FRQ,%g,AMP,%g,OFST,%g,PHSE,0'
@@ -427,13 +451,15 @@ def main():
             g.write('C1:BSWV WVTP,PULSE,FRQ,%g,AMP,%g,OFST,%g,DUTY,50,RISE,%g,FALL,%g'
                     % (a.hz, AMP_VPP, OFST_V, a.edge, a.edge))
         g.output(True)
-        print('stimulus: %.0f Hz %s, %.1f Vpp @ %.1f V, output ON  (half period %.0f us%s)'
-              % (a.hz, a.wave, AMP_VPP, OFST_V, half_us,
-                 ', edges %.0f us' % (a.edge * 1e6) if a.wave == 'pulse' else ''))
+        if a.wave != 'arb':
+            print('stimulus: %.0f Hz %s, %.1f Vpp @ %.1f V, output ON  (half period %.0f us%s)'
+                  % (a.hz, a.wave, AMP_VPP, OFST_V, half_us,
+                     ', edges %.0f us' % (a.edge * 1e6) if a.wave == 'pulse' else ''))
         # READ BACK, because a parameter the generator rejected is not reported: BSWV takes what it
         # understands and leaves the rest, so an unsupported RISE would run as a hard square and the
         # crossings would quietly go back to being half a sample uncertain.
         print('readback: %s' % str(g.query('C1:BSWV?')).strip())
+        print('output ON')
         print()
 
         body = TRIAL % {'fs': ('%g' % a.fs) if a.fs else 'nil',
@@ -454,10 +480,35 @@ def main():
                 for x in lines[:12]:
                     print('  %s' % x)
                 return 1
+            # THE ARB ARM MUST NOT REACH THE GRID, and this is a guard against the worst failure the
+            # tool could have: serial edges give plenty of crossings, so spacing() would return a
+            # mean of unrelated intervals, dtr would be meaningless, and a confident hole would print
+            # from a grid that does not exist. The timestamps are the only thing this arm can say.
+            if a.wave == 'arb':
+                _, det = analyse(lines, a.baud, half_us)
+                if not isinstance(det, dict):
+                    print('try %d/%d: %s' % (t + 1, a.tries, det))
+                    continue
+                ts, tr = det.get('ts_scratch') or [], det.get('ts_record') or []
+                gap = None
+                if ts and tr and ts[-1] is not None and tr[0] is not None:
+                    gap = (tr[0] - ts[-1]) * 1e6
+                print('try %d/%d: scratch %d rd, record %d rd, spl=%s, '
+                      'record_first - scratch_last = %s'
+                      % (t + 1, a.tries, det['ngv'], det['nrv'], tagged(lines, 'spl'),
+                         ('%+.2f us' % gap) if gap is not None else 'unreadable'))
+                print('         scratch ts [... %s]  record ts [%s ...]'
+                      % (' '.join('%.6f' % v for v in ts[-3:] if v is not None) or 'none',
+                         ' '.join('%.6f' % v for v in tr[:3] if v is not None) or 'none'))
+                if gap is not None:
+                    holes.append(gap)
+                    det['hole'] = gap
+                    dets.append(det)
+                continue
             h, det = analyse(lines, a.baud, half_us)
             if h is None:
-                whys.append(det)
-                print('try %d/%d: %s' % (t + 1, a.tries, det))
+                whys.append(det.get('why') or 'unstated')
+                print('try %d/%d: %s' % (t + 1, a.tries, det.get('why')))
                 continue
             holes.append(h)
             det['hole'] = h

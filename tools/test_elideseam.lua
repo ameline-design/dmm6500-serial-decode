@@ -770,6 +770,33 @@ print('-- the ACQUISITION side: the whole chain, with the two-buffer program fil
   check('...while an overlap of the same width costs no alignment at all, so the lap\'s +1 is a hole',
         lap.why == 'ok' and lap.f ~= nil and lap.f > 0.99, hshow(lap))
 
+  -- THE HOLE'S WIDTH, BRACKETED BY THE HARDWARE'S OWN VERDICT PAIR. The instrument reports
+  -- `splwhy=ok` beside payloads around 29 % on 110 of 144 elided cells, and only a narrow band of
+  -- holes produces BOTH of those at once -- which makes the pair a measurement of the width without
+  -- any instrument, and a better one than the direct attempt. Below the band the splice is
+  -- byte-exact, so the hardware would not be failing; above it gap_tail finds no head at all and the
+  -- verdict becomes `tails refused`, which the hardware does not report. The band straddles the
+  -- 70-90 us independently predicted for the handover, 7-9 readings at 100 kS/s.
+  --
+  -- Asserted as a BAND rather than at one width on purpose: the quantity is not known to a reading,
+  -- and a check pinned at a single value would read as precision this does not have.
+  local band, bi, bshow = true, nil, ''
+  for bi = 1, 3 do
+    local hr = ({6, 10, 14})[bi]
+    local c = hcell(hr)
+    bshow = bshow .. string.format('%d:%s/%s ', hr, tostring(c.why),
+                                   (c.f ~= nil) and string.format('%.0f%%', c.f * 100) or '-')
+    if not (c.why == 'ok' and c.f ~= nil and c.f < 0.5) then band = false end
+  end
+  check('the hardware pair -- splwhy=ok beside a third of the payload -- holds across 6 to 14 readings',
+        band, bshow)
+  -- AND BOTH EDGES OF THE BAND, so it is a band and not an unbounded claim.
+  local lo2, hi2 = hcell(2), hcell(18)
+  check('...is byte-exact below it, so a smaller hole would not produce the hardware failure',
+        lo2.why == 'ok' and lo2.f ~= nil and lo2.f > 0.99, hshow(lo2))
+  check('...and loses the head above it, which the hardware does not report',
+        hi2.why == 'tails refused', hshow(hi2))
+
   sdec.gap_nscratch = keep.ns
   pcall(sdec.gap_release_all)
   sdec.gapelide, sdec.force_baud, sdec.capmode = keep.ge, keep.fb, keep.cm
