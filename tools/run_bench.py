@@ -667,6 +667,16 @@ def main():
                     help='enable the seam-padding repair for this run by setting sdec.gap_resume. '
                          '156e-6 is the value the offline model measures; 0 leaves it off, which is '
                          'the shipped default. Verified by read-back, like --elide')
+    # DECLARED, NOT INHERITED -- and reported on every lap whether or not it is passed. The operator's
+    # standing requirement is that every soak carries the over-read at its 10 % default, and until now a
+    # lap had no way to say which margin it actually ran: the value lived only in sdec.strm_overread on
+    # the instrument, and the record's `over=` was for a while emitted inside the elide branch, so an
+    # elision-off lap carried it on none of its rows. That is the same defect twice -- a setting the
+    # launch cannot state and the record cannot show is a setting the lap does not test.
+    ap.add_argument('--over-read', dest='over_read', type=float, default=None, metavar='FRACTION',
+                    help='set sdec.strm_overread for this run, e.g. 0.10 for the shipped 10 %%. 0 turns '
+                         'the margin off, which is a deliberate control. Verified by read-back, like '
+                         '--elide -- and the value in force is printed either way')
     ap.add_argument('--elide-vids', default=None, metavar='V,V',
                     help='elide only these vectors, leaving the other nodrop vectors free-running as a '
                          'control in the same lap. Default is every nodrop vector')
@@ -706,6 +716,13 @@ def main():
         ap.error('--spec needs --push-plan. Without it the spec is never written to the key and the '
                  'engine runs the plan already sitting there, which is usually the last full draw. '
                  'Add --push-plan, or drop --spec if the key already holds the plan you want.')
+    # SAME SHAPE OF MISTAKE, AND IT HAS ALREADY COST INSTRUMENT TIME. --detach only widens what --start
+    # does; on its own it starts nothing and exits 0, which reads exactly like a launched run. On
+    # 2026-10-19 a `--push-plan --detach` returned success having started nothing and the operator's
+    # window was spent before anyone noticed. Nothing legitimate asks for detach without start.
+    if a.detach and not a.start:
+        ap.error('--detach needs --start. On its own it starts nothing and still exits 0, which looks '
+                 'exactly like a launched run. Add --start, or drop --detach.')
 
     rows = None
     if a.push_plan and a.plan_file:
@@ -925,6 +942,27 @@ def main():
                                      % (got, want))
                 print('  seam padding: %s -- NOT the shipped default, which is off'
                       % ('OFF' if a.gap_resume <= 0 else '%g s resume latency' % a.gap_resume))
+            # THE OVER-READ, SET IF ASKED AND REPORTED EITHER WAY. The read-back is unconditional
+            # because the interesting case is the one nobody passed a flag for: a lap that inherited
+            # whatever the app booted with. autoexec can set boot state, so "the default is 10 %" is an
+            # assumption about the instrument until it is read.
+            if a.over_read is not None:
+                d.exec('do sdec.strm_overread = %s end' % repr(float(a.over_read)))
+            got = str(d.q('print(string.format("%.6f", sdec.strm_overread or -1))') or '').strip()
+            try:
+                back = float(got)
+            except ValueError:
+                back = None
+            if a.over_read is not None:
+                if back is None or abs(back - float(a.over_read)) > 1e-9:
+                    raise SystemExit('REFUSING: the instrument did not take sdec.strm_overread (%r, '
+                                     'wanted %r). A lap that silently ran a different margin is not '
+                                     'distinguishable afterwards.' % (got, a.over_read))
+            if back is None or back < 0:
+                print('  over-read: the instrument did not report sdec.strm_overread (%r)' % got)
+            else:
+                print('  over-read: %.2f %%%s' % (back * 100.0,
+                      '' if a.over_read is not None else ' (inherited, not passed)'))
             if a.elide_fsmax is not None:
                 # 0 means NO CAP, since a CLI number cannot carry nil and brun.elide_fsmax = nil is how
                 # the uncapped case is spelled. Same convention as SDEC_PROBE_N in tools/sweep_plan.lua.
@@ -965,7 +1003,7 @@ def main():
                 print('    stop it with the front-panel TRIGGER key -- the run ends after the current')
                 print('    waveform and CLOSES the record, which is what commits it on a FAT key')
                 print('    (or cut the power, which costs at most the last row)')
-                print('    then: python3 tools/run_bench.py --fetch --no-load')
+                print('    then: python3 tools/run_bench.py --fetch')
                 return 0
             # A FINITE RUN IS WAITED FOR, because the point of --smoke is a verdict now. 86 cells at
             # ~6 s is ~9 min; the timeout is generous because a slow cell is not a failure.
