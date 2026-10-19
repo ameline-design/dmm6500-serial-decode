@@ -289,6 +289,29 @@ function sdec.autoset()
   local ok, why = sdec.acquire()
   if not ok then sdec.drop_stale_result() return false, why end
   local dok, dwhy = sdec.decode()
+  -- The probe can fit a SUB-multiple, and then the rate it asks for is too slow to frame anything.
+  -- pick_fs(120, 8) is 1000 S/s, where a 300 baud bit is 3.3 samples -- under sdec.minsabit -- so this
+  -- pass refuses with the wire's own rate in its message and decode_from() retracts that rate into
+  -- baud_probe. Returning the refusal threw the answer away: the smoke's r06@300 'no bytes decoded' at
+  -- fs 1000 against the 2500 the cell wanted. Measured over 40 capture phases of a 300 Bd 7E1 line, 4
+  -- fitted 50, 60, 100 or 120 Bd on the probe and all 4 carried baud_probe = 300.
+  --
+  -- The retry below is the same correction in the other direction and neither covers the other: that
+  -- one runs after a SUCCESSFUL decode and reads sdec.baud, where a rate too slow to frame leaves no
+  -- result to read. One attempt either way -- pick_fs is monotonic in baud, so w3 > sdec.fs cannot
+  -- come back to this rate.
+  if not dok and sdec.baud_probe ~= nil and sdec.baud_probe > 0 then
+    local w3 = sdec.pick_fs(sdec.baud_probe, 8)
+    if w3 ~= nil and w3 > sdec.fs then
+      sdec.probe_note = string.format(
+        'probe fitted %.0f Bd, wire is %.0f -- re-captured at %g kS/s to get samples per bit',
+        target or 0, sdec.baud_probe or 0, w3 / 1000)
+      sdec.fs, sdec.fs_want = w3, w3
+      local ok3, why3 = sdec.acquire()
+      if not ok3 then sdec.drop_stale_result() return false, why3 end
+      dok, dwhy = sdec.decode()
+    end
+  end
   if not dok then sdec.drop_stale_result() return false, dwhy end
 
   -- An octave-out probe costs half the window. docs/MEASUREMENTS.md, 'The probe ladder and the octave retry'.

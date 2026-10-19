@@ -474,6 +474,108 @@ for ci = 1, table.getn(CASES) do
   check(collapse, not has(note, 'were 1 in every frame'), shown)
 end
 
+-- ============================================================================
+print('\nF  a probe that fits a SUB-multiple, and the capture it sizes cannot frame')
+-- ============================================================================
+-- The other half of the same correction, and the half serial_app.tsp did not have. Blocks A-E are a
+-- probe that fits an octave HIGH, where the second pass runs faster than it needs to and the window
+-- is too short. Here it fits a sub-multiple LOW: pick_fs sizes the capture for that rate, and the
+-- real bit time lands under sdec.minsabit -- 3.3 samples at 300 baud for the 1000 S/s that
+-- pick_fs(120, 8) returns. The second pass then measures the wire correctly and refuses on the
+-- capture rate, decode_from() retracts the rate into baud_probe, and autoset() returned that refusal
+-- with the answer sitting in the field kept for it.
+--
+-- Found on hardware, one point of 72 on the smoke's plan stage:
+--     r06@std300  BAD  fs 1000/2500 DIFFERS  no bytes decoded
+--       NOTE: 3.3 samples/bit -- 300 baud needs a faster capture than 1 kSa/s
+--       too slow to frame at 1 MS/s -- re-captured at the rate the probe measured (120 Bd)
+--
+-- THROUGH THE SHIPPED autoset(), not the model above. SRC.native_fs makes the mock honour the rate
+-- the app asks for, so the two-pass rate choice itself is what runs; a copy of the new branch here
+-- would only prove the copy. That is also why this block is the one place in the file that does not
+-- use dmm_capture().
+--
+-- WHY 300 BAUD AND NOT THE FILE'S 9600. The defect needs pick_fs to land below minsabit, which only
+-- the bottom of the rate ladder can do: 1000 S/s is the lowest rung, so a probe fit at or under
+-- 125 baud is the only way to ask for it. At 9600 every sub-multiple still picks a rate that frames.
+do
+  local SBAUD, NATIVE, NPH = 300, 1000000, 40
+  -- r06 is SER_Random_07_7E1_x10 -- random bytes, seven bits, even parity. Park-Miller with a fixed
+  -- seed, so the payload and therefore every phase's verdict is the same every run.
+  local seed = 20261018
+  local function rnd() seed = math.fmod(seed * 16807, 2147483647) return seed / 2147483647 end
+  local sby, snb = {}, 24
+  do local i; for i = 1, snb do sby[i] = math.floor(rnd() * 128) end end
+  local srd, sts, _, sn = GEN({bytes = sby, baud = SBAUD, fs = NATIVE, nbits = 7, par = 1,
+                               lead = 10, gap = 0, tail = 10, loop = true})
+  SRC.rd, SRC.ts, SRC.nsmp = srd, sts, sn
+  SRC.native_fs, SRC.loop = NATIVE, true
+
+  -- Ten consecutive error-free frames matching the payload at some rotation. Cyclic because the
+  -- capture opens anywhere in the loop, and head-tolerant for the same reason -- the leading frame is
+  -- legitimately misaligned. nf > 0 alone would accept a confident wrong answer, which is the worse
+  -- verdict of the two.
+  local function payload_ok(r)
+    if r == nil or (r.nf or 0) < 10 then return false end
+    local f0
+    for f0 = 1, r.nf - 9 do
+      local s
+      for s = 0, snb - 1 do
+        local all, j = true, nil
+        for j = 0, 9 do
+          if r.errs[f0 + j] ~= nil or r.vals[f0 + j] ~= sby[math.fmod(s + j, snb) + 1] then
+            all = false break
+          end
+        end
+        if all then return true end
+      end
+    end
+    return false
+  end
+
+  local nwrong, nretry, lowfit, firstbad = 0, 0, nil, nil
+  local ph
+  for ph = 1, NPH do
+    SRC_PHASE(ph * 7919)
+    clearforce()
+    sdec.capmode, sdec.trigmode = 'frame', 'free'
+    sdec.clear_result()
+    local ok, why = sdec.autoset()
+    if not (ok and sdec.baud == SBAUD and payload_ok(sdec.res)) then
+      nwrong = nwrong + 1
+      if firstbad == nil then
+        firstbad = string.format('phase %d: ok=%s baud=%s nf=%s why=%s', ph, tostring(ok),
+                                 tostring(sdec.baud), tostring(sdec.res and sdec.res.nf),
+                                 tostring(why))
+      end
+    end
+    -- The retry names both rates, so the note is where the sub-multiple fit is observable once the
+    -- fix has corrected it.
+    if has(sdec.probe_note, 'to get samples per bit') then
+      nretry = nretry + 1
+      local f = tonumber(string.match(sdec.probe_note, 'probe fitted (%d+) Bd') or '')
+      if f ~= nil and (lowfit == nil or f < lowfit) then lowfit = f end
+    end
+  end
+
+  -- THE PREMISE, FIRST. Every claim below is about what happens when the probe fits low, so a
+  -- stimulus that stopped doing that would leave the rest passing while testing nothing at all.
+  check('the probe does fit a sub-multiple at some capture phases, which is what makes the rest of '
+        .. 'this block a test',
+        nretry > 0 and lowfit ~= nil and lowfit < SBAUD,
+        string.format('%d of %d phases took the retry, lowest fit %s Bd against %d on the wire',
+                      nretry, NPH, tostring(lowfit), SBAUD))
+  -- The rate reported has to be the wire's as well as the bytes being right: a capture re-taken at a
+  -- rate that frames but is labelled 120 Bd is the cluster-C failure the bench counts separately.
+  check('and every capture phase then reads the payload, and reports 300 Bd for it',
+        nwrong == 0,
+        string.format('%d of %d phases wrong%s', nwrong, NPH,
+                      firstbad and ('  [' .. firstbad .. ']') or ''))
+
+  SRC.rd, SRC.ts, SRC.nsmp, SRC.native_fs, SRC.loop = nil, nil, 0, nil, false
+  clearforce()
+end
+
 -- EVERY LABEL MUST HAVE BEEN REACHED. The register is keyed on the check name, so renaming or
 -- deleting an assertion leaves its exemption behind with nothing to exempt -- and an exemption
 -- with nothing behind it is worse than the failure, because it reads as a defect still under
