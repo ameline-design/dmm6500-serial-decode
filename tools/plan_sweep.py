@@ -193,10 +193,19 @@ RATCHET = {
     #              loud vector counts ok and a refusal on any other class counts bad, so no point left
     #              the comparison. If this ever moves on an acquisition change, the change is wrong.
     #
-    # `acqref` IS DELIBERATELY ABSENT FROM EVERY ROW. It measures 106 at one offset and 697-698 at
-    # eight, it is printed in the per-lap table so --no-ratchet can re-measure it, and it gates nothing
-    # until someone sets a baseline on purpose. An unmeasured key is skipped rather than defaulted, so
-    # leaving it out is the honest state and not an oversight.
+    #   acqref     NEW, and bounded from the first run that has it, for the reason `loudquiet` is
+    #              bounded: a refusal is the CORRECT outcome on a loud vector and has to stay visible,
+    #              and an unbounded correct outcome is exactly the hole `loudquiet` was added to close
+    #              -- a regression that suppressed every byte on every loud vector would move nothing
+    #              at all. Leaving this half unratcheted would reproduce that hole on the acquisition
+    #              path, which is the one place `loudquiet` cannot see. 106 at one offset, 697-698 at
+    #              eight.
+    #
+    # `acqref` AND `loudquiet` ARE NOT A SUBSET PAIR, which is why both are bounded rather than one
+    # standing in for the other. `label` can be a subdivision of `rate` because both describe a capture
+    # that PRODUCED BYTES, so one is a route through the other. A refused acquisition produces none, so
+    # there is nothing for it to be a route through: the two count disjoint events and each needs its
+    # own bound. The verdict block in tools/sweep_plan.lua holds the same reasoning beside the guard.
     #
     # A configuration still means whatever vectors exist now, and `cells` carries the draw, so a vector
     # added later reports itself as a configuration mismatch rather than reading as a regression.
@@ -226,26 +235,26 @@ RATCHET = {
     # less evidence is not an improvement. Bounding `nostim` is what keeps the gate honest: it may
     # excuse the captures it was measured on and not one more.
     (1, 1, (), None): {'bad': 1, 'badcells': 1, 'badall': 1, 'rate': 1, 'flags': 0, 'bytes': 0,
-                       'nobytes': 0, 'bleed': 94, 'skip': 0, 'nostim': 34, 'judged': 1586,
+                       'nobytes': 0, 'bleed': 94, 'skip': 0, 'nostim': 34, 'acqref': 106, 'judged': 1586,
                        'loudquiet': 3, 'loudmiss': 86, 'label': 1, 'cells': 1620},
     (1, 8, (), None): {'bad': 11, 'badcells': 3, 'badall': 1, 'rate': 9, 'flags': 0, 'bytes': 2,
-                       'nobytes': 0, 'bleed': 629, 'skip': 1, 'nostim': 121, 'judged': 12838,
+                       'nobytes': 0, 'bleed': 629, 'skip': 1, 'nostim': 121, 'acqref': 697, 'judged': 12838,
                        'loudquiet': 35, 'loudmiss': 383, 'label': 8, 'cells': 1620},
     # THE TWO CONFIGURATIONS A BENCH LAP CAN ACTUALLY BE COMPARED WITH, because every hardware soak
     # skips all of HW_SKIP -- v96 wedges the generator at vector 33 -- and the skip is drawn on. These
     # are the ones tools/soak_offline.py and the default CLI run.
     (1, 1, SP.HW_SKIP, None): {'bad': 1, 'badcells': 1, 'badall': 1, 'rate': 1, 'flags': 0,
-                               'bytes': 0, 'nobytes': 0, 'bleed': 111, 'skip': 0, 'nostim': 34,
+                               'bytes': 0, 'nobytes': 0, 'bleed': 111, 'skip': 0, 'nostim': 34, 'acqref': 106,
                                'judged': 1478, 'loudquiet': 7, 'loudmiss': 60, 'label': 1,
                                'cells': 1512},
     (1, 8, SP.HW_SKIP, None): {'bad': 11, 'badcells': 3, 'badall': 1, 'rate': 10, 'flags': 0,
-                               'bytes': 1, 'nobytes': 0, 'bleed': 632, 'skip': 1, 'nostim': 122,
+                               'bytes': 1, 'nobytes': 0, 'bleed': 632, 'skip': 1, 'nostim': 122, 'acqref': 698,
                                'judged': 11973, 'loudquiet': 34, 'loudmiss': 379, 'label': 8,
                                'cells': 1512},
     # THE 14-DAY RUN'S OWN CONFIGURATION, four random vectors a lap, which is what the instrument plays.
     # 1404 cells rather than 1512, so none of the four baselines above describes it.
     (1, 1, SP.HW_SKIP, 4): {'bad': 1, 'badcells': 1, 'badall': 1, 'rate': 1, 'flags': 0,
-                            'bytes': 0, 'nobytes': 0, 'bleed': 111, 'skip': 0, 'nostim': 34,
+                            'bytes': 0, 'nobytes': 0, 'bleed': 111, 'skip': 0, 'nostim': 34, 'acqref': 106,
                             'judged': 1370, 'loudquiet': 6, 'loudmiss': 66, 'label': 1,
                             'cells': 1404},
 }
@@ -286,8 +295,9 @@ WHY = {
     # it is a capture that returned nothing and is BAD under `nobytes`. Neither of those names the
     # mechanism, so this does, and it is kept apart from `loudquiet` on purpose -- a refused acquisition
     # is not a quiet decoder, and the verdict block in sweep_plan.lua says why folding them would cost
-    # the only distinction that makes either figure actionable. No RATCHET row carries it yet: it is
-    # printed so --no-ratchet can measure it, and a baseline is a deliberate act. See decode() in
+    # the only distinction that makes either figure actionable. Ratcheted upward at every configuration
+    # for the reason `loudquiet` is, and separately from it because the two count disjoint events. See
+    # decode() in
     # tools/sweep_plan.lua for the cell-for-cell measurement against the gap lap,
     # out/bench/SOAK-20261018-gaplap-merged-splice.csv.
     'acqref': 'captures the app\'s own level gate refused -- not a verdict, a mechanism tally',
