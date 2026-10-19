@@ -195,11 +195,16 @@ brun.elide_maxsec = brun.elide_maxsec or 30
 -- 500 000, AND IT WAS 640 000, WHICH IS THE ONE ENTRY THIS MUST NOT NAME. That figure was justified as the
 -- fastest rate in sdec.rates measured to be honoured while the elision program runs -- measured by reading
 -- the delivered rate back, which is precisely the quantity docs/MEASUREMENTS.md records as lying there:
--- "segfs reads 634 615 while the record's true mean rate is 100 000". 640 000 is the only entry whose period
--- is not a whole number of microseconds, 634 615 being 1e6 x 33/52, and the only one whose loss is block
--- drops rather than uniform thinning. That distinction decides everything: thinning leaves acq_seg_fs
--- measuring what was really delivered, while the block-drop row of that table decodes none correct. 75 cells
--- in the soak archive carry fscap=640000, so this bound binds in practice and not in theory.
+-- "segfs reads 634 615 while the record's true mean rate is 100 000".
+--
+-- WHAT SINGLES 640 000 OUT IS THE MEASUREMENT AND NOT ITS PERIOD. An earlier version of this comment said
+-- it is the only entry whose period is not a whole number of microseconds; ten of them are not, and the
+-- property that separates 160 000 / 320 000 / 640 000 is that they do not divide 66 MHz -- see sdec.rates.
+-- Neither fact picks out 640 000 on its own, and the one that does is the measured loss SHAPE: from
+-- 120 kS/s to 500 kS/s and at 1 MS/s the loss is uniform thinning, which acq_seg_fs measures honestly, and
+-- at 640 kS/s alone it is block drops, whose row in that table decodes none correct. So 500 000 is inside
+-- the band measured safe and 160 000 / 320 000 genuinely need no cap. 75 cells in the soak archive carry
+-- fscap=640000, so this bound binds in practice and not in theory.
 -- docs/MEASUREMENTS.md, 'The reading-backlog dialog above ~100 kS/s'.
 brun.elide_fsmax = brun.elide_fsmax or 500000
 -- The detection window per baud, in seconds, in two tiers.
@@ -3297,7 +3302,12 @@ function brun.soak(iterations, tag)
         if p.splthr ~= nil then
           nt = nt .. string.format(' splthr=%.3f/%.3f/%.3f', p.splthr, p.spllo or 0, p.splhi or 0)
         end
-        if p.splraise ~= nil then nt = nt .. ' splraise=' .. tostring(p.splraise) end
+        -- BRACKETED AND TRUNCATED, as armwhy is. This is a Lua error string: it carries spaces and colons,
+        -- so bare it breaks the space-separated note into tokens that are not fields, and it is unbounded,
+        -- so a sticky fault writes it on every elided cell of a lap against the 256 MB file ceiling.
+        if p.splraise ~= nil then
+          nt = nt .. ' splraise=[' .. string.sub(tostring(p.splraise), 1, 40) .. ']'
+        end
         if p.splseam ~= nil then
           nt = nt .. string.format(' spl=%s/%s', brun.int(p.splran or 0), brun.int(p.splseam))
           if (p.splorph or 0) > 0 then nt = nt .. ' splorph=' .. brun.int(p.splorph) end

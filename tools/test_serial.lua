@@ -11777,6 +11777,72 @@ end)()
           and LIVEBUFS() == beforefree - nexp,
           string.format('%s, %d -> %d buffers of an expected %d', tostring(freedall), beforefree,
                         LIVEBUFS(), beforefree - nexp))
+    -- ---------------------------------------------------------------------------
+    -- THE GUARDED BUFFER HELPERS, which exist to keep the app under its pcall ceiling and therefore
+    -- have exactly one site each. A mutation probe found NOTHING offline would catch bufcap losing the
+    -- distinction it was built for, in either direction -- so here it is, both ways.
+    -- ---------------------------------------------------------------------------
+    do
+      -- A handle whose attribute read RAISES, which is what hardware does once the firmware has dropped
+      -- the buffer, and one that answers something that is not a number, which is what the offline mock
+      -- does. acq_bufmode and acq_bufhave clear their slot for the first and must not for the second.
+      local raiser = setmetatable({}, {__index = function() error('dead buffer', 0) end})
+      local oddball = {capacity = 'not a number'}
+      local c1, d1 = sdec.bufcap(raiser)
+      local c2, d2 = sdec.bufcap(oddball)
+      local c3, d3 = sdec.bufcap(nil)
+      check('bufcap reports a raising handle as DEAD, which is what clears a slot',
+            c1 == nil and d1 == true, string.format('%s / %s', tostring(c1), tostring(d1)))
+      check('...and a handle answering a non-number as alive-but-useless, which must NOT clear one',
+            c2 == nil and d2 == false, string.format('%s / %s', tostring(c2), tostring(d2)))
+      check('...and nil as neither, so a missing buffer is not a dead one',
+            c3 == nil and d3 == false, string.format('%s / %s', tostring(c3), tostring(d3)))
+      -- And the slot behaviour those two results drive, which is the reason the distinction exists.
+      local keepb = sdec.acq_bufs['frame']
+      sdec.acq_bufs['frame'] = raiser
+      local gotr = sdec.acq_bufhave('frame')
+      local clearedr = sdec.acq_bufs['frame'] == nil
+      sdec.acq_bufs['frame'] = oddball
+      local goto_ = sdec.acq_bufhave('frame')
+      local clearedo = sdec.acq_bufs['frame'] == nil
+      sdec.acq_bufs['frame'] = keepb
+      check('acq_bufhave evicts a dead handle from the set',
+            gotr == nil and clearedr, string.format('got=%s cleared=%s', tostring(gotr),
+                                                    tostring(clearedr)))
+      check('...and leaves an odd one in place, because evicting it would strand a live buffer',
+            goto_ == nil and not clearedo,
+            string.format('got=%s cleared=%s', tostring(goto_), tostring(clearedo)))
+      check('bufdel answers false for nil rather than reporting a delete it never made',
+            sdec.bufdel(nil) == false, tostring(sdec.bufdel(nil)))
+      check('bufmake refuses a capacity the instrument would not take, rather than returning the handle',
+            sdec.bufmake(1) == nil, tostring(sdec.bufmake(1)))
+    end
+
+    -- BOTH OF bufmax_for's BOUNDS, WITH THE SET IN HAND. The pool cases above release it first -- they
+    -- have to, or they measure leftovers -- which leaves the two bounds added for the static set running
+    -- inert in every case that calls this. A mutation probe caught neither.
+    do
+      GEN_DEFBUF(10, 10)
+      pcall(sdec.acq_buffree)
+      sdec.acq_bufs = {}
+      sdec.acq_bufinit()
+      local _, rcap = sdec.acq_bufhave('rec')
+      local held = sdec.acq_bufheld()
+      check('acq_bufheld counts the plan, the ladder and the scratches, not just the record',
+            rcap ~= nil and held >= rcap + sdec.acq_bufplan[1].cap,
+            string.format('held %s against a record of %s', tostring(held), tostring(rcap)))
+      check('...and bufmax_for is capped by the static record, never above what the capture can use',
+            sdec.bufmax_for() <= rcap,
+            string.format('%d against a record of %s', sdec.bufmax_for(), tostring(rcap)))
+      -- The cap BITES rather than merely being present: shrink the record and the answer follows it down.
+      local keeprec = sdec.acq_bufs['rec']
+      sdec.acq_bufs['rec'] = {capacity = 900000, n = 0}
+      check('...and it follows the record down, so the cap is live and not decorative',
+            sdec.bufmax_for() <= 900000,
+            string.format('%d against a record of 900000', sdec.bufmax_for()))
+      sdec.acq_bufs['rec'] = keeprec
+    end
+
     sdec.capmode = keepmode
     check('and the suite puts the capture mode back', sdec.capmode == keepmode, tostring(sdec.capmode))
     sdec.acq_bufinit()

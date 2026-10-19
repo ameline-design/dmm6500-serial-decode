@@ -367,12 +367,53 @@ check('and the source outruns the count, or a bound cannot be seen at all',
 -- observable -- STATE_WAITING was not seen in twelve hardware captures.
 local resv2 = math.ceil((sdec.acq_poscap or 0) * (TRIG.position or 0) / 100)
 local nbound = resv2 + sdec.n
-local unbounded = (sdec.acq_poscap or 0) * (100 - (TRIG.position or 0)) / 100
 check('the record holds about the reserve plus the count, not a share of the largest buffer',
       nr ~= nil and nr <= nbound * 1.3,
-      string.format('%s readings; bound %s = %s reserve + %s count, x%.2f; the chosen rung %s stores %.0f',
+      string.format('%s readings; bound %s = %s reserve + %s count, x%.2f of it',
                     tostring(nr), tostring(nbound), tostring(resv2), tostring(sdec.n),
-                    (nr or 0) / nbound, tostring(sdec.acq_poscap), unbounded))
+                    (nr or 0) / nbound))
+-- AND THE SPACING, which is the claim the case above cannot make. That one fails only if the plan default
+-- is chosen instead of a rung -- which the premise above already asserts directly -- so on its own it tests
+-- the selection twice and the LADDER not at all. What bounds every capture rather than this one is the
+-- spacing: the record can only be as close to its ask as the nearest rung is, so the widest gap between
+-- consecutive capacities IS the worst over-capture the design can produce, whatever n is.
+do
+  local caps, nc = {}, 0
+  local i
+  for i = 1, table.getn(sdec.acq_framerungs) do nc = nc + 1; caps[nc] = sdec.acq_framerungs[i] end
+  nc = nc + 1; caps[nc] = sdec.acq_bufplan[1].cap
+  table.sort(caps)
+  local worst, wat = 1, nil
+  for i = 2, nc do
+    local r = caps[i] / caps[i - 1]
+    if r > worst then worst, wat = r, caps[i] end
+  end
+  check('the frame ladder is spaced tightly enough that the worst fit is bounded',
+        worst <= 1.35,
+        string.format('worst step x%.3f at %s, over %s', worst, tostring(wat),
+                      table.concat(caps, ',')))
+  -- AND IT SPANS WHAT FRAME MODE ASKS. 240 bytes x 10 bits x 4.3 samples a bit at the top of the rate
+  -- ladder, and x 12 at sabit_max with a 50 % over-read: acq_cap of those is 12 020 and 45 460. A ladder
+  -- that does not reach the bottom leaves the shortest captures on a rung far too big -- measured 5.59x at
+  -- an ask of 2200 -- and one that does not reach the top makes acq_fit truncate the longest.
+  -- The bottom rung sits just ABOVE the smallest ask, not below it: a rung only serves an ask it can hold,
+  -- so what matters is that it holds it without waste. 12 288 against 12 020 is 1.022x. Bounded by the same
+  -- 1.35 the spacing is, because a bottom rung far above the smallest ask is exactly the 5.59x case.
+  check('...and spans the asks frame mode can make, tightly at the bottom and far enough at the top',
+        caps[1] >= 12020 and caps[1] <= 12020 * 1.35 and caps[nc] >= 45460,
+        string.format('%s to %s for asks 12020 to 45460, bottom fit x%.3f',
+                      tostring(caps[1]), tostring(caps[nc]), caps[1] / 12020))
+end
+-- STILL OPEN, and narrowed rather than closed: 11.4x became 1.10x, which is the ladder working, and 1.10x
+-- is not 1.0x. The record is the whole buffer it was handed, so exactness needs a capacity per capture --
+-- the one thing a static set cannot have. Kept as a known failure so the claim in the commit that closed it
+-- cannot stand unchallenged.
+expect_fail('the record is the reserve plus the count exactly, not merely close to it',
+            'an armed capture stores the whole buffer; rung granularity is the floor on how close that gets')
+check('the record is the reserve plus the count exactly, not merely close to it',
+      nr ~= nil and nr <= nbound * 1.05,
+      string.format('%s readings against %s, x%.3f', tostring(nr), tostring(nbound),
+                    (nr or 0) / nbound))
 -- Expected-fail the other way: the bound must not be passing because the source ran out.
 check('and not merely because the source ended, which would pass the bound by accident',
       nr ~= nil and nr < on * 0.9, string.format('%s of %s rendered', tostring(nr), tostring(on)))

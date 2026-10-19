@@ -957,14 +957,17 @@ end)()
   local wantb = 5 * math.min(sdec.gap_nscratch, sdec.gap_maxscratch) + 1
   -- AND THE SCRATCH COUNT ITSELF, which nothing asserted. Every check around here scales with
   -- gap_nscratch, so dropping it from twelve to one kept them all passing while the splice lost eleven
-  -- burst heads -- a silent loss of recovered bytes with no number anywhere naming it. Both halves are
-  -- derived, so this fails if either the store figure or the default moves alone.
-  CK('the scratch ceiling is derived from the block store, not typed beside a comment deriving it',
-     sdec.gap_maxscratch == math.floor((sdec.gap_blockstore - 1) / 5)
-     and 5 * sdec.gap_maxscratch + 1 <= sdec.gap_blockstore
-     and 5 * (sdec.gap_maxscratch + 1) + 1 > sdec.gap_blockstore,
-     string.format('%d groups = %d blocks of a %d store', sdec.gap_maxscratch,
-                   5 * sdec.gap_maxscratch + 1, sdec.gap_blockstore))
+  -- burst heads -- a silent loss of recovered bytes with no number anywhere naming it.
+  --
+  -- NOT THE DERIVATION, which would be a tautology: gap_maxscratch IS floor((gap_blockstore - 1) / 5) in
+  -- the source, so asserting that here restates the assignment and a comment claiming it "fails if the
+  -- store figure moves alone" was wrong -- move the store to 68 and the ceiling recomputes to 13 with
+  -- every conjunct still true. What is worth pinning is the measured input and the app's own choice.
+  CK('the block store is the measured 63, so a ceiling derived from it means something',
+     sdec.gap_blockstore == 63,
+     string.format('%s blocks, %d groups of 5 plus a branch = %d',
+                   tostring(sdec.gap_blockstore), sdec.gap_maxscratch,
+                   5 * sdec.gap_maxscratch + 1))
   CK('...and the app asks for the ceiling, so a quiet drop to one scratch is a failure and not a shrug',
      sdec.gap_nscratch == sdec.gap_maxscratch,
      string.format('nscratch=%d of a ceiling of %d', sdec.gap_nscratch, sdec.gap_maxscratch))

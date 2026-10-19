@@ -1583,14 +1583,18 @@ end
 
 -- Readings the static set is holding right now, across the plan, the frame ladder and the scratches.
 --   [...]
--- rather than as its planned size. The scratches are counted at gap_scratchcap rather than read back, which
--- keeps this free of a pcall site of its own -- lint_tsp counts sites and the file is already over its
--- ceiling.
+-- to subtract everything except the record -- must not ask twice: between two passes the record can die,
+-- which leaves a non-nil capacity beside a total that no longer contains it and a subtraction that goes
+-- negative. One pass makes them consistent by construction rather than by luck.
 function sdec.acq_bufheld()
-  local tot, i = 0, nil
+  local tot, rcap, i = 0, nil, nil
   for i = 1, sdec.acq_bufplan.n do
-    local _, c = sdec.acq_bufhave(sdec.acq_bufplan[i].id)
-    if c ~= nil then tot = tot + c end
+    local id = sdec.acq_bufplan[i].id
+    local _, c = sdec.acq_bufhave(id)
+    if c ~= nil then
+      tot = tot + c
+      if id == 'rec' then rcap = c end
+    end
   end
   for i = 1, table.getn(sdec.acq_framerungs) do
     local _, c = sdec.acq_bufhave(sdec.acq_rungid(sdec.acq_framerungs[i]))
@@ -1599,7 +1603,11 @@ function sdec.acq_bufheld()
   if sdec.gapbufs ~= nil then
     tot = tot + table.getn(sdec.gapbufs) * (sdec.gap_scratchcap or 0)
   end
-  return tot
+  if sdec.gapbuf ~= nil then
+    local c = sdec.bufcap(sdec.gapbuf)
+    if c ~= nil then tot = tot + c end
+  end
+  return tot, rcap
 end
 
 -- Allocate the whole set, once. -> true when every mode has one.
@@ -1709,7 +1717,7 @@ function sdec.acq_buffree()
   if bufwasours and not sdec.acq_isstatic(sdec.buf) then sdec.buf = nil end
   sdec.acq_bufperm, sdec.acq_bufgot, sdec.acq_scrgot = nil, nil, nil
   sdec.acq_bufnok = nil
-  return sdec.acq_bufs['frame'] == nil and sdec.acq_bufs['rec'] == nil
+  return next(sdec.acq_bufs) == nil
 end
 
 -- Readings a loaded position reserves in buf, which is the figure leadmax needs: the decoder is told how much
@@ -7314,6 +7322,7 @@ function sdec.stream_decode(got)
   end
   sdec.spl_nseam, sdec.spl_nspliced, sdec.spl_nadded, sdec.spl_norphan = nil, nil, nil, nil
   sdec.spl_why = nil
+  sdec.spl_raise, sdec.spl_thr, sdec.spl_lo, sdec.spl_hi = nil, nil, nil, nil
   local rdr, nrd = nil, got
   if sdec.strm_elide == nil then
     sdec.spl_why = 'not elided'
@@ -7804,8 +7813,7 @@ function sdec.bufmax_for()
   if d2 > d1 then bigname, bigcap = 'defbuffer2', d2 end
   local n = sdec.ck_bufwant
   if sdec.ck_bufguard < n then n = sdec.ck_bufguard end
-  local _, rcap = sdec.acq_bufhave('rec')
-  local held = sdec.acq_bufheld()
+  local held, rcap = sdec.acq_bufheld()
   if rcap ~= nil then held = held - rcap end
   local avail = sdec.ck_bufpool - d1 - d2 - held - sdec.ck_bufmargin
   if avail < n then n = avail end
@@ -9046,7 +9054,7 @@ function sdec.stop()
   sdec.ui_destroy()
   if sdec.acq_bufs ~= nil and next(sdec.acq_bufs) ~= nil then
     sdec.acq_buffree()
-    if sdec.acq_bufs['frame'] ~= nil or sdec.acq_bufs['rec'] ~= nil then
+    if next(sdec.acq_bufs) ~= nil then
       sdec.delfails = (sdec.delfails or 0) + 1
       sdec.stickyerr = 'a capture buffer could not be freed -- power cycle the instrument'
     end
@@ -9128,13 +9136,15 @@ function sdec.start()
     end
     ulog.line('rebuilding: previous UI torn down cleanly')
   end
+  sdec.quiet_events()
   local binit, bwhy = sdec.acq_bufinit()
   if not binit then
     ulog.line('static buffers unavailable, falling back to per-capture allocation: ' ..
               tostring(bwhy))
   else
-    ulog.line(string.format('static buffers: %s of %s, %s scratch(es), %s in force',
+    ulog.line(string.format('static buffers: %s of %s, %s of %s frame rung(s), %s scratch(es), %s in force',
                             tostring(sdec.acq_bufnok), tostring(sdec.acq_bufplan.n),
+                            tostring(sdec.acq_rungok), tostring(sdec.acq_rungwant),
                             tostring(sdec.acq_scrgot), tostring(sdec.acq_bufgot)))
   end
   sdec.built = true

@@ -723,6 +723,13 @@ function sdec.stream_decode(got)
   -- could not say which of five guards stopped it, because a count of zero reads the same for all of
   -- them. Every exit below names itself, and the name is what the next lap is for.
   sdec.spl_why = nil
+  -- AND THE THREE DETAIL FIELDS WITH IT, which is the whole reason the line above exists. spl_raise carries
+  -- a raise text and spl_thr/lo/hi the threshold that fell outside the swing; both are set only when their
+  -- exit fires, so leaving them standing lets ONE cell's fault be reported on every cell after it in the
+  -- lap -- the fault class baud_raw already cost this bench, and the comment four lines up states the
+  -- discipline this broke. The note builder gates on these being non-nil, not on spl_why, so a stale value
+  -- is not merely untidy: it is written to the record as though it described that cell.
+  sdec.spl_raise, sdec.spl_thr, sdec.spl_lo, sdec.spl_hi = nil, nil, nil, nil
   local rdr, nrd = nil, got
   if sdec.strm_elide == nil then
     sdec.spl_why = 'not elided'
@@ -1418,19 +1425,17 @@ function sdec.bufmax_for()
   if d2 > d1 then bigname, bigcap = 'defbuffer2', d2 end
   local n = sdec.ck_bufwant
   if sdec.ck_bufguard < n then n = sdec.ck_bufguard end
-  -- THE STATIC RECORD IS THE CEILING WHERE THERE IS ONE, and the pool is beside the point. A recording does
-  -- not allocate: it records into the buffer acq_bufinit made at launch, so the largest it can ask for is
-  -- that buffer's capacity and no arithmetic over what the pool has left can raise it. Answering from the
-  -- pool named 4 076 503 while the record held 6 000 000 of a 7 080 255 total and far less than that was
-  -- free -- a number much larger than anything a capture could use, which is how it reached the oversampling
-  -- bound. acq_fit takes the reserve off this afterwards.
-  -- BOTH BOUNDS, AND THE SMALLER WINS. Either alone is wrong.
-  local _, rcap = sdec.acq_bufhave('rec')
-  -- The pool remainder, less whatever the set is holding EXCEPT the record itself: a recording records into
-  -- that buffer, so it is not a cost to the recording, while the frame buffer, the ladder and the scratches
-  -- are allocated and the instrument genuinely does not have them to give. Leaving all of it out described
-  -- a machine with no app running on it.
-  local held = sdec.acq_bufheld()
+  -- BOTH BOUNDS, AND THE SMALLER WINS, because either alone is wrong.
+  --
+  -- The pool remainder, less whatever the set holds EXCEPT the record itself: a recording records INTO that
+  -- buffer, so it is not a cost to the recording, while the frame buffer, the ladder and the scratches are
+  -- allocated and the instrument genuinely does not have them to give. Subtracting none of it described a
+  -- machine with no app running on it, which is how this answered 4 076 503 while the record held 6 000 000
+  -- of a 7 080 255 total.
+  --
+  -- One call for both figures: asking acq_bufhave('rec') separately opened a window where the record could
+  -- die between the two, leaving a capacity to subtract that the total no longer contained.
+  local held, rcap = sdec.acq_bufheld()
   if rcap ~= nil then held = held - rcap end
   local avail = sdec.ck_bufpool - d1 - d2 - held - sdec.ck_bufmargin
   if avail < n then n = avail end
@@ -2992,7 +2997,12 @@ function sdec.stop()
   -- find room beside them. acq_buffree() takes all three and both scratch forms.
   if sdec.acq_bufs ~= nil and next(sdec.acq_bufs) ~= nil then
     sdec.acq_buffree()
-    if sdec.acq_bufs['frame'] ~= nil or sdec.acq_bufs['rec'] ~= nil then
+    -- ANYTHING LEFT, not just 'frame' or 'rec'. acq_buffree drops an entry only when the delete was taken,
+    -- so a surviving key is a buffer the instrument refused to free -- and naming the two plan ids missed
+    -- the six frame rungs entirely, which would have stranded up to 163 840 readings for the power cycle
+    -- while End App reported success. The whole table is the test, so a rung added later is covered without
+    -- anyone remembering this line.
+    if next(sdec.acq_bufs) ~= nil then
       sdec.delfails = (sdec.delfails or 0) + 1
       sdec.stickyerr = 'a capture buffer could not be freed -- power cycle the instrument'
     end
@@ -3110,6 +3120,11 @@ function sdec.start()
   -- the static buffers, and start() then returned reporting success with nothing allocated. The app ran
   -- on per-capture allocation while the log said 'static buffers: 2 of 2'. test_serial caught it as a
   -- capture that allocated a buffer when the design says none ever should.
+  -- Before the allocations, not after. quiet_events() was reached only through hw_config(), which start()
+  -- does not call on the way here, so every launch-time buffer.make that the pool refused could file a 4919
+  -- with popups still live. The ladder took that from 14 attempts to 20, and docs/UNDOCUMENTED.md records
+  -- which codes raise a dialog as unresolved -- so this is cheap insurance on a path the operator watches.
+  sdec.quiet_events()
   local binit, bwhy = sdec.acq_bufinit()
   if not binit then
     -- Not a refused launch: acq_make_buffer still allocates per capture for whichever mode is missing
@@ -3118,8 +3133,14 @@ function sdec.start()
     ulog.line('static buffers unavailable, falling back to per-capture allocation: ' ..
               tostring(bwhy))
   else
-    ulog.line(string.format('static buffers: %s of %s, %s scratch(es), %s in force',
+    -- THE FRAME RUNGS ARE ON THIS LINE, because a ladder that came up short is the difference between a
+    -- capture storing 1.1x what it asked for and 2.6x, and nothing else reports it: acq_rungok was written
+    -- and read by nothing at all, which is the same fault as a field set in the bench row and never
+    -- serialised. Read at launch, so it is the count as allocated -- acq_framefit evicts a dead rung on any
+    -- later capture, so the live figure can fall below this one without the ladder being at fault.
+    ulog.line(string.format('static buffers: %s of %s, %s of %s frame rung(s), %s scratch(es), %s in force',
                             tostring(sdec.acq_bufnok), tostring(sdec.acq_bufplan.n),
+                            tostring(sdec.acq_rungok), tostring(sdec.acq_rungwant),
                             tostring(sdec.acq_scrgot), tostring(sdec.acq_bufgot)))
   end
   -- Set before ui_build(): a build that fails halfway is the dangerous state, so it counts as an attempt.

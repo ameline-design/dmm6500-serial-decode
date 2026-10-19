@@ -1524,9 +1524,10 @@ end
 --                         brun.point elides with capmode left at 'frame'.
 --                         AND IT IS ONE RUNG OF A LADDER, not the only frame buffer: acq_framerungs adds
 --                         12 288 / 16 384 / 20 480 / 24 576 / 40 960 / 49 152 beside it, and acq_framefit
---                         hands each capture the smallest that holds it. Alone this stored 1.4x a 22 000
---                         ask and 2.6x the shortest capture on the rate ladder; with the rungs a 20 000
---                         capture stores 1.10x, measured in tools/test_frontrig.lua. This entry stays the
+--                         hands each capture the smallest that holds it. ON ONE DENOMINATOR, which an
+--                         earlier version of this mixed: against acq_cap(n), alone this stored 1.41x a
+--                         22 000 ask and with the rungs it stores 1.17x; against n itself the same pair
+--                         reads 1.4x and 1.10x, which is what test_frontrig prints. This entry stays the
 --                         default and the fallback, so a pool that refuses every rung still records.
 --     rec     6 000 000   both recording modes, 8 kB and 32 kB. One buffer rather than two because they
 --                         are the same path -- stream_begin and stream_acquire -- so sharing costs a clear
@@ -1557,7 +1558,8 @@ end
 sdec.acq_bufbudget = 6500000
 --
 -- `least` IS WHAT MAKES THIS FIT EVERY MACHINE. The 2461 pool is 6 875 000 against the DMM6500's
--- 7 080 255, and the set plus two minimum default buffers is 6 286 740 -- so it fits both, but only
+-- 7 080 255, and the set plus the frame ladder plus two minimum default buffers is 6 221 204 -- so it fits
+-- both, but only
 -- because buf_reclaim shrinks the default buffers before this allocates. docs/MEASUREMENTS.md records
 -- that autoexec can leave a cycled instrument with large default buffers, and a reclaim the operator's
 -- own data refuses would leave no room for the full ask. Falling back to per-capture allocation there
@@ -1584,9 +1586,12 @@ sdec.acq_bufs = sdec.acq_bufs or {}
 -- that is acquire.
 --
 -- Together with acq_bufplan's own 32 768 these give 12 288 / 16 384 / 20 480 / 24 576 / 32 768 / 40 960 /
--- 49 152, spaced about 1.25x, so the worst fit is 1.33x and most are under 1.2x. The span is what frame
--- mode can actually ask for: acq_cap of 240 bytes x 10 bits x 4.3 samples a bit at the top of the rate
--- ladder is 12 020, and x 12 at sabit_max with a 50 % over-read is 45 460.
+-- 49 152, spaced about 1.25x, so the worst fit is 1.33x WITHIN THE SPAN and most are under 1.2x. Below the
+-- bottom rung there is no bound at all and the figure is whatever 12 288 divided by the ask comes to --
+-- measured 5.59x for an acq_cap of 2200 -- which is why the span is chosen to cover what frame mode can
+-- actually request and not merely to look generous: acq_cap of 240 bytes x 10 bits x 4.3 samples a bit at
+-- the top of the rate ladder is 12 020, and x 12 at sabit_max with a 50 % over-read is 45 460. A caller
+-- asking far less than 12 020 is not a frame capture, and tools/test_frontrig.lua asserts both ends.
 --
 -- 163 840 readings here plus the plan's 32 768 is 196 608, against 450 848 unasked for in the budget, so
 -- the ladder is affordable twice over. 32 768 is NOT repeated here: acq_framefit treats the plan's own
@@ -1702,11 +1707,19 @@ end
 -- rather than as its planned size. The scratches are counted at gap_scratchcap rather than read back, which
 -- keeps this free of a pcall site of its own -- lint_tsp counts sites and the file is already over its
 -- ceiling.
+-- Second result is the RECORD's own capacity, from the same pass. A caller wanting both -- bufmax_for does,
+-- to subtract everything except the record -- must not ask twice: between two passes the record can die,
+-- which leaves a non-nil capacity beside a total that no longer contains it and a subtraction that goes
+-- negative. One pass makes them consistent by construction rather than by luck.
 function sdec.acq_bufheld()
-  local tot, i = 0, nil
+  local tot, rcap, i = 0, nil, nil
   for i = 1, sdec.acq_bufplan.n do
-    local _, c = sdec.acq_bufhave(sdec.acq_bufplan[i].id)
-    if c ~= nil then tot = tot + c end
+    local id = sdec.acq_bufplan[i].id
+    local _, c = sdec.acq_bufhave(id)
+    if c ~= nil then
+      tot = tot + c
+      if id == 'rec' then rcap = c end
+    end
   end
   for i = 1, table.getn(sdec.acq_framerungs) do
     local _, c = sdec.acq_bufhave(sdec.acq_rungid(sdec.acq_framerungs[i]))
@@ -1715,7 +1728,14 @@ function sdec.acq_bufheld()
   if sdec.gapbufs ~= nil then
     tot = tot + table.getn(sdec.gapbufs) * (sdec.gap_scratchcap or 0)
   end
-  return tot
+  -- The single scratch too, which is not one of the twelve and is not gap_scratchcap: gap_scratch sizes it
+  -- from the window and the rate, so at the widest window and 1 MS/s it is half a million readings on its
+  -- own. Read back rather than assumed for that reason.
+  if sdec.gapbuf ~= nil then
+    local c = sdec.bufcap(sdec.gapbuf)
+    if c ~= nil then tot = tot + c end
+  end
+  return tot, rcap
 end
 
 -- Allocate the whole set, once. -> true when every mode has one.
@@ -1877,7 +1897,9 @@ function sdec.acq_buffree()
   if bufwasours and not sdec.acq_isstatic(sdec.buf) then sdec.buf = nil end
   sdec.acq_bufperm, sdec.acq_bufgot, sdec.acq_scrgot = nil, nil, nil
   sdec.acq_bufnok = nil
-  return sdec.acq_bufs['frame'] == nil and sdec.acq_bufs['rec'] == nil
+  -- Empty, not merely free of the two plan ids: an entry survives only where the delete was refused, and
+  -- naming 'frame' and 'rec' reported success while six frame rungs were still held.
+  return next(sdec.acq_bufs) == nil
 end
 
 -- Readings a loaded position reserves in buf, which is the figure leadmax needs: the decoder is told how much

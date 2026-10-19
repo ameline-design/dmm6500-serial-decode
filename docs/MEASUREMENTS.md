@@ -1906,8 +1906,16 @@ Two shapes, and the difference decides whether anything notices. From 120 kS/s t
 1 MS/s the loss is **uniform thinning** — every k-th reading kept, at a 10.000 us cadence (12.000 us at
 1 MS/s) — so `acq_seg_fs()` measures the delivered rate honestly and only the samples-a-bit floor is
 left to object. At 640 kS/s it is **block drops**: runs at the ADC period with holes between them, which
-is why `segfs` reads 634 615 while the record's true mean rate is 100 000. 640 000 is the one rate in
-`sdec.rates` whose period is not a whole number of microseconds, 634 615 being 1e6 x 33/52.
+is why `segfs` reads 634 615 while the record's true mean rate is 100 000, which is 1e6 x 33/52.
+
+**This used to add that 640 000 is the one rate in `sdec.rates` whose period is not a whole number of
+microseconds, and that is false** — ten of the twenty-three are not: 15 000, 30 000, 60 000, 80 000,
+120 000, 160 000, 300 000, 320 000, 400 000 and 640 000. The property that separates 160 000, 320 000 and
+640 000 from the rest is that they do not divide the 66 MHz sample clock, and that does not pick out
+640 000 either. **Nothing about the arithmetic predicts which rate breaks; only the measurement does**, and
+what it says is that the loss SHAPE changes at 640 kS/s and nowhere else in the band. That matters because
+the bound a reader derives from this section is a cap, and `brun.elide_fsmax` was set to 640 000 on the
+strength of the readback — the one number this section records as untrustworthy there.
 
 So the `fs_cap_tier` cap buys an uninterrupted display **and** a record that is what it claims, and a
 figure like 8.26 samples a bit can be the spacing inside a surviving run rather than the record's.
