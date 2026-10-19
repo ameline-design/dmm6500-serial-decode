@@ -597,6 +597,13 @@ def main():
     # from an older app, so it cannot separate elision from everything else that changed. Naming a subset
     # here leaves the rest of the nodrop vectors free-running in the SAME lap, at the same bauds, through
     # the same generator and the same build, which is the only arrangement that isolates the feature.
+    # NOT A TUNING KNOB. The shipped cap is 500000 and it CLAMPS rather than permits, so it decides by
+    # arithmetic which bauds the elide path can be tested at: 500000 / 3.92 is 127551 Bd against a
+    # declared sdec.maxbaud of 250000. This exists so the level can be MEASURED instead of argued about.
+    ap.add_argument('--elide-fsmax', type=float, default=None, metavar='SA_PER_S',
+                    help='override brun.elide_fsmax for this run only; 0 means NO CAP. Absent, the '
+                         'shipped default stands, so a lap that does not name it describes the app as '
+                         'built. Verified by read-back, like --elide')
     ap.add_argument('--elide-vids', default=None, metavar='V,V',
                     help='elide only these vectors, leaving the other nodrop vectors free-running as a '
                          'control in the same lap. Default is every nodrop vector')
@@ -787,6 +794,34 @@ def main():
                     raise SystemExit('REFUSING: the instrument did not take brun.elide (%r, wanted '
                                      '%.6f). An elision run that silently did not elide is worse than '
                                      'no run.' % (got, a.elide))
+            # THE RATE CAP, OVERRIDDEN FOR THIS RUN ONLY, and absent it the shipped default stands -- so a
+            # lap that does not name it describes the app as built. It exists because the shipped 500000
+            # cannot be measured against any alternative without being movable: the cap CLAMPS, so every
+            # elided cell above 127551 Bd (500000 / minsabit's effective 3.92) is refused by arithmetic,
+            # and the archive shows 128000 and 153600 decoding with nbad 0 at 634615 under the previous
+            # 640000. Whether 1 MS/s survives the elision program is UNMEASURED -- no row in the archive
+            # carries segfs=1000000 -- which is exactly what this flag is for.
+            if a.elide_fsmax is not None:
+                # 0 means NO CAP, since a CLI number cannot carry nil and brun.elide_fsmax = nil is how
+                # the uncapped case is spelled. Same convention as SDEC_PROBE_N in tools/sweep_plan.lua.
+                d.exec('do brun.elide_fsmax = %s end'
+                       % ('nil' if a.elide_fsmax <= 0 else repr(float(a.elide_fsmax))))
+                # READ BACK for the same reason brun.elide is: a refused assignment is silent here, and a
+                # run that reports a lifted cap while still clamping would attribute the clamp's refusals
+                # to the app.
+                got = str(d.q('print(string.format("%.6f", brun.elide_fsmax or -1))') or '').strip()
+                try:
+                    back = float(got)
+                except ValueError:
+                    back = None
+                want = -1.0 if a.elide_fsmax <= 0 else float(a.elide_fsmax)
+                if back is None or abs(back - want) > 1e-6:
+                    raise SystemExit('REFUSING: the instrument did not take brun.elide_fsmax (%r, wanted '
+                                     '%.6f). A run that believes the cap moved and is still clamping '
+                                     'measures the cap, not the app.' % (got, want))
+                print('  elide rate cap: %s, NOT the shipped default -- this run does not describe the '
+                      'app as built' % ('NO CAP' if a.elide_fsmax <= 0
+                                        else '%g S/s' % a.elide_fsmax))
             # STARTED AND LEFT. The call does not return until the loop ends, so it is sent without
             # waiting for a reply -- and for --iterations 0 there is no reply to wait for at all.
             print('starting brun.soak(%d) on the instrument' % a.iterations)

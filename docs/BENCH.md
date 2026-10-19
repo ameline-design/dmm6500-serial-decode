@@ -608,12 +608,30 @@ runs the other way. The bench fails an inconclusive cell on an `exact` vector wh
 unjudgeable — which is why `skip` is ratcheted, so points cannot quietly move out of `bad` into it. And
 the bench checks the reported **format**, which this does not.
 
-**A capture whose window held no traffic is counted apart, as `nostim`.** The generator plays the arb on
-repeat and the plan's wait decides where the capture opens, so for a vector with a gap longer than the
-window the capture can land entirely inside the idle run — and then returning nothing is the only
-correct answer. v99d is the case: an idle run of 4800 bit times against a window of `n / sa_bit`, which
-is 2400 bit times at the top of the rate ladder and 2500 at the bottom. Over its 36 rates **34 windows
-end inside the lead gap and 2 reach the payload**, and `off + window <= run` picks out which in all 36.
+**A capture whose window held no traffic is counted apart, as `nostim` — and that means NOT COMPARABLE,
+not "no defect".** The generator plays the arb on repeat and the plan's wait decides where the capture
+opens, so for a vector with a gap longer than the window the capture can land entirely inside the idle
+run. v99d is the case: an idle run of 4800 bit times against a window of `n / sa_bit`, which is 2400 bit
+times at the top of the rate ladder and 2500 at the bottom. Over its 36 rates **34 windows end inside
+the lead gap and 2 reach the payload**, and `off + window <= run` picks out which in all 36.
+
+**The instrument does not take that window, which is why the counter is not a pass.** It *arms*, and on
+the gap vectors it *elides*, so it never sits blind in a gap at the plan's wait the way this harness
+does. Measured against the judge on the 2026-10-18 hardware lap, over exactly those 34 cells:
+
+| | |
+|---|---|
+| instrument passed | 5 |
+| instrument **FAILED** | **12** |
+| no decode | 10 |
+| inconclusive | 7 |
+
+So `nostim` conceals **12 real decode failures**, and reading it as health is the one mistake it invites.
+What the exemption buys is only that this harness stops reporting its own capture placement as the app's
+defect — 122 of a previous lap's 133 bad cells were that artefact. What it costs is 34 cells of
+coverage, which is why `judged` (`ok + bad`) deliberately excludes them: the coverage loss is reported
+rather than absorbed. **The structural fix is for this harness to arm and elide as the instrument does**,
+after which no window is traffic-free and the counter goes to zero on its own.
 
 The exemption is earned by **geometry, measured from the vector's own codewords** (`GEN_IDLE_RUNS` in
 `tools/gen_serial.lua`), never by naming a vector — so a new gap vector is covered the day it is
