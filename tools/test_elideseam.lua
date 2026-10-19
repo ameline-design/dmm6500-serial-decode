@@ -552,7 +552,11 @@ print('-- the ACQUISITION side: the whole chain, with the two-buffer program fil
 
   -- One cell through the real chain. `nscr` is how many scratches the program is built with, which is what
   -- forces the orphan cases; `defeat` takes the set away after the capture, for the unspliced null.
-  local function cell(baud, np, lat, nscr, defeat, keepset)
+  -- `relock` false runs the pre-fix framing (the head's bit phase carried into the record); nil or true
+  -- the shipped seam re-lock. Restored after the decode either way.
+  local function cell(baud, np, lat, nscr, defeat, keepset, relock)
+    local keeprelock = sdec.seam_relock
+    if relock ~= nil then sdec.seam_relock = relock end
     sdec.capmode, sdec.force_baud, sdec.trigmode = 'sml', baud, 'edge'
     sdec.force_nbits, sdec.force_par, sdec.force_nstop, sdec.force_invert = nil, nil, nil, nil
     sdec.gapelide, sdec.strm_maxsec = 0.01, 60
@@ -583,9 +587,11 @@ print('-- the ACQUISITION side: the whole chain, with the two-buffer program fil
     local got = sdec.stream_acquire(20000)
     if defeat then sdec.gap_used = nil end
     pcall(function() sdec.stream_decode(got) end)
+    sdec.seam_relock = keeprelock
     local r = {got = got, why = sdec.spl_why, nseam = sdec.spl_nseam, nspl = sdec.spl_nspliced,
                nadd = sdec.spl_nadded, norph = sdec.spl_norphan, armed = sdec.strm_armed,
-               elided = sdec.acq_elided}
+               elided = sdec.acq_elided,
+               nrelock = sdec.ck_tot and sdec.ck_tot.nrelock, nlost = sdec.ck_tot and sdec.ck_tot.nseamlost}
     local tl = (sdec.ck_tot ~= nil) and sdec.ck_tot.tail or nil
     if tl ~= nil then r.nm, r.nc = bexp.match(tl, 'v98a') end
     if r.nm ~= nil and r.nc ~= nil and r.nc > 0 then r.f = r.nm / r.nc end
@@ -638,9 +644,20 @@ print('-- the ACQUISITION side: the whole chain, with the two-buffer program fil
   local open1 = cell(9600, 6, 156e-6, 5, false)
   check('a splice that misses only the record OPENING is still byte-exact, the offset being the shift',
         open1.why == 'ok' and open1.norph == 1 and open1.f ~= nil and open1.f > 0.99, show(open1))
-  local inner = cell(9600, 6, 156e-6, 4, false)
+  -- PINNED ON THE PRE-FIX FRAMING: this is the defect as the file first measured it, kept so the arm
+  -- below has something to be compared against.
+  local inner = cell(9600, 6, 156e-6, 4, false, nil, false)
   check('...while missing ONE INTERIOR seam recovers nothing measurable, which is the defect',
         inner.norph == 2 and inner.f ~= nil and inner.f < 0.80, show(inner))
+  -- AND THE SEAM RE-LOCK REPAIRS EXACTLY THAT: the orphaned interior seam is still unspliced (norph 2,
+  -- 'partial'), but the framer re-locks on the record there, declares the one frame the latency took as
+  -- a placeholder, and the remainder aligns -- so the bytes a splice cannot recover are still read.
+  local innerfix = cell(9600, 6, 156e-6, 4, false, nil, true)
+  check('...and with the seam re-lock the same orphaned seam costs one placeholder and nothing else',
+        innerfix.norph == 2 and innerfix.why == 'partial' and innerfix.f ~= nil and innerfix.f > 0.98
+        and (innerfix.nrelock or 0) >= 1 and innerfix.nlost == innerfix.nrelock,
+        show(innerfix) .. string.format(' relock=%s lost=%s', tostring(innerfix.nrelock),
+                                        tostring(innerfix.nlost)))
   -- AND THE REASON HAS TO SEPARATE THEM, because the byte count is what a lap cannot see: 'ok' beside a
   -- count that did not move sends the next reader to the decoder, which is the one place the fault is not.
   check('...and the reason says `partial` rather than `ok`, so a lap reads the consequence',
@@ -711,8 +728,13 @@ print('-- the ACQUISITION side: the whole chain, with the two-buffer program fil
     for r = 2, table.getn(shifts) do d[r - 1] = math.mod(shifts[r] - shifts[r - 1] + wl, wl) end
     return d
   end
-  local function hcell(hole_rd)
-    local keephole = TRIG_HOLE()
+  -- `relock` selects the framing: false is the pre-fix walk that carries the head's bit phase into the
+  -- record, true (the shipped default) re-locks on the record at every seam (sdec.ua_seam_relock). Both
+  -- arms are asserted below, because the hole's signature is what the fix exists to remove and a suite
+  -- that only showed the fixed arm could pass with the hole modelled away.
+  local function hcell(hole_rd, relock)
+    local keephole, keeprelock = TRIG_HOLE(), sdec.seam_relock
+    if relock ~= nil then sdec.seam_relock = relock end
     sdec.capmode, sdec.force_baud, sdec.trigmode = 'sml', 9600, 'edge'
     sdec.gapelide, sdec.strm_maxsec = 0.01, 60
     sdec.gap_nscratch = 12
@@ -736,11 +758,20 @@ print('-- the ACQUISITION side: the whole chain, with the two-buffer program fil
     local got = sdec.stream_acquire(20000)
     pcall(function() sdec.stream_decode(got) end)
     TRIG_HOLE(keephole)
-    local r = {T = fs / 9600, why = sdec.spl_why, nseam = sdec.spl_nseam, nspl = sdec.spl_nspliced}
+    sdec.seam_relock = keeprelock
+    local r = {T = fs / 9600, why = sdec.spl_why, nseam = sdec.spl_nseam, nspl = sdec.spl_nspliced,
+               nrelock = sdec.ck_tot and sdec.ck_tot.nrelock, nlost = sdec.ck_tot and sdec.ck_tot.nseamlost}
     local tl = (sdec.ck_tot ~= nil) and sdec.ck_tot.tail or nil
     if tl ~= nil then
       r.nm, r.nc = bexp.match(tl, 'v98a')
       r.d = wordshifts(tl)
+      -- Flagged frames, and how many of them are the seam placeholders the re-lock emits.
+      local i
+      r.nflag, r.nseamph = 0, 0
+      for i = 1, tl.nf do
+        if tl.errs[i] ~= nil then r.nflag = r.nflag + 1 end
+        if tl.errs[i] == 'seam' then r.nseamph = r.nseamph + 1 end
+      end
     end
     if r.nm ~= nil and r.nc ~= nil and r.nc > 0 then r.f = r.nm / r.nc end
     return r
@@ -753,22 +784,65 @@ print('-- the ACQUISITION side: the whole chain, with the two-buffer program fil
                          (r.f ~= nil) and string.format('%.0f%%', r.f * 100) or '-', s)
   end
   local under = hcell(4)                 -- 0.38 of a bit at 10.4 samples a bit
-  local over = hcell(6)                  -- 0.58 of a bit
-  local lap = hcell(-6)                  -- an overlap of the same width
+  local over = hcell(6, false)           -- 0.58 of a bit, framed the pre-fix way: the lap signature
+  local lap = hcell(-6, false)           -- an overlap of the same width, pre-fix framing: the null
   check('a handover hole under half a bit is absorbed: the splice is still byte-exact',
         under.why == 'ok' and under.nspl == under.nseam and under.f ~= nil and under.f > 0.99,
         hshow(under))
   -- The hardware signature, all three parts of it at once: the splice reports ok with every head back, the
-  -- one-shift score is one segment's worth, and every seam advances the alignment by one.
+  -- one-shift score is one segment's worth, and every seam advances the alignment by one. PINNED ON THE
+  -- PRE-FIX FRAMING (relock false): this is what the 2026-10-18/19 laps recorded and what the re-lock
+  -- below exists to remove, so the suite has to be able to produce it on demand or the fixed arm's
+  -- numbers would mean nothing.
   local plusone = (over.d ~= nil and table.getn(over.d) == (over.nseam or 0) - 1)
   if plusone then local i for i = 1, table.getn(over.d) do if over.d[i] ~= 1 then plusone = false end end end
   check('...over half a bit it is broken at every seam while the splice still says ok, the lap signature',
         over.why == 'ok' and over.nspl == over.nseam and over.f ~= nil and over.f < 0.5 and plusone,
         hshow(over))
+  -- THE RE-LOCK, on the same hole: the splice is unchanged (still 'ok', every head back), the framer
+  -- re-locks on the record after each head, the alignment holds across every seam (deltas 0, not +1),
+  -- the confident bytes are the payload, and the one frame each seam really loses -- its start bit is
+  -- in the head, the rest of it in the hole -- is a flagged placeholder, one per re-locked seam.
+  local fixed = hcell(6, true)
+  local zero = (fixed.d ~= nil and table.getn(fixed.d) >= 1)
+  if zero then local i for i = 1, table.getn(fixed.d) do if fixed.d[i] ~= 0 then zero = false end end end
+  check('...and with the seam re-lock the same hole costs one flagged frame a seam and no alignment',
+        fixed.why == 'ok' and fixed.nspl == fixed.nseam and fixed.f ~= nil and fixed.f > 0.98 and zero
+        and (fixed.nrelock or 0) >= (fixed.nseam or 0) - 1 and fixed.nlost == fixed.nrelock
+        and fixed.nseamph == fixed.nrelock,
+        hshow(fixed) .. string.format(' relock=%s lost=%s placeholders=%s flagged=%s',
+                                      tostring(fixed.nrelock), tostring(fixed.nlost),
+                                      tostring(fixed.nseamph), tostring(fixed.nflag)))
+  -- EXPECTED-FAIL BOTH WAYS, on the quantity that distinguishes the arms: the pre-fix arm's one-shift
+  -- score is under half and the fixed arm's is over 0.98 on the SAME record, so neither check could pass
+  -- on the other's output.
+  check('...the two arms disagree on the one-shift score, so each check can only pass on its own framing',
+        over.f ~= nil and fixed.f ~= nil and over.f < 0.5 and fixed.f > 0.98,
+        string.format('pre-fix %.2f fixed %.2f', over.f or -1, fixed.f or -1))
   -- AND THE NULL THAT SEPARATES A HOLE FROM AN OVERLAP: duplicated readings of the same width leave the
   -- alignment alone, so a lap carrying +1 deltas was not an overlap.
   check('...while an overlap of the same width costs no alignment at all, so the lap\'s +1 is a hole',
         lap.why == 'ok' and lap.f ~= nil and lap.f > 0.99, hshow(lap))
+  -- THE RE-LOCK'S ONE DOCUMENTED COST, pinned rather than hidden. One bad frame at the head with clean
+  -- frames behind it is either an overlap (nothing lost) or a hole longer than half a frame (frame 1
+  -- gone too), and the positions cannot tell them apart. The decoder takes the instrument's world --
+  -- every fitted hardware seam was a loss -- so an overlap, which only this model produces, is read as
+  -- a two-frame loss: two placeholders a seam, and the alignment advances by one at each. The bytes
+  -- themselves stay right; what moves is the index, and only on a waveform no instrument has produced.
+  local lapfix = hcell(-6, true)
+  -- wordshifts reports the shift change modulo the payload length, so one EXTRA byte a seam reads as
+  -- wl - 1 where one missing byte (the hole signature above) reads as +1.
+  local wl = string.len(v98a)
+  local minus = (lapfix.d ~= nil and table.getn(lapfix.d) >= 1)
+  if minus then
+    local i
+    for i = 1, table.getn(lapfix.d) do if lapfix.d[i] ~= wl - 1 then minus = false end end
+  end
+  check('...and the re-lock reads that overlap as a two-frame loss: two placeholders a seam, -1 a seam',
+        lapfix.why == 'ok' and (lapfix.nrelock or 0) >= 1 and lapfix.nlost == 2 * lapfix.nrelock
+        and lapfix.nseamph == lapfix.nlost and minus,
+        hshow(lapfix) .. string.format(' relock=%s lost=%s placeholders=%s', tostring(lapfix.nrelock),
+                                       tostring(lapfix.nlost), tostring(lapfix.nseamph)))
 
   -- THE HOLE'S WIDTH, BRACKETED BY THE HARDWARE'S OWN VERDICT PAIR. The instrument reports
   -- `splwhy=ok` beside payloads around 29 % on 110 of 144 elided cells, and only a narrow band of
@@ -780,16 +854,24 @@ print('-- the ACQUISITION side: the whole chain, with the two-buffer program fil
   --
   -- Asserted as a BAND rather than at one width on purpose: the quantity is not known to a reading,
   -- and a check pinned at a single value would read as precision this does not have.
-  local band, bi, bshow = true, nil, ''
+  -- Both arms across the band. The pre-fix arm is the hardware pair as the laps reported it; the fixed arm
+  -- holds the payload at every width in the band, which is the claim that the re-lock does not depend on
+  -- the hole's size while the hole stays under a frame.
+  local band, fband, bi, bshow = true, true, nil, ''
   for bi = 1, 3 do
     local hr = ({6, 10, 14})[bi]
-    local c = hcell(hr)
-    bshow = bshow .. string.format('%d:%s/%s ', hr, tostring(c.why),
-                                   (c.f ~= nil) and string.format('%.0f%%', c.f * 100) or '-')
+    local c = hcell(hr, false)
+    local cf = hcell(hr, true)
+    bshow = bshow .. string.format('%d:%s/%s->%s ', hr, tostring(c.why),
+                                   (c.f ~= nil) and string.format('%.0f%%', c.f * 100) or '-',
+                                   (cf.f ~= nil) and string.format('%.0f%%', cf.f * 100) or '-')
     if not (c.why == 'ok' and c.f ~= nil and c.f < 0.5) then band = false end
+    if not (cf.why == 'ok' and cf.f ~= nil and cf.f > 0.98) then fband = false end
   end
   check('the hardware pair -- splwhy=ok beside a third of the payload -- holds across 6 to 14 readings',
         band, bshow)
+  check('...and the re-lock holds the payload above 98 % across the same band',
+        fband, bshow)
   -- AND BOTH EDGES OF THE BAND, so it is a band and not an unbounded claim.
   local lo2, hi2 = hcell(2), hcell(18)
   check('...is byte-exact below it, so a smaller hole would not produce the hardware failure',

@@ -538,7 +538,9 @@ end
 
 -- ---------- options form handles ----------
 -- sdec.optscr, sdec.opt_proto, sdec.opt_baud, sdec.opt_bits, sdec.opt_par, sdec.opt_pol,
--- sdec.opt_trig, sdec.opt_ext, sdec.opt_armv, sdec.opt_armw, sdec.opt_gape, sdec.opt_over
+-- sdec.opt_trig, sdec.opt_ext, sdec.opt_armv, sdec.opt_armw, sdec.opt_over
+-- sdec.opt_gape is GONE, not merely unassigned: the Gap Elide field is withheld. See the note
+-- at the form's build site for the measurement behind that and for how to restore it.
 -- -- declared, not assigned.
 -- Eight fields, nine with a protocol module, and this is the riskiest geometry in the app --
 -- docs/MEASUREMENTS.md, 'The options form vertical geometry'. test_serial checks the last box
@@ -2127,7 +2129,6 @@ function sdec.destroy_options()
   sdec.del_obj(sdec.opt_ext)
   sdec.del_obj(sdec.opt_armv)
   sdec.del_obj(sdec.opt_armw)
-  sdec.del_obj(sdec.opt_gape)
   sdec.del_obj(sdec.opt_over)
   if sdec.opt_btn ~= nil then
     local i
@@ -2138,7 +2139,7 @@ function sdec.destroy_options()
   sdec.optscr, sdec.opt_proto, sdec.opt_baud = nil, nil, nil
   sdec.opt_bits, sdec.opt_par, sdec.opt_pol = nil, nil, nil
   sdec.opt_trig, sdec.opt_ext = nil, nil
-  sdec.opt_armv, sdec.opt_armw, sdec.opt_gape = nil, nil, nil
+  sdec.opt_armv, sdec.opt_armw = nil, nil
   sdec.opt_over = nil
   return true
 end
@@ -2151,8 +2152,12 @@ function sdec.build_options()
   -- How many fields there will be, decided before the pitch, because the pitch depends on it. The
   -- Protocol field exists only with a module loaded, OBJ_EDIT_OPTION refusing fewer than two options.
   local pv, pl = sdec.opt_proto_list()
-  local nf = 10
-  if pl.n >= 2 then nf = 11 end
+  -- 9, DOWN FROM 10, because the Gap Elide field is withheld -- see the note at its old build site.
+  -- This count drives the pitch, so leaving it at 10 lays the form out for a field that is no longer
+  -- created: harmless on the glass but it makes ui_opt_nf_used a fiction, and test_serial asserts the
+  -- listed fields against it precisely so that an omission cannot pass unnoticed. It caught this.
+  local nf = 9
+  if pl.n >= 2 then nf = 10 end
   -- The pitch is clamped to what fits, ui_opt_dy being a preference and the last box having
   -- to end above the button row -- docs/MEASUREMENTS.md, 'The options form vertical geometry'.
   local eh, edy = sdec.ui_opt_edit_h, sdec.ui_opt_edit_dy
@@ -2284,16 +2289,26 @@ function sdec.build_options()
                          'Arm/Idle Wait', 'max wait, frozen',
                          display.NFORMAT_PREFIX, sdec.arm_wait_s(),
                          sdec.armwait_min, sdec.armwait_max, 's', 4)
-  -- Zero is off, so the raw setting is shown rather than gap_elide()'s enforced window: the field has to be able
-  -- to say 'off', and the accessor returns nil for that. The floor is applied when a capture arms, not here.
-  -- 'cut after' says which of the two readings the number has: it is the quiet the line must reach before the
-  -- recording stops keeping it, not how much gap comes out, which is unbounded. 16 characters, as wide as the
-  -- Arm/Idle Wait help above it, so check it on the glass after any change to the form's geometry.
-  local fx11, fy11 = nextpos()
-  sdec.opt_gape = create(sdec.optscr, display.OBJ_EDIT_NUMBER, fx11, fy11,
-                         'Gap Elide', '0 off, cut after',
-                         display.NFORMAT_PREFIX, tonumber(sdec.gapelide) or 0,
-                         0, sdec.gapelide_max, 's', 4)
+  -- GAP ELIDE IS NOT ON THIS FORM, and the reason is a measurement rather than caution. The same
+  -- 330-cell spec was run on 2026-10-19 with the feature off and on, same build, one variable:
+  --
+  --   elision OFF   15 BAD of 322 judged    1 FAIL of 214 cells at <= 115200 Bd   0.47 %
+  --   elision ON   125 BAD of 320          101 FAIL of 212                       47.6 %
+  --
+  -- The decoder is near-perfect on exactly the waveforms that fail with elision, and the failures are
+  -- `not the payload, silently wrong` -- confident bytes that are not the payload, which is the worst
+  -- verdict this judge has and the one an operator cannot defend against. So the option is withheld
+  -- until it works: an absent feature is strictly safer than one that lies.
+  --
+  -- THE PROGRAM IS NOT REMOVED. sdec.gapelide is still settable and bench_run.tsp still drives it, so
+  -- the bench keeps measuring the path while the panel cannot reach it -- which is what lets the work
+  -- continue. sdec.record_run() forces it to 0 at entry, because the bench leaves it at the last
+  -- cell's capped value, 0.0125 s at 115200 Bd, and with no field on the glass that residue would
+  -- elide a panel recording with nothing to show or clear it.
+  --
+  -- To restore the field, put back an OBJ_EDIT_NUMBER here with 'Gap Elide' / '0 off, cut after',
+  -- 0 to sdec.gapelide_max, and re-add the read in options_apply and the handle to destroy_options.
+  -- 16 characters of help text, as wide as Arm/Idle Wait above it, so check it on the glass.
   -- Orthogonal to Gap Elide, and placed after it only because both are about what silence costs. Every
   -- pause the line takes is recorded in full unless the trigger model elides it, and those samples come
   -- out of the same count the payload does -- so this margin applies to every recording, and the one

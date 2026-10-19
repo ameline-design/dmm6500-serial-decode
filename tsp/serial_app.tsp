@@ -601,6 +601,12 @@ sdec.fc_maxsec = sdec.fc_maxsec or 1200
 function sdec.record_run()
   -- Discard a latched press before starting: the press that ended the LAST run is still in the latch.
   sdec.cancel_clear()
+  -- ELISION OFF FOR EVERY PANEL RECORDING, and this is the line that makes withholding the field
+  -- honest. bench_run.tsp sets sdec.gapelide per cell and leaves it at the last one's capped value --
+  -- 0.0125 s at 115200 Bd, a number nobody would type -- so without this a panel recording after a
+  -- bench run would elide, with no field on the glass to show it or clear it. The measurement behind
+  -- withholding the feature is at serial_ui.tsp's form build site.
+  sdec.gapelide = 0
   -- strm_empty and ck_cancel are cleared here too, because stream_begin() clears them too late.
   sdec.ck_cancel, sdec.fc_end, sdec.strm_empty = nil, nil, nil
   sdec.fc_win, sdec.fc_bytes, sdec.fc_secs = 0, 0, 0
@@ -746,6 +752,9 @@ function sdec.stream_decode(got)
   -- only once gap_splice_plan is reached, so a capture that exits in a guard would otherwise carry the last
   -- spliced cell's verdict as though it described this one.
   sdec.spl_interior, sdec.spl_headrd = nil, nil
+  -- And the seam list, which only gap_splice_plan writes: a capture that exits in a guard below must not
+  -- hand the framer the last spliced cell's seams.
+  sdec.spl_seampos = nil
   -- WHY, AND NOT ONLY WHETHER. The 166-cell lap of 2026-10-18 recorded no splice on 87 elided cells and
   -- could not say which of five guards stopped it, because a count of zero reads the same for all of
   -- them. Every exit below names itself, and the name is what the next lap is for.
@@ -826,9 +835,23 @@ function sdec.stream_decode(got)
         else
           sdec.spl_why = 'ok'
         end
+        -- THE SEAMS, FOR THE FRAMER: where each restored head's start edge sits and where the record
+        -- resumes after it, in spliced coordinates. ck_decode hands them to ua_run per window and the
+        -- framer re-locks on the record there instead of carrying the head's phase across the handover
+        -- hole -- see sdec.ua_seam_relock. Withheld when sdec.seam_relock is false, which is the pre-fix
+        -- framing tools/test_elideseam.lua pins as the other arm.
         rdr, nrd = sdec.ck_reader_spliced(sdec.buf, got, pl), pl.total
       end
     end
+  end
+  -- THE SEAMS, FOR THE FRAMER: where each restored head's start edge sits and where the record resumes
+  -- after it, in spliced coordinates, from gap_splice_plan -- including the seams it did NOT splice
+  -- (orphans, refused tails, a plan that refused outright), whose bursts open mid-byte just the same.
+  -- ck_decode hands them to ua_run per window and the framer re-locks on the record there instead of
+  -- carrying the head's phase across the handover hole; see sdec.ua_seam_relock. Withheld when
+  -- sdec.seam_relock is false, the pre-fix framing tools/test_elideseam.lua pins as the other arm.
+  if sdec.seam_relock ~= false and sdec.spl_seampos ~= nil and (sdec.spl_seampos.n or 0) > 0 then
+    opts.seams = sdec.spl_seampos
   end
   if rdr == nil then rdr = sdec.ck_reader_buffer(sdec.buf, got) end
   -- THE TOTAL THE WINDOW LOOP IS GIVEN, which is not the record's length on a spliced read and is the
@@ -869,6 +892,14 @@ function sdec.stream_decode(got)
   end
   sdec.ck_tot = tot
   sdec.ck_nbytes = tot.nf
+  -- THE TAIL IS PUBLISHED HERE TOO, as decode_step and sdec.stream() already publish it. Without this
+  -- line sdec.res on the one-shot path was whatever ck_prime_step's decode_from left -- the frame-mode
+  -- decode of the first ~20 000 spliced samples -- and bench_run.tsp builds nf, hex and pay= from
+  -- sdec.res: measured, one 58 590-reading record reported nf=177 against the chunked decode's 520, on
+  -- every elided row of every lap. The tail holds the last ck_keep bytes of the stream, which for a
+  -- bench record is all of them. sdec.stream() assigns the same value after this returns, so the panel
+  -- path is unchanged.
+  if tot.tail ~= nil then sdec.res = tot.tail end
   -- Totals come back whether or not the sink worked, so a non-nil table is not the success test.
   if tot.stopped == 'write failed' or tot.stopped == 'sink' then
     return false, string.format('%s -- %d bytes decoded but the file is incomplete',
@@ -2910,14 +2941,8 @@ function sdec.options_apply()
     if type(av) == 'number' then sdec.armlevel = av end
     local aw = display.getvalue(sdec.opt_armw)
     if type(aw) == 'number' then sdec.armwait = aw end
-    -- Not clamped here either: gap_elide() applies the floor at use, so the form keeps showing what was typed
-    -- and 0 keeps meaning off. A scratch buffer is handed back when elision is turned off, the pool being
-    -- shared with the record.
-    local ge = display.getvalue(sdec.opt_gape)
-    if type(ge) == 'number' then
-      sdec.gapelide = ge
-      if ge <= 0 then pcall(sdec.gap_release) end
-    end
+    -- No Gap Elide read: the field is withheld from the form, so there is nothing to getvalue and a
+    -- read of a nil handle would raise inside this pcall and cost the whole apply. See serial_ui.tsp.
     -- Percent on the glass, a fraction underneath. The field reads 10 where the knob holds 0.10,
     -- because '0.100' beside 'Gap Elide 0.025 s' reads as a second time and not as a proportion.
     -- Clamped to the ceiling here rather than trusting the field, since the ceiling is a field

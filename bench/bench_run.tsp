@@ -997,11 +997,8 @@ function brun.point(fs, baud, lock, elide, vid)
     -- cell so a run of fallbacks cannot read as a run of passes.
     r.elided = sdec.acq_elided
     r.elidewin = sdec.strm_elide
-    -- THE OVER-READ, recorded so the record proves it rather than the launch command being trusted to
-    -- have carried it. It is a stream_acquire quantity, so a cell that did not take that path has none --
-    -- which is the distinction a row has to be able to make. A two-lap soak on 2026-10-18 ran with
-    -- elision off and therefore with no over-read anywhere, and nothing in its 32 284 lines said so.
-    r.overread = sdec.strm_overread
+    -- The elide path's own copy is gone from here: the over-read is recorded UNCONDITIONALLY below,
+    -- because it is no longer a stream_acquire quantity. See the note at r.overread.
     -- Both rate estimates on the same record, which is the measurement this path is missing. acq_fs comes
     -- from acq_seg_fs() on an elided record and acq_measure_fs() on every other, and the two paths
     -- disagree enormously at the same baud: 83 333 S/s on elided cells against 1 000 000 on non-elided
@@ -1158,6 +1155,21 @@ function brun.point(fs, baud, lock, elide, vid)
   -- 22 000 to 58 000, so every pay= scored one window of a longer record and nothing on the row said why.
   if elide ~= nil and sdec.ck_tot ~= nil then
     r.cknwin, r.cknsmp, r.ckstop = sdec.ck_tot.nwin, sdec.ck_tot.nsmp, sdec.ck_tot.stopped
+    -- THE CHUNKED DECODE'S OWN BYTE COUNT, which no row has ever carried, and without it every pay=
+    -- and nf= on every elide lap in this project's history is a FIRST-WINDOW figure rather than a
+    -- whole-record one. r.nf above is built from sdec.res, and on this path sdec.res is left by
+    -- ck_prime_step's decode_from over the first ~20 000 spliced samples -- stream_decode's one-shot
+    -- ck_run branch never assigns sdec.res = tot.tail, only decode_step does, and the bench does not
+    -- call decode_step. Measured: one 58 590-reading record gives sdec.res.nf = 177 against
+    -- sdec.ck_tot.nf = 520. So cknf beside nf is what tells a truncated REPORT from a truncated
+    -- decode, and decwin/ckwin -- which measure the loop -- cannot: the loop ran every window it was
+    -- given on 144 of 144 rows while the row still reported the first window's bytes.
+    r.cknf = sdec.ck_tot.nf
+    -- THE RE-ANCHOR'S OWN COUNTERS, because a lap that cannot show the fix fired cannot test it. The
+    -- 2026-10-19 relock lap read sdec.seam_relock back as true and then carried no evidence that any
+    -- seam re-locked, which is the same defect as the over-read field: a setting the record does not
+    -- show is a setting the lap does not test.
+    r.nrelock, r.nseamlost = sdec.ck_tot.nrelock, sdec.ck_tot.nseamlost
   end
   -- And the three numbers behind 'thr outside swing', which is the one reason that cannot be acted on from
   -- its name alone: which side the threshold fell outside, and by how much, is what tells a failed probe
@@ -1216,6 +1228,13 @@ function brun.point(fs, baud, lock, elide, vid)
 
   local res = sdec.res
   r.ran     = true
+  -- THE OVER-READ ON EVERY ROW, not only on elided ones, and the move is a correction. The field's old
+  -- comment called it "a stream_acquire quantity, so a cell that did not take that path has none" --
+  -- true when written and false since sdec.acquire() gained the margin itself. Recorded in the elide
+  -- branch, it was absent from all 324 rows of an elision-off lap, which reads as "the over-read was
+  -- not applied" when what it meant was "this row does not carry the field". That inference was drawn
+  -- out loud and it was wrong. A setting the record cannot show is a setting the lap does not test.
+  r.overread = sdec.strm_overread
   r.fs      = sdec.acq_fs
   r.nread   = sdec.nread
   r.baud    = sdec.baud
@@ -3387,6 +3406,13 @@ function brun.soak(iterations, tag)
       -- clean run's status rows stay identical and a reader can find the noisy cell with one grep.
       local nt = p.ran and 'ok' or ('FAIL ' .. tostring(p.why))
       if cellev > 0 then nt = nt .. ' ev=' .. brun.int(cellev) end
+      -- THE OVER-READ IN FORCE, on EVERY cell and not inside the elide block where it used to sit.
+      -- The record has to answer "was it on" without trusting the launch command, and from the elide
+      -- block it answered that question only for elided cells -- so an elision-off lap carried the
+      -- setting on none of its 324 rows and I read that absence as the over-read being off. It was
+      -- applied; the field simply was not printed. sdec.acquire() has carried the margin since the
+      -- frame-mode path gained it, so it is not an elision quantity any more.
+      if p.overread ~= nil then nt = nt .. string.format(' over=%.2f', p.overread) end
       -- The payload verdict, on every cell that has one and not only the elided ones: the non-elided
       -- cells are the control, and the whole question is whether elision is what makes the bytes wrong.
       -- Matched of compared, so the row says HOW wrong rather than only that it was -- a cell at 0 of
@@ -3474,6 +3500,13 @@ function brun.soak(iterations, tag)
         -- that did not read the record it scored, and ckstop names the exit that stopped it.
         if p.cknwin ~= nil then
           nt = nt .. string.format(' ckwin=%s/%s', brun.int(p.cknwin), brun.int(p.cknsmp or 0))
+          -- Beside nf= on the R row, not instead of it: the pair is the reading. cknf == nf means the
+          -- row describes the whole decode; cknf > nf means it describes the priming window.
+          if p.cknf ~= nil then nt = nt .. ' cknf=' .. brun.int(p.cknf) end
+          if p.nrelock ~= nil then
+            nt = nt .. string.format(' relock=%s/%s', brun.int(p.nrelock),
+                                     brun.int(p.nseamlost or 0))
+          end
           if p.ckstop ~= nil then nt = nt .. ' ckstop=' .. tostring(p.ckstop) end
         end
         -- THE WINDOW COUNT, UNCONDITIONALLY, including the ordinary case -- which is the whole lesson of
@@ -3502,8 +3535,6 @@ function brun.soak(iterations, tag)
         -- cell was not shortened" off an ordinary row.
         if p.ckstop ~= nil then nt = nt .. ' ckstop=' .. tostring(p.ckstop) end
         if p.ckcancel ~= nil then nt = nt .. ' ckcancel=' .. tostring(p.ckcancel) end
-        -- And the over-read in force, so the record answers "was it on" without trusting the launch.
-        if p.overread ~= nil then nt = nt .. string.format(' over=%.2f', p.overread) end
         -- The ring, on every elided cell and not only the failures: a startindex of 1 on a cell that
         -- passed is the control that says a wrap is what distinguishes the ones that did not.
         if p.elidenrd ~= nil and p.elidecap ~= nil then

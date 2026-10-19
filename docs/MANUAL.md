@@ -636,7 +636,7 @@ number is kept.
 
 ## Options
 
-![The Options form as it opens, with nothing locked: Baud Rate 0.00000 Bd, Trigger Start bit, Arm At 1.000 V, Arm/Idle Wait 10.00 s, Gap Elide 0.000 s which is off, and Over-read 10.00 %](img/options.png)
+![The Options form as it opens, with nothing locked: Baud Rate 0.00000 Bd, Trigger Start bit, Arm At 1.000 V, Arm/Idle Wait 10.00 s and Over-read 10.00 %](img/options.png)
 
 | Setting | What it does |
 |---|---|
@@ -665,7 +665,7 @@ decoder already copes with, so a 2-stop device decodes correctly and is reported
 
 ### Advanced
 
-Four settings you can ignore unless you need them:
+Five settings you can ignore unless you need them:
 
 - **Trigger** — what starts the acquisition. `Start bit` (the default) waits for the line to move.
   `Free run` grabs immediately. `Trigger key` waits for the front-panel TRIGGER key, as described
@@ -692,66 +692,42 @@ Four settings you can ignore unless you need them:
   at least its own 3 s — 2 s and 3 s do the same thing, and the note after an expiry reports the 3 s
   it really waited. It governs `Start bit`; `Trigger key` ignores it and waits its own 30 s for a
   finger.
-- **Gap Elide** — **how long the line must be quiet before the recording stops keeping it.** It is a
-  threshold, not an amount: once a pause reaches it, nothing further is recorded until the line moves
-  again, so the silence actually dropped is however long the device stays quiet. **0 is off and is the
-  default.** On a device that prints a line and then says nothing for two minutes the buffer otherwise
-  fills with dead air; with this on, the same buffer spans minutes of a bursty line instead of
-  seconds. It needs a locked baud rate. See **Recording a bursty line** below for what it costs and
-  when it is worth having.
+- **Over-read** — **extra samples to record so the payload still fits.** **10 % is the default.** Any
+  pause the line takes is recorded in full, and those samples come out of the same budget the bytes
+  do — so without a margin the bytes that go missing are the ones at the end of the recording. Raise
+  it on a line that pauses often and briefly, which is where the most silence is recorded. 0 turns it
+  off. It costs readings and nothing else: the decoder already skips silence, so this buys payload
+  rather than accuracy.
 
 ### Recording a bursty line
 
 A device that prints a startup banner, pauses two seconds, prints another line and then goes quiet
-for two minutes spends almost all of a recording on silence. **Gap Elide** records the bursts and
-discards the gaps between them, which is how an old-fashioned terminal behaves: it shows the
-characters as they arrive and does not care about the dead air.
+for two minutes spends almost all of a recording on silence.
 
-Set **Gap Elide** to how long the line must be quiet before the burst counts as over. A tenth of a
-second is a reasonable start. Then raise **Arm/Idle Wait** past the longest gap you want to sit
-through, because that is still what ends the recording when the device has finished — a 2-minute gap
-needs an **Arm/Idle Wait** above 120 s or the recording ends in the middle of it.
+**There was a setting for this, and it has been withdrawn.** **Gap Elide** recorded the bursts and
+discarded the gaps between them, so a 32 kB buffer spanned minutes of a bursty line instead of
+seconds. It is not on the Options screen in this release, because on the bench it decoded the wrong
+bytes often enough that the recordings it produced could not be trusted: of the test captures that
+elide, **43 % to 48 % decoded a payload that was not the one sent**, against **0.5 %** for the same
+captures with elision off. Same build, same generator, same rates — the feature was the difference.
 
-**What it needs.** A locked **Baud Rate**; one of the recording modes, `8 kB` or `32 kB`; **Trigger**
-on `Start bit`; and a line that is quiet when you press **Capture**, because the comparator is armed
-from the level probe and a line already transmitting gives it nothing to arm on. It cannot be combined
-with flow control on the rear BNC. When any of those is not met the recording still happens, without
-elision, and the note row says which one — `gap elision off -- lock the baud rate first`,
-`-- flow control is on`, or `-- the line was already transmitting when the recording started`.
+**What goes wrong is not in the decoder.** Dropping a gap means stopping one recording and starting
+another, and the samples in between reach neither: measured at **200 to 900 µs per seam**, and a
+different figure at every seam. At 4800 baud and above that is longer than a byte, so **the first
+byte after each pause was never recorded at all** — not mis-decoded, not present. Nothing downstream
+can recover it, which is why this is a withdrawal rather than a fix.
 
-**What it costs, and when it is not worth it.** The instrument cannot know the line has gone quiet
-until the time you set has actually elapsed, so **every burst keeps one Gap Elide window of idle at
-its end**. That is the whole price, and it is why a smaller window is cheaper: elision only pays when
-the bursts are longer than about one and a half windows. A device sending single short lines with a
-0.5 s window records three times more silence than text, which is worse than not eliding at all. The
-note row reports both numbers so this is visible rather than guessed: `buffer full -- 7 bursts,
-elided 94.2 s of 98.1 s` says it worked, and `2 bursts, elided 0.3 s of 4.1 s` says it did not.
+**What to use instead.** Raise **Over-read** — it is the setting that addresses the same problem from
+the other side, and it is still there. A bursty line records every pause in full, and those samples
+come out of the same budget the bytes do, so the margin is what keeps the end of the recording from
+being the part that goes missing. 10 % is the default; a line that pauses often wants more. Then take
+the largest recording mode, `32 kB`, and if the device will cooperate use flow control on the rear
+BNC, which makes the recording unlimited rather than merely larger — see **More than one window:
+flow control** above. That path has none of the problem described here, because it never stops
+recording.
 
-**Over-read** pays part of that price, and it is not an elision setting — it applies to every
-recording. The windows kept at the end of each burst, and any pause too short to be dropped at all,
-are recorded in full and come out of the same sample count the payload does, so the recording is
-sized 10 % larger than the bytes need and the margin absorbs them. Note which way round that runs:
-**elision is what removes silence, so a recording with elision off has more idle in it, not less.**
-Raise **Over-read** on a line that pauses often and briefly — where the most is recorded and the
-least dropped — and on any long recording of a bursty line with elision off. It costs readings on a
-buffer that has them.
-
-**What changes about the record.** The time axis is no longer continuous — the gaps are gone from it,
-so the interval between two bytes either side of a seam is not what the record says. The decoded
-bytes, the rate and the format are all unaffected: a seam joins idle line to the next start bit,
-which is an ordinary serial waveform, so nothing is lost at the join. There is also no pre-trigger
-reserve on each burst, so the first recorded sample of a burst is its own start bit rather than the
-quiet line before it.
-
-**The window has a floor, and the floor comes from the rate.** It is held to at least two frame times
-at the rate you have locked, because a frame can hold a run with no level change of its own — `0x00`
-on an idle-high line is ten bit times at one level — and a shorter window would cut inside a byte.
-Type a smaller number and it is **raised to the floor**, not honoured: at 300 baud 8N1 the floor is
-67 ms, so 10 ms becomes 67 ms. A 2 ms floor on the clock applies as well, and that is the binding one
-above 10 000 baud, where two frames are shorter than 2 ms. If the rate is **not** locked there is no
-frame to measure a window against, so elision declines rather than guessing, and the note row reads
-`gap elision off -- lock the baud rate first`. At a rate slow enough that two frames exceed the 2 s
-ceiling — below about 10 baud — it declines for that reason instead, and says so.
+The recordings a bursty line produces without elision are correct. They are shorter in wall-clock
+span than they would otherwise be, and that is the cost being paid deliberately.
 
 ### Waiting for a device that has not started
 
@@ -781,13 +757,6 @@ crossing in any case, so the latency never costs a byte.
 
 What the app does with it:
 
-- **Over-read** — **extra samples to record so the payload still fits.** **10 % is the default**, and
-  it applies to **every recording**, whether or not **Gap Elide** is on. Any pause the line takes is
-  recorded in full unless the trigger model drops it, and those samples come out of the same budget
-  the bytes do — so without a margin the bytes that go missing are the ones at the end of the
-  recording. A capture that elides nothing has the *most* idle to absorb, not the least. 0 turns it
-  off. It costs readings and nothing else: the decoder already skips silence, so this buys payload
-  rather than accuracy.
 - The level probe finds no transitions, which is how it knows. On a line that is already transmitting
   nothing here applies — the threshold is measured from the two levels, which beats any fixed voltage.
 - The comparator is armed **Arm At** volts from the idle level, on the side the start bit travels: one

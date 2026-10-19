@@ -518,12 +518,32 @@ function sdec.ck_decode(reader, ntotal, fmt, sink, opts)
 
     local tmin0 = nil
     if endpos ~= nil then tmin0 = endpos - off end
+    -- THE SEAMS THIS WINDOW HOLDS, in window coordinates, so the framer can re-lock on the record after
+    -- each restored head instead of carrying the head's bit phase into it. opts.seams is in spliced
+    -- coordinates (stream_decode builds it from the plan); nil on every unspliced read, where ua_run
+    -- behaves exactly as it always has.
+    local ws = nil
+    if opts.seams ~= nil and (opts.seams.n or 0) > 0 then
+      local sj
+      for sj = 1, opts.seams.n do
+        local e = opts.seams.E[sj] - off
+        if e >= 1 and e <= cnt then
+          if ws == nil then ws = {E = {}, R = {}, n = 0} end
+          ws.n = ws.n + 1
+          ws.E[ws.n], ws.R[ws.n] = e, opts.seams.R[sj] - off
+        end
+      end
+    end
     local r = sdec.ua_run(win, cnt, T, fmt.nbits, fmt.par, fmt.nstop, fmt.invert,
-                          tmin0)
+                          tmin0, ws)
 
     tot.nwin = tot.nwin + 1
     tot.nsmp = off + cnt
     tot.nfalse = tot.nfalse + r.nfalse
+    -- How many seams re-locked and how many frames they declared lost, summed: the row's account of the
+    -- placeholders, so a reader can tell a hole's '??' from a framing error's.
+    tot.nrelock = (tot.nrelock or 0) + (r.nrelock or 0)
+    tot.nseamlost = (tot.nseamlost or 0) + (r.nseamlost or 0)
 
     local m = r.nf
     -- Clip at the cap, mid-window if need be: emitting the whole window and then noticing overshoots.
@@ -914,6 +934,9 @@ function sdec.ck_job_step(job)
   tot.fmt = job.fmt
   tot.path = job.path
   tot.tail = sdec.ck_tail_result(job.tail, job.fmt, tot.nf)
+  -- The head verdict travels with the tail: bench_run reads res.headsusp off whatever sdec.res is, and
+  -- the tail is now what the one-shot stream_decode publishes there.
+  if tot.tail ~= nil then tot.tail.headsusp = tot.headsusp end
   return true, tot, nil
 end
 

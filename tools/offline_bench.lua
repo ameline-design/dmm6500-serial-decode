@@ -121,6 +121,14 @@ while arg ~= nil and arg[ai] ~= nil do
   -- own encoded ramp is counted. See gen_serial.lua's SRC.interp. A PAIR of flags with no default here,
   -- because the point of the pair is a paired A/B on one seed: --interp and --no-interp each state the
   -- condition on the record, where a single flag would leave one arm unlabelled.
+  -- THE SEAM RE-ANCHOR, as a paired flag so the twin can run BOTH arms of the fix on one record. Without
+  -- it the only reachable arm is the shipped default, and a fix cannot be compared against its absence.
+  -- THE MODELLED HANDOVER HOLE, in seconds, because without one there is no defect to repair: the twin
+  -- with no hole is byte-exact in both relock arms, which is a control and not a test. 100e-6 is the
+  -- value that reproduces the hardware's failing cells and verdict text.
+  elseif k == '--hole' then A.hole = tonumber(v); ai = ai + 2
+  elseif k == '--relock' then A.relock = true; ai = ai + 1
+  elseif k == '--no-relock' then A.relock = false; ai = ai + 1
   elseif k == '--interp' then A.interp = true; ai = ai + 1
   elseif k == '--no-interp' then A.interp = false; ai = ai + 1
   -- THE DIGITISER'S ACTUAL RATE, 66e6/ceil(66e6/requested). Same paired-flag reasoning as --interp:
@@ -192,6 +200,10 @@ if A.clamp ~= nil then GEN_CLAMP(A.clamp) end
 if A.interp ~= nil then SRC_INTERP(A.interp) end
 if A.truefs ~= nil then SRC_TRUEFS(A.truefs) end
 if A.frontend ~= nil then SRC_FRONTEND(A.frontend) end
+-- Applied with the other toggles and not earlier: sdec.seam_relock is a field on the app, so setting it
+-- before the load would be overwritten by its own declaration.
+if A.relock ~= nil then sdec.seam_relock = A.relock end
+if A.hole ~= nil then TRIG_HOLE(A.hole) end
 if A.aperture ~= nil then SRC_APERTURE(A.aperture) end
 if A.fracorigin ~= nil then SRC_FRACORIGIN(A.fracorigin) end
 -- TWO COMBINATIONS ARE REFUSED, AND BOTH FOR THE SAME REASON: the run would record a condition it did

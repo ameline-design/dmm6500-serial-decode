@@ -614,6 +614,14 @@ def main():
     # the handover hole goes back as DURATION and the framer stops carrying a wrong bit phase across the
     # seam. Offline this takes holes of 6 and 8 readings from 29 % and 28 % to 100 % and costs the
     # byte-exact cases nothing. It has never run on hardware, which is why it is a flag and not a default.
+    # THE SEAM RE-ANCHOR, as a run-time switch so a lap can establish the BASELINE its fix will be
+    # measured against. sdec.seam_relock defaults true in the tree; setting it false here loads the same
+    # build and runs the pre-fix framing, which is the only way to show that the switch is inert when
+    # off -- and nothing the fix reports means anything until that is shown.
+    ap.add_argument('--seam-relock', dest='seam_relock', default=None,
+                    choices=('on', 'off'),
+                    help='force sdec.seam_relock for this run. `off` runs the pre-fix framing on the '
+                         'same build, which is the paired baseline. Verified by read-back')
     ap.add_argument('--gap-resume', type=float, default=None, metavar='SECONDS',
                     help='enable the seam-padding repair for this run by setting sdec.gap_resume. '
                          '156e-6 is the value the offline model measures; 0 leaves it off, which is '
@@ -830,6 +838,16 @@ def main():
             # and the archive shows 128000 and 153600 decoding with nbad 0 at 634615 under the previous
             # 640000. Whether 1 MS/s survives the elision program is UNMEASURED -- no row in the archive
             # carries segfs=1000000 -- which is exactly what this flag is for.
+            if a.seam_relock is not None:
+                want = 'true' if a.seam_relock == 'on' else 'false'
+                d.exec('do sdec.seam_relock = %s end' % want)
+                got = str(d.q('print(tostring(sdec.seam_relock))') or '').strip()
+                if got != want:
+                    raise SystemExit('REFUSING: the instrument did not take sdec.seam_relock (%r, '
+                                     'wanted %r). A baseline that silently ran WITH the re-anchor is '
+                                     'indistinguishable afterwards from one where the fix did nothing.'
+                                     % (got, want))
+                print('  seam re-anchor: %s (read back %s)' % (a.seam_relock.upper(), got))
             if a.gap_resume is not None:
                 # SET BEFORE THE RUN STARTS and READ BACK, for the reason every other knob here is:
                 # brun.soak holds the session for the whole lap, so a value that did not take cannot be

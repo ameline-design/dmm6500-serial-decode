@@ -1982,6 +1982,29 @@ end
 function sdec.quiet_events()
   -- Bare: eventlog.SEV_ERROR is a documented constant, so there is nothing for a pcall to catch.
   localnode.showevents = eventlog.SEV_ERROR
+  -- AND THE BUFFER-CAPACITY DIALOGS, WHICH SEVERITY ALONE CANNOT REACH. 4919 'Available capacity for
+  -- all reading buffers exceeded' is posted at ERROR severity, so showevents = SEV_ERROR displays it --
+  -- and it is a NORMAL event on this app's allocation path, not a fault: acq_bufcap asks the pool for
+  -- ck_bufguard and takes the read-back as the verdict, so a refusal is the design working. Measured on
+  -- a 106-cell elided lap on 2026-10-19: 27 cells filed it, remade the buffer at a workable size, and
+  -- bufshort was empty on every row -- the captures were fine and the operator got a modal box.
+  --
+  -- THE OPERATOR'S REQUIREMENT IS THAT IT NEVER REACHES THE GLASS. eventlog.suppress(N) takes the
+  -- dialog and LEAVES THE LOG ENTRY, measured in docs/UNDOCUMENTED.md, 'eventlog.suppress(N) appears in
+  -- no manual' -- so nothing is lost: sdec.errcount still sees them, and the bench's ev1= field still
+  -- carries the text. That is the whole reason to prefer suppress over a severity change.
+  --
+  -- pcall'd per call and not as a group: `suppress` is in no manual, the documented set being clear,
+  -- csv, getcount, next, post and save, so a firmware without it must degrade to the severity filter
+  -- rather than raise out of hw_config. 4920 is suppressed with 4919 because the measurement covers
+  -- both. 4915 is attempted too and is NOT claimed to work -- the same document records that what
+  -- gives a 4915 a dialog is unresolved and that the severity mute does not reach it.
+  local ev
+  for ev = 1, 3 do
+    local n = ({4919, 4920, 4915})[ev]
+    local ok = pcall(eventlog.suppress, n)
+    if not ok then sdec.suppress_why = 'eventlog.suppress unavailable' end
+  end
   return true
 end
 
@@ -2169,6 +2192,11 @@ sdec.acq_freesettle = 0.05
 -- How many allocations needed that second attempt. A counter and not a flag, so a lap can say whether
 -- this is the once-per-transition case it was written for or something that happens on every capture.
 sdec.acq_remade = 0
+-- How many allocations took the pre-settle: a collection and the free delay BEFORE the first ask, which
+-- is what keeps a refusal off the glass. Counted separately from acq_remade so a lap can say whether the
+-- pre-settle is doing the work or the retry still is -- if acq_remade stays above zero with this
+-- non-zero, the collection is not enough and the delay wants measuring rather than choosing.
+sdec.acq_presettle = 0
 
 -- Free and remake the capture buffer. Follows the project's object-lifetime rule -- delete, nil, then create --
 -- because creating over a live handle leaves the buffer beneath allocated and unreachable until a power cycle.
@@ -2217,6 +2245,26 @@ function sdec.acq_make_buffer(n, perm)
   -- `n` is a required CAPACITY here, not a sample count -- acquire() calls this as
   -- acq_make_buffer(acq_cap(nwant)) -- so it is exactly what picks the frame rung that fits.
   local sb, scap = sdec.acq_bufmode(nil, n)
+  -- A `perm` CALLER IS OFFERED THE STATIC RECORD DIRECTLY, not the one its mode maps to, and this is the
+  -- line that makes "allocate once, never reallocate" true on the bench path. acq_bufplan already holds
+  -- {id = 'rec', cap = 6000000} and acq_bufinit allocates it at startup -- but acq_buffor maps only the
+  -- 'sml' and 'med' modes to it, and the bench and the panel both run in 'frame'. So acq_bufmode handed
+  -- back the 32 768 frame buffer, 32768 >= 6000000 was false, and the request fell through to
+  -- delete-and-make -- while the 6 000 000-reading buffer it needed sat there, already allocated, unoffered.
+  --
+  -- The cost, measured on a 106-cell elided lap on 2026-10-19: the gap plan alternates elided and
+  -- non-elided cells, so the permanent record was made for an eliding cell and freed by the next sized
+  -- one, over and over. 27 of 106 cells filed 4919 'Available capacity for all reading buffers exceeded'
+  -- and remade, 15 once and 12 twice, and the operator got a modal box for each. bufshort was empty on
+  -- every row, so nothing was ever short -- the allocator was thrashing a buffer it already owned.
+  --
+  -- Only for perm, and only when the static record is really there and really large enough. A sized
+  -- caller keeps the exact-capacity rule above it for the reason stated there: its pre-trigger reserve is
+  -- a percentage of CAPACITY, so a small armed capture on this buffer would reserve 300 000 readings.
+  if sdec.acq_bufperm_want ~= false and perm == true then
+    local rb, rcap = sdec.acq_bufhave('rec')
+    if rb ~= nil and rcap ~= nil and rcap >= n then sb, scap = rb, rcap end
+  end
   if sb ~= nil and scap ~= nil and scap >= n then
     sdec.trig_settle()
     sdec.bufclear(sb)
@@ -2274,6 +2322,26 @@ function sdec.acq_make_buffer(n, perm)
   -- only where a delete preceded it: with nothing freed there is nothing to wait for.
   local tries, ntry = {n}, 1
   if nreq < n then tries[2], ntry = nreq, 2 end
+  -- SETTLE BEFORE THE FIRST ASK, NOT AFTER IT FAILS, and this is the line that stops 4919 reaching the
+  -- glass rather than hiding it. The retry below only waits once a make has ALREADY been refused, so a
+  -- freed buffer cost one refusal by construction -- and every refusal posts 4919 'Available capacity
+  -- for all reading buffers exceeded' at ERROR severity, which showevents cannot filter. Measured on a
+  -- 106-cell elided lap on 2026-10-19: 27 cells filed it, 15 with one remake and 12 with two, bufshort
+  -- empty on every row. The captures were all fine; the operator got a modal box 27 times.
+  --
+  -- collectgarbage() first because the operator asked for it and the reasoning holds: buffer.delete has
+  -- not necessarily released by the time the next statement asks -- docs/UNDOCUMENTED.md, 'The real
+  -- ceiling is 7,080,255 readings, across all buffers together' -- and a collection is the one thing a
+  -- caller can do to push that along before spending the delay. pcall'd: it is a stdlib call, but this
+  -- function is on the capture path and must not raise out of it for a collection.
+  --
+  -- Only where a delete preceded it. With nothing freed there is nothing to wait for, so an ordinary
+  -- first allocation pays neither the collection nor the 0.05 s.
+  if freed then
+    pcall(collectgarbage)
+    pcall(delay, sdec.acq_freesettle)
+    sdec.acq_presettle = (sdec.acq_presettle or 0) + 1
+  end
   local i
   for i = 1, ntry do
     -- Guarded at the allocation, the only thing here that can raise. Standard and not compact, and not by
@@ -2986,6 +3054,10 @@ function sdec.gap_tail(scr, thr, sabit, fs)
   local keep = math.ceil(sdec.gap_idlemargin * sabit)
   s = s - keep
   if s < 1 then s = 1 end
+  -- Where the burst's own start edge sits inside the returned tail, 1-based: the margin's length plus one,
+  -- unless the margin was clamped at the scratch's oldest reading. The decoder re-locks from this edge
+  -- (sdec.ua_seam_relock), so it has to be the measured position and not a re-derivation of `keep`.
+  local hoff = lastnon - s + 1
   local out, nk = {}, 0
   for i = s, n do
     p = i + off
@@ -3033,7 +3105,7 @@ function sdec.gap_tail(scr, thr, sabit, fs)
       sdec.spl_npad = (sdec.spl_npad or 0) + 1
     end
   end
-  return out, nk
+  return out, nk, hoff
 end
 
 -- The record with every burst's head put back, in time order. -> the sample array and its length, or nil where
@@ -3075,7 +3147,17 @@ function sdec.gap_splice_plan(buf, n, scrs, thr, sabit, fs)
   -- that pads nothing would otherwise report the last padded capture's figures as its own. The stale-field
   -- class has cost this bench four times.
   sdec.spl_padrd, sdec.spl_npad = 0, 0
-  local pl = {n = 0, pos = {}, len = {}, tail = {}, total = n}
+  -- hoff[j] is where the burst's start edge sits inside tail j (gap_tail's third return), so the decoder
+  -- can tell the restored head from the record that follows it. The two are not interchangeable: the
+  -- head's edge is real but the record's first reading is a measured 0.2-0.9 ms later than it on
+  -- hardware at 100 kS/s, so a framer that carries the head's phase into the record cascades.
+  local pl = {n = 0, pos = {}, len = {}, tail = {}, hoff = {}, total = n}
+  -- EVERY SEAM, SPLICED OR NOT, for the framer. A seam whose tail was refused or orphaned still puts the
+  -- record's next burst at a position the decoder has to re-lock on -- the burst opens mid-byte there
+  -- exactly as it opens mid-start-bit after a restored head. E is the restored head's start edge and R
+  -- where the record resumes; an unspliced seam carries E == R. Spliced coordinates, built alongside
+  -- the running insert below; set on every call so a plan that splices nothing leaves no stale list.
+  sdec.spl_seampos = {E = {}, R = {}, n = 0}
   local nadd, run, j = 0, 0, nil
   -- Whether a seam past the first kept the head it came with, which is what decides whether this splice is
   -- worth anything. The count alone cannot say, seam 1 being the record's own opening; see the limit
@@ -3086,15 +3168,25 @@ function sdec.gap_splice_plan(buf, n, scrs, thr, sabit, fs)
     -- Past ns bursts the early scratches have been reused, so they are skipped rather than approximated.
     if j + ns > nseam then
       local si = math.mod(j - 1, ns) + 1
-      local tt, tn = sdec.gap_tail(scrs[si], thr, sabit, fs)
+      local tt, tn, th = sdec.gap_tail(scrs[si], thr, sabit, fs)
       if tt ~= nil and tn ~= nil and tn > 0 then
         pl.n = pl.n + 1
         -- The running insert is what turns a record index into a spliced one.
         pl.pos[pl.n], pl.len[pl.n], pl.tail[pl.n] = seams[j] + run, tn, tt
+        pl.hoff[pl.n] = th or 1
+        local sp = sdec.spl_seampos
+        sp.n = sp.n + 1
+        sp.E[sp.n], sp.R[sp.n] = seams[j] + run + (th or 1) - 1, seams[j] + run + tn
         run = run + tn
         nadd = nadd + tn
         put = true
       end
+    end
+    -- Seam 1 is the record's own opening, which the window's first anchor already handles.
+    if not put and j > 1 then
+      local sp = sdec.spl_seampos
+      sp.n = sp.n + 1
+      sp.E[sp.n], sp.R[sp.n] = seams[j] + run, seams[j] + run
     end
     -- Both ways a seam goes unrepaired count here, the orphan rule and a refused tail, because the
     -- consequence for the alignment is the same and a reader of the reason needs the consequence.

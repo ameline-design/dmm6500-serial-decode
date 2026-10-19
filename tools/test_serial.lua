@@ -7631,7 +7631,7 @@ local function test_modes()
     local fields = {{'proto', sdec.opt_proto}, {'baud', sdec.opt_baud}, {'bits', sdec.opt_bits},
                     {'par', sdec.opt_par}, {'pol', sdec.opt_pol}, {'trig', sdec.opt_trig},
                     {'ext', sdec.opt_ext}, {'armv', sdec.opt_armv}, {'armw', sdec.opt_armw},
-                    {'gape', sdec.opt_gape}, {'over', sdec.opt_over}}
+                    {'over', sdec.opt_over}}
     -- THE COUNT IS ASSERTED, not just the clearances, because the list is hand-written and the failure mode is
     -- an omission rather than a wrong number: a field left out is simply not measured, and the check passes
     -- while the form is 1 to 5 px into the button row. ui_opt_nf_used is what build_options laid out to.

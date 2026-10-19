@@ -2378,19 +2378,49 @@ local function ringput(b, v, t)
   return true
 end
 
+-- The comparator's next crossing at or after source position `from`, on a LOOPING source. TRIG.fire_at
+-- scans the array as it stands, which is right for a finite render and wrong for SRC.loop, where the
+-- render is one period of a waveform the generator keeps playing: the scan has to wrap, and the index it
+-- returns has to stay unwrapped so the walk's positions keep ascending. -> index, or nil.
+local function trig_fire_looped(from)
+  local n = SRC.nsmp or 0
+  if not (SRC.loop and n > 0) then return (TRIG.fire_at(from)) end
+  local at = dmm.digitize.analogtrigger
+  if at == nil or at.mode ~= dmm.MODE_EDGE or at.edge == nil then return nil end
+  local lvl, slp = at.edge.level, at.edge.slope
+  if lvl == nil then return nil end
+  local prev = SRC.rd[math.mod(from - 1, n) + 1]
+  if prev == nil then return nil end
+  local j, nsc = from + 1, 0
+  while nsc < 2 * n do
+    local v = SRC.rd[math.mod(j - 1, n) + 1]
+    if v == nil then return nil end
+    local cross
+    if slp == dmm.SLOPE_RISING then cross = (prev < lvl and v >= lvl)
+    else cross = (prev > lvl and v <= lvl) end
+    if cross then return j end
+    prev, j, nsc = v, j + 1, nsc + 1
+  end
+  return nil
+end
+
 -- Fill the record and the scratches by walking the program. `tat` is where the first crossing fired.
 function TRIG_ELIDE(rec, scrs, win, tat, step, dt, srcdt)
   local ns = table.getn(scrs)
   local cap = rec.capacity or 1000
-  -- A rate translation is not modelled on this path: the walk works in SOURCE indices because the
-  -- comparator scan does, and mixing the two coordinate systems is where an off-by-one would hide. Every
-  -- eliding fixture leaves SRC.native_fs nil, so step is exactly 1 there.
-  local elidable = (ns >= 1 and win ~= nil and win > 0 and step == 1 and srcdt ~= nil and srcdt > 0)
+  -- THE WALK IS IN SOURCE INDICES, because the comparator scan is, and the readings are taken `step`
+  -- source samples apart through SRC_val -- the same resampling dmm.digitize.read uses -- so a render at
+  -- the vector's own rate against a capture at the app's rate elides exactly as a render AT the capture
+  -- rate does. This used to require step == 1 and send everything else to the contiguous fill below;
+  -- tools/mock_bench.lua sets SRC.native_fs for every cell, so every offline_bench gap cell took that
+  -- fill: ring=6000000/6000000, splwhy=one burst, 20 of 20, and no offline bench ever elided.
+  local elidable = (ns >= 1 and win ~= nil and win > 0 and step ~= nil and step > 0
+                    and srcdt ~= nil and srcdt > 0)
   if elidable then
     -- And the comparator has to be able to fire, or there is no detector and no gap can be found. A
     -- fixture driving this through an override rather than the comparator keeps the contiguous fill.
     local keepscan = SRC.trigscan
-    elidable = (TRIG.fire_at(1) ~= nil)
+    elidable = (trig_fire_looped(tat or 1) ~= nil)
     SRC.trigscan = keepscan
   end
   if not elidable then
@@ -2410,48 +2440,85 @@ function TRIG_ELIDE(rec, scrs, win, tat, step, dt, srcdt)
   local W = math.floor(win / srcdt)
   if W < 1 then W = 1 end
   local lat = math.floor((TRIG.cost.resume or 0) / srcdt)
-  -- The hole in readings, rounded toward zero so a sub-sample setting changes nothing: it is a count of
-  -- readings that reach neither buffer (positive) or both (negative).
-  local hole = (TRIG.cost.hole or 0) / srcdt
-  if hole >= 0 then hole = math.floor(hole) else hole = -math.floor(-hole) end
+  -- The hole in readings: a constant, or with TRIG.cost.hole_max set a uniform draw per seam between
+  -- the two, because the hardware's is not a constant (2026-10-19: 200-900 us between seams of one cell
+  -- at 100 kS/s). Rounded toward zero so a sub-sample setting changes nothing.
+  local hole0 = (TRIG.cost.hole or 0) / srcdt
+  local hole1 = hole0
+  if TRIG.cost.hole_max ~= nil then hole1 = TRIG.cost.hole_max / srcdt end
   local n = SRC.nsmp or 0
-  local pos, g, c, k = 1, 1, tat, nil
-  while c ~= nil and pos <= n and rec.n < cap do
+  local loop = (SRC.loop and n > 0)
+  -- WHERE THE HOST STOPS A LOOPING CAPTURE. Both measure blocks are COUNT_INFINITE; on the instrument
+  -- stream_acquire's `have >= nsmp` poll ends the fill, at 22 000 to 58 000 readings on the 2026-10-19
+  -- laps. A finite render ends itself, as before; a looping one would otherwise run to the 6 000 000
+  -- capacity. Read from the app behind the guard this file already uses for sdec.buf_pool_resolve.
+  local stopn = cap
+  if loop and sdec ~= nil and sdec.strm_target ~= nil and sdec.strm_target > 0
+     and sdec.strm_target < cap then
+    stopn = sdec.strm_target
+  end
+  local pos, g, c = 1, 1, tat
+  while c ~= nil and rec.n < stopn do
+    if (not loop) and pos > n then break end
+    local hole = hole0
+    -- ONE PRNG DRAW PER SEAM, AND ONLY WHEN hole_max IS SET, which is why the guard is a comparison
+    -- and not a nil test. This file's capture phase is consumed from a running sequence per render, so
+    -- a draw that happens in one arm and not the other moves the phase of cells neither arm touched --
+    -- measured at 708 of 1224 free-running rows differing between a seeded elide and no-elide pair.
+    -- With hole_max nil, hole1 == hole0 and nothing is drawn, so the default path is bit-identical to
+    -- the fixed-hole one and older records stay comparable. Setting hole_max BREAKS arm pairing: pass
+    -- --no-phase for any comparison that sets it.
+    if hole1 > hole0 then hole = hole0 + (hole1 - hole0) * GEN_RAND() end
+    if hole >= 0 then hole = math.floor(hole) else hole = -math.floor(-hole) end
+    -- Two parametrisations of one handover. The original: the record opens `resume` after the crossing
+    -- and the hole comes out of the scratch's end, so head = resume - hole, and a hole wider than the
+    -- resume leaves no head at all. With TRIG.cost.head set, the hardware's shape instead: the scratch
+    -- holds a FIXED head after the crossing (~140 us at 100 kS/s, measured on the 2026-10-19 laps) and
+    -- the hole is added after it, so the record opens head + hole late and the head survives whatever
+    -- the hole is. nil keeps the original, bit for bit.
     local recstart = c + lat
+    if TRIG.cost.head ~= nil then recstart = c + math.floor(TRIG.cost.head / srcdt) + hole end
+    local scrend = recstart - hole
     -- Block b+1: the scratch takes everything up to the instant block b+3 starts storing, less the hole --
     -- or past it, when the hole is an overlap.
-    for k = pos, recstart - 1 - hole do
-      local v = SRC.rd[k]
+    local m, from = 1, pos
+    if loop then from = math.mod(pos - 1, n) + 1 end
+    while pos + (m - 1) * step < scrend do
+      local v = SRC_val(from, m, step)
       if v == nil then break end
-      ringput(scrs[g], v, (k - 1) * srcdt)
+      ringput(scrs[g], v, (pos - 1 + (m - 1) * step) * srcdt)
+      m = m + 1
     end
     -- Block b+3 and the detector: the burst runs while some window holds a crossing.
     local e, bend = recstart, nil
     while bend == nil do
       local wend = e + W
       local keepscan = SRC.trigscan
-      local cc = TRIG.fire_at(e - 1)
+      local cc = trig_fire_looped(e - 1)
       SRC.trigscan = keepscan
       if cc ~= nil and cc < wend then e = wend else bend = wend end
     end
-    for k = recstart, bend - 1 do
-      local v = SRC.rd[k]
+    m, from = 1, recstart
+    if loop then from = math.mod(recstart - 1, n) + 1 end
+    while recstart + (m - 1) * step < bend do
+      local v = SRC_val(from, m, step)
       if v == nil then break end
       if rec.n >= cap then break end
       rec.n = rec.n + 1
       rec.readings[rec.n] = v
       -- Absolute, so the gap this burst skipped is a step and not a smooth ramp.
-      rec.relativetimestamps[rec.n] = (k - 1) * srcdt
+      rec.relativetimestamps[rec.n] = (recstart - 1 + (m - 1) * step) * srcdt
+      m = m + 1
     end
     rec.startindex, rec.endindex = 1, rec.n
     pos = bend
     g = g + 1
     if g > ns then g = 1 end
-    if pos > n then
+    if (not loop) and pos > n then
       c = nil
     else
       local keepscan = SRC.trigscan
-      c = TRIG.fire_at(pos - 1)
+      c = trig_fire_looped(pos - 1)
       SRC.trigscan = keepscan
     end
   end
