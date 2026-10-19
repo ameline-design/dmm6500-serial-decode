@@ -103,6 +103,7 @@
 --   lua tools/sweep_plan.lua --plan out/plans/plan-3.lua
 --   lua tools/sweep_plan.lua --plan out/plans/plan-3.lua --hold      # zero-order hold instead
 --   lua tools/sweep_plan.lua --plan out/plans/plan-3.lua --raw       # no DMM front end at all
+--   lua tools/sweep_plan.lua --plan out/plans/plan-3.lua --arm       # armed placement, see arm_off
 --   lua tools/sweep_plan.lua --plan out/plans/plan-3.lua --cell v44b:9600
 --   python3 tools/plan_sweep.py --iteration 1 --offsets 8            # sharded, ratcheted, fresh plan
 --
@@ -141,6 +142,7 @@ if PROBE_N ~= nil and PROBE_N >= 0 then
 end
 
 local A = {plan = nil, hold = false, raw = false, quiet = false, cell = nil, n = 20000,
+           arm = false,
            offsets = 1, shard = 1, nshard = 1}
 local ai = 1
 while arg ~= nil and arg[ai] ~= nil do
@@ -157,6 +159,7 @@ while arg ~= nil and arg[ai] ~= nil do
     ai = ai + 2
   elseif k == '--hold' then A.hold = true; ai = ai + 1
   elseif k == '--raw' then A.raw = true; ai = ai + 1
+  elseif k == '--arm' then A.arm = true; ai = ai + 1
   elseif k == '--quiet' then A.quiet = true; ai = ai + 1
   else print('unknown argument: ' .. tostring(k)); os.exit(2) end
 end
@@ -323,9 +326,60 @@ end
 -- fit for a better-sounding reason.
 --
 -- --hold is the staircase, kept because the argument for it is real and the next lap may say otherwise.
+-- WHERE AN ARMED CAPTURE WOULD OPEN, in arb points. Off by default: this is a capture-placement
+-- model, so it moves every cell in the draw and no RATCHET baseline describes a run with it on.
+--
+-- WHY THE DEFAULT PLACEMENT IS NOT AN APPROXIMATION OF THE INSTRUMENT'S. capture() starts the window
+-- at the plan's wait and runs free. A non-elided armed capture opens at the trigger edge less a
+-- pre-roll, and on a gap vector the program opens every burst at its own crossing -- which is why
+-- stream_decode leaves leadmax nil on that path. So wherever a gap is longer than the window the two
+-- harnesses run different experiments, and that is what the traffic-free gate below is working around
+-- rather than modelling.
+--
+-- THE THRESHOLD COMES FROM sdec.sig_levels, not from a mid-rail guess, because a mid-rail threshold on
+-- a single-rail band is not where the comparator sits. It is measured over the WIRE rather than over a
+-- window, decimated to at most 20000 points so the cost is bounded on v71's million-point arb: the two
+-- logic levels are a property of the waveform and amplitude scaling is affine, so a window cannot know
+-- them better than the whole file does. A wire sig_levels refuses leaves the placement alone.
+--
+-- THE PRE-ROLL IS sdec.pretrig PER CENT of the window -- 5 -- which is the analog-trigger path's own
+-- figure. sdec.acq_pretrig is the boolean marker that a capture HAS one; sdec.pretrig is the
+-- percentage, and confusing the two gives a pre-roll of either 0 or 1 sample.
+--
+-- Searched at most one full period forward, so a waveform with no crossing at all returns the plan's
+-- own wait and this is a no-op rather than a hang.
+local function arm_off(wv, na, off, wlen)
+  local dec = math.ceil(na / 20000)
+  if dec < 1 then dec = 1 end
+  local s, m, i = {}, 0, nil
+  for i = 1, na, dec do m = m + 1; s[m] = wv[i] end
+  local ok = sdec.sig_levels(s, m)
+  if not ok or sdec.thr == nil then return off end
+  local thr = sdec.thr
+  local i0 = math.floor(math.mod(off, na))
+  local base = wv[i0 + 1]
+  if base == nil then base = wv[1] end
+  local idlehi = base > thr
+  local k
+  for k = 1, na do
+    local j = math.mod(i0 + k, na) + 1
+    local vj = wv[j]
+    if vj ~= nil and (vj > thr) ~= idlehi then
+      -- The crossing, less the pre-roll. Kept non-negative by adding whole periods, since math.mod
+      -- keeps the sign of its first argument and a negative offset would index wv[-n].
+      local at = i0 + k - (sdec.pretrig or 0) / 100 * wlen
+      while at < 0 do at = at + na end
+      return math.mod(at, na)
+    end
+  end
+  return off
+end
+
 local function capture(v, arb_fs, fs, off, n, amp, ofst)
   local wv, na = wire(v, amp, ofst)
   if not A.raw then wv = frontend(wv, na, arb_fs) end
+  -- Placement before sampling, on the front-ended wire: the comparator sees the front end too.
+  if A.arm then off = arm_off(wv, na, off, n * arb_fs / fs) end
   local step = arb_fs / fs
   local out, i = {}, nil
   local x = off
@@ -677,11 +731,13 @@ local nloudquiet = 0
 -- EVERY BYTE THE loud MISMATCH BUDGET FORGAVE, and the worst single point. Same reasoning as nbleed:
 -- an allowance the bench has must be here too, and an allowance nobody counts is one nobody checks.
 local nloudmiss, worstloudmiss = 0, 0
--- CAPTURES WHOSE WINDOW HELD NO TRAFFIC, which is a statement about the plan's capture phase and not
--- about the decoder. Counted apart and never as bad -- there was nothing to decode -- and bounded
--- upward by plan_sweep.py for the same reason `skip` is: points that leave `bad` must land somewhere a
--- regression cannot grow them unnoticed. `judged` is ok+bad, so without this the gate would read as
--- evidence disappearing.
+-- Captures whose window held no traffic as this file places the window -- a statement about the
+-- capture placement, not about the decoder, and not a statement that the app was right. Counted apart
+-- and never as bad, because there was nothing to decode; and bounded upward by plan_sweep.py for the
+-- reason `skip` is, that points leaving `bad` must land somewhere a regression cannot grow them
+-- unnoticed. `judged` is ok+bad and excludes them, so that counter carries the coverage these points
+-- cost instead of hiding it. The verdict block says what the measurement against hardware shows:
+-- the instrument passed 5 of these 34 and failed 12, so the count is not a health figure.
 local nnostim = 0
 -- CAPTURES THE APP'S OWN ACQUISITION GATE REFUSED, counted as a mechanism rather than as a verdict.
 -- decode() above says why it is honoured at all; this is what makes it readable and boundable. It is NOT
@@ -714,9 +770,10 @@ local CLS = {'raised', 'nobytes', 'norate', 'rate', 'flags', 'bytes',
              'r46b', 'rfit1', 'rstdC', 'rother'}
 local cls = {}
 do local i; for i = 1, table.getn(CLS) do cls[CLS[i]] = 0 end end
-print(string.format('=== OFFLINE PLAN iteration %d -- %d vectors x %d rates x %d offset(s)%s%s ===',
+print(string.format('=== OFFLINE PLAN iteration %d -- %d vectors x %d rates x %d offset(s)%s%s%s ===',
                     P.iteration, table.getn(P.vectors), table.getn(P.rates), A.offsets,
                     A.hold and ' (zero-order hold)' or '',
+                    A.arm and ' (ARMED placement, not the plan\'s wait)' or '',
                     A.raw and ' (no front end)' or ''))
 -- THE SKIPPED SET, PRINTED, because it is half of the plan's identity and the half a reader assumes.
 -- soakplan applies it BEFORE the shuffle, so it moves every vector's vi and therefore every cell's
@@ -886,12 +943,27 @@ for vi = 1, table.getn(P.vectors) do
                               raw ~= nil and 100 * (raw / baud - 1) or 0,
                               sdec.fitq or -1, tostring(sdec.nw))
         end
-        -- A WINDOW WITH NO TRAFFIC IN IT. Returning nothing is the only correct answer, so this point
-        -- measures where the plan's wait put the capture and not what the decoder did with it.
+        -- A window with no traffic in it, as this file places the window. That is the whole claim and
+        -- it is narrower than it looks: the point is not comparable with a hardware lap, rather than
+        -- a point on which the app was right.
         --
-        -- ONLY WHERE NOTHING CAME BACK, and that half is load-bearing. Bytes out of a traffic-free
-        -- window would be a far worse finding than the one this exemption exists for, so that case
-        -- stays in `bad` where it is visible -- the exemption cannot launder it.
+        -- The instrument does not take this window. capture() opens at the plan's wait and runs
+        -- free; a non-elided armed capture opens at the trigger edge less a pre-roll, and on a gap
+        -- vector the program opens every burst at its own crossing. So where a gap is longer than the
+        -- window the two harnesses are running different experiments and the verdict here describes
+        -- the placement, not the decoder.
+        --
+        -- Measured against the final lap of out/bench/SOAK-20261018-gaplap-merged-splice.csv, over
+        -- the 34 points flagged at one offset -- all of them v99d: the instrument passed 5 and failed
+        -- 12, with 10 no-decode and 7 inconclusive. So this conceals twelve real defects and must not
+        -- be read as health. `judged` is ok+bad and excludes these, so that counter falls by exactly
+        -- the coverage lost; what it cannot say is WHICH cells left, which is what the row and
+        -- plan_sweep.py's bound are for. The remedy is placement rather than exemption:
+        -- a twin that armed would open on traffic and flag none of them. See --arm.
+        --
+        -- Only where nothing came back, and that half is load-bearing. Bytes out of a traffic-free
+        -- window would be a worse finding than the one this gate exists for, so that case stays in
+        -- `bad` where it is visible -- this cannot launder it.
         local nostim = allidle and (r == nil or (r.nf or 0) < 1)
         local verdict
         if not nostim then celljudged = celljudged + 1 end
@@ -935,14 +1007,18 @@ for vi = 1, table.getn(P.vectors) do
           local spoke = r ~= nil and (r.nf or 0) > 0
           if v.class == 'loud' and ran and not silent and not ratebad then
             verdict = 'ok'; nok = nok + 1
-            -- EVERY DECLINE, WHATEVER STAGE DECLINED IT. `loudquiet` is the total -- a loud vector
-            -- that returned no bytes -- and `acqref` is the subdivision that says the acquisition
-            -- gate was the reason rather than the decoder, which is the relationship `label` has to
-            -- `rate`. Counting a gate refusal here as well is not double-counting an event: it is one
-            -- event with a total and a route, and the pair is what distinguishes a decoder that went
-            -- quiet from a capture that never reached it. Both are bounded, so a regression that
-            -- suppressed every byte on every loud vector moves a number whichever route it took.
-            if not spoke then nloudquiet = nloudquiet + 1 end
+            -- A REFUSED ACQUISITION IS NOT A QUIET DECODER, and the two must not share a counter.
+            -- `loudquiet` means a loud vector was handed a capture and DECLINED TO DECODE IT, which
+            -- docs/BENCH.md makes a pass and which is bounded here so mass byte suppression cannot
+            -- hide; `acqref` means the app never reached a decode at all. Folding the second into the
+            -- first puts two mechanisms under one number, which is issue #46's own mistake -- it can
+            -- say the number moved and never which half moved it -- and it would cost the only
+            -- distinction that makes either figure actionable.
+            --
+            -- AND THEY ARE NOT A SUBSET PAIR the way `label` is of `rate`. Those two both describe a
+            -- capture that produced bytes, so one can be a route through the other. A refusal produces
+            -- none, so there is nothing for it to be a subset of. Each is counted where it happened.
+            if not spoke and acqwhy == nil then nloudquiet = nloudquiet + 1 end
           else
             verdict = 'BAD'; nbad = nbad + 1; vbad = vbad + 1; cellbad = cellbad + 1
             local c = classify(ran, r, rb, baud, flagbad and bytesok)

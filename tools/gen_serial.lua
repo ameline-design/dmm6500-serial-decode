@@ -670,10 +670,20 @@ end
 -- ============================================================================
 -- Idle runs long enough to hold a whole capture window
 -- ============================================================================
--- A capture window that lies entirely inside one contains no serial traffic at all, so declining is
--- the only correct answer and the capture is not a test of the decoder. These two functions are what
--- lets a harness say so from the stimulus it handed over, rather than from the app's own refusal --
--- which would make a wrong refusal excuse itself.
+-- A capture window that lies entirely inside one contains no serial traffic, so a harness placing its
+-- window there has handed the decoder nothing to decode. These two functions let it say so from the
+-- stimulus rather than from the app's own refusal, which would let a wrong refusal excuse itself.
+--
+-- What that does not establish is that the instrument would have taken the same window, and it does
+-- not. On a non-elided armed capture the record opens at the trigger edge less a pre-roll, and on a
+-- gap vector the program opens every burst at its own crossing, so the instrument never sits blind in
+-- a gap the way a free-running window at the plan's wait does. A cell this flags is therefore not
+-- comparable with a hardware lap, the capture placement being different, rather than a cell where the
+-- app was right. Measured against the final lap of
+-- out/bench/SOAK-20261018-gaplap-merged-splice.csv, over the 34 points tools/sweep_plan.lua flags at
+-- one offset: the instrument passed 5 of them and failed 12, so the flag conceals twelve real defects
+-- and must never be read as health. The remedy is placement rather than exemption -- a twin that armed
+-- would open on traffic and flag none of them.
 --
 -- v99d is the case that needed it: 80 bytes of 7E1 behind a 4790-bit-time lead, which with the 10-bit
 -- tail is one 4800-bit-time idle run ACROSS THE LOOP SEAM. Measured off the file at 24004 arb points

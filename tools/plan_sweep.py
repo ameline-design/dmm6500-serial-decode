@@ -168,6 +168,35 @@ LINE = re.compile(r'^PLAN (\d+)/(\d+) iteration (\d+): (.*)$')
 # 3-byte head allowance leaves too few for judge() to compare. The app improved and the harness lost
 # the ability to score it, which is exactly what `skip` is bounded to make visible.
 RATCHET = {
+    # RE-MEASURED ON THE DRAW THIS TREE EMITS after sweep_plan.lua's decode() started honouring
+    # sdec.sig_levels' refusal, as sdec.acquire() does on the real capture. Three counters moved and
+    # one is new; everything else came out unchanged at all five configurations, which is the check
+    # that the change did not alter a decode:
+    #
+    #   acqref     NEW, and ratcheted from the first run that has it. Captures the level gate refused:
+    #              106 at one offset and 697-698 at eight. Without a bound here the gate's whole value
+    #              is unmeasured, since the counter only exists to make the refusal class boundable --
+    #              and --no-ratchet is the run you re-measure it with, so it is printed in the per-lap
+    #              table too.
+    #   loudquiet  ROSE, 7 -> 79 at the bench's own configuration and 34 -> 610 at eight offsets. This
+    #              is the counter measuring more of what it exists to measure: at one offset 72 loud
+    #              captures are declined rather than decoded, which is what the instrument does with
+    #              them. acqref is the subdivision that says the gate was the reason.
+    #   loudmiss   FELL, 90 -> 60 here and 540 -> 379 at eight offsets. This is NOT a gain and must not
+    #              be read as one: it is bytes that are not compared at all, on captures the app would
+    #              never have decoded. The fall is the arithmetic consequence of declining them.
+    #   bad, badcells, badall, rate, label  FELL from 2 to 1 at (1, 1, HW_SKIP, 4) ONLY, and it is one
+    #              cell: v48a at 74083 Bd, which the gate refuses with 'no clear logic levels (8 %)'
+    #              and which the previous code scored as a rate misreport (rstdC x1.037, read 76800 Bd
+    #              for 74083 commanded). The app never decodes that capture, so it cannot misreport its
+    #              rate: that point was this harness inventing a defect, and the lower baselines hold
+    #              the correction.
+    #   judged     UNCHANGED at all five -- 1478, 1586, 1370, 11973, 12838. Required: a refusal on a
+    #              loud vector counts ok and a refusal on any other class counts bad, so no point left
+    #              the comparison. If this ever moves on an acquisition change, the change is wrong.
+    #
+    # A configuration still means whatever vectors exist now, and `cells` carries the draw, so a vector
+    # added later reports itself as a configuration mismatch rather than reading as a regression.
     # MEASURED 2026-10-18 on the draw this tree emits: 42 vectors x 36 rates with HW_SKIP, 45 x 36
     # without, 39 x 36 on the four-random subset. The rows these replace were from 2026-08-28 over
     # 39 x 43 and 41 x 43, and by the end none of them described a run at all -- the stage had stopped
@@ -195,26 +224,26 @@ RATCHET = {
     # excuse the captures it was measured on and not one more.
     (1, 1, (), None): {'bad': 1, 'badcells': 1, 'badall': 1, 'rate': 1, 'flags': 0, 'bytes': 0,
                        'nobytes': 0, 'bleed': 94, 'skip': 0, 'nostim': 34, 'judged': 1586,
-                       'loudquiet': 3, 'loudmiss': 114, 'label': 1, 'cells': 1620},
+                       'loudquiet': 3, 'loudmiss': 86, 'label': 1, 'cells': 1620},
     (1, 8, (), None): {'bad': 11, 'badcells': 3, 'badall': 1, 'rate': 9, 'flags': 0, 'bytes': 2,
                        'nobytes': 0, 'bleed': 629, 'skip': 1, 'nostim': 121, 'judged': 12838,
-                       'loudquiet': 35, 'loudmiss': 553, 'label': 8, 'cells': 1620},
+                       'loudquiet': 35, 'loudmiss': 383, 'label': 8, 'cells': 1620},
     # THE TWO CONFIGURATIONS A BENCH LAP CAN ACTUALLY BE COMPARED WITH, because every hardware soak
     # skips all of HW_SKIP -- v96 wedges the generator at vector 33 -- and the skip is drawn on. These
     # are the ones tools/soak_offline.py and the default CLI run.
     (1, 1, SP.HW_SKIP, None): {'bad': 1, 'badcells': 1, 'badall': 1, 'rate': 1, 'flags': 0,
                                'bytes': 0, 'nobytes': 0, 'bleed': 111, 'skip': 0, 'nostim': 34,
-                               'judged': 1478, 'loudquiet': 7, 'loudmiss': 90, 'label': 1,
+                               'judged': 1478, 'loudquiet': 7, 'loudmiss': 60, 'label': 1,
                                'cells': 1512},
     (1, 8, SP.HW_SKIP, None): {'bad': 11, 'badcells': 3, 'badall': 1, 'rate': 10, 'flags': 0,
                                'bytes': 1, 'nobytes': 0, 'bleed': 632, 'skip': 1, 'nostim': 122,
-                               'judged': 11973, 'loudquiet': 34, 'loudmiss': 540, 'label': 8,
+                               'judged': 11973, 'loudquiet': 34, 'loudmiss': 379, 'label': 8,
                                'cells': 1512},
     # THE 14-DAY RUN'S OWN CONFIGURATION, four random vectors a lap, which is what the instrument plays.
     # 1404 cells rather than 1512, so none of the four baselines above describes it.
-    (1, 1, SP.HW_SKIP, 4): {'bad': 2, 'badcells': 2, 'badall': 2, 'rate': 2, 'flags': 0,
+    (1, 1, SP.HW_SKIP, 4): {'bad': 1, 'badcells': 1, 'badall': 1, 'rate': 1, 'flags': 0,
                             'bytes': 0, 'nobytes': 0, 'bleed': 111, 'skip': 0, 'nostim': 34,
-                            'judged': 1370, 'loudquiet': 6, 'loudmiss': 96, 'label': 2,
+                            'judged': 1370, 'loudquiet': 6, 'loudmiss': 66, 'label': 1,
                             'cells': 1404},
 }
 WHY = {
@@ -234,13 +263,20 @@ WHY = {
     # points out of `bad` into `skip`, and an unbounded `skip` would let the driver call that IMPROVED
     # and invite the baseline to be lowered. `judged` is ok+bad and pins how much was compared at all.
     'skip': 'points the app left too short to judge',
-    # BOUNDED FOR THE SAME REASON AS `skip`, AND IT IS THE OTHER HALF OF THE GATE. A capture whose
-    # window lay entirely inside one of the vector's idle runs held no traffic, so declining is right
-    # and the point is a statement about where the plan's wait fell. That exemption moves points OUT of
-    # `bad`, which drops `judged` -- and `judged` falling is a failure below, correctly, because less
-    # evidence is not an improvement. Bounding `nostim` upward is what makes the pair honest: the gate
-    # may excuse the captures it was measured on and not one more.
-    'nostim': 'points whose capture window held no traffic at all -- the plan\'s phase, not the app',
+    # Bounded for the same reason as `skip`, and it is the other half of the gate. A capture whose
+    # window lay entirely inside one of the vector's idle runs held no traffic AS SWEEP_PLAN PLACES THE
+    # WINDOW, and that is all it says: the point is not comparable with a hardware lap, not a point on
+    # which the app was right. The instrument does not take that window -- it arms, and on a gap vector
+    # it elides, so it opens on a crossing rather than at the plan's wait. Measured against the final
+    # lap of out/bench/SOAK-20261018-gaplap-merged-splice.csv, over the 34 points this counts at one
+    # offset: the instrument passed 5 and failed 12. So the counter conceals twelve real defects and is
+    # not a health figure. The gate moves points out of `bad`, which drops `judged` -- and `judged`
+    # falling is a failure below, correctly, because less evidence is not an improvement, which is how
+    # the coverage these points cost gets reported. Bounding `nostim` upward is what keeps the pair
+    # honest: the bound covers the captures it names and not one more. The real fix is placement
+    # -- see sweep_plan.lua's --arm -- rather than a wider exemption.
+    'nostim': 'points whose window held no traffic where the twin placed it -- not comparable with a '
+              'bench lap, and it conceals 12 real defects of its 34',
     # THE MECHANISM COUNTER, AND IT CROSSES THE VERDICTS RATHER THAN BEING ONE. sweep_plan.lua now
     # honours sdec.sig_levels' refusal, as sdec.acquire() does on the real capture, so a capture the app
     # would decline is declined here too. On a `loud` vector that is the documented pass and lands in
