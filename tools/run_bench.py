@@ -629,6 +629,21 @@ def main():
     if not (a.push_plan or a.start or a.fetch):
         ap.error('nothing to do: pass --smoke, --start, --push-plan or --fetch')
 
+    # --spec WITHOUT --push-plan IS SILENTLY IGNORED, and it cost 3.6 h of instrument time on
+    # 2026-10-19. The spec reaches soakplan only on the --push-plan branch below, so without it no plan
+    # is written and brun.soak runs whatever PLAN.CSV the key already holds -- which was the full
+    # 1512-cell draw where 36 cells had been asked for. Nothing in the output said so, and the run
+    # looked exactly like the targeted one it was not.
+    #
+    # REFUSED RATHER THAN WARNED. The run it spoils takes hours, a warning scrolls past inside the load
+    # output, and notes/ already carried the rule in prose -- which is what a prose rule is worth. The
+    # escape is one word, so nothing legitimate is blocked: --spec is read nowhere else in this file,
+    # so passing it without --push-plan is always either a mistake or a no-op.
+    if a.spec and not a.push_plan:
+        ap.error('--spec needs --push-plan. Without it the spec is never written to the key and the '
+                 'engine runs the plan already sitting there, which is usually the last full draw. '
+                 'Add --push-plan, or drop --spec if the key already holds the plan you want.')
+
     rows = None
     if a.push_plan and a.plan_file:
         # REFUSES A PLAN THAT DOES NOT DECLARE ITS OWN ROW COUNT, because the instrument stops reading at
