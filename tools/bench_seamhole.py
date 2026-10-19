@@ -93,6 +93,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from dmmrun import DMM              # noqa: E402
 from siglent import SDG             # noqa: E402
 import run_bench as RB              # noqa: E402
+import vector_names as VN           # noqa: E402
 
 ARB_SPB = 10             # v98a renders at 10 arb samples a bit; tools/make_vectors.lua
 VEC = 'v98a'             # names the elide branch in brun.point; the wire carries the ramp, not this
@@ -352,6 +353,17 @@ def analyse(lines, baud, half_us=HALF_US):
                       'coin flip the retries are for, not a fault')
         return None, det
     sr, wr = spacing(rc)
+    # IS IT A GRID AT ALL? Everything below divides half_us by this spacing and calls the result a
+    # sample interval, so a stimulus whose crossings are not evenly spaced yields a confident figure
+    # from a quantity that does not exist. Measured on the arb arm, where serial edges gave a mean
+    # spacing of 12 readings with a worst deviation of 8.682 -- and a "sample interval" of 40.59 us
+    # against a true 10.00. A square's crossings are even by construction, so this only ever fires on
+    # a stimulus that cannot support the method.
+    if wr > 0.25 * sr:
+        det['why'] = ('the record\'s crossings are not a grid: mean spacing %.2f readings with a '
+                      'worst deviation of %.2f. This stimulus has no uniform period, so no sample '
+                      'interval can be read from it' % (sr, wr))
+        return None, det
     dtr = half_us / sr
     det['dtr'], det['sr'], det['wr'] = dtr, sr, wr
     if len(gc) >= 2:
@@ -532,6 +544,37 @@ def main():
                 print('  %s' % w)
             return 1
 
+        # THE ARB ARM ANSWERS ONE QUESTION AND MUST NOT ANSWER THE OTHER. It was asked whether the two
+        # buffers share a time origin; it is not able to measure a hole, having no uniform grid. The
+        # first version fell through to the verdict below and printed "median OVERLAP of 20470 us =
+        # 196.512 bit times", which is the scratch's own length wearing the name of a handover cost --
+        # a confident figure from a quantity that does not exist. So this arm stops here.
+        if a.wave == 'arb':
+            print()
+            print('=== verdict over %d of %d trials: the ORIGIN question only ===' % (len(holes),
+                                                                                      a.tries))
+            shared = max(abs(x) for x in holes) < 1000.0
+            if shared:
+                print('  The two buffers appear to share a time origin: record_first - scratch_last')
+                print('  is under a millisecond on every trial. If that holds, the hole is a')
+                print('  SUBTRACTION on every capture and the repair needs no constant.')
+            else:
+                print('  The two buffers do NOT share a time origin. Every record read back starts at')
+                print('  0.000000 while its scratch ends at its own length, so the difference is the')
+                print('  scratch, not the handover:')
+                print('    %s' % ' '.join('%+.0f' % x for x in holes))
+                print('  CONSEQUENCES, both of which matter more than the number:')
+                print('   1. The hole CANNOT be derived from timestamps. A per-capture width has to')
+                print('      come from the bit phase either side of the seam, which resolves only to')
+                print('      the nearest whole bit, or from a constant expressed in SECONDS.')
+                print('   2. TRIG_ELIDE stamps the scratch and the record from the same SRC index, so')
+                print('      the offline twin gives the splice a shared clock the instrument does not.')
+                print('      That is a fidelity gap in the model, not only a missing measurement.')
+            print()
+            print('  No hole is reported: serial edges carry no uniform period, so this arm has no')
+            print('  grid to measure one against. Use the default pulse stimulus for that.')
+            return 0
+
         d0 = dets[0]
         print('stimulus and capture, from the last good trial:')
         print('  levels         : threshold %.4f V' % d0['thr'])
@@ -549,10 +592,12 @@ def main():
             ts, tr = x.get('ts_scratch') or [], x.get('ts_record') or []
             fs = ' '.join('%.6f' % v for v in ts[-3:] if v is not None) or 'none'
             fr = ' '.join('%.6f' % v for v in tr[:3] if v is not None) or 'none'
-            d = ''
+            # NOT `d`, which is the DMM handle in this scope: shadowing it here made close() in the
+            # finally block raise AttributeError on a str after the whole measurement had succeeded.
+            delta = ''
             if ts and tr and ts[-1] is not None and tr[0] is not None:
-                d = '   record_first - scratch_last = %+.2f us' % ((tr[0] - ts[-1]) * 1e6)
-            print('  try %d: scratch [... %s]  record [%s ...]%s' % (i + 1, fs, fr, d))
+                delta = '   record_first - scratch_last = %+.2f us' % ((tr[0] - ts[-1]) * 1e6)
+            print('  try %d: scratch [... %s]  record [%s ...]%s' % (i + 1, fs, fr, delta))
         # THE SCRATCH'S OWN INTERVAL WHERE IT HAD ENOUGH CROSSINGS TO GIVE ONE. It is reported and
         # not substituted: substituting on the trials that happen to have two crossings would make
         # the trials incomparable, and the point of the comparison is the spread.

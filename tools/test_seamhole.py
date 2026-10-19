@@ -166,6 +166,35 @@ def main():
        '%+.3f us' % hole(build(10.0, 0, phase_us=5.0)))
 
     print('')
+    print('-- A STIMULUS WITH NO GRID MUST BE REFUSED --')
+    # THE DEFECT THIS PINS, found on the instrument: played against a serial vector, the record's
+    # edges gave a mean crossing spacing of 12 readings with a worst deviation of 8.682 -- no period
+    # at all -- and the tool divided the half period by it, reported a sample interval of 40.59 us
+    # against a true 10.00, and printed a hole of 196 bit times. A confident number from a quantity
+    # that does not exist is worse than a refusal, so the grid is now tested before it is used.
+    lines = build(10.0, 7)
+    jit = []
+    for ln in lines:
+        if ln.startswith('SH rd '):
+            # Crossings scattered rather than periodic: alternate the level every few readings at
+            # irregular intervals, which is what serial data looks like to a crossing finder.
+            off = int(ln.split()[2])
+            vals = ['3.00000' if (i // (2 + (i % 5))) % 2 else '0.00000'
+                    for i in range(off, off + SH.CHUNK)]
+            jit.append('SH rd %d %s' % (off, ' '.join(vals)))
+        else:
+            jit.append(ln)
+    h, det = recover(jit)
+    ck(h is None and 'not a grid' in (det.get('why') or ''),
+       'an irregular crossing series is refused instead of yielding an interval',
+       (det.get('why') or 'NO REFUSAL -- a hole was reported: %s' % h)[:110])
+    # AND THE CONTROL: the real stimulus must not trip the same guard, or the gate is useless.
+    h2, det2 = recover(build(10.0, 7))
+    ck(h2 is not None and abs(h2 - 70.0) < 0.35,
+       '...while the periodic stimulus passes it, so the guard is not simply refusing everything',
+       '%+.3f us' % h2 if h2 is not None else (det2.get('why') or '?'))
+
+    print('')
     print('-- THE HOLE, BOTH WAYS --')
     # Both signs at each width. A sign error gives a plausible number on either test alone: at
     # 10 us a 7-sample hole and a 7-sample overlap are 70 us apart and both inside half a period.
