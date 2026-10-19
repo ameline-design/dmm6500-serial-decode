@@ -1127,7 +1127,25 @@ function brun.point(fs, baud, lock, elide, vid)
   -- after the decode so they say what the cell LEFT behind rather than what it was handed.
   if sdec.ck_tot ~= nil then
     r.decwin, r.decstop = sdec.ck_tot.nwin, sdec.ck_tot.stopped
+    -- THE COUNT THE LOOP EXPECTED, which is the field that makes decwin decidable rather than
+    -- suggestive. ck_decode computes it from its own ntotal, W and stride before the first window, so
+    -- decwin == decest is a loop that ran to the end of what it was given, and decwin < decest is one
+    -- that stopped early -- and only the second is a defect. Without it the 2026-10-19 lap's 15 cells
+    -- covering 48-79 % of ring could not be told from 15 cells given a shorter total to cover.
+    r.decest = sdec.ck_tot.nwin_est
+    -- And the geometry, because the two counts above are in units of it: a window of W advancing by
+    -- stride is what turns nsmp back into "which break fired".
+    r.decwid, r.decstride = sdec.ck_tot.W, sdec.ck_tot.stride
   end
+  -- AND THE BOUND THE WINDOW LOOP WAS GIVEN, beside the reach above, because the two together are what
+  -- make a short decode readable. On a spliced read the loop's ntotal is the PLAN's total and not the
+  -- record's -- nread plus the heads put back -- so `decwin=2 ckwin=2/39187` against `ring=81792` says the
+  -- decode stopped early only once decn says what it was aiming at. Read outside the ck_tot guard: a
+  -- decode that built no totals still had a bound, and that combination is the interesting one.
+  r.decn = sdec.ck_nrd
+  -- The live count too, since ring= carries sdec.nread, which is a copy taken earlier in the cell. A
+  -- bufn that disagrees with it means the record changed under the decode, which nothing else would show.
+  pcall(function() if sdec.buf ~= nil then r.bufn = sdec.buf.n end end)
   r.ckstop, r.ckcancel = sdec.ck_stop, sdec.ck_cancel
   brun.spin_tick()                      -- 4 of 6: the decode is done
   if not okc2 then r.why = 'decode raised'; return r end
@@ -3402,9 +3420,21 @@ function brun.soak(iterations, tag)
         -- ordinary, and a diagnostic emitted only when it already looks interesting cannot find that: it
         -- took a 1512-cell lap and an offline reproduction. `decstop` is nil on a decode that ran out of
         -- record, which is the ordinary ending, and 'stopped' is the exit this field is here for.
+        -- Windows RUN of windows EXPECTED, as one field, because the pair is the reading and neither
+        -- number alone is it: 2 of 2 is a complete decode and 2 of 4 is a truncated one, and every row
+        -- ever written carried only the first of the two.
         if p.decwin ~= nil then
           nt = nt .. ' decwin=' .. brun.int(p.decwin)
+          if p.decest ~= nil then nt = nt .. '/' .. brun.int(p.decest) end
           if p.decstop ~= nil then nt = nt .. ' decstop=' .. tostring(p.decstop) end
+        end
+        -- What the loop was aiming at, and what the record held while it ran. Unconditional for the same
+        -- reason decwin is: a decode that covered its bound looks identical to one that did not until the
+        -- bound is on the row, and that is how 15 short cells read as ordinary.
+        if p.decn ~= nil then nt = nt .. ' decn=' .. brun.int(p.decn) end
+        if p.bufn ~= nil then nt = nt .. ' bufn=' .. brun.int(p.bufn) end
+        if p.decwid ~= nil then
+          nt = nt .. string.format(' decgeo=%s+%s', brun.int(p.decwid), brun.int(p.decstride or 0))
         end
         -- Both flags as the cell left them, so a latched stop is visible on the row that suffered it and
         -- on the rows after it. false is written as well as true: the point is to be able to read "this

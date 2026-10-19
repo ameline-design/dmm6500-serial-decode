@@ -831,6 +831,14 @@ function sdec.stream_decode(got)
     end
   end
   if rdr == nil then rdr = sdec.ck_reader_buffer(sdec.buf, got) end
+  -- THE TOTAL THE WINDOW LOOP IS GIVEN, which is not the record's length on a spliced read and is the
+  -- quantity a short decode has to be judged against. ck_decode breaks on `off + cnt >= ntotal`, so this
+  -- is the bound that decides the reach -- and the 2026-10-19 lap found 15 cells whose decode covered
+  -- 48-79 % of `ring`, where neither candidate exit was taken and nothing on the row named the limit.
+  -- Set on both branches: `got` on a plain read, pl.total on a spliced one, the two differing by the heads
+  -- put back. Assigned here rather than nil'ed at entry because every path above either returns or reaches
+  -- this line, so there is no exit that could leave it stale.
+  sdec.ck_nrd = nrd
   -- Sliced when a panel is waiting, whole when nothing is; the one-shot callers leave budget_s nil.
   if sdec.strm_press then
     -- Work per press and window width are two different budgets: only the width must come from
