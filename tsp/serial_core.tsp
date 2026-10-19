@@ -3014,6 +3014,10 @@ function sdec.gap_splice_plan(buf, n, scrs, thr, sabit, fs)
   sdec.spl_nseam, sdec.spl_nspliced, sdec.spl_nadded = nseam, pl.n, nadd
   sdec.spl_norphan = nseam - pl.n
   sdec.spl_interior = interior
+  -- The head put back less the idle margin every tail carries, summed over the heads restored: what 'ok'
+  -- cannot say, a quarter of a head splicing as readily as a whole one. Reported and not judged, because
+  -- the genuine head ran 70 us at 50 kS/s and 150 us at 100 kS/s on the 2026-10-18 lap -- no one bound fits.
+  sdec.spl_headrd = nadd - pl.n * math.ceil(sdec.gap_idlemargin * sabit)
   if pl.n < 1 then return nil end
   pl.total = n + nadd
   return pl

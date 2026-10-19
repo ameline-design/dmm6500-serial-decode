@@ -1045,6 +1045,17 @@ function brun.point(fs, baud, lock, elide, vid)
   r.splseam, r.splran = sdec.spl_nseam, sdec.spl_nspliced
   r.splorph, r.spladd = sdec.spl_norphan, sdec.spl_nadded
   r.splwhy = sdec.spl_why
+  -- The head restored per seam in readings, the margin already taken off: the figure every reader of the
+  -- 2026-10-18 lap had to rebuild from spladd, splran and the rate, and the one 'ok' does not carry.
+  if sdec.spl_headrd ~= nil and (sdec.spl_nspliced or 0) > 0 then
+    r.splhead = sdec.spl_headrd / sdec.spl_nspliced
+  end
+  -- The decode's reach: nwin windows over nsmp readings, and the exit that ended it, nil being the record
+  -- running out. On the lap of 2026-10-18 nf was the first 20 000 readings' frames against records of
+  -- 22 000 to 58 000, so every pay= scored one window of a longer record and nothing on the row said why.
+  if elide ~= nil and sdec.ck_tot ~= nil then
+    r.cknwin, r.cknsmp, r.ckstop = sdec.ck_tot.nwin, sdec.ck_tot.nsmp, sdec.ck_tot.stopped
+  end
   -- And the three numbers behind 'thr outside swing', which is the one reason that cannot be acted on from
   -- its name alone: which side the threshold fell outside, and by how much, is what tells a failed probe
   -- from failed levels. Set only when that guard fires, so nil here is the ordinary case.
@@ -3312,6 +3323,13 @@ function brun.soak(iterations, tag)
           nt = nt .. string.format(' spl=%s/%s', brun.int(p.splran or 0), brun.int(p.splseam))
           if (p.splorph or 0) > 0 then nt = nt .. ' splorph=' .. brun.int(p.splorph) end
           if (p.spladd or 0) > 0 then nt = nt .. ' spladd=' .. brun.int(p.spladd) end
+          if p.splhead ~= nil then nt = nt .. string.format(' splhead=%.1f', p.splhead) end
+        end
+        -- The decode's reach, beside the record's length in ring= below: nsmp short of the ring is a decode
+        -- that did not read the record it scored, and ckstop names the exit that stopped it.
+        if p.cknwin ~= nil then
+          nt = nt .. string.format(' ckwin=%s/%s', brun.int(p.cknwin), brun.int(p.cknsmp or 0))
+          if p.ckstop ~= nil then nt = nt .. ' ckstop=' .. tostring(p.ckstop) end
         end
         -- And the over-read in force, so the record answers "was it on" without trusting the launch.
         if p.overread ~= nil then nt = nt .. string.format(' over=%.2f', p.overread) end
