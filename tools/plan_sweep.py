@@ -169,31 +169,34 @@ LINE = re.compile(r'^PLAN (\d+)/(\d+) iteration (\d+): (.*)$')
 # the ability to score it, which is exactly what `skip` is bounded to make visible.
 RATCHET = {
     # RE-MEASURED ON THE DRAW THIS TREE EMITS after sweep_plan.lua's decode() started honouring
-    # sdec.sig_levels' refusal, as sdec.acquire() does on the real capture. Three counters moved and
-    # one is new; everything else came out unchanged at all five configurations, which is the check
-    # that the change did not alter a decode:
+    # sdec.sig_levels' refusal, as sdec.acquire() does on the real capture. Two counters moved and
+    # everything else came out unchanged at all five configurations, which is the check that the change
+    # did not alter a decode:
     #
-    #   acqref     NEW, and ratcheted from the first run that has it. Captures the level gate refused:
-    #              106 at one offset and 697-698 at eight. Without a bound here the gate's whole value
-    #              is unmeasured, since the counter only exists to make the refusal class boundable --
-    #              and --no-ratchet is the run you re-measure it with, so it is printed in the per-lap
-    #              table too.
-    #   loudquiet  ROSE, 7 -> 79 at the bench's own configuration and 34 -> 610 at eight offsets. This
-    #              is the counter measuring more of what it exists to measure: at one offset 72 loud
-    #              captures are declined rather than decoded, which is what the instrument does with
-    #              them. acqref is the subdivision that says the gate was the reason.
-    #   loudmiss   FELL, 90 -> 60 here and 540 -> 379 at eight offsets. This is NOT a gain and must not
-    #              be read as one: it is bytes that are not compared at all, on captures the app would
-    #              never have decoded. The fall is the arithmetic consequence of declining them.
+    #   loudmiss   FELL, 90 -> 60 at the bench's own configuration and 540 -> 379 at eight offsets, and
+    #              this is NOT a gain. It is bytes that are not compared at all, on captures the app
+    #              would never have decoded: the fall is the arithmetic consequence of declining them,
+    #              not evidence that fewer bytes are wrong. Recorded at the lower figure because the
+    #              bound has to describe the run that happens now.
     #   bad, badcells, badall, rate, label  FELL from 2 to 1 at (1, 1, HW_SKIP, 4) ONLY, and it is one
     #              cell: v48a at 74083 Bd, which the gate refuses with 'no clear logic levels (8 %)'
     #              and which the previous code scored as a rate misreport (rstdC x1.037, read 76800 Bd
     #              for 74083 commanded). The app never decodes that capture, so it cannot misreport its
     #              rate: that point was this harness inventing a defect, and the lower baselines hold
     #              the correction.
+    #   loudquiet  DID NOT MOVE, and that is a design property rather than luck. A capture the level
+    #              gate refused is counted in `acqref` and NOT here -- see the verdict block in
+    #              sweep_plan.lua for why the two must not share a counter -- so these figures still
+    #              describe what they always described: a loud vector handed a capture and declining to
+    #              decode it.
     #   judged     UNCHANGED at all five -- 1478, 1586, 1370, 11973, 12838. Required: a refusal on a
     #              loud vector counts ok and a refusal on any other class counts bad, so no point left
     #              the comparison. If this ever moves on an acquisition change, the change is wrong.
+    #
+    # `acqref` IS DELIBERATELY ABSENT FROM EVERY ROW. It measures 106 at one offset and 697-698 at
+    # eight, it is printed in the per-lap table so --no-ratchet can re-measure it, and it gates nothing
+    # until someone sets a baseline on purpose. An unmeasured key is skipped rather than defaulted, so
+    # leaving it out is the honest state and not an oversight.
     #
     # A configuration still means whatever vectors exist now, and `cells` carries the draw, so a vector
     # added later reports itself as a configuration mismatch rather than reading as a regression.
@@ -277,14 +280,16 @@ WHY = {
     # -- see sweep_plan.lua's --arm -- rather than a wider exemption.
     'nostim': 'points whose window held no traffic where the twin placed it -- not comparable with a '
               'bench lap, and it conceals 12 real defects of its 34',
-    # THE MECHANISM COUNTER, AND IT CROSSES THE VERDICTS RATHER THAN BEING ONE. sweep_plan.lua now
-    # honours sdec.sig_levels' refusal, as sdec.acquire() does on the real capture, so a capture the app
-    # would decline is declined here too. On a `loud` vector that is the documented pass and lands in
-    # `loudquiet`; on any other class it is a capture that returned nothing and is BAD under `nobytes`.
-    # Neither of those names the mechanism, so this does -- and it is ratcheted UPWARD because the gate
-    # takes points out of the decode path: a change that widened it would make every content counter fall
-    # and leave the lap looking better. See decode() in tools/sweep_plan.lua for the cell-for-cell
-    # measurement against the gap lap, out/bench/SOAK-20261018-gaplap-merged-splice.csv.
+    # THE MECHANISM COUNTER, AND IT CROSSES THE VERDICTS RATHER THAN BEING ONE. sweep_plan.lua honours
+    # sdec.sig_levels' refusal, as sdec.acquire() does on the real capture, so a capture the app would
+    # decline is declined here too. On a `loud` vector that is the documented pass; on any other class
+    # it is a capture that returned nothing and is BAD under `nobytes`. Neither of those names the
+    # mechanism, so this does, and it is kept apart from `loudquiet` on purpose -- a refused acquisition
+    # is not a quiet decoder, and the verdict block in sweep_plan.lua says why folding them would cost
+    # the only distinction that makes either figure actionable. No RATCHET row carries it yet: it is
+    # printed so --no-ratchet can measure it, and a baseline is a deliberate act. See decode() in
+    # tools/sweep_plan.lua for the cell-for-cell measurement against the gap lap,
+    # out/bench/SOAK-20261018-gaplap-merged-splice.csv.
     'acqref': 'captures the app\'s own level gate refused -- not a verdict, a mechanism tally',
     'judged': 'points actually compared against the payload (ok + bad)',
     # A PASS THAT HAS TO STAY VISIBLE. docs/BENCH.md makes declining the correct answer for a `loud`
