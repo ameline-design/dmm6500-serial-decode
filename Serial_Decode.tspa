@@ -2523,6 +2523,7 @@ function sdec.gap_splice_plan(buf, n, scrs, thr, sabit, fs)
   sdec.spl_nseam, sdec.spl_nspliced, sdec.spl_nadded = nseam, pl.n, nadd
   sdec.spl_norphan = nseam - pl.n
   sdec.spl_interior = interior
+  sdec.spl_headrd = nadd - pl.n * math.ceil(sdec.gap_idlemargin * sabit)
   if pl.n < 1 then return nil end
   pl.total = n + nadd
   return pl
@@ -7342,7 +7343,7 @@ function sdec.stream_decode(got)
     opts.primeskip = math.ceil(2 * sdec.strm_elide * sdec.fs)
   end
   sdec.spl_nseam, sdec.spl_nspliced, sdec.spl_nadded, sdec.spl_norphan = nil, nil, nil, nil
-  sdec.spl_interior = nil
+  sdec.spl_interior, sdec.spl_headrd = nil, nil
   sdec.spl_why = nil
   sdec.spl_raise, sdec.spl_thr, sdec.spl_lo, sdec.spl_hi = nil, nil, nil, nil
   local rdr, nrd = nil, got

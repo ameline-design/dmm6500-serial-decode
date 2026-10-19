@@ -619,6 +619,15 @@ print('-- the ACQUISITION side: the whole chain, with the two-buffer program fil
   check('the splice restores the payload byte-exact from scratches the trigger model itself filled',
         fixed.why == 'ok' and fixed.nspl == fixed.nseam and (fixed.norph or 1) == 0
         and fixed.f ~= nil and fixed.f > 0.99, show(fixed))
+  -- AND THE HEAD IT PUT BACK IS THE LATENCY IT WAS CHARGED, less the margin, to the reading: 156 us at the
+  -- rate the app chose is floor(156e-6 * fs) readings. This is the figure the row now carries as splhead=,
+  -- and it dies if the margin accounting in gap_splice_plan drifts from gap_tail's.
+  local wanthead = math.floor(156e-6 * sdec.fs)
+  check('...and the recovered head per seam is the latency charged, to the reading',
+        sdec.spl_headrd ~= nil and fixed.nspl ~= nil and fixed.nspl > 0
+        and sdec.spl_headrd / fixed.nspl == wanthead,
+        string.format('headrd=%s over %s seams, want %d at fs %s', tostring(sdec.spl_headrd),
+                      tostring(fixed.nspl), wanthead, tostring(sdec.fs)))
 
   -- ---- AND THE FINDING: a splice that misses ONE INTERIOR SEAM is worth nothing ----
   -- Six bursts against five scratches orphans seam 1, which is the record's own OPENING: a missing head
@@ -653,6 +662,114 @@ print('-- the ACQUISITION side: the whole chain, with the two-buffer program fil
   check('a program built with five of twelve scratches still pairs burst to scratch correctly',
         reuse.why == 'ok' and reuse.norph == 1 and reuse.f ~= nil and reuse.f > 0.99, show(reuse))
 
+  -- ---- THE HANDOVER HOLE: the one thing the walk assumes, and what the lap of 2026-10-18 says about it ----
+  -- Everything above holds for a CONTINUOUS handover, where the resume latency's samples all went to the
+  -- scratch. The hardware lap says otherwise: on every cell whose scored window held an interior seam, a
+  -- splice reporting ok with every head restored left the bursts misaligned -- one shift 0.3 to 0.8 against
+  -- per-segment 0.95 to 1.00, and tools/judge_seam.py deltas of +1 to +5 at every seam from 80 kS/s up,
+  -- mixed at 60 kS/s, intact at 50 kS/s and below. A dead interval at the record block's entry, in neither
+  -- buffer, does exactly that: the framer anchors on the restored head and every bit centre after the hole
+  -- is sampled late by its width. Swept here through the real chain to find the width that breaks a frame.
+  --
+  -- WHAT THE THREE ROWS PIN. Under half a bit the hole is absorbed and the splice stays byte-exact; over it
+  -- the one-shift score collapses to one segment's worth while the per-segment alignment is intact and
+  -- every seam moves by +1 -- the hardware signature -- with spl_why still 'ok'. An OVERLAP of the same
+  -- width, both buffers holding the readings, costs nothing but flagged frames: the deltas stay at 0. So
+  -- the +1 to +5 the lap carries can only be a hole, and 60 kS/s being mixed puts it at 0.5 T there, about
+  -- 70 to 90 us. The value is unmeasured; TRIG.cost.hole stays 0 by default and this block sets it per row.
+  local function wordshifts(res)
+    -- The per-run best cyclic shift and the deltas between them, as tools/judge_seam.py takes them.
+    local want, wl, i = {}, string.len(v98a), nil
+    for i = 1, wl do want[i] = string.byte(v98a, i) end
+    local runs, cur, start = {}, nil, nil
+    for i = 1, res.nf do
+      if res.errs[i] ~= nil then
+        if cur ~= nil then runs[table.getn(runs) + 1] = {at = start, v = cur} end
+        cur, start = nil, nil
+      else
+        if cur == nil then cur, start = {}, i - 1 end
+        cur[table.getn(cur) + 1] = math.mod(res.vals[i], 256)
+      end
+    end
+    if cur ~= nil then runs[table.getn(runs) + 1] = {at = start, v = cur} end
+    local shifts, r = {}, nil
+    for r = 1, table.getn(runs) do
+      local vals, at = runs[r].v, runs[r].at
+      if table.getn(vals) >= 8 then
+        local best, bsh, sh = -1, nil, nil
+        for sh = 0, wl - 1 do
+          local n, k = 0, nil
+          for k = 1, table.getn(vals) do
+            if vals[k] == want[math.mod(sh + at + k - 1, wl) + 1] then n = n + 1 end
+          end
+          if n > best then best, bsh = n, sh end
+        end
+        shifts[table.getn(shifts) + 1] = bsh
+      end
+    end
+    local d = {}
+    for r = 2, table.getn(shifts) do d[r - 1] = math.mod(shifts[r] - shifts[r - 1] + wl, wl) end
+    return d
+  end
+  local function hcell(hole_rd)
+    local keephole = TRIG_HOLE()
+    sdec.capmode, sdec.force_baud, sdec.trigmode = 'sml', 9600, 'edge'
+    sdec.gapelide, sdec.strm_maxsec = 0.01, 60
+    sdec.gap_nscratch = 12
+    sdec.gap_release_all()
+    sdec.clear_measured()
+    sdec.stream_begin()
+    local fs = sdec.fs
+    local rd, ts, n, i, p = {}, {}, 0, nil, nil
+    for p = 1, 4 do
+      local r1, _, _, n1 = GEN({bytes = GEN_BYTES(v98a), nbits = 8, par = 0, baud = 9600, fs = fs,
+                                gap = 0, lead = 600, tail = 10, loop = false})
+      for i = 1, n1 do n = n + 1 rd[n] = r1[i] ts[n] = (n - 1) / fs end
+    end
+    SRC.rd, SRC.ts, SRC.nsmp = rd, ts, n
+    SRC.trigat, SRC.loop, SRC.native_fs = nil, false, nil
+    TRIG_RESUME(156e-6)
+    TRIG_HOLE(hole_rd / fs)
+    sdec.clear_measured()
+    sdec.stream_begin()
+    TRIG_CLOCK(0)
+    local got = sdec.stream_acquire(20000)
+    pcall(function() sdec.stream_decode(got) end)
+    TRIG_HOLE(keephole)
+    local r = {T = fs / 9600, why = sdec.spl_why, nseam = sdec.spl_nseam, nspl = sdec.spl_nspliced}
+    local tl = (sdec.ck_tot ~= nil) and sdec.ck_tot.tail or nil
+    if tl ~= nil then
+      r.nm, r.nc = bexp.match(tl, 'v98a')
+      r.d = wordshifts(tl)
+    end
+    if r.nm ~= nil and r.nc ~= nil and r.nc > 0 then r.f = r.nm / r.nc end
+    return r
+  end
+  local function hshow(r)
+    local s = ''
+    if r.d ~= nil then local i for i = 1, table.getn(r.d) do s = s .. string.format('%+d ', r.d[i]) end end
+    return string.format('%s spl=%s/%s one=%s/%s %s deltas[%s]', tostring(r.why), tostring(r.nspl),
+                         tostring(r.nseam), tostring(r.nm), tostring(r.nc),
+                         (r.f ~= nil) and string.format('%.0f%%', r.f * 100) or '-', s)
+  end
+  local under = hcell(4)                 -- 0.38 of a bit at 10.4 samples a bit
+  local over = hcell(6)                  -- 0.58 of a bit
+  local lap = hcell(-6)                  -- an overlap of the same width
+  check('a handover hole under half a bit is absorbed: the splice is still byte-exact',
+        under.why == 'ok' and under.nspl == under.nseam and under.f ~= nil and under.f > 0.99,
+        hshow(under))
+  -- The hardware signature, all three parts of it at once: the splice reports ok with every head back, the
+  -- one-shift score is one segment's worth, and every seam advances the alignment by one.
+  local plusone = (over.d ~= nil and table.getn(over.d) == (over.nseam or 0) - 1)
+  if plusone then local i for i = 1, table.getn(over.d) do if over.d[i] ~= 1 then plusone = false end end end
+  check('...over half a bit it is broken at every seam while the splice still says ok, the lap signature',
+        over.why == 'ok' and over.nspl == over.nseam and over.f ~= nil and over.f < 0.5 and plusone,
+        hshow(over))
+  -- AND THE NULL THAT SEPARATES A HOLE FROM AN OVERLAP: duplicated readings of the same width leave the
+  -- alignment alone, so a lap carrying +1 deltas was not an overlap.
+  check('...while an overlap of the same width costs no alignment at all, so the lap\'s +1 is a hole',
+        lap.why == 'ok' and lap.f ~= nil and lap.f > 0.99, hshow(lap))
+
   sdec.gap_nscratch = keep.ns
   pcall(sdec.gap_release_all)
   sdec.gapelide, sdec.force_baud, sdec.capmode = keep.ge, keep.fb, keep.cm
@@ -662,9 +779,10 @@ print('-- the ACQUISITION side: the whole chain, with the two-buffer program fil
   SRC.loop, SRC.native_fs, SRC.trigat = keep.lp, keep.nf, keep.ta
   TRIG_WALK(keep.w == true)
   SRC_TRIGDERIVE(keep.d == true)
-  check('and the suite leaves the scratch count and the modelled latency as it found them',
-        sdec.gap_nscratch == keep.ns and TRIG_RESUME() == keep.lat,
-        string.format('%s / %s', tostring(sdec.gap_nscratch), tostring(TRIG_RESUME())))
+  check('and the suite leaves the scratch count, the modelled latency and the hole as it found them',
+        sdec.gap_nscratch == keep.ns and TRIG_RESUME() == keep.lat and TRIG_HOLE() == 0,
+        string.format('%s / %s / %s', tostring(sdec.gap_nscratch), tostring(TRIG_RESUME()),
+                      tostring(TRIG_HOLE())))
 end)()
 
 print('')

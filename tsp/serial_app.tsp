@@ -745,7 +745,7 @@ function sdec.stream_decode(got)
   -- And the interior-seam verdict with them, for the stale-field reason the comment below gives: it is set
   -- only once gap_splice_plan is reached, so a capture that exits in a guard would otherwise carry the last
   -- spliced cell's verdict as though it described this one.
-  sdec.spl_interior = nil
+  sdec.spl_interior, sdec.spl_headrd = nil, nil
   -- WHY, AND NOT ONLY WHETHER. The 166-cell lap of 2026-10-18 recorded no splice on 87 elided cells and
   -- could not say which of five guards stopped it, because a count of zero reads the same for all of
   -- them. Every exit below names itself, and the name is what the next lap is for.
