@@ -63,7 +63,7 @@ PLANDIR = os.path.join(ROOT, 'out', 'plans', 'auto')
 DEFAULT_SKIP = ','.join(SP.HW_SKIP)
 
 # The counters sweep_plan.lua prints on its PLAN line, in the order they appear there.
-KEYS = ['cells', 'badcells', 'badall', 'points', 'ok', 'bad', 'skip',
+KEYS = ['cells', 'badcells', 'badall', 'points', 'ok', 'bad', 'skip', 'nostim',
         'raised', 'nobytes', 'norate', 'rate', 'flags', 'bytes', 'bleed', 'bleedworst',
         'r46b', 'rfit1', 'rstdC', 'rother', 'loudquiet', 'loudmiss', 'loudmissworst',
         # `label` and its lr* split are captures whose bytes were accepted and whose REPORTED rate is
@@ -168,38 +168,54 @@ LINE = re.compile(r'^PLAN (\d+)/(\d+) iteration (\d+): (.*)$')
 # 3-byte head allowance leaves too few for judge() to compare. The app improved and the harness lost
 # the ability to score it, which is exactly what `skip` is bounded to make visible.
 RATCHET = {
-    # EVERY ROW IS STALE ON A GROWN VECTOR SET and none can be met. At iteration 1 the unskipped pair
-    # now draws 1849 cells against the 1763 recorded here, the HW_SKIP pair 1720 against 1677, and the
-    # four-random row 1591 against 1333 -- 41, 39 and 31 vectors at 43 rates then; 43, 40 and 37 now.
-    # These baselines are from 2026-08-28 and the draw has moved repeatedly since, six gap vectors
-    # landing on 2026-10-16 and v97 joining HW_SKIP. So `judged` reports WORSE on a clean tree and
-    # carries bleed, bytes and loudmiss with it.
+    # MEASURED 2026-10-18 on the draw this tree emits: 42 vectors x 36 rates with HW_SKIP, 45 x 36
+    # without, 39 x 36 on the four-random subset. The rows these replace were from 2026-08-28 over
+    # 39 x 43 and 41 x 43, and by the end none of them described a run at all -- the stage had stopped
+    # reporting a verdict and started reporting the draw mismatch, after six gap vectors landed on
+    # 2026-10-16, v97 joined HW_SKIP and the rate list shortened from 43 to 36.
     #
-    # The vector set is the ratchet's unguarded fourth input and is not in the key. Measured paired at
-    # both offsets and both skips: a clean tree and a changed one give byte-identical rows, so
-    # re-measuring needs a tree-independent decision about which vectors the configuration means and
-    # cannot be a re-run. `cells` below records the draw each row was measured on, so the mismatch
-    # reports itself instead of reading as a regression.
-    (1, 1, (), None): {'bad': 14, 'badcells': 14, 'badall': 14, 'rate': 13, 'flags': 0, 'bytes': 1,
-                       'nobytes': 0, 'bleed': 211, 'skip': 0, 'judged': 1763, 'loudquiet': 9,
-                       'loudmiss': 131, 'label': 3, 'cells': 1763},
-    (1, 8, (), None): {'bad': 110, 'badcells': 20, 'badall': 11, 'rate': 106, 'flags': 0, 'bytes': 4,
-                       'nobytes': 0, 'bleed': 1205, 'skip': 1, 'judged': 14103, 'loudquiet': 53,
-                       'loudmiss': 656, 'label': 24, 'cells': 1763},
+    # WHAT RE-MEASURING DECIDED, since the header this replaces said it could not be a re-run. A
+    # configuration means WHATEVER VECTORS EXIST NOW. The alternative -- pinning each row to the vector
+    # set it was measured over -- is what made these stale in the first place, and it makes every row
+    # unreachable again the next time a vector is added. `cells` carries the draw, so a change reports
+    # itself as a configuration mismatch instead of reading as a regression, which is what `cells` was
+    # added for. The counters are NOT comparable across the two draws and no attempt is made to make
+    # them so.
+    #
+    # `nostim` IS NEW AND THIS IS THE FIRST RUN THAT HAS IT. The traffic-free-window gate counts apart
+    # the captures whose window lay entirely inside one of a vector's idle runs -- 34 points a lap here,
+    # and 122 at eight offsets. Those 122 are exactly the 122 v99d cells the previous session identified
+    # by hand out of 133 bad, which is the cross-check that the gate measures what that analysis named:
+    # bad falls to 11, and 133 - 122 = 11. v99d's lead gap is 4800 bit times, longer than the capture
+    # window at every rate but the top two. See GEN_IDLE_RUNS in tools/gen_serial.lua.
+    #
+    # IT IS RATCHETED UPWARD LIKE `skip`, AND THAT PAIRING IS THE POINT. The exemption moves points out
+    # of `bad`, which drops `judged`, and a falling `judged` is a failure below -- correctly, because
+    # less evidence is not an improvement. Bounding `nostim` is what keeps the gate honest: it may
+    # excuse the captures it was measured on and not one more.
+    (1, 1, (), None): {'bad': 1, 'badcells': 1, 'badall': 1, 'rate': 1, 'flags': 0, 'bytes': 0,
+                       'nobytes': 0, 'bleed': 94, 'skip': 0, 'nostim': 34, 'judged': 1586,
+                       'loudquiet': 3, 'loudmiss': 114, 'label': 1, 'cells': 1620},
+    (1, 8, (), None): {'bad': 11, 'badcells': 3, 'badall': 1, 'rate': 9, 'flags': 0, 'bytes': 2,
+                       'nobytes': 0, 'bleed': 629, 'skip': 1, 'nostim': 121, 'judged': 12838,
+                       'loudquiet': 35, 'loudmiss': 553, 'label': 8, 'cells': 1620},
     # THE TWO CONFIGURATIONS A BENCH LAP CAN ACTUALLY BE COMPARED WITH, because every hardware soak
     # skips all of HW_SKIP -- v96 wedges the generator at vector 33 -- and the skip is drawn on. These
     # are the ones tools/soak_offline.py and the default CLI run.
-    (1, 1, SP.HW_SKIP, None): {'bad': 12, 'badcells': 12, 'badall': 12, 'rate': 10, 'flags': 0,
-                               'bytes': 2, 'nobytes': 0, 'bleed': 200, 'skip': 0, 'judged': 1677,
-                               'loudquiet': 5, 'loudmiss': 122, 'label': 3, 'cells': 1677},
-    (1, 8, SP.HW_SKIP, None): {'bad': 84, 'badcells': 18, 'badall': 8, 'rate': 81, 'flags': 0,
-                               'bytes': 3, 'nobytes': 0, 'bleed': 1050, 'skip': 1, 'judged': 13415,
-                               'loudquiet': 54, 'loudmiss': 622, 'label': 24, 'cells': 1677},
+    (1, 1, SP.HW_SKIP, None): {'bad': 1, 'badcells': 1, 'badall': 1, 'rate': 1, 'flags': 0,
+                               'bytes': 0, 'nobytes': 0, 'bleed': 111, 'skip': 0, 'nostim': 34,
+                               'judged': 1478, 'loudquiet': 7, 'loudmiss': 90, 'label': 1,
+                               'cells': 1512},
+    (1, 8, SP.HW_SKIP, None): {'bad': 11, 'badcells': 3, 'badall': 1, 'rate': 10, 'flags': 0,
+                               'bytes': 1, 'nobytes': 0, 'bleed': 632, 'skip': 1, 'nostim': 122,
+                               'judged': 11973, 'loudquiet': 34, 'loudmiss': 540, 'label': 8,
+                               'cells': 1512},
     # THE 14-DAY RUN'S OWN CONFIGURATION, four random vectors a lap, which is what the instrument plays.
-    # 1333 cells rather than 1677, so none of the four baselines above describes it.
-    (1, 1, SP.HW_SKIP, 4): {'bad': 13, 'badcells': 13, 'badall': 13, 'rate': 12, 'flags': 0,
-                            'bytes': 1, 'nobytes': 0, 'bleed': 176, 'skip': 0, 'judged': 1333,
-                            'loudquiet': 5, 'loudmiss': 163, 'label': 3, 'cells': 1333},
+    # 1404 cells rather than 1512, so none of the four baselines above describes it.
+    (1, 1, SP.HW_SKIP, 4): {'bad': 2, 'badcells': 2, 'badall': 2, 'rate': 2, 'flags': 0,
+                            'bytes': 0, 'nobytes': 0, 'bleed': 111, 'skip': 0, 'nostim': 34,
+                            'judged': 1370, 'loudquiet': 6, 'loudmiss': 96, 'label': 2,
+                            'cells': 1404},
 }
 WHY = {
     'bad': 'failing points',
@@ -218,6 +234,13 @@ WHY = {
     # points out of `bad` into `skip`, and an unbounded `skip` would let the driver call that IMPROVED
     # and invite the baseline to be lowered. `judged` is ok+bad and pins how much was compared at all.
     'skip': 'points the app left too short to judge',
+    # BOUNDED FOR THE SAME REASON AS `skip`, AND IT IS THE OTHER HALF OF THE GATE. A capture whose
+    # window lay entirely inside one of the vector's idle runs held no traffic, so declining is right
+    # and the point is a statement about where the plan's wait fell. That exemption moves points OUT of
+    # `bad`, which drops `judged` -- and `judged` falling is a failure below, correctly, because less
+    # evidence is not an improvement. Bounding `nostim` upward is what makes the pair honest: the gate
+    # may excuse the captures it was measured on and not one more.
+    'nostim': 'points whose capture window held no traffic at all -- the plan\'s phase, not the app',
     'judged': 'points actually compared against the payload (ok + bad)',
     # A PASS THAT HAS TO STAY VISIBLE. docs/BENCH.md makes declining the correct answer for a `loud`
     # waveform, so these are not failures and must never be counted as any -- v47's spikes stack to
@@ -441,9 +464,9 @@ def main():
     # inside the ratchet block cannot be re-measured, because --no-ratchet is exactly the run you make to
     # re-measure it -- so lquiet, lmiss, flags and label are printed here or the documented workflow
     # does not work.
-    hdr = ('%-5s %-13s %6s %5s %7s %6s %6s %6s %5s %5s %5s %5s %5s %5s %6s %5s %5s'
-           % ('lap', 'plan', 'cells', 'bad', 'badcell', 'badall', 'raised', 'nobyte', 'skip', 'rate',
-              'flags', 'bytes', 'label', 'bleed', 'worst', 'lquiet', 'lmiss'))
+    hdr = ('%-5s %-13s %6s %5s %7s %6s %6s %6s %5s %6s %5s %5s %5s %5s %5s %6s %5s %5s'
+           % ('lap', 'plan', 'cells', 'bad', 'badcell', 'badall', 'raised', 'nobyte', 'skip',
+              'nostim', 'rate', 'flags', 'bytes', 'label', 'bleed', 'worst', 'lquiet', 'lmiss'))
     print(hdr)
     print('-' * len(hdr))
     allfail, rows = [], []
@@ -454,10 +477,10 @@ def main():
         if not a.quiet:
             for d in detail:
                 print(d)
-        print('%-5d %-13s %6d %5d %7d %6d %6d %6d %5d %5d %5d %5d %5d %5d %6d %5d %5d'
+        print('%-5d %-13s %6d %5d %7d %6d %6d %6d %5d %6d %5d %5d %5d %5d %5d %6d %5d %5d'
               % (it, digest, tot['cells'], tot['bad'], tot['badcells'], tot['badall'], tot['raised'],
-                 tot['nobytes'], tot['skip'], tot['rate'], tot['flags'], tot['bytes'], tot['label'],
-                 tot['bleed'], tot['bleedworst'], tot['loudquiet'], tot['loudmiss']))
+                 tot['nobytes'], tot['skip'], tot['nostim'], tot['rate'], tot['flags'], tot['bytes'],
+                 tot['label'], tot['bleed'], tot['bleedworst'], tot['loudquiet'], tot['loudmiss']))
         allfail.extend('lap %d: %s' % (it, x) for x in failed)
 
     if len(rows) > 1:

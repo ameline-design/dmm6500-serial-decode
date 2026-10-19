@@ -668,6 +668,91 @@ function GEN_READ(path)
 end
 
 -- ============================================================================
+-- Idle runs long enough to hold a whole capture window
+-- ============================================================================
+-- A capture window that lies entirely inside one contains no serial traffic at all, so declining is
+-- the only correct answer and the capture is not a test of the decoder. These two functions are what
+-- lets a harness say so from the stimulus it handed over, rather than from the app's own refusal --
+-- which would make a wrong refusal excuse itself.
+--
+-- v99d is the case that needed it: 80 bytes of 7E1 behind a 4790-bit-time lead, which with the 10-bit
+-- tail is one 4800-bit-time idle run ACROSS THE LOOP SEAM. Measured off the file at 24004 arb points
+-- against the 24000 tools/make_vectors.lua declares. A 20000-sample capture spans n * spb / sa_bit arb
+-- points, so over the 36 plan rates 34 windows end inside that lead and 2 reach the payload -- and
+-- `off + window <= run` picks out which in all 36.
+--
+-- EARNED BY GEOMETRY, NEVER BY NAME. No vector id appears here or in the callers, so a new gap vector
+-- is covered the day it is rendered and no list goes stale. It also means the exemption CANNOT reach
+-- the v90/v94 band, whose longest flat run is 219 arb points, 21.9 bit times, against a window of at
+-- least 1944: no window fits inside one. tools/soak_offline_bench.py's band comment requires exactly
+-- that -- do not excuse band members one at a time or at all, gate the aggregate rate instead.
+
+-- Floor, in bit times, below which a run cannot matter. The narrowest window the plan can draw is
+-- n / sa_bit bit times and sa_bit tops out near 10, so nothing under a few hundred can ever contain
+-- one. What the floor buys is that the list comes back EMPTY for every vector without a deliberate
+-- gap -- v41, v47, v77, v90, v92, v94 and the r-series all measure zero runs over it -- so the test
+-- costs them one empty-table check.
+GEN_IDLE_FLOOR_BITS = 50
+
+-- GEN_IDLE_RUNS(cw, n, spb) -> array of {at = 1-based start, len = points}, count
+--
+-- CYCLIC, because the generator plays the file on repeat and v99d's run exists only as the join of
+-- its tail and the next pass's lead. The walk starts at a run boundary so the run crossing the seam is
+-- traversed as one run like any other, with no wrap case to get wrong separately.
+function GEN_IDLE_RUNS(cw, n, spb)
+  local out, m = {}, 0
+  local least = GEN_IDLE_FLOOR_BITS * (spb or 10)
+  if cw == nil or n == nil or n < 2 then return out, m end
+  local function prev(i)                       -- 1-based index of the point before i, wrapped
+    local j = math.mod(i - 2, n)
+    if j < 0 then j = j + n end
+    return j + 1
+  end
+  local function at(i)                         -- 1-based index i steps on from the start, wrapped
+    local j = math.mod(i, n)
+    if j < 0 then j = j + n end
+    return j + 1
+  end
+  local s = 1
+  while s <= n and cw[s] == cw[prev(s)] do s = s + 1 end
+  if s > n then                                -- one codeword throughout: the whole file is idle
+    out[1] = {at = 1, len = n}
+    return out, 1
+  end
+  local run, runat, i = 0, s, nil
+  for i = 0, n - 1 do
+    local j = at(s - 1 + i)
+    if run > 0 and cw[j] == cw[prev(j)] then
+      run = run + 1
+    else
+      if run >= least then m = m + 1; out[m] = {at = runat, len = run} end
+      run, runat = 1, j
+    end
+  end
+  if run >= least then m = m + 1; out[m] = {at = runat, len = run} end
+  return out, m
+end
+
+-- GEN_WINDOW_IDLE(runs, npts, off, wlen) -> true if the window holds no traffic at all
+--
+-- THE START MATTERS AS MUCH AS THE LENGTH. A window shorter than the run still sees traffic when it
+-- straddles the end of it, and that is not a corner case: it is the 2 of 36 v99d cells that
+-- legitimately decode. Testing `wlen <= run` alone would excuse them and hide any defect they reach.
+function GEN_WINDOW_IDLE(runs, npts, off, wlen)
+  if runs == nil or npts == nil or npts < 1 or wlen == nil or wlen <= 0 then return false end
+  local k
+  for k = 1, table.getn(runs) do
+    local r = runs[k]
+    if wlen <= r.len then
+      local d = math.mod(off - (r.at - 1), npts)
+      if d < 0 then d = d + npts end
+      if d + wlen <= r.len then return true end
+    end
+  end
+  return false
+end
+
+-- ============================================================================
 -- LIN waveform
 -- ============================================================================
 -- INDEPENDENT reference implementations of the PID and the checksum. Deliberately not

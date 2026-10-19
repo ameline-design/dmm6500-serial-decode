@@ -608,6 +608,28 @@ runs the other way. The bench fails an inconclusive cell on an `exact` vector wh
 unjudgeable — which is why `skip` is ratcheted, so points cannot quietly move out of `bad` into it. And
 the bench checks the reported **format**, which this does not.
 
+**A capture whose window held no traffic is counted apart, as `nostim`.** The generator plays the arb on
+repeat and the plan's wait decides where the capture opens, so for a vector with a gap longer than the
+window the capture can land entirely inside the idle run — and then returning nothing is the only
+correct answer. v99d is the case: an idle run of 4800 bit times against a window of `n / sa_bit`, which
+is 2400 bit times at the top of the rate ladder and 2500 at the bottom. Over its 36 rates **34 windows
+end inside the lead gap and 2 reach the payload**, and `off + window <= run` picks out which in all 36.
+
+The exemption is earned by **geometry, measured from the vector's own codewords** (`GEN_IDLE_RUNS` in
+`tools/gen_serial.lua`), never by naming a vector — so a new gap vector is covered the day it is
+rendered, and no list goes stale. Two properties make it safe to rely on:
+
+* **It cannot excuse the v90/v94 band.** Their longest flat run is 219 arb points, 21.9 bit times,
+  against a window of at least 1944 — no window fits inside one. That band is a per-cell margin with a
+  measured aggregate rate of 0.2917 %, and the rule for it is to gate that rate rather than to excuse
+  members one at a time.
+* **It cannot launder a wrong answer.** The exemption applies only where *nothing* was decoded. Bytes
+  out of a traffic-free window would be a worse finding than the one it exists for, so that case stays
+  in `bad`.
+
+`nostim` is ratcheted upward exactly as `skip` is, and for the same reason: points leaving `bad` drop
+`judged`, and a falling `judged` fails the gate because less evidence is not an improvement.
+
 **A misreported rate is not one of them.** A cell whose bytes are right and whose reported baud is outside
 `snaptol` fails here, counted as `label` and classified by route, because `bench_matrix` ends its verdict
 with `good = good and not baudbad` — *after* its `loud` rule, so a waveform's licence to fail on content

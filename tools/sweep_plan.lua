@@ -236,7 +236,9 @@ local cwcache = {}
 local function wire(v, amp, ofst)
   if cwcache[v.id] == nil then
     local cw, n = GEN_READ('out/vectors/' .. v.id .. '.bin')
-    cwcache[v.id] = {cw = cw, n = n}
+    -- The idle runs are a property of the FILE, so they belong beside the codewords and not beside
+    -- the volts: amplitude and offset scale the waveform, they cannot move a gap.
+    cwcache[v.id] = {cw = cw, n = n, idle = GEN_IDLE_RUNS(cw, n, v.spb)}
   end
   local c = cwcache[v.id]
   -- fsv is AMP/2: the file's +32767 is +AMP/2.
@@ -304,6 +306,17 @@ local function clearforce()
   sdec.force_baud, sdec.force_nbits = nil, nil
   sdec.force_par, sdec.force_nstop, sdec.force_invert = nil, nil, nil
   sdec.widths_any = false
+end
+
+-- Whether THIS capture's window held no traffic at all. Measured in arb points, which is the unit the
+-- runs are in: capture() advances arb_fs/fs per sample, so the window spans n of those steps.
+--
+-- Reads the cache rather than filling it, because capture() has already run by the time this is asked
+-- and a fill here would hide a missing file behind a false "there was traffic".
+local function window_idle(v, off, wlen)
+  local c = cwcache[v.id]
+  if c == nil then return false end
+  return GEN_WINDOW_IDLE(c.idle, c.n, off, wlen)
 end
 
 local function decode(rd, n, fs)
@@ -591,6 +604,12 @@ local nloudquiet = 0
 -- EVERY BYTE THE loud MISMATCH BUDGET FORGAVE, and the worst single point. Same reasoning as nbleed:
 -- an allowance the bench has must be here too, and an allowance nobody counts is one nobody checks.
 local nloudmiss, worstloudmiss = 0, 0
+-- CAPTURES WHOSE WINDOW HELD NO TRAFFIC, which is a statement about the plan's capture phase and not
+-- about the decoder. Counted apart and never as bad -- there was nothing to decode -- and bounded
+-- upward by plan_sweep.py for the same reason `skip` is: points that leave `bad` must land somewhere a
+-- regression cannot grow them unnoticed. `judged` is ok+bad, so without this the gate would read as
+-- evidence disappearing.
+local nnostim = 0
 -- CELLS THAT FAILED AT EVERY OFFSET, which is the only cell-level number a ONE-CAPTURE hardware lap can
 -- be set beside. `badcells` is a UNION over A.offsets capture phases, so it rises with the offset count
 -- for a fixed defect: measured against soak lap 1, 65 cells fail here and passed on the bench, and not
@@ -673,7 +692,10 @@ for vi = 1, table.getn(P.vectors) do
         os.exit(1)
       end
       ncell = ncell + 1; vcell = vcell + 1
-      local cellbad = 0
+      -- PHASES THAT COULD BE JUDGED AT ALL, which is what badall has to be measured against once a
+      -- phase can hold no traffic. Equal to A.offsets wherever the idle gate is inert, so the number
+      -- is unchanged for every vector but v99d.
+      local cellbad, celljudged = 0, 0
       local period = math.max(1, v.npts)
       local oi
       for oi = 0, A.offsets - 1 do
@@ -681,6 +703,9 @@ for vi = 1, table.getn(P.vectors) do
         -- a changed number can only come from the extra captures.
         local off = math.mod(off0 + oi * period / A.offsets, period)
         local rd, n = capture(v, arb_fs, fs, off, A.n, camp, cofst)
+        -- Asked of the STIMULUS, before the decode, so the verdict below cannot be reasoned backwards
+        -- from what the app did with it.
+        local allidle = window_idle(v, off, A.n * arb_fs / fs)
         local ran, why, r = decode(rd, n, fs)
         local rb = sdec.baud
         local good, det, bleed, lmiss
@@ -775,8 +800,18 @@ for vi = 1, table.getn(P.vectors) do
                               raw ~= nil and 100 * (raw / baud - 1) or 0,
                               sdec.fitq or -1, tostring(sdec.nw))
         end
+        -- A WINDOW WITH NO TRAFFIC IN IT. Returning nothing is the only correct answer, so this point
+        -- measures where the plan's wait put the capture and not what the decoder did with it.
+        --
+        -- ONLY WHERE NOTHING CAME BACK, and that half is load-bearing. Bytes out of a traffic-free
+        -- window would be a far worse finding than the one this exemption exists for, so that case
+        -- stays in `bad` where it is visible -- the exemption cannot launder it.
+        local nostim = allidle and (r == nil or (r.nf or 0) < 1)
         local verdict
-        if good == nil then
+        if not nostim then celljudged = celljudged + 1 end
+        if nostim then
+          verdict = 'idle'; nnostim = nnostim + 1
+        elseif good == nil then
           verdict = 'skip'; nskip = nskip + 1
         elseif good and not ratebad then
           verdict = 'ok'; nok = nok + 1
@@ -845,7 +880,11 @@ for vi = 1, table.getn(P.vectors) do
       if cellbad > 0 then nbadcell = nbadcell + 1 end
       -- A CELL THAT FAILED AT EVERY PHASE IT WAS OFFERED. At --offsets 1 this equals badcells, which is
       -- correct: with one capture there is no distinction to draw.
-      if cellbad >= A.offsets then nbadall = nbadall + 1 end
+      --
+      -- Measured against the phases that HELD TRAFFIC rather than against A.offsets, or a cell whose
+      -- traffic-free phases were excused could never reach badall however reliably it failed on the
+      -- phases that could see anything. Identical to the old test wherever the gate is inert.
+      if cellbad > 0 and cellbad >= celljudged then nbadall = nbadall + 1 end
     end
   end
   if not A.quiet and vcell > 0 then
@@ -864,13 +903,17 @@ end
 --   badall    the INTERSECTION -- every phase failed. The phase-independent defects.
 --   bad/points the per-CAPTURE rate, which is the one directly comparable to a bench lap that took one
 --             capture per cell.
+--   nostim    captures whose window held no traffic. In `points` so the total stays self-checking --
+--             ok + bad + skip + nostim is every capture taken -- and out of `judged`, which is ok+bad,
+--             because nothing was compared against the payload.
 print(string.format('\nPLAN %d/%d iteration %d: cells %d badcells %d badall %d points %d ok %d bad %d '
-                    .. 'skip %d '
+                    .. 'skip %d nostim %d '
                     .. 'raised %d nobytes %d norate %d rate %d flags %d bytes %d bleed %d bleedworst %d '
                     .. 'r46b %d rfit1 %d rstdC %d rother %d loudquiet %d loudmiss %d loudmissworst %d '
                     .. 'label %d lr46b %d lrfit1 %d lrstdC %d lrother %d',
-                    A.shard, A.nshard, P.iteration, ncell, nbadcell, nbadall, nok + nbad + nskip,
-                    nok, nbad, nskip,
+                    A.shard, A.nshard, P.iteration, ncell, nbadcell, nbadall,
+                    nok + nbad + nskip + nnostim,
+                    nok, nbad, nskip, nnostim,
                     cls.raised, cls.nobytes, cls.norate, cls.rate, cls.flags, cls.bytes,
                     nbleed, worstbleed,
                     cls.r46b, cls.rfit1, cls.rstdC, cls.rother, nloudquiet,
@@ -890,16 +933,19 @@ do
     os.exit(2)
   end
 end
-print(string.format('%d ok, %d BAD, %d unjudgeable of %d point(s) over %d cell(s), %d cell(s) '
-                    .. 'affected at any phase and %d at every phase, %d head bleed (worst %d), '
+print(string.format('%d ok, %d BAD, %d unjudgeable, %d with no traffic in the window, of %d point(s) '
+                    .. 'over %d cell(s), %d cell(s) affected at any phase and %d at every phase it '
+                    .. 'could be judged at, %d head bleed (worst %d), '
                     .. '%d byte(s) inside the loud budget (worst %d)',
-                    nok, nbad, nskip, nok + nbad + nskip, ncell, nbadcell, nbadall,
+                    nok, nbad, nskip, nnostim, nok + nbad + nskip + nnostim, ncell, nbadcell, nbadall,
                     nbleed, worstbleed, nloudmiss, worstloudmiss))
 -- THE COMPARABLE FIGURE, SPELT OUT, because getting this wrong is how 73 harness failures were filed
 -- against the app. A bench lap takes ONE capture per cell; this takes A.offsets of them and unions.
 if nok + nbad > 0 then
-  print(string.format('per-CAPTURE failure rate %.2f %% (%d of %d) -- this, not the %d affected '
-                      .. 'cell(s), is what a one-capture bench lap can be compared with',
+  -- Over the JUDGEABLE captures, with the traffic-free ones left out of the denominator: including
+  -- them would report a failure rate for a population that could not fail.
+  print(string.format('per-CAPTURE failure rate %.2f %% (%d of %d judgeable) -- this, not the %d '
+                      .. 'affected cell(s), is what a one-capture bench lap can be compared with',
                       100 * nbad / (nok + nbad + nskip), nbad, nok + nbad + nskip, nbadcell))
 end
 if nok + nbad == 0 then

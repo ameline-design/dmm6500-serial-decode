@@ -3408,5 +3408,99 @@ print('-- the error row: the new byte-level classes, the red rule, and the width
 end)()
 
 print('')
+print('-- idle runs long enough to hold a capture window, and the window test over them --');
+-- GEN_IDLE_RUNS / GEN_WINDOW_IDLE are what let tools/sweep_plan.lua say a capture held no traffic
+-- from the STIMULUS rather than from the app's refusal. A wrong answer either way is serious: too
+-- generous and a real failure is excused, too mean and v99d's 34 unjudgeable cells go on being
+-- counted as defects.
+--
+-- THE STIMULUS IS BUILT HERE, NOT READ FROM out/vectors/. That directory is gitignored, so a suite
+-- that read it would pass vacuously on a fresh clone -- the trap tools/test_octave.lua's header
+-- names. Built waveforms also let the gap be an input, so the assertions can be exact rather than
+-- approximate.
+(function()
+  local SPB = 10
+  -- A lead gap, a payload, a tail gap: v99d's shape at a size a test can check by hand.
+  local function geom(leadbits, tailbits, nbytes)
+    local by = {}
+    local i
+    for i = 1, nbytes do by[i] = 65 + math.mod(i, 26) end
+    local rd, ts, nc, n = GEN({bytes = by, baud = 9600, fs = 9600 * SPB,
+                               lead = leadbits, tail = tailbits, gap = 0, loop = true})
+    local cw, k = {}, nil
+    for k = 1, n do cw[k] = GEN_CODE(rd[k], 5.0, 0) end
+    return cw, n
+  end
+
+  -- ---- the run is found, cyclically, and sized right ----
+  local cw, n = geom(400, 100, 20)
+  local runs, m = GEN_IDLE_RUNS(cw, n, SPB)
+  -- 400 lead + 100 tail join across the loop seam into ONE run of 500 bit times. A non-cyclic walk
+  -- reports two runs of 400 and 100 and would then refuse a window of 450 that genuinely sees no
+  -- traffic -- which is exactly how v99d's 4800-bit-time run exists at all.
+  ck(m == 1, 'a lead gap and a tail gap join across the loop seam into one run',
+     string.format('%d run(s)', m))
+  local bits = m >= 1 and runs[1].len / SPB or 0
+  -- ONE BIT TIME LONGER THAN THE DECLARED GAP, AND THAT IS THE SIGNAL AND NOT AN ERROR: the stop bit
+  -- is a MARK, at the same level as idle, so the last frame's stop bit merges into the gap and no
+  -- measurement can separate them. Less the rendered edge, which is a sample or two of neither. So
+  -- 500 declared measures 500.9 here, and v99d's 4800 measures 4800.8 -- the same +1 and the same
+  -- edge. Bounded both ways rather than asserted equal, because the edge width is the renderer's
+  -- business and pinning it here would make this case fail on an unrelated change.
+  ck(bits > 500 and bits <= 501, 'and it measures the gap it was built with, plus the stop bit that '
+     .. 'is also a mark', string.format('%.1f bit times of 500 declared', bits))
+
+  -- ---- two separate gaps are two separate runs ----
+  local cw2, n2 = geom(400, 10, 20)
+  do
+    -- A mid-payload gap as well, so the file has one run at the seam and one inside it.
+    local by, nb = {}, 20
+    local i
+    for i = 1, nb do by[i] = 65 + math.mod(i, 26) end
+    local rd, ts, nc, nn = GEN({bytes = by, baud = 9600, fs = 9600 * SPB, lead = 400, tail = 10,
+                                gap = 0, midgap = 300, midgap_at = 10, loop = true})
+    local cwm, k = {}, nil
+    for k = 1, nn do cwm[k] = GEN_CODE(rd[k], 5.0, 0) end
+    local rm, mm = GEN_IDLE_RUNS(cwm, nn, SPB)
+    ck(mm == 2, 'a mid-payload gap is a SECOND run, not folded into the first',
+       string.format('%d run(s)', mm))
+    -- The longest-run-only shortcut would have reported 410 and silently lost the 300, which for a
+    -- two-gap vector means a window landing in the second gap is judged as though it saw traffic.
+    local a = mm >= 1 and rm[1].len / SPB or 0
+    local b = mm >= 2 and rm[2].len / SPB or 0
+    -- 300 declared for the mid gap and 400 + 10 for the seam, each plus its stop bit as above.
+    ck((a > 300 and a <= 301) and (b > 410 and b <= 411), 'and both are sized independently',
+       string.format('%.1f and %.1f bit times, for 300 and 410 declared', a, b))
+  end
+
+  -- ---- the window test: length is not enough, the START decides ----
+  local r1 = runs[1]
+  local inside = math.mod(r1.at - 1 + 10, n)
+  ck(GEN_WINDOW_IDLE(runs, n, inside, r1.len - 20) == true,
+     'a window shorter than the run and sitting inside it holds no traffic')
+  -- THE CASE A LENGTH-ONLY TEST GETS WRONG, and it is not a corner: it is the 2 of 36 v99d cells that
+  -- legitimately decode. A window that fits in the run but straddles its end sees traffic.
+  ck(GEN_WINDOW_IDLE(runs, n, math.mod(r1.at - 1 + r1.len - 10, n), r1.len - 20) == false,
+     'a window that fits the run but straddles its END does NOT')
+  ck(GEN_WINDOW_IDLE(runs, n, inside, r1.len + 1) == false,
+     'and a window longer than every run never does')
+
+  -- ---- a vector with no deliberate gap can never be excused ----
+  -- This is the guard on the v90/v94 band. Their flat runs are ~22 bit times against a window of at
+  -- least ~1944, so no window fits inside one; here the same thing is asserted on a built waveform,
+  -- where the ONLY idle is the 10-bit seam. If this ever passes, the gate has become able to excuse
+  -- ordinary traffic and tools/soak_offline_bench.py's band is no longer judged.
+  local cwp, np = geom(10, 10, 60)
+  local rp, mp = GEN_IDLE_RUNS(cwp, np, SPB)
+  ck(mp == 0, 'a payload with only a seam gap yields no run over the floor at all',
+     string.format('%d run(s) over %d bit times', mp, GEN_IDLE_FLOOR_BITS))
+  local anyidle, ph = false, nil
+  for ph = 0, 63 do
+    if GEN_WINDOW_IDLE(rp, np, ph * np / 64, np / 4) then anyidle = true end
+  end
+  ck(not anyidle, 'so no window at any phase can be called traffic-free')
+end)()
+
+print('')
 print(string.format('%d passed, %d failed', pass, fail))
 if fail > 0 then os.exit(1) end
