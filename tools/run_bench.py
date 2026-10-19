@@ -391,6 +391,47 @@ def keyfiles(d):
     return found
 
 
+def drain_events(d, out_dir):
+    """Write the instrument's event log beside the record, oldest first. Never fatal.
+
+    THE LOG IS THE OTHER HALF OF A FINISHED LAP, and it is volatile: the PRE block that load_modules
+    runs ends in eventlog.clear(), and reading one byte past the end of the record posts 2201 of its
+    own. Both used to happen before anyone looked. 2026-10-19: a --fetch of a 324-cell lap cleared the
+    log on the way in, and the operator was waiting to power cycle, so the lap's 4919 count -- the one
+    number the allocation work needed -- was simply gone.
+
+    BATCHED AND BOUNDED, ending on a short batch rather than on a count read up front: eventlog.next()
+    REMOVES the entry it returns, so a getcount() taken first is stale the moment the box posts
+    anything, and an unbounded loop on a box that is still posting never finishes.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    entries, nbatch = [], 0
+    while nbatch < 20:
+        out = qtag(d, 'do local s = "" local i for i = 1, 10 do '
+                      'if eventlog.getcount() == 0 then break end '
+                      'local n, m = eventlog.next() '
+                      's = s .. tostring(n) .. " " .. tostring(m) .. "~" end '
+                      'print("EVT=" .. s) end', 'EVT=', timeout=30)
+        if out is None:
+            print('  NOTE: the instrument did not answer the event-log read')
+            break
+        got = [e.strip() for e in out.split('~') if e.strip()]
+        entries.extend(got)
+        nbatch += 1
+        if len(got) < 10:
+            break
+    path = os.path.join(out_dir, 'EVENTS.txt')
+    try:
+        with open(path, 'w') as f:
+            for e in entries:
+                f.write(e + '\n')
+    except OSError as oe:
+        print('  NOTE: could not write the event log (%s)' % oe)
+        return entries
+    print('  event log: %d entr%s -> %s' % (len(entries), 'y' if len(entries) == 1 else 'ies', path))
+    return entries
+
+
 def fetch(d, out_dir):
     """Pull the record off the key, in line batches, reading not one byte past the end.
 
@@ -713,7 +754,23 @@ def main():
                 prune(d)
             except Exception as pe:
                 print('  NOTE: could not prune the key (%s: %s)' % (type(pe).__name__, pe))
-        if not a.no_load:
+        # A PURE FETCH DOES NOT LOAD, because loading is destructive and the record is only a file.
+        # load_modules runs the PRE block, which nils sdec and brun and ends in eventlog.clear() -- so
+        # fetching a finished lap THROUGH the load threw away the event log and every in-memory counter
+        # the lap had just produced, which is the evidence a finished lap is fetched for. 2026-10-19:
+        # cost the event log and sdec.acq_presettle of a 324-cell lap, and the operator was waiting to
+        # power cycle, so there was no second chance at it. fetch() and keyfiles() use file.open and
+        # file.read only, so there is nothing here that needs the app.
+        pure_fetch = a.fetch and not a.start and not a.push_plan
+        # BEFORE ANYTHING ELSE TOUCHES THE BOX, including the load below and the fetch itself: both
+        # post or clear events of their own, so a log read after either describes this tool and not
+        # the lap.
+        if a.fetch:
+            drain_events(d, a.out)
+        if a.no_load or pure_fetch:
+            if pure_fetch and not a.no_load:
+                print('fetch only: not loading, so the lap counters survive')
+        else:
             print('loading the app and the bench engine')
             load_modules(d, APP + ENGINE)
         if a.push_plan:
