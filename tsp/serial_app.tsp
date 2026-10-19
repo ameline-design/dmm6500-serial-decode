@@ -719,6 +719,10 @@ function sdec.stream_decode(got)
   -- Cleared before the attempt, so a recording that elides nothing reports no splice rather than the last
   -- elided one's. gap_splice_plan sets them when it runs and a nil here is the honest "not attempted".
   sdec.spl_nseam, sdec.spl_nspliced, sdec.spl_nadded, sdec.spl_norphan = nil, nil, nil, nil
+  -- And the interior-seam verdict with them, for the stale-field reason the comment below gives: it is set
+  -- only once gap_splice_plan is reached, so a capture that exits in a guard would otherwise carry the last
+  -- spliced cell's verdict as though it described this one.
+  sdec.spl_interior = nil
   -- WHY, AND NOT ONLY WHETHER. The 166-cell lap of 2026-10-18 recorded no splice on 87 elided cells and
   -- could not say which of five guards stopped it, because a count of zero reads the same for all of
   -- them. Every exit below names itself, and the name is what the next lap is for.
@@ -733,7 +737,9 @@ function sdec.stream_decode(got)
   local rdr, nrd = nil, got
   if sdec.strm_elide == nil then
     sdec.spl_why = 'not elided'
-  elseif sdec.gapbufs == nil or sdec.gapbufs[1] == nil then
+  elseif sdec.gap_used == nil or sdec.gap_used[1] == nil then
+    -- gap_used and not gapbufs: the pool is what was allocated, this is what the trigger model was built
+    -- with, and only the latter says which scratch holds which burst's head. See stream_arm.
     sdec.spl_why = 'no scratches'
   elseif sdec.buf == nil then
     sdec.spl_why = 'no record'
@@ -771,7 +777,7 @@ function sdec.stream_decode(got)
       -- handle that raises on the first of them. A refused splice decodes the record as it stands rather than
       -- failing the capture -- which is gap_model's own fallback discipline.
       local pok, perr = pcall(function()
-        pl = sdec.gap_splice_plan(sdec.buf, got, sdec.gapbufs, thr, fs / baud, fs)
+        pl = sdec.gap_splice_plan(sdec.buf, got, sdec.gap_used, thr, fs / baud, fs)
       end)
       if not pok then
         sdec.spl_why = 'raised'
@@ -789,7 +795,14 @@ function sdec.stream_decode(got)
           sdec.spl_why = 'tails refused'
         end
       else
-        sdec.spl_why = 'ok'
+        -- 'ok' is every interior seam having its head back, and nothing less earns the word: a splice that
+        -- missed one is arithmetically indistinguishable from no splice at all. The derivation and the
+        -- measured figures are at sdec.gap_nscratch, which is the constant that bounds it.
+        if sdec.spl_interior then
+          sdec.spl_why = 'partial'
+        else
+          sdec.spl_why = 'ok'
+        end
         rdr, nrd = sdec.ck_reader_spliced(sdec.buf, got, pl), pl.total
       end
     end
@@ -919,6 +932,10 @@ function sdec.stream_arm(nsmp)
   -- note row and the rate formula afterwards -- so a pair left over from a previous capture would run an
   -- eliding recording's arithmetic over a record that was never elided.
   sdec.strm_elide, sdec.acq_elided = nil, nil
+  -- And the scratch set the program was built with, ahead of the same four returns and for the same
+  -- reason: it is what the splice pairs against, so one left over from a previous capture would pair this
+  -- record's bursts with the last recording's burst heads.
+  sdec.gap_used = nil
   local buf = sdec.buf
   -- No buffer is a refused arm, not a raise: the caller can only choose the fallback if it is told.
   if buf == nil then return false end
@@ -976,6 +993,16 @@ function sdec.stream_arm(nsmp)
           -- A refused scratch or a refused program refuses the elision, not the arm: the plain armed
           -- shape still records this line, so it falls back rather than failing the capture.
           if scr ~= nil then ok = sdec.gap_model(buf, scr, ev, elide) end
+          -- The set this program was built with, which is not always the pool: gap_scratches returns the
+          -- first nwant and leaves sdec.gapbufs whole, and only the group count the splice pairs against
+          -- is sound. Normalised as gap_model does it, so the single-scratch fallback splices too.
+          if ok then
+            if type(scr) ~= 'table' or scr[1] == nil then
+              sdec.gap_used = {scr}
+            else
+              sdec.gap_used = scr
+            end
+          end
           if not ok then elide = nil end
         end
         if elide == nil then

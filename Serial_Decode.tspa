@@ -2504,7 +2504,9 @@ function sdec.gap_splice_plan(buf, n, scrs, thr, sabit, fs)
   local nseam = table.getn(seams)
   local pl = {n = 0, pos = {}, len = {}, tail = {}, total = n}
   local nadd, run, j = 0, 0, nil
+  local interior = false
   for j = 1, nseam do
+    local put = false
     if j + ns > nseam then
       local si = math.mod(j - 1, ns) + 1
       local tt, tn = sdec.gap_tail(scrs[si], thr, sabit)
@@ -2513,11 +2515,14 @@ function sdec.gap_splice_plan(buf, n, scrs, thr, sabit, fs)
         pl.pos[pl.n], pl.len[pl.n], pl.tail[pl.n] = seams[j] + run, tn, tt
         run = run + tn
         nadd = nadd + tn
+        put = true
       end
     end
+    if not put and j > 1 then interior = true end
   end
   sdec.spl_nseam, sdec.spl_nspliced, sdec.spl_nadded = nseam, pl.n, nadd
   sdec.spl_norphan = nseam - pl.n
+  sdec.spl_interior = interior
   if pl.n < 1 then return nil end
   pl.total = n + nadd
   return pl
@@ -7321,12 +7326,13 @@ function sdec.stream_decode(got)
     opts.primeskip = math.ceil(2 * sdec.strm_elide * sdec.fs)
   end
   sdec.spl_nseam, sdec.spl_nspliced, sdec.spl_nadded, sdec.spl_norphan = nil, nil, nil, nil
+  sdec.spl_interior = nil
   sdec.spl_why = nil
   sdec.spl_raise, sdec.spl_thr, sdec.spl_lo, sdec.spl_hi = nil, nil, nil, nil
   local rdr, nrd = nil, got
   if sdec.strm_elide == nil then
     sdec.spl_why = 'not elided'
-  elseif sdec.gapbufs == nil or sdec.gapbufs[1] == nil then
+  elseif sdec.gap_used == nil or sdec.gap_used[1] == nil then
     sdec.spl_why = 'no scratches'
   elseif sdec.buf == nil then
     sdec.spl_why = 'no record'
@@ -7347,7 +7353,7 @@ function sdec.stream_decode(got)
     else
       local pl = nil
       local pok, perr = pcall(function()
-        pl = sdec.gap_splice_plan(sdec.buf, got, sdec.gapbufs, thr, fs / baud, fs)
+        pl = sdec.gap_splice_plan(sdec.buf, got, sdec.gap_used, thr, fs / baud, fs)
       end)
       if not pok then
         sdec.spl_why = 'raised'
@@ -7359,7 +7365,11 @@ function sdec.stream_decode(got)
           sdec.spl_why = 'tails refused'
         end
       else
-        sdec.spl_why = 'ok'
+        if sdec.spl_interior then
+          sdec.spl_why = 'partial'
+        else
+          sdec.spl_why = 'ok'
+        end
         rdr, nrd = sdec.ck_reader_spliced(sdec.buf, got, pl), pl.total
       end
     end
@@ -7474,6 +7484,7 @@ end
 function sdec.stream_arm(nsmp)
   sdec.strm_armed = nil
   sdec.strm_elide, sdec.acq_elided = nil, nil
+  sdec.gap_used = nil
   local buf = sdec.buf
   if buf == nil then return false end
   if not sdec.bufclear(buf) then return false end
@@ -7504,6 +7515,13 @@ function sdec.stream_arm(nsmp)
           end
           if scr == nil then scr = sdec.gap_scratch(elide, sdec.fs) end
           if scr ~= nil then ok = sdec.gap_model(buf, scr, ev, elide) end
+          if ok then
+            if type(scr) ~= 'table' or scr[1] == nil then
+              sdec.gap_used = {scr}
+            else
+              sdec.gap_used = scr
+            end
+          end
           if not ok then elide = nil end
         end
         if elide == nil then

@@ -926,9 +926,26 @@ end)()
   local keep = {ge = sdec.gapelide, fb = sdec.force_baud, cm = sdec.capmode,
                 tm = sdec.trigmode, ms = sdec.strm_maxsec}
   local tb = GEN_BYTES(string.rep('gap elision ', 40))
+  -- THREE PASSES CONCATENATED, because the record has to hold MORE THAN ONE BURST for any of the splice
+  -- checks below to mean anything: a single-burst record has one seam, which is its own opening, and a
+  -- splice over it cannot be told from a splice that paired nothing. `loop = true` is what an arb does
+  -- and what the bench plays, so each pass's tail runs into the next pass's lead and the gap between
+  -- bursts is lead + tail bit times of mark.
+  --
   -- The FOURTH return is the sample count; the third is the cell count. Assigning three puts cells into
   -- SRC.nsmp and the source then looks four times shorter than it is.
-  local grd, gts, _, gns = GEN({bytes = tb, baud = 9600, fs = 40000, lead = 600})
+  local grd, gts, gns = {}, {}, 0
+  do
+    local gp, gi
+    for gp = 1, 3 do
+      local r1, _, _, n1 = GEN({bytes = tb, baud = 9600, fs = 40000, lead = 600})
+      for gi = 1, n1 do
+        gns = gns + 1
+        grd[gns] = r1[gi]
+        gts[gns] = (gns - 1) / 40000
+      end
+    end
+  end
   SRC.rd, SRC.ts, SRC.nsmp = grd, gts, gns
   SRC.trigat, SRC.loop, SRC.native_fs = nil, false, nil
   sdec.capmode, sdec.force_baud, sdec.trigmode = 'sml', 9600, 'edge'
@@ -1027,15 +1044,42 @@ end)()
   -- The 166-cell lap of 2026-10-18 found no splice on 87 elided cells and could not say which guard
   -- stopped it, because a count of zero reads the same for all of them. sdec.spl_why names the exit.
   --
-  -- 'one burst' IS THE RIGHT ANSWER HERE, and that is what makes this assertable offline at all:
-  -- gen_serial.lua routes nothing into the scratches and applies no resume latency, so the record has no
-  -- timestamp discontinuity and gap_seams finds a single burst. A reason of 'not elided', 'no scratches',
-  -- 'no threshold', 'no rate' or 'no baud' would mean the chain never reached the arithmetic, and 'ok'
-  -- would mean the harness had started modelling the two-buffer acquisition -- which it says it does not.
-  CK('...and the splice says WHY it did not run, not merely that it did not',
-     sdec.spl_why == 'one burst',
-     string.format('%s (nseam=%s nspliced=%s)', tostring(sdec.spl_why),
-                   tostring(sdec.spl_nseam), tostring(sdec.spl_nspliced)))
+  -- 'ok' IS THE RIGHT ANSWER NOW, and the change of answer is the point. This used to assert 'one burst',
+  -- which was correct while gen_serial.lua routed nothing into the scratches: the record had no timestamp
+  -- discontinuity, gap_seams found a single burst, and the splice could never reach its arithmetic
+  -- offline. TRIG_ELIDE models the two-buffer acquisition, so the chain now runs end to end and the
+  -- answer is a splice that ran. Anything else here names a rung the chain failed to clear: 'not elided',
+  -- 'no scratches', 'no threshold', 'no rate' and 'no baud' are the guards, 'one burst' would mean the
+  -- elided record carried no step for gap_seams to find, 'tails refused' that the scratches held no head,
+  -- and 'partial' that an interior seam kept the head it came with.
+  --
+  -- The scratch count is asserted beside it because 'ok' on its own does not say the heads were FOUND:
+  -- one scratch per burst is what the pairing rests on.
+  CK('...and the splice ran end to end on the elided record, every burst head put back',
+     sdec.spl_why == 'ok' and (sdec.spl_nseam or 0) >= 1
+     and sdec.spl_nspliced == sdec.spl_nseam and (sdec.spl_nadded or 0) > 0,
+     string.format('%s (nseam=%s nspliced=%s nadded=%s)', tostring(sdec.spl_why),
+                   tostring(sdec.spl_nseam), tostring(sdec.spl_nspliced),
+                   tostring(sdec.spl_nadded)))
+  -- AND WITH NO RESUME LATENCY THE ANSWER MUST CHANGE, or the check above is passing on a build that
+  -- writes 'ok' whatever the scratches hold. A perfect handover leaves the scratch idle throughout, so
+  -- there is no head to put back and gap_tail refuses every one of them -- which is 'tails refused'
+  -- meaning 'nothing was lost', not a fault. That distinction is why the reason is worth more than a count.
+  do
+    local keeplat = TRIG_RESUME()
+    TRIG_RESUME(0)
+    TRIG_CLOCK(0)
+    sdec.stream_acquire(20000)
+    pcall(function() sdec.stream_decode(sdec.buf.n) end)
+    local w, ns0, nsp0 = sdec.spl_why, sdec.spl_nseam, sdec.spl_nspliced
+    TRIG_RESUME(keeplat)
+    TRIG_CLOCK(0)
+    sdec.stream_acquire(20000)
+    pcall(function() sdec.stream_decode(sdec.buf.n) end)
+    CK('...while a handover that loses nothing refuses every tail, there being no head to restore',
+       w == 'tails refused' and (ns0 or 0) > 1 and nsp0 == 0,
+       string.format('%s (nseam=%s nspliced=%s)', tostring(w), tostring(ns0), tostring(nsp0)))
+  end
   -- THE GUARD CHAIN'S FIRST RUNG, asserted the other way: with elision off the reason must change. Without
   -- this the check above passes on a build that writes 'one burst' unconditionally.
   do
