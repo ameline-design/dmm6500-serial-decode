@@ -3300,6 +3300,16 @@ function sdec.acquire()
   end
   -- The pre-trigger reserve comes out of capacity, so ask for it on top -- see sdec.acq_cap.
   sdec.acq_make_buffer(sdec.acq_cap(nwant))
+  -- A REFUSED ALLOCATION IS A REASON, NOT A CRASH, and this path had no such check. Everything below
+  -- indexes sdec.buf -- acq_triggered and acq_free both open with it and acq_copy takes it as an argument --
+  -- so a nil buffer died inside autoset with 'attempt to index a nil value (local buf)' and the panel
+  -- reported nothing at all. tools/verify_tspa.lua drives exactly that case against a front end that
+  -- returns no samples, and it has been failing on it since before the static buffers existed. The
+  -- recording path has carried the equivalent check since stream_begin was written.
+  if sdec.buf == nil then
+    return false, string.format('cannot allocate %d readings for the capture',
+                                sdec.acq_cap(nwant) or nwant or 0)
+  end
 
   -- NOT RAISED. The probe is a scout for the two logic levels and nothing reads its byte count, so a
   -- longer one costs capture time and buys nothing. Bounded by sdec.n rather than nwant for the same

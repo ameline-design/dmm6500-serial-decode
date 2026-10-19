@@ -2701,6 +2701,10 @@ function sdec.acquire()
     nwant = math.ceil(sdec.n * (1 + sdec.strm_overread))
   end
   sdec.acq_make_buffer(sdec.acq_cap(nwant))
+  if sdec.buf == nil then
+    return false, string.format('cannot allocate %d readings for the capture',
+                                sdec.acq_cap(nwant) or nwant or 0)
+  end
 
   local pn = sdec.probe_n
   if pn > sdec.n then pn = sdec.n end

@@ -152,9 +152,14 @@ table.getn = table.getn or function(t) return #t end
 
 local nbuf = 0
 buffer = {STYLE_STANDARD = 'std', STYLE_WRITABLE_FULL = 'wf', UNIT_VOLT = 'V'}
-function buffer.make()
+-- WITH A CAPACITY, which this returned no value for at all. The app reads the capacity back as its
+-- verdict -- a refused buffer.make returns nil while pcall reports success -- so a handle that answers
+-- nothing reads as refused, and the app then discards it without deleting it. Every allocation in this
+-- file leaked for that reason, which is what 'every buffer is freed' was reporting, and it meant the
+-- launch being verified here had never once held a working buffer.
+function buffer.make(cap)
   nbuf = nbuf + 1
-  return {alive = true, n = 0, readings = {}, relativetimestamps = {},
+  return {alive = true, n = 0, capacity = cap or 10, readings = {}, relativetimestamps = {},
           clear = function() end}
 end
 function buffer.delete() nbuf = nbuf - 1 end
