@@ -2456,7 +2456,13 @@ function sdec.gap_tail(scr, thr, sabit)
     if v ~= nil and v > thr then nhi = nhi + 1 end
   end
   local idlehi = (2 * nhi >= n)
-  local need = math.ceil(sdec.gap_idlerun * sabit)
+  local nbits = sdec.force_nbits or 8
+  local parbits = 0
+  if sdec.force_par ~= nil and sdec.force_par ~= sdec.PAR_NONE then parbits = 1 end
+  local framebits = 1 + nbits + parbits + (sdec.force_nstop or 1)
+  local runbits = sdec.gap_idlerun
+  if framebits > runbits then runbits = framebits end
+  local need = math.ceil(runbits * sabit)
   if need < 2 then need = 2 end
   local run, s, lastnon = 0, nil, nil
   for i = n, 1, -1 do
