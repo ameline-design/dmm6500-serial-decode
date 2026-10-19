@@ -299,6 +299,11 @@ def stages(outdir, shots):
               note='an elided record across the rate ladder, with the real looping payload, the rate '
                    'forced as gap_elide requires, and the score taken with the panel\'s own bexp.match '
                    '-- plus the rotation sweep that says what a ring wrap would cost'),
+        Stage('unit-seamhole', ['python3', 'tools/test_seamhole.py'],
+              note='the handover-hole measurement, against a handover placed by construction: both '
+                   'signs at five widths, a fractional hole that proves the slow-edged stimulus is '
+                   'needed, the one-sample continuity convention as an expected-fail, and the '
+                   'embedded TSP script through the real 5.0.2 parser'),
         Stage('unit-seam', ['python3', 'tools/test_seam.py'],
               note='a capture whose loop seam lands late must still be judged -- and trimming by '
                    'headsusp instead of damage must still fail, or the reproduction has drifted'),
