@@ -889,10 +889,13 @@ local function newbuf(cap)
   -- only thing that tells the app its record is rotated. Measured on 1.7.17a after an armed capture
   -- whose arm waited three seconds: startindex 13 288, endindex 13 287 on a 21 100-deep buffer. They
   -- are 1 and n until something wraps the ring; SRC.ringoff below is what does that here.
-  local b = {alive = true, capacity = cap, n = 0, readings = {},
+  -- nstored is the ring's write position: readings stored since the last clear, which can exceed
+  -- capacity where n cannot. It is the mock's own bookkeeping and not a firmware attribute, so nothing
+  -- in tsp/ may read it -- see ringput().
+  local b = {alive = true, capacity = cap, n = 0, readings = {}, nstored = 0,
              relativetimestamps = {}, fillmode = 0, startindex = 1, endindex = 0}
   function b.clear()
-    b.n = 0
+    b.n, b.nstored = 0, 0
     b.readings, b.relativetimestamps = {}, {}
     b.startindex, b.endindex = 1, 0
   end
@@ -1685,7 +1688,23 @@ TRIG.cost = {
   -- Jitter is comparable to the latency (6.2 to 9.3 us at 1 MS/s), so the firing point is not
   -- deterministic to the sample and this models the central value only.
   cmp_latency  = 7.3e-6,
+  -- THE RESUME LATENCY: crossing that releases the WAIT to the first reading the next measure block
+  -- stores. 156 to 208 us, BOUNDED FROM THE SEAM DEBRIS of decoded elided records rather than from a
+  -- timestamp, because timestamps cannot show time that was never sampled (docs/TRIGGER.md, 'A
+  -- re-entered measure block appends'). It already includes cmp_latency, so the walk below charges one
+  -- and not both. Fixed in TIME, so it is a growing fraction of a bit as the baud rises, which is why
+  -- a seam is free at 2400 Bd and costs bytes above it.
+  --
+  -- ON BY DEFAULT, and that is the point: with it zero every eliding record is byte-exact without a
+  -- splice and a suite asserting the splice restores the bytes proves nothing. TRIG_RESUME(0) is how a
+  -- test asks for the perfect splice as a control.
+  resume       = 156e-6,
 }
+-- Set the modelled resume latency in seconds; TRIG_RESUME() with no argument reads it.
+function TRIG_RESUME(s)
+  if s ~= nil then TRIG.cost.resume = s end
+  return TRIG.cost.resume
+end
 -- WHAT THE INSTRUMENT WAS DOING BEFORE THE ARM IS WHAT MOVES THE CANDOUR. MEASURED, and it is the
 -- reason a bound anywhere near 0.2 s is a coin toss rather than a clean pass or a clean failure.
 --
@@ -2041,13 +2060,17 @@ end
 --     wait long enough to lap the buffer comes back in order when the instrument's would not.
 --   * THE LOW-LATENCY FLAG. getblocklist() now has a string form, but no fast-path verdict, so nothing
 --     here can catch a program that loses the fast path.
---   * GAP ELISION'S ACTUAL ELISION. setblock() records the program and TRIG_TERMINATES models its
---     non-termination, which is what makes the fill-test defect visible offline. What is NOT modelled is the
---     two-buffer acquisition itself: nothing here sends the gap's samples to the scratch and the burst's to
---     the record, so no offline test can show that a recording came back shorter than the wire. That stays an
---     instrument question and is answered by notes/probe_elideloop.py -- 4 bursts of 1001 readings, splices at
---     1002/2003/3004, 0.4 s kept against 1.198 s elided. Offline tests must therefore assert the PROGRAM, the
---     plumbing and the decode-side arithmetic, and must not claim to have seen a sample elided.
+--   * THE HANDOVER'S CONTINUITY. TRIG_ELIDE does model the two-buffer acquisition -- the gap's samples go
+--     to the group's scratch and the burst's to the record, with TRIG.cost.resume charging the measured
+--     156-208 us the record opens late by. What it ASSUMES is where those late samples went: that block
+--     b+1 keeps storing until block b+3 takes over, which is the design's premise and the whole reason a
+--     per-gap scratch exists. A dead interval at the handover would leave the head in no buffer at all,
+--     and nothing here could tell that apart from the continuity it assumes -- so an offline pass of the
+--     splice is not evidence that the instrument captured the head. Two timestamps on one elided capture
+--     settle it; notes/HANDOFF-session67.md names the measurement.
+--   * THE RATE TRANSLATION ON THAT PATH. The walk works in SOURCE indices because the comparator scan
+--     does, so a fixture setting SRC.native_fs keeps the contiguous fill rather than eliding at a
+--     translated rate.
 
 -- The real call returns three values (state, status, block); only the first is read.
 function trigger.model.state()
@@ -2259,6 +2282,151 @@ function TRIG_TERMINATES()
   return true
 end
 
+-- ---------- THE TWO-BUFFER ELIDING ACQUISITION ----------
+--
+-- WHY THIS EXISTS, and it is the gap that made every offline pass of gap elision consistent with a splice
+-- that cannot work. The record buffer used to be filled CONTIGUOUSLY from the trigger point, so an elided
+-- record had no timestamp discontinuity, sdec.gap_seams found one burst, and the splice never reached its
+-- arithmetic -- tools/test_trigmodel.lua asserted exactly that, `spl_why == 'one burst'`. Nothing routed a
+-- sample into a scratch, so tools/test_elideseam.lua had to build the scratch contents itself by
+-- subtracting what the record kept, which is the answer the splice is being asked to find.
+--
+-- What this models, from the program in sdec.gap_model and the measurements behind it:
+--
+--   * block b+1 digitizes into scratch gi for the whole gap AND through the WAIT, stopping only when
+--     block b+3 is entered -- 'entering either measure block stops the other'. So the scratch holds the
+--     gap's idle followed by the head the record is missing, which is the claim the splice rests on.
+--   * block b+3 records the burst until the detector gives up: block b+4 delays one window and block b+5
+--     branches back only if a crossing arrived during it, so the recorded tail is uniform on [W, 2W).
+--   * the record's timestamps are ABSOLUTE source time, so the elided gaps appear as steps. That is what
+--     gap_seams reads, and it is the whole reason a seam is locatable at all.
+--   * the scratch is fillmode 1 and laps: the k-th stored reading lands at ((k-1) mod cap) + 1 and
+--     startindex reports the rotation, which is what sdec.acq_first has to undo inside gap_tail.
+--   * the groups come from the BLOCK STORE in order, not from an argument, so a program that named the
+--     wrong buffer in the wrong slot elides into the wrong bin here too.
+--
+-- WHAT IT STILL CANNOT MODEL, and no assertion against it may claim otherwise: whether the firmware's
+-- handover from block b+1's digitize to block b+3's is CONTINUOUS. This walk assumes it is -- the resume
+-- latency's samples go to the scratch -- because that is the design's premise. A dead interval there would
+-- put the head in no buffer at all, and its length would be a floor on the bytes a seam destroys that no
+-- decoder change could reach. notes/HANDOFF-session67.md names the two-timestamp measurement that settles
+-- it. Nor does it model a RECORD that laps; the poll loop's fill test is what prevents that, and
+-- tools/test_elideseam.lua sweeps the rotation separately.
+
+-- The scratch buffers in block order and the detector's window in seconds, read back out of the store.
+-- The record is TRIG.buf, which setblock sets to the LAST measure block's buffer -- group ns's burst
+-- block -- so every other measure buffer is a scratch. -> the scratch list, the window or nil.
+function TRIG_GROUPS()
+  local out, n, win, k = {}, 0, nil, nil
+  if TRIG.blocks == nil then return out, nil end
+  for k = 1, (TRIG.nblocks or 0) do
+    local bk = TRIG.blocks[k]
+    if bk ~= nil then
+      if bk.op == 'MEASURE_DIGITIZE' and bk.buf ~= nil and bk.buf ~= TRIG.buf then
+        n = n + 1
+        out[n] = bk.buf
+      end
+      if bk.op == 'DELAY_CONSTANT' and win == nil and bk.arg ~= nil and bk.arg > 0 then
+        win = bk.arg
+      end
+    end
+  end
+  return out, win
+end
+
+-- One reading into a buffer behaving as the firmware's ring. The running total lives on the BUFFER and
+-- not in the caller, so a scratch nobody cleared keeps its write position across arms: a missing clear
+-- then shows up as a scratch holding a previous gap, which is the fault it would really be, rather than
+-- as one that quietly restarted at slot 1. b.clear() is what resets it.
+local function ringput(b, v, t)
+  local cap = b.capacity or 1
+  local m = (b.nstored or 0) + 1
+  if (b.fillmode or 0) ~= 1 and m > cap then return false end
+  b.nstored = m
+  local p = math.mod(m - 1, cap) + 1
+  b.readings[p] = v
+  if t ~= nil then b.relativetimestamps[p] = t end
+  if m < cap then b.n = m else b.n = cap end
+  b.endindex = math.mod(m, cap)
+  -- Only a lapped ring is rotated, which is acq_first's own gate.
+  if m > cap then b.startindex = math.mod(m, cap) + 1 else b.startindex = 1 end
+  return true
+end
+
+-- Fill the record and the scratches by walking the program. `tat` is where the first crossing fired.
+function TRIG_ELIDE(rec, scrs, win, tat, step, dt, srcdt)
+  local ns = table.getn(scrs)
+  local cap = rec.capacity or 1000
+  -- A rate translation is not modelled on this path: the walk works in SOURCE indices because the
+  -- comparator scan does, and mixing the two coordinate systems is where an off-by-one would hide. Every
+  -- eliding fixture leaves SRC.native_fs nil, so step is exactly 1 there.
+  local elidable = (ns >= 1 and win ~= nil and win > 0 and step == 1 and srcdt ~= nil and srcdt > 0)
+  if elidable then
+    -- And the comparator has to be able to fire, or there is no detector and no gap can be found. A
+    -- fixture driving this through an override rather than the comparator keeps the contiguous fill.
+    local keepscan = SRC.trigscan
+    elidable = (TRIG.fire_at(1) ~= nil)
+    SRC.trigscan = keepscan
+  end
+  if not elidable then
+    -- Today's behaviour, unchanged: filled to capacity rather than to a count, both measure blocks being
+    -- COUNT_INFINITE with only the host's abort to stop them. The record then reaches the fill test.
+    local i
+    for i = 1, cap do
+      local v = SRC_val(1, tat + i - 1, step)
+      if v == nil then break end
+      rec.n = i
+      rec.readings[i] = v
+      rec.relativetimestamps[i] = (i - 1) * dt
+    end
+    rec.startindex, rec.endindex = 1, rec.n
+    return
+  end
+  local W = math.floor(win / srcdt)
+  if W < 1 then W = 1 end
+  local lat = math.floor((TRIG.cost.resume or 0) / srcdt)
+  local n = SRC.nsmp or 0
+  local pos, g, c, k = 1, 1, tat, nil
+  while c ~= nil and pos <= n and rec.n < cap do
+    local recstart = c + lat
+    -- Block b+1: the scratch takes everything up to the instant block b+3 starts storing.
+    for k = pos, recstart - 1 do
+      local v = SRC.rd[k]
+      if v == nil then break end
+      ringput(scrs[g], v, (k - 1) * srcdt)
+    end
+    -- Block b+3 and the detector: the burst runs while some window holds a crossing.
+    local e, bend = recstart, nil
+    while bend == nil do
+      local wend = e + W
+      local keepscan = SRC.trigscan
+      local cc = TRIG.fire_at(e - 1)
+      SRC.trigscan = keepscan
+      if cc ~= nil and cc < wend then e = wend else bend = wend end
+    end
+    for k = recstart, bend - 1 do
+      local v = SRC.rd[k]
+      if v == nil then break end
+      if rec.n >= cap then break end
+      rec.n = rec.n + 1
+      rec.readings[rec.n] = v
+      -- Absolute, so the gap this burst skipped is a step and not a smooth ramp.
+      rec.relativetimestamps[rec.n] = (k - 1) * srcdt
+    end
+    rec.startindex, rec.endindex = 1, rec.n
+    pos = bend
+    g = g + 1
+    if g > ns then g = 1 end
+    if pos > n then
+      c = nil
+    else
+      local keepscan = SRC.trigscan
+      c = TRIG.fire_at(pos - 1)
+      SRC.trigscan = keepscan
+    end
+  end
+end
+
 TRIG.aborts = 0
 -- Trigger blenders, so the OR path in acq_triggered() is exercised rather than merely
 -- written. Records what was wired so a test can assert the stimuli, not just the event.
@@ -2381,9 +2549,10 @@ function trigger.model.initiate()
   -- program is subject to the same level and slope rules as any other arm -- its block 3 is a real WAIT on the
   -- comparator. Nothing crossing means the wait never ends, exactly as it does above.
   --
-  -- WHAT IS NOT MODELLED, and the suites must not claim it: the two-buffer split. Nothing here sends the gap's
-  -- samples to the scratch and the burst's to the record, so no offline test can show a record coming back
-  -- shorter than the wire. That is an instrument question, answered by notes/probe_elidelive.py.
+  -- THE TWO-BUFFER SPLIT IS MODELLED, in TRIG_ELIDE: the gap's samples go to the group's scratch and the
+  -- burst's to the record, so a record really does come back shorter than the wire and the splice has real
+  -- scratches to read. What is assumed rather than modelled is the HANDOVER's continuity -- see 'WHAT THIS
+  -- MODEL STILL CANNOT EXPRESS' above, which is where that limit belongs.
   if TRIG.handbuilt then
     local b = TRIG.buf
     if b == nil then error('hand-built program with no measure buffer', 0) end
@@ -2397,20 +2566,13 @@ function trigger.model.initiate()
     local fire = nil
     if tat ~= nil and srcdt ~= nil then fire = (tat - 1) * srcdt end
     TRIG_TIMELINE(nil, dt, fire)
+    -- The scratches are NOT cleared here. sdec.gap_scratches clears the whole set on every arm, so
+    -- clearing again would hide it being skipped -- and an uncleared scratch holding a previous
+    -- capture's gap is exactly the fault that would matter.
+    local groups, win = TRIG_GROUPS()
     b.clear()
     if tat ~= nil then
-      -- Filled to capacity rather than to a count, because both measure blocks are COUNT_INFINITE and only the
-      -- host's abort stops them. The record therefore reaches the fill test, which is the point.
-      local lim = b.capacity or 1000
-      local i
-      for i = 1, lim do
-        local v = SRC_val(1, tat + i - 1, step)
-        if v == nil then break end
-        b.n = i
-        b.readings[i] = v
-        b.relativetimestamps[i] = (i - 1) * dt
-      end
-      b.startindex, b.endindex = 1, b.n
+      TRIG_ELIDE(b, groups, win, tat, step, dt, srcdt)
       READS.triggered = READS.triggered + 1
     end
     return

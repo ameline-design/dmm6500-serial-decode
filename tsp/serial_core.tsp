@@ -2734,11 +2734,21 @@ sdec.gap_blockstore = 63
 -- 5 blocks a group and one branch to close the loop, so this is what the store can hold. DERIVED and not
 -- declared: it read 12 beside a comment deriving 12 from 63, which let either move without the other.
 sdec.gap_maxscratch = math.floor((sdec.gap_blockstore - 1) / 5)
--- As many as the program allows, and the ceiling is the default for a reason: one scratch holds one burst's
--- head, so k scratches are k heads the splice can put back and the rest keep whatever they were captured
--- with. A record carries 2 to 4 seams in practice, so the ceiling is headroom rather than a working figure
--- -- which is exactly why a silent drop to 1 would cost recovered bytes and nothing would report it.
--- tools/test_trigmodel.lua asserts the default IS the ceiling, since every other check scales with it.
+-- As many as the program allows, and the ceiling is the default because one scratch holds one burst's head:
+-- a silent drop to 1 would cost recovered bytes with nothing reporting it, which is why
+-- tools/test_trigmodel.lua asserts the default IS the ceiling -- every other check scales with it.
+-- It is also a hard limit on what the splice can repair. The splice is worth nothing unless every INTERIOR
+-- seam gets its head back: the scorers align on one shift, so one unrepaired interior seam shifts the
+-- remainder against everything before it. tools/test_elideseam.lua, six bursts at 9600 Bd -- byte-exact
+-- with the record's opening unrepaired, its offset being that shift; 16 % with one interior seam left;
+-- 20 % with no splice at all. The last nscratch seams are repaired and the opening is free, so the limit
+-- is nscratch + 1 = 13 bursts, against about 15 000 readings a recorded burst -- its traffic plus 1 to 2
+-- detector windows -- for the 130-byte gap vectors at 9600 Bd and 100 kS/s:
+--     bench sdec.n 20 000 -> 2 bursts, 0 left;  panel 8 kB 853 334 -> 57, 45 left;
+--     panel 32 kB 3 413 334 -> 227 bursts, 215 left.  Reported as spl_why = 'partial'.
+-- Raising the count is not available, the store holding 63 blocks against 5 a group, so closing it needs
+-- a bound on the recording or a synthesised shift, and that wants the resume latency far tighter than the
+-- 156-208 us the record brackets it at.
 sdec.gap_nscratch = sdec.gap_nscratch or sdec.gap_maxscratch
 sdec.gapbufs = sdec.gapbufs or {}
 
@@ -2978,7 +2988,12 @@ function sdec.gap_splice_plan(buf, n, scrs, thr, sabit, fs)
   local nseam = table.getn(seams)
   local pl = {n = 0, pos = {}, len = {}, tail = {}, total = n}
   local nadd, run, j = 0, 0, nil
+  -- Whether a seam past the first kept the head it came with, which is what decides whether this splice is
+  -- worth anything. The count alone cannot say, seam 1 being the record's own opening; see the limit
+  -- derived at sdec.gap_nscratch.
+  local interior = false
   for j = 1, nseam do
+    local put = false
     -- Past ns bursts the early scratches have been reused, so they are skipped rather than approximated.
     if j + ns > nseam then
       local si = math.mod(j - 1, ns) + 1
@@ -2989,11 +3004,16 @@ function sdec.gap_splice_plan(buf, n, scrs, thr, sabit, fs)
         pl.pos[pl.n], pl.len[pl.n], pl.tail[pl.n] = seams[j] + run, tn, tt
         run = run + tn
         nadd = nadd + tn
+        put = true
       end
     end
+    -- Both ways a seam goes unrepaired count here, the orphan rule and a refused tail, because the
+    -- consequence for the alignment is the same and a reader of the reason needs the consequence.
+    if not put and j > 1 then interior = true end
   end
   sdec.spl_nseam, sdec.spl_nspliced, sdec.spl_nadded = nseam, pl.n, nadd
   sdec.spl_norphan = nseam - pl.n
+  sdec.spl_interior = interior
   if pl.n < 1 then return nil end
   pl.total = n + nadd
   return pl

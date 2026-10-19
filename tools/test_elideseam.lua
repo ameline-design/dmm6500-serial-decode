@@ -522,6 +522,151 @@ check('...while the same head spliced half a bit late does NOT restore it, so th
       string.format('%s/%s = %.0f%% four samples late', tostring(wrong.nm), tostring(wrong.nc),
                     fw * 100))
 
+-- ---------------------------------------------------------------------------
+print('')
+print('-- the ACQUISITION side: the whole chain, with the two-buffer program filling the scratches --')
+-- ---------------------------------------------------------------------------
+-- WHY THIS BLOCK EXISTS AND WHY EVERYTHING ABOVE IT WAS NOT ENOUGH. Every splice check above feeds the
+-- scratches from elide(), which computes them by subtracting what the record kept -- that is, from the
+-- answer the splice is being asked to find. So each of those passes was consistent with a splice that
+-- cannot work on a real scratch, and the file said so: 'WHAT IT DOES NOT SHOW: that the firmware fills
+-- the scratches'.
+--
+-- tools/gen_serial.lua now walks the program sdec.gap_model builds -- block b+1 digitizing into scratch
+-- gi through the WAIT, block b+3 recording until the detector sees a crossing-free window -- and routes
+-- every source sample to whichever buffer was live. So this drives the REAL chain, stream_begin through
+-- stream_acquire to stream_decode, and scores the bytes the decode actually produced with bexp.match:
+-- one shift, the same gate as the pay= field in the record and the panel's red rule.
+--
+-- WHAT IT STILL CANNOT SHOW, and no check below claims it: whether the firmware's handover from block
+-- b+1 to block b+3 is CONTINUOUS. The walk assumes it is, which is the design's premise. A dead interval
+-- there would leave the head in no buffer at all and its length would floor the bytes a seam destroys.
+-- That stays the one hardware measurement this feature is waiting on.
+;(function()
+  local keep = {ge = sdec.gapelide, fb = sdec.force_baud, cm = sdec.capmode, tm = sdec.trigmode,
+                ms = sdec.strm_maxsec, ns = sdec.gap_nscratch, w = TRIG.walk, d = SRC.trigderive,
+                lat = TRIG_RESUME(), rd = SRC.rd, ts = SRC.ts, nsmp = SRC.nsmp,
+                lp = SRC.loop, nf = SRC.native_fs, ta = SRC.trigat}
+  TRIG_WALK(true)
+  SRC_TRIGDERIVE(true)
+
+  -- One cell through the real chain. `nscr` is how many scratches the program is built with, which is what
+  -- forces the orphan cases; `defeat` takes the set away after the capture, for the unspliced null.
+  local function cell(baud, np, lat, nscr, defeat, keepset)
+    sdec.capmode, sdec.force_baud, sdec.trigmode = 'sml', baud, 'edge'
+    sdec.force_nbits, sdec.force_par, sdec.force_nstop, sdec.force_invert = nil, nil, nil, nil
+    sdec.gapelide, sdec.strm_maxsec = 0.01, 60
+    sdec.proto, sdec.ui_mode = 'uart', 'text'
+    -- Released before the count is lowered, or gap_scratches takes its reuse path and hands back the first
+    -- nscr of a set it leaves twelve long. `keepset` is how the case below asks for exactly that, because
+    -- it is the pool-against-program mismatch and it has to be reachable to be tested.
+    sdec.gap_nscratch = nscr
+    if not keepset then sdec.gap_release_all() end
+    sdec.clear_measured()
+    -- Begun once to learn the rate the app chooses, then rendered AT it, so the record's own timestamps and
+    -- the app's fs agree and no rate error is mixed into the subject.
+    sdec.stream_begin()
+    local fs = sdec.fs
+    local rd, ts, n, i, p = {}, {}, 0, nil, nil
+    for p = 1, np do
+      local r1, _, _, n1 = GEN({bytes = GEN_BYTES(v98a), nbits = 8, par = 0, baud = baud, fs = fs,
+                                gap = 0, lead = 600, tail = 10, loop = false})
+      for i = 1, n1 do n = n + 1 rd[n] = r1[i] ts[n] = (n - 1) / fs end
+    end
+    SRC.rd, SRC.ts, SRC.nsmp = rd, ts, n
+    SRC.trigat, SRC.loop, SRC.native_fs = nil, false, nil
+    TRIG_RESUME(lat)
+    sdec.clear_measured()
+    local bok, bwhy = sdec.stream_begin()
+    if not bok then return {err = 'begin: ' .. tostring(bwhy)} end
+    TRIG_CLOCK(0)
+    local got = sdec.stream_acquire(20000)
+    if defeat then sdec.gap_used = nil end
+    pcall(function() sdec.stream_decode(got) end)
+    local r = {got = got, why = sdec.spl_why, nseam = sdec.spl_nseam, nspl = sdec.spl_nspliced,
+               nadd = sdec.spl_nadded, norph = sdec.spl_norphan, armed = sdec.strm_armed,
+               elided = sdec.acq_elided}
+    local tl = (sdec.ck_tot ~= nil) and sdec.ck_tot.tail or nil
+    if tl ~= nil then r.nm, r.nc = bexp.match(tl, 'v98a') end
+    if r.nm ~= nil and r.nc ~= nil and r.nc > 0 then r.f = r.nm / r.nc end
+    return r
+  end
+  local function show(r)
+    if r.err ~= nil then return r.err end
+    return string.format('%s nseam=%s spl=%s orph=%s add=%s pay=%s/%s %s', tostring(r.why),
+                         tostring(r.nseam), tostring(r.nspl), tostring(r.norph), tostring(r.nadd),
+                         tostring(r.nm), tostring(r.nc),
+                         (r.f ~= nil) and string.format('%.0f%%', r.f * 100) or '-')
+  end
+
+  -- THE PREMISE, and it is two facts at once: the chain reaches the splice at all, and a handover that
+  -- loses nothing leaves no head to restore. gap_tail refusing an all-idle scratch is the correct answer
+  -- there, not a fault -- and the record is already byte-exact, which is what proves the fixture's
+  -- working case before any damage is introduced.
+  local perfect = cell(9600, 4, 0, 12, false)
+  check('the premise: with a lossless handover the record is byte-exact and every tail is refused',
+        perfect.why == 'tails refused' and (perfect.nseam or 0) > 1 and perfect.nspl == 0
+        and perfect.f ~= nil and perfect.f > 0.95, show(perfect))
+
+  -- THE NULL: the resume latency in, and the splice taken away. This is the damage, and without it every
+  -- check below would pass against a record that was never broken.
+  local null = cell(9600, 4, 156e-6, 12, true)
+  check('the null: the same record with no splice is badly damaged, so there is something to repair',
+        null.why == 'no scratches' and null.f ~= nil and null.f < 0.80, show(null))
+
+  -- AND THE REPAIR, on scratches the PROGRAM filled. This is the claim the file could not make before.
+  local fixed = cell(9600, 4, 156e-6, 12, false)
+  check('the splice restores the payload byte-exact from scratches the trigger model itself filled',
+        fixed.why == 'ok' and fixed.nspl == fixed.nseam and (fixed.norph or 1) == 0
+        and fixed.f ~= nil and fixed.f > 0.99, show(fixed))
+
+  -- ---- AND THE FINDING: a splice that misses ONE INTERIOR SEAM is worth nothing ----
+  -- Six bursts against five scratches orphans seam 1, which is the record's own OPENING: a missing head
+  -- there costs the first frame and no more, because the offset it leaves IS the single shift every scorer
+  -- solves for. Against four scratches seam 2 is orphaned too, and that one is interior -- it shifts the
+  -- remainder against everything before it, so one shift fits only one segment and the recovered bytes
+  -- become invisible. The two rows are one scratch apart and they are the whole mechanism.
+  local open1 = cell(9600, 6, 156e-6, 5, false)
+  check('a splice that misses only the record OPENING is still byte-exact, the offset being the shift',
+        open1.why == 'ok' and open1.norph == 1 and open1.f ~= nil and open1.f > 0.99, show(open1))
+  local inner = cell(9600, 6, 156e-6, 4, false)
+  check('...while missing ONE INTERIOR seam recovers nothing measurable, which is the defect',
+        inner.norph == 2 and inner.f ~= nil and inner.f < 0.80, show(inner))
+  -- AND THE REASON HAS TO SEPARATE THEM, because the byte count is what a lap cannot see: 'ok' beside a
+  -- count that did not move sends the next reader to the decoder, which is the one place the fault is not.
+  check('...and the reason says `partial` rather than `ok`, so a lap reads the consequence',
+        inner.why == 'partial' and open1.why == 'ok',
+        string.format('interior=%s opening=%s', tostring(inner.why), tostring(open1.why)))
+
+  -- ---- THE SPLICE MUST PAIR AGAINST THE PROGRAM, NOT AGAINST THE POOL ----
+  -- gap_scratches leaves the whole set in sdec.gapbufs and returns only the first nwant, so the two differ
+  -- whenever fewer are asked for than are held. The program then has 5 groups and wraps at burst 6, which
+  -- puts burst 6's head in scratch 1 -- while a plan built from a 12-long pool reads scratch 1 as burst 1's
+  -- and splices one burst's head onto another, then finds scratch 6 empty and orphans an interior seam.
+  --
+  -- Forced by allocating twelve and then asking for five WITHOUT releasing, which is the one ordering that
+  -- reaches the reuse path. The previous row is the control: the same 6-burst, 5-scratch geometry with the
+  -- set released comes back byte-exact, so anything this row loses is the pool-against-program mismatch
+  -- and not the orphaned opening it shares with it.
+  cell(9600, 2, 156e-6, 12, false)                    -- allocate twelve, then keep them
+  local reuse = cell(9600, 6, 156e-6, 5, false, true)
+  check('a program built with five of twelve scratches still pairs burst to scratch correctly',
+        reuse.why == 'ok' and reuse.norph == 1 and reuse.f ~= nil and reuse.f > 0.99, show(reuse))
+
+  sdec.gap_nscratch = keep.ns
+  pcall(sdec.gap_release_all)
+  sdec.gapelide, sdec.force_baud, sdec.capmode = keep.ge, keep.fb, keep.cm
+  sdec.trigmode, sdec.strm_maxsec = keep.tm, keep.ms
+  TRIG_RESUME(keep.lat)
+  SRC.rd, SRC.ts, SRC.nsmp = keep.rd, keep.ts, keep.nsmp
+  SRC.loop, SRC.native_fs, SRC.trigat = keep.lp, keep.nf, keep.ta
+  TRIG_WALK(keep.w == true)
+  SRC_TRIGDERIVE(keep.d == true)
+  check('and the suite leaves the scratch count and the modelled latency as it found them',
+        sdec.gap_nscratch == keep.ns and TRIG_RESUME() == keep.lat,
+        string.format('%s / %s', tostring(sdec.gap_nscratch), tostring(TRIG_RESUME())))
+end)()
+
 print(string.format('\n%d passed, %d failed', pass, fail))
 if fail > 0 then
   local i
