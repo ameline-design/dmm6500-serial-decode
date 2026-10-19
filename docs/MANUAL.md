@@ -6,10 +6,11 @@ This app turns a Keithley bench instrument into a serial decoder. Clip onto a UA
 **Capture**, and read the bytes on the front panel. You do not have to tell it the baud rate, the frame
 format or which way up the signal is — it works all of that out from the signal itself.
 
-It was written on a **DMM6500**, and that is **the only instrument it has been tested on**. It should run
-as it is on the rest of the Keithley TSP range that has a digitizer and the touchscreen app API — the
-DAQ6510 and DMM7510 in particular — and it will install on an SMU2461 and try. **Which instruments** in the
-README says what is measured and what is inference.
+It was written on a **DMM6500**, and it is known to run on a **DAQ6510** and a **DMM7510** as well — the
+7510 decoding a hardware serial device at 9600 baud. It will install on an **SMU2461** and try; that is
+the one model nobody has run it on. **Every measured number in this documentation is a DMM6500 number**,
+so on another model treat the rates and the tolerance figures as inference rather than specification.
+**Which instruments** in [PROJECT.md](PROJECT.md) says which is which.
 
 Three things make it worth reaching for over a scope's decode: the **window is large** — a screenful is
 ~240 bytes and a recording holds 32 768 — every capture is **appended to the USB key automatically** while

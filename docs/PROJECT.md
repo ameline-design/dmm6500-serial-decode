@@ -154,8 +154,8 @@ API** (`display.create` and friends), and **Lua 5.0.2**. Every digitizer below r
 | | |
 |---|---|
 | **DMM6500** | **Tested**, firmware 1.7.17a — a 7.6-day run of 136 247 captures with no computer attached and zero instrument events, then 17.24-hour and 8.28-hour runs on the current matrix, and the namespace resolver verified here. 16-bit digitizer, *"maximum resolution 16 bits"*, specifications, April 2018 |
-| **DAQ6510** | Should run unmodified, on the strongest grounds of any untested model: it **shares the UI board and the acquisition board** with the DMM6500, only the channel-board plugin differing. Untested |
-| **DMM7510** | Should run unmodified: 18-bit digitizer, better acquisition boards. Untested |
+| **DAQ6510** | **Runs**, field-reported. It **shares the UI board and the acquisition board** with the DMM6500, only the channel-board plugin differing, which is why it was always the likeliest — and sharing the acquisition board is also why its tolerance and timing figures should transfer, where the 7510's may not |
+| **DMM7510** | **Runs.** A user decoded a hardware serial device at 9600 Bd on one — the only evidence in this table from a real UART rather than a signal generator, and the only evidence from a second model. Field-reported, not instrumented here: it predates gap elision, so it covers the decode path and not the whole feature set, and no tolerance or timing figure was taken. 18-bit digitizer, better acquisition boards |
 | **SMU2461** | **Will install and try; may or may not work.** Dual 18-bit digitizers, reached as `smu.digitize` by a namespace the app resolves at load. That mechanism is verified on the DMM6500; no SMU has ever run it. Three unknowns below |
 | **2470 SMU** | **No.** *"Digitized measurements are not a feature on the 2470"* — its reference manual, rev D, October 2024 |
 | **2450 / 2460 SMU** | Almost certainly not, by absence rather than denial: neither claims a digitizer, and the 2450 reference (rev D, May 2015) documents `smu.measure.*` with no digitize function |
@@ -167,6 +167,13 @@ resolution is the one axis the app is indifferent to, thresholding each sample i
 to re-measure is what goes *through the acquisition board* — the tolerance envelope, the level and offset
 limits. The DAQ6510 shares that board, so a deviation there is a real finding; the
 DMM7510's differs and those figures may move either way.
+
+**RUNNING IS NOT CHARACTERISED, and the table above means only the first.** Three models are now known
+to run the app; **every measured figure in this repository is still a DMM6500 figure.** No tolerance
+envelope, no level or offset limit, and no rate figure has been taken on any other board, and the two
+field reports carried no instrumentation. So a DMM7510 user reaching for REFERENCE is reading numbers
+from a different acquisition board — which is the distinction the DAQ6510 row turns on, since it is the
+only other model whose board is the same one those numbers came from.
 
 **On an SMU2461, three things could stop it.** A 2461 digitizes voltage and current **simultaneously**
 while the decoder trusts consecutive indices, so a buffer carrying current or source values alongside
