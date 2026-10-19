@@ -257,6 +257,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('path')
     ap.add_argument('--verbose', action='store_true', help='one line per failing cell')
+    ap.add_argument('--verbose-max', type=int, default=80, metavar='N',
+                    help='with --verbose, how many failing cells to list; 0 lists all of them. The '
+                         'default caps a fortnight-long record at a screenful, and the list now says '
+                         'when it has truncated rather than ending silently')
     ap.add_argument('--run', default=None,
                     help='which run in the file: a 1-based index, a tag, or "all" to merge them')
     a = ap.parse_args()
@@ -440,8 +444,19 @@ def main():
         # LnnnCmmm IS THE PROJECT'S FORMAT for a lap and a cell -- 'C' rather than '#' because these
         # files use '#' to mean a comment line, in the plan's header and the record's own -- the same string the instrument's own
         # status log writes -- so a failure quoted from either place reads the same way.
-        for it, cell, vid, baud, why in fails[:80]:
+        # THE CAP SAYS SO WHEN IT BITES, and that is not cosmetic. It was a bare fails[:80] with nothing
+        # printed when it truncated, and on 2026-10-19 that silently handed back 80 of 111 failures: a
+        # join of those 80 against the splice verdict put the gap vectors at 44 FAILs where the per-vector
+        # summary three lines above says 94, and the wrong figure was carried into a handoff and two
+        # briefs before the arithmetic was checked against that summary. A list that stops without
+        # saying it stopped is a list that will be read as the whole of something.
+        nshow = len(fails) if a.verbose_max <= 0 else a.verbose_max
+        for it, cell, vid, baud, why in fails[:nshow]:
             print('  %-10s %-6s %8s Bd  %s' % ('L%sC%s' % (it, cell), vid, baud, why[:100]))
+        if len(fails) > nshow:
+            print('  ... and %d more not shown of %d. --verbose-max 0 prints all of them; the '
+                  '"failures by vector" line above is always complete and is what totals should be '
+                  'taken from.' % (len(fails) - nshow, len(fails)))
     bad = nfail + nnodec
     print()
     if bad:
