@@ -1686,8 +1686,13 @@ do
   -- before calling stream_decode. brun.point calls stream_decode directly and reaches neither, so until
   -- the per-cell clear existed one set flag shortened every remaining cell of the run.
   --
-  -- NO ELISION IS NEEDED for any of this -- the leak is in the window loop, not in the splice -- but it
-  -- is asserted on the elided cell because that is the path whose published figures it invalidated.
+  -- NO ELISION IS NEEDED for any of this -- the asymmetry is in the window loop, not in the splice --
+  -- but it is asserted on the elided cell because that is the only path that reaches stream_decode.
+  --
+  -- AND IT IS NOT THE CAUSE OF THE SHORT DECODES IN THE ARCHIVE. That has to be said here or the next
+  -- reader will take these rows as the diagnosis: the lap's own 300 Bd cells polled cancel_asked() 26
+  -- times across 13 s without breaking, so ck_stop was false throughout and this path was not the one
+  -- taken. What these rows protect against is a real asymmetry that has not fired yet.
   ck((pe.decwin or 0) > 1,
      'the premise: this cell`s record is longer than one decode window, so a 1 would be a fault',
      string.format('decwin=%s decstop=%s over %s readings', tostring(pe.decwin),

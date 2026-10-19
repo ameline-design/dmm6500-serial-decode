@@ -666,8 +666,15 @@ function brun.point(fs, baud, lock, elide, vid)
   if elide ~= nil then
     sdec.gapelide = elide
     sdec.trigmode = 'edge'
-    -- The rate is capped here and only here, and this cap treats a symptom -- it is kept only until the
-    -- settle fix below it has been run on hardware, and should then be lifted and re-measured.
+    -- The rate is capped here and only here, and the level is PROVISIONAL. One statement rather than two:
+    -- this site used to say the cap treats a symptom and should be lifted once the settle fix had run,
+    -- while brun.elide_fsmax's own comment said 500 000 sits inside the band measured safe. Both cannot
+    -- be the reason it is 500 000, and the second is the weaker: the measurement it rests on condemns
+    -- 640 000 and exonerates 1 MS/s, so the instrument wants an exclusion and not a ceiling. What this
+    -- value does today is close nine rungs of the plan's ladder by arithmetic -- every baud above
+    -- elide_fsmax / (minsabit * (1 - plaustol)) is refused in decode_from whatever the signal does, which
+    -- is 127 551 Bd here against the 230 400 the ladder reaches. It stays until a lap has run with it set
+    -- to nil and segfs read back per cell; see brun.elide_fsmax.
     --
     -- What it was built on: elided cells asking for 1 MS/s came back at 83 333 while non-elided cells at
     -- the same baud got 1 000 000, and capping at 640 000 raised samples a bit from 0.33 to 2.5. The
@@ -1045,15 +1052,21 @@ function brun.point(fs, baud, lock, elide, vid)
   -- report the last elided cell's splice as its own, and a non-elided cell reading nspliced = 2 is a lie in
   -- the direction that would make the feature look like it was working everywhere.
   sdec.spl_nseam, sdec.spl_nspliced, sdec.spl_nadded, sdec.spl_norphan = nil, nil, nil, nil
-  -- AND ck_stop, WHICH THIS PATH IS THE ONLY CALLER THAT HAS TO CLEAR ITSELF. stream_decode's window loop
-  -- takes sdec.ck_progress, which returns false while ck_stop is set, and chunk_decode's loop then breaks
-  -- with tot.stopped = 'stopped' after window one -- and that break leaves the last good window's verdict
-  -- standing, so the decode returns TRUE over a third of the record. The panel never sees it: stream_begin
-  -- clears ck_stop on entry and sdec.stream() clears it again immediately before calling stream_decode.
-  -- brun.point calls stream_decode directly and reaches neither, so a flag set once stays set and every
-  -- later cell of the run decodes one window. Measured offline through this path: 1 window and 177 frames
-  -- of 520 against 3 windows and 520, reported as success, and the next two cells one window each with
-  -- nothing set. The score comes back 177/177, so nothing in the row looks wrong.
+  -- AND ck_stop, WHICH THIS PATH IS THE ONLY CALLER THAT HAS TO CLEAR ITSELF. Both protected callers
+  -- perform the clear: stream_begin on entry, and sdec.stream() again immediately before it calls
+  -- stream_decode. brun.point calls stream_decode directly and reaches neither. What a set flag costs is
+  -- the whole decode: the window loop takes sdec.ck_progress, which returns false while ck_stop is set,
+  -- and chunk_decode's loop then breaks with tot.stopped = 'stopped' after window one -- leaving the last
+  -- good window's verdict standing, so the call returns TRUE over a fraction of the record. Measured
+  -- offline through this path: 1 window and 177 frames against 3 windows and 520, reported as success,
+  -- and the next two cells one window each with nothing set, because the flag is latched. The score of
+  -- the surviving fraction is 177/177, so no row looks wrong either.
+  --
+  -- THIS IS HYGIENE AND NOT THE CAUSE OF THE SHORT DECODES IN THE ARCHIVE, which is worth stating
+  -- because the mechanism above fits them and did not produce them: the lap's own 300 Bd cells polled
+  -- cancel_asked() 26 times across 13 s without breaking, so ck_stop was false throughout. The static
+  -- path is real and was not the path taken. What remains is a read limit rather than a stop request --
+  -- the rows carrying 'Index exceeds maximum readings stored in buffer' are the lead there.
   --
   -- NOT sdec.cancel_clear() BESIDE IT, which is the obvious companion and would break the run's own stop
   -- key: brun.stopkey_hit() reads the same blender latch through sdec.cancel_pressed(), the latch

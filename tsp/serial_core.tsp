@@ -2728,12 +2728,11 @@ end
 -- timestamp pairing anywhere, and no scratch timestamp is read on any path -- gap_splice_plan takes scratch
 -- ((j-1) mod ns) + 1 for seam j, by the program's own counter, and buf.relativetimestamps is read only by
 -- gap_seams, on the RECORD, to find the seams in the first place. A wrap is handled, the orphan rule
--- refusing the early seams rather than approximating them; what is NOT handled is gap_seams returning a
--- count that is not the burst count, because then every later seam's index is off and the heads go to the
--- wrong bursts. The 2026-10-18 lap has that: at 28800 to 38400 Bd, where pick_fs lands on 159 806, splseam
--- reads 9 to 16 while bexp.match_bursts finds 4 bursts in the same record and scores them 190/190,
--- 224/232, 197/206 and 207/211 -- the bytes are all there and only the alignment between bursts is lost.
--- A timestamp pairing would be immune to the count and is the obvious repair; it is not written yet.
+-- refusing the early seams rather than approximating them, so position pairing is sound as long as
+-- gap_seams' count IS the burst count -- and on the 2026-10-18 lap it is: seams minus one matches the
+-- gaps the record's own span holds, to within one, on every 160 kS/s cell. The orphan cap therefore
+-- binds on geometry and not on a miscount, which is what a reader of splorph needs to know. A timestamp
+-- pairing would not need that condition to hold and is the repair if it ever stops holding.
 -- Blocks the trigger model's store holds, measured. docs/TRIGGER.md, 'The six blocks'.
 sdec.gap_blockstore = 63
 -- 5 blocks a group and one branch to close the loop, so this is what the store can hold. DERIVED and not

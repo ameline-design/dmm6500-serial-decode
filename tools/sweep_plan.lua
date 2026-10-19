@@ -935,14 +935,14 @@ for vi = 1, table.getn(P.vectors) do
           local spoke = r ~= nil and (r.nf or 0) > 0
           if v.class == 'loud' and ran and not silent and not ratebad then
             verdict = 'ok'; nok = nok + 1
-            -- A REFUSED ACQUISITION IS NOT A QUIET DECODER, and keeping the two apart is the whole
-            -- reason `acqref` exists as its own counter. `loudquiet` bounds the DECODER declining to
-            -- produce bytes from a capture it was given; a capture sig_levels never handed it is a
-            -- different event with a different cause, and totalling both under one bound is issue #46's
-            -- own mistake -- one counter over several mechanisms, which can say a number moved and never
-            -- which one moved it. Both are still bounded, one each, so a regression that suppressed
-            -- every byte on every loud vector moves a number whichever route it took.
-            if not spoke and acqwhy == nil then nloudquiet = nloudquiet + 1 end
+            -- EVERY DECLINE, WHATEVER STAGE DECLINED IT. `loudquiet` is the total -- a loud vector
+            -- that returned no bytes -- and `acqref` is the subdivision that says the acquisition
+            -- gate was the reason rather than the decoder, which is the relationship `label` has to
+            -- `rate`. Counting a gate refusal here as well is not double-counting an event: it is one
+            -- event with a total and a route, and the pair is what distinguishes a decoder that went
+            -- quiet from a capture that never reached it. Both are bounded, so a regression that
+            -- suppressed every byte on every loud vector moves a number whichever route it took.
+            if not spoke then nloudquiet = nloudquiet + 1 end
           else
             verdict = 'BAD'; nbad = nbad + 1; vbad = vbad + 1; cellbad = cellbad + 1
             local c = classify(ran, r, rb, baud, flagbad and bytesok)
