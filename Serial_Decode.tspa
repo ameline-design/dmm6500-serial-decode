@@ -1791,6 +1791,12 @@ end
 -- From hw_config, because another app may have set it.
 function sdec.quiet_events()
   localnode.showevents = eventlog.SEV_ERROR
+  local ev
+  for ev = 1, 3 do
+    local n = ({4919, 4920, 4915})[ev]
+    local ok = pcall(eventlog.suppress, n)
+    if not ok then sdec.suppress_why = 'eventlog.suppress unavailable' end
+  end
   return true
 end
 
@@ -1946,6 +1952,7 @@ sdec.acq_bufgot = nil
 sdec.acq_bufperm = nil
 sdec.acq_freesettle = 0.05
 sdec.acq_remade = 0
+sdec.acq_presettle = 0
 
 -- Free and remake the capture buffer. Follows the project's object-lifetime rule -- delete, nil, then create --
 --   [...]
@@ -1958,6 +1965,10 @@ function sdec.acq_make_buffer(n, perm)
   local nreq = n
   if perm and sdec.acq_bufcap ~= nil and sdec.acq_bufcap > n then n = sdec.acq_bufcap end
   local sb, scap = sdec.acq_bufmode(nil, n)
+  if sdec.acq_bufperm_want ~= false and perm == true then
+    local rb, rcap = sdec.acq_bufhave('rec')
+    if rb ~= nil and rcap ~= nil and rcap >= n then sb, scap = rb, rcap end
+  end
   if sb ~= nil and scap ~= nil and scap >= n then
     sdec.trig_settle()
     sdec.bufclear(sb)
@@ -1992,6 +2003,11 @@ function sdec.acq_make_buffer(n, perm)
   end
   local tries, ntry = {n}, 1
   if nreq < n then tries[2], ntry = nreq, 2 end
+  if freed then
+    pcall(collectgarbage)
+    pcall(delay, sdec.acq_freesettle)
+    sdec.acq_presettle = (sdec.acq_presettle or 0) + 1
+  end
   local i
   for i = 1, ntry do
     local nb, cap = sdec.bufmake(tries[i])
@@ -2406,6 +2422,7 @@ sdec.gap_seamdt = 4
 sdec.gap_idlerun = 3
 
 sdec.gap_idlemargin = 2
+sdec.gap_resume = sdec.gap_resume or nil
 
 -- Where the record's bursts begin, in time order. -> a table of indices into the time-ordered record, [1] = 1
 --   [...]
@@ -2440,7 +2457,7 @@ end
 -- A group that never ran reads n = 0, because gap_scratches clears the whole set on reuse. That is what tells
 -- an unused scratch from a used one without buffer.getstats, which this firmware has but the offline harness
 -- does not.
-function sdec.gap_tail(scr, thr, sabit)
+function sdec.gap_tail(scr, thr, sabit, fs)
   if scr == nil or thr == nil then return nil end
   local n = scr.n
   if type(n) ~= 'number' or n < 2 then return nil end
@@ -2485,6 +2502,7 @@ function sdec.gap_tail(scr, thr, sabit)
   local keep = math.ceil(sdec.gap_idlemargin * sabit)
   s = s - keep
   if s < 1 then s = 1 end
+  local hoff = lastnon - s + 1
   local out, nk = {}, 0
   for i = s, n do
     p = i + off
@@ -2493,7 +2511,25 @@ function sdec.gap_tail(scr, thr, sabit)
     out[nk] = rd[p]
   end
   if nk < 1 then return nil end
-  return out, nk
+  if fs ~= nil and fs > 0 and sdec.gap_resume ~= nil and sdec.gap_resume > 0 then
+    local headrd = nk - keep                       -- the burst part, less the idle margin kept above
+    local want = math.ceil(sdec.gap_resume * fs)
+    local pad = want - headrd
+    if pad > 0 then
+      local cap = math.ceil(framebits * sabit)
+      if pad > cap then pad = cap end
+      local idlev = thr - 1
+      if idlehi then idlev = thr + 1 end
+      local pi
+      for pi = 1, pad do
+        nk = nk + 1
+        out[nk] = idlev
+      end
+      sdec.spl_padrd = (sdec.spl_padrd or 0) + pad
+      sdec.spl_npad = (sdec.spl_npad or 0) + 1
+    end
+  end
+  return out, nk, hoff
 end
 
 -- The record with every burst's head put back, in time order. -> the sample array and its length, or nil where
@@ -2508,28 +2544,39 @@ function sdec.gap_splice_plan(buf, n, scrs, thr, sabit, fs)
   if ns < 1 then return nil end
   local seams = sdec.gap_seams(buf, n, fs)
   local nseam = table.getn(seams)
-  local pl = {n = 0, pos = {}, len = {}, tail = {}, total = n}
+  sdec.spl_padrd, sdec.spl_npad = 0, 0
+  local pl = {n = 0, pos = {}, len = {}, tail = {}, hoff = {}, total = n}
+  sdec.spl_seampos = {E = {}, R = {}, n = 0}
   local nadd, run, j = 0, 0, nil
   local interior = false
   for j = 1, nseam do
     local put = false
     if j + ns > nseam then
       local si = math.mod(j - 1, ns) + 1
-      local tt, tn = sdec.gap_tail(scrs[si], thr, sabit)
+      local tt, tn, th = sdec.gap_tail(scrs[si], thr, sabit, fs)
       if tt ~= nil and tn ~= nil and tn > 0 then
         pl.n = pl.n + 1
         pl.pos[pl.n], pl.len[pl.n], pl.tail[pl.n] = seams[j] + run, tn, tt
+        pl.hoff[pl.n] = th or 1
+        local sp = sdec.spl_seampos
+        sp.n = sp.n + 1
+        sp.E[sp.n], sp.R[sp.n] = seams[j] + run + (th or 1) - 1, seams[j] + run + tn
         run = run + tn
         nadd = nadd + tn
         put = true
       end
+    end
+    if not put and j > 1 then
+      local sp = sdec.spl_seampos
+      sp.n = sp.n + 1
+      sp.E[sp.n], sp.R[sp.n] = seams[j] + run, seams[j] + run
     end
     if not put and j > 1 then interior = true end
   end
   sdec.spl_nseam, sdec.spl_nspliced, sdec.spl_nadded = nseam, pl.n, nadd
   sdec.spl_norphan = nseam - pl.n
   sdec.spl_interior = interior
-  sdec.spl_headrd = nadd - pl.n * math.ceil(sdec.gap_idlemargin * sabit)
+  sdec.spl_headrd = nadd - (sdec.spl_padrd or 0) - pl.n * math.ceil(sdec.gap_idlemargin * sabit)
   if pl.n < 1 then return nil end
   pl.total = n + nadd
   return pl
@@ -2961,12 +3008,75 @@ end
 sdec.ua_resid_frac = sdec.ua_resid_frac or 0.25
 sdec.ua_resid_min  = sdec.ua_resid_min  or 20
 
--- Sequential decode of a whole capture
+if sdec.seam_relock == nil then sdec.seam_relock = true end
+sdec.ua_seamtrial = sdec.ua_seamtrial or 8
+
+-- Where the first frame after a spliced seam should anchor. -> the anchor position and the number of
 --   [...]
--- the share over any threshold by chance -- a 13-byte capture was losing its first byte to a vote
--- taken over 12 frames. A capture worth voting on has hundreds: 20000 samples at 9600 baud holds
--- about 190 frames, and the ranking probe's 4000-sample window about 38.
-function sdec.ua_run(rd, n, T, nbits, par, nstop, invert, tmin0)
+-- frames, exact while the hole is under one frame (1.04 ms at 9600 Bd), under-counting by one per whole
+-- frame of hole beyond that.
+-- kE is the edge index of the head's start edge, E its position, R where the record resumes.
+function sdec.ua_seam_relock(rd, n, T, nbits, par, nstop, invert, kE, E, R)
+  local ne, ei, es = sdec.ne, sdec.ei, sdec.es
+  if ne == nil or ne < 1 or T == nil or T <= 0 then return nil end
+  local parbits = 0
+  if par ~= sdec.PAR_NONE then parbits = 1 end
+  local framebits = 1 + nbits + parbits + nstop
+  local want = 0
+  if invert then want = 1 end
+  local K = sdec.ua_seamtrial or 8
+  -- Frames from an anchor at edge kc, framed as the walk frames them. -> errors, frames decoded, and
+  -- the errors in frames AFTER the first.
+  local function trial(kc)
+    local errs, late, got, t, kk = 0, 0, 0, ei[kc], kc
+    while got < K do
+      local val, err = sdec.ua_frame(rd, n, t, T, nbits, par, nstop, invert)
+      if err == 'truncated' then break end
+      got = got + 1
+      if err ~= nil then
+        errs = errs + 1
+        if got > 1 then late = late + 1 end
+      end
+      local tm = t + (framebits - 0.5) * T
+      local found = nil
+      while kk <= ne do
+        if es[kk] == want and ei[kk] >= tm then found = kk; break end
+        kk = kk + 1
+      end
+      if found == nil then break end
+      t = ei[found]
+    end
+    return errs, got, late
+  end
+  local e0, g0, l0 = trial(kE)
+  if g0 < 1 or e0 == 0 then return nil end
+  local lim = R + 2 * framebits * T
+  local best, bk, k = nil, nil, nil
+  for k = kE + 1, ne do
+    local e = ei[k]
+    if e > lim then break end
+    if es[k] == want and e >= R - 0.5 * T and (e - ei[k - 1]) >= 0.9 * T then
+      local errs, got = trial(k)
+      if got >= 1 then
+        if errs == 0 then
+          best, bk = 0, k
+          break
+        end
+        if best == nil or errs < best then best, bk = errs, k end
+      end
+    end
+  end
+  if bk == nil or best >= e0 then return nil end
+  local A = ei[bk]
+  local nlost = math.ceil((A - E) / (framebits * T) - 0.001)
+  if nlost < 1 then nlost = 1 end
+  return A, nlost
+end
+
+-- `seams`, optional: {E = {...}, R = {...}, n} in this window's coordinates, from ck_decode -- the
+-- position of each restored head's start edge and of the record's first reading after it. Nil on every
+-- other call, and with nil nothing below changes.
+function sdec.ua_run(rd, n, T, nbits, par, nstop, invert, tmin0, seams)
   local parbits = 0
   if par ~= sdec.PAR_NONE then parbits = 1 end
   local framebits = 1 + nbits + parbits + nstop
@@ -3029,9 +3139,43 @@ function sdec.ua_run(rd, n, T, nbits, par, nstop, invert, tmin0)
   local tmin = -1
   if tmin0 ~= nil then tmin = tmin0 end
   local prev = nil          -- t0 of the previous emitted frame, for the idle test below
+  local sj = 1              -- the next seam this window has not passed yet
   for k = anchor, ne do
     if es[k] == want and ei[k] >= tmin then
       local t0 = ei[k]
+      local relocked = false
+      if seams ~= nil then
+        while sj <= seams.n and seams.R[sj] + framebits * T < t0 do sj = sj + 1 end
+        local atseam = false
+        if sj <= seams.n and t0 >= seams.E[sj] - 1 then
+          if seams.E[sj] < seams.R[sj] then
+            atseam = (t0 < seams.R[sj])
+          else
+            atseam = (t0 < seams.R[sj] + framebits * T)
+          end
+        end
+        if atseam then
+          local A, nlost = sdec.ua_seam_relock(rd, n, T, nbits, par, nstop, invert, k,
+                                               seams.E[sj], seams.R[sj])
+          if A ~= nil and A > t0 then
+            local li
+            for li = 1, nlost do
+              local nf = r.nf + 1
+              r.nf = nf
+              r.vals[nf], r.errs[nf] = 0, 'seam'
+              r.tpos[nf] = seams.E[sj] + (li - 1) * framebits * T
+              r.nbad = r.nbad + 1
+            end
+            r.nrelock = (r.nrelock or 0) + 1
+            r.nseamlost = (r.nseamlost or 0) + nlost
+            tmin = A - 0.5
+            prev = nil
+            relocked = true
+          end
+          sj = sj + 1
+        end
+      end
+      if not relocked then
       local val, err = sdec.ua_frame(rd, n, t0, T, nbits, par, nstop, invert)
       if err == 'truncated' then break end
 
@@ -3052,6 +3196,7 @@ function sdec.ua_run(rd, n, T, nbits, par, nstop, invert, tmin0)
       end
       prev = t0
 
+      end
       end
     end
   end
@@ -4546,12 +4691,26 @@ function sdec.ck_decode(reader, ntotal, fmt, sink, opts)
 
     local tmin0 = nil
     if endpos ~= nil then tmin0 = endpos - off end
+    local ws = nil
+    if opts.seams ~= nil and (opts.seams.n or 0) > 0 then
+      local sj
+      for sj = 1, opts.seams.n do
+        local e = opts.seams.E[sj] - off
+        if e >= 1 and e <= cnt then
+          if ws == nil then ws = {E = {}, R = {}, n = 0} end
+          ws.n = ws.n + 1
+          ws.E[ws.n], ws.R[ws.n] = e, opts.seams.R[sj] - off
+        end
+      end
+    end
     local r = sdec.ua_run(win, cnt, T, fmt.nbits, fmt.par, fmt.nstop, fmt.invert,
-                          tmin0)
+                          tmin0, ws)
 
     tot.nwin = tot.nwin + 1
     tot.nsmp = off + cnt
     tot.nfalse = tot.nfalse + r.nfalse
+    tot.nrelock = (tot.nrelock or 0) + (r.nrelock or 0)
+    tot.nseamlost = (tot.nseamlost or 0) + (r.nseamlost or 0)
 
     local m = r.nf
     if m > 0 and maxbytes ~= nil and tot.nf + m > maxbytes then
@@ -4876,6 +5035,7 @@ function sdec.ck_job_step(job)
   tot.fmt = job.fmt
   tot.path = job.path
   tot.tail = sdec.ck_tail_result(job.tail, job.fmt, tot.nf)
+  if tot.tail ~= nil then tot.tail.headsusp = tot.headsusp end
   return true, tot, nil
 end
 
@@ -6652,7 +6812,6 @@ function sdec.destroy_options()
   sdec.del_obj(sdec.opt_ext)
   sdec.del_obj(sdec.opt_armv)
   sdec.del_obj(sdec.opt_armw)
-  sdec.del_obj(sdec.opt_gape)
   sdec.del_obj(sdec.opt_over)
   if sdec.opt_btn ~= nil then
     local i
@@ -6663,7 +6822,7 @@ function sdec.destroy_options()
   sdec.optscr, sdec.opt_proto, sdec.opt_baud = nil, nil, nil
   sdec.opt_bits, sdec.opt_par, sdec.opt_pol = nil, nil, nil
   sdec.opt_trig, sdec.opt_ext = nil, nil
-  sdec.opt_armv, sdec.opt_armw, sdec.opt_gape = nil, nil, nil
+  sdec.opt_armv, sdec.opt_armw = nil, nil
   sdec.opt_over = nil
   return true
 end
@@ -6674,8 +6833,8 @@ function sdec.build_options()
   local create = display.create
   local y0, dy, x = sdec.ui_opt_y0, sdec.ui_opt_dy, sdec.ui_opt_x
   local pv, pl = sdec.opt_proto_list()
-  local nf = 10
-  if pl.n >= 2 then nf = 11 end
+  local nf = 9
+  if pl.n >= 2 then nf = 10 end
   local eh, edy = sdec.ui_opt_edit_h, sdec.ui_opt_edit_dy
   local ncols = sdec.ui_opt_cols or 1
   if ncols < 1 then ncols = 1 end
@@ -6766,11 +6925,6 @@ function sdec.build_options()
                          'Arm/Idle Wait', 'max wait, frozen',
                          display.NFORMAT_PREFIX, sdec.arm_wait_s(),
                          sdec.armwait_min, sdec.armwait_max, 's', 4)
-  local fx11, fy11 = nextpos()
-  sdec.opt_gape = create(sdec.optscr, display.OBJ_EDIT_NUMBER, fx11, fy11,
-                         'Gap Elide', '0 off, cut after',
-                         display.NFORMAT_PREFIX, tonumber(sdec.gapelide) or 0,
-                         0, sdec.gapelide_max, 's', 4)
   local fx12, fy12 = nextpos()
   sdec.opt_over = create(sdec.optscr, display.OBJ_EDIT_NUMBER, fx12, fy12,
                          'Over-read', '0 off, idle margin',
@@ -7254,6 +7408,7 @@ sdec.fc_maxsec = sdec.fc_maxsec or 1200
 -- until the device stops. Returns the run's verdict and, on a failure, its reason.
 function sdec.record_run()
   sdec.cancel_clear()
+  sdec.gapelide = 0
   sdec.ck_cancel, sdec.fc_end, sdec.strm_empty = nil, nil, nil
   sdec.fc_win, sdec.fc_bytes, sdec.fc_secs = 0, 0, 0
   sdec.strm_stopped_by_press = nil
@@ -7350,6 +7505,7 @@ function sdec.stream_decode(got)
   end
   sdec.spl_nseam, sdec.spl_nspliced, sdec.spl_nadded, sdec.spl_norphan = nil, nil, nil, nil
   sdec.spl_interior, sdec.spl_headrd = nil, nil
+  sdec.spl_seampos = nil
   sdec.spl_why = nil
   sdec.spl_raise, sdec.spl_thr, sdec.spl_lo, sdec.spl_hi = nil, nil, nil, nil
   local rdr, nrd = nil, got
@@ -7397,7 +7553,11 @@ function sdec.stream_decode(got)
       end
     end
   end
+  if sdec.seam_relock ~= false and sdec.spl_seampos ~= nil and (sdec.spl_seampos.n or 0) > 0 then
+    opts.seams = sdec.spl_seampos
+  end
   if rdr == nil then rdr = sdec.ck_reader_buffer(sdec.buf, got) end
+  sdec.ck_nrd = nrd
   if sdec.strm_press then
     opts.budget_s = sdec.ck_press_budget_s or sdec.ui_latency_s
     local W = sdec.ck_win_for(sdec.ui_latency_s)
@@ -7422,6 +7582,7 @@ function sdec.stream_decode(got)
   end
   sdec.ck_tot = tot
   sdec.ck_nbytes = tot.nf
+  if tot.tail ~= nil then sdec.res = tot.tail end
   if tot.stopped == 'write failed' or tot.stopped == 'sink' then
     return false, string.format('%s -- %d bytes decoded but the file is incomplete',
                                 tostring(tot.stopped), tot.nf or 0)
@@ -8986,11 +9147,6 @@ function sdec.options_apply()
     if type(av) == 'number' then sdec.armlevel = av end
     local aw = display.getvalue(sdec.opt_armw)
     if type(aw) == 'number' then sdec.armwait = aw end
-    local ge = display.getvalue(sdec.opt_gape)
-    if type(ge) == 'number' then
-      sdec.gapelide = ge
-      if ge <= 0 then pcall(sdec.gap_release) end
-    end
     local ov = display.getvalue(sdec.opt_over)
     if type(ov) == 'number' then
       local f = ov / 100

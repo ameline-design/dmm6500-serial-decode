@@ -699,35 +699,15 @@ Five settings you can ignore unless you need them:
   off. It costs readings and nothing else: the decoder already skips silence, so this buys payload
   rather than accuracy.
 
-### Recording a bursty line
+### Short gaps between messages
 
-A device that prints a startup banner, pauses two seconds, prints another line and then goes quiet
-for two minutes spends almost all of a recording on silence.
+A device that sends a line, pauses briefly and sends another spends part of every recording on
+silence. Those samples come out of the same budget the bytes do, so the pauses decide how much of
+the traffic fits — and the bytes that go missing are the ones at the end.
 
-**There was a setting for this, and it has been withdrawn.** **Gap Elide** recorded the bursts and
-discarded the gaps between them, so a 32 kB buffer spanned minutes of a bursty line instead of
-seconds. It is not on the Options screen in this release, because on the bench it decoded the wrong
-bytes often enough that the recordings it produced could not be trusted: of the test captures that
-elide, **43 % to 48 % decoded a payload that was not the one sent**, against **0.5 %** for the same
-captures with elision off. Same build, same generator, same rates — the feature was the difference.
-
-**What goes wrong is not in the decoder.** Dropping a gap means stopping one recording and starting
-another, and the samples in between reach neither: measured at **200 to 900 µs per seam**, and a
-different figure at every seam. At 4800 baud and above that is longer than a byte, so **the first
-byte after each pause was never recorded at all** — not mis-decoded, not present. Nothing downstream
-can recover it, which is why this is a withdrawal rather than a fix.
-
-**What to use instead.** Raise **Over-read** — it is the setting that addresses the same problem from
-the other side, and it is still there. A bursty line records every pause in full, and those samples
-come out of the same budget the bytes do, so the margin is what keeps the end of the recording from
-being the part that goes missing. 10 % is the default; a line that pauses often wants more. Then take
-the largest recording mode, `32 kB`, and if the device will cooperate use flow control on the rear
-BNC, which makes the recording unlimited rather than merely larger — see **More than one window:
-flow control** above. That path has none of the problem described here, because it never stops
-recording.
-
-The recordings a bursty line produces without elision are correct. They are shorter in wall-clock
-span than they would otherwise be, and that is the cost being paid deliberately.
+**Over-read** is the setting for this: it records that much extra so the payload still fits. 10 % is
+the default, and a line that pauses often wants more. It costs readings and nothing else — the
+decoder already skips silence, so it buys payload rather than accuracy.
 
 ### Waiting for a device that has not started
 

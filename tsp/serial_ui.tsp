@@ -542,7 +542,9 @@ end
 -- sdec.opt_gape is GONE, not merely unassigned: the Gap Elide field is withheld. See the note
 -- at the form's build site for the measurement behind that and for how to restore it.
 -- -- declared, not assigned.
--- Eight fields, nine with a protocol module, and this is the riskiest geometry in the app --
+-- Nine fields, ten with a protocol module -- build_options derives both from its own `nf`, and the
+-- count here was already two low before the withheld field took it to nine. The riskiest geometry
+-- in the app --
 -- docs/MEASUREMENTS.md, 'The options form vertical geometry'. test_serial checks the last box
 -- against the button row. A field added now folds into another as an extra option entry, free.
 sdec.ui_opt_y0 = 8
