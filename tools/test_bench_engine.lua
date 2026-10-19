@@ -3582,5 +3582,35 @@ print('-- idle runs long enough to hold a capture window, and the window test ov
 end)()
 
 print('')
+print('-- THE SHIPPED ELIDE RATE LIMITS --')
+;(function()
+  -- THESE VALUES HAVE NO GATE ANYWHERE ELSE. test_elideseam sweeps the cap over 500000, 640000 and nil
+  -- and so is parameterised over the very constant that moved: all three of its rows went on passing
+  -- while the default changed. A sweep across a constant cannot be the gate on that constant's value,
+  -- and this file is where the engine's own constants are reachable -- test_elideseam does not load
+  -- bench_run.tsp at all, which is where the first attempt at this check raised on a nil `brun`.
+  ck(brun.elide_fsmax == nil,
+     'the shipped cap is nil -- the 2026-10-19 no-cap lap measured segfs=1000000 at tdig 0.50 s',
+     tostring(brun.elide_fsmax))
+  ck(brun.elide_fsavoid ~= nil and table.getn(brun.elide_fsavoid) == 1
+     and brun.elide_fsavoid[1] == 640000,
+     '...and 640000 is excluded instead, on its measured block-drop loss shape',
+     (brun.elide_fsavoid == nil) and 'nil'
+     or (table.getn(brun.elide_fsavoid) .. ' entries, first ' .. tostring(brun.elide_fsavoid[1])))
+  -- THE EXCLUSION PROMOTES, and the direction is the whole point. 640 000 is reachable only when the
+  -- need falls in (500 000, 640 000], so the rung above it is 1 MS/s and the rung below is 500 000 --
+  -- which is beneath what such a baud needs. Clamping down is exactly what closed nine rungs of the
+  -- ladder, so the test pins which neighbour the code must take.
+  local ri, up, down = nil, nil, nil
+  for ri = 1, table.getn(sdec.rates) do
+    if sdec.rates[ri] > 640000 and up == nil then up = sdec.rates[ri] end
+    if sdec.rates[ri] < 640000 then down = sdec.rates[ri] end
+  end
+  ck(up == 1000000 and down == 500000,
+     '...and the rung above 640000 is 1 MS/s, so promoting keeps the samples a bit a clamp would lose',
+     string.format('up=%s down=%s', tostring(up), tostring(down)))
+end)()
+
+print('')
 print(string.format('%d passed, %d failed', pass, fail))
 if fail > 0 then os.exit(1) end

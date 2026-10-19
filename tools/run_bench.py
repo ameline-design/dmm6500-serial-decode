@@ -597,9 +597,14 @@ def main():
     # from an older app, so it cannot separate elision from everything else that changed. Naming a subset
     # here leaves the rest of the nodrop vectors free-running in the SAME lap, at the same bauds, through
     # the same generator and the same build, which is the only arrangement that isolates the feature.
-    # NOT A TUNING KNOB. The shipped cap is 500000 and it CLAMPS rather than permits, so it decides by
-    # arithmetic which bauds the elide path can be tested at: 500000 / 3.92 is 127551 Bd against a
-    # declared sdec.maxbaud of 250000. This exists so the level can be MEASURED instead of argued about.
+    # THE MEASUREMENT THIS FLAG EXISTED FOR HAS BEEN TAKEN, and the cap it was measuring is gone. It was
+    # 500000, which CLAMPED rather than permitted and so decided by arithmetic which bauds the elide path
+    # could be tested at -- 500000 / 3.92 is 127551 Bd against a declared sdec.maxbaud of 250000, nine
+    # rungs closed. The 2026-10-19 lap run with `--elide-fsmax 0` measured segfs = 1000000 at tdig 0.50 s
+    # on 10 rows, spanfs == segfs == 1000000 on 2 of them, zero 'needs a faster capture' refusals and no
+    # failure at all above 115200 Bd. The shipped default is now nil, with 640000 excluded by
+    # brun.elide_fsavoid instead -- an exclusion, not a ceiling. So this flag is now the lever for PINNING
+    # a rate deliberately rather than for lifting one, and a run that names it still says so on the row.
     ap.add_argument('--elide-fsmax', type=float, default=None, metavar='SA_PER_S',
                     help='override brun.elide_fsmax for this run only; 0 means NO CAP. Absent, the '
                          'shipped default stands, so a lap that does not name it describes the app as '

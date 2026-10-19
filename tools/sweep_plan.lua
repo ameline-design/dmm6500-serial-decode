@@ -80,6 +80,9 @@
 --     choosing its own rate under brun.elide_fsmax (v98a ran 100000 at 14400, 19200 and 22747 Bd where
 --     pick_fs asks 120000, 159806 and 200000, and fscap=500000 refused nine v99d cells outright).
 --     So quote 1.9 % for the probe alone and 13.4 % for the whole fs disagreement.
+--     THAT CAP IS GONE as of 2026-10-19 -- brun.elide_fsmax is nil and 640000 is excluded instead --
+--     so the nine refusals above are pre-fix evidence from a named lap and not current behaviour.
+--     The 13.4 % will have moved; re-measure it rather than quoting it after a cap change.
 --   * NO NOISE. The instrument contributes ~0.2-0.5 mV rms and nothing here does. Its bandwidth and
 --     aperture ARE modelled -- see frontend() -- but the noise is not, and it is measured to matter:
 --     v71's five failing cells are an INVERTED decode -- every byte is NOT(payload << 1),

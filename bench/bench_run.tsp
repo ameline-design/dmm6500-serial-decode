@@ -218,10 +218,35 @@ brun.elide_maxsec = brun.elide_maxsec or 30
 -- resetting at every measure-block entry -- so T is the longest UNINTERRUPTED run, which on this path is
 -- one burst and not the capture. Over the 141 elided cells of 2026-10-18 that recorded a ring, the lag per
 -- burst reaches 0.025 s against the ~0.5 s threshold, while the free-running row the figure comes from had
--- T = 0.85 s and so 0.72 s. What would settle it is one v99d lap with this set to nil, reading segfs,
--- spanfs and tdig per cell.
+-- T = 0.85 s and so 0.72 s.
 -- docs/MEASUREMENTS.md, 'The reading-backlog dialog above ~100 kS/s'.
-brun.elide_fsmax = brun.elide_fsmax or 500000
+--
+-- THE CEILING IS GONE, AND THE LAP THIS COMMENT ASKED FOR IS WHY. It said "what would settle it is one
+-- v99d lap with this set to nil, reading segfs, spanfs and tdig per cell", and that the level stood only
+-- because 1 MS/s on this path was unmeasured -- "no cell in the soak archive has ever recorded
+-- segfs=1000000 with elision on". That lap ran on 2026-10-19 with --elide-fsmax 0; the archive is
+-- out/bench/SOAK-20261019-fsmax-nocap.csv, last run block:
+--
+--   fscap fired on                 0 of 34 elided rows -- the override took
+--   segfs = 1000000 on            10 rows, at tdig 0.50 s
+--   segfs tracked appfs           2500 .. 400000 .. 634615 .. 1000000, every rung honoured
+--   spanfs == segfs == 1000000 on  2 rows -- no dropped samples at all at 1 MS/s
+--   'needs a faster capture'       0 refusals, against 18 such rows in the archive
+--   judge above 115200 Bd          8 judged, 0 FAIL, 0 no decode
+--
+-- So the rate was never the hazard, which is what the paragraphs above argued from a different direction.
+-- The level is nil and the clamp is kept only as the lever --elide-fsmax drives, so a run can still pin a
+-- rate deliberately and say so on the row. `or nil` rather than a bare nil assignment, because a reload
+-- must not silently discard a level an operator set.
+--
+-- 640 000 STAYS OUT, as an exclusion and not a ceiling, which is the shape this comment has argued for
+-- since it was written. The lap reproduced its signature exactly -- appfs 640000 gave segfs 634615, the
+-- delivered-rate lie docs/MEASUREMENTS.md records -- on ONE cell, which is not enough to re-admit a rate
+-- the earlier loss-shape measurement condemns. See brun.elide_fsavoid below.
+brun.elide_fsmax = brun.elide_fsmax or nil
+-- Rates measured to drop BLOCKS rather than thin uniformly on the elision path. Promoted to the next rung
+-- UP at the clamp site, never clamped down: down is what closed nine rungs of the ladder.
+brun.elide_fsavoid = brun.elide_fsavoid or {640000}
 -- The detection window per baud, in seconds, in two tiers.
 --
 -- 25 ms, raised from 1/100 s, and the reason is the scratch budget rather than detection. The detector
@@ -709,6 +734,29 @@ function brun.point(fs, baud, lock, elide, vid)
     if brun.elide_fsmax ~= nil and sdec.fs > brun.elide_fsmax then
       sdec.fs, sdec.fs_want = brun.elide_fsmax, brun.elide_fsmax
       r.elidefscap = brun.elide_fsmax
+    end
+    -- THE EXCLUSION THAT REPLACED THE CEILING, and it promotes rather than clamps. A clamp DOWN from an
+    -- avoided rate lands below the samples a bit the baud needs, which is how a ceiling turned nine rungs
+    -- of the ladder into refusals; the next rung UP keeps the requirement met and skips the one rate the
+    -- archive condemns. 640 000 is excluded on its measured loss SHAPE and not its value: from 120 kS/s to
+    -- 500 kS/s and at 1 MS/s the loss is uniform thinning, which acq_seg_fs measures honestly, and at
+    -- 640 kS/s alone it is block drops. It is reachable only when the need falls in (500 000, 640 000],
+    -- so this fires on a narrow band of bauds and leaves every other rung alone.
+    if brun.elide_fsavoid ~= nil then
+      local ai
+      for ai = 1, table.getn(brun.elide_fsavoid) do
+        if sdec.fs == brun.elide_fsavoid[ai] then
+          local ri
+          for ri = 1, table.getn(sdec.rates) do
+            if sdec.rates[ri] > sdec.fs then
+              r.elidefsavoid = sdec.fs
+              sdec.fs, sdec.fs_want = sdec.rates[ri], sdec.rates[ri]
+              break
+            end
+          end
+          break
+        end
+      end
     end
     -- And the window comes down with the rate, so the cap above does not move a second quantity at the
     -- same time. stream_decode() sets opts.primeskip = 2 * window * fs, the silence the format search
@@ -3377,6 +3425,11 @@ function brun.soak(iterations, tag)
         -- without them a disagreement cannot be told from a rate the record simply has.
         if p.elidefsapp ~= nil then nt = nt .. string.format(' appfs=%.0f', p.elidefsapp) end
         if p.elidefscap ~= nil then nt = nt .. string.format(' fscap=%.0f', p.elidefscap) end
+        -- The rate that was SKIPPED, not the one in force: appfs already says what the app asked for and
+        -- segfs what arrived, so what a reader cannot otherwise recover is which rung was stepped over.
+        if p.elidefsavoid ~= nil then
+          nt = nt .. string.format(' fsavoid=%.0f', p.elidefsavoid)
+        end
         if p.elidewincap ~= nil then nt = nt .. string.format(' wincap=%.4f', p.elidewincap) end
         if p.elidefs ~= nil then nt = nt .. string.format(' segfs=%.0f', p.elidefs) end
         if p.elidespanfs ~= nil then nt = nt .. string.format(' spanfs=%.0f', p.elidespanfs) end

@@ -1287,6 +1287,7 @@ print('-- THE RATE LADDER ON THE ELIDE PATH, driven the way brun.point drives it
         string.format('maxbaud=%s topfs=%s pick=%s', tostring(sdec.maxbaud), tostring(top.fs),
                       tostring(sdec.pick_fs(230400, sdec.minsabit))))
 
+
   sdec.gap_nscratch = keep.ns
   pcall(sdec.gap_release_all)
   sdec.gapelide, sdec.force_baud, sdec.capmode = keep.ge, keep.fb, keep.cm
