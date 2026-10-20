@@ -1258,7 +1258,7 @@ end
 --                         It was 262 144 to absorb an eliding digitize's 0.5 s poll overshoot, 50 000
 --                         readings at 100 kS/s, which is what filed 4914 on 29 cells at 21 100. That
 --                         overshoot belongs to a recording and reached the frame buffer only because
---                         brun.point elides with capmode left at 'frame'.
+--                         brun.point elided with capmode left at 'frame', which it no longer does.
 --                         AND IT IS ONE RUNG OF A LADDER, not the only frame buffer: acq_framerungs adds
 --                         12 288 / 16 384 / 20 480 / 24 576 / 40 960 / 49 152 beside it, and acq_framefit
 --                         hands each capture the smallest that holds it. ON ONE DENOMINATOR, which an
@@ -1700,9 +1700,10 @@ function sdec.quiet_events()
   -- AND THE BUFFER-CAPACITY DIALOGS, WHICH SEVERITY ALONE CANNOT REACH. 4919 'Available capacity for
   -- all reading buffers exceeded' is posted at ERROR severity, so showevents = SEV_ERROR displays it --
   -- and it is a NORMAL event on this app's allocation path, not a fault: acq_bufinit asks the pool for
-  -- the whole plan and takes each read-back as the verdict, so a refusal is the design working. Measured
-  -- on a 106-cell elided lap on 2026-10-19: 27 cells filed it and remade the buffer at a workable size,
-  -- while nothing was ever short -- the captures were fine and the operator got a modal box.
+  -- the whole plan and takes each read-back as the verdict, so a refusal is the design working.
+  -- The 27-of-106-cells measurement that used to sit here belonged to acq_make_buffer's per-capture
+  -- thrash on the 2026-10-19 elided lap, which is gone with the feature -- acq_bufinit runs once per
+  -- launch and cannot produce a per-cell figure.
   --
   -- THE OPERATOR'S REQUIREMENT IS THAT IT NEVER REACHES THE GLASS. eventlog.suppress(N) takes the
   -- dialog and LEAVES THE LOG ENTRY, measured in docs/UNDOCUMENTED.md, 'eventlog.suppress(N) appears in

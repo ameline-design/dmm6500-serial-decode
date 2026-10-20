@@ -900,9 +900,10 @@ function sdec.stream_arm(nsmp)
       if armed then
         -- position is a percentage of CAPACITY, so a static buffer oversized for this capture reserves far
         -- more than the capture wants: sdec.pretrig's 5 against the 6 000 000 record is 300 000 readings.
-        -- acq_pospct scales it to the readings the reserve MEANS, and rounds UP, because losing the reserve
-        -- costs the head of the record while a percent too much costs only samples. Whole percent: a
-        -- fractional position has never been loaded on this instrument.
+        -- acq_pospct scales it to the readings the reserve MEANS, and the result is FRACTIONAL -- 0.75 on
+        -- the 8 kB mode and 2.99425 on the 32 kB one. Rounding it up to a whole percent with a floor of 1
+        -- is the bug that was reverted, not caution: acq_pospct's own comment says so, because 1 % of the
+        -- static record is 60 000 readings against the 440 a 240-byte frame asks for.
         local pos = sdec.pretrig
         if sdec.acq_bufperm then pos = sdec.acq_pospct(nsmp, buf) end
         ok = pcall(trigger.model.load, 'LoopUntilEvent', ev, pos,

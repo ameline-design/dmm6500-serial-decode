@@ -2751,12 +2751,21 @@ dropping the position to 0 instead cost the head of the record, **three wrong by
 no leading idle for the level probe to measure. So neither figure is loaded raw, and a caller reusing
 `sdec.buf` takes it only at its exact capacity rather than loading a reserve against a larger one.
 
-`acq_pospct()` is what an armed capture loads instead whenever it is recording into one of the static
-set, which `sdec.acq_bufperm` is what says. It scales the reserve back to the readings
-it means and rounds **up**, never to zero: 5 % of 20 000 is 1000 readings, which is 0.017 % of
-6 000 000, so the loaded position is 1 and the reserve is 60 000. A fractional position has never been
-loaded on this instrument. `acq_leadmax()` reports what that really reserves, because the figure the
-decoder is told must come from the position that loaded and not from `sdec.pretrig`.
+`acq_pospct()` is what loads instead, and the two armed paths reach it differently: `acq_triggered()`
+calls it **unconditionally**, while `stream_arm()` gates it on `sdec.acq_bufperm` — so the field says
+whether the *streaming* path scales, not whether the app does. It scales the reserve back to the
+readings it means, and **the result is fractional**: the 8 kB mode loads **0.75** and the 32 kB mode
+**2.99425**. Rounding up to a whole percent with a floor of 1 was tried and reverted, and `acq_pospct`'s
+own comment calls it "a guess dressed as caution" — on the static record 1 % is 60 000 readings against
+the 440 a 240-byte frame asks for.
+
+**The floor is in readings, and for a mid-sized capture it cancels the scaling entirely.** At
+`n = 20 000` the reserve wants `ceil(20000 x 5 / 100)` = 1000 readings, which is 0.0167 % of 6 000 000
+— but `floorpct` is `100 x acq_premin / n` = **5 %**, which dominates, and the `pos > pretrig` cap holds
+it there. So the loaded position is **5.0** and the reserve is **300 000 readings**: that capture gets
+no reduction at all. The scaling only bites where `n` is large enough that `floorpct` falls below the
+scaled figure. `acq_leadmax()` reports what the position really reserves, because the figure the decoder
+is told must come from the position that loaded and not from `sdec.pretrig`.
 
 ### Both default buffers go to the minimum for the app's run
 

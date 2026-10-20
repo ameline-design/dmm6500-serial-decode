@@ -11624,6 +11624,14 @@ end)()
           string.format('%s, %s of %s, %s scratch(es), why=%s', tostring(okinit),
                         tostring(sdec.acq_bufnok), tostring(sdec.acq_bufplan.n),
                         tostring(sdec.acq_scrgot), tostring(whyinit)))
+    -- THE TWO SURVIVING COPIES OF 6 000 000 MUST AGREE, and this guard was nearly lost. It used to tie
+    -- acq_bufplan[2].cap to sdec.acq_bufcap; removing acq_bufcap took the only drift check with it and
+    -- left the figure written twice and verified nowhere -- acq_bufplan's record entry and
+    -- sdec.ck_bufguard. Re-pointed rather than deleted, because that is what the pair needed: against
+    -- the surviving literal alone the assertion would be a tautology, and against ck_bufguard it is not.
+    check('the record buffer in the plan agrees with sdec.ck_bufguard, written twice and checked once',
+          sdec.acq_bufplan[2].cap == sdec.ck_bufguard,
+          string.format('%s vs %s', tostring(sdec.acq_bufplan[2].cap), tostring(sdec.ck_bufguard)))
     -- AND THE WHOLE SET FITS THE SMALLEST SUPPORTED POOL. The 2461 holds 6 875 000 against the
     -- DMM6500's 7 080 255, and a set that does not fit it is a set that cannot ship.
     -- THE FRAME RUNGS COUNT TOO. They are allocated at launch beside the plan and never freed until exit,
