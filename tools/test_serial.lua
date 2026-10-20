@@ -6779,6 +6779,88 @@ end
 test_midbyte()
 
 -- ===========================================================================
+print('\nbit order -- MSB first, reported from the field 2026-10-20')
+-- ===========================================================================
+-- SENDING A BYTE BIT-REVERSED, LSB FIRST, IS THE SAME LINE as sending the original byte MSB first.
+-- So the generator needs no MSB mode to produce a genuine MSB-first capture, and the oracle is the
+-- original message coming back out. A Batronix demo board set to MSB is what found this: the line was
+-- correct on a scope and the app decoded nothing.
+--
+-- BIT ORDER IS INVISIBLE TO FRAMING -- start, stop and parity are all order-invariant, parity being a
+-- popcount -- so both orders frame identically and only CONTENT can choose. Every case below is paired
+-- with its control, because a detector that fires on everything and one that fires on nothing both
+-- pass a one-armed test.
+-- GLOBAL, and that is not sloppiness: this file is at Lua's 200-local ceiling for a main chunk, which
+-- its own clearforce() comment records, so `local function` here costs the one slot that breaks it.
+-- The body's own locals live in the function's scope and cost the main chunk nothing.
+function test_bitorder()
+  clearforce()
+  sdec.force_msb = nil
+  local MSG = 'Hello World the quick brown fox jumps over the lazy dog 0123456789'
+  local fwd = GEN_BYTES(MSG)
+  local rev, i = {}, nil
+  for i = 1, table.getn(fwd) do rev[i] = sdec.ua_revbits(fwd[i], 8) end
+  -- The reversal is its own check first: it must be an involution and must actually change things.
+  check('ua_revbits is an involution and is not the identity',
+        sdec.ua_revbits(sdec.ua_revbits(0x41, 8), 8) == 0x41 and sdec.ua_revbits(0x41, 8) == 0x82,
+        string.format('0x41 -> %s -> %s', tostring(sdec.ua_revbits(0x41, 8)),
+                      tostring(sdec.ua_revbits(sdec.ua_revbits(0x41, 8), 8))))
+
+  -- CONTROL: ordinary LSB text must be left alone. If this flips, every existing capture regresses.
+  local ra = run({bytes = fwd, baud = 9600, fs = 100000})
+  check('an LSB-first line stays LSB under Auto', sdec.msb_used == false,
+        'msb_used=' .. tostring(sdec.msb_used))
+  check('...and reads the message', has(txt(ra), 'quick brown fox'),
+        string.sub(tostring(txt(ra)), 1, 40))
+
+  -- THE REPORTED CASE: an MSB-first line, which Auto must detect from content alone.
+  local rb = run({bytes = rev, baud = 9600, fs = 100000})
+  check('an MSB-first line IS DETECTED under Auto', sdec.msb_used == true,
+        'msb_used=' .. tostring(sdec.msb_used) .. ' note=' .. tostring(sdec.bitorder_note))
+  check('...and the message comes back out', has(txt(rb), 'quick brown fox'),
+        string.sub(tostring(txt(rb)), 1, 40))
+
+  -- FORCED LSB must defeat the detector: the operator's setting is not a hint.
+  sdec.force_msb = false
+  local rc = run({bytes = rev, baud = 9600, fs = 100000})
+  check('forcing LSB refuses to detect, whatever the content',
+        sdec.msb_used == false and not has(txt(rc), 'quick brown fox'),
+        'msb_used=' .. tostring(sdec.msb_used))
+
+  -- FORCED MSB on the same line reads it without any detection running.
+  sdec.force_msb = true
+  local rd3 = run({bytes = rev, baud = 9600, fs = 100000})
+  check('forcing MSB reads the line with no detection involved',
+        sdec.msb_used == true and has(txt(rd3), 'quick brown fox'),
+        string.sub(tostring(txt(rd3)), 1, 40))
+
+  -- AND FORCED MSB ON AN LSB LINE MUST GARBLE IT. Without this the two forced cases pass on a build
+  -- where the flag is ignored and every decode happens to be right.
+  local re = run({bytes = fwd, baud = 9600, fs = 100000})
+  check('forcing MSB on an LSB line garbles it, so the flag is really applied',
+        not has(txt(re), 'quick brown fox'),
+        string.sub(tostring(txt(re)), 1, 40))
+
+  -- THE DEGENERATE PATTERN THE FIRST BUILD GOT WRONG. 0xAA reversed is 'U', so a line of 0xAA reads
+  -- as a line of U and the multiplicative margin was vacuous against a zero LSB count. One distinct
+  -- letter is what rejects it; 45 of the 256 byte values reverse into a letter this way.
+  sdec.force_msb = nil
+  local rf2 = run({bytes = rep(0xAA, 128), baud = 9600, fs = 100000})
+  check('a line of 0xAA is NOT flipped to a line of U', sdec.msb_used == false,
+        'msb_used=' .. tostring(sdec.msb_used) .. ' note=' .. tostring(sdec.bitorder_note))
+  -- AND THE NOTE MUST NOT SURVIVE A DECODE THAT DECLINED. It did: this case reported the previous
+  -- capture's 'MSB first (...)' while correctly staying LSB, which is the status row claiming a flip
+  -- that did not happen.
+  check('...and no stale MSB note is left over from the capture before it',
+        sdec.bitorder_note == nil, tostring(sdec.bitorder_note))
+  check('...and still decodes as 0xAA', rf2 ~= nil and rf2.vals ~= nil and rf2.vals[1] == 0xAA,
+        tostring(rf2 and rf2.vals and rf2.vals[1]))
+  sdec.force_msb = nil
+  clearforce()
+end
+test_bitorder()
+
+-- ===========================================================================
 print('\nthe bottom of the rate range -- a probe that cannot frame a byte')
 -- ===========================================================================
 -- autoset()'s first pass runs at 1 MS/s, where 20 000 samples is 20 ms: six bit times at 300 baud.

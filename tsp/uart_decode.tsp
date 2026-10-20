@@ -46,6 +46,19 @@ function sdec.ua_stops()
   return sdec.try_stop
 end
 
+-- BIT ORDER. nil is Auto, false is LSB first, true is MSB first. Read as ua_run's default rather than
+-- threaded through its nine call sites, which is the same shape force_nstop and widths_any already
+-- use: an explicit argument still wins, and that is what lets ua_refine_bitorder trial one order
+-- against a capture the operator has forced neither way.
+--
+-- LSB FIRST IS THE OVERWHELMING DEFAULT and Auto resolves to it on every tie, because almost every
+-- UART is LSB first -- it is what RS-232 framing specifies. A Batronix demo board that can be set
+-- either way is what turned this from an assumption into a setting: reported from the field on
+-- 2026-10-20, MSB traffic decoded to nothing while a scope confirmed the line was correct.
+sdec.force_msb = nil
+-- Which order actually decoded, for the status row: nil until a decode settles it.
+sdec.msb_used = nil
+
 -- One stop bit, which is a conclusion rather than a simplification: a second is indistinguishable
 -- from a bit time of idle, which the decoder already tolerates, so nstop = 2 can never rescue a
 -- capture nstop = 1 fails on. ua_frame() still honours a forced nstop. 1.5 stop bits defeats
@@ -165,14 +178,30 @@ end
 
 -- ============================================================================
 -- One frame
+-- Reverse the low `nbits` of `v`. What MSB-first framing needs, and it is applied ONCE PER FRAME at
+-- ua_frame's exits rather than by walking the bit weights downward inside the sampling loop. Two
+-- reasons, and the second was measured rather than reasoned: the hot loop stays byte-identical on the
+-- default LSB path, and a descending weight means halving, which yields a FLOAT on Lua 5.3+ that
+-- `string.format('%02X', v)` then refuses -- while 5.0.2 on the instrument has no integer subtype and
+-- would have hidden it until a host-side suite printed `65.0`. Integer arithmetic throughout here.
+function sdec.ua_revbits(v, nbits)
+  if v == nil or nbits == nil or nbits < 2 then return v end
+  local out, src, i = 0, v, nil
+  for i = 1, nbits do
+    out = out * 2 + math.mod(src, 2)
+    src = math.floor(src / 2)
+  end
+  return out
+end
+
 -- ============================================================================
 -- Decode the frame whose start-bit leading edge sits at fractional sample t0. Bit cell k spans
--- [t0 + k*T, t0 + (k+1)*T), k = 0 the start bit; data is LSB first. Returns value, err -- nil on
+-- [t0 + k*T, t0 + (k+1)*T), k = 0 the start bit; data is LSB first unless `msb`. Returns value, err -- nil on
 -- success, else 'start', 'parity', 'framing' or 'truncated'. A parity or framing failure still
 -- returns the value: a byte with a bad stop bit is usually the right byte at the wrong baud rate. The
 -- sampling is ua_bit inline, expression for expression, a call costing about as much as the sampling
 -- it wraps. docs/MEASUREMENTS.md, 'Three-tap majority sampling'.
-function sdec.ua_frame(rd, n, t0, T, nbits, par, nstop, invert)
+function sdec.ua_frame(rd, n, t0, T, nbits, par, nstop, invert, msb)
   local thr = sdec.thr
   local floor = math.floor
   local three, off = false, 0
@@ -241,15 +270,24 @@ function sdec.ua_frame(rd, n, t0, T, nbits, par, nstop, invert)
       if b == 1 then val = val + bv end
       bv = bv * 2
     elseif slot == pslot then
+      -- The popcount is order-invariant, so parity is checked on the value as assembled and needs no
+      -- case for bit order. Only what LEAVES this function is reversed.
       local pe = math.mod(sdec.ua_popcount(val), 2)
       local want
       if par == sdec.PAR_EVEN then want = pe else want = 1 - pe end
-      if b ~= want then return val, 'parity' end
+      if b ~= want then
+        if msb then val = sdec.ua_revbits(val, nbits) end
+        return val, 'parity'
+      end
     else
-      if b ~= 1 then return val, 'framing' end
+      if b ~= 1 then
+        if msb then val = sdec.ua_revbits(val, nbits) end
+        return val, 'framing'
+      end
     end
   end
 
+  if msb then val = sdec.ua_revbits(val, nbits) end
   return val, nil
 end
 
@@ -272,7 +310,11 @@ end
 sdec.ua_resid_frac = sdec.ua_resid_frac or 0.25
 sdec.ua_resid_min  = sdec.ua_resid_min  or 20
 
-function sdec.ua_run(rd, n, T, nbits, par, nstop, invert, tmin0)
+function sdec.ua_run(rd, n, T, nbits, par, nstop, invert, tmin0, msb)
+  -- The SETTING is the default, so forcing MSB reaches every path that decodes without the flag being
+  -- threaded through nine call sites. An explicit argument wins, which is how the Auto trial asks for
+  -- the order the setting does not name. nil stays nil here: ua_frame reads it as falsy, meaning LSB.
+  if msb == nil then msb = sdec.force_msb end
   local parbits = 0
   if par ~= sdec.PAR_NONE then parbits = 1 end
   local framebits = 1 + nbits + parbits + nstop
@@ -367,7 +409,7 @@ function sdec.ua_run(rd, n, T, nbits, par, nstop, invert, tmin0)
   for k = anchor, ne do
     if es[k] == want and ei[k] >= tmin then
       local t0 = ei[k]
-      local val, err = sdec.ua_frame(rd, n, t0, T, nbits, par, nstop, invert)
+      local val, err = sdec.ua_frame(rd, n, t0, T, nbits, par, nstop, invert, msb)
       if err == 'truncated' then break end
 
       -- A failed start bit is a false trigger, not a corrupt byte -- usually an impulse on an idle
@@ -1235,6 +1277,86 @@ end
 -- ============================================================================
 -- Formats whose score came within the margin of the winner's -- the ones this capture genuinely does
 -- not distinguish. Returns a name list and its length. Pure, and it must be called before
+-- BIT ORDER IS DECIDED ON CONTENT, BECAUSE FRAMING CANNOT SEE IT AT ALL, and that limit is the whole
+-- design of this pass rather than a caveat on it. The start bit, the stop bit and the parity bit are
+-- every one of them order-invariant -- parity is a popcount of the assembled value -- so an MSB-first
+-- line frames EXACTLY as well as an LSB-first one, ua_score ties by construction, and a tie-break on
+-- score would be a coin toss dressed as a decision. Only the byte VALUES differ between the two.
+--
+-- So the only evidence is whether the bytes look like text, and that bounds what Auto can promise:
+-- ON BINARY TRAFFIC BIT ORDER IS UNDECIDABLE FROM THE SIGNAL. LSB wins every tie and every
+-- unconvincing margin, which is why the Options field exists -- a binary MSB line has to be told.
+--
+-- THREE FLOORS, AND THE THIRD IS THE ONE THAT MATTERS. A letter count and a multiplicative margin
+-- are not enough, and the first build of this pass proved it by failing three pattern cases and 53 of
+-- the 256 single-byte payloads: against clsb = 0 a multiple is VACUOUS, because 0 x 2 is 0, so any
+-- eight letters won. And reversal fabricates letters readily -- 45 of the 256 byte values are not
+-- letters but reverse into one, so a capture of one repeated byte flips about 18 % of the time by
+-- arithmetic alone. 0xAA is the worst of them: reversed it is 'U', so a line of 0xAA reads as a line
+-- of U and the pattern suite calls that a declared ambiguity rather than a decode.
+--
+-- DISTINCT letters is what separates text from an artefact of the mirror, and it is the same guard
+-- ua_refine_parity uses when it demands >= 3 distinct values before believing a vote. Real text
+-- carries many letters -- 'Hello, World!' has seven distinct -- while a repeated byte carries exactly
+-- one however many frames it fills.
+sdec.msb_textmin  = sdec.msb_textmin  or 8     -- letters MSB must find before it may win
+sdec.msb_margin   = sdec.msb_margin   or 2.0   -- and the multiple of LSB's count it must clear
+sdec.msb_distinct = sdec.msb_distinct or 4     -- and how many DIFFERENT letters, so a mirror cannot
+
+-- Letters in a result, and how many distinct values among them. The second is what makes a repeated
+-- byte fail the text test it would otherwise pass outright.
+function sdec.ua_textdistinct(r)
+  if r == nil or r.vals == nil or r.errs == nil then return 0, 0 end
+  local seen, nd, nc, i = {}, 0, 0, nil
+  for i = 1, r.nf do
+    if r.errs[i] == nil then
+      local v = r.vals[i]
+      if v ~= nil and ((v >= 48 and v <= 57) or (v >= 65 and v <= 90)
+                       or (v >= 97 and v <= 122)) then
+        nc = nc + 1
+        if seen[v] == nil then seen[v] = true; nd = nd + 1 end
+      end
+    end
+  end
+  return nc, nd
+end
+
+function sdec.ua_refine_bitorder(r, rd, n, T)
+  if r == nil then return r end
+  -- Forced either way: there is nothing to detect, and ua_run already honoured it.
+  if sdec.force_msb ~= nil then
+    sdec.msb_used = (sdec.force_msb == true)
+    return r
+  end
+  sdec.msb_used = false
+  -- A synthetic result table has no samples to re-decode, exactly as the parity pass refuses.
+  if rd == nil or n == nil or T == nil then return r end
+  if r.nbits == nil or r.nbits < 2 then return r end
+  local clsb = sdec.ua_textn(r)
+  local r2 = sdec.ua_run(rd, n, T, r.nbits, r.par, r.nstop, r.invert, nil, true)
+  if r2 == nil then return r end
+  local cmsb, dmsb = sdec.ua_textdistinct(r2)
+  if cmsb < sdec.msb_textmin then return r end
+  -- The distinct floor first: it is the one that rejects a mirror, and it costs nothing to test.
+  if dmsb < sdec.msb_distinct then return r end
+  -- Both a MULTIPLE and a DIFFERENCE, because the multiple alone is vacuous against clsb = 0 and the
+  -- difference alone would let a large capture win on a thin proportional lead.
+  if cmsb < clsb * sdec.msb_margin then return r end
+  if cmsb - clsb < sdec.msb_textmin then return r end
+  r2.score = sdec.ua_score(r2)
+  -- Widened, never overwritten, for ua_refine_parity's reason: the other pass found its own extent.
+  if r.headsusp ~= nil and (r2.headsusp == nil or r.headsusp > r2.headsusp) then
+    r2.headsusp = r.headsusp
+  end
+  -- Stamp the format on, since ua_run returns values and errors and not which format made them.
+  r2.nbits, r2.par, r2.nstop, r2.invert = r.nbits, r.par, r.nstop, r.invert
+  r2.msb = true
+  sdec.msb_used = true
+  sdec.bitorder_note = string.format(
+      'MSB first (%d text bytes against %d decoding LSB first)', cmsb or 0, clsb or 0)
+  return r2
+end
+
 -- ua_refine_parity: docs/MEASUREMENTS.md, 'ua_alts must run before ua_refine_parity'.
 function sdec.ua_alts(r)
   local names, m = {}, 0
@@ -1271,7 +1393,12 @@ end
 -- Decode an arbitrary sample array. serial_core's sig_levels / sig_edges / sig_idle must have run
 -- over the same array first. Returns ok, reason.
 function sdec.decode_from(rd, n)
+  -- bitorder_note with the other two, and it is not decoration: a note that survives a decode which
+  -- declined to flip claims MSB on an LSB capture, which is the status row lying to the operator.
+  -- Caught by the 0xAA pattern case, which correctly stayed LSB while still reporting the previous
+  -- capture's detection. Same shape as baud_raw surviving a failed acquire.
   sdec.res, sdec.fmt_note, sdec.baud_note = nil, nil, nil
+  sdec.bitorder_note, sdec.msb_used = nil, nil
   sdec.baud_probe = nil                 -- set only by giveup(), and only for THIS call
   if rd == nil or n == nil or n < 2 then return false, 'nothing captured' end
   local fs = sdec.acq_fs or sdec.fs
@@ -1408,6 +1535,10 @@ function sdec.decode_from(rd, n)
     r = sdec.ua_refine_width(r, rd, n, T)
     -- rd/n/T go in because promotion to 7E1 re-decodes rather than shifting values.
     r = sdec.ua_refine_parity(r, rd, n, T)
+    -- LAST of the three, and the order is forced: it re-decodes at whatever width and parity the two
+    -- above settled on, so running it earlier would trial the bit order against a format still due to
+    -- change underneath it.
+    r = sdec.ua_refine_bitorder(r, rd, n, T)
     sdec.ua_note_fmt(r, anames, na)
   end
 
