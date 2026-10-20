@@ -3,11 +3,19 @@
 --
 -- The point is not to let the UI code run; it is to make it FAIL here rather than
 -- on the instrument. So:
---   * touching a nil, unknown or deleted handle RAISES, which is what turns the
---     object-lifetime rule ("delete -> nil -> create, never create over a live
---     handle") from a claim into a test -- an orphaned display object survives
+--   * touching a nil, unknown or deleted handle is REFUSED AND COUNTED, which is what
+--     turns the object-lifetime rule ("delete -> nil -> create, never create over a
+--     live handle") from a claim into a test -- an orphaned display object survives
 --     inside the firmware until a power cycle, and that accumulation is what walks
---     it toward a PC=002F751C panic;
+--     it toward a PC=002F751C panic. Counted rather than raised because the
+--     instrument has exactly two failure channels and NEITHER is a Lua error: it
+--     posts a log entry (and pops a dialog, which this app must never allow) or it
+--     returns a value indicating the problem. No Keithley example uses pcall and
+--     their documentation never mentions a Lua exception. A raise here was therefore
+--     modelling something the firmware cannot do, and it is what made ~106 pcall
+--     guards in the app look load-bearing when they were inert on the box.
+--     COUNTING IS THE STRONGER TRIPWIRE: a refusal is recorded even when the caller
+--     wraps the call, where a raise was simply swallowed by the guard;
 --   * a live-object and live-buffer census is kept, so a rebuild that leaks even
 --     one object is visible as a number;
 --   * display.create mirrors the firmware's width limit by returning NIL rather
@@ -57,11 +65,29 @@ display = {
   active = nil, events = {},
 }
 
+-- REFUSALS, which are what this mock has instead of raises. The event NUMBER is recorded only where
+-- the instrument's own number is measured -- 1130 for a parameter out of range, 1717 for an attribute
+-- that does not apply to the object type. A dangling handle has no measured number, so none is
+-- invented: the text is the record. MD.nrefused() is the assertion a suite should make, and
+-- MD.refusals() is what tells you which call it was.
+local REFUSED = {}
+local function refuse(what, code)
+  REFUSED[table.getn(REFUSED) + 1] = (code ~= nil and (tostring(code) .. ' ') or '') .. what
+end
+function MD.refusals() return REFUSED end
+function MD.nrefused() return table.getn(REFUSED) end
+function MD.forget_refusals() REFUSED = {} end
+
+-- Where a refused call's writes land, and they are never read. That is what the instrument does: the
+-- call returns, the log gains an entry, and nothing visible changes. Returning this instead of the
+-- object keeps every caller's shape working without a nil check at each of the fourteen use() sites.
+local VOID = {}
+
 local function use(h, what)
-  if h == nil then error(what .. ' on a NIL handle', 0) end
+  if h == nil then refuse(what .. ' on a NIL handle') return VOID end
   local o = OBJ[h]
-  if o == nil then error(what .. ' on an UNKNOWN handle', 0) end
-  if not o.alive then error(what .. ' on a DELETED object (dangling handle)', 0) end
+  if o == nil then refuse(what .. ' on an UNKNOWN handle') return VOID end
+  if not o.alive then refuse(what .. ' on a DELETED object (dangling handle)') return VOID end
   return o
 end
 
@@ -169,6 +195,19 @@ end
 -- three objects relying on the cascade survived 226 tests. So record HOW each object
 -- died, and let a test assert that nothing depended on the parent.
 function display.delete(h)
+  -- A BAD HANDLE IS REFUSED, AND APP-VISIBLY SO, which no other refusal here is. This is the one the
+  -- app has to be able to detect: a handle that will not delete strands a live object until a power
+  -- cycle, and that accumulation is what walks the firmware toward the PC=002F751C panic. The
+  -- instrument raises nothing and returns nothing, so a new entry in the log the app reads through
+  -- eventlog.getcount() is the ONLY signal it gives -- hence MD.evpost and not post(), which is the
+  -- harness's own census. THE EVENT NUMBER IS NOT MODELLED, for the reason the usertext limit gives:
+  -- nothing has measured which number a refused delete files, and inventing one would be a figure a
+  -- test could then pin.
+  if h == nil or OBJ[h] == nil or not OBJ[h].alive then
+    refuse('delete on a handle that is nil, unknown or already deleted')
+    MD.evpost(nil, 'display.delete refused: bad handle')
+    return
+  end
   local o = use(h, 'delete')
   -- DELETING THE SCREEN THE PANEL IS SHOWING, counted. Switch-first-delete-second is shouted about in
   -- ui_destroy and ui_loading_clear and was asserted NOWHERE: moving the changescreen below the
@@ -278,8 +317,9 @@ end
 function display.setfill(h, pct, dir)
   local o = use(h, 'setfill')
   if type(pct) ~= 'number' or pct < 0 or pct > 100 then
-    error('1130 Parameter fill percent, expected value from 0 to 100, got '
-          .. tostring(pct) .. ' -- did you mean display.setcolor?', 0)
+    refuse('Parameter fill percent, expected value from 0 to 100, got '
+           .. tostring(pct) .. ' -- did you mean display.setcolor?', 1130)
+    return
   end
   o.fill = pct
   o.filldir = dir
@@ -295,7 +335,8 @@ end
 function display.setthickness(h, t)
   local o = use(h, 'setthickness')
   if type(t) ~= 'number' or t < 1 or t > 10 then
-    error('1130 Parameter thickness, expected value from 1 to 10, got ' .. tostring(t), 0)
+    refuse('Parameter thickness, expected value from 1 to 10, got ' .. tostring(t), 1130)
+    return
   end
   o.thick = t
 end
@@ -307,7 +348,8 @@ end
 function display.setposition(h, x, y, c, d)
   local o = use(h, 'setposition')
   if o.kind ~= display.OBJ_RECT and o.kind ~= display.OBJ_LINE then
-    error('1717 Attribute position does not apply to an object of type ' .. tostring(o.kind), 0)
+    refuse('Attribute position does not apply to an object of type ' .. tostring(o.kind), 1717)
+    return
   end
   o.x, o.y = x, y
   if o.kind == display.OBJ_LINE then
@@ -329,7 +371,8 @@ function display.setstate(h, st)
   local o = use(h, 'setstate')
   if st == display.STATE_DISABLE and o.kind ~= display.OBJ_EDIT_NUMBER
      and o.kind ~= display.OBJ_EDIT_OPTION and o.kind ~= display.OBJ_EDIT_CHECK then
-    error('STATE_DISABLE applies to display.OBJ_EDIT_* only', 0)
+    refuse('STATE_DISABLE applies to display.OBJ_EDIT_* only')
+    return
   end
   o.state = st
 end

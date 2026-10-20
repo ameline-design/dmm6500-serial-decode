@@ -4829,10 +4829,26 @@ function sdec.ui_color(h, c)
   return (pcall(display.setcolor, h, c))
 end
 
+-- How many entries the instrument's log holds, or nil where it cannot be asked. The one signal a
+-- display call gives: the firmware raises nothing and returns nothing, so a refusal is visible only as
+-- a new entry. Read ONLY from teardown and launch -- never from a capture or a decode, because reading
+-- the log in a performance-critical place is a cost the instrument charges for.
+function sdec.evcount()
+  if eventlog == nil or eventlog.getcount == nil then return nil end
+  return eventlog.getcount()
+end
+
 -- Delete object `h`, counting a refusal rather than assuming it worked. Returns whether it went.
+--   [...]
+-- on hardware anyway. Where something else posts during the call it reads as a refusal: that keeps the
+-- handle and refuses a rebuild, so the false positive errs toward the safe side rather than toward
+-- building over a leak.
 function sdec.del_obj(h)
   if h == nil then return true end
-  local ok = pcall(display.delete, h)
+  local before = sdec.evcount()
+  display.delete(h)
+  local after = sdec.evcount()
+  local ok = (before == nil or after == nil or after <= before)
   if not ok then
     sdec.delfails = (sdec.delfails or 0) + 1
     sdec.orphans = sdec.orphans or {}
@@ -4847,8 +4863,10 @@ function sdec.del_orphans()
   if o == nil then return 0 end
   local keep, nk, i = {}, 0, nil
   for i = 1, table.getn(o) do
-    local ok = pcall(display.delete, o[i])
-    if not ok then nk = nk + 1; keep[nk] = o[i] end
+    local before = sdec.evcount()
+    display.delete(o[i])
+    local after = sdec.evcount()
+    if before ~= nil and after ~= nil and after > before then nk = nk + 1; keep[nk] = o[i] end
   end
   if nk < 1 then sdec.orphans = nil else sdec.orphans = keep end
   return nk

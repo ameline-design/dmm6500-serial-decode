@@ -4087,6 +4087,32 @@ do
   -- Only a handle that stays undeletable is the real risk.
   sdec.stop()
   local savedel, saveorph = sdec.delfails, sdec.orphans
+  -- del_obj's OWN detector, which nothing asserted: the three checks below drive del_orphans, and
+  -- forcing del_obj to report success left the suite at full marks. It reads a log-count delta across
+  -- the call because no display call raises -- so a mock that posts app-visibly is the premise, and
+  -- the first check here asserts THAT rather than assuming it.
+  sdec.delfails, sdec.orphans = 0, nil
+  local evbefore = sdec.evcount()
+  sdec.del_obj('not-a-handle')
+  check('the premise: a refused delete posts an app-visible event, or the detector has no signal',
+        evbefore ~= nil and sdec.evcount() ~= nil and sdec.evcount() > evbefore,
+        string.format('%s -> %s', tostring(evbefore), tostring(sdec.evcount())))
+  check('del_obj reads the delta and counts the refusal',
+        (sdec.delfails or 0) == 1, tostring(sdec.delfails))
+  check('...and KEEPS the handle, so a later teardown can retry it',
+        sdec.orphans ~= nil and table.getn(sdec.orphans) == 1,
+        tostring(sdec.orphans and table.getn(sdec.orphans)))
+  -- A GOOD handle must NOT be read as a refusal, or every teardown would report a leak. The negative
+  -- control, without which the two checks above pass on a detector that is simply always true.
+  local gobj = display.create(sdec.ui_scr or 0, display.OBJ_TEXT, 10, 10, 'probe')
+  sdec.delfails, sdec.orphans = 0, nil
+  if gobj ~= nil then
+    sdec.del_obj(gobj)
+    check('and a GOOD handle deletes silently, counting nothing',
+          (sdec.delfails or 0) == 0 and sdec.orphans == nil,
+          string.format('delfails=%s orphans=%s', tostring(sdec.delfails),
+                        tostring(sdec.orphans and table.getn(sdec.orphans))))
+  end
   sdec.delfails, sdec.orphans = 2, nil
   local ok3a, why3a = sdec.start()
   check('a delete failure that RECLAIMS on retry does not refuse the rebuild',
