@@ -2447,6 +2447,14 @@ function sdec.acq_triggered(n, slope)
 
   -- The raised reason is carried out, and `expired` says which fault it was. An upvalue, so the exit need not
   -- match on firmware text it does not control.
+  --
+  -- THIS pcall IS AN INTERNAL JUMP, not a firmware guard, and converting it is BLOCKED ON A MEASUREMENT
+  -- rather than on effort. Returning the reason instead of raising it works and is behaviour-neutral on
+  -- hardware -- both forms never fire, because what this catches is two error() calls of our own. But it
+  -- strands two test fixtures that stub trigger.model.load and .initiate to RAISE, which the instrument
+  -- cannot do; and a faithful fixture (a load that simply arms nothing) shows the capture falling back
+  -- through the arm timeout with sdec.lasterr NIL. So a refused arm is indistinguishable from a quiet
+  -- line on this path, and fixing that needs what trigger.model.state() admits after a refused load.
   local expired = false
   local ok, perr = pcall(function()
     -- The analog trigger is configured only when it is a source, through arm_comparator() so both armed paths

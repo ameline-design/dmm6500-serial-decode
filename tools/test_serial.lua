@@ -1373,6 +1373,15 @@ check('an idle-low line arms on a RISING edge',
       tostring(dmm.digitize.analogtrigger.edge.slope))
 
 -- A trigger model that errors must fall back rather than abort the capture.
+--
+-- THIS STIMULUS IS FICTION AND IS KEPT ONLY BECAUSE REPLACING IT NEEDS A MEASUREMENT. No trigger.*
+-- call on this instrument transfers control -- docs/UNDOCUMENTED.md records a trigger.model.load given
+-- four parameters as filing 2747 with NOTHING ARMED, and a refused setblock as returning true anyway.
+-- Replacing the raise with `function() end`, which is what a refusal really looks like, was tried: the
+-- capture still falls back, but through the arm wait expiring, and sdec.lasterr comes back NIL -- so on
+-- hardware a refused arm degrades to free-run and records nothing, and the operator reads a free-run
+-- capture as a triggered one. Fixing that needs the one thing no offline test can supply: what
+-- trigger.model.state() admits after a refused load. See notes/HANDOFF-session70.md.
 local realload = trigger.model.load
 trigger.model.load = function() error('analog trigger not supported', 0) end
 SRC.rd, SRC.ts = ard, ats
