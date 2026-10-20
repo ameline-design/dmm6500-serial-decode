@@ -30,7 +30,7 @@ thing that says which plan is actually on the key.
 
 ## The screen
 
-![The soak settings screen: eight fields in two columns, the plan line beneath them, Run Soak and Cancel](img/brun-panel.png)
+![The soak settings screen: six fields in two columns, the plan line beneath them, Run Soak and Cancel](img/brun-panel.png)
 
 The plan line is read off the key when the screen is built, so it describes what is actually there
 rather than what was last pushed from this host. The count is the plan's own `# rows=` header — data
@@ -40,8 +40,6 @@ including the header and comment lines.
 | field | what it does |
 |---|---|
 | **Laps** | passes over the plan, 1 to 210. There is deliberately no "forever": an unbounded run started at the panel has nobody watching a host log that would say so. |
-| **Gap Elide** | the detector window in seconds, `0` for off. Off is the default — elision is the feature under test, not the normal way to run a lap. |
-| **Elide Vectors** | which vectors elide when Gap Elide is on. `v98d v99d v99a` are the only three whose gaps clear two windows at both 9600 and 19200 Bd. |
 | **SDG Address** | the generator, as a pick list. There is no string-entry object in this firmware's set, and a list cannot produce the typo that costs a lap to discover. The live value leads it. |
 | **Lap Type** | narrows the plan — see below. |
 | **Speed Low** / **Speed High** | the rate window in Bd, inclusive at both ends. Defaults span the ladder: 300 is the slowest rate drawn, 250 000 the decoder's own ceiling. |
@@ -53,15 +51,11 @@ including the header and comment lines.
 |---|---|
 | **Full** | every row the plan holds, which is what the host-driven path runs |
 | **Normal** | standard rates only — no drawn interstitial or edge rate |
-| **Gap targeted** | only vectors that declare an idle run |
 | **Adversarial** | only vectors known to produce errors |
 
 `Adversarial` is derived, not listed: it is `barb.expect`'s `loud` entries — the vectors the plan
-drives into conditions where refusing is the documented right answer — plus every vector carrying a
-gap, whose seams cost bytes until the decoder splice lands. A vector added to either table is covered
-here without anybody remembering to update a third list.
-
-`Gap targeted` is keyed off `brun.elide_gapbits` for the same reason.
+drives into conditions where refusing is the documented right answer. A vector added to that table is
+covered here without anybody remembering to update a second list.
 
 ## Running one
 

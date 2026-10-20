@@ -38,55 +38,6 @@ sdec.ck_maxbytes = 32768
 -- window by window -- see ck_levels(). dst is the caller's, reused for every window and never cleared,
 -- so entries past m are stale: safe, sig_levels, sig_edges and ua_bit each being bounded by their n.
 
--- Over an elided record with each burst's recovered head put back in front of it. `plan` comes from
--- sdec.gap_splice_plan: positions in spliced coordinates, so this reader presents a stream of plan.total
--- readings where the buffer holds ntotal.
---
--- A READER AND NOT AN ARRAY, which is the whole reason this exists. The alternative is acq_copy's shape -- one
--- flat table of the spliced record -- and at 56 952 readings that is about 900 kB of Lua table against a heap
--- measured drifting between 2 400 and 5 670 kB. The heads themselves are small, under 500 readings across
--- twelve gaps, so only the record is worth not copying.
---
--- The scan over plan entries carries no cursor state deliberately: `from` is the caller's and ck_levels asks
--- for strided windows over the whole recording while ua_bit asks for narrow ones, so a reader that assumed
--- monotonic requests would be wrong for one of them. The scan is bounded by gap_maxscratch, which is 12.
-function sdec.ck_reader_spliced(buf, ntotal, plan)
-  local rdp = buf.readings
-  local off = 0
-  if sdec.acq_first ~= nil then off = sdec.acq_first(buf, ntotal) - 1 end
-  local np, total = plan.n, plan.total
-  return function(dst, from, count, step)
-    if step == nil then step = 1 end
-    local m, k = 0, nil
-    for k = 1, count do
-      local a = from + (k - 1) * step
-      if a < 1 or a > total then break end
-      local j, nbefore, src, si = nil, 0, nil, nil
-      for j = 1, np do
-        local ps = plan.pos[j]
-        if a < ps then break end
-        local ln = plan.len[j]
-        if a < ps + ln then
-          src, si = plan.tail[j], a - ps + 1
-          break
-        end
-        nbefore = nbefore + ln
-      end
-      local v
-      if src ~= nil then
-        v = src[si]
-      else
-        local p = (a - nbefore) + off
-        if p > ntotal then p = p - ntotal end
-        v = rdp[p]
-      end
-      if v == nil then break end
-      m = m + 1
-      dst[m] = v
-    end
-    return m
-  end
-end
 
 -- Over a plain Lua array: the test path, and the way to chunk a capture already in memory.
 function sdec.ck_reader_table(rd, ntotal)
@@ -518,32 +469,12 @@ function sdec.ck_decode(reader, ntotal, fmt, sink, opts)
 
     local tmin0 = nil
     if endpos ~= nil then tmin0 = endpos - off end
-    -- THE SEAMS THIS WINDOW HOLDS, in window coordinates, so the framer can re-lock on the record after
-    -- each restored head instead of carrying the head's bit phase into it. opts.seams is in spliced
-    -- coordinates (stream_decode builds it from the plan); nil on every unspliced read, where ua_run
-    -- behaves exactly as it always has.
-    local ws = nil
-    if opts.seams ~= nil and (opts.seams.n or 0) > 0 then
-      local sj
-      for sj = 1, opts.seams.n do
-        local e = opts.seams.E[sj] - off
-        if e >= 1 and e <= cnt then
-          if ws == nil then ws = {E = {}, R = {}, n = 0} end
-          ws.n = ws.n + 1
-          ws.E[ws.n], ws.R[ws.n] = e, opts.seams.R[sj] - off
-        end
-      end
-    end
     local r = sdec.ua_run(win, cnt, T, fmt.nbits, fmt.par, fmt.nstop, fmt.invert,
-                          tmin0, ws)
+                          tmin0)
 
     tot.nwin = tot.nwin + 1
     tot.nsmp = off + cnt
     tot.nfalse = tot.nfalse + r.nfalse
-    -- How many seams re-locked and how many frames they declared lost, summed: the row's account of the
-    -- placeholders, so a reader can tell a hole's '??' from a framing error's.
-    tot.nrelock = (tot.nrelock or 0) + (r.nrelock or 0)
-    tot.nseamlost = (tot.nseamlost or 0) + (r.nseamlost or 0)
 
     local m = r.nf
     -- Clip at the cap, mid-window if need be: emitting the whole window and then noticing overshoots.

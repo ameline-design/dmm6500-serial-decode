@@ -36,8 +36,6 @@
 --
 -- AND THE SIXTH, WHICH IS NOT A STIMULUS MODEL BUT A PATH THROUGH THE ENGINE:
 --
---   off  --elide S --elide-vids V,V   gap elision, as tools/run_bench.py switches it on for every
---                        hardware lap (its --elide defaults to 0.01 and its vids are every vector
 --                        soakplan.VECTOR_EXPECT holds to 'nodrop'). Off here, brun.point takes its
 --                        free-running branch for those cells and NO offline harness reaches the
 --                        elision program, the resume latency or the splice -- which is where 104 of
@@ -50,8 +48,6 @@
 --
 --   # the lap the instrument runs, elision and all
 --   python3 tools/soakplan.py --emit-csv --iteration 1 --skip-vectors v95,v96,v97 > /tmp/PLAN.CSV
---   lua tools/offline_bench.lua --plan /tmp/PLAN.CSV --out /tmp/OFFLINE.csv --elide 0.01 \
---       --elide-vids v98a,v98b,v98c,v98d,v99a,v99b,v99c,v99d
 
 dofile('tools/mock_display.lua')
 dofile('tools/gen_serial.lua')
@@ -70,49 +66,13 @@ end
 
 local A = {plan = nil, out = nil, iterations = 1, phaseseed = nil, clamp = nil, interp = nil,
            truefs = nil, frontend = nil, aperture = nil, fracorigin = nil,
-           elide = nil, elidevids = nil}
+           }
 local ai = 1
 while arg ~= nil and arg[ai] ~= nil do
   local k, v = arg[ai], arg[ai + 1]
   if k == '--plan' then A.plan = v; ai = ai + 2
   elseif k == '--out' then A.out = v; ai = ai + 2
   elseif k == '--iterations' then A.iterations = tonumber(v); ai = ai + 2
-  -- GAP ELISION, which the engine has and this harness never switched on. tools/run_bench.py sets
-  -- brun.elide and brun.elide_vids on the instrument and defaults --elide to 0.01, so every ordinary
-  -- hardware lap elides every nodrop vector -- and without these two flags the same engine run here
-  -- takes brun.point's FREE-RUNNING branch for those cells instead, because the gate at
-  -- brun.point is `brun.elide ~= nil and brun.elide_vids ~= nil and brun.elide_vids[c.vid]` and nil
-  -- vids means no cell at all.
-  --
-  -- WHAT THAT COSTS, measured cell for cell against THE GAP LAP -- the final lap of
-  -- out/bench/SOAK-20261018-gaplap-merged-splice.csv, 1512 cells, iteration 1,
-  -- skipping v95/v96/v97: judge_bench scores 141 of its cells bad, and 104 of the 141 are the
-  -- eight nodrop vectors with elision having FIRED -- 104 bad against 41 not-bad where it fired, and
-  -- 0 bad of 143 where it did not. No offline harness could reach any of them: tools/sweep_plan.lua
-  -- does not elide at all and this one had the engine but not the switch.
-  --
-  -- A PAIR, like every other stimulus flag here, so neither arm of an A/B is unlabelled. --no-elide is
-  -- the free-running control, which is what every run before this one silently was.
-  -- THE RAW ARGUMENT IS KEPT, not only its number, so a typo is reported as a typo: tonumber('10ms')
-  -- is nil and every test below reads nil as 'off', which would answer a mistyped window with the
-  -- message for a missing flag.
-  elseif k == '--elide' then A.elide, A.elideraw = tonumber(v), tostring(v); ai = ai + 2
-  elseif k == '--no-elide' then A.elide, A.elideraw = 0, '0'; ai = ai + 1
-  -- WHICH VECTORS, and it has to be named rather than derived: the oracle run_bench.py uses is
-  -- soakplan.VECTOR_EXPECT, which is Python, and a second hand-written list in Lua is exactly the
-  -- drift bench_run.tsp's own comment warns about. tools/soak_offline_bench.py passes the same list
-  -- run_bench.py computes.
-  elseif k == '--elide-vids' then A.elidevids = v; ai = ai + 2
-  -- ONE SEED PER RUN, so a soak can cover phase space across laps while each lap stays reproducible on
-  -- its own. Without this every lap would draw the same phase sequence and extra laps would add nothing.
-  --
-  -- AND A PAIRED A/B NEEDS --no-phase, NOT A SHARED SEED. The phase is drawn from a RUNNING sequence
-  -- consumed per render, so a flag that changes how many renders a lap performs moves the phase of
-  -- every cell after the first one it affects -- even cells the flag cannot touch. MEASURED on the
-  -- --elide pair below at one seed: 708 of the 1224 FREE-RUNNING rows differ between the two arms, so
-  -- two false positives appeared on j20, which does not elide, and were read as elision's doing. A
-  -- shared seed makes the arms look paired and does not make them paired; --no-phase pins the origin
-  -- at sample 1 on both sides and is the only form in which a difference is attributable.
   elseif k == '--phase-seed' then A.phaseseed = tonumber(v); ai = ai + 2
   elseif k == '--no-phase' then A.phaseseed = -1; ai = ai + 1
   elseif k == '--clamp' then A.clamp = v; ai = ai + 2
@@ -121,14 +81,6 @@ while arg ~= nil and arg[ai] ~= nil do
   -- own encoded ramp is counted. See gen_serial.lua's SRC.interp. A PAIR of flags with no default here,
   -- because the point of the pair is a paired A/B on one seed: --interp and --no-interp each state the
   -- condition on the record, where a single flag would leave one arm unlabelled.
-  -- THE SEAM RE-ANCHOR, as a paired flag so the twin can run BOTH arms of the fix on one record. Without
-  -- it the only reachable arm is the shipped default, and a fix cannot be compared against its absence.
-  -- THE MODELLED HANDOVER HOLE, in seconds, because without one there is no defect to repair: the twin
-  -- with no hole is byte-exact in both relock arms, which is a control and not a test. 100e-6 is the
-  -- value that reproduces the hardware's failing cells and verdict text.
-  elseif k == '--hole' then A.hole = tonumber(v); ai = ai + 2
-  elseif k == '--relock' then A.relock = true; ai = ai + 1
-  elseif k == '--no-relock' then A.relock = false; ai = ai + 1
   elseif k == '--interp' then A.interp = true; ai = ai + 1
   elseif k == '--no-interp' then A.interp = false; ai = ai + 1
   -- THE DIGITISER'S ACTUAL RATE, 66e6/ceil(66e6/requested). Same paired-flag reasoning as --interp:
@@ -158,31 +110,6 @@ if A.plan == nil or A.out == nil then
   print('  lua tools/offline_bench.lua --plan out/bench/PLAN.CSV --out out/bench/OFFLINE.csv')
   os.exit(2)
 end
--- REFUSED RATHER THAN DEFAULTED TO EVERY VECTOR. brun.point's gate needs both, so a window with no vids
--- is a run that announces elision and elides nothing -- the silent non-elision that run_bench.py prints
--- a four-line warning about, and the one state in which this record would be mislabelled.
---
-if A.elide == nil and A.elideraw ~= nil then
-  print('REFUSING: --elide ' .. A.elideraw .. ' is not a number of seconds. A window this file cannot')
-  print('  read is treated as OFF everywhere below, so the run would be a free-running lap that was')
-  print('  asked for an eliding one. Seconds, as tools/run_bench.py takes them: --elide 0.01')
-  os.exit(2)
-end
-if A.elide == nil and A.elidevids ~= nil then
-  print('REFUSING: --elide-vids without --elide. The vids alone elide nothing -- brun.point needs the')
-  print('  window as well -- so this would be a free-running run that named the vectors it did not')
-  print('  elide. Add --elide 0.01, which is tools/run_bench.py\'s own default.')
-  os.exit(2)
-end
-if A.elide ~= nil and A.elide > 0 and (A.elidevids == nil or A.elidevids == '') then
-  print('REFUSING: --elide needs --elide-vids. brun.point elides a cell only when brun.elide AND')
-  print('  brun.elide_vids[vid] are both set, so a window on its own produces an ordinary free-running')
-  print('  run wearing the label of an elision one. The list run_bench.py uses is every vector')
-  print('  soakplan.VECTOR_EXPECT holds to \'nodrop\':')
-  print('    lua tools/offline_bench.lua --plan P --out O --elide 0.01 \\')
-  print('        --elide-vids v98a,v98b,v98c,v98d,v99a,v99b,v99c,v99d')
-  os.exit(2)
-end
 
 MD.usb(true)
 MOCKB_SDG({})
@@ -200,10 +127,6 @@ if A.clamp ~= nil then GEN_CLAMP(A.clamp) end
 if A.interp ~= nil then SRC_INTERP(A.interp) end
 if A.truefs ~= nil then SRC_TRUEFS(A.truefs) end
 if A.frontend ~= nil then SRC_FRONTEND(A.frontend) end
--- Applied with the other toggles and not earlier: sdec.seam_relock is a field on the app, so setting it
--- before the load would be overwritten by its own declaration.
-if A.relock ~= nil then sdec.seam_relock = A.relock end
-if A.hole ~= nil then TRIG_HOLE(A.hole) end
 if A.aperture ~= nil then SRC_APERTURE(A.aperture) end
 if A.fracorigin ~= nil then SRC_FRACORIGIN(A.fracorigin) end
 -- TWO COMBINATIONS ARE REFUSED, AND BOTH FOR THE SAME REASON: the run would record a condition it did
@@ -226,36 +149,10 @@ if SRC.aperture and SRC.interp then
   print('  to get the interpolating source model back.')
   os.exit(2)
 end
--- GAP ELISION, AND THE TWO MODEL SWITCHES IT CANNOT WORK WITHOUT. The elision program is a chain of
--- measure blocks the firmware walks, and the scratch buffers are filled by whichever block was live --
--- so with TRIG.walk off the model never advances past the arm and with SRC.trigderive off the source
--- hands every block the same samples. tools/test_elideseam.lua turns both on for its acquisition block
--- for exactly this reason and says why: 'this drives the REAL chain, stream_begin through
--- stream_acquire to stream_decode'. They are the MECHANISM rather than a choice, so they are not
--- separate flags: asking for elision asks for them, and the banner says so.
-local elide_vids = nil
-if A.elide ~= nil and A.elide > 0 then
-  elide_vids = {}
-  local n = 0
-  string.gsub(A.elidevids, '([^,]+)', function(s)
-    s = string.gsub(s, '^%s*(.-)%s*$', '%1')
-    if s ~= '' then elide_vids[s] = true; n = n + 1 end
-  end)
-  if n == 0 then
-    print('REFUSING: --elide-vids ' .. tostring(A.elidevids) .. ' named no vector')
-    os.exit(2)
-  end
-  brun.elide, brun.elide_vids = A.elide, elide_vids
-  TRIG_WALK(true)
-  SRC_TRIGDERIVE(true)
-  print(string.format('gap elision ON at %g s for %d vector(s): %s -- trigger walk and source '
-                      .. 'trigger-derivation on with it', A.elide, n, A.elidevids))
-else
   -- SAID OUT LOUD, as run_bench.py says it: with elision off no cell takes stream_acquire, so the run
   -- covers neither the elision program nor the splice, and the record it writes looks like any other.
   print('gap elision OFF: no cell builds sdec.gap_model, so this run covers neither the elision '
         .. 'program nor the splice')
-end
 print(string.format('stimulus: capture phase %s, envelope %s at %.3f V, reconstruction %s, rate %s, front end %s, aperture %s, origin %s',
                     SRC.phaserand and ('random, seed ' .. tostring(SRC.phaseseed)) or 'fixed at sample 1',
                     tostring(GENLIM.clamp_mode), GENLIM.clamp_v,

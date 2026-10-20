@@ -178,80 +178,9 @@ sdec.armwait_max = 120.0
 -- blend in acq_triggered(). Not on the form: an accidental press costs one retry.
 if sdec.armkey == nil then sdec.armkey = true end
 
--- Gap elision: how long the line must be quiet for the recording to stop keeping it, in seconds. A threshold and
--- not an amount -- once the window has elapsed the recording discards until the line moves again, so what comes
--- out is unbounded and gapelide_max caps the threshold alone. Zero is off and is the default, because an elided
--- record means something different: its time axis is not contiguous and no burst carries a pre-trigger reserve.
--- Options carries it as 'Gap Elide'.
---
--- The window is the one cost that scales: it is recorded as idle at the end of every burst, because the detector
--- cannot know the line stopped until it has elapsed. That is window * fs readings a burst, so 0.1 s at 100 kS/s
--- is 10 000 of them. Expressed in bit times the same cost is constant, about 20 * sa/bit, which is why
--- gap_elide() floors on the bit time and requires a locked rate to derive it from.
--- docs/TRIGGER.md, 'How long the line must stay quiet'.
-sdec.gapelide     = sdec.gapelide or 0
-sdec.gapelide_min = 0.002
-sdec.gapelide_max = 2.0
-
--- The margin on the window, in whole frames. The constraint is not a byte's own run but the COMPARATOR's
--- inter-crossing interval, and the comparator arms on one slope only -- see arm_slope() -- so with idle high and
--- a falling arm the rise out of a space is not a crossing at all. On back-to-back 0x00 the falling crossings are
--- therefore one per FRAME, so the window has to clear framebits and not the ten bit times a single byte suggests:
--- at the widest forced format framebits reaches 13, where a rule written as 10 is 30 % short. A proportionate
--- floor rather than a refusal, the framer resynchronising on the next start bit after a seam.
---
--- What a seam costs is NOT a function of this floor, which earlier versions of this comment implied twice. It is
--- a fixed resume latency of 156 to 208 us between the crossing that releases the wait block and the first reading
--- the measure block stores, so it is there at every window and every rate. The record opens 0.5 to 5 bit times
--- into the first byte of the burst; there is no edge at the true start, so the framer anchors on the splice
--- instead and every sample is late by that much. Under half a bit they stay inside their cells and the seam is
--- free, which is every rate at or below 2400 Bd -- 208 us is 0.50 of a bit there, a near miss rather than a
--- margin. Above it the stop sample lands in the next start bit, the frame fails, and the resync walks three to
--- eight bytes looking for the 1.5 frame mark run that lowercase text never offers. So 4 to 9 payload bytes die at
--- every seam, and a judge that aligns once then counts the whole remainder wrong -- 2 to 3 % of the bytes
--- reported as 33 to 73 %. Measured 2026-10-17 across three vectors and both frame formats.
-sdec.gapelide_frames = 2
--- Blend the eliding arm so block 2 and block 5 do not wait on one event object, which is a fast-path
--- disqualifier in its own right. Off by default: the fast path was measured to cost nothing on the
--- comparator latency, and whether it moves the resume latency -- the quantity that destroys bytes at a
--- seam -- is unmeasured. See the branch in sdec.arm_source.
-sdec.gap_fastpath = sdec.gap_fastpath or false
 
 
--- The enforced window, or nil and the reason it declined. Read by the capture and by the form through this one
--- function, so a typed value cannot mean one thing to the field and another to the trigger model.
-function sdec.gap_elide(baud)
-  local w = tonumber(sdec.gapelide)
-  if w == nil or w <= 0 then return nil end
-  if baud == nil then baud = tonumber(sdec.force_baud) end
-  -- No rate means no frame to measure the floor against, and an unchecked window is the mid-byte cut the floor
-  -- exists to prevent. Declined rather than passed through at the clock floor: every path that can elide has a
-  -- locked rate already, stream_samples() being unable to size a recording without one, so the floor is
-  -- derived on all of them and this closes the remaining case instead of guessing at it.
-  if baud == nil or baud <= 0 then
-    return nil, 'gap elision off -- lock the baud rate first'
-  end
-  -- The forced format where there is one, the 8N1 default where there is not. All three forced fields widen the
-  -- frame, not the width alone.
-  local nbits = sdec.force_nbits or 8
-  local parbits = 0
-  if sdec.force_par ~= nil and sdec.force_par ~= sdec.PAR_NONE then parbits = 1 end
-  local framebits = 1 + nbits + parbits + (sdec.force_nstop or 1)
-  local lo = (sdec.gapelide_frames * framebits) / baud
-  -- The clock floor as well, and past 10 000 Bd at 8N1 it is the binding one: two frames there are under 2 ms.
-  if lo < sdec.gapelide_min then lo = sdec.gapelide_min end
-  -- Refused rather than clamped when the floor the rate derives is past the ceiling: clamping that way lets the
-  -- ceiling win and hands back a window under the floor, which is the mid-frame cut the floor exists to
-  -- prevent. Reachable from the panel rather than only from a script, the Baud Rate field's own minimum being
-  -- 0. gap_why() then has a reason to put on the glass instead of the feature quietly misbehaving.
-  if lo > sdec.gapelide_max then
-    return nil, string.format('gap elision off -- %g Bd needs %.3f s, over the %.1f s ceiling',
-                              baud, lo, sdec.gapelide_max)
-  end
-  if w < lo then w = lo end
-  if w > sdec.gapelide_max then w = sdec.gapelide_max end
-  return w
-end
+
 
 -- Both read through one function each, by the capture and by the form, so a typed value cannot mean one thing
 -- to the field and another to the comparator. Clamped rather than refused.
@@ -389,7 +318,6 @@ function sdec.clear_measured()
   sdec.acq_fs, sdec.acq_fs_est = nil, nil
   -- Which formula reads the next record's rate. Left set, an elided capture's successor measures its rate from
   -- sampled windows when the whole span would have been right, and the reverse costs the elision ratio.
-  sdec.acq_elided = nil
   -- arm_slope() and arm_comparator() prefer these where they exist, so a pair left over from a capture of a silent
   -- line would arm the next capture of a busy one at the wrong level, on the wrong edge.
   sdec.arm_thr, sdec.arm_idle = nil, nil
@@ -1006,7 +934,7 @@ sdec.segfs_nwin = sdec.segfs_nwin or 100
 sdec.segfs_gapmult = sdec.segfs_gapmult or 8
 
 -- Fraction of a stride's own duration that counts as a seam when the bursts are being counted for the note row.
--- See gap_report: the floor is the timestamps' accumulated jitter and the ceiling is the shortest seam worth
+-- The floor is the timestamps' accumulated jitter and the ceiling is the shortest seam worth
 -- reporting, and five per cent clears the first by 15x while catching a seam of a fortieth of a window.
 sdec.gapseg_frac = sdec.gapseg_frac or 0.05
 
@@ -1090,111 +1018,11 @@ function sdec.acq_seg_fs(buf, n)
   return m
 end
 
--- What elision actually did to the record in hand, for the note line. -> kept seconds, elided seconds, segments,
--- or nil when the record cannot be read. Cheap: it reuses the sampled windows' verdict rather than walking.
---
--- Worth reporting rather than inferring, and the segment count is the half that makes it self-diagnosing.
--- Elision pays only while a burst is longer than its own detector window, since one window of idle is recorded
--- at the end of every burst -- so 'elided 1.2 s of 1.6 s' alone cannot distinguish a record that saved a minute
--- from one that is nine tenths detector window. The segment count says which.
-function sdec.gap_report(buf, n, fs)
-  if buf == nil or n == nil or n < 2 or fs == nil or fs <= 0 then return nil end
-  local first = sdec.acq_first(buf, n)
-  local last = first + n - 1
-  if last > n then last = last - n end
-  local t1, tn = nil, nil
-  local ok = pcall(function()
-    local ts = buf.relativetimestamps
-    if ts ~= nil then t1, tn = ts[first], ts[last] end
-  end)
-  if not ok or t1 == nil or tn == nil then return nil end
-  local span = tn - t1
-  if span <= 0 then return nil end
-  local kept = n / fs
-  local elided = span - kept
-  if elided < 0 then elided = 0 end
-  -- The seams are counted rather than divided out. Dividing the elided total by the window would assume every gap is
-  -- one window long, and a gap is however long the device stayed quiet -- 2 to 120 s is the range this feature
-  -- exists for. So the discontinuities are found, and a stride makes that cheap: every burst carries at least
-  -- one detector window of recorded tail, so it is at least window * fs readings, and a stride of half that
-  -- cannot step over a whole burst. At most one seam therefore falls between consecutive probes.
-  local segs = 1
-  local win = sdec.strm_elide
-  if win ~= nil and win > 0 then
-    local stride = math.floor(win * fs / 2)
-    if stride < 1 then stride = 1 end
-    -- The probes' intervals are collected first and the threshold taken from the smallest of them, so the
-    -- record calibrates its own test. Deriving the threshold from 1/fs instead puts a RATE in it, and the rate
-    -- available here can be the commanded one -- which this instrument misses by up to 4.9 % (commanded
-    -- 100 000, delivered 95 143.78; docs/MEASUREMENTS.md, 'A consecutive timestamp delta jitters'). Against a
-    -- 5 % threshold that reads a contiguous record as forty bursts. A stride with no seam in it is the
-    -- shortest there is, and no error in fs can reach it.
-    --
-    -- What the threshold must still clear is the timestamps' own accumulated jitter over one stride: 32 ns a
-    -- delta, at worst 0.3 % of the stride even with every deviation the same way, against 5 %. And a seam can
-    -- be far shorter than a window -- its elided time is the next crossing less the last one less the window --
-    -- so a threshold tied to the window would miss seams and undercount the bursts.
-    local iv, ni, rest, restn = {}, 0, nil, nil
-    -- Guarded at the proxy read like every other attribute here; a partial scan reports the seams it found
-    -- rather than abandoning a kept/elided pair that is already correct.
-    pcall(function()
-      local ts = buf.relativetimestamps
-      if ts == nil then return end
-      local i = 1
-      local pi = first
-      local pt = ts[pi]
-      while i + stride <= n do
-        local j = i + stride
-        local pj = first + j - 1
-        if pj > n then pj = pj - n end
-        local tj = ts[pj]
-        if tj == nil or pt == nil then break end
-        ni = ni + 1
-        iv[ni] = tj - pt
-        i, pi, pt = j, pj, tj
-      end
-      -- The tail is probed too, because the loop above stops a whole stride short of the end and a seam there
-      -- would go uncounted. It is the common case rather than an edge: the 'full' exit cuts the record at an
-      -- arbitrary point mid-burst, so the final partial burst is shorter than a stride more often than not.
-      if i < n and pt ~= nil then
-        local pl = first + n - 1
-        if pl > n then pl = pl - n end
-        local tl = ts[pl]
-        if tl ~= nil then rest, restn = tl - pt, n - i end
-      end
-    end)
-    if ni > 0 then
-      local mn, k = iv[1], nil
-      for k = 2, ni do
-        if iv[k] < mn then mn = iv[k] end
-      end
-      local lim = mn * (1 + sdec.gapseg_frac)
-      local gaps = 0
-      for k = 1, ni do
-        if iv[k] > lim then gaps = gaps + 1 end
-      end
-      -- Scaled to its own length, the residual being a shorter span than a stride.
-      if rest ~= nil and restn ~= nil and restn > 0 and
-         rest > mn * restn / stride * (1 + sdec.gapseg_frac) then
-        gaps = gaps + 1
-      end
-      segs = gaps + 1
-    end
-  end
-  return kept, elided, segs
-end
 
 -- The measured rate, or the requested one with a flag saying so: every byte is scaled by acq_fs, so a silent
 -- substitution would report confident bytes from an untrustworthy number.
 function sdec.acq_fs_or_requested(buf, n)
-  local m = nil
-  if sdec.acq_elided then
-    -- No fall-through to the whole-span formula on an elided record: that number is low by the elision ratio,
-    -- and a confidently wrong rate scales every bit time. An admitted guess is the honest failure here.
-    m = sdec.acq_seg_fs(buf, n)
-  else
-    m = sdec.acq_measure_fs(buf, n)
-  end
+  local m = sdec.acq_measure_fs(buf, n)
   if m ~= nil then
     sdec.acq_fs_est = nil
     return m
@@ -1505,7 +1333,7 @@ end
 -- capture. A mode change from the 240-byte frame to 8 kB or 32 kB is now a clear and nothing else.
 --
 -- Idempotent, because sdec.start() can run more than once per power cycle and a second allocation on top
--- of the first would strand the first. The scratches come from gap_scratches, which already reuses its
+-- of the first would strand the first. It already reuses its
 -- own set, so calling it here is what makes the twelve permanent rather than per-capture.
 -- ONE STATIC BUFFER PER CAPTURE MODE, each oversized for the worst case its own mode can ask for. The
 -- totals are chosen to land on the operator's 6 500 000-reading budget exactly:
@@ -1540,7 +1368,6 @@ end
 --                         The literal and not sdec.acq_bufcap, which holds the same figure: that is
 --                         assigned several hundred lines below this table, so naming it here would read
 --                         nil. test_serial asserts the two agree.
---     scratch    24 576   twelve at gap_scratchcap.
 --
 -- WHY NOT ONE BUFFER FOR EVERYTHING, which is what the operator asked for and would be simpler. An armed
 -- capture stores the buffer it is handed, so a 240-byte frame capture sharing the 6 000 000-reading record
@@ -1685,28 +1512,21 @@ function sdec.acq_isstatic(v)
   for i = 1, table.getn(sdec.acq_framerungs) do
     if sdec.acq_bufs[sdec.acq_rungid(sdec.acq_framerungs[i])] == v then return true end
   end
-  if sdec.gapbufs ~= nil then
-    for i = 1, table.getn(sdec.gapbufs) do
-      if sdec.gapbufs[i] == v then return true end
-    end
-  end
   return false
 end
 
 function sdec.acq_isours(v)
   if v == nil then return false end
-  if v == sdec.buf or v == sdec.gapbuf then return true end
+  if v == sdec.buf then return true end
   return sdec.acq_isstatic(v)
 end
 
--- Readings the static set is holding right now, across the plan, the frame ladder and the scratches.
+-- Readings the static set is holding right now, across the plan and the frame ladder.
 --
 -- For whatever has to reason about what the pool has LEFT: these are allocated and the instrument does not
 -- have them to give, so any figure derived from the pool without subtracting them describes a machine with
 -- no app running on it. Live-checked through acq_bufhave, so a refused or dropped buffer counts as zero
--- rather than as its planned size. The scratches are counted at gap_scratchcap rather than read back, which
--- keeps this free of a pcall site of its own -- lint_tsp counts sites and the file is already over its
--- ceiling.
+-- rather than as its planned size.
 -- Second result is the RECORD's own capacity, from the same pass. A caller wanting both -- bufmax_for does,
 -- to subtract everything except the record -- must not ask twice: between two passes the record can die,
 -- which leaves a non-nil capacity beside a total that no longer contains it and a subtraction that goes
@@ -1723,16 +1543,6 @@ function sdec.acq_bufheld()
   end
   for i = 1, table.getn(sdec.acq_framerungs) do
     local _, c = sdec.acq_bufhave(sdec.acq_rungid(sdec.acq_framerungs[i]))
-    if c ~= nil then tot = tot + c end
-  end
-  if sdec.gapbufs ~= nil then
-    tot = tot + table.getn(sdec.gapbufs) * (sdec.gap_scratchcap or 0)
-  end
-  -- The single scratch too, which is not one of the twelve and is not gap_scratchcap: gap_scratch sizes it
-  -- from the window and the rate, so at the widest window and 1 MS/s it is half a million readings on its
-  -- own. Read back rather than assumed for that reason.
-  if sdec.gapbuf ~= nil then
-    local c = sdec.bufcap(sdec.gapbuf)
     if c ~= nil then tot = tot + c end
   end
   return tot, rcap
@@ -1830,9 +1640,6 @@ function sdec.acq_bufinit()
     end
   end
   sdec.acq_rungok, sdec.acq_rungwant = nrungok, nrung
-  local scr = sdec.gap_scratches(sdec.gap_nscratch, nil, nil)
-  sdec.acq_scrgot = 0
-  if scr ~= nil then sdec.acq_scrgot = table.getn(scr) end
   -- Point sdec.buf at the mode in force so the first capture does not have to.
   local b, cap = sdec.acq_bufmode()
   if b ~= nil then
@@ -1850,8 +1657,6 @@ end
 -- Hand the whole set back, for the app's exit. Deleted rather than dropped: a nil over the handle strands
 -- the readings in a pool the next launch has to find room in.
 function sdec.acq_buffree()
-  sdec.gap_release_all()
-  sdec.gap_release()
   sdec.trig_settle()
   -- Was sdec.buf one of the set? Asked BEFORE the loop, which empties the slots any later test would read.
   local bufwasours = sdec.acq_isstatic(sdec.buf)
@@ -2092,10 +1897,6 @@ function sdec.reset_options()
   sdec.trigext = false
   sdec.trigext_only = false
   sdec.fc_out = false
-  -- Off, and the scratch handed back with it. Off by default is a hard requirement -- an elided record has no
-  -- reserve and a time axis that is not contiguous -- and Reset not clearing it is a way to violate that.
-  sdec.gapelide = 0
-  pcall(sdec.gap_release)
   return true
 end
 
@@ -2667,23 +2468,7 @@ function sdec.arm_source()
   -- different handover: the 156-208 us between the crossing that releases block 2 and the first reading block 3
   -- stores, which is what destroys 4 to 9 payload bytes at every seam above 2400 Bd. Whether the fast path moves
   -- that is a measurement nobody has taken. docs/TRIGGER.md, 'The low-latency flag'.
-  if sdec.gap_fastpath and not blended and useanalog and sdec.trigmode ~= 'free'
-     and sdec.gapelide ~= nil and tonumber(sdec.gapelide) ~= nil and tonumber(sdec.gapelide) > 0 then
-    local fok = pcall(function()
-      trigger.blender[1].reset()
-      trigger.blender[1].orenable = true
-      trigger.blender[1].stimulus[1] = ev
-    end)
-    if fok then
-      ev = trigger.EVENT_BLENDER1
-      blended = true
-      sdec.gap_fastblend = true
-    else
-      sdec.gap_fastblend = nil
-    end
-  else
-    sdec.gap_fastblend = nil
-  end
+  sdec.gap_fastblend = nil
   sdec.trigblended = blended
   return ev, useanalog, blended
 end
@@ -2749,585 +2534,20 @@ function sdec.arm_comparator(useanalog, slope)
   end)
 end
 
--- ============================================================================
--- Gap elision: keep the traffic, discard the dead air
--- ============================================================================
--- The bin the gap's samples go into, made once and reused. -> the buffer, or nil when the pool refused it.
---
--- Small and FIXED rather than scaled to the gap, which is the one sizing that looks wrong and is not: 2000
--- readings behaved identically to 400 000 on the instrument -- same record at the same indices, the same
--- event-log delta, still reaching IDLE -- because fillmode = 1 laps the ring silently. So a two-minute gap needs
--- no more scratch than a half-second one. docs/TRIGGER.md, 'The scratch'.
-function sdec.gap_scratch(win, fs)
-  local want = 2000
-  if win ~= nil and fs ~= nil and fs > 0 then
-    local w = math.ceil(0.25 * win * fs)
-    if w > want then want = w end
-  end
-  if sdec.gapbuf ~= nil then
-    local cok, cap = pcall(function() return sdec.gapbuf.capacity end)
-    if cok and cap ~= nil and cap >= want then
-      sdec.bufclear(sdec.gapbuf)
-      sdec.acq_fillmode(sdec.gapbuf)
-      return sdec.gapbuf
-    end
-    -- Deleted before being dropped: a nil over the handle strands the readings in the pool instead of freeing
-    -- them, and the pool is shared with the record.
-    sdec.bufdel(sdec.gapbuf)
-    sdec.gapbuf = nil
-  end
-  local nb = sdec.bufmake(want)
-  if nb == nil then return nil end
-  sdec.gapbuf = nb
-  sdec.acq_fillmode(sdec.gapbuf)
-  return sdec.gapbuf
-end
 
--- How many gaps the program keeps a scratch for. One is the shipped behaviour and reuses a single buffer for
--- every gap, which is why only the last handover survives a capture.
---
--- What more than one is worth. The record resumes a latency after the crossing that released the wait, so the head
--- of every burst -- its start bit and, at 19200 Bd, about two data bits after it -- is missing from the record
--- and present in the scratch block 1 was still filling. With one scratch the next gap overwrites it. With one
--- per gap every head survives and the decoder can put them back, which is the only route to a byte-exact seam
--- above 2400 Bd: no shift can recover samples that were never recorded, and these were.
---
--- THE PAIRING IS BY POSITION, and this paragraph said the opposite until it was grepped: there is no
--- timestamp pairing anywhere, and no scratch timestamp is read on any path -- gap_splice_plan takes scratch
--- ((j-1) mod ns) + 1 for seam j, by the program's own counter, and buf.relativetimestamps is read only by
--- gap_seams, on the RECORD, to find the seams in the first place. A wrap is handled, the orphan rule
--- refusing the early seams rather than approximating them, so position pairing is sound as long as
--- gap_seams' count IS the burst count -- and on the 2026-10-18 lap it is: seams minus one matches the
--- gaps the record's own span holds, to within one, on every 160 kS/s cell. The orphan cap therefore
--- binds on geometry and not on a miscount, which is what a reader of splorph needs to know. A timestamp
--- pairing would not need that condition to hold and is the repair if it ever stops holding.
--- Blocks the trigger model's store holds, measured. docs/TRIGGER.md, 'The six blocks'.
-sdec.gap_blockstore = 63
--- 5 blocks a group and one branch to close the loop, so this is what the store can hold. DERIVED and not
--- declared: it read 12 beside a comment deriving 12 from 63, which let either move without the other.
-sdec.gap_maxscratch = math.floor((sdec.gap_blockstore - 1) / 5)
--- As many as the program allows, and the ceiling is the default because one scratch holds one burst's head:
--- a silent drop to 1 would cost recovered bytes with nothing reporting it, which is why
--- tools/test_trigmodel.lua asserts the default IS the ceiling -- every other check scales with it.
--- It is also a hard limit on what the splice can repair. The splice is worth nothing unless every INTERIOR
--- seam gets its head back: the scorers align on one shift, so one unrepaired interior seam shifts the
--- remainder against everything before it. tools/test_elideseam.lua, six bursts at 9600 Bd -- byte-exact
--- with the record's opening unrepaired, its offset being that shift; 16 % with one interior seam left;
--- 20 % with no splice at all. The last nscratch seams are repaired and the opening is free, so the limit
--- is nscratch + 1 = 13 bursts, against about 15 000 readings a recorded burst -- its traffic plus 1 to 2
--- detector windows -- for the 130-byte gap vectors at 9600 Bd and 100 kS/s:
---     bench sdec.n 20 000 -> 2 bursts, 0 left;  panel 8 kB 853 334 -> 57, 45 left;
---     panel 32 kB 3 413 334 -> 227 bursts, 215 left.  Reported as spl_why = 'partial'.
--- Raising the count is not available, the store holding 63 blocks against 5 a group, so closing it needs
--- a bound on the recording or a synthesised shift, and that wants the resume latency far tighter than the
--- 156-208 us the record brackets it at.
-sdec.gap_nscratch = sdec.gap_nscratch or sdec.gap_maxscratch
-sdec.gapbufs = sdec.gapbufs or {}
 
--- One scratch holds one burst head, so its capacity is gap_headsec at the highest rate the app records at:
--- 2 ms of 1 MS/s is 2000 readings, and 2048 covers every rate with one size. Fixed rather than scaled to fs
--- because the set is permanent -- a per-capture size would rebuild all twelve whenever the rate changed, and
--- a resize discards every reading. Twelve cost 24 576 against the record's 6 000 000.
-sdec.gap_scratchcap = 2048
 
--- A scratch per gap, allocated once per power cycle. -> a list of buffers, or nil when none could be made.
-function sdec.gap_scratches(nwant, win, fs)
-  if nwant == nil or nwant < 1 then nwant = 1 end
-  if nwant > sdec.gap_maxscratch then nwant = sdec.gap_maxscratch end
-  local want = sdec.gap_scratchcap
-  -- Reuse, which is the normal path after the first capture: the set is there and big enough, so clearing it
-  -- is the whole cost. The list returned is the first nwant of them and sdec.gapbufs keeps all of them, so a
-  -- capture that asks for fewer does not strand the rest in a pool the record shares.
-  local have, i = sdec.gapbufs, nil
-  if have ~= nil and table.getn(have) >= nwant then
-    local fits = true
-    for i = 1, nwant do
-      local cap = sdec.bufcap(have[i])
-      if cap == nil or cap < want then fits = false end
-    end
-    if fits then
-      local out = {}
-      for i = 1, nwant do
-        sdec.bufclear(have[i])
-        sdec.acq_fillmode(have[i])
-        out[i] = have[i]
-      end
-      return out
-    end
-  end
-  -- Released first, so a set that did not fit does not sit beside the one replacing it.
-  sdec.gap_release_all()
-  local out = {}
-  for i = 1, nwant do
-    -- bufmake reads the capacity back for acq_make_buffer's reason: a refused buffer.make returns nil with
-    -- pcall reporting success, so a set short of nwant must be reported by its length and not by an error.
-    local nb, cap = sdec.bufmake(want)
-    if cap == nil then break end
-    sdec.acq_fillmode(nb)
-    out[i] = nb
-  end
-  if table.getn(out) < 1 then return nil end
-  sdec.gapbufs = out
-  return out
-end
 
--- How much of each burst's head a scratch must be able to hold, in seconds. The resume latency is the quantity
--- it has to cover and the record brackets it at well under a millisecond; 2 ms is several times that, and at
--- 100 kS/s it is 200 readings.
-sdec.gap_headsec = 0.002
 
--- Hand the per-gap set back. Deleted rather than dropped, for gap_release's reason: a nil over the handle
--- strands the readings in the pool instead of freeing them.
-function sdec.gap_release_all()
-  if sdec.gapbufs == nil then return end
-  local i
-  for i = 1, table.getn(sdec.gapbufs) do
-    sdec.bufdel(sdec.gapbufs[i])
-  end
-  sdec.gapbufs = {}
-end
 
--- Hand the scratch back, for an operator who tried elision and turned it off again: the pool is shared with the
--- record, so a buffer nobody is using is capacity the next capture cannot have.
-function sdec.gap_release()
-  if sdec.gapbuf == nil then return false end
-  local ok = sdec.bufdel(sdec.gapbuf)
-  sdec.gapbuf = nil
-  return ok
-end
 
--- How far above one sample interval a timestamp step has to be before it is a seam rather than jitter. The
--- quantity being separated is enormous -- the elided part of a gap is the gap less the two windows the record
--- keeps and less the head the scratch holds, so hundreds of milliseconds against 10 us -- and the jitter to
--- clear is 32 ns. Anything between 2 and win*fs would do; 4 is chosen to be obviously neither.
-sdec.gap_seamdt = 4
 
--- How many bit times of unbroken idle mark the end of the silence before a burst, when walking a scratch
--- backwards. A FLOOR and not the figure used: gap_tail raises it to the frame's own width, for the reason
--- below. The silence it has to fall short of is at least one detector window -- 100 bit times at 9600 Bd --
--- so there are two orders of magnitude to sit inside, and the reason it cannot simply be "the trailing run
--- away from idle" is that a data bit at the idle level is indistinguishable from idle: 0xFF carries eight.
---
--- WHY A FIXED NUMBER OF BIT TIMES CANNOT BE THE WHOLE RULE. It has to exceed the head the scratch holds, and
--- the head is the resume latency -- fixed in TIME, 156 to 208 us -- so in bit times it grows with the rate:
--- 1.5 at 9600 Bd and 18 at 115200. Past a frame's width the head carries frame boundaries of its own, and a
--- mark run across one reaches several bit times, so a three-bit-time rule stops INSIDE the head and anchors
--- on the next frame's start bit. gap_tail takes the larger of this and framebits, which is what the longest
--- mark run inside a burst is bounded by. tools/test_elideseam.lua measures both sides of it.
-sdec.gap_idlerun = 3
 
--- And how much idle to carry across with the head. The framer anchors on the first edge it finds, so it needs
--- idle ahead of the start bit rather than a stream that opens mid-transition.
-sdec.gap_idlemargin = 2
--- THE RECORD'S RESUME LATENCY, in SECONDS, which is what gap_tail converts the recovered head against to
--- recover the handover hole. A time and not a reading count: the same latency is 0.58 of a bit at 9600 Bd
--- and 23 bit times at 115 200, so a figure in bit times would be right at one rung of the ladder and wrong
--- at the rest.
---
--- 156 us is the BOTTOM of the band the 2026-10-17 archive bounds it to, 156 to 208, and it is the end the
--- model measures directly: test_elideseam asserts the recovered head at a continuous handover is 15
--- readings at 100 kS/s, which IS 156 us. 208 was tried first, on an argument from the archive's median
--- recovered head, and it over-padded every seam by 5 to 6 readings -- which cost the byte-exact cells 4 %
--- of their payload while still repairing the broken ones. An over-pad is not free and that is the measured
--- price of guessing high.
---
--- NOT A TUNING KNOB AND NOT YET CONFIRMED ON HARDWARE. It is one constant standing in for a firmware
--- property, and the padding it drives repairs holes only to about 0.8 of a bit time -- past that the hole
--- has swallowed most of a bit of real signal and no insertion recovers it, measured as a cliff between 8
--- and 10 readings. Set it to nil to disable the padding outright.
--- OFF BY DEFAULT, and that is a statement about evidence rather than about the repair. The padding is
--- measured to work offline -- holes of 6 and 8 readings go from 29 % and 28 % to 100 % with no cost to the
--- byte-exact cases -- but it has never run on the instrument, and two suite checks exist precisely to pin
--- the UNPADDED mechanism this would hide. So it ships inert and is enabled per run by
--- run_bench.py --gap-resume, which records the value on the row. Turn it on in the tree only once a lap
--- has been judged with it.
-sdec.gap_resume = sdec.gap_resume or nil
 
--- Where the record's bursts begin, in time order. -> a table of indices into the time-ordered record, [1] = 1
--- always, one entry per burst.
---
--- The record is not continuous and is not meant to be: block 3's measure runs on through the delay loop, so a
--- burst keeps the trailing silence of up to two detector windows, and then the record jumps to the next burst.
--- What that step omits is the gap less that tail and less the head parked in the scratch, which is what makes
--- this test need no tuning.
---
--- Rotation is handled for form rather than need: the record is 6 000 000 readings and runs 13 670 to 56 952, so
--- acq_first answers 1 and the offset is inert. It is here because a sized fallback record can lap.
-function sdec.gap_seams(buf, n, fs)
-  local out = {1}
-  if buf == nil or n == nil or n < 2 or fs == nil or fs <= 0 then return out end
-  -- Read bare. A guard on our own call is the first thing the pcall budget takes, and the two failures it
-  -- covered are covered elsewhere: an absent attribute reads nil, which is the test below, and a dead handle
-  -- raises into stream_decode's own pcall around the plan build.
-  local rt = buf.relativetimestamps
-  if rt == nil then return out end
-  local lim = sdec.gap_seamdt / fs
-  local off = sdec.acq_first(buf, n) - 1
-  local nout, prev, i = 1, nil, nil
-  for i = 1, n do
-    local p = i + off
-    if p > n then p = p - n end
-    local t = rt[p]
-    if t ~= nil then
-      if prev ~= nil and (t - prev) > lim then
-        nout = nout + 1
-        out[nout] = i
-      end
-      prev = t
-    end
-  end
-  return out
-end
 
--- The readings of a scratch that belong to the burst the record picked up late: the head, plus a little idle
--- ahead of it. -> a table in time order and its length, or nil where the group never fired or holds no head.
---
--- `thr` is the RECORD's decision threshold and not one derived here. A scratch is 20 ms of silence against
--- 0.16 ms of head, so sig_levels on it finds no separable pair and refuses -- the level pair has to come from
--- the capture that has both levels in it.
---
--- Idle is read as whichever side of the threshold the scratch mostly sits on. That is the same majority
--- argument and it means this needs no view on which way round the line idles, so an inverted vector costs it
--- nothing.
---
--- A group that never ran reads n = 0, because gap_scratches clears the whole set on reuse. That is what tells
--- an unused scratch from a used one without buffer.getstats, which this firmware has but the offline harness
--- does not.
-function sdec.gap_tail(scr, thr, sabit, fs)
-  if scr == nil or thr == nil then return nil end
-  -- Bare, for gap_seams' reason. n is type-tested rather than nil-tested because a proxy that answers
-  -- something other than a number must refuse rather than compare.
-  local n = scr.n
-  if type(n) ~= 'number' or n < 2 then return nil end
-  local rd = scr.readings
-  if rd == nil then return nil end
-  if sabit == nil or sabit <= 0 then return nil end
-  local off = sdec.acq_first(scr, n) - 1
-  local nhi, i, p = 0, nil, nil
-  for i = 1, n do
-    p = i + off
-    if p > n then p = p - n end
-    local v = rd[p]
-    if v ~= nil and v > thr then nhi = nhi + 1 end
-  end
-  local idlehi = (2 * nhi >= n)
-  -- Backwards to the burst. `run` counts consecutive idle readings and `lastnon` holds the earliest non-idle
-  -- reading seen so far, so when the run reaches idlerun bit times the burst's own first reading is already in
-  -- hand. Taking i + 1 instead would answer the END OF THE SILENCE and carry idlerun bit times of idle that
-  -- the margin then doubles.
-  -- THE RUN HAS TO BE LONGER THAN ANY RUN THE HEAD CAN CONTAIN, or this scan stops inside the head and
-  -- anchors on the next frame's start bit -- which hands back the last fragment of the head while
-  -- gap_splice_plan, testing only that a tail came back, calls it a splice and reports 'ok'. A mark run
-  -- inside a burst is bounded by the frame: trailing data bits, the parity bit and the stop bits may all be
-  -- mark, and the next frame's start bit breaks it. So framebits is the floor, and sdec.gap_idlerun is the
-  -- other one. Raised, never lowered, so a scratch whose elided idle is short still refuses its tail rather
-  -- than anchoring on a run this cannot tell from the gap.
-  local nbits = sdec.force_nbits or 8
-  local parbits = 0
-  if sdec.force_par ~= nil and sdec.force_par ~= sdec.PAR_NONE then parbits = 1 end
-  local framebits = 1 + nbits + parbits + (sdec.force_nstop or 1)
-  local runbits = sdec.gap_idlerun
-  if framebits > runbits then runbits = framebits end
-  local need = math.ceil(runbits * sabit)
-  if need < 2 then need = 2 end
-  local run, s, lastnon = 0, nil, nil
-  for i = n, 1, -1 do
-    p = i + off
-    if p > n then p = p - n end
-    local v = rd[p]
-    local isidle = (v == nil) or ((v > thr) == idlehi)
-    if isidle then
-      run = run + 1
-      if run >= need and lastnon ~= nil then
-        s = lastnon
-        break
-      end
-    else
-      run = 0
-      lastnon = i
-    end
-  end
-  -- Nil means one of two things and neither is spliceable: the scratch is idle throughout, so the record did
-  -- not pick the burst up late and there is no head to put back; or it never went quiet, so it is not a gap's
-  -- scratch and its oldest reading is an arbitrary cut.
-  if s == nil then return nil end
-  local keep = math.ceil(sdec.gap_idlemargin * sabit)
-  s = s - keep
-  if s < 1 then s = 1 end
-  -- Where the burst's own start edge sits inside the returned tail, 1-based: the margin's length plus one,
-  -- unless the margin was clamped at the scratch's oldest reading. The decoder re-locks from this edge
-  -- (sdec.ua_seam_relock), so it has to be the measured position and not a re-derivation of `keep`.
-  local hoff = lastnon - s + 1
-  local out, nk = {}, 0
-  for i = s, n do
-    p = i + off
-    if p > n then p = p - n end
-    nk = nk + 1
-    out[nk] = rd[p]
-  end
-  if nk < 1 then return nil end
-  -- THE HANDOVER HOLE, PUT BACK AS DURATION. Restoring the head is not enough: the samples between the
-  -- scratch's last reading and the record's first reached NEITHER buffer, so butting the two halves
-  -- together compresses time at every seam and the framer carries a wrong bit phase through the rest of
-  -- the burst. That is the lap's `splwhy=ok` beside a third of the payload.
-  --
-  -- DERIVED PER CAPTURE, from one constant. The scratch holds the burst from the crossing up to the
-  -- instant the record opens LESS the hole, so the recovered head is (resume latency - hole) and
-  --
-  --     hole = gap_resume * fs - recovered head
-  --
-  -- with the recovered head measured here, every capture. That is why this is not a hole constant: the
-  -- hole itself ran 1 to 46 readings across one lap and a fixed value would be wrong on most cells,
-  -- while the latency it is derived from is a firmware property.
-  --
-  -- fs IS OPTIONAL and nil disables the padding, which keeps every existing caller -- the suites pass
-  -- three arguments -- on the old behaviour rather than silently changing what they assert.
-  if fs ~= nil and fs > 0 and sdec.gap_resume ~= nil and sdec.gap_resume > 0 then
-    local headrd = nk - keep                       -- the burst part, less the idle margin kept above
-    local want = math.ceil(sdec.gap_resume * fs)
-    local pad = want - headrd
-    -- A NEGATIVE PAD IS AN OVERLAP AND IS LEFT ALONE. Measured: an overlap of the same width costs no
-    -- alignment at all, so there is nothing to repair and trimming would discard real samples.
-    if pad > 0 then
-      -- Bounded, because this inserts samples the record will be decoded over: a runaway pad from a
-      -- misread head would push the splice past the window the plan's total describes. One frame is the
-      -- most a sub-bit hole can need and the measured worst is a fifth of that.
-      local cap = math.ceil(framebits * sabit)
-      if pad > cap then pad = cap end
-      local idlev = thr - 1
-      if idlehi then idlev = thr + 1 end
-      local pi
-      for pi = 1, pad do
-        nk = nk + 1
-        out[nk] = idlev
-      end
-      sdec.spl_padrd = (sdec.spl_padrd or 0) + pad
-      sdec.spl_npad = (sdec.spl_npad or 0) + 1
-    end
-  end
-  return out, nk, hoff
-end
 
--- The record with every burst's head put back, in time order. -> the sample array and its length, or nil where
--- there was nothing to splice and the caller should use acq_copy.
---
--- WHAT THIS IS FOR. The record resumes a latency after the line crosses, so every burst in it begins part way
--- into its own start bit. The bytes lost to that are few -- 1.2 a seam, measured -- but the framer anchors on
--- the first edge it finds, and an anchor half a bit out puts every later bit centre in the burst half a bit out
--- with it. That is the damage: 62.8 % of bytes right on one shift against 98.2 % per segment. Restoring the
--- head restores the anchor.
---
--- WHY IT CAN BE COMPLETE. Entering either measure block stops the other, so the scratch stores right up to the
--- instant the record takes over and the latency is not a hole in the acquisition -- it is in the scratch. What
--- the spliced stream loses is the DURATION of the elided idle, and the framer reads idle for position rather
--- than for length, so the result is a waveform it already handles: burst, idle, start bit, burst.
---
--- PAIRING. Burst j's head is in scratch ((j-1) mod ns) + 1, by the program's own counter: gap_model unrolls one
--- group per scratch and each group's measure block names its own buffer. Burst 1 is included -- scratch 1 holds
--- the arm's own latency, so the record's opening is short for the same reason a seam is.
---
--- AND PAST ns BURSTS THE EARLY ONES ARE REFUSED, not approximated. The program's closing BRANCH_ALWAYS returns
--- to group 1, so scratch i holds only the LAST burst that used it; splicing it onto an earlier burst would
--- prepend a different gap's samples. Only the final ns bursts can be paired, and the rest keep the head they
--- came with.
--- The plan, in SPLICED coordinates: where each recovered head goes and what it holds. -> the plan, or nil when
--- there is nothing to put back and the caller should read the record as it stands.
---
--- Positions are spliced rather than record indices because both consumers want them that way: the reader maps
--- a spliced position to its source, and the array build emits in spliced order. Keeping record indices here
--- would make each consumer re-derive the same running offset.
-function sdec.gap_splice_plan(buf, n, scrs, thr, sabit, fs)
-  if buf == nil or n == nil or n < 2 or scrs == nil or thr == nil then return nil end
-  if type(scrs) ~= 'table' or scrs[1] == nil then return nil end
-  local ns = table.getn(scrs)
-  if ns < 1 then return nil end
-  local seams = sdec.gap_seams(buf, n, fs)
-  local nseam = table.getn(seams)
-  -- CLEARED HERE, for the reason this file repeats: gap_tail accumulates into them per seam, so a plan
-  -- that pads nothing would otherwise report the last padded capture's figures as its own. The stale-field
-  -- class has cost this bench four times.
-  sdec.spl_padrd, sdec.spl_npad = 0, 0
-  -- hoff[j] is where the burst's start edge sits inside tail j (gap_tail's third return), so the decoder
-  -- can tell the restored head from the record that follows it. The two are not interchangeable: the
-  -- head's edge is real but the record's first reading is a measured 0.2-0.9 ms later than it on
-  -- hardware at 100 kS/s, so a framer that carries the head's phase into the record cascades.
-  local pl = {n = 0, pos = {}, len = {}, tail = {}, hoff = {}, total = n}
-  -- EVERY SEAM, SPLICED OR NOT, for the framer. A seam whose tail was refused or orphaned still puts the
-  -- record's next burst at a position the decoder has to re-lock on -- the burst opens mid-byte there
-  -- exactly as it opens mid-start-bit after a restored head. E is the restored head's start edge and R
-  -- where the record resumes; an unspliced seam carries E == R. Spliced coordinates, built alongside
-  -- the running insert below; set on every call so a plan that splices nothing leaves no stale list.
-  sdec.spl_seampos = {E = {}, R = {}, n = 0}
-  local nadd, run, j = 0, 0, nil
-  -- Whether a seam past the first kept the head it came with, which is what decides whether this splice is
-  -- worth anything. The count alone cannot say, seam 1 being the record's own opening; see the limit
-  -- derived at sdec.gap_nscratch.
-  local interior = false
-  for j = 1, nseam do
-    local put = false
-    -- Past ns bursts the early scratches have been reused, so they are skipped rather than approximated.
-    if j + ns > nseam then
-      local si = math.mod(j - 1, ns) + 1
-      local tt, tn, th = sdec.gap_tail(scrs[si], thr, sabit, fs)
-      if tt ~= nil and tn ~= nil and tn > 0 then
-        pl.n = pl.n + 1
-        -- The running insert is what turns a record index into a spliced one.
-        pl.pos[pl.n], pl.len[pl.n], pl.tail[pl.n] = seams[j] + run, tn, tt
-        pl.hoff[pl.n] = th or 1
-        local sp = sdec.spl_seampos
-        sp.n = sp.n + 1
-        sp.E[sp.n], sp.R[sp.n] = seams[j] + run + (th or 1) - 1, seams[j] + run + tn
-        run = run + tn
-        nadd = nadd + tn
-        put = true
-      end
-    end
-    -- Seam 1 is the record's own opening, which the window's first anchor already handles.
-    if not put and j > 1 then
-      local sp = sdec.spl_seampos
-      sp.n = sp.n + 1
-      sp.E[sp.n], sp.R[sp.n] = seams[j] + run, seams[j] + run
-    end
-    -- Both ways a seam goes unrepaired count here, the orphan rule and a refused tail, because the
-    -- consequence for the alignment is the same and a reader of the reason needs the consequence.
-    if not put and j > 1 then interior = true end
-  end
-  sdec.spl_nseam, sdec.spl_nspliced, sdec.spl_nadded = nseam, pl.n, nadd
-  sdec.spl_norphan = nseam - pl.n
-  sdec.spl_interior = interior
-  -- The head put back less the idle margin every tail carries, summed over the heads restored: what 'ok'
-  -- cannot say, a quarter of a head splicing as readily as a whole one. Reported and not judged, because
-  -- the genuine head ran 70 us at 50 kS/s and 150 us at 100 kS/s on the 2026-10-18 lap -- no one bound fits.
-  -- LESS THE PADDING, because nadd sums what gap_tail returned and that now includes inserted idle.
-  -- Without this the field reports the pad as recovered head -- measured, headrd 84 over 4 seams against
-  -- a true 15 -- which turns a diagnostic the suites assert on into a function of the repair.
-  sdec.spl_headrd = nadd - (sdec.spl_padrd or 0) - pl.n * math.ceil(sdec.gap_idlemargin * sabit)
-  if pl.n < 1 then return nil end
-  pl.total = n + nadd
-  return pl
-end
 
-function sdec.gap_splice(buf, n, scrs, thr, sabit, fs)
-  local pl = sdec.gap_splice_plan(buf, n, scrs, thr, sabit, fs)
-  if pl == nil then return nil end
-  local rd = buf.readings
-  if rd == nil then return nil end
-  local off = sdec.acq_first(buf, n) - 1
-  local t, m, j = {}, 0, 1
-  local step = sdec.tickevery
-  if step == nil or step < 1 then step = n end
-  local i
-  for i = 1, n do
-    -- Positions ascend and at most one tail opens at any record index, so this needs no search.
-    if j <= pl.n and pl.pos[j] == m + 1 then
-      local tt, k = pl.tail[j], nil
-      for k = 1, pl.len[j] do
-        m = m + 1
-        t[m] = tt[k]
-      end
-      j = j + 1
-    end
-    local p = i + off
-    if p > n then p = p - n end
-    m = m + 1
-    t[m] = rd[p]
-    if sdec.tick ~= nil and math.mod(i, step) == 0 then sdec.tick() end
-  end
-  sdec.smp = t
-  return t, m
-end
 
--- The program that keeps the traffic and discards the gaps. -> true when the store really holds it.
---
---   1) MEASURE_DIGITIZE  scr, COUNT_INFINITE     the gap
---   2) WAIT              <event>, CLEAR_ENTER    the burst starts
---   3) MEASURE_DIGITIZE  rec, COUNT_INFINITE     the burst
---   4) DELAY_CONSTANT    win                     the detector's window
---   5) BRANCH_ON_EVENT   <event>, 4              a crossing: still talking, go round
---   6) BRANCH_ALWAYS     1                       fell through: quiet for a window, next burst
---
--- The record is cleared from Lua before initiate(), not by a leading BUFFER_CLEAR block. A clear block would sit
--- outside this loop and run once per initiate, so the two are equivalent, and a Lua clear costs nothing -- which
--- is the whole reason for it. The fast path is worth nothing measurable anyway, 1.2 us of upper bound against
--- about 8 us of comparator latency, and this program is off it regardless: it posts 2753 on every run and the
--- cause that message names is blocks waiting, not block 4's delay. Which disqualifier applies is not isolated
--- beyond that -- a survey came back warned at every block count from 10 to 18, and one 0.25 s delay warned
--- where docs/TRIGGER.md records 0.25 s as free -- so tools/bench_fastpath.py is taking the shape apart.
--- docs/TRIGGER.md, 'The canned templates and the fast path' and 'The low-latency flag'.
---
--- Two measure blocks exactly, and entering either one stops the other, which is what ends a burst without
--- counting it. 2753 does not mark that budget, though this comment used to say it did: it is the generic
--- low-latency warning whose message names whichever cause applied, so this program posts it every run --
--- 131 cells of 132 reading `elideev=2753`, the firmware's sentence being 'Trigger model is not optimized for
--- speed due to multiple blocks waiting'. A third measure block warns under its own cause and loses the fast
--- path; whether it lands in the store is unread, tools/bench_fastpath.py's three-measure probe being for that.
--- A fixed count cannot be used instead: it cuts wherever it lands, the frame straddling the cut decodes from
--- spliced samples, and the loss is one byte in n frames. Ending on measured silence puts the seam between an
--- idle tail and the next start bit, which is a waveform the framer already reads. Built from Empty because
--- load() replaces the store wholesale while setblock does not clear it.
--- docs/TRIGGER.md, 'The six blocks' and 'Why the burst ends on silence and not on a count'.
-function sdec.gap_model(rec, scr, ev, win)
-  if rec == nil or scr == nil or ev == nil or win == nil or win <= 0 then return false end
-  -- The detector watches the comparator rather than the arm's event, and the two are often not the same object: with
-  -- armkey set arm_source() returns EVENT_BLENDER1 so a TRIGGER press can cut the arm short, and a press
-  -- arriving through that blender would read as "the line is still talking" and hold the burst open. Block 2
-  -- keeps the blended event for exactly the reason the blend exists; block 5 must be the crossing alone.
-  local cmp = trigger.EVENT_ANALOGTRIGGER
-  if cmp == nil then return false end
-  -- `scr` is one buffer or a LIST of them. A list unrolls the loop, one group of five blocks per scratch, so
-  -- each gap is filled by a buffer of its own and every burst head survives the capture instead of only the
-  -- last. One buffer is the shipped shape and builds exactly the six blocks it always did.
-  local scrs = scr
-  if type(scr) ~= 'table' or scr[1] == nil then scrs = {scr} end
-  local ns = table.getn(scrs)
-  if ns < 1 then return false end
-  if ns > sdec.gap_maxscratch then return false end
-  local ok = pcall(function()
-    trigger.model.load('Empty')
-    local gi
-    for gi = 1, ns do
-      local b = (gi - 1) * 5
-      trigger.model.setblock(b + 1, trigger.BLOCK_MEASURE_DIGITIZE, scrs[gi], trigger.COUNT_INFINITE)
-      -- CLEAR_ENTER is load-bearing and not caution. The default CLEAR_NEVER lets this wait consume a crossing
-      -- latched during the burst it has just recorded, so it falls straight through, the next pass starts at
-      -- once, and no gap is ever skipped -- while the record still fills and every other number still looks
-      -- right.
-      trigger.model.setblock(b + 2, trigger.BLOCK_WAIT, ev, trigger.CLEAR_ENTER)
-      trigger.model.setblock(b + 3, trigger.BLOCK_MEASURE_DIGITIZE, rec, trigger.COUNT_INFINITE)
-      trigger.model.setblock(b + 4, trigger.BLOCK_DELAY_CONSTANT, win)
-      -- A branch SPENDS its event, so this takes only on a crossing arriving since the last pass. That is the
-      -- whole detector: falling through means no crossing for one window, and there is no event for silence to
-      -- wait on. The target is this group's OWN delay block, not block 4, or every group after the first would
-      -- hand its burst to the first group's detector.
-      trigger.model.setblock(b + 5, trigger.BLOCK_BRANCH_ON_EVENT, cmp, b + 4)
-    end
-    trigger.model.setblock(ns * 5 + 1, trigger.BLOCK_BRANCH_ALWAYS, 1)
-  end)
-  if not ok then return false end
-  -- A rejected block reads as a FREE one on this instrument, so the store is read back rather than trusted: a
-  -- refused branch would leave a program that records one burst and stops.
-  -- docs/TRIGGER.md, 'Nothing under `trigger.` reports failure'.
-  local bl = nil
-  if not pcall(function() bl = trigger.model.getblocklist() end) then return false end
-  if bl == nil then return false end
-  -- EVERY BLOCK, AND THE MEASURE COUNT, not a couple of landmarks. The reason for reading the store back at all
-  -- is that a rejected setblock reads as a free one, and that applies to all six: a listing missing block 3
-  -- describes a program whose bursts go nowhere, and two landmarks would call it built. One measure block is
-  -- the pre-roll on its own, so the count is as load-bearing as the presence.
-  local _, nmd = string.gsub(bl, 'MEASURE_DIGITIZE', '')
-  if nmd ~= 2 * ns then return false end
-  -- BUFFER_CLEAR is checked for not being there, and no position is exempt: block 6 branches back to block 1, so
-  -- every block is inside the loop and a clear anywhere empties the record once a burst. What survives is the
-  -- last burst alone, while rec.n, the splice positions and the recovered rate all stay plausible for a recording
-  -- of one. The record is cleared from Lua instead, once, before initiate().
-  if string.find(bl, 'BUFFER_CLEAR', 1, true) ~= nil then return false end
-  local want = {'WAIT', 'DELAY_CONSTANT', 'BRANCH_ON_EVENT', 'BRANCH_ALWAYS'}
-  local i
-  for i = 1, table.getn(want) do
-    if string.find(bl, want[i], 1, true) == nil then return false end
-  end
-  return true
-end
 
 
 

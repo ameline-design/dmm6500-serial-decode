@@ -621,65 +621,16 @@ def main():
                          'so this only changes the PERIOD. 0 restores the old behaviour of parking the '
                          'run, which a multi-day soak should never ask for: a wedge on day 2 then costs '
                          'every day after it')
-    # ON BY DEFAULT, AND THE DEFAULT IS THE WHOLE POINT. This was 0.0, and a 3030-cell two-lap soak on
-    # 2026-10-18 ran with elision off for every one of them because the flag was simply not passed --
-    # so it covered neither the elision program nor the over-read, the over-read living on the
-    # stream_acquire path that only an eliding cell takes. A soak that silently tests neither feature
-    # looks exactly like a soak that tests both. The operator's standing requirement is that every soak
-    # carries elision for the vectors with gaps, and a default is the only form of that which cannot be
-    # forgotten. 0.01 s is the window the ladder uses from 2400 Bd up.
-    ap.add_argument('--elide', type=float, default=0.01, metavar='SECONDS',
-                    help='gap elision threshold in seconds for the nodrop vectors, ON by default. '
-                         '0 turns it off, which means no cell builds sdec.gap_model and the soak '
-                         'covers neither the elision program nor the over-read -- pass it only to '
-                         'establish a deliberate control')
-    # A WITHIN-LAP CONTROL, which is the only kind worth having here. Elided cells decode wrong bytes at
-    # a rate rising with baud and non-elided ones do not -- but every non-elided comparison available is
-    # from an older app, so it cannot separate elision from everything else that changed. Naming a subset
-    # here leaves the rest of the nodrop vectors free-running in the SAME lap, at the same bauds, through
-    # the same generator and the same build, which is the only arrangement that isolates the feature.
-    # THE MEASUREMENT THIS FLAG EXISTED FOR HAS BEEN TAKEN, and the cap it was measuring is gone. It was
-    # 500000, which CLAMPED rather than permitted and so decided by arithmetic which bauds the elide path
-    # could be tested at -- 500000 / 3.92 is 127551 Bd against a declared sdec.maxbaud of 250000, nine
-    # rungs closed. The 2026-10-19 lap run with `--elide-fsmax 0` measured segfs = 1000000 at tdig 0.50 s
-    # on 10 rows, spanfs == segfs == 1000000 on 2 of them, zero 'needs a faster capture' refusals and no
-    # failure at all above 115200 Bd. The shipped default is now nil, with 640000 excluded by
-    # brun.elide_fsavoid instead -- an exclusion, not a ceiling. So this flag is now the lever for PINNING
-    # a rate deliberately rather than for lifting one, and a run that names it still says so on the row.
-    ap.add_argument('--elide-fsmax', type=float, default=None, metavar='SA_PER_S',
-                    help='override brun.elide_fsmax for this run only; 0 means NO CAP. Absent, the '
-                         'shipped default stands, so a lap that does not name it describes the app as '
-                         'built. Verified by read-back, like --elide')
-    # THE SEAM-PADDING REPAIR, OFF IN THE TREE AND ENABLED HERE. sdec.gap_resume is the record's resume
-    # latency in seconds; gap_tail pads each spliced seam by that less the head it actually recovered, so
-    # the handover hole goes back as DURATION and the framer stops carrying a wrong bit phase across the
-    # seam. Offline this takes holes of 6 and 8 readings from 29 % and 28 % to 100 % and costs the
-    # byte-exact cases nothing. It has never run on hardware, which is why it is a flag and not a default.
-    # THE SEAM RE-ANCHOR, as a run-time switch so a lap can establish the BASELINE its fix will be
-    # measured against. sdec.seam_relock defaults true in the tree; setting it false here loads the same
-    # build and runs the pre-fix framing, which is the only way to show that the switch is inert when
-    # off -- and nothing the fix reports means anything until that is shown.
-    ap.add_argument('--seam-relock', dest='seam_relock', default=None,
-                    choices=('on', 'off'),
-                    help='force sdec.seam_relock for this run. `off` runs the pre-fix framing on the '
-                         'same build, which is the paired baseline. Verified by read-back')
-    ap.add_argument('--gap-resume', type=float, default=None, metavar='SECONDS',
-                    help='enable the seam-padding repair for this run by setting sdec.gap_resume. '
-                         '156e-6 is the value the offline model measures; 0 leaves it off, which is '
-                         'the shipped default. Verified by read-back, like --elide')
     # DECLARED, NOT INHERITED -- and reported on every lap whether or not it is passed. The operator's
     # standing requirement is that every soak carries the over-read at its 10 % default, and until now a
     # lap had no way to say which margin it actually ran: the value lived only in sdec.strm_overread on
-    # the instrument, and the record's `over=` was for a while emitted inside the elide branch, so an
-    # elision-off lap carried it on none of its rows. That is the same defect twice -- a setting the
-    # launch cannot state and the record cannot show is a setting the lap does not test.
+    # the instrument, and the record's `over=` was for a while emitted on one capture path only, so a
+    # lap that did not take it carried the field on none of its rows. That is the same defect twice --
+    # a setting the launch cannot state and the record cannot show is a setting the lap does not test.
     ap.add_argument('--over-read', dest='over_read', type=float, default=None, metavar='FRACTION',
                     help='set sdec.strm_overread for this run, e.g. 0.10 for the shipped 10 %%. 0 turns '
-                         'the margin off, which is a deliberate control. Verified by read-back, like '
-                         '--elide -- and the value in force is printed either way')
-    ap.add_argument('--elide-vids', default=None, metavar='V,V',
-                    help='elide only these vectors, leaving the other nodrop vectors free-running as a '
-                         'control in the same lap. Default is every nodrop vector')
+                         'the margin off, which is a deliberate control. Verified by read-back, and '
+                         'the value in force is printed either way')
     ap.add_argument('--listen', default=None, metavar='IP',
                     help='host address for live progress pushes (see tools/soak_listen.py)')
     # A PLAN ALREADY GENERATED, because generating 210 laps takes ~5 minutes of CPU and needs no
@@ -854,94 +805,6 @@ def main():
                           'parked run cannot be restarted by anyone who is not standing there')
             if a.listen:
                 d.exec('do brun.listenip = %s end' % lua_str(a.listen))
-            if a.elide <= 0:
-                # SAID OUT LOUD, because the silent version of this cost a two-lap soak. With elision off
-                # no cell takes stream_acquire, so the run covers neither the elision program nor the
-                # over-read that lives on that path -- and the record it writes looks like any other.
-                print('  gap elision OFF (--elide 0): no cell will build sdec.gap_model, so this run')
-                print('    covers neither the elision program nor the over-read. Deliberate controls')
-                print('    only -- every ordinary soak is expected to carry both.')
-            if a.elide > 0:
-                # THE IDS COME FROM VECTOR_EXPECT, not from a second list here. The gap vectors are
-                # exactly the ones held to 'nodrop' -- a declined byte IS the defect they exist to find --
-                # so a new gap vector gets elision by being judged like one, and no list can drift.
-                vids = sorted(v for v, e in SP.VECTOR_EXPECT.items() if e == 'nodrop')
-                if a.elide_vids:
-                    want = [v.strip() for v in a.elide_vids.split(',') if v.strip()]
-                    bad = [v for v in want if v not in vids]
-                    if bad:
-                        raise SystemExit('REFUSING: --elide-vids names %s, which %s not held to nodrop. '
-                                         'Eliding a vector the judge does not hold to a declined byte '
-                                         'measures nothing.' % (', '.join(bad),
-                                                                'is' if len(bad) == 1 else 'are'))
-                    ctrl = [v for v in vids if v not in want]
-                    vids = want
-                    print('  control, free-running in the same lap: %s' % (' '.join(ctrl) or '(none)'))
-                if not vids:
-                    raise SystemExit('REFUSING --elide: no vector in VECTOR_EXPECT is held to nodrop, so '
-                                     'there is nothing a gap-elision run would turn it on for')
-                d.exec('do brun.elide = %r brun.elide_vids = {%s} end'
-                       % (a.elide, ' '.join('%s = true,' % v for v in vids)))
-                # READ BACK, because a refused assignment on this instrument is silent and the run would
-                # then be an ordinary soak wearing the label of an elision test.
-                # COMPARED AS A NUMBER, NOT AS A PREFIX, because Lua 5.0.2 has one number type and
-                # formats it with %.14g: tostring(2.0) is '2', so a prefix test against str(2.0) == '2.0'
-                # fails for every whole-number window. 2 s is sdec.gapelide_max, the value an operator
-                # sweeping the documented range types first, and the run would abort claiming the
-                # instrument refused an assignment it had in fact taken -- with brun.elide left SET, so
-                # the next tool inherits an armed elision it never asked for. Formatted on the
-                # instrument rather than parsed from %.14g here, so the host reads a fixed shape.
-                got = str(d.q('print(string.format("%.6f", brun.elide or -1) .. "," '
-                              '.. tostring(brun.elide_vids ~= nil))') or '').strip()
-                print('  gap elision ON at %g s for %d vector(s): %s' % (a.elide, len(vids),
-                                                                         ' '.join(vids)))
-                print('    instrument reports brun.elide,has-vids = %s' % got)
-                back, _, hasv = got.partition(',')
-                try:
-                    took = abs(float(back) - a.elide) < 1e-6
-                except ValueError:
-                    took = False
-                if not took or hasv.strip() != 'true':
-                    raise SystemExit('REFUSING: the instrument did not take brun.elide (%r, wanted '
-                                     '%.6f). An elision run that silently did not elide is worse than '
-                                     'no run.' % (got, a.elide))
-            # THE RATE CAP, OVERRIDDEN FOR THIS RUN ONLY, and absent it the shipped default stands -- so a
-            # lap that does not name it describes the app as built. It exists because the shipped 500000
-            # cannot be measured against any alternative without being movable: the cap CLAMPS, so every
-            # elided cell above 127551 Bd (500000 / minsabit's effective 3.92) is refused by arithmetic,
-            # and the archive shows 128000 and 153600 decoding with nbad 0 at 634615 under the previous
-            # 640000. Whether 1 MS/s survives the elision program is UNMEASURED -- no row in the archive
-            # carries segfs=1000000 -- which is exactly what this flag is for.
-            if a.seam_relock is not None:
-                want = 'true' if a.seam_relock == 'on' else 'false'
-                d.exec('do sdec.seam_relock = %s end' % want)
-                got = str(d.q('print(tostring(sdec.seam_relock))') or '').strip()
-                if got != want:
-                    raise SystemExit('REFUSING: the instrument did not take sdec.seam_relock (%r, '
-                                     'wanted %r). A baseline that silently ran WITH the re-anchor is '
-                                     'indistinguishable afterwards from one where the fix did nothing.'
-                                     % (got, want))
-                print('  seam re-anchor: %s (read back %s)' % (a.seam_relock.upper(), got))
-            if a.gap_resume is not None:
-                # SET BEFORE THE RUN STARTS and READ BACK, for the reason every other knob here is:
-                # brun.soak holds the session for the whole lap, so a value that did not take cannot be
-                # corrected, and a lap that silently ran without the repair looks exactly like one that
-                # ran with it and did not help.
-                d.exec('do sdec.gap_resume = %s end'
-                       % ('nil' if a.gap_resume <= 0 else repr(float(a.gap_resume))))
-                got = str(d.q('print(string.format("%.9f", sdec.gap_resume or -1))') or '').strip()
-                try:
-                    gotf = float(got)
-                except ValueError:
-                    gotf = None
-                want = -1.0 if a.gap_resume <= 0 else float(a.gap_resume)
-                if gotf is None or abs(gotf - want) > 1e-12:
-                    raise SystemExit('REFUSING: the instrument did not take sdec.gap_resume (%r, '
-                                     'wanted %r). A lap that silently ran without the repair is not '
-                                     'distinguishable afterwards from one where it did not help.'
-                                     % (got, want))
-                print('  seam padding: %s -- NOT the shipped default, which is off'
-                      % ('OFF' if a.gap_resume <= 0 else '%g s resume latency' % a.gap_resume))
             # THE OVER-READ, SET IF ASKED AND REPORTED EITHER WAY. The read-back is unconditional
             # because the interesting case is the one nobody passed a flag for: a lap that inherited
             # whatever the app booted with. autoexec can set boot state, so "the default is 10 %" is an
@@ -963,29 +826,6 @@ def main():
             else:
                 print('  over-read: %.2f %%%s' % (back * 100.0,
                       '' if a.over_read is not None else ' (inherited, not passed)'))
-            if a.elide_fsmax is not None:
-                # 0 means NO CAP, since a CLI number cannot carry nil and brun.elide_fsmax = nil is how
-                # the uncapped case is spelled. Same convention as SDEC_PROBE_N in tools/sweep_plan.lua.
-                d.exec('do brun.elide_fsmax = %s end'
-                       % ('nil' if a.elide_fsmax <= 0 else repr(float(a.elide_fsmax))))
-                # READ BACK for the same reason brun.elide is: a refused assignment is silent here, and a
-                # run that reports a lifted cap while still clamping would attribute the clamp's refusals
-                # to the app.
-                got = str(d.q('print(string.format("%.6f", brun.elide_fsmax or -1))') or '').strip()
-                try:
-                    back = float(got)
-                except ValueError:
-                    back = None
-                want = -1.0 if a.elide_fsmax <= 0 else float(a.elide_fsmax)
-                if back is None or abs(back - want) > 1e-6:
-                    raise SystemExit('REFUSING: the instrument did not take brun.elide_fsmax (%r, wanted '
-                                     '%.6f). A run that believes the cap moved and is still clamping '
-                                     'measures the cap, not the app.' % (got, want))
-                print('  elide rate cap: %s, NOT the shipped default -- this run does not describe the '
-                      'app as built' % ('NO CAP' if a.elide_fsmax <= 0
-                                        else '%g S/s' % a.elide_fsmax))
-            # STARTED AND LEFT. The call does not return until the loop ends, so it is sent without
-            # waiting for a reply -- and for --iterations 0 there is no reply to wait for at all.
             print('starting brun.soak(%d) on the instrument' % a.iterations)
             # A SENTINEL, because brun.soak prints nothing: it writes to the key. Without one the host
             # waits the full timeout for a line that is never coming and then reports "(nothing)" on a

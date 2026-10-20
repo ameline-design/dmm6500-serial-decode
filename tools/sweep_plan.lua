@@ -67,7 +67,7 @@
 --     wait and none of that happens. On the lap above, restricted to those 288 cells: elision fired on
 --     145 of them and 104 were bad, and of the 143 where it did not fire NOT ONE was bad. The rate band
 --     says the same thing -- 61 of 64 bad between 5000 and 20000 Bd, 2 of 24 below 2500 -- which is
---     tools/test_elideseam.lua's own edge at 4800 Bd, where the latency first costs half a bit.
+--     the seam edge at 4800 Bd, where the latency first costs half a bit.
 --     THE HARNESS FOR THIS IS tools/offline_bench.lua, not this one: it drives the real engine, and it
 --     now has --elide/--elide-vids. Reproducing brun's elide branch here would be a second copy of it.
 --   * NO TWO-PASS PROBE. fs comes from the COMMANDED baud, which the app never knows. The app probes at

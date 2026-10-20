@@ -449,37 +449,9 @@ sdec.armwait_max = 120.0
 
 if sdec.armkey == nil then sdec.armkey = true end
 
-sdec.gapelide     = sdec.gapelide or 0
-sdec.gapelide_min = 0.002
-sdec.gapelide_max = 2.0
-
-sdec.gapelide_frames = 2
-sdec.gap_fastpath = sdec.gap_fastpath or false
 
 
--- The enforced window, or nil and the reason it declined. Read by the capture and by the form through this one
--- function, so a typed value cannot mean one thing to the field and another to the trigger model.
-function sdec.gap_elide(baud)
-  local w = tonumber(sdec.gapelide)
-  if w == nil or w <= 0 then return nil end
-  if baud == nil then baud = tonumber(sdec.force_baud) end
-  if baud == nil or baud <= 0 then
-    return nil, 'gap elision off -- lock the baud rate first'
-  end
-  local nbits = sdec.force_nbits or 8
-  local parbits = 0
-  if sdec.force_par ~= nil and sdec.force_par ~= sdec.PAR_NONE then parbits = 1 end
-  local framebits = 1 + nbits + parbits + (sdec.force_nstop or 1)
-  local lo = (sdec.gapelide_frames * framebits) / baud
-  if lo < sdec.gapelide_min then lo = sdec.gapelide_min end
-  if lo > sdec.gapelide_max then
-    return nil, string.format('gap elision off -- %g Bd needs %.3f s, over the %.1f s ceiling',
-                              baud, lo, sdec.gapelide_max)
-  end
-  if w < lo then w = lo end
-  if w > sdec.gapelide_max then w = sdec.gapelide_max end
-  return w
-end
+
 
 -- Both read through one function each, by the capture and by the form, so a typed value cannot mean one thing
 -- to the field and another to the comparator. Clamped rather than refused.
@@ -599,7 +571,6 @@ end
 -- sdec.clear_result(). docs/MEASUREMENTS.md, 'A measurement must not cross a capture boundary'.
 function sdec.clear_measured()
   sdec.acq_fs, sdec.acq_fs_est = nil, nil
-  sdec.acq_elided = nil
   sdec.arm_thr, sdec.arm_idle = nil, nil
   sdec.w, sdec.nw, sdec.wmed, sdec.wshort = nil, 0, nil, nil
   sdec.snr_db, sdec.noise_v = nil, nil
@@ -1185,85 +1156,11 @@ function sdec.acq_seg_fs(buf, n)
   return m
 end
 
--- What elision actually did to the record in hand, for the note line. -> kept seconds, elided seconds, segments,
---   [...]
--- Elision pays only while a burst is longer than its own detector window, since one window of idle is recorded
--- at the end of every burst -- so 'elided 1.2 s of 1.6 s' alone cannot distinguish a record that saved a minute
--- from one that is nine tenths detector window. The segment count says which.
-function sdec.gap_report(buf, n, fs)
-  if buf == nil or n == nil or n < 2 or fs == nil or fs <= 0 then return nil end
-  local first = sdec.acq_first(buf, n)
-  local last = first + n - 1
-  if last > n then last = last - n end
-  local t1, tn = nil, nil
-  local ok = pcall(function()
-    local ts = buf.relativetimestamps
-    if ts ~= nil then t1, tn = ts[first], ts[last] end
-  end)
-  if not ok or t1 == nil or tn == nil then return nil end
-  local span = tn - t1
-  if span <= 0 then return nil end
-  local kept = n / fs
-  local elided = span - kept
-  if elided < 0 then elided = 0 end
-  local segs = 1
-  local win = sdec.strm_elide
-  if win ~= nil and win > 0 then
-    local stride = math.floor(win * fs / 2)
-    if stride < 1 then stride = 1 end
-    local iv, ni, rest, restn = {}, 0, nil, nil
-    pcall(function()
-      local ts = buf.relativetimestamps
-      if ts == nil then return end
-      local i = 1
-      local pi = first
-      local pt = ts[pi]
-      while i + stride <= n do
-        local j = i + stride
-        local pj = first + j - 1
-        if pj > n then pj = pj - n end
-        local tj = ts[pj]
-        if tj == nil or pt == nil then break end
-        ni = ni + 1
-        iv[ni] = tj - pt
-        i, pi, pt = j, pj, tj
-      end
-      if i < n and pt ~= nil then
-        local pl = first + n - 1
-        if pl > n then pl = pl - n end
-        local tl = ts[pl]
-        if tl ~= nil then rest, restn = tl - pt, n - i end
-      end
-    end)
-    if ni > 0 then
-      local mn, k = iv[1], nil
-      for k = 2, ni do
-        if iv[k] < mn then mn = iv[k] end
-      end
-      local lim = mn * (1 + sdec.gapseg_frac)
-      local gaps = 0
-      for k = 1, ni do
-        if iv[k] > lim then gaps = gaps + 1 end
-      end
-      if rest ~= nil and restn ~= nil and restn > 0 and
-         rest > mn * restn / stride * (1 + sdec.gapseg_frac) then
-        gaps = gaps + 1
-      end
-      segs = gaps + 1
-    end
-  end
-  return kept, elided, segs
-end
 
 -- The measured rate, or the requested one with a flag saying so: every byte is scaled by acq_fs, so a silent
 -- substitution would report confident bytes from an untrustworthy number.
 function sdec.acq_fs_or_requested(buf, n)
-  local m = nil
-  if sdec.acq_elided then
-    m = sdec.acq_seg_fs(buf, n)
-  else
-    m = sdec.acq_measure_fs(buf, n)
-  end
+  local m = sdec.acq_measure_fs(buf, n)
   if m ~= nil then
     sdec.acq_fs_est = nil
     return m
@@ -1567,21 +1464,16 @@ function sdec.acq_isstatic(v)
   for i = 1, table.getn(sdec.acq_framerungs) do
     if sdec.acq_bufs[sdec.acq_rungid(sdec.acq_framerungs[i])] == v then return true end
   end
-  if sdec.gapbufs ~= nil then
-    for i = 1, table.getn(sdec.gapbufs) do
-      if sdec.gapbufs[i] == v then return true end
-    end
-  end
   return false
 end
 
 function sdec.acq_isours(v)
   if v == nil then return false end
-  if v == sdec.buf or v == sdec.gapbuf then return true end
+  if v == sdec.buf then return true end
   return sdec.acq_isstatic(v)
 end
 
--- Readings the static set is holding right now, across the plan, the frame ladder and the scratches.
+-- Readings the static set is holding right now, across the plan and the frame ladder.
 --   [...]
 -- to subtract everything except the record -- must not ask twice: between two passes the record can die,
 -- which leaves a non-nil capacity beside a total that no longer contains it and a subtraction that goes
@@ -1598,13 +1490,6 @@ function sdec.acq_bufheld()
   end
   for i = 1, table.getn(sdec.acq_framerungs) do
     local _, c = sdec.acq_bufhave(sdec.acq_rungid(sdec.acq_framerungs[i]))
-    if c ~= nil then tot = tot + c end
-  end
-  if sdec.gapbufs ~= nil then
-    tot = tot + table.getn(sdec.gapbufs) * (sdec.gap_scratchcap or 0)
-  end
-  if sdec.gapbuf ~= nil then
-    local c = sdec.bufcap(sdec.gapbuf)
     if c ~= nil then tot = tot + c end
   end
   return tot, rcap
@@ -1665,9 +1550,6 @@ function sdec.acq_bufinit()
     end
   end
   sdec.acq_rungok, sdec.acq_rungwant = nrungok, nrung
-  local scr = sdec.gap_scratches(sdec.gap_nscratch, nil, nil)
-  sdec.acq_scrgot = 0
-  if scr ~= nil then sdec.acq_scrgot = table.getn(scr) end
   local b, cap = sdec.acq_bufmode()
   if b ~= nil then
     sdec.buf, sdec.acq_bufgot, sdec.acq_bufperm = b, cap, true
@@ -1682,8 +1564,6 @@ end
 -- Hand the whole set back, for the app's exit. Deleted rather than dropped: a nil over the handle strands
 -- the readings in a pool the next launch has to find room in.
 function sdec.acq_buffree()
-  sdec.gap_release_all()
-  sdec.gap_release()
   sdec.trig_settle()
   local bufwasours = sdec.acq_isstatic(sdec.buf)
   local i
@@ -1874,8 +1754,6 @@ function sdec.reset_options()
   sdec.trigext = false
   sdec.trigext_only = false
   sdec.fc_out = false
-  sdec.gapelide = 0
-  pcall(sdec.gap_release)
   return true
 end
 
@@ -2254,23 +2132,7 @@ function sdec.arm_source()
     sdec.armkeyed = nil
   end
 
-  if sdec.gap_fastpath and not blended and useanalog and sdec.trigmode ~= 'free'
-     and sdec.gapelide ~= nil and tonumber(sdec.gapelide) ~= nil and tonumber(sdec.gapelide) > 0 then
-    local fok = pcall(function()
-      trigger.blender[1].reset()
-      trigger.blender[1].orenable = true
-      trigger.blender[1].stimulus[1] = ev
-    end)
-    if fok then
-      ev = trigger.EVENT_BLENDER1
-      blended = true
-      sdec.gap_fastblend = true
-    else
-      sdec.gap_fastblend = nil
-    end
-  else
-    sdec.gap_fastblend = nil
-  end
+  sdec.gap_fastblend = nil
   sdec.trigblended = blended
   return ev, useanalog, blended
 end
@@ -2325,333 +2187,20 @@ function sdec.arm_comparator(useanalog, slope)
   end)
 end
 
--- Gap elision: keep the traffic, discard the dead air
---   [...]
--- readings behaved identically to 400 000 on the instrument -- same record at the same indices, the same
--- event-log delta, still reaching IDLE -- because fillmode = 1 laps the ring silently. So a two-minute gap needs
--- no more scratch than a half-second one. docs/TRIGGER.md, 'The scratch'.
-function sdec.gap_scratch(win, fs)
-  local want = 2000
-  if win ~= nil and fs ~= nil and fs > 0 then
-    local w = math.ceil(0.25 * win * fs)
-    if w > want then want = w end
-  end
-  if sdec.gapbuf ~= nil then
-    local cok, cap = pcall(function() return sdec.gapbuf.capacity end)
-    if cok and cap ~= nil and cap >= want then
-      sdec.bufclear(sdec.gapbuf)
-      sdec.acq_fillmode(sdec.gapbuf)
-      return sdec.gapbuf
-    end
-    sdec.bufdel(sdec.gapbuf)
-    sdec.gapbuf = nil
-  end
-  local nb = sdec.bufmake(want)
-  if nb == nil then return nil end
-  sdec.gapbuf = nb
-  sdec.acq_fillmode(sdec.gapbuf)
-  return sdec.gapbuf
-end
 
-sdec.gap_blockstore = 63
-sdec.gap_maxscratch = math.floor((sdec.gap_blockstore - 1) / 5)
-sdec.gap_nscratch = sdec.gap_nscratch or sdec.gap_maxscratch
-sdec.gapbufs = sdec.gapbufs or {}
 
-sdec.gap_scratchcap = 2048
 
--- A scratch per gap, allocated once per power cycle. -> a list of buffers, or nil when none could be made.
-function sdec.gap_scratches(nwant, win, fs)
-  if nwant == nil or nwant < 1 then nwant = 1 end
-  if nwant > sdec.gap_maxscratch then nwant = sdec.gap_maxscratch end
-  local want = sdec.gap_scratchcap
-  local have, i = sdec.gapbufs, nil
-  if have ~= nil and table.getn(have) >= nwant then
-    local fits = true
-    for i = 1, nwant do
-      local cap = sdec.bufcap(have[i])
-      if cap == nil or cap < want then fits = false end
-    end
-    if fits then
-      local out = {}
-      for i = 1, nwant do
-        sdec.bufclear(have[i])
-        sdec.acq_fillmode(have[i])
-        out[i] = have[i]
-      end
-      return out
-    end
-  end
-  sdec.gap_release_all()
-  local out = {}
-  for i = 1, nwant do
-    local nb, cap = sdec.bufmake(want)
-    if cap == nil then break end
-    sdec.acq_fillmode(nb)
-    out[i] = nb
-  end
-  if table.getn(out) < 1 then return nil end
-  sdec.gapbufs = out
-  return out
-end
 
-sdec.gap_headsec = 0.002
 
--- Hand the per-gap set back. Deleted rather than dropped, for gap_release's reason: a nil over the handle
--- strands the readings in the pool instead of freeing them.
-function sdec.gap_release_all()
-  if sdec.gapbufs == nil then return end
-  local i
-  for i = 1, table.getn(sdec.gapbufs) do
-    sdec.bufdel(sdec.gapbufs[i])
-  end
-  sdec.gapbufs = {}
-end
 
--- Hand the scratch back, for an operator who tried elision and turned it off again: the pool is shared with the
--- record, so a buffer nobody is using is capacity the next capture cannot have.
-function sdec.gap_release()
-  if sdec.gapbuf == nil then return false end
-  local ok = sdec.bufdel(sdec.gapbuf)
-  sdec.gapbuf = nil
-  return ok
-end
 
-sdec.gap_seamdt = 4
 
-sdec.gap_idlerun = 3
 
-sdec.gap_idlemargin = 2
-sdec.gap_resume = sdec.gap_resume or nil
 
--- Where the record's bursts begin, in time order. -> a table of indices into the time-ordered record, [1] = 1
---   [...]
--- this test need no tuning.
--- Rotation is handled for form rather than need: the record is 6 000 000 readings and runs 13 670 to 56 952, so
--- acq_first answers 1 and the offset is inert. It is here because a sized fallback record can lap.
-function sdec.gap_seams(buf, n, fs)
-  local out = {1}
-  if buf == nil or n == nil or n < 2 or fs == nil or fs <= 0 then return out end
-  local rt = buf.relativetimestamps
-  if rt == nil then return out end
-  local lim = sdec.gap_seamdt / fs
-  local off = sdec.acq_first(buf, n) - 1
-  local nout, prev, i = 1, nil, nil
-  for i = 1, n do
-    local p = i + off
-    if p > n then p = p - n end
-    local t = rt[p]
-    if t ~= nil then
-      if prev ~= nil and (t - prev) > lim then
-        nout = nout + 1
-        out[nout] = i
-      end
-      prev = t
-    end
-  end
-  return out
-end
 
--- The readings of a scratch that belong to the burst the record picked up late: the head, plus a little idle
---   [...]
--- A group that never ran reads n = 0, because gap_scratches clears the whole set on reuse. That is what tells
--- an unused scratch from a used one without buffer.getstats, which this firmware has but the offline harness
--- does not.
-function sdec.gap_tail(scr, thr, sabit, fs)
-  if scr == nil or thr == nil then return nil end
-  local n = scr.n
-  if type(n) ~= 'number' or n < 2 then return nil end
-  local rd = scr.readings
-  if rd == nil then return nil end
-  if sabit == nil or sabit <= 0 then return nil end
-  local off = sdec.acq_first(scr, n) - 1
-  local nhi, i, p = 0, nil, nil
-  for i = 1, n do
-    p = i + off
-    if p > n then p = p - n end
-    local v = rd[p]
-    if v ~= nil and v > thr then nhi = nhi + 1 end
-  end
-  local idlehi = (2 * nhi >= n)
-  local nbits = sdec.force_nbits or 8
-  local parbits = 0
-  if sdec.force_par ~= nil and sdec.force_par ~= sdec.PAR_NONE then parbits = 1 end
-  local framebits = 1 + nbits + parbits + (sdec.force_nstop or 1)
-  local runbits = sdec.gap_idlerun
-  if framebits > runbits then runbits = framebits end
-  local need = math.ceil(runbits * sabit)
-  if need < 2 then need = 2 end
-  local run, s, lastnon = 0, nil, nil
-  for i = n, 1, -1 do
-    p = i + off
-    if p > n then p = p - n end
-    local v = rd[p]
-    local isidle = (v == nil) or ((v > thr) == idlehi)
-    if isidle then
-      run = run + 1
-      if run >= need and lastnon ~= nil then
-        s = lastnon
-        break
-      end
-    else
-      run = 0
-      lastnon = i
-    end
-  end
-  if s == nil then return nil end
-  local keep = math.ceil(sdec.gap_idlemargin * sabit)
-  s = s - keep
-  if s < 1 then s = 1 end
-  local hoff = lastnon - s + 1
-  local out, nk = {}, 0
-  for i = s, n do
-    p = i + off
-    if p > n then p = p - n end
-    nk = nk + 1
-    out[nk] = rd[p]
-  end
-  if nk < 1 then return nil end
-  if fs ~= nil and fs > 0 and sdec.gap_resume ~= nil and sdec.gap_resume > 0 then
-    local headrd = nk - keep                       -- the burst part, less the idle margin kept above
-    local want = math.ceil(sdec.gap_resume * fs)
-    local pad = want - headrd
-    if pad > 0 then
-      local cap = math.ceil(framebits * sabit)
-      if pad > cap then pad = cap end
-      local idlev = thr - 1
-      if idlehi then idlev = thr + 1 end
-      local pi
-      for pi = 1, pad do
-        nk = nk + 1
-        out[nk] = idlev
-      end
-      sdec.spl_padrd = (sdec.spl_padrd or 0) + pad
-      sdec.spl_npad = (sdec.spl_npad or 0) + 1
-    end
-  end
-  return out, nk, hoff
-end
 
--- The record with every burst's head put back, in time order. -> the sample array and its length, or nil where
---   [...]
--- Positions are spliced rather than record indices because both consumers want them that way: the reader maps
--- a spliced position to its source, and the array build emits in spliced order. Keeping record indices here
--- would make each consumer re-derive the same running offset.
-function sdec.gap_splice_plan(buf, n, scrs, thr, sabit, fs)
-  if buf == nil or n == nil or n < 2 or scrs == nil or thr == nil then return nil end
-  if type(scrs) ~= 'table' or scrs[1] == nil then return nil end
-  local ns = table.getn(scrs)
-  if ns < 1 then return nil end
-  local seams = sdec.gap_seams(buf, n, fs)
-  local nseam = table.getn(seams)
-  sdec.spl_padrd, sdec.spl_npad = 0, 0
-  local pl = {n = 0, pos = {}, len = {}, tail = {}, hoff = {}, total = n}
-  sdec.spl_seampos = {E = {}, R = {}, n = 0}
-  local nadd, run, j = 0, 0, nil
-  local interior = false
-  for j = 1, nseam do
-    local put = false
-    if j + ns > nseam then
-      local si = math.mod(j - 1, ns) + 1
-      local tt, tn, th = sdec.gap_tail(scrs[si], thr, sabit, fs)
-      if tt ~= nil and tn ~= nil and tn > 0 then
-        pl.n = pl.n + 1
-        pl.pos[pl.n], pl.len[pl.n], pl.tail[pl.n] = seams[j] + run, tn, tt
-        pl.hoff[pl.n] = th or 1
-        local sp = sdec.spl_seampos
-        sp.n = sp.n + 1
-        sp.E[sp.n], sp.R[sp.n] = seams[j] + run + (th or 1) - 1, seams[j] + run + tn
-        run = run + tn
-        nadd = nadd + tn
-        put = true
-      end
-    end
-    if not put and j > 1 then
-      local sp = sdec.spl_seampos
-      sp.n = sp.n + 1
-      sp.E[sp.n], sp.R[sp.n] = seams[j] + run, seams[j] + run
-    end
-    if not put and j > 1 then interior = true end
-  end
-  sdec.spl_nseam, sdec.spl_nspliced, sdec.spl_nadded = nseam, pl.n, nadd
-  sdec.spl_norphan = nseam - pl.n
-  sdec.spl_interior = interior
-  sdec.spl_headrd = nadd - (sdec.spl_padrd or 0) - pl.n * math.ceil(sdec.gap_idlemargin * sabit)
-  if pl.n < 1 then return nil end
-  pl.total = n + nadd
-  return pl
-end
 
-function sdec.gap_splice(buf, n, scrs, thr, sabit, fs)
-  local pl = sdec.gap_splice_plan(buf, n, scrs, thr, sabit, fs)
-  if pl == nil then return nil end
-  local rd = buf.readings
-  if rd == nil then return nil end
-  local off = sdec.acq_first(buf, n) - 1
-  local t, m, j = {}, 0, 1
-  local step = sdec.tickevery
-  if step == nil or step < 1 then step = n end
-  local i
-  for i = 1, n do
-    if j <= pl.n and pl.pos[j] == m + 1 then
-      local tt, k = pl.tail[j], nil
-      for k = 1, pl.len[j] do
-        m = m + 1
-        t[m] = tt[k]
-      end
-      j = j + 1
-    end
-    local p = i + off
-    if p > n then p = p - n end
-    m = m + 1
-    t[m] = rd[p]
-    if sdec.tick ~= nil and math.mod(i, step) == 0 then sdec.tick() end
-  end
-  sdec.smp = t
-  return t, m
-end
 
--- The program that keeps the traffic and discards the gaps. -> true when the store really holds it.
---   [...]
--- idle tail and the next start bit, which is a waveform the framer already reads. Built from Empty because
--- load() replaces the store wholesale while setblock does not clear it.
--- docs/TRIGGER.md, 'The six blocks' and 'Why the burst ends on silence and not on a count'.
-function sdec.gap_model(rec, scr, ev, win)
-  if rec == nil or scr == nil or ev == nil or win == nil or win <= 0 then return false end
-  local cmp = trigger.EVENT_ANALOGTRIGGER
-  if cmp == nil then return false end
-  local scrs = scr
-  if type(scr) ~= 'table' or scr[1] == nil then scrs = {scr} end
-  local ns = table.getn(scrs)
-  if ns < 1 then return false end
-  if ns > sdec.gap_maxscratch then return false end
-  local ok = pcall(function()
-    trigger.model.load('Empty')
-    local gi
-    for gi = 1, ns do
-      local b = (gi - 1) * 5
-      trigger.model.setblock(b + 1, trigger.BLOCK_MEASURE_DIGITIZE, scrs[gi], trigger.COUNT_INFINITE)
-      trigger.model.setblock(b + 2, trigger.BLOCK_WAIT, ev, trigger.CLEAR_ENTER)
-      trigger.model.setblock(b + 3, trigger.BLOCK_MEASURE_DIGITIZE, rec, trigger.COUNT_INFINITE)
-      trigger.model.setblock(b + 4, trigger.BLOCK_DELAY_CONSTANT, win)
-      trigger.model.setblock(b + 5, trigger.BLOCK_BRANCH_ON_EVENT, cmp, b + 4)
-    end
-    trigger.model.setblock(ns * 5 + 1, trigger.BLOCK_BRANCH_ALWAYS, 1)
-  end)
-  if not ok then return false end
-  local bl = nil
-  if not pcall(function() bl = trigger.model.getblocklist() end) then return false end
-  if bl == nil then return false end
-  local _, nmd = string.gsub(bl, 'MEASURE_DIGITIZE', '')
-  if nmd ~= 2 * ns then return false end
-  if string.find(bl, 'BUFFER_CLEAR', 1, true) ~= nil then return false end
-  local want = {'WAIT', 'DELAY_CONSTANT', 'BRANCH_ON_EVENT', 'BRANCH_ALWAYS'}
-  local i
-  for i = 1, table.getn(want) do
-    if string.find(bl, want[i], 1, true) == nil then return false end
-  end
-  return true
-end
 
 
 
@@ -3008,75 +2557,12 @@ end
 sdec.ua_resid_frac = sdec.ua_resid_frac or 0.25
 sdec.ua_resid_min  = sdec.ua_resid_min  or 20
 
-if sdec.seam_relock == nil then sdec.seam_relock = true end
-sdec.ua_seamtrial = sdec.ua_seamtrial or 8
-
--- Where the first frame after a spliced seam should anchor. -> the anchor position and the number of
+-- Sequential decode of a whole capture
 --   [...]
--- frames, exact while the hole is under one frame (1.04 ms at 9600 Bd), under-counting by one per whole
--- frame of hole beyond that.
--- kE is the edge index of the head's start edge, E its position, R where the record resumes.
-function sdec.ua_seam_relock(rd, n, T, nbits, par, nstop, invert, kE, E, R)
-  local ne, ei, es = sdec.ne, sdec.ei, sdec.es
-  if ne == nil or ne < 1 or T == nil or T <= 0 then return nil end
-  local parbits = 0
-  if par ~= sdec.PAR_NONE then parbits = 1 end
-  local framebits = 1 + nbits + parbits + nstop
-  local want = 0
-  if invert then want = 1 end
-  local K = sdec.ua_seamtrial or 8
-  -- Frames from an anchor at edge kc, framed as the walk frames them. -> errors, frames decoded, and
-  -- the errors in frames AFTER the first.
-  local function trial(kc)
-    local errs, late, got, t, kk = 0, 0, 0, ei[kc], kc
-    while got < K do
-      local val, err = sdec.ua_frame(rd, n, t, T, nbits, par, nstop, invert)
-      if err == 'truncated' then break end
-      got = got + 1
-      if err ~= nil then
-        errs = errs + 1
-        if got > 1 then late = late + 1 end
-      end
-      local tm = t + (framebits - 0.5) * T
-      local found = nil
-      while kk <= ne do
-        if es[kk] == want and ei[kk] >= tm then found = kk; break end
-        kk = kk + 1
-      end
-      if found == nil then break end
-      t = ei[found]
-    end
-    return errs, got, late
-  end
-  local e0, g0, l0 = trial(kE)
-  if g0 < 1 or e0 == 0 then return nil end
-  local lim = R + 2 * framebits * T
-  local best, bk, k = nil, nil, nil
-  for k = kE + 1, ne do
-    local e = ei[k]
-    if e > lim then break end
-    if es[k] == want and e >= R - 0.5 * T and (e - ei[k - 1]) >= 0.9 * T then
-      local errs, got = trial(k)
-      if got >= 1 then
-        if errs == 0 then
-          best, bk = 0, k
-          break
-        end
-        if best == nil or errs < best then best, bk = errs, k end
-      end
-    end
-  end
-  if bk == nil or best >= e0 then return nil end
-  local A = ei[bk]
-  local nlost = math.ceil((A - E) / (framebits * T) - 0.001)
-  if nlost < 1 then nlost = 1 end
-  return A, nlost
-end
-
--- `seams`, optional: {E = {...}, R = {...}, n} in this window's coordinates, from ck_decode -- the
--- position of each restored head's start edge and of the record's first reading after it. Nil on every
--- other call, and with nil nothing below changes.
-function sdec.ua_run(rd, n, T, nbits, par, nstop, invert, tmin0, seams)
+-- the share over any threshold by chance -- a 13-byte capture was losing its first byte to a vote
+-- taken over 12 frames. A capture worth voting on has hundreds: 20000 samples at 9600 baud holds
+-- about 190 frames, and the ranking probe's 4000-sample window about 38.
+function sdec.ua_run(rd, n, T, nbits, par, nstop, invert, tmin0)
   local parbits = 0
   if par ~= sdec.PAR_NONE then parbits = 1 end
   local framebits = 1 + nbits + parbits + nstop
@@ -3139,43 +2625,9 @@ function sdec.ua_run(rd, n, T, nbits, par, nstop, invert, tmin0, seams)
   local tmin = -1
   if tmin0 ~= nil then tmin = tmin0 end
   local prev = nil          -- t0 of the previous emitted frame, for the idle test below
-  local sj = 1              -- the next seam this window has not passed yet
   for k = anchor, ne do
     if es[k] == want and ei[k] >= tmin then
       local t0 = ei[k]
-      local relocked = false
-      if seams ~= nil then
-        while sj <= seams.n and seams.R[sj] + framebits * T < t0 do sj = sj + 1 end
-        local atseam = false
-        if sj <= seams.n and t0 >= seams.E[sj] - 1 then
-          if seams.E[sj] < seams.R[sj] then
-            atseam = (t0 < seams.R[sj])
-          else
-            atseam = (t0 < seams.R[sj] + framebits * T)
-          end
-        end
-        if atseam then
-          local A, nlost = sdec.ua_seam_relock(rd, n, T, nbits, par, nstop, invert, k,
-                                               seams.E[sj], seams.R[sj])
-          if A ~= nil and A > t0 then
-            local li
-            for li = 1, nlost do
-              local nf = r.nf + 1
-              r.nf = nf
-              r.vals[nf], r.errs[nf] = 0, 'seam'
-              r.tpos[nf] = seams.E[sj] + (li - 1) * framebits * T
-              r.nbad = r.nbad + 1
-            end
-            r.nrelock = (r.nrelock or 0) + 1
-            r.nseamlost = (r.nseamlost or 0) + nlost
-            tmin = A - 0.5
-            prev = nil
-            relocked = true
-          end
-          sj = sj + 1
-        end
-      end
-      if not relocked then
       local val, err = sdec.ua_frame(rd, n, t0, T, nbits, par, nstop, invert)
       if err == 'truncated' then break end
 
@@ -3196,7 +2648,6 @@ function sdec.ua_run(rd, n, T, nbits, par, nstop, invert, tmin0, seams)
       end
       prev = t0
 
-      end
       end
     end
   end
@@ -4295,49 +3746,6 @@ sdec.ck_probes = 8
 
 sdec.ck_maxbytes = 32768
 
--- Over an elided record with each burst's recovered head put back in front of it. `plan` comes from
---   [...]
--- The scan over plan entries carries no cursor state deliberately: `from` is the caller's and ck_levels asks
--- for strided windows over the whole recording while ua_bit asks for narrow ones, so a reader that assumed
--- monotonic requests would be wrong for one of them. The scan is bounded by gap_maxscratch, which is 12.
-function sdec.ck_reader_spliced(buf, ntotal, plan)
-  local rdp = buf.readings
-  local off = 0
-  if sdec.acq_first ~= nil then off = sdec.acq_first(buf, ntotal) - 1 end
-  local np, total = plan.n, plan.total
-  return function(dst, from, count, step)
-    if step == nil then step = 1 end
-    local m, k = 0, nil
-    for k = 1, count do
-      local a = from + (k - 1) * step
-      if a < 1 or a > total then break end
-      local j, nbefore, src, si = nil, 0, nil, nil
-      for j = 1, np do
-        local ps = plan.pos[j]
-        if a < ps then break end
-        local ln = plan.len[j]
-        if a < ps + ln then
-          src, si = plan.tail[j], a - ps + 1
-          break
-        end
-        nbefore = nbefore + ln
-      end
-      local v
-      if src ~= nil then
-        v = src[si]
-      else
-        local p = (a - nbefore) + off
-        if p > ntotal then p = p - ntotal end
-        v = rdp[p]
-      end
-      if v == nil then break end
-      m = m + 1
-      dst[m] = v
-    end
-    return m
-  end
-end
-
 -- Over a plain Lua array: the test path, and the way to chunk a capture already in memory.
 function sdec.ck_reader_table(rd, ntotal)
   return function(dst, from, count, step)
@@ -4691,26 +4099,12 @@ function sdec.ck_decode(reader, ntotal, fmt, sink, opts)
 
     local tmin0 = nil
     if endpos ~= nil then tmin0 = endpos - off end
-    local ws = nil
-    if opts.seams ~= nil and (opts.seams.n or 0) > 0 then
-      local sj
-      for sj = 1, opts.seams.n do
-        local e = opts.seams.E[sj] - off
-        if e >= 1 and e <= cnt then
-          if ws == nil then ws = {E = {}, R = {}, n = 0} end
-          ws.n = ws.n + 1
-          ws.E[ws.n], ws.R[ws.n] = e, opts.seams.R[sj] - off
-        end
-      end
-    end
     local r = sdec.ua_run(win, cnt, T, fmt.nbits, fmt.par, fmt.nstop, fmt.invert,
-                          tmin0, ws)
+                          tmin0)
 
     tot.nwin = tot.nwin + 1
     tot.nsmp = off + cnt
     tot.nfalse = tot.nfalse + r.nfalse
-    tot.nrelock = (tot.nrelock or 0) + (r.nrelock or 0)
-    tot.nseamlost = (tot.nseamlost or 0) + (r.nseamlost or 0)
 
     local m = r.nf
     if m > 0 and maxbytes ~= nil and tot.nf + m > maxbytes then
@@ -7408,7 +6802,6 @@ sdec.fc_maxsec = sdec.fc_maxsec or 1200
 -- until the device stops. Returns the run's verdict and, on a failure, its reason.
 function sdec.record_run()
   sdec.cancel_clear()
-  sdec.gapelide = 0
   sdec.ck_cancel, sdec.fc_end, sdec.strm_empty = nil, nil, nil
   sdec.fc_win, sdec.fc_bytes, sdec.fc_secs = 0, 0, 0
   sdec.strm_stopped_by_press = nil
@@ -7497,66 +6890,10 @@ function sdec.stream_decode(got)
   local path = sdec.flog_alloc()
   local opts = {maxbytes = md.cap, nocap = (md.cap == nil),
                 progress = sdec.ck_progress}
-  if sdec.strm_armed and sdec.strm_elide == nil and sdec.buf ~= nil then
+  if sdec.strm_armed and sdec.buf ~= nil then
     opts.leadmax = sdec.acq_leadmax(sdec.buf)
   end
-  if sdec.strm_elide ~= nil and sdec.fs ~= nil and sdec.fs > 0 then
-    opts.primeskip = math.ceil(2 * sdec.strm_elide * sdec.fs)
-  end
-  sdec.spl_nseam, sdec.spl_nspliced, sdec.spl_nadded, sdec.spl_norphan = nil, nil, nil, nil
-  sdec.spl_interior, sdec.spl_headrd = nil, nil
-  sdec.spl_seampos = nil
-  sdec.spl_why = nil
-  sdec.spl_raise, sdec.spl_thr, sdec.spl_lo, sdec.spl_hi = nil, nil, nil, nil
-  local rdr, nrd = nil, got
-  if sdec.strm_elide == nil then
-    sdec.spl_why = 'not elided'
-  elseif sdec.gap_used == nil or sdec.gap_used[1] == nil then
-    sdec.spl_why = 'no scratches'
-  elseif sdec.buf == nil then
-    sdec.spl_why = 'no record'
-  else
-    local thr = sdec.thr or sdec.lvl_thr
-    local fs = sdec.acq_fs or sdec.fs
-    local baud = sdec.force_baud
-    local lo, hi = sdec.lo, sdec.hi
-    if thr == nil then
-      sdec.spl_why = 'no threshold'
-    elseif lo ~= nil and hi ~= nil and hi > lo and (thr <= lo or thr >= hi) then
-      sdec.spl_why = 'thr outside swing'
-      sdec.spl_thr, sdec.spl_lo, sdec.spl_hi = thr, lo, hi
-    elseif fs == nil or fs <= 0 then
-      sdec.spl_why = 'no rate'
-    elseif baud == nil or baud <= 0 then
-      sdec.spl_why = 'no baud'
-    else
-      local pl = nil
-      local pok, perr = pcall(function()
-        pl = sdec.gap_splice_plan(sdec.buf, got, sdec.gap_used, thr, fs / baud, fs)
-      end)
-      if not pok then
-        sdec.spl_why = 'raised'
-        sdec.spl_raise = perr
-      elseif pl == nil then
-        if (sdec.spl_nseam or 0) <= 1 then
-          sdec.spl_why = 'one burst'
-        else
-          sdec.spl_why = 'tails refused'
-        end
-      else
-        if sdec.spl_interior then
-          sdec.spl_why = 'partial'
-        else
-          sdec.spl_why = 'ok'
-        end
-        rdr, nrd = sdec.ck_reader_spliced(sdec.buf, got, pl), pl.total
-      end
-    end
-  end
-  if sdec.seam_relock ~= false and sdec.spl_seampos ~= nil and (sdec.spl_seampos.n or 0) > 0 then
-    opts.seams = sdec.spl_seampos
-  end
-  if rdr == nil then rdr = sdec.ck_reader_buffer(sdec.buf, got) end
+  local rdr, nrd = sdec.ck_reader_buffer(sdec.buf, got), got
   sdec.ck_nrd = nrd
   if sdec.strm_press then
     opts.budget_s = sdec.ck_press_budget_s or sdec.ui_latency_s
@@ -7667,8 +7004,6 @@ end
 -- caller's cue to fall back to a free-running read. Guarded at its own firmware boundaries.
 function sdec.stream_arm(nsmp)
   sdec.strm_armed = nil
-  sdec.strm_elide, sdec.acq_elided = nil, nil
-  sdec.gap_used = nil
   local buf = sdec.buf
   if buf == nil then return false end
   if not sdec.bufclear(buf) then return false end
@@ -7680,7 +7015,6 @@ function sdec.stream_arm(nsmp)
   local armed = (sdec.arm_silent() and sdec.trigmode ~= 'free')
   sdec.acq_posloaded = nil
   local ok = false
-  local elide = nil
   if armed then
     local ev, useanalog = sdec.arm_source()
     if ev == nil then
@@ -7690,37 +7024,16 @@ function sdec.stream_arm(nsmp)
                         not sdec.arm_comparator(useanalog, sdec.arm_slope())) then
         armed = false
       end
-      if armed and useanalog then elide = sdec.gap_elide(sdec.force_baud) end
       if armed then
-        if elide ~= nil then
-          local scr = nil
-          if sdec.gap_nscratch ~= nil and sdec.gap_nscratch > 1 then
-            scr = sdec.gap_scratches(sdec.gap_nscratch, elide, sdec.fs)
-          end
-          if scr == nil then scr = sdec.gap_scratch(elide, sdec.fs) end
-          if scr ~= nil then ok = sdec.gap_model(buf, scr, ev, elide) end
-          if ok then
-            if type(scr) ~= 'table' or scr[1] == nil then
-              sdec.gap_used = {scr}
-            else
-              sdec.gap_used = scr
-            end
-          end
-          if not ok then elide = nil end
-        end
-        if elide == nil then
-          local pos = sdec.pretrig
-          if sdec.acq_bufperm then pos = sdec.acq_pospct(nsmp, buf) end
-          ok = pcall(trigger.model.load, 'LoopUntilEvent', ev, pos,
-                     trigger.CLEAR_ENTER, 0, buf)
-          if ok then sdec.acq_posloaded = pos end
-        end
+        local pos = sdec.pretrig
+        if sdec.acq_bufperm then pos = sdec.acq_pospct(nsmp, buf) end
+        ok = pcall(trigger.model.load, 'LoopUntilEvent', ev, pos,
+                   trigger.CLEAR_ENTER, 0, buf)
+        if ok then sdec.acq_posloaded = pos end
       end
       if not ok then armed = false end
     end
   end
-  if armed and elide ~= nil then sdec.acq_elided = true else sdec.acq_elided = nil end
-  sdec.strm_elide = elide
   sdec.strm_armed = armed
   if not armed then ok = pcall(trigger.model.load, 'SimpleLoop', nsmp, 0, buf) end
   if ok then
@@ -7735,10 +7048,6 @@ function sdec.stream_arm(nsmp)
     local spun, saw = 0, false
     while spun < (sdec.arm_settle_s or 0.25) do
       if sdec.trig_waiting() == true then saw = true break end
-      if elide ~= nil then
-        local bn = nil
-        if pcall(function() bn = sdec.buf.n end) and (bn or 0) > 0 then saw = true break end
-      end
       delay(0.01)
       spun = spun + 0.01
     end
@@ -7853,7 +7162,7 @@ function sdec.stream_acquire(nsmp)
   end
   local rfail, rlast = 0, nil
   sdec.strm_readfail = nil
-  local limit = sdec.stream_limit(nsmp, sdec.fs, sdec.strm_elide)
+  local limit = sdec.stream_limit(nsmp, sdec.fs)
   if sdec.strm_armed then limit = limit + sdec.arm_wait_s() end
   while true do
     local have = buf.n or 0
@@ -7863,7 +7172,7 @@ function sdec.stream_acquire(nsmp)
       seen, seenend = 0, -1
       if sdec.armnote_clear ~= nil then pcall(sdec.armnote_clear) end
     end
-    if sdec.strm_armed and sdec.strm_elide == nil then
+    if sdec.strm_armed then
       if armdone and sdec.trig_done(buf) then sdec.ck_endwhy = 'full'; break end
     elseif have >= nsmp then
       sdec.ck_endwhy = 'full'
@@ -7908,13 +7217,6 @@ function sdec.stream_acquire(nsmp)
       quiet = quiet + step
     end
 
-    if sdec.strm_elide ~= nil then
-      if sdec.trig_waiting() == true then
-        quiet = quiet + step
-      else
-        quiet = 0
-      end
-    end
     if armdone and sdec.ck_watch and qexit ~= nil and qexit > 0 and quiet >= qexit then
       local adopted, unmeasurable = sdec.strm_relevel(buf, have, iw)
       if adopted then
@@ -7949,7 +7251,7 @@ function sdec.stream_maxwait(nsmp, fs)
   return t
 end
 
--- The wall-clock ceiling a recording runs under. elide is sdec.strm_elide: the window, or nil when not eliding.
+-- The wall-clock ceiling a recording runs under.
 --   [...]
 -- cut off having recorded a fraction of what was asked, reported as a full buffer. The standing ceiling is the
 -- right bound there, and it is still a bound: the fill test, the quiet-line exit and the operator all end the
@@ -8749,17 +8051,7 @@ end
 
 -- The note-row wording for a finished recording. endwhy is sdec.ck_endwhy; ok and err are the
 -- run's verdict and its message.
--- A wrapper, so the elision verdict reaches the glass without a clause at each of the reasons below: elision
--- declines silently and for reasons that are not the operator's doing -- see gap_why() -- and a recording that
--- quietly did not elide looks exactly like one that did.
 function sdec.strm_exit_why(endwhy, ok, err)
-  local why = sdec.strm_exit_why_base(endwhy, ok, err)
-  local off = sdec.gap_why()
-  if off == nil then return why end
-  return tostring(why) .. '; ' .. off
-end
-
-function sdec.strm_exit_why_base(endwhy, ok, err)
   if ok == false and not (sdec.ck_cancel and sdec.strm_empty) then
     return 'run failed: ' .. tostring(err or 'unknown')
   end
@@ -8796,39 +8088,11 @@ function sdec.strm_exit_why_base(endwhy, ok, err)
     if sdec.ck_cancel then return 'stopped with the TRIGGER key' end
     return 'stopped from the panel'
   elseif endwhy == 'full' then
-    if sdec.strm_elide ~= nil then
-      local n = nil
-      if not pcall(function() n = sdec.buf.n end) then n = nil end
-      if n == nil or n < 2 then n = sdec.nread end
-      local kept, elided, segs = sdec.gap_report(sdec.buf, n, sdec.acq_fs or sdec.fs)
-      if kept ~= nil and elided > 0 then
-        return string.format('buffer full -- %d bursts, elided %.1f s of %.1f s',
-                             segs, elided, kept + elided)
-      end
-    end
     return 'buffer full -- the stream may continue'
   end
   return 'finished'
 end
 
--- Why elision is not running on a recording that asked for it. -> a sentence, or nil when it is running or was
---   [...]
--- targets, a probe that lands inside a burst arms nothing and the recording silently falls back to SimpleLoop
--- with no comparator and no elision. And arm_silent() returns false outright whenever fc_out is set, so elision
--- and flow control are mutually exclusive, which nothing else would tell them.
-function sdec.gap_why()
-  local w = tonumber(sdec.gapelide)
-  if w == nil or w <= 0 then return nil end
-  if sdec.strm_elide ~= nil then return nil end
-  if sdec.fc_out then return 'gap elision off -- flow control is on' end
-  local win, declined = sdec.gap_elide()
-  if win == nil then return declined end
-  if sdec.trigmode == 'free' then return 'gap elision off -- the trigger is free-running' end
-  if not sdec.arm_silent() then
-    return 'gap elision off -- the line was already transmitting when the recording started'
-  end
-  return 'gap elision off -- no analog comparator was armed'
-end
 
 sdec.strm_absorb_s = sdec.strm_absorb_s or 1.0
 
@@ -9044,7 +8308,7 @@ function sdec.options_save()
                    any = sdec.widths_any, trig = sdec.trigmode,
                    ext = sdec.trigext, fc = sdec.fc_out, view = sdec.ui_mode,
                    aset = sdec.autolock_set,
-                   armv = sdec.armlevel, armw = sdec.armwait, gape = sdec.gapelide,
+                   armv = sdec.armlevel, armw = sdec.armwait,
                    over = sdec.strm_overread,
                    dhas = true, dbaud = sdec.baud,
                    dsnap = sdec.snapped, dfirm = sdec.snapfirm}
@@ -9063,7 +8327,6 @@ function sdec.options_restore()
   sdec.autolock_set = s.aset
   if type(s.armv) == 'number' then sdec.armlevel = s.armv end
   if type(s.armw) == 'number' then sdec.armwait = s.armw end
-  if type(s.gape) == 'number' then sdec.gapelide = s.gape end
   if type(s.over) == 'number' then sdec.strm_overread = s.over end
   if s.dhas then
     sdec.baud, sdec.snapped, sdec.snapfirm = s.dbaud, s.dsnap, s.dfirm
@@ -9267,8 +8530,6 @@ function sdec.stop()
       sdec.stickyerr = 'the capture buffer could not be freed -- power cycle the instrument'
     end
   end
-  pcall(sdec.gap_release)
-  pcall(sdec.gap_release_all)
   local restored = sdec.buf_restore()
   if restored ~= nil then ulog.line('default buffer capacities: ' .. restored) end
   sdec.smp, sdec.nread = nil, 0
@@ -10094,70 +9355,6 @@ bexp.seammult = 5
 
 bexp.seamwinfrac = 0.9
 
--- Per-BURST comparison. -> nmatch, ncmp, nburst; nil when there is no verdict.
---   [...]
--- whether it SHOULD read this instead is a question about what the operator is being asked to abort on.
--- Seams come from res.tpos, each frame's start in samples, so no rate or format arithmetic is needed:
--- a pitch more than seammult times the median is silence. That is the same shape of test ua_run uses.
-function bexp.match_bursts(res, vid, winsamp)
-  local want = bexp.bytes(vid)
-  if want == nil or res == nil or (res.nf or 0) < 1 then return nil end
-  if res.tpos == nil then return nil end
-  local wl = string.len(want)
-  local arr = bexp.barr(vid)
-  if wl < 1 or arr == nil then return nil end
-
-  local k, pitch, np = nil, {}, 0
-  for k = 2, res.nf do
-    local a, b = res.tpos[k - 1], res.tpos[k]
-    if a ~= nil and b ~= nil and b > a then np = np + 1 pitch[np] = b - a end
-  end
-  if np < 2 then return nil end
-  local med, best = nil, nil
-  do
-    local i
-    for i = 1, np do
-      local below, j = 0, nil
-      for j = 1, np do if pitch[j] < pitch[i] then below = below + 1 end end
-      if below <= np / 2 and (best == nil or pitch[i] < best) then best = pitch[i] end
-    end
-    med = best
-  end
-  if med == nil or med <= 0 then return nil end
-  local thr = bexp.seammult * med
-  if winsamp ~= nil and winsamp > 0 then
-    local wt = bexp.seamwinfrac * winsamp
-    if wt > thr then thr = wt end
-  end
-
-  local bursts, nb, from = {}, 0, 1
-  for k = 2, res.nf do
-    local a, b = res.tpos[k - 1], res.tpos[k]
-    if a ~= nil and b ~= nil and (b - a) > thr then
-      nb = nb + 1
-      bursts[nb] = {from, k - 1}
-      from = k
-    end
-  end
-  nb = nb + 1
-  bursts[nb] = {from, res.nf}
-
-  local tm, tc, nused = 0, 0, 0
-  local bi
-  for bi = 1, nb do
-    local lo, hi = bursts[bi][1], bursts[bi][2]
-    local sub = {nf = hi - lo + 1, vals = {}, errs = {}}
-    local j
-    for j = lo, hi do
-      sub.vals[j - lo + 1] = res.vals[j]
-      sub.errs[j - lo + 1] = res.errs[j]
-    end
-    local m, c = bexp.match(sub, vid)
-    if m ~= nil and c ~= nil then tm = tm + m tc = tc + c nused = nused + 1 end
-  end
-  if tc < bexp.mincmp then return nil end
-  return tm, tc, nb
-end
 
 -- Compare a decode against what the vector sends. -> nmatch, ncmp, shift; nil when there is no verdict.
 --   [...]
@@ -10280,61 +9477,6 @@ function brun.cell_fs(baud)
 end
 
 brun.evbudget = brun.evbudget or 3      -- events per cell above which a cell counts as noisy
-brun.elide = brun.elide or nil
-brun.elide_vids = brun.elide_vids or nil
-brun.elide_maxsec = brun.elide_maxsec or 30
-brun.elide_fsmax = brun.elide_fsmax or nil
-brun.elide_fsavoid = brun.elide_fsavoid or {640000}
-brun.elide_lowbaud = brun.elide_lowbaud or 2400
-brun.elide_win_low = brun.elide_win_low or 0.100
-brun.elide_win = brun.elide_win or 0.025
-
-brun.elide_promise = brun.elide_promise or 0.050
-
-brun.elide_margin = brun.elide_margin or 2
-
-brun.elide_minbits = brun.elide_minbits or 40
-
-brun.elide_appfs = brun.elide_appfs
-if brun.elide_appfs == nil then brun.elide_appfs = true end
-
--- The window this baud gets, which is also what the gate measures a gap against.
-function brun.elide_window(baud)
-  local w = brun.elide_win
-  if baud ~= nil and baud > 0 and baud < brun.elide_lowbaud then w = brun.elide_win_low end
-  if baud ~= nil and baud > 0 and brun.elide_minbits ~= nil then
-    local lo = brun.elide_minbits / baud
-    if lo > w then w = lo end
-  end
-  return w
-end
-
--- The window a cell gets, or nil and the reason it gets none. -> seconds | nil, why
---   [...]
--- A vector with no entry in elide_gapbits gets the window and no gate. That is the honest answer rather
--- than a refusal: the gate needs the gap, the table holds only the six vectors that declare one, and a
--- caller eliding something else knows something this file does not.
-function brun.elide_for(vid, baud, want)
-  if want == nil or want <= 0 then return nil end
-  if baud == nil or baud <= 0 then return want end
-  local w = brun.elide_window(baud)
-  if w > want then w = want end
-  local gb = nil
-  if brun.elide_gapbits ~= nil then gb = brun.elide_gapbits[vid] end
-  if gb == nil then return w end
-  local gs, need = gb / baud, brun.elide_margin * w
-  if gs < need then
-    return nil, string.format('gap %.1f ms needs %.0f ms at a %.0f ms window',
-                              gs * 1000, need * 1000, w * 1000)
-  end
-  return w
-end
-brun.elide_gapbits = brun.elide_gapbits or
-  {v98a = 610, v98b = 610, v98c = 410, v99a = 1010, v99b = 1010, v99c = 610,
-   v98d = 960, v99d = 4800}
-brun.elide_probe_tries = brun.elide_probe_tries or 4
-brun.elide_probe_wait = brun.elide_probe_wait or 0.15
-brun.elide_probe_budget = brun.elide_probe_budget or 1.5
 
 brun.paywrong_frac = brun.paywrong_frac or 0.5
 brun.frameflag_frac = brun.frameflag_frac or 0.10
@@ -10428,7 +9570,6 @@ end
 brun.filt_baudlo = brun.filt_baudlo          -- Bd, inclusive floor
 brun.filt_baudhi = brun.filt_baudhi          -- Bd, inclusive ceiling
 brun.filt_stdonly = brun.filt_stdonly        -- true: standard rates only
-brun.filt_gaponly = brun.filt_gaponly        -- true: only vectors with a declared gap
 brun.filt_interstit = brun.filt_interstit    -- Bd: no non-standard rate below this
 brun.filt_advonly = brun.filt_advonly        -- true: only vectors known to produce errors
 
@@ -10442,17 +9583,9 @@ function brun.wanted(c)
   if brun.filt_interstit ~= nil and not std and (c.baud or 0) < brun.filt_interstit then
     return false
   end
-  if brun.filt_gaponly then
-    if brun.elide_gapbits == nil or c.vid == nil or brun.elide_gapbits[c.vid] == nil then
-      return false
-    end
-  end
   if brun.filt_advonly then
     local adv = false
     if barb ~= nil and barb.loud ~= nil and barb.loud(c.vid) then adv = true end
-    if brun.elide_gapbits ~= nil and c.vid ~= nil and brun.elide_gapbits[c.vid] ~= nil then
-      adv = true
-    end
     if not adv then return false end
   end
   return true
@@ -10475,7 +9608,7 @@ end
 -- One measurement
 -- MIRRORS bench_point() IN tools/bench_uart.py. Changing one without the other makes this soak
 -- incomparable to every bench result on record; test_bench_engine.lua compares them.
-function brun.point(fs, baud, lock, elide, vid)
+function brun.point(fs, baud, lock, vid)
   local r = {ran = false, why = nil}
   pcall(function() eventlog.clear() end)
   sdec.force_baud, sdec.force_nbits = nil, nil
@@ -10487,152 +9620,10 @@ function brun.point(fs, baud, lock, elide, vid)
   sdec.fs, sdec.fs_want = fs, fs
   local ok, why = false, nil
   local okc
-  r.elide_want = elide
-  local keepgap = sdec.gapelide
-  if elide ~= nil then
-    sdec.gapelide = elide
-    sdec.trigmode = 'edge'
-    if brun.elide_appfs then
-      local fb = nil
-      pcall(function() fb = sdec.fs_for_burst(baud) end)
-      if fb ~= nil and fb > 0 then
-        sdec.fs, sdec.fs_want = fb, fb
-        r.elidefsapp = fb
-      end
-    end
-    if brun.elide_fsmax ~= nil and sdec.fs > brun.elide_fsmax then
-      sdec.fs, sdec.fs_want = brun.elide_fsmax, brun.elide_fsmax
-      r.elidefscap = brun.elide_fsmax
-    end
-    if brun.elide_fsavoid ~= nil then
-      local ai
-      for ai = 1, table.getn(brun.elide_fsavoid) do
-        if sdec.fs == brun.elide_fsavoid[ai] then
-          local ri
-          for ri = 1, table.getn(sdec.rates) do
-            if sdec.rates[ri] > sdec.fs then
-              r.elidefsavoid = sdec.fs
-              sdec.fs, sdec.fs_want = sdec.rates[ri], sdec.rates[ri]
-              break
-            end
-          end
-          break
-        end
-      end
-    end
-    if elide > 0 and sdec.fs > 0 then
-      local wmax = 0.4 * sdec.n / sdec.fs
-      if sdec.gapelide > wmax then
-        sdec.gapelide = wmax
-        r.elidewincap = wmax
-      end
-    end
-    sdec.clear_measured()
-    sdec.hw_config()
-    sdec.acq_make_buffer(sdec.acq_cap(sdec.n), true)
-    local pn = sdec.n
-    local ptry, ntry = 0, brun.elide_probe_tries
-    do
-      local psec = nil
-      if sdec.fs ~= nil and sdec.fs > 0 then psec = sdec.n / sdec.fs end
-      if psec ~= nil and psec > 0 then
-        local fits = math.floor(brun.elide_probe_budget / psec)
-        if fits < ntry then ntry = fits end
-      end
-      if ntry < 1 then ntry = 1 end
-      r.armntry = ntry
-    end
-    pcall(function()
-      local lok, lwhy
-      while true do
-        ptry = ptry + 1
-        if sdec.acq_free(pn, nil, true) >= 2 then
-          lok, lwhy = sdec.sig_levels(sdec.smp, sdec.nread)
-        else
-          lok = false
-        end
-        r.armwhy = lwhy
-        if lok or ptry >= ntry then break end
-        delay(brun.elide_probe_wait)
-      end
-      r.armtry = ptry
-      r.armlok = lok
-      r.armnover = sdec.nover
-      r.armfs = sdec.acq_fs
-      if sdec.acq_fs ~= nil and baud ~= nil and baud > 0 then
-        r.armsabit = sdec.acq_fs / baud
-      end
-      if lok then
-        sdec.sig_edges(sdec.smp, sdec.nread)
-        sdec.sig_idle(sdec.smp, sdec.nread)
-      end
-      do
-        if lok and sdec.thr ~= nil and sdec.swing ~= nil and sdec.swing > 0 then
-          sdec.arm_thr, sdec.arm_idle = sdec.thr, sdec.idle
-        else
-          sdec.arm_threshold()
-        end
-        local t = sdec.arm_thr
-        if t ~= nil and t == t and t > -10 and t < 10 then
-          sdec.probe_idle = 'gap vector: arming on the waveform own idle runs'
-        else
-          r.armthrbad = t
-          sdec.arm_thr = nil
-        end
-      end
-    end)
-    local keepmax = sdec.strm_maxsec
-    sdec.strm_maxsec = brun.elide_maxsec
-    local got = nil
-    sdec.ck_endwhy = nil
-    local perr = nil
-    okc, perr = pcall(function() got = sdec.stream_acquire(sdec.n) end)
-    if not okc then r.raisewhy = tostring(perr) end
-    sdec.strm_maxsec = keepmax
-    ok = got ~= nil and got > 0
-    if not ok and why == nil then
-      if sdec.ck_endwhy == 'noarm' then
-        why = string.format('the comparator never fired in %.0f s at %s V',
-                            sdec.arm_wait_s(), tostring(sdec.arm_expired_at))
-      else
-        why = tostring(sdec.lasterr or 'stream_acquire returned nothing')
-      end
-    end
-    r.elidewhy = sdec.ck_endwhy
-    if sdec.ck_endwhy == 'noarm' then
-      r.armexp = sdec.arm_expired_at
-      r.armlo, r.armhi, r.armidle = sdec.lo, sdec.hi, sdec.arm_idle
-      r.elidegot = got
-    end
-    r.elided = sdec.acq_elided
-    r.elidewin = sdec.strm_elide
-    r.elidefs = sdec.acq_fs
-    pcall(function() r.elidespanfs = sdec.acq_measure_fs(sdec.buf, sdec.nread) end)
-    pcall(function() r.elidecap = sdec.buf.capacity end)
-    pcall(function() r.elidesidx = sdec.buf.startindex end)
-    pcall(function() r.elideeidx = sdec.buf.endindex end)
-    r.elidenrd = sdec.nread
-    r.elidetdig = sdec.strm_waited
-    local codes, ncode, firstmsg = '', 0, nil
-    pcall(function()
-      while ncode < 4 do
-        local n, m = eventlog.next(eventlog.SEV_ALL)
-        if n == nil or n == 0 then break end
-        codes = codes .. tostring(n) .. ' '
-        if firstmsg == nil and m ~= nil then firstmsg = tostring(m) end
-        ncode = ncode + 1
-      end
-    end)
-    if codes ~= '' then r.elideev = codes end
-    if firstmsg ~= nil then r.elideevmsg = string.sub(firstmsg, 1, 70) end
-  else
-    sdec.gapelide = nil
-    sdec.trigmode = 'free'
-    local perr = nil
-    okc, perr = pcall(function() ok, why = sdec.acquire() end)
-    if not okc then r.raisewhy = tostring(perr) end
-  end
-  sdec.gapelide, sdec.trigmode = keepgap, 'free'
+  sdec.trigmode = 'free'
+  local perr = nil
+  okc, perr = pcall(function() ok, why = sdec.acquire() end)
+  if not okc then r.raisewhy = tostring(perr) end
   r.remade = sdec.acq_remade
   r.bufshort = sdec.acq_bufshort
   if brun.timing then pcall(function() brun.tacq = timer.gettime() end) end
@@ -10646,28 +9637,9 @@ function brun.point(fs, baud, lock, elide, vid)
 
   local okd, whyd = false, nil
   local okc2
-  sdec.spl_nseam, sdec.spl_nspliced, sdec.spl_nadded, sdec.spl_norphan = nil, nil, nil, nil
   sdec.ck_stop, sdec.ck_cancel = false, nil
-  if elide ~= nil then
-    okc2 = pcall(function() okd, whyd = sdec.stream_decode(sdec.nread) end)
-  else
-    okc2 = pcall(function() okd, whyd = sdec.decode() end)
-  end
+  okc2 = pcall(function() okd, whyd = sdec.decode() end)
   if brun.timing then pcall(function() brun.tdec = timer.gettime() end) end
-  r.splseam, r.splran = sdec.spl_nseam, sdec.spl_nspliced
-  r.splorph, r.spladd = sdec.spl_norphan, sdec.spl_nadded
-  r.splwhy = sdec.spl_why
-  if sdec.spl_headrd ~= nil and (sdec.spl_nspliced or 0) > 0 then
-    r.splhead = sdec.spl_headrd / sdec.spl_nspliced
-  end
-  r.splpad, r.splnpad = sdec.spl_padrd, sdec.spl_npad
-  if elide ~= nil and sdec.ck_tot ~= nil then
-    r.cknwin, r.cknsmp, r.ckstop = sdec.ck_tot.nwin, sdec.ck_tot.nsmp, sdec.ck_tot.stopped
-    r.cknf = sdec.ck_tot.nf
-    r.nrelock, r.nseamlost = sdec.ck_tot.nrelock, sdec.ck_tot.nseamlost
-  end
-  r.splthr, r.spllo, r.splhi = sdec.spl_thr, sdec.spl_lo, sdec.spl_hi
-  r.splraise = sdec.spl_raise
   if sdec.ck_tot ~= nil then
     r.decwin, r.decstop = sdec.ck_tot.nwin, sdec.ck_tot.stopped
     r.decest = sdec.ck_tot.nwin_est
@@ -10707,14 +9679,6 @@ function brun.point(fs, baud, lock, elide, vid)
     pcall(function()
       local m, c = bexp.match(res, vid)
       if m ~= nil and c ~= nil and c > 0 then r.paymatch, r.paycmp = m, c end
-    end)
-    pcall(function()
-      local winsamp = nil
-      if sdec.gapelide ~= nil and sdec.gapelide > 0 and sdec.acq_fs ~= nil and sdec.acq_fs > 0 then
-        winsamp = sdec.gapelide * sdec.acq_fs
-      end
-      local m, c, nb = bexp.match_bursts(res, vid, winsamp)
-      if m ~= nil and c ~= nil and c > 0 then r.payb, r.paybcmp, r.paybn = m, c, nb end
     end)
   end
   return r
@@ -11932,12 +10896,7 @@ function brun.soak(iterations, tag)
       if brun.timing then pcall(function() brun.tsel = timer.gettime() end) end
       brun.spin_tick()                  -- 2 of 6: stimulus selected and the plan wait is over
       local fs = brun.cell_fs(c.baud)
-      local el, elskip = nil, nil
-      if brun.elide ~= nil and brun.elide_vids ~= nil and brun.elide_vids[c.vid] then
-        el, elskip = brun.elide_for(c.vid, c.baud, brun.elide)
-      end
-      local p = brun.point(fs, c.baud, el ~= nil, el, c.vid)
-      if elskip ~= nil then p.elideskip = elskip end
+      local p = brun.point(fs, c.baud, false, c.vid)
       pcall(function() sdec.mute_events() end)
       if not p.ran then
         brun.nbad = brun.nbad + 1
@@ -12012,91 +10971,8 @@ function brun.soak(iterations, tag)
         nt = nt .. string.format(' payb=%s/%s/%s', brun.int(p.payb), brun.int(p.paybcmp),
                                  brun.int(p.paybn or 0))
       end
-      if p.elideskip ~= nil then nt = nt .. ' noelide=[' .. tostring(p.elideskip) .. ']' end
-      if p.elide_want ~= nil then
-        if p.elided == true then
-          nt = nt .. string.format(' elide=%.3f', p.elidewin or p.elide_want)
-        else
-          nt = nt .. ' elide=FELLBACK'
-        end
-        if p.elideev ~= nil then nt = nt .. ' elideev=' .. tostring(p.elideev) end
-        if (p.remade or 0) > 0 then nt = nt .. ' remade=' .. brun.int(p.remade) end
-        if p.bufshort ~= nil then nt = nt .. ' BUFSHORT=' .. brun.int(p.bufshort) end
-        if p.elideevmsg ~= nil then nt = nt .. ' ev1=[' .. tostring(p.elideevmsg) .. ']' end
-        if p.armlok == false then nt = nt .. ' lok=false' end
-        if p.armwhy ~= nil then nt = nt .. ' armwhy=[' .. string.sub(tostring(p.armwhy), 1, 40) .. ']' end
-        if p.elidefsapp ~= nil then nt = nt .. string.format(' appfs=%.0f', p.elidefsapp) end
-        if p.elidefscap ~= nil then nt = nt .. string.format(' fscap=%.0f', p.elidefscap) end
-        if p.elidefsavoid ~= nil then
-          nt = nt .. string.format(' fsavoid=%.0f', p.elidefsavoid)
-        end
-        if p.elidewincap ~= nil then nt = nt .. string.format(' wincap=%.4f', p.elidewincap) end
-        if p.elidefs ~= nil then nt = nt .. string.format(' segfs=%.0f', p.elidefs) end
-        if p.elidespanfs ~= nil then nt = nt .. string.format(' spanfs=%.0f', p.elidespanfs) end
-        if p.splwhy ~= nil then nt = nt .. ' splwhy=' .. tostring(p.splwhy) end
-        if p.splthr ~= nil then
-          nt = nt .. string.format(' splthr=%.3f/%.3f/%.3f', p.splthr, p.spllo or 0, p.splhi or 0)
-        end
-        if p.splraise ~= nil then
-          nt = nt .. ' splraise=[' .. string.sub(tostring(p.splraise), 1, 40) .. ']'
-        end
-        if p.splseam ~= nil then
-          nt = nt .. string.format(' spl=%s/%s', brun.int(p.splran or 0), brun.int(p.splseam))
-          if (p.splorph or 0) > 0 then nt = nt .. ' splorph=' .. brun.int(p.splorph) end
-          if (p.spladd or 0) > 0 then nt = nt .. ' spladd=' .. brun.int(p.spladd) end
-          if p.splhead ~= nil then nt = nt .. string.format(' splhead=%.1f', p.splhead) end
-          if p.splpad ~= nil and (p.splnpad or 0) > 0 then
-            nt = nt .. string.format(' splpad=%s/%s', brun.int(p.splpad), brun.int(p.splnpad))
-          end
-        end
-        if p.cknwin ~= nil then
-          nt = nt .. string.format(' ckwin=%s/%s', brun.int(p.cknwin), brun.int(p.cknsmp or 0))
-          if p.cknf ~= nil then nt = nt .. ' cknf=' .. brun.int(p.cknf) end
-          if p.nrelock ~= nil then
-            nt = nt .. string.format(' relock=%s/%s', brun.int(p.nrelock),
-                                     brun.int(p.nseamlost or 0))
-          end
-          if p.ckstop ~= nil then nt = nt .. ' ckstop=' .. tostring(p.ckstop) end
-        end
-        if p.decwin ~= nil then
-          nt = nt .. ' decwin=' .. brun.int(p.decwin)
-          if p.decest ~= nil then nt = nt .. '/' .. brun.int(p.decest) end
-          if p.decstop ~= nil then nt = nt .. ' decstop=' .. tostring(p.decstop) end
-        end
-        if p.decn ~= nil then nt = nt .. ' decn=' .. brun.int(p.decn) end
-        if p.bufn ~= nil then nt = nt .. ' bufn=' .. brun.int(p.bufn) end
-        if p.decwid ~= nil then
-          nt = nt .. string.format(' decgeo=%s+%s', brun.int(p.decwid), brun.int(p.decstride or 0))
-        end
-        if p.ckstop ~= nil then nt = nt .. ' ckstop=' .. tostring(p.ckstop) end
-        if p.ckcancel ~= nil then nt = nt .. ' ckcancel=' .. tostring(p.ckcancel) end
-        if p.elidenrd ~= nil and p.elidecap ~= nil then
-          nt = nt .. string.format(' ring=%s/%s', brun.int(p.elidenrd), brun.int(p.elidecap))
-        end
-        if p.elidesidx ~= nil and p.elidesidx > 1 then
-          nt = nt .. ' sidx=' .. brun.int(p.elidesidx)
-        end
-        if p.elidetdig ~= nil then nt = nt .. string.format(' tdig=%.2f', p.elidetdig) end
-        if p.armnover ~= nil and p.armnover > 0 then nt = nt .. ' nover=' .. brun.int(p.armnover) end
-        if p.armtry ~= nil and (p.armtry > 1 or p.armntry ~= brun.elide_probe_tries) then
-          nt = nt .. string.format(' try=%s/%s', brun.int(p.armtry), brun.int(p.armntry or 0))
-        end
-        if p.elidewhy ~= nil and (not p.ran or p.elidewhy ~= 'full') then
-          nt = nt .. ' endwhy=' .. tostring(p.elidewhy)
-          if p.armexp ~= nil then nt = nt .. string.format(' armexp=%.3f', p.armexp) end
-          if p.elidegot ~= nil then nt = nt .. ' got=' .. brun.int(p.elidegot) end
-          if p.armlo ~= nil and p.armhi ~= nil then
-            nt = nt .. string.format(' armpair=%.3f/%.3f', p.armlo, p.armhi)
-          end
-          if p.armidle ~= nil then nt = nt .. ' armidle=' .. tostring(p.armidle) end
-          if p.armfs ~= nil then nt = nt .. string.format(' armfs=%.0f', p.armfs) end
-          if p.armsabit ~= nil then nt = nt .. string.format(' sabit=%.3f', p.armsabit) end
-        end
-        if p.armthrbad ~= nil then
-          nt = nt .. ' armthr=OUTOFRANGE:' .. tostring(p.armthrbad)
-          if p.armnover ~= nil then nt = nt .. ' nover=' .. brun.int(p.armnover) end
-        end
-      end
+      if (p.remade or 0) > 0 then nt = nt .. ' remade=' .. brun.int(p.remade) end
+      if p.bufshort ~= nil then nt = nt .. ' BUFSHORT=' .. brun.int(p.bufshort) end
       if brun.idlediag then
         local lg = sdec.run1 or 0
         if (sdec.run0 or 0) > lg then lg = sdec.run0 end
@@ -12202,15 +11078,9 @@ brun.pn_laps_max = brun.pn_laps_max or 210
 
 brun.pn_sdg = brun.pn_sdg or {'10.0.1.79', '10.0.1.78', '192.168.0.79'}
 
-brun.pn_vidsets = brun.pn_vidsets or
-  {{v = nil,                  t = 'All nodrop'},
-   {v = 'v98d,v99d,v99a',     t = 'v98d v99d v99a'},
-   {v = 'v98d,v99d',          t = 'v98d v99d'}}
-
 brun.pn_laptypes = brun.pn_laptypes or
   {{t = 'Full',         std = nil,  gap = nil,  adv = nil},
    {t = 'Normal',       std = true, gap = nil,  adv = nil},
-   {t = 'Gap targeted', std = nil,  gap = true, adv = nil},
    {t = 'Adversarial',  std = nil,  gap = nil,  adv = true}}
 
 brun.pn_baudlo = brun.pn_baudlo or 300
@@ -12302,17 +11172,7 @@ function brun.build_panel()
                              'Laps', 'plan passes',
                              display.NFORMAT_INTEGER, 1, 1, brun.pn_laps_max, '', 4))
   fx, fy = nextpos()
-  brun.pn_elide = keep(create(brun.pnscr, display.OBJ_EDIT_NUMBER, fx, fy,
-                              'Gap Elide', '0 off, cut after',
-                              display.NFORMAT_PREFIX, 0, 0, sdec.gapelide_max, 's', 4))
-  fx, fy = nextpos()
-  local vt = {}
   local i
-  for i = 1, table.getn(brun.pn_vidsets) do vt[i] = brun.pn_vidsets[i].t end
-  brun.pn_vids = keep(create(brun.pnscr, display.OBJ_EDIT_OPTION, fx, fy,
-                             'Elide Vectors', 'which ones elide',
-                             vt[1], vt[2], vt[3]))
-  fx, fy = nextpos()
   local st, sn = {}, 0
   if bsdg ~= nil and bsdg.ip ~= nil then sn, st[1] = 1, bsdg.ip end
   for i = 1, table.getn(brun.pn_sdg) do
@@ -12383,15 +11243,9 @@ end
 -- Read the form, apply it, and start. Nothing here is applied until every field has been read: a
 -- raise half way would otherwise commit a partial configuration, which is options_apply's rule.
 function brun.panel_run()
-  local laps, elide, vids, ip, lt, lo, hi, inter
+  local laps, ip, lt, lo, hi, inter
   local readok, readerr = pcall(function()
     laps = display.getvalue(brun.pn_laps)
-    elide = display.getvalue(brun.pn_elide)
-    local vi = display.getvalue(brun.pn_vids)
-    if type(vi) == 'number' then
-      local e = brun.pn_vidsets[math.floor(vi + 0.5)]
-      if e ~= nil then vids = e.v end
-    end
     local si = display.getvalue(brun.pn_sdgf)
     if type(si) == 'number' then ip = brun.pn_sdgtxt(math.floor(si + 0.5)) end
     local li = display.getvalue(brun.pn_lapt)
@@ -12420,7 +11274,7 @@ function brun.panel_run()
   laps = math.floor(laps + 0.5)
 
   if lt == nil then lt = brun.pn_laptypes[1] end
-  brun.filt_stdonly, brun.filt_gaponly, brun.filt_advonly = lt.std, lt.gap, lt.adv
+  brun.filt_stdonly, brun.filt_advonly = lt.std, lt.adv
   brun.nfilt = 0
   if type(lo) ~= 'number' then lo = nil end
   if type(hi) ~= 'number' then hi = nil end
@@ -12428,13 +11282,6 @@ function brun.panel_run()
   brun.filt_baudlo, brun.filt_baudhi = lo, hi
   if type(inter) == 'number' and inter > 0 then brun.filt_interstit = inter
   else brun.filt_interstit = nil end
-  if type(elide) == 'number' and elide > 0 then
-    brun.elide = elide
-    brun.elidevids = vids
-  else
-    brun.elide = nil
-    brun.elidevids = nil
-  end
   if ip ~= nil and bsdg ~= nil then
     if bsdg.close ~= nil then pcall(bsdg.close) end
     bsdg.ip = ip

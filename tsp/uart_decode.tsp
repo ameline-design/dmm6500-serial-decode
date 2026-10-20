@@ -272,108 +272,7 @@ end
 sdec.ua_resid_frac = sdec.ua_resid_frac or 0.25
 sdec.ua_resid_min  = sdec.ua_resid_min  or 20
 
--- Re-lock the framer on the record after a spliced seam. ON by default; false keeps the pre-fix framing,
--- which tools/test_elideseam.lua pins both ways.
-if sdec.seam_relock == nil then sdec.seam_relock = true end
--- Frames a trial anchor is judged over. A wrong anchor inside lorem text shows a framing error within
--- five frames (the cascade the hardware records is 3 flagged of 5); eight leaves margin.
-sdec.ua_seamtrial = sdec.ua_seamtrial or 8
-
--- Where the first frame after a spliced seam should anchor. -> the anchor position and the number of
--- frames the seam lost, or nil to keep the head's own edge.
---
--- WHY THE HEAD'S EDGE CANNOT BE TRUSTED FOR PHASE. The restored head is the burst's genuine start edge,
--- but on the instrument the record's first reading after a handover is 0.2-0.9 ms later than that edge
--- at 100 kS/s and the samples in between are in neither buffer (measured per seam from the 2026-10-19
--- laps). A framer anchored on the head therefore reads every bit centre after it late by that much; past
--- half a bit the next frame's true start edge falls before `t0 + (framebits - 0.5) T` and the sequential
--- walk anchors on a data edge instead, which repeats for 3 to 10 frames -- the "silently wrong" cells.
--- Nothing that restores samples or their duration can fix that, because the width differs at every seam.
---
--- WHAT DECIDES INSTEAD IS THE RECORD'S OWN FRAMING. Every candidate edge is decoded forward for
--- ua_seamtrial frames with the same rule the walk uses, and a right anchor decodes without a framing or
--- parity error where a wrong one does not. The head's own edge is tried first and kept whenever it is
--- clean, so a continuous handover -- every suite fixture, and the low-rate hardware cells -- frames
--- exactly as before. Only when the head's sequence shows errors is the earliest clean anchor in the
--- record taken, and the frames between the head's edge and it are declared lost: ceil of the distance in
--- frames, exact while the hole is under one frame (1.04 ms at 9600 Bd), under-counting by one per whole
--- frame of hole beyond that.
---
--- kE is the edge index of the head's start edge, E its position, R where the record resumes.
-function sdec.ua_seam_relock(rd, n, T, nbits, par, nstop, invert, kE, E, R)
-  local ne, ei, es = sdec.ne, sdec.ei, sdec.es
-  if ne == nil or ne < 1 or T == nil or T <= 0 then return nil end
-  local parbits = 0
-  if par ~= sdec.PAR_NONE then parbits = 1 end
-  local framebits = 1 + nbits + parbits + nstop
-  local want = 0
-  if invert then want = 1 end
-  local K = sdec.ua_seamtrial or 8
-  -- Frames from an anchor at edge kc, framed as the walk frames them. -> errors, frames decoded, and
-  -- the errors in frames AFTER the first.
-  local function trial(kc)
-    local errs, late, got, t, kk = 0, 0, 0, ei[kc], kc
-    while got < K do
-      local val, err = sdec.ua_frame(rd, n, t, T, nbits, par, nstop, invert)
-      if err == 'truncated' then break end
-      got = got + 1
-      if err ~= nil then
-        errs = errs + 1
-        if got > 1 then late = late + 1 end
-      end
-      local tm = t + (framebits - 0.5) * T
-      local found = nil
-      while kk <= ne do
-        if es[kk] == want and ei[kk] >= tm then found = kk; break end
-        kk = kk + 1
-      end
-      if found == nil then break end
-      t = ei[found]
-    end
-    return errs, got, late
-  end
-  -- ANY ERROR IN THE HEAD'S SEQUENCE RE-LOCKS, INCLUDING ONE BAD FRAME WITH CLEAN FRAMES BEHIND IT. That
-  -- shape is ambiguous: a hole longer than half a frame skips frame 1's start edge and the walk locks
-  -- on frame 2 with two frames gone, while an overlap -- the record's first readings duplicating the
-  -- head's last -- gives the same one bad frame with nothing gone. The positions cannot tell them
-  -- apart (frame 2 at 20T - hole and frame 1 at 10T + overlap both land between one and one and a half
-  -- frames from the head's edge), so the decoder has to know which world it is in. It is in the
-  -- instrument's: every seam fitted from the 2026-10-19 laps was a loss, 60-760 us at 100 kS/s against a
-  -- 1042 us frame at 9600 Bd, so this shape is a two-frame loss there and ceil below counts it right.
-  -- An overlap, which only the offline model produces, is over-counted by one placeholder a seam, and
-  -- tools/test_elideseam.lua pins that as the documented cost rather than hiding it.
-  local e0, g0, l0 = trial(kE)
-  if g0 < 1 or e0 == 0 then return nil end
-  -- Candidates: falling edges from the record's resume point to two frames past it, each preceded by at
-  -- least a stop bit of mark -- the one thing every true start edge has. The earliest clean one wins.
-  local lim = R + 2 * framebits * T
-  local best, bk, k = nil, nil, nil
-  for k = kE + 1, ne do
-    local e = ei[k]
-    if e > lim then break end
-    if es[k] == want and e >= R - 0.5 * T and (e - ei[k - 1]) >= 0.9 * T then
-      local errs, got = trial(k)
-      if got >= 1 then
-        if errs == 0 then
-          best, bk = 0, k
-          break
-        end
-        if best == nil or errs < best then best, bk = errs, k end
-      end
-    end
-  end
-  -- Only an anchor that frames BETTER than the head's own is taken; equal is kept as it was.
-  if bk == nil or best >= e0 then return nil end
-  local A = ei[bk]
-  local nlost = math.ceil((A - E) / (framebits * T) - 0.001)
-  if nlost < 1 then nlost = 1 end
-  return A, nlost
-end
-
--- `seams`, optional: {E = {...}, R = {...}, n} in this window's coordinates, from ck_decode -- the
--- position of each restored head's start edge and of the record's first reading after it. Nil on every
--- other call, and with nil nothing below changes.
-function sdec.ua_run(rd, n, T, nbits, par, nstop, invert, tmin0, seams)
+function sdec.ua_run(rd, n, T, nbits, par, nstop, invert, tmin0)
   local parbits = 0
   if par ~= sdec.PAR_NONE then parbits = 1 end
   local framebits = 1 + nbits + parbits + nstop
@@ -464,53 +363,10 @@ function sdec.ua_run(rd, n, T, nbits, par, nstop, invert, tmin0, seams)
   local tmin = -1
   if tmin0 ~= nil then tmin = tmin0 end
   local prev = nil          -- t0 of the previous emitted frame, for the idle test below
-  local sj = 1              -- the next seam this window has not passed yet
   -- Numeric for, not a while: the VM folds the increment and bound into one FORLOOP opcode.
   for k = anchor, ne do
     if es[k] == want and ei[k] >= tmin then
       local t0 = ei[k]
-      -- AT A SEAM, THE PHASE IS DECIDED BY TRIAL, not carried. This edge is the restored head's start edge
-      -- when it lies in [E - 1, R); see ua_seam_relock for why that edge frames the head and not the
-      -- record. A relock emits one flagged placeholder per frame the seam lost, so the byte stream
-      -- keeps its index -- a hole shifts the alignment silently otherwise, which is the verdict a
-      -- reader cannot act on -- and resumes at the anchor, which the loop then frames as any edge.
-      local relocked = false
-      if seams ~= nil then
-        while sj <= seams.n and seams.R[sj] + framebits * T < t0 do sj = sj + 1 end
-        -- A spliced seam is entered at the head's edge, inside [E - 1, R). An unspliced one (E == R) has
-        -- no head: the record simply resumes mid-byte at R, so the first edge found after it is the one
-        -- to try, and its trial decides exactly as the head's would.
-        local atseam = false
-        if sj <= seams.n and t0 >= seams.E[sj] - 1 then
-          if seams.E[sj] < seams.R[sj] then
-            atseam = (t0 < seams.R[sj])
-          else
-            atseam = (t0 < seams.R[sj] + framebits * T)
-          end
-        end
-        if atseam then
-          local A, nlost = sdec.ua_seam_relock(rd, n, T, nbits, par, nstop, invert, k,
-                                               seams.E[sj], seams.R[sj])
-          if A ~= nil and A > t0 then
-            local li
-            for li = 1, nlost do
-              local nf = r.nf + 1
-              r.nf = nf
-              r.vals[nf], r.errs[nf] = 0, 'seam'
-              r.tpos[nf] = seams.E[sj] + (li - 1) * framebits * T
-              r.nbad = r.nbad + 1
-            end
-            r.nrelock = (r.nrelock or 0) + 1
-            r.nseamlost = (r.nseamlost or 0) + nlost
-            -- The walk resumes at the anchor: every edge before it fails the tmin test below.
-            tmin = A - 0.5
-            prev = nil
-            relocked = true
-          end
-          sj = sj + 1
-        end
-      end
-      if not relocked then
       local val, err = sdec.ua_frame(rd, n, t0, T, nbits, par, nstop, invert)
       if err == 'truncated' then break end
 
@@ -535,7 +391,6 @@ function sdec.ua_run(rd, n, T, nbits, par, nstop, invert, tmin0, seams)
       end
       prev = t0
 
-      end
       end
     end
   end
@@ -1441,8 +1296,8 @@ function sdec.decode_from(rd, n)
     -- ratenote below is advisory by design and sets text, nothing more; the relock machinery that could
     -- doubt a lock is deliberately frame-path only.
     --
-    -- This is the path the bench takes on every elided cell, because gap_elide() refuses without a rate,
-    -- so every eliding capture is forced: stream_decode -> ck_run -> decode_from. On 2026-10-17 that
+    -- A capture with no locked rate takes this path: stream_decode -> ck_run -> decode_from. On
+    -- 2026-10-17 that
     -- framed 704 frames at 1.736 samples a bit with snapped = true and read_baud equal to the commanded
     -- rate, so the capture looked locked and was below Nyquist. Confident bytes that are not the payload
     -- is the worst verdict the judge has, and a refusal says the same thing truthfully.

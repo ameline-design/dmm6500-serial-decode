@@ -39,22 +39,13 @@ brun.pn_laps_max = brun.pn_laps_max or 210
 -- it leads the list so the field opens on whatever the module was loaded with.
 brun.pn_sdg = brun.pn_sdg or {'10.0.1.79', '10.0.1.78', '192.168.0.79'}
 
--- Which vectors elide, as the three sets a lap is actually run with. The middle entry is the arm from
--- the 2026-10-17 laps: the only vectors whose gaps clear two detector windows at both 9600 and
--- 19200 Bd. An empty string is not nil -- brun.elidevids nil means 'every nodrop vector', so 'None'
--- has to be expressed as elision off rather than as an empty vector set.
-brun.pn_vidsets = brun.pn_vidsets or
-  {{v = nil,                  t = 'All nodrop'},
-   {v = 'v98d,v99d,v99a',     t = 'v98d v99d v99a'},
-   {v = 'v98d,v99d',          t = 'v98d v99d'}}
-
 -- The lap shapes, as filters over the plan on the key and NOT as draws -- see brun.wanted. Each entry
 -- is the filter state the shape means, so the mapping lives beside the label instead of in a branch
 -- further down that a new shape could be added without.
 --
 --   Full          every row the plan holds, which is what the host-driven path runs
 --   Normal        standard rates only, so no drawn interstitial or edge rate plays
---   Gap targeted  only vectors that declare an idle run, which is brun.elide_gapbits' own list
+
 --   Adversarial   only vectors known to produce errors, which is barb.loud's list -- the ones the
 --                 plan drives into conditions where refusing is the documented right answer -- plus
 --                 the gap vectors, whose seams cost bytes until the decoder splice exists. Derived
@@ -63,7 +54,6 @@ brun.pn_vidsets = brun.pn_vidsets or
 brun.pn_laptypes = brun.pn_laptypes or
   {{t = 'Full',         std = nil,  gap = nil,  adv = nil},
    {t = 'Normal',       std = true, gap = nil,  adv = nil},
-   {t = 'Gap targeted', std = nil,  gap = true, adv = nil},
    {t = 'Adversarial',  std = nil,  gap = nil,  adv = true}}
 
 -- The rate window, in Bd. Defaults span the whole ladder, so the fields open describing a lap that
@@ -171,19 +161,7 @@ function brun.build_panel()
                              'Laps', 'plan passes',
                              display.NFORMAT_INTEGER, 1, 1, brun.pn_laps_max, '', 4))
   fx, fy = nextpos()
-  -- Zero is off, and it is the default: elision is the feature under test rather than the normal way
-  -- to run a lap, and a panel that defaults it on would quietly change what every manual soak means.
-  brun.pn_elide = keep(create(brun.pnscr, display.OBJ_EDIT_NUMBER, fx, fy,
-                              'Gap Elide', '0 off, cut after',
-                              display.NFORMAT_PREFIX, 0, 0, sdec.gapelide_max, 's', 4))
-  fx, fy = nextpos()
-  local vt = {}
   local i
-  for i = 1, table.getn(brun.pn_vidsets) do vt[i] = brun.pn_vidsets[i].t end
-  brun.pn_vids = keep(create(brun.pnscr, display.OBJ_EDIT_OPTION, fx, fy,
-                             'Elide Vectors', 'which ones elide',
-                             vt[1], vt[2], vt[3]))
-  fx, fy = nextpos()
   -- The live address leads, so the field opens on what the module holds rather than on a list order.
   local st, sn = {}, 0
   if bsdg ~= nil and bsdg.ip ~= nil then sn, st[1] = 1, bsdg.ip end
@@ -269,15 +247,9 @@ end
 -- Read the form, apply it, and start. Nothing here is applied until every field has been read: a
 -- raise half way would otherwise commit a partial configuration, which is options_apply's rule.
 function brun.panel_run()
-  local laps, elide, vids, ip, lt, lo, hi, inter
+  local laps, ip, lt, lo, hi, inter
   local readok, readerr = pcall(function()
     laps = display.getvalue(brun.pn_laps)
-    elide = display.getvalue(brun.pn_elide)
-    local vi = display.getvalue(brun.pn_vids)
-    if type(vi) == 'number' then
-      local e = brun.pn_vidsets[math.floor(vi + 0.5)]
-      if e ~= nil then vids = e.v end
-    end
     local si = display.getvalue(brun.pn_sdgf)
     if type(si) == 'number' then ip = brun.pn_sdgtxt(math.floor(si + 0.5)) end
     local li = display.getvalue(brun.pn_lapt)
@@ -310,7 +282,7 @@ function brun.panel_run()
   -- trap brun.point's cleared rate-fit fields exist for: a stale filter is worse than an absent one,
   -- because a lap would quietly run a different cell set than the form on the glass describes.
   if lt == nil then lt = brun.pn_laptypes[1] end
-  brun.filt_stdonly, brun.filt_gaponly, brun.filt_advonly = lt.std, lt.gap, lt.adv
+  brun.filt_stdonly, brun.filt_advonly = lt.std, lt.adv
   brun.nfilt = 0
   -- The window, and a reversed pair is the operator's slip rather than an empty lap: swapped so the
   -- form cannot ask for a range that excludes every row.
@@ -322,13 +294,6 @@ function brun.panel_run()
   -- floor of nothing.
   if type(inter) == 'number' and inter > 0 then brun.filt_interstit = inter
   else brun.filt_interstit = nil end
-  if type(elide) == 'number' and elide > 0 then
-    brun.elide = elide
-    brun.elidevids = vids
-  else
-    brun.elide = nil
-    brun.elidevids = nil
-  end
   if ip ~= nil and bsdg ~= nil then
     -- Closed before the address moves, or the next select talks to the old session on the new name.
     if bsdg.close ~= nil then pcall(bsdg.close) end

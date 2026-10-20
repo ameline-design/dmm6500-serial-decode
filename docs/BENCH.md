@@ -322,7 +322,6 @@ the scope only ever reads.
 | `unit-stream` | the streaming arm — both 4915 defences, one press per slice rather than per window |
 | `unit-patterns` | byte-exactness on the hard payloads: edge-density extremes, walking bits and known random data, at the sample rates the panel actually picks |
 | `unit-forcerate` | a forced rate the wire does not carry must **refuse** and name the rate it does carry, with both answers drivable unattended. Plus the mirror fault, which the fit cannot see: a forced rate the wire **does** carry on a capture too slow to hold it. There is nothing for the fit to disagree with there, and `ua_plausible`'s samples-per-bit floor is reached only from the auto-fit path — so a forced decode framed 704 frames at 1.736 samples a bit, below Nyquist, with `snapped = true` |
-| `unit-elideseam` | the offline twin of an **elided** bench cell, which `unit-core`'s splice test is not: the real looping payload, seams where one pass joins the next, idle cut to the window, the rate forced as `gap_elide` requires, and the score taken with the panel's own `bexp.match` so the number compares directly with a record's `pay=` field. Swept across the rate ladder, because the hardware failure has an edge at 4800 Bd that no single rate can show. **The twin currently disagrees with the bench** — byte-exact at every rate offline against 33–73 % on the instrument — and that disagreement is reported as a `NOTE` rather than a failure, deliberately: it is a finding about the twin's coverage, and a suite left red over a diagnostic stops being read. Also sweeps a **rotated** record, which is what a ring wrap would produce, and pins that a rotation can reach the fractions the instrument reported |
 | `unit-judgev` | the harness's three verdicts — too short to read is **inconclusive**, not silently wrong; an alignment survives one bad byte; a loud vector may miss a bounded few. Each with the wrong capture that must still fail, and the offline twin's copy of the allowance *executed* under `lua` against this file's own expression |
 | `unit-ratefit` | the #46 rate-misfit window, pinned per cell and per capture phase against a recorded table — every cell that reproduces must reproduce at every phase, and every cell that does not must be silent at all of them |
 | `unit-octave` | the octave misread — 9600 Bd reported as 19200 `7N1` with the bytes **silently** wrong, which is the decoder's worst failure shape because it is confident rather than refused. Asserts a *fraction of a swept space* rather than one capture: the defect needs the app's real rate-selection path, which takes up to three captures, and it appears only for some capture start points. The sub-multiple gate is also stubbed out and the bench signature must return exactly, so a reproduction too gentle to provoke anything cannot pass as a clean one. Carries **two declared expected failures** (#40 — the same width collapse reached through a *forced* rate, open on purpose); the suite exits 0 with them, and an expected failure that starts *passing* fails the stage, so the declaration cannot outlive the defect |
@@ -617,7 +616,7 @@ times at the top of the rate ladder and 2500 at the bottom. Over its 36 rates **
 the lead gap and 2 reach the payload**, and `off + window <= run` picks out which in all 36.
 
 **The instrument does not take that window, which is why the counter is not a pass.** It *arms*, and on
-the gap vectors it *elides*, so it never sits blind in a gap at the plan's wait the way this harness
+the gap vectors, so it never sits blind in a gap at the plan's wait the way this harness
 does. Measured against the judge on the 2026-10-18 hardware lap, over exactly those 34 cells:
 
 | | |
@@ -631,7 +630,7 @@ So `nostim` conceals **12 real decode failures**, and reading it as health is th
 What the exemption buys is only that this harness stops reporting its own capture placement as the app's
 defect — 122 of a previous lap's 133 bad cells were that artefact. What it costs is 34 cells of
 coverage, which is why `judged` (`ok + bad`) deliberately excludes them: the coverage loss is reported
-rather than absorbed. **The structural fix is for this harness to arm and elide as the instrument does**,
+rather than absorbed. **The structural fix is for this harness to arm as the instrument does**,
 after which no window is traffic-free and the counter goes to zero on its own.
 
 The exemption is earned by **geometry, measured from the vector's own codewords** (`GEN_IDLE_RUNS` in

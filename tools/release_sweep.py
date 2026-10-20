@@ -291,19 +291,6 @@ def stages(outdir, shots):
                    'Also the opposite fault: a forced rate the wire DOES carry on a capture too slow '
                    'to hold it, where there is nothing for the fit to disagree with and the '
                    'samples-per-bit floor was never consulted on the forced path at all'),
-        # THE OFFLINE TWIN OF AN ELIDED CELL, kept because the twin disagreeing with the bench is itself
-        # the finding. test_serial's splice test passes while the instrument loses 33-73 % of its bytes
-        # on the same feature, because it auto-detects the rate, splices two different payloads, and
-        # runs one rate -- none of which is what a bench cell does. This reproduces the cell instead.
-        Stage('unit-elideseam', ['lua', 'tools/test_elideseam.lua'],
-              note='an elided record across the rate ladder, with the real looping payload, the rate '
-                   'forced as gap_elide requires, and the score taken with the panel\'s own bexp.match '
-                   '-- plus the rotation sweep that says what a ring wrap would cost'),
-        Stage('unit-seamhole', ['python3', 'tools/test_seamhole.py'],
-              note='the handover-hole measurement, against a handover placed by construction: both '
-                   'signs at five widths, a fractional hole that proves the slow-edged stimulus is '
-                   'needed, the one-sample continuity convention as an expected-fail, and the '
-                   'embedded TSP script through the real 5.0.2 parser'),
         Stage('unit-seam', ['python3', 'tools/test_seam.py'],
               note='a capture whose loop seam lands late must still be judged -- and trimming by '
                    'headsusp instead of damage must still fail, or the reproduction has drifted'),

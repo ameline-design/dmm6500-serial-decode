@@ -431,7 +431,7 @@ cannot outrun it, and the shipped position of 5 against that capacity is **300 0
 than 1055 -- a record fifteen times the depth, which the frame path copies whole into a Lua table.
 Loading 0 instead costs the head of the record: measured offline as three wrong bytes from offset 1,
 with no leading idle left for the level probe. So only a program that loads no position may take the
-permanent capacity, which is the elision program of section 10 and nothing else; `acq_pospct()` scales
+permanent capacity, which no shipped program does today -- see section 10; `acq_pospct()` scales
 the figure for the one path that can reach `LoopUntilEvent` with that buffer underneath it.
 `docs/MEASUREMENTS.md`, 'The permanent record, and why only a recording may have it'.
 
@@ -599,270 +599,44 @@ empties it, so a flood would bury real events. Over recordings that elided 13.2 
 100 kS/s, about 1.3 million discarded readings, `eventlog.getcount()` read 0, with no error count, no
 fill failures and no sticky error. A wrap under `fillmode = 1` is not a discard the firmware reports.
 
-## 10. The application's recording program
+## 10. Why the application has no recording program
 
-Recording mode acquires a long record of a serial line and decodes it in windows. It loads one of
-three programs, chosen in `sdec.stream_arm()` in `tsp/serial_app.tsp`:
+This section documented a six-block gap-elision program: two measure blocks alternating between a
+scratch ring and the record, a `BRANCH_ON_EVENT` detector, and a splice that put each burst's head
+back. **It is gone, and the reason is a property of this instrument rather than of the code.**
 
-| condition | program |
-|---|---|
-| the line was already transmitting, or the trigger is free-running | `SimpleLoop(nsmp, 0, buf)` |
-| the line is silent and the recording must wait for a device | `LoopUntilEvent(ev, pretrig, CLEAR_ENTER, 0, buf)` |
-| the same, and gap elision is on with the comparator as the source | a hand-built 7-block program |
+**The handover between two measure blocks loses samples.** Measured 2026-10-20 on a hand-built
+five-block model with a sawtooth stimulus, two independent ways agreeing within 3 us -- the absolute
+clock (`seconds` + `fractionalseconds`, nanosecond resolution, and shared between buffers where
+`relativetimestamps` are not) and the position of each reading in the ramp:
 
-`sdec.arm_silent()` makes the first decision: a recording waits only where the level probe found no
-line at all. Every refusal below falls back to the row above it rather than failing the capture, and
-the fallback to `SimpleLoop` acquires the instant it is initiated.
+| commanded fs | hole mean | **hole min** | readings lost |
+|---|---|---|---|
+| 10 kS/s | 125.1 us | **80.0 us** | 1.3 |
+| 20 kS/s | 140.9 us | **79.5 us** | 2.8 |
+| 50 kS/s | 1634.1 us | 401.8 us | 81.7 |
+| 100 kS/s | 2170.7 us | 517.6 us | 217.1 |
+| 1 MS/s | 13955.4 us | 4710.4 us | 13951.6 |
 
-### The arm's event is usually a blender
+So `hole ~= 80 us floor (fixed in TIME) + a throughput term that explodes past ~20 kS/s`. The floor is
+identical at 10 and 20 kS/s, so it is a real block-transition cost; the knee sits well under the
+documented 100 kS/s storage ceiling.
 
-`sdec.arm_source()` returns the event, whether the comparator is a source, and whether a blender was
-used. The base event is `EVENT_ANALOGTRIGGER`, or `EVENT_DISPLAY` for the front-panel mode, or
-`EVENT_EXTERNAL` where the operator anchored the capture to the rear BNC alone. Two things are then
-OR'd in through `trigger.blender[1]`, which makes the event `EVENT_BLENDER1`.
+**AND THE SWITCH CANNOT BE AVOIDED.** `trigger.COUNT_STOP` exists and stopping storage is nearly free
+-- 0 us at 20 kS/s, 36 us at 100 kS/s, and tight. But **the analog comparator needs a live
+acquisition** (section 7), so with storage stopped the comparator cannot fire and a `BLOCK_WAIT` on it
+never releases. Measured as a one-block A/B: with `COUNT_STOP` the model sat at `STATE_WAITING`
+forever, `n` flat across three one-second reads, with the signal still running; with the same block
+switching to a scratch instead, it ran, released 15 times and elided 0.911 s of a 2.911 s span.
 
-The rear BNC is OR'd in rather than selected instead, because "start on a start bit, or when the
-device asserts its GPIO, whichever comes first" is not expressible as a single choice.
+The chain is therefore closed: detection needs the comparator, the comparator needs a live
+acquisition, a live acquisition means storage running somewhere, so not storing the gap means storing
+it elsewhere -- a destination switch, which carries the hole. At 9600 Bd the 80 us floor alone is 0.77
+of a bit at any rate, and 9600 needs fs >= ~48 kS/s, which is past the knee.
 
-The front TRIGGER key is OR'd in as a manual break-in. A wait cannot be interrupted from Lua, but as a
-stimulus of the trigger model the key is serviced by firmware, so it is the only escape from an arm
-that is not going to fire. Four terms all have to hold: an arm from silence, `sdec.armkey` set, the
-key not already the source, and not an anchored capture, where only the marker may place the window.
-
-Whether the comparator is a source is decided before the blender overwrites the event. Asking
-afterwards answered no for rear BNC with edge triggering, so the mode, level and slope went unset. The
-blender is reset when it is not in use: the model waits on its own event either way, but the next
-thing to use a blender would otherwise inherit this application's stimuli and its overrun flag. Where
-the firmware has no blender, the arm degrades to the rear BNC alone or to the unblended event, and
-`sdec.lasterr` says which capability was lost -- appended rather than assigned, because one firmware
-shortfall has two consequences and both are worth saying.
-
-The comparator's level comes from `sdec.arm_threshold()`, which arms `sdec.armlevel` volts inside the
-idle level rather than at a measured midpoint: on a line waiting for a device there is no midpoint to
-measure. On a line idling at ground the start bit can only go up, so the arm goes above ground; on a
-line idling away from ground it goes on the ground side, clamped at half the idle level, the deepest
-arm certainly still inside the swing. `sdec.arm_slope()` takes the matching slope. Both are shared
-with the single-capture path so that the two cannot arm on different edges of the same line.
-
-### The six blocks
-
-`sdec.gap_model()` in `tsp/serial_core.tsp` builds this, from `Empty`:
-
-    1) MEASURE_DIGITIZE  scr, COUNT_INFINITE     the gap
-    2) WAIT              <ev>, CLEAR_ENTER       the burst starts
-    3) MEASURE_DIGITIZE  rec, COUNT_INFINITE     the burst
-    4) DELAY_CONSTANT    <win>                   the detector's window
-    5) BRANCH_ON_EVENT   EVENT_ANALOGTRIGGER, 4  a crossing: still talking, go round
-    6) BRANCH_ALWAYS     1                       fell through: quiet for a window, next burst
-
-Blocks 1 and 3 are two measure blocks exactly, and entering either one stops the other. That is what ends a burst without counting it, and it is the
-whole reason the burst block can be infinite.
-
-Block 2 takes `ev`, which may be the blender, and `CLEAR_ENTER`, which is load-bearing rather than
-cautious. The default `CLEAR_NEVER` lets this wait consume a crossing latched during the burst it has
-recorded, so it falls straight through, the next pass starts at once, and no gap is ever skipped --
-while the record still fills and every other number still looks right.
-
-Block 5 takes `EVENT_ANALOGTRIGGER` alone, and the difference from block 2 is deliberate. With
-`sdec.armkey` set the arm's event is a blender carrying the TRIGGER key, and a press arriving through
-it would read as "the line is still talking" and hold the burst open. Block 2 keeps the blended event
-for exactly the reason the blend exists; block 5 has to be the crossing by itself.
-
-Block 6 is `BRANCH_ALWAYS 1` and not a counter. The recording's length is decided by the poll loop
-rather than by the program, which is why the program never terminates on its own.
-
-**There is no `BUFFER_CLEAR` block, and the record is cleared from Lua instead.** `sdec.stream_arm()`
-calls `buf.clear()` immediately before the single `initiate()` that starts all three programs. The
-behaviour is identical: the program this one replaced carried a clear as block 1 and branched back to
-block 2, so the clear ran once per `initiate()` and never again, which is what one Lua call before
-`initiate()` does. The reason to move it is that a `BLOCK_BUFFER_CLEAR` is the only fast-path
-disqualifier either canned template carries, and the Lua call costs nothing -- so there is no reason to
-spend the disqualifier. **That is not a speed argument.** Being off the fast path is worth nothing
-measurable, 1.2 µs of upper bound against about 8 µs of comparator latency, as "Being off the fast path
-costs nothing measurable" sets out. The change is free, not fast.
-
-A failed clear refuses the arm rather than being noted, with `could not clear the record before
-arming` in `sdec.lasterr`. This program has nothing to fall back on: the recording would append to
-whatever the last one left behind, and every span the rate is read from would then be long by the
-stale part, in the one direction nothing downstream flags. The two canned templates clear their own
-record, so for them the Lua call is redundant and costs one call.
-
-The store is read back rather than trusted, because a rejected block reads as a free one. Four
-distinct opcodes must be present, `MEASURE_DIGITIZE` must occur exactly twice, and **`BUFFER_CLEAR`
-must be absent**. The absence is checked rather than the position, because this program has no safe
-position for a clear: block 6 branches to block 1, so every block is inside the loop and a clear
-anywhere among them runs at least once per burst -- at block 4 or 5, once per detector window, those
-two being an inner cycle. The record would then hold only the last burst, while `rec.n`, the splice
-positions and the recovered rate all stayed plausible for a recording of one. A
-listing missing block 3 describes a program whose bursts go nowhere, and one measure block is the
-pre-roll on its own.
-
-### Why the burst ends on silence and not on a count
-
-A fixed burst count cuts wherever it lands, and the frame straddling the cut decodes from spliced
-samples. The loss is one byte in n frames, so a one per cent loss needs a hundred frames a burst, by
-which point a short gap is shorter than one iteration. Ending on measured silence puts the seam
-between an idle tail and the next start bit, which is a waveform the framer already reads: 43 bytes
-either side of a splice decode as 43 frames, not 42.
-
-### How long the line must stay quiet
-
-`sdec.gap_elide()` returns the enforced window, or nil and the reason it declined. The capture and the
-options form both read it through that one function, so a typed value cannot mean one thing to the
-field and another to the trigger model.
-
-`sdec.gapelide` is a threshold and not an amount. Once the window has elapsed the recording discards
-until the line moves again, so what comes out is unbounded and `sdec.gapelide_max`, 2.0 s, caps the
-threshold alone. It defaults to 0, which is off, because an elided record means something different:
-its time axis is not contiguous and no burst carries a pre-trigger reserve.
-
-The floor is `sdec.gapelide_frames` frame times, and `gapelide_frames` is 2 rather than 1 because the
-constraint is the comparator's inter-crossing interval and the comparator arms on one slope only. With
-idle high and a falling arm, the rise out of a space is not a crossing at all, so on back-to-back
-`0x00` the falling crossings are one per frame. The window therefore has to clear `framebits`,
-`1 + nbits + parbits + nstop`, rather than the ten bit times a single byte suggests. At the widest
-forced format `framebits` reaches 13, where a rule written as 10 is 30 % short. Exceeding the floor
-costs one frame at the seam and not the record, the framer resynchronising on the next start bit, so
-this is a proportionate floor rather than a refusal.
-
-`sdec.gapelide_min`, 0.002 s, is a clock floor, and past 10 000 Bd at 8N1 it is the binding one: two
-frames there are under 2 ms. Where the floor the rate derives exceeds the ceiling the window is
-refused rather than clamped, because clamping lets the ceiling win and hands back a window under the
-floor, which is the mid-frame cut the floor exists to prevent.
-
-Elision needs a locked rate, since without one there is no frame to measure the floor against. Every
-path that can elide has one already, `sdec.stream_samples()` being unable to size a recording without
-it, so the decline covers the remaining case instead of guessing: `gap elision off -- lock the baud
-rate first`.
-
-The window is the one cost that scales. It is recorded as idle at the end of every burst, because the
-detector cannot know the line stopped until the window has elapsed, so each burst carries `win * fs`
-readings of tail: 0.1 s at 100 kS/s is 10 000 of them. Expressed in bit times that cost is constant,
-about 20 times the samples per bit, which is why the floor is derived from the bit time.
-
-### The scratch
-
-`sdec.gap_scratch()` makes the bin the gap's samples go into, `max(2000, ceil(0.25 * win * fs))`
-readings at `fillmode = 1`, and reuses it across captures while its capacity is enough.
-
-Small and fixed rather than scaled to the gap is the one sizing here that looks wrong and is not.
-2000 readings behaved identically to 400 000 on the instrument, giving the same record at the same
-indices, the same event-log delta and still reaching `IDLE`, because `fillmode = 1` laps the ring
-silently. A two-minute gap needs no more scratch than a half-second one. The scratch is deleted before
-its handle is dropped, since assigning nil over the handle strands the readings in the pool instead of
-freeing them, and the pool is shared with the record. `sdec.gap_release()` hands it back when an
-operator turns elision off again, a buffer nobody is using being capacity the next capture cannot
-have.
-
-### How a recording ends
-
-`sdec.stream_acquire()` polls at `sdec.ck_poll_s`, 0.5 s, and sets `sdec.ck_endwhy` on the way out.
-Five exits, and which completion test applies depends on which program loaded.
-
-`full` means the recording got what it asked for. For an armed recording without elision that is
-`sdec.trig_done()`, the model reaching `STATE_IDLE`. For an eliding recording the sample count is the
-only completion available, because the program is a `BRANCH_ALWAYS` loop that never reaches
-`STATE_IDLE`, so `trig_done()` is a constant false. Left on the armed branch the fill test is
-unreachable, and because the record is `fillmode = 1` it would not stop but wrap, overwriting its own
-earliest bursts until some other exit fired, then report a full record that had quietly lost its
-oldest traffic.
-
-`quiet` is the idle watchdog, and on an eliding record its timer comes from the model's state rather
-than from the record. Parked in block 2's `WAIT` means a gap; cycling blocks 3 to 6 means a burst. A
-record-derived timer cannot work here: the record does not grow during a gap, so a freshness test is
-false, and when the record is read `sdec.idle_window()` caps at 4000 samples, 40 ms at 100 kS/s, which
-sees only the burst's own idle tail. The timer would start 40 ms into every tail, before the gap had
-begun, and no allowance against that can be right. The model's state tells a long gap from a dead line
-exactly, which no threshold on a record designed not to grow can.
-
-`stopped` is the operator: the TRIGGER key through the cancel latch, or Mode. The latch is read before
-the arm expiry, because TRIGGER is blended into the arm and a press both fires it and sets the latch.
-
-`noarm` means the arm did not fire within `sdec.arm_wait_s()`. The level the comparator was armed at is
-stashed at the expiry, the next window clearing it before the note is printed.
-
-`readfail` is 20 consecutive failed window reads. A read that raised is ignorance rather than silence,
-so it must not advance the quiet timer, and a persistent run of them is different from a transient
-one.
-
-Over all of these sits a wall-clock ceiling from `sdec.stream_limit()`, which is the only bound that
-always fires: a touch press is not dispatched while Lua runs, so every mode has to terminate by
-construction. For an eliding recording the ceiling is `sdec.strm_maxsec` rather than
-`sdec.stream_maxwait()`'s twice-the-fill-time, which assumes the record fills in real time. An elided
-one does not. The arm's own wait is added on top of the ceiling rather than taken out of it.
-
-### One field for both waits
-
-Arm/Idle Wait answers one question asked twice: how long this device may say nothing, before it starts
-and between blocks once it has. 10 s by default, 2 s minimum, 120 s ceiling, read by
-`sdec.arm_wait_s()` for the arm and by `sdec.idle_exit()` for the quiet-line exit. `idle_exit()` floors
-it at `sdec.idle_exit_s`, which is 1 s and so never binds against a 2 s minimum, and passes a zero or
-nil floor straight through as the watchdog's off switch.
-
-A fixed 1 s exit ended a recording inside the first pause of a startup dump, which stops for seconds
-at a time between blocks with the interesting part still to come. The observable in the tests is the
-poll count: 3 polls at a 2 s wait against 11 at 10 s.
-
-### Reading the record back
-
-An elided record needs three things done differently, all keyed on `sdec.strm_elide` and
-`sdec.acq_elided`, which record what loaded rather than what was asked for. An elision that fell back
-to `LoopUntilEvent` has to be read with the whole-span formula or its rate comes out wrong in the one
-direction nothing would flag.
-
-The rate is measured inside the bursts by `sdec.acq_seg_fs()`. The whole-span formula divides by a
-span that still covers the silence while n counts only traffic, so it reads low by the elision ratio:
-40 467 S/s against a commanded 100 000, measured through the application. `acq_seg_fs()` samples 40
-windows of 100 consecutive readings and averages the deltas, treating anything past
-`sdec.segfs_gapmult` intervals, 8, as a gap. The margin there is enormous by construction, the
-smallest gap elision can produce being one detector window and so at least 20 samples per bit of
-intervals, about 200 against 8, while inside a burst every delta is one interval to 0.3 %. Averaging
-rather than taking the shortest delta matters: a delta jitters 32 ns on a 10.5 µs interval, so the
-minimum reads 0.25 % high, the same order as the rate misreports the manual lists as a known failure.
-Averaging 3960 of them puts the jitter at 0.005 %. A full walk would be 3 413 334 proxy reads on the
-largest mode, 74 s at 21.73 µs each.
-
-`leadmax` is set only on the armed path that is not eliding. An elided record has no reserve at all,
-every burst opening at its own crossing with the samples before it in the scratch. Left set, `pretrig`
-defaulting to 5 would make `leadmax` a fiction, `acq_pretrig` would come back true, and `sig_idle`
-would treat a genuine leading run as the wire before the device started.
-
-`primeskip` is `ceil(2 * win * fs)` on an elided record. The silence the format search may have to
-cross is not at the front but at the end of every burst, and the tail is uniform on
-`[win, 2 * win)` because block 5 only evaluates at multiples of the delay and the last crossing fell
-somewhere in the previous one.
-
-### What the operator sees
-
-While an arm waits, `sdec.armnote()` writes the right-hand cell: `waiting 10s for 1.00V --
-TRIGGER=go`, with the tail present only where the key really was blended in. It is painted once,
-because a touch press only queues while Lua runs and a static panel otherwise reads as a hang. When
-the trigger fires the cell is given back, the run's last full refresh having already happened.
-
-During a sliced decode the status row reads `decoding N bytes (window i/n) -- press Capture`, or
-`preparing: <phase>` while there is no byte count yet, since "decoding 0 bytes" reads as a decode that
-found none.
-
-At the end, an eliding recording that filled its buffer reports what elision bought:
-`buffer full -- 45 bursts, elided 13.2 s of 14.6 s`. The burst count is the half that makes it
-self-diagnosing, since elision pays only while a burst outlasts its own detector window and
-kept-against-spanned alone cannot tell a record that saved a minute from one that is mostly window.
-The seams are counted rather than divided out, a gap being however long the device stayed quiet. A
-quiet exit reads `<n> s with no line activity`.
-
-Where elision was asked for and did not run, `sdec.gap_why()` appends the reason, because every way
-it declines is invisible and none is the operator's mistake. Flow control is reported before the
-rate: `sdec.arm_silent()` refuses outright while `sdec.fc_out` is set, so elision and flow control are
-mutually exclusive, and reporting the rate first would put `gap elision off -- lock the baud rate
-first` on the glass, an instruction that cannot work. The other reasons are a free-running trigger, a
-line already transmitting when the recording started, and no comparator armed. The last of those is
-the one that bites on the bursty line this feature targets: `sdec.arm_silent()` needs the level probe
-to have found no line, so a probe that lands inside a burst arms nothing and the recording falls back
-to `SimpleLoop`.
-
-Those figures come from a run end to end through the application: 13.2 s of silence discarded, 45
-bursts spliced, the repaired rate exact, and 1.3 million discarded readings leaving a completely empty
-event log.
+Sections 1-9 above are instrument knowledge and stand unchanged. The armed-start path -- waiting for a
+device that has not spoken yet -- is a single capture with no handover and is unaffected; it is what
+the app still uses. Full working in `notes/HANDOFF-session70.md`.
 
 ## 11. The canned templates and the fast path
 

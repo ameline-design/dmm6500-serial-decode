@@ -2713,7 +2713,7 @@ times.
 | cells below that posting it | **0** |
 
 `4914` is *"Index exceeds maximum readings stored in a buffer"*, and it is filed first in each cell's
-log -- ahead of the elision program's own `2753`, `2731` and `2728`, all three of which are expected.
+log.
 Note that **none of the ten indexed buffer reads in `tsp/` can produce it on these numbers**: every one
 folds its index once against `n`, and with `n == capacity` the fold is exact. The record's own geometry
 is what the figures show instead -- `sidx=17710` against a capacity of 21 100, so the ring wrapped and
@@ -2740,7 +2740,7 @@ It fits beside everything else the app allocates, on the smallest pool of the th
 | both default buffers at `ck_defbufmin` | 20 |
 | **left over** | **850 404** |
 
-**Only a program that loads no `position` may take it,** which today is the elision program alone.
+**Only a program that loads no `position` may take it,** and no shipped program does today.
 `trigger.model.load('LoopUntilEvent', ev, position, ...)` takes the pre-trigger reserve as a percentage
 of **capacity**, so the shipped 5 reserves 1055 readings against a buffer sized to the capture and
 **300 000** against this one -- a record fifteen times the depth, which the frame path then copies whole
@@ -2751,7 +2751,7 @@ branch asks for the permanent one, and a sized caller refuses to inherit an over
 than loading a reserve against it.
 
 `acq_pospct()` is the fallback for the one path that can reach `LoopUntilEvent` with the permanent
-record underneath -- elision asked for, its program refused. It scales the reserve back to the readings
+record underneath. It scales the reserve back to the readings
 it means and rounds **up**, never to zero: 5 % of 20 000 is 1000 readings, which is 0.017 % of
 6 000 000, so the loaded position is 1 and the reserve is 60 000. A fractional position has never been
 loaded on this instrument. `acq_leadmax()` reports what that really reserves, because the figure the

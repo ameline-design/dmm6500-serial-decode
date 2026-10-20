@@ -539,8 +539,6 @@ end
 -- ---------- options form handles ----------
 -- sdec.optscr, sdec.opt_proto, sdec.opt_baud, sdec.opt_bits, sdec.opt_par, sdec.opt_pol,
 -- sdec.opt_trig, sdec.opt_ext, sdec.opt_armv, sdec.opt_armw, sdec.opt_over
--- sdec.opt_gape is GONE, not merely unassigned: the Gap Elide field is withheld. See the note
--- at the form's build site for the measurement behind that and for how to restore it.
 -- -- declared, not assigned.
 -- Nine fields, ten with a protocol module -- build_options derives both from its own `nf`, and the
 -- count here was already two low before the withheld field took it to nine. The riskiest geometry
@@ -2302,17 +2300,14 @@ function sdec.build_options()
   -- verdict this judge has and the one an operator cannot defend against. So the option is withheld
   -- until it works: an absent feature is strictly safer than one that lies.
   --
-  -- THE PROGRAM IS NOT REMOVED. sdec.gapelide is still settable and bench_run.tsp still drives it, so
-  -- the bench keeps measuring the path while the panel cannot reach it -- which is what lets the work
-  -- continue. sdec.record_run() forces it to 0 at entry, because the bench leaves it at the last
-  -- cell's capped value, 0.0125 s at 115200 Bd, and with no field on the glass that residue would
-  -- elide a panel recording with nothing to show or clear it.
-  --
-  -- To restore the field, put back an OBJ_EDIT_NUMBER here with 'Gap Elide' / '0 off, cut after',
-  -- 0 to sdec.gapelide_max, and re-add the read in options_apply and the handle to destroy_options.
+  -- THE PROGRAM IS GONE TOO, as of 2026-10-20, and it is not coming back in this shape. The hole is
+  -- FORCED by the instrument: detecting the next burst needs the analog comparator, the comparator
+  -- needs a live acquisition, so not storing the gap means storing it somewhere else -- a destination
+  -- switch, which costs an 80 us floor plus a throughput term past 20 kS/s. Measured three ways in
+  -- notes/HANDOFF-session70.md, including the A/B that proves the liveness requirement: the same
+  -- program with COUNT_STOP instead of a switch parks at STATE_WAITING forever.
   -- 16 characters of help text, as wide as Arm/Idle Wait above it, so check it on the glass.
-  -- Orthogonal to Gap Elide, and placed after it only because both are about what silence costs. Every
-  -- pause the line takes is recorded in full unless the trigger model elides it, and those samples come
+  -- Every pause the line takes is recorded in full, and those samples come
   -- out of the same count the payload does -- so this margin applies to every recording, and the one
   -- that elides nothing has the most idle to absorb. Zero is off and it is not the default -- 10 % is --
   -- which makes it the one field here that ships with a non-zero value, because the cost is readings on
