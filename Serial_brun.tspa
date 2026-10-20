@@ -1094,67 +1094,8 @@ function sdec.acq_measure_fs(buf, n)
   return (n - 1) / span
 end
 
-sdec.segfs_nrun = sdec.segfs_nrun or 40
-sdec.segfs_nwin = sdec.segfs_nwin or 100
-sdec.segfs_gapmult = sdec.segfs_gapmult or 8
 
-sdec.gapseg_frac = sdec.gapseg_frac or 0.05
 
--- The sample interval averaged INSIDE the bursts, for a record whose idle gaps were elided. -> rate, or nil.
---   [...]
--- delta is not the interval: the deltas jitter 32 ns on a 10.5 us interval, so the minimum comes out 0.25 %
--- high, which is the same order as the rate misreports the manual lists as a known failure. Averaging 3960 of
--- them puts the jitter at 0.005 %. docs/MEASUREMENTS.md, 'A consecutive timestamp delta jitters'.
-function sdec.acq_seg_fs(buf, n)
-  if buf == nil or n == nil or n < 4 then return nil end
-  local first = sdec.acq_first(buf, n)
-  local nwin = sdec.segfs_nwin
-  if nwin > n then nwin = n end
-  local nrun = sdec.segfs_nrun
-  if nrun * nwin > n then nrun = math.floor(n / nwin) end
-  if nrun < 1 then nrun = 1 end
-  local stride = math.floor((n - nwin) / nrun)
-  if stride < 1 then stride = 1 end
-  local d, nd = {}, 0
-  local ok = pcall(function()
-    local ts = buf.relativetimestamps
-    if ts == nil then error('no timestamps', 0) end
-    local r
-    for r = 0, nrun - 1 do
-      local base = r * stride + 1
-      if base + nwin - 1 > n then base = n - nwin + 1 end
-      local prev, k = nil, nil
-      for k = 0, nwin - 1 do
-        local p = first + base + k - 1
-        if p > n then p = p - n end
-        local t = ts[p]
-        if t == nil then break end
-        if prev ~= nil and t > prev then
-          nd = nd + 1
-          d[nd] = t - prev
-        end
-        prev = t
-      end
-    end
-  end)
-  if not ok or nd < 2 then return nil end
-  local mn, i = d[1], nil
-  for i = 2, nd do
-    if d[i] < mn then mn = d[i] end
-  end
-  local lim = mn * sdec.segfs_gapmult
-  local sum, cnt = 0, 0
-  for i = 1, nd do
-    if d[i] <= lim then
-      sum = sum + d[i]
-      cnt = cnt + 1
-    end
-  end
-  if cnt < 2 or sum <= 0 then return nil end
-  local m = cnt / sum
-  if sdec.fs ~= nil and sdec.fs > 0 and m < sdec.fs / 50 then return nil end
-  return m
-end
 
 
 -- The measured rate, or the requested one with a flag saying so: every byte is scaled by acq_fs, so a silent
@@ -2132,7 +2073,6 @@ function sdec.arm_source()
     sdec.armkeyed = nil
   end
 
-  sdec.gap_fastblend = nil
   sdec.trigblended = blended
   return ev, useanalog, blended
 end
@@ -7256,9 +7196,8 @@ end
 -- cut off having recorded a fraction of what was asked, reported as a full buffer. The standing ceiling is the
 -- right bound there, and it is still a bound: the fill test, the quiet-line exit and the operator all end the
 -- run before it.
-function sdec.stream_limit(nsmp, fs, elide)
+function sdec.stream_limit(nsmp, fs)
   local limit = sdec.stream_maxwait(nsmp, fs)
-  if elide ~= nil and (sdec.strm_maxsec or 0) > 0 then limit = sdec.strm_maxsec end
   if sdec.strm_maxsec ~= nil and sdec.strm_maxsec > 0 and limit > sdec.strm_maxsec then
     limit = sdec.strm_maxsec
   end
@@ -9351,9 +9290,7 @@ bexp.mincmp = 12
 
 bexp.cmpmax = 200000
 
-bexp.seammult = 5
 
-bexp.seamwinfrac = 0.9
 
 
 -- Compare a decode against what the vector sends. -> nmatch, ncmp, shift; nil when there is no verdict.
@@ -11079,9 +11016,9 @@ brun.pn_laps_max = brun.pn_laps_max or 210
 brun.pn_sdg = brun.pn_sdg or {'10.0.1.79', '10.0.1.78', '192.168.0.79'}
 
 brun.pn_laptypes = brun.pn_laptypes or
-  {{t = 'Full',         std = nil,  gap = nil,  adv = nil},
-   {t = 'Normal',       std = true, gap = nil,  adv = nil},
-   {t = 'Adversarial',  std = nil,  gap = nil,  adv = true}}
+  {{t = 'Full',         std = nil,  adv = nil},
+   {t = 'Normal',       std = true, adv = nil},
+   {t = 'Adversarial',  std = nil,  adv = true}}
 
 brun.pn_baudlo = brun.pn_baudlo or 300
 brun.pn_baudhi = brun.pn_baudhi or 250000

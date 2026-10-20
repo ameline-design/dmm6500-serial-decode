@@ -1847,9 +1847,10 @@ span exactly — as it must, being the same sum. Any estimator that replaces the
 **The commanded rate was 100 000 S/s and the delivered rate 95 143.78**, off by 4.9 %, which is why
 the rate is measured from the timestamps at all rather than read back from `digitize.samplerate`.
 
-This is what makes `sdec.acq_seg_fs` sample windows of *consecutive* readings and average the
-non-gap deltas within them, rather than taking a minimum: it needs the span's precision on a record
-whose span is not usable. Probe: `notes/probe_tsprec.py`.
+This is why the rate is averaged over consecutive readings rather than taken from a minimum: the
+measurement needs the span's precision on a record whose span is not usable. (`sdec.acq_seg_fs`, which
+sampled windows and averaged their non-gap deltas, went with gap elision -- it existed because an
+elided record's span is not its duration.) Probe: `notes/probe_tsprec.py`.
 
 ### The no-loss sample rate is 120 kS/s, and baud is not in it
 
@@ -1904,9 +1905,10 @@ Measured on 2026-10-17, same program and same vector, differing only in how long
 
 Two shapes, and the difference decides whether anything notices. From 120 kS/s to 500 kS/s and at
 1 MS/s the loss is **uniform thinning** — every k-th reading kept, at a 10.000 us cadence (12.000 us at
-1 MS/s) — so `acq_seg_fs()` measures the delivered rate honestly and only the samples-a-bit floor is
-left to object. At 640 kS/s it is **block drops**: runs at the ADC period with holes between them, which
-is why `segfs` reads 634 615 while the record's true mean rate is 100 000, which is 1e6 x 33/52.
+1 MS/s) — so a per-window measurement reads the delivered rate honestly and only the samples-a-bit
+floor is left to object. At 640 kS/s it is **block drops**: runs at the ADC period with holes between
+them, which is why a windowed figure reads 634 615 while the record's true mean rate is 100 000, which
+is 1e6 x 33/52.
 
 **This used to add that 640 000 is the one rate in `sdec.rates` whose period is not a whole number of
 microseconds, and that is false** — ten of the twenty-three are not: 15 000, 30 000, 60 000, 80 000,
@@ -2736,9 +2738,8 @@ It fits beside everything else the app allocates, on the smallest pool of the th
 |---|---|
 | 2461 pool, the smallest | 6 875 000 |
 | the record | 6 000 000 |
-| twelve scratches at `gap_scratchcap` 2048 | 24 576 |
 | both default buffers at `ck_defbufmin` | 20 |
-| **left over** | **850 404** |
+| **left over** | **874 980** |
 
 **Only a program that loads no `position` may take it,** and no shipped program does today.
 `trigger.model.load('LoopUntilEvent', ev, position, ...)` takes the pre-trigger reserve as a percentage

@@ -924,99 +924,8 @@ function sdec.acq_measure_fs(buf, n)
   return (n - 1) / span
 end
 
--- Windows of consecutive readings sampled for the interval, and how many readings each holds. 40 x 100 is 4000
--- proxy reads, about 87 ms, and bounded: walking every index costs 74 s on the largest mode.
-sdec.segfs_nrun = sdec.segfs_nrun or 40
-sdec.segfs_nwin = sdec.segfs_nwin or 100
--- A delta past this many intervals is a gap and not a sample. The margin is enormous by construction: the
--- smallest gap elision can produce is one detector window, at least 20 bit times and so at least 20 * sa/bit
--- intervals, about 200 against this 8. Within a burst every delta is one interval to 0.3 %.
-sdec.segfs_gapmult = sdec.segfs_gapmult or 8
 
--- Fraction of a stride's own duration that counts as a seam when the bursts are being counted for the note row.
--- The floor is the timestamps' accumulated jitter and the ceiling is the shortest seam worth
--- reporting, and five per cent clears the first by 15x while catching a seam of a fortieth of a window.
-sdec.gapseg_frac = sdec.gapseg_frac or 0.05
 
--- The sample interval averaged INSIDE the bursts, for a record whose idle gaps were elided. -> rate, or nil.
---
--- The whole-span formula cannot be used on such a record: it divides by a span that still covers the silence
--- while n counts only traffic, so it reads low by the elision ratio -- measured 1270 S/s against 10 000
--- commanded. docs/TRIGGER.md, 'A re-entered measure block appends, and the timestamps carry the splice'.
---
--- Sampled rather than walked, and averaged rather than minimised, because both cheaper answers are wrong. A
--- full walk is 3 413 334 proxy reads on the largest mode, 74 s at 21.73 us each. And the shortest consecutive
--- delta is not the interval: the deltas jitter 32 ns on a 10.5 us interval, so the minimum comes out 0.25 %
--- high, which is the same order as the rate misreports the manual lists as a known failure. Averaging 3960 of
--- them puts the jitter at 0.005 %. docs/MEASUREMENTS.md, 'A consecutive timestamp delta jitters'.
-function sdec.acq_seg_fs(buf, n)
-  if buf == nil or n == nil or n < 4 then return nil end
-  -- Logical index 1 is the ring's oldest reading, so every index below goes through this. Logical order is time
-  -- order even on a wrapped record, which is what lets a window straddle the physical wrap untouched.
-  local first = sdec.acq_first(buf, n)
-  local nwin = sdec.segfs_nwin
-  if nwin > n then nwin = n end
-  local nrun = sdec.segfs_nrun
-  if nrun * nwin > n then nrun = math.floor(n / nwin) end
-  if nrun < 1 then nrun = 1 end
-  local stride = math.floor((n - nwin) / nrun)
-  if stride < 1 then stride = 1 end
-  local d, nd = {}, 0
-  -- Guarded at the proxy read, like every other attribute on this object: a buffer the firmware has dropped
-  -- raises rather than returning nil, and a partial read must come back as "cannot tell" not as a rate.
-  local ok = pcall(function()
-    local ts = buf.relativetimestamps
-    if ts == nil then error('no timestamps', 0) end
-    local r
-    for r = 0, nrun - 1 do
-      local base = r * stride + 1
-      if base + nwin - 1 > n then base = n - nwin + 1 end
-      local prev, k = nil, nil
-      for k = 0, nwin - 1 do
-        local p = first + base + k - 1
-        if p > n then p = p - n end
-        local t = ts[p]
-        if t == nil then break end
-        -- Deltas within a window only. A difference taken across two windows is not an interval.
-        if prev ~= nil and t > prev then
-          nd = nd + 1
-          d[nd] = t - prev
-        end
-        prev = t
-      end
-    end
-  end)
-  if not ok or nd < 2 then return nil end
-  -- The coarse interval sites the gap threshold and nothing else, so its own 0.25 % bias cannot reach the result.
-  local mn, i = d[1], nil
-  for i = 2, nd do
-    if d[i] < mn then mn = d[i] end
-  end
-  local lim = mn * sdec.segfs_gapmult
-  local sum, cnt = 0, 0
-  for i = 1, nd do
-    if d[i] <= lim then
-      sum = sum + d[i]
-      cnt = cnt + 1
-    end
-  end
-  if cnt < 2 or sum <= 0 then return nil end
-  local m = cnt / sum
-  -- The only guard this needs, and a count of gap-classified deltas is not a second one: a window of 100
-  -- consecutive readings spanning bursts of two or more always holds more intra-burst deltas than gap deltas,
-  -- and on one-reading bursts every delta is a uniform gap so none is classified as one. A "most of them were
-  -- gaps" test is therefore unreachable, which is the same trap as testing a minimum that cannot be negative.
-  --
-  -- A sanity floor against the commanded rate, and only a floor -- the answer never comes from it, because the
-  -- commanded rate is the number this whole measurement exists not to trust: it misses by up to 4.9 % here.
-  -- But a result a factor of fifty below it is not a miscalibration, it is a record in which no sampled window
-  -- held an intra-burst delta at all, so the gaps have been measured and called the sample interval. A record
-  -- of one-reading bursts is uniform in its timestamps and comes back at 2.22 S/s against a commanded 10 000,
-  -- which no test on the timestamps alone can tell from a genuinely slow capture. Fifty is far outside any
-  -- error the instrument shows and far inside that failure.
-  if sdec.fs ~= nil and sdec.fs > 0 and m < sdec.fs / 50 then return nil end
-  return m
-end
 
 
 -- The measured rate, or the requested one with a flag saying so: every byte is scaled by acq_fs, so a silent
@@ -1379,7 +1288,7 @@ end
 -- rejected: the pre-roll then lands in a scratch, the record opens at the trigger edge instead of before
 -- it, and the first byte of every capture is clipped -- five suite failures with 'Hello, World!' decoding
 -- as 'ello, World!'. The pre-roll has to be IN the record, so the capacity has to fit the capture.
--- 32 768 frame + 163 840 of frame rungs + 6 000 000 record + 24 576 of scratches = 6 221 184 of this,
+-- 32 768 frame + 163 840 of frame rungs + 6 000 000 record = 6 196 608 of this,
 -- leaving 278 816 unasked for. Against the 2461's smaller 6 875 000 pool it still fits, with 653 816 spare
 -- beside two minimum default buffers.
 sdec.acq_bufbudget = 6500000
@@ -2468,7 +2377,6 @@ function sdec.arm_source()
   -- different handover: the 156-208 us between the crossing that releases block 2 and the first reading block 3
   -- stores, which is what destroys 4 to 9 payload bytes at every seam above 2400 Bd. Whether the fast path moves
   -- that is a measurement nobody has taken. docs/TRIGGER.md, 'The low-latency flag'.
-  sdec.gap_fastblend = nil
   sdec.trigblended = blended
   return ev, useanalog, blended
 end

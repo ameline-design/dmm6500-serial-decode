@@ -2306,10 +2306,9 @@ function sdec.build_options()
   -- switch, which costs an 80 us floor plus a throughput term past 20 kS/s. Measured three ways in
   -- notes/HANDOFF-session70.md, including the A/B that proves the liveness requirement: the same
   -- program with COUNT_STOP instead of a switch parks at STATE_WAITING forever.
-  -- 16 characters of help text, as wide as Arm/Idle Wait above it, so check it on the glass.
-  -- Every pause the line takes is recorded in full, and those samples come
-  -- out of the same count the payload does -- so this margin applies to every recording, and the one
-  -- that elides nothing has the most idle to absorb. Zero is off and it is not the default -- 10 % is --
+  -- 18 characters of help text, wider than Arm/Idle Wait above it, so check it on the glass.
+  -- Every pause the line takes is recorded in full, and those samples come out of the same count the
+  -- payload does -- so this margin applies to every recording. Zero is off and it is not the default -- 10 % is --
   -- which makes it the one field here that ships with a non-zero value, because the cost is readings on
   -- a record sized for them and the cost of not having it is bytes.
   --

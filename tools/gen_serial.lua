@@ -1724,11 +1724,6 @@ function TRIG_RESUME(s)
   if s ~= nil then TRIG.cost.resume = s end
   return TRIG.cost.resume
 end
--- Set the modelled handover hole in seconds, negative for an overlap; TRIG_HOLE() with no argument reads it.
-function TRIG_HOLE(s)
-  if s ~= nil then TRIG.cost.hole = s end
-  return TRIG.cost.hole
-end
 -- WHAT THE INSTRUMENT WAS DOING BEFORE THE ARM IS WHAT MOVES THE CANDOUR. MEASURED, and it is the
 -- reason a bound anywhere near 0.2 s is a coin toss rather than a clean pass or a clean failure.
 --
@@ -2084,15 +2079,6 @@ end
 --     wait long enough to lap the buffer comes back in order when the instrument's would not.
 --   * THE LOW-LATENCY FLAG. getblocklist() now has a string form, but no fast-path verdict, so nothing
 --     here can catch a program that loses the fast path.
---   * THE HANDOVER HOLE'S VALUE. TRIG_ELIDE models the two-buffer acquisition -- the gap's samples go to
---     the group's scratch and the burst's to the record, TRIG.cost.resume charges the measured 156-208 us
---     the record opens late by, and TRIG.cost.hole says how much of that reached neither buffer. The hole
---     defaults to zero, the continuous handover the splice was designed for, and that default is KNOWN TO
---     BE WRONG on the instrument from 60 kS/s up: the elide lap of 2026-10-18 left every seam in the
---     scored window misaligned by +1 to +5 bytes with the splice reporting ok, which the suite
---     reproduces with a hole of half a bit and an overlap cannot reproduce at all. The width is bracketed at
---     70-90 us by 60 kS/s being the rate where it is mixed, and not measured; a suite asserting the splice
---     byte-exact at the default is asserting the design, not the instrument.
 --   * THE RATE TRANSLATION ON THAT PATH. The walk works in SOURCE indices because the comparator scan
 --     does, so a fixture setting SRC.native_fs keeps the contiguous fill rather than eliding at a
 --     translated rate.

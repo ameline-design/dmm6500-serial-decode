@@ -1251,9 +1251,8 @@ end
 -- cut off having recorded a fraction of what was asked, reported as a full buffer. The standing ceiling is the
 -- right bound there, and it is still a bound: the fill test, the quiet-line exit and the operator all end the
 -- run before it.
-function sdec.stream_limit(nsmp, fs, elide)
+function sdec.stream_limit(nsmp, fs)
   local limit = sdec.stream_maxwait(nsmp, fs)
-  if elide ~= nil and (sdec.strm_maxsec or 0) > 0 then limit = sdec.strm_maxsec end
   if sdec.strm_maxsec ~= nil and sdec.strm_maxsec > 0 and limit > sdec.strm_maxsec then
     limit = sdec.strm_maxsec
   end

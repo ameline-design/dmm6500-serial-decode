@@ -122,18 +122,7 @@ bexp.mincmp = 12
 -- million. Past the ceiling there is no verdict rather than a slow one.
 bexp.cmpmax = 200000
 
--- How much larger than the median frame pitch a gap has to be to count as a seam, when the window is not
--- supplied. FIVE, not two: a vector's own loop seam is lead 10 + tail 10 bit times plus the preceding
--- frame's remainder, about three frame pitches, and two would split a contiguous control record there and
--- over-count its bursts. A real elision seam keeps between one and two windows of idle, which is ten to
--- nineteen frames at the 1/100 s the bench uses from 4800 Bd up, so five separates them.
-bexp.seammult = 5
 
--- Better than any multiple of the median: the window itself, in readings. A seam exists only where the
--- detector concluded the line was quiet, and it concludes that only after a whole window of silence, so
--- the kept idle at a seam is at least one window. 0.9 of it allows for the pitch being measured between
--- frame STARTS while the idle is measured from the last stop bit.
-bexp.seamwinfrac = 0.9
 
 
 -- Compare a decode against what the vector sends. -> nmatch, ncmp, shift; nil when there is no verdict.

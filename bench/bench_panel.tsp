@@ -45,16 +45,14 @@ brun.pn_sdg = brun.pn_sdg or {'10.0.1.79', '10.0.1.78', '192.168.0.79'}
 --
 --   Full          every row the plan holds, which is what the host-driven path runs
 --   Normal        standard rates only, so no drawn interstitial or edge rate plays
-
 --   Adversarial   only vectors known to produce errors, which is barb.loud's list -- the ones the
---                 plan drives into conditions where refusing is the documented right answer -- plus
---                 the gap vectors, whose seams cost bytes until the decoder splice exists. Derived
---                 from those two tables and not a third hand-typed list, so a vector added to either
---                 is covered here without anybody remembering to.
+--                 plan drives into conditions where refusing is the documented right answer. Derived
+--                 from that table and not a hand-typed list, so a vector added to it is covered here
+--                 without anybody remembering to.
 brun.pn_laptypes = brun.pn_laptypes or
-  {{t = 'Full',         std = nil,  gap = nil,  adv = nil},
-   {t = 'Normal',       std = true, gap = nil,  adv = nil},
-   {t = 'Adversarial',  std = nil,  gap = nil,  adv = true}}
+  {{t = 'Full',         std = nil,  adv = nil},
+   {t = 'Normal',       std = true, adv = nil},
+   {t = 'Adversarial',  std = nil,  adv = true}}
 
 -- The rate window, in Bd. Defaults span the whole ladder, so the fields open describing a lap that
 -- filters nothing: 300 is the slowest rate soakplan draws and 250 000 the decoder's own ceiling.

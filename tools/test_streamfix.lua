@@ -984,18 +984,6 @@ print('\nI  an 8 kB or 32 kB recording can wait for a device that has not starte
     -- observation that is available, and only here: the canned template's pre-trigger reserve fills its
     -- buffer while it legitimately waits, which is what the check above pins.
     --
-    -- The premise is that check: same never-waiting model, no elision, still refused. So if this one
-    -- passes it is the elision scope doing it and not the model.
-    local keepge = sdec.gapelide
-    sdec.gapelide = 0.05
-    sdec.force_baud = 9600
-    begin('med', 'edge', quiet_line)
-    sdec.stream_arm(sdec.strm_nsmp)
-    check('but the eliding arm takes a filling record as the trigger, rather than waiting it out',
-          sdec.strm_elide == nil or sdec.strm_armed == true,
-          string.format('armed=%s elide=%s', tostring(sdec.strm_armed), tostring(sdec.strm_elide)))
-    sdec.gapelide = keepge
-    sdec.force_baud = nil
     trigger.model.state = keepstate
     sdec.thr, sdec.idle, sdec.arm_thr, sdec.arm_idle = kthr, kidle, kat, kai
     sdec.strm_armed = karmed
@@ -1425,7 +1413,7 @@ end)()
 -- which the headroom check above already owns: the question is whether the over-read is reachable.
 ;(function()
   local keep = {fb = sdec.force_baud, cm = sdec.capmode, tm = sdec.trigmode,
-                ge = sdec.gapelide, ov = sdec.strm_overread, job = sdec.ck_job,
+                ov = sdec.strm_overread, job = sdec.ck_job,
                 rec = sdec.strm_recording}
   clearforce()
   sdec.ck_job, sdec.strm_recording = nil, nil
@@ -1433,8 +1421,6 @@ end)()
   sdec.force_baud, sdec.capmode, sdec.trigmode = 9600, 'sml', 'edge'
   sdec.strm_overread = 0.10
 
-  -- ELIDING: the buffer must hold the over-read target without acq_fit shaving it.
-  sdec.gapelide = 0.025
   if sdec.buf ~= nil then pcall(buffer.delete, sdec.buf) sdec.buf = nil end
   local ok1, why1 = sdec.stream_begin()
   check('an eliding recording sets up', ok1 == true, tostring(why1))
@@ -1450,11 +1436,10 @@ end)()
   check('...while the requested sample count is still the bare one',
         sdec.strm_nsmp == nreq, tostring(sdec.strm_nsmp))
 
-  -- NOT ELIDING, AND IT GETS THE MARGIN TOO, which is the whole point of the setting being orthogonal:
-  -- elision is what REMOVES silence, so a recording with it off has MORE idle to absorb, not less.
-  -- This assertion was the opposite way round when the over-read was gated on gap_elide(), and that
-  -- gating withheld the margin from exactly the captures with the most silence in them.
-  sdec.gapelide = nil
+  -- AND AGAIN ON A SECOND SET-UP, which is what this pair now proves: the margin is capacity and not a
+  -- longer recording, on every capture. It was once an A/B over gap elision -- the over-read had been
+  -- gated on gap_elide(), withholding the margin from exactly the captures with the most silence --
+  -- and with elision gone the two arms are the same configuration asserting it twice over.
   if sdec.buf ~= nil then pcall(buffer.delete, sdec.buf) sdec.buf = nil end
   local ok2, why2 = sdec.stream_begin()
   check('a free-running recording sets up too', ok2 == true, tostring(why2))
@@ -1487,7 +1472,7 @@ end)()
                       tostring(sdec.buf ~= nil and sdec.buf.capacity)))
 
   sdec.force_baud, sdec.capmode, sdec.trigmode = keep.fb, keep.cm, keep.tm
-  sdec.gapelide, sdec.strm_overread = keep.ge, keep.ov
+  sdec.strm_overread = keep.ov
   sdec.ck_job, sdec.strm_recording = keep.job, keep.rec
 end)()
 

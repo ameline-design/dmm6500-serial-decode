@@ -149,10 +149,6 @@ if SRC.aperture and SRC.interp then
   print('  to get the interpolating source model back.')
   os.exit(2)
 end
-  -- SAID OUT LOUD, as run_bench.py says it: with elision off no cell takes stream_acquire, so the run
-  -- covers neither the elision program nor the splice, and the record it writes looks like any other.
-  print('gap elision OFF: no cell builds sdec.gap_model, so this run covers neither the elision '
-        .. 'program nor the splice')
 print(string.format('stimulus: capture phase %s, envelope %s at %.3f V, reconstruction %s, rate %s, front end %s, aperture %s, origin %s',
                     SRC.phaserand and ('random, seed ' .. tostring(SRC.phaseseed)) or 'fixed at sample 1',
                     tostring(GENLIM.clamp_mode), GENLIM.clamp_v,

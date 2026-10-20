@@ -175,8 +175,8 @@ event number: `setblock` returned true, the block was never added, and a program
 is on the fast path. The refusal was event 2725, "Log Event block number 2 Event Number is invalid",
 visible only in the log. With `trigger.LOG_INFO1` (2734) the block is accepted. Confirm a block is
 present in `getblocklist()` before concluding anything from its absence of effect --
-`sdec.gap_model()` in `tsp/serial_core.tsp` reads its whole store back for this reason, counting
-`MEASURE_DIGITIZE` occurrences as well as checking that each opcode is present.
+A program builder should read its whole store back for this reason, counting `MEASURE_DIGITIZE`
+occurrences as well as checking that each opcode is present.
 
 `setblock(63, ...)` is accepted with no event, so the 63-block ceiling is enforced exactly as
 documented. The manual's triggering and TSP-command sections describe none of this reporting, and no
