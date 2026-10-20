@@ -466,13 +466,12 @@ function sdec.stream_begin()
   -- This can need a default buffer shrunk first: docs/UNDOCUMENTED.md, 'The real ceiling is
   -- 7,080,255 readings, across all buffers together'. Bare -- acq_make_buffer() guards it.
   --
-  -- Sized, and NOT the permanent record, because this path arms with LoopUntilEvent whose pre-trigger
-  -- reserve is a percentage of capacity: against 6 000 000 the smallest reserve it can express is 1 % and
-  -- 60 000 readings, where the capture wants about a thousand. Dropping the reserve instead costs the head
-  -- of the record -- measured offline as three wrong bytes from offset 1 and no leading idle for the level
-  -- probe. Only a program that loads no position may take the permanent capacity, which today is the
-  -- elision program alone. docs/MEASUREMENTS.md, 'The permanent record, and why only a recording may
-  -- have it'.
+  -- Sized to the capture, because this path arms with LoopUntilEvent whose pre-trigger reserve is a
+  -- percentage of capacity: against 6 000 000 the smallest reserve it can express is 1 % and 60 000
+  -- readings, where the capture wants about a thousand. Dropping the reserve instead costs the head of the
+  -- record -- measured offline as three wrong bytes from offset 1 and no leading idle for the level probe.
+  -- acq_pospct() is what reconciles the two where a static buffer does serve the capture.
+  -- docs/MEASUREMENTS.md, 'The permanent record, and how every mode shares it'.
   sdec.acq_make_buffer(cap)
   -- Reclaim and retry once, because the capacities are the operator's to change mid-session. Once only.
   if sdec.buf == nil then
@@ -899,12 +898,11 @@ function sdec.stream_arm(nsmp)
       -- the last window, and a key press or a rear marker does not recur with the line.
       -- docs/TRIGGER.md, 'Detecting silence: `BRANCH_ON_EVENT` spends its event'.
       if armed then
-        -- Reachable with the permanent record underneath only as a fallback: elision was asked for, its
-        -- program was refused, and the buffer was allocated for it. position is a percentage of capacity,
-        -- so sdec.pretrig's 5 would reserve 300 000 readings of the 6 000 000 -- scaled down to the
-        -- readings the reserve means, and rounded UP, because losing it costs the head of the record and
-        -- a percent too much costs only samples. Whole percent: a fractional position has never been
-        -- loaded on this instrument.
+        -- position is a percentage of CAPACITY, so a static buffer oversized for this capture reserves far
+        -- more than the capture wants: sdec.pretrig's 5 against the 6 000 000 record is 300 000 readings.
+        -- acq_pospct scales it to the readings the reserve MEANS, and rounds UP, because losing the reserve
+        -- costs the head of the record while a percent too much costs only samples. Whole percent: a
+        -- fractional position has never been loaded on this instrument.
         local pos = sdec.pretrig
         if sdec.acq_bufperm then pos = sdec.acq_pospct(nsmp, buf) end
         ok = pcall(trigger.model.load, 'LoopUntilEvent', ev, pos,

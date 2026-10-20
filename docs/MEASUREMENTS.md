@@ -2654,8 +2654,8 @@ meaningful on their own.
 allocated*, so a probe that allocates before it asks measures its own footprint. Both of those "came
 to be mistaken for a total of about four million", and 4 076 503 is the same order and was taken the
 same way. The allocatable per-buffer figure is `ck_bufguard` = **6 000 000**, which is what vendor
-`bufferVar.capacity` documents, and `acq_bufcap` asks for exactly that. The read-back is the verdict
-either way, so a pool that cannot give it refuses and the second request gets the capture's own size.
+`bufferVar.capacity` documents, and `acq_bufplan`'s `rec` entry asks for exactly that. The read-back is
+the verdict either way, so a pool that cannot give it falls back to that entry's smaller `least`.
 
 `ck_bufmax` is the live ceiling `start()` recomputes from the capacities the operator has actually
 set, initialised to `ck_bufwant` so a caller that never ran `start()` still has a number.
@@ -2725,12 +2725,13 @@ The cost is not the seam. One cell read back `pay=1/114`: one byte of a 114-byte
 120--160 us resume latency destroys 4 to 9 bytes per gap; this destroys most of the record, and it was
 invisible until `r.elidecap` and `r.elidesidx` started being recorded.
 
-### The permanent record, and why only a recording may have it
+### The permanent record, and how every mode shares it
 
-`sdec.acq_bufcap` = **6 000 000**, allocated once per power cycle and never resized, because a resize
-discards every reading. At 100 kS/s that is **60 s** of record against 0.211 s, and at 2500 S/s it is
-40 minutes: no cell in any lap can lap it. `acq_make_buffer(n, perm)` raises every request to it,
-so the first call allocates and every later one finds a buffer already large enough and only clears it.
+`sdec.acq_bufplan`'s `rec` entry = **6 000 000**, allocated once per power cycle by `acq_bufinit()` and
+never resized, because a resize discards every reading. At 100 kS/s that is **60 s** of record against
+0.211 s, and at 2500 S/s it is 40 minutes: no cell in any lap can lap it. `acq_buffor` maps both
+recording modes to it and `acq_make_buffer(n)` hands it to whatever records into it, so a running app
+performs no allocation at all -- a mode change is a clear and nothing else.
 
 It fits beside everything else the app allocates, on the smallest pool of the three supported models:
 
@@ -2741,18 +2742,17 @@ It fits beside everything else the app allocates, on the smallest pool of the th
 | both default buffers at `ck_defbufmin` | 20 |
 | **left over** | **874 980** |
 
-**Only a program that loads no `position` may take it,** and no shipped program does today.
+**A raw `position` against it reserves fifteen times what the capture asked for.**
 `trigger.model.load('LoopUntilEvent', ev, position, ...)` takes the pre-trigger reserve as a percentage
 of **capacity**, so the shipped 5 reserves 1055 readings against a buffer sized to the capture and
 **300 000** against this one -- a record fifteen times the depth, which the frame path then copies whole
-into a Lua table at 16 B a reading. Both failures were measured offline before the split existed:
+into a Lua table at 16 B a reading. Both failures were measured offline before the scaling existed:
 dropping the position to 0 instead cost the head of the record, **three wrong bytes from offset 1** and
-no leading idle for the level probe to measure. So `stream_begin` stays sized, `brun.point`'s elide
-branch asks for the permanent one, and a sized caller refuses to inherit an over-large buffer rather
-than loading a reserve against it.
+no leading idle for the level probe to measure. So neither figure is loaded raw, and a caller reusing
+`sdec.buf` takes it only at its exact capacity rather than loading a reserve against a larger one.
 
-`acq_pospct()` is the fallback for the one path that can reach `LoopUntilEvent` with the permanent
-record underneath. It scales the reserve back to the readings
+`acq_pospct()` is what an armed capture loads instead whenever it is recording into one of the static
+set, which `sdec.acq_bufperm` is what says. It scales the reserve back to the readings
 it means and rounds **up**, never to zero: 5 % of 20 000 is 1000 readings, which is 0.017 % of
 6 000 000, so the loaded position is 1 and the reserve is 60 000. A fractional position has never been
 loaded on this instrument. `acq_leadmax()` reports what that really reserves, because the figure the

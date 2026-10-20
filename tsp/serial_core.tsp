@@ -1274,9 +1274,10 @@ end
 --                         53 % at 8N1 against a base of 3 932 160, and 27 % at the widest frame format;
 --                         the 8 kB mode gets six times its own worst case.
 --
---                         The literal and not sdec.acq_bufcap, which holds the same figure: that is
---                         assigned several hundred lines below this table, so naming it here would read
---                         nil. test_serial asserts the two agree.
+--                         6 000 000 is the per-buffer figure vendor `bufferVar.capacity` documents, and
+--                         it fits beside everything else this app allocates on the smallest pool of the
+--                         three supported models -- 6 875 000 on the 2461, less 24 576 of scratch and 20
+--                         of default buffers. docs/MEASUREMENTS.md, 'The reading pool is per model'.
 --
 -- WHY NOT ONE BUFFER FOR EVERYTHING, which is what the operator asked for and would be simpler. An armed
 -- capture stores the buffer it is handed, so a 240-byte frame capture sharing the 6 000 000-reading record
@@ -1698,10 +1699,10 @@ function sdec.quiet_events()
   localnode.showevents = eventlog.SEV_ERROR
   -- AND THE BUFFER-CAPACITY DIALOGS, WHICH SEVERITY ALONE CANNOT REACH. 4919 'Available capacity for
   -- all reading buffers exceeded' is posted at ERROR severity, so showevents = SEV_ERROR displays it --
-  -- and it is a NORMAL event on this app's allocation path, not a fault: acq_bufcap asks the pool for
-  -- ck_bufguard and takes the read-back as the verdict, so a refusal is the design working. Measured on
-  -- a 106-cell elided lap on 2026-10-19: 27 cells filed it, remade the buffer at a workable size, and
-  -- bufshort was empty on every row -- the captures were fine and the operator got a modal box.
+  -- and it is a NORMAL event on this app's allocation path, not a fault: acq_bufinit asks the pool for
+  -- the whole plan and takes each read-back as the verdict, so a refusal is the design working. Measured
+  -- on a 106-cell elided lap on 2026-10-19: 27 cells filed it and remade the buffer at a workable size,
+  -- while nothing was ever short -- the captures were fine and the operator got a modal box.
   --
   -- THE OPERATOR'S REQUIREMENT IS THAT IT NEVER REACHES THE GLASS. eventlog.suppress(N) takes the
   -- dialog and LEAVES THE LOG ENTRY, measured in docs/UNDOCUMENTED.md, 'eventlog.suppress(N) appears in
@@ -1881,19 +1882,11 @@ function sdec.acq_fit(n, buf)
   return n
 end
 
--- The record's permanent capacity. One buffer per power cycle, sized for the longest recording the app can ask
--- for and then never resized, because a resize discards every reading and a reallocation per capture is what
--- left an eliding record holding 21 100 readings while its digitize ran for 40 s: at 2500 S/s that is 100 000
--- readings into the ring, so it lapped nearly five times and read back as one byte of 114.
---
--- 6 000 000 is the per-buffer figure vendor `bufferVar.capacity` documents, and it fits beside everything else
--- this app allocates on the smallest pool of the three supported models -- 6 875 000 on the 2461, less 24 576
--- of scratch and 20 of default buffers. docs/MEASUREMENTS.md, 'The reading pool is per model'.
-sdec.acq_bufcap = 6000000
 -- What the instrument actually granted, which is the only verdict: see the read-back below.
 sdec.acq_bufgot = nil
--- Whether the live buffer is the permanent one. Read by stream_arm, which must not load a pre-trigger
--- percentage against it: see acq_make_buffer's second argument.
+-- Whether the live buffer is one of the static set, which is oversized for the mode recording into it.
+-- Read by stream_arm, which then takes its pre-trigger reserve from acq_pospct rather than as a percentage
+-- of a capacity the capture did not ask for.
 sdec.acq_bufperm = nil
 -- Seconds to wait before re-asking for a buffer the pool refused immediately after a delete. Short,
 -- because the delete itself has already returned and this covers the firmware's own release and nothing
@@ -1911,42 +1904,31 @@ sdec.acq_presettle = 0
 -- Free and remake the capture buffer. Follows the project's object-lifetime rule -- delete, nil, then create --
 -- because creating over a live handle leaves the buffer beneath allocated and unreachable until a power cycle.
 --
--- `perm` asks for the permanent capacity, and only a recording may ask. The pre-trigger reserve is a
--- percentage of capacity, so `trigger.model.load('LoopUntilEvent', ev, 5, ...)` reserves 1055 readings against
--- a buffer sized to the capture and 300 000 against this one -- a record fifteen times the depth, which the
--- frame path then copies whole into a Lua table at 16 B a reading. The recording paths read through
--- ck_reader_buffer in windows and have no such copy, which is why the split is here and not a knob.
--- docs/MEASUREMENTS.md, 'The pre-trigger reserve comes out of capacity, not out of count'.
-function sdec.acq_make_buffer(n, perm)
+function sdec.acq_make_buffer(n)
   if n == nil then n = 10 end
   if n < 10 then n = 10 end     -- buffer.make() minimum, the figure 4920 names itself
-  -- The capture's own need is kept, because it is the fallback request when the permanent size is refused.
-  local nreq = n
-  if perm and sdec.acq_bufcap ~= nil and sdec.acq_bufcap > n then n = sdec.acq_bufcap end
   -- Reuse before anything is freed: the capacity already covers the request, so the clear is the whole cost.
   --
   -- A sized caller reuses only the buffer it would have made itself, exactly, because its pre-trigger
   -- reserve is a percentage of whatever capacity it ends up with. An inequality here is not good enough: a
-  -- 32 kB recording asks for 3 593 084, so any band wide enough to be useful also admits the permanent
-  -- 6 000 000, and the reserve loaded against that is 300 000 readings rather than the 189 110 the mode
-  -- sized for. Equality costs a reallocation only when the capture size really changes, which is what every
-  -- build before the permanent record did on every call.
-  -- THE STATIC RECORD TAKES EVERY CALLER, sized or not. Once acq_bufinit() has it, a running app performs
-  -- no buffer allocation and no release at all: changing mode from the 240-byte frame to 8 kB or 32 kB is
-  -- a clear and nothing else. That is the point rather than a side effect -- a refused buffer.make in a
-  -- live session is the one fault the app cannot retry its way out of, and docs/UNDOCUMENTED.md records
-  -- that a deleted 6 000 000-reading buffer is not free by the time the next call asks, which cost three
-  -- raised cells the first time this allocator ran per capture.
+  -- 32 kB recording asks for 3 593 084, so any band wide enough to be useful also admits the 6 000 000
+  -- record, and the reserve loaded against that is 300 000 readings rather than the 189 110 the mode sized
+  -- for. Equality costs a reallocation only when the capture size really changes, which is what every build
+  -- before the static set did on every call.
   --
   -- WHAT MADE THIS UNSAFE IS FIXED AT THE OTHER END, not waived here. A sized caller used to need its own
   -- capacity because LoopUntilEvent's position is a percentage of CAPACITY, so a 32 kB mode inheriting
   -- 6 000 000 reserved 300 000 readings instead of the 189 110 it sized for. acq_pospct now scales the
   -- reserve to the readings it is meant to be and acq_triggered loads that figure, so capacity no longer
   -- carries the reserve's meaning and sharing it costs nothing.
+  --
   -- THE STATIC SET TAKES EVERY CALLER whose mode has one, sized or not. Once acq_bufinit() has them a
   -- running app performs no buffer allocation and no release at all: changing mode from the 240-byte frame
-  -- to 8 kB or 32 kB selects a different pre-allocated buffer and clears it. Nothing below this point runs
-  -- in a healthy session.
+  -- to 8 kB or 32 kB selects a different pre-allocated buffer and clears it. That is the point rather than
+  -- a side effect -- a refused buffer.make in a live session is the one fault the app cannot retry its way
+  -- out of, and docs/UNDOCUMENTED.md records that a deleted 6 000 000-reading buffer is not free by the
+  -- time the next call asks, which cost three raised cells when this allocator ran per capture. Nothing
+  -- below this point runs in a healthy session.
   --
   -- `scap >= n` is kept and it is not a hedge. Each buffer is oversized for the worst case its own mode
   -- can ask for, so in a healthy session it is always true; where the pool could only grant part of the
@@ -1955,26 +1937,6 @@ function sdec.acq_make_buffer(n, perm)
   -- `n` is a required CAPACITY here, not a sample count -- acquire() calls this as
   -- acq_make_buffer(acq_cap(nwant)) -- so it is exactly what picks the frame rung that fits.
   local sb, scap = sdec.acq_bufmode(nil, n)
-  -- A `perm` CALLER IS OFFERED THE STATIC RECORD DIRECTLY, not the one its mode maps to, and this is the
-  -- line that makes "allocate once, never reallocate" true on the bench path. acq_bufplan already holds
-  -- {id = 'rec', cap = 6000000} and acq_bufinit allocates it at startup -- but acq_buffor maps only the
-  -- 'sml' and 'med' modes to it, and the bench and the panel both run in 'frame'. So acq_bufmode handed
-  -- back the 32 768 frame buffer, 32768 >= 6000000 was false, and the request fell through to
-  -- delete-and-make -- while the 6 000 000-reading buffer it needed sat there, already allocated, unoffered.
-  --
-  -- The cost, measured on a 106-cell elided lap on 2026-10-19: the gap plan alternates elided and
-  -- non-elided cells, so the permanent record was made for an eliding cell and freed by the next sized
-  -- one, over and over. 27 of 106 cells filed 4919 'Available capacity for all reading buffers exceeded'
-  -- and remade, 15 once and 12 twice, and the operator got a modal box for each. bufshort was empty on
-  -- every row, so nothing was ever short -- the allocator was thrashing a buffer it already owned.
-  --
-  -- Only for perm, and only when the static record is really there and really large enough. A sized
-  -- caller keeps the exact-capacity rule above it for the reason stated there: its pre-trigger reserve is
-  -- a percentage of CAPACITY, so a small armed capture on this buffer would reserve 300 000 readings.
-  if sdec.acq_bufperm_want ~= false and perm == true then
-    local rb, rcap = sdec.acq_bufhave('rec')
-    if rb ~= nil and rcap ~= nil and rcap >= n then sb, scap = rb, rcap end
-  end
   if sb ~= nil and scap ~= nil and scap >= n then
     sdec.trig_settle()
     sdec.bufclear(sb)
@@ -1984,11 +1946,13 @@ function sdec.acq_make_buffer(n, perm)
   end
   if sdec.buf ~= nil then
     local cap = sdec.bufcap(sdec.buf)
-    if cap ~= nil and cap >= n and (perm or cap == nreq) then
+    -- Exactly, not merely enough, for the reason the reuse rule above states: the pre-trigger reserve is a
+    -- percentage of capacity, so a capture inheriting a larger buffer reserves more than it sized for.
+    if cap ~= nil and cap == n then
       sdec.trig_settle()
       sdec.bufclear(sdec.buf)
       sdec.acq_fillmode(sdec.buf)
-      sdec.acq_bufperm = (perm == true)
+      sdec.acq_bufperm = false
       return sdec.buf
     end
   end
@@ -2019,25 +1983,19 @@ function sdec.acq_make_buffer(n, perm)
     sdec.buf = nil
     freed = true
   end
-  -- Two requests in order and never an unbounded loop, because every refusal posts 4919 to the event log:
-  -- the permanent capacity, then the one this capture actually needs. The second degrades to the behaviour
-  -- of every build before this one, so a pool that cannot give 6 000 000 still records.
+  -- ONE REQUEST AND A BOUNDED RETRY, never a loop, because every refusal posts 4919 to the event log.
   --
   -- A deleted buffer is not necessarily free yet. docs/UNDOCUMENTED.md, 'The real ceiling is 7,080,255
   -- readings, across all buffers together', records it in those words: `pcall(buffer.delete)` has not
-  -- necessarily freed it by the time the next call asks. Deleting 6 000 000 readings and asking for 20 000
-  -- in the next statement is exactly that case, and it refused -- one cell per vector on the 2026-10-17
-  -- lap, every one of them the first cell where the elide gate declined and the record went from the
-  -- permanent buffer back to a sized one. So each request gets a second attempt behind a short delay, and
-  -- only where a delete preceded it: with nothing freed there is nothing to wait for.
-  local tries, ntry = {n}, 1
-  if nreq < n then tries[2], ntry = nreq, 2 end
+  -- necessarily freed it by the time the next call asks -- one cell per vector on the 2026-10-17 lap,
+  -- every one of them a cell where the record changed size. So the request gets a second attempt behind a
+  -- short delay, and only where a delete preceded it: with nothing freed there is nothing to wait for.
   -- SETTLE BEFORE THE FIRST ASK, NOT AFTER IT FAILS, and this is the line that stops 4919 reaching the
   -- glass rather than hiding it. The retry below only waits once a make has ALREADY been refused, so a
   -- freed buffer cost one refusal by construction -- and every refusal posts 4919 'Available capacity
   -- for all reading buffers exceeded' at ERROR severity, which showevents cannot filter. Measured on a
-  -- 106-cell elided lap on 2026-10-19: 27 cells filed it, 15 with one remake and 12 with two, bufshort
-  -- empty on every row. The captures were all fine; the operator got a modal box 27 times.
+  -- 106-cell elided lap on 2026-10-19: 27 cells filed it, 15 with one remake and 12 with two, and not one
+  -- of them was ever short. The captures were all fine; the operator got a modal box 27 times.
   --
   -- collectgarbage() first because the operator asked for it and the reasoning holds: buffer.delete has
   -- not necessarily released by the time the next statement asks -- docs/UNDOCUMENTED.md, 'The real
@@ -2052,42 +2010,25 @@ function sdec.acq_make_buffer(n, perm)
     pcall(delay, sdec.acq_freesettle)
     sdec.acq_presettle = (sdec.acq_presettle or 0) + 1
   end
-  local i
-  for i = 1, ntry do
-    -- Guarded at the allocation, the only thing here that can raise. Standard and not compact, and not by
-    -- choice -- docs/MEASUREMENTS.md, 'buffer.STYLE_COMPACT is nil on this firmware'.
-    local nb, cap = sdec.bufmake(tries[i])
-    -- The read-back and not the pcall: a refused buffer.make returns nil while pcall reports success, and
-    -- deleting what it returned posts 1138.
-    if (type(cap) ~= 'number' or cap < 10) and freed then
-      pcall(delay, sdec.acq_freesettle)
-      nb, cap = sdec.bufmake(tries[i])
-      if type(cap) == 'number' and cap >= 10 then
-        sdec.acq_remade = (sdec.acq_remade or 0) + 1
-      end
-    end
+  -- Guarded at the allocation, the only thing here that can raise. Standard and not compact, and not by
+  -- choice -- docs/MEASUREMENTS.md, 'buffer.STYLE_COMPACT is nil on this firmware'.
+  local nb, cap = sdec.bufmake(n)
+  -- The read-back and not the pcall: a refused buffer.make returns nil while pcall reports success, and
+  -- deleting what it returned posts 1138.
+  if (type(cap) ~= 'number' or cap < 10) and freed then
+    pcall(delay, sdec.acq_freesettle)
+    nb, cap = sdec.bufmake(n)
     if type(cap) == 'number' and cap >= 10 then
-      sdec.buf = nb
-      sdec.acq_bufgot = cap
-      -- Permanent only where the permanent size was actually granted: the fallback request is the capture's
-      -- own, and a reserve loaded against that one is the figure it always was.
-      sdec.acq_bufperm = (perm == true and cap >= n)
-      -- A permanent request that fell back must say so. Without this the degradation is silent and
-      -- exact: the record goes back to a capture-sized fillmode = 1 buffer, which is the configuration
-      -- that wrapped and ate 84 % of itself, and nothing in the row or the log would differ. Sticky,
-      -- because the next successful allocation is the only thing entitled to clear it.
-      if perm == true and cap < n then
-        sdec.acq_bufshort = cap
-        if ulog ~= nil and ulog.line ~= nil then
-          pcall(ulog.line, string.format('the permanent record was refused: asked %d readings, got '
-                                         .. '%d -- an eliding capture can wrap this', n, cap))
-        end
-      else
-        sdec.acq_bufshort = nil
-      end
-      sdec.acq_fillmode(sdec.buf)
-      return sdec.buf
+      sdec.acq_remade = (sdec.acq_remade or 0) + 1
     end
+  end
+  if type(cap) == 'number' and cap >= 10 then
+    sdec.buf = nb
+    sdec.acq_bufgot = cap
+    -- Not one of the static set, so the reserve is a percentage of a capacity this capture asked for.
+    sdec.acq_bufperm = false
+    sdec.acq_fillmode(sdec.buf)
+    return sdec.buf
   end
   sdec.acq_bufgot, sdec.acq_bufperm = nil, nil
   return nil

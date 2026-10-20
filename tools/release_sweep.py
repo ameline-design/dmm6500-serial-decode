@@ -101,9 +101,14 @@ def stages(outdir, shots):
         # THE PACKAGE IS LINTED TOO, because it is what ships -- and it could not be before now: the
         # namespace check took the FIRST `<ns> = <ns> or {}`, so a concatenation declaring both ulog and
         # sdec produced 249 false positives.
-        Stage('lint', ['python3', 'tools/lint_tsp.py'] + tsp_files() + ['Serial_Decode.tspa'],
+        # AND THE BENCH MODULES, which this list could not see: it was built from tsp_files() alone, so
+        # bench/*.tsp went through every release unlinted -- including the 900 lines of bench_run.tsp the
+        # elision removal rewrote. They are deliberately NOT added to `parse` below: bench_run.tsp has
+        # always refused stock 5.0.2 on pre-existing hex literals that the instrument's own Lua accepts.
+        Stage('lint', ['python3', 'tools/lint_tsp.py'] + tsp_files() + bench_files()
+              + ['Serial_Decode.tspa'],
               note='Lua 5.0.2 incompatibilities: #, %, gmatch, string args to collectgarbage -- on '
-                   'every module AND on the packaged .tspa that actually ships'),
+                   'every module in tsp/ and bench/ AND on the packaged .tspa that actually ships'),
         Stage('parse', ['bash', '-c',
                         'for f in tsp/*.tsp; do luac -p "$f" || exit 1; done; echo "all parse"'],
               note='luac -p on every module'),
@@ -119,6 +124,20 @@ def stages(outdir, shots):
         Stage('tspa-current', ['python3', 'tools/package_tspa.py', '--check'],
               note='the committed .tspa is what the current modules build -- a stale package installs '
                    'code no test in this repo has ever run'),
+        # THE BENCH ARCHIVE IS AN ARTEFACT TOO, and nothing checked it. `--check` without `--bench`
+        # covers Serial_Decode.tspa alone, so Serial_brun.tspa could sit behind its own modules
+        # indefinitely -- and it is what gets installed to run a soak.
+        Stage('tspa-brun-current', ['python3', 'tools/package_tspa.py', '--bench', '--check'],
+              note='Serial_brun.tspa is what the app plus the bench modules currently build'),
+        # RECORDED AND NOT GATED, which is the whole point of putting it here. The bench archive carries
+        # 200 pcall sites against lint_tsp's ceiling of 132, and that is a standing condition rather than
+        # a regression -- 201 at b4070e4, before the perm removal took one out. Gating it would fail
+        # every release over a figure no release introduced; warning puts the count in the report, where
+        # a decision can be taken against it. The shipped Serial_Decode.tspa is under the ceiling and is
+        # gated by `lint` above.
+        Stage('lint-brun', ['python3', 'tools/lint_tsp.py', 'Serial_brun.tspa'], gate=False,
+              note='the bench archive as the instrument loads it: it carries more pcall sites than the '
+                   'measured bluescreen ceiling, so this warns rather than gates'),
         Stage('unit', ['lua', 'tools/test_serial.lua'],
               note='the offline suite: decoder, UI, state machine, file paths'),
         # BEFORE ANY SEEDED SUITE, because everything a seeded suite reports is worthless if the two
@@ -396,6 +415,13 @@ def stages(outdir, shots):
 def tsp_files():
     d = os.path.join(ROOT, 'tsp')
     return [os.path.join('tsp', f) for f in sorted(os.listdir(d)) if f.endswith('.tsp')]
+
+
+def bench_files():
+    """The bench engine's own modules. Separate from tsp_files() because only some stages take them:
+    they are linted, but stock 5.0.2 will not parse bench/bench_run.tsp."""
+    d = os.path.join(ROOT, 'bench')
+    return [os.path.join('bench', f) for f in sorted(os.listdir(d)) if f.endswith('.tsp')]
 
 
 def summarise(name, out, rc):

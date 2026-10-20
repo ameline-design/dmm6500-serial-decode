@@ -11589,12 +11589,6 @@ end)()
           string.format('%s, %s of %s, %s scratch(es), why=%s', tostring(okinit),
                         tostring(sdec.acq_bufnok), tostring(sdec.acq_bufplan.n),
                         tostring(sdec.acq_scrgot), tostring(whyinit)))
-    -- THE LITERAL IN THE PLAN AND THE CONSTANT MUST AGREE. acq_bufplan is assigned hundreds of lines
-    -- above sdec.acq_bufcap, so it cannot name it and carries the same figure twice -- which is exactly
-    -- the shape that drifts. Asserted rather than commented.
-    check('the record buffer in the plan is sdec.acq_bufcap, written twice and checked once',
-          sdec.acq_bufplan[2].cap == sdec.acq_bufcap,
-          string.format('%s vs %s', tostring(sdec.acq_bufplan[2].cap), tostring(sdec.acq_bufcap)))
     -- AND THE WHOLE SET FITS THE SMALLEST SUPPORTED POOL. The 2461 holds 6 875 000 against the
     -- DMM6500's 7 080 255, and a set that does not fit it is a set that cannot ship.
     -- THE FRAME RUNGS COUNT TOO. They are allocated at launch beside the plan and never freed until exit,

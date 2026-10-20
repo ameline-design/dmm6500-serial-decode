@@ -463,7 +463,6 @@ function brun.point(fs, baud, lock, vid)
   -- THE ALLOCATION'S OWN VERDICT. Read before the early returns so a cell that failed to acquire still
   -- reports it: the cells that raised on 2026-10-17 were the ones that returned early.
   r.remade = sdec.acq_remade
-  r.bufshort = sdec.acq_bufshort
   if brun.timing then pcall(function() brun.tacq = timer.gettime() end) end
   brun.spin_tick()                      -- 3 of 6: the capture is in
   if not okc then
@@ -2693,11 +2692,10 @@ function brun.soak(iterations, tag)
       -- Elision's own verdict on the row, and only where it was asked for, so a lap without it stays
       -- byte-identical. 'FELLBACK' is the one that matters: the capture succeeded, the bytes may be
       -- perfect, and the six-block program never ran -- a pass that proves nothing.
-      -- The allocator's own verdict, on every row. These were emitted only inside the elision block,
-      -- so a cell that remade a buffer or ran on a short one was invisible unless it also took one
-      -- particular capture path -- and the 2026-10-17 raises were all on cells that did not.
+      -- The allocator's own verdict, on every row. This was emitted only inside the elision block, so a
+      -- cell that remade a buffer was invisible unless it also took one particular capture path -- and the
+      -- 2026-10-17 raises were all on cells that did not.
       if (p.remade or 0) > 0 then nt = nt .. ' remade=' .. brun.int(p.remade) end
-      if p.bufshort ~= nil then nt = nt .. ' BUFSHORT=' .. brun.int(p.bufshort) end
       -- THE IDLE DECISION'S OWN INPUTS, appended only when brun.idlediag is set, so a normal soak's
       -- status rows stay byte-identical and nothing a reader greps for moves. It rides the status note
       -- that already exists rather than adding a second S row, so the record grows by characters rather

@@ -425,15 +425,15 @@ which is a plausibility test asking whether the stretch is long enough to be a r
 a thousand samples clears any such threshold several times over, so the capture that most needs the
 sanity check is the one certain to pass it.
 
-**It is a percentage of capacity, which is what stops the permanent record from being used here.**
-`sdec.acq_bufcap` allocates the recording buffer once at 6 000 000 readings so an eliding capture
-cannot outrun it, and the shipped position of 5 against that capacity is **300 000 readings** rather
-than 1055 -- a record fifteen times the depth, which the frame path copies whole into a Lua table.
-Loading 0 instead costs the head of the record: measured offline as three wrong bytes from offset 1,
-with no leading idle left for the level probe. So only a program that loads no position may take the
-permanent capacity, which no shipped program does today -- see section 10; `acq_pospct()` scales
-the figure for the one path that can reach `LoopUntilEvent` with that buffer underneath it.
-`docs/MEASUREMENTS.md`, 'The permanent record, and why only a recording may have it'.
+**It is a percentage of capacity, which is what a shared buffer has to be scaled against.**
+`sdec.acq_bufplan`'s `rec` entry allocates the recording buffer once at 6 000 000 readings so no
+capture can outrun it, and the shipped position of 5 against that capacity is **300 000 readings**
+rather than 1055 -- a record fifteen times the depth, which the frame path copies whole into a Lua
+table. Loading 0 instead costs the head of the record: measured offline as three wrong bytes from
+offset 1, with no leading idle left for the level probe. So the reserve cannot stay a raw percentage:
+`acq_pospct()` scales it to the readings it is meant to be and `acq_triggered()` loads that figure,
+which is what lets a mode record into a buffer sized for a deeper one.
+`docs/MEASUREMENTS.md`, 'The permanent record, and how every mode shares it'.
 
 **Whether anything real out-measures the reserve is decided by the sample rate.** The reserve is a
 fixed sample count, a percentage of buffer capacity, so 1055 samples at 5 % of a 21 100-reading

@@ -1766,7 +1766,6 @@ function sdec.acq_fit(n, buf)
   return n
 end
 
-sdec.acq_bufcap = 6000000
 sdec.acq_bufgot = nil
 sdec.acq_bufperm = nil
 sdec.acq_freesettle = 0.05
@@ -1774,20 +1773,11 @@ sdec.acq_remade = 0
 sdec.acq_presettle = 0
 
 -- Free and remake the capture buffer. Follows the project's object-lifetime rule -- delete, nil, then create --
---   [...]
--- frame path then copies whole into a Lua table at 16 B a reading. The recording paths read through
--- ck_reader_buffer in windows and have no such copy, which is why the split is here and not a knob.
--- docs/MEASUREMENTS.md, 'The pre-trigger reserve comes out of capacity, not out of count'.
-function sdec.acq_make_buffer(n, perm)
+-- because creating over a live handle leaves the buffer beneath allocated and unreachable until a power cycle.
+function sdec.acq_make_buffer(n)
   if n == nil then n = 10 end
   if n < 10 then n = 10 end     -- buffer.make() minimum, the figure 4920 names itself
-  local nreq = n
-  if perm and sdec.acq_bufcap ~= nil and sdec.acq_bufcap > n then n = sdec.acq_bufcap end
   local sb, scap = sdec.acq_bufmode(nil, n)
-  if sdec.acq_bufperm_want ~= false and perm == true then
-    local rb, rcap = sdec.acq_bufhave('rec')
-    if rb ~= nil and rcap ~= nil and rcap >= n then sb, scap = rb, rcap end
-  end
   if sb ~= nil and scap ~= nil and scap >= n then
     sdec.trig_settle()
     sdec.bufclear(sb)
@@ -1797,11 +1787,11 @@ function sdec.acq_make_buffer(n, perm)
   end
   if sdec.buf ~= nil then
     local cap = sdec.bufcap(sdec.buf)
-    if cap ~= nil and cap >= n and (perm or cap == nreq) then
+    if cap ~= nil and cap == n then
       sdec.trig_settle()
       sdec.bufclear(sdec.buf)
       sdec.acq_fillmode(sdec.buf)
-      sdec.acq_bufperm = (perm == true)
+      sdec.acq_bufperm = false
       return sdec.buf
     end
   end
@@ -1820,39 +1810,25 @@ function sdec.acq_make_buffer(n, perm)
     sdec.buf = nil
     freed = true
   end
-  local tries, ntry = {n}, 1
-  if nreq < n then tries[2], ntry = nreq, 2 end
   if freed then
     pcall(collectgarbage)
     pcall(delay, sdec.acq_freesettle)
     sdec.acq_presettle = (sdec.acq_presettle or 0) + 1
   end
-  local i
-  for i = 1, ntry do
-    local nb, cap = sdec.bufmake(tries[i])
-    if (type(cap) ~= 'number' or cap < 10) and freed then
-      pcall(delay, sdec.acq_freesettle)
-      nb, cap = sdec.bufmake(tries[i])
-      if type(cap) == 'number' and cap >= 10 then
-        sdec.acq_remade = (sdec.acq_remade or 0) + 1
-      end
-    end
+  local nb, cap = sdec.bufmake(n)
+  if (type(cap) ~= 'number' or cap < 10) and freed then
+    pcall(delay, sdec.acq_freesettle)
+    nb, cap = sdec.bufmake(n)
     if type(cap) == 'number' and cap >= 10 then
-      sdec.buf = nb
-      sdec.acq_bufgot = cap
-      sdec.acq_bufperm = (perm == true and cap >= n)
-      if perm == true and cap < n then
-        sdec.acq_bufshort = cap
-        if ulog ~= nil and ulog.line ~= nil then
-          pcall(ulog.line, string.format('the permanent record was refused: asked %d readings, got '
-                                         .. '%d -- an eliding capture can wrap this', n, cap))
-        end
-      else
-        sdec.acq_bufshort = nil
-      end
-      sdec.acq_fillmode(sdec.buf)
-      return sdec.buf
+      sdec.acq_remade = (sdec.acq_remade or 0) + 1
     end
+  end
+  if type(cap) == 'number' and cap >= 10 then
+    sdec.buf = nb
+    sdec.acq_bufgot = cap
+    sdec.acq_bufperm = false
+    sdec.acq_fillmode(sdec.buf)
+    return sdec.buf
   end
   sdec.acq_bufgot, sdec.acq_bufperm = nil, nil
   return nil
