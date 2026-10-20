@@ -764,12 +764,49 @@ rr = run({bytes = hb, baud = 9600, fs = 100000})
 check('8N1 text is not misread as 7E1', sdec.fmt_text() == '8N1', sdec.fmt_text())
 
 -- ---- the genuine ambiguities, asserted as such ----
--- A second stop bit is indistinguishable from a bit of idle, so 8N2 must read as
--- 8N1 with the right bytes rather than be guessed at.
+-- A SHORT 8N2 CAPTURE STILL READS AS 8N1, and that is now a statement about the EVIDENCE rather than
+-- about the signal. The spacing between consecutive frames does say how many stop bits the line uses
+-- -- see ua_stopseen -- but 13 bytes give only 12 adjacent pairs against a quorum of 20, so this
+-- capture cannot reach a verdict and must therefore not offer one. The bytes were never in doubt.
 rr = run({bytes = hb, baud = 9600, fs = 100000, nstop = 2})
-check('8N2 traffic reads as 8N1 with the correct bytes (stop count is unobservable)',
+check('a SHORT 8N2 capture reads as 8N1: too few frame pairs to resolve the stop count',
       rr ~= nil and sdec.fmt_text() == '8N1' and txt(rr) == HELLO and rr.nbad == 0,
-      string.format('got %s %q err=%s', sdec.fmt_text(), txt(rr), tostring(rr and rr.nbad)))
+      string.format('got %s %q err=%s nstop_seen=%s', sdec.fmt_text(), txt(rr),
+                    tostring(rr and rr.nbad), tostring(rr and rr.nstop_seen)))
+
+-- AND A LONG GAPLESS ONE RESOLVES IT, which is what makes the case above evidence and not an excuse.
+-- Every arm below is paired, because a detector that answers 2 everywhere and one that answers
+-- nothing anywhere both satisfy a single-armed test.
+do
+  local many = ''
+  local q
+  for q = 1, 12 do many = many .. 'The quick brown fox jumps over the lazy dog. ' end
+  local mb = GEN_BYTES(many)
+
+  local r2 = run({bytes = mb, baud = 9600, fs = 100000, nstop = 2, gap = 0})
+  check('a LONG gapless 8N2 line is reported as 8N2',
+        sdec.fmt_text() == '8N2' and r2 ~= nil and r2.nstop_seen == 2,
+        string.format('%s nstop_seen=%s', sdec.fmt_text(), tostring(r2 and r2.nstop_seen)))
+  -- THE BYTES MUST BE UNTOUCHED BY THE REPORT, which is the property the whole split exists for: the
+  -- decode used nstop = 1 and nothing fed 2 back into it.
+  check('...with the bytes unchanged and the decode still using one stop bit',
+        r2 ~= nil and r2.nbad == 0 and r2.nstop == 1 and has(txt(r2), 'quick brown fox'),
+        string.format('nbad=%s nstop=%s', tostring(r2 and r2.nbad), tostring(r2 and r2.nstop)))
+
+  -- CONTROL ONE: the same payload at 8N1 must not be promoted. Without this the check above passes on
+  -- a build that reports 8N2 for everything.
+  local r1 = run({bytes = mb, baud = 9600, fs = 100000, gap = 0})
+  check('a LONG gapless 8N1 line is NOT promoted to 8N2',
+        sdec.fmt_text() == '8N1' and r1 ~= nil and (r1.nstop_seen == 1 or r1.nstop_seen == nil),
+        string.format('%s nstop_seen=%s', sdec.fmt_text(), tostring(r1 and r1.nstop_seen)))
+
+  -- CONTROL TWO: an 8N2 line with inter-byte GAPS is undecidable, and must say nothing rather than
+  -- guess. This is the same limit bit order has on binary traffic.
+  local rg = run({bytes = mb, baud = 9600, fs = 100000, nstop = 2, gap = 6})
+  check('a GAPPED 8N2 line declines to report a stop count',
+        rg ~= nil and rg.nstop_seen == nil and sdec.fmt_text() == '8N1',
+        string.format('%s nstop_seen=%s', sdec.fmt_text(), tostring(rg and rg.nstop_seen)))
+end
 
 -- A repeated byte fits 8N1 and 7E1 identically, so the common format must win.
 rr = run({bytes = rep(0x55, 10), baud = 9600, fs = 100000})

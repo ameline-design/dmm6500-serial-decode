@@ -1277,6 +1277,62 @@ end
 -- ============================================================================
 -- Formats whose score came within the margin of the winner's -- the ones this capture genuinely does
 -- not distinguish. Returns a name list and its length. Pure, and it must be called before
+-- HOW MANY STOP BITS THE LINE USES, REPORTED AND NEVER FED BACK INTO THE DECODE. That split is the
+-- whole design and it is not symmetric with bit order: an MSB line decodes to different BYTES, so the
+-- order has to reach ua_frame; a second stop bit changes no byte at all, because it is one more bit
+-- time of mark and idle between frames is already tolerated. uart_decode's own note has said for a
+-- long time that "nstop = 2 can never rescue a capture nstop = 1 fails on", which is true of DECODING
+-- and was never revisited for REPORTING -- so an 8N2 line decoded correctly and displayed as 8N1.
+-- Reported from the field 2026-10-20; five of the sixteen UART settings on the board that found it
+-- send two stop bits.
+--
+-- WHY IT MUST NOT REACH THE DECODER. chunk_decode builds its streaming format from r.nstop and
+-- recomputes framebits from it, then hands that back to ua_run -- so writing 2 into r.nstop would make
+-- the chunked decode REQUIRE a second mark bit, and a detection that was ever wrong would fail every
+-- frame on the capture it was wrong about. The decode therefore keeps nstop = 1, which is correct for
+-- either line, and only the format NAME carries what was observed.
+--
+-- THE MEASUREMENT, and its limit is honest rather than hidden. A second stop bit is exactly one extra
+-- bit time of mark before the next start edge, so over consecutive frames the spacing says which it
+-- is: tpos[k+1] - tpos[k], less the frame the decode actually used, lands near 0 bits for one stop
+-- bit and near 1 for two. A transmitter that leaves inter-byte gaps smears that spacing and the
+-- question becomes undecidable -- which is the SAME shape as bit order on binary traffic, and gets the
+-- same answer: say nothing rather than guess. Pairs that sit near neither are ignored as gaps rather
+-- than voted with, and a verdict needs both a quorum of clean pairs and a majority among them.
+sdec.ua_stop_tol   = sdec.ua_stop_tol   or 0.25   -- bits either side of 0 or 1 to count a pair
+sdec.ua_stop_min   = sdec.ua_stop_min   or 20     -- clean adjacent pairs before any verdict
+sdec.ua_stop_frac  = sdec.ua_stop_frac  or 0.8    -- share of them that must agree
+
+-- -> 1, 2, or nil when the capture cannot say. Reads the result only; decodes nothing.
+function sdec.ua_stopseen(r, T)
+  if r == nil or T == nil or T <= 0 then return nil end
+  if r.tpos == nil or r.nf == nil or r.nf < 3 then return nil end
+  if r.nbits == nil then return nil end
+  local parbits = 0
+  if r.par ~= nil and r.par ~= sdec.PAR_NONE then parbits = 1 end
+  -- The frame the DECODE used, which is where the 1 comes from: the spacing is measured against what
+  -- was actually consumed, not against what is being tested for.
+  local used = 1 + r.nbits + parbits + 1
+  local n1, n2, i = 0, 0, nil
+  for i = 1, r.nf - 1 do
+    -- Both ends clean, or the spacing is measured from a frame whose start was never located properly.
+    if r.errs[i] == nil and r.errs[i + 1] == nil
+       and r.tpos[i] ~= nil and r.tpos[i + 1] ~= nil then
+      local extra = (r.tpos[i + 1] - r.tpos[i]) / T - used
+      if extra > -sdec.ua_stop_tol and extra < sdec.ua_stop_tol then
+        n1 = n1 + 1
+      elseif extra > 1 - sdec.ua_stop_tol and extra < 1 + sdec.ua_stop_tol then
+        n2 = n2 + 1
+      end
+    end
+  end
+  local tot = n1 + n2
+  if tot < sdec.ua_stop_min then return nil end
+  if n2 >= tot * sdec.ua_stop_frac then return 2 end
+  if n1 >= tot * sdec.ua_stop_frac then return 1 end
+  return nil
+end
+
 -- BIT ORDER IS DECIDED ON CONTENT, BECAUSE FRAMING CANNOT SEE IT AT ALL, and that limit is the whole
 -- design of this pass rather than a caveat on it. The start bit, the stop bit and the parity bit are
 -- every one of them order-invariant -- parity is a popcount of the assembled value -- so an MSB-first
@@ -1539,6 +1595,9 @@ function sdec.decode_from(rd, n)
     -- above settled on, so running it earlier would trial the bit order against a format still due to
     -- change underneath it.
     r = sdec.ua_refine_bitorder(r, rd, n, T)
+    -- REPORTED, NOT APPLIED: nstop_seen names what the line uses and r.nstop stays what the decode
+    -- used, which is why this reads the result instead of returning a new one.
+    if r ~= nil then r.nstop_seen = sdec.ua_stopseen(r, T) end
     sdec.ua_note_fmt(r, anames, na)
   end
 
@@ -1674,7 +1733,9 @@ function sdec.fmt_text()
   if r ~= nil then
     local o = nil
     if r.msb then o = 'M' end
-    return sdec.ua_fmt_name(r.nbits, r.par, r.nstop, o)
+    -- nstop_seen when the capture could say, r.nstop otherwise. The decode used r.nstop either way --
+    -- see ua_stopseen for why the two are deliberately allowed to differ.
+    return sdec.ua_fmt_name(r.nbits, r.par, r.nstop_seen or r.nstop, o)
   end
   if sdec.force_nbits ~= nil then
     local o = nil

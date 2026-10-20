@@ -3,7 +3,7 @@ loadscript Serial_Decode
 -- $Product: DMM6500, DAQ6510, DMM7510, SMU2461
 -- $Tag: Serial, UART, Decode, Digitize
 -- $Description: Decodes an asynchronous serial line with the instrument's own digitizer: recovers baud rate, frame format and bytes, shows them as text or hex, and saves bytes to USB key. Everything auto-detects; everything can be locked.
--- $Version: 1.60
+-- $Version: 1.70
 -- $Requires: 1.7.0
 -- $Author: Ian Ameline
 -- $License: MIT
@@ -3268,6 +3268,37 @@ function sdec.ua_refine_parity(r, rd, n, T)
   return r
 end
 
+sdec.ua_stop_tol   = sdec.ua_stop_tol   or 0.25   -- bits either side of 0 or 1 to count a pair
+sdec.ua_stop_min   = sdec.ua_stop_min   or 20     -- clean adjacent pairs before any verdict
+sdec.ua_stop_frac  = sdec.ua_stop_frac  or 0.8    -- share of them that must agree
+
+-- -> 1, 2, or nil when the capture cannot say. Reads the result only; decodes nothing.
+function sdec.ua_stopseen(r, T)
+  if r == nil or T == nil or T <= 0 then return nil end
+  if r.tpos == nil or r.nf == nil or r.nf < 3 then return nil end
+  if r.nbits == nil then return nil end
+  local parbits = 0
+  if r.par ~= nil and r.par ~= sdec.PAR_NONE then parbits = 1 end
+  local used = 1 + r.nbits + parbits + 1
+  local n1, n2, i = 0, 0, nil
+  for i = 1, r.nf - 1 do
+    if r.errs[i] == nil and r.errs[i + 1] == nil
+       and r.tpos[i] ~= nil and r.tpos[i + 1] ~= nil then
+      local extra = (r.tpos[i + 1] - r.tpos[i]) / T - used
+      if extra > -sdec.ua_stop_tol and extra < sdec.ua_stop_tol then
+        n1 = n1 + 1
+      elseif extra > 1 - sdec.ua_stop_tol and extra < 1 + sdec.ua_stop_tol then
+        n2 = n2 + 1
+      end
+    end
+  end
+  local tot = n1 + n2
+  if tot < sdec.ua_stop_min then return nil end
+  if n2 >= tot * sdec.ua_stop_frac then return 2 end
+  if n1 >= tot * sdec.ua_stop_frac then return 1 end
+  return nil
+end
+
 sdec.msb_textmin  = sdec.msb_textmin  or 8     -- letters MSB must find before it may win
 sdec.msb_margin   = sdec.msb_margin   or 2.0   -- and the multiple of LSB's count it must clear
 sdec.msb_distinct = sdec.msb_distinct or 4     -- and how many DIFFERENT letters, so a mirror cannot
@@ -3450,6 +3481,7 @@ function sdec.decode_from(rd, n)
     r = sdec.ua_refine_width(r, rd, n, T)
     r = sdec.ua_refine_parity(r, rd, n, T)
     r = sdec.ua_refine_bitorder(r, rd, n, T)
+    if r ~= nil then r.nstop_seen = sdec.ua_stopseen(r, T) end
     sdec.ua_note_fmt(r, anames, na)
   end
 
@@ -3545,7 +3577,7 @@ function sdec.fmt_text()
   if r ~= nil then
     local o = nil
     if r.msb then o = 'M' end
-    return sdec.ua_fmt_name(r.nbits, r.par, r.nstop, o)
+    return sdec.ua_fmt_name(r.nbits, r.par, r.nstop_seen or r.nstop, o)
   end
   if sdec.force_nbits ~= nil then
     local o = nil

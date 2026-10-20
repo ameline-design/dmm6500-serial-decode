@@ -1,6 +1,6 @@
 # Serial Decode — user manual
 
-**Ian Ameline** · version 1.60 · MIT licence
+**Ian Ameline** · version 1.70 · MIT licence
 
 This app turns a Keithley bench instrument into a serial decoder. Clip onto a UART line, press
 **Capture**, and read the bytes on the front panel. You do not have to tell it the baud rate, the frame
@@ -95,7 +95,7 @@ Along the top are the things the app worked out about your line:
 | Field | Meaning |
 |---|---|
 | **BAUD** | The rate it found. A padlock means it is locked and will not be re-detected. |
-| **FORMAT** | Data bits, parity, stop bits — `8N1`, `7E1` and so on. When the decode used **MSB-first** bit order the cell gains an `M` — `8N1M` — and an unmarked `8N1` means LSB first, which is what almost every line is. |
+| **FORMAT** | Data bits, parity, stop bits — `8N1`, `7E1` and so on. When the decode used **MSB-first** bit order the cell gains an `M` — `8N1M` — and an unmarked `8N1` means LSB first, which is what almost every line is. **The stop-bit count is what the capture could show**, which is not always what the line sends: a second stop bit is one more bit time of mark, so it is readable from the spacing between frames only when the device sends them back to back. On a gapless stream a two-stop line reads `8N2`; where the device pauses between bytes, or the capture holds too few frames to be sure, the cell stays `8N1` rather than guess. Either way the **bytes are the same** — a second stop bit is idle, and idle between frames is always tolerated. |
 | **IDLE** | What the line rests at: `HIGH` for CMOS/TTL, `LOW` for an RS-232-style line. |
 | **LOGIC** | The family it looks like, e.g. `3V3 CMOS`, `5V TTL`. |
 | **THRESH** | The voltage it is using to tell 0 from 1. |
