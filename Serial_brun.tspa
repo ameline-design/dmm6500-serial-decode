@@ -3525,22 +3525,33 @@ function sdec.decode()
 end
 
 -- Presentation
--- "8N1", "7E2", ... from explicit fields, so a candidate can be named as well as the chosen format.
-function sdec.ua_fmt_name(nbits, par, nstop)
+--   [...]
+-- and parities and a bit-order letter on each would be noise. fmt_text() passes it, which is the one
+-- place the operator reads the format actually in use: the FORMAT cell, the status notes and the
+-- header of every message written to the key.
+function sdec.ua_fmt_name(nbits, par, nstop, order)
   local p = 'N'
   if par == sdec.PAR_EVEN then p = 'E' end
   if par == sdec.PAR_ODD  then p = 'O' end
-  return string.format('%d%s%d', nbits or 0, tostring(p), nstop or 0)
+  local s = string.format('%d%s%d', nbits or 0, tostring(p), nstop or 0)
+  if order ~= nil then s = s .. order end
+  return s
 end
 
 -- Falls back to the forced format, so a streaming capture names the format it is decoding with: the
 -- modes that produce a file have no sdec.res, and '--' is wrong for the two values the operator set.
 function sdec.fmt_text()
   local r = sdec.res
-  if r ~= nil then return sdec.ua_fmt_name(r.nbits, r.par, r.nstop) end
+  if r ~= nil then
+    local o = nil
+    if r.msb then o = 'M' end
+    return sdec.ua_fmt_name(r.nbits, r.par, r.nstop, o)
+  end
   if sdec.force_nbits ~= nil then
+    local o = nil
+    if sdec.force_msb == true then o = 'M' end
     return sdec.ua_fmt_name(sdec.force_nbits, sdec.force_par or sdec.PAR_NONE,
-                            sdec.force_nstop or 1)
+                            sdec.force_nstop or 1, o)
   end
   return '--'
 end
@@ -4487,7 +4498,7 @@ sdec.ui_lab_y = 14
 sdec.ui_val_y = 32
 sdec.ui_fields = {
   {lab = 'BAUD',   x = 8,   c = 0x00DCFF, med = true, dy = 2, wid = '115200'},
-  {lab = 'FORMAT', x = 115, c = 0x00DCFF, med = true, dy = 2, labdx = -4, wid = '8N1'},
+  {lab = 'FORMAT', x = 115, c = 0x00DCFF, med = true, dy = 2, labdx = -4, wid = '8N1M'},
   {lab = 'IDLE',   x = 188, c = 0xFFFFFF, wid = 'HIGH'},
   {lab = 'LOGIC',  x = 241, c = 0xFFFFFF, wid = '3V3 CMOS'},
   {lab = 'THRESH', x = 334, c = 0xFFFFFF, wid = '-6.00 V'},
@@ -5710,10 +5721,11 @@ function sdec.ui_build(hold)
     {x = 526, w = 112, t = 'Save',       e = 'sdec.save', hide = 'ui_savebtn'},
     {x = 662, w = 112, t = 'Options',    e = 'sdec.options'},
   }
-  local pbw, lbw = 56, 140
+  local pbw, lbw, mbw = 56, 140, 80
   local pdef = {
     {x = 785 - pbw, y = 58,  w = pbw, t = 'Up',        e = 'sdec.page_prev',  pg = true},
-    {x = 785 - lbw, y = 160, w = lbw, t = 'Lock Rate', e = 'sdec.lock_toggle'},
+    {x = 785 - mbw, y = 126, w = mbw, t = 'Msgs',      e = 'sdec.msgs_show',  msg = true},
+    {x = 785 - lbw, y = 194, w = lbw, t = 'Lock Rate', e = 'sdec.lock_toggle'},
     {x = 785 - pbw, y = 262, w = pbw, t = 'Dn',        e = 'sdec.page_next',  pg = true},
   }
   local pk, npg = nil, 0
@@ -5728,6 +5740,8 @@ function sdec.ui_build(hold)
       if pd.pg then
         npg = npg + 1
         sdec.ui_pgbtn[npg] = pb
+      elseif pd.msg then
+        sdec.ui_msgbtn = pb
       else
         sdec.ui_lockbtn = pb
       end
@@ -6197,7 +6211,152 @@ function sdec.opt_pick(tbl, idx)
   return tbl[i]
 end
 
--- Delete every options-screen object and nil its handle.
+sdec.msg_nrow   = 21
+sdec.msg_row_y0 = 8
+sdec.msg_row_dy = 18
+sdec.msg_cols   = 80
+sdec.msg_page   = 0
+sdec.msg_btn_y  = sdec.ui_btn_y
+
+-- Pages this result needs at this screen's geometry. Its own arithmetic, not ui_npages().
+function sdec.msg_per_page()
+  return sdec.msg_cols * sdec.msg_nrow
+end
+
+function sdec.msg_npages()
+  local n = 0
+  if sdec.res ~= nil then n = sdec.res.nf or 0 end
+  if n <= 0 then return 1 end
+  local per = sdec.msg_per_page()
+  return math.floor((n + per - 1) / per)
+end
+
+-- Delete every object this screen owns and nil its handles, in creation order's reverse: children
+-- before the screen, each visited exactly once. The object-lifetime rule -- delete, nil, then create.
+function sdec.destroy_msgs()
+  local i
+  if sdec.msg_row ~= nil then
+    for i = 1, table.getn(sdec.msg_row) do sdec.del_obj(sdec.msg_row[i]) end
+  end
+  sdec.msg_row = nil
+  sdec.del_obj(sdec.msg_ind)
+  sdec.del_obj(sdec.msg_up)
+  sdec.del_obj(sdec.msg_dn)
+  sdec.del_obj(sdec.msg_back)
+  sdec.msg_ind, sdec.msg_up, sdec.msg_dn, sdec.msg_back = nil, nil, nil, nil
+  sdec.del_obj(sdec.msgscr)
+  sdec.msgscr = nil
+  return true
+end
+
+-- Build it. -> the screen handle, or nil with sdec.msg_why set. No raise and no pcall: display.create
+-- returns nil when the pool is gone and posts nothing, so the refusal is a return value to check.
+function sdec.build_msgs()
+  sdec.destroy_msgs()
+  local create = display.create
+  sdec.msg_why = nil
+  sdec.msgscr = create(display.ROOT, display.OBJ_SCREEN, 'SERIAL DECODE MESSAGES')
+  if sdec.msgscr == nil then
+    sdec.msg_why = 'display object pool exhausted -- power cycle the instrument'
+    return nil
+  end
+  local small, left = display.FONT_SMALL, display.JUST_LEFT
+  sdec.msg_row = {}
+  local i
+  for i = 1, sdec.msg_nrow do
+    local y = sdec.msg_row_y0 + (i - 1) * sdec.msg_row_dy
+    local h = create(sdec.msgscr, display.OBJ_TEXT, sdec.ui_x, y, '', sdec.ui_c_data, small, left)
+    if h == nil then
+      sdec.msg_nrow = i - 1
+      break
+    end
+    sdec.msg_row[i] = h
+  end
+  if sdec.msg_nrow < 1 then
+    sdec.destroy_msgs()
+    sdec.msg_why = 'no display objects left for a message row'
+    return nil
+  end
+  sdec.msg_ind = create(sdec.msgscr, display.OBJ_TEXT, sdec.ui_x,
+                        sdec.msg_btn_y - sdec.msg_row_dy - 4, '', sdec.ui_c_pgword, small, left)
+  local bw = 110
+  sdec.msg_up   = create(sdec.msgscr, display.OBJ_BUTTON, 8,   sdec.msg_btn_y, 'Up',   bw)
+  sdec.msg_dn   = create(sdec.msgscr, display.OBJ_BUTTON, 132, sdec.msg_btn_y, 'Dn',   bw)
+  sdec.msg_back = create(sdec.msgscr, display.OBJ_BUTTON, 662, sdec.msg_btn_y, 'Back', 112)
+  if sdec.msg_up   ~= nil then display.setevent(sdec.msg_up,   display.EVENT_PRESS,
+                                                'sdec.guard(sdec.msgs_prev)') end
+  if sdec.msg_dn   ~= nil then display.setevent(sdec.msg_dn,   display.EVENT_PRESS,
+                                                'sdec.guard(sdec.msgs_next)') end
+  if sdec.msg_back ~= nil then display.setevent(sdec.msg_back, display.EVENT_PRESS,
+                                                'sdec.guard(sdec.msgs_close)') end
+  return sdec.msgscr
+end
+
+-- Write the current page into the rows. Separate from the build so paging costs no allocation.
+function sdec.msgs_refresh()
+  if sdec.msg_row == nil then return false end
+  local npg = sdec.msg_npages()
+  if sdec.msg_page >= npg then sdec.msg_page = npg - 1 end
+  if sdec.msg_page < 0 then sdec.msg_page = 0 end
+  local base = sdec.msg_page * sdec.msg_per_page()
+  local nf = 0
+  if sdec.res ~= nil then nf = sdec.res.nf or 0 end
+  local i
+  for i = 1, sdec.msg_nrow do
+    local i0 = base + (i - 1) * sdec.msg_cols + 1
+    local s = ''
+    if i0 <= nf then s = sdec.ua_text_line(i0, sdec.msg_cols) end
+    display.settext(sdec.msg_row[i], s)
+  end
+  if sdec.msg_ind ~= nil then
+    local last = base + sdec.msg_per_page()
+    if last > nf then last = nf end
+    local shown = base + 1
+    if nf < 1 then shown = 0 end
+    display.settext(sdec.msg_ind,
+                    string.format('page %d of %d   bytes %d-%d of %d',
+                                  sdec.msg_page + 1, npg, shown, last, nf))
+  end
+  return true
+end
+
+-- Open it, from the Msgs button in the margin.
+function sdec.msgs_show()
+  if sdec.build_msgs() == nil then
+    sdec.lasterr = sdec.msg_why or 'could not build the messages screen'
+    return false
+  end
+  sdec.msg_page = 0
+  if sdec.ui_page ~= nil and sdec.ui_page > 0 then
+    local mb = sdec.ui_page * (sdec.ui_bytes_per_page() or 0)
+    local per = sdec.msg_per_page()
+    if per > 0 then sdec.msg_page = math.floor(mb / per) end
+  end
+  sdec.msgs_refresh()
+  display.changescreen(sdec.msgscr)
+  return true
+end
+
+function sdec.msgs_next()
+  if sdec.msg_page + 1 < sdec.msg_npages() then sdec.msg_page = sdec.msg_page + 1 end
+  return sdec.msgs_refresh()
+end
+
+function sdec.msgs_prev()
+  if sdec.msg_page > 0 then sdec.msg_page = sdec.msg_page - 1 end
+  return sdec.msgs_refresh()
+end
+
+-- Back to the main screen, and the order is the object-lifetime rule: switch away FIRST, then delete.
+-- Deleting the screen while the panel is showing it is the case the front panel cannot recover from.
+function sdec.msgs_close()
+  local to = sdec.ui_scr
+  if to == nil then to = display.SCREEN_HOME end
+  display.changescreen(to)
+  sdec.destroy_msgs()
+  return true
+end
+
 function sdec.destroy_options()
   if sdec.optscr ~= nil then
     local scr = sdec.ui_scr
@@ -9704,11 +9863,16 @@ function brun.eventcount()
   return n
 end
 
+-- Kept in step with sdec.fmt_text(), which marks MSB and leaves LSB bare: this is the record's `fmt`
+-- column and judge_bench parses it, so an 'M' here must mean what it means on the panel. No
+-- historical value moves, because no capture before 2026-10-20 could be MSB.
 function brun.fmtname(res)
   if res == nil or res.nbits == nil then return '' end
   local p = 'N'
   if res.par == sdec.PAR_EVEN then p = 'E' elseif res.par == sdec.PAR_ODD then p = 'O' end
-  return string.format('%d%s%d', res.nbits, p, res.nstop or 1)
+  local s = string.format('%d%s%d', res.nbits, p, res.nstop or 1)
+  if res.msb then s = s .. 'M' end
+  return s
 end
 
 function brun.flagcount(res)

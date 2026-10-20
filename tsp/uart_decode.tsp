@@ -1649,21 +1649,38 @@ end
 -- Presentation
 -- ============================================================================
 -- "8N1", "7E2", ... from explicit fields, so a candidate can be named as well as the chosen format.
-function sdec.ua_fmt_name(nbits, par, nstop)
+-- `order` is 'L' or 'M' and is OPT-IN: nil appends nothing. The callers that name ALTERNATIVE formats
+-- in a note -- ua_alts and the 8N1-also-fits sentence -- pass nothing, because those compare widths
+-- and parities and a bit-order letter on each would be noise. fmt_text() passes it, which is the one
+-- place the operator reads the format actually in use: the FORMAT cell, the status notes and the
+-- header of every message written to the key.
+function sdec.ua_fmt_name(nbits, par, nstop, order)
   local p = 'N'
   if par == sdec.PAR_EVEN then p = 'E' end
   if par == sdec.PAR_ODD  then p = 'O' end
-  return string.format('%d%s%d', nbits or 0, tostring(p), nstop or 0)
+  local s = string.format('%d%s%d', nbits or 0, tostring(p), nstop or 0)
+  if order ~= nil then s = s .. order end
+  return s
 end
 
 -- Falls back to the forced format, so a streaming capture names the format it is decoding with: the
 -- modes that produce a file have no sdec.res, and '--' is wrong for the two values the operator set.
 function sdec.fmt_text()
   local r = sdec.res
-  if r ~= nil then return sdec.ua_fmt_name(r.nbits, r.par, r.nstop) end
+  -- THE BIT ORDER IS PART OF THE FORMAT, so it is named here: 8N1L or 8N1M. Taken from the result
+  -- rather than from force_msb, because under Auto the setting is nil and the DECODE is what decided.
+  -- r.msb is set only when ua_refine_bitorder flipped, so nil means LSB -- which is a decision and
+  -- not an absence, Auto resolving to LSB on every tie.
+  if r ~= nil then
+    local o = nil
+    if r.msb then o = 'M' end
+    return sdec.ua_fmt_name(r.nbits, r.par, r.nstop, o)
+  end
   if sdec.force_nbits ~= nil then
+    local o = nil
+    if sdec.force_msb == true then o = 'M' end
     return sdec.ua_fmt_name(sdec.force_nbits, sdec.force_par or sdec.PAR_NONE,
-                            sdec.force_nstop or 1)
+                            sdec.force_nstop or 1, o)
   end
   return '--'
 end

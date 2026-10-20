@@ -30,7 +30,7 @@ sdec.ui_val_y = 32
 sdec.ui_fields = {
   -- `med` keeps FONT_MEDIUM, `wid` is the widest value the column is sized for, `dy` drops it n px.
   {lab = 'BAUD',   x = 8,   c = 0x00DCFF, med = true, dy = 2, wid = '115200'},
-  {lab = 'FORMAT', x = 115, c = 0x00DCFF, med = true, dy = 2, labdx = -4, wid = '8N1'},
+  {lab = 'FORMAT', x = 115, c = 0x00DCFF, med = true, dy = 2, labdx = -4, wid = '8N1M'},
   {lab = 'IDLE',   x = 188, c = 0xFFFFFF, wid = 'HIGH'},
   {lab = 'LOGIC',  x = 241, c = 0xFFFFFF, wid = '3V3 CMOS'},
   {lab = 'THRESH', x = 334, c = 0xFFFFFF, wid = '-6.00 V'},
@@ -1559,13 +1559,23 @@ function sdec.ui_build(hold)
     {x = 526, w = 112, t = 'Save',       e = 'sdec.save', hide = 'ui_savebtn'},
     {x = 662, w = 112, t = 'Options',    e = 'sdec.options'},
   }
-  -- Up, Lock Rate, Dn, in that vertical order, each hiding itself when it has nothing to do. A
+  -- Up, Msgs, Lock Rate, Dn, in that vertical order, each hiding itself when it has nothing to do. A
   -- paging control is not optional, a 32 kB capture being 137 pages, and narrowing these does not
   -- widen the text view -- docs/MEASUREMENTS.md, 'The six bottom buttons and the three in the margin'.
-  local pbw, lbw = 56, 140
+  --
+  -- FOUR NOW, AND THE SPACING HAD TO CHANGE TO FIT. The old three sat at 58 / 160 / 262, and a button
+  -- is 58 px tall, so the gap below Up was 160 - (58 + 58) = 44 px and could not take one. The margin
+  -- runs 58..320, which is 262 px for 4 x 58 = 232, so 58 / 126 / 194 / 262 spaces them by 10 px and
+  -- leaves Up and Dn exactly where they were. Msgs lands directly under Up, which is where the
+  -- operator asked for it.
+  -- mbw is its own width and not pbw: the font is proportional and 'Msgs' measures 64 px against the
+  -- 56 px paging face, so sharing the width clipped the label. Caught by the label-fit check, which
+  -- is the only reason this is not a defect on the glass.
+  local pbw, lbw, mbw = 56, 140, 80
   local pdef = {
     {x = 785 - pbw, y = 58,  w = pbw, t = 'Up',        e = 'sdec.page_prev',  pg = true},
-    {x = 785 - lbw, y = 160, w = lbw, t = 'Lock Rate', e = 'sdec.lock_toggle'},
+    {x = 785 - mbw, y = 126, w = mbw, t = 'Msgs',      e = 'sdec.msgs_show',  msg = true},
+    {x = 785 - lbw, y = 194, w = lbw, t = 'Lock Rate', e = 'sdec.lock_toggle'},
     {x = 785 - pbw, y = 262, w = pbw, t = 'Dn',        e = 'sdec.page_next',  pg = true},
   }
   local pk, npg = nil, 0
@@ -1580,6 +1590,10 @@ function sdec.ui_build(hold)
       if pd.pg then
         npg = npg + 1
         sdec.ui_pgbtn[npg] = pb
+      elseif pd.msg then
+        -- Held by name as well as by index, for the reason the `hide` entries below are: the refresh
+        -- reaches it to hide it when there is nothing decoded, and ui_btn is positional.
+        sdec.ui_msgbtn = pb
       else
         sdec.ui_lockbtn = pb
       end
@@ -2141,6 +2155,192 @@ function sdec.opt_pick(tbl, idx)
 end
 
 -- Delete every options-screen object and nil its handle.
+-- ============================================================================
+-- The MESSAGES screen: every decoded byte, on a screen of its own
+-- ============================================================================
+-- WHAT THIS IS FOR, from the field on 2026-10-20: "messages are displayed in the app, but I don't
+-- know how to view them all." The bytes were never truncated -- the main screen pages through all of
+-- them with Up and Dn in the margin -- but nothing on the glass says so, and an operator who does not
+-- find two 56 px buttons concludes the app shows a fragment. So this is a DISCOVERABILITY fix first
+-- and a capacity one second.
+--
+-- IT IS ITS OWN SCREEN WITH ITS OWN PAGING, deliberately not a wider ui_nrow. The main screen's page
+-- size is ui_bytes_per_page(), which multiplies the view's `cols` by ui_nrow, and ui_nrow also sizes
+-- the scrollbar segment list "BY CONSTRUCTION". Changing it per screen would ripple through the
+-- refresh, the scrollbar and the page arithmetic for a layout difference, so this screen reads
+-- sdec.res directly through ua_text_line() and keeps its own page number.
+--
+-- BUILT ON DEMAND AND DESTROYED ON BACK, which is the pattern the Options screen already follows and
+-- the only affordable one: the display pool is 463 objects and the main screen spends about 75 on its
+-- rows alone. This screen costs 21 rows + 3 buttons + a counter + the screen, so nothing is held
+-- while the operator is not looking at it.
+--
+-- 21 ROWS AGAINST THE MAIN SCREEN'S 15, which is the whole capacity gain: there are no status cells
+-- to clear, so the rows start at 8 instead of 71. At 80 characters -- the figure ui_views already
+-- uses for the TEXT view, so it is measured rather than chosen -- that is 1680 bytes a page against
+-- 1200.
+sdec.msg_nrow   = 21
+sdec.msg_row_y0 = 8
+sdec.msg_row_dy = 18
+sdec.msg_cols   = 80
+sdec.msg_page   = 0
+-- The same row the main screen's buttons use. 400 was tried and the mock refused it: a button is
+-- 58 px and the content area is 431, so anything past 373 is clipped off the bottom of the panel.
+sdec.msg_btn_y  = sdec.ui_btn_y
+
+-- Pages this result needs at this screen's geometry. Its own arithmetic, not ui_npages().
+function sdec.msg_per_page()
+  return sdec.msg_cols * sdec.msg_nrow
+end
+
+function sdec.msg_npages()
+  local n = 0
+  if sdec.res ~= nil then n = sdec.res.nf or 0 end
+  if n <= 0 then return 1 end
+  local per = sdec.msg_per_page()
+  return math.floor((n + per - 1) / per)
+end
+
+-- Delete every object this screen owns and nil its handles, in creation order's reverse: children
+-- before the screen, each visited exactly once. The object-lifetime rule -- delete, nil, then create.
+function sdec.destroy_msgs()
+  local i
+  if sdec.msg_row ~= nil then
+    for i = 1, table.getn(sdec.msg_row) do sdec.del_obj(sdec.msg_row[i]) end
+  end
+  sdec.msg_row = nil
+  sdec.del_obj(sdec.msg_ind)
+  sdec.del_obj(sdec.msg_up)
+  sdec.del_obj(sdec.msg_dn)
+  sdec.del_obj(sdec.msg_back)
+  sdec.msg_ind, sdec.msg_up, sdec.msg_dn, sdec.msg_back = nil, nil, nil, nil
+  -- The screen LAST, for the reason ui_destroy states: deleting the screen the panel is showing
+  -- leaves it displaying a dead object, which the front panel cannot recover from.
+  sdec.del_obj(sdec.msgscr)
+  sdec.msgscr = nil
+  return true
+end
+
+-- Build it. -> the screen handle, or nil with sdec.msg_why set. No raise and no pcall: display.create
+-- returns nil when the pool is gone and posts nothing, so the refusal is a return value to check.
+function sdec.build_msgs()
+  sdec.destroy_msgs()
+  local create = display.create
+  sdec.msg_why = nil
+  sdec.msgscr = create(display.ROOT, display.OBJ_SCREEN, 'SERIAL DECODE MESSAGES')
+  if sdec.msgscr == nil then
+    sdec.msg_why = 'display object pool exhausted -- power cycle the instrument'
+    return nil
+  end
+  local small, left = display.FONT_SMALL, display.JUST_LEFT
+  sdec.msg_row = {}
+  local i
+  for i = 1, sdec.msg_nrow do
+    local y = sdec.msg_row_y0 + (i - 1) * sdec.msg_row_dy
+    local h = create(sdec.msgscr, display.OBJ_TEXT, sdec.ui_x, y, '', sdec.ui_c_data, small, left)
+    -- A short ladder is not a failure: fewer rows means a smaller page, and msg_nrow is corrected to
+    -- what was actually built so the paging cannot index a row that is not there.
+    if h == nil then
+      sdec.msg_nrow = i - 1
+      break
+    end
+    sdec.msg_row[i] = h
+  end
+  if sdec.msg_nrow < 1 then
+    sdec.destroy_msgs()
+    sdec.msg_why = 'no display objects left for a message row'
+    return nil
+  end
+  sdec.msg_ind = create(sdec.msgscr, display.OBJ_TEXT, sdec.ui_x,
+                        sdec.msg_btn_y - sdec.msg_row_dy - 4, '', sdec.ui_c_pgword, small, left)
+  local bw = 110
+  sdec.msg_up   = create(sdec.msgscr, display.OBJ_BUTTON, 8,   sdec.msg_btn_y, 'Up',   bw)
+  sdec.msg_dn   = create(sdec.msgscr, display.OBJ_BUTTON, 132, sdec.msg_btn_y, 'Dn',   bw)
+  sdec.msg_back = create(sdec.msgscr, display.OBJ_BUTTON, 662, sdec.msg_btn_y, 'Back', 112)
+  -- Each press goes through sdec.guard, as every other button on every screen does.
+  if sdec.msg_up   ~= nil then display.setevent(sdec.msg_up,   display.EVENT_PRESS,
+                                                'sdec.guard(sdec.msgs_prev)') end
+  if sdec.msg_dn   ~= nil then display.setevent(sdec.msg_dn,   display.EVENT_PRESS,
+                                                'sdec.guard(sdec.msgs_next)') end
+  if sdec.msg_back ~= nil then display.setevent(sdec.msg_back, display.EVENT_PRESS,
+                                                'sdec.guard(sdec.msgs_close)') end
+  return sdec.msgscr
+end
+
+-- Write the current page into the rows. Separate from the build so paging costs no allocation.
+function sdec.msgs_refresh()
+  if sdec.msg_row == nil then return false end
+  local npg = sdec.msg_npages()
+  if sdec.msg_page >= npg then sdec.msg_page = npg - 1 end
+  if sdec.msg_page < 0 then sdec.msg_page = 0 end
+  local base = sdec.msg_page * sdec.msg_per_page()
+  local nf = 0
+  if sdec.res ~= nil then nf = sdec.res.nf or 0 end
+  local i
+  for i = 1, sdec.msg_nrow do
+    local i0 = base + (i - 1) * sdec.msg_cols + 1
+    local s = ''
+    if i0 <= nf then s = sdec.ua_text_line(i0, sdec.msg_cols) end
+    display.settext(sdec.msg_row[i], s)
+  end
+  if sdec.msg_ind ~= nil then
+    -- The byte range as well as the page, because 'page 2 of 9' does not tell an operator which
+    -- bytes they are looking at and a message is located by offset.
+    local last = base + sdec.msg_per_page()
+    if last > nf then last = nf end
+    local shown = base + 1
+    if nf < 1 then shown = 0 end
+    display.settext(sdec.msg_ind,
+                    string.format('page %d of %d   bytes %d-%d of %d',
+                                  sdec.msg_page + 1, npg, shown, last, nf))
+  end
+  return true
+end
+
+-- Open it, from the Msgs button in the margin.
+function sdec.msgs_show()
+  if sdec.build_msgs() == nil then
+    -- Nothing to switch to, so say why on the screen the operator is already looking at rather than
+    -- failing silently. ui_note is where every other refusal lands.
+    sdec.lasterr = sdec.msg_why or 'could not build the messages screen'
+    return false
+  end
+  -- Opened at the page the main screen is showing, so the two views agree on where the operator is.
+  sdec.msg_page = 0
+  if sdec.ui_page ~= nil and sdec.ui_page > 0 then
+    local mb = sdec.ui_page * (sdec.ui_bytes_per_page() or 0)
+    local per = sdec.msg_per_page()
+    if per > 0 then sdec.msg_page = math.floor(mb / per) end
+  end
+  sdec.msgs_refresh()
+  display.changescreen(sdec.msgscr)
+  return true
+end
+
+function sdec.msgs_next()
+  if sdec.msg_page + 1 < sdec.msg_npages() then sdec.msg_page = sdec.msg_page + 1 end
+  return sdec.msgs_refresh()
+end
+
+function sdec.msgs_prev()
+  if sdec.msg_page > 0 then sdec.msg_page = sdec.msg_page - 1 end
+  return sdec.msgs_refresh()
+end
+
+-- Back to the main screen, and the order is the object-lifetime rule: switch away FIRST, then delete.
+-- Deleting the screen while the panel is showing it is the case the front panel cannot recover from.
+function sdec.msgs_close()
+  -- SCREEN_HOME when there is no main screen to go back to, and that case is reachable: this was a
+  -- bare changescreen(sdec.ui_scr), which refused on a nil handle and left the panel on a screen
+  -- about to be deleted -- the one state the front panel cannot recover from. Found by the mock's
+  -- refusal counter, which records what a raise would have had swallowed.
+  local to = sdec.ui_scr
+  if to == nil then to = display.SCREEN_HOME end
+  display.changescreen(to)
+  sdec.destroy_msgs()
+  return true
+end
+
 function sdec.destroy_options()
   if sdec.optscr ~= nil then
     -- Switch away before deleting, or the firmware is left showing a deleted screen.

@@ -575,11 +575,16 @@ function brun.eventcount()
   return n
 end
 
+-- Kept in step with sdec.fmt_text(), which marks MSB and leaves LSB bare: this is the record's `fmt`
+-- column and judge_bench parses it, so an 'M' here must mean what it means on the panel. No
+-- historical value moves, because no capture before 2026-10-20 could be MSB.
 function brun.fmtname(res)
   if res == nil or res.nbits == nil then return '' end
   local p = 'N'
   if res.par == sdec.PAR_EVEN then p = 'E' elseif res.par == sdec.PAR_ODD then p = 'O' end
-  return string.format('%d%s%d', res.nbits, p, res.nstop or 1)
+  local s = string.format('%d%s%d', res.nbits, p, res.nstop or 1)
+  if res.msb then s = s .. 'M' end
+  return s
 end
 
 function brun.flagcount(res)

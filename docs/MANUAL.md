@@ -95,7 +95,7 @@ Along the top are the things the app worked out about your line:
 | Field | Meaning |
 |---|---|
 | **BAUD** | The rate it found. A padlock means it is locked and will not be re-detected. |
-| **FORMAT** | Data bits, parity, stop bits — `8N1`, `7E1` and so on. |
+| **FORMAT** | Data bits, parity, stop bits — `8N1`, `7E1` and so on. When the decode used **MSB-first** bit order the cell gains an `M` — `8N1M` — and an unmarked `8N1` means LSB first, which is what almost every line is. |
 | **IDLE** | What the line rests at: `HIGH` for CMOS/TTL, `LOW` for an RS-232-style line. |
 | **LOGIC** | The family it looks like, e.g. `3V3 CMOS`, `5V TTL`. |
 | **THRESH** | The voltage it is using to tell 0 from 1. |
@@ -207,6 +207,7 @@ away.
 | **Save** | Write a full report of what is on screen to the USB key. |
 | **Options** | The settings screen. |
 | **Up** / **Dn** | Right-hand edge. Only appear when there is more than one page. Once you press either, **page N of M** appears at the right of the note row — and stays for later captures, which is why some figures here show it on a screen nobody has just paged. |
+| **Msgs** | Right-hand edge, directly below **Up**. Opens a screen of its own showing the decoded bytes and nothing else — no status cells, so it fits **21 rows of 80 characters, 1680 bytes a page** against the main screen's 1200. It has its own **Up** / **Dn** and a **Back**, and the counter names the byte range as well as the page, so you can tell *where* in the message you are rather than only which page. It opens at whatever page the main screen was showing. |
 | **Lock Rate** | Right-hand edge. Only appears when the rate is not locked. |
 
 Every button responds immediately except the ones that take a capture. **Capture takes about 1.7

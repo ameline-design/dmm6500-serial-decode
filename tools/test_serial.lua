@@ -6890,6 +6890,101 @@ end
 test_bitorder()
 
 -- ===========================================================================
+print('\nthe Messages screen -- every decoded byte, on a screen of its own')
+-- ===========================================================================
+-- Global for the 200-local reason test_bitorder states.
+--
+-- THE LEAK IS THE HAZARD, not the layout: the display pool is 463 objects and this screen is built on
+-- demand, so a Back that fails to free it spends the pool a screenful at a time until a power cycle.
+-- That is the accumulation the object-lifetime rule exists for, so the census is asserted rather than
+-- the handles being nil'd and hoped about.
+function test_msgs()
+  clearforce()
+  local msg = ''
+  local k
+  for k = 1, 40 do msg = msg .. 'The quick brown fox jumps over the lazy dog. ' end
+  local rr = run({bytes = GEN_BYTES(msg), baud = 9600, fs = 100000})
+  check('the fixture decoded enough bytes to need more than one page',
+        rr ~= nil and rr.nf > sdec.msg_per_page(),
+        string.format('%s bytes, %d per page', tostring(rr and rr.nf), sdec.msg_per_page()))
+
+  local base = MD.live()
+  -- A DELTA, not an absolute: MD.nrefused() is cumulative over the whole suite run and other cases
+  -- touch dangling handles on purpose, so an absolute zero here would be asserting their behaviour
+  -- rather than this screen's.
+  local ref0 = MD.nrefused()
+  local scr = sdec.build_msgs()
+  check('build_msgs returns a screen', scr ~= nil and scr == sdec.msgscr, tostring(scr))
+  check('...and builds its full row ladder', sdec.msg_row ~= nil
+        and table.getn(sdec.msg_row) == sdec.msg_nrow and sdec.msg_nrow == 21,
+        string.format('%s rows', tostring(sdec.msg_row and table.getn(sdec.msg_row))))
+
+  sdec.msg_page = 0
+  sdec.msgs_refresh()
+  local want = math.floor((rr.nf + sdec.msg_per_page() - 1) / sdec.msg_per_page())
+  check('msg_npages matches the byte count over the page size', sdec.msg_npages() == want,
+        string.format('%d vs %d', sdec.msg_npages(), want))
+  check('the first row carries the first bytes of the message',
+        has(MD.text(sdec.msg_row[1]), 'quick brown fox'),
+        tostring(MD.text(sdec.msg_row[1])))
+  check('the counter names the page AND the byte range',
+        has(MD.text(sdec.msg_ind), 'page 1 of') and has(MD.text(sdec.msg_ind), 'bytes 1-'),
+        tostring(MD.text(sdec.msg_ind)))
+
+  local first0 = MD.text(sdec.msg_row[1])
+  sdec.msgs_next()
+  check('Dn advances the page and the rows change', sdec.msg_page == 1
+        and MD.text(sdec.msg_row[1]) ~= first0, 'page=' .. tostring(sdec.msg_page))
+  sdec.msgs_prev()
+  check('...and Up returns to the same first row', sdec.msg_page == 0
+        and MD.text(sdec.msg_row[1]) == first0, 'page=' .. tostring(sdec.msg_page))
+  sdec.msgs_prev()
+  check('Up on the first page stays on it', sdec.msg_page == 0, tostring(sdec.msg_page))
+  sdec.msg_page = sdec.msg_npages() - 1
+  sdec.msgs_next()
+  check('Dn on the last page stays on it', sdec.msg_page == sdec.msg_npages() - 1,
+        tostring(sdec.msg_page))
+
+  -- BACK SWITCHES AWAY BEFORE IT DELETES, which MD.blanked() is the only evidence of: deleting the
+  -- screen the panel is showing leaves it displaying a dead object, unrecoverable from the front.
+  display.changescreen(sdec.msgscr)
+  local blank1 = MD.blanked()
+  sdec.msgs_close()
+  check('Back deletes the screen only after switching off it',
+        MD.blanked() == blank1, string.format('blanked %d -> %d', blank1, MD.blanked()))
+  check('...and the screen handle is nil afterwards', sdec.msgscr == nil, tostring(sdec.msgscr))
+  check('Back frees every object the screen took', MD.live() == base,
+        string.format('%d live, %d before the build', MD.live(), base))
+  check('...and this screen refused no display call of its own',
+        MD.nrefused() == ref0,
+        string.format('%d refusals, %d before the build: %s', MD.nrefused(), ref0,
+                      tostring(MD.refusals()[MD.nrefused()])))
+
+  -- OPENING IT TWICE MUST NOT STRAND THE FIRST, which is what the destroy at the top of build_msgs
+  -- is for. Without it the second build leaks a whole screenful.
+  sdec.msgs_show()
+  sdec.msgs_show()
+  check('a second open does not strand the first screen', MD.live() > base, tostring(MD.live()))
+  sdec.msgs_close()
+  check('...and one Back still frees it all', MD.live() == base,
+        string.format('%d live, %d before', MD.live(), base))
+
+  -- A POOL THAT RUNS OUT MUST REFUSE, NOT RAISE, and must say why. display.create returns nil and
+  -- posts nothing, so the refusal is a return value -- which is the whole reason there is no pcall.
+  MD.poolcap(MD.nobj() + 1)
+  local none = sdec.build_msgs()
+  check('an exhausted pool refuses the screen rather than raising',
+        none == nil and sdec.msg_why ~= nil, tostring(sdec.msg_why))
+  check('...and strands nothing when it refuses', MD.live() == base,
+        string.format('%d live, %d before', MD.live(), base))
+  MD.poolcap(nil)
+  sdec.destroy_msgs()
+  sdec.msg_nrow = 21
+  clearforce()
+end
+test_msgs()
+
+-- ===========================================================================
 print('\nthe bottom of the rate range -- a probe that cannot frame a byte')
 -- ===========================================================================
 -- autoset()'s first pass runs at 1 MS/s, where 20 000 samples is 20 ms: six bit times at 300 baud.
@@ -7704,7 +7799,9 @@ local function test_modes()
   -- 137 pages of which only the first was reachable. The margin came free when the position
   -- bar was removed.
   -- NINE: six along the bottom, plus Up / Lock Rate / Dn down the right margin.
-  check('NINE buttons: six along the bottom plus Up / Lock Rate / Dn', nb == 9,
+  -- TEN: Msgs joined the margin under Up, which is what made the four of them re-space to
+  -- 58 / 126 / 194 / 262 -- a 58 px button could not fit the old 44 px gap below Up.
+  check('TEN buttons: six along the bottom plus Up / Msgs / Lock Rate / Dn', nb == 10,
         tostring(nb))
   -- EVERY BUTTON LABEL MUST FIT ITS FACE, on both screens.
   --
