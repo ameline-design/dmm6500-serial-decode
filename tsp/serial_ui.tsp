@@ -537,7 +537,8 @@ function sdec.armnote(wait, level, keyed)
 end
 
 -- ---------- options form handles ----------
--- sdec.optscr, sdec.opt_proto, sdec.opt_baud, sdec.opt_bits, sdec.opt_par, sdec.opt_pol,
+-- sdec.optscr, sdec.opt_proto, sdec.opt_baud, sdec.opt_bits, sdec.opt_par, sdec.opt_msb,
+-- sdec.opt_pol,
 -- sdec.opt_trig, sdec.opt_ext, sdec.opt_armv, sdec.opt_armw, sdec.opt_over
 -- -- declared, not assigned.
 -- Nine fields, ten with a protocol module -- build_options derives both from its own `nf`, and the
@@ -2086,6 +2087,9 @@ end
 -- Entries 1 and 2 of opt_bits_v both mean "no forced width"; 2 also turns on the rare widths.
 sdec.opt_bits_v  = {nil, nil, 5, 6, 7, 8, 9, n = 7}
 sdec.opt_par_v   = {nil, 0, 1, 2, n = 4}             -- entry 1 = Auto
+-- Entry 1 = Auto, 2 = LSB first, 3 = MSB first. opt_pick returns tbl[i] rather than using `or`,
+-- which is what lets entry 2 carry `false` and not be read as a missing value.
+sdec.opt_msb_v   = {nil, false, true, n = 3}
 -- Protocol entries, with the module each one needs. Version 1 ships UART only; the rest stay
 -- described so that restoring either is one line in package_tspa.py MODULES, and a field listing an
 -- absent parser would appear to work. Bare names, the value column fading past sdec.ui_opt_px.
@@ -2150,6 +2154,7 @@ function sdec.destroy_options()
   sdec.del_obj(sdec.opt_baud)
   sdec.del_obj(sdec.opt_bits)
   sdec.del_obj(sdec.opt_par)
+  sdec.del_obj(sdec.opt_msb)
   sdec.del_obj(sdec.opt_pol)
   sdec.del_obj(sdec.opt_trig)
   sdec.del_obj(sdec.opt_ext)
@@ -2164,6 +2169,7 @@ function sdec.destroy_options()
   sdec.del_obj(sdec.optscr)
   sdec.optscr, sdec.opt_proto, sdec.opt_baud = nil, nil, nil
   sdec.opt_bits, sdec.opt_par, sdec.opt_pol = nil, nil, nil
+  sdec.opt_msb = nil
   sdec.opt_trig, sdec.opt_ext = nil, nil
   sdec.opt_armv, sdec.opt_armw = nil, nil
   sdec.opt_over = nil
@@ -2178,12 +2184,13 @@ function sdec.build_options()
   -- How many fields there will be, decided before the pitch, because the pitch depends on it. The
   -- Protocol field exists only with a module loaded, OBJ_EDIT_OPTION refusing fewer than two options.
   local pv, pl = sdec.opt_proto_list()
-  -- 9, DOWN FROM 10, because the Gap Elide field is withheld -- see the note at its old build site.
-  -- This count drives the pitch, so leaving it at 10 lays the form out for a field that is no longer
-  -- created: harmless on the glass but it makes ui_opt_nf_used a fiction, and test_serial asserts the
-  -- listed fields against it precisely so that an omission cannot pass unnoticed. It caught this.
-  local nf = 9
-  if pl.n >= 2 then nf = 10 end
+  -- 10: 9 after the Gap Elide field was withheld, plus Bit Order. This count drives the pitch, so a
+  -- count that disagrees with the fields actually created lays the form out for a field that is not
+  -- there -- harmless on the glass but it makes ui_opt_nf_used a fiction, and test_serial asserts the
+  -- listed fields against it precisely so that an omission cannot pass unnoticed. It caught that once.
+  -- At ui_opt_cols = 2 this is still five rows, so Bit Order cost the pitch nothing.
+  local nf = 10
+  if pl.n >= 2 then nf = 11 end
   -- The pitch is clamped to what fits, ui_opt_dy being a preference and the last box having
   -- to end above the button row -- docs/MEASUREMENTS.md, 'The options form vertical geometry'.
   local eh, edy = sdec.ui_opt_edit_h, sdec.ui_opt_edit_dy
@@ -2274,6 +2281,14 @@ function sdec.build_options()
                         'Auto', 'None', 'Even', 'Odd')
   -- Eleven characters is the field's limit: past it the firmware fades the tail, so 'Trig In+FC Out'
   -- reads 'Trig In+FC'. Display only -- every field maps its selection by index.
+  -- BIT ORDER, and Auto is first because almost every UART is LSB first -- it is what RS-232 framing
+  -- specifies. Auto cannot always answer: framing is order-invariant, so only byte CONTENT can choose
+  -- and binary traffic is undecidable. That is exactly why the field is here rather than left to the
+  -- detector. Reported from the field 2026-10-20, a demo board set to MSB decoding to nothing.
+  local fx6b, fy6b = nextpos()
+  sdec.opt_msb = create(sdec.optscr, display.OBJ_EDIT_OPTION, fx6b, fy6b,
+                        'Bit Order', 'LSB unless told',
+                        'Auto', 'LSB first', 'MSB first')
   local fx6, fy6 = nextpos()
   sdec.opt_pol = create(sdec.optscr, display.OBJ_EDIT_OPTION, fx6, fy6,
                         'Polarity', 'idle level',

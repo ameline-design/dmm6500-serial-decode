@@ -6150,6 +6150,7 @@ end
 
 sdec.opt_bits_v  = {nil, nil, 5, 6, 7, 8, 9, n = 7}
 sdec.opt_par_v   = {nil, 0, 1, 2, n = 4}             -- entry 1 = Auto
+sdec.opt_msb_v   = {nil, false, true, n = 3}
 sdec.opt_proto_all = {
   {v = 'uart', label = 'UART', need = nil},
   {v = 'midi', label = 'MIDI', need = 'mi_parse'},
@@ -6208,6 +6209,7 @@ function sdec.destroy_options()
   sdec.del_obj(sdec.opt_baud)
   sdec.del_obj(sdec.opt_bits)
   sdec.del_obj(sdec.opt_par)
+  sdec.del_obj(sdec.opt_msb)
   sdec.del_obj(sdec.opt_pol)
   sdec.del_obj(sdec.opt_trig)
   sdec.del_obj(sdec.opt_ext)
@@ -6222,6 +6224,7 @@ function sdec.destroy_options()
   sdec.del_obj(sdec.optscr)
   sdec.optscr, sdec.opt_proto, sdec.opt_baud = nil, nil, nil
   sdec.opt_bits, sdec.opt_par, sdec.opt_pol = nil, nil, nil
+  sdec.opt_msb = nil
   sdec.opt_trig, sdec.opt_ext = nil, nil
   sdec.opt_armv, sdec.opt_armw = nil, nil
   sdec.opt_over = nil
@@ -6234,8 +6237,8 @@ function sdec.build_options()
   local create = display.create
   local y0, dy, x = sdec.ui_opt_y0, sdec.ui_opt_dy, sdec.ui_opt_x
   local pv, pl = sdec.opt_proto_list()
-  local nf = 9
-  if pl.n >= 2 then nf = 10 end
+  local nf = 10
+  if pl.n >= 2 then nf = 11 end
   local eh, edy = sdec.ui_opt_edit_h, sdec.ui_opt_edit_dy
   local ncols = sdec.ui_opt_cols or 1
   if ncols < 1 then ncols = 1 end
@@ -6301,6 +6304,10 @@ function sdec.build_options()
   sdec.opt_par = create(sdec.optscr, display.OBJ_EDIT_OPTION, fx5, fy5,
                         'Parity', 'auto or fixed',
                         'Auto', 'None', 'Even', 'Odd')
+  local fx6b, fy6b = nextpos()
+  sdec.opt_msb = create(sdec.optscr, display.OBJ_EDIT_OPTION, fx6b, fy6b,
+                        'Bit Order', 'LSB unless told',
+                        'Auto', 'LSB first', 'MSB first')
   local fx6, fy6 = nextpos()
   sdec.opt_pol = create(sdec.optscr, display.OBJ_EDIT_OPTION, fx6, fy6,
                         'Polarity', 'idle level',
@@ -8284,6 +8291,10 @@ function sdec.options_seed()
     local pi = 1
     if sdec.force_par ~= nil then pi = sdec.force_par + 2 end
     display.setvalue(sdec.opt_par, pi)
+    local mi = 1
+    if sdec.force_msb == false then mi = 2 end
+    if sdec.force_msb == true then mi = 3 end
+    display.setvalue(sdec.opt_msb, mi)
     local li = 1
     if sdec.force_invert == false then li = 2 end
     if sdec.force_invert == true then li = 3 end
@@ -8310,7 +8321,7 @@ end
 function sdec.options_save()
   sdec.opt_snap = {baud = sdec.force_baud, nbits = sdec.force_nbits,
                    par = sdec.force_par, nstop = sdec.force_nstop,
-                   invert = sdec.force_invert, proto = sdec.proto,
+                   invert = sdec.force_invert, msb = sdec.force_msb, proto = sdec.proto,
                    any = sdec.widths_any, trig = sdec.trigmode,
                    ext = sdec.trigext, fc = sdec.fc_out, view = sdec.ui_mode,
                    aset = sdec.autolock_set,
@@ -8327,6 +8338,7 @@ function sdec.options_restore()
   if s == nil then return false end
   sdec.force_baud, sdec.force_nbits = s.baud, s.nbits
   sdec.force_par, sdec.force_nstop, sdec.force_invert = s.par, s.nstop, s.invert
+  sdec.force_msb = s.msb
   sdec.proto, sdec.widths_any = s.proto, s.any
   sdec.trigmode, sdec.trigext, sdec.fc_out = s.trig, s.ext, s.fc
   sdec.ui_mode = s.view
@@ -8401,6 +8413,11 @@ function sdec.options_apply()
     sdec.force_nbits = sdec.opt_pick(sdec.opt_bits_v, bi)
     sdec.widths_any = (type(bi) == 'number' and math.floor(bi + 0.5) == 2)
     sdec.force_par   = sdec.opt_pick(sdec.opt_par_v, display.getvalue(sdec.opt_par))
+
+    local mi2 = display.getvalue(sdec.opt_msb)
+    if mi2 == 2 then sdec.force_msb = false
+    elseif mi2 == 3 then sdec.force_msb = true
+    else sdec.force_msb = nil end
 
     local li = display.getvalue(sdec.opt_pol)
     if li == 2 then sdec.force_invert = false

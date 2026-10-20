@@ -644,6 +644,7 @@ number is kept.
 | **Baud Rate** | `0` means auto-detect. Type a number to lock that rate; it is rounded to a whole baud. |
 | **Data Bits** | Leave on `Auto (7/8)`. Only use `Auto (any)` if you know the device sends 9-bit words — it can make a damaged capture look tidier while being wrong. |
 | **Parity** | `Auto`, or pin `None` / `Even` / `Odd`. |
+| **Bit Order** | `Auto`, `LSB first` or `MSB first`. Almost every UART is LSB first, which is what RS-232 framing specifies, so leave this on `Auto` unless you know otherwise. **Auto cannot always tell**, and the reason is worth knowing: the start bit, the stop bit and the parity bit are all the same whichever end the data bits come from, so the two orders are indistinguishable by framing and only the *bytes* can choose. Auto therefore compares how much readable text each order produces and keeps LSB on anything close. On a line carrying **binary** data there is nothing to compare and bit order cannot be detected at all — pin it here. |
 | **Polarity** | `Auto`, `Idle high` (normal CMOS/TTL) or `Idle low` (inverted). Auto decodes both and keeps the one the bytes support; pin it if the line is almost never idle *and* carries no text, which is the one case the two readings can tie. |
 
 Each setting is independent — pinning one leaves the rest on auto.
@@ -915,7 +916,7 @@ whole run exists. Every mode captures and decodes without one; what you lose is 
 | `no clear logic levels` | Too much noise, or the swing is too small. 0.33 V works on the bench, and 0.25 V did too; 60 mV is refused outright. |
 | Wrong rate reported | The traffic may be genuinely ambiguous (below). Lock the rate if you know it. |
 | Bytes wrong but `ERR 0`, with the rate locked | The device is not running at the rate you locked. The note row warns when the line disagrees by more than 4 %. |
-| Bytes wrong but `ERR 0`, rate and format plausible | The polarity may be the wrong way round. Check the `IDLE` cell against the line, and pin it in `Options ▸ Polarity`. It takes a line that is never idle and carries no text to get this far. |
+| Bytes wrong but `ERR 0`, rate and format plausible | Either the polarity or the bit order may be the wrong way round, and both look like this: the framing is perfect and the values are not. Check the `IDLE` cell against the line and pin `Options ▸ Polarity`; if that is right, the device may be sending **MSB first**, so try `Options ▸ Bit Order`. A scope that shows the line is correct while the app shows nonsense is the signature of bit order rather than a capture fault. |
 | A baud rate that is not a round number | It is reporting what it measured, because the measurement was not within 2 % of a standard rate. |
 | A `?` after the baud rate | The app does not stand behind the number: either it measured a rate that is not standard, or it rounded one by more than 1.25 %. The bytes are usually fine. **No `?` is not a promise** — a fit that lands close to the wrong standard rate prints none. |
 

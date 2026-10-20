@@ -2509,6 +2509,11 @@ function sdec.options_seed()
     local pi = 1
     if sdec.force_par ~= nil then pi = sdec.force_par + 2 end
     display.setvalue(sdec.opt_par, pi)
+    -- Bit order, the same nil/false/true shape as Polarity below it.
+    local mi = 1
+    if sdec.force_msb == false then mi = 2 end
+    if sdec.force_msb == true then mi = 3 end
+    display.setvalue(sdec.opt_msb, mi)
     local li = 1
     if sdec.force_invert == false then li = 2 end
     if sdec.force_invert == true then li = 3 end
@@ -2539,7 +2544,7 @@ function sdec.options_save()
   -- settings at once. The provenance and the displayed rate are part of the state; dhas marks them kept.
   sdec.opt_snap = {baud = sdec.force_baud, nbits = sdec.force_nbits,
                    par = sdec.force_par, nstop = sdec.force_nstop,
-                   invert = sdec.force_invert, proto = sdec.proto,
+                   invert = sdec.force_invert, msb = sdec.force_msb, proto = sdec.proto,
                    any = sdec.widths_any, trig = sdec.trigmode,
                    ext = sdec.trigext, fc = sdec.fc_out, view = sdec.ui_mode,
                    aset = sdec.autolock_set,
@@ -2556,6 +2561,9 @@ function sdec.options_restore()
   if s == nil then return false end
   sdec.force_baud, sdec.force_nbits = s.baud, s.nbits
   sdec.force_par, sdec.force_nstop, sdec.force_invert = s.par, s.nstop, s.invert
+  -- Assigned plainly, like invert and unlike armv/armw below: nil is a legitimate value here, it is
+  -- what Auto means, so guarding on the value would make Cancel unable to restore Auto.
+  sdec.force_msb = s.msb
   sdec.proto, sdec.widths_any = s.proto, s.any
   sdec.trigmode, sdec.trigext, sdec.fc_out = s.trig, s.ext, s.fc
   sdec.ui_mode = s.view
@@ -2650,6 +2658,11 @@ function sdec.options_apply()
     sdec.widths_any = (type(bi) == 'number' and math.floor(bi + 0.5) == 2)
     -- Parity is applied on its own: the search narrows to it, where pinning the width would force 8E1.
     sdec.force_par   = sdec.opt_pick(sdec.opt_par_v, display.getvalue(sdec.opt_par))
+
+    local mi2 = display.getvalue(sdec.opt_msb)
+    if mi2 == 2 then sdec.force_msb = false
+    elseif mi2 == 3 then sdec.force_msb = true
+    else sdec.force_msb = nil end
 
     local li = display.getvalue(sdec.opt_pol)
     if li == 2 then sdec.force_invert = false

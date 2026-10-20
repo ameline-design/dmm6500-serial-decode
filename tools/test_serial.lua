@@ -3598,6 +3598,35 @@ check('apply forces the protocol settings',
 check('apply sets the hardware settings',
       sdec.range == 10 and sdec.trigmode == 'free',
       string.format('range=%s trig=%s', tostring(sdec.range), tostring(sdec.trigmode)))
+-- BIT ORDER ROUND-TRIPS, all three entries, and Auto is the one worth asserting: it is nil, so a
+-- mapping that used `or` anywhere would turn it into LSB and the field would silently lose a state.
+do
+  display.setvalue(sdec.opt_msb, 3)
+  sdec.options_apply()
+  check('apply forces MSB first from entry 3', sdec.force_msb == true, tostring(sdec.force_msb))
+  display.setvalue(sdec.opt_msb, 2)
+  sdec.options_apply()
+  check('...LSB first from entry 2, and false is not read as absent',
+        sdec.force_msb == false, tostring(sdec.force_msb))
+  display.setvalue(sdec.opt_msb, 1)
+  sdec.options_apply()
+  check('...and Auto from entry 1, which is nil', sdec.force_msb == nil, tostring(sdec.force_msb))
+  -- AND CANCEL MUST UNDO IT. options_save snapshots, the form changes, options_restore puts it back:
+  -- without msb in the snapshot a bit-order edit survived a Cancel that promised it was provisional.
+  sdec.force_msb = true
+  sdec.options_save()
+  sdec.force_msb = false
+  sdec.options_restore()
+  check('Cancel restores the bit order the form opened with',
+        sdec.force_msb == true, tostring(sdec.force_msb))
+  -- The Auto direction too, since nil is the value a careless guard would drop.
+  sdec.force_msb = nil
+  sdec.options_save()
+  sdec.force_msb = true
+  sdec.options_restore()
+  check('...including back to Auto', sdec.force_msb == nil, tostring(sdec.force_msb))
+  sdec.force_msb = nil
+end
 check('apply returns to the main screen', display.active == sdec.ui_scr)
 check('apply re-captures rather than waiting to be asked',
       sdec.res ~= nil and sdec.res.nf == ulgn, sdec.res and tostring(sdec.res.nf) or 'nil')
@@ -7745,9 +7774,9 @@ local function test_modes()
     -- Adding a field to the form means adding it here; there is no way to enumerate them from the
     -- app, because build_options() creates them and holds each in its own named handle.
     local fields = {{'proto', sdec.opt_proto}, {'baud', sdec.opt_baud}, {'bits', sdec.opt_bits},
-                    {'par', sdec.opt_par}, {'pol', sdec.opt_pol}, {'trig', sdec.opt_trig},
-                    {'ext', sdec.opt_ext}, {'armv', sdec.opt_armv}, {'armw', sdec.opt_armw},
-                    {'over', sdec.opt_over}}
+                    {'par', sdec.opt_par}, {'msb', sdec.opt_msb}, {'pol', sdec.opt_pol},
+                    {'trig', sdec.opt_trig}, {'ext', sdec.opt_ext}, {'armv', sdec.opt_armv},
+                    {'armw', sdec.opt_armw}, {'over', sdec.opt_over}}
     -- THE COUNT IS ASSERTED, not just the clearances, because the list is hand-written and the failure mode is
     -- an omission rather than a wrong number: a field left out is simply not measured, and the check passes
     -- while the form is 1 to 5 px into the button row. ui_opt_nf_used is what build_options laid out to.
