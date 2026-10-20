@@ -6958,17 +6958,59 @@ function test_msgs()
 
   sdec.msg_page = 0
   sdec.msgs_refresh()
-  local want = math.floor((rr.nf + sdec.msg_per_page() - 1) / sdec.msg_per_page())
-  check('msg_npages matches the byte count over the page size', sdec.msg_npages() == want,
-        string.format('%d vs %d', sdec.msg_npages(), want))
-  check('the first row carries the first bytes of the message',
-        has(MD.text(sdec.msg_row[1]), 'quick brown fox'),
+  -- A GAPLESS CAPTURE IS ONE MESSAGE, which is the honest answer rather than a degenerate one: the
+  -- split is on idle, and this fixture has none, so there is exactly one burst.
+  local _, nm1 = sdec.msg_split(rr, sdec.bittime)
+  check('a gapless capture splits into exactly one message', nm1 == 1, tostring(nm1))
+  check('the first row is numbered and carries the message',
+        has(MD.text(sdec.msg_row[1]), 'quick brown fox')
+        and has(MD.text(sdec.msg_row[1]), '1'),
         tostring(MD.text(sdec.msg_row[1])))
-  check('the counter names the page AND the byte range',
-        has(MD.text(sdec.msg_ind), 'page 1 of') and has(MD.text(sdec.msg_ind), 'bytes 1-'),
+  check('the counter names the page AND the MESSAGE range',
+        has(MD.text(sdec.msg_ind), 'page 1 of') and has(MD.text(sdec.msg_ind), 'msg 1-'),
         tostring(MD.text(sdec.msg_ind)))
 
+  -- AND A GAPPED CAPTURE SPLITS PER BURST, which is the arm that actually exercises the splitter.
+  -- A gap wider than msg_gapframes frame times between every byte isolates each one, so the message
+  -- count must equal the frame count -- the opposite extreme from the gapless case above, and between
+  -- them they pin the rule from both sides.
+  local rg = run({bytes = GEN_BYTES('The quick brown fox jumps over the lazy dog.'),
+                  baud = 9600, fs = 100000, gap = 30})
+  local msg, nmg = sdec.msg_split(rg, sdec.bittime)
+  check('a capture gapped between every byte splits into one message per byte',
+        nmg == rg.nf and nmg > 1, string.format('%s messages, %s frames', tostring(nmg),
+                                                tostring(rg.nf)))
+  check('...and each message is one frame wide',
+        msg ~= nil and msg[1].first == 1 and msg[1].last == 1,
+        string.format('first message spans %s..%s', tostring(msg and msg[1].first),
+                      tostring(msg and msg[1].last)))
+
+  -- PAGING, on the gapped capture, because the gapless one is a single page by construction.
+  sdec.msg_page = 0
+  sdec.msgs_refresh()
   local first0 = MD.text(sdec.msg_row[1])
+  check('more than one page of messages to walk', sdec.msg_npages() > 1,
+        tostring(sdec.msg_npages()))
+  check('...so Up and Dn are shown',
+        MD.obj(sdec.msg_up).state == display.STATE_ENABLE
+        and MD.obj(sdec.msg_dn).state == display.STATE_ENABLE,
+        string.format('up=%s dn=%s', tostring(MD.obj(sdec.msg_up).state),
+                      tostring(MD.obj(sdec.msg_dn).state)))
+  -- AND HIDDEN ON A SINGLE PAGE, paired with the above: the screen's first outing showed both buttons
+  -- over 'page 1 of 1', offering to page through nothing.
+  local keepres = sdec.res
+  sdec.res = rr                      -- the gapless capture: one message, one page
+  sdec.msg_page = 0
+  sdec.msgs_refresh()
+  check('with one page of messages, Up and Dn hide',
+        sdec.msg_npages() == 1
+        and MD.obj(sdec.msg_up).state == display.STATE_INVISIBLE
+        and MD.obj(sdec.msg_dn).state == display.STATE_INVISIBLE,
+        string.format('npg=%d up=%s dn=%s', sdec.msg_npages(),
+                      tostring(MD.obj(sdec.msg_up).state),
+                      tostring(MD.obj(sdec.msg_dn).state)))
+  sdec.res = keepres
+  sdec.msgs_refresh()
   sdec.msgs_next()
   check('Dn advances the page and the rows change', sdec.msg_page == 1
         and MD.text(sdec.msg_row[1]) ~= first0, 'page=' .. tostring(sdec.msg_page))
@@ -7017,6 +7059,50 @@ function test_msgs()
   MD.poolcap(nil)
   sdec.destroy_msgs()
   sdec.msg_nrow = 21
+
+  -- THE BUTTON HIDES WHEN THERE IS NOTHING TO SEE, which every other margin button does and this one
+  -- did not. Paired in both directions, because a button that is always visible and one that is never
+  -- visible both satisfy a one-armed check -- and the shadow cache means the second write only
+  -- happens if the state really changed, so testing one direction would not prove the other works.
+  -- A LIVE UI FIRST. The cases above tear screens down, so calling ui_page_btns() here reached
+  -- DELETED handles and the mock swallowed every setstate into its void -- three refusals, and the
+  -- state read back as whatever the dead object last held. The product code was right; the fixture
+  -- was asserting against corpses. The probe below keeps that honest.
+  sdec.stop()
+  sdec.built = false
+  sdec.allow_rebuild = true
+  sdec.start()
+  if sdec.ui_msgbtn ~= nil then
+    -- Explicit rather than borrowed: the restart above clears sdec.res, and the rule reads only nf,
+    -- so the two arms are a table with bytes and no table at all.
+    local was = {nf = 13, vals = {}, errs = {}}
+    sdec.res = nil
+    sdec.ui_msgvis = nil
+    local refb = MD.nrefused()
+    sdec.ui_page_btns()
+    check('PROBE: the margin handle is live, not a dangling one from an earlier build',
+          MD.nrefused() == refb,
+          string.format('%d refusal(s) added: %s', MD.nrefused() - refb,
+                        tostring(MD.nrefused() > refb and MD.refusals()[MD.nrefused()] or 'none')))
+    check('the Msgs button is hidden when nothing has decoded',
+          MD.obj(sdec.ui_msgbtn) ~= nil
+          and MD.obj(sdec.ui_msgbtn).state == display.STATE_INVISIBLE,
+          tostring(MD.obj(sdec.ui_msgbtn) and MD.obj(sdec.ui_msgbtn).state))
+    sdec.res = was
+    sdec.ui_page_btns()
+    check('...and shown once there are bytes to look at',
+          MD.obj(sdec.ui_msgbtn).state == display.STATE_ENABLE,
+          tostring(MD.obj(sdec.ui_msgbtn).state))
+    -- And back again, so a cleared result really takes it away rather than leaving it stuck on.
+    sdec.res = nil
+    sdec.ui_page_btns()
+    check('...and hidden again when the result is cleared',
+          MD.obj(sdec.ui_msgbtn).state == display.STATE_INVISIBLE,
+          tostring(MD.obj(sdec.ui_msgbtn).state))
+    -- Left cleared, not restored to the fixture: the next test decodes into sdec.res, and handing it
+    -- a hand-built result with 13 frames and no values is the leftover-state trap.
+    sdec.res = nil
+  end
   clearforce()
 end
 test_msgs()

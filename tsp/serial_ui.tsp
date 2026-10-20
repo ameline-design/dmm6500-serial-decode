@@ -1630,6 +1630,7 @@ function sdec.ui_build(hold)
   sdec.ui_pgvis = nil
   sdec.ui_lockvis = nil
   sdec.ui_savevis = nil
+  sdec.ui_msgvis = nil
   sdec.ui_savebtn = nil
   sdec.ui_newlogbtn = nil
   local k
@@ -1689,6 +1690,22 @@ end
 function sdec.ui_page_btns()
   -- Save and NewLog first, before the guard: gating them on ui_pgbtn meant they could never hide.
   sdec.ui_usb_btns()
+  -- Msgs hides with nothing to show, the rule the rest of this margin follows. Gated on sdec.res,
+  -- the field msgs_refresh itself reads, so button and screen agree by construction -- including
+  -- after a recording, whose bytes are counted in ck_tot and live in the file this screen cannot read.
+  if sdec.ui_msgbtn ~= nil then
+    local mw = (sdec.res ~= nil and (sdec.res.nf or 0) > 0)
+    if mw ~= sdec.ui_msgvis then
+      local mst = display.STATE_INVISIBLE
+      if mw then mst = display.STATE_ENABLE end
+      display.setstate(sdec.ui_msgbtn, mst)
+      sdec.ui_msgvis = mw
+    end
+  end
+
+  -- Above the ui_pgbtn guard for the same reason Save and NewLog are: gating one button's hide rule
+  -- on another button's existence means it can never hide. Msgs reproduced that bug exactly, and the
+  -- suite caught it as a button left visible with nothing decoded.
   local t = sdec.ui_pgbtn
   if t == nil then return false end
   local npg = sdec.ui_npages()
@@ -2203,17 +2220,48 @@ sdec.msg_page   = 0
 -- 58 px and the content area is 431, so anything past 373 is clipped off the bottom of the panel.
 sdec.msg_btn_y  = sdec.ui_btn_y
 
--- Pages this result needs at this screen's geometry. Its own arithmetic, not ui_npages().
+-- A message is a burst between idle runs, and that is the app's own definition rather than a new
+-- one: ua_run already calls a gap of >= 2 frame times idle, which is what sets r.idle1. It is also
+-- what the operator sees on the wire, one country name per burst on the board that found this.
+--
+-- This screen showed the byte stream before, sliced at a fixed 80 columns, which cut through every
+-- message and started row 1 mid-word. That is the main screen's TEXT view with more rows, not a
+-- message view -- said on the glass, and right.
+sdec.msg_gapframes = sdec.msg_gapframes or 2
+
+-- -> a list of {first, last} frame indices, one per message, and how many. Never nil for a result
+-- that decoded anything: a capture with no gap in it is one message, which is the honest answer.
+function sdec.msg_split(r, T)
+  if r == nil or r.tpos == nil or (r.nf or 0) < 1 then return nil, 0 end
+  local parbits = 0
+  if r.par ~= nil and r.par ~= sdec.PAR_NONE then parbits = 1 end
+  local fb = 1 + (r.nbits or 8) + parbits + (r.nstop or 1)
+  local lim = nil
+  if T ~= nil and T > 0 then lim = sdec.msg_gapframes * fb * T end
+  local out, n, first, i = {}, 0, 1, nil
+  for i = 2, r.nf do
+    if lim ~= nil and r.tpos[i] ~= nil and r.tpos[i - 1] ~= nil
+       and (r.tpos[i] - r.tpos[i - 1]) >= lim then
+      n = n + 1
+      out[n] = {first = first, last = i - 1}
+      first = i
+    end
+  end
+  n = n + 1
+  out[n] = {first = first, last = r.nf}
+  return out, n
+end
+
+-- One message per row now, so a page is rows rather than bytes.
 function sdec.msg_per_page()
-  return sdec.msg_cols * sdec.msg_nrow
+  return sdec.msg_nrow
 end
 
 function sdec.msg_npages()
-  local n = 0
-  if sdec.res ~= nil then n = sdec.res.nf or 0 end
-  if n <= 0 then return 1 end
+  local _, nm = sdec.msg_split(sdec.res, sdec.bittime)
+  if nm == nil or nm <= 0 then return 1 end
   local per = sdec.msg_per_page()
-  return math.floor((n + per - 1) / per)
+  return math.floor((nm + per - 1) / per)
 end
 
 -- Delete every object this screen owns and nil its handles, in creation order's reverse: children
@@ -2289,25 +2337,40 @@ function sdec.msgs_refresh()
   if sdec.msg_page >= npg then sdec.msg_page = npg - 1 end
   if sdec.msg_page < 0 then sdec.msg_page = 0 end
   local base = sdec.msg_page * sdec.msg_per_page()
-  local nf = 0
-  if sdec.res ~= nil then nf = sdec.res.nf or 0 end
+  local ms, nm = sdec.msg_split(sdec.res, sdec.bittime)
   local i
   for i = 1, sdec.msg_nrow do
-    local i0 = base + (i - 1) * sdec.msg_cols + 1
+    local k = base + i
     local s = ''
-    if i0 <= nf then s = sdec.ua_text_line(i0, sdec.msg_cols) end
+    if ms ~= nil and k <= nm then
+      local m = ms[k]
+      -- Numbered, because 'which message' is the question this screen exists to answer, and the
+      -- number has to be the one the whole capture gives it rather than the row's position.
+      s = string.format('%3d  %s', k,
+                        sdec.ua_text_line(m.first, m.last - m.first + 1))
+      if string.len(s) > sdec.msg_cols then s = string.sub(s, 1, sdec.msg_cols) end
+    end
     display.settext(sdec.msg_row[i], s)
   end
+  -- Up and Dn hide on a single page, the main margin's rule. This screen's first outing read
+  -- 'page 1 of 1' with both buttons sitting there, offering to page through nothing.
+  if sdec.msg_up ~= nil and sdec.msg_dn ~= nil then
+    local pst = display.STATE_INVISIBLE
+    if npg > 1 then pst = display.STATE_ENABLE end
+    display.setstate(sdec.msg_up, pst)
+    display.setstate(sdec.msg_dn, pst)
+  end
+
   if sdec.msg_ind ~= nil then
-    -- The byte range as well as the page, because 'page 2 of 9' does not tell an operator which
-    -- bytes they are looking at and a message is located by offset.
+    -- The MESSAGE range as well as the page: 'page 2 of 9' does not say which messages are on it.
+    local tot = nm or 0
     local last = base + sdec.msg_per_page()
-    if last > nf then last = nf end
+    if last > tot then last = tot end
     local shown = base + 1
-    if nf < 1 then shown = 0 end
+    if tot < 1 then shown = 0 end
     display.settext(sdec.msg_ind,
-                    string.format('page %d of %d   bytes %d-%d of %d',
-                                  sdec.msg_page + 1, npg, shown, last, nf))
+                    string.format('page %d of %d   msg %d-%d of %d',
+                                  sdec.msg_page + 1, npg, shown, last, tot))
   end
   return true
 end
