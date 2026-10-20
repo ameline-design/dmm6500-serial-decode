@@ -317,8 +317,13 @@ end
 -- page holds 240 bytes, the whole frame in FRAME mode, but a 32 kB streaming capture is 137 pages.
 -- Labelled 'Up' and 'Dn' on 56 px faces -- the width they do not use is width the dump rows get.
 -- They hide themselves when the capture fits one page (sdec.ui_page_btns).
+--
+-- TEN, not nine: 'Msgs' joined the margin under Up, which is what re-spaced the four of them to
+-- 58 / 126 / 194 / 262 -- a 58 px button could not fit the old 44 px gap below Up. It carries its own
+-- 80 px width because the font is proportional and 'Msgs' measures 64 px against the 56 px paging
+-- face.
 check('every main-screen button calls a function that exists',
-      table.getn(bad) == 0 and nbtn == 9,
+      table.getn(bad) == 0 and nbtn == 10,
       nbtn .. ' buttons; bad: ' .. table.concat(bad, ' '))
 local obad = {}
 for i = 1, table.getn(sdec.opt_btn) do
@@ -444,8 +449,8 @@ sdec.built = false
 sdec.delfails = 0
 local rok, rwhy = sdec.start()
 check('with objects available the app builds normally again', rok == true, tostring(rwhy))
-check('and it has all nine buttons again',
-      sdec.ui_btn ~= nil and table.getn(sdec.ui_btn) == 9,
+check('and it has all ten buttons again',
+      sdec.ui_btn ~= nil and table.getn(sdec.ui_btn) == 10,
       tostring(sdec.ui_btn and table.getn(sdec.ui_btn)))
 
 print(string.format('%d passed, %d failed', pass, fail))

@@ -119,7 +119,22 @@ P_RSUB = 7
 #   tools/test_pushplan.py passes HW_SKIP explicitly and so reads 1333 either way: the gate cannot see
 #   this difference, which is the reason to prefer the structural exclusion rather than an argument for
 #   it being unnecessary.
-HW_SKIP = ('v95', 'v96', 'v97')
+# v79 IS SKIPPED FOR v97'S REASON, NOT v96'S, and it is the third kind of entry in this tuple. It is
+# perfectly playable -- it is the 94-glyph payload sent MSB first, and the bit-order detector is the
+# thing it tests -- but it is a TARGETED vector, driven deliberately against v77 as a two-vector
+# comparison, not a member of the standard lap. Leaving it in does the damage v97's note describes:
+# the skip is applied BEFORE the shuffle, so one more name renumbers every survivor and hands each of
+# them another vector's amplitude, offset and wait. Measured rather than argued: the offline sweep
+# drew 1548 cells against 1512 with it in, and while v79 itself was clean in all 36 of its own cells,
+# the reshuffle moved a failure from `rate` to `bytes` and carried loudmiss, loudquiet, judged and
+# label with it. With v79 skipped, all fifteen counters reproduce the measured baseline EXACTLY, which
+# is what says the decode did not change and the draw did.
+#
+# NOTE FOR WHOEVER ADDS THE NEXT VECTOR: the two `skip (nothing)` ratchet entries in
+# tools/plan_sweep.py were measured at 1620 cells and now describe a draw that no longer exists --
+# any new vector does that to them, v79 included. They fail loudly on a cell-count mismatch rather
+# than comparing wrongly, so nothing is silently wrong; re-measuring them is a deliberate act.
+HW_SKIP = ('v79', 'v95', 'v96', 'v97')
 
 # THE VERTICAL AXES. Amplitude and DC offset are swept per cell rather than per waveform, which costs
 # nothing: both are SCPI writes folded into the settle already paid, and the attenuator relay is rated
