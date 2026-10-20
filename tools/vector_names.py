@@ -38,6 +38,7 @@ MAP = {
     'v76':  'SER_Lorem300B_8N1_x10',
     'v77':  'SER_Fox_8N1_x10',
     'v78':  'SER_Fox_7E1_x10',
+    'v79':  'SER_Fox_8N1M_x10',           # MSB first; the board's Select 1 = D
     'v90':  'SER_Blocks256B_8N1_x10',
     'v91':  'SER_RandomRef_8N1_x10',
     'v92':  'SER_Walk_8N1_x10',

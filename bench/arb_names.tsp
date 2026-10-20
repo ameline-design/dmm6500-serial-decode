@@ -61,6 +61,7 @@ barb.name['v71'] = 'SER_Lorem1kB_8N1_x10'
 barb.name['v76'] = 'SER_Lorem300B_8N1_x10'
 barb.name['v77'] = 'SER_Fox_8N1_x10'
 barb.name['v78'] = 'SER_Fox_7E1_x10'
+barb.name['v79'] = 'SER_Fox_8N1M_x10'
 barb.name['v90'] = 'SER_Blocks256B_8N1_x10'
 barb.name['v91'] = 'SER_RandomRef_8N1_x10'
 barb.name['v92'] = 'SER_Walk_8N1_x10'
@@ -134,7 +135,7 @@ barb.benchonly['r10'] = true
 barb.benchonly['r11'] = true
 
 -- The count, so a truncated file is detectable rather than merely short.
-barb.n = 65
+barb.n = 66
 
 -- Returns the generator's name for a vector id, or nil. Never guesses: a fallback to the id itself is
 -- exactly the silent failure this table exists to prevent.

@@ -265,6 +265,29 @@ local function hello(o)
   return opts, by, nb
 end
 
+-- MSB FIRST, WITHOUT TEACHING THE GENERATOR A NEW MODE, and the equivalence is exact rather than
+-- approximate: sending each byte BIT-REVERSED, LSB first, puts the same levels on the wire at the
+-- same times as sending the original byte MSB first. The start bit, the stop bit and the parity bit
+-- are all unaffected, parity being a popcount of the data bits in either order. So the generator
+-- emits the mirror and the EXPECTED bytes stay the real message.
+--
+-- WHICH IS ALSO WHAT MAKES THIS A TEST OF THE DETECTOR rather than of the generator: a decode that
+-- ignores bit order returns the mirror and fails byte for byte, and one that merely guesses has to
+-- beat the content test -- 'Hello, World!' carries 10 letters over 7 distinct values, where the
+-- mirror carries almost none, which is the margin ua_refine_bitorder is looking for.
+--
+-- No math.mod: this file runs under whichever Lua the harness has, and mod left 5.1.
+local function revbits8(v)
+  local out, src, i = 0, v, nil
+  for i = 1, 8 do
+    local half = math.floor(src / 2)
+    out = out * 2 + (src - half * 2)
+    src = half
+  end
+  return out
+end
+
+
 vec{id = 'v41', desc = "'Hello, World!' 9600 8N1", fs = sr(9600), fsv = 5.0,
     build = function() return hello{baud = 9600, fs = sr(9600)} end}
 -- The four parity formats, as DEFENSIVE coverage rather than expected traffic.
@@ -812,10 +835,47 @@ vec{id = 'v76', desc = 'lorem 300 B, 9600 8N1 (loop-exact sweep vector)', fs = s
 -- then computed over all 94 bit patterns rather than over the 40-odd that English prose produces.
 -- Every byte is <= 0x7E, so a seven-bit frame carries the whole payload with nothing truncated --
 -- which is what makes the 8N1 and 7E1 rows directly comparable.
+-- MSB FIRST, ON THE SAME 133-BYTE PAYLOAD v77 AND v78 USE, so the three differ only in the thing
+-- under test. The equivalence is exact rather than approximate: sending each byte BIT-REVERSED, LSB
+-- first, puts the same levels on the wire at the same times as sending the original byte MSB first.
+-- Start, stop and parity are unaffected, parity being a popcount of the data bits in either order.
+-- So the generator emits the mirror and the EXPECTED bytes stay the real message -- which is what
+-- makes this a test of the DETECTOR: a decode that ignores bit order returns the mirror and fails
+-- byte for byte.
+--
+-- WHY NOT 'Hello, World!' LIKE THE v44 FORMAT VARIANTS, which was tried first and does not work.
+-- Bit order is decided on CONTENT, and 13 bytes do not carry enough: the mirror of both 'l' and 'o'
+-- is 0x36, the digit '6', so five of the thirteen mirror bytes land in the text set and the margin
+-- comes to 10 letters against 5 -- which clears the ratio at exactly 2.00 and FAILS the absolute
+-- difference. Repeating Hello does not help, because repetition cannot change a ratio. ASCII94
+-- carries 80 letters over 62 DISTINCT values against the mirror's 27, a ratio of 2.96, so it passes
+-- on margin rather than on luck -- and being a pangram it covers the alphabet by construction, so
+-- the mirror set is as varied as the payload.
+local function ascii94_msb_vec(baud, fs)
+  local by, nb = GEN_BYTES(ASCII94)
+  local mirror, i = {}, nil
+  -- No math.mod: this file runs under whichever Lua the harness has, and mod left 5.1.
+  for i = 1, nb do
+    local out, src, b = 0, by[i], nil
+    for b = 1, 8 do
+      local half = math.floor(src / 2)
+      out = out * 2 + (src - half * 2)
+      src = half
+    end
+    mirror[i] = out
+  end
+  return {bytes = mirror, baud = baud, fs = fs, gap = 0, lead = 10, tail = 10,
+          loop = true}, by, nb, nil, ASCII94
+end
+
 vec{id = 'v77', desc = 'all 94 visible glyphs, 9600 8N1', fs = sr(9600), fsv = 5.0,
     build = function() return ascii94_vec(9600, sr(9600)) end}
 vec{id = 'v78', desc = 'all 94 visible glyphs, 9600 7E1', fs = sr(9600), fsv = 5.0,
     build = function() return ascii94_vec(9600, sr(9600), 7, 1) end}
+-- The board's own MSB case is Select 1 = D: 8N1, MSB first, the only MSB position of its sixteen.
+-- Reported from the field 2026-10-20 as decoding to nothing while a scope confirmed the line.
+vec{id = 'v79', desc = 'all 94 visible glyphs, 9600 8N1 MSB first', fs = sr(9600), fsv = 5.0,
+    build = function() return ascii94_msb_vec(9600, sr(9600)) end}
 
 -- ---------------------------------------------------------------------------
 -- A DOZEN RANDOM VECTORS, for cycling through a long soak
