@@ -60,28 +60,23 @@
 -- cells. Quote the judge; three different failure numbers come off one soak.
 --
 -- WHERE THE TWIN STILL IS NOT THE BENCH, stated because every one of these has hidden a real failure:
---   * NO GAP ELISION, AND IT IS THE BIGGEST ONE. For a vector soakplan holds to 'nodrop' the bench
---     engine takes the ARMED, RECORDING path: brun.point builds sdec.gap_model, the idle runs are cut
---     to one detector window, a fixed resume latency eats each burst's head and the splice puts it back
---     from the scratch buffers. This file takes ONE contiguous capture of A.n samples at the plan's
---     wait and none of that happens. On the lap above, restricted to those 288 cells: elision fired on
---     145 of them and 104 were bad, and of the 143 where it did not fire NOT ONE was bad. The rate band
---     says the same thing -- 61 of 64 bad between 5000 and 20000 Bd, 2 of 24 below 2500 -- which is
---     the seam edge at 4800 Bd, where the latency first costs half a bit.
---     THE HARNESS FOR THIS IS tools/offline_bench.lua, not this one: it drives the real engine, and it
---     now has --elide/--elide-vids. Reproducing brun's elide branch here would be a second copy of it.
+--   * GAP ELISION IS NO LONGER A DIVERGENCE, and this entry used to lead the list as the biggest one.
+--     The feature is removed -- the handover hole is forced by the instrument, see
+--     notes/HANDOFF-session70.md -- so the bench now takes one contiguous capture as this file does,
+--     and the two are aligned on that axis. Pre-fix evidence from the 2026-10-18 gap lap, kept because
+--     it is what the band figures below rest on: of 288 nodrop cells, elision fired on 145 and 104 of
+--     those were bad, while of the 143 where it did not fire NOT ONE was bad -- 61 of 64 bad between
+--     5000 and 20000 Bd against 2 of 24 below 2500.
 --   * NO TWO-PASS PROBE. fs comes from the COMMANDED baud, which the app never knows. The app probes at
 --     1 MS/s and picks fs from what the probe MEASURED, so where the probe misfits, the real capture
 --     runs at a rate this file will not choose -- r00 at 379 Bd was captured at 1250 S/s for 3.3
 --     samples/bit and decoded nothing, and here it gets 5000 S/s and decodes perfectly. On soak lap 1
 --     the two choices disagreed on 26 of 1385 cells, 1.9 %; on the gap lap it is 203 of 1512,
 --     13.4 %, and the difference is not drift in the probe -- 70 of the 203 are cells the app
---     refused BEFORE digitising, so it recorded no fs at all, and most of the rest are the elide path
---     choosing its own rate under brun.elide_fsmax (v98a ran 100000 at 14400, 19200 and 22747 Bd where
---     pick_fs asks 120000, 159806 and 200000, and fscap=500000 refused nine v99d cells outright).
---     So quote 1.9 % for the probe alone and 13.4 % for the whole fs disagreement.
---     THAT CAP IS GONE as of 2026-10-19 -- brun.elide_fsmax is nil and 640000 is excluded instead --
---     so the nine refusals above are pre-fix evidence from a named lap and not current behaviour.
+--     refused BEFORE digitising, so it recorded no fs at all. The rest were the elide path choosing
+--     its own rate under a cap, which is pre-fix evidence from a named lap: that path and its cap are
+--     both gone. So quote 1.9 % for the probe alone and 13.4 % for the whole fs disagreement, the
+--     latter measured on a build that still elided.
 --     The 13.4 % will have moved; re-measure it rather than quoting it after a cap change.
 --   * NO NOISE. The instrument contributes ~0.2-0.5 mV rms and nothing here does. Its bandwidth and
 --     aperture ARE modelled -- see frontend() -- but the noise is not, and it is measured to matter:

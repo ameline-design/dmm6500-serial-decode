@@ -3842,24 +3842,21 @@ function sdec.ck_levels(reader, ntotal, win)
 end
 
 -- How many windows the format search may spend, from the silence an armed record opens with: the first
---   [...]
--- must be nil there or sig_idle treats a genuine leading run as the wire before the device started -- but it
--- carries one detector window of idle at the END of every burst, and a short first burst leaves the search
--- looking at traffic, then idle, then giving up with 'no format' while every byte is present.
-function sdec.ck_prime_tries(leadmax, skip)
+-- window can be entirely the pre-trigger wait, so a search that looks there and nowhere else refuses a
+-- recording whose bytes are all present. leadmax is the caller's and cannot be derived from ntotal,
+-- the reserve coming out of the buffer's capacity; nil means no reserve. docs/MEASUREMENTS.md, 'An
+-- armed record opens on silence' and 'ck_prime_tries = floor(leadmax / W) + 2'.
+function sdec.ck_prime_tries(leadmax)
   local W = sdec.ck_win_n
   if W == nil or W < 1 then return 1 end
   if leadmax == nil or leadmax < 0 then leadmax = 0 end
-  if skip == nil or skip < 0 then skip = 0 end
-  local lead = leadmax
-  if skip > lead then lead = skip end
-  return math.floor(lead / W) + 2
+  return math.floor(leadmax / W) + 2
 end
 
-function sdec.ck_prime_new(reader, ntotal, win, leadmax, skip)
+function sdec.ck_prime_new(reader, ntotal, win, leadmax)
   if reader == nil then return nil, 'no sample source' end
   return {reader = reader, ntotal = ntotal, win = win, phase = 'lvd', probe = 0,
-          cnt = 0, at = 1, try = 1, tries = sdec.ck_prime_tries(leadmax, skip),
+          cnt = 0, at = 1, try = 1, tries = sdec.ck_prime_tries(leadmax),
           leadmax = leadmax,
           why = nil, label = 'levels'}, nil
 end
@@ -3938,8 +3935,8 @@ end
 -- the phase machine, not on the signal, so exceeding it is a coding fault. Derived rather than
 -- constant: one sized for ck_bufmax's reserve is no backstop at the ck_win_min floor, where the same
 -- reserve asks for an order of magnitude more tries. bufmax_for() can lower the cap at runtime.
-function sdec.ck_prime(reader, ntotal, win, leadmax, skip)
-  local pr, perr = sdec.ck_prime_new(reader, ntotal, win, leadmax, skip)
+function sdec.ck_prime(reader, ntotal, win, leadmax)
+  local pr, perr = sdec.ck_prime_new(reader, ntotal, win, leadmax)
   if pr == nil then return nil, perr end
   local done, fmt, err, guard = false, nil, nil, 0
   local gmax = 4 + (sdec.ck_probes or 1) + 3 * (pr.tries or 1)
@@ -4251,7 +4248,7 @@ function sdec.ck_job_new(reader, ntotal, path, opts)
   sdec.smp, sdec.nread = nil, 0
 
   local win = {}
-  local pr, perr = sdec.ck_prime_new(reader, ntotal, win, opts.leadmax, opts.primeskip)
+  local pr, perr = sdec.ck_prime_new(reader, ntotal, win, opts.leadmax)
   if pr == nil then return nil, perr end
   opts.win = win
 

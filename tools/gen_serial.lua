@@ -901,7 +901,7 @@ local function newbuf(cap)
   -- are 1 and n until something wraps the ring; SRC.ringoff below is what does that here.
   -- nstored is the ring's write position: readings stored since the last clear, which can exceed
   -- capacity where n cannot. It is the mock's own bookkeeping and not a firmware attribute, so nothing
-  -- in tsp/ may read it -- see ringput().
+  -- in tsp/ may read it.
   local b = {alive = true, capacity = cap, n = 0, readings = {}, nstored = 0,
              relativetimestamps = {}, fillmode = 0, startindex = 1, endindex = 0}
   function b.clear()
@@ -2293,56 +2293,12 @@ function TRIG_TERMINATES()
   return true
 end
 
--- ---------- THE TWO-BUFFER ELIDING ACQUISITION ----------
+-- ---------- THE ACQUISITION MODEL ----------
 --
--- WHY THIS EXISTS, and it is the gap that made every offline pass of gap elision consistent with a splice
--- that cannot work. The record buffer used to be filled CONTIGUOUSLY from the trigger point, so an elided
--- record had no timestamp discontinuity, sdec.gap_seams found one burst, and the splice never reached its
--- arithmetic -- tools/test_trigmodel.lua asserted exactly that, `spl_why == 'one burst'`. Nothing routed a
--- sample into a scratch, so a caller had to build the scratch contents itself by
--- subtracting what the record kept, which is the answer the splice is being asked to find.
---
--- What this models, from the program in sdec.gap_model and the measurements behind it:
---
---   * block b+1 digitizes into scratch gi for the whole gap AND through the WAIT, stopping only when
---     block b+3 is entered -- 'entering either measure block stops the other'. So the scratch holds the
---     gap's idle followed by the head the record is missing, which is the claim the splice rests on.
---   * block b+3 records the burst until the detector gives up: block b+4 delays one window and block b+5
---     branches back only if a crossing arrived during it, so the recorded tail is uniform on [W, 2W).
---   * the record's timestamps are ABSOLUTE source time, so the elided gaps appear as steps. That is what
---     gap_seams reads, and it is the whole reason a seam is locatable at all.
---   * the scratch is fillmode 1 and laps: the k-th stored reading lands at ((k-1) mod cap) + 1 and
---     startindex reports the rotation, which is what sdec.acq_first has to undo inside gap_tail.
---   * the groups come from the BLOCK STORE in order, not from an argument, so a program that named the
---     wrong buffer in the wrong slot elides into the wrong bin here too.
---
--- WHAT IT STILL CANNOT MODEL, and no assertion against it may claim otherwise: whether the firmware's
--- handover from block b+1's digitize to block b+3's is CONTINUOUS. This walk assumes it is -- the resume
--- latency's samples go to the scratch -- because that is the design's premise. A dead interval there would
--- put the head in no buffer at all, and its length would be a floor on the bytes a seam destroys that no
--- decoder change could reach. notes/HANDOFF-session67.md names the two-timestamp measurement that settles
--- it. Nor does it model a RECORD that laps; the poll loop's fill test is what prevents that, and
--- The rotation was swept separately.
+-- The two-buffer eliding acquisition that stood here is gone with the feature: the handover between two
+-- measure blocks is forced to lose samples on this instrument, see notes/HANDOFF-session70.md and
+-- section 10 of docs/TRIGGER.md. What remains below is the single-capture model every template uses.
 
-
--- One reading into a buffer behaving as the firmware's ring. The running total lives on the BUFFER and
--- not in the caller, so a scratch nobody cleared keeps its write position across arms: a missing clear
--- then shows up as a scratch holding a previous gap, which is the fault it would really be, rather than
--- as one that quietly restarted at slot 1. b.clear() is what resets it.
-local function ringput(b, v, t)
-  local cap = b.capacity or 1
-  local m = (b.nstored or 0) + 1
-  if (b.fillmode or 0) ~= 1 and m > cap then return false end
-  b.nstored = m
-  local p = math.mod(m - 1, cap) + 1
-  b.readings[p] = v
-  if t ~= nil then b.relativetimestamps[p] = t end
-  if m < cap then b.n = m else b.n = cap end
-  b.endindex = math.mod(m, cap)
-  -- Only a lapped ring is rotated, which is acq_first's own gate.
-  if m > cap then b.startindex = math.mod(m, cap) + 1 else b.startindex = 1 end
-  return true
-end
 
 
 

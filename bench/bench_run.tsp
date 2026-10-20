@@ -505,40 +505,17 @@ function brun.point(fs, baud, lock, vid)
   sdec.ck_stop, sdec.ck_cancel = false, nil
   okc2 = pcall(function() okd, whyd = sdec.decode() end)
   if brun.timing then pcall(function() brun.tdec = timer.gettime() end) end
-  -- HOW MANY WINDOWS THE DECODE ACTUALLY RAN, and why it stopped, which no row has ever carried. The
-  -- one-window exit above returns success, so the only evidence of it is the count: a record of n readings
-  -- at window width W should decode about n / W windows, and a 1 beside a record of tens of thousands is
-  -- the fault whatever else the row says.
+  -- THE DECODE-REACH DIAGNOSTIC IS GONE WITH ELISION, and it is worth saying why rather than leaving
+  -- the gap silent. Nine fields lived here -- decwin/decest/decwid/decstride/decn/bufn/ckstop/ckcancel
+  -- and cknf -- and every one of them read sdec.ck_tot, which ONLY the chunked decode builds. The bench
+  -- reached that path through stream_decode, and stream_decode was taken only by an eliding cell. So
+  -- with elision gone brun.point calls sdec.decode(), which is decode_from() single-shot and sets no
+  -- totals: the fields would be nil on every row. They are removed rather than emitted-as-nil.
   --
-  -- ck_tot.stopped AND NOT sdec.fc_end, which is the trap here -- both fields take the string 'stopped'
-  -- and only one of them is reachable. fc_end is written in sdec.record_run, the panel's entry, which this
-  -- engine never calls, so it is nil on every bench row by construction and could not test anything about
-  -- this path. ck_tot.stopped is set by chunk_decode's own loop and is the one that carries it.
-  --
-  -- Read through a guard: ck_tot is nil on a decode that never built totals, and the two flags are read
-  -- after the decode so they say what the cell LEFT behind rather than what it was handed.
-  if sdec.ck_tot ~= nil then
-    r.decwin, r.decstop = sdec.ck_tot.nwin, sdec.ck_tot.stopped
-    -- THE COUNT THE LOOP EXPECTED, which is the field that makes decwin decidable rather than
-    -- suggestive. ck_decode computes it from its own ntotal, W and stride before the first window, so
-    -- decwin == decest is a loop that ran to the end of what it was given, and decwin < decest is one
-    -- that stopped early -- and only the second is a defect. Without it the 2026-10-19 lap's 15 cells
-    -- covering 48-79 % of ring could not be told from 15 cells given a shorter total to cover.
-    r.decest = sdec.ck_tot.nwin_est
-    -- And the geometry, because the two counts above are in units of it: a window of W advancing by
-    -- stride is what turns nsmp back into "which break fired".
-    r.decwid, r.decstride = sdec.ck_tot.W, sdec.ck_tot.stride
-  end
-  -- AND THE BOUND THE WINDOW LOOP WAS GIVEN, beside the reach above, because the two together are what
-  -- make a short decode readable. On a spliced read the loop's ntotal is the PLAN's total and not the
-  -- record's -- nread plus the heads put back -- so `decwin=2 ckwin=2/39187` against `ring=81792` says the
-  -- decode stopped early only once decn says what it was aiming at. Read outside the ck_tot guard: a
-  -- decode that built no totals still had a bound, and that combination is the interesting one.
-  r.decn = sdec.ck_nrd
-  -- The live count too, since ring= carries sdec.nread, which is a copy taken earlier in the cell. A
-  -- bufn that disagrees with it means the record changed under the decode, which nothing else would show.
-  pcall(function() if sdec.buf ~= nil then r.bufn = sdec.buf.n end end)
-  r.ckstop, r.ckcancel = sdec.ck_stop, sdec.ck_cancel
+  -- WHAT WAS LOST: no lap can now answer "did the decode cover the record it scored?", which is the
+  -- question that found the 2026-10-19 lap's 15 cells covering 48-79 % of their records while every
+  -- other field on the row looked ordinary. Restoring it means making the bench take the chunked
+  -- decode, which is a design decision and not a tidy-up. notes/HANDOFF-session70.md carries it.
   brun.spin_tick()                      -- 4 of 6: the decode is done
   if not okc2 then r.why = 'decode raised'; return r end
   if not okd then
@@ -556,8 +533,8 @@ function brun.point(fs, baud, lock, vid)
   local res = sdec.res
   r.ran     = true
   -- THE OVER-READ ON EVERY ROW. sdec.acquire() carries the margin on every capture. It was once
-  -- once recorded on one capture path only, where it was absent from all 324 rows of a lap that did
-  -- not take that path -- and the absence was read out loud as "the over-read was off" when it meant
+  -- recorded on one capture path only, where it was absent from all 324 rows of a lap that did not
+  -- take that path -- and the absence was read out loud as "the over-read was off" when it meant
   -- "this row lacks the field". A setting the record cannot show is a setting the lap does not test.
   r.overread = sdec.strm_overread
   r.fs      = sdec.acq_fs
@@ -1454,7 +1431,6 @@ function brun.errsline()
   --
   -- Derived from paymatch/paycmp, the SAME pair brun.nwrong keys on and inside the same gate, so the two
   -- figures on this line cannot disagree about which cells they counted. The per-segment pair
-  -- (payb/paybcmp) is deliberately not used here: it is a different alignment, and a Bad: that counted
   -- one alignment beside a wrong: that counted another would be a self-contradicting row.
   local head = 'Errors: ' .. brun.int(n + act)
   if (brun.ncmpb or 0) > 0 then
@@ -2646,7 +2622,7 @@ function brun.soak(iterations, tag)
           brun.npayj = brun.npayj + 1
           -- The bytes, in the same gate as the cell count so the panel's two figures always describe
           -- the same set of cells. Accumulated rather than derived at draw time: the per-cell pair is
-          -- gone by the next cell, and the row's own payb= field is a different alignment.
+          -- gone by the next cell.
           brun.ncmpb = (brun.ncmpb or 0) + p.paycmp
           brun.nbadb = (brun.nbadb or 0) + (p.paycmp - p.paymatch)
           if p.paymatch < p.paycmp * brun.paywrong_frac then
@@ -2704,8 +2680,8 @@ function brun.soak(iterations, tag)
       -- THE OVER-READ IN FORCE, on every cell. The record has to answer "was it on" without trusting
       -- the launch command: a setting the record cannot show is a setting the lap does not test.
       if p.overread ~= nil then nt = nt .. string.format(' over=%.2f', p.overread) end
-      -- The payload verdict, on every cell that has one: the
-      -- cells are the control, and the whole question is whether elision is what makes the bytes wrong.
+      -- The payload verdict, on every cell that has one. This is what brun.nwrong and the panel's red
+      -- rule are computed from.
       -- Matched of compared, so the row says HOW wrong rather than only that it was -- a cell at 0 of
       -- 324 and a cell at 321 of 324 are different faults and the pass/fail alone cannot tell them
       -- apart. Confident frames only; the ones the app flagged are counted by nflag already.
@@ -2714,10 +2690,6 @@ function brun.soak(iterations, tag)
       end
       -- Only where it DISAGREES with pay=, which is the whole information: equal figures mean one burst
       -- or seams that cost nothing, and printing them twice would grow every row in a lap for nothing.
-      if p.paybcmp ~= nil and p.payb ~= nil and p.payb ~= (p.paymatch or -1) then
-        nt = nt .. string.format(' payb=%s/%s/%s', brun.int(p.payb), brun.int(p.paybcmp),
-                                 brun.int(p.paybn or 0))
-      end
       -- Elision's own verdict on the row, and only where it was asked for, so a lap without it stays
       -- byte-identical. 'FELLBACK' is the one that matters: the capture succeeded, the bytes may be
       -- perfect, and the six-block program never ran -- a pass that proves nothing.

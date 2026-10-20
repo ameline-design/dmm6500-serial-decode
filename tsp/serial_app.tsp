@@ -39,11 +39,12 @@ if sdec.strm_press == nil then sdec.strm_press = false end
 sdec.strm_maxsec = sdec.strm_maxsec or 1200
 -- Seconds of signal the blocking fallback may record. Short, because nothing can poll it.
 sdec.strm_fallback_s = sdec.strm_fallback_s or 20
--- Fraction of extra samples an eliding recording asks for. A gap shorter than the detector window is never
--- elided and is recorded in full, and those samples come out of the same count the payload does -- so without
--- this the bytes lost are the ones at the end of the mode's budget. The decoder already skips idle, so the
--- over-read buys payload and not correctness. Free on a 6 000 000-reading record, where a 21 100-reading one
--- had nowhere to put it. Elide path only: a free-running capture has no gaps it declined to remove.
+-- Fraction of extra samples a recording asks for. Every pause the line takes is recorded in full, and
+-- those samples come out of the same count the payload does -- so without this the
+-- bytes lost are the ones at the end of the mode's budget. The decoder already skips idle, so the
+-- over-read buys payload and not correctness. Free on a 6 000 000-reading record, where a 21 100-reading
+-- one had nowhere to put it. EVERY capture, not a subset: sdec.acquire() applies it, and the
+-- declaration said 'elide path only' for long enough that the claim outlived the path.
 sdec.strm_overread = sdec.strm_overread or 0.10
 -- The most the Options field will offer. A ceiling and not a limit on what is sensible: the over-read
 -- buys payload against the samples a refused gap costs, and a gap vector spends at most a third of a
@@ -713,13 +714,9 @@ function sdec.stream_decode(got)
                 progress = sdec.ck_progress}
   -- How much silence the record may open with, which only this path knows. docs/MEASUREMENTS.md,
   -- 'An armed record opens on silence'.
-  -- An elided record has no reserve at all, so leadmax must stay nil on that path. The hand-built program takes no
-  -- position argument: every burst opens at its own crossing and the samples before it are in the scratch. Left
-  -- set, pretrig defaulting to 5 would make leadmax a fiction, acq_pretrig would come back true, and sig_idle
-  -- would treat a genuine leading run as the wire before the device started. docs/TRIGGER.md,
-  -- 'Reading the record back'.
-  -- From the position that actually loaded and not from sdec.pretrig, which acq_pospct scales down against
-  -- the permanent record: a leadmax taken from the unscaled figure would be a 300 000-reading fiction.
+  -- The reserve comes from the position that actually loaded and not from sdec.pretrig, which acq_pospct
+-- scales down against the permanent record: a leadmax taken from the unscaled figure would be a
+-- 300 000-reading fiction.
   if sdec.strm_armed and sdec.buf ~= nil then
     opts.leadmax = sdec.acq_leadmax(sdec.buf)
   end
@@ -883,13 +880,9 @@ function sdec.stream_arm(nsmp)
   -- 'Choosing a shape', 'Pre-trigger, and what the comparator needs' and
   -- 'The canned templates and the fast path'.
   local armed = (sdec.arm_silent() and sdec.trigmode ~= 'free')
-  -- Cleared per arm: the elision program loads no position at all, and a stale one would put a reserve in
-  -- leadmax that this recording does not have.
+  -- Cleared per arm: a refused load must not leave the previous arm's value standing.
   sdec.acq_posloaded = nil
   local ok = false
-  -- The enforced elision window, or nil for every path that is not eliding -- which is all of them unless the
-  -- operator asked. Carried out of the branch below because what was actually loaded decides how the record is
-  -- read back, and the option alone does not.
   if armed then
     -- The source, the blender and the TRIGGER-key break-in, from the one function that decides them. The
     -- nil branch is live: arm_source() returns nil when its trigger constant is itself absent.
@@ -947,28 +940,6 @@ function sdec.stream_arm(nsmp)
     local spun, saw = 0, false
     while spun < (sdec.arm_settle_s or 0.25) do
       if sdec.trig_waiting() == true then saw = true break end
-      -- On the eliding program only, a record that is already filling is the model having left its wait
-      -- block -- which is the thing this loop is trying to observe and cannot, on a line that is already
-      -- transmitting: the model leaves block 2 within a bit time and trigger.model.state() lags about
-      -- 190 ms, so STATE_WAITING is never sampled and the loop spins the whole arm_settle_s.
-      --
-      -- Scoped to that program because the canned LoopUntilEvent cannot be read this way: its single
-      -- buffer IS the record, so the pre-trigger reserve fills it WHILE it waits and buf.n > 0 says
-      -- nothing about the trigger. The six-block program has block 1 measuring into the scratch, so its
-      -- record stays empty until block 3 -- the distinction is the whole reason there are two buffers.
-      -- tools/test_streamfix.lua pins the canned behaviour and caught this when it was written without
-      -- the qualifier.
-      --
-      -- Ten seconds of that is not merely slow, it corrupts the record. The digitize runs throughout,
-      -- and past a few seconds the instrument stores only ~100 000 readings a second whatever the ADC
-      -- is doing -- its own words are 'Processing reading backlog'. Measured in one lap of the gap
-      -- vectors: the cells captured while the generator happened to be starting late ran the digitize
-      -- under half a second and came back at the full 1 MS/s with 0 to 3 bad frames of several hundred,
-      -- byte-exact at 250 000 Bd; the cells after it spun the full ten seconds, came back at 83 333 with
-      -- 84 % of samples missing, and decoded 355 to 685 bad frames each. Same code, same bauds, one lap.
-      --
-      -- The silent-line case this loop was written for is unaffected: there the record stays empty while
-      -- the model waits, so buf.n is 0 and the loop still waits out its full ceiling.
       delay(0.01)
       spun = spun + 0.01
     end
@@ -1142,8 +1113,7 @@ function sdec.stream_acquire(nsmp)
     if sdec.strm_armed then
       if armdone and sdec.trig_done(buf) then sdec.ck_endwhy = 'full'; break end
     elseif have >= nsmp then
-      -- The sample count is the only completion an eliding model has. trig_done() wants STATE_IDLE and the
-      -- elision program is a BRANCH_ALWAYS loop, so it never idles by itself -- that is the point of it. Left on
+      -- The sample count is the completion test for an unarmed recording. Left on
       -- the armed branch the fill test is unreachable, and because the record is fillmode = 1 it would not stop
       -- but WRAP, overwriting its own earliest bursts until some other exit fired, and then report a full record
       -- that had quietly lost its oldest traffic. docs/TRIGGER.md, 'How a recording ends'.

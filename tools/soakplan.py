@@ -257,9 +257,11 @@ def rate_ladder():
 
 
 # Rates dropped from the draw despite being in sdec.stdbaud. 1800 is the one genuinely non-standard entry
-# below 2400 and 600 the least used of the classic ones; 300 and 1200 stay as the low-end anchors, and
-# they are what keeps a cell on the 100 ms low-baud window tier (brun.elide_win_low) rather than leaving
-# it dead code.
+# below 2400 and 600 the least used of the classic ones; 300 and 1200 stay as the low-end anchors,
+# because the decoder's samples-a-bit floor and its rate fit both behave differently down there and a
+# ladder with nothing below 2400 would stop covering it. (They were also what kept a cell on the
+# 100 ms low-baud elision window tier; that tier is gone with the feature, so this is now the whole
+# reason rather than the second one.)
 #
 # DROPPED HERE RATHER THAN BY RAISING BAUD_LO, because the range bounds are asserted against every emitted
 # plan and a reader of a plan needs to see which rates went and why.
