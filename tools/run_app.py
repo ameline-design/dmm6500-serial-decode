@@ -72,10 +72,10 @@ function app_report()
                       tostring(r and r.nf), tostring(r and r.ngood),
                       tostring(r and r.nbad), tostring(sdec.force_baud),
                       tostring(sdec.capmode), tostring(sdec.ui_mode)))
-  print(string.format('R window=%s delfails=%s fillfails=%s errcount=%s log=%s',
+  print(string.format('R window=%s delfails=%s errcount=%s log=%s',
                       tostring(sdec.window_bytes and r and
                                sdec.window_bytes(sdec.baud, r.nbits, r.par, r.nstop)),
-                      tostring(sdec.delfails), tostring(sdec.fillfails),
+                      tostring(sdec.delfails),
                       tostring(sdec.errcount), tostring(sdec.flog_bytes)))
   local nt, nn = sdec.ui_notes()
   local i

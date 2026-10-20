@@ -2007,8 +2007,8 @@ function sdec.acq_make_buffer(n)
   -- Only where a delete preceded it. With nothing freed there is nothing to wait for, so an ordinary
   -- first allocation pays neither the collection nor the 0.05 s.
   if freed then
-    pcall(collectgarbage)
-    pcall(delay, sdec.acq_freesettle)
+    collectgarbage()
+    delay(sdec.acq_freesettle)
     sdec.acq_presettle = (sdec.acq_presettle or 0) + 1
   end
   -- Guarded at the allocation, the only thing here that can raise. Standard and not compact, and not by
@@ -2017,7 +2017,7 @@ function sdec.acq_make_buffer(n)
   -- The read-back and not the pcall: a refused buffer.make returns nil while pcall reports success, and
   -- deleting what it returned posts 1138.
   if (type(cap) ~= 'number' or cap < 10) and freed then
-    pcall(delay, sdec.acq_freesettle)
+    delay(sdec.acq_freesettle)
     nb, cap = sdec.bufmake(n)
     if type(cap) == 'number' and cap >= 10 then
       sdec.acq_remade = (sdec.acq_remade or 0) + 1
@@ -2151,7 +2151,7 @@ end
 -- Stop the trigger model and wait for it to stop, abort() being asynchronous. Bounded, because a model that will
 -- not idle must not hang the panel. Every caller is bare: each firmware call here carries its own guard.
 function sdec.trig_settle()
-  pcall(trigger.model.abort)
+  trigger.model.abort()
   local i
   local unread = 0
   for i = 1, 50 do
@@ -2171,7 +2171,7 @@ function sdec.trig_settle()
       if unread >= 10 then return false end
     end
     -- The sleep carries its own guard, so a raise out of delay() cannot escape into sdec.stop()'s teardown.
-    pcall(delay, 0.01)
+    delay(0.01)
   end
   return false
 end
@@ -2251,14 +2251,14 @@ function sdec.arm_source()
   -- Release the blender when not using it. Not a correctness bug -- the model waits on `ev` -- but the next thing
   -- to use a blender would inherit this app's stimuli and its overrun flag.
   if not sdec.trigext then
-    pcall(trigger.blender[1].reset)
+    trigger.blender[1].reset()
   end
   if sdec.trigext and sdec.trigext_only and sdec.trigmode ~= 'free' then
     -- The rear BNC alone: no blender, and the comparator turned off below by clearing useanalog, since leaving it
     -- armed keeps a live stimulus on a model that no longer waits on it. This is what anchors a capture.
     ev = trigger.EVENT_EXTERNAL
     useanalog = false
-    pcall(trigger.blender[1].reset)
+    trigger.blender[1].reset()
   elseif sdec.trigext and sdec.trigmode ~= 'free' then
     local bok = pcall(function()
       trigger.blender[1].reset()
@@ -2482,7 +2482,7 @@ function sdec.acq_triggered(n, slope)
     -- argument. docs/MEASUREMENTS.md, 'The flow-control credit pulse on the free-run path'.
     if sdec.fc_out then
       -- Table tested for the same reason as fc_credit(). The verdict is discarded here by design.
-      if trigger.extout ~= nil then pcall(trigger.extout.assert) end
+      if trigger.extout ~= nil then trigger.extout.assert() end
     end
 
     -- A bounded wait, because a bare waitcomplete() is a hang, and the note is painted once -- a touch press only

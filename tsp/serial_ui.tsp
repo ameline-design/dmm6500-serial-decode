@@ -274,12 +274,14 @@ sdec.ui_tick_s = sdec.ui_tick_s or 0.5
 -- does not -- docs/MEASUREMENTS.md, 'Clearing the handler is the only timer off switch'.
 function sdec.ui_tick_off()
   if sdec.ui_tick_obj == nil then return false end
-  return pcall(display.setevent, sdec.ui_tick_obj, display.EVENT_PRESS, '')
+  display.setevent(sdec.ui_tick_obj, display.EVENT_PRESS, '')
+  return true
 end
 
 function sdec.ui_tick_on()
   if sdec.ui_tick_obj == nil then return false end
-  return pcall(display.setevent, sdec.ui_tick_obj, display.EVENT_PRESS, 'sdec.guard(sdec.ui_tick)')
+  display.setevent(sdec.ui_tick_obj, display.EVENT_PRESS, 'sdec.guard(sdec.ui_tick)')
+  return true
 end
 
 -- Look for a key that has come or gone, and make the panel agree. -> true if anything moved.
@@ -591,16 +593,23 @@ function sdec.ui_set(h, txt)
   -- Not a micro-optimisation: display calls are asynchronous messages over a bounded queue, and
   -- "1706 Message dropped from display queue" precedes the firmware panics.
   if sdec.ui_last[h] == txt then return false end
-  local ok = pcall(display.settext, h, txt)
-  if ok then sdec.ui_last[h] = txt end
-  return ok
+  -- No guard: no display call on this firmware transfers control -- it posts an event and returns, or
+  -- returns a value saying so. The verdict was therefore a constant, and the cache update it gated
+  -- happened every time anyway. The h == nil test above stays: that one is real, because the build
+  -- may never have created the object.
+  display.settext(h, txt)
+  sdec.ui_last[h] = txt
+  return true
 end
 
 -- Set an object's colour, tolerating a handle the build never created.
 function sdec.ui_color(h, c)
   if h == nil then return false end
-  -- Guarded: setcolor fails on Image objects (1717) and is unconfirmed on text.
-  return (pcall(display.setcolor, h, c))
+  -- setcolor on an object that does not take it files 1717 AND RETURNS -- measured, docs/UNDOCUMENTED.md
+  -- 'display.settext works on an OBJ_SCREEN, and setcolor on one is refused with 1717'. So the refusal
+  -- is a log entry, never a raise, and a pcall verdict here was the constant true.
+  display.setcolor(h, c)
+  return true
 end
 
 -- How many entries the instrument's log holds, or nil where it cannot be asked. The one signal a
@@ -656,31 +665,29 @@ function sdec.del_orphans()
   return nk
 end
 
--- Recolour rect `h` to `c`, counting a refusal in sdec.fillfails, which the status row surfaces.
+-- Recolour rect `h` to `c`. -> false only for a nil handle: the firmware cannot refuse this in a way
+-- a caller could see, so there is nothing else to report.
 -- Colour a rect with setcolor, not setfill: a 24-bit colour is refused with 1130, and enough
 -- refusals per refresh raise a modal dialog over the panel. setfill does nothing to a rect at all.
 function sdec.ui_fill(h, c)
   if h == nil then return false end
-  local ok = pcall(display.setcolor, h, c)
-  if not ok then sdec.fillfails = (sdec.fillfails or 0) + 1 end
-  return ok
+  display.setcolor(h, c)
+  return true
 end
 
 -- Make a rect paint: 100 % foreground, once per rect at build time.
 function sdec.ui_fill_solid(h)
   if h == nil then return false end
-  local ok = pcall(display.setfill, h, 100)
-  if not ok then sdec.fillfails = (sdec.fillfails or 0) + 1 end
-  return ok
+  display.setfill(h, 100)
+  return true
 end
 
 -- Show or hide object `h`. The only way to take a rect or a line off the glass: recolouring one to
 -- ui_c_hide does not hide it, and that works for the dump rules only because they are 1 px wide.
 function sdec.ui_setstate(h, st)
   if h == nil then return false end
-  local ok = pcall(display.setstate, h, st)
-  if not ok then sdec.fillfails = (sdec.fillfails or 0) + 1 end
-  return ok
+  display.setstate(h, st)
+  return true
 end
 
 -- Paint the acquire/decode bar at `pct` (0..100), or hide it when pct is nil -- every state with no
@@ -714,7 +721,7 @@ function sdec.ui_progbar_set(pct)
       local w = math.floor(pct * sdec.ui_prog_wmax / 100 + 0.5)
       if w < 1 then w = 1 end
       local x0 = sdec.ui_prog_x + 1
-      pcall(display.setposition, sdec.ui_progline, x0, sdec.ui_prog_ly, x0 + w - 1, sdec.ui_prog_ly)
+      display.setposition(sdec.ui_progline, x0, sdec.ui_prog_ly, x0 + w - 1, sdec.ui_prog_ly)
     end
     sdec.ui_progpct = pct
   end
@@ -1237,7 +1244,7 @@ function sdec.ui_destroy()
   -- Switch away before deleting a visible screen, and delete children before their screen. The cover
   -- counts as a screen to leave: gating on ui_scr alone deleted the screen the panel was showing.
   if sdec.ui_scr ~= nil or sdec.ui_loadscr ~= nil then
-    pcall(display.changescreen, display.SCREEN_HOME)
+    display.changescreen(display.SCREEN_HOME)
   end
   local i
   if sdec.ui_row ~= nil then
@@ -1326,7 +1333,7 @@ end
 -- exhausted, and a missing cover costs only a visible build.
 function sdec.ui_loading_front()
   if sdec.ui_loadscr == nil then return false end
-  pcall(display.changescreen, sdec.ui_loadscr)
+  display.changescreen(sdec.ui_loadscr)
   return true
 end
 
@@ -1341,7 +1348,7 @@ function sdec.ui_loading_raise()
                                      'Loading, please wait...', 0xFFFFFF, display.FONT_MEDIUM)
   end
   -- The create above already took the front, so this is only for a raise over an existing cover.
-  pcall(display.changescreen, sdec.ui_loadscr)
+  display.changescreen(sdec.ui_loadscr)
   return true
 end
 
@@ -1350,7 +1357,7 @@ end
 -- left the panel displaying a deleted object, so it falls back to SCREEN_HOME.
 function sdec.ui_loading_clear(showscr)
   if showscr == nil then showscr = display.SCREEN_HOME end
-  pcall(display.changescreen, showscr)
+  display.changescreen(showscr)
   if sdec.ui_loadscr == nil then return false end
   sdec.del_obj(sdec.ui_loadtxt)
   sdec.del_obj(sdec.ui_loadscr)
@@ -1513,23 +1520,26 @@ function sdec.ui_build(hold)
   sdec.ui_progbox = create(sdec.ui_scr, display.OBJ_RECT, sdec.ui_prog_x, sdec.ui_prog_y,
                            sdec.ui_prog_w, sdec.ui_prog_h)
   sdec.ui_fill(sdec.ui_progbox, sdec.ui_c_prog_box)
-  pcall(display.setthickness, sdec.ui_progbox, 1)
+  display.setthickness(sdec.ui_progbox, 1)
   sdec.ui_progline = create(sdec.ui_scr, display.OBJ_LINE, sdec.ui_prog_x + 1, sdec.ui_prog_ly,
                             sdec.ui_prog_x + 1, sdec.ui_prog_ly)
   sdec.ui_fill(sdec.ui_progline, sdec.ui_c_prog)
-  pcall(display.setthickness, sdec.ui_progline, sdec.ui_prog_lw)
+  display.setthickness(sdec.ui_progline, sdec.ui_prog_lw)
   -- Hidden until a run needs it. The caches are nil, so this genuinely writes STATE_INVISIBLE to both
   -- rather than believing they are already away -- the bug that put a grey frame on the glass.
   sdec.ui_progbar_set(nil)
 
   -- A tick, so the key is noticed without a press; interval and cost are at sdec.ui_tick_s --
   -- docs/MEASUREMENTS.md, 'display.OBJ_TIMER is the only periodic work'.
-  local tok, tobj = pcall(display.create, sdec.ui_scr, display.OBJ_TIMER, sdec.ui_tick_s,
-                          display.TIMER_FOREVER)
+  -- display.create RETURNS NIL when the pool is gone and posts nothing -- it is the one firmware call
+  -- in this file whose refusal is a return value rather than a log entry, which is why the nil test
+  -- below is the real check and a guard never added anything.
+  local tobj = display.create(sdec.ui_scr, display.OBJ_TIMER, sdec.ui_tick_s,
+                              display.TIMER_FOREVER)
   sdec.ui_tick_obj = nil
-  if tok then sdec.ui_tick_obj = tobj end
+  if tobj ~= nil then sdec.ui_tick_obj = tobj end
   if sdec.ui_tick_obj ~= nil then
-    pcall(display.setevent, sdec.ui_tick_obj, display.EVENT_PRESS, 'sdec.guard(sdec.ui_tick)')
+    display.setevent(sdec.ui_tick_obj, display.EVENT_PRESS, 'sdec.guard(sdec.ui_tick)')
   end
 
   sdec.ui_page_t = create(sdec.ui_scr, display.OBJ_TEXT, x, sdec.ui_stat_y, '',
@@ -1664,10 +1674,10 @@ if sdec.ui_savebtn ~= nil or sdec.ui_newlogbtn ~= nil then
     local sst = display.STATE_INVISIBLE
     if sw then sst = display.STATE_ENABLE end
     if sdec.ui_savebtn ~= nil then
-      pcall(display.setstate, sdec.ui_savebtn, sst)
+      display.setstate(sdec.ui_savebtn, sst)
     end
     if sdec.ui_newlogbtn ~= nil then
-      pcall(display.setstate, sdec.ui_newlogbtn, sst)
+      display.setstate(sdec.ui_newlogbtn, sst)
     end
     sdec.ui_savevis = sw
     return true
@@ -1706,7 +1716,7 @@ function sdec.ui_page_btns()
     if want then st = display.STATE_ENABLE end
     local i
     for i = 1, table.getn(t) do
-      pcall(display.setstate, t[i], st)
+      display.setstate(t[i], st)
     end
     sdec.ui_pgvis = want
   end
@@ -1720,7 +1730,7 @@ function sdec.ui_page_btns()
     if lw ~= sdec.ui_lockvis then
       local lst = display.STATE_INVISIBLE
       if lw then lst = display.STATE_ENABLE end
-      pcall(display.setstate, sdec.ui_lockbtn, lst)
+      display.setstate(sdec.ui_lockbtn, lst)
       sdec.ui_lockvis = lw
     end
   end
@@ -1763,10 +1773,12 @@ function sdec.ui_refresh_do()
     sdec.ui_color(sdec.ui_trigsrc_t, tsrc.c)
     sdec.ui_trigsrcc = tsrc.c
   end
-  -- The title bar names the mode too, retexted on change and guarded: a refusal must cost the bar.
+  -- The title bar names the mode too, retexted on change. The cache is written unconditionally: a
+  -- settext that is refused posts an event and returns, so there was never a verdict to gate it on.
   local ttl = sdec.ui_title_text()
   if sdec.ui_titletxt ~= ttl then
-    if pcall(display.settext, sdec.ui_scr, ttl) then sdec.ui_titletxt = ttl end
+    display.settext(sdec.ui_scr, ttl)
+    sdec.ui_titletxt = ttl
   end
   set(sdec.ui_note, sdec.ui_note_text())
 
@@ -1865,10 +1877,13 @@ function sdec.ui_refresh_do()
   if sdec.proto ~= nil and sdec.proto ~= 'uart' then
     st = string.upper(sdec.proto) .. ' ' .. st
   end
-  -- delfails/fillfails are display-API refusals, and this row is the only place that reports them.
+  -- delfails is a display-API refusal and this row is the only place that reports it. fillfails went
+  -- with the guards that were its only writers: no display call transfers control, so the three
+  -- counters feeding it could never increment on the instrument. delfails survives because its other
+  -- writers are on the BUFFER path, where buffer.* really does raise on a dead handle.
   local warn = ''
-  if (sdec.delfails or 0) > 0 or (sdec.fillfails or 0) > 0 then
-    warn = string.format('  del?%d fill?%d', sdec.delfails or 0, sdec.fillfails or 0)
+  if (sdec.delfails or 0) > 0 then
+    warn = string.format('  del?%d', sdec.delfails or 0)
   end
   -- The status row leads with the capture mode, the setting that changes what capture does. The
   -- streaming modes get a different row: they produce a file, so page/of/bytes describes nothing.
@@ -2346,7 +2361,7 @@ function sdec.destroy_options()
     -- Switch away before deleting, or the firmware is left showing a deleted screen.
     local scr = sdec.ui_scr
     if scr == nil then scr = display.SCREEN_HOME end
-    pcall(display.changescreen, scr)
+    display.changescreen(scr)
     -- sdec.options() suspends the tick, so tearing the form down is one of the exits that re-arm.
     if sdec.ui_scr ~= nil then sdec.ui_tick_on() end
   end
@@ -2589,7 +2604,7 @@ function sdec.build_options()
 
   -- Hook End App on this screen too: if the firmware delivers EVENT_ENDAPP only to the visible
   -- screen, exiting from the form would strand both screens and the buffer until a power cycle.
-  pcall(display.setevent, sdec.optscr, display.EVENT_ENDAPP, 'sdec.guard(sdec.cleanup)')
+  display.setevent(sdec.optscr, display.EVENT_ENDAPP, 'sdec.guard(sdec.cleanup)')
 
   -- The cover comes down only if this function raised it; on a launch start() owns it.
   if covermine then sdec.ui_loading_clear(sdec.optscr) end

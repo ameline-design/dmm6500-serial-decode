@@ -347,8 +347,14 @@ check('nothing relied on the parent cascade', (select(1, MD.cascaded())) == 0,
       select(2, MD.cascaded()))
 check('no deletion was refused', sdec.delfails == 0,
       'delfails=' .. tostring(sdec.delfails))
-check('no fill was refused', sdec.fillfails == 0,
-      'fillfails=' .. tostring(sdec.fillfails))
+-- 'no fill was refused' stood here and was a TAUTOLOGY by the end: its three writers were pcall
+-- verdicts on display calls, and no display call on this firmware transfers control. The mock's
+-- change to post-and-return made it vacuous offline too, so the check could not fail either way.
+-- What replaced it is the mock's own refusal census, which counts a refused call whether or not
+-- anyone guards it -- a strictly stronger statement than the one that was here.
+check('no display call was refused building and tearing down the app', MD.nrefused() == 0,
+      tostring(MD.nrefused()) .. ' refusal(s): '
+      .. tostring(MD.nrefused() > 0 and MD.refusals()[1] or 'none'))
 
 print()
 -- ===========================================================================

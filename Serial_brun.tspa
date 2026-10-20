@@ -1811,13 +1811,13 @@ function sdec.acq_make_buffer(n)
     freed = true
   end
   if freed then
-    pcall(collectgarbage)
-    pcall(delay, sdec.acq_freesettle)
+    collectgarbage()
+    delay(sdec.acq_freesettle)
     sdec.acq_presettle = (sdec.acq_presettle or 0) + 1
   end
   local nb, cap = sdec.bufmake(n)
   if (type(cap) ~= 'number' or cap < 10) and freed then
-    pcall(delay, sdec.acq_freesettle)
+    delay(sdec.acq_freesettle)
     nb, cap = sdec.bufmake(n)
     if type(cap) == 'number' and cap >= 10 then
       sdec.acq_remade = (sdec.acq_remade or 0) + 1
@@ -1931,7 +1931,7 @@ end
 -- Stop the trigger model and wait for it to stop, abort() being asynchronous. Bounded, because a model that will
 -- not idle must not hang the panel. Every caller is bare: each firmware call here carries its own guard.
 function sdec.trig_settle()
-  pcall(trigger.model.abort)
+  trigger.model.abort()
   local i
   local unread = 0
   for i = 1, 50 do
@@ -1946,7 +1946,7 @@ function sdec.trig_settle()
       unread = unread + 1
       if unread >= 10 then return false end
     end
-    pcall(delay, 0.01)
+    delay(0.01)
   end
   return false
 end
@@ -2000,12 +2000,12 @@ function sdec.arm_source()
 
   local blended = false
   if not sdec.trigext then
-    pcall(trigger.blender[1].reset)
+    trigger.blender[1].reset()
   end
   if sdec.trigext and sdec.trigext_only and sdec.trigmode ~= 'free' then
     ev = trigger.EVENT_EXTERNAL
     useanalog = false
-    pcall(trigger.blender[1].reset)
+    trigger.blender[1].reset()
   elseif sdec.trigext and sdec.trigmode ~= 'free' then
     local bok = pcall(function()
       trigger.blender[1].reset()
@@ -2164,7 +2164,7 @@ function sdec.acq_triggered(n, slope)
     trigger.model.initiate()
 
     if sdec.fc_out then
-      if trigger.extout ~= nil then pcall(trigger.extout.assert) end
+      if trigger.extout ~= nil then trigger.extout.assert() end
     end
 
     if sdec.arm_silent() and sdec.armnote ~= nil then
@@ -4688,12 +4688,14 @@ sdec.ui_tick_s = sdec.ui_tick_s or 0.5
 -- does not -- docs/MEASUREMENTS.md, 'Clearing the handler is the only timer off switch'.
 function sdec.ui_tick_off()
   if sdec.ui_tick_obj == nil then return false end
-  return pcall(display.setevent, sdec.ui_tick_obj, display.EVENT_PRESS, '')
+  display.setevent(sdec.ui_tick_obj, display.EVENT_PRESS, '')
+  return true
 end
 
 function sdec.ui_tick_on()
   if sdec.ui_tick_obj == nil then return false end
-  return pcall(display.setevent, sdec.ui_tick_obj, display.EVENT_PRESS, 'sdec.guard(sdec.ui_tick)')
+  display.setevent(sdec.ui_tick_obj, display.EVENT_PRESS, 'sdec.guard(sdec.ui_tick)')
+  return true
 end
 
 -- Look for a key that has come or gone, and make the panel agree. -> true if anything moved.
@@ -4937,15 +4939,16 @@ function sdec.ui_set(h, txt)
   if h == nil then return false end
   if sdec.ui_last == nil then sdec.ui_last = {} end
   if sdec.ui_last[h] == txt then return false end
-  local ok = pcall(display.settext, h, txt)
-  if ok then sdec.ui_last[h] = txt end
-  return ok
+  display.settext(h, txt)
+  sdec.ui_last[h] = txt
+  return true
 end
 
 -- Set an object's colour, tolerating a handle the build never created.
 function sdec.ui_color(h, c)
   if h == nil then return false end
-  return (pcall(display.setcolor, h, c))
+  display.setcolor(h, c)
+  return true
 end
 
 -- How many entries the instrument's log holds, or nil where it cannot be asked. The one signal a
@@ -4991,31 +4994,29 @@ function sdec.del_orphans()
   return nk
 end
 
--- Recolour rect `h` to `c`, counting a refusal in sdec.fillfails, which the status row surfaces.
+-- Recolour rect `h` to `c`. -> false only for a nil handle: the firmware cannot refuse this in a way
+-- a caller could see, so there is nothing else to report.
 -- Colour a rect with setcolor, not setfill: a 24-bit colour is refused with 1130, and enough
 -- refusals per refresh raise a modal dialog over the panel. setfill does nothing to a rect at all.
 function sdec.ui_fill(h, c)
   if h == nil then return false end
-  local ok = pcall(display.setcolor, h, c)
-  if not ok then sdec.fillfails = (sdec.fillfails or 0) + 1 end
-  return ok
+  display.setcolor(h, c)
+  return true
 end
 
 -- Make a rect paint: 100 % foreground, once per rect at build time.
 function sdec.ui_fill_solid(h)
   if h == nil then return false end
-  local ok = pcall(display.setfill, h, 100)
-  if not ok then sdec.fillfails = (sdec.fillfails or 0) + 1 end
-  return ok
+  display.setfill(h, 100)
+  return true
 end
 
 -- Show or hide object `h`. The only way to take a rect or a line off the glass: recolouring one to
 -- ui_c_hide does not hide it, and that works for the dump rules only because they are 1 px wide.
 function sdec.ui_setstate(h, st)
   if h == nil then return false end
-  local ok = pcall(display.setstate, h, st)
-  if not ok then sdec.fillfails = (sdec.fillfails or 0) + 1 end
-  return ok
+  display.setstate(h, st)
+  return true
 end
 
 -- Paint the acquire/decode bar at `pct` (0..100), or hide it when pct is nil -- every state with no
@@ -5047,7 +5048,7 @@ function sdec.ui_progbar_set(pct)
       local w = math.floor(pct * sdec.ui_prog_wmax / 100 + 0.5)
       if w < 1 then w = 1 end
       local x0 = sdec.ui_prog_x + 1
-      pcall(display.setposition, sdec.ui_progline, x0, sdec.ui_prog_ly, x0 + w - 1, sdec.ui_prog_ly)
+      display.setposition(sdec.ui_progline, x0, sdec.ui_prog_ly, x0 + w - 1, sdec.ui_prog_ly)
     end
     sdec.ui_progpct = pct
   end
@@ -5479,7 +5480,7 @@ end
 -- Delete every main-screen object and nil its handle.
 function sdec.ui_destroy()
   if sdec.ui_scr ~= nil or sdec.ui_loadscr ~= nil then
-    pcall(display.changescreen, display.SCREEN_HOME)
+    display.changescreen(display.SCREEN_HOME)
   end
   local i
   if sdec.ui_row ~= nil then
@@ -5561,7 +5562,7 @@ end
 -- exhausted, and a missing cover costs only a visible build.
 function sdec.ui_loading_front()
   if sdec.ui_loadscr == nil then return false end
-  pcall(display.changescreen, sdec.ui_loadscr)
+  display.changescreen(sdec.ui_loadscr)
   return true
 end
 
@@ -5573,7 +5574,7 @@ function sdec.ui_loading_raise()
     sdec.ui_loadtxt = display.create(h, display.OBJ_TEXT, 261, 214,
                                      'Loading, please wait...', 0xFFFFFF, display.FONT_MEDIUM)
   end
-  pcall(display.changescreen, sdec.ui_loadscr)
+  display.changescreen(sdec.ui_loadscr)
   return true
 end
 
@@ -5582,7 +5583,7 @@ end
 -- left the panel displaying a deleted object, so it falls back to SCREEN_HOME.
 function sdec.ui_loading_clear(showscr)
   if showscr == nil then showscr = display.SCREEN_HOME end
-  pcall(display.changescreen, showscr)
+  display.changescreen(showscr)
   if sdec.ui_loadscr == nil then return false end
   sdec.del_obj(sdec.ui_loadtxt)
   sdec.del_obj(sdec.ui_loadscr)
@@ -5717,19 +5718,19 @@ function sdec.ui_build(hold)
   sdec.ui_progbox = create(sdec.ui_scr, display.OBJ_RECT, sdec.ui_prog_x, sdec.ui_prog_y,
                            sdec.ui_prog_w, sdec.ui_prog_h)
   sdec.ui_fill(sdec.ui_progbox, sdec.ui_c_prog_box)
-  pcall(display.setthickness, sdec.ui_progbox, 1)
+  display.setthickness(sdec.ui_progbox, 1)
   sdec.ui_progline = create(sdec.ui_scr, display.OBJ_LINE, sdec.ui_prog_x + 1, sdec.ui_prog_ly,
                             sdec.ui_prog_x + 1, sdec.ui_prog_ly)
   sdec.ui_fill(sdec.ui_progline, sdec.ui_c_prog)
-  pcall(display.setthickness, sdec.ui_progline, sdec.ui_prog_lw)
+  display.setthickness(sdec.ui_progline, sdec.ui_prog_lw)
   sdec.ui_progbar_set(nil)
 
-  local tok, tobj = pcall(display.create, sdec.ui_scr, display.OBJ_TIMER, sdec.ui_tick_s,
-                          display.TIMER_FOREVER)
+  local tobj = display.create(sdec.ui_scr, display.OBJ_TIMER, sdec.ui_tick_s,
+                              display.TIMER_FOREVER)
   sdec.ui_tick_obj = nil
-  if tok then sdec.ui_tick_obj = tobj end
+  if tobj ~= nil then sdec.ui_tick_obj = tobj end
   if sdec.ui_tick_obj ~= nil then
-    pcall(display.setevent, sdec.ui_tick_obj, display.EVENT_PRESS, 'sdec.guard(sdec.ui_tick)')
+    display.setevent(sdec.ui_tick_obj, display.EVENT_PRESS, 'sdec.guard(sdec.ui_tick)')
   end
 
   sdec.ui_page_t = create(sdec.ui_scr, display.OBJ_TEXT, x, sdec.ui_stat_y, '',
@@ -5832,10 +5833,10 @@ if sdec.ui_savebtn ~= nil or sdec.ui_newlogbtn ~= nil then
     local sst = display.STATE_INVISIBLE
     if sw then sst = display.STATE_ENABLE end
     if sdec.ui_savebtn ~= nil then
-      pcall(display.setstate, sdec.ui_savebtn, sst)
+      display.setstate(sdec.ui_savebtn, sst)
     end
     if sdec.ui_newlogbtn ~= nil then
-      pcall(display.setstate, sdec.ui_newlogbtn, sst)
+      display.setstate(sdec.ui_newlogbtn, sst)
     end
     sdec.ui_savevis = sw
     return true
@@ -5871,7 +5872,7 @@ function sdec.ui_page_btns()
     if want then st = display.STATE_ENABLE end
     local i
     for i = 1, table.getn(t) do
-      pcall(display.setstate, t[i], st)
+      display.setstate(t[i], st)
     end
     sdec.ui_pgvis = want
   end
@@ -5882,7 +5883,7 @@ function sdec.ui_page_btns()
     if lw ~= sdec.ui_lockvis then
       local lst = display.STATE_INVISIBLE
       if lw then lst = display.STATE_ENABLE end
-      pcall(display.setstate, sdec.ui_lockbtn, lst)
+      display.setstate(sdec.ui_lockbtn, lst)
       sdec.ui_lockvis = lw
     end
   end
@@ -5924,7 +5925,8 @@ function sdec.ui_refresh_do()
   end
   local ttl = sdec.ui_title_text()
   if sdec.ui_titletxt ~= ttl then
-    if pcall(display.settext, sdec.ui_scr, ttl) then sdec.ui_titletxt = ttl end
+    display.settext(sdec.ui_scr, ttl)
+    sdec.ui_titletxt = ttl
   end
   set(sdec.ui_note, sdec.ui_note_text())
 
@@ -6008,8 +6010,8 @@ function sdec.ui_refresh_do()
     st = string.upper(sdec.proto) .. ' ' .. st
   end
   local warn = ''
-  if (sdec.delfails or 0) > 0 or (sdec.fillfails or 0) > 0 then
-    warn = string.format('  del?%d fill?%d', sdec.delfails or 0, sdec.fillfails or 0)
+  if (sdec.delfails or 0) > 0 then
+    warn = string.format('  del?%d', sdec.delfails or 0)
   end
   local md = sdec.mode_cur()
   if md.view and sdec.ck_tot == nil and not sdec.ck_running then
@@ -6393,7 +6395,7 @@ function sdec.destroy_options()
   if sdec.optscr ~= nil then
     local scr = sdec.ui_scr
     if scr == nil then scr = display.SCREEN_HOME end
-    pcall(display.changescreen, scr)
+    display.changescreen(scr)
     if sdec.ui_scr ~= nil then sdec.ui_tick_on() end
   end
   sdec.del_obj(sdec.opt_proto)
@@ -6552,7 +6554,7 @@ function sdec.build_options()
                         .. 'exhausted. Power cycle the instrument.', nob or 0, table.getn(odef) or 0), 0)
   end
 
-  pcall(display.setevent, sdec.optscr, display.EVENT_ENDAPP, 'sdec.guard(sdec.cleanup)')
+  display.setevent(sdec.optscr, display.EVENT_ENDAPP, 'sdec.guard(sdec.cleanup)')
 
   if covermine then sdec.ui_loading_clear(sdec.optscr) end
   return sdec.optscr
@@ -6563,7 +6565,6 @@ end
 sdec = sdec or {}
 
 sdec.delfails  = sdec.delfails or 0
-sdec.fillfails = sdec.fillfails or 0
 sdec.errcount  = sdec.errcount or 0
 sdec.busy      = sdec.busy or false
 sdec.usbdir    = sdec.usbdir or (ulog ~= nil and ulog.usbdir) or '/usb1/SERDEC'
@@ -6610,7 +6611,7 @@ function sdec.clear_result()
   sdec.mode_exitbad = false
   sdec.strm_releveled, sdec.proto_why = nil, nil
   sdec.probe_note = nil                 -- set by autoset() when it had to re-capture slower
-  pcall(collectgarbage)
+  collectgarbage()
   return true
 end
 
@@ -7269,7 +7270,7 @@ end
 -- failure when the buffer could not be read at all, which is what keeps a fault from reading as an
 -- empty recording: buf.n raises on a buffer the firmware has dropped, and 0 reads as 'collected nothing'.
 function sdec.stream_settle()
-  pcall(trigger.model.abort)
+  trigger.model.abort()
   local buf = sdec.buf
   sdec.nread = 0
   if buf ~= nil then
@@ -7577,7 +7578,7 @@ function sdec.buf_reclaim()
     if what == nil then what = s else what = what .. ' and ' .. s end
   end
   if what == nil then return false, nil end
-  pcall(collectgarbage)
+  collectgarbage()
   return true, what
 end
 
@@ -7632,7 +7633,7 @@ function sdec.buf_sweep()
       if gone == nil then gone = s else gone = gone .. ', ' .. s end
     end
   end
-  if freed > 0 then pcall(collectgarbage) end
+  if freed > 0 then collectgarbage() end
   return freed, gone
 end
 
@@ -8637,7 +8638,7 @@ function sdec.options_apply()
     sdec.lasterr = 'Options could not be read in full -- nothing was changed (' ..
                    tostring(readerr) .. ')'
     ulog.line(sdec.lasterr)
-    pcall(display.changescreen, sdec.ui_scr)
+    display.changescreen(sdec.ui_scr)
     sdec.ui_tick_on()
     sdec.ui_refresh()
     return false
@@ -8678,7 +8679,7 @@ function sdec.options_apply()
             tostring(sdec.force_par), tostring(sdec.force_invert),
             tostring(sdec.trigmode)))
 
-  pcall(display.changescreen, sdec.ui_scr)
+  display.changescreen(sdec.ui_scr)
   sdec.ui_tick_on()
   return sdec.capture()
 end
@@ -8715,7 +8716,7 @@ function sdec.stop()
     sdec.stream_settle()
   end
   sdec.ck_running, sdec.ck_stop = false, false
-  pcall(trigger.model.abort)
+  trigger.model.abort()
   if sdec.digitizing() and sdec.atrig ~= nil then
     sdec.atrig.mode = sdec.k.MODE_OFF
   end
@@ -8761,7 +8762,7 @@ end
 -- End App handler: stop the app and hand the screen back to the instrument.
 function sdec.cleanup()
   local r = sdec.stop()
-  pcall(collectgarbage)
+  collectgarbage()
   return r
 end
 
@@ -11312,7 +11313,7 @@ brun.pn_obj = nil
 -- delete against the screen in front leaves the panel drawing a dead object.
 function brun.destroy_panel()
   if brun.pnscr == nil then return false end
-  pcall(display.changescreen, display.SCREEN_HOME)
+  display.changescreen(display.SCREEN_HOME)
   local i
   if brun.pn_obj ~= nil then
     for i = 1, table.getn(brun.pn_obj) do sdec.del_obj(brun.pn_obj[i]) end
@@ -11429,7 +11430,7 @@ function brun.build_panel()
                         .. 'exhausted. Power cycle the instrument.', nb, table.getn(bdef)), 0)
   end
 
-  pcall(display.setevent, brun.pnscr, display.EVENT_ENDAPP, 'sdec.guard(brun.panel_cancel)')
+  display.setevent(brun.pnscr, display.EVENT_ENDAPP, 'sdec.guard(brun.panel_cancel)')
   return brun.pnscr
 end
 
@@ -11509,10 +11510,12 @@ function brun.pn_sdgtxt(i)
 end
 
 -- Say something on the form itself. The plan line is the one text object this screen has, so a
--- refusal replaces it: a message that needs a second object can fail to appear for want of one.
+-- message that needs a second object can fail to appear for want of one. -> false only where the
+-- object was never built: display.settext posts and returns, so there is no other failure to report.
 function brun.pn_say(s)
   if brun.pn_ptxt == nil then return false end
-  return pcall(display.settext, brun.pn_ptxt, string.sub(tostring(s), 1, 58))
+  display.settext(brun.pn_ptxt, string.sub(tostring(s), 1, 58))
+  return true
 end
 
 function brun.panel_cancel()
@@ -11531,7 +11534,7 @@ function brun.panel()
     brun.destroy_panel()
     return false, tostring(err)
   end
-  pcall(display.changescreen, brun.pnscr)
+  display.changescreen(brun.pnscr)
   return true
 end
 

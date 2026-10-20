@@ -12,7 +12,6 @@
 sdec = sdec or {}
 
 sdec.delfails  = sdec.delfails or 0
-sdec.fillfails = sdec.fillfails or 0
 sdec.errcount  = sdec.errcount or 0
 sdec.busy      = sdec.busy or false
 -- All three derive from ulog.usbdir. usb_log.tsp loads first, so the fallback is for a harness.
@@ -87,7 +86,7 @@ function sdec.clear_result()
   -- relocked is the exception: its note must survive to the end of the press, so capture() clears it.
   sdec.probe_note = nil                 -- set by autoset() when it had to re-capture slower
   -- The previous capture's 20 000-entry sample table is now unreachable. 8.3 ms against a 1.6 s capture.
-  pcall(collectgarbage)
+  collectgarbage()
   return true
 end
 
@@ -958,7 +957,7 @@ end
 -- failure when the buffer could not be read at all, which is what keeps a fault from reading as an
 -- empty recording: buf.n raises on a buffer the firmware has dropped, and 0 reads as 'collected nothing'.
 function sdec.stream_settle()
-  pcall(trigger.model.abort)
+  trigger.model.abort()
   local buf = sdec.buf
   sdec.nread = 0
   if buf ~= nil then
@@ -1378,7 +1377,7 @@ function sdec.buf_reclaim()
   end
   if what == nil then return false, nil end
   -- And collect, same reason as the sweep: the resize is what releases the readings.
-  pcall(collectgarbage)
+  collectgarbage()
   return true, what
 end
 
@@ -1454,7 +1453,7 @@ function sdec.buf_sweep()
       if gone == nil then gone = s else gone = gone .. ', ' .. s end
     end
   end
-  if freed > 0 then pcall(collectgarbage) end
+  if freed > 0 then collectgarbage() end
   return freed, gone
 end
 
@@ -2702,7 +2701,7 @@ function sdec.options_apply()
     sdec.lasterr = 'Options could not be read in full -- nothing was changed (' ..
                    tostring(readerr) .. ')'
     ulog.line(sdec.lasterr)
-    pcall(display.changescreen, sdec.ui_scr)
+    display.changescreen(sdec.ui_scr)
     -- The form suspended the tick on the way in, so every way out re-arms it, including this refusal.
     sdec.ui_tick_on()
     sdec.ui_refresh()
@@ -2751,7 +2750,7 @@ function sdec.options_apply()
             tostring(sdec.force_par), tostring(sdec.force_invert),
             tostring(sdec.trigmode)))
 
-  pcall(display.changescreen, sdec.ui_scr)
+  display.changescreen(sdec.ui_scr)
   -- Re-armed here rather than left to sdec.capture(), whose leaving it on is a side effect.
   sdec.ui_tick_on()
   return sdec.capture()
@@ -2797,7 +2796,7 @@ function sdec.stop()
     sdec.stream_settle()
   end
   sdec.ck_running, sdec.ck_stop = false, false
-  pcall(trigger.model.abort)
+  trigger.model.abort()
   -- Only while the digitizer is the selected function (sdec.digitizing): the attribute does not exist
   -- under a basic function, and writing it then posts 2800 as a modal box.
   if sdec.digitizing() and sdec.atrig ~= nil then
@@ -2861,7 +2860,7 @@ end
 function sdec.cleanup()
   local r = sdec.stop()
   -- Teardown has just dropped every object handle and the capture buffer. Collecting costs 8.3 ms.
-  pcall(collectgarbage)
+  collectgarbage()
   return r
 end
 

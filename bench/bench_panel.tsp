@@ -90,7 +90,7 @@ brun.pn_obj = nil
 -- delete against the screen in front leaves the panel drawing a dead object.
 function brun.destroy_panel()
   if brun.pnscr == nil then return false end
-  pcall(display.changescreen, display.SCREEN_HOME)
+  display.changescreen(display.SCREEN_HOME)
   local i
   if brun.pn_obj ~= nil then
     for i = 1, table.getn(brun.pn_obj) do sdec.del_obj(brun.pn_obj[i]) end
@@ -224,7 +224,7 @@ function brun.build_panel()
   end
 
   -- End App on this screen too, for build_options' reason: exiting from the form must not strand it.
-  pcall(display.setevent, brun.pnscr, display.EVENT_ENDAPP, 'sdec.guard(brun.panel_cancel)')
+  display.setevent(brun.pnscr, display.EVENT_ENDAPP, 'sdec.guard(brun.panel_cancel)')
   return brun.pnscr
 end
 
@@ -318,10 +318,12 @@ function brun.pn_sdgtxt(i)
 end
 
 -- Say something on the form itself. The plan line is the one text object this screen has, so a
--- refusal replaces it: a message that needs a second object can fail to appear for want of one.
+-- message that needs a second object can fail to appear for want of one. -> false only where the
+-- object was never built: display.settext posts and returns, so there is no other failure to report.
 function brun.pn_say(s)
   if brun.pn_ptxt == nil then return false end
-  return pcall(display.settext, brun.pn_ptxt, string.sub(tostring(s), 1, 58))
+  display.settext(brun.pn_ptxt, string.sub(tostring(s), 1, 58))
+  return true
 end
 
 function brun.panel_cancel()
@@ -340,6 +342,6 @@ function brun.panel()
     brun.destroy_panel()
     return false, tostring(err)
   end
-  pcall(display.changescreen, brun.pnscr)
+  display.changescreen(brun.pnscr)
   return true
 end
