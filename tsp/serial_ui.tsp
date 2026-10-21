@@ -2504,10 +2504,12 @@ end
 -- event log, so only a grab could ever have found it -- which is the argument for not needing it.
 -- docs/MEASUREMENTS.md, 'Fill a screen before you switch to it'.
 --
--- AND IT IS THE ORDER sdec.options() HAS ALWAYS USED: options_seed() setvalues every field and the
--- changescreen comes after, with no delay in the path, on a form that has never dropped a field on
--- the instrument. The one place that already wrote before switching is the one place that never
--- needed a settle.
+-- WRITING FIRST WAS ALSO MEASURED, AND FAILED -- read what failed: the objects created LAST lost
+-- their writes and the rows created first kept their text. That is elapsed time since the CREATE,
+-- and in that arm the build was in the same breath as the write. Here the build was at launch, so
+-- every object is in the state that arm describes as keeping its text. It is also the order
+-- sdec.options() has always used -- options_seed() setvalues every field, changescreen after, no
+-- delay, a form that has never dropped a field. A grab is still what would confirm it.
 --
 -- The build is at launch, so the cost of this press is 14 settexts and a screen change.
 function sdec.msgs_show()

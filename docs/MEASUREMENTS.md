@@ -3673,11 +3673,27 @@ log, so a screen grab was the only evidence there could be.
 screen reaches the glass, so there is no write to lose and no 0.2 s to pay. The order is now fill,
 then switch. `sdec.msg_settle` is gone -- nothing in the app reads a settle any more.
 
-**That order is not a guess: `sdec.options()` has always used it.** It calls `options_seed()`, which
-`setvalue`s every field on the form, and only then `changescreen(optscr)` -- with no delay anywhere
-in the path, on an instrument where the options screen has never dropped a field. So the one place
-in this app that already wrote before switching is also the one place that never needed a settle,
-which is the strongest evidence available without a grab.
+**Read row 1 of that table again, because it looks like a counter-example and is not.** Writing
+before the `changescreen` was measured, and it failed -- but what failed was specific: *the objects
+created LAST lost their writes, and the 21 rows created first kept their text*. The counter and the
+two buttons, created last, came up blank and visible. That is elapsed time since the **create**, not
+since the switch, and in that arm the build was in the same breath as the write. The display queue
+is asynchronous, so a write chasing its own create is a different race from a write chasing a
+repaint.
+
+**Which is the argument for building at launch rather than against writing first.** At press time
+every object on this screen was created seconds ago, under the cover, with a `changescreen` and a
+cover teardown in between -- so every one of them is in the state row 1 describes as *keeping* its
+text.
+
+**And `sdec.options()` is the hardware precedent.** It calls `options_seed()`, which `setvalue`s
+every field on the form, and only then `changescreen(optscr)` -- no delay anywhere in the path, on a
+screen also built at launch, on an instrument where the form has never dropped a field. Same shape,
+long-standing, works.
+
+**Still worth a grab.** Nothing offline can tell these two orders apart: `msgs_refresh` returns true
+either way. The claim here is a reading of measured data plus a working precedent, not a
+measurement of the new order.
 
 **The flash was the same ordering fault, applied to state rather than text.** `Up` and `Dn` are
 created in the default visible state, and the hide that `msgs_refresh()` applies to them on a

@@ -6430,8 +6430,8 @@ end
 
 -- Open it, from the Msgs button in the margin.
 --   [...]
--- the instrument. The one place that already wrote before switching is the one place that never
--- needed a settle.
+-- sdec.options() has always used -- options_seed() setvalues every field, changescreen after, no
+-- delay, a form that has never dropped a field. A grab is still what would confirm it.
 -- The build is at launch, so the cost of this press is 14 settexts and a screen change.
 function sdec.msgs_show()
   if sdec.msgscr == nil then
