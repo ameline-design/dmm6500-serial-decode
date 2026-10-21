@@ -210,11 +210,13 @@ away.
 | **Msgs** | Right-hand edge, directly below **Up**. Opens a screen showing **the app's own messages** — the notes, warnings and errors — each one **in full** and in a larger face than the dump area uses, wrapped across as many of its 13 rows as it needs and never shortened with an ellipsis. It is not a view of the decoded data; the dump area and its **Up** / **Dn** are what page through that. **The button only appears when the note row is holding something back**: either a second note exists, so the row reads `(+N more)`, or there is one note too wide for the row. A single note the row shows completely gets no button, because there would be nothing new to read. The screen has its own **Up** / **Dn** and a **Back**, and its counter names the page, the line range and the number of notes. |
 | **Lock Rate** | Right-hand edge. Only appears when the rate is not locked. |
 
-The **Msgs** screen, reached from that button. This capture filled its window, which is a condition
-the app reports — so the note is the app's own and nothing was planted to produce the figure. Up and
-Dn are absent because one page holds everything; they appear when it does not.
+The **Msgs** screen, reached from that button. Both notes here are the app's own and nothing was
+planted to produce the figure: the capture auto-locked, which the app reports, and it filled its
+window, which the app also reports. The first note is too wide for one row and wraps, with its
+continuation indented so a wrapped tail cannot be mistaken for a new message. Up and Dn are absent
+because one page holds everything; they appear when it does not.
 
-![The Messages screen: one note, numbered, shown in full, with page 1 of 1 and line 1-1 of 1](img/panel-msgs.png)
+![The Messages screen: two notes, numbered, the first wrapped onto a second indented row, with page 1 of 1 and line 1-3 of 3](img/panel-msgs.png)
 
 Every button responds immediately except the ones that take a capture. **Capture takes about 1.7
 seconds when the rate is locked, and 4 to 9 seconds when it is not** — because to find an unknown

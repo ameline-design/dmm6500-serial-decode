@@ -3691,9 +3691,18 @@ every field on the form, and only then `changescreen(optscr)` -- no delay anywhe
 screen also built at launch, on an instrument where the form has never dropped a field. Same shape,
 long-standing, works.
 
-**Still worth a grab.** Nothing offline can tell these two orders apart: `msgs_refresh` returns true
-either way. The claim here is a reading of measured data plus a working precedent, not a
-measurement of the new order.
+**GRABBED, 2026-10-21, and it paints.** Nothing offline can tell these two orders apart --
+`msgs_refresh` returns true either way -- so the reading above was an argument, not a measurement.
+The screen was then opened on the instrument with the new order and photographed:
+`docs/img/panel-msgs.png` shows **both notes across all three rows, the page counter, and Up and Dn
+correctly absent on a single page**. Under the old order this was the arm that came up with row 1
+only. So the fill-then-switch order paints with no yield anywhere in the path, and the 0.2 s is
+simply gone.
+
+The same grab carries two other confirmations: `Captured more than 239 bytes.` is the note's new
+wording, and `Auto-locked 9600 baud 8N1` is sentence-cased from the literal `'auto-locked ...'` in
+`serial_app.tsp` -- so `add()`'s capitalisation is doing its work on the glass and not only in the
+suite.
 
 **The flash was the same ordering fault, applied to state rather than text.** `Up` and `Dn` are
 created in the default visible state, and the hide that `msgs_refresh()` applies to them on a
