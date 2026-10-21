@@ -422,6 +422,25 @@ def retag_lap(outdir, laps, src, suffix):
         return src
 
 
+def _hw_skip():
+    """The vectors a hardware lap does not play, from soakplan -- the one place the list is defined.
+
+    IMPORTED LAZILY, as run_bench.py does and for its reason: everything else here reaches soakplan by
+    running it as a subprocess, so an eager import would make this module fail to load on a machine
+    where soakplan cannot import. A missing tuple is NOT defaulted to empty: the whole hazard is a
+    list one name short.
+
+    THIS DEFAULTED TO '' AND THAT WAS A DEFECT. Line 206 omits the flag when the value is empty, so a
+    soak launched here drew every vector -- 1657 cells against the bench's 1513 -- and because the
+    skip is applied BEFORE the shuffle, every surviving cell got another vector's amplitude, offset
+    and wait. v79 joining HW_SKIP is what exposed it: the published commands said v95,v96,v97 and
+    drew 1549. run_bench.py and plan_sweep.py both derive their default from HW_SKIP; this is the one
+    that did not.
+    """
+    import soakplan
+    return soakplan.HW_SKIP
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--hours', type=float, default=8.0)
@@ -442,8 +461,12 @@ def main():
     # rather than a separate selection with its own behaviour.
     ap.add_argument('--plan-vectors', type=int, default=None,
                     help='plan suite: a seeded subset of this many vectors (default all 41)')
-    ap.add_argument('--skip-vectors', default='',
-                    help='plan suite: vector ids to leave out, printed in every lap header')
+    ap.add_argument('--skip-vectors', default=','.join(_hw_skip()),
+                    help='plan suite: vector ids to leave out, printed in every lap header. Defaults '
+                         'to the bench\'s own HW_SKIP (%s). Part of the PLAN, not a filter: it is '
+                         'applied before the shuffle, so a different set reshuffles every cell\'s '
+                         'amplitude, offset and wait. Pass "" to draw all of them, which is NOT the '
+                         'lap the bench runs.' % ','.join(_hw_skip()))
     ap.add_argument('--record-every', type=int, default=0,
                     help='also take a one-press recording every Nth lap (0 = never). Each costs '
                          'about a minute, so it trades laps for coverage of the recording path')

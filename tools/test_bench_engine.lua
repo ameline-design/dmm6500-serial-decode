@@ -3004,9 +3004,6 @@ print('-- the expected payload is generated, and must match the generator that b
 end)()
 
 -- ---------------------------------------------------------------------------
-print('-- the elision window tier, and the gate that refuses a gap it cannot detect --')
-
--- ---------------------------------------------------------------------------
 print('-- the error row: the new byte-level classes, the red rule, and the width it must not exceed --')
 -- ---------------------------------------------------------------------------
 -- brun.nbad counts cells that produced no decode and is deliberately not a byte-level verdict. The two

@@ -39,23 +39,23 @@ loadscript Serial_brun
 -- ============================================================================
 
 -- ================= tsp/usb_log.tsp =================
-ulog = ulog or {}
+ulog        = ulog or {}
 
-ulog.usbdir    = ulog.usbdir or '/usb1/SERDEC'
-ulog.path      = ulog.path or (ulog.usbdir .. '/dmm6500_log.txt')
+ulog.usbdir = ulog.usbdir or '/usb1/SERDEC'
+ulog.path   = ulog.path or (ulog.usbdir .. '/dmm6500_log.txt')
 if ulog.path == '/usb1/dmm6500_log.txt' then ulog.path = ulog.usbdir .. '/dmm6500_log.txt' end
-ulog.on        = ulog.on or false      -- true once a file is genuinely open
-ulog.nlines    = ulog.nlines or 0
-ulog.dropped   = ulog.dropped or 0     -- lines refused after the cap
-ulog.maxlines  = ulog.maxlines or 20000  -- cap, so a runaway loop cannot fill the key
-ulog.nwritten  = ulog.nwritten or 0
-ulog.tag       = ulog.tag or '?'       -- short app name, prefixed to every line
+ulog.on       = ulog.on or false      -- true once a file is genuinely open
+ulog.nlines   = ulog.nlines or 0
+ulog.dropped  = ulog.dropped or 0     -- lines refused after the cap
+ulog.maxlines = ulog.maxlines or 20000  -- cap, so a runaway loop cannot fill the key
+ulog.nwritten = ulog.nwritten or 0
+ulog.tag      = ulog.tag or '?'       -- short app name, prefixed to every line
 if ulog.enabled == nil then ulog.enabled = true end
 if ulog.autoflush == nil then ulog.autoflush = true end
 if ulog.keybad == nil then ulog.keybad = false end
 if ulog.keyout == nil then ulog.keyout = false end
-ulog.keygen    = ulog.keygen or 0
-ulog.keyopen   = ulog.keyopen or 0
+ulog.keygen  = ulog.keygen or 0
+ulog.keyopen = ulog.keyopen or 0
 
 
 -- Is a key in the slot? The only question answerable without naming a path.
@@ -68,12 +68,12 @@ end
 -- presence is the only file failure the app can observe -- docs/MEASUREMENTS.md, 'A key pulled from
 -- under a running app'.
 function ulog.keylost(why)
-  ulog.keybad = true
-  ulog.keywhy = tostring(why or 'the USB key stopped accepting writes')
+  ulog.keybad  = true
+  ulog.keywhy  = tostring(why or 'the USB key stopped accepting writes')
   ulog.lasterr = ulog.keywhy
-  ulog.dirok = nil
-  ulog.keyout = false
-  local h = ulog.fh
+  ulog.dirok   = nil
+  ulog.keyout  = false
+  local h      = ulog.fh
   ulog.fh, ulog.on = nil, false
   if h ~= nil then file.close(h) end
   return true
@@ -92,7 +92,7 @@ function ulog.keyok()
   end
   if ulog.keyout then
     ulog.keybad, ulog.keywhy, ulog.keyout = false, nil, false
-    ulog.dirok = nil
+    ulog.dirok  = nil
     ulog.keygen = (ulog.keygen or 0) + 1
   elseif ulog.keybad then
     return false
@@ -140,7 +140,7 @@ function ulog.ensuredir(dir)
   if string.len(leafchk) > 8 or leafchk ~= string.upper(leafchk) then
     return false, 'directory name must be 8 upper-case characters or fewer: ' .. leafchk
   end
-  local leaf = string.gsub(dir, '^.*/', '')
+  local leaf   = string.gsub(dir, '^.*/', '')
   local listed = ulog.rootlists(leaf)
   if listed == true then ulog.dirok = dir; return true end
   if listed == nil then return false, 'cannot read the USB root' end
@@ -185,12 +185,12 @@ function ulog.open(path, truncate)
   ulog.fh, why = ulog.open_write(ulog.path, mode)
   ulog.keyopen = ulog.keygen
   if ulog.fh == nil then
-    ulog.on = false
+    ulog.on      = false
     ulog.lasterr = tostring(why)
     return false
   end
 
-  ulog.on = true
+  ulog.on     = true
   local stamp = ''
   if os ~= nil then
     local tok, tv = pcall(os.time)
@@ -211,12 +211,12 @@ function ulog.line(s)
     ulog.dropped = ulog.dropped + 1
     return false
   end
-  ulog.nlines = ulog.nlines + 1
+  ulog.nlines   = ulog.nlines + 1
   ulog.nwritten = (ulog.nwritten or 0) + 1
   local txt = string.format('%05d %s %s\r\n', ulog.nlines or 0, tostring(ulog.tag),
                             tostring(s))
   if ulog.fh == nil then
-    ulog.on = false
+    ulog.on      = false
     ulog.lasterr = 'the log handle went away'
     return false
   end
@@ -260,7 +260,7 @@ function ulog.exists(path)
   if path == nil then return false end
   local got = fs.is_file(path)
   if got == nil then
-    local fh = file.open(path, file.MODE_READ)
+    local fh    = file.open(path, file.MODE_READ)
     local taken = fh ~= nil
     if fh ~= nil then file.close(fh) end
     return taken
@@ -278,8 +278,8 @@ function ulog.next_free(prefix, ext, limit)
   end
   local idxpath = prefix .. 'idx.txt'
 
-  ulog.idx_ram = ulog.idx_ram or {}
-  local start = ulog.idx_ram[prefix]
+  ulog.idx_ram  = ulog.idx_ram or {}
+  local start   = ulog.idx_ram[prefix]
   if start ~= nil and (start < 0 or start >= limit) then start = nil end
   if start == nil and ulog.exists(idxpath) then
     local fh = file.open(idxpath, file.MODE_READ)
@@ -299,8 +299,8 @@ function ulog.next_free(prefix, ext, limit)
     local path = string.format('%s%03d%s', tostring(prefix), i or 0, tostring(ext))
     if not ulog.exists(path) then
       ulog.idx_ram[prefix] = i
-      local wh = nil
-      wh = ulog.open_write(idxpath, file.MODE_WRITE)
+      local wh    = nil
+      wh          = ulog.open_write(idxpath, file.MODE_WRITE)
       local wrote = false
       if wh ~= nil then
         file.write(wh, tostring(i) .. '\n')
@@ -313,7 +313,7 @@ function ulog.next_free(prefix, ext, limit)
       return path
     end
   end
-  local leaf = string.gsub(tostring(prefix), '^.*/', '')
+  local leaf   = string.gsub(tostring(prefix), '^.*/', '')
   ulog.idx_why = string.format('all %d %sNNN%s names are taken', limit or 0, tostring(leaf), tostring(ext))
   return nil
 end
@@ -368,7 +368,7 @@ sdec.atedge = nil       -- .analogtrigger.edge
 sdec.k      = {}        -- the constants, copied by value
 
 if ns ~= nil then
-  sdec.dig = ns.digitize
+  sdec.dig  = ns.digitize
   sdec.meas = ns.measure
   if ns.digitize.analogtrigger ~= nil then
     sdec.atrig = ns.digitize.analogtrigger
@@ -397,61 +397,57 @@ sdec.acq_prep = PREP[nskey] or function() end
 sdec.rates      = {1000, 1250, 2500, 5000, 10000, 15000, 20000, 30000, 40000,
                    50000, 60000, 80000, 100000, 120000, 160000, 200000, 250000,
                    300000, 320000, 400000, 500000, 640000, 1000000}
-sdec.fs         = 1000000   -- requested sample rate
-sdec.n          = 20000     -- capture depth, samples (see sdec.acq_cap)
-sdec.range      = 10
-sdec.vover      = 1e6
-sdec.nover      = 0
-sdec.probe_n    = 2000      -- samples in the level-learning probe capture
+sdec.fs       = 1000000   -- requested sample rate
+sdec.n        = 20000     -- capture depth, samples (see sdec.acq_cap)
+sdec.range    = 10
+sdec.vover    = 1e6
+sdec.nover    = 0
+sdec.probe_n  = 2000      -- samples in the level-learning probe capture
 sdec.probe_fs = sdec.probe_fs or {1000000, 100000, 10000}
-sdec.pretrig    = 5         -- pre-trigger percentage for the analog-trigger path
-sdec.trigmode   = sdec.trigmode or 'edge'
+sdec.pretrig  = 5         -- pre-trigger percentage for the analog-trigger path
+sdec.trigmode = sdec.trigmode or 'edge'
 if sdec.trigext == nil then sdec.trigext = false end
 if sdec.trigext_only == nil then sdec.trigext_only = false end
 if sdec.fc_out == nil then sdec.fc_out = false end
-sdec.fc_pulse = sdec.fc_pulse or 100e-6
+sdec.fc_pulse     = sdec.fc_pulse or 100e-6
 sdec.trigwait     = sdec.trigwait or 3.0        -- seconds to wait for a start-bit edge
 sdec.trigwait_ext = sdec.trigwait_ext or 30.0   -- see acq_triggered: a person or a DUT event
-sdec.nread      = sdec.nread or 0
+sdec.nread        = sdec.nread or 0
 
-sdec.swing           = sdec.swing or 0     -- hi - lo
-sdec.thr             = sdec.thr or 0       -- decision threshold, volts
-sdec.hyst            = sdec.hyst or 0      -- hysteresis half-width, volts
-sdec.hystfrac        = 0.15       -- hysteresis as a fraction of the swing
-sdec.minswing        = 0.10       -- below this the line is treated as dead, volts
-sdec.family          = '?'        -- inferred logic family, for the summary line
+sdec.swing        = sdec.swing or 0     -- hi - lo
+sdec.thr          = sdec.thr or 0       -- decision threshold, volts
+sdec.hyst         = sdec.hyst or 0      -- hysteresis half-width, volts
+sdec.hystfrac     = 0.15       -- hysteresis as a fraction of the swing
+sdec.minswing     = 0.10       -- below this the line is treated as dead, volts
+sdec.family       = '?'        -- inferred logic family, for the summary line
 
-sdec.ne  = sdec.ne or 0
-sdec.st0 = sdec.st0 or 1    -- physical level at the start of the capture
-sdec.maxback = 64   -- how far to walk back from a hysteresis trip for the crossing
+sdec.ne           = sdec.ne or 0
+sdec.st0          = sdec.st0 or 1    -- physical level at the start of the capture
+sdec.maxback      = 64   -- how far to walk back from a hysteresis trip for the crossing
 
-sdec.fitq     = sdec.fitq or 0    -- 0..1 quality of the least-squares fit
-sdec.snapped  = sdec.snapped or false
-sdec.snaptol  = 0.02  -- snap when within 2 % of a standard rate
-sdec.maxmult  = 12    -- a gap longer than this many bit times is idle, not data
+sdec.fitq         = sdec.fitq or 0    -- 0..1 quality of the least-squares fit
+sdec.snapped      = sdec.snapped or false
+sdec.snaptol      = 0.02  -- snap when within 2 % of a standard rate
+sdec.maxmult      = 12    -- a gap longer than this many bit times is idle, not data
 
 sdec.stdbaud = {110, 300, 600, 1200, 1800, 2400, 4800, 7200, 9600, 14400,
                 19200, 28800, 31250, 38400, 57600, 76800, 115200, 128000,
                 153600, 172800, 192000, 230400, 250000, 460800, 921600}
 
-sdec.nbins     = 512
-sdec.binocc    = 16    -- target samples per BIN
-sdec.minhump   = 2
-sdec.flatfloor = 1.0    -- below this an idle level counts as sitting at ground
+sdec.nbins        = 512
+sdec.binocc       = 16    -- target samples per BIN
+sdec.minhump      = 2
+sdec.flatfloor    = 1.0    -- below this an idle level counts as sitting at ground
 
 sdec.armlevel     = sdec.armlevel or 1.0
 sdec.armlevel_min = 0.33
 sdec.armlevel_max = 6.0
 
-sdec.armwait     = sdec.armwait or 10.0
-sdec.armwait_min = 2.0
-sdec.armwait_max = 120.0
+sdec.armwait      = sdec.armwait or 10.0
+sdec.armwait_min  = 2.0
+sdec.armwait_max  = 120.0
 
 if sdec.armkey == nil then sdec.armkey = true end
-
-
-
-
 
 -- Both read through one function each, by the capture and by the form, so a typed value cannot mean one thing
 -- to the field and another to the comparator. Clamped rather than refused.
@@ -492,19 +488,19 @@ sdec.idlemult  = 10.5
 sdec.minmodal  = 0.15
 sdec.warnmodal = 0.50
 
-sdec.humpfrac = 0.2
+sdec.humpfrac  = 0.2
 
 -- The two densest amplitudes within [v0, v1]. Returns lo, hi and the share of in-range samples belonging to
 -- either hump, or nil when no pair is separable. Each level is the true mean of the samples in its hump.
 function sdec.sig_pair(rd, n, v0, v1)
   local floor = math.floor
-  local nb = floor(n / sdec.binocc)
+  local nb    = floor(n / sdec.binocc)
   if nb > sdec.nbins then nb = sdec.nbins end
   if nb < 24 then nb = 24 end
   if v0 == nil or v1 == nil or v1 <= v0 then return nil end
   local scale = (nb - 1) / (v1 - v0)
-  local hist = {}
-  local bsum = {}
+  local hist  = {}
+  local bsum  = {}
   local i
   for i = 1, nb do hist[i] = 0; bsum[i] = 0 end
   local cnt = 0
@@ -558,7 +554,7 @@ function sdec.sig_pair(rd, n, v0, v1)
     na = na + hist[i]
   end
   for i = a2, b2 do
-    sb = sb + bsum[i]
+    sb  = sb + bsum[i]
     nbb = nbb + hist[i]
   end
   if na < 1 or nbb < sdec.minhump then return nil end
@@ -631,11 +627,11 @@ function sdec.sig_levels(rd, n)
     sdec.wlo, sdec.whi = vmin, vmax
     sdec.lo, sdec.hi = vmin, vmax
     sdec.thr, sdec.hyst = 0.5 * (vmin + vmax), 0
-    sdec.swing = vmax - vmin
+    sdec.swing  = vmax - vmin
     sdec.family = sdec.sig_family(vmin, vmax)
     if lo ~= nil then
       sdec.lo, sdec.hi, sdec.swing = lo, hi, hi - lo
-      sdec.thr = 0.5 * (lo + hi)
+      sdec.thr    = 0.5 * (lo + hi)
       sdec.family = sdec.sig_family(lo, hi)
       return false, string.format('swing only %.3f V', hi - lo)
     end
@@ -644,10 +640,10 @@ function sdec.sig_levels(rd, n)
 
   sdec.wlo, sdec.whi = lo, hi        -- the working range, for diagnostics
   sdec.lo, sdec.hi = lo, hi
-  sdec.modal = modal
-  sdec.swing = hi - lo
-  sdec.thr   = 0.5 * (lo + hi)
-  sdec.hyst  = sdec.hystfrac * sdec.swing
+  sdec.modal  = modal
+  sdec.swing  = hi - lo
+  sdec.thr    = 0.5 * (lo + hi)
+  sdec.hyst   = sdec.hystfrac * sdec.swing
   sdec.family = sdec.sig_family(lo, hi)
   if modal < sdec.minmodal then
     return false, string.format('no clear logic levels (%.0f %% of samples near them)',
@@ -671,7 +667,7 @@ function sdec.sig_noise(rd, n)
   local step = floor(n / sdec.noise_nsamp)
   if step < 1 then step = 1 end
   local nlo, slo, qlo, nhi, shi, qhi = 0, 0, 0, 0, 0, 0
-  local i = 2
+  local i  = 2
   local vo = sdec.vover
   while i <= n - 1 do
     local v = rd[i]
@@ -694,7 +690,7 @@ function sdec.sig_noise(rd, n)
   if nhi > 1 then ss = ss + (qhi - shi * shi / nhi); k = k + nhi - 1 end
   if k < 1 then return end
   if ss < 0 then ss = 0 end          -- rounding only, but a negative would kill the sqrt
-  local rms = sqrt(ss / k)
+  local rms    = sqrt(ss / k)
   sdec.noise_v = rms
   if rms < 1e-6 then rms = 1e-6 end
   sdec.snr_db = 20 * (log(sw / rms) / log(10))
@@ -803,7 +799,7 @@ function sdec.sig_idle(rd, n)
   end
 
   local best1, best0 = 0, 0
-  local onebit = sdec.sig_onebit(ei, ne)
+  local onebit  = sdec.sig_onebit(ei, ne)
   local idlelen = nil
   if onebit ~= nil then idlelen = sdec.idlemult * onebit end
 
@@ -827,12 +823,12 @@ function sdec.sig_idle(rd, n)
     if tail > best0 then best0 = tail end
   end
 
-  local lead = ei[1] - 1
+  local lead   = ei[1] - 1
   sdec.leadrun = lead
-  local nrec = nlong1
+  local nrec   = nlong1
   if nlong0 > nrec then nrec = nlong0 end
   sdec.idlerec = nrec
-  local thin = false
+  local thin   = false
   if sdec.acq_pretrig then
     thin = nrec < 2
   else
@@ -845,7 +841,7 @@ function sdec.sig_idle(rd, n)
 
   sdec.run1, sdec.run0 = best1, best0
 
-  sdec.onebit = onebit
+  sdec.onebit   = onebit
   local longest = best1
   if best0 > longest then longest = best0 end
   if thin or (onebit ~= nil and longest < sdec.idlemult * onebit) then
@@ -891,8 +887,8 @@ end
 -- pulse width is an integer multiple of the bit time, so this is a fit through the origin: sum(w*m)/sum(m*m).
 function sdec.sig_fit(w, nw, seed)
   local floor = math.floor
-  local maxm = sdec.maxmult
-  local T = seed
+  local maxm  = sdec.maxmult
+  local T     = seed
   local it, k
 
   for it = 1, 6 do
@@ -900,7 +896,7 @@ function sdec.sig_fit(w, nw, seed)
     local tol = 0.35 * T
     for k = 1, nw do
       local wk = w[k]
-      local m = floor(wk / T + 0.5)
+      local m  = floor(wk / T + 0.5)
       if m >= 1 and m <= maxm then
         local d = wk - m * T
         if d < 0 then d = -d end
@@ -911,7 +907,7 @@ function sdec.sig_fit(w, nw, seed)
       end
     end
     if snn <= 0 then return nil, 0, 0 end
-    local newT = sn / snn
+    local newT  = sn / snn
     local moved = newT - T
     if moved < 0 then moved = -moved end
     T = newT
@@ -919,12 +915,12 @@ function sdec.sig_fit(w, nw, seed)
   end
 
   local serr, nfit, nsmall = 0, 0, 0
-  local tol = 0.35 * T
+  local tol  = 0.35 * T
   local maxw = (maxm + 0.5) * T
   for k = 1, nw do
     local wk = w[k]
     if wk <= maxw then
-      nsmall = nsmall + 1
+      nsmall  = nsmall + 1
       local m = floor(wk / T + 0.5)
       if m < 1 then m = 1 end
       local e = wk - m * T
@@ -959,13 +955,13 @@ function sdec.sig_bittime()
   end
   sdec.nw, sdec.w = nw, w
   table.sort(s)
-  sdec.wmed = s[math.floor(nw / 2) + 1]
+  sdec.wmed   = s[math.floor(nw / 2) + 1]
 
   sdec.wshort = s[math.floor(nw * 0.05) + 1]
 
   local seeds, nseed, last = {}, 0, 0
   for k = 1, nw do
-    local v = s[k]
+    local v      = s[k]
     local corrob = (k < nw and s[k+1] <= 1.25 * v) or nw < 3
     if v > 0 and corrob and (nseed == 0 or v > 1.3 * last) then
       nseed = nseed + 1
@@ -983,9 +979,9 @@ function sdec.sig_bittime()
   end
   if bestT == nil then return nil, 'no bit time fits the pulse widths' end
 
-  sdec.bittime = bestT
-  sdec.fitq    = bestq
-  local fs = sdec.acq_fs or sdec.fs
+  sdec.bittime  = bestT
+  sdec.fitq     = bestq
+  local fs      = sdec.acq_fs or sdec.fs
   sdec.baud_raw = fs / bestT
   sdec.baud, sdec.snapped, sdec.snapfirm = sdec.sig_snap(sdec.baud_raw)
   return bestT
@@ -1080,7 +1076,7 @@ end
 function sdec.acq_measure_fs(buf, n)
   if buf == nil or n == nil or n < 2 then return nil end
   local first = sdec.acq_first(buf, n)
-  local last = first + n - 1
+  local last  = first + n - 1
   if last > n then last = last - n end
   local t1, tn = nil, nil
   local ok = pcall(function()
@@ -1093,10 +1089,6 @@ function sdec.acq_measure_fs(buf, n)
   if span <= 0 then return nil end
   return (n - 1) / span
 end
-
-
-
-
 
 -- The measured rate, or the requested one with a flag saying so: every byte is scaled by acq_fs, so a silent
 -- substitution would report confident bytes from an untrustworthy number.
@@ -1125,13 +1117,13 @@ function sdec.fs_for_baud(baud)
   return top                      -- faster than the instrument can sample; clamp
 end
 
-sdec.acq_overhead = 0.510e-6
+sdec.acq_overhead  = 0.510e-6
 
 sdec.minsabit_tier = {{9600, 8}, {19200, 5}}
 
-sdec.fs_cap_tier = {{19200, 100000}}
+sdec.fs_cap_tier   = {{19200, 100000}}
 
-sdec.sabit_max = 12
+sdec.sabit_max     = 12
 
 -- The rate that delivers `want` samples per bit, not the rate that would without overhead, and nil when no listed
 -- rate can. `md` is optional and bounds the boost by what the buffer can afford, so that ceiling is per mode
@@ -1174,11 +1166,11 @@ function sdec.fs_for_burst(baud, md)
   end
   local sabcap = nil
   if md ~= nil and md.cap ~= nil and sdec.ck_bufmax ~= nil then
-    local nbits = sdec.force_nbits or 8
+    local nbits   = sdec.force_nbits or 8
     local parbits = 0
     if sdec.force_par ~= nil and sdec.force_par ~= sdec.PAR_NONE then parbits = 1 end
     local framebits = 1 + nbits + parbits + (sdec.force_nstop or 1)
-    local nmax = sdec.ck_bufmax - 100
+    local nmax      = sdec.ck_bufmax - 100
     if sdec.trigmode ~= 'free' then
       nmax = math.floor((sdec.ck_bufmax - 100) * (100 - (sdec.pretrig or 0)) / 100)
     end
@@ -1201,7 +1193,7 @@ function sdec.fs_for_burst(baud, md)
       local r = sdec.rates[i]
       if r > cap then break end
       if r >= lowest then
-        local t = sdec.fs_delivered(r) / baud
+        local t  = sdec.fs_delivered(r) / baud
         local ok = (sdec.sabit_max == nil or t <= sdec.sabit_max)
         if ok and sabcap ~= nil and (r / baud) > sabcap then ok = false end
         if ok then best = r end
@@ -1223,7 +1215,7 @@ end
 -- mode each time rather than remembering anything.
 function sdec.fs_select()
   if sdec.fs_want ~= nil then
-    sdec.fs = sdec.fs_want
+    sdec.fs      = sdec.fs_want
     sdec.fs_want = nil
     return sdec.fs
   end
@@ -1296,7 +1288,7 @@ end
 
 sdec.acq_posfloor = 0.001
 
-sdec.acq_premin = 1000
+sdec.acq_premin   = 1000
 
 -- READINGS of pre-roll the analog comparator needs before it will evaluate at all. The firmware takes
 --   [...]
@@ -1312,8 +1304,8 @@ function sdec.acq_pospct(n, buf)
   sdec.acq_poscap = cap
   if n == nil then n = sdec.n end
   if n == nil or n <= 0 then return pt end
-  local want = math.ceil(n * pt / 100)
-  local pos = want * 100 / cap
+  local want     = math.ceil(n * pt / 100)
+  local pos      = want * 100 / cap
   local floorpct = 100 * sdec.acq_premin / n
   if pos < floorpct then pos = floorpct end
   if pos < sdec.acq_posfloor then pos = sdec.acq_posfloor end
@@ -1322,13 +1314,13 @@ function sdec.acq_pospct(n, buf)
 end
 
 sdec.acq_bufbudget = 6500000
-sdec.acq_bufplan = {
+sdec.acq_bufplan   = {
   {id = 'frame', cap = 32768,   least = 24576},
   {id = 'rec',   cap = 6000000, least = 3952383},
   n = 2,
 }
-sdec.acq_buffor = {frame = 'frame', sml = 'rec', med = 'rec'}
-sdec.acq_bufs = sdec.acq_bufs or {}
+sdec.acq_buffor     = {frame = 'frame', sml = 'rec', med = 'rec'}
+sdec.acq_bufs       = sdec.acq_bufs or {}
 
 sdec.acq_framerungs = {12288, 16384, 20480, 24576, 40960, 49152}
 
@@ -1463,7 +1455,7 @@ function sdec.acq_bufinit()
         sdec.acq_fillmode(got)
         sdec.acq_bufs[p.id] = got
         _G['SDEC_SBUF_' .. string.upper(p.id)] = got
-        nok = nok + 1
+        nok      = nok + 1
         local c2 = sdec.bufcap(got)
         if c2 ~= nil and c2 < p.cap then
           sdec.acq_bufsmall = (sdec.acq_bufsmall or '') .. p.id .. '=' .. tostring(c2) .. ' '
@@ -1477,7 +1469,7 @@ function sdec.acq_bufinit()
   local nrung, nrungok = table.getn(sdec.acq_framerungs), 0
   for i = nrung, 1, -1 do
     local rcap = sdec.acq_framerungs[i]
-    local rid = sdec.acq_rungid(rcap)
+    local rid  = sdec.acq_rungid(rcap)
     if sdec.acq_bufhave(rid) ~= nil then
       nrungok = nrungok + 1
     else
@@ -1510,7 +1502,7 @@ function sdec.acq_buffree()
   local i
   for i = 1, sdec.acq_bufplan.n do
     local id = sdec.acq_bufplan[i].id
-    local b = sdec.acq_bufs[id]
+    local b  = sdec.acq_bufs[id]
     if b ~= nil then
       local delok = sdec.bufdel(b)
       if delok then
@@ -1523,7 +1515,7 @@ function sdec.acq_buffree()
   end
   for i = 1, table.getn(sdec.acq_framerungs) do
     local rid = sdec.acq_rungid(sdec.acq_framerungs[i])
-    local rb = sdec.acq_bufs[rid]
+    local rb  = sdec.acq_bufs[rid]
     if rb ~= nil then
       local rok = sdec.bufdel(rb)
       if rok then
@@ -1614,7 +1606,7 @@ function sdec.quiet_events()
   localnode.showevents = eventlog.SEV_ERROR
   local ev
   for ev = 1, 3 do
-    local n = ({4919, 4920, 4915})[ev]
+    local n  = ({4919, 4920, 4915})[ev]
     local ok = pcall(eventlog.suppress, n)
     if not ok then sdec.suppress_why = 'eventlog.suppress unavailable' end
   end
@@ -1639,7 +1631,7 @@ end
 function sdec.mode_save()
   if sdec.entrymode ~= nil then return true end
   if sdec.dig == nil then return false end
-  local m = nil
+  local m  = nil
   local ok = pcall(function()
     local df = sdec.dig.func
     if sdec.k.FUNC_NONE ~= nil and df == sdec.k.FUNC_NONE then
@@ -1669,7 +1661,7 @@ function sdec.mode_restore()
   local m = sdec.entrymode
   if m == nil then return true end
   sdec.entrymode = nil
-  local ok = pcall(function()
+  local ok       = pcall(function()
     if m.side == 'measure' then
       sdec.meas.func = m.func
     else
@@ -1686,15 +1678,15 @@ end
 -- power cycle nils `sdec`. The lock goes through unlock_all(), the one place that knows all five force_ fields.
 function sdec.reset_options()
   sdec.unlock_all()
-  sdec.proto = 'uart'
-  sdec.proto_why = nil
-  sdec.capmode = 'frame'
-  sdec.ui_mode = 'text'
-  sdec.widths_any = false
-  sdec.trigmode = 'edge'
-  sdec.trigext = false
+  sdec.proto        = 'uart'
+  sdec.proto_why    = nil
+  sdec.capmode      = 'frame'
+  sdec.ui_mode      = 'text'
+  sdec.widths_any   = false
+  sdec.trigmode     = 'edge'
+  sdec.trigext      = false
   sdec.trigext_only = false
-  sdec.fc_out = false
+  sdec.fc_out       = false
   return true
 end
 
@@ -1722,9 +1714,9 @@ function sdec.hw_verify()
   end)
   if not ok then return true end
   sdec.hw_snap = {func = f, range = r, aperture = a}
-  local w = {sdec.k.FUNC_VOLT, sdec.range, 1e-6}
-  local g = {f, r, a}
-  local nm = {'func', 'range', 'aperture'}
+  local w      = {sdec.k.FUNC_VOLT, sdec.range, 1e-6}
+  local g      = {f, r, a}
+  local nm     = {'func', 'range', 'aperture'}
   local allok, i = true, nil
   for i = 1, 3 do
     if not sdec.hw_same(w[i], g[i]) then
@@ -1766,11 +1758,11 @@ function sdec.acq_fit(n, buf)
   return n
 end
 
-sdec.acq_bufgot = nil
-sdec.acq_bufperm = nil
+sdec.acq_bufgot     = nil
+sdec.acq_bufperm    = nil
 sdec.acq_freesettle = 0.05
-sdec.acq_remade = 0
-sdec.acq_presettle = 0
+sdec.acq_remade     = 0
+sdec.acq_presettle  = 0
 
 -- Free and remake the capture buffer. Follows the project's object-lifetime rule -- delete, nil, then create --
 -- because creating over a live handle leaves the buffer beneath allocated and unreachable until a power cycle.
@@ -1800,16 +1792,17 @@ function sdec.acq_make_buffer(n)
   if sdec.buf ~= nil and sdec.acq_isstatic(sdec.buf) then
     sdec.buf = nil
   elseif sdec.buf ~= nil then
-    local b = sdec.buf
+    local b     = sdec.buf
     local delok = sdec.bufdel(b)
     if not delok then
-      sdec.delfails = (sdec.delfails or 0) + 1
+      sdec.delfails  = (sdec.delfails or 0) + 1
       sdec.stickyerr = 'the capture buffer could not be freed -- power cycle the instrument'
       return sdec.buf                    -- KEEP the handle: it is the only way to retry
     end
     sdec.buf = nil
-    freed = true
+    freed    = true
   end
+
   if freed then
     collectgarbage()
     delay(sdec.acq_freesettle)
@@ -1824,8 +1817,8 @@ function sdec.acq_make_buffer(n)
     end
   end
   if type(cap) == 'number' and cap >= 10 then
-    sdec.buf = nb
-    sdec.acq_bufgot = cap
+    sdec.buf         = nb
+    sdec.acq_bufgot  = cap
     sdec.acq_bufperm = false
     sdec.acq_fillmode(sdec.buf)
     return sdec.buf
@@ -1834,7 +1827,7 @@ function sdec.acq_make_buffer(n)
   return nil
 end
 
-sdec.tick = nil
+sdec.tick      = nil
 sdec.tickevery = sdec.tickevery or 2000    -- samples between hook calls; the bench caps the
 -- Where the oldest reading is, as an index into buf.readings. 1 unless the buffer has wrapped, and the
 -- firmware answers it in one proxy read. docs/MEASUREMENTS.md, 'A record can come back rotated'.
@@ -1843,7 +1836,7 @@ function sdec.acq_first(buf, n)
   local cap, dead = sdec.bufcap(buf)
   if dead then return 1 end
   if cap ~= nil and n < cap then return 1 end
-  local s = nil
+  local s  = nil
   local ok = pcall(function() s = buf.startindex end)
   if not ok or s == nil then return 1 end
   s = math.floor(s)
@@ -1866,12 +1859,12 @@ end
 -- the liveness hook costs nothing per sample: a modulo inside the loop would land on all 20 000 iterations of the
 -- hottest loop in the acquisition path, where slicing the range leaves it what it was.
 function sdec.acq_copy(buf, n)
-  local rd = buf.readings
-  local t = {}
+  local rd   = buf.readings
+  local t    = {}
   local step = sdec.tickevery
   if step == nil or step < 1 then step = n end
   local off = sdec.acq_first(buf, n) - 1
-  local i = 1
+  local i   = 1
   while i <= n do
     local j = i + step - 1
     if j > n then j = n end
@@ -1893,16 +1886,16 @@ end
 function sdec.acq_free(n, ncopy, nofc)
   local buf = sdec.buf
   sdec.trig_settle()
-  n = sdec.acq_fit(n, buf)
+  n              = sdec.acq_fit(n, buf)
   sdec.dig.count = n
   buf.clear()
   if sdec.fc_out and not nofc then
     sdec.fc_credit()
   end
   sdec.dig.read(buf)
-  sdec.nread = buf.n or 0
+  sdec.nread  = buf.n or 0
   sdec.acq_fs = sdec.acq_fs_or_requested(buf, sdec.nread)
-  local ncp = sdec.nread
+  local ncp   = sdec.nread
   if ncopy ~= nil and ncopy < ncp then ncp = ncopy end
   sdec.acq_copy(buf, ncp)
   sdec.acq_pretrig = nil
@@ -1952,7 +1945,7 @@ function sdec.trig_settle()
 end
 
 sdec.cancel_blender = 2
-sdec.cancel_poll_s = 0.001
+sdec.cancel_poll_s  = 0.001
 
 -- Send one flow-control credit out of the rear EXT TRIG OUT. Returns whether the pulse went.
 function sdec.fc_credit()
@@ -1966,7 +1959,7 @@ end
 
 -- Wire the TRIGGER key to blender 2's latch and discard anything latched. -> whether the latch is available.
 function sdec.cancel_setup()
-  local b = sdec.cancel_blender
+  local b  = sdec.cancel_blender
   local ok = pcall(function()
     trigger.blender[b].reset()
     trigger.blender[b].orenable = true
@@ -1998,12 +1991,12 @@ function sdec.arm_source()
   if sdec.trigmode == 'front' then ev = trigger.EVENT_DISPLAY end
   local useanalog = (ev == trigger.EVENT_ANALOGTRIGGER)
 
-  local blended = false
+  local blended   = false
   if not sdec.trigext then
     trigger.blender[1].reset()
   end
   if sdec.trigext and sdec.trigext_only and sdec.trigmode ~= 'free' then
-    ev = trigger.EVENT_EXTERNAL
+    ev        = trigger.EVENT_EXTERNAL
     useanalog = false
     trigger.blender[1].reset()
   elseif sdec.trigext and sdec.trigmode ~= 'free' then
@@ -2014,10 +2007,10 @@ function sdec.arm_source()
       trigger.blender[1].stimulus[2] = trigger.EVENT_EXTERNAL
     end)
     if bok then
-      ev = trigger.EVENT_BLENDER1
+      ev      = trigger.EVENT_BLENDER1
       blended = true
     else
-      ev = trigger.EVENT_EXTERNAL
+      ev           = trigger.EVENT_EXTERNAL
       sdec.lasterr = 'no trigger blender; using the rear BNC alone'
     end
   end
@@ -2033,12 +2026,12 @@ function sdec.arm_source()
       trigger.blender[1].stimulus[3] = trigger.EVENT_DISPLAY
     end)
     if kok then
-      ev = trigger.EVENT_BLENDER1
-      blended = true
+      ev            = trigger.EVENT_BLENDER1
+      blended       = true
       sdec.armkeyed = true
     else
       sdec.armkeyed = nil
-      local knote = 'the TRIGGER key will not cut the arm short'
+      local knote   = 'the TRIGGER key will not cut the arm short'
       if sdec.lasterr == nil then
         sdec.lasterr = 'no trigger blender; ' .. knote
       else
@@ -2066,7 +2059,7 @@ function sdec.arm_threshold()
     sdec.arm_thr, sdec.arm_idle = sdec.thr, sdec.idle
     return true
   end
-  local off = sdec.arm_level_v()
+  local off  = sdec.arm_level_v()
   local half = 0.5 * math.abs(idlev)
   if off > half then off = half end
   if idlev < 0 then
@@ -2103,23 +2096,6 @@ function sdec.arm_comparator(useanalog, slope)
   end)
 end
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 -- Capture armed on a signal edge, on the front-panel TRIGGER key or on the rear BNC, degrading to a free-running
 -- read if the source is refused. It keeps sdec.pretrig percent of the buffer from before the trigger, because a
 -- start bit is only a start bit if the line was at mark first, and the comparison runs on the analog board's
@@ -2128,7 +2104,7 @@ function sdec.acq_triggered(n, slope)
   local buf = sdec.buf
   buf.clear()
   sdec.acq_fillmode(buf)
-  n = sdec.acq_fit(n, buf)
+  n              = sdec.acq_fit(n, buf)
   sdec.dig.count = n
   sdec.mute_events()
 
@@ -2157,7 +2133,7 @@ function sdec.acq_triggered(n, slope)
     if not sdec.arm_comparator(useanalog, slope) then
       error('no analog comparator on this digitizer', 0)
     end
-    local pos = sdec.acq_pospct(n, buf)
+    local pos          = sdec.acq_pospct(n, buf)
     sdec.acq_posloaded = pos
     trigger.model.load('LoopUntilEvent', ev,
                        pos, trigger.CLEAR_ENTER, 0, buf)
@@ -2180,7 +2156,7 @@ function sdec.acq_triggered(n, slope)
     end
     local full = (buf.n or 0) >= n and sdec.pretrig <= 0
     if not sdec.trig_done(buf) and not full then
-      expired = true
+      expired   = true
       local why = 'no trigger in ' .. tostring(wait) .. ' s (' .. tostring(sdec.trigmode) .. ')'
       if sdec.arm_silent() and useanalog then
         why = why .. ' -- nothing crossed ' ..
@@ -2207,7 +2183,7 @@ function sdec.acq_triggered(n, slope)
     return sdec.acq_free(n)
   end
 
-  sdec.nread = buf.n or 0
+  sdec.nread  = buf.n or 0
   sdec.acq_fs = sdec.acq_fs_or_requested(buf, sdec.nread)
   sdec.acq_copy(buf, sdec.nread)
   sdec.acq_pretrig = (sdec.pretrig or 0) > 0
@@ -2267,11 +2243,11 @@ end
 
 
 -- ================= tsp/uart_decode.tsp =================
-sdec = sdec or {}
+sdec               = sdec or {}
 
-sdec.PAR_NONE = 0
-sdec.PAR_EVEN = 1
-sdec.PAR_ODD  = 2
+sdec.PAR_NONE      = 0
+sdec.PAR_EVEN      = 1
+sdec.PAR_ODD       = 2
 
 sdec.try_nbits     = {8, 7}              -- the default: the two widths that actually occur
 sdec.try_nbits_all = {8, 7, 6, 5}        -- with "Auto (any width)"; 9 is forced-only, see above
@@ -2298,30 +2274,30 @@ function sdec.ua_stops()
   return sdec.try_stop
 end
 
-sdec.force_msb = nil
-sdec.msb_used = nil
+sdec.force_msb     = nil
+sdec.msb_used      = nil
 
-sdec.try_stop  = {1}
+sdec.try_stop      = {1}
 
-sdec.ratios      = {1, 0.5, 2, 0.3333333333, 3, 0.25, 4, 0.2, 5, 0.1666666667, 6, 8, 10}
-sdec.probe_nbits = {8, 7, 5}
+sdec.ratios        = {1, 0.5, 2, 0.3333333333, 3, 0.25, 4, 0.2, 5, 0.1666666667, 6, 8, 10}
+sdec.probe_nbits   = {8, 7, 5}
 
-sdec.ratemargin = sdec.ratemargin or 0.04
+sdec.ratemargin    = sdec.ratemargin or 0.04
 
-sdec.qgate = 0.8
+sdec.qgate         = 0.8
 
 sdec.alt_minframes = sdec.alt_minframes or 8
 
-sdec.fitratio = sdec.fitratio or 1    -- the rescaling ua_best() settled on
+sdec.fitratio      = sdec.fitratio or 1    -- the rescaling ua_best() settled on
 
 -- Bit sampling
 -- Sample the logical bit level at fractional sample position x. Returns 0, 1, or nil outside the
 -- capture. Three taps are majority-voted: docs/MEASUREMENTS.md, 'Three-tap majority sampling'.
 function sdec.ua_bit(rd, n, x, invert, T)
-  local thr = sdec.thr
+  local thr   = sdec.thr
   local floor = math.floor
 
-  local ic = floor(x + 0.5)
+  local ic    = floor(x + 0.5)
   if ic < 1 or ic > n then return nil end
   local vc = rd[ic]
   if vc == nil then return nil end
@@ -2360,9 +2336,9 @@ sdec.ua_pc = nil
 function sdec.ua_popcount(v)
   local t = sdec.ua_pc
   if t == nil then
-    t = {}
+    t           = {}
     local floor = math.floor
-    local i = 0
+    local i     = 0
     while i < 512 do
       local ones, x = 0, i
       while x > 0 do
@@ -2410,12 +2386,12 @@ end
 -- sampling is ua_bit inline, expression for expression, a call costing about as much as the sampling
 -- it wraps. docs/MEASUREMENTS.md, 'Three-tap majority sampling'.
 function sdec.ua_frame(rd, n, t0, T, nbits, par, nstop, invert, msb)
-  local thr = sdec.thr
+  local thr   = sdec.thr
   local floor = math.floor
   local three, off = false, 0
   if T ~= nil and T >= 6 then
     three = true
-    off = 0.2 * T
+    off   = 0.2 * T
   end
 
   local pslot = -1
@@ -2430,7 +2406,7 @@ function sdec.ua_frame(rd, n, t0, T, nbits, par, nstop, invert, msb)
   if invert then hib, lob = 0, 1 end
 
   for slot = 0, last do
-    local x = t0 + (slot + 0.5) * T
+    local x  = t0 + (slot + 0.5) * T
     local ic = floor(x + 0.5)
     if ic < 1 or ic > n then return nil, 'truncated' end
     local vc = rd[ic]
@@ -2442,7 +2418,7 @@ function sdec.ua_frame(rd, n, t0, T, nbits, par, nstop, invert, msb)
       if vc >= thr then cb = 1 end
       local ones, votes = cb, 1
       local settled = false
-      local i = floor(x - off + 0.5)
+      local i       = floor(x - off + 0.5)
       if i >= 1 and i <= n then
         local v = rd[i]
         if v ~= nil then
@@ -2578,7 +2554,7 @@ function sdec.ua_run(rd, n, T, nbits, par, nstop, invert, tmin0, msb)
       else
 
       local nf = r.nf + 1
-      r.nf = nf
+      r.nf     = nf
       r.vals[nf] = val
       r.errs[nf] = err
       r.tpos[nf] = t0
@@ -2660,7 +2636,7 @@ function sdec.ua_textn(r)
   for i = 1, r.nf do
     if r.errs[i] == nil then
       local v = r.vals[i]
-      g = g + 1
+      g       = g + 1
       if (v >= 48 and v <= 57) or (v >= 65 and v <= 90) or (v >= 97 and v <= 122) then
         c = c + 1
       end
@@ -2706,7 +2682,7 @@ function sdec.ua_printfrac(r)
 end
 
 sdec.ua_polnftol = 0.1
-sdec.ua_textmin = 0.25
+sdec.ua_textmin  = 0.25
 
 -- One run at a fixed format, with the fields ua_pick_pol and the caller read filled in.
 function sdec.ua_run_fmt(rd, n, T, nbits, par, nstop, inv)
@@ -2742,11 +2718,11 @@ end
 -- Search every format at one polarity, also returning those within the margin, the UI's ambiguity.
 function sdec.ua_search_pol(rd, n, T, inv)
   local widths = sdec.ua_widths()
-  local pars = sdec.ua_parities()
-  local stops = sdec.ua_stops()
-  local nnb = table.getn(widths)
-  local npa = table.getn(pars)
-  local nst = table.getn(stops)
+  local pars   = sdec.ua_parities()
+  local stops  = sdec.ua_stops()
+  local nnb    = table.getn(widths)
+  local npa    = table.getn(pars)
+  local nst    = table.getn(stops)
   local best, alts = nil, {}
   local na = 0
   local b, c, d
@@ -2757,10 +2733,10 @@ function sdec.ua_search_pol(rd, n, T, inv)
       local par = pars[c]
       for d = 1, nst do
         local nstop = stops[d]
-        local r = sdec.ua_run(rd, n, T, nbits, par, nstop, inv)
+        local r     = sdec.ua_run(rd, n, T, nbits, par, nstop, inv)
         if r.ngood >= 1 then
           local sc = sdec.ua_score(r)
-          na = na + 1
+          na       = na + 1
           alts[na] = {sc = sc, nbits = nbits, par = par, nstop = nstop}
           if best == nil or sc > best.score + sdec.ua_margin(best.score, nbits) then
             r.score  = sc
@@ -2768,7 +2744,7 @@ function sdec.ua_search_pol(rd, n, T, inv)
             r.par    = par
             r.nstop  = nstop
             r.invert = inv
-            best = r
+            best     = r
           end
         end
       end
@@ -2783,7 +2759,7 @@ end
 -- filled in, or nil.
 function sdec.ua_autoformat(rd, n, T)
   sdec.fmt_note = nil
-  sdec.polwhy = nil
+  sdec.polwhy   = nil
 
   if sdec.force_invert ~= nil then
     return sdec.ua_search_pol(rd, n, T, sdec.force_invert)
@@ -2808,7 +2784,7 @@ function sdec.ua_plausible(T, n)
   if T > n / 8 then return false end               -- no room for even one frame
   if sdec.wmed ~= nil and sdec.wmed > 0 and T > 1.15 * sdec.wmed then return false end
   local fs = sdec.acq_fs or sdec.fs
-  local b = fs / T
+  local b  = fs / T
   return b >= sdec.minbaud * (1 - sdec.plaustol)
      and b <= sdec.maxbaud * (1 + sdec.plaustol)
 end
@@ -2928,15 +2904,15 @@ function sdec.ua_cands(Tfit)
   return c, m
 end
 
-sdec.ua_probe_n = sdec.ua_probe_n or 4000
+sdec.ua_probe_n     = sdec.ua_probe_n or 4000
 
-sdec.ua_alt_margin = sdec.ua_alt_margin or 3
+sdec.ua_alt_margin  = sdec.ua_alt_margin or 3
 sdec.ua_alt_badfrac = sdec.ua_alt_badfrac or 0.1
 
-sdec.ua_tie_margin = sdec.ua_tie_margin or 1
+sdec.ua_tie_margin  = sdec.ua_tie_margin or 1
 
-sdec.ua_textmin  = sdec.ua_textmin  or 16      -- letters, absolute
-sdec.ua_textfrac = sdec.ua_textfrac or 0.25    -- share of good frames; chance alone reaches 0.242
+sdec.ua_textmin     = sdec.ua_textmin  or 16      -- letters, absolute
+sdec.ua_textfrac    = sdec.ua_textfrac or 0.25    -- share of good frames; chance alone reaches 0.242
 
 -- Best score any probe format reaches at one candidate bit time, or nil if none frames.
 function sdec.ua_probe(rd, n, T)
@@ -2976,7 +2952,7 @@ end
 --   ua_best_end    the decision logic over whatever the probes found
 -- `st` holds what the three share: one table, the 200-active-locals ceiling being real here.
 function sdec.ua_best_begin(rd, n, Tfit)
-  local fs = sdec.acq_fs or sdec.fs
+  local fs       = sdec.acq_fs or sdec.fs
   sdec.baud_note = nil
 
   local _, snap1 = sdec.sig_snap(fs / Tfit)
@@ -3023,7 +2999,7 @@ end
 -- the caller decides how many to run before handing the panel back.
 function sdec.ua_best_probe(st)
   if st == nil or st.i >= st.nc then return false end
-  st.i = st.i + 1
+  st.i    = st.i + 1
   local i = st.i
   local T, ratio, q = st.cands[i].T, st.cands[i].r, st.cands[i].q
   if st.mayrescale and ratio ~= 1 and q ~= nil and q >= st.qmin
@@ -3065,7 +3041,7 @@ function sdec.ua_best_end(st)
 
   if snap1 and sc1 ~= nil and sc1 > 0 then
     if altsc ~= nil and altsc > sc1 then
-      local ab = sdec.sig_snap(fs / altT)
+      local ab      = sdec.sig_snap(fs / altT)
       local failing = bad1 ~= nil and good1 ~= nil and good1 > 0 and
                       bad1 >= (sdec.ua_alt_badfrac or 0.1) * (good1 + bad1)
       if failing and altsc >= (sdec.ua_alt_margin or 3) * sc1 then
@@ -3139,7 +3115,7 @@ function sdec.ua_refine_width(r, rd, n, T)
       end
     end
     if not allone or ndist < 3 then break end
-    want = want - 1
+    want    = want - 1
     dropped = dropped + 1
   end
 
@@ -3179,12 +3155,12 @@ function sdec.ua_refine_width(r, rd, n, T)
   return r2
 end
 
-sdec.par_skiphead = sdec.par_skiphead or 3
-sdec.par_skiptail = sdec.par_skiptail or 1
+sdec.par_skiphead     = sdec.par_skiphead or 3
+sdec.par_skiptail     = sdec.par_skiptail or 1
 sdec.par_minfrac      = sdec.par_minfrac      or 0.95
 sdec.par_minvote_all  = sdec.par_minvote_all  or 6
 sdec.par_minvote_frac = sdec.par_minvote_frac or 20
-sdec.par_minboth = sdec.par_minboth or 2
+sdec.par_minboth      = sdec.par_minboth or 2
 
 -- Votes required in each bit-7 state, which stops a restricted alphabet faking parity.
 -- docs/MEASUREMENTS.md, 'par_minboth: both bit-7 states, or it is not evidence of parity'.
@@ -3213,8 +3189,8 @@ function sdec.ua_refine_parity(r, rd, n, T)
   local i
   for i = i0, i1 do
     if r.errs[i] == nil then
-      nvote = nvote + 1
-      local v = r.vals[i]
+      nvote     = nvote + 1
+      local v   = r.vals[i]
       local top = 0
       if v >= 128 then top = 1 end
       if top == 1 then ntop1 = ntop1 + 1 else ntop0 = ntop0 + 1 end
@@ -3241,7 +3217,7 @@ function sdec.ua_refine_parity(r, rd, n, T)
   if par == nil then return r end
 
   local strict = (nagree == nvote)
-  local note = string.format(
+  local note   = string.format(
       '8N1 also fits; chose 7%s1 (bit 7 tracked %s parity in %d of %d frames)',
       tostring(string.upper(string.sub(pname, 1, 1))), tostring(pname), nagree or 0, nvote or 0)
 
@@ -3262,15 +3238,15 @@ function sdec.ua_refine_parity(r, rd, n, T)
     local v = r.vals[i]
     if v ~= nil then r.vals[i] = mod(v, 128) end
   end
-  r.nbits = 7
-  r.par   = par
+  r.nbits       = 7
+  r.par         = par
   sdec.fmt_note = note
   return r
 end
 
-sdec.ua_stop_tol   = sdec.ua_stop_tol   or 0.25   -- bits either side of 0 or 1 to count a pair
-sdec.ua_stop_min   = sdec.ua_stop_min   or 20     -- clean adjacent pairs before any verdict
-sdec.ua_stop_frac  = sdec.ua_stop_frac  or 0.8    -- share of them that must agree
+sdec.ua_stop_tol  = sdec.ua_stop_tol   or 0.25   -- bits either side of 0 or 1 to count a pair
+sdec.ua_stop_min  = sdec.ua_stop_min   or 20     -- clean adjacent pairs before any verdict
+sdec.ua_stop_frac = sdec.ua_stop_frac  or 0.8    -- share of them that must agree
 
 -- -> 1, 2, or nil when the capture cannot say. Reads the result only; decodes nothing.
 function sdec.ua_stopseen(r, T)
@@ -3331,7 +3307,7 @@ function sdec.ua_refine_bitorder(r, rd, n, T)
   if rd == nil or n == nil or T == nil then return r end
   if r.nbits == nil or r.nbits < 2 then return r end
   local clsb = sdec.ua_textn(r)
-  local r2 = sdec.ua_run(rd, n, T, r.nbits, r.par, r.nstop, r.invert, nil, true)
+  local r2   = sdec.ua_run(rd, n, T, r.nbits, r.par, r.nstop, r.invert, nil, true)
   if r2 == nil then return r end
   local cmsb, dmsb = sdec.ua_textdistinct(r2)
   if cmsb < sdec.msb_textmin then return r end
@@ -3343,8 +3319,8 @@ function sdec.ua_refine_bitorder(r, rd, n, T)
     r2.headsusp = r.headsusp
   end
   r2.nbits, r2.par, r2.nstop, r2.invert = r.nbits, r.par, r.nstop, r.invert
-  r2.msb = true
-  sdec.msb_used = true
+  r2.msb             = true
+  sdec.msb_used      = true
   sdec.bitorder_note = string.format(
       'MSB first (%d text bytes against %d decoding LSB first)', cmsb or 0, clsb or 0)
   return r2
@@ -3417,7 +3393,7 @@ function sdec.decode_from(rd, n)
       local Tm = sdec.sig_bittime()
       if Tm == nil or Tm <= 0 then return end
       local ratio = Tm / T
-      local near = nil
+      local near  = nil
       local k
       for k = 1, 6 do
         if math.abs(ratio * k - 1) < 0.12 then near = k end
@@ -3433,7 +3409,7 @@ function sdec.decode_from(rd, n)
       end
       local err = ratio - 1
       if math.abs(err) > (sdec.ratemargin or 0.04) then
-        local meas = fs / Tm
+        local meas     = fs / Tm
         sdec.rate_note = string.format(
           'WARNING: bytes may be WRONG -- wire is %.0f baud, not the %g you set (%+.0f %%)',
           meas, sdec.force_baud, err * 100)
@@ -3450,7 +3426,7 @@ function sdec.decode_from(rd, n)
     T, ratio, badwhy = sdec.ua_best(rd, n, Tfit)
     if T == nil then return giveup(badwhy or 'no usable bit time') end
     local _, q = sdec.sig_fit(sdec.w, sdec.nw, T)
-    sdec.fitq = q or 0
+    sdec.fitq     = q or 0
     sdec.bittime  = T
     sdec.fitratio = ratio
     sdec.baud_raw = fs / T
@@ -3460,10 +3436,10 @@ function sdec.decode_from(rd, n)
 
   local r
   if sdec.force_nbits ~= nil then
-    local par = sdec.force_par or sdec.PAR_NONE
+    local par   = sdec.force_par or sdec.PAR_NONE
     local nstop = sdec.force_nstop or 1
     if sdec.force_invert ~= nil then
-      r = sdec.ua_run_fmt(rd, n, T, sdec.force_nbits, par, nstop, sdec.force_invert)
+      r           = sdec.ua_run_fmt(rd, n, T, sdec.force_nbits, par, nstop, sdec.force_invert)
       sdec.polwhy = nil
     else
       local prior = (sdec.idle == 0)
@@ -3493,7 +3469,7 @@ end
 sdec.relock_badfrac   = 0.25     -- interior frames in error before the lock is doubted
 sdec.relock_minframes = 8        -- fewer frames than this and a bad fraction is not evidence
 
-sdec.force_conflict = sdec.force_conflict or 'adopt'
+sdec.force_conflict   = sdec.force_conflict or 'adopt'
 
 -- Fraction of interior frames that failed, or nil when there are too few to judge. Interior, because
 -- head resync and a clipped tail fail on healthy captures too.
@@ -3520,14 +3496,14 @@ function sdec.decode()
 
   local was, bf0 = sdec.force_baud, bf
   sdec.force_baud = nil
-  sdec.rate_note = nil
+  sdec.rate_note  = nil
   local ok2, why2 = sdec.decode_from(sdec.smp, sdec.nread)
   local bf2 = sdec.ua_badfrac(sdec.res)
   if ok2 and bf2 ~= nil and bf2 < sdec.relock_badfrac and sdec.baud ~= nil then
     local found = sdec.baud
     if sdec.force_conflict == 'adopt' then
       if sdec.snapfirm == false and sdec.baud_raw ~= nil then found = sdec.baud_raw end
-      local adopt = sdec.baud_round(found)
+      local adopt     = sdec.baud_round(found)
       sdec.force_baud = adopt
       sdec.baud, sdec.snapped, sdec.snapfirm = adopt, true, true
       sdec.relocked = string.format('%g baud fit nothing -- now locked to %.0f, which this capture reads',
@@ -3535,7 +3511,7 @@ function sdec.decode()
       return ok2, why2
     end
     sdec.force_baud = was
-    sdec.res = nil
+    sdec.res        = nil
     sdec.rate_offer, sdec.rate_offer_from = found, was
     sdec.rate_refused = string.format(
         '%g baud fits nothing -- this capture reads %.0f. Options > Baud 0 restores detection.',
@@ -3545,7 +3521,7 @@ function sdec.decode()
   sdec.relocked = string.format('%g baud fits nothing, and no other rate fit either -- ' ..
                                 'back to auto-detect', was or 0)
   sdec.rate_backoff = true
-  sdec.force_baud = nil
+  sdec.force_baud   = nil
   if sdec.autolock_set ~= nil then
     if sdec.autolock_set.nbits  then sdec.force_nbits  = nil end
     if sdec.autolock_set.par    then sdec.force_par    = nil end
@@ -3659,9 +3635,9 @@ sdec.ua_hexgap   = 2         -- EXTRA spaces at a group boundary, on top of the 
 -- Join formatted cells, widening the separator at each group boundary. `sep` is '' for the
 -- file form, whose cells carry their own leading space, and ' ' for the screen form.
 function sdec.ua_hexjoin(cells, m, sep)
-  local grp = sdec.ua_hexgroup or 0
+  local grp   = sdec.ua_hexgroup or 0
   local extra = sdec.ua_hexgap or 0
-  local wide = sep .. string.rep(' ', extra)
+  local wide  = sep .. string.rep(' ', extra)
   local out, k, i = {}, 0, 0
   for i = 1, m do
     if i > 1 then
@@ -3678,9 +3654,9 @@ end
 -- Width in characters of one hex group of `ncol` bytes: two chars each plus one separator between, so
 -- the layout derives its columns. The gap between groups is layout (sdec.ui_col_gap2), not spaces.
 function sdec.ua_hexwidth(ncol)
-  local grp = sdec.ua_hexgroup or 0
+  local grp   = sdec.ua_hexgroup or 0
   local extra = sdec.ua_hexgap or 0
-  local w = ncol * 3 - 1                     -- 2 chars per byte + 1 separator between
+  local w     = ncol * 3 - 1                     -- 2 chars per byte + 1 separator between
   if grp > 0 and extra > 0 and ncol > 1 then
     w = w + extra * math.floor((ncol - 1) / grp)
   end
@@ -3700,7 +3676,7 @@ function sdec.ua_hexrow(vals, errs, nf, i0, ncol, base)
       hx[m] = '   '
       as[m] = ' '
     else
-      local v = vals[i]
+      local v   = vals[i]
       local bad = type(v) ~= 'number'
       if not bad then
         bad = v ~= v or v < 0 or v > 255 or math.floor(v) ~= v
@@ -3769,15 +3745,15 @@ end
 
 
 -- ================= tsp/chunk_decode.tsp =================
-sdec = sdec or {}
+sdec             = sdec or {}
 
-sdec.ck_win_n = 20000
+sdec.ck_win_n    = 20000
 
 sdec.ck_ovframes = 3
 
-sdec.ck_level_n = 20000
+sdec.ck_level_n  = 20000
 
-sdec.ck_probes = 8
+sdec.ck_probes   = 8
 
 sdec.ck_maxbytes = 32768
 
@@ -3862,7 +3838,7 @@ end
 -- when the window cannot hold enough frames: at 1200 baud with fs at 1 MSa/s, T is 833 samples and
 -- three 12-bit frames do not fit, so the stride would go negative. The refusal names the sample rate.
 function sdec.ck_geometry(T, framebits)
-  local W = sdec.ck_win_n
+  local W  = sdec.ck_win_n
   local ov = sdec.ck_overlap(T, framebits)
   if ov == nil then return nil, nil, nil, 'no bit time' end
   local need = math.ceil((sdec.ck_ovframes + 2) * framebits * T) + sdec.maxback
@@ -3909,8 +3885,8 @@ function sdec.ck_levels_probe(reader, ntotal, win, k)
   local W = sdec.ck_win_n
   if ntotal ~= nil and ntotal < W then W = ntotal end
   local nprobe = sdec.ck_probes or 1
-  local total = ntotal or W
-  local span = total - W
+  local total  = ntotal or W
+  local span   = total - W
   if span < 0 then span = 0 end
   local from = 1
   if nprobe > 1 and span > 0 then
@@ -3987,7 +3963,7 @@ function sdec.ck_prime_step(pr)
   end
 
   if pr.phase == 'read' then
-    local W = sdec.ck_win_n
+    local W    = sdec.ck_win_n
     local left = nil
     if pr.ntotal ~= nil then left = pr.ntotal - pr.at + 1 end
     if left ~= nil and left < W then W = left end
@@ -4044,22 +4020,22 @@ function sdec.ck_prime(reader, ntotal, win, leadmax)
   return fmt, nil
 end
 
-sdec.ck_smp_us = 73               -- worst-phase cost per sample, microseconds, MEASURED at 4 sa/bit
-sdec.ck_win_max = 20000           -- and never wider than this, whatever the budget allows
-sdec.ck_win_min = 2000            -- nor narrower: below this the per-window seam overhead dominates
-sdec.ck_win_ref = 20000           -- the width the phase timings above were taken at
+sdec.ck_smp_us      = 73        -- worst-phase cost per sample, microseconds, MEASURED at 4 sa/bit
+sdec.ck_win_max     = 20000     -- and never wider than this, whatever the budget allows
+sdec.ck_win_min     = 2000      -- nor narrower: below this the per-window seam overhead dominates
+sdec.ck_win_ref     = 20000     -- the width the phase timings above were taken at
 
 sdec.ck_budget_frac = 0.9
 
-sdec.ck_win_us = 48
-sdec.ck_slice_n = 1
+sdec.ck_win_us      = 48
+sdec.ck_slice_n     = 1
 
 -- The widest window whose every phase fits `budget_s`; nil means the fixed maximum, no panel to protect.
 function sdec.ck_win_for(budget_s)
   local wmax = sdec.ck_win_max or 20000
   if budget_s == nil or budget_s <= 0 then return wmax end
-  local b = budget_s * (sdec.ck_budget_frac or 1)
-  local w = math.floor(b / ((sdec.ck_smp_us or 52) * 1e-6))
+  local b  = budget_s * (sdec.ck_budget_frac or 1)
+  local w  = math.floor(b / ((sdec.ck_smp_us or 52) * 1e-6))
   local wd = math.floor(b / ((sdec.ck_slice_n or 1) *
                              (sdec.ck_win_us or sdec.ck_smp_us or 52) * 1e-6))
   if wd < w then w = wd end
@@ -4094,28 +4070,28 @@ function sdec.ck_decode(reader, ntotal, fmt, sink, opts)
   local maxbytes = opts.maxbytes
   if maxbytes == nil and not opts.nocap then maxbytes = sdec.ck_maxbytes end
   local progress = opts.progress
-  local nwin = sdec.ck_nwin(ntotal, W, stride)
+  local nwin     = sdec.ck_nwin(ntotal, W, stride)
 
   local tot = {nf = 0, ngood = 0, nbad = 0, nfalse = 0, nwin = 0, nwin_est = nwin,
                nsmp = 0, stopped = nil, W = W, overlap = ov, stride = stride}
 
   local endpos = nil
-  local off = 0                 -- absolute 0-based offset of the current window
+  local off    = 0                 -- absolute 0-based offset of the current window
 
   if opts.resume ~= nil then
-    off = opts.resume.off or 0
+    off    = opts.resume.off or 0
     endpos = opts.resume.endpos
     if opts.resume.tot ~= nil then tot = opts.resume.tot end
     tot.suspended = nil
-    tot.nwin_est = nwin
+    tot.nwin_est  = nwin
   end
 
-  local slice = sdec.ck_slice_win(opts.budget_s, W, sdec.ck_win_us)
-  local spent = 0
+  local slice  = sdec.ck_slice_win(opts.budget_s, W, sdec.ck_win_us)
+  local spent  = 0
 
   local primed = opts.primed
-  opts.primed = nil
-  local reuse = (primed ~= nil and off == 0 and opts.resume == nil and primed.W == W and
+  opts.primed  = nil
+  local reuse  = (primed ~= nil and off == 0 and opts.resume == nil and primed.W == W and
                  primed.at == 1)
 
   while true do
@@ -4134,11 +4110,11 @@ function sdec.ck_decode(reader, ntotal, fmt, sink, opts)
     local r = sdec.ua_run(win, cnt, T, fmt.nbits, fmt.par, fmt.nstop, fmt.invert,
                           tmin0)
 
-    tot.nwin = tot.nwin + 1
-    tot.nsmp = off + cnt
+    tot.nwin   = tot.nwin + 1
+    tot.nsmp   = off + cnt
     tot.nfalse = tot.nfalse + r.nfalse
 
-    local m = r.nf
+    local m    = r.nf
     if m > 0 and maxbytes ~= nil and tot.nf + m > maxbytes then
       m = maxbytes - tot.nf
       if m < 0 then m = 0 end
@@ -4161,7 +4137,7 @@ function sdec.ck_decode(reader, ntotal, fmt, sink, opts)
           end
         end
         if hb > 0 then
-          tot.headbad = hb
+          tot.headbad  = hb
           tot.headnbad = hn
         end
       end
@@ -4189,7 +4165,7 @@ function sdec.ck_decode(reader, ntotal, fmt, sink, opts)
       tot.stopped = 'short read'
       break
     end
-    off = off + stride
+    off   = off + stride
 
     spent = spent + 1
     if slice ~= nil and spent >= slice then
@@ -4236,7 +4212,7 @@ function sdec.ck_sink_file(path, ncol)
 
   local cv, ce, cn = {}, {}, 0     -- carry: bytes not yet a full row
   local cbase = 0                  -- stream offset of cv[1]
-  local dead = false
+  local dead  = false
 
   -- ua_hexrow pads ncol - nrow, so the file's last row keeps its ASCII gutter in column.
   local function emit(nrow)
@@ -4248,7 +4224,7 @@ function sdec.ck_sink_file(path, ncol)
       cv[i - nrow] = cv[i]
       ce[i - nrow] = ce[i]
     end
-    cn = cn - nrow
+    cn    = cn - nrow
     cbase = cbase + nrow
   end
 
@@ -4267,7 +4243,7 @@ function sdec.ck_sink_file(path, ncol)
   end
 
   local finished = false
-  local finish = function()
+  local finish   = function()
     if finished then return not dead end
     finished = true
     if not dead and cn > 0 then
@@ -4297,7 +4273,7 @@ function sdec.ck_tail_push(tl, vals, errs, m, base)
   if tl == nil or m == nil or m < 1 then return end
   local i = 1
   if m > tl.cap then
-    i = m - tl.cap + 1
+    i    = m - tl.cap + 1
     tl.w = tl.w + (i - 1)
     tl.n = tl.cap                      -- the skipped bytes are 'seen', and the ring is now full
   end
@@ -4324,7 +4300,7 @@ function sdec.ck_tail_result(tl, fmt, ntotal)
     r.vals[i], r.errs[i] = tl.v[j], tl.e[j]
     if tl.e[j] == nil then r.ngood = r.ngood + 1 else r.nbad = r.nbad + 1 end
   end
-  r.first = start + 1
+  r.first  = start + 1
   r.ntotal = ntotal                         -- how many the whole run decoded
   if fmt ~= nil then
     r.nbits, r.par, r.nstop = fmt.nbits, fmt.par, fmt.nstop
@@ -4367,7 +4343,7 @@ function sdec.ck_job_sinks(job)
       sink = fsink
     else
       local extra = sink
-      sink = function(vals, errs, m, base)
+      sink        = function(vals, errs, m, base)
         local a = extra(vals, errs, m, base)
         local b = fsink(vals, errs, m, base)
         return a ~= false and b ~= false
@@ -4376,10 +4352,10 @@ function sdec.ck_job_sinks(job)
   end
 
   local tail = sdec.ck_tail_new(opts.keep)
-  job.tail = tail
+  job.tail   = tail
   if tail ~= nil then
     local inner = sink
-    sink = function(vals, errs, m, base)
+    sink        = function(vals, errs, m, base)
       sdec.ck_tail_push(tail, vals, errs, m, base)
       if inner == nil then return true end
       return inner(vals, errs, m, base)
@@ -4430,7 +4406,7 @@ function sdec.ck_job_step(job)
   job.opts.resume = nil               -- unconditionally: a raise must not leave it set
   if tot ~= nil then
     if job.headsusp == nil then job.headsusp = tot.headsusp end
-    if job.headbad == nil then job.headbad = tot.headbad end
+    if job.headbad  == nil then job.headbad  = tot.headbad  end
     if job.headnbad == nil then job.headnbad = tot.headnbad end
     tot.headsusp, tot.headbad = job.headsusp, job.headbad
     tot.headnbad = job.headnbad
@@ -4447,7 +4423,7 @@ function sdec.ck_job_step(job)
 
   if tot.suspended ~= nil then
     job.state = tot.suspended
-    job.tot = tot                     -- partial totals, so the panel can show real progress
+    job.tot   = tot                     -- partial totals, so the panel can show real progress
     return false, tot, nil
   end
 
@@ -4458,7 +4434,7 @@ function sdec.ck_job_step(job)
     local fok = fpok and fv
     if not fpok or not fok then tot.stopped = 'write failed' end
   end
-  tot.fmt = job.fmt
+  tot.fmt  = job.fmt
   tot.path = job.path
   tot.tail = sdec.ck_tail_result(job.tail, job.fmt, tot.nf)
   if tot.tail ~= nil then tot.tail.headsusp = tot.headsusp end
@@ -4474,10 +4450,10 @@ function sdec.ck_job_abandon(job)
   local tot = job.tot
   if tot ~= nil then
     tot.suspended = nil
-    tot.stopped = tot.stopped or 'stopped'
-    tot.fmt = job.fmt
-    tot.path = job.path
-    tot.tail = sdec.ck_tail_result(job.tail, job.fmt, tot.nf)
+    tot.stopped   = tot.stopped or 'stopped'
+    tot.fmt       = job.fmt
+    tot.path      = job.path
+    tot.tail      = sdec.ck_tail_result(job.tail, job.fmt, tot.nf)
   end
   return tot
 end
@@ -4520,15 +4496,15 @@ end
 
 
 -- ================= tsp/serial_ui.tsp =================
-sdec = sdec or {}
+sdec            = sdec or {}
 
-sdec.ui_title    = 'SERIAL DECODE'
+sdec.ui_title   = 'SERIAL DECODE'
 
-sdec.ui_ink = 12
+sdec.ui_ink     = 12
 sdec.ui_ink_med = 17
-sdec.ui_lab_y = 14
-sdec.ui_val_y = 32
-sdec.ui_fields = {
+sdec.ui_lab_y   = 14
+sdec.ui_val_y   = 32
+sdec.ui_fields  = {
   {lab = 'BAUD',   x = 8,   c = 0x00DCFF, med = true, dy = 2, wid = '115200'},
   {lab = 'FORMAT', x = 115, c = 0x00DCFF, med = true, dy = 2, labdx = -4, wid = '8N1M'},
   {lab = 'IDLE',   x = 188, c = 0xFFFFFF, wid = 'HIGH'},
@@ -4546,97 +4522,97 @@ sdec.ui_fields = {
 -- test_serial cannot disagree. It must account for the font and fd.dy, or the tallest cells go
 -- unguarded.
 function sdec.ui_field_band(j)
-  local fd = sdec.ui_fields[j]
-  local y = sdec.ui_val_y + (fd.dy or 0)
+  local fd  = sdec.ui_fields[j]
+  local y   = sdec.ui_val_y + (fd.dy or 0)
   local ink = sdec.ui_ink
   if fd.med then ink = sdec.ui_ink_med end
   return y - ink + 1, y
 end
 
-sdec.ui_adv_upper = 10       -- uppercase, measured 9.67 worst case
-sdec.ui_adv_btn = 14
-sdec.ui_adv_mixed = 8        -- digits and mixed-case, measured 7.80 worst case
-sdec.ui_c_lab  = 0xA8A8A8                    -- the label row
+sdec.ui_adv_upper  = 10       -- uppercase, measured 9.67 worst case
+sdec.ui_adv_btn    = 14
+sdec.ui_adv_mixed  = 8        -- digits and mixed-case, measured 7.80 worst case
+sdec.ui_c_lab      = 0xA8A8A8                    -- the label row
 sdec.ui_lockfields = {baud = 1, fmt = 2, idle = 3}
-sdec.ui_c_locked  = 0x40FF40   -- green:  the operator pinned this
-sdec.ui_c_auto    = 0xFFC000   -- amber:  the app worked it out
-sdec.ui_c_unknown = 0xFF6060   -- red:    nothing to lock -- no decode
-sdec.ui_errfield  = 9
-sdec.ui_snfield   = 11
-sdec.ui_fitfield  = 10
-sdec.ui_fit_good  = 0.90
-sdec.ui_fit_bad   = 0.72
-sdec.ui_sn_good   = 30       -- at or above: green
-sdec.ui_sn_bad    = 15       -- below: red. Between the two: amber
-sdec.ui_c_sn_ok   = 0x80FF80 -- green:  the same "all clear" green BYTES and ERR carry
-sdec.ui_c_sn_warn = 0xFFFF00 -- yellow: margin, but not much
-sdec.ui_c_sn_bad  = 0xFF6060 -- red:    the same red ERR goes when it has something to report
-sdec.ui_c_rule = 0xA8A8A8
-sdec.ui_c_hide = 0x000A0D
-sdec.ui_rule_top = 1
-sdec.ui_rule_hdr = 15
-sdec.ui_rule_mid = 37                        -- under the value ink (medium 18..34 on the dy cells)
-sdec.ui_rule_bot = 56                        -- one clear row under the descender tip at 55
-sdec.ui_rule_x0  = 1
-sdec.ui_rule_x1  = 797
+sdec.ui_c_locked   = 0x40FF40   -- green:  the operator pinned this
+sdec.ui_c_auto     = 0xFFC000   -- amber:  the app worked it out
+sdec.ui_c_unknown  = 0xFF6060   -- red:    nothing to lock -- no decode
+sdec.ui_errfield   = 9
+sdec.ui_snfield    = 11
+sdec.ui_fitfield   = 10
+sdec.ui_fit_good   = 0.90
+sdec.ui_fit_bad    = 0.72
+sdec.ui_sn_good    = 30       -- at or above: green
+sdec.ui_sn_bad     = 15       -- below: red. Between the two: amber
+sdec.ui_c_sn_ok    = 0x80FF80 -- green:  the same "all clear" green BYTES and ERR carry
+sdec.ui_c_sn_warn  = 0xFFFF00 -- yellow: margin, but not much
+sdec.ui_c_sn_bad   = 0xFF6060 -- red:    the same red ERR goes when it has something to report
+sdec.ui_c_rule     = 0xA8A8A8
+sdec.ui_c_hide     = 0x000A0D
+sdec.ui_rule_top   = 1
+sdec.ui_rule_hdr   = 15
+sdec.ui_rule_mid   = 37                        -- under the value ink (medium 18..34 on the dy cells)
+sdec.ui_rule_bot   = 56                        -- one clear row under the descender tip at 55
+sdec.ui_rule_x0    = 1
+sdec.ui_rule_x1    = 797
 sdec.ui_note_lab_x = 8
-sdec.ui_trigsrc = {
+sdec.ui_trigsrc    = {
   edge  = {name = 'Start bit',   c = 0x40FF40},
   free  = {name = 'Free run',    c = 0xFFFF00},
   front = {name = 'Trigger key', c = 0x00FFFF},
 }
 sdec.ui_note_val_x = 112
-sdec.ui_pgind_x  = 788
-sdec.ui_pgind_dig = '99'
-sdec.ui_pgind_gap = 6
-sdec.ui_note_gap = 20
+sdec.ui_pgind_x    = 788
+sdec.ui_pgind_dig  = '99'
+sdec.ui_pgind_gap  = 6
+sdec.ui_note_gap   = 20
 
-sdec.ui_note_y   = 51
-sdec.ui_row_y0   = 71                        -- first dump row
-sdec.ui_row_dy   = 18                        -- row pitch (see docs/panel-ref-rows.png)
-sdec.ui_nrow     = 15
-sdec.ui_stat_y   = 344
-sdec.ui_stat_top = 330   -- above the status ink (333..344)
-sdec.ui_stat_bot = 349   -- below it, one clear row under the descender tip at 347
-sdec.ui_stat_div = 472
-sdec.ui_prog_x = 339
-sdec.ui_prog_y = sdec.ui_stat_top + 2
-sdec.ui_prog_h = sdec.ui_stat_bot - 2 - sdec.ui_prog_y + 1
-sdec.ui_prog_w = sdec.ui_stat_div - 3 - sdec.ui_prog_x
-sdec.ui_prog_lw = 10
-sdec.ui_prog_wmax = sdec.ui_prog_w - 2
-sdec.ui_prog_pad  = math.floor((sdec.ui_prog_h - 2 - sdec.ui_prog_lw) / 2)
-sdec.ui_prog_ly   = sdec.ui_prog_y + 1 + sdec.ui_prog_pad + math.floor(sdec.ui_prog_lw / 2)
-sdec.ui_trig_div = 666
-sdec.ui_trig_x   = 675
-sdec.ui_btn_y    = 362
-sdec.ui_btn_h    = 58                        -- for layout arithmetic, not passed to the API
-sdec.ui_x        = 8
+sdec.ui_note_y     = 51
+sdec.ui_row_y0     = 71                        -- first dump row
+sdec.ui_row_dy     = 18                        -- row pitch (see docs/panel-ref-rows.png)
+sdec.ui_nrow       = 15
+sdec.ui_stat_y     = 344
+sdec.ui_stat_top   = 330   -- above the status ink (333..344)
+sdec.ui_stat_bot   = 349   -- below it, one clear row under the descender tip at 347
+sdec.ui_stat_div   = 472
+sdec.ui_prog_x     = 339
+sdec.ui_prog_y     = sdec.ui_stat_top + 2
+sdec.ui_prog_h     = sdec.ui_stat_bot - 2 - sdec.ui_prog_y + 1
+sdec.ui_prog_w     = sdec.ui_stat_div - 3 - sdec.ui_prog_x
+sdec.ui_prog_lw    = 10
+sdec.ui_prog_wmax  = sdec.ui_prog_w - 2
+sdec.ui_prog_pad   = math.floor((sdec.ui_prog_h - 2 - sdec.ui_prog_lw) / 2)
+sdec.ui_prog_ly    = sdec.ui_prog_y + 1 + sdec.ui_prog_pad + math.floor(sdec.ui_prog_lw / 2)
+sdec.ui_trig_div   = 666
+sdec.ui_trig_x     = 675
+sdec.ui_btn_y      = 362
+sdec.ui_btn_h      = 58                        -- for layout arithmetic, not passed to the API
+sdec.ui_x          = 8
 
-sdec.ui_ch_w     = 8                         -- character advance, ESTIMATE
-sdec.ui_col_gap  = 8                         -- clear space each side of a vertical rule
-sdec.ui_ixn      = 5                         -- offset field, '%04d', five digits past 9999
-sdec.ui_hxn      = sdec.ua_hexwidth(8)      -- ONE group of 8 bytes: 8*3 - 1 = 23 chars
-sdec.ui_col_gap2 = 12                       -- clear space BETWEEN the two hex groups
-sdec.ui_asn      = 16                        -- ASCII block, one char per byte
+sdec.ui_ch_w       = 8                         -- character advance, ESTIMATE
+sdec.ui_col_gap    = 8                         -- clear space each side of a vertical rule
+sdec.ui_ixn        = 5                         -- offset field, '%04d', five digits past 9999
+sdec.ui_hxn        = sdec.ua_hexwidth(8)      -- ONE group of 8 bytes: 8*3 - 1 = 23 chars
+sdec.ui_col_gap2   = 12                       -- clear space BETWEEN the two hex groups
+sdec.ui_asn        = 16                        -- ASCII block, one char per byte
 
-sdec.ui_col_ix   = sdec.ui_x
-sdec.ui_ix_gap   = 12
-sdec.ui_vr1_x    = sdec.ui_col_ix + sdec.ui_ixn * sdec.ui_ch_w + sdec.ui_ix_gap
-sdec.ui_col_hx   = sdec.ui_vr1_x + sdec.ui_ix_gap
-sdec.ui_col_hx2  = sdec.ui_col_hx + sdec.ui_hxn * sdec.ui_ch_w + sdec.ui_col_gap2
-sdec.ui_vr2_x    = sdec.ui_stat_div
-sdec.ui_as_gap   = 16
-sdec.ui_col_as   = sdec.ui_vr2_x + sdec.ui_as_gap
-sdec.ui_vr3_x    = sdec.ui_col_as + sdec.ui_asn * sdec.ui_ch_w + sdec.ui_col_gap
-sdec.ui_vr_y0    = sdec.ui_rule_bot + 1
-sdec.ui_vr_y1    = sdec.ui_stat_top
+sdec.ui_col_ix     = sdec.ui_x
+sdec.ui_ix_gap     = 12
+sdec.ui_vr1_x      = sdec.ui_col_ix + sdec.ui_ixn * sdec.ui_ch_w + sdec.ui_ix_gap
+sdec.ui_col_hx     = sdec.ui_vr1_x + sdec.ui_ix_gap
+sdec.ui_col_hx2    = sdec.ui_col_hx + sdec.ui_hxn * sdec.ui_ch_w + sdec.ui_col_gap2
+sdec.ui_vr2_x      = sdec.ui_stat_div
+sdec.ui_as_gap     = 16
+sdec.ui_col_as     = sdec.ui_vr2_x + sdec.ui_as_gap
+sdec.ui_vr3_x      = sdec.ui_col_as + sdec.ui_asn * sdec.ui_ch_w + sdec.ui_col_gap
+sdec.ui_vr_y0      = sdec.ui_rule_bot + 1
+sdec.ui_vr_y1      = sdec.ui_stat_top
 
 if sdec.ui_sb_show == nil then sdec.ui_sb_show = false end
-sdec.ui_sb_x   = 778
-sdec.ui_sb_w   = 12
-sdec.ui_sb_n   = sdec.ui_nrow                -- segments, one per dump row -- BY CONSTRUCTION
-sdec.ui_sb_h   = 17                          -- segment height, 3 px of gap at 20 px pitch
+sdec.ui_sb_x  = 778
+sdec.ui_sb_w  = 12
+sdec.ui_sb_n  = sdec.ui_nrow                -- segments, one per dump row -- BY CONSTRUCTION
+sdec.ui_sb_h  = 17                          -- segment height, 3 px of gap at 20 px pitch
 
 sdec.ui_modes = {
   {id = 'frame', name = 'FRAME',  cap = nil,   log = true, view = true, title = '240B FRAME',
@@ -4649,7 +4625,7 @@ sdec.ui_modes = {
    desc = 'long capture, decoded to a file'},
   n = 3,
 }
-sdec.capmode = sdec.capmode or 'frame'    -- operator state, hence `or`
+sdec.capmode     = sdec.capmode or 'frame'    -- operator state, hence `or`
 
 sdec.idle_exit_s = sdec.idle_exit_s or 1
 
@@ -4666,7 +4642,7 @@ function sdec.idle_exit()
   return floor
 end
 
-sdec.ui_latency_s = sdec.ui_latency_s or 0.5
+sdec.ui_latency_s      = sdec.ui_latency_s or 0.5
 
 sdec.ck_press_budget_s = sdec.ck_press_budget_s or 8.0
 
@@ -4810,7 +4786,7 @@ end
 -- Bounded at 31 characters, the firmware's limit, over which it raises 1707 and truncates silently.
 function sdec.ui_title_text()
   local md = sdec.mode_cur()
-  local s = sdec.ui_title
+  local s  = sdec.ui_title
   if md ~= nil and md.title ~= nil then s = s .. ' - ' .. md.title end
   if string.len(s) > 31 then s = string.sub(s, 1, 31) end
   return s
@@ -4881,25 +4857,25 @@ function sdec.ui_cur()
   return sdec.ui_view() or sdec.ui_views[1]
 end
 
-sdec.ui_c_dim  = 0xB0B0B0    -- grey: secondary detail
-sdec.ui_c_off  = 0x808080
-sdec.ui_c_warn = 0xFFC000    -- amber: ambiguity and warnings
-sdec.ui_c_data = 0xFFFFFF    -- white: the decoded bytes
-sdec.ui_c_err  = 0xFF6060    -- red: a row containing a framing or parity error
-sdec.ui_c_sb_off = 0x282828  -- position bar, outside the current page
-sdec.ui_c_sb_on  = 0x00DCFF  -- position bar, current page
-sdec.ui_c_pgnum  = 0xFFFFFF    -- the numerals: 100 %
-sdec.ui_c_pgword = 0xA8A8A8    -- 'page' and 'of': 66 %
+sdec.ui_c_dim      = 0xB0B0B0    -- grey: secondary detail
+sdec.ui_c_off      = 0x808080
+sdec.ui_c_warn     = 0xFFC000    -- amber: ambiguity and warnings
+sdec.ui_c_data     = 0xFFFFFF    -- white: the decoded bytes
+sdec.ui_c_err      = 0xFF6060    -- red: a row containing a framing or parity error
+sdec.ui_c_sb_off   = 0x282828  -- position bar, outside the current page
+sdec.ui_c_sb_on    = 0x00DCFF  -- position bar, current page
+sdec.ui_c_pgnum    = 0xFFFFFF    -- the numerals: 100 %
+sdec.ui_c_pgword   = 0xA8A8A8    -- 'page' and 'of': 66 %
 sdec.ui_c_prog     = 0x00FFFF
 sdec.ui_c_prog_box = 0xCCCCCC
-sdec.ui_c_extin  = 0x40FF40   -- green: an input, armed
-sdec.ui_c_extout = 0xFFC000   -- amber: an output, pulsing a credit per capture
-sdec.ui_c_extio  = 0x00FFFF   -- cyan:  both directions live
+sdec.ui_c_extin    = 0x40FF40   -- green: an input, armed
+sdec.ui_c_extout   = 0xFFC000   -- amber: an output, pulsing a credit per capture
+sdec.ui_c_extio    = 0x00FFFF   -- cyan:  both directions live
 
-sdec.ui_mode = sdec.ui_mode or 'text'    -- 'text', 'hex' or 'midi'
-sdec.ui_page = sdec.ui_page or 0          -- 0-based page index
-sdec.ui_paged = sdec.ui_paged or false
-sdec.ui_status = sdec.ui_status or 'ready'
+sdec.ui_mode       = sdec.ui_mode or 'text'    -- 'text', 'hex' or 'midi'
+sdec.ui_page       = sdec.ui_page or 0          -- 0-based page index
+sdec.ui_paged      = sdec.ui_paged or false
+sdec.ui_status     = sdec.ui_status or 'ready'
 -- Say the panel is waiting on purpose, called by acq_triggered() before it blocks on an
 -- arm-from-silence: the wait can be 120 s and nothing can interrupt it. The offline harnesses
 -- install no armnote.
@@ -4911,19 +4887,19 @@ function sdec.armnote(wait, level, keyed)
                      string.format('waiting %.0fs for %.2fV%s', wait or 0, level or 0, tail))
 end
 
-sdec.ui_opt_y0 = 8
-sdec.ui_opt_dy = 100
+sdec.ui_opt_y0      = 8
+sdec.ui_opt_dy      = 100
 sdec.ui_opt_edit_h  = 50
 sdec.ui_opt_edit_dy = 4
 sdec.ui_opt_btn_y   = 360
 sdec.ui_opt_btn_gap = 24
-sdec.ui_opt_x  = 185   -- the label is RIGHT-ALIGNED and ends here, so this is its width
-sdec.ui_opt_y_adj = -8
-sdec.ui_opt_cols = 2
-sdec.ui_opt_x_c2 = 552
-sdec.ui_opt_px = 96
+sdec.ui_opt_x       = 185   -- the label is RIGHT-ALIGNED and ends here, so this is its width
+sdec.ui_opt_y_adj   = -8
+sdec.ui_opt_cols    = 2
+sdec.ui_opt_x_c2    = 552
+sdec.ui_opt_px      = 96
 
-sdec.ui_log_px = sdec.ui_trig_div - (sdec.ui_stat_div + 6)
+sdec.ui_log_px      = sdec.ui_trig_div - (sdec.ui_stat_div + 6)
 
 -- Width of an option entry under that model.
 function sdec.ui_optw(s)
@@ -4970,10 +4946,10 @@ function sdec.del_obj(h)
   local before = sdec.evcount()
   display.delete(h)
   local after = sdec.evcount()
-  local ok = (before == nil or after == nil or after <= before)
+  local ok    = (before == nil or after == nil or after <= before)
   if not ok then
     sdec.delfails = (sdec.delfails or 0) + 1
-    sdec.orphans = sdec.orphans or {}
+    sdec.orphans  = sdec.orphans or {}
     sdec.orphans[table.getn(sdec.orphans) + 1] = h
   end
   return ok
@@ -5076,7 +5052,7 @@ end
 -- Pages the current result needs at the current view.
 function sdec.ui_npages()
   local per = sdec.ui_bytes_per_page()
-  local n = sdec.ui_nitems()
+  local n   = sdec.ui_nitems()
   if n <= 0 then return 1 end
   return math.floor((n + per - 1) / per)
 end
@@ -5090,7 +5066,7 @@ end
 -- different rules, so a head-damaged run showed a non-zero ERR in green. Takes the table, not ck_tot.
 function sdec.ck_err_n(t)
   if t == nil then return 0 end
-  local n = t.nbad or 0
+  local n  = t.nbad or 0
   local hb = t.headbad or 0
   if hb > 0 then n = n - (t.headnbad or 0) + hb end
   return n
@@ -5402,12 +5378,12 @@ function sdec.ui_fit(s, maxpx)
   if s == nil then return '' end
   maxpx = math.floor(maxpx / sdec.ui_fit_slack)
   if sdec.ui_textw(s) <= maxpx then return s end
-  local ell = sdec.ui_textw('...')
+  local ell    = sdec.ui_textw('...')
   local budget = maxpx - ell
   if budget <= 0 then return '' end
   local w, i, n = 0, 1, string.len(s)
   while i <= n do
-    local b = string.byte(s, i)
+    local b  = string.byte(s, i)
     local cw = sdec.ui_cw_def
     if b >= 32 and b <= 126 then cw = string.byte(sdec.ui_cw, b - 31) - 48 end
     if w + cw > budget then break end
@@ -5432,11 +5408,11 @@ end
 -- Where the counter's four pieces go, right to left from ui_pgind_x. Returns x_page, x_n, x_of, x_m,
 -- the two number x's being right edges (JUST_RIGHT) and the two word x's left edges.
 function sdec.ui_pgind_layout()
-  local g = sdec.ui_pgind_gap
-  local wn = sdec.ui_textw(sdec.ui_pgind_dig)
-  local xm = sdec.ui_pgind_x
-  local xof = xm - wn - g - sdec.ui_textw('of')
-  local xn = xof - g
+  local g     = sdec.ui_pgind_gap
+  local wn    = sdec.ui_textw(sdec.ui_pgind_dig)
+  local xm    = sdec.ui_pgind_x
+  local xof   = xm - wn - g - sdec.ui_textw('of')
+  local xn    = xof - g
   local xpage = xn - wn - g - sdec.ui_textw('page')
   return xpage, xn, xof, xm
 end
@@ -5509,7 +5485,7 @@ function sdec.ui_destroy()
     for ai = 1, table.getn(sdec.ui_allbtn) do sdec.del_obj(sdec.ui_allbtn[ai]) end
     sdec.ui_allbtn = nil
   end
-  sdec.ui_pgbtn = nil
+  sdec.ui_pgbtn   = nil
   sdec.ui_lockbtn = nil
   if sdec.ui_sb ~= nil then
     for i = 1, table.getn(sdec.ui_sb) do sdec.del_obj(sdec.ui_sb[i]) end
@@ -5599,8 +5575,8 @@ function sdec.ui_build(hold)
 
   local create = display.create
   local small, med = display.FONT_SMALL, display.FONT_MEDIUM
-  local left = display.JUST_LEFT
-  local x = sdec.ui_x
+  local left  = display.JUST_LEFT
+  local x     = sdec.ui_x
 
   sdec.ui_scr = create(display.ROOT, display.OBJ_SCREEN, sdec.ui_title_text())
 
@@ -5612,7 +5588,7 @@ function sdec.ui_build(hold)
   sdec.ui_loading_raise()
 
   sdec.ui_rule = {}
-  local nr = 0
+  local nr     = 0
   local function rule(rx, ry, rw, rh)
     local h = create(sdec.ui_scr, display.OBJ_RECT, rx, ry, rw, rh)
     if h ~= nil then
@@ -5623,18 +5599,18 @@ function sdec.ui_build(hold)
     end
   end
   local rw = sdec.ui_rule_x1 - sdec.ui_rule_x0
-  rule(sdec.ui_rule_x0, sdec.ui_stat_top, rw, 1)
-  rule(sdec.ui_rule_x0, sdec.ui_stat_bot, rw, 1)
-  rule(sdec.ui_rule_x0, sdec.ui_stat_top, 1, sdec.ui_stat_bot - sdec.ui_stat_top)
-  rule(sdec.ui_rule_x1, sdec.ui_stat_top, 1, sdec.ui_stat_bot - sdec.ui_stat_top)
+  rule(sdec.ui_rule_x0,  sdec.ui_stat_top, rw, 1)
+  rule(sdec.ui_rule_x0,  sdec.ui_stat_bot, rw, 1)
+  rule(sdec.ui_rule_x0,  sdec.ui_stat_top, 1, sdec.ui_stat_bot - sdec.ui_stat_top)
+  rule(sdec.ui_rule_x1,  sdec.ui_stat_top, 1, sdec.ui_stat_bot - sdec.ui_stat_top)
   rule(sdec.ui_stat_div, sdec.ui_stat_top, 1, sdec.ui_stat_bot - sdec.ui_stat_top)
   rule(sdec.ui_trig_div, sdec.ui_stat_top, 1, sdec.ui_stat_bot - sdec.ui_stat_top)
-  rule(sdec.ui_rule_x0, sdec.ui_rule_top, rw, 1)
-  rule(sdec.ui_rule_x0, sdec.ui_rule_hdr, rw, 1)
-  rule(sdec.ui_rule_x0, sdec.ui_rule_mid, rw, 1)
-  rule(sdec.ui_rule_x0, sdec.ui_rule_bot, rw, 1)
-  rule(sdec.ui_rule_x0, sdec.ui_rule_top, 1, sdec.ui_rule_bot - sdec.ui_rule_top)
-  rule(sdec.ui_rule_x1, sdec.ui_rule_top, 1, sdec.ui_rule_bot - sdec.ui_rule_top)
+  rule(sdec.ui_rule_x0,  sdec.ui_rule_top, rw, 1)
+  rule(sdec.ui_rule_x0,  sdec.ui_rule_hdr, rw, 1)
+  rule(sdec.ui_rule_x0,  sdec.ui_rule_mid, rw, 1)
+  rule(sdec.ui_rule_x0,  sdec.ui_rule_bot, rw, 1)
+  rule(sdec.ui_rule_x0,  sdec.ui_rule_top, 1, sdec.ui_rule_bot - sdec.ui_rule_top)
+  rule(sdec.ui_rule_x1,  sdec.ui_rule_top, 1, sdec.ui_rule_bot - sdec.ui_rule_top)
   rule(sdec.ui_fields[2].x - 9, sdec.ui_rule_mid, 1,
        sdec.ui_rule_bot - sdec.ui_rule_mid)
 
@@ -5652,7 +5628,7 @@ function sdec.ui_build(hold)
   sdec.ui_flab, sdec.ui_fval = {}, {}
   sdec.ui_lockhit = nil
 
-  local nf = table.getn(sdec.ui_fields)
+  local nf        = table.getn(sdec.ui_fields)
   local j
   for j = 2, nf do
     rule(sdec.ui_fields[j].x - 9, sdec.ui_rule_top,
@@ -5667,7 +5643,7 @@ function sdec.ui_build(hold)
     sdec.ui_fval[j] = create(sdec.ui_scr, display.OBJ_TEXT, fd.x, sdec.ui_val_y + (fd.dy or 0),
                              '--', fd.c, fnt, left)
   end
-  local lx = 95
+  local lx     = 95
   sdec.ui_lock = {}
   local function lockpart(rx, ry, rw, rh)
     local h = create(sdec.ui_scr, display.OBJ_RECT, rx, ry, rw, rh)
@@ -5694,13 +5670,13 @@ function sdec.ui_build(hold)
   local i
   for i = 1, sdec.ui_nrow do
     local y = sdec.ui_row_y0 + (i - 1) * sdec.ui_row_dy
-    sdec.ui_row[i] = create(sdec.ui_scr, display.OBJ_TEXT, sdec.ui_col_ix, y, '',
+    sdec.ui_row[i] = create(sdec.ui_scr, display.OBJ_TEXT,  sdec.ui_col_ix,  y, '',
                             sdec.ui_c_off, small, left)
-    sdec.ui_rhx[i] = create(sdec.ui_scr, display.OBJ_TEXT, sdec.ui_col_hx, y, '',
+    sdec.ui_rhx[i] = create(sdec.ui_scr, display.OBJ_TEXT,  sdec.ui_col_hx,  y, '',
                             sdec.ui_c_data, small, left)
     sdec.ui_rhx2[i] = create(sdec.ui_scr, display.OBJ_TEXT, sdec.ui_col_hx2, y, '',
                              sdec.ui_c_data, small, left)
-    sdec.ui_ras[i] = create(sdec.ui_scr, display.OBJ_TEXT, sdec.ui_col_as, y, '',
+    sdec.ui_ras[i] = create(sdec.ui_scr, display.OBJ_TEXT,  sdec.ui_col_as,  y, '',
                             sdec.ui_c_data, small, left)
   end
 
@@ -5735,24 +5711,24 @@ function sdec.ui_build(hold)
 
   sdec.ui_page_t = create(sdec.ui_scr, display.OBJ_TEXT, x, sdec.ui_stat_y, '',
                           sdec.ui_c_dim, small, left)
-  sdec.ui_log_t = create(sdec.ui_scr, display.OBJ_TEXT, sdec.ui_stat_div + 6,
-                         sdec.ui_stat_y, '',
-                         sdec.ui_c_dim, small, left)
+  sdec.ui_log_t  = create(sdec.ui_scr, display.OBJ_TEXT, sdec.ui_stat_div + 6,
+                          sdec.ui_stat_y, '',
+                          sdec.ui_c_dim, small, left)
   sdec.ui_trighit = nil
   sdec.ui_trig_t = create(sdec.ui_scr, display.OBJ_TEXT, sdec.ui_trig_x, sdec.ui_stat_y,
                           'TRIG', sdec.ui_c_warn, small, left)
 
-  local by = sdec.ui_btn_y
-  sdec.ui_btn = {}
+  local by       = sdec.ui_btn_y
+  sdec.ui_btn    = {}
   sdec.ui_allbtn = {}
   local b
   local bdef = {
-    {x = 8,   w = 120, t = 'Capture',    e = 'sdec.capture'},
-    {x = 152, w = 90,  t = 'View',       e = 'sdec.view_toggle'},
-    {x = 266, w = 100, t = 'Mode',       e = 'sdec.mode_cycle'},
-    {x = 390, w = 112, t = 'NewLog',     e = 'sdec.log_new', hide = 'ui_newlogbtn'},
-    {x = 526, w = 112, t = 'Save',       e = 'sdec.save', hide = 'ui_savebtn'},
-    {x = 662, w = 112, t = 'Options',    e = 'sdec.options'},
+    {x = 8,   w = 120, t = 'Capture', e = 'sdec.capture'},
+    {x = 152, w = 90,  t = 'View',    e = 'sdec.view_toggle'},
+    {x = 266, w = 100, t = 'Mode',    e = 'sdec.mode_cycle'},
+    {x = 390, w = 112, t = 'NewLog',  e = 'sdec.log_new', hide = 'ui_newlogbtn'},
+    {x = 526, w = 112, t = 'Save',    e = 'sdec.save', hide = 'ui_savebtn'},
+    {x = 662, w = 112, t = 'Options', e = 'sdec.options'},
   }
   local pbw, lbw, mbw = 56, 140, 80
   local pdef = {
@@ -5781,29 +5757,29 @@ function sdec.ui_build(hold)
     end
   end
   local xpage, xn, xof, xm = sdec.ui_pgind_layout()
-  local ny = sdec.ui_note_y
+  local ny      = sdec.ui_note_y
   sdec.ui_pgind = {}
   local function pgpiece(px, pc, pj)
     local h = create(sdec.ui_scr, display.OBJ_TEXT, px, ny, '', pc, small, pj)
     if h ~= nil then sdec.ui_pgind[table.getn(sdec.ui_pgind) + 1] = h end
     return h
   end
-  sdec.ui_pgind_w1 = pgpiece(xpage, sdec.ui_c_pgword, left)
-  sdec.ui_pgind_n  = pgpiece(xn,    sdec.ui_c_pgnum,  display.JUST_RIGHT)
-  sdec.ui_pgind_w2 = pgpiece(xof,   sdec.ui_c_pgword, left)
-  sdec.ui_pgind_m  = pgpiece(xm,    sdec.ui_c_pgnum,  display.JUST_RIGHT)
-  sdec.ui_pgindtxt = nil
-  sdec.ui_pgvis = nil
-  sdec.ui_lockvis = nil
-  sdec.ui_savevis = nil
-  sdec.ui_msgvis = nil
-  sdec.ui_savebtn = nil
+  sdec.ui_pgind_w1  = pgpiece(xpage, sdec.ui_c_pgword, left)
+  sdec.ui_pgind_n   = pgpiece(xn,    sdec.ui_c_pgnum,  display.JUST_RIGHT)
+  sdec.ui_pgind_w2  = pgpiece(xof,   sdec.ui_c_pgword, left)
+  sdec.ui_pgind_m   = pgpiece(xm,    sdec.ui_c_pgnum,  display.JUST_RIGHT)
+  sdec.ui_pgindtxt  = nil
+  sdec.ui_pgvis     = nil
+  sdec.ui_lockvis   = nil
+  sdec.ui_savevis   = nil
+  sdec.ui_msgvis    = nil
+  sdec.ui_savebtn   = nil
   sdec.ui_newlogbtn = nil
   local k
   local nb = 0
   for k = 1, table.getn(bdef) do
     local bd = bdef[k]
-    b = create(sdec.ui_scr, display.OBJ_BUTTON, bd.x, by, bd.t, bd.w)
+    b        = create(sdec.ui_scr, display.OBJ_BUTTON, bd.x, by, bd.t, bd.w)
     if b ~= nil then
       display.setevent(b, display.EVENT_PRESS, 'sdec.guard(' .. bd.e .. ')')
       sdec.ui_btn[k] = b
@@ -5860,7 +5836,7 @@ function sdec.ui_page_btns()
 
   local t = sdec.ui_pgbtn
   if t == nil then return false end
-  local npg = sdec.ui_npages()
+  local npg  = sdec.ui_npages()
   local want = false
   if npg > 1 then want = true end
   if sdec.ui_pgind_n ~= nil then
@@ -5908,7 +5884,7 @@ function sdec.ui_refresh_do()
   if sdec.ui_scr == nil then return false end
   local set = sdec.ui_set
 
-  local fv = sdec.ui_field_values()
+  local fv  = sdec.ui_field_values()
   local j
   if sdec.ui_fvalc == nil then sdec.ui_fvalc = {} end
   for j = 1, table.getn(sdec.ui_fval) do
@@ -5948,8 +5924,8 @@ function sdec.ui_refresh_do()
   local base = sdec.ui_page * per
 
   local mode = sdec.ui_mode
-  local vw = sdec.ui_cur()
-  local r = sdec.res
+  local vw   = sdec.ui_cur()
+  local r    = sdec.res
   local hext, honscr = sdec.ui_head_extent()
   if not honscr then hext = nil end
   local i
@@ -5958,8 +5934,8 @@ function sdec.ui_refresh_do()
     local txt, bad, hxs, hxs2, ass
 
     if vw.line ~= nil then
-      txt = ''
-      bad = false
+      txt      = ''
+      bad      = false
       local fn = sdec[vw.line]
       if fn ~= nil then txt = fn(i0) end
       local pr = sdec[vw.res]
@@ -6014,9 +5990,9 @@ function sdec.ui_refresh_do()
 
   sdec.ui_bar(npg)
 
-  local nit = sdec.ui_nitems()
+  local nit   = sdec.ui_nitems()
   local mname = vw.name or 'TEXT'
-  local st = sdec.ui_status
+  local st    = sdec.ui_status
   if sdec.proto ~= nil and sdec.proto ~= 'uart' then
     st = string.upper(sdec.proto) .. ' ' .. st
   end
@@ -6078,14 +6054,14 @@ function sdec.flog_status()
     if sdec.flog_last == nil or sdec.flog_lastgen ~= gen then return 'log: on first capture' end
     path, n = sdec.flog_last, sdec.flog_lastbytes or 0
   end
-  local base = string.gsub(tostring(path), '^.*/', '')
-  base = string.gsub(base, '%.txt$', '')
-  local s = string.format('log: %s  %d B', tostring(base), n)
+  local base  = string.gsub(tostring(path), '^.*/', '')
+  base        = string.gsub(base, '%.txt$', '')
+  local s     = string.format('log: %s  %d B', tostring(base), n)
   local first = true
   while sdec.ui_textw(s) > sdec.ui_log_px and string.len(base) > 4 do
     if first then base = string.sub(base, 5) else base = string.sub(base, 2) end
     first = false
-    s = string.format('log: ~%s  %d B', tostring(base), n or 0)
+    s     = string.format('log: ~%s  %d B', tostring(base), n or 0)
   end
   return s
 end
@@ -6094,7 +6070,7 @@ end
 -- ui_refresh so sdec.progress() can write the same object once a second without touching the other
 -- ~20, every display call being an IPC round trip.
 function sdec.ck_status()
-  local t = sdec.ck_tot
+  local t  = sdec.ck_tot
   local md = sdec.mode_cur()
   if sdec.ck_running then
     if sdec.strm_recording then return 'recording -- press Capture to stop' end
@@ -6186,11 +6162,11 @@ end
 function sdec.ui_bar(npg)
   if sdec.ui_sb == nil or table.getn(sdec.ui_sb) == 0 then return false end
   if npg == nil or npg < 1 then npg = 1 end
-  local n = sdec.ui_sb_n
+  local n     = sdec.ui_sb_n
   local floor = math.floor
 
-  local a = floor(sdec.ui_page * n / npg) + 1
-  local b = floor((sdec.ui_page + 1) * n / npg)
+  local a     = floor(sdec.ui_page * n / npg) + 1
+  local b     = floor((sdec.ui_page + 1) * n / npg)
   if b < a then b = a end          -- more pages than segments: at least one lit
   if a < 1 then a = 1 end
   if b > n then b = n end
@@ -6207,9 +6183,9 @@ function sdec.ui_bar(npg)
   return true
 end
 
-sdec.opt_bits_v  = {nil, nil, 5, 6, 7, 8, 9, n = 7}
-sdec.opt_par_v   = {nil, 0, 1, 2, n = 4}             -- entry 1 = Auto
-sdec.opt_msb_v   = {nil, false, true, n = 3}
+sdec.opt_bits_v    = {nil, nil, 5, 6, 7, 8, 9, n = 7}
+sdec.opt_par_v     = {nil, 0, 1, 2, n = 4}             -- entry 1 = Auto
+sdec.opt_msb_v     = {nil, false, true, n = 3}
 sdec.opt_proto_all = {
   {v = 'uart', label = 'UART', need = nil},
   {v = 'midi', label = 'MIDI', need = 'mi_parse'},
@@ -6232,8 +6208,8 @@ function sdec.opt_proto_list()
   vals.n, labs.n = n, n
   return vals, labs
 end
-sdec.opt_trig_v  = {'edge', 'free', 'front', n = 3}
-sdec.opt_rear_v  = {{false, false}, {true, false}, {false, true}, {true, true}, n = 4}
+sdec.opt_trig_v = {'edge', 'free', 'front', n = 3}
+sdec.opt_rear_v = {{false, false}, {true, false}, {false, true}, {true, true}, n = 4}
 
 -- Which Protocol entry `name` sits at. A reverse lookup, not a second list that would drift.
 function sdec.opt_proto_i(name)
@@ -6297,17 +6273,22 @@ function sdec.msg_lines()
   local out, n, i = {}, 0, nil
   for i = 1, m do
     local s, pre = tostring(t[i]), string.format('%2d  ', i)
-    local guard = 0
-    while guard < 20 do
-      guard = guard + 1
+    local guard = string.len(s) + 1
+    while guard > 0 do
+      guard      = guard - 1
       local room = sdec.msg_cols - string.len(pre)
+      if room < 1 then
+        n = n + 1
+        out[n] = pre .. s
+        break
+      end
       if string.len(s) <= room then
         n = n + 1
         out[n] = pre .. s
         break
       end
       local cut = sdec.msg_wrap_at(s, room)
-      n = n + 1
+      n         = n + 1
       out[n] = pre .. string.sub(s, 1, cut)
       s = string.sub(s, cut + 1)
       while string.sub(s, 1, 1) == ' ' do s = string.sub(s, 2) end
@@ -6354,7 +6335,9 @@ function sdec.build_msgs()
   sdec.destroy_msgs()
   local create = display.create
   sdec.msg_why = nil
-  sdec.msgscr = create(display.ROOT, display.OBJ_SCREEN, 'SERIAL DECODE MESSAGES')
+  sdec.msg_nrow_want = sdec.msg_nrow_want or sdec.msg_nrow
+  sdec.msg_nrow = sdec.msg_nrow_want
+  sdec.msgscr  = create(display.ROOT, display.OBJ_SCREEN, 'SERIAL DECODE MESSAGES')
   if sdec.msgscr == nil then
     sdec.msg_why = 'display object pool exhausted -- power cycle the instrument'
     return nil
@@ -6378,7 +6361,7 @@ function sdec.build_msgs()
   end
   sdec.msg_ind = create(sdec.msgscr, display.OBJ_TEXT, sdec.ui_x,
                         sdec.msg_btn_y - sdec.msg_row_dy - 4, '', sdec.ui_c_pgword, small, left)
-  local bw = 110
+  local bw      = 110
   sdec.msg_up   = create(sdec.msgscr, display.OBJ_BUTTON, 8,   sdec.msg_btn_y, 'Up',   bw)
   sdec.msg_dn   = create(sdec.msgscr, display.OBJ_BUTTON, 132, sdec.msg_btn_y, 'Dn',   bw)
   sdec.msg_back = create(sdec.msgscr, display.OBJ_BUTTON, 662, sdec.msg_btn_y, 'Back', 112)
@@ -6512,7 +6495,7 @@ function sdec.build_options()
   local maxdy = math.floor((sdec.ui_opt_btn_y - (sdec.ui_opt_btn_gap or 0) - y0 - edy - eh) /
                            (nrows - 1))
   if dy > maxdy then dy = maxdy end
-  local used = (nrows - 1) * dy + eh + edy
+  local used  = (nrows - 1) * dy + eh + edy
   local spare = sdec.ui_opt_btn_y - used - y0
   if spare > 0 then y0 = y0 + math.floor(spare / 2) end
   local adj = sdec.ui_opt_y_adj or 0
@@ -6530,7 +6513,7 @@ function sdec.build_options()
     local fx = x
     if c > 0 then fx = sdec.ui_opt_x_c2 end
     local fy = y0 + (row - c * nrows) * dy
-    row = row + 1
+    row      = row + 1
     return fx, fy
   end
 
@@ -6606,7 +6589,7 @@ function sdec.build_options()
                          0, (sdec.overread_max or 0.5) * 100, '%', 4)
 
   sdec.opt_btn = {}
-  local odef = {
+  local odef   = {
     {i = 4, x = 22,  w = 200, t = 'Auto Detect',   e = 'sdec.options_auto'},
     {i = 1, x = 234, w = 220, t = 'Lock Detected', e = 'sdec.options_lock'},
     {i = 2, x = 466, w = 150, t = 'Apply',         e = 'sdec.options_apply'},
@@ -6635,27 +6618,27 @@ end
 
 
 -- ================= tsp/serial_app.tsp =================
-sdec = sdec or {}
+sdec          = sdec or {}
 
-sdec.delfails  = sdec.delfails or 0
-sdec.errcount  = sdec.errcount or 0
-sdec.busy      = sdec.busy or false
-sdec.usbdir    = sdec.usbdir or (ulog ~= nil and ulog.usbdir) or '/usb1/SERDEC'
-sdec.logpath   = sdec.logpath or (sdec.usbdir .. '/serial_decode_log.txt')
-sdec.flogpfx   = sdec.flogpfx or (sdec.usbdir .. '/bytes')
-sdec.savepfx   = sdec.savepfx or (sdec.usbdir .. '/serial_')
+sdec.delfails = sdec.delfails or 0
+sdec.errcount = sdec.errcount or 0
+sdec.busy     = sdec.busy or false
+sdec.usbdir   = sdec.usbdir or (ulog ~= nil and ulog.usbdir) or '/usb1/SERDEC'
+sdec.logpath  = sdec.logpath or (sdec.usbdir .. '/serial_decode_log.txt')
+sdec.flogpfx  = sdec.flogpfx or (sdec.usbdir .. '/bytes')
+sdec.savepfx  = sdec.savepfx or (sdec.usbdir .. '/serial_')
 if sdec.logpath == '/usb1/serial_decode_log.txt' then
   sdec.logpath = sdec.usbdir .. '/serial_decode_log.txt'
 end
 if sdec.flogpfx == '/usb1/bytes' then sdec.flogpfx = sdec.usbdir .. '/bytes' end
 if sdec.savepfx == '/usb1/serial_' then sdec.savepfx = sdec.usbdir .. '/serial_' end
-sdec.saveext   = sdec.saveext or '.txt'
-sdec.proto     = sdec.proto or 'uart'
+sdec.saveext = sdec.saveext or '.txt'
+sdec.proto   = sdec.proto or 'uart'
 if sdec.strm_press == nil then sdec.strm_press = false end
-sdec.strm_maxsec = sdec.strm_maxsec or 1200
+sdec.strm_maxsec     = sdec.strm_maxsec or 1200
 sdec.strm_fallback_s = sdec.strm_fallback_s or 20
-sdec.strm_overread = sdec.strm_overread or 0.10
-sdec.overread_max = sdec.overread_max or 0.50
+sdec.strm_overread   = sdec.strm_overread or 0.10
+sdec.overread_max    = sdec.overread_max or 0.50
 -- Drop a decode result a later pass has invalidated, and nothing else. Returns true.
 -- A pass failing at acquire() returns before any decode, so the previous pass's result survives beside
 -- the failed capture's rate. docs/MEASUREMENTS.md, 'A failed re-capture leaves a stale fit'. Not
@@ -6788,7 +6771,7 @@ function sdec.arm_fit_prior()
     return false
   end
   sdec.force_baud = won
-  local ok = false
+  local ok        = false
   pcall(function() ok = sdec.decode_from(rd, n) end)
   sdec.force_baud = was
   if not ok then return false end
@@ -6799,17 +6782,17 @@ end
 
 -- Pick the sample rate, capture, and decode. Returns ok, reason.
 function sdec.autoset()
-  local target = sdec.force_baud
-  local captured = false
+  local target    = sdec.force_baud
+  local captured  = false
   sdec.baud_probe = nil
 
   if target == nil then
-    sdec.fs = sdec.rates[table.getn(sdec.rates)]      -- top rate: 1 MS/s
+    sdec.fs        = sdec.rates[table.getn(sdec.rates)]      -- top rate: 1 MS/s
     local savetrig = sdec.trigmode
-    sdec.trigmode = 'free'
+    sdec.trigmode  = 'free'
     local ok, why, tries = false, nil, 0
-    local ladder = sdec.probe_fs or {1000000, 100000, 10000}
-    local nlad = table.getn(ladder)
+    local ladder      = sdec.probe_fs or {1000000, 100000, 10000}
+    local nlad        = table.getn(ladder)
     sdec.trig_restore = savetrig
     local lok, lerr = pcall(function()
       while tries < nlad do
@@ -6822,7 +6805,7 @@ function sdec.autoset()
         end
       end
     end)
-    sdec.trigmode = savetrig
+    sdec.trigmode     = savetrig
     sdec.trig_restore = nil
     if not lok then error(lerr, 0) end
     if tries > 1 then
@@ -6834,13 +6817,13 @@ function sdec.autoset()
         if sdec.arm_silent() and savetrig ~= 'free' then return sdec.arm_capture() end
         sdec.drop_stale_result() return false, why
       end
-      target = sdec.baud_probe
+      target          = sdec.baud_probe
       sdec.probe_note = string.format(
         'too slow to frame at 1 MS/s -- re-captured at the rate the probe measured (%.0f Bd)',
         target or 0)
     else
       captured = true
-      target = sdec.baud
+      target   = sdec.baud
     end
     if target == nil then return true end
   end
@@ -6848,7 +6831,7 @@ function sdec.autoset()
   local want = sdec.pick_fs(target, 8)
   if captured and want >= sdec.fs then return true end
 
-  sdec.fs = want
+  sdec.fs      = want
   sdec.fs_want = want
   local ok, why = sdec.acquire()
   if not ok then sdec.drop_stale_result() return false, why end
@@ -6916,7 +6899,7 @@ function sdec.frame_log()
     return false
   end
   sdec.fh_unwind = fh
-  local nfr = 0
+  local nfr      = 0
   if sdec.res ~= nil then nfr = sdec.res.nf end
   local msgno = (sdec.flog_n or 0) + 1
   file.write(fh, string.format('---- msg %d  %s %s  %d bytes %d err\r\n',
@@ -6940,9 +6923,9 @@ function sdec.frame_log()
                     string.gsub(tostring(sdec.flog_path), '^.*/', '')
     return false
   end
-  sdec.flog_n = msgno
+  sdec.flog_n     = msgno
   sdec.flog_bytes = (sdec.flog_bytes or 0) + nfr
-  sdec.flog_why = nil
+  sdec.flog_why   = nil
   return true
 end
 
@@ -6952,7 +6935,7 @@ end
 -- sdec.stream() is polling. Every entry point here is guarded end to end and returns ok, reason.
 -- Size a streaming capture, allocate its buffer, learn the levels and arm the idle watchdog.
 function sdec.stream_begin()
-  local md = sdec.mode_cur()
+  local md  = sdec.mode_cur()
   local why = sdec.mode_why(md)
   if why ~= nil then return false, why end
   if sdec.ck_run == nil then
@@ -6960,7 +6943,7 @@ function sdec.stream_begin()
   end
 
   sdec.hw_config()                      -- picks fs from the locked baud rate
-  local fs = sdec.fs
+  local fs   = sdec.fs
   local nsmp = sdec.stream_samples(md, fs)
   if nsmp == nil then return false, 'cannot size the capture for this rate' end
 
@@ -6972,7 +6955,7 @@ function sdec.stream_begin()
   if sdec.trigmode ~= 'free' and (sdec.pretrig or 0) > 0 then
     cap = math.ceil(sizefor * 100 / (100 - sdec.pretrig)) + 100
     if sdec.ck_bufmax ~= nil and cap > sdec.ck_bufmax then
-      cap = sdec.ck_bufmax
+      cap  = sdec.ck_bufmax
       nsmp = math.floor(cap * (100 - sdec.pretrig) / 100)
       if (sdec.strm_overread or 0) > 0 then
         nsmp = math.floor(nsmp / (1 + sdec.strm_overread))
@@ -7011,10 +6994,10 @@ function sdec.stream_begin()
   end
 
   sdec.ck_watch = false
-  local pn = sdec.probe_n
+  local pn      = sdec.probe_n
   if pn > nsmp then pn = nsmp end
   local budget = 0.25 * (sdec.ui_latency_s or 0.5)
-  local pmax = math.floor((sdec.fs or 1000) * budget)
+  local pmax   = math.floor((sdec.fs or 1000) * budget)
   if pmax < 200 then pmax = 200 end
   if pn > pmax then pn = pmax end
   sdec.probe_idle = nil
@@ -7031,7 +7014,7 @@ function sdec.stream_begin()
   if not sdec.ck_watch and sdec.lvl_thr ~= nil and
      (sdec.lvl_swing or 0) >= sdec.minswing then
     sdec.thr, sdec.hyst, sdec.swing = sdec.lvl_thr, sdec.lvl_hyst, sdec.lvl_swing
-    sdec.ck_watch = true
+    sdec.ck_watch      = true
     sdec.strm_lvlreuse = true
   else
     sdec.strm_lvlreuse = nil
@@ -7045,9 +7028,9 @@ function sdec.stream_begin()
   sdec.smp = nil
 
   sdec.ck_running, sdec.ck_stop, sdec.ck_nbytes, sdec.ck_tot = true, false, 0, nil
-  sdec.ck_endwhy = nil
+  sdec.ck_endwhy      = nil
   sdec.arm_expired_at = nil
-  sdec.ck_cancel = nil
+  sdec.ck_cancel      = nil
   sdec.progress(0)
 
   sdec.strm_nsmp = nsmp
@@ -7091,11 +7074,11 @@ function sdec.record_run()
   while true do
     sdec.ck_tot = nil
     ok, why = sdec.stream()
-    sdec.fc_win = sdec.fc_win + 1
+    sdec.fc_win  = sdec.fc_win + 1
     sdec.fc_secs = sdec.fc_secs + (sdec.strm_waited or 0)
     if sdec.ck_tot ~= nil then
       sdec.fc_bytes = sdec.fc_bytes + (sdec.ck_tot.nf or 0)
-      keep = sdec.ck_tot
+      keep          = sdec.ck_tot
     end
     if not sdec.fc_out then break end
     if sdec.ck_cancel then
@@ -7113,11 +7096,11 @@ function sdec.record_run()
     if sdec.ck_endwhy == 'quiet' then sdec.fc_end = 'quiet'; break end
     if sdec.fc_win >= (sdec.fc_maxwin or 32) then sdec.fc_end = 'bound'; break end
     local el = sdec.fc_secs
-    local t = timer.gettime()
+    local t  = timer.gettime()
     if t ~= nil and t > el then el = t end
     if sdec.fc_maxsec ~= nil and sdec.fc_maxsec > 0 and el >= sdec.fc_maxsec then
       sdec.fc_secs = el
-      sdec.fc_end = 'timebound'
+      sdec.fc_end  = 'timebound'
       break
     end
   end
@@ -7164,7 +7147,7 @@ end
 
 -- Decode a completed recording, shared by both paths. got is the reading count it collected.
 function sdec.stream_decode(got)
-  local md = sdec.mode_cur()
+  local md   = sdec.mode_cur()
 
   local path = sdec.flog_alloc()
   local opts = {maxbytes = md.cap, nocap = (md.cap == nil),
@@ -7176,7 +7159,7 @@ function sdec.stream_decode(got)
   sdec.ck_nrd = nrd
   if sdec.strm_press then
     opts.budget_s = sdec.ck_press_budget_s or sdec.ui_latency_s
-    local W = sdec.ck_win_for(sdec.ui_latency_s)
+    local W       = sdec.ck_win_for(sdec.ui_latency_s)
     sdec.ck_win_n, sdec.ck_level_max = W, W
     local job, jerr = sdec.ck_job_new(rdr, nrd, path, opts)
     if job == nil then return false, tostring(jerr or 'cannot start the decode') end
@@ -7196,7 +7179,7 @@ function sdec.stream_decode(got)
      tot.nf < md.cap then
     tot.stopped = 'exhausted'
   end
-  sdec.ck_tot = tot
+  sdec.ck_tot    = tot
   sdec.ck_nbytes = tot.nf
   if tot.tail ~= nil then sdec.res = tot.tail end
   if tot.stopped == 'write failed' or tot.stopped == 'sink' then
@@ -7222,7 +7205,7 @@ function sdec.decode_step()
 
   if not done then
     sdec.ck_nbytes = (tot and tot.nf) or 0
-    local est = (tot and tot.nwin_est) or 0
+    local est      = (tot and tot.nwin_est) or 0
     if job.phase ~= nil then
       sdec.ui_status = string.format('preparing: %s -- press Capture', tostring(job.phase))
     else
@@ -7235,8 +7218,8 @@ function sdec.decode_step()
 
   sdec.ck_job, sdec.ck_running = nil, false
   if tot == nil then
-    sdec.errcount = sdec.errcount + 1
-    sdec.lasterr = tostring(err or 'decode failed')
+    sdec.errcount  = sdec.errcount + 1
+    sdec.lasterr   = tostring(err or 'decode failed')
     sdec.ui_status = 'error'
     ulog.line(sdec.lasterr)
   else
@@ -7258,7 +7241,7 @@ function sdec.decode_step()
     ulog.line(sdec.ck_summary(tot))
   end
   sdec.ck_job_md = nil
-  local dok = (tot ~= nil and tot.stopped ~= 'write failed' and tot.stopped ~= 'sink')
+  local dok      = (tot ~= nil and tot.stopped ~= 'write failed' and tot.stopped ~= 'sink')
   sdec.mode_exit(sdec.strm_exit_why(sdec.ck_endwhy, dok, sdec.lasterr), not dok)
   sdec.ui_refresh()
   return dok
@@ -7269,7 +7252,7 @@ end
 function sdec.decode_abandon()
   if sdec.ck_job == nil then return false end
   local tot = nil
-  tot = sdec.ck_job_abandon(sdec.ck_job)
+  tot       = sdec.ck_job_abandon(sdec.ck_job)
   sdec.ck_job, sdec.ck_job_md, sdec.ck_running = nil, nil, false
   if tot ~= nil then
     sdec.ck_tot, sdec.ck_nbytes = tot, tot.nf
@@ -7283,7 +7266,7 @@ end
 -- caller's cue to fall back to a free-running read. Guarded at its own firmware boundaries.
 function sdec.stream_arm(nsmp)
   sdec.strm_armed = nil
-  local buf = sdec.buf
+  local buf       = sdec.buf
   if buf == nil then return false end
   if not sdec.bufclear(buf) then return false end
   sdec.acq_fillmode(buf)
@@ -7291,9 +7274,9 @@ function sdec.stream_arm(nsmp)
   local dcount = 1
   if sdec.arm_silent() and sdec.trigmode ~= 'free' then dcount = nsmp end
   if not pcall(function() sdec.dig.count = dcount end) then return false end
-  local armed = (sdec.arm_silent() and sdec.trigmode ~= 'free')
+  local armed        = (sdec.arm_silent() and sdec.trigmode ~= 'free')
   sdec.acq_posloaded = nil
-  local ok = false
+  local ok           = false
   if armed then
     local ev, useanalog = sdec.arm_source()
     if ev == nil then
@@ -7318,7 +7301,7 @@ function sdec.stream_arm(nsmp)
   if ok then
     local cok = sdec.bufclear(buf)
     if not cok then
-      ok = false
+      ok           = false
       sdec.lasterr = 'could not clear the record before arming'
     end
   end
@@ -7344,13 +7327,13 @@ end
 -- empty recording: buf.n raises on a buffer the firmware has dropped, and 0 reads as 'collected nothing'.
 function sdec.stream_settle()
   trigger.model.abort()
-  local buf = sdec.buf
+  local buf  = sdec.buf
   sdec.nread = 0
   if buf ~= nil then
     local n = nil
     local ok, perr = pcall(function() n = buf.n end)
     if not ok then return 0, tostring(perr or 'the buffer could not be read') end
-    sdec.nread = n or 0
+    sdec.nread  = n or 0
     sdec.acq_fs = sdec.acq_fs_or_requested(buf, sdec.nread)
   end
   return sdec.nread
@@ -7392,7 +7375,7 @@ function sdec.strm_relevel(buf, have, iw)
     unmeasure()
     return false
   end
-  sdec.strm_lvlreuse = nil
+  sdec.strm_lvlreuse  = nil
   sdec.strm_releveled = string.format('threshold re-measured mid-recording: %.3f V, not the %.3f V '
                                       .. 'a previous capture measured', sdec.thr or 0, oldthr or 0)
   ulog.line(sdec.strm_releveled)
@@ -7408,11 +7391,11 @@ function sdec.stream_acquire(nsmp)
   end
   sdec.strm_target = nsmp
   sdec.strm_waited = 0
-  local ok = sdec.stream_arm(nsmp)
+  local ok         = sdec.stream_arm(nsmp)
   if not ok then
     sdec.ck_endwhy = 'full'
-    local fs = sdec.fs or 1000
-    local cap = math.floor(fs * (sdec.strm_fallback_s or 20))
+    local fs       = sdec.fs or 1000
+    local cap      = math.floor(fs * (sdec.strm_fallback_s or 20))
     if cap < 2000 then cap = 2000 end
     if cap > nsmp then cap = nsmp end
     if cap < nsmp then
@@ -7427,10 +7410,10 @@ function sdec.stream_acquire(nsmp)
   end
 
   local quiet, seen, step = 0, 0, sdec.ck_poll_s
-  local qexit = sdec.idle_exit()
+  local qexit   = sdec.idle_exit()
   local seenend = -1
-  local iw = sdec.idle_window(sdec.fs)
-  local waited = 0
+  local iw      = sdec.idle_window(sdec.fs)
+  local waited  = 0
   local armdone = true
   if sdec.strm_armed then
     armdone = false
@@ -7441,13 +7424,13 @@ function sdec.stream_acquire(nsmp)
   end
   local rfail, rlast = 0, nil
   sdec.strm_readfail = nil
-  local limit = sdec.stream_limit(nsmp, sdec.fs)
+  local limit        = sdec.stream_limit(nsmp, sdec.fs)
   if sdec.strm_armed then limit = limit + sdec.arm_wait_s() end
   while true do
     local have = buf.n or 0
     if not armdone and sdec.trig_waiting() ~= true then
       armdone = true
-      quiet = 0
+      quiet   = 0
       seen, seenend = 0, -1
       if sdec.armnote_clear ~= nil then pcall(sdec.armnote_clear) end
     end
@@ -7460,12 +7443,12 @@ function sdec.stream_acquire(nsmp)
     if sdec.cancel_asked() then sdec.ck_endwhy = 'stopped'; break end
     if not armdone and waited >= sdec.arm_wait_s() then
       sdec.arm_expired_at = sdec.arm_thr or sdec.thr
-      sdec.ck_endwhy = 'noarm'
+      sdec.ck_endwhy      = 'noarm'
       break
     end
     if waited >= limit then sdec.ck_endwhy = 'full'; break end
 
-    local eidx = sdec.acq_end(buf)
+    local eidx  = sdec.acq_end(buf)
     local fresh = (have > seen)
     if eidx ~= nil then fresh = (eidx ~= seenend) end
     if fresh then
@@ -7480,7 +7463,7 @@ function sdec.stream_acquire(nsmp)
         rlast = rerr
         if rfail >= 20 then
           sdec.strm_readfail = tostring(rlast or 'buffer read failed')
-          sdec.ck_endwhy = 'readfail'
+          sdec.ck_endwhy     = 'readfail'
           break
         end
       elseif m > 1 and sdec.smp_active(win, m, sdec.thr, sdec.hyst) then
@@ -7490,7 +7473,7 @@ function sdec.stream_acquire(nsmp)
         quiet = quiet + step
         rfail = 0
       end
-      seen = have
+      seen    = have
       seenend = eidx
     else
       quiet = quiet + step
@@ -7502,7 +7485,7 @@ function sdec.stream_acquire(nsmp)
         quiet = 0
       elseif unmeasurable then
         sdec.strm_readfail = 'the capture buffer could not be re-measured to confirm a quiet line'
-        sdec.ck_endwhy = 'readfail'
+        sdec.ck_endwhy     = 'readfail'
         break
       else
         sdec.ck_endwhy = 'quiet'
@@ -7512,7 +7495,7 @@ function sdec.stream_acquire(nsmp)
 
     if armdone then sdec.progress_samples(have, nsmp) end
     delay(step)
-    waited = waited + step
+    waited           = waited + step
     sdec.strm_waited = waited
   end
 
@@ -7548,13 +7531,13 @@ function sdec.progress_samples(have, want)
   return sdec.progress_row()
 end
 
-sdec.ck_bufwant = 4076503
+sdec.ck_bufwant         = 4076503
 
-sdec.ck_bufmax = sdec.ck_bufwant
+sdec.ck_bufmax          = sdec.ck_bufwant
 
 sdec.ck_bufpool_default = 7080255
-sdec.ck_bufpool = sdec.ck_bufpool_default
-sdec.ck_bufpool_model = {{'7510', 7500000}, {'2461', 6875000}}
+sdec.ck_bufpool         = sdec.ck_bufpool_default
+sdec.ck_bufpool_model   = {{'7510', 7500000}, {'2461', 6875000}}
 
 -- Resolve the pool from the model number. -> the figure now in force. Assigns unconditionally from a local,
 -- so the answer depends on the model and not on call order. Bare read: localnode is documented on every
@@ -7577,10 +7560,10 @@ function sdec.buf_pool_resolve()
 end
 sdec.buf_pool_resolve()
 
-sdec.ck_bufguard = 6000000
+sdec.ck_bufguard  = 6000000
 sdec.ck_bufmargin = 50000
 
-sdec.ck_bufmin = 898347
+sdec.ck_bufmin    = 898347
 
 -- The ceiling the live defbuffers leave, which is a query and not the policy: buf_reclaim() is what
 -- changes them. One pcall for both reads, because this is an outbound firmware boundary and the pcall
@@ -7642,12 +7625,12 @@ function sdec.buf_reclaim()
   if n2 ~= nil and sdec.defbuf_set('defbuffer2', n2) then
     if sdec.ck_defbufwas == nil then sdec.ck_defbufwas = {} end
     sdec.ck_defbufwas.defbuffer2 = d2
-    what = string.format('defbuffer2 %d -> %d', d2, n2)
+    what                         = string.format('defbuffer2 %d -> %d', d2, n2)
   end
   if n1 ~= nil and sdec.defbuf_set('defbuffer1', n1) then
     if sdec.ck_defbufwas == nil then sdec.ck_defbufwas = {} end
     sdec.ck_defbufwas.defbuffer1 = d1
-    local s = string.format('defbuffer1 %d -> %d', d1, n1)
+    local s                      = string.format('defbuffer1 %d -> %d', d1, n1)
     if what == nil then what = s else what = what .. ' and ' .. s end
   end
   if what == nil then return false, nil end
@@ -7695,13 +7678,13 @@ function sdec.buf_sweep()
   local freed, gone = 0, nil
   local i
   for i = 1, nn do
-    local nm = names[i]
+    local nm  = names[i]
     local dok = pcall(function()
       buffer.delete(_G[nm])
       _G[nm] = nil
     end)
     if dok then
-      freed = freed + names[nm]
+      freed   = freed + names[nm]
       local s = string.format('%s (%d)', nm, names[nm])
       if gone == nil then gone = s else gone = gone .. ', ' .. s end
     end
@@ -7723,7 +7706,7 @@ function sdec.buf_restore()
   local what, left = nil, nil
   if was.defbuffer2 ~= nil then
     if sdec.defbuf_set('defbuffer2', was.defbuffer2) then
-      what = string.format('defbuffer2 to %d', was.defbuffer2)
+      what           = string.format('defbuffer2 to %d', was.defbuffer2)
       was.defbuffer2 = nil
     else
       left = 'defbuffer2'
@@ -7754,11 +7737,11 @@ function sdec.stream_samples(md, fs)
   local baud = sdec.force_baud
   if baud == nil or baud <= 0 then return nil end
   if md.cap == nil then return sdec.ck_bufmax end
-  local nbits = sdec.force_nbits or 8
+  local nbits   = sdec.force_nbits or 8
   local parbits = 0
   if sdec.force_par ~= nil and sdec.force_par ~= sdec.PAR_NONE then parbits = 1 end
   local framebits = 1 + nbits + parbits + (sdec.force_nstop or 1)
-  local n = math.ceil(md.cap * framebits * (fs / baud))
+  local n         = math.ceil(md.cap * framebits * (fs / baud))
   if n > sdec.ck_bufmax then n = sdec.ck_bufmax end
   if n < 100 then n = 100 end
   return n
@@ -7780,7 +7763,7 @@ end
 function sdec.cancel_asked()
   if sdec.ck_stop then return true end
   if not sdec.cancel_pressed() then return false end
-  sdec.ck_stop = true
+  sdec.ck_stop   = true
   sdec.ck_cancel = true
   return true
 end
@@ -7813,14 +7796,14 @@ function sdec.capture_run()
       sdec.stickyerr = 'a previous run did not finish (aborted?) -- run flag cleared'
       ulog.line(sdec.stickyerr)
     else
-      sdec.ck_stop = true                 -- second press during a stream = Stop
+      sdec.ck_stop   = true                 -- second press during a stream = Stop
       sdec.ui_status = 'stopping'
       return sdec.ui_refresh()
     end
   end
 
   if sdec.press_absorbed('Capture') then return true end
-  sdec.relocked = nil
+  sdec.relocked     = nil
   sdec.rate_backoff = nil
   sdec.rate_offer, sdec.rate_offer_from, sdec.rate_refused = nil, nil, nil
 
@@ -7839,7 +7822,7 @@ function sdec.capture_run()
   end
   sdec.busy = true
 
-  local md = sdec.mode_cur()
+  local md  = sdec.mode_cur()
   if not md.view and sdec.strm_recording then
     local sok, swhy = false, nil
     local pok, r1, r2 = pcall(sdec.stream_stop)
@@ -7847,8 +7830,8 @@ function sdec.capture_run()
     if not pok then swhy = r1 end
     sdec.busy = false
     if not pok or not sok then
-      sdec.errcount = sdec.errcount + 1
-      sdec.lasterr = tostring(swhy or 'recording failed')
+      sdec.errcount  = sdec.errcount + 1
+      sdec.lasterr   = tostring(swhy or 'recording failed')
       sdec.ui_status = 'error'
       ulog.line(sdec.lasterr)
       sdec.mode_exit('recording failed', true)
@@ -7870,8 +7853,8 @@ function sdec.capture_run()
     if not pok then swhy = r1 end
     sdec.busy = false
     if not pok or not sok then
-      sdec.errcount = sdec.errcount + 1
-      sdec.lasterr = tostring(swhy or 'could not start recording')
+      sdec.errcount  = sdec.errcount + 1
+      sdec.lasterr   = tostring(swhy or 'could not start recording')
       sdec.ui_status = 'refused'
       ulog.line(sdec.lasterr)
       sdec.mode_exit(sdec.lasterr, true)
@@ -7884,7 +7867,7 @@ function sdec.capture_run()
 
   if not md.view then
     sdec.detect_reset()
-    sdec.ui_status = 'capturing'
+    sdec.ui_status     = 'capturing'
     sdec.strm_inflight = true
     local sok, swhy = false, nil
     local pok, r1, r2 = pcall(sdec.record_run)
@@ -7893,13 +7876,13 @@ function sdec.capture_run()
     sdec.strm_inflight = nil
     sdec.busy, sdec.ck_running = false, false
     if not pok then
-      sdec.errcount = sdec.errcount + 1
-      sdec.lasterr = 'stream raised: ' .. tostring(swhy)
+      sdec.errcount  = sdec.errcount + 1
+      sdec.lasterr   = 'stream raised: ' .. tostring(swhy)
       sdec.ui_status = 'error'
       ulog.line(sdec.lasterr)
     elseif not sok then
-      sdec.errcount = sdec.errcount + 1
-      sdec.lasterr = tostring(swhy)
+      sdec.errcount  = sdec.errcount + 1
+      sdec.lasterr   = tostring(swhy)
       sdec.ui_status = 'refused'
       ulog.line('stream refused: ' .. tostring(swhy))
     else
@@ -7923,7 +7906,7 @@ function sdec.capture_run()
 
   local ok, why = sdec.autoset()
 
-  local rb = sdec.rate_backoff
+  local rb          = sdec.rate_backoff
   sdec.rate_backoff = nil
   if rb then
     ulog.line('rate back-off: ' .. tostring(sdec.relocked))
@@ -7943,7 +7926,7 @@ function sdec.capture_run()
     ulog.line('no decode: ' .. tostring(why))
   else
     sdec.ui_status = 'done'
-    sdec.ui_page = 0
+    sdec.ui_page   = 0
     ulog.line(sdec.summary(1))
     ulog.line(sdec.summary(2))
     ulog.line(sdec.summary(3))
@@ -8022,21 +8005,21 @@ function sdec.autolock_try()
   if (sdec.fitq or 0) < sdec.autolock_fitq then return false end
   if sdec.sig_levelwarn ~= nil and sdec.sig_levelwarn() ~= nil then return false end
 
-  sdec.autolock_set = {}
-  sdec.force_baud   = lockb
+  sdec.autolock_set      = {}
+  sdec.force_baud        = lockb
   sdec.autolock_set.baud = true
   if sdec.force_nbits == nil then sdec.force_nbits = r.nbits; sdec.autolock_set.nbits = true end
   if sdec.force_par   == nil then sdec.force_par   = r.par;   sdec.autolock_set.par   = true end
   if sdec.force_nstop == nil then sdec.force_nstop = r.nstop; sdec.autolock_set.nstop = true end
   if sdec.force_invert == nil and r.invert ~= nil and
      (sdec.idle_weak == false or (sdec.polwhy ~= nil and sdec.polwhy ~= 'prior')) then
-    sdec.force_invert = r.invert
+    sdec.force_invert        = r.invert
     sdec.autolock_set.invert = true
   end
 
   sdec.baud, sdec.snapped, sdec.snapfirm = sdec.force_baud, true, true
-  local fs = sdec.fs_for_baud(sdec.force_baud)
-  local nb = sdec.window_bytes(sdec.force_baud, r.nbits, r.par, r.nstop)
+  local fs          = sdec.fs_for_baud(sdec.force_baud)
+  local nb          = sdec.window_bytes(sdec.force_baud, r.nbits, r.par, r.nstop)
   sdec.autolocknote = string.format(
     'auto-locked %s %s: next %g kS/s ~%d B (Options > Baud Rate = 0 re-detects)',
     tostring(sdec.baud_text()), tostring(sdec.fmt_text()), (fs or 0) / 1000, nb or 0)
@@ -8086,10 +8069,10 @@ end
 -- make a decision of its own, like lock_toggle, has to do this too or the cleanup does not happen.
 -- Raise-free by construction, and it does not log -- a full key is the condition that brought the app here.
 function sdec.unwind(why)
-  sdec.busy = false
+  sdec.busy       = false
   sdec.ck_running = false
   if sdec.trig_restore ~= nil then
-    sdec.trigmode = sdec.trig_restore
+    sdec.trigmode     = sdec.trig_restore
     sdec.trig_restore = nil
   end
   if sdec.drop_pending then
@@ -8097,13 +8080,13 @@ function sdec.unwind(why)
     if sdec.drop_stale_result ~= nil then sdec.drop_stale_result() end
   end
   if sdec.fh_unwind ~= nil then
-    local h = sdec.fh_unwind
+    local h        = sdec.fh_unwind
     sdec.fh_unwind = nil
     file.close(h)
   end
   if sdec.ui_tick_on ~= nil then sdec.ui_tick_on() end
-  sdec.errcount = (sdec.errcount or 0) + 1
-  sdec.lasterr = tostring(why)
+  sdec.errcount  = (sdec.errcount or 0) + 1
+  sdec.lasterr   = tostring(why)
   sdec.ui_status = 'error'
   if sdec.ui_refresh ~= nil then sdec.ui_refresh() end
   return false
@@ -8235,7 +8218,7 @@ function sdec.log_new()
   sdec.flog_bytes = nil        -- or the next file reports the previous file's byte total
   sdec.flog_last, sdec.flog_lastbytes, sdec.flog_lastgen = nil, nil, nil
   if was ~= nil then
-    local base = string.gsub(tostring(was), '^.*/', '')
+    local base   = string.gsub(tostring(was), '^.*/', '')
     sdec.lognote = string.format('closed %s -- the next capture starts a new file', tostring(base))
   else
     sdec.lognote = 'no message log open yet -- the next capture starts one'
@@ -8262,7 +8245,7 @@ end
 -- to auto, red (nothing decoded) refuses with a reason. Either way it re-captures.
 function sdec.lock_toggle()
   if sdec.busy then return false end
-  local st = sdec.lock_state()
+  local st   = sdec.lock_state()
   local note = nil
   if st == 'locked' then
     sdec.unlock_all()
@@ -8296,7 +8279,7 @@ function sdec.lock_toggle()
   if not pok then sdec.unwind('capture raised: ' .. tostring(cres)) end
   if note ~= nil and not (pok and cok) then
     sdec.lognote = note .. ' -- but the re-capture failed, so the figures above are the previous one'
-    note = nil
+    note         = nil
   end
   if note ~= nil then
     local fs = sdec.fs
@@ -8379,7 +8362,7 @@ sdec.strm_absorb_s = sdec.strm_absorb_s or 1.0
 -- false of an operator who presses Capture, TRIGGER, Capture.
 function sdec.strm_absorb_arm()
   sdec.strm_stopped_by_press = nil
-  sdec.strm_nabsorbed = 0
+  sdec.strm_nabsorbed        = 0
   timer.cleartime()
   sdec.strm_stopped_by_press = true
 end
@@ -8400,12 +8383,12 @@ end
 function sdec.press_absorbed(what)
   if not sdec.strm_absorb_due() then
     sdec.strm_stopped_by_press = nil
-    sdec.strm_absorbed = nil
+    sdec.strm_absorbed         = nil
     return false
   end
-  local n = (sdec.strm_nabsorbed or 0) + 1
+  local n             = (sdec.strm_nabsorbed or 0) + 1
   sdec.strm_nabsorbed = n
-  sdec.lasterr = nil
+  sdec.lasterr        = nil
   if n == 1 then
     sdec.strm_absorbed = string.format('%s taken as the Stop for the recording that just '
                                        .. 'ended -- press again to use it',
@@ -8425,9 +8408,9 @@ end
 -- Never raises for any measured failure, so every caller calls it bare; see ulog.line for the one
 -- unmeasured case.
 function sdec.mode_exit(why, bad)
-  local was = sdec.capmode
-  local md = sdec.mode_cur()
-  local running = sdec.ck_running
+  local was         = sdec.capmode
+  local md          = sdec.mode_cur()
+  local running     = sdec.ck_running
   local pressdriven = (sdec.ck_job ~= nil) or (sdec.strm_recording == true)
   if sdec.ck_job ~= nil then sdec.decode_abandon() end
   if sdec.strm_recording then
@@ -8454,7 +8437,7 @@ function sdec.mode_exit(why, bad)
   end
   sdec.mode_exited, sdec.mode_exitbad = nil, false
   if md.id ~= 'frame' then
-    sdec.mode_exited = string.format('%s run ended (%s)', tostring(md.name), tostring(why or 'exited'))
+    sdec.mode_exited  = string.format('%s run ended (%s)', tostring(md.name), tostring(why or 'exited'))
     sdec.mode_exitbad = (bad == true)
     ulog.line(sdec.mode_exited)
   end
@@ -8606,7 +8589,7 @@ function sdec.options_restore()
   sdec.force_msb = s.msb
   sdec.proto, sdec.widths_any = s.proto, s.any
   sdec.trigmode, sdec.trigext, sdec.fc_out = s.trig, s.ext, s.fc
-  sdec.ui_mode = s.view
+  sdec.ui_mode      = s.view
   sdec.autolock_set = s.aset
   if type(s.armv) == 'number' then sdec.armlevel = s.armv end
   if type(s.armw) == 'number' then sdec.armwait = s.armw end
@@ -8649,10 +8632,10 @@ function sdec.options_lock()
     sdec.ui_refresh()
     return false
   end
-  sdec.force_baud  = math.floor(sdec.baud_round(sdec.baud) + 0.5)
-  sdec.force_nbits = sdec.res.nbits
-  sdec.force_par   = sdec.res.par
-  sdec.force_nstop = sdec.res.nstop
+  sdec.force_baud   = math.floor(sdec.baud_round(sdec.baud) + 0.5)
+  sdec.force_nbits  = sdec.res.nbits
+  sdec.force_par    = sdec.res.par
+  sdec.force_nstop  = sdec.res.nstop
   sdec.force_invert = sdec.res.invert
   sdec.autolock_set = nil
   sdec.baud, sdec.snapped, sdec.snapfirm = sdec.force_baud, true, true
@@ -8667,19 +8650,19 @@ end
 function sdec.options_apply()
   local readok, readerr = pcall(function()
     sdec.autolock_set = nil
-    local b = display.getvalue(sdec.opt_baud)
+    local b           = display.getvalue(sdec.opt_baud)
     if type(b) == 'number' and b >= 110 then sdec.force_baud = math.floor(b + 0.5)
     else
       if sdec.force_baud ~= nil then sdec.autolock_defer() end
       sdec.force_baud = nil
     end
 
-    local bi = display.getvalue(sdec.opt_bits)
+    local bi         = display.getvalue(sdec.opt_bits)
     sdec.force_nbits = sdec.opt_pick(sdec.opt_bits_v, bi)
-    sdec.widths_any = (type(bi) == 'number' and math.floor(bi + 0.5) == 2)
+    sdec.widths_any  = (type(bi) == 'number' and math.floor(bi + 0.5) == 2)
     sdec.force_par   = sdec.opt_pick(sdec.opt_par_v, display.getvalue(sdec.opt_par))
 
-    local mi2 = display.getvalue(sdec.opt_msb)
+    local mi2        = display.getvalue(sdec.opt_msb)
     if mi2 == 2 then sdec.force_msb = false
     elseif mi2 == 3 then sdec.force_msb = true
     else sdec.force_msb = nil end
@@ -8689,9 +8672,9 @@ function sdec.options_apply()
     elseif li == 3 then sdec.force_invert = true
     else sdec.force_invert = nil end
 
-    local ti = display.getvalue(sdec.opt_trig)
+    local ti      = display.getvalue(sdec.opt_trig)
     sdec.trigmode = sdec.opt_pick(sdec.opt_trig_v, ti) or 'edge'
-    local ri = sdec.opt_rear_v[display.getvalue(sdec.opt_ext)] or sdec.opt_rear_v[1]
+    local ri      = sdec.opt_rear_v[display.getvalue(sdec.opt_ext)] or sdec.opt_rear_v[1]
     sdec.trigext, sdec.fc_out = ri[1], ri[2]
 
     local av = display.getvalue(sdec.opt_armv)
@@ -8734,11 +8717,11 @@ function sdec.options_apply()
     sdec.force_baud, sdec.force_nbits = 31250, 8
     sdec.force_par, sdec.force_nstop = sdec.PAR_NONE, 1
     sdec.autolock_set = nil
-    sdec.ui_mode = 'midi'
+    sdec.ui_mode      = 'midi'
   elseif sdec.proto == 'lin' then
     sdec.force_nbits, sdec.force_par, sdec.force_nstop = 8, sdec.PAR_NONE, 1
     sdec.force_invert = false
-    sdec.ui_mode = 'lin'
+    sdec.ui_mode      = 'lin'
   elseif was ~= 'uart' then
     sdec.unlock_all()
     sdec.autolock_defer()
@@ -8794,7 +8777,7 @@ function sdec.stop()
     sdec.atrig.mode = sdec.k.MODE_OFF
   end
   sdec.cancel_ok = false
-  local bl = trigger.blender
+  local bl       = trigger.blender
   if bl ~= nil and bl[sdec.cancel_blender] ~= nil then
     pcall(bl[sdec.cancel_blender].reset)
   end
@@ -8803,18 +8786,18 @@ function sdec.stop()
   if sdec.acq_bufs ~= nil and next(sdec.acq_bufs) ~= nil then
     sdec.acq_buffree()
     if next(sdec.acq_bufs) ~= nil then
-      sdec.delfails = (sdec.delfails or 0) + 1
+      sdec.delfails  = (sdec.delfails or 0) + 1
       sdec.stickyerr = 'a capture buffer could not be freed -- power cycle the instrument'
     end
   end
   if sdec.buf ~= nil then
     sdec.trig_settle()
-    local b = sdec.buf
+    local b     = sdec.buf
     local delok = sdec.bufdel(b)
     if delok then
       sdec.buf = nil
     else
-      sdec.delfails = (sdec.delfails or 0) + 1
+      sdec.delfails  = (sdec.delfails or 0) + 1
       sdec.stickyerr = 'the capture buffer could not be freed -- power cycle the instrument'
     end
   end
@@ -8868,8 +8851,8 @@ function sdec.start()
     sdec.ck_relaunching = true
     sdec.cleanup()
     sdec.ck_relaunching = nil
-    local left = 0
-    left = sdec.del_orphans()
+    local left          = 0
+    left                = sdec.del_orphans()
     if left < 1 then sdec.delfails = 0 end
     local nfail = sdec.delfails or 0
     if nfail > 0 and not sdec.allow_rebuild then
@@ -9070,28 +9053,28 @@ end
 
 
 -- ================= bench/sdg_net.tsp =================
-bsdg = bsdg or {}
+bsdg           = bsdg or {}
 
-bsdg.ip      = bsdg.ip or '10.0.1.79'
-bsdg.port    = bsdg.port or 5025
-bsdg.id      = nil                 -- tspnet connection id, nil when closed
-bsdg.why     = nil                 -- why the last call failed, for the status file
-bsdg.nfail   = 0                   -- consecutive failures, so a caller can give up deliberately
-bsdg.ncmd    = 0
-bsdg.timeout = bsdg.timeout or 5   -- seconds; the tspnet default of 20 is far too long to spend on
-bsdg.maxvpp = bsdg.maxvpp or 20.0
-bsdg.minsrate = bsdg.minsrate or 1e-6
-bsdg.maxsrate = bsdg.maxsrate or 40e6
+bsdg.ip        = bsdg.ip or '10.0.1.79'
+bsdg.port      = bsdg.port or 5025
+bsdg.id        = nil                 -- tspnet connection id, nil when closed
+bsdg.why       = nil                 -- why the last call failed, for the status file
+bsdg.nfail     = 0                   -- consecutive failures, so a caller can give up deliberately
+bsdg.ncmd      = 0
+bsdg.timeout   = bsdg.timeout or 5   -- seconds; the tspnet default of 20 is far too long to spend on
+bsdg.maxvpp    = bsdg.maxvpp or 20.0
+bsdg.minsrate  = bsdg.minsrate or 1e-6
+bsdg.maxsrate  = bsdg.maxsrate or 40e6
 
 bsdg.arwvtries = bsdg.arwvtries or 4
-bsdg.arwvwait = bsdg.arwvwait or 0.4
+bsdg.arwvwait  = bsdg.arwvwait or 0.4
 
-bsdg.cur     = nil     -- waveform name last CONFIRMED by ARWV?; nil means unknown
-bsdg.curamp  = nil     -- the BSWV/SRATE values last written and not since disturbed
-bsdg.curofst = nil
-bsdg.cursrate = nil
-bsdg.nskip   = 0       -- consecutive selects that skipped the ARWV verify
-bsdg.nsame   = 0       -- selects that skipped the conversation entirely, for the run's own accounting
+bsdg.cur       = nil     -- waveform name last CONFIRMED by ARWV?; nil means unknown
+bsdg.curamp    = nil     -- the BSWV/SRATE values last written and not since disturbed
+bsdg.curofst   = nil
+bsdg.cursrate  = nil
+bsdg.nskip     = 0       -- consecutive selects that skipped the ARWV verify
+bsdg.nsame     = 0       -- selects that skipped the conversation entirely, for the run's own accounting
 
 bsdg.arwvevery = bsdg.arwvevery or 50
 
@@ -9102,12 +9085,12 @@ function bsdg.open()
   if bsdg.id ~= nil then return true end
   local ok, err = pcall(function()
     tspnet.timeout = bsdg.timeout
-    bsdg.id = tspnet.connect(bsdg.ip, bsdg.port, '')
+    bsdg.id        = tspnet.connect(bsdg.ip, bsdg.port, '')
     tspnet.termination(bsdg.id, tspnet.TERM_CRLF)
   end)
   if not ok or bsdg.id == nil then
-    bsdg.id = nil
-    bsdg.why = 'connect failed: ' .. tostring(err)
+    bsdg.id    = nil
+    bsdg.why   = 'connect failed: ' .. tostring(err)
     bsdg.nfail = bsdg.nfail + 1
     return false, bsdg.why
   end
@@ -9164,11 +9147,11 @@ function bsdg.cmd(s)
   local ok, err = pcall(function() tspnet.write(bsdg.id, s .. '\n') end)
   if not ok then
     bsdg.close()
-    bsdg.why = 'write failed: ' .. tostring(err)
+    bsdg.why   = 'write failed: ' .. tostring(err)
     bsdg.nfail = bsdg.nfail + 1
     return false, bsdg.why
   end
-  bsdg.ncmd = bsdg.ncmd + 1
+  bsdg.ncmd  = bsdg.ncmd + 1
   bsdg.nfail = 0
   return true
 end
@@ -9185,10 +9168,10 @@ function bsdg.ask(s)
   local waited, step = 0, 0.05
   while waited < bsdg.timeout do
     local avail = 0
-    local ok = pcall(function() avail = tspnet.readavailable(bsdg.id) or 0 end)
+    local ok    = pcall(function() avail = tspnet.readavailable(bsdg.id) or 0 end)
     if not ok then
       bsdg.close()
-      bsdg.why = 'readavailable failed on ' .. s
+      bsdg.why   = 'readavailable failed on ' .. s
       bsdg.nfail = bsdg.nfail + 1
       return nil, bsdg.why
     end
@@ -9197,7 +9180,7 @@ function bsdg.ask(s)
       local rok = pcall(function() rep = tspnet.read(bsdg.id) end)
       if not rok or rep == nil then
         bsdg.close()
-        bsdg.why = 'read failed on ' .. s
+        bsdg.why   = 'read failed on ' .. s
         bsdg.nfail = bsdg.nfail + 1
         return nil, bsdg.why
       end
@@ -9207,7 +9190,7 @@ function bsdg.ask(s)
     delay(step)
     waited = waited + step
   end
-  bsdg.why = 'no reply to ' .. s .. ' within ' .. tostring(bsdg.timeout) .. ' s'
+  bsdg.why   = 'no reply to ' .. s .. ' within ' .. tostring(bsdg.timeout) .. ' s'
   bsdg.nfail = bsdg.nfail + 1
   return nil, bsdg.why
 end
@@ -9221,7 +9204,7 @@ function bsdg.drain()
   if bsdg.id == nil then return 0 end
   local n, guard = 0, 0
   while guard < 40 do
-    guard = guard + 1
+    guard       = guard + 1
     local avail = 0
     if not pcall(function() avail = tspnet.readavailable(bsdg.id) or 0 end) then return n end
     if avail <= 0 then return n end
@@ -9240,9 +9223,9 @@ function bsdg.snapshot()
   local out, k = {}, nil
   local keep, keepwhy = bsdg.nfail, bsdg.why
   if keep > 0 then return 'skipped: nfail=' .. tostring(keep) end
-  local keept = bsdg.timeout
+  local keept  = bsdg.timeout
   bsdg.timeout = 1
-  local q = {{'arwv', 'C1:ARWV?'}, {'bswv', 'C1:BSWV?'}, {'srate', 'C1:SRATE?'}, {'outp', 'C1:OUTP?'}}
+  local q      = {{'arwv', 'C1:ARWV?'}, {'bswv', 'C1:BSWV?'}, {'srate', 'C1:SRATE?'}, {'outp', 'C1:OUTP?'}}
   for k = 1, table.getn(q) do
     bsdg.drain()
     local r = bsdg.ask(q[k][2])
@@ -9301,7 +9284,7 @@ function bsdg.select(name, amp, ofst, srate)
     if string.find(name, '/', 1, true) ~= nil then sel = '"' .. name .. '"' end
     if not bsdg.cmd('C1:ARWV NAME,' .. sel) then return false, bsdg.why end
     local want = string.gsub(name, '^.*/', '')
-    want = string.gsub(want, '%.bin$', '')
+    want       = string.gsub(want, '%.bin$', '')
     local vok, r, tries = false, nil, nil
     for tries = 1, bsdg.arwvtries do
       if tries > 1 then delay(bsdg.arwvwait) end
@@ -9355,24 +9338,24 @@ end
 
 
 -- ================= bench/bench_rec.tsp =================
-brec = brec or {}
+brec           = brec or {}
 
-brec.dir      = brec.dir or '/usb1/SERDEC'
-brec.pfx      = brec.pfx or (brec.dir .. '/SOAK')   -- SOAK.CSV, 8.3 like everything else here
-brec.ext      = brec.ext or '.csv'
-brec.maxfile  = brec.maxfile or 268435456   -- 256 MB, far under the 2 GB per-file ceiling and still
-brec.maxtotal = brec.maxtotal or 4294967296 -- 4 GB, inside the 6 GB budget with headroom
-brec.syncrows = brec.syncrows or 50         -- rows between close/reopen
+brec.dir       = brec.dir or '/usb1/SERDEC'
+brec.pfx       = brec.pfx or (brec.dir .. '/SOAK')   -- SOAK.CSV, 8.3 like everything else here
+brec.ext       = brec.ext or '.csv'
+brec.maxfile   = brec.maxfile or 268435456   -- 256 MB, far under the 2 GB per-file ceiling and still
+brec.maxtotal  = brec.maxtotal or 4294967296 -- 4 GB, inside the 6 GB budget with headroom
+brec.syncrows  = brec.syncrows or 50         -- rows between close/reopen
 
-brec.fh       = nil     -- the one open file, or nil
-brec.path     = nil
-brec.nrow     = 0       -- rows in the current file
-brec.ntotrow  = 0       -- rows this run
-brec.nbyte    = 0       -- bytes in the current file
-brec.ntotbyte = 0       -- bytes this run, across rolled files
-brec.nfile    = 0
+brec.fh        = nil     -- the one open file, or nil
+brec.path      = nil
+brec.nrow      = 0       -- rows in the current file
+brec.ntotrow   = 0       -- rows this run
+brec.nbyte     = 0       -- bytes in the current file
+brec.ntotbyte  = 0       -- bytes this run, across rolled files
+brec.nfile     = 0
 brec.sincesync = 0
-brec.why      = nil     -- why recording stopped, if it did
+brec.why       = nil     -- why recording stopped, if it did
 brec.stopped  = false   -- true once the byte budget is spent; the run may continue, unrecorded,
 brec.schema = brec.schema or 'serdec-soak-1'
 
@@ -9381,8 +9364,8 @@ brec.schema = brec.schema or 'serdec-soak-1'
 function brec.q(s)
   if s == nil then return '' end
   local t = tostring(s)
-  t = string.gsub(t, '"', "''")
-  t = string.gsub(t, '[\r\n,]', ' ')
+  t       = string.gsub(t, '"', "''")
+  t       = string.gsub(t, '[\r\n,]', ' ')
   return t
 end
 
@@ -9427,7 +9410,7 @@ end
 -- maxtotal while both counters said otherwise. -> the bytes written, so callers can add them.
 function brec.hwrite(s)
   if not brec.rawwrite(brec.fh, s) then return 0 end
-  brec.nbyte = brec.nbyte + string.len(s)
+  brec.nbyte    = brec.nbyte + string.len(s)
   brec.ntotbyte = brec.ntotbyte + string.len(s)
   return string.len(s)
 end
@@ -9452,14 +9435,14 @@ function brec.roll()
   brec.fh = nil
   if brec.ntotbyte >= brec.maxtotal then
     brec.stopped = true
-    brec.why = string.format('byte budget spent: %d bytes over %d file(s)', brec.ntotbyte, brec.nfile)
+    brec.why     = string.format('byte budget spent: %d bytes over %d file(s)', brec.ntotbyte, brec.nfile)
     brec.note(-1, -1, 0, brec.why)
     return false
   end
   local fh, path, why = brec.newfile(brec.pfx)
   if fh == nil then
     brec.stopped = true
-    brec.why = 'cannot roll to a new file: ' .. tostring(why)
+    brec.why     = 'cannot roll to a new file: ' .. tostring(why)
     brec.note(-1, -1, 0, brec.why)
     return false
   end
@@ -9478,37 +9461,37 @@ function brec.row(s)
   local line = 'R,' .. s .. '\n'
   if not brec.rawwrite(brec.fh, line) then
     pcall(function() file.close(brec.fh) end)
-    brec.fh = nil
+    brec.fh  = nil
     local fh = nil
     pcall(function() fh = file.open(brec.path, file.MODE_APPEND) end)
     if fh == nil then
       brec.stopped = true
-      brec.why = 'write failed and ' .. tostring(brec.path) .. ' will not reopen -- key pulled?'
+      brec.why     = 'write failed and ' .. tostring(brec.path) .. ' will not reopen -- key pulled?'
       return false
     end
     brec.fh = fh
     if not brec.rawwrite(brec.fh, line) then
       brec.stopped = true
-      brec.why = 'write failed twice on ' .. tostring(brec.path)
+      brec.why     = 'write failed twice on ' .. tostring(brec.path)
       return false
     end
   end
-  brec.nrow = brec.nrow + 1
-  brec.ntotrow = brec.ntotrow + 1
-  brec.nbyte = brec.nbyte + string.len(line)
-  brec.ntotbyte = brec.ntotbyte + string.len(line)
+  brec.nrow      = brec.nrow + 1
+  brec.ntotrow   = brec.ntotrow + 1
+  brec.nbyte     = brec.nbyte + string.len(line)
+  brec.ntotbyte  = brec.ntotbyte + string.len(line)
   brec.sincesync = brec.sincesync + 1
   if brec.sincesync >= brec.syncrows then
     pcall(function() file.close(brec.fh) end)
-    brec.fh = nil
+    brec.fh  = nil
     local fh = nil
     pcall(function() fh = file.open(brec.path, file.MODE_APPEND) end)
     if fh == nil then
       brec.stopped = true
-      brec.why = 'reopen after sync failed on ' .. tostring(brec.path)
+      brec.why     = 'reopen after sync failed on ' .. tostring(brec.path)
       return false
     end
-    brec.fh = fh
+    brec.fh        = fh
     brec.sincesync = 0
   end
   if brec.nbyte >= brec.maxfile then return brec.roll() end
@@ -9580,16 +9563,16 @@ function bexp.lorem_text(nwant, cols)
   local col, i, total = 0, 0, 0
   local ln = string.len(bexp.LOREM)
   while total < nwant do
-    i = i + 1
+    i        = i + 1
     local at = math.mod(i - 1, ln) + 1
     local ch = string.sub(bexp.LOREM, at, at)
-    no = no + 1; out[no] = ch; total = total + 1
-    col = col + 1
+    no       = no + 1; out[no] = ch; total = total + 1
+    col      = col + 1
     if col >= cols and ch == ' ' and total + 2 <= nwant then
-      no = no + 1; out[no] = '\013'
-      no = no + 1; out[no] = '\010'
+      no    = no + 1; out[no] = '\013'
+      no    = no + 1; out[no] = '\010'
       total = total + 2
-      col = 0
+      col   = 0
     end
   end
   return table.concat(out)
@@ -9708,51 +9691,51 @@ end
 
 
 -- ================= bench/bench_run.tsp =================
-brun = brun or {}
+brun            = brun or {}
 
-brun.dir      = brun.dir or '/usb1/SERDEC'
-brun.planpath = brun.planpath or (brun.dir .. '/PLAN.CSV')
-brun.stoppath = brun.stoppath or (brun.dir .. '/STOP.TXT')
+brun.dir        = brun.dir or '/usb1/SERDEC'
+brun.planpath   = brun.planpath or (brun.dir .. '/PLAN.CSV')
+brun.stoppath   = brun.stoppath or (brun.dir .. '/STOP.TXT')
 brun.listenip   = brun.listenip or nil    -- optional host listener for live progress; nil = none
 brun.listenport = brun.listenport or 5099
 
-brun.pfh      = nil      -- plan handle while streaming
-brun.nwrap    = 0        -- times the plan file has been re-read from the start
-brun.ncell    = 0        -- cells attempted this run
-brun.nbadsdg  = 0        -- consecutive generator failures
-brun.stopwhy  = nil
-brun.stopbad  = false   -- did it park because something is wrong, or finish what it was asked?
-brun.tag      = brun.tag or 'soak'   -- what this run is: the panel title and the record header both say it
+brun.pfh        = nil      -- plan handle while streaming
+brun.nwrap      = 0        -- times the plan file has been re-read from the start
+brun.ncell      = 0        -- cells attempted this run
+brun.nbadsdg    = 0        -- consecutive generator failures
+brun.stopwhy    = nil
+brun.stopbad    = false   -- did it park because something is wrong, or finish what it was asked?
+brun.tag        = brun.tag or 'soak'   -- what this run is: the panel title and the record header both say it
 
 brun.maxsdgfail = brun.maxsdgfail or 20
 
-brun.holdsecs = brun.holdsecs or 300      -- seconds between retries; 0 parks, and nothing asks for that
-brun.holdslice = brun.holdslice or 10     -- how long a single delay() may be, so the panel stays alive
-brun.holdmax = brun.holdmax or 0          -- give up after this many seconds of holding; 0 = never
-brun.nhold = 0                            -- retries attempted this run
-brun.heldsecs = 0                         -- seconds spent holding this run
+brun.holdsecs   = brun.holdsecs or 300      -- seconds between retries; 0 parks, and nothing asks for that
+brun.holdslice  = brun.holdslice or 10     -- how long a single delay() may be, so the panel stays alive
+brun.holdmax    = brun.holdmax or 0          -- give up after this many seconds of holding; 0 = never
+brun.nhold      = 0                            -- retries attempted this run
+brun.heldsecs   = 0                         -- seconds spent holding this run
 
-brun.recretry = brun.recretry or 50      -- cells between attempts to record again
-brun.nrecfail = 0                        -- consecutive cells measured but not recorded
-brun.nreclost = 0                        -- cells this run that were never written down
-brun.nrecback = 0                        -- times recording recovered
-brun.nsdgalive = 0                       -- cells with no stimulus while the generator answered
+brun.recretry   = brun.recretry or 50      -- cells between attempts to record again
+brun.nrecfail   = 0                        -- consecutive cells measured but not recorded
+brun.nreclost   = 0                        -- cells this run that were never written down
+brun.nrecback   = 0                        -- times recording recovered
+brun.nsdgalive  = 0                       -- cells with no stimulus while the generator answered
 
-brun.selretry = brun.selretry or 5
-brun.selwait = brun.selwait or 0.5       -- seconds between attempts
-brun.nselback = 0                        -- cells whose stimulus needed more than one attempt
+brun.selretry   = brun.selretry or 5
+brun.selwait    = brun.selwait or 0.5       -- seconds between attempts
+brun.nselback   = 0                        -- cells whose stimulus needed more than one attempt
 
-brun.stopevery = brun.stopevery or 0     -- 0 = never look; see the note in the loop
-brun.idlediag = brun.idlediag or false
-brun.ratediag = brun.ratediag or false
+brun.stopevery  = brun.stopevery or 0     -- 0 = never look; see the note in the loop
+brun.idlediag   = brun.idlediag or false
+brun.ratediag   = brun.ratediag or false
 
-brun.sdgverify = brun.sdgverify or false
+brun.sdgverify  = brun.sdgverify or false
 
-brun.timing = brun.timing or false
+brun.timing     = brun.timing or false
 
-brun.maxcell = brun.maxcell or 0
+brun.maxcell    = brun.maxcell or 0
 
-brun.nmeascol = 12
+brun.nmeascol   = 12
 
 -- The rate a cell is captured at is the app's own choice, sdec.pick_fs(c.baud, 8), with nothing added to
 --   [...]
@@ -9763,17 +9746,17 @@ function brun.cell_fs(baud)
   return sdec.pick_fs(baud, sdec.fs_sabit)
 end
 
-brun.evbudget = brun.evbudget or 3      -- events per cell above which a cell counts as noisy
+brun.evbudget       = brun.evbudget or 3      -- events per cell above which a cell counts as noisy
 
-brun.paywrong_frac = brun.paywrong_frac or 0.5
+brun.paywrong_frac  = brun.paywrong_frac or 0.5
 brun.frameflag_frac = brun.frameflag_frac or 0.10
-brun.framemin = brun.framemin or 50
-brun.red_cells = brun.red_cells or 3
-brun.red_bauds = brun.red_bauds or 2
-brun.evstreak = brun.evstreak or 5      -- consecutive noisy cells before shedding a subsystem
-brun.nevstreak = 0
-brun.evshed = nil                       -- what was switched off, for the record
-brun.nevtot = 0
+brun.framemin       = brun.framemin or 50
+brun.red_cells      = brun.red_cells or 3
+brun.red_bauds      = brun.red_bauds or 2
+brun.evstreak       = brun.evstreak or 5      -- consecutive noisy cells before shedding a subsystem
+brun.nevstreak      = 0
+brun.evshed         = nil                       -- what was switched off, for the record
+brun.nevtot         = 0
 
 -- The plan file
 -- Split one CSV line on commas. No quoting is honoured, deliberately: soakplan.py emits plain numbers
@@ -9787,7 +9770,7 @@ function brun.split(s)
       n = n + 1; out[n] = string.sub(s, i0)
       break
     end
-    n = n + 1; out[n] = string.sub(s, i0, a - 1)
+    n  = n + 1; out[n] = string.sub(s, i0, a - 1)
     i0 = a + 1
   end
   return out, n
@@ -9795,25 +9778,25 @@ end
 
 brun.planrows = 0
 brun.planread = 0
-brun.iter = 0
-brun.cell = 0
+brun.iter     = 0
+brun.cell     = 0
 brun.planrsub = nil
-brun.percell = 0          -- cells per lap, 0 until known
+brun.percell  = 0          -- cells per lap, 0 until known
 brun.nidle, brun.nlevels, brun.nswing, brun.nwhyother = 0, 0, 0, 0
-brun.nspin = 0
+brun.nspin     = 0
 brun.nspinlast = 0
 
-brun.gcevery = brun.gcevery or 500
-brun.memk = nil           -- heap KB after the last collection, shown on the note line
-brun.cellmax = 0          -- highest cell number seen this lap
-brun.lapcell = 0
+brun.gcevery   = brun.gcevery or 500
+brun.memk      = nil           -- heap KB after the last collection, shown on the note line
+brun.cellmax   = 0          -- highest cell number seen this lap
+brun.lapcell   = 0
 
 function brun.planopen()
   brun.planclose()
   local fh = nil
   pcall(function() fh = file.open(brun.planpath, file.MODE_READ) end)
   if fh == nil then return false, 'cannot open ' .. brun.planpath end
-  brun.pfh = fh
+  brun.pfh      = fh
   brun.planread = 0
   return true
 end
@@ -9854,11 +9837,11 @@ function brun.nextrow()
           srate = tonumber(f[9]), wait = tonumber(f[10])}
 end
 
-brun.filt_baudlo = brun.filt_baudlo          -- Bd, inclusive floor
-brun.filt_baudhi = brun.filt_baudhi          -- Bd, inclusive ceiling
-brun.filt_stdonly = brun.filt_stdonly        -- true: standard rates only
+brun.filt_baudlo    = brun.filt_baudlo          -- Bd, inclusive floor
+brun.filt_baudhi    = brun.filt_baudhi          -- Bd, inclusive ceiling
+brun.filt_stdonly   = brun.filt_stdonly        -- true: standard rates only
 brun.filt_interstit = brun.filt_interstit    -- Bd: no non-standard rate below this
-brun.filt_advonly = brun.filt_advonly        -- true: only vectors known to produce errors
+brun.filt_advonly   = brun.filt_advonly        -- true: only vectors known to produce errors
 
 -- Does this row survive the filters? -> true to run it.
 function brun.wanted(c)
@@ -9908,7 +9891,7 @@ function brun.point(fs, baud, lock, vid)
   local ok, why = false, nil
   local okc
   sdec.trigmode = 'free'
-  local perr = nil
+  local perr    = nil
   okc, perr = pcall(function() ok, why = sdec.acquire() end)
   if not okc then r.raisewhy = tostring(perr) end
   r.remade = sdec.acq_remade
@@ -9929,30 +9912,30 @@ function brun.point(fs, baud, lock, vid)
   brun.spin_tick()                      -- 4 of 6: the decode is done
   if not okc2 then r.why = 'decode raised'; return r end
   if not okd then
-    r.why = 'dec: ' .. tostring(whyd)
+    r.why   = 'dec: ' .. tostring(whyd)
     r.probe = sdec.baud_probe
-    r.fs = sdec.acq_fs
+    r.fs    = sdec.acq_fs
     r.nread = sdec.nread
-    r.nev = brun.eventcount()
+    r.nev   = brun.eventcount()
     return r
   end
 
-  local res = sdec.res
-  r.ran     = true
+  local res  = sdec.res
+  r.ran      = true
   r.overread = sdec.strm_overread
-  r.fs      = sdec.acq_fs
-  r.nread   = sdec.nread
-  r.baud    = sdec.baud
-  r.snapped = sdec.snapped
+  r.fs       = sdec.acq_fs
+  r.nread    = sdec.nread
+  r.baud     = sdec.baud
+  r.snapped  = sdec.snapped
   r.snapfirm = sdec.snapfirm
-  r.nf      = (res ~= nil and res.nf) or 0
-  r.ngood   = (res ~= nil and res.ngood) or 0
-  r.nbad    = (res ~= nil and res.nbad) or 0
+  r.nf       = (res ~= nil and res.nf) or 0
+  r.ngood    = (res ~= nil and res.ngood) or 0
+  r.nbad     = (res ~= nil and res.nbad) or 0
   r.headsusp = (res ~= nil and res.headsusp) or 0
-  r.fmt     = brun.fmtname(res)
-  r.nev     = brun.eventcount()
-  r.hex     = brun.hex(res)
-  r.nflag   = brun.flagcount(res)
+  r.fmt      = brun.fmtname(res)
+  r.nev      = brun.eventcount()
+  r.hex      = brun.hex(res)
+  r.nflag    = brun.flagcount(res)
   if vid ~= nil and bexp ~= nil and res ~= nil then
     pcall(function()
       local m, c = bexp.match(res, vid)
@@ -10010,10 +9993,10 @@ end
 
 brun.panellim1 = 20      -- TEXT1, characters. Firmware limit, not a style choice.
 brun.panellim2 = 32      -- TEXT2
-brun.panelw = 58
+brun.panelw    = 58
 
 brun.backlight = brun.backlight or display.STATE_LCD_25
-brun.nevpanel = 0
+brun.nevpanel  = 0
 
 -- CLIPPED HERE RATHER THAN BY THE FIRMWARE, because the firmware charges an event for the service.
 -- Every caller below is width-checked by a test, so reaching this is already a bug; it exists so that
@@ -10033,7 +10016,7 @@ function brun.settext(l1, l2)
   local d = brun.eventcount() - n0
   if d > 0 then
     brun.nevpanel = brun.nevpanel + d
-    brun.nevtot = brun.nevtot + d
+    brun.nevtot   = brun.nevtot + d
   end
 end
 
@@ -10056,7 +10039,7 @@ end
 function brun.wave(arb)
   if arb == nil or arb == '' then return '?' end
   local s = string.gsub(arb, '^SER_', '')
-  s = string.gsub(s, '_x%d+$', '')
+  s       = string.gsub(s, '_x%d+$', '')
   local f = brun.fmtof(arb)
   if f ~= '' then
     s = string.gsub(s, '_' .. f .. '_', '_')
@@ -10098,19 +10081,19 @@ function brun.screen(c, arb)
                brun.cellline(c, arb))
 end
 
-brun.c_lab  = (sdec ~= nil and sdec.ui_c_lab) or 0xA8A8A8       -- grey: labels
-brun.c_val  = (sdec ~= nil and sdec.ui_c_data) or 0xFFFFFF      -- white: values
-brun.c_ok   = (sdec ~= nil and sdec.ui_c_sb_on) or 0x00DCFF     -- the panel blue
-brun.c_warn = (sdec ~= nil and sdec.ui_c_warn) or 0xFFC000      -- amber
-brun.c_bad  = (sdec ~= nil and sdec.ui_c_err) or 0xFF6060       -- red
-brun.c_good = (sdec ~= nil and sdec.ui_c_locked) or 0x40FF40    -- green
-brun.ui = nil
+brun.c_lab     = (sdec ~= nil and sdec.ui_c_lab) or 0xA8A8A8       -- grey: labels
+brun.c_val     = (sdec ~= nil and sdec.ui_c_data) or 0xFFFFFF      -- white: values
+brun.c_ok      = (sdec ~= nil and sdec.ui_c_sb_on) or 0x00DCFF     -- the panel blue
+brun.c_warn    = (sdec ~= nil and sdec.ui_c_warn) or 0xFFC000      -- amber
+brun.c_bad     = (sdec ~= nil and sdec.ui_c_err) or 0xFF6060       -- red
+brun.c_good    = (sdec ~= nil and sdec.ui_c_locked) or 0x40FF40    -- green
+brun.ui        = nil
 
-brun.msgn = brun.msgn or 5
-brun.msgs = nil          -- oldest first; the newest is at the bottom of the screen
-brun.lastmsg = nil       -- so an unchanged state is not pushed again
+brun.msgn      = brun.msgn or 5
+brun.msgs      = nil          -- oldest first; the newest is at the bottom of the screen
+brun.lastmsg   = nil       -- so an unchanged state is not pushed again
 brun.lastshape = nil     -- the same state with a different count in it, ditto
-brun.lastn = 0
+brun.lastn     = 0
 
 -- ONE CONDITION MUST NOT FILL THE RING. Dedup on exact text lets a counter push a new line every time it
 --   [...]
@@ -10188,9 +10171,9 @@ function brun.ui_msgs()
   end
 end
 
-brun.warnrate = brun.warnrate or 20      -- % of cells refusing UNEXPECTEDLY: amber above this
-brun.badrate  = brun.badrate  or 40      -- and red above this
-brun.raten    = brun.raten    or 100     -- but neither before this many cells have run, and the
+brun.warnrate   = brun.warnrate or 20      -- % of cells refusing UNEXPECTEDLY: amber above this
+brun.badrate    = brun.badrate  or 40      -- and red above this
+brun.raten      = brun.raten    or 100     -- but neither before this many cells have run, and the
 brun.badsdgwarn = brun.badsdgwarn or 3   -- consecutive generator failures that mean the stimulus is gone
 
 function brun.ui_destroy()
@@ -10221,7 +10204,7 @@ end
 function brun.ui_build()
   brun.ui_destroy()
   if display == nil or display.create == nil then return false end
-  local u = {all = {}, n = 0}
+  local u  = {all = {}, n = 0}
   local ok = pcall(function()
     local create, small, left = display.create, display.FONT_MEDIUM, display.JUST_LEFT
     local function add(h)
@@ -10234,11 +10217,11 @@ function brun.ui_build()
                         'SD ' .. brun.tagword() .. ' - TRIGGER TO STOP'))
     u.health = add(create(u.scr, display.OBJ_TEXT, 12, 20, brun.tagword() .. ' HEALTH --',
                           brun.c_ok, small, left))
-    u.spin = add(create(u.scr, display.OBJ_TEXT, 788, 20, '|', brun.c_good, small, display.JUST_RIGHT))
-    u.prog = add(create(u.scr, display.OBJ_TEXT, 12, 58, '--', brun.c_val, small, left))
-    u.time = add(create(u.scr, display.OBJ_TEXT, 12, 92, '--', brun.c_lab, small, left))
-    u.stim = add(create(u.scr, display.OBJ_TEXT, 12, 126, '--', brun.c_val, small, left))
-    u.fail = add(create(u.scr, display.OBJ_TEXT, 12, 160, '--', brun.c_lab, small, left))
+    u.spin  = add(create(u.scr, display.OBJ_TEXT, 788, 20, '|', brun.c_good, small, display.JUST_RIGHT))
+    u.prog  = add(create(u.scr, display.OBJ_TEXT, 12, 58, '--', brun.c_val, small, left))
+    u.time  = add(create(u.scr, display.OBJ_TEXT, 12, 92, '--', brun.c_lab, small, left))
+    u.stim  = add(create(u.scr, display.OBJ_TEXT, 12, 126, '--', brun.c_val, small, left))
+    u.fail  = add(create(u.scr, display.OBJ_TEXT, 12, 160, '--', brun.c_lab, small, left))
     u.vfail = add(create(u.scr, display.OBJ_TEXT, 12, 194, '--', brun.c_val, small, left))
     u.errs = add(create(u.scr, display.OBJ_TEXT, 12, 228 + brun.msgn * 34, 'Errors: 0',
                         brun.c_good, small, left))
@@ -10389,10 +10372,10 @@ function brun.health()
 end
 
 brun.healthwarn = brun.healthwarn or 99
-brun.healthbad = brun.healthbad or 60
+brun.healthbad  = brun.healthbad or 60
 
-brun.heapwarnk = brun.heapwarnk or 3300
-brun.heapbadk = brun.heapbadk or 3600
+brun.heapwarnk  = brun.heapwarnk or 3300
+brun.heapbadk   = brun.heapbadk or 3600
 
 -- THE DIAGNOSTIC FLAGS IN FORCE, as a short suffix. A run configured wrongly is silently worthless and
 -- nothing on the panel said which flags were on. bsdg.arwvevery is included for a specific reason: Lua
@@ -10415,15 +10398,15 @@ function brun.diagflags()
 end
 
 brun.spinchars = {'|', '/', '-', '\\'}
-brun.spini = 0
+brun.spini     = 0
 
 function brun.spin()
   brun.spini = math.mod(brun.spini + 1, 4)
   return brun.spinchars[brun.spini + 1]
 end
 
-brun.spinmin = brun.spinmin or 0.5        -- seconds between redraws: 2 fps ceiling. The FLOOR is
-brun.spint = nil
+brun.spinmin   = brun.spinmin or 0.5        -- seconds between redraws: 2 fps ceiling. The FLOOR is
+brun.spint     = nil
 
 brun.spinyield = brun.spinyield or 0
 
@@ -10448,7 +10431,7 @@ end
 -- count is the number an operator acts on, and the three bands are what make it readable from across the
 -- room without doing arithmetic.
 function brun.errsline()
-  local n = brun.nbad or 0
+  local n  = brun.nbad or 0
   local nx = brun.nexp or 0
   local nw, nfr = brun.nwrong or 0, brun.nframe or 0
   local act = nw + nfr
@@ -10514,7 +10497,7 @@ function brun.healthline()
                          brun.int(brun.ncell), brun.int(brun.raten)), col0
   end
 
-  local h = brun.health()
+  local h   = brun.health()
   local col = brun.c_good
   if h <= brun.healthwarn then col = brun.c_warn end
   if h < brun.healthbad then col = brun.c_bad end
@@ -10535,9 +10518,9 @@ function brun.ui_show(c, arb)
   local u = brun.ui
   if u == nil then return end
   brun.nspinlast = brun.nspin or 0
-  brun.nspin = 0
-  local vid = tostring(c.vid or '?')
-  local nlap = brun.percell
+  brun.nspin     = 0
+  local vid      = tostring(c.vid or '?')
+  local nlap     = brun.percell
   if nlap <= 0 then nlap = brun.perlap_guess() end
   local lap = 'Lap: ' .. brun.int(c.iter)
   if brun.iterwant ~= nil and brun.iterwant > 0 then
@@ -10698,7 +10681,7 @@ function brun.headline(atend)
   return brun.fit(hl, brun.panelw), hcol
 end
 
-brun.nannfail = 0
+brun.nannfail   = 0
 brun.maxannfail = brun.maxannfail or 5
 
 function brun.announce(s)
@@ -10772,7 +10755,7 @@ function brun.resume_scan()
   if fh == nil then return nil end
   local nb, it, ce = 0, nil, nil
   while nb < sz do
-    local l = nil
+    local l  = nil
     local ok = pcall(function() l = file.read(fh, file.READ_LINE) end)
     if not ok or l == nil then break end
     nb = nb + string.len(l)
@@ -10840,7 +10823,7 @@ function brun.holdwait(what)
     if slice < 1 then slice = 1 end
     if slice > brun.holdsecs - waited then slice = brun.holdsecs - waited end
     brun.holddelay(slice)
-    waited = waited + slice
+    waited        = waited + slice
     brun.heldsecs = brun.heldsecs + slice
     if brun.keyarmed and brun.stopkey_hit() then
       brun.stopwhy = 'TRIGGER Pressed'
@@ -10915,7 +10898,7 @@ end
 -- only the transcript is missing -- so the cadence is kept and only the retry is paced. What is lost is
 -- COUNTED, or the file would have a gap with nothing to say how wide.
 function brun.rechold()
-  local why = tostring(brec.why)
+  local why     = tostring(brec.why)
   brun.nrecfail = brun.nrecfail + 1
   brun.nreclost = brun.nreclost + 1
   if brun.nrecfail == 1 then
@@ -10972,7 +10955,7 @@ function brun.soak(iterations, tag)
     return false, 'the app is not loaded, so there is nothing to soak'
   end
   local forever = (iterations == nil or iterations == 0)
-  brun.tag = tag or 'soak'
+  brun.tag      = tag or 'soak'
   brun.ncell, brun.nwrap, brun.nbadsdg, brun.stopwhy = 0, 0, 0, nil
   brun.stopbad = false
   brun.nevtot, brun.nevstreak, brun.nevpanel = 0, 0, 0
@@ -10995,7 +10978,7 @@ function brun.soak(iterations, tag)
   if not forever then brun.iterwant = iterations end
   brun.t0 = nil
   pcall(function() brun.t0 = os.time() end)
-  brun.tlap = brun.t0
+  brun.tlap       = brun.t0
 
   brun.startfault = nil
   if not brec.begin(brun.tag, forever and 0 or iterations, brun.planpath) then
@@ -11072,7 +11055,7 @@ function brun.soak(iterations, tag)
       break
     end
     local previter = lastiter
-    lastiter = c.iter
+    lastiter       = c.iter
 
     if brun.stopevery > 0 and (brun.ncell == 0 or math.mod(brun.ncell, brun.stopevery) == 0) then
       if brun.stopped() then brun.stopwhy = 'STOP.TXT found'; break end
@@ -11113,7 +11096,7 @@ function brun.soak(iterations, tag)
       pcall(function() brun.tlap = os.time() end)
     end
     brun.lapcell = brun.lapcell + 1
-    c.pos = brun.lapcell
+    c.pos        = brun.lapcell
     if (c.cell or 0) > brun.cellmax then brun.cellmax = c.cell end
     brun.iter, brun.cell = c.iter or 0, c.cell or 0
     local vk = tostring(c.vid or '?')
@@ -11151,7 +11134,7 @@ function brun.soak(iterations, tag)
     if not sok then
       brun.nbadsdg = brun.nbadsdg + 1
       brun.nsdgtot = brun.nsdgtot + 1
-      brun.nbad = brun.nbad + 1
+      brun.nbad    = brun.nbad + 1
       brun.vbad[vk] = (brun.vbad[vk] or 0) + 1
       brun.nunexp = brun.nunexp + 1
       if not brec.row(string.format('%d,%d,%s,%d,%s,%.4f,%.4f,%.6f,%.3f',
@@ -11179,7 +11162,7 @@ function brun.soak(iterations, tag)
       if brun.timing then pcall(function() brun.tsel = timer.gettime() end) end
       brun.spin_tick()                  -- 2 of 6: stimulus selected and the plan wait is over
       local fs = brun.cell_fs(c.baud)
-      local p = brun.point(fs, c.baud, false, c.vid)
+      local p  = brun.point(fs, c.baud, false, c.vid)
       pcall(function() sdec.mute_events() end)
       if not p.ran then
         brun.nbad = brun.nbad + 1
@@ -11244,7 +11227,7 @@ function brun.soak(iterations, tag)
       local cellev = brun.eventcount()
       if (p.nev or 0) > cellev then cellev = p.nev end
       brun.nevtot = brun.nevtot + cellev
-      local nt = p.ran and 'ok' or ('FAIL ' .. tostring(p.why))
+      local nt    = p.ran and 'ok' or ('FAIL ' .. tostring(p.why))
       if cellev > 0 then nt = nt .. ' ev=' .. brun.int(cellev) end
       if p.overread ~= nil then nt = nt .. string.format(' over=%.2f', p.overread) end
       if p.paycmp ~= nil then
@@ -11293,7 +11276,7 @@ function brun.soak(iterations, tag)
       if cellev > brun.evbudget then
         brun.nevstreak = brun.nevstreak + 1
         if brun.nevstreak >= brun.evstreak and brun.evshed == nil then
-          brun.evshed = 'progress push'
+          brun.evshed   = 'progress push'
           brun.listenip = nil
           brec.note(c.iter, c.cell, brun.ncell,
                     string.format('%d cells in a row posted more than %d event(s) -- progress push '
@@ -11350,19 +11333,19 @@ end
 
 
 -- ================= bench/bench_panel.tsp =================
-brun = brun or {}
+brun             = brun or {}
 
 brun.pn_laps_max = brun.pn_laps_max or 210
 
-brun.pn_sdg = brun.pn_sdg or {'10.0.1.79', '10.0.1.78', '192.168.0.79'}
+brun.pn_sdg      = brun.pn_sdg or {'10.0.1.79', '10.0.1.78', '192.168.0.79'}
 
 brun.pn_laptypes = brun.pn_laptypes or
   {{t = 'Full',         std = nil,  adv = nil},
    {t = 'Normal',       std = true, adv = nil},
    {t = 'Adversarial',  std = nil,  adv = true}}
 
-brun.pn_baudlo = brun.pn_baudlo or 300
-brun.pn_baudhi = brun.pn_baudhi or 250000
+brun.pn_baudlo    = brun.pn_baudlo or 300
+brun.pn_baudhi    = brun.pn_baudhi or 250000
 
 brun.pn_interstit = brun.pn_interstit or 2400
 
@@ -11371,15 +11354,15 @@ brun.pn_interstit = brun.pn_interstit or 2400
 -- would drift from them silently. Read through sdec so a changed form moves this one with it.
 function brun.pn_geom()
   local g = {}
-  g.x    = sdec.ui_opt_x or 22
-  g.x2   = sdec.ui_opt_x_c2 or 420
-  g.y0   = sdec.ui_opt_y0 or 60
-  g.dy   = sdec.ui_opt_dy or 54
-  g.btny = sdec.ui_opt_btn_y or 380
+  g.x     = sdec.ui_opt_x or 22
+  g.x2    = sdec.ui_opt_x_c2 or 420
+  g.y0    = sdec.ui_opt_y0 or 60
+  g.dy    = sdec.ui_opt_dy or 54
+  g.btny  = sdec.ui_opt_btn_y or 380
   return g
 end
 
-brun.pnscr = nil
+brun.pnscr  = nil
 brun.pn_obj = nil
 
 -- Hand every object back, screen last. Switch away first, then delete: ui_destroy's rule, because a
@@ -11401,9 +11384,9 @@ end
 -- here rather than left open: brun.planopen is the run's own handle and a second reader would share
 -- the position. -> rows, variant or nil.
 function brun.pn_plan()
-  local keep = brun.planrows
+  local keep    = brun.planrows
   brun.planrows = 0
-  local ok = brun.planopen()
+  local ok      = brun.planopen()
   if not ok then
     brun.planrows = keep
     return nil
@@ -11421,8 +11404,8 @@ end
 function brun.build_panel()
   brun.destroy_panel()
   local create = display.create
-  local g = brun.pn_geom()
-  brun.pn_obj = {}
+  local g      = brun.pn_geom()
+  brun.pn_obj  = {}
   local function keep(h)
     if h ~= nil then brun.pn_obj[table.getn(brun.pn_obj) + 1] = h end
     return h
@@ -11433,7 +11416,7 @@ function brun.build_panel()
     error('display object pool exhausted building the soak screen -- power cycle the instrument.', 0)
   end
 
-  local nf = 8
+  local nf    = 8
   local nrows = math.ceil(nf / 2)
   local maxdy = math.floor((g.btny - 52 - g.y0) / nrows)
   if g.dy > maxdy then g.dy = maxdy end
@@ -11523,13 +11506,13 @@ end
 function brun.panel_run()
   local laps, ip, lt, lo, hi, inter
   local readok, readerr = pcall(function()
-    laps = display.getvalue(brun.pn_laps)
+    laps     = display.getvalue(brun.pn_laps)
     local si = display.getvalue(brun.pn_sdgf)
     if type(si) == 'number' then ip = brun.pn_sdgtxt(math.floor(si + 0.5)) end
     local li = display.getvalue(brun.pn_lapt)
     if type(li) == 'number' then lt = brun.pn_laptypes[math.floor(li + 0.5)] end
-    lo = display.getvalue(brun.pn_lo)
-    hi = display.getvalue(brun.pn_hi)
+    lo    = display.getvalue(brun.pn_lo)
+    hi    = display.getvalue(brun.pn_hi)
     inter = display.getvalue(brun.pn_inter)
   end)
   if not readok then

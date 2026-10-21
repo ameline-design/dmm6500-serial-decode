@@ -6927,7 +6927,7 @@ end
 test_bitorder()
 
 -- ===========================================================================
-print('\nthe Messages screen -- every decoded byte, on a screen of its own')
+print('\nthe Messages screen -- the notes the app itself raises, in full, never decoded text')
 -- ===========================================================================
 -- Global for the 200-local reason test_bitorder states.
 --
@@ -6975,6 +6975,19 @@ function test_msgs()
   check('...and builds its full row ladder', sdec.msg_row ~= nil
         and table.getn(sdec.msg_row) == sdec.msg_nrow and sdec.msg_nrow == 13,
         string.format('%s rows', tostring(sdec.msg_row and table.getn(sdec.msg_row))))
+  -- THE ROW PITCH CLEARS THE GLYPHS, checked here rather than only on the glass. This is what
+  -- MD.fontheight is for, and until this check existed it had no caller at all -- so the claim that
+  -- a pitch could be verified offline was unfulfilled. FONT_3 measures 20 px and the pitch is 23.
+  local fh = MD.fontheight(display.FONT_3)
+  check('the Msgs row pitch clears FONT_3, offline', fh ~= nil and sdec.msg_row_dy > fh,
+        string.format('pitch %s against a %s px glyph', tostring(sdec.msg_row_dy), tostring(fh)))
+  -- AND THE UNMEASURED FACES ANSWER nil, which is the contract: a caller that read "unknown" as
+  -- "fits" would pass a pitch check it never performed.
+  check('...and an unmeasured face answers nil rather than a confident wrong number',
+        MD.fontheight(display.FONT_SMALL) == nil
+        and MD.fontheight(display.FONT_HUGE) == 105,
+        string.format('SMALL=%s HUGE=%s', tostring(MD.fontheight(display.FONT_SMALL)),
+                      tostring(MD.fontheight(display.FONT_HUGE))))
 
   -- ---- THE HIDE RULE: a note the cell shows IN FULL is not worth a button --------------------
   withnotes({})
@@ -7085,6 +7098,42 @@ function test_msgs()
         string.format('npg=%d up=%s dn=%s', sdec.msg_npages(),
                       tostring(MD.obj(sdec.msg_up).state),
                       tostring(MD.obj(sdec.msg_dn).state)))
+
+  -- ---- A LONG NOTE IS NEVER TRUNCATED, which is the one thing this screen exists to prevent -----
+  -- The wrap was bounded at 20 rows on the reasoning that no note is longer; that silently dropped
+  -- 2600 characters of a 4000-character note, and the cliff fell at a row count rather than at a
+  -- character count, so a 1401-character note lost text where a 1400-character one did not.
+  local HUGE = ''
+  for k = 1, 160 do HUGE = HUGE .. 'alpha bravo charlie delta echo ' end
+  withnotes({HUGE})
+  sdec.msg_page = 0
+  local hl, hn = sdec.msg_lines()
+  local joined = ''
+  for k = 1, hn do
+    local t = string.gsub(hl[k], '^%s*%d*%s%s', '')
+    joined = joined .. (joined ~= '' and ' ' or '') .. t
+  end
+  check('a 4800-character note wraps into every row it needs',
+        hn > 60, string.format('%d row(s) for %d chars', hn, string.len(HUGE)))
+  check('...and not one word of it is lost', words(joined) == words(HUGE),
+        string.format('%d word(s) kept of %d', string.len(words(joined)),
+                      string.len(words(HUGE))))
+
+  -- AND THE ROW COUNT SURVIVES A TIGHT POOL. build_msgs shrinks msg_nrow to what it could build;
+  -- nothing restored it, so one failed build disabled the screen for the rest of the power cycle.
+  sdec.destroy_msgs()
+  MD.poolcap(MD.nobj() + 2)
+  local tight = sdec.build_msgs()
+  MD.poolcap(nil)
+  local shrunk = sdec.msg_nrow
+  sdec.destroy_msgs()
+  local back = sdec.build_msgs()
+  check('a build on a tight pool does not disable the screen for ever',
+        back ~= nil and sdec.msg_nrow == 13,
+        string.format('tight build gave nrow=%s, the next gave %s (want 13)',
+                      tostring(shrunk), tostring(sdec.msg_nrow)))
+  sdec.destroy_msgs()
+  sdec.build_msgs()
 
   -- ---- an unbroken token must hard-wrap rather than loop ---------------------------------------
   local WALL = ''

@@ -521,7 +521,8 @@ detected as over no sooner than one window after its last edge.
 
 Put a counter behind the four-block pre-trigger shape and it records many bursts into one buffer while
 the silence between them goes elsewhere. The figures below were measured against this program, which
-is a bounded probe rather than the one the application ships -- "The six blocks" has that:
+is a bounded probe. **The application ships no recording program at all** -- section 10 has the
+measurement that decided it:
 
     1) BUFFER_CLEAR      rec                      once, outside the loop
     2) MEASURE_DIGITIZE  scr, COUNT_INFINITE      the gap's samples, discarded
@@ -535,9 +536,9 @@ block 4 appends rather than restarting its record. `startindex` stayed 1, so a r
 is not rotated. The silence went where it was aimed: `scr.n` = 13 231, which is 1.3 s discarded
 against 0.2 s kept at 10 kS/s.
 
-**The span-derived sample rate is then wrong by the elision ratio.** `(n-1)/span` over
+**The span-derived sample rate is then wrong whenever a gap's samples were discarded.** `(n-1)/span` over
 `buf.relativetimestamps` is how `sdec.acq_measure_fs()` reads the rate back, and it is the number
-every bit time is scaled by. Elision removes the gap's samples and not the gap's time, so on the
+every bit time is scaled by. Discarding a gap removes its samples and not its time, so on the
 record above the span was 1.5737 s for 2000 readings: 1270 S/s implied against 10 000 commanded, low
 by 7.9x. Any decode driven off the whole-span average is scaled by that factor.
 
@@ -551,10 +552,9 @@ discontinuities and measure fs within a segment: only the whole-span average is 
 **The burst block can be infinite too, and the two measure blocks stop each other.** Replacing block
 4's count with `COUNT_INFINITE` and ending the burst with the silence detector gave `rec.n` = 4004 as
 four bursts of 1001 readings, splices at 1002, 2003 and 3004, gaps of 0.3983, 0.4001 and 0.4000 s, and
-0.4 s kept against 1.198 s elided, which sums to the run. Each burst is 100.1 ms because the
+0.4 s kept against 1.198 s discarded, which sums to the run. Each burst is 100.1 ms because the
 detector's window is 0.1 s and the next crossing on that stimulus is half a second away, so the half
-period less the burst closes the arithmetic. The application takes that shape and drops two things
-from it, the counter and the clear block; see "The six blocks".
+period less the burst closes the arithmetic.
 
 The failure this rules out would have been quiet rather than loud. Had block 4 not been stopped, both
 blocks would have kept writing: `rec` would have grown straight through the gaps, held more readings
@@ -584,7 +584,7 @@ late by `s`. Under 0.5 that is inside the cell. At 0.5 the stop sample lands in 
 frame fails, and the search for the next anchor walks three to eight bytes -- lowercase text offers no
 run of mark long enough to anchor on sooner.
 
-**So elision is byte-exact only where `0.5 / baud` exceeds the resume cost**, which is about 2400 Bd and
+**So a discarded gap is byte-exact only where `0.5 / baud` exceeds the resume cost**, which is about 2400 Bd and
 nothing above it. 2400 is a near miss rather than a margin: 208 µs is 0.4992 of a bit there.
 
 **A scratch that wraps costs nothing.** A real gap of 2 to 120 s at 100 kS/s laps any affordable
@@ -595,15 +595,15 @@ reaching `IDLE`. `fillmode = 1` is what buys that, and it has to be set numerica
 
 **The discard costs no events at all.** A wrapping scratch discards continuously for the whole gap,
 the panel shows 4915 as a modal dialog whatever `localnode.showevents` says, and reading the log
-empties it, so a flood would bury real events. Over recordings that elided 13.2 s of silence at
+empties it, so a flood would bury real events. Over recordings that discarded 13.2 s of silence at
 100 kS/s, about 1.3 million discarded readings, `eventlog.getcount()` read 0, with no error count, no
 fill failures and no sticky error. A wrap under `fillmode = 1` is not a discard the firmware reports.
 
 ## 10. Why the application has no recording program
 
-This section documented a six-block gap-elision program: two measure blocks alternating between a
-scratch ring and the record, a `BRANCH_ON_EVENT` detector, and a splice that put each burst's head
-back. **It is gone, and the reason is a property of this instrument rather than of the code.**
+A recording program that discarded the idle between bursts -- two measure blocks alternating between
+a scratch ring and the record -- was built, measured and removed. **The application has no recording
+program, and the reason is a property of this instrument rather than of the code.**
 
 **The handover between two measure blocks loses samples.** Measured 2026-10-20 on a hand-built
 five-block model with a sawtooth stimulus, two independent ways agreeing within 3 us -- the absolute
@@ -627,7 +627,7 @@ documented 100 kS/s storage ceiling.
 acquisition** (section 7), so with storage stopped the comparator cannot fire and a `BLOCK_WAIT` on it
 never releases. Measured as a one-block A/B: with `COUNT_STOP` the model sat at `STATE_WAITING`
 forever, `n` flat across three one-second reads, with the signal still running; with the same block
-switching to a scratch instead, it ran, released 15 times and elided 0.911 s of a 2.911 s span.
+switching to a scratch instead, it ran, released 15 times and discarded 0.911 s of a 2.911 s span.
 
 The chain is therefore closed: detection needs the comparator, the comparator needs a live
 acquisition, a live acquisition means storage running somewhere, so not storing the gap means storing

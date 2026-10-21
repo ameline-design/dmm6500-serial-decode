@@ -9,10 +9,10 @@ stops an expensive one.
 |---|---|---|---|
 | `tools/release_sweep.py --offline` | ~1 min | nothing | can this code possibly work |
 | `tools/bench_smoke.py` | 12.8 min | both instruments | is the bench and the harness sound |
-| `tools/soak.py --suites formats,plan,arm --skip-vectors v95,v96,v97` | ~2.7 h a lap | both instruments | does it hold up over hours, and does the arm still fire |
+| `tools/soak.py --suites formats,plan,arm` | ~2.7 h a lap | both instruments | does it hold up over hours, and does the arm still fire |
 
 Measured, not estimated: **6.5 s per cell**. Ask the planner for the lap size rather than reciting one —
-`python3 tools/soakplan.py --iteration 1 --skip-vectors v95,v96,v97` prints it, and it moves whenever a
+`python3 tools/soakplan.py --iteration 1` prints it, and it moves whenever a
 waveform is added. Today that is **40 waveforms at 43 rates each, 1720 cells**, so about **3.1 hours**;
 all 43 waveforms is 1849 cells and 3.3 h. An offline lap of the same cells is **about 4 seconds** at one
 capture offset per cell and **19 seconds** at eight, measured on 12 workers.
@@ -570,12 +570,12 @@ list. `soakplan` applies the skip **before** the shuffle, so dropping two wavefo
 vector's index — and that index keys the amplitude, the offset *and* the wait for every cell. Every
 hardware lap skips `v95` and `v96`, so a twin lap emitted without them drove a different waveform in
 **all 1677 cells**: `v94` at 300 Bd was 20.000 Vpp at −8.220 V on the bench and 8.595 Vpp at +2.347 V
-offline. `tools/plan_sweep.py` therefore defaults `--skip-vectors` to the soak's own `v95,v96`, the
+offline. `tools/plan_sweep.py` therefore defaults `--skip-vectors` to `soakplan.HW_SKIP`, the
 emitted plan carries its `skipped` set and `sweep_plan.lua` prints it, and the pairing is checkable
 against a finished lap:
 
 ```
-python3 tools/soakplan.py --iteration 1 --skip-vectors v95,v96,v97 \
+python3 tools/soakplan.py --iteration 1 \
         --check-log out/soak/<dir>/lap0001-FAILED.log
 ```
 
@@ -745,7 +745,7 @@ remaining disagreement on `v46` at 80000 Bd — five interior frames flagged on 
 cyclic-exact and nothing flagged here — sits in the signal chain and not in the judge.
 
 **A decline is a pass, and it is still counted.** `sweep_plan.lua` tallies these as `loudquiet` —
-5 a lap at one capture offset, 54 at eight, skipping `v95,v96` — and `plan_sweep.py` ratchets that count
+5 a lap at one capture offset, 54 at eight, skipping the HW_SKIP set — and `plan_sweep.py` ratchets that count
 at every measured configuration. Both halves matter: calling a correct refusal a failure is a harness
 inventing defects, measured at about 80 a lap when it was tried, while leaving it uncounted means a
 regression that
@@ -1020,28 +1020,37 @@ where `dmm.digitize.read` blocks longest in firmware, which is what the p90 of 4
 
 ### Do not pass `--skip-vectors` to `run_bench.py` at all
 
-Its default is already `soakplan.HW_SKIP`, which is **`v95,v96,v97`**. Naming only the first two overrides
-that and re-admits v97, and the comment above `HW_SKIP` sets out exactly what that costs. Measured on two
-runs made that way, because this document's own next-step once spelled out the two-name form:
+**Do not pass it to `tools/soak.py` either.** Both derive their default from `soakplan.HW_SKIP`, and
+`plan_sweep.py` does the same — so the authority is the tuple and never a literal in a document.
+**Never quote the set here.** It has grown twice, and a document that spells it out is a document that
+goes stale silently: ask the planner, which prints `N vectors x 36 rates = M cells`.
 
-* the lap grows by one vector's worth of cells, 43 of them. With today's suite the correct skip gives
-  40 × 43 = **1720** and the two-name form gives 41 × 43 = **1763**; this list previously named 1720 as
-  the misconfiguration signature, which it is not — 1720 is what the correct skip produces
-* the skip is applied *before* the shuffle, so all 39 survivors take another vector's amplitude, offset and
-  wait — the per-cell record stops being comparable with the archive, which is what a seeded plan is
-  for. Aggregate rates survive; anything paired or keyed on (vector, rate, amplitude) does not
-* **v97 then fails 100 % of its 43 cells, in every lap**, as one contiguous burst reported
-  `SDG:ARWV? still names …` against whichever waveform preceded it in the draw — a different one each lap.
-  That reads convincingly like a generator wedge, and it is a configuration error
+`soak.py` DEFAULTED TO `''` UNTIL 2026-10-21, and that was a defect rather than a style: it omits the
+flag when the value is empty, so a soak launched from the published command drew every vector. The
+published commands had meanwhile gone stale twice over. Measured the same day:
+
+| skip set passed | lap |
+|---|---|
+| the current `HW_SKIP` | 42 × 36 = **1512 cells** |
+| one name short | 43 × 36 = 1548 |
+| two names short | 44 × 36 = 1584 |
+| none at all, which is what the old default produced | **1657** |
+
+* the skip is applied *before* the shuffle, so every surviving cell takes another vector's amplitude,
+  offset and wait — the per-cell record stops being comparable with the archive, which is what a seeded
+  plan is for. Aggregate rates survive; anything paired or keyed on (vector, rate, amplitude) does not
+* **a re-admitted vector then fails 100 % of its 36 cells, in every lap**, as one contiguous burst
+  reporting `SDG:ARWV? still names …` against whichever waveform preceded it in the draw — a different
+  one each lap. That reads convincingly like a generator wedge, and it is a configuration error
 
 **A lap-size disagreement between the offline twin and the instrument is a bug, not a property of the two
 harnesses.** Both should say whatever the planner says, which is the only authority worth quoting.
 
 Deriving the lap is still better than assuming it: `run_bench.py` waits `60 + 12 × plan_rows` seconds, so
 the "waiting up to N min" line at startup gives the row count for *all* laps. One run cannot separate the
-header lines from the lap; two can. 1 lap gave 1725 rows and 4 gave 6885, so `h + d = 1725` and
-`h + 4d = 6885` give **d = 1720** and 5 header lines — which is the planner's figure, and an independent
-confirmation of it that sat two lines below the claim that a lap was 1677.
+header lines from the lap; two can. Measured 2026-10-21 off the plan pushes themselves: 1 lap wrote 1518
+rows and 4 wrote 6054, so `h + d = 1518` and `h + 4d = 6054` give **d = 1512** and **6 header lines** —
+the planner's own figure, independently confirmed.
 
 **The instrument's clock is hours off the host's** — ~4 h behind as measured. A record's progress rows are
 stamped with the DMM's own `os.time()`, so a difference between two record stamps is sound (that is where

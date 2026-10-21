@@ -58,6 +58,11 @@ SHOTS = [
     ('panel-errors',           'frame', 'hex',  'head',  'hex view of a mid-byte start'),
     ('panel-hex-note',         'frame', 'hex',  'head',  'the note row naming the head'),
     ('options',                'frame', None,   None,    'the options form'),
+    # THE MESSAGES SCREEN, which needs a NOTE to exist and not a particular capture shape -- the
+    # screen renders ui_notes() and never the decode. A frame capture of this stimulus fills its
+    # window, which posts the 'capture FULL ... the message may continue' note, so the state is
+    # reached the way an operator reaches it rather than by planting a string.
+    ('panel-msgs',             'frame', 'text', None,    'the messages screen, notes in full'),
     ('panel-recording',        'sml',   'text', None,    'an 8 kB recording, part way through'),
     ('panel-after-recording',  'sml',   'text', None,    'after an 8 kB recording, Mode pressed once'),
     ('panel-paged',            'med',   'hex',  None,    'a finished 32 kB recording, hex, paged in'),
@@ -77,18 +82,36 @@ DS_TSP = r'''
 -- 5.0.2 has no select(), so pcall's second return cannot be picked off inline, and these are exactly
 -- the calls that can raise on a capture that refused -- which is a state worth being able to grab.
 function ds_state(tag)
+  -- A NIL sdec IS REACHABLE AND USED TO RAISE ON THE LINE BELOW, silently. Measured 2026-10-21: the
+  -- instrument was restarted mid-run, every ds_call then raised here before printing, and the host
+  -- read that as 'head=None err=None nf=None -- not the shape wanted' and retried. It spent forty
+  -- minutes on the first shot and wrote no images. A raising TSP statement prints NOTHING, so the
+  -- only way this reports is to not raise. Same defect, same fix, as bp_state in bench_panel.py.
+  if sdec == nil then
+    print('DS ' .. tostring(tag) .. ' APPGONE=true nf=nil')
+    print('DSNOTE the app is not loaded -- sdec is nil')
+    print('DS end')
+    return
+  end
   local r = sdec.res
   local fmt, errn, npg = '?', '?', '?'
   pcall(function() fmt = sdec.fmt_text() end)
   pcall(function() errn = sdec.ui_err_n() end)
   pcall(function() npg = sdec.ui_npages() end)
+  -- HOW MANY NOTES THERE ARE, AND WHETHER THE CELL IS WITHHOLDING ANY, on every shot. The Msgs
+  -- button appears exactly when msg_hidden() is true, so these two decide whether the margin in
+  -- this figure has a tenth button in it -- which a caption counting buttons has to know.
+  local nnotes, hid = '?', '?'
+  pcall(function() local t, m = sdec.ui_notes() nnotes = m end)
+  pcall(function() hid = tostring(sdec.msg_hidden()) end)
   print(string.format('DS %s baud=%s fmt=%s nf=%s nbad=%s err=%s head=%s fit=%s sn=%s ' ..
-                      'view=%s capmode=%s page=%s npages=%s paged=%s',
+                      'view=%s capmode=%s page=%s npages=%s paged=%s notes=%s withheld=%s',
                       tostring(tag), tostring(sdec.baud), tostring(fmt),
                       tostring(r and r.nf), tostring(r and r.nbad), tostring(errn),
                       tostring(r and r.headsusp), tostring(sdec.fitq), tostring(sdec.snr_db),
                       tostring(sdec.ui_mode), tostring(sdec.capmode),
-                      tostring(sdec.ui_page), tostring(npg), tostring(sdec.ui_paged)))
+                      tostring(sdec.ui_page), tostring(npg), tostring(sdec.ui_paged),
+                      tostring(nnotes), tostring(hid)))
   -- THE NOTE LINE ITSELF, on its own line: it contains spaces, and the caption quotes it verbatim.
   -- ui_note is the display OBJECT; ui_note_text() is the string, and it is built rather than stored.
   local note = ''
@@ -314,6 +337,20 @@ def main():
     got, missed = [], []
     try:
         d.load_script('dsdefs', DS_TSP)
+        # THE APP MUST ALREADY BE LOADED, and this file never loads it -- it only installs the helper
+        # chunk above. Checked rather than assumed: run on a freshly cycled instrument, sdec is nil,
+        # every ds_call raises before it prints, and the host reads that as a capture of the wrong
+        # shape and retries. One run spent forty minutes on the first shot and wrote no images.
+        #
+        # REFUSED HERE rather than reported per shot, because no shot can succeed and the remedy is
+        # one command.
+        probe = d.q("print('APP ' .. type(sdec) .. ' ' .. tostring(sdec ~= nil and sdec.built))",
+                    timeout=60)
+        print('app: %s' % probe)
+        if 'table' not in str(probe) or 'true' not in str(probe):
+            raise SystemExit('REFUSING: the app is not loaded and built on the instrument (%s). '
+                             'This tool photographs the app and does not load it.\n'
+                             '  python3 tools/run_app.py --captures 0' % probe)
         d.drain()
         d.send('ds_unforce()')
         read_state(d, timeout=60)
@@ -353,10 +390,52 @@ def main():
                     missed.append((name, awhy or 'grab failed'))
                 continue
 
+            if name == 'panel-msgs':
+                # A CAPTURE FIRST, for the note rather than for the bytes: this screen shows
+                # ui_notes() and never the decode, so what it needs is something to report. The
+                # window fills on this stimulus, which posts its own note.
+                fields, note, _ = call(d, name, 'sdec.capture')
+                # REPORTED, NOT ASSUMED. With no note the screen is blank and the button is hidden,
+                # which is correct behaviour and a useless figure -- so it is recorded as missing
+                # rather than photographed empty. ds_state reports notes= on every call, so this
+                # reads the capture's own state rather than asking a second time.
+                nnotes = num(fields, 'notes')
+                if nnotes is None or nnotes < 1:
+                    print('%-22s NO NOTE to show -- the screen would be blank' % name)
+                    missed.append((name, 'no note existed, so there was nothing to photograph'))
+                    continue
+                fsh, _, _ = call(d, 'msgs-show', 'sdec.msgs_show')
+                sok, swhy = acted(fsh)
+                ok = sok and grab(os.path.join(a.out, name + '.png'))
+                # CLOSED WHATEVER HAPPENED, so a failed grab cannot leave this screen in front of
+                # the next shot. msgs_close switches away before it deletes.
+                call(d, 'msgs-close', 'sdec.msgs_close')
+                if ok:
+                    print('      notes=%s on the screen' % nnotes)
+                    got.append((name, 'notes=%s' % nnotes))
+                else:
+                    print('%-22s NOT WRITTEN -- %s' % (name, swhy or 'grab failed'))
+                    missed.append((name, swhy or 'grab failed'))
+                continue
+
             if mode == 'frame':
                 fields, note, _ = {}, '', None
                 for attempt in range(a.retries):
+                    # THE DEADLINE IS CHECKED INSIDE THE LOOP, not only between shots. Each attempt
+                    # can cost the full socket timeout, so twelve of them is an hour -- and a run
+                    # that had already lost its app spent exactly that on one shot while --budget-min
+                    # 22 looked satisfied, because the budget was only consulted before the shot.
+                    if time.time() > deadline:
+                        print('      out of budget after %d attempt(s)' % attempt)
+                        break
                     fields, note, _ = call(d, name, 'sdec.capture')
+                    # AN EMPTY REPLY IS NOT A WRONG SHAPE. No fields at all means the app did not
+                    # answer, and retrying cannot fix that -- it is the condition the APPGONE line
+                    # above exists to report. Said once and abandoned, rather than twelve times.
+                    if not fields or fields.get('APPGONE') == 'true':
+                        print('      THE APP IS NOT ANSWERING -- no state came back. Not retrying; '
+                              'reload it and start again.')
+                        break
                     if shape_ok(shape, fields):
                         break
                     print('      attempt %d: head=%s err=%s nf=%s -- not the shape wanted (%s)'

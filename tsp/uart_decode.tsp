@@ -8,11 +8,11 @@
 -- data bit, which raises a framing error about half the time, so decoding under every plausible
 -- format and keeping the fewest-error result recovers it: 12 decodes by default.
 
-sdec = sdec or {}
+sdec               = sdec or {}
 
-sdec.PAR_NONE = 0
-sdec.PAR_EVEN = 1
-sdec.PAR_ODD  = 2
+sdec.PAR_NONE      = 0
+sdec.PAR_EVEN      = 1
+sdec.PAR_ODD       = 2
 
 -- Search order is also the tie-break order, so the commonest bench format wins when two explain the
 -- capture equally well. A wider frame launders the evidence of damage, so the error count can fall
@@ -55,29 +55,29 @@ end
 -- UART is LSB first -- it is what RS-232 framing specifies. A Batronix demo board that can be set
 -- either way is what turned this from an assumption into a setting: reported from the field on
 -- 2026-10-20, MSB traffic decoded to nothing while a scope confirmed the line was correct.
-sdec.force_msb = nil
+sdec.force_msb     = nil
 -- Which order actually decoded, for the status row: nil until a decode settles it.
-sdec.msb_used = nil
+sdec.msb_used      = nil
 
 -- One stop bit, which is a conclusion rather than a simplification: a second is indistinguishable
 -- from a bit time of idle, which the decoder already tolerates, so nstop = 2 can never rescue a
 -- capture nstop = 1 fails on. ua_frame() still honours a forced nstop. 1.5 stop bits defeats
 -- sig_bittime rather than the frame layer and is left unfixed: docs/MEASUREMENTS.md, '1.5 stop bits'.
-sdec.try_stop  = {1}
+sdec.try_stop      = {1}
 
 -- Candidate bit-time rescalings for ua_best(), ordered by distance from 1, so the fit is trusted
 -- unless a rescaling decodes better. docs/MEASUREMENTS.md, 'Why sdec.ratios is asymmetric'.
-sdec.ratios      = {1, 0.5, 2, 0.3333333333, 3, 0.25, 4, 0.2, 5, 0.1666666667, 6, 8, 10}
-sdec.probe_nbits = {8, 7, 5}
+sdec.ratios        = {1, 0.5, 2, 0.3333333333, 3, 0.25, 4, 0.2, 5, 0.1666666667, 6, 8, 10}
+sdec.probe_nbits   = {8, 7, 5}
 
 -- How far a forced rate may disagree with the wire before the panel says so. Just inside the measured
 -- 5.26 % cliff, so it warns before corruption starts. docs/MEASUREMENTS.md, 'ratemargin = 0.04'.
-sdec.ratemargin = sdec.ratemargin or 0.04
+sdec.ratemargin    = sdec.ratemargin or 0.04
 
 -- How close to the best pulse-width consistency a candidate must come to stay in the running, and
 -- the only thing that breaks a frame-count alias. docs/MEASUREMENTS.md, 'qgate = 0.8, and why
 -- pulse-width consistency is needed at all'.
-sdec.qgate = 0.8
+sdec.qgate         = 0.8
 
 -- Fewest good frames before format alternatives are worth reporting: ua_margin has an absolute
 -- floor, so on a handful of frames almost every format lands inside it and the list says nothing.
@@ -86,7 +86,7 @@ sdec.alt_minframes = sdec.alt_minframes or 8
 -- sdec.res           -- the chosen decode result (declared, not assigned: see
 -- sdec.fmt_note      -- serial_core.tsp on why a reload must not clobber state)
 -- sdec.baud_note     -- an equally-valid reading at a different baud rate
-sdec.fitratio = sdec.fitratio or 1    -- the rescaling ua_best() settled on
+sdec.fitratio      = sdec.fitratio or 1    -- the rescaling ua_best() settled on
 
 -- Manual overrides: each replaces the corresponding auto-detected value. Declared, not assigned, so a
 -- relaunch cannot discard settings the operator entered on the options form.
@@ -102,12 +102,12 @@ sdec.fitratio = sdec.fitratio or 1    -- the rescaling ua_best() settled on
 -- Sample the logical bit level at fractional sample position x. Returns 0, 1, or nil outside the
 -- capture. Three taps are majority-voted: docs/MEASUREMENTS.md, 'Three-tap majority sampling'.
 function sdec.ua_bit(rd, n, x, invert, T)
-  local thr = sdec.thr
+  local thr   = sdec.thr
   local floor = math.floor
 
   -- Centre tap first and unconditionally: its absence is what defines a truncated frame. If outer
   -- taps could stand in, a frame running off the end would fabricate a trailing byte.
-  local ic = floor(x + 0.5)
+  local ic    = floor(x + 0.5)
   if ic < 1 or ic > n then return nil end
   local vc = rd[ic]
   if vc == nil then return nil end
@@ -147,9 +147,9 @@ sdec.ua_pc = nil
 function sdec.ua_popcount(v)
   local t = sdec.ua_pc
   if t == nil then
-    t = {}
+    t           = {}
     local floor = math.floor
-    local i = 0
+    local i     = 0
     while i < 512 do
       local ones, x = 0, i
       while x > 0 do
@@ -202,12 +202,12 @@ end
 -- sampling is ua_bit inline, expression for expression, a call costing about as much as the sampling
 -- it wraps. docs/MEASUREMENTS.md, 'Three-tap majority sampling'.
 function sdec.ua_frame(rd, n, t0, T, nbits, par, nstop, invert, msb)
-  local thr = sdec.thr
+  local thr   = sdec.thr
   local floor = math.floor
   local three, off = false, 0
   if T ~= nil and T >= 6 then
     three = true
-    off = 0.2 * T
+    off   = 0.2 * T
   end
 
   local pslot = -1
@@ -223,7 +223,7 @@ function sdec.ua_frame(rd, n, t0, T, nbits, par, nstop, invert, msb)
   if invert then hib, lob = 0, 1 end
 
   for slot = 0, last do
-    local x = t0 + (slot + 0.5) * T
+    local x  = t0 + (slot + 0.5) * T
     local ic = floor(x + 0.5)
     if ic < 1 or ic > n then return nil, 'truncated' end
     local vc = rd[ic]
@@ -236,7 +236,7 @@ function sdec.ua_frame(rd, n, t0, T, nbits, par, nstop, invert, msb)
       if vc >= thr then cb = 1 end
       local ones, votes = cb, 1
       local settled = false
-      local i = floor(x - off + 0.5)
+      local i       = floor(x - off + 0.5)
       if i >= 1 and i <= n then
         local v = rd[i]
         if v ~= nil then
@@ -419,7 +419,7 @@ function sdec.ua_run(rd, n, T, nbits, par, nstop, invert, tmin0, msb)
       else
 
       local nf = r.nf + 1
-      r.nf = nf
+      r.nf     = nf
       r.vals[nf] = val
       r.errs[nf] = err
       r.tpos[nf] = t0
@@ -513,7 +513,7 @@ function sdec.ua_textn(r)
   for i = 1, r.nf do
     if r.errs[i] == nil then
       local v = r.vals[i]
-      g = g + 1
+      g       = g + 1
       if (v >= 48 and v <= 57) or (v >= 65 and v <= 90) or (v >= 97 and v <= 122) then
         c = c + 1
       end
@@ -575,7 +575,7 @@ sdec.ua_polnftol = 0.1
 -- How far ahead on text a winner must be before text is allowed to decide. Measured separations:
 -- 0.389 on gapless lowercase lorem and 0.576 on the fox vector, against 0.061 between the two
 -- readings of a random payload, where text means nothing and must not decide.
-sdec.ua_textmin = 0.25
+sdec.ua_textmin  = 0.25
 
 -- One run at a fixed format, with the fields ua_pick_pol and the caller read filled in.
 function sdec.ua_run_fmt(rd, n, T, nbits, par, nstop, inv)
@@ -621,11 +621,11 @@ end
 -- Search every format at one polarity, also returning those within the margin, the UI's ambiguity.
 function sdec.ua_search_pol(rd, n, T, inv)
   local widths = sdec.ua_widths()
-  local pars = sdec.ua_parities()
-  local stops = sdec.ua_stops()
-  local nnb = table.getn(widths)
-  local npa = table.getn(pars)
-  local nst = table.getn(stops)
+  local pars   = sdec.ua_parities()
+  local stops  = sdec.ua_stops()
+  local nnb    = table.getn(widths)
+  local npa    = table.getn(pars)
+  local nst    = table.getn(stops)
   local best, alts = nil, {}
   local na = 0
   local b, c, d
@@ -636,10 +636,10 @@ function sdec.ua_search_pol(rd, n, T, inv)
       local par = pars[c]
       for d = 1, nst do
         local nstop = stops[d]
-        local r = sdec.ua_run(rd, n, T, nbits, par, nstop, inv)
+        local r     = sdec.ua_run(rd, n, T, nbits, par, nstop, inv)
         if r.ngood >= 1 then
           local sc = sdec.ua_score(r)
-          na = na + 1
+          na       = na + 1
           alts[na] = {sc = sc, nbits = nbits, par = par, nstop = nstop}
           -- The rival's width sets the extra margin, not the incumbent's.
           if best == nil or sc > best.score + sdec.ua_margin(best.score, nbits) then
@@ -648,7 +648,7 @@ function sdec.ua_search_pol(rd, n, T, inv)
             r.par    = par
             r.nstop  = nstop
             r.invert = inv
-            best = r
+            best     = r
           end
         end
       end
@@ -663,7 +663,7 @@ end
 -- filled in, or nil.
 function sdec.ua_autoformat(rd, n, T)
   sdec.fmt_note = nil
-  sdec.polwhy = nil
+  sdec.polwhy   = nil
 
   -- The prior polarity goes first and keeps the decision unless the other wins by the frame-shape
   -- margin; a forced polarity ends the contest rather than entering it. docs/MEASUREMENTS.md,
@@ -699,7 +699,7 @@ function sdec.ua_plausible(T, n)
   -- docs/MEASUREMENTS.md, 'The median-pulse ceiling'.
   if sdec.wmed ~= nil and sdec.wmed > 0 and T > 1.15 * sdec.wmed then return false end
   local fs = sdec.acq_fs or sdec.fs
-  local b = fs / T
+  local b  = fs / T
   -- Both ends carry plaustol: a limit a rounding error can cross is not a limit.
   return b >= sdec.minbaud * (1 - sdec.plaustol)
      and b <= sdec.maxbaud * (1 + sdec.plaustol)
@@ -841,23 +841,23 @@ end
 
 -- How many samples a probe may look at; nil = all. Only the ranking is truncated -- the final decode
 -- runs over everything. docs/MEASUREMENTS.md, 'ua_probe_n = 4000', with the sweep to re-run first.
-sdec.ua_probe_n = sdec.ua_probe_n or 4000
+sdec.ua_probe_n     = sdec.ua_probe_n or 4000
 
 -- How much better a snapped rescaling must score before it may displace the width fit, and how
 -- badly the fit must be failing to be displaceable at all. See ua_best_end.
-sdec.ua_alt_margin = sdec.ua_alt_margin or 3
+sdec.ua_alt_margin  = sdec.ua_alt_margin or 3
 sdec.ua_alt_badfrac = sdec.ua_alt_badfrac or 0.1
 
 -- Score gap inside which two bit times are called equal and the text count decides. One point: at
 -- two, the all-zero family -- where the rescaling is the truth and the fit reads four letters to its
 -- none -- loses the displacement that recovers it.
-sdec.ua_tie_margin = sdec.ua_tie_margin or 1
+sdec.ua_tie_margin  = sdec.ua_tie_margin or 1
 
 -- What makes a text count evidence rather than an artefact. A wrong bit time re-slices the stream and
 -- fabricates letters, so a bare count decides nothing: both floors must clear.
 -- docs/MEASUREMENTS.md, 'What makes a text count evidence'.
-sdec.ua_textmin  = sdec.ua_textmin  or 16      -- letters, absolute
-sdec.ua_textfrac = sdec.ua_textfrac or 0.25    -- share of good frames; chance alone reaches 0.242
+sdec.ua_textmin     = sdec.ua_textmin  or 16      -- letters, absolute
+sdec.ua_textfrac    = sdec.ua_textfrac or 0.25    -- share of good frames; chance alone reaches 0.242
 
 -- Best score any probe format reaches at one candidate bit time, or nil if none frames.
 function sdec.ua_probe(rd, n, T)
@@ -903,7 +903,7 @@ end
 --   ua_best_end    the decision logic over whatever the probes found
 -- `st` holds what the three share: one table, the 200-active-locals ceiling being real here.
 function sdec.ua_best_begin(rd, n, Tfit)
-  local fs = sdec.acq_fs or sdec.fs
+  local fs       = sdec.acq_fs or sdec.fs
   sdec.baud_note = nil
 
   local _, snap1 = sdec.sig_snap(fs / Tfit)
@@ -967,7 +967,7 @@ end
 -- the caller decides how many to run before handing the panel back.
 function sdec.ua_best_probe(st)
   if st == nil or st.i >= st.nc then return false end
-  st.i = st.i + 1
+  st.i    = st.i + 1
   local i = st.i
   local T, ratio, q = st.cands[i].T, st.cands[i].r, st.cands[i].q
   if st.mayrescale and ratio ~= 1 and q ~= nil and q >= st.qmin
@@ -1016,7 +1016,7 @@ function sdec.ua_best_end(st)
 
   if snap1 and sc1 ~= nil and sc1 > 0 then
     if altsc ~= nil and altsc > sc1 then
-      local ab = sdec.sig_snap(fs / altT)
+      local ab      = sdec.sig_snap(fs / altT)
       -- Displace only a fit that is failing, and then only by a wide margin: a clean fit is never
       -- displaced. docs/MEASUREMENTS.md, 'Only displace a fit that is failing'.
       local failing = bad1 ~= nil and good1 ~= nil and good1 > 0 and
@@ -1113,7 +1113,7 @@ function sdec.ua_refine_width(r, rd, n, T)
       end
     end
     if not allone or ndist < 3 then break end
-    want = want - 1
+    want    = want - 1
     dropped = dropped + 1
   end
 
@@ -1163,8 +1163,8 @@ end
 -- Frames at each end excluded from the vote regardless of what headsusp says: three at the head,
 -- because a gapless stream resynchronises a few frames in, and one at the tail, which the buffer end
 -- slices. docs/MEASUREMENTS.md, 'Why the parity vote skips the capture boundaries'.
-sdec.par_skiphead = sdec.par_skiphead or 3
-sdec.par_skiptail = sdec.par_skiptail or 1
+sdec.par_skiphead     = sdec.par_skiphead or 3
+sdec.par_skiptail     = sdec.par_skiptail or 1
 -- Two tiers, unanimity getting in on a small sample and any dissent earning a larger one:
 -- docs/MEASUREMENTS.md, "The parity vote's two tiers".
 sdec.par_minfrac      = sdec.par_minfrac      or 0.95
@@ -1172,7 +1172,7 @@ sdec.par_minvote_all  = sdec.par_minvote_all  or 6
 sdec.par_minvote_frac = sdec.par_minvote_frac or 20
 -- Votes required in each bit-7 state, which stops a restricted alphabet faking parity.
 -- docs/MEASUREMENTS.md, 'par_minboth: both bit-7 states, or it is not evidence of parity'.
-sdec.par_minboth = sdec.par_minboth or 2
+sdec.par_minboth      = sdec.par_minboth or 2
 
 function sdec.ua_refine_parity(r, rd, n, T)
   if r == nil then return r end
@@ -1206,8 +1206,8 @@ function sdec.ua_refine_parity(r, rd, n, T)
   local i
   for i = i0, i1 do
     if r.errs[i] == nil then
-      nvote = nvote + 1
-      local v = r.vals[i]
+      nvote     = nvote + 1
+      local v   = r.vals[i]
       local top = 0
       if v >= 128 then top = 1 end
       if top == 1 then ntop1 = ntop1 + 1 else ntop0 = ntop0 + 1 end
@@ -1238,7 +1238,7 @@ function sdec.ua_refine_parity(r, rd, n, T)
   -- A dissent forces a real re-decode: rewriting every value to mod(v,128) is sound only when every
   -- voting frame agreed. docs/MEASUREMENTS.md, 'A dissenting voter forces a re-decode'.
   local strict = (nagree == nvote)
-  local note = string.format(
+  local note   = string.format(
       '8N1 also fits; chose 7%s1 (bit 7 tracked %s parity in %d of %d frames)',
       tostring(string.upper(string.sub(pname, 1, 1))), tostring(pname), nagree or 0, nvote or 0)
 
@@ -1266,8 +1266,8 @@ function sdec.ua_refine_parity(r, rd, n, T)
     local v = r.vals[i]
     if v ~= nil then r.vals[i] = mod(v, 128) end
   end
-  r.nbits = 7
-  r.par   = par
+  r.nbits       = 7
+  r.par         = par
   sdec.fmt_note = note
   return r
 end
@@ -1299,9 +1299,9 @@ end
 -- question becomes undecidable -- which is the SAME shape as bit order on binary traffic, and gets the
 -- same answer: say nothing rather than guess. Pairs that sit near neither are ignored as gaps rather
 -- than voted with, and a verdict needs both a quorum of clean pairs and a majority among them.
-sdec.ua_stop_tol   = sdec.ua_stop_tol   or 0.25   -- bits either side of 0 or 1 to count a pair
-sdec.ua_stop_min   = sdec.ua_stop_min   or 20     -- clean adjacent pairs before any verdict
-sdec.ua_stop_frac  = sdec.ua_stop_frac  or 0.8    -- share of them that must agree
+sdec.ua_stop_tol  = sdec.ua_stop_tol   or 0.25   -- bits either side of 0 or 1 to count a pair
+sdec.ua_stop_min  = sdec.ua_stop_min   or 20     -- clean adjacent pairs before any verdict
+sdec.ua_stop_frac = sdec.ua_stop_frac  or 0.8    -- share of them that must agree
 
 -- -> 1, 2, or nil when the capture cannot say. Reads the result only; decodes nothing.
 function sdec.ua_stopseen(r, T)
@@ -1389,7 +1389,7 @@ function sdec.ua_refine_bitorder(r, rd, n, T)
   if rd == nil or n == nil or T == nil then return r end
   if r.nbits == nil or r.nbits < 2 then return r end
   local clsb = sdec.ua_textn(r)
-  local r2 = sdec.ua_run(rd, n, T, r.nbits, r.par, r.nstop, r.invert, nil, true)
+  local r2   = sdec.ua_run(rd, n, T, r.nbits, r.par, r.nstop, r.invert, nil, true)
   if r2 == nil then return r end
   local cmsb, dmsb = sdec.ua_textdistinct(r2)
   if cmsb < sdec.msb_textmin then return r end
@@ -1406,8 +1406,8 @@ function sdec.ua_refine_bitorder(r, rd, n, T)
   end
   -- Stamp the format on, since ua_run returns values and errors and not which format made them.
   r2.nbits, r2.par, r2.nstop, r2.invert = r.nbits, r.par, r.nstop, r.invert
-  r2.msb = true
-  sdec.msb_used = true
+  r2.msb             = true
+  sdec.msb_used      = true
   sdec.bitorder_note = string.format(
       'MSB first (%d text bytes against %d decoding LSB first)', cmsb or 0, clsb or 0)
   return r2
@@ -1512,7 +1512,7 @@ function sdec.decode_from(rd, n)
       -- Only compare like with like: sig_bittime fits the greatest common period, so a fit that
       -- landed on a sub-multiple is a known artefact and would fire the warning on healthy captures.
       local ratio = Tm / T
-      local near = nil
+      local near  = nil
       local k
       for k = 1, 6 do
         if math.abs(ratio * k - 1) < 0.12 then near = k end
@@ -1532,7 +1532,7 @@ function sdec.decode_from(rd, n)
       end
       local err = ratio - 1
       if math.abs(err) > (sdec.ratemargin or 0.04) then
-        local meas = fs / Tm
+        local meas     = fs / Tm
         sdec.rate_note = string.format(
           -- Verdict first, same as the note above; the percentage loses its decimal to buy the room.
           'WARNING: bytes may be WRONG -- wire is %.0f baud, not the %g you set (%+.0f %%)',
@@ -1553,7 +1553,7 @@ function sdec.decode_from(rd, n)
     -- Re-measure the fit quality at the chosen bit time: sig_bittime left sdec.fitq
     -- describing its own proposal, so the FIT column reported a rejected candidate's quality.
     local _, q = sdec.sig_fit(sdec.w, sdec.nw, T)
-    sdec.fitq = q or 0
+    sdec.fitq     = q or 0
     sdec.bittime  = T
     sdec.fitratio = ratio
     sdec.baud_raw = fs / T
@@ -1564,10 +1564,10 @@ function sdec.decode_from(rd, n)
   -- ---- format ----
   local r
   if sdec.force_nbits ~= nil then
-    local par = sdec.force_par or sdec.PAR_NONE
+    local par   = sdec.force_par or sdec.PAR_NONE
     local nstop = sdec.force_nstop or 1
     if sdec.force_invert ~= nil then
-      r = sdec.ua_run_fmt(rd, n, T, sdec.force_nbits, par, nstop, sdec.force_invert)
+      r           = sdec.ua_run_fmt(rd, n, T, sdec.force_nbits, par, nstop, sdec.force_invert)
       sdec.polwhy = nil
     else
       -- A locked format must still contest the polarity. Taking the level inference unopposed is the
@@ -1616,7 +1616,7 @@ sdec.relock_minframes = 8        -- fewer frames than this and a bad fraction is
 -- rate, rounds it to a credible boundary, locks it and says so on the note row. 'ask' refuses and
 -- leaves the choice with the operator: rate_accept() takes the detected rate, rate_decline() keeps
 -- theirs. Neither blocks on a human. docs/MEASUREMENTS.md, 'force_conflict defaults to adopt'.
-sdec.force_conflict = sdec.force_conflict or 'adopt'
+sdec.force_conflict   = sdec.force_conflict or 'adopt'
 
 -- Fraction of interior frames that failed, or nil when there are too few to judge. Interior, because
 -- head resync and a clipped tail fail on healthy captures too.
@@ -1655,7 +1655,7 @@ function sdec.decode()
   local was, bf0 = sdec.force_baud, bf
   sdec.force_baud = nil
   -- Or the warning about the abandoned rate outlives it: the no-lock branch does not clear this.
-  sdec.rate_note = nil
+  sdec.rate_note  = nil
   local ok2, why2 = sdec.decode_from(sdec.smp, sdec.nread)
   local bf2 = sdec.ua_badfrac(sdec.res)
   if ok2 and bf2 ~= nil and bf2 < sdec.relock_badfrac and sdec.baud ~= nil then
@@ -1665,7 +1665,7 @@ function sdec.decode()
       -- measurement rather than the relabelled snap. docs/MEASUREMENTS.md, 'Adopting a rate from the
       -- measurement when the snap was not firm'.
       if sdec.snapfirm == false and sdec.baud_raw ~= nil then found = sdec.baud_raw end
-      local adopt = sdec.baud_round(found)
+      local adopt     = sdec.baud_round(found)
       sdec.force_baud = adopt
       -- snapfirm goes true with snapped: this rate was chosen deliberately and rounded to be typed.
       sdec.baud, sdec.snapped, sdec.snapfirm = adopt, true, true
@@ -1679,7 +1679,7 @@ function sdec.decode()
     sdec.force_baud = was
     -- No bytes on screen. res holds the decode that proved the rate wrong -- correct bytes, at a rate
     -- being declined -- and showing them would be adopting by another route.
-    sdec.res = nil
+    sdec.res        = nil
     sdec.rate_offer, sdec.rate_offer_from = found, was
     sdec.rate_refused = string.format(
         '%g baud fits nothing -- this capture reads %.0f. Options > Baud 0 restores detection.',
@@ -1692,7 +1692,7 @@ function sdec.decode()
   sdec.relocked = string.format('%g baud fits nothing, and no other rate fit either -- ' ..
                                 'back to auto-detect', was or 0)
   sdec.rate_backoff = true
-  sdec.force_baud = nil
+  sdec.force_baud   = nil
   if sdec.autolock_set ~= nil then
     if sdec.autolock_set.nbits  then sdec.force_nbits  = nil end
     if sdec.autolock_set.par    then sdec.force_par    = nil end
@@ -1832,9 +1832,9 @@ sdec.ua_hexgap   = 2         -- EXTRA spaces at a group boundary, on top of the 
 -- Join formatted cells, widening the separator at each group boundary. `sep` is '' for the
 -- file form, whose cells carry their own leading space, and ' ' for the screen form.
 function sdec.ua_hexjoin(cells, m, sep)
-  local grp = sdec.ua_hexgroup or 0
+  local grp   = sdec.ua_hexgroup or 0
   local extra = sdec.ua_hexgap or 0
-  local wide = sep .. string.rep(' ', extra)
+  local wide  = sep .. string.rep(' ', extra)
   local out, k, i = {}, 0, 0
   for i = 1, m do
     if i > 1 then
@@ -1851,9 +1851,9 @@ end
 -- Width in characters of one hex group of `ncol` bytes: two chars each plus one separator between, so
 -- the layout derives its columns. The gap between groups is layout (sdec.ui_col_gap2), not spaces.
 function sdec.ua_hexwidth(ncol)
-  local grp = sdec.ua_hexgroup or 0
+  local grp   = sdec.ua_hexgroup or 0
   local extra = sdec.ua_hexgap or 0
-  local w = ncol * 3 - 1                     -- 2 chars per byte + 1 separator between
+  local w     = ncol * 3 - 1                     -- 2 chars per byte + 1 separator between
   if grp > 0 and extra > 0 and ncol > 1 then
     w = w + extra * math.floor((ncol - 1) / grp)
   end
@@ -1873,7 +1873,7 @@ function sdec.ua_hexrow(vals, errs, nf, i0, ncol, base)
       hx[m] = '   '
       as[m] = ' '
     else
-      local v = vals[i]
+      local v   = vals[i]
       -- Type and range. `v ~= v` is the nan test; floor(inf) == inf, so inf is caught by the bound
       -- rather than by it. docs/MEASUREMENTS.md, 'ua_hexrow is total for any vals content'.
       local bad = type(v) ~= 'number'

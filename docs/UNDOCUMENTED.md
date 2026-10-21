@@ -60,7 +60,9 @@ small one — so a screen that changes face has no way to compute its own wrap.
 fits appreciably more.** The ruler was `123456789|` repeated, and digits are among the widest glyphs
 these faces have. Measured against a real note on the glass at `FONT_3`: 57 characters of ordinary
 text reached x=590, which is **10.2 px/char against the 11.97 the digits gave — 17% narrower**, so a
-prose row holds 74 where the digit figure says 66. `sdec.msg_cols` is 74 for exactly that reason.
+prose row holds 74 where the digit figure says 66. `sdec.msg_cols` is 74 rather than the 77 that arithmetic allows: every other row in this table is
+chars x px/char = 792, and 74 x 10.2 = 755, the 37 px short being a deliberate margin against a
+figure read off a grab.
 Size a column of numbers off this table; add roughly a sixth for a column of sentences, and keep the
 digit figure if the field can hold either.
 
@@ -72,7 +74,7 @@ A full-width row is **792 px**: a text object at `x = 8` on an 800 px panel. Cha
 | `FONT_SMALL` | ~88 | 9.0 | not measured |
 | `FONT_2` | ~78 | 10.1 | 17 |
 | `FONT_9` | ~64 | 12.4 | 21, *italic* |
-| **`FONT_3`** | **66 digits / 74 prose, 74 in use** | 12.0 digits, 10.2 prose | 20 |
+| **`FONT_3`** | **66 digits / 77 prose; 74 in use** | 12.0 digits, 10.2 prose | 20 |
 | `FONT_4` | ~61 | 13.0 | 21 |
 | `FONT_MEDIUM` | ~61 | 13.0 | not measured |
 | `FONT_5` | ~49 | 16.0 | 26 |

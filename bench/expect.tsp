@@ -37,16 +37,16 @@ function bexp.lorem_text(nwant, cols)
   local col, i, total = 0, 0, 0
   local ln = string.len(bexp.LOREM)
   while total < nwant do
-    i = i + 1
+    i        = i + 1
     local at = math.mod(i - 1, ln) + 1
     local ch = string.sub(bexp.LOREM, at, at)
-    no = no + 1; out[no] = ch; total = total + 1
-    col = col + 1
+    no       = no + 1; out[no] = ch; total = total + 1
+    col      = col + 1
     if col >= cols and ch == ' ' and total + 2 <= nwant then
-      no = no + 1; out[no] = '\013'
-      no = no + 1; out[no] = '\010'
+      no    = no + 1; out[no] = '\013'
+      no    = no + 1; out[no] = '\010'
       total = total + 2
-      col = 0
+      col   = 0
     end
   end
   return table.concat(out)

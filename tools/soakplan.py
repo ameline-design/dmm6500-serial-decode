@@ -39,7 +39,7 @@ So a gap containing an edge yields that edge one time in three. Above 125 kBd fs
     python3 tools/soakplan.py --iteration 129 --rates      # just the rate list
     python3 tools/soakplan.py --iteration 1 --vectors 4    # a seeded subset, for a smoke lap
     python3 tools/soakplan.py --selftest                   # properties, no instrument
-    python3 tools/soakplan.py --iteration 1 --skip-vectors v95,v96,v97 \
+    python3 tools/soakplan.py --iteration 1 \
             --check-log out/soak/<dir>/lap0001-FAILED.log  # does the twin replay that lap?
 """
 import argparse
@@ -68,7 +68,7 @@ P_RSUB = 7
 
 # THE VECTORS THE HARDWARE LAP DOES NOT PLAY, and therefore the ones the offline twin must not play
 # either. README.md documents the lap as
-#   python3 tools/soak.py --hours 17 --suites formats,plan --skip-vectors v95,v96,v97
+#   python3 tools/soak.py --hours 17 --suites formats,plan
 # because v96 wedges the generator at vector 33 every time.
 #
 # NAMED HERE BECAUSE THE SKIP IS PART OF THE PLAN, not a detail of one night's operation. plan_order
@@ -90,7 +90,7 @@ P_RSUB = 7
 # DO NOT QUOTE A CELL COUNT HERE. This comment used to say the lap was 39 x 43 = 1677 and that 1720 was
 # the signature of getting the skip wrong. Both were stale: the suite has gained a waveform, the correct
 # skip gives 40 x 43 = 1720 today, and the two-name form gives 41 x 43 = 1763. Ask the planner --
-# `python3 tools/soakplan.py --iteration 1 --skip-vectors v95,v96,v97` prints it.
+# `python3 tools/soakplan.py --iteration 1` prints it; its default IS HW_SKIP.
 #
 # The claim that the kept list is unchanged was verified by diffing a plan before and after, AT THE TIME.
 # It does not survive a change to the vector set, and the ratchet baselines in tools/plan_sweep.py rest on
@@ -1483,10 +1483,16 @@ def main():
     # the same string for the two plans to be the same plan. Applied BEFORE the order is shuffled,
     # exactly where bench_matrix applies it, because every wait, amplitude and offset is keyed on a
     # vector's position in that order.
-    ap.add_argument('--skip-vectors', default='',
-                    help='comma-separated vector ids to leave out, as the bench lap left them out '
-                         '(the lap runs %s); this MOVES every remaining cell\'s amplitude, offset '
-                         'and wait' % ','.join(HW_SKIP))
+    # DEFAULTS TO HW_SKIP, which this module defines, so every caller and every document agrees by
+    # construction rather than by repeating a literal. It defaulted to '' until 2026-10-21 and that
+    # made `soakplan --iteration 1` print the UNSKIPPED lap -- 46 x 36 = 1656 against the bench's
+    # 42 x 36 = 1512 -- so a reader told to "ask the planner" for the lap size got the wrong number.
+    # Pass "" explicitly to plan every vector; that is not the lap the bench runs.
+    ap.add_argument('--skip-vectors', default=','.join(HW_SKIP),
+                    help='comma-separated vector ids to leave out, as the bench lap left them out. '
+                         'Defaults to the bench\'s own set (%s). This MOVES every remaining cell\'s '
+                         'amplitude, offset and wait, because it is applied before the shuffle'
+                         % ','.join(HW_SKIP))
     ap.add_argument('--check-log', default=None,
                     help='a finished soak log: assert this plan is the one it played')
     ap.add_argument('--selftest', action='store_true')

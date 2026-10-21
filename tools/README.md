@@ -46,7 +46,7 @@ Three gates, each about ten times the cost of the one before. Run them in order.
 ```sh
 python3 tools/release_sweep.py --offline   #  ~1 min, no instruments at all
 python3 tools/bench_smoke.py              #  13 min, both instruments
-python3 tools/soak.py --hours 17 --suites formats,plan --skip-vectors v95,v96
+python3 tools/soak.py --hours 17 --suites formats,plan
 python3 tools/release_sweep.py            #  the whole thing, instruments included
 ```
 

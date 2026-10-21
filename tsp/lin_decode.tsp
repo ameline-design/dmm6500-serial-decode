@@ -14,9 +14,9 @@
 --
 -- Lua 5.0.2: no '#', no bitwise operators, math.mod for modulo.
 
-sdec = sdec or {}
+sdec             = sdec or {}
 
-sdec.LI_SYNC = 0x55
+sdec.LI_SYNC     = 0x55
 
 -- Bit times from the break's start edge to the next byte's: a break plus delimiter spans at least 12
 -- and a butted byte 10, so 11 separates them. Corroboration only -- li_break() also requires 0x00 and
@@ -25,7 +25,7 @@ sdec.li_minbreak = 11
 
 -- The four reserved frame IDs. 0x3C and 0x3D carry diagnostics and require the classic checksum
 -- whatever the rest of the bus uses, so the style cannot be assumed.
-sdec.li_name = {}
+sdec.li_name     = {}
 sdec.li_name[0x3C] = 'MasterReq'
 sdec.li_name[0x3D] = 'SlaveResp'
 sdec.li_name[0x3E] = 'user-def'
@@ -47,8 +47,8 @@ end
 --   P1 = not (ID1 xor ID3 xor ID4 xor ID5)  (odd parity)
 -- Checked against the known headers: ID 0x3C -> 0x3C, 0x3D -> 0x7D, 0x00 -> 0x80, 0x01 -> 0xC1.
 function sdec.li_pid(id)
-  local b = sdec.li_bit
-  local i = math.mod(id, 64)
+  local b  = sdec.li_bit
+  local i  = math.mod(id, 64)
   local p0 = math.mod(b(i, 0) + b(i, 1) + b(i, 2) + b(i, 4), 2)
   local p1 = 1 - math.mod(b(i, 1) + b(i, 3) + b(i, 4) + b(i, 5), 2)
   return i + 64 * p0 + 128 * p1
@@ -124,12 +124,12 @@ function sdec.li_parse()
   sdec.lin = {n = 0, msg = {}, kind = {}, bad = 0, nframes = 0, nbreak = 0,
               nenh = 0, ncls = 0, ndiag = 0, nids = 0}
   if r == nil or r.nf == 0 then return false, 'no bytes to parse' end
-  local L = sdec.lin
+  local L      = sdec.lin
   local seenid = {}
 
   local function emit(kind, text)
     local k = L.n + 1
-    L.n = k
+    L.n     = k
     L.kind[k] = kind
     L.msg[k] = text
     if kind == 'err' then L.bad = L.bad + 1 end
@@ -153,7 +153,7 @@ function sdec.li_parse()
     elseif st == 'pid' then
       emit('err', '-- break and sync but no PID byte')
     elseif st == 'resp' then
-      local nm = sdec.li_name[id]
+      local nm   = sdec.li_name[id]
       local head = string.format('ID %02X', id or 0)
       if nm ~= nil then head = head .. ' ' .. nm end
       local pidbad = not (sdec.li_pid_ok(pid))
@@ -185,10 +185,10 @@ function sdec.li_parse()
         L.nframes = L.nframes + 1
       else
         local ndata = nd - 1
-        local cs = r.vals[d0 + nd - 1]
-        local we = sdec.li_csum(r.vals, d0, ndata, pid)
-        local wc = sdec.li_csum(r.vals, d0, ndata, nil)
-        local diag = (id == 0x3C or id == 0x3D)
+        local cs    = r.vals[d0 + nd - 1]
+        local we    = sdec.li_csum(r.vals, d0, ndata, pid)
+        local wc    = sdec.li_csum(r.vals, d0, ndata, nil)
+        local diag  = (id == 0x3C or id == 0x3D)
 
         -- Diagnostic IDs are classic by spec, so they are tried that way round. Both sides of every
         -- comparison must exist: `nil == nil` is true, so a missing byte would validate an absence.
@@ -248,7 +248,7 @@ function sdec.li_parse()
         local lentxt = string.format('%d data', ndata or 0)
         if ndata < 1 then
           lentxt = '0 data (a LIN frame carries 1 to 8)'
-          k = 'err'
+          k      = 'err'
         elseif ndata > 8 then
           lentxt = string.format('%d data (over the 8-byte maximum -- a missed break?)',
                                  ndata or 0)

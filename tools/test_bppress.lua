@@ -108,7 +108,11 @@ local function run_case(name)
 end
 
 local CASES = {'app-gone', 'state-raises', 'notes-raises'}
-local NCASES = 3
+-- COUNTED, NOT WRITTEN DOWN. A hand-maintained length silently skips a case the day someone adds
+-- one. `#` is a parse error in 5.0.2 and table.getn was removed after 5.1, so neither is usable in a
+-- file that must run under both -- hence the walk.
+local NCASES = 0
+while CASES[NCASES + 1] ~= nil do NCASES = NCASES + 1 end
 
 -- ---- arm 1: the real preamble -------------------------------------------------------------------
 realprint('bp_press, as shipped in ' .. SRC .. ':')
@@ -146,8 +150,12 @@ for i = 1, NCASES do
   if c == 'notes-raises' then
     -- Here the PRESS line DOES get out and only the tail is lost, which is the subtler half of the
     -- fault: the host's loop keeps reading, hits its timeout, and used to overwrite a good result.
+    -- BOTH HALVES ASSERTED. Checking only that 'P end' is missing would also pass against a fixture
+    -- that printed nothing at all, which is a different fault and would make this control vacuous.
     check('control/' .. c .. ': the tail is lost', not pend,
           "'P end' came out anyway -- the fixture no longer reproduces this")
+    check('control/' .. c .. ': ...but the PRESS line did get out, which is what makes it subtle',
+          press, 'nothing was printed, so this is the silent fault and not the truncated one')
   else
     check('control/' .. c .. ': the unguarded shape raises', not ok,
           'it survived -- the guard being tested is not what makes the difference')

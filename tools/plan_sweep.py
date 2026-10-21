@@ -17,7 +17,7 @@ across the cores.
     python3 tools/plan_sweep.py --skip-vectors ""         # all 41 vectors: NOT the lap the bench runs
 
 THE SKIPPED SET IS PART OF THE PLAN, not a filter on it, and it defaults to the bench's own
-v95,v96,v97 for that reason -- see DEFAULT_SKIP. soakplan applies it BEFORE the shuffle, so dropping
+those vectors for that reason -- see DEFAULT_SKIP, which derives from the tuple. soakplan applies it BEFORE the shuffle, so dropping
 three names moves every remaining vector's index and that index keys the amplitude, the offset and the
 wait of every cell. 42 vectors less those three is the 39 x 43 = 1677 cells this file's baselines assume.
 
@@ -50,14 +50,14 @@ PLANDIR = os.path.join(ROOT, 'out', 'plans', 'auto')
 
 # THE SKIP LIST IS PART OF THE PLAN, and the default is the bench's own so the twin replays the lap
 # that is actually run. README.md documents it:
-#   python3 tools/soak.py --hours 17 --suites formats,plan --skip-vectors v95,v96,v97
+#   python3 tools/soak.py --hours 17 --suites formats,plan
 #
 # WHY THE DEFAULT IS NOT EMPTY. soakplan.plan_order shuffles the list it is handed and every per-cell
 # wait, amplitude and offset is keyed on a vector's POSITION in that shuffle -- so a twin that emits the
 # 41-vector plan for a 39-vector lap does not test two extra vectors, it plays a DIFFERENT vector's
 # amplitude, offset and capture phase in every single cell. Measured against the bench's own per-cell
 # record for iteration 1, all 1677 cells disagreed:
-#   python3 tools/soakplan.py --iteration 1 --skip-vectors v95,v96,v97 --check-log <a lap log>
+#   python3 tools/soakplan.py --iteration 1 --check-log <a lap log>
 # An empty default is therefore the wrong experiment by default, which is the one thing an offline twin
 # must not be. Both are ratcheted, so `--skip-vectors ""` is still a gated configuration.
 DEFAULT_SKIP = ','.join(SP.HW_SKIP)
@@ -89,7 +89,7 @@ LINE = re.compile(r'^PLAN (\d+)/(\d+) iteration (\d+): (.*)$')
 # THE SKIP IS IN THE KEY because it is not a filter on the results, it is a different draw: dropping
 # names reshuffles the order every wait, amplitude and offset is keyed on, so a baseline measured over 42
 # vectors describes no run over 39. An unmeasured combination is SKIPPED rather than gated wrongly.
-# MEASURED THE HARD WAY: naming only v95,v96 on the instrument left v97 in, made the lap 40 x 43 = 1720,
+# MEASURED THE HARD WAY: naming a short set on the instrument left a vector in, changed the lap size,
 # and v97 then failed 100 % of its 43 cells in every lap while reporting SDG:ARWV? against whichever
 # waveform preceded it -- which reads exactly like a generator wedge and is not one.
 #

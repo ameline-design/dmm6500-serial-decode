@@ -81,10 +81,18 @@ display = {
 -- invented: the text is the record. MD.nrefused() is the assertion a suite should make, and
 -- MD.refusals() is what tells you which call it was.
 -- GLYPH HEIGHTS, measured off a grab and recorded in docs/UNDOCUMENTED.md, so a row pitch can be
--- checked offline instead of only on the panel. small and medium are taken from the dump area's own
--- 18 px pitch, which has shipped for 70 sessions, so those two are a floor rather than a measurement.
+-- checked offline instead of only on the panel.
+--
+-- KEYED ON THE CONSTANT, NOT ON ITS VALUE, and the first version of this table got that wrong: the
+-- named faces carry the ids 1..4, so writing FONTH[3] and FONTH[4] filed FONT_3's and FONT_4's
+-- heights under FONT_LARGE and FONT_HUGE. fontheight(display.FONT_HUGE) answered 21 for a face the
+-- measurement puts at 105 -- a wrong number with a confident type, which is worse than a nil.
+--
+-- The three unmeasured named faces return NIL on purpose, which is what the contract below says.
+-- Width says FONT_SMALL matches FONT_1 and FONT_LARGE matches FONT_5, but equal width is not equal
+-- height and the aliasing is explicitly NOT established in UNDOCUMENTED.md, so nothing is inferred.
 local FONTH = {}
-FONTH[1] = 15        FONTH[2] = 18        FONTH[3] = 20        FONTH[4] = 21
+FONTH[display.FONT_HUGE] = 105       -- measured; the doc records FONT_8 at the same height
 FONTH['f1'] = 15     FONTH['f2'] = 17     FONTH['f3'] = 20     FONTH['f4'] = 21
 FONTH['f5'] = 26     FONTH['f6'] = 29     FONTH['f7'] = 32     FONTH['f8'] = 105
 FONTH['f9'] = 21     FONTH['f10'] = 121

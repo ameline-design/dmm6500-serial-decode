@@ -4,25 +4,25 @@
 -- fftsa share it. No key is normal, so every call degrades to a no-op, and no file call raises --
 -- docs/MEASUREMENTS.md, 'No file call raises'.
 
-ulog = ulog or {}
+ulog        = ulog or {}
 
 -- Declared, not assigned: re-running this file must not erase the only reference to an open file,
 -- and firmware descriptors are not reclaimed until a power cycle, so every default below uses `or`.
 -- ulog.fh      -- file number from file.open, or nil
 -- ulog.lasterr
-ulog.usbdir    = ulog.usbdir or '/usb1/SERDEC'
-ulog.path      = ulog.path or (ulog.usbdir .. '/dmm6500_log.txt')
+ulog.usbdir = ulog.usbdir or '/usb1/SERDEC'
+ulog.path   = ulog.path or (ulog.usbdir .. '/dmm6500_log.txt')
 -- Migrated, not just defaulted: the `or` above would inherit a root path from an older build. Only
 -- the exact old default moves, so an override survives.
 if ulog.path == '/usb1/dmm6500_log.txt' then ulog.path = ulog.usbdir .. '/dmm6500_log.txt' end
-ulog.on        = ulog.on or false      -- true once a file is genuinely open
-ulog.nlines    = ulog.nlines or 0
-ulog.dropped   = ulog.dropped or 0     -- lines refused after the cap
-ulog.maxlines  = ulog.maxlines or 20000  -- cap, so a runaway loop cannot fill the key
+ulog.on       = ulog.on or false      -- true once a file is genuinely open
+ulog.nlines   = ulog.nlines or 0
+ulog.dropped  = ulog.dropped or 0     -- lines refused after the cap
+ulog.maxlines = ulog.maxlines or 20000  -- cap, so a runaway loop cannot fill the key
 -- nlines numbers the rows of one file and restarts at every open(); nwritten bounds the power cycle.
 -- A key pulled and replaced restarts the allowance, and at 2 Hz a flapping contact does that unasked.
-ulog.nwritten  = ulog.nwritten or 0
-ulog.tag       = ulog.tag or '?'       -- short app name, prefixed to every line
+ulog.nwritten = ulog.nwritten or 0
+ulog.tag      = ulog.tag or '?'       -- short app name, prefixed to every line
 -- Booleans need an explicit nil test: `or true` would resurrect a false.
 if ulog.enabled == nil then ulog.enabled = true end
 if ulog.autoflush == nil then ulog.autoflush = true end
@@ -32,8 +32,8 @@ if ulog.autoflush == nil then ulog.autoflush = true end
 if ulog.keybad == nil then ulog.keybad = false end
 if ulog.keyout == nil then ulog.keyout = false end
 -- ulog.keywhy  -- why writing stopped, or nil
-ulog.keygen    = ulog.keygen or 0
-ulog.keyopen   = ulog.keyopen or 0
+ulog.keygen  = ulog.keygen or 0
+ulog.keyopen = ulog.keyopen or 0
 
 
 -- Is a key in the slot? The only question answerable without naming a path.
@@ -46,13 +46,13 @@ end
 -- presence is the only file failure the app can observe -- docs/MEASUREMENTS.md, 'A key pulled from
 -- under a running app'.
 function ulog.keylost(why)
-  ulog.keybad = true
-  ulog.keywhy = tostring(why or 'the USB key stopped accepting writes')
+  ulog.keybad  = true
+  ulog.keywhy  = tostring(why or 'the USB key stopped accepting writes')
   ulog.lasterr = ulog.keywhy
-  ulog.dirok = nil
+  ulog.dirok   = nil
   -- keyok() sets this on seeing the slot empty. This may be running on a key still in it.
-  ulog.keyout = false
-  local h = ulog.fh
+  ulog.keyout  = false
+  local h      = ulog.fh
   ulog.fh, ulog.on = nil, false
   -- Closed here or never: with ulog.on false nothing else would.
   if h ~= nil then file.close(h) end
@@ -76,7 +76,7 @@ function ulog.keyok()
   -- presence alone would retry a latched key once per capture.
   if ulog.keyout then
     ulog.keybad, ulog.keywhy, ulog.keyout = false, nil, false
-    ulog.dirok = nil
+    ulog.dirok  = nil
     ulog.keygen = (ulog.keygen or 0) + 1
   elseif ulog.keybad then
     return false
@@ -130,7 +130,7 @@ function ulog.ensuredir(dir)
   if string.len(leafchk) > 8 or leafchk ~= string.upper(leafchk) then
     return false, 'directory name must be 8 upper-case characters or fewer: ' .. leafchk
   end
-  local leaf = string.gsub(dir, '^.*/', '')
+  local leaf   = string.gsub(dir, '^.*/', '')
   local listed = ulog.rootlists(leaf)
   if listed == true then ulog.dirok = dir; return true end
   -- Absence is not established, and a mkdir on that basis is the 2208 this path avoids.
@@ -183,12 +183,12 @@ function ulog.open(path, truncate)
   -- generation first leaves keyopen one behind and resume() re-opens a current log, resetting nlines.
   ulog.keyopen = ulog.keygen
   if ulog.fh == nil then
-    ulog.on = false
+    ulog.on      = false
     ulog.lasterr = tostring(why)
     return false
   end
 
-  ulog.on = true
+  ulog.on     = true
   -- A separator distinguishes sessions in an appended file. os is tested, not caught: a nil os
   -- raises before pcall is entered.
   local stamp = ''
@@ -213,13 +213,13 @@ function ulog.line(s)
     ulog.dropped = ulog.dropped + 1
     return false
   end
-  ulog.nlines = ulog.nlines + 1
+  ulog.nlines   = ulog.nlines + 1
   ulog.nwritten = (ulog.nwritten or 0) + 1
   local txt = string.format('%05d %s %s\r\n', ulog.nlines or 0, tostring(ulog.tag),
                             tostring(s))
   -- A nil test, not a guard: `on` true implies a handle, and the invariant is worth a compare.
   if ulog.fh == nil then
-    ulog.on = false
+    ulog.on      = false
     ulog.lasterr = 'the log handle went away'
     return false
   end
@@ -267,7 +267,7 @@ function ulog.exists(path)
   local got = fs.is_file(path)
   if got == nil then
     -- One 2205 beats truncating a file or refusing to save; no key and no such file both read 'free'.
-    local fh = file.open(path, file.MODE_READ)
+    local fh    = file.open(path, file.MODE_READ)
     local taken = fh ~= nil
     if fh ~= nil then file.close(fh) end
     return taken
@@ -288,8 +288,8 @@ function ulog.next_free(prefix, ext, limit)
 
   -- A starting point, not an answer; the probe still runs forward from it.
   -- docs/MEASUREMENTS.md, "ulog.next_free's index and the wrapping scan".
-  ulog.idx_ram = ulog.idx_ram or {}
-  local start = ulog.idx_ram[prefix]
+  ulog.idx_ram  = ulog.idx_ram or {}
+  local start   = ulog.idx_ram[prefix]
   if start ~= nil and (start < 0 or start >= limit) then start = nil end
   if start == nil and ulog.exists(idxpath) then
     -- A key pulled mid-read gives nil from file.read and nil from tonumber, so the close is reached.
@@ -312,8 +312,8 @@ function ulog.next_free(prefix, ext, limit)
     if not ulog.exists(path) then
       -- Cache the index found, not the one after, so this stays a query: asked twice it answers once.
       ulog.idx_ram[prefix] = i
-      local wh = nil
-      wh = ulog.open_write(idxpath, file.MODE_WRITE)
+      local wh    = nil
+      wh          = ulog.open_write(idxpath, file.MODE_WRITE)
       local wrote = false
       if wh ~= nil then
         -- The verdict comes from the gate: a pcall round this write returns true however it went.
@@ -328,7 +328,7 @@ function ulog.next_free(prefix, ext, limit)
     end
   end
   -- Genuinely full. idx_why is set here, and names the leaf only: the note row shows 658 px.
-  local leaf = string.gsub(tostring(prefix), '^.*/', '')
+  local leaf   = string.gsub(tostring(prefix), '^.*/', '')
   ulog.idx_why = string.format('all %d %sNNN%s names are taken', limit or 0, tostring(leaf), tostring(ext))
   return nil
 end

@@ -30,7 +30,7 @@ sdec.atedge = nil       -- .analogtrigger.edge
 sdec.k      = {}        -- the constants, copied by value
 
 if ns ~= nil then
-  sdec.dig = ns.digitize
+  sdec.dig  = ns.digitize
   -- Not used by any capture path: this handle exists only so mode_save/mode_restore can put back a basic function
   -- the operator was left in. Guarded, since a digitizer with no measure table still decodes.
   sdec.meas = ns.measure
@@ -71,31 +71,31 @@ sdec.acq_prep = PREP[nskey] or function() end
 sdec.rates      = {1000, 1250, 2500, 5000, 10000, 15000, 20000, 30000, 40000,
                    50000, 60000, 80000, 100000, 120000, 160000, 200000, 250000,
                    300000, 320000, 400000, 500000, 640000, 1000000}
-sdec.fs         = 1000000   -- requested sample rate
+sdec.fs       = 1000000   -- requested sample rate
 -- sdec.acq_fs -- the rate measured from relativetimestamps, which is the one every bit time is scaled by
 -- Capture depth. docs/MEASUREMENTS.md, 'The pre-trigger reserve comes out of capacity, not out of count'.
-sdec.n          = 20000     -- capture depth, samples (see sdec.acq_cap)
+sdec.n        = 20000     -- capture depth, samples (see sdec.acq_cap)
 -- Fixed at the 10 V range and not an option, and a constant, so unlike range-as-a-setting it is safe to assign
 -- unconditionally on reload. docs/MEASUREMENTS.md, 'The 10 V range has the widest digitize bandwidth'.
-sdec.range      = 10
+sdec.range    = 10
 -- Past this a reading was not measured: an over-range sample comes back as the firmware's 9.9e+37, a number as
 -- far as Lua is concerned, which sig_levels used to admit as a logic level. 1e6 clears the 1000 V widest range
 -- the instrument offers. Reachable on this bench whenever the stimulus sits at the rails -- 20 Vpp at 0 V offset
 -- spans the range exactly -- and the poisoned vmax propagates to arm_threshold(), whose comparator write the
 -- firmware then refuses with 1131.
-sdec.vover      = 1e6
+sdec.vover    = 1e6
 -- And the count of readings that exceeded it on the last capture. Initialised because sig_levels is its only
 -- writer: a caller that reads it before any capture would otherwise get nil, and one that reads it after a
 -- capture too short to reach sig_levels would get the PREVIOUS capture's count under this capture's name.
-sdec.nover      = 0
-sdec.probe_n    = 2000      -- samples in the level-learning probe capture
+sdec.nover    = 0
+sdec.probe_n  = 2000      -- samples in the level-learning probe capture
 -- Sample rates the free-run auto-detect probe tries, in order. Each covers ten times as long for the same sample
 -- count, because a window shorter than one frame cannot see a slow line. Every entry must be in sdec.rates.
 sdec.probe_fs = sdec.probe_fs or {1000000, 100000, 10000}
-sdec.pretrig    = 5         -- pre-trigger percentage for the analog-trigger path
+sdec.pretrig  = 5         -- pre-trigger percentage for the analog-trigger path
 -- 'edge' (analog trigger on the signal), 'free' (untriggered) or 'front' (the TRIGGER key). The rear EXT TRIG IN
 -- is not a mode: sdec.trigext OR's it into whichever is selected.
-sdec.trigmode   = sdec.trigmode or 'edge'
+sdec.trigmode = sdec.trigmode or 'edge'
 -- Booleans need an explicit nil test, `or false` resurrecting a deliberate true, and this is operator state that
 -- must survive an App relaunch. Off by default: a decoder has to work with one probe and nothing else.
 if sdec.trigext == nil then sdec.trigext = false end
@@ -107,36 +107,36 @@ if sdec.trigext_only == nil then sdec.trigext_only = false end
 if sdec.fc_out == nil then sdec.fc_out = false end
 -- The requested pulse width, not applied on this firmware -- trigger.extout.pulsewidth is nil on 1.7.17a.
 -- docs/MEASUREMENTS.md, 'The flow-control pulse is ~10 us, not the 100 us requested'.
-sdec.fc_pulse = sdec.fc_pulse or 100e-6
+sdec.fc_pulse     = sdec.fc_pulse or 100e-6
 -- Both trigger timeouts belong here, next to the only code that reads them: declared in serial_app.tsp one of them
 -- is nil when serial_core loads alone, and the wait comparison then raises.
 sdec.trigwait     = sdec.trigwait or 3.0        -- seconds to wait for a start-bit edge
 sdec.trigwait_ext = sdec.trigwait_ext or 30.0   -- see acq_triggered: a person or a DUT event
 -- sdec.buf (capture buffer handle), sdec.smp (the capture as a plain Lua array, see acq_copy)
-sdec.nread      = sdec.nread or 0
+sdec.nread        = sdec.nread or 0
 
 -- ---------- signal conditioning results ----------
 -- sdec.vmin/vmax (raw extremes of the capture), sdec.lo/hi (the two logic levels, volts)
-sdec.swing           = sdec.swing or 0     -- hi - lo
-sdec.thr             = sdec.thr or 0       -- decision threshold, volts
-sdec.hyst            = sdec.hyst or 0      -- hysteresis half-width, volts
-sdec.hystfrac        = 0.15       -- hysteresis as a fraction of the swing
-sdec.minswing        = 0.10       -- below this the line is treated as dead, volts
-sdec.family          = '?'        -- inferred logic family, for the summary line
+sdec.swing        = sdec.swing or 0     -- hi - lo
+sdec.thr          = sdec.thr or 0       -- decision threshold, volts
+sdec.hyst         = sdec.hyst or 0      -- hysteresis half-width, volts
+sdec.hystfrac     = 0.15       -- hysteresis as a fraction of the swing
+sdec.minswing     = 0.10       -- below this the line is treated as dead, volts
+sdec.family       = '?'        -- inferred logic family, for the summary line
 
 -- ---------- edge list ----------
 -- ei[k] is a fractional 1-based sample position (sample i is at time (i-1)/fs), interpolated to the crossing.
-sdec.ne  = sdec.ne or 0
+sdec.ne           = sdec.ne or 0
 -- sdec.ei (fractional sample position of each edge), sdec.es (physical level after edge k: 1 = high, 0 = low)
-sdec.st0 = sdec.st0 or 1    -- physical level at the start of the capture
-sdec.maxback = 64   -- how far to walk back from a hysteresis trip for the crossing
+sdec.st0          = sdec.st0 or 1    -- physical level at the start of the capture
+sdec.maxback      = 64   -- how far to walk back from a hysteresis trip for the crossing
 
 -- ---------- bit timing ----------
 -- sdec.bittime (samples, the native unit), sdec.baud_raw (fs / bittime), sdec.baud (snapped when close enough)
-sdec.fitq     = sdec.fitq or 0    -- 0..1 quality of the least-squares fit
-sdec.snapped  = sdec.snapped or false
-sdec.snaptol  = 0.02  -- snap when within 2 % of a standard rate
-sdec.maxmult  = 12    -- a gap longer than this many bit times is idle, not data
+sdec.fitq         = sdec.fitq or 0    -- 0..1 quality of the least-squares fit
+sdec.snapped      = sdec.snapped or false
+sdec.snaptol      = 0.02  -- snap when within 2 % of a standard rate
+sdec.maxmult      = 12    -- a gap longer than this many bit times is idle, not data
 
 -- Standard rates, two worth recognising by name: 31250 is MIDI and 250000 DMX512. 153600, 172800 and 192000 are
 -- here because a rate that cannot snap cannot auto-lock and the recording modes are gated on a lock.
@@ -152,12 +152,12 @@ sdec.stdbaud = {110, 300, 600, 1200, 1800, 2400, 4800, 7200, 9600, 14400,
 -- docs/MEASUREMENTS.md, 'Why the levels are the two densest amplitudes'.
 
 -- The bin count is adaptive, capped here. docs/MEASUREMENTS.md, 'binocc = 16'.
-sdec.nbins     = 512
-sdec.binocc    = 16    -- target samples per BIN
+sdec.nbins        = 512
+sdec.binocc       = 16    -- target samples per BIN
 -- Minimum samples in the minority hump for it to count as a logic level, which is a different quantity from
 -- binocc. docs/MEASUREMENTS.md, 'minhump = 2'.
-sdec.minhump   = 2
-sdec.flatfloor = 1.0    -- below this an idle level counts as sitting at ground
+sdec.minhump      = 2
+sdec.flatfloor    = 1.0    -- below this an idle level counts as sitting at ground
 
 -- ============================================================================
 -- Arming from silence: waiting for a device that has not started talking yet. The probe finds no transitions, so
@@ -170,17 +170,13 @@ sdec.armlevel_max = 6.0
 
 -- How long such an arm may wait, in seconds, and the panel is frozen for the whole of it.
 -- docs/MEASUREMENTS.md, 'armwait 10, floor 2, ceiling 120'.
-sdec.armwait     = sdec.armwait or 10.0
-sdec.armwait_min = 2.0
-sdec.armwait_max = 120.0
+sdec.armwait      = sdec.armwait or 10.0
+sdec.armwait_min  = 2.0
+sdec.armwait_max  = 120.0
 
 -- May the front TRIGGER key cut an arm short? On, it being the only escape from the wait that works -- see the
 -- blend in acq_triggered(). Not on the form: an accidental press costs one retry.
 if sdec.armkey == nil then sdec.armkey = true end
-
-
-
-
 
 -- Both read through one function each, by the capture and by the form, so a typed value cannot mean one thing
 -- to the field and another to the comparator. Clamped rather than refused.
@@ -231,20 +227,20 @@ sdec.warnmodal = 0.50
 
 -- Bins at or above humpfrac of a peak's own height count as part of it, which measures each hump's width: the
 -- separation cannot be a fixed voltage, because noise widens the humps.
-sdec.humpfrac = 0.2
+sdec.humpfrac  = 0.2
 
 -- The two densest amplitudes within [v0, v1]. Returns lo, hi and the share of in-range samples belonging to
 -- either hump, or nil when no pair is separable. Each level is the true mean of the samples in its hump.
 function sdec.sig_pair(rd, n, v0, v1)
   local floor = math.floor
-  local nb = floor(n / sdec.binocc)
+  local nb    = floor(n / sdec.binocc)
   if nb > sdec.nbins then nb = sdec.nbins end
   if nb < 24 then nb = 24 end
   if v0 == nil or v1 == nil or v1 <= v0 then return nil end
   local scale = (nb - 1) / (v1 - v0)
-  local hist = {}
+  local hist  = {}
   -- The sum of the samples in each bin makes the level means below a walk over bins, not over the capture.
-  local bsum = {}
+  local bsum  = {}
   local i
   for i = 1, nb do hist[i] = 0; bsum[i] = 0 end
   local cnt = 0
@@ -302,7 +298,7 @@ function sdec.sig_pair(rd, n, v0, v1)
     na = na + hist[i]
   end
   for i = a2, b2 do
-    sb = sb + bsum[i]
+    sb  = sb + bsum[i]
     nbb = nbb + hist[i]
   end
   -- A hump of one sample is not a level, and 2 is the minimum that does it. docs/MEASUREMENTS.md, 'minhump = 2'.
@@ -398,11 +394,11 @@ function sdec.sig_levels(rd, n)
     sdec.wlo, sdec.whi = vmin, vmax
     sdec.lo, sdec.hi = vmin, vmax
     sdec.thr, sdec.hyst = 0.5 * (vmin + vmax), 0
-    sdec.swing = vmax - vmin
+    sdec.swing  = vmax - vmin
     sdec.family = sdec.sig_family(vmin, vmax)
     if lo ~= nil then
       sdec.lo, sdec.hi, sdec.swing = lo, hi, hi - lo
-      sdec.thr = 0.5 * (lo + hi)
+      sdec.thr    = 0.5 * (lo + hi)
       sdec.family = sdec.sig_family(lo, hi)
       return false, string.format('swing only %.3f V', hi - lo)
     end
@@ -411,10 +407,10 @@ function sdec.sig_levels(rd, n)
 
   sdec.wlo, sdec.whi = lo, hi        -- the working range, for diagnostics
   sdec.lo, sdec.hi = lo, hi
-  sdec.modal = modal
-  sdec.swing = hi - lo
-  sdec.thr   = 0.5 * (lo + hi)
-  sdec.hyst  = sdec.hystfrac * sdec.swing
+  sdec.modal  = modal
+  sdec.swing  = hi - lo
+  sdec.thr    = 0.5 * (lo + hi)
+  sdec.hyst   = sdec.hystfrac * sdec.swing
   sdec.family = sdec.sig_family(lo, hi)
   -- Two humps holding almost none of the samples are broadband noise, or a signal buried in it.
   if modal < sdec.minmodal then
@@ -442,7 +438,7 @@ function sdec.sig_noise(rd, n)
   local step = floor(n / sdec.noise_nsamp)
   if step < 1 then step = 1 end
   local nlo, slo, qlo, nhi, shi, qhi = 0, 0, 0, 0, 0, 0
-  local i = 2
+  local i  = 2
   -- Over-range readings are skipped here too, sample and neighbours alike. sig_levels keeps them out of the
   -- levels but this function reads the record again, and a clipped rail gives runs of them long enough to
   -- satisfy the neighbour test below -- where v * v is about 1e75 and would stand as the record's noise.
@@ -480,7 +476,7 @@ function sdec.sig_noise(rd, n)
   if nhi > 1 then ss = ss + (qhi - shi * shi / nhi); k = k + nhi - 1 end
   if k < 1 then return end
   if ss < 0 then ss = 0 end          -- rounding only, but a negative would kill the sqrt
-  local rms = sqrt(ss / k)
+  local rms    = sqrt(ss / k)
   sdec.noise_v = rms
   -- Floored at the digitiser, not at zero: a synthesised capture can be noiseless, and log(0) is -inf.
   if rms < 1e-6 then rms = 1e-6 end
@@ -593,7 +589,7 @@ function sdec.sig_idle(rd, n)
 
   local best1, best0 = 0, 0
   -- onebit is computed first because the recurrence test below needs the idle threshold. It reads only ei.
-  local onebit = sdec.sig_onebit(ei, ne)
+  local onebit  = sdec.sig_onebit(ei, ne)
   local idlelen = nil
   if onebit ~= nil then idlelen = sdec.idlemult * onebit end
 
@@ -619,14 +615,14 @@ function sdec.sig_idle(rd, n)
 
   -- On an armed capture the leading run is the reserve, not the line, and the interior must recur.
   -- docs/MEASUREMENTS.md, "sig_idle's run branch, and when the levels decide instead".
-  local lead = ei[1] - 1
+  local lead   = ei[1] - 1
   -- Published for the record, like sdec.onebit: a lap that cannot see the leading run or the recurrence count
   -- cannot tell this branch from a genuinely inverted line.
   sdec.leadrun = lead
-  local nrec = nlong1
+  local nrec   = nlong1
   if nlong0 > nrec then nrec = nlong0 end
   sdec.idlerec = nrec
-  local thin = false
+  local thin   = false
   if sdec.acq_pretrig then
     thin = nrec < 2
   else
@@ -641,7 +637,7 @@ function sdec.sig_idle(rd, n)
 
   -- A run is only evidence of idle if data could not have produced it, and sdec.idlemult carries that margin.
   -- sdec.onebit is published for the record. docs/MEASUREMENTS.md, 'idlemult = 10.5'.
-  sdec.onebit = onebit
+  sdec.onebit   = onebit
   local longest = best1
   if best0 > longest then longest = best0 end
   -- `thin` forces this branch on an armed capture whose interior idle does not recur. Without it the branch is
@@ -693,8 +689,8 @@ end
 -- pulse width is an integer multiple of the bit time, so this is a fit through the origin: sum(w*m)/sum(m*m).
 function sdec.sig_fit(w, nw, seed)
   local floor = math.floor
-  local maxm = sdec.maxmult
-  local T = seed
+  local maxm  = sdec.maxmult
+  local T     = seed
   local it, k
 
   for it = 1, 6 do
@@ -704,7 +700,7 @@ function sdec.sig_fit(w, nw, seed)
     local tol = 0.35 * T
     for k = 1, nw do
       local wk = w[k]
-      local m = floor(wk / T + 0.5)
+      local m  = floor(wk / T + 0.5)
       -- Multiples beyond maxmult are inter-byte idle, carry no timing information, and must not drag the fit.
       if m >= 1 and m <= maxm then
         local d = wk - m * T
@@ -716,7 +712,7 @@ function sdec.sig_fit(w, nw, seed)
       end
     end
     if snn <= 0 then return nil, 0, 0 end
-    local newT = sn / snn
+    local newT  = sn / snn
     local moved = newT - T
     if moved < 0 then moved = -moved end
     T = newT
@@ -726,12 +722,12 @@ function sdec.sig_fit(w, nw, seed)
   -- Quality combines fit tightness with coverage, which rejects a seed at twice the true bit time: the one-bit
   -- pulses stay inside maxmult*T, so they count as eligible but land half a period from any multiple.
   local serr, nfit, nsmall = 0, 0, 0
-  local tol = 0.35 * T
+  local tol  = 0.35 * T
   local maxw = (maxm + 0.5) * T
   for k = 1, nw do
     local wk = w[k]
     if wk <= maxw then
-      nsmall = nsmall + 1
+      nsmall  = nsmall + 1
       local m = floor(wk / T + 0.5)
       if m < 1 then m = 1 end
       local e = wk - m * T
@@ -769,7 +765,7 @@ function sdec.sig_bittime()
   table.sort(s)
   -- The median pulse width, kept for sdec.ua_cands(). Spikes are always a minority of the widths, so they cannot
   -- move it -- unlike the least-squares fit below, which they capture outright.
-  sdec.wmed = s[math.floor(nw / 2) + 1]
+  sdec.wmed   = s[math.floor(nw / 2) + 1]
 
   -- The short end of the same sort, for sdec.ua_minrun_absurd(). Not named wlo: sig_levels owns that name for a
   -- voltage, and overwriting it made the panel's range figure report a pulse width.
@@ -779,7 +775,7 @@ function sdec.sig_bittime()
   -- seeded from one isolated short width can score higher than the truth.
   local seeds, nseed, last = {}, 0, 0
   for k = 1, nw do
-    local v = s[k]
+    local v      = s[k]
     local corrob = (k < nw and s[k+1] <= 1.25 * v) or nw < 3
     if v > 0 and corrob and (nseed == 0 or v > 1.3 * last) then
       nseed = nseed + 1
@@ -799,9 +795,9 @@ function sdec.sig_bittime()
   end
   if bestT == nil then return nil, 'no bit time fits the pulse widths' end
 
-  sdec.bittime = bestT
-  sdec.fitq    = bestq
-  local fs = sdec.acq_fs or sdec.fs
+  sdec.bittime  = bestT
+  sdec.fitq     = bestq
+  local fs      = sdec.acq_fs or sdec.fs
   sdec.baud_raw = fs / bestT
   sdec.baud, sdec.snapped, sdec.snapfirm = sdec.sig_snap(sdec.baud_raw)
   return bestT
@@ -910,7 +906,7 @@ function sdec.acq_measure_fs(buf, n)
   -- A nil test cannot replace the guard: existence and a successful proxy read are different claims. The two ends
   -- are taken in time order -- on a wrapped buffer not index 1 and n, see acq_first.
   local first = sdec.acq_first(buf, n)
-  local last = first + n - 1
+  local last  = first + n - 1
   if last > n then last = last - n end
   local t1, tn = nil, nil
   local ok = pcall(function()
@@ -923,10 +919,6 @@ function sdec.acq_measure_fs(buf, n)
   if span <= 0 then return nil end
   return (n - 1) / span
 end
-
-
-
-
 
 -- The measured rate, or the requested one with a flag saying so: every byte is scaled by acq_fs, so a silent
 -- substitution would report confident bytes from an untrustworthy number.
@@ -970,7 +962,7 @@ end
 
 -- A SimpleLoop trigger model adds a constant 0.510 us to every sample interval, which the streaming modes live
 -- with because the alternative loses data at the seams. docs/MEASUREMENTS.md, 'acq_overhead = 0.510 us'.
-sdec.acq_overhead = 0.510e-6
+sdec.acq_overhead  = 0.510e-6
 
 -- One samples-per-bit floor per baud band, ascending, first match wins. docs/MEASUREMENTS.md, 'The no-loss sample
 -- rate is 120 kS/s, and baud is not in it'.
@@ -978,11 +970,11 @@ sdec.minsabit_tier = {{9600, 8}, {19200, 5}}
 
 -- And a rate ceiling, which keeps the instrument's own backlog dialog off the capture and may override the floor,
 -- but never past minsabit. docs/MEASUREMENTS.md, 'The reading-backlog dialog above ~100 kS/s'.
-sdec.fs_cap_tier = {{19200, 100000}}
+sdec.fs_cap_tier   = {{19200, 100000}}
 
 -- Nor more oversampling than the decoder can use: past the vote threshold extra samples buy only bit-centre
 -- placement, while costing readings and a decode priced per sample. docs/MEASUREMENTS.md, 'sabit_max = 12'.
-sdec.sabit_max = 12
+sdec.sabit_max     = 12
 
 -- The rate that delivers `want` samples per bit, not the rate that would without overhead, and nil when no listed
 -- rate can. `md` is optional and bounds the boost by what the buffer can afford, so that ceiling is per mode
@@ -1029,13 +1021,13 @@ function sdec.fs_for_burst(baud, md)
   -- What this mode's own buffer can hold, in samples per bit. nil where the mode is not byte-capped.
   local sabcap = nil
   if md ~= nil and md.cap ~= nil and sdec.ck_bufmax ~= nil then
-    local nbits = sdec.force_nbits or 8
+    local nbits   = sdec.force_nbits or 8
     local parbits = 0
     if sdec.force_par ~= nil and sdec.force_par ~= sdec.PAR_NONE then parbits = 1 end
     local framebits = 1 + nbits + parbits + (sdec.force_nstop or 1)
     -- The count that leaves room for the reserve and the overshoot headroom, which is stream_begin's own clamp
     -- arithmetic inverted. docs/MEASUREMENTS.md, 'What the ck_bufmax bound on oversampling is worth'.
-    local nmax = sdec.ck_bufmax - 100
+    local nmax      = sdec.ck_bufmax - 100
     if sdec.trigmode ~= 'free' then
       nmax = math.floor((sdec.ck_bufmax - 100) * (100 - (sdec.pretrig or 0)) / 100)
     end
@@ -1060,7 +1052,7 @@ function sdec.fs_for_burst(baud, md)
       local r = sdec.rates[i]
       if r > cap then break end
       if r >= lowest then
-        local t = sdec.fs_delivered(r) / baud
+        local t  = sdec.fs_delivered(r) / baud
         local ok = (sdec.sabit_max == nil or t <= sdec.sabit_max)
         -- The requested ratio is what sizes the capture, not the delivered one: stream_samples multiplies by
         -- fs/baud, so that is the figure the buffer has to hold.
@@ -1086,7 +1078,7 @@ function sdec.fs_select()
   -- A rate the caller already worked out wins, and without this the two-pass auto-detect cannot work. One-shot,
   -- describing a decision for the next capture only. docs/MEASUREMENTS.md, 'fs_want: the second pass of autoset'.
   if sdec.fs_want ~= nil then
-    sdec.fs = sdec.fs_want
+    sdec.fs      = sdec.fs_want
     sdec.fs_want = nil
     return sdec.fs
   end
@@ -1194,7 +1186,7 @@ sdec.acq_posfloor = 0.001
 -- 92 readings already armed the comparator and those cells were failing on the capture LENGTH instead -- see
 -- acq_bufplan. Lowering it again would make the post-trigger count LARGER, position being what the count is
 -- taken from, so it stays where it is.
-sdec.acq_premin = 1000
+sdec.acq_premin   = 1000
 
 function sdec.acq_pospct(n, buf)
   local pt = sdec.pretrig or 0
@@ -1208,8 +1200,8 @@ function sdec.acq_pospct(n, buf)
   if n == nil then n = sdec.n end
   if n == nil or n <= 0 then return pt end
   -- The readings the reserve is meant to be: what acq_cap puts behind a buffer sized to this capture.
-  local want = math.ceil(n * pt / 100)
-  local pos = want * 100 / cap
+  local want     = math.ceil(n * pt / 100)
+  local pos      = want * 100 / cap
   -- FRACTIONAL, AND THE ROUNDING USED TO BE THE BUG. This rounded UP to a whole percent and floored at 1,
   -- on the reasoning that a fractional position had never been loaded on this instrument -- which made
   -- the floor a guess dressed as caution. On the static 6 000 000-reading record 1 % is 60 000 readings
@@ -1304,15 +1296,15 @@ sdec.acq_bufbudget = 6500000
 -- the frame's 24 576 is acq_cap(22 000) rounded up, so it still holds a 22 000 capture with its reserve
 -- and in fact runs CLOSER to the count than the 32 768 above does, and the record's 3 952 383 is what the
 -- 32 kB mode asks for at 8N1 with the over-read. A smaller static buffer is still static.
-sdec.acq_bufplan = {
+sdec.acq_bufplan   = {
   {id = 'frame', cap = 32768,   least = 24576},
   {id = 'rec',   cap = 6000000, least = 3952383},
   n = 2,
 }
 -- Which static buffer each capture mode records into. Two modes share one, so this is a map rather than
 -- the plan's own order -- and an id missing here falls back to 'frame', which is mode_cur()'s own rule.
-sdec.acq_buffor = {frame = 'frame', sml = 'rec', med = 'rec'}
-sdec.acq_bufs = sdec.acq_bufs or {}
+sdec.acq_buffor     = {frame = 'frame', sml = 'rec', med = 'rec'}
+sdec.acq_bufs       = sdec.acq_bufs or {}
 
 -- EXTRA FRAME BUFFERS, so a capture takes one that FITS instead of the only one there is.
 --
@@ -1510,7 +1502,7 @@ function sdec.acq_bufinit()
         -- sdec.acq_bufs, so the CURRENT instance's buffers are spared and a previous instance's -- absent
         -- from the fresh table -- are swept, which is exactly the behaviour wanted at each end.
         _G['SDEC_SBUF_' .. string.upper(p.id)] = got
-        nok = nok + 1
+        nok      = nok + 1
         -- Recorded, because a set that fell back is not the set the sizing arguments assume: the 32 kB
         -- mode in a 3 952 383-reading record affords no over-read at all beyond the 10 % it is sized for.
         local c2 = sdec.bufcap(got)
@@ -1534,7 +1526,7 @@ function sdec.acq_bufinit()
   local nrung, nrungok = table.getn(sdec.acq_framerungs), 0
   for i = nrung, 1, -1 do
     local rcap = sdec.acq_framerungs[i]
-    local rid = sdec.acq_rungid(rcap)
+    local rid  = sdec.acq_rungid(rcap)
     if sdec.acq_bufhave(rid) ~= nil then
       nrungok = nrungok + 1
     else
@@ -1573,7 +1565,7 @@ function sdec.acq_buffree()
   local i
   for i = 1, sdec.acq_bufplan.n do
     local id = sdec.acq_bufplan[i].id
-    local b = sdec.acq_bufs[id]
+    local b  = sdec.acq_bufs[id]
     if b ~= nil then
       -- The verdict is READ, not discarded. A refused delete must leave the handle in place: dropping it
       -- strands the readings for the rest of the power cycle, and a 6 000 000-reading buffer stranded
@@ -1592,7 +1584,7 @@ function sdec.acq_buffree()
   -- stranded as a stranded plan buffer.
   for i = 1, table.getn(sdec.acq_framerungs) do
     local rid = sdec.acq_rungid(sdec.acq_framerungs[i])
-    local rb = sdec.acq_bufs[rid]
+    local rb  = sdec.acq_bufs[rid]
     if rb ~= nil then
       local rok = sdec.bufdel(rb)
       if rok then
@@ -1717,7 +1709,7 @@ function sdec.quiet_events()
   -- gives a 4915 a dialog is unresolved and that the severity mute does not reach it.
   local ev
   for ev = 1, 3 do
-    local n = ({4919, 4920, 4915})[ev]
+    local n  = ({4919, 4920, 4915})[ev]
     local ok = pcall(eventlog.suppress, n)
     if not ok then sdec.suppress_why = 'eventlog.suppress unavailable' end
   end
@@ -1742,7 +1734,7 @@ end
 function sdec.mode_save()
   if sdec.entrymode ~= nil then return true end
   if sdec.dig == nil then return false end
-  local m = nil
+  local m  = nil
   -- One pcall around all the reads, so a partially-read mode is never stored: a nil would raise in teardown.
   local ok = pcall(function()
     local df = sdec.dig.func
@@ -1777,7 +1769,7 @@ function sdec.mode_restore()
   if m == nil then return true end
   -- Cleared before the write, so a raise inside teardown is not retried on the next call.
   sdec.entrymode = nil
-  local ok = pcall(function()
+  local ok       = pcall(function()
     if m.side == 'measure' then
       -- One assignment does the whole job: selecting a basic function is what deselects the digitize one.
       sdec.meas.func = m.func
@@ -1796,18 +1788,18 @@ end
 -- power cycle nils `sdec`. The lock goes through unlock_all(), the one place that knows all five force_ fields.
 function sdec.reset_options()
   sdec.unlock_all()
-  sdec.proto = 'uart'
-  sdec.proto_why = nil
+  sdec.proto        = 'uart'
+  sdec.proto_why    = nil
   -- The capture mode deserves resetting most: a session left in 32 kB makes the first press of a fresh launch a
   -- minutes-long recording, with a file written and no way to stop it.
-  sdec.capmode = 'frame'
-  sdec.ui_mode = 'text'
-  sdec.widths_any = false
-  sdec.trigmode = 'edge'
+  sdec.capmode      = 'frame'
+  sdec.ui_mode      = 'text'
+  sdec.widths_any   = false
+  sdec.trigmode     = 'edge'
   -- Both rear-BNC directions, so the connector is not in the signal path at all.
-  sdec.trigext = false
+  sdec.trigext      = false
   sdec.trigext_only = false
-  sdec.fc_out = false
+  sdec.fc_out       = false
   return true
 end
 
@@ -1836,9 +1828,9 @@ function sdec.hw_verify()
   -- A meter that will not report its own settings is not a snap, so say nothing rather than accuse it of one.
   if not ok then return true end
   sdec.hw_snap = {func = f, range = r, aperture = a}
-  local w = {sdec.k.FUNC_VOLT, sdec.range, 1e-6}
-  local g = {f, r, a}
-  local nm = {'func', 'range', 'aperture'}
+  local w      = {sdec.k.FUNC_VOLT, sdec.range, 1e-6}
+  local g      = {f, r, a}
+  local nm     = {'func', 'range', 'aperture'}
   local allok, i = true, nil
   for i = 1, 3 do
     if not sdec.hw_same(w[i], g[i]) then
@@ -1884,23 +1876,23 @@ function sdec.acq_fit(n, buf)
 end
 
 -- What the instrument actually granted, which is the only verdict: see the read-back below.
-sdec.acq_bufgot = nil
+sdec.acq_bufgot     = nil
 -- Whether the live buffer is one of the static set, which is oversized for the mode recording into it.
 -- Read by stream_arm, which then takes its pre-trigger reserve from acq_pospct rather than as a percentage
 -- of a capacity the capture did not ask for.
-sdec.acq_bufperm = nil
+sdec.acq_bufperm    = nil
 -- Seconds to wait before re-asking for a buffer the pool refused immediately after a delete. Short,
 -- because the delete itself has already returned and this covers the firmware's own release and nothing
 -- longer; a value large enough to matter would be a value worth measuring instead of choosing.
 sdec.acq_freesettle = 0.05
 -- How many allocations needed that second attempt. A counter and not a flag, so a lap can say whether
 -- this is the once-per-transition case it was written for or something that happens on every capture.
-sdec.acq_remade = 0
+sdec.acq_remade     = 0
 -- How many allocations took the pre-settle: a collection and the free delay BEFORE the first ask, which
 -- is what keeps a refusal off the glass. Counted separately from acq_remade so a lap can say whether the
 -- pre-settle is doing the work or the retry still is -- if acq_remade stays above zero with this
 -- non-zero, the collection is not enough and the delay wants measuring rather than choosing.
-sdec.acq_presettle = 0
+sdec.acq_presettle  = 0
 
 -- Free and remake the capture buffer. Follows the project's object-lifetime rule -- delete, nil, then create --
 -- because creating over a live handle leaves the buffer beneath allocated and unreachable until a power cycle.
@@ -1972,18 +1964,19 @@ function sdec.acq_make_buffer(n)
   if sdec.buf ~= nil and sdec.acq_isstatic(sdec.buf) then
     sdec.buf = nil
   elseif sdec.buf ~= nil then
-    local b = sdec.buf
+    local b     = sdec.buf
     -- A refused deletion must not be followed by a new allocation, and the handle must not be dropped: nil'ing first
     -- and swallowing the error strands the buffer and allocates another on top, one more on every retry.
     local delok = sdec.bufdel(b)
     if not delok then
-      sdec.delfails = (sdec.delfails or 0) + 1
+      sdec.delfails  = (sdec.delfails or 0) + 1
       sdec.stickyerr = 'the capture buffer could not be freed -- power cycle the instrument'
       return sdec.buf                    -- KEEP the handle: it is the only way to retry
     end
     sdec.buf = nil
-    freed = true
+    freed    = true
   end
+
   -- ONE REQUEST AND A BOUNDED RETRY, never a loop, because every refusal posts 4919 to the event log.
   --
   -- A deleted buffer is not necessarily free yet. docs/UNDOCUMENTED.md, 'The real ceiling is 7,080,255
@@ -2024,8 +2017,8 @@ function sdec.acq_make_buffer(n)
     end
   end
   if type(cap) == 'number' and cap >= 10 then
-    sdec.buf = nb
-    sdec.acq_bufgot = cap
+    sdec.buf         = nb
+    sdec.acq_bufgot  = cap
     -- Not one of the static set, so the reserve is a percentage of a capacity this capture asked for.
     sdec.acq_bufperm = false
     sdec.acq_fillmode(sdec.buf)
@@ -2037,7 +2030,7 @@ end
 
 -- An optional liveness hook, nil in the shipped app and set by nothing inside it: one call per chunk of samples.
 -- docs/MEASUREMENTS.md, 'sdec.tick: what a soak cell spends inside acquire'.
-sdec.tick = nil
+sdec.tick      = nil
 sdec.tickevery = sdec.tickevery or 2000    -- samples between hook calls; the bench caps the
                                            -- redraw rate itself, so this only has to be small enough
 
@@ -2050,7 +2043,7 @@ function sdec.acq_first(buf, n)
   local cap, dead = sdec.bufcap(buf)
   if dead then return 1 end
   if cap ~= nil and n < cap then return 1 end
-  local s = nil
+  local s  = nil
   -- Guarded at the proxy read, like every other attribute on this object: on a firmware without startindex the
   -- read must come back as "not rotated" rather than unwinding a capture that is otherwise complete.
   local ok = pcall(function() s = buf.startindex end)
@@ -2075,13 +2068,13 @@ end
 -- the liveness hook costs nothing per sample: a modulo inside the loop would land on all 20 000 iterations of the
 -- hottest loop in the acquisition path, where slicing the range leaves it what it was.
 function sdec.acq_copy(buf, n)
-  local rd = buf.readings
-  local t = {}
+  local rd   = buf.readings
+  local t    = {}
   local step = sdec.tickevery
   if step == nil or step < 1 then step = n end
   -- The copy is in time order, not ring order -- see sdec.acq_first. Offset zero is the normal case.
   local off = sdec.acq_first(buf, n) - 1
-  local i = 1
+  local i   = 1
   while i <= n do
     local j = i + step - 1
     if j > n then j = n end
@@ -2105,7 +2098,7 @@ function sdec.acq_free(n, ncopy, nofc)
   -- Try not to read into a buffer a trigger model might still be writing. Best effort only: the verdict is
   -- discarded, so a settle that timed out is followed by buf.clear() and dig.read() regardless.
   sdec.trig_settle()
-  n = sdec.acq_fit(n, buf)
+  n              = sdec.acq_fit(n, buf)
   sdec.dig.count = n
   buf.clear()
   -- Flow control on the free-run path too, and before the read. `nofc` suppresses it for the probe reads.
@@ -2114,9 +2107,9 @@ function sdec.acq_free(n, ncopy, nofc)
     sdec.fc_credit()
   end
   sdec.dig.read(buf)
-  sdec.nread = buf.n or 0
+  sdec.nread  = buf.n or 0
   sdec.acq_fs = sdec.acq_fs_or_requested(buf, sdec.nread)
-  local ncp = sdec.nread
+  local ncp   = sdec.nread
   if ncopy ~= nil and ncopy < ncp then ncp = ncopy end
   sdec.acq_copy(buf, ncp)
   -- A free-running record has no reserve, so its leading run is the line and sig_idle may use it. Cleared rather
@@ -2185,7 +2178,7 @@ end
 sdec.cancel_blender = 2
 -- The timeout handed to blender wait(). Never zero, by analogy with display.waitevent(), where a zero timeout
 -- waits for ever and cost a power cycle; what a zero does here is unmeasured.
-sdec.cancel_poll_s = 0.001
+sdec.cancel_poll_s  = 0.001
 
 -- Send one flow-control credit out of the rear EXT TRIG OUT. Returns whether the pulse went.
 function sdec.fc_credit()
@@ -2203,7 +2196,7 @@ end
 
 -- Wire the TRIGGER key to blender 2's latch and discard anything latched. -> whether the latch is available.
 function sdec.cancel_setup()
-  local b = sdec.cancel_blender
+  local b  = sdec.cancel_blender
   local ok = pcall(function()
     trigger.blender[b].reset()
     trigger.blender[b].orenable = true
@@ -2247,7 +2240,7 @@ function sdec.arm_source()
   -- The rear BNC is OR'd in, not selected instead, because
   -- "start on a start bit, or when the DUT asserts its GPIO, whichever comes first"
   -- is not expressible as a single choice. Skipped for free run, which means do not wait.
-  local blended = false
+  local blended   = false
   -- Release the blender when not using it. Not a correctness bug -- the model waits on `ev` -- but the next thing
   -- to use a blender would inherit this app's stimuli and its overrun flag.
   if not sdec.trigext then
@@ -2256,7 +2249,7 @@ function sdec.arm_source()
   if sdec.trigext and sdec.trigext_only and sdec.trigmode ~= 'free' then
     -- The rear BNC alone: no blender, and the comparator turned off below by clearing useanalog, since leaving it
     -- armed keeps a live stimulus on a model that no longer waits on it. This is what anchors a capture.
-    ev = trigger.EVENT_EXTERNAL
+    ev        = trigger.EVENT_EXTERNAL
     useanalog = false
     trigger.blender[1].reset()
   elseif sdec.trigext and sdec.trigmode ~= 'free' then
@@ -2267,11 +2260,11 @@ function sdec.arm_source()
       trigger.blender[1].stimulus[2] = trigger.EVENT_EXTERNAL
     end)
     if bok then
-      ev = trigger.EVENT_BLENDER1
+      ev      = trigger.EVENT_BLENDER1
       blended = true
     else
       -- No blender on this firmware: fall back to the rear BNC alone, which is what the operator asked to matter.
-      ev = trigger.EVENT_EXTERNAL
+      ev           = trigger.EVENT_EXTERNAL
       sdec.lasterr = 'no trigger blender; using the rear BNC alone'
     end
   end
@@ -2290,14 +2283,14 @@ function sdec.arm_source()
       trigger.blender[1].stimulus[3] = trigger.EVENT_DISPLAY
     end)
     if kok then
-      ev = trigger.EVENT_BLENDER1
-      blended = true
+      ev            = trigger.EVENT_BLENDER1
+      blended       = true
       sdec.armkeyed = true
     else
       sdec.armkeyed = nil
       -- Appended, not assigned: the rear-BNC fallback above sets lasterr for the same missing blender, and a bare
       -- assignment replaced it. One firmware shortfall, two consequences, both worth saying.
-      local knote = 'the TRIGGER key will not cut the arm short'
+      local knote   = 'the TRIGGER key will not cut the arm short'
       if sdec.lasterr == nil then
         sdec.lasterr = 'no trigger blender; ' .. knote
       else
@@ -2340,7 +2333,7 @@ function sdec.arm_threshold()
   end
   -- Idle is away from ground, so the start bit moves towards ground and the arm goes on that side. Clamped at half
   -- the idle level, the deepest arm certainly still inside the swing.
-  local off = sdec.arm_level_v()
+  local off  = sdec.arm_level_v()
   local half = 0.5 * math.abs(idlev)
   if off > half then off = half end
   if idlev < 0 then
@@ -2384,23 +2377,6 @@ function sdec.arm_comparator(useanalog, slope)
   end)
 end
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 -- Capture armed on a signal edge, on the front-panel TRIGGER key or on the rear BNC, degrading to a free-running
 -- read if the source is refused. It keeps sdec.pretrig percent of the buffer from before the trigger, because a
 -- start bit is only a start bit if the line was at mark first, and the comparison runs on the analog board's
@@ -2411,7 +2387,7 @@ function sdec.acq_triggered(n, slope)
   -- Per capture, not only at creation: observed reading back 0 on a capture that reused a buffer, and one
   -- FILL_ONCE capture is one burst of 4915. Setting it clears the buffer, so it has to precede the read.
   sdec.acq_fillmode(buf)
-  n = sdec.acq_fit(n, buf)
+  n              = sdec.acq_fit(n, buf)
   sdec.dig.count = n
   -- The pre-trigger reserve posts 4915 while it waits. Muted here and restored below on both exits.
   sdec.mute_events()
@@ -2472,7 +2448,7 @@ function sdec.acq_triggered(n, slope)
     -- RECORDED, because it is no longer sdec.pretrig and the completion test below needs the figure that
     -- actually loaded rather than the option. A clamped fraction shows up as nread far above n beside a
     -- posloaded the firmware did not honour.
-    local pos = sdec.acq_pospct(n, buf)
+    local pos          = sdec.acq_pospct(n, buf)
     sdec.acq_posloaded = pos
     trigger.model.load('LoopUntilEvent', ev,
                        pos, trigger.CLEAR_ENTER, 0, buf)
@@ -2510,7 +2486,7 @@ function sdec.acq_triggered(n, slope)
     -- readings and wraps, so buf.n reaches n with no trigger. Completion is trig_done().
     local full = (buf.n or 0) >= n and sdec.pretrig <= 0
     if not sdec.trig_done(buf) and not full then
-      expired = true
+      expired   = true
       -- The advice depends on which fault this was, and 'try Free run' is wrong for the silent case. The word for
       -- a quiet line is deliberately absent: bench_trigkey.py and test_frontrig.lua tell a trigger that fired
       -- from an arm that expired by whether lasterr names an idle line.
@@ -2555,7 +2531,7 @@ function sdec.acq_triggered(n, slope)
     return sdec.acq_free(n)
   end
 
-  sdec.nread = buf.n or 0
+  sdec.nread  = buf.n or 0
   sdec.acq_fs = sdec.acq_fs_or_requested(buf, sdec.nread)
   sdec.acq_copy(buf, sdec.nread)
   -- This record opens before the edge that started it, so sig_idle declines to treat the leading run as idle. Set

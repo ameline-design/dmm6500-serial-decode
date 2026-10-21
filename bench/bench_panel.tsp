@@ -22,7 +22,7 @@
 -- The namespace, declared with the idempotent idiom so this file states which table it owns rather
 -- than inheriting one from load order. bench_run.tsp is always loaded first and brings the engine
 -- these functions call; the table itself must not depend on that.
-brun = brun or {}
+brun             = brun or {}
 
 -- ---------------------------------------------------------------------------
 -- Settings offered, and what each maps to
@@ -37,7 +37,7 @@ brun.pn_laps_max = brun.pn_laps_max or 210
 -- object in this firmware's object set -- the app's own options form uses only NUMBER and OPTION --
 -- and a pick list cannot produce a typo that costs a lap to discover. The live value is bsdg.ip, and
 -- it leads the list so the field opens on whatever the module was loaded with.
-brun.pn_sdg = brun.pn_sdg or {'10.0.1.79', '10.0.1.78', '192.168.0.79'}
+brun.pn_sdg      = brun.pn_sdg or {'10.0.1.79', '10.0.1.78', '192.168.0.79'}
 
 -- The lap shapes, as filters over the plan on the key and NOT as draws -- see brun.wanted. Each entry
 -- is the filter state the shape means, so the mapping lives beside the label instead of in a branch
@@ -56,8 +56,8 @@ brun.pn_laptypes = brun.pn_laptypes or
 
 -- The rate window, in Bd. Defaults span the whole ladder, so the fields open describing a lap that
 -- filters nothing: 300 is the slowest rate soakplan draws and 250 000 the decoder's own ceiling.
-brun.pn_baudlo = brun.pn_baudlo or 300
-brun.pn_baudhi = brun.pn_baudhi or 250000
+brun.pn_baudlo    = brun.pn_baudlo or 300
+brun.pn_baudhi    = brun.pn_baudhi or 250000
 
 -- Where drawn rates start being worth the time. INTERSTITIAL_LO in tools/soakplan.py refuses to draw
 -- them below 4800 for the same reason this defaults to 2400 rather than 300: at the bottom of the
@@ -72,18 +72,18 @@ brun.pn_interstit = brun.pn_interstit or 2400
 -- would drift from them silently. Read through sdec so a changed form moves this one with it.
 function brun.pn_geom()
   local g = {}
-  g.x    = sdec.ui_opt_x or 22
-  g.x2   = sdec.ui_opt_x_c2 or 420
-  g.y0   = sdec.ui_opt_y0 or 60
-  g.dy   = sdec.ui_opt_dy or 54
-  g.btny = sdec.ui_opt_btn_y or 380
+  g.x     = sdec.ui_opt_x or 22
+  g.x2    = sdec.ui_opt_x_c2 or 420
+  g.y0    = sdec.ui_opt_y0 or 60
+  g.dy    = sdec.ui_opt_dy or 54
+  g.btny  = sdec.ui_opt_btn_y or 380
   return g
 end
 
 -- ---------------------------------------------------------------------------
 -- Build
 -- ---------------------------------------------------------------------------
-brun.pnscr = nil
+brun.pnscr  = nil
 brun.pn_obj = nil
 
 -- Hand every object back, screen last. Switch away first, then delete: ui_destroy's rule, because a
@@ -105,9 +105,9 @@ end
 -- here rather than left open: brun.planopen is the run's own handle and a second reader would share
 -- the position. -> rows, variant or nil.
 function brun.pn_plan()
-  local keep = brun.planrows
+  local keep    = brun.planrows
   brun.planrows = 0
-  local ok = brun.planopen()
+  local ok      = brun.planopen()
   if not ok then
     brun.planrows = keep
     return nil
@@ -128,8 +128,8 @@ end
 function brun.build_panel()
   brun.destroy_panel()
   local create = display.create
-  local g = brun.pn_geom()
-  brun.pn_obj = {}
+  local g      = brun.pn_geom()
+  brun.pn_obj  = {}
   local function keep(h)
     if h ~= nil then brun.pn_obj[table.getn(brun.pn_obj) + 1] = h end
     return h
@@ -142,7 +142,7 @@ function brun.build_panel()
 
   -- Eight fields in two columns is four rows, and the pitch has to clear the button row: the same
   -- arithmetic build_options does, read from its constants so a changed form moves this one too.
-  local nf = 8
+  local nf    = 8
   local nrows = math.ceil(nf / 2)
   local maxdy = math.floor((g.btny - 52 - g.y0) / nrows)
   if g.dy > maxdy then g.dy = maxdy end
@@ -247,13 +247,13 @@ end
 function brun.panel_run()
   local laps, ip, lt, lo, hi, inter
   local readok, readerr = pcall(function()
-    laps = display.getvalue(brun.pn_laps)
+    laps     = display.getvalue(brun.pn_laps)
     local si = display.getvalue(brun.pn_sdgf)
     if type(si) == 'number' then ip = brun.pn_sdgtxt(math.floor(si + 0.5)) end
     local li = display.getvalue(brun.pn_lapt)
     if type(li) == 'number' then lt = brun.pn_laptypes[math.floor(li + 0.5)] end
-    lo = display.getvalue(brun.pn_lo)
-    hi = display.getvalue(brun.pn_hi)
+    lo    = display.getvalue(brun.pn_lo)
+    hi    = display.getvalue(brun.pn_hi)
     inter = display.getvalue(brun.pn_inter)
   end)
   if not readok then

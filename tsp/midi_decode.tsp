@@ -13,13 +13,13 @@
 --
 -- Lua 5.0.2: no '#', no bitwise operators, math.mod for modulo.
 
-sdec = sdec or {}
+sdec          = sdec or {}
 
 sdec.MI_NOTES = {'C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'}
 
 -- Controllers worth naming. Sparse on purpose: an unnamed controller still prints
 -- its number, and a wrong name is worse than none.
-sdec.mi_ctl = {}
+sdec.mi_ctl   = {}
 sdec.mi_ctl[0]   = 'Bank Select'
 sdec.mi_ctl[1]   = 'Mod Wheel'
 sdec.mi_ctl[7]   = 'Volume'
@@ -71,8 +71,8 @@ end
 
 -- Render one channel or system-common message.
 function sdec.mi_format(st, d)
-  local hi = math.floor(st / 16)
-  local ch = math.mod(st, 16) + 1                  -- channels are 1-16 to a musician
+  local hi  = math.floor(st / 16)
+  local ch  = math.mod(st, 16) + 1                  -- channels are 1-16 to a musician
   local chs = string.format('ch%-2d ', ch or 0)
 
   if hi == 0x8 then
@@ -138,14 +138,14 @@ end
 -- kind[] is 'chan', 'rt', 'sys', 'sysex' or 'err', so the UI can colour a line
 -- without re-parsing it.
 function sdec.mi_parse()
-  local r = sdec.res
+  local r   = sdec.res
   sdec.midi = {n = 0, msg = {}, kind = {}, bad = 0, nrt = 0}
   if r == nil or r.nf == 0 then return false, 'no bytes to parse' end
   local m = sdec.midi
 
   local function emit(kind, text)
     local k = m.n + 1
-    m.n = k
+    m.n     = k
     m.kind[k] = kind
     m.msg[k] = text
     if kind == 'err' then m.bad = m.bad + 1 end
@@ -162,7 +162,7 @@ function sdec.mi_parse()
 
   local running = nil       -- status byte still in force for running status
   local need, got = 0, 0
-  local d = {}
+  local d  = {}
   local st = nil            -- status the pending data belongs to
   local sx, sxn = {}, 0     -- SysEx accumulator
   local insysex = false
@@ -226,7 +226,7 @@ function sdec.mi_parse()
         if st == nil then
           -- No status pending: this is running status if one is in force.
           if running ~= nil then
-            st = running
+            st   = running
             need = sdec.mi_datacount(running)
             got, d = 0, {}
           else

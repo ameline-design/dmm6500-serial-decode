@@ -1848,9 +1848,7 @@ span exactly — as it must, being the same sum. Any estimator that replaces the
 the rate is measured from the timestamps at all rather than read back from `digitize.samplerate`.
 
 This is why the rate is averaged over consecutive readings rather than taken from a minimum: the
-measurement needs the span's precision on a record whose span is not usable. (`sdec.acq_seg_fs`, which
-sampled windows and averaged their non-gap deltas, went with gap elision -- it existed because an
-elided record's span is not its duration.) Probe: `notes/probe_tsprec.py`.
+measurement needs the span's precision on a record whose span is not usable. Probe: `notes/probe_tsprec.py`.
 
 ### The no-loss sample rate is 120 kS/s, and baud is not in it
 
@@ -1916,7 +1914,7 @@ microseconds, and that is false** — ten of the twenty-three are not: 15 000, 3
 640 000 from the rest is that they do not divide the 66 MHz sample clock, and that does not pick out
 640 000 either. **Nothing about the arithmetic predicts which rate breaks; only the measurement does**, and
 what it says is that the loss SHAPE changes at 640 kS/s and nowhere else in the band. That matters because
-the bound a reader derives from this section is a cap, and `brun.elide_fsmax` was set to 640 000 on the
+the bound a reader derives from this section is a cap, and a cap was once set to 640 000 on the
 strength of the readback — the one number this section records as untrustworthy there.
 
 So the `fs_cap_tier` cap buys an uninterrupted display **and** a record that is what it claims, and a
@@ -2697,33 +2695,6 @@ Beneath the pool sit two separate numbers. `ck_bufguard` = 6 000 000 is the hard
 vendor's `bufferVar.capacity` documents. `ck_bufmargin` = 50 000 is a chosen margin, not a second
 measurement: it covers the pool figure's uncertain last digits and the firmware's unreported
 per-buffer overhead, and at **0.7 % of the pool** it costs nothing.
-
-### An eliding record outran the buffer it was sized into, and 4914 said so
-
-**MEASURED, from the 160-cell lap of 2026-10-17.** The record was allocated per capture at
-`acq_cap(sdec.n)` = **21 100 readings**, which is 0.211 s at 100 kS/s. An eliding capture's digitize
-runs until the sample count is reached and that is wall-clock time, not buffer: the same lap recorded
-`tdig` as high as **40 s**, which at 2500 S/s is 100 000 readings into the ring. It lapped nearly five
-times.
-
-| | |
-|---|---|
-| elide cells in the lap | 60 |
-| cells whose record reached capacity exactly | **23**, every one of them `ring=21100/21100` |
-| of those, cells posting `4914` | **23 of 23** |
-| further cells posting it within ~1000 readings of capacity | 6 |
-| cells below that posting it | **0** |
-
-`4914` is *"Index exceeds maximum readings stored in a buffer"*, and it is filed first in each cell's
-log.
-Note that **none of the ten indexed buffer reads in `tsp/` can produce it on these numbers**: every one
-folds its index once against `n`, and with `n == capacity` the fold is exact. The record's own geometry
-is what the figures show instead -- `sidx=17710` against a capacity of 21 100, so the ring wrapped and
-overwrote **17 709 of its own oldest readings, 84 % of the capture**.
-
-The cost is not the seam. One cell read back `pay=1/114`: one byte of a 114-byte payload. The
-120--160 us resume latency destroys 4 to 9 bytes per gap; this destroys most of the record, and it was
-invisible until `r.elidecap` and `r.elidesidx` started being recorded.
 
 ### The permanent record, and how every mode shares it
 

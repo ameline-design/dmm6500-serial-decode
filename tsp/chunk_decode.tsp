@@ -9,22 +9,22 @@
 -- serial_app; everything here is logic over a sample source, exercised offline against
 -- tools/gen_serial.lua. Lua 5.0.2: no '#', math.mod for modulo, table.getn for length.
 
-sdec = sdec or {}
+sdec             = sdec or {}
 
 -- ---------- configuration ----------
 -- sdec.n, the size frame mode already uses, so the memory high-water mark is one the app survives.
-sdec.ck_win_n = 20000
+sdec.ck_win_n    = 20000
 
 -- Overlap in frames: one for correctness, two for margin. ck_overlap() derives the floor.
 sdec.ck_ovframes = 3
 
 -- Samples the level measurement decimates the recording down to: past sig_levels' bin saturation and
 -- equal to frame mode's own population. docs/MEASUREMENTS.md, 'Why ck_level_n is 20 000'.
-sdec.ck_level_n = 20000
+sdec.ck_level_n  = 20000
 
 -- Contiguous windows the level fallback tries, spaced across the recording. docs/MEASUREMENTS.md,
 -- 'Why the contiguous fallback is spaced across the recording'.
-sdec.ck_probes = 8
+sdec.ck_probes   = 8
 
 -- Medium mode's cap, one number for every baud rate. docs/MEASUREMENTS.md, 'ck_maxbytes = 32768'.
 sdec.ck_maxbytes = 32768
@@ -125,7 +125,7 @@ end
 -- when the window cannot hold enough frames: at 1200 baud with fs at 1 MSa/s, T is 833 samples and
 -- three 12-bit frames do not fit, so the stride would go negative. The refusal names the sample rate.
 function sdec.ck_geometry(T, framebits)
-  local W = sdec.ck_win_n
+  local W  = sdec.ck_win_n
   local ov = sdec.ck_overlap(T, framebits)
   if ov == nil then return nil, nil, nil, 'no bit time' end
   local need = math.ceil((sdec.ck_ovframes + 2) * framebits * T) + sdec.maxback
@@ -180,8 +180,8 @@ function sdec.ck_levels_probe(reader, ntotal, win, k)
   local W = sdec.ck_win_n
   if ntotal ~= nil and ntotal < W then W = ntotal end
   local nprobe = sdec.ck_probes or 1
-  local total = ntotal or W
-  local span = total - W
+  local total  = ntotal or W
+  local span   = total - W
   if span < 0 then span = 0 end
   local from = 1
   if nprobe > 1 and span > 0 then
@@ -274,7 +274,7 @@ function sdec.ck_prime_step(pr)
   if pr.phase == 'read' then
     -- From pr.at, which is not always 1: a try that found no format advances by the whole width it
     -- read, and the only question asked here is which format fits, not which frame straddles a seam.
-    local W = sdec.ck_win_n
+    local W    = sdec.ck_win_n
     local left = nil
     if pr.ntotal ~= nil then left = pr.ntotal - pr.at + 1 end
     if left ~= nil and left < W then W = left end
@@ -356,20 +356,20 @@ end
 -- A slice is bounded in windows rather than seconds, the instrument having one timer and a window
 -- count being deterministic. docs/MEASUREMENTS.md, 'Why a slice is bounded in windows',
 -- 'Decode phase timings' and 'ck_smp_us = 73'.
-sdec.ck_smp_us = 73               -- worst-phase cost per sample, microseconds, MEASURED at 4 sa/bit
-sdec.ck_win_max = 20000           -- and never wider than this, whatever the budget allows
-sdec.ck_win_min = 2000            -- nor narrower: below this the per-window seam overhead dominates
-sdec.ck_win_ref = 20000           -- the width the phase timings above were taken at
+sdec.ck_smp_us      = 73        -- worst-phase cost per sample, microseconds, MEASURED at 4 sa/bit
+sdec.ck_win_max     = 20000     -- and never wider than this, whatever the budget allows
+sdec.ck_win_min     = 2000      -- nor narrower: below this the per-window seam overhead dominates
+sdec.ck_win_ref     = 20000     -- the width the phase timings above were taken at
 
 -- Fraction of the budget for the phase itself; the rest pays for the sink's writes and the repaint.
 sdec.ck_budget_frac = 0.9
 
 -- What a decode window costs per sample, against ck_smp_us for the worst priming phase. One constant
 -- for both pins a slice at one window. docs/MEASUREMENTS.md, 'ck_win_us = 48'.
-sdec.ck_win_us = 48
+sdec.ck_win_us      = 48
 -- Decode windows a slice should spend, as a bound on the width, the count following from it.
 -- docs/MEASUREMENTS.md, 'ck_slice_n = 1'.
-sdec.ck_slice_n = 1
+sdec.ck_slice_n     = 1
 
 -- The widest window whose every phase fits `budget_s`; nil means the fixed maximum, no panel to protect.
 function sdec.ck_win_for(budget_s)
@@ -377,8 +377,8 @@ function sdec.ck_win_for(budget_s)
   if budget_s == nil or budget_s <= 0 then return wmax end
   -- ck_budget_frac is applied here and nowhere else: every phase's cost is proportional to the width,
   -- so trimming W once covers the priming phases and the decode slices together.
-  local b = budget_s * (sdec.ck_budget_frac or 1)
-  local w = math.floor(b / ((sdec.ck_smp_us or 52) * 1e-6))
+  local b  = budget_s * (sdec.ck_budget_frac or 1)
+  local w  = math.floor(b / ((sdec.ck_smp_us or 52) * 1e-6))
   -- Narrow enough that ck_slice_n decode windows also fit. Two bounds on one job, the smaller wins.
   local wd = math.floor(b / ((sdec.ck_slice_n or 1) *
                              (sdec.ck_win_us or sdec.ck_smp_us or 52) * 1e-6))
@@ -416,34 +416,34 @@ function sdec.ck_decode(reader, ntotal, fmt, sink, opts)
   local maxbytes = opts.maxbytes
   if maxbytes == nil and not opts.nocap then maxbytes = sdec.ck_maxbytes end
   local progress = opts.progress
-  local nwin = sdec.ck_nwin(ntotal, W, stride)
+  local nwin     = sdec.ck_nwin(ntotal, W, stride)
 
   local tot = {nf = 0, ngood = 0, nbad = 0, nfalse = 0, nwin = 0, nwin_est = nwin,
                nsmp = 0, stopped = nil, W = W, overlap = ov, stride = stride}
 
   -- Absolute position where the last emitted frame ended; nil tells the first window to anchor.
   local endpos = nil
-  local off = 0                 -- absolute 0-based offset of the current window
+  local off    = 0                 -- absolute 0-based offset of the current window
 
   -- Resuming a suspended run: the loop's whole carried state is window cursor, seam and totals. The
   -- sink is not part of it -- it holds an open handle and a partial row, so it must be the same one.
   if opts.resume ~= nil then
-    off = opts.resume.off or 0
+    off    = opts.resume.off or 0
     endpos = opts.resume.endpos
     if opts.resume.tot ~= nil then tot = opts.resume.tot end
     tot.suspended = nil
-    tot.nwin_est = nwin
+    tot.nwin_est  = nwin
   end
 
-  local slice = sdec.ck_slice_win(opts.budget_s, W, sdec.ck_win_us)
-  local spent = 0
+  local slice  = sdec.ck_slice_win(opts.budget_s, W, sdec.ck_win_us)
+  local spent  = 0
 
   -- Reuse the window priming read, saving 0.435 s; cleared before the loop so a resumed slice cannot
   -- inherit it. All four conditions are load-bearing: docs/MEASUREMENTS.md, 'The four window-reuse
   -- conditions' and 'Window reuse between priming and decode'.
   local primed = opts.primed
-  opts.primed = nil
-  local reuse = (primed ~= nil and off == 0 and opts.resume == nil and primed.W == W and
+  opts.primed  = nil
+  local reuse  = (primed ~= nil and off == 0 and opts.resume == nil and primed.W == W and
                  primed.at == 1)
 
   while true do
@@ -464,11 +464,11 @@ function sdec.ck_decode(reader, ntotal, fmt, sink, opts)
     local r = sdec.ua_run(win, cnt, T, fmt.nbits, fmt.par, fmt.nstop, fmt.invert,
                           tmin0)
 
-    tot.nwin = tot.nwin + 1
-    tot.nsmp = off + cnt
+    tot.nwin   = tot.nwin + 1
+    tot.nsmp   = off + cnt
     tot.nfalse = tot.nfalse + r.nfalse
 
-    local m = r.nf
+    local m    = r.nf
     -- Clip at the cap, mid-window if need be: emitting the whole window and then noticing overshoots.
     if m > 0 and maxbytes ~= nil and tot.nf + m > maxbytes then
       m = maxbytes - tot.nf
@@ -497,7 +497,7 @@ function sdec.ck_decode(reader, ntotal, fmt, sink, opts)
           end
         end
         if hb > 0 then
-          tot.headbad = hb
+          tot.headbad  = hb
           tot.headnbad = hn
         end
       end
@@ -532,7 +532,7 @@ function sdec.ck_decode(reader, ntotal, fmt, sink, opts)
       tot.stopped = 'short read'
       break
     end
-    off = off + stride
+    off   = off + stride
 
     -- Suspend, after the cursor advances and after every termination test, so a resume starts on a
     -- window not yet decoded and the loop's own conditions, not the budget, decide that a run is done.
@@ -591,7 +591,7 @@ function sdec.ck_sink_file(path, ncol)
 
   local cv, ce, cn = {}, {}, 0     -- carry: bytes not yet a full row
   local cbase = 0                  -- stream offset of cv[1]
-  local dead = false
+  local dead  = false
 
   -- ua_hexrow pads ncol - nrow, so the file's last row keeps its ASCII gutter in column.
   local function emit(nrow)
@@ -609,7 +609,7 @@ function sdec.ck_sink_file(path, ncol)
       cv[i - nrow] = cv[i]
       ce[i - nrow] = ce[i]
     end
-    cn = cn - nrow
+    cn    = cn - nrow
     cbase = cbase + nrow
   end
 
@@ -631,7 +631,7 @@ function sdec.ck_sink_file(path, ncol)
   -- Idempotent: a normal finish, a Mode press and a raised step all call this, and the raise path
   -- cannot know whether the normal path did. A double close is not harmless here, nor a double flush.
   local finished = false
-  local finish = function()
+  local finish   = function()
     if finished then return not dead end
     finished = true
     -- The final row is guarded so the close is reached -- the exception to "no pcall on app code",
@@ -678,7 +678,7 @@ function sdec.ck_tail_push(tl, vals, errs, m, base)
   -- total ever pushed, not a ring cursor, and ck_tail_result() derives the absolute start from it.
   local i = 1
   if m > tl.cap then
-    i = m - tl.cap + 1
+    i    = m - tl.cap + 1
     tl.w = tl.w + (i - 1)
     tl.n = tl.cap                      -- the skipped bytes are 'seen', and the ring is now full
   end
@@ -705,7 +705,7 @@ function sdec.ck_tail_result(tl, fmt, ntotal)
     r.vals[i], r.errs[i] = tl.v[j], tl.e[j]
     if tl.e[j] == nil then r.ngood = r.ngood + 1 else r.nbad = r.nbad + 1 end
   end
-  r.first = start + 1
+  r.first  = start + 1
   r.ntotal = ntotal                         -- how many the whole run decoded
   if fmt ~= nil then
     r.nbits, r.par, r.nstop = fmt.nbits, fmt.par, fmt.nstop
@@ -751,7 +751,7 @@ function sdec.ck_job_sinks(job)
       sink = fsink
     else
       local extra = sink
-      sink = function(vals, errs, m, base)
+      sink        = function(vals, errs, m, base)
         local a = extra(vals, errs, m, base)
         local b = fsink(vals, errs, m, base)
         return a ~= false and b ~= false
@@ -760,10 +760,10 @@ function sdec.ck_job_sinks(job)
   end
 
   local tail = sdec.ck_tail_new(opts.keep)
-  job.tail = tail
+  job.tail   = tail
   if tail ~= nil then
     local inner = sink
-    sink = function(vals, errs, m, base)
+    sink        = function(vals, errs, m, base)
       sdec.ck_tail_push(tail, vals, errs, m, base)
       if inner == nil then return true end
       return inner(vals, errs, m, base)
@@ -823,7 +823,7 @@ function sdec.ck_job_step(job)
   -- window a step emits is overwritten by the next step's, so job keeps the first non-nil answer.
   if tot ~= nil then
     if job.headsusp == nil then job.headsusp = tot.headsusp end
-    if job.headbad == nil then job.headbad = tot.headbad end
+    if job.headbad  == nil then job.headbad  = tot.headbad  end
     if job.headnbad == nil then job.headnbad = tot.headnbad end
     tot.headsusp, tot.headbad = job.headsusp, job.headbad
     tot.headnbad = job.headnbad
@@ -841,7 +841,7 @@ function sdec.ck_job_step(job)
 
   if tot.suspended ~= nil then
     job.state = tot.suspended
-    job.tot = tot                     -- partial totals, so the panel can show real progress
+    job.tot   = tot                     -- partial totals, so the panel can show real progress
     return false, tot, nil
   end
 
@@ -854,7 +854,7 @@ function sdec.ck_job_step(job)
     local fok = fpok and fv
     if not fpok or not fok then tot.stopped = 'write failed' end
   end
-  tot.fmt = job.fmt
+  tot.fmt  = job.fmt
   tot.path = job.path
   tot.tail = sdec.ck_tail_result(job.tail, job.fmt, tot.nf)
   -- The head verdict travels with the tail: bench_run reads res.headsusp off whatever sdec.res is, and
@@ -876,10 +876,10 @@ function sdec.ck_job_abandon(job)
     -- Clear the checkpoint: tot.suspended.tot is tot, so returning it hands back a result that both
     -- claims to be finished and carries a self-referential offer of more work.
     tot.suspended = nil
-    tot.stopped = tot.stopped or 'stopped'
-    tot.fmt = job.fmt
-    tot.path = job.path
-    tot.tail = sdec.ck_tail_result(job.tail, job.fmt, tot.nf)
+    tot.stopped   = tot.stopped or 'stopped'
+    tot.fmt       = job.fmt
+    tot.path      = job.path
+    tot.tail      = sdec.ck_tail_result(job.tail, job.fmt, tot.nf)
   end
   return tot
 end

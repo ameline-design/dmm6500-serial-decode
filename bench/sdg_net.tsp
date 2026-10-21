@@ -17,26 +17,26 @@
 -- PORT 5025, NEVER 5024. The LAN has also died with ZERO bytes uploaded, and probing 5024 is the
 -- remaining suspect -- see SDG_SHUTDOWN_SUSPECTED_HAZARD in tools/instruments.py.
 
-bsdg = bsdg or {}
+bsdg           = bsdg or {}
 
-bsdg.ip      = bsdg.ip or '10.0.1.79'
-bsdg.port    = bsdg.port or 5025
-bsdg.id      = nil                 -- tspnet connection id, nil when closed
-bsdg.why     = nil                 -- why the last call failed, for the status file
-bsdg.nfail   = 0                   -- consecutive failures, so a caller can give up deliberately
-bsdg.ncmd    = 0
-bsdg.timeout = bsdg.timeout or 5   -- seconds; the tspnet default of 20 is far too long to spend on
+bsdg.ip        = bsdg.ip or '10.0.1.79'
+bsdg.port      = bsdg.port or 5025
+bsdg.id        = nil                 -- tspnet connection id, nil when closed
+bsdg.why       = nil                 -- why the last call failed, for the status file
+bsdg.nfail     = 0                   -- consecutive failures, so a caller can give up deliberately
+bsdg.ncmd      = 0
+bsdg.timeout   = bsdg.timeout or 5   -- seconds; the tspnet default of 20 is far too long to spend on
                                    -- every query of a cell whose generator has gone quiet
 
 -- Vpp CEILING. The vectors are built for a 20 Vpp part into high-Z; a value past that is a plan
 -- error rather than a stimulus, and clipping would be measured as a decode failure.
-bsdg.maxvpp = bsdg.maxvpp or 20.0
+bsdg.maxvpp    = bsdg.maxvpp or 20.0
 -- TrueArb's rate limits, from the datasheet via tools/instruments.py.
-bsdg.minsrate = bsdg.minsrate or 1e-6
+bsdg.minsrate  = bsdg.minsrate or 1e-6
 -- 40 MSa/s, WHICH IS THE FAMILY'S FLOOR AND NOT THIS UNIT'S CEILING. The SDG2122X here does 75e6, but
 -- the cheapest SDG2000X does 40e6 and the highest rate any plan cell draws is 25e6. Matches
 -- tools/instruments.py's SDG_MAX_SRATE, so the instrument refuses exactly what the host refuses.
-bsdg.maxsrate = bsdg.maxsrate or 40e6
+bsdg.maxsrate  = bsdg.maxsrate or 40e6
 
 -- HOW MANY TIMES THE SWITCH VERIFY ASKS. Selecting a waveform makes this generator briefly stop
 -- answering, so one timeout is evidence about the query rather than about the selection. Asking again
@@ -44,7 +44,7 @@ bsdg.maxsrate = bsdg.maxsrate or 40e6
 -- does, which is brun.selretry's job. Only the 39 cells a lap where the vector changes need either.
 -- arwvwait is seconds between asks.
 bsdg.arwvtries = bsdg.arwvtries or 4
-bsdg.arwvwait = bsdg.arwvwait or 0.4
+bsdg.arwvwait  = bsdg.arwvwait or 0.4
 
 -- WHAT THE GENERATOR IS ALREADY PLAYING, so a cell that asks for the same thing can skip the asking.
 -- A lap sweeps 43 rates across one waveform before moving to the next, so 97.7 % of cells re-select a
@@ -57,12 +57,12 @@ bsdg.arwvwait = bsdg.arwvwait or 0.4
 -- can never assert a switch that did not land -- which is the failure the verify exists to catch, and
 -- one that would silently mis-attribute every cell after it to the wrong stimulus. Every failure path
 -- in select() clears it, as do close() and reset(), because a reconnected session knows nothing.
-bsdg.cur     = nil     -- waveform name last CONFIRMED by ARWV?; nil means unknown
-bsdg.curamp  = nil     -- the BSWV/SRATE values last written and not since disturbed
-bsdg.curofst = nil
-bsdg.cursrate = nil
-bsdg.nskip   = 0       -- consecutive selects that skipped the ARWV verify
-bsdg.nsame   = 0       -- selects that skipped the conversation entirely, for the run's own accounting
+bsdg.cur       = nil     -- waveform name last CONFIRMED by ARWV?; nil means unknown
+bsdg.curamp    = nil     -- the BSWV/SRATE values last written and not since disturbed
+bsdg.curofst   = nil
+bsdg.cursrate  = nil
+bsdg.nskip     = 0       -- consecutive selects that skipped the ARWV verify
+bsdg.nsame     = 0       -- selects that skipped the conversation entirely, for the run's own accounting
 
 -- A CEILING ON HOW LONG A STALE CACHE COULD GO UNNOTICED. Nothing in this module can change the
 -- selected waveform behind the cache, but the generator is a third party: a front-panel press or a
@@ -94,14 +94,14 @@ function bsdg.open()
     --
     -- EMPTY RATHER THAN THE MANUAL'S EXAMPLE, which sends *rst: that would drop the output and the
     -- loaded waveform mid-soak. There is nothing this side needs to say on connect.
-    bsdg.id = tspnet.connect(bsdg.ip, bsdg.port, '')
+    bsdg.id        = tspnet.connect(bsdg.ip, bsdg.port, '')
     -- PER CONNECTION, not once: the manual states the termination has to be set after every
     -- connect. Siglent replies are CRLF-terminated.
     tspnet.termination(bsdg.id, tspnet.TERM_CRLF)
   end)
   if not ok or bsdg.id == nil then
-    bsdg.id = nil
-    bsdg.why = 'connect failed: ' .. tostring(err)
+    bsdg.id    = nil
+    bsdg.why   = 'connect failed: ' .. tostring(err)
     bsdg.nfail = bsdg.nfail + 1
     return false, bsdg.why
   end
@@ -163,11 +163,11 @@ function bsdg.cmd(s)
     -- A WRITE THAT FAILED MEANS THE SESSION IS SUSPECT, so it is dropped rather than reused. The
     -- next call reconnects, which is the only recovery available from this side.
     bsdg.close()
-    bsdg.why = 'write failed: ' .. tostring(err)
+    bsdg.why   = 'write failed: ' .. tostring(err)
     bsdg.nfail = bsdg.nfail + 1
     return false, bsdg.why
   end
-  bsdg.ncmd = bsdg.ncmd + 1
+  bsdg.ncmd  = bsdg.ncmd + 1
   bsdg.nfail = 0
   return true
 end
@@ -186,10 +186,10 @@ function bsdg.ask(s)
   local waited, step = 0, 0.05
   while waited < bsdg.timeout do
     local avail = 0
-    local ok = pcall(function() avail = tspnet.readavailable(bsdg.id) or 0 end)
+    local ok    = pcall(function() avail = tspnet.readavailable(bsdg.id) or 0 end)
     if not ok then
       bsdg.close()
-      bsdg.why = 'readavailable failed on ' .. s
+      bsdg.why   = 'readavailable failed on ' .. s
       bsdg.nfail = bsdg.nfail + 1
       return nil, bsdg.why
     end
@@ -198,7 +198,7 @@ function bsdg.ask(s)
       local rok = pcall(function() rep = tspnet.read(bsdg.id) end)
       if not rok or rep == nil then
         bsdg.close()
-        bsdg.why = 'read failed on ' .. s
+        bsdg.why   = 'read failed on ' .. s
         bsdg.nfail = bsdg.nfail + 1
         return nil, bsdg.why
       end
@@ -208,7 +208,7 @@ function bsdg.ask(s)
     delay(step)
     waited = waited + step
   end
-  bsdg.why = 'no reply to ' .. s .. ' within ' .. tostring(bsdg.timeout) .. ' s'
+  bsdg.why   = 'no reply to ' .. s .. ' within ' .. tostring(bsdg.timeout) .. ' s'
   bsdg.nfail = bsdg.nfail + 1
   return nil, bsdg.why
 end
@@ -241,7 +241,7 @@ function bsdg.drain()
   -- BOUNDED. A generator streaming without end would otherwise hold the interpreter for ever, and this
   -- runs inside a soak that has to survive eight days unattended.
   while guard < 40 do
-    guard = guard + 1
+    guard       = guard + 1
     local avail = 0
     if not pcall(function() avail = tspnet.readavailable(bsdg.id) or 0 end) then return n end
     if avail <= 0 then return n end
@@ -269,9 +269,9 @@ function bsdg.snapshot()
   -- unanswered queries would cost 20 s on a cell that has already failed, and on a plan built out of
   -- failing cells that is most of the lap. One second is ample for a generator that is answering at all,
   -- and a query this misses is recorded as nil -- which is itself the finding.
-  local keept = bsdg.timeout
+  local keept  = bsdg.timeout
   bsdg.timeout = 1
-  local q = {{'arwv', 'C1:ARWV?'}, {'bswv', 'C1:BSWV?'}, {'srate', 'C1:SRATE?'}, {'outp', 'C1:OUTP?'}}
+  local q      = {{'arwv', 'C1:ARWV?'}, {'bswv', 'C1:BSWV?'}, {'srate', 'C1:SRATE?'}, {'outp', 'C1:OUTP?'}}
   for k = 1, table.getn(q) do
     -- DRAINED BEFORE EACH QUERY, so this label carries the first chunk of ITS OWN reply rather than the
     -- previous one's tail. A long reply is still truncated -- ARWV's name, BSWV's AMP and OFST and
@@ -364,7 +364,7 @@ function bsdg.select(name, amp, ofst, srate)
     -- Compared, not assumed. A bare flash name needs no stripping; the path and .bin removal is for the
     -- key-file form, which answers without its extension.
     local want = string.gsub(name, '^.*/', '')
-    want = string.gsub(want, '%.bin$', '')
+    want       = string.gsub(want, '%.bin$', '')
     -- ASKED AGAIN BECAUSE THE REPLY CAN LAG. Selecting makes this generator briefly stop answering, and
     -- 15 of the 86 cells in a smoke run were thrown away on 'no reply to C1:ARWV? within 5 s' from a
     -- generator that was working -- 17 % of the run, recorded as stimulus failures.

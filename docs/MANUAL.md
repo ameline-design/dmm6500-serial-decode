@@ -88,7 +88,7 @@ early**, so decide the size before you press — see **The TRIGGER key** below.
 
 ## The screen
 
-![Main screen, hex view — a 240-byte frame capture: 239 bytes decoded, no errors, S/N 74 dB](img/panel-hex.png)
+![Main screen, hex view — a 240-byte frame capture: 280 bytes decoded, no errors, S/N 76 dB](img/panel-hex.png)
 
 Along the top are the things the app worked out about your line:
 
@@ -133,7 +133,7 @@ be reporting the meter's own digitizer resolution rather than anything about you
 one is drawn red across its whole width — offset, hex and ASCII together. Flagged bytes read as
 `?` in the ASCII gutter:
 
-![A capture that began mid-byte: the note names 1 byte and ERR reads 1](img/panel-errors.png)
+![A capture that began mid-byte: the note names 6 bytes and ERR reads 2](img/panel-errors.png)
 
 That is a real 240B capture that began part way through a byte. **The note row names the cause** —
 `began mid-byte -- the first N bytes are misaligned.` — the app arms on a busy line, so it lands
@@ -179,7 +179,7 @@ During a recording the status row carries a live counter — `recording... 40 % 
 **View** switches the byte display to plain text, which is what you want for anything human-readable —
 and a row carrying a flagged byte is red here too:
 
-![Main screen, text view — five bytes misaligned at the start, ERR agreeing at 5](img/panel-text.png)
+![Main screen, text view — a mid-byte start, ERR reading 6](img/panel-text.png)
 
 **The note row is the important one.** Warnings appear there — an ambiguous baud rate, a line that
 disagrees with the rate you locked, a recording that stopped early. If more than one applies it ends
@@ -210,6 +210,12 @@ away.
 | **Msgs** | Right-hand edge, directly below **Up**. Opens a screen showing **the app's own messages** — the notes, warnings and errors — each one **in full** and in a larger face than the dump area uses, wrapped across as many of its 13 rows as it needs and never shortened with an ellipsis. It is not a view of the decoded data; the dump area and its **Up** / **Dn** are what page through that. **The button only appears when the note row is holding something back**: either a second note exists, so the row reads `(+N more)`, or there is one note too wide for the row. A single note the row shows completely gets no button, because there would be nothing new to read. The screen has its own **Up** / **Dn** and a **Back**, and its counter names the page, the line range and the number of notes. |
 | **Lock Rate** | Right-hand edge. Only appears when the rate is not locked. |
 
+The **Msgs** screen, reached from that button. This capture filled its window, which is a condition
+the app reports — so the note is the app's own and nothing was planted to produce the figure. Up and
+Dn are absent because one page holds everything; they appear when it does not.
+
+![The Messages screen: one note, numbered, shown in full, with page 1 of 1 and line 1-1 of 1](img/panel-msgs.png)
+
 Every button responds immediately except the ones that take a capture. **Capture takes about 1.7
 seconds when the rate is locked, and 4 to 9 seconds when it is not** — because to find an unknown
 rate it has to capture two or three times. Slower lines take longer. The exact time varies
@@ -220,7 +226,7 @@ if the panel seems to ignore you, wait rather than pressing again.
 
 ### Paging through a long capture
 
-![Page 4 of 35 of a finished 32 kB recording, hex view](img/panel-paged.png)
+![Page 3 of 35 of a finished 32 kB recording, hex view](img/panel-paged.png)
 
 A recording is far more than one screen, so **Up** and **Dn** appear down the right-hand edge and
 **page N of M** appears at the right of the note row — the two numbers in white, the words dimmed, so
@@ -242,7 +248,7 @@ mode, since 8 kB is its own tail.
 of 35, because a text row holds 80 characters and a hex row holds 16 bytes — 1200 bytes a page against
 240, over the same 8 192:
 
-![A 32 kB capture in text view: page 4 of 7](img/panel-paged-text.png)
+![A 32 kB capture in text view: page 3 of 7](img/panel-paged-text.png)
 
 Nothing about paging changes the capture; only how much of it fits on a screen, and the byte range in
 the note row is the same 24577-32768 either way. The two figures above are separate 32 kB recordings of

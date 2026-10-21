@@ -10,24 +10,24 @@
 -- that must line up needs its own fixed-x object. docs/MEASUREMENTS.md, 'The panel coordinate space'
 -- covers the geometry, and 'Display objects: cost, census and the dump-row choice' the object cost.
 
-sdec = sdec or {}
+sdec            = sdec or {}
 
 -- ---------- main screen geometry (object coordinates) ----------
 -- The words go in the bar and the colour in the mode cell. mockup.lua and render_png.py identify
 -- the main screen by this prefix.
 -- docs/UNDOCUMENTED.md, 'display.settext works on an OBJ_SCREEN, and setcolor on one is refused with 1717'.
-sdec.ui_title    = 'SERIAL DECODE'
+sdec.ui_title   = 'SERIAL DECODE'
 
 -- ---------- header field strip ----------
 -- Dim labels over bright values, each at its own fixed x, because separate objects are the only way
 -- to align columns in a proportional font. No rule lands inside a glyph band, which test_serial
 -- asserts -- docs/MEASUREMENTS.md, 'Where the header table rules go'.
-sdec.ui_ink = 12
+sdec.ui_ink     = 12
 sdec.ui_ink_med = 17
-sdec.ui_lab_y = 14
-sdec.ui_val_y = 32
+sdec.ui_lab_y   = 14
+sdec.ui_val_y   = 32
 -- X positions come from the measured label and widest-value widths; render_png.py reports a collision.
-sdec.ui_fields = {
+sdec.ui_fields  = {
   -- `med` keeps FONT_MEDIUM, `wid` is the widest value the column is sized for, `dy` drops it n px.
   {lab = 'BAUD',   x = 8,   c = 0x00DCFF, med = true, dy = 2, wid = '115200'},
   {lab = 'FORMAT', x = 115, c = 0x00DCFF, med = true, dy = 2, labdx = -4, wid = '8N1M'},
@@ -48,60 +48,60 @@ sdec.ui_fields = {
 -- test_serial cannot disagree. It must account for the font and fd.dy, or the tallest cells go
 -- unguarded.
 function sdec.ui_field_band(j)
-  local fd = sdec.ui_fields[j]
-  local y = sdec.ui_val_y + (fd.dy or 0)
+  local fd  = sdec.ui_fields[j]
+  local y   = sdec.ui_val_y + (fd.dy or 0)
   local ink = sdec.ui_ink
   if fd.med then ink = sdec.ui_ink_med end
   return y - ink + 1, y
 end
 
 -- Measured advances -- docs/MEASUREMENTS.md, 'Character advances on the three panel faces'.
-sdec.ui_adv_upper = 10       -- uppercase, measured 9.67 worst case
+sdec.ui_adv_upper  = 10       -- uppercase, measured 9.67 worst case
 -- A button face needs len * ui_adv_btn + 8 px to render its label uncut.
-sdec.ui_adv_btn = 14
-sdec.ui_adv_mixed = 8        -- digits and mixed-case, measured 7.80 worst case
+sdec.ui_adv_btn    = 14
+sdec.ui_adv_mixed  = 8        -- digits and mixed-case, measured 7.80 worst case
 -- The label row, at 66 %. Judged on the LCD rather than in a grab, which flatters a dim grey: the
 -- labels stay dimmer than the values they head, but not so dim they have to be hunted for.
-sdec.ui_c_lab  = 0xA8A8A8                    -- the label row
+sdec.ui_c_lab      = 0xA8A8A8                    -- the label row
 -- ---------- lock state ----------
 -- Which header fields the operator can assert rather than measure. A forced value looks exactly
 -- like a measured one -- lock 9600, probe a 19200 line -- hence the colour channel below.
 sdec.ui_lockfields = {baud = 1, fmt = 2, idle = 3}
-sdec.ui_c_locked  = 0x40FF40   -- green:  the operator pinned this
-sdec.ui_c_auto    = 0xFFC000   -- amber:  the app worked it out
-sdec.ui_c_unknown = 0xFF6060   -- red:    nothing to lock -- no decode
+sdec.ui_c_locked   = 0x40FF40   -- green:  the operator pinned this
+sdec.ui_c_auto     = 0xFFC000   -- amber:  the app worked it out
+sdec.ui_c_unknown  = 0xFF6060   -- red:    nothing to lock -- no decode
 -- ERR's index, which lets ui_field_colour be the single writer of every value cell's colour. A
 -- second writer with its own cache leaves the loser never repainting: a red error count in green.
-sdec.ui_errfield  = 9
+sdec.ui_errfield   = 9
 -- S/N thresholds are the point of the cell -- docs/MEASUREMENTS.md, 'The S/N cliff is at 12 dB'.
-sdec.ui_snfield   = 11
+sdec.ui_snfield    = 11
 -- FIT bands -- docs/MEASUREMENTS.md, 'Why the FIT bands are 0.90 and 0.72'.
-sdec.ui_fitfield  = 10
-sdec.ui_fit_good  = 0.90
-sdec.ui_fit_bad   = 0.72
+sdec.ui_fitfield   = 10
+sdec.ui_fit_good   = 0.90
+sdec.ui_fit_bad    = 0.72
 -- Above the measured cliff, not on it: red must appear while the capture is still byte-exact.
-sdec.ui_sn_good   = 30       -- at or above: green
-sdec.ui_sn_bad    = 15       -- below: red. Between the two: amber
-sdec.ui_c_sn_ok   = 0x80FF80 -- green:  the same "all clear" green BYTES and ERR carry
-sdec.ui_c_sn_warn = 0xFFFF00 -- yellow: margin, but not much
-sdec.ui_c_sn_bad  = 0xFF6060 -- red:    the same red ERR goes when it has something to report
+sdec.ui_sn_good    = 30       -- at or above: green
+sdec.ui_sn_bad     = 15       -- below: red. Between the two: amber
+sdec.ui_c_sn_ok    = 0x80FF80 -- green:  the same "all clear" green BYTES and ERR carry
+sdec.ui_c_sn_warn  = 0xFFFF00 -- yellow: margin, but not much
+sdec.ui_c_sn_bad   = 0xFF6060 -- red:    the same red ERR goes when it has something to report
 -- Rules boxing the strip into a table: thin OBJ_RECTs, created once and never touched again.
-sdec.ui_c_rule = 0xA8A8A8
+sdec.ui_c_rule     = 0xA8A8A8
 -- The screen background, for hiding an object. It must not be 0: the firmware reads a fill of 0 as
 -- "unset" and paints nothing, so setfill(h, 0) climbs sdec.fillfails and changes nothing.
-sdec.ui_c_hide = 0x000A0D
-sdec.ui_rule_top = 1
+sdec.ui_c_hide     = 0x000A0D
+sdec.ui_rule_top   = 1
 -- Between the label ink and the value ink, with one free row either side.
-sdec.ui_rule_hdr = 15
-sdec.ui_rule_mid = 37                        -- under the value ink (medium 18..34 on the dy cells)
-sdec.ui_rule_bot = 56                        -- one clear row under the descender tip at 55
+sdec.ui_rule_hdr   = 15
+sdec.ui_rule_mid   = 37                        -- under the value ink (medium 18..34 on the dy cells)
+sdec.ui_rule_bot   = 56                        -- one clear row under the descender tip at 55
 -- The full width the space allows; 797 -- docs/MEASUREMENTS.md, 'The panel coordinate space'.
-sdec.ui_rule_x0  = 1
-sdec.ui_rule_x1  = 797
+sdec.ui_rule_x0    = 1
+sdec.ui_rule_x1    = 797
 sdec.ui_note_lab_x = 8
 -- The trigger source, in the note row's left cell. Labels are the option field's own, letter for
 -- letter, build_options() creating that field from this table; the keys are sdec.trigmode's values.
-sdec.ui_trigsrc = {
+sdec.ui_trigsrc    = {
   edge  = {name = 'Start bit',   c = 0x40FF40},
   free  = {name = 'Free run',    c = 0xFFFF00},
   front = {name = 'Trigger key', c = 0x00FFFF},
@@ -110,91 +110,91 @@ sdec.ui_trigsrc = {
 -- ui_trigsrc label against its rule: render_png.py catches only an overrun of the panel edge.
 sdec.ui_note_val_x = 112
 -- The page counter shares the note row. X is the right edge of the last of its four pieces.
-sdec.ui_pgind_x  = 788
+sdec.ui_pgind_x    = 788
 -- Digit columns sized for two digits; a wider count overflows left into the gap.
-sdec.ui_pgind_dig = '99'
-sdec.ui_pgind_gap = 6
-sdec.ui_note_gap = 20
+sdec.ui_pgind_dig  = '99'
+sdec.ui_pgind_gap  = 6
+sdec.ui_note_gap   = 20
 
-sdec.ui_note_y   = 51
-sdec.ui_row_y0   = 71                        -- first dump row
-sdec.ui_row_dy   = 18                        -- row pitch (see docs/panel-ref-rows.png)
+sdec.ui_note_y     = 51
+sdec.ui_row_y0     = 71                        -- first dump row
+sdec.ui_row_dy     = 18                        -- row pitch (see docs/panel-ref-rows.png)
 -- 15 rows x 16 bytes = 240, so a hex page holds an exact number of 16-byte rows.
-sdec.ui_nrow     = 15
-sdec.ui_stat_y   = 344
+sdec.ui_nrow       = 15
+sdec.ui_stat_y     = 344
 -- The status band is boxed like the header strip, so the two do not run together into one wall.
-sdec.ui_stat_top = 330   -- above the status ink (333..344)
-sdec.ui_stat_bot = 349   -- below it, one clear row under the descender tip at 347
+sdec.ui_stat_top   = 330   -- above the status ink (333..344)
+sdec.ui_stat_bot   = 349   -- below it, one clear row under the descender tip at 347
 -- A divider before the right-hand cell. ui_vr2_x derives from it, so the two stay one column.
-sdec.ui_stat_div = 472
+sdec.ui_stat_div   = 472
 -- ---------- the acquire / decode progress bar ----------
 -- A fixed slot in the left status cell: following the progress text would step the bar sideways at
 -- 10 % and again at 100 %, movement the eye reads as the thing itself changing. x is measured --
 -- docs/MEASUREMENTS.md, 'The progress bar extents'.
-sdec.ui_prog_x = 339
+sdec.ui_prog_x     = 339
 -- Every extent below is derived from the three rules that bound the status cell, so moving any of
 -- them moves the bar. A literal goes stale silently: the bar is invisible in frame mode.
-sdec.ui_prog_y = sdec.ui_stat_top + 2
-sdec.ui_prog_h = sdec.ui_stat_bot - 2 - sdec.ui_prog_y + 1
-sdec.ui_prog_w = sdec.ui_stat_div - 3 - sdec.ui_prog_x
+sdec.ui_prog_y     = sdec.ui_stat_top + 2
+sdec.ui_prog_h     = sdec.ui_stat_bot - 2 - sdec.ui_prog_y + 1
+sdec.ui_prog_w     = sdec.ui_stat_div - 3 - sdec.ui_prog_x
 -- Thickness of the bar; 10 is the firmware's ceiling, which is why the trough is 2 px and not 1.
-sdec.ui_prog_lw = 10
+sdec.ui_prog_lw    = 10
 -- The bar's travel inside the frame's 1 px border, and the row its thick line is stroked along.
-sdec.ui_prog_wmax = sdec.ui_prog_w - 2
-sdec.ui_prog_pad  = math.floor((sdec.ui_prog_h - 2 - sdec.ui_prog_lw) / 2)
-sdec.ui_prog_ly   = sdec.ui_prog_y + 1 + sdec.ui_prog_pad + math.floor(sdec.ui_prog_lw / 2)
+sdec.ui_prog_wmax  = sdec.ui_prog_w - 2
+sdec.ui_prog_pad   = math.floor((sdec.ui_prog_h - 2 - sdec.ui_prog_lw) / 2)
+sdec.ui_prog_ly    = sdec.ui_prog_y + 1 + sdec.ui_prog_pad + math.floor(sdec.ui_prog_lw / 2)
 -- The rear BNC gets its own cell, so what the app writes and what its back panel does are not two
 -- unrelated facts in one box. Its labels lost the 'ext' because the cell is 1 px too narrow for it.
-sdec.ui_trig_div = 666
-sdec.ui_trig_x   = 675
+sdec.ui_trig_div   = 666
+sdec.ui_trig_x     = 675
 -- A button is 58 px tall and the content area 431, so a button needs y <= 373. The firmware accepts
 -- a y past that and clips; tools/mock_display raises, so an over-reach fails a test instead.
-sdec.ui_btn_y    = 362
-sdec.ui_btn_h    = 58                        -- for layout arithmetic, not passed to the API
-sdec.ui_x        = 8
+sdec.ui_btn_y      = 362
+sdec.ui_btn_h      = 58                        -- for layout arithmetic, not passed to the API
+sdec.ui_x          = 8
 
 -- ---------- dump column geometry ----------
 -- One unmeasured number, and every column derives from it: at 8 px/char the hex block is 376 px
 -- wide and at 11 it is 517, so a literal ASCII column would sit 141 px inside the hex.
-sdec.ui_ch_w     = 8                         -- character advance, ESTIMATE
-sdec.ui_col_gap  = 8                         -- clear space each side of a vertical rule
+sdec.ui_ch_w       = 8                         -- character advance, ESTIMATE
+sdec.ui_col_gap    = 8                         -- clear space each side of a vertical rule
 -- Five, not four. '%04d' is a minimum width, not a maximum: a 32 kB recording's last row is offset
 -- 32752, and at four the separator at 48 was drawn through the offset text.
-sdec.ui_ixn      = 5                         -- offset field, '%04d', five digits past 9999
+sdec.ui_ixn        = 5                         -- offset field, '%04d', five digits past 9999
 -- Hex block width, derived: changing the grouping has to move the ASCII column and rule 2 with it.
-sdec.ui_hxn      = sdec.ua_hexwidth(8)      -- ONE group of 8 bytes: 8*3 - 1 = 23 chars
-sdec.ui_col_gap2 = 12                       -- clear space BETWEEN the two hex groups
-sdec.ui_asn      = 16                        -- ASCII block, one char per byte
+sdec.ui_hxn        = sdec.ua_hexwidth(8)      -- ONE group of 8 bytes: 8*3 - 1 = 23 chars
+sdec.ui_col_gap2   = 12                       -- clear space BETWEEN the two hex groups
+sdec.ui_asn        = 16                        -- ASCII block, one char per byte
 
-sdec.ui_col_ix   = sdec.ui_x
+sdec.ui_col_ix     = sdec.ui_x
 -- Wider than ui_col_gap, and the same on both sides of rule 1, centring it in its own clear space.
-sdec.ui_ix_gap   = 12
-sdec.ui_vr1_x    = sdec.ui_col_ix + sdec.ui_ixn * sdec.ui_ch_w + sdec.ui_ix_gap
-sdec.ui_col_hx   = sdec.ui_vr1_x + sdec.ui_ix_gap
+sdec.ui_ix_gap     = 12
+sdec.ui_vr1_x      = sdec.ui_col_ix + sdec.ui_ixn * sdec.ui_ch_w + sdec.ui_ix_gap
+sdec.ui_col_hx     = sdec.ui_vr1_x + sdec.ui_ix_gap
 -- The second group of eight at a fixed x: positioned by string content it would drift row to row.
-sdec.ui_col_hx2  = sdec.ui_col_hx + sdec.ui_hxn * sdec.ui_ch_w + sdec.ui_col_gap2
+sdec.ui_col_hx2    = sdec.ui_col_hx + sdec.ui_hxn * sdec.ui_ch_w + sdec.ui_col_gap2
 -- Aligned with the status band's divider, because the two are stacked in one column and 10 px of
 -- disagreement reads as a mistake. Taken from ui_stat_div, this being checkable only by eye.
-sdec.ui_vr2_x    = sdec.ui_stat_div
+sdec.ui_vr2_x      = sdec.ui_stat_div
 -- Wider than ui_col_gap, and rule 2 does not move with it: this only pushes the text off the line.
-sdec.ui_as_gap   = 16
-sdec.ui_col_as   = sdec.ui_vr2_x + sdec.ui_as_gap
-sdec.ui_vr3_x    = sdec.ui_col_as + sdec.ui_asn * sdec.ui_ch_w + sdec.ui_col_gap
+sdec.ui_as_gap     = 16
+sdec.ui_col_as     = sdec.ui_vr2_x + sdec.ui_as_gap
+sdec.ui_vr3_x      = sdec.ui_col_as + sdec.ui_asn * sdec.ui_ch_w + sdec.ui_col_gap
 -- The rules span the dump block, both ends derived from the rules they touch, never from the grid.
-sdec.ui_vr_y0    = sdec.ui_rule_bot + 1
-sdec.ui_vr_y1    = sdec.ui_stat_top
+sdec.ui_vr_y0      = sdec.ui_rule_bot + 1
+sdec.ui_vr_y1      = sdec.ui_stat_top
 
 -- ---------- position bar ----------
 -- A proportional indicator, not a draggable scrollbar, gestures not reaching custom objects here.
 -- Segments are recoloured in place because setposition is unverified on rectangles. Off by default:
 -- a FRAME capture is one page, and 15 segments cost 15 objects.
 if sdec.ui_sb_show == nil then sdec.ui_sb_show = false end
-sdec.ui_sb_x   = 778
-sdec.ui_sb_w   = 12
+sdec.ui_sb_x  = 778
+sdec.ui_sb_w  = 12
 -- Derived, not a matching literal: segments sit on the dump's own grid. Nothing catches a mismatch
 -- -- ui_bar() lights from page fractions, so the only symptom is cosmetic misalignment.
-sdec.ui_sb_n   = sdec.ui_nrow                -- segments, one per dump row -- BY CONSTRUCTION
-sdec.ui_sb_h   = 17                          -- segment height, 3 px of gap at 20 px pitch
+sdec.ui_sb_n  = sdec.ui_nrow                -- segments, one per dump row -- BY CONSTRUCTION
+sdec.ui_sb_h  = 17                          -- segment height, 3 px of gap at 20 px pitch
 
 -- ---------- the capture modes ----------
 -- The Mode button cycles this list, so there is one start control and no rule about which of two
@@ -221,7 +221,7 @@ sdec.ui_modes = {
   -- There is no uncapped mode: a run longer than one window is what flow control is for.
   n = 3,
 }
-sdec.capmode = sdec.capmode or 'frame'    -- operator state, hence `or`
+sdec.capmode     = sdec.capmode or 'frame'    -- operator state, hence `or`
 
 -- The FLOOR on how long a quiet line ends a stream, not the exit itself -- sdec.idle_exit() takes it
 -- from Arm/Idle Wait. Without any such exit a 1200 baud run waits nine minutes for the buffer to fill
@@ -248,7 +248,7 @@ end
 -- How long any one piece of work may hold the panel: a budget, not a poll interval, since only a
 -- handler returning lets a press through -- docs/MEASUREMENTS.md, 'ui_latency_s = 0.5 and
 -- ck_press_budget_s = 8'.
-sdec.ui_latency_s = sdec.ui_latency_s or 0.5
+sdec.ui_latency_s      = sdec.ui_latency_s or 0.5
 
 -- How much work one press of a stepped decode does, which is not how wide a window should be --
 -- ui_latency_s sizes that. A press that returns has been answered; one inside the 8 s is queued.
@@ -412,7 +412,7 @@ end
 -- Bounded at 31 characters, the firmware's limit, over which it raises 1707 and truncates silently.
 function sdec.ui_title_text()
   local md = sdec.mode_cur()
-  local s = sdec.ui_title
+  local s  = sdec.ui_title
   if md ~= nil and md.title ~= nil then s = s .. ' - ' .. md.title end
   if string.len(s) > 31 then s = string.sub(s, 1, 31) end
   return s
@@ -491,24 +491,24 @@ function sdec.ui_cur()
 end
 
 -- ---------- colours ----------
-sdec.ui_c_dim  = 0xB0B0B0    -- grey: secondary detail
+sdec.ui_c_dim      = 0xB0B0B0    -- grey: secondary detail
 -- The dump's offset column, dimmer than ui_c_dim: it is metadata the eye navigates by, not data.
-sdec.ui_c_off  = 0x808080
-sdec.ui_c_warn = 0xFFC000    -- amber: ambiguity and warnings
-sdec.ui_c_data = 0xFFFFFF    -- white: the decoded bytes
-sdec.ui_c_err  = 0xFF6060    -- red: a row containing a framing or parity error
-sdec.ui_c_sb_off = 0x282828  -- position bar, outside the current page
-sdec.ui_c_sb_on  = 0x00DCFF  -- position bar, current page
+sdec.ui_c_off      = 0x808080
+sdec.ui_c_warn     = 0xFFC000    -- amber: ambiguity and warnings
+sdec.ui_c_data     = 0xFFFFFF    -- white: the decoded bytes
+sdec.ui_c_err      = 0xFF6060    -- red: a row containing a framing or parity error
+sdec.ui_c_sb_off   = 0x282828  -- position bar, outside the current page
+sdec.ui_c_sb_on    = 0x00DCFF  -- position bar, current page
 -- The page counter, in two intensities, and a text object carries one: hence four objects.
-sdec.ui_c_pgnum  = 0xFFFFFF    -- the numerals: 100 %
-sdec.ui_c_pgword = 0xA8A8A8    -- 'page' and 'of': 66 %
+sdec.ui_c_pgnum    = 0xFFFFFF    -- the numerals: 100 %
+sdec.ui_c_pgword   = 0xA8A8A8    -- 'page' and 'of': 66 %
 -- The bar: cyan filled, and a grey box so that what is left is as visible as what is done.
 sdec.ui_c_prog     = 0x00FFFF
 sdec.ui_c_prog_box = 0xCCCCCC
 -- The rear BNC's three states. Empty when off: a marker that is always present is not a marker.
-sdec.ui_c_extin  = 0x40FF40   -- green: an input, armed
-sdec.ui_c_extout = 0xFFC000   -- amber: an output, pulsing a credit per capture
-sdec.ui_c_extio  = 0x00FFFF   -- cyan:  both directions live
+sdec.ui_c_extin    = 0x40FF40   -- green: an input, armed
+sdec.ui_c_extout   = 0xFFC000   -- amber: an output, pulsing a credit per capture
+sdec.ui_c_extio    = 0x00FFFF   -- cyan:  both directions live
 
 -- ---------- handles ----------
 -- Declared, not assigned: opening the installed App re-runs this file, and nil-ing a live handle
@@ -516,12 +516,12 @@ sdec.ui_c_extio  = 0x00FFFF   -- cyan:  both directions live
 -- ui_btn (kept so teardown can see them), ui_sb and ui_sbc. See the note in serial_core.tsp.
 
 -- ---------- view state ----------
-sdec.ui_mode = sdec.ui_mode or 'text'    -- 'text', 'hex' or 'midi'
-sdec.ui_page = sdec.ui_page or 0          -- 0-based page index
+sdec.ui_mode       = sdec.ui_mode or 'text'    -- 'text', 'hex' or 'midi'
+sdec.ui_page       = sdec.ui_page or 0          -- 0-based page index
 -- Has the operator paged yet. The counter stays off the note row until they have, 'page 1 of 1'
 -- being worth less than a note. Latched, and `or false` so re-running this file keeps it.
-sdec.ui_paged = sdec.ui_paged or false
-sdec.ui_status = sdec.ui_status or 'ready'
+sdec.ui_paged      = sdec.ui_paged or false
+sdec.ui_status     = sdec.ui_status or 'ready'
 -- sdec.ui_last   -- last text written per handle, to skip redundant settext
 
 -- Say the panel is waiting on purpose, called by acq_triggered() before it blocks on an
@@ -548,10 +548,10 @@ end
 -- in the app --
 -- docs/MEASUREMENTS.md, 'The options form vertical geometry'. test_serial checks the last box
 -- against the button row. A field added now folds into another as an extra option entry, free.
-sdec.ui_opt_y0 = 8
+sdec.ui_opt_y0      = 8
 -- The pitch asks for every pixel available and the clamp in build_options() decides what it gets: a
 -- gap is a touch target -- docs/MEASUREMENTS.md, 'The options form vertical geometry'.
-sdec.ui_opt_dy = 100
+sdec.ui_opt_dy      = 100
 -- Measured, with the offset of the box inside the object; the mock carries the same height.
 sdec.ui_opt_edit_h  = 50
 sdec.ui_opt_edit_dy = 4
@@ -560,20 +560,20 @@ sdec.ui_opt_btn_y   = 360
 -- And the clamp keeps this much back: handing over every pixel put the bottom field 1 px off the
 -- row. It costs air between the boxes, and the dy < eh branch catches a build that cannot afford it.
 sdec.ui_opt_btn_gap = 24
-sdec.ui_opt_x  = 185   -- the label is RIGHT-ALIGNED and ends here, so this is its width
+sdec.ui_opt_x       = 185   -- the label is RIGHT-ALIGNED and ends here, so this is its width
 -- Two columns buy the vertical gap: six fields become three rows. display.create
 -- takes no width for an OBJ_EDIT_*, so the second column's x is the one number to check on the glass.
 -- How far the centred block is nudged, negative being up. See the application site.
-sdec.ui_opt_y_adj = -8
-sdec.ui_opt_cols = 2
-sdec.ui_opt_x_c2 = 552
+sdec.ui_opt_y_adj   = -8
+sdec.ui_opt_cols    = 2
+sdec.ui_opt_x_c2    = 552
 -- How wide an option-field entry may be, in px: past this the firmware fades the tail rather than
 -- clipping -- docs/MEASUREMENTS.md, 'The options form field and button widths'.
-sdec.ui_opt_px = 96
+sdec.ui_opt_px      = 96
 
 -- Width available to the log cell, derived so that moving a divider moves the fit budget with it. A
 -- literal went stale once already, asserting a margin that had not existed for some time.
-sdec.ui_log_px = sdec.ui_trig_div - (sdec.ui_stat_div + 6)
+sdec.ui_log_px      = sdec.ui_trig_div - (sdec.ui_stat_div + 6)
 
 -- Width of an option entry under that model.
 function sdec.ui_optw(s)
@@ -638,12 +638,12 @@ function sdec.del_obj(h)
   local before = sdec.evcount()
   display.delete(h)
   local after = sdec.evcount()
-  local ok = (before == nil or after == nil or after <= before)
+  local ok    = (before == nil or after == nil or after <= before)
   if not ok then
     -- Keep a handle that would not delete: every teardown nils its variables, so dropping a refused
     -- handle strands a live object until a power cycle, and that accumulation raises event 1701.
     sdec.delfails = (sdec.delfails or 0) + 1
-    sdec.orphans = sdec.orphans or {}
+    sdec.orphans  = sdec.orphans or {}
     sdec.orphans[table.getn(sdec.orphans) + 1] = h
   end
   return ok
@@ -749,7 +749,7 @@ end
 -- Pages the current result needs at the current view.
 function sdec.ui_npages()
   local per = sdec.ui_bytes_per_page()
-  local n = sdec.ui_nitems()
+  local n   = sdec.ui_nitems()
   if n <= 0 then return 1 end
   return math.floor((n + per - 1) / per)
 end
@@ -763,7 +763,7 @@ end
 -- different rules, so a head-damaged run showed a non-zero ERR in green. Takes the table, not ck_tot.
 function sdec.ck_err_n(t)
   if t == nil then return 0 end
-  local n = t.nbad or 0
+  local n  = t.nbad or 0
   local hb = t.headbad or 0
   if hb > 0 then n = n - (t.headnbad or 0) + hb end
   return n
@@ -1155,12 +1155,12 @@ function sdec.ui_fit(s, maxpx)
   if s == nil then return '' end
   maxpx = math.floor(maxpx / sdec.ui_fit_slack)
   if sdec.ui_textw(s) <= maxpx then return s end
-  local ell = sdec.ui_textw('...')
+  local ell    = sdec.ui_textw('...')
   local budget = maxpx - ell
   if budget <= 0 then return '' end
   local w, i, n = 0, 1, string.len(s)
   while i <= n do
-    local b = string.byte(s, i)
+    local b  = string.byte(s, i)
     local cw = sdec.ui_cw_def
     if b >= 32 and b <= 126 then cw = string.byte(sdec.ui_cw, b - 31) - 48 end
     if w + cw > budget then break end
@@ -1186,11 +1186,11 @@ end
 -- Where the counter's four pieces go, right to left from ui_pgind_x. Returns x_page, x_n, x_of, x_m,
 -- the two number x's being right edges (JUST_RIGHT) and the two word x's left edges.
 function sdec.ui_pgind_layout()
-  local g = sdec.ui_pgind_gap
-  local wn = sdec.ui_textw(sdec.ui_pgind_dig)
-  local xm = sdec.ui_pgind_x
-  local xof = xm - wn - g - sdec.ui_textw('of')
-  local xn = xof - g
+  local g     = sdec.ui_pgind_gap
+  local wn    = sdec.ui_textw(sdec.ui_pgind_dig)
+  local xm    = sdec.ui_pgind_x
+  local xof   = xm - wn - g - sdec.ui_textw('of')
+  local xn    = xof - g
   local xpage = xn - wn - g - sdec.ui_textw('page')
   return xpage, xn, xof, xm
 end
@@ -1277,7 +1277,7 @@ function sdec.ui_destroy()
     sdec.ui_allbtn = nil
   end
   -- Nil'd because ui_build only assigns these on success: a rebuild would inherit a dead handle.
-  sdec.ui_pgbtn = nil
+  sdec.ui_pgbtn   = nil
   sdec.ui_lockbtn = nil
   if sdec.ui_sb ~= nil then
     for i = 1, table.getn(sdec.ui_sb) do sdec.del_obj(sdec.ui_sb[i]) end
@@ -1375,8 +1375,8 @@ function sdec.ui_build(hold)
 
   local create = display.create
   local small, med = display.FONT_SMALL, display.FONT_MEDIUM
-  local left = display.JUST_LEFT
-  local x = sdec.ui_x
+  local left  = display.JUST_LEFT
+  local x     = sdec.ui_x
 
   sdec.ui_scr = create(display.ROOT, display.OBJ_SCREEN, sdec.ui_title_text())
 
@@ -1393,7 +1393,7 @@ function sdec.ui_build(hold)
 
   -- Table rules first, so the text is created after and cannot be painted over.
   sdec.ui_rule = {}
-  local nr = 0
+  local nr     = 0
   local function rule(rx, ry, rw, rh)
     local h = create(sdec.ui_scr, display.OBJ_RECT, rx, ry, rw, rh)
     if h ~= nil then
@@ -1404,18 +1404,18 @@ function sdec.ui_build(hold)
     end
   end
   local rw = sdec.ui_rule_x1 - sdec.ui_rule_x0
-  rule(sdec.ui_rule_x0, sdec.ui_stat_top, rw, 1)
-  rule(sdec.ui_rule_x0, sdec.ui_stat_bot, rw, 1)
-  rule(sdec.ui_rule_x0, sdec.ui_stat_top, 1, sdec.ui_stat_bot - sdec.ui_stat_top)
-  rule(sdec.ui_rule_x1, sdec.ui_stat_top, 1, sdec.ui_stat_bot - sdec.ui_stat_top)
+  rule(sdec.ui_rule_x0,  sdec.ui_stat_top, rw, 1)
+  rule(sdec.ui_rule_x0,  sdec.ui_stat_bot, rw, 1)
+  rule(sdec.ui_rule_x0,  sdec.ui_stat_top, 1, sdec.ui_stat_bot - sdec.ui_stat_top)
+  rule(sdec.ui_rule_x1,  sdec.ui_stat_top, 1, sdec.ui_stat_bot - sdec.ui_stat_top)
   rule(sdec.ui_stat_div, sdec.ui_stat_top, 1, sdec.ui_stat_bot - sdec.ui_stat_top)
   rule(sdec.ui_trig_div, sdec.ui_stat_top, 1, sdec.ui_stat_bot - sdec.ui_stat_top)
-  rule(sdec.ui_rule_x0, sdec.ui_rule_top, rw, 1)
-  rule(sdec.ui_rule_x0, sdec.ui_rule_hdr, rw, 1)
-  rule(sdec.ui_rule_x0, sdec.ui_rule_mid, rw, 1)
-  rule(sdec.ui_rule_x0, sdec.ui_rule_bot, rw, 1)
-  rule(sdec.ui_rule_x0, sdec.ui_rule_top, 1, sdec.ui_rule_bot - sdec.ui_rule_top)
-  rule(sdec.ui_rule_x1, sdec.ui_rule_top, 1, sdec.ui_rule_bot - sdec.ui_rule_top)
+  rule(sdec.ui_rule_x0,  sdec.ui_rule_top, rw, 1)
+  rule(sdec.ui_rule_x0,  sdec.ui_rule_hdr, rw, 1)
+  rule(sdec.ui_rule_x0,  sdec.ui_rule_mid, rw, 1)
+  rule(sdec.ui_rule_x0,  sdec.ui_rule_bot, rw, 1)
+  rule(sdec.ui_rule_x0,  sdec.ui_rule_top, 1, sdec.ui_rule_bot - sdec.ui_rule_top)
+  rule(sdec.ui_rule_x1,  sdec.ui_rule_top, 1, sdec.ui_rule_bot - sdec.ui_rule_top)
   -- The note row is one wide cell, not part of the grid: carrying every separator through it draws
   -- lines across the note text. Only the trigger-source divider continues, from ui_fields[2].x.
   rule(sdec.ui_fields[2].x - 9, sdec.ui_rule_mid, 1,
@@ -1441,7 +1441,7 @@ function sdec.ui_build(hold)
   -- not, brighter than any rule.
   sdec.ui_lockhit = nil
 
-  local nf = table.getn(sdec.ui_fields)
+  local nf        = table.getn(sdec.ui_fields)
   local j
   for j = 2, nf do
     rule(sdec.ui_fields[j].x - 9, sdec.ui_rule_top,
@@ -1463,7 +1463,7 @@ function sdec.ui_build(hold)
   -- The padlock, four rects because the panel font has no padlock glyph, and worth counting: object
   -- creation is what destabilises this firmware -- docs/MEASUREMENTS.md, 'Rects, the padlock and
   -- the progress bar as objects'.
-  local lx = 95
+  local lx     = 95
   sdec.ui_lock = {}
   local function lockpart(rx, ry, rw, rh)
     local h = create(sdec.ui_scr, display.OBJ_RECT, rx, ry, rw, rh)
@@ -1494,13 +1494,13 @@ function sdec.ui_build(hold)
   local i
   for i = 1, sdec.ui_nrow do
     local y = sdec.ui_row_y0 + (i - 1) * sdec.ui_row_dy
-    sdec.ui_row[i] = create(sdec.ui_scr, display.OBJ_TEXT, sdec.ui_col_ix, y, '',
+    sdec.ui_row[i] = create(sdec.ui_scr, display.OBJ_TEXT,  sdec.ui_col_ix,  y, '',
                             sdec.ui_c_off, small, left)
-    sdec.ui_rhx[i] = create(sdec.ui_scr, display.OBJ_TEXT, sdec.ui_col_hx, y, '',
+    sdec.ui_rhx[i] = create(sdec.ui_scr, display.OBJ_TEXT,  sdec.ui_col_hx,  y, '',
                             sdec.ui_c_data, small, left)
     sdec.ui_rhx2[i] = create(sdec.ui_scr, display.OBJ_TEXT, sdec.ui_col_hx2, y, '',
                              sdec.ui_c_data, small, left)
-    sdec.ui_ras[i] = create(sdec.ui_scr, display.OBJ_TEXT, sdec.ui_col_as, y, '',
+    sdec.ui_ras[i] = create(sdec.ui_scr, display.OBJ_TEXT,  sdec.ui_col_as,  y, '',
                             sdec.ui_c_data, small, left)
   end
 
@@ -1544,30 +1544,30 @@ function sdec.ui_build(hold)
 
   sdec.ui_page_t = create(sdec.ui_scr, display.OBJ_TEXT, x, sdec.ui_stat_y, '',
                           sdec.ui_c_dim, small, left)
-  sdec.ui_log_t = create(sdec.ui_scr, display.OBJ_TEXT, sdec.ui_stat_div + 6,
-                         sdec.ui_stat_y, '',
-                         sdec.ui_c_dim, small, left)
+  sdec.ui_log_t  = create(sdec.ui_scr, display.OBJ_TEXT, sdec.ui_stat_div + 6,
+                          sdec.ui_stat_y, '',
+                          sdec.ui_c_dim, small, left)
   -- No hit rect over the trigger cell: a rect refuses EVENT_PRESS and still draws its outline.
   sdec.ui_trighit = nil
   sdec.ui_trig_t = create(sdec.ui_scr, display.OBJ_TEXT, sdec.ui_trig_x, sdec.ui_stat_y,
                           'TRIG', sdec.ui_c_warn, small, left)
 
-  local by = sdec.ui_btn_y
-  sdec.ui_btn = {}
+  local by       = sdec.ui_btn_y
+  sdec.ui_btn    = {}
   -- Dense, appended in creation order, and the only list ui_destroy deletes buttons from.
   sdec.ui_allbtn = {}
   local b
   -- Six buttons across 8..774. `View` and `Mode` are static labels, the state they cycle to being
   -- named elsewhere -- docs/MEASUREMENTS.md, 'The six bottom buttons and the three in the margin'.
   local bdef = {
-    {x = 8,   w = 120, t = 'Capture',    e = 'sdec.capture'},
-    {x = 152, w = 90,  t = 'View',       e = 'sdec.view_toggle'},
-    {x = 266, w = 100, t = 'Mode',       e = 'sdec.mode_cycle'},
-    {x = 390, w = 112, t = 'NewLog',     e = 'sdec.log_new', hide = 'ui_newlogbtn'},
+    {x = 8,   w = 120, t = 'Capture', e = 'sdec.capture'},
+    {x = 152, w = 90,  t = 'View',    e = 'sdec.view_toggle'},
+    {x = 266, w = 100, t = 'Mode',    e = 'sdec.mode_cycle'},
+    {x = 390, w = 112, t = 'NewLog',  e = 'sdec.log_new', hide = 'ui_newlogbtn'},
     -- `hide` keeps a button's handle by name as well as by index, because ui_page_btns reaches it
     -- every refresh and ui_btn is positional: reordering this table would hide the wrong control.
-    {x = 526, w = 112, t = 'Save',       e = 'sdec.save', hide = 'ui_savebtn'},
-    {x = 662, w = 112, t = 'Options',    e = 'sdec.options'},
+    {x = 526, w = 112, t = 'Save',    e = 'sdec.save', hide = 'ui_savebtn'},
+    {x = 662, w = 112, t = 'Options', e = 'sdec.options'},
   }
   -- Up, Msgs, Lock Rate, Dn, in that vertical order, each hiding itself when it has nothing to do. A
   -- paging control is not optional, a 32 kB capture being 137 pages, and narrowing these does not
@@ -1613,31 +1613,31 @@ function sdec.ui_build(hold)
   -- colour and this line carries two -- docs/MEASUREMENTS.md, 'The page counter is four objects on
   -- the note row'.
   local xpage, xn, xof, xm = sdec.ui_pgind_layout()
-  local ny = sdec.ui_note_y
+  local ny      = sdec.ui_note_y
   sdec.ui_pgind = {}
   local function pgpiece(px, pc, pj)
     local h = create(sdec.ui_scr, display.OBJ_TEXT, px, ny, '', pc, small, pj)
     if h ~= nil then sdec.ui_pgind[table.getn(sdec.ui_pgind) + 1] = h end
     return h
   end
-  sdec.ui_pgind_w1 = pgpiece(xpage, sdec.ui_c_pgword, left)
-  sdec.ui_pgind_n  = pgpiece(xn,    sdec.ui_c_pgnum,  display.JUST_RIGHT)
-  sdec.ui_pgind_w2 = pgpiece(xof,   sdec.ui_c_pgword, left)
-  sdec.ui_pgind_m  = pgpiece(xm,    sdec.ui_c_pgnum,  display.JUST_RIGHT)
-  sdec.ui_pgindtxt = nil
+  sdec.ui_pgind_w1  = pgpiece(xpage, sdec.ui_c_pgword, left)
+  sdec.ui_pgind_n   = pgpiece(xn,    sdec.ui_c_pgnum,  display.JUST_RIGHT)
+  sdec.ui_pgind_w2  = pgpiece(xof,   sdec.ui_c_pgword, left)
+  sdec.ui_pgind_m   = pgpiece(xm,    sdec.ui_c_pgnum,  display.JUST_RIGHT)
+  sdec.ui_pgindtxt  = nil
   -- Visibility shadow caches, where nil means "unknown, so write it on the next refresh".
   -- sdec.ui_lockbtn is not one -- docs/MEASUREMENTS.md, 'The visibility shadow caches'.
-  sdec.ui_pgvis = nil
-  sdec.ui_lockvis = nil
-  sdec.ui_savevis = nil
-  sdec.ui_msgvis = nil
-  sdec.ui_savebtn = nil
+  sdec.ui_pgvis     = nil
+  sdec.ui_lockvis   = nil
+  sdec.ui_savevis   = nil
+  sdec.ui_msgvis    = nil
+  sdec.ui_savebtn   = nil
   sdec.ui_newlogbtn = nil
   local k
   local nb = 0
   for k = 1, table.getn(bdef) do
     local bd = bdef[k]
-    b = create(sdec.ui_scr, display.OBJ_BUTTON, bd.x, by, bd.t, bd.w)
+    b        = create(sdec.ui_scr, display.OBJ_BUTTON, bd.x, by, bd.t, bd.w)
     if b ~= nil then
       display.setevent(b, display.EVENT_PRESS, 'sdec.guard(' .. bd.e .. ')')
       sdec.ui_btn[k] = b
@@ -1708,7 +1708,7 @@ function sdec.ui_page_btns()
   -- suite caught it as a button left visible with nothing decoded.
   local t = sdec.ui_pgbtn
   if t == nil then return false end
-  local npg = sdec.ui_npages()
+  local npg  = sdec.ui_npages()
   local want = false
   if npg > 1 then want = true end
   -- The counter is not gated the way the buttons are: they appear whenever a page 2 exists, where it
@@ -1762,7 +1762,7 @@ function sdec.ui_refresh_do()
   if sdec.ui_scr == nil then return false end
   local set = sdec.ui_set
 
-  local fv = sdec.ui_field_values()
+  local fv  = sdec.ui_field_values()
   local j
   if sdec.ui_fvalc == nil then sdec.ui_fvalc = {} end
   for j = 1, table.getn(sdec.ui_fval) do
@@ -1806,8 +1806,8 @@ function sdec.ui_refresh_do()
   local base = sdec.ui_page * per
 
   local mode = sdec.ui_mode
-  local vw = sdec.ui_cur()
-  local r = sdec.res
+  local vw   = sdec.ui_cur()
+  local r    = sdec.res
   -- The misaligned head, once for the whole loop: one number, and ua_head_bad walks errs for it.
   local hext, honscr = sdec.ui_head_extent()
   if not honscr then hext = nil end
@@ -1820,8 +1820,8 @@ function sdec.ui_refresh_do()
     if vw.line ~= nil then
       -- One parsed message or frame per row, coloured from its own kind rather than from the byte
       -- error list: a LIN break is a framing error at the byte layer and no fault at the frame layer.
-      txt = ''
-      bad = false
+      txt      = ''
+      bad      = false
       local fn = sdec[vw.line]
       if fn ~= nil then txt = fn(i0) end
       local pr = sdec[vw.res]
@@ -1887,10 +1887,10 @@ function sdec.ui_refresh_do()
 
   sdec.ui_bar(npg)
 
-  local nit = sdec.ui_nitems()
+  local nit   = sdec.ui_nitems()
   local mname = vw.name or 'TEXT'
   -- The protocol qualifies the status word rather than taking a header column: there is no room.
-  local st = sdec.ui_status
+  local st    = sdec.ui_status
   if sdec.proto ~= nil and sdec.proto ~= 'uart' then
     st = string.upper(sdec.proto) .. ' ' .. st
   end
@@ -1976,16 +1976,16 @@ function sdec.flog_status()
     if sdec.flog_last == nil or sdec.flog_lastgen ~= gen then return 'log: on first capture' end
     path, n = sdec.flog_last, sdec.flog_lastbytes or 0
   end
-  local base = string.gsub(tostring(path), '^.*/', '')
-  base = string.gsub(base, '%.txt$', '')
-  local s = string.format('log: %s  %d B', tostring(base), n)
+  local base  = string.gsub(tostring(path), '^.*/', '')
+  base        = string.gsub(base, '%.txt$', '')
+  local s     = string.format('log: %s  %d B', tostring(base), n)
   -- Bounded by the name length, so a cell too narrow for a 4-character name returns the overlong
   -- string rather than looping. The first step drops four characters: one can make it wider.
   local first = true
   while sdec.ui_textw(s) > sdec.ui_log_px and string.len(base) > 4 do
     if first then base = string.sub(base, 5) else base = string.sub(base, 2) end
     first = false
-    s = string.format('log: ~%s  %d B', tostring(base), n or 0)
+    s     = string.format('log: ~%s  %d B', tostring(base), n or 0)
   end
   return s
 end
@@ -1994,7 +1994,7 @@ end
 -- ui_refresh so sdec.progress() can write the same object once a second without touching the other
 -- ~20, every display call being an IPC round trip.
 function sdec.ck_status()
-  local t = sdec.ck_tot
+  local t  = sdec.ck_tot
   local md = sdec.mode_cur()
   if sdec.ck_running then
     -- A press-driven recording states its control and nothing else: no Lua of ours runs between the
@@ -2104,11 +2104,11 @@ end
 function sdec.ui_bar(npg)
   if sdec.ui_sb == nil or table.getn(sdec.ui_sb) == 0 then return false end
   if npg == nil or npg < 1 then npg = 1 end
-  local n = sdec.ui_sb_n
+  local n     = sdec.ui_sb_n
   local floor = math.floor
 
-  local a = floor(sdec.ui_page * n / npg) + 1
-  local b = floor((sdec.ui_page + 1) * n / npg)
+  local a     = floor(sdec.ui_page * n / npg) + 1
+  local b     = floor((sdec.ui_page + 1) * n / npg)
   if b < a then b = a end          -- more pages than segments: at least one lit
   if a < 1 then a = 1 end
   if b > n then b = n end
@@ -2131,11 +2131,11 @@ end
 -- Index <-> value mappings for the OBJ_EDIT_OPTION fields: getvalue() is 1-based but each mapping
 -- clamps, and the count travels as `n`, table.getn being unreliable on the nil holes these have.
 -- Entries 1 and 2 of opt_bits_v both mean "no forced width"; 2 also turns on the rare widths.
-sdec.opt_bits_v  = {nil, nil, 5, 6, 7, 8, 9, n = 7}
-sdec.opt_par_v   = {nil, 0, 1, 2, n = 4}             -- entry 1 = Auto
+sdec.opt_bits_v    = {nil, nil, 5, 6, 7, 8, 9, n = 7}
+sdec.opt_par_v     = {nil, 0, 1, 2, n = 4}             -- entry 1 = Auto
 -- Entry 1 = Auto, 2 = LSB first, 3 = MSB first. opt_pick returns tbl[i] rather than using `or`,
 -- which is what lets entry 2 carry `false` and not be read as a missing value.
-sdec.opt_msb_v   = {nil, false, true, n = 3}
+sdec.opt_msb_v     = {nil, false, true, n = 3}
 -- Protocol entries, with the module each one needs. Version 1 ships UART only; the rest stay
 -- described so that restoring either is one line in package_tspa.py MODULES, and a field listing an
 -- absent parser would appear to work. Bare names, the value column fading past sdec.ui_opt_px.
@@ -2161,9 +2161,9 @@ function sdec.opt_proto_list()
   vals.n, labs.n = n, n
   return vals, labs
 end
-sdec.opt_trig_v  = {'edge', 'free', 'front', n = 3}
+sdec.opt_trig_v = {'edge', 'free', 'front', n = 3}
 -- The rear-BNC field's entries, as the booleans they stand for: a table reads in both directions.
-sdec.opt_rear_v  = {{false, false}, {true, false}, {false, true}, {true, true}, n = 4}
+sdec.opt_rear_v = {{false, false}, {true, false}, {false, true}, {true, true}, n = 4}
 
 -- Which Protocol entry `name` sits at. A reverse lookup, not a second list that would drift.
 function sdec.opt_proto_i(name)
@@ -2203,7 +2203,7 @@ end
 --
 -- BUILT ON DEMAND AND DESTROYED ON BACK, which is the pattern the Options screen already follows and
 -- the only affordable one: the display pool is 463 objects and the main screen spends about 75 on its
--- rows alone. This screen costs 21 rows + 3 buttons + a counter + the screen, so nothing is held
+-- rows alone. This screen costs 13 rows + 3 buttons + a counter + the screen, so nothing is held
 -- while the operator is not looking at it.
 --
 -- THE FACE IS FONT_3, chosen off the glass from the seven rendered side by side: these are sentences
@@ -2213,13 +2213,13 @@ end
 -- alone can silently change the typeface or overflow its object", which is the argument for a grab.
 --
 -- WIDTH: with every ruler started from a common x, FONT_3 runs 63 characters before the right edge
--- and FONT_4 only 58, which makes FONT_4 the same width as FONT_MEDIUM and FONT_3 six characters
+-- and FONT_4 only 58, which makes FONT_4 the same width as FONT_MEDIUM and FONT_3 five characters
 -- better.
 --
 -- 74, not the 66 that ruler implies, and the gap is the ruler's fault: it was digits, and these faces
 -- are proportional, so a digit ruler measures the widest glyphs rather than prose. Against a real
 -- note on the glass 57 characters reached x=590 -- 10.2 px/char where the digits gave 11.97 -- and 74
--- of those is 763 px of the 792 a row has. A line of solid digits would overflow, and no note is one.
+-- of those is 755 px of the 792 a row has, the rest being margin. A line of solid digits would overflow, and no note is one.
 --
 -- PITCH 23, against a measured 20 px glyph height. Three stacked lines of 'Wgjpq|' at 23 clear their
 -- descenders; at FONT_MEDIUM the same test ruled out 22 for touching the row below.
@@ -2280,19 +2280,34 @@ function sdec.msg_lines()
   local out, n, i = {}, 0, nil
   for i = 1, m do
     local s, pre = tostring(t[i]), string.format('%2d  ', i)
-    -- Bounded rather than `while true`: a note is one line of text, so twenty rows is already far
-    -- past anything real, and a wrap bug on the instrument must not become an unbreakable loop.
-    local guard = 0
-    while guard < 20 do
-      guard = guard + 1
+    -- BOUNDED BY THE NOTE'S OWN LENGTH, so it can never truncate one. This was `guard < 20` on the
+    -- reasoning that twenty rows is past anything real -- which SILENTLY DROPPED the rest: measured,
+    -- 2600 characters of a 4000-character note, and the cliff was at 20 rows rather than at a round
+    -- number of characters, so a 1401-character note lost text where a 1400-character one did not.
+    -- Not showing a note in full is the one thing this screen exists to prevent, so a cap that can
+    -- cut one is the wrong shape of guard however generous it is.
+    --
+    -- Every pass removes at least one character -- msg_wrap_at returns at least 1, and the tail is
+    -- re-sliced from cut+1 -- so string.len(s) is a bound the loop cannot exceed, and it is a bound
+    -- no real note can reach. That keeps the protection against an unbreakable loop without the cost.
+    local guard = string.len(s) + 1
+    while guard > 0 do
+      guard      = guard - 1
       local room = sdec.msg_cols - string.len(pre)
+      -- room < 1 would make no progress and is the only way the bound above could be needed: emit
+      -- the remainder whole rather than looping on it.
+      if room < 1 then
+        n = n + 1
+        out[n] = pre .. s
+        break
+      end
       if string.len(s) <= room then
         n = n + 1
         out[n] = pre .. s
         break
       end
       local cut = sdec.msg_wrap_at(s, room)
-      n = n + 1
+      n         = n + 1
       out[n] = pre .. string.sub(s, 1, cut)
       s = string.sub(s, cut + 1)
       while string.sub(s, 1, 1) == ' ' do s = string.sub(s, 2) end
@@ -2341,7 +2356,14 @@ function sdec.build_msgs()
   sdec.destroy_msgs()
   local create = display.create
   sdec.msg_why = nil
-  sdec.msgscr = create(display.ROOT, display.OBJ_SCREEN, 'SERIAL DECODE MESSAGES')
+  -- THE ROW COUNT IS RESTORED FIRST, because the ladder below SHRINKS it when the pool is tight and
+  -- nothing used to put it back. A build that lost row 1 set msg_nrow to 0, msg_npages then divided
+  -- a page into nothing, and every later open refused with 'no display objects left' -- for the rest
+  -- of the power cycle, long after the pool had recovered. The wanted figure is kept separately so
+  -- the shrink stays a report of THIS build rather than a permanent downgrade.
+  sdec.msg_nrow_want = sdec.msg_nrow_want or sdec.msg_nrow
+  sdec.msg_nrow = sdec.msg_nrow_want
+  sdec.msgscr  = create(display.ROOT, display.OBJ_SCREEN, 'SERIAL DECODE MESSAGES')
   if sdec.msgscr == nil then
     sdec.msg_why = 'display object pool exhausted -- power cycle the instrument'
     return nil
@@ -2369,7 +2391,7 @@ function sdec.build_msgs()
   end
   sdec.msg_ind = create(sdec.msgscr, display.OBJ_TEXT, sdec.ui_x,
                         sdec.msg_btn_y - sdec.msg_row_dy - 4, '', sdec.ui_c_pgword, small, left)
-  local bw = 110
+  local bw      = 110
   sdec.msg_up   = create(sdec.msgscr, display.OBJ_BUTTON, 8,   sdec.msg_btn_y, 'Up',   bw)
   sdec.msg_dn   = create(sdec.msgscr, display.OBJ_BUTTON, 132, sdec.msg_btn_y, 'Dn',   bw)
   sdec.msg_back = create(sdec.msgscr, display.OBJ_BUTTON, 662, sdec.msg_btn_y, 'Back', 112)
@@ -2535,7 +2557,7 @@ function sdec.build_options()
                            (nrows - 1))
   if dy > maxdy then dy = maxdy end
   -- Centred, because three rows do not fill the form. Only ever down, and only by what is spare.
-  local used = (nrows - 1) * dy + eh + edy
+  local used  = (nrows - 1) * dy + eh + edy
   local spare = sdec.ui_opt_btn_y - used - y0
   if spare > 0 then y0 = y0 + math.floor(spare / 2) end
   -- Then nudged, and a separate number from y0 on purpose: the centring above divides the leftover
@@ -2561,7 +2583,7 @@ function sdec.build_options()
     local fx = x
     if c > 0 then fx = sdec.ui_opt_x_c2 end
     local fy = y0 + (row - c * nrows) * dy
-    row = row + 1
+    row      = row + 1
     return fx, fy
   end
 
@@ -2698,7 +2720,7 @@ function sdec.build_options()
   sdec.opt_btn = {}
   -- Auto Detect is the inverse of Lock Detected and sits beside it. Guarded, like ui_build's button
   -- loops -- docs/MEASUREMENTS.md, 'The options form field and button widths'.
-  local odef = {
+  local odef   = {
     {i = 4, x = 22,  w = 200, t = 'Auto Detect',   e = 'sdec.options_auto'},
     {i = 1, x = 234, w = 220, t = 'Lock Detected', e = 'sdec.options_lock'},
     {i = 2, x = 466, w = 150, t = 'Apply',         e = 'sdec.options_apply'},

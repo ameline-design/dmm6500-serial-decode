@@ -155,7 +155,7 @@ API** (`display.create` and friends), and **Lua 5.0.2**. Every digitizer below r
 |---|---|
 | **DMM6500** | **Tested**, firmware 1.7.17a — a 7.6-day run of 136 247 captures with no computer attached and zero instrument events, then 17.24-hour and 8.28-hour runs on the current matrix, and the namespace resolver verified here. 16-bit digitizer, *"maximum resolution 16 bits"*, specifications, April 2018 |
 | **DAQ6510** | **Runs**, field-reported. It **shares the UI board and the acquisition board** with the DMM6500, only the channel-board plugin differing, which is why it was always the likeliest — and sharing the acquisition board is also why its tolerance and timing figures should transfer, where the 7510's may not |
-| **DMM7510** | **Runs.** A user decoded a hardware serial device at 9600 Bd on one — the only evidence in this table from a real UART rather than a signal generator, and the only evidence from a second model. Field-reported, not instrumented here: it predates gap elision, so it covers the decode path and not the whole feature set, and no tolerance or timing figure was taken. 18-bit digitizer, better acquisition boards |
+| **DMM7510** | **Runs.** A user decoded a hardware serial device at 9600 Bd on one — the only evidence in this table from a real UART rather than a signal generator, and the only evidence from a second model. Field-reported, not instrumented here: it covers the decode path rather than the whole feature set, and no tolerance or timing figure was taken. 18-bit digitizer, better acquisition boards |
 | **SMU2461** | **Will install and try; may or may not work.** Dual 18-bit digitizers, reached as `smu.digitize` by a namespace the app resolves at load. That mechanism is verified on the DMM6500; no SMU has ever run it. Three unknowns below |
 | **2470 SMU** | **No.** *"Digitized measurements are not a feature on the 2470"* — its reference manual, rev D, October 2024 |
 | **2450 / 2460 SMU** | Almost certainly not, by absence rather than denial: neither claims a digitizer, and the 2450 reference (rev D, May 2015) documents `smu.measure.*` with no digitize function |
@@ -217,16 +217,20 @@ Three gates, each about ten times the cost of the one before it. Run them in ord
 python3 tools/release_sweep.py --offline   #  ~1 min, no instruments
 python3 tools/bench_smoke.py               #  13 min, both instruments
                                            #  then POWER CYCLE THE DMM -- see Endurance above
-python3 tools/soak.py --hours 17 --suites formats,plan --skip-vectors v95,v96,v97
+python3 tools/soak.py --hours 17 --suites formats,plan
 python3 tools/release_sweep.py             #  the whole thing, instruments included
 ```
 
-**Name all three skipped vectors, or the run is not the run you think it is.** `soak.py`'s
-`--skip-vectors` defaults to empty and the skip is applied *before* the shuffle, so it sets the lap size
-and keys every amplitude, offset and wait: `v95,v96,v97` gives a **1 677**-cell lap, while naming only
-`v95,v96` gives 1 720 and lets `v97` back in, where it reads as a generator wedge — that is where an
-earlier run's 129 "generator failures" came from. `run_bench.py` already defaults to all three, so do not
-pass the flag to it at all.
+**Do not pass `--skip-vectors` at all, to either tool.** The skip is applied *before* the shuffle, so
+it sets the lap size and keys every amplitude, offset and wait: the current `HW_SKIP` gives a
+**1 512**-cell lap (42 × 36), and every name left out of it re-admits 36 cells and reshuffles the rest.
+A re-admitted `v97` then fails every one of its cells and reads as a generator wedge — that is where an
+earlier run's 129 "generator failures" came from.
+
+`run_bench.py` and `plan_sweep.py` have always derived their default from `soakplan.HW_SKIP`.
+**`soak.py` defaulted to empty until 2026-10-21**, which drew all 1 657 cells, and the set named here
+had gone stale twice over — so this page no longer names it. Ask the planner:
+`python3 tools/soakplan.py --iteration 1`.
 
 **No version is tagged without at least 8 hours of soak.** A soak reports a failure rate per test point
 where a sweep reports one pass or one failure. A lap is 1 677 cells and about 2.1–2.5 hours, so 8 hours is

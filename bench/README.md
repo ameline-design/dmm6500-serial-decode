@@ -207,21 +207,24 @@ python3 tools/run_bench.py --smoke
 
 # a real soak: N laps, plan pushed, started, socket released
 python3 tools/run_bench.py --iterations 100 --push-plan --start --detach \
-        --skip-vectors v95,v96 --random-per-lap 4
+        --random-per-lap 4
 
 # indefinite: runs until the TRIGGER key or the power stops it
 python3 tools/run_bench.py --iterations 0 --push-plan --start
 ```
 
-**`--skip-vectors v95,v96` is the default and should stay.** `v96` wedges the SDG partway through a
-lap, every time; two nights of bench time have been lost to omitting it. The skip is applied **before**
+**Do not pass `--skip-vectors`; the default is `soakplan.HW_SKIP` and it is the one to use.** `v96`
+wedges the SDG partway through a lap, every time, and two nights of bench time have been lost to
+omitting it. The set is NOT named on this page on purpose: it has grown twice, and every document that
+spelled it out went stale silently -- `python3 tools/soakplan.py --iteration 1` prints it and the lap
+size together. The skip is applied **before**
 the plan is shuffled and the shuffled position keys each cell's amplitude, offset and wait — so a lap run
 with a different skip is *different stimulus under the same lap number*. The plan records both the skip and
 `--random-per-lap` in its header for that reason.
 
-With `v95,v96` skipped a lap is **1 677 cells**; `--random-per-lap 4` plays four of the twelve
-random-payload vectors and makes it **1 333 cells** — every vector is still played, just across laps
-rather than within one.
+With the HW_SKIP set a lap is **1 512 cells** (42 × 36, measured 2026-10-21); `--random-per-lap 4`
+plays four of the twelve random-payload vectors and makes it smaller again — every vector is still
+played, just across laps rather than within one. Quote the planner, not this sentence.
 
 **Budget from measured cell rates, not from the tool's estimates.** At the ~6.3 s a cell the 86-cell smoke
 runs at, 1 677 cells is about **2.9 h**, and a 210-lap run at `--random-per-lap 4` measured **1.96 h** for
@@ -232,7 +235,7 @@ exact, and the plan declares its own:
 ```sh
 # grep, not head: soakplan.py writes the whole plan and does not handle a closed pipe,
 # so `| head` ends in a BrokenPipeError after printing the right answer
-python3 tools/soakplan.py --emit-csv --iterations 1 --skip-vectors v95,v96 --random-per-lap 4 \
+python3 tools/soakplan.py --emit-csv --iterations 1 --random-per-lap 4 \
   | grep '^# rows='
 ```
 

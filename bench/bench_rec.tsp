@@ -27,16 +27,16 @@
 -- caps below are not expected to bind; they exist because a full key would silently stop recording a
 -- run that keeps going.
 
-brec = brec or {}
+brec           = brec or {}
 
-brec.dir      = brec.dir or '/usb1/SERDEC'
+brec.dir       = brec.dir or '/usb1/SERDEC'
 -- FULL PATH, because file.open on this instrument requires an absolute one -- a bare 'SOAK.CSV' is
 -- refused. serial_app.tsp builds sdec.flogpfx the same way.
-brec.pfx      = brec.pfx or (brec.dir .. '/SOAK')   -- SOAK.CSV, 8.3 like everything else here
-brec.ext      = brec.ext or '.csv'
-brec.maxfile  = brec.maxfile or 268435456   -- 256 MB, far under the 2 GB per-file ceiling and still
+brec.pfx       = brec.pfx or (brec.dir .. '/SOAK')   -- SOAK.CSV, 8.3 like everything else here
+brec.ext       = brec.ext or '.csv'
+brec.maxfile   = brec.maxfile or 268435456   -- 256 MB, far under the 2 GB per-file ceiling and still
                                             -- small enough to pull over the socket in one piece
-brec.maxtotal = brec.maxtotal or 4294967296 -- 4 GB, inside the 6 GB budget with headroom
+brec.maxtotal  = brec.maxtotal or 4294967296 -- 4 GB, inside the 6 GB budget with headroom
 -- FIFTY ROWS, ABOUT FOUR MINUTES. Every cell is written and flushed as it completes, so the bytes reach
 -- the key at once -- but on FAT the DIRECTORY ENTRY only learns the file's length when the handle is
 -- CLOSED. So this is how much a machine that stops without warning leaves behind: fifty cells of bytes
@@ -46,17 +46,17 @@ brec.maxtotal = brec.maxtotal or 4294967296 -- 4 GB, inside the 6 GB budget with
 -- uncommitted tail costs those cells being MEASURED AGAIN, not lost -- against a FAT directory write on
 -- every one of the ~230 000 cells a fortnight completes, at a latency this key has never been measured
 -- for.
-brec.syncrows = brec.syncrows or 50         -- rows between close/reopen
+brec.syncrows  = brec.syncrows or 50         -- rows between close/reopen
 
-brec.fh       = nil     -- the one open file, or nil
-brec.path     = nil
-brec.nrow     = 0       -- rows in the current file
-brec.ntotrow  = 0       -- rows this run
-brec.nbyte    = 0       -- bytes in the current file
-brec.ntotbyte = 0       -- bytes this run, across rolled files
-brec.nfile    = 0
+brec.fh        = nil     -- the one open file, or nil
+brec.path      = nil
+brec.nrow      = 0       -- rows in the current file
+brec.ntotrow   = 0       -- rows this run
+brec.nbyte     = 0       -- bytes in the current file
+brec.ntotbyte  = 0       -- bytes this run, across rolled files
+brec.nfile     = 0
 brec.sincesync = 0
-brec.why      = nil     -- why recording stopped, if it did
+brec.why       = nil     -- why recording stopped, if it did
 brec.stopped  = false   -- true once the byte budget is spent; the run may continue, unrecorded,
                         -- but it must SAY it is unrecorded rather than look complete
 
@@ -71,8 +71,8 @@ brec.schema = brec.schema or 'serdec-soak-1'
 function brec.q(s)
   if s == nil then return '' end
   local t = tostring(s)
-  t = string.gsub(t, '"', "''")
-  t = string.gsub(t, '[\r\n,]', ' ')
+  t       = string.gsub(t, '"', "''")
+  t       = string.gsub(t, '[\r\n,]', ' ')
   return t
 end
 
@@ -125,7 +125,7 @@ end
 -- maxtotal while both counters said otherwise. -> the bytes written, so callers can add them.
 function brec.hwrite(s)
   if not brec.rawwrite(brec.fh, s) then return 0 end
-  brec.nbyte = brec.nbyte + string.len(s)
+  brec.nbyte    = brec.nbyte + string.len(s)
   brec.ntotbyte = brec.ntotbyte + string.len(s)
   return string.len(s)
 end
@@ -157,14 +157,14 @@ function brec.roll()
   brec.fh = nil
   if brec.ntotbyte >= brec.maxtotal then
     brec.stopped = true
-    brec.why = string.format('byte budget spent: %d bytes over %d file(s)', brec.ntotbyte, brec.nfile)
+    brec.why     = string.format('byte budget spent: %d bytes over %d file(s)', brec.ntotbyte, brec.nfile)
     brec.note(-1, -1, 0, brec.why)
     return false
   end
   local fh, path, why = brec.newfile(brec.pfx)
   if fh == nil then
     brec.stopped = true
-    brec.why = 'cannot roll to a new file: ' .. tostring(why)
+    brec.why     = 'cannot roll to a new file: ' .. tostring(why)
     brec.note(-1, -1, 0, brec.why)
     return false
   end
@@ -185,38 +185,38 @@ function brec.row(s)
     -- A WRITE THAT FAILED is usually a pulled key. Reopening once is worth trying; failing that, the
     -- run says so rather than discarding rows silently.
     pcall(function() file.close(brec.fh) end)
-    brec.fh = nil
+    brec.fh  = nil
     local fh = nil
     pcall(function() fh = file.open(brec.path, file.MODE_APPEND) end)
     if fh == nil then
       brec.stopped = true
-      brec.why = 'write failed and ' .. tostring(brec.path) .. ' will not reopen -- key pulled?'
+      brec.why     = 'write failed and ' .. tostring(brec.path) .. ' will not reopen -- key pulled?'
       return false
     end
     brec.fh = fh
     if not brec.rawwrite(brec.fh, line) then
       brec.stopped = true
-      brec.why = 'write failed twice on ' .. tostring(brec.path)
+      brec.why     = 'write failed twice on ' .. tostring(brec.path)
       return false
     end
   end
-  brec.nrow = brec.nrow + 1
-  brec.ntotrow = brec.ntotrow + 1
-  brec.nbyte = brec.nbyte + string.len(line)
-  brec.ntotbyte = brec.ntotbyte + string.len(line)
+  brec.nrow      = brec.nrow + 1
+  brec.ntotrow   = brec.ntotrow + 1
+  brec.nbyte     = brec.nbyte + string.len(line)
+  brec.ntotbyte  = brec.ntotbyte + string.len(line)
   brec.sincesync = brec.sincesync + 1
   -- THE DIRECTORY ENTRY, COMMITTED. See the note at the top: flush is not close.
   if brec.sincesync >= brec.syncrows then
     pcall(function() file.close(brec.fh) end)
-    brec.fh = nil
+    brec.fh  = nil
     local fh = nil
     pcall(function() fh = file.open(brec.path, file.MODE_APPEND) end)
     if fh == nil then
       brec.stopped = true
-      brec.why = 'reopen after sync failed on ' .. tostring(brec.path)
+      brec.why     = 'reopen after sync failed on ' .. tostring(brec.path)
       return false
     end
-    brec.fh = fh
+    brec.fh        = fh
     brec.sincesync = 0
   end
   if brec.nbyte >= brec.maxfile then return brec.roll() end

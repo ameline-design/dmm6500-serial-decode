@@ -9,33 +9,33 @@
 -- Decoding is single-shot, so there is no frame timer: display writes happen on a button press.
 -- Lua 5.0.2: no '#', no bitwise operators, math.mod for modulo.
 
-sdec = sdec or {}
+sdec          = sdec or {}
 
-sdec.delfails  = sdec.delfails or 0
-sdec.errcount  = sdec.errcount or 0
-sdec.busy      = sdec.busy or false
+sdec.delfails = sdec.delfails or 0
+sdec.errcount = sdec.errcount or 0
+sdec.busy     = sdec.busy or false
 -- All three derive from ulog.usbdir. usb_log.tsp loads first, so the fallback is for a harness.
-sdec.usbdir    = sdec.usbdir or (ulog ~= nil and ulog.usbdir) or '/usb1/SERDEC'
-sdec.logpath   = sdec.logpath or (sdec.usbdir .. '/serial_decode_log.txt')
+sdec.usbdir   = sdec.usbdir or (ulog ~= nil and ulog.usbdir) or '/usb1/SERDEC'
+sdec.logpath  = sdec.logpath or (sdec.usbdir .. '/serial_decode_log.txt')
 -- Prefix of the byte log, which every mode appends to, not just FRAME.
-sdec.flogpfx   = sdec.flogpfx or (sdec.usbdir .. '/bytes')
-sdec.savepfx   = sdec.savepfx or (sdec.usbdir .. '/serial_')
+sdec.flogpfx  = sdec.flogpfx or (sdec.usbdir .. '/bytes')
+sdec.savepfx  = sdec.savepfx or (sdec.usbdir .. '/serial_')
 -- Migrated, not just defaulted: `or` would keep a previous load's path to the key's root.
 if sdec.logpath == '/usb1/serial_decode_log.txt' then
   sdec.logpath = sdec.usbdir .. '/serial_decode_log.txt'
 end
 if sdec.flogpfx == '/usb1/bytes' then sdec.flogpfx = sdec.usbdir .. '/bytes' end
 if sdec.savepfx == '/usb1/serial_' then sdec.savepfx = sdec.usbdir .. '/serial_' end
-sdec.saveext   = sdec.saveext or '.txt'
+sdec.saveext = sdec.saveext or '.txt'
 -- Protocol layer over the UART bytes: 'uart', 'midi' or 'lin'. Operator state, so `or` like the rest.
-sdec.proto     = sdec.proto or 'uart'
+sdec.proto   = sdec.proto or 'uart'
 -- Press-driven streaming, which the panel does not use: true = Capture starts a recording, stops it,
 -- then steps the decode a slice per press. false ships and does the whole job in one press, which no
 -- finger can stop. A nil test, because `false or true` is true.
 if sdec.strm_press == nil then sdec.strm_press = false end
 -- Wall-clock ceiling on one streaming acquisition, seconds; nil means no bound. A backstop, set where
 -- stream_maxwait already caps, because two bounds that disagree make the smaller a hidden cap.
-sdec.strm_maxsec = sdec.strm_maxsec or 1200
+sdec.strm_maxsec     = sdec.strm_maxsec or 1200
 -- Seconds of signal the blocking fallback may record. Short, because nothing can poll it.
 sdec.strm_fallback_s = sdec.strm_fallback_s or 20
 -- Fraction of extra samples a recording asks for. Every pause the line takes is recorded in full, and
@@ -44,13 +44,13 @@ sdec.strm_fallback_s = sdec.strm_fallback_s or 20
 -- over-read buys payload and not correctness. Free on a 6 000 000-reading record, where a 21 100-reading
 -- one had nowhere to put it. EVERY capture, not a subset: sdec.acquire() applies it, and the
 -- declaration said 'elide path only' for long enough that the claim outlived the path.
-sdec.strm_overread = sdec.strm_overread or 0.10
+sdec.strm_overread   = sdec.strm_overread or 0.10
 -- The most the Options field will offer. A ceiling and not a limit on what is sensible: the over-read
 -- buys payload against the samples a refused gap costs, and a gap vector spends at most a third of a
 -- pass on gaps it declined, so half again is past anything the feature can use. The field needs a
 -- maximum of some kind -- OBJ_EDIT_NUMBER takes one -- and an unbounded one lets a typo ask for a
 -- capture the mode cannot size.
-sdec.overread_max = sdec.overread_max or 0.50
+sdec.overread_max    = sdec.overread_max or 0.50
 -- sdec.savedas  -- the last filename written, for the note line
 -- sdec.stickyerr -- a fault that must outlive a capture (see install_cleanup)
 
@@ -205,7 +205,7 @@ function sdec.arm_fit_prior()
   end
   -- Re-decoded at the winner: the loop left sdec.res holding whichever candidate it tried last.
   sdec.force_baud = won
-  local ok = false
+  local ok        = false
   pcall(function() ok = sdec.decode_from(rd, n) end)
   sdec.force_baud = was
   if not ok then return false end
@@ -216,22 +216,22 @@ end
 
 -- Pick the sample rate, capture, and decode. Returns ok, reason.
 function sdec.autoset()
-  local target = sdec.force_baud
-  local captured = false
+  local target    = sdec.force_baud
+  local captured  = false
   -- Per call: giveup() sets baud_probe for one call, but an acquisition failure never reaches it.
   sdec.baud_probe = nil
 
   -- Two passes: docs/MEASUREMENTS.md, 'fs_want: the second pass of autoset'.
   if target == nil then
-    sdec.fs = sdec.rates[table.getn(sdec.rates)]      -- top rate: 1 MS/s
+    sdec.fs        = sdec.rates[table.getn(sdec.rates)]      -- top rate: 1 MS/s
     -- Free-running whatever the operator selected, and retried: arming a model here posts 4915 ten times
     -- a capture. docs/MEASUREMENTS.md, 'Event 4915 on the probe pass'.
     local savetrig = sdec.trigmode
-    sdec.trigmode = 'free'
+    sdec.trigmode  = 'free'
     local ok, why, tries = false, nil, 0
     -- Each retry looks for longer by dropping the rate: 20 ms, 200 ms, 2 s for the same 20 000 samples.
-    local ladder = sdec.probe_fs or {1000000, 100000, 10000}
-    local nlad = table.getn(ladder)
+    local ladder      = sdec.probe_fs or {1000000, 100000, 10000}
+    local nlad        = table.getn(ladder)
     -- Registered for the boundary: sdec.guard can see a field, where savetrig is a local it cannot.
     sdec.trig_restore = savetrig
     -- The restore runs on the raising path too, and sdec.unwind() is not enough cover for it. A host
@@ -252,7 +252,7 @@ function sdec.autoset()
         end
       end
     end)
-    sdec.trigmode = savetrig
+    sdec.trigmode     = savetrig
     sdec.trig_restore = nil
     if not lok then error(lerr, 0) end
     if tries > 1 then
@@ -268,13 +268,13 @@ function sdec.autoset()
         if sdec.arm_silent() and savetrig ~= 'free' then return sdec.arm_capture() end
         sdec.drop_stale_result() return false, why
       end
-      target = sdec.baud_probe
+      target          = sdec.baud_probe
       sdec.probe_note = string.format(
         'too slow to frame at 1 MS/s -- re-captured at the rate the probe measured (%.0f Bd)',
         target or 0)
     else
       captured = true
-      target = sdec.baud
+      target   = sdec.baud
     end
     if target == nil then return true end
   end
@@ -283,7 +283,7 @@ function sdec.autoset()
   -- `captured`, not `sdec.res ~= nil`: a leftover result lets a forced rate perform zero reads.
   if captured and want >= sdec.fs then return true end
 
-  sdec.fs = want
+  sdec.fs      = want
   sdec.fs_want = want
   -- A bare call: this path carries ONE pcall and it is sdec.capture()'s. See the depth note in start().
   local ok, why = sdec.acquire()
@@ -374,7 +374,7 @@ function sdec.frame_log()
   end
   -- Registered for the unwind: a formatter can raise here, where a file call cannot, measured.
   sdec.fh_unwind = fh
-  local nfr = 0
+  local nfr      = 0
   if sdec.res ~= nil then nfr = sdec.res.nf end
   -- The header line needs the message NUMBER, but flog_n advances only on success.
   local msgno = (sdec.flog_n or 0) + 1
@@ -401,9 +401,9 @@ function sdec.frame_log()
                     string.gsub(tostring(sdec.flog_path), '^.*/', '')
     return false
   end
-  sdec.flog_n = msgno
+  sdec.flog_n     = msgno
   sdec.flog_bytes = (sdec.flog_bytes or 0) + nfr
-  sdec.flog_why = nil
+  sdec.flog_why   = nil
   return true
 end
 
@@ -418,7 +418,7 @@ end
 --
 -- Size a streaming capture, allocate its buffer, learn the levels and arm the idle watchdog.
 function sdec.stream_begin()
-  local md = sdec.mode_cur()
+  local md  = sdec.mode_cur()
   local why = sdec.mode_why(md)
   if why ~= nil then return false, why end
   -- Same degrade-rather-than-raise rule the protocol modules follow: chunk_decode.tsp may be absent.
@@ -427,7 +427,7 @@ function sdec.stream_begin()
   end
 
   sdec.hw_config()                      -- picks fs from the locked baud rate
-  local fs = sdec.fs
+  local fs   = sdec.fs
   local nsmp = sdec.stream_samples(md, fs)
   if nsmp == nil then return false, 'cannot size the capture for this rate' end
 
@@ -455,7 +455,7 @@ function sdec.stream_begin()
     -- nsmp comes back off the capacity and not off sizefor: what the clamp leaves is the whole room,
     -- and the over-read is taken out of it again by stream_acquire.
     if sdec.ck_bufmax ~= nil and cap > sdec.ck_bufmax then
-      cap = sdec.ck_bufmax
+      cap  = sdec.ck_bufmax
       nsmp = math.floor(cap * (100 - sdec.pretrig) / 100)
       if (sdec.strm_overread or 0) > 0 then
         nsmp = math.floor(nsmp / (1 + sdec.strm_overread))
@@ -507,10 +507,10 @@ function sdec.stream_begin()
   -- Learn the levels before the long recording: the watchdog needs a threshold, and capture() zeroed it.
   sdec.ck_watch = false
   -- Bounded in time: read() blocks for pn/fs seconds, so 2000 samples at 110 baud would hold it ~2 s.
-  local pn = sdec.probe_n
+  local pn      = sdec.probe_n
   if pn > nsmp then pn = nsmp end
   local budget = 0.25 * (sdec.ui_latency_s or 0.5)
-  local pmax = math.floor((sdec.fs or 1000) * budget)
+  local pmax   = math.floor((sdec.fs or 1000) * budget)
   if pmax < 200 then pmax = 200 end
   if pn > pmax then pn = pmax end
   -- nofc: a probe must not spend a credit. probe_idle is cleared because arm_silent() reads it.
@@ -533,7 +533,7 @@ function sdec.stream_begin()
   if not sdec.ck_watch and sdec.lvl_thr ~= nil and
      (sdec.lvl_swing or 0) >= sdec.minswing then
     sdec.thr, sdec.hyst, sdec.swing = sdec.lvl_thr, sdec.lvl_hyst, sdec.lvl_swing
-    sdec.ck_watch = true
+    sdec.ck_watch      = true
     sdec.strm_lvlreuse = true
   else
     sdec.strm_lvlreuse = nil
@@ -551,11 +551,11 @@ function sdec.stream_begin()
 
   -- ck_stop = false on entry is the authoritative clear, or the next run aborts at once.
   sdec.ck_running, sdec.ck_stop, sdec.ck_nbytes, sdec.ck_tot = true, false, 0, nil
-  sdec.ck_endwhy = nil
+  sdec.ck_endwhy      = nil
   -- Per run, beside ck_endwhy: a level left by a previous expired arm would be quoted at the next.
   sdec.arm_expired_at = nil
   -- ck_cancel is cleared here, because every run of either shape comes through this function.
-  sdec.ck_cancel = nil
+  sdec.ck_cancel      = nil
   sdec.progress(0)
 
   sdec.strm_nsmp = nsmp
@@ -615,11 +615,11 @@ function sdec.record_run()
     -- twice. A write failure still counts its bytes: they were decoded, and the note row says so.
     sdec.ck_tot = nil
     ok, why = sdec.stream()
-    sdec.fc_win = sdec.fc_win + 1
+    sdec.fc_win  = sdec.fc_win + 1
     sdec.fc_secs = sdec.fc_secs + (sdec.strm_waited or 0)
     if sdec.ck_tot ~= nil then
       sdec.fc_bytes = sdec.fc_bytes + (sdec.ck_tot.nf or 0)
-      keep = sdec.ck_tot
+      keep          = sdec.ck_tot
     end
     -- One window unless the device is credited: without 'FC Out' a second window is a different conversation.
     if not sdec.fc_out then break end
@@ -643,11 +643,11 @@ function sdec.record_run()
     if sdec.fc_win >= (sdec.fc_maxwin or 32) then sdec.fc_end = 'bound'; break end
     -- The larger of the clock and the counter: only the clock sees the decode, only the counter is safe.
     local el = sdec.fc_secs
-    local t = timer.gettime()
+    local t  = timer.gettime()
     if t ~= nil and t > el then el = t end
     if sdec.fc_maxsec ~= nil and sdec.fc_maxsec > 0 and el >= sdec.fc_maxsec then
       sdec.fc_secs = el
-      sdec.fc_end = 'timebound'
+      sdec.fc_end  = 'timebound'
       break
     end
   end
@@ -702,7 +702,7 @@ end
 
 -- Decode a completed recording, shared by both paths. got is the reading count it collected.
 function sdec.stream_decode(got)
-  local md = sdec.mode_cur()
+  local md   = sdec.mode_cur()
 
   -- The file is optional; the decode is not. Refusing here made both recording modes decode nothing while
   -- frame mode showed bytes from the same wire. A nil path skips the sink and keeps the tail.
@@ -737,7 +737,7 @@ function sdec.stream_decode(got)
     -- Work per press and window width are two different budgets: only the width must come from
     -- ui_latency_s. Do not spend those presses in display.waitevent(0): on 1.7.17a it wedges the box.
     opts.budget_s = sdec.ck_press_budget_s or sdec.ui_latency_s
-    local W = sdec.ck_win_for(sdec.ui_latency_s)
+    local W       = sdec.ck_win_for(sdec.ui_latency_s)
     -- Globals this path cannot restore, because the decode_step() calls that follow need the narrowed W.
     sdec.ck_win_n, sdec.ck_level_max = W, W
     local job, jerr = sdec.ck_job_new(rdr, nrd, path, opts)
@@ -760,7 +760,7 @@ function sdec.stream_decode(got)
      tot.nf < md.cap then
     tot.stopped = 'exhausted'
   end
-  sdec.ck_tot = tot
+  sdec.ck_tot    = tot
   sdec.ck_nbytes = tot.nf
   -- THE TAIL IS PUBLISHED HERE TOO, as decode_step and sdec.stream() already publish it. Without this
   -- line sdec.res on the one-shot path was whatever ck_prime_step's decode_from left -- the frame-mode
@@ -794,7 +794,7 @@ function sdec.decode_step()
 
   if not done then
     sdec.ck_nbytes = (tot and tot.nf) or 0
-    local est = (tot and tot.nwin_est) or 0
+    local est      = (tot and tot.nwin_est) or 0
     -- A priming phase has no byte count yet, and "decoding 0 bytes" reads as a decode that found none.
     if job.phase ~= nil then
       sdec.ui_status = string.format('preparing: %s -- press Capture', tostring(job.phase))
@@ -808,8 +808,8 @@ function sdec.decode_step()
 
   sdec.ck_job, sdec.ck_running = nil, false
   if tot == nil then
-    sdec.errcount = sdec.errcount + 1
-    sdec.lasterr = tostring(err or 'decode failed')
+    sdec.errcount  = sdec.errcount + 1
+    sdec.lasterr   = tostring(err or 'decode failed')
     sdec.ui_status = 'error'
     ulog.line(sdec.lasterr)
   else
@@ -832,7 +832,7 @@ function sdec.decode_step()
   end
   sdec.ck_job_md = nil
   -- The verdict goes with the reason: the one-shot caller passes both, so strm_exit_why could not fire here.
-  local dok = (tot ~= nil and tot.stopped ~= 'write failed' and tot.stopped ~= 'sink')
+  local dok      = (tot ~= nil and tot.stopped ~= 'write failed' and tot.stopped ~= 'sink')
   sdec.mode_exit(sdec.strm_exit_why(sdec.ck_endwhy, dok, sdec.lasterr), not dok)
   sdec.ui_refresh()
   -- dok, not true: on every path true made a raised decode indistinguishable from one that worked.
@@ -844,7 +844,7 @@ end
 function sdec.decode_abandon()
   if sdec.ck_job == nil then return false end
   local tot = nil
-  tot = sdec.ck_job_abandon(sdec.ck_job)
+  tot       = sdec.ck_job_abandon(sdec.ck_job)
   sdec.ck_job, sdec.ck_job_md, sdec.ck_running = nil, nil, false
   if tot ~= nil then
     sdec.ck_tot, sdec.ck_nbytes = tot, tot.nf
@@ -859,7 +859,7 @@ end
 function sdec.stream_arm(nsmp)
   -- Cleared first, ahead of the four early returns: a stale true would wait for a trigger nothing armed on.
   sdec.strm_armed = nil
-  local buf = sdec.buf
+  local buf       = sdec.buf
   -- No buffer is a refused arm, not a raise: the caller can only choose the fallback if it is told.
   if buf == nil then return false end
   -- The closure form is required: pcall(buf.clear) fetches .clear first, and that fetch is the IPC.
@@ -877,10 +877,10 @@ function sdec.stream_arm(nsmp)
   -- LoopUntilEvent's infinite pre-roll is what makes an analog trigger evaluate. docs/TRIGGER.md,
   -- 'Choosing a shape', 'Pre-trigger, and what the comparator needs' and
   -- 'The canned templates and the fast path'.
-  local armed = (sdec.arm_silent() and sdec.trigmode ~= 'free')
+  local armed        = (sdec.arm_silent() and sdec.trigmode ~= 'free')
   -- Cleared per arm: a refused load must not leave the previous arm's value standing.
   sdec.acq_posloaded = nil
-  local ok = false
+  local ok           = false
   if armed then
     -- The source, the blender and the TRIGGER-key break-in, from the one function that decides them. The
     -- nil branch is live: arm_source() returns nil when its trigger constant is itself absent.
@@ -926,7 +926,7 @@ function sdec.stream_arm(nsmp)
   if ok then
     local cok = sdec.bufclear(buf)
     if not cok then
-      ok = false
+      ok           = false
       sdec.lasterr = 'could not clear the record before arming'
     end
   end
@@ -958,14 +958,14 @@ end
 -- empty recording: buf.n raises on a buffer the firmware has dropped, and 0 reads as 'collected nothing'.
 function sdec.stream_settle()
   trigger.model.abort()
-  local buf = sdec.buf
+  local buf  = sdec.buf
   sdec.nread = 0
   if buf ~= nil then
     -- Guarded at the proxy read: .n raises on a buffer the firmware has dropped, and nil cannot see it.
     local n = nil
     local ok, perr = pcall(function() n = buf.n end)
     if not ok then return 0, tostring(perr or 'the buffer could not be read') end
-    sdec.nread = n or 0
+    sdec.nread  = n or 0
     sdec.acq_fs = sdec.acq_fs_or_requested(buf, sdec.nread)
   end
   return sdec.nread
@@ -1015,7 +1015,7 @@ function sdec.strm_relevel(buf, have, iw)
     return false
   end
   -- Adopted, and cleared so this runs once per recording: the next verdict has its own measurement.
-  sdec.strm_lvlreuse = nil
+  sdec.strm_lvlreuse  = nil
   sdec.strm_releveled = string.format('threshold re-measured mid-recording: %.3f V, not the %.3f V '
                                       .. 'a previous capture measured', sdec.thr or 0, oldthr or 0)
   ulog.line(sdec.strm_releveled)
@@ -1043,12 +1043,12 @@ function sdec.stream_acquire(nsmp)
   sdec.strm_target = nsmp
   -- What this window spent, for record_run's bound. A counter, because the one timer is spoken for twice.
   sdec.strm_waited = 0
-  local ok = sdec.stream_arm(nsmp)
+  local ok         = sdec.stream_arm(nsmp)
   if not ok then
     -- Falls back to a blocking read, which loses every bound, so it is shortened to strm_fallback_s.
     sdec.ck_endwhy = 'full'
-    local fs = sdec.fs or 1000
-    local cap = math.floor(fs * (sdec.strm_fallback_s or 20))
+    local fs       = sdec.fs or 1000
+    local cap      = math.floor(fs * (sdec.strm_fallback_s or 20))
     if cap < 2000 then cap = 2000 end
     if cap > nsmp then cap = nsmp end
     if cap < nsmp then
@@ -1065,11 +1065,11 @@ function sdec.stream_acquire(nsmp)
 
   local quiet, seen, step = 0, 0, sdec.ck_poll_s
   -- Read once: the exit comes from Arm/Idle Wait, and the operator cannot change it mid-run.
-  local qexit = sdec.idle_exit()
+  local qexit   = sdec.idle_exit()
   -- The ring position last looked at, beside the count. -1 rather than nil, since 0 is a real endindex.
   local seenend = -1
-  local iw = sdec.idle_window(sdec.fs)
-  local waited = 0
+  local iw      = sdec.idle_window(sdec.fs)
+  local waited  = 0
   -- The arm, which this loop must bound. docs/MEASUREMENTS.md, 'buf.n is not evidence of a trigger'.
   local armdone = true
   if sdec.strm_armed then
@@ -1085,7 +1085,7 @@ function sdec.stream_acquire(nsmp)
   sdec.strm_readfail = nil
   -- Bounded by wall clock as well as by samples, and the clock is the only bound that always fires: a
   -- press is not dispatched while Lua runs, so every mode must terminate by construction.
-  local limit = sdec.stream_limit(nsmp, sdec.fs)
+  local limit        = sdec.stream_limit(nsmp, sdec.fs)
   -- The arm's own wait goes on top of the ceiling, not inside it: the wait must not come out of the run.
   if sdec.strm_armed then limit = limit + sdec.arm_wait_s() end
   --   full     one of three different endings, and the overload matters to a reader of the record: the
@@ -1100,7 +1100,7 @@ function sdec.stream_acquire(nsmp)
     -- Leaving the wait block is the trigger firing; measured from inside, a host command aborting it.
     if not armdone and sdec.trig_waiting() ~= true then
       armdone = true
-      quiet = 0
+      quiet   = 0
       seen, seenend = 0, -1
       -- And give the cell back, or the arm's note stands for the rest of the run: the refresh in
       -- record_run() is the last full one, so nothing else repaints this until the run ends.
@@ -1124,13 +1124,13 @@ function sdec.stream_acquire(nsmp)
     if not armdone and waited >= sdec.arm_wait_s() then
       -- The level is stashed at the expiry, because the next window clears thr before the note is printed.
       sdec.arm_expired_at = sdec.arm_thr or sdec.thr
-      sdec.ck_endwhy = 'noarm'
+      sdec.ck_endwhy      = 'noarm'
       break
     end
     if waited >= limit then sdec.ck_endwhy = 'full'; break end
 
     -- Newest samples only, by ring position. docs/MEASUREMENTS.md, 'A record can come back rotated'.
-    local eidx = sdec.acq_end(buf)
+    local eidx  = sdec.acq_end(buf)
     local fresh = (have > seen)
     if eidx ~= nil then fresh = (eidx ~= seenend) end
     if fresh then
@@ -1147,7 +1147,7 @@ function sdec.stream_acquire(nsmp)
         -- Persistent is different from transient: a run of failed reads means the buffer cannot be read.
         if rfail >= 20 then
           sdec.strm_readfail = tostring(rlast or 'buffer read failed')
-          sdec.ck_endwhy = 'readfail'
+          sdec.ck_endwhy     = 'readfail'
           break
         end
       elseif m > 1 and sdec.smp_active(win, m, sdec.thr, sdec.hyst) then
@@ -1157,7 +1157,7 @@ function sdec.stream_acquire(nsmp)
         quiet = quiet + step
         rfail = 0
       end
-      seen = have
+      seen    = have
       seenend = eidx
     else
       quiet = quiet + step
@@ -1180,7 +1180,7 @@ function sdec.stream_acquire(nsmp)
       elseif unmeasurable then
         -- The check itself could not be made, so the quiet verdict is unearned: the last gate must not guess.
         sdec.strm_readfail = 'the capture buffer could not be re-measured to confirm a quiet line'
-        sdec.ck_endwhy = 'readfail'
+        sdec.ck_endwhy     = 'readfail'
         break
       else
         sdec.ck_endwhy = 'quiet'
@@ -1191,7 +1191,7 @@ function sdec.stream_acquire(nsmp)
     -- Yields at ck_poll_s, because delay() is what lets the display update. Not while an arm waits.
     if armdone then sdec.progress_samples(have, nsmp) end
     delay(step)
-    waited = waited + step
+    waited           = waited + step
     sdec.strm_waited = waited
   end
 
@@ -1236,20 +1236,20 @@ end
 -- Readings the largest recording may ask for. The 32 kB mode at 9600 records 3 413 334 at 100 kS/s, so any
 -- ceiling above that keeps all 32 768 bytes; this figure buys every other reachable combination. Bisected,
 -- not chosen: docs/MEASUREMENTS.md, 'ck_bufwant = 4076503'.
-sdec.ck_bufwant = 4076503
+sdec.ck_bufwant         = 4076503
 
 -- And the live ceiling, which start() recomputes from the capacities the operator has set. Initialised to the
 -- static need, because a caller that never ran start() still needs a number. bufmax_for() reads ck_bufwant
 -- and never this, so a launch under a large defbuffer1 cannot ratchet it down.
-sdec.ck_bufmax = sdec.ck_bufwant
+sdec.ck_bufmax          = sdec.ck_bufwant
 
 -- The instrument's whole reading memory, across all buffers together. Standard style, which is what
 -- acq_make_buffer() allocates, and not compact, and not by choice -- docs/MEASUREMENTS.md,
 -- 'buffer.STYLE_COMPACT is nil on this firmware'; the per-model figures are under 'The reading pool is
 -- per model'. The default is a separate field, or a resolver that only matches leaves the last match.
 sdec.ck_bufpool_default = 7080255
-sdec.ck_bufpool = sdec.ck_bufpool_default
-sdec.ck_bufpool_model = {{'7510', 7500000}, {'2461', 6875000}}
+sdec.ck_bufpool         = sdec.ck_bufpool_default
+sdec.ck_bufpool_model   = {{'7510', 7500000}, {'2461', 6875000}}
 
 -- Resolve the pool from the model number. -> the figure now in force. Assigns unconditionally from a local,
 -- so the answer depends on the model and not on call order. Bare read: localnode is documented on every
@@ -1275,13 +1275,13 @@ sdec.buf_pool_resolve()
 -- A chosen margin below the measurement, not a second measurement. 6 000 000 is the hard guard, what the
 -- vendor's bufferVar.capacity documents; ck_bufmargin covers the pool figure's uncertain last digits and the
 -- firmware's unreported per-buffer overhead, at 0.7 % of the pool.
-sdec.ck_bufguard = 6000000
+sdec.ck_bufguard  = 6000000
 sdec.ck_bufmargin = 50000
 
 -- The smallest recording that is still a recording, which is the floor start() refuses below. It is the
 -- triggered floor: the reserve term in stream_begin() applies only where trigmode is not 'free', so a
 -- free-running recording's floor is lower. docs/MEASUREMENTS.md, 'ck_bufmin = 898347'.
-sdec.ck_bufmin = 898347
+sdec.ck_bufmin    = 898347
 
 -- The ceiling the live defbuffers leave, which is a query and not the policy: buf_reclaim() is what
 -- changes them. One pcall for both reads, because this is an outbound firmware boundary and the pcall
@@ -1367,12 +1367,12 @@ function sdec.buf_reclaim()
   if n2 ~= nil and sdec.defbuf_set('defbuffer2', n2) then
     if sdec.ck_defbufwas == nil then sdec.ck_defbufwas = {} end
     sdec.ck_defbufwas.defbuffer2 = d2
-    what = string.format('defbuffer2 %d -> %d', d2, n2)
+    what                         = string.format('defbuffer2 %d -> %d', d2, n2)
   end
   if n1 ~= nil and sdec.defbuf_set('defbuffer1', n1) then
     if sdec.ck_defbufwas == nil then sdec.ck_defbufwas = {} end
     sdec.ck_defbufwas.defbuffer1 = d1
-    local s = string.format('defbuffer1 %d -> %d', d1, n1)
+    local s                      = string.format('defbuffer1 %d -> %d', d1, n1)
     if what == nil then what = s else what = what .. ' and ' .. s end
   end
   if what == nil then return false, nil end
@@ -1441,14 +1441,14 @@ function sdec.buf_sweep()
   local freed, gone = 0, nil
   local i
   for i = 1, nn do
-    local nm = names[i]
+    local nm  = names[i]
     -- One site, N executions; per buffer, so a refused delete does not cost the ones after it.
     local dok = pcall(function()
       buffer.delete(_G[nm])
       _G[nm] = nil
     end)
     if dok then
-      freed = freed + names[nm]
+      freed   = freed + names[nm]
       local s = string.format('%s (%d)', nm, names[nm])
       if gone == nil then gone = s else gone = gone .. ', ' .. s end
     end
@@ -1474,7 +1474,7 @@ function sdec.buf_restore()
   local what, left = nil, nil
   if was.defbuffer2 ~= nil then
     if sdec.defbuf_set('defbuffer2', was.defbuffer2) then
-      what = string.format('defbuffer2 to %d', was.defbuffer2)
+      what           = string.format('defbuffer2 to %d', was.defbuffer2)
       was.defbuffer2 = nil
     else
       left = 'defbuffer2'
@@ -1507,11 +1507,11 @@ function sdec.stream_samples(md, fs)
   -- A byte-capped mode's count follows from the format; md.cap = nil takes what the buffer allows.
   if md.cap == nil then return sdec.ck_bufmax end
   -- 8N1 unless the frame format is forced, and all three forced fields widen it, not just the width.
-  local nbits = sdec.force_nbits or 8
+  local nbits   = sdec.force_nbits or 8
   local parbits = 0
   if sdec.force_par ~= nil and sdec.force_par ~= sdec.PAR_NONE then parbits = 1 end
   local framebits = 1 + nbits + parbits + (sdec.force_nstop or 1)
-  local n = math.ceil(md.cap * framebits * (fs / baud))
+  local n         = math.ceil(md.cap * framebits * (fs / baud))
   if n > sdec.ck_bufmax then n = sdec.ck_bufmax end
   if n < 100 then n = 100 end
   return n
@@ -1536,7 +1536,7 @@ end
 function sdec.cancel_asked()
   if sdec.ck_stop then return true end
   if not sdec.cancel_pressed() then return false end
-  sdec.ck_stop = true
+  sdec.ck_stop   = true
   -- Separate from ck_stop, which Mode also sets: ck_cancel is "the operator pressed TRIGGER".
   sdec.ck_cancel = true
   return true
@@ -1579,7 +1579,7 @@ function sdec.capture_run()
       sdec.stickyerr = 'a previous run did not finish (aborted?) -- run flag cleared'
       ulog.line(sdec.stickyerr)
     else
-      sdec.ck_stop = true                 -- second press during a stream = Stop
+      sdec.ck_stop   = true                 -- second press during a stream = Stop
       sdec.ui_status = 'stopping'
       return sdec.ui_refresh()
     end
@@ -1589,7 +1589,7 @@ function sdec.capture_run()
   -- here as a fresh capture and would wipe the bytes on screen. See sdec.press_absorbed().
   if sdec.press_absorbed('Capture') then return true end
   -- Once per press, ahead of the mode dispatch: a relock inside this press must reach the note row.
-  sdec.relocked = nil
+  sdec.relocked     = nil
   -- rate_backoff with it: it requests one re-capture within THIS press.
   sdec.rate_backoff = nil
   -- The rate offer is per press for the opposite reason -- a fresh capture is itself an answer to it.
@@ -1629,7 +1629,7 @@ function sdec.capture_run()
   --   no run      start recording. Arms the hardware and returns; the panel stays live throughout.
   --   recording   stop recording, and decode the first slice.
   --   decoding    decode the next slice.
-  local md = sdec.mode_cur()
+  local md  = sdec.mode_cur()
   if not md.view and sdec.strm_recording then
     local sok, swhy = false, nil
     local pok, r1, r2 = pcall(sdec.stream_stop)
@@ -1637,8 +1637,8 @@ function sdec.capture_run()
     if not pok then swhy = r1 end
     sdec.busy = false
     if not pok or not sok then
-      sdec.errcount = sdec.errcount + 1
-      sdec.lasterr = tostring(swhy or 'recording failed')
+      sdec.errcount  = sdec.errcount + 1
+      sdec.lasterr   = tostring(swhy or 'recording failed')
       sdec.ui_status = 'error'
       ulog.line(sdec.lasterr)
       sdec.mode_exit('recording failed', true)
@@ -1660,8 +1660,8 @@ function sdec.capture_run()
     if not pok then swhy = r1 end
     sdec.busy = false
     if not pok or not sok then
-      sdec.errcount = sdec.errcount + 1
-      sdec.lasterr = tostring(swhy or 'could not start recording')
+      sdec.errcount  = sdec.errcount + 1
+      sdec.lasterr   = tostring(swhy or 'could not start recording')
       sdec.ui_status = 'refused'
       ulog.line(sdec.lasterr)
       sdec.mode_exit(sdec.lasterr, true)
@@ -1674,7 +1674,7 @@ function sdec.capture_run()
 
   if not md.view then
     sdec.detect_reset()
-    sdec.ui_status = 'capturing'
+    sdec.ui_status     = 'capturing'
     -- Set before the refresh, so the control cell says 'no stop until it ends' for the whole run.
     sdec.strm_inflight = true
     -- No refresh here: record_run() paints, immediately after it clears the cancel latch.
@@ -1686,13 +1686,13 @@ function sdec.capture_run()
     sdec.strm_inflight = nil
     sdec.busy, sdec.ck_running = false, false
     if not pok then
-      sdec.errcount = sdec.errcount + 1
-      sdec.lasterr = 'stream raised: ' .. tostring(swhy)
+      sdec.errcount  = sdec.errcount + 1
+      sdec.lasterr   = 'stream raised: ' .. tostring(swhy)
       sdec.ui_status = 'error'
       ulog.line(sdec.lasterr)
     elseif not sok then
-      sdec.errcount = sdec.errcount + 1
-      sdec.lasterr = tostring(swhy)
+      sdec.errcount  = sdec.errcount + 1
+      sdec.lasterr   = tostring(swhy)
       sdec.ui_status = 'refused'
       ulog.line('stream refused: ' .. tostring(swhy))
     else
@@ -1726,7 +1726,7 @@ function sdec.capture_run()
   local ok, why = sdec.autoset()
 
   -- One fresh capture after a back-off, cleared BEFORE the retry or a second back-off retries for ever.
-  local rb = sdec.rate_backoff
+  local rb          = sdec.rate_backoff
   sdec.rate_backoff = nil
   if rb then
     ulog.line('rate back-off: ' .. tostring(sdec.relocked))
@@ -1748,7 +1748,7 @@ function sdec.capture_run()
     ulog.line('no decode: ' .. tostring(why))
   else
     sdec.ui_status = 'done'
-    sdec.ui_page = 0
+    sdec.ui_page   = 0
     -- One call each, no guard: summary() defends every value it formats, and this is a handler's success tail.
     ulog.line(sdec.summary(1))
     ulog.line(sdec.summary(2))
@@ -1859,9 +1859,9 @@ function sdec.autolock_try()
 
   -- Only the fields the operator left on Auto, or a hand-forced parity survives one capture. Which fields
   -- this set is recorded, because a back-off must drop what the app chose and not what was typed.
-  sdec.autolock_set = {}
+  sdec.autolock_set      = {}
   -- Rounded, so a non-standard measurement locks as a number an operator could have typed: 16099 -> 16100.
-  sdec.force_baud   = lockb
+  sdec.force_baud        = lockb
   sdec.autolock_set.baud = true
   if sdec.force_nbits == nil then sdec.force_nbits = r.nbits; sdec.autolock_set.nbits = true end
   if sdec.force_par   == nil then sdec.force_par   = r.par;   sdec.autolock_set.par   = true end
@@ -1873,14 +1873,14 @@ function sdec.autolock_try()
   -- locks in practice. docs/MEASUREMENTS.md, 'Polarity is not locked'.
   if sdec.force_invert == nil and r.invert ~= nil and
      (sdec.idle_weak == false or (sdec.polwhy ~= nil and sdec.polwhy ~= 'prior')) then
-    sdec.force_invert = r.invert
+    sdec.force_invert        = r.invert
     sdec.autolock_set.invert = true
   end
 
   -- Names the payoff, and sized to the note row's budget. docs/MEASUREMENTS.md, 'The note row pixel budget'.
   sdec.baud, sdec.snapped, sdec.snapfirm = sdec.force_baud, true, true
-  local fs = sdec.fs_for_baud(sdec.force_baud)
-  local nb = sdec.window_bytes(sdec.force_baud, r.nbits, r.par, r.nstop)
+  local fs          = sdec.fs_for_baud(sdec.force_baud)
+  local nb          = sdec.window_bytes(sdec.force_baud, r.nbits, r.par, r.nstop)
   sdec.autolocknote = string.format(
     'auto-locked %s %s: next %g kS/s ~%d B (Options > Baud Rate = 0 re-detects)',
     tostring(sdec.baud_text()), tostring(sdec.fmt_text()), (fs or 0) / 1000, nb or 0)
@@ -1941,11 +1941,11 @@ end
 -- make a decision of its own, like lock_toggle, has to do this too or the cleanup does not happen.
 -- Raise-free by construction, and it does not log -- a full key is the condition that brought the app here.
 function sdec.unwind(why)
-  sdec.busy = false
+  sdec.busy       = false
   sdec.ck_running = false
   -- The unwind registers: a frame parks a module field here, because a local is invisible from here.
   if sdec.trig_restore ~= nil then
-    sdec.trigmode = sdec.trig_restore
+    sdec.trigmode     = sdec.trig_restore
     sdec.trig_restore = nil
   end
   -- The drop belongs to the capture path: a Save or a View that failed has invalidated nothing.
@@ -1955,13 +1955,13 @@ function sdec.unwind(why)
   end
   -- An open handle is not reclaimed until a power cycle. Bare: file.close cannot transfer control.
   if sdec.fh_unwind ~= nil then
-    local h = sdec.fh_unwind
+    local h        = sdec.fh_unwind
     sdec.fh_unwind = nil
     file.close(h)
   end
   if sdec.ui_tick_on ~= nil then sdec.ui_tick_on() end
-  sdec.errcount = (sdec.errcount or 0) + 1
-  sdec.lasterr = tostring(why)
+  sdec.errcount  = (sdec.errcount or 0) + 1
+  sdec.lasterr   = tostring(why)
   sdec.ui_status = 'error'
   if sdec.ui_refresh ~= nil then sdec.ui_refresh() end
   return false
@@ -2109,7 +2109,7 @@ function sdec.log_new()
   -- asked for a new file, so the cell must stop naming the old one.
   sdec.flog_last, sdec.flog_lastbytes, sdec.flog_lastgen = nil, nil, nil
   if was ~= nil then
-    local base = string.gsub(tostring(was), '^.*/', '')
+    local base   = string.gsub(tostring(was), '^.*/', '')
     sdec.lognote = string.format('closed %s -- the next capture starts a new file', tostring(base))
   else
     sdec.lognote = 'no message log open yet -- the next capture starts one'
@@ -2142,7 +2142,7 @@ function sdec.lock_toggle()
   -- Locking the baud rate changes the sample rate, so this re-captures rather than merely pinning: at
   -- 9600 the window goes from 19 bytes to 240. Re-entrancy guard, since two rects overlap on one glyph.
   if sdec.busy then return false end
-  local st = sdec.lock_state()
+  local st   = sdec.lock_state()
   local note = nil
   if st == 'locked' then
     sdec.unlock_all()
@@ -2184,7 +2184,7 @@ function sdec.lock_toggle()
   if note ~= nil and not (pok and cok) then
     -- Say both halves: the setting took, the measurement did not. lasterr outranks this note.
     sdec.lognote = note .. ' -- but the re-capture failed, so the figures above are the previous one'
-    note = nil
+    note         = nil
   end
   if note ~= nil then
     -- sdec.fs, the requested rate: acq_fs describes the capture that just happened.
@@ -2288,7 +2288,7 @@ sdec.strm_absorb_s = sdec.strm_absorb_s or 1.0
 -- false of an operator who presses Capture, TRIGGER, Capture.
 function sdec.strm_absorb_arm()
   sdec.strm_stopped_by_press = nil
-  sdec.strm_nabsorbed = 0
+  sdec.strm_nabsorbed        = 0
   -- timer.cleartime() stamps the moment the run ended; nothing else runs before the queued press.
   timer.cleartime()
   sdec.strm_stopped_by_press = true
@@ -2313,13 +2313,13 @@ function sdec.press_absorbed(what)
   if not sdec.strm_absorb_due() then
     -- Stale arm from a run whose window has passed, cleared on the first press after it.
     sdec.strm_stopped_by_press = nil
-    sdec.strm_absorbed = nil
+    sdec.strm_absorbed         = nil
     return false
   end
-  local n = (sdec.strm_nabsorbed or 0) + 1
+  local n             = (sdec.strm_nabsorbed or 0) + 1
   sdec.strm_nabsorbed = n
   -- lasterr goes: a queued press must not replace the verdict the operator is reading.
-  sdec.lasterr = nil
+  sdec.lasterr        = nil
   if n == 1 then
     sdec.strm_absorbed = string.format('%s taken as the Stop for the recording that just '
                                        .. 'ended -- press again to use it',
@@ -2346,9 +2346,9 @@ end
 function sdec.mode_exit(why, bad)
   -- One function for every way out -- Mode, an idle line, a completed run, End App -- so all flush the
   -- same way: the stream through ck_stop, the byte log's path forgotten, and ulog flushed and not closed.
-  local was = sdec.capmode
-  local md = sdec.mode_cur()
-  local running = sdec.ck_running
+  local was         = sdec.capmode
+  local md          = sdec.mode_cur()
+  local running     = sdec.ck_running
   -- A decode in progress owns an open file, so the job is closed out first or the handle strands. Clearing
   -- ck_running matters here: a press-driven run has no loop to own it.
   local pressdriven = (sdec.ck_job ~= nil) or (sdec.strm_recording == true)
@@ -2389,7 +2389,7 @@ function sdec.mode_exit(why, bad)
     -- Said on the note line, and the mode does not change here, so the note must not claim it did.
 
     -- Always set and always logged; tools/test_cancel.lua reads it. Only the note row is conditional.
-    sdec.mode_exited = string.format('%s run ended (%s)', tostring(md.name), tostring(why or 'exited'))
+    sdec.mode_exited  = string.format('%s run ended (%s)', tostring(md.name), tostring(why or 'exited'))
     sdec.mode_exitbad = (bad == true)
     ulog.line(sdec.mode_exited)
   end
@@ -2565,7 +2565,7 @@ function sdec.options_restore()
   sdec.force_msb = s.msb
   sdec.proto, sdec.widths_any = s.proto, s.any
   sdec.trigmode, sdec.trigext, sdec.fc_out = s.trig, s.ext, s.fc
-  sdec.ui_mode = s.view
+  sdec.ui_mode      = s.view
   sdec.autolock_set = s.aset
   -- Guarded on the values, which is a different test from the dhas below: nil is legitimate for the three
   -- display fields and not for these two, so a nil means a snapshot built without them.
@@ -2619,10 +2619,10 @@ function sdec.options_lock()
   end
   -- The snapped rate when it snapped, since that is what a device runs. Through baud_round, because
   -- sdec.baud is standard only when snapped, and whole, because baud_text uses %d.
-  sdec.force_baud  = math.floor(sdec.baud_round(sdec.baud) + 0.5)
-  sdec.force_nbits = sdec.res.nbits
-  sdec.force_par   = sdec.res.par
-  sdec.force_nstop = sdec.res.nstop
+  sdec.force_baud   = math.floor(sdec.baud_round(sdec.baud) + 0.5)
+  sdec.force_nbits  = sdec.res.nbits
+  sdec.force_par    = sdec.res.par
+  sdec.force_nstop  = sdec.res.nstop
   sdec.force_invert = sdec.res.invert
   -- Every forced field is now the operator's: they pressed Lock Detected over these values.
   sdec.autolock_set = nil
@@ -2641,7 +2641,7 @@ function sdec.options_apply()
   local readok, readerr = pcall(function()
     -- Every field below is now the operator's, so none of it is autolock's to take back.
     sdec.autolock_set = nil
-    local b = display.getvalue(sdec.opt_baud)
+    local b           = display.getvalue(sdec.opt_baud)
     -- Rounded to a whole Bd. docs/MEASUREMENTS.md, 'baud_round cascades through three steps'.
     if type(b) == 'number' and b >= 110 then sdec.force_baud = math.floor(b + 0.5)
     else
@@ -2650,15 +2650,15 @@ function sdec.options_apply()
       sdec.force_baud = nil
     end
 
-    local bi = display.getvalue(sdec.opt_bits)
+    local bi         = display.getvalue(sdec.opt_bits)
     sdec.force_nbits = sdec.opt_pick(sdec.opt_bits_v, bi)
     -- Entry 2 widens the automatic search to 6 and 5 data bits. 9 stays forced-only, and a forced
     -- width skips the search. docs/MEASUREMENTS.md, 'Why 9 data bits is never searched, even biased'.
-    sdec.widths_any = (type(bi) == 'number' and math.floor(bi + 0.5) == 2)
+    sdec.widths_any  = (type(bi) == 'number' and math.floor(bi + 0.5) == 2)
     -- Parity is applied on its own: the search narrows to it, where pinning the width would force 8E1.
     sdec.force_par   = sdec.opt_pick(sdec.opt_par_v, display.getvalue(sdec.opt_par))
 
-    local mi2 = display.getvalue(sdec.opt_msb)
+    local mi2        = display.getvalue(sdec.opt_msb)
     if mi2 == 2 then sdec.force_msb = false
     elseif mi2 == 3 then sdec.force_msb = true
     else sdec.force_msb = nil end
@@ -2668,10 +2668,10 @@ function sdec.options_apply()
     elseif li == 3 then sdec.force_invert = true
     else sdec.force_invert = nil end
 
-    local ti = display.getvalue(sdec.opt_trig)
+    local ti      = display.getvalue(sdec.opt_trig)
     sdec.trigmode = sdec.opt_pick(sdec.opt_trig_v, ti) or 'edge'
     -- Both rear-BNC booleans come from one index, with a fallback to entry 1 -- both off.
-    local ri = sdec.opt_rear_v[display.getvalue(sdec.opt_ext)] or sdec.opt_rear_v[1]
+    local ri      = sdec.opt_rear_v[display.getvalue(sdec.opt_ext)] or sdec.opt_rear_v[1]
     sdec.trigext, sdec.fc_out = ri[1], ri[2]
 
     -- The two arm fields, taken only when they read as numbers, or a nil reaches a voltage comparison. Not
@@ -2730,12 +2730,12 @@ function sdec.options_apply()
     sdec.force_par, sdec.force_nstop = sdec.PAR_NONE, 1
     -- A specification is not autolock's guess: insurance against stale provenance becoming live.
     sdec.autolock_set = nil
-    sdec.ui_mode = 'midi'
+    sdec.ui_mode      = 'midi'
   elseif sdec.proto == 'lin' then
     -- LIN is 8N1, idle recessive, by specification, and its break fields are the worst input for a search.
     sdec.force_nbits, sdec.force_par, sdec.force_nstop = 8, sdec.PAR_NONE, 1
     sdec.force_invert = false
-    sdec.ui_mode = 'lin'
+    sdec.ui_mode      = 'lin'
   elseif was ~= 'uart' then
     -- Leaving a protocol hands the wire back to the auto-detector, which the form alone cannot do.
     sdec.unlock_all()
@@ -2806,7 +2806,7 @@ function sdec.stop()
   sdec.cancel_ok = false
   -- The right variable: cancel_blender is a load-time constant, so testing it is vacuous -- the supported
   -- configuration is a firmware with no blenders, where indexing it left 133 objects live.
-  local bl = trigger.blender
+  local bl       = trigger.blender
   if bl ~= nil and bl[sdec.cancel_blender] ~= nil then
     pcall(bl[sdec.cancel_blender].reset)
   end
@@ -2825,18 +2825,18 @@ function sdec.stop()
     -- while End App reported success. The whole table is the test, so a rung added later is covered without
     -- anyone remembering this line.
     if next(sdec.acq_bufs) ~= nil then
-      sdec.delfails = (sdec.delfails or 0) + 1
+      sdec.delfails  = (sdec.delfails or 0) + 1
       sdec.stickyerr = 'a capture buffer could not be freed -- power cycle the instrument'
     end
   end
   if sdec.buf ~= nil then
     sdec.trig_settle()
-    local b = sdec.buf
+    local b     = sdec.buf
     local delok = sdec.bufdel(b)
     if delok then
       sdec.buf = nil
     else
-      sdec.delfails = (sdec.delfails or 0) + 1
+      sdec.delfails  = (sdec.delfails or 0) + 1
       sdec.stickyerr = 'the capture buffer could not be freed -- power cycle the instrument'
     end
   end
@@ -2914,8 +2914,8 @@ function sdec.start()
     sdec.cleanup()
     sdec.ck_relaunching = nil
     -- Retry anything a previous teardown could not delete BEFORE counting failures: it is reclaimable.
-    local left = 0
-    left = sdec.del_orphans()
+    local left          = 0
+    left                = sdec.del_orphans()
     if left < 1 then sdec.delfails = 0 end
     local nfail = sdec.delfails or 0
     if nfail > 0 and not sdec.allow_rebuild then
