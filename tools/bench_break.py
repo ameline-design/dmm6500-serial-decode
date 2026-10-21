@@ -244,7 +244,14 @@ def judge(res, notes, hexs, accept, want_bytes=None, want_baud=None):
                 #
                 # 'fit nothing' DOES NOT MATCH 'fits nothing' -- the s makes them different substrings,
                 # so both spellings are listed rather than one assumed to cover the other.
-                joined = ' | '.join(notes)
+                # CASE-FOLDED, because ui_notes' add() capitalises the first letter of every note it
+                # emits (2026-10-21). 'unlocked' is the first word of one of them -- sdec.lognote's
+                # 'unlocked -- auto-detecting again' -- so matching it case-sensitively stopped
+                # matching the moment that convention arrived, and silently: this arm is one of five
+                # ORs, so losing it narrows what counts as the forced rate being overridden without
+                # failing anything. The other four happen to sit mid-string and were unaffected,
+                # which is exactly why this needed finding rather than noticing.
+                joined = (' | '.join(notes)).lower()
                 if ('fit nothing' in joined or 'fits nothing' in joined
                         or 'unlocked' in joined or 'back to auto-detect' in joined
                         or 'wire is' in joined):

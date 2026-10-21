@@ -77,9 +77,9 @@ options screens.
 Built on the press instead, as it was before 1.71, the same press is eighteen `display.create` calls
 and a 0.2 s settle. At the ~12 ms a create recorded in `MEASUREMENTS.md` that is about **420 ms** --
 derived from that figure rather than measured, the build having been removed before anyone timed it --
-which would have made Msgs the slowest press on the panel by a factor of five and put it five times
-over the 77 ms the row above claims. The operator reported it as "slow" before any of this was
-measured.
+which would have made Msgs **the slowest press that does not capture, by a factor of five** -- five
+times over the 77 ms the first row claims. Not the slowest press on the panel: Capture is seconds,
+and it is supposed to be. The operator reported Msgs as "slow" before any of this was measured.
 
 The unlocked figure is a **range, not an average, and it is genuinely variable**: twelve
 back-to-back unlocked captures on one unchanged 2400 Bd line measured min 4.891 s, mean 5.358 s, max

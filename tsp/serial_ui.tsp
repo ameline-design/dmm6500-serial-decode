@@ -2363,8 +2363,12 @@ function sdec.destroy_msgs()
   return true
 end
 
--- Build it. -> the screen handle, or nil with sdec.msg_why set. No raise and no pcall: display.create
--- returns nil when the pool is gone and posts nothing, so the refusal is a return value to check.
+-- Build it. -> the screen handle, or nil with sdec.msg_why set. The pool running out is a RETURN
+-- VALUE here, not a raise: display.create answers nil and posts nothing, so every create below is
+-- checked rather than guarded. The one call that could raise is the EVENT_ENDAPP setevent at the
+-- end, which install_cleanup() pcalls on the main screen -- left bare here because build_options()
+-- makes the identical call bare immediately before this runs, so a firmware that refused it would
+-- already have taken the launch down.
 function sdec.build_msgs()
   sdec.destroy_msgs()
   local create = display.create
@@ -2413,10 +2417,18 @@ function sdec.build_msgs()
     sdec.msg_row[i] = h
   end
   if sdec.msg_nrow < 1 then
-    sdec.destroy_msgs()
     sdec.msg_why = 'no display objects left for a message row'
-    -- The cover comes down on this path too, or a refused build leaves 'Loading, please wait...' in
-    -- front for ever. To ui_scr, not to the screen just deleted.
+    -- SWITCH AWAY BEFORE THE DELETE, UNCONDITIONALLY, and that is not the same as clearing the
+    -- cover. This path is reached only when the pool is exhausted -- which is also exactly when
+    -- ui_loading_raise() returns false, so `covermine` is false here and the clear below does
+    -- nothing. The screen create above took the front, so destroying it first left the panel
+    -- displaying a dead object: the one state the front panel cannot recover from. Unreachable from
+    -- start(), which always holds a cover, but the guard belongs with the delete and not with the
+    -- caller that happens to be safe.
+    display.changescreen(sdec.ui_scr or display.SCREEN_HOME)
+    sdec.destroy_msgs()
+    -- And the cover comes down if this function raised one, or a refused build leaves
+    -- 'Loading, please wait...' in front for ever.
     if covermine then sdec.ui_loading_clear(sdec.ui_scr) end
     return nil
   end
@@ -2521,10 +2533,16 @@ function sdec.msgs_show()
   --
   -- So a press can only ever switch. A nil handle means the launch build was refused, which is not
   -- a transient state: everything is allocated at launch, so trying again here would fail again.
-  -- Say why on the screen the operator is already looking at -- ui_note is where every refusal
-  -- lands -- rather than failing silently.
+  --
+  -- AND THE REFUSAL HAS TO BE PAINTED, which setting lasterr does not do. sdec.guard() pcalls the
+  -- press and returns on success -- a `false` RETURN is not an unwind, so nothing refreshes -- and
+  -- the 2 Hz tick runs ui_keypoll(), which writes the USB buttons and the log cell and never the
+  -- note. Without this refresh the press was silent on the glass AND permanent, msgscr staying nil
+  -- for the power cycle: a dead button that never says why. sdec.save() is the pattern -- set
+  -- lasterr, paint, then report false.
   if sdec.msgscr == nil then
     sdec.lasterr = sdec.msg_why or 'the messages screen was not built at launch'
+    sdec.ui_refresh()
     return false
   end
   -- Always at the first note, not the main screen's page: this used to map ui_page through

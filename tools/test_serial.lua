@@ -5526,10 +5526,12 @@ end
 -- and baud_note in uart_decode -- and several open with a substituted number, where there is no
 -- literal first letter to capitalise at all.
 --
--- THE PREMISE IS ASSERTED, which is what stops this being a test of its own fixture: each field is
--- checked to be lowercase WHERE IT IS SET and sentence case where it comes out. A test that only
--- read the output would pass just as well against thirty capitalised literals and prove nothing
--- about the one place that has to keep doing it.
+-- TWO HALVES, AND THEY PROVE DIFFERENT THINGS. The OUTPUT half sets nine note fields in lower case
+-- and reads them back sentence-cased, which proves add() transforms what other modules hand it --
+-- de-capitalising add() fires nine checks including the dedicated one. The PREMISE half reads
+-- tsp/serial_ui.tsp and asserts its own literals are still lower case at source, because a rendered
+-- note is identical whether add() capitalised it or the literal was already capital, so nothing in
+-- the output can tell those apart.
 do
   clearforce()
   sdec.clear_result()
@@ -5543,16 +5545,26 @@ do
   -- nothing' must keep its rate, not become '9600 Baud'. string.upper on a digit is the digit, which
   -- is why the transformation is one call and not a search for the first letter.
   sdec.relocked = '9600 baud fits nothing -- now locked to 4800'
-  local lowered = 0
-  for i = 1, table.getn(FIELDS) do
-    local f = sdec[FIELDS[i]]
-    local c = string.sub(f, 1, 1)
-    if c == string.lower(c) and c ~= string.upper(c) then lowered = lowered + 1 end
+  -- THE PREMISE, READ OUT OF THE SOURCE FILE. This used to assert that the nine fixture strings
+  -- three lines above were lower case, which is this block checking its own typing: it said nothing
+  -- about the literals inside ui_notes, and capitalising 'parity was ASSUMED' at source -- the exact
+  -- thing the convention exists to make unnecessary -- left the suite at 1721 passed, 0 failed.
+  --
+  -- The file itself is the only witness that can distinguish "add() capitalised it" from "it was
+  -- already capital", because the rendered note is identical either way. So read it.
+  local fh = io.open('tsp/serial_ui.tsp', 'r')
+  local src = ''
+  if fh ~= nil then src = fh:read('*a'); fh:close() end
+  check('PREMISE: the suite can read its own source, or the next check proves nothing',
+        string.len(src) > 10000, string.format('%d bytes', string.len(src)))
+  local lowlits = {"add('parity was ASSUMED", "add('stop-bit count", "add('began mid-byte",
+                   "add('the run began mid-byte", "add('saved to '"}
+  local missing = nil
+  for i = 1, table.getn(lowlits) do
+    if string.find(src, lowlits[i], 1, true) == nil then missing = lowlits[i] end
   end
-  check('PREMISE: the fields themselves are still lower case where they are set',
-        lowered == table.getn(FIELDS) - 1,
-        string.format('%d of %d lower case (one opens with a digit)', lowered,
-                      table.getn(FIELDS)))
+  check('...and ui_notes\' own literals are LOWER case at source, so add() is what capitalises them',
+        missing == nil, string.format('not found lower case: %s', tostring(missing)))
 
   local nt, nn = sdec.ui_notes()
   check('...and there are notes from every one of them, so the walk is not vacuous',
@@ -7367,6 +7379,21 @@ function test_msgs()
     check('...and a one-page open leaves Up and Dn hidden, never flashed',
           MD.obj(sdec.msg_up).state == display.STATE_INVISIBLE,
           tostring(MD.obj(sdec.msg_up).state))
+
+    -- THE COUNTER MUST CLEAR THE LAST ROW, and this is the one place that can ask. The suite's
+    -- general text-over-text scan skips empty strings, and this screen's rows are blank everywhere
+    -- that scan runs -- so it gives the messages screen ZERO coverage, and dragging the counter up
+    -- onto row 13 leaves the whole suite green. Here the rows are full.
+    --
+    -- Charged FONT_3's ink to the counter, which actually takes FONT_SMALL: 20 px against 12 makes
+    -- the test stricter than the layout, which is the right direction for a clearance check.
+    local lasty = sdec.msg_row_y0 + (sdec.msg_nrow - 1) * sdec.msg_row_dy
+    local indy = MD.obj(sdec.msg_ind).y
+    local ink = MD.fontheight(display.FONT_3) or 20
+    check('the page counter clears the last message row, with the rows full',
+          MD.text(sdec.msg_row[1]) ~= '' and indy - ink + 1 > lasty,
+          string.format('counter y=%s, last row y=%d, charged %s px of ink',
+                        tostring(indy), lasty, tostring(ink)))
     sdec.msgs_close()
   end
 
@@ -11999,12 +12026,24 @@ end)()
     sdec.destroy_msgs()
     local n0 = MD.nobj()
     sdec.lasterr = nil
+    -- The note cell BEFORE the press, because 'it says why' has to mean the glass changed.
+    local notebefore = MD.text(sdec.ui_note)
     local shown = sdec.msgs_show()
     check('Msgs with no screen built refuses rather than building one',
           shown == false and MD.nobj() == n0,
           string.format('returned %s, %d ids from %d', tostring(shown), MD.nobj(), n0))
     check('...and says why, on the screen the operator is already looking at',
           sdec.lasterr ~= nil, tostring(sdec.lasterr))
+    -- AND IT REACHES THE GLASS, which setting lasterr does NOT do on its own. sdec.guard pcalls the
+    -- press and returns on success, so a `false` return is not an unwind and nothing refreshes; the
+    -- 2 Hz tick runs ui_keypoll(), which writes the USB buttons and the log cell and never the note.
+    -- This press was silent on the panel AND permanent -- msgscr stays nil for the power cycle --
+    -- so the operator got a dead button with no explanation. Asserting lasterr alone missed it
+    -- entirely, which is why the cell itself is read here.
+    check('...and the refusal is PAINTED on the note cell, not merely stored in lasterr',
+          MD.text(sdec.ui_note) ~= notebefore and has(MD.text(sdec.ui_note), 'not built'),
+          string.format('cell %q, was %q', tostring(MD.text(sdec.ui_note)),
+                        tostring(notebefore)))
     check('...and did not switch away from the main screen', display.active == sdec.ui_scr,
           tostring(display.active))
 

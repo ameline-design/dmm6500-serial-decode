@@ -2603,8 +2603,8 @@ and return the same silence.
 
 ### How a recording ends
 
-`sdec.ck_endwhy` carries one of five values, and the first of them is an overload worth reading
-carefully.
+`sdec.ck_endwhy` carries one of five values, and **two of the five are overloads** -- `full` covers
+three different endings and `readfail` four, so neither names a mechanism on its own.
 
 | `ck_endwhy` | what happened |
 |---|---|
@@ -2612,7 +2612,7 @@ carefully.
 | `quiet` | no threshold crossing for `sdec.idle_exit()`. The device stopped talking, which is the normal ending |
 | `stopped` | the operator pressed Capture (Stop) or Mode (abort) |
 | `noarm` | the arm expired at `sdec.arm_wait_s()` without the comparator firing |
-| `readfail` | 20 consecutive buffer reads raised, so the record cannot be read rather than being silent |
+| `readfail` | **four different endings.** The buffer could not be read, or could not be re-measured to confirm a quiet line: a settle that returned an error, a settle that raised, 20 consecutive failed reads inside the run, or a final quiet check that could not be made |
 
 **The wall clock is the only bound that always fires**, and that is why every mode has one: a press is
 not dispatched while Lua is running, so a run cannot rely on the operator to end it. Every mode
@@ -2626,8 +2626,12 @@ sample-count fill test. Putting the fill test on the armed branch makes it **unr
 the record runs `fillmode = 1` it would then not stop but **wrap**, overwriting its own earliest bursts
 until some other exit fired -- and report a full record that had quietly lost its oldest traffic.
 
-**A read that raised is ignorance, not silence**, so it must not advance the quiet timer; `readfail`
-needs 20 in a row, because persistent is a different fault from transient.
+**A read that raised is ignorance, not silence**, so it must not advance the quiet timer. Inside the
+run it takes 20 in a row to end it, because persistent is a different fault from transient -- but
+that threshold is one of `readfail`'s four causes and not its meaning. The other three each fire on a
+single failure, two of them in `stream_stop` where the settle is the last chance to read the buffer
+at all, and the third where the closing quiet check could not be made and so the quiet verdict would
+be unearned.
 
 For the gap detector the model's state is the signal, not the record's length: parked in block 2's
 `WAIT` during a gap, cycling blocks 3 to 6 during a burst. That distinguishes a long gap from a dead
@@ -3160,9 +3164,14 @@ rather than thirty-odd edited literals, for two reasons that are not stylistic:
   rather than becoming `9600 Baud`.
 
 The cost is that the source literal and the rendered string differ in their first character, so a
-grep for on-screen text has to allow for it -- which is what `test_serial` asserts, by checking each
-field is still lower case **where it is set** and sentence case where it comes out. Without that
-premise the test would pass equally against capitalised literals and prove nothing about `add()`.
+grep for on-screen text has to allow for it. `test_serial` holds both halves of that, and they are
+not the same assertion: it sets nine note fields in lower case and reads them back sentence-cased,
+which proves `add()` transforms what other modules hand it -- and it **reads `tsp/serial_ui.tsp`
+itself** to assert that `ui_notes`' own literals are still lower case at source. The second one
+cannot be done from the output, because a rendered note looks identical whether `add()` capitalised
+it or the literal was already capital. The first version of that check asserted the test's own
+fixture strings were lower case, which proved nothing: capitalising `'parity was ASSUMED'` at source
+left the whole suite green.
 
 ### Display objects: cost, census and the dump-row choice
 

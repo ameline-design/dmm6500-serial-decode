@@ -698,6 +698,18 @@ def selftest():
          lambda r: r.startswith('unexpected reply')),
     ]
     bad = 0
+    # THE FIXTURE IS CHECKED AGAINST THE REAL CHUNK FIRST. APPGONE_STATE is a copy of what bp_state()
+    # returns for a nil sdec, and a copy is only evidence while it still matches: PRESS_TSP could be
+    # reworded and this file would go on asserting against a string the instrument no longer sends.
+    # PRESS_TSP splits it across two concatenated literals, so each half is checked separately.
+    halves = [APPGONE_STATE[:60], APPGONE_STATE[-60:]]
+    drifted = [h for h in halves if h not in PRESS_TSP]
+    if drifted:
+        print('  FAIL the APP-GONE fixture no longer matches bp_state in PRESS_TSP')
+        print('       missing from PRESS_TSP: %r' % drifted[0])
+        bad += 1
+    else:
+        print('  ok   the APP-GONE fixture is still what bp_state returns')
     for name, stub, pred in cases:
         p = Panel.__new__(Panel)
         p.d = stub

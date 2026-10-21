@@ -2818,11 +2818,14 @@ function sdec.stop()
   end
   sdec.destroy_options()
   sdec.ui_destroy()
-  -- AFTER ui_destroy, which has just taken the panel to SCREEN_HOME. The messages screen is held for
-  -- the whole app run now, so this teardown is what frees it -- and it can be the screen in front
-  -- when End App is pressed, which makes the order load-bearing: deleting the screen the panel is
-  -- showing is the state the front panel cannot recover from. destroy_msgs deliberately does not
-  -- switch away itself, because build_msgs calls it and a switch there would drop the loading cover.
+  -- AFTER ui_destroy, which switches to SCREEN_HOME -- though only if ui_scr or ui_loadscr is still
+  -- set, so the switch is conditional and this ordering is not a guarantee on its own. The messages
+  -- screen is held for the whole app run now, so this teardown is what frees it, and it can be the
+  -- screen in front when End App is pressed: deleting the screen the panel is showing is the state
+  -- the front panel cannot recover from. destroy_msgs deliberately does not switch away itself,
+  -- because build_msgs calls it and a switch there would drop the loading cover; the callers that
+  -- can be looking at this screen switch first instead -- here via ui_destroy, and in build_msgs'
+  -- short-ladder path explicitly.
   sdec.destroy_msgs()
   -- Settle before deleting, and keep the handle if the delete is refused, as acq_make_buffer() does: the
   -- abort does not wait, and the handle is the only one, so dropping it strands the buffer.

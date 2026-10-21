@@ -6336,8 +6336,11 @@ function sdec.destroy_msgs()
   return true
 end
 
--- Build it. -> the screen handle, or nil with sdec.msg_why set. No raise and no pcall: display.create
--- returns nil when the pool is gone and posts nothing, so the refusal is a return value to check.
+-- Build it. -> the screen handle, or nil with sdec.msg_why set. The pool running out is a RETURN
+--   [...]
+-- end, which install_cleanup() pcalls on the main screen -- left bare here because build_options()
+-- makes the identical call bare immediately before this runs, so a firmware that refused it would
+-- already have taken the launch down.
 function sdec.build_msgs()
   sdec.destroy_msgs()
   local create = display.create
@@ -6368,8 +6371,9 @@ function sdec.build_msgs()
     sdec.msg_row[i] = h
   end
   if sdec.msg_nrow < 1 then
-    sdec.destroy_msgs()
     sdec.msg_why = 'no display objects left for a message row'
+    display.changescreen(sdec.ui_scr or display.SCREEN_HOME)
+    sdec.destroy_msgs()
     if covermine then sdec.ui_loading_clear(sdec.ui_scr) end
     return nil
   end
@@ -6436,6 +6440,7 @@ end
 function sdec.msgs_show()
   if sdec.msgscr == nil then
     sdec.lasterr = sdec.msg_why or 'the messages screen was not built at launch'
+    sdec.ui_refresh()
     return false
   end
   sdec.msg_page = 0
