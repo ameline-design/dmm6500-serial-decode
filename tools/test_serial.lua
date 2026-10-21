@@ -6973,7 +6973,7 @@ function test_msgs()
   local scr = sdec.build_msgs()
   check('build_msgs returns a screen', scr ~= nil and scr == sdec.msgscr, tostring(scr))
   check('...and builds its full row ladder', sdec.msg_row ~= nil
-        and table.getn(sdec.msg_row) == sdec.msg_nrow and sdec.msg_nrow == 21,
+        and table.getn(sdec.msg_row) == sdec.msg_nrow and sdec.msg_nrow == 13,
         string.format('%s rows', tostring(sdec.msg_row and table.getn(sdec.msg_row))))
 
   -- ---- THE HIDE RULE: a note the cell shows IN FULL is not worth a button --------------------
@@ -7168,7 +7168,7 @@ function test_msgs()
         string.format('%d live, %d before', MD.live(), base))
   MD.poolcap(nil)
   sdec.destroy_msgs()
-  sdec.msg_nrow = 21
+  sdec.msg_nrow = 13
 
   -- ---- the margin button, all four directions --------------------------------------------------
   -- Paired, because a button that is always visible and one that is never visible both satisfy a

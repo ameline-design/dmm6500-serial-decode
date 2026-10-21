@@ -6256,10 +6256,10 @@ function sdec.opt_pick(tbl, idx)
   return tbl[i]
 end
 
-sdec.msg_nrow   = 21
-sdec.msg_row_y0 = 8
-sdec.msg_row_dy = 18
-sdec.msg_cols   = 80
+sdec.msg_nrow   = 13
+sdec.msg_row_y0 = 18
+sdec.msg_row_dy = 23
+sdec.msg_cols   = 64
 sdec.msg_page   = 0
 sdec.msg_btn_y  = sdec.ui_btn_y
 sdec.msg_settle = sdec.msg_settle or 0.2
@@ -6359,12 +6359,12 @@ function sdec.build_msgs()
     sdec.msg_why = 'display object pool exhausted -- power cycle the instrument'
     return nil
   end
-  local small, left = display.FONT_SMALL, display.JUST_LEFT
+  local small, face, left = display.FONT_SMALL, display.FONT_3, display.JUST_LEFT
   sdec.msg_row = {}
   local i
   for i = 1, sdec.msg_nrow do
     local y = sdec.msg_row_y0 + (i - 1) * sdec.msg_row_dy
-    local h = create(sdec.msgscr, display.OBJ_TEXT, sdec.ui_x, y, '', sdec.ui_c_data, small, left)
+    local h = create(sdec.msgscr, display.OBJ_TEXT, sdec.ui_x, y, '', sdec.ui_c_data, face, left)
     if h == nil then
       sdec.msg_nrow = i - 1
       break

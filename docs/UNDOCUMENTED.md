@@ -50,6 +50,50 @@ Under each claim is its bench probe, indented and in backticks. Four rules hold 
 
   - `probe: do KTF={} KTS=display.create(display.ROOT,display.OBJ_SCREEN,"ktfonts") local x,y for i=1,10 do if i<=5 then x=15 y=15+(i-1)*90 else x=410 y=15+(i-6)*90 end KTF[i]=display.create(KTS,display.OBJ_TEXT,x,y,i.."Wg",0xFFFFFF,display["FONT_"..i]) end print("FONTS|scr="..tostring(KTS).."|f1="..tostring(KTF[1])) end` then `pcall(display.changescreen,KTS)` and grab the screen. A 90 px pitch runs 7 into 8 and 9 into 10; re-render those five at 165 px to measure them. Tear down every id and the screen; all are in named globals, so none can be lost.
 
+### How many characters fit on a row, per face
+
+**MEASURED**, 2026-10-20, because the heights above do not answer the question a layout actually
+asks. Nothing in either manual gives a width, and `sdec.ui_textw()` measures one face only — the
+small one — so a screen that changes face has no way to compute its own wrap.
+
+A full-width row is **792 px**: a text object at `x = 8` on an 800 px panel. Characters that fit:
+
+| face | chars on a 792 px row | px/char | height px |
+|---|---|---|---|
+| `FONT_1` | ~88 | 9.0 | 15 |
+| `FONT_SMALL` | ~88 | 9.0 | not measured |
+| `FONT_2` | ~78 | 10.1 | 17 |
+| `FONT_9` | ~64 | 12.4 | 21, *italic* |
+| **`FONT_3`** | **66, and 64 is in use** | 12.0 | 20 |
+| `FONT_4` | ~61 | 13.0 | 21 |
+| `FONT_MEDIUM` | ~61 | 13.0 | not measured |
+| `FONT_5` | ~49 | 16.0 | 26 |
+| `FONT_LARGE` | ~49 | 16.0 | not measured |
+| `FONT_6` | ~33 | 23.6 | 29 |
+| `FONT_7` | 24 | 33.0 | 32 |
+| `FONT_HUGE` | 13 | 60.9 | 105 |
+| `FONT_8` | 13 | ~61 | 105 |
+| `FONT_10` | 9 | 88.0 | 121 |
+
+**These are read off grabs and are good to about ±2 characters, not better.** `FONT_7` was counted
+twice and gave 25 then 24 under different left margins, so treat a figure within a couple of
+characters of a row's capacity as unproven and leave a margin — which is why `sdec.msg_cols` is 64
+against a measured 66.
+
+**Three pairs are width-identical**, so the named faces look like aliases of numbered ones:
+`FONT_SMALL`/`FONT_1`, `FONT_MEDIUM`/`FONT_4`, `FONT_LARGE`/`FONT_5`, and `FONT_HUGE`/`FONT_8` --
+that last pair already shares the 105 px height recorded above. **Aliasing is NOT established**: only
+width was compared here, and the heights of the four named faces were never measured.
+
+**`FONT_9` is narrower than `FONT_4` at the same 21 px height**, being the condensed italic. So width
+does not follow from height, and a face cannot be picked for line length by its size alone.
+
+  - `probe:` render a ruler whose every fifth character is a letter -- `1234A6789B1234C...`, so `A`=5,
+    `B`=10, and the last letter still on screen times five is the count. A plain digit ruler is
+    unreadable past `FONT_5`: it overflows so far that the cut point is off the panel. Size the string
+    to about a quarter past what you expect to fit, put it at `y = 60` to clear the 49 px title bar,
+    and repeat the same string underneath in `FONT_SMALL` as a scale.
+
 ### display.settext works on an OBJ_SCREEN, and setcolor on one is refused with 1717
 
 **MEASURED on 1.7.17a.** The display doc gives `display.settext` for text objects and says nothing

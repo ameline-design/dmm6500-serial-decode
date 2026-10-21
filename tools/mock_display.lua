@@ -48,7 +48,17 @@ display = {
   OBJ_EDIT_CHECK = 'editcheck', ON = 1, OFF = 0,
   OBJ_TIMER = 'timer', OBJ_RECT = 'rect', OBJ_LINE = 'line',
   EVENT_PRESS = 'press', EVENT_ENDAPP = 'endapp',
-  FONT_SMALL = 1, FONT_MEDIUM = 2,
+  -- FOURTEEN FACES EXIST, not two. The four named ones and FONT_1..FONT_10, all measured present on
+  -- firmware 1.7.17a; FONT_11 is nil. docs/UNDOCUMENTED.md has the census and the heights, and warns
+  -- the numbered ten are NOT a size ladder -- FONT_8 is 105 px, FONT_9 drops back to 21 and is the
+  -- only italic, FONT_10 at 121 px clips a four-character string.
+  --
+  -- Defined here because a face this mock does not know is NIL, and display.create then takes nil for
+  -- its font argument and carries on. The Msgs screen moved to FONT_3 and would have rendered offline
+  -- against a nil font with every test still green.
+  FONT_SMALL = 1, FONT_MEDIUM = 2, FONT_LARGE = 3, FONT_HUGE = 4,
+  FONT_1 = 'f1', FONT_2 = 'f2', FONT_3 = 'f3', FONT_4 = 'f4', FONT_5 = 'f5',
+  FONT_6 = 'f6', FONT_7 = 'f7', FONT_8 = 'f8', FONT_9 = 'f9', FONT_10 = 'f10',
   JUST_LEFT = 0, JUST_CENTER = 1, JUST_RIGHT = 2,
   -- The backlight states the firmware has, and only those: a soak dims the panel for the days it
   -- runs, and there is no value between 25 and 50.
@@ -70,6 +80,18 @@ display = {
 -- that does not apply to the object type. A dangling handle has no measured number, so none is
 -- invented: the text is the record. MD.nrefused() is the assertion a suite should make, and
 -- MD.refusals() is what tells you which call it was.
+-- GLYPH HEIGHTS, measured off a grab and recorded in docs/UNDOCUMENTED.md, so a row pitch can be
+-- checked offline instead of only on the panel. small and medium are taken from the dump area's own
+-- 18 px pitch, which has shipped for 70 sessions, so those two are a floor rather than a measurement.
+local FONTH = {}
+FONTH[1] = 15        FONTH[2] = 18        FONTH[3] = 20        FONTH[4] = 21
+FONTH['f1'] = 15     FONTH['f2'] = 17     FONTH['f3'] = 20     FONTH['f4'] = 21
+FONTH['f5'] = 26     FONTH['f6'] = 29     FONTH['f7'] = 32     FONTH['f8'] = 105
+FONTH['f9'] = 21     FONTH['f10'] = 121
+-- -> the measured height in px, or nil for a face nobody has measured. The nil IS the answer: a
+-- caller that reads "unknown" as "fits" is the mistake this is here to prevent.
+function MD.fontheight(f) return FONTH[f] end
+
 local REFUSED = {}
 local function refuse(what, code)
   REFUSED[table.getn(REFUSED) + 1] = (code ~= nil and (tostring(code) .. ' ') or '') .. what

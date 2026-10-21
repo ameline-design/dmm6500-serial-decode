@@ -2206,13 +2206,28 @@ end
 -- rows alone. This screen costs 21 rows + 3 buttons + a counter + the screen, so nothing is held
 -- while the operator is not looking at it.
 --
--- 21 ROWS, because there are no status cells to clear and the rows can start at 8 instead of 71.
-sdec.msg_nrow   = 21
-sdec.msg_row_y0 = 8
-sdec.msg_row_dy = 18
--- The wrap width, not a slice width. 80 is the figure ui_views already uses for the TEXT view, so it
--- is measured against this font rather than chosen.
-sdec.msg_cols   = 80
+-- THE FACE IS FONT_3, chosen off the glass from the seven rendered side by side: these are sentences
+-- to read rather than a byte grid to scan, so the dump area's FONT_SMALL is too small, and FONT_3
+-- sits between small and medium. Every figure below follows from that choice, and all of them were
+-- measured rather than reasoned about -- docs/UNDOCUMENTED.md ends with "a number chosen for size
+-- alone can silently change the typeface or overflow its object", which is the argument for a grab.
+--
+-- WIDTH: with every ruler started from a common x, FONT_3 runs 63 characters before the right edge
+-- and FONT_4 only 58, which makes FONT_4 the same width as FONT_MEDIUM and FONT_3 six characters
+-- better. 11.97 px/char over the 792 px a row has gives 66; 64 leaves a margin.
+--
+-- PITCH 23, against a measured 20 px glyph height. Three stacked lines of 'Wgjpq|' at 23 clear their
+-- descenders; at FONT_MEDIUM the same test ruled out 22 for touching the row below.
+--
+-- 13 ROWS is what fits: the last lands at 18 + 12*23 = 294 and the counter sits at 335, just above
+-- the 362 button row. A fourteenth would reach 317 and collide with the counter.
+sdec.msg_nrow   = 13
+-- Not 8. At 8 the first row's glyphs were cut roughly in half on the glass -- reported from the
+-- panel, which is the only place it shows.
+sdec.msg_row_y0 = 18
+sdec.msg_row_dy = 23
+-- The wrap width, not a slice width.
+sdec.msg_cols   = 64
 sdec.msg_page   = 0
 -- The same row the main screen's buttons use. 400 was tried and the mock refused it: a button is
 -- 58 px and the content area is 431, so anything past 373 is clipped off the bottom of the panel.
@@ -2326,12 +2341,14 @@ function sdec.build_msgs()
     sdec.msg_why = 'display object pool exhausted -- power cycle the instrument'
     return nil
   end
-  local small, left = display.FONT_SMALL, display.JUST_LEFT
+  -- The rows take `face`, the counter keeps `small`: the notes are what the operator came to read and
+  -- the page counter is furniture, so making both bigger would spend a row's worth of height on it.
+  local small, face, left = display.FONT_SMALL, display.FONT_3, display.JUST_LEFT
   sdec.msg_row = {}
   local i
   for i = 1, sdec.msg_nrow do
     local y = sdec.msg_row_y0 + (i - 1) * sdec.msg_row_dy
-    local h = create(sdec.msgscr, display.OBJ_TEXT, sdec.ui_x, y, '', sdec.ui_c_data, small, left)
+    local h = create(sdec.msgscr, display.OBJ_TEXT, sdec.ui_x, y, '', sdec.ui_c_data, face, left)
     -- A short ladder is not a failure: fewer rows means a smaller page, and msg_nrow is corrected to
     -- what was actually built so the paging cannot index a row that is not there.
     if h == nil then
