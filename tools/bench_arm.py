@@ -27,7 +27,7 @@ arm a coin toss at the settle budget this feature shipped with.
 
   H  Arm At at its 0.33 V FLOOR                 -- must not fire on the digitizer's own noise
   I  Arm At at its 6 V CEILING                  -- the firmware must ADOPT the level, not refuse it
-  J  Arm/Idle Wait at its 2 s FLOOR, device late     -- expires on its own clock, does not catch it
+  J  Arm Wait at its 2 s FLOOR, device late     -- expires on its own clock, does not catch it
   K  the TRIGGER key's promise                  -- blender slot 3 must really hold the event
   L  an arm, then a BUSY line                   -- the guessed level must not outlive its capture
   M  a line idling at -5 V                      -- the other sign, where the start bit goes UP
@@ -195,7 +195,7 @@ def main():
             print('  lasterr: %s' % err)
             print('  fs=%s  note=%s' % (fs, note))
             check('A the default configuration ARMS on a silent line', el >= ARMWAIT * 0.7,
-                  '%.2f s against an Arm/Idle Wait of %g (V1.40: 3.55 s, never armed)' % (el, ARMWAIT))
+                  '%.2f s against an Arm Wait of %g (V1.40: 3.55 s, never armed)' % (el, ARMWAIT))
             check('A ...at the blind rate rather than the top of the probe ladder',
                   num(fs) == num(tq(d, 'Af2', 'sdec.arm_fs()')),
                   'fs=%s, arm_fs=%s' % (fs, tq(d, 'Af3', 'sdec.arm_fs()')))
@@ -272,9 +272,9 @@ def main():
             err = tq(d, 'Ce', 'sdec.lasterr')
             print('  elapsed %.2f s   lasterr: %s' % (el, err))
             check('C a locked rate still arms and waits', el >= ARMWAIT * 0.7,
-                  '%.2f s against an Arm/Idle Wait of %g' % (el, ARMWAIT))
+                  '%.2f s against an Arm Wait of %g' % (el, ARMWAIT))
             check('C ...and the expiry names the two settings and the armed level',
-                  'raise Arm/Idle Wait or lower Arm At' in err and 'crossed' in err, err[:110])
+                  'raise Arm Wait or lower Arm At' in err and 'crossed' in err, err[:110])
             d.exec('sdec.force_baud = nil')
 
         # ---- D: a line idling HIGH, which is every normal TTL UART. ----
@@ -320,7 +320,7 @@ def main():
             # line idling away from ground, and the two assertions above prove exactly that. The
             # decode on an idle-high line is covered by hw-matrix, which drives one properly.
             check('D ...and the arm fired at the transition rather than timing out',
-                  el < ARMWAIT * 0.95, 'returned at %.2f s against an Arm/Idle Wait of %g' % (el, ARMWAIT))
+                  el < ARMWAIT * 0.95, 'returned at %.2f s against an Arm Wait of %g' % (el, ARMWAIT))
             g.output(False, ch=1)
             g.select_arb(VN.arb('v41'), 10.0, a.baud * SPB)
 
@@ -332,10 +332,10 @@ def main():
             el, res = press(d, 'E')
             err = tq(d, 'Ee', 'sdec.lasterr')
             print('  elapsed %.2f s   lasterr: %s' % (el, err))
-            check('E an expired arm waits the operator\'s Arm/Idle Wait and no longer',
-                  2.0 <= el <= 12.0, '%.2f s at an Arm/Idle Wait of 3' % el)
+            check('E an expired arm waits the operator\'s Arm Wait and no longer',
+                  2.0 <= el <= 12.0, '%.2f s at an Arm Wait of 3' % el)
             check('E ...and says what did not happen, naming the level and both settings',
-                  'crossed' in err and 'raise Arm/Idle Wait or lower Arm At' in err, err[:110])
+                  'crossed' in err and 'raise Arm Wait or lower Arm At' in err, err[:110])
             d.exec('sdec.armwait = %g' % ARMWAIT)
 
         # ---- F: an 8 kB RECORDING armed on silence. ----
@@ -412,7 +412,7 @@ def main():
             check('G an expired recording arm has its own ending, not full and not quiet',
                   endwhy == 'noarm', 'endwhy=%s' % endwhy)
             check('G ...and the note names the two settings that govern the wait',
-                  'raise Arm/Idle Wait or lower Arm At' in why, why[:110])
+                  'raise Arm Wait or lower Arm At' in why, why[:110])
             d.exec('sdec.capmode = "frame" sdec.armwait = %g' % ARMWAIT)
             clear_absorb(d)
 
@@ -436,7 +436,7 @@ def main():
                   num(thr) is not None and abs(num(thr, 0) - 0.33) < 0.08,
                   'level=%s, want 0.33' % thr)
             check('H ...and the digitizer\'s own noise does not fire a 0.33 V comparator early',
-                  el >= 4.0 * 0.7, '%.2f s against an Arm/Idle Wait of 4' % el)
+                  el >= 4.0 * 0.7, '%.2f s against an Arm Wait of 4' % el)
 
         # ---- I: Arm At at its CEILING, in the one branch that does not clamp. ----
         if want('I'):
@@ -446,7 +446,7 @@ def main():
             # which makes this the one configuration that asks the digitizer for a trigger level near
             # the top of its 10 V range. AND A REFUSED ATTRIBUTE WRITE IS OUT OF BAND on this
             # instrument: it returns success and merely files an event, so arm_comparator()'s pcall
-            # cannot see it. If the firmware declined a 6 V level the operator would wait out Arm/Idle Wait
+            # cannot see it. If the firmware declined a 6 V level the operator would wait out Arm Wait
             # at a level the comparator never adopted, while the note quoted the level that was asked
             # for. THE READBACK IS THE ONLY THING THAT CAN TELL THOSE TWO APART.
             g.output(False, ch=1)
@@ -462,7 +462,7 @@ def main():
                   num(thr) is not None and abs(num(thr, 0) - 6.0) < 0.1,
                   'readback=%s against 6.00 asked, on a %s V range' % (thr, rng))
             check('I ...and a part that cannot reach 6 V expires instead of firing',
-                  el >= 4.0 * 0.7, '%.2f s against an Arm/Idle Wait of 4' % el)
+                  el >= 4.0 * 0.7, '%.2f s against an Arm Wait of 4' % el)
             # NOT A LITERAL. The arm sits Arm At above the MEASURED idle, and a grounded line measures
             # a few millivolts rather than zero -- so the honest number is 6.01 V, and the thing worth
             # asserting is that the note quotes the level the comparator actually holds. Tying the two
@@ -471,10 +471,10 @@ def main():
                   num(thr) is not None and ('%.2f V' % num(thr, 0)) in err,
                   'note vs readback %.2f: %s' % (num(thr, 0), err[-60:]))
 
-        # ---- J: Arm/Idle Wait at its FLOOR, against a device that starts too late. ----
+        # ---- J: Arm Wait at its FLOOR, against a device that starts too late. ----
         if want('J'):
-            print('\n=== J: Arm/Idle Wait at its 2 s floor, device starts at +4 s ===')
-            # THE FLOOR IS A NO-OP BY DESIGN, AND THAT IS WHAT THIS CASE PINS. Arm/Idle Wait is taken only
+            print('\n=== J: Arm Wait at its 2 s floor, device starts at +4 s ===')
+            # THE FLOOR IS A NO-OP BY DESIGN, AND THAT IS WHAT THIS CASE PINS. Arm Wait is taken only
             # where it EXCEEDS the mode's own wait, and 'edge' already waits sdec.trigwait = 3 s -- so
             # a form wound all the way down to 2 cannot make any pre-existing capture fail faster than
             # it used to, which is the whole reason the floor is 2 and not 0. The operator-visible
@@ -497,11 +497,11 @@ def main():
             print('  generator on at +%.2f s' % (hit.get('on', t0) - t0))
             print('  elapsed %.2f s   lasterr: %s' % (el, err))
             check('J the 2 s floor returns on its own clock rather than the 10 s default',
-                  1.0 <= el <= 7.0, '%.2f s at an Arm/Idle Wait of 2' % el)
+                  1.0 <= el <= 7.0, '%.2f s at an Arm Wait of 2' % el)
             check('J ...and reports the expiry, which is what proves it did not catch the device',
                   'crossed' in err, err[:110])
             check('J ...and the floor is the no-op it was designed to be, not a shorter wait',
-                  'in 3 s' in err, 'Arm/Idle Wait 2 against the edge mode\'s own 3 s: %s' % err[:70])
+                  'in 3 s' in err, 'Arm Wait 2 against the edge mode\'s own 3 s: %s' % err[:70])
             g.output(False, ch=1)
 
         # ---- K: the TRIGGER key's promise, and whether instrument state backs it. ----

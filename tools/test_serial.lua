@@ -3723,7 +3723,7 @@ check('cancel just returns without applying',
 -- ---------------------------------------------------------------------------
 -- A gap shorter than the detector window is recorded in full and its samples come out of the same
 -- count the payload does, so this is the margin that keeps the bytes at the end of the mode's budget.
--- The field reads percent because '0.100' beside 'Gap Elide 0.025 s' reads as a second time.
+-- The field reads percent because a bare '0.100' reads as a second time, not as a proportion.
 ;(function()
   local keep = sdec.strm_overread
   -- THE MODULE'S OWN DEFAULT, from the value captured before any test drove the form. The check below
@@ -7869,7 +7869,7 @@ local function test_modes()
   -- idle_exit_s so a zero there still disables the watchdog.
   local keepaw = sdec.armwait
   sdec.armwait = 10.0
-  check('the quiet exit is Arm/Idle Wait itself -- 10 s at the default',
+  check('the quiet exit is Arm Wait itself -- 10 s at the default',
         sdec.idle_exit() == 10.0, tostring(sdec.idle_exit()))
   sdec.armwait = 2.0
   check('at the 2 s minimum it is 2 s, which is already above the 1 s floor',
@@ -7892,7 +7892,7 @@ local function test_modes()
   sdec.armwait = 10.0
   local keepfl = sdec.idle_exit_s
   sdec.idle_exit_s = 0
-  check('a zero floor still turns the watchdog OFF rather than taking Arm/Idle Wait',
+  check('a zero floor still turns the watchdog OFF rather than taking Arm Wait',
         sdec.idle_exit() == 0, tostring(sdec.idle_exit()))
   sdec.idle_exit_s = nil
   check('and a nil floor stays nil',
@@ -8347,7 +8347,7 @@ local function test_modes()
   do
     local worst, wname = -1, nil
     -- EVERY FIELD, AND THE LIST IS WHY THIS CHECK MISSED A REAL OVERLAP. It named seven while the form
-    -- built nine, and the two it omitted -- Arm At and Arm/Idle Wait -- are the ones that forced a fifth
+    -- built nine, and the two it omitted -- Arm At and Arm Wait -- are the ones that forced a fifth
     -- row. So the assertion measured the clearance of a field that was no longer the lowest, and the
     -- bottom of each column sat 1 to 5 px off the button row on the glass with nothing failing here.
     -- Adding a field to the form means adding it here; there is no way to enumerate them from the
@@ -8388,14 +8388,14 @@ local function test_modes()
     local oav, oaw, obd = MD.obj(sdec.opt_armv), MD.obj(sdec.opt_armw), MD.obj(sdec.opt_baud)
     check('Arm At asks for 4 digits rather than the firmware default of 6',
           oav ~= nil and oav.digits == 4, tostring(oav and oav.digits))
-    check('...and so does Arm/Idle Wait',
+    check('...and so does Arm Wait',
           oaw ~= nil and oaw.digits == 4, tostring(oaw and oaw.digits))
     -- The field that must NOT be trimmed, and the reason is a real typed value: 4 significant digits
     -- renders 104857 Bd as 104.9k, so Baud Rate keeps the default.
     check('Baud Rate is left at the firmware default, since a typed rate needs the digits',
           obd ~= nil and obd.digits == nil, tostring(obd and obd.digits))
     check('the arm wait field names both of its jobs, so the glass explains itself',
-          oaw ~= nil and oaw.label == 'Arm/Idle Wait', tostring(oaw and oaw.label))
+          oaw ~= nil and oaw.label == 'Arm Wait', tostring(oaw and oaw.label))
     check('and the units still reach the firmware past the new argument',
           oav ~= nil and oav.unit == 'V' and oaw ~= nil and oaw.unit == 's',
           string.format('%s / %s', tostring(oav and oav.unit), tostring(oaw and oaw.unit)))
@@ -9102,7 +9102,7 @@ local function test_modes()
   sdec.armwait = 90
   sdec.probe_idle = nil
   local wbusy = waited_with('edge')
-  check('a line that was already talking waits the edge wait, whatever Arm/Idle Wait says',
+  check('a line that was already talking waits the edge wait, whatever Arm Wait says',
         wbusy >= sdec.trigwait - 0.1 and wbusy < 45,
         string.format('%.2f s at armwait 90, edge wait %s', wbusy, tostring(sdec.trigwait)))
   -- A FLOW-CONTROLLED CAPTURE IS NOT A SILENT DEVICE. Its line is quiet because no credit has been
@@ -9168,7 +9168,7 @@ local function test_modes()
   sdec.trigext = false
 
   -- ======================================================================
-  -- WHOSE FAULT THE EXPIRY WAS DECIDES THE ADVICE. Arm At and Arm/Idle Wait govern the COMPARATOR, so
+  -- WHOSE FAULT THE EXPIRY WAS DECIDES THE ADVICE. Arm At and Arm Wait govern the COMPARATOR, so
   -- naming them is right only when the comparator was the source that failed to fire. The front key
   -- and an anchored BNC reach the same line on a quiet line and had no part in it.
   -- ======================================================================
@@ -9185,7 +9185,7 @@ local function test_modes()
   do
     local le = expired_with('edge')
     check('an expired comparator arm names the two settings that govern it, and the armed LEVEL',
-          has(le, 'raise Arm/Idle Wait or lower Arm At') and has(le, string.format('%.2f', sdec.thr)),
+          has(le, 'raise Arm Wait or lower Arm At') and has(le, string.format('%.2f', sdec.thr)),
           le)
     -- THE CONTRACT THE BENCH TOOLS PARSE: bench_trigkey.py reads a lasterr naming an IDLE line as
     -- 'the trigger FIRED' and this prefix as 'the arm expired', so the expiry text must carry the
@@ -11502,7 +11502,7 @@ print('\narming from silence: the capture autoset() reaches, and the rates it fa
     local ok, why = sdec.autoset()
     sdec.atrig = keepat
     sdec.armwait = 2.0
-    check('a digitizer with no comparator degrades to free run instead of waiting out Arm/Idle Wait',
+    check('a digitizer with no comparator degrades to free run instead of waiting out Arm Wait',
           sdec.lasterr ~= nil and has(sdec.lasterr, 'trigger unavailable'),
           string.format('ok=%s lasterr=%s', tostring(ok), tostring(sdec.lasterr)))
   end
@@ -11519,7 +11519,7 @@ print('\narming from silence: the capture autoset() reaches, and the rates it fa
   -- a SUPPORTED configuration, or trigger.EVENT_EXTERNAL on a firmware without it. Neither constant is
   -- nil-tested anywhere else in tsp/, so in plain 'edge' mode on such a box this branch is the only
   -- thing between a nil and trigger.model.load(), which takes it OUT OF BAND: the model loads, waits on
-  -- nothing, and the panel freezes for the whole of Arm/Idle Wait against working hardware. Stubbing the
+  -- nothing, and the panel freezes for the whole of Arm Wait against working hardware. Stubbing the
   -- source is the only way to reach it from here.
   do
     local realsrc = sdec.arm_source

@@ -84,7 +84,7 @@ do
   do
     -- THE OVER-READ IS IN THE CAPACITY, on every recording and not only an eliding one: stream_begin
     -- sizes for sdec.strm_overread so acq_fit cannot shave the margin back off, and the margin is
-    -- orthogonal to elision -- a capture that elides nothing has the most idle to absorb. Derived from
+    -- applied to every recording -- a capture that records every pause has the most idle to absorb. Derived from
     -- the knob and in stream_begin's own order (raise the count, THEN take the reserve off the
     -- capacity), because the two roundings do not commute: 3 413 334 at 10 % and a 5 % reserve is
     -- 3 952 383 this way and a different figure the other.
@@ -1072,11 +1072,11 @@ print('\nI  an 8 kB or 32 kB recording can wait for a device that has not starte
     local why = sdec.strm_exit_why(sdec.ck_endwhy, true, nil)
     sdec.thr = keepthr
     check('...and the note names the two settings that govern the wait, and the armed level',
-          has(why, 'raise Arm/Idle Wait or lower Arm At') and has(why, 'crossed') and
+          has(why, 'raise Arm Wait or lower Arm At') and has(why, 'crossed') and
           not has(why, 'crossed 0.00 V') and not has(why, 'crossed -0.00 V'), why)
-    check('...and it waited the operator\'s Arm/Idle Wait rather than the recording\'s fill time',
+    check('...and it waited the operator\'s Arm Wait rather than the recording\'s fill time',
           (sdec.strm_waited or 0) >= sdec.arm_wait_s() - sdec.ck_poll_s,
-          string.format('%.2f s waited, Arm/Idle Wait %s', sdec.strm_waited or 0,
+          string.format('%.2f s waited, Arm Wait %s', sdec.strm_waited or 0,
                         tostring(sdec.arm_wait_s())))
   end
 
@@ -1437,15 +1437,15 @@ end)()
         sdec.strm_nsmp == nreq, tostring(sdec.strm_nsmp))
 
   -- AND AGAIN ON A SECOND SET-UP, which is what this pair now proves: the margin is capacity and not a
-  -- longer recording, on every capture. It was once an A/B over gap elision -- the over-read had been
-  -- gated on gap_elide(), withholding the margin from exactly the captures with the most silence --
-  -- and with elision gone the two arms are the same configuration asserting it twice over.
+  -- longer recording, on every capture. It was once an A/B over a setting that withheld the margin
+  -- from exactly the captures with the most silence; with that setting gone the two arms are the same
+  -- configuration asserting it twice over.
   if sdec.buf ~= nil then pcall(buffer.delete, sdec.buf) sdec.buf = nil end
   local ok2, why2 = sdec.stream_begin()
   check('a free-running recording sets up too', ok2 == true, tostring(why2))
   local nreq2 = sdec.strm_nsmp
   local want2 = math.ceil(nreq2 * (1 + sdec.strm_overread))
-  check('...and it has room for the over-read as well, elision being orthogonal to it',
+  check('...and it has room for the over-read as well, which every recording now gets',
         sdec.acq_fit(want2, sdec.buf) == want2,
         string.format('fit %s of a %s target, capacity %s',
                       tostring(sdec.acq_fit(want2, sdec.buf)), tostring(want2),

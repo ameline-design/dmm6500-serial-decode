@@ -2425,7 +2425,7 @@ readings and wraps the buffer, so `buf.n` reaches capacity with no trigger ever 
 pre-trigger samples of unrelated activity decode perfectly well and would be presented as "captured on
 a start bit".
 
-### Arm/Idle Wait applies to the comparator and to the quiet-line exit
+### Arm Wait applies to the comparator and to the quiet-line exit
 
 **The 120.05 s figure below is the defect two guards removed, not current behaviour.** It is recorded
 because it is why the guards exist.
@@ -2437,7 +2437,7 @@ changed. The same freeze was reachable a second way, by swallowing `arm_comparat
 loaded the model on an event nothing was configured to raise, then offered advice about two settings
 that cannot help at any value.
 
-**The field now governs two waits, which is why it is called Arm/Idle Wait.** `sdec.arm_wait_s()`
+**The field now governs two waits, which is why it is called Arm Wait.** `sdec.arm_wait_s()`
 bounds the comparator's wait for a line that has not started, and `sdec.idle_exit()` takes the same
 value as the quiet-line exit that ends a recording -- floored at `sdec.idle_exit_s`, which is 1 s and
 so never binds against a 2 s minimum. One number answers one question: how long this device may say
@@ -2451,7 +2451,7 @@ blocking on `trigger.model`, so the panel stays live for the whole wait. Verifie
 absence of the freeze has not been re-measured on hardware.
 
 A nil event constant reaching `trigger.model.load()` takes it **out of band**: the model loads, waits on
-nothing, and the panel freezes for the whole of Arm/Idle Wait against working hardware.
+nothing, and the panel freezes for the whole of Arm Wait against working hardware.
 `trigger.EVENT_ANALOGTRIGGER` is absent on a digitizer with no analog comparator, which this app treats
 as a supported configuration, and `EVENT_EXTERNAL` need not exist on every model; neither is nil-tested
 anywhere else in `tsp/`.

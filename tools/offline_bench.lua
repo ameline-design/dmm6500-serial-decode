@@ -39,7 +39,7 @@
 --   lua tools/offline_bench.lua --plan out/bench/PLAN.CSV --out out/bench/OFFLINE.csv
 --   python3 tools/judge_bench.py out/bench/OFFLINE.csv
 --
---   # the lap the instrument runs, elision and all
+--   # the lap the instrument runs
 --   python3 tools/soakplan.py --emit-csv --iteration 1 --skip-vectors v95,v96,v97 > /tmp/PLAN.CSV
 
 dofile('tools/mock_display.lua')

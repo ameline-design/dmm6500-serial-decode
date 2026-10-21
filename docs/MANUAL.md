@@ -1,6 +1,6 @@
 # Serial Decode — user manual
 
-**Ian Ameline** · version 1.72 · MIT licence
+**Ian Ameline** · version 1.73 · MIT licence
 
 This app turns a Keithley bench instrument into a serial decoder. Clip onto a UART line, press
 **Capture**, and read the bytes on the front panel. You do not have to tell it the baud rate, the frame
@@ -279,7 +279,7 @@ number would be wrong, so what you get is the exact byte ceiling and a progress 
 **What does bound a run,** so it can never hold the panel indefinitely:
 
 - the byte ceiling for the mode — 8192 or 32768;
-- a quiet line: **Arm/Idle Wait** with no activity ends it, 10 s by default;
+- a quiet line: **Arm Wait** with no activity ends it, 10 s by default;
 - under flow control, 32 windows or 20 minutes of wall clock, whichever comes first. The 20 minutes is
   what matters on slow lines, where a full 32 kB window would take 18 minutes at 300 baud.
 
@@ -646,7 +646,7 @@ number is kept.
 
 ## Options
 
-![The Options form as it opens, with nothing locked: Baud Rate 0.00000 Bd, Trigger Start bit, Arm At 1.000 V, Arm/Idle Wait 10.00 s and Over-read 10.00 %](img/options.png)
+![The Options form as it opens, with nothing locked: Baud Rate 0.00000 Bd, Trigger Start bit, Arm At 1.000 V, Arm Wait 10.00 s and Over-read 10.00 %](img/options.png)
 
 | Setting | What it does |
 |---|---|
@@ -681,7 +681,7 @@ Five settings you can ignore unless you need them:
 - **Trigger** — what starts the acquisition. `Start bit` (the default) waits for the line to move.
   `Free run` grabs immediately. `Trigger key` waits for the front-panel TRIGGER key, as described
   under **The TRIGGER key** above. **If the thing you asked for never happens, the capture goes ahead
-  anyway** — after a few seconds, or after **Arm/Idle Wait** on a line that has not started — and the note
+  anyway** — after a few seconds, or after **Arm Wait** on a line that has not started — and the note
   row names the one that did not arrive: `edge trigger unavailable; captured free-running`, or `front`
   for the TRIGGER key. Those bytes are real but they are not lined up with the event you wanted.
 - **Rear BNC** — lets an external trigger in on the rear connector, and `FC Out` sends the
@@ -692,7 +692,7 @@ Five settings you can ignore unless you need them:
   **Waiting for a device that has not started** below. Below 0.33 V the comparator starts firing on
   noise on a floating input and arms the capture on nothing; above 6 V the level no longer sits
   inside an ordinary logic swing, since a 6 V arm already needs a 12 V part.
-- **Arm/Idle Wait** — one setting for two waits, which are the same question asked twice: how long
+- **Arm Wait** — one setting for two waits, which are the same question asked twice: how long
   this device may say nothing. It is how long an armed capture waits for a line that has not started,
   **and** how long a quiet line runs before it ends a recording. From 2 s to 120 s, default 10 s,
   which is chosen to outlast a hand reaching for a power switch. A 1 s exit would end a recording
@@ -741,7 +741,7 @@ crossing in any case, so the latency never costs a byte.
 2. **Lock the baud rate** in `Options ▸ Baud Rate` if you know it. A line that has not started cannot
    be measured, and this is the one path where that matters — see the note on the rate below.
 3. Leave **Trigger** on `Start bit`. Lower **Arm At** if the line's swing is small or weakly driven,
-   and raise **Arm/Idle Wait** to cover however long you need to reach the switch.
+   and raise **Arm Wait** to cover however long you need to reach the switch.
 4. Press **Capture**. The panel reads `waiting 10s for 2.30V -- TRIGGER=go` and is frozen until the
    device speaks or the wait runs out.
 5. Switch the device on.
@@ -767,9 +767,9 @@ What the app does with it:
   that moment.
 - **Where in the wait the device starts does not matter.** Against a 10 s wait the arm fires at
   +0.3 s and still fires at **+9.7 s**; at +11 s it expires.
-- If **Arm/Idle Wait** runs out **the capture still happens, free-running**, and the note row says the
+- If **Arm Wait** runs out **the capture still happens, free-running**, and the note row says the
   whole of it: `edge trigger unavailable; captured free-running (no trigger in 10 s (edge) -- nothing
-  crossed 0.99 V; raise Arm/Idle Wait or lower Arm At)`. That names both settings and the level the
+  crossed 0.99 V; raise Arm Wait or lower Arm At)`. That names both settings and the level the
   comparator was really holding.
 
 **The rate is a guess on this path, and the panel says so.** Nothing can measure the bit rate of a

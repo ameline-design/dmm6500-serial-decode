@@ -43,16 +43,42 @@ brun.pn_sdg      = brun.pn_sdg or {'10.0.1.79', '10.0.1.78', '192.168.0.79'}
 -- is the filter state the shape means, so the mapping lives beside the label instead of in a branch
 -- further down that a new shape could be added without.
 --
---   Full          every row the plan holds, which is what the host-driven path runs
---   Normal        standard rates only, so no drawn interstitial or edge rate plays
---   Adversarial   only vectors known to produce errors, which is barb.loud's list -- the ones the
---                 plan drives into conditions where refusing is the documented right answer. Derived
---                 from that table and not a hand-typed list, so a vector added to it is covered here
---                 without anybody remembering to.
+-- ONE AXIS ONLY, WHICH IT WAS NOT. This field read Full / Normal / Adversarial, and those are two
+-- different questions: 'Normal' filtered RATES while 'Adversarial' filtered VECTORS. A field whose
+-- entries mean different kinds of thing cannot be combined with anything -- there was no way to ask
+-- for adversarial vectors at standard rates. Adversarial moved to Vector Set below, where it belongs,
+-- and this field is now the rate axis alone and composes with it. Operator's call, 2026-10-21.
+--
+--   Full           every rate the plan holds, which is what the host-driven path runs
+--   Standard only  standard rates only, so no drawn interstitial or edge rate plays
 brun.pn_laptypes = brun.pn_laptypes or
-  {{t = 'Full',         std = nil,  adv = nil},
-   {t = 'Normal',       std = true, adv = nil},
-   {t = 'Adversarial',  std = nil,  adv = true}}
+  {{t = 'Full',          std = nil},
+   {t = 'Standard only', std = true}}
+
+-- WHICH VECTORS PLAY, the other axis. Two of these are named for what they ask of the decoder rather
+-- than for a list of ids, and both are derived rather than enumerated: 'All gaps' and 'Start gap' key
+-- on the generator's own waveform NAME through barb.of, so a gap vector added later is covered without
+-- editing a second list, and 'Adversarial' is barb.loud's table -- the vectors the plan drives into
+-- conditions where refusing is the documented right answer.
+--
+--   Normal      the default: no gap vectors and nothing barb.loud excuses, which is the lap you want
+--               when you are asking whether the decoder still works
+--   All         every vector the plan holds
+--   Start gap   a gap BEFORE the first byte -- the GapLead pair, which is the armed-start case
+--   All gaps    every gap vector, lead, mid, both and the long ones
+--   Adversarial only the vectors known to produce errors, so a lap spends its time where the
+--               answers are
+--
+-- NORMAL IS FIRST, AND THAT IS NOT THE SAME CHOICE AS LAP TYPE'S. Lap Type leads with the entry that
+-- filters nothing, because an unreadable field there must not narrow a lap silently. Here the
+-- operator asked for Normal as the default, so Normal leads -- and that makes the fallback for an
+-- unreadable field the same set the glass was showing, which is the honest answer either way.
+brun.pn_vsets = brun.pn_vsets or
+  {{t = 'Normal',      v = 'normal'},
+   {t = 'All',         v = nil},
+   {t = 'Start gap',   v = 'startgap'},
+   {t = 'All gaps',    v = 'gap'},
+   {t = 'Adversarial', v = 'adv'}}
 
 -- The rate window, in Bd. Defaults span the whole ladder, so the fields open describing a lap that
 -- filters nothing: 300 is the slowest rate soakplan draws and 250 000 the decoder's own ceiling.
@@ -77,6 +103,9 @@ function brun.pn_geom()
   g.y0    = sdec.ui_opt_y0 or 60
   g.dy    = sdec.ui_opt_dy or 54
   g.btny  = sdec.ui_opt_btn_y or 380
+  -- Where the plan lines start: clear of the one button, which is 200 px wide at x=22. 24 px of gap,
+  -- the same the options form leaves between its own buttons, so the two do not read as one block.
+  g.pnx   = 246
   return g
 end
 
@@ -98,6 +127,14 @@ function brun.destroy_panel()
   brun.pn_obj = nil
   sdec.del_obj(brun.pnscr)
   brun.pnscr = nil
+  -- NIL'D, NOT JUST DELETED, which is the object-lifetime rule the app follows: delete, nil, then
+  -- create. These were left set, so every one of them was a handle to a deleted object after a
+  -- teardown -- and brun.pn_say's `if brun.pn_ptxt == nil` guard could therefore never fire, which
+  -- made it settext into the void. The mock counts that as a refusal; the instrument posts nothing.
+  brun.pn_laps, brun.pn_sdgf, brun.pn_lapt, brun.pn_vset = nil, nil, nil, nil
+  brun.pn_lo, brun.pn_hi, brun.pn_inter = nil, nil, nil
+  brun.pn_over, brun.pn_armv, brun.pn_armw = nil, nil, nil
+  brun.pn_ptxt, brun.pn_ptxt2 = nil, nil
   return true
 end
 
@@ -140,9 +177,18 @@ function brun.build_panel()
     error('display object pool exhausted building the soak screen -- power cycle the instrument.', 0)
   end
 
-  -- Eight fields in two columns is four rows, and the pitch has to clear the button row: the same
+  -- TEN fields in two columns is five rows, and the pitch has to clear the button row: the same
   -- arithmetic build_options does, read from its constants so a changed form moves this one too.
-  local nf    = 8
+  --
+  -- A STALE FIGURE HERE DOES NOT FAIL, IT SKEWS. It said 8 while the form held six, two fields
+  -- having been removed, which reserved four rows for three -- so the left column ran a slot past
+  -- the right one and the last field sat alone under a hole. That is what the published docs/img/brun-panel.png showed for weeks, because the figure
+  -- outlived the fields and nothing counted them. test_bench_engine counts them now.
+  --
+  -- The ten fit because the plan line moved out of the grid: it used to take a field slot of its own
+  -- and sit above the buttons, and it now runs in two short lines BESIDE the button, which is dead
+  -- space in a single-button row.
+  local nf    = 10
   local nrows = math.ceil(nf / 2)
   local maxdy = math.floor((g.btny - 52 - g.y0) / nrows)
   if g.dy > maxdy then g.dy = maxdy end
@@ -171,8 +217,45 @@ function brun.build_panel()
   fx, fy = nextpos()
   local lt = {}
   for i = 1, table.getn(brun.pn_laptypes) do lt[i] = brun.pn_laptypes[i].t end
-  brun.pn_lapt = keep(create(brun.pnscr, display.OBJ_EDIT_OPTION, fx, fy,
-                             'Lap Type', 'narrows the plan', lt[1], lt[2], lt[3], lt[4]))
+  -- SPELLED OUT PER COUNT, not passed as lt[1]..lt[4] with the tail left nil. There were four lap
+  -- types until one was removed, and passing a nil fourth option made the firmware REFUSE the
+  -- create: display.create returned nil, keep() skipped it, and the Lap Type field simply was not
+  -- on the screen -- while BRUN.md went on documenting it with a subsection of
+  -- its own. Nothing failed, because nothing counted the fields. Seen on the glass 2026-10-21.
+  --
+  -- Same shape as build_options' Protocol field, and for the same reason it is not unpack()'d: the
+  -- instrument's Lua 5.0.2 has a global unpack() and the offline harness's does not.
+  local nlt = table.getn(lt)
+  if nlt >= 4 then
+    brun.pn_lapt = keep(create(brun.pnscr, display.OBJ_EDIT_OPTION, fx, fy,
+                               'Lap Type', 'rates that play', lt[1], lt[2], lt[3], lt[4]))
+  elseif nlt == 3 then
+    brun.pn_lapt = keep(create(brun.pnscr, display.OBJ_EDIT_OPTION, fx, fy,
+                               'Lap Type', 'rates that play', lt[1], lt[2], lt[3]))
+  elseif nlt == 2 then
+    brun.pn_lapt = keep(create(brun.pnscr, display.OBJ_EDIT_OPTION, fx, fy,
+                               'Lap Type', 'rates that play', lt[1], lt[2]))
+  end
+
+  -- THE VECTOR AXIS, beside the rate one. Same per-count spelling as above and for the same reason:
+  -- a nil trailing option makes the firmware refuse the create, which is how Lap Type lost itself.
+  fx, fy = nextpos()
+  local vs, nvs = {}, table.getn(brun.pn_vsets)
+  for i = 1, nvs do vs[i] = brun.pn_vsets[i].t end
+  if nvs >= 5 then
+    brun.pn_vset = keep(create(brun.pnscr, display.OBJ_EDIT_OPTION, fx, fy,
+                               'Vector Set', 'which ones play',
+                               vs[1], vs[2], vs[3], vs[4], vs[5]))
+  elseif nvs == 4 then
+    brun.pn_vset = keep(create(brun.pnscr, display.OBJ_EDIT_OPTION, fx, fy,
+                               'Vector Set', 'which ones play', vs[1], vs[2], vs[3], vs[4]))
+  elseif nvs == 3 then
+    brun.pn_vset = keep(create(brun.pnscr, display.OBJ_EDIT_OPTION, fx, fy,
+                               'Vector Set', 'which ones play', vs[1], vs[2], vs[3]))
+  elseif nvs == 2 then
+    brun.pn_vset = keep(create(brun.pnscr, display.OBJ_EDIT_OPTION, fx, fy,
+                               'Vector Set', 'which ones play', vs[1], vs[2]))
+  end
   fx, fy = nextpos()
   -- 110 is the slowest rate the decoder accepts at all, so the field cannot be set to a floor that
   -- would exclude every row; the ceiling is the other field's own maximum.
@@ -190,25 +273,74 @@ function brun.build_panel()
                               'Interstitial', '0 any, else from',
                               display.NFORMAT_PREFIX, brun.pn_interstit, 0, 250000, 'Bd', 6))
 
+  -- THE THREE CAPTURE SETTINGS A SOAK ACTUALLY TURNS, asked for from the panel on 2026-10-21. Until
+  -- now they could only be set from the host -- run_bench.py --over-read, and the arm pair not at all
+  -- -- so a panel-started soak ran whatever the last host run or the module default left behind. The
+  -- whole point of this screen is a lap with no host, and these are the knobs that change what a
+  -- cell measures rather than which cells run.
+  --
+  -- EVERY ARGUMENT IS THE APP'S OWN, read from sdec rather than restated, so the form here cannot
+  -- offer a range the app would clamp away: the ranges come from the core, and the defaults are
+  -- whatever the app currently holds -- which is what the operator is about to change.
+  fx, fy = nextpos()
+  -- Percent on the glass, a fraction underneath, exactly as the app's form does it: this reads 10
+  -- where sdec.strm_overread holds 0.10. panel_run divides by 100.
+  brun.pn_over = keep(create(brun.pnscr, display.OBJ_EDIT_NUMBER, fx, fy,
+                             'Over-read', '0 off, idle margin',
+                             display.NFORMAT_PREFIX, (sdec.strm_overread or 0) * 100,
+                             0, (sdec.overread_max or 0.5) * 100, '%', 4))
+  fx, fy = nextpos()
+  -- The comparator level for a line that has not started talking, and the wait that goes with it.
+  -- Four significant digits for the reason the app's form states: '1.00000 V' claims a precision the
+  -- setting does not have. docs/MEASUREMENTS.md, 'armlevel 1.0, floor 0.33, ceiling 6.0'.
+  brun.pn_armv = keep(create(brun.pnscr, display.OBJ_EDIT_NUMBER, fx, fy,
+                             'Arm At', 'wake-up level',
+                             display.NFORMAT_PREFIX, sdec.arm_level_v(),
+                             sdec.armlevel_min, sdec.armlevel_max, 'V', 4))
+  fx, fy = nextpos()
+  -- Seconds, and the panel is frozen for every one of them -- which on a soak is seconds per CELL,
+  -- so this is the field most able to turn a lap into an overnight run. The label carries both uses
+  -- because one number serves both: the arm's wait, and the quiet-line exit once the line is up.
+  brun.pn_armw = keep(create(brun.pnscr, display.OBJ_EDIT_NUMBER, fx, fy,
+                             'Arm Wait', 'max wait, frozen',
+                             display.NFORMAT_PREFIX, sdec.arm_wait_s(),
+                             sdec.armwait_min, sdec.armwait_max, 's', 4))
+
   -- THE PLAN, STATED BEFORE THE RUN IS COMMITTED. A soak started against a plan the operator did not
   -- expect is a lap of instrument time spent on the wrong question, and the key keeps whichever plan
   -- was pushed last -- a targeted --spec overwrites PLAN.CSV, so what is there is not necessarily the
   -- fortnight plan.
   local rows, rsub = brun.pn_plan()
-  local ptxt
+  local p1, p2
   if rows == nil then
-    ptxt = 'PLAN: none on the key -- push one with run_bench.py --push-plan'
+    p1 = 'PLAN: none on the key'
+    p2 = 'push one: run_bench.py --push-plan'
   else
-    ptxt = string.format('plan: %s row(s)%s', brun.int(rows),
-                         (rsub ~= nil and rsub ~= '') and (', random-per-lap ' .. rsub) or '')
+    p1 = string.format('plan: %s row(s)', brun.int(rows))
+    p2 = (rsub ~= nil and rsub ~= '') and ('random-per-lap ' .. rsub) or ''
   end
-  fx, fy = nextpos()
-  brun.pn_ptxt = keep(create(brun.pnscr, display.OBJ_TEXT, g.x, g.btny - 44, ptxt))
+  -- BESIDE THE BUTTON, NOT ABOVE IT, and NOT out of nextpos(). This used to take a field slot of its
+  -- own and sit at btny - 44, which cost the grid a row for a line of furniture. A single-button row
+  -- leaves most of its width empty, so the plan runs in two short lines in that space -- which is
+  -- what made room for ten fields. Operator's layout, 2026-10-21.
+  --
+  -- Two objects rather than one wrapped string, because there is no wrapping: a 58-character clip is
+  -- what the one-line form did, and 'PLAN: none on the key -- push one with run_bench.py --push-plan'
+  -- is 62. The second line is where the sentence that got cut now goes.
+  --
+  -- The y values put both lines inside the button's own 58 px band, so nothing here can collide with
+  -- the field grid however the pitch above is clamped.
+  brun.pn_ptxt  = keep(create(brun.pnscr, display.OBJ_TEXT, g.pnx, g.btny + 16, p1,
+                              sdec.ui_c_pgword, display.FONT_SMALL, display.JUST_LEFT))
+  brun.pn_ptxt2 = keep(create(brun.pnscr, display.OBJ_TEXT, g.pnx, g.btny + 44, p2,
+                              sdec.ui_c_pgword, display.FONT_SMALL, display.JUST_LEFT))
 
-  -- Two buttons, and Cancel is one of them for build_options' reason: a form with no way out is worse
-  -- than no form.
-  local bdef = {{x = 22,  w = 200, t = 'Run Soak', e = 'brun.panel_run'},
-                {x = 234, w = 200, t = 'Cancel',   e = 'brun.panel_cancel'}}
+  -- ONE BUTTON. Cancel was the second, and it is gone on the operator's instruction of 2026-10-21:
+  -- End App in the title bar is the way out of this screen, and it is wired below to the same
+  -- teardown Cancel called. That is a complete exit here and not merely a screen change -- the bench
+  -- package's entry point calls brun.panel() and never sdec.start(), so the form is the only thing
+  -- this app has built and destroying it strands nothing.
+  local bdef = {{x = 22,  w = 200, t = 'Run Soak', e = 'brun.panel_run'}}
   local nb = 0
   for i = 1, table.getn(bdef) do
     local b = create(brun.pnscr, display.OBJ_BUTTON, bdef[i].x, g.btny, bdef[i].t, bdef[i].w)
@@ -245,16 +377,21 @@ end
 -- Read the form, apply it, and start. Nothing here is applied until every field has been read: a
 -- raise half way would otherwise commit a partial configuration, which is options_apply's rule.
 function brun.panel_run()
-  local laps, ip, lt, lo, hi, inter
+  local laps, ip, lt, lo, hi, inter, vst, over, armv, armw
   local readok, readerr = pcall(function()
     laps     = display.getvalue(brun.pn_laps)
     local si = display.getvalue(brun.pn_sdgf)
     if type(si) == 'number' then ip = brun.pn_sdgtxt(math.floor(si + 0.5)) end
     local li = display.getvalue(brun.pn_lapt)
     if type(li) == 'number' then lt = brun.pn_laptypes[math.floor(li + 0.5)] end
+    local vi = display.getvalue(brun.pn_vset)
+    if type(vi) == 'number' then vst = brun.pn_vsets[math.floor(vi + 0.5)] end
     lo    = display.getvalue(brun.pn_lo)
     hi    = display.getvalue(brun.pn_hi)
     inter = display.getvalue(brun.pn_inter)
+    over  = display.getvalue(brun.pn_over)
+    armv  = display.getvalue(brun.pn_armv)
+    armw  = display.getvalue(brun.pn_armw)
   end)
   if not readok then
     brun.pn_say('could not read the form: ' .. tostring(readerr))
@@ -280,7 +417,11 @@ function brun.panel_run()
   -- trap brun.point's cleared rate-fit fields exist for: a stale filter is worse than an absent one,
   -- because a lap would quietly run a different cell set than the form on the glass describes.
   if lt == nil then lt = brun.pn_laptypes[1] end
-  brun.filt_stdonly, brun.filt_advonly = lt.std, lt.adv
+  brun.filt_stdonly = lt.std
+  -- The vector axis, assigned on every run for the same reason: entry 1 is the fallback, and here
+  -- that is Normal -- the set the field was showing, because Normal is also its default.
+  if vst == nil then vst = brun.pn_vsets[1] end
+  brun.filt_vset = vst.v
   brun.nfilt = 0
   -- The window, and a reversed pair is the operator's slip rather than an empty lap: swapped so the
   -- form cannot ask for a range that excludes every row.
@@ -296,6 +437,23 @@ function brun.panel_run()
     -- Closed before the address moves, or the next select talks to the old session on the new name.
     if bsdg.close ~= nil then pcall(bsdg.close) end
     bsdg.ip = ip
+  end
+
+  -- THE THREE CAPTURE SETTINGS, applied the way the app's own form applies them, because they are
+  -- the app's fields and not the bench's: sdec.strm_overread, sdec.armlevel and sdec.armwait. Taken
+  -- only when they read as numbers, or a nil reaches a voltage comparison deep in an armed capture.
+  --
+  -- The arm pair is NOT clamped here: arm_level_v() and arm_wait_s() clamp at use, so the form keeps
+  -- showing what was typed rather than silently correcting it. Over-read IS clamped, because the
+  -- ceiling is a field argument and a form built before overread_max moved would still offer the old
+  -- one -- the same reason options_apply clamps it.
+  if type(armv) == 'number' then sdec.armlevel = armv end
+  if type(armw) == 'number' then sdec.armwait = armw end
+  if type(over) == 'number' then
+    local f = over / 100
+    if f < 0 then f = 0 end
+    if f > (sdec.overread_max or 0.5) then f = sdec.overread_max or 0.5 end
+    sdec.strm_overread = f
   end
 
   -- The form goes before the run's own screen is built: both are full screens and the display pool is
@@ -320,9 +478,27 @@ end
 -- Say something on the form itself. The plan line is the one text object this screen has, so a
 -- message that needs a second object can fail to appear for want of one. -> false only where the
 -- object was never built: display.settext posts and returns, so there is no other failure to report.
+-- ACROSS BOTH LINES, breaking at a space. The one-line form clipped at 58 characters, and every
+-- message worth printing here is longer than that: 'REFUSED: a smoke has run on this power cycle --
+-- power cycle the DMM before a soak' lost the half that says what to do. Two lines of 46 is 92, and
+-- the break walks back to a space so a word is not cut in two.
 function brun.pn_say(s)
   if brun.pn_ptxt == nil then return false end
-  display.settext(brun.pn_ptxt, string.sub(tostring(s), 1, 58))
+  local t = tostring(s)
+  local one, two = t, ''
+  if string.len(t) > 46 then
+    local cut = 46
+    local i
+    for i = 46, 20, -1 do
+      if string.sub(t, i, i) == ' ' then cut = i - 1; break end
+    end
+    one = string.sub(t, 1, cut)
+    two = string.sub(t, cut + 1)
+    while string.sub(two, 1, 1) == ' ' do two = string.sub(two, 2) end
+    two = string.sub(two, 1, 46)
+  end
+  display.settext(brun.pn_ptxt, one)
+  if brun.pn_ptxt2 ~= nil then display.settext(brun.pn_ptxt2, two) end
   return true
 end
 

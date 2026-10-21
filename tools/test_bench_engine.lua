@@ -1357,27 +1357,195 @@ print('-- the panel\'s own guards, which the host-side ones do not cover --')
      '...and after a smoke it refuses, naming the power cycle that is the only cure', tostring(why))
   SMOKED = kept
 
-  -- EVERY LAP TYPE MUST MEAN SOMETHING DIFFERENT. Four entries that mapped to the same filter state
-  -- would read as four choices on the glass and behave as one, which is the shape of defect a label
-  -- test cannot see.
+  -- EVERY ENTRY ON BOTH FIELDS MUST MEAN SOMETHING DIFFERENT. Two entries mapping to the same filter
+  -- state would read as two choices on the glass and behave as one, which is the shape of defect a
+  -- label test cannot see. Checked per field, because they are two axes now: Lap Type carries rates
+  -- and Vector Set carries vectors, and until 2026-10-21 one field carried both -- so 'adversarial
+  -- vectors at standard rates only' was unaskable.
   local seen, n = {}, table.getn(brun.pn_laptypes)
   local dup = nil
   local i
   for i = 1, n do
     local e = brun.pn_laptypes[i]
-    local k = tostring(e.std) .. '/' .. tostring(e.adv)
+    local k = tostring(e.std)
     if seen[k] ~= nil then dup = e.t .. ' == ' .. seen[k] end
     seen[k] = e.t
   end
-  ck(n >= 3 and dup == nil,
-     string.format('%d lap types, and no two mean the same filter state', n),
+  ck(n >= 2 and dup == nil,
+     string.format('%d lap types, and no two mean the same rate filter', n),
      dup or 'all distinct')
   -- And the first entry is the unfiltered one, because panel_run falls back to it when the field
-  -- cannot be read: a fallback that narrowed the plan would be the worst of the four to default to.
+  -- cannot be read: a fallback that narrowed a lap's RATES would be the worst of the two to default
+  -- to, since nothing on the glass would say it had happened.
   local f = brun.pn_laptypes[1]
-  ck(f.std == nil and f.gap == nil and f.adv == nil,
-     'the first lap type filters nothing, which is what an unreadable field falls back to', f.t)
+  ck(f.std == nil, 'the first lap type filters no rates, which an unreadable field falls back to', f.t)
+
+  local vseen, vn = {}, table.getn(brun.pn_vsets)
+  local vdup = nil
+  for i = 1, vn do
+    local e = brun.pn_vsets[i]
+    local k = tostring(e.v)
+    if vseen[k] ~= nil then vdup = e.t .. ' == ' .. vseen[k] end
+    vseen[k] = e.t
+  end
+  ck(vn >= 2 and vdup == nil,
+     string.format('%d vector sets, and no two select the same vectors', vn),
+     vdup or 'all distinct')
+  -- NORMAL LEADS, and that is the opposite choice from Lap Type above, deliberately: the operator
+  -- asked for Normal as the default, so it is entry 1 -- which makes the fallback for an unreadable
+  -- field the same set the glass was showing. Asserted because a reordering would silently change
+  -- both the default and the fallback.
+  ck(brun.pn_vsets[1].v == 'normal',
+     'Normal leads the vector sets, so the default and the fallback are the same set',
+     tostring(brun.pn_vsets[1].t))
+
+  -- AND EVERY FIELD IS ACTUALLY ON THE SCREEN. Nothing counted them, and that is how the settings
+  -- screen shipped WITHOUT its Lap Type field: there were four lap types until 'Gap targeted' went
+  -- when the fourth was removed, build_panel went on passing lt[1]..lt[4], and an explicit nil fourth
+  -- makes the firmware REFUSE the create -- display.create answers nil, keep() skips it, and the
+  -- field is simply absent. Seen on the glass on 2026-10-21, when the figure in BRUN.md was
+  -- regenerated and came back a field short; BRUN.md had documented Lap Type throughout.
+  --
+  -- A HANDLE AT A TIME, not a total, so the failure names the field.
+  local built = brun.build_panel()
+  local fields = {{'Laps', brun.pn_laps}, {'SDG Address', brun.pn_sdgf},
+                  {'Lap Type', brun.pn_lapt}, {'Vector Set', brun.pn_vset},
+                  {'Speed Low', brun.pn_lo}, {'Speed High', brun.pn_hi},
+                  {'Interstitial', brun.pn_inter}, {'Over-read', brun.pn_over},
+                  {'Arm At', brun.pn_armv}, {'Arm Wait', brun.pn_armw}}
+  local absent = nil
+  for i = 1, table.getn(fields) do
+    if fields[i][2] == nil then absent = (absent or '') .. fields[i][1] .. ' ' end
+  end
+  ck(built ~= nil and absent == nil,
+     'every documented settings field reaches the screen, Vector Set and the arm pair included',
+     absent and ('absent: ' .. absent) or 'all ten present')
+  -- Both plan lines too, which carry the row count and the message pn_say writes. They sit beside
+  -- the button rather than in the grid, so a layout change cannot quietly drop one.
+  ck(brun.pn_ptxt ~= nil and brun.pn_ptxt2 ~= nil,
+     'and both plan lines exist, so pn_say has somewhere to put a long refusal',
+     string.format('%s,%s', tostring(brun.pn_ptxt), tostring(brun.pn_ptxt2)))
+  -- THE ROW ARITHMETIC MATCHES THE FIELD COUNT, which is the other half of the same stale figure:
+  -- build_panel reserves ceil(nf/2) rows, and nf was left at 8 when the form went to 6 -- so the
+  -- left column ran a slot past the right one and the last field sat under a hole. The layout cannot
+  -- report that itself, so the count is asserted against the fields that exist.
+  ck(table.getn(fields) == 10,
+     'and the form is ten fields, which is what build_panel reserves rows for',
+     string.format('%d field(s)', table.getn(fields)))
+
+  -- EVERY OPTION-COUNT BRANCH BUILDS, which is the structural answer to the nil-option refusal: the
+  -- field is spelled out per count precisely so no call can pass a hole, and this walks the lengths
+  -- a future edit might leave behind. Without the branches, a list of 2, 3 or 4 would pass nil in
+  -- the tail and the field would vanish -- offline too, now the mock refuses it as the firmware does.
+  do
+    local kept = brun.pn_vsets
+    local len
+    local lost = nil
+    for len = 2, 5 do
+      local t = {}
+      for i = 1, len do t[i] = {t = 'S' .. i, v = (i == 1) and 'normal' or ('s' .. i)} end
+      brun.pn_vsets = t
+      brun.build_panel()
+      if brun.pn_vset == nil then lost = (lost or '') .. len .. ' ' end
+    end
+    brun.pn_vsets = kept
+    brun.build_panel()
+    ck(lost == nil, 'Vector Set builds at every list length from 2 to 5',
+       lost and ('no field at length(s): ' .. lost) or '2,3,4,5 all build')
+  end
+  brun.destroy_panel()
 end)()
+
+-- ---------------------------------------------------------------------------
+print('')
+print('-- the plan filters: two axes, and they have to compose --')
+-- brun.wanted had NO test at all, which is how one field came to carry two axes without anything
+-- noticing: the filters were only ever exercised through a real lap, where a narrowed plan looks
+-- exactly like a plan that is simply shorter.
+do
+  local kept = {brun.filt_baudlo, brun.filt_baudhi, brun.filt_stdonly,
+                brun.filt_interstit, brun.filt_vset}
+  local function cell(vid, baud, kind)
+    return {vid = vid, baud = baud, kind = kind or 'std'}
+  end
+  local function only(vset, stdonly)
+    brun.filt_baudlo, brun.filt_baudhi, brun.filt_interstit = nil, nil, nil
+    brun.filt_vset, brun.filt_stdonly = vset, stdonly
+  end
+
+  -- THE VECTOR IDS ARE REAL ONES, read off barb: v98a/v99a are the GapLead pair, v98d a long gap,
+  -- v47 and v61 are barb.loud entries, v71 and v77 ordinary prose. A fixture of invented ids would
+  -- test the predicate against itself, since both key on barb.of's names.
+  only(nil, nil)
+  ck(brun.wanted(cell('v98a', 9600)) and brun.wanted(cell('v71', 9600)),
+     'no vector set runs everything, gaps included')
+
+  only('normal', nil)
+  ck(brun.wanted(cell('v71', 9600)) and brun.wanted(cell('v77', 9600)),
+     'Normal keeps ordinary prose vectors')
+  ck(not brun.wanted(cell('v98a', 9600)) and not brun.wanted(cell('v98d', 9600)),
+     'Normal drops every gap vector')
+  ck(not brun.wanted(cell('v47', 9600)) and not brun.wanted(cell('v61', 9600)),
+     'Normal drops what barb.loud excuses, so a clean lap asks a clean question')
+
+  only('startgap', nil)
+  ck(brun.wanted(cell('v98a', 9600)) and brun.wanted(cell('v99a', 9600)),
+     'Start gap keeps the GapLead pair, which is the armed-start case')
+  ck(not brun.wanted(cell('v98b', 9600)) and not brun.wanted(cell('v98d', 9600))
+     and not brun.wanted(cell('v71', 9600)),
+     '...and nothing else: not a mid gap, not a long gap, not prose')
+
+  only('gap', nil)
+  ck(brun.wanted(cell('v98a', 9600)) and brun.wanted(cell('v98b', 9600))
+     and brun.wanted(cell('v98c', 9600)) and brun.wanted(cell('v98d', 9600))
+     and brun.wanted(cell('v99d', 9600)),
+     'All gaps keeps lead, mid, both and the long ones')
+  ck(not brun.wanted(cell('v71', 9600)), '...and drops prose')
+
+  only('adv', nil)
+  ck(brun.wanted(cell('v47', 9600)) and brun.wanted(cell('v61', 9600)),
+     'Adversarial keeps exactly what barb.loud names')
+  ck(not brun.wanted(cell('v71', 9600)), '...and nothing that is expected to decode')
+
+  -- THE CASE THAT WAS UNASKABLE, and the reason the axes were split: one field carrying both meant
+  -- adversarial vectors could only be had at every rate, or standard rates only at every vector.
+  only('adv', true)
+  ck(brun.wanted(cell('v47', 9600, 'std')),
+     'adversarial vectors AT STANDARD RATES ONLY, which one field could not express')
+  ck(not brun.wanted(cell('v47', 9600, 'rand')),
+     '...and the rate axis still bites inside the vector set')
+  ck(not brun.wanted(cell('v71', 9600, 'std')),
+     '...and the vector axis still bites inside the rate filter')
+
+  -- A VECTOR THE NAME TABLE DOES NOT KNOW IS RUN, not skipped. barb.of answers nil only when
+  -- arb_names.tsp is stale, and a stale table should fail at the ARWV that cannot find the waveform
+  -- rather than quietly shrink the lap -- which is the outcome nobody would notice.
+  only('normal', nil)
+  ck(brun.wanted(cell('zz9', 9600)),
+     'an unknown vector id survives Normal, so a stale name table fails loudly instead of silently')
+  -- And an unrecognised set name runs everything rather than nothing: a typo must not look like a
+  -- plan with no matching rows, which reads as a broken key.
+  only('nosuchset', nil)
+  ck(brun.wanted(cell('v71', 9600)) and brun.wanted(cell('v98a', 9600)),
+     'an unrecognised vector set runs everything, so a typo cannot read as an empty plan')
+
+  -- THE RATE AXIS, which was also untested. Inclusive at both ends, per BRUN.md.
+  only(nil, nil)
+  brun.filt_baudlo, brun.filt_baudhi = 2400, 9600
+  ck(brun.wanted(cell('v71', 2400)) and brun.wanted(cell('v71', 9600)),
+     'the rate window is inclusive at both ends')
+  ck(not brun.wanted(cell('v71', 1200)) and not brun.wanted(cell('v71', 19200)),
+     '...and excludes outside it')
+  only(nil, nil)
+  brun.filt_interstit = 4800
+  ck(brun.wanted(cell('v71', 300, 'std')) and not brun.wanted(cell('v71', 300, 'rand')),
+     'the interstitial floor binds drawn rates only, never standard ones')
+
+  brun.filt_baudlo, brun.filt_baudhi, brun.filt_stdonly = kept[1], kept[2], kept[3]
+  brun.filt_interstit, brun.filt_vset = kept[4], kept[5]
+  ck(brun.filt_vset == kept[5], 'and the suite leaves the filters as it found them',
+     tostring(brun.filt_vset))
+end
 
 -- ---------------------------------------------------------------------------
 print('')

@@ -1328,7 +1328,7 @@ ARM_BAUD = 9600
 # as the line's idle level. That is the regime the first defect lived in: 0 of 6 readable. At the blind
 # rate the app samples faster, the gap wins, and the same defect was only intermittent.
 ARM_LEVEL = 1.0              # Arm At: the shipped default, inside sdec.armlevel_min..max (0.33..6.0)
-ARM_WAIT = 10.0              # Arm/Idle Wait for a cell whose device DOES start
+ARM_WAIT = 10.0              # Arm Wait for a cell whose device DOES start
 # AND A SHORT ONE FOR THE CELL WHOSE DEVICE NEVER STARTS, because that cell's cost IS its wait. Three
 # seconds is what bench_arm case E uses and it is comfortably above the 2 s floor the panel allows.
 ARM_EXPIRE_WAIT = 3.0
@@ -1692,15 +1692,15 @@ def arm_claims(cell, r, el, hit, fsmap, before):
     lead, run0 = num(r, 'lead', 0), num(r, 'run0', 0)
 
     if not cell['starts']:
-        # THE EXPIRY. It must wait the operator's Arm/Idle Wait and no longer, name the degrade and the two
+        # THE EXPIRY. It must wait the operator's Arm Wait and no longer, name the degrade and the two
         # settings that govern it, and -- the part a message cannot fake -- NOT claim a trigger.
-        cl.append(('waits the operator Arm/Idle Wait and no longer',
+        cl.append(('waits the operator Arm Wait and no longer',
                    2.0 <= el <= cell['wait'] + 9.0))
         cl.append(('says the arm expired and the capture degraded to free-running',
                    'trigger unavailable; captured free-running' in (r.get('err') or '')))
         cl.append(('names the armed level and both settings that govern the wait',
                    'crossed' in (r.get('err') or '')
-                   and 'raise Arm/Idle Wait or lower Arm At' in (r.get('err') or '')))
+                   and 'raise Arm Wait or lower Arm At' in (r.get('err') or '')))
         cl.append(('does NOT report a pre-trigger reserve it never had',
                    r.get('pretrig') != 'true'))
         cl.append(('publishes no bytes out of the silence', nf <= 0))
@@ -1844,7 +1844,7 @@ def suite_arm(d, g, a, rows):
     print('    entry: capmode=%s trigmode=%s armlevel=%s armwait=%s   (handed back on the way out)'
           % (entry.get('capmode'), entry.get('trigmode'), entry.get('armlevel'),
              entry.get('armwait')))
-    print('    arm:   Arm At %.2f V, Arm/Idle Wait %.1f s, reserve %s %% of capacity, absorb %s s; '
+    print('    arm:   Arm At %.2f V, Arm Wait %.1f s, reserve %s %% of capacity, absorb %s s; '
           'fs blind %s / locked %s'
           % (ARM_LEVEL, ARM_WAIT, entry.get('pretrigpct'), entry.get('absorb'),
              fmt_num(fsmap['blind'], '%.0f'), fmt_num(fsmap['locked'], '%.0f')))
@@ -1917,7 +1917,7 @@ def suite_arm(d, g, a, rows):
                     if not got:
                         print('      BROKEN CLAIM: %s' % text)
                 print('      REPRO %s: %s at %.3f Vpp offset %+0.3f V, %s, %s lock, device %s, '
-                      'Arm At %.2f V Arm/Idle Wait %.1f s'
+                      'Arm At %.2f V Arm Wait %.1f s'
                       % (cell['name'], cell['vid'], amp, cell['ofst'], cell['mode'], cell['lock'],
                          ('on at +%.1f s' % ARM_START_AT) if cell['starts'] else 'never starts',
                          ARM_LEVEL, cell['wait']))
@@ -2014,7 +2014,7 @@ def _arm_clean(cell, fsmap):
                 'idle': 'nil', 'weak': 'nil', 'fs': '200000', 'nread': '20000',
                 'trigreq': 'edge', 'note': 'nil',
                 'err': 'edge trigger unavailable; captured free-running (no trigger in 3 s (edge) '
-                       '-- nothing crossed 1.00 V; raise Arm/Idle Wait or lower Arm At)',
+                       '-- nothing crossed 1.00 V; raise Arm Wait or lower Arm At)',
                 'baud': 'nil', 'fmt': '?', 'thr': 'nil', 'lo': 'nil', 'hi': 'nil', 'hyst': 'nil',
                 'fam': 'nil', 'sn': 'nil', 'nf': '-1', 'nbad': '-1', 'ngood': '-1', 'head': '-1',
                 'inv': '?', 'text': '-', 'endwhy': 'nil', 'ckn': 'nil', 'armed': 'nil',
@@ -2187,7 +2187,7 @@ def arm_selftest():
     broken(cells['expiry'], {'nf': '240', 'nbad': '0'}, el=3.4,
            what='an expiry that published bytes out of the silence')
     broken(cells['expiry'], {}, el=0.02,
-           what='an expiry that returned at once instead of waiting its Arm/Idle Wait')
+           what='an expiry that returned at once instead of waiting its Arm Wait')
     # THE BIPOLAR CONTROL IN BOTH DIRECTIONS: a decoder that always inverts, and one that never does.
     broken(cells['bipolar'], {'idle': '1', 'inv': 'false'}, what='the bipolar line read as idle-HIGH')
     broken(cells['frame autolock'], {'idle': '0', 'inv': 'true'},

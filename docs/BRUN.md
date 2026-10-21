@@ -1,6 +1,6 @@
 # Serial Brun — starting a bench soak from the front panel
 
-**Ian Ameline** · version 1.72 · MIT licence
+**Ian Ameline** · version 1.73 · MIT licence
 
 `Serial_brun.tspa` puts the bench engine behind a settings screen on the instrument, so a lap can be
 started with nobody connected. It is the same `brun.soak()` the host drives — a second door into one
@@ -30,10 +30,17 @@ thing that says which plan is actually on the key.
 
 ## The screen
 
-![The soak settings screen: six fields in two columns, the plan line beneath them, Run Soak and Cancel](img/brun-panel.png)
+![The soak settings screen: ten fields in two columns of five, Run Soak, and the plan in two lines beside it](img/brun-panel.png)
 
-The plan line is read off the key when the screen is built, so it describes what is actually there
-rather than what was last pushed from this host. The count is the plan's own `# rows=` header — data
+**There is no Cancel button.** `End App` in the title bar is the way out, and it is wired to the same
+teardown Cancel called — which is a complete exit here rather than a screen change, because the
+bench package's entry point calls `brun.panel()` and never `sdec.start()`, so the form is the only
+thing this app has built.
+
+The plan runs in two short lines beside **Run Soak**, which is dead space in a single-button row and
+is what made room for ten fields; it used to take a field slot of its own. It is read off the key
+when the screen is built, so it describes what is actually there rather than what was last pushed
+from this host. The count is the plan's own `# rows=` header — data
 rows, which is six fewer than the line count `run_bench.py --push-plan` reports, that figure
 including the header and comment lines.
 
@@ -44,18 +51,45 @@ including the header and comment lines.
 | **Lap Type** | narrows the plan — see below. |
 | **Speed Low** / **Speed High** | the rate window in Bd, inclusive at both ends. Defaults span the ladder: 300 is the slowest rate drawn, 250 000 the decoder's own ceiling. |
 | **Interstitial** | a floor under the *drawn* rates only, `0` for none. Standard rates still play below it. At the bottom of the ladder a non-standard rate costs the most seconds and tests the least. |
+| **Vector Set** | which vectors play — see below. Defaults to **Normal**. |
+| **Over-read** | the idle margin on every recording, as a percentage, `0` for off. The app's own `sdec.strm_overread`, which until now could only be set from the host with `run_bench.py --over-read`. |
+| **Arm At** | the comparator level that wakes a capture on a line which has not started talking. `sdec.armlevel`, 0.33 to 6 V. |
+| **Arm Wait** | how long an armed capture waits, and the quiet-line exit once the line is up. `sdec.armwait`, 2 to 120 s. **On a soak this is seconds per cell**, so it is the field most able to turn a lap into an overnight run. |
 
-### Lap Type
+The last four are the app's own capture settings rather than the bench's, and they are applied the way
+the Options form applies them — the arm pair unclamped, because `arm_level_v()` and `arm_wait_s()`
+clamp at use so the form keeps showing what was typed, and Over-read clamped to `overread_max`
+because that ceiling is a field argument and a form built before it moved would still offer the old
+one.
 
-| | what plays |
+### Lap Type, and Vector Set
+
+**Two axes, and they compose.** Until 2026-10-21 one field carried both: `Lap Type` read Full /
+Normal / Adversarial, where *Normal* filtered rates and *Adversarial* filtered vectors. So
+"adversarial vectors at standard rates only" could not be asked for at all. `Lap Type` is now the
+rate axis alone and `Vector Set` is the vector axis.
+
+| Lap Type | what plays |
 |---|---|
-| **Full** | every row the plan holds, which is what the host-driven path runs |
-| **Normal** | standard rates only — no drawn interstitial or edge rate |
-| **Adversarial** | only vectors known to produce errors |
+| **Full** | every rate the plan holds, which is what the host-driven path runs |
+| **Standard only** | standard rates only — no drawn interstitial or edge rate |
 
-`Adversarial` is derived, not listed: it is `barb.expect`'s `loud` entries — the vectors the plan
-drives into conditions where refusing is the documented right answer. A vector added to that table is
-covered here without anybody remembering to update a second list.
+| Vector Set | what plays |
+|---|---|
+| **Normal** | the default. No gap vectors and nothing `barb.loud` excuses — the lap you want when the question is whether the decoder still works |
+| **All** | every vector the plan holds |
+| **Start gap** | a gap *before the first byte*: the `GapLead` pair, which is the armed-start case |
+| **All gaps** | every gap vector — lead, mid, both, and the long ones |
+| **Adversarial** | only the vectors known to produce errors, so a lap spends its time where the answers are |
+
+Three of those are **derived, not listed**. `Adversarial` is `barb.expect`'s `loud` entries — the
+vectors the plan drives into conditions where refusing is the documented right answer. `Start gap`
+and `All gaps` key on the generator's own waveform **name** through `barb.of`, every gap vector
+carrying `Gap` in its, so a gap vector added later is covered without editing a second list.
+
+**A vector the name table does not know is run, not skipped.** `barb.of` answers nil only when
+`arb_names.tsp` is stale, and a stale table should fail loudly at the `ARWV` that cannot find the
+waveform rather than quietly shrink the lap — which is the one outcome nobody would notice.
 
 ## Running one
 

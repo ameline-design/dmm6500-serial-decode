@@ -363,7 +363,45 @@ brun.filt_baudlo    = brun.filt_baudlo          -- Bd, inclusive floor
 brun.filt_baudhi    = brun.filt_baudhi          -- Bd, inclusive ceiling
 brun.filt_stdonly   = brun.filt_stdonly        -- true: standard rates only
 brun.filt_interstit = brun.filt_interstit    -- Bd: no non-standard rate below this
-brun.filt_advonly   = brun.filt_advonly        -- true: only vectors known to produce errors
+brun.filt_vset      = brun.filt_vset   -- nil: every vector; else 'normal'/'startgap'/'gap'/'adv'
+
+-- DOES THIS VECTOR CARRY A GAP, and does the gap come before the first byte? Keyed on the generator's
+-- own waveform NAME through barb.of, not on an id list: the names are generated from
+-- tools/vector_names.py and every gap vector carries 'Gap' in its own, so a gap vector added later is
+-- covered here without a second enumeration to remember. 'GapLead' is the start-gap pair.
+--
+-- AN UNKNOWN VECTOR IS NOT A GAP, so 'Normal' RUNS it rather than skipping it. barb.of answers nil
+-- only when arb_names.tsp is stale, and a stale table should fail loudly at the ARWV that cannot find
+-- the waveform -- not quietly shrink the lap, which is the one outcome nobody would notice.
+function brun.vid_gap(vid)
+  local nm = nil
+  if barb ~= nil and barb.of ~= nil then nm = barb.of(vid) end
+  if nm == nil then return false end
+  return string.find(nm, 'Gap', 1, true) ~= nil
+end
+
+function brun.vid_startgap(vid)
+  local nm = nil
+  if barb ~= nil and barb.of ~= nil then nm = barb.of(vid) end
+  if nm == nil then return false end
+  return string.find(nm, 'GapLead', 1, true) ~= nil
+end
+
+-- Is this vector in the set the form asked for? -> true to run it. Split out of brun.wanted because
+-- five sets in one `if` chain is the shape that grows a sixth nobody tests.
+function brun.in_vset(vid)
+  local s = brun.filt_vset
+  if s == nil then return true end
+  local loud = false
+  if barb ~= nil and barb.loud ~= nil and barb.loud(vid) then loud = true end
+  if s == 'normal' then return not brun.vid_gap(vid) and not loud end
+  if s == 'startgap' then return brun.vid_startgap(vid) end
+  if s == 'gap' then return brun.vid_gap(vid) end
+  if s == 'adv' then return loud end
+  -- An unrecognised set runs everything rather than nothing: a typo in a filter must not look like a
+  -- plan with no matching rows, which is the failure that reads as a broken key.
+  return true
+end
 
 -- Does this row survive the filters? -> true to run it.
 function brun.wanted(c)
@@ -377,14 +415,9 @@ function brun.wanted(c)
   if brun.filt_interstit ~= nil and not std and (c.baud or 0) < brun.filt_interstit then
     return false
   end
-  -- ADVERSARIAL: the vectors that actually produce errors, so a lap spends its time where the answers
-  -- are. barb.expect's 'loud' entries are the vectors the plan drives into conditions where refusing is
-  -- correct, and that table is already the authority on them.
-  if brun.filt_advonly then
-    local adv = false
-    if barb ~= nil and barb.loud ~= nil and barb.loud(c.vid) then adv = true end
-    if not adv then return false end
-  end
+  -- WHICH VECTORS, the other axis, and it composes with the rate filters above rather than replacing
+  -- them: 'Adversarial vectors at standard rates only' was unaskable while one field carried both.
+  if not brun.in_vset(c.vid) then return false end
   return true
 end
 

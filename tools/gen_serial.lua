@@ -675,7 +675,7 @@ end
 -- stimulus rather than from the app's own refusal, which would let a wrong refusal excuse itself.
 --
 -- What that does not establish is that the instrument would have taken the same window, and it does
--- not. On a non-elided armed capture the record opens at the trigger edge less a pre-roll, and on a
+-- not. On an armed capture the record opens at the trigger edge less a pre-roll, and on a
 -- gap vector the program opens every burst at its own crossing, so the instrument never sits blind in
 -- a gap the way a free-running window at the plan's wait does. A cell this flags is therefore not
 -- comparable with a hardware lap, the capture placement being different, rather than a cell where the
@@ -1619,8 +1619,8 @@ trigger = {
   STATE_IDLE = 'idle', STATE_RUNNING = 'running', STATE_ABORTED = 'aborted',
   STATE_WAITING = 'waiting',
   -- Block opcodes, as the strings getblocklist() disassembles to, so a test asserting a program reads like the
-  -- instrument's own listing. The gap-elision program is the app's first and only user of setblock(): the two
-  -- canned templates covered every earlier shape, which is why none of these existed before it.
+  -- instrument's own listing. They exist for hand-built programs: the two canned templates are described by
+  -- their arguments, so nothing needed an opcode name until a program was written block by block.
   BLOCK_BUFFER_CLEAR = 'BUFFER_CLEAR', BLOCK_MEASURE_DIGITIZE = 'MEASURE_DIGITIZE',
   BLOCK_WAIT = 'WAIT', BLOCK_DELAY_CONSTANT = 'DELAY_CONSTANT', BLOCK_NOTIFY = 'NOTIFY',
   BLOCK_BRANCH_ON_EVENT = 'BRANCH_ON_EVENT', BLOCK_BRANCH_ALWAYS = 'BRANCH_ALWAYS',
@@ -1699,10 +1699,10 @@ TRIG.cost = {
   -- deterministic to the sample and this models the central value only.
   cmp_latency  = 7.3e-6,
   -- THE RESUME LATENCY: crossing that releases the WAIT to the first reading the next measure block
-  -- stores. 156 to 208 us, BOUNDED FROM THE SEAM DEBRIS of decoded elided records rather than from a
-  -- timestamp, because timestamps cannot show time that was never sampled (docs/TRIGGER.md, 'A
-  -- re-entered measure block appends, and the timestamps carry the splice'). It already includes
-  -- cmp_latency, so the walk below charges one
+  -- stores. 156 to 208 us, BOUNDED FROM THE SEAM DEBRIS of records decoded on a build that split a
+  -- capture between two destinations, rather than from a timestamp, because timestamps cannot show
+  -- time that was never sampled (docs/TRIGGER.md, 'A re-entered measure block appends, and the
+  -- timestamps carry the splice'). It already includes cmp_latency, so the walk below charges one
   -- and not both. Fixed in TIME, so it is a growing fraction of a bit as the baud rises, which is why
   -- a seam is free at 2400 Bd and costs bytes above it.
   --
@@ -1715,9 +1715,9 @@ TRIG.cost = {
   -- and the readings in between land in neither buffer, so the splice restores a head that is short by
   -- that much and the framer re-anchors across the gap. A negative hole is an overlap: both buffers hold
   -- the readings in between, so the splice duplicates them. Zero is the continuous handover the splice
-  -- was designed for, and the only one it can be exact on. Unmeasured on the instrument; the elide lap of
-  -- 2026-10-18 left every seam inside the scored window misaligned with the splice reporting ok, which a
-  -- hole of about half a bit does and nothing in a continuous model can.
+  -- was designed for, and the only one it can be exact on. Unmeasured on the instrument; the 2026-10-18
+  -- lap on that build left every seam inside the scored window misaligned with the splice reporting ok,
+  -- which a hole of about half a bit does and nothing in a continuous model can.
   hole         = 0,
 }
 -- Set the modelled resume latency in seconds; TRIG_RESUME() with no argument reads it.
@@ -1900,7 +1900,7 @@ function TRIG_TIMELINE(post, dt, fire)
   end
   -- A PROGRAM THAT CANNOT REACH ITS END HAS NO END, exactly as a wait that never fires has none. The walk above
   -- is linear and charges each block once, so without this a backward BRANCH_ALWAYS would fall through it and
-  -- set t_done -- reporting the gap-elision program as reaching IDLE offline when on the instrument it never
+  -- set t_done -- reporting a looping program as reaching IDLE offline when on the instrument it never
   -- can. See TRIG_TERMINATES.
   if not stalled and not TRIG_TERMINATES() then stalled = true end
   if not stalled then TRIG.t_done = t end
@@ -2116,8 +2116,8 @@ end
 -- shape would be caught on the instrument and not before.
 function trigger.model.load(template, a, b, c, d, e)
   -- 'Empty' IS A REAL TEMPLATE and the only way to empty the store (MEASURED, P4). It has to be here before
-  -- anything can be hand-built: the app's gap-elision program loads Empty and then writes its own blocks, so a
-  -- mock that raised here sent gap_model() down its pcall and reported "elision refused" in every offline suite
+  -- anything can be hand-built: a program can load Empty and then write its own blocks, so a mock that
+  -- raised here sent every such build down its pcall and reported a refusal in every offline suite
   -- -- a feature silently absent while every assertion about it still passed.
   if template == 'Empty' then
     TRIG.template, TRIG.count, TRIG.buf = 'Empty', nil, nil
@@ -2195,8 +2195,8 @@ end
 -- ---------- HAND-BUILT PROGRAMS: setblock, the disassembly, and non-termination ----------
 --
 -- WHY THESE ARE SEPARATE FROM TRIG_PROGRAM. The two canned templates are described by their arguments, so
--- TRIG_PROGRAM can derive their blocks. A hand-built program is described only by the blocks themselves, and
--- there is one in the app now: gap elision loads 'Empty' and writes eight of them.
+-- TRIG_PROGRAM can derive their blocks. A hand-built program is described only by the blocks themselves,
+-- which is a shape the app no longer builds but the mock still has to model faithfully.
 --
 -- setblock() DOES NOT CLEAR THE STORE while any load() replaces it wholesale (MEASURED, P4), so this writes one
 -- slot and leaves the rest -- including a slot a shorter program left behind, which is the trap P4 exists to
@@ -2273,12 +2273,12 @@ end
 
 -- Does this program ever reach its end? -> true when it terminates.
 --
--- WITHOUT THIS, EVERY OFFLINE TEST OF GAP ELISION IS WORSE THAN ABSENT. The elision program ends on
--- `BRANCH_ALWAYS 2`, so on the instrument it never reaches STATE_IDLE and sdec.trig_done() -- which requires
--- exactly that -- is false for the whole run. The walk above is linear and charges each block once, so a branch
+-- WITHOUT THIS, AN OFFLINE TEST OF A LOOPING PROGRAM IS WORSE THAN ABSENT. A program ending on
+-- `BRANCH_ALWAYS 2` never reaches STATE_IDLE on the instrument, so sdec.trig_done() -- which requires exactly
+-- that -- is false for the whole run. The walk above is linear and charges each block once, so a branch
 -- opcode it does not recognise costs 0 and falls through: the walk reaches the end of the block list and sets
--- t_done, reporting the program as finishing. A suite would then prove that an eliding capture ends on
--- trig_done when on hardware it can never do so, which is the defect the sample-count fill test covers.
+-- t_done, reporting the program as finishing. A suite would then prove such a capture ends on trig_done when
+-- on hardware it can never do so, which is the defect the sample-count fill test covers.
 --
 -- A backward branch with no conditional exit ahead of it is the whole test: BRANCH_ALWAYS to a lower block can
 -- never be left, while BRANCH_ON_EVENT and BRANCH_COUNTER both fall through.
@@ -2413,11 +2413,10 @@ function trigger.model.initiate()
     READS.triggered = READS.triggered + 1
     return
   end
-  -- A HAND-BUILT PROGRAM REACHES THE PRE-TRIGGER EMULATION BELOW, like every other template. The branch
-  -- that used to sit here existed only for gap elision: it walked the elision program's block groups and
-  -- split the samples between a scratch and the record. Elision is gone -- the hole it carried is forced
-  -- by the instrument, see notes/HANDOFF-session70.md -- so nothing builds a program this branch could
-  -- model, and TRIG.handbuilt now only records which template was loaded.
+  -- A HAND-BUILT PROGRAM REACHES THE PRE-TRIGGER EMULATION BELOW, like every other template. A branch
+  -- here used to walk a program's block groups and split the samples between a scratch buffer and the
+  -- record; nothing builds a program of that shape any more, so TRIG.handbuilt now only records which
+  -- template was loaded.
 
   -- Emulate the pre-trigger split: `position` percent of the capture is kept from
   -- before the trigger edge, the rest from after. SRC.trigat is the sample index

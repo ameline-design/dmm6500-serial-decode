@@ -224,12 +224,12 @@ sdec.ui_modes = {
 sdec.capmode     = sdec.capmode or 'frame'    -- operator state, hence `or`
 
 -- The FLOOR on how long a quiet line ends a stream, not the exit itself -- sdec.idle_exit() takes it
--- from Arm/Idle Wait. Without any such exit a 1200 baud run waits nine minutes for the buffer to fill
+-- from Arm Wait. Without any such exit a 1200 baud run waits nine minutes for the buffer to fill
 -- after the device stops talking, and 1 s is ~40 frame times at the slowest rate allowed. Zero or nil
 -- here turns the watchdog off entirely, which is the one thing idle_exit() passes straight through.
 sdec.idle_exit_s = sdec.idle_exit_s or 1
 
--- Arm/Idle Wait itself, never below the floor above: 10 s at the default, 2 s at the minimum, 120 s at
+-- Arm Wait itself, never below the floor above: 10 s at the default, 2 s at the minimum, 120 s at
 -- the ceiling. One field answers both halves of the same question, which is how long this device may go
 -- without saying anything -- before it starts, and between blocks once it has. A device dumping its
 -- startup banner stops for seconds at a time, and a fixed 1 s ends the recording inside the first of
@@ -238,7 +238,7 @@ sdec.idle_exit_s = sdec.idle_exit_s or 1
 function sdec.idle_exit()
   local floor = sdec.idle_exit_s
   -- The off switch, passed through unchanged: a watchdog disabled by the floor must not come back from
-  -- Arm/Idle Wait.
+  -- Arm Wait.
   if floor == nil or floor <= 0 then return floor end
   local w = sdec.arm_wait_s()
   if w ~= nil and w > floor then return w end
@@ -2623,7 +2623,7 @@ function sdec.build_options()
   -- How many fields there will be, decided before the pitch, because the pitch depends on it. The
   -- Protocol field exists only with a module loaded, OBJ_EDIT_OPTION refusing fewer than two options.
   local pv, pl = sdec.opt_proto_list()
-  -- 10: 9 after the Gap Elide field was withheld, plus Bit Order. This count drives the pitch, so a
+  -- 10 fields. This count drives the pitch, so a
   -- count that disagrees with the fields actually created lays the form out for a field that is not
   -- there -- harmless on the glass but it makes ui_opt_nf_used a fiction, and test_serial asserts the
   -- listed fields against it precisely so that an omission cannot pass unnoticed. It caught that once.
@@ -2766,34 +2766,18 @@ function sdec.build_options()
   -- check it on the glass after any change to the form's geometry.
   local fx10, fy10 = nextpos()
   sdec.opt_armw = create(sdec.optscr, display.OBJ_EDIT_NUMBER, fx10, fy10,
-                         'Arm/Idle Wait', 'max wait, frozen',
+                         'Arm Wait', 'max wait, frozen',
                          display.NFORMAT_PREFIX, sdec.arm_wait_s(),
                          sdec.armwait_min, sdec.armwait_max, 's', 4)
-  -- GAP ELIDE IS NOT ON THIS FORM, and the reason is a measurement rather than caution. The same
-  -- 330-cell spec was run on 2026-10-19 with the feature off and on, same build, one variable:
-  --
-  --   elision OFF   15 BAD of 322 judged    1 FAIL of 214 cells at <= 115200 Bd   0.47 %
-  --   elision ON   125 BAD of 320          101 FAIL of 212                       47.6 %
-  --
-  -- The decoder is near-perfect on exactly the waveforms that fail with elision, and the failures are
-  -- `not the payload, silently wrong` -- confident bytes that are not the payload, which is the worst
-  -- verdict this judge has and the one an operator cannot defend against. So the option is withheld
-  -- until it works: an absent feature is strictly safer than one that lies.
-  --
-  -- THE PROGRAM IS GONE TOO, as of 2026-10-20, and it is not coming back in this shape. The hole is
-  -- FORCED by the instrument: detecting the next burst needs the analog comparator, the comparator
-  -- needs a live acquisition, so not storing the gap means storing it somewhere else -- a destination
-  -- switch, which costs an 80 us floor plus a throughput term past 20 kS/s. Measured three ways in
-  -- notes/HANDOFF-session70.md, including the A/B that proves the liveness requirement: the same
-  -- program with COUNT_STOP instead of a switch parks at STATE_WAITING forever.
-  -- 18 characters of help text, wider than Arm/Idle Wait above it, so check it on the glass.
+  -- 18 characters of help text, the widest on this form, so check it on the glass after any change
+  -- to the form's geometry.
   -- Every pause the line takes is recorded in full, and those samples come out of the same count the
   -- payload does -- so this margin applies to every recording. Zero is off and it is not the default -- 10 % is --
   -- which makes it the one field here that ships with a non-zero value, because the cost is readings on
   -- a record sized for them and the cost of not having it is bytes.
   --
-  -- Percent, not the fraction the knob holds: '0.100' beside 'Gap Elide 0.025 s' reads as a second
-  -- time rather than a proportion. options_apply divides by 100 and options_seed multiplies.
+  -- Percent, not the fraction the knob holds: a bare '0.100' beside a field in seconds reads as a
+  -- second time rather than a proportion. options_apply divides by 100 and options_seed multiplies.
   local fx12, fy12 = nextpos()
   sdec.opt_over = create(sdec.optscr, display.OBJ_EDIT_NUMBER, fx12, fy12,
                          'Over-read', '0 off, idle margin',

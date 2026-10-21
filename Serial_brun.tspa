@@ -3,7 +3,7 @@ loadscript Serial_brun
 -- $Product: DMM6500, DAQ6510, DMM7510, SMU2461
 -- $Tag: Serial, UART, Decode, Digitize
 -- $Description: Decodes an asynchronous serial line with the instrument's own digitizer: recovers baud rate, frame format and bytes, shows them as text or hex, and saves bytes to USB key. Everything auto-detects; everything can be locked.
--- $Version: 1.72
+-- $Version: 1.73
 -- $Requires: 1.7.0
 -- $Author: Ian Ameline
 -- $License: MIT
@@ -2161,7 +2161,7 @@ function sdec.acq_triggered(n, slope)
       if sdec.arm_silent() and useanalog then
         why = why .. ' -- nothing crossed ' ..
               string.format('%.2f', sdec.thr or sdec.arm_level_v()) ..
-              ' V; raise Arm/Idle Wait or lower Arm At'
+              ' V; raise Arm Wait or lower Arm At'
       else
         why = why .. ' -- try Free run'
       end
@@ -4629,7 +4629,7 @@ sdec.capmode     = sdec.capmode or 'frame'    -- operator state, hence `or`
 
 sdec.idle_exit_s = sdec.idle_exit_s or 1
 
--- Arm/Idle Wait itself, never below the floor above: 10 s at the default, 2 s at the minimum, 120 s at
+-- Arm Wait itself, never below the floor above: 10 s at the default, 2 s at the minimum, 120 s at
 --   [...]
 -- startup banner stops for seconds at a time, and a fixed 1 s ends the recording inside the first of
 -- those pauses with the interesting part still to come. One setting the operator can see on the glass
@@ -6601,7 +6601,7 @@ function sdec.build_options()
                          sdec.armlevel_min, sdec.armlevel_max, 'V', 4)
   local fx10, fy10 = nextpos()
   sdec.opt_armw = create(sdec.optscr, display.OBJ_EDIT_NUMBER, fx10, fy10,
-                         'Arm/Idle Wait', 'max wait, frozen',
+                         'Arm Wait', 'max wait, frozen',
                          display.NFORMAT_PREFIX, sdec.arm_wait_s(),
                          sdec.armwait_min, sdec.armwait_max, 's', 4)
   local fx12, fy12 = nextpos()
@@ -8362,7 +8362,7 @@ function sdec.strm_exit_why(endwhy, ok, err)
     return 'recording failed: ' .. tostring(sdec.strm_readfail or 'the capture buffer could not be read')
   end
   if endwhy == 'noarm' then
-    return string.format('nothing crossed %.2f V in %g s -- raise Arm/Idle Wait or lower Arm At',
+    return string.format('nothing crossed %.2f V in %g s -- raise Arm Wait or lower Arm At',
                          sdec.arm_expired_at or sdec.thr or sdec.arm_level_v(), sdec.arm_wait_s())
   end
   if endwhy == 'quiet' then
@@ -9864,7 +9864,40 @@ brun.filt_baudlo    = brun.filt_baudlo          -- Bd, inclusive floor
 brun.filt_baudhi    = brun.filt_baudhi          -- Bd, inclusive ceiling
 brun.filt_stdonly   = brun.filt_stdonly        -- true: standard rates only
 brun.filt_interstit = brun.filt_interstit    -- Bd: no non-standard rate below this
-brun.filt_advonly   = brun.filt_advonly        -- true: only vectors known to produce errors
+brun.filt_vset      = brun.filt_vset   -- nil: every vector; else 'normal'/'startgap'/'gap'/'adv'
+
+-- DOES THIS VECTOR CARRY A GAP, and does the gap come before the first byte? Keyed on the generator's
+--   [...]
+-- AN UNKNOWN VECTOR IS NOT A GAP, so 'Normal' RUNS it rather than skipping it. barb.of answers nil
+-- only when arb_names.tsp is stale, and a stale table should fail loudly at the ARWV that cannot find
+-- the waveform -- not quietly shrink the lap, which is the one outcome nobody would notice.
+function brun.vid_gap(vid)
+  local nm = nil
+  if barb ~= nil and barb.of ~= nil then nm = barb.of(vid) end
+  if nm == nil then return false end
+  return string.find(nm, 'Gap', 1, true) ~= nil
+end
+
+function brun.vid_startgap(vid)
+  local nm = nil
+  if barb ~= nil and barb.of ~= nil then nm = barb.of(vid) end
+  if nm == nil then return false end
+  return string.find(nm, 'GapLead', 1, true) ~= nil
+end
+
+-- Is this vector in the set the form asked for? -> true to run it. Split out of brun.wanted because
+-- five sets in one `if` chain is the shape that grows a sixth nobody tests.
+function brun.in_vset(vid)
+  local s = brun.filt_vset
+  if s == nil then return true end
+  local loud = false
+  if barb ~= nil and barb.loud ~= nil and barb.loud(vid) then loud = true end
+  if s == 'normal' then return not brun.vid_gap(vid) and not loud end
+  if s == 'startgap' then return brun.vid_startgap(vid) end
+  if s == 'gap' then return brun.vid_gap(vid) end
+  if s == 'adv' then return loud end
+  return true
+end
 
 -- Does this row survive the filters? -> true to run it.
 function brun.wanted(c)
@@ -9876,11 +9909,7 @@ function brun.wanted(c)
   if brun.filt_interstit ~= nil and not std and (c.baud or 0) < brun.filt_interstit then
     return false
   end
-  if brun.filt_advonly then
-    local adv = false
-    if barb ~= nil and barb.loud ~= nil and barb.loud(c.vid) then adv = true end
-    if not adv then return false end
-  end
+  if not brun.in_vset(c.vid) then return false end
   return true
 end
 
@@ -11363,9 +11392,15 @@ brun.pn_laps_max = brun.pn_laps_max or 210
 brun.pn_sdg      = brun.pn_sdg or {'10.0.1.79', '10.0.1.78', '192.168.0.79'}
 
 brun.pn_laptypes = brun.pn_laptypes or
-  {{t = 'Full',         std = nil,  adv = nil},
-   {t = 'Normal',       std = true, adv = nil},
-   {t = 'Adversarial',  std = nil,  adv = true}}
+  {{t = 'Full',          std = nil},
+   {t = 'Standard only', std = true}}
+
+brun.pn_vsets = brun.pn_vsets or
+  {{t = 'Normal',      v = 'normal'},
+   {t = 'All',         v = nil},
+   {t = 'Start gap',   v = 'startgap'},
+   {t = 'All gaps',    v = 'gap'},
+   {t = 'Adversarial', v = 'adv'}}
 
 brun.pn_baudlo    = brun.pn_baudlo or 300
 brun.pn_baudhi    = brun.pn_baudhi or 250000
@@ -11382,6 +11417,7 @@ function brun.pn_geom()
   g.y0    = sdec.ui_opt_y0 or 60
   g.dy    = sdec.ui_opt_dy or 54
   g.btny  = sdec.ui_opt_btn_y or 380
+  g.pnx   = 246
   return g
 end
 
@@ -11400,6 +11436,10 @@ function brun.destroy_panel()
   brun.pn_obj = nil
   sdec.del_obj(brun.pnscr)
   brun.pnscr = nil
+  brun.pn_laps, brun.pn_sdgf, brun.pn_lapt, brun.pn_vset = nil, nil, nil, nil
+  brun.pn_lo, brun.pn_hi, brun.pn_inter = nil, nil, nil
+  brun.pn_over, brun.pn_armv, brun.pn_armw = nil, nil, nil
+  brun.pn_ptxt, brun.pn_ptxt2 = nil, nil
   return true
 end
 
@@ -11439,7 +11479,7 @@ function brun.build_panel()
     error('display object pool exhausted building the soak screen -- power cycle the instrument.', 0)
   end
 
-  local nf    = 8
+  local nf    = 10
   local nrows = math.ceil(nf / 2)
   local maxdy = math.floor((g.btny - 52 - g.y0) / nrows)
   if g.dy > maxdy then g.dy = maxdy end
@@ -11467,8 +11507,35 @@ function brun.build_panel()
   fx, fy = nextpos()
   local lt = {}
   for i = 1, table.getn(brun.pn_laptypes) do lt[i] = brun.pn_laptypes[i].t end
-  brun.pn_lapt = keep(create(brun.pnscr, display.OBJ_EDIT_OPTION, fx, fy,
-                             'Lap Type', 'narrows the plan', lt[1], lt[2], lt[3], lt[4]))
+  local nlt = table.getn(lt)
+  if nlt >= 4 then
+    brun.pn_lapt = keep(create(brun.pnscr, display.OBJ_EDIT_OPTION, fx, fy,
+                               'Lap Type', 'rates that play', lt[1], lt[2], lt[3], lt[4]))
+  elseif nlt == 3 then
+    brun.pn_lapt = keep(create(brun.pnscr, display.OBJ_EDIT_OPTION, fx, fy,
+                               'Lap Type', 'rates that play', lt[1], lt[2], lt[3]))
+  elseif nlt == 2 then
+    brun.pn_lapt = keep(create(brun.pnscr, display.OBJ_EDIT_OPTION, fx, fy,
+                               'Lap Type', 'rates that play', lt[1], lt[2]))
+  end
+
+  fx, fy = nextpos()
+  local vs, nvs = {}, table.getn(brun.pn_vsets)
+  for i = 1, nvs do vs[i] = brun.pn_vsets[i].t end
+  if nvs >= 5 then
+    brun.pn_vset = keep(create(brun.pnscr, display.OBJ_EDIT_OPTION, fx, fy,
+                               'Vector Set', 'which ones play',
+                               vs[1], vs[2], vs[3], vs[4], vs[5]))
+  elseif nvs == 4 then
+    brun.pn_vset = keep(create(brun.pnscr, display.OBJ_EDIT_OPTION, fx, fy,
+                               'Vector Set', 'which ones play', vs[1], vs[2], vs[3], vs[4]))
+  elseif nvs == 3 then
+    brun.pn_vset = keep(create(brun.pnscr, display.OBJ_EDIT_OPTION, fx, fy,
+                               'Vector Set', 'which ones play', vs[1], vs[2], vs[3]))
+  elseif nvs == 2 then
+    brun.pn_vset = keep(create(brun.pnscr, display.OBJ_EDIT_OPTION, fx, fy,
+                               'Vector Set', 'which ones play', vs[1], vs[2]))
+  end
   fx, fy = nextpos()
   brun.pn_lo = keep(create(brun.pnscr, display.OBJ_EDIT_NUMBER, fx, fy,
                            'Speed Low', 'slowest rate run',
@@ -11482,19 +11549,37 @@ function brun.build_panel()
                               'Interstitial', '0 any, else from',
                               display.NFORMAT_PREFIX, brun.pn_interstit, 0, 250000, 'Bd', 6))
 
-  local rows, rsub = brun.pn_plan()
-  local ptxt
-  if rows == nil then
-    ptxt = 'PLAN: none on the key -- push one with run_bench.py --push-plan'
-  else
-    ptxt = string.format('plan: %s row(s)%s', brun.int(rows),
-                         (rsub ~= nil and rsub ~= '') and (', random-per-lap ' .. rsub) or '')
-  end
   fx, fy = nextpos()
-  brun.pn_ptxt = keep(create(brun.pnscr, display.OBJ_TEXT, g.x, g.btny - 44, ptxt))
+  brun.pn_over = keep(create(brun.pnscr, display.OBJ_EDIT_NUMBER, fx, fy,
+                             'Over-read', '0 off, idle margin',
+                             display.NFORMAT_PREFIX, (sdec.strm_overread or 0) * 100,
+                             0, (sdec.overread_max or 0.5) * 100, '%', 4))
+  fx, fy = nextpos()
+  brun.pn_armv = keep(create(brun.pnscr, display.OBJ_EDIT_NUMBER, fx, fy,
+                             'Arm At', 'wake-up level',
+                             display.NFORMAT_PREFIX, sdec.arm_level_v(),
+                             sdec.armlevel_min, sdec.armlevel_max, 'V', 4))
+  fx, fy = nextpos()
+  brun.pn_armw = keep(create(brun.pnscr, display.OBJ_EDIT_NUMBER, fx, fy,
+                             'Arm Wait', 'max wait, frozen',
+                             display.NFORMAT_PREFIX, sdec.arm_wait_s(),
+                             sdec.armwait_min, sdec.armwait_max, 's', 4))
 
-  local bdef = {{x = 22,  w = 200, t = 'Run Soak', e = 'brun.panel_run'},
-                {x = 234, w = 200, t = 'Cancel',   e = 'brun.panel_cancel'}}
+  local rows, rsub = brun.pn_plan()
+  local p1, p2
+  if rows == nil then
+    p1 = 'PLAN: none on the key'
+    p2 = 'push one: run_bench.py --push-plan'
+  else
+    p1 = string.format('plan: %s row(s)', brun.int(rows))
+    p2 = (rsub ~= nil and rsub ~= '') and ('random-per-lap ' .. rsub) or ''
+  end
+  brun.pn_ptxt  = keep(create(brun.pnscr, display.OBJ_TEXT, g.pnx, g.btny + 16, p1,
+                              sdec.ui_c_pgword, display.FONT_SMALL, display.JUST_LEFT))
+  brun.pn_ptxt2 = keep(create(brun.pnscr, display.OBJ_TEXT, g.pnx, g.btny + 44, p2,
+                              sdec.ui_c_pgword, display.FONT_SMALL, display.JUST_LEFT))
+
+  local bdef = {{x = 22,  w = 200, t = 'Run Soak', e = 'brun.panel_run'}}
   local nb = 0
   for i = 1, table.getn(bdef) do
     local b = create(brun.pnscr, display.OBJ_BUTTON, bdef[i].x, g.btny, bdef[i].t, bdef[i].w)
@@ -11527,16 +11612,21 @@ end
 -- Read the form, apply it, and start. Nothing here is applied until every field has been read: a
 -- raise half way would otherwise commit a partial configuration, which is options_apply's rule.
 function brun.panel_run()
-  local laps, ip, lt, lo, hi, inter
+  local laps, ip, lt, lo, hi, inter, vst, over, armv, armw
   local readok, readerr = pcall(function()
     laps     = display.getvalue(brun.pn_laps)
     local si = display.getvalue(brun.pn_sdgf)
     if type(si) == 'number' then ip = brun.pn_sdgtxt(math.floor(si + 0.5)) end
     local li = display.getvalue(brun.pn_lapt)
     if type(li) == 'number' then lt = brun.pn_laptypes[math.floor(li + 0.5)] end
+    local vi = display.getvalue(brun.pn_vset)
+    if type(vi) == 'number' then vst = brun.pn_vsets[math.floor(vi + 0.5)] end
     lo    = display.getvalue(brun.pn_lo)
     hi    = display.getvalue(brun.pn_hi)
     inter = display.getvalue(brun.pn_inter)
+    over  = display.getvalue(brun.pn_over)
+    armv  = display.getvalue(brun.pn_armv)
+    armw  = display.getvalue(brun.pn_armw)
   end)
   if not readok then
     brun.pn_say('could not read the form: ' .. tostring(readerr))
@@ -11558,7 +11648,9 @@ function brun.panel_run()
   laps = math.floor(laps + 0.5)
 
   if lt == nil then lt = brun.pn_laptypes[1] end
-  brun.filt_stdonly, brun.filt_advonly = lt.std, lt.adv
+  brun.filt_stdonly = lt.std
+  if vst == nil then vst = brun.pn_vsets[1] end
+  brun.filt_vset = vst.v
   brun.nfilt = 0
   if type(lo) ~= 'number' then lo = nil end
   if type(hi) ~= 'number' then hi = nil end
@@ -11569,6 +11661,15 @@ function brun.panel_run()
   if ip ~= nil and bsdg ~= nil then
     if bsdg.close ~= nil then pcall(bsdg.close) end
     bsdg.ip = ip
+  end
+
+  if type(armv) == 'number' then sdec.armlevel = armv end
+  if type(armw) == 'number' then sdec.armwait = armw end
+  if type(over) == 'number' then
+    local f = over / 100
+    if f < 0 then f = 0 end
+    if f > (sdec.overread_max or 0.5) then f = sdec.overread_max or 0.5 end
+    sdec.strm_overread = f
   end
 
   brun.destroy_panel()
@@ -11589,11 +11690,27 @@ function brun.pn_sdgtxt(i)
 end
 
 -- Say something on the form itself. The plan line is the one text object this screen has, so a
--- message that needs a second object can fail to appear for want of one. -> false only where the
--- object was never built: display.settext posts and returns, so there is no other failure to report.
+--   [...]
+-- message worth printing here is longer than that: 'REFUSED: a smoke has run on this power cycle --
+-- power cycle the DMM before a soak' lost the half that says what to do. Two lines of 46 is 92, and
+-- the break walks back to a space so a word is not cut in two.
 function brun.pn_say(s)
   if brun.pn_ptxt == nil then return false end
-  display.settext(brun.pn_ptxt, string.sub(tostring(s), 1, 58))
+  local t = tostring(s)
+  local one, two = t, ''
+  if string.len(t) > 46 then
+    local cut = 46
+    local i
+    for i = 46, 20, -1 do
+      if string.sub(t, i, i) == ' ' then cut = i - 1; break end
+    end
+    one = string.sub(t, 1, cut)
+    two = string.sub(t, cut + 1)
+    while string.sub(two, 1, 1) == ' ' do two = string.sub(two, 2) end
+    two = string.sub(two, 1, 46)
+  end
+  display.settext(brun.pn_ptxt, one)
+  if brun.pn_ptxt2 ~= nil then display.settext(brun.pn_ptxt2, two) end
   return true
 end
 

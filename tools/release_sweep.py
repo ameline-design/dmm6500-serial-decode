@@ -103,7 +103,7 @@ def stages(outdir, shots):
         # sdec produced 249 false positives.
         # AND THE BENCH MODULES, which this list could not see: it was built from tsp_files() alone, so
         # bench/*.tsp went through every release unlinted -- including the 900 lines of bench_run.tsp the
-        # elision removal rewrote. They are deliberately NOT added to `parse` below: bench_run.tsp has
+        # that removal rewrote. They are deliberately NOT added to `parse` below: bench_run.tsp has
         # always refused stock 5.0.2 on pre-existing hex literals that the instrument's own Lua accepts.
         Stage('lint', ['python3', 'tools/lint_tsp.py'] + tsp_files() + bench_files()
               + ['Serial_Decode.tspa'],

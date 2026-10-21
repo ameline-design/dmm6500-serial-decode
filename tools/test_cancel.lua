@@ -218,7 +218,7 @@ do
 end
 
 -- ============================================================================
-print('\nC2 the quiet-line watchdog waits Arm/Idle Wait, inside the real loop')
+print('\nC2 the quiet-line watchdog waits Arm Wait, inside the real loop')
 -- ============================================================================
 -- THE ACCESSOR IS TESTED IN test_serial.lua; THIS TESTS THE CALL SITE. Pinning sdec.idle_exit() alone
 -- leaves the loop free to keep reading sdec.idle_exit_s, and a mutant that does exactly that passed
@@ -265,7 +265,7 @@ do
   -- that printed sdec.idle_exit_s here survived every other assertion in both suites.
   sdec.armwait = 10.0
   local n10 = sdec.strm_exit_why('quiet', true, nil)
-  check('the quiet note names ten seconds at the Arm/Idle Wait default',
+  check('the quiet note names ten seconds at the Arm Wait default',
         has(n10, '10 s with no line activity'), n10)
   sdec.armwait = 2.0
   local n2 = sdec.strm_exit_why('quiet', true, nil)
@@ -1696,7 +1696,7 @@ do
   check('the recording mode can size a capture to fill', need ~= nil and need > 1000,
         string.format('%s readings at %s S/s', tostring(need), tostring(sdec.fs)))
   -- AND THE OVER-READ COMES OUT OF THE FIXTURE, not out of the ending. stream_acquire runs to
-  -- `need * (1 + strm_overread)` on every recording now -- the margin is orthogonal to elision -- so a
+  -- `need * (1 + strm_overread)` on every recording now, the margin applying to all of them -- so a
   -- source sized to the bare count can never reach the target and the run ends 'quiet', which is what
   -- it did when the margin became unconditional. Derived from the knob, so turning it off or changing
   -- it resizes the fixture rather than relabelling the run, which is what the note above asks for.

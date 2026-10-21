@@ -1,6 +1,6 @@
 # Serial Decode — measured reference
 
-**Ian Ameline** · version 1.72 · MIT licence
+**Ian Ameline** · version 1.73 · MIT licence
 
 The detail behind [MANUAL.md](MANUAL.md). Everything here was measured on a DMM6500 (firmware
 1.7.17a) against an SDG2122X generator, verified where noted with an SDS1204X-E scope. The manual is
@@ -906,7 +906,7 @@ well as on the form, so a programmatic set and a typed one cannot disagree about
 | | |
 |---|---|
 | `Options ▸ Arm At` | **0.33 – 6 V**, default **1 V** (`sdec.armlevel`) — how far from the idle level the comparator arms |
-| `Options ▸ Arm/Idle Wait` | **2 – 120 s**, default **10 s** (`sdec.armwait`) — the armed wait *and* the quiet-line exit, and the panel is frozen for every second of the armed one |
+| `Options ▸ Arm Wait` | **2 – 120 s**, default **10 s** (`sdec.armwait`) — the armed wait *and* the quiet-line exit, and the panel is frozen for every second of the armed one |
 
 **The 2 s floor is why no pre-existing timing moves.** `acq_triggered()` takes this value only where it
 *exceeds* the mode's own wait, which is `sdec.trigwait` = 3 s for an `edge` capture, so a form wound all

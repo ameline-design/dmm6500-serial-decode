@@ -52,7 +52,8 @@
 --
 -- NO FALSE POSITIVES AT ALL, which is the half worth quoting: the one `bad` here (j10 at 124606 Bd) is a
 -- real hardware failure. And 1 of 141, which is the half that matters: 104 of those 140 are the eight
--- nodrop gap vectors with GAP ELISION having fired, and this file does not elide. See the bullet below.
+-- nodrop gap vectors as captured on a build that split one capture across two destinations, which this
+-- file does not model. See the bullet below.
 --
 -- AND THE 110 IS NOT THE NUMBER TO COMPARE WITH. That lap's own `110 FAILED` is its RUN TOTAL -- rows
 -- with ran=n, i.e. captures the app refused -- and 80 of the 110 are `loud` vectors declining, which
@@ -60,23 +61,24 @@
 -- cells. Quote the judge; three different failure numbers come off one soak.
 --
 -- WHERE THE TWIN STILL IS NOT THE BENCH, stated because every one of these has hidden a real failure:
---   * GAP ELISION IS NO LONGER A DIVERGENCE, and this entry used to lead the list as the biggest one.
---     The feature is removed -- the handover hole is forced by the instrument, see
+--   * THE SPLIT CAPTURE IS NO LONGER A DIVERGENCE, and this entry used to lead the list as the
+--     biggest one. That path is removed -- the handover hole is forced by the instrument, see
 --     notes/HANDOFF-session70.md -- so the bench now takes one contiguous capture as this file does,
---     and the two are aligned on that axis. Pre-fix evidence from the 2026-10-18 gap lap, kept because
---     it is what the band figures below rest on: of 288 nodrop cells, elision fired on 145 and 104 of
---     those were bad, while of the 143 where it did not fire NOT ONE was bad -- 61 of 64 bad between
---     5000 and 20000 Bd against 2 of 24 below 2500.
+--     and the two are aligned on that axis. PRE-FIX EVIDENCE from the 2026-10-18 gap lap, kept
+--     because it is what the band figures below rest on, and it describes a build that no longer
+--     exists: of 288 nodrop cells the split fired on 145 and 104 of those were bad, while of the 143
+--     where it did not fire NOT ONE was bad -- 61 of 64 bad between 5000 and 20000 Bd against 2 of 24
+--     below 2500.
 --   * NO TWO-PASS PROBE. fs comes from the COMMANDED baud, which the app never knows. The app probes at
 --     1 MS/s and picks fs from what the probe MEASURED, so where the probe misfits, the real capture
 --     runs at a rate this file will not choose -- r00 at 379 Bd was captured at 1250 S/s for 3.3
 --     samples/bit and decoded nothing, and here it gets 5000 S/s and decodes perfectly. On soak lap 1
 --     the two choices disagreed on 26 of 1385 cells, 1.9 %; on the gap lap it is 203 of 1512,
 --     13.4 %, and the difference is not drift in the probe -- 70 of the 203 are cells the app
---     refused BEFORE digitising, so it recorded no fs at all. The rest were the elide path choosing
---     its own rate under a cap, which is pre-fix evidence from a named lap: that path and its cap are
---     both gone. So quote 1.9 % for the probe alone and 13.4 % for the whole fs disagreement, the
---     latter measured on a build that still elided.
+--     refused BEFORE digitising, so it recorded no fs at all. The rest were that path choosing its
+--     own rate under a cap, which is pre-fix evidence from a named lap: the path and its cap are both
+--     gone. So quote 1.9 % for the probe alone and 13.4 % for the whole fs disagreement, the latter
+--     measured on a build that still had it.
 --     The 13.4 % will have moved; re-measure it rather than quoting it after a cap change.
 --   * NO NOISE. The instrument contributes ~0.2-0.5 mV rms and nothing here does. Its bandwidth and
 --     aperture ARE modelled -- see frontend() -- but the noise is not, and it is measured to matter:
@@ -328,7 +330,7 @@ end
 -- model, so it moves every cell in the draw and no RATCHET baseline describes a run with it on.
 --
 -- WHY THE DEFAULT PLACEMENT IS NOT AN APPROXIMATION OF THE INSTRUMENT'S. capture() starts the window
--- at the plan's wait and runs free. A non-elided armed capture opens at the trigger edge less a
+-- at the plan's wait and runs free. An armed capture opens at the trigger edge less a
 -- pre-roll, and on a gap vector the program opens every burst at its own crossing -- which is why
 -- stream_decode leaves leadmax nil on that path. So wherever a gap is longer than the window the two
 -- harnesses run different experiments, and that is what the traffic-free gate below is working around
@@ -946,7 +948,7 @@ for vi = 1, table.getn(P.vectors) do
         -- a point on which the app was right.
         --
         -- The instrument does not take this window. capture() opens at the plan's wait and runs
-        -- free; a non-elided armed capture opens at the trigger edge less a pre-roll, and on a gap
+        -- free; an armed capture opens at the trigger edge less a pre-roll, and on a gap
         -- vector the program opens every burst at its own crossing. So where a gap is longer than the
         -- window the two harnesses are running different experiments and the verdict here describes
         -- the placement, not the decoder.

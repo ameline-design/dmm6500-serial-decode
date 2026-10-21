@@ -162,7 +162,7 @@ sdec.flatfloor    = 1.0    -- below this an idle level counts as sitting at grou
 -- ============================================================================
 -- Arming from silence: waiting for a device that has not started talking yet. The probe finds no transitions, so
 -- the silent branch in sdec.acquire() arms the comparator arm_level_v() volts from the idle level, on the side
--- the start bit travels. Options carries these two settings as 'Arm At' and 'Arm/Idle Wait'; armlevel equals
+-- the start bit travels. Options carries these two settings as 'Arm At' and 'Arm Wait'; armlevel equals
 -- sdec.flatfloor by coincidence. docs/MEASUREMENTS.md, 'armlevel 1.0, floor 0.33, ceiling 6.0'.
 sdec.armlevel     = sdec.armlevel or 1.0
 sdec.armlevel_min = 0.33
@@ -312,8 +312,8 @@ end
 -- sdec.clear_result(). docs/MEASUREMENTS.md, 'A measurement must not cross a capture boundary'.
 function sdec.clear_measured()
   sdec.acq_fs, sdec.acq_fs_est = nil, nil
-  -- Which formula reads the next record's rate. Left set, an elided capture's successor measures its rate from
-  -- sampled windows when the whole span would have been right, and the reverse costs the elision ratio.
+  -- Which formula reads the next record's rate. Left set, the next capture measures its rate from the
+  -- PREVIOUS one's sampling rather than from its own span.
   -- arm_slope() and arm_comparator() prefer these where they exist, so a pair left over from a capture of a silent
   -- line would arm the next capture of a busy one at the wrong level, on the wrong edge.
   sdec.arm_thr, sdec.arm_idle = nil, nil
@@ -1250,7 +1250,7 @@ end
 --                         It was 262 144 to absorb an eliding digitize's 0.5 s poll overshoot, 50 000
 --                         readings at 100 kS/s, which is what filed 4914 on 29 cells at 21 100. That
 --                         overshoot belongs to a recording and reached the frame buffer only because
---                         brun.point elided with capmode left at 'frame', which it no longer does.
+--                         brun.point ran with capmode left at 'frame', which it no longer does.
 --                         AND IT IS ONE RUNG OF A LADDER, not the only frame buffer: acq_framerungs adds
 --                         12 288 / 16 384 / 20 480 / 24 576 / 40 960 / 49 152 beside it, and acq_framefit
 --                         hands each capture the smallest that holds it. ON ONE DENOMINATOR, which an
@@ -1694,7 +1694,7 @@ function sdec.quiet_events()
   -- and it is a NORMAL event on this app's allocation path, not a fault: acq_bufinit asks the pool for
   -- the whole plan and takes each read-back as the verdict, so a refusal is the design working.
   -- The 27-of-106-cells measurement that used to sit here belonged to acq_make_buffer's per-capture
-  -- thrash on the 2026-10-19 elided lap, which is gone with the feature -- acq_bufinit runs once per
+  -- thrash on a 2026-10-19 lap whose capture mode no longer exists -- acq_bufinit runs once per
   -- launch and cannot produce a per-cell figure.
   --
   -- THE OPERATOR'S REQUIREMENT IS THAT IT NEVER REACHES THE GLASS. eventlog.suppress(N) takes the
@@ -1989,7 +1989,7 @@ function sdec.acq_make_buffer(n)
   -- glass rather than hiding it. The retry below only waits once a make has ALREADY been refused, so a
   -- freed buffer cost one refusal by construction -- and every refusal posts 4919 'Available capacity
   -- for all reading buffers exceeded' at ERROR severity, which showevents cannot filter. Measured on a
-  -- 106-cell elided lap on 2026-10-19: 27 cells filed it, 15 with one remake and 12 with two, and not one
+  -- 106-cell lap on 2026-10-19: 27 cells filed it, 15 with one remake and 12 with two, and not one
   -- of them was ever short. The captures were all fine; the operator got a modal box 27 times.
   --
   -- collectgarbage() first because the operator asked for it and the reasoning holds: buffer.delete has
@@ -2302,10 +2302,10 @@ function sdec.arm_source()
     sdec.armkeyed = nil
   end
 
-  -- The fast path, on the eliding program and only when nothing else has blended. getblocklist() reports a model
-  -- off the fast path whenever two blocks wait on the SAME event, and the elision program is exactly that case
-  -- unblended: block 2 waits on this `ev` and block 5 branches on the comparator, which are one object when the
-  -- arm is the comparator alone. Blending with the comparator as the single stimulus makes them two objects for
+  -- The fast path, and only when nothing else has blended. getblocklist() reports a model off the fast
+  -- path whenever two blocks wait on the SAME event, which is what block 2 waiting on this `ev` and
+  -- block 5 branching on the comparator are, unblended: one object when the arm is the comparator
+  -- alone. Blending with the comparator as the single stimulus makes them two objects for
   -- the same firing condition -- the shape the rear BNC and the TRIGGER key already use above.
   --
   -- Off by default and a knob, because it is unverified. Being off the fast path was measured to cost nothing on
@@ -2401,7 +2401,7 @@ function sdec.acq_triggered(n, slope)
 
   -- An arm from silence gets the operator's own wait and can only lengthen it, hence a comparison.
   -- docs/MEASUREMENTS.md, 'armwait 10, floor 2, ceiling 120'.
-  -- docs/MEASUREMENTS.md, 'Arm/Idle Wait applies to the comparator and to the quiet-line exit'.
+  -- docs/MEASUREMENTS.md, 'Arm Wait applies to the comparator and to the quiet-line exit'.
   if sdec.arm_silent() and sdec.trigmode == 'edge' and
      not (sdec.trigext and sdec.trigext_only) then
     local armw = sdec.arm_wait_s()
@@ -2499,7 +2499,7 @@ function sdec.acq_triggered(n, slope)
         -- ground the arm sits arm_level_v() volts below idle.
         why = why .. ' -- nothing crossed ' ..
               string.format('%.2f', sdec.thr or sdec.arm_level_v()) ..
-              ' V; raise Arm/Idle Wait or lower Arm At'
+              ' V; raise Arm Wait or lower Arm At'
       else
         why = why .. ' -- try Free run'
       end
@@ -2550,8 +2550,8 @@ function sdec.acquire()
   sdec.clear_measured()
   sdec.hw_config()
   -- THE OVER-READ APPLIES HERE TOO, which it did not until now: the margin lived only in stream_begin and
-  -- stream_acquire, so a frame-mode capture -- the ~240-byte one the panel opens on, and every non-elided
-  -- bench cell -- had none at all. A gap shorter than the detector window is recorded in full and its
+  -- stream_acquire, so a frame-mode capture -- the ~240-byte one the panel opens on, and every bench
+  -- cell -- had none at all. A gap shorter than the detector window is recorded in full and its
   -- samples come out of the same count the payload does, so without the margin a small gap costs bytes off
   -- the end of the frame. It is on 100 % of the time by the operator's standing requirement.
   --

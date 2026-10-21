@@ -279,7 +279,7 @@ WHY = {
     # window lay entirely inside one of the vector's idle runs held no traffic AS SWEEP_PLAN PLACES THE
     # WINDOW, and that is all it says: the point is not comparable with a hardware lap, not a point on
     # which the app was right. The instrument does not take that window -- it arms, and on a gap vector
-    # it elides, so it opens on a crossing rather than at the plan's wait. Measured against the final
+    # it opens on a crossing rather than at the plan's wait. Measured against the final
     # lap of out/bench/SOAK-20261018-gaplap-merged-splice.csv, over the 34 points this counts at one
     # offset: the instrument passed 5 and failed 12. So the counter conceals twelve real defects and is
     # not a health figure. The gate moves points out of `bad`, which drops `judged` -- and `judged`

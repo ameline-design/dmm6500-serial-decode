@@ -205,7 +205,7 @@ print('\n-- a forced rate the wire DOES carry, on a capture too slow to hold it 
 -- samples-per-bit floor was never consulted on the forced path at all: it is reached from ua_cands,
 -- sig_bittime's candidates and arm_try_ok, none of which a forced decode runs.
 --
--- WHY IT MATTERS MORE THAN IT LOOKS. Every elided capture is forced, gap_elide() refusing without a
+-- WHY IT MATTERS MORE THAN IT LOOKS. A capture split across destinations was always forced, refusing without a
 -- rate, so this is the path the whole bench takes. On 2026-10-17 a 57600 Bd cell captured at 100 kS/s
 -- framed 704 frames at 1.736 samples a bit with snapped = true and read_baud equal to the commanded
 -- rate -- below Nyquist and reported as a confident lock. 222 of those frames were flagged and the

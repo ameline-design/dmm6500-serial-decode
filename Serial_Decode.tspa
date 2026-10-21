@@ -3,7 +3,7 @@ loadscript Serial_Decode
 -- $Product: DMM6500, DAQ6510, DMM7510, SMU2461
 -- $Tag: Serial, UART, Decode, Digitize
 -- $Description: Decodes an asynchronous serial line with the instrument's own digitizer: recovers baud rate, frame format and bytes, shows them as text or hex, and saves bytes to USB key. Everything auto-detects; everything can be locked.
--- $Version: 1.72
+-- $Version: 1.73
 -- $Requires: 1.7.0
 -- $Author: Ian Ameline
 -- $License: MIT
@@ -2161,7 +2161,7 @@ function sdec.acq_triggered(n, slope)
       if sdec.arm_silent() and useanalog then
         why = why .. ' -- nothing crossed ' ..
               string.format('%.2f', sdec.thr or sdec.arm_level_v()) ..
-              ' V; raise Arm/Idle Wait or lower Arm At'
+              ' V; raise Arm Wait or lower Arm At'
       else
         why = why .. ' -- try Free run'
       end
@@ -4629,7 +4629,7 @@ sdec.capmode     = sdec.capmode or 'frame'    -- operator state, hence `or`
 
 sdec.idle_exit_s = sdec.idle_exit_s or 1
 
--- Arm/Idle Wait itself, never below the floor above: 10 s at the default, 2 s at the minimum, 120 s at
+-- Arm Wait itself, never below the floor above: 10 s at the default, 2 s at the minimum, 120 s at
 --   [...]
 -- startup banner stops for seconds at a time, and a fixed 1 s ends the recording inside the first of
 -- those pauses with the interesting part still to come. One setting the operator can see on the glass
@@ -6601,7 +6601,7 @@ function sdec.build_options()
                          sdec.armlevel_min, sdec.armlevel_max, 'V', 4)
   local fx10, fy10 = nextpos()
   sdec.opt_armw = create(sdec.optscr, display.OBJ_EDIT_NUMBER, fx10, fy10,
-                         'Arm/Idle Wait', 'max wait, frozen',
+                         'Arm Wait', 'max wait, frozen',
                          display.NFORMAT_PREFIX, sdec.arm_wait_s(),
                          sdec.armwait_min, sdec.armwait_max, 's', 4)
   local fx12, fy12 = nextpos()
@@ -8362,7 +8362,7 @@ function sdec.strm_exit_why(endwhy, ok, err)
     return 'recording failed: ' .. tostring(sdec.strm_readfail or 'the capture buffer could not be read')
   end
   if endwhy == 'noarm' then
-    return string.format('nothing crossed %.2f V in %g s -- raise Arm/Idle Wait or lower Arm At',
+    return string.format('nothing crossed %.2f V in %g s -- raise Arm Wait or lower Arm At',
                          sdec.arm_expired_at or sdec.thr or sdec.arm_level_v(), sdec.arm_wait_s())
   end
   if endwhy == 'quiet' then

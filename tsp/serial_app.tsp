@@ -43,7 +43,7 @@ sdec.strm_fallback_s = sdec.strm_fallback_s or 20
 -- bytes lost are the ones at the end of the mode's budget. The decoder already skips idle, so the
 -- over-read buys payload and not correctness. Free on a 6 000 000-reading record, where a 21 100-reading
 -- one had nowhere to put it. EVERY capture, not a subset: sdec.acquire() applies it, and the
--- declaration said 'elide path only' for long enough that the claim outlived the path.
+-- declaration named a single capture path for long enough that the claim outlived it.
 sdec.strm_overread   = sdec.strm_overread or 0.10
 -- The most the Options field will offer. A ceiling and not a limit on what is sensible: the over-read
 -- buys payload against the samples a refused gap costs, and a gap vector spends at most a third of a
@@ -237,8 +237,8 @@ function sdec.autoset()
     -- The restore runs on the raising path too, and sdec.unwind() is not enough cover for it. A host
     -- tool that pcalls sdec.capture() itself never reaches the firmware boundary, so a raise in this
     -- loop would leave trig_restore set -- and acquire() now reads that field to keep its free-run
-    -- fall-through out of the ladder, so a leaked marker silently disables gap elision for every later
-    -- capture and survives an app reload. The symptom would read as 'the fix did not take'. Caught and
+    -- fall-through out of the ladder, so a leaked marker silently changes how every later capture
+    -- arms, and survives an app reload. The symptom would read as 'the fix did not take'. Caught and
     -- re-raised here rather than left to a catcher that may not exist; level 0 so the re-raise does not
     -- staple a second position onto the message.
     local lok, lerr = pcall(function()
@@ -438,8 +438,8 @@ function sdec.stream_begin()
   -- while strm_nsmp stays the bare request: the two are different numbers and stream_acquire publishes
   -- both (sdec.strm_target is the one it ran to).
   --
-  -- Every recording, for stream_acquire's reason: the margin is orthogonal to elision, and the capture
-  -- that elides nothing is the one with the most idle to absorb.
+  -- Every recording, for stream_acquire's reason: a capture that records every pause in full is the
+  -- one with the most idle to absorb.
   local sizefor = nsmp
   if (sdec.strm_overread or 0) > 0 then
     sizefor = math.ceil(nsmp * (1 + sdec.strm_overread))
@@ -718,11 +718,8 @@ function sdec.stream_decode(got)
   if sdec.strm_armed and sdec.buf ~= nil then
     opts.leadmax = sdec.acq_leadmax(sdec.buf)
   end
-  -- A PLAIN READ OF THE RECORD, which is now the only kind. What stood here was the elision splice:
-  -- it cleared ten spl_* fields, named which of seven guards refused, put each burst's head back from
-  -- its scratch, and handed the framer a seam list to re-lock on. Gap elision is gone -- the handover
-  -- hole it existed to paper over is forced by the instrument, notes/HANDOFF-session70.md -- so there
-  -- is no splice, no seam list and no head to restore.
+  -- A PLAIN READ OF THE RECORD, which is the only kind there is: no splice, no seam list, and no
+  -- burst head to put back from a scratch buffer.
   -- LOCAL, AND THAT IS LOAD-BEARING. These were declared inside the splice block that stood above, and
   -- removing it left both as GLOBALS: nrd read nil, ck_run decoded against a nil total, and
   -- tools/test_streamfix.lua caught it as 59 of 60 bytes wrong on a device that starts late.
@@ -765,8 +762,8 @@ function sdec.stream_decode(got)
   -- THE TAIL IS PUBLISHED HERE TOO, as decode_step and sdec.stream() already publish it. Without this
   -- line sdec.res on the one-shot path was whatever ck_prime_step's decode_from left -- the frame-mode
   -- decode of the first ~20 000 spliced samples -- and bench_run.tsp builds nf, hex and pay= from
-  -- sdec.res: measured, one 58 590-reading record reported nf=177 against the chunked decode's 520, on
-  -- every elided row of every lap. The tail holds the last ck_keep bytes of the stream, which for a
+  -- sdec.res: measured, one 58 590-reading record reported nf=177 against the chunked decode's 520.
+  -- The tail holds the last ck_keep bytes of the stream, which for a
   -- bench record is all of them. sdec.stream() assigns the same value after this returns, so the panel
   -- path is unchanged.
   if tot.tail ~= nil then sdec.res = tot.tail end
@@ -1031,7 +1028,7 @@ function sdec.stream_acquire(nsmp)
   -- Over-read, before anything is sized from nsmp: see sdec.strm_overread. Clamped to the buffer, so the
   -- target stays a count the record can actually reach and `have >= nsmp` remains a reachable exit.
   --
-  -- Unconditional, because the over-read is orthogonal to gap elision. Every pause the line takes is
+  -- Unconditional, and it applies to every recording. Every pause the line takes is
   -- recorded in full, and those samples come out of the same count the payload does, so every recording
   -- spends part of its budget on idle. Unconditional for that reason: the margin is wanted most by the
   -- captures with the most silence, and there is nothing to make it depend on.
@@ -1064,7 +1061,7 @@ function sdec.stream_acquire(nsmp)
   end
 
   local quiet, seen, step = 0, 0, sdec.ck_poll_s
-  -- Read once: the exit comes from Arm/Idle Wait, and the operator cannot change it mid-run.
+  -- Read once: the exit comes from Arm Wait, and the operator cannot change it mid-run.
   local qexit   = sdec.idle_exit()
   -- The ring position last looked at, beside the count. -1 rather than nil, since 0 is a real endindex.
   local seenend = -1
@@ -2259,7 +2256,7 @@ function sdec.strm_exit_why(endwhy, ok, err)
   end
   -- The arm expired, which is not a recording that happened: name the two settings that govern the wait.
   if endwhy == 'noarm' then
-    return string.format('nothing crossed %.2f V in %g s -- raise Arm/Idle Wait or lower Arm At',
+    return string.format('nothing crossed %.2f V in %g s -- raise Arm Wait or lower Arm At',
                          sdec.arm_expired_at or sdec.thr or sdec.arm_level_v(), sdec.arm_wait_s())
   end
   if endwhy == 'quiet' then
@@ -2686,10 +2683,8 @@ function sdec.options_apply()
     if type(av) == 'number' then sdec.armlevel = av end
     local aw = display.getvalue(sdec.opt_armw)
     if type(aw) == 'number' then sdec.armwait = aw end
-    -- No Gap Elide read: the field is withheld from the form, so there is nothing to getvalue and a
-    -- read of a nil handle would raise inside this pcall and cost the whole apply. See serial_ui.tsp.
     -- Percent on the glass, a fraction underneath. The field reads 10 where the knob holds 0.10,
-    -- because '0.100' beside 'Gap Elide 0.025 s' reads as a second time and not as a proportion.
+    -- because a bare '0.100' reads as a second time and not as a proportion.
     -- Clamped to the ceiling here rather than trusting the field, since the ceiling is a field
     -- argument and a form built before overread_max moved would still offer the old one.
     local ov = display.getvalue(sdec.opt_over)

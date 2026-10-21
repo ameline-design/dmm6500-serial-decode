@@ -128,7 +128,14 @@ end
 POOLCAP = nil
 function MD.poolcap(n) POOLCAP = n end
 
-function display.create(parent, kind, a, b, c, d, e, f, g, h, i, j, k, l, m, n)
+-- VARARGS, FOR THE ARGUMENT COUNT ALONE. The body below still works in named locals -- they are
+-- unpacked on the next line and nothing else changes -- but an explicitly passed trailing nil is
+-- invisible to a fixed parameter list, and that is a real firmware refusal this mock could not see.
+-- select('#') is safe here because this file never runs on the instrument: it is the offline mock,
+-- so the modern Lua idiom is available where tsp/ could not use it.
+function display.create(parent, kind, ...)
+  local nargs = select('#', ...)
+  local a, b, c, d, e, f, g, h, i, j, k, l, m, n = ...
   if parent ~= display.ROOT then use(parent, 'create under parent') end
   if POOLCAP ~= nil and nextid >= POOLCAP then return nil end
   local o = {kind = kind, parent = parent, alive = true}
@@ -182,6 +189,20 @@ function display.create(parent, kind, a, b, c, d, e, f, g, h, i, j, k, l, m, n)
     o.nopts = 0
     local q
     for q = 1, 10 do if o.opts[q] ~= nil then o.nopts = q end end
+    -- A NIL OPTION ARGUMENT IS REFUSED, which is what the instrument does and what this mock used
+    -- to accept. Measured on 1.7.17a, 2026-10-21: bench_panel passed lt[1]..lt[4] after the fourth
+    -- lap type was removed, so the fourth argument was an explicit nil, display.create answered NIL,
+    -- and the Lap Type field was simply not on the screen. Offline it built happily with three
+    -- options, so the suite agreed with the broken code and only a panel grab found it.
+    --
+    -- THE ARGUMENT COUNT IS THE ONLY WAY TO SEE THIS. Three options passed as three is correct;
+    -- three passed as four is not, and once they are in a table those two are identical -- a
+    -- trailing nil leaves no trace. Hence nargs: the options are arguments 5 onward of the vararg
+    -- list, so `nargs - 4` of them were passed and any nil inside that span is a hole.
+    local npassed = nargs - 4
+    for q = 1, npassed do
+      if o.opts[q] == nil then return nil end
+    end
     if o.opts[1] == nil or o.opts[2] == nil then
       error('OBJ_EDIT_OPTION needs at least two options', 0)
     end
@@ -500,7 +521,7 @@ local WPATH = nil     -- the path handle 42 currently points at
 -- the inner close sets WPATH to nil and every subsequent write on the OUTER handle goes nowhere --
 -- silently, because file.write only appends `if WPATH ~= nil`.
 --
--- MEASURED COST OF NOT HAVING IT: an offline bench lap with gap elision on writes the app's own USB
+-- MEASURED COST OF NOT HAVING IT: an offline bench lap writes the app's own USB
 -- byte log (bytesidx.txt once, bytes000.txt fifteen times) in the middle of the run, and bench_rec's
 -- record lost one whole brec.syncrows window -- 50 consecutive cells, absent from the CSV while
 -- brun.soak returned '1 iteration(s) complete' and the judge scored the short file without complaint.
