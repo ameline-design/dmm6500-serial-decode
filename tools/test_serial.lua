@@ -6937,13 +6937,33 @@ print('\nthe Messages screen -- every decoded byte, on a screen of its own')
 -- the handles being nil'd and hoped about.
 function test_msgs()
   clearforce()
+
+  -- THE NOTE LIST IS STUBBED for the cases that count notes, and that is deliberate rather than
+  -- lazy. ui_notes() synthesises notes from capture state as well as from settable fields -- a full
+  -- capture window alone produces 'capture FULL at 192 bytes', and lasterr arrives prefixed with
+  -- 'NOTE: ' -- so a test that nils the fields it knows about still gets an unpredictable list, and
+  -- every count below would be asserting ui_notes' content instead of this screen's behaviour. What
+  -- ui_notes puts in the list is tested where it is built. The LAST case here runs against the real
+  -- one, so the wiring is still proved.
+  local realnotes = sdec.ui_notes
+  local function withnotes(t)
+    sdec.ui_notes = function() return t, table.getn(t) end
+  end
+
+  local SHORT = 'baud 9600'
+  local LONG = 'Rear BNC = Trig In is set but IGNORED -- Free run means do not wait for '
+               .. 'anything, so the trigger source field is reporting a setting that this '
+               .. 'capture did not use and will not use until the mode changes'
+
+  -- A capture is decoded and LEFT in sdec.res on purpose: this screen must never show decoded text,
+  -- and the only way to assert that is to have some available for it to show by mistake. Both of the
+  -- wrong builds of this screen would fail that check.
   local msg = ''
   local k
   for k = 1, 40 do msg = msg .. 'The quick brown fox jumps over the lazy dog. ' end
   local rr = run({bytes = GEN_BYTES(msg), baud = 9600, fs = 100000})
-  check('the fixture decoded enough bytes to need more than one page',
-        rr ~= nil and rr.nf > sdec.msg_per_page(),
-        string.format('%s bytes, %d per page', tostring(rr and rr.nf), sdec.msg_per_page()))
+  check('the fixture decoded bytes, so "no decoded text" is a real assertion',
+        rr ~= nil and rr.nf > 100, tostring(rr and rr.nf))
 
   local base = MD.live()
   -- A DELTA, not an absolute: MD.nrefused() is cumulative over the whole suite run and other cases
@@ -6956,61 +6976,90 @@ function test_msgs()
         and table.getn(sdec.msg_row) == sdec.msg_nrow and sdec.msg_nrow == 21,
         string.format('%s rows', tostring(sdec.msg_row and table.getn(sdec.msg_row))))
 
+  -- ---- THE HIDE RULE: a note the cell shows IN FULL is not worth a button --------------------
+  withnotes({})
   sdec.msg_page = 0
   sdec.msgs_refresh()
-  -- A GAPLESS CAPTURE IS ONE MESSAGE, which is the honest answer rather than a degenerate one: the
-  -- split is on idle, and this fixture has none, so there is exactly one burst.
-  local _, nm1 = sdec.msg_split(rr, sdec.bittime)
-  check('a gapless capture splits into exactly one message', nm1 == 1, tostring(nm1))
-  check('the first row is numbered and carries the message',
-        has(MD.text(sdec.msg_row[1]), 'quick brown fox')
-        and has(MD.text(sdec.msg_row[1]), '1'),
-        tostring(MD.text(sdec.msg_row[1])))
-  check('the counter names the page AND the MESSAGE range',
-        has(MD.text(sdec.msg_ind), 'page 1 of') and has(MD.text(sdec.msg_ind), 'msg 1-'),
-        tostring(MD.text(sdec.msg_ind)))
+  check('with no notes at all, nothing is withheld', sdec.msg_hidden() == false,
+        tostring(sdec.msg_hidden()))
+  check('...and the screen is blank rather than showing the capture',
+        MD.text(sdec.msg_row[1]) == '', tostring(MD.text(sdec.msg_row[1])))
 
-  -- AND A GAPPED CAPTURE SPLITS PER BURST, which is the arm that actually exercises the splitter.
-  -- A gap wider than msg_gapframes frame times between every byte isolates each one, so the message
-  -- count must equal the frame count -- the opposite extreme from the gapless case above, and between
-  -- them they pin the rule from both sides.
-  local rg = run({bytes = GEN_BYTES('The quick brown fox jumps over the lazy dog.'),
-                  baud = 9600, fs = 100000, gap = 30})
-  local msg, nmg = sdec.msg_split(rg, sdec.bittime)
-  check('a capture gapped between every byte splits into one message per byte',
-        nmg == rg.nf and nmg > 1, string.format('%s messages, %s frames', tostring(nmg),
-                                                tostring(rg.nf)))
-  check('...and each message is one frame wide',
-        msg ~= nil and msg[1].first == 1 and msg[1].last == 1,
-        string.format('first message spans %s..%s', tostring(msg and msg[1].first),
-                      tostring(msg and msg[1].last)))
+  withnotes({SHORT})
+  local hid, nn = sdec.msg_hidden()
+  check('one SHORT note fits the cell, so nothing is withheld', hid == false,
+        string.format('hidden=%s notes=%s', tostring(hid), tostring(nn)))
+  -- ASSERT THE PREMISE: the case above only means anything if the cell really does show it whole.
+  check('...and the premise holds -- ui_fit returns that note unchanged',
+        sdec.ui_fit(SHORT, sdec.ui_note_px - sdec.ui_pgind_px()) == SHORT, 'it was clipped')
 
-  -- PAGING, on the gapped capture, because the gapless one is a single page by construction.
+  withnotes({LONG})
+  hid, nn = sdec.msg_hidden()
+  check('one LONG note does NOT fit, so the button is warranted', hid == true,
+        string.format('hidden=%s notes=%s', tostring(hid), tostring(nn)))
+  check('...and ui_fit really does clip it, which is what makes that true',
+        sdec.ui_fit(LONG, sdec.ui_note_px - sdec.ui_pgind_px()) ~= LONG, 'it fitted after all')
+
+  withnotes({SHORT, 'b.csv'})
+  hid, nn = sdec.msg_hidden()
+  check('two SHORT notes still withhold one, because the cell shows only the first',
+        hid == true and nn == 2, string.format('hidden=%s notes=%s', tostring(hid), tostring(nn)))
+
+  -- ---- the screen shows the notes, wrapped and whole -----------------------------------------
+  local function rowtext()
+    local all, i = '', nil
+    for i = 1, sdec.msg_nrow do all = all .. MD.text(sdec.msg_row[i]) end
+    return all
+  end
+  -- string.find in a loop, not gfind or gmatch: the former is 5.0-only and the latter 5.1-and-up,
+  -- and the instrument has 5.0.2 while this harness runs something much newer.
+  local function words(s)
+    local out, i = '', 1
+    while true do
+      local a, b = string.find(s, '%S+', i)
+      if a == nil then return out end
+      out = out .. string.sub(s, a, b) .. '|'
+      i = b + 1
+    end
+  end
+
+  withnotes({LONG})
   sdec.msg_page = 0
   sdec.msgs_refresh()
+  check('the long note is WRAPPED onto more than one row', MD.text(sdec.msg_row[2]) ~= '',
+        'row 2 is empty, so it was truncated instead')
+  check('...and no row ends in an ellipsis, because this screen never fits',
+        not has(rowtext(), '...'), rowtext())
+  -- THE WHOLE NOTE IS THERE. Reassembled and compared word for word, because "it wrapped" and "it
+  -- is all present" are different claims and only the second is the requirement.
+  check('every word of the note survives the wrap', words(rowtext()) == words('1 ' .. LONG),
+        string.format('got %s', string.sub(rowtext(), 1, 150)))
+  check('the counter names the page, the lines AND the note count',
+        has(MD.text(sdec.msg_ind), 'page 1 of') and has(MD.text(sdec.msg_ind), 'line 1-')
+        and has(MD.text(sdec.msg_ind), '(1 note)'), tostring(MD.text(sdec.msg_ind)))
+
+  -- NEVER DECODED TEXT. The capture is still in sdec.res, and both earlier versions of this screen
+  -- put its bytes on these rows.
+  check('NOT ONE ROW carries decoded text, which is what this screen is not for',
+        not has(rowtext(), 'quick brown fox'), rowtext())
+
+  -- ---- paging, on enough notes to need a second page -----------------------------------------
+  -- EIGHT long notes. Six came to exactly 21 lines, which is exactly one page -- a boundary that
+  -- passed the npages check for the wrong reason and then failed the Up/Dn one.
+  local many = {}
+  for k = 1, 8 do many[k] = LONG end
+  withnotes(many)
+  sdec.msg_page = 0
+  sdec.msgs_refresh()
+  local _, nl = sdec.msg_lines()
+  check('eight wrapped notes need more than one page', sdec.msg_npages() > 1,
+        string.format('%d line(s), %d page(s)', nl, sdec.msg_npages()))
   local first0 = MD.text(sdec.msg_row[1])
-  check('more than one page of messages to walk', sdec.msg_npages() > 1,
-        tostring(sdec.msg_npages()))
   check('...so Up and Dn are shown',
         MD.obj(sdec.msg_up).state == display.STATE_ENABLE
         and MD.obj(sdec.msg_dn).state == display.STATE_ENABLE,
         string.format('up=%s dn=%s', tostring(MD.obj(sdec.msg_up).state),
                       tostring(MD.obj(sdec.msg_dn).state)))
-  -- AND HIDDEN ON A SINGLE PAGE, paired with the above: the screen's first outing showed both buttons
-  -- over 'page 1 of 1', offering to page through nothing.
-  local keepres = sdec.res
-  sdec.res = rr                      -- the gapless capture: one message, one page
-  sdec.msg_page = 0
-  sdec.msgs_refresh()
-  check('with one page of messages, Up and Dn hide',
-        sdec.msg_npages() == 1
-        and MD.obj(sdec.msg_up).state == display.STATE_INVISIBLE
-        and MD.obj(sdec.msg_dn).state == display.STATE_INVISIBLE,
-        string.format('npg=%d up=%s dn=%s', sdec.msg_npages(),
-                      tostring(MD.obj(sdec.msg_up).state),
-                      tostring(MD.obj(sdec.msg_dn).state)))
-  sdec.res = keepres
-  sdec.msgs_refresh()
   sdec.msgs_next()
   check('Dn advances the page and the rows change', sdec.msg_page == 1
         and MD.text(sdec.msg_row[1]) ~= first0, 'page=' .. tostring(sdec.msg_page))
@@ -7023,6 +7072,67 @@ function test_msgs()
   sdec.msgs_next()
   check('Dn on the last page stays on it', sdec.msg_page == sdec.msg_npages() - 1,
         tostring(sdec.msg_page))
+
+  -- AND HIDDEN ON A SINGLE PAGE, paired with the above: the screen's first outing showed both
+  -- buttons over 'page 1 of 1', offering to page through nothing.
+  withnotes({SHORT})
+  sdec.msg_page = 0
+  sdec.msgs_refresh()
+  check('with one page of notes, Up and Dn hide',
+        sdec.msg_npages() == 1
+        and MD.obj(sdec.msg_up).state == display.STATE_INVISIBLE
+        and MD.obj(sdec.msg_dn).state == display.STATE_INVISIBLE,
+        string.format('npg=%d up=%s dn=%s', sdec.msg_npages(),
+                      tostring(MD.obj(sdec.msg_up).state),
+                      tostring(MD.obj(sdec.msg_dn).state)))
+
+  -- ---- an unbroken token must hard-wrap rather than loop ---------------------------------------
+  local WALL = ''
+  for k = 1, 30 do WALL = WALL .. 'ABCDEFGHIJ' end
+  withnotes({WALL})
+  sdec.msg_page = 0
+  sdec.msgs_refresh()
+  check('a 300-character note with no spaces still wraps instead of hanging',
+        MD.text(sdec.msg_row[1]) ~= '' and MD.text(sdec.msg_row[2]) ~= '',
+        tostring(MD.text(sdec.msg_row[1])))
+  check('...and msg_wrap_at hard-breaks at the row width when there is no space',
+        sdec.msg_wrap_at(WALL, 40) == 40, tostring(sdec.msg_wrap_at(WALL, 40)))
+  -- 'aaa bbb' with room 5: the space is at 4, so the break is 3 and the row reads 'aaa'. Chosen
+  -- over a case whose answer happens to equal `room`, which would pass against a broken function.
+  check('...while it DOES break at a space when there is one',
+        sdec.msg_wrap_at('aaa bbb', 5) == 3, tostring(sdec.msg_wrap_at('aaa bbb', 5)))
+
+  -- ---- THE SETTLE, which only the instrument could show -------------------------------------
+  -- msgs_show must yield between bringing the screen up and writing to it. Four orderings were
+  -- measured on the glass and only the one with a yield paints: writing before the changescreen lost
+  -- the objects created last, writing straight after it lost all but row 1, and refreshing twice with
+  -- no yield still lost the counter and the buttons. In every failing case msgs_refresh returned true
+  -- and nothing reached the event log, so this count is the only offline evidence there can be.
+  withnotes({SHORT})
+  sdec.msgs_close()
+  MD.forget_prewrites()
+  sdec.msgs_show()
+  check('msgs_show settles after the screen change, before it writes',
+        MD.nprewrite() == 0,
+        string.format('%d unsettled write(s), first: %s', MD.nprewrite(),
+                      tostring(MD.prewrites()[1])))
+
+  -- THE CONTROL, and it is arm B exactly: change screen, write, no yield. Without this the check
+  -- above would pass just as happily against a counter that never fires.
+  sdec.msgs_close()
+  sdec.build_msgs()
+  MD.forget_prewrites()
+  display.changescreen(sdec.msgscr)
+  sdec.msgs_refresh()
+  check('CONTROL: changescreen then write with no yield IS flagged, as it failed on the glass',
+        MD.nprewrite() > 0, string.format('%d unsettled write(s)', MD.nprewrite()))
+  check('...and a yield clears the window, which is what msgs_show relies on',
+        MD.pending() == true, 'the window was never open, so the control proves nothing')
+  delay(sdec.msg_settle)
+  check('...so after a delay the window is shut', MD.pending() == false, tostring(MD.pending()))
+  MD.forget_prewrites()
+  sdec.msgs_close()
+  sdec.msgs_show()
 
   -- BACK SWITCHES AWAY BEFORE IT DELETES, which MD.blanked() is the only evidence of: deleting the
   -- screen the panel is showing leaves it displaying a dead object, unrecoverable from the front.
@@ -7060,10 +7170,11 @@ function test_msgs()
   sdec.destroy_msgs()
   sdec.msg_nrow = 21
 
-  -- THE BUTTON HIDES WHEN THERE IS NOTHING TO SEE, which every other margin button does and this one
-  -- did not. Paired in both directions, because a button that is always visible and one that is never
-  -- visible both satisfy a one-armed check -- and the shadow cache means the second write only
-  -- happens if the state really changed, so testing one direction would not prove the other works.
+  -- ---- the margin button, all four directions --------------------------------------------------
+  -- Paired, because a button that is always visible and one that is never visible both satisfy a
+  -- one-armed check -- and the shadow cache means the second write only happens if the state really
+  -- changed, so testing one direction would not prove the other works.
+  --
   -- A LIVE UI FIRST. The cases above tear screens down, so calling ui_page_btns() here reached
   -- DELETED handles and the mock swallowed every setstate into its void -- three refusals, and the
   -- state read back as whatever the dead object last held. The product code was right; the fixture
@@ -7073,10 +7184,7 @@ function test_msgs()
   sdec.allow_rebuild = true
   sdec.start()
   if sdec.ui_msgbtn ~= nil then
-    -- Explicit rather than borrowed: the restart above clears sdec.res, and the rule reads only nf,
-    -- so the two arms are a table with bytes and no table at all.
-    local was = {nf = 13, vals = {}, errs = {}}
-    sdec.res = nil
+    withnotes({})
     sdec.ui_msgvis = nil
     local refb = MD.nrefused()
     sdec.ui_page_btns()
@@ -7084,25 +7192,62 @@ function test_msgs()
           MD.nrefused() == refb,
           string.format('%d refusal(s) added: %s', MD.nrefused() - refb,
                         tostring(MD.nrefused() > refb and MD.refusals()[MD.nrefused()] or 'none')))
-    check('the Msgs button is hidden when nothing has decoded',
+    check('the Msgs button is hidden when there are no notes',
           MD.obj(sdec.ui_msgbtn) ~= nil
           and MD.obj(sdec.ui_msgbtn).state == display.STATE_INVISIBLE,
           tostring(MD.obj(sdec.ui_msgbtn) and MD.obj(sdec.ui_msgbtn).state))
-    sdec.res = was
+
+    -- THE CASE THE OLD RULE GOT BACKWARDS: a note arrives with nothing decoded. The old gate read
+    -- sdec.res and kept the button DOWN here, hiding the one thing worth reading.
+    sdec.res = nil
+    withnotes({LONG})
     sdec.ui_page_btns()
-    check('...and shown once there are bytes to look at',
+    check('...and shown for a long note even with NOTHING decoded',
           MD.obj(sdec.ui_msgbtn).state == display.STATE_ENABLE,
           tostring(MD.obj(sdec.ui_msgbtn).state))
-    -- And back again, so a cleared result really takes it away rather than leaving it stuck on.
-    sdec.res = nil
+
+    -- AND THE OTHER HALF IT GOT BACKWARDS: a capture decoded, no note to read. The old gate put the
+    -- button UP for every capture, offering a screen with nothing on it.
+    withnotes({})
+    sdec.res = {nf = 13, vals = {}, errs = {}}
     sdec.ui_page_btns()
-    check('...and hidden again when the result is cleared',
+    check('...and hidden for a decoded capture with no notes at all',
           MD.obj(sdec.ui_msgbtn).state == display.STATE_INVISIBLE,
           tostring(MD.obj(sdec.ui_msgbtn).state))
-    -- Left cleared, not restored to the fixture: the next test decodes into sdec.res, and handing it
-    -- a hand-built result with 13 frames and no values is the leftover-state trap.
-    sdec.res = nil
+
+    -- The third case is the one the operator specified: a note exists and fits, so no button.
+    withnotes({SHORT})
+    sdec.ui_page_btns()
+    check('...and hidden for a SHORT note, which the cell already shows in full',
+          MD.obj(sdec.ui_msgbtn).state == display.STATE_INVISIBLE,
+          tostring(MD.obj(sdec.ui_msgbtn).state))
+
+    -- ---- AND ONCE AGAINST THE REAL ui_notes, so the stub above is not the only thing proved ----
+    -- A full capture window produces a genuine note of its own, long enough that the cell clips it.
+    -- Nothing is injected: the only input is a decode, which is what an operator actually does.
+    sdec.ui_notes = realnotes
+    sdec.res = rr
+    sdec.ui_msgvis = nil
+    sdec.ui_page_btns()
+    local rt, rn = sdec.ui_notes()
+    check('REAL ui_notes: a decode that fills its window produces notes of its own',
+          rn > 0, string.format('%d note(s)', rn))
+    check('...and the button follows msg_hidden on them, not on a stub',
+          (MD.obj(sdec.ui_msgbtn).state == display.STATE_ENABLE) == sdec.msg_hidden(),
+          string.format('state=%s hidden=%s', tostring(MD.obj(sdec.ui_msgbtn).state),
+                        tostring(sdec.msg_hidden())))
+    check('...and those notes reach the screen, which is the wiring end to end',
+          sdec.build_msgs() ~= nil and sdec.msgs_refresh()
+          and has(MD.text(sdec.msg_row[1]), string.sub(rt[1], 1, 12)),
+          string.format('row1=%s want=%s', tostring(MD.text(sdec.msg_row[1])),
+                        tostring(string.sub(rt[1], 1, 12))))
+    sdec.destroy_msgs()
   end
+
+  -- RESTORED, and sdec.res cleared: the next test decodes into it, and a stubbed ui_notes would
+  -- follow this case through the rest of the suite.
+  sdec.ui_notes = realnotes
+  sdec.res = nil
   clearforce()
 end
 test_msgs()

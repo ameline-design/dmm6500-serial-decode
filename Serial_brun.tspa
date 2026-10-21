@@ -5849,7 +5849,7 @@ end
 function sdec.ui_page_btns()
   sdec.ui_usb_btns()
   if sdec.ui_msgbtn ~= nil then
-    local mw = (sdec.res ~= nil and (sdec.res.nf or 0) > 0)
+    local mw = sdec.msg_hidden()
     if mw ~= sdec.ui_msgvis then
       local mst = display.STATE_INVISIBLE
       if mw then mst = display.STATE_ENABLE end
@@ -6262,42 +6262,72 @@ sdec.msg_row_dy = 18
 sdec.msg_cols   = 80
 sdec.msg_page   = 0
 sdec.msg_btn_y  = sdec.ui_btn_y
+sdec.msg_settle = sdec.msg_settle or 0.2
 
-sdec.msg_gapframes = sdec.msg_gapframes or 2
+-- Is the note cell withholding anything? -> true/false, and the note count. The one source of truth
+--   [...]
+-- would eventually disagree with the cell it describes.
+-- The page counter takes width off the same cell (ui_pgind_px), so one note can fit at 'page 1 of 1'
+-- and be clipped at 'page 9 of 35'. Not a glitch: by then it genuinely is cut off.
+function sdec.msg_hidden()
+  local t, m = sdec.ui_notes()
+  if m < 1 then return false, 0 end
+  if m > 1 then return true, m end
+  local px = sdec.ui_note_px - sdec.ui_pgind_px()
+  return sdec.ui_fit(t[1], px) ~= t[1], m
+end
 
--- -> a list of {first, last} frame indices, one per message, and how many. Never nil for a result
--- that decoded anything: a capture with no gap in it is one message, which is the honest answer.
-function sdec.msg_split(r, T)
-  if r == nil or r.tpos == nil or (r.nf or 0) < 1 then return nil, 0 end
-  local parbits = 0
-  if r.par ~= nil and r.par ~= sdec.PAR_NONE then parbits = 1 end
-  local fb = 1 + (r.nbits or 8) + parbits + (r.nstop or 1)
-  local lim = nil
-  if T ~= nil and T > 0 then lim = sdec.msg_gapframes * fb * T end
-  local out, n, first, i = {}, 0, 1, nil
-  for i = 2, r.nf do
-    if lim ~= nil and r.tpos[i] ~= nil and r.tpos[i - 1] ~= nil
-       and (r.tpos[i] - r.tpos[i - 1]) >= lim then
+-- The last space at or before `room`, so a note breaks between words; `room` itself when there is no
+-- space to break at, which hard-wraps a long unbroken token rather than looping for ever.
+function sdec.msg_wrap_at(s, room)
+  if room < 1 then return 1 end
+  local i
+  for i = room + 1, 2, -1 do
+    if string.sub(s, i, i) == ' ' then return i - 1 end
+  end
+  return room
+end
+
+-- EVERY NOTE WRAPPED INTO ROWS -> a flat list of row strings, and how many.
+-- Wrapped and not fitted: truncating here would reproduce the exact problem this screen exists to
+-- solve. Numbered once per note, with continuations indented, so a wrapped tail is not mistaken for
+-- a new message.
+function sdec.msg_lines()
+  local t, m = sdec.ui_notes()
+  local out, n, i = {}, 0, nil
+  for i = 1, m do
+    local s, pre = tostring(t[i]), string.format('%2d  ', i)
+    local guard = 0
+    while guard < 20 do
+      guard = guard + 1
+      local room = sdec.msg_cols - string.len(pre)
+      if string.len(s) <= room then
+        n = n + 1
+        out[n] = pre .. s
+        break
+      end
+      local cut = sdec.msg_wrap_at(s, room)
       n = n + 1
-      out[n] = {first = first, last = i - 1}
-      first = i
+      out[n] = pre .. string.sub(s, 1, cut)
+      s = string.sub(s, cut + 1)
+      while string.sub(s, 1, 1) == ' ' do s = string.sub(s, 2) end
+      pre = '    '
+      if s == '' then break end
     end
   end
-  n = n + 1
-  out[n] = {first = first, last = r.nf}
   return out, n
 end
 
--- One message per row now, so a page is rows rather than bytes.
+-- One row per wrapped line, so a page is rows.
 function sdec.msg_per_page()
   return sdec.msg_nrow
 end
 
 function sdec.msg_npages()
-  local _, nm = sdec.msg_split(sdec.res, sdec.bittime)
-  if nm == nil or nm <= 0 then return 1 end
+  local _, nl = sdec.msg_lines()
+  if nl == nil or nl <= 0 then return 1 end
   local per = sdec.msg_per_page()
-  return math.floor((nm + per - 1) / per)
+  return math.floor((nl + per - 1) / per)
 end
 
 -- Delete every object this screen owns and nil its handles, in creation order's reverse: children
@@ -6368,17 +6398,12 @@ function sdec.msgs_refresh()
   if sdec.msg_page >= npg then sdec.msg_page = npg - 1 end
   if sdec.msg_page < 0 then sdec.msg_page = 0 end
   local base = sdec.msg_page * sdec.msg_per_page()
-  local ms, nm = sdec.msg_split(sdec.res, sdec.bittime)
+  local ls, nl = sdec.msg_lines()
   local i
   for i = 1, sdec.msg_nrow do
     local k = base + i
     local s = ''
-    if ms ~= nil and k <= nm then
-      local m = ms[k]
-      s = string.format('%3d  %s', k,
-                        sdec.ua_text_line(m.first, m.last - m.first + 1))
-      if string.len(s) > sdec.msg_cols then s = string.sub(s, 1, sdec.msg_cols) end
-    end
+    if ls ~= nil and k <= nl then s = ls[k] end
     display.settext(sdec.msg_row[i], s)
   end
   if sdec.msg_up ~= nil and sdec.msg_dn ~= nil then
@@ -6389,32 +6414,33 @@ function sdec.msgs_refresh()
   end
 
   if sdec.msg_ind ~= nil then
-    local tot = nm or 0
+    local _, nm = sdec.ui_notes()
     local last = base + sdec.msg_per_page()
-    if last > tot then last = tot end
+    if last > nl then last = nl end
     local shown = base + 1
-    if tot < 1 then shown = 0 end
+    if nl < 1 then shown = 0 end
     display.settext(sdec.msg_ind,
-                    string.format('page %d of %d   msg %d-%d of %d',
-                                  sdec.msg_page + 1, npg, shown, last, tot))
+                    string.format('page %d of %d   line %d-%d of %d   (%d note%s)',
+                                  sdec.msg_page + 1, npg, shown, last, nl, nm,
+                                  nm == 1 and '' or 's'))
   end
   return true
 end
 
 -- Open it, from the Msgs button in the margin.
+--   [...]
+-- case and nothing reached the event log, so only a grab could find it, and it did so after the
+-- offline suite had passed. The main screen never needed this: its 2 Hz tick refreshes again within
+-- 500 ms, so a lost write there repairs itself. This screen refreshes only when asked.
 function sdec.msgs_show()
   if sdec.build_msgs() == nil then
     sdec.lasterr = sdec.msg_why or 'could not build the messages screen'
     return false
   end
   sdec.msg_page = 0
-  if sdec.ui_page ~= nil and sdec.ui_page > 0 then
-    local mb = sdec.ui_page * (sdec.ui_bytes_per_page() or 0)
-    local per = sdec.msg_per_page()
-    if per > 0 then sdec.msg_page = math.floor(mb / per) end
-  end
-  sdec.msgs_refresh()
   display.changescreen(sdec.msgscr)
+  delay(sdec.msg_settle)
+  sdec.msgs_refresh()
   return true
 end
 

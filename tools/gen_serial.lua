@@ -2561,6 +2561,10 @@ function delay(s)
   TRIG.delays = TRIG.delays + 1
   TRIG.delayed = TRIG.delayed + d
   TRIG.clock = TRIG.clock + d
+  -- AND IT SETTLES THE DISPLAY, which is the other half of what delay() does on the instrument:
+  -- a screen just brought up by changescreen cannot be written to until the firmware is yielded to.
+  -- Modelled in mock_display, closed here, because this is the only yield the app has.
+  if MD ~= nil and MD.settled ~= nil then MD.settled() end
 end
 
 -- ---------- load the REAL modules ----------

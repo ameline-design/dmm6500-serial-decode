@@ -1690,11 +1690,11 @@ end
 function sdec.ui_page_btns()
   -- Save and NewLog first, before the guard: gating them on ui_pgbtn meant they could never hide.
   sdec.ui_usb_btns()
-  -- Msgs hides with nothing to show, the rule the rest of this margin follows. Gated on sdec.res,
-  -- the field msgs_refresh itself reads, so button and screen agree by construction -- including
-  -- after a recording, whose bytes are counted in ck_tot and live in the file this screen cannot read.
+  -- Msgs appears only when the note cell withholds something, decided by msg_hidden() -- which the
+  -- screen reads too, so the button cannot offer a screen with nothing new on it. Gating it on
+  -- sdec.res was the decoded-text premise, and backwards in both directions.
   if sdec.ui_msgbtn ~= nil then
-    local mw = (sdec.res ~= nil and (sdec.res.nf or 0) > 0)
+    local mw = sdec.msg_hidden()
     if mw ~= sdec.ui_msgvis then
       local mst = display.STATE_INVISIBLE
       if mw then mst = display.STATE_ENABLE end
@@ -2188,80 +2188,111 @@ end
 
 -- Delete every options-screen object and nil its handle.
 -- ============================================================================
--- The MESSAGES screen: every decoded byte, on a screen of its own
+-- The MESSAGES screen: the app's own notes, in full
 -- ============================================================================
 -- WHAT THIS IS FOR, from the field on 2026-10-20: "messages are displayed in the app, but I don't
--- know how to view them all." The bytes were never truncated -- the main screen pages through all of
--- them with Up and Dn in the margin -- but nothing on the glass says so, and an operator who does not
--- find two 56 px buttons concludes the app shows a fragment. So this is a DISCOVERABILITY fix first
--- and a capacity one second.
+-- know how to view them all." The messages are the app's own -- the diagnostics and errors
+-- ui_notes() builds. The note cell at the top of the main screen shows exactly one of them, fitted,
+-- with '(+N more)' appended when there are others. So an operator could see that something was being
+-- withheld and had no way to read it, which is the complaint exactly.
 --
--- IT IS ITS OWN SCREEN WITH ITS OWN PAGING, deliberately not a wider ui_nrow. The main screen's page
--- size is ui_bytes_per_page(), which multiplies the view's `cols` by ui_nrow, and ui_nrow also sizes
--- the scrollbar segment list "BY CONSTRUCTION". Changing it per screen would ripple through the
--- refresh, the scrollbar and the page arithmetic for a layout difference, so this screen reads
--- sdec.res directly through ua_text_line() and keeps its own page number.
+-- NEVER DECODED TEXT, and this screen has been built wrong twice in that direction: once as the TEXT
+-- view with 21 rows instead of 15, once as the byte stream split into bursts between idle runs. Both
+-- are the dump area's job, and the dump area already pages through all of it. A screen that answers
+-- a question nobody asked is worse than a missing one, because it looks like the feature.
 --
 -- BUILT ON DEMAND AND DESTROYED ON BACK, which is the pattern the Options screen already follows and
 -- the only affordable one: the display pool is 463 objects and the main screen spends about 75 on its
 -- rows alone. This screen costs 21 rows + 3 buttons + a counter + the screen, so nothing is held
 -- while the operator is not looking at it.
 --
--- 21 ROWS AGAINST THE MAIN SCREEN'S 15, which is the whole capacity gain: there are no status cells
--- to clear, so the rows start at 8 instead of 71. At 80 characters -- the figure ui_views already
--- uses for the TEXT view, so it is measured rather than chosen -- that is 1680 bytes a page against
--- 1200.
+-- 21 ROWS, because there are no status cells to clear and the rows can start at 8 instead of 71.
 sdec.msg_nrow   = 21
 sdec.msg_row_y0 = 8
 sdec.msg_row_dy = 18
+-- The wrap width, not a slice width. 80 is the figure ui_views already uses for the TEXT view, so it
+-- is measured against this font rather than chosen.
 sdec.msg_cols   = 80
 sdec.msg_page   = 0
 -- The same row the main screen's buttons use. 400 was tried and the mock refused it: a button is
 -- 58 px and the content area is 431, so anything past 373 is clipped off the bottom of the panel.
 sdec.msg_btn_y  = sdec.ui_btn_y
+-- The yield between bringing this screen up and writing to it. 0.2 s is measured to work and is not
+-- a minimum -- nothing established how far it can come down, and opening a screen is an operator
+-- action rather than a hot path, so it was not worth the bisection. msgs_show says what it is for.
+sdec.msg_settle = sdec.msg_settle or 0.2
 
--- A message is a burst between idle runs, and that is the app's own definition rather than a new
--- one: ua_run already calls a gap of >= 2 frame times idle, which is what sets r.idle1. It is also
--- what the operator sees on the wire, one country name per burst on the board that found this.
+-- Is the note cell withholding anything? -> true/false, and the note count. The one source of truth
+-- for both the Msgs button and this screen, so the button cannot offer a screen with nothing new on
+-- it. Two ways the cell comes up short and only two: a second note exists, so ui_note_text appends
+-- '(+N more)'; or one note does not fit, so ui_fit clips it. Comparing against ui_fit's own return
+-- is exact -- it hands back its argument untouched when it fits -- where a width recomputed here
+-- would eventually disagree with the cell it describes.
 --
--- This screen showed the byte stream before, sliced at a fixed 80 columns, which cut through every
--- message and started row 1 mid-word. That is the main screen's TEXT view with more rows, not a
--- message view -- said on the glass, and right.
-sdec.msg_gapframes = sdec.msg_gapframes or 2
+-- The page counter takes width off the same cell (ui_pgind_px), so one note can fit at 'page 1 of 1'
+-- and be clipped at 'page 9 of 35'. Not a glitch: by then it genuinely is cut off.
+function sdec.msg_hidden()
+  local t, m = sdec.ui_notes()
+  if m < 1 then return false, 0 end
+  if m > 1 then return true, m end
+  local px = sdec.ui_note_px - sdec.ui_pgind_px()
+  return sdec.ui_fit(t[1], px) ~= t[1], m
+end
 
--- -> a list of {first, last} frame indices, one per message, and how many. Never nil for a result
--- that decoded anything: a capture with no gap in it is one message, which is the honest answer.
-function sdec.msg_split(r, T)
-  if r == nil or r.tpos == nil or (r.nf or 0) < 1 then return nil, 0 end
-  local parbits = 0
-  if r.par ~= nil and r.par ~= sdec.PAR_NONE then parbits = 1 end
-  local fb = 1 + (r.nbits or 8) + parbits + (r.nstop or 1)
-  local lim = nil
-  if T ~= nil and T > 0 then lim = sdec.msg_gapframes * fb * T end
-  local out, n, first, i = {}, 0, 1, nil
-  for i = 2, r.nf do
-    if lim ~= nil and r.tpos[i] ~= nil and r.tpos[i - 1] ~= nil
-       and (r.tpos[i] - r.tpos[i - 1]) >= lim then
+-- The last space at or before `room`, so a note breaks between words; `room` itself when there is no
+-- space to break at, which hard-wraps a long unbroken token rather than looping for ever.
+function sdec.msg_wrap_at(s, room)
+  if room < 1 then return 1 end
+  local i
+  for i = room + 1, 2, -1 do
+    if string.sub(s, i, i) == ' ' then return i - 1 end
+  end
+  return room
+end
+
+-- EVERY NOTE WRAPPED INTO ROWS -> a flat list of row strings, and how many.
+--
+-- Wrapped and not fitted: truncating here would reproduce the exact problem this screen exists to
+-- solve. Numbered once per note, with continuations indented, so a wrapped tail is not mistaken for
+-- a new message.
+function sdec.msg_lines()
+  local t, m = sdec.ui_notes()
+  local out, n, i = {}, 0, nil
+  for i = 1, m do
+    local s, pre = tostring(t[i]), string.format('%2d  ', i)
+    -- Bounded rather than `while true`: a note is one line of text, so twenty rows is already far
+    -- past anything real, and a wrap bug on the instrument must not become an unbreakable loop.
+    local guard = 0
+    while guard < 20 do
+      guard = guard + 1
+      local room = sdec.msg_cols - string.len(pre)
+      if string.len(s) <= room then
+        n = n + 1
+        out[n] = pre .. s
+        break
+      end
+      local cut = sdec.msg_wrap_at(s, room)
       n = n + 1
-      out[n] = {first = first, last = i - 1}
-      first = i
+      out[n] = pre .. string.sub(s, 1, cut)
+      s = string.sub(s, cut + 1)
+      while string.sub(s, 1, 1) == ' ' do s = string.sub(s, 2) end
+      pre = '    '
+      if s == '' then break end
     end
   end
-  n = n + 1
-  out[n] = {first = first, last = r.nf}
   return out, n
 end
 
--- One message per row now, so a page is rows rather than bytes.
+-- One row per wrapped line, so a page is rows.
 function sdec.msg_per_page()
   return sdec.msg_nrow
 end
 
 function sdec.msg_npages()
-  local _, nm = sdec.msg_split(sdec.res, sdec.bittime)
-  if nm == nil or nm <= 0 then return 1 end
+  local _, nl = sdec.msg_lines()
+  if nl == nil or nl <= 0 then return 1 end
   local per = sdec.msg_per_page()
-  return math.floor((nm + per - 1) / per)
+  return math.floor((nl + per - 1) / per)
 end
 
 -- Delete every object this screen owns and nil its handles, in creation order's reverse: children
@@ -2337,19 +2368,12 @@ function sdec.msgs_refresh()
   if sdec.msg_page >= npg then sdec.msg_page = npg - 1 end
   if sdec.msg_page < 0 then sdec.msg_page = 0 end
   local base = sdec.msg_page * sdec.msg_per_page()
-  local ms, nm = sdec.msg_split(sdec.res, sdec.bittime)
+  local ls, nl = sdec.msg_lines()
   local i
   for i = 1, sdec.msg_nrow do
     local k = base + i
     local s = ''
-    if ms ~= nil and k <= nm then
-      local m = ms[k]
-      -- Numbered, because 'which message' is the question this screen exists to answer, and the
-      -- number has to be the one the whole capture gives it rather than the row's position.
-      s = string.format('%3d  %s', k,
-                        sdec.ua_text_line(m.first, m.last - m.first + 1))
-      if string.len(s) > sdec.msg_cols then s = string.sub(s, 1, sdec.msg_cols) end
-    end
+    if ls ~= nil and k <= nl then s = ls[k] end
     display.settext(sdec.msg_row[i], s)
   end
   -- Up and Dn hide on a single page, the main margin's rule. This screen's first outing read
@@ -2362,20 +2386,30 @@ function sdec.msgs_refresh()
   end
 
   if sdec.msg_ind ~= nil then
-    -- The MESSAGE range as well as the page: 'page 2 of 9' does not say which messages are on it.
-    local tot = nm or 0
+    -- The NOTE COUNT as well as the page, and it counts notes rather than the rows they wrap onto:
+    -- 'line 22 of 40' tells an operator nothing, where 'note 3 of 5' is what they came to find out.
+    local _, nm = sdec.ui_notes()
     local last = base + sdec.msg_per_page()
-    if last > tot then last = tot end
+    if last > nl then last = nl end
     local shown = base + 1
-    if tot < 1 then shown = 0 end
+    if nl < 1 then shown = 0 end
     display.settext(sdec.msg_ind,
-                    string.format('page %d of %d   msg %d-%d of %d',
-                                  sdec.msg_page + 1, npg, shown, last, tot))
+                    string.format('page %d of %d   line %d-%d of %d   (%d note%s)',
+                                  sdec.msg_page + 1, npg, shown, last, nl, nm,
+                                  nm == 1 and '' or 's'))
   end
   return true
 end
 
 -- Open it, from the Msgs button in the margin.
+--
+-- The yield between the screen change and the writes is load-bearing, and sdec.ck_poll already said
+-- why: "delay() is what lets the display update". Four orderings were measured on the glass and only
+-- the one with a yield paints -- refreshing twice without one still lost the counter and Up/Dn, which
+-- rules out repeating the write and leaves elapsed time. msgs_refresh returned true in every failing
+-- case and nothing reached the event log, so only a grab could find it, and it did so after the
+-- offline suite had passed. The main screen never needed this: its 2 Hz tick refreshes again within
+-- 500 ms, so a lost write there repairs itself. This screen refreshes only when asked.
 function sdec.msgs_show()
   if sdec.build_msgs() == nil then
     -- Nothing to switch to, so say why on the screen the operator is already looking at rather than
@@ -2383,15 +2417,14 @@ function sdec.msgs_show()
     sdec.lasterr = sdec.msg_why or 'could not build the messages screen'
     return false
   end
-  -- Opened at the page the main screen is showing, so the two views agree on where the operator is.
+  -- Always at the first note, not the main screen's page: this used to map ui_page through
+  -- ui_bytes_per_page(), which only meant anything while the screen showed bytes. Notes do not
+  -- correspond to dump pages, and note 1 is the one the cell was already showing.
   sdec.msg_page = 0
-  if sdec.ui_page ~= nil and sdec.ui_page > 0 then
-    local mb = sdec.ui_page * (sdec.ui_bytes_per_page() or 0)
-    local per = sdec.msg_per_page()
-    if per > 0 then sdec.msg_page = math.floor(mb / per) end
-  end
-  sdec.msgs_refresh()
+  -- Up, yield, then write. The yield is not optional; see above the function.
   display.changescreen(sdec.msgscr)
+  delay(sdec.msg_settle)
+  sdec.msgs_refresh()
   return true
 end
 

@@ -248,9 +248,46 @@ function MD.cascaded()
   return n, table.concat(what, ' ')
 end
 
+-- A SCREEN JUST BROUGHT UP CANNOT BE WRITTEN TO YET, and this mock could not see that at all.
+-- Measured 2026-10-20 on the Msgs screen, four orderings, only one of which paints: writing before
+-- the changescreen lost the objects created LAST (the counter and Up/Dn) while the rows created first
+-- kept their text; writing straight after the changescreen lost all but row 1; refreshing twice with
+-- no yield painted the rows and still lost the counter and buttons. Yielding once between the two
+-- paints everything. sdec.ck_poll already recorded the reason -- "delay() is what lets the display
+-- update" -- so the yield is the mechanism, not a workaround for one.
+--
+-- In every failing case msgs_refresh returned true and nothing reached the event log, so no return
+-- value and no refusal count could catch it. A screen grab was the only evidence, and it came after
+-- the offline suite had passed green.
+--
+-- SO: changescreen opens a window in which writes are at risk, and delay() closes it. The delay stub
+-- in gen_serial.lua calls MD.settled() to do that -- it is a virtual clock, so no suite gets slower.
+--
+-- REPORTED, NOT ENFORCED. Dropping these writes would be the faithful thing, but it would silently
+-- change what hundreds of existing checks mean. The main screen writes in this window too and gets
+-- away with it on the instrument, because its 2 Hz tick refreshes again within 500 ms -- so enforcing
+-- would fail a screen that works. Counted instead, for a test to assert on where it matters.
+local PENDING = false
+local PREWRITE = {}
+
+local function atrisk(o, what)
+  if not PENDING or o == nil then return end
+  table.insert(PREWRITE, string.format('%s on object %s, written before the screen had settled',
+                                       what, tostring(o.id)))
+end
+
+function MD.prewrites() return PREWRITE end
+function MD.nprewrite() return table.getn(PREWRITE) end
+function MD.forget_prewrites() PREWRITE = {} end
+-- Called by the delay() stub: the yield that lets the firmware catch up.
+function MD.settled() PENDING = false end
+function MD.pending() return PENDING end
+
 function display.changescreen(h)
   if h ~= display.SCREEN_HOME then use(h, 'changescreen') end
   display.active = h
+  -- Opens the at-risk window. Only a delay() closes it.
+  PENDING = true
 end
 
 -- THE FIRMWARE'S OWN TWO TEXT LINES, which are NOT created objects. display.TEXT1 and TEXT2 belong to
@@ -297,6 +334,7 @@ function display.settext(h, s)
     return
   end
   local o = use(h, 'settext')
+  atrisk(o, 'settext')
   o.text = s
   o.sets = (o.sets or 0) + 1     -- counted, so tests can assert refresh traffic
 end
@@ -369,6 +407,7 @@ display.STATE_READONLY = 'readonly'
 -- button that is simply still live on the instrument.
 function display.setstate(h, st)
   local o = use(h, 'setstate')
+  atrisk(o, 'setstate')
   if st == display.STATE_DISABLE and o.kind ~= display.OBJ_EDIT_NUMBER
      and o.kind ~= display.OBJ_EDIT_OPTION and o.kind ~= display.OBJ_EDIT_CHECK then
     refuse('STATE_DISABLE applies to display.OBJ_EDIT_* only')
