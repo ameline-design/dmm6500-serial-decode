@@ -2579,16 +2579,22 @@ function sdec.options_restore()
   return true
 end
 
--- Show the options screen, building it first if it does not exist yet.
+-- Show the options screen. Never builds it: start() does that, behind the loading cover.
 function sdec.options()
-  -- Through pcall: build_options() raises by design when the pool is exhausted, and this is a handler.
+  -- NOT BUILT HERE. This used to build the form on the press if it was missing, through a pcall
+  -- because build_options() raises when the pool refuses. Removed on the operator's rule of
+  -- 2026-10-21: create everything up front behind the loading screen. Two reasons, and neither is
+  -- tidiness -- creating display objects on a screen the operator can SEE is both slow and visibly
+  -- wrong, and create/destroy cycles are how this app runs out of objects, a refused delete being
+  -- a permanent leak that raises nothing (sdec.delfails, sdec.orphans).
+  --
+  -- A nil handle is not transient: everything is allocated at launch, so the retry this replaced
+  -- would have failed the same way. Say so instead. docs/MEASUREMENTS.md, 'Nothing is created on a
+  -- visible screen, and nothing on demand'.
   if sdec.optscr == nil then
-    local bok, berr = pcall(sdec.build_options)
-    if not bok or sdec.optscr == nil then
-      sdec.lasterr = tostring(berr or 'the options screen could not be built')
-      ulog.line('options: ' .. sdec.lasterr)
-      return sdec.ui_refresh()
-    end
+    sdec.lasterr = 'the options screen was not built at launch -- power cycle the instrument'
+    ulog.line('options: ' .. sdec.lasterr)
+    return sdec.ui_refresh()
   end
   sdec.options_save()     -- so Cancel has something to go back to
   -- The seed's verdict decides whether the form may open: a part-way setvalue leaves the fields above it
@@ -2812,6 +2818,12 @@ function sdec.stop()
   end
   sdec.destroy_options()
   sdec.ui_destroy()
+  -- AFTER ui_destroy, which has just taken the panel to SCREEN_HOME. The messages screen is held for
+  -- the whole app run now, so this teardown is what frees it -- and it can be the screen in front
+  -- when End App is pressed, which makes the order load-bearing: deleting the screen the panel is
+  -- showing is the state the front panel cannot recover from. destroy_msgs deliberately does not
+  -- switch away itself, because build_msgs calls it and a switch there would drop the loading cover.
+  sdec.destroy_msgs()
   -- Settle before deleting, and keep the handle if the delete is refused, as acq_make_buffer() does: the
   -- abort does not wait, and the handle is the only one, so dropping it strands the buffer.
   -- THE WHOLE STATIC SET, not just sdec.buf. sdec.buf is whichever of the three the mode in force
@@ -3006,6 +3018,17 @@ function sdec.start()
     -- Hook End App as soon as a screen exists, before anything that could fail.
     sdec.install_cleanup(sdec.ui_scr)
     sdec.build_options()
+    -- The messages screen, here with the options screen rather than on the press that opens it: 18
+    -- display.create calls cost the operator a visible wait at the press, and its Up/Dn buttons were
+    -- seen to flash before the first refresh hid them. Under the loading cover, because creating a
+    -- screen makes it the active one.
+    --
+    -- NOT FATAL AND NOT IN A pcall: build_msgs returns nil when the pool refuses rather than
+    -- raising, and the app runs without the screen -- the Msgs press then reports instead of
+    -- opening. Logged, because a missing Msgs screen is otherwise unexplainable from the panel.
+    if sdec.build_msgs() == nil then
+      ulog.line('messages screen unavailable at launch: ' .. tostring(sdec.msg_why))
+    end
 
     -- Main screen in front, then the loading screen away: deleting the displayed screen blanks the panel.
     sdec.ui_loading_clear(sdec.ui_scr)

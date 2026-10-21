@@ -297,11 +297,19 @@ end
 -- change what hundreds of existing checks mean. The main screen writes in this window too and gets
 -- away with it on the instrument, because its 2 Hz tick refreshes again within 500 ms -- so enforcing
 -- would fail a screen that works. Counted instead, for a test to assert on where it matters.
+-- ON THE SCREEN THAT WAS JUST SWITCHED TO, and only that one. A write to any other screen's objects
+-- cannot be lost by a repaint it is not part of -- the panel is not showing it -- so counting those
+-- measures a hazard that does not exist. It read every write in the window at first, and that made
+-- the fill-then-switch order look WORSE than the one it replaced: msgs_close switches to the main
+-- screen, msgs_show then writes 16 rows to the messages screen, and all 16 were charged to a window
+-- belonging to a screen they never touched.
 local PENDING = false
+local PENDSCR = nil
 local PREWRITE = {}
 
 local function atrisk(o, what)
   if not PENDING or o == nil then return end
+  if PENDSCR ~= nil and o.parent ~= PENDSCR then return end
   table.insert(PREWRITE, string.format('%s on object %s, written before the screen had settled',
                                        what, tostring(o.id)))
 end
@@ -316,8 +324,9 @@ function MD.pending() return PENDING end
 function display.changescreen(h)
   if h ~= display.SCREEN_HOME then use(h, 'changescreen') end
   display.active = h
-  -- Opens the at-risk window. Only a delay() closes it.
+  -- Opens the at-risk window, for this screen's own children. Only a delay() closes it.
   PENDING = true
+  PENDSCR = h
 end
 
 -- THE FIRMWARE'S OWN TWO TEXT LINES, which are NOT created objects. display.TEXT1 and TEXT2 belong to

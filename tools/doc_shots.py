@@ -60,8 +60,8 @@ SHOTS = [
     ('options',                'frame', None,   None,    'the options form'),
     # THE MESSAGES SCREEN, which needs a NOTE to exist and not a particular capture shape -- the
     # screen renders ui_notes() and never the decode. A frame capture of this stimulus fills its
-    # window, which posts the 'capture FULL ... the message may continue' note, so the state is
-    # reached the way an operator reaches it rather than by planting a string.
+    # window, which posts the 'Captured more than N bytes' note, so the state is reached the way an
+    # operator reaches it rather than by planting a string.
     ('panel-msgs',             'frame', 'text', None,    'the messages screen, notes in full'),
     ('panel-recording',        'sml',   'text', None,    'an 8 kB recording, part way through'),
     ('panel-after-recording',  'sml',   'text', None,    'after an 8 kB recording, Mode pressed once'),
@@ -408,7 +408,8 @@ def main():
                 sok, swhy = acted(fsh)
                 ok = sok and grab(os.path.join(a.out, name + '.png'))
                 # CLOSED WHATEVER HAPPENED, so a failed grab cannot leave this screen in front of
-                # the next shot. msgs_close switches away before it deletes.
+                # the next shot. msgs_close only switches away now -- the screen is built at launch
+                # and held, so nothing here deletes it.
                 call(d, 'msgs-close', 'sdec.msgs_close')
                 if ok:
                     print('      notes=%s on the screen' % nnotes)

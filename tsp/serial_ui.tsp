@@ -940,8 +940,16 @@ end
 -- there are; ulog and the saved file get all of them. Ordered by how badly an absence would mislead.
 function sdec.ui_notes()
   local t, m = {}, 0
+  -- Sentence case, applied here rather than at the thirty-odd literals: a dozen of these notes are
+  -- set in other modules and several open with a substituted number, where no literal has a first
+  -- letter to capitalise. string.upper leaves a digit alone, so '9600 baud fits nothing' keeps its
+  -- rate and 'armed at' becomes 'Armed at'. docs/MEASUREMENTS.md, 'Sentence case, applied in add()
+  -- and not at the literals'.
   local function add(s)
-    if s ~= nil and s ~= '' then m = m + 1; t[m] = s end
+    if s ~= nil and s ~= '' then
+      m = m + 1
+      t[m] = string.upper(string.sub(s, 1, 1)) .. string.sub(s, 2)
+    end
   end
 
   if sdec.lasterr ~= nil then add('NOTE: ' .. tostring(sdec.lasterr)) end
@@ -1093,18 +1101,20 @@ function sdec.ui_notes()
   add(sdec.baud_note)
   add(sdec.fmt_note)
 
-  -- The capture was FULL, so the message probably continues past what is shown. Not for a retained
-  -- tail -- docs/MEASUREMENTS.md, 'Why the capture-FULL note excludes a retained tail'.
+  -- The capture came back FULL, so what is on screen is a window rather than a whole message. The
+  -- wording is the operator's, 2026-10-21: it states the byte count and stops, where it used to add
+  -- "the message may continue" -- a guess about the wire, next to a fact about the window. Not for a
+  -- retained tail -- docs/MEASUREMENTS.md, 'Why the capture-FULL note excludes a retained tail'.
   local istail = (sdec.res ~= nil and sdec.res.first ~= nil)
   if sdec.res ~= nil and sdec.res.nf > 0 and not istail then
     local cap = sdec.window_bytes(sdec.baud, sdec.res.nbits, sdec.res.par,
                                   sdec.res.nstop)
     if cap ~= nil and cap > 0 and sdec.res.nf >= cap then
       if sdec.force_baud == nil then
-        add(string.format('capture FULL at %d bytes -- the message may continue; ' ..
+        add(string.format('Captured more than %d bytes -- ' ..
                           'lock the baud rate for a longer window', cap or 0))
       else
-        add(string.format('capture FULL at %d bytes -- the message may continue', cap or 0))
+        add(string.format('Captured more than %d bytes.', cap or 0))
       end
     end
   end
@@ -2201,10 +2211,17 @@ end
 -- are the dump area's job, and the dump area already pages through all of it. A screen that answers
 -- a question nobody asked is worse than a missing one, because it looks like the feature.
 --
--- BUILT ON DEMAND AND DESTROYED ON BACK, which is the pattern the Options screen already follows and
--- the only affordable one: the display pool is 463 objects and the main screen spends about 75 on its
--- rows alone. This screen costs 13 rows + 3 buttons + a counter + the screen, so nothing is held
--- while the operator is not looking at it.
+-- BUILT ONCE AT LAUNCH AND HELD, which is the pattern the Options screen follows -- start() calls
+-- build_options() under the loading cover and nothing tears it down until End App. This screen was
+-- built on demand instead, and from the field on 2026-10-21: "slow, and the page buttons appear
+-- briefly before being hidden". Both are the same cause. A build is 18 display.create calls at the
+-- moment the operator is waiting, and Up/Dn were created in their default visible state, so the
+-- hide that msgs_refresh applies to them landed after the screen was already in front.
+--
+-- So: the 18 objects are allocated once, beside the Options screen's own, and Up/Dn are hidden AT
+-- CREATION rather than on the first refresh. The pool is 463 objects and the main screen spends
+-- about 75 on its rows, so holding 13 rows + 3 buttons + a counter + the screen is affordable where
+-- the latency was not.
 --
 -- THE FACE IS FONT_3, chosen off the glass from the seven rendered side by side: these are sentences
 -- to read rather than a byte grid to scan, so the dump area's FONT_SMALL is too small, and FONT_3
@@ -2237,10 +2254,6 @@ sdec.msg_page   = 0
 -- The same row the main screen's buttons use. 400 was tried and the mock refused it: a button is
 -- 58 px and the content area is 431, so anything past 373 is clipped off the bottom of the panel.
 sdec.msg_btn_y  = sdec.ui_btn_y
--- The yield between bringing this screen up and writing to it. 0.2 s is measured to work and is not
--- a minimum -- nothing established how far it can come down, and opening a screen is an operator
--- action rather than a hot path, so it was not worth the bisection. msgs_show says what it is for.
-sdec.msg_settle = sdec.msg_settle or 0.2
 
 -- Is the note cell withholding anything? -> true/false, and the note count. The one source of truth
 -- for both the Msgs button and this screen, so the button cannot offer a screen with nothing new on
@@ -2368,6 +2381,21 @@ function sdec.build_msgs()
     sdec.msg_why = 'display object pool exhausted -- power cycle the instrument'
     return nil
   end
+  -- A COVER BEFORE THE CHILDREN, UNCONDITIONALLY. Nothing may be created on a screen the operator
+  -- can see: it is slow -- a create is ~12 ms of display queue -- and it looks like a fault, the
+  -- screen assembling itself in front of them. The create above has already taken the front, as
+  -- every screen create does, so this screen is visible from here until something covers it.
+  --
+  -- Who raised it decides who clears it, the rule build_options follows and the same ownership
+  -- test: "did I create it". On a launch start() owns the cover and this only takes the front back.
+  -- docs/MEASUREMENTS.md, 'Who raises and who clears the loading cover' and 'Nothing is created on
+  -- a visible screen, and nothing on demand'.
+  local covermine = false
+  if sdec.ui_loadscr == nil then
+    covermine = sdec.ui_loading_raise()
+  else
+    sdec.ui_loading_front()
+  end
   -- The rows take `face`, the counter keeps `small`: the notes are what the operator came to read and
   -- the page counter is furniture, so making both bigger would spend a row's worth of height on it.
   local small, face, left = display.FONT_SMALL, display.FONT_3, display.JUST_LEFT
@@ -2387,6 +2415,9 @@ function sdec.build_msgs()
   if sdec.msg_nrow < 1 then
     sdec.destroy_msgs()
     sdec.msg_why = 'no display objects left for a message row'
+    -- The cover comes down on this path too, or a refused build leaves 'Loading, please wait...' in
+    -- front for ever. To ui_scr, not to the screen just deleted.
+    if covermine then sdec.ui_loading_clear(sdec.ui_scr) end
     return nil
   end
   sdec.msg_ind = create(sdec.msgscr, display.OBJ_TEXT, sdec.ui_x,
@@ -2395,6 +2426,12 @@ function sdec.build_msgs()
   sdec.msg_up   = create(sdec.msgscr, display.OBJ_BUTTON, 8,   sdec.msg_btn_y, 'Up',   bw)
   sdec.msg_dn   = create(sdec.msgscr, display.OBJ_BUTTON, 132, sdec.msg_btn_y, 'Dn',   bw)
   sdec.msg_back = create(sdec.msgscr, display.OBJ_BUTTON, 662, sdec.msg_btn_y, 'Back', 112)
+  -- HIDDEN AT CREATION, not on the first refresh. A button is created in its default visible state,
+  -- and the operator saw these two flash: the hide that msgs_refresh applies landed after the screen
+  -- had reached the glass. Most opens are one page, so hidden is also the common case. Set here
+  -- rather than left to msgs_refresh so the state is right before anything can see it.
+  if sdec.msg_up ~= nil then display.setstate(sdec.msg_up, display.STATE_INVISIBLE) end
+  if sdec.msg_dn ~= nil then display.setstate(sdec.msg_dn, display.STATE_INVISIBLE) end
   -- Each press goes through sdec.guard, as every other button on every screen does.
   if sdec.msg_up   ~= nil then display.setevent(sdec.msg_up,   display.EVENT_PRESS,
                                                 'sdec.guard(sdec.msgs_prev)') end
@@ -2402,6 +2439,16 @@ function sdec.build_msgs()
                                                 'sdec.guard(sdec.msgs_next)') end
   if sdec.msg_back ~= nil then display.setevent(sdec.msg_back, display.EVENT_PRESS,
                                                 'sdec.guard(sdec.msgs_close)') end
+  -- END APP ON THIS SCREEN TOO, for the reason build_options states: if the firmware delivers
+  -- EVENT_ENDAPP only to the visible screen, exiting from here would strand all three screens and
+  -- the static buffers until a power cycle. This screen had no hook at all -- it was built on
+  -- demand, which made the window look small, but a screen the operator is looking at is exactly
+  -- when they reach for End App.
+  display.setevent(sdec.msgscr, display.EVENT_ENDAPP, 'sdec.guard(sdec.cleanup)')
+  -- Back to the main screen if this function raised the cover, which is the non-launch caller: this
+  -- screen is not what the operator asked to look at, so it must not be what the cover comes down
+  -- on. build_options clears to its own form because there the press WAS for the form.
+  if covermine then sdec.ui_loading_clear(sdec.ui_scr) end
   return sdec.msgscr
 end
 
@@ -2447,28 +2494,45 @@ end
 
 -- Open it, from the Msgs button in the margin.
 --
--- The yield between the screen change and the writes is load-bearing, and sdec.ck_poll already said
--- why: "delay() is what lets the display update". Four orderings were measured on the glass and only
--- the one with a yield paints -- refreshing twice without one still lost the counter and Up/Dn, which
--- rules out repeating the write and leaves elapsed time. msgs_refresh returned true in every failing
--- case and nothing reached the event log, so only a grab could find it, and it did so after the
--- offline suite had passed. The main screen never needed this: its 2 Hz tick refreshes again within
--- 500 ms, so a lost write there repairs itself. This screen refreshes only when asked.
+-- FILL IT, THEN SWITCH TO IT, and that order is the whole of this function. Writing to a screen the
+-- panel is already showing has to wait for the display to settle -- four orderings were measured on
+-- the glass and only the one with a yield painted, so this used to changescreen, delay(0.2) and then
+-- write. Refreshing twice without a yield still lost the counter and Up/Dn, which ruled out
+-- repeating the write and left elapsed time. Writing FIRST sidesteps the settle entirely: the
+-- objects already hold their text when the screen reaches the glass, so there is no write to lose
+-- and no 0.2 s to wait. msgs_refresh returned true in every failing case and nothing reached the
+-- event log, so only a grab could ever have found it -- which is the argument for not needing it.
+-- docs/MEASUREMENTS.md, 'Fill a screen before you switch to it'.
+--
+-- AND IT IS THE ORDER sdec.options() HAS ALWAYS USED: options_seed() setvalues every field and the
+-- changescreen comes after, with no delay in the path, on a form that has never dropped a field on
+-- the instrument. The one place that already wrote before switching is the one place that never
+-- needed a settle.
+--
+-- The build is at launch, so the cost of this press is 14 settexts and a screen change.
 function sdec.msgs_show()
-  if sdec.build_msgs() == nil then
-    -- Nothing to switch to, so say why on the screen the operator is already looking at rather than
-    -- failing silently. ui_note is where every other refusal lands.
-    sdec.lasterr = sdec.msg_why or 'could not build the messages screen'
+  -- NOTHING IS BUILT HERE, and that is the operator's rule of 2026-10-21: create everything up
+  -- front behind the loading screen, because creating and destroying display objects is how this
+  -- app runs out of them. A refused delete raises nothing -- del_obj counts it in sdec.delfails and
+  -- parks the handle in sdec.orphans -- so a leak is permanent for the power cycle, and a screen
+  -- that cycles 18 objects per press is a leak surface proportional to how useful it is.
+  --
+  -- So a press can only ever switch. A nil handle means the launch build was refused, which is not
+  -- a transient state: everything is allocated at launch, so trying again here would fail again.
+  -- Say why on the screen the operator is already looking at -- ui_note is where every refusal
+  -- lands -- rather than failing silently.
+  if sdec.msgscr == nil then
+    sdec.lasterr = sdec.msg_why or 'the messages screen was not built at launch'
     return false
   end
   -- Always at the first note, not the main screen's page: this used to map ui_page through
   -- ui_bytes_per_page(), which only meant anything while the screen showed bytes. Notes do not
   -- correspond to dump pages, and note 1 is the one the cell was already showing.
   sdec.msg_page = 0
-  -- Up, yield, then write. The yield is not optional; see above the function.
-  display.changescreen(sdec.msgscr)
-  delay(sdec.msg_settle)
+  -- Every row is written every refresh, blanks included, so a held screen cannot show the last
+  -- open's notes.
   sdec.msgs_refresh()
+  display.changescreen(sdec.msgscr)
   return true
 end
 
@@ -2482,17 +2546,17 @@ function sdec.msgs_prev()
   return sdec.msgs_refresh()
 end
 
--- Back to the main screen, and the order is the object-lifetime rule: switch away FIRST, then delete.
--- Deleting the screen while the panel is showing it is the case the front panel cannot recover from.
+-- Back to the main screen. A switch and nothing else: the screen is held for the rest of the app
+-- run, so Back no longer deletes it and the next open costs no allocation. sdec.stop() is what
+-- frees it, after ui_destroy() has taken the panel to SCREEN_HOME.
 function sdec.msgs_close()
   -- SCREEN_HOME when there is no main screen to go back to, and that case is reachable: this was a
   -- bare changescreen(sdec.ui_scr), which refused on a nil handle and left the panel on a screen
-  -- about to be deleted -- the one state the front panel cannot recover from. Found by the mock's
-  -- refusal counter, which records what a raise would have had swallowed.
+  -- with nothing in front of it. Found by the mock's refusal counter, which records what a raise
+  -- would have had swallowed.
   local to = sdec.ui_scr
   if to == nil then to = display.SCREEN_HOME end
   display.changescreen(to)
-  sdec.destroy_msgs()
   return true
 end
 

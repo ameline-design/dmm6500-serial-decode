@@ -220,7 +220,10 @@ print('\nlaunch against a dead front end')
 -- its objects back down, so a build that raised presents here as "0 screens" with the
 -- reason sitting unread in sdec.lasterr -- which is a diagnosis withheld by the very
 -- harness whose job is to give one.
-check('both screens were built', MD.live('screen') == 2,
+-- THREE: main, options and messages. The messages screen joined the launch set on 2026-10-21 --
+-- nothing is created on demand, and nothing on a visible screen -- so a count of two now means one
+-- of them was refused, which is exactly what this check is for.
+check('all three screens were built', MD.live('screen') == 3,
       MD.live('screen') .. ' screens, ' .. MD.live() .. ' objects'
       .. (sdec.lasterr and ('  lasterr: ' .. tostring(sdec.lasterr)) or ''))
 -- IT COMPARES THEM, rather than only asserting the screen has some title of a legal length: a name check

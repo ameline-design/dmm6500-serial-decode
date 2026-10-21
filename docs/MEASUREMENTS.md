@@ -3112,6 +3112,26 @@ rendered as '...everythi...', which is what cut every trailing reassurance from 
 sentence is the other way round: in full it measures **802 px against a 798 px panel**, so the status
 row carries 'not armed -- see the note' and the note cell carries the remedy.
 
+### Sentence case, applied in add() and not at the literals
+
+Every note on the message line starts with a capital, on the operator's instruction of 2026-10-21.
+The transformation is one `string.upper` on the first character inside `ui_notes`' own `add()`,
+rather than thirty-odd edited literals, for two reasons that are not stylistic:
+
+* **A dozen notes are not literals in that file at all.** `probe_note` is set in six places in
+  `serial_app.tsp`, `relocked`, `rate_refused`, `rate_note`, `baud_note` and `fmt_note` in
+  `uart_decode.tsp`. A convention enforced at the point of use covers a module added later; one
+  applied at the literals covers whatever was grepped for on the day.
+* **Several open with a substituted number**, where there is no literal first letter to capitalise:
+  `'%g baud fits nothing'` renders as `9600 baud fits nothing`. `string.upper` on a digit is the
+  digit, so the one call handles that case by doing nothing, and the rate keeps its leading `9600`
+  rather than becoming `9600 Baud`.
+
+The cost is that the source literal and the rendered string differ in their first character, so a
+grep for on-screen text has to allow for it -- which is what `test_serial` asserts, by checking each
+field is still lower case **where it is set** and sentence case where it comes out. Without that
+premise the test would pass equally against capitalised literals and prove nothing about `add()`.
+
 ### Display objects: cost, census and the dump-row choice
 
 **A text object costs ~12 ms to create** and one display message per refresh, and ~**192 messages per
@@ -3120,10 +3140,20 @@ the second PowerPC over a bounded, overrunnable queue -- "1706 Message dropped f
 precedes the firmware panics -- so rewriting unchanged rows is pure queue pressure, which is what
 `ui_set`'s shadow cache exists to avoid.
 
-**Object census**, counted by `tools/mock_display.lua`: **122** objects live after `ui_build()` and
-**134** once the options screen is built too, 12 of them its own. Any reasoning about how close the
-pool is to exhaustion starts from those two numbers. At ~12 ms each that is well over a second of
-drawing, which is what the loading cover hides.
+**Object census**, counted by `tools/mock_display.lua` on 2026-10-21:
+
+| after | live | screens | its own |
+|---|---|---|---|
+| `ui_build(true)` | 136 | 2 (main, loading cover) | -- |
+| `build_options()` | 152 | 3 | 16 |
+| `build_msgs()` | 170 | 4 | 18 |
+| `ui_loading_clear()` | **168** | 3 | the cover's 2 freed |
+
+**168 is the shipped census**, out of a pool of 463. Any reasoning about how close the pool is to
+exhaustion starts there. At ~12 ms a create that is over two seconds of drawing, which is what the
+loading cover hides -- and is why the messages screen is built at launch with the other two rather
+than on the press that opens it. This table previously read 122 and 134 with 12 for the options
+screen; all three had drifted, which is the argument for a measured table over a sentence.
 
 Objects per dump row, with each block at its own fixed x so no block can drift into the next:
 
@@ -3366,6 +3396,12 @@ continuously busy line -- a micro dumping debug text, which is the main use of t
 capture is full. The note names the remedy too: locking the detected rate drops the sample rate to
 suit it and lengthens the window, 19 bytes to 192 at 9600.
 
+It reads **`Captured more than 192 bytes -- lock the baud rate for a longer window`**, and
+`Captured more than 192 bytes.` once the rate is locked and the remedy has been taken. The wording
+is the operator's, 2026-10-21: it had said `the message may continue`, which is a guess about the
+wire standing beside a measurement of the window. Whether anything follows those bytes is not
+something the capture can know.
+
 **Not for a recording's retained tail**, and this is the guard that was missing. After an 8 kB run
 the result on screen is a SLICE of a capture that went to a file, so 'the capture was full' is not
 a fact about it, and the figure came out as the FRAME window at the recording's own sample rate --
@@ -3601,8 +3637,8 @@ first thing the operator ever saw, reading as a run that had already lost its be
 Creating a screen makes it the active one, which is why the operator can otherwise watch this app
 build itself: `ui_build()` creates the main screen and fills it, `build_options()` then creates the
 options screen -- bringing THAT to the front -- and fills it too, and only afterwards does
-`start()` call `changescreen(ui_scr)`. Two screens assemble in full view, in the wrong order,
-ending on a jump. At ~12 ms a text object and ~134 objects a launch, there is well over a second of
+`start()` call `changescreen(ui_scr)`. Three screens assemble in full view, in the wrong order,
+ending on a jump. At ~12 ms a text object and 168 objects a launch, there is over two seconds of
 drawing to hide.
 
 So the cover is raised after EVERY screen create, not once at the start, and `ui_loading_raise()`
@@ -3618,6 +3654,93 @@ its settings page at launch and then leave it.
 Never fatal. The pool can be exhausted and `display.create` returns nil silently, so a missing
 cover means a visible build -- the behaviour this replaces, not a failure -- and every call here is
 guarded with an advisory return.
+
+### Fill a screen before you switch to it
+
+The messages screen was built on the press that opened it and destroyed on Back, and from the field
+on 2026-10-21: **"slow, and the page buttons appear briefly before being hidden"**. One cause, two
+symptoms, and a third effect that was hiding in the code.
+
+**The latency is 18 `display.create` calls at the moment somebody is waiting**, ~12 ms each, plus a
+`delay(0.2)`. That delay was there because **a write to the screen the panel is already showing has
+to wait for the display to settle**: four orderings were measured on the glass, and only the one
+with a yield painted. Writing straight after `changescreen` lost everything but row 1; refreshing
+twice with no yield still lost the counter and the buttons, which rules out repetition and leaves
+elapsed time. `msgs_refresh()` returned true in every failing case and nothing reached the event
+log, so a screen grab was the only evidence there could be.
+
+**Writing first is a better answer than waiting.** The objects already hold their text when the
+screen reaches the glass, so there is no write to lose and no 0.2 s to pay. The order is now fill,
+then switch. `sdec.msg_settle` is gone -- nothing in the app reads a settle any more.
+
+**That order is not a guess: `sdec.options()` has always used it.** It calls `options_seed()`, which
+`setvalue`s every field on the form, and only then `changescreen(optscr)` -- with no delay anywhere
+in the path, on an instrument where the options screen has never dropped a field. So the one place
+in this app that already wrote before switching is also the one place that never needed a settle,
+which is the strongest evidence available without a grab.
+
+**The flash was the same ordering fault, applied to state rather than text.** `Up` and `Dn` are
+created in the default visible state, and the hide that `msgs_refresh()` applies to them on a
+single-page screen landed after the screen was already in front. They are hidden at creation now,
+which is also the common case: most opens are one page.
+
+So the screen joins the other two at launch, under the same cover, and Back is a `changescreen` and
+nothing else. It costs 18 of the 463 objects for the whole app run, `sdec.cleanup()` frees it after
+`ui_destroy()` has taken the panel to `SCREEN_HOME`, and the press that opens it now allocates
+nothing at all -- which `test_serial` asserts as a flat census across a close and two more opens.
+
+The mock counts writes made between a `changescreen` and the next `delay()`, **for that screen's own
+children only**. Scoping matters: unscoped, it charged all 16 of `msgs_show`'s writes to the window
+that `msgs_close`'s switch to the main screen had opened, which made the fill-then-switch order look
+worse than the one it replaced.
+
+### Nothing is created on a visible screen, and nothing on demand
+
+Two rules, both the operator's, 2026-10-21. They are not about tidiness.
+
+**Never create display objects on a screen somebody can see.** It is slow -- a create is ~12 ms of
+display-queue traffic -- and it looks like a fault rather than slowness: the screen assembles itself
+in front of the operator, in creation order, ending on a jump. The subtlety is that **creating a
+screen makes it the active one**, so a build that starts by creating its own screen has made that
+screen visible before it creates a single child. The messages screen drew all 17 of its children
+that way until it moved to launch time.
+
+**Never create them on demand.** `display.delete` can be refused, and a refused delete **raises
+nothing** -- `sdec.del_obj` detects it by an event-count delta, charges `sdec.delfails` and parks
+the handle in `sdec.orphans` for `del_orphans()` to retry. What it cannot do is get the object back
+in the general case, so every create/destroy cycle is a chance to lose part of a 463-object pool for
+the rest of the power cycle. A screen built and destroyed per press makes that risk proportional to
+how useful the screen is, which is the worst possible shape for it.
+
+So **every screen is built once, in `start()`, behind the loading cover**, and a press only ever
+switches. `sdec.options()` used to build the form if it was missing and `sdec.msgs_show()` used to
+build the messages screen on every open; both now report and create nothing:
+
+    the options screen was not built at launch -- power cycle the instrument
+
+That refusal is honest rather than defensive. Everything is allocated at launch, so a handle that is
+nil at press time is nil because the pool refused, which is not a transient condition -- the retry
+those two paths used to perform would have failed the same way, after creating objects on a visible
+screen to do it.
+
+`build_msgs` and `build_options` both raise a cover themselves if there is not one, on the same
+"did I create it" ownership test, so the guarantee does not depend on the caller. They differ only
+in where the cover comes down: `build_options` clears to its own form, because the press that
+reached it was *for* the form; `build_msgs` clears to the main screen, because a build is not an
+open.
+
+`tools/mock_display.lua` records `created_while_active` on every object, which is the only evidence
+that distinguishes a screen built out of sight from one built in full view -- both are identical
+once finished. `test_serial` walks a whole launch and asserts zero for all three screens, and drives
+the no-cover path for the two that can take it.
+
+**One leak the move exposed: the messages screen had no End App hook.** `build_options` hooks
+`EVENT_ENDAPP` on the options screen as well as the main one, on the reasoning that if the firmware
+delivers it only to the *visible* screen then exiting from the form would strand both screens and
+the static buffers until a power cycle. The messages screen never had that hook. Building it on
+demand made the window look small -- it existed only while the screen did -- but that is precisely
+the window in which an operator reaches for End App, because they are reading the screen. Hooked
+now, and asserted beside the other two.
 
 ### Why the Protocol field comes first and is spelled out
 

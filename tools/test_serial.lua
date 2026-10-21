@@ -1851,6 +1851,11 @@ do
   sdec.force_baud, sdec.force_nbits = nil, nil
   sdec.force_par, sdec.force_nstop, sdec.force_invert = nil, nil, nil
   sdec.trigmode = 'edge'
+  -- THE FORM IS BUILT FIRST, because sdec.options() no longer builds it. It used to, on the press,
+  -- and that is what the operator ruled out: nothing may be created on a screen somebody can see,
+  -- and create/destroy cycles are how the app runs out of display objects. start() builds it under
+  -- the loading cover, so a fixture that wants a form has to do what the launch does.
+  sdec.build_options()
   sdec.options()
   check('opening Options snapshots what is in effect', sdec.opt_snap ~= nil)
   local lok = sdec.options_lock()
@@ -2292,7 +2297,11 @@ local sok, serr = sdec.start()
 check('start() succeeds', sok, tostring(serr))
 local live1, bufs1 = MD.live(), LIVEBUFS()
 check('start() created objects', live1 > 0, 'live=' .. live1)
-check('exactly two screens are live', MD.live('screen') == 2,
+-- THREE, not two: main, options and messages. The messages screen joined them at launch when
+-- building it on the press proved slow enough to see -- 18 creates while the operator waits -- and
+-- its Up/Dn buttons flashed before the first refresh hid them. A count rather than a list, so a
+-- fourth screen nobody meant to hold has to be explained here.
+check('exactly three screens are live: main, options, messages', MD.live('screen') == 3,
       'screens=' .. MD.live('screen'))
 -- ONE TIMER, AND ONLY ONE. The app is still single-shot -- nothing is redrawn on a tick that a
 -- press would not redraw -- but it cannot see a USB key arrive or leave without one: the firmware
@@ -2346,6 +2355,13 @@ check('End App is hooked on the main screen',
       MD.events(sdec.ui_scr) ~= nil and MD.events(sdec.ui_scr)['endapp'] == 'sdec.guard(sdec.cleanup)')
 check('End App is hooked on the options screen too',
       MD.events(sdec.optscr) ~= nil and MD.events(sdec.optscr)['endapp'] == 'sdec.guard(sdec.cleanup)')
+-- AND ON THE MESSAGES SCREEN, which had no hook at all. If the firmware delivers EVENT_ENDAPP only
+-- to the visible screen, exiting from there strands all three screens and the static buffers until
+-- a power cycle -- and a screen the operator is reading is exactly when they reach for End App.
+check('End App is hooked on the messages screen, which had no hook at all',
+      MD.events(sdec.msgscr) ~= nil
+      and MD.events(sdec.msgscr)['endapp'] == 'sdec.guard(sdec.cleanup)',
+      tostring(MD.events(sdec.msgscr) and MD.events(sdec.msgscr)['endapp']))
 check('the capture was logged to USB', has(MD.logtext(), '9600 baud'),
       'log has ' .. tostring(MD.loglines()) .. ' writes')
 
@@ -2359,10 +2375,14 @@ check('the capture was logged to USB', has(MD.logtext(), '9600 baud'),
 -- sdec.options() still gave 1363/0.
 sdec.ui_build(true)
 sdec.build_options()
+-- build_msgs is part of the mirror now: start() builds the messages screen under the same cover, so
+-- a bootstrap that skipped it would leave the census 18 objects short of live1 and the leak check
+-- below would read a rebuild that frees more than it takes as a pass.
+sdec.build_msgs()
 sdec.ui_loading_clear(sdec.ui_scr)
 check('rebuilding the UI leaks NO display objects', MD.live() == live1,
       'live=' .. MD.live() .. ' vs ' .. live1)
-check('still exactly two screens after a rebuild', MD.live('screen') == 2,
+check('still exactly three screens after a rebuild', MD.live('screen') == 3,
       'screens=' .. MD.live('screen'))
 check('no deletion was refused', sdec.delfails == 0, 'delfails=' .. tostring(sdec.delfails))
 
@@ -3384,7 +3404,12 @@ do
        and r.x ~= nil and r.w ~= nil then
       for j = 1, MD.nobj() do
         local t = MD.obj(j)
-        if t ~= nil and t.alive and t.kind == display.OBJ_TEXT
+        -- ON THE SAME SCREEN, and that qualifier is not a refinement. Three screens are live at once
+        -- now that the messages screen is built at launch, and its rows sit at the y values the main
+        -- screen's rules use -- its page counter at y=335 against the status rule at y=330. Four
+        -- collisions were reported between objects that can never be displayed together. Comparing
+        -- by parent is what makes the collision geometric rather than numeric.
+        if t ~= nil and t.alive and t.kind == display.OBJ_TEXT and t.parent == r.parent
            and t.x ~= nil and t.y ~= nil then
           -- Only if they overlap horizontally. A rule beside a text object is fine.
           local tw = string.len(t.text or '') * (sdec.ui_ch_w or 8)
@@ -3416,7 +3441,10 @@ do
          and t1.x ~= nil and t1.y ~= nil and (t1.text or '') ~= '' then
         for bq = a + 1, MD.nobj() do
           local t2 = MD.obj(bq)
-          if t2 ~= nil and t2.alive and t2.kind == display.OBJ_TEXT
+          -- Same screen, for the reason the rule scan above states. This one was not reporting
+          -- false collisions only because the messages screen's rows were blank where it ran; a
+          -- filled one would have, so the guard belongs here too rather than where it fired.
+          if t2 ~= nil and t2.alive and t2.kind == display.OBJ_TEXT and t2.parent == t1.parent
              and t2.x ~= nil and t2.y ~= nil and (t2.text or '') ~= '' then
             local i1 = ink
             if t1.font == display.FONT_MEDIUM then i1 = sdec.ui_ink_med or 17 end
@@ -4939,7 +4967,7 @@ check('the note explains that the framing errors are break fields',
       has(sdec.ui_note_text(), 'break field')
       and has(sdec.ui_note_text(), 'normal'), sdec.ui_note_text())
 check('and the stop-bit remark is suppressed now the format is forced',
-      not has(MD.text(sdec.ui_note), 'stop-bit count'), tostring(MD.text(sdec.ui_note)))
+      not has(MD.text(sdec.ui_note), 'Stop-bit count'), tostring(MD.text(sdec.ui_note)))
 
 -- The saved file must carry the frames, not just the bytes.
 MD.usb(true)
@@ -5269,7 +5297,7 @@ do
   local nt, nn = sdec.ui_notes()
   local full, hint, i = false, false, nil
   for i = 1, nn do
-    if has(nt[i], 'capture FULL') then full = true end
+    if has(nt[i], 'Captured more than') then full = true end
     if has(nt[i], 'lock the baud rate') then hint = true end
   end
   check('a capture filled to capacity SAYS so rather than looking complete', full,
@@ -5279,7 +5307,7 @@ do
   sdec.res.nf = 18
   nt, nn = sdec.ui_notes()
   full = false
-  for i = 1, nn do if has(nt[i], 'capture FULL') then full = true end end
+  for i = 1, nn do if has(nt[i], 'Captured more than') then full = true end end
   check('a capture with room to spare is reported as complete, with no note', not full)
   -- Once locked, the remedy has been taken, so only the fact remains.
   sdec.res.nf = 192
@@ -5287,13 +5315,13 @@ do
   nt, nn = sdec.ui_notes()
   full, hint = false, false
   for i = 1, nn do
-    if has(nt[i], 'capture FULL') then full = true end
+    if has(nt[i], 'Captured more than') then full = true end
     if has(nt[i], 'lock the baud rate') then hint = true end
   end
   check('still says FULL at the longer window, but stops suggesting a done deed',
         full and not hint)
   -- BUT NOT FOR A RECORDING'S RETAINED TAIL, which is a slice of a capture that went to a FILE. The
-  -- FULL note there reads 'capture FULL at 423 bytes -- the message may continue' after an 8 kB run,
+  -- FULL note there reads 'Captured more than 423 bytes' after an 8 kB run,
   -- where 423 is the FRAME window at the recording's own sample rate -- a number belonging to no
   -- capture that took place, over a tail of 8192 bytes already filed. Its remedy is wrong too: a
   -- recording mode requires a locked rate.
@@ -5312,7 +5340,7 @@ do
                      stopped = 'cap'}
       nt, nn = sdec.ui_notes()
       full = false
-      for i = 1, nn do if has(nt[i], 'capture FULL') then full = true end end
+      for i = 1, nn do if has(nt[i], 'Captured more than') then full = true end end
       check(string.format('a recording tail starting at byte %d says nothing about a FULL capture',
                           firstbyte), not full, table.concat(nt, ' | '))
     end
@@ -5329,7 +5357,7 @@ do
                      stopped = 'cap', headsusp = 22}
       local j = table.concat(sdec.ui_notes(), ' | ')
       check('an 8 kB run that began mid-byte SAYS so, as a frame capture does',
-            has(j, 'began mid-byte') and has(j, '22 byte'), j)
+            has(j, 'Began mid-byte') and has(j, '22 byte'), j)
       check('...and says the bytes are on screen, not in the file', not has(j, 'in the file'), j)
       -- AND IT FITS BESIDE THE PAGE COUNTER. The long form was 757 px against the 556 the note keeps
       -- once the counter is showing, so the panel rendered '...everythi...' -- cutting the half that
@@ -5343,7 +5371,7 @@ do
         local note = nil
         local nt2, nn2 = sdec.ui_notes()
         local k
-        for k = 1, nn2 do if has(nt2[k], 'began mid-byte') then note = nt2[k] end end
+        for k = 1, nn2 do if has(nt2[k], 'Began mid-byte') then note = nt2[k] end end
         check('the mid-byte note survives the page counter uncut',
               note ~= nil and sdec.ui_textw(note) * sdec.ui_fit_slack <= budget,
               string.format('%d px of %d: %s', note and sdec.ui_textw(note) or -1, budget,
@@ -5356,7 +5384,7 @@ do
       sdec.ck_tot.nf, sdec.ck_tot.ntotal = 32768, 32768
       j = table.concat(sdec.ui_notes(), ' | ')
       check('a tail that does NOT contain the misaligned head says it is in the file',
-            has(j, 'the run began mid-byte') and has(j, 'misaligned, in the file'), j)
+            has(j, 'The run began mid-byte') and has(j, 'misaligned, in the file'), j)
       -- AND THERE IS NOT ALWAYS A FILE. A recording made with no key passes a nil path, keeps its
       -- tail and discards the rest -- so 'in the file' cited something that does not exist, about the
       -- one part of the run the operator cannot go and look at. Seen on the instrument at 22382
@@ -5365,7 +5393,7 @@ do
       sdec.ck_tot.path = nil
       j = table.concat(sdec.ui_notes(), ' | ')
       check('...and with NO key it says those bytes were not recorded, naming no file',
-            has(j, 'the run began mid-byte') and has(j, 'NOT recorded')
+            has(j, 'The run began mid-byte') and has(j, 'NOT recorded')
             and not has(j, 'in the file'), j)
       sdec.ck_tot.path = keptpath
       j = table.concat(sdec.ui_notes(), ' | ')
@@ -5450,7 +5478,7 @@ do
     -- AND THE NOTE THAT BELONGS TO THAT CASE IS STILL THERE, so this is a REPLACEMENT and not a
     -- deletion: the operator still learns the panel is showing a slice, and which bytes.
     local shown = false
-    for i = 1, nn do if has(nt[i], 'panel shows bytes') then shown = true end end
+    for i = 1, nn do if has(nt[i], 'Panel shows bytes') then shown = true end end
     check('...and the tail note that DOES describe it survives', shown,
           table.concat(nt, ' | '))
     sdec.ck_tot = nil
@@ -5472,21 +5500,82 @@ do
   local nt, nn = sdec.ui_notes()
   local found = false
   local i
-  for i = 1, nn do if has(nt[i], 'parity was ASSUMED') then found = true end end
+  for i = 1, nn do if has(nt[i], 'Parity was ASSUMED') then found = true end end
   check('a forced width with Auto parity SAYS parity was assumed, not detected', found,
         tostring(nt[1]))
   -- Setting parity explicitly means nothing was assumed, so the note must go away.
   sdec.force_par = sdec.PAR_EVEN
   nt, nn = sdec.ui_notes()
   found = false
-  for i = 1, nn do if has(nt[i], 'parity was ASSUMED') then found = true end end
+  for i = 1, nn do if has(nt[i], 'Parity was ASSUMED') then found = true end end
   check('and it is silent once parity is set explicitly', not found)
   -- MIDI and LIN both pin width AND parity, so neither may trip it.
   sdec.force_nbits, sdec.force_par = 8, sdec.PAR_NONE
   nt, nn = sdec.ui_notes()
   found = false
-  for i = 1, nn do if has(nt[i], 'parity was ASSUMED') then found = true end end
+  for i = 1, nn do if has(nt[i], 'Parity was ASSUMED') then found = true end end
   check('nor does a protocol that pins both, which is how MIDI and LIN apply', not found)
+  clearforce()
+end
+
+-- ---------------------------------------------------------------------------
+-- EVERY NOTE READS AS A SENTENCE, which is ui_notes' add() and not the literals.
+--
+-- Operator's instruction, 2026-10-21: capitalize the first letter of all of these messages. Applied
+-- at add() because a dozen of them are set in other modules -- probe_note in serial_app, relocked
+-- and baud_note in uart_decode -- and several open with a substituted number, where there is no
+-- literal first letter to capitalise at all.
+--
+-- THE PREMISE IS ASSERTED, which is what stops this being a test of its own fixture: each field is
+-- checked to be lowercase WHERE IT IS SET and sentence case where it comes out. A test that only
+-- read the output would pass just as well against thirty capitalised literals and prove nothing
+-- about the one place that has to keep doing it.
+do
+  clearforce()
+  sdec.clear_result()
+  local FIELDS = {'lognote', 'relocked', 'rate_refused', 'autolocknote', 'probe_note',
+                  'rate_note', 'baud_note', 'fmt_note', 'strm_releveled'}
+  local i, k
+  for i = 1, table.getn(FIELDS) do
+    sdec[FIELDS[i]] = 'the ' .. FIELDS[i] .. ' field, set in lower case'
+  end
+  -- A note that OPENS WITH A NUMBER is the case a blind capitalisation gets wrong: '9600 baud fits
+  -- nothing' must keep its rate, not become '9600 Baud'. string.upper on a digit is the digit, which
+  -- is why the transformation is one call and not a search for the first letter.
+  sdec.relocked = '9600 baud fits nothing -- now locked to 4800'
+  local lowered = 0
+  for i = 1, table.getn(FIELDS) do
+    local f = sdec[FIELDS[i]]
+    local c = string.sub(f, 1, 1)
+    if c == string.lower(c) and c ~= string.upper(c) then lowered = lowered + 1 end
+  end
+  check('PREMISE: the fields themselves are still lower case where they are set',
+        lowered == table.getn(FIELDS) - 1,
+        string.format('%d of %d lower case (one opens with a digit)', lowered,
+                      table.getn(FIELDS)))
+
+  local nt, nn = sdec.ui_notes()
+  check('...and there are notes from every one of them, so the walk is not vacuous',
+        nn >= table.getn(FIELDS),
+        string.format('%d note(s) for %d field(s)', nn, table.getn(FIELDS)))
+  local bad, nbad = nil, 0
+  for k = 1, nn do
+    local c = string.sub(tostring(nt[k]), 1, 1)
+    -- Lower case means a letter that differs from its own upper case: a digit or a quote is neither
+    -- right nor wrong to start a sentence, and '9' == string.upper('9') is how that is said.
+    if c == string.lower(c) and c ~= string.upper(c) then
+      nbad = nbad + 1
+      if bad == nil then bad = nt[k] end
+    end
+  end
+  check('every note on the message line starts with a capital', nbad == 0,
+        string.format('%d of %d start lower case, first: %s', nbad, nn, tostring(bad)))
+  local kept = nil
+  for k = 1, nn do if has(nt[k], 'baud fits nothing') then kept = nt[k] end end
+  check('...and one that opens with a rate keeps the digits, not a capitalised word',
+        kept ~= nil and string.sub(kept, 1, 5) == '9600 ', tostring(kept))
+
+  for i = 1, table.getn(FIELDS) do sdec[FIELDS[i]] = nil end
   clearforce()
 end
 
@@ -6940,7 +7029,7 @@ function test_msgs()
 
   -- THE NOTE LIST IS STUBBED for the cases that count notes, and that is deliberate rather than
   -- lazy. ui_notes() synthesises notes from capture state as well as from settable fields -- a full
-  -- capture window alone produces 'capture FULL at 192 bytes', and lasterr arrives prefixed with
+  -- capture window alone produces 'Captured more than 192 bytes', and lasterr arrives prefixed with
   -- 'NOTE: ' -- so a test that nils the fields it knows about still gets an unpredictable list, and
   -- every count below would be asserting ui_notes' content instead of this screen's behaviour. What
   -- ui_notes puts in the list is tested where it is built. The LAST case here runs against the real
@@ -7152,60 +7241,74 @@ function test_msgs()
         sdec.msg_wrap_at('aaa bbb', 5) == 3, tostring(sdec.msg_wrap_at('aaa bbb', 5)))
 
   -- ---- THE SETTLE, which only the instrument could show -------------------------------------
-  -- msgs_show must yield between bringing the screen up and writing to it. Four orderings were
-  -- measured on the glass and only the one with a yield paints: writing before the changescreen lost
-  -- the objects created last, writing straight after it lost all but row 1, and refreshing twice with
-  -- no yield still lost the counter and the buttons. In every failing case msgs_refresh returned true
-  -- and nothing reached the event log, so this count is the only offline evidence there can be.
+  -- A write to the screen the panel is ALREADY SHOWING has to wait for the display to settle. Four
+  -- orderings were measured on the glass and only the one with a yield painted: writing straight
+  -- after the changescreen lost all but row 1, and refreshing twice with no yield still lost the
+  -- counter and the buttons. msgs_refresh returned true in every failing case and nothing reached
+  -- the event log, so this count is the only offline evidence there can be.
+  --
+  -- msgs_show now writes BEFORE the switch, which is a stronger answer than a delay: there is no
+  -- write left to lose, and the 0.2 s that order had to pay is what the operator was feeling. So
+  -- the assertion is that the unsettled window stays EMPTY -- with the text checked below it, since
+  -- a msgs_show that wrote nothing at all would satisfy a count of zero just as well.
   withnotes({SHORT})
   sdec.msgs_close()
   MD.forget_prewrites()
   sdec.msgs_show()
-  check('msgs_show settles after the screen change, before it writes',
+  check('msgs_show writes before the screen change, so no write races the repaint',
         MD.nprewrite() == 0,
         string.format('%d unsettled write(s), first: %s', MD.nprewrite(),
                       tostring(MD.prewrites()[1])))
+  check('...and the row really was filled, which is what makes that zero mean something',
+        has(MD.text(sdec.msg_row[1]), SHORT), tostring(MD.text(sdec.msg_row[1])))
 
-  -- THE CONTROL, and it is arm B exactly: change screen, write, no yield. Without this the check
-  -- above would pass just as happily against a counter that never fires.
+  -- THE CONTROL, and it is the order msgs_show used to use: change screen, write, no yield. Without
+  -- this the check above would pass just as happily against a counter that never fires.
   sdec.msgs_close()
-  sdec.build_msgs()
   MD.forget_prewrites()
   display.changescreen(sdec.msgscr)
   sdec.msgs_refresh()
   check('CONTROL: changescreen then write with no yield IS flagged, as it failed on the glass',
         MD.nprewrite() > 0, string.format('%d unsettled write(s)', MD.nprewrite()))
-  check('...and a yield clears the window, which is what msgs_show relies on',
+  check('...and a yield clears the window, which is what the old order relied on',
         MD.pending() == true, 'the window was never open, so the control proves nothing')
-  delay(sdec.msg_settle)
+  -- The measured settle, as a literal: nothing in the app reads it now that the writes come first.
+  delay(0.2)
   check('...so after a delay the window is shut', MD.pending() == false, tostring(MD.pending()))
   MD.forget_prewrites()
   sdec.msgs_close()
   sdec.msgs_show()
 
-  -- BACK SWITCHES AWAY BEFORE IT DELETES, which MD.blanked() is the only evidence of: deleting the
-  -- screen the panel is showing leaves it displaying a dead object, unrecoverable from the front.
+  -- BACK IS A SWITCH AND NOTHING ELSE. The screen is built at launch and held for the app run, so
+  -- Back must not delete it: that is what made a second open cost 18 creates with the operator
+  -- waiting. The census across a close and two more opens is the whole claim.
   display.changescreen(sdec.msgscr)
   local blank1 = MD.blanked()
+  local held = MD.live()
   sdec.msgs_close()
-  check('Back deletes the screen only after switching off it',
+  check('Back blanks nothing: it switches away and leaves the screen built',
         MD.blanked() == blank1, string.format('blanked %d -> %d', blank1, MD.blanked()))
-  check('...and the screen handle is nil afterwards', sdec.msgscr == nil, tostring(sdec.msgscr))
-  check('Back frees every object the screen took', MD.live() == base,
-        string.format('%d live, %d before the build', MD.live(), base))
+  check('...and the screen handle survives Back', sdec.msgscr ~= nil, tostring(sdec.msgscr))
+  check('...and Back frees nothing, so the next open allocates nothing',
+        MD.live() == held, string.format('%d live, %d before Back', MD.live(), held))
   check('...and this screen refused no display call of its own',
         MD.nrefused() == ref0,
         string.format('%d refusals, %d before the build: %s', MD.nrefused(), ref0,
                       tostring(MD.refusals()[MD.nrefused()])))
 
-  -- OPENING IT TWICE MUST NOT STRAND THE FIRST, which is what the destroy at the top of build_msgs
-  -- is for. Without it the second build leaks a whole screenful.
+  -- OPENING IT TWICE MUST NOT REBUILD IT, let alone strand the first. A flat census is the test:
+  -- msgs_show returns early on a live msgscr, so neither open can create anything.
   sdec.msgs_show()
   sdec.msgs_show()
-  check('a second open does not strand the first screen', MD.live() > base, tostring(MD.live()))
-  sdec.msgs_close()
-  check('...and one Back still frees it all', MD.live() == base,
-        string.format('%d live, %d before', MD.live(), base))
+  check('two more opens create nothing at all', MD.live() == held,
+        string.format('%d live, %d held', MD.live(), held))
+  -- AND THE TEARDOWN IS WHAT FREES IT, which sdec.cleanup() calls after ui_destroy has taken the
+  -- panel to SCREEN_HOME. Checked here because Back no longer does it.
+  sdec.destroy_msgs()
+  check('destroy_msgs frees every object the screen took', MD.live() == base,
+        string.format('%d live, %d before the build', MD.live(), base))
+  check('...and nils the screen handle', sdec.msgscr == nil, tostring(sdec.msgscr))
+  sdec.build_msgs()
 
   -- A POOL THAT RUNS OUT MUST REFUSE, NOT RAISE, and must say why. display.create returns nil and
   -- posts nothing, so the refusal is a return value -- which is the whole reason there is no pcall.
@@ -7232,6 +7335,41 @@ function test_msgs()
   sdec.built = false
   sdec.allow_rebuild = true
   sdec.start()
+
+  -- ---- BUILT BY THE LAUNCH, NOT BY THE PRESS ---------------------------------------------------
+  -- From the field on 2026-10-21: the screen was "slow, and the page buttons appear briefly before
+  -- being hidden". Both followed from building it on the press -- 18 creates while the operator
+  -- waits, and Up/Dn created visible and hidden only by the refresh that came after the screen was
+  -- in front. start() builds it with the options screen now, under the loading cover.
+  check('start() builds the messages screen, so the press does not',
+        sdec.msgscr ~= nil and sdec.msg_row ~= nil
+        and table.getn(sdec.msg_row) == sdec.msg_nrow,
+        string.format('msgscr=%s rows=%s', tostring(sdec.msgscr),
+                      tostring(sdec.msg_row and table.getn(sdec.msg_row))))
+  -- STRAIGHT OUT OF THE BUILD, before any refresh has run: this is the state the buttons are in
+  -- when the screen first reaches the glass, and it is the flash the operator reported.
+  check('...with Up and Dn hidden from the moment they are created',
+        MD.obj(sdec.msg_up) ~= nil
+        and MD.obj(sdec.msg_up).state == display.STATE_INVISIBLE
+        and MD.obj(sdec.msg_dn).state == display.STATE_INVISIBLE,
+        string.format('up=%s dn=%s', tostring(MD.obj(sdec.msg_up) and MD.obj(sdec.msg_up).state),
+                      tostring(MD.obj(sdec.msg_dn) and MD.obj(sdec.msg_dn).state)))
+  -- AND THE PRESS COSTS NOTHING, which is the latency claim stated as a census. A single-page open
+  -- is the common case and it must not reveal the buttons either.
+  do
+    withnotes({SHORT})
+    local pre = MD.live()
+    local nc0 = MD.nobj()
+    sdec.msgs_show()
+    check('opening it creates no display objects at all',
+          MD.live() == pre and MD.nobj() == nc0,
+          string.format('%d live and %d ids, from %d and %d', MD.live(), MD.nobj(), pre, nc0))
+    check('...and a one-page open leaves Up and Dn hidden, never flashed',
+          MD.obj(sdec.msg_up).state == display.STATE_INVISIBLE,
+          tostring(MD.obj(sdec.msg_up).state))
+    sdec.msgs_close()
+  end
+
   if sdec.ui_msgbtn ~= nil then
     withnotes({})
     sdec.ui_msgvis = nil
@@ -8011,7 +8149,7 @@ local function test_modes()
   -- ---- the streaming notes and the short status row ----
   nt, nn = sdec.ui_notes()
   check('a finished stream SAYS the panel shows only the first window',
-        has(table.concat(nt, ' | '), 'panel shows the first'), table.concat(nt, ' | '))
+        has(table.concat(nt, ' | '), 'Panel shows the first'), table.concat(nt, ' | '))
 
   -- A RETAINED TAIL IS NOT A PREFIX, and the note must not call it one: a recording ends with
   -- sdec.res = ck_tot.tail -- the LAST ck_keep bytes -- so 'the first 8192 bytes' sits beside an
@@ -8026,7 +8164,7 @@ local function test_modes()
     check('a retained TAIL names the byte range it is showing',
           has(tnt, 'bytes 24577-32768 of 32768'), tnt)
     check('...and does NOT claim to be the first bytes of the stream',
-          not has(tnt, 'panel shows the first'), tnt)
+          not has(tnt, 'Panel shows the first'), tnt)
     check('...and still names the file holding all of them',
           has(tnt, 'stream00.txt'), tnt)
     sdec.res, sdec.ck_tot = svres, svtot
@@ -8465,7 +8603,7 @@ local function test_modes()
   check('it says what it locked, on the note line',
         sdec.lognote ~= nil and has(sdec.lognote, '9600') and
         has(sdec.lognote, 'locked') and
-        has(table.concat(sdec.ui_notes(), ' | '), 'locked 9600'),
+        has(table.concat(sdec.ui_notes(), ' | '), 'Locked 9600'),
         tostring(sdec.lognote))
 
   -- ---- and the BUTTON that does it has to appear and disappear with those states ----
@@ -11686,16 +11824,22 @@ end)()
   check('no screen was deleted while the panel was showing it, across a whole launch',
         MD.blanked() == 0, 'blanked=' .. MD.blanked())
 
-  -- Every child of either real screen, and which screen was in front when it was made.
+  -- Every child of all three real screens, and which screen was in front when it was made.
   local nchild, nvis_main, nvis_opt, hidden_id, nhidden = 0, 0, 0, nil, 0
+  -- Counted separately so the messages arm cannot pass by being empty: a nil msgscr matches no
+  -- parent, and a walk that visits nothing reports zero objects drawn in view.
+  local nvis_msg, nmsgchild = 0, 0
   local i
   for i = 1, MD.nobj() do
     local o = MD.obj(i)
     if o ~= nil and o.kind ~= display.OBJ_SCREEN
-       and (o.parent == sdec.ui_scr or o.parent == sdec.optscr) then
+       and (o.parent == sdec.ui_scr or o.parent == sdec.optscr or o.parent == sdec.msgscr) then
       nchild = nchild + 1
+      if o.parent == sdec.msgscr then nmsgchild = nmsgchild + 1 end
       if o.created_while_active == o.parent then
-        if o.parent == sdec.ui_scr then nvis_main = nvis_main + 1 else nvis_opt = nvis_opt + 1 end
+        if o.parent == sdec.ui_scr then nvis_main = nvis_main + 1
+        elseif o.parent == sdec.msgscr then nvis_msg = nvis_msg + 1
+        else nvis_opt = nvis_opt + 1 end
       else
         if hidden_id == nil then
           hidden_id, nhidden = o.created_while_active, 1
@@ -11712,6 +11856,15 @@ end)()
         nvis_main == 0, nvis_main .. ' of ' .. nchild .. ' drawn in view')
   check('and none on the options screen either -- the one that looked like a fault at launch',
         nvis_opt == 0, nvis_opt .. ' drawn in view')
+  -- THE MESSAGES SCREEN JOINED THE LAUNCH on the operator's rule of 2026-10-21: never create display
+  -- objects on a visible screen, and never create them on demand. It was built on the press, where
+  -- the first thing created was the screen itself -- which takes the front -- so all 17 children
+  -- after it were drawn in full view of whoever had just pressed the button.
+  check('the launch built the messages screen too, so the next check has something to walk',
+        sdec.msgscr ~= nil and nmsgchild > 10,
+        tostring(nmsgchild) .. ' child object(s) of ' .. tostring(sdec.msgscr))
+  check('and none on the messages screen, which used to build itself in front of the operator',
+        nvis_msg == 0, nvis_msg .. ' of ' .. nmsgchild .. ' drawn in view')
   check('every one of them was built behind the SAME screen, so the cover is never dropped mid-build',
         hidden_id ~= nil and nhidden == nchild, tostring(nhidden) .. ' of ' .. nchild
         .. ' behind id ' .. tostring(hidden_id))
@@ -11737,10 +11890,15 @@ end)()
         cover ~= nil and ('active_at_delete=' .. tostring(cover.active_at_delete)
                           .. ' cover=' .. tostring(hidden_id)) or 'nil')
 
-  -- THE OPTIONS BUTTON PATH, which is a different owner of the cover. During a launch start() holds
-  -- one and build_options only takes the front back; pressed by hand on a session whose form was
-  -- destroyed, build_options has to raise its own -- and that path built all 13 objects in full view
-  -- until it did. Reached here by destroying the form and rebuilding it, which is what options() does.
+  -- A REBUILD WITH NO COVER, which is the other owner. During a launch start() holds one and
+  -- build_options only takes the front back; called with none, build_options has to raise its own --
+  -- and that path built all 13 objects in full view until it did.
+  --
+  -- NO SHIPPED CALLER REACHES IT ANY MORE. sdec.options() used to build the form on the press if it
+  -- was missing, and that is exactly what the operator ruled out on 2026-10-21: everything is
+  -- created up front behind the loading screen, so a press can only switch. The property is still
+  -- worth holding -- build_msgs has the same protocol and the suite itself calls both directly --
+  -- so the path is driven here by hand rather than deleted along with its last caller.
   sdec.destroy_options()
   local optbefore = display.active
   sdec.build_options()
@@ -11784,6 +11942,87 @@ end)()
         oc ~= nil and oc.active_at_delete ~= optcover,
         oc ~= nil and ('active_at_delete=' .. tostring(oc.active_at_delete)
                        .. ' cover=' .. tostring(optcover)) or 'nil')
+
+  -- THE SAME PROTOCOL ON THE MESSAGES SCREEN, and this is the one the rule was written for: the
+  -- screen create itself takes the front, so a build with no cover draws every one of its 17
+  -- children in full view. Driven with the main screen in front, which is where any non-launch
+  -- caller would be standing.
+  do
+    display.changescreen(sdec.ui_scr)
+    sdec.destroy_msgs()
+    local mbefore = display.active
+    local mscr = sdec.build_msgs()
+    local nmsg, nmsgvis = 0, 0
+    for i = 1, MD.nobj() do
+      local o = MD.obj(i)
+      if o ~= nil and o.alive and o.kind ~= display.OBJ_SCREEN and o.parent == sdec.msgscr then
+        nmsg = nmsg + 1
+        if o.created_while_active == sdec.msgscr then nmsgvis = nmsgvis + 1 end
+      end
+    end
+    check('a messages screen built with no cover creates objects, so the next check is not vacuous',
+          mscr ~= nil and nmsg > 10, nmsg .. ' object(s)')
+    check('and NONE of them was created while the messages screen was in front',
+          nmsgvis == 0, nmsgvis .. ' of ' .. nmsg .. ' drawn in view, active before='
+          .. tostring(mbefore))
+    -- AND IT GOES BACK TO THE MAIN SCREEN, not to the screen it just built: a build is not an open.
+    -- build_options clears to its own form because there the press WAS for the form.
+    check('the cover comes down on the main screen, since nobody asked to look at this one',
+          display.active == sdec.ui_scr,
+          'active=' .. tostring(display.active) .. ' ui_scr=' .. tostring(sdec.ui_scr))
+    check('and that cover was cleaned up too',
+          sdec.ui_loadscr == nil and sdec.ui_loadtxt == nil,
+          tostring(sdec.ui_loadscr) .. ',' .. tostring(sdec.ui_loadtxt))
+    local mcover = nil
+    for i = 1, MD.nobj() do
+      local o = MD.obj(i)
+      if o ~= nil and o.kind ~= display.OBJ_SCREEN and o.parent == sdec.msgscr
+         and o.created_while_active ~= sdec.msgscr then
+        mcover = o.created_while_active
+      end
+    end
+    local mc = mcover ~= nil and MD.obj(mcover) or nil
+    check('its cover was a screen that got deleted', mc ~= nil and mc.alive == false,
+          tostring(mcover))
+    check('and the panel was NOT showing that one either when it was deleted',
+          mc ~= nil and mc.active_at_delete ~= mcover,
+          mc ~= nil and ('active_at_delete=' .. tostring(mc.active_at_delete)
+                         .. ' cover=' .. tostring(mcover)) or 'nil')
+  end
+
+  -- NEITHER SCREEN IS BUILT BY A PRESS ANY MORE, which is the operator's rule stated as a refusal:
+  -- a handler finding its screen missing must report and create nothing. Both used to build, and
+  -- that is the create/destroy cycle that leaks the pool -- a refused delete raises nothing, so the
+  -- loss is permanent for the power cycle.
+  do
+    local keptm, kepto = sdec.msgscr, sdec.optscr
+    sdec.destroy_msgs()
+    local n0 = MD.nobj()
+    sdec.lasterr = nil
+    local shown = sdec.msgs_show()
+    check('Msgs with no screen built refuses rather than building one',
+          shown == false and MD.nobj() == n0,
+          string.format('returned %s, %d ids from %d', tostring(shown), MD.nobj(), n0))
+    check('...and says why, on the screen the operator is already looking at',
+          sdec.lasterr ~= nil, tostring(sdec.lasterr))
+    check('...and did not switch away from the main screen', display.active == sdec.ui_scr,
+          tostring(display.active))
+
+    sdec.destroy_options()
+    n0 = MD.nobj()
+    sdec.lasterr = nil
+    sdec.options()
+    check('Options with no form built refuses rather than building one',
+          MD.nobj() == n0 and sdec.lasterr ~= nil,
+          string.format('%d ids from %d: %s', MD.nobj(), n0, tostring(sdec.lasterr)))
+    check('...and the refusal names the remedy, a power cycle',
+          has(tostring(sdec.lasterr), 'power cycle'), tostring(sdec.lasterr))
+    -- Put both back: the cases after this one expect a launched app.
+    sdec.build_options()
+    sdec.build_msgs()
+    display.changescreen(sdec.ui_scr)
+    if keptm == nil or kepto == nil then check('both screens were live before this case', false) end
+  end
 
   -- CLEARING WITH NO ARGUMENT, which no in-tree caller does and which used to delete the screen in
   -- front and leave the panel on a dead object. SCREEN_HOME is the fallback because the instrument's

@@ -3,7 +3,7 @@ loadscript Serial_Decode
 -- $Product: DMM6500, DAQ6510, DMM7510, SMU2461
 -- $Tag: Serial, UART, Decode, Digitize
 -- $Description: Decodes an asynchronous serial line with the instrument's own digitizer: recovers baud rate, frame format and bytes, shows them as text or hex, and saves bytes to USB key. Everything auto-detects; everything can be locked.
--- $Version: 1.70
+-- $Version: 1.71
 -- $Requires: 1.7.0
 -- $Author: Ian Ameline
 -- $License: MIT
@@ -5214,8 +5214,16 @@ end
 -- there are; ulog and the saved file get all of them. Ordered by how badly an absence would mislead.
 function sdec.ui_notes()
   local t, m = {}, 0
+  -- Sentence case, applied here rather than at the thirty-odd literals: a dozen of these notes are
+  -- set in other modules and several open with a substituted number, where no literal has a first
+  -- letter to capitalise. string.upper leaves a digit alone, so '9600 baud fits nothing' keeps its
+  -- rate and 'armed at' becomes 'Armed at'. docs/MEASUREMENTS.md, 'Sentence case, applied in add()
+  -- and not at the literals'.
   local function add(s)
-    if s ~= nil and s ~= '' then m = m + 1; t[m] = s end
+    if s ~= nil and s ~= '' then
+      m = m + 1
+      t[m] = string.upper(string.sub(s, 1, 1)) .. string.sub(s, 2)
+    end
   end
 
   if sdec.lasterr ~= nil then add('NOTE: ' .. tostring(sdec.lasterr)) end
@@ -5330,10 +5338,10 @@ function sdec.ui_notes()
                                   sdec.res.nstop)
     if cap ~= nil and cap > 0 and sdec.res.nf >= cap then
       if sdec.force_baud == nil then
-        add(string.format('capture FULL at %d bytes -- the message may continue; ' ..
+        add(string.format('Captured more than %d bytes -- ' ..
                           'lock the baud rate for a longer window', cap or 0))
       else
-        add(string.format('capture FULL at %d bytes -- the message may continue', cap or 0))
+        add(string.format('Captured more than %d bytes.', cap or 0))
       end
     end
   end
@@ -6238,7 +6246,6 @@ sdec.msg_row_dy = 23
 sdec.msg_cols   = 74
 sdec.msg_page   = 0
 sdec.msg_btn_y  = sdec.ui_btn_y
-sdec.msg_settle = sdec.msg_settle or 0.2
 
 -- Is the note cell withholding anything? -> true/false, and the note count. The one source of truth
 --   [...]
@@ -6342,6 +6349,12 @@ function sdec.build_msgs()
     sdec.msg_why = 'display object pool exhausted -- power cycle the instrument'
     return nil
   end
+  local covermine = false
+  if sdec.ui_loadscr == nil then
+    covermine = sdec.ui_loading_raise()
+  else
+    sdec.ui_loading_front()
+  end
   local small, face, left = display.FONT_SMALL, display.FONT_3, display.JUST_LEFT
   sdec.msg_row = {}
   local i
@@ -6357,6 +6370,7 @@ function sdec.build_msgs()
   if sdec.msg_nrow < 1 then
     sdec.destroy_msgs()
     sdec.msg_why = 'no display objects left for a message row'
+    if covermine then sdec.ui_loading_clear(sdec.ui_scr) end
     return nil
   end
   sdec.msg_ind = create(sdec.msgscr, display.OBJ_TEXT, sdec.ui_x,
@@ -6365,12 +6379,16 @@ function sdec.build_msgs()
   sdec.msg_up   = create(sdec.msgscr, display.OBJ_BUTTON, 8,   sdec.msg_btn_y, 'Up',   bw)
   sdec.msg_dn   = create(sdec.msgscr, display.OBJ_BUTTON, 132, sdec.msg_btn_y, 'Dn',   bw)
   sdec.msg_back = create(sdec.msgscr, display.OBJ_BUTTON, 662, sdec.msg_btn_y, 'Back', 112)
+  if sdec.msg_up ~= nil then display.setstate(sdec.msg_up, display.STATE_INVISIBLE) end
+  if sdec.msg_dn ~= nil then display.setstate(sdec.msg_dn, display.STATE_INVISIBLE) end
   if sdec.msg_up   ~= nil then display.setevent(sdec.msg_up,   display.EVENT_PRESS,
                                                 'sdec.guard(sdec.msgs_prev)') end
   if sdec.msg_dn   ~= nil then display.setevent(sdec.msg_dn,   display.EVENT_PRESS,
                                                 'sdec.guard(sdec.msgs_next)') end
   if sdec.msg_back ~= nil then display.setevent(sdec.msg_back, display.EVENT_PRESS,
                                                 'sdec.guard(sdec.msgs_close)') end
+  display.setevent(sdec.msgscr, display.EVENT_ENDAPP, 'sdec.guard(sdec.cleanup)')
+  if covermine then sdec.ui_loading_clear(sdec.ui_scr) end
   return sdec.msgscr
 end
 
@@ -6412,18 +6430,17 @@ end
 
 -- Open it, from the Msgs button in the margin.
 --   [...]
--- case and nothing reached the event log, so only a grab could find it, and it did so after the
--- offline suite had passed. The main screen never needed this: its 2 Hz tick refreshes again within
--- 500 ms, so a lost write there repairs itself. This screen refreshes only when asked.
+-- the instrument. The one place that already wrote before switching is the one place that never
+-- needed a settle.
+-- The build is at launch, so the cost of this press is 14 settexts and a screen change.
 function sdec.msgs_show()
-  if sdec.build_msgs() == nil then
-    sdec.lasterr = sdec.msg_why or 'could not build the messages screen'
+  if sdec.msgscr == nil then
+    sdec.lasterr = sdec.msg_why or 'the messages screen was not built at launch'
     return false
   end
   sdec.msg_page = 0
-  display.changescreen(sdec.msgscr)
-  delay(sdec.msg_settle)
   sdec.msgs_refresh()
+  display.changescreen(sdec.msgscr)
   return true
 end
 
@@ -6437,13 +6454,13 @@ function sdec.msgs_prev()
   return sdec.msgs_refresh()
 end
 
--- Back to the main screen, and the order is the object-lifetime rule: switch away FIRST, then delete.
--- Deleting the screen while the panel is showing it is the case the front panel cannot recover from.
+-- Back to the main screen. A switch and nothing else: the screen is held for the rest of the app
+-- run, so Back no longer deletes it and the next open costs no allocation. sdec.stop() is what
+-- frees it, after ui_destroy() has taken the panel to SCREEN_HOME.
 function sdec.msgs_close()
   local to = sdec.ui_scr
   if to == nil then to = display.SCREEN_HOME end
   display.changescreen(to)
-  sdec.destroy_msgs()
   return true
 end
 
@@ -8600,15 +8617,12 @@ function sdec.options_restore()
   return true
 end
 
--- Show the options screen, building it first if it does not exist yet.
+-- Show the options screen. Never builds it: start() does that, behind the loading cover.
 function sdec.options()
   if sdec.optscr == nil then
-    local bok, berr = pcall(sdec.build_options)
-    if not bok or sdec.optscr == nil then
-      sdec.lasterr = tostring(berr or 'the options screen could not be built')
-      ulog.line('options: ' .. sdec.lasterr)
-      return sdec.ui_refresh()
-    end
+    sdec.lasterr = 'the options screen was not built at launch -- power cycle the instrument'
+    ulog.line('options: ' .. sdec.lasterr)
+    return sdec.ui_refresh()
   end
   sdec.options_save()     -- so Cancel has something to go back to
   local sok = sdec.options_seed()
@@ -8783,6 +8797,7 @@ function sdec.stop()
   end
   sdec.destroy_options()
   sdec.ui_destroy()
+  sdec.destroy_msgs()
   if sdec.acq_bufs ~= nil and next(sdec.acq_bufs) ~= nil then
     sdec.acq_buffree()
     if next(sdec.acq_bufs) ~= nil then
@@ -8917,6 +8932,9 @@ function sdec.start()
     sdec.ui_build(true)   -- hold the loading screen: build_options() is still to come
     sdec.install_cleanup(sdec.ui_scr)
     sdec.build_options()
+    if sdec.build_msgs() == nil then
+      ulog.line('messages screen unavailable at launch: ' .. tostring(sdec.msg_why))
+    end
 
     sdec.ui_loading_clear(sdec.ui_scr)
     sdec.ui_status = 'ready -- press Capture'
