@@ -2214,7 +2214,12 @@ end
 --
 -- WIDTH: with every ruler started from a common x, FONT_3 runs 63 characters before the right edge
 -- and FONT_4 only 58, which makes FONT_4 the same width as FONT_MEDIUM and FONT_3 six characters
--- better. 11.97 px/char over the 792 px a row has gives 66; 64 leaves a margin.
+-- better.
+--
+-- 74, not the 66 that ruler implies, and the gap is the ruler's fault: it was digits, and these faces
+-- are proportional, so a digit ruler measures the widest glyphs rather than prose. Against a real
+-- note on the glass 57 characters reached x=590 -- 10.2 px/char where the digits gave 11.97 -- and 74
+-- of those is 763 px of the 792 a row has. A line of solid digits would overflow, and no note is one.
 --
 -- PITCH 23, against a measured 20 px glyph height. Three stacked lines of 'Wgjpq|' at 23 clear their
 -- descenders; at FONT_MEDIUM the same test ruled out 22 for touching the row below.
@@ -2227,7 +2232,7 @@ sdec.msg_nrow   = 13
 sdec.msg_row_y0 = 18
 sdec.msg_row_dy = 23
 -- The wrap width, not a slice width.
-sdec.msg_cols   = 64
+sdec.msg_cols   = 74
 sdec.msg_page   = 0
 -- The same row the main screen's buttons use. 400 was tried and the mock refused it: a button is
 -- 58 px and the content area is 431, so anything past 373 is clipped off the bottom of the panel.

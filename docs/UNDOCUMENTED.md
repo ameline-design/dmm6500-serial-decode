@@ -56,6 +56,14 @@ Under each claim is its bench probe, indented and in backticks. Four rules hold 
 asks. Nothing in either manual gives a width, and `sdec.ui_textw()` measures one face only — the
 small one — so a screen that changes face has no way to compute its own wrap.
 
+**THE TABLE IS DIGITS, AND EVERY FACE IS PROPORTIONAL, so these counts are a WORST CASE and prose
+fits appreciably more.** The ruler was `123456789|` repeated, and digits are among the widest glyphs
+these faces have. Measured against a real note on the glass at `FONT_3`: 57 characters of ordinary
+text reached x=590, which is **10.2 px/char against the 11.97 the digits gave — 17% narrower**, so a
+prose row holds 74 where the digit figure says 66. `sdec.msg_cols` is 74 for exactly that reason.
+Size a column of numbers off this table; add roughly a sixth for a column of sentences, and keep the
+digit figure if the field can hold either.
+
 A full-width row is **792 px**: a text object at `x = 8` on an 800 px panel. Characters that fit:
 
 | face | chars on a 792 px row | px/char | height px |
@@ -64,7 +72,7 @@ A full-width row is **792 px**: a text object at `x = 8` on an 800 px panel. Cha
 | `FONT_SMALL` | ~88 | 9.0 | not measured |
 | `FONT_2` | ~78 | 10.1 | 17 |
 | `FONT_9` | ~64 | 12.4 | 21, *italic* |
-| **`FONT_3`** | **66, and 64 is in use** | 12.0 | 20 |
+| **`FONT_3`** | **66 digits / 74 prose, 74 in use** | 12.0 digits, 10.2 prose | 20 |
 | `FONT_4` | ~61 | 13.0 | 21 |
 | `FONT_MEDIUM` | ~61 | 13.0 | not measured |
 | `FONT_5` | ~49 | 16.0 | 26 |
@@ -77,8 +85,8 @@ A full-width row is **792 px**: a text object at `x = 8` on an 800 px panel. Cha
 
 **These are read off grabs and are good to about ±2 characters, not better.** `FONT_7` was counted
 twice and gave 25 then 24 under different left margins, so treat a figure within a couple of
-characters of a row's capacity as unproven and leave a margin — which is why `sdec.msg_cols` is 64
-against a measured 66.
+characters of a row's capacity as unproven and leave a margin. The prose caveat above matters more
+than this one: it is a 17% effect where this is a 3% one.
 
 **Three pairs are width-identical**, so the named faces look like aliases of numbered ones:
 `FONT_SMALL`/`FONT_1`, `FONT_MEDIUM`/`FONT_4`, `FONT_LARGE`/`FONT_5`, and `FONT_HUGE`/`FONT_8` --

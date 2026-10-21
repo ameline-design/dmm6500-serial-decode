@@ -6259,7 +6259,7 @@ end
 sdec.msg_nrow   = 13
 sdec.msg_row_y0 = 18
 sdec.msg_row_dy = 23
-sdec.msg_cols   = 64
+sdec.msg_cols   = 74
 sdec.msg_page   = 0
 sdec.msg_btn_y  = sdec.ui_btn_y
 sdec.msg_settle = sdec.msg_settle or 0.2
