@@ -318,6 +318,39 @@ class Panel:
                 return CAPTURE_BUDGET_S
         return self.budget
 
+    def _late_state(self, timeout=20):
+        """After a no-reply press, ask the app what state it is in. -> a short string, or None.
+
+        EVIDENCE, NOT A VERDICT. A press that produced no reply has said nothing about whether it
+        ran, so the one question worth asking is whether the app is still there and what it thinks
+        happened. `status=APP-GONE` means the app is down and every later press in the stage is
+        measuring nothing; a live status means the press probably ran and the REPLY was lost, which
+        is a different fault in a different place.
+
+        SHORT TIMEOUT, deliberately. The press has already cost its full 300 s; if the instrument is
+        genuinely wedged, waiting that again here doubles the cost of the stage for no new fact.
+
+        NEVER FATAL. Every failure mode -- a raise, a refusal re-sent as data, another timeout --
+        answers None, because a diagnostic that can break the run it is diagnosing is worse than no
+        diagnostic. bp_state is guarded on the instrument side and cannot raise.
+        """
+        try:
+            self.d.drain()
+            ln = self.d.q('print("LATE " .. bp_state())', timeout=timeout)
+        except Exception as e:
+            return 'unreadable (%s)' % type(e).__name__
+        if not ln:
+            return 'no answer to a state read either -- the socket is not talking'
+        ln = str(ln).strip()
+        if ln.startswith('LATE '):
+            # THE RAW LINE, not parse_state's dict. parse_state splits on whitespace, so a value
+            # with a space in it keeps only its first word -- `status=ready -- press Capture` parses
+            # as `status=ready`, and `err=` holds a whole sentence. That is harmless where the
+            # harness compares single-word states, and it is exactly wrong here, where the words
+            # after the space are the diagnosis. Capped, because this goes on a verdict line.
+            return ln[5:][:160]
+        return 'unexpected reply: %s' % ln[:60]
+
     def press(self, label, fn, expect=None, timeout=300, paints=None,
               quiet_screen=False, swap=False, buttons=None, buttons_before=None):
         """One press, screen-grabbed either side of it.
@@ -418,6 +451,15 @@ class Panel:
             # known about whether it raised. Naming the real symptom is the whole point -- the press
             # produced no PRESS line, and what to examine next is the app's state, not its return.
             verdict.append('NO REPLY in %.0f s -- no PRESS line came back' % host_secs)
+            # SO EXAMINE IT, HERE. The line above has named what to look at since it was written and
+            # nothing looked. On 2026-10-21 Options/open timed out and the only evidence that the
+            # press had RUN was the NEXT press's verified screen swap -- noticed by hand, off a
+            # different test, after the gate had already failed. A state read is also a safer first
+            # command after a timeout than the press that otherwise follows it.
+            late = self._late_state()
+            if late is not None:
+                print('      LATE STATE: %s' % late)
+                verdict.append('late state: %s' % late)
         elif not ok:
             verdict.append('RAISED %s' % str(ret)[:44])
         if nreal:
@@ -606,8 +648,78 @@ def num(v, default=None):
         return default
 
 
+# The nil-sdec answer bp_state() returns, verbatim from PRESS_TSP above, so the selftest below is
+# asserting against the string the instrument really sends and not a paraphrase of it.
+APPGONE_STATE = ('view=nil mode=nil page=nil npg=0 nf=nil baud=nil force=nil saved=nil log=nil '
+                 'logn=nil status=APP-GONE lock=? suits=? fcwin=nil vsum=nil err=nil')
+
+
+def selftest():
+    """_late_state against every answer the instrument can give, with no instrument. -> 0 or 1.
+
+    WHY THIS IS WORTH A STAGE. _late_state runs only after a press has already cost its entire
+    timeout, which is the worst moment to introduce a second failure -- and it is unreachable on a
+    healthy bench, so a normal gate run never executes it. That combination is how the bp_state
+    defect survived: the code that runs only when something is wrong is the code nothing exercises.
+
+    THE ARMS ARE THE REAL REPLIES, not shapes invented here: a live app, the nil-sdec string, no
+    answer at all, a raise, and a refusal sentence arriving where a reply was expected -- which q()
+    is documented to hand back as data.
+    """
+    class Stub:
+        def __init__(self, reply=None, raises=None):
+            self.reply, self.raises, self.drained = reply, raises, 0
+
+        def drain(self):
+            self.drained += 1
+
+        def q(self, cmd, timeout=30):
+            if self.raises is not None:
+                raise self.raises
+            return self.reply
+
+    cases = [
+        # A MULTI-WORD STATUS SURVIVES WHOLE, which is the point of not going through parse_state:
+        # 'ready' alone would not distinguish a live app from one stuck mid-press.
+        ('a live app names its status, spaces and all',
+         Stub('LATE view=hex mode=frame status=ready -- press Capture err=nil'),
+         lambda r: 'status=ready -- press Capture' in r),
+        ('a torn-down app is reported as APP-GONE, not as a slow press',
+         Stub('LATE ' + APPGONE_STATE),
+         lambda r: 'status=APP-GONE' in r),
+        ('silence to the state read too is said plainly',
+         Stub(None),
+         lambda r: 'the socket is not talking' in r),
+        ('a raise answers a string rather than ending the stage',
+         Stub(raises=RuntimeError('boom')),
+         lambda r: r == 'unreadable (RuntimeError)'),
+        ('a refusal handed back as data is not parsed as a state',
+         Stub('FAILURE: A command from another interface is running'),
+         lambda r: r.startswith('unexpected reply')),
+    ]
+    bad = 0
+    for name, stub, pred in cases:
+        p = Panel.__new__(Panel)
+        p.d = stub
+        got = p._late_state(timeout=1)
+        ok = isinstance(got, str) and pred(got)
+        # DRAINED FIRST, every time: stale bytes from the press that timed out are exactly what
+        # would otherwise be read as the answer to this question.
+        if stub.drained != 1 and stub.raises is None:
+            ok = False
+            got = '%s (drained %d times)' % (got, stub.drained)
+        print('  %-4s %s' % ('ok' if ok else 'FAIL', name))
+        if not ok:
+            print('       got: %r' % (got,))
+            bad += 1
+    print('%d of %d late-state arms hold' % (len(cases) - bad, len(cases)))
+    return 1 if bad else 0
+
+
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument('--selftest', action='store_true',
+                    help='the host-side no-reply path, with no instrument')
     ap.add_argument('--reuse', action='store_true',
                     help='drive the app already running; do NOT reload the modules. Required '
                          'once the one UI build of this power cycle has been spent -- reloading '
@@ -622,6 +734,11 @@ def main():
     ap.add_argument('--page-baud', type=int, default=250000,
                     help='a rate whose capture spans more than one hex page')
     a = ap.parse_args()
+
+    # BEFORE ANY CONNECTION. This runs in the offline sweep, where opening a socket to the bench
+    # would be both wrong and slow.
+    if a.selftest:
+        return selftest()
 
     shots = None
     if a.shots:

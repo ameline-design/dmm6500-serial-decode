@@ -1178,7 +1178,7 @@ sdec.acq_posfloor = 0.001
 -- its capture leaves almost nothing ahead of the edge: the static 262 144-reading frame buffer took the
 -- frame mode's pre-roll from 1100 readings to 92, and 16 of 72 smoke cells then fell back with 'no
 -- trigger in 3 s (edge)' -- about 3 s wasted on each, on top of a decode from a free-running record.
--- docs/MEASUREMENTS.md, 'Analog trigger needs a live acquisition'.
+-- docs/TRIGGER.md, '7. Pre-trigger, and what the comparator needs'.
 --
 -- 1000, AND THE REASONING FOR IT WAS WRONG even though the figure is harmless. It was raised because the
 -- 262 144-reading frame buffer left only 92 readings of pre-roll, on the reading that this was why 16 of 72
@@ -1699,8 +1699,9 @@ function sdec.quiet_events()
   --
   -- THE OPERATOR'S REQUIREMENT IS THAT IT NEVER REACHES THE GLASS. eventlog.suppress(N) takes the
   -- dialog and LEAVES THE LOG ENTRY, measured in docs/UNDOCUMENTED.md, 'eventlog.suppress(N) appears in
-  -- no manual' -- so nothing is lost: sdec.errcount still sees them, and the bench's ev1= field still
-  -- carries the text. That is the whole reason to prefer suppress over a severity change.
+  -- no manual, and what it suppresses is not the log entry' -- so nothing is lost: sdec.errcount still
+  -- sees them, and the bench's ev1= field still carries the text. That is the whole reason to prefer
+  -- suppress over a severity change.
   --
   -- pcall'd per call and not as a group: `suppress` is in no manual, the documented set being clear,
   -- csv, getcount, next, post and save, so a firmware without it must degrade to the severity filter

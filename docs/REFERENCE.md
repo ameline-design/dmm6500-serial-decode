@@ -1,6 +1,6 @@
 # Serial Decode — measured reference
 
-**Ian Ameline** · version 1.71 · MIT licence
+**Ian Ameline** · version 1.72 · MIT licence
 
 The detail behind [MANUAL.md](MANUAL.md). Everything here was measured on a DMM6500 (firmware
 1.7.17a) against an SDG2122X generator, verified where noted with an SDS1204X-E scope. The manual is
@@ -57,7 +57,8 @@ than delivered to the interpreter, so a running handler could see it. Measured 2
 the press does not reach the latch while a panel-initiated run executes, so **nothing makes a
 minutes-long press interruptible**. The run is bounded and says its cost beforehand.
 
-Measured over 50 button presses covering every control in every state:
+Measured over 50 button presses covering every control in every state (the **Msgs** button came
+later and is measured under the table):
 
 | Press | Measured |
 |---|---|
@@ -66,6 +67,19 @@ Measured over 50 button presses covering every control in every state:
 | Capture, unlocked, 9600 Bd and up | 3.6 – 6.5 s |
 | Capture, unlocked, 2400 Bd | 4.9 – **9.1 s** |
 | A recording, start to filed | **one press**, as long as the window takes — see below |
+
+**Msgs is the fastest control on the panel: 1.5 ms to open.** Instrument-timed on 2026-10-21 over a
+two-note screen — 1.5 ms to open, 1.7 ms to reopen, 1.8 ms to page, and a close that reads 0.0000 s,
+below the timer's resolution, being a single `changescreen`. The press is fourteen `settext`s and a
+screen change and allocates nothing, because the screen is built at launch beside the main and
+options screens.
+
+Built on the press instead, as it was before 1.71, the same press is eighteen `display.create` calls
+and a 0.2 s settle. At the ~12 ms a create recorded in `MEASUREMENTS.md` that is about **420 ms** --
+derived from that figure rather than measured, the build having been removed before anyone timed it --
+which would have made Msgs the slowest press on the panel by a factor of five and put it five times
+over the 77 ms the row above claims. The operator reported it as "slow" before any of this was
+measured.
 
 The unlocked figure is a **range, not an average, and it is genuinely variable**: twelve
 back-to-back unlocked captures on one unchanged 2400 Bd line measured min 4.891 s, mean 5.358 s, max

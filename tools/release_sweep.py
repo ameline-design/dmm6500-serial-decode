@@ -188,6 +188,17 @@ def stages(outdir, shots):
                    'a raising ui_notes each still put a PRESS line and a P end on the socket -- with an '
                    'unguarded fixture that must go silent on all three, so the guard is what is tested '
                    'and not the harness'),
+        # THE OTHER HALF OF THE SAME GUARANTEE, on the host. The stage above makes the instrument
+        # always answer; this one covers what the host does when it does not -- a path that only runs
+        # after a press has already cost its whole timeout, and therefore never runs on a healthy
+        # bench. Code that executes only when something is wrong is code nothing exercises, which is
+        # how the bp_state defect survived in the first place.
+        Stage('unit-bppress-host', ['python3', 'tools/bench_panel.py', '--selftest'],
+              note='the host side of a no-reply press: after a timeout the harness asks the app what '
+                   'state it is in rather than guessing, and the five arms are the real answers -- a '
+                   'live app, the nil-sdec APP-GONE string, silence, a raise, and a refusal sentence '
+                   'handed back where a reply was expected. The raw state line is reported, NOT '
+                   "parse_state's dict, which keeps only the first word of a value with a space in it"),
         # THE HOSTILE PAYLOADS, as opposed to the hostile SIGNALS the stress stage covers. Every check
         # here is a byte-exactness assertion against a payload chosen to break a value-dependent
         # decoder -- blocks of 00/FF/55/AA, walking ones and zeros, and 1024 uniform random bytes from

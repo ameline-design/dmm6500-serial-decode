@@ -1701,7 +1701,8 @@ TRIG.cost = {
   -- THE RESUME LATENCY: crossing that releases the WAIT to the first reading the next measure block
   -- stores. 156 to 208 us, BOUNDED FROM THE SEAM DEBRIS of decoded elided records rather than from a
   -- timestamp, because timestamps cannot show time that was never sampled (docs/TRIGGER.md, 'A
-  -- re-entered measure block appends'). It already includes cmp_latency, so the walk below charges one
+  -- re-entered measure block appends, and the timestamps carry the splice'). It already includes
+  -- cmp_latency, so the walk below charges one
   -- and not both. Fixed in TIME, so it is a growing fraction of a bit as the baud rises, which is why
   -- a seam is free at 2400 Bd and costs bytes above it.
   --

@@ -2601,6 +2601,38 @@ and return the same silence.
 
 ## Flow control and recording
 
+### How a recording ends
+
+`sdec.ck_endwhy` carries one of five values, and the first of them is an overload worth reading
+carefully.
+
+| `ck_endwhy` | what happened |
+|---|---|
+| `full` | **three different endings.** The buffer reached `nsmp`, OR the wall clock `limit` expired, OR `stream_arm` was refused and the fallback read ran. **Only the first is a complete record.** |
+| `quiet` | no threshold crossing for `sdec.idle_exit()`. The device stopped talking, which is the normal ending |
+| `stopped` | the operator pressed Capture (Stop) or Mode (abort) |
+| `noarm` | the arm expired at `sdec.arm_wait_s()` without the comparator firing |
+| `readfail` | 20 consecutive buffer reads raised, so the record cannot be read rather than being silent |
+
+**The wall clock is the only bound that always fires**, and that is why every mode has one: a press is
+not dispatched while Lua is running, so a run cannot rely on the operator to end it. Every mode
+terminates by construction. The arm's own wait is added **on top of** that ceiling rather than taken
+out of it -- `limit = stream_limit(...) + arm_wait_s()` -- so waiting for a device that has not spoken
+yet does not shorten the recording it is waiting to make.
+
+**What counts as finished turns on whether the recording waited.** An armed recording is finished when
+the trigger model is, its pre-trigger phase having already filled the buffer; an unarmed one keeps the
+sample-count fill test. Putting the fill test on the armed branch makes it **unreachable**, and because
+the record runs `fillmode = 1` it would then not stop but **wrap**, overwriting its own earliest bursts
+until some other exit fired -- and report a full record that had quietly lost its oldest traffic.
+
+**A read that raised is ignorance, not silence**, so it must not advance the quiet timer; `readfail`
+needs 20 in a row, because persistent is a different fault from transient.
+
+For the gap detector the model's state is the signal, not the record's length: parked in block 2's
+`WAIT` during a gap, cycling blocks 3 to 6 during a burst. That distinguishes a long gap from a dead
+line exactly, which no threshold on a record designed never to grow can do.
+
 ### fc_maxwin = 32 and fc_maxsec = 1200
 
 What one press may spend under flow control. The normal ending needs no bound at all -- a credited

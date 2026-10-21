@@ -1114,7 +1114,7 @@ function sdec.stream_acquire(nsmp)
       -- The sample count is the completion test for an unarmed recording. Left on
       -- the armed branch the fill test is unreachable, and because the record is fillmode = 1 it would not stop
       -- but WRAP, overwriting its own earliest bursts until some other exit fired, and then report a full record
-      -- that had quietly lost its oldest traffic. docs/TRIGGER.md, 'How a recording ends'.
+      -- that had quietly lost its oldest traffic. docs/MEASUREMENTS.md, 'How a recording ends'.
       sdec.ck_endwhy = 'full'
       break
     end
@@ -1169,7 +1169,7 @@ function sdec.stream_acquire(nsmp)
     -- the timer starts running 40 ms into every burst's tail, before the gap has even begun, and no allowance
     -- against it can be right. The model's state is the gap detector instead: parked in block 2's WAIT during a
     -- gap, cycling blocks 3 to 6 during a burst. That tells a long gap from a dead line exactly, which no
-    -- threshold on a record that is designed not to grow ever can. docs/TRIGGER.md, 'How a recording ends'.
+    -- threshold on a record that is designed not to grow ever can. docs/MEASUREMENTS.md, 'How a recording ends'.
     -- The idle watchdog is off until the arm fires: a waiting arm is a line with nothing on it by design,
     -- so the watchdog would end the run before the device started. Not moot where levels were reused.
     if armdone and sdec.ck_watch and qexit ~= nil and qexit > 0 and quiet >= qexit then
