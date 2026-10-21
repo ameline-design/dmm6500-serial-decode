@@ -98,6 +98,15 @@ RECORDS = ('Capture/8kB', 'Capture/32kB', 'Capture/cancelled', 'Capture/fc')
 # between the two turns a formatting difference into a behavioural verdict.
 PRESS_TSP = r'''
 function bp_state()
+  -- A NIL sdec IS REACHABLE AND USED TO RAISE ON THE LINE BELOW. The three pcalls further down
+  -- protect the awkward reads, which made this look guarded -- but `sdec.res` is indexed before any
+  -- of them, so a torn-down app raised here instead. bp_press prints this string, so the raise cost
+  -- the whole press: no BEFORE, no PRESS, and the host can only read that as 300 s of silence.
+  -- A power cycle leaves the app unset, and a reset or reload between stages does it mid-sequence.
+  if sdec == nil then
+    return 'view=nil mode=nil page=nil npg=0 nf=nil baud=nil force=nil saved=nil log=nil '
+           .. 'logn=nil status=APP-GONE lock=? suits=? fcwin=nil vsum=nil err=nil'
+  end
   local r = sdec.res
   local npg, lock, suits = 0, '?', '?'
   pcall(function() npg = sdec.ui_npages() end)
@@ -135,7 +144,13 @@ end
 
 function bp_press(name, fn)
   eventlog.clear()
-  print('BEFORE ' .. bp_state())
+  -- PRINT ON BOTH PATHS, and these two guards are the only reason a PRESS line is now guaranteed.
+  -- bp_state is OUR code, not firmware, so it genuinely can raise -- the firmware calls below are
+  -- left bare because they are measured not to. An unprotected bp_state here printed BEFORE and then
+  -- nothing, and a raise is silent on the socket, so the host waited out its whole timeout at 0% CPU.
+  local okb, sb = pcall(bp_state)
+  if not okb then sb = 'status=STATE-UNREADABLE' end
+  print('BEFORE ' .. sb)
   timer.cleartime()
   local ok, ret = pcall(fn)
   local t = timer.gettime()
@@ -146,11 +161,22 @@ function bp_press(name, fn)
     local n, m = eventlog.next()
     if m ~= nil then emsg = emsg .. string.format('[%s %s]', tostring(n), tostring(m)) end
   end
-  print('AFTER ' .. bp_state())
+  local oka, sa = pcall(bp_state)
+  if not oka then sa = 'status=STATE-UNREADABLE' end
+  print('AFTER ' .. sa)
   print(string.format('PRESS %s|%s|%.4f|%d|%s|%s', name, tostring(ok), t, ec, emsg,
                       tostring(ret)))
-  local nt, nn = sdec.ui_notes()
-  for i = 1, nn do print('NOTE ' .. tostring(nt[i])) end
+  -- ui_notes is ours as well, and a raise here used to cost a press that had already succeeded:
+  -- the PRESS line was on the wire but 'P end' never followed, so the host timed out and threw the
+  -- good result away.
+  local nt, nn = nil, 0
+  if sdec ~= nil then
+    local okn, a, b = pcall(sdec.ui_notes)
+    if okn then nt, nn = a, b end
+  end
+  if nt ~= nil and nn ~= nil then
+    for i = 1, nn do print('NOTE ' .. tostring(nt[i])) end
+  end
   print('P end')
 end
 print('===DONE===')
@@ -333,9 +359,17 @@ class Panel:
         t_host = time.time()
         self.d.send('bp_press(%r, %s)' % (label, fn))
         before, after, res, notes = {}, {}, None, []
+        timed_out = False
         while True:
             ln = self.d.line(timeout)
             if ln is None:
+                if res is not None:
+                    # PRESS CAME BACK AND 'P end' DID NOT, which is a different fault from a press
+                    # that never answered -- the measurement is complete and only the tail is
+                    # missing. Overwriting res here discarded a good result and called it a timeout.
+                    notes.append('no P end: the tail of the press was lost, the result stands')
+                    break
+                timed_out = True
                 res = (label, False, 0.0, 0, 'timeout', 'timeout')
                 break
             if ln.startswith('BEFORE '):
@@ -356,8 +390,13 @@ class Panel:
         # WHEN THEY DISAGREE, BELIEVE THE LONGER ONE AND SAY SO. The host figure includes the socket
         # round trip, which is milliseconds; the instrument figure can only be too SHORT, and only by
         # a clobbered timer. So a host time well past the instrument's is not noise, it is evidence.
-        clobbered = host_secs > secs * 2 + 0.25
-        if clobbered:
+        # A TIMEOUT IS NOT A CLOBBERED TIMER, and conflating the two cost an entire diagnosis. When the
+        # press never answers, secs is the 0.0 placeholder set above, so host_secs beats it by the whole
+        # timeout and this test fired unconditionally -- the gate then blamed strm_absorb_arm for a plain
+        # no-reply. The absorb was disarmed and innocent: BS.preflight clears it and REFUSES to run if it
+        # cannot, so that mechanism was never available as an explanation in the first place.
+        clobbered = not timed_out and host_secs > secs * 2 + 0.25
+        if clobbered or timed_out:
             secs = host_secs
 
         if shot_b:
@@ -374,7 +413,12 @@ class Panel:
 
         budget = self._budget_for(label)
         verdict, effect = [], 'n/a'
-        if not ok:
+        if timed_out:
+            # NOT 'RAISED', which is what this used to say: the app never answered, so nothing is
+            # known about whether it raised. Naming the real symptom is the whole point -- the press
+            # produced no PRESS line, and what to examine next is the app's state, not its return.
+            verdict.append('NO REPLY in %.0f s -- no PRESS line came back' % host_secs)
+        elif not ok:
             verdict.append('RAISED %s' % str(ret)[:44])
         if nreal:
             verdict.append('LOGGED %d: %s' % (nreal, emsg[:56]))

@@ -179,6 +179,15 @@ def stages(outdir, shots):
               note='the on-instrument soak engine: brun.point against bench_uart.py\'s own bench_point, '
                    'every status line at its widest, and the fault paths that must report rather than '
                    'end the run'),
+        # THE HARNESS ITSELF, not the app. A raise inside bench_panel's press helper prints nothing, so
+        # the host blocks its whole budget and reports a fault in the app -- which is exactly what a
+        # 300 s panel failure was published as. This stage is the gate on the harness being able to
+        # tell "the app misbehaved" from "I never heard back".
+        Stage('unit-bppress', ['lua', 'tools/test_bppress.lua'],
+              note="bench_panel's press helper always answers: a torn-down app, a raising bp_state and "
+                   'a raising ui_notes each still put a PRESS line and a P end on the socket -- with an '
+                   'unguarded fixture that must go silent on all three, so the guard is what is tested '
+                   'and not the harness'),
         # THE HOSTILE PAYLOADS, as opposed to the hostile SIGNALS the stress stage covers. Every check
         # here is a byte-exactness assertion against a payload chosen to break a value-dependent
         # decoder -- blocks of 00/FF/55/AA, walking ones and zeros, and 1024 uniform random bytes from
