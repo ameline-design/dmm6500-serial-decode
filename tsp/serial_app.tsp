@@ -2606,9 +2606,11 @@ function sdec.options()
   -- Nothing periodic may run while this form is up: a press on an OBJ_EDIT_* opens a firmware modal
   -- editor and the tick is dispatched like a press, so the two compete. Nothing here reads presence.
   sdec.ui_tick_off()
-  local ok = pcall(display.changescreen, sdec.optscr)
-  if not ok then sdec.ui_tick_on() end
-  return ok
+  -- NOT pcall'd. display.changescreen cannot raise -- the firmware returns and posts, it does not
+  -- throw -- so `ok` was true on every path and the tick-restore behind it never ran. A detector that
+  -- cannot fire is worse than none: it reads as a handled failure.
+  display.changescreen(sdec.optscr)
+  return true
 end
 
 -- Copy what the last capture detected into the forced fields and re-seed the form. Does NOT
@@ -2763,18 +2765,28 @@ function sdec.options_cancel()
   sdec.options_restore()
   sdec.options_seed()
   sdec.ui_refresh()
-  local ok = pcall(display.changescreen, sdec.ui_scr)
+  display.changescreen(sdec.ui_scr)
   -- After the switch, and unconditionally: the tick belongs to the main screen.
   sdec.ui_tick_on()
-  return ok
+  return true
 end
 
 -- ============================================================================
 -- Lifecycle
 -- ============================================================================
 -- Hook End App on screen scr, so leaving the app tears it down. Returns whether the hook took.
+-- A COUNT DELTA AND NOT A CAUGHT ERROR, for del_obj's reason: display.setevent cannot raise, so the
+-- pcall this used to sit behind reported ok on every path and the sticky error below was unreachable.
+-- 'End App is not hooked' could therefore never be said -- and that is the one fault here worth
+-- saying, because an unhooked End App leaks every object and both static buffers on exit, silently.
+-- The event log is the firmware's own channel, so a post during the call is the only refusal there is
+-- to read. Where the count cannot be read the hook is assumed to have taken, which is what this did
+-- on hardware anyway.
 function sdec.install_cleanup(scr)
-  local ok = pcall(display.setevent, scr, display.EVENT_ENDAPP, 'sdec.guard(sdec.cleanup)')
+  local before = sdec.evcount()
+  display.setevent(scr, display.EVENT_ENDAPP, 'sdec.guard(sdec.cleanup)')
+  local after  = sdec.evcount()
+  local ok     = (before == nil or after == nil or after <= before)
   if not ok then
     -- Sticky, not lasterr: a later capture would clear lasterr, and this fault must outlive it.
     sdec.stickyerr = 'End App is not hooked -- exiting will not clean up'

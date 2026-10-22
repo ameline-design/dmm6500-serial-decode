@@ -1433,6 +1433,24 @@ print('-- the panel\'s own guards, which the host-side ones do not cover --')
      'and the form is ten fields, which is what build_panel reserves rows for',
      string.format('%d field(s)', table.getn(fields)))
 
+  -- A FORM WITH A MISSING FIELD REFUSES THE RUN. panel_run used to wrap all ten reads in one pcall,
+  -- which could only fire on a nil handle -- display.getvalue does not raise -- and reported "could
+  -- not read the form" without saying which. It nil-checks each handle now and names it, and refuses
+  -- rather than starting a soak on a default nobody chose. That is the state a short build leaves:
+  -- the screen that went out without its Lap Type field.
+  do
+    brun.build_panel()
+    local kepth = brun.pn_vset
+    brun.pn_vset = nil
+    local started = brun.panel_run()
+    brun.pn_vset = kepth
+    ck(started == false, 'a form missing a field refuses to start the soak', tostring(started))
+    ck(brun.pn_ptxt ~= nil
+       and string.find(MD.text(brun.pn_ptxt) or '', 'Vector Set', 1, true) ~= nil,
+       '...and names the field that is absent, not just "could not read the form"',
+       tostring(brun.pn_ptxt and MD.text(brun.pn_ptxt)))
+  end
+
   -- EVERY OPTION-COUNT BRANCH BUILDS, which is the structural answer to the nil-option refusal: the
   -- field is spelled out per count precisely so no call can pass a hole, and this walks the lengths
   -- a future edit might leave behind. Without the branches, a list of 2, 3 or 4 would pass nil in

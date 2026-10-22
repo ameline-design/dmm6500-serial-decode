@@ -88,23 +88,33 @@ function brec.newfile(pfx)
   if ulog ~= nil and ulog.ensuredir ~= nil then
     -- The directory, made once. ensuredir looks in the FAT listing before ordering a mkdir precisely so
     -- a speculative one is never issued -- see its own note on why that matters.
-    pcall(function() ulog.ensuredir(brec.dir) end)
+    ulog.ensuredir(brec.dir)
   end
   local path = pfx .. brec.ext
   if brec.nfile > 1 then path = pfx .. tostring(brec.nfile) .. brec.ext end
   local fh = nil
-  -- file.open RETURNS NIL rather than raising, and a pcall around it reports ok = true either way, so
-  -- the handle is what has to be tested.
-  pcall(function() fh = file.open(path, file.MODE_APPEND) end)
+  -- file.open RETURNS NIL rather than raising, so the HANDLE is what has to be tested and there is
+  -- nothing for a guard to catch -- which is why there is no longer one here. The app makes 36 file
+  -- calls across tsp/ with no pcall on any of them, measured: docs/UNDOCUMENTED.md and
+  -- [[file-api-never-raises-measured]]. Every pcall site costs part of a shipping budget the firmware
+  -- enforces by bluescreening on load, so an inert one is not free.
+  fh = file.open(path, file.MODE_APPEND)
   if fh == nil then return nil, path, 'cannot open ' .. path end
   return fh, path, nil
 end
 
+-- A WRITE IS NOT WHERE A PULLED KEY IS CAUGHT, and this function used to imply it was: it read
+-- `local ok = pcall(file.write)` and returned false on a raise. file.write does not raise -- the DMM
+-- file API posts an event and returns -- so `ok` was true on a dead handle as readily as a live one
+-- and the `return false` was unreachable. Every caller's recovery path hung off it.
+--
+-- WHAT DOES CATCH IT is the reopen at the sync boundary, below: brec.row() closes and reopens every
+-- `syncrows` rows to commit the directory entry, and file.open RETURNING NIL is a real verdict. So
+-- detection already worked, at that granularity, and nothing is lost by saying so plainly.
 function brec.rawwrite(fh, s)
   if fh == nil then return false end
-  local ok = pcall(function() file.write(fh, s) end)
-  if not ok then return false end
-  pcall(function() file.flush(fh) end)
+  file.write(fh, s)
+  file.flush(fh)
   return true
 end
 
@@ -153,7 +163,7 @@ end
 -- ROLL rather than grow past the per-file cap, and count the total so an indefinite run cannot fill
 -- the key behind everyone's back.
 function brec.roll()
-  if brec.fh ~= nil then pcall(function() file.close(brec.fh) end) end
+  if brec.fh ~= nil then file.close(brec.fh) end
   brec.fh = nil
   if brec.ntotbyte >= brec.maxtotal then
     brec.stopped = true
@@ -184,10 +194,10 @@ function brec.row(s)
   if not brec.rawwrite(brec.fh, line) then
     -- A WRITE THAT FAILED is usually a pulled key. Reopening once is worth trying; failing that, the
     -- run says so rather than discarding rows silently.
-    pcall(function() file.close(brec.fh) end)
+    file.close(brec.fh)
     brec.fh  = nil
     local fh = nil
-    pcall(function() fh = file.open(brec.path, file.MODE_APPEND) end)
+    fh = file.open(brec.path, file.MODE_APPEND)
     if fh == nil then
       brec.stopped = true
       brec.why     = 'write failed and ' .. tostring(brec.path) .. ' will not reopen -- key pulled?'
@@ -207,10 +217,10 @@ function brec.row(s)
   brec.sincesync = brec.sincesync + 1
   -- THE DIRECTORY ENTRY, COMMITTED. See the note at the top: flush is not close.
   if brec.sincesync >= brec.syncrows then
-    pcall(function() file.close(brec.fh) end)
+    file.close(brec.fh)
     brec.fh  = nil
     local fh = nil
-    pcall(function() fh = file.open(brec.path, file.MODE_APPEND) end)
+    fh = file.open(brec.path, file.MODE_APPEND)
     if fh == nil then
       brec.stopped = true
       brec.why     = 'reopen after sync failed on ' .. tostring(brec.path)
@@ -237,7 +247,7 @@ end
 function brec.reopen()
   if brec.ntotbyte >= brec.maxtotal then return false end
   if brec.fh ~= nil and not brec.stopped then return true end
-  if brec.fh ~= nil then pcall(function() file.close(brec.fh) end) end
+  if brec.fh ~= nil then file.close(brec.fh) end
   brec.fh = nil
   local fh, path = brec.newfile(brec.pfx)
   if fh == nil then return false end
@@ -246,7 +256,7 @@ function brec.reopen()
   -- THE HEADER HAS TO LAND BEFORE THIS IS CALLED RECOVERED, or a still-failing key reports 'recording
   -- resumed' and counts a recovery it did not make.
   if not brec.header('resumed', nil, nil) then
-    pcall(function() file.close(brec.fh) end)
+    file.close(brec.fh)
     brec.fh = nil
     return false
   end
@@ -269,7 +279,7 @@ function brec.note(iter, cell, ncell, note, nbad, nsdgfail)
   -- os.time() IS THE ONLY CLOCK A RESTARTED INSTRUMENT AGREES WITH ITSELF ABOUT, and it is recorded
   -- as seconds rather than formatted, so a reader can subtract two of them without parsing.
   local t = 0
-  pcall(function() t = os.time() end)
+  t = os.time()
   brec.rawwrite(brec.fh, string.format('S,%d,%d,%d,%d,%d,%d,%d,%s\n',
                                        t, iter or -1, cell or -1, ncell or 0,
                                        brec.ntotrow, nbad or 0, nsdgfail or 0, brec.q(note)))
@@ -277,6 +287,6 @@ end
 
 function brec.finish(note)
   brec.note(-1, -1, 0, note or 'finished')
-  if brec.fh ~= nil then pcall(function() file.close(brec.fh) end) end
+  if brec.fh ~= nil then file.close(brec.fh) end
   brec.fh = nil
 end

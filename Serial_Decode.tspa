@@ -3,7 +3,7 @@ loadscript Serial_Decode
 -- $Product: DMM6500, DAQ6510, DMM7510, SMU2461
 -- $Tag: Serial, UART, Decode, Digitize
 -- $Description: Decodes an asynchronous serial line with the instrument's own digitizer: recovers baud rate, frame format and bytes, shows them as text or hex, and saves bytes to USB key. Everything auto-detects; everything can be locked.
--- $Version: 1.73
+-- $Version: 1.74
 -- $Requires: 1.7.0
 -- $Author: Ian Ameline
 -- $License: MIT
@@ -8638,9 +8638,8 @@ function sdec.options()
     return sdec.ui_refresh()
   end
   sdec.ui_tick_off()
-  local ok = pcall(display.changescreen, sdec.optscr)
-  if not ok then sdec.ui_tick_on() end
-  return ok
+  display.changescreen(sdec.optscr)
+  return true
 end
 
 -- Copy what the last capture detected into the forced fields and re-seed the form. Does NOT
@@ -8764,15 +8763,21 @@ function sdec.options_cancel()
   sdec.options_restore()
   sdec.options_seed()
   sdec.ui_refresh()
-  local ok = pcall(display.changescreen, sdec.ui_scr)
+  display.changescreen(sdec.ui_scr)
   sdec.ui_tick_on()
-  return ok
+  return true
 end
 
 -- Lifecycle
--- Hook End App on screen scr, so leaving the app tears it down. Returns whether the hook took.
+--   [...]
+-- The event log is the firmware's own channel, so a post during the call is the only refusal there is
+-- to read. Where the count cannot be read the hook is assumed to have taken, which is what this did
+-- on hardware anyway.
 function sdec.install_cleanup(scr)
-  local ok = pcall(display.setevent, scr, display.EVENT_ENDAPP, 'sdec.guard(sdec.cleanup)')
+  local before = sdec.evcount()
+  display.setevent(scr, display.EVENT_ENDAPP, 'sdec.guard(sdec.cleanup)')
+  local after  = sdec.evcount()
+  local ok     = (before == nil or after == nil or after <= before)
   if not ok then
     sdec.stickyerr = 'End App is not hooked -- exiting will not clean up'
     ulog.line(sdec.stickyerr)

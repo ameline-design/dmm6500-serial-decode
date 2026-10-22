@@ -1,9 +1,9 @@
 loadscript Serial_brun
 -- $Title: Serial Brun
 -- $Product: DMM6500, DAQ6510, DMM7510, SMU2461
--- $Tag: Serial, UART, Decode, Digitize
--- $Description: Decodes an asynchronous serial line with the instrument's own digitizer: recovers baud rate, frame format and bytes, shows them as text or hex, and saves bytes to USB key. Everything auto-detects; everything can be locked.
--- $Version: 1.73
+-- $Tag: Serial, UART, Decode, Soak, Test
+-- $Description: Test bed for the Serial Decode app: runs that decoder against the signal generator over a plan of waveforms, rates and frame formats, unattended, recording every cell to USB key. Press TRIGGER to stop.
+-- $Version: 1.74
 -- $Requires: 1.7.0
 -- $Author: Ian Ameline
 -- $License: MIT
@@ -8638,9 +8638,8 @@ function sdec.options()
     return sdec.ui_refresh()
   end
   sdec.ui_tick_off()
-  local ok = pcall(display.changescreen, sdec.optscr)
-  if not ok then sdec.ui_tick_on() end
-  return ok
+  display.changescreen(sdec.optscr)
+  return true
 end
 
 -- Copy what the last capture detected into the forced fields and re-seed the form. Does NOT
@@ -8764,15 +8763,21 @@ function sdec.options_cancel()
   sdec.options_restore()
   sdec.options_seed()
   sdec.ui_refresh()
-  local ok = pcall(display.changescreen, sdec.ui_scr)
+  display.changescreen(sdec.ui_scr)
   sdec.ui_tick_on()
-  return ok
+  return true
 end
 
 -- Lifecycle
--- Hook End App on screen scr, so leaving the app tears it down. Returns whether the hook took.
+--   [...]
+-- The event log is the firmware's own channel, so a post during the call is the only refusal there is
+-- to read. Where the count cannot be read the hook is assumed to have taken, which is what this did
+-- on hardware anyway.
 function sdec.install_cleanup(scr)
-  local ok = pcall(display.setevent, scr, display.EVENT_ENDAPP, 'sdec.guard(sdec.cleanup)')
+  local before = sdec.evcount()
+  display.setevent(scr, display.EVENT_ENDAPP, 'sdec.guard(sdec.cleanup)')
+  local after  = sdec.evcount()
+  local ok     = (before == nil or after == nil or after <= before)
   if not ok then
     sdec.stickyerr = 'End App is not hooked -- exiting will not clean up'
     ulog.line(sdec.stickyerr)
@@ -9399,21 +9404,25 @@ end
 -- when one run passes brec.maxfile, and the roll opens for append too.
 function brec.newfile(pfx)
   if ulog ~= nil and ulog.ensuredir ~= nil then
-    pcall(function() ulog.ensuredir(brec.dir) end)
+    ulog.ensuredir(brec.dir)
   end
   local path = pfx .. brec.ext
   if brec.nfile > 1 then path = pfx .. tostring(brec.nfile) .. brec.ext end
   local fh = nil
-  pcall(function() fh = file.open(path, file.MODE_APPEND) end)
+  fh = file.open(path, file.MODE_APPEND)
   if fh == nil then return nil, path, 'cannot open ' .. path end
   return fh, path, nil
 end
 
+-- A WRITE IS NOT WHERE A PULLED KEY IS CAUGHT, and this function used to imply it was: it read
+--   [...]
+-- WHAT DOES CATCH IT is the reopen at the sync boundary, below: brec.row() closes and reopens every
+-- `syncrows` rows to commit the directory entry, and file.open RETURNING NIL is a real verdict. So
+-- detection already worked, at that granularity, and nothing is lost by saying so plainly.
 function brec.rawwrite(fh, s)
   if fh == nil then return false end
-  local ok = pcall(function() file.write(fh, s) end)
-  if not ok then return false end
-  pcall(function() file.flush(fh) end)
+  file.write(fh, s)
+  file.flush(fh)
   return true
 end
 
@@ -9454,7 +9463,7 @@ end
 -- ROLL rather than grow past the per-file cap, and count the total so an indefinite run cannot fill
 -- the key behind everyone's back.
 function brec.roll()
-  if brec.fh ~= nil then pcall(function() file.close(brec.fh) end) end
+  if brec.fh ~= nil then file.close(brec.fh) end
   brec.fh = nil
   if brec.ntotbyte >= brec.maxtotal then
     brec.stopped = true
@@ -9483,10 +9492,10 @@ function brec.row(s)
   if brec.fh == nil then return false end
   local line = 'R,' .. s .. '\n'
   if not brec.rawwrite(brec.fh, line) then
-    pcall(function() file.close(brec.fh) end)
+    file.close(brec.fh)
     brec.fh  = nil
     local fh = nil
-    pcall(function() fh = file.open(brec.path, file.MODE_APPEND) end)
+    fh = file.open(brec.path, file.MODE_APPEND)
     if fh == nil then
       brec.stopped = true
       brec.why     = 'write failed and ' .. tostring(brec.path) .. ' will not reopen -- key pulled?'
@@ -9505,10 +9514,10 @@ function brec.row(s)
   brec.ntotbyte  = brec.ntotbyte + string.len(line)
   brec.sincesync = brec.sincesync + 1
   if brec.sincesync >= brec.syncrows then
-    pcall(function() file.close(brec.fh) end)
+    file.close(brec.fh)
     brec.fh  = nil
     local fh = nil
-    pcall(function() fh = file.open(brec.path, file.MODE_APPEND) end)
+    fh = file.open(brec.path, file.MODE_APPEND)
     if fh == nil then
       brec.stopped = true
       brec.why     = 'reopen after sync failed on ' .. tostring(brec.path)
@@ -9529,14 +9538,14 @@ end
 function brec.reopen()
   if brec.ntotbyte >= brec.maxtotal then return false end
   if brec.fh ~= nil and not brec.stopped then return true end
-  if brec.fh ~= nil then pcall(function() file.close(brec.fh) end) end
+  if brec.fh ~= nil then file.close(brec.fh) end
   brec.fh = nil
   local fh, path = brec.newfile(brec.pfx)
   if fh == nil then return false end
   brec.fh, brec.path = fh, path
   brec.sincesync = 0
   if not brec.header('resumed', nil, nil) then
-    pcall(function() file.close(brec.fh) end)
+    file.close(brec.fh)
     brec.fh = nil
     return false
   end
@@ -9553,7 +9562,7 @@ function brec.note(iter, cell, ncell, note, nbad, nsdgfail)
     if cell == nil or cell == -1 then cell = brun.cell end
   end
   local t = 0
-  pcall(function() t = os.time() end)
+  t = os.time()
   brec.rawwrite(brec.fh, string.format('S,%d,%d,%d,%d,%d,%d,%d,%s\n',
                                        t, iter or -1, cell or -1, ncell or 0,
                                        brec.ntotrow, nbad or 0, nsdgfail or 0, brec.q(note)))
@@ -9561,7 +9570,7 @@ end
 
 function brec.finish(note)
   brec.note(-1, -1, 0, note or 'finished')
-  if brec.fh ~= nil then pcall(function() file.close(brec.fh) end) end
+  if brec.fh ~= nil then file.close(brec.fh) end
   brec.fh = nil
 end
 
@@ -9817,7 +9826,7 @@ brun.lapcell   = 0
 function brun.planopen()
   brun.planclose()
   local fh = nil
-  pcall(function() fh = file.open(brun.planpath, file.MODE_READ) end)
+  fh = file.open(brun.planpath, file.MODE_READ)
   if fh == nil then return false, 'cannot open ' .. brun.planpath end
   brun.pfh      = fh
   brun.planread = 0
@@ -9826,19 +9835,17 @@ end
 
 function brun.planclose()
   if brun.pfh == nil then return end
-  pcall(function() file.close(brun.pfh) end)
+  file.close(brun.pfh)
   brun.pfh = nil
 end
 
 -- One cell, or nil at end of file. Header and blank lines are skipped here so callers never see them.
--- THE HANDLE IS CLOSED OUTSIDE THE pcall, matching usb_log.tsp's own note: a file.read that raises --
--- the key pulled mid-line -- must not leave the handle open, because the allocator then cannot reuse it.
+-- A READ PAST THE DECLARED COUNT IS WHAT IS AVOIDED, not a raise: file.read does not raise, it posts
+-- 2201 'File read error' as a box on the panel, which is why the row count below is the bound.
 function brun.nextrow()
   if brun.pfh == nil then return nil end
   if brun.planrows > 0 and brun.planread >= brun.planrows then return nil end
-  local ln = nil
-  local ok = pcall(function() ln = file.read(brun.pfh, file.READ_LINE) end)
-  if not ok then brun.planclose(); return nil end
+  local ln = file.read(brun.pfh, file.READ_LINE)
   if ln == nil or ln == '' then return nil end
   ln = string.gsub(ln, '[\r\n]', '')
   if ln == '' then return brun.nextrow() end
@@ -9932,7 +9939,7 @@ end
 -- incomparable to every bench result on record; test_bench_engine.lua compares them.
 function brun.point(fs, baud, lock, vid)
   local r = {ran = false, why = nil}
-  pcall(function() eventlog.clear() end)
+  eventlog.clear()
   sdec.force_baud, sdec.force_nbits = nil, nil
   sdec.force_par, sdec.force_nstop, sdec.force_invert = nil, nil, nil
   sdec.baud_raw, sdec.bittime, sdec.fitratio = nil, nil, nil
@@ -9947,7 +9954,7 @@ function brun.point(fs, baud, lock, vid)
   okc, perr = pcall(function() ok, why = sdec.acquire() end)
   if not okc then r.raisewhy = tostring(perr) end
   r.remade = sdec.acq_remade
-  if brun.timing then pcall(function() brun.tacq = timer.gettime() end) end
+  if brun.timing then brun.tacq = timer.gettime() end
   brun.spin_tick()                      -- 3 of 6: the capture is in
   if not okc then
     r.why = 'acquire raised'
@@ -9960,7 +9967,7 @@ function brun.point(fs, baud, lock, vid)
   local okc2
   sdec.ck_stop, sdec.ck_cancel = false, nil
   okc2 = pcall(function() okd, whyd = sdec.decode() end)
-  if brun.timing then pcall(function() brun.tdec = timer.gettime() end) end
+  if brun.timing then brun.tdec = timer.gettime() end
   brun.spin_tick()                      -- 4 of 6: the decode is done
   if not okc2 then r.why = 'decode raised'; return r end
   if not okd then
@@ -10001,7 +10008,7 @@ end
 -- front of the operator, and a count of what it filed is the only way a soak can police that.
 function brun.eventcount()
   local n = 0
-  pcall(function() n = eventlog.getcount() or 0 end)
+  n = eventlog.getcount() or 0
   return n
 end
 
@@ -10183,10 +10190,10 @@ end
 -- and does not claim os.date exists at all. A nil field raises, pcall catches it, and nothing is posted.
 function brun.stamp()
   local t = nil
-  pcall(function() t = os.date('%H:%M') end)
+  t = os.date('%H:%M')
   if type(t) == 'string' and string.len(t) >= 4 then return t end
   local el = 0
-  if brun.t0 ~= nil then pcall(function() el = os.time() - brun.t0 end) end
+  if brun.t0 ~= nil then el = os.time() - brun.t0 end
   return string.format('%d:%02d', math.floor(el / 3600), math.floor(math.mod(el, 3600) / 60))
 end
 
@@ -10233,9 +10240,9 @@ function brun.ui_destroy()
   local u, k = brun.ui, nil
   for k = u.n, 1, -1 do
     if sdec ~= nil and sdec.del_obj ~= nil then
-      pcall(function() sdec.del_obj(u.all[k]) end)
+      if sdec.del_obj ~= nil then sdec.del_obj(u.all[k]) end
     else
-      pcall(function() display.delete(u.all[k]) end)
+      display.delete(u.all[k])
     end
     u.all[k] = nil
   end
@@ -10290,14 +10297,14 @@ function brun.ui_build()
     return false
   end
   brun.ui = u
-  pcall(function() display.changescreen(u.scr) end)
+  display.changescreen(u.scr)
   return true
 end
 
 function brun.ui_set(h, txt, col)
   if h == nil then return end
-  pcall(function() display.settext(h, txt) end)
-  if col ~= nil then pcall(function() display.setcolor(h, col) end) end
+  display.settext(h, txt)
+  if col ~= nil then display.setcolor(h, col) end
 end
 
 -- HOURS, NOT SECONDS, and '--' where it cannot be known. An indefinite run has no end to count down to,
@@ -10326,7 +10333,7 @@ function brun.stopnag()
   if not brun.keyarmed then return ' - TRIGGER NOT ARMED: CUT POWER TO STOP' end
   if (brun.ncell or 0) > 0 then
     local red = false
-    pcall(function() red = (brun.ui_status() == brun.c_bad) end)
+    if brun.ui_status ~= nil then red = (brun.ui_status() == brun.c_bad) end
     if red then return ' - ABORT NOW WITH TRIGGER BUTTON' end
   end
   return ''
@@ -10465,7 +10472,7 @@ brun.spinyield = brun.spinyield or 0
 function brun.spin_tick()
   if brun.ui == nil or brun.ui.spin == nil then return end
   local t = nil
-  pcall(function() t = timer.gettime() end)
+  t = timer.gettime()
   if t ~= nil then
     if brun.spint ~= nil and t >= brun.spint and t - brun.spint < brun.spinmin then return end
     brun.spint = t
@@ -10473,7 +10480,7 @@ function brun.spin_tick()
   brun.ui_set(brun.ui.spin, brun.spin(), brun.c_good)
   brun.nspin = (brun.nspin or 0) + 1
   if brun.spinyield ~= nil and brun.spinyield > 0 then
-    pcall(function() delay(brun.spinyield) end)
+    delay(brun.spinyield)
   end
 end
 
@@ -10766,11 +10773,10 @@ end
 -- string.find in the FAT table.
 function brun.stopped()
   local fh = nil
-  pcall(function() fh = file.open(brun.dir, file.MODE_READ) end)
+  fh = file.open(brun.dir, file.MODE_READ)
   if fh == nil then return false end
-  local raw = nil
-  pcall(function() raw = file.read(fh, file.READ_ALL) end)
-  pcall(function() file.close(fh) end)
+  local raw = file.read(fh, file.READ_ALL)
+  file.close(fh)
   if raw == nil then return false end
   return string.find(raw, 'STOP', 1, true) ~= nil
 end
@@ -10782,11 +10788,10 @@ end
 -- fetch uses -- measured: SOAK    CSV at offset 7425 of a 16384-byte table, size 76514.
 function brun.keysize(n83)
   local fh = nil
-  pcall(function() fh = file.open(brun.dir, file.MODE_READ) end)
+  fh = file.open(brun.dir, file.MODE_READ)
   if fh == nil then return nil end
-  local raw = nil
-  pcall(function() raw = file.read(fh, file.READ_ALL) end)
-  pcall(function() file.close(fh) end)
+  local raw = file.read(fh, file.READ_ALL)
+  file.close(fh)
   if raw == nil then return nil end
   local a = string.find(raw, n83, 1, true)
   if a == nil then return nil end
@@ -10803,13 +10808,13 @@ function brun.resume_scan()
   local sz = brun.keysize('SOAK    CSV')
   if sz == nil or sz <= 0 then return nil end
   local fh = nil
-  pcall(function() fh = file.open(brec.path, file.MODE_READ) end)
+  fh = file.open(brec.path, file.MODE_READ)
   if fh == nil then return nil end
   local nb, it, ce = 0, nil, nil
   while nb < sz do
     local l  = nil
-    local ok = pcall(function() l = file.read(fh, file.READ_LINE) end)
-    if not ok or l == nil then break end
+    l = file.read(fh, file.READ_LINE)
+    if l == nil then break end
     nb = nb + string.len(l)
     if string.sub(l, 1, 2) == 'R,' then
       local f, nf = brun.split(l)
@@ -10818,7 +10823,7 @@ function brun.resume_scan()
       end
     end
   end
-  pcall(function() file.close(fh) end)
+  file.close(fh)
   return it, ce
 end
 
@@ -10846,8 +10851,8 @@ function brun.stopkey_setup()
   if not brun.stopkey then return false end
   if sdec == nil or sdec.cancel_setup == nil then return false end
   local ok = false
-  pcall(function() ok = sdec.cancel_setup() end)
-  if ok then pcall(function() sdec.cancel_clear() end) end
+  if sdec.cancel_setup ~= nil then ok = sdec.cancel_setup() end
+  if ok and sdec.cancel_clear ~= nil then sdec.cancel_clear() end
   return ok == true
 end
 
@@ -10855,7 +10860,7 @@ function brun.stopkey_hit()
   if not brun.stopkey then return false end
   if sdec == nil or sdec.cancel_pressed == nil then return false end
   local hit = false
-  pcall(function() hit = sdec.cancel_pressed() end)
+  if sdec.cancel_pressed ~= nil then hit = sdec.cancel_pressed() end
   return hit == true
 end
 
@@ -10865,7 +10870,7 @@ end
 -- beside the call. delay() is also the plan's per-cell wait, so spying on delay itself cannot separate
 -- the two -- measured, 24 calls and 9.05 s where the hold accounted for 4.
 function brun.holddelay(secs)
-  pcall(function() delay(secs) end)
+  delay(secs)
 end
 
 function brun.holdwait(what)
@@ -10900,7 +10905,7 @@ end
 function brun.sdghold()
   if brun.holdsecs <= 0 then return false end
   local live0 = false
-  pcall(function() live0 = bsdg.alive() end)
+  if bsdg ~= nil and bsdg.alive ~= nil then live0 = bsdg.alive() end
   if live0 then
     brun.nsdgalive = brun.nsdgalive + 1
     brec.note(brun.iter, brun.cell, brun.ncell,
@@ -11029,7 +11034,7 @@ function brun.soak(iterations, tag)
   brun.iterwant = 0
   if not forever then brun.iterwant = iterations end
   brun.t0 = nil
-  pcall(function() brun.t0 = os.time() end)
+  brun.t0 = os.time()
   brun.tlap       = brun.t0
 
   brun.startfault = nil
@@ -11057,13 +11062,13 @@ function brun.soak(iterations, tag)
     end
   end
 
-  pcall(function() sdec.mute_events() end)
+  if sdec.mute_events ~= nil then sdec.mute_events() end
   if brun.backlight ~= nil then
-    pcall(function() display.lightstate = brun.backlight end)
+    display.lightstate = brun.backlight
   end
   brun.keyarmed = brun.stopkey_setup()
   if not brun.ui_build() then
-    pcall(function() display.changescreen(display.SCREEN_USER_SWIPE) end)
+    display.changescreen(display.SCREEN_USER_SWIPE)
   end
   brun.settext('SOAK starting', 'reaching the generator')
   bsdg.reset()
@@ -11133,7 +11138,7 @@ function brun.soak(iterations, tag)
     end
     if brun.gcevery > 0
        and (math.mod(brun.ncell, brun.gcevery) == 0 or (previter ~= nil and c.iter ~= previter)) then
-      pcall(function() collectgarbage() end)
+      collectgarbage()
       brun.memk = brun.heapk()
     end
     if previter ~= nil and c.iter ~= previter and brun.lapcell > 0 then
@@ -11145,7 +11150,7 @@ function brun.soak(iterations, tag)
       brun.percell = brun.lapcell
       brun.lapcell = 0
       brun.cellmax = 0
-      pcall(function() brun.tlap = os.time() end)
+      brun.tlap = os.time()
     end
     brun.lapcell = brun.lapcell + 1
     c.pos        = brun.lapcell
@@ -11157,7 +11162,7 @@ function brun.soak(iterations, tag)
     brun.spin_tick()                    -- 1 of 6: the cell has started
     if brun.timing then
       sdec.strm_stopped_by_press = nil
-      pcall(function() timer.cleartime() end)
+      timer.cleartime()
     end
     local sok, swhy
     if arb == nil then
@@ -11211,17 +11216,17 @@ function brun.soak(iterations, tag)
       brun.nbadsdg = 0
       if c.wait ~= nil and c.wait > 0 then delay(c.wait / 1000) end
 
-      if brun.timing then pcall(function() brun.tsel = timer.gettime() end) end
+      if brun.timing then brun.tsel = timer.gettime() end
       brun.spin_tick()                  -- 2 of 6: stimulus selected and the plan wait is over
       local fs = brun.cell_fs(c.baud)
       local p  = brun.point(fs, c.baud, false, c.vid)
-      pcall(function() sdec.mute_events() end)
+      if sdec.mute_events ~= nil then sdec.mute_events() end
       if not p.ran then
         brun.nbad = brun.nbad + 1
         brun.vbad[vk] = (brun.vbad[vk] or 0) + 1
         if brun.sdgverify then
           local snap = nil
-          pcall(function() snap = bsdg.snapshot() end)
+          if bsdg.snapshot ~= nil then snap = bsdg.snapshot() end
           brec.note(c.iter, c.cell, brun.ncell,
                     string.format('nostim %s: %s', tostring(p.why), tostring(snap)),
                     brun.nbad, brun.nbadsdg)
@@ -11301,7 +11306,7 @@ function brun.soak(iterations, tag)
       if brun.timing then
         local function ts(v) if v == nil then return 'nil' end return string.format('%.3f', v) end
         local trow = nil
-        pcall(function() trow = timer.gettime() end)
+        trow = timer.gettime()
         nt = nt .. string.format(' t=%s/%s/%s/%s', ts(brun.tsel), ts(brun.tacq), ts(brun.tdec), ts(trow))
       end
       if brun.ratediag then
@@ -11348,7 +11353,7 @@ function brun.soak(iterations, tag)
                tostring(brun.stopwhy or 'ended'))
   brun.ui_end()
   if brun.gcevery > 0 then
-    pcall(function() collectgarbage() end)
+    collectgarbage()
     brun.memk = brun.heapk()
   end
   brec.note(brun.iter, brun.cell, brun.ncell,
@@ -11363,7 +11368,7 @@ function brun.soak(iterations, tag)
     why = string.format('L%dC%d: %s', brun.iter, brun.cell, why)
   end
   brec.finish(why)
-  pcall(function() sdec.unmute_events() end)
+  if sdec.unmute_events ~= nil then sdec.unmute_events() end
   brun.announce('END ' .. tostring(brun.stopwhy))
   return true, brun.stopwhy
 end
@@ -11610,26 +11615,32 @@ function brun.pn_poisoned()
 end
 
 -- Read the form, apply it, and start. Nothing here is applied until every field has been read: a
--- raise half way would otherwise commit a partial configuration, which is options_apply's rule.
+--   [...]
+-- not raise. So the test is for the handle, which also says WHICH field is missing instead of
+-- reporting one failure for the form. A field whose handle is gone reads as nil and the `type(x) ==
+-- 'number'` tests below already treat that as "not set", which is the right answer for it.
 function brun.panel_run()
   local laps, ip, lt, lo, hi, inter, vst, over, armv, armw
-  local readok, readerr = pcall(function()
-    laps     = display.getvalue(brun.pn_laps)
-    local si = display.getvalue(brun.pn_sdgf)
-    if type(si) == 'number' then ip = brun.pn_sdgtxt(math.floor(si + 0.5)) end
-    local li = display.getvalue(brun.pn_lapt)
-    if type(li) == 'number' then lt = brun.pn_laptypes[math.floor(li + 0.5)] end
-    local vi = display.getvalue(brun.pn_vset)
-    if type(vi) == 'number' then vst = brun.pn_vsets[math.floor(vi + 0.5)] end
-    lo    = display.getvalue(brun.pn_lo)
-    hi    = display.getvalue(brun.pn_hi)
-    inter = display.getvalue(brun.pn_inter)
-    over  = display.getvalue(brun.pn_over)
-    armv  = display.getvalue(brun.pn_armv)
-    armw  = display.getvalue(brun.pn_armw)
-  end)
-  if not readok then
-    brun.pn_say('could not read the form: ' .. tostring(readerr))
+  local missing = nil
+  local function val(h, name)
+    if h == nil then missing = (missing or '') .. name .. ' '; return nil end
+    return display.getvalue(h)
+  end
+  laps     = val(brun.pn_laps, 'Laps')
+  local si = val(brun.pn_sdgf, 'SDG Address')
+  if type(si) == 'number' then ip = brun.pn_sdgtxt(math.floor(si + 0.5)) end
+  local li = val(brun.pn_lapt, 'Lap Type')
+  if type(li) == 'number' then lt = brun.pn_laptypes[math.floor(li + 0.5)] end
+  local vi = val(brun.pn_vset, 'Vector Set')
+  if type(vi) == 'number' then vst = brun.pn_vsets[math.floor(vi + 0.5)] end
+  lo    = val(brun.pn_lo, 'Speed Low')
+  hi    = val(brun.pn_hi, 'Speed High')
+  inter = val(brun.pn_inter, 'Interstitial')
+  over  = val(brun.pn_over, 'Over-read')
+  armv  = val(brun.pn_armv, 'Arm At')
+  armw  = val(brun.pn_armw, 'Arm Wait')
+  if missing ~= nil then
+    brun.pn_say('form incomplete, not starting: no ' .. missing)
     return false
   end
 
@@ -11659,7 +11670,7 @@ function brun.panel_run()
   if type(inter) == 'number' and inter > 0 then brun.filt_interstit = inter
   else brun.filt_interstit = nil end
   if ip ~= nil and bsdg ~= nil then
-    if bsdg.close ~= nil then pcall(bsdg.close) end
+    if bsdg.close ~= nil then bsdg.close() end
     bsdg.ip = ip
   end
 

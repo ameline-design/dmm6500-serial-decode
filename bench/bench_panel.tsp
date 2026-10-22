@@ -375,26 +375,38 @@ function brun.pn_poisoned()
 end
 
 -- Read the form, apply it, and start. Nothing here is applied until every field has been read: a
--- raise half way would otherwise commit a partial configuration, which is options_apply's rule.
+-- half-read form would otherwise commit a partial configuration, which is options_apply's rule.
+--
+-- NIL-CHECKED, NOT pcall'd. This wrapped all ten reads in one guard, and the only way a
+-- display.getvalue can fail is a nil HANDLE -- the firmware returns values and posts events, it does
+-- not raise. So the test is for the handle, which also says WHICH field is missing instead of
+-- reporting one failure for the form. A field whose handle is gone reads as nil and the `type(x) ==
+-- 'number'` tests below already treat that as "not set", which is the right answer for it.
 function brun.panel_run()
   local laps, ip, lt, lo, hi, inter, vst, over, armv, armw
-  local readok, readerr = pcall(function()
-    laps     = display.getvalue(brun.pn_laps)
-    local si = display.getvalue(brun.pn_sdgf)
-    if type(si) == 'number' then ip = brun.pn_sdgtxt(math.floor(si + 0.5)) end
-    local li = display.getvalue(brun.pn_lapt)
-    if type(li) == 'number' then lt = brun.pn_laptypes[math.floor(li + 0.5)] end
-    local vi = display.getvalue(brun.pn_vset)
-    if type(vi) == 'number' then vst = brun.pn_vsets[math.floor(vi + 0.5)] end
-    lo    = display.getvalue(brun.pn_lo)
-    hi    = display.getvalue(brun.pn_hi)
-    inter = display.getvalue(brun.pn_inter)
-    over  = display.getvalue(brun.pn_over)
-    armv  = display.getvalue(brun.pn_armv)
-    armw  = display.getvalue(brun.pn_armw)
-  end)
-  if not readok then
-    brun.pn_say('could not read the form: ' .. tostring(readerr))
+  local missing = nil
+  local function val(h, name)
+    if h == nil then missing = (missing or '') .. name .. ' '; return nil end
+    return display.getvalue(h)
+  end
+  laps     = val(brun.pn_laps, 'Laps')
+  local si = val(brun.pn_sdgf, 'SDG Address')
+  if type(si) == 'number' then ip = brun.pn_sdgtxt(math.floor(si + 0.5)) end
+  local li = val(brun.pn_lapt, 'Lap Type')
+  if type(li) == 'number' then lt = brun.pn_laptypes[math.floor(li + 0.5)] end
+  local vi = val(brun.pn_vset, 'Vector Set')
+  if type(vi) == 'number' then vst = brun.pn_vsets[math.floor(vi + 0.5)] end
+  lo    = val(brun.pn_lo, 'Speed Low')
+  hi    = val(brun.pn_hi, 'Speed High')
+  inter = val(brun.pn_inter, 'Interstitial')
+  over  = val(brun.pn_over, 'Over-read')
+  armv  = val(brun.pn_armv, 'Arm At')
+  armw  = val(brun.pn_armw, 'Arm Wait')
+  -- A MISSING FIELD REFUSES THE RUN rather than running on a default nobody chose. The form is built
+  -- at once and all ten handles come back together, so a nil here means the build was short -- the
+  -- state that put a soak screen on the glass without its Lap Type field.
+  if missing ~= nil then
+    brun.pn_say('form incomplete, not starting: no ' .. missing)
     return false
   end
 
@@ -435,7 +447,7 @@ function brun.panel_run()
   else brun.filt_interstit = nil end
   if ip ~= nil and bsdg ~= nil then
     -- Closed before the address moves, or the next select talks to the old session on the new name.
-    if bsdg.close ~= nil then pcall(bsdg.close) end
+    if bsdg.close ~= nil then bsdg.close() end
     bsdg.ip = ip
   end
 

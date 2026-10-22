@@ -161,7 +161,7 @@ MANIFEST = [
     # the very next release inverts: '1.4' is followed by '1.10', and '1.10' < '1.4' as strings, so the
     # newer build reads as older. Two digits also make the width fixed, which is what leaves the compare
     # on the digits rather than on where the string ran out.
-    ('Version', '1.73'),
+    ('Version', '1.74'),
     # Stated minimum firmware, kept deliberately low: if the installer compares this
     # field as a STRING then "1.7.3c" sorts above "1.7.17a" and the app refuses to
     # install on the very unit it is developed on. "1.7.0" satisfies either compare.
@@ -377,7 +377,24 @@ def main():
 -- screen, and the analyser's two would spend display objects the soak needs. docs/BRUN.md.
 brun.panel()
 '''
-        MANIFEST = [(k, 'Serial Brun' if k == 'Title' else v) for k, v in MANIFEST]
+        # TITLE AND DESCRIPTION BOTH, and the description is not a detail: only the Title was
+        # overridden, so the Apps Menu entry for this archive described the DECODER -- "Decodes an
+        # asynchronous serial line ... saves bytes to USB key" -- which is what the other archive
+        # does. An operator picking between two entries on the glass got one accurate line and one
+        # that belonged to its neighbour. Under 240 characters, which verify_tspa measures.
+        BRUN_DESC = ('Test bed for the Serial Decode app: runs that decoder against the signal '
+                     'generator over a plan of waveforms, rates and frame formats, unattended, '
+                     'recording every cell to USB key. Press TRIGGER to stop.')
+        BRUN_TAG = 'Serial, UART, Decode, Soak, Test'
+        def _brun_manifest(k, v):
+            if k == 'Title':
+                return 'Serial Brun'
+            if k == 'Description':
+                return BRUN_DESC
+            if k == 'Tag':
+                return BRUN_TAG
+            return v
+        MANIFEST = [(k, _brun_manifest(k, v)) for k, v in MANIFEST]
         if os.path.abspath(args.out) == os.path.abspath(os.path.join(ROOT, 'Serial_Decode.tspa')):
             args.out = os.path.join(ROOT, NAME + '.tspa')
     if args.no_docs:

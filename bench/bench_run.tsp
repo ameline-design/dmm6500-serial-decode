@@ -1,5 +1,10 @@
 -- bench_run.tsp -- the soak loop, running on the instrument with nobody connected.
 --
+-- THIS IS A TEST BED FOR THE SERIAL DECODER, not a second decoder. It drives the signal generator
+-- through a plan of waveforms, rates and frame formats, asks sdec to decode each one, and records
+-- what came back. Every judgement about whether a decode was right is made elsewhere -- by the host
+-- judge, or by barb.expect -- so nothing here decides what a correct answer looks like.
+--
 -- brun.soak(n) runs n iterations of the plan; brun.soak() or brun.soak(0) runs until the power is cut.
 -- Every cell is written to the USB key as it completes, because a power cycle is the stop button and
 -- there is no graceful exit to save anything at.
@@ -289,7 +294,7 @@ brun.lapcell   = 0
 function brun.planopen()
   brun.planclose()
   local fh = nil
-  pcall(function() fh = file.open(brun.planpath, file.MODE_READ) end)
+  fh = file.open(brun.planpath, file.MODE_READ)
   if fh == nil then return false, 'cannot open ' .. brun.planpath end
   brun.pfh      = fh
   brun.planread = 0
@@ -298,22 +303,20 @@ end
 
 function brun.planclose()
   if brun.pfh == nil then return end
-  pcall(function() file.close(brun.pfh) end)
+  file.close(brun.pfh)
   brun.pfh = nil
 end
 
 -- One cell, or nil at end of file. Header and blank lines are skipped here so callers never see them.
 --
--- THE HANDLE IS CLOSED OUTSIDE THE pcall, matching usb_log.tsp's own note: a file.read that raises --
--- the key pulled mid-line -- must not leave the handle open, because the allocator then cannot reuse it.
+-- A READ PAST THE DECLARED COUNT IS WHAT IS AVOIDED, not a raise: file.read does not raise, it posts
+-- 2201 'File read error' as a box on the panel, which is why the row count below is the bound.
 function brun.nextrow()
   if brun.pfh == nil then return nil end
   -- STOP AT THE DECLARED COUNT rather than at EOF, for the event reason above. A plan with no rows=
   -- header falls back to reading until EOF, which still works and costs one event per pass.
   if brun.planrows > 0 and brun.planread >= brun.planrows then return nil end
-  local ln = nil
-  local ok = pcall(function() ln = file.read(brun.pfh, file.READ_LINE) end)
-  if not ok then brun.planclose(); return nil end
+  local ln = file.read(brun.pfh, file.READ_LINE)
   if ln == nil or ln == '' then return nil end
   ln = string.gsub(ln, '[\r\n]', '')
   if ln == '' then return brun.nextrow() end
@@ -444,7 +447,7 @@ end
 -- incomparable to every bench result on record; test_bench_engine.lua compares them.
 function brun.point(fs, baud, lock, vid)
   local r = {ran = false, why = nil}
-  pcall(function() eventlog.clear() end)
+  eventlog.clear()
   sdec.force_baud, sdec.force_nbits = nil, nil
   sdec.force_par, sdec.force_nstop, sdec.force_invert = nil, nil, nil
   -- THE RATE FIT'S OUTPUTS ARE CLEARED PER CELL, and this is not housekeeping. This function returns
@@ -496,7 +499,7 @@ function brun.point(fs, baud, lock, vid)
   -- THE ALLOCATION'S OWN VERDICT. Read before the early returns so a cell that failed to acquire still
   -- reports it: the cells that raised on 2026-10-17 were the ones that returned early.
   r.remade = sdec.acq_remade
-  if brun.timing then pcall(function() brun.tacq = timer.gettime() end) end
+  if brun.timing then brun.tacq = timer.gettime() end
   brun.spin_tick()                      -- 3 of 6: the capture is in
   if not okc then
     r.why = 'acquire raised'
@@ -536,7 +539,7 @@ function brun.point(fs, baud, lock, vid)
   -- otherwise write 'ckcancel=true' on every remaining cell of the lap and name the wrong one.
   sdec.ck_stop, sdec.ck_cancel = false, nil
   okc2 = pcall(function() okd, whyd = sdec.decode() end)
-  if brun.timing then pcall(function() brun.tdec = timer.gettime() end) end
+  if brun.timing then brun.tdec = timer.gettime() end
   -- THERE IS NO DECODE-REACH DIAGNOSTIC, and the gap is worth naming rather than leaving silent. Nine
   -- fields would belong here -- decwin/decest/decwid/decstride/decn/bufn/ckstop/ckcancel and cknf --
   -- and every one of them reads sdec.ck_tot, which ONLY the chunked decode builds. brun.point calls
@@ -603,7 +606,7 @@ end
 -- front of the operator, and a count of what it filed is the only way a soak can police that.
 function brun.eventcount()
   local n = 0
-  pcall(function() n = eventlog.getcount() or 0 end)
+  n = eventlog.getcount() or 0
   return n
 end
 
@@ -875,10 +878,10 @@ end
 -- and does not claim os.date exists at all. A nil field raises, pcall catches it, and nothing is posted.
 function brun.stamp()
   local t = nil
-  pcall(function() t = os.date('%H:%M') end)
+  t = os.date('%H:%M')
   if type(t) == 'string' and string.len(t) >= 4 then return t end
   local el = 0
-  if brun.t0 ~= nil then pcall(function() el = os.time() - brun.t0 end) end
+  if brun.t0 ~= nil then el = os.time() - brun.t0 end
   return string.format('%d:%02d', math.floor(el / 3600), math.floor(math.mod(el, 3600) / 60))
 end
 
@@ -943,9 +946,9 @@ function brun.ui_destroy()
   -- goes on sdec.orphans, where it looks like a leaked object and blocks the next rebuild.
   for k = u.n, 1, -1 do
     if sdec ~= nil and sdec.del_obj ~= nil then
-      pcall(function() sdec.del_obj(u.all[k]) end)
+      if sdec.del_obj ~= nil then sdec.del_obj(u.all[k]) end
     else
-      pcall(function() display.delete(u.all[k]) end)
+      display.delete(u.all[k])
     end
     u.all[k] = nil
   end
@@ -1035,14 +1038,14 @@ function brun.ui_build()
     return false
   end
   brun.ui = u
-  pcall(function() display.changescreen(u.scr) end)
+  display.changescreen(u.scr)
   return true
 end
 
 function brun.ui_set(h, txt, col)
   if h == nil then return end
-  pcall(function() display.settext(h, txt) end)
-  if col ~= nil then pcall(function() display.setcolor(h, col) end) end
+  display.settext(h, txt)
+  if col ~= nil then display.setcolor(h, col) end
 end
 
 -- HOURS, NOT SECONDS, and '--' where it cannot be known. An indefinite run has no end to count down to,
@@ -1089,7 +1092,7 @@ function brun.stopnag()
   if not brun.keyarmed then return ' - TRIGGER NOT ARMED: CUT POWER TO STOP' end
   if (brun.ncell or 0) > 0 then
     local red = false
-    pcall(function() red = (brun.ui_status() == brun.c_bad) end)
+    if brun.ui_status ~= nil then red = (brun.ui_status() == brun.c_bad) end
     if red then return ' - ABORT NOW WITH TRIGGER BUTTON' end
   end
   return ''
@@ -1368,7 +1371,7 @@ function brun.spin_tick()
   -- clearing it here would make an absorb from minutes ago look current, which once made a host tool file
   -- good vectors as BAD for a whole soak. A read is free and cannot do that.
   local t = nil
-  pcall(function() t = timer.gettime() end)
+  t = timer.gettime()
   if t ~= nil then
     -- t < brun.spint means the timer was cleared under us (a new cell took it), so the elapsed comparison
     -- is meaningless and the tick is allowed through rather than suppressed for a whole cell.
@@ -1385,7 +1388,7 @@ function brun.spin_tick()
   -- AFTER THE WRITE, NEVER BEFORE: the point is to give the firmware a slice in which to paint what was
   -- just written. pcall because delay() is absent in the offline harness, where the count is what matters.
   if brun.spinyield ~= nil and brun.spinyield > 0 then
-    pcall(function() delay(brun.spinyield) end)
+    delay(brun.spinyield)
   end
 end
 
@@ -1956,11 +1959,10 @@ end
 -- string.find in the FAT table.
 function brun.stopped()
   local fh = nil
-  pcall(function() fh = file.open(brun.dir, file.MODE_READ) end)
+  fh = file.open(brun.dir, file.MODE_READ)
   if fh == nil then return false end
-  local raw = nil
-  pcall(function() raw = file.read(fh, file.READ_ALL) end)
-  pcall(function() file.close(fh) end)
+  local raw = file.read(fh, file.READ_ALL)
+  file.close(fh)
   if raw == nil then return false end
   return string.find(raw, 'STOP', 1, true) ~= nil
 end
@@ -1984,11 +1986,10 @@ end
 -- fetch uses -- measured: SOAK    CSV at offset 7425 of a 16384-byte table, size 76514.
 function brun.keysize(n83)
   local fh = nil
-  pcall(function() fh = file.open(brun.dir, file.MODE_READ) end)
+  fh = file.open(brun.dir, file.MODE_READ)
   if fh == nil then return nil end
-  local raw = nil
-  pcall(function() raw = file.read(fh, file.READ_ALL) end)
-  pcall(function() file.close(fh) end)
+  local raw = file.read(fh, file.READ_ALL)
+  file.close(fh)
   if raw == nil then return nil end
   local a = string.find(raw, n83, 1, true)
   if a == nil then return nil end
@@ -2005,13 +2006,13 @@ function brun.resume_scan()
   local sz = brun.keysize('SOAK    CSV')
   if sz == nil or sz <= 0 then return nil end
   local fh = nil
-  pcall(function() fh = file.open(brec.path, file.MODE_READ) end)
+  fh = file.open(brec.path, file.MODE_READ)
   if fh == nil then return nil end
   local nb, it, ce = 0, nil, nil
   while nb < sz do
     local l  = nil
-    local ok = pcall(function() l = file.read(fh, file.READ_LINE) end)
-    if not ok or l == nil then break end
+    l = file.read(fh, file.READ_LINE)
+    if l == nil then break end
     nb = nb + string.len(l)
     if string.sub(l, 1, 2) == 'R,' then
       local f, nf = brun.split(l)
@@ -2023,7 +2024,7 @@ function brun.resume_scan()
       end
     end
   end
-  pcall(function() file.close(fh) end)
+  file.close(fh)
   return it, ce
 end
 
@@ -2074,8 +2075,8 @@ function brun.stopkey_setup()
   if not brun.stopkey then return false end
   if sdec == nil or sdec.cancel_setup == nil then return false end
   local ok = false
-  pcall(function() ok = sdec.cancel_setup() end)
-  if ok then pcall(function() sdec.cancel_clear() end) end
+  if sdec.cancel_setup ~= nil then ok = sdec.cancel_setup() end
+  if ok and sdec.cancel_clear ~= nil then sdec.cancel_clear() end
   return ok == true
 end
 
@@ -2083,7 +2084,7 @@ function brun.stopkey_hit()
   if not brun.stopkey then return false end
   if sdec == nil or sdec.cancel_pressed == nil then return false end
   local hit = false
-  pcall(function() hit = sdec.cancel_pressed() end)
+  if sdec.cancel_pressed ~= nil then hit = sdec.cancel_pressed() end
   return hit == true
 end
 
@@ -2096,7 +2097,7 @@ end
 -- beside the call. delay() is also the plan's per-cell wait, so spying on delay itself cannot separate
 -- the two -- measured, 24 calls and 9.05 s where the hold accounted for 4.
 function brun.holddelay(secs)
-  pcall(function() delay(secs) end)
+  delay(secs)
 end
 
 function brun.holdwait(what)
@@ -2144,7 +2145,7 @@ function brun.sdghold()
   -- generator answering -- a static fault no amount of holding fixes, and holding 300 s per 20 cells for
   -- it would add ~7 h of holding to a lap that runs in under three, and call it recovery.
   local live0 = false
-  pcall(function() live0 = bsdg.alive() end)
+  if bsdg ~= nil and bsdg.alive ~= nil then live0 = bsdg.alive() end
   if live0 then
     brun.nsdgalive = brun.nsdgalive + 1
     brec.note(brun.iter, brun.cell, brun.ncell,
@@ -2301,7 +2302,7 @@ function brun.soak(iterations, tag)
   brun.iterwant = 0
   if not forever then brun.iterwant = iterations end
   brun.t0 = nil
-  pcall(function() brun.t0 = os.time() end)
+  brun.t0 = os.time()
   -- THE CURRENT LAP'S OWN START, so the lap line can say how long the lap has run rather than deriving it
   -- from the run's average. Equal to t0 for lap 1; reset at every lap boundary. A --resume start lands
   -- mid-lap, so that first lap's elapsed UNDERSTATES -- the laps after it are exact.
@@ -2342,18 +2343,18 @@ function brun.soak(iterations, tag)
   -- tested call and deliberately leaves the LOG intact -- so brun.point's per-cell event count still
   -- polices the app's behaviour while nothing reaches the panel. An unattended week must not end with a
   -- modal box waiting for a keypress that nobody is there to give.
-  pcall(function() sdec.mute_events() end)
+  if sdec.mute_events ~= nil then sdec.mute_events() end
   -- THE STATUS SCREEN, BUILT ONCE, and the USER swipe screen if it cannot be. Either way the two swipe
   -- lines are written every cell, so a run is never invisible.
   --
   -- ONCE, not per cell: changescreen is a user-visible jump and doing it repeatedly would fight
   -- anybody trying to look at another screen.
   if brun.backlight ~= nil then
-    pcall(function() display.lightstate = brun.backlight end)
+    display.lightstate = brun.backlight
   end
   brun.keyarmed = brun.stopkey_setup()
   if not brun.ui_build() then
-    pcall(function() display.changescreen(display.SCREEN_USER_SWIPE) end)
+    display.changescreen(display.SCREEN_USER_SWIPE)
   end
   brun.settext('SOAK starting', 'reaching the generator')
   bsdg.reset()
@@ -2468,7 +2469,7 @@ function brun.soak(iterations, tag)
     -- missing garbage collector must not be what ends an overnight run.
     if brun.gcevery > 0
        and (math.mod(brun.ncell, brun.gcevery) == 0 or (previter ~= nil and c.iter ~= previter)) then
-      pcall(function() collectgarbage() end)
+      collectgarbage()
       brun.memk = brun.heapk()
     end
     if previter ~= nil and c.iter ~= previter and brun.lapcell > 0 then
@@ -2489,7 +2490,7 @@ function brun.soak(iterations, tag)
       brun.cellmax = 0
       -- AND THE NEW LAP'S CLOCK STARTS HERE, at the same boundary the lap size is learned at, so the two
       -- numbers on the lap line always describe the same lap.
-      pcall(function() brun.tlap = os.time() end)
+      brun.tlap = os.time()
     end
     -- COUNTED BEFORE THE CELL RUNS, so brun.lapcell is this cell's 1-based position in its lap and the
     -- screen below can divide by it directly.
@@ -2515,7 +2516,7 @@ function brun.soak(iterations, tag)
     -- tools/bench_matrix.py's mx_point() takes the timer the same way, in the same order.
     if brun.timing then
       sdec.strm_stopped_by_press = nil
-      pcall(function() timer.cleartime() end)
+      timer.cleartime()
     end
     -- THE GENERATOR FIRST. A cell measured against the previous cell's waveform is worse than no cell
     -- at all: it is a wrong answer that looks like a right one, which is the failure mode the whole
@@ -2600,7 +2601,7 @@ function brun.soak(iterations, tag)
 
       -- CHARGED TO THE SELECT, and it includes the plan's own wait: both happen before any measurement
       -- and a reader can subtract c.wait, which the row already carries.
-      if brun.timing then pcall(function() brun.tsel = timer.gettime() end) end
+      if brun.timing then brun.tsel = timer.gettime() end
       brun.spin_tick()                  -- 2 of 6: stimulus selected and the plan wait is over
       local fs = brun.cell_fs(c.baud)
       local p  = brun.point(fs, c.baud, false, c.vid)
@@ -2608,7 +2609,7 @@ function brun.soak(iterations, tag)
       -- localnode.showevents = SEV_ERROR -- so the mute taken once at the top of this function is undone
       -- by the first cell, and every event after that is a popup again. One assignment per cell is
       -- nothing against a modal box on an instrument nobody is standing at.
-      pcall(function() sdec.mute_events() end)
+      if sdec.mute_events ~= nil then sdec.mute_events() end
       if not p.ran then
         brun.nbad = brun.nbad + 1
         brun.vbad[vk] = (brun.vbad[vk] or 0) + 1
@@ -2618,7 +2619,7 @@ function brun.soak(iterations, tag)
         -- overwrite the state being asked about.
         if brun.sdgverify then
           local snap = nil
-          pcall(function() snap = bsdg.snapshot() end)
+          if bsdg.snapshot ~= nil then snap = bsdg.snapshot() end
           brec.note(c.iter, c.cell, brun.ncell,
                     string.format('nostim %s: %s', tostring(p.why), tostring(snap)),
                     brun.nbad, brun.nbadsdg)
@@ -2783,7 +2784,7 @@ function brun.soak(iterations, tag)
       if brun.timing then
         local function ts(v) if v == nil then return 'nil' end return string.format('%.3f', v) end
         local trow = nil
-        pcall(function() trow = timer.gettime() end)
+        trow = timer.gettime()
         nt = nt .. string.format(' t=%s/%s/%s/%s', ts(brun.tsel), ts(brun.tacq), ts(brun.tdec), ts(trow))
       end
       -- THE RUNNER-UP'S QUALITY, on cells where ua_best RESCALED the fit. uart_decode accepts a rescale on
@@ -2863,7 +2864,7 @@ function brun.soak(iterations, tag)
   -- lap -- which on a 1-lap run is every lap there is. Collected here so the figure is post-collection like
   -- the others and the series is comparable end to end.
   if brun.gcevery > 0 then
-    pcall(function() collectgarbage() end)
+    collectgarbage()
     brun.memk = brun.heapk()
   end
   brec.note(brun.iter, brun.cell, brun.ncell,
@@ -2882,7 +2883,7 @@ function brun.soak(iterations, tag)
   brec.finish(why)
   -- RESTORED, so a run ending does not leave the instrument silently swallowing real errors for the
   -- next operator. The app's own unmute, not a literal.
-  pcall(function() sdec.unmute_events() end)
+  if sdec.unmute_events ~= nil then sdec.unmute_events() end
   brun.announce('END ' .. tostring(brun.stopwhy))
   return true, brun.stopwhy
 end
