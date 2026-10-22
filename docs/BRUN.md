@@ -30,7 +30,7 @@ thing that says which plan is actually on the key.
 
 ## The screen
 
-![The soak settings screen: ten fields in two columns of five, Run Soak, and the plan in two lines beside it](img/brun-panel.png)
+![The soak settings screen, grabbed off the shipped 1.74 build: ten fields in two columns of five, Vector Set reading Normal, and the key's own plan in two lines beside Run Soak -- plan: 6048 row(s), random-per-lap all](img/brun-panel.png)
 
 **There is no Cancel button.** `End App` in the title bar is the way out, and it is wired to the same
 teardown Cancel called — which is a complete exit here rather than a screen change, because the
