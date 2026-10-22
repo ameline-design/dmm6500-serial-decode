@@ -179,6 +179,14 @@ def stages(outdir, shots):
               note='the on-instrument soak engine: brun.point against bench_uart.py\'s own bench_point, '
                    'every status line at its widest, and the fault paths that must report rather than '
                    'end the run'),
+        # THE ONE CHECK THAT MAKES AN ON-INSTRUMENT PLAN DRAW SAFE. bench/plan_gen.tsp draws the soak
+        # plan on the box so a lap needs no host; soakplan.py still draws it here. Two draws of one
+        # plan is the failure whose signature is a reasonable-looking plan that is a different
+        # experiment -- measured once at 1677 of 1677 cells -- so the two are compared BYTE FOR BYTE,
+        # under the host Lua and under out/lua502/bin/lua, which is the instrument's own dialect.
+        Stage('unit-plangen', ['lua', 'tools/test_plan_gen.lua'],
+              note='the instrument\'s plan draw against soakplan.py, byte for byte, under both Luas; '
+                   'plus the lazy twist against the eager one and bplan.check on a truncated plan'),
         # THE HARNESS ITSELF, not the app. A raise inside bench_panel's press helper prints nothing, so
         # the host blocks its whole budget and reports a fault in the app -- which is exactly what a
         # 300 s panel failure was published as. This stage is the gate on the harness being able to

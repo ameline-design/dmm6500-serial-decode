@@ -157,6 +157,30 @@ def app_namespaces(code, default='sdec'):
     return ns or {default}
 
 
+def file_locals(code):
+    """Every name declared `local` at column 0, as a set.
+
+    A FIELD OF A LOCAL TABLE IS NOT A GLOBAL, and without this the check cannot tell the two apart.
+    bench/plan_rand.tsp holds the MT19937 in a do-block with `local M = bplan.mt` and `local MT = {}`,
+    so `M.TWO32` and `MT.__index` were reported as bare globals -- two correct lines in the one module
+    that has file-scope locals at all. Narrow on purpose: it allows a root that the file DECLARED
+    local, and nothing else, so a genuinely bare global is still refused.
+    """
+    out = set()
+    for line in code.split('\n'):
+        m = re.match(r'local\s+function\s+([A-Za-z_][A-Za-z0-9_]*)', line)
+        if m:
+            out.add(m.group(1))
+            continue
+        m = re.match(r'local\s+([A-Za-z_][A-Za-z0-9_,\s]*)', line)
+        if m:
+            for nm in m.group(1).split(','):
+                nm = nm.strip()
+                if re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', nm):
+                    out.add(nm)
+    return out
+
+
 def check_globals(code, name):
     """Assignments at column 0 (file scope) must be local or <ns>.* fields.
 
@@ -164,8 +188,8 @@ def check_globals(code, name):
     share one Lua global environment, and event command strings resolve names
     there too, so a generic global is a real collision risk.
     """
-    ns = app_namespaces(code)
-    shown = '/'.join(sorted(ns))
+    ns = app_namespaces(code) | file_locals(code)
+    shown = '/'.join(sorted(app_namespaces(code)))
     errs = []
     for lineno, line in enumerate(code.split('\n'), 1):
         m = re.match(r'([A-Za-z_][A-Za-z0-9_.]*)\s*=[^=]', line)

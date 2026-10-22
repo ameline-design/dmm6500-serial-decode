@@ -395,6 +395,20 @@ function display.settext(h, s)
   end
   local o = use(h, 'settext')
   atrisk(o, 'settext')
+  -- A settext ON A SCREEN SETS ITS TITLE, and this mock did not model it: it kept `title` from the
+  -- create and wrote `text`, so a retitle was invisible to every test. The shipping app depends on
+  -- this -- serial_ui.tsp settexts sdec.ui_scr whenever the mode changes, through its own
+  -- ui_title_text() and a cache -- so the behaviour is proven on 1.7.17a and the gap was here.
+  --
+  -- THE LENGTH LIMIT APPLIES TO THE NEW TITLE TOO. The firmware truncates past 31 characters and
+  -- posts 1707; checking only the create would let a retitle introduce exactly what the create path
+  -- refuses, which is the kind of one-sided check this file exists to avoid.
+  if o.kind == display.OBJ_SCREEN then
+    if s ~= nil and string.len(tostring(s)) > 31 then
+      error('screen retitled over 31 chars: "' .. tostring(s) .. '"', 0)
+    end
+    o.title = s
+  end
   o.text = s
   o.sets = (o.sets or 0) + 1     -- counted, so tests can assert refresh traffic
 end

@@ -37,7 +37,10 @@ sys.path.insert(0, os.path.join(ROOT, 'tools'))
 
 from mt19937 import MT19937, TWO32                              # noqa: E402
 
-MODULE = os.path.join(ROOT, 'tools', 'mt19937.lua')
+# THE IMPLEMENTATION, not the shim. tools/mt19937.lua is three lines of loadfile now, and the
+# instrument leg below SENDS this text down the socket -- where there is no dofile and no tools/
+# directory -- so it has to be the real module.
+MODULE = os.path.join(ROOT, 'bench', 'plan_rand.tsp')
 
 VERBOSE = False
 FAILED = []
@@ -67,12 +70,19 @@ def ck(cond, what):
 
 
 def module_source():
+    """The module's text with the driver's `M` bound. -> str
+
+    THE MODULE IS A do ... end BLOCK and exports through the global `bplan.mt`, so the driver cannot
+    be appended to a file-scope local the way it was when this read tools/mt19937.lua. Binding M here
+    keeps the driver -- and therefore both Lua legs and the instrument leg -- exactly as it was.
+    """
     with open(MODULE) as f:
         src = f.read()
-    tail = '\nreturn M\n'
+    tail = '\nend\n'
     if not src.endswith(tail):
-        raise RuntimeError('mt19937.lua does not end in "return M"; the driver cannot be appended')
-    return src[:-len(tail)]
+        raise RuntimeError('bench/plan_rand.tsp does not end in "end"; it is no longer the do-block '
+                           'this driver binds against')
+    return src + '\nlocal M = bplan.mt\n'
 
 
 def lua(src):

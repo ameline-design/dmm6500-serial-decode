@@ -66,7 +66,9 @@ APP = ['tsp/usb_log.tsp', 'tsp/serial_core.tsp', 'tsp/uart_decode.tsp',
 # loading it here means every host load also leaves the panel available -- so an operator at the bench
 # can start the next lap with no host at all, against the plan this push already put on the key.
 ENGINE = ['bench/arb_names.tsp', 'bench/sdg_net.tsp', 'bench/bench_rec.tsp',
-          'bench/expect.tsp', 'bench/bench_run.tsp', 'bench/bench_panel.tsp']
+          'bench/expect.tsp', 'bench/plan_rand.tsp', 'bench/plan_data.tsp',
+          'bench/plan_gen.tsp', 'bench/bench_run.tsp', 'bench/soak_eval.tsp',
+          'bench/bench_panel.tsp']
 
 # The smoke's own subset, from bench_smoke.py rather than repeated here: the two have to be the same 86
 # cells for the instrument-driven run to be comparable with the host-driven one.

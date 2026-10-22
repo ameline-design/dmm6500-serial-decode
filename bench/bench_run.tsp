@@ -967,8 +967,87 @@ function brun.tagword()
   return string.upper(t)
 end
 
+-- The status screen's title, in ONE place: it is now written twice -- by the create when the screen is
+-- first built and by the retitle when a second run reuses it -- and two copies of this string would
+-- drift.
+--
+-- THE TAG IS TRUNCATED, NOT THE TITLE, and this is a real defect found rather than a precaution. A
+-- screen title over 31 characters is refused by the firmware with 1707, and the create sits inside
+-- ui_build's pcall -- so a long tag meant the whole status screen failed to build and the run went on
+-- with NO SCREEN AT ALL, silently. Measured: tag 'STOPFILE-IGNORED' gives a 37-character title.
+--
+-- THE STOP INSTRUCTION IS WHAT SURVIVES. 'SD ' and ' - TRIGGER TO STOP' are 21 characters, so the tag
+-- gets the remaining 10. Keeping the whole tag and dropping the suffix was the alternative and is
+-- worse: the tag's first characters already tell a smoke from a soak, and TRIGGER is the only way to
+-- stop a run -- the one thing a title must not lose.
+brun.titlemax = brun.titlemax or 31
+
+function brun.ui_titletext()
+  local head, tail = 'SD ', ' - TRIGGER TO STOP'
+  local room = brun.titlemax - string.len(head) - string.len(tail)
+  return head .. brun.fit(brun.tagword(), room) .. tail
+end
+
+-- Retitle the status screen in place. display.settext ON A SCREEN sets its title -- serial_ui.tsp does
+-- exactly this to sdec.ui_scr, so it is proven on this firmware rather than assumed.
+--
+-- WHY IT MATTERS ON REUSE: the tag is what tells a smoke from a soak at a glance, and the TRIGGER key
+-- stops whichever run is really there. A reused screen still carrying SD SMOKE through a soak is the
+-- exact confusion brun.tagword's own comment warns about.
+function brun.ui_title()
+  if brun.ui == nil or brun.ui.scr == nil then return false end
+  display.settext(brun.ui.scr, brun.ui_titletext())
+  return true
+end
+
+-- Put a reused status screen back to its placeholders. -> ok
+--
+-- WHY REUSE NEEDS THIS AT ALL, and the offline suite caught it: the screen used to be deleted and
+-- rebuilt per run, so every line began at its placeholder by construction. Reused, it opens still
+-- showing the PREVIOUS run's last state -- a green 'FINISHED' headline and that run's totals -- until
+-- the first cell overwrites them. On a soak the first cell is seconds away, and for those seconds the
+-- glass would be describing a run that already ended. The headline is the line that answers the
+-- question from across the room, so it is the worst one to leave stale.
+--
+-- THE PLACEHOLDERS ARE THE ONES ui_build WRITES AT CREATE, so the two paths start identically.
+function brun.ui_reset()
+  local u = brun.ui
+  if u == nil or u.scr == nil then return false end
+  brun.ui_set(u.health, brun.tagword() .. ' HEALTH --', brun.c_ok)
+  brun.ui_set(u.spin,  '|',         brun.c_good)
+  brun.ui_set(u.prog,  '--',        brun.c_val)
+  brun.ui_set(u.time,  '--',        brun.c_lab)
+  brun.ui_set(u.stim,  '--',        brun.c_val)
+  brun.ui_set(u.fail,  '--',        brun.c_lab)
+  brun.ui_set(u.vfail, '--',        brun.c_val)
+  brun.ui_set(u.errs,  'Errors: 0', brun.c_good)
+  -- THE LOG IS CLEARED, not carried over. Its lines are stamped with the lap and cell they happened
+  -- at, so a previous run's stamps under a new run's headline name cells this run has not reached.
+  if u.msg ~= nil then
+    local i
+    for i = 1, table.getn(u.msg) do brun.ui_set(u.msg[i], '', brun.c_lab) end
+  end
+  return true
+end
+
 function brun.ui_build()
-  brun.ui_destroy()
+  -- BUILT ONCE PER APP, NOT ONCE PER RUN. Operator's rule of 2026-10-22: nothing is deleted until the
+  -- app exits. This opened with ui_destroy(), so every run deleted fourteen objects and created
+  -- fourteen more -- which was harmless while a session held one run and is not the shape to keep now
+  -- that the result screen's Back button makes several laps in one session the normal way to work.
+  --
+  -- THE TITLE IS STILL REWRITTEN BELOW, which is the only thing a new run changes about the frame: a
+  -- smoke reads SD SMOKE and a soak SD SOAK, and brun.soak resets every line's contents through
+  -- ui_set as the first cell runs. So reuse costs nothing in staleness.
+  --
+  -- A HOST RELOAD IS A DIFFERENT CASE and is still handled: run_bench.py's PRELUDE calls
+  -- brun.ui_destroy() before dropping the table, because THAT is an app exit -- the handles are about
+  -- to become unreachable.
+  if brun.ui ~= nil and brun.ui.scr ~= nil then
+    brun.ui_title()
+    brun.ui_reset()
+    return true
+  end
   if display == nil or display.create == nil then return false end
   local u  = {all = {}, n = 0}
   local ok = pcall(function()
@@ -991,8 +1070,7 @@ function brun.ui_build()
     -- stop control that is true for the whole run does not belong in them. 'SD' rather than 'SERIAL
     -- DECODE' to make room, and 'TRIGGER TO STOP' rather than 'PRESS TRIGGER TO STOP' -- the verb is the
     -- only word a title can drop.
-    u.scr  = add(create(display.ROOT, display.OBJ_SCREEN,
-                        'SD ' .. brun.tagword() .. ' - TRIGGER TO STOP'))
+    u.scr  = add(create(display.ROOT, display.OBJ_SCREEN, brun.ui_titletext()))
     -- THE HEADLINE FIRST, because it is the one line that answers the question from across the room.
     -- FONT_MEDIUM is the largest this firmware has -- the reference lists FONT_SMALL and FONT_MEDIUM and
     -- nothing else -- so it is emphasised by position and colour rather than by size.
@@ -1340,11 +1418,17 @@ end
 
 -- Rewrite ONLY the headline, with the next character. Silent when the screen has not been built or the
 -- headline has not been composed yet, so a call from anywhere is safe.
-brun.spinmin   = brun.spinmin or 0.5        -- seconds between redraws: 2 fps ceiling. The FLOOR is
-                                          -- set by how often the hook is reached, not by this.
+-- Seconds between redraws: a 4 fps CEILING, on the operator's instruction of 2026-10-22. The FLOOR is
+-- set by how often the hook is reached, not by this -- which is why raising it costs nothing on a soak:
+-- the hook is reached about six times a cell and a cell is seconds, so the ceiling was never what
+-- limited the status spinner. It does bind on the plan draw, whose hook fires once per row.
+--
+-- ONE CONSTANT, BOTH SPINNERS: the status screen's spin_tick and the plan draw's brun.wk_spin both
+-- read it, so there is no second rate to keep in step.
+brun.spinmin   = brun.spinmin or 0.25
 brun.spint     = nil
 
--- THE YIELD THAT MAKES A WRITE VISIBLE, and the reason a redraw ceiling of 2 fps is now the right one.
+-- THE YIELD THAT MAKES A WRITE VISIBLE, and the reason the redraw ceiling is not what sets the rate.
 --
 -- MEASURED: 10 writes a cell arrived as 2 visible 45 deg steps, and 10 mod 4 = 2 -- so the writes were
 -- landing and the LCD was only showing the accumulated glyph at the ~2 points a cell where the interpreter
@@ -2299,6 +2383,12 @@ function brun.soak(iterations, tag)
   brun.nbadb, brun.ncmpb = 0, 0
   brun.bad_bauds = {}
   brun.vcell, brun.vbad = {}, {}
+  -- PER VECTOR, FOR THE FOUR CLASSES THE END-OF-RUN SCREEN RANKS ON. The run totals beside them
+  -- answer 'is this soak healthy'; these answer 'which waveform is the reason', which is the question
+  -- an operator reading a finished run actually has. vbad above is cells that produced no decode and
+  -- is not one of the four: a cell can be bad and judged, or judged and wrong, and conflating them is
+  -- what hid 133 confidently-wrong cells on a 396-cell lap.
+  brun.vwrong, brun.vbadb, brun.vflag, brun.vunexp = {}, {}, {}, {}
   brun.iterwant = 0
   if not forever then brun.iterwant = iterations end
   brun.t0 = nil
@@ -2566,6 +2656,7 @@ function brun.soak(iterations, tag)
       -- A MISSING STIMULUS IS NEVER AN EXPECTED REFUSAL. The vector might be one that is allowed to
       -- refuse, but it was not asked: nothing was on the wire.
       brun.nunexp = brun.nunexp + 1
+      brun.vunexp[vk] = (brun.vunexp[vk] or 0) + 1
       -- THE EMPTY COLUMNS ARE COUNTED, NOT TYPED. A cell with no stimulus has nothing to say in the twelve
       -- measurement columns, and a comma miscounted here is a 22-field row in a 23-field schema: nothing
       -- on the instrument, and judge_bench.py refusing the whole file on the host, correctly, because a
@@ -2643,6 +2734,7 @@ function brun.soak(iterations, tag)
           brun.nexp = brun.nexp + 1
         else
           brun.nunexp = brun.nunexp + 1
+          brun.vunexp[vk] = (brun.vunexp[vk] or 0) + 1
         end
       else
         -- A cell that ran can still be wrong, and until now nothing on the instrument said so. brun.nbad
@@ -2662,8 +2754,10 @@ function brun.soak(iterations, tag)
           -- gone by the next cell.
           brun.ncmpb = (brun.ncmpb or 0) + p.paycmp
           brun.nbadb = (brun.nbadb or 0) + (p.paycmp - p.paymatch)
+          brun.vbadb[vk] = (brun.vbadb[vk] or 0) + (p.paycmp - p.paymatch)
           if p.paymatch < p.paycmp * brun.paywrong_frac then
             brun.nwrong = brun.nwrong + 1
+            brun.vwrong[vk] = (brun.vwrong[vk] or 0) + 1
             brun.bad_bauds[c.baud] = true
           end
         end
@@ -2675,6 +2769,7 @@ function brun.soak(iterations, tag)
            not (barb ~= nil and barb.loud ~= nil and barb.loud(vk)) then
           if (p.nflag or 0) > (p.nf or 0) * brun.frameflag_frac then
             brun.nframe = brun.nframe + 1
+            brun.vflag[vk] = (brun.vflag[vk] or 0) + 1
             brun.bad_bauds[c.baud] = true
           end
         end
@@ -2885,6 +2980,17 @@ function brun.soak(iterations, tag)
   -- next operator. The app's own unmute, not a literal.
   if sdec.unmute_events ~= nil then sdec.unmute_events() end
   brun.announce('END ' .. tostring(brun.stopwhy))
+  -- THE RESULT SCREEN, ON BOTH ENDINGS. This is the single exit from the loop: laps completed, STOP.TXT,
+  -- cell cap, a generator that gave up, and TRIGGER all arrive here, so one call covers every way a run
+  -- can finish -- and TRIGGER is the common one on an overnight soak.
+  --
+  -- AFTER brec.finish, DELIBERATELY. The record is closed first because that is what commits it on a
+  -- FAT key; a screen is never worth a record. beval reads brun's counters, which outlive the loop.
+  --
+  -- NIL-CHECKED AND NOT pcall'd. bench/soak_eval.tsp is a separate module and a host load that did not
+  -- list it would otherwise turn this into an attempt to index nil -- the failure whose signature is
+  -- silence. The firmware does not raise, so there is nothing here for a pcall to catch.
+  if beval ~= nil and beval.show ~= nil then beval.show() end
   return true, brun.stopwhy
 end
 

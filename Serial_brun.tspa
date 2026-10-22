@@ -3,7 +3,7 @@ loadscript Serial_brun
 -- $Product: DMM6500, DAQ6510, DMM7510, SMU2461
 -- $Tag: Serial, UART, Decode, Soak, Test
 -- $Description: Test bed for the Serial Decode app: runs that decoder against the signal generator over a plan of waveforms, rates and frame formats, unattended, recording every cell to USB key. Press TRIGGER to stop.
--- $Version: 1.74
+-- $Version: 1.75
 -- $Requires: 1.7.0
 -- $Author: Ian Ameline
 -- $License: MIT
@@ -9722,6 +9722,779 @@ function bexp.match(res, vid)
 end
 
 
+-- ================= bench/plan_rand.tsp =================
+bplan = bplan or {}
+bplan.mt = {}
+
+do
+
+local M = bplan.mt
+
+
+-- Array length WITHOUT '#' AND WITHOUT table.getn, because neither spelling works in both places
+-- this file has to run. 5.0.2 has no '#' at all -- it is a SYNTAX error, so one occurrence anywhere
+-- stops the whole module loading on the instrument, taken branch or not -- and the host Lua has no
+-- table.getn. Counting is the only form both accept.
+local function alen(t)
+  local n = 0
+  while t[n + 1] ~= nil do n = n + 1 end
+  return n
+end
+
+local N, MM = 624, 397
+local MATRIX_A = 2567483615      -- 0x9908b0df
+local UPPER    = 2147483648      -- 0x80000000
+local LOWER    = 2147483647      -- 0x7fffffff
+local TEMPER_B = 2636928640      -- 0x9d2c5680
+local TEMPER_C = 4022730752      -- 0xefc60000
+local TWO32    = 4294967296
+
+M.TWO32 = TWO32
+
+local floor = math.floor
+
+local function imod(a, b) return a - floor(a / b) * b end
+
+local X4, A4 = {}, {}
+do
+  local a, b, i
+  for a = 0, 15 do
+    for b = 0, 15 do
+      local x, n, pa, pb, p = 0, 0, a, b, 1
+      for i = 1, 4 do
+        local ba, bb = imod(pa, 2), imod(pb, 2)
+        if ba ~= bb then x = x + p end
+        if ba == 1 and bb == 1 then n = n + p end
+        pa, pb, p = (pa - ba) / 2, (pb - bb) / 2, p * 2
+      end
+      X4[a * 16 + b], A4[a * 16 + b] = x, n
+    end
+  end
+end
+
+-- STOPPING WHEN ONE OPERAND RUNS OUT, which is not a micro-optimisation here: it is most of the cost
+--   [...]
+-- guarded by test and not by argument.
+-- MEASURED TOGETHER WITH THE UPPER/LOWER SUBSTITUTION in u32 below, on a 1512-row plan under the host
+-- Lua: 19.3 s to 8.7 s. The two are reported as one figure because they were measured as one change.
+local function bxor(a, b)
+  local r, p = 0, 1
+  while true do
+    if b == 0 then return r + a * p end
+    if a == 0 then return r + b * p end
+    local al = imod(a, 16)
+    local bl = imod(b, 16)
+    r = r + X4[al * 16 + bl] * p
+    a = (a - al) / 16; b = (b - bl) / 16; p = p * 16
+  end
+end
+
+local function band(a, b)
+  local r, p = 0, 1
+  while true do
+    if a == 0 or b == 0 then return r end
+    local al = imod(a, 16)
+    local bl = imod(b, 16)
+    r = r + A4[al * 16 + bl] * p
+    a = (a - al) / 16; b = (b - bl) / 16; p = p * 16
+  end
+end
+
+-- a * b mod 2^32 with both under 2^32. Splitting b keeps every product under 2^48.
+local function mul32(a, b)
+  local bh = floor(b / 65536)
+  local bl = b - bh * 65536
+  return imod(a * bl + imod(a * bh, 65536) * 65536, TWO32)
+end
+
+local function rsh(a, k) return floor(a / (2 ^ k)) end
+local function lsh(a, k) return imod(a * (2 ^ k), TWO32) end
+
+M.bxor, M.band, M.mul32, M.imod = bxor, band, mul32, imod
+
+local MT = {}
+MT.__index = MT
+
+-- Knuth's multiplicative fill. The ONLY seed-dependent step is mt[0]; everything after is the same
+-- recurrence at every seed, which is why agreement at one seed settles the routine.
+local function init_genrand(s)
+  local mt = {}
+  mt[0] = imod(s, TWO32)
+  local i
+  for i = 1, N - 1 do
+    mt[i] = imod(mul32(1812433253, bxor(mt[i - 1], rsh(mt[i - 1], 30))) + i, TWO32)
+  end
+  return mt, N
+end
+
+-- Seeding from a KEY ARRAY rather than one integer, because a soak decision is addressed by several
+-- small numbers -- iteration, purpose, index -- and concatenating them into one seed would make
+-- neighbouring cells neighbouring seeds. init_by_array mixes them instead.
+local function init_by_array(key)
+  local klen = alen(key)
+  if klen < 1 then error('mt19937: the key array is empty', 2) end
+  local mt = init_genrand(19650218)
+  local i, j, k = 1, 0, N
+  if klen > N then k = klen end
+  while k > 0 do
+    mt[i] = imod(bxor(mt[i], mul32(bxor(mt[i - 1], rsh(mt[i - 1], 30)), 1664525))
+                 + key[j + 1] + j, TWO32)
+    i = i + 1; j = j + 1
+    if i >= N then mt[0] = mt[N - 1]; i = 1 end
+    if j >= klen then j = 0 end
+    k = k - 1
+  end
+  k = N - 1
+  while k > 0 do
+    mt[i] = imod(bxor(mt[i], mul32(bxor(mt[i - 1], rsh(mt[i - 1], 30)), 1566083941))
+                 - i + TWO32, TWO32)
+    i = i + 1
+    if i >= N then mt[0] = mt[N - 1]; i = 1 end
+    k = k - 1
+  end
+  mt[0] = UPPER
+  return mt, N
+end
+
+-- new(seed) or new{a, b, c}. An integer is wrapped, so a one-element key and a bare integer are the
+-- same stream and there is no second convention to remember.
+function M.new(seed)
+  local key = seed
+  if type(seed) == 'number' then key = {seed} end
+  if type(key) ~= 'table' then error('mt19937.new wants a number or an array of numbers', 2) end
+  local o = {}
+  o.mt, o.mti = init_by_array(key)
+  o.tw = N
+  return setmetatable(o, MT)
+end
+
+-- Twist words tw .. upto of the current pass, IN ORDER. -> nothing
+--   [...]
+-- tools/test_soakrand.py holds the sequence to CPython's, including the rejection loop that draws
+-- hundreds of words from one stream; MT:u32_eager below is the reference form, kept so a test can
+-- hold the lazy path to it directly rather than only to the Python twin.
+function MT:twistto(upto)
+  local mt, kk = self.mt, nil
+  for kk = self.tw, upto do
+    local nxt = kk + 1
+    if nxt >= N then nxt = 0 end
+    local y = floor(mt[kk] / UPPER) * UPPER + imod(mt[nxt], UPPER)
+    local src
+    if kk < N - MM then src = mt[kk + MM] else src = mt[kk + MM - N] end
+    mt[kk] = bxor(src, rsh(y, 1))
+    if imod(y, 2) == 1 then mt[kk] = bxor(mt[kk], MATRIX_A) end
+  end
+  if upto + 1 > self.tw then self.tw = upto + 1 end
+end
+
+function MT:u32()
+  if self.mti >= N then
+    self.mti = 0
+    self.tw = 0
+  end
+  if self.mti >= self.tw then self:twistto(self.mti) end
+  local y = self.mt[self.mti]
+  self.mti = self.mti + 1
+  y = bxor(y, rsh(y, 11))
+  y = bxor(y, band(lsh(y, 7), TEMPER_B))
+  y = bxor(y, band(lsh(y, 15), TEMPER_C))
+  y = bxor(y, rsh(y, 18))
+  return y
+end
+
+function MT:u32_eager()
+  if self.mti >= N then
+    local mt, kk, y = self.mt, nil, nil
+    for kk = 0, N - MM - 1 do
+      y = floor(mt[kk] / UPPER) * UPPER + imod(mt[kk + 1], UPPER)
+      mt[kk] = bxor(mt[kk + MM], rsh(y, 1))
+      if imod(y, 2) == 1 then mt[kk] = bxor(mt[kk], MATRIX_A) end
+    end
+    for kk = N - MM, N - 2 do
+      y = floor(mt[kk] / UPPER) * UPPER + imod(mt[kk + 1], UPPER)
+      mt[kk] = bxor(mt[kk + (MM - N)], rsh(y, 1))
+      if imod(y, 2) == 1 then mt[kk] = bxor(mt[kk], MATRIX_A) end
+    end
+    y = floor(mt[N - 1] / UPPER) * UPPER + imod(mt[0], UPPER)
+    mt[N - 1] = bxor(mt[MM - 1], rsh(y, 1))
+    if imod(y, 2) == 1 then mt[N - 1] = bxor(mt[N - 1], MATRIX_A) end
+    self.mti = 0
+  end
+  local y = self.mt[self.mti]
+  self.mti = self.mti + 1
+  y = bxor(y, rsh(y, 11))
+  y = bxor(y, band(lsh(y, 7), TEMPER_B))
+  y = bxor(y, band(lsh(y, 15), TEMPER_C))
+  y = bxor(y, rsh(y, 18))
+  return y
+end
+
+-- [0,1). u32/2^32 rather than the 53-bit form: one word per draw keeps the two implementations
+-- comparable word for word, and no decision here needs more than 32 bits of resolution.
+function MT:float() return self:u32() / TWO32 end
+
+-- An integer in [0, n), REJECTING the ragged tail rather than taking a modulus of the whole range.
+-- A bare mod favours the low residues, and the whole point of a seeded rate draw is that the
+-- distribution is the one claimed.
+function MT:below(n)
+  if n == nil or n < 1 or floor(n) ~= n then
+    error('mt19937 below() wants a positive integer, got ' .. tostring(n), 2)
+  end
+  if n == 1 then return 0 end
+  local limit = TWO32 - imod(TWO32, n)
+  local x = self:u32()
+  while x >= limit do x = self:u32() end
+  return imod(x, n)
+end
+
+-- Inclusive, for reading at the call site.
+function MT:range(lo, hi) return lo + self:below(hi - lo + 1) end
+
+-- Fisher-Yates, descending, on a 1-based array. In place, and it returns the table so a call reads
+-- as a value. Descending and below(i) are chosen to match the Python twin exactly; any other order
+-- is a different permutation from the same seed.
+function MT:shuffle(t)
+  local n = alen(t)
+  local i
+  for i = n, 2, -1 do
+    local j = 1 + self:below(i)
+    t[i], t[j] = t[j], t[i]
+  end
+  return t
+end
+
+end
+
+
+-- ================= bench/plan_data.tsp =================
+bplan = bplan or {}
+
+bplan.vecs = {
+  'j02', 'j10', 'j20', 'r00', 'r01', 'r02', 'r06', 'r07',
+  'r08', 'r09', 'v41', 'v44a', 'v44b', 'v44c', 'v44d', 'v44e',
+  'v45', 'v46', 'v47', 'v48a', 'v48b', 'v51', 'v61', 'v62',
+  'v63', 'v71', 'v76', 'v77', 'v78', 'v79', 'v90', 'v91',
+  'v92', 'v93', 'v94', 'v95', 'v96', 'v97', 'v98a', 'v98b',
+  'v98c', 'v98d', 'v99a', 'v99b', 'v99c', 'v99d',
+}
+
+bplan.rvecs = {'r00', 'r01', 'r02', 'r06', 'r07', 'r08', 'r09'}
+
+bplan.hwskip = {'v79', 'v95', 'v96', 'v97'}
+
+bplan.span = {}
+bplan.span['j02'] = {amp = 10, ofst = 0, lo = 0, hi = 3.2999999999999998, spb = 100, exp = 1}
+bplan.span['j10'] = {amp = 10, ofst = 0, lo = 0, hi = 3.2999999999999998, spb = 100, exp = 1}
+bplan.span['j20'] = {amp = 10, ofst = 0, lo = 0, hi = 3.2999999999999998, spb = 100, exp = 1}
+bplan.span['r00'] = {amp = 10, ofst = 0, lo = 0, hi = 3.2999999999999998, spb = 10, exp = 1}
+bplan.span['r01'] = {amp = 10, ofst = 0, lo = 0, hi = 3.2999999999999998, spb = 10, exp = 1}
+bplan.span['r02'] = {amp = 10, ofst = 0, lo = 0, hi = 3.2999999999999998, spb = 10, exp = 1}
+bplan.span['r06'] = {amp = 10, ofst = 0, lo = 0, hi = 3.2999999999999998, spb = 10, exp = 1}
+bplan.span['r07'] = {amp = 10, ofst = 0, lo = 0, hi = 3.2999999999999998, spb = 10, exp = 1}
+bplan.span['r08'] = {amp = 10, ofst = 0, lo = 0, hi = 3.2999999999999998, spb = 10, exp = 1}
+bplan.span['r09'] = {amp = 10, ofst = 0, lo = 0, hi = 3.2999999999999998, spb = 10, exp = 1}
+bplan.span['v41'] = {amp = 10, ofst = 0, lo = 0, hi = 3.2999999999999998, spb = 10, exp = 1}
+bplan.span['v44a'] = {amp = 10, ofst = 0, lo = 0, hi = 3.2999999999999998, spb = 10, exp = 1}
+bplan.span['v44b'] = {amp = 10, ofst = 0, lo = 0, hi = 3.2999999999999998, spb = 10, exp = 1}
+bplan.span['v44c'] = {amp = 10, ofst = 0, lo = 0, hi = 3.2999999999999998, spb = 10, exp = 1}
+bplan.span['v44d'] = {amp = 10, ofst = 0, lo = 0, hi = 3.2999999999999998, spb = 10, exp = 1}
+bplan.span['v44e'] = {amp = 10, ofst = 0, lo = 0, hi = 3.2999999999999998, spb = 10, exp = 1}
+bplan.span['v45'] = {amp = 10, ofst = 0, lo = 0, hi = 3.2999999999999998, spb = 10, exp = 1}
+bplan.span['v46'] = {amp = 10, ofst = 0, lo = 0, hi = 3.2999999999999998, spb = 10, exp = 1}
+bplan.span['v47'] = {amp = 20, ofst = 0, lo = -3, hi = 6.2999999999999998, spb = 100, exp = 1}
+bplan.span['v48a'] = {amp = 10, ofst = 0, lo = -0.59999999999999998, hi = 3.8999999999999999, spb = 10, exp = 1}
+bplan.span['v48b'] = {amp = 10, ofst = 0, lo = -1, hi = 4.2999999999999998, spb = 10, exp = 1}
+bplan.span['v51'] = {amp = 10, ofst = 0, lo = 0, hi = 3.2999999999999998, spb = 10, exp = 1}
+bplan.span['v61'] = {amp = 15, ofst = 0, lo = 0, hi = 6, spb = 10, exp = 1}
+bplan.span['v62'] = {amp = 15, ofst = 0, lo = 0, hi = 6, spb = 10, exp = 1}
+bplan.span['v63'] = {amp = 15, ofst = 0, lo = 0, hi = 6, spb = 10, exp = 1}
+bplan.span['v71'] = {amp = 10, ofst = 0, lo = 0, hi = 3.2999999999999998, spb = 10, exp = 1}
+bplan.span['v76'] = {amp = 10, ofst = 0, lo = 0, hi = 3.2999999999999998, spb = 10, exp = 1}
+bplan.span['v77'] = {amp = 10, ofst = 0, lo = 0, hi = 3.2999999999999998, spb = 10, exp = 1}
+bplan.span['v78'] = {amp = 10, ofst = 0, lo = 0, hi = 3.2999999999999998, spb = 10, exp = 1}
+bplan.span['v79'] = {amp = 10, ofst = 0, lo = 0, hi = 3.2999999999999998, spb = 10, exp = 1}
+bplan.span['v90'] = {amp = 10, ofst = 0, lo = 0, hi = 3.2999999999999998, spb = 10, exp = 1}
+bplan.span['v91'] = {amp = 10, ofst = 0, lo = 0, hi = 3.2999999999999998, spb = 10, exp = 1}
+bplan.span['v92'] = {amp = 10, ofst = 0, lo = 0, hi = 3.2999999999999998, spb = 10, exp = 1}
+bplan.span['v93'] = {amp = 10, ofst = 0, lo = 0, hi = 3.2999999999999998, spb = 10, exp = 1}
+bplan.span['v94'] = {amp = 10, ofst = 0, lo = 0, hi = 3.2999999999999998, spb = 10, exp = 1}
+bplan.span['v95'] = {amp = 10, ofst = 0, lo = 0, hi = 3.2999999999999998, spb = 10, exp = 1}
+bplan.span['v96'] = {amp = 10, ofst = 0, lo = 0, hi = 3.2999999999999998, spb = 10, exp = 1}
+bplan.span['v97'] = {amp = 10, ofst = 0, lo = 0, hi = 3.2999999999999998, spb = 10, exp = 1}
+bplan.span['v98a'] = {amp = 10, ofst = 0, lo = 0, hi = 3.2999999999999998, spb = 10, exp = 1}
+bplan.span['v98b'] = {amp = 10, ofst = 0, lo = 0, hi = 3.2999999999999998, spb = 10, exp = 1}
+bplan.span['v98c'] = {amp = 10, ofst = 0, lo = 0, hi = 3.2999999999999998, spb = 10, exp = 1}
+bplan.span['v98d'] = {amp = 10, ofst = 0, lo = 0, hi = 3.2999999999999998, spb = 10, exp = 1}
+bplan.span['v99a'] = {amp = 10, ofst = 0, lo = 0, hi = 3.2999999999999998, spb = 10, exp = 1}
+bplan.span['v99b'] = {amp = 10, ofst = 0, lo = 0, hi = 3.2999999999999998, spb = 10, exp = 1}
+bplan.span['v99c'] = {amp = 10, ofst = 0, lo = 0, hi = 3.2999999999999998, spb = 10, exp = 1}
+bplan.span['v99d'] = {amp = 10, ofst = 0, lo = 0, hi = 3.2999999999999998, spb = 5, exp = 1}
+
+bplan.k = {magic = 1397051980, order = 1, rate = 2, wait = 3, amp = 5, ofst = 6, rsub = 7}
+bplan.c = {
+  swinglo = 0.45000000000000001,
+  swinghi = 8,
+  sdgmax = 20,
+  vrail = 9.5,
+  env = 10,
+  qdig = 3,
+  baudlo = 300,
+  baudhi = 250000,
+  waitbt = 10,
+  bitsbyte = 10,
+  edgeodds = 3,
+  interlo = 4800,
+  srmax = 40000000,
+}
+
+bplan.bauddrop = {}
+bplan.bauddrop[600] = true
+bplan.bauddrop[1800] = true
+
+
+-- ================= bench/plan_gen.tsp =================
+bplan = bplan or {}
+
+bplan.path = bplan.path or '/usb1/SERDEC/PLAN.CSV'
+
+bplan.banner = '# generated by bench/plan_gen.tsp on the instrument; '
+               .. 'one row per cell, streamed by bench_run.tsp'
+
+bplan.cols = 'iter,cell,vid,arb,baud,kind,amp_vpp,ofst_v,srate,wait_ms'
+
+-- Rounding that matches Python's
+-- q(x, 3) is round(x, 3). iround(x) is int(round(x)). Both go through string.format so the decimal
+-- conversion is the C library's correctly-rounded one, which is what CPython's round() also uses.
+function bplan.q(x, nd)
+  return tonumber(string.format('%.' .. nd .. 'f', x))
+end
+
+function bplan.iround(x)
+  return tonumber(string.format('%.0f', x))
+end
+
+-- The rate axis, read LIVE out of sdec
+-- standard_rates(): sdec.stdbaud inside [baudlo, baudhi], less the two soakplan drops.
+function bplan.stdrates()
+  local out, n = {}, 0
+  local i = 1
+  while sdec.stdbaud[i] ~= nil do
+    local b = sdec.stdbaud[i]
+    if b >= bplan.c.baudlo and b <= bplan.c.baudhi and bplan.bauddrop[b] == nil then
+      n = n + 1
+      out[n] = b
+    end
+    i = i + 1
+  end
+  return out, n
+end
+
+-- ladder_edges(): the baud in each ladder step with the FEWEST samples a bit, floor(fs/8), deduped
+-- and ascending. floor and not round: at fs = 2500 the exact edge is 312.5, and 312 still snaps to
+-- 2500 for 8.013 samples a bit while 313 snaps up to 5000 for 15.97.
+function bplan.edges()
+  local seen, out, n = {}, {}, 0
+  local i = 1
+  while sdec.rates[i] ~= nil do
+    local e = math.floor(sdec.rates[i] / 8)
+    if e >= bplan.c.baudlo and e <= bplan.c.baudhi and seen[e] == nil then
+      seen[e] = true
+      n = n + 1
+      out[n] = e
+    end
+    i = i + 1
+  end
+  table.sort(out)
+  return out, n
+end
+
+-- One non-standard rate strictly inside (lo, hi). -> baud, why
+-- LOG-UNIFORM, not linear: what breaks a decode is samples a bit and where the ladder snaps, and both
+-- are multiplicative, so a uniform draw in a wide gap sits near the top of it in ratio terms.
+function bplan.interstitial(it, gi, lo, hi, edges, nedge)
+  local g = bplan.mt.new{bplan.k.magic, it, bplan.k.rate, gi}
+  local inside, ni = {}, 0
+  local i
+  for i = 1, nedge do
+    if edges[i] > lo and edges[i] < hi then
+      ni = ni + 1
+      inside[ni] = edges[i]
+    end
+  end
+  if ni > 0 and g:below(bplan.c.edgeodds) == 0 then
+    return inside[g:below(ni) + 1], 'edge'
+  end
+  local u = g:float()
+  local baud = bplan.iround(math.exp(math.log(lo) + u * (math.log(hi) - math.log(lo))))
+  if baud <= lo then baud = lo + 1 end
+  if baud >= hi then baud = hi - 1 end
+  return baud, 'rand'
+end
+
+-- The iteration's rate list, ascending. -> {{baud=, kind=}, ...}, n
+-- THE SAME RATE LIST FOR EVERY VECTOR IN THE ITERATION, which is what makes a sweep a sweep.
+function bplan.rates(it)
+  local std, ns = bplan.stdrates()
+  local edges, ne = bplan.edges()
+  local out, n = {}, 0
+  local i
+  for i = 1, ns do
+    n = n + 1
+    out[n] = {baud = std[i], kind = 'std'}
+  end
+  for i = 1, ns - 1 do
+    local lo, hi = std[i], std[i + 1]
+    if hi - lo >= 2 and hi > bplan.c.interlo then
+      local baud, why = bplan.interstitial(it, i - 1, lo, hi, edges, ne)
+      n = n + 1
+      out[n] = {baud = baud, kind = why}
+    end
+  end
+  table.sort(out, function(a, b)
+    if a.baud ~= b.baud then return a.baud < b.baud end
+    return a.kind < b.kind
+  end)
+  return out, n
+end
+
+-- The vector axis
+-- Which random-payload vectors this iteration does NOT play. -> a set, possibly empty
+function bplan.rdrop(it, keep)
+  local out = {}
+  local nr = 0
+  while bplan.rvecs[nr + 1] ~= nil do nr = nr + 1 end
+  if keep == nil or keep >= nr then return out end
+  local t, i = {}, nil
+  for i = 1, nr do t[i] = bplan.rvecs[i] end
+  local g = bplan.mt.new{bplan.k.magic, it, bplan.k.rsub, 0}
+  g:shuffle(t)
+  local first = keep
+  if first < 1 then first = 1 end
+  for i = first + 1, nr do out[t[i]] = true end
+  return out
+end
+
+-- The vectors every hardware lap leaves out, as a set.
+--   [...]
+-- shuffle, so it would not be a smaller plan either, it would be a different stimulus in every cell.
+-- It also matters on its own: v96 WEDGES THE GENERATOR, and this draw exists so a lap can run
+-- overnight with nobody at the bench to power cycle it.
+function bplan.hwskipset()
+  local out, i = {}, 1
+  while bplan.hwskip[i] ~= nil do
+    out[bplan.hwskip[i]] = true
+    i = i + 1
+  end
+  return out
+end
+
+-- The skip set for ONE iteration: the run's own skip plus the random vectors sitting this lap out.
+-- ONE PLACE, because two call sites computing a skip themselves is what let a hardware lap and its
+-- offline twin drive different waveforms while comparing their results.
+-- nil MEANS THE HARDWARE SKIP, not "skip nothing" -- that is soakplan's own default. An empty table
+-- is how a caller asks for every vector, which is explicit because it drives v96.
+function bplan.skipfor(it, skip, rkeep)
+  local out = {}
+  local k
+  if skip == nil then skip = bplan.hwskipset() end
+  for k in pairs(skip) do out[k] = true end
+  if rkeep ~= nil then
+    local d = bplan.rdrop(it, rkeep)
+    for k in pairs(d) do out[k] = true end
+  end
+  return out
+end
+
+-- THE ONE PLACE A LAP'S VECTOR ORDER IS DECIDED. -> ordered list, n
+--   [...]
+-- vector's index moves, so the whole lap draws a different stimulus. Measured once at 1677 of 1677
+-- cells. Filtering after the shuffle would keep vi stable and is not available: the laps already on
+-- disk were drawn this way and their receipts are the ground truth.
+function bplan.order(it, skip, nvec)
+  local keep, n = {}, 0
+  local i = 1
+  while bplan.vecs[i] ~= nil do
+    local v = bplan.vecs[i]
+    if skip == nil or skip[v] == nil then
+      n = n + 1
+      keep[n] = v
+    end
+    i = i + 1
+  end
+  local g = bplan.mt.new{bplan.k.magic, it, bplan.k.order, 0}
+  g:shuffle(keep)
+  if nvec ~= nil and nvec < n then
+    local k = nvec
+    if k < 1 then k = 1 end
+    local out = {}
+    for i = 1, k do out[i] = keep[i] end
+    return out, k
+  end
+  return keep, n
+end
+
+-- The per-cell draws. vi and ri are ZERO-BASED, as Python's enumerate() makes them.
+--   [...]
+-- THE FIRST LOOK KEEPS A FOUR-ELEMENT KEY. MT19937 seeds from the whole array, so appending even a
+-- zero would change the draw for every cell of every plan already on disk. rep = 0 is spelled as
+-- absence, not as a zero.
+function bplan.wait(it, vi, ri, baud, rep)
+  local key = {bplan.k.magic, it, bplan.k.wait, vi, ri}
+  if rep ~= nil and rep ~= 0 then key[6] = rep end
+  local g = bplan.mt.new(key)
+  return g:float() * bplan.c.waitbt * bplan.c.bitsbyte / baud
+end
+
+-- The two vertical draws, each in [0,1). Keyed like the wait, so one cell replays without running the
+-- cells before it.
+function bplan.ampofst_u(it, vi, ri)
+  local ua = bplan.mt.new{bplan.k.magic, it, bplan.k.amp, vi, ri}:float()
+  local uo = bplan.mt.new{bplan.k.magic, it, bplan.k.ofst, vi, ri}:float()
+  return ua, uo
+end
+
+-- A vector's codeword extremes, SIGNED. -> lo, hi
+-- Derived from the manifest rather than read, because reading the words unsigned turns a small
+-- negative excursion into a near-full-scale one: the drift vectors dip below zero, and 45 % of full
+-- scale then reads as 100 %, which is the difference between a vector with headroom and one with none.
+function bplan.cwspan(vid)
+  local s = bplan.span[vid]
+  local k = 32767 / (s.amp / 2)
+  return bplan.iround((s.lo - s.ofst) * k), bplan.iround((s.hi - s.ofst) * k)
+end
+
+-- Map two unit draws to a CLIP-SAFE amplitude and offset. -> amp_vpp, ofst_v
+-- The amplitude scales the vector's OWN reference, clamped to the generator's ceiling. The offset is
+-- then placed inside whatever range keeps both extremes within the rails at that amplitude, so a
+-- vector already near the rail gets a narrow range rather than a clipped waveform.
+function bplan.ampofst(vid, u_amp, u_ofst)
+  local s = bplan.span[vid]
+  local lo, hi = bplan.cwspan(vid)
+  local ref_span = s.hi - s.lo
+  if ref_span < 1e-9 then ref_span = 1e-9 end
+  local target = bplan.c.swinglo + u_amp * (bplan.c.swinghi - bplan.c.swinglo)
+  local amp = s.amp * target / ref_span
+  if amp > bplan.c.sdgmax then amp = bplan.c.sdgmax end
+  amp = bplan.q(amp, bplan.c.qdig)
+  local dlo, dhi = 0, 0
+  local pass
+  for pass = 1, 2 do
+    local half = amp / 2
+    dlo = -bplan.c.vrail - lo / 32767 * half
+    dhi = bplan.c.vrail - hi / 32767 * half
+    if half > bplan.c.env then
+      dlo, dhi = 0, 0
+    else
+      if dlo < -(bplan.c.env - half) then dlo = -(bplan.c.env - half) end
+      if dhi > bplan.c.env - half then dhi = bplan.c.env - half end
+    end
+    if dhi >= dlo then break end
+    local den = hi - lo
+    if den < 1 then den = 1 end
+    amp = bplan.q(2 * bplan.c.vrail * 2 * 32767 / den, bplan.c.qdig)
+  end
+  local ofst
+  local nseg, seg = 0, {}
+  if s.lo >= 0 then
+    local half_c = amp / 2
+    local a_edge = -sdec.flatfloor - lo / 32767 * half_c
+    local b_edge = sdec.flatfloor - hi / 32767 * half_c
+    if a_edge > b_edge then
+      local l1, h1 = dlo, b_edge
+      if h1 > dhi then h1 = dhi end
+      local l2, h2 = a_edge, dhi
+      if l2 < dlo then l2 = dlo end
+      if h1 > l1 then nseg = nseg + 1; seg[nseg] = {l1, h1} end
+      if h2 > l2 then nseg = nseg + 1; seg[nseg] = {l2, h2} end
+    end
+  end
+  if nseg > 0 then
+    local total, i = 0, nil
+    for i = 1, nseg do total = total + (seg[i][2] - seg[i][1]) end
+    local want = u_ofst * total
+    ofst = seg[nseg][2]
+    for i = 1, nseg do
+      local w = seg[i][2] - seg[i][1]
+      if want <= w then
+        ofst = seg[i][1] + want
+        break
+      end
+      want = want - w
+    end
+    ofst = bplan.q(ofst, bplan.c.qdig)
+  else
+    local w = dhi - dlo
+    if w < 0 then w = 0 end
+    ofst = bplan.q(dlo + u_ofst * w, bplan.c.qdig)
+  end
+  local qstep = 10 ^ (-bplan.c.qdig)
+  if ofst > dhi then ofst = math.floor(dhi / qstep) * qstep end
+  if ofst < dlo then ofst = math.ceil(dlo / qstep) * qstep end
+  return amp, bplan.q(ofst, bplan.c.qdig)
+end
+
+bplan.block = bplan.block or 200
+
+-- -> ok, nrows, err
+-- opt = {first=, last=, skip=, rkeep=, reps=, nvec=}. Every field optional; the defaults are the
+-- host's own for a soak push -- one iteration, every vector, every random vector, one look each.
+function bplan.emit(path, opt)
+  if sdec == nil or sdec.stdbaud == nil then
+    return false, 0, 'the app is not loaded, so there is no rate ladder to draw against'
+  end
+  if bplan.vecs == nil or bplan.span == nil then
+    return false, 0, 'bench/plan_data.tsp did not load, so there is no vector list'
+  end
+  opt = opt or {}
+  local first = opt.first or 1
+  local last  = opt.last or first
+  local reps  = opt.reps or 1
+  local fh = file.open(path, file.MODE_WRITE)
+  if fh == nil then
+    return false, 0, 'cannot write ' .. path .. ' -- is the key in and is /usb1/SERDEC there?'
+  end
+  local nrows, per, same = 0, nil, true
+  local it
+  for it = first, last do
+    local n = bplan.lapsize(it, opt, reps)
+    nrows = nrows + n
+    if per == nil then per = n elseif per ~= n then same = false end
+  end
+  local buf, nb = {}, 0
+  local function put(s)
+    nb = nb + 1
+    buf[nb] = s
+    if nb >= bplan.block then
+      file.write(fh, table.concat(buf, '\n') .. '\n')
+      buf, nb = {}, 0
+    end
+  end
+  put(bplan.banner)
+  put('# rows=' .. nrows)
+  if opt.rkeep == nil then
+    put('# random-per-lap=all')
+  else
+    put('# random-per-lap=' .. opt.rkeep)
+  end
+  put('# repeats=' .. reps)
+  if same and per ~= nil then put('# cells-per-lap=' .. per) end
+  put(bplan.cols)
+  local total = 0
+  for it = first, last do
+    local rates, nr = bplan.rates(it)
+    local order, nv = bplan.order(it, bplan.skipfor(it, opt.skip, opt.rkeep), opt.nvec)
+    local n = 0
+    local vi
+    for vi = 1, nv do
+      local vid = order[vi]
+      local s = bplan.span[vid]
+      if s ~= nil and s.exp == 1 then
+        local ri
+        for ri = 1, nr do
+          local srate = bplan.iround(rates[ri].baud * s.spb)
+          if srate <= bplan.c.srmax then
+            local ua, uo = bplan.ampofst_u(it, vi - 1, ri - 1)
+            local amp, ofst = bplan.ampofst(vid, ua, uo)
+            local rep
+            for rep = 0, reps - 1 do
+              n = n + 1
+              total = total + 1
+              put(string.format('%d,%d,%s,%s,%d,%s,%.4f,%.4f,%d,%.3f',
+                                it, n, vid, barb.name[vid], rates[ri].baud, rates[ri].kind,
+                                amp, ofst, srate,
+                                1000 * bplan.wait(it, vi - 1, ri - 1, rates[ri].baud, rep)))
+              if opt.progress ~= nil then opt.progress(total, nrows) end
+            end
+          end
+        end
+      end
+    end
+  end
+  if nb > 0 then file.write(fh, table.concat(buf, '\n') .. '\n') end
+  file.flush(fh)
+  file.close(fh)
+  if total ~= nrows then
+    return false, total, string.format('the header declared %d row(s) and %d were written -- '
+                                       .. 'bplan.lapsize disagrees with bplan.emit', nrows, total)
+  end
+  return true, total, nil
+end
+
+-- How many rows one iteration contributes. THE SAME CONDITIONS emit applies, and nothing else: this
+-- exists only so the row count can go in the header.
+function bplan.lapsize(it, opt, reps)
+  local rates, nr = bplan.rates(it)
+  local order, nv = bplan.order(it, bplan.skipfor(it, opt.skip, opt.rkeep), opt.nvec)
+  local n, vi = 0, nil
+  for vi = 1, nv do
+    local s = bplan.span[order[vi]]
+    if s ~= nil and s.exp == 1 then
+      local ri
+      for ri = 1, nr do
+        if bplan.iround(rates[ri].baud * s.spb) <= bplan.c.srmax then n = n + reps end
+      end
+    end
+  end
+  return n
+end
+
+-- Is there a usable plan on the key?
+--   [...]
+-- IT READS THE WHOLE FILE, which is the cost. There is no seek and no size in this firmware's file
+-- API -- open, read a line, read it all, write, flush, close -- so counting rows means reading them.
+-- About 6 s for a 6048-row plan, once, at app start.
+function bplan.check(path)
+  local fh = file.open(path, file.MODE_READ)
+  if fh == nil then return false, 0, 'no plan on the key' end
+  local want, cols, nrow = nil, false, 0
+  local ln = file.read(fh, file.READ_LINE)
+  while ln ~= nil and ln ~= '' do
+    ln = string.gsub(ln, '[\r\n]', '')
+    if ln ~= '' then
+      if string.sub(ln, 1, 1) == '#' then
+        local _, _, r = string.find(ln, 'rows=(%d+)')
+        if r ~= nil then want = tonumber(r) end
+      elseif ln == bplan.cols then
+        cols = true
+      else
+        nrow = nrow + 1
+      end
+    end
+    ln = file.read(fh, file.READ_LINE)
+  end
+  file.close(fh)
+  if not cols then
+    return false, nrow, 'the plan has no column header, so it is not a plan this engine reads'
+  end
+  if want == nil then
+    return false, nrow, 'the plan declares no row count, so the engine cannot tell where it ends'
+  end
+  if nrow ~= want then
+    return false, nrow, string.format('the plan declares %d row(s) and holds %d -- truncated',
+                                      want, nrow)
+  end
+  if nrow < 1 then return false, 0, 'the plan has a header and no cells' end
+  return true, nrow, nil
+end
+
+-- Check the key, and draw a plan only if what is there cannot be used. -> ok, rows, why
+-- THE DEFAULT IS TO LEAVE A GOOD PLAN ALONE, and that is deliberate: a targeted --spec push is a
+-- plan the operator chose, and regenerating over it would silently replace the experiment with the
+-- full draw. Drawing happens when there is nothing usable, which is the case the bench app exists
+-- to cover -- a key with no host behind it.
+function bplan.ensure(path, opt)
+  path = path or bplan.path
+  local ok, rows, why = bplan.check(path)
+  if ok then return true, rows, nil end
+  bplan.lastwhy = why
+  local wok, wrows, werr = bplan.emit(path, opt)
+  if not wok then return false, wrows, werr end
+  local cok, crows, cwhy = bplan.check(path)
+  if not cok then return false, crows, 'drew a plan and it did not read back: ' .. tostring(cwhy) end
+  return true, crows, nil
+end
+
+
 -- ================= bench/bench_run.tsp =================
 brun            = brun or {}
 
@@ -10260,8 +11033,54 @@ function brun.tagword()
   return string.upper(t)
 end
 
+brun.titlemax = brun.titlemax or 31
+
+function brun.ui_titletext()
+  local head, tail = 'SD ', ' - TRIGGER TO STOP'
+  local room = brun.titlemax - string.len(head) - string.len(tail)
+  return head .. brun.fit(brun.tagword(), room) .. tail
+end
+
+-- Retitle the status screen in place. display.settext ON A SCREEN sets its title -- serial_ui.tsp does
+-- exactly this to sdec.ui_scr, so it is proven on this firmware rather than assumed.
+-- WHY IT MATTERS ON REUSE: the tag is what tells a smoke from a soak at a glance, and the TRIGGER key
+-- stops whichever run is really there. A reused screen still carrying SD SMOKE through a soak is the
+-- exact confusion brun.tagword's own comment warns about.
+function brun.ui_title()
+  if brun.ui == nil or brun.ui.scr == nil then return false end
+  display.settext(brun.ui.scr, brun.ui_titletext())
+  return true
+end
+
+-- Put a reused status screen back to its placeholders. -> ok
+--   [...]
+-- glass would be describing a run that already ended. The headline is the line that answers the
+-- question from across the room, so it is the worst one to leave stale.
+-- THE PLACEHOLDERS ARE THE ONES ui_build WRITES AT CREATE, so the two paths start identically.
+function brun.ui_reset()
+  local u = brun.ui
+  if u == nil or u.scr == nil then return false end
+  brun.ui_set(u.health, brun.tagword() .. ' HEALTH --', brun.c_ok)
+  brun.ui_set(u.spin,  '|',         brun.c_good)
+  brun.ui_set(u.prog,  '--',        brun.c_val)
+  brun.ui_set(u.time,  '--',        brun.c_lab)
+  brun.ui_set(u.stim,  '--',        brun.c_val)
+  brun.ui_set(u.fail,  '--',        brun.c_lab)
+  brun.ui_set(u.vfail, '--',        brun.c_val)
+  brun.ui_set(u.errs,  'Errors: 0', brun.c_good)
+  if u.msg ~= nil then
+    local i
+    for i = 1, table.getn(u.msg) do brun.ui_set(u.msg[i], '', brun.c_lab) end
+  end
+  return true
+end
+
 function brun.ui_build()
-  brun.ui_destroy()
+  if brun.ui ~= nil and brun.ui.scr ~= nil then
+    brun.ui_title()
+    brun.ui_reset()
+    return true
+  end
   if display == nil or display.create == nil then return false end
   local u  = {all = {}, n = 0}
   local ok = pcall(function()
@@ -10272,8 +11091,7 @@ function brun.ui_build()
       u.all[u.n] = h
       return h
     end
-    u.scr  = add(create(display.ROOT, display.OBJ_SCREEN,
-                        'SD ' .. brun.tagword() .. ' - TRIGGER TO STOP'))
+    u.scr  = add(create(display.ROOT, display.OBJ_SCREEN, brun.ui_titletext()))
     u.health = add(create(u.scr, display.OBJ_TEXT, 12, 20, brun.tagword() .. ' HEALTH --',
                           brun.c_ok, small, left))
     u.spin  = add(create(u.scr, display.OBJ_TEXT, 788, 20, '|', brun.c_good, small, display.JUST_RIGHT))
@@ -10464,7 +11282,7 @@ function brun.spin()
   return brun.spinchars[brun.spini + 1]
 end
 
-brun.spinmin   = brun.spinmin or 0.5        -- seconds between redraws: 2 fps ceiling. The FLOOR is
+brun.spinmin   = brun.spinmin or 0.25
 brun.spint     = nil
 
 brun.spinyield = brun.spinyield or 0
@@ -11031,6 +11849,7 @@ function brun.soak(iterations, tag)
   brun.nbadb, brun.ncmpb = 0, 0
   brun.bad_bauds = {}
   brun.vcell, brun.vbad = {}, {}
+  brun.vwrong, brun.vbadb, brun.vflag, brun.vunexp = {}, {}, {}, {}
   brun.iterwant = 0
   if not forever then brun.iterwant = iterations end
   brun.t0 = nil
@@ -11194,6 +12013,7 @@ function brun.soak(iterations, tag)
       brun.nbad    = brun.nbad + 1
       brun.vbad[vk] = (brun.vbad[vk] or 0) + 1
       brun.nunexp = brun.nunexp + 1
+      brun.vunexp[vk] = (brun.vunexp[vk] or 0) + 1
       if not brec.row(string.format('%d,%d,%s,%d,%s,%.4f,%.4f,%.6f,%.3f',
                              c.iter, c.cell, brec.q(c.vid), c.baud, brec.q(c.kind),
                              c.amp or 0, c.ofst or 0, c.srate or 0, c.wait or 0)
@@ -11245,14 +12065,17 @@ function brun.soak(iterations, tag)
           brun.nexp = brun.nexp + 1
         else
           brun.nunexp = brun.nunexp + 1
+          brun.vunexp[vk] = (brun.vunexp[vk] or 0) + 1
         end
       else
         if p.paycmp ~= nil and p.paycmp > 0 then
           brun.npayj = brun.npayj + 1
           brun.ncmpb = (brun.ncmpb or 0) + p.paycmp
           brun.nbadb = (brun.nbadb or 0) + (p.paycmp - p.paymatch)
+          brun.vbadb[vk] = (brun.vbadb[vk] or 0) + (p.paycmp - p.paymatch)
           if p.paymatch < p.paycmp * brun.paywrong_frac then
             brun.nwrong = brun.nwrong + 1
+            brun.vwrong[vk] = (brun.vwrong[vk] or 0) + 1
             brun.bad_bauds[c.baud] = true
           end
         end
@@ -11260,6 +12083,7 @@ function brun.soak(iterations, tag)
            not (barb ~= nil and barb.loud ~= nil and barb.loud(vk)) then
           if (p.nflag or 0) > (p.nf or 0) * brun.frameflag_frac then
             brun.nframe = brun.nframe + 1
+            brun.vflag[vk] = (brun.vflag[vk] or 0) + 1
             brun.bad_bauds[c.baud] = true
           end
         end
@@ -11370,6 +12194,7 @@ function brun.soak(iterations, tag)
   brec.finish(why)
   if sdec.unmute_events ~= nil then sdec.unmute_events() end
   brun.announce('END ' .. tostring(brun.stopwhy))
+  if beval ~= nil and beval.show ~= nil then beval.show() end
   return true, brun.stopwhy
 end
 
@@ -11386,6 +12211,341 @@ end
 function brun.fsnum(fs)
   if fs == nil then return '' end
   return string.format('%.4f', fs)
+end
+
+
+-- ================= bench/soak_eval.tsp =================
+beval = beval or {}
+
+beval.path = beval.path or '/usb1/SERDEC/EVAL.CSV'
+
+beval.cols = 'when,tag,laps,cells,bad,judged,cmpb,badb,wrong,flag,unexp,exp'
+
+beval.rel    = beval.rel or 0.25
+beval.absmin = beval.absmin or 3
+
+-- This run, as numbers
+-- -> a summary table, or nil when no run has happened in this session.
+-- READ OFF brun's OWN COUNTERS, never recomputed: these are the figures the status screen showed
+-- while the run was going, so the end screen cannot disagree with what the operator was watching.
+function beval.summary()
+  if brun == nil or brun.ncell == nil then return nil end
+  local s = {}
+  s.when   = os.time()
+  s.tag    = brun.tag or 'SOAK'
+  s.laps   = brun.iter or 0
+  s.cells  = brun.ncell or 0
+  s.bad    = brun.nbad or 0
+  s.judged = brun.npayj or 0
+  s.cmpb   = brun.ncmpb or 0
+  s.badb   = brun.nbadb or 0
+  s.wrong  = brun.nwrong or 0
+  s.flag   = brun.nframe or 0
+  s.unexp  = brun.nunexp or 0
+  s.exp    = brun.nexp or 0
+  return s
+end
+
+-- The four rates, each over its OWN denominator. -> wrong, badb, flag, unexp (all per unit, 0 when
+--   [...]
+-- bytes over bytes COMPARED. `flag` and `unexp` are cells over cells RUN. Dividing all four by the
+-- cell count would understate wrong by whatever share of the lap cannot be judged, which is how a
+-- regression in the judged subset would hide behind the vectors that are not in it.
+function beval.rates(s)
+  local function per(n, d)
+    if d == nil or d <= 0 then return 0 end
+    return n / d
+  end
+  return per(s.wrong, s.judged), per(s.badb, s.cmpb),
+         per(s.flag, s.cells), per(s.unexp, s.cells)
+end
+
+-- The key: read the last run, then append this one
+-- The most recent summary on the key, or nil. -> table or nil
+-- THE LAST DATA LINE WINS. The file is appended to, one line per run, so it is a short history rather
+-- than a single value -- which costs nothing and means a regression can be looked at against more
+-- than one predecessor later. Read before this run's line is written, never after.
+function beval.prev(path)
+  path = path or beval.path
+  local fh = file.open(path, file.MODE_READ)
+  if fh == nil then return nil end
+  local last = nil
+  local ln = file.read(fh, file.READ_LINE)
+  while ln ~= nil and ln ~= '' do
+    ln = string.gsub(ln, '[\r\n]', '')
+    if ln ~= '' and string.sub(ln, 1, 1) ~= '#' and ln ~= beval.cols then last = ln end
+    ln = file.read(fh, file.READ_LINE)
+  end
+  file.close(fh)
+  if last == nil then return nil end
+  local f, nf = brun.split(last)
+  if nf < 12 then return nil end
+  return {when = tonumber(f[1]) or 0, tag = f[2], laps = tonumber(f[3]) or 0,
+          cells = tonumber(f[4]) or 0, bad = tonumber(f[5]) or 0, judged = tonumber(f[6]) or 0,
+          cmpb = tonumber(f[7]) or 0, badb = tonumber(f[8]) or 0, wrong = tonumber(f[9]) or 0,
+          flag = tonumber(f[10]) or 0, unexp = tonumber(f[11]) or 0, exp = tonumber(f[12]) or 0}
+end
+
+-- Append this run. -> ok
+-- APPEND AND NOT REWRITE, so a key pulled during the write costs the new line and not the history.
+function beval.save(path, s)
+  path = path or beval.path
+  if s == nil then return false end
+  local probe = file.open(path, file.MODE_READ)
+  local fresh = (probe == nil)
+  if probe ~= nil then file.close(probe) end
+  local fh = file.open(path, file.MODE_APPEND)
+  if fh == nil then return false end
+  if fresh then
+    file.write(fh, '# one line per finished soak, written by bench/soak_eval.tsp\n')
+    file.write(fh, beval.cols .. '\n')
+  end
+  file.write(fh, string.format('%d,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n',
+                               s.when, tostring(s.tag), s.laps, s.cells, s.bad, s.judged,
+                               s.cmpb, s.badb, s.wrong, s.flag, s.unexp, s.exp))
+  file.flush(fh)
+  file.close(fh)
+  return true
+end
+
+-- Did anything get worse?
+-- -> n, lines   n is the number of classes that regressed; lines describes each.
+-- NO PREVIOUS RUN IS NOT 'NO REGRESSIONS'. It is a different answer and the screen says so: there is
+-- nothing to compare against, which is exactly the state a first run on a fresh key is in. Reporting
+-- that as green would make the first run of any new key look like a pass.
+function beval.regress(cur, prev)
+  local lines, n = {}, 0
+  if cur == nil or prev == nil then return 0, lines end
+  local cw, cb, cf, cu = beval.rates(cur)
+  local pw, pb, pf, pu = beval.rates(prev)
+  local function cmp(name, crate, prate, cden, unit)
+    if cden == nil or cden <= 0 then return end
+    if prate <= 0 and crate <= 0 then return end
+    local expect = prate * cden
+    local got    = crate * cden
+    if crate > prate * (1 + beval.rel) and got - expect >= beval.absmin then
+      n = n + 1
+      lines[n] = string.format('%s %.3f%% was %.3f%% (+%d %s)',
+                               name, crate * 100, prate * 100,
+                               bplan ~= nil and bplan.iround(got - expect) or (got - expect), unit)
+    end
+  end
+  cmp('wrong',  cw, pw, cur.judged, 'cell(s)')
+  cmp('bad',    cb, pb, cur.cmpb,   'byte(s)')
+  cmp('flag',   cf, pf, cur.cells,  'cell(s)')
+  cmp('unexp',  cu, pu, cur.cells,  'cell(s)')
+  return n, lines
+end
+
+-- Which waveforms are responsible
+--   [...]
+-- let the loudest class bury the most serious one.
+-- ONLY VECTORS WITH SOMETHING TO REPORT. A list padded to six with clean vectors reads as six
+-- problems; the screen says how many there were.
+function beval.topvec(n)
+  n = n or 6
+  if brun == nil or brun.vwrong == nil then return {}, 0 end
+  local seen, ids, ni = {}, {}, 0
+  local function note(t)
+    if t == nil then return end
+    local k
+    for k in pairs(t) do
+      if seen[k] == nil then
+        seen[k] = true
+        ni = ni + 1
+        ids[ni] = k
+      end
+    end
+  end
+  note(brun.vwrong)
+  note(brun.vbadb)
+  note(brun.vflag)
+  note(brun.vunexp)
+  local out, no = {}, 0
+  local i
+  for i = 1, ni do
+    local v = ids[i]
+    local w = brun.vwrong[v] or 0
+    local b = brun.vbadb[v] or 0
+    local f = brun.vflag[v] or 0
+    local u = brun.vunexp[v] or 0
+    if w > 0 or b > 0 or f > 0 or u > 0 then
+      no = no + 1
+      out[no] = {vid = v, wrong = w, badb = b, flag = f, unexp = u}
+    end
+  end
+  table.sort(out, function(a, b)
+    if a.wrong ~= b.wrong then return a.wrong > b.wrong end
+    if a.badb  ~= b.badb  then return a.badb  > b.badb  end
+    if a.flag  ~= b.flag  then return a.flag  > b.flag  end
+    if a.unexp ~= b.unexp then return a.unexp > b.unexp end
+    return a.vid < b.vid
+  end)
+  local keep, nk = {}, 0
+  for i = 1, no do
+    if nk >= n then break end
+    nk = nk + 1
+    keep[nk] = out[i]
+  end
+  return keep, no
+end
+
+beval.scr    = nil
+beval.obj    = nil
+beval.rows   = 6
+beval.y0     = 150
+beval.dy     = 26
+
+function beval.destroy()
+  if beval.scr == nil then return false end
+  display.changescreen(display.SCREEN_HOME)
+  local i
+  if beval.obj ~= nil then
+    for i = 1, table.getn(beval.obj) do sdec.del_obj(beval.obj[i]) end
+  end
+  beval.obj = nil
+  sdec.del_obj(beval.scr)
+  beval.scr = nil
+  beval.t_verdict, beval.t_run, beval.t_err, beval.t_cmp, beval.t_head = nil, nil, nil, nil, nil
+  beval.t_row = nil
+  return true
+end
+
+-- Built EMPTY and once, like every other screen in this app: nothing is created when the run ends,
+-- because the display object pool is 463 and a soak that exhausts it at the finish line would lose
+-- the one screen that says what the soak found.
+function beval.build()
+  if beval.scr ~= nil then return true end
+  beval.scr = display.create(display.ROOT, display.OBJ_SCREEN, 'SOAK RESULT')
+  if beval.scr == nil then return false end
+  if brun ~= nil and brun.cover_show ~= nil then brun.cover_show(nil) end
+  beval.obj = {}
+  local function keep(h)
+    if h ~= nil then beval.obj[table.getn(beval.obj) + 1] = h end
+    return h
+  end
+  local dim = (sdec ~= nil and sdec.ui_c_dim) or 0xB0B0B0
+  local val = (sdec ~= nil and sdec.ui_c_data) or 0xFFFFFF
+  beval.t_verdict = keep(display.create(beval.scr, display.OBJ_TEXT, 22, 24, '',
+                                        val, display.FONT_5, display.JUST_LEFT))
+  beval.t_run = keep(display.create(beval.scr, display.OBJ_TEXT, 22, 70, '',
+                                    val, display.FONT_3, display.JUST_LEFT))
+  beval.t_err = keep(display.create(beval.scr, display.OBJ_TEXT, 22, 96, '',
+                                    val, display.FONT_3, display.JUST_LEFT))
+  beval.t_head = keep(display.create(beval.scr, display.OBJ_TEXT, 22, 124, '',
+                                     dim, display.FONT_3, display.JUST_LEFT))
+  beval.t_row = {}
+  local i
+  for i = 1, beval.rows do
+    beval.t_row[i] = keep(display.create(beval.scr, display.OBJ_TEXT, 22,
+                                         beval.y0 + (i - 1) * beval.dy, '',
+                                         val, display.FONT_3, display.JUST_LEFT))
+  end
+  beval.t_cmp = keep(display.create(beval.scr, display.OBJ_TEXT, 22,
+                                    beval.y0 + beval.rows * beval.dy + 10, '',
+                                    dim, display.FONT_3, display.JUST_LEFT))
+  local btny = 360
+  if brun ~= nil and brun.pn_geom ~= nil then btny = brun.pn_geom().btny end
+  local b = display.create(beval.scr, display.OBJ_BUTTON, 22, btny, 'Back', 200)
+  if b ~= nil then
+    display.setevent(b, display.EVENT_PRESS, 'sdec.guard(beval.back)')
+    keep(b)
+  end
+  display.setevent(beval.scr, display.EVENT_ENDAPP, 'sdec.guard(beval.endapp)')
+  return true
+end
+
+-- Back to the settings form. The result screen is LEFT STANDING rather than destroyed: it is eleven
+--   [...]
+-- THE PLAN LINE IS RE-READ on the way back, because the form's two plan lines were composed when the
+-- form was built and the key is the thing that can have changed since -- a record was just written to
+-- it, and on a long soak the key is also the thing most likely to have been swapped.
+function beval.back()
+  if brun == nil or brun.pnscr == nil then return false end
+  if brun.pn_refresh_plan ~= nil then brun.pn_refresh_plan() end
+  display.changescreen(brun.pnscr)
+  return true
+end
+
+-- End App on this screen tears down everything the app built, the bench panel's own rule: the
+-- firmware keeps a display object alive until it is deleted, and once brun and beval are nil'd
+-- nothing can reach the handles.
+function beval.endapp()
+  beval.destroy()
+  if brun ~= nil and brun.panel_cancel ~= nil then brun.panel_cancel() end
+  return true
+end
+
+-- FILL IT, THEN SWITCH TO IT -- this project's standing display rule. -> ok
+-- IT DOES NOT BUILD. brun.panel builds this screen at launch; a run that ends with no screen reports
+-- false and leaves the record -- which is already closed by then -- as the only account. Building
+-- here would put a dozen display.create calls at the one moment the pool is least likely to have
+-- them, after the run, with no second chance.
+function beval.show()
+  if beval.scr == nil then return false end
+  local cur = beval.summary()
+  if cur == nil then return false end
+  local prev = beval.prev(beval.path)
+  local nreg, lines = beval.regress(cur, prev)
+
+  local green = (sdec ~= nil and sdec.ui_c_sn_ok) or 0x80FF80
+  local red   = (sdec ~= nil and sdec.ui_c_err) or 0xFF6060
+  local amber = (sdec ~= nil and sdec.ui_c_warn) or 0xFFC000
+  if prev == nil then
+    display.settext(beval.t_verdict, 'NO PREVIOUS RUN TO COMPARE')
+    display.setcolor(beval.t_verdict, amber)
+  elseif nreg == 0 then
+    display.settext(beval.t_verdict, 'NO REGRESSIONS')
+    display.setcolor(beval.t_verdict, green)
+  else
+    display.settext(beval.t_verdict, string.format('%d REGRESSION(S)', nreg))
+    display.setcolor(beval.t_verdict, red)
+  end
+
+  display.settext(beval.t_run,
+                  string.format('%s  %d lap(s)  %d cell(s)  %d no decode  %d judged',
+                                tostring(cur.tag), cur.laps, cur.cells, cur.bad, cur.judged))
+  display.settext(beval.t_err,
+                  string.format('wrong %d  bad %d/%d  flag %d  unexp %d  (allowed %d)',
+                                cur.wrong, cur.badb, cur.cmpb, cur.flag, cur.unexp, cur.exp))
+
+  local top, ntop = beval.topvec(beval.rows)
+  if ntop == 0 then
+    display.settext(beval.t_head, 'No vector produced an unexpected error.')
+  else
+    display.settext(beval.t_head,
+                    string.format('Worst %d of %d vector(s) with errors -- '
+                                  .. 'wrong, bad, flag, unexp:',
+                                  table.getn(top), ntop))
+  end
+  local i
+  for i = 1, beval.rows do
+    local t = top[i]
+    if t == nil then
+      display.settext(beval.t_row[i], '')
+    else
+      display.settext(beval.t_row[i],
+                      string.format('%d. %-5s  wrong %d  bad %d  flag %d  unexp %d',
+                                    i, t.vid, t.wrong, t.badb, t.flag, t.unexp))
+    end
+  end
+
+  local tail
+  if prev == nil then
+    tail = 'First run on this key. The host judge is the verdict: judge_bench.py'
+  else
+    tail = string.format('vs %s, %d cell(s). Panel measure only -- judge_bench.py is the verdict',
+                         tostring(prev.tag), prev.cells)
+    if nreg > 0 and lines[1] ~= nil then
+      tail = lines[1]
+      if nreg > 1 then tail = tail .. string.format('  (+%d more)', nreg - 1) end
+    end
+  end
+  display.settext(beval.t_cmp, string.sub(tail, 1, 74))
+
+  beval.save(beval.path, cur)
+  display.changescreen(beval.scr)
+  return true
 end
 
 
@@ -11466,6 +12626,31 @@ function brun.pn_plan()
   return n, v
 end
 
+-- The two plan lines, DERIVED IN ONE PLACE so the build and the refresh cannot disagree. They used to
+-- be formatted inline in build_panel, which was fine while the plan could only change between
+-- sessions; the app draws its own plan now, so the lines the form was built with are stale by the
+-- time it is shown and a second copy of this formatting would be a second thing to keep in step.
+-- -> line1, line2
+function brun.pn_plantext()
+  local rows, rsub = brun.pn_plan()
+  if rows == nil then
+    return 'PLAN: none readable on the key', 'check the key and restart the app'
+  end
+  local l2 = ''
+  if rsub ~= nil and rsub ~= '' then l2 = 'random-per-lap ' .. rsub end
+  return string.format('plan: %s row(s)', brun.int(rows)), l2
+end
+
+-- Rewrite the plan lines on a form that is already built. Used by startup, because a plan drawn
+-- during startup is not the plan build_panel read.
+function brun.pn_refresh_plan()
+  if brun.pn_ptxt == nil then return false end
+  local p1, p2 = brun.pn_plantext()
+  display.settext(brun.pn_ptxt, p1)
+  if brun.pn_ptxt2 ~= nil then display.settext(brun.pn_ptxt2, p2) end
+  return true
+end
+
 -- Build the settings screen. Returns the screen handle, or raises with a reason the operator can act
 -- on -- the same contract as sdec.build_options, and for the same reason: a Run screen that opens
 -- nothing is worse than a refusal that says why.
@@ -11483,6 +12668,7 @@ function brun.build_panel()
   if brun.pnscr == nil then
     error('display object pool exhausted building the soak screen -- power cycle the instrument.', 0)
   end
+  brun.cover_show(nil)
 
   local nf    = 10
   local nrows = math.ceil(nf / 2)
@@ -11570,15 +12756,7 @@ function brun.build_panel()
                              display.NFORMAT_PREFIX, sdec.arm_wait_s(),
                              sdec.armwait_min, sdec.armwait_max, 's', 4))
 
-  local rows, rsub = brun.pn_plan()
-  local p1, p2
-  if rows == nil then
-    p1 = 'PLAN: none on the key'
-    p2 = 'push one: run_bench.py --push-plan'
-  else
-    p1 = string.format('plan: %s row(s)', brun.int(rows))
-    p2 = (rsub ~= nil and rsub ~= '') and ('random-per-lap ' .. rsub) or ''
-  end
+  local p1, p2 = brun.pn_plantext()
   brun.pn_ptxt  = keep(create(brun.pnscr, display.OBJ_TEXT, g.pnx, g.btny + 16, p1,
                               sdec.ui_c_pgword, display.FONT_SMALL, display.JUST_LEFT))
   brun.pn_ptxt2 = keep(create(brun.pnscr, display.OBJ_TEXT, g.pnx, g.btny + 44, p2,
@@ -11725,22 +12903,243 @@ function brun.pn_say(s)
   return true
 end
 
-function brun.panel_cancel()
-  brun.destroy_panel()
+-- EVERY SCREEN THIS APP BUILT, not just the form. End App is wired to this on all four screens, and
+-- a teardown that freed one of them would strand the other three: the firmware keeps a display object
+-- alive until it is deleted, and once brun is nil'd nothing can reach the handles. That is the whole
+-- reason a panel app used to need a power cycle every few loads.
+function brun.destroy_startup_screens()
+  local i
+  if brun.key_obj ~= nil then
+    for i = 1, table.getn(brun.key_obj) do sdec.del_obj(brun.key_obj[i]) end
+  end
+  brun.key_obj, brun.key_txt = nil, nil
+  if brun.wk_t1 ~= nil then sdec.del_obj(brun.wk_t1) end
+  if brun.wk_t2 ~= nil then sdec.del_obj(brun.wk_t2) end
+  brun.wk_t1, brun.wk_t2 = nil, nil
+  if brun.cv_txt ~= nil then sdec.del_obj(brun.cv_txt) end
+  brun.cv_txt = nil
+  if brun.keyscr ~= nil then sdec.del_obj(brun.keyscr) end
+  if brun.wkscr ~= nil then sdec.del_obj(brun.wkscr) end
+  if brun.cvscr ~= nil then sdec.del_obj(brun.cvscr) end
+  brun.keyscr, brun.wkscr, brun.cvscr = nil, nil, nil
   return true
 end
 
--- The entry point the bench package's App header calls. Builds the form and shows it; takes no
--- capture and starts nothing, so the instrument comes up waiting for a press.
+-- THE APP EXITING is the only thing that deletes a screen, and this is it: End App on any of the five
+--   [...]
+-- THE RESULT SCREEN WAS MISSED, and the offline suite caught it the moment that screen moved from
+-- being built at the end of a run to being built at launch: 13 live objects after a teardown that
+-- reported success.
+function brun.panel_cancel()
+  brun.destroy_panel()
+  brun.destroy_startup_screens()
+  if beval ~= nil and beval.destroy ~= nil then beval.destroy() end
+  if brun.ui_destroy ~= nil then brun.ui_destroy() end
+  return true
+end
+
+brun.cvscr  = nil
+brun.cv_txt = nil
+brun.keyscr = nil
+brun.key_txt = nil
+brun.key_obj = nil
+brun.key_tries = 0
+brun.wkscr  = nil
+brun.wk_t1  = nil
+brun.wk_t2  = nil
+
+-- The cover. Two objects, so the flash while it builds is one screen and one line of text.
+function brun.build_cover()
+  brun.cvscr = display.create(display.ROOT, display.OBJ_SCREEN, 'BENCH SOAK')
+  if brun.cvscr == nil then return false end
+  brun.cv_txt = display.create(brun.cvscr, display.OBJ_TEXT, 22, 150,
+                               'Starting the bench soak app...',
+                               sdec.ui_c_pgword, display.FONT_5, display.JUST_LEFT)
+  return true
+end
+
+function brun.cover_show(s)
+  if brun.cvscr == nil then return false end
+  if brun.cv_txt ~= nil and s ~= nil then display.settext(brun.cv_txt, s) end
+  display.changescreen(brun.cvscr)
+  return true
+end
+
+-- Is the key there? file.usbdriveexists answers 1 or 0 and never raises; ulog.keyok() reads it the
+-- same way. A nil binding is treated as absent rather than present: the honest answer when the
+-- firmware cannot be asked is that this app cannot know the key is there.
+function brun.keyok()
+  if file.usbdriveexists == nil then return false end
+  return file.usbdriveexists() ~= 0
+end
+
+-- THE KEY SCREEN. Retry and Exit, on the operator's instruction of 2026-10-22 -- the app writes its
+-- record and reads its plan on /usb1, so with no key there is nothing it can usefully do, and the two
+-- answers are 'I have put one in' and 'let me out'.
+function brun.build_keyerr()
+  brun.keyscr = display.create(display.ROOT, display.OBJ_SCREEN, 'BENCH SOAK')
+  if brun.keyscr == nil then return false end
+  brun.cover_show(nil)
+  brun.key_obj = {}
+  local function keep(h)
+    if h ~= nil then brun.key_obj[table.getn(brun.key_obj) + 1] = h end
+    return h
+  end
+  keep(display.create(brun.keyscr, display.OBJ_TEXT, 22, 70, 'No USB key',
+                      sdec.ui_c_err, display.FONT_5, display.JUST_LEFT))
+  keep(display.create(brun.keyscr, display.OBJ_TEXT, 22, 130,
+                      'This app keeps its plan and its record on /usb1.',
+                      sdec.ui_c_pgword, display.FONT_3, display.JUST_LEFT))
+  brun.key_txt = keep(display.create(brun.keyscr, display.OBJ_TEXT, 22, 170,
+                                     'Insert a USB key, then press Retry.',
+                                     sdec.ui_c_pgword, display.FONT_3, display.JUST_LEFT))
+  local g = brun.pn_geom()
+  local b = display.create(brun.keyscr, display.OBJ_BUTTON, 22, g.btny, 'Retry', 200)
+  if b ~= nil then
+    display.setevent(b, display.EVENT_PRESS, 'sdec.guard(brun.key_retry)')
+    keep(b)
+  end
+  local x = display.create(brun.keyscr, display.OBJ_BUTTON, 246, g.btny, 'Exit', 200)
+  if x ~= nil then
+    display.setevent(x, display.EVENT_PRESS, 'sdec.guard(brun.key_exit)')
+    keep(x)
+  end
+  display.setevent(brun.keyscr, display.EVENT_ENDAPP, 'sdec.guard(brun.panel_cancel)')
+  return true
+end
+
+-- The working screen, for the one step that takes minutes.
+function brun.build_working()
+  brun.wkscr = display.create(display.ROOT, display.OBJ_SCREEN, 'BENCH SOAK')
+  if brun.wkscr == nil then return false end
+  brun.cover_show(nil)
+  brun.wk_t1 = display.create(brun.wkscr, display.OBJ_TEXT, 22, 120, 'Working...',
+                              sdec.ui_c_pgword, display.FONT_5, display.JUST_LEFT)
+  brun.wk_t2 = display.create(brun.wkscr, display.OBJ_TEXT, 22, 180, '',
+                              sdec.ui_c_pgword, display.FONT_3, display.JUST_LEFT)
+  display.setevent(brun.wkscr, display.EVENT_ENDAPP, 'sdec.guard(brun.panel_cancel)')
+  return true
+end
+
+function brun.wk_say(l1, l2)
+  if l1 ~= nil then brun.wk_msg = l1 end
+  if brun.wk_t1 ~= nil and l1 ~= nil then display.settext(brun.wk_t1, l1) end
+  if brun.wk_t2 ~= nil and l2 ~= nil then display.settext(brun.wk_t2, l2) end
+  return true
+end
+
+brun.wk_msg  = brun.wk_msg or 'Working'
+brun.wkspint = nil
+brun.nwkspin = 0
+
+function brun.wk_spin(force)
+  if brun.wk_t1 == nil then return false end
+  local t = nil
+  if timer ~= nil and timer.gettime ~= nil then t = timer.gettime() end
+  if t ~= nil and force ~= true then
+    if brun.wkspint ~= nil and t >= brun.wkspint and t - brun.wkspint < brun.spinmin then
+      return false
+    end
+  end
+  if t ~= nil then brun.wkspint = t end
+  display.settext(brun.wk_t1, brun.wk_msg .. '   ' .. brun.spin())
+  brun.nwkspin = brun.nwkspin + 1
+  return true
+end
+
+-- Retry. THE PRESS MUST BE VISIBLE EVEN WHEN NOTHING CHANGES: a Retry that silently does nothing
+-- because the key is still absent is indistinguishable from a dead button, and the operator's next
+-- move after a dead button is the power switch.
+function brun.key_retry()
+  brun.key_tries = brun.key_tries + 1
+  if not brun.keyok() then
+    if brun.key_txt ~= nil then
+      display.settext(brun.key_txt,
+                      string.format('Still no key at /usb1 -- checked %d time(s). '
+                                    .. 'Insert one and press Retry.', brun.key_tries))
+    end
+    return false
+  end
+  return brun.startup()
+end
+
+function brun.key_exit()
+  return brun.panel_cancel()
+end
+
+-- The plan step. CHECKED, AND DRAWN ONLY IF WHAT IS THERE CANNOT BE USED -- bplan.ensure's rule, so a
+-- targeted --spec push is left alone rather than silently replaced by the full draw.
+function brun.plan_step()
+  if bplan == nil or bplan.check == nil then
+    return false, 0, 'bench/plan_gen.tsp is not loaded, so no plan can be checked or drawn'
+  end
+  brun.cover_show(nil)
+  brun.wk_say('Checking the plan on the key', bplan.path)
+  display.changescreen(brun.wkscr)
+  local ok, rows, why = bplan.check(bplan.path)
+  if ok then return true, rows, nil end
+  brun.wk_say('Drawing a plan on the key', 'no usable plan: ' .. tostring(why))
+  brun.wk_spin(true)
+  local eok, erows, eerr = bplan.ensure(bplan.path, {
+    first = 1,
+    progress = function(done, total)
+      if brun.wk_spin() then
+        display.settext(brun.wk_t2, string.format('%d of %d row(s)', done, total))
+      end
+    end,
+  })
+  return eok, erows, eerr
+end
+
+-- The entry point the bench package's App header calls. Builds every screen, then decides which one
+-- to show; takes no capture and starts nothing, so the instrument comes up waiting for a press.
 function brun.panel()
   if sdec == nil or sdec.acquire == nil then
     return false, 'the app is not loaded, so there is nothing to soak'
+  end
+  if brun.cvscr == nil and not brun.build_cover() then
+    return false, 'display object pool exhausted before anything was built -- power cycle'
+  end
+  brun.cover_show('Starting the bench soak app...')
+  if brun.keyscr == nil and not brun.build_keyerr() then
+    return false, 'display object pool exhausted building the key screen -- power cycle'
+  end
+  if brun.wkscr == nil and not brun.build_working() then
+    return false, 'display object pool exhausted building the working screen -- power cycle'
   end
   local ok, err = pcall(brun.build_panel)
   if not ok then
     brun.destroy_panel()
     return false, tostring(err)
   end
+  if beval ~= nil and beval.build ~= nil and beval.scr == nil then
+    if not beval.build() then
+      brun.cover_show('No result screen: the display object pool is full.')
+    end
+  end
+  return brun.startup()
+end
+
+-- Which screen the operator lands on, decided after everything exists. Called again by Retry, which
+-- is why it is separate from the building.
+function brun.startup()
+  if not brun.keyok() then
+    brun.key_tries = 0
+    if brun.key_txt ~= nil then
+      display.settext(brun.key_txt, 'Insert a USB key, then press Retry.')
+    end
+    display.changescreen(brun.keyscr)
+    return true
+  end
+  local ok, rows, why = brun.plan_step()
+  if not ok then
+    if brun.key_txt ~= nil then
+      display.settext(brun.key_txt, string.sub('Plan: ' .. tostring(why), 1, 58))
+    end
+    display.changescreen(brun.keyscr)
+    return true
+  end
+  brun.pn_refresh_plan()
   display.changescreen(brun.pnscr)
   return true
 end

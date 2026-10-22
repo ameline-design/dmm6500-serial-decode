@@ -159,6 +159,34 @@ function brun.pn_plan()
   return n, v
 end
 
+-- The two plan lines, DERIVED IN ONE PLACE so the build and the refresh cannot disagree. They used to
+-- be formatted inline in build_panel, which was fine while the plan could only change between
+-- sessions; the app draws its own plan now, so the lines the form was built with are stale by the
+-- time it is shown and a second copy of this formatting would be a second thing to keep in step.
+-- -> line1, line2
+function brun.pn_plantext()
+  local rows, rsub = brun.pn_plan()
+  if rows == nil then
+    -- REACHABLE ONLY IF THE KEY WENT AWAY after startup checked it: brun.startup draws a plan when
+    -- there is none, and lands on the key screen when it cannot. So this no longer advises a host
+    -- push -- the app can draw one -- it reports the key.
+    return 'PLAN: none readable on the key', 'check the key and restart the app'
+  end
+  local l2 = ''
+  if rsub ~= nil and rsub ~= '' then l2 = 'random-per-lap ' .. rsub end
+  return string.format('plan: %s row(s)', brun.int(rows)), l2
+end
+
+-- Rewrite the plan lines on a form that is already built. Used by startup, because a plan drawn
+-- during startup is not the plan build_panel read.
+function brun.pn_refresh_plan()
+  if brun.pn_ptxt == nil then return false end
+  local p1, p2 = brun.pn_plantext()
+  display.settext(brun.pn_ptxt, p1)
+  if brun.pn_ptxt2 ~= nil then display.settext(brun.pn_ptxt2, p2) end
+  return true
+end
+
 -- Build the settings screen. Returns the screen handle, or raises with a reason the operator can act
 -- on -- the same contract as sdec.build_options, and for the same reason: a Run screen that opens
 -- nothing is worse than a refusal that says why.
@@ -176,6 +204,12 @@ function brun.build_panel()
   if brun.pnscr == nil then
     error('display object pool exhausted building the soak screen -- power cycle the instrument.', 0)
   end
+  -- STRAIGHT BACK TO THE COVER, BEFORE THE FIRST FIELD. Creating a screen makes it the active one, so
+  -- without this the operator watches thirteen objects appear one at a time -- which is both slow and
+  -- the thing the operator ruled out for the app's own screens. The cover is built first by
+  -- brun.panel; when there is none (an offline render, or a direct build_panel call) this is a no-op
+  -- and the build behaves as it did before.
+  brun.cover_show(nil)
 
   -- TEN fields in two columns is five rows, and the pitch has to clear the button row: the same
   -- arithmetic build_options does, read from its constants so a changed form moves this one too.
@@ -310,15 +344,7 @@ function brun.build_panel()
   -- expect is a lap of instrument time spent on the wrong question, and the key keeps whichever plan
   -- was pushed last -- a targeted --spec overwrites PLAN.CSV, so what is there is not necessarily the
   -- fortnight plan.
-  local rows, rsub = brun.pn_plan()
-  local p1, p2
-  if rows == nil then
-    p1 = 'PLAN: none on the key'
-    p2 = 'push one: run_bench.py --push-plan'
-  else
-    p1 = string.format('plan: %s row(s)', brun.int(rows))
-    p2 = (rsub ~= nil and rsub ~= '') and ('random-per-lap ' .. rsub) or ''
-  end
+  local p1, p2 = brun.pn_plantext()
   -- BESIDE THE BUTTON, NOT ABOVE IT, and NOT out of nextpos(). This used to take a field slot of its
   -- own and sit at btny - 44, which cost the grid a row for a line of furniture. A single-button row
   -- leaves most of its width empty, so the plan runs in two short lines in that space -- which is
@@ -514,22 +540,311 @@ function brun.pn_say(s)
   return true
 end
 
-function brun.panel_cancel()
-  brun.destroy_panel()
+-- EVERY SCREEN THIS APP BUILT, not just the form. End App is wired to this on all four screens, and
+-- a teardown that freed one of them would strand the other three: the firmware keeps a display object
+-- alive until it is deleted, and once brun is nil'd nothing can reach the handles. That is the whole
+-- reason a panel app used to need a power cycle every few loads.
+function brun.destroy_startup_screens()
+  local i
+  if brun.key_obj ~= nil then
+    for i = 1, table.getn(brun.key_obj) do sdec.del_obj(brun.key_obj[i]) end
+  end
+  brun.key_obj, brun.key_txt = nil, nil
+  if brun.wk_t1 ~= nil then sdec.del_obj(brun.wk_t1) end
+  if brun.wk_t2 ~= nil then sdec.del_obj(brun.wk_t2) end
+  brun.wk_t1, brun.wk_t2 = nil, nil
+  if brun.cv_txt ~= nil then sdec.del_obj(brun.cv_txt) end
+  brun.cv_txt = nil
+  -- SCREENS LAST, and after the switch away that destroy_panel does: deleting the screen in front
+  -- leaves the panel drawing a dead object.
+  if brun.keyscr ~= nil then sdec.del_obj(brun.keyscr) end
+  if brun.wkscr ~= nil then sdec.del_obj(brun.wkscr) end
+  if brun.cvscr ~= nil then sdec.del_obj(brun.cvscr) end
+  brun.keyscr, brun.wkscr, brun.cvscr = nil, nil, nil
   return true
 end
 
--- The entry point the bench package's App header calls. Builds the form and shows it; takes no
--- capture and starts nothing, so the instrument comes up waiting for a press.
+-- THE APP EXITING is the only thing that deletes a screen, and this is it: End App on any of the five
+-- screens, and the key screen's Exit button. Every screen the app built has to go here, or the ones
+-- missed are stranded -- the firmware keeps a display object alive until it is deleted and nothing can
+-- reach a handle once brun and beval are nil'd.
+--
+-- THE RESULT SCREEN WAS MISSED, and the offline suite caught it the moment that screen moved from
+-- being built at the end of a run to being built at launch: 13 live objects after a teardown that
+-- reported success.
+function brun.panel_cancel()
+  brun.destroy_panel()
+  brun.destroy_startup_screens()
+  if beval ~= nil and beval.destroy ~= nil then beval.destroy() end
+  -- THE STATUS SCREEN TOO, and it was missed for the same reason the result screen was: it used to be
+  -- deleted and rebuilt per run, so nothing had to free it at exit. Now that it is built once and
+  -- kept, exit is the only thing that frees its fourteen objects -- and run_bench.py's PRELUDE calls
+  -- the same function for a host reload, which is the other way this app ends.
+  if brun.ui_destroy ~= nil then brun.ui_destroy() end
+  return true
+end
+
+-- ---------------------------------------------------------------------------
+-- Startup: the cover, the key, the plan, then the form
+-- ---------------------------------------------------------------------------
+-- THE COVER EXISTS BECAUSE CREATING A SCREEN MAKES IT THE ACTIVE ONE. There is no way to build a
+-- screen that is not in front: display.create(ROOT, OBJ_SCREEN) shows it. So the first thing built is
+-- a two-object screen saying what is happening, and every screen after it switches BACK to the cover
+-- the instant its own screen exists -- which leaves the children going onto a screen nobody is
+-- looking at. Before this, the soak form assembled itself in front of the operator, thirteen objects
+-- at a time, which is the thing the operator ruled out for the app's own screens.
+--
+-- AND NOTHING IS BUILT ON DEMAND. All four screens are created here, at launch, once. A screen built
+-- when a button is pressed is slower, visibly assembles, and -- the reason that rule exists at all --
+-- cannot fail safely: the display object pool is 463 and exhausting it mid-session returns nil from
+-- create with event 1701 logged once, so the failure arrives as a screen with holes in it.
+brun.cvscr  = nil
+brun.cv_txt = nil
+brun.keyscr = nil
+brun.key_txt = nil
+brun.key_obj = nil
+brun.key_tries = 0
+brun.wkscr  = nil
+brun.wk_t1  = nil
+brun.wk_t2  = nil
+
+-- The cover. Two objects, so the flash while it builds is one screen and one line of text.
+function brun.build_cover()
+  brun.cvscr = display.create(display.ROOT, display.OBJ_SCREEN, 'BENCH SOAK')
+  if brun.cvscr == nil then return false end
+  brun.cv_txt = display.create(brun.cvscr, display.OBJ_TEXT, 22, 150,
+                               'Starting the bench soak app...',
+                               sdec.ui_c_pgword, display.FONT_5, display.JUST_LEFT)
+  return true
+end
+
+function brun.cover_show(s)
+  if brun.cvscr == nil then return false end
+  if brun.cv_txt ~= nil and s ~= nil then display.settext(brun.cv_txt, s) end
+  display.changescreen(brun.cvscr)
+  return true
+end
+
+-- Is the key there? file.usbdriveexists answers 1 or 0 and never raises; ulog.keyok() reads it the
+-- same way. A nil binding is treated as absent rather than present: the honest answer when the
+-- firmware cannot be asked is that this app cannot know the key is there.
+function brun.keyok()
+  if file.usbdriveexists == nil then return false end
+  return file.usbdriveexists() ~= 0
+end
+
+-- THE KEY SCREEN. Retry and Exit, on the operator's instruction of 2026-10-22 -- the app writes its
+-- record and reads its plan on /usb1, so with no key there is nothing it can usefully do, and the two
+-- answers are 'I have put one in' and 'let me out'.
+function brun.build_keyerr()
+  brun.keyscr = display.create(display.ROOT, display.OBJ_SCREEN, 'BENCH SOAK')
+  if brun.keyscr == nil then return false end
+  -- STRAIGHT BACK TO THE COVER, before a single child: see the block comment above.
+  brun.cover_show(nil)
+  brun.key_obj = {}
+  local function keep(h)
+    if h ~= nil then brun.key_obj[table.getn(brun.key_obj) + 1] = h end
+    return h
+  end
+  keep(display.create(brun.keyscr, display.OBJ_TEXT, 22, 70, 'No USB key',
+                      sdec.ui_c_err, display.FONT_5, display.JUST_LEFT))
+  keep(display.create(brun.keyscr, display.OBJ_TEXT, 22, 130,
+                      'This app keeps its plan and its record on /usb1.',
+                      sdec.ui_c_pgword, display.FONT_3, display.JUST_LEFT))
+  brun.key_txt = keep(display.create(brun.keyscr, display.OBJ_TEXT, 22, 170,
+                                     'Insert a USB key, then press Retry.',
+                                     sdec.ui_c_pgword, display.FONT_3, display.JUST_LEFT))
+  -- THE BUTTON ROW COMES FROM pn_geom AND IS NOT TYPED HERE. A hardcoded y of 380 put a 58 px button
+  -- at 438 against a 431 px content area -- caught offline by mock_display's geometry check, which is
+  -- the whole reason that check exists. The form's own row is 360, and reading it through pn_geom
+  -- means a changed form moves this screen with it.
+  local g = brun.pn_geom()
+  local b = display.create(brun.keyscr, display.OBJ_BUTTON, 22, g.btny, 'Retry', 200)
+  if b ~= nil then
+    display.setevent(b, display.EVENT_PRESS, 'sdec.guard(brun.key_retry)')
+    keep(b)
+  end
+  local x = display.create(brun.keyscr, display.OBJ_BUTTON, 246, g.btny, 'Exit', 200)
+  if x ~= nil then
+    display.setevent(x, display.EVENT_PRESS, 'sdec.guard(brun.key_exit)')
+    keep(x)
+  end
+  display.setevent(brun.keyscr, display.EVENT_ENDAPP, 'sdec.guard(brun.panel_cancel)')
+  return true
+end
+
+-- The working screen, for the one step that takes minutes.
+function brun.build_working()
+  brun.wkscr = display.create(display.ROOT, display.OBJ_SCREEN, 'BENCH SOAK')
+  if brun.wkscr == nil then return false end
+  brun.cover_show(nil)
+  brun.wk_t1 = display.create(brun.wkscr, display.OBJ_TEXT, 22, 120, 'Working...',
+                              sdec.ui_c_pgword, display.FONT_5, display.JUST_LEFT)
+  brun.wk_t2 = display.create(brun.wkscr, display.OBJ_TEXT, 22, 180, '',
+                              sdec.ui_c_pgword, display.FONT_3, display.JUST_LEFT)
+  display.setevent(brun.wkscr, display.EVENT_ENDAPP, 'sdec.guard(brun.panel_cancel)')
+  return true
+end
+
+function brun.wk_say(l1, l2)
+  if l1 ~= nil then brun.wk_msg = l1 end
+  if brun.wk_t1 ~= nil and l1 ~= nil then display.settext(brun.wk_t1, l1) end
+  if brun.wk_t2 ~= nil and l2 ~= nil then display.settext(brun.wk_t2, l2) end
+  return true
+end
+
+-- THE SPINNER, so a draw that takes minutes cannot be mistaken for a hung app. Operator's
+-- instruction of 2026-10-22, and the same four glyphs and the same 4 Hz ceiling the status screen
+-- uses -- brun.spin() and brun.spinmin, not a second spinner with its own rate.
+--
+-- ITS OWN LAST-TICK FIELD. brun.spint belongs to the status screen's spinner and a soak may be
+-- running in the same session; sharing it would make each suppress the other.
+--
+-- THE TIMER IS READ AND NEVER CLEARED, which is this project's standing rule for it: the global timer
+-- carries the cell's phase timing and a recording's absorb, and clearing it here would make an absorb
+-- from minutes ago look current. A read is free and cannot do that. A cleared-under-us timer (t below
+-- the last tick) lets the tick through rather than suppressing it.
+brun.wk_msg  = brun.wk_msg or 'Working'
+brun.wkspint = nil
+brun.nwkspin = 0
+
+function brun.wk_spin(force)
+  if brun.wk_t1 == nil then return false end
+  local t = nil
+  if timer ~= nil and timer.gettime ~= nil then t = timer.gettime() end
+  if t ~= nil and force ~= true then
+    if brun.wkspint ~= nil and t >= brun.wkspint and t - brun.wkspint < brun.spinmin then
+      return false
+    end
+  end
+  if t ~= nil then brun.wkspint = t end
+  display.settext(brun.wk_t1, brun.wk_msg .. '   ' .. brun.spin())
+  -- COUNTED AFTER THE RATE LIMIT, so this is redraws and not calls -- the status spinner's rule, and
+  -- what lets a test tell a suppressed tick from a painted one.
+  brun.nwkspin = brun.nwkspin + 1
+  return true
+end
+
+-- Retry. THE PRESS MUST BE VISIBLE EVEN WHEN NOTHING CHANGES: a Retry that silently does nothing
+-- because the key is still absent is indistinguishable from a dead button, and the operator's next
+-- move after a dead button is the power switch.
+function brun.key_retry()
+  brun.key_tries = brun.key_tries + 1
+  if not brun.keyok() then
+    if brun.key_txt ~= nil then
+      display.settext(brun.key_txt,
+                      string.format('Still no key at /usb1 -- checked %d time(s). '
+                                    .. 'Insert one and press Retry.', brun.key_tries))
+    end
+    return false
+  end
+  return brun.startup()
+end
+
+function brun.key_exit()
+  return brun.panel_cancel()
+end
+
+-- The plan step. CHECKED, AND DRAWN ONLY IF WHAT IS THERE CANNOT BE USED -- bplan.ensure's rule, so a
+-- targeted --spec push is left alone rather than silently replaced by the full draw.
+function brun.plan_step()
+  -- THE FIRST INDEX OF A FOREIGN TABLE IS GUARDED, which is this project's standing lesson about
+  -- failures whose signature is silence: bench/plan_gen.tsp is a separate module, and an archive or a
+  -- test harness that did not load it would turn `bplan.path` into an attempt to index nil. A nil
+  -- check rather than a pcall -- the firmware never raises, and this is our own structural fault.
+  if bplan == nil or bplan.check == nil then
+    return false, 0, 'bench/plan_gen.tsp is not loaded, so no plan can be checked or drawn'
+  end
+  brun.cover_show(nil)
+  brun.wk_say('Checking the plan on the key', bplan.path)
+  display.changescreen(brun.wkscr)
+  local ok, rows, why = bplan.check(bplan.path)
+  if ok then return true, rows, nil end
+  -- WHAT IS HAPPENING AND WHY, on the glass: this step can take minutes and the operator did not ask
+  -- for it -- the app decided the key had no usable plan. Saying which is what makes the wait
+  -- legible rather than mysterious.
+  brun.wk_say('Drawing a plan on the key', 'no usable plan: ' .. tostring(why))
+  brun.wk_spin(true)
+  local eok, erows, eerr = bplan.ensure(bplan.path, {
+    first = 1,
+    progress = function(done, total)
+      -- THE SPINNER FIRST AND UNCONDITIONALLY, because it is rate-limited inside wk_spin; the row
+      -- count only moves when the spinner did, so the two lines cannot disagree about how recently
+      -- this was alive.
+      if brun.wk_spin() then
+        display.settext(brun.wk_t2, string.format('%d of %d row(s)', done, total))
+      end
+    end,
+  })
+  return eok, erows, eerr
+end
+
+-- The entry point the bench package's App header calls. Builds every screen, then decides which one
+-- to show; takes no capture and starts nothing, so the instrument comes up waiting for a press.
 function brun.panel()
   if sdec == nil or sdec.acquire == nil then
     return false, 'the app is not loaded, so there is nothing to soak'
   end
+  if brun.cvscr == nil and not brun.build_cover() then
+    return false, 'display object pool exhausted before anything was built -- power cycle'
+  end
+  brun.cover_show('Starting the bench soak app...')
+  if brun.keyscr == nil and not brun.build_keyerr() then
+    return false, 'display object pool exhausted building the key screen -- power cycle'
+  end
+  if brun.wkscr == nil and not brun.build_working() then
+    return false, 'display object pool exhausted building the working screen -- power cycle'
+  end
+  -- build_panel calls error() on purpose when the pool runs out, which is what this pcall is for:
+  -- our own error(), not a firmware call. The firmware signals by return value and by dialog and
+  -- neither is catchable.
   local ok, err = pcall(brun.build_panel)
   if not ok then
     brun.destroy_panel()
     return false, tostring(err)
   end
+  -- THE RESULT SCREEN, AT LAUNCH AND NOT WHEN THE RUN ENDS. beval.show() would build it on first use,
+  -- which is this project's rule broken in the worst available place: the end of a soak is when the
+  -- display object pool is least likely to have twelve left, and a create that returns nil there
+  -- loses the one screen that says what the soak found -- after the run, so there is no second
+  -- chance. Built empty here and settext'd at the end.
+  --
+  -- A FAILURE HERE IS NOT FATAL. The run is what matters and a soak is still worth starting without
+  -- its result screen, so this reports and carries on rather than refusing to launch. beval.show()
+  -- answers false when there is no screen, and the record is closed either way.
+  if beval ~= nil and beval.build ~= nil and beval.scr == nil then
+    if not beval.build() then
+      brun.cover_show('No result screen: the display object pool is full.')
+    end
+  end
+  return brun.startup()
+end
+
+-- Which screen the operator lands on, decided after everything exists. Called again by Retry, which
+-- is why it is separate from the building.
+function brun.startup()
+  if not brun.keyok() then
+    brun.key_tries = 0
+    if brun.key_txt ~= nil then
+      display.settext(brun.key_txt, 'Insert a USB key, then press Retry.')
+    end
+    display.changescreen(brun.keyscr)
+    return true
+  end
+  local ok, rows, why = brun.plan_step()
+  if not ok then
+    -- THE KEY SCREEN CARRIES THIS TOO, because every way the plan step fails is a key problem: the
+    -- key went away mid-draw, /usb1/SERDEC is missing, or the write was refused. Retry is the right
+    -- offer in all three.
+    if brun.key_txt ~= nil then
+      display.settext(brun.key_txt, string.sub('Plan: ' .. tostring(why), 1, 58))
+    end
+    display.changescreen(brun.keyscr)
+    return true
+  end
+  -- THE FORM IS FILLED BEFORE IT IS SHOWN. brun.pn_say rewrites the plan lines from what is actually
+  -- on the key now, which is not what build_panel read if a plan was just drawn.
+  brun.pn_refresh_plan()
   display.changescreen(brun.pnscr)
   return true
 end

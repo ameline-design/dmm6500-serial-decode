@@ -22,7 +22,9 @@ end
 -- before the instrument: nothing else offline reads that file. It defines functions and three tables
 -- at load and touches no display object until a button is pressed, so loading it costs nothing here.
 for _, m in ipairs({'bench/arb_names.tsp', 'bench/sdg_net.tsp', 'bench/bench_rec.tsp',
-                    'bench/expect.tsp', 'bench/bench_run.tsp', 'bench/bench_panel.tsp'}) do
+                    'bench/expect.tsp', 'bench/plan_rand.tsp', 'bench/plan_data.tsp',
+                    'bench/plan_gen.tsp', 'bench/bench_run.tsp', 'bench/soak_eval.tsp',
+                    'bench/bench_panel.tsp'}) do
   local chunk, err = loadfile(m)
   if chunk == nil then print('LOAD FAILED ' .. m .. ': ' .. tostring(err)); os.exit(1) end
   chunk()
@@ -1677,8 +1679,13 @@ do
   -- share the headline: FONT_MEDIUM is proportional, so padding with spaces moves a glyph ~4 px each and it
   -- sat nowhere near the right edge. One object per BUILD -- not per cell -- is the price of right
   -- alignment, and the number is pinned here because the pool is never reclaimed.
-  ck(MD.live(display.OBJ_TEXT) <= 13,
-     'and the object count is fixed -- the swipe lines cost none, the screen a bounded thirteen',
+  -- TWENTY-FOUR SINCE THE RESULT SCREEN, and still fixed rather than per cell, which is the whole
+  -- claim: thirteen on the status screen and eleven on the end-of-run screen -- a verdict, a run line,
+  -- an error line, a heading, SIX PREALLOCATED VECTOR ROWS and a comparison line. The six rows are
+  -- built empty and settext'd, so a run where sixty vectors had errors costs exactly the same as one
+  -- where none did. The block further down asserts that independently.
+  ck(MD.live(display.OBJ_TEXT) <= 24,
+     'and the object count is fixed -- the swipe lines cost none, 13 status + 11 result',
      tostring(MD.live(display.OBJ_TEXT)))
 
   -- THE DETECTOR ITSELF, FIRED ON PURPOSE. Without this the two assertions above pass just as happily
@@ -3377,6 +3384,300 @@ print('-- idle runs long enough to hold a capture window, and the window test ov
     if GEN_WINDOW_IDLE(rp, np, ph * np / 64, np / 4) then anyidle = true end
   end
   ck(not anyidle, 'so no window at any phase can be called traffic-free')
+end)()
+
+
+-- ---------------------------------------------------------------------------
+-- Startup: the key, the cover, the spinner
+-- ---------------------------------------------------------------------------
+-- These are the paths an instrument session cannot arrange on purpose. Pulling the key before launch
+-- means walking to the bench; building a screen in front of the operator is visible and not
+-- measurable by eye; and a spinner's rate limit is invisible either way.
+--
+-- THE SEMICOLON IS LOAD-BEARING: the block above ends in `end)()` and a line starting with `(` would
+-- otherwise parse as a call on its result.
+;(function()
+  -- NOTHING IS CREATED ON A SCREEN THAT IS IN FRONT. The rule the operator set for the app's own
+  -- screens, now asserted for the bench's: a create whose parent is the ACTIVE screen is the
+  -- operator watching the form assemble itself.
+  --
+  -- WRAPPED RATHER THAN READ OFF THE MOCK, because mock_display's own at-risk window measures WRITES
+  -- before a settle, which is a different hazard. This counts creates.
+  local realcreate = display.create
+  local onvisible, ncreate = 0, 0
+  display.create = function(parent, ...)
+    ncreate = ncreate + 1
+    if parent ~= display.ROOT and parent == display.active then onvisible = onvisible + 1 end
+    return realcreate(parent, ...)
+  end
+
+  MD.usb(true)
+  brun.panel_cancel()
+  -- LIVE OBJECTS, NOT MD.nobj(). nobj is the id counter and only ever rises, so a leak test against
+  -- it can never pass -- it read 490 before and 515 after a teardown that had freed everything.
+  local base = MD.live()
+  local ok = brun.panel()
+  display.create = realcreate
+
+  ck(ok == true, 'panel() comes up with a key present')
+  ck(ncreate > 15, 'and it built the screens rather than finding them', ncreate .. ' create(s)')
+  -- EXACTLY ONE, AND IT IS THE COVER'S OWN TEXT. Creating a screen makes it active and there is
+  -- nothing to hide the FIRST screen behind, so the irreducible exposure is the cover: one screen and
+  -- one line of text. Every screen after it switches back to the cover before its first child, which
+  -- is why 24 of 25 creates are invisible. Pinned at 1 rather than asserted as 0 so that adding a
+  -- second object to the cover fails here instead of being seen on the glass.
+  ck(onvisible == 1, 'only the cover\'s own text is created on a visible screen',
+     onvisible .. ' of ' .. ncreate)
+  ck(display.active == brun.pnscr, 'and it lands on the settings form')
+  -- THE PREMISE OF THE LEAK TEST BELOW. If live() were 0 here, 'frees everything' would pass against
+  -- a teardown that did nothing.
+  local built = MD.live()
+  ck(built >= base + 20, 'the startup is holding its objects before the teardown',
+     string.format('%d live, %d before', built, base))
+
+  -- EVERY SCREEN IS HANDED BACK. Four screens now, and freeing one of them would strand the rest:
+  -- the firmware keeps a display object until it is deleted and nothing can reach a handle once brun
+  -- is nil'd, which is what used to cost a power cycle every few host loads.
+  brun.panel_cancel()
+  ck(MD.live() == base, 'panel_cancel frees every object the startup built',
+     string.format('%d live before, %d after', base, MD.live()))
+  ck(brun.cvscr == nil and brun.keyscr == nil and brun.wkscr == nil and brun.pnscr == nil,
+     'and nils all four screen handles, so no stale handle can be settext into')
+
+  -- NO KEY. The app keeps its plan and its record on /usb1, so this is a refusal with two answers.
+  MD.usb(false)
+  local kok = brun.panel()
+  ck(kok == true, 'panel() still comes up with no key rather than refusing to start')
+  ck(display.active == brun.keyscr, 'and it lands on the key screen, not the form')
+  ck(string.find(MD.text(brun.key_txt) or '', 'Insert a USB key', 1, true) ~= nil,
+     'which tells the operator to insert one and press Retry',
+     tostring(MD.text(brun.key_txt)))
+
+  -- RETRY WITH THE KEY STILL OUT must look like something happened. A button that silently does
+  -- nothing is indistinguishable from a dead one, and the next move after a dead button is the power
+  -- switch.
+  brun.key_retry()
+  local t1 = MD.text(brun.key_txt) or ''
+  ck(string.find(t1, 'Still no key', 1, true) ~= nil,
+     'Retry with the key still out reports that it checked', t1)
+  ck(string.find(t1, '1 time', 1, true) ~= nil, 'and counts the attempt')
+  brun.key_retry()
+  ck(string.find(MD.text(brun.key_txt) or '', '2 time', 1, true) ~= nil,
+     'and the count moves on the second press')
+  ck(display.active == brun.keyscr, 'and it stays on the key screen')
+
+  -- RETRY WITH THE KEY IN goes on to the plan and the form.
+  MD.usb(true)
+  brun.key_retry()
+  ck(display.active == brun.pnscr, 'Retry with a key present proceeds to the form')
+
+  -- THE SPINNER. Four glyphs, and a ceiling that is a CEILING: forced ticks always paint, rate-limited
+  -- ones do not. brun.spinmin is one constant for both spinners, so this covers the status screen's
+  -- rate too.
+  ck(brun.spinmin == 0.25, 'the spinner ceiling is 4 Hz', tostring(brun.spinmin))
+  brun.wk_say('Drawing a plan on the key', '')
+  local seen = {}
+  local i
+  for i = 1, 8 do
+    brun.wk_spin(true)
+    local s = MD.text(brun.wk_t1) or ''
+    seen[string.sub(s, -1)] = true
+  end
+  ck(seen['|'] and seen['/'] and seen['-'] and seen['\\'],
+     'a forced tick cycles through all four glyphs')
+  ck(string.find(MD.text(brun.wk_t1) or '', 'Drawing a plan on the key', 1, true) ~= nil,
+     'and the message stays beside it, so the screen says what is being waited for')
+
+  -- THE RATE LIMIT, with the timer standing still: a second unforced tick inside the window must not
+  -- paint. timer.gettime is the mock's and does not advance on its own here, which is exactly the
+  -- condition that makes this a test of the ceiling and not of the clock.
+  brun.wkspint = nil
+  brun.wk_spin(true)
+  local n0 = brun.nwkspin
+  brun.wk_spin()
+  brun.wk_spin()
+  ck(brun.nwkspin == n0, 'an unforced tick inside the window does not repaint',
+     string.format('%d redraw(s) added', brun.nwkspin - n0))
+
+  brun.panel_cancel()
+  MD.usb(true)
+end)()
+
+
+-- ---------------------------------------------------------------------------
+-- The end-of-run screen: the ranking, the regression rule, and what it costs
+-- ---------------------------------------------------------------------------
+;(function()
+  MD.usb(true)
+  beval.destroy()
+  brun.panel_cancel()
+  MD.rmfile(beval.path)
+
+  -- THE RANKING IS A PRIORITY, NOT A SUM. One wrong cell outranks two hundred flagged frames: wrong
+  -- bytes are a decode that confidently lied, flagged frames are a decode that said it was unsure.
+  -- A sum would let the loudest class bury the most serious one, which is the whole reason the
+  -- operator gave the four classes in an order.
+  brun.vwrong = {va = 1, vb = 0, vc = 0, vd = 0}
+  brun.vbadb  = {va = 0, vb = 500, vc = 0, vd = 0}
+  brun.vflag  = {va = 0, vb = 0, vc = 200, vd = 0}
+  brun.vunexp = {va = 0, vb = 0, vc = 0, vd = 99}
+  local top, ntop = beval.topvec(6)
+  ck(ntop == 4, 'every vector with an error is counted', tostring(ntop))
+  ck(top[1] ~= nil and top[1].vid == 'va',
+     'one wrong cell outranks 500 bad bytes, 200 flagged and 99 refusals',
+     top[1] and top[1].vid)
+  ck(top[2] ~= nil and top[2].vid == 'vb', 'then bad bytes', top[2] and top[2].vid)
+  ck(top[3] ~= nil and top[3].vid == 'vc', 'then flagged frames', top[3] and top[3].vid)
+  ck(top[4] ~= nil and top[4].vid == 'vd', 'then unexpected refusals', top[4] and top[4].vid)
+
+  -- A CLEAN VECTOR IS NOT LISTED. Six rows padded with clean vectors reads as six problems.
+  brun.vwrong = {vq = 2}
+  brun.vbadb, brun.vflag, brun.vunexp = {}, {}, {}
+  local one, none = beval.topvec(6)
+  ck(none == 1 and table.getn(one) == 1, 'only vectors with something to report are listed',
+     tostring(none))
+
+  -- SIX AT MOST, however many there are.
+  brun.vwrong = {}
+  local i
+  for i = 1, 20 do brun.vwrong['v' .. i] = i end
+  local six, twenty = beval.topvec(6)
+  ck(table.getn(six) == 6 and twenty == 20, 'at most six are shown, and the total is reported',
+     string.format('%d shown of %d', table.getn(six), twenty))
+
+  -- ---- the regression rule ----
+  -- RATES, NEVER COUNTS. A five-lap run has five times the cells of a one-lap run, so raw totals
+  -- compare two different experiments.
+  local prev = {when = 1, tag = 'SOAK', laps = 1, cells = 1000, bad = 0, judged = 1000,
+                cmpb = 100000, badb = 100, wrong = 10, flag = 10, unexp = 10, exp = 0}
+  local big  = {when = 2, tag = 'SOAK', laps = 5, cells = 5000, bad = 0, judged = 5000,
+                cmpb = 500000, badb = 500, wrong = 50, flag = 50, unexp = 50, exp = 0}
+  local n = beval.regress(big, prev)
+  ck(n == 0, 'a run five times as long with five times the errors has NOT regressed', tostring(n))
+
+  local worse = {when = 3, tag = 'SOAK', laps = 1, cells = 1000, bad = 0, judged = 1000,
+                 cmpb = 100000, badb = 100, wrong = 40, flag = 10, unexp = 10, exp = 0}
+  local nw, wl = beval.regress(worse, prev)
+  ck(nw == 1, 'four times the wrong-cell RATE is one regression', tostring(nw))
+  ck(wl[1] ~= nil and string.find(wl[1], 'wrong', 1, true) == 1,
+     'and it names the class that moved', wl[1])
+
+  -- THE ABSOLUTE FLOOR. At 40 cells one extra bad cell is a 2.5 % rate against 0.5 %, a 400 % rise --
+  -- and it is one cell. absmin is what stops a short run reporting that as a regression.
+  local tiny = {when = 4, tag = 'SOAK', laps = 1, cells = 40, bad = 0, judged = 40,
+                cmpb = 4000, badb = 4, wrong = 1, flag = 0, unexp = 0, exp = 0}
+  local nt = beval.regress(tiny, prev)
+  ck(nt == 0, 'one extra cell on a 40-cell run is not a regression', tostring(nt))
+
+  -- NO PREVIOUS RUN IS ITS OWN ANSWER, not 'no regressions'.
+  local nn = beval.regress(big, nil)
+  ck(nn == 0, 'with no previous run there is nothing to compare')
+
+  -- ---- the screen ----
+  brun.ncell, brun.nbad, brun.npayj = 1000, 12, 900
+  brun.ncmpb, brun.nbadb, brun.nwrong, brun.nframe = 100000, 100, 10, 7
+  brun.nunexp, brun.nexp, brun.iter, brun.tag = 4, 3, 2, 'SOAK'
+  brun.vwrong = {v98d = 4, v47 = 1}
+  brun.vbadb, brun.vflag, brun.vunexp = {v98d = 120}, {v47 = 2}, {v61 = 1}
+  ck(beval.build() == true, 'the result screen builds')
+  local texts = MD.live(display.OBJ_TEXT)
+  ck(beval.show() == true, 'and fills before it switches')
+  ck(display.active == beval.scr, 'and it is the screen in front when a run ends')
+  ck(MD.live(display.OBJ_TEXT) == texts,
+     'showing it creates NOTHING -- the six rows are preallocated and settext only',
+     string.format('%d texts before, %d after', texts, MD.live(display.OBJ_TEXT)))
+  ck(string.find(MD.text(beval.t_verdict) or '', 'NO PREVIOUS RUN', 1, true) ~= nil,
+     'the first run on a fresh key says so rather than claiming green',
+     MD.text(beval.t_verdict))
+  ck(string.find(MD.text(beval.t_row[1]) or '', 'v98d', 1, true) ~= nil,
+     'the worst vector leads the table', MD.text(beval.t_row[1]))
+  ck(string.find(MD.text(beval.t_cmp) or '', 'judge_bench', 1, true) ~= nil,
+     'and the screen says the host judge is the verdict', MD.text(beval.t_cmp))
+
+  -- A SECOND RUN NOW HAS A BASELINE: the first run's line is on the key.
+  local p2 = beval.prev(beval.path)
+  ck(p2 ~= nil and p2.cells == 1000, 'the run wrote its summary to the key for the next one',
+     p2 and tostring(p2.cells))
+  brun.nwrong = 10
+  ck(beval.show() == true, 'a second run reads that baseline')
+  ck(string.find(MD.text(beval.t_verdict) or '', 'NO REGRESSIONS', 1, true) ~= nil,
+     'and an identical run reports NO REGRESSIONS in green', MD.text(beval.t_verdict))
+  -- THE COLOUR IS READ OFF THE OBJECT, because 'green' is the operator's actual requirement here and
+  -- a verdict that says NO REGRESSIONS in red would satisfy every text assertion above.
+  ck(MD.obj(beval.t_verdict).color == sdec.ui_c_sn_ok,
+     'in the same green the app uses for all clear',
+     tostring(MD.obj(beval.t_verdict).color))
+
+  brun.nwrong = 400
+  ck(beval.show() == true, 'a third run with a worse rate')
+  ck(string.find(MD.text(beval.t_verdict) or '', 'REGRESSION', 1, true) ~= nil
+     and string.find(MD.text(beval.t_verdict) or '', 'NO REGRESSIONS', 1, true) == nil,
+     'reports the regression instead', MD.text(beval.t_verdict))
+
+  -- ---- Back, and nothing deleted until the app exits ----
+  -- The operator's rule of 2026-10-22. It is asserted by COUNTING LIVE OBJECTS across the things that
+  -- used to delete: a second run, which rebuilt the status screen, and the result screen, which was
+  -- built and destroyed around each use.
+  MD.usb(true)
+  beval.destroy()
+  brun.panel_cancel()
+  ck(brun.panel() == true, 'the app launches')
+  local after_launch = MD.live()
+  ck(beval.scr ~= nil, 'the result screen is built AT LAUNCH, not when a run ends')
+
+  -- A second build is a no-op rather than a rebuild.
+  ck(beval.build() == true, 'building it again succeeds')
+  ck(MD.live() == after_launch, 'and creates nothing -- it is built once',
+     string.format('%d live, was %d', MD.live(), after_launch))
+
+  -- The status screen, twice, with different tags.
+  brun.tag = 'soak'
+  ck(brun.ui_build() == true, 'the status screen builds')
+  local with_status = MD.live()
+  local scr1 = brun.ui.scr
+  brun.tag = 'smoke'
+  ck(brun.ui_build() == true, 'and builds again for a second run')
+  ck(brun.ui.scr == scr1, 'reusing the SAME screen rather than deleting it',
+     tostring(brun.ui.scr) .. ' vs ' .. tostring(scr1))
+  ck(MD.live() == with_status, 'so a second run costs no display object',
+     string.format('%d live, was %d', MD.live(), with_status))
+  ck(MD.obj(scr1).title == 'SD SMOKE - TRIGGER TO STOP',
+     'and the title is retitled to the new run', tostring(MD.obj(scr1).title))
+  ck(string.find(MD.text(brun.ui.health) or '', 'SMOKE HEALTH', 1, true) ~= nil,
+     'and the headline is back to its placeholder, not the last run\'s verdict',
+     MD.text(brun.ui.health))
+
+  -- A LONG TAG TRUNCATES RATHER THAN FAILING TO BUILD. The create sits inside ui_build's pcall, so an
+  -- over-long title used to mean no status screen at all, silently, for the whole run.
+  brun.tag = 'stopfile-ignored'
+  ck(brun.ui_build() == true, 'a 16-character tag still builds a screen')
+  ck(string.len(MD.obj(brun.ui.scr).title) <= 31,
+     'with a title inside the 31-character ceiling',
+     string.format('%d: %s', string.len(MD.obj(brun.ui.scr).title),
+                   MD.obj(brun.ui.scr).title))
+  ck(string.find(MD.obj(brun.ui.scr).title, 'TRIGGER TO STOP', 1, true) ~= nil,
+     'and the stop instruction is what survived the truncation',
+     MD.obj(brun.ui.scr).title)
+
+  -- Back goes to the form and leaves the result screen standing.
+  brun.tag = 'soak'
+  ck(beval.show() == true, 'the result screen shows')
+  local before_back = MD.live()
+  ck(beval.back() == true, 'Back returns to the form')
+  ck(display.active == brun.pnscr, 'and the form is the screen in front')
+  ck(beval.scr ~= nil and MD.live() == before_back,
+     'and the result screen is still there, not deleted',
+     string.format('%d live, was %d', MD.live(), before_back))
+  ck(beval.show() == true, 'so it can be shown again without rebuilding')
+  ck(MD.live() == before_back, 'still creating nothing')
+
+  -- AND THE APP EXITING frees all five screens. This is the one thing that deletes.
+  brun.panel_cancel()
+  ck(beval.scr == nil, 'End App frees the result screen too')
+  ck(MD.live() == 0, 'and every object the app built', string.format('%d left', MD.live()))
+
+  beval.destroy()
+  brun.panel_cancel()
 end)()
 
 
