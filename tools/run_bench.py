@@ -36,6 +36,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import instruments as I                                                  # noqa: E402
 import lint_tsp                                                          # noqa: E402
 import soakplan as SP                                                    # noqa: E402
+import strip_tsp                                                         # noqa: E402
 from dmmrun import DMM                                                   # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -133,9 +134,22 @@ def load_modules(d, paths, timeout=300):
     module body never prints. Ten modules is fifty minutes of waiting for output that was never coming.
     One script with the sentinel appended loads in about 25 s.
     """
-    body = ['-- ==== %s ====\n%s' % (p, open(os.path.join(ROOT, p)).read()) for p in paths]
-    src = PRELUDE + '\n'.join(body) + "\nprint('===DONE===')"
-    print('  %d bytes / %d lines' % (len(src), src.count('\n') + 1))
+    # COMMENTS ARE STRIPPED BEFORE THE PUSH, on the operator's instruction of 2026-10-22, and the
+    # measurement is why: this tree comments heavily and the raw load had reached 944 kB over 18 268
+    # lines -- 1.84x the packaged archive -- all of it pushed with no flow control. A load that size
+    # never returned its sentinel and the instrument then reset the connection; the last one that
+    # worked was 16 334 lines. Comments cannot reach a compiled chunk, so they are the one half of the
+    # payload that can go without changing what runs. Measured: 942 kB to 388 kB, 41 %.
+    #
+    # LINE NUMBERS SURVIVE, which is the property that makes this safe to diagnose. A chunk that will
+    # not compile posts its reason WITH A LINE NUMBER and prints nothing down the socket, so that
+    # number is the only evidence there is; strip_tsp turns a comment-only line into an EMPTY line
+    # rather than deleting it, so the count is unchanged and a reported line still names real source.
+    raw = ['-- ==== %s ====\n%s' % (p, open(os.path.join(ROOT, p)).read()) for p in paths]
+    rawsrc = PRELUDE + '\n'.join(raw) + "\nprint('===DONE===')"
+    src, linemap = strip_tsp.squeeze(rawsrc)
+    print('  %d bytes / %d lines  (was %d bytes / %d lines; comments and blank lines removed)'
+          % (len(src), src.count('\n') + 1, len(rawsrc), rawsrc.count('\n') + 1))
     t0 = time.time()
     out = d.load_script('sdecbench', src, timeout=timeout)
     print('  %.1f s' % (time.time() - t0))
@@ -151,6 +165,15 @@ def load_modules(d, paths, timeout=300):
     ev = [m for m in d.errors() if m]
     for m in ev:
         print('  EVENT: %s' % m)
+        # THE LINE NUMBER IS AGAINST THE SQUEEZED TEXT, not the files. Comments and blank lines are
+        # removed before the push, so a compile error names a line of something nobody has on disk --
+        # which is worse than no number at all. strip_tsp keeps the map; this is the translation.
+        mm = re.search(r'line (\d+)', m)
+        if mm is not None:
+            orig = strip_tsp.where(linemap, int(mm.group(1)))
+            if orig is not None:
+                print('         ^ squeezed line %s is original line %d of the concatenation'
+                      % (mm.group(1), orig))
     # AND WHAT ACTUALLY ARRIVED, MEASURED. scriptVar.source hands back the stored text, so the bytes on
     # the instrument can be compared with the bytes sent. This exists because a build that a real Lua
     # 5.0.2 parses cleanly -- checked, not assumed -- was still rejected by the instrument as a syntax
@@ -695,12 +718,13 @@ def main():
         print('plan: %d line(s) from %s (%d data rows, declared %d)'
               % (len(rows), a.plan_file, ndata, ndecl))
     elif a.push_plan:
+        last = max(a.iteration, a.iteration + max(a.iterations, 1) - 1)
         argv = ['python3', os.path.join(ROOT, 'tools', 'soakplan.py'), '--emit-csv',
                 '--iteration', str(a.iteration)]
         # THE ITERATION COUNT BELONGS ON BOTH BRANCHES. soakplan honours --iterations with --spec, but
         # it was only ever passed on the full-plan side -- so a targeted run asked brun.soak(N) for N
         # laps while the key held rows for one, and every lap after the first had nothing to read.
-        argv += ['--iterations', str(max(a.iteration, a.iteration + max(a.iterations, 1) - 1))]
+        argv += ['--iterations', str(last)]
         if a.spec:
             argv += ['--spec', a.spec]
         else:
@@ -708,6 +732,43 @@ def main():
             if a.random_per_lap is not None:
                 argv += ['--random-per-lap', str(a.random_per_lap)]
         text = subprocess.check_output(argv, cwd=ROOT).decode()
+        # THE INSTRUMENT'S OWN DRAW IS THE AUTHORITY, AND THE HOST'S IS THE ORACLE. bench/plan_gen.tsp
+        # is what the bench app uses when a key has no plan, so it is the implementation that ships --
+        # and a key that could receive a plan from EITHER draw is the thing to rule out. So the bytes
+        # pushed are the Lua draw's, checked against soakplan.py's before they are sent.
+        #
+        # VERIFIED RATHER THAN DELEGATED, deliberately. Having soakplan.py simply call the Lua draw
+        # would remove the duplication and also the proof: tools/test_plan_gen.lua would be comparing
+        # Lua against Lua, which is a test that cannot fail. Two implementations and one comparison is
+        # what makes either of them trustworthy, so the comparison moves to the moment it matters most.
+        #
+        # --spec IS STILL THE HOST'S. The Lua draw has no spec grammar, so a targeted push is Python's
+        # alone and says so. Teaching plan_gen the grammar is what would close that gap.
+        if a.spec:
+            print('plan: spec %s -- drawn by soakplan.py, which is the only side with the '
+                  'spec grammar' % a.spec)
+        else:
+            lua_argv = ['lua', os.path.join(ROOT, 'tools', 'plan_emit.lua'),
+                        str(a.iteration), str(last)]
+            if a.random_per_lap is not None:
+                lua_argv += ['--random-per-lap', str(a.random_per_lap)]
+            if a.skip_vectors == '':
+                lua_argv += ['--no-skip']
+            ltext = subprocess.check_output(lua_argv, cwd=ROOT).decode()
+            # The provenance line is deliberately different -- a reader has to be able to tell which
+            # draw made a plan -- so it is the one line excluded from the comparison.
+            pbody = text.split('\n', 1)[1]
+            lbody = ltext.split('\n', 1)[1]
+            if pbody != lbody:
+                raise SystemExit(
+                    'REFUSING to push: the instrument\'s draw and soakplan.py disagree.\n'
+                    '  python %d line(s), lua %d line(s)\n'
+                    '  Run: lua tools/test_plan_gen.lua\n'
+                    '  A plan keys every cell off a vector index, so two draws that differ anywhere '
+                    'differ almost everywhere and both still look reasonable.'
+                    % (len(pbody.split('\n')), len(lbody.split('\n'))))
+            text = ltext
+            print('plan: the instrument\'s own draw, verified against soakplan.py byte for byte')
         rows = [ln for ln in text.split('\n') if ln.strip()]
         print('plan: %d line(s)%s' % (len(rows), (' spec %s' % a.spec) if a.spec else ''))
 

@@ -793,7 +793,16 @@ function file.read(h, act)
   -- directory exists without risking an event.
   local body = r.listing or CONTENT[r.path] or ''
   local len = string.len(body)
-  if r.pos > len then return nil end        -- position is at end of file
+  -- A READ PAST THE END POSTS 2201 AND THE FIRMWARE SHOWS IT AS A POPUP. Measured on the instrument
+  -- 2026-10-22: four of them in one app launch, from bplan.check walking a plan to EOF to count its
+  -- rows. This mock used to return nil silently, which is the whole reason that went unnoticed
+  -- offline -- the same class of gap as settext-on-a-screen above.
+  --
+  -- WHY IT MATTERS RATHER THAN BEING COSMETIC: bench_run's nextrow bounds itself on the plan's own
+  -- '# rows=' header specifically to avoid this, since one popup per pass over a fortnight plan is a
+  -- dialog the operator has to dismiss on an unattended run. Any caller that reads to EOF on purpose
+  -- has to expect the event.
+  if r.pos > len then post(2201); return nil end        -- position is at end of file
   if act == file.READ_ALL then
     local all = string.sub(body, r.pos)
     r.pos = len + 1

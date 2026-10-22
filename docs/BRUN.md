@@ -1,6 +1,6 @@
 # Serial Brun — starting a bench soak from the front panel
 
-**Ian Ameline** · version 1.75 · MIT licence
+**Ian Ameline** · version 1.76 · MIT licence
 
 `Serial_brun.tspa` puts the bench engine behind a settings screen on the instrument, so a lap can be
 started with nobody connected. It is the same `brun.soak()` the host drives — a second door into one
@@ -26,7 +26,7 @@ dead one, and the next move after a dead button is the power switch.
 
 ### The plan — and it draws its own now
 
-Until version 1.75 this app could not draw a plan, and this document argued it should never learn:
+Until version 1.76 this app could not draw a plan, and this document argued it should never learn:
 re-deriving the draw on the instrument would be a second implementation of the one thing every lap is
 compared against, since the amplitude, the offset and the wait are all keyed off a vector's index, so
 a plan drawn twice is two different experiments wearing one name.
@@ -150,8 +150,37 @@ with `acq: line is idle (no transitions)`, and only a power cycle clears it. Thi
 times on this bench; the last was 705 cells of 705. The host guard that catches it lives in
 `run_bench.py`, so the panel carries its own.
 
-**Stopping** is the front-panel **TRIGGER** key. The run ends after the current waveform and closes
-the record, which is what commits it on a FAT key. Cutting the power costs at most the last row.
+**Stopping** is the **`Abort`** check box on the status screen. Tick it and the run ends after the
+current waveform and closes the record, which is what commits it on a FAT key. Cutting the power
+costs at most the last row.
+
+The front-panel **TRIGGER** key also stops a run, but **only one started from the host.** That is
+not a preference, it is what the firmware does, and it is worth stating plainly because the panel
+spent a while promising a control that could not work:
+
+| the run was started by | the TRIGGER key | a button's handler | the `Abort` box |
+|---|---|---|---|
+| the host, or any top-level call | **latches** — seen at iterations 23, 59 and 11 of three polled loops, with a trigger model loaded and with none at all | never dispatched | read every cell |
+| a press on the glass, so a display handler | **never** | never dispatched | **read every cell** |
+
+Measured on 1.7.17a, 2026-10-22, three arms each. While Lua is executing the firmware *queues*
+front-panel input — the glass clicks and nothing happens — and it routes the TRIGGER key to the
+trigger subsystem only when the running code is not inside a display handler. A panel-started soak
+always is, which is why three presses against one did nothing, and why no `OBJ_BUTTON` can abort a
+run either. An edit object is different because the **firmware owns its value** and keeps updating it
+from the glass regardless: an `OBJ_EDIT_OPTION` was seen changing at iteration 38 of 160 with no
+event posted, and the check box used here is the same mechanism.
+
+`display.waitevent` is not an alternative. It wedges this firmware at a timeout of `0.001`, not only
+at the documented `0`, and the only way out is the power.
+
+Two things make the abort prompt rather than merely possible. `brun.holdslice` is 2 s, because that
+interval is also how often a parked run re-reads its stop controls — at 10 s an abort took up to ten
+seconds to be noticed. And `bsdg.ask` polls an optional `bsdg.giveup` hook about twice a second
+inside its own 50 ms loop, so a stop does not queue behind a wedged generator's 5 s timeout, several
+of which fall in every cell. `brun.soak` points that hook at `brun.ab_hit` and deliberately **not**
+at `brun.stopasked`: reading the box is idempotent, where polling the TRIGGER key's blender latch
+clears it, so the other choice would silently eat a press between cells.
 
 ## The status screen
 
@@ -159,9 +188,11 @@ the record, which is what commits it on a FAT key. Cutting the power costs at mo
 lap shows — the title changes with the run's tag, so a smoke reads `SD SMOKE` and a soak `SD SOAK`.
 Nine lines, and every one of them answers a different question.
 
-The title is **`SD <TAG> - TRIGGER TO STOP`**. The stop instruction lives there because the title is
-the one part of the screen that never scrolls and never redraws; the body's 58 characters are all
-needed for what changes.
+The title is **`SD <TAG>`**, and the tag has all 31 characters to itself. It used to carry a stop
+instruction — first `TRIGGER TO STOP`, which was true only for a host-started run, then
+`ABORT ON SCREEN`, which was true but redundant once the `Abort` box carried its own label where the
+finger is. The tag is what a title is for here: it is the one thing that tells a smoke from a soak
+from a resumed run at a glance.
 
 | line | reads | what it is for |
 |---|---|---|
@@ -258,8 +289,9 @@ the normal way to work. The app exiting is the only thing that deletes, and it f
 That change found a defect it was not looking for: the status screen's title is created inside a
 `pcall`, and a tag long enough to push the title past the firmware's 31-character limit made the
 *whole status screen* fail to build, silently, for the length of the run. The tag is truncated to fit
-now, and `TRIGGER TO STOP` is what survives — the tag's first characters already tell a smoke from a
-soak, and the stop instruction is the one thing a title must not lose.
+now. It was then truncated to leave room for a stop instruction as well; since that phrase has gone
+from the title the tag gets the full 31, so it takes a much longer tag to reach the ceiling — which
+is why the test that guards this uses one well past it rather than one that merely nears it.
 
 **It is still not the oracle, and it says so on the screen.** These are the engine's own counters,
 computed cell by cell with the thresholds in `bench_run.tsp`; the host judge weighs coverage floors

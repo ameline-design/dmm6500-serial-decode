@@ -6,18 +6,28 @@ timer blended in as blender 2's stimulus 2, fired 8 s into an 8 kB run, ends it 
 keeps every byte decoded. What does not work is a FINGER -- pressed 20 % into a 32 kB decode, the run
 finishes 'full' with the latch EMPTY afterwards, so the press never reaches the blender.
 
-WHAT IS STILL UNKNOWN, AND IT IS THE WHOLE POINT OF THIS FILE. Two measurements disagree and neither
-covers the case that matters:
+SETTLED, 2026-10-22, AND THE ANSWER WAS THE EXECUTION CONTEXT. The table this file was written to
+fill now reads:
 
   bench_cancelkey.py   key press during a HOST-initiated busy loop        -> LATCHED (twice)
   the owner's runs     key press during a PANEL-initiated recording       -> nothing
-  this file            key press during a HOST-initiated recording        -> ?
+  a polled host loop   key press, no trigger model loaded at all          -> LATCHED at iteration 59
+  a polled host loop   key press, model parked and RUNNING                -> LATCHED at iteration 11
+  a handler-run loop   key press, NOTIFY model loaded                     -> nothing, NO event posted
 
-If this LATCHES, the blocker is the display-handler execution context: work started from a button's
-event string cannot see the key, and the design rule becomes "do not do long work inside a handler".
-If it does NOT latch, the recording state itself suppresses the key -- the trigger model's aftermath --
-and bench_cancelkey's busy loop differs for some other reason. Either answer decides whether an
-interruptible recording is reachable at all on this firmware.
+So the recording state does not suppress the key and neither does the trigger model: the key latches
+from a top-level or host-initiated loop with a model or without one, and never from a loop started by
+a display handler. While Lua executes, the firmware QUEUES front-panel input -- the glass clicks and
+nothing is dispatched -- and it routes the TRIGGER key to the trigger subsystem only when the running
+code is not inside a handler. A press made while the interpreter was idle posts 2710 'no block number
+1 found' if no model is loaded, which is how the model was briefly suspected.
+
+THE DESIGN RULE IS THEREFORE 'DO NOT RELY ON THE KEY FROM A HANDLER', and the bench app does not: its
+stop control is an OBJ_EDIT_CHECK whose value the FIRMWARE maintains from the glass while Lua runs,
+polled once per cell. docs/BRUN.md carries the table and the reasoning. display.waitevent is not an
+alternative -- it wedges this firmware at a timeout of 0.001, not only at the documented 0.
+
+This file is still the way to re-measure the key itself after a firmware update.
 
 IT DOES NOT NEED PERFECT TIMING. The run is ~20 s at 19200 baud and the poll granularity is about a
 second, so any press in the middle third is decisive. The script says when to press and waits.

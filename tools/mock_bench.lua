@@ -43,6 +43,16 @@ function timer.gettime() return os.clock() - MOCKB.t0 end
 -- eventlog
 -- ---------------------------------------------------------------------------
 eventlog = {}
+-- THE SEVERITY CONSTANTS SURVIVE THE REPLACEMENT. This table deliberately replaces mock_display's
+-- event QUEUE with a counter -- the run's watchdog reads getcount() and nothing else -- but it was
+-- dropping eventlog.SEV_ERROR along with it, and that constant is what sdec.unmute_events() writes
+-- into localnode.showevents. Offline the unmute therefore stored NIL, so every assertion about the
+-- mute window compared nil against nil and passed while testing nothing. Same numbers as
+-- mock_display.lua and the instrument.
+eventlog.SEV_ERROR = 1
+eventlog.SEV_WARN  = 2
+eventlog.SEV_INFO  = 4
+eventlog.SEV_ALL   = 7
 function eventlog.clear() MOCKB.events = 0 end
 function eventlog.getcount() return MOCKB.events end
 function eventlog.next() return nil end

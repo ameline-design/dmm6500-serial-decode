@@ -1800,13 +1800,23 @@ do
   brun.ui_destroy()
   local live0 = MD.live(display.OBJ_TEXT)
   local ok = brun.ui_build()
-  ck(ok == true and brun.ui ~= nil and brun.ui.n == 14,
-     'the screen is fourteen objects, built once -- thirteen plus the liveness spinner', string.format('ok=%s n=%s', tostring(ok),
-                                                             tostring(brun.ui and brun.ui.n)))
+  -- DERIVED FROM brun.msgn, NOT A LITERAL. The screen is the screen, eight fixed lines plus the
+  -- spinner, the log ring and the Abort field; writing 14 here meant that moving one log row to make
+  -- space for the field failed this test for the layout rather than for the invariant it guards,
+  -- which is that the screen is built ONCE and never grows per cell.
+  local wantn = 9 + brun.msgn + 1      -- screen + 8 lines + msgn log rows + the Abort box
+  ck(ok == true and brun.ui ~= nil and brun.ui.n == wantn,
+     'the screen is built once: eight lines, the log ring and the Abort box',
+     string.format('ok=%s n=%s want=%d', tostring(ok),
+                   tostring(brun.ui and brun.ui.n), wantn))
   brun.soak(1, 'uiscreen')
-  ck(MD.live(display.OBJ_TEXT) - live0 == 13,
+  -- TEXT OBJECTS ONLY, so the Abort field is not in this count -- it is an OBJ_EDIT_OPTION.
+  -- TEXT OBJECTS ONLY, so the Abort box is not in this count -- it is an OBJ_EDIT_CHECK, and the
+  -- firmware draws its label itself.
+  ck(MD.live(display.OBJ_TEXT) - live0 == 8 + brun.msgn,
      'and a whole run adds no more of them -- settext only, per cell',
-     string.format('%d text object(s)', MD.live(display.OBJ_TEXT) - live0))
+     string.format('%d text object(s), want %d', MD.live(display.OBJ_TEXT) - live0,
+                   8 + brun.msgn))
 
   -- EVERY FIELD THE OPERATOR ASKED FOR, and n-of-m rather than a bare index: 'cell 412' says nothing
   -- about how much is left, which is the question a soak screen exists to answer.
@@ -2312,7 +2322,8 @@ do
      'and teardown frees every object with no refused deletes',
      string.format('live=%d delfails=%d', MD.live(display.OBJ_TEXT) - live0,
                    (sdec.delfails or 0) - nfail0))
-  ck(brun.ui_build() == true and brun.ui.n == 14, 'and it can be built again afterwards')
+  ck(brun.ui_build() == true and brun.ui.n == 9 + brun.msgn + 1,
+     'and it can be built again afterwards')
   brun.ui_destroy()
 end
 
@@ -3046,8 +3057,7 @@ do
   ck(brun.tagword() == 'SOAK', 'and an empty tag reads as SOAK rather than as nothing')
 
   local tags = {'soak', 'smoke', 'resumed'}
-  local want = {'SD SOAK - TRIGGER TO STOP', 'SD SMOKE - TRIGGER TO STOP',
-                'SD RESUMED - TRIGGER TO STOP'}
+  local want = {'SD SOAK', 'SD SMOKE', 'SD RESUMED'}
   local k
   for k = 1, 3 do
     brun.tag = tags[k]
@@ -3499,6 +3509,27 @@ end)()
   ck(brun.nwkspin == n0, 'an unforced tick inside the window does not repaint',
      string.format('%d redraw(s) added', brun.nwkspin - n0))
 
+  -- THE 4 Hz CEILING IS A CEILING, asserted the hard way: the operator's concern is that status
+  -- updates must not burn CPU, so what matters is the number of PAINTS over a long draw, not that the
+  -- rate limit exists. The mock's timer does not advance on its own, so a thousand progress calls
+  -- against a still clock must paint at most once -- which is the strongest form of the claim
+  -- available offline.
+  brun.wk_say('Drawing a plan on the key', '')
+  brun.wkspint = nil
+  brun.wk_spin(true)                       -- opens the window
+  local paints = brun.nwkspin
+  local i
+  for i = 1, 1000 do
+    if math.mod(i, brun.progevery) == 0 then brun.wk_spin() end
+  end
+  ck(brun.nwkspin == paints,
+     'a thousand progress calls inside one window paint NOTHING further',
+     string.format('%d paint(s) added', brun.nwkspin - paints))
+  ck(brun.spinmin == 0.25 and brun.progevery >= 2,
+     'the ceiling is 4 Hz and most rows never reach the clock',
+     string.format('spinmin %s, 1 clock read per %d row(s)',
+                   tostring(brun.spinmin), brun.progevery))
+
   brun.panel_cancel()
   MD.usb(true)
 end)()
@@ -3512,6 +3543,7 @@ end)()
   beval.destroy()
   brun.panel_cancel()
   MD.rmfile(beval.path)
+  MD.rmfile(beval.lastpath)
 
   -- THE RANKING IS A PRIORITY, NOT A SUM. One wrong cell outranks two hundred flagged frames: wrong
   -- bytes are a decode that confidently lied, flagged frames are a decode that said it was unsure.
@@ -3589,15 +3621,70 @@ end)()
   ck(string.find(MD.text(beval.t_verdict) or '', 'NO PREVIOUS RUN', 1, true) ~= nil,
      'the first run on a fresh key says so rather than claiming green',
      MD.text(beval.t_verdict))
+
+  -- THE SPINNER DURING THE ANALYSIS. Operator's rule: a screen that does not change cannot be told
+  -- from a wedge. show() puts the screen up with 'Analysing the run' FIRST and ticks through the
+  -- steps, so the count of redraws over one show() has to be nonzero -- and it is counted after the
+  -- rate limit, so this is paint and not calls.
+  ck(beval.nspin > 0, 'the analysis ticked a spinner while it worked',
+     beval.nspin .. ' redraw(s)')
+  beval.spint = nil
+  local n0 = beval.nspin
+  beval.tick(true)
+  local t1 = MD.text(beval.t_verdict) or ''
+  ck(beval.nspin == n0 + 1 and string.find(t1, 'Analysing', 1, true) ~= nil,
+     'a forced tick repaints the line it shares with the verdict', t1)
+  local glyphs = {}
+  for i = 1, 8 do
+    beval.spint = nil
+    beval.tick(true)
+    local s = MD.text(beval.t_verdict) or ''
+    glyphs[string.sub(s, -1)] = true
+  end
+  ck(glyphs['|'] and glyphs['/'] and glyphs['-'] and glyphs['\\'],
+     'and it cycles the same four glyphs the other screens use')
+  local n1 = beval.nspin
+  beval.tick()
+  ck(beval.nspin == n1, 'while an unforced tick inside the 4 Hz window does not repaint')
+  -- AND THE VERDICT REPLACES IT. The spinner shares the verdict line, so a show() that left the
+  -- spinner text behind would report 'Analysing the run' as the result of the run.
+  ck(beval.show() == true, 'a second show replaces the spinner with a verdict')
+  ck(string.find(MD.text(beval.t_verdict) or '', 'Analysing', 1, true) == nil,
+     'so the finished screen never still says Analysing', MD.text(beval.t_verdict))
   ck(string.find(MD.text(beval.t_row[1]) or '', 'v98d', 1, true) ~= nil,
      'the worst vector leads the table', MD.text(beval.t_row[1]))
   ck(string.find(MD.text(beval.t_cmp) or '', 'judge_bench', 1, true) ~= nil,
      'and the screen says the host judge is the verdict', MD.text(beval.t_cmp))
 
   -- A SECOND RUN NOW HAS A BASELINE: the first run's line is on the key.
-  local p2 = beval.prev(beval.path)
+  local p2 = beval.prev()
   ck(p2 ~= nil and p2.cells == 1000, 'the run wrote its summary to the key for the next one',
      p2 and tostring(p2.cells))
+  -- AND IT READ WITHOUT RUNNING OFF THE END, which is the whole reason EVALLAST.CSV exists. prev
+  -- used to walk EVAL.CSV for its last line, and the read that ENDS such a walk is a read at the end
+  -- of the file: 2201, as a popup nothing can mute. The operator met it on the second abort of a
+  -- session and again on the fifth, coming and going with the file's length, 2026-10-22.
+  -- MD.fevent_count, NOT eventlog.getcount. mock_bench replaces the whole eventlog table with its
+  -- own counter, so getcount() cannot see what mock_display's file mock posts -- it answered 0
+  -- whether the bug was there or not, and the control below is what caught that.
+  MD.forget_fevents()
+  local p3 = beval.prev()
+  ck(p3 ~= nil and MD.fevent_count(2201) == 0,
+     'and reading it costs no event -- nothing reads past the end of a file',
+     string.format('prev=%s 2201s=%s', tostring(p3 ~= nil), tostring(MD.fevent_count(2201))))
+  -- THE CHECK ABOVE IS NOT VACUOUS, and this is the positive control that says so: the walk it
+  -- replaced posts one. Without this, a mock that stopped modelling the event -- or a prev() that
+  -- silently read nothing at all -- would turn the assertion above into a constant.
+  MD.forget_fevents()
+  do
+    local fh = file.open(beval.path, file.MODE_READ)
+    local ln = file.read(fh, file.READ_LINE)
+    while ln ~= nil and ln ~= '' do ln = file.read(fh, file.READ_LINE) end
+    file.close(fh)
+  end
+  ck(MD.fevent_count(2201) > 0,
+     'while walking the history to its end, as prev used to, posts 2201',
+     tostring(MD.fevent_count(2201)))
   brun.nwrong = 10
   ck(beval.show() == true, 'a second run reads that baseline')
   ck(string.find(MD.text(beval.t_verdict) or '', 'NO REGRESSIONS', 1, true) ~= nil,
@@ -3641,7 +3728,7 @@ end)()
      tostring(brun.ui.scr) .. ' vs ' .. tostring(scr1))
   ck(MD.live() == with_status, 'so a second run costs no display object',
      string.format('%d live, was %d', MD.live(), with_status))
-  ck(MD.obj(scr1).title == 'SD SMOKE - TRIGGER TO STOP',
+  ck(MD.obj(scr1).title == 'SD SMOKE',
      'and the title is retitled to the new run', tostring(MD.obj(scr1).title))
   ck(string.find(MD.text(brun.ui.health) or '', 'SMOKE HEALTH', 1, true) ~= nil,
      'and the headline is back to its placeholder, not the last run\'s verdict',
@@ -3649,14 +3736,19 @@ end)()
 
   -- A LONG TAG TRUNCATES RATHER THAN FAILING TO BUILD. The create sits inside ui_build's pcall, so an
   -- over-long title used to mean no status screen at all, silently, for the whole run.
-  brun.tag = 'stopfile-ignored'
-  ck(brun.ui_build() == true, 'a 16-character tag still builds a screen')
+  --
+  -- THE TAG NOW HAS THE WHOLE TITLE TO ITSELF, so reaching the ceiling takes a longer tag than it
+  -- did when a stop instruction was eating eighteen of the thirty-one characters. The tag here is
+  -- deliberately past the ceiling rather than near it: a tag that happens to fit asserts nothing.
+  brun.tag = 'stopfile-ignored-and-then-some'
+  ck(brun.ui_build() == true, 'an over-long tag still builds a screen')
   ck(string.len(MD.obj(brun.ui.scr).title) <= 31,
      'with a title inside the 31-character ceiling',
      string.format('%d: %s', string.len(MD.obj(brun.ui.scr).title),
                    MD.obj(brun.ui.scr).title))
-  ck(string.find(MD.obj(brun.ui.scr).title, 'TRIGGER TO STOP', 1, true) ~= nil,
-     'and the stop instruction is what survived the truncation',
+  ck(string.sub(MD.obj(brun.ui.scr).title, 1, 3) == 'SD ' and
+     string.len(MD.obj(brun.ui.scr).title) == 31,
+     'and it is the tag that was cut, filling the title exactly',
      MD.obj(brun.ui.scr).title)
 
   -- Back goes to the form and leaves the result screen standing.
@@ -3680,6 +3772,192 @@ end)()
   brun.panel_cancel()
 end)()
 
+
+-- ---------------------------------------------------------------------------
+-- The lap size the screen shows must be the FILTERED one
+-- ---------------------------------------------------------------------------
+;(function()
+  MD.usb(true)
+  -- NO FILTERS: the plan's own header is the answer and nothing is counted.
+  brun.filt_baudlo, brun.filt_baudhi = nil, nil
+  brun.filt_stdonly, brun.filt_interstit, brun.filt_vset = nil, nil, nil
+  ck(brun.filt_any() == false, 'with no filter set, filt_any is false')
+  brun.filt_vset = 'normal'
+  ck(brun.filt_any() == true,
+     'but the panel default of Vector Set Normal IS a filter -- the easy one to miss')
+  brun.filt_vset = nil
+  brun.filt_stdonly = true
+  ck(brun.filt_any() == true, 'and Standard only is one')
+
+  -- A REAL PLAN, written through the mock, then counted under the operator's own selection.
+  brun.filt_stdonly, brun.filt_vset, brun.filt_baudlo = nil, nil, nil
+  -- THE WHOLE VECTOR SET, not a subset: a 6-vector plan does not contain v98a or v99a, so the
+  -- filtered count came back 0 of 216 -- which passed a `fewer than` assertion and would have passed
+  -- it just as well with the filter broken. Zero is the answer a broken filter gives.
+  bplan.emit(brun.planpath, {first = 1})
+  local all = brun.count_wanted(1)
+  ck(all ~= nil and all > 1000, 'count_wanted counts every cell when nothing filters',
+     tostring(all))
+  -- Start gap + standard only + 1200 Bd floor: the selection that reported 1512 on the glass.
+  brun.filt_vset, brun.filt_stdonly, brun.filt_baudlo = 'startgap', true, 1200
+  local few = brun.count_wanted(1)
+  ck(few ~= nil and few > 0 and few < all / 10,
+     'and a few dozen under Start gap at standard rates from 1200 Bd',
+     string.format('%s of %s', tostring(few), tostring(all)))
+  -- THE NUMBER ITSELF: two start-gap vectors times the standard rates at or above 1200 Bd. Asserted
+  -- as a range rather than a literal so a rate added to the ladder does not fail this.
+  ck(few >= 30 and few <= 44, 'which is two vectors times the standard rates above the floor',
+     tostring(few))
+  -- AND IT DOES NOT DISTURB THE RUN'S OWN READER, which owns brun.pfh.
+  ck(brun.pfh == nil, 'and it closed its handle rather than leaving the run a shared position')
+
+  brun.filt_vset, brun.filt_stdonly, brun.filt_baudlo = nil, nil, nil
+  brun.percell_filt = nil
+end)()
+
+-- ============================================================================
+print('')
+-- The semicolon is load-bearing: without it Lua reads the print and the following
+-- (function() ... end)() as one call and the suite dies with 'attempt to call a nil value'.
+print('-- the mute covers the whole run, the result screen included --');
+-- ============================================================================
+-- THE POPUP THE OPERATOR SAW, 2026-10-22: 'when the lap is finished an error popup appears for a
+-- fraction of a second'. unmute_events ran BEFORE brun.announce and beval.show, so everything the
+-- run does on its way out -- the announce, EVAL.CSV read, EVAL.CSV appended -- ran with popups back
+-- on, and a real event reached the glass and was then painted over by the changescreen to the result
+-- screen. Nothing asserted the mute window at all, which is how it came to move.
+(function()
+  MOCKB_SDG({})
+  bsdg.reset()
+  writeplan({'1,1,v77,' .. ARB.v77 .. ',9600,std,5.0000,0.0000,96000,0.000'})
+  local realshow, atshow = beval.show, nil
+  beval.show = function()
+    atshow = MD.showevents()
+    return realshow()
+  end
+  -- THE END ANNOUNCE, NAMED BY ITS TEXT. announce is called several times a run and the first call
+  -- would answer a different question; '^END' is the one that runs after the loop.
+  local realann, atann = brun.announce, nil
+  brun.announce = function(s)
+    if atann == nil and string.find(tostring(s), '^END') ~= nil then atann = MD.showevents() end
+    return realann(s)
+  end
+  localnode.showevents = eventlog.SEV_ERROR
+  brun.soak(1, 'mute')
+  beval.show, brun.announce = realshow, realann
+  ck(atshow == 0, 'the result screen is built with events still muted', tostring(atshow))
+  ck(atann == 0, 'and so is the END announce', tostring(atann))
+  -- AND STILL RESTORED. A run that ends must not leave the next operator's real errors silent, so
+  -- the fix is the ORDER and not the removal.
+  ck(MD.showevents() == eventlog.SEV_ERROR,
+     'and SEV_ERROR is restored on the way out, so real errors are seen again',
+     tostring(MD.showevents()))
+end)()
+
+-- ============================================================================
+print('')
+-- The semicolon is load-bearing -- see the note above the previous section.
+print('-- the Abort field stops a run, which is the only panel control that can --');
+-- ============================================================================
+-- THE MEASURED REASON THIS EXISTS. On 1.7.17a a touch press is never dispatched to Lua while a run
+-- executes, and the TRIGGER key reaches a blender only from a run that was NOT started by a display
+-- handler -- so a panel-started soak had no stop control at all and the operator pressed TRIGGER
+-- three times against a run that could not see it. An OBJ_EDIT_OPTION is firmware-owned and was
+-- measured changing mid-run, so the run polls it. Setting the value here is exactly what the glass
+-- does to it.
+(function()
+  MOCKB_SDG({})
+  bsdg.reset()
+  -- THE LAP SIZE THE PREVIOUS SECTION LEFT BEHIND. count_wanted emits a real 1512-row plan, and its
+  -- header sets brun.percell -- so a four-row test plan inherited a declared lap of 1512 and the run
+  -- ended after one cell. Reset here rather than there: a section that depends on run state should
+  -- state what it needs instead of trusting the section above it.
+  brun.percell, brun.maxcell, brun.stopevery = 0, 0, 0
+  -- EVERY FIELD brun.wanted READS, not the three the section above happened to set: filt_baudhi and
+  -- filt_interstit were left out of the first attempt and three of the four rows were filtered away,
+  -- which looked exactly like the abort firing on cell 1.
+  brun.filt_vset, brun.filt_stdonly = nil, nil
+  brun.filt_baudlo, brun.filt_baudhi, brun.filt_interstit = nil, nil, nil
+  brun.percell_filt, brun.nfilt = nil, 0
+  writeplan({'1,1,v77,' .. ARB.v77 .. ',9600,std,5.0000,0.0000,96000,0.000',
+             '1,2,v77,' .. ARB.v77 .. ',19200,std,5.0000,0.0000,192000,0.000',
+             '1,3,v77,' .. ARB.v77 .. ',4800,std,5.0000,0.0000,48000,0.000',
+             '1,4,v77,' .. ARB.v77 .. ',2400,std,5.0000,0.0000,24000,0.000'})
+  -- THE OPERATOR'S TOUCH, ON THE SECOND CELL. ui_show runs once a cell, so this is the hook that
+  -- puts the field into 'Yes' part way through a lap rather than before it starts.
+  local realshow, nshown = brun.ui_show, 0
+  brun.ui_show = function(c, arb)
+    nshown = nshown + 1
+    if nshown == 2 and brun.ui ~= nil and brun.ui.abort ~= nil then
+      display.setvalue(brun.ui.abort, display.ON)
+    end
+    return realshow(c, arb)
+  end
+  local ok, why = brun.soak(1, 'abortfield')
+  brun.ui_show = realshow
+  ck(why == 'Abort set on the panel', 'the run stops with the field as the reason',
+     string.format('%s  (nfilt=%s)', tostring(why), tostring(brun.nfilt)))
+  -- AND IT STOPPED EARLY, which is the point: a reason reported by a run that finished all four
+  -- cells anyway would be a stop control that does not stop anything.
+  ck(brun.ncell ~= nil and brun.ncell < 4, 'and it stopped before the end of the lap',
+     string.format('%s of 4 cell(s)', tostring(brun.ncell)))
+  ck(ok == true, 'and the run still returns cleanly, so the record is closed', tostring(ok))
+
+  -- RESET AT THE START OF THE NEXT RUN. The screen is built once and reused, so a field left on Yes
+  -- must not stop the following run at cell 1 -- which is what ab_hit's 'anything but No' would do.
+  display.setvalue(brun.ui.abort, display.ON)
+  writeplan({'1,1,v77,' .. ARB.v77 .. ',9600,std,5.0000,0.0000,96000,0.000',
+             '1,2,v77,' .. ARB.v77 .. ',19200,std,5.0000,0.0000,192000,0.000'})
+  local ok2, why2 = brun.soak(1, 'abortreset')
+  ck(why2 ~= 'Abort set on the panel',
+     'a field left on Yes does not stop the NEXT run, because the run resets it',
+     tostring(why2))
+  ck(brun.ncell == 2, 'which ran its whole lap', tostring(brun.ncell))
+  ck(ok2 == true and display.getvalue(brun.ui.abort) == display.OFF,
+     'and the box reads clear while the run is going',
+     tostring(display.getvalue(brun.ui.abort)))
+end)()
+
+
+-- ============================================================================
+print('')
+-- The semicolon is load-bearing -- see the note on the mute section.
+print('-- a wedged generator must not delay the abort --');
+-- ============================================================================
+-- MEASURED BY THE OPERATOR, 2026-10-22: with the SDG wedged the panel abort 'worked but VERY
+-- slowly'. A wedged generator accepts writes and answers nothing, so every query spends the whole
+-- bsdg.timeout and there are several per cell -- and the Abort box could only be read between them.
+-- bsdg.ask now asks an optional hook about twice a second inside its own 50 ms poll loop.
+(function()
+  MOCKB_SDG({wedged = true})
+  bsdg.reset()
+  bsdg.timeout = 1
+  -- THE CONTROL FIRST, so 'abandoned' below is known to be the hook's doing and not what a wedged
+  -- ask says anyway.
+  local rep0, why0 = bsdg.ask('*IDN?')
+  ck(rep0 == nil and string.find(tostring(why0), 'within', 1, true) ~= nil,
+     'with no hook set, the wait runs to the timeout and reports one', tostring(why0))
+  local n1 = bsdg.nfail
+  ck(n1 >= 1, 'which DOES count a generator failure', tostring(n1))
+  bsdg.giveup = function() return true end
+  local rep, why = bsdg.ask('*IDN?')
+  bsdg.giveup = nil
+  ck(rep == nil and string.find(tostring(why), 'abandoned', 1, true) ~= nil,
+     'while the hook abandons it, so a stop does not queue behind the timeout', tostring(why))
+  -- NOT A GENERATOR FAULT. bsdg.nfail drives brun.maxsdgfail, so counting an operator's abort here
+  -- would let repeated aborts push a later run towards giving up on a generator that is fine.
+  -- ZERO, NOT 'unchanged'. bsdg.cmd clears nfail on a successful write, so the count entering the
+  -- abandoned ask is already 0 and 'did not increase' would pass even if this path did increment.
+  -- The pair above and below is the real assertion: a timeout leaves 1, giving up leaves 0.
+  ck(bsdg.nfail == 0, 'and giving up adds none, where the timeout above added one',
+     string.format('%s then %s', tostring(n1), tostring(bsdg.nfail)))
+  -- AND IT IS WIRED UP: brun.soak points the hook at the Abort box, not at stopasked -- reading the
+  -- box is idempotent where polling the TRIGGER key's blender latch CLEARS it, so the wrong choice
+  -- here would silently eat the operator's press between cells.
+  ck(brun.ab_hit ~= nil and brun.stopasked ~= nil,
+     'and both stop readers exist for brun.soak to choose between')
+  bsdg.timeout = 5
+end)()
 
 print('')
 print(string.format('%d passed, %d failed', pass, fail))

@@ -25,6 +25,17 @@ beval = beval or {}
 -- The previous runs' summaries, on the key beside the record. 8.3, like everything this firmware's
 -- file API is given: docs/MEASUREMENTS.md records that it posts events rather than failing a long name.
 beval.path = beval.path or '/usb1/SERDEC/EVAL.CSV'
+-- THE LAST RUN'S LINE, ON ITS OWN, AND THE REASON IS AN UNMUTABLE POPUP. beval.prev used to walk
+-- every line of EVAL.CSV to find the last one, and the read that ENDS that walk is a read at the end
+-- of the file -- which posts 2201 'file read error' as a dialog nothing can suppress. The operator
+-- met it on the second abort of a session and not the first, because the first run has no file to
+-- read yet; whether it fires at all depends on where the final line ends, so the third abort passed
+-- again. One line, one read, no walk: this file is REWRITTEN each run and read with a single
+-- READ_LINE, so nothing ever reads past an end.
+--
+-- EVAL.CSV IS STILL WRITTEN, and still appended to, so the history is not lost -- it is simply never
+-- read by the app. 8.3 name: 'EVALLAST' is exactly eight characters, which the FAT directory needs.
+beval.lastpath = beval.lastpath or '/usb1/SERDEC/EVALLAST.CSV'
 
 beval.cols = 'when,tag,laps,cells,bad,judged,cmpb,badb,wrong,flag,unexp,exp'
 
@@ -92,18 +103,23 @@ end
 -- than a single value -- which costs nothing and means a regression can be looked at against more
 -- than one predecessor later. Read before this run's line is written, never after.
 function beval.prev(path)
-  path = path or beval.path
+  path = path or beval.lastpath
+  -- fs.is_file BEFORE THE OPEN, AND IT IS NOT A DIRECTORY LISTING. Opening a file that is not there
+  -- posts 2205, and a directory READ_ALL to check first is slow AND posts 2201 -- the two things
+  -- this function used to choose between. fs.is_file is a per-path probe that posts NEITHER
+  -- (tsp/usb_log.tsp:267, measured), so the first run of a session costs no event at all now.
+  if fs == nil or fs.is_file == nil then return nil end
+  if not fs.is_file(path) then return nil end
   local fh = file.open(path, file.MODE_READ)
   if fh == nil then return nil end
-  local last = nil
-  local ln = file.read(fh, file.READ_LINE)
-  while ln ~= nil and ln ~= '' do
-    ln = string.gsub(ln, '[\r\n]', '')
-    if ln ~= '' and string.sub(ln, 1, 1) ~= '#' and ln ~= beval.cols then last = ln end
-    ln = file.read(fh, file.READ_LINE)
-  end
+  -- EXACTLY ONE READ. The file holds one data line and nothing else, so there is no walk to the end
+  -- and therefore no read at an end -- which is the whole point of its existing. A second READ_LINE
+  -- here would reintroduce the 2201 this was written to remove.
+  local last = file.read(fh, file.READ_LINE)
   file.close(fh)
   if last == nil then return nil end
+  last = string.gsub(last, '[\r\n]', '')
+  if last == '' or string.sub(last, 1, 1) == '#' or last == beval.cols then return nil end
   -- brun.split is the engine's own CSV splitter; a second one here would be a second thing to get
   -- wrong about quoting.
   local f, nf = brun.split(last)
@@ -120,23 +136,37 @@ end
 function beval.save(path, s)
   path = path or beval.path
   if s == nil then return false end
-  -- THE PROBE HANDLE IS CLOSED. Written as a bare `file.open(...) == nil` first, which leaked a
-  -- descriptor per finished run -- invisible on a host test and a real cost on an instrument that
-  -- runs for a fortnight without a restart.
-  local probe = file.open(path, file.MODE_READ)
-  local fresh = (probe == nil)
-  if probe ~= nil then file.close(probe) end
+  -- fs.is_file RATHER THAN A PROBE OPEN. The probe was an open-for-read purely to find out whether
+  -- the file existed, which posts 2205 on the run that creates it -- an unmutable popup for a
+  -- question that fs.is_file answers for free and without an event. It also had to be closed again,
+  -- and the version before that leaked a descriptor per finished run.
+  local fresh = true
+  if fs ~= nil and fs.is_file ~= nil then fresh = not fs.is_file(path) end
   local fh = file.open(path, file.MODE_APPEND)
   if fh == nil then return false end
   if fresh then
     file.write(fh, '# one line per finished soak, written by bench/soak_eval.tsp\n')
     file.write(fh, beval.cols .. '\n')
   end
-  file.write(fh, string.format('%d,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n',
-                               s.when, tostring(s.tag), s.laps, s.cells, s.bad, s.judged,
-                               s.cmpb, s.badb, s.wrong, s.flag, s.unexp, s.exp))
+  local line = string.format('%d,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n',
+                             s.when, tostring(s.tag), s.laps, s.cells, s.bad, s.judged,
+                             s.cmpb, s.badb, s.wrong, s.flag, s.unexp, s.exp)
+  file.write(fh, line)
   file.flush(fh)
   file.close(fh)
+  -- AND THE SAME LINE ON ITS OWN, REWRITTEN. This is the file the next run READS, and it holds one
+  -- line so that reading it is a single READ_LINE with no read at an end -- see beval.lastpath. The
+  -- history above is append-only and never read back.
+  --
+  -- WRITTEN SECOND, so a key pulled between the two costs the comparison and not the history: a
+  -- missing EVALLAST.CSV reads as 'no previous run', which is the honest answer, while a missing
+  -- EVAL.CSV would lose every run before this one.
+  local lh = file.open(beval.lastpath, file.MODE_WRITE)
+  if lh ~= nil then
+    file.write(lh, line)
+    file.flush(lh)
+    file.close(lh)
+  end
   return true
 end
 
@@ -248,6 +278,32 @@ beval.rows   = 6
 beval.y0     = 150
 beval.dy     = 26
 
+-- THE SPINNER FOR THIS SCREEN. Same four glyphs and the same 4 Hz ceiling as everything else --
+-- brun.spin() and brun.spinmin, not a third rate -- and its OWN last-tick field, because the status
+-- screen's brun.spint and the plan draw's brun.wkspint belong to those screens and sharing one would
+-- make each suppress the others.
+--
+-- THE TIMER IS READ AND NEVER CLEARED, the standing rule for it: the global timer carries a cell's
+-- phase timing and a recording's absorb, and clearing it would make an old absorb look current.
+beval.spint  = nil
+beval.nspin  = 0
+
+function beval.tick(force)
+  if beval.t_verdict == nil or brun == nil or brun.spin == nil then return false end
+  local t = nil
+  if timer ~= nil and timer.gettime ~= nil then t = timer.gettime() end
+  if t ~= nil and force ~= true then
+    if beval.spint ~= nil and t >= beval.spint and t - beval.spint < (brun.spinmin or 0.25) then
+      return false
+    end
+  end
+  if t ~= nil then beval.spint = t end
+  display.settext(beval.t_verdict, 'Analysing the run...   ' .. brun.spin())
+  -- Counted after the rate limit, so this is redraws and not calls.
+  beval.nspin = beval.nspin + 1
+  return true
+end
+
 function beval.destroy()
   if beval.scr == nil then return false end
   display.changescreen(display.SCREEN_HOME)
@@ -350,10 +406,43 @@ end
 -- them, after the run, with no second chance.
 function beval.show()
   if beval.scr == nil then return false end
+  -- A 2205 CANNOT BE MUTED -- operator, 2026-10-22 -- so beval.prev no longer OPENS a file it has not
+  -- seen listed. The mute stays only because the event log is still better left alone across a
+  -- screen that writes to the key; it is not what keeps the popup away.
+  local mine = false
+  if brun ~= nil and brun.mute_push ~= nil then mine = brun.mute_push() end
+  -- THE SCREEN GOES UP FIRST, WITH A SPINNER, and only then is the work done. Operator's rule of
+  -- 2026-10-22: a long task on this instrument must show that it is alive, because a screen that does
+  -- not change is indistinguishable from a wedge -- and the only recovery from a suspected wedge is a
+  -- human cutting the power.
+  --
+  -- THIS DOES NOT BREAK fill-then-switch. That rule is about CREATING objects on a visible screen,
+  -- which still never happens: every object here was created at launch. What changes is that the
+  -- screen is switched to before its text is final, which is the whole point -- the operator sees
+  -- 'Analysing the run' moving rather than a blank panel.
+  display.settext(beval.t_verdict, 'Analysing the run...')
+  display.setcolor(beval.t_verdict, (sdec ~= nil and sdec.ui_c_warn) or 0xFFC000)
+  local i
+  for i = 1, beval.rows do display.settext(beval.t_row[i], '') end
+  display.settext(beval.t_head, '')
+  display.settext(beval.t_cmp, '')
+  display.settext(beval.t_run, '')
+  display.settext(beval.t_err, '')
+  display.changescreen(beval.scr)
+  beval.tick(true)
+
   local cur = beval.summary()
-  if cur == nil then return false end
-  local prev = beval.prev(beval.path)
+  if cur == nil then
+    if brun ~= nil and brun.mute_pop ~= nil then brun.mute_pop(mine) end
+    return false
+  end
+  beval.tick()
+  -- ONE LINE OFF THE KEY, from EVALLAST.CSV rather than the whole of EVAL.CSV. The walk this used
+  -- to do ended in a read at the end of the file, which posts an unmutable 2201 -- see beval.lastpath.
+  local prev = beval.prev()
+  beval.tick()
   local nreg, lines = beval.regress(cur, prev)
+  beval.tick()
 
   local green = (sdec ~= nil and sdec.ui_c_sn_ok) or 0x80FF80
   local red   = (sdec ~= nil and sdec.ui_c_err) or 0xFF6060
@@ -380,7 +469,9 @@ function beval.show()
                   string.format('wrong %d  bad %d/%d  flag %d  unexp %d  (allowed %d)',
                                 cur.wrong, cur.badb, cur.cmpb, cur.flag, cur.unexp, cur.exp))
 
+  beval.tick()
   local top, ntop = beval.topvec(beval.rows)
+  beval.tick()
   if ntop == 0 then
     display.settext(beval.t_head, 'No vector produced an unexpected error.')
   else
@@ -420,5 +511,6 @@ function beval.show()
   -- THE RECORD OF THIS RUN GOES DOWN LAST, after the comparison has read the previous one.
   beval.save(beval.path, cur)
   display.changescreen(beval.scr)
+  if brun ~= nil and brun.mute_pop ~= nil then brun.mute_pop(mine) end
   return true
 end

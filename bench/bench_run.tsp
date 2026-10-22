@@ -58,7 +58,11 @@ brun.maxsdgfail = brun.maxsdgfail or 20
 -- holdsecs is the retry period. HELD IN SLICES, not one delay(), so the panel keeps changing and the
 -- TRIGGER key still works -- without it the only way out of a hold is the power. 0 parks instead.
 brun.holdsecs   = brun.holdsecs or 300      -- seconds between retries; 0 parks, and nothing asks for that
-brun.holdslice  = brun.holdslice or 10     -- how long a single delay() may be, so the panel stays alive
+-- TWO SECONDS, NOT TEN. This is also the interval at which a hold polls the stop controls, so ten
+-- made a panel abort take up to ten seconds to be noticed while the run sat waiting for a generator
+-- -- measured by the operator 2026-10-22 as 'the abort worked but VERY slowly'. brun.holdwait floors
+-- a slice at one second regardless, so this cannot be driven down to a spin.
+brun.holdslice  = brun.holdslice or 2     -- how long a single delay() may be, so the panel stays alive
 brun.holdmax    = brun.holdmax or 0          -- give up after this many seconds of holding; 0 = never
 brun.nhold      = 0                            -- retries attempted this run
 brun.heldsecs   = 0                         -- seconds spent holding this run
@@ -298,6 +302,13 @@ function brun.planopen()
   if fh == nil then return false, 'cannot open ' .. brun.planpath end
   brun.pfh      = fh
   brun.planread = 0
+  -- AND THE DECLARED COUNT, which only planread used to be reset beside. brun.planrows is set ONLY
+  -- from a '# ... rows=N' header, so a plan without one inherited the last plan's count -- and
+  -- nextrow stops at planread >= planrows. A four-row plan opened after a one-row plan therefore ran
+  -- exactly one cell and reported the lap complete, with nothing filtered and no error anywhere.
+  -- Found by a test that read as the new Abort field firing on cell 1. Zero means 'read to EOF',
+  -- which is the right default for a plan that declares nothing.
+  brun.planrows = 0
   return true
 end
 
@@ -349,6 +360,82 @@ function brun.nextrow()
   return {iter = tonumber(f[1]), cell = tonumber(f[2]), vid = f[3], arb = f[4],
           baud = tonumber(f[5]), kind = f[6], amp = tonumber(f[7]), ofst = tonumber(f[8]),
           srate = tonumber(f[9]), wait = tonumber(f[10])}
+end
+
+-- Is any cell filter in force? -> true/false
+--
+-- THE VECTOR SET COUNTS, and it is the easy one to forget: the panel DEFAULTS Vector Set to Normal,
+-- which excludes the gap vectors -- so a form-started run with nothing else touched is already
+-- filtered and its lap size is not the plan's.
+function brun.filt_any()
+  if brun.filt_baudlo ~= nil or brun.filt_baudhi ~= nil then return true end
+  if brun.filt_stdonly then return true end
+  if brun.filt_interstit ~= nil or brun.filt_vset ~= nil then return true end
+  return false
+end
+
+-- How many cells of one iteration SURVIVE THE FILTERS. -> count, or nil if the plan cannot be read.
+--
+-- WHY IT EXISTS. The lap size on the screen was brun.percell, straight from the plan's own
+-- '# cells-per-lap=' header -- the UNFILTERED size. So a lap narrowed to Start gap at standard rates
+-- from 1200 Bd showed 'Cell n/1512' and projected hours against 1512, when the selection runs 38
+-- cells. The operator read 1512 and reasonably concluded the filters had done nothing. They had: the
+-- reporting had not. The projection is the number used to decide whether to wait up for a run, so
+-- being wrong by 40x is worse than cosmetic.
+--
+-- ITS OWN HANDLE, saved and restored around brun.pfh like brun.pn_plan does: the run's reader owns
+-- that handle and a second reader sharing it would move the position under the loop.
+--
+-- BOUNDED, so it posts no 2201: nextrow stops at the declared row count and never reads past the
+-- last row. One pass over 18 144 rows is about 3 s, once, at the start of a run.
+--
+-- ONE ITERATION, not the file. Laps can differ slightly -- each draws its own interstitial -- so this
+-- is the first lap's filtered size and is exact whenever the rate filters exclude drawn rates, which
+-- 'Standard only' does.
+function brun.count_wanted(iter)
+  -- ENUMERATED, NOT READ. The first version of this streamed the plan -- up to 18 144 rows through
+  -- file.read and brun.split -- inside the Run Soak handler, with no yield and no UI. On the
+  -- instrument that froze the whole box: no repaint, no front-panel input, and the LXI web interface
+  -- stopped answering too, so the button looked dead. It was a fix for a wrong denominator that
+  -- created exactly the failure it was fixing the report of.
+  --
+  -- THE SAME ARITHMETIC THE DRAW USES, so it needs no file at all: the cells of a lap are the vectors
+  -- of its order crossed with the rates of its rate list, less the ones whose sample rate exceeds the
+  -- generator's ceiling -- which is bplan.lapsize's own loop, with brun.wanted applied. Costs a
+  -- handful of MT19937 seedings rather than thousands of firmware calls.
+  --
+  -- IT AGREES WITH THE PLAN BECAUSE THE PLAN IS DRAWN BY THAT ARITHMETIC, host or instrument -- the
+  -- two are held byte-identical by tools/test_plan_gen.lua.
+  if bplan == nil or bplan.rates == nil or bplan.span == nil then return nil end
+  -- NO RATE DRAW WHEN THE DRAWN RATES ARE FILTERED OUT ANYWAY. bplan.rates seeds mt19937 once per gap
+  -- -- about a dozen seedings, ~2 s on the instrument -- purely to produce interstitials that
+  -- filt_stdonly then discards. The standard ladder needs no draw at all: it is sdec.stdbaud.
+  local rates, nr
+  if brun.filt_stdonly then
+    local std, ns = bplan.stdrates()
+    rates, nr = {}, ns
+    local i
+    for i = 1, ns do rates[i] = {baud = std[i], kind = 'std'} end
+  else
+    rates, nr = bplan.rates(iter)
+  end
+  local order, nv = bplan.order(iter, bplan.skipfor(iter, nil, nil), nil)
+  local n, vi = 0, nil
+  for vi = 1, nv do
+    local vid = order[vi]
+    local sp  = bplan.span[vid]
+    if sp ~= nil and sp.exp == 1 then
+      local ri
+      for ri = 1, nr do
+        if bplan.iround(rates[ri].baud * sp.spb) <= bplan.c.srmax then
+          if brun.wanted({vid = vid, baud = rates[ri].baud, kind = rates[ri].kind}) then
+            n = n + 1
+          end
+        end
+      end
+    end
+  end
+  return n
 end
 
 -- ---------------------------------------------------------------------------
@@ -833,7 +920,13 @@ brun.ui        = nil
 --
 -- ONLY STATE CHANGES ARE PUSHED, not one line per cell. A log that repeats 'generator missed 1 cell' for
 -- four hundred cells has thrown away the one thing a log is for -- knowing WHEN something started.
-brun.msgn      = brun.msgn or 5
+-- THREE, NOT FIVE, AND THE TWO ROWS PAID FOR THE ABORT FIELD. The log is what says WHEN something
+-- started on a soak nobody is standing at, so this is a real loss -- but a run that cannot be
+-- stopped from the panel is worse, and the Abort field needs 54 px of the 420 the content area
+-- allows. The log rows sit at 228 + (n-1)*34 with the error count behind them, so five rows put the
+-- field past the bottom of the glass. Settable: a host-driven soak has the TRIGGER key, which does
+-- work in that context, and can raise this before brun.ui_build().
+brun.msgn      = brun.msgn or 3
 brun.msgs      = nil          -- oldest first; the newest is at the bottom of the screen
 brun.lastmsg   = nil       -- so an unchanged state is not pushed again
 brun.lastshape = nil     -- the same state with a different count in it, ditto
@@ -983,9 +1076,17 @@ end
 brun.titlemax = brun.titlemax or 31
 
 function brun.ui_titletext()
-  local head, tail = 'SD ', ' - TRIGGER TO STOP'
-  local room = brun.titlemax - string.len(head) - string.len(tail)
-  return head .. brun.fit(brun.tagword(), room) .. tail
+  -- NO STOP INSTRUCTION IN THE TITLE ANY MORE. It said TRIGGER TO STOP, which was true only for a
+  -- host-initiated run -- measured 2026-10-22, the TRIGGER key never reaches a blender from a run
+  -- started by a panel button, so for the operator at the instrument it named a control that did
+  -- nothing, and they pressed it three times. It then said ABORT ON SCREEN, which was true but
+  -- redundant: the Abort box carries its own label where the finger is, so the title was spending a
+  -- third of its 31 characters pointing at something already visible.
+  --
+  -- WHICH GIVES THE TAG THE WHOLE TITLE, and the tag is what a title is for here: it is the one
+  -- thing that tells a smoke from a soak from a resumed run at a glance.
+  local head = 'SD '
+  return head .. brun.fit(brun.tagword(), brun.titlemax - string.len(head))
 end
 
 -- Retitle the status screen in place. display.settext ON A SCREEN sets its title -- serial_ui.tsp does
@@ -1046,6 +1147,12 @@ function brun.ui_build()
   if brun.ui ~= nil and brun.ui.scr ~= nil then
     brun.ui_title()
     brun.ui_reset()
+    -- AND SHOW IT. This function never switched to its own screen: CREATING a screen makes it the
+    -- active one, so the status screen came up as a side effect of being built. Build-once removed
+    -- the create and therefore the switch -- so a second run in one session ran correctly with the
+    -- SETTINGS FORM still on the glass. Measured on the instrument 2026-10-22: the generator was
+    -- clicking through cells while the panel showed the form and the Run Soak button looked dead.
+    display.changescreen(brun.ui.scr)
     return true
   end
   if display == nil or display.create == nil then return false end
@@ -1109,6 +1216,40 @@ function brun.ui_build()
       u.msg[mk] = add(create(u.scr, display.OBJ_TEXT, 12, 228 + (mk - 1) * 34, '',
                              brun.c_lab, small, left))
     end
+    -- THE ONE STOP CONTROL THAT WORKS FROM THE PANEL, and it is an EDIT FIELD rather than a button
+    -- for a measured reason. On 1.7.17a a touch press is never dispatched to Lua while a run
+    -- executes -- the glass clicks and the handler does not run -- so no OBJ_BUTTON can abort a
+    -- soak, and the TRIGGER key reaches the trigger subsystem only when the running Lua is NOT
+    -- inside a display handler, which a panel-started run always is. All of that was measured on
+    -- 2026-10-22, three arms each.
+    --
+    -- AN EDIT FIELD IS DIFFERENT because the FIRMWARE owns its value: the form already reads its
+    -- fields back with display.getvalue (bench/bench_panel.tsp:420) rather than being handed
+    -- presses. Measured the same day, inside a handler-run loop: the field was changed on the glass
+    -- and the loop saw it at iteration 38 of 160, with ZERO events posted. So the run polls it.
+    --
+    -- 54 px OF PITCH, which is what the options form allows per field (pn_geom().dy), and that is
+    -- what brun.msgn had to give up two rows for -- see its own note.
+    -- A CHECK BOX LABELLED 'Abort', NOT AN OPTION FIELD. Operator's instruction of 2026-10-22, and
+    -- it is a point about affordance rather than taste: an OBJ_EDIT_OPTION always displays the
+    -- option currently SELECTED, so while a run is going it can only ever read 'No' or 'Continue' --
+    -- and nobody looking for a way to stop a soak will tap a control that says Continue. A check box
+    -- shows its LABEL beside the box, so this one reads 'Abort' the whole time it is waiting to be
+    -- used, and one tap arms it. It also opens no dialog, which removes the Yes/No/Cancel wording
+    -- problem at the root instead of renaming it.
+    -- WHERE A CHECK BOX PUTS ITS TEXT, measured on the glass 2026-10-22 with four boxes at x=12,
+    -- 200, 400 and 600: the LABEL goes above and to the right of the object, and the DESCRIPTION
+    -- goes below it. Neither is clipped to the object's own width, so both run off the right edge if
+    -- there is not room, and at x=12 -- hard against the left edge -- there was nowhere for the
+    -- label at all: the one control that stops a soak rendered as a bare X in a small button. The
+    -- first fix attempted here was a text object beside it, which was solving the wrong problem.
+    -- The label was never ignored, it was off the glass.
+    --
+    -- SO THE DESCRIPTION IS SHORT. 'stop this run at the end of the cell' reached the edge and was
+    -- clipped mid-word to 'stop this run at the end of the', which is worse than saying less. The
+    -- end-of-cell detail belongs in docs/BRUN.md, not in a caption that cannot hold it.
+    u.abort = add(create(u.scr, display.OBJ_EDIT_CHECK, 130, 228 + brun.msgn * 34 + 34,
+                         'Abort', 'Stop this run', display.OFF))
   end)
   if not ok then
     brun.ui = u                    -- so ui_destroy frees whatever did get created
@@ -1664,7 +1805,10 @@ function brun.ui_show(c, arb)
   local vid      = tostring(c.vid or '?')
   -- FOUR NUMBERS, AND NONE OF THEM IS brun.planrows. planrows is the whole FILE -- 279 930 for a 210-lap
   -- plan -- so using it here pins the lap percentage at 0 %. The lap size is brun.percell.
+  -- THE FILTERED LAP SIZE WHEN THERE IS ONE, because that is the number of cells this run will
+  -- actually do. brun.percell is the plan's own unfiltered size and is the fallback.
   local nlap     = brun.percell
+  if brun.percell_filt ~= nil and brun.percell_filt > 0 then nlap = brun.percell_filt end
   if nlap <= 0 then nlap = brun.perlap_guess() end
   -- n/m RATHER THAN 'n of m', ON BOTH LINES. Four times shows what it buys: at FONT_MEDIUM the glass holds
   -- 58 characters, MEDIUM is the largest font the firmware has, and the layout with ' of ' spelled out
@@ -2172,6 +2316,55 @@ function brun.stopkey_hit()
   return hit == true
 end
 
+-- ---------------------------------------------------------------------------
+-- The stop control that works from the PANEL: the Abort field on the status screen
+-- ---------------------------------------------------------------------------
+-- WHY A FIELD AND NOT THE KEY OR A BUTTON. Measured on 1.7.17a, 2026-10-22, three arms each:
+--
+--   a touch press             never dispatched to Lua while a run executes; the glass clicks and
+--                             the handler does not run, in a top-level loop or a handler-run one
+--   the TRIGGER key           latches a blender from a top-level or host-initiated loop (iterations
+--                             23, 59 and 11 in three runs, with and without a trigger model) and
+--                             NEVER from a loop started by a display handler
+--   an OBJ_EDIT_OPTION        the firmware owns the value and updates it from the glass WHILE Lua
+--                             runs in a handler -- seen at iteration 38 of 160, zero events posted
+--
+-- A panel-started soak runs inside Run Soak's handler, so the key cannot stop it and a button
+-- cannot either. The field can, because nothing has to be dispatched: the run just reads it.
+--
+-- ANYTHING BUT display.OFF IS AN ABORT, rather than testing for ON. A box somebody left ticked then
+-- stops the next run immediately instead of being a stop control that silently does nothing, and
+-- brun.ab_reset clears it at the start of every run so that cannot happen by accident.
+--
+-- display.OFF AND NOT 0. A check object's value is display.ON / display.OFF, and whether those are
+-- numbers or userdata on this firmware is not something this has to know -- comparing against the
+-- constant is right either way.
+function brun.ab_reset()
+  if brun.ui == nil or brun.ui.abort == nil then return false end
+  display.setvalue(brun.ui.abort, display.OFF)
+  return true
+end
+
+-- -> true when the operator has set it. NIL-CHECKED, NOT pcall'd: the only way getvalue fails is a
+-- nil handle, which is the screen having been built without the field, and that reads as "no abort
+-- asked for" -- the run's own bounds still end it.
+function brun.ab_hit()
+  if brun.ui == nil or brun.ui.abort == nil then return false end
+  local v = display.getvalue(brun.ui.abort)
+  if v == nil then return false end
+  return v ~= display.OFF
+end
+
+-- EITHER CONTROL, ONE ANSWER, so the two poll sites do not have to know which context they are in.
+-- The key is read FIRST and unconditionally: cancel_pressed auto-resets on read, so skipping it
+-- when the field has already fired would leave a press latched for the next run.
+function brun.stopasked()
+  local key = (brun.keyarmed and brun.stopkey_hit())
+  if key then return true, 'TRIGGER Pressed' end
+  if brun.ab_hit() then return true, 'Abort set on the panel' end
+  return false, nil
+end
+
 -- ONE HOLD, USED BY EVERY FAULT THAT WAITS. -> true to retry, false to stop -- and the only two things
 -- that answer false are the TRIGGER key and brun.holdmax, which is to say: the operator, or a bound a test
 -- asked for. Shared rather than copied because the interruptible-slice logic is the part that must not
@@ -2195,14 +2388,16 @@ function brun.holdwait(what)
     brun.holddelay(slice)
     waited        = waited + slice
     brun.heldsecs = brun.heldsecs + slice
-    -- THE KEY STILL WORKS DURING A HOLD. The latch is firmware, so a press lands whatever the
-    -- interpreter is doing, and this is the only way out that closes the record.
-    if brun.keyarmed and brun.stopkey_hit() then
+    -- BOTH STOP CONTROLS STILL WORK DURING A HOLD, and a hold is where they matter most: it is the
+    -- state a run parks in for as long as nobody comes. The key's latch is firmware and the Abort
+    -- field is firmware-owned, so neither needs this loop to return to anything.
+    local heldask, heldwhy = brun.stopasked()
+    if heldask then
       -- THE BARE PHRASE, no lap/cell prefix and no 'while holding for': the panel prints this after
       -- 'STOPPED: ' and an operator stop needs no explanation. Nothing is lost -- brec.finish() adds the
       -- lap and cell itself when the reason does not carry them, and what the run was holding for is
       -- already in the run-total line as heldsecs over nhold retry(s).
-      brun.stopwhy = 'TRIGGER Pressed'
+      brun.stopwhy = heldwhy
       return false
     end
     if brun.holdmax > 0 and brun.heldsecs >= brun.holdmax then
@@ -2401,6 +2596,21 @@ function brun.soak(iterations, tag)
   -- A FAULT AT STARTUP IS STILL ONLY A FAULT, and returning here would lose a fortnight to a key that was
   -- briefly unreadable. brec.stopped is retried by rechold, and a closed plan handle makes nextrow answer
   -- nil, which puts the loop into planwait.
+  -- HOW MANY CELLS THIS RUN WILL ACTUALLY DO, counted before the first one. Without it the lap size
+  -- and the projection came from the plan's unfiltered header: a lap narrowed to Start gap at
+  -- standard rates from 1200 Bd reported 'Cell n/1512' and projected hours against 1512 when the
+  -- selection runs 38 cells. One bounded pass, about 3 s on 18 144 rows, once per run.
+  --
+  -- nil IS A VALID ANSWER and leaves the old behaviour: if the plan cannot be opened here, the
+  -- screen falls back to brun.percell rather than reporting a total of zero.
+  -- ONLY WHEN A FILTER IS ACTUALLY IN FORCE. With none, the plan's own header is already the right
+  -- answer and is free -- and overriding it unconditionally made the screen's lap size depend on
+  -- re-reading the plan in cases where brun.percell was set deliberately: a resume, a cumulative
+  -- plan, a wrapped plan. Six assertions in test_bench_engine said so immediately.
+  -- COUNTED AFTER THE SCREEN IS UP, not before. It is a few MT19937 seedings -- about two seconds on
+  -- the instrument -- and done here it sat between the Run Soak press and anything appearing, which
+  -- the operator measured as 'several seconds before it is actually doing it'. See below ui_build.
+  brun.percell_filt = nil
   brun.startfault = nil
   if not brec.begin(brun.tag, forever and 0 or iterations, brun.planpath) then
     brun.startfault = 'cannot record: ' .. tostring(brec.why)
@@ -2443,9 +2653,22 @@ function brun.soak(iterations, tag)
     display.lightstate = brun.backlight
   end
   brun.keyarmed = brun.stopkey_setup()
+  -- THE FILTERED LAP SIZE, counted HERE because the status screen is now in front. It is a few
+  -- mt19937 seedings -- about two seconds on the instrument -- and done before the screen existed it
+  -- sat between the Run Soak press and anything at all appearing, which the operator measured as
+  -- several seconds of nothing. The screen opens on placeholders and this fills the denominator in.
+  if brun.filt_any() then brun.percell_filt = brun.count_wanted(1) end
   if not brun.ui_build() then
     display.changescreen(display.SCREEN_USER_SWIPE)
   end
+  -- CLEARED BEFORE THE FIRST CELL. The screen is built once and reused, so a box left ticked by the
+  -- run that just ended would stop the next one at cell 1 -- which, with ab_hit treating anything
+  -- but OFF as an abort, is the safe direction to fail but a useless run.
+  brun.ab_reset()
+  -- AND THE GENERATOR'S WAITS BECOME ABORTABLE. ab_hit and not stopasked: reading the box costs
+  -- nothing and consumes nothing, while stopasked polls the TRIGGER key's blender latch, which
+  -- CLEARS on read -- so handing that to bsdg would throw away a press between cells.
+  if bsdg ~= nil then bsdg.giveup = brun.ab_hit end
   brun.settext('SOAK starting', 'reaching the generator')
   bsdg.reset()
   local live, idn = bsdg.alive()
@@ -2510,10 +2733,12 @@ function brun.soak(iterations, tag)
     if brun.stopevery > 0 and (brun.ncell == 0 or math.mod(brun.ncell, brun.stopevery) == 0) then
       if brun.stopped() then brun.stopwhy = 'STOP.TXT found'; break end
     end
-    -- THE KEY, READ ONCE PER CELL. Costs about a millisecond and no event, so unlike the stop file it
-    -- can be checked every cell, where the stop file is off by default.
-    if brun.keyarmed and brun.stopkey_hit() then
-      brun.stopwhy = 'TRIGGER Pressed'
+    -- THE KEY AND THE ABORT FIELD, READ ONCE PER CELL. Together about a millisecond and no event, so
+    -- unlike the stop file they can be checked every cell, where the stop file is off by default.
+    -- The field is the one that works for a panel-started run; see brun.stopasked.
+    local asked, askwhy = brun.stopasked()
+    if asked then
+      brun.stopwhy = askwhy
       break
     end
     if brun.maxcell > 0 and brun.ncell >= brun.maxcell then
@@ -2976,9 +3201,6 @@ function brun.soak(iterations, tag)
     why = string.format('L%dC%d: %s', brun.iter, brun.cell, why)
   end
   brec.finish(why)
-  -- RESTORED, so a run ending does not leave the instrument silently swallowing real errors for the
-  -- next operator. The app's own unmute, not a literal.
-  if sdec.unmute_events ~= nil then sdec.unmute_events() end
   brun.announce('END ' .. tostring(brun.stopwhy))
   -- THE RESULT SCREEN, ON BOTH ENDINGS. This is the single exit from the loop: laps completed, STOP.TXT,
   -- cell cap, a generator that gave up, and TRIGGER all arrive here, so one call covers every way a run
@@ -2991,6 +3213,13 @@ function brun.soak(iterations, tag)
   -- list it would otherwise turn this into an attempt to index nil -- the failure whose signature is
   -- silence. The firmware does not raise, so there is nothing here for a pcall to catch.
   if beval ~= nil and beval.show ~= nil then beval.show() end
+  -- UNMUTED LAST, AFTER THE RESULT SCREEN. It used to be restored before brun.announce, which left
+  -- everything the run does on its way out -- announce, beval.prev reading EVAL.CSV, beval.save
+  -- appending to it -- running with popups back on. The operator saw it as a dialog flashing for a
+  -- fraction of a second as the lap finished: a real event, posted and then painted over by the
+  -- changescreen to the result screen. The mute has to cover the whole run, not just the cell loop.
+  -- Still restored on every exit, so a finished run does not leave the next operator's errors silent.
+  if sdec.unmute_events ~= nil then sdec.unmute_events() end
   return true, brun.stopwhy
 end
 

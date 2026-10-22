@@ -62,6 +62,10 @@ do
       opt.nvec = tonumber(arg[i])
     elseif a == '--no-skip' then
       opt.skip = {}
+    elseif a == '--exact' then
+      -- The per-cell keyed draw that preceded the block-seeded one. Kept so a test can compare the
+      -- two schemes and so an old plan can be reproduced.
+      opt.fast = false
     else
       pos = pos + 1
       if pos == 1 then first = tonumber(a) else last = tonumber(a) end

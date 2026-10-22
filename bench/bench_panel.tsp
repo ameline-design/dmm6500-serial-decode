@@ -191,7 +191,11 @@ end
 -- on -- the same contract as sdec.build_options, and for the same reason: a Run screen that opens
 -- nothing is worse than a refusal that says why.
 function brun.build_panel()
-  brun.destroy_panel()
+  -- BUILT ONCE, NEVER REBUILT. Operator's rule, restated 2026-10-22: only tear down on application
+  -- exit. This opened with destroy_panel(), which is the delete-then-create idiom -- right for a
+  -- screen that is rebuilt per use and wrong for one that lives for the session. brun.panel calls
+  -- this at launch and brun.panel_cancel is the only thing that frees it.
+  if brun.pnscr ~= nil then return brun.pnscr end
   local create = display.create
   local g      = brun.pn_geom()
   brun.pn_obj  = {}
@@ -494,9 +498,15 @@ function brun.panel_run()
     sdec.strm_overread = f
   end
 
-  -- The form goes before the run's own screen is built: both are full screens and the display pool is
-  -- 463 objects, so holding this one open through a soak spends objects the status screen needs.
-  brun.destroy_panel()
+  -- THE FORM IS KEPT, NOT TORN DOWN. It used to be destroyed here on a pool argument -- both are full
+  -- screens and the pool is 463 objects -- but the measured census says there is room: the app plus
+  -- all five of this app's screens is well under it, and the status screen is built once now rather
+  -- than per run.
+  --
+  -- AND KEEPING IT IS WHAT MAKES `Back` WORK. beval.back switches to brun.pnscr, so a destroyed form
+  -- left it with nothing to return to and the button did nothing at all -- measured on the instrument
+  -- 2026-10-22. It is also the operator's standing rule since the same day: nothing is deleted until
+  -- the app exits, and panel_cancel is where that happens.
   brun.soak(laps, 'soak')
   return true
 end
@@ -625,6 +635,34 @@ function brun.cover_show(s)
   return true
 end
 
+-- EVENTS MUTED ACROSS A WHOLE LAUNCH, as one region rather than per function.
+--
+-- WHY AT ALL: a plan that is absent, empty or header-less cannot be recognised without reading it,
+-- this firmware's file API has no size or seek, and a read past the end posts 2201 -- WHICH THE
+-- FIRMWARE PUTS ON THE GLASS AS A POPUP. So the one unavoidable event of a missing plan arrived as a
+-- dialog over the screen that was already explaining the situation in words.
+--
+-- WHY NESTING-SAFE: the key is read in more than one place during a launch -- build_panel composes
+-- the plan line through brun.pn_plan BEFORE the form exists, and startup checks and may draw. A mute
+-- per function meant the inner one restored events while the outer still needed them muted, so the
+-- popup simply moved. These nest: only the outermost pop restores.
+brun.evmuted = false
+
+function brun.mute_push()
+  if brun.evmuted then return false end
+  if sdec == nil or sdec.mute_events == nil then return false end
+  brun.evmuted = true
+  sdec.mute_events()
+  return true
+end
+
+function brun.mute_pop(mine)
+  if mine ~= true then return false end
+  brun.evmuted = false
+  if sdec ~= nil and sdec.unmute_events ~= nil then sdec.unmute_events() end
+  return true
+end
+
 -- Is the key there? file.usbdriveexists answers 1 or 0 and never raises; ulog.keyok() reads it the
 -- same way. A nil binding is treated as absent rather than present: the honest answer when the
 -- firmware cannot be asked is that this app cannot know the key is there.
@@ -707,6 +745,24 @@ end
 brun.wk_msg  = brun.wk_msg or 'Working'
 brun.wkspint = nil
 brun.nwkspin = 0
+-- Rows between clock reads in the plan-draw progress hook. See the hook for why this cannot loosen
+-- the 4 Hz ceiling: it only declines to ASK, and the ceiling decides.
+brun.progevery = brun.progevery or 8
+-- TWO YIELDS, BECAUSE THEY DO DIFFERENT JOBS, and 2 ms of the first alone was measured on the
+-- instrument NOT to repaint: the form stayed up for a whole draw.
+--
+--   drawyield  -- a slice every brun.yieldevery rows, so the firmware is never starved for long.
+--                 Operator's instruction of 2026-10-22: yield once per five lines.
+--   paintyield -- a LONGER slice immediately after a write, which is what actually gets the LCD to
+--                 redraw. Four a second at the 4 Hz ceiling, so 80 ms a second.
+--
+-- NEITHER IS brun.spinyield, which stays 0: that one fires inside sdec.acq_copy between proxy reads
+-- of a live capture buffer and cost real cells. No capture runs during a plan draw.
+-- Rows between slices. ONE, because a row costs ~0.5 s on the instrument: anything larger puts
+-- seconds between paints. Kept as a field so it can be raised if the draw ever gets fast.
+brun.yieldevery = brun.yieldevery or 1
+brun.drawyield  = brun.drawyield or 0.002
+brun.paintyield = brun.paintyield or 0.02
 
 function brun.wk_spin(force)
   if brun.wk_t1 == nil then return false end
@@ -722,6 +778,22 @@ function brun.wk_spin(force)
   -- COUNTED AFTER THE RATE LIMIT, so this is redraws and not calls -- the status spinner's rule, and
   -- what lets a test tell a suppressed tick from a painted one.
   brun.nwkspin = brun.nwkspin + 1
+  -- THE YIELD, AND WITHOUT IT NONE OF THIS REACHES THE GLASS. This firmware repaints only when the
+  -- interpreter hands control back, and a plan draw is ONE statement off the socket that runs for
+  -- minutes without ever doing so -- so every changescreen and settext above lands in state and the
+  -- LCD goes on showing whatever was in front when the statement began. Measured on the instrument
+  -- 2026-10-22: the form stayed up for the whole draw, which reads exactly like a hung app.
+  --
+  -- brun.spinyield IS A DIFFERENT KNOB AND STAYS AT 0. That one fires from inside sdec.acq_copy,
+  -- between proxy reads of a live capture buffer, where a delay stretches the window a capture is
+  -- copied over -- it produced a large number of failing cells within minutes of a soak. There is no
+  -- capture running during a plan draw, so a yield here costs nothing but the milliseconds.
+  --
+  -- AFTER THE WRITE, NEVER BEFORE: the point is to give the firmware a slice in which to paint what
+  -- was just written. At the 4 Hz ceiling this is four 2 ms slices a second.
+  if brun.paintyield ~= nil and brun.paintyield > 0 and delay ~= nil then
+    delay(brun.paintyield)
+  end
   return true
 end
 
@@ -747,7 +819,21 @@ end
 
 -- The plan step. CHECKED, AND DRAWN ONLY IF WHAT IS THERE CANNOT BE USED -- bplan.ensure's rule, so a
 -- targeted --spec push is left alone rather than silently replaced by the full draw.
-function brun.plan_step()
+-- HOW MANY LAPS A SELF-DRAWN PLAN COVERS. Twelve, on the operator's instruction of 2026-10-22, which
+-- is 12 x 1512 = 18 144 rows.
+--
+-- IT IS AFFORDABLE ONLY BECAUSE OF THE FAST DRAW. Measured on the instrument: 6048 rows in about 70 s
+-- once the draw stopped seeding mt19937 three times a row, so ~86 rows a second and twelve laps is
+-- about three and a half minutes, once, when a key has no usable plan. Under the old per-cell seeding
+-- the same twelve laps would have been about two and a half HOURS.
+--
+-- ONE LAP WOULD HAVE BEEN WRONG AND WOULD NOT HAVE LOOKED IT. Drawing a single iteration and then
+-- running several laps makes the engine WRAP -- documented behaviour -- so every lap replays iteration
+-- 1: the same amplitude, the same offset and the same wait in every cell. The run would report twelve
+-- laps of coverage and have one lap's worth.
+brun.plan_laps = brun.plan_laps or 12
+
+function brun.plan_step(force)
   -- THE FIRST INDEX OF A FOREIGN TABLE IS GUARDED, which is this project's standing lesson about
   -- failures whose signature is silence: bench/plan_gen.tsp is a separate module, and an archive or a
   -- test harness that did not load it would turn `bplan.path` into an attempt to index nil. A nil
@@ -758,8 +844,29 @@ function brun.plan_step()
   brun.cover_show(nil)
   brun.wk_say('Checking the plan on the key', bplan.path)
   display.changescreen(brun.wkscr)
+  -- A SLICE FOR THE SWITCH ITSELF. Without it the working screen does not appear until the first
+  -- paint inside the draw, and a check that takes a second shows the previous screen throughout.
+  brun.wk_spin(true)
+  -- EVENTS ARE MUTED ACROSS THE PLAN WORK, and this is a fix rather than a convenience. A plan that
+  -- is ABSENT, EMPTY or header-less cannot be recognised without reading it, there is no size or seek
+  -- in this firmware's file API, and a read past the end posts 2201 -- WHICH THE FIRMWARE PUTS ON THE
+  -- GLASS AS A POPUP. So the one unavoidable event of a missing plan arrived as a dialog on top of
+  -- the screen that was already explaining the situation in words, before the operator had seen
+  -- anything else. Measured on the instrument 2026-10-22, two or three per launch.
+  --
+  -- NOT A BLANKET MUTE: it is restored before this function returns, on every path, so nothing after
+  -- the plan step is hidden. sdec.unmute_events restores eventlog.SEV_ERROR, which is what the app
+  -- runs at.
+  local mine = brun.mute_push()
+  local function unmute()
+    brun.mute_pop(mine)
+  end
   local ok, rows, why = bplan.check(bplan.path)
-  if ok then return true, rows, nil end
+  if ok and force ~= true then
+    unmute()
+    return true, rows, nil
+  end
+  if ok then why = 'redraw asked for' end
   -- WHAT IS HAPPENING AND WHY, on the glass: this step can take minutes and the operator did not ask
   -- for it -- the app decided the key had no usable plan. Saying which is what makes the wait
   -- legible rather than mysterious.
@@ -767,15 +874,41 @@ function brun.plan_step()
   brun.wk_spin(true)
   local eok, erows, eerr = bplan.ensure(bplan.path, {
     first = 1,
+    last  = brun.plan_laps,
+    force = force,
     progress = function(done, total)
       -- THE SPINNER FIRST AND UNCONDITIONALLY, because it is rate-limited inside wk_spin; the row
       -- count only moves when the spinner did, so the two lines cannot disagree about how recently
       -- this was alive.
+      --
+      -- ROW, TOTAL AND PER CENT, on the operator's instruction of 2026-10-22: the spinner says the
+      -- app is alive, and these say whether it is going to finish this minute or this hour. The
+      -- percentage is computed rather than displayed from a counter so it cannot disagree with the
+      -- two numbers beside it.
+      -- EVERY ROW, and the measurement is why. A row costs about half a second ON THE INSTRUMENT --
+      -- roughly two rows a second, measured 2026-10-22 -- so the row-count gate that looked like a
+      -- sensible saving on the host put THREE SECONDS between paints, and a screen that moves every
+      -- three seconds is one an operator reasonably reads as stuck. Against 500 ms of work, a
+      -- timer.gettime() and a 2 ms slice are free; the saving was never worth having here.
+      --
+      -- THE 4 Hz CEILING STILL CAPS IT, so this asks every row and paints at most four times a
+      -- second. At the measured row rate that yields about 2 Hz, which is inside the 1-to-4 Hz band
+      -- the operator asked for.
       if brun.wk_spin() then
-        display.settext(brun.wk_t2, string.format('%d of %d row(s)', done, total))
+        local pct = 0
+        if total ~= nil and total > 0 then pct = done * 100 / total end
+        display.settext(brun.wk_t2, string.format('row %d of %d   %d%% done',
+                                                  done, total, math.floor(pct)))
+      end
+      -- AND A SLICE EVERY ROW, whether or not the paint happened: the point is that the interpreter
+      -- never holds the processor for long, which is what 'appearing stuck is as bad as being stuck'
+      -- requires. 6048 slices of 2 ms is 12 s against a draw that takes far longer than that.
+      if brun.drawyield ~= nil and brun.drawyield > 0 and delay ~= nil then
+        delay(brun.drawyield)
       end
     end,
   })
+  unmute()
   return eok, erows, eerr
 end
 
@@ -800,6 +933,9 @@ function brun.panel()
   -- neither is catchable.
   local ok, err = pcall(brun.build_panel)
   if not ok then
+    -- THE ONE DELETE THAT IS NOT AN APP EXIT, and it is not a teardown of a live screen: the build
+    -- raised part way, so this frees the PARTIAL objects of a screen that never came up. Leaving them
+    -- would strand them for the session with no handle able to reach them.
     brun.destroy_panel()
     return false, tostring(err)
   end

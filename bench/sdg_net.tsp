@@ -25,6 +25,13 @@ bsdg.id        = nil                 -- tspnet connection id, nil when closed
 bsdg.why       = nil                 -- why the last call failed, for the status file
 bsdg.nfail     = 0                   -- consecutive failures, so a caller can give up deliberately
 bsdg.ncmd      = 0
+-- OPTIONAL, AND NIL HERE. -> true to abandon a wait that has not finished. bench_run sets this to
+-- its Abort box so a stop does not have to queue behind a wedged generator's timeouts; this module
+-- holds no opinion about what a stop control is. It must be a function that COSTS NOTHING TO ASK and
+-- consumes nothing -- reading the box is idempotent, where reading the TRIGGER key's blender latch
+-- clears it, so pointing this at the key would silently eat the operator's press.
+bsdg.giveup      = bsdg.giveup or nil
+bsdg.giveupevery = bsdg.giveupevery or 10   -- 50 ms steps, so ask about twice a second
 bsdg.timeout   = bsdg.timeout or 5   -- seconds; the tspnet default of 20 is far too long to spend on
                                    -- every query of a cell whose generator has gone quiet
 
@@ -183,14 +190,30 @@ function bsdg.ask(s)
   local bad = bsdg.forbidden(s)
   if bad ~= nil then bsdg.why = bad; return nil, bad end
   if not bsdg.cmd(s) then return nil, bsdg.why end
-  local waited, step = 0, 0.05
+  local waited, step, nstep = 0, 0.05, 0
   while waited < bsdg.timeout do
+    nstep = nstep + 1
     local avail = 0
     local ok    = pcall(function() avail = tspnet.readavailable(bsdg.id) or 0 end)
     if not ok then
       bsdg.close()
       bsdg.why   = 'readavailable failed on ' .. s
       bsdg.nfail = bsdg.nfail + 1
+      return nil, bsdg.why
+    end
+    -- AN ABANDONED WAIT, SO AN ABORT DOES NOT QUEUE BEHIND A WEDGED GENERATOR. With the SDG wedged
+    -- every query costs the full bsdg.timeout, several per cell, and the operator measured the panel
+    -- abort as working but VERY slowly for exactly that reason -- it could only be read between
+    -- queries. The hook is optional and this module sets it to nothing: bench_run points it at its
+    -- own Abort box, and nothing here has to know what a stop control is.
+    --
+    -- NOT EVERY STEP. The step is 50 ms and the hook reads the glass, so asking on every pass would
+    -- poll the display twenty times a second for the whole timeout.
+    --
+    -- NOT COUNTED AS A FAILURE. bsdg.nfail is evidence about the generator and an operator giving up
+    -- is not; incrementing it here would let an abort push the run towards brun.maxsdgfail.
+    if bsdg.giveup ~= nil and math.mod(nstep, bsdg.giveupevery) == 0 and bsdg.giveup() then
+      bsdg.why = 'abandoned waiting for ' .. s
       return nil, bsdg.why
     end
     if avail > 0 then

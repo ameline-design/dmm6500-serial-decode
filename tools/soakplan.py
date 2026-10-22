@@ -66,6 +66,36 @@ P_ORDER, P_RATE, P_WAIT, P_SUBSET, P_AMP, P_OFST = 1, 2, 3, 4, 5, 6
 # not disturb any draw that already exists -- every other stream is keyed on its own P_*.
 P_RSUB = 7
 
+# THE BLOCK SEEDS OF THE FAST DRAW. Operator's design of 2026-10-22, and the reason is measured:
+# seeding mt19937 is 99.9 % of the cost of emitting a row -- three init_by_array calls per row, each
+# O(624) whatever the key -- which on the instrument came out at two rows a second and ~50 minutes for
+# a 6048-row plan. init_by_array has nothing to shave, so the only lever is to seed less often: one
+# twister draw per FASTBLOCK rows, seeding a Park-Miller stream for the rows in between.
+#
+# PARK-MILLER because bench/plan_rand.tsp has to run it too and 5.0.2 has no bitwise operators:
+# x = 16807x mod (2^31-1) is arithmetic only, and 16807 * (2^31-2) = 3.6e13 is well under 2^53, so
+# every step is exact in a double as well as in a Python int.
+#
+# A DIFFERENT PLAN FROM THE EXACT DRAW, declared in the header as `# draw=fast1`. Every plan from here
+# uses it, so they all match; plans emitted before today were `exact` and are a different experiment.
+P_FAST = 11
+FASTBLOCK = 100
+PM_MOD, PM_MULT = 2147483647, 16807
+
+
+def _pm_new(seed):
+    """A Park-Miller state from a 32-bit seed. -> [state]
+
+    IN [1, m-1]: zero is a fixed point, so a seed that lands on it would make every draw zero. The
+    Lua twin does the same arithmetic in the same order -- see bplan.pm_new.
+    """
+    return [seed % (PM_MOD - 1) + 1]
+
+
+def _pm_float(pm):
+    pm[0] = (pm[0] * PM_MULT) % PM_MOD
+    return pm[0] / PM_MOD
+
 # THE VECTORS THE HARDWARE LAP DOES NOT PLAY, and therefore the ones the offline twin must not play
 # either. README.md documents the lap as
 #   python3 tools/soak.py --hours 17 --suites formats,plan
@@ -1349,7 +1379,7 @@ def spec_order(spec):
     return order, kindmap
 
 
-def emit_csv(first, last, nvectors=None, skip=None, spec=None, rkeep=None, reps=1):
+def emit_csv(first, last, nvectors=None, skip=None, spec=None, rkeep=None, reps=1, fast=True):
     """The plan as flat CSV for bench/bench_run.tsp to stream off the USB key.
 
     WHY A THIRD FORM, after the Lua table and the hardware sweep's own iteration. The on-instrument
@@ -1379,6 +1409,10 @@ def emit_csv(first, last, nvectors=None, skip=None, spec=None, rkeep=None, reps=
            # operating points, and a reader that assumed one row per point would divide every rate by
            # this number without noticing.
            '# repeats=%d' % reps,
+           # WHICH DRAW MADE THIS FILE. 'fast1' is the block-seeded scheme every plan uses from
+           # 2026-10-22; 'exact' is the per-cell keyed draw that preceded it. They are different
+           # experiments and a reader that cannot tell them apart would compare two plans as one.
+           '# draw=%s' % ('fast1' if fast else 'exact'),
            'iter,cell,vid,arb,baud,kind,amp_vpp,ofst_v,srate,wait_ms']
     import instruments as _I
     for it in range(first, last + 1):
@@ -1390,6 +1424,9 @@ def emit_csv(first, last, nvectors=None, skip=None, spec=None, rkeep=None, reps=
             # whichever random vectors sit this lap out. skip_for is the only place that is decided.
             order, kindmap = plan_order(it, vecs, skip_for(it, skip, rkeep), nvectors), None
         n = 0
+        # PER LAP, because the block seed is keyed on the iteration. Boxed so the inner scope can
+        # rebind them without a nonlocal, matching the Lua twin's locals.
+        lastblk, pm = [-1], [None]
         for vi, vid in enumerate(order):
             row = _manifest_rows().get(vid) or {}
             # THE SAME TWO SKIPS bench_matrix APPLIES, and each changes the cell COUNT rather than only
@@ -1405,7 +1442,17 @@ def emit_csv(first, last, nvectors=None, skip=None, spec=None, rkeep=None, reps=
                 srate = int(round(baud * spb))
                 if srate > _I.SDG_MAX_SRATE:
                     continue
-                ua, uo = amp_ofst_u(it, vi, ri)
+                # THE FAST PATH SEEDS ONCE PER BLOCK, keyed on the iteration and the block index, so
+                # a lap still rebuilds from its number alone. bench/plan_gen.tsp does the same
+                # arithmetic in the same order; tools/test_plan_gen.lua compares the two byte for byte.
+                if fast:
+                    blk = n // FASTBLOCK
+                    if blk != lastblk[0]:
+                        lastblk[0] = blk
+                        pm[0] = _pm_new(MT19937([MAGIC, it, P_FAST, blk]).u32())
+                    ua, uo = _pm_float(pm[0]), _pm_float(pm[0])
+                else:
+                    ua, uo = amp_ofst_u(it, vi, ri)
                 amp, ofst = amp_ofst_for(vid, ua, uo)[0:2]
                 # THE GENERATOR'S OWN NAME TRAVELS WITH THE CELL, from vector_names.MAP -- the same
                 # place bench_matrix gets it. The instrument must not derive it: ARWV NAME takes the
@@ -1425,9 +1472,15 @@ def emit_csv(first, last, nvectors=None, skip=None, spec=None, rkeep=None, reps=
                 # the phase is redrawn and nothing else is.
                 for rep in range(reps):
                     n += 1
+                    # THE WAIT FROM THE SAME STREAM, drawn after the vertical pair so the per-row
+                    # order is fixed and the block seed reproduces the rows exactly.
+                    if fast:
+                        wsec = _pm_float(pm[0]) * WAIT_BYTE_TIMES * BITS_PER_BYTE / float(baud)
+                    else:
+                        wsec = wait_s(it, vi, ri, baud, rep)
                     out.append('%d,%d,%s,%s,%d,%s,%.4f,%.4f,%d,%.3f'
                                % (it, n, vid, _MAP[vid], baud, kind, amp, ofst, srate,
-                                  1000.0 * wait_s(it, vi, ri, baud, rep)))
+                                  1000.0 * wsec))
     # THE ROW COUNT IN THE HEADER, so the instrument can stop at the last row instead of discovering the
     # end by reading past it -- which posts event 2201, 'File read error', as a popup on the panel once
     # per pass. Substituted at the end because it is not known until the rows are built.

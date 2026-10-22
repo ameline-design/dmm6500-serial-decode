@@ -161,8 +161,15 @@ do
     PLANTEXT = nil
     file = {MODE_WRITE = 'w', MODE_READ = 'r', READ_LINE = 'line', READ_ALL = 'all'}
     local lines, nl, pos = {}, 0, 0
+    NREAD = 0
     function file.open(p, m)
       if m == file.MODE_WRITE then lines, nl = {}, 0; return {w = true} end
+      -- A DIRECTORY HANDLE READS BACK ITS LISTING. bplan.listed asks the directory before it opens
+      -- any file, so a shim without this refuses every plan with 'no plan on the key'.
+      if p == bplan.dir then
+        if PLANTEXT == nil then return {dir = true, empty = true} end
+        return {dir = true}
+      end
       if PLANTEXT == nil then return nil end
       lines, nl, pos = {}, 0, 0
       for ln in string.gfind(PLANTEXT, '([^\n]*)\n') do nl = nl + 1; lines[nl] = ln end
@@ -174,6 +181,12 @@ do
     function file.flush(fh) end
     function file.close(fh) end
     function file.read(fh, what)
+      if fh.dir then
+        if fh.empty then return '' end
+        return 'PLAN.CSV EVAL.CSV'
+      end
+      -- COUNTED, so a test can assert the check never walks the body.
+      NREAD = NREAD + 1
       pos = pos + 1
       if pos > nl then return nil end
       return lines[pos] .. '\n'
@@ -197,7 +210,14 @@ do
     local gok, grows, gwhy = bplan.check('/usb1/SERDEC/PLAN.CSV')
     print('GOOD ok=' .. tostring(gok) .. ' rows=' .. tostring(grows) .. ' why=' .. tostring(gwhy))
 
-    -- THE SAME PLAN WITH ITS TAIL CUT OFF
+    -- THE READ BUDGET. The check must never walk the body: verifying a declared count against a short
+    -- file needs the read that discovers it is short, and that read posts 2201 as a popup which
+    -- cannot be muted. So the header block is all it is allowed to touch.
+    print('NREAD=' .. tostring(NREAD) .. ' HDRMAX=' .. tostring(bplan.hdrmax))
+
+    -- THE SAME PLAN WITH ITS TAIL CUT OFF is now ACCEPTED here, by design: the header is intact and
+    -- the shortfall is discovered by the run, which ends its lap early. Named so the trade is
+    -- recorded rather than discovered later.
     local keep = {}
     for i = 1, nl - 3 do keep[i] = lines[i] end
     PLANTEXT = table.concat(keep, '\n') .. '\n'
@@ -219,10 +239,15 @@ do
      'and says so in words the panel can show')
   ck(string.find(out, 'GOOD ok=true', 1, true) ~= nil,
      'check accepts a plan it just drew', string.gsub(out, '.*(GOOD[^\n]*).*', '%1'))
-  ck(string.find(out, 'TRUNC ok=false', 1, true) ~= nil,
-     'check REFUSES a truncated plan rather than streaming a prefix')
-  ck(string.find(out, 'truncated', 1, true) ~= nil,
-     'and names truncation as the reason')
+  ck(string.find(out, 'TRUNC ok=true', 1, true) ~= nil,
+     'a plan truncated after its header is ACCEPTED, the run finding the shortfall')
+  do
+    local _, _, nr = string.find(out, 'NREAD=(%d+)')
+    local _, _, hm = string.find(out, 'HDRMAX=(%d+)')
+    ck(nr ~= nil and hm ~= nil and tonumber(nr) <= tonumber(hm) + 1,
+       'and the check read only the header block -- it never walks to the end of the file',
+       tostring(nr) .. ' read(s), header budget ' .. tostring(hm))
+  end
   ck(string.find(out, 'FOREIGN ok=false', 1, true) ~= nil,
      'check refuses a file that is not a plan')
 end
