@@ -767,6 +767,11 @@ brun.panellim2 = 32      -- TEXT2
 -- -- so every line here is written against this number and a test checks each at its widest. An alarm
 -- that overruns loses the half that says what to DO, which is the half worth having.
 brun.panelw    = 58
+-- THE WIDTH OF ONE SLOT BESIDE THE ABORT BOX. The error line moved off its own full-width row to the
+-- right of the box, so it has brun.errx to the right edge -- 580 px from 220, and FONT_MEDIUM
+-- advances about 13.4, so 43 characters against the 58 a full row holds. Still TWO lines, because the
+-- line reaches 56 at its widest, and the operator measured the space as taking two at that size.
+brun.errw      = 43
 
 -- THE BACKLIGHT, DIMMED FOR THE DURATION OF A RUN. An unattended soak leaves one screen lit for days, and
 -- this panel's backlight has a finite life it need not spend on an empty room.
@@ -920,13 +925,49 @@ brun.ui        = nil
 --
 -- ONLY STATE CHANGES ARE PUSHED, not one line per cell. A log that repeats 'generator missed 1 cell' for
 -- four hundred cells has thrown away the one thing a log is for -- knowing WHEN something started.
--- THREE, NOT FIVE, AND THE TWO ROWS PAID FOR THE ABORT FIELD. The log is what says WHEN something
--- started on a soak nobody is standing at, so this is a real loss -- but a run that cannot be
--- stopped from the panel is worse, and the Abort field needs 54 px of the 420 the content area
--- allows. The log rows sit at 228 + (n-1)*34 with the error count behind them, so five rows put the
--- field past the bottom of the glass. Settable: a host-driven soak has the TRIGGER key, which does
--- work in that context, and can raise this before brun.ui_build().
-brun.msgn      = brun.msgn or 3
+-- FIVE AGAIN. This was cut to three to make room for the Abort box, which cost two rows the log
+-- could not spare -- the log is what says WHEN something started on a soak nobody is standing at.
+-- Both rows came back without giving the box up: the error count moved to the empty width BESIDE
+-- the box instead of taking a row of its own, and brun.rowdy dropped from 34 to 32. The arithmetic
+-- that has to hold is the OTHER way round: the last log row, my0 + (msgn-1) * rowdy plus the ~13 px
+-- a line occupies, has to clear brun.aby -- 357 against 364 at five rows. The box does not move.
+brun.msgn      = brun.msgn or 5
+-- THE ROW PITCH, and the top of the log block. Separate because the body lines above the log hang
+-- off the pitch alone while the log needs its own origin.
+brun.rowdy     = brun.rowdy or 30
+brun.msgy0     = brun.msgy0 or 216
+-- THE BOTTOM ROW, AND IT IS FIXED RATHER THAN DERIVED. The Abort box sits hard against the bottom of
+-- the glass, so this is not a value the log's row count gets to push around: deriving it as
+-- my0 + msgn * rowdy moved the box 12 px DOWN when the log went back to five rows, off the edge it
+-- was already against. The log has to fit ABOVE it instead, which is what the arithmetic on
+-- brun.msgn checks -- at five rows the last one ends around 357 and this row starts at 364.
+brun.aby       = brun.aby or 364
+-- THE ERROR ROWS HAVE THEIR OWN ORIGIN, positioned by eye against the box rather than derived from
+-- it. They sit just right of the Abort box and a little below its top: 220 clears the box, and 374
+-- drops the pair so the second row still ends inside the 420 the firmware draws to. Independent
+-- constants because the operator placed the two things separately, and tying them together would
+-- mean a nudge to one silently moving the other -- which is how the box ended up off the bottom edge.
+brun.errx      = brun.errx or 220
+brun.erry      = brun.erry or 388
+-- THE GAP BETWEEN THE TWO ERROR ROWS, and it is deliberately TIGHTER than brun.rowdy. The pair is
+-- one item read together, not two rungs of the screen's rhythm, and at the main pitch the second row
+-- ended at 423 -- three pixels past the 420 the firmware draws to, which display.create does not
+-- refuse and nothing on the glass would announce.
+-- BETWEEN THE PAIR, tighter than brun.rowdy because the two rows are one item read together rather
+-- than two rungs of the screen's rhythm.
+--
+-- 21 PUTS THE SECOND ROW'S FOOT AT 422, which is past the 420 this file elsewhere calls the limit --
+-- and that 420 is a figure carried in a comment, never measured. The content area is 431, which is
+-- what mock_display refuses an edit object for, so the offline bound is 431 and the glass is the
+-- authority for the handful of pixels between the two. The row was positioned by eye WITH TEXT IN IT
+-- for exactly that reason; blank, nothing would have shown it running off the bottom.
+brun.errdy     = brun.errdy or 21
+-- BLANK, WHICH IS THE SHIPPED BEHAVIOUR: a clean run leaves the second row empty, for the same
+-- reason the first writes each class only when it is nonzero -- an operator's eye must not be
+-- trained to skip a row of zeroes. Set it to a sample string to position the row by eye, which is
+-- what it was for: an empty row cannot be placed on the glass. It is a FALLBACK for the empty case
+-- and not an initial value, because the first cell overwrites anything create() put there.
+brun.errs2ph   = brun.errs2ph or ''
 brun.msgs      = nil          -- oldest first; the newest is at the bottom of the screen
 brun.lastmsg   = nil       -- so an unchanged state is not pushed again
 brun.lastshape = nil     -- the same state with a different count in it, ditto
@@ -1122,6 +1163,7 @@ function brun.ui_reset()
   brun.ui_set(u.fail,  '--',        brun.c_lab)
   brun.ui_set(u.vfail, '--',        brun.c_val)
   brun.ui_set(u.errs,  'Errors: 0', brun.c_good)
+  brun.ui_set(u.errs2, brun.errs2ph, brun.c_good)
   -- THE LOG IS CLEARED, not carried over. Its lines are stamped with the lap and cell they happened
   -- at, so a previous run's stamps under a new run's headline name cells this run has not reached.
   if u.msg ~= nil then
@@ -1193,11 +1235,15 @@ function brun.ui_build()
     -- the colour its position takes. c_val white is the bright rung and c_lab grey the dim one; the three
     -- lines outside the block -- the headline and the error count -- carry a STATUS colour instead, and
     -- those must not be pulled into the pattern.
+    -- EVERY ROW OFF ONE PITCH, not five literals. brun.rowdy went from 34 to 32 on the operator's
+    -- reading of the glass -- 'all the lines on that screen have at least 2 extra pixels of vertical
+    -- spacing' -- and five hard-coded y values is five places to get that wrong.
+    local dy, my0 = brun.rowdy, brun.msgy0
     u.prog  = add(create(u.scr, display.OBJ_TEXT, 12, 58, '--', brun.c_val, small, left))
-    u.time  = add(create(u.scr, display.OBJ_TEXT, 12, 92, '--', brun.c_lab, small, left))
-    u.stim  = add(create(u.scr, display.OBJ_TEXT, 12, 126, '--', brun.c_val, small, left))
-    u.fail  = add(create(u.scr, display.OBJ_TEXT, 12, 160, '--', brun.c_lab, small, left))
-    u.vfail = add(create(u.scr, display.OBJ_TEXT, 12, 194, '--', brun.c_val, small, left))
+    u.time  = add(create(u.scr, display.OBJ_TEXT, 12, 58 + dy, '--', brun.c_lab, small, left))
+    u.stim  = add(create(u.scr, display.OBJ_TEXT, 12, 58 + 2 * dy, '--', brun.c_val, small, left))
+    u.fail  = add(create(u.scr, display.OBJ_TEXT, 12, 58 + 3 * dy, '--', brun.c_lab, small, left))
+    u.vfail = add(create(u.scr, display.OBJ_TEXT, 12, 58 + 4 * dy, '--', brun.c_val, small, left))
     -- THE LOG, STARTING AT THE ROW UNDER THE BODY. brun.msgn lines at a 34 px pitch and then the error
     -- count: 228 + 5 * 34 = 398, inside the 420 the firmware allows and the 431 px content area --
     -- checked, because display.create returns nil rather than raising for a y it will not take, and a nil
@@ -1208,14 +1254,18 @@ function brun.ui_build()
     -- abort this run now -- is appended to the error count, where a red line already draws the eye. That
     -- frees the 228 row for a fifth log line, which is the row that pays for itself on a soak nobody is
     -- standing at: the log is what says WHEN something started.
-    u.errs = add(create(u.scr, display.OBJ_TEXT, 12, 228 + brun.msgn * 34, 'Errors: 0',
-                        brun.c_good, small, left))
     u.msg = {}
     local mk
     for mk = 1, brun.msgn do
-      u.msg[mk] = add(create(u.scr, display.OBJ_TEXT, 12, 228 + (mk - 1) * 34, '',
+      u.msg[mk] = add(create(u.scr, display.OBJ_TEXT, 12, my0 + (mk - 1) * dy, '',
                              brun.c_lab, small, left))
     end
+    -- THE BOTTOM ROW HOLDS BOTH: the Abort box on the left and the error count BESIDE it rather than
+    -- on a row of its own. Operator's layout, 2026-10-22 -- the box is one small widget and the width
+    -- to its right was empty, so a whole 32 px row was being spent on a nine-character count. With
+    -- that row given back and the pitch two pixels tighter, the log is FIVE lines again instead of
+    -- the three it was cut to when the box first arrived.
+    local aby = brun.aby
     -- THE ONE STOP CONTROL THAT WORKS FROM THE PANEL, and it is an EDIT FIELD rather than a button
     -- for a measured reason. On 1.7.17a a touch press is never dispatched to Lua while a run
     -- executes -- the glass clicks and the handler does not run -- so no OBJ_BUTTON can abort a
@@ -1248,8 +1298,16 @@ function brun.ui_build()
     -- SO THE DESCRIPTION IS SHORT. 'stop this run at the end of the cell' reached the edge and was
     -- clipped mid-word to 'stop this run at the end of the', which is worse than saying less. The
     -- end-of-cell detail belongs in docs/BRUN.md, not in a caption that cannot hold it.
-    u.abort = add(create(u.scr, display.OBJ_EDIT_CHECK, 130, 228 + brun.msgn * 34 + 34,
+    u.abort = add(create(u.scr, display.OBJ_EDIT_CHECK, 130, aby,
                          'Abort', 'Stop this run', display.OFF))
+    u.errs = add(create(u.scr, display.OBJ_TEXT, brun.errx, brun.erry, 'Errors: 0',
+                        brun.c_good, small, left))
+    -- THE SECOND SLOT. 31 characters does not hold a 56-character error line, so the breakout and the
+    -- call to action go on a row of their own under the count -- still beside the box, still clear of
+    -- the log. aby + rowdy is 396, and a line occupies about 13, so it ends inside the 420 the
+    -- firmware takes.
+    u.errs2 = add(create(u.scr, display.OBJ_TEXT, brun.errx, brun.erry + brun.errdy,
+                         brun.errs2ph, brun.c_good, small, left))
   end)
   if not ok then
     brun.ui = u                    -- so ui_destroy frees whatever did get created
@@ -1434,8 +1492,9 @@ function brun.ui_end()
   -- ABORTED goes out red and FINISHED cyan.
   local hl, hcol = brun.headline(true)
   brun.ui_set(u.health, hl, hcol)
-  local el_, ecol_ = brun.errsline()
-  brun.ui_set(u.errs, el_, ecol_)
+  local el_, ecol_, e1_, e2_ = brun.errsline()
+  brun.ui_set(u.errs, e1_, ecol_)
+  brun.ui_set(u.errs2, e2_, ecol_)
   brun.ui_note()
 end
 
@@ -1707,7 +1766,23 @@ function brun.errsline()
     ex = ex .. string.format('  wrong %s/%s', brun.int(nw), brun.int(brun.npayj or 0))
   end
   if string.len(head .. ex .. nag) > brun.panelw then ex = '' end
-  return head .. ex .. nag, col
+  -- AND THE SAME PARTS AS TWO DISPLAY LINES, for the pair of slots to the right of the Abort box.
+  -- Returned as EXTRA values rather than instead of the combined string: ten callers do
+  -- `local e, c = brun.errsline()` and the record's note wants the whole line on one row. One
+  -- composition, four returns, so the screen and the record cannot disagree about what was counted.
+  --
+  -- THE SPLIT IS WHERE THE PRIORITY ALREADY WAS: the head carries the total and the byte count, the
+  -- second line the per-class breakout, and the nag is appended to the second and is never what gets
+  -- dropped -- it is the only part that asks the operator to do something.
+  local rest = ex .. nag
+  rest = string.gsub(rest, '^%s+', '')
+  if string.len(rest) > brun.errw then rest = string.gsub(nag, '^%s+', '') end
+  -- THE PLACEHOLDER IS A FALLBACK FOR THE EMPTY CASE, not an initial value. Set as the create's text
+  -- it was overwritten by the first cell and never seen again: a clean run computes an EMPTY second
+  -- row, which is the shipped behaviour, so the row has to be positioned with something standing in
+  -- for content that is not there. brun.errs2ph = '' restores the blank row.
+  if rest == '' then rest = brun.errs2ph end
+  return head .. ex .. nag, col, brun.fit(head, brun.errw), brun.fit(rest, brun.errw)
 end
 
 function brun.stateword()
@@ -1977,8 +2052,9 @@ function brun.ui_show(c, arb)
   -- and healthy, amber when either figure is borderline, cyan before there is a figure at all.
   local hl, hcol = brun.headline(false)
   brun.ui_set(u.health, hl, hcol)
-  local el_, ecol_ = brun.errsline()
-  brun.ui_set(u.errs, el_, ecol_)
+  local el_, ecol_, e1_, e2_ = brun.errsline()
+  brun.ui_set(u.errs, e1_, ecol_)
+  brun.ui_set(u.errs2, e2_, ecol_)
 end
 
 -- ANYTHING WORTH SAYING GOES TO THE LOG, ONCE. The prompt above keeps saying how to stop the run, which

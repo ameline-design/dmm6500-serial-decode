@@ -111,8 +111,14 @@ if sdec ~= nil then
   pcall(function() sdec.destroy_options() end)
   pcall(function() sdec.ui_destroy() end)
 end
--- brun BUILDS FOURTEEN OF ITS OWN, on the same pool and with the same handle-dropping problem.
+-- brun BUILDS FIVE SCREENS OF ITS OWN as well as the status screen, on the same pool and with the
+-- same handle-dropping problem. ui_destroy frees only the status screen, so the cover, the key-error
+-- screen, the working screen, the settings form and the result screen were stranded by EVERY load --
+-- about 40 objects a time, which exhausted the pool of 463 after roughly eight loads in one session
+-- and cost a power cycle. brun.panel_cancel is the app's own exit path and frees all of them; this
+-- comment used to say 'fourteen of its own', from before those screens existed.
 if brun ~= nil then
+  pcall(function() brun.panel_cancel() end)
   pcall(function() brun.ui_destroy() end)
 end
 sdec = nil

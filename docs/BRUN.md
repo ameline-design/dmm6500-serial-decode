@@ -186,7 +186,9 @@ clears it, so the other choice would silently eat a press between cells.
 
 `Run Soak` tears the form down and `brun.ui_build()` takes over. It is the same screen a host-driven
 lap shows — the title changes with the run's tag, so a smoke reads `SD SMOKE` and a soak `SD SOAK`.
-Nine lines, and every one of them answers a different question.
+Nine lines, and every one of them answers a different question. The bottom row is shared: the
+**`Abort`** check box on the left, with the error count beside it rather than on a row of its own,
+which is what buys the log its fifth line back.
 
 The title is **`SD <TAG>`**, and the tag has all 31 characters to itself. It used to carry a stop
 instruction — first `TRIGGER TO STOP`, which was true only for a host-started run, then
@@ -204,7 +206,25 @@ from a resumed run at a glance.
 | **refusals** | `Refusals: Allowed 12 Unexpected 0 of 86 cells` | cells that refused to decode. `Allowed` is the vectors the plan drives into conditions where refusing is correct; `Unexpected` is the count that matters. |
 | **vector** | `Vec: v98d 4 of 20 bad   I3 L0 S1` | this vector's own failure count beside the run's, because the two answer different questions — whether the soak is healthy, and whether **one** waveform is the reason it is not. `I`, `L`, `S` are idle, levels and swing; initials because spelled out at six-figure totals the line is 70 characters against the 58 the glass holds. |
 | **log** | five scrolling lines | stamped with the lap and cell they happened at. This is what says *when* something started, which is the row that pays for itself on a run nobody is standing at. |
-| **errors** | `Errors: 22  Bad: 640/17160  nodec 10  flag 7  wrong 5/132` | see below. |
+| **errors** | `Errors: 22  Bad: 640/17160` then `nodec 10  flag 7  wrong 5/132` | see below. **Two rows**, stacked at x=380 to the right of the `Abort` box. |
+| **abort** | a tick box labelled `Abort` | the only stop control a panel-started run can see. Bottom left, hard against the bottom edge. |
+
+The error line is drawn as **two** rows because the width beside the box is `brun.errw` 31
+characters — x=380 to the right edge, at a font advancing about 13.4 px — and the line reaches 56 at
+its widest. The split follows the priority the single row already had: the total and the byte count
+lead the first row, the per-class breakout goes on the second, and the call to action is appended to
+the second and is **never** what gets dropped when it will not fit. All four values come from one
+call to `brun.errsline()`, so the two rows and the record's own note cannot disagree about what was
+counted.
+
+The geometry is four constants and the rest is derived: `brun.rowdy` 32 is the row pitch,
+`brun.msgy0` 216 the top of the log block, `brun.aby` 364 the bottom row, and `brun.errw` 31 the
+width of one slot beside the box. **`brun.aby` is fixed,
+not derived** — the box is against the bottom edge, so the log fits above it and does not push it
+down. Both bounds are asserted offline, because breaking either is silent: `display.create` returns
+nil for a y the firmware will not take and every later object on that screen is nil too, with nothing
+said. Deriving `aby` from the row count put the box 12 px below the edge; before that the log was cut
+to three rows because nobody worked out that five still fitted.
 
 ### The error line
 

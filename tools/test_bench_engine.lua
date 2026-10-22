@@ -1804,19 +1804,48 @@ do
   -- spinner, the log ring and the Abort field; writing 14 here meant that moving one log row to make
   -- space for the field failed this test for the layout rather than for the invariant it guards,
   -- which is that the screen is built ONCE and never grows per cell.
-  local wantn = 9 + brun.msgn + 1      -- screen + 8 lines + msgn log rows + the Abort box
+  local wantn = 11 + brun.msgn   -- screen + 7 lines + msgn log rows + Abort box + 2 error rows
   ck(ok == true and brun.ui ~= nil and brun.ui.n == wantn,
-     'the screen is built once: eight lines, the log ring and the Abort box',
+     'the screen is built once: the lines, the log ring, the Abort box and both error rows',
      string.format('ok=%s n=%s want=%d', tostring(ok),
                    tostring(brun.ui and brun.ui.n), wantn))
   brun.soak(1, 'uiscreen')
   -- TEXT OBJECTS ONLY, so the Abort field is not in this count -- it is an OBJ_EDIT_OPTION.
   -- TEXT OBJECTS ONLY, so the Abort box is not in this count -- it is an OBJ_EDIT_CHECK, and the
-  -- firmware draws its label itself.
-  ck(MD.live(display.OBJ_TEXT) - live0 == 8 + brun.msgn,
+  -- firmware draws its label itself. The error row is TWO of them: 31 characters beside the box does
+  -- not hold a 56-character line.
+  ck(MD.live(display.OBJ_TEXT) - live0 == 9 + brun.msgn,
      'and a whole run adds no more of them -- settext only, per cell',
      string.format('%d text object(s), want %d', MD.live(display.OBJ_TEXT) - live0,
-                   8 + brun.msgn))
+                   9 + brun.msgn))
+
+  -- THE GEOMETRY IS SELF-CHECKING, because getting it wrong is SILENT: display.create returns nil
+  -- for a y the firmware will not take, and a nil parent makes every later object on that screen nil
+  -- too, with nothing said. Both bounds were broken by hand within an hour of each other --
+  -- brun.aby was briefly derived from the row count, which pushed the Abort box 12 px below the
+  -- bottom edge it was already against, and before that the log was cut to three rows because
+  -- nothing worked out that five would still fit.
+  --
+  -- THE ABORT ROW IS THE FIXED ONE. The log fits above it; it does not move for the log.
+  local lastlog = brun.msgy0 + (brun.msgn - 1) * brun.rowdy + 13
+  ck(lastlog <= brun.aby, 'the log rows clear the Abort row rather than running into it',
+     string.format('last log ends %d, Abort row at %d', lastlog, brun.aby))
+  -- 431 IS THE CONTENT AREA and 50 the height an edit object occupies -- mock_display's own numbers,
+  -- which it refuses an OBJ_EDIT_NUMBER or OBJ_EDIT_OPTION for. It does NOT refuse an
+  -- OBJ_EDIT_CHECK, so this is the only thing standing between the Abort box and the bottom edge.
+  ck(brun.aby + 50 <= 431,
+     'and the Abort box fits the content area, which create would refuse in silence',
+     string.format('%d + 50 vs 431', brun.aby))
+  -- AND THE SECOND ERROR ROW IS THE LOWEST TEXT ON THE SCREEN, so it is the one that runs off the
+  -- bottom first. The firmware draws to about 420 and a line occupies ~13, so this is the bound that
+  -- moving the pair down by eye could cross without anything saying so.
+  -- 431, THE CONTENT AREA, not the 420 bench_run's own comments call the limit. That 420 is prose
+  -- nobody measured; 431 is mock_display's CONTENT_H, the figure it refuses an edit object past. The
+  -- second error row now sits at 422 by the operator's eye with text in it, which is evidence against
+  -- the 420 and none at all against the 431.
+  ck(brun.erry + brun.errdy + 13 <= 431,
+     'and the second error row ends inside the content area',
+     string.format('%d vs 431', brun.erry + brun.errdy + 13))
 
   -- EVERY FIELD THE OPERATOR ASKED FOR, and n-of-m rather than a bare index: 'cell 412' says nothing
   -- about how much is left, which is the question a soak screen exists to answer.
@@ -2322,7 +2351,7 @@ do
      'and teardown frees every object with no refused deletes',
      string.format('live=%d delfails=%d', MD.live(display.OBJ_TEXT) - live0,
                    (sdec.delfails or 0) - nfail0))
-  ck(brun.ui_build() == true and brun.ui.n == 9 + brun.msgn + 1,
+  ck(brun.ui_build() == true and brun.ui.n == 11 + brun.msgn,
      'and it can be built again afterwards')
   brun.ui_destroy()
 end
@@ -3269,6 +3298,30 @@ print('-- the error row: the new byte-level classes, the red rule, and the width
   e, c = brun.errsline()
   ck(string.find(e, 'Bad: 640/17160', 1, true) ~= nil and string.find(e, 'wrong 5/132', 1, true) ~= nil,
      'the byte count and the cell count appear together and agree on what was judged', e)
+
+  -- THE TWO DISPLAY ROWS, which are what the glass actually shows. The error line moved off its own
+  -- full-width row to the pair of slots beside the Abort box, where each holds brun.errw characters
+  -- against the 56 the combined line reaches -- so it is drawn as two, and both come from the same
+  -- composition as the combined string above.
+  local full_, _c, l1_, l2_ = brun.errsline()
+  ck(string.len(l1_) <= brun.errw and string.len(l2_) <= brun.errw,
+     'both error rows fit the width beside the Abort box',
+     string.format('%d and %d, limit %d: %q / %q', string.len(l1_), string.len(l2_),
+                   brun.errw, l1_, l2_))
+  -- AND BETWEEN THEM THEY SAY WHAT THE ONE ROW SAID. The head answers 'how bad' and the second row
+  -- 'bad at what'; a split that dropped one of those would pass the width check above.
+  ck(string.find(l1_, 'Bad: 640/17160', 1, true) ~= nil, 'the count and the bytes lead the first row',
+     l1_)
+  ck(string.find(l2_, 'wrong 5/132', 1, true) ~= nil, 'and the breakout is on the second', l2_)
+  -- THE CALL TO ACTION IS NEVER WHAT GETS DROPPED. With a nag present the breakout cannot also fit,
+  -- and the nag is the only part that asks the operator to do something.
+  local realnag = brun.stopnag
+  brun.stopnag = function() return '  COME AND LOOK AT THIS NOW' end
+  local _f, _c2, _n1, n2_ = brun.errsline()
+  brun.stopnag = realnag
+  ck(string.find(n2_, 'COME AND LOOK', 1, true) ~= nil and string.len(n2_) <= brun.errw,
+     'a nag survives the width, and the breakout is what goes',
+     string.format('%d of %d: %q', string.len(n2_), brun.errw, n2_))
 
   -- The total is the sum and sits beside the count, where truncation cannot reach it first.
   set(10, 0, 10, 5, 7, 132, 2)

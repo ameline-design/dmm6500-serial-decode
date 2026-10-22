@@ -376,11 +376,15 @@ def main():
                              'bench/bench_panel.tsp']
         # brun.panel() and NOT sdec.start(): the bench builds its own status screen and never wants the
         # analyser's two, which would spend display objects out of the pool of 463 that the soak needs.
+        # THE ENTRY POINT IS THE SOAK SETTINGS SCREEN, and nothing else: no capture is taken and
+        # no lap is started until Run Soak is pressed. sdec.start() is deliberately NOT called --
+        # the bench builds its own status screen, and the analyser's two would spend display objects
+        # the soak needs. docs/BRUN.md.
+        #
+        # THE REASONING LIVES HERE, IN PYTHON, rather than as TSP comments inside the string. It was
+        # written as a comment block in the archive, which KEEP_DOCS cannot reach -- it is a literal
+        # here, not module source -- so three comment lines survived a build asked to carry none.
         ENTRY = '''
--- ==================== TTI App entry point ====================
--- The soak settings screen, and nothing else: no capture is taken and no lap is started until
--- Run Soak is pressed. sdec.start() is deliberately NOT called -- the bench builds its own status
--- screen, and the analyser's two would spend display objects the soak needs. docs/BRUN.md.
 brun.panel()
 '''
         # TITLE AND DESCRIPTION BOTH, and the description is not a detail: only the Title was
@@ -390,7 +394,7 @@ brun.panel()
         # that belonged to its neighbour. Under 240 characters, which verify_tspa measures.
         BRUN_DESC = ('Test bed for the Serial Decode app: runs that decoder against the signal '
                      'generator over a plan of waveforms, rates and frame formats, unattended, '
-                     'recording every cell to USB key. Press TRIGGER to stop.')
+                     'recording every cell to USB key. Tick Abort on the status screen to stop.')
         BRUN_TAG = 'Serial, UART, Decode, Soak, Test'
         def _brun_manifest(k, v):
             if k == 'Title':
@@ -403,13 +407,29 @@ brun.panel()
         MANIFEST = [(k, _brun_manifest(k, v)) for k, v in MANIFEST]
         if os.path.abspath(args.out) == os.path.abspath(os.path.join(ROOT, 'Serial_Decode.tspa')):
             args.out = os.path.join(ROOT, NAME + '.tspa')
+        # THE BENCH ARCHIVE CARRIES NO COMMENTS, and the shipped app still carries all of them.
+        # Operator's instruction of 2026-10-22, and the asymmetry is the point: tsp/ is the product
+        # and its archive is something a reader may open, where this one is scaffolding whose only
+        # job is to be installed and run. Stripping it takes 522 kB to 416 kB, which matters on a
+        # firmware whose loadscript silently stops returning its sentinel as the body grows -- this
+        # engine hit that at 944 kB earlier today.
+        #
+        # SET HERE RATHER THAN BEHIND --no-docs, so that --bench --check builds a stripped body too
+        # and therefore AGREES with the file on disk. That is what --no-docs refuses to do and is
+        # right to refuse: a one-off diagnostic archive on the default path would make the next
+        # --check read it as the current build.
+        #
+        # The manifest is written below from MANIFEST and is not part of the body, so the header
+        # survives the strip -- which is what makes the archive still install.
+        global KEEP_DOCS
+        KEEP_DOCS = False
     if args.no_docs:
         # NOT SHIPPABLE, AND IT REFUSES TO PRETEND OTHERWISE: an archive with no comments in it must
         # not land on the default path, where the next --check would read it as the current build and
-        # every tool that reads the archive would see a body nothing in tsp/ produces.
+        # every tool that reads the archive would see a body nothing in tsp/ produces. The --bench
+        # archive above is the exception, and it is only an exception because --check strips too.
         if os.path.abspath(args.out) == os.path.abspath(os.path.join(ROOT, NAME + '.tspa')):
             raise SystemExit('--no-docs builds a diagnostic archive; give it its own --out path')
-        global KEEP_DOCS
         KEEP_DOCS = False
 
     out = []
