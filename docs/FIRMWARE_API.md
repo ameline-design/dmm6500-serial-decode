@@ -26,8 +26,7 @@ letters.
 ## The machine the API is talking to
 
 Two identical 400 MHz PowerPC processors sit on the CPU board with an FPGA that drives the display and
-touchscreen. The processor with 128 MB of DDR2 is the raster graphics engine; the other, with 256 MB,
-runs the application and the UI. The analog front end has its own ARM Cortex-M4.
+touchscreen; one has 128 MB of DDR2, the other 256 MB. The analog front end has its own ARM Cortex-M4.
 
 The firmware bundle names all of it. `versions.txt` inside `ki_DMM6500_v1_7_18a.zip`:
 
@@ -38,11 +37,41 @@ The firmware bundle names all of it. `versions.txt` inside `ki_DMM6500_v1_7_18a.
 | `amicro_3.zx` | v0.10.0a | the analog micro, the Cortex-M4 |
 | `6520` / `6521` / `6522` | v0.12.0a / v0.9.0a / v0.6.0a | the GPIB, TSP-Link and RS-232 comm cards, each with its own FPGA pair |
 
-**This matters for every drawing call.** A display call on the application CPU is a message to a
-different processor, so the cost is per *call*, not per pixel. That is the reason `display.setpixel`
-is too slow to draw with while the graph widget is fast: one graph call hands over a whole trace.
-The graphics engine can also be **saturated and crashed by being fed too much too quickly**, which is
-why this project holds its own display updates between 1 and 4 Hz.
+**Correction.** An earlier revision of this file called the 128 MB processor "the raster graphics
+engine" and said every display call was a message to a different processor. That was wrong. `CODE`:
+the start-up function at `0x00146FCC` creates the instrument's tasks and then, with no role switch,
+calls `c2c_text_channel_init(9, 0x1977, 0xFB775, "DAQ Display", 'F', 'T')`. That function
+(`0x000A7394`) registers channel 9 as the "Display C2C Client" (string `0x00545380`, materialised at
+`0x000A7498`) and then creates the task "PEG Main" (string `0x00545394`, materialised at `0x000A7708`;
+32 KB stack, priority 0xB4). It has exactly two call sites, `0x001479C4` and `0x00147AE8`, with
+byte-identical arguments. The widget tree, the graph's binning and autoscale, its tick engine and the
+line and marker rasterising are all in `main.x` and run in that task, on the same core as the Lua
+interpreter. Channel 9 is an in-process channel: the channel objects carry a local-or-remote flag at
+`+0x441`, and the local path calls the registered handler directly.
+
+What is not established is where the finished pixels go. PEG draws through a screen object
+(`DAT_00eb3ec4`) whose driver is unread, and `c2c_text_channel_init` installs an interrupt handler for
+a device at `0x90000C00` and reads a 64-bit time base at `0x90000C20` — that `0x90000000` window is
+where frame-buffer scan-out and touch would live ("PEG Touch Controller", `0x00545060`). So a second
+processor is still doing display work, at the frame-buffer level rather than the widget level. Which
+processor has which role, and what `logic.zx` configures, is unread.
+
+**What survives is the part that matters for cost:** a display call is still a message — to a task,
+not a processor — so the cost is per *call*, not per pixel. One `display.graph.add` hands over a
+buffer name and the receiving task does the rest; `display.setpixel` writes RAM directly and pays a
+Lua-to-C call per pixel.
+
+**The display task gets the core only when the Lua task blocks or yields.** `CONFIRMED` on 1.7.17a:
+with the same paint pending in both cases, a synchronous `graph.removeall` cost 0.24 ms after an
+80 ms `delay()` and 22 ms after an 80 ms busy spin on `os.clock()` — the spin left the display task
+exactly as far behind as no gap at all. So a Lua loop that never blocks starves it, and its work for
+a frame is paid either inside a synchronous call or inside a deliberate yield, never for free. The
+display queue is finite: `q_post_msg` at `0x0024104C` retries once after 100 ms on a full queue, then
+drops the message, and posts event `2351` for the first ten drops only (`CODE`). This bench has hung
+the instrument by flooding the display, with `1706` "Message dropped from display queue" in the log
+before the panic (`CONFIRMED`, `MEASUREMENTS.md`); which queue posts `1706` is unread. Outrunning the
+display task shows up as silent loss, not back-pressure, which is why this project holds its own
+display updates between 1 and 4 Hz.
 
 ### Getting at the image
 
@@ -105,7 +134,7 @@ a materialised address lands exactly on the first byte of a NUL-terminated strin
 
 So `link = flash - 0xFF200000`, the image is linked at `0x00000000`, and an importer told the flash
 base resolves nothing. The four large runs are contiguous in link space, so `main.x` is the
-**application** CPU alone; the raster engine's code is not in it.
+**application** CPU alone; whatever runs on the second processor is not in it.
 
 **The image states this itself, which beats inferring it.** It carries its own section table — a
 Green Hills `.secinfo` at flash `0xFFBE2300` — giving `.text` at RAM `0x4000`, `0x5217D0` long, with
@@ -214,8 +243,9 @@ manual, `DMM6500DisplayDoc.md` or `Display API Command Reference.md`.
 
 ### display.graph
 
-`CONFIRMED`. The graph widget is the fast drawing path: one call hands a whole trace to the graphics
-processor instead of a message per pixel.
+`CONFIRMED`. The graph widget is the fast drawing path: one call hands a buffer name to the display
+task, which keeps its own copy of the readings and draws from that. The mechanism, every member and
+the measured costs are under "The graph" below.
 
 | Confirmed function | Confirmed `nil` |
 |---|---|
@@ -223,36 +253,57 @@ processor instead of a message per pixel.
 | `graph.drawstyle`, `graph.markersize`, `graph.markerlastcolor` | `graph.getobject`, `graph.xscale`, `graph.yscale` |
 | `graph.select`, `graph.cursor`, `graph.add`, `graph.removeall` | `graph.cursorlock` |
 
-`HAZARD`: **setting the graph's horizontal units to frequency crashes the instrument.** Time in
-microseconds works and is what to use. Measured on this bench before this document existed.
+Five of the ten — `add`, `drawstyle`, `scalex`, `scaley`, `removeall` — are also exercised every frame
+by a working application (`dmm6500-fft/tsp/spectrum_graph.tsp`). `notes/firmware/registry.json`
+marks eight of them `exists_on_dmm6500: false, "measured nil on 1.7.17a"`; that column is wrong for
+the whole namespace, because the lookups it records were made on `display`, where these names are
+nil, not on `display.graph`. The same file lists 16 `display.graph.set*`/`getvalue`/`create` rows
+and 44 `display.graph.SCREEN_*`/`COLOR_*`/`TEXT*`/`TIMER_FOREVER` constants. They are
+namespace-attribution artefacts: the registrar pushes one `graph` sub-table and then exactly ten
+methods (`0x002CCF78`-`0x002CD2FC`, `CODE`), and all 60 are `display.*` names.
 
-The scaling constants live on `display`, not on `display.graph`: `XSCALE_LATEST`, `XSCALE_GROUP`,
-`XSCALE_ALL`, `XSCALE_AUTOBIN`, `XSCALE_SWIM`, `XSCALE_OFF`, and `YSCALE_SMART`, `YSCALE_ALL`,
-`YSCALE_PER_TRACE`, `YSCALE_PER_TRACE_ONCE`, `YSCALE_SWIM`, `YSCALE_OFF`.
+`HAZARD`: **setting the graph's horizontal units to frequency crashes the instrument.** Time in
+microseconds works and is what to use. Measured on this bench before this document existed. What the
+code says about it, and the one experiment that would pin it, are under "The frequency crash" below.
+
+The scaling constants live on `display`, not on `display.graph`. `IMAGE`: `XSCALE_SMART` 0,
+`XSCALE_LATEST` 1, `XSCALE_GROUP` 2, `XSCALE_ALL` 3, `XSCALE_AUTOBIN` 4, `XSCALE_SWIM` 5,
+`XSCALE_SHARED` 6, `XSCALE_OFF` 7; `YSCALE_SMART` 0, `YSCALE_PER_TRACE` = `YSCALE_ALL` 1,
+`YSCALE_PER_TRACE_ONCE` 2, `YSCALE_SWIM` 3, `YSCALE_SHARED` 4, `YSCALE_OFF` 5. `ELEMENT_DATA` 0,
+`ELEMENT_TIME` 1, and `ELEMENT_EXTRA` and `ELEMENT_SOURCE` are **both 2**, so passing one is
+indistinguishable from passing the other.
 
 ### Object types, in full
 
 `IMAGE`. The documented set is `OBJ_TEXT`, `OBJ_RECT`, `OBJ_LINE`, `OBJ_BUTTON`, `OBJ_BUTTON_MENU`,
-`OBJ_SCREEN`, `OBJ_SCREEN_MENU`, `OBJ_SWIPE` and the `OBJ_EDIT_*` family. The rest are not.
+`OBJ_GRAPH`, `OBJ_SCREEN`, `OBJ_SCREEN_MENU`, `OBJ_SCREEN_HOME`, `OBJ_SWIPE` and the `OBJ_EDIT_*`
+family. The rest are not.
 
 | id | name | id | name |
 |---|---|---|---|
-| 1 | `OBJ_TEXT` | 20 | `OBJ_SCREEN` |
-| 2 | `OBJ_RECT` | 21 | `OBJ_SCREEN_MENU` |
-| 3 | `OBJ_LINE` | 25 | `OBJ_SWIPE` |
-| **4** | **`OBJ_CIRCLE`** | **26** | **`OBJ_TIMER`** |
-| **5** | **`OBJ_IMAGE`** | **30** | **`OBJ_PROGRESS_BAR`** |
-| 6 | `OBJ_BUTTON` | **31** | **`OBJ_POPUP_MENU_SCREEN`** |
-| 7 | `OBJ_BUTTON_MENU` | 32 | `OBJ_EDIT_NOTIFY_EVENT` |
-| 8 | `OBJ_EDIT_NUMBER` | 33 | `OBJ_EDIT_WAIT_EVENT` |
-| 9 | `OBJ_EDIT_OPTION` | 34 | `OBJ_EDIT_BUFFER` |
-| 10 | `OBJ_EDIT_STRING` | 35 | `OBJ_EDIT_CHANNEL` |
-| 11 | `OBJ_EDIT_CHECK` | **36** | **`OBJ_LIST`** |
-| **12** | **`OBJ_EDIT_SLIDER`** | | |
+| 1 | `OBJ_TEXT` | 18 | `OBJ_GRAPH` |
+| 2 | `OBJ_RECT` | 20 | `OBJ_SCREEN` |
+| 3 | `OBJ_LINE` | 21 | `OBJ_SCREEN_MENU` |
+| **4** | **`OBJ_CIRCLE`** | 22 | `OBJ_SCREEN_HOME` |
+| **5** | **`OBJ_IMAGE`** | 25 | `OBJ_SWIPE` |
+| 6 | `OBJ_BUTTON` | **26** | **`OBJ_TIMER`** |
+| 7 | `OBJ_BUTTON_MENU` | **30** | **`OBJ_PROGRESS_BAR`** |
+| 8 | `OBJ_EDIT_NUMBER` | **31** | **`OBJ_POPUP_MENU_SCREEN`** |
+| 9 | `OBJ_EDIT_OPTION` | 32 | `OBJ_EDIT_NOTIFY_EVENT` |
+| 10 | `OBJ_EDIT_STRING` | 33 | `OBJ_EDIT_WAIT_EVENT` |
+| 11 | `OBJ_EDIT_CHECK` | 34 | `OBJ_EDIT_BUFFER` |
+| **12** | **`OBJ_EDIT_SLIDER`** | 35 | `OBJ_EDIT_CHANNEL` |
+| | | **36** | **`OBJ_LIST`** |
 
 `OBJ_CIRCLE`, `OBJ_IMAGE` and `OBJ_PROGRESS_BAR` are the interesting ones: a circle and an image are
-drawing primitives expressed as objects, which the graphics processor draws in one message, and a
+drawing primitives expressed as objects, which the display task draws from one message, and a
 progress bar is a widget this project currently fakes with a rectangle.
+
+The firmware's own type-name table at `0x009B0FDC` goes past the enum (`CODE`): 13-17 are the input
+dialogs ("Input Option", "Input Number", "Input String", "Input Channel", "Prompt"), 19 "Screen",
+**23 "Graph Screen"**, 24 "Swipe", 37 "Window", 38 "Fast Text" and 39 "Static Label", none with a
+`display.OBJ_*` constant. 23 matters below: every `display.graph.*` function accepts an object of
+type 18 or 23 and nothing else (allow-list `{18, 23, 0}` at `0x009B11C8`, `IMAGE`).
 
 ### Event flags are a bitmask
 
@@ -466,20 +517,26 @@ display.graph.add(g, b)
 display.changescreen(scr)
 ```
 
-Measured, with the event log clean throughout:
+Measured, with the event log clean throughout. `dmm6500-fft/docs/PERFORMANCE.md` holds the cost model
+the per-call figures come from:
 
 | step | time | note |
 |---|---|---|
-| 200 `buffer.write.reading` | 0.028 s | 140 µs each |
-| `display.graph.add(g, b)` | **0.004 s** | the firmware walks the buffer and draws |
-| **200 points, end to end** | **~32 ms** | about 30 Hz |
+| `buffer.write.reading` | **65 µs** each | 256 writes, function cached in a local; 72 µs through the table |
+| `buffer.clear()` | 0.2 ms | |
+| `display.graph.add(g, b)` | **4 ms** | one call, any number of points — a task round trip, see "The graph" |
+| `display.graph.removeall(g)` | **0.24 ms** idle, 10-60 ms otherwise | it waits for the display task's pending paint of the previous frame |
+| **256 points, refill and one repaint** | **~20 ms** | the graph phase of a 12.5 fps frame |
 | 1,600 `setpixel` writes | 0.020 s | 12.7 µs each |
-| `display.flush` | **0.203 s** | fixed -- the same for a 400x200 and an 800x480 object |
+| `display.flush` | **0.203 s** | an 800x480 surface both times — see "Flush is a bulk copy" |
 
-So the pixel path is capped at about 5 Hz by a flush whose cost does not scale with the area drawn,
-while the graph path redraws 200 points at 30 Hz and brings axes, auto-scaling, grid, labels,
-line/marker/histogram styles and legends with it. Nothing an app writes per pixel competes with the
-firmware's own trace renderer, which runs in the UI task rather than in Lua.
+An earlier revision of this table gave 140 µs per write, from 0.028 s for the 200-iteration loop
+above, `math.sin` and uncached lookups included. The direct measurement supersedes it.
+
+So the pixel path is capped at about 5 Hz by a flush that copies the whole surface, while the graph
+path refills and repaints 256 points in about 20 ms and brings axes, auto-scaling, grid, labels, line
+and marker styles and legends with it. Nothing an app writes per pixel competes with the firmware's
+own trace renderer, which runs in the display task rather than in Lua.
 
 Three things the create call will tell you if you get them wrong, each in its own event:
 `1714` "Object type Graph must have 6 parameters", `1130` "Parameter width, expected value from
@@ -488,9 +545,11 @@ Three things the create call will tell you if you get them wrong, each in its ow
 
 **A writable buffer is how an app plots arbitrary numbers.** `buffer.make(n, buffer.STYLE_WRITABLE)`
 then `buffer.write.format(b, unit, digits)` then `buffer.write.reading(b, value)`. A standard-style
-buffer refuses the writes with event `4926`, "must be of a 'writable' style to use this function".
-The x axis is the buffer's **timestamps**, which is worth knowing before trying to make it a
-frequency axis: points written faster than the timestamp resolution bunch together.
+buffer refuses the writes with event `4926`, "must be of a 'writable' style to use this function", and
+a plain Lua table is refused with `1138` — there is no bulk route into a buffer, so a refill costs
+65 µs a point. The default x axis is the buffer's **timestamps**, and points written faster than the
+timestamp resolution bunch together. A numeric x axis is the x-y form of `add`, which is the path the
+frequency crash most likely took — see "The frequency crash" below.
 
 ### display.setpixel writes the framebuffer directly
 
@@ -544,6 +603,333 @@ confirmed by reading a bounds check, is that a handle of 1024 would address obje
 refused — a stale or computed handle silently writing to a live object, with no event and nothing in
 the log. This project's pool is 463 objects, well inside the mask, so every handle it could hold
 aliases something real. Worth designing against; not yet worth asserting.
+
+## The graph: a trace is a copy in another task, fed by a subscription
+
+`CODE` throughout unless marked, from a static pass over 1.7.18a; `notes/firmware/graph/GRAPH.md`
+has every address and the method. Nothing in this section was measured on the instrument except
+where it says `CONFIRMED`: those figures come from the table above and from the probe of 2026-10-23
+recorded in `notes/firmware/graph/MEASURED.md`.
+
+### A display call is a message to a task
+
+Three layers. **Same thread:** the shared trampoline marshals the arguments and calls the display
+module's `execute`, the 59-case switch at `0x002CF58C`. Every `display.graph.*` case first calls
+`disp_check_supported(id, "<cap>", 0x009B11C8)`, whose allow-list is `{18, 23, 0}`, Graph and Graph
+Screen. **The display message:** the case fills the shared 0x6C-byte record at `0x009E7BB0` — `+3`
+length, `+4` object id in the low 10 bits, `+6` opcode, payload from `+0xC` — and posts it with
+`q_post_msg(DAT_00cef0b8, rec)`. Then it either waits, `ev_wait(DAT_00cef0b4, 0, timeout)` with a
+two-second timeout (`{0, 2, 0, 0}` at `0x00670748`, `IMAGE`; `CONFIRMED` by a cursor set with the
+9.9e37 "off" value, which the display task never acknowledges and which returns after 2000.1 ms),
+returning 0 on reply, -1 on timeout and -2 on abort, or returns at once. **The "PEG Main" task:** `relay_disp_record_to_peg` (`0x000B79EC`)
+maps the opcode through a 41-entry table at `0x00547AD0` (`IMAGE`: entry *n* is PEG type
+`0x40C8 + n`, except `0x0F` → `0x40D8`, `0x12` → `0x40D7`, `0x21` → `0x40EA`), copies the record into a
+per-object parameter block of stride `0x2F0`, and pushes a PegMessage. The custom-screen window's
+`Message()` (`0x00054510`, 18.8 KB) applies it to the widget whose pointer sits in the GUI object
+table (`0x00D17BE0 + id*0x260`, pointer at `+0x50`) and acknowledges with
+`c2c_send_text(DAT_00a75844, "S$DE")` (`0x00547A44`).
+
+So a synchronous call's time is a task round trip — queue, context switch, the receiving task's work
+up to its acknowledgement, and the wake-up — plus whatever that task had queued or in progress ahead
+of it, and PEG paints only when its queue is empty. `CONFIRMED` on 1.7.17a: `add` takes 0.5-5 ms
+whether the buffer holds 16, 256 or 710 points; `removeall` takes 0.24 ms when the display task is
+idle and 10-60 ms when the previous frame's paint is still in progress; a cursor set is acknowledged
+in 0.10-0.16 ms and a second one straight after it is just as fast; `scaley` with unchanged limits is
+acknowledged in 1.9 ms and a second one straight after waits 54 ms, because the first triggered a
+full repaint. The paint of a 784x300 graph with a 256-point line trace is therefore roughly 20-50 ms
+of the display task's time.
+
+Replies that carry data are text, `S$DE_<id>_<subcode>_<values…>`, parsed by `disp_rx_handler`
+(`0x002872C4`) and stored in the Lua-side object record, 176 bytes at `0x009D1BB0 + id*0xB0`:
+
+| subcode | record fields | event bit | meaning |
+|---|---|---|---|
+| `0x0F` | `+0x38 +0x40 +0x48 +0x50` xmin, xmax, ymin, ymax | 2 `EVENT_SCALE` | scale changed |
+| `0x10`-`0x12` | `+0x58/+0x60`, `+0x68/+0x70`, `+0x78/+0x80` | 4 `EVENT_DRAG` | vertical, horizontal, trigger cursor dragged |
+| `0x13`-`0x15` | the same pairs | 8 `EVENT_CURSOR` | cursor placed |
+| below `0x0F` | `+0x88 +0x90 +0x98 +0xA0` | 1 `EVENT_PRESS` | touch, in data coordinates |
+
+If the record's event mask (`+6`) has the bit and a handler string is installed, `disp_dispatch_event`
+(`0x00286C3C`) substitutes `%value` and `%id` and queues the chunk for the interpreter; otherwise the
+message counts as an acknowledgement.
+
+### The trace is a copy, fed by a subscription
+
+The display task does not read the buffer. `graph_trace_add` (`0x0002D3C4`) allocates an
+**82,464-byte** trace object per `add` — `0x14220`, built as `lis r26,1` / `addi r26,r26,0x4180` /
+`addi r3,r26,0xA0` at `0x0002D438`-`0x0002D440`, then `bl 0x0018CB1C` at `0x0002D444` — and appends
+its pointer to the graph widget's trace array at `graph+0x3EC`. It holds the buffer name (32 bytes at
+`+0x08`), the subscription handle (`+0x30`), per-trace x and y ranges with pixels-per-unit, and from
+`+0x220` a **720-slot ring of 56-byte records**: three floats at `+0x1C/+0x20/+0x24` (the value, and
+for binned data the min and max around it), flags at `+0x28` (bit 7 overflow), the x value at
+`+0x2C/+0x30` as seconds and nanoseconds on a time axis or two floats on a numeric one, and scratch at
+`+0x00`-`+0x14` where the extent passes write pixel coordinates. **Values are floats**; the display
+task never sees the buffer's doubles. 720 slots against a 710-pixel plot is one record per pixel
+column; the appender (`0x00022140`) caps the count at `0x2D0` and wraps.
+
+The ring is filled by streaming. `graph_trace_add` calls `bufsub_subscribe` (`0x000B4708`), which
+sends `S$BE` (`0x005479A8`) and the buffer name to the buffer module; an empty name means
+`defbuffer1`. There (`0x002BB684`) the subscription installs two hooks on the buffer object itself
+(`rbuf_install_hooks`, `0x0027F824`): an append hook (`0x002BC8BC`) and a clear hook (`0x002BD87C`).
+The append hook drains the readings pending for its cursor and sends them **batched,
+`floor(239 / record size)` per message** (`0xEF / size`, around `0x002BCE40`; a 0x14-byte header plus
+the records, with a more-follows bit). The clear hook sends one clear marker. On the display side the
+appender copies each record into the ring and, only if the graph's pending flag `+0x5B0` is clear,
+posts PEG **`0x403E`** and sets the flag — however many records arrive, one repaint is outstanding at
+a time. The graph widget's `Message()` (`0x0002A164`) handles `0x403E` with `graph_new_data_process`
+(`0x00028F94`) and, if anything changed, the repaint (`0x00033540`: axes, traces and cursors between
+`BeginDraw` and `EndDraw`). The extent passes walk only the records not yet processed (`+0x1F8` to
+`+0x200`), so the per-batch cost is O(new records) for extents plus O(ring) for the draw, whatever
+the buffer's size.
+
+Three consequences. `buf.clear()` empties the ring and repaints, which is the flicker a refill in
+place shows (`CONFIRMED`, the spectrum analyser's own observation). The acknowledgement that ends
+`add`'s 4 ms is sent **before** any readings arrive; the first paint happens when the burst lands.
+And the initial burst is decimated: the stream request `S$BA` (`0x00527550`, sent by
+`graph_trace_rescale` at `0x00027EC0`) names a point budget of `0x2C6` = 710 for the full-width graph
+or `0x288` = 648 in the latest-window mode, and a larger buffer is decimated by the buffer module
+before it is sent. For 256 readings nothing is decimated.
+
+### Why `removeall` + `add` every frame costs what it does
+
+The pair is the only API-level way to get exactly one repaint per frame, and it does more than it
+looks. `removeall` unsubscribes (`S$BB`, `graph_trace_remove_first` at `0x0002C9C4`) and **frees the
+82 KB trace object**; `add` **allocates a new one**, runs eight sub-object constructors,
+re-subscribes, and the display task requests the buffer's current contents in one burst. Two
+blocking round trips plus an 82 KB malloc and free per frame, on an instrument whose heap the
+operator already watches. There is **no begin/end-update, batch or explicit-repaint opcode** among
+the module's 59 cases; the complete list is below. `drawstyle` does end in an invalidate, but the
+trace already repaints when data arrives, so an extra one only adds a frame.
+
+`CONFIRMED` on 1.7.17a, 256-point frames, event log clean throughout:
+
+| per frame | Lua side | display task |
+|---|---|---|
+| refill with the trace bound | 76 µs a write against 54 unbound: the append hook costs **22 µs a reading** | one repaint per coalesced batch — the partial-trace flicker |
+| `removeall`, refill, `add` | 0.24 + 14 + 1.2 ms | ~22 ms for the burst and one paint, paid inside the *next* `removeall` |
+| refill bound, then `removeall` + `add` (the spectrum analyser's order) | 19.7 + ~22 + 2 ms | the same, plus the streamed batches |
+| hide, refill bound, show | 0.030 + 19.7 + 0.048 ms | **36.5 ms** of message work for 64 batches of four readings plus hide and show, then the paint |
+
+So the expensive half of the pair is `removeall`, and only because it waits for the paint the display
+task still owes from the previous frame; with that paint done it costs 0.24 ms. Hiding the graph
+(`setstate` INVISIBLE / ENABLE, both fire-and-forget as read) makes the Lua side cheap but gives the
+display task more to do, not less, because the subscription forwards readings four to a message where
+the burst sends them all at once — and since that task runs only when Lua blocks, a frame built on
+hide/show has to yield for those 36 ms explicitly or fall behind on every frame. The pair's merits are
+one burst and natural pacing; hide/show's are no blank interval and no 82 KB churn. Screenshots during
+12 s loops caught a blank graph in both pair orders and none under hide/show, but only 3-4 grabs
+landed per loop, so that part is indicative, not measured.
+
+### The complete `display.graph.*` surface
+
+Ten functions, registered into the `graph` sub-table at `0x002CCF78` and `0x002CCFDC`-`0x002CD2FC`.
+All take a graph object, else `1717`. `cmd` is the switch case, `op` the display-message opcode,
+`PEG` the message type on the display side; S waits for the acknowledgement, A returns at once.
+
+| Lua | cmd | body | descriptor | args | op | PEG | S/A |
+|---|---|---|---|---|---|---|---|
+| `graph.add` | 39 | `0x002D774C` | `0x00EB2430` | 1..7 | `0x18` | `0x40E0` | S |
+| `graph.markerlastcolor` | 40 | `0x002D7938` | `0x00EB243C` | 2..3 | `0x26` | `0x40EF` | A |
+| `graph.markersize` | 41 | `0x002D79C8` | `0x00EB2448` | 2..3 | `0x25` | `0x40EE` | A |
+| `graph.removeall` | 42 | `0x002D7AAC` | `0x00EB2454` | 1 | `0x19` | `0x40E1` | S |
+| `graph.select` | 43 | `0x002D7AD0` | `0x00EB2460` | 2..4 | `0x1A` | `0x40E2` | S |
+| `graph.scaletrace` | 44 | `0x002D7B70` | `0x00EB249C` | 2 | `0x28` | `0x40F1` | A |
+| `graph.scalex` | 45 | `0x002D7C10` | `0x00EB246C` | 1..5 | `0x1B` | `0x40E3` | S; one argument sends nothing |
+| `graph.scaley` | 46 | `0x002D7C10` | `0x00EB2478` | 1..5 | `0x1C` | `0x40E4` | S; one argument sends nothing |
+| `graph.cursor` | 47 | `0x002D7EB0` | `0x00EB2490` | 2..4 | `0x1E` | `0x40E6` | S; two arguments send nothing |
+| `graph.drawstyle` | 48 | `0x002D7E30` | `0x00EB2484` | 2 | `0x1D` | `0x40E5` | A |
+
+Existence of all ten is `CONFIRMED` by `type()` (the table under `display.graph` above).
+`display.graph.delete` (cmd 49, `(string)`) is `display.delete`'s by-name form, not a graph method.
+`display.setevent` posts opcode 6 and `display.setstate` opcode `0x0E`, both without waiting.
+
+**`add(g [, ybuf [, yelem [, x [, xelem [, ?, legend]]]]])`.** Argument 4 is declared `value`
+(`0x0F`) and resolved at run time; an earlier pass rendered the type word as `table`, which it is
+not. The body at `0x002D774C` accepts:
+
+- `add(g)` — no buffer. The subscription's empty name defaults to `defbuffer1`.
+- `add(g, ybuf [, yelem])` — y from `ybuf`, x is time.
+- `add(g, ybuf, yelem, xbuf [, xelem])` with a **reading buffer** fourth: the numeric x-y plot.
+  Without `xelem` it is forced to 2, `ELEMENT_EXTRA`.
+- `add(g, ybuf, yelem, chanlist [, xbuf, xelem, legend])` with a **string** fourth: a channel list
+  (`"101"`, `"all"`) selecting one channel of a scan buffer; only 4 or 7 arguments are accepted on
+  this path. Anything else fourth posts `1127` "expected reading buffer or channel list", the text
+  this bench has already seen.
+
+What `graph_add_trace` (`0x0028D7E0`) then enforces: `yelem == ELEMENT_TIME` → `1730` "y axis cannot
+be time"; the x buffer must be the **same** buffer as the y buffer (`strcmp` of the two names, else
+`1724`); the first trace fixes the graph's kind — `xelem == ELEMENT_TIME` is a time axis, anything
+else numeric — and a later trace of the other kind gets `1723`. Limits: 20 traces per graph
+(`1722`), 30 across all graphs (`1736`), 10 graph objects (`1736`, in `disp_create_obj`). The message
+carries the two buffer *names*, 32 bytes each at `+0x0C` and `+0x2C`, `(yelem << 4) | xelem` at
+`+0x4C`, the buffers' style codes at `+0x4F`, and 16-bit handles for the channel list and legend at
+`+0x60/+0x62`. So `add(g, buf, ELEMENT_DATA, buf, ELEMENT_TIME)` — the spectrum analyser's call — is
+the time plot, and `add(g, buf, ELEMENT_DATA, buf, ELEMENT_EXTRA)` the x-y plot.
+
+**`scalex(g [, method [, axis [, min [, max]]]])` and `scaley`** share one body; `cmd == 46` selects y.
+
+- **One argument is a free read, and only works after `setevent`.** If the object's event mask
+  (`+6`) is non-zero it returns the two doubles the display task last reported (`+0x38/+0x40` for x,
+  `+0x48/+0x50` for y) without sending anything; if the mask is zero it returns nothing. The mask is
+  set by `display.setevent(g, display.EVENT_SCALE, 1)`, which also makes the display task send a
+  subcode `0x0F` report whenever the scale changes. So: enable `EVENT_SCALE` once, then poll
+  `scalex(g)`. `CONFIRMED` on 1.7.17a with `display.ON` as the third argument: `nil, nil` before
+  the `setevent`, `0, 0` after it until the first scale change, then the autoscaled limits
+  (`x 0, 14.025` and `y -3.2, 3.2` after re-adding a trace of three times the amplitude).
+- **Two to five arguments** go through `graph_scale` (`0x0028E150`) and wait. `axis` is `AXIS_NORMAL`
+  0 or `AXIS_LOG` 1; non-zero takes the limits as absolute values, and the log flag is honoured for y
+  only (`graph+0x3A0`). `hi < lo` is swapped; `lo == hi` with two limits → `1130` "minimum and maximum
+  values cannot be equal"; a numeric limit outside ±1e15 → `1131`; a time limit outside 0..1e8 s →
+  `1131`. The call returns the two values it sent, not the display task's result, and an unsupplied
+  limit is 0.0.
+
+**`cursor(g, type [, pos1 [, pos2]])`.** `CURSOR_VERTICAL` 1, `CURSOR_HORIZONTAL` 2,
+`CURSOR_TRIGGER` 3 (`IMAGE`). Two arguments read the stored positions without a message; three or
+four sort the pair, store it, send it and wait. A position at or above 9e37 switches that cursor
+off — and `CONFIRMED`, that call is never acknowledged: it returns after the 2 s timeout, with no
+event. In-range positions, and off-plot ones such as 1e6, are acknowledged in 0.10-0.16 ms with no
+paint queued behind them, which makes an off-plot cursor set the cheapest synchronous probe of the
+display task's backlog. Dragging a cursor on the glass sends subcodes `0x10`-`0x15` back.
+
+**`select(g, buf [, elem [, chanlist]])`** finds the trace whose name, element and channel-list
+handle match (`0x0002DDF4`) and makes it active: the one autoscaled in per-trace modes, the one
+`scaletrace` copies, the one cursors read. Selecting fires the scale and cursor callbacks and
+rescales every trace.
+
+**`scaletrace(g, mode)`** needs a custom object id (at least `0x31`, else `1130` "need custom screen
+id not a system one"). `TRACE_ALL` 1 forces both scale methods off, copies the active trace's extents
+into the graph's range and rescales every trace to it; `TRACE_ACTIVE` 0 restores per-trace scaling.
+
+**`drawstyle(g, style)`**, **`markersize(g, size [, lastsize])`**, **`markerlastcolor(g, which
+[, colour])`.** `size` must be 1..5 (`1130` "marker size 1 to 5") and `lastsize` defaults to it.
+`which` is `MARKER_LAST_TRACE` 0 or `MARKER_LAST_CUSTOM` 1; `colour` is `0xRRGGBB`, default -1 for
+unset. All three return without waiting.
+
+**`display.setevent(g, event, enable_or_handler)`** is not a graph member but is the only way to
+make the display task report scale changes (`0x0028B384`). `EVENT_SCALE` 2 and `EVENT_CURSOR` 8 are
+valid only on a graph; `EVENT_DRAG` 4 on a graph or a slider; `EVENT_PRESS` 1 on anything; `ENDAPP`,
+`SHOW`, `HIDE` and two values with no constant, `0x80` (knob rotate) and `0x100` (knob press), only
+on screens — `1717` otherwise. A string third argument is stored as a Lua chunk with `%value` and
+`%id` substituted; anything else is read as a boolean enable.
+
+### Scaling
+
+`graph_set_scale_methods` (`0x0002CED0`) maps the Lua enum to the widget's internal code:
+
+| Lua x | internal | | Lua y | internal |
+|---|---|---|---|---|
+| `XSCALE_OFF` 7 | 0 fixed | | `YSCALE_OFF` 5 | 0 fixed |
+| `XSCALE_ALL` 3 | 1 whole buffer, decimated to 710 points | | `YSCALE_PER_TRACE` = `ALL` 1 | 10 continuous per-trace autoscale |
+| `XSCALE_LATEST` 1 | 2 window ending at the newest reading, 648 points | | `YSCALE_PER_TRACE_ONCE` 2 | 9 autoscale until six points exist, then hold |
+| `XSCALE_GROUP` 2 | 7, with `+0x3E0` = 1 | | `YSCALE_SWIM` 3 | 0xB swim lanes |
+| `XSCALE_AUTOBIN` 4 | 8 histogram auto-bin | | `YSCALE_SHARED` 4 | 0xC one range for all traces |
+| `XSCALE_SWIM` 5 | 9 | | `YSCALE_SMART` 0 | the remembered mode, flagged smart |
+| `XSCALE_SHARED` 6 | 10 | | | |
+| `XSCALE_SMART` 0 | the remembered mode, flagged smart | | | |
+
+Smart mode (`0x00027950`) on a time axis picks `LATEST` when the data span exceeds the visible span by
+a 0.7 ratio, `ALL` with at most four records, `GROUP` for a scan group, and a fixed window otherwise;
+the remembered y mode is `SHARED` with more than one trace and 9 with one. The first trace's kind sets
+the defaults (`graph_set_xaxis_kind`, `0x0002BF14`): a time axis gets x internal 4 with the smart
+flag, y `0xC`, draw style `BOTH`, ranges 0..10 s and 0..10; a numeric axis gets x `ALL`, y 10, style
+9, both ranges 0..1 then re-ticked.
+
+**Autoscale has a 35 % hysteresis band.** `trace_y_extent_b` (`0x00025E70`) finds the min and max of
+the new records (in log10 for a log axis, floored at 1e-35) and changes the trace's range only if the
+new min lies outside `[lo, lo + 0.35·span]` or the new max outside `[hi − 0.35·span, hi]` (0.35 at
+`0x00527510`, `IMAGE`) — which is what stops a live trace re-ranging on every reading.
+`graph_fn_2705c` (`0x0002705C`) then combines traces: `SHARED` gives all traces one range rounded by
+`nice_range` (`0x00026590`); **swim** places trace *i* of *n* in its own vertical band of width
+`1.1·(max − min)`, stacked so the lanes do not overlap; a trace with no data inherits the active
+trace's range; a histogram floor is clamped to 0; trigger-cursor mode pads 10 % around the cursor
+level. Time-axis x autoscale is done by the stream request (`S$BA` with the window and point
+budget), with 0.85 / 0.2 / 1.2 factors (`0x005274E0`-`F0`) deciding when the `LATEST` window slides;
+numeric x axes autoscale like y, with the same band.
+
+**Ticks.** `axis_tick_engine` (`0x0002338C`): the step is a nice number — a floor-log10 picks the
+decade, `ceil(step / decade)` snaps up, and one more decade step is added if the tick count exceeds
+the axis maximum; six divisions by default (`0x005274C8`). The label exponent is the engineering
+exponent of the larger limit, rounded to a multiple of 3, and labels switch to an offset-plus-delta
+form when the span is more than three decades below the magnitude. Time axes (`time_axis_ticks`,
+`0x0000C1C4`) choose seconds, minutes or hours formats with the switch at 60 s and the day at
+86,400 s — the reason the spectrum analyser keeps its scaled "seconds" below 59. `HAZARD`: the tick
+loop `for (t = lo + first; t < hi + step/2; t += step)` has no count limit other than the step; the
+display task's own guard is `1731` "Graph scale values vary too greatly in accuracy" when
+`log10(|lo|) − log10(|span/10|) > 9`, and limits that pass the Lua-side range checks but fail it are
+refused with the previous scale kept.
+
+Touch is handled in the same widget: a one-finger drag of more than 10 pixels switches the x method
+off and pans; two fingers zoom, with span limits 1e-7..1e8 s for time and 1e-11..1e19 for numbers.
+
+### Draw styles, and why there is no histogram
+
+`drawstyle` writes the widget's style mask at `graph+0x59C` (`graph_set_drawstyle`, `0x0002D37C`):
+`STYLE_LINE` → 1, `STYLE_MARKER` → `0xC`, `STYLE_BOTH` → `0xD`; on a numeric-x graph bits 1-2 are
+cleared, giving 1 / 8 / 9. Bit 0 connects points, bit 2 draws markers, bit 3 is the histogram and
+x-y point form. The painters select on the graph's axis kind at `+0x1DC`: 0 time, 1 time with delta
+records, 2 numeric x-y, 3 histogram.
+
+**Histogram mode is not reachable through `display.graph.add`.** The add handler calls
+`graph_set_xaxis_kind` with 0 or 2 only; kinds 1 and 3 are set by the built-in Graph and Histogram
+screens (`SCREEN_GRAPH` 11, `SCREEN_HISTOGRAM` 13), whose setup code at `0x00034D64`-`0x00037900`
+calls `graph_trace_add` directly. There is no hidden `STYLE_*` value, and `XSCALE_AUTOBIN` only acts
+on a kind-3 graph. `ABSENT` as an API feature. Trace colours come from the firmware's own per-trace
+table (`0x003185B0`, red `0xFF0000` fallback); marker size and the last-marker colour are the only
+other appearance controls.
+
+### Every display-message opcode
+
+From the case bodies and the display-side dispatcher: 1 create, 2 delete, 3 setcell, 4 setcolor,
+5 setabbrv, 6 setevent, 7, 8, 9 flush, `0xA` setminmax, `0xC` popup menu, `0xD` setposition, `0xE`
+setstate, `0xF` settext, `0x10` setthickness, `0x11`, `0x12` image data, `0x13` setvalue, `0x16`,
+`0x18` graph.add, `0x19` graph.removeall, `0x1A` graph.select, `0x1B` graph.scalex, `0x1C`
+graph.scaley, `0x1D` graph.drawstyle, `0x1E` graph.cursor, `0x1F` getpixel, `0x20` getchecksum,
+`0x21` dump, `0x25` graph.markersize, `0x26` graph.markerlastcolor, `0x27` popup-menu list, `0x28`
+graph.scaletrace. **None is a batch, a begin/end or an explicit repaint.**
+
+### Enum values settled statically
+
+Six constants are not in the data tables; they are registered by code as `{name, r30}` / `{name, r31}`
+pairs, where `r30` is `li r30,0` at `0x002CC0E0` and `r31` is 1 — pinned by the
+`STYLE_LINE/MARKER/BOTH` table registered 60 bytes earlier as `{r30, r31, r28}` with the data-table
+values 0/1/2:
+
+| constant | value | registered at |
+|---|---|---|
+| `AXIS_NORMAL` / `AXIS_LOG` | 0 / 1 | `0x002CED98`-`0x002CEDC4` |
+| `TRACE_ACTIVE` / `TRACE_ALL` | 0 / 1 | `0x002CEDD4`-`0x002CEE00` |
+| `MARKER_LAST_TRACE` / `MARKER_LAST_CUSTOM` | 0 / 1 | `0x002CECA0`-`0x002CECCC` |
+
+`CONFIRMED` on 1.7.17a: `tonumber` of the six, in the order `AXIS_NORMAL`, `AXIS_LOG`, `TRACE_ALL`,
+`TRACE_ACTIVE`, `MARKER_LAST_TRACE`, `MARKER_LAST_CUSTOM`, reads `0 1 1 0 0 1`.
+
+### The frequency crash
+
+What the code establishes, against the `HAZARD` recorded under `display.graph`:
+
+- **The unit of an axis comes from the buffer, not from a `display.*` argument.** The `0x407F`
+  handler reads the subscription's unit code and looks the symbol up through
+  `DAT_009B034C[buffer.UNIT_*]` and `DAT_00526A44[(code+1)*4 + range]` into the symbol table at
+  `0x00526580`. For `UNIT_HERTZ` 9 the row is `09 17 17 17` → index 9 → `"Hz"`. **The Hz path is
+  well-formed**; the only garbage row is code 22, which no `buffer.UNIT_*` produces. The axis label is
+  not read from the two 21-entry tables at `0x006B3290` and `0x006B4E28` where an earlier pass found
+  Hertz as an empty string.
+- **The axis kind is decided by the x element, not by the unit.** `add(g, buf, ELEMENT_DATA, buf,
+  ELEMENT_EXTRA)` gives a numeric x axis whatever the extra element's unit;
+  `add(g, buf, ELEMENT_DATA, buf, ELEMENT_TIME)` gives a time axis. "Setting the horizontal units to
+  frequency" can only have meant binding x to an element whose unit was Hz — the extra element
+  written by `buffer.write.format(buf, UNIT_VOLT, …, UNIT_HERTZ, …)` — which is the **numeric x-y
+  path**, and no built-in screen exercises it.
+- `HAZARD`: on that path the first trace arrives with extents at the sentinels ±1e99
+  (`0x00527500/08`) until the first records are processed; `graph_select_first_trace` copies trace
+  extents into the graph range when the x method is 0; and the tick loop has no count bound. A
+  sentinel range reaching the tick loop would write the tick array far past its end. Whether that
+  ordering can occur depends on message timing that cannot be read statically.
+
+The fault is not pinned, and the failing call was never captured. The discriminating experiment: on a
+`STYLE_WRITABLE_FULL` buffer with extra unit `UNIT_HERTZ`, bind `add(g, buf, ELEMENT_DATA, buf,
+ELEMENT_EXTRA)`; then the same with extra unit `UNIT_VOLT`. If both crash the fault is the x-y path;
+if only the first, the unit. Event log clean, and read the PC off any bluescreen.
 
 ## bit: the undocumented bitwise table, and when it is worth calling
 
@@ -616,8 +1002,9 @@ kind: `emu`, `flog`, `c2c`, `backgrounds`, `tmodel`, `sysinfo`.
 `backgrounds` are all nil as globals on a DMM6500 at 1.7.17a. Registered in the image, not reachable
 here.
 
-`interruptcontroller` and `interruptmapping` are the ones to look at next: if the mailbox between the
-application CPU and the graphics processor is reachable from Lua, it is reachable through those.
+`interruptcontroller` and `interruptmapping` are the ones to look at next: the display channel's
+device at `0x90000C00` is served by an interrupt handler, and if anything on the hardware side of the
+display is reachable from Lua, it is reachable through those.
 
 ---
 
@@ -707,8 +1094,12 @@ dead code: `sysinfo.nvmeminit` and `sysinfo.nvmemdump`, ordinary registrations i
 `CODE` and `CONFIRMED`, and the two together resolve a contradiction in my own measurements.
 
 `display.flush(id)` is not a small message. It copies the image object's **entire pixel block** to
-the display processor over channel 9 in **240-byte chunks** under a per-channel lock. So its cost is
-proportional to the surface's **area**: an 800x480 32-bit surface is 1,536,000 bytes, 6,400 chunks.
+the display task over channel 9 — the in-process channel described under "The machine the API is
+talking to", whose maximum message is 240 bytes — in **240-byte chunks** under a per-channel lock. So
+its cost is proportional to the surface's **area**: an 800x480 32-bit surface is 1,536,000 bytes,
+6,400 chunks. At 0.203 s that is 7.5 MB/s, slow for a copy within one core, so the receiving task's
+repaint may be the real cost; a 100x100 surface against an 800x480 one would tell, and has not been
+timed.
 
 I measured 0.203 s for a 400x200 object and 0.203 s for an 800x480 one, which looks like a fixed
 cost and contradicts that — until the second finding explains it. **The string argument to
@@ -741,10 +1132,43 @@ stale handle corrupts some *other* image. Null a handle at the point of delete.
 
 ## Still open
 
-- Every signature. The names and constants above are solid; the argument lists are not, and are
-  being recovered from the registrar's metadata and the handlers rather than guessed.
-- `display.flush` — whether it batches drawing. This is the single most useful thing left.
+Three items from the last revision are closed and have been removed: every display signature is in
+the table above; the event table is `docs/firmware-events.tsv`; and `display.flush` does not batch
+drawing — there is no batch, begin/end or repaint opcode among the 59 cases, so `flush` is the image
+copy and nothing else.
+
+Settled on 1.7.17a since the last revision, each a `CONFIRMED` tag above and a line in
+`notes/firmware/graph/MEASURED.md`: the six enum values; the 2 s acknowledgement timeout; the
+one-argument `scalex`/`scaley` read-back; the 22 µs streaming cost per reading; `add` at 0.5-5 ms
+independent of point count and `removeall` as the call that waits for the pending paint; hide and
+show as fire-and-forget posts (0.030 and 0.048 ms) with 36.5 ms of display-task work behind a hidden
+256-point refill; the display task running only when Lua blocks; and `add(g)` with no buffer binding
+the empty `defbuffer1` without an event.
+
+Still open, each with the measurement that settles it. None touches calibration.
+
+- **Does hiding the graph erase its area on the glass?** Hide for eight seconds and photograph the
+  panel through the LXI grab, which takes about three seconds under load; a three-second hide was
+  tried and both grabs landed after the show. If the old trace stays visible while hidden, a
+  hide/refill/show frame has no blank interval at all.
+- **Blank intervals in the pair orders, properly.** Only 3-4 screenshots landed per 12 s loop, because
+  the web server shares the starved core. A loop that yields longer between frames lets more land, at
+  the cost of representativeness.
+- **The display task's paint time against graph size.** 20-50 ms for a 784x300 graph with a 256-point
+  line trace. Repeat the probes on a 400x150 graph: if it halves, area is the cost and a smaller plot
+  is a frame-rate lever.
+- **The frequency crash.** The failing line, then the discriminating experiment under "The frequency
+  crash". It costs a power cycle, so it is the operator's call.
+- **`add(g, buf, ELEMENT_DATA, "101")`** should filter a scan buffer to channel 101; what it does on a
+  non-scan buffer is unread.
+- **What the second processor does.** Not a frame-rate question. Time `display.flush` on a 100x100
+  surface against an 800x480 one, if two surfaces of different sizes can be obtained under the
+  surface-name rule above: a fixed cost means the repaint dominates, not the transfer.
+- **Which queue posts `1706`.** `2351` is `q_post_msg`'s; the bench has only ever seen `1706` before a
+  panic, from a mechanism that is unread.
+
+And from before:
+
 - What consumes the `ki.display` action codes, which is the HELP key answer.
-- `logic.zx` and `rom.zip`, neither opened. `logic.zx` is the best candidate for the raster engine.
-- The event-number table. A code-to-text list for 2201, 2205, 2710, 1130, 1138, 1703, 1716 and 4915
-  would have saved this project hours.
+- `logic.zx` and `rom.zip`, neither opened past the header. `logic.zx` is a Lattice bitstream and the
+  only candidate on disk for whatever sits behind the `0x90000000` window.
