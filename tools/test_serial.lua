@@ -6973,6 +6973,35 @@ function test_bitorder()
         string.format('0x41 -> %s -> %s', tostring(sdec.ua_revbits(0x41, 8)),
                       tostring(sdec.ua_revbits(sdec.ua_revbits(0x41, 8), 8))))
 
+  -- THE LOOKUP TABLE AGAINST THE DEFINITION, EXHAUSTIVELY. ua_revbits answers the byte case from a
+  -- 256-entry table and keeps the loop only for nine bits, so the two must agree everywhere they
+  -- overlap -- and an involution check cannot see a width-dependent error, because reversing twice
+  -- hides a wrong shift. Every value in 0..511 against every width in 2..9 is 4096 comparisons and
+  -- costs milliseconds. The reference is written out here rather than called: a table compared
+  -- against itself is the vacuous test this file's own rules forbid.
+  local rvref = function (v, nb)
+    local out, src, j = 0, v, nil
+    for j = 1, nb do
+      out = out * 2 + math.mod(src, 2)
+      src = math.floor(src / 2)
+    end
+    return out
+  end
+  local rvbad, rvn, nb, v = nil, 0, nil, nil
+  for nb = 2, 9 do
+    for v = 0, 511 do
+      rvn = rvn + 1
+      if sdec.ua_revbits(v, nb) ~= rvref(v, nb) then
+        rvbad = string.format('nbits=%d v=%d: table %s, loop %s', nb, v,
+                              tostring(sdec.ua_revbits(v, nb)), tostring(rvref(v, nb)))
+        break
+      end
+    end
+    if rvbad ~= nil then break end
+  end
+  check('the ua_revbits table agrees with the loop at every width and value',
+        rvbad == nil, rvbad or string.format('%d comparisons', rvn))
+
   -- CONTROL: ordinary LSB text must be left alone. If this flips, every existing capture regresses.
   local ra = run({bytes = fwd, baud = 9600, fs = 100000})
   check('an LSB-first line stays LSB under Auto', sdec.msb_used == false,

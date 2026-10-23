@@ -2367,11 +2367,38 @@ end
 
 -- One frame
 --   [...]
--- default LSB path, and a descending weight means halving, which yields a FLOAT on Lua 5.3+ that
--- `string.format('%02X', v)` then refuses -- while 5.0.2 on the instrument has no integer subtype and
--- would have hidden it until a host-side suite printed `65.0`. Integer arithmetic throughout here.
+-- discarding what falls off: bit k lands at 7-k, so the bits at or above n land below 8-n and the
+-- divide drops them. nbits is 8 on nearly every frame and 5..7 otherwise, so the common case is a
+-- single table read; nine bits is forced-only (see sdec.try_nbits_all) and keeps the loop.
 function sdec.ua_revbits(v, nbits)
   if v == nil or nbits == nil or nbits < 2 then return v end
+  local t = sdec.ua_rv
+  if t == nil then
+    t = {}
+    local floor = math.floor
+    local i = 0
+    while i < 256 do
+      local out, src, k = 0, i, 0
+      while k < 8 do
+        out = out * 2 + math.mod(src, 2)
+        src = floor(src / 2)
+        k = k + 1
+      end
+      t[i] = out
+      i = i + 1
+    end
+    sdec.ua_rv   = t
+    sdec.ua_rvsh = {}
+    local n = 2
+    while n < 8 do sdec.ua_rvsh[n] = 2 ^ (8 - n); n = n + 1 end
+  end
+  if nbits <= 8 then
+    local r = t[v]
+    if r ~= nil then
+      if nbits == 8 then return r end
+      return math.floor(r / sdec.ua_rvsh[nbits])
+    end
+  end
   local out, src, i = 0, v, nil
   for i = 1, nbits do
     out = out * 2 + math.mod(src, 2)
