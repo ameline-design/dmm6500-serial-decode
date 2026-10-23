@@ -37,7 +37,42 @@ brun.pn_laps_max = brun.pn_laps_max or 210
 -- object in this firmware's object set -- the app's own options form uses only NUMBER and OPTION --
 -- and a pick list cannot produce a typo that costs a lap to discover. The live value is bsdg.ip, and
 -- it leads the list so the field opens on whatever the module was loaded with.
-brun.pn_sdg      = brun.pn_sdg or {'10.0.1.79', '10.0.1.78', '192.168.0.79'}
+-- THE ADDRESS IS ONE STRING FIELD, and the route there is worth recording because three designs
+-- were tried on the glass. An option list of whole addresses could only offer what somebody had
+-- listed. A prefix option plus an OBJ_EDIT_NUMBER octet needed 283 px of a 130 px gap and the number
+-- field cannot be narrowed -- measured, its box is a fixed ~150 px whatever `digits` and the value
+-- range say, and display.create takes no width for it. An OBJ_EDIT_STRING holds the whole address in
+-- ONE box of about that same width.
+--
+-- SFORMAT_IP_ADDRESS, WHICH IS UNDOCUMENTED AND WAS FOUND IN THE FIRMWARE IMAGE. Probing by name
+-- had concluded no IP format existed -- every spelling tried was SFORMAT_IPADDRESS, and the real one
+-- has an underscore between IP and ADDRESS. The display namespace is metatable-backed and
+-- next(display) yields NOTHING, so a name that is not guessed cannot be discovered from the
+-- instrument at all. It came out of ki_DMM6500_v1_7_18a.zip: main.zx is itself a zip, main.x inside
+-- it is a Motorola S-Record, and once that hex is decoded the API names are plain strings. No
+-- encryption anywhere -- the hex encoding alone was what defeated strings(1).
+--
+-- Confirmed on 1.7.17a: display.SFORMAT_IP_ADDRESS is userdata, the field creates, and '10.0.1.79'
+-- round-trips with no event. docs/UNDOCUMENTED.md carries the census.
+--
+-- THE CLEANING STAYS. The format constrains the KEYBOARD, not what a script can setvalue, and this
+-- field is also written from bsdg.ip -- so the value is still stripped to digits and dots and then
+-- checked for four parts of 0..255 before any run uses it. display.input.string would raise the
+-- firmware's keyboard too, but it BLOCKS until answered, and blocking display calls have form here:
+-- display.waitevent wedged this instrument at a 1 ms timeout and cost a power cycle.
+--
+-- COLUMN OFFSETS OF OUR OWN, and not edits to sdec.ui_opt_x / ui_opt_x_c2. Those are the DECODE
+-- app's options screen geometry, shared with this form -- moving them to suit the bench would move
+-- the shipped app's own screen with it.
+brun.pn_x1off    = brun.pn_x1off or -16
+brun.pn_x2off    = brun.pn_x2off or 50
+-- NO ROW-PITCH OFFSET HERE, and the reason is worth keeping. One was added to put a few pixels
+-- between the rows, and 2, 4 and 6 all rendered IDENTICALLY -- because g.dy is not what places
+-- these rows. Read off the instrument 2026-10-22: sdec.ui_opt_dy is 100 and g.y0 is 8, which at five
+-- rows would put the last one at 432 in a 431 px area, while the glass shows a ~60 px pitch and a
+-- tidy form. So the vertical layout comes from somewhere else, and a brun.pn_dyoff would have sat in
+-- this file looking like a control while changing nothing. The COLUMN offsets below are different:
+-- both were seen to move on the glass.
 
 -- The lap shapes, as filters over the plan on the key and NOT as draws -- see brun.wanted. Each entry
 -- is the filter state the shape means, so the mapping lives beside the label instead of in a branch
@@ -98,8 +133,8 @@ brun.pn_interstit = brun.pn_interstit or 2400
 -- would drift from them silently. Read through sdec so a changed form moves this one with it.
 function brun.pn_geom()
   local g = {}
-  g.x     = sdec.ui_opt_x or 22
-  g.x2    = sdec.ui_opt_x_c2 or 420
+  g.x     = (sdec.ui_opt_x or 22) + brun.pn_x1off
+  g.x2    = (sdec.ui_opt_x_c2 or 420) + brun.pn_x2off
   g.y0    = sdec.ui_opt_y0 or 60
   g.dy    = sdec.ui_opt_dy or 54
   g.btny  = sdec.ui_opt_btn_y or 380
@@ -131,7 +166,7 @@ function brun.destroy_panel()
   -- create. These were left set, so every one of them was a handle to a deleted object after a
   -- teardown -- and brun.pn_say's `if brun.pn_ptxt == nil` guard could therefore never fire, which
   -- made it settext into the void. The mock counts that as a refusal; the instrument posts nothing.
-  brun.pn_laps, brun.pn_sdgf, brun.pn_lapt, brun.pn_vset = nil, nil, nil, nil
+  brun.pn_laps, brun.pn_sdgip, brun.pn_lapt, brun.pn_vset = nil, nil, nil, nil
   brun.pn_lo, brun.pn_hi, brun.pn_inter = nil, nil, nil
   brun.pn_over, brun.pn_armv, brun.pn_armw = nil, nil, nil
   brun.pn_ptxt, brun.pn_ptxt2 = nil, nil
@@ -244,14 +279,13 @@ function brun.build_panel()
                              display.NFORMAT_INTEGER, 1, 1, brun.pn_laps_max, '', 4))
   fx, fy = nextpos()
   local i
-  -- The live address leads, so the field opens on what the module holds rather than on a list order.
-  local st, sn = {}, 0
-  if bsdg ~= nil and bsdg.ip ~= nil then sn, st[1] = 1, bsdg.ip end
-  for i = 1, table.getn(brun.pn_sdg) do
-    if brun.pn_sdg[i] ~= st[1] then sn = sn + 1; st[sn] = brun.pn_sdg[i] end
-  end
-  brun.pn_sdgf = keep(create(brun.pnscr, display.OBJ_EDIT_OPTION, fx, fy,
-                             'SDG Address', 'generator', st[1], st[2], st[3]))
+  -- THE VALUE IS NOT SET HERE. display.setvalue on a string field whose screen is NOT in front
+  -- leaves the firmware's keyboard PENDING, and it then appears the moment that screen is switched
+  -- to -- seen on the glass 2026-10-22, a probe that set a value before its changescreen came up
+  -- with the keyboard over it. This screen is built behind the cover, so the value is written by
+  -- brun.pn_ipset once the form is actually in front.
+  brun.pn_sdgip = keep(create(brun.pnscr, display.OBJ_EDIT_STRING, fx, fy,
+                              'SDG IP', 'generator', brun.pn_ipfmt()))
   fx, fy = nextpos()
   local lt = {}
   for i = 1, table.getn(brun.pn_laptypes) do lt[i] = brun.pn_laptypes[i].t end
@@ -433,8 +467,24 @@ function brun.panel_run(resume)
     return display.getvalue(h)
   end
   laps     = val(brun.pn_laps, 'Laps')
-  local si = val(brun.pn_sdgf, 'SDG Address')
-  if type(si) == 'number' then ip = brun.pn_sdgtxt(math.floor(si + 0.5)) end
+  -- THE ADDRESS IS CLEANED AND THEN CHECKED, which is two steps for a reason: stripping is kind to
+  -- a fat-fingered keyboard entry, but a string that still is not an address after stripping must
+  -- REFUSE rather than be guessed at. An address that resolves to nothing costs bsdg.timeout per
+  -- query for the whole run and reads as a dead generator.
+  --
+  -- THE CLEANED FORM IS NOT WRITTEN BACK to the field. display.setvalue on a string field whose
+  -- screen is not in front leaves the firmware's keyboard pending, and by here the working screen is
+  -- already up -- so showing the operator the tidied text would ambush them with a keyboard.
+  local ipraw = val(brun.pn_sdgip, 'SDG IP')
+  if ipraw ~= nil then
+    local clean = brun.ip_clean(ipraw)
+    if not brun.ip_valid(clean) then
+      brun.show_now(brun.pnscr)
+      brun.pn_say('REFUSED: ' .. tostring(ipraw) .. ' is not an address -- four numbers 0-255')
+      return false
+    end
+    ip = clean
+  end
   local li = val(brun.pn_lapt, 'Lap Type')
   if type(li) == 'number' then lt = brun.pn_laptypes[math.floor(li + 0.5)] end
   local vi = val(brun.pn_vset, 'Vector Set')
@@ -541,14 +591,75 @@ end
 
 -- The address text for an option index, which is the same list build_panel assembled -- rebuilt here
 -- rather than stashed, so a field and its meaning cannot drift apart across a rebuild.
-function brun.pn_sdgtxt(i)
-  local st, sn = {}, 0
-  if bsdg ~= nil and bsdg.ip ~= nil then sn, st[1] = 1, bsdg.ip end
-  local k
-  for k = 1, table.getn(brun.pn_sdg) do
-    if brun.pn_sdg[k] ~= st[1] then sn = sn + 1; st[sn] = brun.pn_sdg[k] end
+-- '10.0.1.79' -> '10.0.1', 79. nil, nil for anything that is not four dotted numbers.
+--
+-- string.find WITH CAPTURES, because 5.0.2 has no string.match: it returns the two indices first and
+-- the captures after them. Same trap as math.fmod, and tools/lint_tsp.py refuses the name.
+function brun.ip_split(ip)
+  if ip == nil then return nil, nil end
+  local _, _, net, host = string.find(tostring(ip), '^(%d+%.%d+%.%d+)%.(%d+)$')
+  if net == nil then return nil, nil end
+  return net, tonumber(host)
+end
+
+-- The string format for the address field: the firmware's own IP format where it exists, and
+-- SFORMAT_ANY where it does not. -> format constant
+--
+-- NIL-CHECKED RATHER THAN ASSUMED. SFORMAT_IP_ADDRESS is undocumented, found by decoding the
+-- firmware image rather than from any manual, so a different build could reasonably not have it --
+-- and display.create ANSWERS NIL for a format it does not take, which would lose the whole form in
+-- silence. SFORMAT_ANY is present on everything and the cleaning covers the difference.
+function brun.pn_ipfmt()
+  if display.SFORMAT_IP_ADDRESS ~= nil then return display.SFORMAT_IP_ADDRESS end
+  return display.SFORMAT_ANY
+end
+
+-- Everything that cannot be part of a dotted address, removed. -> string
+--
+-- SFORMAT_ANY RAISES THE FULL ALPHANUMERIC KEYBOARD -- there is no digits-only string format on this
+-- firmware, all 17 other SFORMAT spellings answer nil -- so letters and spaces are reachable and a
+-- slip is likely. Parenthesised because string.gsub returns the count as well.
+function brun.ip_clean(s)
+  if s == nil then return '' end
+  return (string.gsub(tostring(s), '[^0-9.]', ''))
+end
+
+-- Four dotted numbers, each 0..255? -> true/false
+--
+-- string.find WITH CAPTURES, because 5.0.2 has no string.match. The anchors are load-bearing: without
+-- them '10.0.1.79.5' and 'x10.0.1.79' both pass, and the first is what a doubled paste looks like.
+--
+-- LEADING ZEROS ARE ALLOWED -- '010.000.001.079' is how the instrument's own LAN screen renders an
+-- address -- but a part over 255 is not, so '1000.1.1.1' is refused by the range test rather than by
+-- counting digits.
+function brun.ip_valid(s)
+  if s == nil then return false end
+  local _, _, a, b, c, dd = string.find(tostring(s), '^(%d+)%.(%d+)%.(%d+)%.(%d+)$')
+  if a == nil then return false end
+  local p = {tonumber(a), tonumber(b), tonumber(c), tonumber(dd)}
+  local i
+  for i = 1, 4 do
+    if p[i] == nil or p[i] < 0 or p[i] > 255 then return false end
   end
-  return st[i]
+  return true
+end
+
+-- Write the live generator address into the field. -> ok
+--
+-- CALLED ONCE THE FORM IS IN FRONT, never during the build: display.setvalue on a string field whose
+-- screen is not active leaves the keyboard pending and it appears on the next changescreen.
+function brun.pn_ipset()
+  if brun.pn_sdgip == nil then return false end
+  if bsdg == nil or bsdg.ip == nil then return false end
+  display.setvalue(brun.pn_sdgip, tostring(bsdg.ip))
+  -- AND THE SWITCH THAT DISMISSES THE KEYBOARD, which is the whole reason this is a function.
+  -- display.setvalue on an OBJ_EDIT_STRING OPENS the firmware's editor over whatever is in front --
+  -- measured on the glass 2026-10-22, the app launched with the keyboard up and the operator would
+  -- have had to cancel it every single time. A changescreen to the screen already in front closes
+  -- it and costs nothing. Doing the setvalue before the first changescreen does NOT avoid this; the
+  -- editor just appears on the switch instead.
+  if brun.pnscr ~= nil then display.changescreen(brun.pnscr) end
+  return true
 end
 
 -- Say something on the form itself. The plan line is the one text object this screen has, so a
@@ -1030,5 +1141,8 @@ function brun.startup()
   -- on the key now, which is not what build_panel read if a plan was just drawn.
   brun.pn_refresh_plan()
   display.changescreen(brun.pnscr)
+  -- AFTER THE SWITCH, DELIBERATELY. See brun.pn_ipset: setting a string field while its screen is
+  -- behind another leaves the firmware's keyboard pending on the one in front.
+  brun.pn_ipset()
   return true
 end

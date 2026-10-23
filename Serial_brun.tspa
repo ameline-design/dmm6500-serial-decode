@@ -10328,8 +10328,8 @@ end
 brun.healthwarn = brun.healthwarn or 99
 brun.healthbad  = brun.healthbad or 60
 
-brun.heapwarnk  = brun.heapwarnk or 3300
-brun.heapbadk   = brun.heapbadk or 3600
+brun.heapwarnk  = brun.heapwarnk or 7000
+brun.heapbadk   = brun.heapbadk or 8000
 
 function brun.diagflags()
   local f = ''
@@ -11645,8 +11645,8 @@ brun             = brun or {}
 
 brun.pn_laps_max = brun.pn_laps_max or 210
 
-brun.pn_sdg      = brun.pn_sdg or {'10.0.1.79', '10.0.1.78', '192.168.0.79'}
-
+brun.pn_x1off    = brun.pn_x1off or -16
+brun.pn_x2off    = brun.pn_x2off or 50
 brun.pn_laptypes = brun.pn_laptypes or
   {{t = 'Full',          std = nil},
    {t = 'Standard only', std = true}}
@@ -11665,8 +11665,8 @@ brun.pn_interstit = brun.pn_interstit or 2400
 
 function brun.pn_geom()
   local g = {}
-  g.x     = sdec.ui_opt_x or 22
-  g.x2    = sdec.ui_opt_x_c2 or 420
+  g.x     = (sdec.ui_opt_x or 22) + brun.pn_x1off
+  g.x2    = (sdec.ui_opt_x_c2 or 420) + brun.pn_x2off
   g.y0    = sdec.ui_opt_y0 or 60
   g.dy    = sdec.ui_opt_dy or 54
   g.btny  = sdec.ui_opt_btn_y or 380
@@ -11687,7 +11687,7 @@ function brun.destroy_panel()
   brun.pn_obj = nil
   sdec.del_obj(brun.pnscr)
   brun.pnscr = nil
-  brun.pn_laps, brun.pn_sdgf, brun.pn_lapt, brun.pn_vset = nil, nil, nil, nil
+  brun.pn_laps, brun.pn_sdgip, brun.pn_lapt, brun.pn_vset = nil, nil, nil, nil
   brun.pn_lo, brun.pn_hi, brun.pn_inter = nil, nil, nil
   brun.pn_over, brun.pn_armv, brun.pn_armw = nil, nil, nil
   brun.pn_ptxt, brun.pn_ptxt2 = nil, nil
@@ -11761,13 +11761,8 @@ function brun.build_panel()
                              display.NFORMAT_INTEGER, 1, 1, brun.pn_laps_max, '', 4))
   fx, fy = nextpos()
   local i
-  local st, sn = {}, 0
-  if bsdg ~= nil and bsdg.ip ~= nil then sn, st[1] = 1, bsdg.ip end
-  for i = 1, table.getn(brun.pn_sdg) do
-    if brun.pn_sdg[i] ~= st[1] then sn = sn + 1; st[sn] = brun.pn_sdg[i] end
-  end
-  brun.pn_sdgf = keep(create(brun.pnscr, display.OBJ_EDIT_OPTION, fx, fy,
-                             'SDG Address', 'generator', st[1], st[2], st[3]))
+  brun.pn_sdgip = keep(create(brun.pnscr, display.OBJ_EDIT_STRING, fx, fy,
+                              'SDG IP', 'generator', brun.pn_ipfmt()))
   fx, fy = nextpos()
   local lt = {}
   for i = 1, table.getn(brun.pn_laptypes) do lt[i] = brun.pn_laptypes[i].t end
@@ -11861,6 +11856,7 @@ function brun.pn_poisoned()
 end
 
 function brun.panel_run(resume)
+  brun.show_now(brun.wkscr, 'Starting the soak', 'reading the settings')
   local laps, ip, lt, lo, hi, inter, vst, over, armv, armw
   local missing = nil
   local function val(h, name)
@@ -11868,8 +11864,16 @@ function brun.panel_run(resume)
     return display.getvalue(h)
   end
   laps     = val(brun.pn_laps, 'Laps')
-  local si = val(brun.pn_sdgf, 'SDG Address')
-  if type(si) == 'number' then ip = brun.pn_sdgtxt(math.floor(si + 0.5)) end
+  local ipraw = val(brun.pn_sdgip, 'SDG IP')
+  if ipraw ~= nil then
+    local clean = brun.ip_clean(ipraw)
+    if not brun.ip_valid(clean) then
+      brun.show_now(brun.pnscr)
+      brun.pn_say('REFUSED: ' .. tostring(ipraw) .. ' is not an address -- four numbers 0-255')
+      return false
+    end
+    ip = clean
+  end
   local li = val(brun.pn_lapt, 'Lap Type')
   if type(li) == 'number' then lt = brun.pn_laptypes[math.floor(li + 0.5)] end
   local vi = val(brun.pn_vset, 'Vector Set')
@@ -11881,17 +11885,20 @@ function brun.panel_run(resume)
   armv  = val(brun.pn_armv, 'Arm At')
   armw  = val(brun.pn_armw, 'Arm Wait')
   if missing ~= nil then
+    brun.show_now(brun.pnscr)
     brun.pn_say('form incomplete, not starting: no ' .. missing)
     return false
   end
 
   local why = brun.pn_poisoned()
   if why ~= nil then
+    brun.show_now(brun.pnscr)
     brun.pn_say('REFUSED: ' .. why)
     return false
   end
   local rows = brun.pn_plan()
   if rows == nil then
+    brun.show_now(brun.pnscr)
     brun.pn_say('REFUSED: no plan on the key -- run_bench.py --push-plan first')
     return false
   end
@@ -11928,19 +11935,45 @@ function brun.panel_run(resume)
   local tag = 'soak'
   if brun.resume then tag = 'resumed' end
   brun.wk_say('Starting the soak', 'counting the lap and building the screen')
-  brun.show_now(brun.wkscr)
   brun.soak(laps, tag)
   return true
 end
 
-function brun.pn_sdgtxt(i)
-  local st, sn = {}, 0
-  if bsdg ~= nil and bsdg.ip ~= nil then sn, st[1] = 1, bsdg.ip end
-  local k
-  for k = 1, table.getn(brun.pn_sdg) do
-    if brun.pn_sdg[k] ~= st[1] then sn = sn + 1; st[sn] = brun.pn_sdg[k] end
+function brun.ip_split(ip)
+  if ip == nil then return nil, nil end
+  local _, _, net, host = string.find(tostring(ip), '^(%d+%.%d+%.%d+)%.(%d+)$')
+  if net == nil then return nil, nil end
+  return net, tonumber(host)
+end
+
+function brun.pn_ipfmt()
+  if display.SFORMAT_IP_ADDRESS ~= nil then return display.SFORMAT_IP_ADDRESS end
+  return display.SFORMAT_ANY
+end
+
+function brun.ip_clean(s)
+  if s == nil then return '' end
+  return (string.gsub(tostring(s), '[^0-9.]', ''))
+end
+
+function brun.ip_valid(s)
+  if s == nil then return false end
+  local _, _, a, b, c, dd = string.find(tostring(s), '^(%d+)%.(%d+)%.(%d+)%.(%d+)$')
+  if a == nil then return false end
+  local p = {tonumber(a), tonumber(b), tonumber(c), tonumber(dd)}
+  local i
+  for i = 1, 4 do
+    if p[i] == nil or p[i] < 0 or p[i] > 255 then return false end
   end
-  return st[i]
+  return true
+end
+
+function brun.pn_ipset()
+  if brun.pn_sdgip == nil then return false end
+  if bsdg == nil or bsdg.ip == nil then return false end
+  display.setvalue(brun.pn_sdgip, tostring(bsdg.ip))
+  if brun.pnscr ~= nil then display.changescreen(brun.pnscr) end
+  return true
 end
 
 function brun.pn_say(s)
@@ -12133,9 +12166,10 @@ end
 
 brun.plan_laps = brun.plan_laps or 12
 
-function brun.show_now(scr)
+function brun.show_now(scr, l1, l2)
   if scr == nil then return false end
   display.changescreen(scr)
+  if (l1 ~= nil or l2 ~= nil) and brun.wk_say ~= nil then brun.wk_say(l1, l2) end
   delay(brun.paintyield or 0.02)
   return true
 end
@@ -12226,6 +12260,7 @@ function brun.startup()
   end
   brun.pn_refresh_plan()
   display.changescreen(brun.pnscr)
+  brun.pn_ipset()
   return true
 end
 

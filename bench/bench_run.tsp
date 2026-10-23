@@ -1534,11 +1534,14 @@ brun.healthbad  = brun.healthbad or 60
 -- brun.heapsetk: the displayed count is a sawtooth between the live set and twice it, so a band on the
 -- count fires on the tooth. The live set is what a leak moves.
 --
--- THE NUMBERS ARE THE RECORDED SERIES', BECAUSE THAT SERIES IS THE LIVE SET: the lap-seam figures in the
--- record are sampled straight after a collectgarbage(), which is exactly threshold/2. Measured steady
--- states, each FLAT within its own run: 2993 kB across five laps, 3025-3026 across four, 3030-3031
--- across three. So the working band sits at about 3030; 3300 clears it by 9 % -- enough that ordinary
--- feature growth does not trip it -- and 3600 is a figure only a growing live set has reached.
+-- THE BANDS ARE SET WHERE THE OPERATOR WANTS THE ALARM, AND THEY ARE LOOSE ON PURPOSE. The recorded
+-- lap-seam series is the live set -- those figures are sampled straight after a collectgarbage(), which is
+-- exactly threshold/2 -- and it was flat within each run at 2993 kB across five laps, 3025-3026 across
+-- four and 3030-3031 across three. The bands were 3300/3600 to clear that by 9 %, and they no longer do:
+-- a healthy resumed soak painted its headline RED at cell 29 with health at 100.00 %, no errors, and
+-- 6779 kB on the glass. WHAT GREW IS NOT MEASURED. The glass figure is a sawtooth, so it bounds the set
+-- only to [3390, 6779], and a band re-fitted to a figure nobody has would be a guess wearing a
+-- measurement's clothes. 7000/8000 is the operator's number, and well clear of both ends of that range.
 --
 -- FLATNESS BETWEEN LAP SEAMS IS THE REAL LEAK TEST, not this band. +1 kB over 5031 cells is not a leak,
 -- so what the band answers is 'bigger than a healthy run's' and nothing more. It needs real headroom to
@@ -1550,8 +1553,8 @@ brun.healthbad  = brun.healthbad or 60
 -- up to the moment it dies, so this is the one failure no other field on the screen can show coming. What
 -- gcinfo() cannot say is how much the allocator will still hand out: the threshold tracks the live set
 -- rather than any ceiling, so these bands say 'bigger than a healthy run's', never 'nearly out'.
-brun.heapwarnk  = brun.heapwarnk or 3300
-brun.heapbadk   = brun.heapbadk or 3600
+brun.heapwarnk  = brun.heapwarnk or 7000
+brun.heapbadk   = brun.heapbadk or 8000
 
 -- THE DIAGNOSTIC FLAGS IN FORCE, as a short suffix. A run configured wrongly is silently worthless and
 -- nothing on the panel said which flags were on. bsdg.arwvevery is included for a specific reason: Lua

@@ -1410,7 +1410,7 @@ print('-- the panel\'s own guards, which the host-side ones do not cover --')
   --
   -- A HANDLE AT A TIME, not a total, so the failure names the field.
   local built = brun.build_panel()
-  local fields = {{'Laps', brun.pn_laps}, {'SDG Address', brun.pn_sdgf},
+  local fields = {{'Laps', brun.pn_laps}, {'SDG IP', brun.pn_sdgip},
                   {'Lap Type', brun.pn_lapt}, {'Vector Set', brun.pn_vset},
                   {'Speed Low', brun.pn_lo}, {'Speed High', brun.pn_hi},
                   {'Interstitial', brun.pn_inter}, {'Over-read', brun.pn_over},
@@ -2232,9 +2232,24 @@ do
   -- this field exists for: nothing else on the screen can see the allocator coming.
   brun.heapsetk = function() return brun.heapbadk + 1 end
   local hlh, hlc = brun.headline(false)
-  brun.heapsetk = realset
   ck(hlc == brun.c_bad,
      'and a red heap makes the headline red on a run whose cells are all passing', hlh)
+  -- AND THE CONVERSE, WHICH IS THE BUG OF 2026-10-23: a resumed soak with health at 100.00 %, no errors
+  -- and nothing in the log painted its headline RED at cell 29, showing 6779 kB. That figure is a
+  -- sawtooth, so the live set behind it was somewhere in [3390, 6779] -- both ends have to clear the amber
+  -- band, or the only line read from across the room is red on a run with nothing wrong with it.
+  -- PINNED TO THE OBSERVATION, NOT TO THE BANDS, unlike the rule checks above: it is the measurement that
+  -- makes the bands wrong or right, so a band moved under this check has to answer to it.
+  brun.heapsetk = function() return 3390 end
+  local _, hcl = brun.heapfield()
+  brun.heapsetk = function() return 6779 end
+  local hgh, hgc = brun.headline(false)
+  local _, hch = brun.heapfield()
+  brun.heapsetk = realset
+  ck(hcl == nil and hch == nil and hgc == brun.c_good,
+     'and the live set behind that red headline now reads clear at both ends, green on a clean run',
+     string.format('3390 -> %s, 6779 -> %s, headline %s  (bands %d/%d)', tostring(hcl), tostring(hch),
+                   hgh, brun.heapwarnk, brun.heapbadk))
   -- THE FOUR STATE WORDS AND THEIR FOUR COLOURS, which is what the headline is read for from across the
   -- room: cyan while there is nothing to judge yet, green while it runs and the figure is good, red for a
   -- run that gave up, cyan again for one that finished the laps it was asked for. The operator's own
@@ -4192,6 +4207,76 @@ print('-- Resume on the result screen, offered only when there is something to r
   ck(rep == true and tag4 == 'soak' and res4 == false,
      'while Repeat starts a fresh run: tagged soak, resume flag cleared',
      string.format('ok=%s tag=%s resume=%s', tostring(rep), tostring(tag4), tostring(res4)))
+end)()
+
+-- ============================================================================
+print('')
+-- The semicolon is load-bearing -- see the note on the mute section.
+print('-- the SDG address as one string field, cleaned and checked --');
+-- ============================================================================
+-- THERE IS NO IP FIELD ON THIS FIRMWARE. Probed 2026-10-22: every OBJ_EDIT_IP / NFORMAT_IPADDRESS /
+-- SFORMAT_IPADDRESS spelling answers nil, a literal mask in the format argument is refused, and the
+-- four string formats are ANY, UPPER, UPPER_LOWER and BUFFER_NAME. SFORMAT_ANY raises the full
+-- alphanumeric keyboard, so letters and spaces are reachable and the cleaning has to be ours.
+(function()
+  -- THE FIRMWARE'S OWN IP FORMAT IS PREFERRED, with SFORMAT_ANY only as a fallback. It is
+  -- undocumented -- found by decoding the firmware image, not from any manual -- so a build without
+  -- it has to still build a form rather than lose it to a nil format.
+  ck(brun.pn_ipfmt() == display.SFORMAT_IP_ADDRESS,
+     'the address field takes the firmware IP format where it exists', tostring(brun.pn_ipfmt()))
+  do
+    local keep = display.SFORMAT_IP_ADDRESS
+    display.SFORMAT_IP_ADDRESS = nil
+    ck(brun.pn_ipfmt() == display.SFORMAT_ANY,
+       'and falls back to SFORMAT_ANY where it does not, rather than a nil format',
+       tostring(brun.pn_ipfmt()))
+    display.SFORMAT_IP_ADDRESS = keep
+  end
+  ck(brun.ip_clean('10.0.1.79') == '10.0.1.79', 'a clean address survives cleaning',
+     brun.ip_clean('10.0.1.79'))
+  ck(brun.ip_clean(' 10.0.A1.79x ') == '10.0.1.79',
+     'and letters and spaces are stripped, which the keyboard makes reachable',
+     brun.ip_clean(' 10.0.A1.79x '))
+  ck(brun.ip_clean(nil) == '', 'and a nil cleans to empty rather than raising')
+  ck(brun.ip_valid('10.0.1.79') and brun.ip_valid('192.168.100.255')
+     and brun.ip_valid('010.000.001.079'),
+     'four numbers 0-255 are valid, leading zeros included -- the LAN screen writes them that way')
+  -- THE ANCHORS ARE LOAD-BEARING: without them a doubled paste and a prefixed typo both pass.
+  ck(not brun.ip_valid('10.0.1.79.5') and not brun.ip_valid('x10.0.1.79'),
+     'while a trailing or leading extra is refused, not trimmed')
+  ck(not brun.ip_valid('1000.1.1.1') and not brun.ip_valid('10.0.1.256'),
+     'and a part over 255 is refused')
+  ck(not brun.ip_valid('10.0.1') and not brun.ip_valid('') and not brun.ip_valid(nil),
+     'as are too few parts, empty and nil')
+
+  -- THE FIELD CARRIES THE LIVE ADDRESS, written only once the form is in front.
+  bsdg.ip = '192.168.0.42'
+  brun.destroy_panel()
+  brun.build_panel()
+  brun.pn_ipset()
+  ck(display.getvalue(brun.pn_sdgip) == '192.168.0.42',
+     'the field opens on the live generator address',
+     tostring(display.getvalue(brun.pn_sdgip)))
+
+  -- AND A RUN TAKES WHAT IT SPELLS, after cleaning.
+  display.setvalue(brun.pn_sdgip, '10.0.1.7')
+  local realsoak, gotip = brun.soak, nil
+  brun.soak = function(laps, tag) gotip = bsdg.ip; return true, nil end
+  brun.panel_run()
+  brun.soak = realsoak
+  ck(gotip == '10.0.1.7', 'and the run is pointed at the address the field holds', tostring(gotip))
+
+  -- A BAD ADDRESS REFUSES AND SAYS SO ON THE FORM, rather than starting a run whose every query
+  -- times out against a name that resolves to nothing.
+  display.setvalue(brun.pn_sdgip, 'not an address')
+  local realsoak2, called2 = brun.soak, false
+  brun.soak = function(laps, tag) called2 = true; return true, nil end
+  local started = brun.panel_run()
+  brun.soak = realsoak2
+  ck(started == false and called2 == false,
+     'an address that is not one refuses the run outright', tostring(started))
+  ck(display.active == brun.pnscr,
+     'and leaves the operator on the form, where the refusal is written', tostring(display.active))
 end)()
 
 print('')

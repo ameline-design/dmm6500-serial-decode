@@ -46,6 +46,16 @@ display = {
   -- A check object's value is display.ON / display.OFF, a different value type from an
   -- option field's 1-based index -- both go through the same setvalue call.
   OBJ_EDIT_CHECK = 'editcheck', ON = 1, OFF = 0,
+  -- THE STRING FORMATS, which were absent entirely -- so display.create took a NIL format offline
+  -- while the instrument took a real constant, and brun.pn_ipfmt picked its fallback branch here and
+  -- its real one there. Same divergence class as settext-on-a-screen and read-past-EOF.
+  --
+  -- SFORMAT_IP_ADDRESS IS UNDOCUMENTED AND REAL: found by decoding ki_DMM6500_v1_7_18a -- main.zx is
+  -- itself a zip and main.x inside it is a Motorola S-Record, so the API names are plain strings once
+  -- the hex is decoded -- then confirmed on 1.7.17a as userdata. Probing by name had missed it
+  -- because every spelling tried was SFORMAT_IPADDRESS, without the underscore.
+  SFORMAT_ANY = 'sfany', SFORMAT_UPPER = 'sfupper', SFORMAT_UPPER_LOWER = 'sfupperlower',
+  SFORMAT_BUFFER_NAME = 'sfbufname', SFORMAT_IP_ADDRESS = 'sfip', SFORMAT_FILE_NAME = 'sffile',
   OBJ_TIMER = 'timer', OBJ_RECT = 'rect', OBJ_LINE = 'line',
   EVENT_PRESS = 'press', EVENT_ENDAPP = 'endapp',
   -- FOURTEEN FACES EXIST, not two. The four named ones and FONT_1..FONT_10, all measured present on
