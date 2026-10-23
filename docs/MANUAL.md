@@ -6,21 +6,14 @@ This app turns a Keithley bench instrument into a serial decoder. Clip onto a UA
 **Capture**, and read the bytes on the front panel. You do not have to tell it the baud rate, the frame
 format or which way up the signal is — it works all of that out from the signal itself.
 
-It was written on a **DMM6500**, and it is known to run on a **DAQ6510** and a **DMM7510** as well — the
-7510 decoding a hardware serial device at 9600 baud. It will install on an **SMU2461** and try; that is
-the one model nobody has run it on. **Every measured number in this documentation is a DMM6500 number**,
-so on another model treat the rates and the tolerance figures as inference rather than specification.
-**Which instruments** in [PROJECT.md](PROJECT.md) says which is which.
+It was written on a **DMM6500**, and it is known to run on a **DAQ6510** and a **DMM7510** as well. It will
+install on an **SMU2461** and try; that is the one model nobody has run it on. **Every measured number 
+in this documentation is a DMM6500 number**, so on another model treat the rates and the tolerance figures 
+as inference rather than specification. **Which instruments** in [PROJECT.md](PROJECT.md) says which is which.
 
 Three things make it worth reaching for over a scope's decode: the **window is large** — a screenful is
-~240 bytes and a recording holds 32 768 — every capture is **appended to the USB key automatically** while
+~240 bytes and a recording holds 8k or 32k — every capture is **appended to the USB key automatically** while
 a key is in the slot, and the **serial parameters are detected rather than configured**.
-
-> **Every number in this manual was measured on a real DMM6500** against a real signal generator unless
-> the text says otherwise; anything calculated or untested says so where it appears. What that cannot
-> cover is the variety of real devices, so if the app tells you something you can prove is wrong, that is
-> the bug worth reporting. It is built so that **refusing with a reason is acceptable and confident
-> nonsense is not**, and anything it is unsure of it says on the note row at the bottom of the screen.
 
 ---
 
@@ -35,7 +28,7 @@ to load it down.
 relative to INPUT LO, so without a shared ground the readings mean nothing.
 
 **Do not put a differential bus straight across HI and LO.** RS-485, CAN and LIN need to go through a
-transceiver first, or you need to tap one side of the pair against ground.
+transceiver first, or just tap one side of the pair against ground.
 
 **A DC offset does not matter.** The app measures the two voltage levels on your line and puts its
 decision threshold between them, so it does not care where they sit — only that both fit inside
@@ -49,9 +42,9 @@ budget on a 0.5 V one.
 
 **The app takes over the measurement function, and gives it back when you end it.** Capturing means
 digitizing, so every press of Capture selects **Digitize Voltage** on the 10 V range — whatever the
-meter was measuring before. The mode you were in is read once when the app starts and put back when
-you press **End App**, so ending the app leaves the meter measuring what it was measuring when you
-launched it, on the range it was on.
+meter was measuring before. The mode you were in and the range is read once when the app starts and 
+put back when you press **End App**, so ending the app leaves the meter measuring what it was measuring 
+when you launched it, and on the range it was on when the app was started.
 
 Two things follow from that:
 
@@ -73,15 +66,15 @@ That is the whole normal workflow. The first capture also locks the baud rate wh
 so later captures are faster.
 
 **If the device is not talking yet, press Capture first and it waits for it.** The app arms the
-instrument's **analog trigger** a volt off the resting level and holds for up to 10 s — chosen to
-outlast a hand reaching for a power switch — then opens the window just *before* the first start bit,
-so the device's first byte is whole. That is the way to read what a board says as it powers on, which
-is often the part you cannot get any other way. Lock the baud rate first if you know it, because a
-line that has not started cannot be measured. The settings and the rest of the behaviour are under
-**Waiting for a device that has not started**.
+instrument's **analog trigger** a volt off the resting level and holds for up to 10 s (the default 
+value - it can be raised to 120s in the options) — chosen to outlast a hand reaching for a power 
+switch — then opens the window just *before* the first start bit, so the device's first byte is whole. 
+That is the way to read what a board says as it powers on, which is often the part you cannot get any 
+other way. Lock the baud rate first if you know it, because a line that has not started cannot be measured. 
+The settings and the rest of the behaviour are under **Waiting for a device that has not started**.
 
 Two more things before you need them: **Mode** turns Capture into a recording of up to
-32 768 bytes straight to the USB key, still one press — and once a long job starts, **nothing stops it
+32k bytes straight to the USB key, still one press — and once a long job starts, **nothing stops it
 early**, so decide the size before you press — see **The TRIGGER key** below.
 
 ---
@@ -107,7 +100,7 @@ Along the top are the things the app worked out about your line:
 
 A dash means "not measured yet".
 
-**`FIT` and `S/N` are coloured, and the colour is the quick read.** Green means there is margin, amber
+**`FIT` and `S/N` are coloured for a quick read.** Green means there is margin, amber
 means there is some but not much, red means you are close to the edge — so the top line can be checked
 at a glance instead of remembering two sets of numbers:
 
@@ -122,12 +115,13 @@ where captures stop working is around 12 dB, and past it the app says `no clear 
 than handing you wrong bytes. Green `S/N` is noise under about 5 % of your swing, amber down to about
 a third of it.
 
-**`S/N` describes your wiring, not the app.** It is measured on the flat parts of the signal, away from
-the edges, so it reports what is riding on your levels — mains hum picked up by a long unshielded lead,
-a switching supply, a noisy ground. If it reads low, the wiring is worth fixing before anything else:
-every other tolerance in this manual is a fraction of the swing, so noise spends the same budget that
-jitter and slow edges do. The cell stops at `>99 dB` rather than counting higher: above that it would
-be reporting the meter's own digitizer resolution rather than anything about your line.
+**`S/N` describes your wiring and the source signal, not the app.** It is measured on the flat parts 
+of the signal, away from the edges, so it reports what is riding on your levels — mains hum picked up 
+by a long unshielded lead, a switching supply, a noisy ground. If it reads low, the wiring is worth 
+fixing before anything else: every other tolerance in this manual is a fraction of the swing, so noise 
+spends the same budget that jitter and slow edges do. The cell stops at `>99 dB` rather than counting 
+higher: above that it would be reporting the meter's own digitizer resolution rather than anything about 
+your line.
 
 **Broken bytes are shown, not hidden.** `ERR` turns red when there are any, and every row containing
 one is drawn red across its whole width — offset, hex and ASCII together. Flagged bytes read as
@@ -137,11 +131,10 @@ one is drawn red across its whole width — offset, hex and ASCII together. Flag
 
 That is a real 240B capture that began part way through a byte. **The note row names the cause** —
 `began mid-byte -- the first N bytes are misaligned.` — the app arms on a busy line, so it lands
-wherever the traffic happens to be, and the
-bytes before the first gap between messages cannot be framed. On a busy line roughly one capture in
-eight starts this way.
+wherever the traffic happens to be, and the bytes before the first gap between messages cannot be 
+framed. On a busy line roughly one capture in eight starts this way.
 
-**The note and `ERR` agree.** The note's number is how far the damage reaches —
+**The note and `ERR` should agree.** The note's number is how far the damage reaches —
 the last byte in the opening region the decoder could not frame — so "the first N" is literally true,
 nothing past N is being accused, and `ERR` is never less than N. Above, both say 1. `ERR` counts the whole
 region rather than only the frames that failed a check: inside a misaligned head the bit boundaries are in
@@ -161,7 +154,7 @@ Underneath: the **trigger cell**, the bytes, then two rows of text. The **status
 you are (`FRAME HEX pg 1/1 bytes 1-239/239 win 240 [done]`) and names the log file.
 
 **Which mode you are in is in the title bar** — `SERIAL DECODE - 240B FRAME`, `- 8K CAPTURE` or
-`- 32K CAPTURE`, in the largest type on the screen.
+`- 32K CAPTURE`.
 
 **The cell at the left of the note row is what a capture waits for**, colour-coded so a glance is
 enough: green `Start bit` (the normal case — it waits for the line's own start bit), yellow `Free run`
