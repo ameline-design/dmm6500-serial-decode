@@ -23,7 +23,7 @@ cd "$ROOT"
 # reach: check_version.py checks docs/BRUN.pdf, so every bump left exactly one of nineteen statements wrong
 # and the fix looked like "rerun mkpdf.sh", which did not build it. A doc whose PDF is checked but not built
 # is the same shape as a suite that is run but not wired into release_sweep.
-DOCS="${*:-README.md docs/MANUAL.md docs/PRINCIPLES.md docs/TRIGGER.md docs/REFERENCE.md docs/BENCH.md docs/BRUN.md docs/BETA.md docs/UNDOCUMENTED.md docs/MEASUREMENTS.md}"
+DOCS="${*:-README.md docs/MANUAL.md docs/PRINCIPLES.md docs/TRIGGER.md docs/REFERENCE.md docs/BENCH.md docs/BRUN.md docs/BETA.md docs/UNDOCUMENTED.md docs/FIRMWARE_API.md docs/MEASUREMENTS.md}"
 
 for md in $DOCS; do
   base=$(echo "$md" | sed 's/\.md$//')

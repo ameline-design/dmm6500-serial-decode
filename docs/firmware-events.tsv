@@ -1,0 +1,677 @@
+code	severity	message	detail
+-440	error	Query UNTERMINATED after indefinite response	
+-430	error	Query DEADLOCKED	
+-420	error	Query UNTERMINATED (from %s)	The instrument was asked to send information but there was nothing to send.
+-410	error	Query INTERRUPTED	The instrument was sent a query and then received another command or query before the complete response to the prior query was read.
+-363	error	Input buffer overrun	Too many characters were sent in one line.
+-362	error	Framing error	
+-361	error	Parity error	
+-360	error	Communications error	
+-350	error	Queue overflow	
+-330	error	Self test failed	
+-315	error	Configuration memory lost	
+-314	error	Save/recall memory lost	
+-292	error	Referenced name does not exist	
+-284	error	Program currently running	
+-282	error	Illegal program name	
+-281	error	Cannot create program	
+-260	error	Expression error	
+-241	error	Hardware missing	
+-230	error	Data corrupt or stale	
+-225	error	Out of memory	
+-224	error	Illegal parameter value	Refer to product documentation for the command parameters.
+-223	error	Too much data	
+-222	error	Parameter data out of range	Refer to product documentation for the command parameters.
+-221	error	Settings conflict	Refer to product documentation for the command parameters.
+-220	error	Parameter error	Refer to product documentation for the command parameters.
+-215	error	Arm deadlock	
+-214	error	Trigger deadlock	
+-213	error	Init ignored	
+-212	error	Arm ignored	
+-211	error	Trigger ignored	
+-210	error	Trigger error	
+-203	error	Command protected	
+-202	error	Settings lost due to RTL	
+-201	error	Invalid while in local	
+-200	error	Execution error	
+-178	error	Expression data not allowed	
+-171	error	Invalid expression	
+-170	error	Expression error	
+-168	error	Block data not allowed	
+-161	error	Invalid block data	
+-160	error	Block data error	
+-158	error	String data not allowed	
+-154	error	String too long	
+-151	error	Invalid string data	
+-150	error	String data error	
+-148	error	Character data not allowed	
+-144	error	Character data too long	
+-141	error	Invalid character data	
+-140	error	Character data error	
+-128	error	Numeric data not allowed	
+-124	error	Too many digits	
+-123	error	Exponent too large	
+-121	error	Invalid character in number	
+-120	error	Numeric data error	
+-114	error	Header suffix out of range	
+-113	error	Undefined SCPI header	The SCPI command is not correct. Verify that you are using the SCPI Command Set.
+-112	error	Program mnemonic too long	
+-111	error	SCPI header separator error	The SCPI command is not correct. Verify that you are using the SCPI Command Set.
+-110	error	SCPI command header error	
+-109	error	Missing parameter	Refer to product documentation for the command parameters.
+-108	error	Parameter not allowed	Refer to product documentation for the command parameters.
+-105	error	Trigger not allowed	
+-104	error	Data type error	
+-103	error	Invalid separator	
+-102	error	Syntax error	Refer to product documentation for the command parameters.
+-101	error	Invalid character	
+-100	error	Command error	Refer to product documentation for the command parameters.
+22	error	secp256k1	
+23	error	secp256r1	
+24	error	secp384r1	
+25	warning	secp521r1	
+26	error	brainpoolP256r1	
+27	error	brainpoolP384r1	
+28	warning	brainpoolP512r1	
+100	information	Limit 1 failed	
+101	information	Low limit 2 failed	
+102	information	High limit 2 failed	
+103	information	Low limit 3 failed	
+104	information	High limit 3 failed	
+105	information	Active limit tests passed	
+106	information	Reading available	
+107	error	MXB	POLY
+108	information	Buffer available	
+109	information	Buffer full	
+110	information	Limit 4 failed	
+111	information	OUTPUT interlock asserted	
+112	information	Temperature limit exceeded	
+113	information	Voltage limit exceeded	
+114	information	Source in compliance	
+200	information	Operation complete	
+300	information	Device calibrating	
+303	information	Device sweeping	
+305	information	Waiting in trigger layer	
+306	information	Waiting in arm layer	
+310	information	Entering idle layer	
+408	information	Question calibration	
+414	information	Command warning: %s	
+500	error	Date of calibration not set	
+501	error	Next date of calibration not set	
+502	error	Calibration data invalid	
+503	error	Calibration overflow	
+504	error	Calibration underflow	
+505	error	Source offset data invalid	
+506	error	Source gain data invalid	
+507	error	Measurement offset data invalid	
+508	error	Measurement gain data invalid	
+509	error	Not permitted with calibration locked	
+510	error	Not permitted with calibration unlocked	
+532	error	Cannot achieve requested resolution	
+540	error	Cannot use overload as math reference	
+601	error	Reading buffer data lost	
+602	error	GPIB address lost	
+603	error	Power on state lost	
+604	error	DC calibration data lost	
+605	error	Calibration dates lost	
+606	error	GPIB communication language lost	
+700	error	Invalid system communication	
+701	error	ASCII only with RS-232	
+702	error	Unresponsive digital FPGA	
+800	error	Illegal with storage active	
+801	error	Insufficient vector data	
+802	error	OUTPUT blocked by interlock	The interlock must be engaged to turn on the output. Refer to product documentation for more information on using the interlock.
+803	error	Not permitted with OUTPUT off	
+804	error	Expression list full	
+805	error	Undefined expression exists	
+806	error	Expression not found	
+807	error	Definition not allowed	
+808	error	Expression cannot be deleted	
+809	error	Source memory location revised	
+810	error	OUTPUT blocked by overtemperature condition	
+811	error	Not an operator or number	
+812	error	Mismatched parentheses	
+813	error	Not a number of data handle	
+814	error	Mismatched brackets	
+815	error	Too many parentheses	
+816	error	Entire expression not parsed	
+817	error	Unknown token	
+818	error	Error parsing mantissa	
+819	error	Error parsing exponent	
+820	error	Error parsing value	
+821	error	Invalid data handle index	
+822	error	Too small for sense range	
+823	error	Invalid when source read back is On	
+824	error	Cannot exceed compliance range	
+825	error	Invalid with auto ohms On	
+826	error	Attempt to exceed power limit	
+827	error	Invalid with ohms guard On	
+828	error	Invalid on 1 A range	
+829	error	Invalid on 1 kV range	
+830	error	Invalid with infinite arm count	
+831	error	Invalid in pulse mode	
+900	error	Jan	Feb
+1000	error	Unknown event occurred	The system cannot determine the problem due to an internal issue. If this issue persists, contact us at tek.com/keithley.
+1001	warning	Severity mask must be a combination of error, warning, or information.	The severity mask must be a combination of error, warning, or information, but not 0.
+1002	warning	Incorrect severity specified	The severity mask must either be an error, warning, or information, and not a combination.
+1003	information	User: %.80s	This informational event is generated from a user command or script for logging purposes, and does not represent an issue or problem with the instrument.
+1004	warning	User: %.80s	This warning event is generated from a user command or script for logging purposes, and does not represent an issue or problem with the instrument.
+1005	error	User: %.80s	This error event is generated from a user command or script for logging purposes, and does not represent an issue or problem with the instrument.
+1006	error	Can only suppress a valid event number, severity mask, or 0	The command needs a single parameter, which must be an event, a severity mask, or 0 to enable all popups.
+1100	error	Command unavailable	
+1101	error	Parameter too big	
+1102	error	Parameter too small	
+1103	error	Minimum greater than maximum	
+1104	error	Too many digits for parameter type	
+1105	error	Too many parameters	
+1106	error	Battery not present	
+1107	error	Cannot modify factory menu	
+1108	error	Menu name does not exist	
+1109	error	Menu name already exists	
+1110	error	Analog supply failure: overtemperature condition	Be sure your instrument is in a suitable environment. Refer to the production documentation for specifications. If the problem persists, contact us at tek.com/keithley.
+1111	error	Data output too large for buffer	
+1112	error	Password entered does not match present password	
+1113	error	Data too complex	
+1114	error	Cannot set because %s	
+1115	error	Parameter error: %s	Correct the specified parameter to be valid as indicated. Refer to the product documentation.
+1116	error	Configuration error: %s	View the event log for other error messages that may explain why operation failed. Verify not exceeding memory or index limits for configuration item.
+1117	error	Out of thread resources	
+1118	error	Internal message error	
+1119	error	Invalid data in setup	
+1120	error	Invalid model number	
+1121	error	Unreleased firmware; Instrument performance is unqualified	
+1122	error	Interlock or power supply failure	
+1123	error	Nonvolatile storage unavailable	
+1124	error	Unrecognized USB device	
+1125	error	USB overcurrent condition	
+1126	warning	Reboot the instrument for change to take effect	
+1127	error	Parameter, %s, expected %s data type	
+1128	error	Parameter, %s, conflicts because %s	
+1129	error	Command needs %d parameters	The correct number of parameters has not been provided. Refer to the product documentation.
+1130	error	Parameter %s, expected value from %d to %d	Expected a number within the values indicated. Change the parameter value to be within that range.
+1131	error	Parameter, %s, expected value from %.14g to %.14g	Expected a number within the values indicated. Change the parameter value to be within that range.
+1132	error	Command error: %s	Refer to the production documentation for the command syntax details.
+1133	error	Command needs %d to %d parameters	The correct number of parameters has not been provided. Refer to the product documentation.
+1134	error	Parameter %d, %s	
+1135	error	Parameter %d, Syntax error, %s	
+1136	error	Parameter %d, numeric data error, %s %c	
+1137	error	Parameter %d, expected %s for named parameter	Command needs a numerical parameter or a listed named parameter. Change parameter to a number or a correctly named one.
+1138	error	Parameter %d, expected type '%s', but found type '%s'	The indicated parameter is not valid for this command.
+1139	error	Parameter %d, array element, %d, expected type '%s', but found type '%s'	The indicated array element of specified parameter needs a different parameter type than the one used.
+1140	warning	Time is not set; the year is set to 1970	Set system time on front panel or use a command. If warning appears again after setting system time, you may need to replace the battery in the instrument.
+1141	error	Setup %d cannot be recalled because it has not been saved	Verify recall setup number is correct and that the setup was saved. If incorrect, resend *RCL with correct setup number. If not saved, use *SAV to save the setup first.
+1142	error	Line frequency detection failure	Could not detect the power line frequency. If this issue persists, contact us at tek.com/keithley.
+1143	error	Parameter, %s, expected value outside of values %.14g and %.14g	Expected a number outside of the values indicated. Change the parameter value to be outside that range.
+1144	error	Internal power supply failure	The internal power supply has encountered an overcurrent condition and has shut down to prevent damage. Power cycle the instrument. If this issue persists, contact us at tek.com/keithley.
+1145	warning	Communication changed from USB to LAN	There is a LAN cable attached between the instrument and your computer.
+1146	warning	Communication changed from LAN to USB	There is a USB cable attached between the instrument and your computer. USB communications take precedence over LAN.
+1147	error	Parameter %d, expected node %d (%s), but found node %d (%s)	The indicated parameter contains an enum that must be accessed through the correct node. Send the command with node[N] before the enum.
+1148	error	Boot loader Step %d failure, base_address = %d, p = %d, end_address = %d, status = %d	The analog firmware loaded incorrectly. Retry boot loading sequence after you cycle power.
+1149	error	AFPGA initialization failure	Detected an issue during startup. If firmware upgrade was in progress, please retry. If instrument has a line voltage selector, check it for correct setting. If this issue persists, contact us at tek.com/keithley.
+1150	error	AMICRO initialization failure	Detected an issue during startup. If firmware upgrade was in progress, please retry. If instrument has a line voltage selector, check it for correct setting. If this issue persists, contact us at tek.com/keithley.
+1151	error	Command requires installation of accessory card	This command requires installation of a specific accessory card. Install the required card or contact us at tek.com/keithley.
+1152	warning	Parameter warning: %s	The parameter was accepted but may not behave in an expected way. Refer to the product documentation.
+1153	error	Abnormal line voltage detected; check power module	Measurements are disabled due to the detection of abnormal line voltage. Verify the setting of the power module. Refer to the documentation. If this issue persists, contact us at tek.com/keithley.
+1154	error	Unexpected hardware reset	An unexpected hardware reset has occurred. If this issue persists, contact us at tek.com/keithley.
+1155	error	Insufficient memory to perform requested operation	The memory available in the instrument is near its limit. Please refer to the reference manual for information on reading buffer capacity, memory considerations or contact us at tek.com/keithley.
+1200	error	TSP-Link initialization failed	Refer to product documentation for more information on setting up a TSP-Link network.
+1201	error	TSP-Link initialization failed	Refer to product documentation for more information on setting up a TSP-Link network.
+1202	error	TSP-Link initialization failed	Refer to product documentation for more information on setting up a TSP-Link network.
+1203	error	TSP-Link initialization failed (possible loop in node chain)	Refer to product documentation for more information on setting up a TSP-Link network.
+1204	error	TSP-Link initialization failed	Refer to product documentation for more information on setting up a TSP-Link network.
+1205	error	No remote nodes on the TSP-Link network	Check the connections between the TSP-Link nodes. Verify that you are using LAN cross-over cables and connecting them to the TSP-Link ports.
+1206	error	TSP-Link initialization failed	Refer to product documentation for more information on setting up a TSP-Link network.
+1207	error	TSP-Link initialization failed	Refer to product documentation for more information on setting up a TSP-Link network.
+1208	error	TSP-Link initialization failed	Refer to product documentation for more information on setting up a TSP-Link network.
+1209	error	TSP-Link initialization failed	Refer to product documentation for more information on setting up a TSP-Link network.
+1210	error	TSP-Link initialization failed (node ID conflict)	Two nodes on the TSP-Link network have the same node number.
+1211	error	TSP-Link Node %u cannot be reached	The node may be disconnected or too busy to communicate. Check the node.
+1212	error	Invalid node ID. Must be from 1 through 63	Refer to product documentation for more information on setting up a TSP-Link network.
+1213	error	TSP-Link session expired	Refer to product documentation for more information on setting up a TSP-Link network.
+1214	error	TSP-Link unknown remote command encoding	Refer to product documentation for more information on setting up a TSP-Link network.
+1215	error	Code execution requested within the local group	Refer to product documentation for more information on setting up a TSP-Link network.
+1216	error	Remote execution requested on node in group with pending overlapped operations	Refer to product documentation for more information on setting up a TSP-Link network.
+1217	error	Remote execution requested on node outside the local group	Refer to product documentation for more information on setting up a TSP-Link network.
+1218	error	Operation only allowed when node is TSP-Link master	Refer to product documentation for more information on setting up a TSP-Link network.
+1219	error	TSP-Link found fewer nodes than expected	Refer to product documentation for more information on setting up a TSP-Link network.
+1220	error	TSP-Link exceeded maximum supported nodes	Refer to product documentation for more information on setting up a TSP-Link network.
+1400	error	Expected at least %d parameters	
+1401	error	Parameter %d is invalid	
+1402	error	User scripts lost	
+1403	error	Factory scripts lost	
+1404	error	Invalid byte order	
+1405	error	Invalid ASCII precision	
+1406	error	Invalid data format	
+1407	error	File name contains invalid characters for a script name	The file name must not contain any non-alphanumeric characters except for the '_' and the first letter of the name cannot be a number.
+1408	error	A script with the same name already exists	A global variable with the same name already exists. If the global variable is a script then delete the script using script.delete('scriptname'). Otherwise, set its name to 'nil' to remove it.
+1409	warning	Aborted the running script	The aborted script did not run to completion. The instrument may be partially configured.
+1410	warning	Previous recording macro was stopped without saving	Starting a macro while another macro is already recording results in the first macro being cleared and restarted.
+1411	error	Macro memory limit exceeded, macro stopped	Macros have a limited memory size and are automatically canceled when too large. This normally occurs when a recording macro is forgotten and records for an extended period of time.
+1412	error	Script name %s does not exist	Verify the script name. Script names are case sensitive.
+1601	error	GPIB input queue overrun	
+1701	error	The maximum number of objects have already been created	Custom screens only support a limited number of objects shared between all screens.
+1702	error	Internal: %s	Encountered an internal error. Rerun your test. If this error persists, contact us at tek.com/keithley.
+1703	error	Object id is invalid	The object id was never created or has been destroyed.
+1704	error	Display splat has been initialized incorrectly	If this error persists, contact us at tek.com/keithley.
+1705	error	The dialog prompt button combination is invalid	Buttons can only be Yes, No, OK, or Cancel.
+1706	error	Message dropped from display queue	If this error persists, contact us at tek.com/keithley.
+1707	warning	Text has been shortened to the maximum length of %d characters	Objects with changeable text have a limited number of characters and that length has been exceeded.
+1708	error	Only one prompt display object can be active	The display only operates on a single prompt object at a time. A second prompt can only be created after the first is acknowledged or removed.
+1709	error	Fixed objects cannot be deleted, moved, or resized	The display has built-in objects, such as the text on the swipe screen. These objects are fixed and cannot be deleted, moved, or resized.
+1710	error	Missed capture packet, expected %d and received %d	If this error persists, contact us at tek.com/keithley.
+1711	error	The option selection must have at least 2 and no more than 10 options	Supply more choices or use a different type of dialog.
+1712	error	The input prompt requires at least one button	The input prompt requires a user response. At least one button is required to wait for the user response.
+1713	error	Parameter %d, must be of object type %s	The display command only operates on specific object types. Create the object with the correct type.
+1714	error	Object type %s must have %d parameters	The correct number of parameters has not been provided. Refer to the product documentation for exact requirements for this display object type.
+1715	error	Object type %s must have between %d and %d parameters	The correct number of parameters has not been provided. Refer to the product documentation for exact requirements for this display object type.
+1716	error	Object type %s parameter %d must be type %s	Parameters must be a number, string, justification, fill, etc as defined by the command. Refer to the product documentation for exact requirements for this display object type.
+1717	error	Attribute %s, does not apply to an object of type %s	The attribute to change is not supported by this object type. For example, text cannot be set on a rectangle. Refer to documentation for a list of attributes for each object type.
+1718	error	Found the 'endimage' keyword without a matching 'loadimage'	The interface encountered an 'endimage' string without a 'loadimage'. The 'endimage' is reserved for use to mark the end of an image.
+1719	error	Image could not be loaded because %s	The image being processed cannot be loaded because it does not meet the required format. Refer to product documentation for more information.
+1720	error	Image name length must be less than %d and contain no illegal characters	Image names must conform to certain standards. Refer to product documentation for more information.
+1721	error	Swipe object ID is invalid	Attempted to add an already created swipe screen but the object ID is invalid.
+1722	error	The maximum number (%d) of traces has been exceeded	The number of traces on a graph is limited. Reduce the number of traces.
+1723	error	The trace number %d cannot be added to present graph type	The first trace defines the type of graph (either Scatter or Time). Additional traces must be defined to fit into the same graph type.
+1724	error	The trace number %d cannot use different reading buffers	Copy the readings from the two different buffers into a single writeable Full buffer to create a Scatter graph.
+1725	error	Substitution '%s' is invalid for this object type '%s'	The substitutions available vary for the different object types. Refer to product documentation for valid substitutions for this object type.
+1726	error	Event commands must be less than %d characters	An event command associated with an object is limited to a certain number of characters.
+1727	warning	Timer resolution of %s cannot exceed %g s	Timers are only accurate to a specific resolution. Specified values will be rounded to that resolution.
+1728	error	IP Address format must be 'nnn.nnn.nnn.nnn'	IP addresses must be formatted as four sets of numbers (from 0 to 255) and separated by a period.
+1729	error	Value must be a valid option selection	For an edit option object, the value to set must be an option selection from 1 to the number of created options.
+1730	error	Added trace invalid because %s	The Y axis cannot be time.
+1731	error	Graph scale values vary too greatly in accuracy	Axis minimum, maximum, and span values either provided or derived must be within 10 decades to properly draw the graph.
+1733	error	The number of abbreviations (%d) does not match the number of options (%d)	Once an object is created, the number of options becomes fixed. When adding abbreviations the number of them must match the number of options when created.
+1734	error	The image file is not the correct format or is corrupt	Some internal portion of the PNG image file is corrupt or is an incompatible format. Refer to product documentation for more information.
+1735	error	The image is read only	The image was created from a PNG file and is read only. It cannot be modified.
+1736	error	The maximum number of %d %s objects has been exceeded	The number of certain objects on the display is limited to reduce resource usage. Reduce the number of those objects.
+1737	error	Display touch screen driver write operation failed	Power cycle the instrument and if this error persists, contact us at tek.com/keithley.
+1738	error	Display touch screen driver read operation failed	Power cycle the instrument and if this error persists, contact us at tek.com/keithley.
+1739	error	Channel list must be 'none', 'all', or less than 20 channels	Specify the parameter using 'none', 'all', or the standard channel list notation where the number of channels is less than 20.
+1740	error	Object for change screen is no longer available for display	After replacing the default home screen object, the specified screen is not accessible to display a custom home screen.
+1741	error	User swipe is no longer available to display text lines	After replacing the default home screen, the user swipe is not accessible to display lines of text for a custom home screen.
+1742	error	Found the 'loadimage' keyword without a matching 'endimage'	The interface encountered a 'loadimage' string without an 'endimage'. The 'loadimage' is reserved for use to mark the beginning of an image.
+1743	error	No multiple columns on selectable item list	Selectable cells is not yet implemented.
+1744	error	Item list columns cannot increase after first row completed	Utilize all the needed columns when the first row is being created. Once the first row is created, the number of columns cannot change.
+1745	error	Only one screen popup menu object can be active on a screen	A screen only operates with a single screen popup menu object at a time. A second popup menu can only be created after the first one is removed.
+1800	error	Invalid digital trigger mode	Refer to the product documentation on using Digital I/O.
+1801	error	Invalid digital I/O line	Refer to the product documentation on using Digital I/O.
+1802	error	Digital bit in parameter write protected	Refer to the product documentation on using Digital I/O.
+1804	error	Cannot set %s when Line %d Mode is set to Trigger	When reading or writing a digital I/O line, the mode must be set to Digital. This setting allows for logic level input and output. Use trigger mode to detect edges and output pulses.
+1805	error	Cannot set %s when Line %d Mode is set to Digital	When changing a trigger setting, Line Mode must be set to Trigger. This setting detects edges and outputs pulses when used with the trigger model. Use Line Mode set to Digital to read or write to line.
+1806	error	Cannot set %s when Line %d Mode is set to Digital	Using a trigger feature of a digital I/O line when Line Mode set to Digital. Digital mode allows you to read or write to a line and trigger mode allows you to use the line with the trigger model.
+1807	warning	Attempting to drive digital I/O line when configured as Input	An attempt to set digital I/O line may not produce intended results because Line Mode is set to Input. To drive line, configure it as an Output using the digital I/O Line Mode command.
+1808	warning	Attempting to read digital I/O line when configured as an Output	An attempt to read digital I/O line may not produce intended results because line is set up as an Output. To read the line state, configure it as an Input using the digital I/O Line Mode command.
+1809	error	The mode setting for TSP-Link lines only supports Open Drain	For TSP-Link lines, the hardware implementation restricts the Line Mode settings to only Open Drain. Set the mode for these lines to either Trigger Open Drain or Digital Open Drain.
+1810	warning	Open drain digital line %d Pulse width of %g s may not generate a pulse	Depending on load, if pulse is not generated, increase the pulse width using trigger Pulse width command or change to Logic to Negative using trigger logic command.
+1811	warning	Setting %s line %d to digital has reset a trigger setting for %s line	One or more of the line's Edge, Logic, Pulse width or Stimulus trigger settings has reset. First set the line mode, then any additional settings.
+1812	error	Invalid direction with Synchronous type for Line Mode	Resend the Line Mode command and either set type to Synchronous and direction to Acceptor or Master or set type to Digital or Trigger with direction set to In, Out or Open Drain.
+2003	error	Script contained 'endscript' keyword without starting with 'loadscript'	The interface encountered an 'endscript' string without a 'loadscript'. The 'endscript' is reserved for use to mark the end of a script.
+2005	information	TSP: '%s'	
+2006	information	SCPI: '%s'	
+2007	information	Successfully logged %s the %s interface	
+2008	error	Failed to log %s the %s interface since %s is active	Must log in or out of the active interface before changing to a new one.
+2009	error	Use LOGIN before sending commands on %s interface while %s is active	Send the LOGIN command to gain control of new interface before sending commands.
+2010	error	ABORT or DCL failed, sent on %s interface when %s is active	Abort command or device clear message received on non-active interface. Send on active interface or change Interface Access to Full.
+2011	error	Incorrect password with LOGIN	Recheck your password and login again.
+2102	warning	Connection not established	Verify LAN settings and cable connection.
+2103	warning	LAN configuration is already in progress	Wait until the configuration is finished.
+2105	warning	Could not send LXI LAN trigger	The LXI LAN trigger could not be sent. Verify all network connections.
+2108	warning	Duplicate IP address detected	Another device on your network is using the same IP address.
+2109	warning	DHCP lease lost	Check your network connection.
+2110	warning	LAN cable disconnected	Check your LAN connection to the network.
+2112	warning	Hostname characters invalid or too long	Check the characters and length of the hostname. Refer to the production documentation for details.
+2115	error	Invalid IP address	Check the syntax. Refer to the production documentation for details.
+2117	error	Invalid Subnet Mask address	Check the syntax. Refer to the production documentation for details.
+2119	error	Invalid Gateway address	Check the syntax. Refer to the production documentation for details.
+2120	error	Could not modify IP configuration mode	Check IP address, subnet mask, and gateway for manual mode.
+2121	error	Invalid DNS address	Check the syntax. Refer to the production documentation for details.
+2122	information	LXI Event: %s from %s, HWDetect %s, Domain %d, Seq %d, Time %s, Epoch %d, Flags 0x%02x	
+2123	error	LXI Event: %s from %s, HWDetect %s, Domain %d, Seq %d, Time %s, Epoch %d, Flags 0x%02x	
+2124	warning	Stored LAN configuration set to default	Stored LAN configuration was corrupt. Configuration method reset to Auto.
+2125	warning	LAN configuration was reset	The LAN settings were reset to factory defaults.
+2200	error	File write error	
+2201	error	File read error	
+2202	error	Cannot close file	
+2203	error	Cannot open file	
+2204	error	Directory not found	
+2205	error	File not found	
+2206	error	Cannot read current working directory	
+2207	error	Cannot change directory	
+2208	error	Cannot create directory	
+2211	error	File system error	
+2212	error	File system command not supported	
+2213	error	Too many open files	
+2214	error	File access denied	
+2215	error	Invalid file handle	
+2216	error	Invalid USB flash device	
+2217	error	File system busy	
+2218	error	Disk full	
+2219	error	File corrupt	
+2220	error	File already exists	
+2221	error	File seek error	
+2222	error	End-of-file error	
+2223	error	Directory not empty	
+2224	error	USB flash device not present	A USB flash device must be inserted into the front panel USB port to use this feature. A flash device is either not present or not recognizable. Insert a device or a try a different one.
+2225	error	USB mass storage device format is not supported or unplugged while reading or writing	System only supports USB flash device formatted as FAT32. Do not unplug before reading or writing activity is finished.
+2226	error	Filename too long, needs to be within the limit of 256 characters (including path).	
+2300	error	No %s found	The upgrade file is most likely corrupt. Download the file again from tek.com/keithley.
+2302	error	Upgrade '%s %s' device not ready	The device is not ready to be upgraded. Wait and try again.
+2303	error	Upgrade '%s %s' device type not acceptable	The device is not capable of being upgraded.
+2304	error	Upgrade write to '%s %s' device checksum failure	The upgrade file is most likely corrupt. Download the file again from tek.com/keithley.
+2305	error	Upgrade write to '%s %s' device failed. Try upgrade again.	If this issue persists, contact us at tek.com/keithley.
+2306	error	Upgrade connection timeout with '%s %s' device	Try the upgrade again. If this issue persists, contact us at tek.com/keithley.
+2307	error	Upgrade write failed because of %s	Try the upgrade again. If this issue persists, contact us at tek.com/keithley.
+2308	error	Upgrade denied. If this issue persists, contact us at tek.com/keithley	
+2309	error	Not enough available memory to perform upgrade	Upgrade requires a large amount of memory. Power cycle the instrument to clear memory before trying the upgrade again.
+2310	error	Not enough available memory to perform upgrade	Upgrade requires a large amount of memory. Power cycle the instrument to clear memory before trying the upgrade again.
+2311	error	Upgrade failed for component %s, using previous version	The current version number indicates that the component did not upgrade as expected. Try the upgrade again by choosing the 'Downgrade to Older' option. If this issue persists, contact us at tek.com/keithley.
+2312	error	Hardware incompatible with firmware versions below %s	
+2350	error	SPLT command message lost	A command message was lost. The command did not execute. If this issue persists, contact us at tek.com/keithley.
+2351	error	SPLT non-critical message lost (SLT: %d)	An internal non-critical message was lost. Reading data remains intact. If this issue persists, contact us at tek.com/keithley.
+2400	error	Invalid specified connection	The IP address, hostname, or port number is invalid. Check parameters.
+2401	error	Invalid timeout (0.001 to 30 s)	Set timeout to be in the supported range.
+2402	error	Remote Error: (%d) %s	This event was retrieved from the event log of the remote node. Check the last command sent to that node.
+2403	error	TSP-Net failure	Refer to the product documentation for information on TSP-Net.
+2404	error	TSP-Net read failure	Failed to read data from the remote node. Check for a valid connection to the remote node.
+2405	warning	TSP-Net read failure, aborted	Failed to read data from the remote node. A user aborted the read from the remote node.
+2406	error	TSP-Net read failure, timeout	Failed to read data from the remote node. Check for a valid connection to the remote node. The remote node did not respond.
+2407	error	TSP-Net write failure	Failed to write data to the remote node. Check for a valid connection to the remote node.
+2408	error	TSP-Net write failure, aborted	Failed to write data to the remote node. A user aborted the write to the remote node.
+2409	error	TSP-Net write failure, timeout	Failed to write data to the remote node. Check for a valid connection to the remote node. The remote node did not respond.
+2410	error	TSP-Net maximum connections reached	Refer to the product documentation for information on TSP-Net.
+2411	error	TSP-Net connection failed	The remote node could not be reached. Check the remote node's LAN connection and settings.
+2412	error	TSP-Net invalid termination	Refer to the product documentation for information on using termination with TSP-Net.
+2413	error	TSP-Net invalid reading buffer table	Refer to the product documentation for information on using reading buffers with TSP-Net.
+2414	error	TSP-Net invalid reading buffer index range	Refer to the product documentation for information on using reading buffers with TSP-Net.
+2415	error	TSP-Net feature only supported on TSP connections	Some commands only operate when the remote node is also a TSP device set to the TSP command set.
+2416	error	TSP-Net must specify both port number and initialization string	If a port number and initialization are provided, it is assumed that the remote device is not TSP-enabled. The instrument will not perform any extra processing, prompt handling, error handling, or sending of commands.
+2417	error	TSP-Net disconnected by other side	The remote node closed the connection. Check the remote node.
+2418	error	TSP-Net read input buffer overflow	The data read from the remote node exceeded the buffer limit of 4 kB.
+2419	error	Invalid format specifier	The format specifier could not be determined. Refer to the product documentation for information on using format specifier with TSP-Net.
+2420	error	Termination cannot be changed on a TSP connection	The remote node is a TSP device. The termination for TSP cannot be modified.
+2421	error	Command %s is not available for a TLS connection	Verify that the connection parameter is not using TLS. You cannot use a connection that is using TLS with this command.  Refer to the product documentation for information on TSP-Net commands that are not available for TLS connections.
+2500	error	Average delay must be at least %.6f s	
+2700	error	Block number %d must have parameter for Logic	Refer to the product documentation for this trigger model block type.
+2701	error	Block number %d must have logic parameter of AND or OR	Refer to the product documentation for this trigger model block type.
+2702	error	Block number %d must have %d parameters	The correct number of parameters has not been provided. Refer to the product documentation for this trigger model block type.
+2703	error	Block number %d parameter %d must be type %s	Parameters must be a number, string, reading buffer, event, delay, logic or limit.
+2704	error	Block number %d must have between %d and %d parameters	The correct number of parameters has not been provided. Refer to the product documentation for this trigger model block type.
+2705	error	Trigger model cannot be changed while running	Use the abort command to stop the trigger model before making changes.
+2706	error	Delay for Constant Delay #%d value must be %d ns to %d s, or 0	Set the delay parameter to a valid value.
+2707	error	Block number %d has an invalid event ID in parameter %d	Refer to the product documentation for this trigger model block type.
+2708	error	Block number %d is missing from the list	There is no trigger model block defined for this block number. Define a block for this block number before trying to run the trigger model.
+2709	error	Branch to block number %d does not exist	The block number that is defined in the Branch to Block parameter must exist in order to run the trigger model. Either change the Branch to Block parameter to go to an existing block or create a new block that is assigned to that number.
+2710	error	Unable to initiate, no block number %d found in trigger model	The given Start block number does not exist in the defined trigger model.
+2711	error	The specified block number has not been created	The referenced trigger model block does not exist. Enter a valid block number or create a block with the number.
+2712	error	The specified block number is not a Branch Counter	This command returns information from a Branch Counter block. Resend the command with the block number of a Branch Counter.
+2713	error	No trigger model engine is available	There are only two simultaneous trigger model engines available to run. Check your trigger model to ensure it is correctly designed.
+2714	error	Block number %d has an invalid configuration list name, %s	Refer to the product documentation for this trigger model block type.
+2715	error	Block number %d accessed an invalid configuration list reference, %s at index %d	The recall configuration list trigger model block can only access an existing configuration list index. Create an configuration list index with the specified value or specify a valid index.
+2716	error	Cannot find predefined model, %s	Refer to the product documentation for more information on the trigger model.
+2717	error	Allowed number of Branch Counters has been exceeded (%d maximum)	Refer to the product documentation for this trigger model block types.
+2718	error	Number of combined event Wait blocks exceeded (%d maximum)	Only limited number of Wait blocks can include combined events. You can set up additional Wait blocks if they do not combine events.
+2719	error	Number of allowed Wait blocks exceeded (%d maximum)	Refer to the product documentation for the trigger model Wait block type.
+2722	error	Block number %d contains '%s', an invalid configuration list	The configuration list specified when the block was created is no longer valid. Change the block to specify a valid configuration list or create a new configuration list using the previous name.
+2723	error	Block number %d cannot find a Measure or Digitize block at block number %d	The specified Measure or Digitize block cannot be found in the trigger model or is not located before the block being configured.
+2724	error	Digital Line %d Mode must be set to Digital Out	Any digital I/O line used by the trigger model in a Digital I/O block must be configured to digital out using digital I/O specific commands.
+2725	error	Log Event block number %d Event Number is invalid	An Event Number must be Info<n>, Warn<n> or Error<n> where <n> is 1 to 4 (or the corresponding event type).
+2726	error	Block number %d message must be less than %d characters	Shorten the message so that it has less characters.
+2727	error	Command prohibited while trigger model is running	Some commands conflict with trigger model operations. Use the abort command to stop the trigger model before using this command.
+2728	warning	Trigger model path #%d has been aborted	Trigger model was running, but then aborted by the user.
+2729	error	Block number %d requires a Measure or Digitize block number	For this block type, a Measure or Digitize block is required. The specified block number must point to a block of that type.
+2730	error	Trigger model path #%d has failed	An error caused the trigger model to stop running. View the event log for more information.
+2731	information	Trigger model path #%d has been initiated	Trigger model was idle and is now running.
+2732	information	Trigger model path #%d has been idled	Trigger model was running, completed successfully, and is now in idle.
+2733	warning	Trigger model path #%d block #%d ended due to %s	This log event is generated by a trigger model block. Correct the issue or change the trigger model to avoid this message.
+2734	information	TM path #%d block #%d logged: %s	A trigger model log event block logged this information type event.
+2735	information	TM path #%d block #%d logged: %s	A trigger model log event block logged this information type event.
+2736	information	TM path #%d block #%d logged: %s	A trigger model log event block logged this information type event.
+2737	information	TM path #%d block #%d logged: %s	A trigger model log event block logged this information type event.
+2738	warning	TM path #%d block #%d logged: %s	A trigger model log event block logged this warning type event.
+2739	warning	TM path #%d block #%d logged: %s	A trigger model log event block logged this warning type event.
+2740	warning	TM path #%d block #%d logged: %s	A trigger model log event block logged this warning type event.
+2741	warning	TM path #%d block #%d logged: %s	A trigger model log event block logged this warning type event.
+2742	error	TM path #%d block #%d logged: %s	A trigger model log event block logged this error type event.
+2743	error	TM path #%d block #%d logged: %s	A trigger model log event block logged this error type event.
+2744	error	TM path #%d block #%d logged: %s	A trigger model log event block logged this error type event.
+2745	error	TM path #%d block #%d logged: %s	A trigger model log event block logged this error type event.
+2746	error	Block number %d limit index must be 1 or 2	There are only two limit sets available.
+2747	error	For trigger model load with %s, parameter %d must be type %s	Parameters must be a number, string, reading buffer, event, delay, logic, limit, reading or on/off.
+2748	error	Trigger model is invalid with active function	Change the active function or change the type of the block. If using configuration list blocks, check the functions that are saved in the list.
+2749	error	Measure #%d and Digitize #%d are not allowed in same trigger model	Trigger models only support one type of measurement block. You cannot mix Measure and Digitize blocks in the same trigger model.
+2750	error	The 'LoopUntilEvent' trigger model template does not allow event setting of None	Change the 'LoopUntilEvent' template to specify an event other than None.
+2751	error	Block number %d has an invalid reading buffer	The reading buffer referred to by the block no longer exists. Create a new trigger model block with a valid reading buffer.
+2752	error	Trigger %s stimulus and trigger model are not allowed together	Trigger stimulus and Measure/Digitize block in trigger model are configured simultaneously. Remove trigger stimulus and then initiate trigger model.
+2753	information	Trigger model is not optimized for speed due to %s	Reduce the complexity of the trigger models to improve performance. This trigger model requires the use of slower resources and may not achieve published specifications.
+2754	error	'LoopUntilEvent' template with trigger event is incompatible with function	The 'LoopUntilEvent' template with analog trigger source event only works for DC Voltage or Current or Digitize Voltage or Current functions. Change to one of these functions or specify an event other than analog trigger.
+2755	error	The %s for '%s' template must have a value between %d ns and %d s, or 0	Set a delay between the listed values or remove additional delay by setting the delay to 0.
+2756	error	Analog trigger cannot be used when %s is On	Set a range manually and set Auto Zero off before restarting the trigger model.
+2757	error	The specified measure configuration list, %s, is empty (no stored index points)	To use a measure configuration list, it must have at least one stored index point. Store a measure index point using the configuration list store command.
+2758	error	Exceeded %d Start blocks at block number %d	The trigger model can only run a limited number of paths simultaneously. There is an implied Start block at the beginning of the model plus any user added Start blocks.
+2759	error	Exceeded %d true branch depth at block number %d	The maximum true path branch depth has been exceeded. Branch depth is increased by one whenever the true path of a branch block leads to another branch block.
+2760	error	Trigger model block #%d is being executed by multiple trigger model paths	A trigger model block can only be executed in one trigger model path. There is a second Start block which could follow a path to this block.
+2761	error	Block number %d must use different configuration list types	When using a trigger model block with two configuration lists, the configuration lists must be of different types (for example, Measure and Source, or Measure and Switch)
+2762	error	Block number %d failed to apply configuration list index %d and %d	Verify the configuration list settings are valid when used together. View the event log for more information.
+2763	error	Block number %d %s configuration list type not allowed to be followed with %s block	A configuration list has a measure Function with a Digitize block or a digitize Function with a Measure block. Specify a list with a function for block defined in model or change block to match function in specified list.
+2764	error	Trigger model cannot be paused during Measure or Digitize blocks with Count Infinite	Abort the trigger model and if you want to pause then change the count.
+2765	warning	Trigger model pause automatically completed the last active delay block	When resuming, the trigger model will continue on the next block after the delay block.
+2766	error	Trigger model cannot be resumed unless it is in the paused state	Pause the trigger model before attempting to resume the trigger model.
+2767	error	Trigger model cannot be paused unless it is already running	Initiate the trigger model before attempting to pause the trigger model.
+2768	warning	Trigger model pause is waiting for the last measurement	Wait until trigger model state changes to PAUSE. Trigger model abort will not take effect until pause is finished.
+2769	error	Unable to write to USB flash device	The USB flash device is unplugged or failed. Restart scan, or pause trigger model and resume with an inserted USB flash device.
+2770	warning	The fan is spinning too slowly (%d%% of minimum)	The instrument is experiencing an internal malfunction and requires immediate service. Contact us at tek.com/keithley.
+2771	warning	%s temperature over %d C, consider corrective action	The instrument is nearing an internal temperature where corrective action will be necessary. The next limit will automatically turn off source outputs or limit other functionality.
+2775	information	The fan is operating properly	An internal malfunction has been corrected. The instrument is now operating normally.
+2776	information	Instrument temperature returned to normal	The instrument is operating at normal temperature levels and is fully functional.
+2777	warning	%s temperature critical (%d C), functionality limited	The instrument temperature has reached a level at which source output and other functionality are not available.
+2778	information	Full functionality restored because of acceptable instrument temperature	The instrument temperature has fallen to a level at which source output and other functionality are now available.
+2779	error	Fan controller busy	The fan may not be monitored accurately. Contact us at tek.com/keithley.
+2790	error	Configuration list %s, does not exist	Create the configuration list through the front panel or by using a create command.
+2791	error	Configuration list does not have stored settings at index %d	Use the configuration list size command to determine how many indexes are stored in the configuration list. Resend command with a valid index.
+2792	error	Invalid configuration list name parameter; the string has no characters	The configuration list name cannot be blank.
+2793	error	Invalid %s configuration list name parameter; it has more than %d characters	Shorten the string name to be no more than the maximum number of characters.
+2794	error	Invalid configuration list name parameter	Use a valid string for the configuration list name parameter.
+2800	error	The %s attribute is not available for the %s function	The listed attribute is not supported for the stated function. Not all attributes operate for all functions. Refer to the product documentation.
+2801	error	DMM cannot measure when %s function is set to None	You cannot use the measure and digitize functions at the same time. Setting the Function of one therefore sets the Function of the other to None. Set the measure or digitize Function to a valid function and try again.
+2802	error	%s; on step %d, sub-step %d, value %f; expected value from %f to %f	A measurement of an internal value was outside of the expected range. Check your connections and try again. If this issue persists, contact us at tek.com/keithley.
+2803	error	Digitize function, Aperture %g s exceeds maximum of %g s	The digitize Aperture must be smaller than the period that corresponds to the Sample Rate. Reduce the Aperture or reduce the Sample Rate.
+2805	warning	Turning on Dry Circuit also turned on Offset Compensation	Offset compensation was automatically enabled to improve measurement accuracy.
+2806	warning	Analog triggers won't operate since %s Level is %g and exceeds %s Range of %g to %g	Set the analog Trigger Level to be within specified Range or select a higher fixed Range based on analog trigger and waveform levels.
+2807	warning	Analog trigger %s Level of %g exceeds present %s Range of %g to %g	The analog trigger event will never be detected with these settings. Set the Analog Trigger Level to be within specified range limits or select a higher fixed Range based on analog trigger and waveform levels.
+2808	warning	Analog trigger is %s, Auto Range is On, %s level is %g and present Range is %g to %g	Select a fixed Range that is appropriate for waveform levels and analog trigger level or ignore warning since Auto Range is On. Auto Range will change to a new range that allows analog trigger detection.
+2809	error	%s cannot set function to None	You cannot set both the Measure and Digitize functions to None. Either the Measure or Digitize Function must be set to a valid Function other than None.
+2810	error	Setting %s with invalid value for function %s	Refer to the product documentation for more information.
+2811	error	%s cannot be turned on because %s is On	Dry Circuit and Open Lead Detector are incompatible. Only one can be enabled at a time. If you want use one, you must first set the other to Off.
+2812	error	Cannot set Trigger Window %s to %g because %s (%g). %s Level unchanged (%g)	Set the analog Trigger Window High Level to be more than the Window Low Level setting or set Low Level setting to be less than Window High Level setting.
+2813	error	Cannot set analog trigger to Window when High <= Low. High = %g and Low = %g	Set the analog Trigger Window levels so that the Low Level is less than the High Level. Then, set analog Trigger to Window again.
+2814	warning	Changing digitize Sample Rate to %d changed digitize Aperture to %g s	The maximum Aperture is 1/(Sample Rate). The instrument automatically adjusts the Aperture setting if the Sample Rate is changed to a rate that does not support the existing Aperture setting.
+2815	warning	Auto Range is not available on Rear 10 A terminal	Auto Range is only available for 3 A terminal. Select a specific range.
+2816	error	Cannot sustain requested Sample Rate into reading buffer	The present Sample Rate is too high to be sustained into a buffer size over 8,000,000 readings. Decrease the Sample Rate or decrease the buffer size.
+2817	error	High speed readings caused buffer overrun and readings were lost	An internal issue has resulted in the loss of readings. Power cycle and restart the test sequence.
+2818	error	High speed analog buffer overrun and readings were lost	An internal issue has resulted in the loss of readings. Power cycle and restart the test sequence.
+2825	error	Auto Range is not available for the rear-panel 10 A range	The only Range available for the Rear 10 A terminal is 10 A. Select a lower Range (3 A or below) to select the other terminal. You can then enable Auto Range.
+2826	warning	Setting %s is not used while Transducer is %s. Change Transducer to %s	The change to the setting was made, but to use the setting, change the Transducer type to one that uses this setting. Set the Transducer type before setting other temperature attributes.
+2827	error	Cannot change integration rate (Aperture) when Detector Bandwidth is 3 or 30 Hz	To change the integration rate (Aperture) for AC Voltage or AC Current, set the Detector Bandwidth to 300 Hz before setting the Integration Rate for these functions.
+2828	error	10 A range is not supported on Front terminals	Select the Rear terminals and the 10 A range before connecting to the 10 A terminal.
+2830	error	Threshold Level exceeds the Threshold Range	The Threshold Level cannot be greater than the Threshold Range.
+2831	warning	Changing the Threshold Range resulted in a change to the Threshold Level	The Threshold Level cannot be above the Threshold Range. The Threshold Level was lowered to the Threshold Range value.
+2832	error	Cannot determine Relative Offset due to reading overflow	The instrument is presently measuring overflow and cannot use the reading for the Relative Offset value. Change the configuration to get valid readings before attempting another relative value acquire operation.
+2833	warning	Rel Offset Method set to Parts caused the Level be set to maximum of %g	When the relative offset method is set to Parts, the relative offset level cannot exceed the maximum range value of the function. Change the Relative Offset level before changing the Relative Method.
+2834	warning	Front terminals cannot measure on 10 A range and was changed to 3 A range	The Front terminals cannot measure above 3 A. The range has been automatically changed from 10 A to 3 A. To make 10 A measurements, select the Rear terminals and change to the 10 A range.
+2835	error	Invalid %s function parameter, cannot use a %s function for %s	A function command received an incorrect parameter value. Resend the command and use a measure function or a digitize function.
+2836	warning	Analog triggers won't operate since %s level is %g A on Front terminals	Set the analog trigger level to be less than 3 A or select Rear terminals and enable them to measure or digitize above 3 A. Then set the analog trigger levels above 3 A.
+2837	information	Performance Setting: '%s'	The function attribute listed was set to the indicated value because of a performance setting change. If the setting is incorrect for your application, change the setting or performance selection.
+2838	error	The internal temperature is too hot for normal specification operation	Check for blocked air vents and use the unit in a cooler environment. Running at high temperature reduces measurement accuracy.
+2839	error	The internal temperature of the instrument has cooled enough	Temperature allows for normal specification operation.
+2840	error	Analog trigger and measure Auto Range cannot both be enabled at the same time	You will need to set the Range to a fixed value before running the trigger model that is waiting for an analog trigger event.
+2841	error	Analog trigger and Auto Zero cannot both be enabled at the same time	Turn off Auto Zero and set a fixed range.
+2842	error	You cannot Auto Zero once when analog trigger is enabled	Turn off analog trigger mode, then do the Auto Zero once operation.
+2843	warning	Aborted high speed acquisition resulted in missing readings	When you abort high-speed data acquisition, you may lose data segments. Measurements that were acquired are valid but were not acquired at the requested rate.
+2844	error	The Threshold Level must be 0 %s when threshold Auto Range is On	To set a Threshold Level, select a Threshold Range, then set Threshold Level 
+2845	error	Cannot set Threshold Range to Auto for %s when Threshold Level is not 0	Set Threshold Level to 0 and then set Threshold Range to Auto.
+2846	error	Cannot change Auto Zero setting for %s when Detector Bandwidth setting is %d Hz	Auto Zero can only be changed when detector bandwidth setting equals 300 Hz. Set Detector Bandwidth to 300 Hz then change Auto Zero setting.
+2847	warning	Auto Zero for %s was turned On because the Detector Bandwidth is %d Hz	Auto Zero enable is fixed at On for Detector Bandwidth settings of 3 and 30 Hz. When Detector Bandwidth setting is 300 Hz, the Auto Zero setting may be set to On or Off.
+2848	error	Analog to Digital communication packets dropped	An internal issue has resulted in the loss of data. Cycle power and restart the test sequence.
+2849	error	Digital to Analog communication packets dropped	An internal issue has resulted in the loss of data. Cycle power and restart the test sequence.
+2850	warning	Disconnected %s stimulus for direct triggering of measurements	Continuous Measurement triggers measurements and is not compatible with triggering when using the stimulus commands. The event connected to this stimulus was removed. To reconnect, use the stimulus command.
+2853	warning	Analog trigger mode, Auto Zero, and Auto Range cannot be enabled at the same time	Turn off Auto Zero and set a fixed Range.
+2854	warning	Input Impedance for %s won't take effect until Signal Coupling is DC	Input Impedance is not used for AC signal coupling. It only applies when Signal Coupling is DC. Change Signal Coupling with coupling type command.
+2855	error	For a digitize Count above %d, the Sample Rate must be below %d	To use a high Sample Rate, you must decrease the digitize Count. If a high digitize Count is needed, decrease the Sample Rate.
+2858	error	The %s command is not available for the %s function	The command is not supported for the function. Not all commands work for all functions. Refer to the product documentation.
+2859	error	No channels closed on card to measure	When Rear terminals are selected, the channels on a card must be closed in order to make a valid measurement. Close the desired channel to measure.
+2860	error	Internal temperature limit exceeded (Sensor 1)	The internal temperature has exceeded the normal operating range. This may indicate that maximum signal levels have been exceeded. Consider removing all test connections.
+2861	error	Internal temperature limit exceeded (Sensor 2)	The internal temperature has exceeded the normal operating range. This may indicate that maximum signal levels have been exceeded. Consider removing all test connections.
+2862	error	Internal temperature limit exceeded (Sensor 3)	The internal temperature has exceeded the normal operating range. This may indicate that maximum signal levels have been exceeded. Consider removing all test connections.
+2863	error	Internal temperature limit exceeded (Sensor 4)	The internal temperature has exceeded the normal operating range. This may indicate that maximum signal levels have been exceeded. Consider removing all test connections.
+2864	error	Internal temperature limit exceeded (Sensor 5)	The internal temperature has exceeded the normal operating range. This may indicate that maximum signal levels have been exceeded. Consider removing all test connections.
+2865	error	Internal temperature limit exceeded (Sensor 6)	The internal temperature has exceeded the normal operating range. This may indicate that maximum signal levels have been exceeded. Consider removing all test connections.
+2866	error	Internal temperature limit exceeded (Sensor 7)	The internal temperature has exceeded the normal operating range. This may indicate that maximum signal levels have been exceeded. Consider removing all test connections.
+2870	warning	Switching to Rear with channel %d closed updates active function settings	The previously used settings for the closed channel were used to update the DMM.
+2871	error	DMM cannot be set to internal or external reference junction when on Front terminals	Internal and external reference junction is only supported on the Rear terminals.
+2872	information	Begin reading backlog processing	Interaction with user interface is disabled until complete.
+2873	information	End reading backlog processing	Interaction with user interface is allowed now.
+2874	warning	Analog trigger condition may no longer be valid given active function settings	Ensure that the analog trigger setting is enabled.
+2875	error	Diode Bias Level must be %s A	Change the value to match one of the listed values.
+2876	warning	Transducer type set to 2W RTD turns Off both Offset Compensation & Open Lead Detector	Offset Compensation and Open Lead dDetector are fixed at Off for 2-wire RTD. You can change the settings for Transducer type of thermocouple, 3 or 4-wire RTD.
+2877	error	Terminals switch failure detected	The terminals switch has been incorrectly configured for the instrument to operate normally. Contact us at tek.com/keithley for service.
+3000	error	General unknown switching error	If this issue persists, contact us at tek.com/keithley.
+3001	error	Channel does not support the specified measurement function	Because of channel specifications, not all functions measure on all channels. Refer to the card documentation for more information for this channel.
+3002	error	The measure attribute for the channel's function cannot be changed	Refer to the product documentation for more information on using channel commands.
+3003	error	Requested function requires a paired channel that has not been initialized	Refer to the product documentation for more information on using channel commands.
+3004	error	Pole relay for 4-wire measurements does not exist on switch card	Refer to the product documentation for more information on using channel commands.
+3005	error	Channel width specified is invalid	Digital channel width may only be set to 1, 2, 3, or 4, depending on the position of the channel on the card. Refer to the product documentation.
+3006	error	Multiple channels cannot be closed	Single pole multiple throw channels only allow one channel per bank to be closed at any time. Refer to the card documentation for more information.
+3007	error	Failed to write new calibration constants to card	If this issue persists, contact us at tek.com/keithley.
+3008	error	Channel %s can only be set to Current functions	Refer to the card documentation for more information for this channel. 
+3009	error	Channel %s cannot be set to a function	The channel does not support making measurements. Refer to the card documentation for more information for this channel.
+3010	error	Channel %s can only be set to non-Current functions	Refer to the card documentation for more information for this channel.
+3011	error	Channel %s can only be set to 2-wire functions	The channel can only be configured for 2-wire functions. Refer to the card documentation for more information for this channel.
+3012	error	Cannot use channel %s that is paired to a channel with a 4W function	Change the function on the paired channel to a non 4-wire function. Then this channel will available for 2-wire functions.
+3013	error	Cannot set a measure attribute for a function different from the channel function	Channels can only associate measure attributes from one function at a time. To set attributes for a different function, first change the channel's function to the required function.
+3014	warning	Channel %s is closed to measure %s without Rear terminals selected	Select the Rear terminals to measure through card channels.
+3015	error	Channel %s does not support the internal reference junction setting	Verify that the card supports the setting Reference Junction to Internal.
+3016	error	Filter Type Moving or Hybrid Average not available to set on a channel	The Filter Type cannot be Moving or Hybrid Average because the DMM does not keep averages per channel. Use Reading Buffer Channel Math for a method to average readings on a channel.
+3017	error	Channel %s type does not support measurement attributes	Refer to the card documentation for more information for this channel.
+3018	error	Channel %s mode is invalid since digital type monitor channels must be input	Use a digital input channel for monitor channel.  Also, monitor channel type may be switch or totalizer.
+3400	error	Unknown scan error	If this issue persists, contact us at tek.com/keithley.
+3401	error	Maximum scan steps reached	Refer to the product documentation for more information on using scan commands.
+3402	error	Requested scan step cannot be added due to card power restrictions	Decrease the number of requested open or close channels in the step.
+3403	warning	Scan restarted because it did not complete successfully	Instrument was restarted before scan could finish. Power may have been lost or instrument was power cycled.
+3404	error	Unhandled scan step command error	If this issue persists, contact us at tek.com/keithley.
+3405	error	Cannot initiate scan, no longer contains a valid scan	Ensure all trigger model scan options are only being configured using the scan commands.
+3406	error	Cannot start pre-scan monitor with a function of None set for channel %s	A function other than None must be set to the monitor channel before using the pre-scan monitor.
+3407	warning	Scan initiated with Front terminals active	Select the Rear terminals by using the Terminals button on the front panel.
+3408	error	Cannot learn scan limits with Front terminals active	Select the Rear terminals by using the Terminals button on the front panel.
+3409	error	Cannot add write only channel %s to scan read step	Requested channel can only be added in scan write step. Remove this channel from scan read step.
+3410	error	Cannot add read only channel %s to scan write step	Requested channel can only be added in scan read step. Remove this channel from scan write step.
+3411	error	%s setting can only be set to 0 s, or greater than or equal to %1g s	Increase the requested Interval setting.
+3412	error	%s setting can only be set to less than %d s	Decrease the requested Interval setting.
+3413	error	Limits on channel %s were not set while learning scan limits because of overflow	Verify the integrity of the connections on the channel and try again.
+3414	warning	Existing scan was modified by another trigger model template	If you want to restore your scan, go to Scan icon and select 'Use Preview' or 'Create New'.
+3415	error	Number of measurements in the scan is greater than the buffer size	Data will be lost because the buffer selected for the scan is too small to support all measurements in the scan. Increase the buffer capacity selected for the scan, or use a different buffer.
+3416	error	High limit is less than or equal to the low limit for the selected scan monitor mode	If you are monitoring a range of measurements to determine when to start the scan, the high value must be greater than the low value
+3600	warning	Trigger model pause delayed because USB flash device write is in progress	Wait until trigger model state changes to PAUSE. Trigger model abort will not take effect until pause is finished.
+3601	error	Trigger model resume failed because USB flash device is not inserted	Reinsert the USB flash device and wait a few seconds for it to be recognized.
+3602	error	The specified source configuration list, %s, is empty (no stored index points)	To use a source configuration list, it must have at least one stored index point. Store a source index point using the configuration list store command.
+4900	error	Reading buffer index %d is invalid	Refer to product documentation for more information on reading buffers.
+4901	error	The maximum index for this buffer is %d	Refer to product documentation for more information on reading buffers.
+4903	error	Reading buffer expired	Refer to product documentation for more information on reading buffers.
+4904	error	ICX parameter count mismatch, %s (Line #%d)	
+4905	error	ICX parameter invalid value, %s (Line #%d)	
+4906	error	ICX invalid function id, %s (Line #%d)	
+4909	error	Reading buffer not found within instrument	Refer to product documentation for more information on reading buffers.
+4910	error	No readings exist within buffer	Refer to product documentation for more information on reading buffers.
+4911	error	Table not found within buffer	Refer to product documentation for more information on reading buffers.
+4912	error	Attribute not found within buffer	Refer to product documentation for more information on reading buffers.
+4914	error	Index exceeds maximum readings stored in buffer	Refer to product documentation for more information on reading buffers.
+4915	error	Attempting to store past the capacity of reading buffer	Cannot make more readings because the active buffer is full. Select another buffer, clear the buffer, or change the buffer fill mode to continuous before resuming readings.
+4917	information	Reading buffer %s is %d%% filled	Refer to product documentation for more information on reading buffers.
+4918	information	Reading buffer %s is %d%% filled	Refer to product documentation for more information on reading buffers.
+4919	error	Available capacity for all reading buffers exceeded, remaining capacity is %d readings	The combination of all created reading buffers must not exceed the overall capacity available. Delete user buffers or shrink the default buffers to gain space.
+4920	error	Invalid size: Reading buffer capacity must be between %d and %d readings	Ensure the requested capacity is between the limits given.
+4921	warning	Reading buffer capacity changed failed, automatically sized to %d readings	Memory for the requested capacity was unavailable. The buffer was sized to fit the memory available.
+4922	error	A default buffer cannot be deleted	Only user-defined reading buffers may be deleted. You may shrink the capacity of default buffers to gain space.
+4923	error	Can only change format of reading buffer %s when empty	This buffer stores attributes based on the first reading to save space. Those attributes cannot be different for future readings. Clear buffer before changing format attributes.
+4924	error	Time in a 'writable' reading buffer cannot reverse	The time specified when writing to a writable buffer must move forward from the previous reading. If you do not specify a time then a valid time will be added.
+4925	error	Measurements cannot be added to a 'writable' reading buffer	A 'writable' reading buffer cannot be used as a reading buffer capable of making normal measurements.
+4926	error	Reading buffer %s must be of a 'writable' style to use this function	Certain functionality is only available for writable reading buffers. Create the reading buffer with the 'writable' style to enable this functionality.
+4927	error	Reading buffer, %s, does not store %s, must be at least of style %s	Not all information is contained in every reading buffer style. Refer to product documentation for more information on reading buffers.
+4928	error	Requested reading count must be less than the capacity of the reading buffer	The requested reading count must be less than the capacity of the reading buffer.
+4929	error	Cannot have more than %d reading buffers	The total number of all user-created and default reading buffers cannot exceed the maximum indicated.
+4930	error	Reading buffer %s must be of a 'writable full' style to use extra parameters	Standard writable reading buffers do not contain an extra measurement. Create the reading buffer with the writable full style to enable this functionality.
+4931	error	Cannot store readings in buffer %s, when Auto Range is On since range may change	This buffer stores attributes based on first reading to save space. Those attributes cannot change once stored. Select a different buffer to store readings or set Range to a fixed value before storing readings in this buffer.
+4932	error	Invalid reading buffer statistics; start and end time parameters	The start and end times must be specified as either 2 parameters; start decimal seconds and end decimal seconds, or as 4 parameters; start integer seconds, start fractional seconds, start integer seconds, and start fractional seconds.
+4933	warning	Reading buffer custom unit truncated to two characters	Only the first two characters of custom units are used. Change the custom unit to only use one or two characters.
+4934	error	Expression requires %d parameters but %d were supplied	Refer to product documentation for more information on the expression and the available parameters.
+4935	error	Reading buffer style %s when style %s is required	The reading buffer being used is not of the correct style for requested functionality.
+4936	warning	Specified flag %s causes certain other flags to be ignored	The specified flag causes a predefined set of flags to be used.
+4937	error	Insufficient memory for requested reading buffer capacity, %d readings available	Reading buffer maximum capacity can be limited by various factors based on memory usage. Refer to product documentation for more information on reading buffers.
+4938	warning	Requested reading buffer statistics are invalid	To increase performance, buffer statistics were not calculated on all readings added to the buffer. Expect inaccurate statistics.
+4939	error	Reading buffer file layout %s is incompatible with 'Export to USB' writepoint %s	Refer to the product documentation for valid combinations of buffer file layout and export writepoints.
+4940	error	Reading buffer '%s' was not created because the name exceeded (%d) characters	Create a buffer using a shorter buffer name.
+5500	error	Card unknown error	If this issue persists, contact us at tek.com/keithley.
+5501	error	Failed to write to card's non-volatile memory	Card may not function correctly.
+5502	error	Failed to read card's non-volatile memory	Card may not function correctly.
+5503	error	Unable to read all relay counts from card	The relay count memory seems corrupt. The issue was corrected but relay counts may be incorrect. If this issue persists, contact us at tek.com/keithley.
+5505	error	Error completing a card action in requested operation	
+5506	error	Communication error with a card in requested operation	
+5507	error	Card operation completed under low total power	
+5508	error	Card operation completed under low bank power	
+5509	error	Card operation completed under low slot power	
+5510	error	Not enough total power to hold requested card operation	
+5511	error	Not enough bank power to hold requested card operation	
+5512	error	Not enough slot power to hold requested card operation	
+5513	error	Not enough total power to complete requested card operation	
+5514	error	Not enough bank power to complete requested card operation	
+5515	error	Not enough slot power to complete requested card operation	
+5516	error	Slot empty, no configuration data exist	
+5517	error	Slot error, configuration data not found	
+5518	error	Slot error, communication error accessing configuration data	
+5519	error	Slot error, timeout error accessing configuration data	
+5525	error	An unsupported card is inserted, this card may not function	
+5526	error	Card Calibration data lost, temperature readings may be incorrect	A potential hardware or environmental issue has caused the loss of calibration information. Defaults will be used. Temperature readings may have more error than normal. Contact us at tek.com/keithley to calibrate this card.
+5527	error	Card Temperature Cold Calibration error	Contact us at tek.com/keithley to calibrate this card.
+5528	error	Card analog output zero error	Contact us at tek.com/keithley to calibrate this card.
+5529	error	Card analog output positive gain error	Contact us at tek.com/keithley to calibrate this card.
+5530	error	Card analog output negative gain error	Contact us at tek.com/keithley to calibrate this card.
+5531	error	Card cannot be calibrated unless Rear terminals are selected	Contact us at tek.com/keithley to calibrate this card.
+5532	error	DMM cannot set Reference Junction to Internal when card does not support it	Verify that the card in the mainframe supports the internal reference junction setting.
+5533	information	Begin installing pseudocard	Interaction with user interface is disabled until complete.
+5534	information	End installing pseudocard	Interaction with user interface is allowed now.
+5550	error	Internal: C2C packet resync on slot 1	
+5551	error	Internal: C2C packet resync on slot 2	
+5552	error	Internal: C2C packet resync on slot 3	
+5553	error	Internal: C2C packet resync on slot 4	
+5554	error	Internal: C2C packet resync on slot 5	
+5555	error	Internal: C2C packet resync on slot 6	
+5556	error	Internal: C2C packet resync on slot 7	
+5557	error	Internal: C2C packet resync on slot 8	
+5558	error	Internal: C2C packet resync on slot 9	
+5562	error	Internal: C2C packet resync reported from slot 1	
+5563	error	Internal: C2C packet resync reported from slot 2	
+5564	error	Internal: C2C packet resync reported from slot 3	
+5565	error	Internal: C2C packet resync reported from slot 4	
+5566	error	Internal: C2C packet resync reported from slot 5	
+5567	error	Internal: C2C packet resync reported from slot 6	
+5568	error	Internal: C2C packet resync reported from slot 7	
+5569	error	Internal: C2C packet resync reported from slot 8	
+5570	error	Internal: C2C packet resync reported from slot 9	
+5574	error	Internal: C2C slot exception (Code: %d %08X)	
+5575	error	Internal: C2C packet queue full reported from slot 1	
+5576	error	Internal: C2C packet queue full reported from slot 2	
+5577	error	Internal: C2C packet queue full reported from slot 3	
+5578	error	Internal: C2C packet queue full reported from slot 4	
+5579	error	Internal: C2C packet queue full reported from slot 5	
+5580	error	Internal: C2C packet queue full reported from slot 6	
+5581	error	Internal: C2C packet queue full reported from slot 7	
+5582	error	Internal: C2C packet queue full reported from slot 8	
+5583	error	Internal: C2C packet queue full reported from slot 9	
+5698	error	AC calibration data lost	Instrument must be calibrated to meet measurement specifications.
+5699	error	DC calibration data lost	Instrument must be calibrated to meet measurement specifications.
+5700	error	PreCal calibration data lost	
+5701	error	Measurement Timeout	A measurement reading took too long and was aborted. 
+5732	error	Questionable Calibration	Instrument must be calibrated to meet measurement specifications.
+5734	error	Internal DMM Error	If this issue persists, contact us at tek.com/keithley.
+5735	error	General unknown DMM error	If this issue persists, contact us at tek.com/keithley.
+5737	error	Error completing DMM action in requested operation	If this issue persists, contact us at tek.com/keithley.
+5738	error	Communication error with DMM in requested operation	If this issue persists, contact us at tek.com/keithley.
