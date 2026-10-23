@@ -316,6 +316,7 @@ function beval.destroy()
   beval.scr = nil
   beval.t_verdict, beval.t_run, beval.t_err, beval.t_cmp, beval.t_head = nil, nil, nil, nil, nil
   beval.t_row = nil
+  beval.b_resume, beval.b_repeat = nil, nil
   return true
 end
 
@@ -371,6 +372,29 @@ function beval.build()
     display.setevent(b, display.EVENT_PRESS, 'sdec.guard(beval.back)')
     keep(b)
   end
+  -- RESUME, BESIDE Back. 24 px of gap at 246 is what the options form and the key screen leave
+  -- between their own buttons, so the two do not read as one block.
+  --
+  -- A RUN THAT WAS CUT SHORT IS WORTH DAYS OF STIMULUS. Without this the only way to carry on after
+  -- an abort was the host's --resume, which is exactly the dependency this app exists to remove.
+  -- TWO BUTTONS IN ONE PLACE, EXACTLY ONE VISIBLE, rather than one button whose label is rewritten.
+  -- display.settext on a button is not something this firmware has been measured doing -- settext on
+  -- a SCREEN sets its title, which is proven, and the button case is an assumption -- and a button
+  -- reading 'Resume' while it repeated the run would be worse than no button at all. Hiding with
+  -- STATE_INVISIBLE is proven: tsp/serial_ui.tsp shows and hides its own buttons that way, and
+  -- STATE_DISABLE is documented for display.OBJ_EDIT_* only.
+  beval.b_resume = display.create(beval.scr, display.OBJ_BUTTON, 246, btny, 'Resume', 200)
+  if beval.b_resume ~= nil then
+    display.setevent(beval.b_resume, display.EVENT_PRESS, 'sdec.guard(beval.resume)')
+    keep(beval.b_resume)
+  end
+  -- REPEAT, for a run that finished what it was asked for. There is nothing to resume there, and the
+  -- useful offer is another go with the same settings.
+  beval.b_repeat = display.create(beval.scr, display.OBJ_BUTTON, 246, btny, 'Repeat', 200)
+  if beval.b_repeat ~= nil then
+    display.setevent(beval.b_repeat, display.EVENT_PRESS, 'sdec.guard(beval.again)')
+    keep(beval.b_repeat)
+  end
   display.setevent(beval.scr, display.EVENT_ENDAPP, 'sdec.guard(beval.endapp)')
   return true
 end
@@ -384,9 +408,47 @@ end
 -- it, and on a long soak the key is also the thing most likely to have been swapped.
 function beval.back()
   if brun == nil or brun.pnscr == nil then return false end
+  -- SWITCHED FIRST, REFRESHED SECOND. pn_refresh_plan reads the plan's header off the key, so doing
+  -- it before the changescreen left the result screen in front for the whole read and the button
+  -- read as dead. The plan lines are stale for that moment and then correct, which is the right way
+  -- round: the operator sees the form appear at once.
+  if brun.show_now ~= nil then brun.show_now(brun.pnscr) else display.changescreen(brun.pnscr) end
   if brun.pn_refresh_plan ~= nil then brun.pn_refresh_plan() end
-  display.changescreen(brun.pnscr)
   return true
+end
+
+-- Carry on after a run that was cut short, from the cell after the last one the record holds.
+--
+-- IT GOES BACK THROUGH brun.panel_run, which means the form on the glass is read again and every
+-- filter, capture setting and generator address is applied exactly as a fresh run applies them. A
+-- resume that built its own configuration would be a second place for the plan's cell set to be
+-- decided, and a resumed leg that measured a different set than the leg before it is worse than no
+-- resume at all -- the record would carry both under one header.
+--
+-- IT REFUSES RATHER THAN STARTING OVER when there is nothing to resume, which brun.resumable
+-- answers. The button is invisible in that case, so this is the belt to that braces: an event string
+-- already queued when the run ended could still arrive here.
+--
+-- The engine does the rest, and is already careful about it: brun.resume_scan finds the last
+-- completed cell bounded by the record's own FAT size -- so it cannot read past the end -- and
+-- brun.resume_to REFUSES a resume point the plan does not contain, because that means the plan is
+-- not the one that produced the record.
+function beval.resume()
+  if brun == nil or brun.panel_run == nil then return false end
+  if brun.resumable == nil or not brun.resumable() then return false end
+  return brun.panel_run(true)
+end
+
+-- Another go at a run that finished what it was asked for, from the top, with the settings the form
+-- still holds. -> ok
+--
+-- `again` AND NOT `repeat`, WHICH IS A LUA KEYWORD. beval.repeat would not parse.
+--
+-- IT PASSES NOTHING, so brun.panel_run clears brun.resume and the leg is tagged 'soak' -- a fresh
+-- run in the record rather than a continuation of the one before it, which is what a repeat is.
+function beval.again()
+  if brun == nil or brun.panel_run == nil then return false end
+  return brun.panel_run()
 end
 
 -- End App on this screen tears down everything the app built, the bench panel's own rule: the
@@ -507,6 +569,27 @@ function beval.show()
     end
   end
   display.settext(beval.t_cmp, string.sub(tail, 1, 74))
+
+  -- THE RESUME BUTTON IS OFFERED ONLY WHEN THERE IS SOMETHING TO RESUME. A run that finished its
+  -- laps has nothing: pressing it would replay the whole plan while the record said 'resumed'.
+  --
+  -- INVISIBLE, NOT DISABLED. display.STATE_DISABLE applies to display.OBJ_EDIT_* only on this
+  -- firmware -- mock_display refuses it on a button, and tsp/serial_ui.tsp hides its own buttons the
+  -- same way -- so a disabled Resume would have been a button that looked live and did nothing.
+  --
+  -- A COMPLETED RUN GETS Repeat, A RUN THAT WAS CUT SHORT GETS Resume, and never both: resuming a
+  -- completed run would replay the whole plan under a header saying 'resumed', and repeating one
+  -- that was cut short would throw away the cells it did measure.
+  local canres = false
+  if brun ~= nil and brun.resumable ~= nil then canres = brun.resumable() end
+  if beval.b_resume ~= nil then
+    if canres then display.setstate(beval.b_resume, display.STATE_ENABLE)
+    else display.setstate(beval.b_resume, display.STATE_INVISIBLE) end
+  end
+  if beval.b_repeat ~= nil then
+    if canres then display.setstate(beval.b_repeat, display.STATE_INVISIBLE)
+    else display.setstate(beval.b_repeat, display.STATE_ENABLE) end
+  end
 
   -- THE RECORD OF THIS RUN GOES DOWN LAST, after the comparison has read the previous one.
   beval.save(beval.path, cur)

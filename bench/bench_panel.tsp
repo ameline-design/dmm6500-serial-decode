@@ -412,7 +412,20 @@ end
 -- not raise. So the test is for the handle, which also says WHICH field is missing instead of
 -- reporting one failure for the form. A field whose handle is gone reads as nil and the `type(x) ==
 -- 'number'` tests below already treat that as "not set", which is the right answer for it.
-function brun.panel_run()
+-- `resume` true means: carry on after the last cell the record on the key already holds. The result
+-- screen's Resume button is the only caller that passes it; Run Soak passes nothing.
+--
+-- ONE START PATH, NOT TWO. Everything below -- reading the form, applying the filters, the capture
+-- settings, the generator address -- has to happen identically for a resumed leg, and a second copy
+-- of it is a second thing to forget to change.
+function brun.panel_run(resume)
+  -- THE WINDOW CHANGES ON THE PRESS, BEFORE THE FORM IS EVEN READ. It used to switch after every
+  -- field had been read and applied, which is fast but not instant -- and on a resume what follows
+  -- is a 15 MB read of the record. The operator's rule is that the press is acknowledged first.
+  --
+  -- A REFUSAL GOES BACK, which is what pays for switching this early: the three refusal paths below
+  -- all speak through brun.pn_say, which writes to the FORM, so each one returns the operator to it.
+  brun.show_now(brun.wkscr, 'Starting the soak', 'reading the settings')
   local laps, ip, lt, lo, hi, inter, vst, over, armv, armw
   local missing = nil
   local function val(h, name)
@@ -436,17 +449,20 @@ function brun.panel_run()
   -- at once and all ten handles come back together, so a nil here means the build was short -- the
   -- state that put a soak screen on the glass without its Lap Type field.
   if missing ~= nil then
+    brun.show_now(brun.pnscr)
     brun.pn_say('form incomplete, not starting: no ' .. missing)
     return false
   end
 
   local why = brun.pn_poisoned()
   if why ~= nil then
+    brun.show_now(brun.pnscr)
     brun.pn_say('REFUSED: ' .. why)
     return false
   end
   local rows = brun.pn_plan()
   if rows == nil then
+    brun.show_now(brun.pnscr)
     brun.pn_say('REFUSED: no plan on the key -- run_bench.py --push-plan first')
     return false
   end
@@ -507,7 +523,19 @@ function brun.panel_run()
   -- left it with nothing to return to and the button did nothing at all -- measured on the instrument
   -- 2026-10-22. It is also the operator's standing rule since the same day: nothing is deleted until
   -- the app exits, and panel_cancel is where that happens.
-  brun.soak(laps, 'soak')
+  -- SET HERE, AND SET EVERY TIME. brun.resume is a module field, so a Run Soak after a resume would
+  -- inherit the flag and quietly carry on from the record instead of starting at the top.
+  brun.resume = (resume == true)
+  -- THE TAG ON A RESUMED LEG MUST BE 'resumed', and this is not cosmetic: judge_bench.split_runs
+  -- treats 'resumed' and 'roll' as CONTINUATIONS of the previous leg, where any other tag starts a
+  -- new run in the record's header -- and the judge then reads only the last one. Tagging a resume
+  -- 'soak' silently halves the thing being judged. tools/run_bench.py's --resume does the same.
+  local tag = 'soak'
+  if brun.resume then tag = 'resumed' end
+  -- The working screen is already in front -- switched at the top of this function, on the press --
+  -- so this only updates what it says about where the time is now going.
+  brun.wk_say('Starting the soak', 'counting the lap and building the screen')
+  brun.soak(laps, tag)
   return true
 end
 
@@ -832,6 +860,26 @@ end
 -- 1: the same amplitude, the same offset and the same wait in every cell. The run would report twelve
 -- laps of coverage and have one lap's worth.
 brun.plan_laps = brun.plan_laps or 12
+
+-- Switch to `scr` AND MAKE IT APPEAR, before the caller starts anything slow. -> ok
+--
+-- WHY A HELPER. display.changescreen lands in state and does not reach the LCD until the interpreter
+-- hands control back, so a handler that switches and then works for ten seconds leaves the OLD
+-- screen in front for all ten -- which the operator reads as a dead button. brun.paintyield is the
+-- slice measured to actually get a repaint out; 2 ms of drawyield was measured NOT to.
+--
+-- The operator's instruction of 2026-10-22: switch the window first, so pressing Run Soak, Resume or
+-- Back looks immediate even when what follows is not.
+function brun.show_now(scr, l1, l2)
+  if scr == nil then return false end
+  -- THE changescreen IS THE FIRST STATEMENT, deliberately. Operator's instruction of 2026-10-22:
+  -- the switch happens on the press with nothing before it, and whatever delay is needed comes
+  -- AFTER the window has changed -- that way the app looks responsive even when the work is not.
+  display.changescreen(scr)
+  if (l1 ~= nil or l2 ~= nil) and brun.wk_say ~= nil then brun.wk_say(l1, l2) end
+  delay(brun.paintyield or 0.02)
+  return true
+end
 
 function brun.plan_step(force)
   -- THE FIRST INDEX OF A FOREIGN TABLE IS GUARDED, which is this project's standing lesson about

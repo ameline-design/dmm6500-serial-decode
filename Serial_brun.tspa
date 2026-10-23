@@ -10649,18 +10649,34 @@ function brun.keysize(n83)
   return sz
 end
 
+brun.scanevery = brun.scanevery or 100
+
 function brun.resume_scan()
   local sz = brun.keysize('SOAK    CSV')
   if sz == nil or sz <= 0 then return nil end
   local fh = nil
   fh = file.open(brec.path, file.MODE_READ)
   if fh == nil then return nil end
+  if brun.wk_say ~= nil then brun.wk_say('Finding where the run stopped', '') end
+  if brun.show_now ~= nil then brun.show_now(brun.wkscr) end
   local nb, it, ce = 0, nil, nil
+  local nsince = 0
   while nb < sz do
     local l  = nil
     l = file.read(fh, file.READ_LINE)
     if l == nil then break end
     nb = nb + string.len(l)
+    nsince = nsince + 1
+    if nsince >= brun.scanevery then
+      nsince = 0
+      if brun.wk_spin ~= nil and brun.wk_spin() then
+        if brun.wk_say ~= nil then
+          brun.wk_say(nil, string.format('%d of %d kB   %d%% read',
+                                         brun.int(nb / 1024), brun.int(sz / 1024),
+                                         brun.int(nb * 100 / sz)))
+        end
+      end
+    end
     if string.sub(l, 1, 2) == 'R,' then
       local f, nf = brun.split(l)
       if nf >= 3 and tonumber(f[2]) ~= nil and tonumber(f[3]) ~= nil then
@@ -10720,9 +10736,15 @@ end
 
 function brun.stopasked()
   local key = (brun.keyarmed and brun.stopkey_hit())
-  if key then return true, 'TRIGGER Pressed' end
-  if brun.ab_hit() then return true, 'Abort set on the panel' end
+  if key then brun.stopuser = true; return true, 'TRIGGER Pressed' end
+  if brun.ab_hit() then brun.stopuser = true; return true, 'Abort set on the panel' end
   return false, nil
+end
+
+function brun.resumable()
+  if brun.stopuser then return true end
+  if brun.stopbad then return true end
+  return false
 end
 
 function brun.holddelay(secs)
@@ -10913,6 +10935,8 @@ function brun.soak(iterations, tag)
     display.changescreen(display.SCREEN_USER_SWIPE)
   end
   brun.ab_reset()
+  brun.stopuser = false
+  brun.nevgap = 0
   if bsdg ~= nil then bsdg.giveup = brun.ab_hit end
   brun.settext('SOAK starting', 'reaching the generator')
   bsdg.reset()
@@ -10960,6 +10984,16 @@ function brun.soak(iterations, tag)
 
     if brun.stopevery > 0 and (brun.ncell == 0 or math.mod(brun.ncell, brun.stopevery) == 0) then
       if brun.stopped() then brun.stopwhy = 'STOP.TXT found'; break end
+    end
+    if brun.nevgap == nil then brun.nevgap = 0 end
+    local ngap = eventlog.getcount()
+    if ngap ~= nil and ngap > 0 then
+      brun.nevgap = brun.nevgap + ngap
+      brec.note(brun.iter or 0, brun.cell or 0, brun.ncell or 0,
+                string.format('%d event(s) posted between cells, after L%sC%s -- nothing in the '
+                              .. 'measured path instigated them', ngap, tostring(brun.iter),
+                              tostring(brun.cell)))
+      brun.msg(brun.c_warn, string.format('%d event(s) between cells', brun.nevgap))
     end
     local asked, askwhy = brun.stopasked()
     if asked then
@@ -11209,10 +11243,10 @@ function brun.soak(iterations, tag)
   brec.note(brun.iter, brun.cell, brun.ncell,
             string.format('run total: %d cell(s), %d failed, %d event(s) instigated (%d from the panel), '
                           .. 'held %d s over %d retry(s), %d cell(s) unrecorded in %d gap(s), '
-                          .. '%d stimulus retry(s), heap %s kB',
+                          .. '%d stimulus retry(s), %d between cells, heap %s kB',
                           brun.ncell, brun.nbad, brun.nevtot, brun.nevpanel,
                           brun.heldsecs, brun.nhold, brun.nreclost, brun.nrecback, brun.nselback,
-                          brun.int(brun.memk)))
+                          brun.nevgap or 0, brun.int(brun.memk)))
   local why = tostring(brun.stopwhy or 'ended')
   if string.find(why, '^L%d+C%d+:') == nil then
     why = string.format('L%dC%d: %s', brun.iter, brun.cell, why)
@@ -11426,6 +11460,7 @@ function beval.destroy()
   beval.scr = nil
   beval.t_verdict, beval.t_run, beval.t_err, beval.t_cmp, beval.t_head = nil, nil, nil, nil, nil
   beval.t_row = nil
+  beval.b_resume, beval.b_repeat = nil, nil
   return true
 end
 
@@ -11466,15 +11501,36 @@ function beval.build()
     display.setevent(b, display.EVENT_PRESS, 'sdec.guard(beval.back)')
     keep(b)
   end
+  beval.b_resume = display.create(beval.scr, display.OBJ_BUTTON, 246, btny, 'Resume', 200)
+  if beval.b_resume ~= nil then
+    display.setevent(beval.b_resume, display.EVENT_PRESS, 'sdec.guard(beval.resume)')
+    keep(beval.b_resume)
+  end
+  beval.b_repeat = display.create(beval.scr, display.OBJ_BUTTON, 246, btny, 'Repeat', 200)
+  if beval.b_repeat ~= nil then
+    display.setevent(beval.b_repeat, display.EVENT_PRESS, 'sdec.guard(beval.again)')
+    keep(beval.b_repeat)
+  end
   display.setevent(beval.scr, display.EVENT_ENDAPP, 'sdec.guard(beval.endapp)')
   return true
 end
 
 function beval.back()
   if brun == nil or brun.pnscr == nil then return false end
+  if brun.show_now ~= nil then brun.show_now(brun.pnscr) else display.changescreen(brun.pnscr) end
   if brun.pn_refresh_plan ~= nil then brun.pn_refresh_plan() end
-  display.changescreen(brun.pnscr)
   return true
+end
+
+function beval.resume()
+  if brun == nil or brun.panel_run == nil then return false end
+  if brun.resumable == nil or not brun.resumable() then return false end
+  return brun.panel_run(true)
+end
+
+function beval.again()
+  if brun == nil or brun.panel_run == nil then return false end
+  return brun.panel_run()
 end
 
 function beval.endapp()
@@ -11565,6 +11621,17 @@ function beval.show()
     end
   end
   display.settext(beval.t_cmp, string.sub(tail, 1, 74))
+
+  local canres = false
+  if brun ~= nil and brun.resumable ~= nil then canres = brun.resumable() end
+  if beval.b_resume ~= nil then
+    if canres then display.setstate(beval.b_resume, display.STATE_ENABLE)
+    else display.setstate(beval.b_resume, display.STATE_INVISIBLE) end
+  end
+  if beval.b_repeat ~= nil then
+    if canres then display.setstate(beval.b_repeat, display.STATE_INVISIBLE)
+    else display.setstate(beval.b_repeat, display.STATE_ENABLE) end
+  end
 
   beval.save(beval.path, cur)
   display.changescreen(beval.scr)
@@ -11793,7 +11860,7 @@ function brun.pn_poisoned()
          .. 'will read "line is idle"'
 end
 
-function brun.panel_run()
+function brun.panel_run(resume)
   local laps, ip, lt, lo, hi, inter, vst, over, armv, armw
   local missing = nil
   local function val(h, name)
@@ -11857,7 +11924,12 @@ function brun.panel_run()
     sdec.strm_overread = f
   end
 
-  brun.soak(laps, 'soak')
+  brun.resume = (resume == true)
+  local tag = 'soak'
+  if brun.resume then tag = 'resumed' end
+  brun.wk_say('Starting the soak', 'counting the lap and building the screen')
+  brun.show_now(brun.wkscr)
+  brun.soak(laps, tag)
   return true
 end
 
@@ -12060,6 +12132,13 @@ function brun.key_exit()
 end
 
 brun.plan_laps = brun.plan_laps or 12
+
+function brun.show_now(scr)
+  if scr == nil then return false end
+  display.changescreen(scr)
+  delay(brun.paintyield or 0.02)
+  return true
+end
 
 function brun.plan_step(force)
   if bplan == nil or bplan.check == nil then

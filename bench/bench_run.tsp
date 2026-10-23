@@ -2306,18 +2306,45 @@ function brun.keysize(n83)
 end
 
 -- -> iter, cell of the last complete result row, or nil if there is not one.
+-- Lines between clock reads in brun.resume_scan. Same job as brun.progevery in the plan draw, and
+-- the same caveat: it only declines to ASK the time. brun.spinmin decides how often the glass is
+-- actually written, so this cannot loosen the 4 Hz ceiling.
+brun.scanevery = brun.scanevery or 100
+
 function brun.resume_scan()
   local sz = brun.keysize('SOAK    CSV')
   if sz == nil or sz <= 0 then return nil end
   local fh = nil
   fh = file.open(brec.path, file.MODE_READ)
   if fh == nil then return nil end
+  -- A SCREEN AND A SPINNER, BECAUSE THIS IS THE SLOWEST THING THE APP DOES. The whole record is read
+  -- to find its last completed cell -- 15.2 MB and 47 504 lines on the operator's soak of
+  -- 2026-10-22, minutes on a fortnight's 160 MB -- in a loop that yielded nowhere, so the firmware
+  -- never repainted and pressing Resume looked like a dead button. Operator's standing rule since the
+  -- plan draw: a long task on this instrument has a UI with a spinner, because appearing stuck is
+  -- just as bad as being stuck.
+  if brun.wk_say ~= nil then brun.wk_say('Finding where the run stopped', '') end
+  if brun.show_now ~= nil then brun.show_now(brun.wkscr) end
   local nb, it, ce = 0, nil, nil
+  local nsince = 0
   while nb < sz do
     local l  = nil
     l = file.read(fh, file.READ_LINE)
     if l == nil then break end
     nb = nb + string.len(l)
+    -- THE CEILING DECIDES, NOT THIS COUNTER. The progress line is written only when the spin
+    -- actually fired, so the second line cannot update faster than the first.
+    nsince = nsince + 1
+    if nsince >= brun.scanevery then
+      nsince = 0
+      if brun.wk_spin ~= nil and brun.wk_spin() then
+        if brun.wk_say ~= nil then
+          brun.wk_say(nil, string.format('%d of %d kB   %d%% read',
+                                         brun.int(nb / 1024), brun.int(sz / 1024),
+                                         brun.int(nb * 100 / sz)))
+        end
+      end
+    end
     if string.sub(l, 1, 2) == 'R,' then
       local f, nf = brun.split(l)
       -- A TORN LAST ROW IS THE NORMAL ENDING, so a row without both numbers is ignored rather than
@@ -2436,9 +2463,24 @@ end
 -- when the field has already fired would leave a press latched for the next run.
 function brun.stopasked()
   local key = (brun.keyarmed and brun.stopkey_hit())
-  if key then return true, 'TRIGGER Pressed' end
-  if brun.ab_hit() then return true, 'Abort set on the panel' end
+  -- brun.stopuser IS SET HERE AND NOWHERE ELSE, which is the point of it being in this function
+  -- rather than at the two poll sites: every caller records the fact by asking the question.
+  if key then brun.stopuser = true; return true, 'TRIGGER Pressed' end
+  if brun.ab_hit() then brun.stopuser = true; return true, 'Abort set on the panel' end
   return false, nil
+end
+
+-- Was this run cut short, as opposed to finishing what it was asked for? -> true/false
+--
+-- NOT READ OFF brun.stopwhy, and that is deliberate. A natural ending sets it too -- '1 iteration(s)
+-- complete' -- so deciding this by looking for 'Abort' or 'TRIGGER' in the text would be a rule
+-- living in a string that the next change to the wording silently breaks. brun.stopuser is set by
+-- brun.stopasked, and brun.stopbad where the run PARKED: the generator gone, the record unwritable.
+-- Both are resumable; a completed run is not, and offering to resume one would mean replaying it.
+function brun.resumable()
+  if brun.stopuser then return true end
+  if brun.stopbad then return true end
+  return false
 end
 
 -- ONE HOLD, USED BY EVERY FAULT THAT WAITS. -> true to retry, false to stop -- and the only two things
@@ -2741,6 +2783,10 @@ function brun.soak(iterations, tag)
   -- run that just ended would stop the next one at cell 1 -- which, with ab_hit treating anything
   -- but OFF as an abort, is the safe direction to fail but a useless run.
   brun.ab_reset()
+  -- CLEARED PER RUN, beside the box it mirrors. Left set from the run before, the result screen
+  -- would offer to resume a run that finished its laps.
+  brun.stopuser = false
+  brun.nevgap = 0
   -- AND THE GENERATOR'S WAITS BECOME ABORTABLE. ab_hit and not stopasked: reading the box costs
   -- nothing and consumes nothing, while stopasked polls the TRIGGER key's blender latch, which
   -- CLEARS on read -- so handing that to bsdg would throw away a press between cells.
@@ -2808,6 +2854,27 @@ function brun.soak(iterations, tag)
     -- brun.stopevery = N re-enables it for an attended run.
     if brun.stopevery > 0 and (brun.ncell == 0 or math.mod(brun.ncell, brun.stopevery) == 0) then
       if brun.stopped() then brun.stopwhy = 'STOP.TXT found'; break end
+    end
+    -- AN EVENT POSTED BETWEEN CELLS IS RECORDED NOWHERE, and that is a measured gap rather than a
+    -- theory: the operator saw a 2201 'file read error' during a 4273-cell soak whose own run total
+    -- read '0 event(s) instigated'. brun.point clears the log and counts what ITS cell posted, so
+    -- anything the scaffolding does -- the plan read, the record's directory commit, the screen, the
+    -- generator -- lands in the window between that count and this one, and is then cleared by the
+    -- next cell before anybody sees it. One getcount per cell closes the window and names the gap it
+    -- appeared in; brun.point clears the log immediately afterwards, so nothing is double counted.
+    -- NO BARE `do` BLOCK TO SCOPE THIS LOCAL: tools/lint_tsp.py does not count one as opening a
+    -- block, so it read brun.soak's own `end` as closing nothing. The local lives in the loop body.
+    if brun.nevgap == nil then brun.nevgap = 0 end
+    local ngap = eventlog.getcount()
+    if ngap ~= nil and ngap > 0 then
+      brun.nevgap = brun.nevgap + ngap
+      -- THE LAP AND CELL BELONG TO THE CELL THAT JUST FINISHED, which is the point: this says the
+      -- event appeared after that cell and before the next one began.
+      brec.note(brun.iter or 0, brun.cell or 0, brun.ncell or 0,
+                string.format('%d event(s) posted between cells, after L%sC%s -- nothing in the '
+                              .. 'measured path instigated them', ngap, tostring(brun.iter),
+                              tostring(brun.cell)))
+      brun.msg(brun.c_warn, string.format('%d event(s) between cells', brun.nevgap))
     end
     -- THE KEY AND THE ABORT FIELD, READ ONCE PER CELL. Together about a millisecond and no event, so
     -- unlike the stop file they can be checked every cell, where the stop file is off by default.
@@ -3266,10 +3333,10 @@ function brun.soak(iterations, tag)
   brec.note(brun.iter, brun.cell, brun.ncell,
             string.format('run total: %d cell(s), %d failed, %d event(s) instigated (%d from the panel), '
                           .. 'held %d s over %d retry(s), %d cell(s) unrecorded in %d gap(s), '
-                          .. '%d stimulus retry(s), heap %s kB',
+                          .. '%d stimulus retry(s), %d between cells, heap %s kB',
                           brun.ncell, brun.nbad, brun.nevtot, brun.nevpanel,
                           brun.heldsecs, brun.nhold, brun.nreclost, brun.nrecback, brun.nselback,
-                          brun.int(brun.memk)))
+                          brun.nevgap or 0, brun.int(brun.memk)))
   -- THE STOP REASON ALREADY CARRIES ITS OWN LAP AND CELL wherever one is known, so an unconditional prefix
   -- writes 'L1C247: L1C248: TRIGGER Pressed' -- two cell numbers, one line, disagreeing.
   local why = tostring(brun.stopwhy or 'ended')

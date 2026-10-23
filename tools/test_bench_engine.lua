@@ -4012,6 +4012,188 @@ print('-- a wedged generator must not delay the abort --');
   bsdg.timeout = 5
 end)()
 
+-- ============================================================================
+print('')
+-- The semicolon is load-bearing -- see the note on the mute section.
+print('-- Resume on the result screen, offered only when there is something to resume --');
+-- ============================================================================
+-- A run cut short is worth days of stimulus, and until this existed the only way to carry on was the
+-- host's --resume -- the dependency this app exists to remove. The button goes back through
+-- brun.panel_run so a resumed leg reads the same form and applies the same filters as a fresh run.
+(function()
+  MOCKB_SDG({})
+  bsdg.reset()
+  brun.percell, brun.maxcell, brun.stopevery = 0, 0, 0
+  brun.filt_vset, brun.filt_stdonly = nil, nil
+  brun.filt_baudlo, brun.filt_baudhi, brun.filt_interstit = nil, nil, nil
+  brun.percell_filt, brun.nfilt = nil, 0
+  -- THE RESULT SCREEN HAS TO EXIST. An earlier section exercises End App, which frees it, and
+  -- nothing rebuilds it -- beval.show answers false when there is no screen rather than building one
+  -- on demand, which is this project's rule. Without this the button assertions below read nil and
+  -- say 'hidden' for a button that was never created.
+  if beval.scr == nil then beval.build() end
+  -- AND SO DOES THE FORM, for the same reason: brun.panel_run reads every field off it with
+  -- display.getvalue, and a freed form makes each one read nil, report itself missing and return
+  -- before brun.soak is ever reached. build_panel needs the cover screen, which it switches back to
+  -- before the first field so the operator does not watch thirteen objects appear one at a time.
+  if brun.cvscr == nil then brun.build_cover() end
+  if brun.pnscr == nil then brun.build_panel() end
+  -- AND THE WORKING SCREEN, which is where Run Soak and Resume switch to on the press. Without it
+  -- brun.show_now has nothing to switch to and answers false, so the order assertion below would be
+  -- testing a missing screen rather than the order.
+  if brun.wkscr == nil then brun.build_working() end
+  local rows = {'1,1,v77,' .. ARB.v77 .. ',9600,std,5.0000,0.0000,96000,0.000',
+                '1,2,v77,' .. ARB.v77 .. ',19200,std,5.0000,0.0000,192000,0.000',
+                '1,3,v77,' .. ARB.v77 .. ',4800,std,5.0000,0.0000,48000,0.000',
+                '1,4,v77,' .. ARB.v77 .. ',2400,std,5.0000,0.0000,24000,0.000'}
+
+  -- A RUN THAT FINISHED ITS LAPS IS NOT RESUMABLE, and this is the arm that matters: resuming one
+  -- would replay the whole plan while the record said 'resumed'.
+  writeplan(rows)
+  brun.soak(1, 'whole')
+  ck(brun.resumable() == false, 'a run that finished its laps is not resumable',
+     tostring(brun.stopwhy))
+  ck(beval.b_resume ~= nil and MD.obj(beval.b_resume).state == display.STATE_INVISIBLE,
+     'so the result screen hides the Resume button',
+     tostring(beval.b_resume ~= nil and MD.obj(beval.b_resume).state))
+  -- AND OFFERS Repeat INSTEAD. The two share a position, so exactly one may be visible: a hidden
+  -- button is still there, and two live ones on the same pixels would be a coin toss.
+  ck(beval.b_repeat ~= nil and MD.obj(beval.b_repeat).state == display.STATE_ENABLE,
+     'and offers Repeat in its place',
+     tostring(beval.b_repeat ~= nil and MD.obj(beval.b_repeat).state))
+
+  -- AND A RUN STOPPED FROM THE PANEL IS. The box is ticked on the second cell, which is what the
+  -- glass does to it.
+  writeplan(rows)
+  local realshow, nshown = brun.ui_show, 0
+  brun.ui_show = function(c, arb)
+    nshown = nshown + 1
+    if nshown == 2 and brun.ui ~= nil and brun.ui.abort ~= nil then
+      display.setvalue(brun.ui.abort, display.ON)
+    end
+    return realshow(c, arb)
+  end
+  brun.soak(1, 'cut')
+  brun.ui_show = realshow
+  ck(brun.resumable() == true, 'a run stopped from the panel is resumable', tostring(brun.stopwhy))
+  ck(MD.obj(beval.b_resume).state == display.STATE_ENABLE,
+     'and the Resume button is offered', tostring(MD.obj(beval.b_resume).state))
+  ck(MD.obj(beval.b_repeat).state == display.STATE_INVISIBLE,
+     'and Repeat is hidden, so the two are never both live',
+     tostring(MD.obj(beval.b_repeat).state))
+
+  -- PRESSING IT STARTS A RESUMED LEG, and the TAG is the load-bearing part: judge_bench.split_runs
+  -- treats 'resumed' as a CONTINUATION, where any other tag starts a new run in the record header
+  -- and the judge then reads only the last one. Tagged 'soak', a resume silently halves what is
+  -- judged. brun.soak is stubbed because what is asserted is the call, not another lap.
+  local realsoak, gottag, gotres = brun.soak, nil, nil
+  brun.soak = function(laps, tag) gottag = tag; gotres = brun.resume; return true, nil end
+  local pressed = beval.resume()
+  brun.soak = realsoak
+  ck(pressed == true and gottag == 'resumed',
+     'the resumed leg is tagged resumed, so the judge reads it as a continuation', tostring(gottag))
+  ck(gotres == true, 'and the engine is told to carry on from the record', tostring(gotres))
+
+  -- THE WINDOW CHANGES ON THE PRESS, BEFORE THE WORK. Operator's instruction of 2026-10-22: Run
+  -- Soak, Resume and Back must all switch screens immediately, so the press is acknowledged even
+  -- when what follows is slow -- on a resume that is a 15 MB read of the record. What is asserted is
+  -- the ORDER: the screen in front AT THE MOMENT brun.soak is called, which a switch made afterwards
+  -- would fail.
+  local realsoakS, frontS = brun.soak, nil
+  brun.soak = function(laps, tag) frontS = display.active; return true, nil end
+  brun.panel_run()
+  brun.soak = realsoakS
+  ck(frontS == brun.wkscr,
+     'Run Soak is already on the working screen by the time the soak starts',
+     string.format('%s, want wkscr %s', tostring(frontS), tostring(brun.wkscr)))
+
+  -- AND A REFUSAL GOES BACK TO THE FORM, which is what switching this early has to pay for: all
+  -- three refusal paths speak through brun.pn_say, which writes to the form.
+  local keeplaps = brun.pn_laps
+  brun.pn_laps = nil
+  brun.panel_run()
+  brun.pn_laps = keeplaps
+  ck(display.active == brun.pnscr,
+     'and an incomplete form puts the operator back on it, where the message is written',
+     tostring(display.active))
+
+  -- A PLAIN Run Soak AFTER A RESUME MUST NOT INHERIT THE FLAG. brun.resume is a module field, so
+  -- without being set on every start the next run would quietly carry on from the record instead of
+  -- starting at the top -- and report a full lap count while running a fraction of one.
+  brun.resume = true
+  local realsoak2, gotres2 = brun.soak, nil
+  brun.soak = function(laps, tag) gotres2 = brun.resume; return true, nil end
+  brun.panel_run()
+  brun.soak = realsoak2
+  ck(gotres2 == false, 'and a plain Run Soak afterwards does NOT inherit the resume flag',
+     tostring(gotres2))
+
+  -- EVERY OPTION HOLDS THROUGH TO THE RESUMED LEG. Operator's requirement: anything changed on the
+  -- form must stay changed when the run is resumed. The form fields are set to NON-DEFAULT values
+  -- here, because options that happen to equal their defaults would carry through whether the code
+  -- preserved them or not -- which is the test proving nothing.
+  --
+  -- WHAT IS COMPARED is the applied state, not the field values: the filters, the three capture
+  -- settings and the generator address as brun.panel_run leaves them, plus the lap count it hands to
+  -- brun.soak. That is the whole set panel_run writes.
+  display.setvalue(brun.pn_laps, 3)
+  display.setvalue(brun.pn_lo, 2400)
+  display.setvalue(brun.pn_hi, 19200)
+  display.setvalue(brun.pn_over, 20)
+  display.setvalue(brun.pn_armv, 1.5)
+  display.setvalue(brun.pn_armw, 7)
+  display.setvalue(brun.pn_vset, 2)
+  local function optsnap()
+    return string.format('vset=%s std=%s lo=%s hi=%s inter=%s ip=%s armv=%s armw=%s over=%s',
+                         tostring(brun.filt_vset), tostring(brun.filt_stdonly),
+                         tostring(brun.filt_baudlo), tostring(brun.filt_baudhi),
+                         tostring(brun.filt_interstit), tostring(bsdg ~= nil and bsdg.ip),
+                         tostring(sdec.armlevel), tostring(sdec.armwait),
+                         tostring(sdec.strm_overread))
+  end
+  local realsoakA, lapsA, snapA = brun.soak, nil, nil
+  brun.soak = function(laps, tag) lapsA = laps; snapA = optsnap(); return true, nil end
+  brun.panel_run()
+  brun.soak = realsoakA
+  -- The same form, resumed. Nothing touches the fields in between -- Resume is reachable only from
+  -- the result screen, so there is no path on which the operator could have edited them.
+  brun.stopuser = true
+  local realsoakB, lapsB, snapB = brun.soak, nil, nil
+  brun.soak = function(laps, tag) lapsB = laps; snapB = optsnap(); return true, nil end
+  beval.resume()
+  brun.soak = realsoakB
+  ck(snapA ~= nil and snapA == snapB,
+     'every option the form applies is identical on the resumed leg',
+     string.format('%s  VS  %s', tostring(snapA), tostring(snapB)))
+  ck(lapsA == lapsB and lapsA == 3, 'and the lap count carries through unchanged',
+     string.format('%s then %s', tostring(lapsA), tostring(lapsB)))
+  -- AND THEY ARE NOT THE DEFAULTS, or the comparison above would hold for a resume that reset
+  -- everything. This is the premise the equality rests on.
+  ck(brun.filt_baudlo == 2400 and brun.filt_baudhi == 19200 and sdec.armwait == 7,
+     'and they really were the changed values, not the defaults', optsnap())
+
+  -- AND IT REFUSES WHEN THERE IS NOTHING TO RESUME, which is the belt to the hidden button's braces:
+  -- an event string already queued when the run ended could still arrive.
+  brun.stopuser, brun.stopbad = false, false
+  local realsoak3, called3 = brun.soak, false
+  brun.soak = function(laps, tag) called3 = true; return true, nil end
+  local refused = beval.resume()
+  brun.soak = realsoak3
+  ck(refused == false and called3 == false,
+     'beval.resume refuses when the run was not cut short', tostring(refused))
+  -- WHILE Repeat STARTS A FRESH RUN THERE, which is the whole point of the second button: tagged
+  -- 'soak' and with the resume flag clear, so the record carries it as a new run rather than a
+  -- continuation of the one that already finished.
+  local realsoak4, tag4, res4 = brun.soak, nil, nil
+  brun.resume = true                      -- left set, to prove again() clears it
+  brun.soak = function(laps, tag) tag4 = tag; res4 = brun.resume; return true, nil end
+  local rep = beval.again()
+  brun.soak = realsoak4
+  ck(rep == true and tag4 == 'soak' and res4 == false,
+     'while Repeat starts a fresh run: tagged soak, resume flag cleared',
+     string.format('ok=%s tag=%s resume=%s', tostring(rep), tostring(tag4), tostring(res4)))
+end)()
+
 print('')
 print(string.format('%d passed, %d failed', pass, fail))
 if fail > 0 then os.exit(1) end

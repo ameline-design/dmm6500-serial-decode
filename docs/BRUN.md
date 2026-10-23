@@ -209,6 +209,60 @@ from a resumed run at a glance.
 | **errors** | `Errors: 22  Bad: 640/17160` then `nodec 10  flag 7  wrong 5/132` | see below. **Two rows**, stacked at x=380 to the right of the `Abort` box. |
 | **abort** | a tick box labelled `Abort` | the only stop control a panel-started run can see. Bottom left, hard against the bottom edge. |
 
+### Resume, or Repeat
+
+The result screen carries one button beside `Back`, and which one depends on how the run ended:
+
+| the run | the button | what it does |
+|---|---|---|
+| was cut short — aborted, or parked | **`Resume`** | carries on from the cell after the last one the record holds, tagged `resumed` |
+| finished what it was asked for | **`Repeat`** | another go from the top with the same settings, tagged `soak` |
+
+Never both. They share a position and exactly one is visible, because resuming a completed run would
+replay the whole plan under a header saying `resumed`, and repeating one that was cut short would
+throw away the cells it did measure.
+
+**Two buttons rather than one whose label is rewritten.** `display.settext` on a *screen* sets its
+title and that is measured, but the button case is an assumption on this firmware — and a button
+reading `Resume` while it repeated the run is worse than no button. Hiding with `STATE_INVISIBLE` is
+how `tsp/serial_ui.tsp` shows and hides its own buttons, so it is already proven here.
+
+**Every option holds through.** Both paths go back through `brun.panel_run`, which reads the form
+again, so anything changed before the run stays changed for the resumption or the repeat — the
+filters, the rate window, the three capture settings, the generator address and the lap count. That
+is asserted offline with deliberately non-default values, because options equal to their defaults
+would carry through whether the code preserved them or not.
+
+`Resume` carries on from the cell after the last one the record holds. That is worth days of stimulus after an abort,
+and until it existed the only way to do it was the host's `--resume` — the dependency this app
+exists to remove.
+
+Which button appears is decided by `brun.resumable()` — `brun.stopuser`, set by `brun.stopasked` when either
+stop control fires, or `brun.stopbad` where the run parked. Deliberately **not** read off
+`brun.stopwhy`, which is non-nil for a natural ending too (`1 iteration(s) complete`), so matching
+text in it would be a rule living in a string.
+
+Hidden rather than disabled: `display.STATE_DISABLE` applies to `display.OBJ_EDIT_*` only on this
+firmware, so a "disabled" button is simply still live.
+
+Two things about it are load-bearing:
+
+- **It goes back through `brun.panel_run`**, so the form is read again and every filter, capture
+  setting and generator address is applied exactly as a fresh run applies them. A resume that built
+  its own configuration would be a second place for the plan's cell set to be decided, and a resumed
+  leg measuring a different set than the leg before it is worse than no resume — the record carries
+  both under one header.
+- **The leg is tagged `resumed`.** `judge_bench.split_runs` treats `resumed` and `roll` as
+  *continuations*; any other tag starts a new run in the record's header and the judge then reads
+  only the last one. Tagged `soak`, a resume silently halves what is judged. `brun.resume` is set on
+  **every** start, not only a resuming one, or a later Run Soak would inherit the flag and carry on
+  from the record while reporting a full lap count.
+
+The engine does the rest and is already careful: `brun.resume_scan` finds the last completed cell
+bounded by the record's own FAT size, so it cannot read past the end, and `brun.resume_to` **refuses**
+a resume point the plan does not contain — that means the plan is not the one that produced the
+record, and starting over would replay days of stimulus while reporting a resume.
+
 The error line is drawn as **two** rows because the width beside the box is `brun.errw` 31
 characters — x=380 to the right edge, at a font advancing about 13.4 px — and the line reaches 56 at
 its widest. The split follows the priority the single row already had: the total and the byte count
