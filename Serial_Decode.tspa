@@ -3,7 +3,7 @@ loadscript Serial_Decode
 -- $Product: DMM6500, DAQ6510, DMM7510, SMU2461
 -- $Tag: Serial, UART, Decode, Digitize
 -- $Description: Decodes an asynchronous serial line with the instrument's own digitizer: recovers baud rate, frame format and bytes, shows them as text or hex, and saves bytes to USB key. Everything auto-detects; everything can be locked.
--- $Version: 1.76
+-- $Version: 1.77
 -- $Requires: 1.7.0
 -- $Author: Ian Ameline
 -- $License: MIT
@@ -75,7 +75,7 @@ function ulog.keylost(why)
   ulog.keyout  = false
   local h      = ulog.fh
   ulog.fh, ulog.on = nil, false
-  if h ~= nil then file.close(h) end
+  if h ~= nil then h:close() end
   return true
 end
 
@@ -114,16 +114,17 @@ function ulog.resume()
 end
 
 -- Is `name` listed in the USB root? true, false, or nil when the root could not be read; nil taken
--- as absence orders a mkdir on no evidence and posts 2208, so the two must not be merged. Only an
--- 8.3-clean name is contiguous in the FAT table, hence 'SERDEC' -- docs/MEASUREMENTS.md, 'Why the
--- directory is called SERDEC'. Not a FAT parser: a stale entry errs towards 'present'.
+--   [...]
+-- mock hands the listing to both front ends, so an io that did NOT read directories would have left
+-- every suite green while ensuredir() answered 'cannot read the USB root' for ever and the log, the
+-- byte log and Save never opened again.
 function ulog.rootlists(name)
   if name == nil or name == '' then return nil end
-  local fh = file.open('/usb1', file.MODE_READ)
+  local fh = io.open('/usb1', 'r')
   if fh == nil then return nil end
-  local raw = file.read(fh, file.READ_ALL)
-  file.close(fh)
-  if raw == nil then return nil end
+  local raw = fh:read('*a')
+  fh:close()
+  if raw == nil or raw == '' then return nil end
   if string.find(raw, string.upper(name), 1, 1) ~= nil then return true end
   return false
 end
@@ -144,7 +145,7 @@ function ulog.ensuredir(dir)
   local listed = ulog.rootlists(leaf)
   if listed == true then ulog.dirok = dir; return true end
   if listed == nil then return false, 'cannot read the USB root' end
-  file.mkdir(dir)
+  fs.mkdir(dir)
   if ulog.rootlists(leaf) == true then ulog.dirok = dir; return true end
   return false, 'cannot create ' .. dir
 end
@@ -159,13 +160,13 @@ end
 -- and not retried, having already posted its event; an inserted key is recovered from by resume().
 function ulog.open_write(path, mode)
   if path == nil then return nil, 'no filename available' end
-  if mode == nil then mode = file.MODE_APPEND end
+  if mode == nil then mode = 'a' end
   if not ulog.keyok() then
     return nil, tostring(ulog.keywhy or 'no USB key') .. ' -- ' .. tostring(path)
   end
   local ready, rwhy = ulog.ensuredir()
   if not ready then return nil, tostring(rwhy) .. ' -- cannot open ' .. tostring(path) end
-  local fh = file.open(path, mode)
+  local fh = io.open(path, mode)
   if fh ~= nil then return fh end
   return nil, 'cannot open ' .. tostring(path)
                 .. ' -- key may be absent, full, write-protected, or refusing the directory'
@@ -179,8 +180,8 @@ function ulog.open(path, truncate)
   if not ulog.enabled then return false end
   if path ~= nil then ulog.path = path end
 
-  local mode = file.MODE_APPEND
-  if truncate then mode = file.MODE_WRITE end
+  local mode = 'a'
+  if truncate then mode = 'w' end
   local why = nil
   ulog.fh, why = ulog.open_write(ulog.path, mode)
   ulog.keyopen = ulog.keygen
@@ -220,8 +221,8 @@ function ulog.line(s)
     ulog.lasterr = 'the log handle went away'
     return false
   end
-  file.write(ulog.fh, txt)
-  if ulog.autoflush then file.flush(ulog.fh) end
+  ulog.fh:write(txt)
+  if ulog.autoflush then ulog.fh:flush() end
   return true
 end
 
@@ -237,7 +238,7 @@ end
 -- Flush buffered lines to the key without closing the file.
 function ulog.flush()
   if not ulog.on or ulog.fh == nil then return false end
-  file.flush(ulog.fh)
+  ulog.fh:flush()
   return true
 end
 
@@ -246,23 +247,24 @@ function ulog.close()
   if ulog.fh ~= nil then
     local h = ulog.fh
     ulog.fh = nil
-    file.flush(h)
-    file.close(h)
+    h:flush()
+    h:close()
   end
   ulog.on = false
   return true
 end
 
--- Does this file exist, without logging an error if it does not? true or false, never nil. The open
--- probe posts 2205, the one severity showevents still raises a box for -- docs/MEASUREMENTS.md,
--- 'fs.is_file against the open probe'.
+-- Does this file exist, without logging an error if it does not? true or false, never nil. fs.is_file
+-- stays the probe: an open per candidate posts an event per candidate, and 1000 of them arrive as
+-- 'Multiple errors have occurred' over the hex dump -- docs/MEASUREMENTS.md, 'fs.is_file against the
+-- open probe'.
 function ulog.exists(path)
   if path == nil then return false end
   local got = fs.is_file(path)
   if got == nil then
-    local fh    = file.open(path, file.MODE_READ)
+    local fh    = io.open(path, 'r')
     local taken = fh ~= nil
-    if fh ~= nil then file.close(fh) end
+    if fh ~= nil then fh:close() end
     return taken
   end
   return got == true
@@ -282,10 +284,10 @@ function ulog.next_free(prefix, ext, limit)
   local start   = ulog.idx_ram[prefix]
   if start ~= nil and (start < 0 or start >= limit) then start = nil end
   if start == nil and ulog.exists(idxpath) then
-    local fh = file.open(idxpath, file.MODE_READ)
+    local fh = io.open(idxpath, 'r')
     if fh ~= nil then
-      local ln = file.read(fh, file.READ_LINE)
-      file.close(fh)
+      local ln = fh:read('*l')
+      fh:close()
       local n = tonumber(ln)
       if n ~= nil and n >= 0 and n < limit then start = math.floor(n) end
     end
@@ -300,12 +302,12 @@ function ulog.next_free(prefix, ext, limit)
     if not ulog.exists(path) then
       ulog.idx_ram[prefix] = i
       local wh    = nil
-      wh          = ulog.open_write(idxpath, file.MODE_WRITE)
+      wh          = ulog.open_write(idxpath, 'w')
       local wrote = false
       if wh ~= nil then
-        file.write(wh, tostring(i) .. '\n')
-        file.flush(wh)
-        file.close(wh)
+        wh:write(tostring(i) .. '\n')
+        wh:flush()
+        wh:close()
         wrote = ulog.keyok()
       end
       if wrote then ulog.idx_why = nil
@@ -322,17 +324,17 @@ end
 -- Write an array of lines to its own file and close it. ok, reason. The handle never outlives it.
 function ulog.write_file(path, lines, n)
   if path == nil then return false, 'no filename available' end
-  local fh, why = ulog.open_write(path, file.MODE_WRITE)
+  local fh, why = ulog.open_write(path, 'w')
   if fh == nil then return false, tostring(why) end
 
   local gone = false
   local i
   for i = 1, n do
     if not ulog.keyok() then gone = true; break end
-    file.write(fh, tostring(lines[i]) .. '\r\n')
+    fh:write(tostring(lines[i]) .. '\r\n')
   end
-  file.flush(fh)
-  file.close(fh)
+  fh:flush()
+  fh:close()
   if gone or not ulog.keyok() then
     return false, 'the USB key went away -- the file is empty or truncated'
   end
@@ -4226,14 +4228,14 @@ end
 -- carried rather than emitted short, which would skew every offset after the seam. Returns sink, finish.
 function sdec.ck_sink_file(path, ncol)
   if ncol == nil then ncol = 16 end
-  local fh, owhy = ulog.open_write(path, file.MODE_APPEND)
+  local fh, owhy = ulog.open_write(path, 'a')
   if fh == nil then return nil, nil, 'cannot append to ' .. tostring(path) end
   local hdr = string.format('---- stream  %s %s\r\n',
                             sdec.baud_text and sdec.baud_text() or '?',
                             sdec.fmt_text and sdec.fmt_text() or '?')
-  file.write(fh, hdr)
+  fh:write(hdr)
   if ulog ~= nil and ulog.keyok ~= nil and not ulog.keyok() then
-    file.close(fh)
+    fh:close()
     return nil, nil, 'cannot write the stream header to ' .. tostring(path)
   end
 
@@ -4245,7 +4247,7 @@ function sdec.ck_sink_file(path, ncol)
   local function emit(nrow)
     local line = sdec.ua_hexrow(cv, ce, nrow, 1, ncol, cbase)
     if not dead and ulog ~= nil and ulog.keyok ~= nil and not ulog.keyok() then dead = true end
-    if not dead then file.write(fh, line .. '\r\n') end
+    if not dead then fh:write(line .. '\r\n') end
     local i
     for i = nrow + 1, cn do
       cv[i - nrow] = cv[i]
@@ -4276,8 +4278,8 @@ function sdec.ck_sink_file(path, ncol)
     if not dead and cn > 0 then
       if not pcall(emit, cn) then dead = true end
     end
-    file.flush(fh)
-    file.close(fh)
+    fh:flush()
+    fh:close()
     fh = nil
     if not dead and ulog ~= nil and ulog.keyok ~= nil and not ulog.keyok() then dead = true end
     return not dead
@@ -6942,7 +6944,7 @@ end
 function sdec.frame_log()
   if sdec.res == nil or sdec.res.nf < 1 then return false end
   if sdec.flog_alloc() == nil then return false end
-  local fh, fwhy = ulog.open_write(sdec.flog_path, file.MODE_APPEND)
+  local fh, fwhy = ulog.open_write(sdec.flog_path, 'a')
   if fh == nil then
     sdec.flog_why = 'cannot append to ' .. tostring(sdec.flog_path)
     return false
@@ -6951,22 +6953,22 @@ function sdec.frame_log()
   local nfr      = 0
   if sdec.res ~= nil then nfr = sdec.res.nf end
   local msgno = (sdec.flog_n or 0) + 1
-  file.write(fh, string.format('---- msg %d  %s %s  %d bytes %d err\r\n',
+  fh:write(string.format('---- msg %d  %s %s  %d bytes %d err\r\n',
                                msgno or 0, tostring(sdec.baud_text()), tostring(sdec.fmt_text()),
                                sdec.res.nf or 0, sdec.res.nbad or 0))
   local i = 1
   while i <= sdec.res.nf do
-    file.write(fh, sdec.ua_text_line(i, 64) .. '\r\n')
+    fh:write(sdec.ua_text_line(i, 64) .. '\r\n')
     i = i + 64
   end
   i = 1
   while i <= sdec.res.nf do
-    file.write(fh, sdec.ua_hex_line(i, 16) .. '\r\n')
+    fh:write(sdec.ua_hex_line(i, 16) .. '\r\n')
     i = i + 16
   end
-  file.flush(fh)
-  file.close(fh)
+  fh:flush()
   sdec.fh_unwind = nil
+  fh:close()
   if not ulog.keyok() then
     sdec.flog_why = 'write failed part-way through ' ..
                     string.gsub(tostring(sdec.flog_path), '^.*/', '')
@@ -8131,7 +8133,7 @@ function sdec.unwind(why)
   if sdec.fh_unwind ~= nil then
     local h        = sdec.fh_unwind
     sdec.fh_unwind = nil
-    file.close(h)
+    h:close()
   end
   if sdec.ui_tick_on ~= nil then sdec.ui_tick_on() end
   sdec.errcount  = (sdec.errcount or 0) + 1
