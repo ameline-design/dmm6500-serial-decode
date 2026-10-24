@@ -987,11 +987,18 @@ function io.open(path, mode)
     return nil, ap .. ': no space left on device'
   end
   if not USB then
-    -- Measured 2026-10-24 with no key at all: read, write and append each answer nil plus this
-    -- message, and the event log stays at 0 across all three. file.open posted 2224 for a file and
-    -- 2205 for /usb1, and 2205 is the severity showevents still raises a box for -- so removing
-    -- those two posts is most of what the migration bought. A mock that posts them cannot host a
-    -- test of the migration's headline claim.
+    -- With no key, io.open answers nil plus this message AND POSTS 2203. Measured 2026-10-24 on four
+    -- paths, each counted on its own: '/', '/usb1', '/ZZNOSUCH' and '/usb1/ZZNOSUCH', one event each.
+    --
+    -- An earlier reading the same day said this path was silent, and the mock was changed to match
+    -- it. That reading was wrong, and the shape of the error is worth keeping: it reported zero
+    -- events AND no event text, which is what a log already drained by localnode.showevents looks
+    -- like. The mkdir numbers below were taken in the same sitting but came back WITH their text, so
+    -- the log was live for those and they stand. A count with no text behind it is not a measurement.
+    --
+    -- 2203 is io's number. file.open posted 2224 for a file and 2205 for /usb1, so the migration did
+    -- change what lands here -- it did not make the keyless path quiet.
+    post(2203)
     return nil, ap .. ': No such file or directory'
   end
   -- A missing parent fails every mode, for the reason file.open's comment gives: a
