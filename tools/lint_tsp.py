@@ -42,6 +42,26 @@ INCOMPAT = [
     # measured, a build using it refused every capture with "attempt to call field `fmod' (a nil
     # value)" after 368640 clean offline decodes.
     (r'math\.fmod\s*\(', "math.fmod (5.1+; 5.0.2 has math.mod -- and the offline shim hides this)"),
+    # KEITHLEY'S file.* IS BANNED, and the reason is the panel. It is a wrapper over Lua's own io,
+    # and the wrapper is what posts events: file.read answers nil at the end of a file AND posts 2201
+    # 'File read error', which on this instrument is a modal box nothing can suppress. On a plan read
+    # once per lap that is one dialog per pass -- the operator had to power-cycle a running soak
+    # because the box kept coming back. Measured on 1.7.17a 2026-10-24: io.open/read/write/close/
+    # flush/seek all work, f:seek('end') IS the file length, a read at the end returns nil and posts
+    # NOTHING, and a file written through io reads back through file.* -- one filesystem, two front
+    # ends. os.remove and os.rename work; fs.is_file, fs.is_dir, fs.mkdir and fs.rmdir exist.
+    #
+    # file.usbdriveexists IS THE ONE EXCEPTION and is excluded below. It is the only SILENT
+    # 'is a key present' question -- with no key even file.open('/usb1') posts 2205 -- and it is
+    # specific to this instrument, so io and os have no equivalent.
+    # io.lines IS ABSENT ON THE INSTRUMENT -- measured 2026-10-24: io.open, read, write,
+    # close, flush, input and output are all functions, io.lines is NIL. The host Lua HAS
+    # it, so a module using it passes every offline suite and raises on the box. Exactly
+    # the math.fmod shape of trap, which is why it belongs here and not in a comment.
+    (r'\bio\.lines\b', "io.lines (ABSENT on the instrument -- iterate with h:read('*l'))"),
+    (r'\bfile\.(?!usbdriveexists)[A-Za-z_]',
+     "Keithley file.* (use io.*/os.*/fs.*; file.read posts 2201 at the end of a file, which is a "
+     "modal box. Only file.usbdriveexists is allowed)"),
     # THE SAME TRAP AS math.fmod, AND IT COST A RUN. string.match and string.gmatch arrived in 5.1;
     # 5.0.2 has string.find (which returns its captures after the two indices) and string.gfind. The
     # host Lua has all four, so a module using string.match passes every offline suite and then dies on

@@ -25,13 +25,19 @@ beval = beval or {}
 -- The previous runs' summaries, on the key beside the record. 8.3, like everything this firmware's
 -- file API is given: docs/MEASUREMENTS.md records that it posts events rather than failing a long name.
 beval.path = beval.path or '/usb1/SERDEC/EVAL.CSV'
--- THE LAST RUN'S LINE, ON ITS OWN, AND THE REASON IS AN UNMUTABLE POPUP. beval.prev used to walk
--- every line of EVAL.CSV to find the last one, and the read that ENDS that walk is a read at the end
--- of the file -- which posts 2201 'file read error' as a dialog nothing can suppress. The operator
--- met it on the second abort of a session and not the first, because the first run has no file to
--- read yet; whether it fires at all depends on where the final line ends, so the third abort passed
--- again. One line, one read, no walk: this file is REWRITTEN each run and read with a single
--- READ_LINE, so nothing ever reads past an end.
+-- THE LAST RUN'S LINE, ON ITS OWN. The reason was an unmutable popup: beval.prev used to walk every
+-- line of EVAL.CSV to find the last one, and the read that ENDS that walk is a read at the end of the
+-- file -- which through file.read posts 2201 'file read error' as a dialog nothing can suppress. The
+-- operator met it on the second abort of a session and not the first, because the first run has no
+-- file to read yet; whether it fires at all depends on where the final line ends, so the third abort
+-- passed again.
+--
+-- THE READS NOW GO THROUGH io, WHICH ANSWERS nil AT AN END AND POSTS NOTHING (measured on the
+-- instrument 2026-10-24: read at the end, then again past it, zero events), so that popup is gone
+-- whatever this file reads. The one-line file stays: one line is all a comparison needs, rewriting it
+-- each run keeps the read a single read whatever the history grows to, and a file read to its end is
+-- still a file whose end has to be handled. What has moved is the cost of getting it wrong -- it is no
+-- longer a box on the panel.
 --
 -- EVAL.CSV IS STILL WRITTEN, and still appended to, so the history is not lost -- it is simply never
 -- read by the app. 8.3 name: 'EVALLAST' is exactly eight characters, which the FAT directory needs.
@@ -105,19 +111,26 @@ end
 function beval.prev(path)
   path = path or beval.lastpath
   -- fs.is_file BEFORE THE OPEN, AND IT IS NOT A DIRECTORY LISTING. Opening a file that is not there
-  -- posts 2205, and a directory READ_ALL to check first is slow AND posts 2201 -- the two things
-  -- this function used to choose between. fs.is_file is a per-path probe that posts NEITHER
-  -- (tsp/usb_log.tsp:267, measured), so the first run of a session costs no event at all now.
+  -- posts an event -- 2205 through file.open and 2203 through io.open, measured on the instrument
+  -- 2026-10-24 -- and a directory READ_ALL to check first is slow AND posts 2201, which were the two
+  -- things this function used to choose between. fs.is_file is a per-path probe that posts NEITHER
+  -- (tsp/usb_log.tsp:267, measured), so the first run of a session still costs no event at all: the
+  -- guard earns its keep against io exactly as it did against file.open.
   if fs == nil or fs.is_file == nil then return nil end
   if not fs.is_file(path) then return nil end
-  local fh = file.open(path, file.MODE_READ)
+  local fh = io.open(path, 'r')
   if fh == nil then return nil end
-  -- EXACTLY ONE READ. The file holds one data line and nothing else, so there is no walk to the end
-  -- and therefore no read at an end -- which is the whole point of its existing. A second READ_LINE
-  -- here would reintroduce the 2201 this was written to remove.
-  local last = file.read(fh, file.READ_LINE)
-  file.close(fh)
+  -- EXACTLY ONE READ, AND STILL ONLY ONE. The file holds one data line and nothing else, so there is
+  -- nothing a second read could return. The constraint has MOVED rather than lifted: a second read
+  -- under file.read would have reintroduced the 2201 popup, and under io it would answer nil in
+  -- silence -- so adding one is no longer dangerous, just wrong about what the file holds.
+  local last = fh:read('*l')
+  fh:close()
   if last == nil then return nil end
+  -- '*l' DROPS THE '\n' AND LEAVES A '\r', so the gsub stays. This file is written here with '\n', but
+  -- a file that has been through a host tool can come back CRLF -- mock_display's own reader strips a
+  -- trailing '\r' for the same reason -- and a '\r' left on rides into the twelfth field, where
+  -- tonumber() answers nil and `exp` then silently reads 0.
   last = string.gsub(last, '[\r\n]', '')
   if last == '' or string.sub(last, 1, 1) == '#' or last == beval.cols then return nil end
   -- brun.split is the engine's own CSV splitter; a second one here would be a second thing to get
@@ -137,35 +150,40 @@ function beval.save(path, s)
   path = path or beval.path
   if s == nil then return false end
   -- fs.is_file RATHER THAN A PROBE OPEN. The probe was an open-for-read purely to find out whether
-  -- the file existed, which posts 2205 on the run that creates it -- an unmutable popup for a
-  -- question that fs.is_file answers for free and without an event. It also had to be closed again,
-  -- and the version before that leaked a descriptor per finished run.
+  -- the file existed, which posts an event on the run that creates it -- 2205 as it was written, 2203
+  -- through io.open -- an unmutable popup for a question that fs.is_file answers for free and without
+  -- an event. It also had to be closed again, and the version before that leaked a descriptor per
+  -- finished run.
   local fresh = true
   if fs ~= nil and fs.is_file ~= nil then fresh = not fs.is_file(path) end
-  local fh = file.open(path, file.MODE_APPEND)
+  local fh = io.open(path, 'a')
   if fh == nil then return false end
   if fresh then
-    file.write(fh, '# one line per finished soak, written by bench/soak_eval.tsp\n')
-    file.write(fh, beval.cols .. '\n')
+    fh:write('# one line per finished soak, written by bench/soak_eval.tsp\n')
+    fh:write(beval.cols .. '\n')
   end
   local line = string.format('%d,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n',
                              s.when, tostring(s.tag), s.laps, s.cells, s.bad, s.judged,
                              s.cmpb, s.badb, s.wrong, s.flag, s.unexp, s.exp)
-  file.write(fh, line)
-  file.flush(fh)
-  file.close(fh)
+  fh:write(line)
+  fh:flush()
+  fh:close()
   -- AND THE SAME LINE ON ITS OWN, REWRITTEN. This is the file the next run READS, and it holds one
-  -- line so that reading it is a single READ_LINE with no read at an end -- see beval.lastpath. The
-  -- history above is append-only and never read back.
+  -- line so that reading it is a single read of a known line -- see beval.lastpath. The history above
+  -- is append-only and never read back.
   --
   -- WRITTEN SECOND, so a key pulled between the two costs the comparison and not the history: a
   -- missing EVALLAST.CSV reads as 'no previous run', which is the honest answer, while a missing
   -- EVAL.CSV would lose every run before this one.
-  local lh = file.open(beval.lastpath, file.MODE_WRITE)
+  --
+  -- MODE 'w' TRUNCATES, which is the point: one line, replaced. A pull mid-write leaves it empty or
+  -- torn, and beval.prev answers nil to an empty read and to any line short of twelve fields -- 'no
+  -- previous run', which is the honest answer, rather than a baseline built from half a line.
+  local lh = io.open(beval.lastpath, 'w')
   if lh ~= nil then
-    file.write(lh, line)
-    file.flush(lh)
-    file.close(lh)
+    lh:write(line)
+    lh:flush()
+    lh:close()
   end
   return true
 end
@@ -468,9 +486,10 @@ end
 -- them, after the run, with no second chance.
 function beval.show()
   if beval.scr == nil then return false end
-  -- A 2205 CANNOT BE MUTED -- operator, 2026-10-22 -- so beval.prev no longer OPENS a file it has not
-  -- seen listed. The mute stays only because the event log is still better left alone across a
-  -- screen that writes to the key; it is not what keeps the popup away.
+  -- AN OPEN-FAILED EVENT CANNOT BE MUTED -- operator, 2026-10-22 -- so beval.prev does not OPEN a file
+  -- it has not seen listed; through io that event is 2203 rather than the 2205 the rule was written
+  -- about. The mute stays only because the event log is still better left alone across a screen that
+  -- writes to the key; it is not what keeps the popup away.
   local mine = false
   if brun ~= nil and brun.mute_push ~= nil then mine = brun.mute_push() end
   -- THE SCREEN GOES UP FIRST, WITH A SPINNER, and only then is the work done. Operator's rule of
@@ -499,8 +518,10 @@ function beval.show()
     return false
   end
   beval.tick()
-  -- ONE LINE OFF THE KEY, from EVALLAST.CSV rather than the whole of EVAL.CSV. The walk this used
-  -- to do ended in a read at the end of the file, which posts an unmutable 2201 -- see beval.lastpath.
+  -- ONE LINE OFF THE KEY, from EVALLAST.CSV rather than the whole of EVAL.CSV. The walk this used to
+  -- do ended in a read at the end of the file, which through file.read posted an unmutable 2201; the
+  -- read goes through io now and the end is silent, but one line is still all a comparison needs --
+  -- see beval.lastpath.
   local prev = beval.prev()
   beval.tick()
   local nreg, lines = beval.regress(cur, prev)

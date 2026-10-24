@@ -595,6 +595,45 @@ function file.mkdir(path)
 end
 function file.usbdriveexists() if USB then return 1 end return 0 end
 
+-- ---------- fs.*, the undocumented firmware namespace ----------
+-- fs.is_file, fs.is_dir, fs.mkdir and fs.rmdir are all measured PRESENT on 1.7.17a
+-- (fs does not enumerate through pairs, so they were probed by name). fs.is_file is
+-- measured SILENT, which is why the app uses it as its existence probe rather than a
+-- trial open -- an open of a missing path posts, and in the free-name scan that meant
+-- a modal 'multiple errors' box over the hex dump.
+--
+-- fs.mkdir's FAILURE signalling is NOT measured. file.mkdir posted 2208 and returned
+-- nothing; whether fs.mkdir posts, returns false, or raises is unknown. So this models
+-- the structural outcome only -- the directory appears or it does not -- and posts
+-- NOTHING, which means a test must verify with fs.is_dir rather than by a return value.
+-- Anything in the app that depends on how a failure is SIGNALLED is untested offline.
+fs = fs or {}
+function fs.is_file(path)
+  if not USB then return false end
+  local p = abs(tostring(path))
+  -- EITHER FRONT END. file.open(MODE_WRITE) seeds CONTENT and io.open('w') seeds
+  -- FILES, so checking one of them answered false for a file the other had written --
+  -- and during a migration both are in play.
+  return FILES[p] == true or CONTENT[p] ~= nil
+end
+function fs.is_dir(path)
+  if not USB then return false end
+  return DIRS[abs(tostring(path))] == true
+end
+function fs.mkdir(path)
+  local p = abs(tostring(path))
+  if not USB then return end
+  if string.sub(p, 1, 1) ~= '/' then return end          -- bare names always fail
+  if DIRS[p] then return end                             -- and so does one that exists
+  if not DIRS[parentof(p)] then return end               -- one level only
+  DIRS[p] = true
+end
+function fs.rmdir(path)
+  local p = abs(tostring(path))
+  if not USB then return end
+  DIRS[p] = nil
+end
+
 -- fs, DOCUMENTED AT REF 14-264 AND ALWAYS PRESENT ON THIS INSTRUMENT. Absent here,
 -- `pcall(fs.is_file, p)` indexes a nil table and raises OUTSIDE the guard -- which was the only
 -- reason ulog.exists probed for the table at all before using it. Backed by the same registry the
@@ -829,6 +868,191 @@ function file.read(h, act)
   end
   line = string.gsub(line, '\r$', '')       -- a CRLF file reads the same as an LF one
   return line
+end
+
+-- ---------- the io library, measured on 1.7.17a ----------
+-- Keithley's file.* is a wrapper over Lua's own io, and the wrapper is what posts the
+-- events. Measured on the instrument 2026-10-24, with the event count read either
+-- side of every single step:
+--
+--   type(io) table, io.open/io.read/io.input functions, io.lines NIL
+--   io.open('/usb1/SERDEC/PLAN.CSV','r')  -> handle,            0 events
+--   f:seek('end')                         -> 226018,            0 events
+--   f:seek('set',0) then f:read('*l')     -> a 96-byte line,    0 events
+--   seek to the end, then f:read('*l')    -> NIL,               0 EVENTS
+--   read again at the end                 -> nil,               0 events
+--   io.open of a missing path             -> nil + 'No such file', 1 event (2203)
+--
+-- Writes measured the same way 2026-10-24: io.open 'w', write, close, read back
+-- through file.* -> 'alpha'; io.open 'a' grew the file 11 -> 17 bytes; handle
+-- :flush() works; os.remove returns true and fs.is_file then answers false. Zero
+-- events for the whole sequence.
+--
+-- THE READ-AT-THE-END LINE IS WHY THIS EXISTS. file.read answers nil at the end AND posts 2201,
+-- a modal box nothing can suppress -- one per pass over a plan, for as long as a soak
+-- runs. io answers nil and says nothing, so a reader built on it cannot put a dialog
+-- on the panel however far it reads.
+-- ONLY THE INSTRUMENT'S FILESYSTEM IS INTERCEPTED. This mock replaces a GLOBAL, and
+-- the host's own io.open is how the suite reads soakplan.py and the vector files off
+-- the real disk -- so clobbering it outright broke tests that have nothing to do with
+-- the instrument, in two different files, with messages that named neither. Anything
+-- not under the mocked root is handed straight back to the real one.
+--
+-- io.lines is NOT nil'd here even though the instrument does not have it: doing that
+-- would take it away from the host too. tools/lint_tsp.py refuses io.lines in a TSP
+-- module instead, which is where the restriction actually applies.
+io = io or {}
+local real_io_open = io.open
+local MOCKROOT = '/usb1'
+
+function io.open(path, mode)
+  -- THE RAW PATH DECIDES, NOT abs(). abs() prefixes a relative path with the
+  -- instrument root, so testing the expanded form sent host-relative paths like
+  -- 'out/vectors/v77.bin' to the mock as '/usb1/out/vectors/v77.bin' and failed five
+  -- tests that only wanted to read a vector file off the real disk. Only a path that
+  -- names the instrument root itself is the instrument's.
+  local raw = tostring(path)
+  if string.sub(raw, 1, string.len(MOCKROOT)) ~= MOCKROOT then
+    if real_io_open == nil then return nil, raw .. ': no host io.open' end
+    return real_io_open(path, mode)
+  end
+  local ap = abs(path)
+  mode = mode or 'r'
+  local reading = (mode == 'r' or mode == 'rb')
+  if not USB then
+    -- Same wrapper underneath, so the no-key events are the file.open ones.
+    if ap == '/usb1' then post(2205) else post(2224) end
+    return nil, ap .. ': No such file'
+  end
+  -- A missing parent fails every mode, for the reason file.open's comment gives: a
+  -- filesystem cannot hold /usb1/SERDEC/x while /usb1/SERDEC is absent.
+  if not DIRS[parentof(ap)] and not DIRS[ap] then
+    post(2203)
+    return nil, ap .. ': No such file'
+  end
+  local body
+  if reading then
+    body = CONTENT[ap]
+    if DIRS[ap] then body = fat_table(ap) end
+    if body == nil then
+      post(2203)
+      return nil, ap .. ': No such file'
+    end
+  elseif mode == 'w' or mode == 'wb' then
+    LOG = {}
+    CONTENT[ap] = ''
+    FILES[ap] = true
+    body = ''
+  elseif mode == 'a' or mode == 'ab' then
+    CONTENT[ap] = CONTENT[ap] or ''
+    FILES[ap] = true
+    body = CONTENT[ap]
+  else
+    return nil, ap .. ': bad mode ' .. tostring(mode)
+  end
+  local h = {pos = 0, body = body, path = ap, reading = reading}
+  if not reading then h.pos = string.len(body) end
+  NLIVE = NLIVE + 1            -- paired with h.close, so a leaked handle is visible
+  -- A write goes to the same store file.* uses, measured on the instrument: a file
+  -- written through io was read back through file.open/file.read as 'alpha'. One
+  -- filesystem, two front ends.
+  -- ONE ARGUMENT, not varargs. Lua 5.0.2 collects varargs into an implicit `arg`
+  -- table and later versions do not, so a vararg writer here would behave differently
+  -- under the host Lua this mock runs on than on the instrument. Every caller in the
+  -- app writes a single string, which is the only shape worth modelling.
+  -- THE SAME INSTRUMENTATION file.write CARRIES, because the mock's controls are the
+  -- only way the suite can express 'the key went away'. An io writer that merely
+  -- updated CONTENT left MD.logtext and MD.loglines seeing nothing, and took WFAIL,
+  -- FFAIL, FAILAT, PULLAT and the no-key post out of play -- 18 assertions in
+  -- test_serial went from testing the app to testing nothing.
+  function h.write(self, part)
+    if type(part) == 'number' then part = tostring(part) end
+    if part == nil then return self end
+    if WFAIL ~= nil then WFAIL = WFAIL - 1; if WFAIL < 0 then error('USB full', 0) end end
+    -- A KEY PULLED AFTER n WRITES, one-shot, exactly as file.write models it.
+    if PULLAT ~= nil then
+      if PULLAT <= 0 then USB = false; PULLAT = nil else PULLAT = PULLAT - 1 end
+    end
+    if FAILAT ~= nil and table.getn(LOG) >= FAILAT then
+      error('USB write failed (key removed)', 0)
+    end
+    -- A HANDLE HELD ACROSS A KEY PULL DOES NOT FAIL IN LUA. file.write posts 2200 per
+    -- write and returns; io is the layer underneath the wrapper that posts, so it
+    -- just returns. Either way NOTHING IS WRITTEN, which is the part the app has to
+    -- notice for itself through ulog.keyok().
+    if not USB then return self end
+    LOG[table.getn(LOG) + 1] = part
+    self.body = self.body .. part
+    CONTENT[self.path] = self.body
+    WRITTEN = (WRITTEN or 0) + string.len(part)
+    self.pos = string.len(self.body)
+    return self
+  end
+  function h.flush(self)
+    if FFAIL ~= nil then FFAIL = FFAIL - 1; if FFAIL < 0 then error('USB flush failed', 0) end end
+    CONTENT[self.path] = self.body
+    FLUSHES = (FLUSHES or 0) + 1
+    return self
+  end
+  function h.seek(self, whence, off)
+    local len = string.len(self.body)
+    if whence == 'end' then
+      self.pos = len + (off or 0)
+    elseif whence == 'set' then
+      self.pos = off or 0
+    elseif whence == 'cur' or whence == nil then
+      self.pos = self.pos + (off or 0)
+    end
+    if self.pos < 0 then self.pos = 0 end
+    return self.pos
+  end
+  function h.read(self, fmt)
+    local len = string.len(self.body)
+    -- MD.failread HAS TO REACH HERE. Without it, test_usblog's 'a read that FAILS is
+    -- refused without propagating' went VACUOUS -- it still passed, which is worse
+    -- than failing, because it reads as coverage. file.read posts 2201 on a failed
+    -- read; io is below the wrapper, so it answers nil and says nothing.
+    if not USB then return nil end
+    if RFAIL ~= nil then
+      RFAIL = RFAIL - 1
+      if RFAIL < 0 then return nil end
+    end
+    -- NO EVENT AT THE END EITHER, which is the whole point. nil, silently -- but only
+    -- for '*l'. See the '*a' note below.
+    if self.pos >= len then
+      if fmt == '*a' then return '' end
+      return nil
+    end
+    -- '*a' AT END OF FILE RETURNS '', NOT nil. Measured on the host Lua and on the real
+    -- 5.0.2; only '*l' answers nil there. This mock used to answer nil for both, and
+    -- that hid a live bug: ulog.rootlists tested only for nil, so an openable but
+    -- unreadable directory would have reported ABSENCE and ordered the mkdir its own
+    -- comment warns posts 2208. A mock kinder than the firmware is worse than no mock.
+    if fmt == '*a' then
+      local r = string.sub(self.body, self.pos + 1)
+      self.pos = len
+      return r
+    end
+    -- '*l' and the default: up to and not including the newline, which IS consumed.
+    local nl = string.find(self.body, '\n', self.pos + 1, true)
+    local r
+    if nl == nil then
+      r = string.sub(self.body, self.pos + 1)
+      self.pos = len
+    else
+      r = string.sub(self.body, self.pos + 1, nl - 1)
+      self.pos = nl
+    end
+    return r
+  end
+  function h.close(self)
+    if not self.reading then CONTENT[self.path] = self.body end
+    self.pos = string.len(self.body)
+    self.closed = true
+    NLIVE = NLIVE - 1
+    return true
+  end
+  return h
 end
 
 function file.write(h, s)

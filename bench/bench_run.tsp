@@ -234,9 +234,17 @@ function brun.split(s)
   return out, n
 end
 
--- THE ROW COUNT COMES OUT OF THE HEADER, so the loop never reads past the end of the file. Reading
--- past EOF posts event 2201 -- 'File read error' -- which is a popup on the panel, once per pass. It is
--- a comment line of the form '# rows=N' written by soakplan.py --emit-csv.
+-- THE ROW COUNT COMES OUT OF THE HEADER -- a comment line of the form '# rows=N' written by
+-- soakplan.py --emit-csv -- and nextrow stops once it has returned that many rows. It is not a guard
+-- against an event any more: the plan is read through io, which answers nil at the end and posts
+-- nothing. What the count still does is bound the reader by what the plan DECLARES, which is a
+-- different statement from 'the file ended'.
+--
+-- WHAT WENT WITH THE 2201. file.read answered nil at the end AND posted 2201 'File read error' as a
+-- modal box -- one dialog per pass over the plan, which is one a lap for as long as a soak runs. Two
+-- fields stood in for a bound that did not need the plan to declare anything: brun.plansz, the
+-- file's length decoded out of its FAT directory entry, and brun.planbytes, the bytes consumed so
+-- far. Both went with file.read, because a read past the end of an io handle is silent.
 brun.planrows = 0
 brun.planread = 0
 -- WHICH LAP AND CELL THE RUN IS ON, kept on brun so that every message can name them. A soak is
@@ -298,7 +306,7 @@ brun.lapcell   = 0
 function brun.planopen()
   brun.planclose()
   local fh = nil
-  fh = file.open(brun.planpath, file.MODE_READ)
+  fh = io.open(brun.planpath, 'r')
   if fh == nil then return false, 'cannot open ' .. brun.planpath end
   brun.pfh      = fh
   brun.planread = 0
@@ -314,21 +322,29 @@ end
 
 function brun.planclose()
   if brun.pfh == nil then return end
-  file.close(brun.pfh)
+  brun.pfh:close()
   brun.pfh = nil
 end
 
 -- One cell, or nil at end of file. Header and blank lines are skipped here so callers never see them.
 --
--- A READ PAST THE DECLARED COUNT IS WHAT IS AVOIDED, not a raise: file.read does not raise, it posts
--- 2201 'File read error' as a box on the panel, which is why the row count below is the bound.
+-- READING OFF THE END IS NOT A FAULT HERE. io's read answers nil at the end and posts nothing, so a
+-- plan that declares no row count is read to EOF silently. file.read answered nil too, but posted
+-- 2201 'File read error' as a box on the panel with it, which is why this used to be bounded two ways.
 function brun.nextrow()
   if brun.pfh == nil then return nil end
-  -- STOP AT THE DECLARED COUNT rather than at EOF, for the event reason above. A plan with no rows=
-  -- header falls back to reading until EOF, which still works and costs one event per pass.
+  -- STOP AT THE DECLARED COUNT, which bounds the reader by what the plan says it holds rather than by
+  -- where the file happens to end. A plan with no rows= header reads to EOF instead.
   if brun.planrows > 0 and brun.planread >= brun.planrows then return nil end
-  local ln = file.read(brun.pfh, file.READ_LINE)
-  if ln == nil or ln == '' then return nil end
+  local ln = brun.pfh:read('*l')
+  -- nil IS THE END, AND '' IS A BLANK LINE -- which are the same value under file.read and are not
+  -- under io. file.read returned the newline as part of the line, so a blank line arrived as '\n' and
+  -- only EOF could be empty; this test read `ln == nil or ln == ''`. '*l' STRIPS the newline, so a
+  -- blank line IS '' and that test would have ended the plan at the first one -- a trailing blank
+  -- line, or one separating laps, truncating the lap silently and reporting it complete.
+  if ln == nil then return nil end
+  -- '*l' TAKES THE \n AND LEAVES THE \r, so a CRLF plan still arrives with one on every line. The
+  -- blank-line skip below depends on this running first.
   ln = string.gsub(ln, '[\r\n]', '')
   if ln == '' then return brun.nextrow() end
   if string.sub(ln, 1, 1) == '#' then
@@ -2258,18 +2274,19 @@ end
 -- A FILE, checked between cells, so a run can be ended cleanly by dropping STOP.TXT on the key without
 -- a power cycle -- which matters when the alternative is losing the last unflushed rows.
 --
--- LOCATED BY LISTING THE DIRECTORY, NOT BY OPENING IT. file.open on a file that is not there POSTS AN
--- EVENT on this instrument, and this check runs once per cell -- 86 events in a smoke and ~120 000 across
--- eight days, every one of them a popup on the panel. Opening the directory, which does
--- exist, and searching its listing costs no event at all. usb_log.tsp's ensuredir uses the same
--- technique and its comment is why the directory is called SERDEC: only an 8.3 name can be found by one
--- string.find in the FAT table.
+-- LOCATED BY LISTING THE DIRECTORY, NOT BY OPENING IT, AND io CHANGES NOTHING ABOUT THAT. Opening a
+-- path that is not there posts an event whichever front end asks -- measured 2026-10-24, io.open of a
+-- missing path returns nil and posts 2203 where file.open posted 2205 -- and this check runs once per
+-- cell: 86 events in a smoke and ~120 000 across eight days, every one a popup on the panel. Opening
+-- the directory, which does exist, and searching its listing costs no event at all. usb_log.tsp's
+-- ensuredir uses the same technique and its comment is why the directory is called SERDEC: only an 8.3
+-- name can be found by one string.find in the FAT table.
 function brun.stopped()
   local fh = nil
-  fh = file.open(brun.dir, file.MODE_READ)
+  fh = io.open(brun.dir, 'r')
   if fh == nil then return false end
-  local raw = file.read(fh, file.READ_ALL)
-  file.close(fh)
+  local raw = fh:read('*a')
+  fh:close()
   if raw == nil then return false end
   return string.find(raw, 'STOP', 1, true) ~= nil
 end
@@ -2287,27 +2304,14 @@ end
 -- row, measured or SDG-failed, so the lap and cell in that row locate the plan exactly. A count of rows
 -- would do the same job and be wrong quietly if anything ever wrote two rows for one cell.
 --
--- BOUNDED BY THE DIRECTORY ENTRY, not by reading until nil. A read past EOF posts 2201 'File read error'
--- as a box on the panel, and this runs at the start of a run that must not put one there. The 8.3 name in
--- the FAT table carries the file's length at offset 28, which is the same trick tools/run_bench.py's
--- fetch uses -- measured: SOAK    CSV at offset 7425 of a 16384-byte table, size 76514.
-function brun.keysize(n83)
-  local fh = nil
-  fh = file.open(brun.dir, file.MODE_READ)
-  if fh == nil then return nil end
-  local raw = file.read(fh, file.READ_ALL)
-  file.close(fh)
-  if raw == nil then return nil end
-  local a = string.find(raw, n83, 1, true)
-  if a == nil then return nil end
-  local sz = nil
-  pcall(function()
-    sz = string.byte(raw, a + 28) + string.byte(raw, a + 29) * 256
-         + string.byte(raw, a + 30) * 65536 + string.byte(raw, a + 31) * 16777216
-  end)
-  return sz
-end
-
+-- READ TO THE END, WHICH IS NOW THE CHEAP WAY TO FIND IT. This used to be bounded by the file's length
+-- decoded out of its FAT directory entry -- offset 28 of the 8.3 entry, the same trick
+-- tools/run_bench.py's fetch still uses -- because a read past EOF through file.read posted 2201 'File
+-- read error' as a box on the panel, and this runs at the start of a run that must not put one there.
+-- io answers nil at the end and posts nothing, so the end of the file is the loop's natural terminator.
+-- The length is still wanted, but only to say '47 % read' on the glass, and the handle itself carries
+-- it.
+--
 -- -> iter, cell of the last complete result row, or nil if there is not one.
 -- Lines between clock reads in brun.resume_scan. Same job as brun.progevery in the plan draw, and
 -- the same caveat: it only declines to ASK the time. brun.spinmin decides how often the glass is
@@ -2315,11 +2319,22 @@ end
 brun.scanevery = brun.scanevery or 100
 
 function brun.resume_scan()
-  local sz = brun.keysize('SOAK    CSV')
-  if sz == nil or sz <= 0 then return nil end
+  -- THE PATH IS ASKED FOR BEFORE IT IS OPENED. The length used to come from a hard-coded 8.3 name,
+  -- 'SOAK    CSV', while the loop read brec.path -- so once brec rolled over to SOAK2.csv the scan of
+  -- SOAK2 was bounded by SOAK's length, and a shorter SOAK would have stopped it early and resumed from
+  -- the wrong cell. seek asks the filesystem about the file actually being read.
+  if brec == nil or brec.path == nil then return nil end
   local fh = nil
-  fh = file.open(brec.path, file.MODE_READ)
+  fh = io.open(brec.path, 'r')
   if fh == nil then return nil end
+  -- THE LENGTH OFF THE HANDLE, then back to the top to read it. Measured on the instrument:
+  -- f:seek('end') on a 226 018-byte plan returns 226018 and posts no event.
+  local sz = fh:seek('end')
+  fh:seek('set', 0)
+  if sz == nil or sz <= 0 then
+    fh:close()
+    return nil
+  end
   -- A SCREEN AND A SPINNER, BECAUSE THIS IS THE SLOWEST THING THE APP DOES. The whole record is read
   -- to find its last completed cell -- 15.2 MB and 47 504 lines on the operator's soak of
   -- 2026-10-22, minutes on a fortnight's 160 MB -- in a loop that yielded nowhere, so the firmware
@@ -2330,17 +2345,23 @@ function brun.resume_scan()
   if brun.show_now ~= nil then brun.show_now(brun.wkscr) end
   local nb, it, ce = 0, nil, nil
   local nsince = 0
-  while nb < sz do
+  while true do
     local l  = nil
-    l = file.read(fh, file.READ_LINE)
+    l = fh:read('*l')
     if l == nil then break end
-    nb = nb + string.len(l)
     -- THE CEILING DECIDES, NOT THIS COUNTER. The progress line is written only when the spin
     -- actually fired, so the second line cannot update faster than the first.
     nsince = nsince + 1
     if nsince >= brun.scanevery then
       nsince = 0
       if brun.wk_spin ~= nil and brun.wk_spin() then
+        -- THE POSITION OFF THE HANDLE, AND ONLY WHERE IT IS ABOUT TO BE DRAWN. seek() with no
+        -- arguments answers where the reader is, which is exact; accumulating string.len(l) is not,
+        -- because '*l' has already taken the newline off every line counted -- one byte a line, so
+        -- the operator's 47 504-line record would have finished reading at 99.7 %. It is a firmware
+        -- call per ask, so it is asked once per brun.scanevery lines and only when the glyph actually
+        -- moved, rather than once per line.
+        nb = fh:seek()
         if brun.wk_say ~= nil then
           brun.wk_say(nil, string.format('%d of %d kB   %d%% read',
                                          brun.int(nb / 1024), brun.int(sz / 1024),
@@ -2358,7 +2379,7 @@ function brun.resume_scan()
       end
     end
   end
-  file.close(fh)
+  fh:close()
   return it, ce
 end
 
@@ -2609,7 +2630,7 @@ function brun.rechold()
     brun.msg(brun.c_bad, brun.fit('NOT RECORDING: ' .. why, brun.panelw))
   end
   -- FIRST FAILURE, THEN EVERY recretry CELLS. A write that failed once should heal at once; one that
-  -- needs a human should not cost a file.open per cell for six days.
+  -- needs a human should not cost an open per cell for six days.
   if math.mod(brun.nrecfail, brun.recretry) ~= 1 then return false end
   if not brec.reopen() then return false end
   brun.nrecback = brun.nrecback + 1

@@ -48,7 +48,7 @@ Everything the soak reads and writes lives on it, under `/usb1/SERDEC/`:
 | `PLAN.CSV` | the plan, pushed over the LAN before the run starts |
 | `SOAK.CSV` | the record, appended cell by cell as the run goes |
 
-With no key, `file.open` returns nil, the run has nowhere to record, and the panel goes red with
+With no key, `io.open` returns nil plus an error string, the run has nowhere to record, and the panel goes red with
 `NOT RECORDING`. The directory name is 8.3 (`SERDEC`) because only an 8.3 name can be found by searching the
 FAT table, which is how the run checks the key without opening a file that is not there — an open on a
 missing name posts an event, and an event is a box on the panel.

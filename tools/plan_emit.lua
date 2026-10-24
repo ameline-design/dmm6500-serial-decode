@@ -18,27 +18,33 @@
 -- hand back what was written.
 PLANOUT = {n = 0}
 
-file = {
-  MODE_WRITE = 'w', MODE_READ = 'r', MODE_APPEND = 'a',
-  READ_LINE = 'line', READ_ALL = 'all',
-}
+-- AN io SHIM, NOT A file.* ONE. bench/plan_gen.tsp writes through io now, because
+-- Keithley's file.* wrapper posts event 2201 at the end of a read and that is a modal
+-- box on the panel. A shim for the old API intercepts nothing, io.open on the host
+-- answers nil for '/usb1/...', and emit then refuses every draw -- 19 failures all
+-- reading 'python 1518, lua 0'.
+--
+-- Only the instrument's own root is intercepted; anything else goes to the real
+-- io.open, because this harness also reads vector files off the real disk.
+local real_io_open = io.open
 
-function file.open(path, mode)
-  if mode == file.MODE_WRITE then
-    PLANOUT = {n = 0}
-    return {path = path, w = true}
+function io.open(path, mode)
+  local raw = tostring(path)
+  if string.sub(raw, 1, 5) ~= '/usb1' then return real_io_open(path, mode) end
+  if mode ~= 'w' and mode ~= 'wb' then return nil, raw .. ': emit only writes' end
+  PLANOUT = {n = 0}
+  local h = {path = raw}
+  function h.write(self, s)
+    PLANOUT.n = PLANOUT.n + 1
+    PLANOUT[PLANOUT.n] = s
+    return self
   end
-  return nil
+  function h.flush(self) return self end
+  function h.close(self) return true end
+  -- Deliberately absent: seek and read. Nothing in the draw uses them, and a stub
+  -- answering plausibly would hide a draw that started to.
+  return h
 end
-
-function file.write(fh, s)
-  PLANOUT.n = PLANOUT.n + 1
-  PLANOUT[PLANOUT.n] = s
-end
-
-function file.flush(fh) end
-function file.close(fh) end
-function file.read(fh, what) return nil end
 
 dofile('tsp/serial_core.tsp')
 dofile('bench/arb_names.tsp')

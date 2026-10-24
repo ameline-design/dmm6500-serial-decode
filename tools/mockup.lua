@@ -145,19 +145,32 @@ function display.setevent(id, ev, cmd)
 end
 
 -- ---------- USB present, so the log status line shows the real case ----------
+-- AN io SHIM. The app writes logs through io now, because Keithley's file.* wrapper
+-- posts event 2201 at the end of a read and that is a modal box on the panel. A shim
+-- for the old API would intercept nothing and the render would die on the real
+-- io.open answering nil for '/usb1/...'.
 file = {MODE_APPEND = 'a', MODE_WRITE = 'w', MODE_READ = 'r'}
 local LOGLINES = 0
--- MODE_READ returns NIL: that is what an empty USB key looks like, and it is what
+local real_io_open = io.open
+-- READ RETURNS NIL: that is what an empty USB key looks like, and it is what
 -- ulog.next_free() probes with. Returning a handle for reads as well made every candidate
 -- name look taken, so next_free() ran out and the panel showed
 -- 'NOTE: no free /usb1/streamNN.txt name' in a mockup that was supposed to show a filename.
-function file.open(path, mode)
-  if mode == file.MODE_READ then return nil end
-  return 7
+--
+-- Only the instrument root is intercepted; this renderer reads its own assets off the
+-- real disk.
+function io.open(path, mode)
+  local raw = tostring(path)
+  if string.sub(raw, 1, 5) ~= '/usb1' then return real_io_open(path, mode) end
+  if mode == nil or mode == 'r' or mode == 'rb' then
+    return nil, raw .. ': No such file'
+  end
+  local h = {}
+  function h.write(self, s) LOGLINES = LOGLINES + 1 return self end
+  function h.flush(self) return self end
+  function h.close(self) return true end
+  return h
 end
-function file.write(h, s) LOGLINES = LOGLINES + 1 end
-function file.flush(h) end
-function file.close(h) end
 
 -- ---------- the event log, which hw_config asserts on every capture ----------
 -- WITHOUT THIS THE WHOLE GALLERY STOPS BUILDING, and it did. sdec.quiet_events() sets

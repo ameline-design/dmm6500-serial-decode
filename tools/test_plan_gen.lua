@@ -20,6 +20,14 @@
 --   lua tools/test_plan_gen.lua            # the standard set
 --   lua tools/test_plan_gen.lua --quick    # iteration 1 only, for an edit loop
 
+-- SCRATCH PATHS ARE UNIQUE PER RUN. These were fixed names, so two agents running this
+-- gate at once wrote and executed the same file and clobbered each other mid-write --
+-- producing 19 failures reading 'python 1518, lua 0' against a plan_gen.tsp that had not
+-- changed, which looks exactly like a real regression. tools/test_serial.lua already
+-- uniquifies its scratch; this did not.
+local SCRATCH = '/tmp/plan_gen_probe_' .. tostring(os.time()) .. '_'
+                .. string.gsub(tostring(os.clock()), '%.', '') .. '_'
+
 local QUICK = false
 do
   local i = 1
@@ -142,11 +150,11 @@ do
     end
     print('BAD=' .. bad)
   ]]
-  local fh = io.open('/tmp/plan_twist_probe.lua', 'w')
+  local fh = io.open((SCRATCH .. 'twist.lua'), 'w')
   fh:write(src)
   fh:close()
-  local h = run('lua /tmp/plan_twist_probe.lua')
-  local f = run('out/lua502/bin/lua /tmp/plan_twist_probe.lua')
+  local h = run(('lua ' .. SCRATCH .. 'twist.lua'))
+  local f = run(('out/lua502/bin/lua ' .. SCRATCH .. 'twist.lua'))
   ck(string.find(h, 'BAD=0', 1, true) ~= nil,
      'lazy twist == eager twist over 1400 words, host lua', string.gsub(h, '%s+$', ''))
   ck(string.find(f, 'BAD=0', 1, true) ~= nil,
@@ -159,37 +167,50 @@ end
 do
   local src = [[
     PLANTEXT = nil
-    file = {MODE_WRITE = 'w', MODE_READ = 'r', READ_LINE = 'line', READ_ALL = 'all'}
+    -- AN io SHIM. plan_gen reads and writes through io now: file.* posts event 2201 at
+    -- the end of a read, which is a modal box on the panel, and io posts nothing.
+    -- The shape of the shim changes with it -- a handle is an OBJECT with methods,
+    -- not an integer plus a module function.
     local lines, nl, pos = {}, 0, 0
     NREAD = 0
-    function file.open(p, m)
-      if m == file.MODE_WRITE then lines, nl = {}, 0; return {w = true} end
+    local real_io_open = io.open
+    local function mkhandle(kind)
+      local h = {kind = kind}
+      function h.write(self, s)
+        for ln in string.gfind(s, '([^\n]*)\n') do nl = nl + 1; lines[nl] = ln end
+        return self
+      end
+      function h.flush(self) return self end
+      function h.close(self) return true end
+      function h.read(self, what)
+        if self.kind == 'dirempty' then return '' end
+        if self.kind == 'dir' then return 'PLAN.CSV EVAL.CSV' end
+        -- COUNTED, so a test can assert the check never walks the body.
+        NREAD = NREAD + 1
+        pos = pos + 1
+        if pos > nl then return nil end
+        -- '*l' STRIPS THE NEWLINE, where file.read(READ_LINE) kept it. Returning it
+        -- here would put a '\n' inside every parsed field.
+        return lines[pos]
+      end
+      -- seek is NOT provided: nothing in the draw or the check uses it, and a stub
+      -- answering plausibly would hide one that started to.
+      return h
+    end
+    function io.open(p, m)
+      local raw = tostring(p)
+      if string.sub(raw, 1, 5) ~= '/usb1' then return real_io_open(p, m) end
+      if m == 'w' or m == 'wb' then lines, nl = {}, 0; return mkhandle('w') end
       -- A DIRECTORY HANDLE READS BACK ITS LISTING. bplan.listed asks the directory before it opens
       -- any file, so a shim without this refuses every plan with 'no plan on the key'.
-      if p == bplan.dir then
-        if PLANTEXT == nil then return {dir = true, empty = true} end
-        return {dir = true}
+      if raw == bplan.dir then
+        if PLANTEXT == nil then return mkhandle('dirempty') end
+        return mkhandle('dir')
       end
-      if PLANTEXT == nil then return nil end
+      if PLANTEXT == nil then return nil, raw .. ': No such file' end
       lines, nl, pos = {}, 0, 0
       for ln in string.gfind(PLANTEXT, '([^\n]*)\n') do nl = nl + 1; lines[nl] = ln end
-      return {r = true}
-    end
-    function file.write(fh, s)
-      for ln in string.gfind(s, '([^\n]*)\n') do nl = nl + 1; lines[nl] = ln end
-    end
-    function file.flush(fh) end
-    function file.close(fh) end
-    function file.read(fh, what)
-      if fh.dir then
-        if fh.empty then return '' end
-        return 'PLAN.CSV EVAL.CSV'
-      end
-      -- COUNTED, so a test can assert the check never walks the body.
-      NREAD = NREAD + 1
-      pos = pos + 1
-      if pos > nl then return nil end
-      return lines[pos] .. '\n'
+      return mkhandle('r')
     end
     dofile('tsp/serial_core.tsp')
     dofile('bench/arb_names.tsp')
@@ -229,10 +250,10 @@ do
     local fok, frows, fwhy = bplan.check('/usb1/SERDEC/PLAN.CSV')
     print('FOREIGN ok=' .. tostring(fok) .. ' why=' .. tostring(fwhy))
   ]]
-  local fh = io.open('/tmp/plan_check_probe.lua', 'w')
+  local fh = io.open((SCRATCH .. 'check.lua'), 'w')
   fh:write(src)
   fh:close()
-  local out = run('out/lua502/bin/lua /tmp/plan_check_probe.lua')
+  local out = run(('out/lua502/bin/lua ' .. SCRATCH .. 'check.lua'))
   ck(string.find(out, 'EMPTY ok=false', 1, true) ~= nil,
      'check refuses a key with no plan')
   ck(string.find(out, 'no plan on the key', 1, true) ~= nil,

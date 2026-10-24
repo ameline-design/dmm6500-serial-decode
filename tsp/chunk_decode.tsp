@@ -574,7 +574,7 @@ function sdec.ck_sink_file(path, ncol)
   if ncol == nil then ncol = 16 end
   -- MODE_APPEND, not MODE_WRITE: this sink writes to the shared byte log that frame mode also appends
   -- to, so opening for write silently truncates it. ulog.open_write, for its no-key gate and reason.
-  local fh, owhy = ulog.open_write(path, file.MODE_APPEND)
+  local fh, owhy = ulog.open_write(path, 'a')
   if fh == nil then return nil, nil, 'cannot append to ' .. tostring(path) end
   -- A header, so a stream's rows are distinguishable from a frame capture's in one file -- and the
   -- sink's first write, so its failure is the sink's: an unlabelled stream is what it exists to stop.
@@ -583,9 +583,9 @@ function sdec.ck_sink_file(path, ncol)
                             sdec.fmt_text and sdec.fmt_text() or '?')
   -- Bare, the refusal moving to the gate below: no file call transfers control, so a pcall here always
   -- returns true. docs/MEASUREMENTS.md, 'No file call raises'.
-  file.write(fh, hdr)
+  fh:write(hdr)
   if ulog ~= nil and ulog.keyok ~= nil and not ulog.keyok() then
-    file.close(fh)
+    fh:close()
     return nil, nil, 'cannot write the stream header to ' .. tostring(path)
   end
 
@@ -603,7 +603,7 @@ function sdec.ck_sink_file(path, ncol)
     -- The write is bare and nothing here can set `dead`, so the carry shift below always runs: cn and
     -- cbase must never describe rows the file never got, and flog_bytes is counted on acceptance. Nor
     -- can ua_hexrow fail, so sink's loop calls emit bare.
-    if not dead then file.write(fh, line .. '\r\n') end
+    if not dead then fh:write(line .. '\r\n') end
     local i
     for i = nrow + 1, cn do
       cv[i - nrow] = cv[i]
@@ -640,8 +640,8 @@ function sdec.ck_sink_file(path, ncol)
       if not pcall(emit, cn) then dead = true end
     end
     -- Both bare: neither can transfer control (docs/MEASUREMENTS.md, 'No file call raises').
-    file.flush(fh)
-    file.close(fh)
+    fh:flush()
+    fh:close()
     fh = nil
     -- A key pulled mid-stream posts 2200 and returns, so `dead` never saw it and the run reported a
     -- complete file. This presence check does, and it latches logging off. See ulog.keylost().

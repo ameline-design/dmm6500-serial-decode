@@ -10,12 +10,13 @@
 -- so a cut at the wrong instant leaves an EMPTY file and no idea how far the run got. Appending leaves
 -- a torn last line with an intact line above it.
 --
--- ONE FILE, WITH TAGGED ROWS, and that is forced rather than tidy: the firmware hands out a SINGLE
--- write handle, so a results file and a status file cannot be open at once -- opening the second
--- silently redirects the first's writes. tools/mock_display.lua models that one handle and 67
--- assertions in test_usblog.lua run against it. Results are 'R,...' rows and progress is 'S,...' rows in
--- one file, which also puts the last status line immediately before whatever the run was doing when it
--- stopped.
+-- ONE FILE, WITH TAGGED ROWS. The forcing reason was the firmware's file.* API, which hands out a
+-- SINGLE write handle: a results file and a status file could not be open at once, because opening the
+-- second silently redirected the first's writes. tools/mock_display.lua models that one handle and 67
+-- assertions in test_usblog.lua still run against it. This module writes through io instead, where
+-- that limit has NOT been measured either way -- so the one file stays, and nothing here asks the
+-- question: there is never a second handle. It also puts the last status line immediately before
+-- whatever the run was doing when it stopped. Results are 'R,...' rows and progress is 'S,...' rows.
 --
 -- CLOSED AND REOPENED PERIODICALLY, because flush and close are not the same promise on FAT: flush
 -- pushes the bytes, close updates the directory entry that says how long the file is. A key pulled
@@ -30,8 +31,9 @@
 brec           = brec or {}
 
 brec.dir       = brec.dir or '/usb1/SERDEC'
--- FULL PATH, because file.open on this instrument requires an absolute one -- a bare 'SOAK.CSV' is
--- refused. serial_app.tsp builds sdec.flogpfx the same way.
+-- FULL PATH, because this instrument's filesystem calls require an absolute one -- a bare 'SOAK.CSV'
+-- is refused, and every io.open measured on the box was given an absolute path too.
+-- serial_app.tsp builds sdec.flogpfx the same way.
 brec.pfx       = brec.pfx or (brec.dir .. '/SOAK')   -- SOAK.CSV, 8.3 like everything else here
 brec.ext       = brec.ext or '.csv'
 brec.maxfile   = brec.maxfile or 268435456   -- 256 MB, far under the 2 GB per-file ceiling and still
@@ -77,9 +79,10 @@ function brec.q(s)
 end
 
 -- ONE FIXED NAME, OPENED FOR APPEND, AND NOT A NUMBERED SLOT. ulog.next_free finds a free number by
--- OPENING CANDIDATES, and an open on a name that is not there posts event 2205 -- a box on the panel.
--- One per run is one too many for a machine that sits unattended for days. MODE_APPEND on a fixed path
--- always succeeds, creating the file if it is absent, so nothing is ever probed.
+-- OPENING CANDIDATES, and an open on a name that is not there posts an event -- 2205 through file.open,
+-- 2203 through io.open, a box on the panel either way. One per run is one too many for a machine that
+-- sits unattended for days. Mode 'a' on a fixed path always succeeds, creating the file if it is
+-- absent, so nothing is ever probed.
 --
 -- RUNS ARE SEPARATED BY THEIR HEADER, not by their filename: every run writes a '# serdec-soak-1 tag=..'
 -- line first and a reader splits the file on those. brec.roll numbers ROLLED files, which happens only
@@ -92,29 +95,40 @@ function brec.newfile(pfx)
   end
   local path = pfx .. brec.ext
   if brec.nfile > 1 then path = pfx .. tostring(brec.nfile) .. brec.ext end
-  local fh = nil
-  -- file.open RETURNS NIL rather than raising, so the HANDLE is what has to be tested and there is
-  -- nothing for a guard to catch -- which is why there is no longer one here. The app makes 36 file
-  -- calls across tsp/ with no pcall on any of them, measured: docs/UNDOCUMENTED.md and
-  -- [[file-api-never-raises-measured]]. Every pcall site costs part of a shipping budget the firmware
-  -- enforces by bluescreening on load, so an inert one is not free.
-  fh = file.open(path, file.MODE_APPEND)
-  if fh == nil then return nil, path, 'cannot open ' .. path end
+  local fh, oerr = nil, nil
+  -- io.open RETURNS NIL AND A MESSAGE rather than raising, so the HANDLE is what has to be tested and
+  -- there is nothing for a guard to catch. Measured on the instrument 2026-10-24: a missing path
+  -- answers nil plus '<path>: No such file'. Every pcall site costs part of a shipping budget the
+  -- firmware enforces by bluescreening on load, so an inert one is not free.
+  --
+  -- THE MESSAGE IS KEPT, which it was not worth doing under file.open: that call posted an event the
+  -- operator could read off the panel, and io posts none for most failures. So the string this returns
+  -- is now the only account of why the record would not open.
+  fh, oerr = io.open(path, 'a')
+  if fh == nil then return nil, path, 'cannot open ' .. path .. ': ' .. tostring(oerr) end
   return fh, path, nil
 end
 
 -- A WRITE IS NOT WHERE A PULLED KEY IS CAUGHT, and this function used to imply it was: it read
--- `local ok = pcall(file.write)` and returned false on a raise. file.write does not raise -- the DMM
--- file API posts an event and returns -- so `ok` was true on a dead handle as readily as a live one
--- and the `return false` was unreachable. Every caller's recovery path hung off it.
+-- `local ok = pcall(file.write)` and returned false on a raise. That write did not raise -- the DMM
+-- file API posts an event and returns, docs/MEASUREMENTS.md's file-API table -- so `ok` was true on a
+-- dead handle as readily as a live one and the `return false` was unreachable. Every caller's recovery
+-- path hung off it.
 --
 -- WHAT DOES CATCH IT is the reopen at the sync boundary, below: brec.row() closes and reopens every
--- `syncrows` rows to commit the directory entry, and file.open RETURNING NIL is a real verdict. So
+-- `syncrows` rows to commit the directory entry, and the open RETURNING NIL is a real verdict. So
 -- detection already worked, at that granularity, and nothing is lost by saying so plainly.
+--
+-- AND IT IS WHY THE RECORD WRITES THROUGH io. file.write to a handle whose key has gone returns
+-- normally and posts 2200 'File write error' PER WRITE, measured on 1.7.17a -- so a key pulled during
+-- a soak put a modal box on the panel for every row the run went on to write. An io write posts
+-- nothing. WHAT IS NOT MEASURED is whether an io write on such a handle RAISES where file.write
+-- returned; if it does, the raise leaves this function, since there is no pcall and the shipping
+-- budget above is why there is not one.
 function brec.rawwrite(fh, s)
   if fh == nil then return false end
-  file.write(fh, s)
-  file.flush(fh)
+  fh:write(s)
+  fh:flush()
   return true
 end
 
@@ -163,7 +177,7 @@ end
 -- ROLL rather than grow past the per-file cap, and count the total so an indefinite run cannot fill
 -- the key behind everyone's back.
 function brec.roll()
-  if brec.fh ~= nil then file.close(brec.fh) end
+  if brec.fh ~= nil then brec.fh:close() end
   brec.fh = nil
   if brec.ntotbyte >= brec.maxtotal then
     brec.stopped = true
@@ -194,10 +208,10 @@ function brec.row(s)
   if not brec.rawwrite(brec.fh, line) then
     -- A WRITE THAT FAILED is usually a pulled key. Reopening once is worth trying; failing that, the
     -- run says so rather than discarding rows silently.
-    file.close(brec.fh)
+    brec.fh:close()
     brec.fh  = nil
     local fh = nil
-    fh = file.open(brec.path, file.MODE_APPEND)
+    fh = io.open(brec.path, 'a')
     if fh == nil then
       brec.stopped = true
       brec.why     = 'write failed and ' .. tostring(brec.path) .. ' will not reopen -- key pulled?'
@@ -217,10 +231,10 @@ function brec.row(s)
   brec.sincesync = brec.sincesync + 1
   -- THE DIRECTORY ENTRY, COMMITTED. See the note at the top: flush is not close.
   if brec.sincesync >= brec.syncrows then
-    file.close(brec.fh)
+    brec.fh:close()
     brec.fh  = nil
     local fh = nil
-    fh = file.open(brec.path, file.MODE_APPEND)
+    fh = io.open(brec.path, 'a')
     if fh == nil then
       brec.stopped = true
       brec.why     = 'reopen after sync failed on ' .. tostring(brec.path)
@@ -239,7 +253,7 @@ end
 -- retry that lets a transient failure -- a briefly unreadable key, a write that failed once -- heal
 -- instead of costing the rest of a fortnight.
 --
--- THE BYTE BUDGET IS NOT RETRIED, which is why this lives here rather than as a file.open in the loop: a
+-- THE BYTE BUDGET IS NOT RETRIED, which is why this lives here rather than as an io.open in the loop: a
 -- spent budget is still spent in five minutes. brec.stopped stays true and the run says so.
 --
 -- A HEADER MARKS THE GAP, tagged `resumed`, which judge_bench's split_runs reads as a continuation --
@@ -247,7 +261,7 @@ end
 function brec.reopen()
   if brec.ntotbyte >= brec.maxtotal then return false end
   if brec.fh ~= nil and not brec.stopped then return true end
-  if brec.fh ~= nil then file.close(brec.fh) end
+  if brec.fh ~= nil then brec.fh:close() end
   brec.fh = nil
   local fh, path = brec.newfile(brec.pfx)
   if fh == nil then return false end
@@ -256,7 +270,7 @@ function brec.reopen()
   -- THE HEADER HAS TO LAND BEFORE THIS IS CALLED RECOVERED, or a still-failing key reports 'recording
   -- resumed' and counts a recovery it did not make.
   if not brec.header('resumed', nil, nil) then
-    file.close(brec.fh)
+    brec.fh:close()
     brec.fh = nil
     return false
   end
@@ -287,6 +301,6 @@ end
 
 function brec.finish(note)
   brec.note(-1, -1, 0, note or 'finished')
-  if brec.fh ~= nil then file.close(brec.fh) end
+  if brec.fh ~= nil then brec.fh:close() end
   brec.fh = nil
 end

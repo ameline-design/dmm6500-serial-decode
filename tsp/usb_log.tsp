@@ -8,7 +8,8 @@ ulog        = ulog or {}
 
 -- Declared, not assigned: re-running this file must not erase the only reference to an open file,
 -- and firmware descriptors are not reclaimed until a power cycle, so every default below uses `or`.
--- ulog.fh      -- file number from file.open, or nil
+-- ulog.fh      -- file handle object from io.open, or nil. Write through it with ulog.fh:write(s),
+--                 never file.write: the firmware wrapper wants a descriptor and refuses an object.
 -- ulog.lasterr
 ulog.usbdir = ulog.usbdir or '/usb1/SERDEC'
 ulog.path   = ulog.path or (ulog.usbdir .. '/dmm6500_log.txt')
@@ -38,6 +39,10 @@ ulog.keyopen = ulog.keyopen or 0
 
 -- Is a key in the slot? The only question answerable without naming a path.
 function ulog.haskey()
+  -- THE ONE DELIBERATE file.* SURVIVOR. It is the only SILENT way to ask whether a key is present:
+  -- with the slot empty a file path posts 2224 and even file.open('/usb1') posts 2205, and io is no
+  -- quieter -- io.open of a missing path posts 2203. It is also DMM-specific, with no io or os
+  -- equivalent, and fs.is_dir('/usb1') answers a different question: a mounted root, not a key.
   if file.usbdriveexists() == 0 then return false end
   return true
 end
@@ -55,7 +60,7 @@ function ulog.keylost(why)
   local h      = ulog.fh
   ulog.fh, ulog.on = nil, false
   -- Closed here or never: with ulog.on false nothing else would.
-  if h ~= nil then file.close(h) end
+  if h ~= nil then h:close() end
   return true
 end
 
@@ -101,13 +106,27 @@ end
 -- as absence orders a mkdir on no evidence and posts 2208, so the two must not be merged. Only an
 -- 8.3-clean name is contiguous in the FAT table, hence 'SERDEC' -- docs/MEASUREMENTS.md, 'Why the
 -- directory is called SERDEC'. Not a FAT parser: a stale entry errs towards 'present'.
+--
+-- WHAT IS OPENED HERE IS A DIRECTORY, not a file, and the listing comes back because a FAT directory
+-- reads as 65536 bytes of entries. That behaviour is UNDERNEATH the wrapper, not in it, so io sees it
+-- too -- measured on 1.7.17a 2026-10-24: io.open('/usb1','r') gives a handle and 0 events,
+-- f:seek('end') is 65536, and f:read('*a') is the same 65536 bytes file.read(READ_ALL) returns,
+-- starting 'IA_SKEY3   ('. Worth stating because the opposite would have been invisible offline: the
+-- mock hands the listing to both front ends, so an io that did NOT read directories would have left
+-- every suite green while ensuredir() answered 'cannot read the USB root' for ever and the log, the
+-- byte log and Save never opened again.
 function ulog.rootlists(name)
   if name == nil or name == '' then return nil end
-  local fh = file.open('/usb1', file.MODE_READ)
+  local fh = io.open('/usb1', 'r')
   if fh == nil then return nil end
-  local raw = file.read(fh, file.READ_ALL)
-  file.close(fh)
-  if raw == nil then return nil end
+  local raw = fh:read('*a')
+  fh:close()
+  -- EMPTY COUNTS AS UNREADABLE, not as 'the directory is absent'. '*a' returns '' and not nil when
+  -- there is nothing to give -- measured on the real 5.0.2 as well as the host -- and '' would walk
+  -- straight on to string.find, miss, report absence, and order a mkdir on no evidence, which is the
+  -- 2208 this function exists to avoid. The real table is 65536 bytes however empty the directory is,
+  -- so no legitimate read lands here.
+  if raw == nil or raw == '' then return nil end
   -- `1` for a plain find, no patterns.
   if string.find(raw, string.upper(name), 1, 1) ~= nil then return true end
   return false
@@ -135,8 +154,11 @@ function ulog.ensuredir(dir)
   if listed == true then ulog.dirok = dir; return true end
   -- Absence is not established, and a mkdir on that basis is the 2208 this path avoids.
   if listed == nil then return false, 'cannot read the USB root' end
-  -- Bare: mkdir has no return value, so a guard reports success every time.
-  file.mkdir(dir)
+  -- Bare, and it has to be: fs.mkdir returns nothing, so a guard round it would report success every
+  -- time, and HOW IT SIGNALS A FAILURE IS UNMEASURED -- file.mkdir posted 2208, and whether fs.mkdir
+  -- posts anything at all is unknown. So the rootlists() re-read below is the only verdict there is,
+  -- and the one piece of this function that must not be traded for a return value.
+  fs.mkdir(dir)
   if ulog.rootlists(leaf) == true then ulog.dirok = dir; return true end
   return false, 'cannot create ' .. dir
 end
@@ -151,7 +173,7 @@ end
 -- and not retried, having already posted its event; an inserted key is recovered from by resume().
 function ulog.open_write(path, mode)
   if path == nil then return nil, 'no filename available' end
-  if mode == nil then mode = file.MODE_APPEND end
+  if mode == nil then mode = 'a' end
   -- Before the open and before the directory, an open against an absent key posting 2224. The path
   -- goes in the reason, a bare 'no USB key' reading as the ordinary keyless run.
   if not ulog.keyok() then
@@ -159,7 +181,7 @@ function ulog.open_write(path, mode)
   end
   local ready, rwhy = ulog.ensuredir()
   if not ready then return nil, tostring(rwhy) .. ' -- cannot open ' .. tostring(path) end
-  local fh = file.open(path, mode)
+  local fh = io.open(path, mode)
   if fh ~= nil then return fh end
   -- Not a reason to latch: an absent directory reaches this as readily as a bad key, and a session
   -- of silence over a transient is the worse failure.
@@ -175,8 +197,8 @@ function ulog.open(path, truncate)
   if not ulog.enabled then return false end
   if path ~= nil then ulog.path = path end
 
-  local mode = file.MODE_APPEND
-  if truncate then mode = file.MODE_WRITE end
+  local mode = 'a'
+  if truncate then mode = 'w' end
   local why = nil
   ulog.fh, why = ulog.open_write(ulog.path, mode)
   -- After the open, on both outcomes: open_write's keyok() is what advances keygen, so recording the
@@ -223,9 +245,9 @@ function ulog.line(s)
     ulog.lasterr = 'the log handle went away'
     return false
   end
-  file.write(ulog.fh, txt)
+  ulog.fh:write(txt)
   -- Flush every line: the log that matters is the one before a panic. autoflush=false in a hot loop.
-  if ulog.autoflush then file.flush(ulog.fh) end
+  if ulog.autoflush then ulog.fh:flush() end
   return true
 end
 
@@ -242,7 +264,7 @@ end
 -- Flush buffered lines to the key without closing the file.
 function ulog.flush()
   if not ulog.on or ulog.fh == nil then return false end
-  file.flush(ulog.fh)
+  ulog.fh:flush()
   return true
 end
 
@@ -251,25 +273,29 @@ function ulog.close()
   if ulog.fh ~= nil then
     local h = ulog.fh
     ulog.fh = nil
-    file.flush(h)
-    file.close(h)
+    h:flush()
+    h:close()
   end
   ulog.on = false
   return true
 end
 
--- Does this file exist, without logging an error if it does not? true or false, never nil. The open
--- probe posts 2205, the one severity showevents still raises a box for -- docs/MEASUREMENTS.md,
--- 'fs.is_file against the open probe'.
+-- Does this file exist, without logging an error if it does not? true or false, never nil. fs.is_file
+-- stays the probe: an open per candidate posts an event per candidate, and 1000 of them arrive as
+-- 'Multiple errors have occurred' over the hex dump -- docs/MEASUREMENTS.md, 'fs.is_file against the
+-- open probe'.
 function ulog.exists(path)
   if path == nil then return false end
   -- Bare: fs.is_file answers false for a bad path and for garbage, and posts nothing.
   local got = fs.is_file(path)
   if got == nil then
-    -- One 2205 beats truncating a file or refusing to save; no key and no such file both read 'free'.
-    local fh    = file.open(path, file.MODE_READ)
+    -- io.open, not file.open: both answer nil for an absent path, but file.open posts 2205 -- the one
+    -- severity showevents still raises a box for -- where io posts 2203, which it does not. Measured
+    -- on 1.7.17a, 2026-10-24. Still one event per call, so this stays the fallback and not the probe.
+    -- The message io returns alongside the nil is dropped: presence is the whole question.
+    local fh    = io.open(path, 'r')
     local taken = fh ~= nil
-    if fh ~= nil then file.close(fh) end
+    if fh ~= nil then fh:close() end
     return taken
   end
   return got == true
@@ -292,11 +318,16 @@ function ulog.next_free(prefix, ext, limit)
   local start   = ulog.idx_ram[prefix]
   if start ~= nil and (start < 0 or start >= limit) then start = nil end
   if start == nil and ulog.exists(idxpath) then
-    -- A key pulled mid-read gives nil from file.read and nil from tonumber, so the close is reached.
-    local fh = file.open(idxpath, file.MODE_READ)
+    -- io, not file: an EMPTY index file -- a key pulled mid-write, which is the case below -- is at
+    -- end of file on the first read, and file.read answers nil there AND posts 2201 'File read error',
+    -- a modal box nothing can suppress. io answers nil and posts nothing; measured 1.7.17a 2026-10-24.
+    -- A key pulled mid-read gives nil from the read and nil from tonumber, so the close is reached.
+    local fh = io.open(idxpath, 'r')
     if fh ~= nil then
-      local ln = file.read(fh, file.READ_LINE)
-      file.close(fh)
+      -- '*l' STRIPS the terminator where file.READ_LINE kept it. Nothing here counts bytes, and
+      -- tonumber takes '5' and '5\n' alike, so the index reads the same either way.
+      local ln = fh:read('*l')
+      fh:close()
       local n = tonumber(ln)
       if n ~= nil and n >= 0 and n < limit then start = math.floor(n) end
     end
@@ -313,13 +344,13 @@ function ulog.next_free(prefix, ext, limit)
       -- Cache the index found, not the one after, so this stays a query: asked twice it answers once.
       ulog.idx_ram[prefix] = i
       local wh    = nil
-      wh          = ulog.open_write(idxpath, file.MODE_WRITE)
+      wh          = ulog.open_write(idxpath, 'w')
       local wrote = false
       if wh ~= nil then
         -- The verdict comes from the gate: a pcall round this write returns true however it went.
-        file.write(wh, tostring(i) .. '\n')
-        file.flush(wh)
-        file.close(wh)
+        wh:write(tostring(i) .. '\n')
+        wh:flush()
+        wh:close()
         wrote = ulog.keyok()
       end
       if wrote then ulog.idx_why = nil
@@ -338,7 +369,7 @@ end
 function ulog.write_file(path, lines, n)
   if path == nil then return false, 'no filename available' end
   -- MODE_WRITE creates the file, never its parent: a Save into an absent directory just fails.
-  local fh, why = ulog.open_write(path, file.MODE_WRITE)
+  local fh, why = ulog.open_write(path, 'w')
   if fh == nil then return false, tostring(why) end
 
   local gone = false
@@ -346,10 +377,10 @@ function ulog.write_file(path, lines, n)
   for i = 1, n do
     -- Per row, to suppress the event storm: a departed key posts 2200 per write and returns.
     if not ulog.keyok() then gone = true; break end
-    file.write(fh, tostring(lines[i]) .. '\r\n')
+    fh:write(tostring(lines[i]) .. '\r\n')
   end
-  file.flush(fh)
-  file.close(fh)
+  fh:flush()
+  fh:close()
   -- The trailing keyok() is the detector; `gone` only short-circuits the remaining writes.
   if gone or not ulog.keyok() then
     return false, 'the USB key went away -- the file is empty or truncated'

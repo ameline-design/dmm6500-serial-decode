@@ -805,6 +805,13 @@ end
 -- Is the key there? file.usbdriveexists answers 1 or 0 and never raises; ulog.keyok() reads it the
 -- same way. A nil binding is treated as absent rather than present: the honest answer when the
 -- firmware cannot be asked is that this app cannot know the key is there.
+--
+-- THE ONE file.* CALL THAT SURVIVES, deliberately, and it is not an oversight: everything else in the
+-- bench reads and writes through io/os/fs because file.read posts 2201 at the end of a file. This is
+-- the only SILENT way to ask whether a key is present at all -- with no key, even io.open('/usb1')
+-- posts an event -- it is platform-specific to this instrument so io has no equivalent, and fs.is_dir
+-- answers a different question: whether a path is a directory, which it is not when there is nothing
+-- to mount.
 function brun.keyok()
   if file.usbdriveexists == nil then return false end
   return file.usbdriveexists() ~= 0

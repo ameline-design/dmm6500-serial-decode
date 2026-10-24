@@ -420,7 +420,7 @@ end
 -- Emitting the file
 -- ---------------------------------------------------------------------------
 -- WRITTEN IN BLOCKS, not a row at a time and not all at once. A fortnight plan is ~272 000 rows and
--- the whole file as one Lua string is megabytes on a heap that has none to spare; a file.write per row
+-- the whole file as one Lua string is megabytes on a heap that has none to spare; a write per row
 -- is a syscall per row. A block of 200 rows is about 12 kB.
 bplan.block = bplan.block or 200
 
@@ -444,7 +444,10 @@ function bplan.emit(path, opt)
   local fast  = opt.fast
   if fast == nil then fast = true end
   opt.fast = fast
-  local fh = file.open(path, file.MODE_WRITE)
+  -- io, AND THE HANDLE IS AN OBJECT rather than the integer file.* handed back. nil is still the
+  -- failure test; io.open's second return is a message, dropped so the refusal below keeps the
+  -- wording the panel already shows.
+  local fh = io.open(path, 'w')
   if fh == nil then
     return false, 0, 'cannot write ' .. path .. ' -- is the key in and is /usb1/SERDEC there?'
   end
@@ -468,7 +471,7 @@ function bplan.emit(path, opt)
     nb = nb + 1
     buf[nb] = s
     if nb >= bplan.block then
-      file.write(fh, table.concat(buf, '\n') .. '\n')
+      fh:write(table.concat(buf, '\n') .. '\n')
       buf, nb = {}, 0
     end
   end
@@ -492,15 +495,20 @@ function bplan.emit(path, opt)
   -- written independently -- this line was emitted before cells-per-lap here and after it there.
   put('# draw=' .. (fast and 'fast1' or 'exact'))
   put(bplan.cols)
-  -- THE HEADER GOES TO THE KEY NOW, not when the first 200-row block fills. A draw killed before that
-  -- block flushed left a ZERO-BYTE PLAN.CSV -- file.open(MODE_WRITE) truncates -- and a zero-byte file
-  -- is the one case where even the first read overshoots the end and posts 2201. Measured twice on the
-  -- instrument. Flushing here means an interrupted draw always leaves something readable.
+  -- THE HEADER GOES TO THE KEY NOW, not when the first 200-row block fills. io.open(p, 'w') truncates
+  -- exactly as file.MODE_WRITE did, so a draw killed before that block flushes leaves a ZERO-BYTE
+  -- PLAN.CSV -- a file bplan.check can only refuse, over a plan that was usable a moment earlier.
+  -- Flushing here means an interrupted draw always leaves a readable header behind it.
+  --
+  -- ONE OF THE TWO REASONS IS GONE, named so it is not re-argued into a deletion: under file.* a
+  -- zero-byte plan was also the one case where even the FIRST read overshot the end and posted 2201 as
+  -- a popup. Through io a read at the end is nil and silent. The truncation above is the reason that
+  -- survives, and it is enough on its own.
   if nb > 0 then
-    file.write(fh, table.concat(buf, '\n') .. '\n')
+    fh:write(table.concat(buf, '\n') .. '\n')
     buf, nb = {}, 0
   end
-  file.flush(fh)
+  fh:flush()
   -- THE CELL NUMBER RESTARTS AT 1 EVERY LAP, and the total is counted separately. It is a LABEL, not
   -- a position: bench_run writes each row as L<iter>C<label>, and a label that kept counting across
   -- laps would number lap 2 from 1513 -- so every cross-lap comparison, and every note naming a cell,
@@ -567,13 +575,15 @@ function bplan.emit(path, opt)
       end
     end
   end
-  if nb > 0 then file.write(fh, table.concat(buf, '\n') .. '\n') end
-  file.flush(fh)
-  file.close(fh)
-  -- THE DECLARED COUNT AND THE WRITTEN COUNT, COMPARED. bench_run stops at rows=, so a header that
-  -- over-declares sends it past the last row -- and a read past the end posts 2201 'File read error'
-  -- as a box on the panel once per pass. The two passes are the same arithmetic, so a disagreement
-  -- here is a defect in lapsize and worth refusing over.
+  if nb > 0 then fh:write(table.concat(buf, '\n') .. '\n') end
+  fh:flush()
+  fh:close()
+  -- THE DECLARED COUNT AND THE WRITTEN COUNT, COMPARED, AND THE CHECK OUTLIVES THE EVENT THAT MOTIVATED
+  -- IT. bench_run stops at rows=, so a header that over-declares sends it looking for rows that were
+  -- never written: the lap runs a cell count the file cannot supply. That used to cost a 2201 'File
+  -- read error' box per pass as well, and through io it does not -- but the wrong cell count is the
+  -- defect, the popup was only how it announced itself. The two passes are the same arithmetic, so a
+  -- disagreement here is a bug in bplan.lapsize and worth refusing over.
   if total ~= nrows then
     return false, total, string.format('the header declared %d row(s) and %d were written -- '
                                        .. 'bplan.lapsize disagrees with bplan.emit', nrows, total)
@@ -609,29 +619,40 @@ end
 -- and the record looks like a short run rather than a broken file. The declared count is checked
 -- against the rows that are actually there.
 --
--- IT READS THE WHOLE FILE, which is the cost. There is no seek and no size in this firmware's file
--- API -- open, read a line, read it all, write, flush, close -- so counting rows means reading them.
--- About 6 s for a 6048-row plan, once, at app start.
+-- COUNTING ROWS MEANS READING THEM, and the two paragraphs above describe a check that did. The one
+-- below does not: see bplan.check, which stops at the column header. io does carry a seek -- f:seek('end')
+-- answers the length of a plan in one call, measured on the instrument -- so a cheaper form of the
+-- count check is now possible where under file.* it was not; nothing wires one up yet.
 -- Is `name` listed in `dir`? true, false, or nil when the directory could not be read.
 --
--- WHY THIS EXISTS RATHER THAN A mute. Opening a file that is not there posts 2205, and reading past
--- the end of one posts 2201 -- and BOTH REACH THE GLASS AS A POPUP WHICH CANNOT BE SUPPRESSED. The
--- operator's rule of 2026-10-22: do not create the error in the first place. So nothing here opens a
--- file it has not first seen listed.
+-- NOTHING CALLS THIS. bplan.check opens the plan directly and accepts the one event that costs -- see
+-- its comment for why a listing first was measured and rejected. Kept because it is the only form that
+-- answers 'is there a plan' without opening one, and a caller may want that again.
 --
--- A DIRECTORY HANDLE READS BACK ITS LISTING, not file content, and that read posts nothing. This is
--- ulog.rootlists' technique, which is how the app already asks whether /usb1 holds SERDEC without
--- risking an event. Not a FAT parser: a stale entry errs towards 'present', which is the safe
--- direction -- it costs one ordinary open, where erring towards 'absent' would skip a real plan.
+-- WHY IT EXISTS RATHER THAN A mute. The operator's rule of 2026-10-22: do not create the error in the
+-- first place, because an event reaches the glass as a popup which cannot be suppressed. Through io
+-- only ONE of the two events it dodged is still real -- opening a file that is not there posts 2203 --
+-- and reading past the end of one is now nil and SILENT. So this buys the open, not the read.
+--
+-- A DIRECTORY HANDLE READS BACK ITS LISTING, not file content. This is ulog.rootlists' technique, which
+-- is how the app already asks whether /usb1 holds SERDEC. Not a FAT parser: a stale entry errs towards
+-- 'present', which is the safe direction -- it costs one ordinary open, where erring towards 'absent'
+-- would skip a real plan.
+--
+-- THE LISTING TRICK IS MEASURED THROUGH file.*, NOT THROUGH io. file.open(dir, MODE_READ) +
+-- READ_ALL returning the directory table is measured on 1.7.17a; io.open(dir, 'r') + :read('*a') is
+-- not, and is assumed here because file.* is a wrapper over io. If this ever gets a caller, measure it
+-- first -- or use fs.is_file(dir .. '/' .. name), which answers the question directly and is documented
+-- at Ref 14-264. The only thing fs cannot express is the nil below.
 --
 -- nil IS NOT false. A directory that cannot be read is not evidence of absence, and treating it as
 -- such would redraw a plan that is sitting right there.
 function bplan.listed(dir, name)
   if dir == nil or name == nil then return nil end
-  local fh = file.open(dir, file.MODE_READ)
+  local fh = io.open(dir, 'r')
   if fh == nil then return nil end
-  local raw = file.read(fh, file.READ_ALL)
-  file.close(fh)
+  local raw = fh:read('*a')
+  fh:close()
   if raw == nil then return nil end
   -- THE 8.3 FORM, BECAUSE THAT IS WHAT IS IN THE LISTING. A FAT directory entry stores the name
   -- padded to eight characters followed by the three-character extension and NO DOT: 'PLAN.CSV' is
@@ -660,32 +681,45 @@ bplan.hdrmax = bplan.hdrmax or 20
 
 function bplan.check(path)
   -- OPENED DIRECTLY, and the directory listing is NOT consulted here. Asking the directory first was
-  -- meant to avoid the 2205 an absent plan posts -- but a READ_ALL of a directory is expensive
+  -- meant to avoid the event an absent plan posts -- but reading a whole directory is expensive
   -- (usb_log caches the /usb1 listing for exactly that reason, "paid once per launch") and it sits
   -- inside one Lua call with no opportunity to paint. Measured on the instrument 2026-10-22: the
   -- working screen sat on 'Checking the plan on the key' with a motionless spinner. A HANG IS WORSE
   -- THAN A POPUP -- appearing stuck is the thing the operator ruled out first.
   --
-  -- SO THE 2205 IS ACCEPTED HERE, and it is bounded: it happens only when there is no plan at all,
+  -- SO ONE EVENT IS ACCEPTED HERE, and it is bounded: it happens only when there is no plan at all,
   -- which is a fresh key, once. Every other path -- a plan that is present, valid, or short -- opens
-  -- a file that exists and posts nothing.
-  local fh = file.open(path, file.MODE_READ)
+  -- a file that exists and posts nothing. Through io the open of a missing path is 2203, where
+  -- file.open posted 2205; one event either way, and this is the only one left in the function.
+  local fh = io.open(path, 'r')
   if fh == nil then return false, 0, 'no plan on the key' end
   -- THE HEADER BLOCK FIRST, AND NOTHING IS READ PAST IT UNTIL THE ROW COUNT IS KNOWN.
   --
-  -- EVERY READ PAST THE END POSTS 2201 AND THE FIRMWARE PUTS IT ON THE GLASS AS A POPUP. Measured on
-  -- the instrument 2026-10-22, twice: first by counting rows to EOF, and then -- after that was
-  -- bounded by the declared count -- again on a plan with NO '# rows=' header, where the bound did
-  -- not apply and the walk ran to the end anyway. That second case is the common one, because it is
-  -- exactly what a half-written plan looks like.
+  -- WHY THE BOUND IS STILL HERE NOW THAT THE EVENT IS NOT. Under file.* every read past the end posted
+  -- 2201 as a popup on the glass -- measured on the instrument 2026-10-22, twice: first by counting
+  -- rows to EOF, and then, after that was bounded by the declared count, again on a plan with NO
+  -- '# rows=' header, where the bound did not apply and the walk ran to the end anyway. :read('*l')
+  -- answers nil at the end and posts NOTHING, so neither walk could put a box on the panel today.
   --
-  -- SO A FILE THAT CANNOT DECLARE ITS LENGTH IS REFUSED WITHOUT READING ITS BODY. The header block is
-  -- bounded, the column header ends it, and both failures -- no row count, no column header -- are
-  -- decided inside those few lines. Nothing here ever asks for the line after the last one.
+  -- WHAT THE BOUND BUYS INSTEAD IS WORK. This runs at app start, in one Lua call, with no chance to
+  -- paint; walking a file that is not a plan at all to its end is seconds of motionless spinner, which
+  -- is the failure the comment above ruled out. So a file that cannot declare its length is still
+  -- refused without reading its body: the header block is bounded, the column header ends it, and both
+  -- failures -- no row count, no column header -- are decided inside those few lines.
   local want, cols, nrow, nhdr = nil, false, 0, 0
-  local ln = file.read(fh, file.READ_LINE)
+  local ln = fh:read('*l')
+  -- `ln ~= ''` MEANS SOMETHING NOW THAT IT DID NOT MEAN BEFORE, and it is the one semantic change in
+  -- this function. file.read(READ_LINE) handed back the TERMINATOR with the line, so a blank line in
+  -- the header arrived as '\n' and was skipped; nothing but a bug could produce '' and the guard was
+  -- dead. :read('*l') STRIPS the newline, so a blank line now arrives as '' and ENDS the scan -- a
+  -- plan whose header block has a hole in it is refused for having no column header. That is the
+  -- right answer: bplan.emit writes the header as one contiguous run of put() calls, so a blank line
+  -- inside it is not a plan this engine wrote.
   while ln ~= nil and ln ~= '' and not cols and nhdr < bplan.hdrmax do
     nhdr = nhdr + 1
+    -- THE gsub STAYS, and '*l' is why it is not redundant. '*l' strips the '\n' and LEAVES THE '\r',
+    -- so every line of a CRLF plan -- which is what a host push through a Windows tool leaves -- would
+    -- otherwise end in one, and the column-header comparison below is an exact string equality.
     ln = string.gsub(ln, '[\r\n]', '')
     if ln == bplan.cols then
       cols = true
@@ -693,30 +727,40 @@ function bplan.check(path)
       local _, _, r = string.find(ln, 'rows=(%d+)')
       if r ~= nil then want = tonumber(r) end
     end
-    if not cols then ln = file.read(fh, file.READ_LINE) end
+    if not cols then ln = fh:read('*l') end
   end
   if not cols then
-    file.close(fh)
+    fh:close()
     return false, 0, 'the plan has no column header, so it is not a plan this engine reads'
   end
   if want == nil then
-    file.close(fh)
+    fh:close()
     return false, 0, 'the plan declares no row count, so the engine cannot tell where it ends'
   end
-  -- THE BODY IS NOT READ AT ALL, and that is the operator's rule rather than a shortcut: verifying a
-  -- DECLARED row count against a SHORT file requires the read that discovers it is short, and that
-  -- read posts 2201 'File read error' as a popup which cannot be suppressed. 'Do not create the error
-  -- in the first place' leaves no version of the count check that is allowed to exist.
+  -- THE BODY IS NOT READ AT ALL, and the reason has CHANGED WITHOUT THE ANSWER CHANGING. It used to be
+  -- forbidden: verifying a DECLARED row count against a SHORT file requires the read that discovers it
+  -- is short, that read posted 2201 'File read error' as an unsuppressable popup, and the operator's
+  -- rule -- do not create the error in the first place -- left no version of the check allowed to
+  -- exist. Through io that read is nil and silent, so the prohibition is lifted.
   --
-  -- WHAT IS GIVEN UP, named rather than glossed: a plan truncated after its header is no longer
+  -- WHAT STILL RULES IT OUT IS COST, not events. This is one Lua call at app start with no chance to
+  -- paint, and the walk it replaced measured about 6 s on a 6048-row plan -- a fortnight is forty-odd
+  -- times that. A HANG IS WORSE THAN A POPUP is the operator's other rule, and it outlives the first.
+  --
+  -- WHAT IS NOW POSSIBLE AND IS NOT WIRED UP. io carries a seek: fh:seek('end') answers the plan's
+  -- LENGTH in one call, no body read and no event -- 226018 bytes for a real plan, measured on the
+  -- instrument. Rows are variable-length so a length cannot give an exact count, but it bounds one,
+  -- which is a cheap pre-run check that could not exist before. Left alone deliberately:
+  -- tools/test_plan_gen.lua pins the CURRENT verdict on a truncated plan, and changing it is a
+  -- decision about the run rather than part of moving off file.*.
+  --
+  -- WHAT IS GIVEN UP MEANWHILE, named rather than glossed: a plan truncated after its header is not
   -- caught before the run. It is not silent -- the lap ends early and the status screen shows a lap
   -- that stopped short of its cell count -- but it is discovered during the run instead of before it.
   --
   -- WHAT REPLACES IT IS AT THE SOURCE. bplan.emit flushes immediately after the header block, so a
-  -- draw killed part way leaves a readable header rather than a zero-byte file, and a zero-byte file
-  -- was the one case where even the FIRST read overshot. Between the directory listing above and that
-  -- flush, every ordinary path reads only lines that exist.
-  file.close(fh)
+  -- draw killed part way leaves a readable header rather than a zero-byte file.
+  fh:close()
   return true, want, nil
 end
 

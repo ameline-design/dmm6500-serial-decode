@@ -366,34 +366,39 @@ end
 function sdec.frame_log()
   if sdec.res == nil or sdec.res.nf < 1 then return false end
   if sdec.flog_alloc() == nil then return false end
-  -- open_write, not file.open: it carries the no-key gate and the reason string.
-  local fh, fwhy = ulog.open_write(sdec.flog_path, file.MODE_APPEND)
+  -- open_write, not a bare io.open: it carries the no-key gate and the reason string.
+  local fh, fwhy = ulog.open_write(sdec.flog_path, 'a')
   if fh == nil then
     sdec.flog_why = 'cannot append to ' .. tostring(sdec.flog_path)
     return false
   end
-  -- Registered for the unwind: a formatter can raise here, where a file call cannot, measured.
+  -- Registered for the unwind: a formatter can raise here, where the writes below cannot -- measured,
+  -- io.write and io.close on a live handle both return without transferring control.
   sdec.fh_unwind = fh
   local nfr      = 0
   if sdec.res ~= nil then nfr = sdec.res.nf end
   -- The header line needs the message NUMBER, but flog_n advances only on success.
   local msgno = (sdec.flog_n or 0) + 1
-  file.write(fh, string.format('---- msg %d  %s %s  %d bytes %d err\r\n',
+  fh:write(string.format('---- msg %d  %s %s  %d bytes %d err\r\n',
                                msgno or 0, tostring(sdec.baud_text()), tostring(sdec.fmt_text()),
                                sdec.res.nf or 0, sdec.res.nbad or 0))
   local i = 1
   while i <= sdec.res.nf do
-    file.write(fh, sdec.ua_text_line(i, 64) .. '\r\n')
+    fh:write(sdec.ua_text_line(i, 64) .. '\r\n')
     i = i + 64
   end
   i = 1
   while i <= sdec.res.nf do
-    file.write(fh, sdec.ua_hex_line(i, 16) .. '\r\n')
+    fh:write(sdec.ua_hex_line(i, 16) .. '\r\n')
     i = i + 16
   end
-  file.flush(fh)
-  file.close(fh)
+  fh:flush()
+  -- DEREGISTERED BEFORE THE CLOSE, not after. file.close could not transfer control, so closing first
+  -- and clearing second was safe; an io handle raises 'attempt to use a closed file' on a second
+  -- close, so a close that ever did raise would leave this field naming a dead handle and sdec.unwind
+  -- -- raise-free by construction -- would close it again and let the raise out to the firmware.
   sdec.fh_unwind = nil
+  fh:close()
   -- The presence check is the whole test: a write that posted 2200 returns normally, so nothing the
   -- writes report can see a key pulled since the open. See ulog.keylost.
   if not ulog.keyok() then
@@ -1950,11 +1955,13 @@ function sdec.unwind(why)
     sdec.drop_pending = nil
     if sdec.drop_stale_result ~= nil then sdec.drop_stale_result() end
   end
-  -- An open handle is not reclaimed until a power cycle. Bare: file.close cannot transfer control.
+  -- An open handle is not reclaimed until a power cycle. Bare, and it stays bare: a close on a LIVE
+  -- handle does not transfer control, and every register site clears this field before closing, so
+  -- the one case that would raise -- a second close -- cannot be reached from here.
   if sdec.fh_unwind ~= nil then
     local h        = sdec.fh_unwind
     sdec.fh_unwind = nil
-    file.close(h)
+    h:close()
   end
   if sdec.ui_tick_on ~= nil then sdec.ui_tick_on() end
   sdec.errcount  = (sdec.errcount or 0) + 1
