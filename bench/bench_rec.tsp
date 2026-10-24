@@ -120,7 +120,18 @@ end
 -- detection already worked, at that granularity, and nothing is lost by saying so plainly.
 --
 -- AND IT IS WHY THE RECORD WRITES THROUGH io. file.write to a handle whose key has gone returns
--- normally and posts 2200 'File write error' PER WRITE, measured on 1.7.17a -- so a key pulled during
+-- normally. MEASURED 2026-10-24, KEY PULLED MID-CAPTURE WITH THE HANDLE HELD: an io write to a dead-key
+-- handle NEITHER RAISES NOR POSTS. pcall says ok, the event log stays at 0 over twelve writes,
+-- a flush and a close, and the data goes NOWHERE -- the file was 12 bytes before the pull and
+-- 12 bytes after. file.write posted 2200 per write here; io is the layer below the one that
+-- posts, so the storm is gone.
+--
+-- SO THIS CHECK IS NOT ABOUT EVENTS ANY MORE, AND IT MUST NOT BE DELETED FOR LACK OF THEM.
+-- A silent write that discards its data leaves this as the ONLY way anything notices the key
+-- has gone.
+--
+-- AND brec.rawwrite IS THEREFORE SAFE UNGUARDED. It has no pcall by design; io cannot raise here,
+-- so that design holds. The old concern was a key pulled during
 -- a soak put a modal box on the panel for every row the run went on to write. An io write posts
 -- nothing. WHAT IS NOT MEASURED is whether an io write on such a handle RAISES where file.write
 -- returned; if it does, the raise leaves this function, since there is no pcall and the shipping

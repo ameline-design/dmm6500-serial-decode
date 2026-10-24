@@ -643,7 +643,72 @@ function sdec.ck_sink_file(path, ncol)
     fh:flush()
     fh:close()
     fh = nil
-    -- A key pulled mid-stream posts 2200 and returns, so `dead` never saw it and the run reported a
+    -- A key pulled mid-stream does not close the stream and does not give `dead` anything to see,
+    -- so without this check the run reports a complete file. This presence check does see it, and it
+    -- latches logging off. See ulog.keylost().
+    --
+    -- MEASURED 2026-10-24, KEY PULLED MID-CAPTURE WITH THE HANDLE HELD: an io write to a dead-key
+    -- handle NEITHER RAISES NOR POSTS. pcall says ok, the event log stays at 0 over twelve writes, a
+    -- flush and a close, and the data goes NOWHERE -- the file was 12 bytes before the pull and 12
+    -- bytes after. file.write posted 2200 per write here; io is the layer below the one that posts.
+    --
+    -- SO THIS CHECK IS NOT ABOUT SUPPRESSING EVENTS ANY MORE, AND IT MUST NOT BE DELETED FOR LACK OF
+    -- THEM. A silent write that discards its data leaves this as the ONLY thing that notices.
+    if not dead and ulog ~= nil and ulog.keyok ~= nil and not ulog.keyok() then dead = true end
+    -- The write is bare and nothing here can set `dead`, so the carry shift below always runs: cn and
+    -- cbase must never describe rows the file never got, and flog_bytes is counted on acceptance. Nor
+    -- can ua_hexrow fail, so sink's loop calls emit bare.
+    if not dead then fh:write(line .. '\r\n') end
+    local i
+    for i = nrow + 1, cn do
+      cv[i - nrow] = cv[i]
+      ce[i - nrow] = ce[i]
+    end
+    cn    = cn - nrow
+    cbase = cbase + nrow
+  end
+
+  local sink = function(v, e, m, base)
+    if dead then return false end
+    if cn == 0 then cbase = base end
+    local i
+    for i = 1, m do
+      cn = cn + 1
+      cv[cn] = v[i]
+      ce[cn] = e[i]
+    end
+    -- Counted on acceptance, not emit: a byte in the carry is in the log's charge, and finish() flushes.
+    sdec.flog_bytes = (sdec.flog_bytes or 0) + m
+    while cn >= ncol and not dead do emit(ncol) end
+    return not dead
+  end
+
+  -- Idempotent: a normal finish, a Mode press and a raised step all call this, and the raise path
+  -- cannot know whether the normal path did. A double close is not harmless here, nor a double flush.
+  local finished = false
+  local finish   = function()
+    if finished then return not dead end
+    finished = true
+    -- The final row is guarded so the close is reached -- the exception to "no pcall on app code",
+    -- because a stranded handle needs a power cycle, while a lost row is what `dead` reports.
+    if not dead and cn > 0 then
+      if not pcall(emit, cn) then dead = true end
+    end
+    -- Both bare: neither can transfer control (docs/MEASUREMENTS.md, 'No file call raises').
+    fh:flush()
+    fh:close()
+    fh = nil
+    -- A key pulled mid-stream used to post 2200 and return, so `dead` never saw it and the run
+    -- reported a
+    -- MEASURED 2026-10-24, KEY PULLED MID-CAPTURE WITH THE HANDLE HELD: an io write to a dead-key
+    -- handle NEITHER RAISES NOR POSTS. pcall says ok, the event log stays at 0 over twelve writes,
+    -- a flush and a close, and the data goes NOWHERE -- the file was 12 bytes before the pull and
+    -- 12 bytes after. file.write posted 2200 per write here; io is the layer below the one that
+    -- posts, so the storm is gone.
+--
+    -- SO THIS CHECK IS NOT ABOUT EVENTS ANY MORE, AND IT MUST NOT BE DELETED FOR LACK OF THEM.
+    -- A silent write that discards its data leaves this as the ONLY way anything notices the key
+    -- has gone.
     -- complete file. This presence check does, and it latches logging off. See ulog.keylost().
     if not dead and ulog ~= nil and ulog.keyok ~= nil and not ulog.keyok() then dead = true end
     return not dead

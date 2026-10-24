@@ -375,7 +375,15 @@ function ulog.write_file(path, lines, n)
   local gone = false
   local i
   for i = 1, n do
-    -- Per row, to suppress the event storm: a departed key posts 2200 per write and returns.
+    -- Per row. Measured 2026-10-24, KEY PULLED MID-CAPTURE WITH THE HANDLE HELD: an io write to a dead-key
+    -- handle NEITHER RAISES NOR POSTS. pcall says ok, the event log stays at 0 over twelve writes,
+    -- a flush and a close, and the data goes NOWHERE -- the file was 12 bytes before the pull and
+    -- 12 bytes after. file.write posted 2200 per write here; io is the layer below the one that
+    -- posts, so the storm is gone.
+--
+    -- SO THIS CHECK IS NOT ABOUT EVENTS ANY MORE, AND IT MUST NOT BE DELETED FOR LACK OF THEM.
+    -- A silent write that discards its data leaves this as the ONLY way anything notices the key
+    -- has gone.
     if not ulog.keyok() then gone = true; break end
     fh:write(tostring(lines[i]) .. '\r\n')
   end

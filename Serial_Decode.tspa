@@ -4282,6 +4282,41 @@ function sdec.ck_sink_file(path, ncol)
     fh:close()
     fh = nil
     if not dead and ulog ~= nil and ulog.keyok ~= nil and not ulog.keyok() then dead = true end
+    if not dead then fh:write(line .. '\r\n') end
+    local i
+    for i = nrow + 1, cn do
+      cv[i - nrow] = cv[i]
+      ce[i - nrow] = ce[i]
+    end
+    cn    = cn - nrow
+    cbase = cbase + nrow
+  end
+
+  local sink = function(v, e, m, base)
+    if dead then return false end
+    if cn == 0 then cbase = base end
+    local i
+    for i = 1, m do
+      cn = cn + 1
+      cv[cn] = v[i]
+      ce[cn] = e[i]
+    end
+    sdec.flog_bytes = (sdec.flog_bytes or 0) + m
+    while cn >= ncol and not dead do emit(ncol) end
+    return not dead
+  end
+
+  local finished = false
+  local finish   = function()
+    if finished then return not dead end
+    finished = true
+    if not dead and cn > 0 then
+      if not pcall(emit, cn) then dead = true end
+    end
+    fh:flush()
+    fh:close()
+    fh = nil
+    if not dead and ulog ~= nil and ulog.keyok ~= nil and not ulog.keyok() then dead = true end
     return not dead
   end
 
