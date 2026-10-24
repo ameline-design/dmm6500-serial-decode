@@ -84,13 +84,16 @@ def fetch_source(d, name):
 
 def fetch_file(d, path):
     """Every line of a file on the key."""
-    src = ("local fh = nil pcall(function() fh = file.open('%s', file.MODE_READ) end) "
+    # io, not file.*: file.read posted 2201 at the end of the file, a box on the panel once per run.
+    # io answers nil silently, so the pcalls are gone. Only nil ends the read -- the old `ln == ''`
+    # guard was safe under READ_LINE, which kept the terminator, but '*l' strips it and a blank line
+    # would end the read early.
+    src = ("local fh = io.open('%s', 'r') "
            "if fh == nil then print('NO-FILE') else "
-           "  while true do local ln = nil "
-           "    local ok = pcall(function() ln = file.read(fh, file.READ_LINE) end) "
-           "    if not ok or ln == nil or ln == '' then break end "
+           "  while true do local ln = fh:read('*l') "
+           "    if ln == nil then break end "
            "    print('L' .. ln) end "
-           "  pcall(function() file.close(fh) end) end "
+           "  fh:close() end "
            "print('%s')" % (path, END))
     return [l[1:] for l in stream(d, src) if l.startswith('L')]
 

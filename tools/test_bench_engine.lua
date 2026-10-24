@@ -1267,6 +1267,57 @@ do
   ck(okl == true and brun.nreclost >= 1, 'a record that fails on the LAST cell is still counted',
      string.format('%d cell(s) unrecorded', brun.nreclost))
 
+  -- THE FIRST ROLL MUST NUMBER ITS FILE. brec.newfile builds the name FROM brec.nfile and numbers
+  -- only when it is above 1, and brec.begin leaves it at 1 -- so while the increment came AFTER the
+  -- newfile call, the first roll asked for a name with the count still at 1, got the ORIGINAL path
+  -- back, reopened the file it was supposed to be leaving for append, reset nbyte to 0 and wrote a
+  -- 'tag=roll ... file=2' header into the MIDDLE of it. The second file appeared only on the second
+  -- roll, the first grew to about twice maxfile, and judge_bench's split_runs saw a roll header
+  -- mid-file. The path comparison is the assertion: nfile alone reached 2 either way, which is why
+  -- counting it could not see this.
+  brec.finish('rolled')
+  brec.begin('roll1', 1, 'x')
+  local p1 = brec.path
+  local keepmax = brec.maxfile
+  brec.maxfile = 1000000000                 -- no automatic roll; this tests the explicit one
+  ck(brec.roll() == true, 'the first roll succeeds')
+  ck(brec.path ~= p1,
+     'and it opens a NEW file rather than reopening the first',
+     tostring(p1) .. ' -> ' .. tostring(brec.path))
+  ck(brec.nfile == 2, 'with the count at 2', tostring(brec.nfile))
+  brec.maxfile = keepmax
+
+  -- A refused roll must say so in the record, and must not keep retrying. roll() nil'd the handle
+  -- before calling brec.note, which returns early on a nil handle, so both failure paths wrote
+  -- nothing: the last line stayed an ordinary R row, indistinguishable from a power cut. And without
+  -- the latch, each brun.rechold recovery reopened the over-cap file and added a 'resumed' header
+  -- that split_runs reads as a continuation -- 3.8x the cap with three of them.
+  brec.finish('rolled')
+  MD.forget_files()
+  local keepmax2 = brec.maxfile
+  brec.begin('refused', 1, 'x')
+  local rpath = brec.path
+  brec.maxfile = 300                        -- so a roll is due almost at once
+  -- Through the mock, not by assigning to the global io.open: a patched global leaks if an assertion
+  -- raises before it is put back, and it routes around the io.open every other test goes through.
+  MD.refuse_open('SOAK2')
+  local cell
+  for cell = 1, 6 do
+    -- What brun.rechold does when a row reports the record is no longer live.
+    if not brec.row('c,' .. cell .. ',data') then brec.reopen() end
+  end
+  local nrefused = MD.refused_opens()
+  MD.refuse_open(nil)
+  local body = MD.content(rpath) or ''
+  ck(string.find(body, 'cannot roll to a new file', 1, true) ~= nil,
+     'a refused roll writes its reason into the record',
+     'tail: ' .. string.sub(body, -60))
+  ck(nrefused == 1, 'and the roll is attempted once, not once per recovery', tostring(nrefused))
+  local _, nres = string.gsub(body, 'tag=resumed', '')
+  ck(nres == 0, 'so nothing writes a resumed header into a file that cannot be rolled',
+     tostring(nres) .. ' header(s)')
+  brec.maxfile = keepmax2
+
   -- (c) THE HEADER'S OWN BYTES COUNT. Three header lines per run, per roll and per recovery went into the
   -- file and not into the budgets, so a key that failed and recovered repeatedly could pass maxfile and
   -- maxtotal while both counters said otherwise.

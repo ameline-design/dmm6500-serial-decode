@@ -228,6 +228,7 @@ do
     local i
     for i = 1, nl do t[i] = lines[i] end
     PLANTEXT = table.concat(t, '\n') .. '\n'
+    local goodtext = PLANTEXT
     local gok, grows, gwhy = bplan.check('/usb1/SERDEC/PLAN.CSV')
     print('GOOD ok=' .. tostring(gok) .. ' rows=' .. tostring(grows) .. ' why=' .. tostring(gwhy))
 
@@ -249,6 +250,26 @@ do
     PLANTEXT = 'hello\nworld\n'
     local fok, frows, fwhy = bplan.check('/usb1/SERDEC/PLAN.CSV')
     print('FOREIGN ok=' .. tostring(fok) .. ' why=' .. tostring(fwhy))
+
+    -- A BLANK LINE IN THE HEADER, BOTH TERMINATORS, AND THE VERDICT MUST AGREE. '*l' strips the '\n'
+    -- and leaves the '\r', so the hole arrived as '\r' in a CRLF plan -- what a host push through a
+    -- Windows tool writes -- the `ln ~= ''` guard did not fire, and the scan carried on past it. The
+    -- same hole in an LF plan refused the plan. Which tool wrote the file decided whether it loaded.
+    local function withblank(sep)
+      local out, first = {}, true
+      local ln
+      for ln in string.gfind(goodtext, '([^\n]*)\n') do
+        out[table.getn(out) + 1] = ln
+        if first then out[table.getn(out) + 1] = ''; first = false end
+      end
+      return table.concat(out, sep) .. sep
+    end
+    PLANTEXT = withblank('\n')
+    local blf = bplan.check('/usb1/SERDEC/PLAN.CSV')
+    print('BLANKLF ok=' .. tostring(blf))
+    PLANTEXT = withblank('\r\n')
+    local bcrlf = bplan.check('/usb1/SERDEC/PLAN.CSV')
+    print('BLANKCRLF ok=' .. tostring(bcrlf))
   ]]
   local fh = io.open((SCRATCH .. 'check.lua'), 'w')
   fh:write(src)
@@ -262,6 +283,10 @@ do
      'check accepts a plan it just drew', string.gsub(out, '.*(GOOD[^\n]*).*', '%1'))
   ck(string.find(out, 'TRUNC ok=true', 1, true) ~= nil,
      'a plan truncated after its header is ACCEPTED, the run finding the shortfall')
+  ck(string.find(out, 'BLANKLF ok=false', 1, true) ~= nil,
+     'a blank line in the header refuses an LF plan')
+  ck(string.find(out, 'BLANKCRLF ok=false', 1, true) ~= nil,
+     'and refuses a CRLF plan the same way -- the verdict does not depend on the terminator')
   do
     local _, _, nr = string.find(out, 'NREAD=(%d+)')
     local _, _, hm = string.find(out, 'HDRMAX=(%d+)')

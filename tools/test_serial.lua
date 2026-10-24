@@ -8002,6 +8002,29 @@ local function test_modes()
         sdec.frame_log() == false)
   MD.usb(true)
 
+  -- ---- a close that raises, and why the deregister comes first ----
+  --
+  -- sdec.unwind closes sdec.fh_unwind bare, safe only because every register site clears the field
+  -- first. Untested until now: the ordering matters only when the first close raises, and nothing
+  -- could make one. A second close raises on 1.7.17a, measured, so clearing after a raised close
+  -- leaves the field naming a closed handle for unwind to close again.
+  --
+  -- Keyed to the byte log's path, not a close count: the first close after arming is usually another
+  -- handle's, so a count lands elsewhere and measures nothing. And the premise is asserted -- without
+  -- `closeraise == false` a frame_log that returned early passes without reaching the code.
+  MD.usb(true)
+  sdec.flog_path, sdec.flog_n, sdec.flog_why = nil, nil, nil
+  sdec.fh_unwind = nil
+  MD.failclose_on('bytes%d')
+  local closeraise = pcall(function() return sdec.frame_log() end)
+  MD.failclose_on(nil)
+  check('a close that raises still leaves the unwind register clear',
+        closeraise == false and sdec.fh_unwind == nil,
+        'the close raised=' .. tostring(not closeraise) .. ' reg=' .. tostring(sdec.fh_unwind))
+  check('so the unwind that follows does not close the handle a second time',
+        pcall(function() return sdec.unwind('after a failed close') end) == true)
+  sdec.flog_path, sdec.flog_n, sdec.flog_why = nil, nil, nil
+
   -- ---- the SERDEC directory, across a KEY SWAP ----
   --
   -- THE CACHED NAME IS THE TRAP. flog_alloc() returns the name it already chose without touching the

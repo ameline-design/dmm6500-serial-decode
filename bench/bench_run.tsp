@@ -2274,21 +2274,28 @@ end
 -- A FILE, checked between cells, so a run can be ended cleanly by dropping STOP.TXT on the key without
 -- a power cycle -- which matters when the alternative is losing the last unflushed rows.
 --
--- LOCATED BY LISTING THE DIRECTORY, NOT BY OPENING IT, AND io CHANGES NOTHING ABOUT THAT. Opening a
--- path that is not there posts an event whichever front end asks -- measured 2026-10-24, io.open of a
--- missing path returns nil and posts 2203 where file.open posted 2205 -- and this check runs once per
--- cell: 86 events in a smoke and ~120 000 across eight days, every one a popup on the panel. Opening
--- the directory, which does exist, and searching its listing costs no event at all. usb_log.tsp's
--- ensuredir uses the same technique and its comment is why the directory is called SERDEC: only an 8.3
--- name can be found by one string.find in the FAT table.
+-- Located by listing the directory, not by opening the file. An open of a path that is not there
+-- posts an event whichever front end asks -- measured 2026-10-24: io.open of a missing path returns
+-- nil and posts 2203, where file.open posted 2205 -- and this check runs once per cell, so 86 events
+-- in a smoke and ~120 000 across eight days, every one a popup. Listing a directory that does exist
+-- costs no event.
+--
+-- fs.readdir, which replaced reading the directory as a file and searching 65536 bytes of raw FAT
+-- table for the name. The parse tied this to FAT32 and could only find an 8.3 name; readdir answers
+-- with real long names, and reads less.
+--
+-- Indexed from 0, so pairs(): table.getn reports one less than the entry count and a 1-based walk
+-- drops whichever name sits at index 0. A prefix match, upper-cased, keeps the old behaviour -- the
+-- raw table held upper-case 8.3 names, so STOP.TXT, stop.txt and a bare STOP all matched, and an
+-- operator dropping any of them still stops the run.
 function brun.stopped()
-  local fh = nil
-  fh = io.open(brun.dir, 'r')
-  if fh == nil then return false end
-  local raw = fh:read('*a')
-  fh:close()
-  if raw == nil then return false end
-  return string.find(raw, 'STOP', 1, true) ~= nil
+  local t = fs.readdir(brun.dir)
+  if type(t) ~= 'table' then return false end
+  local k, v
+  for k, v in pairs(t) do
+    if type(v) == 'string' and string.find(string.upper(v), '^STOP') ~= nil then return true end
+  end
+  return false
 end
 
 -- ---------------------------------------------------------------------------

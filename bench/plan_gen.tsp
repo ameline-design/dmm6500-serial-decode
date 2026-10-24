@@ -623,55 +623,14 @@ end
 -- below does not: see bplan.check, which stops at the column header. io does carry a seek -- f:seek('end')
 -- answers the length of a plan in one call, measured on the instrument -- so a cheaper form of the
 -- count check is now possible where under file.* it was not; nothing wires one up yet.
--- Is `name` listed in `dir`? true, false, or nil when the directory could not be read.
---
--- NOTHING CALLS THIS. bplan.check opens the plan directly and accepts the one event that costs -- see
--- its comment for why a listing first was measured and rejected. Kept because it is the only form that
--- answers 'is there a plan' without opening one, and a caller may want that again.
---
--- WHY IT EXISTS RATHER THAN A mute. The operator's rule of 2026-10-22: do not create the error in the
--- first place, because an event reaches the glass as a popup which cannot be suppressed. Through io
--- only ONE of the two events it dodged is still real -- opening a file that is not there posts 2203 --
--- and reading past the end of one is now nil and SILENT. So this buys the open, not the read.
---
--- A DIRECTORY HANDLE READS BACK ITS LISTING, not file content. This is ulog.rootlists' technique, which
--- is how the app already asks whether /usb1 holds SERDEC. Not a FAT parser: a stale entry errs towards
--- 'present', which is the safe direction -- it costs one ordinary open, where erring towards 'absent'
--- would skip a real plan.
---
--- THE LISTING TRICK IS MEASURED THROUGH file.*, NOT THROUGH io. file.open(dir, MODE_READ) +
--- READ_ALL returning the directory table is measured on 1.7.17a; io.open(dir, 'r') + :read('*a') is
--- not, and is assumed here because file.* is a wrapper over io. If this ever gets a caller, measure it
--- first -- or use fs.is_file(dir .. '/' .. name), which answers the question directly and is documented
--- at Ref 14-264. The only thing fs cannot express is the nil below.
---
--- nil IS NOT false. A directory that cannot be read is not evidence of absence, and treating it as
--- such would redraw a plan that is sitting right there.
-function bplan.listed(dir, name)
-  if dir == nil or name == nil then return nil end
-  local fh = io.open(dir, 'r')
-  if fh == nil then return nil end
-  local raw = fh:read('*a')
-  fh:close()
-  if raw == nil then return nil end
-  -- THE 8.3 FORM, BECAUSE THAT IS WHAT IS IN THE LISTING. A FAT directory entry stores the name
-  -- padded to eight characters followed by the three-character extension and NO DOT: 'PLAN.CSV' is
-  -- 'PLAN    CSV' on the key. ulog.rootlists gets away with a plain find because it looks for
-  -- 'SERDEC', which has no extension and is therefore contiguous either way.
-  --
-  -- MEASURED THE HARD WAY, 2026-10-22: searching for the dotted name never matched, so listed()
-  -- answered false for a plan that was sitting right there -- and the app redrew 18 144 rows over a
-  -- good plan. A false negative here is expensive, which is why both spellings are tried.
-  local up = string.upper(name)
-  if string.find(raw, up, 1, 1) ~= nil then return true end
-  local _, _, base, ext = string.find(up, '^([^.]+)%.(.+)$')
-  if base ~= nil then
-    local pad = base
-    while string.len(pad) < 8 do pad = pad .. ' ' end
-    if string.find(raw, pad .. ext, 1, 1) ~= nil then return true end
-  end
-  return false
-end
+-- bplan.listed was here: 'is `name` listed in `dir`', answered by reading the directory as a file and
+-- searching 65536 bytes of raw FAT table for an 8.3 spelling of the name. Deleted, for three reasons
+-- that arrived together. Nothing ever called it -- bplan.check opens the plan directly and accepts
+-- the one event that costs, see its comment. It carried the trap-2 hole the rest of the migration was
+-- fixed for: `read('*a')` answers '' and not nil at the end, so an openable-but-unreadable directory
+-- reported absence rather than 'could not read'. And fs.readdir now answers the same question without
+-- any filesystem assumption, with real long names rather than 8.3, so a reinstated version would
+-- share nothing with this one but its name.
 
 bplan.dir = bplan.dir or '/usb1/SERDEC'
 
@@ -707,27 +666,28 @@ function bplan.check(path)
   -- refused without reading its body: the header block is bounded, the column header ends it, and both
   -- failures -- no row count, no column header -- are decided inside those few lines.
   local want, cols, nrow, nhdr = nil, false, 0, 0
-  local ln = fh:read('*l')
-  -- `ln ~= ''` MEANS SOMETHING NOW THAT IT DID NOT MEAN BEFORE, and it is the one semantic change in
-  -- this function. file.read(READ_LINE) handed back the TERMINATOR with the line, so a blank line in
-  -- the header arrived as '\n' and was skipped; nothing but a bug could produce '' and the guard was
-  -- dead. :read('*l') STRIPS the newline, so a blank line now arrives as '' and ENDS the scan -- a
-  -- plan whose header block has a hole in it is refused for having no column header. That is the
-  -- right answer: bplan.emit writes the header as one contiguous run of put() calls, so a blank line
-  -- inside it is not a plan this engine wrote.
+  -- Stripped at the read, so the guard below sees a blank line as '' whichever terminator the file
+  -- uses. '*l' removes the '\n' and leaves the '\r', so a blank line in a CRLF plan -- what a host
+  -- push through a Windows tool writes -- arrived as '\r', the `ln ~= ''` guard did not fire and the
+  -- scan carried on, while the same hole in an LF plan refused the plan. The verdict depended on
+  -- which tool wrote the file. A blank line now ends the scan either way, and the plan is refused for
+  -- having no column header: bplan.emit writes the header as one contiguous run of put() calls, so a
+  -- hole in it is not a plan this engine wrote.
+  local function rdline()
+    local l = fh:read('*l')
+    if l == nil then return nil end
+    return string.gsub(l, '[\r\n]', '')
+  end
+  local ln = rdline()
   while ln ~= nil and ln ~= '' and not cols and nhdr < bplan.hdrmax do
     nhdr = nhdr + 1
-    -- THE gsub STAYS, and '*l' is why it is not redundant. '*l' strips the '\n' and LEAVES THE '\r',
-    -- so every line of a CRLF plan -- which is what a host push through a Windows tool leaves -- would
-    -- otherwise end in one, and the column-header comparison below is an exact string equality.
-    ln = string.gsub(ln, '[\r\n]', '')
     if ln == bplan.cols then
       cols = true
     elseif ln ~= '' and string.sub(ln, 1, 1) == '#' then
       local _, _, r = string.find(ln, 'rows=(%d+)')
       if r ~= nil then want = tonumber(r) end
     end
-    if not cols then ln = fh:read('*l') end
+    if not cols then ln = rdline() end
   end
   if not cols then
     fh:close()

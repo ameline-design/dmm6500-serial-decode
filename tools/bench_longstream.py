@@ -37,19 +37,23 @@ import vector_names as VN                                     # noqa: E402
 ROW = re.compile(r'^(\d{4})\s+((?:[0-9A-F]{2}|--|\s{2})(?:\s+(?:[0-9A-F]{2}|--))*)\s*\|')
 
 DUMP_TSP = r'''
+-- io, not file.*: file.read answered nil at the end AND posted 2201 as a box on the panel, once per
+-- run of this tool. io answers nil and says nothing, so the pcall that wrapped it is gone too.
+-- Only nil ends the read. The old guard also broke on '', which under READ_LINE could not occur
+-- because the terminator came with the line -- but '*l' strips it, so a blank line in the dump would
+-- have ended the read early and reported a short file.
 function ls_dump(p, skip)
-  local f = file.open(p, file.MODE_READ)
+  local f = io.open(p, 'r')
   if f == nil then print('L NOFILE') print('===EOF===') return end
   local n = 0
   while true do
-    local ln = nil
-    local ok = pcall(function() ln = file.read(f, file.READ_LINE) end)
-    if not ok or ln == nil or ln == '' then break end
+    local ln = f:read('*l')
+    if ln == nil then break end
     n = n + 1
     if n > skip then print('L ' .. ln) end
     if n > skip + 1200 then break end
   end
-  file.close(f)
+  f:close()
   print('===EOF===')
 end
 '''

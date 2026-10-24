@@ -10,20 +10,24 @@
 -- so a cut at the wrong instant leaves an EMPTY file and no idea how far the run got. Appending leaves
 -- a torn last line with an intact line above it.
 --
--- ONE FILE, WITH TAGGED ROWS. The forcing reason was the firmware's file.* API, which hands out a
--- SINGLE write handle: a results file and a status file could not be open at once, because opening the
--- second silently redirected the first's writes. tools/mock_display.lua models that one handle and 67
--- assertions in test_usblog.lua still run against it. This module writes through io instead, where
--- that limit has NOT been measured either way -- so the one file stays, and nothing here asks the
--- question: there is never a second handle. It also puts the last status line immediately before
--- whatever the run was doing when it stopped. Results are 'R,...' rows and progress is 'S,...' rows.
+-- One file, with tagged rows. The original reason was the firmware's file.* API, which handed out a
+-- single write handle: a results file and a status file could not be open at once, because opening
+-- the second silently redirected the first's writes. That limit does not survive the move to io --
+-- measured 2026-10-24, two handles open together each kept their own bytes, 0 events -- so the one
+-- file is now a choice rather than a constraint, and what carries it is that the last status line
+-- lands immediately before whatever the run was doing when it stopped. Results are 'R,...' rows and
+-- progress is 'S,...' rows.
 --
--- CLOSED AND REOPENED PERIODICALLY, because flush and close are not the same promise on FAT: flush
--- pushes the bytes, close updates the directory entry that says how long the file is. A key pulled
--- with a long-open handle holds data the directory does not admit to. THIS IS THE ONE ASSUMPTION HERE
--- THAT OFFLINE TESTING CANNOT SETTLE -- it needs a real power cycle mid-run to confirm.
+-- The app does hold two write handles at once, so do not read the above as a claim that it cannot:
+-- ulog.fh is held open across captures and one logged error in a soak cell leaves it live alongside
+-- brec.fh for the rest of the run.
 --
--- SIZE. The key is 8 GB with a 6 GB working budget and a 2 GB per-file ceiling. A cell row is ~600
+-- Closed and reopened periodically, because flush and close are not the same promise on this
+-- filesystem: flush pushes the bytes, close updates the directory entry that says how long the file
+-- is. A key pulled with a long-open handle holds data the directory does not admit to. This is the
+-- one assumption here that offline testing cannot settle -- it needs a real power cycle mid-run.
+--
+-- Size. The key is 8 GB with a 6 GB working budget and a 2 GB per-file ceiling. A cell row is ~600
 -- bytes with its decoded bytes in hex, so a 1677-cell lap is ~1 MB and a week of laps is ~60 MB. The
 -- caps below are not expected to bind; they exist because a full key would silently stop recording a
 -- run that keeps going.
@@ -60,7 +64,9 @@ brec.nfile     = 0
 brec.sincesync = 0
 brec.why       = nil     -- why recording stopped, if it did
 brec.stopped  = false   -- true once the byte budget is spent; the run may continue, unrecorded,
-                        -- but it must SAY it is unrecorded rather than look complete
+                        -- but it must say it is unrecorded rather than look complete
+brec.rollfail = false   -- true once a roll was refused, which stops brec.reopen recovering onto a
+                        -- file that is over maxfile and cannot be rolled
 
 -- SCHEMA VERSION IN THE HEADER, because these files will be read by a tool that did not exist when
 -- they were written, possibly after this file has changed. A reader that cannot recognise the version
@@ -109,33 +115,20 @@ function brec.newfile(pfx)
   return fh, path, nil
 end
 
--- A WRITE IS NOT WHERE A PULLED KEY IS CAUGHT, and this function used to imply it was: it read
--- `local ok = pcall(file.write)` and returned false on a raise. That write did not raise -- the DMM
--- file API posts an event and returns, docs/MEASUREMENTS.md's file-API table -- so `ok` was true on a
--- dead handle as readily as a live one and the `return false` was unreachable. Every caller's recovery
--- path hung off it.
+-- A write is not where a pulled key is caught. Measured 2026-10-24, key pulled mid-capture with the
+-- handle held: an io write to a dead-key handle neither raises nor posts -- pcall says ok, the event
+-- log stays at 0 over twelve writes, a flush and a close, and the data goes nowhere. file.write
+-- posted 2200 per write here, which was the popup storm.
 --
--- WHAT DOES CATCH IT is the reopen at the sync boundary, below: brec.row() closes and reopens every
--- `syncrows` rows to commit the directory entry, and the open RETURNING NIL is a real verdict. So
--- detection already worked, at that granularity, and nothing is lost by saying so plainly.
+-- What does catch it is the reopen at the sync boundary in brec.row: the record closes and reopens
+-- every `syncrows` rows to commit the directory entry, and that open returning nil is a real verdict.
 --
--- AND IT IS WHY THE RECORD WRITES THROUGH io. file.write to a handle whose key has gone returns
--- normally. MEASURED 2026-10-24, KEY PULLED MID-CAPTURE WITH THE HANDLE HELD: an io write to a dead-key
--- handle NEITHER RAISES NOR POSTS. pcall says ok, the event log stays at 0 over twelve writes,
--- a flush and a close, and the data goes NOWHERE -- the file was 12 bytes before the pull and
--- 12 bytes after. file.write posted 2200 per write here; io is the layer below the one that
--- posts, so the storm is gone.
+-- So the `fh == nil` test is not a key check and never fires here -- every caller has already
+-- excluded a nil handle, leaving the false return and the recovery paths behind it unreachable. It
+-- stays because this is where a future failure signal would land. brec has no per-row keyok() gate;
+-- usb_log and chunk_decode do, and that is what notices a key going in those modules.
 --
--- SO THIS CHECK IS NOT ABOUT EVENTS ANY MORE, AND IT MUST NOT BE DELETED FOR LACK OF THEM.
--- A silent write that discards its data leaves this as the ONLY way anything notices the key
--- has gone.
---
--- AND brec.rawwrite IS THEREFORE SAFE UNGUARDED. It has no pcall by design; io cannot raise here,
--- so that design holds. The old concern was a key pulled during
--- a soak put a modal box on the panel for every row the run went on to write. An io write posts
--- nothing. WHAT IS NOT MEASURED is whether an io write on such a handle RAISES where file.write
--- returned; if it does, the raise leaves this function, since there is no pcall and the shipping
--- budget above is why there is not one.
+-- Unguarded by design, and io does not raise here -- now measured rather than assumed.
 function brec.rawwrite(fh, s)
   if fh == nil then return false end
   fh:write(s)
@@ -146,7 +139,7 @@ end
 -- ---------------------------------------------------------------------------
 -- Start recording. `tag` names the run in the header so two runs on one key are never confused.
 function brec.begin(tag, iterations, planid)
-  brec.why, brec.stopped = nil, false
+  brec.why, brec.stopped, brec.rollfail = nil, false, false
   brec.nrow, brec.ntotrow, brec.nbyte, brec.ntotbyte, brec.nfile, brec.sincesync = 0, 0, 0, 0, 0, 0
   local fh, path, why = brec.newfile(brec.pfx)
   if fh == nil then brec.why = why; brec.stopped = true; return false, why end
@@ -187,24 +180,43 @@ end
 
 -- ROLL rather than grow past the per-file cap, and count the total so an indefinite run cannot fill
 -- the key behind everyone's back.
+-- The old handle stays open until the new file is known to be there, so both failure paths below have
+-- somewhere to write their note. Closing first discarded it -- brec.note returns early on a nil
+-- handle -- leaving an ordinary R row as the record's last line, indistinguishable from a power cut.
+-- Overlapping two write handles is honest under io, measured 2026-10-24.
 function brec.roll()
-  if brec.fh ~= nil then brec.fh:close() end
-  brec.fh = nil
+  local old = brec.fh
   if brec.ntotbyte >= brec.maxtotal then
     brec.stopped = true
     brec.why     = string.format('byte budget spent: %d bytes over %d file(s)', brec.ntotbyte, brec.nfile)
     brec.note(-1, -1, 0, brec.why)
+    if old ~= nil then old:close() end
+    brec.fh = nil
     return false
   end
+  -- THE COUNT GOES UP BEFORE newfile, NOT AFTER, because newfile builds the name FROM it: it numbers
+  -- only when brec.nfile > 1, and brec.open leaves it at 1. Incrementing afterwards meant the FIRST
+  -- roll asked for a name while the count still said 1, got SOAK.csv back, reopened the file it was
+  -- supposed to be leaving for append, reset nbyte to 0 and wrote a 'tag=roll ... file=2' header into
+  -- the MIDDLE of it. SOAK2.csv appeared only on the second roll, the first file grew to about twice
+  -- maxfile, and judge_bench's split_runs saw a roll header mid-file.
+  brec.nfile = brec.nfile + 1
   local fh, path, why = brec.newfile(brec.pfx)
   if fh == nil then
-    brec.stopped = true
-    brec.why     = 'cannot roll to a new file: ' .. tostring(why)
+    -- Back down: brec.nfile counts files actually opened, and the byte-budget message reports it.
+    brec.nfile    = brec.nfile - 1
+    brec.stopped  = true
+    brec.rollfail = true
+    brec.why      = 'cannot roll to a new file: ' .. tostring(why)
+    -- Into the old file, which is still open for exactly this.
     brec.note(-1, -1, 0, brec.why)
+    if old ~= nil then old:close() end
+    brec.fh = nil
     return false
   end
+  if old ~= nil then old:close() end
+  brec.rollfail      = false
   brec.fh, brec.path = fh, path
-  brec.nfile = brec.nfile + 1
   brec.nrow, brec.nbyte, brec.sincesync = 0, 0, 0
   brec.header('roll', nil, nil)
   return true
@@ -277,15 +289,30 @@ function brec.reopen()
   local fh, path = brec.newfile(brec.pfx)
   if fh == nil then return false end
   brec.fh, brec.path = fh, path
+  -- The file's real length, not a counter that survived the failure. seek('end') on an append handle
+  -- is the length, measured 2026-10-24.
+  local n = fh:seek('end')
+  if n ~= nil then brec.nbyte = n end
+  -- A roll already refused will be refused again -- the failing open is a create on a full key or
+  -- directory. Recovering would append past maxfile and add one 'resumed' header per recovery, which
+  -- split_runs reads as a legitimate continuation: measured offline at 3.8x the cap with three.
+  if brec.rollfail and brec.nbyte >= brec.maxfile then
+    brec.fh:close()
+    brec.fh = nil
+    return false
+  end
   brec.sincesync = 0
-  -- THE HEADER HAS TO LAND BEFORE THIS IS CALLED RECOVERED, or a still-failing key reports 'recording
-  -- resumed' and counts a recovery it did not make.
+  -- The header has to land before this is called recovered, or a still-failing key reports
+  -- 'recording resumed' and counts a recovery it did not make.
   if not brec.header('resumed', nil, nil) then
     brec.fh:close()
     brec.fh = nil
     return false
   end
   brec.stopped, brec.why = false, nil
+  -- Already over the cap, so roll now rather than at the next row: that way the header just written
+  -- closes the old file instead of being the first of a run of them.
+  if brec.nbyte >= brec.maxfile then return brec.roll() end
   return true
 end
 

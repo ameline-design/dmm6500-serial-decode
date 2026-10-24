@@ -201,22 +201,22 @@ def load_modules(d, paths, timeout=300):
 
 
 def keysize(d, name):
-    """The byte length of one file on the key, out of the FAT directory entry. -> int, or None.
+    """The byte length of one file on the key. -> int, or None when it is not there.
 
-    THE SAME TRICK keyfiles() USES, for the same reason: a 32-byte directory entry carries the file's
-    length little-endian at offset 28, so 'is it there and how long is it' costs one read of a directory
-    that exists -- no event, and no pulling the file itself back through a socket. Verifying a 9 MB plan
-    by READ_ALL would mean holding 9 MB in a Lua string on a 2016 instrument and then sending it back
-    over the wire to be counted.
+    fs.is_file first, then seek('end') on the handle. Both are measured silent, so 'is it there and
+    how long is it' still costs no event -- which is the requirement, because an open of an absent
+    path posts 2203 and that reaches the glass as a dialog. Nothing pulls the file back over the
+    socket: verifying a 9 MB plan by reading it would mean holding 9 MB in a Lua string on a 2016
+    instrument and sending it back to be counted.
+
+    seek('end') is the length on a read, write or append handle, measured on 1.7.17a. It replaced a
+    parse of the file's FAT directory entry, which tied this to FAT32 and matched on an 8.3 name.
     """
-    n83 = name83(name.split('.')[0], name.split('.')[-1])
-    out = qtag(d, 'do local fh = file.open("%s", file.MODE_READ) local raw = nil '
-                  'if fh ~= nil then raw = file.read(fh, file.READ_ALL) file.close(fh) end '
-                  'local n = -1 '
-                  'if raw ~= nil then local a = string.find(raw, "%s", 1, true) '
-                  '  if a ~= nil then n = string.byte(raw, a+28) + string.byte(raw, a+29)*256 '
-                  '      + string.byte(raw, a+30)*65536 + string.byte(raw, a+31)*16777216 end end '
-                  'print("KEYSIZE=" .. tostring(n)) end' % (USBDIR, n83), 'KEYSIZE=', timeout=90)
+    path = '%s/%s' % (USBDIR, name)
+    out = qtag(d, 'do local n = -1 local p = "%s" '
+                  'if fs.is_file(p) then local fh = io.open(p, "r") '
+                  '  if fh ~= nil then n = fh:seek("end") fh:close() end end '
+                  'print("KEYSIZE=" .. tostring(n)) end' % path, 'KEYSIZE=', timeout=90)
     if out is None:
         return None
     try:
@@ -282,13 +282,13 @@ def push_plan(d, rows):
     if len(rows) > PUSH_MAX_ROWS:
         raise SystemExit('REFUSING: %d rows is past PUSH_MAX_ROWS (%d).' % (len(rows), PUSH_MAX_ROWS))
     t0 = time.time()
-    if not d.exec('do _pw = file.open("%s", file.MODE_WRITE) _pn = 0 end' % PLAN):
+    if not d.exec('do _pw = io.open("%s", "w") _pn = 0 end' % PLAN):
         raise SystemExit('the instrument would not open %s for writing' % PLAN)
     sent, nb = 0, 0
     while sent < len(rows):
         batch = rows[sent:sent + PUSH_BATCH_ROWS]
         payload = '\\n'.join(batch) + '\\n'
-        stmt = ('do if _pw == nil then print("PW=-1") else file.write(_pw, "%s") '
+        stmt = ('do if _pw == nil then print("PW=-1") else _pw:write("%s") '
                 '_pn = _pn + %d print("PW=" .. tostring(_pn)) end end' % (payload, len(batch)))
         got = qtag(d, stmt, 'PW=', timeout=120)
         if got is None:
@@ -303,7 +303,7 @@ def push_plan(d, rows):
         if len(rows) > 20000 and sent % 20000 < PUSH_BATCH_ROWS:
             print('    %d/%d rows (%.0f kB) %.0f s' % (sent, len(rows), nb / 1024.0,
                                                       time.time() - t0))
-    d.exec('do file.flush(_pw) file.close(_pw) _pw = nil end')
+    d.exec('do _pw:flush() _pw:close() _pw = nil end')
     print('  plan pushed: %d row(s) in %.1f s (%d batch(es) of %d)'
           % (sent, time.time() - t0, (sent + PUSH_BATCH_ROWS - 1) // PUSH_BATCH_ROWS,
              PUSH_BATCH_ROWS))
@@ -371,52 +371,53 @@ def lua_str(s):
     return '"' + s.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n') + '"'
 
 
-def name83(base, ext):
-    """A FAT short name as it appears in a directory entry: 8 characters of name, space padded, then
-    the extension, all upper case. '/usb1/SERDEC/SOAK.csv' is stored as 'SOAK    CSV'."""
-    return (base.upper() + '        ')[:8] + ext.upper()
-
-
 def keyfiles(d):
-    """-> {name: size} for the record files on the key, WITHOUT OPENING ANY OF THEM.
+    """-> {name: size} for the record files on the key, without probing for a name.
 
-    NOTHING HERE MAY PROBE FOR A FILE, and that is the whole design of this function. file.open on a
-    path that is not there posts event 2205 -- a box on the front panel of an instrument whose one
-    inviolable rule is that it never shows one. The previous version of this fetch probed SOAK000.csv
-    upward until a miss ended the search, which is one guaranteed popup per fetch: it fired the moment a
-    run finished, in front of the operator, and it also found a STALE numbered file from an older session
+    Nothing here may probe for a file. An open of a path that is not there posts an event -- 2205
+    through file.open, 2203 through io.open -- and that reaches the front panel of an instrument whose
+    one inviolable rule is that it never shows a box. An early version probed SOAK000.csv upward until
+    a miss ended the search, which is one guaranteed popup per fetch: it fired the moment a run
+    finished, in front of the operator, and it also found a stale numbered file from an older session
     instead of the record the run had just written.
 
-    THE DIRECTORY IS READ INSTEAD, which costs nothing -- measured in the attribution table: reading
-    /usb1/SERDEC is 0 events, because the directory is there. It hands back the raw FAT table, and a
-    32-byte entry carries the file's length little-endian at offset 28. So both questions -- is it there,
-    and how long is it -- are answered by one read of something that exists. Measured on the key:
-    'SOAK    CSV' at offset 7425 of a 16384-byte table, size 76514.
+    The directory is listed instead, with fs.readdir, which costs no event on a directory that exists.
+    Each name it returns is then opened for its length, and only those names, so no open can miss.
+    That replaced a parse of the raw FAT table -- the 8.3 name at offset 0 and the length
+    little-endian at 28 -- which tied this to FAT32 and could not see a long name.
 
-    Rolled files (SOAK2.csv and up, which brec.roll only writes if one run passes 256 MB) are looked for
-    the same way, so a long run's continuation is never missed and never probed for.
+    Rolled files (SOAK2.csv and up, which brec.roll only writes if one run passes 256 MB) come out of
+    the same listing, so a long run's continuation is never missed, never probed for, and no longer
+    capped at nine: the old form tested a fixed candidate list of SOAK.csv through SOAK9.csv.
+
+    pairs(), not `for i = 1, table.getn(t)`: fs.readdir is indexed from 0 and getn reports one less
+    than the entry count, so a 1-based walk drops whichever name sits at index 0. Measured on this
+    key, that name was SOAK.csv -- the fetch would have reported no record for a finished run.
     """
-    cands = [('SOAK.csv', name83('SOAK', 'csv'))]
-    cands += [('SOAK%d.csv' % i, name83('SOAK%d' % i, 'csv')) for i in range(2, 10)]
-    tbl = ','.join('{"%s","%s"}' % c for c in cands)
-    out = qtag(d, 'do local fh = file.open("%s", file.MODE_READ) local raw = nil '
-                  'if fh ~= nil then raw = file.read(fh, file.READ_ALL) file.close(fh) end '
-                  'local s = "" '
-                  'if raw ~= nil then local c = {%s} local k '
-                  '  for k = 1, table.getn(c) do '
-                  '    local a = string.find(raw, c[k][2], 1, true) '
-                  '    if a ~= nil then '
-                  '      s = s .. c[k][1] .. ":" .. tostring(string.byte(raw, a+28) '
-                  '          + string.byte(raw, a+29)*256 + string.byte(raw, a+30)*65536 '
-                  '          + string.byte(raw, a+31)*16777216) .. " " end end end '
-                  'print("KEYFILES=" .. s) end' % (USBDIR, tbl), 'KEYFILES=', timeout=90)
+    out = qtag(d, 'do local t = fs.readdir("%s") local s = "" '
+                  'if t ~= nil then for k, nm in pairs(t) do '
+                  '  if string.find(string.upper(nm), "^SOAK%%d*%%.CSV$") ~= nil then '
+                  '    local fh = io.open("%s/" .. nm, "r") '
+                  '    if fh ~= nil then s = s .. nm .. ":" .. tostring(fh:seek("end")) .. " " '
+                  '      fh:close() end end end end '
+                  'print("KEYFILES=" .. s) end' % (USBDIR, USBDIR), 'KEYFILES=', timeout=90)
     if out is None:
         raise SystemExit('the instrument did not report the directory listing on the key')
     found = {}
     for tok in out.split():
         n, _, sz = tok.partition(':')
+        # Canonical spelling, because the name comes back in whatever case the key stores and every
+        # caller below looks it up as 'SOAK.csv' or 'SOAK<n>.csv'.
+        up = n.upper()
+        key = n
+        if up.startswith('SOAK') and up.endswith('.CSV'):
+            mid = up[4:-4]
+            if mid == '':
+                key = 'SOAK.csv'
+            elif mid.isdigit():
+                key = 'SOAK%s.csv' % mid
         try:
-            found[n] = int(sz)
+            found[key] = int(sz)
         except ValueError:
             pass
     return found
@@ -464,16 +465,16 @@ def drain_events(d, out_dir):
 
 
 def fetch(d, out_dir):
-    """Pull the record off the key, in line batches, reading not one byte past the end.
+    """Pull the record off the key, in line batches.
 
-    READ IN BATCHES, not READ_ALL: the file is tens of MB after a week, and one string that size is more
-    than the instrument will hand over in a single reply -- or hold.
+    Read in batches rather than whole: the file is tens of MB after a week, and one string that size
+    is more than the instrument will hand over in a single reply -- or hold.
 
-    AND BOUNDED BY THE LENGTH FROM THE DIRECTORY, because 'read until it returns nil' means READING PAST
-    THE END, and that posts 2201 'File read error' -- one popup per fetch, at the end, where it looks
-    like the run failed. file.read(READ_LINE) hands back the newline (measured: a 72-character header line
-    with a trailing byte 10), so summing the lengths counts bytes exactly and the loop can stop on the
-    last line instead of discovering the end by falling off it.
+    The end is discovered, not predicted. Under file.* a read past the end posted 2201 'File read
+    error' -- one popup per fetch, at the end, where it looks like the run failed -- so the loop had
+    to stop at a length taken from the directory. io answers nil silently, measured, so EOF ends it
+    and a wrong size can no longer truncate the record. The size is still read, and a disagreement
+    larger than the one byte '*l' accounting can explain is reported rather than acted on.
     """
     os.makedirs(out_dir, exist_ok=True)
     found = keyfiles(d)
@@ -486,18 +487,22 @@ def fetch(d, out_dir):
         for name in sorted(found):
             size = found[name]
             path = '%s/%s' % (USBDIR, name)
-            d.exec('do _rd_fh = file.open("%s", file.MODE_READ) _rd_n = 0 end' % path)
-            # ONE print PER LINE, and a tagged sentinel to end each batch. The first version used
-            # io.write(table.concat(t)) to avoid the per-line overhead -- and TSP has no `io` table, so
-            # the statement raised, nothing came back, and the fetch wrote a 0-line file that the judge
-            # then correctly refused. print is the only output primitive here.
+            d.exec('do _rd_fh = io.open("%s", "r") _rd_n = 0 end' % path)
+            # ONE print PER LINE, and a tagged sentinel to end each batch. print is the output
+            # primitive here: io.write goes to the instrument's own stdout, not back over the socket.
+            #
+            # NO LENGTH BOUND ANY MORE. It was here because file.read past the end posted 2201 as a
+            # box on the panel, so the loop had to stop before EOF rather than discover it. io answers
+            # nil and says nothing, measured, so EOF is now the terminator and a wrong size cannot
+            # truncate the fetch. _rd_n is kept for the progress line, with +1 per line because '*l'
+            # strips the newline that READ_LINE used to hand back -- so it may read one high on a file
+            # whose last line is unterminated.
             while True:
                 d.drain()
                 send_lua(d, 'do local n = 0 local i for i = 1, 200 do '
-                       'if _rd_n >= %d then break end '
-                       'local l = file.read(_rd_fh, file.READ_LINE) '
+                       'local l = _rd_fh:read("*l") '
                        'if l == nil then break end '
-                       '_rd_n = _rd_n + string.len(l) n = n + 1 '
+                       '_rd_n = _rd_n + string.len(l) + 1 n = n + 1 '
                        # \\r\\n, ESCAPED FOR PYTHON SO LUA RECEIVES THE ESCAPES. Written '[\r\n]' in a
                        # plain Python string, the interpreter substitutes a real CR and LF -- which lands
                        # INSIDE a Lua string literal, splits this one-line statement in two, and the
@@ -505,7 +510,7 @@ def fetch(d, out_dir):
                        # kind of bug that only ever shows up on hardware, and send_lua below now refuses
                        # any statement carrying a control character rather than letting it reach the box.
                        'print("L|" .. string.gsub(l, "[\\r\\n]", "")) end '
-                       'print("===BATCH=== " .. tostring(n) .. " " .. tostring(_rd_n)) end' % size)
+                       'print("===BATCH=== " .. tostring(n) .. " " .. tostring(_rd_n)) end')
                 got, at, done = 0, 0, False
                 while True:
                     ln = d.line(timeout=120)
@@ -519,10 +524,13 @@ def fetch(d, out_dir):
                     if ln.startswith('L|'):
                         f.write(ln[2:] + '\n')
                         nline += 1
-                if done or got == 0 or at >= size:
+                if done or got == 0:
                     nbyte += at
+                    if size and abs(at - size) > 1:
+                        print('  note: %s read %d byte(s) where the directory said %d'
+                              % (name, at, size))
                     break
-            d.exec('do file.close(_rd_fh) _rd_fh = nil end')
+            d.exec('do _rd_fh:close() _rd_fh = nil end')
     print('  %d line(s), %d byte(s) -> %s' % (nline, nbyte, local))
     return local
 
@@ -796,8 +804,8 @@ def main():
         # fetching a finished lap THROUGH the load threw away the event log and every in-memory counter
         # the lap had just produced, which is the evidence a finished lap is fetched for. 2026-10-19:
         # cost the event log and sdec.acq_presettle of a 324-cell lap, and the operator was waiting to
-        # power cycle, so there was no second chance at it. fetch() and keyfiles() use file.open and
-        # file.read only, so there is nothing here that needs the app.
+        # power cycle, so there was no second chance at it. fetch() and keyfiles() use io and fs
+        # only, so there is nothing here that needs the app.
         pure_fetch = a.fetch and not a.start and not a.push_plan
         # BEFORE ANYTHING ELSE TOUCHES THE BOX, including the load below and the fetch itself: both
         # post or clear events of their own, so a log read after either describes this tool and not

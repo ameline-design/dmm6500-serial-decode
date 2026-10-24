@@ -68,13 +68,13 @@ class FakeDMM:
 
     # -- the interpreter ---------------------------------------------------
     def _run(self, cmd):
-        m = re.search(r'_pw = file\.open\("([^"]+)", file\.MODE_WRITE\)', cmd)
+        m = re.search(r'_pw = io\.open\("([^"]+)", "w"\)', cmd)
         if m:
             self.pw = m.group(1)
             self.files[self.pw] = ''
             self.pn = 0
             return
-        m = re.search(r'file\.write\(_pw, "(.*)"\) _pn = _pn \+ (\d+)', cmd, re.S)
+        m = re.search(r'_pw:write\("(.*)"\) _pn = _pn \+ (\d+)', cmd, re.S)
         if m:
             self.nbatch += 1
             if self.closehandle is not None and self.nbatch >= self.closehandle:
@@ -91,7 +91,7 @@ class FakeDMM:
                 self.pn += n
             self.out.append('PW=%d' % self.miscount.get(self.nbatch, self.pn))
             return
-        if 'file.close(_pw)' in cmd:
+        if '_pw:close()' in cmd:
             self.pw = None
             return
         # keysize(): the FAT directory entry, which is where the length really comes from.

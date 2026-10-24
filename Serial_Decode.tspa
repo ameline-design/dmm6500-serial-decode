@@ -3,7 +3,7 @@ loadscript Serial_Decode
 -- $Product: DMM6500, DAQ6510, DMM7510, SMU2461
 -- $Tag: Serial, UART, Decode, Digitize
 -- $Description: Decodes an asynchronous serial line with the instrument's own digitizer: recovers baud rate, frame format and bytes, shows them as text or hex, and saves bytes to USB key. Everything auto-detects; everything can be locked.
--- $Version: 1.77
+-- $Version: 1.78
 -- $Requires: 1.7.0
 -- $Author: Ian Ameline
 -- $License: MIT
@@ -113,19 +113,21 @@ function ulog.resume()
   return ulog.open(nil, false)
 end
 
--- Is `name` listed in the USB root? true, false, or nil when the root could not be read; nil taken
+-- Is `name` listed in the USB root? true, false, or nil when the root could not be read. nil taken as
 --   [...]
--- mock hands the listing to both front ends, so an io that did NOT read directories would have left
--- every suite green while ensuredir() answered 'cannot read the USB root' for ever and the log, the
--- byte log and Save never opened again.
+-- reports one less than the entry count, and a directory holding one file reports getn 0.
+-- Upper-cased on both sides, because the filesystem is case-insensitive and the directory on the
+-- shipped key is actually 'SerDec'. An exact match would report it absent and mkdir over it.
 function ulog.rootlists(name)
   if name == nil or name == '' then return nil end
-  local fh = io.open('/usb1', 'r')
-  if fh == nil then return nil end
-  local raw = fh:read('*a')
-  fh:close()
-  if raw == nil or raw == '' then return nil end
-  if string.find(raw, string.upper(name), 1, 1) ~= nil then return true end
+  if fs == nil or fs.readdir == nil then return nil end
+  local t = fs.readdir('/usb1')
+  if type(t) ~= 'table' then return nil end
+  local want = string.upper(name)
+  local k, v
+  for k, v in pairs(t) do
+    if type(v) == 'string' and string.upper(v) == want then return true end
+  end
   return false
 end
 
@@ -137,6 +139,10 @@ function ulog.ensuredir(dir)
   if not ulog.keyok() then return false, tostring(ulog.keywhy or 'no USB key') end
   if ulog.dirok == dir then return true end
   if string.sub(dir, 1, 1) ~= '/' then return false, 'directory must be absolute: ' .. dir end
+  local rest = string.gsub(dir, '^/[^/]*/?', '')
+  if string.find(rest, '/') ~= nil then
+    return false, 'directory must be one level below the root: ' .. dir
+  end
   local leafchk = string.gsub(dir, '^.*/', '')
   if string.len(leafchk) > 8 or leafchk ~= string.upper(leafchk) then
     return false, 'directory name must be 8 upper-case characters or fewer: ' .. leafchk
@@ -4246,41 +4252,6 @@ function sdec.ck_sink_file(path, ncol)
   -- ua_hexrow pads ncol - nrow, so the file's last row keeps its ASCII gutter in column.
   local function emit(nrow)
     local line = sdec.ua_hexrow(cv, ce, nrow, 1, ncol, cbase)
-    if not dead and ulog ~= nil and ulog.keyok ~= nil and not ulog.keyok() then dead = true end
-    if not dead then fh:write(line .. '\r\n') end
-    local i
-    for i = nrow + 1, cn do
-      cv[i - nrow] = cv[i]
-      ce[i - nrow] = ce[i]
-    end
-    cn    = cn - nrow
-    cbase = cbase + nrow
-  end
-
-  local sink = function(v, e, m, base)
-    if dead then return false end
-    if cn == 0 then cbase = base end
-    local i
-    for i = 1, m do
-      cn = cn + 1
-      cv[cn] = v[i]
-      ce[cn] = e[i]
-    end
-    sdec.flog_bytes = (sdec.flog_bytes or 0) + m
-    while cn >= ncol and not dead do emit(ncol) end
-    return not dead
-  end
-
-  local finished = false
-  local finish   = function()
-    if finished then return not dead end
-    finished = true
-    if not dead and cn > 0 then
-      if not pcall(emit, cn) then dead = true end
-    end
-    fh:flush()
-    fh:close()
-    fh = nil
     if not dead and ulog ~= nil and ulog.keyok ~= nil and not ulog.keyok() then dead = true end
     if not dead then fh:write(line .. '\r\n') end
     local i

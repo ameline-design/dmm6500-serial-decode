@@ -227,6 +227,15 @@ if timer.gettime   == nil then function timer.gettime() return TCLOCK end end
 file = file or {}
 if file.usbdriveexists == nil then function file.usbdriveexists() return 1 end end
 
+-- fs too, for the same reason: ulog.rootlists lists /usb1 through fs.readdir, so a nil fs killed the
+-- render at the first capture. SERDEC present, since these mockups are of the normal case. readdir is
+-- indexed from 0 here because the firmware's is.
+fs = fs or {}
+if fs.readdir == nil then function fs.readdir(p) if p == '/usb1' then return {[0] = 'SERDEC'} end return {} end end
+if fs.is_dir  == nil then function fs.is_dir(p) return p == '/usb1' or p == '/usb1/SERDEC' end end
+if fs.is_file == nil then function fs.is_file() return false end end
+if fs.mkdir   == nil then function fs.mkdir() end end
+
 -- ---------- waveform + instrument mocks, and the real modules ----------
 dofile('tools/gen_serial.lua')
 for _, m in ipairs({'tsp/usb_log.tsp', 'tsp/serial_ui.tsp', 'tsp/serial_app.tsp'}) do

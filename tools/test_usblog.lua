@@ -360,10 +360,15 @@ ulog.ensuredir()
 
 -- ---------- the instrument must not pop an error at the operator ----------
 --
--- THIS IS THE REQUIREMENT, AND IT IS THE ONLY THING THAT MEASURES IT. Every check above passes whether or
--- not the app is filing 2208s behind the operator's back, because none of them look. The mock counts what
--- the firmware would post -- 2208 for a mkdir that already exists, for a bare name or for no key, 2205 for
--- an open of a path that is not there -- so the count IS the assertion.
+-- This is the requirement, and it is the only thing that measures it. Every check above passes
+-- whether or not the app is filing events behind the operator's back, because none of them look. The
+-- mock counts what the firmware was measured to post -- fs.mkdir answers 2220 for a directory that
+-- already exists and 2205 for an absent parent, and io.open answers 2203 for a path that is not
+-- there -- so the count is the assertion.
+--
+-- The numbers below are fs.mkdir's, measured 2026-10-24. They used to be 2208, which is file.mkdir's,
+-- and no shipped module calls file.mkdir any more: the assertions were testing a number that could
+-- not arise and passed no matter what the app did.
 print('\nthe quiet path is quiet')
 
 MD.usb(true)
@@ -371,17 +376,21 @@ MD.forget_files()
 ulog.dirlost()
 MD.forget_fevents()
 local made3 = ulog.ensuredir()
-check('creating the directory on a fresh key posts NO 2208',
-      made3 == true and MD.fevent_count(2208) == 0,
-      'made=' .. tostring(made3) .. ' 2208=' .. MD.fevent_count(2208))
+check('creating the directory on a fresh key posts nothing at all',
+      made3 == true and MD.fevent_count() == 0,
+      'made=' .. tostring(made3) .. ' events=' .. MD.fevent_count())
 
--- The case that a speculative mkdir would ruin: the directory is already there, and the app is asked
--- again and again, as every capture does.
+-- The case a speculative mkdir would ruin: the directory is already there and the app asks again, as
+-- every capture does. ulog.dirlost() between the calls, because ulog.dirok short-circuits ensuredir
+-- on a confirmed directory -- without clearing it, this measured the cache and never reached the
+-- decision it is here to police.
 MD.forget_fevents()
 local r1 = ulog.ensuredir()
+ulog.dirlost()
 local r2 = ulog.ensuredir()
+ulog.dirlost()
 local r3 = ulog.ensuredir()
-check('asking three more times posts nothing at all -- no mkdir is ever speculative',
+check('asking three more times, with the cache cleared each time, posts nothing at all',
       r1 and r2 and r3 and MD.fevent_count() == 0,
       'events=' .. MD.fevent_count())
 
@@ -401,16 +410,19 @@ check('and it says both what is wrong and which file', has(tostring(nkw), 'no US
       and has(tostring(nkw), 'nokey.txt'), tostring(nkw))
 MD.usb(true)
 
--- THE NEGATIVE. A speculative mkdir is what the design exists to avoid, so prove the counter would catch
--- one: call it directly on a directory that already exists, exactly as a naive implementation would.
+-- The negative, and it has to use the function the app actually calls. A speculative mkdir is what
+-- the design exists to avoid, so prove the counter would catch one: fs.mkdir on a directory that is
+-- already there, exactly as a naive implementation would. This control used to call file.mkdir,
+-- which still posts 2208 in the mock and so still passed -- while controlling nothing, because
+-- ensuredir calls fs.mkdir.
 MD.forget_fevents()
-file.mkdir(ulog.usbdir)
-check('a mkdir on an existing directory DOES post 2208, so the checks above can fail',
-      MD.fevent_count(2208) == 1, '2208=' .. MD.fevent_count(2208))
+fs.mkdir(ulog.usbdir)
+check('a speculative fs.mkdir on an existing directory posts 2220, so the checks above can fail',
+      MD.fevent_count(2220) == 1, '2220=' .. MD.fevent_count(2220))
 MD.forget_fevents()
-file.mkdir('SERDEC')
-check('and so does a bare relative name, which is why only absolute paths are issued',
-      MD.fevent_count(2208) == 1, '2208=' .. MD.fevent_count(2208))
+fs.mkdir('/usb1/NOSUCHPARENT/SUB')
+check('and a mkdir whose parent is absent posts 2205',
+      MD.fevent_count(2205) == 1, '2205=' .. MD.fevent_count(2205))
 MD.forget_fevents()
 
 -- THE NAME ITSELF IS A LOAD-BEARING DECISION, so it is pinned. rootlists can only find a directory whose

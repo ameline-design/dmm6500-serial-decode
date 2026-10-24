@@ -3,7 +3,7 @@ loadscript Serial_brun
 -- $Product: DMM6500, DAQ6510, DMM7510, SMU2461
 -- $Tag: Serial, UART, Decode, Soak, Test
 -- $Description: Test bed for the Serial Decode app: runs that decoder against the signal generator over a plan of waveforms, rates and frame formats, unattended, recording every cell to USB key. Tick Abort on the status screen to stop.
--- $Version: 1.76
+-- $Version: 1.78
 -- $Requires: 1.7.0
 -- $Author: Ian Ameline
 -- $License: MIT
@@ -71,7 +71,7 @@ function ulog.keylost(why)
   ulog.keyout  = false
   local h      = ulog.fh
   ulog.fh, ulog.on = nil, false
-  if h ~= nil then file.close(h) end
+  if h ~= nil then h:close() end
   return true
 end
 
@@ -103,12 +103,14 @@ end
 
 function ulog.rootlists(name)
   if name == nil or name == '' then return nil end
-  local fh = file.open('/usb1', file.MODE_READ)
-  if fh == nil then return nil end
-  local raw = file.read(fh, file.READ_ALL)
-  file.close(fh)
-  if raw == nil then return nil end
-  if string.find(raw, string.upper(name), 1, 1) ~= nil then return true end
+  if fs == nil or fs.readdir == nil then return nil end
+  local t = fs.readdir('/usb1')
+  if type(t) ~= 'table' then return nil end
+  local want = string.upper(name)
+  local k, v
+  for k, v in pairs(t) do
+    if type(v) == 'string' and string.upper(v) == want then return true end
+  end
   return false
 end
 
@@ -118,6 +120,10 @@ function ulog.ensuredir(dir)
   if not ulog.keyok() then return false, tostring(ulog.keywhy or 'no USB key') end
   if ulog.dirok == dir then return true end
   if string.sub(dir, 1, 1) ~= '/' then return false, 'directory must be absolute: ' .. dir end
+  local rest = string.gsub(dir, '^/[^/]*/?', '')
+  if string.find(rest, '/') ~= nil then
+    return false, 'directory must be one level below the root: ' .. dir
+  end
   local leafchk = string.gsub(dir, '^.*/', '')
   if string.len(leafchk) > 8 or leafchk ~= string.upper(leafchk) then
     return false, 'directory name must be 8 upper-case characters or fewer: ' .. leafchk
@@ -126,7 +132,7 @@ function ulog.ensuredir(dir)
   local listed = ulog.rootlists(leaf)
   if listed == true then ulog.dirok = dir; return true end
   if listed == nil then return false, 'cannot read the USB root' end
-  file.mkdir(dir)
+  fs.mkdir(dir)
   if ulog.rootlists(leaf) == true then ulog.dirok = dir; return true end
   return false, 'cannot create ' .. dir
 end
@@ -137,13 +143,13 @@ end
 
 function ulog.open_write(path, mode)
   if path == nil then return nil, 'no filename available' end
-  if mode == nil then mode = file.MODE_APPEND end
+  if mode == nil then mode = 'a' end
   if not ulog.keyok() then
     return nil, tostring(ulog.keywhy or 'no USB key') .. ' -- ' .. tostring(path)
   end
   local ready, rwhy = ulog.ensuredir()
   if not ready then return nil, tostring(rwhy) .. ' -- cannot open ' .. tostring(path) end
-  local fh = file.open(path, mode)
+  local fh = io.open(path, mode)
   if fh ~= nil then return fh end
   return nil, 'cannot open ' .. tostring(path)
                 .. ' -- key may be absent, full, write-protected, or refusing the directory'
@@ -155,8 +161,8 @@ function ulog.open(path, truncate)
   if not ulog.enabled then return false end
   if path ~= nil then ulog.path = path end
 
-  local mode = file.MODE_APPEND
-  if truncate then mode = file.MODE_WRITE end
+  local mode = 'a'
+  if truncate then mode = 'w' end
   local why = nil
   ulog.fh, why = ulog.open_write(ulog.path, mode)
   ulog.keyopen = ulog.keygen
@@ -195,8 +201,8 @@ function ulog.line(s)
     ulog.lasterr = 'the log handle went away'
     return false
   end
-  file.write(ulog.fh, txt)
-  if ulog.autoflush then file.flush(ulog.fh) end
+  ulog.fh:write(txt)
+  if ulog.autoflush then ulog.fh:flush() end
   return true
 end
 
@@ -209,7 +215,7 @@ end
 
 function ulog.flush()
   if not ulog.on or ulog.fh == nil then return false end
-  file.flush(ulog.fh)
+  ulog.fh:flush()
   return true
 end
 
@@ -217,8 +223,8 @@ function ulog.close()
   if ulog.fh ~= nil then
     local h = ulog.fh
     ulog.fh = nil
-    file.flush(h)
-    file.close(h)
+    h:flush()
+    h:close()
   end
   ulog.on = false
   return true
@@ -228,9 +234,9 @@ function ulog.exists(path)
   if path == nil then return false end
   local got = fs.is_file(path)
   if got == nil then
-    local fh    = file.open(path, file.MODE_READ)
+    local fh    = io.open(path, 'r')
     local taken = fh ~= nil
-    if fh ~= nil then file.close(fh) end
+    if fh ~= nil then fh:close() end
     return taken
   end
   return got == true
@@ -249,10 +255,10 @@ function ulog.next_free(prefix, ext, limit)
   local start   = ulog.idx_ram[prefix]
   if start ~= nil and (start < 0 or start >= limit) then start = nil end
   if start == nil and ulog.exists(idxpath) then
-    local fh = file.open(idxpath, file.MODE_READ)
+    local fh = io.open(idxpath, 'r')
     if fh ~= nil then
-      local ln = file.read(fh, file.READ_LINE)
-      file.close(fh)
+      local ln = fh:read('*l')
+      fh:close()
       local n = tonumber(ln)
       if n ~= nil and n >= 0 and n < limit then start = math.floor(n) end
     end
@@ -267,12 +273,12 @@ function ulog.next_free(prefix, ext, limit)
     if not ulog.exists(path) then
       ulog.idx_ram[prefix] = i
       local wh    = nil
-      wh          = ulog.open_write(idxpath, file.MODE_WRITE)
+      wh          = ulog.open_write(idxpath, 'w')
       local wrote = false
       if wh ~= nil then
-        file.write(wh, tostring(i) .. '\n')
-        file.flush(wh)
-        file.close(wh)
+        wh:write(tostring(i) .. '\n')
+        wh:flush()
+        wh:close()
         wrote = ulog.keyok()
       end
       if wrote then ulog.idx_why = nil
@@ -288,17 +294,17 @@ end
 
 function ulog.write_file(path, lines, n)
   if path == nil then return false, 'no filename available' end
-  local fh, why = ulog.open_write(path, file.MODE_WRITE)
+  local fh, why = ulog.open_write(path, 'w')
   if fh == nil then return false, tostring(why) end
 
   local gone = false
   local i
   for i = 1, n do
     if not ulog.keyok() then gone = true; break end
-    file.write(fh, tostring(lines[i]) .. '\r\n')
+    fh:write(tostring(lines[i]) .. '\r\n')
   end
-  file.flush(fh)
-  file.close(fh)
+  fh:flush()
+  fh:close()
   if gone or not ulog.keyok() then
     return false, 'the USB key went away -- the file is empty or truncated'
   end
@@ -3847,14 +3853,14 @@ end
 
 function sdec.ck_sink_file(path, ncol)
   if ncol == nil then ncol = 16 end
-  local fh, owhy = ulog.open_write(path, file.MODE_APPEND)
+  local fh, owhy = ulog.open_write(path, 'a')
   if fh == nil then return nil, nil, 'cannot append to ' .. tostring(path) end
   local hdr = string.format('---- stream  %s %s\r\n',
                             sdec.baud_text and sdec.baud_text() or '?',
                             sdec.fmt_text and sdec.fmt_text() or '?')
-  file.write(fh, hdr)
+  fh:write(hdr)
   if ulog ~= nil and ulog.keyok ~= nil and not ulog.keyok() then
-    file.close(fh)
+    fh:close()
     return nil, nil, 'cannot write the stream header to ' .. tostring(path)
   end
 
@@ -3865,7 +3871,7 @@ function sdec.ck_sink_file(path, ncol)
   local function emit(nrow)
     local line = sdec.ua_hexrow(cv, ce, nrow, 1, ncol, cbase)
     if not dead and ulog ~= nil and ulog.keyok ~= nil and not ulog.keyok() then dead = true end
-    if not dead then file.write(fh, line .. '\r\n') end
+    if not dead then fh:write(line .. '\r\n') end
     local i
     for i = nrow + 1, cn do
       cv[i - nrow] = cv[i]
@@ -3896,8 +3902,8 @@ function sdec.ck_sink_file(path, ncol)
     if not dead and cn > 0 then
       if not pcall(emit, cn) then dead = true end
     end
-    file.flush(fh)
-    file.close(fh)
+    fh:flush()
+    fh:close()
     fh = nil
     if not dead and ulog ~= nil and ulog.keyok ~= nil and not ulog.keyok() then dead = true end
     return not dead
@@ -6321,7 +6327,7 @@ end
 function sdec.frame_log()
   if sdec.res == nil or sdec.res.nf < 1 then return false end
   if sdec.flog_alloc() == nil then return false end
-  local fh, fwhy = ulog.open_write(sdec.flog_path, file.MODE_APPEND)
+  local fh, fwhy = ulog.open_write(sdec.flog_path, 'a')
   if fh == nil then
     sdec.flog_why = 'cannot append to ' .. tostring(sdec.flog_path)
     return false
@@ -6330,22 +6336,22 @@ function sdec.frame_log()
   local nfr      = 0
   if sdec.res ~= nil then nfr = sdec.res.nf end
   local msgno = (sdec.flog_n or 0) + 1
-  file.write(fh, string.format('---- msg %d  %s %s  %d bytes %d err\r\n',
+  fh:write(string.format('---- msg %d  %s %s  %d bytes %d err\r\n',
                                msgno or 0, tostring(sdec.baud_text()), tostring(sdec.fmt_text()),
                                sdec.res.nf or 0, sdec.res.nbad or 0))
   local i = 1
   while i <= sdec.res.nf do
-    file.write(fh, sdec.ua_text_line(i, 64) .. '\r\n')
+    fh:write(sdec.ua_text_line(i, 64) .. '\r\n')
     i = i + 64
   end
   i = 1
   while i <= sdec.res.nf do
-    file.write(fh, sdec.ua_hex_line(i, 16) .. '\r\n')
+    fh:write(sdec.ua_hex_line(i, 16) .. '\r\n')
     i = i + 16
   end
-  file.flush(fh)
-  file.close(fh)
+  fh:flush()
   sdec.fh_unwind = nil
+  fh:close()
   if not ulog.keyok() then
     sdec.flog_why = 'write failed part-way through ' ..
                     string.gsub(tostring(sdec.flog_path), '^.*/', '')
@@ -7423,7 +7429,7 @@ function sdec.unwind(why)
   if sdec.fh_unwind ~= nil then
     local h        = sdec.fh_unwind
     sdec.fh_unwind = nil
-    file.close(h)
+    h:close()
   end
   if sdec.ui_tick_on ~= nil then sdec.ui_tick_on() end
   sdec.errcount  = (sdec.errcount or 0) + 1
@@ -8605,6 +8611,7 @@ brec.nfile     = 0
 brec.sincesync = 0
 brec.why       = nil     -- why recording stopped, if it did
 brec.stopped  = false   -- true once the byte budget is spent; the run may continue, unrecorded,
+brec.rollfail = false   -- true once a roll was refused, which stops brec.reopen recovering onto a
 brec.schema = brec.schema or 'serdec-soak-1'
 
 function brec.q(s)
@@ -8621,21 +8628,21 @@ function brec.newfile(pfx)
   end
   local path = pfx .. brec.ext
   if brec.nfile > 1 then path = pfx .. tostring(brec.nfile) .. brec.ext end
-  local fh = nil
-  fh = file.open(path, file.MODE_APPEND)
-  if fh == nil then return nil, path, 'cannot open ' .. path end
+  local fh, oerr = nil, nil
+  fh, oerr = io.open(path, 'a')
+  if fh == nil then return nil, path, 'cannot open ' .. path .. ': ' .. tostring(oerr) end
   return fh, path, nil
 end
 
 function brec.rawwrite(fh, s)
   if fh == nil then return false end
-  file.write(fh, s)
-  file.flush(fh)
+  fh:write(s)
+  fh:flush()
   return true
 end
 
 function brec.begin(tag, iterations, planid)
-  brec.why, brec.stopped = nil, false
+  brec.why, brec.stopped, brec.rollfail = nil, false, false
   brec.nrow, brec.ntotrow, brec.nbyte, brec.ntotbyte, brec.nfile, brec.sincesync = 0, 0, 0, 0, 0, 0
   local fh, path, why = brec.newfile(brec.pfx)
   if fh == nil then brec.why = why; brec.stopped = true; return false, why end
@@ -8665,23 +8672,30 @@ function brec.header(tag, iterations, planid)
 end
 
 function brec.roll()
-  if brec.fh ~= nil then file.close(brec.fh) end
-  brec.fh = nil
+  local old = brec.fh
   if brec.ntotbyte >= brec.maxtotal then
     brec.stopped = true
     brec.why     = string.format('byte budget spent: %d bytes over %d file(s)', brec.ntotbyte, brec.nfile)
     brec.note(-1, -1, 0, brec.why)
+    if old ~= nil then old:close() end
+    brec.fh = nil
     return false
   end
+  brec.nfile = brec.nfile + 1
   local fh, path, why = brec.newfile(brec.pfx)
   if fh == nil then
-    brec.stopped = true
-    brec.why     = 'cannot roll to a new file: ' .. tostring(why)
+    brec.nfile    = brec.nfile - 1
+    brec.stopped  = true
+    brec.rollfail = true
+    brec.why      = 'cannot roll to a new file: ' .. tostring(why)
     brec.note(-1, -1, 0, brec.why)
+    if old ~= nil then old:close() end
+    brec.fh = nil
     return false
   end
+  if old ~= nil then old:close() end
+  brec.rollfail      = false
   brec.fh, brec.path = fh, path
-  brec.nfile = brec.nfile + 1
   brec.nrow, brec.nbyte, brec.sincesync = 0, 0, 0
   brec.header('roll', nil, nil)
   return true
@@ -8692,10 +8706,10 @@ function brec.row(s)
   if brec.fh == nil then return false end
   local line = 'R,' .. s .. '\n'
   if not brec.rawwrite(brec.fh, line) then
-    file.close(brec.fh)
+    brec.fh:close()
     brec.fh  = nil
     local fh = nil
-    fh = file.open(brec.path, file.MODE_APPEND)
+    fh = io.open(brec.path, 'a')
     if fh == nil then
       brec.stopped = true
       brec.why     = 'write failed and ' .. tostring(brec.path) .. ' will not reopen -- key pulled?'
@@ -8714,10 +8728,10 @@ function brec.row(s)
   brec.ntotbyte  = brec.ntotbyte + string.len(line)
   brec.sincesync = brec.sincesync + 1
   if brec.sincesync >= brec.syncrows then
-    file.close(brec.fh)
+    brec.fh:close()
     brec.fh  = nil
     local fh = nil
-    fh = file.open(brec.path, file.MODE_APPEND)
+    fh = io.open(brec.path, 'a')
     if fh == nil then
       brec.stopped = true
       brec.why     = 'reopen after sync failed on ' .. tostring(brec.path)
@@ -8733,18 +8747,26 @@ end
 function brec.reopen()
   if brec.ntotbyte >= brec.maxtotal then return false end
   if brec.fh ~= nil and not brec.stopped then return true end
-  if brec.fh ~= nil then file.close(brec.fh) end
+  if brec.fh ~= nil then brec.fh:close() end
   brec.fh = nil
   local fh, path = brec.newfile(brec.pfx)
   if fh == nil then return false end
   brec.fh, brec.path = fh, path
+  local n = fh:seek('end')
+  if n ~= nil then brec.nbyte = n end
+  if brec.rollfail and brec.nbyte >= brec.maxfile then
+    brec.fh:close()
+    brec.fh = nil
+    return false
+  end
   brec.sincesync = 0
   if not brec.header('resumed', nil, nil) then
-    file.close(brec.fh)
+    brec.fh:close()
     brec.fh = nil
     return false
   end
   brec.stopped, brec.why = false, nil
+  if brec.nbyte >= brec.maxfile then return brec.roll() end
   return true
 end
 
@@ -8763,7 +8785,7 @@ end
 
 function brec.finish(note)
   brec.note(-1, -1, 0, note or 'finished')
-  if brec.fh ~= nil then file.close(brec.fh) end
+  if brec.fh ~= nil then brec.fh:close() end
   brec.fh = nil
 end
 
@@ -9480,7 +9502,7 @@ function bplan.emit(path, opt)
   local fast  = opt.fast
   if fast == nil then fast = true end
   opt.fast = fast
-  local fh = file.open(path, file.MODE_WRITE)
+  local fh = io.open(path, 'w')
   if fh == nil then
     return false, 0, 'cannot write ' .. path .. ' -- is the key in and is /usb1/SERDEC there?'
   end
@@ -9496,7 +9518,7 @@ function bplan.emit(path, opt)
     nb = nb + 1
     buf[nb] = s
     if nb >= bplan.block then
-      file.write(fh, table.concat(buf, '\n') .. '\n')
+      fh:write(table.concat(buf, '\n') .. '\n')
       buf, nb = {}, 0
     end
   end
@@ -9512,10 +9534,10 @@ function bplan.emit(path, opt)
   put('# draw=' .. (fast and 'fast1' or 'exact'))
   put(bplan.cols)
   if nb > 0 then
-    file.write(fh, table.concat(buf, '\n') .. '\n')
+    fh:write(table.concat(buf, '\n') .. '\n')
     buf, nb = {}, 0
   end
-  file.flush(fh)
+  fh:flush()
   local total = 0
   for it = first, last do
     local rates, nr = bplan.rates(it)
@@ -9563,9 +9585,9 @@ function bplan.emit(path, opt)
       end
     end
   end
-  if nb > 0 then file.write(fh, table.concat(buf, '\n') .. '\n') end
-  file.flush(fh)
-  file.close(fh)
+  if nb > 0 then fh:write(table.concat(buf, '\n') .. '\n') end
+  fh:flush()
+  fh:close()
   if total ~= nrows then
     return false, total, string.format('the header declared %d row(s) and %d were written -- '
                                        .. 'bplan.lapsize disagrees with bplan.emit', nrows, total)
@@ -9589,53 +9611,39 @@ function bplan.lapsize(it, opt, reps)
   return n
 end
 
-function bplan.listed(dir, name)
-  if dir == nil or name == nil then return nil end
-  local fh = file.open(dir, file.MODE_READ)
-  if fh == nil then return nil end
-  local raw = file.read(fh, file.READ_ALL)
-  file.close(fh)
-  if raw == nil then return nil end
-  local up = string.upper(name)
-  if string.find(raw, up, 1, 1) ~= nil then return true end
-  local _, _, base, ext = string.find(up, '^([^.]+)%.(.+)$')
-  if base ~= nil then
-    local pad = base
-    while string.len(pad) < 8 do pad = pad .. ' ' end
-    if string.find(raw, pad .. ext, 1, 1) ~= nil then return true end
-  end
-  return false
-end
-
 bplan.dir = bplan.dir or '/usb1/SERDEC'
 
 bplan.hdrmax = bplan.hdrmax or 20
 
 function bplan.check(path)
-  local fh = file.open(path, file.MODE_READ)
+  local fh = io.open(path, 'r')
   if fh == nil then return false, 0, 'no plan on the key' end
   local want, cols, nrow, nhdr = nil, false, 0, 0
-  local ln = file.read(fh, file.READ_LINE)
+  local function rdline()
+    local l = fh:read('*l')
+    if l == nil then return nil end
+    return string.gsub(l, '[\r\n]', '')
+  end
+  local ln = rdline()
   while ln ~= nil and ln ~= '' and not cols and nhdr < bplan.hdrmax do
     nhdr = nhdr + 1
-    ln = string.gsub(ln, '[\r\n]', '')
     if ln == bplan.cols then
       cols = true
     elseif ln ~= '' and string.sub(ln, 1, 1) == '#' then
       local _, _, r = string.find(ln, 'rows=(%d+)')
       if r ~= nil then want = tonumber(r) end
     end
-    if not cols then ln = file.read(fh, file.READ_LINE) end
+    if not cols then ln = rdline() end
   end
   if not cols then
-    file.close(fh)
+    fh:close()
     return false, 0, 'the plan has no column header, so it is not a plan this engine reads'
   end
   if want == nil then
-    file.close(fh)
+    fh:close()
     return false, 0, 'the plan declares no row count, so the engine cannot tell where it ends'
   end
-  file.close(fh)
+  fh:close()
   return true, want, nil
 end
 
@@ -9750,7 +9758,7 @@ brun.lapcell   = 0
 function brun.planopen()
   brun.planclose()
   local fh = nil
-  fh = file.open(brun.planpath, file.MODE_READ)
+  fh = io.open(brun.planpath, 'r')
   if fh == nil then return false, 'cannot open ' .. brun.planpath end
   brun.pfh      = fh
   brun.planread = 0
@@ -9760,15 +9768,15 @@ end
 
 function brun.planclose()
   if brun.pfh == nil then return end
-  file.close(brun.pfh)
+  brun.pfh:close()
   brun.pfh = nil
 end
 
 function brun.nextrow()
   if brun.pfh == nil then return nil end
   if brun.planrows > 0 and brun.planread >= brun.planrows then return nil end
-  local ln = file.read(brun.pfh, file.READ_LINE)
-  if ln == nil or ln == '' then return nil end
+  local ln = brun.pfh:read('*l')
+  if ln == nil then return nil end
   ln = string.gsub(ln, '[\r\n]', '')
   if ln == '' then return brun.nextrow() end
   if string.sub(ln, 1, 1) == '#' then
@@ -10650,53 +10658,41 @@ function brun.announce(s)
 end
 
 function brun.stopped()
-  local fh = nil
-  fh = file.open(brun.dir, file.MODE_READ)
-  if fh == nil then return false end
-  local raw = file.read(fh, file.READ_ALL)
-  file.close(fh)
-  if raw == nil then return false end
-  return string.find(raw, 'STOP', 1, true) ~= nil
-end
-
-function brun.keysize(n83)
-  local fh = nil
-  fh = file.open(brun.dir, file.MODE_READ)
-  if fh == nil then return nil end
-  local raw = file.read(fh, file.READ_ALL)
-  file.close(fh)
-  if raw == nil then return nil end
-  local a = string.find(raw, n83, 1, true)
-  if a == nil then return nil end
-  local sz = nil
-  pcall(function()
-    sz = string.byte(raw, a + 28) + string.byte(raw, a + 29) * 256
-         + string.byte(raw, a + 30) * 65536 + string.byte(raw, a + 31) * 16777216
-  end)
-  return sz
+  local t = fs.readdir(brun.dir)
+  if type(t) ~= 'table' then return false end
+  local k, v
+  for k, v in pairs(t) do
+    if type(v) == 'string' and string.find(string.upper(v), '^STOP') ~= nil then return true end
+  end
+  return false
 end
 
 brun.scanevery = brun.scanevery or 100
 
 function brun.resume_scan()
-  local sz = brun.keysize('SOAK    CSV')
-  if sz == nil or sz <= 0 then return nil end
+  if brec == nil or brec.path == nil then return nil end
   local fh = nil
-  fh = file.open(brec.path, file.MODE_READ)
+  fh = io.open(brec.path, 'r')
   if fh == nil then return nil end
+  local sz = fh:seek('end')
+  fh:seek('set', 0)
+  if sz == nil or sz <= 0 then
+    fh:close()
+    return nil
+  end
   if brun.wk_say ~= nil then brun.wk_say('Finding where the run stopped', '') end
   if brun.show_now ~= nil then brun.show_now(brun.wkscr) end
   local nb, it, ce = 0, nil, nil
   local nsince = 0
-  while nb < sz do
+  while true do
     local l  = nil
-    l = file.read(fh, file.READ_LINE)
+    l = fh:read('*l')
     if l == nil then break end
-    nb = nb + string.len(l)
     nsince = nsince + 1
     if nsince >= brun.scanevery then
       nsince = 0
       if brun.wk_spin ~= nil and brun.wk_spin() then
+        nb = fh:seek()
         if brun.wk_say ~= nil then
           brun.wk_say(nil, string.format('%d of %d kB   %d%% read',
                                          brun.int(nb / 1024), brun.int(sz / 1024),
@@ -10711,7 +10707,7 @@ function brun.resume_scan()
       end
     end
   end
-  file.close(fh)
+  fh:close()
   return it, ce
 end
 
@@ -11338,10 +11334,10 @@ function beval.prev(path)
   path = path or beval.lastpath
   if fs == nil or fs.is_file == nil then return nil end
   if not fs.is_file(path) then return nil end
-  local fh = file.open(path, file.MODE_READ)
+  local fh = io.open(path, 'r')
   if fh == nil then return nil end
-  local last = file.read(fh, file.READ_LINE)
-  file.close(fh)
+  local last = fh:read('*l')
+  fh:close()
   if last == nil then return nil end
   last = string.gsub(last, '[\r\n]', '')
   if last == '' or string.sub(last, 1, 1) == '#' or last == beval.cols then return nil end
@@ -11358,23 +11354,23 @@ function beval.save(path, s)
   if s == nil then return false end
   local fresh = true
   if fs ~= nil and fs.is_file ~= nil then fresh = not fs.is_file(path) end
-  local fh = file.open(path, file.MODE_APPEND)
+  local fh = io.open(path, 'a')
   if fh == nil then return false end
   if fresh then
-    file.write(fh, '# one line per finished soak, written by bench/soak_eval.tsp\n')
-    file.write(fh, beval.cols .. '\n')
+    fh:write('# one line per finished soak, written by bench/soak_eval.tsp\n')
+    fh:write(beval.cols .. '\n')
   end
   local line = string.format('%d,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n',
                              s.when, tostring(s.tag), s.laps, s.cells, s.bad, s.judged,
                              s.cmpb, s.badb, s.wrong, s.flag, s.unexp, s.exp)
-  file.write(fh, line)
-  file.flush(fh)
-  file.close(fh)
-  local lh = file.open(beval.lastpath, file.MODE_WRITE)
+  fh:write(line)
+  fh:flush()
+  fh:close()
+  local lh = io.open(beval.lastpath, 'w')
   if lh ~= nil then
-    file.write(lh, line)
-    file.flush(lh)
-    file.close(lh)
+    lh:write(line)
+    lh:flush()
+    lh:close()
   end
   return true
 end

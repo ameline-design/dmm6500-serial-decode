@@ -527,6 +527,8 @@ function MD.events(id) return display.events[id] end
 local USB, LOG, FAILAT, WFAIL, RFAIL = true, {}, nil, nil, nil
 local PULLAT = nil
 local FFAIL, NLIVE = nil, 0
+local CFAIL = nil           -- a close that raises, armed by MD.failclose
+local CFAILPAT = nil        -- ...or keyed to a path, for a specific handle
 file = {MODE_APPEND = 'a', MODE_WRITE = 'w', MODE_READ = 'r',
         READ_LINE = 'line', READ_ALL = 'all'}
 -- Files that have been written, so MODE_READ can answer "does this exist?".
@@ -602,30 +604,44 @@ function file.usbdriveexists() if USB then return 1 end return 0 end
 -- trial open -- an open of a missing path posts, and in the free-name scan that meant
 -- a modal 'multiple errors' box over the hex dump.
 --
--- fs.mkdir's FAILURE signalling is NOT measured. file.mkdir posted 2208 and returned
--- nothing; whether fs.mkdir posts, returns false, or raises is unknown. So this models
--- the structural outcome only -- the directory appears or it does not -- and posts
--- NOTHING, which means a test must verify with fs.is_dir rather than by a return value.
--- Anything in the app that depends on how a failure is SIGNALLED is untested offline.
+-- fs, documented at Ref 14-264 and always present on this instrument. Absent here,
+-- `pcall(fs.is_file, p)` indexes a nil table and raises outside the guard -- which was the only
+-- reason ulog.exists probed for the table at all before using it. Backed by the same registry the
+-- file.* mock writes to, so a name written through either front end answers true.
+--
+-- A missing key is not a missing file, and the two answers differ: with no key there is nothing to
+-- read, so every path is absent. A trial open could never distinguish those, which is why the real
+-- call is preferred over it.
+--
+-- fs.mkdir's signalling is measured, 2026-10-24: it returns nil on success and on every failure, so
+-- the return value carries nothing -- ulog.ensuredir taking its verdict from a rootlists re-read is
+-- correct and must stay. It posts 2220 for a directory that already exists and 2205 for a parent
+-- that is absent. Not 2208; that was file.mkdir. So a speculative mkdir is still a box on the
+-- panel, and the event count here is what measures that the app never issues one.
+--
+-- Defined ONCE. There were two of each of is_file and is_dir, 35 lines apart, and the second pair
+-- won -- so the either-front-end fix in the first pair was dead the moment it was written.
 fs = fs or {}
-function fs.is_file(path)
-  if not USB then return false end
-  local p = abs(tostring(path))
-  -- EITHER FRONT END. file.open(MODE_WRITE) seeds CONTENT and io.open('w') seeds
-  -- FILES, so checking one of them answered false for a file the other had written --
-  -- and during a migration both are in play.
-  return FILES[p] == true or CONTENT[p] ~= nil
+function fs.is_file(p)
+  if p == nil or not USB then return false end
+  local ap = abs(tostring(p))
+  -- Either front end: file.open(MODE_WRITE) seeds CONTENT and io.open('w') seeds FILES, so testing
+  -- one of them answers false for a file the other wrote.
+  return FILES[ap] == true or CONTENT[ap] ~= nil
 end
-function fs.is_dir(path)
-  if not USB then return false end
-  return DIRS[abs(tostring(path))] == true
+function fs.is_dir(p)
+  if p == nil or not USB then return false end
+  return DIRS[abs(tostring(p))] == true
 end
 function fs.mkdir(path)
   local p = abs(tostring(path))
-  if not USB then return end
-  if string.sub(p, 1, 1) ~= '/' then return end          -- bare names always fail
-  if DIRS[p] then return end                             -- and so does one that exists
-  if not DIRS[parentof(p)] then return end               -- one level only
+  if not USB then return end                       -- silent with no key, measured
+  -- A bare relative name is unmeasured through fs.mkdir and unreachable from the app, which refuses
+  -- a non-absolute directory before it gets here. It fails, and posts nothing it has not been seen
+  -- to post.
+  if string.sub(p, 1, 1) ~= '/' then return end
+  if DIRS[p] then post(2220) return end
+  if not DIRS[parentof(p)] then post(2205) return end
   DIRS[p] = true
 end
 function fs.rmdir(path)
@@ -633,23 +649,35 @@ function fs.rmdir(path)
   if not USB then return end
   DIRS[p] = nil
 end
-
--- fs, DOCUMENTED AT REF 14-264 AND ALWAYS PRESENT ON THIS INSTRUMENT. Absent here,
--- `pcall(fs.is_file, p)` indexes a nil table and raises OUTSIDE the guard -- which was the only
--- reason ulog.exists probed for the table at all before using it. Backed by the same registry the
--- file.* mock writes to, so a name this mock has written answers true.
---
--- A MISSING KEY IS NOT A MISSING FILE, and the two answers differ: with no key there is nothing to
--- read, so every path is absent. That is what the open probe could never distinguish, and the whole
--- reason the real call is preferred over it.
-fs = fs or {}
-function fs.is_file(p)
-  if p == nil or not USB then return false end
-  return CONTENT[abs(p)] ~= nil
-end
-function fs.is_dir(p)
-  if p == nil or not USB then return false end
-  return DIRS[abs(p)] == true
+-- INDEXED FROM 0, because the firmware is. Measured on three directories: table.getn reports one
+-- less than the entry count, and a directory holding a single file reports getn 0 and reads as
+-- empty. A 1-based mock would hide every `for i = 1, table.getn(t)` walk -- which is the form
+-- Keithley's own example at Ref 14-264 uses, and the form that silently lost SOAK.csv here.
+-- Real long names, and no '.' or '..'. nil plus 2204 for an absent directory or for a path that
+-- names a file.
+function fs.readdir(path)
+  local p = abs(tostring(path))
+  if not USB then return nil end
+  if not DIRS[p] then post(2204) return nil end
+  local pfx = p
+  if string.sub(pfx, -1) ~= '/' then pfx = pfx .. '/' end
+  local seen, out, n = {}, {}, 0
+  local function add(k)
+    if string.sub(k, 1, string.len(pfx)) ~= pfx then return end
+    local tail = string.sub(k, string.len(pfx) + 1)
+    local nm   = string.gsub(tail, '/.*$', '')
+    if nm == '' or seen[nm] then return end
+    -- A nested path proves the child directory only if DIRS still holds it.
+    if nm ~= tail and not DIRS[pfx .. nm] then return end
+    seen[nm] = true
+    out[n]   = nm
+    n        = n + 1
+  end
+  local k
+  for k in pairs(DIRS) do if k ~= p then add(k) end end
+  for k in pairs(CONTENT) do add(k) end
+  for k in pairs(FILES) do add(k) end
+  return out
 end
 -- What the app actually created, so a test can assert the directory rather than infer it.
 function MD.dirs() return DIRS end
@@ -905,6 +933,39 @@ io = io or {}
 local real_io_open = io.open
 local MOCKROOT = '/usb1'
 
+-- os.remove and os.rename reach the HOST unless /usb1 paths are intercepted, so a TSP module that
+-- grew an os.remove would delete a real file during a suite run. Host paths still pass through --
+-- test_plan_gen writes host scratch files -- and os.execute answers nil, as the instrument does with
+-- no shell.
+local real_os_remove, real_os_rename = os.remove, os.rename
+function os.remove(path)
+  local raw = tostring(path)
+  if string.sub(raw, 1, string.len(MOCKROOT)) ~= MOCKROOT then return real_os_remove(path) end
+  local ap = abs(path)
+  if CONTENT[ap] == nil and FILES[ap] == nil then return nil, ap .. ': No such file or directory' end
+  CONTENT[ap], FILES[ap] = nil, nil
+  return true
+end
+function os.rename(from, to)
+  local raw = tostring(from)
+  if string.sub(raw, 1, string.len(MOCKROOT)) ~= MOCKROOT then return real_os_rename(from, to) end
+  local a1, a2 = abs(from), abs(to)
+  if CONTENT[a1] == nil and FILES[a1] == nil then return nil, a1 .. ': No such file or directory' end
+  CONTENT[a2], FILES[a2] = CONTENT[a1], FILES[a1]
+  CONTENT[a1], FILES[a1] = nil, nil
+  return true
+end
+function os.execute() return nil end
+
+-- An open that is refused, for a full key or a full directory. That is the one file failure which
+-- shows up as an open returning nil rather than as a write going quietly nowhere, and brec.roll
+-- depends on telling them apart. A test used to reach it by assigning to the global io.open, which
+-- leaks the patch if an assertion raises before the restore and routes around everything below.
+local OREFUSE  = nil
+local OREFUSED = 0
+function MD.refuse_open(pat) OREFUSE = pat; OREFUSED = 0 end
+function MD.refused_opens() return OREFUSED end
+
 function io.open(path, mode)
   -- THE RAW PATH DECIDES, NOT abs(). abs() prefixes a relative path with the
   -- instrument root, so testing the expanded form sent host-relative paths like
@@ -919,10 +980,19 @@ function io.open(path, mode)
   local ap = abs(path)
   mode = mode or 'r'
   local reading = (mode == 'r' or mode == 'rb')
+  -- Refused first, and silently: an open that fails for want of space answers nil and posts nothing,
+  -- like every other io failure measured on this firmware.
+  if OREFUSE ~= nil and string.find(ap, OREFUSE) ~= nil then
+    OREFUSED = OREFUSED + 1
+    return nil, ap .. ': no space left on device'
+  end
   if not USB then
-    -- Same wrapper underneath, so the no-key events are the file.open ones.
-    if ap == '/usb1' then post(2205) else post(2224) end
-    return nil, ap .. ': No such file'
+    -- Measured 2026-10-24 with no key at all: read, write and append each answer nil plus this
+    -- message, and the event log stays at 0 across all three. file.open posted 2224 for a file and
+    -- 2205 for /usb1, and 2205 is the severity showevents still raises a box for -- so removing
+    -- those two posts is most of what the migration bought. A mock that posts them cannot host a
+    -- test of the migration's headline claim.
+    return nil, ap .. ': No such file or directory'
   end
   -- A missing parent fails every mode, for the reason file.open's comment gives: a
   -- filesystem cannot hold /usb1/SERDEC/x while /usb1/SERDEC is absent.
@@ -981,6 +1051,9 @@ function io.open(path, mode)
     -- just returns. Either way NOTHING IS WRITTEN, which is the part the app has to
     -- notice for itself through ulog.keyok().
     if not USB then return self end
+    -- Directory gone means the handle is dead and the bytes go nowhere -- measured across a key pull,
+    -- and it stops a stale handle writing a file back into a wiped registry.
+    if not DIRS[parentof(self.path)] then return self end
     LOG[table.getn(LOG) + 1] = part
     self.body = self.body .. part
     CONTENT[self.path] = self.body
@@ -990,6 +1063,7 @@ function io.open(path, mode)
   end
   function h.flush(self)
     if FFAIL ~= nil then FFAIL = FFAIL - 1; if FFAIL < 0 then error('USB flush failed', 0) end end
+    if not DIRS[parentof(self.path)] then return self end
     CONTENT[self.path] = self.body
     FLUSHES = (FLUSHES or 0) + 1
     return self
@@ -1045,13 +1119,44 @@ function io.open(path, mode)
     end
     return r
   end
+  -- A SECOND CLOSE RAISES, measured on 1.7.17a, where file.close could not transfer control at all.
+  -- That is why the register is nilled BEFORE the close in sdec.unwind (tsp/serial_app.tsp) and in
+  -- ulog.keylost: sdec.unwind is documented raise-free by construction, and a double close is the
+  -- one thing in it that can raise. Until this guard existed nothing offline could fail if that
+  -- ordering were reverted.
+  --
+  -- It also kept MD.handles() honest. close used to decrement NLIVE unconditionally, so two closes
+  -- on one handle took the count to -1 and a genuine leak elsewhere in the same test netted to zero
+  -- and read as 'no leak' -- in the mock's only strandedness accounting.
+  local function usecheck(self, what)
+    if self.closed then error('attempt to use a closed file (' .. what .. ')', 0) end
+  end
   function h.close(self)
-    if not self.reading then CONTENT[self.path] = self.body end
+    usecheck(self, 'close')
+    -- A close that fails, armed by MD.failclose. Without it the deregister-before-close ordering at
+    -- the register sites was untestable: the ordering only matters when the FIRST close raises, and
+    -- nothing could make one. The handle is left open and NLIVE undecremented, which is what a
+    -- failed close does.
+    if CFAIL ~= nil then
+      CFAIL = CFAIL - 1
+      if CFAIL < 0 then error('USB close failed', 0) end
+    end
+    if CFAILPAT ~= nil and string.find(self.path, CFAILPAT) ~= nil then
+      error('USB close failed on ' .. self.path, 0)
+    end
+    if not self.reading and DIRS[parentof(self.path)] then CONTENT[self.path] = self.body end
     self.pos = string.len(self.body)
     self.closed = true
     NLIVE = NLIVE - 1
     return true
   end
+  -- Every other method too: Lua's own liolib refuses all of them on a closed handle, and a mock that
+  -- accepted a write after a close would hide a use-after-close in the app.
+  local raw = {write = h.write, read = h.read, seek = h.seek, flush = h.flush}
+  h.write = function(self, a) usecheck(self, 'write') return raw.write(self, a) end
+  h.read  = function(self, a) usecheck(self, 'read')  return raw.read(self, a) end
+  h.seek  = function(self, a, b) usecheck(self, 'seek') return raw.seek(self, a, b) end
+  h.flush = function(self) usecheck(self, 'flush') return raw.flush(self) end
   return h
 end
 
@@ -1108,6 +1213,11 @@ end
 function MD.failwrite(n) WFAIL = n end
 -- Make the Nth flush raise on a GOOD handle -- the present-and-refusing key.
 function MD.failflush(n) FFAIL = n end
+function MD.failclose(n) CFAIL = n end
+-- Keyed to a path, because a count is fragile: the first close after arming is often some other
+-- handle's -- ulog.rootlists closes /usb1, the debug log closes itself -- so a count aimed at one
+-- handle lands on another and the test measures nothing.
+function MD.failclose_on(pat) CFAILPAT = pat end
 -- Live handles: opens minus closes. A STRANDED HANDLE IS UNOBSERVABLE WITHOUT THIS, because
 -- file.open hands out the constant 42 for writes, so a second open after a leak looks identical.
 function MD.handles() return NLIVE end

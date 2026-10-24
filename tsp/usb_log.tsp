@@ -1,8 +1,9 @@
 -- usb_log.tsp -- debug logging to the USB key, for TSP apps on Keithley TTI instruments (Lua 5.0.2).
 -- A .tspa from the Apps menu has nowhere to print, and the event log holds only firmware errors and
 -- is cleared by whatever happens next. `ulog` is the one exception to the one-global rule: sdec and
--- fftsa share it. No key is normal, so every call degrades to a no-op, and no file call raises --
--- docs/MEASUREMENTS.md, 'No file call raises'.
+-- fftsa share it. No key is normal, so every call degrades to a no-op. io answers nil rather than
+-- raising on every failure measured on 1.7.17a, including a write to a dead-key handle; a second
+-- close is the one call here that does raise, so handles are deregistered before closing.
 
 ulog        = ulog or {}
 
@@ -102,33 +103,31 @@ function ulog.resume()
   return ulog.open(nil, false)
 end
 
--- Is `name` listed in the USB root? true, false, or nil when the root could not be read; nil taken
--- as absence orders a mkdir on no evidence and posts 2208, so the two must not be merged. Only an
--- 8.3-clean name is contiguous in the FAT table, hence 'SERDEC' -- docs/MEASUREMENTS.md, 'Why the
--- directory is called SERDEC'. Not a FAT parser: a stale entry errs towards 'present'.
+-- Is `name` listed in the USB root? true, false, or nil when the root could not be read. nil taken as
+-- absence orders a mkdir on no evidence, and a mkdir on a directory already there posts 2220 -- a box
+-- -- so the two must not be merged. fs.is_dir cannot express the nil, which is why it is not used.
 --
--- WHAT IS OPENED HERE IS A DIRECTORY, not a file, and the listing comes back because a FAT directory
--- reads as 65536 bytes of entries. That behaviour is UNDERNEATH the wrapper, not in it, so io sees it
--- too -- measured on 1.7.17a 2026-10-24: io.open('/usb1','r') gives a handle and 0 events,
--- f:seek('end') is 65536, and f:read('*a') is the same 65536 bytes file.read(READ_ALL) returns,
--- starting 'IA_SKEY3   ('. Worth stating because the opposite would have been invisible offline: the
--- mock hands the listing to both front ends, so an io that did NOT read directories would have left
--- every suite green while ensuredir() answered 'cannot read the USB root' for ever and the log, the
--- byte log and Save never opened again.
+-- fs.readdir replaced a parse of 65536 bytes of raw FAT table, which tied this to FAT32 and could
+-- only see a name FAT stores contiguously: an 11-character directory once broke a run because its
+-- long name was split across entries and read as absent.
+--
+-- Walked with pairs() because readdir is indexed from 0 -- measured on three directories: getn
+-- reports one less than the entry count, and a directory holding one file reports getn 0.
+--
+-- Upper-cased on both sides, because the filesystem is case-insensitive and the directory on the
+-- shipped key is actually 'SerDec'. An exact match would report it absent and mkdir over it.
 function ulog.rootlists(name)
   if name == nil or name == '' then return nil end
-  local fh = io.open('/usb1', 'r')
-  if fh == nil then return nil end
-  local raw = fh:read('*a')
-  fh:close()
-  -- EMPTY COUNTS AS UNREADABLE, not as 'the directory is absent'. '*a' returns '' and not nil when
-  -- there is nothing to give -- measured on the real 5.0.2 as well as the host -- and '' would walk
-  -- straight on to string.find, miss, report absence, and order a mkdir on no evidence, which is the
-  -- 2208 this function exists to avoid. The real table is 65536 bytes however empty the directory is,
-  -- so no legitimate read lands here.
-  if raw == nil or raw == '' then return nil end
-  -- `1` for a plain find, no patterns.
-  if string.find(raw, string.upper(name), 1, 1) ~= nil then return true end
+  -- Guarded, not assumed. fs is always there on 1.7.17a, but a bare index would raise at launch on a
+  -- firmware without it, and nil here is the honest answer: the root could not be read.
+  if fs == nil or fs.readdir == nil then return nil end
+  local t = fs.readdir('/usb1')
+  if type(t) ~= 'table' then return nil end
+  local want = string.upper(name)
+  local k, v
+  for k, v in pairs(t) do
+    if type(v) == 'string' and string.upper(v) == want then return true end
+  end
   return false
 end
 
@@ -140,11 +139,20 @@ function ulog.ensuredir(dir)
   -- First, without touching a path: with no key a file path posts 2224 and /usb1 posts 2205. keyok()
   -- rather than haskey(), so the latch is honoured and a dead key is not re-probed per capture.
   if not ulog.keyok() then return false, tostring(ulog.keywhy or 'no USB key') end
-  -- Cached, the root listing being 65536 bytes, and only a confirmed directory is cached.
+  -- Cached, and only a confirmed directory is cached: the listing is one readdir, but this runs per
+  -- capture.
   if ulog.dirok == dir then return true end
   if string.sub(dir, 1, 1) ~= '/' then return false, 'directory must be absolute: ' .. dir end
-  -- Refused rather than renamed silently: a longer name is not contiguous in the FAT table, so every
-  -- lookup would answer absent, order a mkdir on a directory that exists, and post 2208.
+  -- One level below the root, checked: rootlists searches the /usb1 listing, so a deeper leaf can
+  -- never appear in it. It answers false rather than nil, a mkdir goes out on no evidence, and with
+  -- the intermediate directory absent that mkdir posts 2205 -- a box, once per capture, since dirok
+  -- is never set. Every shipped default is one level, but `dir` is a parameter.
+  local rest = string.gsub(dir, '^/[^/]*/?', '')
+  if string.find(rest, '/') ~= nil then
+    return false, 'directory must be one level below the root: ' .. dir
+  end
+  -- The listing no longer needs an 8.3 name, but the convention is kept: the host tools that prune
+  -- and fetch the key match on these names.
   local leafchk = string.gsub(dir, '^.*/', '')
   if string.len(leafchk) > 8 or leafchk ~= string.upper(leafchk) then
     return false, 'directory name must be 8 upper-case characters or fewer: ' .. leafchk
@@ -152,12 +160,12 @@ function ulog.ensuredir(dir)
   local leaf   = string.gsub(dir, '^.*/', '')
   local listed = ulog.rootlists(leaf)
   if listed == true then ulog.dirok = dir; return true end
-  -- Absence is not established, and a mkdir on that basis is the 2208 this path avoids.
+  -- Absence is not established, and a mkdir on that basis is the 2220 this path avoids.
   if listed == nil then return false, 'cannot read the USB root' end
-  -- Bare, and it has to be: fs.mkdir returns nothing, so a guard round it would report success every
-  -- time, and HOW IT SIGNALS A FAILURE IS UNMEASURED -- file.mkdir posted 2208, and whether fs.mkdir
-  -- posts anything at all is unknown. So the rootlists() re-read below is the only verdict there is,
-  -- and the one piece of this function that must not be traded for a return value.
+  -- Bare, and it has to be: measured 2026-10-24, fs.mkdir returns nil on success AND on every
+  -- failure, so a guard round it would report success every time. It posts 2220 for a directory that
+  -- already exists and 2205 for an absent parent. The rootlists() re-read below is the only verdict
+  -- there is, and the one piece of this function that must not be traded for a return value.
   fs.mkdir(dir)
   if ulog.rootlists(leaf) == true then ulog.dirok = dir; return true end
   return false, 'cannot create ' .. dir

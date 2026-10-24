@@ -2990,7 +2990,7 @@ function sdec.start()
 
   local ok, err = pcall(function()
     ulog.tag = 'SDEC'
-    -- Once, here, and not per write: confirming the directory reads the whole 64 kB FAT table.
+    -- Once, here, and not per write: confirming the directory costs a readdir of /usb1.
     ulog.ensuredir()
     ulog.open(sdec.logpath)
 

@@ -58,10 +58,22 @@ INCOMPAT = [
     # close, flush, input and output are all functions, io.lines is NIL. The host Lua HAS
     # it, so a module using it passes every offline suite and raises on the box. Exactly
     # the math.fmod shape of trap, which is why it belongs here and not in a comment.
-    (r'\bio\.lines\b', "io.lines (ABSENT on the instrument -- iterate with h:read('*l'))"),
-    (r'\bfile\.(?!usbdriveexists)[A-Za-z_]',
+    # BOTH PATTERNS ALLOW SPACES AND THE BRACKET FORM, because the dotted spelling was not the only
+    # way to write them: `file['read']`, `file . read(p)` and `io['lines'](p)` all passed, and so did
+    # `local f = file` followed by `f.read(...)`. The alias is the only one a hand edit would
+    # plausibly produce, and it is the one still not caught -- an alias cannot be seen without
+    # tracking assignment, so it is left to review.
+    (r'\bio\s*\.\s*lines\b', "io.lines (ABSENT on the instrument -- iterate with h:read('*l'))"),
+    (r'\bfile\s*\.\s*(?!usbdriveexists)[A-Za-z_]',
      "Keithley file.* (use io.*/os.*/fs.*; file.read posts 2201 at the end of a file, which is a "
      "modal box. Only file.usbdriveexists is allowed)"),
+    # THE BRACKET FORM IS BANNED WHOLE, name and all, because the name cannot be read: strip() blanks
+    # string bodies before these patterns run, so `file['read']` arrives as `file['']` and no pattern
+    # on the field can see it. Neither table is ever indexed that way in this tree, so banning the
+    # shape costs nothing and closes the hole. What is still not caught is an alias -- `local f = file`
+    # then `f.read(...)` -- which needs assignment tracking, and is left to review.
+    (r'\bfile\s*\[', "file.* by bracket index (the field name is unreadable here, so the form is refused)"),
+    (r'\bio\s*\[', "io by bracket index (io.lines is absent and the field name is unreadable here)"),
     # THE SAME TRAP AS math.fmod, AND IT COST A RUN. string.match and string.gmatch arrived in 5.1;
     # 5.0.2 has string.find (which returns its captures after the two indices) and string.gfind. The
     # host Lua has all four, so a module using string.match passes every offline suite and then dies on
@@ -234,9 +246,17 @@ def check_dupes(code, name):
     THE INDENTATION HALF IS WHAT GENERALISES: the duplicate was byte-identical, so the name test caught
     it, but a nested DIFFERENT function would only trip the indentation. `local function` is how a real
     helper is written here and does not match.
+
+    AND THE ASSIGNMENT FORM, added after one shipped. 65 lines of chunk_decode.tsp's ck_sink_file --
+    `local sink = function(...)`, `local finished = false`, `local finish = function()` -- were
+    duplicated into the same function body by a commit whose message said it rewrote three comments.
+    The pattern above cannot see it: there is no `function NAME(` anywhere in it. luac 5.0.2 accepts
+    it, the nesting check does not apply, 2810 assertions passed, and it reached both shipping
+    archives. The later copy wins, so the dead copy is the one a reader is most likely to edit.
     """
     seen, errs = {}, []
-    for lineno, line in enumerate(code.split('\n'), 1):
+    lines = code.split('\n')
+    for lineno, line in enumerate(lines, 1):
         m = re.match(r'(\s+)?function\s+([A-Za-z_][A-Za-z0-9_.:]*)\s*\(', line)
         if not m:
             continue
@@ -250,6 +270,30 @@ def check_dupes(code, name):
                         f'later one silently wins, and only when its enclosing scope runs')
         else:
             seen[fn] = lineno
+
+    # `local NAME = function`, scoped to the enclosing top-level function. Scope is tracked by column
+    # alone -- a `function` at column 0 opens one and an `end` at column 0 closes it -- which is exact
+    # for this tree because every file-scope definition here is unindented.
+    scope, lseen = False, {}
+    for lineno, line in enumerate(lines, 1):
+        if re.match(r'(local\s+)?function\s+[A-Za-z_]', line):
+            scope, lseen = True, {}
+            continue
+        if re.match(r'end\s*$', line):
+            scope, lseen = False, {}
+            continue
+        if not scope:
+            continue
+        m = re.match(r'\s+local\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*function\b', line)
+        if not m:
+            continue
+        fn = m.group(1)
+        if fn in lseen:
+            errs.append(f'{name}:{lineno}: `local {fn} = function` is already defined at line '
+                        f'{lseen[fn]} in the same function body -- the later one wins and the earlier '
+                        f'is dead code that reads as live')
+        else:
+            lseen[fn] = lineno
     return errs
 
 

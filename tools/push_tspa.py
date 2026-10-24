@@ -14,11 +14,11 @@ Writing the file to the key instead leaves the instrument's own installer to do 
 install, so a result can be compared with every result obtained by carrying the key
 across the room. The only thing this replaces is the walk.
 
-VERIFIED BY READING IT BACK, because a silent short write is the exact failure this
-must not have: file.write on this firmware reports a failed write only as a pop-up and
-returns success, so the length and the CR/LF counts are compared against the local file
-afterwards. READ_ALL is used for that, and only the counts come back over the socket,
-never the content.
+Verified by reading it back, because a silent short write is the exact failure this must
+not have, and neither front end reports one at the write. file.write returned success and
+posted a popup; an io write to a dead-key handle returns success and posts nothing at all,
+measured. So the length and the CR/LF counts are compared against the local file
+afterwards, with only the counts coming back over the socket, never the content.
 
     python3 tools/push_tspa.py --file ~/tmp/sdec-versions/C_ca93c8f.tspa
     python3 tools/push_tspa.py --file build.tspa --dest /usb1/Serial_Decode.tspa
@@ -35,7 +35,7 @@ END = '===PUSH-END==='
 # The execute path accepts exactly 1024 bytes on a line, terminator included; one more
 # raises -363. Everything below budgets against that, with room for the wrapper.
 LINE_BUDGET = 1024
-WRAP = len('file.write(fh,"")') + 8
+WRAP = len('fh:write("")') + 8     # the io form is 5 bytes shorter than file.write(fh,"")
 SYNC_EVERY = 25
 
 
@@ -103,16 +103,20 @@ def main():
         d.exec('pcall(function() display.changescreen(display.SCREEN_HOME) end)', timeout=30)
         d.exec('eventlog.clear()', timeout=30)
 
-        # MODE_WRITE truncates, which is what a replacement wants. Opened once and held: one
-        # open per chunk would be 600 opens and would also lose the truncation semantics.
-        r = d.q('fh = nil pcall(function() fh = file.open("%s", file.MODE_WRITE) end) '
+        # Mode 'w' truncates, which is what a replacement wants. Opened once and held: one open per
+        # chunk would be 600 opens and would also lose the truncation semantics.
+        #
+        # io, not file.*: a write that fails reported itself only as a popup on the panel, and an io
+        # write to a dead-key handle is silent -- measured. Neither is detectable at the write, which
+        # is why the read-back below is the verification and not a formality.
+        r = d.q('fh = io.open("%s", "w") '
                 'print(tostring(fh ~= nil))' % dest, timeout=60)
         if r != 'true':
             raise SystemExit('could not open %s for writing (reply %r)' % (dest, r))
 
         t0 = time.time()
         for i, part in enumerate(parts):
-            d.send('file.write(fh,"%s")' % lua_quote(part))
+            d.send('fh:write("%s")' % lua_quote(part))
             if (i + 1) % SYNC_EVERY == 0:
                 # SYNCED PERIODICALLY, not fired blind: a few hundred unread statements can
                 # overrun the instrument's input buffer, and a sync also gives a progress point
@@ -121,15 +125,15 @@ def main():
                     raise SystemExit('lost sync after %d of %d statements' % (i + 1, len(parts)))
                 sys.stdout.write('\r  %d/%d statements' % (i + 1, len(parts)))
                 sys.stdout.flush()
-        d.exec('pcall(function() file.close(fh) end) fh = nil', timeout=60)
+        d.exec('fh:flush() fh:close() fh = nil', timeout=60)
         print('\r  %d/%d statements, %.1f s' % (len(parts), len(parts), time.time() - t0))
 
         d.drain()
-        d.send('local g = nil pcall(function() g = file.open("%s", file.MODE_READ) end) '
+        d.send('local g = io.open("%s", "r") '
                'if g == nil then print("NO-FILE") else '
-               '  local raw = nil pcall(function() raw = file.read(g, file.READ_ALL) end) '
-               '  pcall(function() file.close(g) end) '
-               '  if raw == nil then print("NO-READ") else '
+               '  local raw = g:read("*a") '
+               '  g:close() '
+               '  if raw == nil or raw == "" then print("NO-READ") else '
                '    local _, ncr = string.gsub(raw, "\\r", "") '
                '    local _, nlf = string.gsub(raw, "\\n", "") '
                '    print("ONKEY len=" .. string.len(raw) .. " cr=" .. ncr .. " lf=" .. nlf) '
