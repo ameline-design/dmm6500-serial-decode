@@ -128,16 +128,33 @@ SERIAL DECODE - 240B FRAME	button	266	362	100	0	1	16777215	-1	0	1	enable	Mode
 SERIAL DECODE - 240B FRAME	button	390	362	112	0	1	16777215	-1	0	1	enable	NewLog
 SERIAL DECODE - 240B FRAME	button	526	362	112	0	1	16777215	-1	0	1	enable	Save
 SERIAL DECODE - 240B FRAME	button	662	362	112	0	1	16777215	-1	0	1	enable	Options
-SERIAL DECODE OPTIONS	editopt	185	13	0	0	1	16777215	-1	0	1	enable	Protocol	wire parameters	UART
-SERIAL DECODE OPTIONS	editnum	185	81	0	0	1	16777215	-1	0	1	enable	Baud Rate	0 = auto-detect	0 Bd
-SERIAL DECODE OPTIONS	editopt	185	149	0	0	1	16777215	-1	0	1	enable	Data Bits	auto, or fix it	Auto (7/8)
-SERIAL DECODE OPTIONS	editopt	185	217	0	0	1	16777215	-1	0	1	enable	Parity	auto or fixed	Auto
-SERIAL DECODE OPTIONS	editopt	185	285	0	0	1	16777215	-1	0	1	enable	Polarity	idle level	Auto
-SERIAL DECODE OPTIONS	editopt	552	13	0	0	1	16777215	-1	0	1	enable	Trigger	capture start	Free run
-SERIAL DECODE OPTIONS	editopt	552	81	0	0	1	16777215	-1	0	1	enable	Rear BNC	trig in / FC out	Off
-SERIAL DECODE OPTIONS	editnum	552	149	0	0	1	16777215	-1	0	1	enable	Arm At	wake-up level	1.0 V
-SERIAL DECODE OPTIONS	editnum	552	217	0	0	1	16777215	-1	0	1	enable	Arm/Idle Wait	max wait, frozen	10.0 s
+SERIAL DECODE OPTIONS	editopt	185	14	0	0	1	16777215	-1	0	1	enable	Protocol	wire parameters	UART
+SERIAL DECODE OPTIONS	editnum	185	68	0	0	1	16777215	-1	0	1	enable	Baud Rate	0 = auto-detect	0 Bd
+SERIAL DECODE OPTIONS	editopt	185	122	0	0	1	16777215	-1	0	1	enable	Data Bits	auto, or fix it	Auto (7/8)
+SERIAL DECODE OPTIONS	editopt	185	176	0	0	1	16777215	-1	0	1	enable	Parity	auto or fixed	Auto
+SERIAL DECODE OPTIONS	editopt	185	230	0	0	1	16777215	-1	0	1	enable	Bit Order	LSB unless told	Auto
+SERIAL DECODE OPTIONS	editopt	185	284	0	0	1	16777215	-1	0	1	enable	Polarity	idle level	Auto
+SERIAL DECODE OPTIONS	editopt	552	14	0	0	1	16777215	-1	0	1	enable	Trigger	capture start	Free run
+SERIAL DECODE OPTIONS	editopt	552	68	0	0	1	16777215	-1	0	1	enable	Rear BNC	trig in / FC out	Off
+SERIAL DECODE OPTIONS	editnum	552	122	0	0	1	16777215	-1	0	1	enable	Arm At	wake-up level	1.0 V
+SERIAL DECODE OPTIONS	editnum	552	176	0	0	1	16777215	-1	0	1	enable	Arm Wait	max wait, frozen	10.0 s
+SERIAL DECODE OPTIONS	editnum	552	230	0	0	1	16777215	-1	0	1	enable	Over-read	0 off, idle margin	10.0 %
 SERIAL DECODE OPTIONS	button	22	360	200	0	1	16777215	-1	0	1	enable	Auto Detect
 SERIAL DECODE OPTIONS	button	234	360	220	0	1	16777215	-1	0	1	enable	Lock Detected
 SERIAL DECODE OPTIONS	button	466	360	150	0	1	16777215	-1	0	1	enable	Apply
 SERIAL DECODE OPTIONS	button	628	360	150	0	1	16777215	-1	0	1	enable	Cancel
+SERIAL DECODE MESSAGES	text	8	18	0	0	1	16777215	-1	0	1	enable	
+SERIAL DECODE MESSAGES	text	8	41	0	0	1	16777215	-1	0	1	enable	
+SERIAL DECODE MESSAGES	text	8	64	0	0	1	16777215	-1	0	1	enable	
+SERIAL DECODE MESSAGES	text	8	87	0	0	1	16777215	-1	0	1	enable	
+SERIAL DECODE MESSAGES	text	8	110	0	0	1	16777215	-1	0	1	enable	
+SERIAL DECODE MESSAGES	text	8	133	0	0	1	16777215	-1	0	1	enable	
+SERIAL DECODE MESSAGES	text	8	156	0	0	1	16777215	-1	0	1	enable	
+SERIAL DECODE MESSAGES	text	8	179	0	0	1	16777215	-1	0	1	enable	
+SERIAL DECODE MESSAGES	text	8	202	0	0	1	16777215	-1	0	1	enable	
+SERIAL DECODE MESSAGES	text	8	225	0	0	1	16777215	-1	0	1	enable	
+SERIAL DECODE MESSAGES	text	8	248	0	0	1	16777215	-1	0	1	enable	
+SERIAL DECODE MESSAGES	text	8	271	0	0	1	16777215	-1	0	1	enable	
+SERIAL DECODE MESSAGES	text	8	294	0	0	1	16777215	-1	0	1	enable	
+SERIAL DECODE MESSAGES	text	8	335	0	0	1	11053224	-1	0	1	enable	
+SERIAL DECODE MESSAGES	button	662	362	112	0	1	16777215	-1	0	1	enable	Back
