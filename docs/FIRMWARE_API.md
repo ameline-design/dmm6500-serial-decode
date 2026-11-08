@@ -690,6 +690,168 @@ And the initial burst is decimated: the stream request `S$BA` (`0x00527550`, sen
 or `0x288` = 648 in the latest-window mode, and a larger buffer is decimated by the buffer module
 before it is sent. For 256 readings nothing is decimated.
 
+### The append hook drains a staging ring, not the buffer
+
+`CODE` from `notes/firmware/graph/fns11.c` and `fns8.c`, with the record layout and every live
+address `CONFIRMED` on a DMM6500 1.7.17a by `dmm6500-fft/tools/probe_substage.py` on
+2026-11-08.
+
+**The send is synchronous, and two earlier attributions were wrong.** `dispatch` ends at
+`0x001E7240` with an indirect call through the message object's own vtable:
+
+    lwz   r9, 4(r27)      ; the vtable
+    lwz   r0, 8(r9)       ; slot 2
+    addi  r4, r1, 104     ; an out-parameter
+    mtctr r0
+    bctrl                 ; <- the send
+    lwz   r31, 64(r1)     ; a RESULT COUNT comes back
+    lwz   r6, 12(r11)     ; clamped to a capacity
+    bl    001E6A64        ; and is unmarshalled
+
+So **`0x001E6A64` is reply unmarshalling, not argument marshalling**, and `0x00212D94` at
+`0x001E7218` sits in the error path downstream of the `1138`/`1139`/`1147` arity checks, which
+makes it event reporting rather than the send. `fwmem-DISPATCH.md` left "does the caller
+block?" open; it does. A fire-and-forget post has no return values to decode.
+
+**The hook never reads the reading buffer.** `bufpub_append_hook` (`0x002BC8BC`) copies
+28-byte records out of a ring the **subscription** owns, and the subscriptions live inside the
+buffer object itself, so every address below is reachable from a descriptor with no firmware
+constant:
+
+| offset | field |
+|---|---|
+| `desc + 0xF60` | lock taken around installing or removing a subscription |
+| `desc + 0xF64` | number installed |
+| `desc + 0xF68` | subscription slot 0, stride `0xE48` |
+| `sub + 0x00/0x04/0x08` | the three arguments `rbuf_install_hooks` was given |
+| `sub + 0x10` | read cursor, advanced `0x1C` a record, wraps at `+0x94` to `+0x8C` |
+| `sub + 0x70` | lock, held for a whole drain |
+| `sub + 0x78` | enabled; zero drains nothing |
+| `sub + 0x84` | record size, `0x1C` |
+| `sub + 0x8C` | ring start, `malloc(0x5780)` = 22,400 bytes = **800 records** |
+| `sub + 0x90` | write cursor |
+| `sub + 0x94` | ring end |
+| `sub + 0xA0` | pending count, decremented per record drained |
+
+`rbuf_install_hooks` (`0x0027F824`) allocates that ring on first use and memsets 800 slots.
+The drain loop is the whole mechanism:
+
+    iVar14 = *(int *)(param_1 + 0x10);                      // read cursor
+    *(int *)(param_1 + 0xa0) += -1;                         // pending--
+    FUN_004ac57c(puVar9, iVar14, *(int *)(param_1 + 0x84));  // copy the record out
+    uVar8 = iVar14 + 0x1c;                                   // advance
+    if (*(uint *)(param_1 + 0x94) <= uVar8)                  // past the end?
+        uVar8 = *(uint *)(param_1 + 0x8c);                   //   wrap
+    *(uint *)(param_1 + 0x10) = uVar8;
+
+batched `0xEF / 0x1C` = **8 records a message**, with a more-follows bit.
+
+**The 28-byte wire record, measured rather than read off the code.** One append of
+`-42.5` dB at `12345.0` Hz into a live trace buffer, dumped at the write cursor before and
+after:
+
+    before  00000000 c2c4670e c2c4670e 00000000 41c35000 41c35000 40000000
+    after   00000000 c22a0000 c22a0000 00000000 4640e400 4640e400 40000000
+
+| wire | meaning |
+|---|---|
+| `+0x00` | zero in every record seen |
+| `+0x04` | the reading, float32 |
+| `+0x08` | the reading again -- the min/max pair, equal for an unbinned point |
+| `+0x0C` | flags, read as a byte at `param_6[3]`; **bit `0x80` is a time axis**, clear is numeric |
+| `+0x10` | the x value, float32 (this app's extra value, Hz) |
+| `+0x14` | the x value again |
+| `+0x18` | `0x40000000`, which is `2.0` as a float |
+
+The display side copies that **verbatim** into its 56-byte trace record at `+0x1C` --
+`graph_fn_22140_timer` (`0x00022140`), `FUN_004ac57c(iVar2 + 0x1c, param_6, param_5)` -- with
+the count at `trace+0x218` capped at `0x2D0` = 720, the write cursor at `trace+0x214`, the
+ring bounds at `trace+0x208`/`+0x20C`, and the graph's pending-repaint flag at `graph+0x5B0`.
+Note the layout is one word later than the prose above this section implies: the "value" slot
+at `trace+0x1C` is the record's zero word, and the reading lands at `trace+0x20`.
+
+**The hook runs inline, on the appending thread.** `CONFIRMED`: a single append moved the
+write cursor exactly 28 bytes and left `pending` at zero, so the drain had already happened
+before the call returned. There is therefore no concurrent reader of the staging ring, and
+the lock at `sub+0x70` guards against another subscriber, not against us.
+
+Live on a DMM6500 1.7.17a, one trace bound to a 510-point buffer: descriptor `0x035BC570`,
+buffer lock `0x03248C20`, 1 subscription at `0x035BD4D8`, ring `0x035430F8..0x03548878`
+(22,400 bytes), record size 28, read and write cursors equal, pending 0, enabled 1.
+
+**What this closes.** Writing readings into a buffer's element storage cannot make the graph
+draw, and "fill 254 points natively plus one append from Lua" cannot work either -- not as an
+inference from a failed experiment, but because the hook stages one record per sanctioned
+write and drains only what `pending` counts. A native element write puts nothing in the ring,
+so there is nothing to drain; one append stages one record, so exactly one point draws. That
+is precisely what was measured in both cases.
+
+**What it opens, and what it closes.** `CONFIRMED` cost split: 76 us a write with a trace
+bound against 54 us unbound, so the hook is ~22 us and the IPC round trip ~54 us. Bypassing
+the hook alone wins under a third of the fill; the round trip is the prize.
+
+**Pre-loading `pending` does not work.** `CONFIRMED`: eight records staged into the ring by
+hand with `+0x90` advanced and `+0xA0` set to 8 read back correctly, and the first sanctioned
+append then drained exactly ONE record and left pending at zero. The push path **sets**
+pending rather than incrementing it, so a count placed there is overwritten. The batching
+bound of `0xEF / 0x1C` = 8 records a message is therefore reached only by whatever stages
+many at once -- the subscribe-time burst -- and not by an ordinary append.
+
+**HAZARD.** Advancing `+0x90` and not restoring it leaves the read and write cursors
+permanently out of step. The subscription's accounting then stops adding up and the service
+task raises **2350, "SPLT command message lost"**, as a modal dialog that reappears on OK and
+blocks the control socket and the LXI web panel together. `ABORT`, dead-socket termination on
+port 5030 and `ki.reboot` all fail, because none of them can reach the interpreter. Only a
+power cycle clears it. Restore both fields before anything else that can fail.
+
+**The ring accumulates across frames, so the pass-to-pass join is drawn.** `CONFIRMED`, and
+it took three builds to get right. The trace object's ring is 720 records and the appender
+wraps when it fills, so the plot shows roughly the last 720 points however they arrived --
+about 2.8 passes at 255 points each. A pass that always runs `flo -> fhi` therefore leaves a
+`fhi -> flo` step at every frame boundary inside that ring, and the widget draws it: a line
+from the start of the trace to its end, on alternate frames as the wrap moves. **The trace is
+not closed on itself** -- an unconditional closure would draw every frame, and
+`display.graph.setfill(g, 0)` does not affect it either.
+
+What removes it is making each pass END where the next BEGINS. A fold does that by running up
+the band and back down, ending at `flo` where the next pass starts, at twice the appends.
+**Alternating the direction of each pass gets the same property at one lap** -- ascending ends
+at `fhi` where the next descending pass begins, descending ends at `flo` where the next
+ascending pass begins -- and a descending pass traverses the same curve backwards, so the
+picture and the trace extent are unchanged. Measured on a DMM6500 at a 50 kHz span: **14 fps
+at 2048 against the fold's 9.5**, 17 against 11 at 1024, and no line. One or two frames glitch
+at launch while the ring fills.
+
+**Do not test any of this with a straight-line spectrum.** A ramp's pass-to-pass join is
+collinear with the ramp, so it is invisible and an always-ascending pass looks clean when it
+is not. Two identical ascending ramps written into one ring drew a single clean line, which
+was read as "no return edge is drawn" -- and two builds shipped on the strength of it. Use a
+shape whose two ends sit at different values.
+
+**`display.setvalue` is not a bulk path for a graph.** `CONFIRMED`: command 36 refuses every
+table shape against a graph object with event **1717**, and `display.getvalue` on the same
+object answers nil and 1717 too. An empty table, one number, two numbers, an x-y pair, ten
+values, ten `{x,y}` rows and 255 values were all refused, and `setvalue(g, t,
+display.ELEMENT_DATA)` gets **1138** instead. The allow-list for that call does not include a
+graph; it belongs to editable widgets.
+
+**How this compares with the bulk `setpixel` lead.** Exactly 5 of 1376 registered functions
+take a table: `buffer.channelmath` (232), `buffer.write.reading` (226), `display.graph.add`
+(39), `display.setpixel` (30) and `display.setvalue` (36). `setpixel`'s table form is the
+resampling path two sections above, and it is a different kind of answer from this one: it
+paints an object in one call with no round trip at all, but it bilinearly resamples a source
+array over the object's **whole area**, so using it for a trace means rasterising the plot
+into a `srcW x srcH` table of doubles every frame and giving up the graph widget -- and with
+it the axis, cursors and autoscaling that widget draws. Building a table that size in Lua
+costs more than the 510 appends it would replace, and anything drawn over the graph is
+repainted by it, so the widget would have to go entirely. The staging ring keeps the widget
+and the axis, which is the binding constraint on this app.
+
+`display.setvalue` (36) is the one of the five that has **not** been tried or read. Its table
+is mandatory -- `min_args` is 2 -- and it is undocumented. Both it and `setpixel` appear under
+a `display.graph.` prefix in `registry.json` that is an artifact of how the sub-table is
+walked; the app calls the same family as plain `display.settext` and `display.create`.
+
 ### Why `removeall` + `add` every frame costs what it does
 
 The pair is the only API-level way to get exactly one repaint per frame, and it does more than it
@@ -1129,6 +1291,39 @@ check, because there is no generation counter and no ownership test — the reco
 non-zero and of an accepted type. The call then edits a live, unrelated object and reports success.
 With 463 objects against 512 slots, reuse is the normal case, and for the narrow allow-lists above a
 stale handle corrupts some *other* image. Null a handle at the point of delete.
+
+## A buffer's descriptor on a model you have never run on
+
+Native code that reads a reading buffer in place needs the column descriptor: element size at
+`+0x08`, elements per chunk at `+0x0C`, chunk count at `+0x10`, the chunk vector at `+0x44`,
+element 0 at `+0x48`, and two owner self-pointers at `+0x54` and `+0x64` that identify it. Nothing
+outside the descriptor points at it — a sweep for its address found four references, three inside
+it and one in allocator bookkeeping — so it is found by searching for element 0's address as a
+big-endian word and confirming the self-pointers.
+
+**That search needs a window, and the window is the part that does not travel.** A DMM7510 1.7.16
+confirmed element 0 at `0x0158D7C0` and found no descriptor in `tostring({}) ± 24 MB` or `± 128 MB`
+around a Lua anchor of `0x010CDF10`. Its heap runs to `0x0F8A2000`, so those windows covered 143 MB
+of 248 MB. `tostring({})` anchors the **Lua** allocator; descriptors come from the **C++** one, and
+on a 6500 the two happen to sit within 11.5 MB of each other.
+
+The buffer carries the right anchor itself:
+
+    getmetatable(buf).CClassRef   ->  "userdata: 353b010"     the Udata payload
+    peek32(0x0353B010)            ->  0x0353E330              the C++ instance
+
+`getmetatable` is unprotected and `tostring` on a userdata gives the payload pointer already —
+**do not add 16**, that form belongs to the metatable hash walk and dereferencing it faults. The
+instance measured 19 KB from the descriptor, and its header lists per-column pointers that every
+capture has put within a couple of hundred KB of it. Sweep `± 256 KB` around those first.
+
+**The layout itself does travel.** `notes/firmware/structmatch.py` indexes every `stw rS, d(rA)`
+whose displacement is one of the four copies of `n` — `0x78`, `0x80`, `0x84`, `0x88` — keeps the
+sites where all four share a base register that is not `r1`, then searches the other image for
+those bytes and grows the identical run. The descriptor initialiser comes back byte-identical in
+all ten images on hand: 6500 1.7.08 through 1.7.18 and 7510 1.7.10 through 1.7.18, 1044 bytes of it
+at 6500 `0x003F29A8` and 7510 `0x00221BDC`. So a descriptor a sweep cannot find is in the wrong
+place, not of the wrong shape — which is worth settling before moving a field offset.
 
 ## Still open
 
