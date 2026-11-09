@@ -33,11 +33,33 @@ from dmmrun import DMM          # noqa: E402
 
 END = '===PUSH-END==='
 
-PARK = ("do if fftsa == nil then print('PK|true') return end "
-        "if fftsa.saved_frame == nil then fftsa.saved_frame = fftsa.frame "
-        "fftsa.frame = function() end end print('PK|' .. tostring(fftsa.saved_frame ~= nil)) end")
-UNPARK = ("do if fftsa ~= nil and fftsa.saved_frame ~= nil then "
-          "fftsa.frame = fftsa.saved_frame fftsa.saved_frame = nil end print('UP|ok') end")
+# Either app, because this tool pushes either one and what each ticks from is different.
+# sdec drives a display timer whose handler string is the only off switch -- clearing the
+# object does not stop it (tsp/serial_ui.tsp:269-273) -- and it exposes ui_tick_off/on for
+# exactly this. fftsa drives a frame function the timer resolves by name, so emptying the
+# field stops the body.
+#
+# The reply reports WHAT IT SAW and WHAT IT PARKED, as two lists, rather than answering
+# true. A park that found no app has to be distinguishable from a park that worked: a form
+# that answered true when the app's table was absent reported success for having done
+# nothing, which is the whole hazard this exists to remove.
+#
+# fftsa.frame is saved before it is replaced and only when it is a function, so a second
+# park cannot save the empty stub over the real body and leave no way back.
+PARK = ("do local saw, got = '', '' "
+        "if sdec ~= nil then saw = saw .. 'sdec ' "
+        "local ok, r = pcall(sdec.ui_tick_off) if ok and r then got = got .. 'sdec ' end end "
+        "if fftsa ~= nil then saw = saw .. 'fftsa ' "
+        "if type(fftsa.frame) == 'function' then "
+        "if fftsa.saved_frame == nil then fftsa.saved_frame = fftsa.frame end "
+        "fftsa.frame = function() end got = got .. 'fftsa ' end end "
+        "print('PK|' .. saw .. '|' .. got) end")
+UNPARK = ("do local got = '' "
+          "if sdec ~= nil then local ok, r = pcall(sdec.ui_tick_on) "
+          "if ok and r then got = got .. 'sdec ' end end "
+          "if fftsa ~= nil and fftsa.saved_frame ~= nil then "
+          "fftsa.frame = fftsa.saved_frame fftsa.saved_frame = nil got = got .. 'fftsa ' end "
+          "print('UP|' .. got) end")
 # The execute path accepts exactly 1024 bytes on a line, terminator included; one more
 # raises -363. Everything below budgets against that, with room for the wrapper.
 LINE_BUDGET = 1024
@@ -105,6 +127,7 @@ def main():
     # probe fails, and that connects to the DST port -- which aborts the running script. That
     # has not been observed from here, but writing a file to the key must not be ABLE to do it.
     d = DMM(timeout=120, recover=False)
+    parked = ''
     try:
         print(' ', d.q('print(localnode.model, localnode.version)'))
         # PARK THE APP'S FRAMES. DO NOT GO HOME.
@@ -120,16 +143,31 @@ def main():
         # so on the glass, and only a relaunch clears it. Restoring the screen afterwards does
         # not help: the damage is to the measurement subsystem, not to which screen shows.
         #
-        # Parking does both jobs without touching the panel: the frame body becomes empty, so
-        # the timer stops filing and stops holding the interpreter. Unparked in the finally.
+        # Parking does both jobs without touching the panel: the tick's handler is cleared and
+        # the frame body becomes empty, so neither files nor holds the interpreter. Unparked in
+        # the finally, which is where it has to be -- four exits below raise past this point,
+        # and an app left with an empty frame body renders nothing and looks exactly like the
+        # dead app this tool exists to stop producing.
+        #
+        # The reply lists what it SAW and what it PARKED. Seeing an app and failing to park it
+        # is the refusal; seeing none is not, because pushing to a key with nothing running is
+        # the ordinary case. A form that answered true when the app's table was absent reported
+        # success for having done nothing, which is the hazard itself.
         for _ in range(40):
             r = d.q(PARK, timeout=30)
-            if r is not None and str(r).startswith('PK|true'):
+            if r is not None and str(r).startswith('PK|'):
+                f = str(r)[3:].split('|')
+                saw = f[0].strip() if len(f) > 0 else ''
+                got = f[1].strip() if len(f) > 1 else ''
+                if saw and not got:
+                    raise SystemExit('saw %s running and could not park it; refusing to '
+                                     'write while it runs' % saw)
+                parked = got
+                print('  parked: %s' % (got if got else 'nothing running to park'))
                 break
             time.sleep(0.5)
         else:
-            raise SystemExit('could not park the app; refusing to write while it runs')
-        print('  parked: the app frame loop is stopped for the write')
+            raise SystemExit('the app did not answer the park; refusing to write')
         d.exec('eventlog.clear()', timeout=30)
 
         # Mode 'w' truncates, which is what a replacement wants. Opened once and held: one open per
@@ -184,21 +222,6 @@ def main():
             raise SystemExit(1)
         same = (int(got['len']) == len(data) and int(got['cr']) == data.count(b'\r')
                 and int(got['lf']) == data.count(b'\n'))
-        # PUT THE APP'S SCREEN BACK. Going HOME is required before the write -- a live app's
-        # statements get refused otherwise, and its timer would be touching the same
-        # filesystem mid-write -- but leaving the panel there stops the app dead to look at:
-        # a frame timer only runs while the screen it is parented to is on show. The status
-        # bar then reads "No Script", which is what a launched app ALWAYS reads once its
-        # entry function has returned, and the home screen adopts the app's trace buffer and
-        # shows a spectrum level in dB as though it were a measurement. All three together
-        # look exactly like an app that has been killed. It has not been; it is off-screen.
-        #
-        # Measured 2026-11-09: diagnosed as a DST abort twice and relaunched for nothing.
-        try:
-            print('  unpark:', d.q(UNPARK, timeout=30))
-        except Exception as e:                                       # noqa: BLE001
-            print('  unpark FAILED -- %s' % e)
-            print('         run: fftsa.frame = fftsa.saved_frame fftsa.saved_frame = nil')
         print('  local len=%d cr=%d lf=%d' % (len(data), data.count(b'\r'), data.count(b'\n')))
         print('  onkey len=%s cr=%s lf=%s' % (got['len'], got['cr'], got['lf']))
         print('  -> %s' % ('IDENTICAL: install it from Manage Apps as usual'
@@ -206,6 +229,28 @@ def main():
         if not same:
             raise SystemExit(1)
     finally:
+        # THE UNPARK, where every exit above reaches it. Four of them raise -- the open
+        # failing, a lost sync, an unreadable read-back, and any socket error in the write
+        # loop -- and one of those has fired on this bench before. Skipping it leaves the app
+        # ticking with its handler cleared and its frame body empty: nothing on the glass
+        # moves, which is the symptom this tool is supposed to stop causing.
+        #
+        # Checked and not merely attempted: DMM.q returns None on a timeout and after
+        # exhausting its refusal retries rather than raising, so an except branch alone never
+        # fires and the operator reads "IDENTICAL" over a frame-dead app.
+        if parked:
+            back = None
+            try:
+                back = d.q(UNPARK, timeout=30)
+            except Exception as exc:                                 # noqa: BLE001
+                print('  unpark FAILED -- %s' % exc)
+            if back is not None and str(back).startswith('UP|'):
+                print('  unpark: %s' % str(back)[3:].strip())
+            else:
+                print('  UNPARK UNCONFIRMED (reply %r) -- the app is still parked.' % back)
+                print('  Run on the instrument: sdec.ui_tick_on()')
+                print('  and, for the FFT app: fftsa.frame = fftsa.saved_frame '
+                      'fftsa.saved_frame = nil')
         d.close()
 
 
