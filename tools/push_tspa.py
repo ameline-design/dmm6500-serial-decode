@@ -32,6 +32,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from dmmrun import DMM          # noqa: E402
 
 END = '===PUSH-END==='
+
+PARK = ("do if fftsa == nil then print('PK|true') return end "
+        "if fftsa.saved_frame == nil then fftsa.saved_frame = fftsa.frame "
+        "fftsa.frame = function() end end print('PK|' .. tostring(fftsa.saved_frame ~= nil)) end")
+UNPARK = ("do if fftsa ~= nil and fftsa.saved_frame ~= nil then "
+          "fftsa.frame = fftsa.saved_frame fftsa.saved_frame = nil end print('UP|ok') end")
 # The execute path accepts exactly 1024 bytes on a line, terminator included; one more
 # raises -363. Everything below budgets against that, with room for the wrapper.
 LINE_BUDGET = 1024
@@ -101,9 +107,29 @@ def main():
     d = DMM(timeout=120, recover=False)
     try:
         print(' ', d.q('print(localnode.model, localnode.version)'))
-        # HOME FIRST: with a live app's screen in front this socket's statements get refused,
-        # and the app's own timer would be touching the same filesystem mid-write.
-        d.exec('pcall(function() display.changescreen(display.SCREEN_HOME) end)', timeout=30)
+        # PARK THE APP'S FRAMES. DO NOT GO HOME.
+        #
+        # This used to switch to SCREEN_HOME, for two good reasons: a live app's frame holds
+        # the interpreter about three quarters of the time, so statements come back "a command
+        # from another interface is running", and the app's own timer would be touching the
+        # same filesystem mid-write. Going HOME fixes both and breaks something worse.
+        #
+        # Measured 2026-11-09, twice: the HOME screen is a LIVE MEASUREMENT -- DIGITIZE
+        # VOLTAGE, taking its own readings -- so the front panel reconfigures the digitizer
+        # under the app, and the app's next capture fails with rc=-5 ECAPTURE. It halts, says
+        # so on the glass, and only a relaunch clears it. Restoring the screen afterwards does
+        # not help: the damage is to the measurement subsystem, not to which screen shows.
+        #
+        # Parking does both jobs without touching the panel: the frame body becomes empty, so
+        # the timer stops filing and stops holding the interpreter. Unparked in the finally.
+        for _ in range(40):
+            r = d.q(PARK, timeout=30)
+            if r is not None and str(r).startswith('PK|true'):
+                break
+            time.sleep(0.5)
+        else:
+            raise SystemExit('could not park the app; refusing to write while it runs')
+        print('  parked: the app frame loop is stopped for the write')
         d.exec('eventlog.clear()', timeout=30)
 
         # Mode 'w' truncates, which is what a replacement wants. Opened once and held: one open per
@@ -169,13 +195,10 @@ def main():
         #
         # Measured 2026-11-09: diagnosed as a DST abort twice and relaunched for nothing.
         try:
-            d.exec("pcall(function() if fftsa ~= nil then fftsa.show_main() end end)",
-                   timeout=30)
-            d.exec("pcall(function() if sdec ~= nil and sdec.show_main ~= nil then "
-                   "sdec.show_main() end end)", timeout=30)
-            print('  panel: the app was asked to show its own screen again')
+            print('  unpark:', d.q(UNPARK, timeout=30))
         except Exception as e:                                       # noqa: BLE001
-            print('  panel: could not restore the app screen -- %s' % e)
+            print('  unpark FAILED -- %s' % e)
+            print('         run: fftsa.frame = fftsa.saved_frame fftsa.saved_frame = nil')
         print('  local len=%d cr=%d lf=%d' % (len(data), data.count(b'\r'), data.count(b'\n')))
         print('  onkey len=%s cr=%s lf=%s' % (got['len'], got['cr'], got['lf']))
         print('  -> %s' % ('IDENTICAL: install it from Manage Apps as usual'
