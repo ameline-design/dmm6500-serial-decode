@@ -95,11 +95,9 @@ def main():
     parts = chunks(data, LINE_BUDGET - WRAP)
     print('  %d write statements' % len(parts))
 
-    # recover=False IS LOAD-BEARING. The default constructor calls clear_dead_sockets() when
-    # its first alive() probe fails, and that connects to the DST port -- which ABORTS THE
-    # RUNNING SCRIPT. Measured 2026-11-09: a push with the default took the FFT app down
-    # mid-session, "No Script" in the status bar and the trace buffer adopted by the front
-    # panel as its current reading. Writing a file to the key must not be able to do that.
+    # recover=False. The default constructor calls clear_dead_sockets() when its first alive()
+    # probe fails, and that connects to the DST port -- which aborts the running script. That
+    # has not been observed from here, but writing a file to the key must not be ABLE to do it.
     d = DMM(timeout=120, recover=False)
     try:
         print(' ', d.q('print(localnode.model, localnode.version)'))
@@ -160,6 +158,24 @@ def main():
             raise SystemExit(1)
         same = (int(got['len']) == len(data) and int(got['cr']) == data.count(b'\r')
                 and int(got['lf']) == data.count(b'\n'))
+        # PUT THE APP'S SCREEN BACK. Going HOME is required before the write -- a live app's
+        # statements get refused otherwise, and its timer would be touching the same
+        # filesystem mid-write -- but leaving the panel there stops the app dead to look at:
+        # a frame timer only runs while the screen it is parented to is on show. The status
+        # bar then reads "No Script", which is what a launched app ALWAYS reads once its
+        # entry function has returned, and the home screen adopts the app's trace buffer and
+        # shows a spectrum level in dB as though it were a measurement. All three together
+        # look exactly like an app that has been killed. It has not been; it is off-screen.
+        #
+        # Measured 2026-11-09: diagnosed as a DST abort twice and relaunched for nothing.
+        try:
+            d.exec("pcall(function() if fftsa ~= nil then fftsa.show_main() end end)",
+                   timeout=30)
+            d.exec("pcall(function() if sdec ~= nil and sdec.show_main ~= nil then "
+                   "sdec.show_main() end end)", timeout=30)
+            print('  panel: the app was asked to show its own screen again')
+        except Exception as e:                                       # noqa: BLE001
+            print('  panel: could not restore the app screen -- %s' % e)
         print('  local len=%d cr=%d lf=%d' % (len(data), data.count(b'\r'), data.count(b'\n')))
         print('  onkey len=%s cr=%s lf=%s' % (got['len'], got['cr'], got['lf']))
         print('  -> %s' % ('IDENTICAL: install it from Manage Apps as usual'
