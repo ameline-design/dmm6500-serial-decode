@@ -95,7 +95,12 @@ def main():
     parts = chunks(data, LINE_BUDGET - WRAP)
     print('  %d write statements' % len(parts))
 
-    d = DMM(timeout=120)
+    # recover=False IS LOAD-BEARING. The default constructor calls clear_dead_sockets() when
+    # its first alive() probe fails, and that connects to the DST port -- which ABORTS THE
+    # RUNNING SCRIPT. Measured 2026-11-09: a push with the default took the FFT app down
+    # mid-session, "No Script" in the status bar and the trace buffer adopted by the front
+    # panel as its current reading. Writing a file to the key must not be able to do that.
+    d = DMM(timeout=120, recover=False)
     try:
         print(' ', d.q('print(localnode.model, localnode.version)'))
         # HOME FIRST: with a live app's screen in front this socket's statements get refused,
