@@ -669,7 +669,76 @@ column; the appender (`0x00022140`) caps the count at `0x2D0` and wraps.
 
 The ring is filled by streaming. `graph_trace_add` calls `bufsub_subscribe` (`0x000B4708`), which
 sends `S$BE` (`0x005479A8`) and the buffer name to the buffer module; an empty name means
-`defbuffer1`. There (`0x002BB684`) the subscription installs two hooks on the buffer object itself
+`defbuffer1`.
+
+### Finding a trace object from its buffer name, without searching
+
+`bufsub_subscribe` allocates a slot in a **static** table and, before its switch on the kind,
+writes three things unconditionally. That makes the table a name-to-trace index, and it is the
+cheapest route to a trace object that exists:
+
+| offset in the slot | content |
+|---|---|
+| `+0x00` | the kind. `0x407F` is a graph-trace subscription |
+| `+0x04` | set when the caller passed no name |
+| `+0x08` | **the buffer name**, 32 bytes, NUL-terminated |
+| `+0x34` | the graph widget |
+| `+0x40` | the **address** of the widget's routing-array element holding the trace pointer |
+
+So for a graph trace the chain is
+
+```
+slot      = (address of the name) - 8
+graph     = *(slot + 0x34)
+trace     = *( *(slot + 0x40) )
+ring      = trace + 0x220,  bounds and cursors at trace + 0x1F0
+```
+
+`+0x40` is not an index. `graph_trace_add` computes
+`graph + 0x498 + *(graph+0x538)*4` and passes that address, so one dereference gives the array
+element and a second gives the trace object.
+
+**The table base is not needed.** Because the slot is the name hit minus 8, the base, the stride
+and the slot count never enter. That matters because the base moves between builds: it is
+`0x00D67708` on a DMM6500 at 1.7.17a and `0x00D67A48` at 1.7.18a, with the count 0x50 below it in
+each case — the same `0x340` `.bss` delta as the GUI object table.
+
+Measured on a DMM6500 at 1.7.17a with the FFT app running at 2048 points:
+
+```
+slot 00D67CD0  kind 0000407F  graph 03134A28  p4 03134EC0
+*(p4)      = 0352D4B0          the trace object
+trace+0x08 = FFTSA_TRACE       the name again
+trace+0x00 = 03134A28          the graph, matching slot+0x34
+trace+0x30 = 00D67CD0          the subscription handle, matching the slot address
+trace+0x1F0 = 0352D6D0..03537488, count 510, and 0352D6D0 is trace+0x220
+```
+
+Four facts to be careful of, all of which make a bare name search unsafe:
+
+- **A corpse keeps its name and its `+0x40`.** Unsubscribing clears the slot's *kind* and
+  nothing else, so liveness is `kind == 0x407F` exactly. Removing one of several equivalent
+  subscribers can leave `-2` there, so "non-zero" is not liveness either.
+- **There is a decoy below the table.** The c2c request record holds a copy of the name at
+  `0x00D678D8` (1.7.18a numbering) and, eight bytes before it, a pointer to the *current* slot —
+  so a forward search finds the decoy first. Measured: two name hits in the window, the first at
+  `0x00D67598` whose first word read back `0x00D67CD0`, the live slot's own address.
+- **Names are not unique.** Slots are allocated lowest-free-first with no uniqueness check, one
+  trace can create a second `0x407F` subscription, and two graphs can subscribe the same buffer.
+  "First exact name" is not authoritative; every hit has to be validated.
+- **The slot count is a high-water mark**, one past the highest occupied slot with holes allowed,
+  and an empty table reads as `1`.
+
+The cross-checks that make the dereferences safe are mutual, and each pair was written by a
+different store in the firmware: `slot+0x40` must lie inside `graph+0x498 .. graph+0x534` where
+`graph` came from `slot+0x34`; `trace+0x00` must equal that same graph; and `trace+0x30` must
+equal the slot's own address.
+
+**The DMM7510 has none of this.** Its 1.7.16a image has no `S$BE`, no `0x407F` immediate and no
+`mulli 0x128`, and the masked DMM6500 code signature scores the same flat partial match there
+that the object-table search produced. That is a different subsystem, not a relocated copy, so
+the route must fail closed on that model rather than accept a best partial match.
+ There (`0x002BB684`) the subscription installs two hooks on the buffer object itself
 (`rbuf_install_hooks`, `0x0027F824`): an append hook (`0x002BC8BC`) and a clear hook (`0x002BD87C`).
 The append hook drains the readings pending for its cursor and sends them **batched,
 `floor(239 / record size)` per message** (`0xEF / size`, around `0x002BCE40`; a 0x14-byte header plus
@@ -1324,6 +1393,53 @@ those bytes and grows the identical run. The descriptor initialiser comes back b
 all ten images on hand: 6500 1.7.08 through 1.7.18 and 7510 1.7.10 through 1.7.18, 1044 bytes of it
 at 6500 `0x003F29A8` and 7510 `0x00221BDC`. So a descriptor a sweep cannot find is in the wrong
 place, not of the wrong shape — which is worth settling before moving a field offset.
+
+## Reading memory: what can fault, and what cannot
+
+`ki.peek8/16/32` and `ki.memread` are both raw loads with **no address validation whatsoever**.
+`peek8|16|32` are one handler with the width in an upvalue, ending in the load itself --
+`lwz r28, 0(r30)` at `0x001FA4B0` on 1.7.17a -- and `memread` is
+`lua_pushlstring(L, (const char *)addr, count)`, a straight copy of `count` bytes from wherever
+the address parsed to. **Neither one is safer than the other**, and neither refuses an address.
+
+What decides whether a load faults is therefore not the API but the **BATs the boot code
+programs**, and there are only five mapped ranges:
+
+| range | size | attributes |
+|---|---|---|
+| `00000000-10000000` | **256 MB** | DRAM, cacheable, R/W -- one BAT, `BL=0x7FF` |
+| `80000000-80100000` | 1 MB | cache-inhibited and guarded -- MMIO |
+| `90000000-90100000` | 1 MB | MMIO, the `.fpga` section |
+| `A0000000-A0100000` | 1 MB | MMIO |
+| `FE000000-FFFFFFFF` | 32 MB | flash, readable as data |
+
+**All 256 MB of DRAM is mapped by a single BAT.** So an aligned read anywhere in
+`0x00000000-0x10000000` cannot take a data storage interrupt -- there is no unmapped hole in it to
+hit, including the 41.5 MB above `.ramend`, which is a linker marker and not the physical end.
+That is the useful consequence: a pointer followed out of a firmware structure needs no proof that
+its target is mapped, provided it is 4-aligned and inside DRAM.
+
+The bluescreens all came from **outside** those ranges, and from one cause: the address is a
+**hex string**, `lua_isstring` accepts a number, `lua_tostring` renders it in decimal and the
+parser reads base 16 unconditionally. `ki.peek32(0xFF4CC0B4)` became `"4283616948"`, parsed as
+`0x83616948`, which is in none of the five ranges. Always `string.format('%X', addr)`.
+
+So the only guard a reader needs is the one `_wg` in `tsp/native_link.tsp` applies: 4-aligned,
+and inside `0x3000..0x10000000`. Two mistakes are worth recording because both cost real time:
+
+* **A span of addresses this app has read is not a map of what is mapped.** The FFT app gates
+  speculative pointer walks on `px_live`, whose span is built from addresses the *app* has
+  dereferenced -- useful for rejecting a garbage widget pointer, useless as a fault guard, and
+  actively wrong when the pointer is correct. Measured: the subscriber chain found the right trace
+  object on a relaunch and `px_live` refused it 209 times -- `3E0EF30 outside 11EB018..3C8C7C8` --
+  because the display task had allocated above the app's own allocations.
+* **`memread` is not the safe alternative to `peek32`.** It is equally unvalidated. Choosing it
+  for safety is choosing a slower primitive for a property it does not have; the Lua sweep's habit
+  of skipping blocks `memread` "refused" was skipping blocks outside the ranges above, which
+  `peek32` would have refused on the same test.
+
+Errors from both go through `lua_error` as plain Lua strings, so `pcall` catches them -- no
+dialog, no event. Cheap to probe.
 
 ## Still open
 
